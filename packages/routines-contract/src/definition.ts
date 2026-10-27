@@ -62,11 +62,17 @@ export const IntervalTriggerSchema = z.object({
 export const CronTriggerSchema = z.object({
   kind: z.literal('cron'), expr: z.string().min(1).max(256), tz: RoutineTimezoneSchema,
 }).strict();
-export const WebhookHmacSchema = z.object({
+/** Existing raw-body HMAC settings remain valid without normalization or defaults changing. */
+export const CustomWebhookHmacSchema = z.object({
   header: z.string().min(1).max(128).regex(/^[!#$%&'*+.^_`|~A-Za-z0-9-]+$/, 'Invalid header.'),
   algorithm: z.enum(['sha256', 'sha1']).default('sha256'),
   prefix: z.string().max(128).optional(),
 }).strict();
+/** Named apps fix the entire signing protocol; raw overrides would be misleading. */
+export const WebhookHmacSchema = z.union([
+  CustomWebhookHmacSchema,
+  z.object({ app: z.enum(['stripe', 'slack', 'zendesk']) }).strict(),
+]);
 export const WebhookTriggerSchema = z.object({
   kind: z.literal('webhook'), path: z.string().refine(validateWebhookPath, 'Invalid webhook path.'),
   events: z.array(z.string().min(1).max(64).regex(/^[A-Za-z0-9_-]+$/, 'Invalid event name.')).max(32).optional(),

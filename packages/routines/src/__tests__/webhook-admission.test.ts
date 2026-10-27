@@ -21,7 +21,7 @@ function request(over:Partial<HttpRequest>={}):HttpRequest {
   const body=Buffer.from('{"private":"payload"}');
   return {path:'/webhooks/token/hook',rawPath:'/webhooks/token/hook',params:{token:'token','*':'hook'},body,headers:{'content-type':'application/json','x-github-event':'push','x-github-delivery':'delivery-1',sig:createHmac('sha256','secret').update(body).digest('hex')},...over};
 }
-function response(){const state={code:0,ended:false};const res={status(code:number){state.code=code;return res;},end(){state.ended=true;}};return{state,res};}
+function response(){const state={code:0,ended:false};const res={status(code:number){state.code=code;return res;},end(){state.ended=true;},json(){state.ended=true;}};return{state,res};}
 describe('authenticated webhook durable admission',()=>{
   it('validates signatures, bodies and filtering before any dedupe admission',async()=>{
     const f=fixture();

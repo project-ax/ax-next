@@ -42,6 +42,7 @@ import { routineApi, RoutineApiError } from '@/lib/routines';
 import { describeCron } from '@/lib/cron-describe';
 import { TASK_KIND_LABELS } from '@/lib/task-kinds';
 import { ActiveHoursDaySelector } from './ActiveHoursDaySelector';
+import { WebhookSignatureFields } from './WebhookSignatureFields';
 
 interface Props {
   mode: 'create' | 'edit';
@@ -724,101 +725,17 @@ function RoutineForm({
               </>}
               {form.webhook !== null && (
                 <>
-                  <Field orientation="horizontal">
-                    <FieldLabel htmlFor={`${id}-hmac`}>
-                      Verify HMAC signature
-                    </FieldLabel>
-                    <Switch
-                      id={`${id}-hmac`}
-                      checked={form.webhook.hmac !== undefined}
-                      disabled={disabled}
-                      onCheckedChange={(v) => {
-                        if (form.webhook !== null) {
-                          const { hmac: _hmac, ...rest } = form.webhook;
-                          update(
-                            'webhook',
-                            v
-                              ? {
-                                  ...rest,
-                                  hmac: {
-                                    header: 'X-Hub-Signature-256',
-                                    algorithm: 'sha256',
-                                  },
-                                }
-                              : rest,
-                          );
-                        }
-                      }}
-                    />
-                  </Field>
-                  {form.webhook.hmac && (
-                    <>
-                      {textField(
-                        'Signature header',
-                        form.webhook.hmac.header,
-                        'webhook.hmac.header',
-                        (v) => {
-                          if (
-                            form.webhook !== null &&
-                            form.webhook.hmac
-                          )
-                            update('webhook', {
-                              ...form.webhook,
-                              hmac: { ...form.webhook.hmac, header: v },
-                            });
-                        },
-                        { maxLength: 128 },
-                      )}
-                      <Field>
-                        <FieldLabel>Signature algorithm</FieldLabel>
-                        <ToggleGroup
-                          type="single"
-                          aria-label="Signature algorithm"
-                          value={form.webhook.hmac.algorithm}
-                          disabled={disabled}
-                          onValueChange={(v) => {
-                            if (
-                              (v === 'sha256' || v === 'sha1') &&
-                              form.webhook !== null &&
-                              form.webhook.hmac
-                            )
-                              update('webhook', {
-                                ...form.webhook,
-                                hmac: { ...form.webhook.hmac, algorithm: v },
-                              });
-                          }}
-                          className="justify-start"
-                        >
-                          <ToggleGroupItem value="sha256">
-                            SHA256
-                          </ToggleGroupItem>
-                          <ToggleGroupItem value="sha1">SHA1</ToggleGroupItem>
-                        </ToggleGroup>
-                      </Field>
-                      {textField(
-                        'Signature prefix',
-                        form.webhook.hmac.prefix ?? '',
-                        'webhook.hmac.prefix',
-                        (v) => {
-                          if (
-                            form.webhook !== null &&
-                            form.webhook.hmac
-                          ) {
-                            const { prefix: _prefix, ...hmac } =
-                              form.webhook.hmac;
-                            update('webhook', {
-                              ...form.webhook,
-                              hmac: v ? { ...hmac, prefix: v } : hmac,
-                            });
-                          }
-                        },
-                        { maxLength: 128 },
-                      )}
-                      <FieldDescription>
-                        {taskMode ? 'The task owner can manage its signing secret in Task options after saving. Without a saved secret, signed deliveries are rejected.' : 'The owner of this routine can manage its signing secret in the saved routine’s credential settings. Without a saved secret, signed deliveries are rejected.'}
-                      </FieldDescription>
-                    </>
-                  )}
+                  <WebhookSignatureFields
+                    value={form.webhook.hmac}
+                    disabled={disabled}
+                    taskMode={taskMode}
+                    invalidField={invalidField ?? firstIssue?.path.join('.')}
+                    onChange={value => {
+                      if (form.webhook === null) return;
+                      const { hmac: _hmac, ...webhook } = form.webhook;
+                      update('webhook', value === undefined ? webhook : { ...webhook, hmac: value });
+                    }}
+                  />
                 </>
               )}
             </FieldGroup>

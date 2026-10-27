@@ -155,7 +155,7 @@ describe('structured routine form', () => {
     render(<RoutineEditor mode="edit" agentId="a" agentName="Caveman" routine={memberRow} onSaved={vi.fn()} onCancel={vi.fn()} />);
     await screen.findByDisplayValue(row.name);
     fireEvent.click(screen.getByRole('button', { name: 'Optional settings' }));
-    fireEvent.click(screen.getByRole('switch', { name: 'Verify HMAC signature' }));
+    fireEvent.click(screen.getByRole('switch', { name: 'Verify signature' }));
     expect(screen.getByText(/The owner of this routine can manage its signing secret/)).toBeVisible();
     expect(screen.getByText(/Without a saved secret, signed deliveries are rejected/)).toBeVisible();
     expect(screen.queryByLabelText('Webhook HMAC secret')).not.toBeInTheDocument();
@@ -409,8 +409,9 @@ describe('structured routine form', () => {
     expect(screen.getByRole('switch', { name: 'Active hours' })).toBeDisabled();
     fill('Events (comma-separated)', 'push, update');
     fireEvent.click(
-      screen.getByRole('switch', { name: 'Verify HMAC signature' }),
+      screen.getByRole('switch', { name: 'Verify signature' }),
     );
+    fireEvent.click(screen.getByRole('radio', { name: 'Other' }));
     fill('Signature header', 'X-Signature');
     fill('Signature prefix', 'sha256=');
     fill('Silence token', 'quiet');
