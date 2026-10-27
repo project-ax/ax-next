@@ -25,7 +25,8 @@ describe('active-hour selected days', () => {
     expect(RoutineCreateToolInputSchema.parse({ requestId: 'create', definition }).definition.activeHours).toEqual(definition.activeHours);
     expect(RoutineUpdateToolInputSchema.parse({ requestId: 'update', routineId: 'job', expectedRevision: 'r', patch: { activeHours } }).patch.activeHours)
       .toEqual(definition.activeHours);
-    expect(RoutineUpsertDefaultInputSchema.parse(definition).activeHours).toEqual(definition.activeHours);
+    const { schedule, webhook: _webhook, ...legacyDefault } = definition;
+    expect(RoutineUpsertDefaultInputSchema.parse({ ...legacyDefault, trigger: schedule }).activeHours).toEqual(definition.activeHours);
   });
 
   it.each([[[]], [['mon', 'mon']], [['toString']], [['Monday']], [['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun', 'mon']]])

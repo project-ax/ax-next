@@ -53,7 +53,7 @@ describe('independent methods through real approval, restart and HTTP dispatch',
       name: 'Approved dual repeat', promptBody: 'Approved dual input: {{payload}}',
       schedule: { kind: 'interval', every: '60s' },
       webhook: { kind: 'webhook', path: '/approved-dual', events: ['push'], hmac: { header: 'X-Signature', algorithm: 'sha256', prefix: 'sha256=' } },
-      activeHours: { start: '09:00', end: '17:00', tz: 'UTC' },
+      activeHours: { start: '09:00', end: '17:00', tz: 'UTC', days: ['fri'] },
     };
     const call: ToolCall = { id: 'dual-approved', name: 'routine_create', input: { requestId: 'dual-approved', definition } };
     await approve(ctx, await holdRawCall(ctx, call));
@@ -84,6 +84,7 @@ describe('independent methods through real approval, restart and HTTP dispatch',
       expect(await mount(port)).toBe(port);
       store = createRoutinesStore(h.db);
       expect((await store.findOne(row))?.webhook).toEqual(definition.webhook);
+      expect((await store.findOne(row))?.activeHours).toEqual(definition.activeHours);
       await expect.poll(() => Boolean(wake)).toBe(true);
       now += 60_000;
       wake!();
@@ -100,10 +101,20 @@ describe('independent methods through real approval, restart and HTTP dispatch',
       await expect.poll(async () => (await history()).length).toBe(2);
       expect((await history())[0]).toMatchObject({ triggerSource: 'webhook', status: 'ok', renderedPrompt: expect.stringContaining('from the app') });
       expect((await store.findOne(row))?.nextRunAt).toEqual(nextRunAt);
+      now = Date.parse('2026-10-10T12:00:00Z'); // Clock hours match, but Saturday is not selected.
+      const unselectedBody = '{"event":"push","title":"on an unselected day"}';
+      const unselectedSignature = createHmac('sha256', 'dual-fixture-key').update(unselectedBody).digest('hex');
+      const unselectedResponse = await fetch(originalUrl, { method: 'POST', body: unselectedBody, headers: {
+        'content-type': 'application/json', 'x-github-event': 'push', 'x-signature': `sha256=${unselectedSignature}`,
+      } });
+      expect(unselectedResponse.status).toBe(202);
+      await expect.poll(async () => (await history()).length).toBe(3);
+      expect((await history())[0]).toMatchObject({ triggerSource: 'webhook', status: 'ok', renderedPrompt: expect.stringContaining('on an unselected day') });
+      expect((await store.findOne(row))?.nextRunAt).toEqual(nextRunAt);
       wake!();
       await expect.poll(() => Boolean(wake)).toBe(true);
-      expect(await history()).toHaveLength(2);
-      expect(h.invokeCalls).toHaveLength(2);
+      expect(await history()).toHaveLength(3);
+      expect(h.invokeCalls).toHaveLength(3);
       expect(listening.messages).toHaveLength(2);
     } finally {
       await http?.close();

@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { Cron } from 'croner';
 import { z } from 'zod';
-import { CheckInMissSchema, RoutineDefinitionObjectSchema, RoutineDefinitionSchema, RoutinePatchSchema, RoutineReportStatusSchema, RoutineStepAuthorSchema, durationToSeconds, normalizeLegacyRoutineDefinition, repeatScheduleWriteIssue, type RoutineDefinition, type RoutinePatch } from '@ax/routines-contract';
+import { CheckInMissSchema, RoutineDefinitionObjectSchema, RoutineDefinitionSchema, RoutinePatchSchema, RoutineReportStatusSchema, RoutineStepAuthorSchema, activeHoursWriteIssue, durationToSeconds, normalizeLegacyRoutineDefinition, repeatScheduleWriteIssue, type RoutineDefinition, type RoutinePatch } from '@ax/routines-contract';
 import { SafeToolError, type SafeToolField } from '@ax/core';
 import type { StoredRoutine } from './types.js';
 
@@ -54,7 +54,9 @@ export function schedulingChanged(a: RoutineDefinition, b: RoutineDefinition): b
 export function credentialRef(key: { agentId: string; routineId: string }): string { return `routine:${key.agentId}:${key.routineId}:hmac`; }
 export function hasHmac(row: RoutineDefinition): boolean { return row.webhook !== null && row.webhook.hmac !== undefined; }
 /** New effects only: a completed receipt is returned before this authoring rule runs. */
-export function validateScheduleWrite(next: RoutineDefinition, previous?: RoutineDefinition): void {
+export function validateScheduleWrite(next: RoutineDefinition, previous?: RoutineDefinition, patch?: RoutinePatch): void {
+  if (activeHoursWriteIssue(next.activeHours) !== null && !(patch !== undefined && isStopOnlyPatch(patch)))
+    throw new SafeToolError('validation', 'activeHours.end');
   if (next.kind === 'repeat' && repeatScheduleWriteIssue(next.schedule, previous?.schedule) !== null)
     throw new SafeToolError('validation', next.schedule?.kind === 'cron' ? 'schedule.expr' : 'schedule.every');
 }

@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { advanceToNextActiveWindow } from '../active-hours.js';
 
 describe('advanceToNextActiveWindow', () => {
@@ -83,5 +83,35 @@ describe('selected active days, overnight windows and real local time', () => {
 
   it('does not invent a next check for a historical empty window', () => {
     expect(shifted('2026-10-26T10:00:00.000Z', { start: '09:00', end: '09:00', tz: 'UTC' })).toBeNull();
+  });
+});
+
+describe('bounded repeated active-window reads', () => {
+  it('isolates restrictions in the key and keeps the memo bounded', () => {
+    const hours = { start: '03:00', end: '04:00', tz: 'UTC' };
+    const first = new Date('2040-01-01T00:00:00Z');
+    for (let index = 0; index < 130; index++)
+      advanceToNextActiveWindow(new Date(first.getTime() + index * 60_000), hours);
+    const spy = vi.spyOn(Intl.DateTimeFormat.prototype, 'formatToParts');
+    try {
+      expect(advanceToNextActiveWindow(first, hours)?.toISOString()).toBe('2040-01-01T03:00:00.000Z');
+      expect(spy.mock.calls.length).toBeGreaterThan(1);
+      expect(advanceToNextActiveWindow(first, { ...hours, start: '04:00', end: '05:00' })?.toISOString())
+        .toBe('2040-01-01T04:00:00.000Z');
+    } finally { spy.mockRestore(); }
+  });
+  it('reuses the same outside-window minute without caching a mutable Date', () => {
+    const spy = vi.spyOn(Intl.DateTimeFormat.prototype, 'formatToParts');
+    try {
+      const hours = { start: '19:13', end: '19:14', tz: 'UTC', days: ['wed'] as ['wed'] };
+      const first = advanceToNextActiveWindow(new Date('2026-10-26T14:00:01Z'), hours)!;
+      expect(first.toISOString()).toBe('2026-10-28T19:13:00.000Z');
+      expect(spy.mock.calls.length).toBeGreaterThan(1000);
+      first.setTime(0);
+      spy.mockClear();
+      expect(advanceToNextActiveWindow(new Date('2026-10-26T14:00:40Z'), hours)?.toISOString())
+        .toBe('2026-10-28T19:13:00.000Z');
+      expect(spy).toHaveBeenCalledTimes(1);
+    } finally { spy.mockRestore(); }
   });
 });
