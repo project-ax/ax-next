@@ -8,7 +8,7 @@ import {
   type HookBus,
 } from '@ax/core';
 import type { Destination } from '@ax/credentials';
-import { RoutineSecretOutputSchema } from '@ax/routines-contract';
+import { RoutineGetOutputSchema, RoutineKeySchema, RoutineSecretOutputSchema, RoutineSecretStatusOutputSchema } from '@ax/routines-contract';
 import { z } from 'zod';
 import {
   parseRequestBody,
@@ -36,7 +36,8 @@ import { validateProviderKey } from './provider-validator.js';
 // `account` (connector) key is never stored per person: `account` at user
 // scope is a 400 (`account-not-per-person`), and at agent scope a 403 (the
 // agent's own key route owns it).
-// Settings routes: scope forced to 'user', ownerId forced to the actor's id.
+// Settings routes: scope forced to 'user', ownerId forced to the actor's id,
+// except routine-hmac, whose exact agent destination is authorized by routines.
 // There is NO settings route for the `account` kind (404): connector keys
 // belong to agents, or are the one shared company key (agent-owned sign-ins,
 // slice 5).
@@ -238,6 +239,7 @@ export function createDestinationHandlers(deps: DestinationRouteDeps): {
   createSettings: (req: RouteRequest, res: RouteResponse) => Promise<void>;
   destroy: (req: RouteRequest, res: RouteResponse) => Promise<void>;
   destroySettings: (req: RouteRequest, res: RouteResponse) => Promise<void>;
+  routineStatus: (req: RouteRequest, res: RouteResponse) => Promise<void>;
 } {
   const ctx = makeAgentContext({
     sessionId: 'credentials-destinations',
@@ -267,7 +269,7 @@ export function createDestinationHandlers(deps: DestinationRouteDeps): {
    * a missing route, before auth or the body is read.
    */
   function settingsRouteGone(req: RouteRequest, res: RouteResponse): boolean {
-    if (req.params.destinationKind !== 'account' && req.params.destinationKind !== 'routine-hmac') return false;
+    if (req.params.destinationKind !== 'account') return false;
     res.status(404).json({ error: 'not-found' });
     return true;
   }
@@ -508,7 +510,7 @@ export function createDestinationHandlers(deps: DestinationRouteDeps): {
       if (settingsRouteGone(req, res)) return;
       const actor = await requireUser(deps.bus, ctx, req, res);
       if (actor === null) return;
-      await doCreate(req, res, { id: actor.id }, actor.id);
+      await doCreate(req, res, req.params.destinationKind === 'routine-hmac' ? null : { id: actor.id }, actor.id);
     },
 
     /** DELETE /admin/destinations/:destinationKind/credential */
@@ -523,7 +525,37 @@ export function createDestinationHandlers(deps: DestinationRouteDeps): {
       if (settingsRouteGone(req, res)) return;
       const actor = await requireUser(deps.bus, ctx, req, res);
       if (actor === null) return;
-      await doDelete(req, res, { id: actor.id }, actor.id);
+      await doDelete(req, res, req.params.destinationKind === 'routine-hmac' ? null : { id: actor.id }, actor.id);
+    },
+
+    /** Exact own-routine presence only; the global metadata list stays admin-only. */
+    async routineStatus(req: RouteRequest, res: RouteResponse): Promise<void> {
+      if (req.params.destinationKind !== 'routine-hmac') {
+        res.status(404).json({ error: 'not-found' });
+        return;
+      }
+      const actor = await requireUser(deps.bus, ctx, req, res);
+      if (actor === null) return;
+      // The HTTP adapter normalizes query names to lowercase.
+      const input = z.object({ agentid: RoutineKeySchema.shape.agentId, routineid: RoutineKeySchema.shape.routineId }).strict()
+        .transform(value => ({ agentId: value.agentid, routineId: value.routineid })).safeParse(req.query);
+      if (!input.success) {
+        res.status(400).json({ code: 'validation', field: 'input', error: 'Invalid routine credential input.' });
+        return;
+      }
+      const routineCtx = makeAgentContext({ sessionId: 'routine-secret-settings', userId: actor.id, agentId: input.data.agentId });
+      try {
+        const routine = RoutineGetOutputSchema.parse(await deps.bus.call('routines:get', routineCtx, input.data));
+        if (!routine.permissions.manageSecret || routine.trigger.kind !== 'webhook' || !routine.trigger.hmac) {
+          res.status(404).json({ code: 'not-found', error: 'The routine is unavailable.' });
+          return;
+        }
+        const ref = refForDestination({ kind: 'routine-hmac', ...input.data });
+        const list = z.object({ credentials: z.array(z.object({
+          scope: z.enum(['global', 'user', 'agent']), ownerId: z.string().nullable(), ref: z.string(),
+        }).passthrough()) }).passthrough().parse(await deps.bus.call('credentials:list', routineCtx, { scope: 'agent', ownerId: input.data.agentId }));
+        res.status(200).json(RoutineSecretStatusOutputSchema.parse({ configured: list.credentials.some(entry => entry.scope === 'agent' && entry.ownerId === input.data.agentId && entry.ref === ref) }));
+      } catch (error) { writeRoutineError(res, error); }
     },
   };
 }
@@ -538,10 +570,15 @@ export async function registerDestinationRoutes(
 ): Promise<Array<() => void>> {
   const h = createDestinationHandlers({ bus });
   const routes: Array<{
-    method: 'POST' | 'DELETE';
+    method: 'GET' | 'POST' | 'DELETE';
     path: string;
     handler: (req: RouteRequest, res: RouteResponse) => Promise<void>;
   }> = [
+    {
+      method: 'GET',
+      path: '/settings/destinations/:destinationKind/credential',
+      handler: h.routineStatus,
+    },
     {
       method: 'POST',
       path: '/admin/destinations/:destinationKind/credential',

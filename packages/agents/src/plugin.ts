@@ -494,7 +494,7 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
       bus.registerService('agents:can-manage-routines', PLUGIN_NAME, async (ctx, raw) => {
         const input = CanManageRoutinesInputSchema.parse(raw);
         const agent = await getForConnectorEdit(localStore, input.agentId, 'agents:can-manage-routines');
-        return { allowed: await connectorsManageAllowed(agent, bus, ctx, { userId: ctx.userId, isAdmin: false }) };
+        return routinesManageAllowed(agent, bus, ctx);
       }, { returns: CanManageRoutinesOutputSchema });
 
       // TASK-765 / TASK-798 — may this actor change this agent's connectors
@@ -1023,6 +1023,23 @@ async function isTeamMember(
     if (err instanceof PluginError && err.code === 'no-service') {
       return false;
     }
+    throw err;
+  }
+}
+
+/** TASK-969. Task authors need current membership, not authority over shared connectors. */
+async function routinesManageAllowed(agent: Agent, bus: HookBus, ctx: AgentContext): Promise<{ allowed: boolean; stopOthers: boolean }> {
+  if (agent.visibility === 'personal') return {
+    allowed: agent.ownerType === 'user' && agent.ownerId === ctx.userId,
+    stopOthers: false,
+  };
+  if (agent.ownerType !== 'team') return { allowed: false, stopOthers: false };
+  try {
+    const result = await bus.call<{ teamId: string; userId: string }, { member: boolean; role?: 'admin' | 'member' }>(
+      'teams:is-member', ctx, { teamId: agent.ownerId, userId: ctx.userId });
+    return { allowed: result.member === true, stopOthers: result.member === true && result.role === 'admin' };
+  } catch (err) {
+    if (err instanceof PluginError && err.code === 'no-service') return { allowed: false, stopOthers: false };
     throw err;
   }
 }

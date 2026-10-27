@@ -3,7 +3,7 @@ import { z } from 'zod';
 import * as C from '@ax/routines-contract';
 import type { RoutinesStore } from './store.js';
 import type { AcceptedDispatch, FireRow, OpenCheckInLookup, ReportRefusal, StoredReading, StoredRoutine } from './types.js';
-import { credentialRef, editableDefinition, deleteRequestHash, updateRequestHash, parseStoredRoutine, validationError } from './definition.js';
+import { credentialRef, editableDefinition, deleteRequestHash, updateRequestHash, isStopOnlyPatch, parseStoredRoutine, validationError } from './definition.js';
 import { drainRoutineCleanup } from './cleanup.js';
 import { advanceToNextActiveWindow } from './active-hours.js';
 
@@ -30,22 +30,23 @@ export function parseRoutineInput<T>(schema: z.ZodType<T, z.ZodTypeDef, unknown>
 }
 export async function resolveRoutineAccess(bus: HookBus, store: RoutinesStore, ctx: AgentContext, agentId: string) {
   const { agent } = await bus.callJoined<{ agentId: string; userId: string }, { agent: Agent }>('agents:resolve', ctx, { agentId, userId: ctx.userId });
-  const { allowed } = await bus.callJoined<{ agentId: string }, { allowed: boolean }>('agents:can-manage-routines', ctx, { agentId });
+  const { allowed, stopOthers } = await bus.callJoined<{ agentId: string }, { allowed: boolean; stopOthers?: boolean }>('agents:can-manage-routines', ctx, { agentId });
   if (agent.ownerType === 'user') await store.reconcileOwners({ agents: [{ agentId, ownerUserId: agent.ownerId }] });
-  return { agent, allowed };
+  return { agent, allowed, stopOthers: stopOthers === true };
 }
-export function routinePermissions(row: StoredRoutine, userId: string, allowed: boolean): C.RoutinePermissions {
+export function routinePermissions(row: StoredRoutine, userId: string, allowed: boolean, stopOthers = false): C.RoutinePermissions {
   const own = allowed && row.ownerUserId === userId && row.definitionId === null;
-  return { edit: own, stop: allowed && row.definitionId === null, fire: allowed && row.ownerUserId === userId, manageSecret: own };
+  return { edit: own, stop: allowed && row.definitionId === null && (own || stopOthers), fire: allowed && row.ownerUserId === userId, manageSecret: own };
 }
-export function routineView(row: StoredRoutine, userId: string, allowed: boolean): C.RoutineView {
+export function routineView(row: StoredRoutine, userId: string, allowed: boolean, stopOthers = false): C.RoutineView {
   // The tick skips a run outside the active hours and re-arms it at the next window's start (tick.ts), so that's when it will run (TASK-910).
   const nextRunAt = row.nextRunAt === null || row.activeHours === null ? row.nextRunAt : advanceToNextActiveWindow(row.nextRunAt, row.activeHours);
   return { ...editableDefinition(row), agentId: row.agentId, routineId: row.routineId, revision: row.revision,
+    ownedByCaller: row.ownerUserId === userId,
     origin: row.definitionId === null ? 'authored' : 'default', defaultRoutineId: row.definitionId,
     nextRunAt: nextRunAt?.toISOString() ?? null, lastRunAt: row.lastRunAt?.toISOString() ?? null,
     lastStatus: row.lastStatus, lastError: row.lastError, lastWarning: row.lastWarning,
-    permissions: routinePermissions(row, userId, allowed), task: taskView(row, userId),
+    permissions: routinePermissions(row, userId, allowed, stopOthers), task: taskView(row, userId),
     noRecentUpdate: noRecentUpdateView(row, userId), steps: stepsView(row, userId), finishBy: finishByView(row),
     finishByTimeZone: finishByTimeZoneView(row), done: doneView(row, userId) };
 }
@@ -281,33 +282,34 @@ export function registerRoutineServices({ bus, store, now, dispatch, admitDispat
   }
   register('list', C.RoutineListInputSchema, C.RoutineListOutputSchema, async (ctx, input) => {
     const a = await access(ctx, input.agentId);
-    return { routines: (await store.list(input)).map(row => routineView(row, ctx.userId, a.allowed)) };
+    return { routines: (await store.list(input)).map(row => routineView(row, ctx.userId, a.allowed, a.stopOthers)) };
   });
   register('get', C.RoutineGetInputSchema, C.RoutineGetOutputSchema, async (ctx, input) => {
-    const a = await access(ctx, input.agentId); return routineView(await rowFor(input), ctx.userId, a.allowed);
+    const a = await access(ctx, input.agentId); return routineView(await rowFor(input), ctx.userId, a.allowed, a.stopOthers);
   });
   register('create', C.RoutineCreateInputSchema, C.RoutineCreateOutputSchema, async (ctx, input) => {
     const a = await access(ctx, input.agentId); requireAllowed(a.allowed);
     const row = await store.createAuthored({ ...input, actorUserId: ctx.userId, ownerUserId: a.agent.ownerType === 'user' ? a.agent.ownerId : ctx.userId, now: now() });
-    return routineView(row, ctx.userId, a.allowed);
+    return routineView(row, ctx.userId, a.allowed, a.stopOthers);
   });
   register('update', C.RoutineUpdateInputSchema, C.RoutineUpdateOutputSchema, async (ctx, input) => {
     const a = await access(ctx, input.agentId); requireAllowed(a.allowed);
     const receipt = await store.findOperationReceipt({ ...input, actorUserId: ctx.userId, operation: 'update', inputHash: updateRequestHash(input) });
     const row = receipt ? parseStoredRoutine(receipt) : await rowFor(input);
-    const own = routinePermissions(row, ctx.userId, a.allowed).edit;
-    const stopOnly = Object.keys(input.patch).length === 1 && input.patch.enabled === false;
-    requireAllowed(own || (stopOnly && row.definitionId === null));
-    if (receipt) return routineView(row, ctx.userId, a.allowed);
+    const permissions = routinePermissions(row, ctx.userId, a.allowed, a.stopOthers);
+    const own = permissions.edit;
+    const stopOnly = isStopOnlyPatch(input.patch);
+    requireAllowed(own || (stopOnly && permissions.stop));
+    if (receipt) return routineView(row, ctx.userId, a.allowed, a.stopOthers);
     const updated = await store.updateAuthored({ ...input, actorUserId: ctx.userId, now: now(), stopOnly: !own });
     await drainRoutineCleanup({ bus, store });
-    return routineView(updated, ctx.userId, a.allowed);
+    return routineView(updated, ctx.userId, a.allowed, a.stopOthers);
   });
   register('delete', C.RoutineDeleteInputSchema, C.RoutineDeleteOutputSchema, async (ctx, input) => {
     const a = await access(ctx, input.agentId); requireAllowed(a.allowed);
     const receipt = await store.findOperationReceipt({ ...input, actorUserId: ctx.userId, operation: 'delete', inputHash: deleteRequestHash(input) });
     if (receipt) return C.RoutineDeleteOutputSchema.parse(receipt);
-    requireAllowed(routinePermissions(await rowFor(input), ctx.userId, a.allowed).stop);
+    requireAllowed(routinePermissions(await rowFor(input), ctx.userId, a.allowed, a.stopOthers).stop);
     const result = await store.deleteAuthored({ ...input, actorUserId: ctx.userId, now: now() });
     await drainRoutineCleanup({ bus, store }); return result;
   });
@@ -315,7 +317,7 @@ export function registerRoutineServices({ bus, store, now, dispatch, admitDispat
     const a = await access(ctx, input.agentId); requireAllowed(a.allowed);
     const row = await store.findOne(input);
     if (row) {
-      requireAllowed(routinePermissions(row, ctx.userId, a.allowed).fire);
+      requireAllowed(routinePermissions(row, ctx.userId, a.allowed, a.stopOthers).fire);
       // Revision conflicts are distinct from the effective-enabled rejection.
       // Matching accepted receipts are checked transactionally by acceptDispatch.
     }
@@ -326,7 +328,7 @@ export function registerRoutineServices({ bus, store, now, dispatch, admitDispat
       if (row.revision !== input.expectedRevision) throw new SafeToolError('revision-conflict', 'expectedRevision');
       throw new SafeToolError('disabled', 'enabled');
     }
-    requireAllowed(routinePermissions(result.accepted.row, ctx.userId, a.allowed).fire);
+    requireAllowed(routinePermissions(result.accepted.row, ctx.userId, a.allowed, a.stopOthers).fire);
     // 'ok' acknowledges the durable dispatch; replay never claims the turn completed.
     return result.replayed ? { status: 'ok' as const } : dispatch(result.accepted);
   }));
@@ -344,7 +346,7 @@ export function registerRoutineServices({ bus, store, now, dispatch, admitDispat
   });
   register('set-webhook-secret', C.RoutineSecretInputSchema, C.RoutineSecretOutputSchema, async (ctx, input) => {
     const a = await access(ctx, input.agentId);
-    requireAllowed(routinePermissions(await rowFor(input), ctx.userId, a.allowed).manageSecret);
+    requireAllowed(routinePermissions(await rowFor(input), ctx.userId, a.allowed, a.stopOthers).manageSecret);
     return store.withLockedWebhookSecret(input, async () => {
       const target = { scope: 'agent', ownerId: input.agentId, ref: credentialRef(input) };
       if (input.operation === 'set') await bus.callJoined('credentials:set', ctx, { ...target, kind: 'api-key', payload: input.secret });
@@ -492,7 +494,7 @@ export function registerRoutineServices({ bus, store, now, dispatch, admitDispat
     const row = await rowFor(input);
     const { outcome } = await store.completeTask({
       agentId: input.agentId, routineId: input.routineId, actorUserId: ctx.userId, requestId: input.requestId,
-      mayEdit: routinePermissions(row, ctx.userId, a.allowed).edit, now: now(),
+      mayEdit: routinePermissions(row, ctx.userId, a.allowed, a.stopOthers).edit, now: now(),
     });
     if (outcome === 'completed') ctx.logger.info('routines_task_completed', { agentId: input.agentId, routineId: input.routineId });
     return { done: true as const };
@@ -512,7 +514,7 @@ export function registerRoutineServices({ bus, store, now, dispatch, admitDispat
     const row = await rowFor(input);
     const outcome = await store.reopenTask({
       agentId: input.agentId, routineId: input.routineId, actorUserId: ctx.userId, requestId: input.requestId, text: input.text,
-      mayEdit: routinePermissions(row, ctx.userId, a.allowed).edit, now: now(),
+      mayEdit: routinePermissions(row, ctx.userId, a.allowed, a.stopOthers).edit, now: now(),
     });
     if (outcome === 'not-found') throw new SafeToolError('not-found', 'routineId');
     if (outcome === 'forbidden') throw new SafeToolError('forbidden', 'input');
@@ -565,7 +567,7 @@ export function registerRoutineServices({ bus, store, now, dispatch, admitDispat
   // it stays out of the answer), never the task's name or steps.
   register('duplicate', C.RoutineDuplicateInputSchema, C.RoutineDuplicateOutputSchema, async (ctx, input) => {
     const a = await access(ctx, input.agentId); requireAllowed(a.allowed);
-    requireAllowed(routinePermissions(await rowFor({ agentId: input.agentId, routineId: input.routineId }), ctx.userId, a.allowed).edit);
+    requireAllowed(routinePermissions(await rowFor({ agentId: input.agentId, routineId: input.routineId }), ctx.userId, a.allowed, a.stopOthers).edit);
     const outcome = await store.duplicateAuthored({
       agentId: input.agentId, routineId: input.routineId, actorUserId: ctx.userId,
       ownerUserId: a.agent.ownerType === 'user' ? a.agent.ownerId : ctx.userId, requestId: input.requestId, now: now(),

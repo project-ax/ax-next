@@ -7,10 +7,10 @@ import * as C from '@ax/routines-contract';
 import type { RoutinesStore, OperationKey } from './store.js';
 import {
   createRequestHash, updateRequestHash, deleteRequestHash, dispatchRequestHash,
-  editableDefinition, parseStoredRoutine, validationError,
+  editableDefinition, isStopOnlyPatch, parseStoredRoutine, validationError,
 } from './definition.js';
 import { AcceptedDispatchSchema } from './dispatch.js';
-import { parseRoutineInput, reportRefused, routinePermissions, routineView } from './services.js';
+import { parseRoutineInput, reportRefused, resolveRoutineAccess, routinePermissions, routineView } from './services.js';
 
 const PLUGIN = '@ax/routines';
 const names = Object.keys(C.RoutineToolInputSchemas) as C.RoutineToolName[];
@@ -109,7 +109,7 @@ async function prepare({ bus, store, ctx, call }: Invocation): Promise<Prepared>
   if (name === 'routine_report') return prepareReport({ store, ctx, call });
   const { agent } = await bus.call<unknown, { agent: { ownerType: 'user' | 'team'; ownerId: string } }>(
     'agents:resolve', ctx, { agentId: ctx.agentId, userId: ctx.userId });
-  const { allowed } = await bus.call<unknown, { allowed: boolean }>('agents:can-manage-routines', ctx, { agentId: ctx.agentId });
+  const { allowed, stopOthers } = await bus.call<unknown, { allowed: boolean; stopOthers?: boolean }>('agents:can-manage-routines', ctx, { agentId: ctx.agentId });
   if (name === 'routine_list') return { hook: 'routines:list', input: { agentId: ctx.agentId } };
   if (name === 'routine_get') return { hook: 'routines:get', input: { agentId: ctx.agentId, ...parseRoutineInput(C.RoutineGetToolInputSchema, call.input) } };
   requireAllowed(allowed === true);
@@ -140,8 +140,9 @@ async function prepare({ bus, store, ctx, call }: Invocation): Promise<Prepared>
   if (receipt !== null) {
     if (name === 'routine_create' || name === 'routine_update') {
       const row = parseStoredRoutine(receipt);
-      const stopOnly = name === 'routine_update' && Object.keys((prepared.input as C.RoutineUpdateInput).patch).length === 1 && (prepared.input as C.RoutineUpdateInput).patch.enabled === false;
-      requireAllowed(row.ownerUserId === ctx.userId || stopOnly);
+      const stopOnly = name === 'routine_update' && isStopOnlyPatch((prepared.input as C.RoutineUpdateInput).patch);
+      const permissions = routinePermissions(row, ctx.userId, allowed, stopOthers === true);
+      requireAllowed(permissions.edit || (stopOnly && permissions.stop));
     } else if (name === 'routine_fire_now') requireAllowed(AcceptedDispatchSchema.parse(receipt).row.ownerUserId === ctx.userId);
     return prepared;
   }
@@ -165,14 +166,14 @@ async function prepare({ bus, store, ctx, call }: Invocation): Promise<Prepared>
     // mutate here or approve a proposal against the old owner/revision.
     if (row.revision !== input.expectedRevision || (agent.ownerType === 'user' && row.ownerUserId !== agent.ownerId))
       throw new SafeToolError('revision-conflict', 'expectedRevision');
-    const permissions = routinePermissions(row, ctx.userId, allowed);
+    const permissions = routinePermissions(row, ctx.userId, allowed, stopOthers === true);
     if (name === 'routine_fire_now') {
       requireAllowed(permissions.fire);
       if (!row.enabled) throw new SafeToolError('disabled', 'enabled');
     } else if (name === 'routine_delete') requireAllowed(permissions.stop);
     else {
       const patch = (prepared.input as C.RoutineUpdateInput).patch;
-      requireAllowed(permissions.edit || (permissions.stop && Object.keys(patch).length === 1 && patch.enabled === false));
+      requireAllowed(permissions.edit || (permissions.stop && isStopOnlyPatch(patch)));
       try { next = C.applyRoutinePatch(editableDefinition(row), patch); }
       catch (error) { throw validationError(error); }
     }
@@ -190,10 +191,16 @@ const executionBindingSchema = z.object({
   outcome: z.literal('succeeded').nullable(),
 }).strict();
 type Recovery = { kind: 'committed'; output: unknown } | { kind: 'failed' } | { kind: 'pending' } | { kind: 'absent' };
-async function recover(store: RoutinesStore, ctx: AgentContext, key: OperationKey, succeeded: boolean): Promise<Recovery> {
+async function recover(bus: HookBus, store: RoutinesStore, ctx: AgentContext, key: OperationKey, succeeded: boolean, stopOnly = false): Promise<Recovery> {
   const receipt = await store.findOperationReceipt(key);
   if (receipt === null) return { kind: 'absent' };
-  if (key.operation === 'create' || key.operation === 'update') return { kind: 'committed', output: routineView(parseStoredRoutine(receipt), ctx.userId, true) };
+  if (key.operation === 'create' || key.operation === 'update') {
+    const access = await resolveRoutineAccess(bus, store, ctx, ctx.agentId);
+    const row = parseStoredRoutine(receipt);
+    const permissions = routinePermissions(row, ctx.userId, access.allowed, access.stopOthers);
+    if (!permissions.edit && !(key.operation === 'update' && stopOnly && permissions.stop)) return { kind: 'failed' };
+    return { kind: 'committed', output: routineView(row, ctx.userId, access.allowed, access.stopOthers) };
+  }
   if (key.operation === 'delete') return { kind: 'committed', output: C.RoutineDeleteOutputSchema.parse(receipt) };
   if (succeeded) return { kind: 'committed', output: { status: 'ok' } };
   const accepted = AcceptedDispatchSchema.parse(receipt);
@@ -300,11 +307,12 @@ export async function registerRoutineTools({ bus, store }: Dependencies & { now:
       let output: unknown;
       let effectError: unknown;
       let knownFailure = false;
+      const stopOnly = prepared.receiptKey.operation === 'update' && isStopOnlyPatch((prepared.input as C.RoutineUpdateInput).patch);
       try {
         // An active dispatch replay must prove its outcome. Merely accepting it
         // again would turn an uncertain/failed external call into false success.
         const previous = prepared.receiptKey.operation === 'dispatch'
-          ? await recover(store, ctx, prepared.receiptKey, binding.outcome === 'succeeded') : { kind: 'absent' as const };
+          ? await recover(bus, store, ctx, prepared.receiptKey, binding.outcome === 'succeeded') : { kind: 'absent' as const };
         if (previous.kind === 'pending') pending();
         if (previous.kind === 'failed') { knownFailure = true; throw new SafeToolError('unavailable', 'input'); }
         if (previous.kind === 'committed') output = previous.output;
@@ -317,12 +325,12 @@ export async function registerRoutineTools({ bus, store }: Dependencies & { now:
       if (effectError !== undefined) {
         const safe = safeFailure(effectError);
         let recovered: Recovery;
-        try { recovered = await recover(store, ctx, prepared.receiptKey, binding.outcome === 'succeeded'); }
+        try { recovered = await recover(bus, store, ctx, prepared.receiptKey, binding.outcome === 'succeeded', stopOnly); }
         catch { return pending(); }
         if (recovered.kind === 'committed' && !knownFailure) output = recovered.output;
         else if (knownFailure || recovered.kind === 'failed' || recovered.kind === 'absent') {
-          // Joined effects have finished. A successful empty receipt lookup
-          // proves no durable effect, regardless of the provider's error class.
+          // Joined effects have finished. A failed effect, absent receipt or
+          // current row-authority refusal must preserve the closed error.
           await settle('failed', safe);
           throw safe;
         } else return pending();

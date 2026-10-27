@@ -8,6 +8,7 @@ import {
 } from '@ax/test-harness';
 import { createDatabasePostgresPlugin } from '@ax/database-postgres';
 import { createAgentsPlugin } from '../plugin.js';
+import { PluginError } from '@ax/core';
 
 let container: StartedPostgreSqlContainer;
 let connectionString: string;
@@ -37,10 +38,10 @@ afterEach(async () => {
   }
 });
 
-async function makeHarness(teamRole?: 'admin' | 'member'): Promise<TestHarness> {
+async function makeHarness(teamRole?: 'admin' | 'member' | (() => { member: boolean; role?: 'admin' | 'member' })): Promise<TestHarness> {
   const h = await createTestHarness({
     services: {
-      ...(teamRole ? { 'teams:is-member': async () => ({ member: true, role: teamRole }) } : {}),
+      ...(teamRole ? { 'teams:is-member': async () => typeof teamRole === 'function' ? teamRole() : ({ member: true, role: teamRole }) } : {}),
       'http:register-route': async () => ({ unregister: () => {} }),
       'auth:require-user': async () => ({ user: { id: 'u1', isAdmin: false } }),
     },
@@ -326,21 +327,52 @@ describe('agents:resolve-by-webhook-token', () => {
 describe('routine management authority', () => {
   it('uses the real context actor, refusing a forged workspace-admin payload', async () => {
     const h = await makeHarness(); const agentId = await createAgent(h, 'owner');
-    await expect(h.bus.call('agents:can-manage-routines', h.ctx({ userId: 'owner' }), { agentId })).resolves.toEqual({ allowed: true });
-    await expect(h.bus.call('agents:can-manage-routines', h.ctx({ userId: 'outsider' }), { agentId })).resolves.toEqual({ allowed: false });
+    await expect(h.bus.call('agents:can-manage-routines', h.ctx({ userId: 'owner' }), { agentId })).resolves.toEqual({ allowed: true, stopOthers: false });
+    await expect(h.bus.call('agents:can-manage-routines', h.ctx({ userId: 'outsider' }), { agentId })).resolves.toEqual({ allowed: false, stopOthers: false });
     await expect(h.bus.call('agents:can-manage-routines', h.ctx({ userId: 'outsider' }), { agentId, isAdmin: true })).rejects.toThrow();
   });
-  it('allows team admins to ensure/rotate tokens and manage routines, but denies members', async () => {
+  it('allows members to manage their own routines while token access remains admin-only', async () => {
     const h = await makeHarness('admin');
     const { agent } = await h.bus.call<unknown, { agent: { id: string } }>('agents:create', h.ctx({ userId: 'owner' }), { actor: { userId: 'owner', isAdmin: false }, input: { displayName: 'team', allowedTools: [], mcpConfigIds: [], model: 'anthropic/claude-opus-4-7', visibility: 'team', teamId: 'team-1' } });
     const actor = { userId: 'team-admin', isAdmin: false };
-    await expect(h.bus.call('agents:can-manage-routines', h.ctx({ userId: actor.userId }), { agentId: agent.id })).resolves.toEqual({ allowed: true });
+    await expect(h.bus.call('agents:can-manage-routines', h.ctx({ userId: actor.userId }), { agentId: agent.id })).resolves.toEqual({ allowed: true, stopOthers: true });
     for (const hook of ['agents:ensure-webhook-token', 'agents:rotate-webhook-token']) await expect(h.bus.call(hook, h.ctx({ userId: actor.userId }), { actor, agentId: agent.id })).resolves.toHaveProperty('token');
     const member = await makeHarness('member');
-    await expect(member.bus.call('agents:can-manage-routines', member.ctx({ userId: 'member' }), { agentId: agent.id })).resolves.toEqual({ allowed: false });
+    await expect(member.bus.call('agents:can-manage-routines', member.ctx({ userId: 'member' }), { agentId: agent.id })).resolves.toEqual({ allowed: true, stopOthers: false });
     for (const hook of ['agents:ensure-webhook-token', 'agents:rotate-webhook-token']) await expect(member.bus.call(hook, member.ctx({ userId: 'member' }), { actor: { userId: 'member', isAdmin: false }, agentId: agent.id })).rejects.toMatchObject({ code: 'forbidden' });
     const noTeams = await makeHarness();
-    await expect(noTeams.bus.call('agents:can-manage-routines', noTeams.ctx({ userId: 'owner' }), { agentId: agent.id })).resolves.toEqual({ allowed: false });
+    await expect(noTeams.bus.call('agents:can-manage-routines', noTeams.ctx({ userId: 'owner' }), { agentId: agent.id })).resolves.toEqual({ allowed: false, stopOthers: false });
 
+  });
+  it('rechecks role and membership without widening connectors, credentials or shared-token reads', async () => {
+    let membership: { member: boolean; role?: 'admin' | 'member' } = { member: true, role: 'admin' };
+    let outage = false;
+    const h = await makeHarness(() => {
+      if (outage) throw new PluginError({ code: 'unavailable', plugin: 'test-directory', message: 'directory unavailable' });
+      return membership;
+    });
+    const actor = { userId: 'creator', isAdmin: false };
+    const ctx = h.ctx({ userId: actor.userId });
+    const { agent } = await h.bus.call<unknown, { agent: { id: string } }>('agents:create', ctx, {
+      actor,
+      input: { displayName: 'team', allowedTools: [], mcpConfigIds: [], model: 'anthropic/claude-opus-4-7', visibility: 'team', teamId: 'team-1' },
+    });
+    const key = { agentId: agent.id };
+    await expect(h.bus.call('agents:can-manage-routines', ctx, key)).resolves.toEqual({ allowed: true, stopOthers: true });
+    const token = await h.bus.call<unknown, { token: string }>('agents:ensure-webhook-token', ctx, { ...key, actor });
+    expect(token.token).toEqual(expect.any(String));
+    membership = { member: true, role: 'member' };
+    await expect(h.bus.call('agents:can-manage-routines', ctx, key)).resolves.toEqual({ allowed: true, stopOthers: false });
+    for (const hook of ['agents:can-manage-connectors', 'agents:can-set-shared-credential']) {
+      await expect(h.bus.call(hook, ctx, { ...key, actor })).resolves.toEqual({ allowed: false });
+    }
+    // ensure is also the token READ path: denying rotation alone would leave the shared URL exposed.
+    for (const hook of ['agents:ensure-webhook-token', 'agents:rotate-webhook-token']) {
+      await expect(h.bus.call(hook, ctx, { ...key, actor })).rejects.toMatchObject({ code: 'forbidden' });
+    }
+    membership = { member: false };
+    await expect(h.bus.call('agents:can-manage-routines', ctx, key)).resolves.toEqual({ allowed: false, stopOthers: false });
+    outage = true;
+    await expect(h.bus.call('agents:can-manage-routines', ctx, key)).rejects.toMatchObject({ code: 'unavailable' });
   });
 });
