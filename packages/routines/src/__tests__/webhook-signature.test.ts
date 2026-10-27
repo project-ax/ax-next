@@ -16,6 +16,18 @@ function signed(app: App, at = now): Record<string, string> {
 }
 
 describe('provider signature protocols', () => {
+  it.each(['constructor', '__proto__'])('refuses missing/inherited custom header %s and accepts a real header', header => {
+    const config = { header, algorithm: 'sha256' as const };
+    const digest = createHmac('sha256', secret).update(body).digest('hex');
+    expect(verifyWebhookSignature(config, {}, body, secret, now)).toBe(false);
+    expect(verifyWebhookSignature(config, Object.create({ [header]: digest }) as Record<string, string>, body, secret, now)).toBe(false);
+    const own: Record<string, string> = Object.create(null) as Record<string, string>;
+    own[header] = digest;
+    expect(verifyWebhookSignature(config, own, body, secret, now)).toBe(true);
+  });
+  it.each(['stripe', 'slack', 'zendesk'] as const)('%s refuses inherited provider headers', app => {
+    expect(verifyWebhookSignature({ app }, Object.create(signed(app)) as Record<string, string>, body, secret, now)).toBe(false);
+  });
   it.each(['stripe', 'slack', 'zendesk'] as const)('%s authenticates the raw body and timestamp', app => {
     const headers = signed(app);
     expect(verifyWebhookSignature({ app }, headers, body, secret, now)).toBe(true);
