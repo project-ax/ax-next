@@ -19,6 +19,15 @@ export function createRepeatDeliveryPump(deps: { bus: HookBus; deliveries: Repea
             const ctx = makeAgentContext({ sessionId:'repeat-recovery',agentId:expired.agent_id,userId:expired.run_as_user_id });
             const metadata = await deps.bus.callJoined<{conversationId:string;userId:string},{activeSessionId:string|null}>('conversations:get-metadata',ctx,{conversationId:expired.conversation_id!,userId:expired.run_as_user_id});
             terminal = metadata.activeSessionId === null;
+            if (!terminal && deps.bus.hasService('sandbox:session-status') && deps.bus.hasService('session:terminate')) {
+              const observed = await deps.bus.callJoined<{sessionId:string},{state:'running'|'stopped'|'unknown'}>('sandbox:session-status',ctx,{sessionId:metadata.activeSessionId!});
+              if (observed.state === 'stopped') {
+                // Revoke the old session before releasing capacity. A late resource creation or runner retry
+                // cannot use its stale credential to start work after another delivery takes this slot.
+                await deps.bus.callJoined('session:terminate',ctx,{sessionId:metadata.activeSessionId!});
+                terminal = true;
+              }
+            }
           } catch {
             // Unknown execution still occupies capacity. Provider messages may contain private data.
             makeAgentContext({sessionId:'repeat-recovery',agentId:expired.agent_id,userId:expired.run_as_user_id}).logger.warn('repeat_recovery_status_unavailable',{dispatchId:expired.dispatch_id});

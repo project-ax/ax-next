@@ -185,6 +185,24 @@ export function registerRoutineAuthorization(
     { returns: AuthorizeRoutineCallOutputSchema },
   );
   bus.registerService(
+    'decisions:reject-unstarted-routine-call',
+    '@ax/decisions',
+    async (ctx, raw) => {
+      const input = AuthorizeRoutineCallInputSchema.extend({
+        failureCode: z.string().min(1).max(64),
+      }).parse(raw);
+      const call = checkedRoutineCall({ ...input.call, input: input.call.input });
+      const recorded = await store.rejectUnstartedRoutineCall({
+        agentId: ctx.agentId, userId: ctx.userId,
+        requestId: (call.input as { requestId: string }).requestId,
+        fingerprint: callFingerprint(call), failureCode: new SafeToolError(input.failureCode as SafeToolCode, 'input').toolCode,
+        nowIso: now().toISOString(),
+      });
+      return { recorded };
+    },
+    { returns: z.object({ recorded: z.boolean() }).strict() },
+  );
+  bus.registerService(
     'decisions:settle-routine-call',
     '@ax/decisions',
     async (ctx, raw) => {

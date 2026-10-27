@@ -85,6 +85,7 @@ describe('shared Agent Sandbox pool', () => {
     // before the controller can create any standby Pods.
     expect(calls[1]![0].body).toMatchObject({ spec: { replicas: 2, updateStrategy: { type: 'OnReplenish' } } });
     expect(calls[2]![0].body).toMatchObject({ spec: { warmPoolRef: { name: buildSharedTemplate(config, '/runner.js').name } } });
+    expect(calls[2]![0].body).toMatchObject({ metadata: { annotations: { 'ax.io/session-id': 'session-a' } } });
     expect(JSON.stringify(calls)).not.toContain('secret-session-token');
     expect((calls[2]![0].body as { spec: object }).spec).not.toHaveProperty('env');
     expect(f.storage.assign).toHaveBeenCalledWith('gvisor-node', expect.objectContaining({

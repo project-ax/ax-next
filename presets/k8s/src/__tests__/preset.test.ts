@@ -487,6 +487,7 @@ describe('@ax/preset-k8s wiring', () => {
       'decisions:approve',
       'decisions:authorize-routine-call',
       'decisions:settle-routine-call',
+      'decisions:reject-unstarted-routine-call',
       'decisions:dismiss',
       'decisions:undo',
       // TASK-226: expires what nobody answered, and runs an irreversible

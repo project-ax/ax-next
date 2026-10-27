@@ -516,6 +516,7 @@ export interface DecisionStore {
     nowIso: string,
   ): Promise<Decision | null>;
   hasRoutineAuthority(input: { agentId: string; userId: string; requestId: string; fingerprint: string; nowIso: string }): Promise<boolean>;
+  rejectUnstartedRoutineCall(input: { agentId: string; userId: string; requestId: string; fingerprint: string; failureCode: SafeToolCode; nowIso: string }): Promise<boolean>;
   claimRoutineAuthority(input: {
     agentId: string;
     userId: string;
@@ -1149,6 +1150,28 @@ export function createDecisionsStore(db: Kysely<DecisionsDatabase>): DecisionSto
         .where(eb => eb.or([eb('outcome', 'is', null), eb('outcome', '=', 'succeeded')]))
         .executeTakeFirst();
       return row !== undefined;
+    },
+    async rejectUnstartedRoutineCall(input) {
+      return db.transaction().execute(async trx => {
+        await sql`SELECT pg_advisory_xact_lock_shared(hashtextextended(${input.agentId},18427151))`.execute(trx);
+        // The same lock as claimRoutineAuthority: no executor can start between
+        // proving that no authority exists and recording the preflight refusal.
+        await sql`SELECT pg_advisory_xact_lock(${openHoldLockKey(input.agentId, input.userId + ':' + input.requestId)}::bigint)`.execute(trx);
+        const started = await trx.selectFrom('decisions_v1_routine_authorizations').select('authorization_id')
+          .where('agent_id', '=', input.agentId).where('user_id', '=', input.userId)
+          .where('request_id', '=', input.requestId).executeTakeFirst();
+        if (started) return false; // A pending or completed effect must use its existing settlement path.
+        const rows = await trx.updateTable(table).set({ status: 'failed', routine_outcome: 'failed',
+          routine_failure_code: input.failureCode, routine_failure_field: 'input', replay_due_at: null,
+          delivery_due_at: null, replay_abandoned_at: null, replay_error: null })
+          .where('agent_id', '=', input.agentId).where('owner_user_id', '=', input.userId)
+          .where('call_fingerprint', '=', input.fingerprint).where('status', 'in', AUTHORISING_STATUSES as string[])
+          .where('routine_authorization_id', 'is', null).where('routine_outcome', 'is', null)
+          .where('routine_release_at', '<=', new Date(input.nowIso))
+          .where('consent_delivery_state', 'not in', ['pending', 'failed'])
+          .returning('decision_id').execute();
+        return rows.length > 0;
+      });
     },
     async claimRoutineAuthority(input) {
       return db.transaction().execute(async (trx) => {

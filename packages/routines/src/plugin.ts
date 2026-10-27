@@ -56,6 +56,7 @@ export function createRoutinesPlugin(
         'tool:register',
         'decisions:authorize-routine-call',
         'decisions:settle-routine-call',
+        'decisions:reject-unstarted-routine-call',
         'agents:resolve',
         'agents:can-manage-routines',
         'auth:get-user',
@@ -74,6 +75,10 @@ export function createRoutinesPlugin(
         'blob:get',
         'conversations:get-metadata',
         'http:register-route',
+      ],
+      optionalCalls: [
+        { hook: 'sandbox:session-status', degradation: 'retain expired execution slots when the runner cannot be observed' },
+        { hook: 'session:terminate', degradation: 'retain expired execution slots when a stopped runner cannot be fenced' },
       ],
       subscribes: [
         'blob:collect-refs',
