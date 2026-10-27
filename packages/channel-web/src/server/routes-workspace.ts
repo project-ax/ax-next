@@ -3,7 +3,6 @@
  * GET  /api/workspace/agents/:agentId  — one agent's detail panel
  *        ?conversationId=<id> reads that conversation instead of the current
  *        one (the rail's read-only past-conversation view)
- * GET  /api/workspace/activity         — THE event feed (one collection)
  *        ?agentId=<id> scopes it to one agent; ?before=<ISO>&limit=<n> page it
  * GET  /api/workspace/tasks            — every task the caller owns, across their agents (TASK-909)
  * GET  /api/workspace/tasks/:agentId/:routineId — one task's page: its latest update, brief, notes and updates (TASK-910)
@@ -214,7 +213,6 @@ import {
 } from '@ax/core';
 import { stripSurfaceRewritersFromDocument } from '@ax/core/surface-text';
 import type {
-  ActivityEvent,
   AgentAbilities,
   AgentAbilitiesRead,
   AgentAbility,
@@ -277,7 +275,7 @@ import { fenceBlock, fenceLine } from '../lib/fence-line.js';
 import { checkInSchedule, describeCheckIns } from '../lib/task-schedule.js';
 // A task's kind as the wire carries it (TASK-948): one of the contract's task
 // kinds, and a kind this page doesn't know as the never-finishing one.
-import { toTaskKind } from '../lib/task-kinds.js';
+import { toTaskKind, toWorkspaceTaskKind } from '../lib/task-kinds.js';
 import { KICKOFF_TEXT } from '../lib/bootstrap-kickoff.js';
 // The sentence a full storage limit answers a Rules Save with (TASK-719), and
 // the one test for "this refusal is the storage limit". The sentence is shared
@@ -740,51 +738,6 @@ interface ConversationsGetOutput {
 }
 
 /**
- * The subset of @ax/routines' `FireRow` this surface reads.
- *
- * `firedAt` is typed `Date | string` on purpose. In-process the hook hands back
- * real `Date` instances; anything that carries this over a wire hands back an
- * ISO string. Accepting both here is cheaper than making every future
- * transport pretend to be the in-process one.
- *
- * There is no `id` here, and there is none on the hook payload either any more
- * (TASK-251, then TASK-312 for the sibling `routines:recent-fires`): it was a
- * `BIGSERIAL`, storage vocabulary that had leaked into the payload, and neither
- * fires hook declares the row with it now. Nothing on this surface is keyed off
- * a row id — the pagination cursor is the `firedAt` instant, and the React key
- * is the composite.
- */
-interface FireRow {
-  agentId: string;
-  routineId: string;
-  firedAt: string;
-  triggerSource: 'tick' | 'webhook' | 'manual';
-  conversationId: string | null;
-  status: 'ok' | 'silenced' | 'error';
-  error: string | null;
-}
-interface RecentFiresForAgentInput {
-  agentId: string;
-  limit?: number;
-  before?: string;
-}
-interface RecentFiresForAgentOutput {
-  fires: FireRow[];
-}
-
-/** Just enough of a routine to put its AUTHORED name on the row. */
-interface RoutineRow {
-  routineId: string;
-  name: string;
-}
-interface RoutinesListInput {
-  agentId?: string;
-}
-interface RoutinesListOutput {
-  routines: RoutineRow[];
-}
-
-/**
  * What the Tasks page (TASK-909) reads off one `routines:list` view. The bus
  * has already parsed the answer through `RoutineListOutputSchema` (the
  * service's `returns`), so these fields are read, not validated again. The
@@ -807,6 +760,7 @@ type TaskListView = Pick<
   | 'done'
   | 'schedule'
   | 'activeHours'
+  | 'origin' | 'delivery' | 'lastRunAt' | 'lastStatus' | 'lastError' | 'lastWarning' | 'conversation' | 'webhook'
 >;
 interface TaskListOutput {
   routines: TaskListView[];
@@ -838,6 +792,7 @@ type TaskDetailView = Pick<
   | 'finishBy'
   | 'finishByTimeZone'
   | 'done'
+  | 'origin' | 'delivery' | 'lastRunAt' | 'lastStatus' | 'lastError' | 'lastWarning' | 'conversation' | 'webhook'
 >;
 type TaskFireView = Pick<
   RoutineFireView,
@@ -1077,56 +1032,6 @@ interface DecisionsGetOutput {
   decision: StoredDecision | null;
 }
 
-/**
- * `decisions:recent-receipts-for-agent` — the second source behind the Activity
- * feed, duck-typed like every other hook on this surface (I2).
- *
- * Shaped to page exactly like `routines:recent-fires-for-agent` above, because
- * the two are merged into one time-ordered collection and two sources that page
- * differently cannot be merged without losing rows at the seam. The one
- * difference is deliberate: `before` is an ISO STRING here where the fires hook
- * takes a `Date`. @ax/decisions keeps every instant on its hook surface as an
- * ISO string ("no `Date` ever leaves the store"), and the feed's own cursor is
- * a string too, so this is the shape that needs no conversion at either end.
- *
- * `userId` is a SCOPE, not a hint, and dropping it would be a real leak rather
- * than an inefficiency: a team agent can carry decisions belonging to several
- * people, so passing the ACL on the AGENT is not the same as being entitled to
- * read every decision attached to it.
- *
- * Note what is NOT here: no `call`, no `callFingerprint`, no `status`. The
- * receipt is the sentence and the outcome, already derived by the plugin that
- * authored the sentence — this surface renders it and does not re-derive it,
- * which is what stops a second copy of the decision machine growing here by
- * accident.
- */
-interface DecisionReceiptRow {
-  decisionId: string;
-  agentId: string;
-  /**
-   * Five outcomes, and only ONE of them claims the action happened. The other
-   * four are the question being settled — turned down, run out of time, tried
-   * and failed, approved but not yet performed — and every one of them is an
-   * event in the person's history (TASK-447).
-   */
-  outcome: 'executed' | 'failed' | 'pending-agent' | 'declined' | 'expired';
-  /** HOST-AUTHORED prose. Fenced here anyway — see `receiptToActivityEvent`. */
-  receipt: string;
-  /** ISO instant. Orders the feed, cuts the page, prints on the row. */
-  at: string;
-  /** The host executor's sanitised failure detail, on a `failed` row only. */
-  error: string | null;
-}
-interface DecisionsRecentReceiptsInput {
-  userId: string;
-  agentId: string;
-  limit?: number;
-  before?: string;
-}
-interface DecisionsRecentReceiptsOutput {
-  receipts: DecisionReceiptRow[];
-}
-
 interface DecisionsResolveInput {
   decisionId: string;
   userId: string;
@@ -1346,27 +1251,6 @@ export interface UndoResponse {
   decision: Decision;
   /** False when there was nothing left to take back. */
   undone: boolean;
-}
-
-/**
- * `GET /api/workspace/activity` — the one event collection, newest first.
- *
- * The global Activity page is this unfiltered; the per-agent "What it did" tab
- * is this with `agentid` set. One route, one shape, one renderer.
- */
-export interface ActivityResponse {
-  events: ActivityEvent[];
-  /**
-   * The cursor for the next page: the instant of the last fire CONSIDERED, not
-   * of the last event rendered.
-   *
-   * Those differ, and the difference is load-bearing. A `silenced` fire renders
-   * as nothing, so a page can legitimately come back with zero events and more
-   * history behind it. A client paginating on its last visible row would have
-   * no cursor at all and the feed would dead-end on a quiet stretch. `null`
-   * means we reached the end of what this agent has.
-   */
-  nextBefore: string | null;
 }
 
 /**
@@ -2492,44 +2376,6 @@ function byRecencyDesc(a: ConversationRow, b: ConversationRow): number {
 export const CONVERSATION_ID_QUERY_KEY = 'conversationid';
 
 /**
- * `GET /api/workspace/activity`'s query keys, in the ONLY spelling a handler
- * ever sees. Same trap as `CONVERSATION_ID_QUERY_KEY`: the browser sends
- * `?agentId=`, `http-server` projects it as `agentid`, and a handler reading
- * `req.query.agentId` gets `undefined` forever — which here would silently
- * serve the WHOLE workspace's feed under one agent's "What it did" tab.
- */
-export const ACTIVITY_AGENT_ID_QUERY_KEY = 'agentid';
-export const ACTIVITY_BEFORE_QUERY_KEY = 'before';
-export const ACTIVITY_LIMIT_QUERY_KEY = 'limit';
-
-/** Page size. The client asks; we decide. */
-const ACTIVITY_DEFAULT_LIMIT = 50;
-export const ACTIVITY_MAX_LIMIT = 100;
-
-/** Plain-language trigger labels. The wire word is vocabulary, not a sentence. */
-const TRIGGER_LABEL: Record<FireRow['triggerSource'], string> = {
-  tick: 'Scheduled',
-  webhook: 'Webhook',
-  manual: 'Run by hand',
-};
-
-/** `Date | string` → epoch ms. `NaN` for anything unreadable. */
-function fireStamp(firedAt: Date | string): number {
-  return firedAt instanceof Date ? firedAt.getTime() : Date.parse(firedAt);
-}
-
-/**
- * The same instant, but sortable: an unreadable one goes to the BOTTOM instead
- * of wherever `NaN` comparisons happen to leave it. A row we cannot date is
- * dropped by the mapper anyway; it must not take a datable row's place on the
- * page on its way out.
- */
-function sortableStamp(firedAt: Date | string): number {
-  const t = fireStamp(firedAt);
-  return Number.isNaN(t) ? Number.NEGATIVE_INFINITY : t;
-}
-
-/**
  * How much of an authored line this feed will carry.
  *
  * On a ROUTINE row the subject line is a LABEL — a routine's name, one
@@ -2545,8 +2391,7 @@ function sortableStamp(firedAt: Date | string): number {
  * whole job is to say what happened. The DOM truncates either way; this is
  * about what goes on the wire.
  */
-export const ACTIVITY_LABEL_MAX_CHARS = 60;
-export const ACTIVITY_DETAIL_MAX_CHARS = 200;
+export const TASK_ERROR_MAX_CHARS = 200;
 
 /*
   The fence itself lives in `lib/fence-line.ts`. It used to be a private copy
@@ -2680,44 +2525,6 @@ export const DECISION_FALLBACK_SUMMARY = 'A decision with no readable summary';
  */
 export const DECISION_FALLBACK_APPROVED = 'You approved this.';
 export const DECISION_FALLBACK_DISMISSED = 'You turned this down. Nothing ran.';
-/** The feed's fallback for an expired row. See `RECEIPT_RENDERING`. */
-export const DECISION_FALLBACK_EXPIRED = 'This one ran out of time.';
-/**
- * …and for a failed one, which cannot borrow either of the lines above.
- *
- * It is NOT "you approved this" — true, but the wrong fact to lead a failure
- * with — and it is NOT "it did not work", because one kind of `failed` is the
- * host dying mid-flight, where the call may well have gone out and the only
- * honest receipt is that we cannot say. So the fallback claims nothing about
- * the action at all: our own sentence was the thing that could not be printed,
- * and saying so is the one statement that is true either way.
- */
-export const DECISION_FALLBACK_FAILED = 'We could not show what happened here.';
-
-/**
- * What a decision receipt is badged as in the feed.
- *
- * Plain language, like the trigger labels above: the reader is being told where
- * this row came from, and "it came from something you approved" is the whole
- * message. Deliberately not the outcome — that is what the row's own sentence
- * and icon say, and a badge repeating it would be the same fact three times.
- */
-export const DECISION_RECEIPT_TAG = 'Approval';
-
-/**
- * …and what the OTHER half is badged as.
- *
- * "Approval" is the right word for a row that follows a yes — including a
- * failed one, where the person did approve and the attempt is what went wrong.
- * It is the wrong word over "You turned this down" and over "This one ran out
- * of time", where nothing was approved at all, and a badge that says otherwise
- * is the surface contradicting the sentence directly beneath it.
- *
- * Both are still one vocabulary answering one question — where did this row
- * come from — and the answer for these two is the neutral one: a decision was
- * put to you. The outcome is the row's own sentence and icon to tell.
- */
-export const DECISION_UNRESOLVED_TAG = 'Decision';
 
 // --- the rail ------------------------------------------------------------
 
@@ -3292,216 +3099,6 @@ export function toFileSummary(path: string): WorkspaceFileSummary {
 }
 
 /**
- * What we say under "What it did" when we cannot say what it did.
- *
- * A routine fire records THAT it ran, when, how it was triggered and whether
- * it failed. It does not record a summary of what it produced — the agent's
- * output goes to the conversation the fire opened, and nothing copies a
- * sentence of it back onto the fire row.
- *
- * Until TASK-419 this surface papered over that by printing the routine's NAME
- * as the whole row. On the default self-improvement routine that reads, in
- * full, `heartbeat` — a bare identifier sitting where a sentence about the
- * agent's work belongs, which tells the reader nothing and looks like machinery
- * leaking through. Naming the routine is fine; presenting the name AS the
- * answer is not.
- *
- * So the row says both halves out loud: what ran, and that we do not have a
- * summary of what it did. Stating the gap is the honest move and it keeps the
- * gap visible — a row that silently reads like a label is one nobody ever
- * fixes. (Same rule as the "It failed, and no reason was recorded." sentence
- * below: we would rather admit a blank than dress one up.)
- */
-export const FIRE_NO_SUMMARY = "We don't have a summary of what it did.";
-
-/** The same admission when even the routine's name is unreadable. */
-export const FIRE_UNNAMED_SENTENCE =
-  "A routine ran. We don't have a readable name for it, or a summary of what it did.";
-
-/** Authored labels are fenced; failed reads and genuinely missing IDs stay distinct. */
-export function fireLabel(
-  fire: FireRow,
-  nameByRoutineId: ReadonlyMap<string, string> | null,
-): string | null {
-  return (
-    nameByRoutineId === null ? 'Routine unavailable' : nameByRoutineId.has(fire.routineId) ? fenceLine(nameByRoutineId.get(fire.routineId), ACTIVITY_LABEL_MAX_CHARS) ?? 'Routine unavailable' : 'Deleted routine'
-  );
-}
-
-/**
- * One fire → one feed row, or `null` for a fire that produced nothing.
- *
- * `silenced` maps to `null` and that is the whole point of this function. A
- * silenced fire ran the trigger, decided there was nothing to say, and stopped.
- * Rendering "Inbox digest — done" over it would be a receipt for an outcome
- * nobody observed, which is honesty rule H1 — the exact failure this surface
- * cannot afford. It is not rendered dimmed, or collapsed, or as "no change".
- * It is not rendered.
- *
- * The headline is a SENTENCE, not a label — see {@link FIRE_NO_SUMMARY} for
- * why, and {@link fireLabel} for how the routine in it gets named.
- */
-export function fireToActivityEvent(
-  fire: FireRow,
-  nameByRoutineId: ReadonlyMap<string, string> | null,
-): ActivityEvent | null {
-  if (fire.status === 'silenced') return null;
-  const stamp = fireStamp(fire.firedAt);
-  if (Number.isNaN(stamp)) return null; // An undateable row cannot be filed.
-  const at = new Date(stamp).toISOString();
-  const label = fireLabel(fire, nameByRoutineId);
-  const text =
-    label === null ? FIRE_UNNAMED_SENTENCE : `Ran ${label}. ${FIRE_NO_SUMMARY}`;
-  return {
-    // Composite, and stable across pages. Never the fire's BIGSERIAL id.
-    // Opaque identity is a key; fencing it could collapse distinct IDs.
-    id: `${fire.agentId}|${fire.routineId}|${at}`,
-    agentId: fire.agentId,
-    at,
-    text,
-    kind: fire.status === 'error' ? 'stopped' : 'done',
-    detail:
-      fire.status === 'error'
-        ? // Never an empty string, and never an invented cause. "We don't know
-          // why" is a true sentence; a plausible reason would not be. A
-          // recorded error that is blank or all whitespace is the same absence
-          // as a null one — passing it through would render a row that says
-          // something went wrong with nothing at all underneath it. An error
-          // made only of control or bidi characters is that same absence
-          // wearing a costume, so the fence runs FIRST and its `null` lands on
-          // the same sentence.
-          (fenceLine(fire.error, ACTIVITY_DETAIL_MAX_CHARS) ??
-          'It failed, and no reason was recorded.')
-        : null,
-    tag: TRIGGER_LABEL[fire.triggerSource] ?? null,
-    // A routine fire has no decision behind it. Decision receipts are the
-    // feed's OTHER source and carry their own id — see
-    // `receiptToActivityEvent` below.
-    decisionId: null,
-  };
-}
-
-/**
- * One decision receipt → one feed row, or `null` for a receipt we cannot place
- * in time.
- *
- * The receipt is DERIVED by @ax/decisions from the decision row on every read.
- * That is what makes this surface's job small: there is no receipt store to
- * reconcile with, no removal path, and an undone execution's row simply stops
- * being returned — which is how "an undone execution's receipt disappears"
- * became true without a line of code here doing anything about it.
- *
- * The prose is HOST-AUTHORED, and it is fenced anyway. `approvedText` is built
- * from a capability clause and a tool name that arrive from MCP servers and
- * agent-authored skills, so this is the trust boundary; fencing here bounds
- * what goes on the WIRE, which is the only place a second renderer cannot
- * forget to do it. Same reasoning as `toWireDecision`, a few hundred lines up.
- *
- * `text` is the RECEIPT and `detail` is the executor's own message, never the
- * other way round. A host tool's failure text can quote model-authored input
- * back at us, so it rides beside our claim as audit-trail detail and is never
- * mistaken for our voice. Unlike a failed routine fire, a missing detail needs
- * no stand-in sentence: the subject line already says it did not work, and
- * "no reason was recorded" underneath that would be noise under a sentence
- * that is already complete.
- */
-/**
- * How each outcome draws — TOTAL over the union, on purpose (TASK-447).
- *
- * This was three ternaries reading `r.outcome === 'failed'`, which meant every
- * outcome that was not `failed` rendered as an approval: the right answer for
- * the three that existed, and a silent lie the moment a fourth arrived. A
- * `Record` keyed on the union cannot do that — adding an outcome and not
- * deciding how it looks is a build error.
- *
- * `fallback` is per-outcome for the same reason and it is the load-bearing one.
- * A receipt that fenced away entirely must still say something, but WHAT it
- * says is not interchangeable: "You approved this." printed over a decision the
- * person turned down is precisely the derived-from-the-wrong-outcome lie that
- * `approvedText` and `dismissedText` are kept as separate authored strings to
- * prevent. Three of the five sentences are host constants that cannot fence
- * away today; the map is total anyway, because "cannot happen" is not a thing
- * this file is willing to encode about a string it did not write.
- */
-const RECEIPT_RENDERING: Record<
-  DecisionReceiptRow['outcome'],
-  { kind: ActivityEvent['kind']; tag: string; fallback: string }
-> = {
-  executed: {
-    kind: 'approved',
-    tag: DECISION_RECEIPT_TAG,
-    fallback: DECISION_FALLBACK_APPROVED,
-  },
-  'pending-agent': {
-    kind: 'approved',
-    tag: DECISION_RECEIPT_TAG,
-    fallback: DECISION_FALLBACK_APPROVED,
-  },
-  failed: {
-    kind: 'stopped',
-    tag: DECISION_RECEIPT_TAG,
-    fallback: DECISION_FALLBACK_FAILED,
-  },
-  declined: {
-    kind: 'dismissed',
-    tag: DECISION_UNRESOLVED_TAG,
-    fallback: DECISION_FALLBACK_DISMISSED,
-  },
-  expired: {
-    kind: 'expired',
-    tag: DECISION_UNRESOLVED_TAG,
-    fallback: DECISION_FALLBACK_EXPIRED,
-  },
-};
-
-export function receiptToActivityEvent(
-  r: DecisionReceiptRow,
-  /**
-   * Called instead of silence when a row is dropped for an outcome this build
-   * cannot name. The drop itself is right — see below — but a row vanishing
-   * with nothing said is the shape this whole change exists to remove, so the
-   * route passes its logger through rather than letting the last one go quiet.
-   * Optional because the mapping is otherwise pure and every other caller (and
-   * every test) wants it that way.
-   */
-  onUnknownOutcome?: (outcome: string) => void,
-): ActivityEvent | null {
-  const stamp = Date.parse(r.at);
-  if (Number.isNaN(stamp)) return null; // An undateable row cannot be filed.
-  // An outcome this build has never heard of is DROPPED, not guessed at. The
-  // plugin is duck-typed across the bus (I2), so a newer @ax/decisions can send
-  // one; rendering it as an approval because that is what the old ternary did
-  // is how a decline became a "You approved this." row in the first place.
-  //
-  // Unreachable in a single-commit deployment — `DecisionReceiptSchema`'s
-  // `returns` validation refuses an unknown outcome before it gets here — and
-  // kept anyway, because "the layer above catches it" is exactly the reasoning
-  // that left the old ternary looking safe.
-  const style = RECEIPT_RENDERING[r.outcome];
-  if (style === undefined) {
-    onUnknownOutcome?.(r.outcome);
-    return null;
-  }
-  return {
-    // Composite and stable, in the same shape a fire's id takes. The decision
-    // id is a KEY — never rendered — so it goes in raw; fencing it could
-    // collapse two distinct decisions onto one row.
-    id: `${r.agentId}|decision|${r.decisionId}`,
-    agentId: r.agentId,
-    at: new Date(stamp).toISOString(),
-    // A receipt that fenced away entirely would say nothing at all, which
-    // reads as "we are not sure what you did". Every outcome keeps a plain
-    // sentence rather than an empty row — its OWN sentence.
-    text: fenceLine(r.receipt, DECISION_RECEIPT_MAX_CHARS) ?? style.fallback,
-    kind: style.kind,
-    detail:
-      r.outcome === 'failed' ? fenceLine(r.error, ACTIVITY_DETAIL_MAX_CHARS) : null,
-    tag: style.tag,
-    decisionId: r.decisionId,
-  };
-}
-
-/**
  * How long the Tasks page waits for one agent's `routines:list` before it
  * names that agent as unavailable and answers with the rest (TASK-909). The
  * bus's own bound is two minutes, and one stalled agent would otherwise hold
@@ -3519,6 +3116,19 @@ export const TASKS_AGENT_READ_DEADLINE_MS = 10_000;
  */
 function isOwnTask(view: Pick<RoutineView, 'ownedByCaller'>): boolean {
   return view.ownedByCaller === true;
+}
+
+function repeatTaskState(view: Pick<RoutineView, 'delivery' | 'lastRunAt' | 'lastStatus' | 'lastError' | 'lastWarning' | 'conversation' | 'webhook'>) {
+  return {
+    lastRunAt: view.lastRunAt,
+    status: view.lastStatus,
+    error: view.lastStatus === 'error' ? fenceLine(view.lastError, TASK_ERROR_MAX_CHARS) : null,
+    warning: fenceLine(view.lastWarning, TASK_ERROR_MAX_CHARS),
+    active: view.delivery?.active ?? null,
+    waiting: view.delivery?.waiting ?? null,
+    sharedThread: view.conversation === 'shared',
+    appUpdates: view.webhook !== null,
+  };
 }
 
 /**
@@ -3569,18 +3179,19 @@ function toTaskRows(
   now: Date,
 ): TaskRow[] {
   return views
-    .filter((view) => view.kind !== 'repeat' && isOwnTask(view))
+    .filter((view) => view.origin === 'authored' && isOwnTask(view))
     .map((view) => ({
       agentId: agent.id,
       agentName: agent.displayName,
       routineId: view.routineId,
       name: fenceLine(view.name, ROUTINE_NAME_MAX_CHARS) ?? 'Untitled task',
       enabled: view.enabled,
-      kind: toTaskKind(view.kind),
+      kind: toWorkspaceTaskKind(view.kind),
+      ...(view.kind === 'repeat' ? { repeat: repeatTaskState(view) } : {}),
       steps: toTaskStepCounts(view),
       finishBy: toTaskFinishBy(view, now),
       task:
-        view.task === null
+        view.kind === 'repeat' || view.task === null
           ? null
           : {
               status: view.task.status,
@@ -3592,7 +3203,7 @@ function toTaskRows(
             },
       noRecentUpdate: toTaskNoRecentUpdate(view),
       doneAt: toTaskDoneAt(view),
-      canMarkDone: view.permissions.edit === true,
+      canMarkDone: view.kind !== 'repeat' && view.permissions.edit === true,
     }));
 }
 
@@ -3974,7 +3585,8 @@ function toTaskDetail(
   return {
     agentName: agent.displayName,
     name: fenceLine(view.name, ROUTINE_NAME_MAX_CHARS) ?? 'Untitled task',
-    kind: toTaskKind(view.kind),
+    kind: toWorkspaceTaskKind(view.kind),
+    ...(view.kind === 'repeat' ? { repeat: repeatTaskState(view) } : {}),
     enabled: view.enabled,
     revision: view.revision,
     permissions: {
@@ -3983,7 +3595,7 @@ function toTaskDetail(
       edit: view.permissions.edit,
     },
     schedule: fenceLine(
-      checkInSchedule(view.schedule, view.activeHours),
+      [checkInSchedule(view.schedule, view.activeHours), view.webhook !== null ? 'when an app sends an update' : null].filter(Boolean).join('; also ') || null,
       DECISION_TASK_CHECKS_IN_MAX_CHARS,
     ),
     nextCheckAt: view.nextRunAt,
@@ -3996,7 +3608,7 @@ function toTaskDetail(
           ?.text ?? null,
     },
     task:
-      view.task === null
+      view.kind === 'repeat' || view.task === null
         ? null
         : {
             status: view.task.status,
@@ -4041,7 +3653,7 @@ function toTaskUpdate(fire: TaskFireView): TaskUpdate {
   return {
     firedAt: fire.firedAt,
     status: fire.status,
-    error: fire.status === 'error' ? fenceLine(fire.error, ACTIVITY_DETAIL_MAX_CHARS) : null,
+    error: fire.status === 'error' ? fenceLine(fire.error, TASK_ERROR_MAX_CHARS) : null,
     report:
       fire.report === null
         ? null
@@ -4077,6 +3689,7 @@ function toTaskCheckin(
     taskName: fenceLine(view.name, ROUTINE_NAME_MAX_CHARS) ?? 'Untitled task',
     agentName: agent.displayName,
     checkIn: toTaskUpdate(fire),
+    ...(view.kind === 'repeat' ? { kind: 'repeat' as const, sharedThread: view.conversation === 'shared' } : {}),
     triggerSource: fire.triggerSource,
     thread,
     decisions: { status },
@@ -4754,93 +4367,6 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
   }
 
   /**
-   * One agent's slice of the feed: its fires, plus the routine names to label
-   * them with.
-   *
-   * `strict` splits the two callers the same way `listConversations` does. On
-   * the per-agent tab this list IS the content, so a fault has to surface —
-   * "nothing recorded" over a failed read is a claim we cannot back (H7). In
-   * the roster-wide fan-out one agent's hiccup must not take the page down, so
-   * it degrades to nothing and says so in the log.
-   */
-  async function firesForAgent(
-    agentId: string,
-    limit: number,
-    before: Date | null,
-    strict: boolean,
-    userId: string,
-  ): Promise<FireRow[]> {
-    if (!bus.hasService('routines:recent-fires-for-agent')) return [];
-    try {
-      const out = await bus.call<RecentFiresForAgentInput, RecentFiresForAgentOutput>(
-        'routines:recent-fires-for-agent',
-        agentWorkspaceCtx(agentId, userId),
-        { agentId, limit, ...(before !== null ? { before: before.toISOString() } : {}) },
-      );
-      return out.fires ?? [];
-    } catch (err) {
-      if (strict) throw err;
-      initCtx.logger.warn('workspace_activity_fires_failed', {
-        agentId,
-        error: err instanceof Error ? err.message : String(err),
-      });
-      return [];
-    }
-  }
-
-  /**
-   * One agent's slice of the OTHER half of the feed: its decision receipts.
-   *
-   * The same strict/non-strict split `firesForAgent` makes, for the same reason
-   * and with one extra edge on it. A failed receipts read must never degrade
-   * into rows-we-do-have, because that page looks COMPLETE: the routine fires
-   * render, the feed has content, and every approval this agent ever acted on
-   * is silently missing with nothing on the surface to say so. "We don't know"
-   * rendering as "there is nothing here" is design H7, and it is the defect
-   * family TASK-238 / TASK-264 / TASK-272 all sit in. So on the per-agent tab —
-   * where this agent's history IS the page — the throw propagates and the route
-   * fails loudly.
-   *
-   * In the roster-wide fan-out it degrades, exactly as the fires read does: one
-   * agent's hiccup must not take the whole page down, and it is logged.
-   *
-   * `userId` is passed because the hook is owner-scoped. Reaching an agent is
-   * not the same as being entitled to read every decision attached to it — a
-   * team agent can carry several people's.
-   */
-  async function receiptsForAgent(
-    agentId: string,
-    userId: string,
-    limit: number,
-    before: Date | null,
-    strict: boolean,
-  ): Promise<DecisionReceiptRow[]> {
-    // No @ax/decisions in this deployment means there are genuinely no
-    // receipts. That is a configuration, not a fault, and it must not cost the
-    // routine history that IS there.
-    if (!bus.hasService('decisions:recent-receipts-for-agent')) return [];
-    try {
-      const out = await bus.call<
-        DecisionsRecentReceiptsInput,
-        DecisionsRecentReceiptsOutput
-      >('decisions:recent-receipts-for-agent', initCtx, {
-        userId,
-        agentId,
-        limit,
-        ...(before !== null ? { before: before.toISOString() } : {}),
-      });
-      return out.receipts ?? [];
-    } catch (err) {
-      if (strict) throw err;
-      initCtx.logger.warn('workspace_activity_receipts_failed', {
-        agentId,
-        error: err instanceof Error ? err.message : String(err),
-      });
-      return [];
-    }
-  }
-
-  /**
    * TASK-744 — toolNamespace → connector display name (and, since TASK-753,
    * the server's cached tool titles), for ONE reader.
    *
@@ -4874,32 +4400,6 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
   }
 
   /**
-   * Opaque routine ID → the authored name, for one agent.
-   *
-   * Reads one agent's authored names by opaque ID. Failed reads return null,
-   * so the UI never mistakes an unavailable name lookup for deletion.
-   */
-  async function routineNames(agentId: string, userId: string): Promise<Map<string, string> | null> {
-    const names = new Map<string, string>();
-    if (!bus.hasService('routines:list')) return null;
-    try {
-      const out = await bus.call<RoutinesListInput, RoutinesListOutput>(
-        'routines:list',
-        agentWorkspaceCtx(agentId, userId),
-        { agentId },
-      );
-      for (const r of out.routines ?? []) names.set(r.routineId, r.name);
-    } catch (err) {
-      initCtx.logger.warn('workspace_activity_routine_names_failed', {
-        agentId,
-        error: err instanceof Error ? err.message : String(err),
-      });
-      return null;
-    }
-    return names;
-  }
-
-  /**
    * One agent's slice of the Tasks page (TASK-909): its `routines:list`, read
    * as the caller, projected to the caller's own task rows (`toTaskRows`).
    *
@@ -4918,7 +4418,7 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
     let timer: ReturnType<typeof setTimeout> | undefined;
     let timedOut = false;
     try {
-      const read = bus.call<RoutinesListInput, TaskListOutput>(
+      const read = bus.call<{agentId:string}, TaskListOutput>(
         'routines:list',
         agentWorkspaceCtx(agent.id, userId),
         { agentId: agent.id },
@@ -4989,7 +4489,7 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
       res.status(404).json({ error: 'task-not-found' });
       return null;
     }
-    if (view.kind === 'repeat' || !isOwnTask(view)) {
+    if (view.origin === 'default' || !isOwnTask(view)) {
       res.status(404).json({ error: 'task-not-found' });
       return null;
     }
@@ -6326,9 +5826,15 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
       const open = (out.decisions ?? []).filter(
         (d) => d.conversationId === conversationId && isOpenDecision(d),
       );
+      // Open holds remain unbounded; the bounded history adds durable outcomes.
+      const history = bus.hasService('decisions:recent-for-conversation')
+        ? await bus.call<{ userId: string; agentId: string; conversationId: string }, DecisionsListOutput>(
+          'decisions:recent-for-conversation', agentWorkspaceCtx(agentId, userId), { userId, agentId, conversationId })
+        : { decisions: [] };
+      const rows = new Map([...history.decisions, ...open].filter(d => d.ownerUserId === userId && d.agentId === agentId && d.conversationId === conversationId).map(d => [d.id,d]));
       return {
         status: 'ok',
-        messages: [...open]
+        messages: [...rows.values()]
           .sort((a, b) => stamp(a.createdAt) - stamp(b.createdAt))
           .map((d) => ({ kind: 'approval', id: `decision-${d.id}`, decisionId: d.id })),
         live: {
@@ -7178,6 +6684,29 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
       } satisfies DecisionsResponse);
     },
 
+    async conversationDecisions(req: RouteRequest, res: RouteResponse): Promise<void> {
+      const userId = await authOr401(bus, initCtx, req, res);
+      if (userId === null) return;
+      const agentId = (req.params.agentId ?? '').trim();
+      const conversationId = (req.params.conversationId ?? '').trim();
+      if (!agentId || !conversationId) { res.status(400).json({ error: 'invalid-conversation' }); return; }
+      if (await resolveAgentOr404(bus, initCtx, agentId, userId, res) === null) return;
+      let got: ConversationsGetOutput;
+      try { got = await bus.call<ConversationsGetInput, ConversationsGetOutput>('conversations:get', initCtx, {conversationId, userId}); }
+      catch (error) { if (!isBenignConversationRead(error)) throw error; res.status(404).json({error:'conversation-not-found'}); return; }
+      if (got.conversation.agentId !== agentId || got.conversation.userId !== userId) { res.status(404).json({error:'conversation-not-found'}); return; }
+      if (!bus.hasService('decisions:recent-for-conversation')) {
+        if (bus.hasService('decisions:list')) { res.status(503).json({error:'decision-history-unavailable'}); return; }
+        res.status(200).json({decisions:[]}); return;
+      }
+      const history = await bus.call<{userId:string;agentId:string;conversationId:string}, DecisionsListOutput>(
+        'decisions:recent-for-conversation', agentWorkspaceCtx(agentId,userId), {userId,agentId,conversationId});
+      const open = await bus.call<DecisionsListInput, DecisionsListOutput>('decisions:list', initCtx, {userId,agentId});
+      const rows = [...new Map([...history.decisions, ...open.decisions].filter(d => d.ownerUserId===userId && d.agentId===agentId && d.conversationId===conversationId).map(d => [d.id,d])).values()];
+      const labels = await checkInsFor(rows, userId, DECISION_CHECKINS_LIST_DEADLINE_MS);
+      res.status(200).json({decisions:await Promise.all(rows.map(d => projectDecision(d,userId,checkInOf(labels,d))))} satisfies DecisionsResponse);
+    },
+
     /**
      * GET /api/workspace/grants — pending capability grants waiting on this
      * person (TASK-373).
@@ -7464,172 +6993,6 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
     },
 
     /**
-     * GET /api/workspace/activity — the one event feed.
-     *
-     * `?agentid=` scopes it to a single agent (the "What it did" tab);
-     * unscoped it merges the whole roster (the Activity page). `?before=` is
-     * the pagination cursor and it is an INSTANT, never a row id — which is
-     * also what lets two sources with completely different storage share it.
-     */
-    async activity(req: RouteRequest, res: RouteResponse): Promise<void> {
-      const userId = await authOr401(bus, initCtx, req, res);
-      if (userId === null) return;
-
-      const rawLimit = Number.parseInt(
-        (req.query[ACTIVITY_LIMIT_QUERY_KEY] ?? '').trim(),
-        10,
-      );
-      const limit = Number.isNaN(rawLimit)
-        ? ACTIVITY_DEFAULT_LIMIT
-        : Math.min(ACTIVITY_MAX_LIMIT, Math.max(1, rawLimit));
-
-      /*
-        An unparseable `before` is REFUSED, not ignored. Dropping it would
-        silently rewind the reader to page one — the same rows again, under a
-        "load more" they just clicked, with no sign anything went wrong.
-      */
-      const rawBefore = (req.query[ACTIVITY_BEFORE_QUERY_KEY] ?? '').trim();
-      let before: Date | null = null;
-      if (rawBefore.length > 0) {
-        const parsed = Date.parse(rawBefore);
-        if (Number.isNaN(parsed)) {
-          res.status(400).json({ error: 'invalid-before' });
-          return;
-        }
-        before = new Date(parsed);
-      }
-
-      const scopedId = (req.query[ACTIVITY_AGENT_ID_QUERY_KEY] ?? '').trim();
-
-      // Which agents to read, and how loudly a failure counts. Scoped: ACL
-      // first, then strict — that agent's history IS the page. Unscoped: the
-      // roster, non-strict.
-      let targets: Array<{ id: string }>;
-      let strict: boolean;
-      if (scopedId.length > 0) {
-        const agent = await resolveAgentOr404(bus, initCtx, scopedId, userId, res);
-        if (agent === null) return;
-        targets = [{ id: agent.id }];
-        strict = true;
-      } else {
-        targets = await listAgents(userId);
-        strict = false;
-      }
-
-      /*
-        TWO SOURCES, ONE COLLECTION. Routine fires say what an agent did on its
-        own; decision receipts say what it did because a person said yes. They
-        are one story to a reader, so they are one feed — and both are asked the
-        SAME question (`limit`, `before`) so a merge cannot lose a row at the
-        seam. Each source hands back its newest `limit`; the merge sorts and
-        cuts, so a page is right however lopsided the mix happens to be.
-      */
-      const slices = await Promise.all(
-        targets.map(async (a) => {
-          const [fires, receipts] = await Promise.all([
-            firesForAgent(a.id, limit, before, strict, userId),
-            receiptsForAgent(a.id, userId, limit, before, strict),
-          ]);
-          if (fires.length === 0) {
-            return { fires, receipts, names: new Map<string, string>() };
-          }
-          return { fires, receipts, names: await routineNames(a.id, userId) };
-        }),
-      );
-
-      /*
-        Mapped BEFORE the merge, so the two sources are comparable as one list
-        and the cursor below can be taken off whatever actually landed last.
-
-        `event: null` is a row that renders as nothing — a silenced fire, or
-        anything undateable. It still occupies its place in the page, which is
-        what keeps `nextBefore` honest: see `ActivityResponse`, a page can
-        legitimately come back with zero events and more history behind it.
-
-        Undateable rows sort LAST (`sortableStamp` floors them at -Infinity)
-        rather than landing wherever `NaN` comparisons leave them. They are
-        dropped by the mappers; they must not take a datable row's place on the
-        page on their way out.
-      */
-      const merged = slices
-        .flatMap((s) => [
-          ...s.fires.map((f) => ({
-            stamp: sortableStamp(f.firedAt),
-            event: fireToActivityEvent(f, s.names),
-          })),
-          ...s.receipts.map((r) => ({
-            stamp: sortableStamp(r.at),
-            event: receiptToActivityEvent(r, (outcome) =>
-              initCtx.logger.warn('workspace_activity_receipt_outcome_unknown', {
-                agentId: r.agentId,
-                outcome,
-              }),
-            ),
-          })),
-        ])
-        .sort((x, y) => y.stamp - x.stamp)
-        .slice(0, limit);
-
-      const events: ActivityEvent[] = [];
-      for (const m of merged) {
-        if (m.event !== null) events.push(m.event);
-      }
-
-      /*
-        The cursor is the last row we CONSIDERED, not the last one rendered.
-        See `ActivityResponse`: a page of all-silenced fires renders nothing,
-        and a cursor taken from the last visible row would strand the reader on
-        it.
-
-        `null` when this page did not fill: every source handed back everything
-        it had, so there is nothing older to ask for.
-
-        The cursor is EXCLUSIVE on both sources (`fired_at < before`,
-        `resolved_at < before`), and that carries a real cost: two rows sharing
-        an instant to the millisecond, straddling a page boundary, LOSE the
-        second one. It is not on this page, and `< before` excludes it from the
-        next — permanently, and with nothing on the surface to say a row went
-        missing.
-
-        THE OLD JUSTIFICATION FOR ACCEPTING THAT NO LONGER APPLIES, and it is
-        worth saying so rather than quietly editing it out. This comment used
-        to argue the collision was "not a case we have" because fires are
-        seconds-apart events written by a tick loop. That reasoned about ONE
-        stream. There are now two independent ones, and a tick-loop fire
-        colliding to the millisecond with the instant a human pressed Approve
-        is materially more plausible than two fires colliding with each other:
-        nothing co-ordinates those two clocks, and neither knows the other
-        exists.
-
-        The store's `decision_id` tie-break does NOT rescue it. That makes the
-        ORDER deterministic — which is what keeps a page boundary from
-        shuffling — but the cursor carries an instant and only an instant, so
-        both same-millisecond rows fall on the same side of `<` regardless of
-        how they were ordered.
-
-        Still exclusive, and now that is a judgement rather than a claim about
-        frequency. The fix that would actually close it is a COMPOSITE
-        `(instant, id)` cursor — "older than this instant, or at this instant
-        with a smaller id" — which means a signature change on both hooks and a
-        matching predicate in both backends, to buy a collision we have never
-        observed. An inclusive cursor is not the alternative: it repeats a row
-        on every single page turn, which a reader does notice. If this is ever
-        seen in the wild, the composite cursor is the answer.
-
-        `Number.isFinite`, not `!Number.isNaN`: `sortableStamp` floors an
-        unreadable instant at -Infinity so it sorts last, and `new
-        Date(-Infinity).toISOString()` THROWS rather than producing a bad
-        cursor.
-      */
-      const filled = merged.length === limit;
-      const lastStamp = merged.at(-1)?.stamp ?? NaN;
-      const nextBefore =
-        filled && Number.isFinite(lastStamp) ? new Date(lastStamp).toISOString() : null;
-
-      res.status(200).json({ events, nextBefore } satisfies ActivityResponse);
-    },
-
-    /**
      * GET /api/workspace/tasks — the Tasks page (TASK-909): every task the
      * caller owns, on every agent in their roster, in roster order.
      *
@@ -7649,6 +7012,19 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
      * `routines:list` (no @ax/routines in this deployment) nobody can have a
      * task, so the answer is an honest empty list, without reading the roster.
      */
+    async taskAgents(req: RouteRequest, res: RouteResponse): Promise<void> {
+      const userId = await authOr401(bus, initCtx, req, res);
+      if (userId === null) return;
+      if (!bus.hasService('agents:can-manage-routines')) { res.status(503).json({ error: 'task-agents-unavailable' }); return; }
+      const roster = await listAgents(userId);
+      const agents = await Promise.all(roster.map(async agent => {
+        const authority = await bus.call<{ agentId: string }, { allowed: boolean }>(
+          'agents:can-manage-routines', agentWorkspaceCtx(agent.id, userId), { agentId: agent.id });
+        return authority.allowed === true ? { agentId: agent.id, agentName: agent.displayName } : null;
+      }));
+      res.status(200).json({ agents: agents.filter(agent => agent !== null) });
+    },
+
     async tasks(req: RouteRequest, res: RouteResponse): Promise<void> {
       const userId = await authOr401(bus, initCtx, req, res);
       if (userId === null) return;
@@ -7712,7 +7088,7 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
         own.ctx,
         { ...key, limit: TASK_UPDATES_LIMIT },
       );
-      const replies = bus.hasService('routines:recent-replies')
+      const replies = own.view.kind !== 'repeat' && bus.hasService('routines:recent-replies')
         ? (
             await bus.call<TaskRepliesInput, TaskRepliesOutput>(
               'routines:recent-replies',
@@ -7978,6 +7354,7 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
       }
       const own = await ownTaskOr404(userId, key, res);
       if (own === null) return;
+      if (own.view.kind === 'repeat') { res.status(404).json({ error: 'task-not-found' }); return; }
       const zone =
         body.timeZone !== null && RoutineTimezoneSchema.safeParse(body.timeZone).success
           ? body.timeZone
@@ -8253,6 +7630,7 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
       }
       const own = await ownTaskOr404(userId, key, res);
       if (own === null) return;
+      if (own.view.kind === 'repeat') { res.status(404).json({ error: 'task-not-found' }); return; }
       let out: TaskDuplicateOutput;
       try {
         out = await bus.call<TaskDuplicateInput, TaskDuplicateOutput>(
@@ -8319,7 +7697,8 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
       // 'shared'` repeat), and no single run's report describes that
       // transcript.
       const matches = fires.filter((f) => f.conversationId === conversationId);
-      const fire = matches.length === 1 ? matches[0] : undefined;
+      const sharedRepeat = own.view.kind === 'repeat' && own.view.conversation === 'shared';
+      const fire = matches.length === 1 || sharedRepeat && matches.length > 0 ? matches[0] : undefined;
       if (fire === undefined) {
         res.status(404).json({ error: 'checkin-not-found' });
         return;
@@ -10618,16 +9997,17 @@ export async function registerWorkspaceRoutes(
       path: '/api/workspace/agents/:agentId',
       handler: handlers.agentDetail as unknown as RouteHandler,
     },
-    {
-      method: 'GET',
-      path: '/api/workspace/activity',
-      handler: handlers.activity as unknown as RouteHandler,
-    },
+    { method: 'GET', path: '/api/workspace/agents/:agentId/conversations/:conversationId/decisions', handler: handlers.conversationDecisions as unknown as RouteHandler },
     {
       // TASK-909 — the Tasks page: the caller's own tasks, across their roster.
       method: 'GET',
       path: '/api/workspace/tasks',
       handler: handlers.tasks as unknown as RouteHandler,
+    },
+    {
+      method: 'GET',
+      path: '/api/workspace/tasks/agents',
+      handler: handlers.taskAgents as unknown as RouteHandler,
     },
     {
       // TASK-910 — one task's own page, and Clear notes on it.

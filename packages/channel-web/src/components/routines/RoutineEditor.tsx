@@ -47,8 +47,9 @@ interface Props {
   mode: 'create' | 'edit';
   agentId: string;
   agentName: string;
-  routine?: RoutineView | undefined;
-  onSaved: () => void;
+  routine?: Pick<RoutineView, 'routineId'> | undefined;
+  taskMode?: boolean;
+  onSaved: (routine: RoutineView) => void;
   onCancel: () => void;
   onPendingChange?: ((pending: boolean) => void) | undefined;
 }
@@ -59,12 +60,12 @@ interface DefaultProps {
   onCancel: () => void;
   onPendingChange?: ((pending: boolean) => void) | undefined;
 }
-const empty = (): RoutineDefinition => ({
+const empty = (taskMode = false): RoutineDefinition => ({
   name: '',
   description: '',
   promptBody: '',
   enabled: true,
-  schedule: {
+  schedule: taskMode ? { kind: 'interval', every: '1h' } : {
     kind: 'cron',
     expr: '0 8 * * 1-5',
     tz: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
@@ -74,8 +75,8 @@ const empty = (): RoutineDefinition => ({
   silenceToken: null,
   silenceMaxChars: 300,
   conversation: 'per-fire',
-  kind: 'repeat',
-  goodWhen: null,
+  kind: taskMode ? 'stay-on-top' : 'repeat',
+  goodWhen: taskMode ? '' : null,
 });
 const editableKeys = [
   'name',
@@ -140,11 +141,12 @@ export function RoutineEditor(props: Props) {
       key={loaded?.revision ?? 'create'}
       agentId={props.agentId}
       agentName={props.agentName}
-      initial={loaded ? editableDefinition(loaded) : empty()}
+      initial={loaded ? editableDefinition(loaded) : empty(props.taskMode)}
+      taskMode={props.taskMode === true}
       canEdit={loaded?.permissions.edit ?? true}
       mode={props.mode}
       onCancel={props.onCancel}
-      onSaved={props.onSaved}
+      onSaved={result => props.onSaved(result as RoutineView)}
       onReload={() => setGeneration((v) => v + 1)}
       onPendingChange={props.onPendingChange}
       save={async (definition, requestId) =>
@@ -188,6 +190,7 @@ function RoutineForm({
   agentName,
   mode,
   defaults = false,
+  taskMode = false,
   canEdit = true,
   save,
   onSaved,
@@ -200,9 +203,10 @@ function RoutineForm({
   agentName: string;
   mode: 'create' | 'edit';
   defaults?: boolean;
+  taskMode?: boolean;
   canEdit?: boolean;
   save: (definition: RoutineDefinition, requestId: string) => Promise<unknown>;
-  onSaved: () => void;
+  onSaved: (result: unknown) => void;
   onCancel: () => void;
   onReload?: () => void;
   onPendingChange?: ((pending: boolean) => void) | undefined;
@@ -357,10 +361,10 @@ function RoutineForm({
       definition: validation.success ? validation.data : draftDefinition,
     };
     try {
-      await save(operation.current.definition, operation.current.requestId);
+      const result = await save(operation.current.definition, operation.current.requestId);
       operation.current = null;
       setUncertain(false);
-      onSaved();
+      onSaved(result);
     } catch (e) {
       const safe = e instanceof RoutineApiError;
       setError(safe ? e.message : 'We couldn’t save this routine. Try again.');
@@ -392,6 +396,121 @@ function RoutineForm({
     initial.webhook !== null &&
     JSON.stringify(initial.webhook) === JSON.stringify(draftDefinition.webhook) &&
     mode === 'edit';
+  const scheduleFields = (form.schedule !== null && (
+          <>
+            <Field>
+              <FieldLabel>Schedule</FieldLabel>
+              <ToggleGroup type="single" aria-label="Schedule" value={form.schedule.kind} disabled={disabled} onValueChange={value => {
+                if (value === 'interval') update('schedule', { kind: 'interval', every: '1h' });
+                if (value === 'cron' && !defaults) update('schedule', { kind: 'cron', expr: '0 8 * * 1-5', tz: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC' });
+              }} className="justify-start flex-wrap">
+                <ToggleGroupItem value="interval">Interval</ToggleGroupItem>
+                {!defaults && <ToggleGroupItem value="cron">Custom schedule</ToggleGroupItem>}
+              </ToggleGroup>
+            </Field>
+            {form.schedule.kind === 'interval' && textField('Interval', form.schedule.every, 'schedule.every', value => update('schedule', { kind: 'interval', every: value }))}
+            {form.schedule.kind === 'cron' && (
+              <>
+                <FieldGroup className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                  {textField('Cron expression', form.schedule.expr, 'schedule.expr', value => { if (form.schedule?.kind === 'cron') update('schedule', { ...form.schedule, expr: value }); })}
+                  {textField('Time zone', form.schedule.tz, 'schedule.tz', value => { if (form.schedule?.kind === 'cron') update('schedule', { ...form.schedule, tz: value }); })}
+                </FieldGroup>
+                <FieldDescription>{describeCron(form.schedule.expr).kind === 'described' ? (describeCron(form.schedule.expr) as { text: string }).text : 'Custom schedule'} · {form.schedule.tz}</FieldDescription>
+              </>
+            )}
+          </>
+        ));
+  const conversationFields = (<Field>
+          <FieldLabel>Conversation</FieldLabel>
+          <ToggleGroup
+            type="single"
+            aria-label="Conversation"
+            value={form.conversation}
+            disabled={disabled}
+            onValueChange={(v) => {
+              if (v === 'per-fire' || v === 'shared') update('conversation', v);
+            }}
+            className="justify-start flex-wrap"
+          >
+            <ToggleGroupItem value="per-fire">New each run</ToggleGroupItem>
+            <ToggleGroupItem value="shared">One ongoing thread</ToggleGroupItem>
+          </ToggleGroup>
+          <FieldDescription>
+            {form.conversation === 'per-fire'
+              ? 'Each run starts in a fresh conversation.'
+              : 'Runs continue in one ongoing conversation.'}
+          </FieldDescription>
+        </Field>);
+  const hoursFields = (<><Field orientation="horizontal">
+                <FieldLabel htmlFor={`${id}-hours`}>Active hours</FieldLabel>
+                <Switch
+                  id={`${id}-hours`}
+                  checked={form.activeHours !== null}
+                  disabled={disabled || form.schedule === null}
+                  onCheckedChange={(v) =>
+                    update(
+                      'activeHours',
+                      v
+                        ? {
+                            start: '09:00',
+                            end: '17:00',
+                            tz:
+                              Intl.DateTimeFormat().resolvedOptions()
+                                .timeZone || 'UTC',
+                          }
+                        : null,
+                    )
+                  }
+                />
+              </Field>
+              {form.webhook !== null && <FieldDescription>App updates run when received. Active hours apply to the schedule.</FieldDescription>}
+              {form.activeHours && (
+                <>
+                <Field data-invalid={activeDaysInvalid || undefined}>
+                  <FieldLabel>Active days</FieldLabel>
+                  <ActiveHoursDaySelector value={form.activeHours.days} disabled={disabled}
+                    invalid={activeDaysInvalid}
+                    describedBy={activeDaysInvalid ? `${id}-days-error ${id}-days-help` : `${id}-days-help`}
+                    onChange={days => { if (form.activeHours) update('activeHours', { ...form.activeHours, days }); }} />
+                  <FieldDescription id={`${id}-days-help`}>
+                    Selected days name when the window starts. Overnight hours continue into the next morning.
+                  </FieldDescription>
+                  {activeDaysInvalid && <FieldError id={`${id}-days-error`}>Choose at least one active day.</FieldError>}
+                </Field>
+                <FieldGroup className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+                  {textField(
+                    'Start',
+                    form.activeHours.start,
+                    'activeHours.start',
+                    (v) => {
+                      if (form.activeHours)
+                        update('activeHours', {
+                          ...form.activeHours,
+                          start: v,
+                        });
+                    },
+                  )}
+                  {textField(
+                    'End',
+                    form.activeHours.end,
+                    'activeHours.end',
+                    (v) => {
+                      if (form.activeHours)
+                        update('activeHours', { ...form.activeHours, end: v });
+                    },
+                  )}
+                  {!taskMode && textField(
+                    'Active hours time zone',
+                    form.activeHours.tz,
+                    'activeHours.tz',
+                    (v) => {
+                      if (form.activeHours)
+                        update('activeHours', { ...form.activeHours, tz: v });
+                    },
+                  )}
+                </FieldGroup>
+                </>
+              )}</>);
   return (
     <form
       className="flex flex-col gap-4"
@@ -400,13 +519,30 @@ function RoutineForm({
         void submit();
       }}
     >
-      {isTaskKind(form.kind) && (
+      {taskMode && <Field>
+        <FieldLabel>What kind of help do you need?</FieldLabel>
+        <ToggleGroup type="single" aria-label="Task kind" value={form.kind} disabled={disabled}
+          className="flex-wrap justify-start" onValueChange={value => {
+            if (value !== 'repeat' && value !== 'stay-on-top' && value !== 'get-done') return;
+            setForm(f => ({ ...f, kind: value, goodWhen: value === 'repeat' ? null : (f.goodWhen ?? ''),
+              schedule: value === 'repeat' ? f.schedule : (f.schedule ?? { kind: 'interval', every: '1h' }),
+              webhook: value === 'repeat' ? f.webhook : null,
+              conversation: value === 'repeat' ? f.conversation : 'per-fire' }));
+            setError(null); setInvalidField(undefined);
+          }}>
+          {(['stay-on-top', 'get-done', 'repeat'] as const).map(kind => <ToggleGroupItem key={kind} value={kind}>{TASK_KIND_LABELS[kind]}</ToggleGroupItem>)}
+        </ToggleGroup>
+      </Field>}
+      {taskMode && mode === 'edit' && form.kind !== initial.kind && <Alert><AlertDescription>
+        Changing the kind clears steps, latest update, notes, claim, Done status, and finish date.
+      </AlertDescription></Alert>}
+      {!taskMode && isTaskKind(form.kind) && (
         <p className="text-sm text-muted-foreground">
           {TASK_KIND_LABELS[form.kind]}
         </p>
       )}
       <p className="text-sm text-muted-foreground">
-        {agentName} runs this work on its schedule or when an app sends an update.
+        {isTaskKind(form.kind) ? `${agentName} checks in on the schedule you choose.` : `${agentName} runs this work on its schedule or when an app sends an update.`}
       </p>
       <FieldGroup className="gap-4">
         <FieldGroup className="grid grid-cols-1 gap-4 sm:grid-cols-2">
@@ -466,29 +602,10 @@ function RoutineForm({
             )}
           </FieldSet>
         )}
-        {form.schedule !== null && (
-          <>
-            <Field>
-              <FieldLabel>Schedule</FieldLabel>
-              <ToggleGroup type="single" aria-label="Schedule" value={form.schedule.kind} disabled={disabled} onValueChange={value => {
-                if (value === 'interval') update('schedule', { kind: 'interval', every: '1h' });
-                if (value === 'cron' && !defaults) update('schedule', { kind: 'cron', expr: '0 8 * * 1-5', tz: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC' });
-              }} className="justify-start flex-wrap">
-                <ToggleGroupItem value="interval">Interval</ToggleGroupItem>
-                {!defaults && <ToggleGroupItem value="cron">Custom schedule</ToggleGroupItem>}
-              </ToggleGroup>
-            </Field>
-            {form.schedule.kind === 'interval' && textField('Interval', form.schedule.every, 'schedule.every', value => update('schedule', { kind: 'interval', every: value }))}
-            {form.schedule.kind === 'cron' && (
-              <>
-                <FieldGroup className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                  {textField('Cron expression', form.schedule.expr, 'schedule.expr', value => { if (form.schedule?.kind === 'cron') update('schedule', { ...form.schedule, expr: value }); })}
-                  {textField('Time zone', form.schedule.tz, 'schedule.tz', value => { if (form.schedule?.kind === 'cron') update('schedule', { ...form.schedule, tz: value }); })}
-                </FieldGroup>
-                <FieldDescription>{describeCron(form.schedule.expr).kind === 'described' ? (describeCron(form.schedule.expr) as { text: string }).text : 'Custom schedule'} · {form.schedule.tz}</FieldDescription>
-              </>
-            )}
-          </>
+        {!taskMode ? scheduleFields : form.schedule !== null && !optional && (
+          form.schedule.kind === 'interval'
+            ? textField('Interval', form.schedule.every, 'schedule.every', value => update('schedule', { kind: 'interval', every: value }))
+            : <FieldDescription>Custom schedule. Open More options to review its time zone and cron expression.</FieldDescription>
         )}
         {form.webhook !== null && (
           <>
@@ -516,7 +633,7 @@ function RoutineForm({
               )}
             </FieldGroup>
             {receiverAllowed === false ? (
-              <FieldDescription>An agent administrator can connect app updates. The signing secret remains in the task owner's settings.</FieldDescription>
+              <FieldDescription>{taskMode ? 'An agent administrator can connect app updates. The task owner manages its signing secret in Task options.' : "An agent administrator can connect app updates. The signing secret remains in the task owner's settings."}</FieldDescription>
             ) : receiverError ? (
               <Alert variant="destructive">
                 <AlertDescription>
@@ -556,7 +673,7 @@ function RoutineForm({
                   {savedWebhook
                     ? 'Saved receiver URL.'
                     : mode === 'create'
-                      ? 'Preview only — inactive until Create routine.'
+                      ? taskMode ? 'Preview only — inactive until Start task.' : 'Preview only — inactive until Create routine.'
                       : 'Preview only — inactive until Save. Save to apply path changes.'}
                 </FieldDescription>
                 <span role="status" className="text-xs text-muted-foreground">
@@ -570,27 +687,8 @@ function RoutineForm({
             )}
           </>
         )}
-        <Field>
-          <FieldLabel>Conversation</FieldLabel>
-          <ToggleGroup
-            type="single"
-            aria-label="Conversation"
-            value={form.conversation}
-            disabled={disabled}
-            onValueChange={(v) => {
-              if (v === 'per-fire' || v === 'shared') update('conversation', v);
-            }}
-            className="justify-start flex-wrap"
-          >
-            <ToggleGroupItem value="per-fire">New each run</ToggleGroupItem>
-            <ToggleGroupItem value="shared">One ongoing thread</ToggleGroupItem>
-          </ToggleGroup>
-          <FieldDescription>
-            {form.conversation === 'per-fire'
-              ? 'Each run starts in a fresh conversation.'
-              : 'Runs continue in one ongoing conversation.'}
-          </FieldDescription>
-        </Field>
+        {taskMode && hoursFields}
+        {!taskMode && conversationFields}
         <Collapsible open={optional} onOpenChange={setOptional}>
           <CollapsibleTrigger asChild>
             <Button
@@ -598,83 +696,18 @@ function RoutineForm({
               variant="ghost"
               className="w-full justify-between"
             >
-              Optional settings
+              {taskMode ? 'More options' : 'Optional settings'}
               <ChevronRight data-icon="inline-end" />
             </Button>
           </CollapsibleTrigger>
           <CollapsibleContent className="pt-3">
             <FieldGroup className="gap-4">
-              <Field orientation="horizontal">
-                <FieldLabel htmlFor={`${id}-hours`}>Active hours</FieldLabel>
-                <Switch
-                  id={`${id}-hours`}
-                  checked={form.activeHours !== null}
-                  disabled={disabled || form.schedule === null}
-                  onCheckedChange={(v) =>
-                    update(
-                      'activeHours',
-                      v
-                        ? {
-                            start: '09:00',
-                            end: '17:00',
-                            tz:
-                              Intl.DateTimeFormat().resolvedOptions()
-                                .timeZone || 'UTC',
-                          }
-                        : null,
-                    )
-                  }
-                />
-              </Field>
-              {form.webhook !== null && <FieldDescription>App updates run when received. Active hours apply to the schedule.</FieldDescription>}
-              {form.activeHours && (
-                <>
-                <Field data-invalid={activeDaysInvalid || undefined}>
-                  <FieldLabel>Active days</FieldLabel>
-                  <ActiveHoursDaySelector value={form.activeHours.days} disabled={disabled}
-                    invalid={activeDaysInvalid}
-                    describedBy={activeDaysInvalid ? `${id}-days-error ${id}-days-help` : `${id}-days-help`}
-                    onChange={days => { if (form.activeHours) update('activeHours', { ...form.activeHours, days }); }} />
-                  <FieldDescription id={`${id}-days-help`}>
-                    Selected days name when the window starts. Overnight hours continue into the next morning.
-                  </FieldDescription>
-                  {activeDaysInvalid && <FieldError id={`${id}-days-error`}>Choose at least one active day.</FieldError>}
-                </Field>
-                <FieldGroup className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-                  {textField(
-                    'Start',
-                    form.activeHours.start,
-                    'activeHours.start',
-                    (v) => {
-                      if (form.activeHours)
-                        update('activeHours', {
-                          ...form.activeHours,
-                          start: v,
-                        });
-                    },
-                  )}
-                  {textField(
-                    'End',
-                    form.activeHours.end,
-                    'activeHours.end',
-                    (v) => {
-                      if (form.activeHours)
-                        update('activeHours', { ...form.activeHours, end: v });
-                    },
-                  )}
-                  {textField(
-                    'Active hours time zone',
-                    form.activeHours.tz,
-                    'activeHours.tz',
-                    (v) => {
-                      if (form.activeHours)
-                        update('activeHours', { ...form.activeHours, tz: v });
-                    },
-                  )}
-                </FieldGroup>
-                </>
-              )}
-              {textField(
+              {taskMode && scheduleFields}
+              {taskMode && form.kind === 'repeat' && conversationFields}
+              {taskMode && form.activeHours && textField('Active hours time zone', form.activeHours.tz, 'activeHours.tz', value => { if (form.activeHours) update('activeHours', { ...form.activeHours, tz: value }); })}
+              {!taskMode && hoursFields}
+              {(!taskMode || form.kind === 'repeat') && <>
+{textField(
                 'Silence token',
                 form.silenceToken ?? '',
                 'silenceToken',
@@ -688,6 +721,7 @@ function RoutineForm({
                 (v) => update('silenceMaxChars', Number(v)),
                 { type: 'number' },
               )}
+              </>}
               {form.webhook !== null && (
                 <>
                   <Field orientation="horizontal">
@@ -781,7 +815,7 @@ function RoutineForm({
                         { maxLength: 128 },
                       )}
                       <FieldDescription>
-                        The owner of this routine can manage its signing secret in the saved routine’s credential settings. Without a saved secret, signed deliveries are rejected.
+                        {taskMode ? 'The task owner can manage its signing secret in Task options after saving. Without a saved secret, signed deliveries are rejected.' : 'The owner of this routine can manage its signing secret in the saved routine’s credential settings. Without a saved secret, signed deliveries are rejected.'}
                       </FieldDescription>
                     </>
                   )}
@@ -816,7 +850,7 @@ function RoutineForm({
       {!canEdit && (
         <Alert>
           <AlertDescription>
-            You don’t have permission to edit this routine.
+            You don’t have permission to edit this task.
           </AlertDescription>
         </Alert>
       )}
@@ -854,7 +888,7 @@ function RoutineForm({
               : uncertain
                 ? 'Retry save'
                 : mode === 'create'
-                  ? 'Create routine'
+                  ? taskMode ? 'Start task' : 'Create routine'
                   : 'Save'}
           </Button>
         </div>

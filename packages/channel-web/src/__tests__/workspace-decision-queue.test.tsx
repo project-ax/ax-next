@@ -39,6 +39,7 @@ import {
 import { DecisionRow } from '@/components/workspace/DecisionRow';
 
 const listDecisions = vi.fn();
+const conversationDecisions = vi.fn();
 const readDecision = vi.fn();
 const approveDecision = vi.fn();
 const dismissDecision = vi.fn();
@@ -52,6 +53,7 @@ vi.mock('../lib/workspace-api', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../lib/workspace-api')>()),
   workspaceApi: {
     decisions: (...a: unknown[]) => listDecisions(...a),
+    conversationDecisions: (...a: unknown[]) => conversationDecisions(...a),
     decision: (...a: unknown[]) => readDecision(...a),
     approveDecision: (...a: unknown[]) => approveDecision(...a),
     dismissDecision: (...a: unknown[]) => dismissDecision(...a),
@@ -985,5 +987,37 @@ describe('useDecisionQueue — an answered row keeps its task (TASK-933)', () =>
     });
 
     expect(result.current.decisions[0]!.checkIn).toBeNull();
+  });
+});
+
+
+describe('conversation decision history', () => {
+  beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(new Date('2026-08-22T12:00:00Z')); listDecisions.mockResolvedValue({ decisions: [] }); conversationDecisions.mockReset(); });
+  afterEach(() => { cleanup(); vi.useRealTimers(); });
+  it.each([false, true])('keeps a late failure in its originating thread and on fresh revisit (routine=%s)', async (routine) => {
+    const approved = { ...resolvedFixture('executed'), agentId: 'a1', conversationId: 'c1', resolvedAt: '2026-08-22T11:00:00Z', undoable: false, ...(routine ? { routineOutcome: 'succeeded' as const } : {}) };
+    const failed = { ...approved, status: 'failed' as const, ...(routine ? { routineOutcome: 'failed' as const } : {}) };
+    conversationDecisions.mockResolvedValue({ decisions: [approved] });
+    const hooks = { conversationScope: { agentId: 'a1', conversationId: 'c1' } };
+    const first = renderHook(() => useDecisionQueue(hooks)); await settle();
+    expect(first.result.current.threadDecisions).toEqual([approved]);
+    conversationDecisions.mockResolvedValue({ decisions: [failed] }); await tick(10_000);
+    expect(first.result.current.threadDecisions).toEqual([failed]);
+    expect(first.result.current.decisions.filter(d => d.status === 'pending' || d.status === 'stale')).toEqual([]);
+    expect(undoSecondsLeft(first.result.current.threadDecisions[0]!)).toBe(0);
+    first.unmount();
+    const revisit = renderHook(() => useDecisionQueue(hooks)); await settle();
+    expect(revisit.result.current.threadDecisions).toEqual([failed]);
+  });
+  it('rejects an old conversation read and reports a current history failure', async () => {
+    let resolveOld!: (value: {decisions: Decision[]}) => void;
+    conversationDecisions.mockImplementationOnce(() => new Promise(resolve => { resolveOld = resolve; }));
+    const handle = renderHook(({conversationId}) => useDecisionQueue({conversationScope:{agentId:'a1',conversationId}}), {initialProps:{conversationId:'old'}});
+    await settle();
+    conversationDecisions.mockRejectedValue(new Error('offline'));
+    handle.rerender({conversationId:'new'}); await settle();
+    await act(async () => resolveOld({decisions:[{...resolvedFixture('failed'),agentId:'a1',conversationId:'old'}]}));
+    expect(handle.result.current.threadDecisions).toEqual([]);
+    expect(handle.result.current.historyError?.kind).toBe('failed');
   });
 });

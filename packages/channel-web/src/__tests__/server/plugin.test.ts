@@ -766,14 +766,9 @@ describe('@ax/channel-web server plugin (integration)', () => {
             'declined-grant markers are never reclaimed, so the per-user prefix scan behind GET /api/workspace/grants grows with every "Not now" ever given (correct answers, slower reads)',
         },
         {
-          hook: 'routines:recent-fires-for-agent',
-          degradation:
-            'the workspace Activity feed is empty (this deployment keeps no routine fire history)',
-        },
-        {
           hook: 'routines:list',
           degradation:
-            'the Tasks page lists no tasks, and Activity rows say "Routine unavailable" instead of each routine\'s authored name',
+            'the Tasks page lists no tasks',
         },
         {
           hook: 'routines:get',
@@ -909,6 +904,7 @@ describe('@ax/channel-web server plugin (integration)', () => {
           degradation:
             'a connector\'s details view says per-tool permissions are not available here instead of drawing choices that change nothing',
         },
+        { hook: 'decisions:recent-for-conversation', degradation: 'conversation approval history is unavailable; the thread reports the failed read' },
         {
           hook: 'decisions:list',
           degradation:
@@ -1024,11 +1020,6 @@ describe('@ax/channel-web server plugin (integration)', () => {
           hook: 'decisions:undo',
           degradation:
             'never reached without decisions:get (the route 404s first); same producer',
-        },
-        {
-          hook: 'decisions:recent-receipts-for-agent',
-          degradation:
-            'the workspace Activity feed carries no decision receipts (routine history still shows)',
         },
         {
           hook: 'memory:recall',
@@ -1652,7 +1643,6 @@ describe('@ax/channel-web server plugin (integration)', () => {
         is what must NOT happen — and the 401 says it doesn't.
       */
       for (const path of [
-        '/api/workspace/activity',
         '/api/workspace/agents/agt_test',
         '/api/workspace/agents/agt_test/files',
         '/api/workspace/agents/agt_test/files/x.md',

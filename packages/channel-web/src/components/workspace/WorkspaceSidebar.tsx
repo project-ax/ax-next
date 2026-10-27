@@ -1,5 +1,4 @@
 import {
-  Activity,
   Bot,
   ChevronDown,
   Inbox,
@@ -25,14 +24,13 @@ import { IconTooltip } from './IconTooltip';
 
 interface Props {
   agents: WorkspaceAgent[];
-  route: 'today' | 'tasks' | 'activity' | 'agent';
+  route: 'today' | 'tasks' | 'agent';
   activeAgentId: string | null;
   pendingCount: number;
   rosterOpen: boolean;
   onRoster: (open: boolean) => void;
   onToday: () => void;
   onTasks: () => void;
-  onActivity: () => void;
   onAgent: (id: string) => void;
   onOpenAdminSettings?: (() => void) | undefined;
   onCreateAgent?: (() => void) | undefined;
@@ -53,7 +51,6 @@ export function WorkspaceSidebarNav({
   onRoster,
   onToday,
   onTasks,
-  onActivity,
   onAgent,
   onOpenAdminSettings,
   onCreateAgent,
@@ -140,7 +137,6 @@ export function WorkspaceSidebarNav({
             pendingCount > 0,
           )}
           {iconRow('Tasks', ListChecks, onTasks, route === 'tasks')}
-          {iconRow('Activity', Activity, onActivity, route === 'activity')}
           {iconRow(
             'Agents',
             Bot,
@@ -194,15 +190,6 @@ export function WorkspaceSidebarNav({
           >
             <ListChecks data-icon="inline-start" aria-hidden="true" />
             Tasks
-          </Button>
-          <Button
-            variant="navigation"
-            onClick={go(onActivity)}
-            className={row()}
-            data-active={route === 'activity'}
-          >
-            <Activity data-icon="inline-start" aria-hidden="true" />
-            Activity
           </Button>
           <Collapsible
             className="mt-3.5"

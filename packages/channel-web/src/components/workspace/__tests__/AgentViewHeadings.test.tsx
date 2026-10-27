@@ -95,8 +95,6 @@ function renderView(over: Partial<ComponentProps<typeof AgentView>> = {}) {
       onApprove={vi.fn()}
       onDismiss={vi.fn()}
       onUndo={vi.fn()}
-      activity={[]}
-      agents={[quill]}
       onBack={vi.fn()}
       decisionsError={null}
       version={0}
@@ -131,7 +129,7 @@ describe('AgentView heading outline', () => {
     THE CARD'S HEADLINE DEFECT, on every tab. Before the fix this array was
     empty on all four — the assertion that fails first, and loudest.
   */
-  for (const tab of ['activity', 'chat', 'files'] as const) {
+  for (const tab of ['chat', 'files'] as const) {
     it(`gives the ${tab} tab an outline with no skipped levels and exactly one h1`, async () => {
       renderView({ tab });
 
@@ -160,6 +158,7 @@ describe('AgentView heading outline', () => {
         'h1: Quill',
         'h2: Conversation',
         'h2: Chats',
+        'h3: Right now',
       ]),
     );
   });
@@ -184,11 +183,11 @@ describe('AgentView heading outline', () => {
     three describe regions that are not mounted.
   */
   it('heads the panel with the open tab, not with all four', async () => {
-    renderView({ tab: 'activity' });
+    renderView({ tab: 'chat' });
 
     await waitFor(() => {
       const h2s = screen.getAllByRole('heading', { level: 2 });
-      expect(h2s.map((h) => h.textContent)).toEqual(['Conversation', 'Activity']);
+      expect(h2s.map((h) => h.textContent)).toEqual(['Conversation', 'Chats']);
     });
   });
 
@@ -250,7 +249,7 @@ describe('AgentView heading outline', () => {
   screen when the assertion runs.
 */
 describe('AgentView loading pane name', () => {
-  for (const tab of ['chat', 'activity', 'files'] as const) {
+  for (const tab of ['chat', 'chat', 'files'] as const) {
     it(`names the ${tab} tab's loading pane "Loading agent"`, () => {
       agentMock.mockReturnValue(new Promise<AgentDetail>(() => {}));
       renderView({ tab });

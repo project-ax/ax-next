@@ -49,6 +49,16 @@ const MISS = {
 };
 
 describe('workspaceApi.tasks (TASK-909)', () => {
+  it('preserves Repeat kind and refuses missing run metadata rather than inventing a report (PR4)', async () => {
+    const row = { ...ROW, kind: 'repeat', task: null, canMarkDone: false,
+      repeat: { lastRunAt: null, status: null, error: null, warning: null, active: 1, waiting: 2, sharedThread: false, appUpdates: true } };
+    respondWith({ tasks: [row], unavailableAgents: [] });
+    expect((await workspaceApi.tasks()).tasks[0]).toEqual(row);
+    vi.restoreAllMocks();
+    const { repeat: _repeat, ...missing } = row;
+    respondWith({ tasks: [missing], unavailableAgents: [] });
+    await expect(workspaceApi.tasks()).rejects.toBeInstanceOf(WorkspaceShapeError);
+  });
   it('reads the page from GET /api/workspace/tasks', async () => {
     const body = {
       tasks: [ROW, { ...ROW, routineId: 'r-2', task: null }],
@@ -197,7 +207,7 @@ describe('workspaceApi.tasks (TASK-909)', () => {
   it('reads a kind it doesn’t know as stay-on-top, as the server does, with its steps read as a stay-on-top row’s (TASK-948)', async () => {
     // A tab left open across a deploy that adds a kind must still load Tasks, Today and the badge. Steps
     // stay as they came, as on any stay-on-top row: the Tasks row draws counts for get-done only.
-    for (const kind of ['track-number', 'repeat']) {
+    for (const kind of ['track-number', 'future-kind']) {
       for (const steps of [null, { done: 1, total: 3 }]) {
         respondWith({ tasks: [{ ...ROW, kind, steps }], unavailableAgents: [] });
         await expect(workspaceApi.tasks()).resolves.toStrictEqual({
@@ -324,5 +334,13 @@ describe('workspaceApi.tasks (TASK-909)', () => {
     const err = await workspaceApi.tasks().catch((e: unknown) => e);
     expect(err).toBeInstanceOf(WorkspaceApiError);
     expect((err as WorkspaceApiError).status).toBe(500);
+  });
+});
+
+describe('task agent choice transport', () => {
+  it('requests the registered path exactly once and checks the minimal agent projection', async () => {
+    const fetch=respondWith({agents:[{agentId:'a1',agentName:'Caveman'}]});
+    expect(await workspaceApi.taskAgents()).toEqual({agents:[{agentId:'a1',agentName:'Caveman'}]});
+    expect(fetch).toHaveBeenCalledWith('/api/workspace/tasks/agents',expect.any(Object));
   });
 });

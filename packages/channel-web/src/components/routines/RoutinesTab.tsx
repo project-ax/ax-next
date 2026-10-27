@@ -20,9 +20,7 @@ export function RoutinesTab({
   agentName?: string | undefined;
   onViewSkills?: (() => void) | undefined;
 }) {
-  const [tab, setTab] = useState('mine');
   const [category, setCategory] = useState('scheduled');
-  const [createRequest, setCreateRequest] = useState(0);
   const [refreshKey, setRefreshKey] = useState(0);
   const refresh = () => setRefreshKey((n) => n + 1);
   if (!agentId) {
@@ -48,45 +46,13 @@ export function RoutinesTab({
     );
   }
   return (
-    <Tabs value={tab} onValueChange={setTab} className="flex flex-col gap-5">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <TabsList variant="quiet" aria-label="Routine views">
-          <TabsTrigger variant="quiet" value="mine">My routines</TabsTrigger>
-          <TabsTrigger variant="quiet" value="improvement">Self-improvement</TabsTrigger>
-        </TabsList>
-        {tab === 'mine' && (
-          <Button onClick={() => setCreateRequest((n) => n + 1)}>New routine</Button>
-        )}
-      </div>
-      <TabsContent value="mine" className="flex flex-col gap-5">
-        <RoutineConsentSection agentId={agentId} agentName={agentName ?? 'This agent'} />
-        <RoutinesList
-          key={agentId}
-          hideCreateAction
-          createRequest={createRequest}
-          agentId={agentId}
-          agentName={agentName}
-          refreshKey={refreshKey}
-          isAdmin={isAdmin}
-          onFired={refresh}
-        />
-      </TabsContent>
-      <TabsContent value="improvement" className="flex flex-col gap-5">
-        <AgentSelfImprovementSection
-          agentId={agentId}
-          agentName={agentName}
-          onChanged={refresh}
-          onViewSkills={onViewSkills}
-        />
-        <AgentDefaultControls agentId={agentId} onChanged={refresh} />
-        <RoutinesList
-          origin="default"
-          agentId={agentId}
-          agentName={agentName}
-          refreshKey={refreshKey}
-          onFired={refresh}
-        />
-      </TabsContent>
-    </Tabs>
+    <div className="flex flex-col gap-5">
+      <p className="text-sm text-muted-foreground">Scheduled work you create lives in Tasks. Housekeeping keeps this agent’s built-in maintenance running.</p>
+      <Button variant="outline" className="self-start" asChild><a href="/workspace/tasks">Open Tasks</a></Button>
+      <RoutineConsentSection agentId={agentId} agentName={agentName ?? 'This agent'} />
+      <AgentSelfImprovementSection agentId={agentId} agentName={agentName} onChanged={refresh} onViewSkills={onViewSkills} />
+      <AgentDefaultControls agentId={agentId} onChanged={refresh} />
+      <RoutinesList origin="default" agentId={agentId} agentName={agentName} refreshKey={refreshKey} onFired={refresh} />
+    </div>
   );
 }

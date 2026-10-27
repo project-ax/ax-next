@@ -1793,3 +1793,17 @@ describe('decisions store — deleteAllForAgent (TASK-718)', () => {
     for (const id of kept) expect(await s.get(id)).not.toBeNull();
   });
 });
+
+
+describe('bounded conversation history', () => {
+  it('returns closed failures only for the exact owner, agent and conversation, newest 100 first', async () => {
+    const store = await freshStore();
+    for (let i=0; i<103; i++) await store.create(base({ id: `history-${i}`, callFingerprint: `history-${i}`, status: 'failed', createdAt: new Date(Date.parse(T0)+i*1000).toISOString() }));
+    await store.create(base({id:'other-owner',ownerUserId:'u2',callFingerprint:'other-owner',status:'failed',createdAt:T_LATE}));
+    await store.create(base({id:'other-agent',agentId:'a2',callFingerprint:'other-agent',status:'failed',createdAt:T_LATE}));
+    await store.create(base({id:'other-conversation',conversationId:'c2',callFingerprint:'other-conversation',status:'failed',createdAt:T_LATE}));
+    const rows = await store.recentForConversation({ownerUserId:'u1',agentId:'a1',conversationId:'c1'});
+    expect(rows).toHaveLength(100); expect(rows[0]!.id).toBe('history-102'); expect(rows[99]!.id).toBe('history-3');
+    expect(rows.every(d => d.ownerUserId==='u1' && d.agentId==='a1' && d.conversationId==='c1' && d.status==='failed')).toBe(true);
+  });
+});

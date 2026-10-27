@@ -23,7 +23,7 @@
  *
  * Each row opens its task page (TASK-910) through a real link, so it can open in a new tab too.
  */
-import { useEffect, useId, useLayoutEffect, useState, type ReactNode } from 'react';
+import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { ChevronDown, ListChecks } from 'lucide-react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
@@ -56,6 +56,8 @@ import { checkInWhen, timeAgo } from '@/lib/workspace-time';
 import type { TaskRow, UnavailableAgent } from '@/lib/workspace-types';
 import { StateDot, StateDotSlot } from './bits';
 import { Segmented, WorkspaceHeader } from './WorkspaceHeader';
+import { TaskDialog } from './TaskDialog';
+import { RepeatRunSummary } from './RepeatRunSummary';
 
 /** How often "checked 4 min ago" is recomputed, as `LearnedInChat` does. */
 const AGO_TICK_MS = 30_000;
@@ -72,19 +74,26 @@ export function TasksPage({
   retry,
   leading,
   onNavigate,
+  onTaskWriteSucceeded,
 }: {
   state: TasksState;
   retry: () => void;
   leading?: ReactNode;
   onNavigate: (route: WorkspaceRoute) => void;
+  onTaskWriteSucceeded: () => void;
 }) {
+  const [creating, setCreating] = useState(false);
+  const createRef = useRef<HTMLButtonElement>(null);
   return (
     <>
       <WorkspaceHeader
         title="Tasks"
         subtitle="What your agents are looking after"
         leading={leading}
-      />
+      ><Button ref={createRef} onClick={() => setCreating(true)}>New task</Button></WorkspaceHeader>
+      <TaskDialog open={creating} onOpenChange={setCreating} onWriteSucceeded={onTaskWriteSucceeded}
+        onSaved={(agentId, routineId) => onNavigate({ kind: 'task', agentId, routineId })}
+        onClosed={() => createRef.current?.focus()} />
       <div className="flex-1 overflow-y-auto">
         <div className="mx-auto flex w-full max-w-[900px] flex-col gap-4 px-6 pb-6">
           {state.kind === 'loading' && (
@@ -160,7 +169,10 @@ function TaskBoard({
   // "checked 4 min ago" keeps moving on a tab left open, but the clock only
   // runs while a row (a paused one included) has a report or a done time to date.
   const [now, setNow] = useState(() => new Date());
-  const { groups, paused, doneRecently, doneAll } = groupTasks(tasks, now);
+  const repeats = tasks.filter(task => task.kind === 'repeat');
+  const grouped = groupTasks(tasks.filter(task => task.kind !== 'repeat'), now);
+  const { groups, doneRecently, doneAll } = grouped;
+  const paused = [...grouped.paused, ...repeats.filter(task => !task.enabled)];
   // What the person picked; with nothing done there is nothing to pick, so the
   // page is Current whatever was chosen before (the last done task was reopened),
   // and the choice goes back to Current too: the next task marked done brings
@@ -174,7 +186,7 @@ function TaskBoard({
   // brings the first reported row in would otherwise read a stale `now`.
   // A layout effect, so the stale time never reaches the screen.
   useLayoutEffect(() => setNow(new Date()), [tasks]);
-  const anyReported = tasks.some((t) => t.task !== null || t.doneAt !== null);
+  const anyReported = tasks.some((t) => t.task !== null || t.doneAt !== null || t.repeat?.lastRunAt != null);
   useEffect(() => {
     if (!anyReported) return;
     const id = setInterval(() => setNow(new Date()), AGO_TICK_MS);
@@ -247,6 +259,10 @@ function TaskBoard({
           {groups.map(({ group, rows }) => (
             <TaskGroupSection key={group} group={group} rows={rows} now={now} onNavigate={onNavigate} />
           ))}
+          {repeats.some(task => task.enabled) && <section className="flex flex-col gap-2.5" aria-label="Repeat jobs">
+            <h2 className="text-sm font-medium">Repeat jobs</h2>
+            <TaskList rows={repeats.filter(task => task.enabled)} now={now} onNavigate={onNavigate} />
+          </section>}
           {doneRecently.length > 0 && (
             <DoneSection title="Done this week" rows={doneRecently} now={now} onNavigate={onNavigate} />
           )}
@@ -411,6 +427,13 @@ function TaskItem({
   now: Date;
   onNavigate: (route: WorkspaceRoute) => void;
 }) {
+  if (row.kind === 'repeat') return <a
+    {...routeLinkProps({ kind: 'task', agentId: row.agentId, routineId: row.routineId }, onNavigate)}
+    className="flex min-w-0 flex-col gap-1 px-5 py-3 hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring">
+    <span className="truncate text-sm font-medium" title={row.name}>{row.name}</span>
+    <span className="text-sm text-muted-foreground">{row.agentName} · Repeat a job</span>
+    <RepeatRunSummary run={row.repeat} enabled={row.enabled} now={now} />
+  </a>;
   const checkedAt = row.noRecentUpdate?.at ?? row.task?.reportedAt ?? null;
   const ago = checkedAt === null ? null : timeAgo(checkedAt, now);
   // The third line, in order: why a paused-by-misses task is paused, why a task

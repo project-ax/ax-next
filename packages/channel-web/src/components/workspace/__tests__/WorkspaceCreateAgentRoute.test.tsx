@@ -36,8 +36,8 @@ vi.mock('@/lib/workspace-api', async () => {
       board: vi.fn(),
       agent: vi.fn(),
       route: vi.fn(),
-      activity: vi.fn(),
       decisions: vi.fn(),
+      conversationDecisions: vi.fn(async () => ({decisions: []})),
       approveDecision: vi.fn(),
       dismissDecision: vi.fn(),
       undoDecision: vi.fn(),
@@ -57,7 +57,6 @@ vi.mock('@/lib/workspace-api', async () => {
 });
 
 const boardMock = vi.mocked(workspaceApi.board);
-const activityMock = vi.mocked(workspaceApi.activity);
 const decisionsMock = vi.mocked(workspaceApi.decisions);
 const agentMock = vi.mocked(workspaceApi.agent);
 const sendMessageMock = vi.mocked(workspaceApi.sendMessage);
@@ -95,8 +94,6 @@ beforeEach(() => {
   window.history.replaceState(null, '', '/workspace');
   boardMock.mockReset();
   boardMock.mockResolvedValue({ agents: [] });
-  activityMock.mockReset();
-  activityMock.mockResolvedValue({ events: [], nextBefore: null });
   decisionsMock.mockReset();
   decisionsMock.mockResolvedValue({ decisions: [] });
   agentMock.mockReset();

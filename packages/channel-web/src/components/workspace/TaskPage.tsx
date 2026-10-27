@@ -167,6 +167,9 @@ import { TaskReplyBox, type TaskReplyMode } from './TaskReplyBox';
 import { TaskSteps } from './TaskSteps';
 import { TaskUpdates } from './TaskUpdates';
 import { WorkspaceHeader } from './WorkspaceHeader';
+import { TaskDialog } from './TaskDialog';
+import { TaskOptions } from './TaskOptions';
+import { RepeatTaskBody } from './RepeatTaskBody';
 
 const LABEL = 'text-[11.5px] text-muted-foreground break-words';
 const VALUE = 'text-[13px] leading-relaxed text-foreground';
@@ -283,7 +286,7 @@ function pressFailure(kind: ActionKind, e: unknown): { text: string; register: A
  * answer came decides what the retry sends (`isConfirmedRefusal`, the
  * workspace routes' rule).
  */
-function duplicateFailure(e: unknown, agentName: string): { text: string; register: AlertRegister } {
+function duplicateFailure(e: unknown): { text: string; register: AlertRegister } {
   if (!isConfirmedRefusal(e)) return { text: UNCONFIRMED.duplicate, register: 'destructive' };
   switch (e.status) {
     case 401:
@@ -293,7 +296,7 @@ function duplicateFailure(e: unknown, agentName: string): { text: string; regist
       return { text: COPY_NOT_ALLOWED, register: 'destructive' };
     case 400:
       return {
-        text: `We couldn’t copy this task as it is. Change it in ${agentName}’s settings first.`,
+        text: `We couldn’t copy this task as it is. Open Edit to review it first.`,
         register: 'destructive',
       };
     case 404:
@@ -321,6 +324,7 @@ function useTaskActions(
   refresh: () => void,
   poll: Pick<TaskPoll, 'start' | 'stop'>,
   onDuplicated: (routineId: string) => void,
+  onWriteSucceeded: () => void,
 ) {
   const [acting, setActing] = useState<ActionKind | null>(null);
   const [notice, setNotice] = useState<Notice>(null);
@@ -351,7 +355,7 @@ function useTaskActions(
       } catch (e) {
         logRequestFailure(e, 'task-actions');
         if (isConfirmedRefusal(e)) pendingCopy.current = null;
-        const { text, register } = duplicateFailure(e, detail.agentName);
+        const { text, register } = duplicateFailure(e);
         setNotice({ failed: text, register });
       } finally {
         inFlight.current = false;
@@ -380,6 +384,7 @@ function useTaskActions(
         await routineApi.update({ ...request, patch: { enabled: kind === 'resume' } });
       }
       pending.current = null;
+      onWriteSucceeded();
     } catch (e) {
       logRequestFailure(e, 'task-actions');
       if (!unconfirmed(e)) pending.current = null;
@@ -449,6 +454,7 @@ export function TaskPage({
 }) {
   const { state, refresh, refreshQuietly, replaceSteps, applyAnswer } = useTask(agentId, routineId);
   const detail = state.kind === 'ready' ? state.detail : null;
+  const [editing, setEditing] = useState(false);
   const poll = useTaskPoll(detail?.updates ?? null, refreshQuietly);
   const { acting, notice, press } = useTaskActions(
     agentId,
@@ -457,8 +463,14 @@ export function TaskPage({
     refresh,
     poll,
     onDuplicated,
+    onTaskWriteSucceeded,
   );
   const busy = acting !== null || (state.kind === 'ready' && state.refreshing);
+  useEffect(() => {
+    if (detail?.kind !== 'repeat' || (detail.repeat?.active ?? 0) === 0 && (!detail.enabled || (detail.repeat?.waiting ?? 0) === 0) || poll.phase === 'checking') return;
+    const timer = setInterval(refreshQuietly, 10_000);
+    return () => clearInterval(timer);
+  }, [detail?.kind, detail?.enabled, detail?.repeat?.active, detail?.repeat?.waiting, poll.phase, refreshQuietly]);
 
   // One-way: the first read that shows the copy running, or Done, uses the
   // line up, so a later Pause or Reopen doesn't bring it back (see THE
@@ -560,9 +572,14 @@ export function TaskPage({
             boxId={boxId}
             reopenOpen={inPlace?.mode === 'reopen' && inPlace.open}
             onReopen={() => toggleBox('reopen')}
+            onEdit={() => setEditing(true)}
           />
         )}
       </WorkspaceHeader>
+      {detail !== null && <TaskDialog open={editing} onOpenChange={setEditing}
+        agent={{ agentId, agentName: detail.agentName }} routineId={routineId}
+        onWriteSucceeded={onTaskWriteSucceeded} onSaved={() => refresh()}
+        onClosed={() => moreRef.current?.focus()} />}
       <div className="flex-1 overflow-y-auto">
         <div className="mx-auto flex w-full max-w-[900px] flex-col gap-4 px-6 pb-6">
           {state.kind === 'loading' && (
@@ -572,6 +589,9 @@ export function TaskPage({
           )}
           {state.kind === 'failed' && <TaskLoadFailure error={state.error} onRetry={refresh} />}
           {state.kind === 'ready' && (
+            <>
+            {state.detail.kind === 'repeat' ? <RepeatTaskBody detail={state.detail} agentId={agentId} routineId={routineId}
+              refreshFailed={state.refreshFailed} onRefresh={refresh} onEdit={() => setEditing(true)} onNavigate={onNavigate} notice={notice} /> : (
             <TaskBody
               agentId={agentId}
               routineId={routineId}
@@ -592,7 +612,11 @@ export function TaskPage({
               onStepsChanged={replaceSteps}
               onFinishBySaved={onFinishBySaved}
               onNavigate={onNavigate}
-            />
+              onEdit={() => setEditing(true)}
+            />)}
+            <TaskOptions key={state.detail.revision} agentId={agentId} routineId={routineId} agentName={state.detail.agentName}
+              onWriteSucceeded={onTaskWriteSucceeded} onDeleted={() => onNavigate({ kind: 'tasks' })} />
+            </>
           )}
         </div>
       </div>
@@ -623,6 +647,7 @@ function TaskActions({
   boxId,
   reopenOpen,
   onReopen,
+  onEdit,
 }: {
   detail: TaskDetail;
   busy: boolean;
@@ -636,6 +661,7 @@ function TaskActions({
   boxId: string;
   reopenOpen: boolean;
   onReopen: () => void;
+  onEdit: () => void;
 }) {
   // The chosen action runs once the menu has handed focus back to the ⋯ (TaskSteps' way).
   const chosen = useRef<(() => void) | null>(null);
@@ -675,13 +701,14 @@ function TaskActions({
         }}
       >
         <DropdownMenuGroup>
-          <DropdownMenuItem
+          <DropdownMenuItem onSelect={() => { chosen.current = onEdit; }}>Edit</DropdownMenuItem>
+          {detail.kind !== 'repeat' && <DropdownMenuItem
             onSelect={() => {
               chosen.current = () => onPress('duplicate');
             }}
           >
             Duplicate
-          </DropdownMenuItem>
+          </DropdownMenuItem>}
         </DropdownMenuGroup>
       </DropdownMenuContent>
     </DropdownMenu>
@@ -718,7 +745,7 @@ function TaskActions({
         onClick={() => onPress('check')}
       >
         {acting === 'check' && <Spinner data-icon="inline-start" aria-hidden="true" />}
-        Check now
+        {detail.kind === 'repeat' ? 'Run now' : 'Check now'}
       </Button>
       <Button
         ref={toggleRef}
@@ -778,6 +805,7 @@ function TaskBody({
   onStepsChanged,
   onFinishBySaved,
   onNavigate,
+  onEdit,
 }: {
   agentId: string;
   routineId: string;
@@ -801,6 +829,7 @@ function TaskBody({
   onStepsChanged: (steps: TaskStep[]) => void;
   onFinishBySaved: (finishBy: TaskFinishBy | null) => void;
   onNavigate: (route: WorkspaceRoute) => void;
+  onEdit: () => void;
 }) {
   const replyRef = useRef<HTMLTextAreaElement>(null);
   const boxRef = useRef<HTMLTextAreaElement>(null);
@@ -926,15 +955,7 @@ function TaskBody({
         <Alert>
           <AlertDescription className="flex flex-col gap-1">
             <span>{COPY_LINE}</span>
-            <a
-              {...routeLinkProps({ kind: 'agent-settings', id: agentId, section: 'routines' }, onNavigate)}
-              className={cn(
-                'self-start rounded-sm underline underline-offset-2 hover:text-foreground',
-                RESOLUTION_FOCUS_RING,
-              )}
-            >
-              {`Change it in ${agentName}’s settings`}
-            </a>
+            <Button variant="outline" className="self-start" onClick={onEdit}>Edit task</Button>
           </AlertDescription>
         </Alert>
       )}
@@ -950,6 +971,7 @@ function TaskBody({
         routineId={routineId}
         onNavigate={onNavigate}
         onReply={() => replyRef.current?.focus()}
+        onEdit={onEdit}
         finish={finish}
       />
       {/*
@@ -1018,16 +1040,7 @@ function TaskBody({
             onCleared={onRefresh}
           />
         </dl>
-        {/* Until design PR 4's ⋯ › Edit, the brief is changed in the agent's settings. */}
-        <a
-          {...routeLinkProps({ kind: 'agent-settings', id: agentId, section: 'routines' }, onNavigate)}
-          className={cn(
-            'self-start rounded-sm text-[12px] text-muted-foreground underline underline-offset-2 hover:text-foreground',
-            RESOLUTION_FOCUS_RING,
-          )}
-        >
-          {`Change these in ${agentName}’s settings`}
-        </a>
+        {detail.permissions.edit && <Button variant="outline" className="self-start" onClick={onEdit}>Edit task</Button>}
       </section>
       <TaskUpdates
         updates={detail.updates}
@@ -1138,6 +1151,7 @@ function LatestUpdate({
   routineId,
   onNavigate,
   onReply,
+  onEdit,
   finish,
 }: {
   detail: TaskDetail;
@@ -1147,6 +1161,7 @@ function LatestUpdate({
   onNavigate: (route: WorkspaceRoute) => void;
   /** Takes the person to the reply box. */
   onReply: () => void;
+  onEdit: () => void;
   finish: Finish;
 }) {
   const headingId = useId();
@@ -1234,18 +1249,7 @@ function LatestUpdate({
               {words.fix}
             </p>
             {words.settingsLink && (
-              <a
-                {...routeLinkProps(
-                  { kind: 'agent-settings', id: agentId, section: 'routines' },
-                  onNavigate,
-                )}
-                className={cn(
-                  'self-start rounded-sm text-[13px] underline underline-offset-2 hover:text-foreground',
-                  RESOLUTION_FOCUS_RING,
-                )}
-              >
-                {`Open ${agentName}’s settings`}
-              </a>
+              <Button variant="outline" className="self-start" onClick={onEdit}>Edit task</Button>
             )}
             <CheckedLine
               label="Last check-in"

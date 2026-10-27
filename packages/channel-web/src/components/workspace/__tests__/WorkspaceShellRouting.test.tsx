@@ -35,8 +35,8 @@ vi.mock('@/lib/workspace-api', async () => {
       board: vi.fn(),
       agent: vi.fn(),
       route: vi.fn(),
-      activity: vi.fn(),
       decisions: vi.fn(),
+      conversationDecisions: vi.fn(async () => ({decisions: []})),
       tasks: vi.fn(),
       task: vi.fn(),
       taskCheckin: vi.fn(),
@@ -68,7 +68,6 @@ vi.mock('@/lib/attachment-upload', async (importOriginal) => {
 
 const boardMock = vi.mocked(workspaceApi.board);
 const agentMock = vi.mocked(workspaceApi.agent);
-const activityMock = vi.mocked(workspaceApi.activity);
 const decisionsMock = vi.mocked(workspaceApi.decisions);
 const tasksMock = vi.mocked(workspaceApi.tasks);
 const taskMock = vi.mocked(workspaceApi.task);
@@ -156,8 +155,6 @@ beforeEach(() => {
     past: [],
     memory: { rules: { status: 'unavailable', doc: null } },
   });
-  activityMock.mockReset();
-  activityMock.mockResolvedValue({ events: [], nextBefore: null });
   decisionsMock.mockReset();
   decisionsMock.mockResolvedValue({ decisions: [] });
   tasksMock.mockReset();
@@ -184,9 +181,9 @@ describe('landing on a URL', () => {
   });
 
   it('opens Activity from its own URL', async () => {
-    renderAt('/workspace/activity');
+    renderAt('/workspace/tasks');
 
-    expect(await screen.findByRole('heading', { name: 'Activity' })).toBeTruthy();
+    expect(await screen.findByRole('heading', { name: 'Tasks' })).toBeTruthy();
   });
 
   it('opens Tasks from its own URL, with its sidebar row active', async () => {
@@ -195,7 +192,7 @@ describe('landing on a URL', () => {
     expect(await screen.findByRole('heading', { name: 'Tasks' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Tasks' })).toHaveAttribute('data-active', 'true');
     expect(screen.getByRole('button', { name: /^Today/ })).toHaveAttribute('data-active', 'false');
-    expect(screen.getByRole('button', { name: 'Activity' })).toHaveAttribute('data-active', 'false');
+    expect(screen.queryByRole('button', { name: 'Activity' })).toBeNull();
     await waitFor(() => expect(tasksMock).toHaveBeenCalledTimes(1));
   });
 
@@ -459,19 +456,18 @@ describe('agent settings page (TASK-888)', () => {
     renderAt('/workspace/agents/a-quill/settings/instructions');
     await screen.findByRole('heading', { level: 1, name: 'Quill settings' });
 
-    fireEvent.click(navItem('Routines'));
+    fireEvent.click(navItem('Housekeeping'));
 
     await waitFor(() =>
       expect(window.location.pathname).toBe('/workspace/agents/a-quill/settings/routines'),
     );
-    expect(screen.getByRole('tab', { name: 'My routines' })).toBeTruthy();
-    expect(navItem('Routines')).toHaveAttribute('aria-current', 'page');
+    expect(screen.getByRole('link', {name:'Open Tasks'})).toHaveAttribute('href','/workspace/tasks');
+    expect(navItem('Housekeeping')).toHaveAttribute('aria-current', 'page');
   });
 
   it('opens this agent\'s Skills section from routine self-improvement', async () => {
     const open = vi.fn();
     renderAt('/workspace/agents/a-quill/settings/routines', open);
-    fireEvent.keyDown(await screen.findByRole('tab', {name:'Self-improvement'}), {key:'Enter'});
     fireEvent.click(await screen.findByRole('button', {name:'View skills'}));
     await waitFor(() => expect(window.location.pathname).toBe('/workspace/agents/a-quill/settings/skills'));
     expect(open).not.toHaveBeenCalled();
@@ -851,7 +847,7 @@ describe('one tasks read (TASK-933)', () => {
     });
     await screen.findByRole('heading', { level: 1, name: 'Zero open support tickets' });
     act(() => {
-      window.history.pushState(null, '', '/workspace/activity');
+      window.history.pushState(null, '', '/workspace/agents/a-quill/files');
       window.dispatchEvent(new PopStateEvent('popstate'));
     });
     await waitFor(() =>
@@ -937,10 +933,10 @@ describe('one tasks read (TASK-933)', () => {
     await waitFor(() => expect(tasksMock).toHaveBeenCalledTimes(2));
 
     act(() => {
-      window.history.pushState(null, '', '/workspace/activity');
+      window.history.pushState(null, '', '/workspace/tasks');
       window.dispatchEvent(new PopStateEvent('popstate'));
     });
-    await screen.findByRole('heading', { name: 'Activity' });
+    await screen.findByRole('heading', { name: 'Tasks' });
     fireEvent.click(screen.getByRole('button', { name: /^Today/ }));
     await screen.findByRole('heading', { name: 'Today' });
     fireEvent.click(screen.getByRole('button', { name: 'Tasks' }));

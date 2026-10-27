@@ -60,7 +60,8 @@ describe('registerWorkspaceRoutes (no flag)', () => {
   it('mounts the whole workspace surface with no options passed', async () => {
     const routes = (await registeredRoutes()).map((r) => `${r.method} ${r.path}`);
     expect(routes).toContain('GET /api/workspace/state');
-    expect(routes).toContain('GET /api/workspace/activity');
+    expect(routes).not.toContain('GET /api/workspace/activity');
+    expect(routes).toContain('GET /api/workspace/agents/:agentId/conversations/:conversationId/decisions');
     expect(routes).toContain('GET /api/workspace/tasks');
     expect(routes).toContain('GET /api/workspace/tasks/:agentId/:routineId');
     expect(routes).toContain('DELETE /api/workspace/tasks/:agentId/:routineId/notes');

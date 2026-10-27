@@ -69,8 +69,8 @@ export function missWords(
         what: 'Its instructions are too long to load.',
         // Only someone who can edit gets the instruction to do it, and the link; anyone else is told who can.
         fix: can.edit
-          ? `Shorten “What should ${agentName} do?” in ${agentName}’s settings${paused ? ', then resume it.' : '.'}`
-          : `Someone who manages this agent’s tasks needs to shorten “What should ${agentName} do?” in ${agentName}’s settings.${paused ? ' Then they can resume it.' : ''}`,
+          ? `Shorten “What should ${agentName} do?” in Edit${paused ? ', then resume it.' : '.'}`
+          : `Someone who manages this agent’s tasks needs to shorten “What should ${agentName} do?” in Edit.${paused ? ' Then they can resume it.' : ''}`,
         settingsLink: can.edit,
       };
     case 'interrupted':

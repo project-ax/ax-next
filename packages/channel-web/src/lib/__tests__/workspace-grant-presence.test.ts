@@ -39,7 +39,7 @@ const grant = (agentId = 'a-quill', request = skill()): WorkspaceGrant => ({
 /** The one presence state that routes a grant into a thread. */
 const there = (
   id = 'a-quill',
-  tab: 'activity' | 'chat' | 'files' = 'chat',
+  tab: 'files' | 'chat' | 'files' = 'chat',
 ): GrantPresence => ({ route: { kind: 'agent', id, tab }, visible: true });
 
 describe('the thread is the exception', () => {
@@ -53,7 +53,7 @@ describe('the thread is the exception', () => {
     expect(grantBelongsInThread(grant('a-quill'), there('a-scout'))).toBe(false);
   });
 
-  test.each(['activity', 'files'] as const)(
+  test.each(['files'] as const)(
     "the conversation beside the agent's %s tab takes it",
     (tab) => {
       // Every detail tab is beside the same conversation and composer.
@@ -65,7 +65,7 @@ describe('the thread is the exception', () => {
 
   test.each([
     ['today', { kind: 'today' } as WorkspaceRoute],
-    ['activity', { kind: 'activity' } as WorkspaceRoute],
+    ['activity', { kind: 'tasks' } as WorkspaceRoute],
   ])('%s does not take it — it IS the queue, or next to it', (_name, route) => {
     expect(grantBelongsInThread(grant('a-quill'), { route, visible: true })).toBe(
       false,

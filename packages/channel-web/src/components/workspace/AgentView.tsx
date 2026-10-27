@@ -78,7 +78,6 @@ import type { SendableAttachment } from '@/lib/workspace-attachments';
 import type { PhaseKind } from '@/server/types';
 import { STOPPED_NOTICE, STOP_COPY, STOP_FALLBACK_MS } from './stop-copy';
 import { saveRefusedRowId, type SaveRefusedCode } from '@/lib/save-refused';
-import { ActivityFeed } from './ActivityFeed';
 import { AgentConversation, approvalReadFrom, type ApprovalRead } from './AgentConversation';
 import { AgentFiles } from './AgentFiles';
 import { SkippedConnectorsNotice } from './SkippedConnectorsNotice';
@@ -91,9 +90,7 @@ import { LearnedAnnouncer, LearnedInChat } from './LearnedInChat';
 import { learnedAnnouncement, learnedToggleLabel } from './memory-copy';
 import { AgentTile } from './bits';
 import type {
-  ActivityEvent,
   ThreadMessage,
-  WorkspaceAgent,
 } from '@/lib/workspace-api';
 import {
   workspaceGrantActions,
@@ -122,6 +119,7 @@ export type { AgentTab } from '@/lib/workspace-route';
  */
 
 interface Props {
+  onConversationScope?: (scope: {agentId:string;conversationId:string} | null) => void;
   agentId: string;
   tab: AgentTab;
   onTab: (t: AgentTab) => void;
@@ -157,13 +155,6 @@ interface Props {
    * all. One implementation, both render sites.
    */
   onGranted: (grant: WorkspaceGrant) => Promise<boolean>;
-  activity: ActivityEvent[];
-  /** Threaded straight through to the `did` tab's `ActivityFeed` — see there. */
-  activityHasMore?: boolean;
-  onActivityLoadMore?: () => void;
-  activityLoading?: boolean;
-  activityError?: string | null;
-  agents: WorkspaceAgent[];
   onBack: () => void;
   /**
    * Opens Settings on AI model keys — the rail's paused-memory "Fix this"
@@ -347,6 +338,7 @@ const PAST_COPY: Record<ReadOutcome, string> = {
 };
 
 export function AgentView({
+  onConversationScope,
   agentId,
   tab,
   onTab,
@@ -356,12 +348,6 @@ export function AgentView({
   threadGrants,
   onGrantResolved,
   onGranted,
-  activity,
-  activityHasMore,
-  onActivityLoadMore,
-  activityLoading,
-  activityError,
-  agents,
   onBack,
   onOpenModelKeys,
   onOpenNav,
@@ -425,6 +411,12 @@ export function AgentView({
    * on the page able to clear it. This is the retry's way in.
    */
   const [pastReload, setPastReload] = useState(0);
+
+  const visibleConversationId = pastId !== null ? pastDetail?.conversationId ?? null : detail?.conversationId ?? null;
+  useEffect(() => {
+    onConversationScope?.(visibleConversationId === null ? null : {agentId,conversationId:visibleConversationId});
+    return () => onConversationScope?.(null);
+  }, [agentId, visibleConversationId, onConversationScope]);
 
   /*
     "What I learned in this chat" (TASK-627). The state lives HERE, not in the
@@ -1616,11 +1608,6 @@ export function AgentView({
       onChanged();
     },
     panels: {
-      activity: <ActivityFeed rail events={activity} agents={agents} agentId={agent.id}
-        {...(activityHasMore !== undefined ? { hasMore: activityHasMore } : {})}
-        {...(onActivityLoadMore ? { onLoadMore: onActivityLoadMore } : {})}
-        {...(activityLoading !== undefined ? { loading: activityLoading } : {})}
-        {...(activityError !== undefined ? { error: activityError } : {})} />,
       files: <AgentFiles agentId={agent.id} agentName={agent.name} onCount={setFileCount} />,
     },
     ...(onSettingsSection

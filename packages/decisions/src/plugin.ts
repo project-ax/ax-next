@@ -58,6 +58,7 @@ import {
   type DecisionsGetInput,
   type DecisionsGetOutput,
   type DecisionsListInput,
+  type DecisionsConversationInput,
   type DecisionsListOutput,
   type DecisionsRecentReceiptsInput,
   type DecisionsRecentReceiptsOutput,
@@ -222,6 +223,7 @@ export function createDecisionsPlugin(opts?: DecisionsPluginOptions): Plugin {
       version: '0.0.0',
       registers: [
         'decisions:list',
+        'decisions:recent-for-conversation',
         'decisions:count',
         'decisions:get',
         'decisions:recent-receipts-for-agent',
@@ -457,6 +459,17 @@ export function createDecisionsPlugin(opts?: DecisionsPluginOptions): Plugin {
       // ---------------------------------------------------------------------
       // Reads
       // ---------------------------------------------------------------------
+      bus.registerService<DecisionsConversationInput, DecisionsListOutput>(
+        'decisions:recent-for-conversation', PLUGIN_NAME, async (ctx, input) => {
+          const ownerUserId = requireField(input.userId, 'userId');
+          const agentId = requireField(input.agentId, 'agentId');
+          const conversationId = requireField(input.conversationId, 'conversationId');
+          if (ctx.userId !== ownerUserId || ctx.agentId !== agentId) throw new Error('conversation decision scope mismatch');
+          await store!.expireDue(now().toISOString());
+          return { decisions: await store!.recentForConversation({ ownerUserId, agentId, conversationId }) };
+        }, { returns: DecisionsListOutputSchema },
+      );
+
       bus.registerService<DecisionsListInput, DecisionsListOutput>(
         'decisions:list',
         PLUGIN_NAME,

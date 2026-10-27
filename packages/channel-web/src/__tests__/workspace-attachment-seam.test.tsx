@@ -323,8 +323,6 @@ function renderLiveView(): ReturnType<typeof render> {
       onApprove={vi.fn()}
       onDismiss={vi.fn()}
       onUndo={vi.fn()}
-      activity={[]}
-      agents={[quill]}
       onBack={vi.fn()}
       decisionsError={null}
       version={0}

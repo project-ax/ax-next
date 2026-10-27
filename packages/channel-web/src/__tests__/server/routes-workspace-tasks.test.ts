@@ -240,7 +240,7 @@ function setup(over: Partial<World> & { now?: () => Date } = {}) {
     await handlers.tasks(req, res);
     return captured;
   }
-  return { get, rosterCalls, listCalls, lastWritten: () => last };
+  return { get, handlers, bus, rosterCalls, listCalls, lastWritten: () => last };
 }
 
 function bodyOf(captured: CapturedRes): TasksResponse {
@@ -266,6 +266,30 @@ const TEAM_ROWS: StoredRoutine[] = [
 ];
 
 describe('GET /api/workspace/tasks (TASK-909)', () => {
+  it('reads eligible task agents from current member authority, not roster presence (PR4)', async () => {
+    const { handlers, bus } = setup();
+    bus.registerService('agents:can-manage-routines', 'agents', async (ctx, input: { agentId: string }) => {
+      expect(ctx.userId).toBe('alice');
+      return { allowed: input.agentId === 'a2' };
+    });
+    expect(handlers).toHaveProperty('taskAgents', expect.any(Function));
+    const { res, captured } = mkRes();
+    await (handlers as unknown as { taskAgents: (req: RouteRequest, res: RouteResponse) => Promise<void> }).taskAgents(mkReq(), res);
+    expect(captured).toEqual({ statusCode: 200, body: { agents: [{ agentId: 'a2', agentName: 'Juniper' }] } });
+  });
+  it('includes never-reported owned repeats and fences their actual run failure, excluding housekeeping and teammates (PR4)', async () => {
+    const { get } = setup({ rows: [
+      stored({ agentId: 'a1', routineId: 'repeat-owned', kind: 'repeat', goodWhen: null, lastStatus: 'error', lastError: 'The app refused the request.\nTry later.', lastRunAt: new Date('2026-10-26T12:00:00Z') }),
+      stored({ agentId: 'a1', routineId: 'repeat-peer', kind: 'repeat', goodWhen: null, ownerUserId: 'bob' }),
+      stored({ agentId: 'a1', routineId: 'default:heartbeat', kind: 'repeat', goodWhen: null, definitionId: 'heartbeat' }),
+    ], unvalidated: true, viewPatch: { delivery: { active: 1, waiting: 2 } } });
+    const captured = await get();
+    expect(routineIds(captured)).toEqual(['repeat-owned']);
+    const row = bodyOf(captured).tasks[0]!;
+    expect(row).toMatchObject({ kind: 'repeat', task: null, steps: null, doneAt: null, canMarkDone: false,
+      repeat: { status: 'error', error: 'The app refused the request. Try later.', active: 1, waiting: 2, lastRunAt: '2026-10-26T12:00:00.000Z' } });
+    expect(todayTasks(bodyOf(captured).tasks)).toEqual([]);
+  });
   it('lists only tasks, across two agents, in roster order', async () => {
     const { get } = setup({
       rows: [
@@ -281,6 +305,7 @@ describe('GET /api/workspace/tasks (TASK-909)', () => {
     const body = bodyOf(captured);
     expect(body.tasks.map((t) => [t.agentId, t.routineId])).toEqual([
       ['a1', 't1'],
+      ['a1', 'r1'],
       ['a2', 't2'],
     ]);
     expect(body.unavailableAgents).toEqual([]);

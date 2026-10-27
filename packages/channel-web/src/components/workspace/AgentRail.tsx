@@ -51,7 +51,6 @@ import {
 import { IconTooltip } from './IconTooltip';
 
 export const RAIL_TABS = {
-  activity: { label: 'Activity', Icon: Activity },
   chat: { label: 'Chats', Icon: MessageSquare },
   files: { label: 'Files', Icon: Folder },
 } satisfies Record<AgentTab, { label: string; Icon: typeof Activity }>;
@@ -327,12 +326,6 @@ export function AgentRailContent({
               >
                 <Icon aria-hidden="true" className="size-4 shrink-0" />
                 {!collapsed && <span>{label}</span>}
-                {value === 'activity' && agent.state === 'working' && (
-                  <span
-                    aria-hidden="true"
-                    className="absolute right-2 top-2 size-1.5 rounded-full bg-primary"
-                  />
-                )}
               </TabsTrigger>
             </IconTooltip>
           );
@@ -369,22 +362,11 @@ export function AgentRailContent({
                   <AlertDescription>{actionError}</AlertDescription>
                 </Alert>
               )}
-              {active === 'activity' && (
-                <>
-                  <SectionLabel>Right now</SectionLabel>
-                  <RightNow
-                    agent={agent}
-                    rail={rail}
-                    loading={loading}
-                    error={error}
-                  />
-                  <ThisWeek rail={rail} loading={loading} error={error} />
-                  <SectionLabel>Recent activity</SectionLabel>
-                  {panels?.activity}
-                </>
-              )}
               {active === 'chat' && (
                 <div className="flex flex-col gap-0.5">
+                  <SectionLabel>Right now</SectionLabel>
+                  <RightNow agent={agent} rail={rail} loading={loading} error={error} />
+                  <ThisWeek rail={rail} loading={loading} error={error} />
                   <div className="group relative flex h-9 items-center rounded-sm max-md:h-11">
                     <Button
                       variant="ghost"

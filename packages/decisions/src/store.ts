@@ -206,6 +206,7 @@ export interface DecisionStore {
   /** `ownerUserId`, when given, is a scope filter and not a hint. */
   get(decisionId: string, ownerUserId?: string): Promise<Decision | null>;
   list(filter: DecisionListFilter): Promise<Decision[]>;
+  recentForConversation(filter: { ownerUserId: string; agentId: string; conversationId: string }): Promise<Decision[]>;
 
   /**
    * HOW MANY were raised in the window — counted in the database, not fetched
@@ -714,6 +715,14 @@ export function createDecisionsStore(db: Kysely<DecisionsDatabase>): DecisionSto
       // Oldest first: the queue is a queue, and the thing that has been
       // waiting longest is the thing most likely to be about to expire.
       const rows = await q.orderBy('created_at', 'asc').orderBy('decision_id', 'asc').execute();
+      return rows.map(toDecision);
+    },
+
+    async recentForConversation({ ownerUserId, agentId, conversationId }) {
+      const rows = await db.selectFrom(table).selectAll()
+        .where('owner_user_id', '=', ownerUserId).where('agent_id', '=', agentId)
+        .where('conversation_id', '=', conversationId)
+        .orderBy('created_at', 'desc').orderBy('decision_id', 'desc').limit(100).execute();
       return rows.map(toDecision);
     },
 

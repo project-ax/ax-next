@@ -24,7 +24,7 @@ import { TasksPage } from '../TasksPage';
 
 vi.mock('@/lib/workspace-api', async () => {
   const actual = await vi.importActual<Record<string, unknown>>('@/lib/workspace-api');
-  return { ...actual, workspaceApi: { tasks: vi.fn() } };
+  return { ...actual, workspaceApi: { tasks: vi.fn(), taskAgents: vi.fn() } };
 });
 
 const tasksMock = vi.mocked(workspaceApi.tasks);
@@ -86,8 +86,8 @@ function Harness({
   leading?: ReactNode;
   onNavigate: (route: WorkspaceRoute) => void;
 }) {
-  const { state, retry } = useTasks();
-  return <TasksPage state={state} retry={retry} leading={leading} onNavigate={onNavigate} />;
+  const { state, retry, reload } = useTasks();
+  return <TasksPage state={state} retry={retry} leading={leading} onNavigate={onNavigate} onTaskWriteSucceeded={reload} />;
 }
 
 /** The page, with the shell's `navigate` stood in for by a spy. */
@@ -116,6 +116,25 @@ afterEach(() => {
 });
 
 describe('TasksPage (TASK-909)', () => {
+  it('opens a keyboard-accessible New task dialog with an honest no-eligible-agent state (PR4)', async () => {
+    tasksMock.mockResolvedValue(page([]));
+    vi.mocked(workspaceApi.taskAgents).mockResolvedValue({ agents: [] });
+    renderPage();
+    await screen.findByText('No tasks yet');
+    fireEvent.click(screen.getByRole('button', { name: 'New task' }));
+    expect(await screen.findByRole('dialog', { name: 'New task' })).toBeVisible();
+    expect(await screen.findByText('No agents are available for a new task. Join an agent or create one first.')).toBeVisible();
+    expect(screen.queryByRole('combobox', { name: 'Agent' })).not.toBeInTheDocument();
+  });
+  it('shows Repeat failures and durable waiting counts without a fabricated report or Today task', async () => {
+    tasksMock.mockResolvedValue(page([row('Daily digest', { kind: 'repeat', task: null, canMarkDone: false,
+      repeat: { lastRunAt: '2026-10-26T12:00:00Z', status: 'error', error: 'Delivery failed.', warning: null, active: 0, waiting: 2, sharedThread: false, appUpdates: true } })]));
+    renderPage();
+    expect(await screen.findByText('Last run failed.')).toBeVisible();
+    expect(screen.getByText('Delivery failed.')).toBeVisible();
+    expect(screen.getByText('2 app updates waiting')).toBeVisible();
+    expect(screen.queryByText('No update yet')).not.toBeInTheDocument();
+  });
   it('draws the state it is handed, without reading anything (TASK-933)', () => {
     const state: TasksState = {
       kind: 'ready',
@@ -124,7 +143,7 @@ describe('TasksPage (TASK-909)', () => {
       refreshing: false,
       refreshFailed: false,
     };
-    render(<TasksPage state={state} retry={vi.fn()} onNavigate={vi.fn()} />);
+    render(<TasksPage onTaskWriteSucceeded={vi.fn()} state={state} retry={vi.fn()} onNavigate={vi.fn()} />);
     expect(screen.getByText('Sweep')).toBeTruthy();
     expect(tasksMock).not.toHaveBeenCalled();
   });
@@ -280,7 +299,7 @@ describe('TasksPage (TASK-909)', () => {
     expect(screen.getByText('Paused by me.')).toBeInTheDocument();
   });
 
-  it('teaches the one way in when there are no tasks', async () => {
+  it('offers New task and chat when there are no tasks', async () => {
     tasksMock.mockResolvedValue(page([]));
     renderPage();
     expect(await screen.findByText('No tasks yet')).toBeInTheDocument();
@@ -291,8 +310,7 @@ describe('TasksPage (TASK-909)', () => {
     ).toBeInTheDocument();
     expect(groupHeadings()).toEqual([]);
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
-    // Chat is the way in; PR 1 has no New task button.
-    expect(screen.queryByRole('button')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'New task' })).toBeVisible();
   });
 
   it('says which agents could not be read, and never claims the list is empty', async () => {
@@ -843,7 +861,7 @@ describe('TasksPage: Done tasks (TASK-950)', () => {
     });
     const supportQueue = () => row('Support queue', { task: report('on-track') });
     const pageFor = (tasks: TaskRow[]) => (
-      <TasksPage state={ready(tasks)} retry={vi.fn()} onNavigate={vi.fn()} />
+      <TasksPage onTaskWriteSucceeded={vi.fn()} state={ready(tasks)} retry={vi.fn()} onNavigate={vi.fn()} />
     );
     const view = render(pageFor([done('Old one', ago(9 * DAY)), supportQueue()]));
     fireEvent.click(screen.getByRole('radio', { name: /^Done/ }));

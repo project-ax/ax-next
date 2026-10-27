@@ -143,7 +143,7 @@ describe('workspaceApi.task (TASK-910)', () => {
   it('reads a kind it doesn’t know as stay-on-top, as the server does, with its steps kept as a stay-on-top task’s are (TASK-948)', async () => {
     // A tab left open across a deploy that adds a kind still opens the task, under a kind it has words for.
     // The page draws steps for get-done only.
-    for (const kind of ['track-number', 'repeat']) {
+    for (const kind of ['track-number', 'future-kind']) {
       for (const steps of [[], [STEP]]) {
         respondWith({ ...DETAIL, kind, steps });
         await expect(workspaceApi.task('a1', 't1')).resolves.toStrictEqual({ ...DETAIL, kind: 'stay-on-top', steps });

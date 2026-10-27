@@ -207,6 +207,21 @@ afterEach(() => {
 });
 
 describe('TaskPage (TASK-910)', () => {
+  it('shows a Repeat run history and shared-thread caveat without task-only fields (PR4)', async () => {
+    vi.mocked(workspaceApi.task).mockResolvedValue(detail({ kind: 'repeat', task: null, steps: [], replies: [],
+      repeat: { lastRunAt: REPORTED, status: 'error', error: 'The app refused the run.', warning: null, active: 0, waiting: 2, sharedThread: true, appUpdates: true },
+      updates: [{ firedAt: REPORTED, status: 'error', error: 'The app refused the run.', report: null, conversationId: 'shared-run' }] }));
+    await renderReady();
+    expect(screen.getByRole('heading', { name: 'Run history' })).toBeVisible();
+    expect(screen.getByText('Last run failed.')).toBeVisible();
+    expect(screen.getByText(/This job uses a shared thread/)).toBeVisible();
+    expect(screen.getByRole('link', { name: 'See what it did' })).toHaveAttribute('href', '/workspace/tasks/a1/t1/checkins/shared-run');
+    expect(screen.queryByText('Going well when')).not.toBeInTheDocument();
+    expect(screen.queryByRole('textbox')).not.toBeInTheDocument();
+    const trigger = screen.getByRole('button', { name: 'More actions' }); trigger.focus(); fireEvent.keyDown(trigger, { key: 'ArrowDown' });
+    expect(await screen.findByRole('menuitem', { name: 'Edit' })).toBeVisible();
+    expect(screen.queryByRole('menuitem', { name: 'Duplicate' })).not.toBeInTheDocument();
+  });
   it('shows the latest update, when it checked and checks next, and the ask in the agent’s words', async () => {
     taskMock.mockResolvedValue(detail());
     await renderReady();
@@ -323,9 +338,9 @@ describe('TaskPage (TASK-910)', () => {
     expect(screen.getByText('Quill · Stay on top of something')).toBeInTheDocument();
   });
 
-  it('shows the brief as written, read-only, with a way to change it in the agent’s settings', async () => {
+  it('shows the brief as written, read-only, with the shared Edit action', async () => {
     taskMock.mockResolvedValue(detail());
-    const { onNavigate } = await renderReady();
+    await renderReady();
     const brief = screen.getByRole('region', { name: 'About this task' });
     expect(within(brief).getByText('What Quill does')).toBeInTheDocument();
     expect(
@@ -336,15 +351,7 @@ describe('TaskPage (TASK-910)', () => {
     expect(within(brief).getByText('Quill’s notes')).toBeInTheDocument();
     expect(within(brief).queryByRole('textbox')).toBeNull();
 
-    const settings = within(brief).getByRole('link', { name: 'Change these in Quill’s settings' });
-    expect(settings).toHaveAttribute('href', '/workspace/agents/a1/settings/routines');
-    fireEvent.click(settings);
-    expect(onNavigate).toHaveBeenCalledTimes(1);
-    expect(onNavigate).toHaveBeenCalledWith({
-      kind: 'agent-settings',
-      id: 'a1',
-      section: 'routines',
-    });
+    expect(within(brief).getByRole('button', { name: 'Edit task' })).toBeEnabled();
   });
 
   it('a brief with nothing saved says so', async () => {
@@ -1162,19 +1169,13 @@ describe('TaskPage: a missed check-in (TASK-930)', () => {
     expect(within(latestUpdate()).queryByRole('link')).toBeNull();
   });
 
-  it('a too-long brief points at the agent’s settings', async () => {
+  it('a too-long brief points at the shared Edit action', async () => {
     taskMock.mockResolvedValue(detail({ noRecentUpdate: missed({ reason: 'brief-too-long' }) }));
-    const { onNavigate } = await renderReady();
+    await renderReady();
     const latest = latestUpdate();
     expect(within(latest).getByText('Its instructions are too long to load.')).toBeInTheDocument();
-    expect(within(latest).getByText('Shorten “What should Quill do?” in Quill’s settings.')).toBeInTheDocument();
-    const link = within(latest).getByRole('link', { name: 'Open Quill’s settings' });
-    fireEvent.click(link);
-    expect(onNavigate).toHaveBeenCalledWith({
-      kind: 'agent-settings',
-      id: 'a1',
-      section: 'routines',
-    });
+    expect(within(latest).getByText('Shorten “What should Quill do?” in Edit.')).toBeInTheDocument();
+    expect(within(latest).getByRole('button', { name: 'Edit task' })).toBeEnabled();
   });
 
   it('a too-long brief, for a viewer who can’t edit, says who needs to shorten it and has no settings link', async () => {
@@ -1188,7 +1189,7 @@ describe('TaskPage: a missed check-in (TASK-930)', () => {
     const latest = latestUpdate();
     expect(
       within(latest).getByText(
-        'Someone who manages this agent’s tasks needs to shorten “What should Quill do?” in Quill’s settings.',
+        'Someone who manages this agent’s tasks needs to shorten “What should Quill do?” in Edit.',
       ),
     ).toBeInTheDocument();
     expect(within(latest).queryByRole('link', { name: /settings/ })).toBeNull();
@@ -2485,7 +2486,7 @@ describe('TaskPage: ⋯ › Duplicate and the paused copy (TASK-953)', () => {
   });
 
   it.each([
-    { status: 400, text: 'We couldn’t copy this task as it is. Change it in Quill’s settings first.', destructive: true },
+    { status: 400, text: 'We couldn’t copy this task as it is. Open Edit to review it first.', destructive: true },
     { status: 404, text: GONE, destructive: true },
     { status: 401, text: HTTP_SESSION_ENDED, destructive: false },
     { status: 409, text: JUST_NOW, destructive: true },
@@ -2539,12 +2540,11 @@ describe('TaskPage: ⋯ › Duplicate and the paused copy (TASK-953)', () => {
     expect(await screen.findByRole('menuitem', { name: 'Duplicate' })).toBeInTheDocument();
   });
 
-  it('the copy’s page says once that it’s a paused copy, with the link to its agent’s settings', async () => {
+  it('the copy’s page says once that it’s a paused copy, with the shared Edit action', async () => {
     taskMock.mockResolvedValue(detail({ enabled: false, nextCheckAt: null }));
-    const { onNavigate } = await renderReady({ justCopied: true });
+    await renderReady({ justCopied: true });
     expect(screen.getByText(COPY_LINE)).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('link', { name: 'Change it in Quill’s settings' }));
-    expect(onNavigate).toHaveBeenCalledWith({ kind: 'agent-settings', id: 'a1', section: 'routines' });
+    expect(within(screen.getByRole('alert')).getByRole('button', { name: 'Edit task' })).toBeEnabled();
   });
 
   it.each([
@@ -2573,7 +2573,7 @@ describe('TaskPage: ⋯ › Duplicate and the paused copy (TASK-953)', () => {
     taskMock.mockResolvedValue(detail(over));
     await renderReady({ justCopied });
     expect(screen.queryByText(COPY_LINE)).toBeNull();
-    expect(screen.queryByRole('link', { name: 'Change it in Quill’s settings' })).toBeNull();
+    expect(screen.queryByRole('link', { name: 'Change it in Edit' })).toBeNull();
   });
 
   it('Resume uses the line up: it doesn’t come back when the copy is paused again', async () => {

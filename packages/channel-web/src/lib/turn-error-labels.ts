@@ -150,7 +150,7 @@ export const ERROR_LABELS: Record<string, string> = {
   // by the test, so the summary above the transcript and the row in it agree.
   'system-prompt:brief-missing': 'This task’s instructions didn’t load, so the check-in didn’t run.',
   'system-prompt:brief-too-long':
-    'This task’s instructions are too long to load, so the check-in didn’t run. Shorten “What should … do?” in the agent’s settings and the next check-in will run.',
+    'This task’s instructions are too long to load, so the check-in didn’t run. Shorten “What should … do?” in Edit and the next check-in will run.',
 };
 
 /**

@@ -47,8 +47,8 @@ vi.mock('@/lib/workspace-api', async () => {
       board: vi.fn(),
       agent: vi.fn(),
       route: vi.fn(),
-      activity: vi.fn(),
       decisions: vi.fn(),
+      conversationDecisions: vi.fn(async () => ({decisions: []})),
       approveDecision: vi.fn(),
       dismissDecision: vi.fn(),
       undoDecision: vi.fn(),
@@ -71,7 +71,6 @@ vi.mock('@/lib/workspace-api', async () => {
 
 const boardMock = vi.mocked(workspaceApi.board);
 const agentMock = vi.mocked(workspaceApi.agent);
-const activityMock = vi.mocked(workspaceApi.activity);
 const decisionsMock = vi.mocked(workspaceApi.decisions);
 const grantsMock = vi.mocked(workspaceApi.grants);
 const sendMock = vi.mocked(workspaceApi.sendMessage);
@@ -186,8 +185,6 @@ beforeEach(() => {
   }));
   sendMock.mockReset();
   sendMock.mockResolvedValue({ conversationId: 'cnv-1', reqId: 'req-resume' });
-  activityMock.mockReset();
-  activityMock.mockResolvedValue({ events: [], nextBefore: null });
   decisionsMock.mockReset();
   decisionsMock.mockResolvedValue({ decisions: [] });
   grantsMock.mockReset();
@@ -331,7 +328,7 @@ describe('everything else is the queue alone', () => {
     renderAt('/workspace/activity');
 
     expect(
-      await screen.findByRole('heading', { name: 'Activity' }),
+      await screen.findByRole('heading', { name: 'Tasks' }),
     ).toBeInTheDocument();
     expect(threadRegion()).toBeNull();
   });

@@ -106,6 +106,10 @@ export function createFakeStore(): FakeStore {
       return row;
     },
 
+    async recentForConversation({ ownerUserId, agentId, conversationId }) {
+      return [...rows.values()].filter(d => d.ownerUserId === ownerUserId && d.agentId === agentId && d.conversationId === conversationId)
+        .sort((a,b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id)).slice(0,100).map(d => structuredClone(d));
+    },
     async list({ ownerUserId, agentId, status }) {
       return [...rows.values()]
         .filter((r) => r.ownerUserId === ownerUserId)

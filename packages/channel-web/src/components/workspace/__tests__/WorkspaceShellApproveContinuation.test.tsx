@@ -37,8 +37,8 @@ vi.mock('@/lib/workspace-api', async () => {
       board: vi.fn(),
       agent: vi.fn(),
       route: vi.fn(),
-      activity: vi.fn(),
       decisions: vi.fn(),
+      conversationDecisions: vi.fn(async () => ({decisions: []})),
       decision: vi.fn(),
       approveDecision: vi.fn(),
       dismissDecision: vi.fn(),
@@ -56,7 +56,6 @@ vi.mock('@/lib/workspace-api', async () => {
 
 const boardMock = vi.mocked(workspaceApi.board);
 const agentMock = vi.mocked(workspaceApi.agent);
-const activityMock = vi.mocked(workspaceApi.activity);
 const decisionsMock = vi.mocked(workspaceApi.decisions);
 const decisionMock = vi.mocked(workspaceApi.decision);
 const approveMock = vi.mocked(workspaceApi.approveDecision);
@@ -136,8 +135,6 @@ beforeEach(() => {
   boardMock.mockResolvedValue({ agents: [QUILL] });
   agentMock.mockReset();
   agentMock.mockResolvedValue(detail([asked, pointer]));
-  activityMock.mockReset();
-  activityMock.mockResolvedValue({ events: [], nextBefore: null });
   decisionsMock.mockReset();
   decisionsMock.mockResolvedValue({ decisions: [open] });
   decisionMock.mockReset();
@@ -251,12 +248,10 @@ describe('approve in the agent thread → the continuation streams live (TASK-54
     // The thread on screen is c-now; the card's row says c1 (an older turn).
     agentMock.mockResolvedValue(detail([asked, pointer], 'c-now'));
     renderAt('/workspace/agents/scheduler');
-    const yes = await screen.findByRole('button', { name: open.primaryLabel });
-
-    answerApprove('req-cont-1');
-    fireEvent.click(yes);
+    await screen.findByRole('region', {name:'Conversation with Quill'});
     await settle();
-
+    expect(screen.queryByRole('button', {name:open.primaryLabel})).toBeNull();
+    expect(approveMock).not.toHaveBeenCalled();
     expect(streamMock).not.toHaveBeenCalled();
   });
 

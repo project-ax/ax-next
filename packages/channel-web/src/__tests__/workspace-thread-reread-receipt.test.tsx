@@ -16,6 +16,7 @@
  * These tests drive the REAL `AgentView.load` and the REAL `useDecisionQueue`
  * through a mocked transport, so the second re-read is the actual code path.
  */
+import { useEffect } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import type { AgentDetail, ThreadMessage, WorkspaceAgent } from '@/lib/workspace-api';
@@ -23,6 +24,7 @@ import { JUST_RESOLVED_MS } from '@/lib/workspace-types';
 
 const agentRead = vi.fn();
 const listDecisions = vi.fn();
+const historyRead = vi.fn(async () => ({decisions: [] as ReturnType<typeof decisionFixture>[]}));
 const readDecision = vi.fn();
 const approveDecision = vi.fn();
 const undoDecision = vi.fn();
@@ -33,6 +35,7 @@ vi.mock('../lib/workspace-api', async (importOriginal) => ({
     agent: (...a: unknown[]) => agentRead(...a),
     rail: vi.fn(async () => railFixture()),
     decisions: (...a: unknown[]) => listDecisions(...a),
+    conversationDecisions: (...a: unknown[]) => historyRead(...a as []),
     decision: (...a: unknown[]) => readDecision(...a),
     approveDecision: (...a: unknown[]) => approveDecision(...a),
     dismissDecision: vi.fn(),
@@ -96,13 +99,14 @@ function detail(thread: ThreadMessage[], conversationId = 'c1'): AgentDetail {
 
 /** The shell's wiring: ONE queue, its rows and handlers handed to the view. */
 function Harness({ version }: { version: number }) {
-  const q = useDecisionQueue();
+  const q = useDecisionQueue({conversationScope:{agentId:'scheduler',conversationId:'c1'}});
+  useEffect(() => { void q.refresh(); }, [version,q.refresh]);
   return (
     <AgentView
       agentId="scheduler"
       tab="chat"
       onTab={vi.fn()}
-      decisions={q.decisions}
+      decisions={q.threadDecisions}
       threadGrants={[]}
       onGrantResolved={vi.fn()}
       onGranted={vi.fn(async () => true)}
@@ -111,10 +115,8 @@ function Harness({ version }: { version: number }) {
       onUndo={q.undo}
       busyIds={q.busyIds}
       notices={q.notices}
-      activity={[]}
-      agents={[quill]}
       onBack={vi.fn()}
-      decisionsError={q.error}
+      decisionsError={q.historyError ?? q.error}
       version={version}
       onChanged={() => void q.refresh()}
     />
@@ -159,6 +161,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  historyRead.mockResolvedValue({decisions:[]});
   cleanup();
 });
 
@@ -238,6 +241,23 @@ describe("in-thread receipt — survives the thread's own re-read (TASK-536)", (
   });
 });
 
+describe('durable late approval failure in the real thread', () => {
+  it.each([false,true])('shows a failure beyond grace and after a fresh visit (routine=%s)', async (routine) => {
+    const {view}=await approveInThread();
+    const failed=resolvedFixture('failed',{agentId:'scheduler',conversationId:'c1',undoable:false,resolvedAt:new Date(Date.now()-60000).toISOString(), ...(routine ? {routineOperation:'routine_update',routineOutcome:'failed'} : {})});
+    historyRead.mockResolvedValue({decisions:[failed]});
+    listDecisions.mockResolvedValue({decisions:[]});
+    agentRead.mockResolvedValue(detail([asked,pointer,replied]));
+    view.rerender(<Harness version={10}/>); await settle();
+    expect(screen.getByTestId(`approval-outcome-${open.id}`)).toHaveTextContent(/did not work|failed/i);
+    expect(screen.queryByRole('button',{name:/Undo/})).toBeNull();
+    view.unmount(); render(<Harness version={11}/>); await settle();
+    expect(screen.getByTestId(`approval-outcome-${open.id}`)).toHaveTextContent(/did not work|failed/i);
+    expect(screen.queryByRole('button',{name:/Undo/})).toBeNull();
+    historyRead.mockResolvedValue({decisions:[]});
+  });
+});
+
 describe('in-thread question — keeps its focus through a re-read after Undo (TASK-543)', () => {
   /*
     MEASURED on the TASK-358 walk (attempt 2): Undo reopened the card and put
@@ -307,11 +327,11 @@ describe('keepAnsweredApprovals — which dropped pointers come back, and where'
     ]);
   });
 
-  it('drops a receipt older than JUST_RESOLVED_MS — the same rule the queue applies', () => {
+  it('keeps a durable receipt older than JUST_RESOLVED_MS while the authoritative history holds it', () => {
     const old = resolvedFixture('executed', {
       resolvedAt: new Date(now - JUST_RESOLVED_MS - 1).toISOString(),
     });
-    expect(keepAnsweredApprovals([asked, pointer], [asked], [old], now)).toEqual([asked]);
+    expect(keepAnsweredApprovals([asked, pointer], [asked], [old], now)).toEqual([asked,pointer]);
   });
 
   it('keeps an OPEN row the queue still holds — a read that landed after an Undo', () => {

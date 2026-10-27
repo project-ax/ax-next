@@ -235,12 +235,12 @@ export function keepAnsweredApprovals(
   prev: readonly ThreadMessage[],
   fresh: readonly ThreadMessage[],
   decisions: readonly Decision[],
-  now: number,
+  _now: number,
 ): ThreadMessage[] {
   const freshById = new Map(fresh.map((m) => [m.id, m]));
   const still = (decisionId: string): boolean => {
     const d = decisions.find((x) => x.id === decisionId);
-    return d !== undefined && (isOpenDecision(d) || isJustResolved(d, now) || needsRoutineRead(d));
+    return d !== undefined;
   };
   /** Anchor message id (or `null` for "before everything") → pointers after it. */
   const after = new Map<string | null, ThreadMessage[]>();
@@ -273,6 +273,8 @@ export function keepAnsweredApprovals(
 
 export interface DecisionQueue {
   decisions: Decision[];
+  threadDecisions: Decision[];
+  historyError: DecisionReadError | null;
   loading: boolean;
   /**
    * Non-null means we do not have the queue. Never rendered as an empty queue,
@@ -307,6 +309,7 @@ function keepCheckIn(prev: Decision, next: Decision): Decision {
 }
 
 export interface DecisionQueueHooks {
+  conversationScope?: { agentId: string; conversationId: string } | null;
   /**
    * TASK-278 — fires after an approve POST resolves with a row applied.
    * Carries the row and the approve response's `streamReqId` (null when no
@@ -350,6 +353,13 @@ export interface DecisionQueueHooks {
 
 export function useDecisionQueue(hooks?: DecisionQueueHooks): DecisionQueue {
   const { onDecisionApproved, onDecisionUndone, onRoutineChangeSucceeded } = hooks ?? {};
+  const scope = hooks?.conversationScope ?? null;
+  const scopeAgent = scope?.agentId ?? null;
+  const scopeConversation = scope?.conversationId ?? null;
+  const scopeKey = JSON.stringify([scopeAgent, scopeConversation]);
+  const scopeRef = useRef(scopeKey);
+  scopeRef.current = scopeKey;
+  const [historyError, setHistoryError] = useState<DecisionReadError | null>(null);
   const [decisions, setDecisions] = useState<Decision[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<DecisionReadError | null>(null);
@@ -406,43 +416,38 @@ export function useDecisionQueue(hooks?: DecisionQueueHooks): DecisionQueue {
     }
   }, []);
 
+  const reading = useRef(false);
   const refresh = useCallback(async () => {
+    reading.current = true;
     const id = ++readId.current;
     setLoading(true);
-    try {
-      const page = await workspaceApi.decisions();
-      if (readId.current !== id) return;
-      // Snapshot before the updater: React may run it later, or twice.
-      const newer = new Set<string>();
-      for (const [rowId, at] of appliedAtRead.current) if (at >= id) newer.add(rowId);
-      appliedAtRead.current.clear();
-      /*
-        A body that is not a decisions page never reaches here — `workspaceApi`
-        throws `WorkspaceShapeError` at the boundary, and the `catch` below
-        turns it into a FAILED READ. That distinction is the whole point of the
-        header on this file: an empty queue says "nothing is waiting on you",
-        which is the most reassuring claim this product makes, and it may only
-        be rendered when we actually read the list. A malformed body is not
-        that — and `decisions` feeds `watchedKey` below, which calls `.filter`
-        on it during render, so an `undefined` here would not degrade, it would
-        throw out of the hook and unmount the surface.
-      */
-      setDecisions((prev) =>
-        mergeReadWithReceipts(prev, page.decisions, Date.now(), newer),
-      );
-      setError(null);
-    } catch (e) {
-      if (readId.current !== id) return;
-      setError(toDecisionReadError(e));
-    } finally {
-      if (readId.current === id) setLoading(false);
-    }
-  }, []);
-
+    const [queue, history] = await Promise.allSettled([
+      workspaceApi.decisions(),
+      scopeAgent !== null && scopeConversation !== null
+        ? workspaceApi.conversationDecisions(scopeAgent, scopeConversation)
+        : Promise.resolve({decisions: [] as Decision[]}),
+    ]);
+    if (readId.current === id) reading.current = false;
+    if (readId.current !== id || scopeRef.current !== scopeKey) return;
+    const newer = new Set<string>();
+    for (const [rowId, at] of appliedAtRead.current) if (at >= id) newer.add(rowId);
+    appliedAtRead.current.clear();
+    setDecisions(prev => {
+      const open = queue.status === 'fulfilled' ? queue.value.decisions : prev.filter(isOpenDecision);
+      const thread = history.status === 'fulfilled' ? history.value.decisions.filter(d => d.agentId === scopeAgent && d.conversationId === scopeConversation)
+        : prev.filter(d => d.agentId === scopeAgent && d.conversationId === scopeConversation);
+      return mergeReadWithReceipts(prev, [...new Map([...thread, ...open].map(d => [d.id,d])).values()], Date.now(), newer);
+    });
+    setError(queue.status === 'rejected' ? toDecisionReadError(queue.reason) : null);
+    setHistoryError(history.status === 'rejected' ? toDecisionReadError(history.reason) : null);
+    setLoading(false);
+  }, [scopeAgent, scopeConversation, scopeKey]);
+  useEffect(() => { void refresh(); }, [refresh]);
   useEffect(() => {
-    void refresh();
-  }, [refresh]);
-
+    if (scopeAgent === null || scopeConversation === null) return;
+    const timer = setInterval(() => { if (!reading.current && document.visibilityState !== 'hidden') void refresh(); }, 10_000);
+    return () => clearInterval(timer);
+  }, [scopeAgent, scopeConversation, refresh]);
   const setNotice = useCallback((id: string, line: string | null) => {
     setNotices((prev) => {
       const next = new Map(prev);
@@ -766,6 +771,8 @@ export function useDecisionQueue(hooks?: DecisionQueueHooks): DecisionQueue {
 
   return {
     decisions,
+    threadDecisions: decisions.filter(d => d.agentId === scopeAgent && d.conversationId === scopeConversation),
+    historyError,
     loading,
     error,
     busyIds,

@@ -25,7 +25,6 @@ beforeEach(() => {
 });
 it('keeps default toggles, manual fire and actual history reachable in Self-improvement without authored controls', async () => {
   render(<RoutinesTab isAdmin={false} agentId="a" agentName="Caveman" />);
-  fireEvent.mouseDown(screen.getByRole('tab', { name: 'Self-improvement' }), { button: 0, ctrlKey: false });
   const heartbeatToggle = await screen.findByRole('switch', { name: 'Heartbeat' });
   const reflectionToggle = await screen.findByRole('switch', { name: 'Skill self-improvement for Caveman' });
   fireEvent.click(await screen.findByRole('button', { name: 'Recent runs for Heartbeat' }));

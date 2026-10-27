@@ -309,15 +309,6 @@ export function createChannelWebServerPlugin(
             'declined-grant markers are never reclaimed, so the per-user prefix scan behind GET /api/workspace/grants grows with every "Not now" ever given (correct answers, slower reads)',
         },
         {
-          // TASK-231 — GET /api/workspace/activity is the one event feed, and
-          // routine fires are what it is made of today. A preset without
-          // @ax/routines records no routine history at all, so an empty feed
-          // there is the true answer rather than a swallowed read.
-          hook: 'routines:recent-fires-for-agent',
-          degradation:
-            'the workspace Activity feed is empty (this deployment keeps no routine fire history)',
-        },
-        {
           // Same feed: this supplies the routine's AUTHORED name for each row.
           // Without it the rows say "Routine unavailable" — a worse label, but
           // never a wrong one, and never a dropped row. The Tasks page
@@ -326,7 +317,7 @@ export function createChannelWebServerPlugin(
           // empty list.
           hook: 'routines:list',
           degradation:
-            'the Tasks page lists no tasks, and Activity rows say "Routine unavailable" instead of each routine\'s authored name',
+            'the Tasks page lists no tasks',
         },
         {
           // TASK-910 — the task page reads the task itself, and only for the
@@ -535,6 +526,7 @@ export function createChannelWebServerPlugin(
           degradation:
             'a connector\'s details view says per-tool permissions are not available here instead of drawing choices that change nothing',
         },
+        { hook: 'decisions:recent-for-conversation', degradation: 'conversation approval history is unavailable; the thread reports the failed read' },
         {
           // TASK-235 — the open decisions behind the queue and the approval
           // cards in a thread. NOT the counter any more: TASK-266 moved that
@@ -705,12 +697,6 @@ export function createChannelWebServerPlugin(
           hook: 'decisions:undo',
           degradation:
             'never reached without decisions:get (the route 404s first); same producer',
-        },
-        {
-          // The Activity feed's decision receipts.
-          hook: 'decisions:recent-receipts-for-agent',
-          degradation:
-            'the workspace Activity feed carries no decision receipts (routine history still shows)',
         },
         {
           // The Memory tab's facts read and the thread's "used memory" receipts.

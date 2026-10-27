@@ -27,7 +27,7 @@ import { CHAT_CONTENT_CLASS } from './ChatComposer';
  *      grants read is the exception: it is one buffer read at mount, and its
  *      failure already stops the empty sentence.
  */
-import { ArrowRight, CheckCircle2 } from 'lucide-react';
+import { CheckCircle2 } from 'lucide-react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { SignInAgainButton } from '@/components/SignInAgainButton';
@@ -138,14 +138,6 @@ interface Props {
    */
   loading?: boolean;
   onRetry?: () => void;
-  onSeeActivity: () => void;
-  /**
-   * From the real activity feed — how many `done` rows landed today, local
-   * time. `undefined` when the pages the shell holds cannot back that number
-   * (see `doneTodayFrom` in `WorkspaceShell`); the line is then simply absent,
-   * never a zero standing in for "we did not look far enough".
-   */
-  doneToday?: number;
   /**
    * How the pending-grants read-back went (TASK-373). `null` = read fine (or
    * not attempted); `'failed'` = blip, retryable; `'expired'` = 401, the
@@ -197,8 +189,6 @@ export function TodayView({
   error = null,
   loading = false,
   onRetry,
-  onSeeActivity,
-  doneToday,
   grantsError = null,
   onRetryGrants,
   tasks,
@@ -297,9 +287,7 @@ export function TodayView({
     );
   }
   if (waiting > 0) summary.push(`${waiting} waiting on you`);
-  if (doneToday !== undefined && doneToday > 0) {
-    summary.push(`${doneToday} done today`);
-  }
+
 
   /*
     The hint describes an action on a row that exists. Rendered over an empty
@@ -666,15 +654,7 @@ export function TodayView({
 
       <div className="flex items-center gap-3 px-1 pt-3.5 text-[12.5px] text-muted-foreground">
         {hint !== null && <span>{hint}</span>}
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={onSeeActivity}
-          className="ml-auto h-7 gap-1.5 text-[12px] text-primary"
-        >
-          Everything they did
-          <ArrowRight size={11} />
-        </Button>
+
       </div>
     </div>
   );

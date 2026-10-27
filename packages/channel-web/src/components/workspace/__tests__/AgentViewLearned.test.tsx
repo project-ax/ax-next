@@ -120,8 +120,6 @@ function renderView({
         notices={new Map<string, string>()}
         decisionsError={null}
         onDecisionRaised={() => {}}
-        activity={[]}
-        agents={[quill]}
         onBack={() => {}}
         onOpenModelKeys={onOpenModelKeys}
         version={0}

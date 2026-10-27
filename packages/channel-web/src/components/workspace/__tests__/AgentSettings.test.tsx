@@ -92,7 +92,7 @@ describe('AgentSettings — desktop', () => {
       'Connectors',
       'Memory',
       'Skills',
-      'Routines',
+      'Housekeeping',
     ]);
     expect(items.filter((b) => b.getAttribute('aria-current') === 'page')).toHaveLength(1);
     expect(within(nav).getByRole('button', { name: 'Memory' })).toHaveAttribute(
@@ -141,7 +141,7 @@ describe('AgentSettings — desktop', () => {
     expect(within(empty as HTMLElement).queryAllByRole('combobox')).toHaveLength(0);
   });
 
-  it.each([['skills', 'Installed'], ['routines', 'My routines']] as const)('wires the %s section to its agent-specific controls', async (initial, tab) => {
+  it.each([['skills', 'Installed']] as const)('wires the %s section to its agent-specific controls', async (initial, tab) => {
     render(<Harness initial={initial} />);
     expect(screen.getByRole('tab', { name: tab })).toBeTruthy();
     expect(await screen.findByRole('button', { name: initial === 'skills' ? 'Create' : 'New routine' })).toBeTruthy();
@@ -149,10 +149,10 @@ describe('AgentSettings — desktop', () => {
 
   it('hosts structured routines and permission disclosure in the agent shell', () => {
     render(<Harness initial="routines" />);
-    expect(screen.getByRole('tab', { name: 'My routines' })).toBeVisible();
-    expect(screen.getByRole('tab', { name: 'Self-improvement' })).toBeVisible();
-    expect(screen.getByRole('button', { name: 'New routine' })).toBeVisible();
-    expect(screen.getByLabelText('Loading routine permissions')).toBeVisible();
+    expect(screen.getByRole('link', { name: 'Open Tasks' })).toHaveAttribute('href', '/workspace/tasks');
+    expect(screen.queryByRole('button', { name: 'New routine' })).toBeNull();
+    expect(screen.getByText(/built-in maintenance/)).toBeVisible();
+    expect(screen.getByLabelText('Loading task permissions')).toBeVisible();
   });
 
   it('draws the memories list it is given under Memory', () => {

@@ -830,7 +830,6 @@ describe('the host grant turned down (site 4)', () => {
             onApprove={vi.fn()}
             onDismiss={vi.fn()}
             onUndo={vi.fn()}
-            onSeeActivity={vi.fn()}
             error={{ kind: 'failed', detail: 'queue read blew up' }}
             tasks={[]}
             tasksError={null}
@@ -1139,7 +1138,6 @@ describe('Today keeps an answered approval where it was (TASK-933)', () => {
           }}
           onDismiss={vi.fn()}
           onUndo={vi.fn()}
-          onSeeActivity={vi.fn()}
           tasks={tasks}
           tasksError={null}
           tasksRefreshing={false}

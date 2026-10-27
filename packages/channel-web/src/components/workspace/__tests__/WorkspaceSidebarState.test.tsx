@@ -48,7 +48,6 @@ function renderRoster(
         onRoster={vi.fn()}
         onToday={vi.fn()}
         onTasks={vi.fn()}
-        onActivity={vi.fn()}
         onAgent={vi.fn()}
         {...overrides}
       />
@@ -125,9 +124,9 @@ describe('the Tasks row (TASK-909)', () => {
     renderRoster(AGENTS, { onTasks });
     const names = within(workspaceNav())
       .getAllByRole('button')
-      .slice(0, 3)
+      .slice(0, 2)
       .map((b) => b.textContent?.trim());
-    expect(names).toEqual(['Today', 'Tasks', 'Activity']);
+    expect(names).toEqual(['Today', 'Tasks']);
 
     fireEvent.click(within(workspaceNav()).getByRole('button', { name: 'Tasks' }));
     expect(onTasks).toHaveBeenCalledTimes(1);
@@ -138,7 +137,7 @@ describe('the Tasks row (TASK-909)', () => {
     const nav = within(workspaceNav());
     expect(nav.getByRole('button', { name: 'Tasks' })).toHaveAttribute('data-active', 'true');
     expect(nav.getByRole('button', { name: 'Today' })).toHaveAttribute('data-active', 'false');
-    expect(nav.getByRole('button', { name: 'Activity' })).toHaveAttribute('data-active', 'false');
+    expect(nav.queryByRole('button', { name: 'Activity' })).toBeNull();
   });
 
   it('puts Tasks between Today and Activity in the icon rail', () => {
@@ -146,6 +145,6 @@ describe('the Tasks row (TASK-909)', () => {
     const labels = within(workspaceNav())
       .getAllByRole('button')
       .map((b) => b.getAttribute('aria-label'));
-    expect(labels.slice(0, 4)).toEqual(['Today', 'Tasks', 'Activity', 'Agents']);
+    expect(labels.slice(0, 3)).toEqual(['Today', 'Tasks', 'Agents']);
   });
 });

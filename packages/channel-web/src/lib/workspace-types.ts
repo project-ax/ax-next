@@ -620,53 +620,6 @@ export interface AgentRailData {
   };
 }
 
-export type ActivityKind =
-  | 'done'
-  | 'held'
-  | 'approved'
-  | 'dismissed'
-  | 'working'
-  // Nobody answered in time (TASK-447). Its own value rather than a reuse of
-  // `dismissed`: the icon and tone happen to be quiet for both, but a kind is
-  // what the row MEANS, and "you turned this down" and "you never got to it"
-  // are different things to the person reading their own history.
-  | 'expired'
-  | 'stopped';
-
-/**
- * One row of the single event feed (design §7).
- *
- * There is deliberately no `day` and no `time`. The prototype carried both as
- * SERVER-COMPUTED display strings — "Today", "4:12 PM" — which are only right
- * for a reader sitting in the server's timezone. Everyone else got a row
- * confidently filed under the wrong day. The row now carries the instant and
- * nothing else; the CLIENT buckets by its own local date and formats its own
- * clock. A display string is a rendering decision, and rendering decisions do
- * not belong on the wire.
- *
- * `id` is a composite of the things that identify the event on any backend
- * (agent, routine path, instant). It is NOT the fire's row id: that is a
- * `BIGSERIAL`, i.e. storage vocabulary, and it never crosses this wire.
- */
-export interface ActivityEvent {
-  id: string;
-  agentId: string;
-  /** ISO instant. The client buckets by LOCAL date — see above. */
-  at: string;
-  text: string;
-  kind: ActivityKind;
-  /**
-   * The second line: the real error on a `stopped` row, `null` otherwise.
-   * Carried separately from `text` so a failure keeps the same scannable
-   * subject line as a success, and so nothing has to be assembled by string
-   * surgery to say what went wrong.
-   */
-  detail: string | null;
-  tag: string | null;
-  /** Links a receipt back to the decision that produced it. */
-  decisionId: string | null;
-}
-
 /**
  * One file the person attached to a message, as the transcript remembers it
  * (TASK-424).
@@ -1427,7 +1380,9 @@ export interface TaskRow {
   name: string;
   enabled: boolean;
   /** TASK-948. The server reads a kind it doesn't know (a newer routines plugin) as `'stay-on-top'`. */
-  kind: TaskKind;
+  kind: TaskKind | 'repeat';
+  /** Host run state, only for Repeat a job. No report or queued content is synthesized. */
+  repeat?: RepeatTaskState;
   /** TASK-948. Null unless the task is `'get-done'`; zero of zero for one with no steps yet. */
   steps: TaskStepCounts | null;
   /** TASK-951. Null unless the task is "get-done" and has a finish date. */
@@ -1443,6 +1398,17 @@ export interface TaskRow {
    * Mark done off, saying why, when false; the host still refuses such a press (403).
    */
   canMarkDone: boolean;
+}
+
+export interface RepeatTaskState {
+  lastRunAt: string | null;
+  status: 'ok' | 'silenced' | 'error' | null;
+  error: string | null;
+  warning: string | null;
+  active: number | null;
+  waiting: number | null;
+  sharedThread: boolean;
+  appUpdates: boolean;
 }
 
 /** An agent whose tasks couldn't be read, so the page can say so instead of looking complete. */
@@ -1559,7 +1525,8 @@ export interface TaskDetail {
   agentName: string;
   name: string;
   /** TASK-948. The server reads a kind it doesn't know (a newer routines plugin) as `'stay-on-top'`. */
-  kind: TaskKind;
+  kind: TaskKind | 'repeat';
+  repeat?: RepeatTaskState;
   enabled: boolean;
   /** Check now's and Pause/Resume's `expectedRevision`. */
   revision: string;
@@ -1588,6 +1555,9 @@ export interface TaskDetail {
 
 /** One check-in's read-only page (TASK-911): GET /api/workspace/tasks/:agentId/:routineId/checkins/:conversationId. */
 export interface TaskCheckin {
+  kind?: TaskKind | 'repeat';
+  /** A shared Repeat thread may include several runs; never attribute all of it to one. */
+  sharedThread?: boolean;
   /** The task's name, fenced to one line: the breadcrumb's middle crumb. */
   taskName: string;
   /** The agent's name, as the roster has it. */

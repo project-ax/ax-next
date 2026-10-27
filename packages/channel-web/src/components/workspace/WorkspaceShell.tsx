@@ -36,7 +36,6 @@ import {
   workspaceApi,
   WorkspaceApiError,
 } from '@/lib/workspace-api';
-import { useActivityFeed } from '@/lib/workspace-activity';
 import { useDecisionQueue } from '@/lib/workspace-decisions';
 import { tasksForToday, useTasks } from '@/lib/workspace-tasks';
 import { waitingOnYou } from '@/lib/today-queue';
@@ -58,14 +57,12 @@ import { KICKOFF_TEXT } from '@/lib/bootstrap-kickoff';
 import { logRequestFailure } from '@/lib/http';
 import { toastActions } from '@/lib/toast-store';
 import { grantResumedTitle } from '@/lib/grant-copy';
-import type { ActivityEvent } from '@/lib/workspace-types';
 import {
   parseWorkspaceRoute,
   routeAgentId,
   workspaceRoutePath,
   type WorkspaceRoute,
 } from '@/lib/workspace-route';
-import { ActivityFeed } from './ActivityFeed';
 import { TaskCheckinPage } from './TaskCheckinPage';
 import { TaskPage } from './TaskPage';
 import { TasksPage } from './TasksPage';
@@ -83,83 +80,6 @@ function today(): string {
     day: 'numeric',
     month: 'long',
   });
-}
-
-/** Local calendar day, for the "done today" count — never the server's day. */
-function isLocalToday(at: string): boolean {
-  const d = new Date(at);
-  if (Number.isNaN(d.getTime())) return false;
-  const now = new Date();
-  return (
-    d.getFullYear() === now.getFullYear() &&
-    d.getMonth() === now.getMonth() &&
-    d.getDate() === now.getDate()
-  );
-}
-
-/**
- * The instant the reader's local day began — the floor `isLocalToday` accepts,
- * as a number so a feed cursor can be compared against it.
- */
-function startOfLocalToday(): number {
-  const now = new Date();
-  return new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
-}
-
-/**
- * How many `done` rows landed today — or `undefined` when the pages we hold
- * cannot back that number.
- *
- * `feed.events` is only what has been fetched, and on Today nothing ever calls
- * `loadMore`, so it is page one: fifty rows. A day busier than that used to
- * report whatever fraction fitted, as a flat fact, with nothing on screen to
- * say it was a floor.
- *
- * The feed is strictly newest-first, so the count is true the moment the
- * fetched window reaches back PAST local midnight — every row from today is
- * then already in hand. That is the gate. `null` (nothing older exists) counts
- * as reaching past it; a cursor sitting exactly ON midnight does not, because
- * the cursor is exclusive and a row at that same instant can be cut.
- *
- * Deliberately NOT gated on `!feed.hasMore`. Exhaustion is the right test for
- * Activity's "N entries", which claims the whole record — but the
- * workspace-wide feed on a busy account essentially never exhausts, so reusing
- * it here would hide the line permanently instead of only while the window is
- * short. That trades an undercount for a disappearance.
- *
- * `undefined` rather than `0`: a zero is a claim too, and this is the case
- * where we have none to make. `TodayView` drops the line for either.
- *
- * One case this does NOT catch, deliberately: before the first page lands the
- * cursor is still its initial `null`, so the gate passes over an empty list and
- * this returns 0. What keeps that off screen is `TodayView`'s own positive
- * test, not this function — the honesty guard is genuinely split across the
- * two, and it is the same unlanded-page zero the Activity subtitle below
- * mentions. Folding it in here would mean a `loading` branch no rendered output
- * can distinguish from this one, i.e. a behaviour no test could hold.
- */
-function doneTodayFrom(feed: {
-  events: ActivityEvent[];
-  nextBefore: string | null;
-  scope: string | undefined;
-}): number | undefined {
-  /*
-    The rows in hand must describe the WHOLE workspace, because that is what
-    this line claims. One feed serves both scopes and it re-scopes in an
-    effect, so on the first render back from an agent's tab `events` is still
-    that agent's — and counting it printed one agent's day as the account's
-    (TASK-402). An undercount, and a one-frame one, but still a sentence about
-    the workspace built from a fact about one agent: the same H7 substitution
-    the honesty gate below exists to prevent, arriving through the other axis.
-    `undefined`, not `0`, for the same reason as everything else here — a zero
-    is a claim too, and we have none to make until the right pages land.
-  */
-  if (feed.scope !== undefined) return undefined;
-  const reachesPastMidnight =
-    feed.nextBefore === null || Date.parse(feed.nextBefore) < startOfLocalToday();
-  if (!reachesPastMidnight) return undefined;
-  return feed.events.filter((e) => e.kind === 'done' && isLocalToday(e.at))
-    .length;
 }
 
 export interface WorkspaceShellProps {
@@ -326,32 +246,6 @@ function Inner({
     }
   }, []);
 
-  /**
-   * The single activity collection, scoped to the agent tab when one is open
-   * and to the whole workspace otherwise (design §7 — one feed and a filter).
-   * Called once here rather than once per consumer: Today's "done today"
-   * count, the Activity page, and a given agent's "What it did" tab all read
-   * off this same fetch.
-   */
-  const feedScope = routeAgentId(route) ?? undefined;
-  const feed = useActivityFeed(feedScope);
-  /**
-   * The feed is holding a DIFFERENT collection than the one this render is
-   * asking for. True for exactly one render after the reader switches scope,
-   * because the hook re-scopes in an effect and effects run after the commit.
-   *
-   * Every consumer of `feed.events` has to answer for this, not just the one
-   * that counts: `doneTodayFrom` refuses its number, the Activity subtitle
-   * refuses its total, and the feed itself shows placeholders instead of rows
-   * that belong to somebody else (TASK-453).
-   *
-   * `AgentView` is deliberately NOT handed this. It remounts on every agent
-   * switch (`key` below) and renders nothing until its own detail read
-   * resolves, which is after the feed's reset effect — so the stale frame is
-   * already over by the time its "What it did" tab exists. See the note beside
-   * that tab's `ActivityFeed`.
-   */
-  const feedStale = feed.scope !== feedScope;
   /*
     The tasks read (TASK-933), the one Today, the sidebar badge and the Tasks
     page share. It reads at mount (the badge is on screen on every route), again
@@ -430,7 +324,11 @@ function Inner({
    * When an approved routine change goes through, the queue says so
    * (`onRoutineChangeSucceeded`) and the tasks list is read again (TASK-939).
    */
+  const [conversationScope, setConversationScope] = useState<{agentId:string;conversationId:string} | null>(null);
+  const activeScope = route.kind === 'task-checkin' ? {agentId:route.agentId,conversationId:route.conversationId}
+    : route.kind === 'agent' && route.tab === 'chat' && conversationScope?.agentId === route.id ? conversationScope : null;
   const queue = useDecisionQueue({
+    conversationScope: activeScope,
     onDecisionApproved: continuationActions.continueApprovedTurn,
     onDecisionUndone: continuationActions.cancelApprovedTurn,
     onRoutineChangeSucceeded: taskRead.reload,
@@ -789,14 +687,6 @@ function Inner({
     // resend, so a changed identity re-running this effect is harmless.
   }, [kickoffAgentId, startTurn, navigate, onKickoffConsumed, onKickoffRouted]);
 
-  /**
-   * `undefined` when the pages we hold cannot back the number — see
-   * `doneTodayFrom`. Passed as an ABSENT prop rather than an explicit
-   * `undefined` (`exactOptionalPropertyTypes`), which is the same thing to
-   * `TodayView` and the shape the rest of this file already uses.
-   */
-  const doneToday = doneTodayFrom(feed);
-
   if (error) {
     return (
       <div className="flex h-screen items-center justify-center bg-background px-6">
@@ -872,26 +762,6 @@ function Inner({
   const openAgent = (id: string) =>
     navigate({ kind: 'agent', id, tab: 'chat' });
 
-  /**
-   * The same door, opened onto the agent's RECORD rather than its thread —
-   * used from the Activity page's rows, and only there.
-   *
-   * Everywhere else ("open this agent" from the rail, from Today, from a
-   * decision card) the reader is going to the agent, and its conversation is
-   * the right landing. On Activity they are reading the record and clicked a
-   * name IN it, so the question is "what else has this one done"; dropping
-   * them into a chat throws away the only thing they told us. The record is
-   * also the one place the agent column exists to be clicked at all — the
-   * per-agent feed drops it.
-   *
-   * #609's reviewer filed this as "agent→agent 'What it did' is unreachable".
-   * That overstates it: every `AgentView` renders a visible "What it did" tab
-   * trigger, so the destination was always two clicks away. What was missing
-   * is the one-click path from the surface that is already about the record.
-   */
-  const openAgentRecord = (id: string) =>
-    navigate({ kind: 'agent', id, tab: 'activity' });
-
   /*
     One set of nav props, two frames. Written once because the rail and the
     sheet are the SAME navigation — two literals here would be two things free
@@ -911,7 +781,6 @@ function Inner({
     onRoster: setRosterOpen,
     onToday: () => navigate({ kind: 'today' }),
     onTasks: () => navigate({ kind: 'tasks' }),
-    onActivity: () => navigate({ kind: 'activity' }),
     onAgent: openAgent,
     onOpenAdminSettings,
     onCreateAgent,
@@ -1022,8 +891,6 @@ function Inner({
                   onRetry={() => void queue.refresh()}
                   grantsError={grantsError}
                   onRetryGrants={fetchGrants}
-                  onSeeActivity={() => navigate({ kind: 'activity' })}
-                  {...(doneToday !== undefined ? { doneToday } : {})}
                   tasks={tasksOnToday.tasks}
                   tasksError={tasksOnToday.error}
                   tasksRefreshing={tasksOnToday.refreshing}
@@ -1044,6 +911,7 @@ function Inner({
               retry={taskRead.retry}
               leading={navTrigger}
               onNavigate={navigate}
+              onTaskWriteSucceeded={taskRead.reload}
             />
           )}
           {route.kind === 'task' && (
@@ -1083,63 +951,20 @@ function Inner({
               conversationId={route.conversationId}
               leading={navTrigger}
               onNavigate={navigate}
-              decisions={queue.decisions}
+              decisions={queue.threadDecisions}
               onApprove={queue.approve}
               onDismiss={queue.dismiss}
               onUndo={queue.undo}
               busyIds={queue.busyIds}
               notices={queue.notices}
-              decisionsError={queue.error}
+              decisionsError={queue.historyError ?? queue.error}
               onRetryDecisions={() => void queue.refresh()}
             />
           )}
 
-          {route.kind === 'activity' && (
-            <>
-              {/*
-                "12 entries" is a claim about the WHOLE record, and
-                `feed.events.length` only counts the pages fetched so far. So
-                the subtitle appears only once there is nothing left to page
-                into — at which point the two numbers are the same one. While
-                more is loadable the count is simply absent, along with the
-                zero that shows briefly on every mount before the first page
-                lands. Same rule as Today's summary line — a count is rendered
-                only when it is both positive and true — but a different test
-                for "true". This number claims the whole record, so only
-                exhaustion settles it; Today's claims a single day, and
-                `doneTodayFrom` settles that the moment the fetched window
-                reaches back past local midnight.
-              */}
-              <WorkspaceHeader
-                title="Activity"
-                leading={navTrigger}
-                {...(!feedStale && feed.events.length > 0 && !feed.hasMore
-                  ? {
-                      subtitle: `${feed.events.length} ${
-                        feed.events.length === 1 ? 'entry' : 'entries'
-                      }`,
-                    }
-                  : {})}
-              />
-              <div className="flex-1 overflow-y-auto">
-                <div className="mx-auto w-full max-w-[900px] px-6 pb-6">
-                  <ActivityFeed
-                    events={feed.events}
-                    agents={board.agents}
-                    onOpenAgent={openAgentRecord}
-                    hasMore={feed.hasMore}
-                    onLoadMore={feed.loadMore}
-                    loading={feed.loading}
-                    error={feed.error}
-                    awaitingScope={feedStale}
-                  />
-                </div>
-              </div>
-            </>
-          )}
-
           {(route.kind === 'agent' || route.kind === 'agent-settings') && (
             <AgentView
+              onConversationScope={setConversationScope}
               /*
                 TASK-393 — a switch mid-send used to reuse this instance: the
                 old agent's `send()` continuation (its POST has no abort
@@ -1166,7 +991,7 @@ function Inner({
               onSettingsSection={(section) =>
                 navigate({ kind: 'agent-settings', id: route.id, section })
               }
-              decisions={queue.decisions}
+              decisions={queue.threadDecisions}
               threadGrants={grantsInThread}
               onGrantResolved={workspaceGrantActions.resolve}
               onGranted={resumeAfterGrant}
@@ -1182,14 +1007,8 @@ function Inner({
                 the thread simply showed no approval cards — the same silence a
                 conversation with nothing waiting in it shows.
               */
-              decisionsError={queue.error}
+              decisionsError={queue.historyError ?? queue.error}
               onDecisionRaised={() => void queue.refresh()}
-              activity={feed.events}
-              activityHasMore={feed.hasMore}
-              onActivityLoadMore={feed.loadMore}
-              activityLoading={feed.loading}
-              activityError={feed.error}
-              agents={board.agents}
               onBack={() => navigate({ kind: 'today' })}
               onOpenModelKeys={
                 onOpenAdminSettings === undefined
