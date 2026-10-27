@@ -32,6 +32,12 @@ describe('task update canary: signed HTTP to elected scheduler to check-in and r
     });
     expect(message).toContain('Please check the overdue ticket too.');
     expect(h.invokeCalls).toHaveLength(2);
+    await expect.poll(async () => (await createRoutinesStore(h!.db).recentFires(task)).length).toBe(2);
+    // A lost queued response can be retried after the follow-up has finished.
+    // The original reply's stable request must not launch another check-in.
+    expect(await h.bus.call('routines:reply', h.owner, { agentId: h.agentId, routineId: task.routineId, requestId: 'during-check-in', text: 'Please check the overdue ticket too.' }))
+      .toMatchObject({ checkIn: 'replayed' });
+    expect(h.invokeCalls).toHaveLength(2);
   });
 
   it('persists and batches FIFO updates, retries an unreported batch, and scopes full reads to the live owner check-in', async () => {

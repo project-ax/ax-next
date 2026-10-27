@@ -5,7 +5,7 @@ import { durationToSeconds, isTaskKind } from '@ax/routines-contract';
 import type { RoutinesDatabase, TaskEventRow } from './migrations.js';
 import type { StoredRoutine } from './types.js';
 import { lockLiveAgent, rowToRoutine } from './store.js';
-import { nextRun, opaqueId } from './definition.js';
+import { opaqueId } from './definition.js';
 import { serializeAdmission } from './admission-order.js';
 import { githubDeliveryId } from './repeat-limits.js';
 import { advanceToNextActiveWindow } from './active-hours.js';
@@ -21,8 +21,8 @@ function activeDue(row:StoredRoutine, due:Date):Date|null { return row.activeHou
 export async function nudgeTaskEvents(db:DB, row:StoredRoutine, now:Date, afterRun?:{acceptedAt:Date;reported:boolean;boundary:number|null;requested?:boolean}):Promise<void> {
   if (!isTaskKind(row.kind) || !row.enabled) return;
   const pending=await db.selectFrom('routines_v1_task_events').select(['received_at','sequence_id']).where('agent_id','=',row.agentId).where('routine_id','=',row.routineId).where('owner_user_id','=',row.ownerUserId).where('consumed_at','is',null).where('dispatch_id','is',null).orderBy('sequence_id').limit(1).executeTakeFirst();
-  const safety=afterRun ? nextRun(row,afterRun.acceptedAt) : row.nextRunAt;
-  let due=safety;
+  const timers=await db.selectFrom('routines_v1_definitions').select(['task_safety_due_at','task_check_in_requested']).where('agent_id','=',row.agentId).where('routine_id','=',row.routineId).executeTakeFirstOrThrow();
+  let due=timers.task_safety_due_at;
   if (pending) {
     // Already waiting when a reported run started: overflow from its20-entry batch follows immediately.
     const overflow=afterRun?.reported === true && afterRun.boundary !== null && Number(pending.sequence_id)<=afterRun.boundary;
@@ -34,7 +34,7 @@ export async function nudgeTaskEvents(db:DB, row:StoredRoutine, now:Date, afterR
   }
   if (due!==null) due=activeDue(row,due);
   // A queued owner reply is an explicit request, as immediate replies are.
-  if (afterRun?.requested) due=now;
+  if (timers.task_check_in_requested) due=now;
   await db.updateTable('routines_v1_definitions').set({next_run_at:due}).where('agent_id','=',row.agentId).where('routine_id','=',row.routineId).execute();
 }
 
@@ -63,11 +63,16 @@ export function createTaskEventStore(db:DB) {
       const row=await db.selectFrom('routines_v1_definitions').select('task_check_in_requested').where('agent_id','=',input.agentId).where('routine_id','=',input.routineId).executeTakeFirst();
       return row?.task_check_in_requested===true;
     },
-    async requestTaskCheckIn(input:{agentId:string;routineId:string;actorUserId:string;now:Date}):Promise<'queued'|'missing'> {
+    async requestTaskCheckIn(input:{agentId:string;routineId:string;actorUserId:string;now:Date;requestId?:string}):Promise<'queued'|'replayed'|'missing'> {
       return db.transaction().execute(async trx=>{
         if (!await lockLiveAgent(trx,input.agentId)) return 'missing';
         const raw=await trx.selectFrom('routines_v1_definitions').selectAll().where('agent_id','=',input.agentId).where('routine_id','=',input.routineId).forUpdate().executeTakeFirst();
         if (!raw || !isTaskKind(raw.kind) || !raw.enabled || raw.owner_user_id!==input.actorUserId) return 'missing';
+        if (input.requestId!==undefined) {
+          const receipts=await trx.selectFrom('routines_v1_requests').select(['operation','result',sql<string|null>`coalesce(routine_id,result->'row'->>'routineId')`.as('routine_id')]).where('agent_id','=',input.agentId).where('owner_user_id','=',input.actorUserId).where('request_id','=',input.requestId).where('operation','in',['dispatch','queued-check-in']).execute();
+          if (receipts.some(receipt=>receipt.routine_id===input.routineId && (receipt.operation==='queued-check-in' || receipt.result!==null))) return 'replayed';
+          await trx.insertInto('routines_v1_requests').values({agent_id:input.agentId,owner_user_id:input.actorUserId,operation:'queued-check-in',request_id:input.requestId,routine_id:input.routineId,input_hash:createHash('sha256').update(input.routineId).digest('hex'),result:JSON.stringify({queued:true})}).execute();
+        }
         await trx.updateTable('routines_v1_definitions').set({task_check_in_requested:true,next_run_at:input.now}).where('agent_id','=',input.agentId).where('routine_id','=',input.routineId).execute();
         return 'queued';
       });

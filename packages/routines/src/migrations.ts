@@ -9,6 +9,7 @@ import {
 
 export interface RoutinesDefinitionsRow {
   task_check_in_requested: Generated<boolean>;
+  task_safety_due_at: Generated<Date|null>;
   revision: string;
   enabled: Generated<boolean>;
   agent_id: string;
@@ -386,7 +387,8 @@ export async function runRoutinesMigration(db: Kysely<RoutinesDatabase>): Promis
       await sql`INSERT INTO routines_schema_versions(version) VALUES(18)`.execute(trx);
     }
     if (!await done(19)) {
-      await sql`ALTER TABLE routines_v1_definitions ADD COLUMN task_check_in_requested boolean NOT NULL DEFAULT false`.execute(trx);
+      await sql`ALTER TABLE routines_v1_definitions ADD COLUMN task_check_in_requested boolean NOT NULL DEFAULT false, ADD COLUMN task_safety_due_at timestamptz`.execute(trx);
+      await sql`UPDATE routines_v1_definitions SET task_safety_due_at=next_run_at WHERE kind IN ('stay-on-top','get-done')` .execute(trx);
       await sql`ALTER TABLE routines_v1_dispatches ADD COLUMN task_event_boundary bigint`.execute(trx);
       await sql`CREATE TABLE routines_v1_task_events (
         sequence_id bigserial NOT NULL UNIQUE,event_id text PRIMARY KEY,agent_id text NOT NULL,routine_id text NOT NULL,owner_user_id text NOT NULL,

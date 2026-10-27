@@ -1,3 +1,4 @@
+import { acceptHistoricalDispatch } from './support/historical-dispatch.js';
 import { describe, it, expect } from 'vitest';
 import { sql } from 'kysely';
 import { RoutineDefinitionSchema } from '@ax/routines-contract';
@@ -22,7 +23,7 @@ const taskInput = (requestId: string) => ({ ...createInput(requestId), definitio
   kind: 'stay-on-top', goodWhen: 'No ticket waits longer than an hour.',
 }) });
 type Key = { agentId: string; routineId: string; revision: string };
-const accept = async (row: Key, requestId: string, at = now) => (await f.store.acceptDispatch({
+const accept = async (row: Key, requestId: string, at = now) => (await acceptHistoricalDispatch(f.db,f.store,{
   agentId: row.agentId, routineId: row.routineId, expectedRevision: row.revision, actorUserId: 'owner', source: 'manual', requestId, now: at,
 }))!.accepted;
 const bound = async (row: Key, requestId: string, conversationId: string, at = now) => {

@@ -1,3 +1,4 @@
+import { acceptHistoricalDispatch } from './support/historical-dispatch.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { sql } from 'kysely';
 import { CHECK_IN_MISSES, RoutineDefinitionSchema, TASK_AUTO_PAUSE_AFTER_MISSES, type RoutinePatch } from '@ax/routines-contract';
@@ -118,7 +119,7 @@ const runId = (row: Key, name: string) => `${row.routineId}/${name}`;
 /** A run of `row` accepted at `at` and bound to its own conversation, that reports `report` when there is one. */
 async function checkIn(row: Key, name: string, { at = now, report }: { at?: Date; report?: DispatchReport } = {}) {
   const requestId = runId(row, name), conversationId = `c-${requestId}`;
-  const { accepted } = (await f.store.acceptDispatch({
+  const { accepted } = (await acceptHistoricalDispatch(f.db,f.store,{
     agentId: row.agentId, routineId: row.routineId, expectedRevision: row.revision, actorUserId: 'owner', source: 'manual', requestId, now: at,
   }))!;
   await f.store.bindDispatchConversation({ dispatchId: accepted.dispatchId, conversationId });

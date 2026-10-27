@@ -251,8 +251,9 @@ export function registerRoutineServices({ bus, store, now, dispatch, admitDispat
       // none, at another revision.
       if (err instanceof SafeToolError && err.toolCode === 'request-conflict') return 'replayed';
       if (err instanceof SafeToolError && err.toolCode === 'busy' && C.isTaskKind(row.kind)) {
-        const requested = await store.requestTaskCheckIn({ ...key, actorUserId: ctx.userId, now: now() });
+        const requested = await store.requestTaskCheckIn({ ...key, actorUserId: ctx.userId, requestId, now: now() });
         if (requested === 'queued') return 'queued';
+        if (requested === 'replayed') return 'replayed';
       }
       throw err;
     }

@@ -977,7 +977,7 @@ export function createRoutinesStore(db: DB, executorId?: string): RoutinesStore 
         validateScheduleWrite(definition);
         const row = await trx.insertInto('routines_v1_definitions').values({
           ...definitionColumns(definition), agent_id: input.agentId,
-          routine_id: opaqueId('rtn'), revision: opaqueId('rev'), owner_user_id: input.ownerUserId, next_run_at: nextRun(definition, input.now),
+          routine_id: opaqueId('rtn'), revision: opaqueId('rev'), owner_user_id: input.ownerUserId, next_run_at: nextRun(definition, input.now), task_safety_due_at: isTaskKind(definition.kind) ? nextRun(definition,input.now) : null,
           last_run_at: null, last_status: null, last_error: null, definition_id: null, definition_updated_at: null, created_at: input.now, updated_at: input.now
         }).returningAll().executeTakeFirstOrThrow();
         return rowToRoutine(row);
@@ -996,11 +996,17 @@ export function createRoutinesStore(db: DB, executorId?: string): RoutinesStore 
         if (repeatConfigurationHash(current) !== repeatConfigurationHash(next)) {
           await trx.updateTable('routines_v1_deliveries').set({ invalidated_reason: 'job-changed' }).where('agent_id', '=', input.agentId).where('routine_id', '=', input.routineId).where('dispatch_id', 'is', null).where('completed_at', 'is', null).execute();
         }
-        if (next.kind !== current.kind) await trx.deleteFrom('routines_v1_task_events').where('agent_id','=',input.agentId).where('routine_id','=',input.routineId).execute();
+        if (isTaskKind(current.kind) && !isTaskKind(next.kind)) {
+          // Accepted updates keep their FIFO across the two batched kinds. Repeat cannot consume that inbox.
+          const unseen=await trx.selectFrom('routines_v1_task_events').select('event_id').where('agent_id','=',input.agentId).where('routine_id','=',input.routineId).where('consumed_at','is',null).limit(1).executeTakeFirst();
+          if (unseen) throw new SafeToolError('busy','routineId');
+          await trx.deleteFrom('routines_v1_task_events').where('agent_id','=',input.agentId).where('routine_id','=',input.routineId).execute();
+        }
         const row = await trx.updateTable('routines_v1_definitions').set({
           ...definitionColumns(next), revision: opaqueId('rev'), updated_at: input.now,
           ...(next.webhook === null ? { webhook_address_token: null, webhook_legacy_enabled: false } : {}),
           next_run_at: schedulingChanged(current, next) ? nextRun(next, input.now) : current.nextRunAt,
+          task_safety_due_at: next.kind==='repeat' ? null : schedulingChanged(current,next) || next.kind!==current.kind ? nextRun(next,input.now) : sql<Date|null>`task_safety_due_at`,
           ...(next.kind === current.kind ? {} : { ...NO_TASK_STATE, ...NO_FINISH_BY,task_check_in_requested:false }),
           // TASK-930: a Resume starts the count over, whoever paused the task. No other edit does:
           // shortening instructions that were too long leaves the task paused, and counted.
@@ -1014,7 +1020,7 @@ export function createRoutinesStore(db: DB, executorId?: string): RoutinesStore 
           .where('agent_id', '=', input.agentId).where('routine_id', '=', input.routineId).returningAll().executeTakeFirstOrThrow();
         const updated = rowToRoutine(row);
         if (isTaskKind(updated.kind)) await nudgeTaskEvents(trx,updated,input.now);
-        return updated;
+        return rowToRoutine(await trx.selectFrom('routines_v1_definitions').selectAll().where('agent_id','=',input.agentId).where('routine_id','=',input.routineId).executeTakeFirstOrThrow());
       });
     },
     async deleteAuthored(input) {
@@ -1057,6 +1063,8 @@ export function createRoutinesStore(db: DB, executorId?: string): RoutinesStore 
           const override = await trx.selectFrom('agent_default_routine_overrides_v1').select('enabled').where('agent_id', '=', input.agentId).where('default_routine_id', '=', raw.definition_id).executeTakeFirst();
           if (override?.enabled === false) return null;
         }
+        // A reply queued while busy already owns this logical request. Its retry cannot start a second run.
+        if (await trx.selectFrom('routines_v1_requests').select('request_id').where('agent_id','=',input.agentId).where('owner_user_id','=',input.actorUserId).where('operation','=','queued-check-in').where('request_id','=',input.requestId).where('routine_id','=',input.routineId).executeTakeFirst()) throw new SafeToolError('busy','routineId');
         {
           const active = await trx.selectFrom('routines_v1_dispatches').select(eb => eb.fn.countAll<string>().as('n')).where('agent_id', '=', input.agentId).where('routine_id', '=', input.routineId).where('completed_at', 'is', null).executeTakeFirstOrThrow();
           if (Number(active.n) >= (raw.kind === 'repeat' ? REPEAT_DELIVERY_LIMITS.active : 1)) throw new SafeToolError('busy', 'routineId');
@@ -1075,7 +1083,7 @@ export function createRoutinesStore(db: DB, executorId?: string): RoutinesStore 
         if (isTaskKind(raw.kind)) {
           const boundary=await assignTaskEvents(trx,result.row,result.dispatchId);
           await trx.updateTable('routines_v1_dispatches').set({task_event_boundary:boundary}).where('dispatch_id','=',result.dispatchId).execute();
-          await trx.updateTable('routines_v1_definitions').set({next_run_at:nextRun(result.row,input.now),last_run_at:input.now,task_check_in_requested:false}).where('agent_id','=',raw.agent_id).where('routine_id','=',raw.routine_id).execute();
+          await trx.updateTable('routines_v1_definitions').set({next_run_at:nextRun(result.row,input.now),task_safety_due_at:nextRun(result.row,input.now),last_run_at:input.now,task_check_in_requested:false}).where('agent_id','=',raw.agent_id).where('routine_id','=',raw.routine_id).execute();
         }
         return result;
       }, async () => { replayed = true; });
@@ -1431,7 +1439,7 @@ export function createRoutinesStore(db: DB, executorId?: string): RoutinesStore 
           const running = { ...editableDefinition(row), enabled: true };
           const reopenedRow = await trx.updateTable('routines_v1_definitions').set({
             ...NO_COMPLETION, task_done_claimed_at: null, enabled: true, revision: opaqueId('rev'), spec_hash: inputHash(running),
-            next_run_at: nextRun(running, input.now), updated_at: input.now, ...NO_MISSES,
+            next_run_at: nextRun(running, input.now),task_safety_due_at:nextRun(running,input.now), updated_at: input.now, ...NO_MISSES,
           }).where('agent_id', '=', input.agentId).where('routine_id', '=', input.routineId).returningAll().executeTakeFirstOrThrow();
           return { outcome: 'added', replyId: added.reply_id, row: rowToRoutine(reopenedRow), wasDone };
         }

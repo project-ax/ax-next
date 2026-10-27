@@ -257,7 +257,7 @@ const editableProperties = {
   enabled: { type: 'boolean' },
   schedule: { anyOf: [schedule, { type: 'null' }], description: 'An interval or cron schedule, or null. A repeat job may also have app updates. Required for both task kinds.' },
   webhook: { anyOf: [webhook, { type: 'null' }], description: 'Updates from another app. Repeat jobs run once per update; tasks batch updates and keep their safety schedule. A person finishes address and signing-secret setup on the task page.' },
-  activeHours: { anyOf: [activeHours, { type: 'null' }], description: 'Optional local-time window for scheduled runs, including overnight windows. App updates still run on arrival.' },
+  activeHours: { anyOf: [activeHours, { type: 'null' }], description: 'Optional local-time window for scheduled runs and batched task updates, including overnight windows. Repeat jobs still handle app updates on arrival.' },
   silenceToken: { anyOf: [{ type: 'string', maxLength: 128 }, { type: 'null' }] },
   silenceMaxChars: { type: 'integer', minimum: 0, maximum: 65536 },
   conversation: { type: 'string', enum: ['per-fire', 'shared'] },

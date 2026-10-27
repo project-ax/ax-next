@@ -105,11 +105,54 @@ describe('durable task update inbox',()=>{
     expect((await f.store.findOne(row))!.nextRunAt!.getTime()).toBeLessThanOrEqual(Date.now()+1000);
     await accept(row,'queued',at(7));expect(await f.store.hasTaskCheckInRequest(row)).toBe(false);
   });
-  it('clears old inbox reach on owner/kind changes, deletion and agent purge and copies no app connection',async()=>{
+  it('clears old inbox reach on owner changes, deletion and agent purge, and copies no app connection',async()=>{
     const row=await task();await admit(row,1);const copied=await f.store.duplicateAuthored({...row,actorUserId:'owner',ownerUserId:'owner',requestId:'copy',now});expect(typeof copied).toBe('object');
     if(typeof copied==='object')expect((await f.store.findOne({agentId:row.agentId,routineId:copied.routineId}))?.webhook).toBeNull();
     await f.store.reconcileOwners({agents:[{agentId:row.agentId,ownerUserId:'next'}]});expect(await rows()).toHaveLength(0);
-    const current=(await f.store.findOne(row))!;await admit(current,2);await f.store.updateAuthored({...current,actorUserId:'next',expectedRevision:current.revision,requestId:'kind',now,stopOnly:false,patch:{kind:'repeat',goodWhen:null,webhook:{kind:'webhook',path:'/support'}}});expect(await rows()).toHaveLength(0);
+    const current=(await f.store.findOne(row))!;await admit(current,2);await f.store.deleteAuthored({...current,actorUserId:'next',expectedRevision:current.revision,requestId:'delete',now});expect(await rows()).toHaveLength(0);
     const again=await f.store.createAuthored({...createInput('second'),definition:RoutineDefinitionSchema.parse({name:'Second',promptBody:'Keep tickets answered.',goodWhen:'No ticket waits.',kind:'stay-on-top',schedule:{kind:'interval',every:'1h'},webhook:{kind:'webhook',path:'/second'}})});await admit(again,3);await f.store.purgeAgent(again.agentId);expect(await rows()).toHaveLength(0);
   });
+  it('increasing Respond within recomputes from the true safety deadline rather than the previous cached nudge',async()=>{
+    let row=await task();row=await f.store.updateAuthored({...row,actorUserId:'owner',expectedRevision:row.revision,requestId:'fast',now,stopOnly:false,patch:{webhook:{...row.webhook!,respondWithin:'1m'}}});
+    await admit(row,1);expect((await f.store.findOne(row))?.nextRunAt).toEqual(at(1));
+    const changed=await f.store.updateAuthored({...row,actorUserId:'owner',expectedRevision:row.revision,requestId:'slow',now,stopOnly:false,patch:{webhook:{...row.webhook!,respondWithin:'24h'}}});
+    expect(changed.nextRunAt).toEqual(at(60));expect((await f.store.findOne(row))?.nextRunAt).toEqual(at(60));
+  });
+  it('a later app delivery cannot defer a queued owner reply to work hours',async()=>{
+    let row=await task();row=await f.store.updateAuthored({...row,actorUserId:'owner',expectedRevision:row.revision,requestId:'hours',now,stopOnly:false,patch:{activeHours:{start:'09:00',end:'18:00',tz:'UTC'}}});
+    const run=await accept(row);await f.store.requestTaskCheckIn({...row,actorUserId:'owner',requestId:'reply-queued',now:at(6)});await report(row,run.dispatchId);await finish(run.dispatchId);
+    await admit(row,1,at(7));expect((await f.store.findOne(row))?.nextRunAt).toEqual(at(7));expect(await f.store.hasTaskCheckInRequest(row)).toBe(true);
+  });
+  it('preserves a safety-schedule edit made while a check-in is running',async()=>{
+    const row=await task();const run=await accept(row);await f.store.updateAuthored({...row,actorUserId:'owner',expectedRevision:row.revision,requestId:'schedule',now:at(6),stopOnly:false,patch:{schedule:{kind:'interval',every:'2h'}}});
+    await report(row,run.dispatchId);await finish(run.dispatchId);expect((await f.store.findOne(row))?.nextRunAt).toEqual(at(126));
+  });
+  it('distinguishes same-timestamp late arrivals from overflow using the persisted FIFO boundary',async()=>{
+    const row=await task();await admit(row,1);const run=await accept(row);await admit(row,2,at(5));await report(row,run.dispatchId);await finish(run.dispatchId);
+    expect((await f.store.findOne(row))?.nextRunAt).toEqual(at(10));
+  });
+  it('keeps queued reply requests idempotent after the follow-up reports, including an admission that won the race',async()=>{
+    const row=await task();const run=await accept(row);const queued={...row,actorUserId:'owner',requestId:'stable-reply',now:at(6)};
+    expect(await f.store.requestTaskCheckIn(queued)).toBe('queued');await report(row,run.dispatchId);await finish(run.dispatchId);
+    const follow=await accept(row,'follow-up',at(7));await report(row,follow.dispatchId);await finish(follow.dispatchId);
+    expect(await f.store.requestTaskCheckIn(queued)).toBe('replayed');expect(await f.store.hasTaskCheckInRequest(row)).toBe(false);
+    await expect(f.store.acceptDispatch({...row,actorUserId:'owner',expectedRevision:row.revision,requestId:'stable-reply',source:'manual',now:at(8)})).rejects.toMatchObject({toolCode:'busy'});
+    const won=await accept(row,'accepted-before-queue',at(8));expect(await f.store.requestTaskCheckIn({...queued,requestId:'accepted-before-queue'})).toBe('replayed');expect(await f.store.hasTaskCheckInRequest(row)).toBe(false);await finish(won.dispatchId);
+  });
+
+  it('keeps acknowledged updates across task-kind changes and refuses switching to Repeat until the inbox is consumed',async()=>{
+    const row=await task();await admit(row,1);const before=await rows();
+    const changed=await f.store.updateAuthored({...row,actorUserId:'owner',expectedRevision:row.revision,requestId:'other-task-kind',now,stopOnly:false,patch:{kind:'get-done'}});expect(await rows()).toEqual(before);
+    const repeat={...changed,actorUserId:'owner',expectedRevision:changed.revision,requestId:'repeat',now,stopOnly:false,patch:{kind:'repeat' as const,goodWhen:null,webhook:{kind:'webhook' as const,path:'/support'}}};
+    await expect(f.store.updateAuthored(repeat)).rejects.toMatchObject({toolCode:'busy'});expect(await rows()).toEqual(before);
+    const run=await accept(changed);await expect(f.store.updateAuthored(repeat)).rejects.toMatchObject({toolCode:'busy'});await report(changed,run.dispatchId);await finish(run.dispatchId);
+    expect((await f.store.updateAuthored(repeat)).kind).toBe('repeat');expect(await rows()).toEqual([]);
+  });
+  it('SQL serializes independent host admissions and claims even when no in-process admission tail is shared',async()=>{
+    const row=await task();const a=createRoutinesStore(f.db,'one'),b=createRoutinesStore(f.db.withSchema('public'),'two');
+    const input={row,payload:{n:1},deliveryId:'one-delivery',now};expect((await Promise.all([a.admitTaskEvent(input,persist),b.admitTaskEvent(input,persist)])).sort()).toEqual(['accepted','duplicate']);
+    const results=await Promise.allSettled([a.acceptDispatch({...row,actorUserId:'owner',expectedRevision:row.revision,requestId:'host-one',source:'tick',now:at(5)}),b.acceptDispatch({...row,actorUserId:'owner',expectedRevision:row.revision,requestId:'host-two',source:'manual',now:at(5)})]);
+    expect(results.filter(result=>result.status==='fulfilled')).toHaveLength(1);expect(results.filter(result=>result.status==='rejected')).toHaveLength(1);expect((await rows()).filter(event=>event.dispatch_id!==null)).toHaveLength(1);
+  });
+
 });
