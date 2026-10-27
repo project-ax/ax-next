@@ -254,8 +254,9 @@ export interface RoutinesStore {
   /**
    * TASK-908. Whether `conversationId` is a task check-in's conversation on
    * `agentId`: some run of that agent, open or finished, is bound to it, and
-   * its routine isn't a repeat routine, or is gone. Read from routines' own
-   * dispatch rows, so the answer survives a host restart mid-check-in.
+   * its accepted kind is task or unknown (TASK-919). Read only from routines'
+   * retained dispatch rows: kind/owner edits, deletion and restart cannot
+   * reclassify a check-in. Only proven repeat history permits capture.
    */
   isTaskConversation(input: { agentId: string; conversationId: string }): Promise<boolean>;
   /**
@@ -317,10 +318,9 @@ export interface RoutinesStore {
  */
 export function taskConversationQuery(db: Kysely<RoutinesDatabase>, input: { agentId: string; conversationId: string }) {
   return db.selectFrom('routines_v1_dispatches as d')
-    .leftJoin('routines_v1_definitions as r', join => join.onRef('r.agent_id', '=', 'd.agent_id').onRef('r.routine_id', '=', 'd.routine_id'))
     .select('d.dispatch_id')
     .where('d.agent_id', '=', input.agentId).where('d.conversation_id', '=', input.conversationId)
-    .where(eb => eb.or([eb('r.kind', 'is', null), eb('r.kind', '!=', 'repeat')]))
+    .where(eb => eb.or([eb('d.kind', 'is', null), eb('d.kind', '!=', 'repeat')]))
     .limit(1);
 }
 /**
@@ -1045,6 +1045,8 @@ export function createRoutinesStore(db: DB): RoutinesStore {
         await trx.insertInto('routines_v1_dispatches').values({
           dispatch_id: result.dispatchId, agent_id: input.agentId, routine_id: input.routineId,
           revision: raw.revision, req_id: result.reqId, accepted_at: input.now, completed_at: null, trigger_source: input.source,
+          // TASK-919: the accepted definition under this lock, never a later edit or caller claim.
+          kind: raw.kind,
           // TASK-936: who the run runs as, the owner read under this row lock (fire.ts runs as
           // accepted.row.ownerUserId), never the actor who asked for it. Nothing moves it later.
           run_as_user_id: raw.owner_user_id,
@@ -1173,10 +1175,10 @@ export function createRoutinesStore(db: DB): RoutinesStore {
       return { run: { dispatchId: row.dispatch_id, routineId: row.routine_id, kind: row.kind, ownerUserId: row.owner_user_id } };
     },
     async isTaskConversation(input) {
-      // A left join: a run whose routine was deleted still counts (`kind` is
-      // null), the safe direction for memory capture. Memory asks this for
-      // every capture pass, ordinary chats included, so it reads through
-      // version 5's `routines_v1_dispatches_conversation` index.
+      // TASK-919: any task or unknown accepted kind permanently refuses this
+      // conversation, through definition edits/deletion and host restarts.
+      // Known repeat runs stay capturable. Every pass, ordinary chats included,
+      // reads through version 5's `routines_v1_dispatches_conversation` index.
       return (await taskConversationQuery(db, input).executeTakeFirst()) !== undefined;
     },
     async tasksForConversations(input) {
