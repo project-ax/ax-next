@@ -40,15 +40,20 @@ knows what it's for and says how it's going.
   when" editable in Settings. The TASK-954 walk passed on kind on 2026-10-25; the
   results, screenshots and the follow-up findings are in
   `deploy/kind/walks/2026-10-25-TASK-954/`.
-- **Production is deployed.** PRs 1–3 and the subsequent fixes and polish are
-  live at `97429ce05`, Helm revision 54, routines schema version 14
-  (2026-10-26). First-time setup is complete. The user created a real
-  "Picnic checklist" task, received its three-item packing checklist from a
-  successful check-in, and marked it done; read-only database checks confirmed
-  all three steps done and the schedule stopped.
-- **Next:** §12 PR 4 (one list, the New task dialog, ⋯ › Edit). Its product
-  choices are settled: routines move into Tasks as Repeat a job, active hours
-  use simple day selectors, and Repeat a job keeps its 60-second minimum.
+- **PR 4 is done and deployed.** TASK-968–975 and the acceptance fixes
+  TASK-976–978 are complete. PRs 1–4 are live at
+  `e74ccdbef30dd7f2ac7b12941b65e1781c8ae184`, production Helm revision 56,
+  routines schema version 17 (2026-10-27). TASK-979's authenticated production
+  task smoke passed and its temporary fixtures were removed.
+- **Now: PR 5, updates from other apps.** TASK-981 implements provider
+  signature verification through the existing Repeat editor and receiver.
+  TASK-982 adds task-scoped addresses with explicit legacy cutover;
+  TASK-983 depends on both and wires the durable FIFO inbox, serialized task
+  check-ins and response/safety timers; TASK-984 completes connection/test
+  status and refusal counts; TASK-985 is the final kind acceptance walk.
+  Work is sequential. PR 5 has no production deployment authorization.
+- **Still later:** email notifications, sharing and “Also ask”. Their existing
+  decisions are unchanged.
 - Settle the open questions in §14 as each PR needs them. Record answers in §15
   and in a `.claude/memory/decisions/` shard.
 
@@ -590,8 +595,16 @@ task page.
 | Self-improvement and workspace defaults | Stay in Settings. They're the agent's housekeeping, not work someone handed it. |
 
 Existing webhook routines keep their routine IDs, paths, event filters and
-signing secrets, so their addresses don't change and nothing needs
-reconfiguring in GitHub or anywhere else.
+signing secrets. PR 5 preserves their original agent-token addresses as legacy
+aliases until the owner explicitly replaces that task's address. Provisioning a
+new task-specific address may coexist with the legacy alias during setup.
+**Replace address** revokes both that task's previous token and its legacy
+alias; the other tasks on the agent keep working. New tasks receive only their
+own token and never inherit a legacy alias. Owner changes and deletion revoke
+old address reach. This reconciles “existing addresses don't change” with the
+per-task token decision: the upgrade requires no sender reconfiguration, while
+an explicit replacement affects one task. TASK-982 owns implementation and
+rotation-race tests; TASK-981 leaves current addressing unchanged.
 
 ### 5.4 Gaps in today's webhook code
 
@@ -1100,3 +1113,6 @@ view-only sharing of a task and an "Also ask" list.
 | 2026-10-26 | Implemented (TASK-969) | Current team members may start their own tasks. Saved runs keep their creator’s identity and usage limits; edit, fire and signing-secret controls stay with that creator. Team admins may stop or delete another member’s work, never adopt its execution identity. Connector/shared-credential and agent-wide webhook-token authority is unchanged. Host-derived ownedByCaller keeps never-reported tasks visible to their owner independently of write permission. |
 | 2026-10-26 | Implemented (TASK-969) | A member manages their own webhook signing secret through authenticated settings, including its configured status, Save and Remove. The global credential list and generic admin routes stay restricted. The shared receiver-address token retains its existing manager gate until PR 5; owning a signing secret does not grant that token. |
 | 2026-10-27 | Implemented in TASK-972 / TASK-973 / TASK-974 | Authored Repeat jobs use Tasks with host run history; New/Edit share the canonical form and day selectors. Agent Settings retains Housekeeping and a Tasks link. Conversation-scoped authoritative decision history keeps failed approvals visible live and after reopening; Activity is retired, legacy links open Tasks, and Right now remains in Chats. Existing owner/brief/credential authority and omitted legacy days are preserved. Deployment and hosted acceptance are separate gates. |
+
+| 2026-10-27 | Implementation contract (TASK-982) | Preserve existing webhook URLs as legacy aliases until explicit per-task replacement. A task-specific URL may coexist during setup; Replace revokes that task's previous token and legacy alias only. New tasks have no shared alias. Owner changes and deletion revoke prior reach. |
+| 2026-10-27 | Implemented (TASK-981) | Named Stripe, Slack and Zendesk signing protocols use raw request bytes and authenticated timestamps with a five-minute window in both directions. Stripe accepts multiple v1 signatures for secret rotation. A signed Slack URL-verification challenge answers setup without enqueueing a job. Existing custom/GitHub HMAC settings, addresses and owner-scoped secret controls remain compatible. |

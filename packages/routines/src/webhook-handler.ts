@@ -1,7 +1,7 @@
 import { githubDeliveryId } from './repeat-limits.js';
 import type { RepeatDeliveryStore } from './repeat-deliveries.js';
 export { githubDeliveryId, repeatQueueFits } from './repeat-limits.js';
-import { createHmac, timingSafeEqual } from 'node:crypto';
+import { verifyWebhookSignature } from './webhook-signature.js';
 import { makeAgentContext, type HookBus } from '@ax/core';
 import { validateWebhookPath } from '@ax/routines-contract';
 import { credentialRef } from './definition.js';
@@ -18,6 +18,7 @@ export interface HttpRequest {
 export interface HttpResponse {
   status(code: number): HttpResponse;
   end(): void;
+  json(body: unknown): void;
 }
 export type HttpRouteHandler = (req: HttpRequest, res: HttpResponse) => Promise<void>;
 export interface WebhookRouterDeps {
@@ -59,26 +60,7 @@ export function createWebhookRouter(deps: WebhookRouterDeps): HttpRouteHandler {
         return;
       }
 
-      const headerName = trigger.hmac.header.toLowerCase();
-      const header = req.headers[headerName];
-      if (typeof header !== 'string' || header.length === 0) {
-        res.status(401).end();
-        return;
-      }
-
-      // Strip optional prefix (e.g. "sha256=") before comparing
-      const bare = trigger.hmac.prefix !== undefined && header.startsWith(trigger.hmac.prefix)
-        ? header.slice(trigger.hmac.prefix.length)
-        : header;
-
-      const algorithm = trigger.hmac.algorithm;
-      const computed = createHmac(algorithm, secret).update(req.body).digest('hex');
-
-      // Constant-time comparison over equal-length lowercase hex strings.
-      // Explicit length check first — timingSafeEqual throws on length mismatch.
-      const lhs = Buffer.from(bare.toLowerCase(), 'utf8');
-      const rhs = Buffer.from(computed, 'utf8');
-      if (lhs.length !== rhs.length || !timingSafeEqual(lhs, rhs)) {
+      if (!verifyWebhookSignature(trigger.hmac, req.headers, req.body, secret, deps.now())) {
         res.status(401).end();
         return;
       }
@@ -99,6 +81,16 @@ export function createWebhookRouter(deps: WebhookRouterDeps): HttpRouteHandler {
     } else {
       res.status(415).end();
       return;
+    }
+
+    // Slack verifies the connection before sending events. This is authenticated
+    // setup traffic, not a job; never enqueue its challenge or expose it to a model.
+    if (trigger.hmac && 'app' in trigger.hmac && trigger.hmac.app === 'slack'
+      && payload !== null && typeof payload === 'object' && 'type' in payload && payload.type === 'url_verification') {
+      if (!('challenge' in payload) || typeof payload.challenge !== 'string' || payload.challenge.length === 0 || payload.challenge.length > 4096) {
+        res.status(400).end(); return;
+      }
+      res.status(200).json({ challenge: payload.challenge }); return;
     }
 
     // Step 4: optional GitHub event filter

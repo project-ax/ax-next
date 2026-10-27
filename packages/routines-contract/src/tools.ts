@@ -236,10 +236,12 @@ const trigger = {
     { type: 'object', additionalProperties: false, required: ['kind', 'path'], properties: {
       kind: { const: 'webhook' }, path: { type: 'string', maxLength: 128, pattern: '^/[A-Za-z0-9._/-]+$', description: 'Canonical absolute path. No empty, dot, dot-dot, trailing-slash or reserved /webhooks/ segments.' },
       events: { type: 'array', maxItems: 32, items: { type: 'string', minLength: 1, maxLength: 64, pattern: '^[A-Za-z0-9_-]+$' } },
-      hmac: { type: 'object', additionalProperties: false, required: ['header'], properties: {
+      hmac: { oneOf: [{ type: 'object', additionalProperties: false, required: ['header'], properties: {
         header: { type: 'string', minLength: 1, maxLength: 128, pattern: "^[!#$%&'*+.^_`|~A-Za-z0-9-]+$" },
         algorithm: { type: 'string', enum: ['sha256', 'sha1'], default: 'sha256' }, prefix: { type: 'string', maxLength: 128 },
-      } },
+      } }, { type: 'object', additionalProperties: false, required: ['app'], properties: {
+        app: { type: 'string', enum: ['stripe', 'slack', 'zendesk'], description: 'Verify this app’s complete signing protocol, including its timestamp. The owner saves the signing secret separately; never put it in the definition.' },
+      } }] },
     } },
   ],
 };
