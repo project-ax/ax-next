@@ -1,3 +1,5 @@
+import { repeatConfigurationHash } from './definition.js';
+import { REPEAT_DELIVERY_LIMITS } from './repeat-limits.js';
 import { sql, type Kysely, type Selectable, type Transaction, type Updateable } from 'kysely';
 import { SafeToolError } from '@ax/core';
 import { activeHoursWriteIssue,
@@ -56,7 +58,7 @@ export interface RoutinesStore {
    * as `recordReport` refuses its report; one with no record of who it ran as
    * (accepted by code from before version 9) counts as before.
    */
-  finishDispatch(input: { dispatchId: string; outcome: DispatchOutcome }): Promise<boolean>;
+  finishDispatch(input: { dispatchId: string; outcome: DispatchOutcome; onlyIfExpired?: { conversationId: string | null } }): Promise<boolean>;
   /** TASK-907. Records an open run's conversation, once. Throws `RUN_CLOSED` when the run has finished, is gone, or its agent is retired. */
   bindDispatchConversation(input: { dispatchId: string; conversationId: string }): Promise<void>;
   /** TASK-907. The one open run of this agent in this conversation, or why there's none: no open run, more than one, or one whose routine is gone. Takes no lock. */
@@ -222,7 +224,7 @@ export interface RoutinesStore {
    * copy's id alone.
    */
   duplicateAuthored(input: RoutineKey & Actor & { ownerUserId: string; requestId: string; now: Date }): Promise<DuplicateResult>;
-  advance(input: RoutineKey & { expectedRevision: string; nextRunAt: Date | null; lastRunAt: Date }): Promise<void>;
+  advance(input: RoutineKey & { expectedRevision: string; nextRunAt: Date | null; lastRunAt?: Date | null }): Promise<void>;
   claimDue(input: { now: Date; limit: number; claimWindowMinutes: number }): Promise<StoredRoutine[]>;
   /**
    * A routine's runs, newest first; `limit` is clamped to 1-200. TASK-936: a
@@ -706,7 +708,7 @@ function rowSteps(row: Pick<Selectable<RoutinesDefinitionsRow>, 'agent_id' | 'ro
   }
   return storedSteps(row.task_steps);
 }
-function rowToRoutine(row: Selectable<RoutinesDefinitionsRow>): StoredRoutine {
+export function rowToRoutine(row: Selectable<RoutinesDefinitionsRow>): StoredRoutine {
   const finishBy = storedFinishBy(row.finish_by);
   return parseStoredRoutine({
     agentId: row.agent_id, routineId: row.routine_id, revision: row.revision, ownerUserId: row.owner_user_id,
@@ -823,7 +825,7 @@ function matchesReceiptHash(key: OperationKey, hash: string): boolean {
 /** Shared lifecycle fence allows routine concurrency; purge uses the same key exclusively.
  * The durable tombstone prevents a request authorized before deletion from recreating data.
  */
-async function lockLiveAgent(db: DB, agentId: string): Promise<boolean> {
+export async function lockLiveAgent(db: DB, agentId: string): Promise<boolean> {
   await sql`SELECT pg_advisory_xact_lock_shared(hashtextextended(${agentId}, 18427132))`.execute(db);
   return !await db.selectFrom('routines_v1_retired_agents').select('agent_id').where('agent_id', '=', agentId).executeTakeFirst();
 }
@@ -959,7 +961,7 @@ function jobFromRow(r: { agent_id: string; routine_id: string; credential_ref: s
  * HookBus.call timeouts do not cancel handlers and cannot provide this guarantee.
  * No transaction handle crosses the callback boundary.
  */
-export function createRoutinesStore(db: DB): RoutinesStore {
+export function createRoutinesStore(db: DB, executorId?: string): RoutinesStore {
   return {
     async createAuthored(input) {
       const definition = validateDefinition(input.definition);
@@ -987,6 +989,9 @@ export function createRoutinesStore(db: DB): RoutinesStore {
         validateScheduleWrite(next, current, input.patch);
         if (hasHmac(next)) await assertNoCleanup(trx, current);
         if (hasHmac(current) && !hasHmac(next)) await queueCleanup(trx, current);
+        if (repeatConfigurationHash(current) !== repeatConfigurationHash(next)) {
+          await trx.updateTable('routines_v1_deliveries').set({ invalidated_reason: 'job-changed' }).where('agent_id', '=', input.agentId).where('routine_id', '=', input.routineId).where('dispatch_id', 'is', null).where('completed_at', 'is', null).execute();
+        }
         const row = await trx.updateTable('routines_v1_definitions').set({
           ...definitionColumns(next), revision: opaqueId('rev'), updated_at: input.now,
           next_run_at: schedulingChanged(current, next) ? nextRun(next, input.now) : current.nextRunAt,
@@ -1013,6 +1018,7 @@ export function createRoutinesStore(db: DB): RoutinesStore {
         // TASK-931: after the row lock, so a reply that took it first is in by now, and one still
         // waiting on it finds no routine (addReply).
         await trx.deleteFrom('routines_v1_replies').where('agent_id', '=', input.agentId).where('routine_id', '=', input.routineId).execute();
+        await trx.deleteFrom('routines_v1_deliveries').where('agent_id', '=', input.agentId).where('routine_id', '=', input.routineId).execute();
         await trx.deleteFrom('routines_v1_definitions').where('agent_id', '=', input.agentId).where('routine_id', '=', input.routineId).execute();
         return { deleted: true as const, cleanupPending: pending !== undefined };
       });
@@ -1041,12 +1047,17 @@ export function createRoutinesStore(db: DB): RoutinesStore {
           const override = await trx.selectFrom('agent_default_routine_overrides_v1').select('enabled').where('agent_id', '=', input.agentId).where('default_routine_id', '=', raw.definition_id).executeTakeFirst();
           if (override?.enabled === false) return null;
         }
+        if (raw.kind === 'repeat') {
+          const active = await trx.selectFrom('routines_v1_dispatches').select(eb => eb.fn.countAll<string>().as('n')).where('agent_id', '=', input.agentId).where('routine_id', '=', input.routineId).where('completed_at', 'is', null).executeTakeFirstOrThrow();
+          if (Number(active.n) >= REPEAT_DELIVERY_LIMITS.active) throw new SafeToolError('busy', 'routineId');
+        }
         const result: AcceptedDispatch = { dispatchId: opaqueId('dispatch'), reqId: opaqueId('routine_run'), row: rowToRoutine(raw), source: input.source, acceptedAt: input.now };
         await trx.insertInto('routines_v1_dispatches').values({
           dispatch_id: result.dispatchId, agent_id: input.agentId, routine_id: input.routineId,
           revision: raw.revision, req_id: result.reqId, accepted_at: input.now, completed_at: null, trigger_source: input.source,
           // TASK-919: the accepted definition under this lock, never a later edit or caller claim.
           kind: raw.kind,
+          ...(raw.kind === 'repeat' && executorId ? { executor_id: executorId, lease_expires_at: sql<Date>`clock_timestamp() + interval '120 seconds'` } : {}),
           // TASK-936: who the run runs as, the owner read under this row lock (fire.ts runs as
           // accepted.row.ownerUserId), never the actor who asked for it. Nothing moves it later.
           run_as_user_id: raw.owner_user_id,
@@ -1056,10 +1067,11 @@ export function createRoutinesStore(db: DB): RoutinesStore {
       return accepted === null ? null : { accepted, replayed };
     },
     async interruptAbandonedDispatches() {
-      // Startup only, before any new dispatch accepts work in this single-host runtime.
-      const rows = await db.selectFrom('routines_v1_dispatches').select('dispatch_id').where('completed_at', 'is', null).execute();
+      // Legacy/task runs keep their startup behavior; leased Repeat runs are guarded again under lock.
+      const rows = await db.selectFrom('routines_v1_dispatches').select(['dispatch_id', 'kind', 'executor_id', 'conversation_id']).where('completed_at', 'is', null)
+        .where(sql<boolean>`kind IS DISTINCT FROM 'repeat' OR executor_id IS NULL OR executor_released OR (lease_expires_at<=clock_timestamp() AND conversation_id IS NULL)`).execute();
       let interrupted = 0;
-      for (const row of rows) if (await this.finishDispatch({ dispatchId: row.dispatch_id, outcome: {
+      for (const row of rows) if (await this.finishDispatch({ dispatchId: row.dispatch_id, ...(row.kind === 'repeat' && row.executor_id !== null ? { onlyIfExpired: { conversationId: row.conversation_id } } : {}), outcome: {
         status: 'error', error: RUN_INTERRUPTED,
         conversationId: null, renderedPrompt: null, warning: null, miss: 'interrupted',
       } })) interrupted++;
@@ -1093,6 +1105,15 @@ export function createRoutinesStore(db: DB): RoutinesStore {
         if (!candidate || !await lockLiveAgent(trx, candidate.agent_id)) return false;
         const dispatch = await trx.selectFrom('routines_v1_dispatches').selectAll().where('dispatch_id', '=', input.dispatchId).forUpdate().executeTakeFirst();
         if (!dispatch || dispatch.completed_at) return false;
+        if (input.onlyIfExpired) {
+          // A heartbeat or conversation bind since recovery's read invalidates its observation.
+          if (dispatch.kind !== 'repeat' || dispatch.conversation_id !== input.onlyIfExpired.conversationId) return false;
+          const expired = await trx.selectFrom('routines_v1_dispatches').select('dispatch_id').where('dispatch_id', '=', input.dispatchId)
+            .where(sql<boolean>`executor_released OR lease_expires_at<=clock_timestamp()`).executeTakeFirst();
+          if (!expired) return false;
+        }
+        const recordedError = dispatch.delivery_id !== null && outcome.error !== null ? 'This app update could not run.' : outcome.error;
+        const recordedWarning = dispatch.delivery_id !== null ? null : outcome.warning;
         // TASK-930: the routine's row, locked before anything here writes to it, so two runs that
         // finish at once count one after the other. recordReport's order (agent fence, dispatch row,
         // definition row), and nothing locks a dispatch row after a definition row, so it adds no
@@ -1109,7 +1130,7 @@ export function createRoutinesStore(db: DB): RoutinesStore {
         await trx.insertInto('routines_v1_fires').values({
           agent_id: dispatch.agent_id, routine_id: dispatch.routine_id, dispatch_id: dispatch.dispatch_id,
           fired_at: dispatch.accepted_at, trigger_source: dispatch.trigger_source, conversation_id: outcome.conversationId, status: outcome.status,
-          error: outcome.error, rendered_prompt: outcome.renderedPrompt === null ? null : truncateUtf8(outcome.renderedPrompt, 65536), warning: outcome.warning,
+          error: recordedError, rendered_prompt: dispatch.delivery_id !== null || outcome.renderedPrompt === null ? null : truncateUtf8(outcome.renderedPrompt, 65536), warning: recordedWarning,
           report_status: stored.report?.status ?? null, report_update: stored.report?.update ?? null, report_ask: stored.report?.ask ?? null,
           report_reading_value: reading?.value ?? null, report_reading_label: reading?.label ?? null,
           // TASK-936: copied from the dispatch, not read from the routine, which may have moved since the accept.
@@ -1118,7 +1139,7 @@ export function createRoutinesStore(db: DB): RoutinesStore {
         // The fire row has the report and its reading now; one copy of the text is enough (TASK-907).
         await trx.updateTable('routines_v1_dispatches').set({ completed_at: finishedAt, report: null, report_reading_value: null, report_reading_label: null })
           .where('dispatch_id', '=', input.dispatchId).execute();
-        await trx.updateTable('routines_v1_definitions').set({ last_run_at: dispatch.accepted_at, last_status: outcome.status, last_error: outcome.error, last_warning: outcome.warning })
+        await trx.updateTable('routines_v1_definitions').set({ last_run_at: dispatch.accepted_at, last_status: outcome.status, last_error: recordedError, last_warning: recordedWarning })
           .where('agent_id', '=', dispatch.agent_id).where('routine_id', '=', dispatch.routine_id).where('revision', '=', dispatch.revision)
           .where(eb => eb.or([eb('last_run_at', 'is', null), eb('last_run_at', '<=', dispatch.accepted_at)])).execute();
         // TASK-930: the missed check-ins, only now. The pause mints a new revision, so before the
@@ -1490,7 +1511,7 @@ export function createRoutinesStore(db: DB): RoutinesStore {
       }
     },
     async advance(input) {
-      await db.updateTable('routines_v1_definitions').set({ next_run_at: input.nextRunAt, last_run_at: input.lastRunAt })
+      await db.updateTable('routines_v1_definitions').set({ next_run_at: input.nextRunAt, ...(input.lastRunAt !== undefined ? { last_run_at: input.lastRunAt } : {}) })
         .where('agent_id', '=', input.agentId).where('routine_id', '=', input.routineId).where('revision', '=', input.expectedRevision).execute();
     },
     async withLockedWebhookSecret(input, effect) {
@@ -1523,6 +1544,7 @@ export function createRoutinesStore(db: DB): RoutinesStore {
         await sql`SELECT pg_advisory_xact_lock(hashtextextended(${agentId}, 18427132))`.execute(trx);
         await trx.insertInto('routines_v1_retired_agents').values({ agent_id: agentId }).onConflict(oc => oc.doNothing()).execute();
         // Dispatch first matches finishDispatch's order and prevents late history resurrection.
+        await trx.deleteFrom('routines_v1_deliveries').where('agent_id', '=', agentId).execute();
         await trx.deleteFrom('routines_v1_dispatches').where('agent_id', '=', agentId).execute();
         const rows = await trx.selectFrom('routines_v1_definitions').selectAll().where('agent_id', '=', agentId).forUpdate().execute();
         for (const row of rows) await queueCleanup(trx, rowToRoutine(row));
@@ -1828,8 +1850,8 @@ export function createRoutinesStore(db: DB): RoutinesStore {
       // they could reach, and a run of the new owner's that fails early carries the routine's last
       // warning into its own fire row (fire.ts). Its time stays, since default-routine scheduling
       // keys off last_run_at.
-      const res = await sql`
-        UPDATE routines_v1_definitions r
+      const res = await sql<{n:string}>`
+        WITH moved AS (UPDATE routines_v1_definitions r
            SET owner_user_id = a.owner_user_id,
                revision = 'rev_' || replace(gen_random_uuid()::text, '-', ''),
                updated_at = now(),
@@ -1841,8 +1863,12 @@ export function createRoutinesStore(db: DB): RoutinesStore {
             AS a(agent_id, owner_user_id)
          WHERE r.agent_id = a.agent_id
            AND r.owner_user_id IS DISTINCT FROM a.owner_user_id
+        RETURNING r.agent_id,r.routine_id), invalidated AS (
+          UPDATE routines_v1_deliveries q SET invalidated_reason='owner-changed' FROM moved
+          WHERE q.agent_id=moved.agent_id AND q.routine_id=moved.routine_id AND q.completed_at IS NULL AND q.dispatch_id IS NULL RETURNING q.delivery_id
+        ) SELECT count(*)::text AS n FROM moved
       `.execute(db);
-      return Number(res.numAffectedRows ?? 0);
+      return Number(res.rows[0]?.n ?? 0);
     },
 
     async setAgentDefaultEnabled(input) {

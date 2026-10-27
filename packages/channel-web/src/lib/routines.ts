@@ -44,6 +44,7 @@ const messages = {
   'approval-required': 'This change requires approval.',
   'not-found': 'This routine is unavailable.',
   forbidden: 'You cannot manage this routine.',
+  busy: 'Three runs are already in progress. Try again when one finishes.',
   disabled: 'Enable this routine before running it.',
   'cleanup-pending': 'Credential removal is pending. Try again shortly.',
   unavailable: 'Routine management is temporarily unavailable.',

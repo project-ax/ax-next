@@ -184,8 +184,9 @@ function fireViews(userId: string, fires: FireRow[]): C.RoutineFireView[] {
       ? { status: report.status, update: report.update, ask: report.ask, reading: readingView(report.reading) } : null,
   }));
 }
-export function registerRoutineServices({ bus, store, now, dispatch, admitDispatch = effect => effect() }: {
+export function registerRoutineServices({ bus, store, now, dispatch, admitDispatch = effect => effect(), deliveryStatus }: {
   bus: HookBus; store: RoutinesStore; now: () => Date;
+  deliveryStatus?: (key:C.RoutineKey,owner:string)=>Promise<{active:number;waiting:number}>;
   admitDispatch?: <T>(effect: () => Promise<T>) => Promise<T>;
   dispatch?: (accepted: AcceptedDispatch) => Promise<C.RoutineFireNowOutput>;
 }): void {
@@ -283,10 +284,11 @@ export function registerRoutineServices({ bus, store, now, dispatch, admitDispat
   }
   register('list', C.RoutineListInputSchema, C.RoutineListOutputSchema, async (ctx, input) => {
     const a = await access(ctx, input.agentId);
-    return { routines: (await store.list(input)).map(row => routineView(row, ctx.userId, a.allowed, a.stopOthers)) };
+    return { routines: await Promise.all((await store.list(input)).map(async row => ({...routineView(row,ctx.userId,a.allowed,a.stopOthers),...(deliveryStatus ? {delivery:row.kind==='repeat' && row.ownerUserId===ctx.userId ? await deliveryStatus(row,ctx.userId):null}: {})}))) };
   });
   register('get', C.RoutineGetInputSchema, C.RoutineGetOutputSchema, async (ctx, input) => {
-    const a = await access(ctx, input.agentId); return routineView(await rowFor(input), ctx.userId, a.allowed, a.stopOthers);
+    const a = await access(ctx,input.agentId); const row=await rowFor(input);
+    return {...routineView(row,ctx.userId,a.allowed,a.stopOthers),...(deliveryStatus ? {delivery:row.kind==='repeat' && row.ownerUserId===ctx.userId ? await deliveryStatus(row,ctx.userId):null}: {})};
   });
   register('create', C.RoutineCreateInputSchema, C.RoutineCreateOutputSchema, async (ctx, input) => {
     const a = await access(ctx, input.agentId); requireAllowed(a.allowed);

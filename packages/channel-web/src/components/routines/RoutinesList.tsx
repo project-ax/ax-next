@@ -81,6 +81,7 @@ export function RoutinesList({
   }
   const flight = useRef(false);
   const previousCreateRequest = useRef(createRequest);
+  const loadedRead = useRef<string | null>(null);
   useEffect(() => {
     if (createRequest !== previousCreateRequest.current && agentId) setCreating(agentId);
     previousCreateRequest.current = createRequest;
@@ -95,6 +96,10 @@ export function RoutinesList({
     // Preserve the child and its exact retry identity. A changed refresh key is
     // picked up when the operation is confirmed or explicitly refused.
     if (fireProtectedRef.current) return;
+    const readKey = JSON.stringify([idKey, agentsStatus, version, refreshKey, origin]);
+    // Releasing a definite refusal changes the lock, not the query. Keep its mounted result.
+    if (loadedRead.current === readKey) return;
+    loadedRead.current = null;
     let active = true;
     setList(null);
     setError(null);
@@ -105,7 +110,10 @@ export function RoutinesList({
     }
     void Promise.all(ids.map((id) => routineApi.list(id)))
       .then((rows) => {
-        if (active) setList(rows.flat().filter((r) => r.origin === origin));
+        if (active) {
+          loadedRead.current = readKey;
+          setList(rows.flat().filter((r) => r.origin === origin));
+        }
       })
       .catch(() => {
         if (active) setError('We couldn’t load routines.');
@@ -285,6 +293,9 @@ export function RoutinesList({
               <div className="min-w-0 flex-1">
                 <p className="truncate text-sm font-medium">{row.name}</p>
                 <TriggerChip schedule={row.schedule} webhook={row.webhook} />
+                {row.delivery !== null && row.delivery !== undefined && row.delivery.waiting > 0 && (
+                  <p role="status" className="text-sm text-muted-foreground">{row.delivery.waiting} app {row.delivery.waiting === 1 ? 'update' : 'updates'} waiting.</p>
+                )}
                 {row.lastWarning === ACTIVE_HOURS_REPAIR_MESSAGE && <p className="text-sm text-muted-foreground">{row.lastWarning}</p>}
                 {!agentId && (
                   <p className="text-xs text-muted-foreground">

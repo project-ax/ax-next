@@ -1,3 +1,8 @@
+import { answerBlobCollectRefs } from '@ax/core';
+import { opaqueId } from './definition.js';
+import { createRepeatDeliveryStore, type RepeatDeliveryStore } from './repeat-deliveries.js';
+import { createRepeatDeliveryPump } from './repeat-runtime.js';
+import { REPEAT_DELIVERY_LIMITS } from './repeat-limits.js';
 import type { Plugin } from '@ax/core';
 import {
   makeAgentContext, MEMORY_PRE_CAPTURE_HOOK, SYSTEM_PROMPT_LANDED_HOOK, SystemPromptAugmentOutputSchema,
@@ -36,6 +41,8 @@ export function createRoutinesPlugin(
   let lifetime: RoutineLifetime | undefined;
   let tickLoop: Promise<void> | undefined;
   let abortCtl: AbortController | undefined;
+  let deliveries: RepeatDeliveryStore | undefined;
+  let deliveryTimer: ReturnType<typeof setInterval> | undefined;
 
   return {
     shutdownMode: 'joined',
@@ -63,9 +70,13 @@ export function createRoutinesPlugin(
         'conversations:hide',
         'agent:invoke',
         'credentials:get',
+        'blob:put',
+        'blob:get',
+        'conversations:get-metadata',
         'http:register-route',
       ],
       subscribes: [
+        'blob:collect-refs',
         'tool:pre-call',
         'chat:turn-end',
         // Slice 6 — what a routine fire's turn went without (keyed by reqId).
@@ -105,7 +116,11 @@ export function createRoutinesPlugin(
       );
       db = shared as Kysely<RoutinesDatabase>;
       await runRoutinesMigration(db);
-      store = createRoutinesStore(db);
+      const executorId = opaqueId('repeat_executor');
+      store = createRoutinesStore(db, executorId);
+      deliveries = createRepeatDeliveryStore(db,executorId);
+      const localDeliveries = deliveries;
+      bus.subscribe('blob:collect-refs',PLUGIN_NAME,(_ctx,payload)=>answerBlobCollectRefs(payload,PLUGIN_NAME,candidates=>localDeliveries.references(candidates)));
       const localStore = store;
       // The capture check needs only the migrated schema: bound conversations
       // survive the abandoned-run pass below, so it needn't wait for that.
@@ -306,11 +321,16 @@ export function createRoutinesPlugin(
         return undefined;
       }));
 
-      registerRoutineServices({ bus, store: localStore, now: () => clock.now(), admitDispatch: effects.admit, dispatch: async accepted => { const result = await fireRoutine(accepted); return { status: result.status === 'error' ? 'error' : 'ok' }; }, ...runtime });
+      const pump = createRepeatDeliveryPump({bus,deliveries:localDeliveries,store:localStore,fire:fireRoutine,now:()=>clock.now()});
+      let renewing = false;
+      let draining = false;
+      let nextHeartbeat = 0;
+
+      registerRoutineServices({ bus, store: localStore, now: () => clock.now(), deliveryStatus:(key,owner)=>localDeliveries.status(key,owner), admitDispatch: effects.admit, dispatch: async accepted => { const result = await fireRoutine(accepted); return { status: result.status === 'error' ? 'error' : 'ok' }; }, ...runtime });
       await registerRoutineTools({ bus, store: localStore, now: () => clock.now() });
       await drainRoutineCleanup({ bus, store: localStore });
 
-      const handler = createWebhookRouter({ bus, store: localStore, fire: fireRoutine, now: () => clock.now() });
+      const handler = createWebhookRouter({ bus, store: localStore, deliveries:localDeliveries, pump, now: () => clock.now() });
       const route = await bus.call<unknown, { unregister(): void }>('http:register-route', initCtx, {
         method: 'POST', path: '/webhooks/:token/*', bypassCsrf: true,
         handler: (req: Parameters<typeof handler>[0], res: Parameters<typeof handler>[1]) => effects.admit(() => handler(req, res)),
@@ -347,21 +367,34 @@ export function createRoutinesPlugin(
 
       abortCtl = new AbortController();
       tickLoop = runTickLoop({
-        db: localDb, fire: fireRoutine, getAgents, clock,
+        db: localDb, fire: fireRoutine, getAgents, clock, executorId,
         cleanup: () => drainRoutineCleanup({ bus, store: localStore }),
         signal: abortCtl.signal,
         ...tickConfig,
       }).catch((err) => {
         process.stderr.write(`[ax/routines] tick loop died: ${err}\n`);
       });
+      // No native worker survives a failed service/route setup.
+      deliveryTimer = setInterval(() => {
+        if (!renewing && Date.now()>=nextHeartbeat) {
+          renewing=true;
+          void effects.admit(()=>localDeliveries.renew()).catch(()=>initCtx.logger.warn('repeat_heartbeat_failed')).finally(()=>{renewing=false;nextHeartbeat=Date.now()+REPEAT_DELIVERY_LIMITS.heartbeatMs;});
+        }
+        if (!draining) { draining=true; void effects.admit(pump).catch(()=>initCtx.logger.warn('repeat_queue_drain_failed')).finally(()=>{draining=false;}); }
+      },REPEAT_DELIVERY_LIMITS.drainMs);
+      deliveryTimer.unref?.();
     },
     async shutdown() {
+      if (deliveryTimer) clearInterval(deliveryTimer);
+      deliveryTimer=undefined;
       lifetime?.stopAdmission();
       unregisterWebhook?.();
       unregisterWebhook = undefined;
       abortCtl?.abort();
       await tickLoop;
       await lifetime?.drain();
+      await deliveries?.release();
+      deliveries=undefined;
       tickLoop = undefined;
       abortCtl = undefined;
       db = undefined;

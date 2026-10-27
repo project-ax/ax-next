@@ -880,7 +880,7 @@ describe('@ax/preset-k8s wiring', () => {
         .filter((p) => p.manifest.subscribes.includes('blob:collect-refs'))
         .map((p) => p.manifest.name)
         .sort(),
-    ).toEqual(['@ax/attachments', '@ax/branding', '@ax/skills']);
+    ).toEqual(['@ax/attachments', '@ax/branding', '@ax/routines', '@ax/skills']);
     // The exception must still be real: loaded, and still a blob writer. An
     // exception for a plugin that no longer exists is a hole for its successor.
     for (const name of BLOB_WRITER_HOLDER_EXCEPTIONS) {

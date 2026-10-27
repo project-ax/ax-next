@@ -862,6 +862,8 @@ export const RoutineDoneViewSchema = z.object({ at: RoutineInstantSchema }).stri
 export type RoutineDoneView = z.output<typeof RoutineDoneViewSchema>;
 
 const RoutineViewShape = {
+  /** Owner-relative admission counts only; omitted by older producers, never payloads or delivery IDs. */
+  delivery: z.object({ active:z.number().int().nonnegative(),waiting:z.number().int().nonnegative() }).strict().nullable().optional(),
   ...RoutineEditableShape,
   agentId: RoutineOpaqueStringSchema, routineId: RoutineOpaqueStringSchema, revision: RoutineOpaqueStringSchema,
   /** Caller-relative ownership, independent of report presence and present write authority. */

@@ -226,6 +226,7 @@ describe('structured human routine REST adapters', () => {
       ['not-found', 404],
       ['forbidden', 404],
       ['revision-conflict', 409],
+      ['busy', 409],
       ['cleanup-pending', 409],
     ] as const) {
       const failure = new SafeToolError(code, 'routineId');
@@ -364,7 +365,7 @@ describe('the Settings routes answer no task state (TASK-957)', () => {
       trigger: { kind: 'interval', every: '1h' }, kind: 'get-done', goodWhen: 'Every article is on the new site.',
     }),
     agentId: 'a', routineId: 'rtn_a', revision: 'rev1', ownedByCaller: true, origin: 'authored', defaultRoutineId: null,
-    nextRunAt: null, lastRunAt: '2026-10-25T09:00:00.000Z', lastStatus: 'ok', lastError: null, lastWarning: null,
+    nextRunAt: null, lastRunAt: '2026-10-25T09:00:00.000Z', lastStatus: 'ok', lastError: null, lastWarning: null, delivery: null,
     permissions: { edit: true, stop: true, fire: true, manageSecret: true },
     task: {
       status: 'needs-you', update: AGENT_TEXT.update, ask: AGENT_TEXT.ask, reading: { value: 3, label: AGENT_TEXT.label },
@@ -386,7 +387,7 @@ describe('the Settings routes answer no task state (TASK-957)', () => {
    * Every field a Settings routine view carries, reviewed. A new field fails here on purpose: if an agent
    * writes any of it, settingsView leaves it out; if only the host or a person writes it, add it here.
    */
-  const VIEW_KEYS = ['activeHours', 'agentId', 'conversation', 'defaultRoutineId', 'description', 'done', 'enabled',
+  const VIEW_KEYS = ['activeHours', 'agentId', 'conversation', 'defaultRoutineId', 'delivery', 'description', 'done', 'enabled',
     'finishBy', 'finishByTimeZone', 'goodWhen', 'kind', 'lastError', 'lastRunAt', 'lastStatus', 'lastWarning',
     'name', 'nextRunAt', 'noRecentUpdate', 'ownedByCaller', 'origin', 'permissions', 'promptBody', 'revision', 'routineId',
     'silenceMaxChars', 'silenceToken', 'steps', 'task', 'schedule', 'webhook'];

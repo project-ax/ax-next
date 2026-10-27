@@ -61,6 +61,7 @@ export const toolExecuteHostHandler: ActionHandler = async (rawPayload, ctx, bus
         case 'revision-conflict':
         case 'webhook-path-conflict':
         case 'request-conflict':
+        case 'busy':
         case 'disabled':
         case 'cleanup-pending':
           return { status: 409, body: { error: { code: 'HOOK_REJECTED', message } } };

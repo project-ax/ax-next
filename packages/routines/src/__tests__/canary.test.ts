@@ -46,7 +46,12 @@ describe('independent methods through real approval, restart and HTTP dispatch',
         signal.addEventListener('abort', finish, { once: true });
       }),
     };
-    h = await createRoutineHarness({ clock, strictCredentials: true });
+    const invocations: Array<{ reqId: string; userId: string; input: unknown }> = [];
+    h = await createRoutineHarness({ clock, strictCredentials: true, invoke: async (runCtx, bus, input) => {
+      invocations.push({ reqId: runCtx.reqId, userId: runCtx.userId, input });
+      await bus.fire('chat:turn-end', runCtx, { reqId: runCtx.reqId, contentBlocks: [{ type: 'text', text: 'done' }] });
+      return { kind: 'complete' };
+    } });
     h.setAttended(false);
     const ctx = makeAgentContext({ ...h.owner, agentId: h.agentId, conversationId: 'conversation' });
     const definition = {
@@ -99,7 +104,10 @@ describe('independent methods through real approval, restart and HTTP dispatch',
       const response = await fetch(originalUrl, { method: 'POST', body, headers: { 'content-type': 'application/json', 'x-github-event': 'push', 'x-signature': `sha256=${signature}` } });
       expect(response.status).toBe(202);
       await expect.poll(async () => (await history()).length).toBe(2);
-      expect((await history())[0]).toMatchObject({ triggerSource: 'webhook', status: 'ok', renderedPrompt: expect.stringContaining('from the app') });
+      expect((await history())[0]).toMatchObject({ triggerSource: 'webhook', status: 'ok', renderedPrompt: null });
+      expect(invocations).toContainEqual(expect.objectContaining({ userId: ctx.userId, input: {
+        message: { role: 'user', content: `Approved dual input: ${body}` },
+      } }));
       expect((await store.findOne(row))?.nextRunAt).toEqual(nextRunAt);
       now = Date.parse('2026-10-10T12:00:00Z'); // Clock hours match, but Saturday is not selected.
       const unselectedBody = '{"event":"push","title":"on an unselected day"}';
@@ -109,7 +117,10 @@ describe('independent methods through real approval, restart and HTTP dispatch',
       } });
       expect(unselectedResponse.status).toBe(202);
       await expect.poll(async () => (await history()).length).toBe(3);
-      expect((await history())[0]).toMatchObject({ triggerSource: 'webhook', status: 'ok', renderedPrompt: expect.stringContaining('on an unselected day') });
+      expect((await history())[0]).toMatchObject({ triggerSource: 'webhook', status: 'ok', renderedPrompt: null });
+      expect(invocations).toContainEqual(expect.objectContaining({ userId: ctx.userId, input: {
+        message: { role: 'user', content: `Approved dual input: ${unselectedBody}` },
+      } }));
       expect((await store.findOne(row))?.nextRunAt).toEqual(nextRunAt);
       wake!();
       await expect.poll(() => Boolean(wake)).toBe(true);
@@ -120,6 +131,7 @@ describe('independent methods through real approval, restart and HTTP dispatch',
       const targetRequests = new Set(dispatches.map(dispatch => dispatch.req_id));
       // The harness also runs background defaults; each target dispatch must invoke exactly once.
       expect(h.invokeCalls.filter(reqId => targetRequests.has(reqId)).sort()).toEqual([...targetRequests].sort());
+      expect(invocations.filter(call => targetRequests.has(call.reqId)).map(call => call.reqId).sort()).toEqual([...targetRequests].sort());
       expect(listening.messages).toHaveLength(2);
     } finally {
       await http?.close();
@@ -294,7 +306,7 @@ describe('registered approval-to-tick-to-webhook cutover canary', () => {
         kind: 'webhook', path: '/canary', events: ['push'], hmac: { header: 'X-Signature', algorithm: 'sha256', prefix: 'sha256=' },
       } },
     });
-    expect(await h.bus.call('tool:execute:routine_get', ctx, { id: 'get', name: 'routine_get', input: { routineId: row.routineId } })).toEqual(changed);
+    expect(await h.bus.call('tool:execute:routine_get', ctx, { id: 'get', name: 'routine_get', input: { routineId: row.routineId } })).toEqual({ ...changed, delivery: { active: 0, waiting: 0 } });
     await expect(h.bus.call('routines:get', h.teamAdmin, { agentId: h.agentId, routineId: row.routineId })).rejects.toThrow();
     await h.bus.call('routines:set-webhook-secret', ctx, { agentId: h.agentId, routineId: row.routineId, expectedRevision: changed.revision, operation: 'set', secret: Buffer.from('canary-only-key') });
     const { token } = await h.bus.call<unknown, { token: string }>('agents:ensure-webhook-token', ctx, { agentId: h.agentId, actor: { userId: ctx.userId, isAdmin: false } });
@@ -309,7 +321,9 @@ describe('registered approval-to-tick-to-webhook cutover canary', () => {
       now += 1_000;
       expect((await post()).status).toBe(202);
       await expect.poll(async () => (await store.recentFires(row)).length).toBe(2);
-      expect((await store.recentFires(row))[0]).toMatchObject({ status: 'ok', renderedPrompt: changed.promptBody });
+      expect((await store.recentFires(row))[0]).toMatchObject({ status: 'ok', renderedPrompt: null });
+      expect(calls.mock.calls.filter(([hook]) => hook === 'agent:invoke').map(([, runCtx, input]) => ({ userId: runCtx.userId, input })))
+        .toContainEqual({ userId: ctx.userId, input: { message: { role: 'user', content: changed.promptBody } } });
       expect(await h.bus.call('routines:delete', ctx, { agentId: h.agentId, routineId: row.routineId, expectedRevision: changed.revision, requestId: 'delete-canary' })).toEqual({ deleted: true, cleanupPending: true });
       const secretRef = h.credentialCalls.find(item => item.operation === 'set')!.ref;
       expect(h.credentialCalls).toContainEqual({ operation: 'delete', ref: secretRef });
