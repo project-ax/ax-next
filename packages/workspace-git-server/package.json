@@ -28,7 +28,7 @@
   "dependencies": {
     "@ax/core": "workspace:*",
     "@ax/workspace-bundle-protocol": "workspace:*",
-    "zod": "^4.6.6"
+    "zod": "^3.23.8"
   },
   "devDependencies": {
     "@ax/test-harness": "workspace:*",

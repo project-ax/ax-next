@@ -22,7 +22,7 @@
     "@modelcontextprotocol/sdk": "1.32.1",
     "ipaddr.js": "2.4.0",
     "kysely": "0.28.17",
-    "zod": "^4.6.6"
+    "zod": "^3.23.8"
   },
   "devDependencies": {
     "@ax/connectors": "workspace:*",

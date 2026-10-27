@@ -42,9 +42,6 @@ overrides:
   zod@>=4.0.0 <4.6.6: '>=4.6.6 <5.0.0'
 
 patchedDependencies:
-  node-forge@1.4.0:
-    hash: 4fa957cddb4b4601a48b535053d0fec7ed013f9d075660a38365f285fc830fe0
-    path: patches/node-forge@1.4.0.patch
   testcontainers@11.14.0:
     hash: b8b51408a0cfa267b364c141f22080e606eefbb3699eec1fbbb96a6e0546a35a
     path: patches/testcontainers@11.14.0.patch
@@ -167,8 +164,8 @@ importers:
         specifier: 7.0.70
         version: 7.0.70(zod@4.6.7)
       undici:
-        specifier: ^7.30.1
-        version: 7.30.1
+        specifier: '>=6.29.1 <7.0.0'
+        version: 6.29.1
     devDependencies:
       '@types/node':
         specifier: ^25.6.0
@@ -266,8 +263,8 @@ importers:
         specifier: workspace:*
         version: link:../tool-skill-propose
       undici:
-        specifier: ^7.30.1
-        version: 7.30.1
+        specifier: '>=6.29.1 <7.0.0'
+        version: 6.29.1
     devDependencies:
       '@types/node':
         specifier: ^25.6.0
@@ -1062,8 +1059,8 @@ importers:
         specifier: workspace:*
         version: link:../core
       node-forge:
-        specifier: 1.4.0
-        version: 1.4.0(patch_hash=4fa957cddb4b4601a48b535053d0fec7ed013f9d075660a38365f285fc830fe0)
+        specifier: 1.4.1
+        version: 1.4.1
     devDependencies:
       '@ax/credential-proxy-bridge':
         specifier: workspace:*
@@ -3029,8 +3026,8 @@ importers:
         specifier: 0.28.17
         version: 0.28.17
       node-forge:
-        specifier: 1.4.0
-        version: 1.4.0(patch_hash=4fa957cddb4b4601a48b535053d0fec7ed013f9d075660a38365f285fc830fe0)
+        specifier: 1.4.1
+        version: 1.4.1
       pg:
         specifier: 8.20.0
         version: 8.20.0
@@ -3386,12 +3383,12 @@ packages:
     peerDependencies:
       '@babel/core': '>=7.29.6 <8.0.0'
 
-  '@babel/runtime@7.29.10':
-    resolution: {integrity: sha512-NpugTzbKgGrNe45Ui32cN8vCFFMxVtP/9rtfwv0nP5FRDAjvYBxJcLVpYA9mr1jxP6cnIT7x9LUzuDTbWYYNRA==}
-    engines: {node: '>=6.9.0'}
-
   '@babel/runtime@7.29.2':
     resolution: {integrity: sha512-JiDShH45zKHWyGe4ZNVRrCjBz8Nh9TMmZG1kh4QTK8hCBTWBi8Da+i7s1fJw7/lYpM4ccepSNfqzZ/QvABBi5g==}
+    engines: {node: '>=6.9.0'}
+
+  '@babel/runtime@7.29.7':
+    resolution: {integrity: sha512-Nq8OhGWiZIZGV6hLHoyAKLLcJihP/xFeBMGJoUrxTX2psI8dCifzLhZISFb+VWS3wFMRDmCGw5R+dOySCqPLhw==}
     engines: {node: '>=6.9.0'}
 
   '@babel/template@7.29.7':
@@ -6908,8 +6905,8 @@ packages:
       encoding:
         optional: true
 
-  node-forge@1.4.0:
-    resolution: {integrity: sha512-LarFH0+6VfriEhqMMcLX2F7SwSXeWwnEAJEsYm5QKWchiVYVvJyV9v7UDvUv+w5HO23ZpQTXDv/GxdDdMyOuoQ==}
+  node-forge@1.4.1:
+    resolution: {integrity: sha512-w5/MfWaeMrpR/5ba6fZyAUTLSuE6aYz7H/3cYrqwZEmf5eQS3IaaLgJt4MBv7HglGFWmV22K8h4U18RJQmw/ow==}
     engines: {node: '>= 6.13.0'}
 
   node-releases@2.0.54:
@@ -7771,6 +7768,10 @@ packages:
   undici-types@7.19.2:
     resolution: {integrity: sha512-qYVnV5OEm2AW8cJMCpdV20CDyaN3g0AjDlOGf1OW4iaDEx8MwdtChUp4zu4H0VP3nDRF/8RKWH+IPp9uW0YGZg==}
 
+  undici@6.29.1:
+    resolution: {integrity: sha512-EvRlUt/QqAEvXdQeRMYUfwOQsfzpDztykrG2owGEE/rBOBoYv9uF39ZzsNDh4lTFHhTr2XOZjKkYgueD12ZmGA==}
+    engines: {node: '>=18.17'}
+
   undici@7.30.1:
     resolution: {integrity: sha512-03KrMbjIFDWQR5RNPrSw3bd1r12JpyFQl9/yxjUbJtqkjmllqC5lFjZh6ujeuJCKr8EOQvRW872Oy/az+nLYxg==}
     engines: {node: '>=20.18.1'}
@@ -8555,9 +8556,9 @@ snapshots:
       '@babel/core': 7.29.7
       '@babel/helper-plugin-utils': 7.28.6
 
-  '@babel/runtime@7.29.10': {}
-
   '@babel/runtime@7.29.2': {}
+
+  '@babel/runtime@7.29.7': {}
 
   '@babel/template@7.29.7':
     dependencies:
@@ -10120,7 +10121,7 @@ snapshots:
   '@testing-library/dom@10.4.1':
     dependencies:
       '@babel/code-frame': 7.29.7
-      '@babel/runtime': 7.29.10
+      '@babel/runtime': 7.29.7
       '@types/aria-query': 5.0.4
       aria-query: 5.3.0
       dom-accessibility-api: 0.5.16
@@ -12138,7 +12139,7 @@ snapshots:
     dependencies:
       whatwg-url: 5.0.0
 
-  node-forge@1.4.0(patch_hash=4fa957cddb4b4601a48b535053d0fec7ed013f9d075660a38365f285fc830fe0): {}
+  node-forge@1.4.1: {}
 
   node-releases@2.0.54: {}
 
@@ -13137,6 +13138,8 @@ snapshots:
   undici-types@7.16.0: {}
 
   undici-types@7.19.2: {}
+
+  undici@6.29.1: {}
 
   undici@7.30.1: {}
 

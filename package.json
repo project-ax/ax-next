@@ -75,12 +75,10 @@
     },
     "patchedDependencies": {
       "testcontainers@11.14.0": "patches/testcontainers@11.14.0.patch",
-      "node-forge@1.4.0": "patches/node-forge@1.4.0.patch",
       "zod@3.25.76": "patches/zod@3.25.76.patch"
     },
     "auditConfig": {
       "ignoreGhsas": [
-        "GHSA-86w9-cpqp-85rv",
         "GHSA-vfj7-8cjw-p6xm",
         "GHSA-mrhx-c7xc-m3w5"
       ]

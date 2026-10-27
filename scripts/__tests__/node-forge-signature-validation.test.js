@@ -3,9 +3,9 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { beforeAll, describe, expect, it } from 'vitest';
 
-// The audit exception is safe only while the installed dependency rejects the
-// CVE-2026-85393 vector. Test both consumers, including the preset's test tools,
-// in the unconditional scripts suite so patch removal cannot silently pass CI.
+// Keep the CVE-2026-85393 regression after replacing our local backport with
+// node-forge 1.4.1. Test both consumers, including the preset's test tools,
+// in the unconditional scripts suite so a dependency regression fails CI.
 for (const consumer of ['packages/credential-proxy', 'presets/k8s']) {
   describe(`${consumer}: node-forge PKCS#1 signature validation`, () => {
     const require = createRequire(new URL(`../../${consumer}/package.json`, import.meta.url));
@@ -48,18 +48,20 @@ for (const consumer of ['packages/credential-proxy', 'presets/k8s']) {
   });
 }
 
-it('limits the advisory exception to the pinned, patched node-forge release', () => {
+it('uses the pinned upstream node-forge fix without a local patch or audit exception', () => {
   const root = fileURLToPath(new URL('../../', import.meta.url));
   const manifest = JSON.parse(readFileSync(`${root}/package.json`, 'utf8'));
   const proxy = JSON.parse(readFileSync(`${root}/packages/credential-proxy/package.json`, 'utf8'));
-  expect(proxy.dependencies['node-forge']).toBe('1.4.0');
-  expect(manifest.pnpm.patchedDependencies['node-forge@1.4.0']).toBe('patches/node-forge@1.4.0.patch');
+  const preset = JSON.parse(readFileSync(`${root}/presets/k8s/package.json`, 'utf8'));
+  expect(proxy.dependencies['node-forge']).toBe('1.4.1');
+  expect(preset.devDependencies['node-forge']).toBe('1.4.1');
+  expect(manifest.pnpm.patchedDependencies).not.toHaveProperty('node-forge@1.4.0');
   // The braces exception (GHSA-vfj7-8cjw-p6xm, TASK-750) has its own guard in
   // braces-dev-only-audit-exception.test.js. The zod one (GHSA-mrhx-c7xc-m3w5) is
   // covered by a local patch, patches/zod@3.25.76.patch (TASK-938), guarded by
   // zod-issue-bound.test.js and zod-audit-exception.test.js. Any further entry
   // needs a guard too.
   expect(manifest.pnpm.auditConfig).toEqual({
-    ignoreGhsas: ['GHSA-86w9-cpqp-85rv', 'GHSA-vfj7-8cjw-p6xm', 'GHSA-mrhx-c7xc-m3w5'],
+    ignoreGhsas: ['GHSA-vfj7-8cjw-p6xm', 'GHSA-mrhx-c7xc-m3w5'],
   });
 });
