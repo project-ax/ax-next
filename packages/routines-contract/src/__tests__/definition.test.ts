@@ -264,7 +264,9 @@ describe('public services and tools', () => {
       const required = Object.entries(runtime.shape).filter(([, field]) => !field.isOptional()).map(([name]) => name).sort();
       expect(('required' in json ? [...json.required] : []).sort()).toEqual(required);
     }
-    expect(Object.keys(contract.RoutineDefinitionJsonSchema.properties).sort()).toEqual(Object.keys(contract.RoutineEditableShape).sort());
+    for (const alternative of contract.RoutineDefinitionJsonSchema.anyOf) {
+      expect(Object.keys(alternative.properties).sort()).toEqual(Object.keys(contract.RoutineEditableShape).sort());
+    }
     expect(Object.keys(contract.RoutinePatchJsonSchema.properties).sort()).toEqual(Object.keys(contract.RoutineEditableShape).sort());
     expect(contract.RoutinePatchJsonSchema).toMatchObject({ minProperties: 1, additionalProperties: false });
     expect(JSON.stringify(contract.RoutinePatchJsonSchema.properties)).not.toContain('"default":true');
@@ -512,8 +514,9 @@ describe('task kinds (TASK-906)', () => {
   });
 
   it('the JSON schema offers both fields', () => {
-    expect(contract.RoutineDefinitionJsonSchema.properties.kind).toMatchObject({ enum: ['repeat', 'stay-on-top', 'get-done'], default: 'repeat' });
-    expect(contract.RoutineDefinitionJsonSchema.properties.goodWhen).toMatchObject({ default: null });
+    expect(contract.RoutineDefinitionJsonSchema.anyOf[0]!.properties.kind).toMatchObject({ enum: ['repeat'], default: 'repeat' });
+    expect(contract.RoutineDefinitionJsonSchema.anyOf[2]!.properties.kind).toMatchObject({ enum: ['stay-on-top', 'get-done'] });
+    expect(contract.RoutineDefinitionJsonSchema.anyOf[2]!.properties.goodWhen).toMatchObject({ type: 'string', minLength: 1 });
   });
 });
 
@@ -1324,8 +1327,9 @@ describe('get-done tasks (TASK-948)', () => {
   });
 
   it('the JSON schema offers it, and says what it is', () => {
-    expect(contract.RoutineDefinitionJsonSchema.properties.kind).toMatchObject({ enum: ['repeat', 'stay-on-top', 'get-done'], default: 'repeat' });
-    expect(contract.RoutineDefinitionJsonSchema.properties.kind.description).toContain('"get-done" is a "Get something done" task: it works through a checklist of steps until the person marks it done. It needs goodWhen and a schedule, like "stay-on-top".');
+    expect(contract.RoutineDefinitionJsonSchema.anyOf[0]!.properties.kind).toMatchObject({ enum: ['repeat'], default: 'repeat' });
+    expect(contract.RoutineDefinitionJsonSchema.anyOf[2]!.properties.kind).toMatchObject({ enum: ['stay-on-top', 'get-done'] });
+    expect(contract.RoutineDefinitionJsonSchema.anyOf[2]!.properties.kind.description).toContain('"get-done" is a "Get something done" task: it works through a checklist of steps until the person marks it done. It needs goodWhen and a schedule, like "stay-on-top".');
   });
 });
 
