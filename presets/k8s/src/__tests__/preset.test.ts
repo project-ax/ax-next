@@ -474,16 +474,15 @@ describe('@ax/preset-k8s wiring', () => {
     expect(d).toBeDefined();
     expect(d!.manifest.registers).toEqual([
       'decisions:list',
+      // TASK-972: bounded authoritative outcomes in the originating conversation.
+      'decisions:recent-for-conversation',
       // TASK-266: the workspace rail's counter, in ONE read. Its caller is
       // @ax/channel-web's rail route, in this preset, which is what keeps this
       // list honest — every hook in it has a caller here.
       'decisions:count',
       'decisions:get',
-      // TASK-279: the Activity feed's second source. It REPLACED the
-      // `decisions:executed` fire, which was registered by nobody and
-      // subscribed to by nobody — invariant 3 violated for three slices while
-      // the preset note promised a subscriber that was never coming. Every
-      // hook in this list now has a caller in this preset.
+      // Retain the existing receipt service. Tasks' originating-thread history
+      // now reads decisions:recent-for-conversation above.
       'decisions:recent-receipts-for-agent',
       'decisions:approve',
       'decisions:authorize-routine-call',
