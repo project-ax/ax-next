@@ -58,9 +58,9 @@ that safe, and CI runs both on every PR.
   and `zod/v4`, ESM and CommonJS), and checks the cap. Two child processes
   parse 1,000,000 bad elements inside a 96 MB heap. It fails on an unpatched
   3.25.76.
-- `scripts/__tests__/zod-audit-exception.test.js` checks three things: the
-  patch is registered, every zod 3 in the tree is this one 3.25.76 directory,
-  and every zod 4 is at 4.6.6 or later.
+- `scripts/__tests__/zod-audit-exception.test.js` checks the patch registration,
+  the single installed 3.25.76 directory, the zod 4 security floor and the v3
+  schema API in workspace and standalone research manifests.
 
 The patch adds no install script, no dependency and no network access.
 
@@ -98,5 +98,6 @@ Not covered here:
   plain-union nesting on untrusted input.
 - `dem-memory/` is a standalone research project outside the pnpm workspace.
   It installs its own unpatched zod 3.25.76 from its own `package-lock.json`.
-  Neither guard can see it, no workspace package depends on it, and it isn't
-  in any image.
+  Its manifest is checked for v3 API compatibility. Its separate npm install
+  is not inspected by the workspace's issue-cap or installed-version checks.
+  No workspace package depends on it, and it isn't in any image.
