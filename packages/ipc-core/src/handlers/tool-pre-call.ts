@@ -5,7 +5,7 @@ import {
   type ToolCall,
 } from '@ax/ipc-protocol';
 import { clampCodeUnits, isHold } from '@ax/core';
-import {
+import { zodSummary,
   internalError,
   logInternalError,
   validationError,
@@ -34,7 +34,7 @@ import type { ActionHandler } from './types.js';
 export const toolPreCallHandler: ActionHandler = async (rawPayload, ctx, bus) => {
   const parsed = ToolPreCallRequestSchema.safeParse(rawPayload);
   if (!parsed.success) {
-    return validationError(`tool.pre-call: ${parsed.error.message}`);
+    return validationError(`tool.pre-call: ${zodSummary(parsed.error)}`);
   }
 
   const result = await bus.fire<ToolCall>('tool:pre-call', ctx, parsed.data.call);
@@ -54,7 +54,7 @@ export const toolPreCallHandler: ActionHandler = async (rawPayload, ctx, bus) =>
       logInternalError(
         ctx.logger,
         'tool.pre-call',
-        new Error(`response shape drift: ${checked.error.message}`),
+        new Error(`response shape drift: ${zodSummary(checked.error)}`),
       );
       return internalError();
     }
@@ -76,7 +76,7 @@ export const toolPreCallHandler: ActionHandler = async (rawPayload, ctx, bus) =>
       logInternalError(
         ctx.logger,
         'tool.pre-call',
-        new Error(`response shape drift: ${checked.error.message}`),
+        new Error(`response shape drift: ${zodSummary(checked.error)}`),
       );
       return internalError();
     }
@@ -89,7 +89,7 @@ export const toolPreCallHandler: ActionHandler = async (rawPayload, ctx, bus) =>
     logInternalError(
       ctx.logger,
       'tool.pre-call',
-      new Error(`response shape drift: ${checked.error.message}`),
+      new Error(`response shape drift: ${zodSummary(checked.error)}`),
     );
     return internalError();
   }

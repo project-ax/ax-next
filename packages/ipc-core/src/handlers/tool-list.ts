@@ -5,7 +5,7 @@ import {
   type ToolListRequest,
   type ToolListResponse,
 } from '@ax/ipc-protocol';
-import {
+import { zodSummary,
   internalError,
   logInternalError,
   mapPluginError,
@@ -28,7 +28,7 @@ import type { ActionHandler } from './types.js';
 export const toolListHandler: ActionHandler = async (rawPayload, ctx, bus) => {
   const parsed = ToolListRequestSchema.safeParse(rawPayload);
   if (!parsed.success) {
-    return validationError(`tool.list: ${parsed.error.message}`);
+    return validationError(`tool.list: ${zodSummary(parsed.error)}`);
   }
 
   let result: ToolListResponse;
@@ -49,7 +49,7 @@ export const toolListHandler: ActionHandler = async (rawPayload, ctx, bus) => {
     logInternalError(
       ctx.logger,
       'tool.list',
-      new Error(`response shape drift: ${checked.error.message}`),
+      new Error(`response shape drift: ${zodSummary(checked.error)}`),
     );
     return internalError();
   }

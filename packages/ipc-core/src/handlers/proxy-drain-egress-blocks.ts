@@ -5,7 +5,7 @@ import {
   type ProxyDrainEgressBlocksRequest,
   type ProxyDrainEgressBlocksResponse,
 } from '@ax/ipc-protocol';
-import {
+import { zodSummary,
   internalError,
   logInternalError,
   mapPluginError,
@@ -43,7 +43,7 @@ interface BusDrainOutput {
 export const proxyDrainEgressBlocksHandler: ActionHandler = async (rawPayload, ctx, bus) => {
   const parsed = ProxyDrainEgressBlocksRequestSchema.safeParse(rawPayload);
   if (!parsed.success) {
-    return validationError(`proxy.drain-egress-blocks: ${parsed.error.message}`);
+    return validationError(`proxy.drain-egress-blocks: ${zodSummary(parsed.error)}`);
   }
 
   // No egress proxy in this deployment → no allowlist gate → nothing to drain.
@@ -70,7 +70,7 @@ export const proxyDrainEgressBlocksHandler: ActionHandler = async (rawPayload, c
     logInternalError(
       ctx.logger,
       'proxy.drain-egress-blocks',
-      new Error(`response shape drift: ${checked.error.message}`),
+      new Error(`response shape drift: ${zodSummary(checked.error)}`),
     );
     return internalError();
   }

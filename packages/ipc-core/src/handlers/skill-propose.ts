@@ -3,7 +3,7 @@ import {
   SkillProposeRequestSchema,
   SkillProposeResponseSchema,
 } from '@ax/ipc-protocol';
-import {
+import { zodSummary,
   hookRejected,
   internalError,
   logInternalError,
@@ -68,7 +68,7 @@ interface SkillsProposeHookOutput {
 export const skillProposeHandler: ActionHandler = async (rawPayload, ctx, bus) => {
   const parsed = SkillProposeRequestSchema.safeParse(rawPayload);
   if (!parsed.success) {
-    return validationError(`skill.propose: ${parsed.error.message}`);
+    return validationError(`skill.propose: ${zodSummary(parsed.error)}`);
   }
   // A runner on an OWNER-LESS session (canary / `serve` / pre-9.5) can't
   // author a skill: the (user, agent) scope is required. Reject cleanly rather
@@ -138,7 +138,7 @@ export const skillProposeHandler: ActionHandler = async (rawPayload, ctx, bus) =
     logInternalError(
       ctx.logger,
       'skill.propose',
-      new Error(`response shape drift: ${checked.error.message}`),
+      new Error(`response shape drift: ${zodSummary(checked.error)}`),
     );
     return internalError();
   }

@@ -4,7 +4,7 @@ import type {
   WorkspaceExportBaselineBundleOutput,
 } from '@ax/workspace-bundle-protocol';
 import { WorkspaceExportBaselineBundleRequestSchema } from '@ax/ipc-protocol';
-import {
+import { zodSummary,
   hookRejected,
   internalError,
   logInternalError,
@@ -82,7 +82,7 @@ export const workspaceExportBaselineBundleHandler: ActionHandler = async (
   const parsed = WorkspaceExportBaselineBundleRequestSchema.safeParse(rawPayload);
   if (!parsed.success) {
     return validationError(
-      `workspace.export-baseline-bundle: ${parsed.error.message}`,
+      `workspace.export-baseline-bundle: ${zodSummary(parsed.error)}`,
     );
   }
   const { version } = parsed.data;

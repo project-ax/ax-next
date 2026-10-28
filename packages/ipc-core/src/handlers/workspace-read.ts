@@ -6,7 +6,7 @@ import {
   WorkspaceReadRequestSchema,
   WorkspaceReadResponseSchema,
 } from '@ax/ipc-protocol';
-import { internalError, logInternalError, validationError } from '../errors.js';
+import { zodSummary, internalError, logInternalError, validationError } from '../errors.js';
 import type { ActionHandler } from './types.js';
 
 // ---------------------------------------------------------------------------
@@ -28,7 +28,7 @@ export const workspaceReadHandler: ActionHandler = async (
 ) => {
   const parsed = WorkspaceReadRequestSchema.safeParse(rawPayload);
   if (!parsed.success) {
-    return validationError(`workspace.read: ${parsed.error.message}`);
+    return validationError(`workspace.read: ${zodSummary(parsed.error)}`);
   }
 
   let body: { found: true; bytesBase64: string } | { found: false };
@@ -56,7 +56,7 @@ export const workspaceReadHandler: ActionHandler = async (
     logInternalError(
       ctx.logger,
       'workspace.read',
-      new Error(`response shape drift: ${checked.error.message}`),
+      new Error(`response shape drift: ${zodSummary(checked.error)}`),
     );
     return internalError();
   }

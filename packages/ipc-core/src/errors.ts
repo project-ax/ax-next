@@ -23,7 +23,21 @@ import type { HandlerErr } from './handlers/types.js';
 
 /** Validation failure — bad JSON shape, missing fields, etc. */
 export function validationError(message: string): HandlerErr {
-  return { status: 400, body: { error: { code: 'VALIDATION', message } } };
+  return { status: 400, body: { error: { code: 'VALIDATION', message: message.slice(0, 1024) } } };
+}
+
+/** Fixed-size diagnostics; never read Zod's lazily serialized message or union trees. */
+export function zodSummary(error: { issues: readonly unknown[] }): string {
+  const details = error.issues.slice(0, 5).map(issue => {
+    if (typeof issue !== 'object' || issue === null) return 'invalid';
+    const { code, path } = issue as { code?: unknown; path?: unknown };
+    const name = typeof code === 'string' ? code.slice(0, 32) : 'invalid';
+    const location = Array.isArray(path) ? path.slice(0, 4).map(part =>
+      typeof part === 'string' ? part.slice(0, 32) : typeof part === 'number' ? String(part) : '?',
+    ).join('.') : '';
+    return location ? `${name} at ${location}` : name;
+  });
+  return `${error.issues.length} validation problem(s): ${details.join('; ')}`.slice(0, 960);
 }
 
 /** 404 for "unknown route / unknown host tool" — distinct from 400 VALIDATION

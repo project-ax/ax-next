@@ -4,7 +4,7 @@ import {
   ConversationDrainSaveRefusalsResponseSchema,
   type ConversationDrainSaveRefusalsResponse,
 } from '@ax/ipc-protocol';
-import {
+import { zodSummary,
   internalError,
   logInternalError,
   mapPluginError,
@@ -43,7 +43,7 @@ export const conversationDrainSaveRefusalsHandler: ActionHandler = async (
 ) => {
   const parsed = ConversationDrainSaveRefusalsRequestSchema.safeParse(rawPayload);
   if (!parsed.success) {
-    return validationError(`conversation.drain-save-refusals: ${parsed.error.message}`);
+    return validationError(`conversation.drain-save-refusals: ${zodSummary(parsed.error)}`);
   }
 
   const empty = { refusals: [] } satisfies ConversationDrainSaveRefusalsResponse;
@@ -76,7 +76,7 @@ export const conversationDrainSaveRefusalsHandler: ActionHandler = async (
     logInternalError(
       ctx.logger,
       'conversation.drain-save-refusals',
-      new Error(`response shape drift: ${checked.error.message}`),
+      new Error(`response shape drift: ${zodSummary(checked.error)}`),
     );
     return internalError();
   }

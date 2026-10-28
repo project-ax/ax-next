@@ -91,6 +91,24 @@ for (const [consumer, { version, flavors }] of loaded) {
           expect(nearMiss.safeParse(Array(N).fill('ab')).error.issues).toHaveLength(CAP);
         });
 
+        if (engine === 'v3') it.each([false, true])('does not collect union branch errors after the parent issue budget is full (async=%s)', async asyncMode => {
+          let reads = 0;
+          const probe = z.any();
+          probe._parse = input => {
+            Object.defineProperty(input.parent.common, 'issues', {
+              configurable: true,
+              get() { reads++; return [{ code: 'custom', path: [], message: 'branch failure' }]; },
+            });
+            return { status: 'aborted' };
+          };
+          const schema = z.object({ first: z.array(z.string()), later: z.union([probe, probe]) });
+          const input = { first: Array(100).fill(0), later: null };
+          const result = asyncMode ? await schema.safeParseAsync(input) : schema.safeParse(input);
+          expect(result.success).toBe(false);
+          expect(result.error.issues).toHaveLength(100);
+          expect(reads).toBe(0);
+        });
+
         it('caps the async parse path, including elements whose check is async', async () => {
           const r = await z.array(z.string()).safeParseAsync(BAD);
           expect(r.success).toBe(false);

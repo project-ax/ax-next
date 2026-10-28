@@ -17,7 +17,7 @@
  * plugin always does. User A's queries must never touch user B's rows.
  */
 import { createHash } from 'node:crypto';
-import { SafeToolError, PluginError, type SafeToolCode } from '@ax/core';
+import { MAX_FRAME, SafeToolError, PluginError, type SafeToolCode } from '@ax/core';
 import { sql, type Kysely } from 'kysely';
 import type { DecisionRow, DecisionsDatabase } from './migrations.js';
 import { RECEIPT_STATUSES } from './receipts.js';
@@ -1435,6 +1435,12 @@ export function createDecisionsStore(db: Kysely<DecisionsDatabase>): DecisionSto
 // ---------------------------------------------------------------------------
 
 function fromDecision(d: Decision): DecisionRow {
+  // Approval must retain the exact call. Refuse oversized new writes rather
+  // than storing a truncated call that could approve different arguments.
+  const callJson = JSON.stringify(d.call);
+  if (Buffer.byteLength(callJson) > MAX_FRAME) {
+    throw new PluginError({ code: 'invalid-payload', plugin: '@ax/decisions', message: 'The tool call is too large to save for approval.' });
+  }
   return {
     decision_id: d.id,
     agent_id: d.agentId,
@@ -1443,7 +1449,7 @@ function fromDecision(d: Decision): DecisionRow {
     kind: d.kind,
     attendance: d.attendance,
     status: d.status,
-    call_json: JSON.stringify(d.call),
+    call_json: callJson,
     call_fingerprint: d.callFingerprint,
     rule_id: d.ruleId,
     freshness_json: d.freshness === null ? null : JSON.stringify(d.freshness),

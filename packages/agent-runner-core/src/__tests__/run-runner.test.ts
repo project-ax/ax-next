@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach, type Mock } from 'vitest';
-import type { IpcClient, IpcClientOptions } from '@ax/ipc-protocol';
+import { IpcRequestError, type IpcClient, type IpcClientOptions } from '@ax/ipc-protocol';
 import type { RunnerEnv } from '../env.js';
 import type { Loop, LoopContext, RunnerDeps, RunnerSeams, TranscriptSource } from '../index.js';
 import * as fs from 'node:fs/promises';
@@ -95,6 +95,39 @@ const transcriptSource: TranscriptSource = {
   read: vi.fn().mockResolvedValue(null),
   write: vi.fn().mockResolvedValue('accepted'),
 };
+
+describe('runRunner — bounded final history and visible event refusals', () => {
+  it('keeps the final history inside the wire cap while retaining the newest message', async () => {
+    const loop: Loop = { run: async ctx => {
+      for (let i = 0; i < 6; i++) ctx.recordAssistantText('\\'.repeat(800_000));
+      ctx.recordAssistantText('the newest answer');
+      return 0;
+    } };
+    expect(await runRunner(() => loop, seams(fakeEnv))).toBe(0);
+    const payload = fakeClient.event.mock.calls.find(c => c[0] === 'event.chat-end')![1];
+    expect(Buffer.byteLength(JSON.stringify(payload))).toBeLessThan(4 * 1024 * 1024);
+    expect(payload.outcome.messages.at(-1)).toEqual({ role: 'assistant', content: 'the newest answer' });
+  });
+
+  it.each([400, 413])('logs refused turn/chat-end status %i without its response body', async status => {
+    fakeClient.event.mockRejectedValue(new IpcRequestError('VALIDATION', status, 'PRIVATE_RESPONSE_BODY'));
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const loop: Loop = { run: async ctx => {
+      await ctx.endTurn({ contentBlocks: [{ type: 'text', text: 'PRIVATE_MODEL_TEXT' }], toolResultBlocks: [{ type: 'text', text: 'PRIVATE_TOOL_TEXT' }], usage: null, readTurnId: async () => undefined });
+      return 0;
+    } };
+    try {
+      expect(await runRunner(() => loop, seams(fakeEnv))).toBe(0);
+      const logs = stderr.mock.calls.map(c => String(c[0]));
+      const refusals = logs.filter(l => l.includes('ipc_event_refused'));
+      expect(refusals).toHaveLength(3);
+      expect(refusals.every(l => l.includes(`"status":${status}`))).toBe(true);
+      expect(refusals.join('')).toContain('event.turn-end');
+      expect(refusals.join('')).toContain('event.chat-end');
+      expect(refusals.join('')).not.toContain('PRIVATE_');
+    } finally { stderr.mockRestore(); }
+  });
+});
 
 function seams(readEnv: () => RunnerEnv): RunnerSeams {
   return {

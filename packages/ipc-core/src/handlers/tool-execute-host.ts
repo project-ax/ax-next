@@ -4,7 +4,7 @@ import {
   ToolExecuteHostResponseSchema,
   type ToolExecuteHostRequest,
 } from '@ax/ipc-protocol';
-import {
+import { zodSummary,
   internalError,
   logInternalError,
   mapPluginError,
@@ -30,7 +30,7 @@ import type { ActionHandler } from './types.js';
 export const toolExecuteHostHandler: ActionHandler = async (rawPayload, ctx, bus) => {
   const parsed = ToolExecuteHostRequestSchema.safeParse(rawPayload);
   if (!parsed.success) {
-    return validationError(`tool.execute-host: ${parsed.error.message}`);
+    return validationError(`tool.execute-host: ${zodSummary(parsed.error)}`);
   }
 
   const { call } = parsed.data as ToolExecuteHostRequest;
@@ -91,7 +91,7 @@ export const toolExecuteHostHandler: ActionHandler = async (rawPayload, ctx, bus
     logInternalError(
       ctx.logger,
       'tool.execute-host',
-      new Error(`response shape drift: ${checked.error.message}`),
+      new Error(`response shape drift: ${zodSummary(checked.error)}`),
     );
     return internalError();
   }

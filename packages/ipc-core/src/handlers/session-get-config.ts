@@ -5,7 +5,7 @@ import {
   type SessionGetConfigRequest,
   type SessionGetConfigResponse,
 } from '@ax/ipc-protocol';
-import {
+import { zodSummary,
   internalError,
   logInternalError,
   mapPluginError,
@@ -82,7 +82,7 @@ interface BusGetMetadataOutput {
 export const sessionGetConfigHandler: ActionHandler = async (rawPayload, ctx, bus) => {
   const parsed = SessionGetConfigRequestSchema.safeParse(rawPayload);
   if (!parsed.success) {
-    return validationError(`session.get-config: ${parsed.error.message}`);
+    return validationError(`session.get-config: ${zodSummary(parsed.error)}`);
   }
 
   let cfg: BusSessionGetConfigOutput;
@@ -140,7 +140,7 @@ export const sessionGetConfigHandler: ActionHandler = async (rawPayload, ctx, bu
     logInternalError(
       ctx.logger,
       'session.get-config',
-      new Error(`response shape drift: ${checked.error.message}`),
+      new Error(`response shape drift: ${zodSummary(checked.error)}`),
     );
     return internalError();
   }

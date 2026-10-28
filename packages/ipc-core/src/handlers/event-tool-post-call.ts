@@ -1,6 +1,6 @@
 import type { AgentContext, HookBus } from '@ax/core';
 import { EventToolPostCallSchema } from '@ax/ipc-protocol';
-import { validationError } from '../errors.js';
+import { zodSummary, validationError } from '../errors.js';
 import type { HandlerErr } from './types.js';
 
 // ---------------------------------------------------------------------------
@@ -23,7 +23,7 @@ export function validateEventToolPostCall(rawPayload: unknown):
   | HandlerErr {
   const parsed = EventToolPostCallSchema.safeParse(rawPayload);
   if (!parsed.success) {
-    return validationError(`event.tool-post-call: ${parsed.error.message}`);
+    return validationError(`event.tool-post-call: ${zodSummary(parsed.error)}`);
   }
   // Wire payload field is `call`; internal hook payload key is `toolCall`
   // (matches chat-loop.ts). Rename here so subscribers see the expected shape.

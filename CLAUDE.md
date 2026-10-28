@@ -160,7 +160,7 @@ When adding or changing a service-hook signature, or adding a subscriber hook wi
 - **Alternate impl this hook could have:** name one. (If you can't, consider whether this needs to be a hook at all vs. just a function inside one plugin.)
 - **Payload field names that might leak:** list any, or "none". (e.g., `sha`, `bucket`, `pod_name`, `socket_path`. If present, justify or rename.)
 - **Subscriber risk:** could a subscriber key off a backend-specific field and break when the alternate impl ships?
-- **Wire surface (if this is also an IPC action):** schema lives in this plugin's directory, not a central file.
+- **Wire surface (if this is also an IPC action):** use the shared contract in `@ax/ipc-protocol` (`actions.ts`, `events.ts` or a domain module). Validation/dispatch live with the owning handler. Describe any translation between the wire payload and hook payload.
 
 If you can't name an alternate impl, the abstraction may be premature — just write a function. If field names leak, rename now (cheap) before subscribers depend on them (expensive).
 
