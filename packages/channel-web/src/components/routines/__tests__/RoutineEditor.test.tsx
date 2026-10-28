@@ -42,6 +42,19 @@ function edit() {
     />,
   );
 }
+
+it('uses UTC when the browser reports an unusable default time zone', async () => {
+  const options = new Intl.DateTimeFormat().resolvedOptions();
+  const zone = vi.spyOn(Intl.DateTimeFormat.prototype, 'resolvedOptions').mockReturnValue({ ...options, timeZone: 'Etc/Unknown' });
+  try {
+    render(<RoutineEditor mode="create" agentId="a" agentName="Caveman" onSaved={vi.fn()} onCancel={vi.fn()} />);
+    fill('Name', 'Weekly report');
+    fill('What should Caveman do?', 'Prepare the weekly report.');
+    fireEvent.click(screen.getByRole('button', { name: 'Create routine' }));
+    await waitFor(() => expect(routineApi.create).toHaveBeenCalledOnce());
+    expect(vi.mocked(routineApi.create).mock.calls[0]![0].definition.schedule).toMatchObject({ kind: 'cron', tz: 'UTC' });
+  } finally { zone.mockRestore(); cleanup(); }
+});
 describe('structured routine form', () => {
   describe('shared Tasks form (PR4)', () => {
     it.each(['stay-on-top', 'get-done', 'repeat'] as const)('creates %s through the same human form and returns the saved ID', async kind => {

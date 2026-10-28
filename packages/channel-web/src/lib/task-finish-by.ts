@@ -8,9 +8,9 @@
  * never remaining" rule is about the agent's own estimate of how long a run
  * or a check-in has to go, which nobody can know. This is a count of whole
  * days to a date the PERSON picked, so it is no estimate: it is the date,
- * restated. The host counts it (`daysLeft`, in the task's time zone: its
- * schedule's, else its active hours', else the zone the person set the date
- * from, else UTC; TASK-955), so the page, the row and the check-in's brief
+ * restated. The host counts it (`daysLeft`, in the zone saved with the date,
+ * then the schedule's, then active hours', then UTC; TASK-961), so the page,
+ * the row and the check-in's brief
  * agree, and this file only words it.
  *
  * THE DATE IS A CALENDAR DAY, NEVER AN INSTANT. It is read at UTC midnight and
@@ -54,10 +54,10 @@ export function browserToday(now: Date = new Date()): string {
 
 /**
  * The browser's own time zone, or null when it can't tell (TASK-955). The
- * date field sends it with a date, and the host counts the days in it when the
- * task has no zone of its own. A browser that can't tell reports
+ * date field sends it with a date, and the host gives that calendar priority.
+ * A browser that can't tell reports
  * "Etc/Unknown", which `Intl` refuses, so a zone the contract's zone rule
- * refuses here is not sent at all and the date counts on UTC. The host would
+ * refuses here is not sent; the task's cron/active-hours zone, then UTC, is the fallback. The host would
  * drop it anyway (and log `workspace_finish_by_zone_unusable`); that warn line
  * is for a zone this browser knows and the host doesn't, not for this case.
  */

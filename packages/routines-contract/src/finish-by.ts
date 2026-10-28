@@ -18,8 +18,8 @@ import type { ActiveHours, RoutineSchedule } from './definition.js';
  * passed (TASK-906). A date in the past is a late task, and its brief says so.
  *
  * One calendar is shared by the brief, the Tasks row and the task page, so the
- * agent and the person count the same days: the task's own time zone, else the
- * one its date was set from (`taskTimeZone`), the date there
+ * agent and the person count the same days: the zone its date was set from,
+ * then its schedule/active-hours zone (`taskTimeZone`), the date there
  * (`calendarDateIn`), and whole days between two dates (`calendarDaysBetween`).
  */
 
@@ -60,23 +60,14 @@ export const RoutineFinishBySchema = z.string().superRefine((value, ctx) => {
 });
 
 /**
- * The time zone a task's calendar runs on, in four steps: its cron's, else its
- * active hours', else the zone its finish date was set from, else 'UTC'. A
- * cron's times are written in its own zone. An interval has no zone, so the
- * active hours', the hours of the person's day, come next. A task with neither
- * counts on the calendar of the person who set the date (TASK-955): the zone
- * their browser reported with it, stored beside it (`finishByTimeZone`).
- *
- * The task's own zone wins when the two differ (TASK-955 decisions row 2), so a
- * check-in's "today" is always the day its own schedule is on, and a task that
- * has a zone counts as it did before TASK-955. `finishByTimeZone` is required,
- * not optional: a caller that doesn't pass the stored zone fails to compile
- * rather than quietly counting in UTC. Callers pass a zone the contract's rule
- * (`RoutineTimezoneSchema`) accepted on this runtime, or null.
+ * The saved finish-date zone wins (TASK-961), so a UTC schedule cannot make
+ * the person's date overdue while it is still today on their calendar. Dates
+ * with no saved zone retain the cron, active-hours, then UTC fallback.
+ * `finishByTimeZone` is required so typed callers cannot silently omit it.
+ * Callers pass a zone accepted by RoutineTimezoneSchema on this runtime, or null.
  */
 export function taskTimeZone(row: { schedule: RoutineSchedule | null; activeHours: ActiveHours | null; finishByTimeZone: string | null }): string {
-  if (row.schedule?.kind === 'cron') return row.schedule.tz;
-  return row.activeHours?.tz ?? row.finishByTimeZone ?? 'UTC';
+  return row.finishByTimeZone ?? (row.schedule?.kind === 'cron' ? row.schedule.tz : row.activeHours?.tz ?? 'UTC');
 }
 
 /**

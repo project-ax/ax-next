@@ -78,11 +78,11 @@ describe('routines:set-finish-by (TASK-951)', () => {
     expect(await setFinishBy(h.teamAdmin, { ...key(task), ...dated })).toStrictEqual(dated);
     // Its owner sees the date and the zone it was set from beside the task's state...
     expect(await get(h.teamAdmin, task)).toMatchObject({ ...dated, task: { status: 'on-track' }, steps: [{ id: 's000001' }] });
-    // ...and so does anyone else who sees the task, without that state: the date is about the work, and holds no agent text,
-    // and so is its zone (TASK-955). Another admin of the team, who manages its tasks, and an ordinary member.
+    // The date remains shared task metadata. Its personal zone is owner-only,
+    // including when another team admin can stop the task (TASK-961).
     for (const person of [h.owner, h.teamMember]) {
-      expect(await get(person, task), person.userId).toMatchObject({ ...dated, task: null, steps: [] });
-      expect(await listed(person, task), person.userId).toMatchObject(dated);
+      expect(await get(person, task), person.userId).toMatchObject({ finishBy: DATE, finishByTimeZone: null, task: null, steps: [] });
+      expect(await listed(person, task), person.userId).toMatchObject({ finishBy: DATE, finishByTimeZone: null });
       for (const finishBy of ['2030-01-01', null]) {
         await expect(setFinishBy(person, { ...key(task), finishBy }), `${person.userId} ${finishBy}`).rejects.toMatchObject({ toolCode: 'forbidden' });
       }
