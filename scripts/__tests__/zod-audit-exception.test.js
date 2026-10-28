@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { readFileSync, realpathSync } from 'node:fs';
+import { readFileSync, readdirSync, realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { expect, it } from 'vitest';
 
@@ -22,6 +22,23 @@ import { expect, it } from 'vitest';
 // else: the patch is registered, every zod 3 in the tree is that one patched
 // 3.25.76, and every zod 4 is at 4.6.6 or later (the package.json override).
 const root = fileURLToPath(new URL('../../', import.meta.url));
+
+it('keeps first-party schemas on the patched zod 3 API until they are migrated', () => {
+  let checked = 0;
+  for (const entry of readdirSync(`${root}/packages`, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const manifest = JSON.parse(readFileSync(`${root}/packages/${entry.name}/package.json`, 'utf8'));
+    for (const section of ['dependencies', 'devDependencies']) {
+      const version = manifest[section]?.zod;
+      if (!version) continue;
+      checked++;
+      // Changing the manifest alone bypasses our issue cap and changes schema
+      // semantics. A zod 4 migration must replace this guard and the cap together.
+      expect(version, `${manifest.name} ${section}.zod`).toMatch(/^\^?3\./);
+    }
+  }
+  expect(checked).toBeGreaterThan(0);
+});
 
 let installed;
 function installedZods() {
