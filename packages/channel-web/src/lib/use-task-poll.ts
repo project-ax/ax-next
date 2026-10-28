@@ -84,10 +84,13 @@ function useBoundedTaskPoll<T, A>(
     timers.current = null;
   }, []);
 
-  const start = useCallback((by: TaskPollStarter) => {
+  // The caller retains its own snapshot across an unconfirmed send and its retries.
+  const capture = useCallback(() => ({ at: Date.now(), before: latest.current.snapshot }), []);
+
+  const start = useCallback((by: TaskPollStarter, captured?: { at: number; before: T | null }) => {
     if (!mounted.current || latest.current.snapshot === null) return;
     clear();
-    press.current = { at: Date.now(), before: latest.current.snapshot };
+    press.current = captured ?? { at: Date.now(), before: latest.current.snapshot };
     setPoll({ phase: 'checking', startedBy: by, arrived: null });
     timers.current = {
       tick: setInterval(() => latest.current.reread(), TASK_POLL_INTERVAL_MS),
@@ -125,7 +128,7 @@ function useBoundedTaskPoll<T, A>(
     }
   }, [snapshot, poll.phase, clear, stop]);
 
-  return { ...poll, start, stop };
+  return { ...poll, capture, start, stop };
 }
 
 /** Detail reads retain their fire identity and clock-slack arrival rule. */
