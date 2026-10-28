@@ -21,7 +21,7 @@
     "@ax/core": "workspace:*",
     "@ax/routines-contract": "workspace:*",
     "kysely": "0.28.17",
-    "zod": "^3.23.8"
+    "zod": "^4.6.6"
   },
   "devDependencies": {
     "@ax/database-postgres": "workspace:*",

@@ -22,7 +22,7 @@
     "@ax/sandbox-mount-protocol": "workspace:*",
     "@ax/user-files-read": "workspace:*",
     "@ax/sandbox-protocol": "workspace:*",
-    "zod": "^3.23.8"
+    "zod": "^4.6.6"
   },
   "devDependencies": {
     "@ax/ipc-server": "workspace:*",
