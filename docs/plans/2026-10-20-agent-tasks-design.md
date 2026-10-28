@@ -52,10 +52,15 @@ knows what it's for and says how it's going.
   TASK-982 merged as #1068: task-scoped addresses with explicit legacy cutover
   (schema version 18, owner-only setup/copy/replace).
   TASK-983 merged as #1070: durable FIFO inbox, serialized task
-  check-ins and response/safety timers (schema version 19). TASK-984 adds private
-  connection/test status and bounded refusal counts (schema version 20);
-  TASK-985 is the final kind acceptance walk after TASK-984 merges.
-  Work is sequential. PR 5 has no production deployment authorization.
+  check-ins and response/safety timers (schema version 19). TASK-984 merged as
+  #1071: private connection/test status and bounded refusal counts (schema
+  version 20). **The TASK-985 final kind walk passed on 2026-10-27** against
+  `f9290b121e40a89312546706d6c6979b88d9a325`, Helm revision 28 on
+  `kind-ax-next-dev`. The report, proof and masked desktop/mobile screenshots
+  are in `deploy/kind/walks/2026-10-27-TASK-985/`. All three kinds, signatures,
+  FIFO/full-read/retry, restart serialization, timers, connection/refusal status,
+  creator billing, privacy and approval gates passed; owned fixtures were removed.
+  PR 5 is accepted on kind. It has no production deployment authorization.
 - **Still later:** email notifications, sharing and “Also ask”. Their existing
   decisions are unchanged.
 - Settle the open questions in §14 as each PR needs them. Record answers in §15

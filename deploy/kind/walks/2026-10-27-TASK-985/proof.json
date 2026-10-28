@@ -1,0 +1,243 @@
+{
+  "migration-image-proof": {
+    "schema19To20": true,
+    "threeKindsPreserved": true,
+    "addressesAndSchedulesPreserved": true,
+    "liveRuntimeHashesMatchImage": true,
+    "revision": "f9290b121e40a89312546706d6c6979b88d9a325"
+  },
+  "burst-receipt-proof": {
+    "accepted": 21,
+    "duplicate": 202,
+    "rejectedSignature": 401,
+    "failedTestNeverConnected": true,
+    "privateStatusNoStore": true,
+    "durableInbox": 21,
+    "noImmediateRun": true,
+    "responseSeconds": 60,
+    "largeFirstEntry": true
+  },
+  "provider-initial-proof": {
+    "customGitHubAccepted": true,
+    "legacySignedAliasAccepted": true,
+    "stripeRejectedBadAndAcceptedValid": true,
+    "zendeskMemberAccepted": true,
+    "repeatDuplicate202": true
+  },
+  "slack-proof": {
+    "signedHandshake200": true,
+    "handshakeNeverQueued": true,
+    "verifiedSeparateFromConnected": true,
+    "signedEventAccepted": true
+  },
+  "fifo-privacy-timer-proof": {
+    "realRunnerReports": 2,
+    "batches": [
+      20,
+      1
+    ],
+    "consumed": 21,
+    "secretAndBearerAbsentFromRunner": true,
+    "currentOwnerRuns": true,
+    "safetySecondsFromLatestStart": 3600,
+    "oldTaskAndLegacy404": true,
+    "otherLegacy202": true,
+    "peerFullReadTranscript404": true,
+    "fullReadVerifiedBy": "structuredFullReadFollowup"
+  },
+  "failure-retry-proof": {
+    "deliberateNoToolBrief": true,
+    "firstCheckInDidNotReport": true,
+    "unseenEntryReleasedAndPreserved": true,
+    "schedulerRetried": true,
+    "secondCheckInReported": true,
+    "consumedOnlyAfterReport": true,
+    "noInputLoss": true
+  },
+  "restart-before-proof": {
+    "realBashSleepObserved": true,
+    "oneActive": true,
+    "manualBusy409": true,
+    "secondEventAccepted": true,
+    "replyHTTP": 200,
+    "replyOutcome": {
+      "checkIn": "queued"
+    }
+  },
+  "restart-final-proof": {
+    "runs": [
+      {
+        "started": "2026-10-28T01:44:11.841+00:00",
+        "completed": "2026-10-28T01:45:36.917+00:00",
+        "source": "manual",
+        "correctOwner": true
+      },
+      {
+        "started": "2026-10-28T01:45:41.904+00:00",
+        "completed": "2026-10-28T01:47:43.331+00:00",
+        "source": "tick",
+        "correctOwner": true
+      },
+      {
+        "started": "2026-10-28T01:48:17.328+00:00",
+        "completed": "2026-10-28T01:48:29.469+00:00",
+        "source": "tick",
+        "correctOwner": true
+      }
+    ],
+    "fires": [
+      {
+        "status": "ok",
+        "error": null
+      },
+      {
+        "status": "error",
+        "error": "The routine run was interrupted by a host restart."
+      },
+      {
+        "status": "ok",
+        "error": null
+      }
+    ],
+    "consumedExactly": 2,
+    "noPending": true,
+    "queuedReplyReplayed": true,
+    "reportAfterRestart": true
+  },
+  "restart-idempotency-fence-proof": {
+    "replayAfterCompletion": true,
+    "noExtraDispatch": true,
+    "noWakeIntent": true,
+    "interruptedSessionCleared": true
+  },
+  "active-hours-proof": {
+    "receivedOutsideHours": true,
+    "start": "03:00",
+    "end": "04:00",
+    "zone": "UTC",
+    "deferredTo": "2026-10-28 03:00:00+00",
+    "noAutomaticRun": true
+  },
+  "final-runtime-proof": {
+    "getDoneConsumed": true,
+    "scheduledSafetyTick": true,
+    "deadlineAcceleratedOnlyForFixture": true,
+    "safetyResetSeconds": 3600,
+    "declinedApprovalCreatedNothing": true,
+    "refusalSurvivedRestart": true,
+    "allRestartAttemptsSettled": true,
+    "noOverlapByAcceptedAndCompletedTimes": true,
+    "allRestartInputConsumed": true
+  },
+  "repeat-capacity-proof": {
+    "accepted": 35,
+    "refused": 3,
+    "active": 3,
+    "waiting": 32,
+    "totalDurable": 35,
+    "duplicateAtCapacity202": true,
+    "refusalsCounted": true,
+    "pausedAfterProbe": true
+  },
+  "team-privacy-proof": {
+    "memberCreatedTask": true,
+    "teamAdminSetup404": true,
+    "teamAdminStatus404": true,
+    "teamAdminDetail404": true,
+    "peerPersonalStatus404": true
+  },
+  "member-billing-proof": {
+    "dispatchOwnerIsCreator": true,
+    "creatorSessionRows": 1,
+    "memberConsumed": 1,
+    "adminSetup404": true
+  },
+  "usage-billing-proof": {
+    "memberOwnUsageBuckets": [
+      {
+        "creator": true,
+        "turns": 1,
+        "costMicros": 38851
+      }
+    ],
+    "dispatchAndSessionCreatorVerified": true
+  },
+  "approval-before-proof": {
+    "realChatRequestedCreate": true,
+    "liveApprovalCard": true,
+    "noTaskBeforeApproval": true
+  },
+  "retention-read-proof": {
+    "onlyFixtureCounterTimestampsAccelerated": true,
+    "expiredCountsHiddenImmediately": true,
+    "physicalPrunePending": true
+  },
+  "retention-prune-proof": {
+    "schedulerPhysicallyPrunedExpiredCounters": true,
+    "remainingBuckets": 0
+  },
+  "browser-proof": {
+    "desktop1280": true,
+    "mobile390": true,
+    "realCluster": true,
+    "copy": true,
+    "cancelAndReplace": true,
+    "responseSaveReload": "2m",
+    "safetyRequired": true,
+    "providerPreset": true,
+    "refusalVisible": true,
+    "controlled503Retry": true,
+    "adminPrivate404": true,
+    "memberOwnSetup": true,
+    "noOverflow": true,
+    "noSqueezedAction": true,
+    "pageErrors": [],
+    "unexpectedConsoleErrors": [],
+    "screenshotsMasked": true
+  },
+  "cleanup-proof": {
+    "ownedAgentsRemoved": 3,
+    "ownedAccountsRemoved": 2,
+    "ownedTeamRemoved": 1,
+    "ownedRunnerPodsRemoved": 8,
+    "scopedRowsZero": true,
+    "baselineDefinitionsAndReceiptsUnchanged": true,
+    "privateCredentialsRemoved": true,
+    "fixtureUsageRemoved": true,
+    "ownedAuthoredTasksRemoved": 7,
+    "remainingCredentialRowsAreEmptyTombstones": true,
+    "nonemptyOrphanTaskCredentials": 0
+  },
+  "runtimeHashes": {
+    "@ax/routines": "5ecd65d79e429f78f849d37bc033061a4460c020bf6cb8da7c01d39ac9d20cec",
+    "@ax/routines-contract": "ef64b90f6a4c4945e133b40d7e1f94f8375c5ffbc666bb7c531a4a2fde25b1f9",
+    "@ax/chat-orchestrator": "1d1bb069461b680f8d7360cb2e8cba25895e80d8bbd4ffb8a33db5bb680593b5",
+    "web": "e0ec6f42ae43b7ea6a824c35b2279ef9892f33766bca8bfb6175f8985c422dd7"
+  },
+  "helmRevision": 28,
+  "image": "ax-next/agent:task985-f9290b121",
+  "structuredFullReadFollowup": {
+    "structuredAssistantToolUse": true,
+    "readToolCalls": 20,
+    "pairedReadToolResults": 20,
+    "successfulReadResultsContainingUnknownTail": 1,
+    "tailMarkerAbsentFromPrompt": true,
+    "tailMarkerQuotedInRoutineReportNotes": true,
+    "markerSha256": "4a95d1c06140d36bddc43c7016cb63059fc00afc8496b6a97f60f4a767a533c4",
+    "noSecretOrBearerInTranscript": true,
+    "batches": [
+      20,
+      1
+    ],
+    "consumed": 21,
+    "pending": 0
+  },
+  "fullReadFollowupCleanup": {
+    "ownedAgentRemoved": 1,
+    "ownedAuthoredTaskRemoved": 1,
+    "ownedAccountRemoved": 1,
+    "ownedRunnerPodsRemoved": 2,
+    "nonemptyCredentials": 0,
+    "baselineAndOriginalReceiptsPreserved": true
+  }
+}
