@@ -22,7 +22,7 @@
     "@ax/http-server": "workspace:*",
     "@ax/ipc-protocol": "workspace:*",
     "picomatch": "^4.0.4",
-    "zod": "^4.6.6"
+    "zod": "^3.23.8"
   },
   "devDependencies": {
     "@ax/mcp-client": "workspace:*",

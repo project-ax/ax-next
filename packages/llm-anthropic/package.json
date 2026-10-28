@@ -20,7 +20,7 @@
   "dependencies": {
     "@ax/core": "workspace:*",
     "@anthropic-ai/sdk": "^0.91.1",
-    "zod": "^4.6.6"
+    "zod": "^3.23.8"
   },
   "devDependencies": {
     "@types/node": "^25.6.0",
