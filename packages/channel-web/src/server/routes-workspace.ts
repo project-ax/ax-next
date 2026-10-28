@@ -2349,11 +2349,15 @@ async function resolveAgentOr404(
     );
     return r.agent;
   } catch (err) {
-    if (err instanceof PluginError || isRejection(err)) {
+    const code = err instanceof SafeToolError ? err.toolCode
+      : err instanceof PluginError || isRejection(err) ? err.code : undefined;
+    if (code === 'not-found' || code === 'forbidden') {
       res.status(404).json({ error: 'agent-not-found' });
       return null;
     }
-    throw err;
+    ctx.logger.warn('workspace_agent_resolution_failed', { agentId });
+    res.status(503).json({ error: 'agent-unavailable' });
+    return null;
   }
 }
 

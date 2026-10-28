@@ -532,8 +532,13 @@ export function TaskPage({
       // This link stays visible through either outcome; never focus the hidden composer.
       if (hadFocus) tasksLinkRef.current?.focus();
     }
-    if (checkIn === 'started' || checkIn === 'replayed') poll.start('reply');
     refresh();
+  };
+  const onReplySendStart = () => {
+    const captured = poll.capture();
+    return (checkIn: TaskReplyCheckIn) => {
+      if (checkIn === 'started' || checkIn === 'replayed') poll.start('reply', captured);
+    };
   };
 
   // A saved finish date shows at once; the page then reads the task again (TASK-951).
@@ -609,6 +614,7 @@ export function TaskPage({
               copyLine={copyLine}
               onRefresh={refresh}
               onReplySent={onReplySent}
+              onReplySendStart={onReplySendStart}
               onTaskWriteSucceeded={onTaskWriteSucceeded}
               onStepsChanged={replaceSteps}
               onFinishBySaved={onFinishBySaved}
@@ -803,6 +809,7 @@ function TaskBody({
   copyLine,
   onRefresh,
   onReplySent,
+  onReplySendStart,
   onTaskWriteSucceeded,
   onStepsChanged,
   onFinishBySaved,
@@ -826,6 +833,7 @@ function TaskBody({
   copyLine: boolean;
   onRefresh: () => void;
   onReplySent: (checkIn: TaskReplyCheckIn, closeBox?: boolean) => void;
+  onReplySendStart: () => (checkIn: TaskReplyCheckIn) => void;
   onTaskWriteSucceeded: () => void;
   /** A step change's answer: the steps as they now are, swapped in with no re-read (TASK-949). */
   onStepsChanged: (steps: TaskStep[]) => void;
@@ -995,6 +1003,7 @@ function TaskBody({
             inputRef={boxRef}
             completedCheckIn={poll.arrived === null ? null : `${poll.arrived.firedAt}|${poll.arrived.conversationId ?? ''}`}
             onSent={(checkIn) => onReplySent(checkIn, true)}
+            onSendStart={onReplySendStart}
           />
         )}
       </div>
@@ -1063,6 +1072,7 @@ function TaskBody({
           inputRef={replyRef}
           completedCheckIn={poll.arrived === null ? null : `${poll.arrived.firedAt}|${poll.arrived.conversationId ?? ''}`}
           onSent={onReplySent}
+          onSendStart={onReplySendStart}
         />
       )}
     </>

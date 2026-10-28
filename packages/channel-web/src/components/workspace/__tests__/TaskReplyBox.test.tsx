@@ -32,6 +32,7 @@ function renderBox(
     canStart: boolean;
     mode: TaskReplyMode;
     onSent: (c: TaskReplyCheckIn) => void;
+    onSendStart: () => void;
     inputRef: Ref<HTMLTextAreaElement>;
   }> = {},
 ) {
@@ -47,6 +48,7 @@ function renderBox(
         canStart={over.canStart ?? true}
         {...(over.mode === undefined ? {} : { mode: over.mode })}
         onSent={onSent}
+        {...(over.onSendStart === undefined ? {} : { onSendStart: over.onSendStart })}
         {...(over.inputRef === undefined ? {} : { inputRef: over.inputRef })}
       />
     </>,
@@ -240,15 +242,20 @@ describe('TaskReplyBox — the request id', () => {
     ['an answer it couldn’t read', () => new WorkspaceShapeError('/x')],
   ])('an unconfirmed send (%s) keeps its id for the same text, so a retry can’t store it twice', async (_l, fail) => {
     sendMock.mockRejectedValueOnce(fail()).mockResolvedValueOnce({ checkIn: 'started' });
-    const { onSent } = renderBox();
+    const observe = vi.fn();
+    const onSendStart = vi.fn(() => observe);
+    const { onSent } = renderBox({ onSendStart });
     await send('Hi');
     expect(screen.getByRole('alert').textContent).toBe(UNCONFIRMED);
     expect(box().value).toBe('Hi');
     expect(onSent).not.toHaveBeenCalled();
+    expect(observe).not.toHaveBeenCalled();
     fireEvent.click(sendButton());
     await waitFor(() => expect(onSent).toHaveBeenCalledTimes(1));
     expect(sendMock).toHaveBeenCalledTimes(2);
     expect(sendMock.mock.calls[1]![2].requestId).toBe(sendMock.mock.calls[0]![2].requestId);
+    expect(onSendStart).toHaveBeenCalledTimes(1);
+    expect(observe).toHaveBeenCalledExactlyOnceWith('started');
     expect(screen.queryByRole('alert')).toBeNull();
   });
 

@@ -135,6 +135,7 @@ export function TaskReplyBox({
   canStart,
   mode = 'reply',
   onSent,
+  onSendStart,
   completedCheckIn = null,
   inputRef,
   formHidden = false,
@@ -149,6 +150,8 @@ export function TaskReplyBox({
   /** `reply` unless this is a Not yet or a Reopen; see THREE MODES above. */
   mode?: TaskReplyMode;
   onSent: (checkIn: TaskReplyCheckIn) => void;
+  /** A response observer bound to the first attempt; retries retain the same observer. */
+  onSendStart?: () => ((checkIn: TaskReplyCheckIn) => void) | void;
   /** Identity of the completed check-in the parent observed; clears only its running receipt. */
   completedCheckIn?: string | null;
   inputRef?: Ref<HTMLTextAreaElement>;
@@ -177,7 +180,7 @@ export function TaskReplyBox({
       s.completionAtSend !== completedCheckIn ? null : s,
     );
   }, [completedCheckIn, sent]);
-  const pending = useRef<{ text: string; requestId: string } | null>(null);
+  const pending = useRef<{ text: string; requestId: string; observe: ((checkIn: TaskReplyCheckIn) => void) | void } | null>(null);
   const inFlight = useRef(false);
   const textarea = useRef<HTMLTextAreaElement | null>(null);
   const sendButton = useRef<HTMLButtonElement | null>(null);
@@ -207,7 +210,7 @@ export function TaskReplyBox({
     const op =
       pending.current !== null && pending.current.text === text
         ? pending.current
-        : { text, requestId: crypto.randomUUID() };
+        : { text, requestId: crypto.randomUUID(), observe: onSendStart?.() };
     pending.current = op;
     const completionAtSend = completion.current;
     try {
@@ -221,6 +224,7 @@ export function TaskReplyBox({
       // A sent Reopen has switched the task on, whatever `enabled` said of the Done task:
       // `not-allowed` then still has a next check-in, and `paused` means paused again since.
       setSent({ checkIn: answer.checkIn, enabled: enabled || mode === 'reopen', completionAtSend });
+      if (typeof op.observe === 'function') op.observe(answer.checkIn);
       onSent(answer.checkIn);
     } catch (e) {
       logRequestFailure(e, mode === 'reply' ? 'task-reply' : 'task-reopen');
