@@ -116,6 +116,13 @@ export function createRoutinesAdminHandlers(deps: AdminDeps) {
   const item = (req: RouteRequest, res: RouteResponse) =>
     key(req, res, true) as C.RoutineKey | undefined;
   return {
+    webhookStatus: scoped(deps, async (req, res, ctx) => {
+      const input = item(req, res);
+      if (!input) return;
+      const out = await call('routines:webhook-status', ctx, input, C.RoutineWebhookStatusOutputSchema);
+      res.header?.('Cache-Control', 'no-store');
+      res.status(200).json(out);
+    }),
     taskReceiver: scoped(deps, async (req, res, ctx) => {
       const input = item(req, res);
       if (!input) return;
@@ -365,6 +372,7 @@ export async function registerRoutinesAdminRoutes(
     { method: 'DELETE', path: `${base}/consent`, handler: h.revokeConsent },
     { method: 'GET', path: `${base}/receiver`, handler: h.receiver },
     { method: 'GET', path: `${base}/receiver-access`, handler: h.receiverAccess },
+    { method: 'GET', path: `${base}/:routineId/receiver/status`, handler: h.webhookStatus },
     { method: 'GET', path: `${base}/:routineId/receiver`, handler: h.taskReceiver },
     { method: 'POST', path: `${base}/:routineId/receiver/replace`, handler: h.replaceTaskReceiver },
     { method: 'GET', path: base, handler: h.list },

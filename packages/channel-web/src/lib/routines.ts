@@ -234,6 +234,9 @@ export const routineApi = {
   getReceiver(agentId: string): Promise<{ url: string }> {
     return request(`${collection(agentId)}/receiver`);
   },
+  getWebhookStatus(key: RoutineKey): Promise<import('@ax/routines-contract').RoutineWebhookStatus> {
+    return request(`${item(key)}/receiver/status`);
+  },
   getTaskReceiver(key: RoutineKey): Promise<RoutineReceiver> {
     return request(`${collection(key.agentId)}/${encodeURIComponent(key.routineId)}/receiver`);
   },

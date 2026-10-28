@@ -17,6 +17,17 @@ export const RoutineGetInputSchema = RoutineKeySchema;
 export const RoutineWebhookAddressInputSchema = RoutineKeySchema;
 export const RoutineReplaceWebhookAddressInputSchema = RoutineKeySchema.extend({ expectedVersion: z.string().regex(/^[a-f0-9]{64}$/) }).strict();
 export const RoutineWebhookAddressOutputSchema = z.object({ token: z.string().regex(/^rt_[A-Za-z0-9_-]{43}$/), version: z.string().regex(/^[a-f0-9]{64}$/), legacyActive: z.boolean() }).strict();
+/** Private connection evidence; acceptance is distinct from execution. No request content. */
+export const WebhookRefusalReasonSchema = z.enum(['signature', 'secret', 'invalid-body', 'unsupported-content', 'event-filter', 'delivery-id', 'capacity', 'unavailable', 'paused', 'too-large']);
+export type WebhookRefusalReason = z.infer<typeof WebhookRefusalReasonSchema>;
+export const RoutineWebhookStatusOutputSchema = z.object({
+  agentId: RoutineOpaqueStringSchema, routineId: RoutineOpaqueStringSchema,
+  setupReady: z.boolean(), app: z.enum(['stripe', 'slack', 'zendesk', 'other']),
+  lastAcceptedAt: RoutineInstantSchema.nullable(), signatureChecked: z.boolean(),
+  verifiedAt: RoutineInstantSchema.nullable(), windowStart: RoutineInstantSchema,
+  refusals: z.array(z.object({ reason: WebhookRefusalReasonSchema, count: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER) }).strict()).max(10),
+}).strict();
+export type RoutineWebhookStatus = z.infer<typeof RoutineWebhookStatusOutputSchema>;
 export const RoutineListOutputSchema = z.object({ routines: z.array(RoutineViewSchema) }).strict();
 /** What the `routine_list` tool returns: the service's list, without any task's agent notes (TASK-907). */
 export const RoutineListToolOutputSchema = z.object({ routines: z.array(RoutineListToolViewSchema) }).strict();

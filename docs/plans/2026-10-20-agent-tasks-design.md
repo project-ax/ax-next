@@ -51,9 +51,10 @@ knows what it's for and says how it's going.
   TASK-980 supplied the required audited dependency updates on main;
   TASK-982 merged as #1068: task-scoped addresses with explicit legacy cutover
   (schema version 18, owner-only setup/copy/replace).
-  TASK-983 wires the durable FIFO inbox, serialized task
-  check-ins and response/safety timers (schema version 19); TASK-984 completes connection/test
-  status and refusal counts; TASK-985 is the final kind acceptance walk.
+  TASK-983 merged as #1070: durable FIFO inbox, serialized task
+  check-ins and response/safety timers (schema version 19). TASK-984 adds private
+  connection/test status and bounded refusal counts (schema version 20);
+  TASK-985 is the final kind acceptance walk after TASK-984 merges.
   Work is sequential. PR 5 has no production deployment authorization.
 - **Still later:** email notifications, sharing and “Also ask”. Their existing
   decisions are unchanged.
@@ -582,6 +583,26 @@ The agent never sees the address or the secret, as today, so a task the agent
 drafts in chat starts as "Waiting for setup" and the person finishes it on the
 task page.
 
+TASK-984 records an accepted update in the same transaction that saves its
+input. A test sent from the other app uses this same receiver and may start
+paid work under the task's usual rules. “Connected” means the app's update was
+safely received; the check-in's result remains under Updates. A signed Slack
+address-verification handshake is shown separately and never enters the inbox.
+The owner can use **Check connection** to reload evidence after sending a test.
+A failed read clears the old status and offers a retry.
+
+Refusal evidence contains only fixed reasons and counts in at most 60 minute
+buckets per task. The card states the exact window start (“since …”), rather
+than implying a second-precise rolling hour. The existing scheduler removes
+expired buckets, including on idle tasks; reads ignore expired counts at once.
+No request body, header, delivery identifier, address or secret enters this
+status. Owner changes, webhook edits, address replacement and signing-secret
+writes clear old evidence. Requests in flight recheck a private setup generation
+before recording evidence or accepting input. An uncertain secret write clears
+evidence too. The status read has the same owner-and-edit boundary as private
+address setup, and never appears in generic task views or agent tools.
+
+
 ### 5.3 Every routine setting has a home
 
 | In routines today | In Tasks |
@@ -610,10 +631,13 @@ per-task token decision: the upgrade requires no sender reconfiguration, while
 an explicit replacement affects one task. TASK-982 owns implementation and
 rotation-race tests; TASK-981 leaves current addressing unchanged.
 
-### 5.4 Gaps in today's webhook code
+### 5.4 Original webhook gaps and required guarantees
 
-These come from `packages/routines/src/webhook-handler.ts` and matter more once
-webhooks are easier to find:
+This list records the original design gaps in
+`packages/routines/src/webhook-handler.ts`. PR 4 supplied Repeat caps and dedupe;
+TASK-981 added provider signatures, TASK-982 isolated addresses, TASK-983 added
+the batched inbox, and TASK-984 adds private refusal evidence (§5.2). The
+original problems and the required behavior are:
 
 - **No cap and no dedupe.** Every accepted delivery starts its own run, and a
   sender's retry starts another, because each request gets a fresh

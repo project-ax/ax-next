@@ -110,6 +110,7 @@ function setup(
     return { agent: { ownerId: 'team' } };
   });
   for (const [hook, result] of Object.entries({
+    'routines:webhook-status': { agentId: 'a', routineId: 'rtn_a', setupReady: true, app: 'other', lastAcceptedAt: null, signatureChecked: false, verifiedAt: null, windowStart: '2031-01-01T11:01:00.000Z', refusals: [] },
     'routines:webhook-address': { token: 'rt_' + 'a'.repeat(43), version: 'a'.repeat(64), legacyActive: true },
     'routines:replace-webhook-address': { token: 'rt_' + 'b'.repeat(43), version: 'b'.repeat(64), legacyActive: false },
     'routines:list': { routines: [view] },
@@ -409,6 +410,7 @@ describe('the Settings routes answer no task state (TASK-957)', () => {
     revokeConsent: req({}),
     receiver: req(),
     receiverAccess: req(),
+    webhookStatus: req(),
     taskReceiver: req(),
     replaceTaskReceiver: req({ expectedVersion: 'a'.repeat(64) }),
   };

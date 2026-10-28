@@ -1,3 +1,4 @@
+import { writeWebhookObservation } from './webhook-health.js';
 import { createHash } from 'node:crypto';
 import { sql, type Kysely, type Selectable } from 'kysely';
 import type { BlobRef } from '@ax/core';
@@ -99,6 +100,7 @@ export function createTaskEventStore(db:DB) {
         const active=await trx.selectFrom('routines_v1_dispatches').select('dispatch_id').where('agent_id','=',raw.agent_id).where('routine_id','=',raw.routine_id).where('completed_at','is',null).limit(1).executeTakeFirst();
         await trx.insertInto('routines_v1_task_events').values({event_id:opaqueId('update'),agent_id:raw.agent_id,routine_id:raw.routine_id,owner_user_id:raw.owner_user_id,received_at:input.now,expires_at:new Date(input.now.getTime()+TASK_EVENT_LIMITS.retentionMs),delivery_id_hash:hash,blob_ref:stored.sha256,byte_length:bytes.length,dispatch_id:null,consumed_at:null,may_be_own_change:active!==undefined}).execute();
         await nudgeTaskEvents(trx,rowToRoutine(raw),input.now);
+        if (input.address) await writeWebhookObservation(trx, raw, 'accepted', input.now);
         return 'accepted';
       }));
     },

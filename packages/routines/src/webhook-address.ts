@@ -1,19 +1,19 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { SafeToolError } from '@ax/core';
 import { serializeAdmission } from './admission-order.js';
-import type { Kysely, Selectable, Transaction } from 'kysely';
+import { sql, type Kysely, type Selectable, type Transaction } from 'kysely';
 import type { RoutineKey } from '@ax/routines-contract';
 import type { RoutinesDatabase, RoutinesDefinitionsRow } from './migrations.js';
 import type { StoredRoutine } from './types.js';
 
-export type WebhookAddressProof = { kind: 'task' | 'legacy'; token: string };
+export type WebhookAddressProof = { kind: 'task' | 'legacy'; token: string; generation?: string };
 type Raw = Selectable<RoutinesDefinitionsRow>;
 type DB = Kysely<RoutinesDatabase>;
 const version = (token: string) => createHash('sha256').update(token).digest('hex');
 
 /** Called again while the admission transaction holds the definition lock. */
 export function webhookAddressMatches(row: Raw, proof: WebhookAddressProof): boolean {
-  return proof.kind === 'task' ? row.webhook_address_token === proof.token : row.webhook_legacy_enabled;
+  return (proof.generation === undefined || row.webhook_health_generation === proof.generation) && (proof.kind === 'task' ? row.webhook_address_token === proof.token : row.webhook_legacy_enabled);
 }
 
 export function createWebhookAddressStore(db: DB, helpers: {
@@ -29,7 +29,7 @@ export function createWebhookAddressStore(db: DB, helpers: {
       const replace = input.expectedVersion !== undefined;
       const token = replace || row.webhook_address_token === null ? `rt_${randomBytes(32).toString('base64url')}` : row.webhook_address_token;
       const legacyActive = !replace && row.webhook_legacy_enabled;
-      await trx.updateTable('routines_v1_definitions').set({ webhook_address_token: token, webhook_legacy_enabled: legacyActive }).where('agent_id', '=', input.agentId).where('routine_id', '=', input.routineId).execute();
+      await trx.updateTable('routines_v1_definitions').set({ webhook_address_token: token, webhook_legacy_enabled: legacyActive, ...(replace ? { webhook_health: null, webhook_health_generation: sql<string>`gen_random_uuid()::text` } : {}) }).where('agent_id', '=', input.agentId).where('routine_id', '=', input.routineId).execute();
       return { token, version: version(token), legacyActive };
     }));
   }

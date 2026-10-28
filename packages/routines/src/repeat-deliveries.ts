@@ -1,3 +1,4 @@
+import { writeWebhookObservation } from './webhook-health.js';
 import { serializeAdmission } from './admission-order.js';
 import { createHash } from 'node:crypto';
 import { sql, type Kysely, type Selectable } from 'kysely';
@@ -38,6 +39,7 @@ export function createRepeatDeliveryStore(db: DB, executorId: string) {
         if (!/^[a-f0-9]{64}$/.test(stored.sha256) || stored.size !== bytes.length) throw new Error('App update storage did not confirm its bytes.');
         await trx.insertInto('routines_v1_deliveries').values({ delivery_id: opaqueId('delivery'), agent_id: row.agentId, routine_id: row.routineId, owner_user_id: row.ownerUserId,
           accepted_at: input.now, expires_at: new Date(input.now.getTime()+LIMIT.retentionMs), github_id_hash: hash, configuration_hash: configurationHash(row), blob_ref: stored.sha256, byte_length: bytes.length, dispatch_id: null, invalidated_reason: null, completed_at: null }).execute();
+        if (input.address) await writeWebhookObservation(trx, raw, 'accepted', input.now);
         return 'accepted';
       }));
     },

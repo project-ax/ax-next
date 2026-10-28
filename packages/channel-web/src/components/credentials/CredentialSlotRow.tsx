@@ -15,6 +15,7 @@ export interface CredentialSlotRowProps {
   slot: { label: string; kind: 'api-key'; description?: string };
   scope: { scope: 'global' | 'agent'; ownerId: string | null };
   displayName?: string;
+  onSaved?: () => void;
 }
 
 export function CredentialSlotRow(props: CredentialSlotRowProps) {
@@ -24,7 +25,7 @@ export function CredentialSlotRow(props: CredentialSlotRowProps) {
   return <CredentialSlotTarget key={identity} {...props} />;
 }
 
-function CredentialSlotTarget({ destination, slot, scope, displayName }: CredentialSlotRowProps) {
+function CredentialSlotTarget({ destination, slot, scope, displayName, onSaved }: CredentialSlotRowProps) {
   const ref = refForDestination(destination);
   const [open, setOpen] = useState(false);
   const [isSet, setIsSet] = useState(false);
@@ -94,7 +95,7 @@ function CredentialSlotTarget({ destination, slot, scope, displayName }: Credent
         <div className="mt-4">
           <CredentialSlotForm destination={destination} slot={slot} scope={scope} current={{ set: isSet }}
             {...(destination.kind === 'routine-hmac' && routineInfo?.manageSecret ? { expectedRevision: routineInfo.revision } : {})}
-            onSaved={() => { setOpen(false); void refresh(); }} />
+            onSaved={() => { setOpen(false); onSaved?.(); void refresh(); }} />
         </div>
       </SheetContent>
     </Sheet>

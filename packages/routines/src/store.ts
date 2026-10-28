@@ -15,6 +15,7 @@ import { createRequestHashes, updateRequestHashes, deleteRequestHash, completeRe
 import { AcceptedDispatchSchema, DispatchOutcomeSchema, DispatchReportSchema } from './dispatch.js';
 import { changeStoredSteps, storedSteps, StepsReceiptSchema } from './steps.js';
 import { copiedSteps, duplicateName } from './duplicate.js';
+import { createWebhookHealthStore } from './webhook-health.js';
 import { createWebhookAddressStore } from './webhook-address.js';
 
 type DB = Kysely<RoutinesDatabase>;
@@ -23,7 +24,7 @@ export type CleanupJob = { agentId: string; routineId: string; credentialRef: st
 export type AcceptDispatchInput = RoutineKey & Actor & { expectedRevision: string; source: FireSource; requestId: string; now: Date };
 export type OperationKey = { agentId: string; actorUserId: string; operation: string; requestId: string; inputHash: string; compatibleInputHashes?: readonly string[] };
 export type DefaultRoutineDetailRow = Omit<import('@ax/routines-contract').RoutineGetDefaultOutput, 'updatedAt'> & { updatedAt: Date };
-export interface RoutinesStore extends ReturnType<typeof createWebhookAddressStore>, ReturnType<typeof createTaskEventStore> {
+export interface RoutinesStore extends ReturnType<typeof createWebhookHealthStore>, ReturnType<typeof createWebhookAddressStore>, ReturnType<typeof createTaskEventStore> {
   createAuthored(input: RoutineCreateInput & Actor & { ownerUserId: string; now: Date }): Promise<StoredRoutine>;
   updateAuthored(input: RoutineUpdateInput & Actor & { now: Date; stopOnly: boolean }): Promise<StoredRoutine>;
   deleteAuthored(input: RoutineDeleteInput & Actor & { now: Date }): Promise<RoutineDeleteOutput>;
@@ -965,6 +966,7 @@ function jobFromRow(r: { agent_id: string; routine_id: string; credential_ref: s
  */
 export function createRoutinesStore(db: DB, executorId?: string): RoutinesStore {
   return {
+    ...createWebhookHealthStore(db),
     ...createWebhookAddressStore(db, { lockLiveAgent, rowToRoutine }),
     ...createTaskEventStore(db),
     async createAuthored(input) {
@@ -1003,6 +1005,7 @@ export function createRoutinesStore(db: DB, executorId?: string): RoutinesStore 
           await trx.deleteFrom('routines_v1_task_events').where('agent_id','=',input.agentId).where('routine_id','=',input.routineId).execute();
         }
         const row = await trx.updateTable('routines_v1_definitions').set({
+          ...(JSON.stringify(current.webhook) !== JSON.stringify(next.webhook) ? { webhook_health: null, webhook_health_generation: sql<string>`gen_random_uuid()::text` } : {}),
           ...definitionColumns(next), revision: opaqueId('rev'), updated_at: input.now,
           ...(next.webhook === null ? { webhook_address_token: null, webhook_legacy_enabled: false } : {}),
           next_run_at: schedulingChanged(current, next) ? nextRun(next, input.now) : current.nextRunAt,
@@ -1544,13 +1547,20 @@ export function createRoutinesStore(db: DB, executorId?: string): RoutinesStore 
         .where(eb=>eb.or([eb('kind','=','repeat'),eb('task_check_in_requested','=',false)])).execute();
     },
     async withLockedWebhookSecret(input, effect) {
-      return db.transaction().execute(async trx => {
+      const result = await db.transaction().execute(async trx => {
         const row = await lockRoutine(trx, input);
         await assertNoCleanup(trx, row);
         if (!hasHmac(row)) throw new SafeToolError('validation', 'webhook.hmac');
-        await effect();
-        return { saved: true as const };
+        let outcome: { saved: true } | { failed: unknown };
+        try { await effect(); outcome = { saved: true }; }
+        catch (error) { outcome = { failed: error }; }
+        // An unsuccessful vault response may still have changed the secret.
+        // Commit evidence invalidation even then, and preserve the original error.
+        await trx.updateTable('routines_v1_definitions').set({ webhook_health: null, webhook_health_generation: sql<string>`gen_random_uuid()::text` }).where('agent_id', '=', input.agentId).where('routine_id', '=', input.routineId).execute();
+        return outcome;
       });
+      if ('failed' in result) throw result.failed;
+      return result;
     },
     async pendingCleanup(input) {
       return (await db.selectFrom('routines_v1_credential_cleanup').selectAll().orderBy('created_at').limit(Math.max(1, Math.min(input.limit, 200))).execute()).map(jobFromRow);
@@ -1888,6 +1898,7 @@ export function createRoutinesStore(db: DB, executorId?: string): RoutinesStore 
                last_status = NULL,
                last_error = NULL,
                last_warning = NULL,
+               webhook_health = NULL,
                webhook_address_token = NULL,
                webhook_legacy_enabled = false,
                task_check_in_requested = false,

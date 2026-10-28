@@ -6,6 +6,7 @@ import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle }
 import { FieldGroup } from '@/components/ui/field';
 import { Skeleton } from '@/components/ui/skeleton';
 import { CredentialSlotRow } from '@/components/credentials/CredentialSlotRow';
+import { TaskAppConnection } from './TaskAppConnection';
 import { WebhookAddressFields } from '@/components/routines/WebhookAddressFields';
 
 /** Private setup stays behind a current owner/edit read; generic task details carry no address. */
@@ -17,6 +18,7 @@ function AppSetup({ agentId, routineId, onEdit }: Parameters<typeof TaskAppUpdat
   const [row, setRow] = useState<Routine | null>(null);
   const [failed, setFailed] = useState(false);
   const [generation, setGeneration] = useState(0);
+  const [connectionGeneration, setConnectionGeneration] = useState(0);
   const [busy, setBusy] = useState(false);
   useEffect(() => {
     let current = true;
@@ -42,7 +44,8 @@ function AppSetup({ agentId, routineId, onEdit }: Parameters<typeof TaskAppUpdat
         <WebhookAddressFields agentId={agentId} routineId={routineId} path={row.webhook.path} saved disabled={busy} onPendingChange={setBusy} />
         {row.webhook.hmac && row.permissions.manageSecret ? <CredentialSlotRow
           destination={{ kind: 'routine-hmac', agentId, routineId }} slot={{ label: 'Webhook signing secret', kind: 'api-key' }}
-          scope={{ scope: 'agent', ownerId: agentId }} /> : <p className="text-sm text-muted-foreground">{row.webhook.hmac ? 'Signing secret management is currently unavailable.' : 'Signature verification is recommended. Choose the app in Edit app setup, then save its signing secret here.'}</p>}
+          scope={{ scope: 'agent', ownerId: agentId }} onSaved={() => setConnectionGeneration(value => value + 1)} /> : <p className="text-sm text-muted-foreground">{row.webhook.hmac ? 'Signing secret management is currently unavailable.' : 'Signature verification is recommended. Choose the app in Edit app setup, then save its signing secret here.'}</p>}
+        {!busy && <TaskAppConnection key={connectionGeneration} agentId={agentId} routineId={routineId} />}
         <p className="text-sm text-muted-foreground">The address and signing secret stay private. The agent receives only the app’s updates.</p>
       </FieldGroup> : <Skeleton aria-label="Loading app setup" className="h-24 w-full" />}
     </CardContent>

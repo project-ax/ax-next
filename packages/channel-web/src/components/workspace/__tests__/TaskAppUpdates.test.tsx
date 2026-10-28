@@ -3,12 +3,13 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { TaskAppUpdates } from '../TaskAppUpdates';
 import { routineApi, type Routine } from '@/lib/routines';
 import { routineFixture } from '@/components/routines/__tests__/routine-fixture';
-vi.mock('@/lib/routines', async original => ({ ...(await original<typeof import('@/lib/routines')>()), routineApi: { get: vi.fn(), getTaskReceiver: vi.fn(), replaceTaskReceiver: vi.fn() } }));
+vi.mock('@/lib/routines', async original => ({ ...(await original<typeof import('@/lib/routines')>()), routineApi: { get: vi.fn(), getWebhookStatus: vi.fn(), getTaskReceiver: vi.fn(), replaceTaskReceiver: vi.fn() } }));
 vi.mock('@/components/credentials/CredentialSlotRow', () => ({ CredentialSlotRow: ({ destination }: { destination: unknown }) => <p>Signing secret {JSON.stringify(destination)}</p> }));
 const row: Routine = { ...routineFixture, kind: 'stay-on-top', goodWhen: 'All handled.', webhook: { kind: 'webhook', path: '/updates', hmac: { app: 'slack' } } };
 beforeEach(() => {
   vi.resetAllMocks();
   vi.mocked(routineApi.get).mockResolvedValue(row);
+  vi.mocked(routineApi.getWebhookStatus).mockResolvedValue({ agentId: 'a', routineId: 'opaque-r1', app: 'slack', setupReady: true, lastAcceptedAt: null, signatureChecked: false, verifiedAt: null, windowStart: '2031-01-01T11:01:00.000Z', refusals: [] });
   vi.mocked(routineApi.getTaskReceiver).mockResolvedValue({ url: '/webhooks/private-task-token', version: 'a'.repeat(64), legacyActive: false });
 });
 function show() { const onEdit = vi.fn(); return { ...render(<TaskAppUpdates agentId="a" routineId="opaque-r1" onEdit={onEdit} />), onEdit }; }
