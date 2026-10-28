@@ -11,7 +11,7 @@ import { fullTaskEventPayload, readTaskEventContent } from './task-event-content
 const PLUGIN = '@ax/routines';
 export const ROUTINE_SERVICES = [
   'list', 'get', 'create', 'update', 'delete', 'fire-now', 'recent-fires', 'recent-fires-for-agent',
-  'set-webhook-secret', 'webhook-address', 'replace-webhook-address', 'list-defaults', 'get-default', 'upsert-default', 'delete-default',
+  'webhook-status', 'set-webhook-secret', 'webhook-address', 'replace-webhook-address', 'list-defaults', 'get-default', 'upsert-default', 'delete-default',
   'set-agent-default-enabled', 'list-agent-defaults', 'report', 'clear-notes', 'tasks-for-conversations',
   'reply', 'recent-replies', 'set-steps', 'set-finish-by', 'complete', 'reopen', 'duplicate', 'read-update',
 ].map(name => `routines:${name}`);
@@ -353,6 +353,11 @@ export function registerRoutineServices({ bus, store, now, dispatch, admitDispat
     const { before } = input;
     const fires = await store.recentFiresForAgent({ agentId: input.agentId, actorUserId: ctx.userId, ...(input.limit === undefined ? {} : { limit: input.limit }), ...(before === undefined ? {} : { before: new Date(before) }) });
     return { fires: fireViews(ctx.userId, fires) };
+  });
+  register('webhook-status', C.RoutineKeySchema, C.RoutineWebhookStatusOutputSchema, async (ctx, input) => {
+    const a = await access(ctx, input.agentId);
+    requireAllowed(routinePermissions(await rowFor(input), ctx.userId, a.allowed, a.stopOthers).edit);
+    return store.webhookStatus({ ...input, actorUserId: ctx.userId, now: now() });
   });
   register('webhook-address', C.RoutineWebhookAddressInputSchema, C.RoutineWebhookAddressOutputSchema, async (ctx, input) => {
     const a = await access(ctx, input.agentId);

@@ -151,7 +151,11 @@ describe("a person's copy of their task (store, TASK-953)", () => {
     // marked done has it, so none of TASK-950's columns, or anything else this source holds, rides across. (A
     // column a later version adds is guarded by the INSERT naming its columns, not by this sweep.)
     const fresh = (await rowOf((await createTask('fresh')).routineId))!;
-    const SET_BY_THE_COPY = new Set(['routine_id', 'revision', 'name', 'enabled', 'spec_hash', 'next_run_at', 'task_safety_due_at', 'created_at', 'updated_at', 'task_steps']);
+    expect(copy?.webhook_health).toBeNull();
+    expect(copy?.webhook_health_generation).toMatch(/^[a-f0-9-]{36}$/);
+    expect(copy?.webhook_health_generation).not.toBe(fresh.webhook_health_generation);
+    expect(copy?.webhook_health_generation).not.toBe((await rowOf(task.routineId))?.webhook_health_generation);
+    const SET_BY_THE_COPY = new Set(['routine_id', 'revision', 'name', 'enabled', 'spec_hash', 'next_run_at', 'task_safety_due_at', 'created_at', 'updated_at', 'task_steps', 'webhook_health_generation']);
     for (const [column, value] of Object.entries(copy!)) {
       if (!SET_BY_THE_COPY.has(column)) expect(value, column).toEqual(fresh[column]);
     }

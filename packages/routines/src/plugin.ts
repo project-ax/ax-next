@@ -375,7 +375,10 @@ export function createRoutinesPlugin(
       abortCtl = new AbortController();
       tickLoop = runTickLoop({
         db: localDb, fire: fireRoutine, getAgents, clock, executorId,
-        cleanup: () => drainRoutineCleanup({ bus, store: localStore }),
+        cleanup: async () => {
+          await drainRoutineCleanup({ bus, store: localStore });
+          await localStore.pruneWebhookRefusals(clock.now());
+        },
         signal: abortCtl.signal,
         ...tickConfig,
       }).catch((err) => {

@@ -21,6 +21,8 @@ export interface RoutinesDefinitionsRow {
   schedule_spec: unknown | null;
   webhook_spec: unknown | null;
   /** Private setup state: never project into StoredRoutine, receipts or payload blobs. */
+  webhook_health: Generated<unknown | null>;
+  webhook_health_generation: Generated<string>;
   webhook_address_token: Generated<string | null>;
   webhook_legacy_enabled: Generated<boolean>;
   active_hours: unknown | null;
@@ -400,6 +402,10 @@ export async function runRoutinesMigration(db: Kysely<RoutinesDatabase>): Promis
       await sql`CREATE INDEX routines_v1_task_event_dispatch ON routines_v1_task_events(dispatch_id) WHERE dispatch_id IS NOT NULL`.execute(trx);
       await sql`CREATE INDEX routines_v1_task_event_owner ON routines_v1_task_events(owner_user_id)`.execute(trx);
       await sql`INSERT INTO routines_schema_versions(version) VALUES(19)`.execute(trx);
+    }
+    if (!await done(20)) {
+      await sql`ALTER TABLE routines_v1_definitions ADD COLUMN webhook_health jsonb, ADD COLUMN webhook_health_generation text NOT NULL DEFAULT gen_random_uuid()::text`.execute(trx);
+      await sql`INSERT INTO routines_schema_versions(version) VALUES(20)`.execute(trx);
     }
   });
 }
