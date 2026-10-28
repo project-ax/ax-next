@@ -78,7 +78,7 @@ function CredentialSlotTarget({ destination, slot, scope, displayName, onSaved }
         <span className="text-sm">{humanLabel}</span>
         <Badge variant={status === 'ready' && isSet ? 'default' : 'outline'}>{statusLabel}</Badge>
       </div>
-      <Button size="sm" variant="outline" disabled={!canManage} onClick={() => setOpen(true)}>{isSet ? 'Replace key' : 'Add key'}</Button>
+      <Button size="sm" variant="outline" className="shrink-0" disabled={!canManage} onClick={() => setOpen(true)}>{isSet ? 'Replace key' : 'Add key'}</Button>
     </div>}
     {status === 'error' && <Alert variant="destructive">
       <AlertDescription>
