@@ -40,6 +40,12 @@ it('keeps first-party schemas on the patched zod 3 API until they are migrated',
   expect(checked).toBeGreaterThan(0);
 });
 
+it('keeps the standalone dem-memory schema API on zod 3 until it is migrated', () => {
+  const manifest = JSON.parse(readFileSync(`${root}/dem-memory/package.json`, 'utf8'));
+  // This research project has its own npm lock and is not visited by the workspace guard.
+  expect(manifest.dependencies.zod).toMatch(/^\^?3\./);
+});
+
 let installed;
 function installedZods() {
   if (installed) return installed;
