@@ -151,7 +151,8 @@ describe('createGuardedFetch', () => {
       baseFetch: async () =>
         new Response('x'.repeat(64), { headers: { 'content-length': '64' } }),
     });
-    await expect(g.fetch('https://mcp.example.com/mcp')).rejects.toThrow(ResponseTooLargeError);
+    const response = await g.fetch('https://mcp.example.com/mcp');
+    await expect(response.arrayBuffer()).rejects.toThrow(ResponseTooLargeError);
     await g.close();
   });
 
@@ -179,6 +180,17 @@ describe('createGuardedFetch', () => {
     const res = await g.fetch('https://mcp.example.com/mcp');
     expect(await res.text()).toBe('hello');
     await g.close();
+  });
+
+  it('reads an ordinary body even when fetch returns a non-ByteString status text', async () => {
+    const response = new Response('hello');
+    Object.defineProperty(response, 'statusText', { value: '\u{1f4a5}' });
+    const g = createGuardedFetch({ ...opts, baseFetch: async () => response });
+    try {
+      expect(await (await g.fetch(opts.serverUrl)).text()).toBe('hello');
+    } finally {
+      await g.close();
+    }
   });
 
   it('real undici path: a hostname resolving to a private address never connects', async () => {

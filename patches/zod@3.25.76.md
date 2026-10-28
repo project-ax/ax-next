@@ -81,8 +81,10 @@ Not covered here:
   better-auth and the AI-SDK runner's MCP SDK. Since TASK-944, the runner
   validates `tools/call` results with the SDK's loose `ResultSchema` and caps
   every connector answer (8 MiB for `tools/call`, 2 MiB otherwise). Its
-  `tools/list` pages still go through the SDK's schema, bounded only by that
-  2 MiB cap (about 376 MB of heap at worst).
+  Since TASK-962, `tools/list` pages must also fit 16,384 values and 32
+  container levels before the SDK's schema runs. Output-schema validation
+  stops on the first error, and model-stream events are capped at 2 MiB.
+  These bound the known remote-input paths without patching that Zod copy.
 - `@anthropic-ai/claude-agent-sdk` bundles its own zod in `sdk.mjs`.
 - The cap is per issue list, not per parse. A plain `z.union` gives each option
   its own list and keeps every option's list when they all fail, so unions

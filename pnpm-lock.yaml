@@ -163,6 +163,12 @@ importers:
       ai:
         specifier: 7.0.70
         version: 7.0.70(zod@4.6.7)
+      ajv:
+        specifier: 8.20.0
+        version: 8.20.0
+      ajv-formats:
+        specifier: 3.0.1
+        version: 3.0.1(ajv@8.20.0)
       undici:
         specifier: '>=6.29.1 <7.0.0'
         version: 6.29.1

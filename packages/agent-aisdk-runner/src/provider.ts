@@ -54,6 +54,7 @@
 import * as fs from 'node:fs';
 import { ProxyAgent, fetch as undiciFetch } from 'undici';
 import { createAnthropic } from '@ai-sdk/anthropic';
+import { capModelFetch } from './model-fetch.js';
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
 import { pruneMessages, type LanguageModel, type ModelMessage } from 'ai';
 import {
@@ -395,7 +396,7 @@ export function resolveModel(opts: ResolveModelOptions): LanguageModel {
 
   const fetchImpl =
     opts.fetchImpl !== undefined ? opts.fetchImpl : createProxyFetch(providerEnv);
-  return entry.create({ apiKey, fetchImpl })(modelId);
+  return entry.create({ apiKey, fetchImpl: capModelFetch(fetchImpl) })(modelId);
 }
 
 /**
