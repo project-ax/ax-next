@@ -114,14 +114,14 @@ describe('independent routine methods in the existing editor', () => {
     expect(mocks.update).not.toHaveBeenCalled();
   });
 
-  it('keeps task schedules on and does not offer app updates before the task inbox exists', async () => {
+  it('keeps task safety schedules on and offers batched app updates', async () => {
     const task = { ...view(), kind: 'stay-on-top' as const, goodWhen: 'Nothing waits.', webhook: null };
     mocks.get.mockResolvedValue(task);
     render(<RoutineEditor mode="edit" agentId="a" agentName="Caveman" routine={task} onSaved={vi.fn()} onCancel={vi.fn()} />);
     await screen.findByDisplayValue('Nothing waits.');
     expect(screen.getByRole('checkbox', { name: 'On a schedule' })).toBeChecked();
     expect(screen.getByRole('checkbox', { name: 'On a schedule' })).toBeDisabled();
-    expect(screen.queryByRole('checkbox', { name: 'When another app sends an update' })).not.toBeInTheDocument();
+    expect(screen.getByRole('checkbox', { name: 'When another app sends an update' })).not.toBeChecked();
     expect(mocks.access).not.toHaveBeenCalled();
     expect(mocks.receiver).not.toHaveBeenCalled();
   });
@@ -225,5 +225,65 @@ describe('private task address controls', () => {
     result.rerender(form());
     await waitFor(() => expect(screen.getByLabelText('Webhook URL')).toHaveValue(`${window.location.origin}/webhooks/different-bearer/original`));
     for (const commit of commits.filter(x => x.task === selected)) expect(commit.url).not.toContain('original-bearer');
+  });
+});
+
+
+describe('batched task app updates (TASK-983)', () => {
+  it.each(['Stay on top of something', 'Get something done'])('creates %s with a response time and waits for saved setup', async kind => {
+    render(<RoutineEditor taskMode mode="create" agentId="a" agentName="Caveman" onSaved={vi.fn()} onCancel={vi.fn()} />);
+    fireEvent.click(screen.getByRole('radio', { name: kind }));
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Handle updates' } });
+    fireEvent.change(screen.getByLabelText('What should Caveman do?'), { target: { value: 'Review the queue.' } });
+    fireEvent.change(screen.getByLabelText('Going well when'), { target: { value: 'No update waits.' } });
+    fireEvent.click(screen.getByRole('checkbox', { name: 'When another app sends an update' }));
+    fireEvent.change(screen.getByLabelText('Respond within'), { target: { value: '2m' } });
+    expect(mocks.receiver).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Start task' }));
+    await waitFor(() => expect(mocks.create).toHaveBeenCalledWith(expect.objectContaining({ definition: expect.objectContaining({ schedule, webhook: { kind: 'webhook', path: '/project-updates', respondWithin: '2m' } }) })));
+  });
+  const task = (kind: 'stay-on-top' | 'get-done' = 'stay-on-top') => ({ ...view(), kind, goodWhen: 'Nothing waits.', webhook: null });
+  it.each(['stay-on-top', 'get-done'] as const)('saves %s updates, response time and required safety schedule', async kind => {
+    const value = task(kind); mocks.get.mockResolvedValue(value);
+    render(<RoutineEditor taskMode mode="edit" agentId="a" agentName="Caveman" routine={value} onSaved={vi.fn()} onCancel={vi.fn()} />);
+    await screen.findByDisplayValue('Nothing waits.');
+    fireEvent.click(screen.getByRole('checkbox', { name: 'When another app sends an update' }));
+    expect(screen.getByLabelText('Respond within')).toHaveValue('5m');
+    expect(screen.getByRole('checkbox', { name: 'On a schedule' })).toBeDisabled();
+    expect(screen.getByText('Save this task to get its own webhook address.')).toBeVisible();
+    fireEvent.change(screen.getByLabelText('Respond within'), { target: { value: '10m' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(mocks.update).toHaveBeenCalledWith(expect.objectContaining({ patch: { webhook: { kind: 'webhook', path: '/project-updates', respondWithin: '10m' } } })));
+  });
+  it.each(['59s', '25h', 'never'])('blocks an invalid response duration %s', async duration => {
+    mocks.get.mockResolvedValue(task());
+    render(<RoutineEditor taskMode mode="edit" agentId="a" agentName="Caveman" routine={task()} onSaved={vi.fn()} onCancel={vi.fn()} />);
+    await screen.findByDisplayValue('Nothing waits.');
+    fireEvent.click(screen.getByRole('checkbox', { name: 'When another app sends an update' }));
+    fireEvent.change(screen.getByLabelText('Respond within'), { target: { value: duration } });
+    expect(screen.getByLabelText('Respond within')).toHaveAttribute('aria-invalid', 'true');
+    expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled();
+  });
+  it('reloads saved updates and preserves absent response timing on a brief-only edit', async () => {
+    const value = { ...task(), webhook }; mocks.get.mockResolvedValue(value);
+    render(<RoutineEditor taskMode mode="edit" agentId="a" agentName="Caveman" routine={value} onSaved={vi.fn()} onCancel={vi.fn()} />);
+    await screen.findByDisplayValue('Nothing waits.');
+    expect(screen.getByLabelText('Respond within')).toHaveValue('5m');
+    await screen.findByLabelText('Webhook URL');
+    fireEvent.change(screen.getByLabelText('What should Caveman do?'), { target: { value: 'Check the queue.' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(mocks.update).toHaveBeenCalledWith(expect.objectContaining({ patch: { promptBody: 'Check the queue.' } })));
+  });
+  it('keeps the app configuration when switching task kinds and removes task timing for Repeat', async () => {
+    const value = { ...task(), webhook: { ...webhook, respondWithin: '10m' } }; mocks.get.mockResolvedValue(value);
+    render(<RoutineEditor taskMode mode="edit" agentId="a" agentName="Caveman" routine={value} onSaved={vi.fn()} onCancel={vi.fn()} />);
+    await screen.findByDisplayValue('Nothing waits.');
+    fireEvent.click(screen.getByRole('radio', { name: 'Get something done' }));
+    expect(screen.getByLabelText('Respond within')).toHaveValue('10m');
+    expect(screen.getByLabelText('Webhook path')).toHaveValue('/original');
+    fireEvent.click(screen.getByRole('radio', { name: 'Repeat a job' }));
+    expect(screen.queryByLabelText('Respond within')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(mocks.update).toHaveBeenCalledWith(expect.objectContaining({ patch: expect.objectContaining({ kind: 'repeat', webhook }) })));
   });
 });

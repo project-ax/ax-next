@@ -8,6 +8,8 @@ import {
 } from './reflection-prompt.js';
 
 export interface RoutinesDefinitionsRow {
+  task_check_in_requested: Generated<boolean>;
+  task_safety_due_at: Generated<Date|null>;
   revision: string;
   enabled: Generated<boolean>;
   agent_id: string;
@@ -223,6 +225,7 @@ export interface CredentialCleanupRow {
   created_at: Generated<Date>;
 }
 export interface DispatchesRow {
+  task_event_boundary: Generated<number|null>;
   executor_id: ColumnType<string | null, string | null | undefined, string | null>;
   executor_released: ColumnType<boolean, boolean | undefined, boolean>;
   lease_expires_at: ColumnType<Date | null, Date | null | undefined, Date | null>;
@@ -267,7 +270,13 @@ export interface RepeatDeliveryRow {
   accepted_at: Date; expires_at: Date; github_id_hash: string | null; configuration_hash: string;
   blob_ref: string | null; byte_length: number; dispatch_id: string | null; invalidated_reason: string | null; completed_at: Date | null;
 }
+export interface TaskEventRow {
+  sequence_id: Generated<number>; event_id:string; agent_id:string; routine_id:string; owner_user_id:string;
+  received_at:Date; expires_at:Date; delivery_id_hash:string|null; blob_ref:string|null; byte_length:number;
+  dispatch_id:string|null; consumed_at:Date|null; may_be_own_change:boolean;
+}
 export interface RoutinesDatabase {
+  routines_v1_task_events: TaskEventRow;
   routines_v1_deliveries: RepeatDeliveryRow;
   routines_v1_retired_agents: { agent_id: string; retired_at: Generated<Date> };
   routines_v1_requests: RoutinesRequestsRow;
@@ -376,6 +385,21 @@ export async function runRoutinesMigration(db: Kysely<RoutinesDatabase>): Promis
       await sql`ALTER TABLE routines_v1_definitions ALTER COLUMN webhook_legacy_enabled SET DEFAULT false, ALTER COLUMN webhook_legacy_enabled SET NOT NULL`.execute(trx);
       await sql`CREATE UNIQUE INDEX IF NOT EXISTS routines_v1_webhook_address_token ON routines_v1_definitions(webhook_address_token) WHERE webhook_address_token IS NOT NULL`.execute(trx);
       await sql`INSERT INTO routines_schema_versions(version) VALUES(18)`.execute(trx);
+    }
+    if (!await done(19)) {
+      await sql`ALTER TABLE routines_v1_definitions ADD COLUMN task_check_in_requested boolean NOT NULL DEFAULT false, ADD COLUMN task_safety_due_at timestamptz`.execute(trx);
+      await sql`UPDATE routines_v1_definitions SET task_safety_due_at=next_run_at WHERE kind IN ('stay-on-top','get-done')` .execute(trx);
+      await sql`ALTER TABLE routines_v1_dispatches ADD COLUMN task_event_boundary bigint`.execute(trx);
+      await sql`CREATE TABLE routines_v1_task_events (
+        sequence_id bigserial NOT NULL UNIQUE,event_id text PRIMARY KEY,agent_id text NOT NULL,routine_id text NOT NULL,owner_user_id text NOT NULL,
+        received_at timestamptz NOT NULL,expires_at timestamptz NOT NULL,delivery_id_hash text,blob_ref text,byte_length integer NOT NULL CHECK(byte_length>=0),
+        dispatch_id text,consumed_at timestamptz,may_be_own_change boolean NOT NULL DEFAULT false,
+        CHECK((consumed_at IS NULL AND blob_ref IS NOT NULL) OR (consumed_at IS NOT NULL AND blob_ref IS NULL AND byte_length=0)))`.execute(trx);
+      await sql`CREATE UNIQUE INDEX routines_v1_task_event_dedupe ON routines_v1_task_events(agent_id,routine_id,delivery_id_hash) WHERE delivery_id_hash IS NOT NULL`.execute(trx);
+      await sql`CREATE INDEX routines_v1_task_event_pending ON routines_v1_task_events(agent_id,routine_id,sequence_id) WHERE consumed_at IS NULL`.execute(trx);
+      await sql`CREATE INDEX routines_v1_task_event_dispatch ON routines_v1_task_events(dispatch_id) WHERE dispatch_id IS NOT NULL`.execute(trx);
+      await sql`CREATE INDEX routines_v1_task_event_owner ON routines_v1_task_events(owner_user_id)`.execute(trx);
+      await sql`INSERT INTO routines_schema_versions(version) VALUES(19)`.execute(trx);
     }
   });
 }

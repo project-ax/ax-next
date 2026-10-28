@@ -1657,7 +1657,7 @@ describe('chat-orchestrator', () => {
     return getConfig().allowedTools;
   }
 
-  it('TASK-908: a routine run of a non-wildcard agent sees routine_report', async () => {
+  it('TASK-983: a routine run of a non-wildcard agent sees reporting and full-update read tools', async () => {
     const allowedTools = await invokeAndReadAllowedTools(
       { allowedTools: ['file.read'], mcpConfigIds: [] },
       sourcedCtx('s1', 'routine'),
@@ -1669,6 +1669,7 @@ describe('chat-orchestrator', () => {
       'skill_propose',
       'connector_propose',
       'routine_report',
+      'routine_read_update',
     ]);
   });
 
@@ -7001,18 +7002,20 @@ describe('withBrokerDefaults', () => {
   // after the broker tools, because a task check-in's brief tells it to report.
   // Both directions are pinned: a wildcard agent's list and an ordinary
   // session's list stay exactly what they were.
-  it('a routine run of a non-wildcard agent also gets routine_report, after the broker tools', () => {
+  it('a routine run of a non-wildcard agent also gets reporting and full-update read tools, after the broker tools', () => {
     expect(withBrokerDefaults(['file.read'], [], { routineRun: true })).toEqual([
       'file.read',
       ...BROKER,
       'routine_report',
+      'routine_read_update',
     ]);
   });
 
-  it('an mcpConfigIds-only routine run also gets routine_report', () => {
+  it('an mcpConfigIds-only routine run also gets reporting and full-update read tools', () => {
     expect(withBrokerDefaults([], ['mcp-1'], { routineRun: true })).toEqual([
       ...BROKER,
       'routine_report',
+      'routine_read_update',
     ]);
   });
 
@@ -7024,11 +7027,20 @@ describe('withBrokerDefaults', () => {
     expect(withBrokerDefaults(['routine_report'], [], { routineRun: true })).toEqual([
       'routine_report',
       ...BROKER,
+      'routine_read_update',
     ]);
   });
 
-  it('an ordinary session gets no routine_report', () => {
-    expect(withBrokerDefaults(['file.read'], [])).not.toContain('routine_report');
+  it('an ordinary session gets no routine-only reporting or update-read tools', () => {
+    const tools = withBrokerDefaults(['file.read'], []);
+    expect(tools).not.toContain('routine_report');
+    expect(tools).not.toContain('routine_read_update');
+  });
+
+  it('dedups an explicitly listed full-update read tool and keeps the routine union idempotent', () => {
+    const tools = withBrokerDefaults(['routine_read_update'], [], { routineRun: true });
+    expect(tools).toEqual(['routine_read_update', ...BROKER, 'routine_report']);
+    expect(withBrokerDefaults(tools, [], { routineRun: true })).toEqual(tools);
   });
 
   it('routineRun: false, which every non-routine turn passes, adds no routine_report', () => {

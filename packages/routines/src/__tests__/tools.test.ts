@@ -21,9 +21,9 @@ async function approve(call: ToolCall, scope = 'once', advance = true) {
 }
 const execute = (call: ToolCall) => h.bus.call<ToolCall, RoutineView>(`tool:execute:${call.name}`, actor(), call);
 describe('routine tools through real policy, decisions, agents and database', () => {
-  it('registers seven strict host tools without workspace flush or identity inputs', async () => {
+  it('registers eight strict host tools without workspace flush or identity inputs', async () => {
     h = await createRoutineHarness();
-    expect(h.descriptors.map(d => d.name).sort()).toEqual(['routine_create','routine_delete','routine_fire_now','routine_get','routine_list','routine_report','routine_update']);
+    expect(h.descriptors.map(d => d.name).sort()).toEqual(['routine_create','routine_delete','routine_fire_now','routine_get','routine_list','routine_read_update','routine_report','routine_update']);
     for (const d of h.descriptors) {
       expect(d.executesIn).toBe('host'); expect(d).not.toHaveProperty('flushWorkspace');
       expect(d.inputSchema).toMatchObject({ additionalProperties: false });

@@ -574,7 +574,7 @@ describe('a task that thinks it’s done (TASK-950)', () => {
   it('Not yet accurately promises an immediate check-in when the owner may manage the task', () => {
     renderGroup(group([claimed()]));
     fireEvent.click(screen.getByRole('button', { name: 'Not yet' }));
-    expect(screen.getByText('Caveman reads this, and sending it starts a check-in now.')).toBeVisible();
+    expect(screen.getByText('Caveman reads this, and sending it starts a check-in, or queues it if one is running.')).toBeVisible();
     expect(screen.queryByText('Caveman reads this at its next check-in.')).toBeNull();
   });
 
@@ -790,7 +790,7 @@ describe('a task that thinks it’s done (TASK-950)', () => {
 
 
 describe('bounded Today reply refresh (TASK-940)', () => {
-  it.each(['started', 'replayed', 'paused', 'not-allowed'] as const)('starts the parent window only for a running reply answer: %s', async (checkIn) => {
+  it.each(['started', 'replayed', 'queued', 'paused', 'not-allowed'] as const)('starts the parent window only for a running reply answer: %s', async (checkIn) => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     sendMock.mockResolvedValue({ checkIn });
     const onReplied = vi.fn();
@@ -802,7 +802,7 @@ describe('bounded Today reply refresh (TASK-940)', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Send' }));
     await waitFor(() => expect(onReplied).toHaveBeenCalledTimes(1));
     await act(async () => vi.advanceTimersByTimeAsync(10_000));
-    expect(onCheckInStarted).toHaveBeenCalledTimes(checkIn === 'started' || checkIn === 'replayed' ? 1 : 0);
+    expect(onCheckInStarted).toHaveBeenCalledTimes(checkIn === 'started' || checkIn === 'replayed' || checkIn === 'queued' ? 1 : 0);
     view.unmount();
     const starts = onCheckInStarted.mock.calls.length;
     await act(async () => vi.advanceTimersByTimeAsync(30_000));

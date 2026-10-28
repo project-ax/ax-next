@@ -169,7 +169,7 @@ describe('no tool can set a finish date (TASK-951)', () => {
     // finishByTimeZone contains finishBy, so this rules out both.
     expect(JSON.stringify(RoutineToolJsonSchemas)).not.toContain('finishBy');
     expect(Object.keys(RoutineToolInputSchemas)).toEqual([
-      'routine_list', 'routine_get', 'routine_create', 'routine_update', 'routine_delete', 'routine_fire_now', 'routine_report',
+      'routine_list', 'routine_get', 'routine_create', 'routine_update', 'routine_delete', 'routine_fire_now', 'routine_report', 'routine_read_update',
     ]);
   });
 });

@@ -169,6 +169,7 @@ import { TaskUpdates } from './TaskUpdates';
 import { WorkspaceHeader } from './WorkspaceHeader';
 import { TaskDialog } from './TaskDialog';
 import { TaskOptions } from './TaskOptions';
+import { TaskAppUpdates } from './TaskAppUpdates';
 import { RepeatTaskBody } from './RepeatTaskBody';
 
 const LABEL = 'text-[11.5px] text-muted-foreground break-words';
@@ -518,8 +519,8 @@ export function TaskPage({
     void press(kind);
   };
 
-  // A reply that started a check-in watches for it like Check now does; every
-  // reply reads the task again, so Updates shows it.
+  // Watch started replies like Check now. A queued reply keeps its saved receipt
+  // without claiming the next check-in has started; every reply refreshes Updates.
   const onReplySent = (checkIn: TaskReplyCheckIn, closeBox = false) => {
     onTaskWriteSucceeded();
     if (closeBox) {
@@ -614,6 +615,7 @@ export function TaskPage({
               onNavigate={onNavigate}
               onEdit={() => setEditing(true)}
             />)}
+            {state.detail.appUpdates && state.detail.permissions.edit && <TaskAppUpdates key={`${agentId}/${routineId}/${state.detail.revision}`} agentId={agentId} routineId={routineId} onEdit={() => setEditing(true)} />}
             <TaskOptions key={state.detail.revision} agentId={agentId} routineId={routineId} agentName={state.detail.agentName}
               onWriteSucceeded={onTaskWriteSucceeded} onDeleted={() => onNavigate({ kind: 'tasks' })} />
             </>

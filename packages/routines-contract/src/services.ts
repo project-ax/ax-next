@@ -141,7 +141,7 @@ export const RoutineTasksForConversationsOutputSchema = z.object({ checkIns: z.a
  * at the same moment still start one between them. Neither a tool nor an IPC
  * action: a reply reaches a model only in a check-in message.
  */
-export const ROUTINE_REPLY_CHECK_INS = ['started', 'paused', 'not-allowed', 'replayed'] as const;
+export const ROUTINE_REPLY_CHECK_INS = ['started', 'paused', 'not-allowed', 'replayed', 'queued'] as const;
 export const RoutineReplyCheckInSchema = z.enum(ROUTINE_REPLY_CHECK_INS);
 export const RoutineReplyInputSchema = RoutineKeySchema.extend({ requestId: RoutineOpaqueStringSchema, text: RoutineReplyTextSchema }).strict();
 export const RoutineReplyOutputSchema = z.object({ replyId: RoutineOpaqueStringSchema, checkIn: RoutineReplyCheckInSchema }).strict();
@@ -331,3 +331,7 @@ export type RoutineSetStepsInput = z.output<typeof RoutineSetStepsInputSchema>;
 export type RoutineSetStepsOutput = z.output<typeof RoutineSetStepsOutputSchema>;
 export type RoutineDuplicateInput = z.output<typeof RoutineDuplicateInputSchema>;
 export type RoutineDuplicateOutput = z.output<typeof RoutineDuplicateOutputSchema>;
+
+/** One update from the caller’s own open task check-in; conversation identity is host context. */
+export const RoutineReadUpdateInputSchema = z.object({ agentId: RoutineOpaqueStringSchema, eventId: RoutineOpaqueStringSchema }).strict();
+export const RoutineReadUpdateOutputSchema = z.object({ eventId: z.string(), receivedAt: z.string().datetime(), payload: z.string() }).strict();

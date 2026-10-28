@@ -112,7 +112,8 @@ export function createWebhookRouter(deps: WebhookRouterDeps): HttpRouteHandler {
     catch { res.status(400).end(); return; }
     let admitted: 'accepted' | 'duplicate' | 'full' | 'missing';
     try {
-      admitted = await deps.deliveries.admit({row,payload,deliveryId,now:deps.now(),address},async(bytes,owner)=>
+      const admit = row.kind === 'repeat' ? deps.deliveries.admit.bind(deps.deliveries) : deps.store.admitTaskEvent.bind(deps.store);
+      admitted = await admit({row,payload,deliveryId,now:deps.now(),address},async(bytes,owner)=>
         deps.bus.callJoined('blob:put',makeAgentContext({sessionId:'repeat-delivery-admission',agentId:row.agentId,userId:owner}),{bytes}),
       async () => (await resolveLegacy())?.agent.id === row.agentId);
     } catch (error) {
@@ -121,7 +122,10 @@ export function createWebhookRouter(deps: WebhookRouterDeps): HttpRouteHandler {
     if (admitted==='missing') { res.status(404).end(); return; }
     if (admitted==='full') { res.status(429).end(); return; }
     // Admission is already durable. Pump failure never turns an accepted delivery into a retryable write.
-    if (admitted==='accepted') {
+    // A task update only brings its durable scheduler due time forward. The
+    // receiver must never start task check-ins; batching and work hours belong
+    // to the existing scheduler. Repeat retains its per-delivery drain.
+    if (admitted==='accepted' && row.kind === 'repeat') {
       try { await deps.pump(); } catch { ctx.logger.warn('repeat_queue_drain_failed',{agentId:row.agentId,routineId:row.routineId}); }
     }
     res.status(202).end();

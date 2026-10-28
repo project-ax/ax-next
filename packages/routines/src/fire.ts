@@ -6,6 +6,7 @@ import { createRoutineLifetime, type RoutineLifetime } from './lifetime.js';
 import type { RoutinesStore } from './store.js';
 import { briefRunError, briefRunMiss, isTaskRun } from './brief.js';
 import { CHECK_IN_REPLIES, CHECK_IN_REPORTS, renderCheckInMessage } from './checkin-message.js';
+import { readTaskEventContent, renderTaskEvents, taskEventPreview } from './task-event-content.js';
 import {
   buildSkipWarning, normalizeSkipReason, sanitizeSkipName, type SkipReason,
 } from './skip-warning.js';
@@ -140,7 +141,7 @@ export interface FireDeps {
    * and reads a task's latest reports (TASK-908) and its owner's own latest
    * replies on it (TASK-931) for its check-in message.
    */
-  store: Pick<RoutinesStore, 'finishDispatch' | 'bindDispatchConversation' | 'recentReports' | 'recentReplies'>;
+  store: Pick<RoutinesStore, 'finishDispatch' | 'bindDispatchConversation' | 'recentReports' | 'recentReplies' | 'taskEventsForDispatch'>;
   purgeAgent: (agentId: string) => Promise<void>;
   /**
    * How long after an invoke settles `complete` to wait for its turn end
@@ -279,17 +280,26 @@ export function createFireRoutine(deps: FireDeps) {
       // while the task is still theirs, so an earlier owner's reports and
       // words never steer it, and one that moved since the accept gets none.
       // A failed read is recorded like any other setup failure, and the agent
-      // never starts. Task kinds have no app-update method until their inbox exists
-      // (validateDefinition), so a check-in has no webhook payload.
+      // never starts. Its assigned app updates are outside content, supplied
+      // in this user message with explicit framing, never in the trusted brief.
       let reports: Awaited<ReturnType<RoutinesStore['recentReports']>>;
       let replies: Awaited<ReturnType<RoutinesStore['recentReplies']>>;
+      let updates: string | null;
       try {
         reports = await deps.store.recentReports({ agentId: row.agentId, routineId: row.routineId, actorUserId: row.ownerUserId, limit: CHECK_IN_REPORTS });
         replies = await deps.store.recentReplies({ agentId: row.agentId, routineId: row.routineId, actorUserId: row.ownerUserId, limit: CHECK_IN_REPLIES });
+        const events = await deps.store.taskEventsForDispatch({ agentId: row.agentId, dispatchId, actorUserId: row.ownerUserId });
+        const previews = [];
+        for (const event of events) {
+          const bytes = await readTaskEventContent(deps.bus, fireCtx, event);
+          previews.push({ ...event, ...taskEventPreview(bytes) });
+        }
+        updates = renderTaskEvents(previews);
       } catch (err) { return fail(err); }
       prompt = renderCheckInMessage({
         source, agentNotes: row.task?.agentNotes ?? null, reports, replies, missesInARow: row.noRecentUpdate?.inARow ?? 0,
         steps: row.kind === 'get-done' ? row.steps : null, doneClaimed: row.kind === 'get-done' && row.task?.doneClaimed === true,
+        updates,
       });
     } else {
       // Phase D: render whenever payload is provided, regardless of source.

@@ -77,6 +77,7 @@ export const WebhookTriggerSchema = z.object({
   kind: z.literal('webhook'), path: z.string().refine(validateWebhookPath, 'Invalid webhook path.'),
   events: z.array(z.string().min(1).max(64).regex(/^[A-Za-z0-9_-]+$/, 'Invalid event name.')).max(32).optional(),
   hmac: WebhookHmacSchema.optional(),
+  respondWithin: z.string().refine(value => { const seconds = durationToSeconds(value); return seconds !== null && seconds <= 86400; }, 'Choose a response time from 1 minute to 24 hours.').optional(),
 }).strict();
 const TASK_CRON_QUESTION_MARK_MESSAGE = 'A task’s schedule can’t use “?”. Write the exact time instead.';
 const TASK_CRON_ONE_DATE_MESSAGE = 'A task checks in again and again, so its schedule can’t be a single date.';
@@ -421,6 +422,7 @@ function validateDefinition(definition: RoutineDefinition, ctx: z.RefinementCtx)
   }
   switch (definition.kind) {
     case 'repeat':
+      if (definition.webhook?.respondWithin !== undefined) issue(['webhook', 'respondWithin'], 'Response timing is for batched tasks only.');
       if (definition.goodWhen !== null) issue(['goodWhen'], 'Only a task can say when it’s going well.');
       if (definition.schedule === null && definition.webhook === null) issue(['schedule'], 'Choose a schedule or updates from another app.');
       break;
@@ -430,9 +432,8 @@ function validateDefinition(definition: RoutineDefinition, ctx: z.RefinementCtx)
       if (!flagged.has('goodWhen') && (definition.goodWhen === null || definition.goodWhen.trim() === '')) {
         issue(['goodWhen'], 'Say how we’ll know this task is going well.');
       }
-      const { schedule, webhook } = definition;
-      if (schedule === null && webhook === null) issue(['schedule'], 'A task needs a schedule.');
-      if (webhook !== null) issue(['webhook'], 'A task checks in on a schedule, not from an update from another app.');
+      const { schedule } = definition;
+      if (schedule === null) issue(['schedule'], 'A task needs a schedule as a safety check.');
       if (definition.conversation !== 'per-fire') issue(['conversation'], 'A task starts a fresh conversation for each check-in.');
       if (definition.silenceToken !== null) issue(['silenceToken'], 'A task reports how it’s going, so it doesn’t use a silence token.');
       if (schedule?.kind === 'interval') {

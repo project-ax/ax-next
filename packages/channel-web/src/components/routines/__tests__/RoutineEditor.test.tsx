@@ -51,7 +51,7 @@ describe('structured routine form', () => {
       fill('Name', 'Useful work'); fill('What should Caveman do?', 'Do the useful work.');
       if (kind !== 'repeat') {
         fill('Going well when', 'The work is in good shape.');
-        expect(screen.queryByRole('checkbox', { name: 'When another app sends an update' })).not.toBeInTheDocument();
+        expect(screen.getByRole('checkbox', { name: 'When another app sends an update' })).not.toBeChecked();
       }
       fireEvent.click(screen.getByRole('button', { name: 'Start task' }));
       await waitFor(() => expect(routineApi.create).toHaveBeenCalledTimes(1));
@@ -234,12 +234,12 @@ describe('structured routine form', () => {
       ).toBeVisible();
       expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled();
     });
-    it('keeps the task schedule enabled without offering unsupported app updates', async () => {
+    it('keeps the safety schedule enabled while offering app updates', async () => {
       edit();
       await screen.findByDisplayValue(row.name);
       expect(screen.getByRole('checkbox', { name: 'On a schedule' })).toBeChecked();
       expect(screen.getByRole('checkbox', { name: 'On a schedule' })).toBeDisabled();
-      expect(screen.queryByRole('checkbox', { name: 'When another app sends an update' })).not.toBeInTheDocument();
+      expect(screen.getByRole('checkbox', { name: 'When another app sends an update' })).not.toBeChecked();
     });
   });
   describe("a task's Going well when (TASK-953)", () => {

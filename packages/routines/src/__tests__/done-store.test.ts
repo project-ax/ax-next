@@ -1,3 +1,4 @@
+import { acceptHistoricalDispatch } from './support/historical-dispatch.js';
 import { afterEach, describe, it, expect, vi } from 'vitest';
 import { sql, type Transaction } from 'kysely';
 import { RoutineDefinitionSchema, TASK_AUTO_PAUSE_AFTER_MISSES, type RoutineDefinition, type RoutineKey, type RoutinePatch } from '@ax/routines-contract';
@@ -30,7 +31,7 @@ const onTrack = { status: 'on-track', update: 'Found two more articles.', ask: n
 /** A run of the routine at its current revision, accepted at `at` and bound to its own conversation. */
 const bound = async (key: RoutineKey, requestId: string, at: Date) => {
   const row = (await f.store.findOne(key))!;
-  const { accepted } = (await f.store.acceptDispatch({
+  const { accepted } = (await acceptHistoricalDispatch(f.db,f.store,{
     agentId: row.agentId, routineId: row.routineId, expectedRevision: row.revision, actorUserId: 'owner', source: 'manual', requestId, now: at,
   }))!;
   await f.store.bindDispatchConversation({ dispatchId: accepted.dispatchId, conversationId: `c-${requestId}` });

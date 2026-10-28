@@ -1,3 +1,4 @@
+import { acceptHistoricalDispatch } from './support/historical-dispatch.js';
 import { describe, it, expect } from 'vitest';
 import { sql } from 'kysely';
 import { RoutineDefinitionSchema, type RoutineKey } from '@ax/routines-contract';
@@ -21,7 +22,7 @@ const moveTo = (ownerUserId: string) => f.store.reconcileOwners({ agents: [{ age
 /** A run of the routine at its current revision, asked for by `actorUserId`, bound to its own conversation. */
 const bound = async (key: RoutineKey, requestId: string, at: Date, actorUserId = 'owner') => {
   const row = (await f.store.findOne(key))!;
-  const { accepted } = (await f.store.acceptDispatch({
+  const { accepted } = (await acceptHistoricalDispatch(f.db,f.store,{
     agentId: row.agentId, routineId: row.routineId, expectedRevision: row.revision, actorUserId, source: 'manual', requestId, now: at,
   }))!;
   await f.store.bindDispatchConversation({ dispatchId: accepted.dispatchId, conversationId: `c-${requestId}` });

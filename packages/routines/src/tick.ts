@@ -89,13 +89,18 @@ export async function runTickOnce(input: TickOnceInput): Promise<void> {
   });
 
   for (const row of claimed) {
-    if (row.activeHours !== null) {
+    // A queued reply is the person's explicit request to check now, like its
+    // immediate manual path. App updates and scheduled checks still wait for
+    // the next active window.
+    const requested = row.kind !== 'repeat' && row.activeHours !== null
+      && await input.store.hasTaskCheckInRequest({ agentId: row.agentId, routineId: row.routineId });
+    if (row.activeHours !== null && !requested) {
       const adjusted = advanceToNextActiveWindow(input.now, row.activeHours);
       if (adjusted === null || adjusted.getTime() > input.now.getTime()) {
         await input.store.advance({
           agentId: row.agentId, routineId: row.routineId, expectedRevision: row.revision,
           nextRunAt: row.definitionId === null ? adjusted : null,
-          lastRunAt: row.definitionId === null ? input.now : adjusted ?? input.now,
+          ...(row.kind === 'repeat' ? { lastRunAt: row.definitionId === null ? input.now : adjusted ?? input.now } : {}),
         });
         continue;
       }
@@ -110,7 +115,10 @@ export async function runTickOnce(input: TickOnceInput): Promise<void> {
       // A previous row in this batch may have discovered and purged the same agent.
       if (err instanceof SafeToolError && err.toolCode === 'not-found') continue;
       if (err instanceof SafeToolError && err.toolCode === 'busy') {
-        await input.store.advance({agentId:row.agentId,routineId:row.routineId,expectedRevision:row.revision,nextRunAt:row.nextRunAt===null?null:new Date(row.nextRunAt.getTime()-input.claimWindowMinutes*60_000)});
+        // An active task's finish recalculates its next due time. Restoring an
+        // older claim here could overwrite a finish that just acquired the
+        // task lock. Repeat retains its independently scheduled capacity retry.
+        if (row.kind === 'repeat') await input.store.advance({agentId:row.agentId,routineId:row.routineId,expectedRevision:row.revision,nextRunAt:row.nextRunAt===null?null:new Date(row.nextRunAt.getTime()-input.claimWindowMinutes*60_000)});
         continue;
       }
       throw err;
@@ -119,7 +127,10 @@ export async function runTickOnce(input: TickOnceInput): Promise<void> {
     const originalNextRunAt = row.nextRunAt === null ? null
       : new Date(row.nextRunAt.getTime() - input.claimWindowMinutes * 60_000);
     // Advance scheduling independently of terminal status, and only for this revision.
-    await input.store.advance({
+    // Task acceptance already resets its full-check timer and snapshots its
+    // FIFO batch under the task lock. Advancing here could overwrite a nudge
+    // that arrived after that transaction. Repeat keeps its existing cadence.
+    if (row.kind === 'repeat') await input.store.advance({
       agentId: row.agentId, routineId: row.routineId, expectedRevision: row.revision,
       nextRunAt: computeNextRunAt(row, originalNextRunAt, input.now), lastRunAt: input.now,
     });

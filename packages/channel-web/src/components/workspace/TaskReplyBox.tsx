@@ -95,11 +95,11 @@ function helperLine(
   }
   if (mode === 'not-yet') {
     return canStart
-      ? `${agentName} reads this, and sending it starts a check-in now.`
+      ? `${agentName} reads this, and sending it starts a check-in, or queues it if one is running.`
       : `${agentName} reads this at its next check-in.`;
   }
   return canStart
-    ? `${agentName} reads your replies every time it checks in. Sending one starts a check-in now.`
+    ? `${agentName} reads your replies every time it checks in. Sending one starts a check-in, or queues it if one is running.`
     : `${agentName} reads your replies every time it checks in.`;
 }
 
@@ -115,6 +115,8 @@ function sentLine(
       return mode === 'reply'
         ? `Sent. ${agentName} started checking in.`
         : `Sent. ${agentName} is checking in now.`;
+    case 'queued':
+      return `Sent. ${agentName}’s next check-in is queued. It will read your reply then.`;
     case 'paused':
       return `Sent. ${agentName} will read it when you resume the task.`;
     case 'not-allowed':

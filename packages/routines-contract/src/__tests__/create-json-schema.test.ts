@@ -16,10 +16,10 @@ describe('advertised task creation schema', () => {
     }
   });
 
-  it.each(['stay-on-top', 'get-done'])('does not advertise the production-invalid %s plus webhook combination', kind => {
+  it.each(['stay-on-top', 'get-done'])('advertises %s with a safety schedule plus batched app updates', kind => {
     const input = { requestId: 'create-project', definition: { ...definition, kind, webhook } };
-    expect(RoutineCreateToolInputSchema.safeParse(input).success).toBe(false);
-    expect(validate(input)).toBe(false);
+    expect(RoutineCreateToolInputSchema.safeParse(input).success).toBe(true);
+    expect(validate(input)).toBe(true);
   });
 
   it.each([

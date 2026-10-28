@@ -76,12 +76,12 @@ describe('routines:reply (TASK-931)', () => {
     }
   });
 
-  it.each(['started', 'paused', 'not-allowed', 'replayed'] as const)('answers a reply id and checkIn %s', checkIn => {
+  it.each(['started', 'paused', 'not-allowed', 'replayed', 'queued'] as const)('answers a reply id and checkIn %s', checkIn => {
     expect(RoutineReplyOutputSchema.parse({ replyId: 'reply_1', checkIn })).toEqual({ replyId: 'reply_1', checkIn });
   });
 
-  it('answers only those four check-in words, and nothing else', () => {
-    expect(RoutineReplyCheckInSchema.options).toEqual(['started', 'paused', 'not-allowed', 'replayed']);
+  it('answers only those five check-in words, and nothing else', () => {
+    expect(RoutineReplyCheckInSchema.options).toEqual(['started', 'paused', 'not-allowed', 'replayed', 'queued']);
     const answers = (value: unknown): boolean => RoutineReplyOutputSchema.safeParse(value).success;
     expect(answers({ replyId: 'reply_1', checkIn: 'finished' })).toBe(false);
     expect(answers({ replyId: 'reply_1', checkIn: 'started', status: 'ok' })).toBe(false);

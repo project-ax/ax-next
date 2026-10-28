@@ -34,11 +34,11 @@ describe('independent authored wake methods', () => {
     expect(result.data).toMatchObject({ schedule, webhook, activeHours });
   });
 
-  it.each(['stay-on-top', 'get-done'] as const)('%s keeps its required schedule and refuses app updates until the inbox exists', kind => {
+  it.each(['stay-on-top', 'get-done'] as const)('%s keeps its required safety schedule and accepts batched app updates', kind => {
     const input = { ...brief, kind, goodWhen: 'No unreviewed work.', schedule, webhook: null };
     expect(RoutineDefinitionSchema.safeParse(input).success).toBe(true);
     expect(RoutineDefinitionSchema.safeParse({ ...input, schedule: null }).success).toBe(false);
-    expect(RoutineDefinitionSchema.safeParse({ ...input, webhook }).success).toBe(false);
+    expect(RoutineDefinitionSchema.safeParse({ ...input, webhook }).success).toBe(true);
   });
 
   it('refuses a repeat with no wake method', () => {

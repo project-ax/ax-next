@@ -1,3 +1,4 @@
+import { createTaskEventStore, assignTaskEvents, consumeTaskEvents, releaseTaskEvents, nudgeTaskEvents } from './task-events.js';
 import { repeatConfigurationHash } from './definition.js';
 import { REPEAT_DELIVERY_LIMITS } from './repeat-limits.js';
 import { sql, type Kysely, type Selectable, type Transaction, type Updateable } from 'kysely';
@@ -22,7 +23,7 @@ export type CleanupJob = { agentId: string; routineId: string; credentialRef: st
 export type AcceptDispatchInput = RoutineKey & Actor & { expectedRevision: string; source: FireSource; requestId: string; now: Date };
 export type OperationKey = { agentId: string; actorUserId: string; operation: string; requestId: string; inputHash: string; compatibleInputHashes?: readonly string[] };
 export type DefaultRoutineDetailRow = Omit<import('@ax/routines-contract').RoutineGetDefaultOutput, 'updatedAt'> & { updatedAt: Date };
-export interface RoutinesStore extends ReturnType<typeof createWebhookAddressStore> {
+export interface RoutinesStore extends ReturnType<typeof createWebhookAddressStore>, ReturnType<typeof createTaskEventStore> {
   createAuthored(input: RoutineCreateInput & Actor & { ownerUserId: string; now: Date }): Promise<StoredRoutine>;
   updateAuthored(input: RoutineUpdateInput & Actor & { now: Date; stopOnly: boolean }): Promise<StoredRoutine>;
   deleteAuthored(input: RoutineDeleteInput & Actor & { now: Date }): Promise<RoutineDeleteOutput>;
@@ -965,6 +966,7 @@ function jobFromRow(r: { agent_id: string; routine_id: string; credential_ref: s
 export function createRoutinesStore(db: DB, executorId?: string): RoutinesStore {
   return {
     ...createWebhookAddressStore(db, { lockLiveAgent, rowToRoutine }),
+    ...createTaskEventStore(db),
     async createAuthored(input) {
       const definition = validateDefinition(input.definition);
       const hashes = createRequestHashes(input);
@@ -975,7 +977,7 @@ export function createRoutinesStore(db: DB, executorId?: string): RoutinesStore 
         validateScheduleWrite(definition);
         const row = await trx.insertInto('routines_v1_definitions').values({
           ...definitionColumns(definition), agent_id: input.agentId,
-          routine_id: opaqueId('rtn'), revision: opaqueId('rev'), owner_user_id: input.ownerUserId, next_run_at: nextRun(definition, input.now),
+          routine_id: opaqueId('rtn'), revision: opaqueId('rev'), owner_user_id: input.ownerUserId, next_run_at: nextRun(definition, input.now), task_safety_due_at: isTaskKind(definition.kind) ? nextRun(definition,input.now) : null,
           last_run_at: null, last_status: null, last_error: null, definition_id: null, definition_updated_at: null, created_at: input.now, updated_at: input.now
         }).returningAll().executeTakeFirstOrThrow();
         return rowToRoutine(row);
@@ -994,11 +996,19 @@ export function createRoutinesStore(db: DB, executorId?: string): RoutinesStore 
         if (repeatConfigurationHash(current) !== repeatConfigurationHash(next)) {
           await trx.updateTable('routines_v1_deliveries').set({ invalidated_reason: 'job-changed' }).where('agent_id', '=', input.agentId).where('routine_id', '=', input.routineId).where('dispatch_id', 'is', null).where('completed_at', 'is', null).execute();
         }
+        if (isTaskKind(current.kind) && !isTaskKind(next.kind)) {
+          // Accepted updates keep their FIFO across the two batched kinds. Repeat cannot consume that inbox.
+          const unseen=await trx.selectFrom('routines_v1_task_events').select('event_id').where('agent_id','=',input.agentId).where('routine_id','=',input.routineId).where('consumed_at','is',null).limit(1).executeTakeFirst();
+          if (unseen) throw new SafeToolError('busy','routineId');
+          await trx.deleteFrom('routines_v1_task_events').where('agent_id','=',input.agentId).where('routine_id','=',input.routineId).execute();
+        }
         const row = await trx.updateTable('routines_v1_definitions').set({
           ...definitionColumns(next), revision: opaqueId('rev'), updated_at: input.now,
           ...(next.webhook === null ? { webhook_address_token: null, webhook_legacy_enabled: false } : {}),
           next_run_at: schedulingChanged(current, next) ? nextRun(next, input.now) : current.nextRunAt,
+          task_safety_due_at: next.kind==='repeat' ? null : schedulingChanged(current,next) || next.kind!==current.kind ? nextRun(next,input.now) : sql<Date|null>`task_safety_due_at`,
           ...(next.kind === current.kind ? {} : { ...NO_TASK_STATE, ...NO_FINISH_BY }),
+          ...(isTaskKind(next.kind) === isTaskKind(current.kind) ? {} : {task_check_in_requested:false}),
           // TASK-930: a Resume starts the count over, whoever paused the task. No other edit does:
           // shortening instructions that were too long leaves the task paused, and counted.
           ...(!current.enabled && next.enabled ? NO_MISSES : {}),
@@ -1009,7 +1019,9 @@ export function createRoutinesStore(db: DB, executorId?: string): RoutinesStore 
           ...(current.done !== null && !next.enabled ? {} : NO_COMPLETION),
         })
           .where('agent_id', '=', input.agentId).where('routine_id', '=', input.routineId).returningAll().executeTakeFirstOrThrow();
-        return rowToRoutine(row);
+        const updated = rowToRoutine(row);
+        if (isTaskKind(updated.kind)) await nudgeTaskEvents(trx,updated,input.now);
+        return rowToRoutine(await trx.selectFrom('routines_v1_definitions').selectAll().where('agent_id','=',input.agentId).where('routine_id','=',input.routineId).executeTakeFirstOrThrow());
       });
     },
     async deleteAuthored(input) {
@@ -1022,6 +1034,7 @@ export function createRoutinesStore(db: DB, executorId?: string): RoutinesStore 
         // waiting on it finds no routine (addReply).
         await trx.deleteFrom('routines_v1_replies').where('agent_id', '=', input.agentId).where('routine_id', '=', input.routineId).execute();
         await trx.deleteFrom('routines_v1_deliveries').where('agent_id', '=', input.agentId).where('routine_id', '=', input.routineId).execute();
+        await trx.deleteFrom('routines_v1_task_events').where('agent_id','=',input.agentId).where('routine_id','=',input.routineId).execute();
         await trx.deleteFrom('routines_v1_definitions').where('agent_id', '=', input.agentId).where('routine_id', '=', input.routineId).execute();
         return { deleted: true as const, cleanupPending: pending !== undefined };
       });
@@ -1051,9 +1064,11 @@ export function createRoutinesStore(db: DB, executorId?: string): RoutinesStore 
           const override = await trx.selectFrom('agent_default_routine_overrides_v1').select('enabled').where('agent_id', '=', input.agentId).where('default_routine_id', '=', raw.definition_id).executeTakeFirst();
           if (override?.enabled === false) return null;
         }
-        if (raw.kind === 'repeat') {
+        // A reply queued while busy already owns this logical request. Its retry cannot start a second run.
+        if (await trx.selectFrom('routines_v1_requests').select('request_id').where('agent_id','=',input.agentId).where('owner_user_id','=',input.actorUserId).where('operation','=','queued-check-in').where('request_id','=',input.requestId).where('routine_id','=',input.routineId).executeTakeFirst()) throw new SafeToolError('busy','routineId');
+        {
           const active = await trx.selectFrom('routines_v1_dispatches').select(eb => eb.fn.countAll<string>().as('n')).where('agent_id', '=', input.agentId).where('routine_id', '=', input.routineId).where('completed_at', 'is', null).executeTakeFirstOrThrow();
-          if (Number(active.n) >= REPEAT_DELIVERY_LIMITS.active) throw new SafeToolError('busy', 'routineId');
+          if (Number(active.n) >= (raw.kind === 'repeat' ? REPEAT_DELIVERY_LIMITS.active : 1)) throw new SafeToolError('busy', 'routineId');
         }
         const result: AcceptedDispatch = { dispatchId: opaqueId('dispatch'), reqId: opaqueId('routine_run'), row: rowToRoutine(raw), source: input.source, acceptedAt: input.now };
         await trx.insertInto('routines_v1_dispatches').values({
@@ -1061,21 +1076,26 @@ export function createRoutinesStore(db: DB, executorId?: string): RoutinesStore 
           revision: raw.revision, req_id: result.reqId, accepted_at: input.now, completed_at: null, trigger_source: input.source,
           // TASK-919: the accepted definition under this lock, never a later edit or caller claim.
           kind: raw.kind,
-          ...(raw.kind === 'repeat' && executorId ? { executor_id: executorId, lease_expires_at: sql<Date>`clock_timestamp() + interval '120 seconds'` } : {}),
+          ...(executorId ? { executor_id: executorId, lease_expires_at: sql<Date>`clock_timestamp() + interval '120 seconds'` } : {}),
           // TASK-936: who the run runs as, the owner read under this row lock (fire.ts runs as
           // accepted.row.ownerUserId), never the actor who asked for it. Nothing moves it later.
           run_as_user_id: raw.owner_user_id,
         }).execute();
+        if (isTaskKind(raw.kind)) {
+          const boundary=await assignTaskEvents(trx,result.row,result.dispatchId);
+          await trx.updateTable('routines_v1_dispatches').set({task_event_boundary:boundary}).where('dispatch_id','=',result.dispatchId).execute();
+          await trx.updateTable('routines_v1_definitions').set({next_run_at:nextRun(result.row,input.now),task_safety_due_at:nextRun(result.row,input.now),last_run_at:input.now,task_check_in_requested:false}).where('agent_id','=',raw.agent_id).where('routine_id','=',raw.routine_id).execute();
+        }
         return result;
       }, async () => { replayed = true; });
       return accepted === null ? null : { accepted, replayed };
     },
     async interruptAbandonedDispatches() {
-      // Legacy/task runs keep their startup behavior; leased Repeat runs are guarded again under lock.
+      // Legacy unleased runs retain startup cleanup; every leased run is guarded again under lock.
       const rows = await db.selectFrom('routines_v1_dispatches').select(['dispatch_id', 'kind', 'executor_id', 'conversation_id']).where('completed_at', 'is', null)
-        .where(sql<boolean>`kind IS DISTINCT FROM 'repeat' OR executor_id IS NULL OR executor_released OR (lease_expires_at<=clock_timestamp() AND conversation_id IS NULL)`).execute();
+        .where(sql<boolean>`executor_id IS NULL OR executor_released OR (lease_expires_at<=clock_timestamp() AND conversation_id IS NULL)`).execute();
       let interrupted = 0;
-      for (const row of rows) if (await this.finishDispatch({ dispatchId: row.dispatch_id, ...(row.kind === 'repeat' && row.executor_id !== null ? { onlyIfExpired: { conversationId: row.conversation_id } } : {}), outcome: {
+      for (const row of rows) if (await this.finishDispatch({ dispatchId: row.dispatch_id, ...(row.executor_id !== null ? { onlyIfExpired: { conversationId: row.conversation_id } } : {}), outcome: {
         status: 'error', error: RUN_INTERRUPTED,
         conversationId: null, renderedPrompt: null, warning: null, miss: 'interrupted',
       } })) interrupted++;
@@ -1111,7 +1131,7 @@ export function createRoutinesStore(db: DB, executorId?: string): RoutinesStore 
         if (!dispatch || dispatch.completed_at) return false;
         if (input.onlyIfExpired) {
           // A heartbeat or conversation bind since recovery's read invalidates its observation.
-          if (dispatch.kind !== 'repeat' || dispatch.conversation_id !== input.onlyIfExpired.conversationId) return false;
+          if (dispatch.executor_id === null || dispatch.conversation_id !== input.onlyIfExpired.conversationId) return false;
           const expired = await trx.selectFrom('routines_v1_dispatches').select('dispatch_id').where('dispatch_id', '=', input.dispatchId)
             .where(sql<boolean>`executor_released OR lease_expires_at<=clock_timestamp()`).executeTakeFirst();
           if (!expired) return false;
@@ -1160,6 +1180,10 @@ export function createRoutinesStore(db: DB, executorId?: string): RoutinesStore 
           await trx.updateTable('routines_v1_definitions').set(misses.columns)
             .where('agent_id', '=', dispatch.agent_id).where('routine_id', '=', dispatch.routine_id).execute();
           if (misses.paused) paused = { agentId: dispatch.agent_id, routineId: dispatch.routine_id, keptHash: misses.keptHash };
+        }
+        await releaseTaskEvents(trx,dispatch.dispatch_id);
+        if (definition && !ranAsAnother && isTaskKind(definition.kind) && !misses?.paused) {
+          await nudgeTaskEvents(trx,rowToRoutine(definition),finishedAt,{acceptedAt:dispatch.accepted_at,reported:stored.report!==null,boundary:dispatch.task_event_boundary===null?null:Number(dispatch.task_event_boundary),requested:definition.task_check_in_requested});
         }
         return true;
       });
@@ -1289,6 +1313,7 @@ export function createRoutinesStore(db: DB, executorId?: string): RoutinesStore 
         } catch (error) {
           throw reportWriteError(dispatch.dispatch_id, error);
         }
+        await consumeTaskEvents(trx,dispatch.dispatch_id,input.now);
         return changes === null ? 'recorded' : { outcome: 'recorded', applied: changes.applied, skipped: changes.skipped };
       });
     },
@@ -1415,7 +1440,7 @@ export function createRoutinesStore(db: DB, executorId?: string): RoutinesStore 
           const running = { ...editableDefinition(row), enabled: true };
           const reopenedRow = await trx.updateTable('routines_v1_definitions').set({
             ...NO_COMPLETION, task_done_claimed_at: null, enabled: true, revision: opaqueId('rev'), spec_hash: inputHash(running),
-            next_run_at: nextRun(running, input.now), updated_at: input.now, ...NO_MISSES,
+            next_run_at: nextRun(running, input.now),task_safety_due_at:nextRun(running,input.now), updated_at: input.now, ...NO_MISSES,
           }).where('agent_id', '=', input.agentId).where('routine_id', '=', input.routineId).returningAll().executeTakeFirstOrThrow();
           return { outcome: 'added', replyId: added.reply_id, row: rowToRoutine(reopenedRow), wasDone };
         }
@@ -1489,11 +1514,10 @@ export function createRoutinesStore(db: DB, executorId?: string): RoutinesStore 
           // read: the service reconciles a personal agent's tasks to its owner first, so the two always agree, and
           // a caller that names anyone else is refused instead of handing the task to them.
           if (input.ownerUserId !== raw.owner_user_id) throw new DuplicateRefused('forbidden');
-          // No task has a webhook trigger (validateDefinition): no path, HMAC or credential to copy.
-          if (raw.webhook_spec !== null) throw new DuplicateRefused('not-found');
+          // A copied task starts without an app connection: its address, signing credential and inbox belong to the original.
           let source: StoredRoutine;
           try { source = rowToRoutine(raw); } catch (error) { throw validationError(error); }
-          const definition = validateDefinition({ ...editableDefinition(source), name: duplicateName(source.name), enabled: false });
+          const definition = validateDefinition({ ...editableDefinition(source), webhook:null, name: duplicateName(source.name), enabled: false });
           validateScheduleWrite(definition);
           // Every column left out takes its default: no task state, stamps, warning, finish date (TASK-951) or the
           // zone it was set from (TASK-955).
@@ -1516,7 +1540,8 @@ export function createRoutinesStore(db: DB, executorId?: string): RoutinesStore 
     },
     async advance(input) {
       await db.updateTable('routines_v1_definitions').set({ next_run_at: input.nextRunAt, ...(input.lastRunAt !== undefined ? { last_run_at: input.lastRunAt } : {}) })
-        .where('agent_id', '=', input.agentId).where('routine_id', '=', input.routineId).where('revision', '=', input.expectedRevision).execute();
+        .where('agent_id', '=', input.agentId).where('routine_id', '=', input.routineId).where('revision', '=', input.expectedRevision)
+        .where(eb=>eb.or([eb('kind','=','repeat'),eb('task_check_in_requested','=',false)])).execute();
     },
     async withLockedWebhookSecret(input, effect) {
       return db.transaction().execute(async trx => {
@@ -1549,6 +1574,7 @@ export function createRoutinesStore(db: DB, executorId?: string): RoutinesStore 
         await trx.insertInto('routines_v1_retired_agents').values({ agent_id: agentId }).onConflict(oc => oc.doNothing()).execute();
         // Dispatch first matches finishDispatch's order and prevents late history resurrection.
         await trx.deleteFrom('routines_v1_deliveries').where('agent_id', '=', agentId).execute();
+        await trx.deleteFrom('routines_v1_task_events').where('agent_id','=',agentId).execute();
         await trx.deleteFrom('routines_v1_dispatches').where('agent_id', '=', agentId).execute();
         const rows = await trx.selectFrom('routines_v1_definitions').selectAll().where('agent_id', '=', agentId).forUpdate().execute();
         for (const row of rows) await queueCleanup(trx, rowToRoutine(row));
@@ -1864,6 +1890,7 @@ export function createRoutinesStore(db: DB, executorId?: string): RoutinesStore 
                last_warning = NULL,
                webhook_address_token = NULL,
                webhook_legacy_enabled = false,
+               task_check_in_requested = false,
                ${sql.join(Object.entries(NO_TASK_STATE).map(([column, value]) => sql`${sql.ref(column)} = ${value}`))}
           FROM unnest(${agentIds}::text[], ${ownerIds}::text[])
             AS a(agent_id, owner_user_id)
@@ -1872,6 +1899,8 @@ export function createRoutinesStore(db: DB, executorId?: string): RoutinesStore 
         RETURNING r.agent_id,r.routine_id), invalidated AS (
           UPDATE routines_v1_deliveries q SET invalidated_reason='owner-changed' FROM moved
           WHERE q.agent_id=moved.agent_id AND q.routine_id=moved.routine_id AND q.completed_at IS NULL AND q.dispatch_id IS NULL RETURNING q.delivery_id
+        ), cleared_events AS (
+          DELETE FROM routines_v1_task_events e USING moved WHERE e.agent_id=moved.agent_id AND e.routine_id=moved.routine_id RETURNING e.event_id
         ) SELECT count(*)::text AS n FROM moved
       `.execute(db);
       return Number(res.rows[0]?.n ?? 0);

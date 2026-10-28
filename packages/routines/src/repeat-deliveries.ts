@@ -93,7 +93,7 @@ export function createRepeatDeliveryStore(db: DB, executorId: string) {
     async release() { await db.updateTable('routines_v1_dispatches').set({executor_released:true}).where('executor_id','=',executorId).where('completed_at','is',null).execute(); },
     async deferRecovery(dispatchId:string) { await sql`UPDATE routines_v1_dispatches SET lease_expires_at=clock_timestamp()+interval '10 seconds' WHERE dispatch_id=${dispatchId} AND completed_at IS NULL AND NOT executor_released AND lease_expires_at<=clock_timestamp()`.execute(db); },
     async expired() {
-      return db.selectFrom('routines_v1_dispatches').select(['dispatch_id','agent_id','run_as_user_id','conversation_id','executor_released']).where('kind','=','repeat').where('completed_at','is',null).where(sql<boolean>`executor_released OR lease_expires_at<=clock_timestamp()`).orderBy('lease_expires_at').limit(100).execute();
+      return db.selectFrom('routines_v1_dispatches').select(['dispatch_id','agent_id','run_as_user_id','conversation_id','executor_released']).where('executor_id','is not',null).where('completed_at','is',null).where(sql<boolean>`executor_released OR lease_expires_at<=clock_timestamp()`).orderBy('lease_expires_at').limit(100).execute();
     },
   };
 }

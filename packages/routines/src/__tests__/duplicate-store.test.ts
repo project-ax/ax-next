@@ -146,12 +146,12 @@ describe("a person's copy of their task (store, TASK-953)", () => {
     expect(await rowOf(task.routineId)).toMatchObject({ task_completed_by_user_id: 'owner', task_done_claimed_at: minute(2) });
     const { routineId } = await copied(task, 'd1');
     const copy = await rowOf(routineId);
-    expect(copy).toMatchObject({ enabled: false, task_done_claimed_at: null, task_completed_at: null, task_completed_by_user_id: null });
+    expect(copy).toMatchObject({ enabled: false, task_done_claimed_at: null, task_completed_at: null, task_completed_by_user_id: null,task_safety_due_at:null });
     // Negative space: every column but the ones a copy sets is as a task that was never run, reported on or
     // marked done has it, so none of TASK-950's columns, or anything else this source holds, rides across. (A
     // column a later version adds is guarded by the INSERT naming its columns, not by this sweep.)
     const fresh = (await rowOf((await createTask('fresh')).routineId))!;
-    const SET_BY_THE_COPY = new Set(['routine_id', 'revision', 'name', 'enabled', 'spec_hash', 'next_run_at', 'created_at', 'updated_at', 'task_steps']);
+    const SET_BY_THE_COPY = new Set(['routine_id', 'revision', 'name', 'enabled', 'spec_hash', 'next_run_at', 'task_safety_due_at', 'created_at', 'updated_at', 'task_steps']);
     for (const [column, value] of Object.entries(copy!)) {
       if (!SET_BY_THE_COPY.has(column)) expect(value, column).toEqual(fresh[column]);
     }
@@ -208,12 +208,12 @@ describe("a person's copy of their task (store, TASK-953)", () => {
     expect(await receipts()).toEqual([]);
   });
 
-  it('a task holding a webhook trigger, which no task can have, is not-found rather than a validation error', async () => {
+  it('a task holding app updates without its required safety schedule is refused without a copy', async () => {
     const task = await createTask('task');
     await sql`UPDATE routines_v1_definitions SET schedule_spec = NULL, webhook_spec = ${JSON.stringify({ kind: 'webhook', path: '/hook' })}::jsonb
       WHERE routine_id = ${task.routineId}`.execute(f.db);
     const rows = await definitionRows();
-    expect(await duplicate(task, 'd1')).toBe('not-found');
+    await expect(duplicate(task, 'd1')).rejects.toMatchObject({toolCode:'validation'});
     expect(await definitionRows()).toBe(rows);
     expect(await receipts()).toEqual([]);
   });

@@ -3599,6 +3599,7 @@ function toTaskDetail(
       DECISION_TASK_CHECKS_IN_MAX_CHARS,
     ),
     nextCheckAt: view.nextRunAt,
+    ...(view.webhook !== null ? { appUpdates: { respondWithin: view.kind === 'repeat' ? null : view.webhook.respondWithin ?? '5m' } } : {}),
     brief: {
       promptBody:
         fenceBlock(view.promptBody, DECISION_TASK_TEXT_MAX_CHARS, DECISION_TASK_TEXT_MAX_LINES)

@@ -1,3 +1,4 @@
+import { acceptHistoricalDispatch } from './support/historical-dispatch.js';
 import { inspect } from 'node:util';
 import { describe, it, expect } from 'vitest';
 import { sql, type Transaction } from 'kysely';
@@ -67,7 +68,7 @@ const onTrack = { status: 'on-track', update: 'Moving.', ask: null } as const;
 /** A run of the routine at its current revision, accepted at `at` and bound to its own conversation. */
 const bound = async (key: RoutineKey, requestId: string, at: Date) => {
   const row = (await f.store.findOne(key))!;
-  const { accepted } = (await f.store.acceptDispatch({
+  const { accepted } = (await acceptHistoricalDispatch(f.db,f.store,{
     agentId: row.agentId, routineId: row.routineId, expectedRevision: row.revision, actorUserId: 'owner', source: 'manual', requestId, now: at,
   }))!;
   await f.store.bindDispatchConversation({ dispatchId: accepted.dispatchId, conversationId: `c-${requestId}` });

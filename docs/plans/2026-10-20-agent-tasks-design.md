@@ -49,10 +49,10 @@ knows what it's for and says how it's going.
   as #1066 (`ece0ffad4`): provider signatures through the existing Repeat
   editor and receiver, plus a guard for the actual request parser.
   TASK-980 supplied the required audited dependency updates on main;
-  TASK-982 implements task-scoped addresses with explicit legacy cutover
-  (schema version 18, owner-only setup/copy/replace);
-  TASK-983 depends on both and wires the durable FIFO inbox, serialized task
-  check-ins and response/safety timers; TASK-984 completes connection/test
+  TASK-982 merged as #1068: task-scoped addresses with explicit legacy cutover
+  (schema version 18, owner-only setup/copy/replace).
+  TASK-983 wires the durable FIFO inbox, serialized task
+  check-ins and response/safety timers (schema version 19); TASK-984 completes connection/test
   status and refusal counts; TASK-985 is the final kind acceptance walk.
   Work is sequential. PR 5 has no production deployment authorization.
 - **Still later:** email notifications, sharing and “Also ask”. Their existing
@@ -545,10 +545,11 @@ TASK-970 (PR 4-B) implements independent nullable `schedule` and `webhook` field
 for Repeat a job. Its existing editor offers both When choices together, and an
 edit to one preserves the other's configuration. Existing IDs, webhook addresses,
 events and signature settings survive the conversion; old approved `trigger`
-calls still mean an exclusive replacement. Stay on top and Get done keep their
-schedule and have no app-update control until PR 5's inbox and nudges exist.
-This contract change does not move routines into the Tasks list; the remaining
-PR 4 cards do that. The setup flow described in §5.2 remains the PR 5 design.
+calls still mean an exclusive replacement. TASK-983 adds the optional app-update
+control for Stay on top and Get done, alongside their required safety schedule.
+These kinds batch updates through the existing scheduler; Repeat keeps one run
+per accepted update. TASK-984 completes connection tests and refusal status in
+the setup flow described in §5.2.
 
 Folding routines in brings their webhooks along. A webhook is one more way for
 a task to wake up, next to its schedule, a reply and Check now. What an update
@@ -636,6 +637,26 @@ webhooks are easier to find:
   only after a check-in that saw it reports back; a failed check-in hands its
   updates to the next one.
 
+TASK-983 implements the task inbox in schema version 19. Accepted updates are
+private, owner-scoped blobs with a durable FIFO ledger. Admission refuses new
+work at the fixed capacity limit rather than acknowledging and losing it.
+Delivery IDs are retained for seven days after acceptance for deduplication;
+unseen updates do not expire. Each check-in claims at most 20 updates. Its
+full-read tool accepts only IDs assigned to that open check-in and checks the
+current owner and conversation again.
+
+The response window defaults to five minutes and can be set from one minute
+to 24 hours. A check-in restarts an interval safety schedule from its actual
+start; a cron schedule keeps its next configured occurrence. Already-waiting
+overflow beyond the first 20 follows promptly after a report. Arrivals during
+a check-in wait their response window and are marked as possible echoes.
+Automatic checks respect active hours. A person's reply during a run is saved
+and queues the next check-in, with that state shown in the reply box.
+One leased dispatch per task enforces serialization across hosts and restarts.
+
+TASK-984 still owns app connection tests, connection status and counted
+refusals. Saving setup does not claim that a delivery or a check-in succeeded.
+
 ## 6. Worked example: zero open support tickets, with Zendesk
 
 In a person's head this task is both kinds at once: a standing condition to
@@ -662,9 +683,9 @@ would also give one outcome two statuses and two threads.
 **The rules that make it work:**
 
 - **One check-in at a time per task.** Updates that arrive during a check-in
-  wait for the next one, so no ticket is handled by two runs at once. Routines
-  allow overlapping runs today (the store's lifecycle fence "allows routine
-  concurrency", `packages/routines/src/store.ts`); tasks won't.
+  wait for the next one, so no ticket is handled by two runs at once. TASK-983
+  enforces this for every task check-in source with a durable admission gate
+  and executor leases. Repeat jobs retain their separate run cap.
 - **Updates are hints; Zendesk is the source of truth.** The agent always
   re-reads the ticket and the queue, so a lost, late or repeated update can't
   make it act wrongly. At worst it makes it slower, and the full check limits

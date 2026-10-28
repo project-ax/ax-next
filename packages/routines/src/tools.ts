@@ -19,6 +19,7 @@ const activities: Record<C.RoutineToolName, string> = {
   routine_list: 'Reading routines', routine_get: 'Reading a routine', routine_create: 'Creating a routine',
   routine_update: 'Updating a routine', routine_delete: 'Deleting a routine', routine_fire_now: 'Starting a routine',
   routine_report: 'Reporting on a task',
+  routine_read_update: 'Reading an app update',
 };
 export const ROUTINE_TOOL_DESCRIPTORS: ToolDescriptor[] = names.map(name => ({
   name, description: C.RoutineToolDescriptions[name], inputSchema: C.RoutineToolJsonSchemas[name],
@@ -107,6 +108,13 @@ async function prepare({ bus, store, ctx, call }: Invocation): Promise<Prepared>
   // A report is the run's own output, not routine management: it answers to the
   // check-in it ran in, never to agents:resolve or agents:can-manage-routines.
   if (name === 'routine_report') return prepareReport({ store, ctx, call });
+  if (name === 'routine_read_update') {
+    const input = parseRoutineInput(C.RoutineReadUpdateToolInputSchema, call.input);
+    if (ctx.source !== 'routine' || !ctx.conversationId) throw new SafeToolError('forbidden', 'input');
+    const event = await store.readTaskEvent({ agentId: ctx.agentId, conversationId: ctx.conversationId, actorUserId: ctx.userId, eventId: input.eventId });
+    if (event === null) throw new SafeToolError('not-found', 'input');
+    return { hook: 'routines:read-update', input: { agentId: ctx.agentId, ...input } };
+  }
   const { agent } = await bus.call<unknown, { agent: { ownerType: 'user' | 'team'; ownerId: string } }>(
     'agents:resolve', ctx, { agentId: ctx.agentId, userId: ctx.userId });
   const { allowed, stopOthers } = await bus.call<unknown, { allowed: boolean; stopOthers?: boolean }>('agents:can-manage-routines', ctx, { agentId: ctx.agentId });

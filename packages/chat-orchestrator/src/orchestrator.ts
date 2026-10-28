@@ -1419,7 +1419,8 @@ const ALWAYS_ON_BROKER_TOOLS = [
   'connector_propose',
 ] as const;
 
-// TASK-908: a ROUTINE run of a non-wildcard agent also sees `routine_report`.
+// TASK-908/983: a ROUTINE run of a non-wildcard agent also sees
+// `routine_report` and `routine_read_update`.
 // "Routine run" means `ctx.source === 'routine'` on `agent:invoke`. Only
 // @ax/routines' fire.ts sets that there, host-side. A chat request has no way
 // to set it. (@ax/decisions' replay also says 'routine', but it calls
@@ -1427,6 +1428,8 @@ const ALWAYS_ON_BROKER_TOOLS = [
 //
 // - A task check-in's brief tells the agent to finish with one routine_report
 //   call, so the tool has to be in the catalog the check-in sees.
+// - Its app-update previews can be truncated; routine_read_update must also
+//   be visible so the check-in can read its assigned updates in full.
 // - An agent made through the admin API can't be a wildcard
 //   (`rejectsWildcardScope` in packages/agents/src/admin-routes.ts refuses an
 //   empty-empty scope), so a team agent always carries an explicit list.
@@ -1435,15 +1438,16 @@ const ALWAYS_ON_BROKER_TOOLS = [
 //   run-runner). Without this, a team agent's check-ins could never report.
 // - Visibility isn't a grant. routine_report's host gate (TASK-907: @ax/routines
 //   `prepareReport`, checked again under locks by `routines:report`) refuses
-//   anywhere but a task's own check-in. A repeat routine's run of
-//   such an agent sees the tool too, and is refused if it calls it.
+//   anywhere but a task's own check-in. routine_read_update additionally
+//   requires that open check-in's assigned update and current owner. A repeat
+//   routine's run sees these tools too, and is refused if it calls them.
 //
-// A wildcard agent already sees the whole catalog, routine_report included, so
+// A wildcard agent already sees the whole catalog, these tools included, so
 // it's left alone, as for the broker tools. An ordinary chat gets nothing new.
 // That's why this isn't in ALWAYS_ON_BROKER_TOOLS: there it would sit in every
 // chat's catalog and always refuse. Same I2 posture as above: a local mirror of
 // @ax/routines-contract's tool name, not an import.
-const ROUTINE_RUN_TOOLS = ['routine_report'] as const;
+const ROUTINE_RUN_TOOLS = ['routine_report', 'routine_read_update'] as const;
 
 /**
  * "default+locked" broker tools, computed at session-open (TASK-51).

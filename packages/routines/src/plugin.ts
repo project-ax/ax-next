@@ -125,8 +125,10 @@ export function createRoutinesPlugin(
       store = createRoutinesStore(db, executorId);
       deliveries = createRepeatDeliveryStore(db,executorId);
       const localDeliveries = deliveries;
-      bus.subscribe('blob:collect-refs',PLUGIN_NAME,(_ctx,payload)=>answerBlobCollectRefs(payload,PLUGIN_NAME,candidates=>localDeliveries.references(candidates)));
       const localStore = store;
+      bus.subscribe('blob:collect-refs',PLUGIN_NAME,(_ctx,payload)=>answerBlobCollectRefs(payload,PLUGIN_NAME,async candidates => [
+        ...await localDeliveries.references(candidates), ...await localStore.taskEventReferences(candidates),
+      ]));
       // The capture check needs only the migrated schema: bound conversations
       // survive the abandoned-run pass below, so it needn't wait for that.
       storeReady(localStore);

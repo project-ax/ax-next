@@ -1,3 +1,4 @@
+import { acceptHistoricalDispatch } from './support/historical-dispatch.js';
 import { inspect } from 'node:util';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { sql } from 'kysely';
@@ -39,7 +40,7 @@ function services(store: RoutinesStore = f.store): HookBus {
   return bus;
 }
 type Key = { agentId: string; routineId: string; revision: string };
-const accept = async (row: Key, requestId: string) => (await f.store.acceptDispatch({
+const accept = async (row: Key, requestId: string) => (await acceptHistoricalDispatch(f.db,f.store,{
   agentId: row.agentId, routineId: row.routineId, expectedRevision: row.revision, actorUserId: 'owner', source: 'manual', requestId, now,
 }))!.accepted;
 /** An open run of `row`, bound to a conversation of its own the way fire.ts binds it, and its runner's context. */
@@ -113,7 +114,7 @@ describe('routines:report (TASK-907)', () => {
     const bus = services();
     const task = await f.store.createAuthored(taskInput('task'));
     const run = await bound(task, 'run');
-    // Another open check-in of the same task, in its own conversation.
+    // A historical overlapping check-in of the same task, in its own conversation.
     const sibling = await bound(task, 'sibling');
     const target = { agentId: 'a', dispatchId: run.dispatchId, ...needsYou, notes: NOTES };
     const refused: Array<[string, AgentContext, string]> = [

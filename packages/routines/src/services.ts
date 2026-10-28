@@ -6,13 +6,14 @@ import type { AcceptedDispatch, FireRow, OpenCheckInLookup, ReportRefusal, Store
 import { credentialRef, editableDefinition, deleteRequestHash, updateRequestHashes, isStopOnlyPatch, parseStoredRoutine, validationError } from './definition.js';
 import { drainRoutineCleanup } from './cleanup.js';
 import { advanceToNextActiveWindow } from './active-hours.js';
+import { fullTaskEventPayload, readTaskEventContent } from './task-event-content.js';
 
 const PLUGIN = '@ax/routines';
 export const ROUTINE_SERVICES = [
   'list', 'get', 'create', 'update', 'delete', 'fire-now', 'recent-fires', 'recent-fires-for-agent',
   'set-webhook-secret', 'webhook-address', 'replace-webhook-address', 'list-defaults', 'get-default', 'upsert-default', 'delete-default',
   'set-agent-default-enabled', 'list-agent-defaults', 'report', 'clear-notes', 'tasks-for-conversations',
-  'reply', 'recent-replies', 'set-steps', 'set-finish-by', 'complete', 'reopen', 'duplicate',
+  'reply', 'recent-replies', 'set-steps', 'set-finish-by', 'complete', 'reopen', 'duplicate', 'read-update',
 ].map(name => `routines:${name}`);
 /** TASK-931. How many replies `routines:recent-replies` reads when the caller names no limit (the contract's default). */
 const RECENT_REPLIES_DEFAULT_LIMIT = 20;
@@ -249,6 +250,11 @@ export function registerRoutineServices({ bus, store, now, dispatch, admitDispat
       // The receipt's hash covers the revision: another try accepted this key's check-in after the walk read
       // none, at another revision.
       if (err instanceof SafeToolError && err.toolCode === 'request-conflict') return 'replayed';
+      if (err instanceof SafeToolError && err.toolCode === 'busy' && C.isTaskKind(row.kind)) {
+        const requested = await store.requestTaskCheckIn({ ...key, actorUserId: ctx.userId, requestId, now: now() });
+        if (requested === 'queued') return 'queued';
+        if (requested === 'replayed') return 'replayed';
+      }
       throw err;
     }
     if (result === null) {
@@ -387,6 +393,19 @@ export function registerRoutineServices({ bus, store, now, dispatch, admitDispat
     await access(ctx, input.agentId);
     const disabled = new Set(await store.disabledDefaultIdsForAgent(input.agentId));
     return { defaults: (await store.listDefaults()).map(row => ({ defaultRoutineId: row.defaultRoutineId, name: row.name, enabled: !disabled.has(row.defaultRoutineId) })) };
+  });
+  // A full update is readable only by its assigned, still-open check-in.
+  register('read-update', C.RoutineReadUpdateInputSchema, C.RoutineReadUpdateOutputSchema, async (ctx, input) => {
+    if (ctx.source !== 'routine' || input.agentId !== ctx.agentId || !ctx.conversationId)
+      throw new SafeToolError('forbidden', 'input');
+    const scope = { agentId: ctx.agentId, conversationId: ctx.conversationId, actorUserId: ctx.userId, eventId: input.eventId };
+    const event = await store.readTaskEvent(scope);
+    if (event === null) throw new SafeToolError('not-found', 'input');
+    const bytes = await readTaskEventContent(bus, ctx, event);
+    // Blob retrieval is an external awaited operation. Recheck authority after
+    // it, so a report, owner change or run closure while it waited revokes it.
+    if (await store.readTaskEvent(scope) === null) throw new SafeToolError('not-found', 'input');
+    return { eventId: event.eventId, receivedAt: event.receivedAt.toISOString(), payload: fullTaskEventPayload(bytes) };
   });
   // TASK-907. A check-in's report is the run's own output, not routine management, so there's no
   // access check here. The hook checks the whole binding itself, whoever calls it: a routine run's

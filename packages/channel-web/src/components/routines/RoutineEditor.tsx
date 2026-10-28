@@ -428,7 +428,7 @@ function RoutineForm({
                   }
                 />
               </Field>
-              {form.webhook !== null && <FieldDescription>App updates run when received. Active hours apply to the schedule.</FieldDescription>}
+              {form.webhook !== null && <FieldDescription>{isTaskKind(form.kind) ? 'Updates received outside active hours wait for the next active window.' : 'App updates run when received. Active hours apply to the schedule.'}</FieldDescription>}
               {form.activeHours && (
                 <>
                 <Field data-invalid={activeDaysInvalid || undefined}>
@@ -489,9 +489,13 @@ function RoutineForm({
         <ToggleGroup type="single" aria-label="Task kind" value={form.kind} disabled={disabled}
           className="flex-wrap justify-start" onValueChange={value => {
             if (value !== 'repeat' && value !== 'stay-on-top' && value !== 'get-done') return;
+            if (value === 'repeat') {
+              const { respondWithin: _respondWithin, ...webhook } = webhookDraft.current;
+              webhookDraft.current = webhook;
+            }
             setForm(f => ({ ...f, kind: value, goodWhen: value === 'repeat' ? null : (f.goodWhen ?? ''),
               schedule: value === 'repeat' ? f.schedule : (f.schedule ?? { kind: 'interval', every: '1h' }),
-              webhook: value === 'repeat' ? f.webhook : null,
+              webhook: value === 'repeat' && f.webhook !== null ? webhookDraft.current : f.webhook,
               conversation: value === 'repeat' ? f.conversation : 'per-fire' }));
             setError(null); setInvalidField(undefined);
           }}>
@@ -507,7 +511,7 @@ function RoutineForm({
         </p>
       )}
       <p className="text-sm text-muted-foreground">
-        {isTaskKind(form.kind) ? `${agentName} checks in on the schedule you choose.` : `${agentName} runs this work on its schedule or when an app sends an update.`}
+        {isTaskKind(form.kind) ? `${agentName} checks in on schedule and batches updates from connected apps.` : `${agentName} runs this work on its schedule or when an app sends an update.`}
       </p>
       <FieldGroup className="gap-4">
         <FieldGroup className="grid grid-cols-1 gap-4 sm:grid-cols-2">
@@ -557,14 +561,11 @@ function RoutineForm({
               <Checkbox id={`${id}-scheduled`} checked={form.schedule !== null} disabled={disabled || isTaskKind(form.kind)} onCheckedChange={value => toggleSchedule(value === true)} />
               <FieldLabel htmlFor={`${id}-scheduled`}>On a schedule</FieldLabel>
             </Field>
-            {isTaskKind(form.kind) ? (
-              <FieldDescription>The schedule stays on for full check-ins. Updates from another app come later.</FieldDescription>
-            ) : (
-              <Field orientation="horizontal">
-                <Checkbox id={`${id}-updates`} checked={form.webhook !== null} disabled={disabled} onCheckedChange={value => toggleWebhook(value === true)} />
-                <FieldLabel htmlFor={`${id}-updates`}>When another app sends an update</FieldLabel>
-              </Field>
-            )}
+            {isTaskKind(form.kind) && <FieldDescription>The schedule stays on for full check-ins, even if an app misses an update.</FieldDescription>}
+            <Field orientation="horizontal">
+              <Checkbox id={`${id}-updates`} checked={form.webhook !== null} disabled={disabled} onCheckedChange={value => toggleWebhook(value === true)} />
+              <FieldLabel htmlFor={`${id}-updates`}>When another app sends an update</FieldLabel>
+            </Field>
           </FieldSet>
         )}
         {!taskMode ? scheduleFields : form.schedule !== null && !optional && (
@@ -574,6 +575,12 @@ function RoutineForm({
         )}
         {form.webhook !== null && (
           <>
+            {isTaskKind(form.kind) && <>
+              {textField('Respond within', form.webhook.respondWithin ?? '5m', 'webhook.respondWithin', value => {
+                if (form.webhook !== null) update('webhook', { ...form.webhook, respondWithin: value });
+              }, { maxLength: 32 })}
+              <FieldDescription>Batch app updates into one check-in. Use 1m to 24h; 5m means fewer check-ins on a busy day. Extra waiting batches follow after the current check-in.</FieldDescription>
+            </>}
             <FieldGroup className="grid grid-cols-1 gap-4 sm:grid-cols-2">
               {textField(
                 'Webhook path',
