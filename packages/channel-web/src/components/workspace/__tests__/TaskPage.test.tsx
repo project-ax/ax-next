@@ -1511,6 +1511,27 @@ describe('TaskPage: replies and checking in now (TASK-931)', () => {
     expect(taskMock).toHaveBeenCalledTimes(3);
   });
 
+  it('a replayed reply recognizes a check-in already read since its first unconfirmed send', async () => {
+    taskMock.mockResolvedValue(detail());
+    await renderReady();
+    await checkNow();
+    replyMock.mockRejectedValueOnce(new TypeError('Failed to fetch')).mockResolvedValueOnce({ checkIn: 'replayed' });
+    await sendReply('Refunds under $100 are fine.');
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Send' })).toBeEnabled());
+    const completed = landed({ firedAt: new Date(Date.now() + 1000).toISOString() });
+    taskMock.mockResolvedValue(completed);
+    await advance(10_000);
+    expect(await within(pageStatus()).findByText(FINISHED)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+    await waitFor(() => expect(replyMock).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(taskMock).toHaveBeenCalledTimes(4));
+    expect(replyMock.mock.calls[1]![2].requestId).toBe(replyMock.mock.calls[0]![2].requestId);
+    expect(within(pageStatus()).queryByText(CHECKING_IN)).toBeNull();
+    expect(within(pageStatus()).getByText(FINISHED)).toBeInTheDocument();
+    await advance(10_000);
+    expect(taskMock).toHaveBeenCalledTimes(4);
+  });
+
   it('a reply answering not-allowed starts no poll: no Checking in now…, no re-read at 10 seconds', async () => {
     taskMock.mockResolvedValue(detail({ permissions: { fire: false, stop: false, edit: false } }));
     replyMock.mockResolvedValue({ checkIn: 'not-allowed' });

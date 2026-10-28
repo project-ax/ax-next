@@ -209,6 +209,7 @@ interface World {
   absent: Set<string>;
   /** Set: `routines:get` throws this. */
   getFailure: Error | null;
+  resolveFailure: unknown;
   /** Set: `routines:recent-fires` throws this. */
   firesFailure: Error | null;
   /** Set: `routines:clear-notes` throws this. */
@@ -272,6 +273,7 @@ function setup(over: Partial<World> & { now?: () => Date } = {}) {
     fires: [],
     absent: new Set(),
     getFailure: null,
+    resolveFailure: null,
     firesFailure: null,
     clearFailure: null,
     replies: [],
@@ -318,6 +320,7 @@ function setup(over: Partial<World> & { now?: () => Date } = {}) {
     'agents',
     async (_ctx: AgentContext, input: { agentId: string; userId: string }) => {
       resolveCalls.push(input);
+      if (world.resolveFailure !== null) throw world.resolveFailure;
       const agent = world.agents[input.agentId];
       if (agent === undefined || !agent.users.includes(input.userId)) {
         throw new PluginError({ code: 'not-found', plugin: 'agents', message: 'no such agent' });
@@ -930,6 +933,34 @@ describe('GET /api/workspace/tasks/:agentId/:routineId (TASK-910)', () => {
     expect(getCalls).toEqual([]);
     expect(firesCalls).toEqual([]);
     expect(repliesCalls).toEqual([]);
+  });
+
+  it.each([
+    new PluginError({ code: 'timeout', plugin: 'agents', message: 'private provider details' }),
+    new PluginError({ code: 'unavailable', plugin: 'agents', message: 'private provider details' }),
+    new PluginError({ code: 'unexpected', plugin: 'agents', message: 'private provider details' }),
+    new SafeToolError('unavailable', 'input'),
+    { rejected: true, reason: 'private provider details', code: 'unavailable' },
+    // HookBus wraps non-PluginError throws as unknown; a nested code is not an authoritative refusal.
+    { rejected: true, reason: 'private provider details', code: 'forbidden' },
+    new Error('private provider details'),
+  ])('agent resolution fault %# returns a generic retryable 503 before reading any task', async resolveFailure => {
+    const { detail, getCalls, firesCalls, repliesCalls } = setup({ resolveFailure });
+    const captured = await detail();
+    expect(captured.statusCode).toBe(503);
+    expect(captured.body).toEqual({ error: 'agent-unavailable' });
+    expect(getCalls).toEqual([]);
+    expect(firesCalls).toEqual([]);
+    expect(repliesCalls).toEqual([]);
+  });
+
+  it.each([
+    new PluginError({ code: 'forbidden', plugin: 'agents', message: 'private' }),
+    new SafeToolError('not-found', 'input'),
+    new PluginError({ code: 'not-found', plugin: 'agents', message: 'private' }),
+  ])('explicit hidden-agent refusals remain 404', async resolveFailure => {
+    const { detail } = setup({ resolveFailure });
+    expect(await detail()).toMatchObject({ statusCode: 404, body: { error: 'agent-not-found' } });
   });
 
   it('404s a routine that isn’t there', async () => {

@@ -3,7 +3,7 @@ import { z } from 'zod';
 import * as C from '@ax/routines-contract';
 import type { RoutinesStore } from './store.js';
 import type { AcceptedDispatch, FireRow, OpenCheckInLookup, ReportRefusal, StoredReading, StoredRoutine } from './types.js';
-import { credentialRef, editableDefinition, deleteRequestHash, updateRequestHashes, isStopOnlyPatch, parseStoredRoutine, validationError } from './definition.js';
+import { credentialRef, editableDefinition, deleteRequestHash, updateRequestHashes, inputHash, isStopOnlyPatch, parseStoredRoutine, validationError } from './definition.js';
 import { drainRoutineCleanup } from './cleanup.js';
 import { advanceToNextActiveWindow } from './active-hours.js';
 import { fullTaskEventPayload, readTaskEventContent } from './task-event-content.js';
@@ -23,6 +23,8 @@ const RECENT_REPLIES_DEFAULT_LIMIT = 20;
  * starting runs that die.
  */
 export const REPLY_CHECK_IN_RESTARTS = 3;
+/** An unconfirmed Check now may recover three host-interrupted task runs. */
+export const CHECK_NOW_RESTARTS = 3;
 type Agent = { id: string; ownerType: 'user' | 'team'; ownerId: string };
 export function parseRoutineInput<T>(schema: z.ZodType<T, z.ZodTypeDef, unknown>, input: unknown): T {
   const parsed = schema.safeParse(input);
@@ -219,7 +221,7 @@ export function registerRoutineServices({ bus, store, now, dispatch, admitDispat
    * Updates, and Check now tries again) or reported. If a host restart cut it off before it
    * reported (the sweep's `RUN_INTERRUPTED`), the retry starts one more, keyed on the reply and the
    * check-in it replaces (`reply:<replyId>:after:<dispatchId>`), so retries at once start one
-   * between them, up to `REPLY_CHECK_IN_RESTARTS` per reply. Check now's own retry doesn't do this.
+   * between them, up to `REPLY_CHECK_IN_RESTARTS` per reply. Check now has its own bounded recovery.
    * The walk looks only at the reply's own check-ins: a scheduled check-in or Check now that ran and
    * reported after the cut-off one already read the reply (fire.ts puts recent replies in every
    * check-in's message), yet a retry still starts one more; that is bounded (the owner's own retry,
@@ -332,15 +334,26 @@ export function registerRoutineServices({ bus, store, now, dispatch, admitDispat
       // Matching accepted receipts are checked transactionally by acceptDispatch.
     }
     if (!dispatch) throw new SafeToolError('unavailable', 'input');
-    const result = await store.acceptDispatch({ ...input, actorUserId: ctx.userId, source: 'manual', now: now() });
-    if (!result) {
-      if (!row) throw new SafeToolError('not-found', 'routineId');
-      if (row.revision !== input.expectedRevision) throw new SafeToolError('revision-conflict', 'expectedRevision');
-      throw new SafeToolError('disabled', 'enabled');
+    let requestId = input.requestId;
+    for (let restarts = 0; ; restarts++) {
+      // Validate the original receipt's hash before walking replacements. Every key retains the
+      // caller's revision fence, so an edit requires a fresh confirmed press rather than running
+      // changed instructions. The receipt transaction makes concurrent retries converge.
+      const result = await store.acceptDispatch({ ...input, requestId, actorUserId: ctx.userId, source: 'manual', now: now() });
+      if (!result) {
+        const fresh = await store.findOne(input);
+        if (!fresh) throw new SafeToolError('not-found', 'routineId');
+        if (fresh.revision !== input.expectedRevision) throw new SafeToolError('revision-conflict', 'expectedRevision');
+        throw new SafeToolError('disabled', 'enabled');
+      }
+      requireAllowed(routinePermissions(result.accepted.row, ctx.userId, a.allowed, a.stopOthers).fire);
+      if (!result.replayed) return dispatch(result.accepted);
+      // Repeat can have external side effects without a report. Keep its replay acknowledgement.
+      if (restarts === CHECK_NOW_RESTARTS || !row || !C.isTaskKind(row.kind) || !C.isTaskKind(result.accepted.row.kind)) return { status: 'ok' as const };
+      const outcome = await store.getDispatchOutcome({ agentId: input.agentId, dispatchId: result.accepted.dispatchId });
+      if (outcome?.miss !== 'interrupted') return { status: 'ok' as const };
+      requestId = `check-retry:${inputHash({ requestId: input.requestId, after: result.accepted.dispatchId })}`;
     }
-    requireAllowed(routinePermissions(result.accepted.row, ctx.userId, a.allowed, a.stopOthers).fire);
-    // 'ok' acknowledges the durable dispatch; replay never claims the turn completed.
-    return result.replayed ? { status: 'ok' as const } : dispatch(result.accepted);
   }));
   // TASK-947: read for the caller. A routine that's gone lists a run only for the person it ran as (historyQuery).
   register('recent-fires', C.RoutineRecentFiresInputSchema, C.RoutineRecentFiresOutputSchema, async (ctx, input) => {
