@@ -192,7 +192,7 @@ describe('canonical routine return schemas', () => {
       expect(projected.finishBy).toBe('2026-11-14');
       // Not owner-gated, unlike the task's steps: the date is about the work, and holds no agent text.
       const teammate = routineView(task, 'teammate', true);
-      expect(teammate).toEqual({ ...projected, ownedByCaller: false, permissions: routinePermissions(task, 'teammate', true), steps: [] });
+      expect(teammate).toEqual({ ...projected, ownedByCaller: false, permissions: routinePermissions(task, 'teammate', true), steps: [], finishByTimeZone: null });
       // The list tools' view keeps it: they leave only the agent notes and the steps out.
       const { steps: _steps, ...toolView } = projected;
       expect(C.RoutineListToolOutputSchema.parse({ routines: [toolView] })).toEqual({ routines: [toolView] });
@@ -212,12 +212,18 @@ describe('canonical routine return schemas', () => {
       expect(C.RoutineViewSchema.safeParse({ ...projected, finishBy: 3 }).success).toBe(false);
       expect(C.RoutineViewSchema.parse({ ...projected, finishBy: 'not a date' }).finishBy).toBe('not a date');
     });
-    it('projects the zone its date was set from beside it, to whoever sees it, and none for any other kind (TASK-955)', () => {
+    it('projects the saved personal zone only to its current owner, and none for any other kind (TASK-961)', () => {
       const projected = routineView(task, 'owner', true);
       expect([projected.finishBy, projected.finishByTimeZone]).toEqual(['2026-11-14', 'America/Los_Angeles']);
-      // Not owner-gated, as the date isn't: whoever sees the routine sees both.
-      expect(routineView(task, 'teammate', true).finishByTimeZone).toBe('America/Los_Angeles');
-      // The list tools' view keeps it, as it keeps the date.
+      // Read permission and team-admin stop permission do not reveal this zone.
+      for (const stopOthers of [false, true]) {
+        const peer = routineView(task, 'teammate', true, stopOthers);
+        expect(peer.finishBy).toBe('2026-11-14');
+        expect(peer.finishByTimeZone).toBeNull();
+        const { steps: _peerSteps, ...peerToolView } = peer;
+        expect(C.RoutineListToolOutputSchema.parse({ routines: [peerToolView] }).routines[0]?.finishByTimeZone).toBeNull();
+      }
+      // The owner's list tool view keeps the zone.
       const { steps: _steps, ...toolView } = projected;
       expect(C.RoutineListToolOutputSchema.parse({ routines: [toolView] }).routines[0]?.finishByTimeZone).toBe('America/Los_Angeles');
       // Any other kind shows none, even when its row holds one.
