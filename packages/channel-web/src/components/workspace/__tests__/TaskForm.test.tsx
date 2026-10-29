@@ -91,8 +91,13 @@ describe('task form validation', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
     const chip = await screen.findByRole('button', { name: /^Active hours:/ });
     await waitFor(() => expect(chip).toHaveFocus());
-    expect(chip).toHaveAttribute('aria-invalid', 'true');
+    // aria-invalid isn't supported on buttons; the chip says it through its description.
+    expect(chip).not.toHaveAttribute('aria-invalid');
     expect(chip).toHaveAccessibleDescription('Choose different start and end times for active hours.');
+    fireEvent.click(chip);
+    for (const edge of ['Start', 'End']) {
+      expect(screen.getByLabelText(edge)).toHaveAccessibleDescription('Choose different start and end times for active hours.');
+    }
     expect(routineApi.update).not.toHaveBeenCalled();
   });
 
@@ -145,6 +150,42 @@ describe('task form validation', () => {
     const problem = await screen.findByText('Only a task can say when it’s going well.');
     await waitFor(() => expect(problem).toHaveFocus());
     expect(routineApi.update).not.toHaveBeenCalled();
+  });
+
+  it('links an empty day selection to its problem inside the hours popover', async () => {
+    await edit({ ...task, activeHours: { start: '09:00', end: '17:00', tz: 'UTC' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Active hours: Every day 9am–5pm' }));
+    for (const day of ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']) fireEvent.click(screen.getByRole('button', { name: day }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    fireEvent.click(await screen.findByRole('button', { name: /^Active hours:/ }));
+    const days = screen.getByRole('group', { name: 'Active days' });
+    expect(days).toHaveAttribute('aria-invalid', 'true');
+    expect(days).toHaveAccessibleDescription(expect.stringContaining('Choose at least one day.'));
+  });
+
+  it('says a custom schedule’s problem once, linked from both its inputs', async () => {
+    await edit({ ...task, schedule: { kind: 'cron', expr: '0 9 * * 1-5', tz: 'UTC' } });
+    fireEvent.click(screen.getByRole('button', { name: 'More options' }));
+    fill('Cron expression', 'not a cron');
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    const words = /We couldn’t read that schedule/;
+    await waitFor(() => expect(screen.getAllByText(words)).toHaveLength(1));
+    expect(screen.getByLabelText('Cron expression')).toHaveAccessibleDescription(words);
+    expect(screen.getByLabelText('Time zone')).toHaveAccessibleDescription(words);
+  });
+
+  it('gives the Interval input and its help their own ids', () => {
+    create();
+    fireEvent.click(screen.getByRole('button', { name: 'More options' }));
+    const interval = screen.getByLabelText('Interval');
+    expect(document.querySelectorAll(`[id="${interval.id}"]`)).toHaveLength(1);
+    expect(interval).toHaveAccessibleDescription('A number and a unit: m for minutes, h for hours, d for days.');
+  });
+
+  it('names the kind toggle by its own label, with no stray hidden label', () => {
+    create();
+    expect(screen.getByRole('group', { name: 'Kind of task' })).toHaveAccessibleDescription('Keeps checking and fixing. Never finishes.');
+    expect(screen.queryByText('Kind of task')).not.toBeInTheDocument();
   });
 
   it('closes without a write when Save has nothing to send', async () => {

@@ -98,7 +98,7 @@ function SettingChip({ icon: Icon, leading, label, name, open, onOpenChange, inv
     <Popover open={open} onOpenChange={onOpenChange}>
       <PopoverTrigger asChild>
         <Button ref={buttonRef} type="button" variant="outline" size="sm" disabled={disabled}
-          aria-label={name} aria-invalid={invalid || undefined} aria-describedby={describedBy}
+          aria-label={name} aria-describedby={describedBy}
           className={cn('h-8 rounded-full px-3 text-[13px] font-normal', invalid && 'border-destructive')}>
           {leading ?? (Icon && <Icon aria-hidden="true" data-icon="inline-start" />)}
           {label}
@@ -227,24 +227,26 @@ export function TaskForm({
   const fieldError = (field: TaskField) => shown.has(field)
     ? <FieldError id={errorId(field)}>{shown.get(field)}</FieldError> : null;
   // A popover's own copy of its chip's problem, so it reads there too.
+  const popoverErrorId = (field: TaskField) => `${errorId(field)}-popover`;
   const popoverError = (field: TaskField) => shown.has(field)
-    ? <p className="text-sm text-destructive">{shown.get(field)}</p> : null;
+    ? <p id={popoverErrorId(field)} className="text-sm text-destructive">{shown.get(field)}</p> : null;
   const openChip = (name: Chip) => (open: boolean) => setChip(open ? name : null);
 
   function textInput(label: string, field: TaskField, value: string | number, onChange: (value: string) => void,
-    options: { type?: string; maxLength?: number; placeholder?: string; help?: string; key?: string; focus?: boolean } = {}) {
-    const helpId = options.help ? `${id}-${field}-${options.key ?? 'help'}` : undefined;
+    options: { type?: string; maxLength?: number; placeholder?: string; help?: string; key?: string; focus?: boolean; error?: boolean } = {}) {
+    const inputId = `${id}-${field}-${options.key ?? 'input'}`;
+    const helpId = options.help ? `${inputId}-help` : undefined;
     return (
       <Field key={options.key} data-invalid={invalid(field) || undefined} data-disabled={disabled || undefined}>
-        <FieldLabel htmlFor={`${id}-${field}-${options.key ?? 'input'}`}>{label}</FieldLabel>
-        <Input id={`${id}-${field}-${options.key ?? 'input'}`} ref={options.focus === false ? undefined : register(field)} value={value}
+        <FieldLabel htmlFor={inputId}>{label}</FieldLabel>
+        <Input id={inputId} ref={options.focus === false ? undefined : register(field)} value={value}
           onChange={event => onChange(event.target.value)} disabled={disabled}
           aria-invalid={invalid(field) || undefined} aria-describedby={describedBy(field, helpId)}
           {...(options.type ? { type: options.type } : {})}
           {...(options.maxLength ? { maxLength: options.maxLength } : {})}
           {...(options.placeholder ? { placeholder: options.placeholder } : {})} />
         {options.help && <FieldDescription id={helpId}>{options.help}</FieldDescription>}
-        {fieldError(field)}
+        {options.error !== false && fieldError(field)}
       </Field>
     );
   }
@@ -269,7 +271,6 @@ export function TaskForm({
   return (
     <form noValidate className="flex flex-col gap-4" onSubmit={event => { event.preventDefault(); onSubmit(); }}>
       <Field className="gap-2">
-        <FieldLabel className="sr-only">Kind of task</FieldLabel>
         <ToggleGroup type="single" aria-label="Kind of task" aria-describedby={`${id}-kind-help`} value={form.kind}
           disabled={disabled} className="w-full gap-1 rounded-lg bg-muted p-1"
           onValueChange={value => { if (value === 'repeat' || isTaskKind(value)) changeKind(value); }}>
@@ -396,7 +397,7 @@ export function TaskForm({
                 <FieldLabel>Days</FieldLabel>
                 <ActiveHoursDaySelector value={form.activeHours.days} disabled={disabled}
                   invalid={invalid('hours') && form.activeHours.days?.length === 0}
-                  describedBy={`${id}-days-help`}
+                  describedBy={invalid('hours') && form.activeHours.days?.length === 0 ? `${id}-days-help ${popoverErrorId('hours')}` : `${id}-days-help`}
                   onChange={days => { if (form.activeHours) update('activeHours', { ...form.activeHours, days }); }} />
                 <FieldDescription id={`${id}-days-help`}>
                   Days name when the window starts. Overnight hours continue into the next morning.
@@ -408,6 +409,7 @@ export function TaskForm({
                     <FieldLabel htmlFor={`${id}-hours-${edge}`}>{edge === 'start' ? 'Start' : 'End'}</FieldLabel>
                     <Input id={`${id}-hours-${edge}`} value={form.activeHours?.[edge] ?? ''} placeholder={edge === 'start' ? '09:00' : '17:00'}
                       disabled={disabled} aria-invalid={invalid('hours') || undefined}
+                      aria-describedby={invalid('hours') ? popoverErrorId('hours') : undefined}
                       onChange={event => { if (form.activeHours) update('activeHours', { ...form.activeHours, [edge]: event.target.value }); }} />
                   </Field>
                 ))}
@@ -470,11 +472,12 @@ export function TaskForm({
                 : <FieldGroup className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                   {textInput('Cron expression', 'customSchedule', form.schedule.expr, value => {
                     if (form.schedule?.kind === 'cron') update('schedule', { ...form.schedule, expr: value });
-                  }, { key: 'expr' })}
+                  }, { key: 'expr', error: false })}
                   {textInput('Time zone', 'customSchedule', form.schedule.tz, value => {
                     if (form.schedule?.kind === 'cron') update('schedule', { ...form.schedule, tz: value });
-                  }, { key: 'tz', focus: false })}
+                  }, { key: 'tz', focus: false, error: false })}
                 </FieldGroup>}
+              {form.schedule.kind === 'cron' && fieldError('customSchedule')}
               {form.schedule.kind === 'cron' && <FieldDescription>
                 {(() => { const words = describeCron(form.schedule.expr); return words.kind === 'described' ? words.text : 'Custom schedule'; })()} · {form.schedule.tz}
               </FieldDescription>}
