@@ -1,0 +1,233 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import type { RoutineView } from '@ax/routines-contract';
+import { RoutineEditor } from '@/components/routines/RoutineEditor';
+import { routineApi } from '@/lib/routines';
+import { routineFixture } from '@/components/routines/__tests__/routine-fixture';
+import { schedulePreset, scheduleChip, hoursChip } from '../task-form-helpers';
+
+vi.mock('@/lib/routines', async original => ({
+  ...(await original<typeof import('@/lib/routines')>()),
+  routineApi: { get: vi.fn(), create: vi.fn(), update: vi.fn(), getTaskReceiver: vi.fn(), replaceTaskReceiver: vi.fn(), getReceiver: vi.fn(), getReceiverAccess: vi.fn() },
+}));
+const task: RoutineView = { ...routineFixture, kind: 'stay-on-top', goodWhen: 'Nothing waits.' };
+beforeEach(() => {
+  vi.resetAllMocks();
+  vi.mocked(routineApi.create).mockResolvedValue(task);
+  vi.mocked(routineApi.update).mockResolvedValue(task);
+  vi.mocked(routineApi.getTaskReceiver).mockResolvedValue({ url: '/webhooks/r', version: 'a'.repeat(64), legacyActive: false });
+});
+function create() {
+  const onCancel = vi.fn();
+  render(<RoutineEditor taskMode mode="create" agentId="a" agentName="Caveman" onSaved={vi.fn()} onCancel={onCancel} />);
+  return { onCancel };
+}
+async function edit(view: RoutineView) {
+  vi.mocked(routineApi.get).mockResolvedValue(view);
+  const onCancel = vi.fn();
+  render(<RoutineEditor taskMode mode="edit" agentId="a" agentName="Caveman" routine={view} onSaved={vi.fn()} onCancel={onCancel} />);
+  await screen.findByDisplayValue(view.name);
+  return { onCancel };
+}
+const fill = (label: string, value: string) => fireEvent.change(screen.getByLabelText(label), { target: { value } });
+const start = () => fireEvent.click(screen.getByRole('button', { name: 'Start task' }));
+// zod's built-ins and the contract's terse checks; none may reach the page.
+const RAW = /String must contain|Expected|Required|Invalid|too_small|at least 1 character/;
+
+describe('task form validation', () => {
+  it('shows a plain error under each missing field on submit, links it, and focuses the first', async () => {
+    create();
+    expect(screen.queryByText('Give it a name.')).not.toBeInTheDocument();
+    const button = screen.getByRole('button', { name: 'Start task' });
+    expect(button).toBeEnabled();
+    start();
+    const name = screen.getByLabelText('Name');
+    expect(await screen.findByText('Give it a name.')).toBeVisible();
+    expect(screen.getByText('Tell Caveman what to do.')).toBeVisible();
+    expect(screen.getByText('Say how we’ll know this task is going well.')).toBeVisible();
+    expect(name).toHaveAttribute('aria-invalid', 'true');
+    expect(name).toHaveAccessibleDescription('Give it a name.');
+    expect(screen.getByLabelText('What should Caveman do?')).toHaveAccessibleDescription('Tell Caveman what to do.');
+    await waitFor(() => expect(name).toHaveFocus());
+    expect(document.body.textContent).not.toMatch(RAW);
+    expect(routineApi.create).not.toHaveBeenCalled();
+
+    fill('Name', 'Queue');
+    expect(screen.queryByText('Give it a name.')).not.toBeInTheDocument();
+    start();
+    await waitFor(() => expect(screen.getByLabelText('What should Caveman do?')).toHaveFocus());
+    fill('What should Caveman do?', 'Answer easy questions.');
+    fill('Going well when', 'Nothing waits a day.');
+    start();
+    await waitFor(() => expect(routineApi.create).toHaveBeenCalledOnce());
+  });
+
+  it('opens More options and focuses a problem hidden there, in plain words', async () => {
+    create();
+    fill('Name', 'Queue'); fill('What should Caveman do?', 'Answer.'); fill('Going well when', 'Calm.');
+    fireEvent.click(screen.getByRole('button', { name: 'App updates: Off' }));
+    fireEvent.click(screen.getByRole('switch', { name: 'When another app sends an update' }));
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: 'Escape' });
+    // Closing hands focus back to the chip a tick later.
+    await waitFor(() => expect(screen.getByRole('button', { name: /^App updates: On/ })).toHaveFocus());
+    fireEvent.click(screen.getByRole('button', { name: 'More options' }));
+    fill('Address name', 'not a path');
+    fireEvent.click(screen.getByRole('button', { name: 'More options' }));
+    expect(screen.queryByLabelText('Address name')).not.toBeInTheDocument();
+    start();
+    const address = await screen.findByLabelText('Address name');
+    await waitFor(() => expect(address).toHaveFocus());
+    expect(address).toHaveAccessibleDescription(expect.stringContaining('Use letters, numbers, dots, dashes and slashes'));
+    expect(screen.getByRole('button', { name: 'More options' })).toHaveAttribute('aria-expanded', 'true');
+    expect(document.body.textContent).not.toMatch(RAW);
+    expect(routineApi.create).not.toHaveBeenCalled();
+  });
+
+  it('puts a chip’s problem under the chip row and focuses the chip', async () => {
+    await edit({ ...task, activeHours: { start: '09:00', end: '17:00', tz: 'UTC' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Active hours: Every day 9am–5pm' }));
+    fill('End', '09:00');
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: 'Escape' });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    const chip = await screen.findByRole('button', { name: /^Active hours:/ });
+    await waitFor(() => expect(chip).toHaveFocus());
+    expect(chip).toHaveAttribute('aria-invalid', 'true');
+    expect(chip).toHaveAccessibleDescription('Choose different start and end times for active hours.');
+    expect(routineApi.update).not.toHaveBeenCalled();
+  });
+
+  it('keeps focus on the first problem when a submit closes an open popover', async () => {
+    create();
+    fireEvent.click(screen.getByRole('button', { name: 'Active hours: Any time' }));
+    fireEvent.click(screen.getByRole('switch', { name: 'Only at certain hours' }));
+    fireEvent.submit(screen.getByRole('button', { name: 'Start task' }).closest('form')!);
+    const name = screen.getByLabelText('Name');
+    await waitFor(() => expect(name).toHaveFocus());
+    await new Promise(resolve => setTimeout(resolve, 10));
+    expect(name).toHaveFocus();
+    expect(screen.queryByRole('switch', { name: 'Only at certain hours' })).not.toBeInTheDocument();
+  });
+
+  it('closes without a write when Save has nothing to send', async () => {
+    const { onCancel } = await edit(task);
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    expect(onCancel).toHaveBeenCalledOnce();
+    expect(routineApi.update).not.toHaveBeenCalled();
+  });
+});
+
+describe('task form chips and presets', () => {
+  it('names each chip with its current value', async () => {
+    create();
+    expect(screen.getByRole('button', { name: 'How often: Every hour' })).toHaveTextContent('Every hour');
+    expect(screen.getByRole('button', { name: 'App updates: Off' })).toBeVisible();
+    const hours = screen.getByRole('button', { name: 'Active hours: Any time' });
+    fireEvent.click(hours);
+    fireEvent.click(screen.getByRole('switch', { name: 'Only at certain hours' }));
+    expect(screen.getByRole('button', { name: 'Active hours: Every day 9am–5pm' })).toBeVisible();
+    for (const day of ['Saturday', 'Sunday']) fireEvent.click(screen.getByRole('button', { name: day }));
+    expect(screen.getByRole('button', { name: 'Active hours: Weekdays 9am–5pm' })).toBeVisible();
+  });
+
+  it('describes the selected kind in one line and offers Repeat its faster presets only', async () => {
+    create();
+    expect(screen.getByText('Keeps checking and fixing. Never finishes.')).toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: 'How often: Every hour' }));
+    fireEvent.keyDown(screen.getByRole('combobox', { name: 'Every' }), { key: 'ArrowDown' });
+    expect(screen.queryByRole('option', { name: '5 min' })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('option', { name: '15 min' }));
+    expect(screen.getByRole('button', { name: 'How often: Every 15 min' })).toBeVisible();
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: 'Escape' });
+    fireEvent.click(screen.getByRole('radio', { name: 'Repeat' }));
+    expect(screen.getByText('Does the same job on a schedule.')).toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: 'How often: Every 15 min' }));
+    fireEvent.keyDown(screen.getByRole('combobox', { name: 'Every' }), { key: 'ArrowDown' });
+    fireEvent.click(screen.getByRole('option', { name: '1 min' }));
+    expect(screen.getByRole('button', { name: 'How often: Every minute' })).toBeVisible();
+    fill('Name', 'Ping'); fill('What should Caveman do?', 'Ping.');
+    start();
+    await waitFor(() => expect(routineApi.create).toHaveBeenCalledOnce());
+    expect(vi.mocked(routineApi.create).mock.calls[0]![0].definition.schedule).toStrictEqual({ kind: 'interval', every: '1m' });
+  });
+
+  it('shows a saved cron that equals a preset as that preset, and leaves it untouched on save', async () => {
+    await edit({ ...task, schedule: { kind: 'cron', expr: '*/15 * * * *', tz: 'UTC' } });
+    expect(screen.getByRole('button', { name: 'How often: Every 15 min' })).toBeVisible();
+    fill('What should Caveman do?', 'Only the brief changed.');
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(routineApi.update).toHaveBeenCalledOnce());
+    expect(vi.mocked(routineApi.update).mock.calls[0]![0].patch).toStrictEqual({ promptBody: 'Only the brief changed.' });
+  });
+
+  it('shows another cron as a custom schedule and replaces it only when a preset is picked', async () => {
+    await edit({ ...task, schedule: { kind: 'cron', expr: '0 9 * * 1-5', tz: 'UTC' } });
+    fireEvent.click(screen.getByRole('button', { name: 'How often: Custom schedule' }));
+    const every = screen.getByRole('combobox', { name: 'Every' });
+    expect(every).toHaveTextContent('Custom schedule…');
+    fireEvent.keyDown(every, { key: 'ArrowDown' });
+    fireEvent.click(screen.getByRole('option', { name: '30 min' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(routineApi.update).toHaveBeenCalledOnce());
+    expect(vi.mocked(routineApi.update).mock.calls[0]![0].patch).toStrictEqual({ schedule: { kind: 'interval', every: '30m' } });
+  });
+
+  it('maps equal presets both ways', () => {
+    expect(schedulePreset({ kind: 'interval', every: '60m' }, 'stay-on-top')).toBe('1h');
+    expect(schedulePreset({ kind: 'interval', every: '45m' }, 'stay-on-top')).toBeNull();
+    expect(schedulePreset({ kind: 'cron', expr: '0 */2 * * *', tz: 'UTC' }, 'get-done')).toBe('2h');
+    expect(schedulePreset({ kind: 'cron', expr: '0 */5 * * * *', tz: 'UTC' }, 'repeat')).toBe('5m');
+    // A task never runs every 5 minutes, so that cron stays custom there.
+    expect(schedulePreset({ kind: 'cron', expr: '*/5 * * * *', tz: 'UTC' }, 'stay-on-top')).toBeNull();
+    expect(schedulePreset({ kind: 'cron', expr: '*/15 * * 1 *', tz: 'UTC' }, 'stay-on-top')).toBeNull();
+    expect(scheduleChip({ kind: 'interval', every: '45m' }, 'stay-on-top')).toBe('Every 45 min');
+    expect(scheduleChip(null, 'repeat')).toBe('No schedule');
+    expect(hoursChip({ start: '22:00', end: '06:30', tz: 'UTC', days: ['sat', 'sun'] })).toBe('Weekends 10pm–6:30am');
+  });
+});
+
+describe('task form More options', () => {
+  it('holds the schedule, note and Start right away for a task, and no quiet settings', () => {
+    create();
+    fireEvent.click(screen.getByRole('button', { name: 'More options' }));
+    expect(screen.getByRole('radio', { name: 'Custom schedule' })).toBeVisible();
+    expect(screen.getByLabelText('Note for you (optional)')).toBeVisible();
+    expect(screen.getByRole('switch', { name: 'Start right away' })).toBeChecked();
+    expect(screen.queryByLabelText('Quiet word (optional)')).not.toBeInTheDocument();
+    expect(screen.queryByRole('group', { name: 'Memory between runs' })).not.toBeInTheDocument();
+  });
+
+  it('holds Repeat’s memory, quiet reply and app settings, and saves them in the same shape', async () => {
+    create();
+    fireEvent.click(screen.getByRole('radio', { name: 'Repeat' }));
+    fill('Name', 'Digest'); fill('What should Caveman do?', 'Send the digest.');
+    fireEvent.click(screen.getByRole('button', { name: 'App updates: Off' }));
+    fireEvent.click(screen.getByRole('switch', { name: 'When another app sends an update' }));
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: 'Escape' });
+    fireEvent.click(screen.getByRole('button', { name: 'More options' }));
+    fireEvent.click(screen.getByRole('radio', { name: 'Keep one running conversation' }));
+    expect(screen.queryByLabelText('Treat replies this short as quiet')).not.toBeInTheDocument();
+    fill('Quiet word (optional)', 'NOTHING_NEW');
+    expect(screen.getByLabelText('Quiet word (optional)')).toHaveAccessibleDescription(/starts or ends with this word/);
+    fill('Treat replies this short as quiet', '40');
+    fill('Address name', '/digest');
+    fill('Only these kinds of updates', 'push, release');
+    fireEvent.click(screen.getByRole('switch', { name: 'Verify signature' }));
+    fill('Note for you (optional)', 'Mine.');
+    fireEvent.click(screen.getByRole('switch', { name: 'Start right away' }));
+    start();
+    await waitFor(() => expect(routineApi.create).toHaveBeenCalledOnce());
+    expect(vi.mocked(routineApi.create).mock.calls[0]![0].definition).toStrictEqual({
+      name: 'Digest', description: 'Mine.', promptBody: 'Send the digest.', enabled: false,
+      schedule: { kind: 'interval', every: '1h' },
+      webhook: { kind: 'webhook', path: '/digest', events: ['push', 'release'], hmac: { header: 'X-Hub-Signature-256', algorithm: 'sha256', prefix: 'sha256=' } },
+      activeHours: null, silenceToken: 'NOTHING_NEW', silenceMaxChars: 40, conversation: 'shared', kind: 'repeat', goodWhen: null,
+    });
+  });
+
+  it('hides Start right away on edit, where Pause and Resume live on the task page', async () => {
+    await edit(task);
+    fireEvent.click(screen.getByRole('button', { name: 'More options' }));
+    expect(screen.getByLabelText('Note for you (optional)')).toHaveValue(task.description);
+    expect(screen.queryByRole('switch', { name: 'Start right away' })).not.toBeInTheDocument();
+  });
+});
