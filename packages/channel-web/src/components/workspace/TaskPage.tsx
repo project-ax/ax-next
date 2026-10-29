@@ -57,10 +57,13 @@
  * by a person. The server fenced and capped every one before it
  * left (`server/routes-workspace.ts`). Here they are only ever React text
  * children: never `dangerouslySetInnerHTML`, never the markdown renderer, and
- * no attribute is built from them (so a clamped line has no `title`: its whole
- * text is still in the page for a screen reader, and on the check-in's page).
+ * no attribute is built from them. The latest update is shown whole (the
+ * server already capped it to one line); a check-in row is clamped to two
+ * lines with no `title`, its whole text still in the page for a screen reader
+ * and on the check-in's own page, and a failure's reason is never clamped.
  * `**bold**` and `<img>` show as those characters. The quote marks around the
- * latest update are CSS, so they're never part of its text.
+ * latest update are CSS, so they're never part of its text, and our own
+ * "can't show" sentence gets none.
  *
  * A GET-DONE TASK'S FINISH DATE (TASK-951) is a meta chip, "Nov 14 · 9 days",
  * which is also the button that sets, changes or removes it

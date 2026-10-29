@@ -13,8 +13,9 @@
  * and here it is only ever a React text child, so `<img>` shows as those
  * characters.
  *
- * The line is decorative (`aria-hidden`): "Earlier: …", hidden from view,
- * prints the same values, and stands in for a hover layer.
+ * The line is decorative (`aria-hidden`): "Earlier: …", a small muted row
+ * under it, prints the same values for everyone, and stands in for a hover
+ * layer.
  */
 import { useId } from 'react';
 import { formatReading, readingTrend, sparklinePoints } from '@/lib/task-reading';
@@ -83,9 +84,9 @@ export function TaskReadingBlock({
           </span>
         )}
       </div>
-      {/* The trend's values in words: the line above is only its picture. */}
+      {/* The trend's values in words, seen and heard: the line above is only its picture. */}
       {earlier.length > 0 && (
-        <p className="sr-only">
+        <p className="mt-1 text-[12px] text-muted-foreground">
           {`Earlier: ${earlier.map((value) => formatReading(value)).join(' · ')}`}
         </p>
       )}
