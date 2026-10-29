@@ -317,12 +317,18 @@ describe('withoutLatest and entryCount (2026-10-29)', () => {
     expect(withoutLatest(items, null)).toEqual(items);
   });
 
-  it('never drops a reply, and never mutates what it was given', () => {
+  it('drops the latest card’s entry even when a newer reply sits above it, and never the reply', () => {
     const reply: TaskReply = { sentAt: '2026-10-22T11:00:00.000Z', text: 'A', byYou: true };
-    const items = foldTimeline([said('off-track', 'A')], [reply]);
+    const items = foldTimeline([said('off-track', 'A'), said('off-track', 'B')], [reply]);
+    expect(items.map((i) => i.kind)).toEqual(['reply', 'update', 'update']);
     const before = [...items];
-    expect(withoutLatest(items, { status: 'off-track', update: 'A' })).toEqual(items);
+    expect(withoutLatest(items, { status: 'off-track', update: 'A' })).toEqual([items[0], items[2]]);
     expect(items).toEqual(before);
+  });
+
+  it('only the newest check-in can be the latest card’s: an older one saying the same stays', () => {
+    const items = foldTimeline([said('off-track', 'B'), said('off-track', 'A')], []);
+    expect(withoutLatest(items, { status: 'off-track', update: 'A' })).toEqual(items);
   });
 
   it('counts a fold as the check-ins it holds', () => {

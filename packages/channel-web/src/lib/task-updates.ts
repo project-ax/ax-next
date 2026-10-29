@@ -113,18 +113,24 @@ export function runFailureText(error: string | null): string {
 }
 
 /**
- * The timeline without its newest entry when that entry is the latest update
- * the page already shows above it (same status, same words), so the check-ins
- * list never repeats it. Anything else, a reply or a different report, stays.
+ * The timeline without the entry the latest card already shows above it, so
+ * the check-ins list never repeats it: the newest check-in, wherever it sits
+ * (a reply sent since can be above it), when it says what the card says
+ * (same status, same words). Anything else stays: a reply, an older check-in
+ * that happened to say the same, or a newest check-in that says something
+ * else. Never mutates what it was given.
  */
 export function withoutLatest(
   items: readonly TimelineItem[],
   task: Pick<TaskDetailReport, 'status' | 'update'> | null,
 ): TimelineItem[] {
-  const first = items[0];
-  if (task === null || first?.kind !== 'update' || first.update.report === null) return [...items];
-  const { report } = first.update;
-  return report.status === task.status && report.update === task.update ? items.slice(1) : [...items];
+  const at = items.findIndex((item) => item.kind === 'update');
+  const newest = items[at];
+  if (task === null || newest?.kind !== 'update' || newest.update.report === null) return [...items];
+  const { report } = newest.update;
+  return report.status === task.status && report.update === task.update
+    ? [...items.slice(0, at), ...items.slice(at + 1)]
+    : [...items];
 }
 
 /** How many check-ins and replies a run of timeline items holds, a fold counting each check-in it hides. */

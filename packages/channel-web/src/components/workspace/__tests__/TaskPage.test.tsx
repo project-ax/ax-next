@@ -1052,6 +1052,19 @@ describe('TaskPage (TASK-910)', () => {
     expect(screen.getByRole('textbox', { name: 'Reply to Quill about this task' })).toBeInTheDocument();
   });
 
+  it('a reply sent since the latest update doesn’t make that update show twice', async () => {
+    taskMock.mockResolvedValue(
+      detail({
+        task: report({ ask: null }),
+        replies: [{ sentAt: new Date(2026, 9, 22, 11, 0).toISOString(), text: 'Leave #4410 for Sam.', byYou: true }],
+      }),
+    );
+    await renderReady();
+    const updates = screen.getByRole('region', { name: 'Updates' });
+    expect(within(updates).getByText('Leave #4410 for Sam.')).toBeInTheDocument();
+    expect(screen.getAllByText('3 open. I’m answering #4411 and #4412 now.')).toHaveLength(1);
+  });
+
   it('a check-in a restart cut off says so in plain words', async () => {
     taskMock.mockResolvedValue(
       detail({
