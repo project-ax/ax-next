@@ -4,11 +4,23 @@
  * and link, a compact row time, and the status pill.
  *
  * WORDS MOVE INTO TOOLTIPS, NEVER OUT OF THE PAGE. The design replaces meta
- * text with icons, so every icon here carries its full sentence twice: a
- * Tooltip for sighted pointer and keyboard users, and an accessible name
- * (`aria-label`, or visually hidden text) for screen readers. A chip or
+ * text with icons, so every icon here carries its full sentence in two
+ * places: a Tooltip for sighted pointer and keyboard users, and an accessible
+ * name (`aria-label`, or visually hidden text) for screen readers. A chip or
  * button that dropped its words would be a guessing game for exactly the
  * non-technical people the redesign is for.
+ *
+ * SAID ONCE. A screen reader hears the name (or hidden text), never the open
+ * tooltip as well: Radix points a trigger's `aria-describedby` at its open
+ * tooltip, which would read the same words again, so `Tip` switches that off.
+ * A caller's own `aria-describedby` (a disabled button's reason) still stands.
+ *
+ * A DISABLED ACTION STILL SAYS WHAT IT IS, AND WHY. A disabled `Button` takes
+ * no pointer events and no focus, so a tooltip on it could never open. An
+ * `IconAction` sits in a span that is the tooltip's trigger, focusable while
+ * the button is disabled (Radix's documented pattern for disabled triggers),
+ * and its tooltip then adds `reason` under the label. The button keeps its `aria-describedby`, so
+ * a screen reader hears the reason from the page's own line as before.
  */
 import type { ComponentProps, ReactNode, Ref } from 'react';
 import { ListChecks, RefreshCw, Repeat2, type LucideIcon } from 'lucide-react';
@@ -37,13 +49,17 @@ export const TASK_KIND_SHORT: Record<Kind, string> = {
   repeat: 'Repeat',
 };
 
-function Tip({ label, children }: { label: string; children: ReactNode }) {
+function Tip({ label, reason, children }: { label: string; reason?: string | undefined; children: ReactNode }) {
   return (
     <TooltipProvider delayDuration={300}>
       <Tooltip>
-        <TooltipTrigger asChild>{children}</TooltipTrigger>
+        {/* SAID ONCE: the trigger's own words are its name; the open tooltip adds no description. */}
+        <TooltipTrigger asChild aria-describedby={undefined}>
+          {children}
+        </TooltipTrigger>
         <TooltipContent side="bottom" className="max-w-xs text-[12px]">
           {label}
+          {reason !== undefined && <span className="block text-muted-foreground">{reason}</span>}
         </TooltipContent>
       </Tooltip>
     </TooltipProvider>
@@ -103,11 +119,15 @@ export function MetaChip({
 /**
  * An icon-only button: `label` is its accessible name and its tooltip. Takes
  * every `Button` prop, so callers keep their refs, `aria-describedby` and
- * disabled reasons.
+ * disabled reasons. Disabled, it sits in a focusable span that opens the
+ * tooltip, with `reason` under the label (see A DISABLED ACTION, above).
+ * The span is always there and only focusable while disabled, so a margin
+ * meant to push the button belongs on its neighbour or a wrapper.
  */
 export function IconAction({
   icon: Icon,
   label,
+  reason,
   variant = 'outline',
   busy,
   ref,
@@ -116,16 +136,29 @@ export function IconAction({
 }: Omit<ComponentProps<typeof Button>, 'size' | 'aria-label'> & {
   icon: LucideIcon;
   label: string;
+  /** Why it's disabled, shown in its tooltip under the label. Only while disabled. */
+  reason?: string | undefined;
   /** A spinner (or anything) shown in place of the icon while a press is on its way. */
   busy?: ReactNode;
   ref?: Ref<HTMLButtonElement>;
 }) {
+  const button = (
+    <Button ref={ref} type="button" size="icon" variant={variant} aria-label={label} {...props}>
+      {busy ?? <Icon aria-hidden="true" />}
+      {children}
+    </Button>
+  );
+  const disabled = props.disabled === true;
+  // Always the same span, so the button's node (and the focus and place a screen reader keeps on
+  // it) survives going disabled and back; the span only takes focus while the button can't.
   return (
-    <Tip label={label}>
-      <Button ref={ref} type="button" size="icon" variant={variant} aria-label={label} {...props}>
-        {busy ?? <Icon aria-hidden="true" />}
-        {children}
-      </Button>
+    <Tip label={label} reason={disabled ? reason : undefined}>
+      <span
+        tabIndex={disabled ? 0 : undefined}
+        className="inline-flex shrink-0 rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      >
+        {button}
+      </span>
     </Tip>
   );
 }

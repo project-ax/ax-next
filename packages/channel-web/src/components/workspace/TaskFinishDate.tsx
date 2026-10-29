@@ -222,6 +222,7 @@ export function TaskFinishDate({
               className="size-7 text-muted-foreground"
               disabled={stuck !== null}
               aria-describedby={describedBy}
+              reason={stuck?.line}
             />
           ) : (
             <ChipTip line={line ?? ''}>

@@ -312,6 +312,7 @@ export function TaskReplyBox({
               variant="send"
               className="size-8"
               disabled={sending || text.trim() === ''}
+              reason={sending ? undefined : 'Write a reply first.'}
               busy={sending ? <Spinner aria-hidden="true" /> : undefined}
             />
           </InputGroupAddon>

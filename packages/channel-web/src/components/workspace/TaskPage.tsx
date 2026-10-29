@@ -83,9 +83,11 @@
  * request the same way.
  *
  * WHY A BUTTON IS OFF is one line under the meta chips (`actionNote`), which
- * every disabled button points at (`aria-describedby`). The plain paused line
- * is already the pill, so it is hidden text there, shown only when focus
- * lands on it; the others (no longer allowed, or auto-paused) are shown.
+ * every disabled button points at (`aria-describedby`), and which a disabled
+ * icon's tooltip shows under its name (`IconAction`'s `reason`; its wrapper
+ * opens it, since a disabled button can't). The plain paused line is already
+ * the pill, so it is hidden text there, shown only when focus lands on it;
+ * the others (no longer allowed, or auto-paused) are shown.
  *
  * THE PAUSED-COPY LINE (TASK-953). A copy opens paused, and its page says so
  * once, with the way to change it. The shell tells the page it was just
@@ -838,10 +840,11 @@ function TaskActions({
   const chosen = useRef<(() => void) | null>(null);
   const { enabled, permissions } = detail;
   const done = detail.doneAt !== null;
-  const hasNote = actionNote(detail) !== null;
-  // Only a button the note explains points at it; one that's only waiting
-  // for a press to finish needs no reason.
-  const describedBy = (blocked: boolean) => (blocked && hasNote ? noteId : undefined);
+  const note = actionNote(detail);
+  // Only a button the note explains points at it, and shows it in its tooltip; one that's only
+  // waiting for a press to finish needs no reason.
+  const describedBy = (blocked: boolean) => (blocked && note !== null ? noteId : undefined);
+  const why = (blocked: boolean) => (blocked && note !== null ? note : undefined);
   const more = (
     <DropdownMenu modal={false}>
       <DropdownMenuTrigger asChild>
@@ -852,6 +855,7 @@ function TaskActions({
           variant="ghost"
           disabled={!permissions.edit || busy}
           aria-describedby={describedBy(!permissions.edit)}
+          reason={why(!permissions.edit)}
           busy={acting === 'duplicate' && !done ? <Spinner aria-hidden="true" /> : undefined}
         />
       </DropdownMenuTrigger>
@@ -915,6 +919,7 @@ function TaskActions({
           label="Duplicate"
           disabled={!permissions.edit || busy}
           aria-describedby={describedBy(!permissions.edit)}
+          reason={why(!permissions.edit)}
           busy={acting === 'duplicate' ? <Spinner aria-hidden="true" /> : undefined}
           onClick={() => onPress('duplicate', 'copy')}
         />
@@ -935,6 +940,7 @@ function TaskActions({
         label={repeat ? 'Run now' : 'Check now'}
         disabled={checkBlocked || busy}
         aria-describedby={describedBy(checkBlocked)}
+        reason={why(checkBlocked)}
         busy={acting === 'check' ? <Spinner aria-hidden="true" /> : undefined}
         onClick={() => onPress('check')}
       />
@@ -961,6 +967,7 @@ function TaskActions({
           label={enabled ? 'Pause' : 'Resume'}
           disabled={toggleBlocked || busy}
           aria-describedby={describedBy(toggleBlocked)}
+          reason={why(toggleBlocked)}
           busy={toggling ? <Spinner aria-hidden="true" /> : undefined}
           onClick={() => onPress(enabled ? 'pause' : 'resume')}
         />

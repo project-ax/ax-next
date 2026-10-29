@@ -485,7 +485,7 @@ export function TaskSteps({
       <section ref={section} aria-labelledby={headingId} className="flex flex-col gap-2 p-4">
         <div className="flex min-h-7 items-center gap-2">
           {/* Seen as "1/2"; heard as the whole count. */}
-          <h2 id={headingId} className="flex items-center gap-1.5 text-[13px] font-medium text-muted-foreground">
+          <h2 id={headingId} className="flex flex-1 items-center gap-1.5 text-[13px] font-medium text-muted-foreground">
             <ListChecks aria-hidden="true" className="size-3.5" />
             <span aria-hidden="true">{steps.length === 0 ? 'Steps' : `${done}/${steps.length}`}</span>
             <span className="sr-only">
@@ -498,7 +498,8 @@ export function TaskSteps({
               icon={Plus}
               label="Add a step"
               variant="ghost"
-              className="ml-auto size-7"
+              className="size-7"
+              reason={atCap ? AT_CAP : undefined}
               disabled={busy !== null || atCap}
               aria-describedby={atCap ? capId : undefined}
               onClick={() => openEditor({ kind: 'add', text: '', failure: null })}

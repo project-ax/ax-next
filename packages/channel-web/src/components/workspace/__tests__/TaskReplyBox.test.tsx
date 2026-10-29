@@ -594,6 +594,12 @@ describe('TaskReplyBox — compact, on the task page (2026-10-29)', () => {
     expect(box()).toHaveAccessibleDescription(helper.textContent!);
   });
 
+  it('an empty box’s Send says why it can’t send, in a tooltip', async () => {
+    renderCompact();
+    act(() => sendButton().parentElement!.focus());
+    expect(await screen.findByRole('tooltip')).toHaveTextContent('Write a reply first.');
+  });
+
   it('shows the paused line, since a reply then waits for Resume', () => {
     renderCompact(false);
     expect(screen.getByText('It’s paused, so Quill will read this once you resume it.')).not.toHaveClass('sr-only');

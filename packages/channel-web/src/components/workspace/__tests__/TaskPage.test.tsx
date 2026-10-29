@@ -3064,6 +3064,32 @@ describe('TaskPage: the minimal header and the ⋯ menu (2026-10-29)', () => {
     expect(screen.getByRole('heading', { level: 1 }).parentElement).toHaveTextContent('Needs you');
   });
 
+  it.each([
+    { what: 'a paused task’s Check now', over: { enabled: false, nextCheckAt: null }, name: 'Check now', why: PAUSED_NOTE },
+    {
+      what: 'a viewer who can’t manage the tasks: Pause',
+      over: { permissions: { fire: false, stop: false, edit: false } },
+      name: 'Pause',
+      why: NO_MANAGE_NOTE,
+    },
+    {
+      what: 'a Done task’s Duplicate, without edit',
+      over: { kind: 'get-done' as const, enabled: false, nextCheckAt: null, doneAt: REPORTED, permissions: { fire: false, stop: false, edit: false } },
+      name: 'Duplicate',
+      why: 'Done. Only someone who manages this agent’s tasks can reopen or copy it.',
+    },
+  ])('a disabled icon still says what it is and why, in a tooltip its wrapper opens: $what', async ({ over, name, why }) => {
+    taskMock.mockResolvedValue(detail(over));
+    await renderReady();
+    const button = screen.getByRole('button', { name });
+    expect(button).toBeDisabled();
+    expect(button).toHaveAccessibleDescription(why);
+    act(() => button.parentElement!.focus());
+    const tip = await screen.findByRole('tooltip');
+    expect(tip).toHaveTextContent(name);
+    expect(tip).toHaveTextContent(why);
+  });
+
   it('a paused task’s Resume is the page’s one primary action, in words; its paused line is hidden text', async () => {
     taskMock.mockResolvedValue(detail({ enabled: false, nextCheckAt: null, task: report({ ask: null }) }));
     await renderReady();
