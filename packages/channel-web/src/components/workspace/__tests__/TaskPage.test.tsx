@@ -1065,6 +1065,37 @@ describe('TaskPage (TASK-910)', () => {
     expect(screen.getAllByText('3 open. I’m answering #4411 and #4412 now.')).toHaveLength(1);
   });
 
+  it('the agent’s words are quoted, but our own “can’t show” sentence isn’t', async () => {
+    taskMock.mockResolvedValue(detail({ task: report({ ask: null }) }));
+    const view = await renderReady();
+    expect(within(latestUpdate()).getByText('3 open. I’m answering #4411 and #4412 now.').className).toMatch(/before:content/);
+    view.unmount();
+    taskMock.mockResolvedValue(detail({ task: report({ ask: null, update: null }) }));
+    await renderReady();
+    expect(within(latestUpdate()).getByText('It left an update we can’t show.').className).not.toMatch(/before:content|after:content/);
+  });
+
+  it('someone who can’t edit sees each About row’s state, never an Edit they can’t use', async () => {
+    taskMock.mockResolvedValue(detail({ permissions: { fire: true, stop: true, edit: false } }));
+    const view = await renderReady();
+    openAboutRow(/^App updates/);
+    expect(within(about()).getByText('Off.')).toBeInTheDocument();
+    expect(within(about()).queryByText(/Edit task/)).toBeNull();
+    view.unmount();
+    taskMock.mockResolvedValue(
+      detail({
+        kind: 'repeat',
+        task: null,
+        permissions: { fire: true, stop: true, edit: false },
+        repeat: { lastRunAt: null, status: null, error: null, warning: null, active: 0, waiting: 0, sharedThread: true, appUpdates: false },
+      }),
+    );
+    await renderReady();
+    openAboutRow(/^Memory between runs/);
+    expect(within(about()).getByText(/This job uses a shared thread/)).toBeInTheDocument();
+    expect(within(about()).queryByText(/Edit/)).toBeNull();
+  });
+
   it('a check-in a restart cut off says so in plain words', async () => {
     taskMock.mockResolvedValue(
       detail({

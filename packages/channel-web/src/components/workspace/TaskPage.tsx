@@ -1537,6 +1537,7 @@ function LatestUpdate({
   const { task, enabled, agentName } = detail;
   const done = detail.doneAt !== null;
   const fromCheckIn = latestUpdateCheckIn(task, detail.updates);
+  const cantShow = task !== null && (task.update === null || task.update === '');
   const next =
     enabled && detail.nextCheckAt !== null ? checkInWhen(detail.nextCheckAt, now) : null;
   const banner = bannerOf(detail);
@@ -1558,10 +1559,11 @@ function LatestUpdate({
           <p
             className={cn(
               'min-w-0 flex-1 whitespace-pre-wrap break-words text-[15px] leading-6',
-              "before:content-['“'] after:content-['”']",
+              // Quote marks are for the agent's words; "It left an update we can't show." is ours.
+              cantShow ? 'text-muted-foreground' : "before:content-['“'] after:content-['”']",
             )}
           >
-            {task.update === null || task.update === '' ? CANT_SHOW : task.update}
+            {cantShow ? CANT_SHOW : task.update}
           </p>
           <WhenLine
             short={timeAgo(task.reportedAt, now)}
@@ -1790,7 +1792,8 @@ function AboutRow({
  * About this task: the side list whose rows open in place (see THE LAYOUT).
  * The brief was written by a person; the notes by the agent. Both are text
  * children only. Changing any of it is Edit's (⋯ › Edit task); a row that has
- * nothing yet points there.
+ * nothing yet points there, but only for someone who may edit: anyone else
+ * sees the state alone.
  */
 function AboutList({
   detail,
@@ -1873,7 +1876,13 @@ function AboutList({
           <AboutRow icon={Plug} label="App updates" meta={appOn ? 'On' : 'Off'}>
             {!appOn ? (
               <p className="text-[13px] text-muted-foreground">
-                Off. Turn it on in Edit task. {editLink}
+                {permissions.edit ? (
+                  <>
+                    Off. Turn it on in Edit task. {editLink}
+                  </>
+                ) : (
+                  'Off.'
+                )}
               </p>
             ) : permissions.edit ? (
               <TaskAppUpdates key={`${agentId}/${routineId}/${detail.revision}`} agentId={agentId} routineId={routineId} onEdit={onEdit} />
@@ -1888,8 +1897,13 @@ function AboutList({
               <p className="text-[13px] text-muted-foreground">
                 {detail.repeat?.sharedThread
                   ? 'This job uses a shared thread. A transcript can include several runs.'
-                  : 'Each run starts fresh.'}{' '}
-                Change it in Edit task. {editLink}
+                  : 'Each run starts fresh.'}
+                {permissions.edit && (
+                  <>
+                    {' Change it in Edit task. '}
+                    {editLink}
+                  </>
+                )}
               </p>
             </AboutRow>
           )}
