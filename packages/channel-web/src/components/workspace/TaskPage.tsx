@@ -126,8 +126,12 @@
  * clears the line first, so each press is heard again. The reply box speaks
  * its own sent line ("Sent. {agent} started checking in."), so when a reply
  * started it, the page's "Checking in now…" is shown but hidden from screen
- * readers. A failure is an `Alert`. None of them ever takes focus, so none is
- * heard twice. The 10-second re-reads are quiet (`refreshQuietly`): they
+ * readers. A Repeat job's line says the same in run words ("Running now…",
+ * "{agent} finished the run.", "The run didn’t finish. The reason is under Run
+ * history."), and while it is watching a run the Runs card's own live line
+ * keeps quiet (`RepeatTaskBody`'s `quiet`), so each outcome is said once. A
+ * failure is an `Alert`. None of them ever takes focus, so none is heard
+ * twice. The 10-second re-reads are quiet (`refreshQuietly`): they
  * leave the buttons pressable and raise no alert when one fails.
  *
  * OPENED BY THE LIST'S REPLY, the page puts the cursor in its reply box once,
@@ -234,6 +238,10 @@ const REFRESH_FAILED =
 const CHECKING_IN = 'Checking in now…';
 const DIDNT_FINISH = 'The check-in didn’t finish. The reason is under Updates.';
 const STILL_CHECKING = 'Still checking in. Its update will be under Updates when it’s done.';
+/** A Repeat job's runs are said as runs (see WHAT IS SAID OUT LOUD). */
+const RUNNING = 'Running now…';
+const RUN_DIDNT_FINISH = 'The run didn’t finish. The reason is under Run history.';
+const STILL_RUNNING = 'Still running. It will be under Run history when it’s done.';
 export const CANT_SHOW = 'It left an update we can’t show.';
 
 type ActionKind = 'check' | 'pause' | 'resume' | 'duplicate';
@@ -738,7 +746,9 @@ export function TaskPage({
             )}
             {/* Empty, and taking no room, until a check-in has something to say. */}
             <p role="status" className="text-[13px] empty:-mt-2">
-              {detail !== null && <PollLine poll={poll} agentName={detail.agentName} />}
+              {detail !== null && (
+                <PollLine poll={poll} agentName={detail.agentName} repeat={detail.kind === 'repeat'} />
+              )}
             </p>
           </header>
           {state.kind === 'loading' && (
@@ -765,6 +775,7 @@ export function TaskPage({
                       agentId={agentId}
                       routineId={routineId}
                       onNavigate={onNavigate}
+                      quiet={poll.phase === 'checking'}
                     />
                   }
                   side={
@@ -1437,7 +1448,7 @@ function TaskBody({
  * The page's live line about a check-in a press or a reply started (see WHAT
  * IS SAID OUT LOUD, above). Nothing while no check-in is being watched.
  */
-function PollLine({ poll, agentName }: { poll: TaskPoll; agentName: string }) {
+function PollLine({ poll, agentName, repeat }: { poll: TaskPoll; agentName: string; repeat: boolean }) {
   switch (poll.phase) {
     case 'idle':
       return null;
@@ -1449,13 +1460,14 @@ function PollLine({ poll, agentName }: { poll: TaskPoll; agentName: string }) {
           className="inline-flex items-center gap-1.5"
         >
           <Spinner aria-hidden="true" />
-          {CHECKING_IN}
+          {repeat ? RUNNING : CHECKING_IN}
         </span>
       );
     case 'arrived':
-      return poll.arrived?.status === 'error' ? DIDNT_FINISH : `${agentName} finished checking in.`;
+      if (poll.arrived?.status === 'error') return repeat ? RUN_DIDNT_FINISH : DIDNT_FINISH;
+      return repeat ? `${agentName} finished the run.` : `${agentName} finished checking in.`;
     case 'timed-out':
-      return STILL_CHECKING;
+      return repeat ? STILL_RUNNING : STILL_CHECKING;
   }
 }
 

@@ -6,7 +6,9 @@
  * Above the list, one muted line says what the host sees right now: runs
  * still going (and that they finish after a Pause), app updates waiting their
  * turn, and the job's own warning. It is the card's live region, mounted with
- * it, so a run starting or finishing is said once. Host observations only,
+ * it, so a run starting or finishing is said once. While the page's own line
+ * is watching a run someone started (`quiet`), this one is shown but not said
+ * (`aria-live="off"`): that line says the outcome. Host observations only,
  * never an invented agent report.
  *
  * Each run is one row: its mark (done, off-track or no update for completed,
@@ -58,11 +60,14 @@ export function RepeatTaskBody({
   agentId,
   routineId,
   onNavigate,
+  quiet = false,
 }: {
   detail: TaskDetail;
   agentId: string;
   routineId: string;
   onNavigate: (route: WorkspaceRoute) => void;
+  /** The page's own live line is watching a run (Run now): show this line, don't say it. */
+  quiet?: boolean;
 }) {
   const headingId = useId();
   const restId = useId();
@@ -84,7 +89,7 @@ export function RepeatTaskBody({
         <h2 id={headingId} className="sr-only">
           Run history
         </h2>
-        <p role="status" className="text-[13px] text-muted-foreground">
+        <p role="status" aria-live={quiet ? 'off' : undefined} className="text-[13px] text-muted-foreground">
           {repeatStatusLine(detail.repeat, detail.enabled)}
         </p>
         {runs.length === 0 ? (

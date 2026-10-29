@@ -3156,6 +3156,76 @@ describe('TaskPage: the minimal header and the ⋯ menu (2026-10-29)', () => {
     expect(within(about()).queryByRole('button', { name: /notes/ })).toBeNull();
   });
 
+  it('a Repeat job’s Run now is said in run words, once: the runs card’s own line keeps quiet meanwhile', async () => {
+    const repeat = { lastRunAt: null, status: null, error: null, warning: null, active: 0, waiting: 0, sharedThread: false, appUpdates: false };
+    const job = (over: Partial<TaskDetail> = {}) =>
+      detail({ kind: 'repeat', task: null, repeat, updates: [], ...over });
+    taskMock
+      .mockResolvedValueOnce(job())
+      .mockResolvedValueOnce(job({ repeat: { ...repeat, active: 1 } }))
+      .mockResolvedValue(
+        job({
+          updates: [
+            {
+              firedAt: new Date(Date.now() + 1000).toISOString(),
+              status: 'error',
+              error: 'Slack wasn’t reachable.',
+              report: null,
+              conversationId: 'c-run',
+            },
+          ],
+        }),
+      );
+    fireNowMock.mockResolvedValue({ status: 'ok' });
+    await renderReady();
+    const runLine = within(screen.getByRole('region', { name: 'Run history' })).getByRole('status');
+    expect(runLine).not.toHaveAttribute('aria-live', 'off');
+    const run = screen.getByRole('button', { name: 'Run now' });
+    fireEvent.click(run);
+    await settled(run, 2);
+    expect(pageStatus()).toHaveTextContent('Running now…');
+    expect(pageStatus()).not.toHaveTextContent(/check/i);
+    // The runs card shows "Working…", but only the page's line says it out loud.
+    expect(runLine).toHaveTextContent('Working… 1 run active');
+    expect(runLine).toHaveAttribute('aria-live', 'off');
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10_000);
+    });
+    expect(pageStatus()).toHaveTextContent('The run didn’t finish. The reason is under Run history.');
+    expect(runLine).not.toHaveAttribute('aria-live', 'off');
+  });
+
+  it('a Repeat run that finished says so in run words', async () => {
+    const repeat = { lastRunAt: null, status: null, error: null, warning: null, active: 0, waiting: 0, sharedThread: false, appUpdates: false };
+    const job = (over: Partial<TaskDetail> = {}) =>
+      detail({ kind: 'repeat', task: null, repeat, updates: [], ...over });
+    taskMock
+      .mockResolvedValueOnce(job())
+      .mockResolvedValueOnce(job())
+      .mockResolvedValue(
+        job({
+          updates: [
+            {
+              firedAt: new Date(Date.now() + 1000).toISOString(),
+              status: 'ok',
+              error: null,
+              report: { status: 'on-track', update: 'Posted 6 highlights.', reading: null },
+              conversationId: 'c-run',
+            },
+          ],
+        }),
+      );
+    fireNowMock.mockResolvedValue({ status: 'ok' });
+    await renderReady();
+    const run = screen.getByRole('button', { name: 'Run now' });
+    fireEvent.click(run);
+    await settled(run, 2);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10_000);
+    });
+    expect(pageStatus()).toHaveTextContent('Quill finished the run.');
+  });
+
   it('⋯ holds Edit task, Duplicate and Delete task…, and Delete asks first', async () => {
     taskMock.mockResolvedValue(detail());
     await renderReady();
