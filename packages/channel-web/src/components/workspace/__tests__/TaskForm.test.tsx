@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import type { RoutineView } from '@ax/routines-contract';
 import { RoutineEditor } from '@/components/routines/RoutineEditor';
 import { routineApi, RoutineApiError } from '@/lib/routines';
@@ -45,8 +45,13 @@ describe('task form validation', () => {
     expect(await screen.findByText('Give it a name.')).toBeVisible();
     expect(screen.getByText('Tell Caveman what to do.')).toBeVisible();
     expect(screen.getByText('Say how we’ll know this task is going well.')).toBeVisible();
-    expect(name).toHaveAttribute('aria-invalid', 'true');
     expect(name).toHaveAccessibleDescription('Give it a name.');
+    // Both draw the destructive outline from their Field's invalid state, as the InputGroup does.
+    for (const control of [name, screen.getByLabelText('What should Caveman do?')]) {
+      expect(control).toHaveAttribute('aria-invalid', 'true');
+      expect(control.closest('[data-slot="field"]')).toHaveAttribute('data-invalid', 'true');
+      expect(control).toHaveClass('group-data-[invalid=true]/field:border-destructive');
+    }
     expect(screen.getByLabelText('What should Caveman do?')).toHaveAccessibleDescription('Tell Caveman what to do.');
     await waitFor(() => expect(name).toHaveFocus());
     expect(document.body.textContent).not.toMatch(RAW);
@@ -180,6 +185,16 @@ describe('task form validation', () => {
     const interval = screen.getByLabelText('Interval');
     expect(document.querySelectorAll(`[id="${interval.id}"]`)).toHaveLength(1);
     expect(interval).toHaveAccessibleDescription('A number and a unit: m for minutes, h for hours, d for days.');
+  });
+
+  it('keeps each kind on one line, and its word for the accessible name when only the icon fits', () => {
+    create();
+    for (const word of ['Stay on top', 'Get done', 'Repeat']) {
+      const item = screen.getByRole('radio', { name: word });
+      expect(item).toHaveClass('whitespace-nowrap');
+      expect(item).toHaveTextContent(word);
+      expect(within(item).getByText(word)).toHaveClass('max-[359px]:sr-only');
+    }
   });
 
   it('names the kind toggle by its own label, with no stray hidden label', () => {
