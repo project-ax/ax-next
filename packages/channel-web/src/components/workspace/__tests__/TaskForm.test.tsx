@@ -108,6 +108,45 @@ describe('task form validation', () => {
     expect(screen.queryByRole('switch', { name: 'Only at certain hours' })).not.toBeInTheDocument();
   });
 
+  it('keeps a problem’s field on screen after the setting that showed it is cleared', async () => {
+    create();
+    fireEvent.click(screen.getByRole('radio', { name: 'Repeat' }));
+    fill('Name', 'Digest'); fill('What should Caveman do?', 'Send it.');
+    fireEvent.click(screen.getByRole('button', { name: 'More options' }));
+    fill('Quiet word (optional)', 'QUIET');
+    fill('Treat replies this short as quiet', '-5');
+    fill('Quiet word (optional)', '');
+    expect(screen.queryByLabelText('Treat replies this short as quiet')).not.toBeInTheDocument();
+    start();
+    const length = await screen.findByLabelText('Treat replies this short as quiet');
+    await waitFor(() => expect(length).toHaveFocus());
+    expect(length).toHaveAttribute('aria-invalid', 'true');
+    expect(length).toHaveAccessibleDescription(expect.stringContaining('Use a whole number from 0 to 65,536.'));
+    expect(routineApi.create).not.toHaveBeenCalled();
+  });
+
+  it('shows a task’s shared conversation where it can be fixed', async () => {
+    await edit({ ...task, conversation: 'shared' });
+    fill('What should Caveman do?', 'Changed.');
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    const memory = await screen.findByRole('group', { name: 'Memory between runs' });
+    expect(memory).toHaveAccessibleDescription('A task starts a fresh conversation for each check-in.');
+    await waitFor(() => expect(memory.contains(document.activeElement)).toBe(true));
+    fireEvent.click(screen.getByRole('radio', { name: 'Start fresh each time' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(routineApi.update).toHaveBeenCalledOnce());
+    expect(vi.mocked(routineApi.update).mock.calls[0]![0].patch).toStrictEqual({ promptBody: 'Changed.', conversation: 'per-fire' });
+  });
+
+  it('says a problem with no control of its own at the form, and focuses it', async () => {
+    await edit({ ...routineFixture, goodWhen: 'Left over.' });
+    fill('What should Caveman do?', 'Changed.');
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    const problem = await screen.findByText('Only a task can say when it’s going well.');
+    await waitFor(() => expect(problem).toHaveFocus());
+    expect(routineApi.update).not.toHaveBeenCalled();
+  });
+
   it('closes without a write when Save has nothing to send', async () => {
     const { onCancel } = await edit(task);
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
@@ -248,7 +287,7 @@ describe('task form More options', () => {
 describe('task form save refusals', () => {
   // Every code the host can refuse a save with, in a task's words, never Settings' "routine" copy.
   it.each([
-    ['validation', 'We couldn’t save one of these settings. Check the marked one and try again.'],
+    ['validation', 'We couldn’t save these settings. Check them and try again.'],
     ['revision-conflict', 'This task changed while you had it open. Reload it to get the latest, then make your change again.'],
     ['webhook-path-conflict', 'Another task already uses that address name. Choose a different one.'],
     ['request-conflict', 'We couldn’t match this save to your earlier try. Close this and make the change again.'],
@@ -266,6 +305,26 @@ describe('task form save refusals', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
     expect(await screen.findByText(words)).toBeVisible();
     expect(document.body.textContent).not.toMatch(/routine/i);
+  });
+
+  it('opens More options and focuses the field the host refused', async () => {
+    vi.mocked(routineApi.update).mockRejectedValue(new RoutineApiError(400, 'validation', 'webhook.path'));
+    await edit({ ...task, webhook: { kind: 'webhook', path: '/updates' } });
+    fill('What should Caveman do?', 'Changed.');
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    expect(await screen.findByText('We couldn’t save one of these settings. Check the marked one and try again.')).toBeVisible();
+    const address = await screen.findByLabelText('Address name');
+    await waitFor(() => expect(address).toHaveFocus());
+    expect(address).toHaveAttribute('aria-invalid', 'true');
+  });
+
+  it('promises no mark when the host names no field we show', async () => {
+    vi.mocked(routineApi.update).mockRejectedValue(new RoutineApiError(400, 'validation', 'input'));
+    await edit(task);
+    fill('What should Caveman do?', 'Changed.');
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    expect(await screen.findByText('We couldn’t save these settings. Check them and try again.')).toBeVisible();
+    expect(screen.queryByText(/marked/)).not.toBeInTheDocument();
   });
 
   it('keeps the reload offer on a conflict', async () => {

@@ -151,6 +151,21 @@ export function taskField(path: string, custom: boolean): TaskField {
   }
 }
 
+/**
+ * Whether a field's control can be on screen for this draft. Conversation and the
+ * quiet settings are drawn whenever they have a problem, so they always can; a
+ * problem anywhere else with nothing to show it on is said at the form instead.
+ */
+export function fieldHasControl(field: TaskField, definition: RoutineDefinition): boolean {
+  switch (field) {
+    case 'goodWhen': return isTaskKind(definition.kind);
+    case 'customSchedule': return definition.schedule !== null;
+    case 'hoursZone': return definition.activeHours !== null;
+    case 'address': case 'events': case 'signature': return definition.webhook !== null;
+    default: return true;
+  }
+}
+
 const ZONE = 'Use a time zone name, like America/New_York.';
 const FALLBACK: Record<TaskField, string> = {
   name: 'Give it a name.',
@@ -196,7 +211,7 @@ export function plainIssue(field: TaskField, issue: { code?: string; message?: s
  * that wasn't the host's answer (no response, or one we couldn't read).
  */
 const SAVE_ERRORS: Record<RoutineErrorCode, string> = {
-  validation: 'We couldn’t save one of these settings. Check the marked one and try again.',
+  validation: 'We couldn’t save these settings. Check them and try again.',
   'revision-conflict': 'This task changed while you had it open. Reload it to get the latest, then make your change again.',
   'webhook-path-conflict': 'Another task already uses that address name. Choose a different one.',
   'request-conflict': 'We couldn’t match this save to your earlier try. Close this and make the change again.',
@@ -208,6 +223,8 @@ const SAVE_ERRORS: Record<RoutineErrorCode, string> = {
   'cleanup-pending': 'We’re still removing this task’s old signing secret. Try again in a moment.',
   unavailable: 'We couldn’t reach tasks just now. Try again in a moment.',
 };
-export function taskSaveError(code: RoutineErrorCode | null): string {
+/** `marked`: the host named a field we draw and mark, so the sentence may point at it. */
+export function taskSaveError(code: RoutineErrorCode | null, marked = false): string {
+  if (code === 'validation' && marked) return 'We couldn’t save one of these settings. Check the marked one and try again.';
   return code === null ? 'We couldn’t save this task. Try again.' : SAVE_ERRORS[code];
 }

@@ -57,6 +57,7 @@ import {
   respondPreset,
   scheduleChip,
   schedulePreset,
+  fieldHasControl,
   TASK_FIELDS,
   taskField,
   taskSaveError,
@@ -162,24 +163,32 @@ export function TaskForm({
     if (!validation.success) {
       for (const issue of validation.error.issues) {
         const field = taskField(issue.path.join('.'), customCron);
-        if (!found.has(field)) found.set(field, plainIssue(field, issue, agentName));
+        // A problem with nothing on screen to fix is said at the form, never dropped.
+        const at = fieldHasControl(field, draftDefinition) ? field : 'form';
+        if (!found.has(at)) found.set(at, plainIssue(field, issue, agentName));
       }
     }
     return found;
-  }, [validation, draftDefinition.promptBody, customCron, agentName]);
+  }, [validation, draftDefinition, customCron, agentName]);
+  // The field the host named when it refused a save, if we draw one.
+  const refusedField = invalidField === undefined ? null : taskField(invalidField, customCron);
   // Shown after the first press, then kept current as the person fixes them.
   const shown = useMemo(() => {
     const visible = new Map(attempted ? issues : []);
     // The host named a field it refused; say so there, in our words.
-    if (invalidField !== undefined) {
-      const field = taskField(invalidField, customCron);
-      if (field !== 'form' && !visible.has(field)) {
-        visible.set(field, errorCode === 'webhook-path-conflict' && field === 'address'
-          ? taskSaveError(errorCode) : plainIssue(field, {}, agentName));
-      }
+    if (refusedField !== null && refusedField !== 'form' && !visible.has(refusedField)) {
+      visible.set(refusedField, errorCode === 'webhook-path-conflict' && refusedField === 'address'
+        ? taskSaveError(errorCode, true) : plainIssue(refusedField, {}, agentName));
     }
     return visible;
-  }, [attempted, issues, invalidField, errorCode, customCron, agentName]);
+  }, [attempted, issues, refusedField, errorCode, agentName]);
+  // A refused save goes to the field it names, under More options too.
+  useEffect(() => {
+    if (error === null || refusedField === null || refusedField === 'form') return;
+    if (MORE_OPTIONS_FIELDS.has(refusedField)) setMore(true);
+    focusNext.current = refusedField;
+    setFocusTick(tick => tick + 1);
+  }, [error, refusedField]);
 
   useEffect(() => {
     const field = focusNext.current;
@@ -253,7 +262,8 @@ export function TaskForm({
   const updatesOn = form.webhook !== null;
   const chosenAgent = agentChoices?.agents.find(agent => agent.agentId === agentChoices.selected);
   const savedWebhook = initial.webhook !== null && initial.webhook.path === form.webhook?.path && mode === 'edit';
-  const showQuiet = form.kind === 'repeat' || form.silenceToken !== null;
+  const showQuiet = form.kind === 'repeat' || form.silenceToken !== null || shown.has('quietWord');
+  const showQuietLength = (showQuiet && form.silenceToken !== null) || shown.has('quietLength');
 
   return (
     <form noValidate className="flex flex-col gap-4" onSubmit={event => { event.preventDefault(); onSubmit(); }}>
@@ -488,10 +498,11 @@ export function TaskForm({
               </div>
               {fieldError('signature')}
             </>}
-            {form.kind === 'repeat' && (
-              <Field>
+            {(form.kind === 'repeat' || shown.has('conversation')) && (
+              <Field data-invalid={invalid('conversation') || undefined}>
                 <FieldLabel>Memory between runs</FieldLabel>
                 <ToggleGroup type="single" aria-label="Memory between runs" value={form.conversation} disabled={disabled}
+                  aria-describedby={describedBy('conversation')}
                   className="flex-wrap justify-start" ref={register('conversation')}
                   onValueChange={value => { if (value === 'per-fire' || value === 'shared') update('conversation', value); }}>
                   <ToggleGroupItem value="per-fire">Start fresh each time</ToggleGroupItem>
@@ -503,7 +514,7 @@ export function TaskForm({
             {showQuiet && textInput('Quiet word (optional)', 'quietWord', form.silenceToken ?? '',
               value => update('silenceToken', value === '' ? null : value),
               { maxLength: 128, help: `When ${agentName}’s reply starts or ends with this word, we drop the reply and mark the run as finished quietly. Leave it empty to keep every reply.` })}
-            {showQuiet && form.silenceToken !== null && textInput('Treat replies this short as quiet', 'quietLength', form.silenceMaxChars,
+            {showQuietLength && textInput('Treat replies this short as quiet', 'quietLength', form.silenceMaxChars,
               value => update('silenceMaxChars', Number(value)),
               { type: 'number', help: 'In characters, not counting the quiet word. A longer reply is kept even when it has the quiet word.' })}
             <Field data-invalid={invalid('description') || undefined} data-disabled={disabled || undefined}>
@@ -524,11 +535,11 @@ export function TaskForm({
         </CollapsibleContent>
       </Collapsible>
 
-      {shown.has('form') && <FieldError>{shown.get('form')}</FieldError>}
+      {shown.has('form') && <FieldError id={errorId('form')} ref={register('form')} tabIndex={-1}>{shown.get('form')}</FieldError>}
       {error && (
         <Alert variant="destructive">
           <AlertDescription>
-            {taskSaveError(errorCode)}
+            {taskSaveError(errorCode, refusedField !== null && refusedField !== 'form')}
             {conflict && onReload && (
               <Button type="button" variant="outline" onClick={onReload}>Reload and discard my changes</Button>
             )}
