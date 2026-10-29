@@ -259,12 +259,24 @@ describe('batched task app updates (TASK-983)', () => {
     openUpdates();
     fireEvent.click(screen.getByRole('switch', { name: 'When another app sends an update' }));
     expect(screen.getByRole('combobox', { name: 'React within' })).toHaveTextContent('5 min');
-    expect(screen.getByRole('button', { name: 'How often: Every hour' })).toBeVisible();
-    expect(screen.queryByRole('switch', { name: 'On a schedule' })).not.toBeInTheDocument();
     expect(screen.getByText('You’ll connect the app after you save.')).toBeVisible();
     chooseRespond('15 min');
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: 'Escape' });
+    // A task's schedule is its safety check, so How often has no switch to turn it off.
+    fireEvent.click(screen.getByRole('button', { name: 'How often: Every hour' }));
+    expect(screen.getByRole('combobox', { name: 'Every' })).toBeVisible();
+    expect(screen.queryByRole('switch', { name: 'On a schedule' })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
     await waitFor(() => expect(mocks.update).toHaveBeenCalledWith(expect.objectContaining({ patch: { webhook: { kind: 'webhook', path: '/project-updates', respondWithin: '15m' } } })));
+  });
+  it('lets Repeat, and only Repeat, turn its schedule off under How often', async () => {
+    mocks.get.mockResolvedValue(view());
+    render(<RoutineEditor taskMode mode="edit" agentId="a" agentName="Caveman" routine={view()} onSaved={vi.fn()} onCancel={vi.fn()} />);
+    await screen.findByDisplayValue(routineFixture.name);
+    fireEvent.click(screen.getByRole('button', { name: 'How often: Every hour' }));
+    fireEvent.click(screen.getByRole('switch', { name: 'On a schedule' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(mocks.update).toHaveBeenCalledWith(expect.objectContaining({ patch: { schedule: null } })));
   });
   it('offers response times from 1 to 60 minutes and keeps an unlisted saved one as it is', async () => {
     const value = { ...task(), webhook: { kind: 'webhook' as const, path: '/updates', respondWithin: '10m' } }; mocks.get.mockResolvedValue(value);
