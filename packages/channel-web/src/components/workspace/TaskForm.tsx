@@ -19,6 +19,7 @@
 import { useEffect, useId, useMemo, useRef, useState, type ReactNode, type Ref } from 'react';
 import { CalendarDays, ChevronDown, Clock, Ellipsis, Plug, Target, type LucideIcon } from 'lucide-react';
 import {
+  durationToSeconds,
   isTaskKind,
   ROUTINE_GOOD_WHEN_MAX_CHARS,
   ROUTINE_NAME_MAX_CHARS,
@@ -239,11 +240,14 @@ export function TaskForm({
   }
 
   const intervals = intervalPresets(form.kind);
-  const scheduleValue = form.schedule === null ? '' : preset
-    ?? (form.schedule.kind === 'interval' ? form.schedule.every : CUSTOM);
-  const extraInterval = form.schedule?.kind === 'interval' && preset === null ? form.schedule.every : null;
-  const respondValue = form.webhook === null ? '' : respondPreset(form.webhook.respondWithin) ?? form.webhook.respondWithin ?? '5m';
-  const respondExtra = form.webhook !== null && respondPreset(form.webhook.respondWithin) === null ? form.webhook.respondWithin : undefined;
+  // Only a real duration gets its own item: Radix Select throws on an empty item value,
+  // and a half-typed Interval ('', '4') shows the placeholder instead.
+  const extraInterval = form.schedule?.kind === 'interval' && preset === null && durationToSeconds(form.schedule.every) !== null
+    ? form.schedule.every : null;
+  const scheduleValue = form.schedule === null ? '' : preset ?? extraInterval ?? (form.schedule.kind === 'cron' ? CUSTOM : '');
+  const respondExtra = form.webhook !== null && respondPreset(form.webhook.respondWithin) === null
+    && durationToSeconds(form.webhook.respondWithin ?? '') !== null ? form.webhook.respondWithin : undefined;
+  const respondValue = form.webhook === null ? '' : respondPreset(form.webhook.respondWithin) ?? respondExtra ?? '';
   const hoursLabel = hoursChip(form.activeHours);
   const scheduleLabel = scheduleChip(form.schedule, form.kind);
   const updatesOn = form.webhook !== null;
@@ -349,7 +353,7 @@ export function TaskForm({
                   if (value === CUSTOM) { setChip(null); setMore(true); return; }
                   if (value !== extraInterval) update('schedule', { kind: 'interval', every: value });
                 }}>
-                  <SelectTrigger id={`${id}-every`}><SelectValue /></SelectTrigger>
+                  <SelectTrigger id={`${id}-every`}><SelectValue placeholder="Choose how often" /></SelectTrigger>
                   <SelectContent><SelectGroup>
                     {intervals.map(item => <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>)}
                     {extraInterval !== null && <SelectItem value={extraInterval}>{durationWords(extraInterval)}</SelectItem>}
@@ -411,7 +415,7 @@ export function TaskForm({
                 <Select value={respondValue} disabled={disabled} onValueChange={value => {
                   if (form.webhook !== null && value !== respondExtra) update('webhook', { ...form.webhook, respondWithin: value });
                 }}>
-                  <SelectTrigger id={`${id}-respond`}><SelectValue /></SelectTrigger>
+                  <SelectTrigger id={`${id}-respond`}><SelectValue placeholder="Choose a time" /></SelectTrigger>
                   <SelectContent><SelectGroup>
                     {RESPOND_PRESETS.map(item => <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>)}
                     {respondExtra !== undefined && <SelectItem value={respondExtra}>{durationWords(respondExtra)}</SelectItem>}

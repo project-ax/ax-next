@@ -171,6 +171,19 @@ describe('task form chips and presets', () => {
     expect(vi.mocked(routineApi.update).mock.calls[0]![0].patch).toStrictEqual({ schedule: { kind: 'interval', every: '30m' } });
   });
 
+  it('survives a cleared Interval: How often shows no choice instead of an empty option', () => {
+    create();
+    fireEvent.click(screen.getByRole('button', { name: 'More options' }));
+    fill('Interval', '');
+    fireEvent.click(screen.getByRole('button', { name: /^How often:/ }));
+    const every = screen.getByRole('combobox', { name: 'Every' });
+    expect(every).toHaveTextContent('Choose how often');
+    fireEvent.keyDown(every, { key: 'ArrowDown' });
+    expect(screen.getAllByRole('option').map(option => option.textContent)).toEqual(['15 min', '30 min', '1 hour', '2 hours', '1 day', '1 week', 'Custom schedule…']);
+    fireEvent.click(screen.getByRole('option', { name: '30 min' }));
+    expect(screen.getByLabelText('Interval')).toHaveValue('30m');
+  });
+
   it('maps equal presets both ways', () => {
     expect(schedulePreset({ kind: 'interval', every: '60m' }, 'stay-on-top')).toBe('1h');
     expect(schedulePreset({ kind: 'interval', every: '45m' }, 'stay-on-top')).toBeNull();
