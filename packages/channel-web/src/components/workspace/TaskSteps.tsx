@@ -60,7 +60,7 @@
  * done, `readOnly` shows its steps as they were left, ticked or not, with
  * nothing to change: each box is a picture of its state, said to a screen
  * reader in words (`Done: ` / `Not done: `), and there are no options and no
- * Add a step. An editor left open closes, and a change's failure or skipped
+ * Add a step (the Plus in the steps' header). An editor left open closes, and a change's failure or skipped
  * line goes. If that editor held changed text the steps don't show, or a
  * refused change (the task was marked done elsewhere first) isn't on the
  * record, the status line says "This task was marked done, so that change
@@ -80,11 +80,12 @@
  * the markdown renderer, and no attribute is built from it. `**bold**` and
  * `<img>` show as those characters. It is drawn at full contrast, because a
  * person audits it. Each box is named by its step's text and described by
- * "added by {agent}", and each options button points at the text it opens
+ * "added by {agent}" (hidden text; on screen it's the step's tooltip since
+ * the minimal redesign, 2026-10-29), and each options button points at the text it opens
  * (`aria-describedby`), so fifty of them still say which is which.
  */
 import { useId, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from 'react';
-import { MoreHorizontal, Plus, Square, SquareCheck } from 'lucide-react';
+import { ListChecks, MoreHorizontal, Plus, Square, SquareCheck } from 'lucide-react';
 import {
   ROUTINE_STEP_TEXT_MAX_CHARS,
   ROUTINE_STEPS_MAX,
@@ -93,6 +94,7 @@ import {
 } from '@ax/routines-contract';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
+import { Card } from '@/components/ui/card';
 import { Checkbox } from '@/components/ui/checkbox';
 import {
   DropdownMenu,
@@ -104,11 +106,13 @@ import {
 import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel } from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
 import { Spinner } from '@/components/ui/spinner';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { HTTP_SESSION_ENDED, isConfirmedRefusal, isSessionEnded, logRequestFailure } from '@/lib/http';
 import type { AlertRegister } from '@/lib/read-register';
 import { cn } from '@/lib/utils';
 import { workspaceApi } from '@/lib/workspace-api';
 import type { TaskStep, TaskStepsResponse } from '@/lib/workspace-types';
+import { IconAction } from './task-bits';
 
 /** What a step the server couldn't read says instead of its text. */
 export const STEP_CANT_SHOW = 'We can’t show this step’s text.';
@@ -477,108 +481,114 @@ export function TaskSteps({
   };
 
   return (
-    <section ref={section} aria-labelledby={headingId} className="flex flex-col gap-2.5">
-      <h2 id={headingId} className="text-[12.5px] font-medium">
-        {steps.length === 0 ? 'Steps' : `Steps · ${done} of ${steps.length} done`}
-      </h2>
-      {steps.length === 0 ? (
-        <p className="text-[13px] text-muted-foreground">
-          {readOnly ? 'No steps.' : `No steps yet. Add one, or ${agentName} drafts them at its next check-in.`}
-        </p>
-      ) : (
-        <ul className="flex flex-col gap-1">
-          {steps.map((step, index) => {
-            if (readOnly) return <DoneStep key={step.id} step={step} agentName={agentName} />;
-            const editing = editor?.kind === 'edit' && editor.id === step.id ? editor : null;
-            return (
-              <StepRow
-                key={step.id}
-                step={step}
-                agentName={agentName}
-                busy={busy !== null}
-                sent={busy?.place === 'list' && busy.op.id === step.id ? busy.op.op : null}
-                editing={editing !== null}
-                boxRef={fileUnder(boxes.current, step.id)}
-                optionsRef={fileUnder(optionButtons.current, step.id)}
-                onTick={(checked) => tick(step, index, checked)}
-                onEdit={() => {
-                  const text = step.text ?? '';
-                  openEditor({ kind: 'edit', id: step.id, text, opened: text, failure: null });
-                }}
-                onDelete={() => remove(step, index)}
-              >
-                {editing !== null && (
-                  <StepEditor
-                    label="Edit step"
-                    submit="Save"
-                    text={editing.text}
-                    failure={editing.failure}
-                    note={step.byAgent ? `Once you save it, ${agentName} reads this as your words.` : null}
-                    busy={busy !== null}
-                    sending={busy?.place === 'editor'}
-                    canSubmit
-                    inputRef={input}
-                    onText={typed}
-                    onSubmit={save}
-                    onCancel={closeEditor}
-                  />
-                )}
-              </StepRow>
-            );
-          })}
-        </ul>
-      )}
-      {listFailure !== null && (
-        <Alert variant={listFailure.register}>
-          <AlertDescription>{listFailure.line}</AlertDescription>
-        </Alert>
-      )}
-      {readOnly ? null : editor?.kind === 'add' ? (
-        <StepEditor
-          label="New step"
-          submit="Add"
-          text={editor.text}
-          failure={editor.failure}
-          note={atCap ? AT_CAP : null}
-          busy={busy !== null}
-          sending={busy?.place === 'editor'}
-          canSubmit={!atCap}
-          inputRef={input}
-          onText={typed}
-          onSubmit={add}
-          onCancel={closeEditor}
-        />
-      ) : (
-        <div className="flex flex-col items-start gap-1">
-          <Button
-            ref={addButton}
-            type="button"
-            variant="ghost"
-            size="sm"
-            className="-ml-3"
-            disabled={busy !== null || atCap}
-            aria-describedby={atCap ? capId : undefined}
-            onClick={() => openEditor({ kind: 'add', text: '', failure: null })}
-          >
-            <Plus data-icon="inline-start" aria-hidden="true" />
-            Add a step
-          </Button>
-          {atCap && (
+    <Card>
+      <section ref={section} aria-labelledby={headingId} className="flex flex-col gap-2 p-4">
+        <div className="flex min-h-7 items-center gap-2">
+          {/* Seen as "1/2"; heard as the whole count. */}
+          <h2 id={headingId} className="flex items-center gap-1.5 text-[13px] font-medium text-muted-foreground">
+            <ListChecks aria-hidden="true" className="size-3.5" />
+            <span aria-hidden="true">{steps.length === 0 ? 'Steps' : `${done}/${steps.length}`}</span>
+            <span className="sr-only">
+              {steps.length === 0 ? 'Steps' : `Steps · ${done} of ${steps.length} done`}
+            </span>
+          </h2>
+          {!readOnly && editor?.kind !== 'add' && (
+            <IconAction
+              ref={addButton}
+              icon={Plus}
+              label="Add a step"
+              variant="ghost"
+              className="ml-auto size-7"
+              disabled={busy !== null || atCap}
+              aria-describedby={atCap ? capId : undefined}
+              onClick={() => openEditor({ kind: 'add', text: '', failure: null })}
+            />
+          )}
+        </div>
+        {steps.length === 0 ? (
+          <p className="text-[13px] text-muted-foreground">
+            {readOnly ? 'No steps.' : `No steps yet. Add one, or ${agentName} drafts them at its next check-in.`}
+          </p>
+        ) : (
+          <ul className="flex flex-col gap-1">
+            {steps.map((step, index) => {
+              if (readOnly) return <DoneStep key={step.id} step={step} agentName={agentName} />;
+              const editing = editor?.kind === 'edit' && editor.id === step.id ? editor : null;
+              return (
+                <StepRow
+                  key={step.id}
+                  step={step}
+                  agentName={agentName}
+                  busy={busy !== null}
+                  sent={busy?.place === 'list' && busy.op.id === step.id ? busy.op.op : null}
+                  editing={editing !== null}
+                  boxRef={fileUnder(boxes.current, step.id)}
+                  optionsRef={fileUnder(optionButtons.current, step.id)}
+                  onTick={(checked) => tick(step, index, checked)}
+                  onEdit={() => {
+                    const text = step.text ?? '';
+                    openEditor({ kind: 'edit', id: step.id, text, opened: text, failure: null });
+                  }}
+                  onDelete={() => remove(step, index)}
+                >
+                  {editing !== null && (
+                    <StepEditor
+                      label="Edit step"
+                      submit="Save"
+                      text={editing.text}
+                      failure={editing.failure}
+                      note={step.byAgent ? `Once you save it, ${agentName} reads this as your words.` : null}
+                      busy={busy !== null}
+                      sending={busy?.place === 'editor'}
+                      canSubmit
+                      inputRef={input}
+                      onText={typed}
+                      onSubmit={save}
+                      onCancel={closeEditor}
+                    />
+                  )}
+                </StepRow>
+              );
+            })}
+          </ul>
+        )}
+        {listFailure !== null && (
+          <Alert variant={listFailure.register}>
+            <AlertDescription>{listFailure.line}</AlertDescription>
+          </Alert>
+        )}
+        {readOnly ? null : editor?.kind === 'add' ? (
+          <StepEditor
+            label="New step"
+            submit="Add"
+            text={editor.text}
+            failure={editor.failure}
+            note={atCap ? AT_CAP : null}
+            busy={busy !== null}
+            sending={busy?.place === 'editor'}
+            canSubmit={!atCap}
+            inputRef={input}
+            onText={typed}
+            onSubmit={add}
+            onCancel={closeEditor}
+          />
+        ) : (
+          atCap && (
             <p id={capId} className="text-[12px] text-muted-foreground">
               {AT_CAP}
             </p>
-          )}
-        </div>
-      )}
-      {/*
-        Mounted with the section, not with its sentence: a region created and
-        filled together is the announcement screen readers drop (TASK-651).
-      */}
-      <p role="status" className="text-[12.5px] text-muted-foreground empty:-mt-2.5">
-        {notSaved ? NOT_SAVED_DONE : (skipped ?? '')}
-      </p>
-      {footer}
-    </section>
+          )
+        )}
+        {/*
+          Mounted with the section, not with its sentence: a region created and
+          filled together is the announcement screen readers drop (TASK-651).
+        */}
+        <p role="status" className="text-[12px] text-muted-foreground empty:-mt-2">
+          {notSaved ? NOT_SAVED_DONE : (skipped ?? '')}
+        </p>
+        {footer}
+      </section>
+    </Card>
   );
 }
 
@@ -589,18 +599,38 @@ export function TaskSteps({
 function DoneStep({ step, agentName }: { step: TaskStep; agentName: string }) {
   const Box = step.done ? SquareCheck : Square;
   return (
-    <li className="flex min-w-0 items-start gap-2 text-[13px] leading-relaxed">
+    <li className="flex min-w-0 items-start gap-2 text-[14px] leading-relaxed">
       <Box aria-hidden="true" className="mt-2 size-4 shrink-0 text-muted-foreground" />
       <span className="flex min-w-0 flex-1 flex-col py-1.5">
-        <span className={cn('break-words', step.text === null && 'text-muted-foreground')}>
-          <span className="sr-only">{step.done ? 'Done: ' : 'Not done: '}</span>
-          {step.text ?? STEP_CANT_SHOW}
-        </span>
-        {step.byAgent && (
-          <span className="break-words text-[12px] text-muted-foreground">{`added by ${agentName}`}</span>
-        )}
+        <AddedBy by={step.byAgent ? agentName : null}>
+          <span className={cn('break-words', step.text === null && 'text-muted-foreground')}>
+            <span className="sr-only">{step.done ? 'Done: ' : 'Not done: '}</span>
+            {step.text ?? STEP_CANT_SHOW}
+          </span>
+        </AddedBy>
+        {step.byAgent && <span className="sr-only">{`added by ${agentName}`}</span>}
       </span>
     </li>
+  );
+}
+
+/**
+ * Who added a step, said on hover over its text (the minimal redesign,
+ * 2026-10-29). The same words stay in hidden text beside it, which is what a
+ * screen reader hears (the box's description), so this tooltip is only a
+ * picture of them. Nothing when the person added it.
+ */
+function AddedBy({ by, children }: { by: string | null; children: ReactNode }) {
+  if (by === null) return <>{children}</>;
+  return (
+    <TooltipProvider delayDuration={300}>
+      <Tooltip>
+        <TooltipTrigger asChild>{children}</TooltipTrigger>
+        <TooltipContent side="bottom" className="text-[12px]" aria-hidden="true">
+          {`added by ${by}`}
+        </TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
   );
 }
 
@@ -642,7 +672,7 @@ function StepRow({
   return (
     <li
       aria-busy={sent !== null || undefined}
-      className="flex min-w-0 items-start gap-2 text-[13px] leading-relaxed"
+      className="flex min-w-0 items-start gap-2 text-[14px] leading-relaxed"
     >
       <Checkbox
         ref={boxRef}
@@ -659,17 +689,16 @@ function StepRow({
       />
       <div className="flex min-w-0 flex-1 flex-col py-1.5">
         {/* While the step is reworded its text stays, unseen, so its box keeps its name. */}
-        <span
-          id={textId}
-          className={cn('break-words', step.text === null && 'text-muted-foreground', editing && 'sr-only')}
-        >
-          {step.text ?? STEP_CANT_SHOW}
-        </span>
-        {step.byAgent && (
+        <AddedBy by={step.byAgent && !editing ? agentName : null}>
           <span
-            id={byId}
-            className={cn('break-words text-[12px] text-muted-foreground', editing && 'sr-only')}
+            id={textId}
+            className={cn('break-words', step.text === null && 'text-muted-foreground', editing && 'sr-only')}
           >
+            {step.text ?? STEP_CANT_SHOW}
+          </span>
+        </AddedBy>
+        {step.byAgent && (
+          <span id={byId} className="sr-only">
             {`added by ${agentName}`}
           </span>
         )}

@@ -1,6 +1,6 @@
 /**
- * TaskNotes: the agent's notes on a task's page, shown on request and
- * clearable after a confirm (TASK-910).
+ * TaskNotes: the agent's notes on a task's page, shown on request (their About
+ * row is the Show, 2026-10-29) and clearable after a confirm (TASK-910).
  *
  * The notes are text a model wrote, and they go back to it at the task's next
  * check-in. An instruction injected through a ticket could persist that way,
@@ -29,9 +29,7 @@ const NOTES_PATH = '/tasks/a1/t1/notes';
 function renderNotes(notes: string | null = NOTES) {
   const onCleared = vi.fn();
   const tree = (value: string | null) => (
-    <dl>
-      <TaskNotes agentId="a1" routineId="t1" agentName="Quill" notes={value} onCleared={onCleared} />
-    </dl>
+    <TaskNotes agentId="a1" routineId="t1" agentName="Quill" notes={value} onCleared={onCleared} />
   );
   const view = render(tree(notes));
   return { ...view, onCleared, rerenderNotes: (next: string | null) => view.rerender(tree(next)) };
@@ -47,13 +45,8 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
-function showNotes() {
-  fireEvent.click(screen.getByRole('button', { name: 'Show Quill’s notes' }));
-}
-
-/** Show the notes, press Clear notes, and hand back the confirm. */
+/** Press Clear notes, and hand back the confirm. */
 function openConfirm(): HTMLElement {
-  showNotes();
   fireEvent.click(screen.getByRole('button', { name: 'Clear notes' }));
   return screen.getByRole('dialog');
 }
@@ -74,21 +67,9 @@ beforeEach(() => {
 });
 
 describe('TaskNotes (TASK-910)', () => {
-  it('keeps the notes folded away until asked, then shows them as written', () => {
+  it('shows the notes as written, says what they are for, and offers Clear notes', () => {
     renderNotes();
-    expect(screen.getByText('Quill’s notes')).toBeInTheDocument();
-    expect(screen.queryByText(/Ticket 1182/)).toBeNull();
-
-    const toggle = screen.getByRole('button', { name: 'Show Quill’s notes' });
-    expect(toggle).toHaveTextContent(/^Show$/);
-    expect(toggle).toHaveAttribute('aria-expanded', 'false');
-    expect(toggle).toHaveAccessibleDescription('(it keeps these for its next check-in)');
-    expect(screen.queryByRole('button', { name: 'Clear notes' })).toBeNull();
-
-    fireEvent.click(toggle);
-    expect(toggle).toHaveAttribute('aria-expanded', 'true');
-    expect(toggle).toHaveTextContent(/^Hide$/);
-    expect(toggle).toHaveAccessibleName('Hide Quill’s notes');
+    expect(screen.getByText('Quill keeps these for its next check-in.')).toBeInTheDocument();
     expect(screen.getByText(/Ticket 1182/).textContent).toBe(NOTES);
     expect(screen.getByRole('button', { name: 'Clear notes' })).toBeInTheDocument();
   });
@@ -96,7 +77,6 @@ describe('TaskNotes (TASK-910)', () => {
   it('draws notes with markdown or HTML as plain text', () => {
     const written = '**Done** <b>3</b> [docs](https://x.test) <img src=x onerror=alert(1)>';
     const { container } = renderNotes(written);
-    showNotes();
     expect(screen.getByText(written).textContent).toBe(written);
     expect(container.querySelector('strong, b, a, img')).toBeNull();
   });
@@ -142,10 +122,7 @@ describe('TaskNotes (TASK-910)', () => {
     rerenderNotes(null);
     rerenderNotes(NOTES);
     expect(screen.queryByText('Notes cleared.')).toBeNull();
-    expect(screen.getByRole('button', { name: 'Show Quill’s notes' })).toHaveAttribute(
-      'aria-expanded',
-      'false',
-    );
+    expect(screen.getByRole('button', { name: 'Clear notes' })).toBeInTheDocument();
   });
 
   it('Cancel leaves the notes alone', () => {
@@ -250,7 +227,6 @@ describe('TaskNotes (TASK-910)', () => {
 
   it('says there are no notes, with nothing to clear', () => {
     renderNotes(null);
-    expect(screen.getByText('Quill’s notes')).toBeInTheDocument();
     expect(screen.getByText('None. It keeps notes here between check-ins.')).toBeInTheDocument();
     expect(screen.queryAllByRole('button')).toEqual([]);
   });

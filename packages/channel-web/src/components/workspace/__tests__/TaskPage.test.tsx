@@ -43,7 +43,7 @@ vi.mock('@/lib/workspace-api', async () => {
 
 vi.mock('@/lib/routines', async () => {
   const actual = await vi.importActual<Record<string, unknown>>('@/lib/routines');
-  return { ...actual, routineApi: { fireNow: vi.fn(), update: vi.fn() } };
+  return { ...actual, routineApi: { fireNow: vi.fn(), update: vi.fn(), remove: vi.fn(), get: vi.fn() } };
 });
 
 const taskMock = vi.mocked(workspaceApi.task);
@@ -56,6 +56,7 @@ const reopenMock = vi.mocked(workspaceApi.reopenTask);
 const duplicateMock = vi.mocked(workspaceApi.duplicateTask);
 const fireNowMock = vi.mocked(routineApi.fireNow);
 const updateMock = vi.mocked(routineApi.update);
+const removeMock = vi.mocked(routineApi.remove);
 
 const NOW = new Date(2026, 9, 22, 12, 0);
 const REPORTED = new Date(2026, 9, 22, 10, 2).toISOString();
@@ -157,6 +158,33 @@ function latestUpdate(): HTMLElement {
   return screen.getByRole('region', { name: 'Latest update' });
 }
 
+/** The claim's banner (TASK-950): Not yet and Mark done. */
+function claim(): HTMLElement {
+  return screen.getByRole('region', { name: /^Quill (said it )?thinks this is done\.$/ });
+}
+
+/** The ask's banner, with the reply box inside it. */
+function askBanner(): HTMLElement {
+  return screen.getByRole('region', { name: 'Quill asks' });
+}
+
+/** The About list (the brief, the notes, app updates). */
+function about(): HTMLElement {
+  return screen.getByRole('region', { name: 'About this task' });
+}
+
+/** Opens one of the About list's rows in place, by its name. */
+function openAboutRow(name: string | RegExp): HTMLElement {
+  const row = within(about()).getByRole('button', { name });
+  fireEvent.click(row);
+  return row;
+}
+
+/** A meta chip's whole sentence (its hidden words, also its tooltip). */
+function chip(sentence: string | RegExp): HTMLElement {
+  return screen.getByText(sentence, { selector: '.sr-only' });
+}
+
 /** The page's own live line. The reply box has one too, later in the document (TASK-931). */
 function pageStatus(): HTMLElement {
   return screen.getAllByRole('status')[0]!;
@@ -195,6 +223,9 @@ beforeEach(() => {
   duplicateMock.mockReset();
   fireNowMock.mockReset();
   updateMock.mockReset();
+  removeMock.mockReset();
+  // Edit's editor reads the task's routine; the page's cases never need its answer.
+  vi.mocked(routineApi.get).mockReset().mockReturnValue(new Promise(() => {}));
   vi.useFakeTimers({ shouldAdvanceTime: true });
   vi.setSystemTime(NOW);
   // Failed reads and presses are logged, and several cases fail on purpose.
@@ -212,14 +243,23 @@ describe('TaskPage (TASK-910)', () => {
       repeat: { lastRunAt: REPORTED, status: 'error', error: 'The app refused the run.', warning: null, active: 0, waiting: 2, sharedThread: true, appUpdates: true },
       updates: [{ firedAt: REPORTED, status: 'error', error: 'The app refused the run.', report: null, conversationId: 'shared-run' }] }));
     await renderReady();
-    expect(screen.getByRole('heading', { name: 'Run history' })).toBeVisible();
-    expect(screen.getByText('Last run failed.')).toBeVisible();
-    expect(screen.getByText(/This job uses a shared thread/)).toBeVisible();
-    expect(screen.getByRole('link', { name: 'See what it did' })).toHaveAttribute('href', '/workspace/tasks/a1/t1/checkins/shared-run');
-    expect(screen.queryByText('Going well when')).not.toBeInTheDocument();
+    const runs = screen.getByRole('region', { name: 'Run history' });
+    // The failed run says why in plain words, beside its mark's hidden word.
+    expect(within(runs).getByText('Failed:')).toHaveClass('sr-only');
+    expect(within(runs).getByText('The app refused the run.')).toBeVisible();
+    // The host's live state, one line, in the card's own live region.
+    expect(within(runs).getByRole('status')).toHaveTextContent('2 app updates waiting');
+    expect(within(runs).getByRole('link', { name: /^See what it did/ })).toHaveAttribute('href', '/workspace/tasks/a1/t1/checkins/shared-run');
+    // A Repeat job's pill, its Run now, and the shared thread behind Memory between runs.
+    expect(screen.getByText('Scheduled')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Run now' })).toBeEnabled();
+    openAboutRow(/^Memory between runs/);
+    expect(within(about()).getByText(/This job uses a shared thread/)).toBeVisible();
+    expect(within(about()).queryByRole('button', { name: /going well/ })).toBeNull();
     expect(screen.queryByRole('textbox')).not.toBeInTheDocument();
     const trigger = screen.getByRole('button', { name: 'More actions' }); trigger.focus(); fireEvent.keyDown(trigger, { key: 'ArrowDown' });
-    expect(await screen.findByRole('menuitem', { name: 'Edit' })).toBeVisible();
+    expect(await screen.findByRole('menuitem', { name: 'Edit task' })).toBeVisible();
+    expect(screen.getByRole('menuitem', { name: 'Delete task…' })).toBeVisible();
     expect(screen.queryByRole('menuitem', { name: 'Duplicate' })).not.toBeInTheDocument();
   });
   it('shows the latest update, when it checked and checks next, and the ask in the agent’s words', async () => {
@@ -229,16 +269,23 @@ describe('TaskPage (TASK-910)', () => {
     expect(within(latest).getByRole('heading', { level: 2, name: 'Latest update' })).toHaveClass(
       'sr-only',
     );
-    expect(within(latest).getByText('Needs you')).toBeInTheDocument();
+    // The status is the header's pill now: the list's own group.
+    expect(screen.getByRole('heading', { level: 1 }).parentElement).toHaveTextContent('Needs you');
     expect(within(latest).getByText('3 open. I’m answering #4411 and #4412 now.')).toBeInTheDocument();
+    // On screen a short "2 hr ago"; for a screen reader, the whole sentence.
+    expect(within(latest).getByText('1 hr ago')).toHaveAttribute('aria-hidden', 'true');
     expect(
       within(latest).getByText(
         `Checked at ${localTime(REPORTED)} · Next check at ${localTime(NEXT)}`,
       ),
-    ).toBeInTheDocument();
+    ).toHaveClass('sr-only');
+    // The ask is the banner, in the agent's own words, with the reply box inside it.
+    const ask = askBanner();
     expect(
-      within(latest).getByText('Quill asks: Want me to draft a reply to #4410 for you to send?'),
+      within(ask).getByText('Want me to draft a reply to #4410 for you to send?'),
     ).toBeInTheDocument();
+    expect(within(ask).getByRole('textbox', { name: 'Reply to Quill about this task' })).toBeInTheDocument();
+    expect(within(latest).queryByText(/asks:/)).toBeNull();
     expect(taskMock).toHaveBeenCalledWith('a1', 't1');
   });
 
@@ -248,6 +295,7 @@ describe('TaskPage (TASK-910)', () => {
     const latest = latestUpdate();
     expect(within(latest).getByText('It left an update we can’t show.')).toBeInTheDocument();
     expect(within(latest).queryByText(/asks:/)).toBeNull();
+    expect(screen.queryByRole('region', { name: 'Quill asks' })).toBeNull();
   });
 
   it('says there is no update yet, and when it will first check in', async () => {
@@ -276,6 +324,9 @@ describe('TaskPage (TASK-910)', () => {
     const { onNavigate } = await renderReady();
     const link = within(latestUpdate()).getByRole('link', { name: 'See what it did' });
     expect(link).toHaveAttribute('href', '/workspace/tasks/a1/t1/checkins/c1');
+    // An icon: its words are its name and its tooltip.
+    expect(link.textContent).toBe('See what it did');
+    expect(within(link).getByText('See what it did')).toHaveClass('sr-only');
     fireEvent.click(link);
     expect(onNavigate).toHaveBeenCalledWith({
       kind: 'task-checkin',
@@ -320,12 +371,16 @@ describe('TaskPage (TASK-910)', () => {
     expect(within(latestUpdate()).getByText('No update yet.')).toBeInTheDocument();
   });
 
-  it('names the agent, the kind of task and how often it checks in', async () => {
+  it('names the agent, the kind of task and how often it checks in, as chips with their whole sentences', async () => {
     taskMock.mockResolvedValue(detail());
     await renderReady();
+    // The agent is the one chip with words; the kind and the schedule are an icon and a word or two.
+    expect(screen.getByText('Stay on top', { selector: '[aria-hidden="true"]' })).toBeInTheDocument();
+    expect(chip('Stay on top of something')).toBeInTheDocument();
+    expect(screen.getByText('1 hr', { selector: '[aria-hidden="true"]' })).toBeInTheDocument();
     expect(
-      screen.getByText(
-        'Quill · Stay on top of something · checks in every hour, 9:00 AM to 6:00 PM (America/New_York)',
+      chip(
+        `Quill checks in every hour, 9:00 AM to 6:00 PM (America/New_York). Next check at ${localTime(NEXT)}.`,
       ),
     ).toBeInTheDocument();
     // Below `md` the shell's nav trigger is the only door to the sidebar.
@@ -335,31 +390,68 @@ describe('TaskPage (TASK-910)', () => {
   it('leaves out how often a task checks in when it doesn’t on a schedule', async () => {
     taskMock.mockResolvedValue(detail({ schedule: null }));
     await renderReady();
-    expect(screen.getByText('Quill · Stay on top of something')).toBeInTheDocument();
+    expect(chip('Stay on top of something')).toBeInTheDocument();
+    expect(screen.queryByText(/Quill checks in/)).toBeNull();
   });
 
-  it('shows the brief as written, read-only, with the shared Edit action', async () => {
+  it('shows the brief as written, read-only, each About row opening in place', async () => {
     taskMock.mockResolvedValue(detail());
     await renderReady();
-    const brief = screen.getByRole('region', { name: 'About this task' });
-    expect(within(brief).getByText('What Quill does')).toBeInTheDocument();
+    const brief = about();
+    // Folded away until asked: one line per row.
+    expect(within(brief).queryByText(/Keep the support queue empty\./)).toBeNull();
+    const instructions = openAboutRow('Instructions');
+    expect(instructions).toHaveAttribute('aria-expanded', 'true');
     expect(
       within(brief).getByText(/Keep the support queue empty\./).textContent,
     ).toBe('Keep the support queue empty.\nLeave refunds over $100 to me.');
+    // The going-well line is its own row's label, and opens to the whole of it.
+    const goodWhen = openAboutRow('No ticket is open longer than an hour.');
+    expect(goodWhen).toHaveAttribute('aria-expanded', 'true');
     expect(within(brief).getByText('Going well when')).toBeInTheDocument();
-    expect(within(brief).getByText('No ticket is open longer than an hour.')).toBeInTheDocument();
-    expect(within(brief).getByText('Quill’s notes')).toBeInTheDocument();
+    expect(within(brief).getAllByText('No ticket is open longer than an hour.')).toHaveLength(2);
+    expect(within(brief).getByRole('button', { name: /^Quill’s notes/ })).toHaveAttribute('aria-expanded', 'false');
+    fireEvent.click(instructions);
+    expect(within(brief).queryByText(/Keep the support queue empty\./)).toBeNull();
     expect(within(brief).queryByRole('textbox')).toBeNull();
-
-    expect(within(brief).getByRole('button', { name: 'Edit task' })).toBeEnabled();
   });
 
-  it('a brief with nothing saved says so', async () => {
+  it('a brief with nothing saved says so, and the going-well row points at Edit', async () => {
     taskMock.mockResolvedValue(detail({ brief: { promptBody: null, goodWhen: null } }));
     await renderReady();
-    const brief = screen.getByRole('region', { name: 'About this task' });
-    expect(within(brief).getByText('No instructions saved.')).toBeInTheDocument();
-    expect(within(brief).getByText('Nothing saved.')).toBeInTheDocument();
+    openAboutRow('Instructions');
+    expect(within(about()).getByText('No instructions saved.')).toBeInTheDocument();
+    fireEvent.click(within(about()).getByRole('button', { name: 'Add how we’ll know it’s going well' }));
+    expect(await screen.findByRole('dialog')).toBeInTheDocument();
+  });
+
+  it('a going-well line nobody saved, for a viewer who can’t edit, only says so', async () => {
+    taskMock.mockResolvedValue(
+      detail({ brief: { promptBody: null, goodWhen: null }, permissions: { fire: true, stop: true, edit: false } }),
+    );
+    await renderReady();
+    expect(within(about()).getByText('Nothing saved for how we’ll know it’s going well.')).toBeInTheDocument();
+    expect(within(about()).queryByRole('button', { name: /going well/ })).toBeNull();
+  });
+
+  it('the agent’s notes, app updates and the agent-wide permissions are About rows too', async () => {
+    taskMock.mockResolvedValue(detail());
+    const { onNavigate } = await renderReady();
+    // A count of the note's lines, said in words.
+    const notes = within(about()).getByRole('button', { name: /^Quill’s notes/ });
+    expect(notes).toHaveAccessibleName(/2 lines/);
+    fireEvent.click(notes);
+    expect(within(about()).getByText(/Ticket 4410 is from an enterprise customer\./)).toBeInTheDocument();
+    expect(within(about()).getByRole('button', { name: 'Clear notes' })).toBeInTheDocument();
+    // No app updates: Off, and the way to turn them on.
+    openAboutRow(/^App updates/);
+    expect(within(about()).getByText(/Off\. Turn it on in Edit task\./)).toBeInTheDocument();
+    expect(within(about()).getByRole('button', { name: 'Edit task' })).toBeEnabled();
+    // The routine consent lives in the agent's Settings, one link away.
+    const consent = within(about()).getByRole('link', { name: 'What Quill can do without asking' });
+    expect(consent).toHaveAttribute('href', '/workspace/agents/a1/settings/routines');
+    fireEvent.click(consent);
+    expect(onNavigate).toHaveBeenCalledWith({ kind: 'agent-settings', id: 'a1', section: 'routines' });
   });
 
   it('Check now starts a check-in with the task’s current revision, then reads the task again', async () => {
@@ -581,7 +673,7 @@ describe('TaskPage (TASK-910)', () => {
     const check = screen.getByRole('button', { name: 'Check now' });
     check.focus();
     fireEvent.click(check);
-    const show = screen.getByRole('button', { name: 'Show Quill’s notes' });
+    const show = within(about()).getByRole('button', { name: /^Quill’s notes/ });
     show.focus();
 
     await act(async () => fired.resolve({ status: 'ok' }));
@@ -796,13 +888,13 @@ describe('TaskPage (TASK-910)', () => {
     const title = await screen.findByRole('heading', { level: 1 });
     expect(title.textContent).toBe(`Name ${raw}`);
     const latest = latestUpdate();
+    // The quote marks are CSS, never part of the text.
     expect(within(latest).getByText(`Update ${raw}`).textContent).toBe(`Update ${raw}`);
-    expect(within(latest).getByText(`Quill asks: Ask ${raw}`).textContent).toBe(
-      `Quill asks: Ask ${raw}`,
-    );
+    expect(within(askBanner()).getByText(`Ask ${raw}`).textContent).toBe(`Ask ${raw}`);
+    openAboutRow('Instructions');
     expect(screen.getByText(`Does ${raw}`).textContent).toBe(`Does ${raw}`);
-    expect(screen.getByText(`Well ${raw}`).textContent).toBe(`Well ${raw}`);
-    fireEvent.click(screen.getByRole('button', { name: 'Show Quill’s notes' }));
+    expect(within(about()).getByRole('button', { name: `Well ${raw}` })).toBeInTheDocument();
+    openAboutRow(/^Quill’s notes/);
     expect(screen.getByText(`Notes ${raw}`).textContent).toBe(`Notes ${raw}`);
     expect(document.querySelector('strong, b, img')).toBeNull();
     expect(document.querySelector('a[href="https://x.test"]')).toBeNull();
@@ -871,14 +963,13 @@ describe('TaskPage (TASK-910)', () => {
     );
   });
 
-  it('the Tasks crumb goes back to Tasks', async () => {
+  it('the back link goes back to Tasks', async () => {
     taskMock.mockReturnValue(new Promise<TaskDetail>(() => {}));
     const { onNavigate } = renderPage();
     // There while the task loads, and the title says only that it's a task.
     expect(screen.getByRole('status', { name: 'Loading' })).toBeInTheDocument();
     expect(screen.getByRole('heading', { level: 1, name: 'Task' })).toBeInTheDocument();
-    const crumbs = screen.getByRole('navigation', { name: 'breadcrumb' });
-    const crumb = within(crumbs).getByRole('link', { name: 'Tasks' });
+    const crumb = screen.getByRole('link', { name: 'Tasks' });
     expect(crumb).toHaveAttribute('href', '/workspace/tasks');
     fireEvent.click(crumb);
     expect(onNavigate).toHaveBeenCalledTimes(1);
@@ -894,7 +985,7 @@ describe('TaskPage (TASK-910)', () => {
       .mockResolvedValueOnce(detail({ task: report({ agentNotes: null }) }));
     clearMock.mockResolvedValue({ cleared: true });
     await renderReady();
-    fireEvent.click(screen.getByRole('button', { name: 'Show Quill’s notes' }));
+    openAboutRow(/^Quill’s notes/);
     fireEvent.click(screen.getByRole('button', { name: 'Clear notes' }));
     const dialog = screen.getByRole('dialog');
     fireEvent.click(within(dialog).getByRole('button', { name: 'Clear notes' }));
@@ -906,13 +997,65 @@ describe('TaskPage (TASK-910)', () => {
     ).toBeInTheDocument();
   });
 
-  it('shows the Updates thread', async () => {
-    taskMock.mockResolvedValue(detail());
+  it('shows the check-ins under the latest update, without repeating it', async () => {
+    const older = (h: number, said: string) => ({
+      firedAt: new Date(2026, 9, 22, h, 0).toISOString(),
+      status: 'ok' as const,
+      error: null,
+      report: { status: 'off-track' as const, update: said, reading: null },
+      conversationId: null,
+    });
+    const base = detail();
+    taskMock.mockResolvedValue(
+      detail({
+        updates: [
+          ...base.updates,
+          older(9, 'Nine open.'),
+          older(8, 'Eight open.'),
+          older(7, 'Seven open.'),
+          older(6, 'Six open.'),
+          older(5, 'Five open.'),
+        ],
+      }),
+    );
+    await renderReady();
+    const updates = screen.getByRole('region', { name: 'Updates' });
+    // The latest card already says the newest, so the list starts after it.
+    expect(within(updates).queryByText('3 open. I’m answering #4411 and #4412 now.')).toBeNull();
+    // The newest three, then the rest behind "N earlier".
+    expect(within(updates).getByText('Nine open.')).toBeInTheDocument();
+    expect(within(updates).getByText('Seven open.')).toBeInTheDocument();
+    expect(within(updates).queryByText('Six open.')).toBeNull();
+    const earlier = within(updates).getByRole('button', { name: '2 earlier' });
+    expect(earlier).toHaveAttribute('aria-expanded', 'false');
+    fireEvent.click(earlier);
+    expect(earlier).toHaveAttribute('aria-expanded', 'true');
+    expect(within(updates).getByText('Six open.')).toBeInTheDocument();
+    expect(within(updates).getByText('Five open.')).toBeInTheDocument();
+  });
+
+  it('a check-in a restart cut off says so in plain words', async () => {
+    taskMock.mockResolvedValue(
+      detail({
+        task: report({ ask: null }),
+        updates: [
+          ...detail().updates,
+          {
+            firedAt: new Date(2026, 9, 22, 9, 0).toISOString(),
+            status: 'error',
+            error: 'The routine run was interrupted by a host restart.',
+            report: null,
+            conversationId: null,
+          },
+        ],
+      }),
+    );
     await renderReady();
     const updates = screen.getByRole('region', { name: 'Updates' });
     expect(
-      within(updates).getByText('3 open. I’m answering #4411 and #4412 now.'),
+      within(updates).getByText('Stopped early because we restarted. It tries again next time.'),
     ).toBeInTheDocument();
+    expect(document.body.textContent).not.toMatch(/routine|host restart/i);
   });
 });
 
@@ -925,12 +1068,11 @@ describe('TaskPage: a get-done task (TASK-948)', () => {
   it('names a get-done task’s kind, and shows its steps between the latest update and the brief (TASK-948)', async () => {
     taskMock.mockResolvedValue(detail({ kind: 'get-done', steps: STEPS }));
     await renderReady();
-    expect(
-      screen.getByText(
-        'Quill · Get something done · checks in every hour, 9:00 AM to 6:00 PM (America/New_York)',
-      ),
-    ).toBeInTheDocument();
+    expect(chip('Get something done')).toBeInTheDocument();
+    expect(chip(/^Quill checks in every hour/)).toBeInTheDocument();
+    // Seen as "1/2", heard as the whole count.
     const steps = screen.getByRole('heading', { level: 2, name: 'Steps · 1 of 2 done' });
+    expect(within(steps).getByText('1/2')).toHaveAttribute('aria-hidden', 'true');
     const after = (a: Node, b: Node) => a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING;
     expect(after(latestUpdate(), steps)).toBeTruthy();
     expect(after(steps, screen.getByRole('region', { name: 'About this task' }))).toBeTruthy();
@@ -957,17 +1099,14 @@ describe('TaskPage: a get-done task (TASK-948)', () => {
     taskMock.mockResolvedValue(detail());
     await renderReady();
     expect(screen.queryByRole('heading', { name: /^Steps/ })).toBeNull();
-    expect(
-      screen.getByText(
-        'Quill · Stay on top of something · checks in every hour, 9:00 AM to 6:00 PM (America/New_York)',
-      ),
-    ).toBeInTheDocument();
+    expect(chip('Stay on top of something')).toBeInTheDocument();
   });
 
   it('a paused get-done task with no schedule still names its kind', async () => {
     taskMock.mockResolvedValue(detail({ kind: 'get-done', schedule: null }));
     await renderReady();
-    expect(screen.getByText('Quill · Get something done')).toBeInTheDocument();
+    expect(chip('Get something done')).toBeInTheDocument();
+    expect(screen.queryByText(/Quill checks in/)).toBeNull();
     expect(screen.getByRole('heading', { level: 2, name: 'Steps' })).toBeInTheDocument();
   });
 
@@ -991,20 +1130,21 @@ describe('TaskPage: a get-done task (TASK-948)', () => {
 describe('TaskPage: a get-done task’s finish date (TASK-951)', () => {
   const FB = { date: '2026-11-14', daysLeft: 23 };
 
-  it('a get-done task shows its finish date under the meta line; a stay-on-top task shows no finish date at all', async () => {
+  it('a get-done task shows its finish date as a meta chip; a stay-on-top task shows no finish date at all', async () => {
     taskMock.mockResolvedValue(detail({ kind: 'get-done', finishBy: FB }));
     const view = await renderReady();
-    const meta = screen.getByText(/^Quill · Get something done/);
-    const line = screen.getByText(finishByLine(FB));
-    expect(meta.compareDocumentPosition(line) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Change' })).toBeInTheDocument();
+    // "Nov 14 · 23 days" on screen; the whole line is its description. The chip opens the date's field.
+    const date = screen.getByRole('button', { name: 'Change finish date' });
+    expect(date).toHaveAccessibleDescription(finishByLine(FB));
+    expect(within(date).getByText('Nov 14 · 23 days')).toHaveAttribute('aria-hidden', 'true');
+    expect(chip('Get something done').compareDocumentPosition(date) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     view.unmount();
 
     // A stay-on-top task that carries a date (it can't, but the page must not trust that) shows none.
     taskMock.mockResolvedValue(detail({ kind: 'stay-on-top', finishBy: FB }));
     await renderReady();
     expect(screen.queryByText(/Finish by/)).toBeNull();
-    expect(screen.queryByRole('button', { name: 'Change' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Change finish date' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Add a finish date' })).toBeNull();
   });
 
@@ -1024,12 +1164,16 @@ describe('TaskPage: a get-done task’s finish date (TASK-951)', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Add a finish date' }));
     fireEvent.change(screen.getByLabelText('Finish by'), { target: { value: '2026-11-14' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
-    expect(await screen.findByText(finishByLine(FB))).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: 'Change finish date' })).toHaveAccessibleDescription(
+      finishByLine(FB),
+    );
     // With the browser's own zone, whatever zone the runner is in (TASK-955).
     expect(finishByMock).toHaveBeenCalledWith('a1', 't1', '2026-11-14', browserTimeZone());
     await waitFor(() => expect(taskMock).toHaveBeenCalledTimes(2));
     await waitFor(() => expect(screen.getByRole('button', { name: 'Check now' })).toBeEnabled());
-    expect(screen.getByText(finishByLine(FB))).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Change finish date' })).toHaveAccessibleDescription(
+      finishByLine(FB),
+    );
   });
 
   it('shows the saved date before the re-read settles, and keeps it when the re-read fails (the page applies the answer)', async () => {
@@ -1043,7 +1187,8 @@ describe('TaskPage: a get-done task’s finish date (TASK-951)', () => {
     fireEvent.change(screen.getByLabelText('Finish by'), { target: { value: '2026-11-14' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
     // On screen from the PUT's own answer, with the re-read still in flight.
-    expect(await screen.findByText(finishByLine(FB))).toBeInTheDocument();
+    const date = await screen.findByRole('button', { name: 'Change finish date' });
+    expect(date).toHaveAccessibleDescription(finishByLine(FB));
     await waitFor(() => expect(taskMock).toHaveBeenCalledTimes(2));
     // The re-read fails; the date the host just confirmed stays.
     await act(async () => {
@@ -1051,7 +1196,9 @@ describe('TaskPage: a get-done task’s finish date (TASK-951)', () => {
       await Promise.resolve();
     });
     await waitFor(() => expect(warn).toHaveBeenCalled());
-    expect(screen.getByText(finishByLine(FB))).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Change finish date' })).toHaveAccessibleDescription(
+      finishByLine(FB),
+    );
   });
 });
 
@@ -1064,6 +1211,11 @@ describe('TaskPage: a missed check-in (TASK-930)', () => {
     return { inARow: 1, reason: 'no-report', at: MISSED, autoPaused: false, ...over };
   }
 
+  /** The missed check-in's banner, named by its mark's word. */
+  function missBanner(word: string): HTMLElement {
+    return screen.getByRole('region', { name: word });
+  }
+
   function missedEntry(
     over: Partial<TaskDetail['updates'][number]> = {},
   ): TaskDetail['updates'][number] {
@@ -1074,38 +1226,46 @@ describe('TaskPage: a missed check-in (TASK-930)', () => {
     taskMock.mockResolvedValue(
       detail({ task: report({ status: 'on-track', ask: null }), noRecentUpdate: missed() }),
     );
+    fireNowMock.mockResolvedValue({ status: 'ok' });
     await renderReady();
-    const latest = latestUpdate();
-    const text = latest.textContent ?? '';
-    const lastUpdate = `Last update at ${localTime(REPORTED)}: ${LAST_UPDATE}`;
+    const banner = missBanner('No recent update');
+    const text = banner.textContent ?? '';
     const positions = [
       'No recent update',
       'It checked in but didn’t say how it went.',
-      'Press Check now to try again.',
       `Last check-in at ${localTime(MISSED)} · Next check at ${localTime(NEXT)}`,
-      lastUpdate,
+      'Press Check now to try again.',
     ].map((line) => {
-      expect(within(latest).getByText(line)).toBeInTheDocument();
+      expect(within(banner).getByText(line)).toBeInTheDocument();
       return text.indexOf(line);
     });
     expect(positions).toEqual([...positions].sort((a, b) => a - b));
-    // The stale status is not drawn as if it were current.
-    expect(within(latest).queryByText('On track')).toBeNull();
-    expect(within(latest).getByText(lastUpdate)).toHaveClass('text-muted-foreground');
+    // The banner comes first; the latest card still shows the last update, with its own time.
+    const latest = latestUpdate();
+    expect(banner.compareDocumentPosition(latest) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(within(latest).getByText(LAST_UPDATE)).toBeInTheDocument();
+    expect(within(latest).getByText(`Checked at ${localTime(REPORTED)} · Next check at ${localTime(NEXT)}`)).toHaveClass('sr-only');
+    // The stale status is not drawn as if it were current: the pill says the miss.
+    expect(screen.queryByText('On track')).toBeNull();
+    // The fix is a button that does it.
+    fireEvent.click(within(banner).getByRole('button', { name: 'Press Check now to try again.' }));
+    await waitFor(() => expect(fireNowMock).toHaveBeenCalledTimes(1));
   });
 
   it('a needs-you report followed by one miss stays Needs you and keeps its ask, muted', async () => {
     taskMock.mockResolvedValue(detail({ noRecentUpdate: missed() }));
     await renderReady();
+    expect(missBanner('Needs you')).toBeInTheDocument();
+    expect(screen.queryByRole('region', { name: 'No recent update' })).toBeNull();
+    // The miss holds the banner, so the ask stays in the latest card, muted, after the update.
+    expect(screen.queryByRole('region', { name: 'Quill asks' })).toBeNull();
     const latest = latestUpdate();
-    expect(within(latest).getByText('Needs you')).toBeInTheDocument();
-    expect(within(latest).queryByText('No recent update')).toBeNull();
     const ask = within(latest).getByText(
       'Quill asks: Want me to draft a reply to #4410 for you to send?',
     );
     expect(ask).toHaveClass('text-muted-foreground');
     const text = latest.textContent ?? '';
-    expect(text.indexOf(`Last update at ${localTime(REPORTED)}`)).toBeLessThan(text.indexOf('Quill asks:'));
+    expect(text.indexOf(LAST_UPDATE)).toBeLessThan(text.indexOf('Quill asks:'));
   });
 
   it('an off-track report followed by one miss stays Off track', async () => {
@@ -1113,18 +1273,17 @@ describe('TaskPage: a missed check-in (TASK-930)', () => {
       detail({ task: report({ status: 'off-track', ask: null }), noRecentUpdate: missed() }),
     );
     await renderReady();
-    expect(within(latestUpdate()).getByText('Off track')).toBeInTheDocument();
-    expect(within(latestUpdate()).queryByText('No recent update')).toBeNull();
+    expect(missBanner('Off track')).toBeInTheDocument();
+    expect(screen.queryByRole('region', { name: 'No recent update' })).toBeNull();
   });
 
   it('three in a row read Needs you with the count', async () => {
     taskMock.mockResolvedValue(detail({ noRecentUpdate: missed({ inARow: 3 }) }));
     await renderReady();
-    const latest = latestUpdate();
-    expect(within(latest).getByText('Needs you')).toBeInTheDocument();
-    expect(within(latest).queryByText('No recent update')).toBeNull();
+    const banner = missBanner('Needs you');
+    expect(screen.queryByRole('region', { name: 'No recent update' })).toBeNull();
     expect(
-      within(latest).getByText(
+      within(banner).getByText(
         'Its last 3 check-ins didn’t leave an update. It checked in but didn’t say how it went.',
       ),
     ).toBeInTheDocument();
@@ -1133,9 +1292,9 @@ describe('TaskPage: a missed check-in (TASK-930)', () => {
   it('a task that never reported shows the miss without a last update', async () => {
     taskMock.mockResolvedValue(detail({ task: null, updates: [], noRecentUpdate: missed() }));
     await renderReady();
-    const latest = latestUpdate();
-    expect(within(latest).getByText('No recent update')).toBeInTheDocument();
-    expect(within(latest).queryByText(/Last update/)).toBeNull();
+    expect(missBanner('No recent update')).toBeInTheDocument();
+    expect(within(latestUpdate()).getByText(`No update yet. It’ll check in at ${localTime(NEXT)}.`)).toBeInTheDocument();
+    expect(within(latestUpdate()).queryByText(/Checked/)).toBeNull();
   });
 
   it('See what it did opens the check-in that missed, not a newer one', async () => {
@@ -1150,7 +1309,7 @@ describe('TaskPage: a missed check-in (TASK-930)', () => {
       }),
     );
     const { onNavigate } = await renderReady();
-    const link = within(latestUpdate()).getByRole('link', { name: 'See what it did' });
+    const link = within(missBanner('Needs you')).getByRole('link', { name: 'See what it did' });
     expect(link).toHaveAttribute('href', '/workspace/tasks/a1/t1/checkins/c-missed');
     fireEvent.click(link);
     expect(onNavigate).toHaveBeenCalledWith({
@@ -1166,16 +1325,18 @@ describe('TaskPage: a missed check-in (TASK-930)', () => {
       detail({ noRecentUpdate: missed(), updates: [missedEntry({ conversationId: null })] }),
     );
     await renderReady();
-    expect(within(latestUpdate()).queryByRole('link')).toBeNull();
+    expect(within(missBanner('Needs you')).queryByRole('link')).toBeNull();
   });
 
   it('a too-long brief points at the shared Edit action', async () => {
     taskMock.mockResolvedValue(detail({ noRecentUpdate: missed({ reason: 'brief-too-long' }) }));
     await renderReady();
-    const latest = latestUpdate();
-    expect(within(latest).getByText('Its instructions are too long to load.')).toBeInTheDocument();
-    expect(within(latest).getByText('Shorten “What should Quill do?” in Edit.')).toBeInTheDocument();
-    expect(within(latest).getByRole('button', { name: 'Edit task' })).toBeEnabled();
+    const banner = missBanner('Needs you');
+    expect(within(banner).getByText('Its instructions are too long to load.')).toBeInTheDocument();
+    const fix = within(banner).getByRole('button', { name: 'Shorten “What should Quill do?” in Edit.' });
+    expect(fix).toBeEnabled();
+    fireEvent.click(fix);
+    expect(await screen.findByRole('dialog', { name: 'Edit task' })).toBeInTheDocument();
   });
 
   it('a too-long brief, for a viewer who can’t edit, says who needs to shorten it and has no settings link', async () => {
@@ -1186,20 +1347,21 @@ describe('TaskPage: a missed check-in (TASK-930)', () => {
       }),
     );
     await renderReady();
-    const latest = latestUpdate();
+    const banner = missBanner('Needs you');
     expect(
-      within(latest).getByText(
+      within(banner).getByText(
         'Someone who manages this agent’s tasks needs to shorten “What should Quill do?” in Edit.',
       ),
     ).toBeInTheDocument();
-    expect(within(latest).queryByRole('link', { name: /settings/ })).toBeNull();
-    expect(within(latest).queryByText(/Shorten/)).toBeNull();
+    // Words only: nothing to press for someone who can't.
+    expect(within(banner).queryByRole('button')).toBeNull();
+    expect(within(banner).queryByText(/Shorten/)).toBeNull();
   });
 
   it('only a too-long brief gets the settings link', async () => {
     taskMock.mockResolvedValue(detail({ noRecentUpdate: missed({ reason: 'failed' }) }));
     await renderReady();
-    expect(within(latestUpdate()).queryByRole('link', { name: /settings/ })).toBeNull();
+    expect(within(missBanner('Needs you')).queryByRole('button', { name: /Edit/ })).toBeNull();
   });
 
   it('a paused task’s fix says to resume, never Check now', async () => {
@@ -1207,12 +1369,12 @@ describe('TaskPage: a missed check-in (TASK-930)', () => {
       detail({ enabled: false, nextCheckAt: null, noRecentUpdate: missed() }),
     );
     await renderReady();
-    const latest = latestUpdate();
+    const banner = missBanner('Needs you');
     expect(
-      within(latest).getByText('Press Resume, and it’ll try again at its next check-in.'),
-    ).toBeInTheDocument();
-    expect(within(latest).queryByText(/Press Check now/)).toBeNull();
-    expect(within(latest).getByText(`Last check-in at ${localTime(MISSED)} · Paused`)).toBeInTheDocument();
+      within(banner).getByRole('button', { name: 'Press Resume, and it’ll try again at its next check-in.' }),
+    ).toBeEnabled();
+    expect(within(banner).queryByText(/Press Check now/)).toBeNull();
+    expect(within(banner).getByText(`Last check-in at ${localTime(MISSED)} · Paused`)).toBeInTheDocument();
   });
 
   it('a viewer who can’t press Check now is not told to', async () => {
@@ -1223,9 +1385,10 @@ describe('TaskPage: a missed check-in (TASK-930)', () => {
       }),
     );
     await renderReady();
-    const latest = latestUpdate();
-    expect(within(latest).getByText('It’ll try again at its next check-in.')).toBeInTheDocument();
-    expect(within(latest).queryByText(/Press Check now/)).toBeNull();
+    const banner = missBanner('Needs you');
+    expect(within(banner).getByText('It’ll try again at its next check-in.')).toBeInTheDocument();
+    expect(within(banner).queryByRole('button')).toBeNull();
+    expect(within(banner).queryByText(/Press Check now/)).toBeNull();
   });
 
   it('a viewer who can’t resume is not told to press Resume', async () => {
@@ -1238,11 +1401,11 @@ describe('TaskPage: a missed check-in (TASK-930)', () => {
       }),
     );
     await renderReady();
-    const latest = latestUpdate();
+    const banner = missBanner('Needs you');
     expect(
-      within(latest).getByText('Only someone who manages this agent’s tasks can resume it.'),
+      within(banner).getByText('Only someone who manages this agent’s tasks can resume it.'),
     ).toBeInTheDocument();
-    expect(within(latest).queryByText(/Press Resume/)).toBeNull();
+    expect(within(banner).queryByText(/Press Resume/)).toBeNull();
   });
 
   it('an auto-paused task says why it’s paused and how to resume', async () => {
@@ -1259,8 +1422,10 @@ describe('TaskPage: a missed check-in (TASK-930)', () => {
     expect(screen.queryByText(PAUSED_NOTE)).toBeNull();
     expect(screen.getByRole('button', { name: 'Check now' })).toHaveAccessibleDescription(note);
     expect(screen.getByRole('button', { name: 'Resume' })).toBeEnabled();
+    // Not the plain paused line: this one is shown, since the pill can't say why.
+    expect(screen.getByText(note)).not.toHaveClass('sr-only');
     expect(
-      within(latestUpdate()).getByText(
+      within(missBanner('Needs you')).getByText(
         'Its last 5 check-ins didn’t leave an update. It checked in but didn’t say how it went.',
       ),
     ).toBeInTheDocument();
@@ -1305,8 +1470,7 @@ describe('TaskPage: a missed check-in (TASK-930)', () => {
     updateMock.mockResolvedValue(ROUTINE);
     await renderReady();
     expect(screen.getByText(AUTO_PAUSED, { exact: false })).toBeInTheDocument();
-    expect(within(latestUpdate()).getByText('Needs you')).toBeInTheDocument();
-    expect(within(latestUpdate()).getByText(/didn’t leave an update/)).toBeInTheDocument();
+    expect(within(missBanner('Needs you')).getByText(/didn’t leave an update/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Resume' }));
     await screen.findByRole('button', { name: 'Pause' });
     expect(updateMock).toHaveBeenCalledWith({
@@ -1318,7 +1482,7 @@ describe('TaskPage: a missed check-in (TASK-930)', () => {
     });
     expect(taskMock).toHaveBeenCalledTimes(2);
     expect(screen.queryByText(AUTO_PAUSED, { exact: false })).toBeNull();
-    expect(within(latestUpdate()).queryByText(/didn’t leave an update/)).toBeNull();
+    expect(screen.queryByText(/didn’t leave an update/)).toBeNull();
   });
 
   it('a miss time it can’t read shows no time, never Invalid Date', async () => {
@@ -1329,10 +1493,13 @@ describe('TaskPage: a missed check-in (TASK-930)', () => {
       }),
     );
     await renderReady();
+    const banner = missBanner('Needs you');
     const latest = latestUpdate();
+    expect(banner.textContent).not.toContain('Invalid Date');
     expect(latest.textContent).not.toContain('Invalid Date');
+    expect(within(banner).getByText(`Next check at ${localTime(NEXT)}`)).toBeInTheDocument();
     expect(within(latest).getByText(`Next check at ${localTime(NEXT)}`)).toBeInTheDocument();
-    expect(within(latest).getByText(`Last update: ${LAST_UPDATE}`)).toBeInTheDocument();
+    expect(within(latest).getByText(LAST_UPDATE)).toBeInTheDocument();
   });
 
   it('draws an agent-written last update as text', async () => {
@@ -1345,20 +1512,14 @@ describe('TaskPage: a missed check-in (TASK-930)', () => {
     const { container } = await renderReady();
     expect(container.querySelector('img')).toBeNull();
     expect(
-      within(latestUpdate()).getByText(
-        `Last update at ${localTime(REPORTED)}: **bold** <img src=x onerror=alert(1)>`,
-      ),
-    ).toBeInTheDocument();
+      within(latestUpdate()).getByText('**bold** <img src=x onerror=alert(1)>').textContent,
+    ).toBe('**bold** <img src=x onerror=alert(1)>');
   });
 
   it('an unreadable last update says so', async () => {
     taskMock.mockResolvedValue(detail({ noRecentUpdate: missed(), task: report({ update: null }) }));
     await renderReady();
-    expect(
-      within(latestUpdate()).getByText(
-        `Last update at ${localTime(REPORTED)}: It left an update we can’t show.`,
-      ),
-    ).toBeInTheDocument();
+    expect(within(latestUpdate()).getByText('It left an update we can’t show.')).toBeInTheDocument();
   });
 });
 
@@ -1408,24 +1569,48 @@ describe('TaskPage: replies and checking in now (TASK-931)', () => {
     await waitFor(() => expect(replyMock).toHaveBeenCalledTimes(1));
   }
 
-  it('the reply box sits under Updates', async () => {
-    taskMock.mockResolvedValue(detail());
+  it('with no ask, the reply box sits under Updates, one line, its helper its hidden description', async () => {
+    taskMock.mockResolvedValue(detail({ task: report({ ask: null }) }));
     await renderReady();
     const updates = screen.getByRole('region', { name: 'Updates' });
     const box = screen.getByRole('textbox', { name: BOX });
     expect(updates.contains(box)).toBe(false);
     expect(updates.compareDocumentPosition(box) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(
-      screen.getByText('Quill reads your replies every time it checks in. Sending one starts a check-in, or queues it if one is running.'),
-    ).toBeInTheDocument();
+    expect(box).toHaveAttribute('rows', '1');
+    const helper = screen.getByText(
+      'Quill reads your replies every time it checks in. Sending one starts a check-in, or queues it if one is running.',
+    );
+    expect(helper).toHaveClass('sr-only');
+    expect(box).toHaveAccessibleDescription(helper.textContent!);
+    // Send is an icon, named and in a tooltip.
+    expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled();
   });
 
-  it('a paused task’s box says it’ll be read once resumed', async () => {
+  it('an ask puts the reply box inline in its banner, and there is no other', async () => {
+    taskMock.mockResolvedValue(detail());
+    replyMock.mockResolvedValue({ checkIn: 'started' });
+    await renderReady();
+    const ask = askBanner();
+    const box = within(ask).getByRole('textbox', { name: BOX });
+    expect(screen.getAllByRole('textbox')).toEqual([box]);
+    expect(within(latestUpdate()).queryByRole('button', { name: 'Reply' })).toBeNull();
+    // Enter sends from the one-line box; Shift+Enter is a new line.
+    fireEvent.change(box, { target: { value: 'Yes, draft it.' } });
+    fireEvent.keyDown(box, { key: 'Enter', shiftKey: true });
+    expect(replyMock).not.toHaveBeenCalled();
+    fireEvent.keyDown(box, { key: 'Enter' });
+    await waitFor(() =>
+      expect(replyMock).toHaveBeenCalledWith('a1', 't1', { text: 'Yes, draft it.', requestId: expect.any(String) }),
+    );
+    expect(await within(ask).findByText('Sent. Quill started checking in.')).toBeInTheDocument();
+  });
+
+  it('a paused task’s box says, on screen, it’ll be read once resumed', async () => {
     taskMock.mockResolvedValue(detail({ enabled: false, nextCheckAt: null }));
     await renderReady();
     expect(
       screen.getByText('It’s paused, so Quill will read this once you resume it.'),
-    ).toBeInTheDocument();
+    ).not.toHaveClass('sr-only');
   });
 
   it('an owner who can’t manage the agent’s tasks isn’t promised a check-in', async () => {
@@ -1435,12 +1620,14 @@ describe('TaskPage: replies and checking in now (TASK-931)', () => {
     expect(screen.queryByText(/Sending one starts a check-in/)).toBeNull();
   });
 
-  it('Reply on the latest card focuses the box', async () => {
-    taskMock.mockResolvedValue(detail());
+  it('Reply beside an ask the banner can’t hold focuses the box under Updates', async () => {
+    taskMock.mockResolvedValue(detail({ kind: 'get-done', task: report({ doneClaimed: true }) }));
     await renderReady();
     const reply = within(latestUpdate()).getByRole('button', { name: 'Reply' });
     fireEvent.click(reply);
-    expect(document.activeElement).toBe(screen.getByRole('textbox', { name: BOX }));
+    const box = screen.getByRole('textbox', { name: BOX });
+    expect(document.activeElement).toBe(box);
+    expect(screen.getByRole('region', { name: 'Updates' }).compareDocumentPosition(box) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it('no Reply when the agent asks nothing', async () => {
@@ -1725,7 +1912,7 @@ describe('TaskPage: the agent’s reading (TASK-952)', () => {
       }),
     );
     await renderReady();
-    expect(within(latestUpdate()).getByText('No recent update')).toBeInTheDocument();
+    expect(screen.getByRole('region', { name: 'No recent update' })).toBeInTheDocument();
     expect(within(readingBlock()).getByText('Open tickets')).toBeInTheDocument();
   });
 });
@@ -1769,9 +1956,9 @@ describe('TaskPage: finishing a task (TASK-950)', () => {
   it('a claimed task leads its latest update with the claim, and Mark done is the page’s one primary action', async () => {
     taskMock.mockResolvedValue(claimed());
     await renderReady();
-    const latest = latestUpdate();
-    const claim = within(latest).getByText('Quill thinks this is done.');
-    expect(after(claim, within(latest).getByText('3 open. I’m answering #4411 and #4412 now.'))).toBeTruthy();
+    // The claim is the banner, before the latest update.
+    expect(after(claim(), within(latestUpdate()).getByText('3 open. I’m answering #4411 and #4412 now.'))).toBeTruthy();
+    expect(within(claim()).getByRole('heading', { level: 2, name: 'Quill thinks this is done.' })).toBeInTheDocument();
     const primary = screen
       .getAllByRole('button')
       .filter((b) => b.className.includes('bg-action'))
@@ -1785,7 +1972,7 @@ describe('TaskPage: finishing a task (TASK-950)', () => {
     taskMock.mockResolvedValue(claimed({ enabled: false, nextCheckAt: null }));
     await renderReady();
     expect(screen.getByRole('button', { name: 'Resume' })).not.toHaveClass('bg-action');
-    expect(within(latestUpdate()).getByRole('button', { name: 'Mark done' })).toHaveClass('bg-action');
+    expect(within(claim()).getByRole('button', { name: 'Mark done' })).toHaveClass('bg-action');
   });
 
   it('a claim that came with an ask keeps the ask and its Reply', async () => {
@@ -1796,7 +1983,8 @@ describe('TaskPage: finishing a task (TASK-950)', () => {
       within(latest).getByText('Quill asks: Want me to draft a reply to #4410 for you to send?'),
     ).toBeInTheDocument();
     expect(within(latest).getByRole('button', { name: 'Reply' })).toBeInTheDocument();
-    expect(within(latest).getByRole('button', { name: 'Mark done' })).toBeInTheDocument();
+    expect(within(claim()).getByRole('button', { name: 'Mark done' })).toBeInTheDocument();
+    expect(screen.queryByRole('region', { name: 'Quill asks' })).toBeNull();
   });
 
   it('a claim over a missed check-in says Quill said so, and still offers Mark done and Not yet', async () => {
@@ -1811,11 +1999,13 @@ describe('TaskPage: finishing a task (TASK-950)', () => {
       }),
     );
     await renderReady();
+    const banner = screen.getByRole('region', { name: 'Quill said it thinks this is done.' });
+    expect(within(banner).getByRole('button', { name: 'Mark done' })).toBeInTheDocument();
+    expect(within(banner).getByRole('button', { name: 'Not yet' })).toBeInTheDocument();
+    // The miss the banner can't hold stays in the latest card, before the update.
     const latest = latestUpdate();
-    const said = within(latest).getByText('Quill said it thinks this is done.');
-    expect(after(said, within(latest).getByText(/^Last update/))).toBeTruthy();
-    expect(within(latest).getByRole('button', { name: 'Mark done' })).toBeInTheDocument();
-    expect(within(latest).getByRole('button', { name: 'Not yet' })).toBeInTheDocument();
+    const miss = within(latest).getByText('It checked in but didn’t say how it went.');
+    expect(after(miss, within(latest).getByText('3 open. I’m answering #4411 and #4412 now.'))).toBeTruthy();
   });
 
   it('Mark done finishes on the first press with every step ticked, and reads the task again', async () => {
@@ -1823,11 +2013,11 @@ describe('TaskPage: finishing a task (TASK-950)', () => {
     await renderReady();
     completeMock.mockResolvedValue({ done: true });
     taskMock.mockResolvedValue(doneTask({ steps: ALL_TICKED }));
-    fireEvent.click(within(latestUpdate()).getByRole('button', { name: 'Mark done' }));
+    fireEvent.click(within(claim()).getByRole('button', { name: 'Mark done' }));
     await waitFor(() => expect(completeMock).toHaveBeenCalledTimes(1));
     expect(completeMock).toHaveBeenCalledWith('a1', 't1', { requestId: expect.any(String) });
     await waitFor(() => expect(taskMock).toHaveBeenCalledTimes(2));
-    expect(await screen.findByText(/^Done · You marked it done/)).toBeInTheDocument();
+    expect(await screen.findByText(/^You marked this done/)).toBeInTheDocument();
   });
 
   it('Mark done finishes on the first press with no steps at all', async () => {
@@ -1835,7 +2025,7 @@ describe('TaskPage: finishing a task (TASK-950)', () => {
     await renderReady();
     completeMock.mockResolvedValue({ done: true });
     taskMock.mockResolvedValue(doneTask({ steps: [] }));
-    fireEvent.click(within(latestUpdate()).getByRole('button', { name: 'Mark done' }));
+    fireEvent.click(within(claim()).getByRole('button', { name: 'Mark done' }));
     await waitFor(() => expect(completeMock).toHaveBeenCalledTimes(1));
   });
 
@@ -1848,7 +2038,7 @@ describe('TaskPage: finishing a task (TASK-950)', () => {
   ])('Mark done asks first with unticked steps (%#)', async (steps, line) => {
     taskMock.mockResolvedValue(claimed({ steps }));
     await renderReady();
-    fireEvent.click(within(latestUpdate()).getByRole('button', { name: 'Mark done' }));
+    fireEvent.click(within(claim()).getByRole('button', { name: 'Mark done' }));
     expect(screen.getByText(line)).toBeInTheDocument();
     expect(completeMock).not.toHaveBeenCalled();
     const anyway = screen.getByRole('button', { name: 'Mark done anyway' });
@@ -1862,15 +2052,15 @@ describe('TaskPage: finishing a task (TASK-950)', () => {
   it('Cancel closes the question and finishes nothing', async () => {
     taskMock.mockResolvedValue(claimed({ steps: [STEPS[1]!] }));
     await renderReady();
-    fireEvent.click(within(latestUpdate()).getByRole('button', { name: 'Mark done' }));
+    fireEvent.click(within(claim()).getByRole('button', { name: 'Mark done' }));
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
     expect(screen.queryByText(/isn’t ticked/)).toBeNull();
     expect(completeMock).not.toHaveBeenCalled();
-    expect(within(latestUpdate()).getByRole('button', { name: 'Mark done' })).toBeInTheDocument();
+    expect(within(claim()).getByRole('button', { name: 'Mark done' })).toBeInTheDocument();
   });
 
   it.each<[string, () => TaskDetail, () => HTMLElement]>([
-    ['the claim card', () => claimed({ steps: [STEPS[1]!] }), () => latestUpdate()],
+    ['the claim card', () => claimed({ steps: [STEPS[1]!] }), () => claim()],
     ['the steps footer', () => detail({ kind: 'get-done', steps: STEPS }), () => document.body],
   ])('Cancel in %s puts focus back on Mark done', async (_, task, scope) => {
     taskMock.mockResolvedValue(task());
@@ -1888,14 +2078,14 @@ describe('TaskPage: finishing a task (TASK-950)', () => {
     completeMock.mockResolvedValue({ done: true });
     taskMock.mockRejectedValueOnce(new WorkspaceApiError('/tasks/a1/t1', 500));
     vi.spyOn(console, 'warn').mockImplementation(() => {});
-    fireEvent.click(within(latestUpdate()).getByRole('button', { name: 'Mark done' }));
+    fireEvent.click(within(claim()).getByRole('button', { name: 'Mark done' }));
     await screen.findByText('We couldn’t refresh this task just now, so what you see may be out of date.');
     // Something else reads the task later, and by then it shows Done.
     fireNowMock.mockResolvedValue({ status: 'ok' });
     taskMock.mockResolvedValue(doneTask({ steps: ALL_TICKED }));
     const check = screen.getByRole('button', { name: 'Check now' });
     fireEvent.click(check);
-    const line = await screen.findByText(/^Done · You marked it done/);
+    const line = await screen.findByText(/^You marked this done/);
     expect(document.activeElement).not.toBe(line.closest('[tabindex="-1"]'));
   });
 
@@ -1904,8 +2094,8 @@ describe('TaskPage: finishing a task (TASK-950)', () => {
     await renderReady();
     completeMock.mockResolvedValue({ done: true });
     taskMock.mockResolvedValue(doneTask({ steps: ALL_TICKED }));
-    fireEvent.click(within(latestUpdate()).getByRole('button', { name: 'Mark done' }));
-    const line = await screen.findByText(/^Done · You marked it done/);
+    fireEvent.click(within(claim()).getByRole('button', { name: 'Mark done' }));
+    const line = await screen.findByText(/^You marked this done/);
     await waitFor(() => expect(document.activeElement).toBe(line.closest('[tabindex="-1"]')));
   });
 
@@ -1914,7 +2104,7 @@ describe('TaskPage: finishing a task (TASK-950)', () => {
     await renderReady();
     const answer = deferred<{ done: true }>();
     completeMock.mockReturnValue(answer.promise);
-    const button = within(latestUpdate()).getByRole('button', { name: 'Mark done' });
+    const button = within(claim()).getByRole('button', { name: 'Mark done' });
     act(() => button.focus());
     fireEvent.click(button);
     expect(button).toBeDisabled();
@@ -1932,7 +2122,7 @@ describe('TaskPage: finishing a task (TASK-950)', () => {
   it('a failed Mark done anyway puts focus back inside the question', async () => {
     taskMock.mockResolvedValue(claimed({ steps: [STEPS[1]!] }));
     await renderReady();
-    fireEvent.click(within(latestUpdate()).getByRole('button', { name: 'Mark done' }));
+    fireEvent.click(within(claim()).getByRole('button', { name: 'Mark done' }));
     completeMock.mockRejectedValue(new WorkspaceApiError('/tasks/a1/t1/complete', 500));
     const anyway = screen.getByRole('button', { name: 'Mark done anyway' });
     act(() => anyway.focus());
@@ -2042,7 +2232,7 @@ describe('TaskPage: finishing a task (TASK-950)', () => {
     taskMock.mockResolvedValue(claimed());
     await renderReady();
     completeMock.mockRejectedValueOnce(new WorkspaceApiError('/tasks/a1/t1/complete', 502));
-    fireEvent.click(within(latestUpdate()).getByRole('button', { name: 'Mark done' }));
+    fireEvent.click(within(claim()).getByRole('button', { name: 'Mark done' }));
     await screen.findByText(UNCONFIRMED_DONE);
     // Something else reads the task again, and nothing about it changed: a retry is the same request.
     fireNowMock.mockResolvedValue({ status: 'ok' });
@@ -2052,7 +2242,7 @@ describe('TaskPage: finishing a task (TASK-950)', () => {
     await settled(check, 2);
     expect(screen.getByText(UNCONFIRMED_DONE)).toBeInTheDocument();
     completeMock.mockResolvedValue({ done: true });
-    fireEvent.click(within(latestUpdate()).getByRole('button', { name: 'Mark done' }));
+    fireEvent.click(within(claim()).getByRole('button', { name: 'Mark done' }));
     await waitFor(() => expect(completeMock).toHaveBeenCalledTimes(2));
     expect(completeMock.mock.calls[1]![2]).toEqual(completeMock.mock.calls[0]![2]);
   });
@@ -2066,7 +2256,7 @@ describe('TaskPage: finishing a task (TASK-950)', () => {
     const inPlace = document.getElementById(notYet.getAttribute('aria-controls')!)!;
     const box = within(inPlace).getByRole('textbox', { name: NOT_YET_BOX });
     fireEvent.change(box, { target: { value: 'One redirect is still broken.' } });
-    fireEvent.click(within(latestUpdate()).getByRole('button', { name: 'Mark done' }));
+    fireEvent.click(within(claim()).getByRole('button', { name: 'Mark done' }));
     completeMock.mockRejectedValueOnce(new WorkspaceApiError('/tasks/a1/t1/complete', 502));
     fireEvent.click(screen.getByRole('button', { name: 'Mark done anyway' }));
     await screen.findByText(UNCONFIRMED_DONE);
@@ -2099,7 +2289,7 @@ describe('TaskPage: finishing a task (TASK-950)', () => {
     taskMock.mockResolvedValue(claimed());
     await renderReady();
     completeMock.mockRejectedValue(new WorkspaceApiError('/tasks/a1/t1/complete', 403));
-    fireEvent.click(within(latestUpdate()).getByRole('button', { name: 'Mark done' }));
+    fireEvent.click(within(claim()).getByRole('button', { name: 'Mark done' }));
     const alert = await screen.findByRole('alert');
     expect(alert).toHaveTextContent(MARK_DONE_NOT_ALLOWED);
   });
@@ -2171,7 +2361,7 @@ describe('TaskPage: finishing a task (TASK-950)', () => {
     expect(screen.getByRole('textbox', { name: NOT_YET_BOX })).toBeVisible();
     completeMock.mockResolvedValue({ done: true });
     taskMock.mockResolvedValue(doneTask({ steps: ALL_TICKED }));
-    fireEvent.click(within(latestUpdate()).getByRole('button', { name: 'Mark done' }));
+    fireEvent.click(within(claim()).getByRole('button', { name: 'Mark done' }));
     const reopen = await screen.findByRole('button', { name: 'Reopen' });
     expect(reopen).toHaveAttribute('aria-expanded', 'false');
     expect(screen.queryByRole('textbox', { name: NOT_YET_BOX })).toBeNull();
@@ -2195,7 +2385,7 @@ describe('TaskPage: finishing a task (TASK-950)', () => {
   it('without edit, Mark done is disabled and says why; Not yet still works', async () => {
     taskMock.mockResolvedValue(claimed({ permissions: { fire: false, stop: false, edit: false } }));
     await renderReady();
-    const mark = within(latestUpdate()).getByRole('button', { name: 'Mark done' });
+    const mark = within(claim()).getByRole('button', { name: 'Mark done' });
     expect(mark).toBeDisabled();
     const why = document.getElementById(mark.getAttribute('aria-describedby')!)!;
     expect(why).toHaveTextContent(MARK_DONE_NOT_ALLOWED);
@@ -2274,14 +2464,21 @@ describe('TaskPage: finishing a task (TASK-950)', () => {
     expect(screen.queryByRole('button', { name: 'Mark done' })).toBeNull();
     expect(screen.getByRole('button', { name: 'Reopen' })).toBeEnabled();
     expect(screen.getByRole('button', { name: 'More actions' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Duplicate' })).toBeEnabled();
+    // The banner is the Done line; the latest card keeps the last update, as the record.
     expect(
-      within(latestUpdate()).getByText(`Done · You marked it done at ${localTime(DONE_AT)}.`),
+      within(screen.getByRole('region', { name: 'Done' })).getByText(`You marked this done at ${localTime(DONE_AT)}.`),
     ).toBeInTheDocument();
+    expect(chip(`You marked it done at ${localTime(DONE_AT)}.`)).toBeInTheDocument();
     expect(
-      within(latestUpdate()).getByText(
-        `Last update at ${localTime(REPORTED)}: 3 open. I’m answering #4411 and #4412 now.`,
-      ),
+      within(latestUpdate()).getByText('3 open. I’m answering #4411 and #4412 now.'),
     ).toBeInTheDocument();
+    expect(within(latestUpdate()).getByText(`Last update at ${localTime(REPORTED)}`)).toHaveClass('sr-only');
+    // Every check-in, one click down.
+    const all = screen.getByRole('button', { name: '1 check-in' });
+    expect(all).toHaveAttribute('aria-expanded', 'false');
+    fireEvent.click(all);
+    expect(within(screen.getByRole('region', { name: 'Updates' })).getByText('3 open. I’m answering #4411 and #4412 now.')).toBeInTheDocument();
     expect(screen.getByText('Not done:')).toBeInTheDocument();
     // The steps are its record (TASK-949's controls go): no box to tick, no options, nothing to add.
     expect(screen.queryAllByRole('checkbox')).toEqual([]);
@@ -2300,7 +2497,7 @@ describe('TaskPage: finishing a task (TASK-950)', () => {
     const tick = screen.getByRole('checkbox', { name: 'Check the redirects' });
     act(() => tick.focus());
     fireEvent.click(tick);
-    const line = await screen.findByText(/^Done · You marked it done/);
+    const line = await screen.findByText(/^You marked this done/);
     expect(taskMock).toHaveBeenCalledTimes(2);
     // The refusal's line went with the controls: the steps show as the record they now are, and say the tick didn't land.
     expect(screen.queryByText('We couldn’t find this task any more. It may have been deleted.')).toBeNull();
@@ -2327,7 +2524,7 @@ describe('TaskPage: finishing a task (TASK-950)', () => {
     onTestFinished(() => elsewhere.remove());
     act(() => elsewhere.focus());
     await act(async () => answer.reject(new WorkspaceApiError('/tasks/a1/t1/steps', 404)));
-    await screen.findByText(/^Done · You marked it done/);
+    await screen.findByText(/^You marked this done/);
     await waitFor(() => expect(taskMock).toHaveBeenCalledTimes(2));
     expect(document.activeElement).toBe(elsewhere);
   });
@@ -2348,7 +2545,7 @@ describe('TaskPage: finishing a task (TASK-950)', () => {
   it('a Done time it can’t read still says it was marked done', async () => {
     taskMock.mockResolvedValue(doneTask({ doneAt: 'nonsense' }));
     await renderReady();
-    expect(within(latestUpdate()).getByText('Done · You marked it done.')).toBeInTheDocument();
+    expect(screen.getByText('You marked this done.')).toBeInTheDocument();
   });
 
   it('Reopen opens the what’s-left box, and sending reopens the task', async () => {
@@ -2422,28 +2619,52 @@ describe('TaskPage: ⋯ › Duplicate and the paused copy (TASK-953)', () => {
     expect(taskMock).toHaveBeenCalledTimes(reads);
   });
 
-  it('Duplicate is offered on a Done task: ⋯ follows Reopen, and copies it (TASK-950)', async () => {
+  /** A Done task, whose header holds Reopen, Duplicate and the ⋯. */
+  const doneTask = () =>
+    detail({
+      kind: 'get-done',
+      enabled: false,
+      nextCheckAt: null,
+      doneAt: new Date(2026, 9, 22, 11, 30).toISOString(),
+      steps: [{ id: 's1', text: 'Export every article', done: true, byAgent: true }],
+      task: report({ ask: null, doneClaimed: false }),
+    });
+
+  it('Duplicate is a Done task’s own button: after Reopen, before ⋯, and it copies it (TASK-950)', async () => {
     // Copying a finished plan is the main use. The copy is the host's: paused and not Done.
-    taskMock.mockResolvedValue(
-      detail({
-        kind: 'get-done',
-        enabled: false,
-        nextCheckAt: null,
-        doneAt: new Date(2026, 9, 22, 11, 30).toISOString(),
-        steps: [{ id: 's1', text: 'Export every article', done: true, byAgent: true }],
-        task: report({ ask: null, doneClaimed: false }),
-      }),
-    );
+    taskMock.mockResolvedValue(doneTask());
     duplicateMock.mockResolvedValue({ routineId: 'rtn_copy' });
     const { onDuplicated } = await renderReady();
     const reopen = screen.getByRole('button', { name: 'Reopen' });
+    const copy = screen.getByRole('button', { name: 'Duplicate' });
     expect(more()).toBeEnabled();
     expect(more()).not.toHaveAttribute('aria-describedby');
-    expect(reopen.compareDocumentPosition(more()) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(reopen.compareDocumentPosition(copy) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(copy.compareDocumentPosition(more()) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Check now' })).toBeNull();
-    await chooseDuplicate();
+    // Not twice: the ⋯ of a Done task has no Duplicate.
+    more().focus();
+    fireEvent.keyDown(more(), { key: 'ArrowDown' });
+    expect(await screen.findByRole('menuitem', { name: 'Edit task' })).toBeInTheDocument();
+    expect(screen.queryByRole('menuitem', { name: 'Duplicate' })).toBeNull();
+    fireEvent.keyDown(screen.getByRole('menu'), { key: 'Escape' });
+    fireEvent.click(copy);
     await waitFor(() => expect(onDuplicated).toHaveBeenCalledWith('rtn_copy'));
     expect(duplicateMock).toHaveBeenCalledWith('a1', 't1', { requestId: expect.any(String) });
+  });
+
+  it('after a failed Duplicate on a Done task, focus goes back to Duplicate', async () => {
+    const answer = deferred<{ routineId: string }>();
+    taskMock.mockResolvedValue(doneTask());
+    duplicateMock.mockReturnValueOnce(answer.promise);
+    await renderReady();
+    const copy = screen.getByRole('button', { name: 'Duplicate' });
+    copy.focus();
+    fireEvent.click(copy);
+    dropFocusOnBody();
+    await act(async () => answer.reject(new WorkspaceApiError('/x', 503)));
+    expect(await screen.findByRole('alert')).toHaveTextContent(NOT_CONFIRMED);
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Duplicate' })));
   });
 
   it('a press whose answer never came keeps its request id, and the retry sends the same one', async () => {
@@ -2780,13 +3001,199 @@ describe('TaskPage: landed-write announcements and form completion (TASK-959)', 
     startWrite('Mark done');
     await screen.findByRole('button', { name: 'Reopen' });
     expect(screen.queryByText(/checks in every hour/)).toBeNull();
-    expect(within(latestUpdate()).getByText(`Done · You marked it done at ${localTime(DONE_AT)}.`)).toBeVisible();
+    expect(screen.getByText(`You marked this done at ${localTime(DONE_AT)}.`)).toBeVisible();
   });
 
   it('omits the schedule on an initially Done task', async () => {
     taskMock.mockResolvedValue(done());
     await renderReady();
     expect(screen.queryByText(/checks in every hour/)).toBeNull();
-    expect(screen.getByText('Quill · Get something done')).toBeVisible();
+    expect(chip('Get something done')).toBeVisible();
+  });
+});
+
+describe('TaskPage: the minimal header and the ⋯ menu (2026-10-29)', () => {
+  const more = () => screen.getByRole('button', { name: 'More actions' });
+
+  async function openMore() {
+    const trigger = more();
+    trigger.focus();
+    fireEvent.keyDown(trigger, { key: 'ArrowDown' });
+    return screen.findByRole('menu');
+  }
+
+  async function chooseDelete() {
+    await openMore();
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Delete task…' }));
+    return screen.findByRole('dialog', { name: 'Delete “Zero open support tickets”?' });
+  }
+
+  it('the actions are icons, each named and with its words in a tooltip', async () => {
+    taskMock.mockResolvedValue(detail());
+    await renderReady();
+    for (const name of ['Check now', 'Pause', 'More actions']) {
+      const button = screen.getByRole('button', { name });
+      // No visible words: the name is the label, and the tooltip says it.
+      expect(button).toHaveAttribute('aria-label', name);
+      expect(button.textContent).toBe('');
+      act(() => button.focus());
+      expect(await screen.findByRole('tooltip')).toHaveTextContent(name);
+      act(() => button.blur());
+    }
+    // The pill says the state in words, never colour alone.
+    expect(screen.getByRole('heading', { level: 1 }).parentElement).toHaveTextContent('Needs you');
+  });
+
+  it('a paused task’s Resume is the page’s one primary action, in words; its paused line is hidden text', async () => {
+    taskMock.mockResolvedValue(detail({ enabled: false, nextCheckAt: null, task: report({ ask: null }) }));
+    await renderReady();
+    const resume = screen.getByRole('button', { name: 'Resume' });
+    expect(resume).toHaveTextContent('Resume');
+    expect(resume).toHaveClass('bg-action');
+    expect(screen.getByRole('button', { name: 'Check now' })).not.toHaveClass('bg-action');
+    expect(screen.getByRole('heading', { level: 1 }).parentElement).toHaveTextContent('Paused');
+    expect(screen.getByText(PAUSED_NOTE)).toHaveClass('sr-only');
+  });
+
+  it('a Repeat job’s pill says Scheduled, or Paused, and its runs past the newest four wait behind N earlier', async () => {
+    const run = (day: number, said: string) => ({
+      firedAt: new Date(2026, 9, day, 9, 0).toISOString(),
+      status: 'ok' as const,
+      error: null,
+      report: { status: 'on-track' as const, update: said, reading: null },
+      conversationId: `c${day}`,
+    });
+    const repeat = { lastRunAt: REPORTED, status: 'ok' as const, error: null, warning: null, active: 0, waiting: 0, sharedThread: false, appUpdates: false };
+    taskMock.mockResolvedValue(
+      detail({
+        kind: 'repeat',
+        task: null,
+        repeat,
+        updates: [run(21, 'Run 6.'), run(20, 'Run 5.'), run(19, 'Run 4.'), run(18, 'Run 3.'), run(17, 'Run 2.'), run(16, 'Run 1.')],
+      }),
+    );
+    await renderReady();
+    expect(screen.getByRole('heading', { level: 1 }).parentElement).toHaveTextContent('Scheduled');
+    const runs = screen.getByRole('region', { name: 'Run history' });
+    expect(within(runs).getByText('Run 3.')).toBeInTheDocument();
+    expect(within(runs).queryByText('Run 2.')).toBeNull();
+    fireEvent.click(within(runs).getByRole('button', { name: '2 earlier' }));
+    expect(within(runs).getByText('Run 2.')).toBeInTheDocument();
+    expect(within(runs).getByText('Run 1.')).toBeInTheDocument();
+    // About: instructions and memory, no going-well row and no notes.
+    openAboutRow(/^Memory between runs/);
+    expect(within(about()).getByText(/Each run starts fresh\./)).toBeInTheDocument();
+    expect(within(about()).queryByRole('button', { name: /notes/ })).toBeNull();
+  });
+
+  it('⋯ holds Edit task, Duplicate and Delete task…, and Delete asks first', async () => {
+    taskMock.mockResolvedValue(detail());
+    await renderReady();
+    await openMore();
+    expect(screen.getAllByRole('menuitem').map((item) => item.textContent)).toEqual([
+      'Edit task',
+      'Duplicate',
+      'Delete task…',
+    ]);
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Delete task…' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Delete “Zero open support tickets”?' });
+    expect(dialog).toHaveTextContent(
+      'It leaves Tasks and no new check-ins will start. A check-in that’s already running may finish.',
+    );
+    expect(dialog).toHaveTextContent('Just need it to stop for a while? Pause it instead.');
+    expect(removeMock).not.toHaveBeenCalled();
+    // Cancel deletes nothing and hands focus back to the ⋯.
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    await waitFor(() => expect(document.activeElement).toBe(more()));
+    expect(removeMock).not.toHaveBeenCalled();
+  });
+
+  it('Delete task deletes against the revision just read, says so to the shell, and goes back to Tasks', async () => {
+    taskMock.mockResolvedValue(detail());
+    removeMock.mockResolvedValue({ deleted: true, cleanupPending: false });
+    const { onNavigate, onTaskWriteSucceeded } = await renderReady();
+    const dialog = await chooseDelete();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Delete task' }));
+    await waitFor(() => expect(onNavigate).toHaveBeenCalledWith({ kind: 'tasks' }));
+    expect(removeMock).toHaveBeenCalledWith({
+      agentId: 'a1',
+      routineId: 't1',
+      expectedRevision: 'rev-1',
+      requestId: expect.any(String),
+    });
+    expect(onTaskWriteSucceeded).toHaveBeenCalledTimes(1);
+  });
+
+  it('Pause instead pauses the task, closes the confirm and leaves focus on Resume', async () => {
+    taskMock
+      .mockResolvedValueOnce(detail())
+      .mockResolvedValue(detail({ enabled: false, nextCheckAt: null, revision: 'rev-2' }));
+    updateMock.mockResolvedValue(ROUTINE);
+    await renderReady();
+    const dialog = await chooseDelete();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Pause instead' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(updateMock).toHaveBeenCalledWith({
+      agentId: 'a1',
+      routineId: 't1',
+      expectedRevision: 'rev-1',
+      requestId: expect.any(String),
+      patch: { enabled: false },
+    });
+    expect(removeMock).not.toHaveBeenCalled();
+    const resume = await screen.findByRole('button', { name: 'Resume' });
+    await waitFor(() => expect(document.activeElement).toBe(resume));
+  });
+
+  it('a paused task’s confirm has no Pause instead', async () => {
+    taskMock.mockResolvedValue(detail({ enabled: false, nextCheckAt: null }));
+    await renderReady();
+    const dialog = await chooseDelete();
+    expect(within(dialog).queryByRole('button', { name: 'Pause instead' })).toBeNull();
+    expect(dialog).not.toHaveTextContent('Pause it instead');
+  });
+
+  it('a delete nobody could confirm is retried with the same request, even after Cancel', async () => {
+    taskMock.mockResolvedValue(detail());
+    removeMock
+      .mockRejectedValueOnce(new RoutineApiError(503))
+      .mockResolvedValueOnce({ deleted: true, cleanupPending: false });
+    const { onNavigate } = await renderReady();
+    let dialog = await chooseDelete();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Delete task' }));
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent(
+      'We couldn’t confirm the task was deleted. Try again, and it won’t happen twice.',
+    );
+    // Pausing a task that may be gone would only confuse it.
+    expect(within(dialog).getByRole('button', { name: 'Pause instead' })).toBeDisabled();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    dialog = await chooseDelete();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Delete task' }));
+    await waitFor(() => expect(onNavigate).toHaveBeenCalledWith({ kind: 'tasks' }));
+    expect(removeMock.mock.calls[1]![0]).toEqual(removeMock.mock.calls[0]![0]);
+  });
+
+  it('a delete refused as changed elsewhere reads the task again, and the next press is a new request', async () => {
+    taskMock
+      .mockResolvedValueOnce(detail())
+      .mockResolvedValue(detail({ revision: 'rev-2' }));
+    removeMock
+      .mockRejectedValueOnce(new RoutineApiError(409, 'revision-conflict'))
+      .mockResolvedValueOnce({ deleted: true, cleanupPending: false });
+    const { onNavigate, onTaskWriteSucceeded } = await renderReady();
+    const dialog = await chooseDelete();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Delete task' }));
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent(
+      'This task changed while you had it open. We’ve loaded the latest, so try again.',
+    );
+    await waitFor(() => expect(taskMock).toHaveBeenCalledTimes(2));
+    expect(onTaskWriteSucceeded).not.toHaveBeenCalled();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Delete task' }));
+    await waitFor(() => expect(onNavigate).toHaveBeenCalledWith({ kind: 'tasks' }));
+    const second = removeMock.mock.calls[1]![0];
+    expect(second.expectedRevision).toBe('rev-2');
+    expect(second.requestId).not.toBe(removeMock.mock.calls[0]![0].requestId);
   });
 });

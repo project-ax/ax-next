@@ -14,6 +14,9 @@
  * TASK-911), and which check-ins can't be linked to because they share a
  * conversation (`sharedConversationIds`).
  *
+ * And it words a failed check-in's reason (`runFailureText`, 2026-10-29): the
+ * one place the routines store's own sentences become the page's.
+ *
  * Pure, with relative imports only: the server-side wire types live next door.
  */
 import type { TaskDetailReport, TaskReply, TaskUpdate } from './workspace-types.js';
@@ -80,6 +83,53 @@ export function foldTimeline(
     }
   }
   return items;
+}
+
+/**
+ * The routines store's own words for a run that a restart cut off
+ * (`RUN_INTERRUPTED`) and one that closed before it could start (`RUN_CLOSED`),
+ * byte for byte. The wire carries no reason code for a failed run, only its
+ * fenced `error` line, so the two known sentences are matched as text. A
+ * change to either string in `@ax/routines` makes these read as written again,
+ * which is honest, just less plain.
+ */
+const STORE_INTERRUPTED = 'The routine run was interrupted by a host restart.';
+const STORE_CLOSED = 'The routine run closed before it could start.';
+
+export const RUN_INTERRUPTED_TEXT = 'Stopped early because we restarted. It tries again next time.';
+export const RUN_FAILED_TEXT = 'Something went wrong, so this check-in didn’t finish.';
+export const RUN_NO_REASON_TEXT = 'No reason was recorded.';
+
+/**
+ * A failed check-in's (or run's) reason in plain words: the store's two
+ * sentences, which speak of routines and hosts, as the page says them; no
+ * reason as "No reason was recorded."; any other reason as it was written.
+ */
+export function runFailureText(error: string | null): string {
+  if (error === null) return RUN_NO_REASON_TEXT;
+  if (error === STORE_INTERRUPTED) return RUN_INTERRUPTED_TEXT;
+  if (error === STORE_CLOSED) return RUN_FAILED_TEXT;
+  return error;
+}
+
+/**
+ * The timeline without its newest entry when that entry is the latest update
+ * the page already shows above it (same status, same words), so the check-ins
+ * list never repeats it. Anything else, a reply or a different report, stays.
+ */
+export function withoutLatest(
+  items: readonly TimelineItem[],
+  task: Pick<TaskDetailReport, 'status' | 'update'> | null,
+): TimelineItem[] {
+  const first = items[0];
+  if (task === null || first?.kind !== 'update' || first.update.report === null) return [...items];
+  const { report } = first.update;
+  return report.status === task.status && report.update === task.update ? items.slice(1) : [...items];
+}
+
+/** How many check-ins and replies a run of timeline items holds, a fold counting each check-in it hides. */
+export function entryCount(items: readonly TimelineItem[]): number {
+  return items.reduce((n, item) => n + (item.kind === 'fold' ? item.updates.length : 1), 0);
 }
 
 /** What an Updates entry says: the agent's update, or why there isn't one (TASK-910's words, now shared with a check-in's page). */

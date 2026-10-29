@@ -1,7 +1,7 @@
 /**
  * Small shared pieces of the Tasks surfaces (the minimal redesign, 2026-10-29):
- * the kind icon, an icon-and-few-words meta chip, an icon-only action button,
- * and the status pill.
+ * the kind icon, an icon-and-few-words meta chip, an icon-only action button
+ * and link, and the status pill.
  *
  * WORDS MOVE INTO TOOLTIPS, NEVER OUT OF THE PAGE. The design replaces meta
  * text with icons, so every icon here carries its full sentence twice: a
@@ -124,6 +124,32 @@ export function IconAction({
       <Button ref={ref} type="button" size="icon" variant={variant} aria-label={label} {...props}>
         {busy ?? <Icon aria-hidden="true" />}
         {children}
+      </Button>
+    </Tip>
+  );
+}
+
+/**
+ * A link drawn as an icon-only button (ArrowUpRight "See what it did"): a real
+ * `<a>`, so it opens in a new tab too. Its name is `label` in hidden text,
+ * followed by `children` (more hidden words, say the entry's time, so a list
+ * of them still says which is which); the tooltip says `label`.
+ */
+export function IconLink({
+  icon: Icon,
+  label,
+  className,
+  children,
+  ...props
+}: Omit<ComponentProps<'a'>, 'aria-label'> & { icon: LucideIcon; label: string }) {
+  return (
+    <Tip label={label}>
+      <Button asChild variant="ghost" size="icon" className={cn('size-7 shrink-0 text-muted-foreground', className)}>
+        <a {...props}>
+          <Icon aria-hidden="true" />
+          <span className="sr-only">{label}</span>
+          {children}
+        </a>
       </Button>
     </Tip>
   );

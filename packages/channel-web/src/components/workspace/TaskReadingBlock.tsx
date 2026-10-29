@@ -1,9 +1,11 @@
 /**
  * The agent's reading on a task's own page (TASK-952): the latest number the
  * agent reported, with its label, then a small line of the earlier readings
- * under that label and the same values in words.
+ * under that label, with the same values in words for screen readers. Since
+ * the minimal redesign (2026-10-29) it is one row under the latest update:
+ * the number, its label, muted, and the line at the end.
  *
- * ALWAYS THE AGENT'S. The heading says "{agent}’s reading": a number the agent
+ * ALWAYS THE AGENT'S. The (hidden) heading says "{agent}’s reading": a number the agent
  * reported at a check-in, never one ax measured or checked. Design §3 allows
  * counting, not progress bars or time estimates, so there is no fill, axis,
  * target line, percentage or forecast. The label is agent-written: the server
@@ -11,8 +13,8 @@
  * and here it is only ever a React text child, so `<img>` shows as those
  * characters.
  *
- * The line is decorative (`aria-hidden`): "Earlier: …" prints the same values,
- * and stands in for a hover layer.
+ * The line is decorative (`aria-hidden`): "Earlier: …", hidden from view,
+ * prints the same values, and stands in for a hover layer.
  */
 import { useId } from 'react';
 import { formatReading, readingTrend, sparklinePoints } from '@/lib/task-reading';
@@ -63,22 +65,27 @@ export function TaskReadingBlock({
   const earlier = trend.slice(0, -1);
   const note = `These are the numbers ${agentName} reported at each check-in.`;
   return (
-    <section aria-labelledby={headingId} aria-describedby={noteId} className="flex flex-col gap-1">
-      <h2 id={headingId} className="text-[11.5px] font-medium text-muted-foreground">
+    <section aria-labelledby={headingId} aria-describedby={noteId} className="flex flex-col">
+      <h2 id={headingId} className="sr-only">
         {`${agentName}’s reading`}
       </h2>
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-1" title={note}>
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
         <p className="flex min-w-0 items-baseline gap-2">
-          {/* min-w-0, so a long unbroken label wraps instead of widening the page. */}
-          <span className="min-w-0 break-words text-[13px]">{reading.label}</span>
-          <span className="text-[20px] font-medium leading-none">
+          <span className="text-[20px] font-semibold leading-none tabular-nums">
             {formatReading(reading.value)}
           </span>
+          {/* min-w-0, so a long unbroken label wraps instead of widening the page. */}
+          <span className="min-w-0 break-words text-[13px] text-muted-foreground">{reading.label}</span>
         </p>
-        {trend.length >= 2 && <ReadingSparkline values={trend} />}
+        {trend.length >= 2 && (
+          <span className="ml-auto">
+            <ReadingSparkline values={trend} />
+          </span>
+        )}
       </div>
+      {/* The trend's values in words: the line above is only its picture. */}
       {earlier.length > 0 && (
-        <p className="text-[12px] text-muted-foreground">
+        <p className="sr-only">
           {`Earlier: ${earlier.map((value) => formatReading(value)).join(' · ')}`}
         </p>
       )}

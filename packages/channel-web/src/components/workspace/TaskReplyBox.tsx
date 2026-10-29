@@ -39,6 +39,13 @@
  * close after success; their one mounted status stays beside the hidden form,
  * so every outcome remains visible and announced.
  *
+ * COMPACT (the minimal redesign, 2026-10-29). The task page's reply box is
+ * `compact`: one line that grows as you type, a send icon inside it, Enter to
+ * send (Shift+Enter for a new line), and its label hidden. Its helper line is
+ * hidden too, still its description, except while the task is paused: then it
+ * says the reply waits for Resume, which is state the person needs to see.
+ * The sent and failure lines show as they always did. Today keeps the full box.
+ *
  * WHERE FOCUS GOES. A clicked Send goes disabled while it sends (and stays
  * disabled once the box clears), which drops focus on `<body>`. When the send
  * settles, if focus is on `<body>` or on Send it moves back to the textarea,
@@ -47,6 +54,7 @@
  */
 import { useCallback, useEffect, useId, useRef, useState, type KeyboardEvent, type Ref } from 'react';
 import { RoutineReplyTextSchema } from '@ax/routines-contract';
+import { SendHorizontal } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
   Field,
@@ -55,11 +63,14 @@ import {
   FieldGroup,
   FieldLabel,
 } from '@/components/ui/field';
+import { InputGroup, InputGroupAddon, InputGroupTextarea } from '@/components/ui/input-group';
 import { Spinner } from '@/components/ui/spinner';
 import { Textarea } from '@/components/ui/textarea';
 import { HTTP_SESSION_ENDED, isConfirmedRefusal, logRequestFailure } from '@/lib/http';
 import { workspaceApi } from '@/lib/workspace-api';
+import { cn } from '@/lib/utils';
 import type { TaskReplyCheckIn } from '@/lib/workspace-types';
+import { IconAction } from './task-bits';
 
 const UNCONFIRMED =
   'We couldn’t confirm your reply was sent. Try again, and it won’t be sent twice.';
@@ -139,6 +150,7 @@ export function TaskReplyBox({
   completedCheckIn = null,
   inputRef,
   formHidden = false,
+  compact = false,
 }: {
   agentId: string;
   routineId: string;
@@ -157,6 +169,8 @@ export function TaskReplyBox({
   inputRef?: Ref<HTMLTextAreaElement>;
   /** Hide a closed special form while keeping its sent status mounted and accessible. */
   formHidden?: boolean;
+  /** The task page's one-line box (see COMPACT above). */
+  compact?: boolean;
 }) {
   const ids = useId();
   const helperId = `${ids}-helper`;
@@ -241,18 +255,75 @@ export function TaskReplyBox({
   };
 
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key !== 'Enter' || !(e.ctrlKey || e.metaKey) || e.nativeEvent.isComposing) return;
+    if (e.key !== 'Enter' || e.nativeEvent.isComposing) return;
+    // The compact box sends on Enter, as a one-line box does; the full box on Ctrl/Cmd+Enter.
+    if (compact ? e.shiftKey : !(e.ctrlKey || e.metaKey)) return;
     e.preventDefault();
     void send();
   };
 
   const receipt = (
-    <p role="status" className="text-sm text-muted-foreground">
+    <p role="status" className={cn('text-muted-foreground', compact ? 'text-[13px]' : 'text-sm')}>
       {sent === null ? '' : sentLine(agentName, sent.checkIn, sent.enabled, mode)}
     </p>
   );
 
-  const form = (
+  const label =
+    mode === 'reply' ? `Reply to ${agentName} about this task` : `What’s left for ${agentName} to do?`;
+  const describedBy = failure === null ? helperId : `${helperId} ${errorId}`;
+  const onChange = (value: string) => {
+    setText(value);
+    setSent(null);
+    setFailure(null);
+  };
+
+  const form = compact ? (
+    <form
+      hidden={formHidden}
+      onSubmit={(e) => {
+        e.preventDefault();
+        void send();
+      }}
+    >
+      <Field data-invalid={failure?.rule === true ? true : undefined} className="gap-1.5">
+        <FieldLabel htmlFor={`${ids}-text`} className="sr-only">
+          {label}
+        </FieldLabel>
+        <InputGroup className="has-[>textarea]:h-auto">
+          <InputGroupTextarea
+            id={`${ids}-text`}
+            ref={setTextarea}
+            rows={1}
+            placeholder="Reply…"
+            value={text}
+            readOnly={sending}
+            className="max-h-40 min-h-0 py-2.5 text-[14px] [field-sizing:content]"
+            aria-describedby={describedBy}
+            aria-invalid={failure?.rule === true ? true : undefined}
+            onChange={(e) => onChange(e.target.value)}
+            onKeyDown={onKeyDown}
+          />
+          <InputGroupAddon align="inline-end" className="self-end pb-1.5">
+            <IconAction
+              ref={sendButton}
+              type="submit"
+              icon={SendHorizontal}
+              label="Send"
+              variant="send"
+              className="size-8"
+              disabled={sending || text.trim() === ''}
+              busy={sending ? <Spinner aria-hidden="true" /> : undefined}
+            />
+          </InputGroupAddon>
+        </InputGroup>
+        <FieldDescription id={helperId} className={cn('text-[12px]', enabled && 'sr-only')}>
+          {helperLine(agentName, enabled, canStart, mode)}
+        </FieldDescription>
+        {failure !== null && <FieldError id={errorId}>{failure.line}</FieldError>}
+        {mode === 'reply' && receipt}
+      </Field>
+    </form>
+  ) : (
     <form
       hidden={formHidden}
       onSubmit={(e) => {
@@ -262,24 +333,16 @@ export function TaskReplyBox({
     >
       <FieldGroup>
         <Field data-invalid={failure?.rule === true ? true : undefined}>
-          <FieldLabel htmlFor={`${ids}-text`}>
-            {mode === 'reply'
-              ? `Reply to ${agentName} about this task`
-              : `What’s left for ${agentName} to do?`}
-          </FieldLabel>
+          <FieldLabel htmlFor={`${ids}-text`}>{label}</FieldLabel>
           <Textarea
             id={`${ids}-text`}
             ref={setTextarea}
             rows={3}
             value={text}
             readOnly={sending}
-            aria-describedby={failure === null ? helperId : `${helperId} ${errorId}`}
+            aria-describedby={describedBy}
             aria-invalid={failure?.rule === true ? true : undefined}
-            onChange={(e) => {
-              setText(e.target.value);
-              setSent(null);
-              setFailure(null);
-            }}
+            onChange={(e) => onChange(e.target.value)}
             onKeyDown={onKeyDown}
           />
           <FieldDescription id={helperId}>{helperLine(agentName, enabled, canStart, mode)}</FieldDescription>

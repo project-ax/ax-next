@@ -1,4 +1,5 @@
 import type { RepeatTaskState } from '@/lib/workspace-types';
+import { runFailureText } from '@/lib/task-updates';
 import { timeAgo } from '@/lib/workspace-time';
 
 /** Host observations, never an invented agent report. */
@@ -12,7 +13,7 @@ export function RepeatRunSummary({ run, enabled, now }: { run: RepeatTaskState |
     {run.lastRunAt !== null && <p className="text-sm text-muted-foreground">Last run {timeAgo(run.lastRunAt, now)}</p>}
     {run.active !== null && run.active > 0 && <p className="text-sm text-muted-foreground">{run.active} {run.active === 1 ? 'run active' : 'runs active'}{!enabled ? ' · finishing after Pause' : ''}</p>}
     {run.waiting !== null && run.waiting > 0 && <p className="text-sm text-muted-foreground">{run.waiting} {run.waiting === 1 ? 'app update waiting' : 'app updates waiting'}</p>}
-    {run.status === 'error' && run.error !== null && <p className="text-sm">{run.error}</p>}
+    {run.status === 'error' && run.error !== null && <p className="text-sm">{runFailureText(run.error)}</p>}
     {run.warning !== null && <p className="text-sm text-muted-foreground">{run.warning}</p>}
   </>;
 }

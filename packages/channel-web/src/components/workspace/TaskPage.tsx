@@ -1,31 +1,52 @@
 /**
- * `/workspace/tasks/<agentId>/<routineId>` — one task's own page, of either
- * kind (TASK-910; "Get something done" with its steps, TASK-948, which its
- * owner edits there, TASK-949).
+ * `/workspace/tasks/<agentId>/<routineId>` — one task's own page, of any kind
+ * (TASK-910; "Get something done" with its steps, TASK-948, which its owner
+ * edits there, TASK-949; "Repeat a job", PR 4).
  *
- * It reads like a thread (design §3.3): the latest update at the top, the
- * agent's reading under it when the latest report sent one (TASK-952), a
- * get-done task's steps under that (TASK-948), the brief under those, then
- * every check-in and the person's replies, then the reply box (TASK-931; the
- * latest update's ask has a Reply button that focuses it). The header holds
- * Check now, Pause (or Resume while it's paused) and ⋯ with Duplicate
- * (TASK-953). The page reads its own task
- * (`useTask`), so it only fetches while it is mounted; the shell keys it by the
- * task's ids, since a refresh keeps what's on screen.
+ * THE LAYOUT (the minimal redesign, 2026-10-29). Only what can't be said
+ * another way is words: the name, the agent's own words, the status pill, the
+ * one thing the page wants from you, and the reply box. Everything else is an
+ * icon (whose words are its tooltip and its accessible name, `task-bits`), a
+ * position, or one click down. The page draws its own header inside the
+ * scroll column: a back link to Tasks (beside the shell's nav trigger, which
+ * below `md` is the only door to the sidebar, TASK-404), the name as the H1
+ * with the task's pill (`taskGroup`, the list's own grouping; "Scheduled" or
+ * "Paused" for a Repeat job), a row of meta chips (the agent, the kind, how
+ * often it checks in, a get-done task's finish date), and the actions on the
+ * right. Under the header sits at most one banner, the page's question: a Done
+ * task's Done line, else the agent's claim that it's finished, else a missed
+ * check-in, else the agent's ask with the reply box inside it. Then two
+ * columns (one below `lg`): the latest update and the check-ins on the left;
+ * a get-done task's steps and the About list on the right (on a phone the
+ * steps come straight after the latest update). The About list opens each
+ * row in place: how we'll know it's going well, the instructions, the agent's
+ * notes, app updates, a Repeat job's memory, and a link to what the agent may
+ * do without asking, which lives in the agent's Settings. A Repeat job has
+ * the same header and About list around one Runs card (`RepeatTaskBody`). The
+ * page reads its own task (`useTask`), so it only fetches while it is
+ * mounted; the shell keys it by the task's ids, since a refresh keeps what's
+ * on screen.
  *
  * FINISHING A TASK (TASK-950). Only the person marks a task done. When the
- * agent says it thinks the task is finished (`task.doneClaimed`), the latest
- * update leads with that and Mark done becomes the page's one primary action
- * (Check now and Pause/Resume go outline), beside Not yet, which opens a
- * what's-left box in place. A get-done task that hasn't claimed anything has
+ * agent says it thinks the task is finished (`task.doneClaimed`), the banner
+ * says so, with Not yet and Mark done, the page's one primary action (Check
+ * now and Pause/Resume stay icons). Not yet opens a what's-left box in place,
+ * right under the banner. A get-done task that hasn't claimed anything has
  * Mark done under its steps, outline. With unticked steps the press asks
- * first. A Done task shows a Done line instead of an update card, keeps its
- * steps as they were, read-only, has no reply box, and its header holds
- * Reopen, which opens the same box in its reopen mode, and the ⋯ with
- * Duplicate (TASK-953: copying a finished plan is its main use). The in-place
- * form closes after a successful send; its composer stays mounted and its
- * sent receipt stays visible outside the hidden fields. A later claim or Done
- * is a new question: it finds the box closed and empty.
+ * first. A Done task's banner is its Done line; its header holds Reopen, which
+ * opens the same box in its reopen mode, and Duplicate (TASK-953: copying a
+ * finished plan is its main use); it keeps its steps as they were, read-only,
+ * its last update with every check-in one click down, and no reply box. The
+ * in-place form closes after a successful send; its composer stays mounted and
+ * its sent receipt stays visible outside the hidden fields. A later claim or
+ * Done is a new question: it finds the box closed and empty.
+ *
+ * AN ASK THE BANNER CAN'T HOLD. A claim or a missed check-in takes the banner
+ * first: the claim is the question the page most needs answered, and a miss is
+ * newer than the report its ask came with. The ask then stays in the latest
+ * card, muted, with a Reply that takes the person to the reply box, now at the
+ * foot of the check-ins: a person who is still being waited on is never
+ * hidden. A miss under a claim stays in the latest card the same way.
  *
  * AGENT-WRITTEN TEXT IS DRAWN AS TEXT. The task's name, its latest update and
  * ask, its reading's label and the agent's notes were written by a model, and
@@ -34,15 +55,17 @@
  * by a person. The server fenced and capped every one before it
  * left (`server/routes-workspace.ts`). Here they are only ever React text
  * children: never `dangerouslySetInnerHTML`, never the markdown renderer, and
- * no attribute is built from them. `**bold**` and `<img>` show as those
- * characters.
+ * no attribute is built from them (so a clamped line has no `title`: its whole
+ * text is still in the page for a screen reader, and on the check-in's page).
+ * `**bold**` and `<img>` show as those characters. The quote marks around the
+ * latest update are CSS, so they're never part of its text.
  *
- * A GET-DONE TASK'S FINISH DATE (TASK-951) shows right under the meta line,
- * with its own field to set, change or remove it (`TaskFinishDate`). The host
- * counts the days left in the task's time zone (its schedule's, else its
- * active hours', else the zone the person set the date from, else UTC;
- * TASK-955); a saved date shows at once and the page then reads the task
- * again (`useTask`'s `applyAnswer`). A
+ * A GET-DONE TASK'S FINISH DATE (TASK-951) is a meta chip, "Nov 14 · 9 days",
+ * which is also the button that sets, changes or removes it
+ * (`TaskFinishDate`, in a Popover). The host counts the days left in the
+ * task's time zone (its schedule's, else its active hours', else the zone the
+ * person set the date from, else UTC; TASK-955); a saved date shows at once
+ * and the page then reads the task again (`useTask`'s `applyAnswer`). A
  * stay-on-top task shows none, whatever it carries, and neither does a Done
  * one (TASK-950): it has no days left to count, and nothing to set.
  *
@@ -55,7 +78,14 @@
  * with its `message`, which speaks of routines. Duplicate goes through
  * `workspaceApi` to the page's own route instead, and is worded from the
  * status (`duplicateFailure`); on success the shell opens the copy, so the
- * page doesn't read this task again.
+ * page doesn't read this task again. Delete (⋯ › Delete task…) asks first in a
+ * dialog that offers Pause instead (`TaskDeleteDialog`), and keeps its own
+ * request the same way.
+ *
+ * WHY A BUTTON IS OFF is one line under the meta chips (`actionNote`), which
+ * every disabled button points at (`aria-describedby`). The plain paused line
+ * is already the pill, so it is hidden text there, shown only when focus
+ * lands on it; the others (no longer allowed, or auto-paused) are shown.
  *
  * THE PAUSED-COPY LINE (TASK-953). A copy opens paused, and its page says so
  * once, with the way to change it. The shell tells the page it was just
@@ -83,12 +113,12 @@
  * answer, a refusal included, ends the request.
  *
  * WHAT IS SAID OUT LOUD, AND BY WHOM: each outcome once (TASK-651). The
- * page's lines are said by one polite live region that is mounted with the
- * task, not inserted with its sentence (a region created and filled together
- * is the announcement screen readers drop most often). After Check now or a
- * reply starts a check-in it says "Checking in now…" while the page reads the
- * task again every 10 seconds (`useTaskPoll`, TASK-931), then "{agent}
- * finished checking in." when that check-in's update arrives, or "The
+ * page's lines are said by one polite live region in the header that is
+ * mounted with the task, not inserted with its sentence (a region created and
+ * filled together is the announcement screen readers drop most often). After
+ * Check now or a reply starts a check-in it says "Checking in now…" while the
+ * page reads the task again every 10 seconds (`useTaskPoll`, TASK-931), then
+ * "{agent} finished checking in." when that check-in's update arrives, or "The
  * check-in didn’t finish. The reason is under Updates." when it arrived as an
  * error, or "Still checking in. …" after five minutes. A Check now press
  * clears the line first, so each press is heard again. The reply box speaks
@@ -101,40 +131,55 @@
  * WHERE FOCUS GOES after a press. A browser drops focus on `<body>` from a
  * button the moment it goes disabled, and every button here is disabled while
  * a press and its re-read are on their way. When they're done, focus goes back
- * to the button that was pressed (Pause and Resume are one button, so pressing
- * Pause lands on Resume; Duplicate lands on the ⋯), or the others if that can't
- * be pressed now, or else the line that says why none can. Only from `<body>`
- * or those buttons: someone who moved on meanwhile stays where they went. Mark
- * done follows the same rule: once the task reads as Done, focus goes to the
- * Done line; after a failure, back to the button (or into the question).
+ * to the button that was pressed (Pause and Resume are one slot, so pressing
+ * Pause lands on Resume; Duplicate from the ⋯ lands on the ⋯, and a Done
+ * task's Duplicate on itself), or the others if that can't be pressed now, or
+ * else the line that says why none can. Only from `<body>` or those buttons:
+ * someone who moved on meanwhile stays where they went. Mark done follows the
+ * same rule: once the task reads as Done, focus goes to the Done line; after a
+ * failure, back to the button (or into the question).
  */
 import {
-  Fragment,
   useEffect,
   useId,
   useLayoutEffect,
   useRef,
   useState,
-  type ReactElement,
   type ReactNode,
   type RefObject,
 } from 'react';
-import { MoreHorizontal } from 'lucide-react';
-import { Alert, AlertDescription } from '@/components/ui/alert';
 import {
-  Breadcrumb,
-  BreadcrumbItem,
-  BreadcrumbLink,
-  BreadcrumbList,
-  BreadcrumbSeparator,
-} from '@/components/ui/breadcrumb';
+  ArrowUpRight,
+  Check,
+  ChevronLeft,
+  ChevronRight,
+  Clock,
+  Copy,
+  FileText,
+  History,
+  MessageSquare,
+  MoreHorizontal,
+  NotebookPen,
+  Pause,
+  Pencil,
+  Play,
+  Plug,
+  RefreshCw,
+  ShieldCheck,
+  Target,
+  Trash2,
+  type LucideIcon,
+} from 'lucide-react';
+import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent } from '@/components/ui/card';
+import { Card } from '@/components/ui/card';
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuGroup,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { Spinner } from '@/components/ui/spinner';
@@ -143,8 +188,9 @@ import { HTTP_SESSION_ENDED, isConfirmedRefusal, logRequestFailure } from '@/lib
 import { readAlertVariant, type AlertRegister } from '@/lib/read-register';
 import { routeLinkProps } from '@/lib/route-link';
 import { routineApi, RoutineApiError } from '@/lib/routines';
-import { taskGroup, TASK_GROUP_LABELS } from '@/lib/task-groups';
+import { taskGroup, TASK_GROUP_LABELS, type TaskGroup } from '@/lib/task-groups';
 import { TASK_KIND_LABELS } from '@/lib/task-kinds';
+import { scheduleShort } from '@/lib/task-meta';
 import { AUTO_PAUSED_LINE, missSummary, missWords } from '@/lib/task-miss';
 import { latestUpdateCheckIn, missCheckIn } from '@/lib/task-updates';
 import { cn } from '@/lib/utils';
@@ -152,9 +198,10 @@ import type { WorkspaceRoute } from '@/lib/workspace-route';
 import { useTaskPoll } from '@/lib/use-task-poll';
 import { workspaceApi } from '@/lib/workspace-api';
 import { useTask, type TaskReadError } from '@/lib/workspace-task';
-import { checkInWhen } from '@/lib/workspace-time';
+import { checkInWhen, shortDay, timeAgo } from '@/lib/workspace-time';
 import type { TaskDetail, TaskFinishBy, TaskReplyCheckIn, TaskStep } from '@/lib/workspace-types';
-import { StateDot, StateDotSlot } from './bits';
+import { AgentTile, StateDot, StateDotSlot } from './bits';
+import { IconAction, IconLink, MetaChip, TASK_KIND_ICONS, TASK_KIND_SHORT, TaskStatusPill } from './task-bits';
 import { TaskFinishDate } from './TaskFinishDate';
 import {
   MARK_DONE_NOT_ALLOWED,
@@ -166,14 +213,10 @@ import { TaskReadingBlock } from './TaskReadingBlock';
 import { TaskReplyBox, type TaskReplyMode } from './TaskReplyBox';
 import { TaskSteps } from './TaskSteps';
 import { TaskUpdates } from './TaskUpdates';
-import { WorkspaceHeader } from './WorkspaceHeader';
 import { TaskDialog } from './TaskDialog';
-import { TaskOptions } from './TaskOptions';
+import { TaskDeleteDialog } from './TaskOptions';
 import { TaskAppUpdates } from './TaskAppUpdates';
 import { RepeatTaskBody } from './RepeatTaskBody';
-
-const LABEL = 'text-[11.5px] text-muted-foreground break-words';
-const VALUE = 'text-[13px] leading-relaxed text-foreground';
 
 const LOAD_COPY: Record<TaskReadError, string> = {
   failed: 'We couldn’t load this task just now. Nothing was lost.',
@@ -211,6 +254,8 @@ const CHANGED_ELSEWHERE =
   'This task changed while you had it open. We’ve loaded the latest, so try again.';
 const PAUSED_ELSEWHERE = 'This task is paused, so it can’t check in. Resume it first.';
 const NOT_THEIRS = 'You can’t change this task any more.';
+/** The plain paused note: the pill already says it, so it's hidden text (see WHY A BUTTON IS OFF). */
+const PAUSED_NOTE = 'Paused. It won’t check in until you resume it.';
 
 /**
  * Why a button is disabled, one line under the header, or null when nothing
@@ -233,7 +278,7 @@ function actionNote(detail: TaskDetail): string | null {
   }
   if (!detail.enabled) {
     return detail.permissions.edit
-      ? 'Paused. It won’t check in until you resume it.'
+      ? PAUSED_NOTE
       : 'Paused. Only someone who manages this agent’s tasks can resume or copy it.';
   }
   if (!detail.permissions.fire) {
@@ -249,6 +294,25 @@ function actionNote(detail: TaskDetail): string | null {
 /** The agent says it thinks the task is finished, and the person hasn't answered. */
 function isClaimed(detail: TaskDetail): boolean {
   return detail.doneAt === null && detail.task?.doneClaimed === true;
+}
+
+/** Which question the banner asks (see THE LAYOUT and AN ASK THE BANNER CAN'T HOLD), or none. */
+type Banner = 'done' | 'claim' | 'miss' | 'ask' | null;
+
+function bannerOf(detail: TaskDetail): Banner {
+  if (detail.kind === 'repeat') return null;
+  if (detail.doneAt !== null) return 'done';
+  if (isClaimed(detail)) return 'claim';
+  if (detail.noRecentUpdate !== null) return 'miss';
+  return detail.task?.ask != null ? 'ask' : null;
+}
+
+/** The header's pill: the list's own group, or a Repeat job's "Scheduled" / "Paused". */
+function pillOf(detail: TaskDetail): { group: TaskGroup; label?: string } {
+  if (detail.kind === 'repeat' && detail.doneAt === null) {
+    return detail.enabled ? { group: 'on-track', label: 'Scheduled' } : { group: 'paused' };
+  }
+  return { group: taskGroup(detail) };
 }
 
 /**
@@ -401,7 +465,9 @@ function useTaskActions(
   return { acting, notice, press };
 }
 
-type FocusSlot = 'check' | 'toggle' | 'more';
+/** The header's buttons a press hands focus back to, in header order. */
+type FocusSlot = 'check' | 'toggle' | 'copy' | 'more';
+type HeaderRefs = Record<FocusSlot, RefObject<HTMLButtonElement | null>>;
 
 /**
  * Hands focus back after a press (see WHERE FOCUS GOES, above). `pressed` is
@@ -410,9 +476,7 @@ type FocusSlot = 'check' | 'toggle' | 'more';
 function useFocusAfterPress(
   busy: boolean,
   pressed: RefObject<FocusSlot | null>,
-  check: RefObject<HTMLButtonElement | null>,
-  toggle: RefObject<HTMLButtonElement | null>,
-  more: RefObject<HTMLButtonElement | null>,
+  refs: HeaderRefs,
   note: RefObject<HTMLParagraphElement | null>,
 ) {
   // A layout effect, so focus is back in the same commit that enables the
@@ -422,15 +486,15 @@ function useFocusAfterPress(
     const slot = pressed.current;
     pressed.current = null;
     // The pressed control first, then the others in header order.
-    const inOrder = [check.current, toggle.current, more.current];
-    const pressedButton = { check: check, toggle: toggle, more: more }[slot].current;
+    const inOrder = [refs.check.current, refs.toggle.current, refs.copy.current, refs.more.current];
+    const pressedButton = refs[slot].current;
     const candidates = [pressedButton, ...inOrder.filter((b) => b !== pressedButton)];
     const at = document.activeElement;
     if (at !== null && at !== document.body && !inOrder.includes(at as HTMLButtonElement)) return;
     const target =
       candidates.find((b): b is HTMLButtonElement => b !== null && !b.disabled) ?? note.current;
     if (target !== null && target !== at) takeResolutionFocus(target);
-  }, [busy, pressed, check, toggle, more, note]);
+  }, [busy, pressed, refs, note]);
 }
 
 export function TaskPage({
@@ -444,6 +508,7 @@ export function TaskPage({
 }: {
   agentId: string;
   routineId: string;
+  /** The shell's nav trigger below `md` (TASK-404), drawn before the back link. */
   leading?: ReactNode;
   onNavigate: (route: WorkspaceRoute) => void;
   /** The copy Duplicate made (same agent): the shell opens it. */
@@ -456,6 +521,7 @@ export function TaskPage({
   const { state, refresh, refreshQuietly, replaceSteps, applyAnswer } = useTask(agentId, routineId);
   const detail = state.kind === 'ready' ? state.detail : null;
   const [editing, setEditing] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   const poll = useTaskPoll(detail?.updates ?? null, refreshQuietly);
   const { acting, notice, press } = useTaskActions(
     agentId,
@@ -482,15 +548,23 @@ export function TaskPage({
     if (lineUsedUp) setCopyLine(false);
   }, [lineUsedUp]);
 
+  // Times on the page are read against the clock when the task last arrived,
+  // not when the page first opened. A layout effect, so a stale time never
+  // reaches the screen.
+  const [now, setNow] = useState(() => new Date());
+  useLayoutEffect(() => setNow(new Date()), [detail]);
+
   const noteId = useId();
   const checkRef = useRef<HTMLButtonElement>(null);
   const toggleRef = useRef<HTMLButtonElement>(null);
-  const noteRef = useRef<HTMLParagraphElement>(null);
+  const copyRef = useRef<HTMLButtonElement>(null);
   const moreRef = useRef<HTMLButtonElement>(null);
+  const [headerRefs] = useState<HeaderRefs>(() => ({ check: checkRef, toggle: toggleRef, copy: copyRef, more: moreRef }));
+  const noteRef = useRef<HTMLParagraphElement>(null);
   const pressed = useRef<FocusSlot | null>(null);
-  useFocusAfterPress(busy, pressed, checkRef, toggleRef, moreRef, noteRef);
+  useFocusAfterPress(busy, pressed, headerRefs, noteRef);
 
-  // Not yet and Reopen share one box under the latest update (see FINISHING A TASK).
+  // Not yet and Reopen share one box under the banner (see FINISHING A TASK).
   const boxId = useId();
   const tasksLinkRef = useRef<HTMLAnchorElement>(null);
   const [inPlace, setInPlace] = useState<InPlaceBox | null>(null);
@@ -514,8 +588,8 @@ export function TaskPage({
     });
   }, [detail, question]);
 
-  const onPress = (kind: ActionKind) => {
-    pressed.current = kind === 'check' ? 'check' : kind === 'duplicate' ? 'more' : 'toggle';
+  const onPress = (kind: ActionKind, from?: FocusSlot) => {
+    pressed.current = from ?? (kind === 'check' ? 'check' : kind === 'duplicate' ? 'more' : 'toggle');
     void press(kind);
   };
 
@@ -545,49 +619,115 @@ export function TaskPage({
   const onFinishBySaved = (finishBy: TaskFinishBy | null) =>
     applyAnswer((d) => ({ ...d, finishBy }));
 
+  // Pause instead leaves the dialog for the press, whose own rule then places focus.
+  const pausingInstead = useRef(false);
+
+  const note = detail === null ? null : actionNote(detail);
   return (
     <>
-      <WorkspaceHeader
-        title={detail?.name ?? 'Task'}
-        leading={
-          <>
-            {leading}
-            <Breadcrumb>
-              <BreadcrumbList>
-                <BreadcrumbItem>
-                  <BreadcrumbLink asChild>
-                    <a ref={tasksLinkRef} {...routeLinkProps({ kind: 'tasks' }, onNavigate)}>Tasks</a>
-                  </BreadcrumbLink>
-                </BreadcrumbItem>
-                <BreadcrumbSeparator />
-              </BreadcrumbList>
-            </Breadcrumb>
-          </>
-        }
-      >
-        {detail !== null && (
-          <TaskActions
-            detail={detail}
-            busy={busy}
-            acting={acting}
-            noteId={noteId}
-            checkRef={checkRef}
-            toggleRef={toggleRef}
-            moreRef={moreRef}
-            onPress={onPress}
-            boxId={boxId}
-            reopenOpen={inPlace?.mode === 'reopen' && inPlace.open}
-            onReopen={() => toggleBox('reopen')}
-            onEdit={() => setEditing(true)}
-          />
-        )}
-      </WorkspaceHeader>
       {detail !== null && <TaskDialog open={editing} onOpenChange={setEditing}
         agent={{ agentId, agentName: detail.agentName }} routineId={routineId}
         onWriteSucceeded={onTaskWriteSucceeded} onSaved={() => refresh()}
         onClosed={() => moreRef.current?.focus()} />}
+      {detail !== null && (
+        <TaskDeleteDialog
+          open={deleting}
+          onOpenChange={setDeleting}
+          agentId={agentId}
+          routineId={routineId}
+          name={detail.name}
+          revision={detail.revision}
+          repeat={detail.kind === 'repeat'}
+          canPauseInstead={detail.enabled && detail.doneAt === null && detail.permissions.stop}
+          onPauseInstead={() => {
+            pausingInstead.current = true;
+            setDeleting(false);
+            onPress('pause', 'toggle');
+          }}
+          onWriteSucceeded={onTaskWriteSucceeded}
+          onDeleted={() => onNavigate({ kind: 'tasks' })}
+          onRefresh={refresh}
+          onCloseAutoFocus={(event) => {
+            event.preventDefault();
+            if (pausingInstead.current) {
+              pausingInstead.current = false;
+              return;
+            }
+            moreRef.current?.focus();
+          }}
+        />
+      )}
       <div className="flex-1 overflow-y-auto">
-        <div className="mx-auto flex w-full max-w-[900px] flex-col gap-4 px-6 pb-6">
+        <div className="mx-auto flex w-full max-w-[1000px] flex-col gap-4 px-4 pb-8 pt-3 md:px-6 md:pt-5">
+          <header className="flex flex-col gap-2">
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+              <div className="flex items-center gap-1 md:basis-full">
+                {leading}
+                <a
+                  ref={tasksLinkRef}
+                  {...routeLinkProps({ kind: 'tasks' }, onNavigate)}
+                  className={cn(
+                    '-ml-1 inline-flex items-center gap-0.5 rounded-sm px-1 py-0.5 text-[13px] text-muted-foreground hover:text-foreground',
+                    RESOLUTION_FOCUS_RING,
+                  )}
+                >
+                  <ChevronLeft aria-hidden="true" className="size-3.5" />
+                  Tasks
+                </a>
+              </div>
+              {/* Below `md` the actions share the back link's row and the title takes its own. */}
+              <div className="order-last flex min-w-0 basis-full flex-wrap items-center gap-x-3 gap-y-1.5 md:order-none md:basis-0 md:flex-1">
+                <h1 className="min-w-0 break-words text-[24px] font-semibold leading-tight tracking-[-0.01em]">
+                  {detail?.name ?? 'Task'}
+                </h1>
+                {detail !== null && <TaskStatusPill {...pillOf(detail)} />}
+              </div>
+              {detail !== null && (
+                <div className="ml-auto flex shrink-0 items-center gap-2">
+                  <TaskActions
+                    detail={detail}
+                    busy={busy}
+                    acting={acting}
+                    noteId={noteId}
+                    refs={headerRefs}
+                    onPress={onPress}
+                    boxId={boxId}
+                    reopenOpen={inPlace?.mode === 'reopen' && inPlace.open}
+                    onReopen={() => toggleBox('reopen')}
+                    onEdit={() => setEditing(true)}
+                    onDelete={() => setDeleting(true)}
+                  />
+                </div>
+              )}
+            </div>
+            {detail !== null && (
+              <MetaRow
+                detail={detail}
+                agentId={agentId}
+                routineId={routineId}
+                now={now}
+                onFinishBySaved={onFinishBySaved}
+              />
+            )}
+            {note !== null && (
+              <p
+                ref={noteRef}
+                id={noteId}
+                tabIndex={-1}
+                className={cn(
+                  'self-start rounded-sm text-[13px] text-muted-foreground',
+                  RESOLUTION_FOCUS_RING,
+                  note === PAUSED_NOTE && 'sr-only focus:not-sr-only',
+                )}
+              >
+                {note}
+              </p>
+            )}
+            {/* Empty, and taking no room, until a check-in has something to say. */}
+            <p role="status" className="text-[13px] empty:-mt-2">
+              {detail !== null && <PollLine poll={poll} agentName={detail.agentName} />}
+            </p>
+          </header>
           {state.kind === 'loading' && (
             <div className="flex justify-center py-10">
               <Spinner />
@@ -596,34 +736,58 @@ export function TaskPage({
           {state.kind === 'failed' && <TaskLoadFailure error={state.error} onRetry={refresh} />}
           {state.kind === 'ready' && (
             <>
-            {state.detail.kind === 'repeat' ? <RepeatTaskBody detail={state.detail} agentId={agentId} routineId={routineId}
-              refreshFailed={state.refreshFailed} onRefresh={refresh} onEdit={() => setEditing(true)} onNavigate={onNavigate} notice={notice} /> : (
-            <TaskBody
-              agentId={agentId}
-              routineId={routineId}
-              detail={state.detail}
-              refreshing={state.refreshing}
-              refreshFailed={state.refreshFailed}
-              notice={notice}
-              poll={poll}
-              noteId={noteId}
-              noteRef={noteRef}
-              boxId={boxId}
-              inPlace={inPlace}
-              onNotYet={() => toggleBox('not-yet')}
-              copyLine={copyLine}
-              onRefresh={refresh}
-              onReplySent={onReplySent}
-              onReplySendStart={onReplySendStart}
-              onTaskWriteSucceeded={onTaskWriteSucceeded}
-              onStepsChanged={replaceSteps}
-              onFinishBySaved={onFinishBySaved}
-              onNavigate={onNavigate}
-              onEdit={() => setEditing(true)}
-            />)}
-            {state.detail.appUpdates && state.detail.permissions.edit && <TaskAppUpdates key={`${agentId}/${routineId}/${state.detail.revision}`} agentId={agentId} routineId={routineId} onEdit={() => setEditing(true)} />}
-            <TaskOptions key={state.detail.revision} agentId={agentId} routineId={routineId} agentName={state.detail.agentName}
-              onWriteSucceeded={onTaskWriteSucceeded} onDeleted={() => onNavigate({ kind: 'tasks' })} />
+              <PageAlerts
+                refreshFailed={state.refreshFailed}
+                refreshing={state.refreshing}
+                onRefresh={refresh}
+                copyLine={copyLine && !state.detail.enabled && state.detail.permissions.edit}
+                notice={notice}
+                onEdit={() => setEditing(true)}
+              />
+              {state.detail.kind === 'repeat' ? (
+                <Columns
+                  main={
+                    <RepeatTaskBody
+                      detail={state.detail}
+                      agentId={agentId}
+                      routineId={routineId}
+                      onNavigate={onNavigate}
+                    />
+                  }
+                  side={
+                    <AboutList
+                      detail={state.detail}
+                      agentId={agentId}
+                      routineId={routineId}
+                      onEdit={() => setEditing(true)}
+                      onNavigate={onNavigate}
+                      onRefresh={refresh}
+                    />
+                  }
+                />
+              ) : (
+                <TaskBody
+                  agentId={agentId}
+                  routineId={routineId}
+                  detail={state.detail}
+                  now={now}
+                  busy={busy}
+                  refreshing={state.refreshing}
+                  refreshFailed={state.refreshFailed}
+                  poll={poll}
+                  boxId={boxId}
+                  inPlace={inPlace}
+                  onNotYet={() => toggleBox('not-yet')}
+                  onRefresh={refresh}
+                  onPress={onPress}
+                  onReplySent={onReplySent}
+                  onReplySendStart={onReplySendStart}
+                  onTaskWriteSucceeded={onTaskWriteSucceeded}
+                  onStepsChanged={replaceSteps}
+                  onNavigate={onNavigate}
+                  onEdit={() => setEditing(true)}
+                />
+              )}
             </>
           )}
         </div>
@@ -633,47 +797,47 @@ export function TaskPage({
 }
 
 /**
- * Check now, then Pause or Resume, then ⋯ with Duplicate, always in that order
- * and always the same three buttons: React keeps each one's node, so pressing
- * Pause leaves the person on what is now Resume. One primary action at a time:
- * Check now while it runs, Resume while it's paused, and neither while the
- * agent's claim waits for Mark done (TASK-950). It's the ⋯ that is disabled
- * without `edit`, not its one item: a disabled menu item can't take keyboard
- * focus, so a menu of one disabled item would say nothing about why. A Done
- * task has Reopen and the same ⋯: copying a finished plan is Duplicate's main
- * use, and the copy is a fresh, paused task that isn't Done.
+ * The header's actions, always in the same slots: Check now (Run now for a
+ * Repeat job), then Pause or Resume, then ⋯; on a Done task, Reopen, then
+ * Duplicate, then ⋯. React keeps each slot's node where it can, and focus
+ * follows the slot (`useFocusAfterPress`). One primary action at a time:
+ * Resume is a text button while it's the page's one job (paused, no claim
+ * waiting); otherwise every action here is an icon, and the claim's Mark done
+ * (TASK-950) or nothing is primary. It's the ⋯ that is disabled without
+ * `edit`, not its items: a disabled menu item can't take keyboard focus, so a
+ * menu of disabled items would say nothing about why. Pause or Resume never
+ * appears in the ⋯: a task that has them always has them here.
  */
 function TaskActions({
   detail,
   busy,
   acting,
   noteId,
-  checkRef,
-  toggleRef,
-  moreRef,
+  refs,
   onPress,
   boxId,
   reopenOpen,
   onReopen,
   onEdit,
+  onDelete,
 }: {
   detail: TaskDetail;
   busy: boolean;
   acting: ActionKind | null;
   noteId: string;
-  checkRef: RefObject<HTMLButtonElement | null>;
-  toggleRef: RefObject<HTMLButtonElement | null>;
-  moreRef: RefObject<HTMLButtonElement | null>;
-  onPress: (kind: ActionKind) => void;
+  refs: HeaderRefs;
+  onPress: (kind: ActionKind, from?: FocusSlot) => void;
   /** The in-place box's id, and whether it is open in its reopen mode. */
   boxId: string;
   reopenOpen: boolean;
   onReopen: () => void;
   onEdit: () => void;
+  onDelete: () => void;
 }) {
   // The chosen action runs once the menu has handed focus back to the ⋯ (TaskSteps' way).
   const chosen = useRef<(() => void) | null>(null);
   const { enabled, permissions } = detail;
+  const done = detail.doneAt !== null;
   const hasNote = actionNote(detail) !== null;
   // Only a button the note explains points at it; one that's only waiting
   // for a press to finish needs no reason.
@@ -681,21 +845,15 @@ function TaskActions({
   const more = (
     <DropdownMenu modal={false}>
       <DropdownMenuTrigger asChild>
-        <Button
-          ref={moreRef}
-          type="button"
-          size="icon"
+        <IconAction
+          ref={refs.more}
+          icon={MoreHorizontal}
+          label="More actions"
           variant="ghost"
-          aria-label="More actions"
           disabled={!permissions.edit || busy}
           aria-describedby={describedBy(!permissions.edit)}
-        >
-          {acting === 'duplicate' ? (
-            <Spinner aria-hidden="true" />
-          ) : (
-            <MoreHorizontal aria-hidden="true" />
-          )}
-        </Button>
+          busy={acting === 'duplicate' && !done ? <Spinner aria-hidden="true" /> : undefined}
+        />
       </DropdownMenuTrigger>
       <DropdownMenuContent
         align="end"
@@ -704,24 +862,40 @@ function TaskActions({
           chosen.current = null;
           if (action === null) return;
           event.preventDefault();
-          moreRef.current?.focus();
+          refs.more.current?.focus();
           setTimeout(action, 0);
         }}
       >
         <DropdownMenuGroup>
-          <DropdownMenuItem onSelect={() => { chosen.current = onEdit; }}>Edit</DropdownMenuItem>
-          {detail.kind !== 'repeat' && <DropdownMenuItem
-            onSelect={() => {
-              chosen.current = () => onPress('duplicate');
-            }}
-          >
-            Duplicate
-          </DropdownMenuItem>}
+          <DropdownMenuItem onSelect={() => { chosen.current = onEdit; }}>
+            <Pencil aria-hidden="true" />
+            Edit task
+          </DropdownMenuItem>
+          {detail.kind !== 'repeat' && !done && (
+            <DropdownMenuItem onSelect={() => { chosen.current = () => onPress('duplicate', 'more'); }}>
+              <Copy aria-hidden="true" />
+              Duplicate
+            </DropdownMenuItem>
+          )}
         </DropdownMenuGroup>
+        {permissions.stop && (
+          <>
+            <DropdownMenuSeparator />
+            <DropdownMenuGroup>
+              <DropdownMenuItem
+                className="text-destructive focus:text-destructive"
+                onSelect={() => { chosen.current = onDelete; }}
+              >
+                <Trash2 aria-hidden="true" />
+                Delete task…
+              </DropdownMenuItem>
+            </DropdownMenuGroup>
+          </>
+        )}
       </DropdownMenuContent>
     </DropdownMenu>
   );
-  if (detail.doneAt !== null) {
+  if (done) {
     return (
       <>
         <Button
@@ -735,41 +909,134 @@ function TaskActions({
         >
           Reopen
         </Button>
+        <IconAction
+          ref={refs.copy}
+          icon={Copy}
+          label="Duplicate"
+          disabled={!permissions.edit || busy}
+          aria-describedby={describedBy(!permissions.edit)}
+          busy={acting === 'duplicate' ? <Spinner aria-hidden="true" /> : undefined}
+          onClick={() => onPress('duplicate', 'copy')}
+        />
         {more}
       </>
     );
   }
   const claimed = isClaimed(detail);
+  const repeat = detail.kind === 'repeat';
   const checkBlocked = !enabled || !permissions.fire;
   const toggleBlocked = enabled ? !permissions.stop : !permissions.edit;
+  const toggling = acting === 'pause' || acting === 'resume';
   return (
     <>
-      <Button
-        ref={checkRef}
-        size="sm"
-        variant={enabled && !claimed ? 'default' : 'outline'}
+      <IconAction
+        ref={refs.check}
+        icon={repeat ? Play : RefreshCw}
+        label={repeat ? 'Run now' : 'Check now'}
         disabled={checkBlocked || busy}
         aria-describedby={describedBy(checkBlocked)}
+        busy={acting === 'check' ? <Spinner aria-hidden="true" /> : undefined}
         onClick={() => onPress('check')}
-      >
-        {acting === 'check' && <Spinner data-icon="inline-start" aria-hidden="true" />}
-        {detail.kind === 'repeat' ? 'Run now' : 'Check now'}
-      </Button>
-      <Button
-        ref={toggleRef}
-        size="sm"
-        variant={enabled || claimed ? 'outline' : 'default'}
-        disabled={toggleBlocked || busy}
-        aria-describedby={describedBy(toggleBlocked)}
-        onClick={() => onPress(enabled ? 'pause' : 'resume')}
-      >
-        {(acting === 'pause' || acting === 'resume') && (
-          <Spinner data-icon="inline-start" aria-hidden="true" />
-        )}
-        {enabled ? 'Pause' : 'Resume'}
-      </Button>
+      />
+      {!enabled && !claimed ? (
+        // Resume is the page's one job: words, and primary.
+        <Button
+          ref={refs.toggle}
+          size="sm"
+          disabled={toggleBlocked || busy}
+          aria-describedby={describedBy(toggleBlocked)}
+          onClick={() => onPress('resume')}
+        >
+          {toggling ? (
+            <Spinner data-icon="inline-start" aria-hidden="true" />
+          ) : (
+            <Play data-icon="inline-start" aria-hidden="true" />
+          )}
+          Resume
+        </Button>
+      ) : (
+        <IconAction
+          ref={refs.toggle}
+          icon={enabled ? Pause : Play}
+          label={enabled ? 'Pause' : 'Resume'}
+          disabled={toggleBlocked || busy}
+          aria-describedby={describedBy(toggleBlocked)}
+          busy={toggling ? <Spinner aria-hidden="true" /> : undefined}
+          onClick={() => onPress(enabled ? 'pause' : 'resume')}
+        />
+      )}
       {more}
     </>
+  );
+}
+
+/** A chip's short words when there are any; with none it shows its icon alone. */
+function withLabel(label: string | null): { label?: string } {
+  return label === null ? {} : { label };
+}
+
+/**
+ * The meta chips under the title: the agent (the one chip with words), the
+ * kind, how often it checks in, and a get-done task's finish date (the chip is
+ * the date's own control, `TaskFinishDate`). A Done task trades the schedule
+ * and the date for the day it was marked done.
+ */
+function MetaRow({
+  detail,
+  agentId,
+  routineId,
+  now,
+  onFinishBySaved,
+}: {
+  detail: TaskDetail;
+  agentId: string;
+  routineId: string;
+  now: Date;
+  onFinishBySaved: (finishBy: TaskFinishBy | null) => void;
+}) {
+  const { agentName } = detail;
+  const done = detail.doneAt !== null;
+  const next = detail.enabled && detail.nextCheckAt !== null ? checkInWhen(detail.nextCheckAt, now) : null;
+  const doneWhen = done ? checkInWhen(detail.doneAt as string, now) : null;
+  const doneDay = done ? shortDay(detail.doneAt as string) : '';
+  return (
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+      <span className="inline-flex items-center gap-1.5 text-[13px]">
+        <AgentTile agent={{ name: agentName }} size={18} />
+        {agentName}
+      </span>
+      <MetaChip
+        icon={TASK_KIND_ICONS[detail.kind]}
+        label={TASK_KIND_SHORT[detail.kind]}
+        description={TASK_KIND_LABELS[detail.kind]}
+      />
+      {!done && detail.schedule !== null && (
+        <MetaChip
+          icon={Clock}
+          {...withLabel(scheduleShort(detail.schedule))}
+          description={`${agentName} ${detail.kind === 'repeat' ? 'runs' : 'checks in'} ${detail.schedule}.${
+            next === null ? '' : ` Next ${detail.kind === 'repeat' ? 'run' : 'check'} ${next}.`
+          }`}
+        />
+      )}
+      {/* A Done task has no date left to keep (TASK-950): it shows neither the date nor the field. */}
+      {detail.kind === 'get-done' && !done && (
+        <TaskFinishDate
+          agentId={agentId}
+          routineId={routineId}
+          agentName={agentName}
+          finishBy={detail.finishBy}
+          onSaved={onFinishBySaved}
+        />
+      )}
+      {done && doneDay !== '' && (
+        <MetaChip
+          icon={Check}
+          label={doneDay}
+          description={doneWhen === null ? 'You marked it done.' : `You marked it done ${doneWhen}.`}
+        />
+      )}
+    </div>
   );
 }
 
@@ -793,51 +1060,117 @@ function TaskLoadFailure({ error, onRetry }: { error: TaskReadError; onRetry: ()
   );
 }
 
+/** A re-read that failed, the paused-copy line, and the last press's failure, over any kind of task. */
+function PageAlerts({
+  refreshFailed,
+  refreshing,
+  onRefresh,
+  copyLine,
+  notice,
+  onEdit,
+}: {
+  refreshFailed: boolean;
+  refreshing: boolean;
+  onRefresh: () => void;
+  /** This page was just opened by Duplicate, the copy hasn't run, and the viewer may edit it (TASK-953). */
+  copyLine: boolean;
+  notice: Notice;
+  onEdit: () => void;
+}) {
+  return (
+    <>
+      {/*
+        No title: this sits over a task the page can still show, and it knows
+        nothing about what it couldn't load (`lib/read-register.ts`).
+      */}
+      {refreshFailed && (
+        <Alert variant="destructive">
+          <AlertDescription className="flex flex-wrap items-center gap-3">
+            <span className="min-w-0">{REFRESH_FAILED}</span>
+            <Button
+              variant="secondary"
+              size="sm"
+              className="ml-auto"
+              onClick={onRefresh}
+              disabled={refreshing}
+            >
+              Try again
+            </Button>
+          </AlertDescription>
+        </Alert>
+      )}
+      {copyLine && (
+        <Alert>
+          <AlertDescription className="flex flex-wrap items-center gap-3">
+            <span className="min-w-0">{COPY_LINE}</span>
+            <Button variant="outline" size="sm" className="ml-auto" onClick={onEdit}>Edit task</Button>
+          </AlertDescription>
+        </Alert>
+      )}
+      {notice !== null && (
+        <Alert variant={notice.register}>
+          <AlertDescription>{notice.failed}</AlertDescription>
+        </Alert>
+      )}
+    </>
+  );
+}
+
+/**
+ * Two columns from `lg` (the side one 290px), one below it. On a phone the
+ * side column's first card (a get-done task's steps) comes straight after the
+ * main column's first (the latest update): both wrappers are `contents` there,
+ * so their cards are ordered as one list.
+ */
+function Columns({ main, side }: { main: ReactNode; side: ReactNode }) {
+  return (
+    <div className="flex flex-col gap-4 lg:grid lg:grid-cols-[minmax(0,1fr)_290px] lg:items-start">
+      <div className="contents lg:flex lg:min-w-0 lg:flex-col lg:gap-4">{main}</div>
+      <div className="contents lg:flex lg:flex-col lg:gap-4">{side}</div>
+    </div>
+  );
+}
+
 function TaskBody({
   agentId,
   routineId,
   detail,
+  now,
+  busy,
   refreshing,
   refreshFailed,
-  notice,
   poll,
-  noteId,
-  noteRef,
   boxId,
   inPlace,
   onNotYet,
-  copyLine,
   onRefresh,
+  onPress,
   onReplySent,
   onReplySendStart,
   onTaskWriteSucceeded,
   onStepsChanged,
-  onFinishBySaved,
   onNavigate,
   onEdit,
 }: {
   agentId: string;
   routineId: string;
   detail: TaskDetail;
+  now: Date;
+  busy: boolean;
   refreshing: boolean;
   refreshFailed: boolean;
-  notice: Notice;
   poll: TaskPoll;
-  noteId: string;
-  noteRef: RefObject<HTMLParagraphElement | null>;
   /** The in-place box's id and state (see FINISHING A TASK, above). */
   boxId: string;
   inPlace: InPlaceBox | null;
   onNotYet: () => void;
-  /** This page was just opened by Duplicate and hasn't run yet (TASK-953). */
-  copyLine: boolean;
   onRefresh: () => void;
+  onPress: (kind: ActionKind, from?: FocusSlot) => void;
   onReplySent: (checkIn: TaskReplyCheckIn, closeBox?: boolean) => void;
   onReplySendStart: () => (checkIn: TaskReplyCheckIn) => void;
   onTaskWriteSucceeded: () => void;
   /** A step change's answer: the steps as they now are, swapped in with no re-read (TASK-949). */
   onStepsChanged: (steps: TaskStep[]) => void;
-  onFinishBySaved: (finishBy: TaskFinishBy | null) => void;
   onNavigate: (route: WorkspaceRoute) => void;
   onEdit: () => void;
 }) {
@@ -845,6 +1178,7 @@ function TaskBody({
   const boxRef = useRef<HTMLTextAreaElement>(null);
   const done = detail.doneAt !== null;
   const claimed = isClaimed(detail);
+  const banner = bannerOf(detail);
   const unticked = detail.steps.filter((s) => !s.done).length;
 
   // Mark done (TASK-950). Its success reads the task again; once that shows it
@@ -898,92 +1232,62 @@ function TaskBody({
     notYetOpen: inPlace?.mode === 'not-yet' && inPlace.open,
     onNotYet,
   };
-  // Times on the page are read against the clock when the task last arrived,
-  // not when the page first opened. A layout effect, so a stale time never
-  // reaches the screen.
-  const [now, setNow] = useState(() => new Date());
-  useLayoutEffect(() => setNow(new Date()), [detail]);
-  const briefId = useId();
-  const note = actionNote(detail);
   const { agentName } = detail;
-  const kindMeta = `${agentName} · ${TASK_KIND_LABELS[detail.kind]}`;
-  const meta = done || detail.schedule === null ? kindMeta : `${kindMeta} · checks in ${detail.schedule}`;
+  const completedCheckIn =
+    poll.arrived === null ? null : `${poll.arrived.firedAt}|${poll.arrived.conversationId ?? ''}`;
+  // One reply box on the page: in the ask's banner, else at the foot of the check-ins. A Done task
+  // has nothing to reply to; Reopen is how a person writes to it.
+  const replyBox = (
+    <TaskReplyBox
+      compact
+      agentId={agentId}
+      routineId={routineId}
+      agentName={agentName}
+      enabled={detail.enabled}
+      canStart={detail.permissions.fire}
+      inputRef={replyRef}
+      completedCheckIn={completedCheckIn}
+      onSent={onReplySent}
+      onSendStart={onReplySendStart}
+    />
+  );
+  const missFix = (
+    <MissLine
+      detail={detail}
+      now={now}
+      agentId={agentId}
+      routineId={routineId}
+      busy={busy}
+      onNavigate={onNavigate}
+      onPress={onPress}
+      onEdit={onEdit}
+    />
+  );
 
   return (
     <>
-      {/*
-        No title: this sits over a task the page can still show, and it knows
-        nothing about what it couldn't load (`lib/read-register.ts`).
-      */}
-      {refreshFailed && (
-        <Alert variant="destructive">
-          <AlertDescription className="flex flex-wrap items-center gap-3">
-            <span className="min-w-0">{REFRESH_FAILED}</span>
-            <Button
-              variant="secondary"
-              size="sm"
-              className="ml-auto"
-              onClick={onRefresh}
-              disabled={refreshing}
-            >
-              Try again
-            </Button>
-          </AlertDescription>
-        </Alert>
+      {banner === 'done' && <DoneBanner detail={detail} now={now} doneLineRef={doneLineRef} />}
+      {banner === 'claim' && (
+        <ClaimBanner detail={detail} finish={finish} unticked={unticked} />
       )}
-      <div className="flex flex-col">
-        <p className="break-words text-[13px] text-muted-foreground">{meta}</p>
-        {/* A Done task has no date left to keep (TASK-950): it shows neither the date nor the field. */}
-        {detail.kind === 'get-done' && !done && (
-          <TaskFinishDate
-            agentId={agentId}
-            routineId={routineId}
-            agentName={agentName}
-            finishBy={detail.finishBy}
-            onSaved={onFinishBySaved}
-          />
-        )}
-        {note !== null && (
-          <p
-            ref={noteRef}
-            id={noteId}
-            tabIndex={-1}
-            className={cn(
-              'mt-1 self-start rounded-sm text-[13px] text-muted-foreground',
-              RESOLUTION_FOCUS_RING,
-            )}
-          >
-            {note}
-          </p>
-        )}
-        {/* Empty, and taking no room, until a check-in has something to say. */}
-        <p role="status" className="mt-1 text-[13px] empty:mt-0">
-          <PollLine poll={poll} agentName={agentName} />
-        </p>
-      </div>
-      {copyLine && !detail.enabled && detail.permissions.edit && (
-        <Alert>
-          <AlertDescription className="flex flex-col gap-1">
-            <span>{COPY_LINE}</span>
-            <Button variant="outline" className="self-start" onClick={onEdit}>Edit task</Button>
-          </AlertDescription>
-        </Alert>
+      {banner === 'miss' && (
+        <Card className="bg-muted p-4 shadow-none">{missFix}</Card>
       )}
-      {notice !== null && (
-        <Alert variant={notice.register}>
-          <AlertDescription>{notice.failed}</AlertDescription>
-        </Alert>
+      {banner === 'ask' && (
+        <section aria-label={`${agentName} asks`}>
+          <Card className="flex flex-col gap-3 bg-warning-soft p-4 shadow-none">
+            <div className="flex items-start gap-2.5">
+              <span className="mt-0.5 shrink-0">
+                <AgentTile agent={{ name: agentName }} size={20} />
+              </span>
+              <p className="min-w-0 whitespace-pre-wrap break-words text-[15px] leading-relaxed">
+                {detail.task?.ask}
+              </p>
+            </div>
+            {replyBox}
+          </Card>
+        </section>
       )}
-      <LatestUpdate
-        detail={detail}
-        now={now}
-        agentId={agentId}
-        routineId={routineId}
-        onNavigate={onNavigate}
-        onReply={() => replyRef.current?.focus()}
-        onEdit={onEdit}
-        finish={finish}
-      />
       {/*
         Not yet and Reopen open this. It is mounted from its first opening and
         only its form hides after a successful send. Its single sent status
@@ -1001,80 +1305,96 @@ function TaskBody({
             enabled={detail.enabled}
             canStart={detail.permissions.fire}
             inputRef={boxRef}
-            completedCheckIn={poll.arrived === null ? null : `${poll.arrived.firedAt}|${poll.arrived.conversationId ?? ''}`}
+            completedCheckIn={completedCheckIn}
             onSent={(checkIn) => onReplySent(checkIn, true)}
             onSendStart={onReplySendStart}
           />
         )}
       </div>
-      {/* Under a missed check-in too: its card still shows the last update this reading came with. */}
-      <TaskReadingBlock agentName={agentName} task={detail.task} updates={detail.updates} />
-      {detail.kind === 'get-done' && (
-        <TaskSteps
-          agentId={agentId}
-          routineId={routineId}
-          steps={detail.steps}
-          agentName={agentName}
-          onChanged={onStepsChanged}
-          onRefused={onStepsRefused}
-          readOnly={done}
-          footer={
-            done || claimed ? undefined : (
-              <MarkDoneControls
-                variant="footer"
-                finish={finish}
-                unticked={unticked}
-                canEdit={detail.permissions.edit}
-                agentName={agentName}
-                running={detail.enabled}
+      <Columns
+        main={
+          <>
+            <Card className="order-1 flex flex-col gap-3 p-4 lg:order-none">
+              <LatestUpdate
+                detail={detail}
+                now={now}
+                agentId={agentId}
+                routineId={routineId}
+                onNavigate={onNavigate}
+                onReply={() => replyRef.current?.focus()}
+                missLine={banner === 'claim' && detail.noRecentUpdate !== null ? missFix : null}
               />
-            )
-          }
-        />
-      )}
-      <section aria-labelledby={briefId} className="flex flex-col gap-3">
-        <h2 id={briefId} className="sr-only">
-          About this task
-        </h2>
-        <dl className="flex flex-col gap-3">
-          <BriefRow
-            label={`What ${agentName} does`}
-            value={detail.brief.promptBody}
-            missing="No instructions saved."
-          />
-          <BriefRow label="Going well when" value={detail.brief.goodWhen} missing="Nothing saved." />
-          <TaskNotes
-            agentId={agentId}
-            routineId={routineId}
-            agentName={agentName}
-            notes={detail.task?.agentNotes ?? null}
-            onCleared={onRefresh}
-          />
-        </dl>
-        {detail.permissions.edit && <Button variant="outline" className="self-start" onClick={onEdit}>Edit task</Button>}
-      </section>
-      <TaskUpdates
-        updates={detail.updates}
-        replies={detail.replies}
-        now={now}
-        agentId={agentId}
-        routineId={routineId}
-        onNavigate={onNavigate}
+              {/* Under a missed check-in too: its card still shows the last update this reading came with. */}
+              <TaskReadingBlock agentName={agentName} task={detail.task} updates={detail.updates} />
+              {done && (
+                <TaskUpdates
+                  updates={detail.updates}
+                  replies={detail.replies}
+                  now={now}
+                  agentId={agentId}
+                  routineId={routineId}
+                  onNavigate={onNavigate}
+                  collapsed
+                />
+              )}
+            </Card>
+            {!done && (
+              <Card className="order-3 flex flex-col gap-2 p-4 lg:order-none">
+                <TaskUpdates
+                  updates={detail.updates}
+                  replies={detail.replies}
+                  now={now}
+                  agentId={agentId}
+                  routineId={routineId}
+                  onNavigate={onNavigate}
+                  latest={detail.task}
+                  shown={3}
+                />
+                {banner !== 'ask' && replyBox}
+              </Card>
+            )}
+          </>
+        }
+        side={
+          <>
+            {detail.kind === 'get-done' && (
+              <div className="order-2 lg:order-none">
+                <TaskSteps
+                  agentId={agentId}
+                  routineId={routineId}
+                  steps={detail.steps}
+                  agentName={agentName}
+                  onChanged={onStepsChanged}
+                  onRefused={onStepsRefused}
+                  readOnly={done}
+                  footer={
+                    done || claimed ? undefined : (
+                      <MarkDoneControls
+                        variant="footer"
+                        finish={finish}
+                        unticked={unticked}
+                        canEdit={detail.permissions.edit}
+                        agentName={agentName}
+                        running={detail.enabled}
+                      />
+                    )
+                  }
+                />
+              </div>
+            )}
+            <div className="order-4 lg:order-none">
+              <AboutList
+                detail={detail}
+                agentId={agentId}
+                routineId={routineId}
+                onEdit={onEdit}
+                onNavigate={onNavigate}
+                onRefresh={onRefresh}
+              />
+            </div>
+          </>
+        }
       />
-      {/* A Done task has nothing to reply to; Reopen is how a person writes to it. */}
-      {!done && (
-        <TaskReplyBox
-          agentId={agentId}
-          routineId={routineId}
-          agentName={agentName}
-          enabled={detail.enabled}
-          canStart={detail.permissions.fire}
-          inputRef={replyRef}
-          completedCheckIn={poll.arrived === null ? null : `${poll.arrived.firedAt}|${poll.arrived.conversationId ?? ''}`}
-          onSent={onReplySent}
-          onSendStart={onReplySendStart}
-        />
-      )}
     </>
   );
 }
@@ -1105,56 +1425,38 @@ function PollLine({ poll, agentName }: { poll: TaskPoll; agentName: string }) {
   }
 }
 
-/** One row of the brief, the `DecisionTaskBlock` row shape. The text keeps its own line breaks. */
-function BriefRow({
-  label,
-  value,
-  missing,
-}: {
-  label: string;
-  value: string | null;
-  missing: string;
-}) {
+/**
+ * A time as the page shows it: a muted "2 hr ago" on screen, and the whole
+ * sentence ("Checked at 10:02 AM · Next check at 1:00 PM") for a screen
+ * reader. Nothing at all when there's nothing to say.
+ */
+function WhenLine({ short, full }: { short: string | null; full: string | null }) {
+  if (short === null && full === null) return null;
   return (
-    <div className="flex flex-col gap-0.5">
-      <dt className={LABEL}>{label}</dt>
-      <dd
-        className={cn(
-          VALUE,
-          'whitespace-pre-wrap break-words',
-          value === null && 'text-muted-foreground',
-        )}
-      >
-        {value ?? missing}
-      </dd>
-    </div>
+    <span className="shrink-0 text-[12px] leading-6 tabular-nums text-muted-foreground">
+      {short !== null && <span aria-hidden="true">{short}</span>}
+      {full !== null && <span className="sr-only">{full}</span>}
+    </span>
   );
 }
 
+/** "Checked at 10:02 AM · Next check at 1:00 PM", "… · Paused", or less when a time can't be read. */
+function checkedSentence(label: 'Checked' | 'Last check-in', at: string, enabled: boolean, next: string | null, now: Date): string | null {
+  const checked = checkInWhen(at, now);
+  const parts = [
+    checked === null ? null : `${label} ${checked}`,
+    !enabled ? 'Paused' : next === null ? null : `Next check ${next}`,
+  ].filter((p): p is string => p !== null);
+  return parts.length === 0 ? null : parts.join(' · ');
+}
+
 /**
- * The latest report: its mark and word, what the agent said, when it checked
- * and checks next, and what it asks. A task that has never reported says so,
- * and when it will first check in. Paused, it shows the last report it had.
- *
- * A task whose last check-in left no report leads with that instead (TASK-930):
- * its mark (`taskGroup`, the same as its Tasks row: No recent update, or Needs
- * you from the third in a row or when the last report needed you), why, the one
- * thing to do, and when it last checked in. The last report stays under it,
- * muted and dated. It is usually from a check-in that started before the silent
- * one (it may have reported later). Just after an agent reports, it can be from
- * one that started after those misses, until a later finish moves the count
- * (a report never does on its own; a Resume or a kind change also moves it,
- * and not every finish does). Its ask stays too, muted: a person is
- * still being waited on, and hiding the ask would hide that.
- * The reason and the fix are host-written words (`lib/task-miss.ts`); the last
- * update and its ask are agent-written.
- *
- * Wherever the ask shows, a Reply button follows it (TASK-931): the ask is the
- * person being waited on, and the reply box under Updates is how to answer.
- *
- * A claim (TASK-950) adds a line saying the agent thinks the task is done, and
- * Mark done and Not yet after the ask, so a pending ask is never hidden by it.
- * A Done task leads with its Done line instead and shows the last update, muted.
+ * The latest report: what the agent said, in quotes, when it checked (and
+ * checks next) and a link to that check-in. A task that has never reported
+ * says so, and when it will first check in. Paused, it shows the last report
+ * it had; Done, its last report, as the record. The banner holds the page's
+ * question; an ask the banner can't hold stays here, muted, with Reply, and so
+ * does a miss under a claim (see AN ASK THE BANNER CAN'T HOLD).
  */
 function LatestUpdate({
   detail,
@@ -1163,8 +1465,7 @@ function LatestUpdate({
   routineId,
   onNavigate,
   onReply,
-  onEdit,
-  finish,
+  missLine,
 }: {
   detail: TaskDetail;
   now: Date;
@@ -1173,208 +1474,391 @@ function LatestUpdate({
   onNavigate: (route: WorkspaceRoute) => void;
   /** Takes the person to the reply box. */
   onReply: () => void;
-  onEdit: () => void;
-  finish: Finish;
+  /** A miss the banner can't hold (a claim took it). */
+  missLine: ReactNode;
 }) {
   const headingId = useId();
   const { task, enabled, agentName } = detail;
+  const done = detail.doneAt !== null;
   const fromCheckIn = latestUpdateCheckIn(task, detail.updates);
   const next =
     enabled && detail.nextCheckAt !== null ? checkInWhen(detail.nextCheckAt, now) : null;
-  const miss = detail.noRecentUpdate;
-  const claimed = isClaimed(detail);
-  const claimActions = claimed && (
-    <MarkDoneControls
-      variant="claim"
-      finish={finish}
-      unticked={detail.steps.filter((s) => !s.done).length}
-      canEdit={detail.permissions.edit}
-      agentName={agentName}
-      running={enabled}
-    />
-  );
-  if (detail.doneAt !== null) {
-    const doneWhen = checkInWhen(detail.doneAt, now);
-    const reportedWhen = task === null ? null : checkInWhen(task.reportedAt, now);
-    return (
-      <section aria-labelledby={headingId}>
-        <h2 id={headingId} className="sr-only">
-          Latest update
-        </h2>
-        <Card>
-          <CardContent className="flex flex-col gap-2 px-5 py-4">
-            <p
-              ref={finish.doneLineRef}
-              tabIndex={-1}
-              className={cn(
-                'flex items-center gap-2 self-start rounded-sm text-[12.5px] font-medium',
-                RESOLUTION_FOCUS_RING,
-              )}
-            >
-              <StateDotSlot>
-                <StateDot state="done" />
-              </StateDotSlot>
-              <span>
-                {doneWhen === null
-                  ? 'Done · You marked it done.'
-                  : `Done · You marked it done ${doneWhen}.`}
-              </span>
-            </p>
-            {task !== null && (
-              <p className="whitespace-pre-wrap break-words text-[12px] text-muted-foreground">
-                {`Last update${reportedWhen === null ? '' : ` ${reportedWhen}`}: ${
-                  task.update === null || task.update === '' ? CANT_SHOW : task.update
-                }`}
-              </p>
-            )}
-          </CardContent>
-        </Card>
-      </section>
-    );
-  }
-  if (miss !== null) {
-    // Grouped as the Tasks row groups it, minus the pause: this card says "Paused" in its own line.
-    const group = taskGroup({ enabled: true, doneAt: null, task, noRecentUpdate: miss });
-    const words = missWords(miss.reason, agentName, !enabled, {
-      checkNow: detail.permissions.fire,
-      edit: detail.permissions.edit,
-    });
-    const missedConversation = missCheckIn(miss, detail.updates);
-    const reportedWhen = task === null ? null : checkInWhen(task.reportedAt, now);
-    return (
-      <section aria-labelledby={headingId}>
-        <h2 id={headingId} className="sr-only">
-          Latest update
-        </h2>
-        <Card>
-          <CardContent className="flex flex-col gap-2 px-5 py-4">
-            <p className="flex items-center gap-2 text-[12.5px] font-medium">
-              <StateDotSlot>
-                <StateDot state={group} />
-              </StateDotSlot>
-              <span>{TASK_GROUP_LABELS[group]}</span>
-            </p>
-            <p className="whitespace-pre-wrap break-words text-[13px] leading-relaxed">
-              {missSummary(miss)}
-            </p>
-            <p className="whitespace-pre-wrap break-words text-[13px] leading-relaxed">
-              {words.fix}
-            </p>
-            {words.settingsLink && (
-              <Button variant="outline" className="self-start" onClick={onEdit}>Edit task</Button>
-            )}
-            <CheckedLine
-              label="Last check-in"
-              at={miss.at}
-              enabled={enabled}
-              next={next}
-              now={now}
-              seeWhatItDid={
-                missedConversation === null
-                  ? null
-                  : {
-                      route: {
-                        kind: 'task-checkin',
-                        agentId,
-                        routineId,
-                        conversationId: missedConversation,
-                      },
-                      onNavigate,
-                    }
-              }
-            />
-            {claimed && (
-              <p className="text-[12px] text-muted-foreground">
-                {`${agentName} said it thinks this is done.`}
-              </p>
-            )}
-            {task !== null && (
-              <p className="whitespace-pre-wrap break-words text-[12px] text-muted-foreground">
-                {`Last update${reportedWhen === null ? '' : ` ${reportedWhen}`}: ${
-                  task.update === null || task.update === '' ? CANT_SHOW : task.update
-                }`}
-              </p>
-            )}
-            {task?.ask != null && (
-              <>
-                <p className="whitespace-pre-wrap break-words text-[12px] text-muted-foreground">
-                  {`${agentName} asks: ${task.ask}`}
-                </p>
-                <ReplyButton onReply={onReply} />
-              </>
-            )}
-            {claimActions}
-          </CardContent>
-        </Card>
-      </section>
-    );
-  }
+  const banner = bannerOf(detail);
   return (
-    <section aria-labelledby={headingId}>
+    <section aria-labelledby={headingId} className="flex flex-col gap-2">
       <h2 id={headingId} className="sr-only">
         Latest update
       </h2>
-      <Card>
-        <CardContent className="flex flex-col gap-2 px-5 py-4">
-          {task === null ? (
-            <p className="flex items-center gap-2 text-[13px]">
-              <StateDotSlot>
-                <StateDot state="no-update" />
-              </StateDotSlot>
-              <span>{next === null ? 'No update yet.' : `No update yet. It’ll check in ${next}.`}</span>
-            </p>
-          ) : (
-            <>
-              <p className="flex items-center gap-2 text-[12.5px] font-medium">
-                <StateDotSlot>
-                  <StateDot state={task.status} />
-                </StateDotSlot>
-                <span>{TASK_GROUP_LABELS[task.status]}</span>
-              </p>
-              {claimed && <p className="text-[13px] font-medium">{`${agentName} thinks this is done.`}</p>}
-              <p className="whitespace-pre-wrap break-words text-[13px] leading-relaxed">
-                {task.update === null || task.update === '' ? CANT_SHOW : task.update}
-              </p>
-              <CheckedLine
-                label="Checked"
-                at={task.reportedAt}
-                enabled={enabled}
-                next={next}
-                now={now}
-                seeWhatItDid={
-                  fromCheckIn === null
-                    ? null
-                    : {
-                        route: {
-                          kind: 'task-checkin',
-                          agentId,
-                          routineId,
-                          conversationId: fromCheckIn,
-                        },
-                        onNavigate,
-                      }
-                }
-              />
-              {task.ask !== null && (
-                <>
-                  <p className="whitespace-pre-wrap break-words text-[13px] leading-relaxed">
-                    {`${agentName} asks: ${task.ask}`}
-                  </p>
-                  <ReplyButton onReply={onReply} />
-                </>
-              )}
-              {claimActions}
-            </>
+      {missLine !== null && <div className="text-muted-foreground">{missLine}</div>}
+      {task === null ? (
+        <p className="flex items-center gap-2 text-[14px] text-muted-foreground">
+          <StateDotSlot>
+            <StateDot state="no-update" />
+          </StateDotSlot>
+          <span>{next === null || done ? 'No update yet.' : `No update yet. It’ll check in ${next}.`}</span>
+        </p>
+      ) : (
+        <div className="flex items-start gap-3">
+          <p
+            className={cn(
+              'min-w-0 flex-1 whitespace-pre-wrap break-words text-[15px] leading-6',
+              "before:content-['“'] after:content-['”']",
+            )}
+          >
+            {task.update === null || task.update === '' ? CANT_SHOW : task.update}
+          </p>
+          <WhenLine
+            short={timeAgo(task.reportedAt, now)}
+            full={done ? `Last update ${checkInWhen(task.reportedAt, now) ?? ''}`.trim() : checkedSentence('Checked', task.reportedAt, enabled, next, now)}
+          />
+          {fromCheckIn === null ? null : (
+            <IconLink
+              icon={ArrowUpRight}
+              label="See what it did"
+              {...routeLinkProps({ kind: 'task-checkin', agentId, routineId, conversationId: fromCheckIn }, onNavigate)}
+            />
           )}
-        </CardContent>
+        </div>
+      )}
+      {task?.ask != null && banner !== 'ask' && !done && (
+        <div className="flex items-start gap-2">
+          <p className="min-w-0 flex-1 whitespace-pre-wrap break-words text-[13px] leading-6 text-muted-foreground">
+            {`${agentName} asks: ${task.ask}`}
+          </p>
+          <IconAction icon={MessageSquare} label="Reply" variant="ghost" className="size-7" onClick={onReply} />
+        </div>
+      )}
+    </section>
+  );
+}
+
+/**
+ * A check-in that left no report (TASK-930): its mark (`taskGroup`, the same
+ * as its Tasks row: No recent update, or Needs you from the third in a row or
+ * when the last report needed you), the one-line reason, and the one thing to
+ * do as a link-styled button that does it (Check now, Resume, or Edit for a
+ * too-long brief; just words when there's nothing to press), with when it
+ * missed and a link to that check-in. The reason and the fix are host-written
+ * words (`lib/task-miss.ts`).
+ */
+function MissLine({
+  detail,
+  now,
+  agentId,
+  routineId,
+  busy,
+  onNavigate,
+  onPress,
+  onEdit,
+}: {
+  detail: TaskDetail;
+  now: Date;
+  agentId: string;
+  routineId: string;
+  busy: boolean;
+  onNavigate: (route: WorkspaceRoute) => void;
+  onPress: (kind: ActionKind, from?: FocusSlot) => void;
+  onEdit: () => void;
+}) {
+  const headingId = useId();
+  const miss = detail.noRecentUpdate;
+  if (miss === null) return null;
+  const { enabled, permissions, agentName } = detail;
+  // Grouped as the Tasks row groups it, minus the pause: the pill already says "Paused".
+  const group = taskGroup({ enabled: true, doneAt: null, task: detail.task, noRecentUpdate: miss });
+  const words = missWords(miss.reason, agentName, !enabled, {
+    checkNow: permissions.fire,
+    edit: permissions.edit,
+  });
+  const next = enabled && detail.nextCheckAt !== null ? checkInWhen(detail.nextCheckAt, now) : null;
+  const missed = missCheckIn(miss, detail.updates);
+  // The button does what its words say: Edit, Resume or Check now. A too-long brief nobody here may
+  // shorten names no action, so it stays words.
+  const fix: (() => void) | null = words.settingsLink
+    ? onEdit
+    : miss.reason === 'brief-too-long'
+      ? null
+      : !enabled
+        ? permissions.edit
+          ? () => onPress('resume')
+          : null
+        : permissions.fire && miss.reason !== 'interrupted'
+          ? () => onPress('check')
+          : null;
+  return (
+    <section aria-labelledby={headingId} className="flex flex-col gap-1.5">
+      <div className="flex items-start gap-2.5">
+        <span className="flex h-6 items-center">
+          <StateDotSlot>
+            <StateDot state={group} />
+          </StateDotSlot>
+        </span>
+        <h2 id={headingId} className="sr-only">
+          {TASK_GROUP_LABELS[group]}
+        </h2>
+        <p className="min-w-0 flex-1 break-words text-[14px] leading-6">{missSummary(miss)}</p>
+        <WhenLine short={timeAgo(miss.at, now)} full={checkedSentence('Last check-in', miss.at, enabled, next, now)} />
+        {missed !== null && (
+          <IconLink
+            icon={ArrowUpRight}
+            label="See what it did"
+            {...routeLinkProps({ kind: 'task-checkin', agentId, routineId, conversationId: missed }, onNavigate)}
+          />
+        )}
+      </div>
+      <div className="pl-[18px]">
+        {fix === null ? (
+          <p className="text-[13px] text-muted-foreground">{words.fix}</p>
+        ) : (
+          <Button
+            type="button"
+            variant="link"
+            size="sm"
+            className="h-auto whitespace-normal p-0 text-left text-[13px]"
+            disabled={busy && !words.settingsLink}
+            onClick={fix}
+          >
+            {words.fix}
+          </Button>
+        )}
+      </div>
+    </section>
+  );
+}
+
+/** A Done task's banner: when the person marked it done. Focus lands here after Mark done (WHERE FOCUS GOES). */
+function DoneBanner({
+  detail,
+  now,
+  doneLineRef,
+}: {
+  detail: TaskDetail;
+  now: Date;
+  doneLineRef: RefObject<HTMLParagraphElement | null>;
+}) {
+  const doneWhen = checkInWhen(detail.doneAt as string, now);
+  return (
+    <section aria-label="Done">
+      <Card className="bg-primary-soft px-4 py-3 shadow-none">
+        <p
+          ref={doneLineRef}
+          tabIndex={-1}
+          className={cn('flex items-center gap-2 rounded-sm text-[14px] font-medium', RESOLUTION_FOCUS_RING)}
+        >
+          <Check aria-hidden="true" className="size-4 shrink-0 text-primary" />
+          <span>{doneWhen === null ? 'You marked this done.' : `You marked this done ${doneWhen}.`}</span>
+        </p>
       </Card>
     </section>
   );
 }
 
+/** The agent thinks the task is finished (TASK-950): the page's one question, Not yet or Mark done. */
+function ClaimBanner({ detail, finish, unticked }: { detail: TaskDetail; finish: Finish; unticked: number }) {
+  const headingId = useId();
+  const { agentName } = detail;
+  return (
+    <section aria-labelledby={headingId}>
+      <Card className="flex flex-col gap-3 bg-primary-soft p-4 shadow-none sm:flex-row sm:items-center">
+        <div className="flex min-w-0 flex-1 items-center gap-2.5">
+          <span className="shrink-0">
+            <AgentTile agent={{ name: agentName }} size={20} />
+          </span>
+          <h2 id={headingId} className="min-w-0 break-words text-[15px] font-medium">
+            {detail.noRecentUpdate !== null
+              ? `${agentName} said it thinks this is done.`
+              : `${agentName} thinks this is done.`}
+          </h2>
+        </div>
+        <MarkDoneControls
+          variant="claim"
+          finish={finish}
+          unticked={unticked}
+          canEdit={detail.permissions.edit}
+          agentName={agentName}
+          running={detail.enabled}
+        />
+      </Card>
+    </section>
+  );
+}
+
+/** One row of the About list: its icon, one line, a short fact and a chevron. It opens in place. */
+function AboutRow({
+  icon: Icon,
+  label,
+  meta,
+  metaWords,
+  children,
+}: {
+  icon: LucideIcon;
+  /** Person- or host-written; one line on screen, the whole of it inside. */
+  label: string;
+  /** The short fact at the end ("On", "2"), shown. */
+  meta?: string | undefined;
+  /** What `meta` says in words, for a screen reader, when the shown fact is only a number. */
+  metaWords?: string | undefined;
+  children: ReactNode;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <li>
+      <Collapsible open={open} onOpenChange={setOpen}>
+        <CollapsibleTrigger asChild>
+          <Button
+            variant="ghost"
+            className="h-auto w-full justify-start gap-2.5 px-2.5 py-2 text-[14px] font-normal"
+          >
+            <Icon data-icon="inline-start" aria-hidden="true" className="text-muted-foreground" />
+            <span className="min-w-0 flex-1 truncate text-left">{label}</span>
+            {meta !== undefined && (
+              <span aria-hidden={metaWords !== undefined || undefined} className="text-[13px] text-muted-foreground">
+                {meta}
+              </span>
+            )}
+            {metaWords !== undefined && <span className="sr-only">{metaWords}</span>}
+            <ChevronRight
+              data-icon="inline-end"
+              aria-hidden="true"
+              className={cn('text-muted-foreground transition-transform', open && 'rotate-90')}
+            />
+          </Button>
+        </CollapsibleTrigger>
+        <CollapsibleContent className="px-2.5 pb-3 pt-1">{children}</CollapsibleContent>
+      </Collapsible>
+    </li>
+  );
+}
+
+/**
+ * About this task: the side list whose rows open in place (see THE LAYOUT).
+ * The brief was written by a person; the notes by the agent. Both are text
+ * children only. Changing any of it is Edit's (⋯ › Edit task); a row that has
+ * nothing yet points there.
+ */
+function AboutList({
+  detail,
+  agentId,
+  routineId,
+  onEdit,
+  onNavigate,
+  onRefresh,
+}: {
+  detail: TaskDetail;
+  agentId: string;
+  routineId: string;
+  onEdit: () => void;
+  onNavigate: (route: WorkspaceRoute) => void;
+  onRefresh: () => void;
+}) {
+  const headingId = useId();
+  const { agentName, brief, permissions } = detail;
+  const repeat = detail.kind === 'repeat';
+  const appOn = detail.appUpdates !== undefined || detail.repeat?.appUpdates === true;
+  const notes = detail.task?.agentNotes ?? null;
+  const noteLines = notes === null ? 0 : notes.split('\n').filter((l) => l.trim() !== '').length;
+  const editLink = permissions.edit && (
+    <Button type="button" variant="link" size="sm" className="h-auto p-0 text-[13px]" onClick={onEdit}>
+      Edit task
+    </Button>
+  );
+  const text = 'whitespace-pre-wrap break-words text-[13px] leading-relaxed';
+  return (
+    <Card>
+      <section aria-labelledby={headingId} className="p-1.5">
+        <h2 id={headingId} className="sr-only">
+          About this task
+        </h2>
+        <ul className="flex flex-col divide-y divide-border">
+          {!repeat &&
+            (brief.goodWhen !== null ? (
+              <AboutRow icon={Target} label={brief.goodWhen}>
+                <p className="text-[12px] text-muted-foreground">Going well when</p>
+                <p className={text}>{brief.goodWhen}</p>
+              </AboutRow>
+            ) : permissions.edit ? (
+              <li>
+                <Button
+                  variant="ghost"
+                  className="h-auto w-full justify-start gap-2.5 px-2.5 py-2 text-[14px] font-normal text-muted-foreground"
+                  onClick={onEdit}
+                >
+                  <Target data-icon="inline-start" aria-hidden="true" />
+                  <span className="min-w-0 flex-1 truncate text-left">Add how we’ll know it’s going well</span>
+                </Button>
+              </li>
+            ) : (
+              <li className="flex items-center gap-2.5 px-2.5 py-2 text-[14px] text-muted-foreground">
+                <Target aria-hidden="true" className="size-4 shrink-0" />
+                Nothing saved for how we’ll know it’s going well.
+              </li>
+            ))}
+          <AboutRow icon={FileText} label="Instructions">
+            <p className={cn(text, brief.promptBody === null && 'text-muted-foreground')}>
+              {brief.promptBody ?? 'No instructions saved.'}
+            </p>
+          </AboutRow>
+          {!repeat && (
+            <AboutRow
+              icon={NotebookPen}
+              label={`${agentName}’s notes`}
+              meta={noteLines > 0 ? String(noteLines) : undefined}
+              metaWords={noteLines > 0 ? `, ${noteLines} ${noteLines === 1 ? 'line' : 'lines'}` : undefined}
+            >
+              <TaskNotes
+                agentId={agentId}
+                routineId={routineId}
+                agentName={agentName}
+                notes={notes}
+                onCleared={onRefresh}
+              />
+            </AboutRow>
+          )}
+          <AboutRow icon={Plug} label="App updates" meta={appOn ? 'On' : 'Off'}>
+            {!appOn ? (
+              <p className="text-[13px] text-muted-foreground">
+                Off. Turn it on in Edit task. {editLink}
+              </p>
+            ) : permissions.edit ? (
+              <TaskAppUpdates key={`${agentId}/${routineId}/${detail.revision}`} agentId={agentId} routineId={routineId} onEdit={onEdit} />
+            ) : (
+              <p className="text-[13px] text-muted-foreground">
+                On. Only someone who manages this agent’s tasks can see its setup.
+              </p>
+            )}
+          </AboutRow>
+          {repeat && (
+            <AboutRow icon={History} label="Memory between runs" meta={detail.repeat?.sharedThread ? 'One thread' : 'Fresh'}>
+              <p className="text-[13px] text-muted-foreground">
+                {detail.repeat?.sharedThread
+                  ? 'This job uses a shared thread. A transcript can include several runs.'
+                  : 'Each run starts fresh.'}{' '}
+                Change it in Edit task. {editLink}
+              </p>
+            </AboutRow>
+          )}
+          <li>
+            <Button
+              asChild
+              variant="ghost"
+              className="h-auto w-full justify-start gap-2.5 px-2.5 py-2 text-[13px] font-normal text-muted-foreground"
+            >
+              <a {...routeLinkProps({ kind: 'agent-settings', id: agentId, section: 'routines' }, onNavigate)}>
+                <ShieldCheck data-icon="inline-start" aria-hidden="true" />
+                <span className="min-w-0 flex-1 truncate text-left">{`What ${agentName} can do without asking`}</span>
+                <ArrowUpRight data-icon="inline-end" aria-hidden="true" />
+              </a>
+            </Button>
+          </li>
+        </ul>
+      </section>
+    </Card>
+  );
+}
+
 type MarkDone = ReturnType<typeof useMarkDone>;
 
-/** What the latest-update card, the steps footer and the body share about finishing a task. */
+/** What the claim banner, the steps footer and the body share about finishing a task. */
 interface Finish {
   /** Its `buttonRef` goes on whichever Mark done is on screen (the claim's or the footer's; never both), its `controlsRef` on what holds it. */
   markDone: MarkDone;
@@ -1385,11 +1869,11 @@ interface Finish {
 }
 
 /**
- * Mark done: in the claim card as the page's primary action beside Not yet, or
- * under the steps as an outline button. The words and the button need the same
- * permission (`edit`): without it the button is disabled and the line says why,
- * and nothing here names an action the viewer can't take. With unticked steps
- * the press opens a question in place of the row.
+ * Mark done: in the claim banner as the page's primary action after Not yet,
+ * or under the steps as an outline button. The words and the button need the
+ * same permission (`edit`): without it the button is disabled and the line
+ * says why, and nothing here names an action the viewer can't take. With
+ * unticked steps the press opens a question in place of the row.
  */
 function MarkDoneControls({
   variant,
@@ -1420,7 +1904,11 @@ function MarkDoneControls({
       aria-describedby={claim && canEdit ? undefined : whyId}
       onClick={markDone.press}
     >
-      {markDone.busy && <Spinner data-icon="inline-start" aria-hidden="true" />}
+      {markDone.busy ? (
+        <Spinner data-icon="inline-start" aria-hidden="true" />
+      ) : (
+        claim && <Check data-icon="inline-start" aria-hidden="true" />
+      )}
       Mark done
     </Button>
   );
@@ -1442,7 +1930,6 @@ function MarkDoneControls({
       ) : claim ? (
         <>
           <div className="flex flex-wrap items-center gap-2">
-            {button}
             <Button
               type="button"
               size="sm"
@@ -1453,6 +1940,7 @@ function MarkDoneControls({
             >
               Not yet
             </Button>
+            {button}
           </div>
           {!canEdit && (
             <p id={whyId} className="text-[12px] text-muted-foreground">
@@ -1461,9 +1949,9 @@ function MarkDoneControls({
           )}
         </>
       ) : (
-        <div className="flex flex-wrap items-center gap-3">
+        <div className="flex flex-col items-start gap-2">
           {button}
-          <p id={whyId} className="text-[13px] text-muted-foreground">
+          <p id={whyId} className="text-[12px] text-muted-foreground">
             {footerLine}
           </p>
         </div>
@@ -1474,62 +1962,5 @@ function MarkDoneControls({
         </Alert>
       )}
     </div>
-  );
-}
-
-/** Outline, so the page keeps one primary action (Check now, or Resume). */
-function ReplyButton({ onReply }: { onReply: () => void }) {
-  return (
-    <Button type="button" variant="outline" size="sm" className="self-start" onClick={onReply}>
-      Reply
-    </Button>
-  );
-}
-
-function CheckedLine({
-  label,
-  at,
-  enabled,
-  next,
-  now,
-  seeWhatItDid,
-}: {
-  /** "Checked" after a report; "Last check-in" when the last one left none (TASK-930). */
-  label: 'Checked' | 'Last check-in';
-  /** When that check-in started, ISO. */
-  at: string;
-  enabled: boolean;
-  next: string | null;
-  now: Date;
-  /** The "See what it did" link's destination, or null when the card has none (TASK-911). */
-  seeWhatItDid: { route: WorkspaceRoute; onNavigate: (route: WorkspaceRoute) => void } | null;
-}) {
-  const checked = checkInWhen(at, now);
-  const parts = [
-    checked === null ? null : `${label} ${checked}`,
-    !enabled ? 'Paused' : next === null ? null : `Next check ${next}`,
-    seeWhatItDid === null ? null : (
-      <a
-        key="see-what-it-did"
-        {...routeLinkProps(seeWhatItDid.route, seeWhatItDid.onNavigate)}
-        className={cn(
-          'rounded-sm text-[12px] text-muted-foreground underline underline-offset-2 hover:text-foreground',
-          RESOLUTION_FOCUS_RING,
-        )}
-      >
-        See what it did
-      </a>
-    ),
-  ].filter((p): p is string | ReactElement => p !== null);
-  if (parts.length === 0) return null;
-  return (
-    <p className="text-[12px] text-muted-foreground">
-      {parts.map((part, i) => (
-        <Fragment key={i}>
-          {i > 0 && ' · '}
-          {part}
-        </Fragment>
-      ))}
-    </p>
   );
 }
