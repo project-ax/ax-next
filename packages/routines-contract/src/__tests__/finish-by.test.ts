@@ -9,7 +9,7 @@ import {
 // TASK-951: a "get-done" task's finish date. A person sets it on the task page, through
 // `routines:set-finish-by`, which is neither a tool nor an IPC action, so no model can set it. It is a
 // calendar date, not an instant, and the brief, the Tasks row and the page count the days to it on one
-// calendar: the task's own.
+// calendar: the saved personal zone, then the legacy task/UTC fallbacks.
 const issues = (value: unknown): string[] => {
   const result = RoutineFinishBySchema.safeParse(value);
   return result.success ? [] : result.error.issues.map(issue => issue.message);
@@ -54,12 +54,13 @@ describe("a task's finish date (TASK-951)", () => {
 });
 
 describe("a task's calendar (TASK-951)", () => {
-  it('runs on the cron’s zone, else the active hours’, else the zone its date was set from, else UTC (TASK-955)', () => {
+  it('counts in the saved personal zone first, then cron, active hours and UTC (TASK-961)', () => {
     const tokyoHours = { start: '09:00', end: '17:00', tz: 'Asia/Tokyo' };
     const setFrom = 'America/Los_Angeles';
-    // The task's own zone wins over the one its date was set from.
-    expect(taskTimeZone({ schedule: { kind: 'cron', expr: '0 9 * * *', tz: 'America/New_York' }, activeHours: tokyoHours, finishByTimeZone: setFrom })).toBe('America/New_York');
-    expect(taskTimeZone({ schedule: { kind: 'interval', every: '15m' }, activeHours: tokyoHours, finishByTimeZone: setFrom })).toBe('Asia/Tokyo');
+    expect(taskTimeZone({ schedule: { kind: 'cron', expr: '0 9 * * *', tz: 'America/New_York' }, activeHours: tokyoHours, finishByTimeZone: setFrom })).toBe('America/Los_Angeles');
+    expect(taskTimeZone({ schedule: { kind: 'interval', every: '15m' }, activeHours: tokyoHours, finishByTimeZone: setFrom })).toBe('America/Los_Angeles');
+    expect(taskTimeZone({ schedule: { kind: 'cron', expr: '0 9 * * *', tz: 'America/New_York' }, activeHours: tokyoHours, finishByTimeZone: null })).toBe('America/New_York');
+    expect(taskTimeZone({ schedule: null, activeHours: tokyoHours, finishByTimeZone: null })).toBe('Asia/Tokyo');
     expect(taskTimeZone({ schedule: { kind: 'interval', every: '15m' }, activeHours: null, finishByTimeZone: setFrom })).toBe('America/Los_Angeles');
     expect(taskTimeZone({ schedule: { kind: 'interval', every: '15m' }, activeHours: null, finishByTimeZone: null })).toBe('UTC');
   });

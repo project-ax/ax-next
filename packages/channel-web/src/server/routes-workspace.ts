@@ -3322,8 +3322,8 @@ function toTaskStepCounts(view: Pick<RoutineView, 'kind' | 'steps'>): TaskStepCo
 /**
  * A view's finish date → the wire's (TASK-951): none unless the task is
  * `get-done` and its date is one the contract's rule accepts, else the date
- * and the whole days left to it at `now`, counted in the task's own time zone,
- * else the one its date was set from (`taskTimeZone`, TASK-955), never the
+ * and the whole days left to it at `now`, counted in the zone saved with its
+ * date, then the task's cron/active-hours zone, then UTC (`taskTimeZone`, TASK-961), never the
  * reader's or the host's, so the Tasks row, the page and the check-in's brief
  * agree. The zone itself never crosses.
  *
@@ -3331,10 +3331,9 @@ function toTaskStepCounts(view: Pick<RoutineView, 'kind' | 'steps'>): TaskStepCo
  * `toTaskNoRecentUpdate` is, and never a thrown request: a date the rule
  * refuses reads as none, a day no calendar has included, which would draw as
  * another day or make `Intl` throw. So does a task's own time zone this
- * runtime doesn't know, which the count would throw on (a parsed view's zone
- * was checked on this runtime). The zone the date was set from is only the
- * fallback, so one the contract's zone rule refuses here, or one that isn't
- * text, reads as none: the date still shows, counted on UTC's calendar.
+ * runtime doesn't know when it is the selected fallback (a parsed view's zone
+ * was checked on this runtime). An unusable saved personal zone is omitted;
+ * the task's own zone, then UTC, supplies the calendar instead.
  */
 function toTaskFinishBy(
   view: Pick<RoutineView, 'kind' | 'finishBy' | 'finishByTimeZone' | 'schedule' | 'activeHours'>,

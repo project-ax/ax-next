@@ -2976,3 +2976,10 @@ describe('task app setup metadata (TASK-983)', () => {
     expect(bodyOf(await scheduled.detail())).not.toHaveProperty('appUpdates');
   });
 });
+
+it('a UTC-scheduled task is still due today in the saved Los Angeles zone at 01:00 UTC', async () => {
+  const { detail } = setup({ rows: [laTask({ schedule: { kind: 'cron', expr: '0 9 * * *', tz: 'UTC' }, finishBy: '2026-10-25', finishByTimeZone: 'America/Los_Angeles' })], now: () => new Date('2026-10-26T01:00:00Z') });
+  const captured = await detail();
+  expect(captured.statusCode).toBe(200);
+  expect(bodyOf(captured).finishBy).toEqual({ date: '2026-10-25', daysLeft: 0 });
+});

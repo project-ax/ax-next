@@ -432,12 +432,17 @@ describe("a finish date's days, counted in the zone it was set from (TASK-955)",
     expect(briefAtBoundary(dated(interval, null))).toContain(DAY_AGO);
   });
 
-  it('the task’s own zone wins over the zone its date was set from (TASK-955)', () => {
-    // Tokyo is already on Monday the 26th at that instant, whichever of the task's own zones names it.
+  it('the saved personal zone wins over cron and active hours (TASK-961)', () => {
     const tokyoCron = dated({ trigger: { kind: 'cron', expr: '0 9 * * *', tz: 'Asia/Tokyo' } }, 'America/Los_Angeles');
     const tokyoHours = dated({ ...interval, activeHours: { start: '09:00', end: '17:00', tz: 'Asia/Tokyo' } }, 'America/Los_Angeles');
     for (const [name, row] of [['cron', tokyoCron], ['active hours', tokyoHours]] as const) {
-      expect(briefAtBoundary(row), name).toContain(DAY_AGO);
+      expect(briefAtBoundary(row), name).toContain(TODAY);
     }
+  });
+
+  it('a UTC cron still says today in Los Angeles, with the cron fallback retained for an old date', () => {
+    const cron = { trigger: { kind: 'cron', expr: '0 9 * * *', tz: 'UTC' } };
+    expect(briefAtBoundary(dated(cron, 'America/Los_Angeles'))).toContain(TODAY);
+    expect(briefAtBoundary(dated(cron, null))).toContain(DAY_AGO);
   });
 });

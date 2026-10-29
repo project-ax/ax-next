@@ -40,6 +40,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { routineApi, RoutineApiError } from '@/lib/routines';
 import { describeCron } from '@/lib/cron-describe';
 import { TASK_KIND_LABELS } from '@/lib/task-kinds';
+import { browserTimeZone } from '@/lib/task-finish-by';
 import { ActiveHoursDaySelector } from './ActiveHoursDaySelector';
 import { WebhookSignatureFields } from './WebhookSignatureFields';
 import { WebhookAddressFields } from './WebhookAddressFields';
@@ -69,7 +70,7 @@ const empty = (taskMode = false): RoutineDefinition => ({
   schedule: taskMode ? { kind: 'interval', every: '1h' } : {
     kind: 'cron',
     expr: '0 8 * * 1-5',
-    tz: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
+    tz: browserTimeZone() ?? 'UTC',
   },
   webhook: null,
   activeHours: null,
@@ -367,7 +368,7 @@ function RoutineForm({
               <FieldLabel>Schedule</FieldLabel>
               <ToggleGroup type="single" aria-label="Schedule" value={form.schedule.kind} disabled={disabled} onValueChange={value => {
                 if (value === 'interval') update('schedule', { kind: 'interval', every: '1h' });
-                if (value === 'cron' && !defaults) update('schedule', { kind: 'cron', expr: '0 8 * * 1-5', tz: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC' });
+                if (value === 'cron' && !defaults) update('schedule', { kind: 'cron', expr: '0 8 * * 1-5', tz: browserTimeZone() ?? 'UTC' });
               }} className="justify-start flex-wrap">
                 <ToggleGroupItem value="interval">Interval</ToggleGroupItem>
                 {!defaults && <ToggleGroupItem value="cron">Custom schedule</ToggleGroupItem>}
@@ -419,9 +420,7 @@ function RoutineForm({
                         ? {
                             start: '09:00',
                             end: '17:00',
-                            tz:
-                              Intl.DateTimeFormat().resolvedOptions()
-                                .timeZone || 'UTC',
+                            tz: browserTimeZone() ?? 'UTC',
                           }
                         : null,
                     )

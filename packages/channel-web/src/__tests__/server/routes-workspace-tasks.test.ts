@@ -1050,7 +1050,7 @@ describe('GET /api/workspace/tasks, the finish date (TASK-951)', () => {
   /** 18:00 on 4 November in Los Angeles, when it is already the 5th in UTC. */
   const LA_EVENING = (): Date => new Date('2026-11-05T02:00:00.000Z');
 
-  it("each get-done row carries its finish date and the days left in its own task's time zone, else the one its date was set from (TASK-951, TASK-955)", async () => {
+  it('each get-done row counts in the saved personal zone first, retaining legacy fallbacks (TASK-961)', async () => {
     const { get } = setup({
       rows: [
         stored({
@@ -1070,7 +1070,7 @@ describe('GET /api/workspace/tasks, the finish date (TASK-951)', () => {
           finishBy: '2026-11-14',
           finishByTimeZone: 'America/Los_Angeles',
         }),
-        // The task's own zone wins over the one its date was set from (TASK-955).
+        // The saved personal zone wins over the task's schedule (TASK-961).
         stored({
           agentId: 'a1',
           routineId: 'tokyo',
@@ -1090,8 +1090,7 @@ describe('GET /api/workspace/tasks, the finish date (TASK-951)', () => {
       ['la', { date: '2026-11-14', daysLeft: 10 }],
       ['utc', { date: '2026-11-14', daysLeft: 9 }],
       ['person', { date: '2026-11-14', daysLeft: 10 }],
-      // Already the 5th in Tokyo: 9 days, though the date was set from Los Angeles.
-      ['tokyo', { date: '2026-11-14', daysLeft: 9 }],
+      ['tokyo', { date: '2026-11-14', daysLeft: 10 }],
       // A stay-on-top task never has one.
       ['queue', null],
     ]);
@@ -1262,4 +1261,11 @@ describe('GET /api/workspace/tasks, who may mark a task done (TASK-956)', () => 
     expect(captured.statusCode).toBe(200);
     expect(bodyOf(captured).tasks.map((t) => [t.routineId, t.canMarkDone])).toEqual([['t1', false]]);
   });
+});
+
+it('a UTC-scheduled task is still due today in the saved Los Angeles zone at 01:00 UTC', async () => {
+  const { get } = setup({ rows: [stored({ agentId: 'a1', routineId: 'utc-person', kind: 'get-done', schedule: { kind: 'cron', expr: '0 9 * * *', tz: 'UTC' }, finishBy: '2026-10-25', finishByTimeZone: 'America/Los_Angeles' })], now: () => new Date('2026-10-26T01:00:00Z') });
+  const captured = await get();
+  expect(captured.statusCode).toBe(200);
+  expect(bodyOf(captured).tasks.find(t => t.routineId === 'utc-person')!.finishBy).toEqual({ date: '2026-10-25', daysLeft: 0 });
 });
