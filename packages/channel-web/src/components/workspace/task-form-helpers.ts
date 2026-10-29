@@ -106,6 +106,7 @@ export function hoursChip(hours: ActiveHours | null): string {
   if (hours === null) return 'Any time';
   const days = hours.days;
   const dayWord = days === undefined || days.length === 7 ? 'Every day'
+    : days.length === 0 ? 'No days'
     : days.join(',') === WEEKDAYS ? 'Weekdays'
     : days.join(',') === 'sat,sun' ? 'Weekends'
     : days.map(day => day.charAt(0).toUpperCase() + day.slice(1)).join(', ');

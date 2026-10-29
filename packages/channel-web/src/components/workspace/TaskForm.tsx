@@ -264,7 +264,11 @@ export function TaskForm({
   const scheduleLabel = scheduleChip(form.schedule, form.kind);
   const updatesOn = form.webhook !== null;
   const chosenAgent = agentChoices?.agents.find(agent => agent.agentId === agentChoices.selected);
-  const savedWebhook = initial.webhook !== null && initial.webhook.path === form.webhook?.path && mode === 'edit';
+  // The task already has an address; a changed name is only a preview until saved.
+  const hasAddress = mode === 'edit' && initial.webhook !== null;
+  const savedWebhook = hasAddress && initial.webhook?.path === form.webhook?.path;
+  const respondLabel = RESPOND_PRESETS.find(item => item.value === respondPreset(form.webhook?.respondWithin))?.label
+    ?? durationWords(form.webhook?.respondWithin ?? '5m');
   const showQuiet = form.kind === 'repeat' || form.silenceToken !== null || shown.has('quietWord');
   const showQuietLength = (showQuiet && form.silenceToken !== null) || shown.has('quietLength');
 
@@ -418,7 +422,7 @@ export function TaskForm({
             {popoverError('hours')}
           </SettingChip>
           <SettingChip icon={Plug} label={updatesOn ? 'App updates on' : 'App updates'}
-            name={`App updates: ${updatesOn ? `On${task ? `, react within ${durationWords(form.webhook?.respondWithin ?? '5m')}` : ''}` : 'Off'}`}
+            name={`App updates: ${updatesOn ? `On${task ? `, react within ${respondLabel}` : ''}` : 'Off'}`}
             open={chip === 'updates'} onOpenChange={openChip('updates')}
             invalid={invalid('updates')} describedBy={describedBy('updates')} buttonRef={register('updates')}>
             <Field orientation="horizontal">
@@ -441,7 +445,7 @@ export function TaskForm({
               </Field>
             )}
             {form.webhook !== null && <FieldDescription>
-              {savedWebhook ? 'Its address and signature settings are under More options.'
+              {hasAddress ? 'Its address and signature settings are under More options.'
                 : mode === 'create' ? 'You’ll connect the app after you start the task.' : 'You’ll connect the app after you save.'}
             </FieldDescription>}
             {popoverError('updates')}
@@ -490,7 +494,7 @@ export function TaskForm({
               }, { maxLength: 128, help: 'The end of the web address the other app sends updates to.' })}
               {textInput('Only these kinds of updates', 'events', eventsDraft, editEvents,
                 { placeholder: 'push, issue_comment', help: 'Event names, separated by commas. Leave it empty for every update.' })}
-              {savedWebhook && canEdit && routineId !== undefined && (
+              {hasAddress && canEdit && routineId !== undefined && (
                 <WebhookAddressFields key={`${agentId}/${routineId}`} agentId={agentId} routineId={routineId}
                   path={form.webhook.path} saved={savedWebhook} disabled={disabled} onPendingChange={setAddressBusy} />
               )}

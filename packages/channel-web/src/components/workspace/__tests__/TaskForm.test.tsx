@@ -274,6 +274,12 @@ describe('task form chips and presets', () => {
     expect(routineApi.update).not.toHaveBeenCalled();
   });
 
+  it('words an hour’s response time the way its Select does', async () => {
+    await edit({ ...task, webhook: { kind: 'webhook', path: '/updates', respondWithin: '1h' } });
+    fireEvent.click(screen.getByRole('button', { name: 'App updates: On, react within 60 min' }));
+    expect(screen.getByRole('combobox', { name: 'React within' })).toHaveTextContent('60 min');
+  });
+
   it('maps equal presets both ways', () => {
     expect(schedulePreset({ kind: 'interval', every: '60m' }, 'stay-on-top')).toBe('1h');
     expect(schedulePreset({ kind: 'interval', every: '45m' }, 'stay-on-top')).toBeNull();
@@ -285,6 +291,7 @@ describe('task form chips and presets', () => {
     expect(scheduleChip({ kind: 'interval', every: '45m' }, 'stay-on-top')).toBe('Every 45 min');
     expect(scheduleChip(null, 'repeat')).toBe('No schedule');
     expect(hoursChip({ start: '22:00', end: '06:30', tz: 'UTC', days: ['sat', 'sun'] })).toBe('Weekends 10pm–6:30am');
+    expect(hoursChip({ start: '09:00', end: '17:00', tz: 'UTC', days: [] })).toBe('No days 9am–5pm');
   });
 });
 
@@ -325,6 +332,15 @@ describe('task form More options', () => {
       webhook: { kind: 'webhook', path: '/digest', events: ['push', 'release'], hmac: { header: 'X-Hub-Signature-256', algorithm: 'sha256', prefix: 'sha256=' } },
       activeHours: null, silenceToken: 'NOTHING_NEW', silenceMaxChars: 40, conversation: 'shared', kind: 'repeat', goodWhen: null,
     });
+  });
+
+  it('previews a saved address under More options and says when a new name is only a preview', async () => {
+    await edit({ ...task, webhook: { kind: 'webhook', path: '/updates' } });
+    fireEvent.click(screen.getByRole('button', { name: 'More options' }));
+    expect(await screen.findByText('This address belongs only to this task.')).toBeVisible();
+    fill('Address name', '/renamed');
+    expect(screen.getByText('Preview only — save to apply path changes.')).toBeVisible();
+    expect(screen.getByLabelText('Webhook URL')).toHaveValue(`${window.location.origin}/webhooks/r/renamed`);
   });
 
   it('hides Start right away on edit, where Pause and Resume live on the task page', async () => {

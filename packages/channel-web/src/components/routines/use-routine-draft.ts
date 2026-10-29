@@ -106,6 +106,7 @@ export function useRoutineDraft({
   }, [busy, uncertain, addressBusy, onPendingChange]);
   function clearErrors() {
     setError(null);
+    setErrorCode(null);
     setInvalidField(undefined);
   }
   function update<K extends keyof RoutineDefinition>(
@@ -157,6 +158,7 @@ export function useRoutineDraft({
     flight.current = true;
     setBusy(true);
     setError(null);
+    setErrorCode(null);
     setConflict(false);
     operation.current ??= {
       requestId: crypto.randomUUID(),
