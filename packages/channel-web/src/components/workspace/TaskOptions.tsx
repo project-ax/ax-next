@@ -18,6 +18,10 @@
  * replays its answer instead of deleting twice. An answered refusal ends the
  * request; a revision conflict also asks the page to read the task again
  * (`onRefresh`), and the next press is a new request against what it read.
+ * While a request is still open, Pause instead stays off: the task may be
+ * gone. Each failure is worded from its status (an ended session, a task
+ * that's gone, one that's no longer theirs, one changed elsewhere), and
+ * closing the confirm, however it's closed, drops the last one.
  *
  * A landed delete is announced (`onWriteSucceeded`) even if the page has gone
  * meanwhile; only a page still there moves on to Tasks (`onDeleted`).
@@ -35,15 +39,35 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { Spinner } from '@/components/ui/spinner';
-import { logRequestFailure } from '@/lib/http';
+import { HTTP_SESSION_ENDED, logRequestFailure } from '@/lib/http';
 import { routineApi, RoutineApiError } from '@/lib/routines';
 
-const UNCONFIRMED = 'We couldn’t confirm the task was deleted. Try again, and it won’t happen twice.';
-const CHANGED = 'This task changed while you had it open. We’ve loaded the latest, so try again.';
-const REFUSED = 'We couldn’t delete this task. You may not manage this agent’s tasks any more.';
+/** A failed delete, one sentence per answer, worded from the status and never the message. */
+type Failure = 'unconfirmed' | 'expired' | 'gone' | 'forbidden' | 'changed' | 'refused';
+const FAILURE_COPY: Record<Failure, string> = {
+  unconfirmed: 'We couldn’t confirm the task was deleted. Try again, and it won’t happen twice.',
+  // A session running out isn't a malfunction (`lib/read-register.ts`): drawn in the quiet register.
+  expired: HTTP_SESSION_ENDED,
+  gone: 'This task isn’t available anymore. It may have been deleted.',
+  forbidden: 'We couldn’t delete this task. You may not manage this agent’s tasks any more.',
+  changed: 'This task changed while you had it open. We’ve loaded the latest, so try again.',
+  refused: 'We couldn’t delete this task just now. Try again.',
+};
 
-type Failure = 'unconfirmed' | 'changed' | 'refused';
-const FAILURE_COPY: Record<Failure, string> = { unconfirmed: UNCONFIRMED, changed: CHANGED, refused: REFUSED };
+function failureOf(status: number): Exclude<Failure, 'unconfirmed'> {
+  switch (status) {
+    case 401:
+      return 'expired';
+    case 404:
+      return 'gone';
+    case 403:
+      return 'forbidden';
+    case 409:
+      return 'changed';
+    default:
+      return 'refused';
+  }
+}
 
 export function TaskDeleteDialog({
   open,
@@ -110,27 +134,28 @@ export function TaskDeleteDialog({
       const answered = error instanceof RoutineApiError && error.status >= 400 && error.status < 500;
       if (answered) operation.current = null;
       if (alive.current) {
-        if (!answered) setFailure('unconfirmed');
-        else if (error.status === 409) {
-          setFailure('changed');
-          onRefresh();
-        } else setFailure('refused');
+        const failed = answered ? failureOf(error.status) : 'unconfirmed';
+        setFailure(failed);
+        if (failed === 'changed') onRefresh();
       }
     } finally {
       if (alive.current) setBusy(false);
     }
   }
 
+  // Every way out (Cancel, Escape, a click outside) goes through here, so a reopened confirm starts
+  // without the last answer. A delete on its way can't be dismissed out from under itself.
+  const change = (next: boolean) => {
+    if (busy) return;
+    if (!next) setFailure(null);
+    onOpenChange(next);
+  };
+  // A delete nobody could confirm may have happened: until its retry is answered, pausing the task
+  // instead would only confuse it. The request, not the alert, says so; Cancel clears the alert.
+  const deletePending = operation.current !== null;
+
   return (
-    <Dialog
-      open={open}
-      onOpenChange={(next) => {
-        // A delete on its way can't be dismissed out from under itself.
-        if (busy) return;
-        if (!next) setFailure(null);
-        onOpenChange(next);
-      }}
-    >
+    <Dialog open={open} onOpenChange={change}>
       <DialogContent onCloseAutoFocus={onCloseAutoFocus}>
         <DialogHeader>
           <DialogTitle className="break-words">{`Delete “${name}”?`}</DialogTitle>
@@ -144,16 +169,16 @@ export function TaskDeleteDialog({
           <p className="text-[14px]">Just need it to stop for a while? Pause it instead.</p>
         )}
         {failure !== null && (
-          <Alert variant="destructive">
+          <Alert variant={failure === 'expired' ? 'default' : 'destructive'}>
             <AlertDescription>{FAILURE_COPY[failure]}</AlertDescription>
           </Alert>
         )}
         <DialogFooter className="gap-2 sm:gap-0">
-          <Button variant="outline" disabled={busy} onClick={() => onOpenChange(false)}>
+          <Button variant="outline" disabled={busy} onClick={() => change(false)}>
             Cancel
           </Button>
           {canPauseInstead && (
-            <Button variant="outline" disabled={busy || failure === 'unconfirmed'} onClick={onPauseInstead}>
+            <Button variant="outline" disabled={busy || deletePending} onClick={onPauseInstead}>
               <Pause data-icon="inline-start" aria-hidden="true" />
               Pause instead
             </Button>

@@ -1,6 +1,8 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { TaskDeleteDialog } from '../TaskOptions';
+import { useState } from 'react';
+import { HTTP_SESSION_ENDED } from '@/lib/http';
 import { routineApi, RoutineApiError } from '@/lib/routines';
 vi.mock('@/lib/routines', async original => ({...(await original<typeof import('@/lib/routines')>()), routineApi:{remove:vi.fn()}}));
 beforeEach(()=>{vi.resetAllMocks();vi.spyOn(console,'warn').mockImplementation(()=>{});vi.mocked(routineApi.remove).mockResolvedValue({deleted:true,cleanupPending:false});});
@@ -77,5 +79,58 @@ describe('the task delete confirm (⋯ › Delete task…)',()=>{
   const h=show();let resolve!:()=>void;vi.mocked(routineApi.remove).mockImplementationOnce(()=>new Promise(r=>{resolve=()=>r({deleted:true,cleanupPending:false});}));
   fireEvent.click(deleteButton());h.unmount();
   await act(async()=>resolve());expect(h.onWriteSucceeded).toHaveBeenCalledOnce();expect(h.onDeleted).not.toHaveBeenCalled();
+ });
+ describe('closing and reopening',()=>{
+  /** The page's side: it holds the dialog's open state, as TaskPage does. */
+  function Harness({onPauseInstead}:{onPauseInstead:()=>void}){
+   const [open,setOpen]=useState(true);
+   return <>
+    <button type="button" onClick={()=>setOpen(true)}>Delete task…</button>
+    <TaskDeleteDialog open={open} onOpenChange={setOpen} agentId="a" routineId="opaque-r1" name="Tidy" revision="rev-1"
+     repeat={false} canPauseInstead onPauseInstead={onPauseInstead} onWriteSucceeded={vi.fn()} onDeleted={vi.fn()} onRefresh={vi.fn()} />
+   </>;
+  }
+  const reopen=async()=>{fireEvent.click(screen.getByRole('button',{name:'Delete task…'}));return screen.findByRole('dialog');};
+  it.each([
+   ['Cancel',()=>fireEvent.click(screen.getByRole('button',{name:'Cancel'}))],
+   ['Escape',()=>fireEvent.keyDown(screen.getByRole('dialog'),{key:'Escape'})],
+  ])('%s closes it, and it reopens without the last failure',async(_,close)=>{
+   vi.mocked(routineApi.remove).mockRejectedValueOnce(new RoutineApiError(403));
+   render(<Harness onPauseInstead={vi.fn()}/>);
+   fireEvent.click(deleteButton());
+   expect(await screen.findByRole('alert')).toBeInTheDocument();
+   close();
+   await waitFor(()=>expect(screen.queryByRole('dialog')).toBeNull());
+   const dialog=await reopen();
+   expect(dialog.querySelector('[role="alert"]')).toBeNull();
+  });
+  it('a delete nobody could confirm keeps Pause instead off, even after Cancel and reopening, until it’s answered',async()=>{
+   vi.mocked(routineApi.remove).mockRejectedValueOnce(new RoutineApiError(503)).mockRejectedValueOnce(new RoutineApiError(403));
+   render(<Harness onPauseInstead={vi.fn()}/>);
+   fireEvent.click(deleteButton());
+   await screen.findByRole('alert');
+   expect(screen.getByRole('button',{name:'Pause instead'})).toBeDisabled();
+   fireEvent.click(screen.getByRole('button',{name:'Cancel'}));
+   await waitFor(()=>expect(screen.queryByRole('dialog')).toBeNull());
+   await reopen();
+   // The delete may have happened: pausing it would only confuse it.
+   expect(screen.getByRole('button',{name:'Pause instead'})).toBeDisabled();
+   // Its retry is answered with a refusal: the request is over, and Pause instead comes back.
+   fireEvent.click(deleteButton());
+   await screen.findByRole('alert');
+   await waitFor(()=>expect(screen.getByRole('button',{name:'Pause instead'})).toBeEnabled());
+  });
+ });
+ it.each([
+  [401, HTTP_SESSION_ENDED, false],
+  [404, 'This task isn’t available anymore. It may have been deleted.', true],
+  [403, 'We couldn’t delete this task. You may not manage this agent’s tasks any more.', true],
+  [400, 'We couldn’t delete this task just now. Try again.', true],
+ ])('a %i says why in its own words',async(status,text,destructive)=>{
+  show();vi.mocked(routineApi.remove).mockRejectedValueOnce(new RoutineApiError(status));
+  fireEvent.click(deleteButton());
+  const alert=await screen.findByRole('alert');
+  expect(alert).toHaveTextContent(text);
+  expect(alert.className.includes('destructive')).toBe(destructive);
  });
 });
