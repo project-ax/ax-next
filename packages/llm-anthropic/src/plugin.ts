@@ -16,6 +16,7 @@ import {
 } from '@ax/core';
 import { z, type ZodType } from 'zod';
 import { DEFAULT_MODEL, fromAnthropicResponse, toAnthropicRequest } from './translate.js';
+import { capCompletionFetch } from './completion-fetch.js';
 
 const PLUGIN_NAME = '@ax/llm-anthropic';
 const PLUGIN_VERSION = '0.0.0';
@@ -115,7 +116,7 @@ export interface LlmAnthropicConfig {
    * `credentials:set`). Override only for tests.
    */
   credentialRef?: string;
-  /** Test seam for `models:list-available:anthropic` (the SDK client is not used for the model list). Defaults to global `fetch`. */
+  /** Test seam for model-list and completion HTTP requests. Defaults to global fetch. */
   fetchImpl?: typeof fetch;
 
 }
@@ -184,6 +185,7 @@ export function createLlmAnthropicPlugin(cfg: LlmAnthropicConfig = {}): Plugin {
             ? cfg.clientFactory(apiKey)
             : new Anthropic({
                 apiKey,
+                fetch: capCompletionFetch(cfg.fetchImpl ?? fetch),
                 ...(cfg.timeoutMs !== undefined ? { timeout: cfg.timeoutMs } : {}),
               });
         clients.set(apiKey, created);

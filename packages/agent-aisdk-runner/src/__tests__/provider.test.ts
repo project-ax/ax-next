@@ -53,6 +53,34 @@ const CANNED_OPENAI_RESPONSE = {
   usage: { prompt_tokens: 3, completion_tokens: 1, total_tokens: 4 },
 };
 
+it.each(['anthropic/claude-sonnet-4-6', 'openrouter/x-ai/grok-4.6'])(
+  'bounds one oversized model event through the actual %s provider', async modelRef => {
+    const stats = { bytes: 0, cancelled: false };
+    const body = new ReadableStream<Uint8Array>({
+      pull(c) {
+        if (stats.bytes >= 8 * 1024 * 1024) return c.close();
+        const chunk = new Uint8Array(16 * 1024).fill(0x61);
+        if (stats.bytes === 0) chunk[0] = 0x3a; // One unterminated SSE comment.
+        stats.bytes += chunk.length;
+        c.enqueue(chunk);
+      },
+      cancel() { stats.cancelled = true; },
+    }, { highWaterMark: 0 });
+    const model = resolveModel({
+      modelRef, providerEnv: env({ OPENROUTER_API_KEY: OR_PLACEHOLDER }),
+      fetchImpl: async () => new Response(body, { headers: { 'content-type': 'text/event-stream' } }),
+    });
+    const errors: unknown[] = [];
+    const result = streamText({ model, prompt: 'hello', maxRetries: 0, onError: () => undefined });
+    try {
+      for await (const part of result.fullStream) if (part.type === 'error') errors.push(part.error);
+    } catch (err) { errors.push(err); }
+    expect(errors.some(err => err instanceof Error && err.name === 'ResponseTooLargeError')).toBe(true);
+    await vi.waitFor(() => expect(stats.cancelled).toBe(true));
+    expect(stats.bytes).toBeLessThanOrEqual(2 * 1024 * 1024 + 32 * 1024);
+  },
+);
+
 interface CapturedRequest {
   url: string;
   headers: Record<string, string>;

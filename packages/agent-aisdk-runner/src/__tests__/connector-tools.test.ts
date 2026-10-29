@@ -980,16 +980,64 @@ describe('connectConnectorTools — response size cap (TASK-944)', () => {
   });
 
   it("a tools/list that fails validation logs a count and the first problem, never zod's text", async () => {
-    const s = await junkServer('tools/list', { tools: Array(20_000).fill(0) });
+    const s = await junkServer('tools/list', { tools: Array(2_000).fill(0) });
     const ct = await connect({ [NS]: { url: s.url, bundle: 'b' } });
     expect(ct.tools).toEqual({});
     const mine = ct.logs.filter((l) => l.startsWith(`${NS}: `));
     expect(mine).toEqual([
-      `${NS}: could not load this connector's tools: "the server's answer was not valid MCP (20000 problems; first: invalid_type at tools.0)"`,
+      `${NS}: could not load this connector's tools: "the server's answer was not valid MCP (2000 problems; first: invalid_type at tools.0)"`,
     ]);
     // Nothing of zod's own text: its message is a JSON array of issues, each with an "expected".
     expect(mine[0]).not.toContain('expected');
     expect(mine[0]).not.toContain('[');
+  });
+
+  it('refuses a structurally excessive list before the SDK collects errors for every element', async () => {
+    const s = await junkServer('tools/list', { tools: Array(100_000).fill(0) });
+    const ct = await connect({ [NS]: { url: s.url, bundle: 'b' } });
+    expect(ct.tools).toEqual({});
+    expect(ct.logs.filter(l => l.startsWith(`${NS}: `))).toEqual([
+      `${NS}: could not load this connector's tools: "the server's answer was not valid MCP (1 problem: custom)"`,
+    ]);
+  });
+
+  it('stops structured-output validation after the first bad property', async () => {
+    const s = await testServer([{ name: 'checked', handler: () => ({ content: [], structuredContent: { a: 1, b: 2 } }) }], {
+      raw: {
+        method: 'tools/list', headers: { 'content-type': 'application/json' },
+        chunks: id => [JSON.stringify({ jsonrpc: '2.0', id, result: { tools: [{
+          name: 'checked', inputSchema: { type: 'object' },
+          outputSchema: { type: 'object', additionalProperties: { type: 'string' } },
+        }] } })],
+      },
+    });
+    const ct = await connect({ [NS]: { url: s.url, bundle: 'b' } });
+    const { err } = await failedCall(ct, `mcp__${NS}__checked`);
+    expect(err.message).toContain('data/a must be string');
+    expect(err.message).not.toContain('data/b');
+  });
+
+  it('still applies the SDK output-schema formats with the fail-fast validator', async () => {
+    const s = await testServer([{ name: 'checked', handler: () => ({ content: [], structuredContent: { when: 'not-a-date' } }) }], {
+      raw: {
+        method: 'tools/list', headers: { 'content-type': 'application/json' },
+        chunks: id => [JSON.stringify({ jsonrpc: '2.0', id, result: { tools: [{
+          name: 'checked', inputSchema: { type: 'object' },
+          outputSchema: { type: 'object', properties: { when: { type: 'string', format: 'date-time' } } },
+        }] } })],
+      },
+    });
+    const ct = await connect({ [NS]: { url: s.url, bundle: 'b' } });
+    await expect(exec(ct, `mcp__${NS}__checked`, {})).rejects.toThrow('must match format');
+  });
+
+  it('rejects excessively deep tool schemas before the SDK validates or compiles them', async () => {
+    let inputSchema: Record<string, unknown> = { type: 'object' };
+    for (let i = 0; i < 40; i++) inputSchema = { type: 'object', properties: { nested: inputSchema } };
+    const s = await junkServer('tools/list', { tools: [{ name: 'deep', inputSchema }] });
+    const ct = await connect({ [NS]: { url: s.url, bundle: 'b' } });
+    expect(ct.tools).toEqual({});
+    expect(ct.logs.some(l => l.includes('(1 problem: custom)'))).toBe(true);
   });
 
   // The loose parse no longer checks that `isError` is a boolean, so a truthy

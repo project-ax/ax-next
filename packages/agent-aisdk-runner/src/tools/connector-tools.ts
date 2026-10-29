@@ -59,7 +59,7 @@
 // ---------------------------------------------------------------------------
 
 import { jsonSchema, tool, type JSONSchema7, type Tool } from 'ai';
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import type { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import {
   StreamableHTTPClientTransport,
   StreamableHTTPError,
@@ -76,6 +76,7 @@ import {
   type ResponseScope,
 } from './connector-fetch.js';
 import { renderMcpResult } from './mcp-result.js';
+import { createConnectorClient } from './connector-client.js';
 import { wrapWithPolicy } from './policy-wrap.js';
 
 export const CONNECT_TIMEOUT_MS = 10_000;
@@ -245,7 +246,7 @@ interface Connection {
 
 /** `fetchImpl` is the capped fetch (`capConnectorFetch`): every answer on this connection passes through it. */
 function newConnection(server: ProjectedMcpServer, fetchImpl: typeof fetch): Connection {
-  const client = new Client({ name: 'ax-aisdk-runner', version: '0.0.0' });
+  const client = createConnectorClient();
   const transport = new StreamableHTTPClientTransport(new URL(server.url), {
     fetch: fetchImpl,
     ...(server.headers !== undefined ? { requestInit: { headers: server.headers } } : {}),

@@ -36,20 +36,14 @@ import { lookup as dnsLookup, type LookupAddress } from 'node:dns';
 import { isIP } from 'node:net';
 import ipaddr from 'ipaddr.js';
 import { Agent, fetch as undiciFetch } from 'undici';
+import { capResponseBody, type ResponseTooLargeError } from '@ax/core/response-cap';
+export { ResponseTooLargeError } from '@ax/core/response-cap';
 
 /** Thrown when a request is refused by policy (not a network failure). */
 export class BlockedRequestError extends Error {
   constructor(message: string) {
     super(message);
     this.name = 'BlockedRequestError';
-  }
-}
-
-/** Thrown when a response body exceeds the byte cap. */
-export class ResponseTooLargeError extends Error {
-  constructor(limit: number) {
-    super(`response exceeded ${limit} bytes`);
-    this.name = 'ResponseTooLargeError';
   }
 }
 
@@ -106,6 +100,8 @@ export interface GuardedFetchOptions {
   timeoutMs: number;
   /** Max response-body bytes per request. */
   maxResponseBytes: number;
+  /** Abort the inventory operation if the SDK swallows an SSE reader error. */
+  onOversize?: (error: ResponseTooLargeError) => void;
   /** Test seam: DNS resolver. */
   resolver?: AllAddressesResolver;
   /**
@@ -176,34 +172,6 @@ export function makePinnedLookup(resolver: AllAddressesResolver) {
   };
 }
 
-/** Wrap a body so reading more than `limit` bytes errors the stream. */
-function capBody(res: Response, limit: number): Response {
-  const declared = Number(res.headers.get('content-length') ?? NaN);
-  if (Number.isFinite(declared) && declared > limit) {
-    void res.body?.cancel().catch(() => {});
-    throw new ResponseTooLargeError(limit);
-  }
-  if (res.body === null) return res;
-  let seen = 0;
-  const counted = res.body.pipeThrough(
-    new TransformStream<Uint8Array, Uint8Array>({
-      transform(chunk, controller) {
-        seen += chunk.byteLength;
-        if (seen > limit) {
-          controller.error(new ResponseTooLargeError(limit));
-          return;
-        }
-        controller.enqueue(chunk);
-      },
-    }),
-  );
-  return new Response(counted, {
-    status: res.status,
-    statusText: res.statusText,
-    headers: res.headers,
-  });
-}
-
 export interface GuardedFetch {
   fetch: FetchLike;
   /** Release the dispatcher's sockets. Idempotent. */
@@ -251,7 +219,9 @@ export function createGuardedFetch(opts: GuardedFetchOptions): GuardedFetch {
       void res.body?.cancel().catch(() => {});
       throw new BlockedRequestError('connector server answered with a redirect');
     }
-    return capBody(res, opts.maxResponseBytes);
+    return capResponseBody(res, opts.maxResponseBytes, {
+      ...(opts.onOversize !== undefined ? { onOversize: opts.onOversize } : {}),
+    });
   };
 
   return {

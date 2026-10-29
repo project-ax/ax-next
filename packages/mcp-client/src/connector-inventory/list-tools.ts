@@ -170,19 +170,21 @@ function classifyError(err: unknown): ListOutcome {
  */
 export async function listServerTools(opts: ListServerToolsOptions): Promise<ListOutcome> {
   const limits = { ...INVENTORY_LIMITS, ...(opts.limits ?? {}) };
+  const oversize = new AbortController();
   let guarded: ReturnType<typeof createGuardedFetch>;
   try {
     guarded = createGuardedFetch({
       serverUrl: opts.url,
       timeoutMs: limits.requestTimeoutMs,
       maxResponseBytes: limits.maxResponseBytes,
+      onOversize: error => oversize.abort(error),
       ...(opts.resolver !== undefined ? { resolver: opts.resolver } : {}),
       ...(opts.baseFetch !== undefined ? { baseFetch: opts.baseFetch } : {}),
     });
   } catch (err) {
     return classifyError(err);
   }
-  const budget = AbortSignal.timeout(limits.serverBudgetMs);
+  const budget = AbortSignal.any([AbortSignal.timeout(limits.serverBudgetMs), oversize.signal]);
   const transport = new StreamableHTTPClientTransport(new URL(opts.url), {
     fetch: guarded.fetch as FetchLike,
     requestInit: { headers: opts.headers },
@@ -217,7 +219,7 @@ export async function listServerTools(opts: ListServerToolsOptions): Promise<Lis
     const { tools, dropped } = normalizeTools(raw);
     return { kind: 'ok', tools, dropped };
   } catch (err) {
-    return classifyError(err);
+    return classifyError(oversize.signal.aborted ? oversize.signal.reason : err);
   } finally {
     await client.close().catch(() => {});
     await guarded.close();

@@ -213,6 +213,22 @@ describe('listServerTools', () => {
     expect(out).toEqual({ kind: 'unreachable', reason: 'response-too-large' });
   });
 
+  it('reports an oversized event-stream page as a size refusal rather than a timeout', async () => {
+    const server = fakeMcpServer();
+    const out = await listServerTools({
+      url: URL_OK, headers: {},
+      baseFetch: async (url, init) => {
+        const msg = typeof init.body === 'string' ? JSON.parse(init.body) : {};
+        if (msg.method !== 'tools/list') return server.baseFetch(url, init);
+        return new Response(`data: ${JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: { tools: [], padding: 'x'.repeat(5_000) } })}\n\n`, {
+          headers: { 'content-type': 'text/event-stream' },
+        });
+      },
+      limits: { maxResponseBytes: 1_000, requestTimeoutMs: 800, serverBudgetMs: 2_000 },
+    });
+    expect(out).toEqual({ kind: 'unreachable', reason: 'response-too-large' });
+  });
+
   it.each(['http://mcp.example.com/mcp', 'https://10.0.0.1/mcp', 'https://169.254.169.254/'])(
     'refuses SSRF-shaped url %s without making a request',
     async (url) => {
