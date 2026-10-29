@@ -1,10 +1,10 @@
 import { randomUUID } from 'node:crypto';
+import { ChatEndHistory } from './chat-end-history.js';
 import { promises as fsp } from 'node:fs';
 import * as path from 'node:path';
 import {
   createIpcClient,
   IpcRequestError,
-  type AgentMessage,
   type ContentBlock,
   type ConversationDrainSaveRefusalsResponse,
   type IpcClient,
@@ -332,7 +332,7 @@ export interface LoopContext {
    * already in place would be the wrong trade.
    */
   replaceTranscript(): Promise<void>;
-  /** Record assistant text for the final `event.chat-end` outcome. */
+  /** Record recent assistant text for the bounded final `event.chat-end` outcome. */
   recordAssistantText(text: string): void;
   /** The transcript session id in effect (resume id, or the loop's own). */
   getTranscriptSessionId(): string | null;
@@ -882,7 +882,18 @@ async function runRunnerInner(
   // maintains its OWN transcript internally; this array is only the shape
   // the host cares about (user/assistant text round-tripped through
   // AgentMessage).
-  const chatEndHistory: AgentMessage[] = [];
+  const chatEndHistory = new ChatEndHistory();
+  const logEventRefusal = (action: 'event.turn-end' | 'event.chat-end', error: unknown): void => {
+    // IDs and a numeric status only. Never serialize the exception: its
+    // message may contain a refused payload or the host's response body.
+    try {
+      process.stderr.write(JSON.stringify({
+        event: 'ipc_event_refused', action, sessionId: env.sessionId.slice(0, 128),
+        ...(currentReqId !== undefined ? { reqId: currentReqId.slice(0, 128) } : {}),
+        ...(error instanceof IpcRequestError ? { status: error.status } : {}),
+      }) + '\n');
+    } catch { /* diagnostic failure must not fail a completed turn */ }
+  };
 
   // Most-recent host-minted reqId from the inbox (J9). Set when a user
   // message arrives; read by `event.stream-chunk` emissions during the
@@ -1318,11 +1329,9 @@ async function runRunnerInner(
           ]
         : userText;
 
-      // Keep chatEndHistory as text-only — if contentBlocks were used,
-      // include the user's typed text (if any) plus a short blocks summary
-      // so the chat-end event payload doesn't carry raw bytes. Phase 3 may
-      // refine this once downstream consumers of event.chat-end's
-      // outcome.messages are clearer about what they need.
+      // The final event carries a bounded recent-text projection. Include a
+      // short blocks summary rather than copying raw attachment bytes. Full
+      // history remains in the persisted transcript/display log.
       chatEndHistory.push({
         role: 'user',
         content: hasBlocks
@@ -1815,9 +1824,7 @@ async function runRunnerInner(
           // that acts on the first one sees them.
           ...foldedReqIdsForTurnEnd(),
         })
-        .catch(() => {
-          /* host may be tearing down; non-fatal */
-        });
+        .catch(error => logEventRefusal('event.turn-end', error));
     }
 
     // Look up the uuid of the LAST 'assistant' line so subscribers
@@ -1854,9 +1861,7 @@ async function runRunnerInner(
         ...(assistantTurnId !== undefined ? { turnId: assistantTurnId } : {}),
         ...foldedReqIdsForTurnEnd(),
       })
-      .catch(() => {
-        /* host may be tearing down; non-fatal */
-      });
+      .catch(error => logEventRefusal('event.turn-end', error));
   }
 
   const ctx: LoopContext = {
@@ -1867,8 +1872,8 @@ async function runRunnerInner(
       // the model produces it; we ship it as `event.stream-chunk` so the
       // host's chat:stream-chunk subscriber (Task 5) can fan out to waiting
       // clients (Task 7). Failure is non-fatal: the host may be tearing down,
-      // and the canonical transcript still flows via event.turn-end /
-      // event.chat-end. Untrusted (J2): the text is model output and reaches
+      // and the canonical transcript/display log still flows through the
+      // transcript sync and event.turn-end. Untrusted (J2): the text is model output and reaches
       // the host verbatim — host-side renderers sanitize.
       // A chunk means a turn is streaming: from here a pulled message parks
       // (TASK-573). Marked before the skip — a turn with no id to route to is
@@ -2033,12 +2038,21 @@ async function runRunnerInner(
   // the diagnostic).
   const outcome =
     exitCode === 0
-      ? { kind: 'complete' as const, messages: chatEndHistory }
+      ? { kind: 'complete' as const, messages: chatEndHistory.messages() }
       : {
           kind: 'terminated' as const,
-          reason: terminatedReason ?? 'unknown',
-          ...(terminatedError !== undefined ? { error: terminatedError } : {}),
+          reason: (terminatedReason ?? 'unknown').slice(0, 4096),
+          ...(terminatedError !== undefined ? { error: {
+            name: terminatedError.name.slice(0, 128),
+            message: terminatedError.message.slice(0, 4096),
+            ...(terminatedError.stack !== undefined ? { stack: terminatedError.stack.slice(0, 8192) } : {}),
+          } } : {}),
         };
+  if (chatEndHistory.dropped > 0 || chatEndHistory.shortened > 0) {
+    try {
+      process.stderr.write(JSON.stringify({ event: 'chat_end_history_bounded', sessionId: env.sessionId.slice(0, 128), dropped: chatEndHistory.dropped, shortened: chatEndHistory.shortened }) + '\n');
+    } catch { /* best-effort diagnostic */ }
+  }
   // TASK-731: a refused final/idle save rides here (see the final commit
   // above). Absent when that save went through, had nothing to save, never
   // ran, or failed in a way that is not a refusal. A per-turn refusal never
@@ -2048,9 +2062,7 @@ async function runRunnerInner(
       outcome,
       ...(finalSaveRefused !== undefined ? { saveRefused: finalSaveRefused } : {}),
     })
-    .catch(() => {
-      /* swallow */
-    });
+    .catch(error => logEventRefusal('event.chat-end', error));
   await client.close().catch(() => {
     /* close is best-effort; a clean chat shouldn't exit non-zero on teardown */
   });

@@ -55,6 +55,13 @@ async function freshStore(): Promise<DecisionStore> {
   return createDecisionsStore(db);
 }
 
+it('refuses a call larger than the IPC frame without persisting a truncated approval', async () => {
+  const store = await freshStore();
+  const decision = base({ call: { id: 'large', name: 'write', input: { text: '\u{1f642}'.repeat(1_100_000) } } });
+  await expect(store.create(decision)).rejects.toMatchObject({ code: 'invalid-payload' });
+  expect(await store.get(decision.id, decision.ownerUserId)).toBeNull();
+});
+
 const T0 = '2026-08-20T09:00:00.000Z';
 const T_SOON = '2026-08-20T09:00:05.000Z';
 const T_LATE = '2026-08-20T13:00:00.000Z';

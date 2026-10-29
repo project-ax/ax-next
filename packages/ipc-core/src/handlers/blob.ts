@@ -3,7 +3,7 @@ import {
   BlobGetRequestSchema,
   BlobPutResponseSchema,
 } from '@ax/ipc-protocol';
-import {
+import { zodSummary,
   hookRejected,
   internalError,
   logInternalError,
@@ -91,7 +91,7 @@ export const blobPutHandler: BinaryActionHandler = async (
     logInternalError(
       ctx.logger,
       'blob.put',
-      new Error(`response shape drift: ${checked.error.message}`),
+      new Error(`response shape drift: ${zodSummary(checked.error)}`),
     );
     return internalError();
   }
@@ -118,7 +118,7 @@ type BlobGetOutput = { bytes: Uint8Array } | { found: false };
 export const blobGetHandler: ActionHandler = async (rawPayload, ctx, bus) => {
   const parsed = BlobGetRequestSchema.safeParse(rawPayload);
   if (!parsed.success) {
-    return validationError(`blob.get: ${parsed.error.message}`);
+    return validationError(`blob.get: ${zodSummary(parsed.error)}`);
   }
   let out: BlobGetOutput;
   try {

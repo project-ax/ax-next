@@ -4,7 +4,7 @@ import {
   ConversationStoreRunnerSessionResponseSchema,
   type ConversationStoreRunnerSessionResponse,
 } from '@ax/ipc-protocol';
-import {
+import { zodSummary,
   internalError,
   logInternalError,
   mapPluginError,
@@ -58,7 +58,7 @@ export const conversationStoreRunnerSessionHandler: ActionHandler = async (
   const parsed = ConversationStoreRunnerSessionRequestSchema.safeParse(rawPayload);
   if (!parsed.success) {
     return validationError(
-      `conversation.store-runner-session: ${parsed.error.message}`,
+      `conversation.store-runner-session: ${zodSummary(parsed.error)}`,
     );
   }
 
@@ -88,7 +88,7 @@ export const conversationStoreRunnerSessionHandler: ActionHandler = async (
     logInternalError(
       ctx.logger,
       'conversation.store-runner-session',
-      new Error(`response shape drift: ${checked.error.message}`),
+      new Error(`response shape drift: ${zodSummary(checked.error)}`),
     );
     return internalError();
   }

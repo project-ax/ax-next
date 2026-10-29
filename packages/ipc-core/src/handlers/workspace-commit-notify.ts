@@ -25,7 +25,7 @@ import { filterToPolicy } from '../bundler/filter.js';
 import { prepareScratchRepo } from '../bundler/scratch.js';
 import { verifyBundleAuthor } from '../bundler/verify.js';
 import { walkBundleChanges } from '../bundler/walk.js';
-import {
+import { zodSummary,
   internalError,
   logInternalError,
   validationError,
@@ -158,7 +158,7 @@ export const workspaceCommitNotifyHandler: ActionHandler = async (
 ) => {
   const parsed = WorkspaceCommitNotifyRequestSchema.safeParse(rawPayload);
   if (!parsed.success) {
-    return validationError(`workspace.commit-notify: ${parsed.error.message}`);
+    return validationError(`workspace.commit-notify: ${zodSummary(parsed.error)}`);
   }
   return commitBundleCore(parsed.data, ctx, bus);
 };
@@ -177,7 +177,7 @@ export const workspaceCommitBundleHandler: BinaryActionHandler = async (
     parentVersion: url.searchParams.get('parentVersion'),
   });
   if (!parsed.success) {
-    return validationError(`workspace.commit-bundle: ${parsed.error.message}`);
+    return validationError(`workspace.commit-bundle: ${zodSummary(parsed.error)}`);
   }
   // The core consumes base64 (scratch repo, `workspace:apply-bundle`). An empty
   // body encodes to '', which is the empty-turn short-circuit.
@@ -231,7 +231,7 @@ async function commitBundleCore(
       logInternalError(
         ctx.logger,
         'workspace.commit-notify',
-        new Error(`response shape drift (empty-bundle): ${checked.error.message}`),
+        new Error(`response shape drift (empty-bundle): ${zodSummary(checked.error)}`),
       );
       return internalError();
     }
@@ -305,7 +305,7 @@ async function commitBundleCore(
           ctx.logger,
           'workspace.commit-notify',
           new Error(
-            `response shape drift (export-baseline parent-mismatch): ${checked.error.message}`,
+            `response shape drift (export-baseline parent-mismatch): ${zodSummary(checked.error)}`,
           ),
         );
         return internalError();
@@ -465,7 +465,7 @@ async function commitBundleCore(
           ctx.logger,
           'workspace.commit-notify',
           new Error(
-            `response shape drift (runner-immutable): ${checked.error.message}`,
+            `response shape drift (runner-immutable): ${zodSummary(checked.error)}`,
           ),
         );
         return internalError();
@@ -581,7 +581,7 @@ async function commitBundleCore(
         logInternalError(
           ctx.logger,
           'workspace.commit-notify',
-          new Error(`response shape drift (rejected): ${checked.error.message}`),
+          new Error(`response shape drift (rejected): ${zodSummary(checked.error)}`),
         );
         return internalError();
       }
@@ -632,7 +632,7 @@ async function commitBundleCore(
             ctx.logger,
             'workspace.commit-notify',
             new Error(
-              `response shape drift (apply-bundle parent-mismatch): ${checked.error.message}`,
+              `response shape drift (apply-bundle parent-mismatch): ${zodSummary(checked.error)}`,
             ),
           );
           return internalError();
@@ -674,7 +674,7 @@ async function commitBundleCore(
       logInternalError(
         ctx.logger,
         'workspace.commit-notify',
-        new Error(`response shape drift (accepted): ${checked.error.message}`),
+        new Error(`response shape drift (accepted): ${zodSummary(checked.error)}`),
       );
       return internalError();
     }

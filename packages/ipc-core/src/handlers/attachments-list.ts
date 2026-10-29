@@ -3,7 +3,7 @@ import {
   AttachmentsListResponseSchema,
 } from '@ax/ipc-protocol';
 import { PluginError } from '@ax/core';
-import { internalError, logInternalError, mapPluginError, validationError } from '../errors.js';
+import { zodSummary, internalError, logInternalError, mapPluginError, validationError } from '../errors.js';
 import type { ActionHandler } from './types.js';
 
 // ---------------------------------------------------------------------------
@@ -39,7 +39,7 @@ interface AttachmentsListForConversationOutput {
 export const attachmentsListHandler: ActionHandler = async (rawPayload, ctx, bus) => {
   const parsed = AttachmentsListRequestSchema.safeParse(rawPayload);
   if (!parsed.success) {
-    return validationError(`attachments.list: ${parsed.error.message}`);
+    return validationError(`attachments.list: ${zodSummary(parsed.error)}`);
   }
   let out: AttachmentsListForConversationOutput;
   try {
@@ -61,7 +61,7 @@ export const attachmentsListHandler: ActionHandler = async (rawPayload, ctx, bus
     logInternalError(
       ctx.logger,
       'attachments.list',
-      new Error(`response shape drift: ${checked.error.message}`),
+      new Error(`response shape drift: ${zodSummary(checked.error)}`),
     );
     return internalError();
   }

@@ -1,6 +1,6 @@
 import type { AgentContext, HookBus } from '@ax/core';
 import { EventConnectorAuthFailureSchema, type EventConnectorAuthFailure } from '@ax/ipc-protocol';
-import { validationError } from '../errors.js';
+import { zodSummary, validationError } from '../errors.js';
 import type { HandlerErr } from './types.js';
 
 // ---------------------------------------------------------------------------
@@ -36,7 +36,7 @@ export function validateEventConnectorAuthFailure(rawPayload: unknown):
   | HandlerErr {
   const parsed = EventConnectorAuthFailureSchema.safeParse(rawPayload);
   if (!parsed.success) {
-    return validationError(`event.connector-auth-failure: ${parsed.error.message}`);
+    return validationError(`event.connector-auth-failure: ${zodSummary(parsed.error)}`);
   }
   // One entry per namespace (the first wins), so a repeated namespace cannot
   // fan out into repeated checks.

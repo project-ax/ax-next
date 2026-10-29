@@ -3,7 +3,7 @@ import {
   IPC_TIMEOUTS_MS,
   SessionNextMessageResponseSchema,
 } from '@ax/ipc-protocol';
-import {
+import { zodSummary,
   internalError,
   logInternalError,
   mapPluginError,
@@ -82,7 +82,7 @@ export async function sessionNextMessageHandler(
     logInternalError(
       ctx.logger,
       'session.next-message',
-      new Error(`response shape drift: ${checked.error.message}`),
+      new Error(`response shape drift: ${zodSummary(checked.error)}`),
     );
     return internalError();
   }

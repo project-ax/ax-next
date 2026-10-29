@@ -4,7 +4,7 @@ import {
   type AgentMessage,
   type ContentBlock,
 } from '@ax/ipc-protocol';
-import {
+import { zodSummary,
   hookRejected,
   internalError,
   logInternalError,
@@ -156,7 +156,7 @@ export const sessionGetDisplayHistoryHandler: ActionHandler = async (
 ) => {
   const parsed = SessionGetDisplayHistoryRequestSchema.safeParse(rawPayload);
   if (!parsed.success) {
-    return validationError(`session.get-display-history: ${parsed.error.message}`);
+    return validationError(`session.get-display-history: ${zodSummary(parsed.error)}`);
   }
 
   let conversationId: string | null;

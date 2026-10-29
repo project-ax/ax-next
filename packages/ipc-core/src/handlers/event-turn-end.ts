@@ -6,7 +6,7 @@ import {
   type EventTurnEnd,
   type SaveRefusedCode,
 } from '@ax/ipc-protocol';
-import { validationError } from '../errors.js';
+import { zodSummary, validationError } from '../errors.js';
 import type { HandlerErr } from './types.js';
 
 // ---------------------------------------------------------------------------
@@ -43,7 +43,7 @@ export function validateEventTurnEnd(rawPayload: unknown):
   | HandlerErr {
   const parsed = EventTurnEndSchema.safeParse(rawPayload);
   if (!parsed.success) {
-    return validationError(`event.turn-end: ${parsed.error.message}`);
+    return validationError(`event.turn-end: ${zodSummary(parsed.error)}`);
   }
   // TASK-271: same fence as the stream-chunk path — these blocks persist
   // into the display log (persist-before-ack below), so a hostile phrase

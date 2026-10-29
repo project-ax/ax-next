@@ -5,7 +5,7 @@ import {
   SessionGetTranscriptRequestSchema,
   SessionReplaceTranscriptResponseSchema,
 } from '@ax/ipc-protocol';
-import {
+import { zodSummary,
   hookRejected,
   internalError,
   logInternalError,
@@ -94,7 +94,7 @@ export const sessionAppendTranscriptHandler: BinaryActionHandler = async (
     prefixHash: prefixHashRaw,
   });
   if (!parsed.success) {
-    return validationError(`session.append-transcript: ${parsed.error.message}`);
+    return validationError(`session.append-transcript: ${zodSummary(parsed.error)}`);
   }
   // The lines are an UNTRUSTED, adversarial SDK/model artifact — split verbatim
   // (no re-serialization, no per-line parse) and forwarded to the store as-is.
@@ -136,7 +136,7 @@ export const sessionAppendTranscriptHandler: BinaryActionHandler = async (
     logInternalError(
       ctx.logger,
       'session.append-transcript',
-      new Error(`response shape drift: ${checked.error.message}`),
+      new Error(`response shape drift: ${zodSummary(checked.error)}`),
     );
     return internalError();
   }
@@ -193,7 +193,7 @@ export const sessionReplaceTranscriptHandler: BinaryActionHandler = async (
     logInternalError(
       ctx.logger,
       'session.replace-transcript',
-      new Error(`response shape drift: ${checked.error.message}`),
+      new Error(`response shape drift: ${zodSummary(checked.error)}`),
     );
     return internalError();
   }
@@ -221,7 +221,7 @@ export const sessionGetTranscriptHandler: ActionHandler = async (
 ) => {
   const parsed = SessionGetTranscriptRequestSchema.safeParse(rawPayload);
   if (!parsed.success) {
-    return validationError(`session.get-transcript: ${parsed.error.message}`);
+    return validationError(`session.get-transcript: ${zodSummary(parsed.error)}`);
   }
   let conversationId: string | null;
   try {

@@ -12,7 +12,7 @@ import type {
   WorkspaceExportBaselineBundleOutput,
 } from '@ax/workspace-bundle-protocol';
 import { WorkspaceMaterializeRequestSchema } from '@ax/ipc-protocol';
-import {
+import { zodSummary,
   internalError,
   logInternalError,
   validationError,
@@ -182,7 +182,7 @@ export const workspaceMaterializeHandler: ActionHandler = async (
 ) => {
   const parsed = WorkspaceMaterializeRequestSchema.safeParse(rawPayload);
   if (!parsed.success) {
-    return validationError(`workspace.materialize: ${parsed.error.message}`);
+    return validationError(`workspace.materialize: ${zodSummary(parsed.error)}`);
   }
 
   let bundleBytes: string;

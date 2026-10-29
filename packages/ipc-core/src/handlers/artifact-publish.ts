@@ -2,7 +2,7 @@ import {
   ArtifactPublishRequestSchema,
   ArtifactPublishResponseSchema,
 } from '@ax/ipc-protocol';
-import { internalError, logInternalError, mapPluginError, validationError } from '../errors.js';
+import { zodSummary, internalError, logInternalError, mapPluginError, validationError } from '../errors.js';
 import { PluginError } from '@ax/core';
 import type { ActionHandler } from './types.js';
 
@@ -41,7 +41,7 @@ interface ArtifactPublishBlobOutput {
 export const artifactPublishHandler: ActionHandler = async (rawPayload, ctx, bus) => {
   const parsed = ArtifactPublishRequestSchema.safeParse(rawPayload);
   if (!parsed.success) {
-    return validationError(`artifact.publish: ${parsed.error.message}`);
+    return validationError(`artifact.publish: ${zodSummary(parsed.error)}`);
   }
   let out: ArtifactPublishBlobOutput;
   try {
@@ -75,7 +75,7 @@ export const artifactPublishHandler: ActionHandler = async (rawPayload, ctx, bus
     logInternalError(
       ctx.logger,
       'artifact.publish',
-      new Error(`response shape drift: ${checked.error.message}`),
+      new Error(`response shape drift: ${zodSummary(checked.error)}`),
     );
     return internalError();
   }

@@ -4,7 +4,7 @@ import {
   sanitizeActivityPhrase,
   type EventStreamChunk,
 } from '@ax/ipc-protocol';
-import { validationError } from '../errors.js';
+import { zodSummary, validationError } from '../errors.js';
 import type { HandlerErr } from './types.js';
 
 // ---------------------------------------------------------------------------
@@ -26,7 +26,7 @@ export function validateEventStreamChunk(rawPayload: unknown):
   | HandlerErr {
   const parsed = EventStreamChunkSchema.safeParse(rawPayload);
   if (!parsed.success) {
-    return validationError(`event.stream-chunk: ${parsed.error.message}`);
+    return validationError(`event.stream-chunk: ${zodSummary(parsed.error)}`);
   }
   // TASK-271: the phrase round-tripped through the untrusted runner — fence
   // it here, at the trust boundary, before the broadcast fans it to SSE

@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { AgentContext, HookBus } from '@ax/core';
 import { EventChatEndSchema, type EventChatEnd } from '@ax/ipc-protocol';
-import { validationError } from '../errors.js';
+import { zodSummary, validationError } from '../errors.js';
 import { appendSaveRefusedBestEffort } from './event-turn-end.js';
 import type { HandlerErr } from './types.js';
 
@@ -50,7 +50,7 @@ export function validateEventChatEnd(rawPayload: unknown):
   | HandlerErr {
   const parsed = EventChatEndSchema.safeParse(rawPayload);
   if (!parsed.success) {
-    return validationError(`event.chat-end: ${parsed.error.message}`);
+    return validationError(`event.chat-end: ${zodSummary(parsed.error)}`);
   }
   return { ok: true, payload: parsed.data };
 }

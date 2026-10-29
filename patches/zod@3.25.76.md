@@ -13,7 +13,9 @@ CommonJS (`.cjs`) builds.
 - **The v3 API** (`import { z } from 'zod'`), which every ax-next package uses.
   `addIssueToContext` (`v3/helpers/parseUtil`) stops adding issues once an issue
   list holds 100. `ZodUnion` (`v3/types`) copies a near-miss option's issues
-  only up to the same cap. An array over its `.max()` or `.length()`, or a set
+  only up to the same cap. Once its parent issue list is full, it no longer
+  collects branch-error trees (TASK-963, synchronous and async paths). An
+  array over its `.max()` or `.length()`, or a set
   over its `.max()` or `.size()`, now reports only the size issue and does not
   parse its elements. That is upstream zod 4.6.6's behaviour
   ([PR #6652](https://github.com/colinhacks/zod/pull/6652), commit
@@ -92,12 +94,15 @@ Not covered here:
   untrusted input: `tool_result.content` (a string or an array) inside every
   content-block list (`event.turn-end`, `event.chat-end`,
   `POST /api/chat/messages`). At that one level we measured 10,200 retained
-  issues and a 3.2 MB `error.message` for a 25 KB turn-end (ipc-core echoes
-  that message to the runner that sent it), and about 0.5 s of CPU for a
+  issues and a 3.2 MB `error.message` for a 25 KB turn-end before TASK-963,
+  and about 0.5 s of CPU for a
   4 MiB frame whose junk is spread over 16,000 blocks. A second level
   multiplies it again: about 1,000,000 issues and a 370 MB message from 2 MB
   of input, with 100 elements per list. Don't add a second level of
-  plain-union nesting on untrusted input.
+  plain-union nesting on untrusted input. IPC now returns a bounded code/path
+  summary without serializing `ZodError.message`. The new v3 guard avoids
+  discarded branch trees after the parent fills; this is still not a single
+  global issue budget for an entire nested parse.
 - `dem-memory/` is a standalone research project outside the pnpm workspace.
   It installs its own unpatched zod 3.25.76 from its own `package-lock.json`.
   Its manifest is checked for v3 API compatibility. Its separate npm install

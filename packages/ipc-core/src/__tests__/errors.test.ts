@@ -1,6 +1,27 @@
 import { PluginError } from '@ax/core';
 import { describe, expect, it } from 'vitest';
 import { mapPluginError } from '../errors.js';
+import { validateEventChatEnd } from '../handlers/event-chat-end.js';
+import { EventChatEndSchema } from '@ax/ipc-protocol';
+import { vi } from 'vitest';
+
+it('a validation refusal never reads ZodError.message', () => {
+  const parsed = EventChatEndSchema.safeParse({});
+  if (parsed.success) throw new Error('expected an invalid fixture');
+  const message = vi.spyOn(Object.getPrototypeOf(parsed.error), 'message', 'get').mockImplementation(() => { throw new Error('unbounded serialization'); });
+  try {
+    expect(validateEventChatEnd({ outcome: { kind: 'invalid' } })).toMatchObject({ status: 400 });
+  } finally { message.mockRestore(); }
+});
+
+it('bounds a refusal and omits invalid values from the summary', () => {
+  const out = validateEventChatEnd({ outcome: { kind: 'PRIVATE_'.repeat(10_000) } });
+  expect(out).toMatchObject({ status: 400 });
+  if ('body' in out) {
+    expect(out.body.error.message.length).toBeLessThanOrEqual(1024);
+    expect(out.body.error.message).not.toContain('PRIVATE_');
+  }
+});
 
 // Security review: the GENERIC `mapPluginError` — reachable from every dispatch
 // path — must NOT special-case a PluginError's message onto the wire.
