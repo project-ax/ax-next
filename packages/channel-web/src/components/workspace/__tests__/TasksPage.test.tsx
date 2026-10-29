@@ -290,9 +290,9 @@ describe('TasksPage (TASK-909)', () => {
     const line =
       'Its last 3 check-ins didn’t leave an update. It checked in but didn’t say how it went.';
     expect(screen.getByText(line)).toHaveAttribute('title', line);
-    // "checked" dates the miss; the three-miss row needs you, so Reply stands in its place.
+    // "checked" dates the miss; the three-miss row needs you, and keeps its fact beside its Reply.
     expect(within(rowLink('Morning inbox')).getByText(/^Checked /)).toBeInTheDocument();
-    expect(within(rowLink('Weekly digest')).queryByText(/^Checked /)).toBeNull();
+    expect(within(rowLink('Weekly digest')).getByText(/^Checked /)).toBeInTheDocument();
     expect(screen.getAllByRole('button', { name: 'Reply' })).toHaveLength(1);
   });
 
@@ -573,11 +573,13 @@ describe('TasksPage (TASK-909)', () => {
       ]),
     );
     const { onNavigate, onReply } = renderPage();
-    // Reply takes the right-hand fact's place: the needs-you row has no "checked" time.
+    // A needs-you row keeps its right-hand fact, and Reply comes after it.
     await screen.findByText('Support queue');
-    expect(within(rowLink('Support queue')).queryByText(/^Checked /)).toBeNull();
+    expect(within(rowLink('Support queue')).getByText(/^Checked /)).toBeInTheDocument();
     expect(within(rowLink('Weekly digest')).getByText(/^Checked /)).toBeInTheDocument();
     const reply = await screen.findByRole('button', { name: 'Reply' });
+    const fact = within(rowLink('Support queue')).getByText(/^Checked /);
+    expect(fact.compareDocumentPosition(reply) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(reply).toHaveAccessibleDescription('Support queue');
     const link = rowLink('Support queue');
     expect(link.contains(reply)).toBe(false);
@@ -682,6 +684,27 @@ describe('TasksPage (TASK-909)', () => {
     const stay = rowLink('Stay on top');
     expect(within(stay).getByText('Caveman')).toBeInTheDocument();
     expect(within(stay).queryByText(/left|Due|Checked/)).toBeNull();
+  });
+});
+
+describe('TasksPage: a needs-you row keeps its fact', () => {
+  it('a late get-done task that needs you still shows it’s past its date, then Reply', async () => {
+    tasksMock.mockResolvedValue(
+      page([
+        row('Late and asking', {
+          kind: 'get-done',
+          steps: { done: 2, total: 5 },
+          finishBy: { date: '2026-10-19', daysLeft: -3 },
+          task: report('needs-you', { ask: 'Push the date, or cut a step?' }),
+        }),
+      ]),
+    );
+    renderPage();
+    const late = await screen.findByText('2 of 5 steps · 3 days past its finish date');
+    expect(late.parentElement).toHaveClass('text-destructive');
+    const reply = screen.getByRole('button', { name: 'Reply' });
+    expect(late.compareDocumentPosition(reply) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(rowLink('Late and asking').contains(reply)).toBe(false);
   });
 });
 

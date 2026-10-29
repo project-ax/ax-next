@@ -548,7 +548,8 @@ function TaskList({
  * One task: its agent's tile, its name, at most one latest line
  * (`rowLatest`), its kind's icon and one short right-hand fact (`rowFact`),
  * whose whole sentence is in the link's name and a `title`; a needs-you row
- * has Reply in the fact's place. Below `sm` the
+ * keeps that fact, which may be the late finish-date warning, and has Reply
+ * after it. Below `sm` the
  * name and the latest line stack. A needs-you row quotes its ask in the
  * foreground and gets a Reply button beside the link, which opens the task
  * page with its reply box focused (the shell's one-shot memory, `onReply`),
@@ -596,8 +597,8 @@ function TaskItem({
         </span>
         <TaskKindIcon kind={row.kind} className="hidden sm:inline-flex" />
         <span className="sr-only">{row.agentName}</span>
-        {/* A needs-you row's action is Reply, beside the link; it carries no fact. */}
-        {!needsYou && fact !== null && (
+        {/* Every row keeps its fact (a late finish date is the one in the error colour); a needs-you row's Reply follows it, beside the link. */}
+        {fact !== null && (
           <span
             className={cn('shrink-0 text-[13px] tabular-nums', fact.late ? 'text-destructive' : 'text-muted-foreground')}
             title={fact.full}
