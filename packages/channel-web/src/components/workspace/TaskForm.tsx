@@ -154,24 +154,25 @@ export function TaskForm({
   const register = (field: TaskField) => (element: HTMLElement | null) => { controls.current.set(field, element); };
   const task = isTaskKind(form.kind);
   const preset = schedulePreset(form.schedule, form.kind);
-  // A cron that isn't a preset is edited under More options, so its problems show there.
-  const customCron = form.schedule?.kind === 'cron' && preset === null;
+  // Any cron, and an interval that isn't a preset, is edited under More options, so a
+  // problem with its values shows there; the chip's popover holds only the presets.
+  const scheduleInMore = form.schedule !== null && (form.schedule.kind === 'cron' || preset === null);
 
   const issues = useMemo(() => {
     const found = new Map<TaskField, string>();
     if (draftDefinition.promptBody.trim() === '') found.set('promptBody', `Tell ${agentName} what to do.`);
     if (!validation.success) {
       for (const issue of validation.error.issues) {
-        const field = taskField(issue.path.join('.'), customCron);
+        const field = taskField(issue.path.join('.'), scheduleInMore);
         // A problem with nothing on screen to fix is said at the form, never dropped.
         const at = fieldHasControl(field, draftDefinition) ? field : 'form';
         if (!found.has(at)) found.set(at, plainIssue(field, issue, agentName));
       }
     }
     return found;
-  }, [validation, draftDefinition, customCron, agentName]);
+  }, [validation, draftDefinition, scheduleInMore, agentName]);
   // The field the host named when it refused a save, if we draw one.
-  const refusedField = invalidField === undefined ? null : taskField(invalidField, customCron);
+  const refusedField = invalidField === undefined ? null : taskField(invalidField, scheduleInMore);
   // Shown after the first press, then kept current as the person fixes them.
   const shown = useMemo(() => {
     const visible = new Map(attempted ? issues : []);

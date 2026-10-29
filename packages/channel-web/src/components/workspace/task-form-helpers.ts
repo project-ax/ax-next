@@ -201,7 +201,7 @@ export function plainIssue(field: TaskField, issue: { code?: string; message?: s
   if (field === 'promptBody') return `Tell ${agentName} what to do.`;
   if (field === 'name' && issue.code !== undefined && issue.code !== 'too_small') return 'Keep the name to 128 characters or fewer.';
   if ((field === 'customSchedule' || field === 'schedule') && issue.path?.[1] === 'tz') return ZONE;
-  if (field === 'schedule' && issue.message === 'Invalid interval.') return 'Write how often as a number and a unit, at least a minute apart, like 45m or 2h.';
+  if ((field === 'schedule' || field === 'customSchedule') && issue.message === 'Invalid interval.') return 'Write how often as a number and a unit, at least a minute apart, like 45m or 2h.';
   return FALLBACK[field];
 }
 

@@ -223,6 +223,16 @@ describe('task form chips and presets', () => {
     expect(screen.getByLabelText('Interval')).toHaveValue('30m');
   });
 
+  it('shows a preset-equal cron’s time zone problem under More options, where the time zone is', async () => {
+    await edit({ ...task, schedule: { kind: 'cron', expr: '*/15 * * * *', tz: 'Mars/Olympus' } });
+    fill('What should Caveman do?', 'Changed.');
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    const zone = await screen.findByLabelText('Time zone');
+    expect(zone).toHaveAccessibleDescription(expect.stringContaining('Use a time zone name, like America/New_York.'));
+    expect(screen.getByRole('button', { name: 'How often: Every 15 min' })).not.toHaveAccessibleDescription();
+    expect(routineApi.update).not.toHaveBeenCalled();
+  });
+
   it('maps equal presets both ways', () => {
     expect(schedulePreset({ kind: 'interval', every: '60m' }, 'stay-on-top')).toBe('1h');
     expect(schedulePreset({ kind: 'interval', every: '45m' }, 'stay-on-top')).toBeNull();
