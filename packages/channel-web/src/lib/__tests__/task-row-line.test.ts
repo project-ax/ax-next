@@ -129,10 +129,10 @@ describe('repeatLine', () => {
     // The routines store's own sentences, byte for byte, read plainly (`runFailureText`).
     expect(
       repeatLine({ ...RUN, status: 'error', error: 'The routine run was interrupted by a host restart.' }, true),
-    ).toBe('Last run failed. Stopped early because we restarted. It tries again next time.');
+    ).toBe('Last run failed. Stopped early because we restarted. It runs again next time.');
     expect(
       repeatLine({ ...RUN, status: 'error', error: 'The routine run closed before it could start.' }, true),
-    ).toBe('Last run failed. Something went wrong, so this check-in didn’t finish.');
+    ).toBe('Last run failed. Something went wrong, so this run didn’t finish.');
     expect(repeatLine({ ...RUN, active: 2 }, true)).toBe('Working. · 2 runs active');
     expect(repeatLine({ ...RUN, active: 1 }, false)).toBe('Finishing after Pause.');
   });

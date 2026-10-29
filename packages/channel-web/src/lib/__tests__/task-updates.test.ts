@@ -298,6 +298,21 @@ describe('runFailureText (2026-10-29)', () => {
     expect(runFailureText(null)).toBe('No reason was recorded.');
     expect(runFailureText('The mailbox said no.')).toBe('The mailbox said no.');
   });
+
+  it('says a Repeat job’s run as a run', () => {
+    expect(runFailureText('The routine run was interrupted by a host restart.', 'run')).toBe(
+      'Stopped early because we restarted. It runs again next time.',
+    );
+    expect(runFailureText('The routine run closed before it could start.', 'run')).toBe(
+      'Something went wrong, so this run didn’t finish.',
+    );
+    expect(runFailureText(null, 'run')).toBe('No reason was recorded.');
+    expect(runFailureText('Slack wasn’t reachable.', 'run')).toBe('Slack wasn’t reachable.');
+    // A check-in is the default.
+    expect(runFailureText('The routine run closed before it could start.', 'check-in')).toBe(
+      runFailureText('The routine run closed before it could start.'),
+    );
+  });
 });
 
 describe('withoutLatest and entryCount (2026-10-29)', () => {

@@ -96,19 +96,30 @@ export function foldTimeline(
 const STORE_INTERRUPTED = 'The routine run was interrupted by a host restart.';
 const STORE_CLOSED = 'The routine run closed before it could start.';
 
-export const RUN_INTERRUPTED_TEXT = 'Stopped early because we restarted. It tries again next time.';
-export const RUN_FAILED_TEXT = 'Something went wrong, so this check-in didn’t finish.';
-export const RUN_NO_REASON_TEXT = 'No reason was recorded.';
+/** What the reason is about: a task's check-in, or a Repeat job's run. */
+export type RunNoun = 'check-in' | 'run';
+
+const INTERRUPTED_TEXT: Record<RunNoun, string> = {
+  'check-in': 'Stopped early because we restarted. It tries again next time.',
+  run: 'Stopped early because we restarted. It runs again next time.',
+};
+const FAILED_TEXT: Record<RunNoun, string> = {
+  'check-in': 'Something went wrong, so this check-in didn’t finish.',
+  run: 'Something went wrong, so this run didn’t finish.',
+};
+const NO_REASON_TEXT = 'No reason was recorded.';
 
 /**
- * A failed check-in's (or run's) reason in plain words: the store's two
- * sentences, which speak of routines and hosts, as the page says them; no
- * reason as "No reason was recorded."; any other reason as it was written.
+ * A failed check-in's (or a Repeat job's run's) reason in plain words: the
+ * store's two sentences, which speak of routines and hosts, as the page says
+ * them, in the surface's own noun ("this check-in", or "this run" for a
+ * Repeat job); no reason as "No reason was recorded."; any other reason as it
+ * was written.
  */
-export function runFailureText(error: string | null): string {
-  if (error === null) return RUN_NO_REASON_TEXT;
-  if (error === STORE_INTERRUPTED) return RUN_INTERRUPTED_TEXT;
-  if (error === STORE_CLOSED) return RUN_FAILED_TEXT;
+export function runFailureText(error: string | null, noun: RunNoun = 'check-in'): string {
+  if (error === null) return NO_REASON_TEXT;
+  if (error === STORE_INTERRUPTED) return INTERRUPTED_TEXT[noun];
+  if (error === STORE_CLOSED) return FAILED_TEXT[noun];
   return error;
 }
 

@@ -3311,6 +3311,23 @@ describe('TaskPage: the minimal header and the ⋯ menu (2026-10-29)', () => {
     expect(pageStatus()).toHaveTextContent('Quill finished the run.');
   });
 
+  it.each([
+    ['The routine run was interrupted by a host restart.', 'Stopped early because we restarted. It runs again next time.'],
+    ['The routine run closed before it could start.', 'Something went wrong, so this run didn’t finish.'],
+  ])('a Repeat run the store ended says so in run words: %s', async (error, said) => {
+    taskMock.mockResolvedValue(
+      detail({
+        kind: 'repeat',
+        task: null,
+        repeat: { lastRunAt: REPORTED, status: 'error', error, warning: null, active: 0, waiting: 0, sharedThread: false, appUpdates: false },
+        updates: [{ firedAt: REPORTED, status: 'error', error, report: null, conversationId: null }],
+      }),
+    );
+    await renderReady();
+    expect(within(screen.getByRole('region', { name: 'Run history' })).getByText(said)).toBeInTheDocument();
+    expect(screen.queryByText(/check-in/)).toBeNull();
+  });
+
   it('a failed run’s reason is readable in full: never clipped', async () => {
     const reason = 'Slack wasn’t reachable from the workspace network. '.repeat(10).trim();
     taskMock.mockResolvedValue(

@@ -157,7 +157,7 @@ function RunRow({
   const word = RUN_WORD[update.status];
   const said =
     update.status === 'error'
-      ? runFailureText(update.error)
+      ? runFailureText(update.error, 'run')
       : update.report?.update != null && update.report.update !== ''
         ? update.report.update
         : word;
