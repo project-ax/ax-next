@@ -6,7 +6,7 @@
  * The groups come first, then enabled Repeat jobs, then two toggles at the
  * bottom: "N paused" (only a person resumes a paused task) and "N done"
  * (TASK-950: every task ever marked done, newest first). With nothing running
- * and nothing done this week the page says so in one quiet line.
+ * the page says so in one quiet line, whatever is done.
  *
  * The page draws the shell's tasks read (TASK-933), the same one Today and the
  * sidebar badge count from. `groupTasks` decides the groups
@@ -117,19 +117,24 @@ export function TasksPage({
     <>
       {/*
         The shared `WorkspaceHeader`'s 15px title is the other pages' metric;
-        this page's title is 24px, with the same wrapping header around it.
+        this page's title is 24px. The header sits in the rows' centred column,
+        so the title and New task line up with the list's edges. It stays
+        outside the scroller, and below `md` the shell's nav trigger
+        (`leading`, TASK-404) still leads it.
       */}
-      <header className="flex min-h-14 shrink-0 items-center gap-3 px-6 pb-2 pt-4">
-        {leading}
-        <h1 className="text-[24px] font-semibold tracking-[-0.01em]">Tasks</h1>
-        <div className="ml-auto flex items-center gap-2">
-          {agents.length > 1 && (
-            <AgentFilter agents={agents} agent={agent} onValueChange={setPicked} />
-          )}
-          <Button ref={createRef} onClick={() => setCreating(true)}>
-            <Plus data-icon="inline-start" aria-hidden="true" />
-            <span className="max-sm:sr-only">New task</span>
-          </Button>
+      <header className="shrink-0 pb-2 pt-4">
+        <div className="mx-auto flex min-h-10 w-full max-w-[900px] items-center gap-3 px-6">
+          {leading}
+          <h1 className="text-[24px] font-semibold tracking-[-0.01em]">Tasks</h1>
+          <div className="ml-auto flex items-center gap-2">
+            {agents.length > 1 && (
+              <AgentFilter agents={agents} agent={agent} onValueChange={setPicked} />
+            )}
+            <Button ref={createRef} onClick={() => setCreating(true)}>
+              <Plus data-icon="inline-start" aria-hidden="true" />
+              <span className="max-sm:sr-only">New task</span>
+            </Button>
+          </div>
         </div>
       </header>
       <TaskDialog open={creating} onOpenChange={setCreating} onWriteSucceeded={onTaskWriteSucceeded}
@@ -264,7 +269,7 @@ function TaskBoard({
   const repeats = shown.filter((task) => task.kind === 'repeat');
   const runningRepeats = repeats.filter((task) => task.enabled);
   const grouped = groupTasks(shown.filter((task) => task.kind !== 'repeat'), now);
-  const { groups, doneRecently, doneAll } = grouped;
+  const { groups, doneAll } = grouped;
   const paused = [...grouped.paused, ...repeats.filter((task) => !task.enabled)];
   // New rows are dated against the clock now, not when the page first opened:
   // the interval below only runs while a row has a report, so a retry that
@@ -277,9 +282,8 @@ function TaskBoard({
     const id = setInterval(() => setNow(new Date()), AGO_TICK_MS);
     return () => clearInterval(id);
   }, [anyReported]);
-  // Nothing running and nothing finished lately: one quiet line, not an empty page.
-  const calm =
-    shown.length > 0 && groups.length === 0 && runningRepeats.length === 0 && doneRecently.length === 0;
+  // Nothing running: one quiet line, so a page of closed toggles never looks broken.
+  const calm = shown.length > 0 && groups.length === 0 && runningRepeats.length === 0;
 
   return (
     <>

@@ -160,6 +160,12 @@ describe('TasksPage (TASK-909)', () => {
     renderPage(<button type="button">Open navigation</button>);
     const title = screen.getByRole('heading', { level: 1, name: 'Tasks' });
     expect(title).toHaveClass('text-[24px]');
+    // The title and New task sit in the rows' centred column, nav trigger first.
+    const column = title.parentElement as HTMLElement;
+    expect(column).toHaveClass('mx-auto', 'max-w-[900px]', 'px-6');
+    expect(within(column).getByRole('button', { name: 'New task' })).toBeInTheDocument();
+    expect(column.firstElementChild).toBe(screen.getByRole('button', { name: 'Open navigation' }));
+    expect(screen.getByRole('status', { name: 'Loading' }).closest('.max-w-\\[900px\\]')).not.toBeNull();
     expect(screen.queryByText('What your agents are looking after')).not.toBeInTheDocument();
     expect(screen.getByRole('status', { name: 'Loading' })).toBeInTheDocument();
     // Below `md` the shell's nav trigger is the only door to the sidebar.
@@ -912,12 +918,20 @@ describe('TasksPage: Done tasks (TASK-950)', () => {
     await waitFor(() => expect(toggle).toHaveFocus());
     second.unmount();
 
-    // Something done this week is something to look at.
-    tasksMock.mockResolvedValueOnce(page([done('This week', ago(HOUR))]));
+    // A task done this week doesn't hide it: closed toggles alone would look broken.
+    tasksMock.mockResolvedValueOnce(
+      page([done('Four days ago', ago(4 * DAY)), row('Old inbox', { enabled: false }), row('Old digest', { enabled: false })]),
+    );
     const third = renderPage();
     await screen.findByRole('button', { name: '1 done task' });
-    expect(screen.queryByText(CALM)).not.toBeInTheDocument();
+    expect(screen.getByText(CALM)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Show 2 paused' })).toBeInTheDocument();
     third.unmount();
+    tasksMock.mockResolvedValueOnce(page([done('This hour', ago(HOUR))]));
+    const fourth = renderPage();
+    await screen.findByRole('button', { name: '1 done task' });
+    expect(screen.getByText(CALM)).toBeInTheDocument();
+    fourth.unmount();
 
     // So is a running task, or a running Repeat job.
     tasksMock.mockResolvedValueOnce(
