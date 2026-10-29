@@ -3267,6 +3267,22 @@ describe('TaskPage: the minimal header and the ⋯ menu (2026-10-29)', () => {
     expect(pageStatus()).toHaveTextContent('Quill finished the run.');
   });
 
+  it('a failed run’s reason is readable in full: never clipped', async () => {
+    const reason = 'Slack wasn’t reachable from the workspace network. '.repeat(10).trim();
+    taskMock.mockResolvedValue(
+      detail({
+        kind: 'repeat',
+        task: null,
+        repeat: { lastRunAt: REPORTED, status: 'error', error: reason, warning: null, active: 0, waiting: 0, sharedThread: false, appUpdates: false },
+        updates: [{ firedAt: REPORTED, status: 'error', error: reason, report: null, conversationId: null }],
+      }),
+    );
+    await renderReady();
+    const line = within(screen.getByRole('region', { name: 'Run history' })).getByText(reason);
+    expect(line.closest('[class*="line-clamp"]')).toBeNull();
+    expect(line).toHaveClass('whitespace-pre-wrap', 'break-words');
+  });
+
   it('⋯ holds Edit task, Duplicate and Delete task…, and Delete asks first', async () => {
     taskMock.mockResolvedValue(detail());
     await renderReady();

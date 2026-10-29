@@ -27,7 +27,8 @@
  * shows as those characters. So is a reply, which keeps its line breaks
  * (`whitespace-pre-wrap`) and has no link. An entry is clamped to two lines
  * on screen; the whole of it is still there for a screen reader, and on the
- * check-in's own page.
+ * check-in's own page. A failed check-in's reason is never clamped: it sits
+ * on a line of its own under the update, read whole.
  *
  * A failed check-in's reason is worded by `runFailureText`: the routines
  * store's own sentences ("…interrupted by a host restart.") become the page's
@@ -253,20 +254,22 @@ function UpdateEntry({
         </StateDotSlot>
       </span>
       <span className="sr-only">{TASK_GROUP_LABELS[mark]}</span>
-      <p className="line-clamp-2 min-w-0 flex-1 break-words text-[14px] leading-6">
-        {updateText(update)}
-        {reading !== null && (
-          <span className="text-muted-foreground">
-            {` · ${readingText(reading)}`}
-          </span>
-        )}
+      <div className="flex min-w-0 flex-1 flex-col">
+        <p className="line-clamp-2 break-words text-[14px] leading-6">
+          {updateText(update)}
+          {reading !== null && (
+            <span className="text-muted-foreground">
+              {` · ${readingText(reading)}`}
+            </span>
+          )}
+        </p>
+        {/* Its own line, never clamped: a reason is the one thing here that must be read whole. */}
         {update.status === 'error' && (
-          <>
-            <span aria-hidden="true" className="text-muted-foreground">{' · '}</span>
-            <span className="text-muted-foreground">{runFailureText(update.error)}</span>
-          </>
+          <p className="whitespace-pre-wrap break-words text-[13px] leading-5 text-muted-foreground">
+            {runFailureText(update.error)}
+          </p>
         )}
-      </p>
+      </div>
       <RowTime iso={update.firedAt} now={now} className="pt-0.5 leading-5" />
       {linked ? (
         <IconLink

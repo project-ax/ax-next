@@ -24,6 +24,7 @@ import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { routeLinkProps } from '@/lib/route-link';
 import { runFailureText } from '@/lib/task-updates';
+import { cn } from '@/lib/utils';
 import { updateStamp } from '@/lib/workspace-time';
 import type { WorkspaceRoute } from '@/lib/workspace-route';
 import type { RepeatTaskState, TaskDetail, TaskUpdate } from '@/lib/workspace-types';
@@ -169,7 +170,15 @@ function RunRow({
         </StateDotSlot>
       </span>
       {said !== word && <span className="sr-only">{`${word}:`}</span>}
-      <p className="line-clamp-2 min-w-0 flex-1 break-words text-[14px] leading-6">{said}</p>
+      {/* A failure's reason is read whole, never clamped; any other run's line is. */}
+      <p
+        className={cn(
+          'min-w-0 flex-1 break-words text-[14px] leading-6',
+          update.status === 'error' ? 'whitespace-pre-wrap' : 'line-clamp-2',
+        )}
+      >
+        {said}
+      </p>
       <RowTime iso={update.firedAt} now={now} className="pt-0.5 leading-5" />
       {update.conversationId !== null ? (
         <IconLink

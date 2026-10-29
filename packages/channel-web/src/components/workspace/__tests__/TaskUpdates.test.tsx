@@ -395,6 +395,22 @@ describe('TaskUpdates (TASK-910)', () => {
     });
   });
 
+  it('a failed check-in’s reason is on a line of its own, never clipped with the update', () => {
+    const reason = 'The mailbox said no. '.repeat(20).trim();
+    renderThread([
+      update({
+        status: 'error',
+        error: reason,
+        report: { status: 'off-track', update: 'Got partway through the inbox.', reading: null },
+      }),
+    ]);
+    const line = screen.getByText(reason);
+    expect(line.closest('[class*="line-clamp"]')).toBeNull();
+    expect(line).toHaveClass('whitespace-pre-wrap', 'break-words');
+    // The update it came with is still the clamped line.
+    expect(screen.getByText('Got partway through the inbox.').closest('[class*="line-clamp"]')).not.toBeNull();
+  });
+
   describe('the row time (2026-10-29)', () => {
     // Pinned, so "today" and "this past week" are the same days wherever the suite runs.
     let savedTz: string | undefined;
