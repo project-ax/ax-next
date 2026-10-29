@@ -230,46 +230,68 @@ describe('private task address controls', () => {
 
 
 describe('batched task app updates (TASK-983)', () => {
-  it.each(['Stay on top of something', 'Get something done'])('creates %s with a response time and waits for saved setup', async kind => {
+  function openUpdates() {
+    fireEvent.click(screen.getByRole('button', { name: /^App updates:/ }));
+  }
+  function chooseRespond(label: string) {
+    fireEvent.keyDown(screen.getByRole('combobox', { name: 'React within' }), { key: 'ArrowDown' });
+    fireEvent.click(screen.getByRole('option', { name: label }));
+  }
+  it.each(['Stay on top', 'Get done'])('creates %s with a response time and waits for saved setup', async kind => {
     render(<RoutineEditor taskMode mode="create" agentId="a" agentName="Caveman" onSaved={vi.fn()} onCancel={vi.fn()} />);
     fireEvent.click(screen.getByRole('radio', { name: kind }));
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Handle updates' } });
     fireEvent.change(screen.getByLabelText('What should Caveman do?'), { target: { value: 'Review the queue.' } });
     fireEvent.change(screen.getByLabelText('Going well when'), { target: { value: 'No update waits.' } });
-    fireEvent.click(screen.getByRole('checkbox', { name: 'When another app sends an update' }));
-    fireEvent.change(screen.getByLabelText('Respond within'), { target: { value: '2m' } });
+    openUpdates();
+    fireEvent.click(screen.getByRole('switch', { name: 'When another app sends an update' }));
+    expect(screen.getByText('You’ll connect the app after you start the task.')).toBeVisible();
+    chooseRespond('15 min');
     expect(mocks.receiver).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole('button', { name: 'Start task' }));
-    await waitFor(() => expect(mocks.create).toHaveBeenCalledWith(expect.objectContaining({ definition: expect.objectContaining({ schedule, webhook: { kind: 'webhook', path: '/project-updates', respondWithin: '2m' } }) })));
+    await waitFor(() => expect(mocks.create).toHaveBeenCalledWith(expect.objectContaining({ definition: expect.objectContaining({ schedule, webhook: { kind: 'webhook', path: '/project-updates', respondWithin: '15m' } }) })));
   });
   const task = (kind: 'stay-on-top' | 'get-done' = 'stay-on-top') => ({ ...view(), kind, goodWhen: 'Nothing waits.', webhook: null });
   it.each(['stay-on-top', 'get-done'] as const)('saves %s updates, response time and required safety schedule', async kind => {
     const value = task(kind); mocks.get.mockResolvedValue(value);
     render(<RoutineEditor taskMode mode="edit" agentId="a" agentName="Caveman" routine={value} onSaved={vi.fn()} onCancel={vi.fn()} />);
     await screen.findByDisplayValue('Nothing waits.');
-    fireEvent.click(screen.getByRole('checkbox', { name: 'When another app sends an update' }));
-    expect(screen.getByLabelText('Respond within')).toHaveValue('5m');
-    expect(screen.getByRole('checkbox', { name: 'On a schedule' })).toBeDisabled();
-    expect(screen.getByText('Save this task to get its own webhook address.')).toBeVisible();
-    fireEvent.change(screen.getByLabelText('Respond within'), { target: { value: '10m' } });
+    openUpdates();
+    fireEvent.click(screen.getByRole('switch', { name: 'When another app sends an update' }));
+    expect(screen.getByRole('combobox', { name: 'React within' })).toHaveTextContent('5 min');
+    expect(screen.getByRole('button', { name: 'How often: Every hour' })).toBeVisible();
+    expect(screen.queryByRole('switch', { name: 'On a schedule' })).not.toBeInTheDocument();
+    expect(screen.getByText('You’ll connect the app after you save.')).toBeVisible();
+    chooseRespond('15 min');
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
-    await waitFor(() => expect(mocks.update).toHaveBeenCalledWith(expect.objectContaining({ patch: { webhook: { kind: 'webhook', path: '/project-updates', respondWithin: '10m' } } })));
+    await waitFor(() => expect(mocks.update).toHaveBeenCalledWith(expect.objectContaining({ patch: { webhook: { kind: 'webhook', path: '/project-updates', respondWithin: '15m' } } })));
   });
-  it.each(['59s', '25h', 'never'])('blocks an invalid response duration %s', async duration => {
-    mocks.get.mockResolvedValue(task());
-    render(<RoutineEditor taskMode mode="edit" agentId="a" agentName="Caveman" routine={task()} onSaved={vi.fn()} onCancel={vi.fn()} />);
+  it('offers response times from 1 to 60 minutes and keeps an unlisted saved one as it is', async () => {
+    const value = { ...task(), webhook: { kind: 'webhook' as const, path: '/updates', respondWithin: '10m' } }; mocks.get.mockResolvedValue(value);
+    render(<RoutineEditor taskMode mode="edit" agentId="a" agentName="Caveman" routine={value} onSaved={vi.fn()} onCancel={vi.fn()} />);
     await screen.findByDisplayValue('Nothing waits.');
-    fireEvent.click(screen.getByRole('checkbox', { name: 'When another app sends an update' }));
-    fireEvent.change(screen.getByLabelText('Respond within'), { target: { value: duration } });
-    expect(screen.getByLabelText('Respond within')).toHaveAttribute('aria-invalid', 'true');
-    expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'App updates: On, react within 10 min' })).toBeVisible();
+    openUpdates();
+    fireEvent.keyDown(screen.getByRole('combobox', { name: 'React within' }), { key: 'ArrowDown' });
+    expect(screen.getAllByRole('option').map(option => option.textContent)).toEqual(['1 min', '5 min', '15 min', '60 min', '10 min']);
+    fireEvent.click(screen.getByRole('option', { name: '10 min' }));
+    fireEvent.change(screen.getByLabelText('What should Caveman do?'), { target: { value: 'Check the queue.' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(mocks.update).toHaveBeenCalledWith(expect.objectContaining({ patch: { promptBody: 'Check the queue.' } })));
   });
   it('reloads saved updates and preserves absent response timing on a brief-only edit', async () => {
     const value = { ...task(), webhook }; mocks.get.mockResolvedValue(value);
     render(<RoutineEditor taskMode mode="edit" agentId="a" agentName="Caveman" routine={value} onSaved={vi.fn()} onCancel={vi.fn()} />);
     await screen.findByDisplayValue('Nothing waits.');
-    expect(screen.getByLabelText('Respond within')).toHaveValue('5m');
+    openUpdates();
+    expect(screen.getByRole('combobox', { name: 'React within' })).toHaveTextContent('5 min');
+    expect(screen.getByText('Its address and signature settings are under More options.')).toBeVisible();
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: 'Escape' });
+    fireEvent.click(screen.getByRole('button', { name: 'More options' }));
     await screen.findByLabelText('Webhook URL');
+    expect(screen.getByLabelText('Address name')).toHaveValue('/original');
+    expect(screen.getByLabelText('Only these kinds of updates')).toHaveValue('push');
+    expect(screen.getByLabelText('Signature header')).toHaveValue('X-Signature');
     fireEvent.change(screen.getByLabelText('What should Caveman do?'), { target: { value: 'Check the queue.' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
     await waitFor(() => expect(mocks.update).toHaveBeenCalledWith(expect.objectContaining({ patch: { promptBody: 'Check the queue.' } })));
@@ -278,11 +300,14 @@ describe('batched task app updates (TASK-983)', () => {
     const value = { ...task(), webhook: { ...webhook, respondWithin: '10m' } }; mocks.get.mockResolvedValue(value);
     render(<RoutineEditor taskMode mode="edit" agentId="a" agentName="Caveman" routine={value} onSaved={vi.fn()} onCancel={vi.fn()} />);
     await screen.findByDisplayValue('Nothing waits.');
-    fireEvent.click(screen.getByRole('radio', { name: 'Get something done' }));
-    expect(screen.getByLabelText('Respond within')).toHaveValue('10m');
-    expect(screen.getByLabelText('Webhook path')).toHaveValue('/original');
-    fireEvent.click(screen.getByRole('radio', { name: 'Repeat a job' }));
-    expect(screen.queryByLabelText('Respond within')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('radio', { name: 'Get done' }));
+    expect(screen.getByRole('button', { name: 'App updates: On, react within 10 min' })).toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: 'More options' }));
+    expect(screen.getByLabelText('Address name')).toHaveValue('/original');
+    fireEvent.click(screen.getByRole('radio', { name: 'Repeat' }));
+    expect(screen.getByRole('button', { name: 'App updates: On' })).toBeVisible();
+    openUpdates();
+    expect(screen.queryByRole('combobox', { name: 'React within' })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
     await waitFor(() => expect(mocks.update).toHaveBeenCalledWith(expect.objectContaining({ patch: expect.objectContaining({ kind: 'repeat', webhook }) })));
   });

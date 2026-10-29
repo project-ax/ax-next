@@ -23,7 +23,7 @@ async function fill() {
 describe('shared task dialog', () => {
   it('uses its sole eligible agent, announces a landed write first, and opens the real saved ID', async () => {
     const h = show(); await fill();
-    expect(screen.queryByRole('combobox', { name: 'Agent' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^Agent:/ })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Start task' }));
     await waitFor(() => expect(h.onSaved).toHaveBeenCalledWith('a1', 'saved-task'));
     expect(h.onWriteSucceeded.mock.invocationCallOrder[0]).toBeLessThan(h.onSaved.mock.invocationCallOrder[0]!);
@@ -32,8 +32,9 @@ describe('shared task dialog', () => {
   it('shows a picker only for multiple eligible agents and preserves the brief while switching', async () => {
     vi.mocked(workspaceApi.taskAgents).mockResolvedValue({ agents: [{ agentId: 'a1', agentName: 'Caveman' }, { agentId: 'a2', agentName: 'Juniper' }] });
     show(); await fill();
-    fireEvent.keyDown(screen.getByRole('combobox', { name: 'Agent' }), { key: 'ArrowDown' });
-    fireEvent.click(await screen.findByRole('option', { name: 'Juniper' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Agent: Caveman' }));
+    fireEvent.click(await screen.findByRole('radio', { name: 'Juniper' }));
+    expect(screen.getByRole('button', { name: 'Agent: Juniper' })).toBeVisible();
     expect(screen.getByLabelText('What should Juniper do?')).toHaveValue('Answer easy questions.');
     fireEvent.click(screen.getByRole('button', { name: 'Start task' }));
     await waitFor(() => expect(routineApi.create).toHaveBeenCalledTimes(1));

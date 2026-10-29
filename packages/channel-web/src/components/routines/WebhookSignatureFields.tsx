@@ -76,7 +76,7 @@ export function WebhookSignatureFields({ value, disabled, taskMode, invalidField
         We check the signature and reject updates with a timestamp more than five minutes from our clock.
       </FieldDescription>}
       <FieldDescription>
-        {taskMode ? 'The task owner can manage its signing secret in Task options after saving. Without a saved secret, signed deliveries are rejected.' : 'The owner of this routine can manage its signing secret in the saved routine’s credential settings. Without a saved secret, signed deliveries are rejected.'}
+        {taskMode ? 'The task owner can add its signing secret on the task page after saving. Without a saved secret, signed deliveries are rejected.' : 'The owner of this routine can manage its signing secret in the saved routine’s credential settings. Without a saved secret, signed deliveries are rejected.'}
       </FieldDescription>
     </FieldGroup>}
   </>;
