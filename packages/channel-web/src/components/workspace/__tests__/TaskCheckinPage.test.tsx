@@ -202,6 +202,17 @@ describe('TaskCheckinPage (TASK-911)', () => {
     expect(within(s).getByText('No reason was recorded.')).toBeInTheDocument();
   });
 
+  it.each([
+    ['The routine run was interrupted by a host restart.', 'Stopped early because we restarted. It tries again next time.'],
+    ['The routine run closed before it could start.', 'Something went wrong, so this check-in didn’t finish.'],
+  ])('a check-in the store ended with its own words says so plainly: %s', async (error, said) => {
+    checkinMock.mockResolvedValueOnce(page({ checkIn: checkIn({ status: 'error', error, report: null }) }));
+    renderPage();
+    const s = await ready();
+    expect(within(s).getByText(said)).toBeInTheDocument();
+    expect(document.body.textContent).not.toContain(error);
+  });
+
   it('shows the tools it ran', async () => {
     checkinMock.mockResolvedValue(
       page({

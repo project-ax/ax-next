@@ -9,6 +9,7 @@
 import { taskGroup } from './task-groups.js';
 import { finishByCount } from './task-finish-by.js';
 import { AUTO_PAUSED_LINE, missSummary } from './task-miss.js';
+import { runFailureText } from './task-updates.js';
 import { checkInWhen, localDayKey, timeAgo } from './workspace-time.js';
 import type { RepeatTaskState, TaskRow } from './workspace-types.js';
 
@@ -65,7 +66,8 @@ export function repeatLine(run: RepeatTaskState | undefined, enabled: boolean): 
   else if (run.status === 'silenced') sentences.push('Last run finished quietly.');
   else if (run.status === 'ok') sentences.push('Last run completed.');
   else sentences.push('No completed runs yet.');
-  if (run.status === 'error' && run.error !== null) sentences.push(run.error);
+  // The store's own sentences speak of routines and hosts; `runFailureText` says them plainly.
+  if (run.status === 'error' && run.error !== null) sentences.push(runFailureText(run.error));
   if (run.warning !== null) sentences.push(run.warning);
   const parts = [sentences.join(' ')];
   if (active > 1) parts.push(`${active} runs active`);
