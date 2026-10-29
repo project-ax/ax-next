@@ -8,7 +8,7 @@ import {
   type RoutineSchedule,
   type WebhookTrigger,
 } from '@ax/routines-contract';
-import { RoutineApiError } from '@/lib/routines';
+import { RoutineApiError, type RoutineErrorCode } from '@/lib/routines';
 
 const editableKeys = [
   'name',
@@ -61,6 +61,8 @@ export function useRoutineDraft({
     (initial.webhook?.events ?? []).join(', '),
   );
   const [error, setError] = useState<string | null>(null);
+  // Which refusal `error` words, so a form can say it its own way; null when it wasn't the host's.
+  const [errorCode, setErrorCode] = useState<RoutineErrorCode | null>(null);
   const [invalidField, setInvalidField] = useState<string | undefined>();
   const [conflict, setConflict] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -168,6 +170,7 @@ export function useRoutineDraft({
     } catch (e) {
       const safe = e instanceof RoutineApiError;
       setError(safe ? e.message : 'We couldn’t save this routine. Try again.');
+      setErrorCode(safe ? e.code : null);
       setInvalidField(safe ? e.field : undefined);
       setConflict(safe && e.code === 'revision-conflict');
       if (!safe || e.status === 0 || e.status >= 500) setUncertain(true);
@@ -188,6 +191,7 @@ export function useRoutineDraft({
     dirty,
     disabled,
     error,
+    errorCode,
     invalidField,
     conflict,
     busy,

@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { RoutineView } from '@ax/routines-contract';
 import { RoutineEditor } from '@/components/routines/RoutineEditor';
-import { routineApi } from '@/lib/routines';
+import { routineApi, RoutineApiError } from '@/lib/routines';
 import { routineFixture } from '@/components/routines/__tests__/routine-fixture';
 import { schedulePreset, scheduleChip, hoursChip } from '../task-form-helpers';
 
@@ -229,5 +229,58 @@ describe('task form More options', () => {
     fireEvent.click(screen.getByRole('button', { name: 'More options' }));
     expect(screen.getByLabelText('Note for you (optional)')).toHaveValue(task.description);
     expect(screen.queryByRole('switch', { name: 'Start right away' })).not.toBeInTheDocument();
+  });
+});
+
+describe('task form save refusals', () => {
+  // Every code the host can refuse a save with, in a task's words, never Settings' "routine" copy.
+  it.each([
+    ['validation', 'We couldn’t save one of these settings. Check the marked one and try again.'],
+    ['revision-conflict', 'This task changed while you had it open. Reload it to get the latest, then make your change again.'],
+    ['webhook-path-conflict', 'Another task already uses that address name. Choose a different one.'],
+    ['request-conflict', 'We couldn’t match this save to your earlier try. Close this and make the change again.'],
+    ['approval-required', 'This change needs someone’s approval before it takes effect.'],
+    ['not-found', 'This task isn’t available anymore. It may have been deleted.'],
+    ['forbidden', 'You don’t have permission to change this task.'],
+    ['busy', 'This task is busy with a run. Try again when it finishes.'],
+    ['disabled', 'This task is paused. Resume it, then try again.'],
+    ['cleanup-pending', 'We’re still removing this task’s old signing secret. Try again in a moment.'],
+    ['unavailable', 'We couldn’t reach tasks just now. Try again in a moment.'],
+  ])('says %s in task words', async (code, words) => {
+    vi.mocked(routineApi.update).mockRejectedValue(new RoutineApiError(409, code));
+    await edit(task);
+    fill('What should Caveman do?', 'Changed.');
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    expect(await screen.findByText(words)).toBeVisible();
+    expect(document.body.textContent).not.toMatch(/routine/i);
+  });
+
+  it('keeps the reload offer on a conflict', async () => {
+    vi.mocked(routineApi.update).mockRejectedValue(new RoutineApiError(409, 'revision-conflict'));
+    await edit(task);
+    fill('What should Caveman do?', 'Changed.');
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    expect(await screen.findByRole('button', { name: 'Reload and discard my changes' })).toBeVisible();
+  });
+
+  it('marks the address name when another task already uses it', async () => {
+    vi.mocked(routineApi.update).mockRejectedValue(new RoutineApiError(409, 'webhook-path-conflict', 'webhook.path'));
+    await edit({ ...task, webhook: { kind: 'webhook', path: '/taken' } });
+    fireEvent.click(screen.getByRole('button', { name: 'More options' }));
+    fill('Address name', '/also-taken');
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    const address = screen.getByLabelText('Address name');
+    await waitFor(() => expect(address).toHaveAttribute('aria-invalid', 'true'));
+    expect(address).toHaveAccessibleDescription(expect.stringContaining('Another task already uses that address name. Choose a different one.'));
+  });
+
+  it('says a failure that wasn’t the host’s answer plainly, without its text', async () => {
+    vi.mocked(routineApi.update).mockRejectedValue(new Error('socket hang up at 10.0.0.4'));
+    await edit(task);
+    fill('What should Caveman do?', 'Changed.');
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    expect(await screen.findByText('We couldn’t save this task. Try again.')).toBeVisible();
+    expect(screen.getByRole('button', { name: 'Retry save' })).toBeVisible();
+    expect(document.body.textContent).not.toMatch(/socket|routine/i);
   });
 });

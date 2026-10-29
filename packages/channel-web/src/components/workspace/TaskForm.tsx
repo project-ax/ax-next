@@ -58,6 +58,7 @@ import {
   schedulePreset,
   TASK_FIELDS,
   taskField,
+  taskSaveError,
   type TaskField,
 } from './task-form-helpers';
 
@@ -138,7 +139,7 @@ export function TaskForm({
 }) {
   const id = useId();
   const {
-    form, eventsDraft, draftDefinition, validation, dirty, disabled, error, invalidField,
+    form, eventsDraft, draftDefinition, validation, dirty, disabled, error, errorCode, invalidField,
     conflict, busy, uncertain, addressBusy, setAddressBusy, update, editEvents,
     toggleSchedule, toggleWebhook, changeKind, submit,
   } = useRoutineDraft({ initial, mode, canEdit, save, onSaved, onPendingChange });
@@ -171,10 +172,13 @@ export function TaskForm({
     // The host named a field it refused; say so there, in our words.
     if (invalidField !== undefined) {
       const field = taskField(invalidField, customCron);
-      if (field !== 'form' && !visible.has(field)) visible.set(field, plainIssue(field, {}, agentName));
+      if (field !== 'form' && !visible.has(field)) {
+        visible.set(field, errorCode === 'webhook-path-conflict' && field === 'address'
+          ? taskSaveError(errorCode) : plainIssue(field, {}, agentName));
+      }
     }
     return visible;
-  }, [attempted, issues, invalidField, customCron, agentName]);
+  }, [attempted, issues, invalidField, errorCode, customCron, agentName]);
 
   useEffect(() => {
     const field = focusNext.current;
@@ -520,7 +524,7 @@ export function TaskForm({
       {error && (
         <Alert variant="destructive">
           <AlertDescription>
-            {error}
+            {taskSaveError(errorCode)}
             {conflict && onReload && (
               <Button type="button" variant="outline" onClick={onReload}>Reload and discard my changes</Button>
             )}
