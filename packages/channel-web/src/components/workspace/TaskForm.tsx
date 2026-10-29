@@ -334,7 +334,9 @@ export function TaskForm({
               open={chip === 'agent'} onOpenChange={openChip('agent')} disabled={disabled}>
               <RadioGroup aria-label="Agent" value={agentChoices.selected} disabled={disabled}
                 className="max-h-64 overflow-y-auto"
-                onValueChange={value => { agentChoices.onSelect(value); setChip(null); }}>
+                // Arrow keys check as they move, so a change alone never closes the picker.
+                onValueChange={agentChoices.onSelect}
+                onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); setChip(null); } }}>
                 {agentChoices.agents.map(agent => (
                   <Field key={agent.agentId} orientation="horizontal">
                     <RadioGroupItem id={`${id}-agent-${agent.agentId}`} value={agent.agentId} />
@@ -345,6 +347,7 @@ export function TaskForm({
                   </Field>
                 ))}
               </RadioGroup>
+              <Button type="button" variant="ghost" size="sm" className="self-end" onClick={() => setChip(null)}>Done</Button>
             </SettingChip>
           )}
           <SettingChip icon={Clock} label={scheduleLabel} name={`How often: ${scheduleLabel}`}
