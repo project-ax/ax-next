@@ -1,30 +1,33 @@
 /**
  * `/workspace/tasks` — every task the person owns, across the agents they can
- * see, grouped by what needs them (TASK-909).
+ * see, grouped by what needs them (TASK-909), in the minimal layout
+ * (2026-10-29): one line per task on desktop, two on a phone.
  *
- * Two views (TASK-950). Current is the groups, then "Done this week" (tasks
- * marked done in the last 7 days, against the browser's clock), then paused
- * tasks behind their toggle. Done is every task ever marked done, newest first.
- * The switch between them shows only once a task is done; with none, the page
- * is the one it always was.
+ * The groups come first, then enabled Repeat jobs, then two toggles at the
+ * bottom: "N paused" (only a person resumes a paused task) and "N done"
+ * (TASK-950: every task ever marked done, newest first). With nothing running
+ * and nothing done this week the page says so in one quiet line.
  *
  * The page draws the shell's tasks read (TASK-933), the same one Today and the
  * sidebar badge count from. `groupTasks` decides the groups
  * and their order; each group's mark is `StateDot`'s task mark, so a task
- * waiting on you looks exactly like an agent waiting on you.
+ * waiting on you looks exactly like an agent waiting on you. With more than
+ * one agent among the rows, an agent filter narrows them, client-side.
  *
  * AGENT-WRITTEN TEXT IS DRAWN AS TEXT. A task's `name`, its report's `update`
- * and its reading's label (TASK-952) were written by a model, and an update can
- * quote a ticket or an email. The server fences each to one line and caps it
- * before it leaves (`server/routes-workspace.ts`). Here they are only ever
- * React text children: never `dangerouslySetInnerHTML`, never the markdown
- * renderer, so `**bold**` or `<img>` in an update shows as those characters.
- * Each clamped one keeps the whole fenced value in a `title` (TASK-436).
+ * and its `ask` were written by a model, and an update can quote a ticket or
+ * an email. The server fences each to one line and caps it before it leaves
+ * (`server/routes-workspace.ts`). Here they are only ever React text
+ * children: never `dangerouslySetInnerHTML`, never the markdown renderer, so
+ * `**bold**` or `<img>` in an update shows as those characters. Each clamped
+ * one keeps the whole fenced value in a `title` (TASK-436).
  *
- * Each row opens its task page (TASK-910) through a real link, so it can open in a new tab too.
+ * Each row opens its task page (TASK-910) through a real link, so it can open
+ * in a new tab too. A needs-you row's Reply button sits beside that link,
+ * never inside it: a button nested in a link is two controls in one.
  */
-import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
-import { ChevronDown, ListChecks } from 'lucide-react';
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react';
+import { Bot, ChevronDown, ListChecks, MessageSquare, Plus, Repeat2 } from 'lucide-react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
@@ -33,6 +36,14 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from '@/components/ui/collapsible';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
 import {
   Empty,
   EmptyDescription,
@@ -45,19 +56,15 @@ import { Spinner } from '@/components/ui/spinner';
 import { HTTP_SESSION_ENDED } from '@/lib/http';
 import { readAlertVariant } from '@/lib/read-register';
 import { routeLinkProps } from '@/lib/route-link';
-import { AUTO_PAUSED_LINE, missSummary } from '@/lib/task-miss';
-import { TASK_GROUP_LABELS, groupTasks, type ActiveTaskGroup } from '@/lib/task-groups';
-import { finishByCount } from '@/lib/task-finish-by';
-import { formatReading } from '@/lib/task-reading';
+import { TASK_GROUP_LABELS, groupTasks, taskGroup, type ActiveTaskGroup } from '@/lib/task-groups';
+import { rowFact, rowLatest } from '@/lib/task-row-line';
 import { cn } from '@/lib/utils';
 import type { WorkspaceRoute } from '@/lib/workspace-route';
 import type { TasksReadError, TasksState } from '@/lib/workspace-tasks';
-import { checkInWhen, timeAgo } from '@/lib/workspace-time';
 import type { TaskRow, UnavailableAgent } from '@/lib/workspace-types';
-import { StateDot, StateDotSlot } from './bits';
-import { Segmented, WorkspaceHeader } from './WorkspaceHeader';
+import { AgentTile, StateDot, StateDotSlot } from './bits';
+import { IconAction, TaskKindIcon } from './task-bits';
 import { TaskDialog } from './TaskDialog';
-import { RepeatRunSummary } from './RepeatRunSummary';
 
 /** How often "checked 4 min ago" is recomputed, as `LearnedInChat` does. */
 const AGO_TICK_MS = 30_000;
@@ -68,6 +75,22 @@ const LOAD_COPY: Record<TasksReadError, string> = {
   expired: HTTP_SESSION_ENDED,
   failed: 'We couldn’t load your tasks just now. Nothing was lost.',
 };
+
+interface AgentChoice {
+  agentId: string;
+  agentName: string;
+}
+
+/** The distinct agents among the rows, by name. */
+function rowAgents(tasks: readonly TaskRow[]): AgentChoice[] {
+  const byId = new Map<string, string>();
+  for (const task of tasks) if (!byId.has(task.agentId)) byId.set(task.agentId, task.agentName);
+  return [...byId]
+    .map(([agentId, agentName]) => ({ agentId, agentName }))
+    .sort((a, b) => a.agentName.localeCompare(b.agentName) || (a.agentId < b.agentId ? -1 : 1));
+}
+
+const ALL_AGENTS = '';
 
 export function TasksPage({
   state,
@@ -84,13 +107,31 @@ export function TasksPage({
 }) {
   const [creating, setCreating] = useState(false);
   const createRef = useRef<HTMLButtonElement>(null);
+  const tasks = state.kind === 'ready' ? state.tasks : null;
+  const agents = useMemo(() => (tasks === null ? [] : rowAgents(tasks)), [tasks]);
+  // What the person picked; an agent no longer among the rows (its last task
+  // went) reads as All agents, so a filter can never hide every row.
+  const [picked, setPicked] = useState(ALL_AGENTS);
+  const agent = agents.length > 1 ? (agents.find((a) => a.agentId === picked) ?? null) : null;
   return (
     <>
-      <WorkspaceHeader
-        title="Tasks"
-        subtitle="What your agents are looking after"
-        leading={leading}
-      ><Button ref={createRef} onClick={() => setCreating(true)}>New task</Button></WorkspaceHeader>
+      {/*
+        The shared `WorkspaceHeader`'s 15px title is the other pages' metric;
+        this page's title is 24px, with the same wrapping header around it.
+      */}
+      <header className="flex min-h-14 shrink-0 items-center gap-3 px-6 pb-2 pt-4">
+        {leading}
+        <h1 className="text-[24px] font-semibold tracking-[-0.01em]">Tasks</h1>
+        <div className="ml-auto flex items-center gap-2">
+          {agents.length > 1 && (
+            <AgentFilter agents={agents} agent={agent} onValueChange={setPicked} />
+          )}
+          <Button ref={createRef} onClick={() => setCreating(true)}>
+            <Plus data-icon="inline-start" aria-hidden="true" />
+            <span className="max-sm:sr-only">New task</span>
+          </Button>
+        </div>
+      </header>
       <TaskDialog open={creating} onOpenChange={setCreating} onWriteSucceeded={onTaskWriteSucceeded}
         onSaved={(agentId, routineId) => onNavigate({ kind: 'task', agentId, routineId })}
         onClosed={() => createRef.current?.focus()} />
@@ -107,6 +148,7 @@ export function TasksPage({
           {state.kind === 'ready' && (
             <TaskBoard
               tasks={state.tasks}
+              agent={agent}
               unavailableAgents={state.unavailableAgents}
               refreshing={state.refreshing}
               refreshFailed={state.refreshFailed}
@@ -117,6 +159,53 @@ export function TasksPage({
         </div>
       </div>
     </>
+  );
+}
+
+/**
+ * The Bot icon's menu: All agents, then each agent among the rows. While the
+ * rows are narrowed, the button wears that agent's tile and says so in its
+ * name and tooltip, so the filter is never on without the page showing it.
+ */
+function AgentFilter({
+  agents,
+  agent,
+  onValueChange,
+}: {
+  agents: AgentChoice[];
+  agent: AgentChoice | null;
+  onValueChange: (agentId: string) => void;
+}) {
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        {agent === null ? (
+          <IconAction icon={Bot} label="Filter by agent" />
+        ) : (
+          <IconAction
+            icon={Bot}
+            label={`Showing ${agent.agentName}’s tasks. Change filter`}
+            busy={<AgentTile agent={{ name: agent.agentName }} size={22} />}
+            className="bg-primary-soft ring-2 ring-primary-soft"
+          />
+        )}
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="min-w-44">
+        <DropdownMenuRadioGroup
+          aria-label="Show tasks from"
+          value={agent?.agentId ?? ALL_AGENTS}
+          onValueChange={onValueChange}
+        >
+          <DropdownMenuRadioItem value={ALL_AGENTS}>All agents</DropdownMenuRadioItem>
+          <DropdownMenuSeparator />
+          {agents.map((a) => (
+            <DropdownMenuRadioItem key={a.agentId} value={a.agentId}>
+              <span className="truncate" title={a.agentName}>{a.agentName}</span>
+            </DropdownMenuRadioItem>
+          ))}
+        </DropdownMenuRadioGroup>
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
 
@@ -148,11 +237,9 @@ function TasksLoadFailure({
   );
 }
 
-/** Which list the Tasks page shows (TASK-950). */
-type TasksView = 'current' | 'done';
-
 function TaskBoard({
   tasks,
+  agent,
   unavailableAgents,
   refreshing,
   refreshFailed,
@@ -160,6 +247,8 @@ function TaskBoard({
   onRetry,
 }: {
   tasks: TaskRow[];
+  /** The agent the rows are narrowed to, or null for all of them. */
+  agent: AgentChoice | null;
   unavailableAgents: UnavailableAgent[];
   refreshing: boolean;
   refreshFailed: boolean;
@@ -169,18 +258,14 @@ function TaskBoard({
   // "checked 4 min ago" keeps moving on a tab left open, but the clock only
   // runs while a row (a paused one included) has a report or a done time to date.
   const [now, setNow] = useState(() => new Date());
-  const repeats = tasks.filter(task => task.kind === 'repeat');
-  const grouped = groupTasks(tasks.filter(task => task.kind !== 'repeat'), now);
+  const [pausedOpen, setPausedOpen] = useState(false);
+  const pausedToggle = useRef<HTMLButtonElement>(null);
+  const shown = agent === null ? tasks : tasks.filter((task) => task.agentId === agent.agentId);
+  const repeats = shown.filter((task) => task.kind === 'repeat');
+  const runningRepeats = repeats.filter((task) => task.enabled);
+  const grouped = groupTasks(shown.filter((task) => task.kind !== 'repeat'), now);
   const { groups, doneRecently, doneAll } = grouped;
-  const paused = [...grouped.paused, ...repeats.filter(task => !task.enabled)];
-  // What the person picked; with nothing done there is nothing to pick, so the
-  // page is Current whatever was chosen before (the last done task was reopened),
-  // and the choice goes back to Current too: the next task marked done brings
-  // the toggle back on Current instead of switching the page to Done by itself.
-  // Set while rendering, React's way to adjust state to new props.
-  const [chosen, setChosen] = useState<TasksView>('current');
-  if (doneAll.length === 0 && chosen !== 'current') setChosen('current');
-  const view: TasksView = doneAll.length === 0 ? 'current' : chosen;
+  const paused = [...grouped.paused, ...repeats.filter((task) => !task.enabled)];
   // New rows are dated against the clock now, not when the page first opened:
   // the interval below only runs while a row has a report, so a retry that
   // brings the first reported row in would otherwise read a stale `now`.
@@ -192,22 +277,12 @@ function TaskBoard({
     const id = setInterval(() => setNow(new Date()), AGO_TICK_MS);
     return () => clearInterval(id);
   }, [anyReported]);
+  // Nothing running and nothing finished lately: one quiet line, not an empty page.
+  const calm =
+    shown.length > 0 && groups.length === 0 && runningRepeats.length === 0 && doneRecently.length === 0;
 
   return (
     <>
-      {doneAll.length > 0 && (
-        <div className="self-start">
-          <Segmented<TasksView>
-            label="Which tasks to show"
-            value={view}
-            onValueChange={setChosen}
-            options={[
-              { value: 'current', label: 'Current' },
-              { value: 'done', label: 'Done', count: doneAll.length },
-            ]}
-          />
-        </div>
-      )}
       {/*
         No title: this sits over rows the page can still show, and it knows
         nothing about the tasks it couldn't load (`lib/read-register.ts`).
@@ -254,31 +329,55 @@ function TaskBoard({
           </EmptyHeader>
         </Empty>
       )}
-      {view === 'current' && (
-        <>
-          {groups.map(({ group, rows }) => (
-            <TaskGroupSection key={group} group={group} rows={rows} now={now} onNavigate={onNavigate} />
-          ))}
-          {repeats.some(task => task.enabled) && <section className="flex flex-col gap-2.5" aria-label="Repeat jobs">
-            <h2 className="text-sm font-medium">Repeat jobs</h2>
-            <TaskList rows={repeats.filter(task => task.enabled)} now={now} onNavigate={onNavigate} />
-          </section>}
-          {doneRecently.length > 0 && (
-            <DoneSection title="Done this week" rows={doneRecently} now={now} onNavigate={onNavigate} />
-          )}
-          {paused.length > 0 && <PausedTasks rows={paused} now={now} onNavigate={onNavigate} />}
-          {groups.length === 0 &&
-            doneRecently.length === 0 &&
-            paused.length === 0 &&
-            doneAll.length > 0 && (
-              <p className="text-[13px] text-muted-foreground">
-                No tasks need looking after right now. Finished ones are under Done.
-              </p>
-            )}
-        </>
+      {groups.map(({ group, rows }) => (
+        <TaskGroupSection key={group} group={group} rows={rows} now={now} onNavigate={onNavigate} />
+      ))}
+      {runningRepeats.length > 0 && (
+        <RowSection
+          mark={<Repeat2 aria-hidden="true" className="size-3.5" />}
+          title="Repeat jobs"
+          rows={runningRepeats}
+          now={now}
+          onNavigate={onNavigate}
+        />
       )}
-      {view === 'done' && (
-        <DoneSection title="Done" rows={doneAll} now={now} onNavigate={onNavigate} />
+      {calm && (
+        <p className="flex flex-wrap items-center gap-x-2 text-[13px] text-muted-foreground">
+          <span>Nothing is running right now.</span>
+          {paused.length > 0 && !pausedOpen && (
+            <Button
+              variant="link"
+              size="sm"
+              className="h-auto px-0 text-[13px]"
+              onClick={() => {
+                setPausedOpen(true);
+                // This button goes once the list opens; focus lands on the toggle that closes it.
+                requestAnimationFrame(() => pausedToggle.current?.focus());
+              }}
+            >
+              {`Show ${paused.length} paused`}
+            </Button>
+          )}
+        </p>
+      )}
+      {(paused.length > 0 || doneAll.length > 0) && (
+        <div className="flex flex-col gap-1">
+          {paused.length > 0 && (
+            <RowsToggle
+              state="paused"
+              word="paused"
+              rows={paused}
+              open={pausedOpen}
+              onOpenChange={setPausedOpen}
+              triggerRef={pausedToggle}
+              now={now}
+              onNavigate={onNavigate}
+            />
+          )}
+          {doneAll.length > 0 && (
+            <DoneToggle rows={doneAll} now={now} onNavigate={onNavigate} />
+          )}
+        </div>
       )}
     </>
   );
@@ -295,30 +394,26 @@ function TaskGroupSection({
   now: Date;
   onNavigate: (route: WorkspaceRoute) => void;
 }) {
-  const headingId = useId();
   return (
-    <section aria-labelledby={headingId} className="flex flex-col gap-2.5">
-      <h2 id={headingId} className="flex items-center gap-2 text-[12.5px] font-medium">
-        <StateDotSlot>
-          <StateDot state={group} />
-        </StateDotSlot>
-        <span>
-          {TASK_GROUP_LABELS[group]}{' '}
-          <span className="text-muted-foreground">· {rows.length}</span>
-        </span>
-      </h2>
-      <TaskList rows={rows} now={now} onNavigate={onNavigate} />
-    </section>
+    <RowSection
+      mark={<StateDot state={group} />}
+      title={TASK_GROUP_LABELS[group]}
+      rows={rows}
+      now={now}
+      onNavigate={onNavigate}
+    />
   );
 }
 
-/** Tasks marked done, under a heading with a check, headed like a group (TASK-950). */
-function DoneSection({
+/** A heading (its mark, the muted word and a muted count) over its rows. */
+function RowSection({
+  mark,
   title,
   rows,
   now,
   onNavigate,
 }: {
+  mark: ReactNode;
   title: string;
   rows: TaskRow[];
   now: Date;
@@ -326,13 +421,11 @@ function DoneSection({
 }) {
   const headingId = useId();
   return (
-    <section aria-labelledby={headingId} className="flex flex-col gap-2.5">
-      <h2 id={headingId} className="flex items-center gap-2 text-[12.5px] font-medium">
-        <StateDotSlot>
-          <StateDot state="done" />
-        </StateDotSlot>
+    <section aria-labelledby={headingId} className="flex flex-col gap-2">
+      <h2 id={headingId} className="flex items-center gap-2 text-[13px] font-medium text-muted-foreground">
+        <StateDotSlot>{mark}</StateDotSlot>
         <span>
-          {title} <span className="text-muted-foreground">· {rows.length}</span>
+          {title} <span className="font-normal tabular-nums">{rows.length}</span>
         </span>
       </h2>
       <TaskList rows={rows} now={now} onNavigate={onNavigate} />
@@ -340,8 +433,8 @@ function DoneSection({
   );
 }
 
-/** Only a person resumes a paused task, so paused tasks wait behind a toggle, closed at first. */
-function PausedTasks({
+/** "N done": every task marked done, newest first, opened in place (TASK-950). */
+function DoneToggle({
   rows,
   now,
   onNavigate,
@@ -351,19 +444,44 @@ function PausedTasks({
   onNavigate: (route: WorkspaceRoute) => void;
 }) {
   const [open, setOpen] = useState(false);
-  const count = rows.length;
   return (
-    <Collapsible open={open} onOpenChange={setOpen} className="flex flex-col gap-2.5">
+    <RowsToggle state="done" word="done" rows={rows} open={open} onOpenChange={setOpen} now={now} onNavigate={onNavigate} />
+  );
+}
+
+/** A bottom toggle, closed at first: its mark and "N paused" / "N done", then its rows in place. */
+function RowsToggle({
+  state,
+  word,
+  rows,
+  open,
+  onOpenChange,
+  triggerRef,
+  now,
+  onNavigate,
+}: {
+  state: 'paused' | 'done';
+  word: string;
+  rows: TaskRow[];
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  triggerRef?: RefObject<HTMLButtonElement | null>;
+  now: Date;
+  onNavigate: (route: WorkspaceRoute) => void;
+}) {
+  const count = rows.length;
+  const noun = count === 1 ? 'task' : 'tasks';
+  return (
+    <Collapsible open={open} onOpenChange={onOpenChange} className="flex flex-col gap-2">
       <CollapsibleTrigger asChild>
-        <Button variant="ghost" size="sm" className="-ml-3 self-start">
+        <Button ref={triggerRef} variant="ghost" size="sm" className="-ml-3 self-start text-[13px] text-muted-foreground">
           <StateDotSlot>
-            <StateDot state="paused" />
+            <StateDot state={state} />
           </StateDotSlot>
-          {open
-            ? 'Hide paused tasks'
-            : count === 1
-              ? 'Show 1 paused task'
-              : `Show ${count} paused tasks`}
+          <span>
+            {`${count} ${word}`}
+            <span className="sr-only">{` ${noun}`}</span>
+          </span>
           <ChevronDown
             data-icon="inline-end"
             aria-hidden="true"
@@ -372,7 +490,7 @@ function PausedTasks({
         </Button>
       </CollapsibleTrigger>
       <CollapsibleContent>
-        <TaskList rows={rows} now={now} onNavigate={onNavigate} />
+        <TaskList rows={rows} now={now} onNavigate={onNavigate} label={`${word === 'done' ? 'Done' : 'Paused'} tasks`} />
       </CollapsibleContent>
     </Collapsible>
   );
@@ -382,16 +500,18 @@ function TaskList({
   rows,
   now,
   onNavigate,
+  label,
 }: {
   rows: TaskRow[];
   now: Date;
   onNavigate: (route: WorkspaceRoute) => void;
+  label?: string;
 }) {
   // `overflow-hidden`: a row's hover fill must follow the card's rounded
   // corners, and its focus ring is drawn inside the row for the same reason.
   return (
     <Card className="overflow-hidden">
-      <ul>
+      <ul aria-label={label}>
         {rows.map((row, i) => (
           <li key={`${row.agentId}:${row.routineId}`}>
             {i > 0 && <Separator />}
@@ -404,19 +524,13 @@ function TaskList({
 }
 
 /**
- * One task: its name, whose it is and when it last checked in, then the
- * agent's latest update, or, when its last check-ins left none, why (TASK-930),
- * and the agent's reading from that update's report (TASK-952).
- * A get-done task's finish date, when it has one, ends the second line
- * ("2 of 5 steps · 9 days left", TASK-951), unless the task is done.
- * "checked" dates the last miss when present, otherwise the last real report.
- * A task with neither shows its agent's name alone:
- * a time on a row is a claim, and the task's last-run time moves when a
- * check-in is skipped, so it can't stand in for one (decisions rows 3 and 4).
- * A done task (TASK-950) says when it was marked done in place of either, and
- * shows its last update whatever misses it had before: it is finished, and the
- * update is what the person accepted. A current claim without misses says
- * the agent thinks it is done, above the update, as Today and the task page do.
+ * One task: its agent's tile, its name, at most one latest line
+ * (`rowLatest`), its kind's icon and one short right-hand fact (`rowFact`),
+ * whose whole sentence is in the link's name and a `title`; a needs-you row
+ * has Reply in the fact's place. Below `sm` the
+ * name and the latest line stack. A needs-you row quotes its ask in the
+ * foreground and gets a Reply button beside the link, which opens the task
+ * page, where the ask is the first thing.
  */
 function TaskItem({
   row,
@@ -427,83 +541,57 @@ function TaskItem({
   now: Date;
   onNavigate: (route: WorkspaceRoute) => void;
 }) {
-  if (row.kind === 'repeat') return <a
-    {...routeLinkProps({ kind: 'task', agentId: row.agentId, routineId: row.routineId }, onNavigate)}
-    className="flex min-w-0 flex-col gap-1 px-5 py-3 hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring">
-    <span className="truncate text-sm font-medium" title={row.name}>{row.name}</span>
-    <span className="text-sm text-muted-foreground">{row.agentName} · Repeat a job</span>
-    <RepeatRunSummary run={row.repeat} enabled={row.enabled} now={now} />
-  </a>;
-  const checkedAt = row.noRecentUpdate?.at ?? row.task?.reportedAt ?? null;
-  const ago = checkedAt === null ? null : timeAgo(checkedAt, now);
-  // The third line, in order: why a paused-by-misses task is paused, why a task
-  // has no recent update, else the last report's update (TASK-930). With
-  // misses, the report isn't shown: it's usually from a check-in that started
-  // before the silent one. One that started after them sits beside the misses
-  // until a later finish moves the count: a report alone never does (a Resume
-  // or a kind change also moves it, and not every finish does). All of it
-  // host-written except the update.
-  // The agent's reading (TASK-952) shows only beside that update: next to a
-  // miss, the same stale report's number would contradict it, and with no
-  // update line (it fenced to nothing) it would hang under nothing.
-  const isDone = row.doneAt !== null;
-  const third = isDone
-    ? (row.task?.update ?? null)
-    : !row.enabled && row.noRecentUpdate?.autoPaused
-      ? AUTO_PAUSED_LINE
-      : row.noRecentUpdate !== null
-        ? missSummary(row.noRecentUpdate)
-        : (row.task?.update ?? null);
-  const reading =
-    (isDone || row.noRecentUpdate === null) && row.task?.update != null ? (row.task.reading ?? null) : null;
-  // A get-done task with steps says how far along it is where a stay-on-top
-  // one says when it last checked in (TASK-948). One with none yet reads as any
-  // other, so a row never claims "0 of 0 steps".
-  const doneWhen = row.doneAt === null ? null : checkInWhen(row.doneAt, now);
-  const progress = isDone
-    ? doneWhen === null
-      ? `${row.agentName} · Done`
-      : `${row.agentName} · Done ${doneWhen}`
-    : row.kind === 'get-done' && row.steps !== null && row.steps.total > 0
-      ? `${row.agentName} · ${row.steps.done} of ${row.steps.total} steps`
-      : ago === null
-        ? row.agentName
-        : `${row.agentName} · checked ${ago}`;
-  // A get-done task with a finish date says how long is left after that (TASK-951), unless it is
-  // Done (TASK-950): a finished task has no days left to count, and its row says when it was done.
-  const secondLine =
-    !isDone && row.kind === 'get-done' && row.finishBy !== null
-      ? `${progress} · ${finishByCount(row.finishBy.daysLeft)}`
-      : progress;
+  const nameId = useId();
+  const route: WorkspaceRoute = { kind: 'task', agentId: row.agentId, routineId: row.routineId };
+  const needsYou = row.kind !== 'repeat' && taskGroup(row) === 'needs-you';
+  const latest = rowLatest(row);
+  const fact = rowFact(row, now);
   return (
-    <a
-      {...routeLinkProps(
-        { kind: 'task', agentId: row.agentId, routineId: row.routineId },
-        onNavigate,
+    <div className="flex items-center gap-1 transition-colors hover:bg-accent">
+      <a
+        {...routeLinkProps(route, onNavigate)}
+        className="flex min-w-0 flex-1 items-center gap-3 px-4 py-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+      >
+        <span className="shrink-0" title={row.agentName}>
+          <AgentTile agent={{ name: row.agentName }} size={22} />
+        </span>
+        <span className="flex min-w-0 flex-1 flex-col gap-0.5 sm:flex-row sm:items-baseline sm:gap-3">
+          <span id={nameId} className="truncate text-sm font-medium sm:max-w-[60%] sm:shrink-0" title={row.name}>
+            {row.name}
+          </span>
+          {latest !== null && (
+            <span
+              className={cn('min-w-0 truncate text-[13px]', needsYou ? 'text-foreground' : 'text-muted-foreground')}
+              title={latest.text}
+            >
+              {latest.ask ? '“' : null}
+              {latest.text}
+              {latest.ask ? '”' : null}
+            </span>
+          )}
+        </span>
+        <TaskKindIcon kind={row.kind} className="hidden sm:inline-flex" />
+        <span className="sr-only">{row.agentName}</span>
+        {/* A needs-you row's action is Reply, beside the link; it carries no fact. */}
+        {!needsYou && fact !== null && (
+          <span
+            className={cn('shrink-0 text-[13px] tabular-nums', fact.late ? 'text-destructive' : 'text-muted-foreground')}
+            title={fact.full}
+          >
+            <span aria-hidden="true">{fact.short}</span>
+            <span className="sr-only">{fact.full}</span>
+          </span>
+        )}
+      </a>
+      {needsYou && (
+        <IconAction
+          icon={MessageSquare}
+          label="Reply"
+          aria-describedby={nameId}
+          className="mr-3 shrink-0"
+          onClick={() => onNavigate(route)}
+        />
       )}
-      className="flex min-w-0 flex-col gap-1 px-5 py-3 transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
-    >
-      <span className="truncate text-[13px] font-medium" title={row.name}>
-        {row.name}
-      </span>
-      <span className="break-words text-[12px] text-muted-foreground">
-        {secondLine}
-      </span>
-      {!isDone && row.noRecentUpdate === null && row.task?.doneClaimed === true && (
-        <p className="break-words text-[13px] font-medium">
-          {`${row.agentName} thinks this is done.`}
-        </p>
-      )}
-      {third !== null && (
-        <p className="line-clamp-2 break-words text-[13px]" title={third}>
-          {third}
-        </p>
-      )}
-      {reading !== null && (
-        <p className="break-words text-[12px] text-muted-foreground">
-          {`${row.agentName}’s reading · ${reading.label}: ${formatReading(reading.value)}`}
-        </p>
-      )}
-    </a>
+    </div>
   );
 }
