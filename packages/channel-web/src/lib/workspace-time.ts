@@ -150,3 +150,53 @@ export function updateStamp(iso: string, now: Date = new Date()): string | null 
   const d = new Date(iso);
   return localDayKey(d) === localDayKey(now) ? time : `${localDayLabel(d, now)}, ${time}`;
 }
+
+/** Local midnight of `d`'s calendar day, as a timestamp. */
+function startOfLocalDay(d: Date): number {
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+}
+
+/**
+ * "Oct 23": the month and day in the reader's language and time zone, the
+ * same form `finishByShort` gives a finish date, so every short date on a
+ * task's page reads alike. Empty on an instant it can't read. `locale` is for
+ * tests.
+ */
+export function monthDay(iso: string, locale?: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  return new Intl.DateTimeFormat(locale, { month: 'short', day: 'numeric' }).format(d);
+}
+
+/**
+ * A compact row's time (the task page's check-ins and runs, 2026-10-29):
+ * "7:13 PM" today, "Fri 7:13 PM" within the six days before, and "Oct 23"
+ * otherwise (older, or a stamp ahead of today). Days are the reader's calendar
+ * days, counted from local midnights, so a 23- or 25-hour day at a clock
+ * change still counts as one. `null` on an instant it can't read.
+ */
+export function compactStamp(iso: string, now: Date = new Date(), locale?: string): string | null {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return null;
+  const days = Math.round((startOfLocalDay(now) - startOfLocalDay(d)) / 86_400_000);
+  const time = d.toLocaleTimeString(locale, { hour: 'numeric', minute: '2-digit' });
+  if (days === 0) return time;
+  if (days >= 1 && days <= 6) {
+    return `${d.toLocaleDateString(locale, { weekday: 'short' })} ${time}`;
+  }
+  return monthDay(iso, locale);
+}
+
+/** The whole of a compact stamp, for hidden text and its tooltip: "Fri, Oct 23, 2026, 7:13 PM". `null` on an instant it can't read. */
+export function fullStamp(iso: string, locale?: string): string | null {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toLocaleString(locale, {
+    weekday: 'short',
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  });
+}

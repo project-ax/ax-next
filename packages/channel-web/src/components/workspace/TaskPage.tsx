@@ -192,13 +192,13 @@ import { taskGroup, TASK_GROUP_LABELS, type TaskGroup } from '@/lib/task-groups'
 import { TASK_KIND_LABELS } from '@/lib/task-kinds';
 import { scheduleShort } from '@/lib/task-meta';
 import { AUTO_PAUSED_LINE, missSummary, missWords } from '@/lib/task-miss';
-import { latestUpdateCheckIn, missCheckIn } from '@/lib/task-updates';
+import { foldTimeline, latestUpdateCheckIn, missCheckIn, withoutLatest } from '@/lib/task-updates';
 import { cn } from '@/lib/utils';
 import type { WorkspaceRoute } from '@/lib/workspace-route';
 import { useTaskPoll } from '@/lib/use-task-poll';
 import { workspaceApi } from '@/lib/workspace-api';
 import { useTask, type TaskReadError } from '@/lib/workspace-task';
-import { checkInWhen, shortDay, timeAgo } from '@/lib/workspace-time';
+import { checkInWhen, monthDay, timeAgo } from '@/lib/workspace-time';
 import type { TaskDetail, TaskFinishBy, TaskReplyCheckIn, TaskStep } from '@/lib/workspace-types';
 import { AgentTile, StateDot, StateDotSlot } from './bits';
 import { IconAction, IconLink, MetaChip, TASK_KIND_ICONS, TASK_KIND_SHORT, TaskStatusPill } from './task-bits';
@@ -998,7 +998,8 @@ function MetaRow({
   const done = detail.doneAt !== null;
   const next = detail.enabled && detail.nextCheckAt !== null ? checkInWhen(detail.nextCheckAt, now) : null;
   const doneWhen = done ? checkInWhen(detail.doneAt as string, now) : null;
-  const doneDay = done ? shortDay(detail.doneAt as string) : '';
+  // The month-day form every short date on the page uses ("Oct 25", `finishByShort`'s).
+  const doneDay = done ? monthDay(detail.doneAt as string) : '';
   return (
     <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
       <span className="inline-flex items-center gap-1.5 text-[13px]">
@@ -1251,6 +1252,12 @@ function TaskBody({
       onSendStart={onReplySendStart}
     />
   );
+  // The check-ins card holds the entries the latest card doesn't, and the reply box when the ask's
+  // banner doesn't. With neither, it would be an empty box, so it isn't drawn.
+  const earlierEntries =
+    detail.updates.length + detail.replies.length === 0 ||
+    withoutLatest(foldTimeline(detail.updates, detail.replies), detail.task).length > 0;
+  const checkInsCard = !done && (banner !== 'ask' || earlierEntries);
   const missFix = (
     <MissLine
       detail={detail}
@@ -1338,7 +1345,7 @@ function TaskBody({
                 />
               )}
             </Card>
-            {!done && (
+            {checkInsCard && (
               <Card className="order-3 flex flex-col gap-2 p-4 lg:order-none">
                 <TaskUpdates
                   updates={detail.updates}

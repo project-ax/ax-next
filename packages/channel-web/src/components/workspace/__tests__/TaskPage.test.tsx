@@ -19,7 +19,8 @@ import { routineApi, RoutineApiError, type Routine } from '@/lib/routines';
 import { workspaceApi, WorkspaceApiError } from '@/lib/workspace-api';
 import type { WorkspaceRoute } from '@/lib/workspace-route';
 import { browserTimeZone, finishByLine } from '@/lib/task-finish-by';
-import { localTime } from '@/lib/workspace-time';
+import { localTime, monthDay } from '@/lib/workspace-time';
+import { finishByShort } from '@/lib/task-meta';
 import type { TaskDetail, TaskDetailReport, TaskNoRecentUpdate } from '@/lib/workspace-types';
 import { MARK_DONE_NOT_ALLOWED } from '../TaskMarkDone';
 import { TaskPage } from '../TaskPage';
@@ -1032,6 +1033,22 @@ describe('TaskPage (TASK-910)', () => {
     expect(earlier).toHaveAttribute('aria-expanded', 'true');
     expect(within(updates).getByText('Six open.')).toBeInTheDocument();
     expect(within(updates).getByText('Five open.')).toBeInTheDocument();
+  });
+
+  it('no empty check-ins card when the latest card holds the only check-in and the ask holds the reply box', async () => {
+    // The default task: one check-in, which the latest card shows, and an ask.
+    taskMock.mockResolvedValue(detail({ kind: 'get-done' }));
+    await renderReady();
+    expect(screen.queryByRole('region', { name: 'Updates' })).toBeNull();
+    expect(screen.getAllByRole('textbox')).toEqual([within(askBanner()).getByRole('textbox')]);
+  });
+
+  it('the check-ins card stays for the reply box when there is no ask, even with nothing earlier', async () => {
+    taskMock.mockResolvedValue(detail({ task: report({ ask: null }) }));
+    await renderReady();
+    const updates = screen.getByRole('region', { name: 'Updates' });
+    expect(within(updates).queryAllByRole('listitem')).toEqual([]);
+    expect(screen.getByRole('textbox', { name: 'Reply to Quill about this task' })).toBeInTheDocument();
   });
 
   it('a check-in a restart cut off says so in plain words', async () => {
@@ -2469,7 +2486,10 @@ describe('TaskPage: finishing a task (TASK-950)', () => {
     expect(
       within(screen.getByRole('region', { name: 'Done' })).getByText(`You marked this done at ${localTime(DONE_AT)}.`),
     ).toBeInTheDocument();
-    expect(chip(`You marked it done at ${localTime(DONE_AT)}.`)).toBeInTheDocument();
+    // The Done chip's date reads as every short date on the page does: "Oct 22", like a finish date.
+    const doneChip = chip(`You marked it done at ${localTime(DONE_AT)}.`);
+    expect(doneChip.parentElement).toHaveTextContent(new RegExp(`^${monthDay(DONE_AT)}`));
+    expect(monthDay(DONE_AT)).toBe(finishByShort({ date: '2026-10-22', daysLeft: 0 }).split(' · ')[0]);
     expect(
       within(latestUpdate()).getByText('3 open. I’m answering #4411 and #4412 now.'),
     ).toBeInTheDocument();

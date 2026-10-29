@@ -1,7 +1,7 @@
 /**
  * Small shared pieces of the Tasks surfaces (the minimal redesign, 2026-10-29):
  * the kind icon, an icon-and-few-words meta chip, an icon-only action button
- * and link, and the status pill.
+ * and link, a compact row time, and the status pill.
  *
  * WORDS MOVE INTO TOOLTIPS, NEVER OUT OF THE PAGE. The design replaces meta
  * text with icons, so every icon here carries its full sentence twice: a
@@ -18,6 +18,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/comp
 import { TASK_GROUP_LABELS, type TaskGroup } from '@/lib/task-groups';
 import { TASK_KIND_LABELS } from '@/lib/task-kinds';
 import { cn } from '@/lib/utils';
+import { compactStamp, fullStamp } from '@/lib/workspace-time';
 import { StateDot } from './bits';
 
 type Kind = keyof typeof TASK_KIND_LABELS;
@@ -152,6 +153,28 @@ export function IconLink({
         </a>
       </Button>
     </Tip>
+  );
+}
+
+/**
+ * A compact row's time: "7:13 PM" today, "Fri 7:13 PM" this past week, "Oct 23"
+ * before that (`compactStamp`). The whole date is its tooltip (`title`: our
+ * words, never an agent's) and its hidden text, which is what a screen reader
+ * hears. Nothing for an instant it can't read.
+ */
+export function RowTime({ iso, now, className }: { iso: string; now: Date; className?: string }) {
+  const short = compactStamp(iso, now);
+  const full = fullStamp(iso);
+  if (short === null || full === null) return null;
+  return (
+    <time
+      dateTime={iso}
+      title={full}
+      className={cn('shrink-0 whitespace-nowrap text-[12px] tabular-nums text-muted-foreground', className)}
+    >
+      <span aria-hidden="true">{short}</span>
+      <span className="sr-only">{full}</span>
+    </time>
   );
 }
 

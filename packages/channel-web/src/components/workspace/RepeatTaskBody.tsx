@@ -12,7 +12,7 @@
  * Each run is one row: its mark (done, off-track or no update for completed,
  * failed or finished quietly, with the word hidden beside it), what it said
  * (or its plain status, or a failure's reason through `runFailureText`), its
- * time and a See what it did link. The newest four show; the rest wait behind
+ * short time (`RowTime`) and a See what it did link. The newest four show; the rest wait behind
  * "N earlier". An agent-written update and a recorded reason are only ever
  * React text children.
  */
@@ -26,7 +26,7 @@ import { updateStamp } from '@/lib/workspace-time';
 import type { WorkspaceRoute } from '@/lib/workspace-route';
 import type { RepeatTaskState, TaskDetail, TaskUpdate } from '@/lib/workspace-types';
 import { StateDot, StateDotSlot } from './bits';
-import { IconLink } from './task-bits';
+import { IconLink, RowTime } from './task-bits';
 
 /** How many runs show before "N earlier". */
 const SHOWN = 4;
@@ -165,7 +165,7 @@ function RunRow({
       </span>
       {said !== word && <span className="sr-only">{`${word}:`}</span>}
       <p className="line-clamp-2 min-w-0 flex-1 break-words text-[14px] leading-6">{said}</p>
-      <span className="shrink-0 pt-0.5 text-[12px] leading-5 tabular-nums text-muted-foreground">{stamp}</span>
+      <RowTime iso={update.firedAt} now={now} className="pt-0.5 leading-5" />
       {update.conversationId !== null ? (
         <IconLink
           icon={ArrowUpRight}

@@ -4,7 +4,8 @@
  * been telling them, and what they told it, over time.
  *
  * ONE LINE EACH (the minimal redesign, 2026-10-29). An entry is its mark (with
- * its word, hidden), what it said, a short time and an icon link. On the task
+ * its word, hidden), what it said, a short time ("7:13 PM", "Fri 7:13 PM",
+ * "Oct 23"; the whole date hidden beside it, `RowTime`) and an icon link. On the task
  * page the list leaves out the entry the latest card already shows (`latest`),
  * shows the newest few (`shown`) and puts the rest behind one "N earlier"
  * button; a Done task's whole list starts behind "N check-ins" (`collapsed`).
@@ -70,7 +71,7 @@ import type { WorkspaceRoute } from '@/lib/workspace-route';
 import { updateStamp } from '@/lib/workspace-time';
 import type { TaskDetailReport, TaskReply, TaskUpdate } from '@/lib/workspace-types';
 import { StateDot, StateDotSlot } from './bits';
-import { IconLink } from './task-bits';
+import { IconLink, RowTime } from './task-bits';
 
 /** Where an entry's "See what it did" goes: the task it is listed under. */
 interface EntryLinks {
@@ -207,15 +208,6 @@ function Fold({ updates, now, links }: { updates: TaskUpdate[]; now: Date; links
   );
 }
 
-/** The short time at the end of a row. */
-function Stamp({ text }: { text: string | null }) {
-  return (
-    <span className="shrink-0 pt-0.5 text-[12px] leading-5 tabular-nums text-muted-foreground">
-      {text}
-    </span>
-  );
-}
-
 /** What the person sent: who said it, the words as plain text, and their time. No mark, no link. */
 function ReplyEntry({ reply, now }: { reply: TaskReply; now: Date }) {
   return (
@@ -230,7 +222,7 @@ function ReplyEntry({ reply, now }: { reply: TaskReply; now: Date }) {
       <p className="line-clamp-2 min-w-0 flex-1 whitespace-pre-wrap break-words text-[14px] leading-6">
         {reply.text ?? 'We can’t show this reply.'}
       </p>
-      <Stamp text={updateStamp(reply.sentAt, now)} />
+      <RowTime iso={reply.sentAt} now={now} className="pt-0.5 leading-5" />
       {/* Holds the link column, so every row's time lines up. */}
       <span aria-hidden="true" className="size-7 shrink-0" />
     </li>
@@ -275,7 +267,7 @@ function UpdateEntry({
           </>
         )}
       </p>
-      <Stamp text={stamp} />
+      <RowTime iso={update.firedAt} now={now} className="pt-0.5 leading-5" />
       {linked ? (
         <IconLink
           icon={ArrowUpRight}
