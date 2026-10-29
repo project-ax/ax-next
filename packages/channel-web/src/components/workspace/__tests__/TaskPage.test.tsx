@@ -3156,6 +3156,47 @@ describe('TaskPage: the minimal header and the ⋯ menu (2026-10-29)', () => {
     expect(within(about()).queryByRole('button', { name: /notes/ })).toBeNull();
   });
 
+  it.each([
+    { what: 'a get-done task', over: { kind: 'get-done' as const, task: report({ ask: null }) }, steps: true },
+    { what: 'a stay-on-top task', over: { task: report({ ask: null }) }, steps: false },
+  ])('$what reads in the same order it shows on a phone, with no CSS reordering', async ({ over, steps }) => {
+    taskMock.mockResolvedValue(detail(over));
+    const { container } = await renderReady();
+    const order = [
+      latestUpdate(),
+      ...(steps ? [screen.getByRole('heading', { level: 2, name: /^Steps/ })] : []),
+      screen.getByRole('region', { name: 'Updates' }),
+      about(),
+    ];
+    for (let i = 1; i < order.length; i++) {
+      expect(order[i - 1]!.compareDocumentPosition(order[i]!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    }
+    // On a phone the visual order is the DOM order (WCAG 1.3.2, 2.4.3): nothing is moved by `order`
+    // at any width, or flattened by `display: contents` below the widths that place cards on a grid.
+    // (A shadcn primitive's own parts, `data-slot`, are left out: InputGroup puts its end addon
+    // `order-last`, and it's already last.)
+    const moved = [...container.querySelectorAll('[class]:not([data-slot])')].filter((el) =>
+      /(^|\s)(\S+:)?order-\S+|(^|\s)contents(\s|$)/.test(el.getAttribute('class') ?? ''),
+    );
+    expect(moved).toEqual([]);
+  });
+
+  it('the back link and the actions come before the title, in one row that stays at the top on a phone', async () => {
+    taskMock.mockResolvedValue(detail());
+    await renderReady();
+    const back = screen.getByRole('link', { name: 'Tasks' });
+    const check = screen.getByRole('button', { name: 'Check now' });
+    const title = screen.getByRole('heading', { level: 1 });
+    const row = back.closest('.sticky');
+    expect(row).not.toBeNull();
+    expect(row).toContainElement(screen.getByRole('button', { name: 'Open navigation' }));
+    expect(row).toContainElement(check);
+    expect(row).not.toContainElement(title);
+    expect(row).toHaveClass('top-0', 'bg-background');
+    expect(back.compareDocumentPosition(check) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(check.compareDocumentPosition(title) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
   it('a Repeat job’s Run now is said in run words, once: the runs card’s own line keeps quiet meanwhile', async () => {
     const repeat = { lastRunAt: null, status: null, error: null, warning: null, active: 0, waiting: 0, sharedThread: false, appUpdates: false };
     const job = (over: Partial<TaskDetail> = {}) =>

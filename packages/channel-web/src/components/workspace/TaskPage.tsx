@@ -9,7 +9,8 @@
  * icon (whose words are its tooltip and its accessible name, `task-bits`), a
  * position, or one click down. The page draws its own header inside the
  * scroll column: a back link to Tasks (beside the shell's nav trigger, which
- * below `md` is the only door to the sidebar, TASK-404), the name as the H1
+ * below `md` is the only door to the sidebar, TASK-404; that row, with the
+ * actions, stays at the top of a long page below `md`), the name as the H1
  * with the task's pill (`taskGroup`, the list's own grouping; "Scheduled" or
  * "Paused" for a Repeat job), a row of meta chips (the agent, the kind, how
  * often it checks in, a get-done task's finish date), and the actions on the
@@ -18,7 +19,8 @@
  * check-in, else the agent's ask with the reply box inside it. Then two
  * columns (one below `lg`): the latest update and the check-ins on the left;
  * a get-done task's steps and the About list on the right (on a phone the
- * steps come straight after the latest update). The About list opens each
+ * steps come straight after the latest update, which is also their DOM
+ * order: nothing is reordered with CSS). The About list opens each
  * row in place: how we'll know it's going well, the instructions, the agent's
  * notes, app updates, a Repeat job's memory, and a link to what the agent may
  * do without asking, which lives in the agent's Settings. A Repeat job has
@@ -679,142 +681,153 @@ export function TaskPage({
         />
       )}
       <div className="flex-1 overflow-y-auto">
-        <div className="mx-auto flex w-full max-w-[1000px] flex-col gap-4 px-4 pb-8 pt-3 md:px-6 md:pt-5">
-          <header className="flex flex-col gap-2">
-            <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
-              <div className="flex items-center gap-1 md:basis-full">
-                {leading}
-                <a
-                  ref={tasksLinkRef}
-                  {...routeLinkProps({ kind: 'tasks' }, onNavigate)}
-                  className={cn(
-                    '-ml-1 inline-flex items-center gap-0.5 rounded-sm px-1 py-0.5 text-[13px] text-muted-foreground hover:text-foreground',
-                    RESOLUTION_FOCUS_RING,
-                  )}
-                >
-                  <ChevronLeft aria-hidden="true" className="size-3.5" />
-                  Tasks
-                </a>
-              </div>
-              {/* Below `md` the actions share the back link's row and the title takes its own. */}
-              <div className="order-last flex min-w-0 basis-full flex-wrap items-center gap-x-3 gap-y-1.5 md:order-none md:basis-0 md:flex-1">
-                <h1 className="min-w-0 break-words text-[24px] font-semibold leading-tight tracking-[-0.01em]">
-                  {detail?.name ?? 'Task'}
-                </h1>
-                {detail !== null && <TaskStatusPill {...pillOf(detail)} />}
-              </div>
-              {detail !== null && (
-                <div className="ml-auto flex shrink-0 items-center gap-2">
-                  <TaskActions
-                    detail={detail}
-                    busy={busy}
-                    acting={acting}
-                    noteId={noteId}
-                    refs={headerRefs}
-                    onPress={onPress}
-                    boxId={boxId}
-                    reopenOpen={inPlace?.mode === 'reopen' && inPlace.open}
-                    onReopen={() => toggleBox('reopen')}
-                    onEdit={() => setEditing(true)}
-                    onDelete={() => setDeleting(true)}
-                  />
-                </div>
-              )}
-            </div>
-            {detail !== null && (
-              <MetaRow
-                detail={detail}
-                agentId={agentId}
-                routineId={routineId}
-                now={now}
-                onFinishBySaved={onFinishBySaved}
-              />
-            )}
-            {note !== null && (
-              <p
-                ref={noteRef}
-                id={noteId}
-                tabIndex={-1}
+        {/*
+          In the DOM in the order a phone shows it: the back link and the actions (one row that
+          stays at the top below `md`, so the shell's nav trigger, the way back and the actions are
+          always in reach on a long page: it's a child of this tall column, since a sticky element
+          only sticks inside its parent), then the title, which scrolls away, then everything
+          else. From `md` the column is a grid, that row's wrapper steps aside (`md:contents`), and
+          the actions sit beside the title.
+        */}
+        <div className="mx-auto flex w-full max-w-[1000px] flex-col gap-4 px-4 pb-8 pt-3 md:grid md:grid-cols-[minmax(0,1fr)_auto] md:gap-x-4 md:gap-y-2 md:px-6 md:pt-5">
+          <div className="sticky top-0 z-10 -mx-4 -mt-3 flex items-center gap-1 bg-background px-4 pb-1.5 pt-3 md:contents">
+            <div className="flex items-center gap-1 md:col-span-2 md:row-start-1">
+              {leading}
+              <a
+                ref={tasksLinkRef}
+                {...routeLinkProps({ kind: 'tasks' }, onNavigate)}
                 className={cn(
-                  'self-start rounded-sm text-[13px] text-muted-foreground',
+                  '-ml-1 inline-flex items-center gap-0.5 rounded-sm px-1 py-0.5 text-[13px] text-muted-foreground hover:text-foreground',
                   RESOLUTION_FOCUS_RING,
-                  note === PAUSED_NOTE && 'sr-only focus:not-sr-only',
                 )}
               >
-                {note}
-              </p>
-            )}
-            {/* Empty, and taking no room, until a check-in has something to say. */}
-            <p role="status" className="text-[13px] empty:-mt-2">
-              {detail !== null && (
-                <PollLine poll={poll} agentName={detail.agentName} repeat={detail.kind === 'repeat'} />
-              )}
-            </p>
-          </header>
-          {state.kind === 'loading' && (
-            <div className="flex justify-center py-10">
-              <Spinner />
+                <ChevronLeft aria-hidden="true" className="size-3.5" />
+                Tasks
+              </a>
             </div>
-          )}
-          {state.kind === 'failed' && <TaskLoadFailure error={state.error} onRetry={refresh} />}
-          {state.kind === 'ready' && (
-            <>
-              <PageAlerts
-                refreshFailed={state.refreshFailed}
-                refreshing={state.refreshing}
-                onRefresh={refresh}
-                copyLine={copyLine && !state.detail.enabled && state.detail.permissions.edit}
-                notice={notice}
-                onEdit={() => setEditing(true)}
-              />
-              {state.detail.kind === 'repeat' ? (
-                <Columns
-                  main={
-                    <RepeatTaskBody
-                      detail={state.detail}
-                      agentId={agentId}
-                      routineId={routineId}
-                      onNavigate={onNavigate}
-                      quiet={poll.phase === 'checking'}
-                    />
-                  }
-                  side={
-                    <AboutList
-                      detail={state.detail}
-                      agentId={agentId}
-                      routineId={routineId}
-                      onEdit={() => setEditing(true)}
-                      onNavigate={onNavigate}
-                      onRefresh={refresh}
-                    />
-                  }
+            {detail !== null && (
+              <div className="ml-auto flex shrink-0 items-center gap-2 md:col-start-2 md:row-start-2 md:self-start">
+                <TaskActions
+                  detail={detail}
+                  busy={busy}
+                  acting={acting}
+                  noteId={noteId}
+                  refs={headerRefs}
+                  onPress={onPress}
+                  boxId={boxId}
+                  reopenOpen={inPlace?.mode === 'reopen' && inPlace.open}
+                  onReopen={() => toggleBox('reopen')}
+                  onEdit={() => setEditing(true)}
+                  onDelete={() => setDeleting(true)}
                 />
-              ) : (
-                <TaskBody
+              </div>
+            )}
+          </div>
+          <header className="flex min-w-0 flex-col gap-2 md:col-start-1 md:row-start-2">
+            <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1.5">
+              <h1 className="min-w-0 break-words text-[24px] font-semibold leading-tight tracking-[-0.01em]">
+                {detail?.name ?? 'Task'}
+              </h1>
+              {detail !== null && <TaskStatusPill {...pillOf(detail)} />}
+            </div>
+            <div className="flex flex-col gap-2">
+              {detail !== null && (
+                <MetaRow
+                  detail={detail}
                   agentId={agentId}
                   routineId={routineId}
-                  detail={state.detail}
                   now={now}
-                  busy={busy}
-                  refreshing={state.refreshing}
-                  refreshFailed={state.refreshFailed}
-                  poll={poll}
-                  boxId={boxId}
-                  inPlace={inPlace}
-                  onNotYet={() => toggleBox('not-yet')}
-                  onRefresh={refresh}
-                  onPress={onPress}
-                  onReplySent={onReplySent}
-                  onReplySendStart={onReplySendStart}
-                  onTaskWriteSucceeded={onTaskWriteSucceeded}
-                  onStepsChanged={replaceSteps}
-                  onNavigate={onNavigate}
-                  onEdit={() => setEditing(true)}
-                  replyFocus={replyFocus}
+                  onFinishBySaved={onFinishBySaved}
                 />
               )}
-            </>
-          )}
+              {note !== null && (
+                <p
+                  ref={noteRef}
+                  id={noteId}
+                  tabIndex={-1}
+                  className={cn(
+                    'self-start rounded-sm text-[13px] text-muted-foreground',
+                    RESOLUTION_FOCUS_RING,
+                    note === PAUSED_NOTE && 'sr-only focus:not-sr-only',
+                  )}
+                >
+                  {note}
+                </p>
+              )}
+              {/* Empty, and taking no room, until a check-in has something to say. */}
+              <p role="status" className="text-[13px] empty:-mt-2">
+                {detail !== null && (
+                  <PollLine poll={poll} agentName={detail.agentName} repeat={detail.kind === 'repeat'} />
+                )}
+              </p>
+            </div>
+          </header>
+          <div className="flex min-w-0 flex-col gap-4 md:col-span-2 md:row-start-3 md:mt-2">
+            {state.kind === 'loading' && (
+              <div className="flex justify-center py-10">
+                <Spinner />
+              </div>
+            )}
+            {state.kind === 'failed' && <TaskLoadFailure error={state.error} onRetry={refresh} />}
+            {state.kind === 'ready' && (
+              <>
+                <PageAlerts
+                  refreshFailed={state.refreshFailed}
+                  refreshing={state.refreshing}
+                  onRefresh={refresh}
+                  copyLine={copyLine && !state.detail.enabled && state.detail.permissions.edit}
+                  notice={notice}
+                  onEdit={() => setEditing(true)}
+                />
+                {state.detail.kind === 'repeat' ? (
+                  <Columns
+                    main={
+                      <RepeatTaskBody
+                        detail={state.detail}
+                        agentId={agentId}
+                        routineId={routineId}
+                        onNavigate={onNavigate}
+                        quiet={poll.phase === 'checking'}
+                      />
+                    }
+                    side={
+                      <AboutList
+                        detail={state.detail}
+                        agentId={agentId}
+                        routineId={routineId}
+                        onEdit={() => setEditing(true)}
+                        onNavigate={onNavigate}
+                        onRefresh={refresh}
+                      />
+                    }
+                  />
+                ) : (
+                  <TaskBody
+                    agentId={agentId}
+                    routineId={routineId}
+                    detail={state.detail}
+                    now={now}
+                    busy={busy}
+                    refreshing={state.refreshing}
+                    refreshFailed={state.refreshFailed}
+                    poll={poll}
+                    boxId={boxId}
+                    inPlace={inPlace}
+                    onNotYet={() => toggleBox('not-yet')}
+                    onRefresh={refresh}
+                    onPress={onPress}
+                    onReplySent={onReplySent}
+                    onReplySendStart={onReplySendStart}
+                    onTaskWriteSucceeded={onTaskWriteSucceeded}
+                    onStepsChanged={replaceSteps}
+                    onNavigate={onNavigate}
+                    onEdit={() => setEditing(true)}
+                    replyFocus={replyFocus}
+                  />
+                )}
+              </>
+            )}
+          </div>
         </div>
       </div>
     </>
@@ -1147,17 +1160,12 @@ function PageAlerts({
   );
 }
 
-/**
- * Two columns from `lg` (the side one 290px), one below it. On a phone the
- * side column's first card (a get-done task's steps) comes straight after the
- * main column's first (the latest update): both wrappers are `contents` there,
- * so their cards are ordered as one list.
- */
+/** A Repeat job's two columns from `lg` (the side one 290px), one below it: the runs, then About, in DOM order. */
 function Columns({ main, side }: { main: ReactNode; side: ReactNode }) {
   return (
     <div className="flex flex-col gap-4 lg:grid lg:grid-cols-[minmax(0,1fr)_290px] lg:items-start">
-      <div className="contents lg:flex lg:min-w-0 lg:flex-col lg:gap-4">{main}</div>
-      <div className="contents lg:flex lg:flex-col lg:gap-4">{side}</div>
+      <div className="flex min-w-0 flex-col gap-4">{main}</div>
+      <div className="flex flex-col gap-4">{side}</div>
     </div>
   );
 }
@@ -1356,90 +1364,92 @@ function TaskBody({
           />
         )}
       </div>
-      <Columns
-        main={
-          <>
-            <Card className="order-1 flex flex-col gap-3 p-4 lg:order-none">
-              <LatestUpdate
-                detail={detail}
-                now={now}
-                agentId={agentId}
-                routineId={routineId}
-                onNavigate={onNavigate}
-                onReply={() => replyRef.current?.focus()}
-                missLine={banner === 'claim' && detail.noRecentUpdate !== null ? missFix : null}
-              />
-              {/* Under a missed check-in too: its card still shows the last update this reading came with. */}
-              <TaskReadingBlock agentName={agentName} task={detail.task} updates={detail.updates} />
-              {done && (
-                <TaskUpdates
-                  updates={detail.updates}
-                  replies={detail.replies}
-                  now={now}
-                  agentId={agentId}
-                  routineId={routineId}
-                  onNavigate={onNavigate}
-                  collapsed
-                />
-              )}
-            </Card>
-            {checkInsCard && (
-              <Card className="order-3 flex flex-col gap-2 p-4 lg:order-none">
-                <TaskUpdates
-                  updates={detail.updates}
-                  replies={detail.replies}
-                  now={now}
-                  agentId={agentId}
-                  routineId={routineId}
-                  onNavigate={onNavigate}
-                  latest={detail.task}
-                  shown={3}
-                />
-                {banner !== 'ask' && replyBox}
-              </Card>
-            )}
-          </>
-        }
-        side={
-          <>
-            {detail.kind === 'get-done' && (
-              <div className="order-2 lg:order-none">
-                <TaskSteps
-                  agentId={agentId}
-                  routineId={routineId}
-                  steps={detail.steps}
-                  agentName={agentName}
-                  onChanged={onStepsChanged}
-                  onRefused={onStepsRefused}
-                  readOnly={done}
-                  footer={
-                    done || claimed ? undefined : (
-                      <MarkDoneControls
-                        variant="footer"
-                        finish={finish}
-                        unticked={unticked}
-                        canEdit={detail.permissions.edit}
-                        agentName={agentName}
-                        running={detail.enabled}
-                      />
-                    )
-                  }
-                />
-              </div>
-            )}
-            <div className="order-4 lg:order-none">
-              <AboutList
-                detail={detail}
-                agentId={agentId}
-                routineId={routineId}
-                onEdit={onEdit}
-                onNavigate={onNavigate}
-                onRefresh={onRefresh}
-              />
-            </div>
-          </>
-        }
-      />
+      {/*
+        In the DOM in the order a phone shows them (latest, steps, check-ins,
+        About), so reading and Tab order match what's seen (WCAG 1.3.2, 2.4.3).
+        From `lg` each card is placed: the latest and the check-ins on the
+        left, the steps and About on the right. Three rows keep the columns
+        from waiting on each other: the check-ins start right under the
+        latest card (they span its row's neighbours), and the steps span the
+        first two rows, so About starts under them. Only when the latest card
+        is taller than the steps does About wait for it.
+      */}
+      <div className="flex flex-col gap-4 lg:grid lg:grid-cols-[minmax(0,1fr)_290px] lg:grid-rows-[auto_auto_1fr] lg:items-start">
+        <Card className="flex flex-col gap-3 p-4 lg:col-start-1 lg:row-start-1">
+          <LatestUpdate
+            detail={detail}
+            now={now}
+            agentId={agentId}
+            routineId={routineId}
+            onNavigate={onNavigate}
+            onReply={() => replyRef.current?.focus()}
+            missLine={banner === 'claim' && detail.noRecentUpdate !== null ? missFix : null}
+          />
+          {/* Under a missed check-in too: its card still shows the last update this reading came with. */}
+          <TaskReadingBlock agentName={agentName} task={detail.task} updates={detail.updates} />
+          {done && (
+            <TaskUpdates
+              updates={detail.updates}
+              replies={detail.replies}
+              now={now}
+              agentId={agentId}
+              routineId={routineId}
+              onNavigate={onNavigate}
+              collapsed
+            />
+          )}
+        </Card>
+        {detail.kind === 'get-done' && (
+          <div className="lg:col-start-2 lg:row-span-2 lg:row-start-1">
+            <TaskSteps
+              agentId={agentId}
+              routineId={routineId}
+              steps={detail.steps}
+              agentName={agentName}
+              onChanged={onStepsChanged}
+              onRefused={onStepsRefused}
+              readOnly={done}
+              footer={
+                done || claimed ? undefined : (
+                  <MarkDoneControls
+                    variant="footer"
+                    finish={finish}
+                    unticked={unticked}
+                    canEdit={detail.permissions.edit}
+                    agentName={agentName}
+                    running={detail.enabled}
+                  />
+                )
+              }
+            />
+          </div>
+        )}
+        {checkInsCard && (
+          <Card className="flex flex-col gap-2 p-4 lg:col-start-1 lg:row-span-2 lg:row-start-2">
+            <TaskUpdates
+              updates={detail.updates}
+              replies={detail.replies}
+              now={now}
+              agentId={agentId}
+              routineId={routineId}
+              onNavigate={onNavigate}
+              latest={detail.task}
+              shown={3}
+            />
+            {banner !== 'ask' && replyBox}
+          </Card>
+        )}
+        <div className={cn('lg:col-start-2', detail.kind === 'get-done' ? 'lg:row-start-3' : 'lg:row-span-3 lg:row-start-1')}>
+          <AboutList
+            detail={detail}
+            agentId={agentId}
+            routineId={routineId}
+            onEdit={onEdit}
+            onNavigate={onNavigate}
+            onRefresh={onRefresh}
+          />
+        </div>
+      </div>
     </>
   );
 }
