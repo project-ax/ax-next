@@ -204,6 +204,19 @@ function Inner({
   }, [route, freshCopy]);
 
   /**
+   * The task a Tasks row's Reply just opened, by the same key: its page puts
+   * the cursor in its reply box once. Memory only and cleared the same way, so
+   * a reload, Back and Forward or the row's own link never take focus.
+   */
+  const [replyTo, setReplyTo] = useState<string | null>(null);
+  useEffect(() => {
+    if (replyTo === null) return;
+    const here =
+      route.kind === 'task' ? JSON.stringify([route.agentId, route.routineId]) : null;
+    if (here !== replyTo) setReplyTo(null);
+  }, [route, replyTo]);
+
+  /**
    * Back / forward. The URL is the source of truth on the way in, exactly as
    * it is at mount.
    *
@@ -911,6 +924,11 @@ function Inner({
               retry={taskRead.retry}
               leading={navTrigger}
               onNavigate={navigate}
+              onReply={(to) => {
+                // Both setters run in this one callback, so the effect above never sees the flag beside the list's route.
+                setReplyTo(JSON.stringify([to.agentId, to.routineId]));
+                navigate(to);
+              }}
               onTaskWriteSucceeded={taskRead.reload}
             />
           )}
@@ -923,6 +941,7 @@ function Inner({
               onNavigate={navigate}
               onTaskWriteSucceeded={taskRead.reload}
               justCopied={freshCopy === JSON.stringify([route.agentId, route.routineId])}
+              focusReply={replyTo === JSON.stringify([route.agentId, route.routineId])}
               onDuplicated={(copyId) => {
                 // Someone who left while the copy was being made stays where
                 // they went: the copy is in Tasks, and no line waits for it.

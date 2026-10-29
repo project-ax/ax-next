@@ -130,6 +130,10 @@
  * heard twice. The 10-second re-reads are quiet (`refreshQuietly`): they
  * leave the buttons pressable and raise no alert when one fails.
  *
+ * OPENED BY THE LIST'S REPLY, the page puts the cursor in its reply box once,
+ * when the task is first on screen (`focusReply`, shell memory like
+ * `justCopied`, never the URL). A Done task has no box, and nothing moves.
+ *
  * WHERE FOCUS GOES after a press. A browser drops focus on `<body>` from a
  * button the moment it goes disabled, and every button here is disabled while
  * a press and its re-read are on their way. When they're done, focus goes back
@@ -507,6 +511,7 @@ export function TaskPage({
   onDuplicated,
   onTaskWriteSucceeded,
   justCopied = false,
+  focusReply = false,
 }: {
   agentId: string;
   routineId: string;
@@ -519,6 +524,8 @@ export function TaskPage({
   onTaskWriteSucceeded: () => void;
   /** This page was just opened by Duplicate, so it says once that it's a paused copy. */
   justCopied?: boolean;
+  /** This page was just opened by the list's Reply, so the reply box takes focus once (see WHERE FOCUS GOES). */
+  focusReply?: boolean;
 }) {
   const { state, refresh, refreshQuietly, replaceSteps, applyAnswer } = useTask(agentId, routineId);
   const detail = state.kind === 'ready' ? state.detail : null;
@@ -620,6 +627,10 @@ export function TaskPage({
   // A saved finish date shows at once; the page then reads the task again (TASK-951).
   const onFinishBySaved = (finishBy: TaskFinishBy | null) =>
     applyAnswer((d) => ({ ...d, finishBy }));
+
+  // The list's Reply asks for the reply box once, when the task is first on screen (one-way, like
+  // the paused-copy line): later reads, and a Done task with no box, use it up.
+  const replyFocus = useRef(focusReply);
 
   // Pause instead leaves the dialog for the press, whose own rule then places focus.
   const pausingInstead = useRef(false);
@@ -788,6 +799,7 @@ export function TaskPage({
                   onStepsChanged={replaceSteps}
                   onNavigate={onNavigate}
                   onEdit={() => setEditing(true)}
+                  replyFocus={replyFocus}
                 />
               )}
             </>
@@ -1159,6 +1171,7 @@ function TaskBody({
   onStepsChanged,
   onNavigate,
   onEdit,
+  replyFocus,
 }: {
   agentId: string;
   routineId: string;
@@ -1181,8 +1194,15 @@ function TaskBody({
   onStepsChanged: (steps: TaskStep[]) => void;
   onNavigate: (route: WorkspaceRoute) => void;
   onEdit: () => void;
+  /** Set when the list's Reply opened the page; used up the first time the task is on screen. */
+  replyFocus: RefObject<boolean>;
 }) {
   const replyRef = useRef<HTMLTextAreaElement>(null);
+  useEffect(() => {
+    if (!replyFocus.current) return;
+    replyFocus.current = false;
+    replyRef.current?.focus();
+  }, [replyFocus]);
   const boxRef = useRef<HTMLTextAreaElement>(null);
   const done = detail.doneAt !== null;
   const claimed = isClaimed(detail);

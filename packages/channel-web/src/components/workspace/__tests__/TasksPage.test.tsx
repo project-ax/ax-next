@@ -84,19 +84,22 @@ function deferred<T>() {
 function Harness({
   leading,
   onNavigate,
+  onReply,
 }: {
   leading?: ReactNode;
   onNavigate: (route: WorkspaceRoute) => void;
+  onReply: (route: { kind: 'task'; agentId: string; routineId: string }) => void;
 }) {
   const { state, retry, reload } = useTasks();
-  return <TasksPage state={state} retry={retry} leading={leading} onNavigate={onNavigate} onTaskWriteSucceeded={reload} />;
+  return <TasksPage state={state} retry={retry} leading={leading} onNavigate={onNavigate} onReply={onReply} onTaskWriteSucceeded={reload} />;
 }
 
-/** The page, with the shell's `navigate` stood in for by a spy. */
+/** The page, with the shell's `navigate` and its Reply stood in for by spies. */
 function renderPage(leading?: ReactNode) {
   const onNavigate = vi.fn<(route: WorkspaceRoute) => void>();
-  const view = render(<Harness leading={leading} onNavigate={onNavigate} />);
-  return { ...view, onNavigate };
+  const onReply = vi.fn<(route: { kind: 'task'; agentId: string; routineId: string }) => void>();
+  const view = render(<Harness leading={leading} onNavigate={onNavigate} onReply={onReply} />);
+  return { ...view, onNavigate, onReply };
 }
 
 /** The group headings, in page order, as text. */
@@ -150,7 +153,7 @@ describe('TasksPage (TASK-909)', () => {
     expect(within(rowLink('Daily digest')).getByText('Last run 3 days ago')).toBeInTheDocument();
   });
   it('draws the state it is handed, without reading anything (TASK-933)', () => {
-    render(<TasksPage onTaskWriteSucceeded={vi.fn()} state={ready([row('Sweep', { task: report('on-track') })])} retry={vi.fn()} onNavigate={vi.fn()} />);
+    render(<TasksPage onTaskWriteSucceeded={vi.fn()} state={ready([row('Sweep', { task: report('on-track') })])} retry={vi.fn()} onNavigate={vi.fn()} onReply={vi.fn()} />);
     expect(screen.getByText('Sweep')).toBeTruthy();
     expect(tasksMock).not.toHaveBeenCalled();
   });
@@ -569,7 +572,7 @@ describe('TasksPage (TASK-909)', () => {
         row('Weekly digest', { task: report('on-track') }),
       ]),
     );
-    const { onNavigate } = renderPage();
+    const { onNavigate, onReply } = renderPage();
     // Reply takes the right-hand fact's place: the needs-you row has no "checked" time.
     await screen.findByText('Support queue');
     expect(within(rowLink('Support queue')).queryByText(/^Checked /)).toBeNull();
@@ -586,8 +589,10 @@ describe('TasksPage (TASK-909)', () => {
     expect(ask).toHaveAttribute('title', 'Keep checking, or pause?');
     expect(within(link).queryByText('Nothing new since this morning.')).toBeNull();
 
+    // Reply opens the task with its reply box focused: the shell's own Reply, not a plain visit.
     fireEvent.click(reply);
-    expect(onNavigate).toHaveBeenCalledWith({ kind: 'task', agentId: 'a1', routineId: 't1' });
+    expect(onReply).toHaveBeenCalledWith({ kind: 'task', agentId: 'a1', routineId: 't1' });
+    expect(onNavigate).not.toHaveBeenCalled();
     // Only the row that needs you gets one.
     expect(screen.getAllByRole('button', { name: 'Reply' })).toHaveLength(1);
     expect(within(rowLink('Weekly digest')).getByText('Nothing new since this morning.')).toHaveClass(
@@ -954,7 +959,7 @@ describe('TasksPage: Done tasks (TASK-950)', () => {
   it('the done list stays open across a re-read, and goes when the last done task is reopened', () => {
     const supportQueue = () => row('Support queue', { task: report('on-track') });
     const pageFor = (tasks: TaskRow[]) => (
-      <TasksPage onTaskWriteSucceeded={vi.fn()} state={ready(tasks)} retry={vi.fn()} onNavigate={vi.fn()} />
+      <TasksPage onTaskWriteSucceeded={vi.fn()} state={ready(tasks)} retry={vi.fn()} onNavigate={vi.fn()} onReply={vi.fn()} />
     );
     const view = render(pageFor([done('Old one', ago(9 * DAY)), supportQueue()]));
     openDone(1);

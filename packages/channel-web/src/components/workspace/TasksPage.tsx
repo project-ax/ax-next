@@ -92,17 +92,23 @@ function rowAgents(tasks: readonly TaskRow[]): AgentChoice[] {
 
 const ALL_AGENTS = '';
 
+/** A task's own page: where a row's link and its Reply go. */
+type TaskRoute = Extract<WorkspaceRoute, { kind: 'task' }>;
+
 export function TasksPage({
   state,
   retry,
   leading,
   onNavigate,
+  onReply,
   onTaskWriteSucceeded,
 }: {
   state: TasksState;
   retry: () => void;
   leading?: ReactNode;
   onNavigate: (route: WorkspaceRoute) => void;
+  /** A needs-you row's Reply: the shell opens the task with its reply box focused, once. */
+  onReply: (route: TaskRoute) => void;
   onTaskWriteSucceeded: () => void;
 }) {
   const [creating, setCreating] = useState(false);
@@ -158,6 +164,7 @@ export function TasksPage({
               refreshing={state.refreshing}
               refreshFailed={state.refreshFailed}
               onNavigate={onNavigate}
+              onReply={onReply}
               onRetry={retry}
             />
           )}
@@ -249,6 +256,7 @@ function TaskBoard({
   refreshing,
   refreshFailed,
   onNavigate,
+  onReply,
   onRetry,
 }: {
   tasks: TaskRow[];
@@ -258,6 +266,7 @@ function TaskBoard({
   refreshing: boolean;
   refreshFailed: boolean;
   onNavigate: (route: WorkspaceRoute) => void;
+  onReply: (route: TaskRoute) => void;
   onRetry: () => void;
 }) {
   // "checked 4 min ago" keeps moving on a tab left open, but the clock only
@@ -334,7 +343,7 @@ function TaskBoard({
         </Empty>
       )}
       {groups.map(({ group, rows }) => (
-        <TaskGroupSection key={group} group={group} rows={rows} now={now} onNavigate={onNavigate} />
+        <TaskGroupSection key={group} group={group} rows={rows} now={now} onNavigate={onNavigate} onReply={onReply} />
       ))}
       {runningRepeats.length > 0 && (
         <RowSection
@@ -392,11 +401,13 @@ function TaskGroupSection({
   rows,
   now,
   onNavigate,
+  onReply,
 }: {
   group: ActiveTaskGroup;
   rows: TaskRow[];
   now: Date;
   onNavigate: (route: WorkspaceRoute) => void;
+  onReply: (route: TaskRoute) => void;
 }) {
   return (
     <RowSection
@@ -405,6 +416,7 @@ function TaskGroupSection({
       rows={rows}
       now={now}
       onNavigate={onNavigate}
+      onReply={onReply}
     />
   );
 }
@@ -416,12 +428,15 @@ function RowSection({
   rows,
   now,
   onNavigate,
+  onReply,
 }: {
   mark: ReactNode;
   title: string;
   rows: TaskRow[];
   now: Date;
   onNavigate: (route: WorkspaceRoute) => void;
+  /** Only the active groups' rows can need you, so only they take a Reply. */
+  onReply?: (route: TaskRoute) => void;
 }) {
   const headingId = useId();
   return (
@@ -432,7 +447,7 @@ function RowSection({
           {title} <span className="font-normal tabular-nums">{rows.length}</span>
         </span>
       </h2>
-      <TaskList rows={rows} now={now} onNavigate={onNavigate} />
+      <TaskList rows={rows} now={now} onNavigate={onNavigate} onReply={onReply} />
     </section>
   );
 }
@@ -504,11 +519,13 @@ function TaskList({
   rows,
   now,
   onNavigate,
+  onReply,
   label,
 }: {
   rows: TaskRow[];
   now: Date;
   onNavigate: (route: WorkspaceRoute) => void;
+  onReply?: ((route: TaskRoute) => void) | undefined;
   label?: string;
 }) {
   // `overflow-hidden`: a row's hover fill must follow the card's rounded
@@ -519,7 +536,7 @@ function TaskList({
         {rows.map((row, i) => (
           <li key={`${row.agentId}:${row.routineId}`}>
             {i > 0 && <Separator />}
-            <TaskItem row={row} now={now} onNavigate={onNavigate} />
+            <TaskItem row={row} now={now} onNavigate={onNavigate} onReply={onReply} />
           </li>
         ))}
       </ul>
@@ -534,19 +551,22 @@ function TaskList({
  * has Reply in the fact's place. Below `sm` the
  * name and the latest line stack. A needs-you row quotes its ask in the
  * foreground and gets a Reply button beside the link, which opens the task
- * page, where the ask is the first thing.
+ * page with its reply box focused (the shell's one-shot memory, `onReply`),
+ * where the ask is the first thing.
  */
 function TaskItem({
   row,
   now,
   onNavigate,
+  onReply,
 }: {
   row: TaskRow;
   now: Date;
   onNavigate: (route: WorkspaceRoute) => void;
+  onReply?: ((route: TaskRoute) => void) | undefined;
 }) {
   const nameId = useId();
-  const route: WorkspaceRoute = { kind: 'task', agentId: row.agentId, routineId: row.routineId };
+  const route: TaskRoute = { kind: 'task', agentId: row.agentId, routineId: row.routineId };
   const needsYou = row.kind !== 'repeat' && taskGroup(row) === 'needs-you';
   const latest = rowLatest(row);
   const fact = rowFact(row, now);
@@ -593,7 +613,7 @@ function TaskItem({
           label="Reply"
           aria-describedby={nameId}
           className="mr-3 shrink-0"
-          onClick={() => onNavigate(route)}
+          onClick={() => (onReply ?? onNavigate)(route)}
         />
       )}
     </div>

@@ -130,7 +130,7 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
-function renderPage(over: { justCopied?: boolean } = {}) {
+function renderPage(over: { justCopied?: boolean; focusReply?: boolean } = {}) {
   const onNavigate = vi.fn<(route: WorkspaceRoute) => void>();
   const onDuplicated = vi.fn<(routineId: string) => void>();
   const onTaskWriteSucceeded = vi.fn();
@@ -143,13 +143,14 @@ function renderPage(over: { justCopied?: boolean } = {}) {
       onDuplicated={onDuplicated}
       onTaskWriteSucceeded={onTaskWriteSucceeded}
       justCopied={over.justCopied ?? false}
+      focusReply={over.focusReply ?? false}
     />,
   );
   return { ...view, onNavigate, onDuplicated, onTaskWriteSucceeded };
 }
 
 /** Render, and wait for the task to be on screen. */
-async function renderReady(over: { justCopied?: boolean } = {}) {
+async function renderReady(over: { justCopied?: boolean; focusReply?: boolean } = {}) {
   const view = renderPage(over);
   await screen.findByRole('heading', { level: 1, name: 'Zero open support tickets' });
   return view;
@@ -1601,6 +1602,29 @@ describe('TaskPage: replies and checking in now (TASK-931)', () => {
     expect(box).toHaveAccessibleDescription(helper.textContent!);
     // Send is an icon, named and in a tooltip.
     expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled();
+  });
+
+  it('opened by the list’s Reply, the page puts the cursor in the reply box once, when the task is ready', async () => {
+    taskMock.mockResolvedValue(detail());
+    fireNowMock.mockResolvedValue({ status: 'ok' });
+    await renderReady({ focusReply: true });
+    const box = within(askBanner()).getByRole('textbox', { name: BOX });
+    await waitFor(() => expect(document.activeElement).toBe(box));
+    // Once: a later read doesn't take focus back.
+    const check = screen.getByRole('button', { name: 'Check now' });
+    act(() => check.focus());
+    fireEvent.click(check);
+    await settled(check, 2);
+    expect(document.activeElement).not.toBe(box);
+  });
+
+  it('with no ask, the list’s Reply lands in the box under Updates; a plain visit focuses nothing', async () => {
+    taskMock.mockResolvedValue(detail({ task: report({ ask: null }) }));
+    const view = await renderReady({ focusReply: true });
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('textbox', { name: BOX })));
+    view.unmount();
+    await renderReady();
+    expect(document.activeElement).toBe(document.body);
   });
 
   it('an ask puts the reply box inline in its banner, and there is no other', async () => {
