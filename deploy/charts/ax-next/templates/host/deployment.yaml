@@ -288,13 +288,14 @@ spec:
             - name: AX_BLOB_BACKEND
               value: {{ .Values.blob.backend | quote }}
             {{- if eq .Values.blob.backend "fs" }}
-            {{- if .Values.blob.fs.root }}
-            # Explicit fs root. Empty → the preset derives <workspace
-            # mountPath>/blobs (a sibling dir on the host PVC), so we only
-            # stamp this when the operator overrode it.
+            # The fs root, always stamped (TASK-992): the preset no longer
+            # derives one and refuses to boot without it. blob.fs.root is pinned
+            # in values.yaml to the path the preset used to derive
+            # (<workspace.mountPath>/blobs, on the host PVC), and
+            # ax-next.validateBlobBackend has already failed the render if it is
+            # empty or off the workspace volume.
             - name: AX_BLOB_FS_ROOT
               value: {{ .Values.blob.fs.root | quote }}
-            {{- end }}
             {{- else if eq .Values.blob.backend "s3" }}
             # S3-compatible blob backend. In the kind/dev path minio.enabled
             # provides the bucket + endpoint + (dev-only) static keys from the

@@ -550,13 +550,32 @@ password (lookup-stable) when minio.enabled and the operator didn't supply one.
 
 {{/*
 Validate blob.backend wiring (out-of-git design Part A). Fails fast at template
-time on two misconfigurations the operator can't recover from at runtime:
+time on misconfigurations the operator can't recover from at runtime:
   - blob.backend=s3 with neither an explicit blob.s3.endpoint NOR minio.enabled
     → the host pod boots with no endpoint and no in-cluster MinIO to fall back
     to; the SDK would try AWS's real endpoint, which is never what a self-host /
     kind / GCS deploy wants.
   - blob.backend=s3 with an empty blob.s3.bucket AND minio.enabled=false → the
     preset's loader throws `AX_BLOB_S3_BUCKET is required` at boot.
+  - blob.backend=fs with an empty blob.fs.root (TASK-992). The root is pinned
+    in values.yaml and the preset no longer derives one, so empty is never
+    right. It almost always means `helm upgrade --reuse-values` carried a
+    pre-TASK-992 release's `root: ""` forward (it renders with the OLD
+    release's values, not this chart's defaults). The message prints the path
+    the preset used to derive with the local workspace backend,
+    `<workspace.mountPath>/blobs`, so pinning it moves nothing. (With
+    git-protocol the preset used /var/lib/ax-next/blobs, on the container's
+    scratch disk, so there were no durable blobs to keep.)
+  - blob.backend=fs with a root that is not under workspace.mountPath, while
+    workspace.backend=local mounts the workspace PVC there. The host has no
+    other volume a blob root could live on, so such a root is the container's
+    scratch disk: existing blobs vanish from view and new ones are lost on
+    restart. This is the hazard the pin itself creates: an install with a
+    custom workspace.mountPath that upgrades with `-f` values picks up the
+    pinned default, which is off its PVC.
+Workspace values are read through `dig`, so the last guard switches itself off
+when the workspace settings go away; the chart test "AX_BLOB_FS_ROOT lies on
+the host PVC mount" is the backstop then.
 Belt-and-suspenders for the values schema (helm has no native enum-with-prereqs
 validator). Invoked from host/deployment.yaml, which always renders.
 */}}
@@ -567,6 +586,16 @@ validator). Invoked from host/deployment.yaml, which always renders.
 {{- end -}}
 {{- if and (not .Values.blob.s3.bucket) (not (include "ax-next.bool" .Values.minio.enabled)) -}}
 {{- fail "blob.backend=s3 requires blob.s3.bucket to be set" -}}
+{{- end -}}
+{{- else if eq .Values.blob.backend "fs" -}}
+{{- $ws := .Values.workspace | default dict -}}
+{{- $mp := dig "mountPath" "/var/lib/ax-next/workspaces" $ws -}}
+{{- $root := dig "fs" "root" "" .Values.blob -}}
+{{- if not $root -}}
+{{- fail (printf "blob.fs.root is empty. Blobs (attachments, artifacts, skill files) live on the host disk at blob.fs.root, and the chart no longer works that out from workspace.mountPath. This deployment's existing blobs are at %s/blobs: pass --set blob.fs.root=%s/blobs once (--reuse-values keeps it after that). An empty value usually means helm upgrade --reuse-values carried it forward from an older chart." $mp $mp) -}}
+{{- end -}}
+{{- if and (eq (dig "backend" "" $ws) "local") (not (hasPrefix (printf "%s/" (trimSuffix "/" $mp)) $root)) -}}
+{{- fail (printf "blob.fs.root (%s) is not on the host's workspace volume (mounted at %s), so blobs would land on the container's scratch disk and vanish on restart. Set blob.fs.root to a path under %s; this deployment's existing blobs are at %s/blobs." $root $mp $mp $mp) -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}

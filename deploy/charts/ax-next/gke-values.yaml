@@ -113,7 +113,10 @@ gitServer:
 blob:
   backend: fs                 # blobs on the host PVC (sibling of the workspace)
   fs:
-    root: ""                  # "" → <workspace.mountPath>/blobs
+    # Pinned (TASK-992): the path the chart used to derive from
+    # workspace.mountPath. Do not change it on a live deployment; a new root
+    # starts an empty blob store. See values.yaml (blob.fs.root).
+    root: /var/lib/ax-next/workspaces/blobs
 
 minio:
   enabled: false              # dev-only object store; prod uses fs (above)

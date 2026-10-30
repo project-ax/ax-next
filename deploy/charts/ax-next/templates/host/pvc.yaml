@@ -1,15 +1,25 @@
 {{/*
-PersistentVolumeClaim for the workspace-git repo dir.
+PersistentVolumeClaim for the host's on-disk storage, mounted at
+workspace.mountPath.
 
-`@ax/workspace-git` writes session workspace versions to a directory on
-disk. Single-replica only this slice — multi-replica needs a shared
-storage backend (Week 10+ git-server pod). The PVC is intentionally
-left orphaned by helm uninstall (resource-policy: keep) so a reinstall
-picks the same data up.
+It holds two things:
+  - the workspace-git bare repos (`@ax/workspace-git` writes session
+    workspace versions here);
+  - `blobs/`, the fs blob store (blob.fs.root, pinned by TASK-992 to
+    /var/lib/ax-next/workspaces/blobs): every attachment, artifact and skill
+    file.
 
-Only rendered when workspace.backend == "local". In "http" mode the
-host pod talks to the git-server pod over HTTP and owns no local repo
-storage of its own — that PVC lives on the git-server side.
+Single-replica only — multi-replica needs a shared storage backend. The PVC
+is intentionally left orphaned by helm uninstall (resource-policy: keep) so a
+reinstall picks the same data up.
+
+Only rendered when workspace.backend == "local". In "git-protocol" mode the
+host talks to the git-server StatefulSet, whose own PVCs hold the repos.
+
+When the workspace backend goes away (TASK-995 or the chart cleanup that
+follows it), this PVC and its host mount must STAY: the blobs live here. The
+chart test "AX_BLOB_FS_ROOT lies on the host PVC mount"
+(__tests__/blob-backend.test.ts) goes red if they are dropped.
 */}}
 {{- if eq .Values.workspace.backend "local" }}
 apiVersion: v1

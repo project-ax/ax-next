@@ -196,7 +196,8 @@ gitServer:
 #
 #   - `fs` (default): @ax/blob-store-fs writes content-addressed files on
 #     the host PVC. Single-replica only (RWO PVC), cheapest, zero new deps.
-#     `root` defaults to a sibling dir on the workspace PVC.
+#     `root` is pinned below, in a sibling dir of the workspace repos on the
+#     workspace PVC.
 #   - `s3`: @ax/blob-store-s3 talks to one S3-compatible bucket. Multi-
 #     replica-safe. Dev/test: point at the in-cluster MinIO (set
 #     `minio.enabled=true` and `blob.backend=s3`; see kind-dev-values.yaml).
@@ -214,9 +215,23 @@ gitServer:
 blob:
   backend: fs            # fs | s3
   fs:
-    # Empty → preset derives <workspace.mountPath>/blobs (a sibling dir on
-    # the host PVC for the local workspace backend).
-    root: ""
+    # Where the blobs live: a directory on the host's `<release>-workspace`
+    # PVC (mounted at workspace.mountPath), next to the workspace repos.
+    #
+    # Pinned (TASK-992). It used to be left empty and derived from
+    # workspace.mountPath; this is the same path, written down, so the blob
+    # store no longer depends on the workspace settings. Do not change it on
+    # an existing deployment: a different root starts an empty blob store, and
+    # the blobs already stored (every attachment, artifact and skill file)
+    # stop being found. With the local workspace backend, the chart refuses a
+    # root that is not on the workspace volume.
+    #
+    # `helm upgrade --reuse-values` renders with the running release's values,
+    # not these defaults, so a release from before TASK-992 still carries
+    # `root: ""` and the render fails, printing the exact
+    # `--set blob.fs.root=<path>` to pass once. After that, --reuse-values
+    # keeps it.
+    root: /var/lib/ax-next/workspaces/blobs
   s3:
     bucket: ""           # required when backend=s3 AND minio.enabled=false
     endpoint: ""         # MinIO Service URL (auto when minio.enabled) / GCS / AWS / R2
