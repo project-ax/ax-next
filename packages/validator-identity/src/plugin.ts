@@ -11,7 +11,10 @@
 //      it. The check is `scanIdentityText` in identity-safety-scan.ts: no
 //      I/O, no bus calls; the one side effect is an `identity_scan_refused`
 //      log line carrying the category only. A refusal is an ANSWER, not a
-//      throw; only a malformed payload throws.
+//      throw; only a malformed payload throws. The payload is
+//      `{ text, kind? }`: `kind: 'instructions'` (people's Instructions)
+//      skips only the weak egress-near-secret heuristic; absent or
+//      `'self-description'` (identity, soul) is the full check.
 //
 //   2. The legacy `workspace:pre-apply` gate on the agent's identity FILES
 //      under /agent/.ax/, described below. Since TASK-989 the runner composes
@@ -76,31 +79,42 @@ import { PluginError, reject } from '@ax/core';
 // byte-for-byte (see the BOOTSTRAP branch below).
 import { BOOTSTRAP_TEMPLATE } from '@ax/agent-identity-templates';
 import {
+  IDENTITY_TEXT_KINDS,
   regexScan,
   scanIdentityText,
   type IdentityScanOutput,
+  type IdentityTextKind,
 } from './identity-safety-scan.js';
 
 const PLUGIN_NAME = '@ax/validator-identity';
 
 const IDENTITY_SCAN_HOOK = 'identity:scan';
 
+function isTextKind(value: unknown): value is IdentityTextKind {
+  return (IDENTITY_TEXT_KINDS as readonly unknown[]).includes(value);
+}
+
 /**
- * The `identity:scan` payload's text, or an `invalid-payload` throw. The
- * caller is another plugin, but the payload is still checked here rather than
- * trusted: a missing or non-string `text` must not reach the scan and come
- * back looking like a verdict. The message is fixed and never quotes the input.
+ * The `identity:scan` payload's text and kind, or an `invalid-payload` throw.
+ * The caller is another plugin, but the payload is still checked here rather
+ * than trusted: a missing or non-string `text` must not reach the scan and
+ * come back looking like a verdict, and an unknown `kind` must not quietly
+ * pick a laxer check. An absent `kind` is `self-description`, the full check.
+ * The message is fixed and never quotes the input.
  */
-function scanTextFrom(input: unknown): string {
+function scanInputFrom(input: unknown): { text: string; kind: IdentityTextKind } {
   if (typeof input === 'object' && input !== null) {
-    const text = (input as { text?: unknown }).text;
-    if (typeof text === 'string') return text;
+    const { text, kind } = input as { text?: unknown; kind?: unknown };
+    if (typeof text === 'string') {
+      if (kind === undefined) return { text, kind: 'self-description' };
+      if (isTextKind(kind)) return { text, kind };
+    }
   }
   throw new PluginError({
     code: 'invalid-payload',
     plugin: PLUGIN_NAME,
     hookName: IDENTITY_SCAN_HOOK,
-    message: `${IDENTITY_SCAN_HOOK} expects { text: string }`,
+    message: `${IDENTITY_SCAN_HOOK} expects { text: string, kind?: 'self-description' | 'instructions' }`,
   });
 }
 
@@ -191,7 +205,8 @@ export function createValidatorIdentityPlugin(): Plugin {
         IDENTITY_SCAN_HOOK,
         PLUGIN_NAME,
         async (ctx, input) => {
-          const result = scanIdentityText(scanTextFrom(input));
+          const { text, kind } = scanInputFrom(input);
+          const result = scanIdentityText(text, kind);
           if (result.verdict === 'refused') {
             ctx.logger.warn('identity_scan_refused', { category: result.category });
           }

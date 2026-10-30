@@ -411,7 +411,8 @@ export interface CanSetSharedCredentialOutput {
 // Every write goes through `agents:identity:set`, which normalises each
 // section (trailing whitespace trimmed), caps the Instructions, runs each
 // non-empty section through `identity:scan` (FAIL CLOSED: a missing scanner,
-// a throw or any answer but `{ verdict: 'clean' }` refuses the whole patch)
+// a throw or any answer but `{ verdict: 'clean' }` refuses the whole patch —
+// `content` for a `refused` verdict, `scan-unavailable` for everything else)
 // and compare-and-sets on `revision`. A saved write and a completed first-run
 // setup fire `system-prompt:augment-changed { agentId }` so live sessions
 // rebuild their prompt at their next turn.
@@ -431,6 +432,16 @@ export const AGENTS_IDENTITY_SET_HOOK = 'agents:identity:set';
 export const AGENTS_IDENTITY_COMPLETE_BOOTSTRAP_HOOK = 'agents:identity:complete-bootstrap';
 /** Registered by @ax/validator-identity; called once per non-empty section of a write. */
 export const IDENTITY_SCAN_HOOK = 'identity:scan';
+
+/**
+ * The `identity:scan` payload, re-declared here (no cross-plugin import).
+ * `kind: 'instructions'` for people's Instructions; absent (the scanner's
+ * default, `self-description`) for the identity and the soul.
+ */
+export interface IdentityScanPayload {
+  text: string;
+  kind?: 'self-description' | 'instructions';
+}
 
 /** The three texts, in the fixed order a write scans them. */
 export const IDENTITY_SECTIONS = ['identity', 'soul', 'instructions'] as const;
@@ -472,8 +483,9 @@ export interface IdentitySetInput {
 
 /**
  * Why a write was refused: `too-long` (Instructions over the cap), `content`
- * (the scan refused it), `scan-unavailable` (the scan could not answer, so
- * nothing could be checked or saved).
+ * (the scan refused it), `scan-unavailable` (the scan is missing, threw or
+ * answered neither `clean` nor `refused`, so nothing could be checked or
+ * saved).
  */
 export type IdentityRefusalCode = 'too-long' | 'content' | 'scan-unavailable';
 

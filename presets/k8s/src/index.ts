@@ -820,11 +820,11 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   // manifest), but we keep it adjacent to audit-log because both are
   // observe-only hook subscribers with no dependencies of their own.
   plugins.push(createValidatorSkillPlugin());
-  // Phase 3 (conversational-agent-identity): gates the agent's writes to its
-  // own /agent/.ax/ identity files. Subscribes workspace:pre-apply; reads
-  // the committed .ax/BOOTSTRAP.md at the parent version (via the workspace:read
-  // registered by the git-server client) to decide the bootstrap window. Same
-  // observe-and-veto shape as the two validators above.
+  // validator-identity's main job (TASK-989) is `identity:scan`: the pure,
+  // write-time injection check @ax/agents runs on every identity, soul and
+  // Instructions save, failing closed without it. Its legacy second job is a
+  // workspace:pre-apply gate on the retired /agent/.ax/ identity files (the
+  // runner no longer reads them; it goes with the git tier).
   plugins.push(createValidatorIdentityPlugin());
   // TASK-150: validator-service registers `services:validate` — the neutral
   // dev-SERVICE descriptor validator (digest-pin I8, descriptor caps, named

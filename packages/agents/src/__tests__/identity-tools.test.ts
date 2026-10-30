@@ -2,7 +2,7 @@
 // never Instructions) and `complete_bootstrap`. Executors are called the way
 // the host's tool.execute-host handler calls them: `tool:execute:<name>` with
 // the whole ToolCall, the input under `call.input`.
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { ToolCall, ToolDescriptor } from '@ax/core';
 import {
   COMPLETE_BOOTSTRAP_DESCRIPTOR,
@@ -11,6 +11,7 @@ import {
   type UpdateIdentityResult,
 } from '../identity/tools.js';
 import {
+  AGENTS_IDENTITY_COMPLETE_BOOTSTRAP_HOOK,
   AGENTS_IDENTITY_GET_HOOK,
   AGENTS_IDENTITY_SET_HOOK,
   type AgentIdentityRecord,
@@ -381,20 +382,64 @@ describe('update_identity', () => {
     expect(await get(ih, id, 'u1')).toMatchObject({ soul: '', revision: 0 });
   });
 
-  it('update_identity reports unavailable when its agent cannot be reached', async () => {
+  it('update_identity says not-allowed, without a retry, when its agent cannot be reached', async () => {
     const ih = await env.makeHarness();
     const id = await ih.createAgent('alice');
-    const unavailable = {
+    const notAllowed = {
       ok: false,
-      error: 'unavailable',
-      message: "NOT SAVED: your identity couldn't be saved right now; you may retry later.",
+      error: 'not-allowed',
+      message: "NOT SAVED: you can't change this agent's identity from here.",
     };
-    // A session whose agent is gone, and one whose user cannot reach it.
+    // A session whose agent is gone (not-found), one whose user cannot reach
+    // it (forbidden), and one with no agent at all (invalid-payload). Retrying
+    // would never help, so the message must not invite it.
     expect(await updateIdentity(ih, 'agt_missing', 'alice', { section: 'soul', content: 'Kind' })).toEqual(
-      unavailable,
+      notAllowed,
     );
-    expect(await updateIdentity(ih, id, 'mallory', { section: 'soul', content: 'Kind' })).toEqual(unavailable);
+    expect(await updateIdentity(ih, id, 'mallory', { section: 'soul', content: 'Kind' })).toEqual(notAllowed);
+    expect(await updateIdentity(ih, '', 'alice', { section: 'soul', content: 'Kind' })).toEqual(notAllowed);
     expect(await get(ih, id, 'alice')).toMatchObject({ soul: '', revision: 0 });
+  });
+
+  it('update_identity says unavailable, with a retry, on any other failure', async () => {
+    const ih = await env.makeHarness();
+    const id = await ih.createAgent('alice');
+    const real = ih.h.bus.call.bind(ih.h.bus);
+    const spy = vi.spyOn(ih.h.bus, 'call').mockImplementation(async (hook, ctx, input) => {
+      if (hook === AGENTS_IDENTITY_SET_HOOK) throw new Error('database went away');
+      return real(hook, ctx, input);
+    });
+    try {
+      expect(await updateIdentity(ih, id, 'alice', { section: 'soul', content: 'Kind' })).toEqual({
+        ok: false,
+        error: 'unavailable',
+        message: "NOT SAVED: your identity couldn't be saved right now; you may retry later.",
+      });
+    } finally {
+      spy.mockRestore();
+    }
+    expect(await get(ih, id, 'alice')).toMatchObject({ soul: '', revision: 0 });
+  });
+
+  // Invariant 3: the tool goes through the registered agents:identity:* hooks
+  // (and their `returns` schemas), not around them.
+  it('update_identity reads and writes through the agents:identity:get and :set hooks', async () => {
+    const ih = await env.makeHarness();
+    const id = await ih.createAgent('alice');
+    const spy = vi.spyOn(ih.h.bus, 'call');
+    try {
+      expect(await updateIdentity(ih, id, 'alice', { section: 'soul', content: 'Kind' })).toMatchObject({
+        ok: true,
+      });
+      const hooks = spy.mock.calls.map((c) => [c[0], c[2]]);
+      expect(hooks).toContainEqual([AGENTS_IDENTITY_GET_HOOK, { agentId: id }]);
+      expect(hooks).toContainEqual([
+        AGENTS_IDENTITY_SET_HOOK,
+        { agentId: id, patch: { soul: 'Kind' }, expectedRevision: 0 },
+      ]);
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it('two concurrent update_identity calls on different sections both land', async () => {
@@ -586,12 +631,52 @@ describe('complete_bootstrap', () => {
     expect((await get(ih, other, 'u1')).bootstrap).toBe('pending');
   });
 
-  it('complete_bootstrap reports unavailable when its agent cannot be reached', async () => {
+  it('complete_bootstrap says not-allowed, without a retry, when its agent cannot be reached', async () => {
     const ih = await env.makeHarness();
-    expect(await completeBootstrap(ih, 'agt_missing', 'u1')).toEqual({
+    const id = await ih.createAgent('alice', { bootstrap: 'pending' });
+    const notAllowed = {
       ok: false,
-      error: 'unavailable',
-      message: "NOT DONE: this couldn't be completed right now; you may retry later.",
+      error: 'not-allowed',
+      message: "NOT DONE: you can't finish this agent's first-run setup from here.",
+    };
+    expect(await completeBootstrap(ih, 'agt_missing', 'alice')).toEqual(notAllowed);
+    expect(await completeBootstrap(ih, id, 'mallory')).toEqual(notAllowed);
+    expect(await completeBootstrap(ih, '', 'alice')).toEqual(notAllowed);
+    expect((await get(ih, id, 'alice')).bootstrap).toBe('pending');
+  });
+
+  it('complete_bootstrap says unavailable, with a retry, on any other failure', async () => {
+    const ih = await env.makeHarness();
+    const id = await ih.createAgent('alice', { bootstrap: 'pending' });
+    const real = ih.h.bus.call.bind(ih.h.bus);
+    const spy = vi.spyOn(ih.h.bus, 'call').mockImplementation(async (hook, ctx, input) => {
+      if (hook === AGENTS_IDENTITY_COMPLETE_BOOTSTRAP_HOOK) throw new Error('database went away');
+      return real(hook, ctx, input);
     });
+    try {
+      expect(await completeBootstrap(ih, id, 'alice')).toEqual({
+        ok: false,
+        error: 'unavailable',
+        message: "NOT DONE: this couldn't be completed right now; you may retry later.",
+      });
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  // Invariant 3: agents:identity:complete-bootstrap has a real caller — this tool.
+  it('complete_bootstrap goes through the agents:identity:complete-bootstrap hook', async () => {
+    const ih = await env.makeHarness();
+    const id = await ih.createAgent('alice', { bootstrap: 'pending' });
+    await updateIdentity(ih, id, 'alice', { section: 'identity', content: 'I am Pip.' });
+    await updateIdentity(ih, id, 'alice', { section: 'soul', content: 'Kind.' });
+    const spy = vi.spyOn(ih.h.bus, 'call');
+    try {
+      expect(await completeBootstrap(ih, id, 'alice')).toMatchObject({ ok: true });
+      const hooks = spy.mock.calls.map((c) => [c[0], c[2]]);
+      expect(hooks).toContainEqual([AGENTS_IDENTITY_COMPLETE_BOOTSTRAP_HOOK, { agentId: id }]);
+    } finally {
+      spy.mockRestore();
+    }
   });
 });

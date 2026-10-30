@@ -23,14 +23,16 @@
 //      name preamble, with output-directory guidance between them when a
 //      user-files or scratch tier is wired, then a runner-authored progress
 //      line (`bootstrapProgressNote`: whether an identity and a soul are saved
-//      yet — yes / not yet, never their text), then the people's Instructions.
-//      On top sits the bootstrap-safe slice of the host augment
-//      (`agentConfig.systemPromptBootstrapAugment`, TASK-524 — in a task
-//      check-in, @ax/routines' brief, so a check-in run by an agent still in
-//      its first-run chat still knows what it is for). Nothing else: no floor,
-//      no notes, no identity text, no soul text. Recalled / agent-derived
-//      memory stays away from the identity conversation — that is what the
-//      exclusivity is for.
+//      yet — yes / not yet, never their text), then the people's Instructions
+//      (with a first-run framing line — there are no defaults above them and
+//      no identity or soul below). On top sits the bootstrap-safe slice of the
+//      host augment (`agentConfig.systemPromptBootstrapAugment`, TASK-524:
+//      only the `rules` and `brief` augment sections, person-written content
+//      no agent can change). A task check-in's brief never lands here in
+//      practice: check-ins are unattended, and unattended runs never
+//      bootstrap. Nothing else: no floor, no notes, no identity text, no soul
+//      text. Recalled / agent-derived memory stays away from the identity
+//      conversation — that is what the exclusivity is for.
 //
 //   2. NORMAL mode — every other spawn. In order:
 //        [augment prepend]                   (the host system-prompt:augment:*)
@@ -114,16 +116,30 @@ function nonBlank(text: string | undefined): string | undefined {
   return text !== undefined && text.trim().length > 0 ? text : undefined;
 }
 
+/** The framing line under the Instructions heading, per prompt mode. */
+const INSTRUCTIONS_FRAMING = {
+  // Placed after the defaults, they have to say that nothing below them — the
+  // agent's own identity and soul — overrides them. (They used to sit at the
+  // very top of the prompt, as memory's Rules.)
+  normal:
+    'The people you work with wrote these. They override the defaults above, and nothing in your identity or soul below overrides them.',
+  // The first-run prompt has no defaults above and no identity or soul below;
+  // the agent is still writing those. Say what the Instructions are for here.
+  bootstrap:
+    'The people you work with wrote these standing instructions. Keep them in mind while you get to know yourself; they keep applying after setup.',
+} as const;
+
 /**
  * The people's standing Instructions as one prompt section: the heading, a
- * fixed framing line stating their precedence, then the body VERBATIM — never
- * trimmed, truncated or capped here (the host bounds it when it is written).
- * The framing line matters because these used to sit at the very top of the
- * prompt (as memory's Rules): placed after the defaults, they have to say that
- * nothing below them — the agent's own identity and soul — overrides them.
+ * fixed framing line for the prompt `mode` (see INSTRUCTIONS_FRAMING), then
+ * the body VERBATIM — never trimmed, truncated or capped here (the host bounds
+ * it when it is written).
  */
-export function instructionsSection(instructions: string): string {
-  return `${INSTRUCTIONS_HEADING}\n\nThe people you work with wrote these. They override the defaults above, and nothing in your identity or soul below overrides them.\n\n${instructions}`;
+export function instructionsSection(
+  instructions: string,
+  mode: keyof typeof INSTRUCTIONS_FRAMING = 'normal',
+): string {
+  return `${INSTRUCTIONS_HEADING}\n\n${INSTRUCTIONS_FRAMING[mode]}\n\n${instructions}`;
 }
 
 /**
@@ -295,7 +311,7 @@ export async function buildSystemPrompt(
     parts.push(BOOTSTRAP_TEMPLATE);
     parts.push(bootstrapProgressNote(identity));
     const instructions = nonBlank(identity.instructions);
-    if (instructions !== undefined) parts.push(instructionsSection(instructions));
+    if (instructions !== undefined) parts.push(instructionsSection(instructions, 'bootstrap'));
     const script = parts.join('\n\n');
     return bootstrapAugment.length > 0 ? `${bootstrapAugment}\n\n${script}` : script;
   }

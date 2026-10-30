@@ -716,9 +716,10 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
         async (ctx, input) => identityService.completeBootstrap(ctx, input),
         { returns: IdentityCompleteBootstrapOutputSchema },
       );
-      // The agent's own tools over the same service: `update_identity`
-      // (identity or soul, never Instructions) and `complete_bootstrap`.
-      await registerIdentityTools(bus, identityService, initCtx);
+      // The agent's own tools over the three hooks just registered (they call
+      // them on the bus): `update_identity` (identity or soul, never
+      // Instructions) and `complete_bootstrap`.
+      await registerIdentityTools(bus, initCtx);
 
       // Mount /admin/agents[/:id]. Routes are registered LAST so the bus
       // calls inside their handlers reach our own services, which were

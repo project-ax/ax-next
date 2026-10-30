@@ -7,6 +7,8 @@
 //     @ax/agents calls it on every identity, soul and Instructions write, and
 //     refuses the write on anything but `clean`. That text is frozen into the
 //     session config at spawn and composed VERBATIM into the system prompt.
+//     Instructions (kind 'instructions') skip only the weak egress-near-secret
+//     heuristic, which refuses ordinary instructions; see IdentityTextKind.
 //   - `regexScan` alone backs the legacy `workspace:pre-apply` gate on the
 //     `.ax/` identity files (see plugin.ts), which the runner no longer reads.
 //
@@ -100,12 +102,22 @@ const OBFUSCATION_PATTERNS: RegExp[] = [
 // U+FEFF). A leading BOM never reaches here: the strict TextDecoder consumes it.
 const HIDDEN_CHARS = HIDDEN_FORMAT_CHARS;
 
+/** `regexScan` options. Every default is validator-skill's behaviour. */
+export interface RegexScanOptions {
+  /**
+   * Run the WEAK per-line egress-near-secret heuristic. Default true. Only
+   * `scanIdentityText` turns it off, for people's Instructions (see
+   * {@link IdentityTextKind}).
+   */
+  egressNearSecret?: boolean;
+}
+
 /**
  * Pure synchronous regex scan. Returns the FIRST category hit or null. Order:
  * instruction-override → credential-exfiltration → obfuscation (most actionable
  * reason first).
  */
-export function regexScan(text: string): ScanHit | null {
+export function regexScan(text: string, opts: RegexScanOptions = {}): ScanHit | null {
   for (const re of INSTRUCTION_OVERRIDE) {
     if (re.test(text)) {
       return hit('instruction-override', 'possible prompt-injection / instruction override');
@@ -118,9 +130,11 @@ export function regexScan(text: string): ScanHit | null {
   // WEAK egress-near-secret signal: evaluated PER LINE so an auth-header line
   // (legitimate credential USE) is spared while a genuine exfil line elsewhere
   // still trips.
-  for (const line of text.split('\n')) {
-    if (EGRESS_NEAR_SECRET.test(line) && !AUTH_HEADER.test(line)) {
-      return hit('credential-exfiltration', 'possible credential/secret exfiltration');
+  if (opts.egressNearSecret !== false) {
+    for (const line of text.split('\n')) {
+      if (EGRESS_NEAR_SECRET.test(line) && !AUTH_HEADER.test(line)) {
+        return hit('credential-exfiltration', 'possible credential/secret exfiltration');
+      }
     }
   }
   if (HIDDEN_CHARS.test(text)) return hit('obfuscation', 'hidden zero-width/bidi control characters');
@@ -139,9 +153,28 @@ export function regexScan(text: string): ScanHit | null {
  */
 export const IDENTITY_TEXT_MAX_BYTES = 262_144;
 
-/** `identity:scan` input. */
+/**
+ * What a scanned text is, which picks how strict the credential check is:
+ *
+ *   - `self-description` (the default) — an agent's identity or soul. Mostly
+ *     written by the agent itself, so model output: the full check.
+ *   - `instructions` — the standing instructions its people wrote. Every
+ *     check but one: the WEAK egress-near-secret heuristic is skipped, because
+ *     ordinary instructions trip it all the time ("Send my weekly report to my
+ *     secretary", "Never post passwords in a chat", "the postgres token
+ *     budget"). The STRONG exfiltration signatures, instruction overrides,
+ *     obfuscation, hidden characters, lone surrogates and the size cap all
+ *     still apply.
+ */
+export type IdentityTextKind = 'self-description' | 'instructions';
+
+/** Every {@link IdentityTextKind}; `identity:scan` refuses any other `kind`. */
+export const IDENTITY_TEXT_KINDS: readonly IdentityTextKind[] = ['self-description', 'instructions'];
+
+/** `identity:scan` input. `kind` absent means `self-description`. */
 export interface IdentityScanInput {
   text: string;
+  kind?: IdentityTextKind;
 }
 
 /**
@@ -167,15 +200,20 @@ const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[
  *   1. more than {@link IDENTITY_TEXT_MAX_BYTES} UTF-8 bytes → `too-large`
  *   2. a lone surrogate                                       → `not-well-formed`
  *   3. a `regexScan` signature                                → its category
- * Size goes first so the regexes never run over an oversized text.
+ * Size goes first so the regexes never run over an oversized text. For
+ * `kind: 'instructions'`, step 3 skips only the weak egress-near-secret
+ * heuristic (see {@link IdentityTextKind}).
  */
-export function scanIdentityText(text: string): IdentityScanOutput {
+export function scanIdentityText(
+  text: string,
+  kind: IdentityTextKind = 'self-description',
+): IdentityScanOutput {
   const found =
     Buffer.byteLength(text, 'utf8') > IDENTITY_TEXT_MAX_BYTES
       ? hit('too-large', 'over the 256 KiB limit')
       : LONE_SURROGATE.test(text)
         ? hit('not-well-formed', 'text is not valid Unicode (lone surrogate)')
-        : regexScan(text);
+        : regexScan(text, { egressNearSecret: kind !== 'instructions' });
   if (found === null) return { verdict: 'clean' };
   return { verdict: 'refused', category: found.category, reason: found.reason };
 }

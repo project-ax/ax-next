@@ -321,6 +321,9 @@ importers:
       '@ax/tool-policy':
         specifier: workspace:*
         version: link:../tool-policy
+      '@ax/validator-identity':
+        specifier: workspace:*
+        version: link:../validator-identity
       '@testcontainers/postgresql':
         specifier: 11.14.0
         version: 11.14.0

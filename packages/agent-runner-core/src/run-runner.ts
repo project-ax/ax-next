@@ -1589,9 +1589,10 @@ async function runRunnerInner(
     // governed root, not the new cwd.
     homeDir,
     env.memoryRoot,
-    // TASK-524: the bootstrap-safe slice of the augment (the person's Rules
-    // and, in a task check-in, the task's brief),
-    // the ONLY augment content bootstrap mode admits. Optional on the wire —
+    // TASK-524: the bootstrap-safe slice of the augment (the kernel `rules`
+    // and `brief` sections; people's Instructions now arrive in
+    // `agentConfig.identity` instead, TASK-989), the ONLY augment content
+    // bootstrap mode admits. Optional on the wire —
     // a session frozen before TASK-524 carries none, which means none.
     agentConfig.systemPromptBootstrapAugment ?? '',
     tools.some(tool => ['routine_list', 'routine_get', 'routine_create', 'routine_update', 'routine_delete', 'routine_fire_now'].includes(tool.name)),

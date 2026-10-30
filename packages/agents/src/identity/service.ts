@@ -17,6 +17,7 @@ import {
   type AgentIdentityRecord,
   type IdentityCompleteBootstrapOutput,
   type IdentityRefusalCode,
+  type IdentityScanPayload,
   type IdentitySection,
   type IdentitySetOutput,
 } from '../types.js';
@@ -24,8 +25,8 @@ import type { IdentityStore } from './store.js';
 
 // ---------------------------------------------------------------------------
 // TASK-989 — the three identity hooks. The agent tools (tools.ts) call these
-// same functions with `ctx.agentId`, so a person's save and an agent's save
-// pass the same checks.
+// same hooks on the bus with `ctx.agentId`, so a person's save and an agent's
+// save pass the same checks and the same `returns` schemas.
 //
 // Order on every hook: input shape (incl. `input.agentId === ctx.agentId`) →
 // the agent exists → `ctx.userId` reaches it (`checkAccess`). Then `set`
@@ -147,6 +148,14 @@ function isClean(answer: unknown): boolean {
 }
 
 /**
+ * A `refused` verdict: the scanner judged the text. Any other non-clean
+ * answer is a broken scanner, not a judgement (see `scan`).
+ */
+function isRefusal(answer: unknown): boolean {
+  return isPlainObject(answer) && answer.verdict === 'refused';
+}
+
+/**
  * A well-formed refusal's own short reason; anything else gets the fixed one.
  * Only a `refused` verdict's reason is passed on, so odd text from a
  * malformed answer never reaches a person or the agent.
@@ -200,16 +209,28 @@ export function createIdentityService(deps: IdentityServiceDeps): IdentityServic
     section: IdentitySection,
     text: string,
   ): Promise<ScanResult> {
+    // People's Instructions are scanned as kind 'instructions' (every check
+    // but the weak egress-near-secret heuristic, which refuses ordinary
+    // instructions); identity and soul take the scanner's default, full check.
+    const payload: IdentityScanPayload =
+      section === 'instructions' ? { text, kind: 'instructions' } : { text };
     let answer: unknown;
     try {
       // No hasService check: a missing scanner rejects with `no-service`,
       // which lands in the same fail-closed branch as any other failure.
-      answer = await bus.call<{ text: string }, unknown>(IDENTITY_SCAN_HOOK, ctx, { text });
+      answer = await bus.call<IdentityScanPayload, unknown>(IDENTITY_SCAN_HOOK, ctx, payload);
     } catch (err) {
       ctx.logger.warn('agent_identity_scan_unavailable', { agentId, section, ...errorFields(err) });
       return { ok: false, code: 'scan-unavailable', reason: SCAN_UNAVAILABLE_REASON };
     }
     if (isClean(answer)) return { ok: true };
+    // Neither clean nor a refusal: the scanner is broken, which says nothing
+    // about the text. Still nothing is saved (fail closed), but it is not
+    // reported as a content refusal the writer should reword.
+    if (!isRefusal(answer)) {
+      ctx.logger.warn('agent_identity_scan_unavailable', { agentId, section, name: 'malformed-answer' });
+      return { ok: false, code: 'scan-unavailable', reason: SCAN_UNAVAILABLE_REASON };
+    }
     const category = loggableCategory(answer);
     ctx.logger.info('agent_identity_write_refused', {
       agentId,

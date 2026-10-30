@@ -1,5 +1,12 @@
 import { PluginError, type AgentContext, type HookBus, type ToolDescriptor } from '@ax/core';
-import type { IdentityService } from './service.js';
+import {
+  AGENTS_IDENTITY_COMPLETE_BOOTSTRAP_HOOK,
+  AGENTS_IDENTITY_GET_HOOK,
+  AGENTS_IDENTITY_SET_HOOK,
+  type AgentIdentityRecord,
+  type IdentityCompleteBootstrapOutput,
+  type IdentitySetOutput,
+} from '../types.js';
 
 // ---------------------------------------------------------------------------
 // TASK-989 — the agent's own host tools.
@@ -14,12 +21,15 @@ import type { IdentityService } from './service.js';
 // a routine or a task check-in, no person present); the orchestrator also
 // keeps them out of such a session's catalog, so this is defence in depth.
 //
-// They go through the same service as the `agents:identity:*` hooks, so the
-// agent's writes are scanned, capped and compare-and-set exactly like a
+// They call the `agents:identity:*` hooks on the bus — the same registered
+// surface, checks and `returns` schemas a person's editor goes through — so
+// the agent's writes are scanned, capped and compare-and-set exactly like a
 // person's. Executors never throw: a host tool cannot mark its own result as
 // an error to the model (only a throw does, and that path redacts the
 // message), so every failure is an `ok: false` result whose message says, on
-// its own, that nothing was saved.
+// its own, that nothing was saved. A hook's `forbidden`, `not-found` or
+// `invalid-payload` throw is `not-allowed` (retrying cannot help); any other
+// throw is `unavailable` (it may).
 // ---------------------------------------------------------------------------
 
 const PLUGIN_NAME = '@ax/agents';
@@ -85,6 +95,7 @@ export type UpdateIdentityError =
   | 'refused'
   | 'changed'
   | 'not-available'
+  | 'not-allowed'
   | 'unavailable';
 
 export type UpdateIdentityResult =
@@ -96,6 +107,7 @@ export type CompleteBootstrapError =
   | 'not-bootstrapping'
   | 'needs-identity-and-soul'
   | 'not-available'
+  | 'not-allowed'
   | 'unavailable'
   | 'invalid-input';
 
@@ -133,6 +145,7 @@ const UPDATE_MESSAGES: Record<
     'update_identity changes only your identity or your soul.',
   changed: 'your identity kept changing while you edited it. Try again.',
   'not-available': "you can't change your identity in a run with no person present.",
+  'not-allowed': "you can't change this agent's identity from here.",
   unavailable: "your identity couldn't be saved right now; you may retry later.",
 };
 
@@ -143,6 +156,7 @@ const COMPLETE_MESSAGES: Record<CompleteBootstrapError, string> = {
   'not-bootstrapping': "You're not in first-run setup, so there's nothing to finish.",
   'needs-identity-and-soul': 'NOT DONE: save both your identity and your soul with update_identity first.',
   'not-available': "NOT DONE: first-run setup can't be finished in a run with no person present.",
+  'not-allowed': "NOT DONE: you can't finish this agent's first-run setup from here.",
   unavailable: "NOT DONE: this couldn't be completed right now; you may retry later.",
   'invalid-input': 'NOT DONE: complete_bootstrap takes no input; call it with {}.',
 };
@@ -204,8 +218,19 @@ function errorFields(err: unknown): { name: string; code?: string } {
   return err instanceof PluginError ? { name, code: err.code } : { name };
 }
 
+/**
+ * The identity hooks throw only for a call that can never succeed from this
+ * session — malformed input, an agent that is gone, or a user who cannot
+ * reach it. Anything else (a timeout, a database error) is worth a retry.
+ */
+const NOT_ALLOWED_CODES = new Set(['forbidden', 'not-found', 'invalid-payload']);
+
+function failureKind(err: unknown): 'not-allowed' | 'unavailable' {
+  return err instanceof PluginError && NOT_ALLOWED_CODES.has(err.code) ? 'not-allowed' : 'unavailable';
+}
+
 async function runUpdateIdentity(
-  service: IdentityService,
+  bus: HookBus,
   ctx: AgentContext,
   call: ToolCallInput | undefined,
 ): Promise<UpdateIdentityResult> {
@@ -215,7 +240,11 @@ async function runUpdateIdentity(
   const { section } = request;
   try {
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-      const record = await service.get(ctx, { agentId: ctx.agentId });
+      const record = await bus.call<{ agentId: string }, AgentIdentityRecord>(
+        AGENTS_IDENTITY_GET_HOOK,
+        ctx,
+        { agentId: ctx.agentId },
+      );
       const current = record[section];
       let next: string;
       if (request.form === 'content') {
@@ -243,7 +272,10 @@ async function runUpdateIdentity(
         // literally, so `$&`, `$1`, `$$` and friends stay as written.
         next = current.slice(0, at) + request.replacement + current.slice(at + request.old.length);
       }
-      const out = await service.set(ctx, {
+      const out = await bus.call<
+        { agentId: string; patch: Partial<Record<SelfSection, string>>; expectedRevision: number },
+        IdentitySetOutput
+      >(AGENTS_IDENTITY_SET_HOOK, ctx, {
         agentId: ctx.agentId,
         patch: { [section]: next },
         expectedRevision: record.revision,
@@ -273,7 +305,7 @@ async function runUpdateIdentity(
       tool: UPDATE_IDENTITY_TOOL,
       ...errorFields(err),
     });
-    return notSaved('unavailable');
+    return notSaved(failureKind(err));
   }
 }
 
@@ -285,7 +317,7 @@ const COMPLETE_OUTCOMES = {
 } as const satisfies Record<string, CompleteBootstrapResult>;
 
 async function runCompleteBootstrap(
-  service: IdentityService,
+  bus: HookBus,
   ctx: AgentContext,
   call: ToolCallInput | undefined,
 ): Promise<CompleteBootstrapResult> {
@@ -296,7 +328,11 @@ async function runCompleteBootstrap(
     return completeFailure('invalid-input');
   }
   try {
-    const out = await service.completeBootstrap(ctx, { agentId: ctx.agentId });
+    const out = await bus.call<{ agentId: string }, IdentityCompleteBootstrapOutput>(
+      AGENTS_IDENTITY_COMPLETE_BOOTSTRAP_HOOK,
+      ctx,
+      { agentId: ctx.agentId },
+    );
     return { ...COMPLETE_OUTCOMES[out.outcome] };
   } catch (err) {
     ctx.logger.warn('agent_identity_tool_failed', {
@@ -304,29 +340,26 @@ async function runCompleteBootstrap(
       tool: COMPLETE_BOOTSTRAP_TOOL,
       ...errorFields(err),
     });
-    return completeFailure('unavailable');
+    return completeFailure(failureKind(err));
   }
 }
 
 /**
  * Register both executors, and — when a tool catalog is loaded — both
  * descriptors. The executors are always registered: without `tool:register`
- * no agent is offered the tools, but the services still answer.
+ * no agent is offered the tools, but the services still answer. Register them
+ * after the `agents:identity:*` hooks they call.
  */
-export async function registerIdentityTools(
-  bus: HookBus,
-  service: IdentityService,
-  initCtx: AgentContext,
-): Promise<void> {
+export async function registerIdentityTools(bus: HookBus, initCtx: AgentContext): Promise<void> {
   bus.registerService<ToolCallInput | undefined, UpdateIdentityResult>(
     UPDATE_IDENTITY_TOOL_HOOK,
     PLUGIN_NAME,
-    async (ctx, call) => runUpdateIdentity(service, ctx, call),
+    async (ctx, call) => runUpdateIdentity(bus, ctx, call),
   );
   bus.registerService<ToolCallInput | undefined, CompleteBootstrapResult>(
     COMPLETE_BOOTSTRAP_TOOL_HOOK,
     PLUGIN_NAME,
-    async (ctx, call) => runCompleteBootstrap(service, ctx, call),
+    async (ctx, call) => runCompleteBootstrap(bus, ctx, call),
   );
   if (bus.hasService('tool:register')) {
     await bus.call('tool:register', initCtx, UPDATE_IDENTITY_DESCRIPTOR);

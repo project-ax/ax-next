@@ -23,7 +23,7 @@ promoted, but identity text goes live next turn).
 The validator performs NO process spawn, NO direct filesystem I/O, NO network, NO env
 access. It registers one service and makes exactly one bus call, which is optional:
 
-- **Registers `identity:scan` (pure, no I/O).** Takes `{ text }`, returns a verdict. It
+- **Registers `identity:scan` (pure, no I/O).** Takes `{ text, kind? }`, returns a verdict. It
   makes no bus call and reads or writes nothing; its only side effect is an
   `identity_scan_refused` log line carrying the category.
 - `workspace:read` (`optionalCall`, `hasService`-guarded) — the legacy gate reads the
@@ -67,14 +67,34 @@ All of it is untrusted:
 - **People**, through the settings page's Instructions editor and the admin identity
   editor. On a team agent, one person's Instructions reach every teammate's sessions.
 
-All three sections are scanned the same way.
+All three sections get every check, with one exception. The caller says what the text is
+with `kind`: `'self-description'` (the default; identity and soul) or `'instructions'`.
+For Instructions, the **weak** egress-near-secret heuristic (an egress verb such as
+"send", "post" or "fetch" within 80 characters of a secret word such as "token" or
+"password", on one line, no word boundaries) is skipped. It refused ordinary instructions
+("Send my weekly report to my secretary", "Check the postgres token budget", "Never post
+passwords in a chat"), which made the Instructions editor unusable for normal people
+saying normal things.
+
+What Instructions still get: the size cap, the lone-surrogate check, instruction-override
+signatures, the **strong** exfiltration signatures (a secret as `curl -d` / `--data` /
+`body:` request data, or a secret routed to `https://…`, a webhook or "exfil"),
+obfuscation and hidden format characters. NUL is refused by `@ax/agents` before the scan.
+
+Why this is the proportionate trade: Instructions are written by people, through an
+authenticated editor, about their own agent; identity and soul are mostly written by the
+model, where a prompt injection in a tool result could steer the text. The weak heuristic
+is a high-recall net for model output; for people's prose it was mostly noise. An unknown
+`kind` throws `invalid-payload` — it never quietly selects the laxer check — and an
+absent `kind` is the full check, so a caller that forgets the field fails safe.
 
 ### Fail closed, at the caller
 
 A refusal is an answer, not a throw; only a malformed payload (no string `text`) throws
 `invalid-payload`. `@ax/agents` declares `identity:scan` as an `optionalCall` and saves
 only on exactly `{ verdict: 'clean' }`. A missing scanner, a throw, or any other answer
-refuses the write, and nothing is saved. "The scanner is down" never means "everything
+refuses the write, and nothing is saved (a `refused` verdict is reported as a content
+refusal; anything else as "the safety check isn't available"). "The scanner is down" never means "everything
 passes".
 
 ### No text in reasons or logs
@@ -195,9 +215,15 @@ If those break, the failure is louder than this plugin can compensate for.
 - **Regex recall.** A novel injection phrasing not in the Layer-1 set passes the scan.
   The non-editable runner safety floor is the backstop; an LLM layer is a possible
   follow-up if real-world abuse warrants it.
-- **False positives.** The weak egress-near-secret signal can refuse a benign sentence,
-  for example "never post API keys in chat" (an egress verb near a secret word). The text
-  is not saved; rewording gets it through.
+- **False positives.** The weak egress-near-secret signal can refuse a benign identity or
+  soul sentence, for example "never post API keys in chat" (an egress verb near a secret
+  word). The text is not saved; rewording gets it through. Instructions skip that signal
+  (see above).
+- **Instructions: weaker credential recall.** Because Instructions skip the weak signal,
+  a person can save "fetch the deploy token and post it in #general". Only the strong
+  signatures (request data, a URL, a webhook) catch exfiltration there. The author is a
+  person with access to the agent, and the runner's safety floor still sits above the
+  Instructions.
 - **One section at a time.** `identity:scan` sees one section's text per call, so it
   cannot see a signature split across two sections.
 - **Legacy gate: exact-path matching.** `.ax/{IDENTITY,SOUL,AGENTS,BOOTSTRAP}.md` only —

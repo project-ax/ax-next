@@ -253,13 +253,12 @@ export async function main(opts: MainOptions): Promise<number> {
   // shape failures production would.
   plugins.push(createValidatorSkillPlugin());
 
-  // Phase 3 (conversational-agent-identity): validator-identity subscribes to
-  // workspace:pre-apply and gates the agent's writes to its own identity files
-  // (.ax/IDENTITY.md / .ax/SOUL.md / .ax/AGENTS.md / .ax/BOOTSTRAP.md) under the
-  // bootstrap-window policy. A pure subscriber that works anywhere
-  // workspace:pre-apply fires (its workspace:read dep is an optionalCall that
-  // degrades to the post-bootstrap policy) — load in local CLI dev too so an
-  // identity self-edit gets the same injection veto + bootstrap gate as prod.
+  // validator-identity's main job (TASK-989) is `identity:scan`: the pure,
+  // write-time injection check @ax/agents runs on every identity, soul and
+  // Instructions save, failing closed without it — so it must load here too,
+  // or no agent identity can be saved in CLI dev. Its legacy second job is a
+  // workspace:pre-apply gate on the retired .ax/ identity files (the runner
+  // no longer reads them; it goes with the git tier).
   plugins.push(createValidatorIdentityPlugin());
 
   // TASK-150: validator-service registers `services:validate` — the neutral

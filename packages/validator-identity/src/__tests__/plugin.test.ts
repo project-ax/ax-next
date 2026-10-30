@@ -110,6 +110,34 @@ describe('identity:scan service', () => {
     expect(read).not.toHaveBeenCalled();
   });
 
+  it("identity:scan takes an optional kind; 'instructions' spares ordinary Instructions, nothing else", async () => {
+    const { bus, ctx } = await bootstrapWith([createValidatorIdentityPlugin()]);
+    const ordinary = 'Never post passwords or API keys in a chat.';
+    await expect(bus.call('identity:scan', ctx, { text: ordinary, kind: 'instructions' })).resolves.toEqual({
+      verdict: 'clean',
+    });
+    // The default kind, and naming it, keep the full check.
+    for (const input of [{ text: ordinary }, { text: ordinary, kind: 'self-description' }]) {
+      await expect(bus.call('identity:scan', ctx, input)).resolves.toMatchObject({
+        verdict: 'refused',
+        category: 'credential-exfiltration',
+      });
+    }
+    await expect(bus.call('identity:scan', ctx, { text: OVERRIDE, kind: 'instructions' })).resolves.toMatchObject({
+      verdict: 'refused',
+      category: 'instruction-override',
+    });
+    // An unknown kind is a malformed payload, never a laxer scan.
+    for (const kind of ['soul', 'INSTRUCTIONS', '', 1, null]) {
+      const err = await bus.call('identity:scan', ctx, { text: ordinary, kind }).then(
+        () => undefined,
+        (e: unknown) => e,
+      );
+      expect(err, JSON.stringify(kind)).toBeInstanceOf(PluginError);
+      expect(err).toMatchObject({ code: 'invalid-payload', hookName: 'identity:scan' });
+    }
+  });
+
   it('logs a refusal by category only, never the text', async () => {
     const { bus, ctx } = await bootstrapWith([createValidatorIdentityPlugin()]);
     const warn = vi.spyOn(ctx.logger, 'warn');

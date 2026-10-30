@@ -120,6 +120,18 @@ describe('instructionsSection', () => {
         'The people you work with wrote these. They override the defaults above, and nothing in your identity or soul below overrides them.\n\n' +
         body,
     );
+    expect(instructionsSection(body, 'normal')).toBe(instructionsSection(body));
+  });
+
+  // Bootstrap mode has no defaults above and no identity or soul below, so
+  // the normal framing would describe a prompt that is not there.
+  it('in bootstrap mode, frames them for a first-run chat under the same heading', () => {
+    const body = '  Be brief.\n\n- always cite sources\t';
+    expect(instructionsSection(body, 'bootstrap')).toBe(
+      '## Instructions from your people\n\n' +
+        'The people you work with wrote these standing instructions. Keep them in mind while you get to know yourself; they keep applying after setup.\n\n' +
+        body,
+    );
   });
 });
 
@@ -335,8 +347,11 @@ describe('buildSystemPrompt — bootstrap mode (a host decision, exclusive)', ()
     expect(out).toBe(
       `${bootstrapPreamble('Pip')}\n\n${fileOutputNote(WS, '/ephemeral')}\n\n${BOOTSTRAP_TEMPLATE}\n\n` +
         `${bootstrapProgressNote({ identity: 'IDENTITY_BODY', soul: 'SOUL_BODY' })}\n\n` +
-        `${instructionsSection('INSTRUCTIONS_BODY')}`,
+        `${instructionsSection('INSTRUCTIONS_BODY', 'bootstrap')}`,
     );
+    // The normal-mode framing names defaults above and an identity and soul
+    // below — neither is in this prompt.
+    expect(out).not.toContain('They override the defaults above');
     // Exclusivity: none of the normal-mode content leaks in.
     expect(out).not.toContain(safetyFloorNote());
     expect(out).not.toContain('## Identity');

@@ -5,8 +5,9 @@
 // Each suite that calls `useIdentityEnv()` at module top level gets its own
 // container (beforeAll/afterAll) and a clean pair of tables after every case.
 // The harness registers a configurable `identity:scan` stub (default: clean;
-// records every input), optional `teams:is-member` / `tool:register` stubs,
-// and a spy on `system-prompt:augment-changed`.
+// records every input) or, with `realScan`, the real @ax/validator-identity;
+// optional `teams:is-member` / `tool:register` stubs; and a spy on
+// `system-prompt:augment-changed`.
 import { afterAll, afterEach, beforeAll } from 'vitest';
 import {
   PostgreSqlContainer,
@@ -19,6 +20,7 @@ import {
   startTestContainer,
 } from '@ax/test-harness';
 import { createDatabasePostgresPlugin } from '@ax/database-postgres';
+import { createValidatorIdentityPlugin } from '@ax/validator-identity';
 import {
   SYSTEM_PROMPT_AUGMENT_CHANGED_HOOK,
   type AgentContext,
@@ -36,6 +38,11 @@ export const CLEAN: ScanAnswer = async () => ({ verdict: 'clean' });
 export interface IdentityHarnessOptions {
   /** Register the `identity:scan` stub. Default true. */
   withScan?: boolean;
+  /**
+   * Load the REAL @ax/validator-identity in place of the stub (so `scanned`
+   * and `setScan` do nothing). Default false.
+   */
+  realScan?: boolean;
   /** Register a recording `tool:register` stub. Default false. */
   withToolRegister?: boolean;
   /** Users `teams:is-member` answers `member: true` for. Absent → no teams stub. */
@@ -117,7 +124,7 @@ export function useIdentityEnv(): {
         throw new Error('auth:require-user is not used by the identity suites');
       },
     };
-    if (opts.withScan !== false) {
+    if (opts.withScan !== false && opts.realScan !== true) {
       services['identity:scan'] = async (_ctx, input) => {
         scanned.push(input);
         return scanAnswer(input);
@@ -137,7 +144,11 @@ export function useIdentityEnv(): {
     }
     const h = await createTestHarness({
       services,
-      plugins: [createDatabasePostgresPlugin({ connectionString }), createAgentsPlugin()],
+      plugins: [
+        createDatabasePostgresPlugin({ connectionString }),
+        ...(opts.realScan === true ? [createValidatorIdentityPlugin()] : []),
+        createAgentsPlugin(),
+      ],
     });
     harnesses.push(h);
     const changed: SystemPromptAugmentChangedPayload[] = [];

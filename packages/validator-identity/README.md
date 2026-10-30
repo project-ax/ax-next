@@ -17,8 +17,10 @@ runner starts, they are frozen into its session config and placed **verbatim int
 system prompt**. Text that lands there unchecked is a way to rewrite the agent's rules,
 so every write gets checked first.
 
-- **Input:** `{ text: string }`, one section's text. Anything that isn't an object with
-  a string `text` throws a `PluginError` with code `invalid-payload`.
+- **Input:** `{ text: string, kind?: 'self-description' | 'instructions' }`, one
+  section's text and what it is. `kind` defaults to `'self-description'` (an agent's
+  identity or soul). Anything that isn't an object with a string `text`, or that names
+  any other `kind`, throws a `PluginError` with code `invalid-payload`.
 - **Output:** `{ verdict: 'clean' }`, or `{ verdict: 'refused', category, reason }`.
   `reason` is a fixed sentence of at most 160 characters that names the category. It
   never quotes the text.
@@ -32,6 +34,14 @@ The checks run in this order, and the first one that fails decides:
 | 3 | An injection signature from the Layer-1 regex set | `instruction-override`, `credential-exfiltration` or `obfuscation` |
 
 Size goes first, so the regexes never run over an oversized text.
+
+**`kind: 'instructions'`** (people's Instructions, which `@ax/agents` sends) runs every
+check above except one: the weak "egress verb near a secret word" heuristic. People write
+instructions like "Send my weekly report to my secretary" or "Never post passwords in a
+chat", and that heuristic refused them all. Instruction overrides, the strong
+exfiltration signatures (a secret sent as request data, or to a URL or webhook),
+obfuscation, hidden characters, lone surrogates and the size cap all still apply. The
+identity and the soul keep the full check.
 
 A refusal is an answer, not an error. `@ax/agents` saves the text only when the answer
 is exactly `{ verdict: 'clean' }`; anything else means nothing is saved. A missing or
