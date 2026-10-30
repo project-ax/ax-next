@@ -582,11 +582,11 @@ async function runRunnerInner(
     // bundled back to the host. Must run AFTER the clone for the same reason
     // as the skill-surface scaffold (it appends to any baseline .gitignore).
     await scaffoldWorkspaceGitignore(env.workspaceRoot);
-    // Whatever the loop needs scaffolded into the freshly-cloned tree before
-    // it starts — typically redirecting the loop's own transcript writes into
-    // the workspace. Loop-shaped by nature (it knows where its SDK writes), so
-    // it is a seam; it runs INSIDE this try, so a failure is bootstrap-fatal
-    // exactly like the clone itself.
+    // Whatever the loop needs laid down before it starts — typically its own
+    // runner-private transcript directory (never the workspace). Loop-shaped
+    // by nature (it knows where its SDK writes), so it is a seam; it runs
+    // INSIDE this try, so a failure is bootstrap-fatal exactly like the clone
+    // itself.
     if (seams.afterMaterialize !== undefined) {
       await seams.afterMaterialize(env);
     }

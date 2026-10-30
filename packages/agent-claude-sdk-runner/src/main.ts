@@ -484,8 +484,7 @@ export function createClaudeSdkLoop(deps: RunnerDeps): Loop {
           // The set, deduped (cwd is excluded; the SDK already grants it):
           //   - The governed tier `env.workspaceRoot` (=/agent). In Phase 2 cwd is
           //     /files, so /agent is NO LONGER the cwd and MUST be listed — it
-          //     holds `.ax/uploads` (materialized attachments), the transcript
-          //     `.claude/projects` symlink target, and every `.ax/**`+`.claude/**`
+          //     holds `.ax/uploads` (materialized attachments) and every `.ax/**`+`.claude/**`
           //     path the PreToolUse re-rooter rewrites BACK to /agent (§14). Without
           //     it those re-rooted writes would be denied. (When userFilesRoot is
           //     unset, /agent IS the cwd, so it drops out via the dedup.)
