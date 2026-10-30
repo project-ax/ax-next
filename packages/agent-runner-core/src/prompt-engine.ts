@@ -21,14 +21,16 @@
 //   1. BOOTSTRAP mode — the system prompt is the canonical bootstrap script
 //      (`BOOTSTRAP_TEMPLATE`, a compile-time constant) behind a runner-authored
 //      name preamble, with output-directory guidance between them when a
-//      user-files or scratch tier is wired, then the people's Instructions.
+//      user-files or scratch tier is wired, then a runner-authored progress
+//      line (`bootstrapProgressNote`: whether an identity and a soul are saved
+//      yet — yes / not yet, never their text), then the people's Instructions.
 //      On top sits the bootstrap-safe slice of the host augment
 //      (`agentConfig.systemPromptBootstrapAugment`, TASK-524 — in a task
 //      check-in, @ax/routines' brief, so a check-in run by an agent still in
 //      its first-run chat still knows what it is for). Nothing else: no floor,
-//      no notes, no identity, no soul. Recalled / agent-derived memory stays
-//      away from the identity conversation — that is what the exclusivity is
-//      for.
+//      no notes, no identity text, no soul text. Recalled / agent-derived
+//      memory stays away from the identity conversation — that is what the
+//      exclusivity is for.
 //
 //   2. NORMAL mode — every other spawn. In order:
 //        [augment prepend]                   (the host system-prompt:augment:*)
@@ -141,6 +143,23 @@ export function safetyFloorNote(): string {
     `Before any irreversible or external action (deleting data, sending a message,`,
     `spending money, or anything you can't take back), confirm with the user first.`,
   ].join(' ');
+}
+
+/**
+ * Bootstrap mode's progress line, after the script: whether the agent has
+ * already saved an identity and a soul. A save retires the session, so the next
+ * turn respawns into the script again; without this the agent would not know
+ * what it already did and could start over. Only `yes` / `not yet` reaches the
+ * prompt — never the saved text, which is agent-written and bootstrap mode has
+ * no safety floor above it. A whitespace-only section counts as not yet, the
+ * same rule `complete_bootstrap` applies.
+ */
+export function bootstrapProgressNote(identity: Pick<PromptIdentity, 'identity' | 'soul'>): string {
+  const saved = (text: string): string => (nonBlank(text) !== undefined ? 'yes' : 'not yet');
+  return (
+    `Saved so far: your identity (${saved(identity.identity)}), your soul (${saved(identity.soul)}). ` +
+    'Sending content to update_identity replaces the whole section.'
+  );
 }
 
 /**
@@ -266,13 +285,15 @@ export async function buildSystemPrompt(
   // runner-authored name preamble (the script doesn't encode the agent's
   // pre-assigned name), with output-directory guidance, then the people's
   // Instructions — TASK-524's promise that their standing instructions reach
-  // the first-run chat too. The script finishes with a tool call
+  // the first-run chat too. Between the script and the Instructions sits the
+  // progress line, so a respawn after a save knows what is already saved. The script finishes with a tool call
   // (`complete_bootstrap`), not a file operation, so it needs no path guidance.
   if (identity.bootstrapMode) {
     const parts = [bootstrapPreamble(displayName)];
     const outputNote = fileOutputNote(workspaceRoot, ephemeralRoot, userFilesRoot);
     if (outputNote.length > 0) parts.push(outputNote);
     parts.push(BOOTSTRAP_TEMPLATE);
+    parts.push(bootstrapProgressNote(identity));
     const instructions = nonBlank(identity.instructions);
     if (instructions !== undefined) parts.push(instructionsSection(instructions));
     const script = parts.join('\n\n');

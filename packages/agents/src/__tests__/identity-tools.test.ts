@@ -242,11 +242,22 @@ describe('update_identity', () => {
     expect(await get(ih, id, 'u1')).toEqual(before);
     expect(ih.changed).toHaveLength(changedBefore);
 
-    // Matches are counted without overlap: 'aa' occurs once in 'aaa'.
+    // Overlapping matches count: 'aa' occurs twice in 'aaa' (at 0 and at 1),
+    // so which one the agent meant is ambiguous and nothing is saved.
     await updateIdentity(ih, id, 'u1', { section: 'soul', content: 'aaa' });
-    expect(await updateIdentity(ih, id, 'u1', { section: 'soul', old: 'aa', new: 'X' })).toMatchObject({
+    const beforeOverlap = await get(ih, id, 'u1');
+    expect(await updateIdentity(ih, id, 'u1', { section: 'soul', old: 'aa', new: 'X' })).toEqual({
+      ok: false,
+      error: 'old-not-unique',
+      message:
+        'NOT SAVED: old appears more than once in your current soul. ' +
+        'Include more of the surrounding text so it matches exactly once.',
+    });
+    expect(await get(ih, id, 'u1')).toEqual(beforeOverlap);
+    // A passage that really is there once still edits.
+    expect(await updateIdentity(ih, id, 'u1', { section: 'soul', old: 'aaa', new: 'X' })).toMatchObject({
       ok: true,
-      content: 'Xa',
+      content: 'X',
     });
   });
 
@@ -445,6 +456,46 @@ describe('update_identity', () => {
     }
     expect(agent).toMatchObject({ ok: true, content: 'Kind.' });
     expect(await get(ih, id, 'u1')).toMatchObject({ instructions: 'Be brief.', soul: 'Kind.', revision: 2 });
+  });
+
+  it('two concurrent update_identity edits to the same section keep both edits', async () => {
+    const ih = await env.makeHarness();
+    const id = await ih.createAgent('u1');
+    await updateIdentity(ih, id, 'u1', { section: 'soul', content: 'I like tea.' });
+    const seeded = await get(ih, id, 'u1');
+    ih.scanned.length = 0;
+    ih.changed.length = 0;
+    // Hold each write at the scan until both have read the same revision and
+    // computed their edit from 'I like tea.'. Without the compare-and-set the
+    // later write would overwrite the earlier with its own stale splice
+    // ('I like coffee.' or 'We like tea.'); with it, the loser conflicts,
+    // re-reads the winner's text and applies its edit on top.
+    let release!: () => void;
+    const bothRead = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let arrivals = 0;
+    ih.setScan(async () => {
+      arrivals += 1;
+      if (arrivals === 2) release();
+      await bothRead;
+      return { verdict: 'clean' };
+    });
+    const [a, b] = await Promise.all([
+      updateIdentity(ih, id, 'u1', { section: 'soul', old: 'tea', new: 'coffee' }),
+      updateIdentity(ih, id, 'u1', { section: 'soul', old: 'I like', new: 'We like' }),
+    ]);
+    expect(a).toMatchObject({ ok: true, section: 'soul', note: SAVED_NOTE });
+    expect(b).toMatchObject({ ok: true, section: 'soul', note: SAVED_NOTE });
+    // Whichever saved second returns the merged text.
+    expect([a, b].map((r) => (r.ok ? r.content : ''))).toContain('We like coffee.');
+    expect(await get(ih, id, 'u1')).toMatchObject({
+      soul: 'We like coffee.',
+      revision: seeded.revision + 2,
+    });
+    // Three scans: one per first attempt, one for the retry after the conflict.
+    expect(ih.scanned).toHaveLength(3);
+    expect(ih.changed).toEqual([{ agentId: id }, { agentId: id }]);
   });
 
   it('update_identity gives up after three conflicting writes and saves nothing', async () => {

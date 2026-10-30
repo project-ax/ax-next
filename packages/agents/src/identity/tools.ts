@@ -187,11 +187,16 @@ function parseUpdateInput(raw: unknown): UpdateRequest | 'invalid-input' | 'inst
   return 'invalid-input';
 }
 
-/** Where `needle` occurs in `text` — once, never, or more than once (no overlap). */
+/**
+ * Where `needle` occurs in `text` — once, never, or more than once. Overlapping
+ * matches count ('aa' is in 'aaa' twice, at 0 and at 1): "exactly once" means
+ * the agent's passage picks out one position, and an overlap leaves which one
+ * it meant ambiguous.
+ */
 function findOnce(text: string, needle: string): number | 'none' | 'many' {
   const first = text.indexOf(needle);
   if (first === -1) return 'none';
-  return text.indexOf(needle, first + needle.length) === -1 ? first : 'many';
+  return text.indexOf(needle, first + 1) === -1 ? first : 'many';
 }
 
 function errorFields(err: unknown): { name: string; code?: string } {

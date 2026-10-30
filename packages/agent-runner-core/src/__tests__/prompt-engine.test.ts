@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 import {
   INSTRUCTIONS_HEADING,
   NO_PROMPT_IDENTITY,
+  bootstrapProgressNote,
   buildSystemPrompt,
   composeNormalModePrompt,
   identityEvolutionNote,
@@ -321,7 +322,7 @@ describe('buildSystemPrompt — normal mode (identity from the session config)',
 });
 
 describe('buildSystemPrompt — bootstrap mode (a host decision, exclusive)', () => {
-  it('bootstrap mode: preamble, script, then Instructions — no floor and no identity', async () => {
+  it('bootstrap mode: preamble, script, progress line, then Instructions — no floor and no identity', async () => {
     const out = await build(
       idn({
         identity: 'IDENTITY_BODY',
@@ -332,7 +333,9 @@ describe('buildSystemPrompt — bootstrap mode (a host decision, exclusive)', ()
       { augment: 'FULL-AUGMENT', ephemeralRoot: '/ephemeral', identityToolAvailable: true },
     );
     expect(out).toBe(
-      `${bootstrapPreamble('Pip')}\n\n${fileOutputNote(WS, '/ephemeral')}\n\n${BOOTSTRAP_TEMPLATE}\n\n${instructionsSection('INSTRUCTIONS_BODY')}`,
+      `${bootstrapPreamble('Pip')}\n\n${fileOutputNote(WS, '/ephemeral')}\n\n${BOOTSTRAP_TEMPLATE}\n\n` +
+        `${bootstrapProgressNote({ identity: 'IDENTITY_BODY', soul: 'SOUL_BODY' })}\n\n` +
+        `${instructionsSection('INSTRUCTIONS_BODY')}`,
     );
     // Exclusivity: none of the normal-mode content leaks in.
     expect(out).not.toContain(safetyFloorNote());
@@ -350,15 +353,50 @@ describe('buildSystemPrompt — bootstrap mode (a host decision, exclusive)', ()
       bootstrapAugment: 'BRIEF',
     });
     expect(out.startsWith('BRIEF\n\n')).toBe(true);
-    expect(out).toBe(`BRIEF\n\n${bootstrapPreamble('Pip')}\n\n${BOOTSTRAP_TEMPLATE}`);
+    expect(out).toBe(
+      `BRIEF\n\n${bootstrapPreamble('Pip')}\n\n${BOOTSTRAP_TEMPLATE}\n\n${bootstrapProgressNote(NO_PROMPT_IDENTITY)}`,
+    );
     // Recalled facts are the half the exclusivity exists to keep out.
     expect(out).not.toContain('RECALLED-FACTS');
   });
 
-  it('without Instructions or an output tier the prompt is the preamble then the script', async () => {
+  it('without Instructions or an output tier the prompt is the preamble, the script, then the progress line', async () => {
     expect(await build(idn({ bootstrapMode: true }))).toBe(
-      `${bootstrapPreamble('Pip')}\n\n${BOOTSTRAP_TEMPLATE}`,
+      `${bootstrapPreamble('Pip')}\n\n${BOOTSTRAP_TEMPLATE}\n\n${bootstrapProgressNote(NO_PROMPT_IDENTITY)}`,
     );
+  });
+
+  it('bootstrap mode says what is already saved — yes or not yet — without showing the saved text', async () => {
+    // A respawn after the agent's first update_identity must not lose track of
+    // what it already saved, but agent-written text stays out of a prompt with
+    // no safety floor: only a runner-authored yes / not yet reaches it.
+    const cases: Array<[Partial<PromptIdentity>, string]> = [
+      [{}, 'Saved so far: your identity (not yet), your soul (not yet).'],
+      [{ identity: 'IDENTITY_SAVED_TEXT' }, 'Saved so far: your identity (yes), your soul (not yet).'],
+      [{ soul: 'SOUL_SAVED_TEXT' }, 'Saved so far: your identity (not yet), your soul (yes).'],
+      [
+        { identity: 'IDENTITY_SAVED_TEXT', soul: 'SOUL_SAVED_TEXT' },
+        'Saved so far: your identity (yes), your soul (yes).',
+      ],
+      // Whitespace-only is nothing saved.
+      [{ identity: ' \n\t', soul: '   ' }, 'Saved so far: your identity (not yet), your soul (not yet).'],
+    ];
+    for (const [over, status] of cases) {
+      const out = await build(idn({ ...over, instructions: 'INSTRUCTIONS_BODY', bootstrapMode: true }));
+      const line = `${status} Sending content to update_identity replaces the whole section.`;
+      expect(bootstrapProgressNote(idn(over))).toBe(line);
+      // Exactly once, after the script and before the people's Instructions.
+      expect(out.split(line).length - 1).toBe(1);
+      expect(out.indexOf(BOOTSTRAP_TEMPLATE)).toBeLessThan(out.indexOf(line));
+      expect(out.indexOf(line)).toBeLessThan(out.indexOf(INSTRUCTIONS_HEADING));
+      expect(out).not.toContain('IDENTITY_SAVED_TEXT');
+      expect(out).not.toContain('SOUL_SAVED_TEXT');
+    }
+  });
+
+  it('normal mode carries no progress line', async () => {
+    const out = await build(idn({ identity: 'I am Pip.', soul: 'Kind.' }));
+    expect(out).not.toContain('Saved so far:');
   });
 
   it('directs user deliverables to scratch artifacts without a durable mount', async () => {
@@ -373,7 +411,8 @@ describe('buildSystemPrompt — bootstrap mode (a host decision, exclusive)', ()
     // path note when cwd moved to /files. It finishes with a tool call now.
     const out = await build(idn({ bootstrapMode: true }), { userFilesRoot: '/files', cwd: '/files' });
     expect(out).toBe(
-      `${bootstrapPreamble('Pip')}\n\n${fileOutputNote(WS, undefined, '/files')}\n\n${BOOTSTRAP_TEMPLATE}`,
+      `${bootstrapPreamble('Pip')}\n\n${fileOutputNote(WS, undefined, '/files')}\n\n${BOOTSTRAP_TEMPLATE}\n\n` +
+        bootstrapProgressNote(NO_PROMPT_IDENTITY),
     );
     expect(out).not.toContain('.ax/');
   });
