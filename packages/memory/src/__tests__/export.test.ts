@@ -2,7 +2,8 @@ import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { MEMORY_FACTS_EXPORT_ROOT, type AgentContext } from '@ax/core';
+import type { AgentContext } from '@ax/core';
+import { MEMORY_FACTS_EXPORT_ROOT } from '@ax/sandbox-protocol';
 
 import { MEMORY_EXPORT_FLUSH_HOOK } from '../exporter.js';
 import { volumeAgentKey } from '../export-volume.js';

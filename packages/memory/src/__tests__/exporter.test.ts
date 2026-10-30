@@ -4,11 +4,11 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   HookBus,
-  MEMORY_FACTS_EXPORT_ROOT,
   makeAgentContext,
   PluginError,
   type Logger,
 } from '@ax/core';
+import { MEMORY_FACTS_EXPORT_ROOT } from '@ax/sandbox-protocol';
 
 import { AGENTS_RESOLVE_HOOK } from '../access.js';
 import { createMemoryExporter, MEMORY_EXPORT_FAILED_EVENT } from '../exporter.js';

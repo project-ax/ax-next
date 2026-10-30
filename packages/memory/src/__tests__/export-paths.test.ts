@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, expectTypeOf, it } from 'vitest';
-import { MEMORY_FACTS_EXPORT_ROOT } from '@ax/core';
+import { MEMORY_FACTS_EXPORT_ROOT } from '@ax/sandbox-protocol';
 
 import {
   factsPath,

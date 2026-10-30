@@ -5,12 +5,12 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   HookBus,
-  MEMORY_FACTS_EXPORT_ROOT,
   PluginError,
   makeAgentContext,
   type AgentContext,
   type Logger,
 } from '@ax/core';
+import { MEMORY_FACTS_EXPORT_ROOT } from '@ax/sandbox-protocol';
 
 import { MEMORY_EXPORT_FLUSH_HOOK } from '../exporter.js';
 import { volumeAgentKey } from '../export-volume.js';

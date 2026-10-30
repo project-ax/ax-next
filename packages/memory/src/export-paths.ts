@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { MEMORY_FACTS_EXPORT_ROOT } from '@ax/core';
+import { MEMORY_FACTS_EXPORT_ROOT } from '@ax/sandbox-protocol';
 
 declare const factsPathBrand: unique symbol;
 

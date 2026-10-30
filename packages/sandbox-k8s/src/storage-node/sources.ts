@@ -1,5 +1,4 @@
-import { volumeAgentKey } from '@ax/sandbox-protocol';
-import { MEMORY_FACTS_EXPORT_ROOT } from '@ax/core';
+import { MEMORY_FACTS_EXPORT_ROOT, volumeAgentKey } from '@ax/sandbox-protocol';
 import { createHash } from 'node:crypto';
 import { isLegacySharedFolderId } from './protocol.js';
 

@@ -2,7 +2,7 @@ import { mkdtemp, rm, mkdir, readFile, symlink, writeFile, stat } from 'node:fs/
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { MEMORY_FACTS_EXPORT_ROOT } from '@ax/core';
+import { MEMORY_FACTS_EXPORT_ROOT } from '@ax/sandbox-protocol';
 
 import { factsPath, type FactsPath } from '../export-paths.js';
 import {

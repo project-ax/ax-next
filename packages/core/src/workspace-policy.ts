@@ -79,9 +79,3 @@ export function filterToPolicy(changes: readonly FileChange[]): FileChange[] {
 // kept empty. `permanent/memory/facts/**` in a workspace is an ordinary agent
 // path now.
 // ---------------------------------------------------------------------------
-
-/**
- * Where each agent's facts live inside its slot of the memory export volume.
- * Kept here only until it moves to `@ax/sandbox-protocol` (TASK-991).
- */
-export const MEMORY_FACTS_EXPORT_ROOT = 'permanent/memory/facts' as const;

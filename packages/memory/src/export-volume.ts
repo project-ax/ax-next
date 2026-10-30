@@ -2,9 +2,9 @@ import { randomUUID } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import { isAbsolute, join, parse, posix, resolve, sep } from 'node:path';
 
-import { MEMORY_FACTS_EXPORT_ROOT, safePath } from '@ax/core';
+import { safePath } from '@ax/core';
 import type { NfsMountSpec } from '@ax/sandbox-mount-protocol';
-import { volumeAgentKey } from '@ax/sandbox-protocol';
+import { MEMORY_FACTS_EXPORT_ROOT, volumeAgentKey } from '@ax/sandbox-protocol';
 export { volumeAgentKey } from '@ax/sandbox-protocol';
 
 import { parseFactsPath, type FactsPath } from './export-paths.js';
