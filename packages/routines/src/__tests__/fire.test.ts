@@ -8,6 +8,7 @@ import { createFireRoutine, stashConnectorsSkipped, warningFor, type PendingFire
 import { captureExpectedStderr } from './support/expected-diagnostics.js';
 import { fixture, createInput, now } from './store-fixture.js';
 import { purgeRoutineAgent } from '../cleanup.js';
+import { RUN_INTERRUPTED } from '../store.js';
 import { renderCheckInMessage } from '../checkin-message.js';
 import type { FireReport, StoredReply, StoredRoutine } from '../types.js';
 const f = fixture();
@@ -22,6 +23,8 @@ async function setup(options: {
   bind?: () => Promise<void>;
   reports?: () => Promise<Array<{ firedAt: Date; report: FireReport }>>;
   replies?: (input: { agentId: string; routineId: string; actorUserId: string; limit: number }) => Promise<StoredReply[]>;
+  /** TASK-991. Stands in for the store's read of the routine's last completed run. */
+  lastCompletedRun?: (input: { agentId: string; routineId: string; actorUserId: string }) => Promise<Date | null>;
   /** TASK-951. The finish date the owner sets on the task before its run is accepted. */
   finishBy?: string;
   /** TASK-955. The time zone that date is set from. */
@@ -48,7 +51,7 @@ async function setup(options: {
   bus.registerService('conversations:find-or-create', 'test', shared);
   bus.registerService('credentials:delete', 'test', async () => undefined);
   const store = { ...f.store, ...(options.bind ? { bindDispatchConversation: options.bind } : {}), ...(options.reports ? { recentReports: options.reports } : {}),
-    ...(options.replies ? { recentReplies: options.replies } : {}) };
+    ...(options.replies ? { recentReplies: options.replies } : {}), ...(options.lastCompletedRun ? { lastCompletedRun: options.lastCompletedRun } : {}) };
   const fire = createFireRoutine({ bus, pending, store, purgeAgent: agentId => purgeRoutineAgent({ bus, store: f.store, pending, agentId }), turnEndGraceMs: options.grace ?? 60000 });
   cleanups.push(async () => { pending.clear(); await fire.shutdown(); });
   return { bus, row, accepted, pending, invoked, conversation, shared, fire };
@@ -286,6 +289,75 @@ describe("a check-in's accept time (TASK-951)", () => {
     const brief = checkInBrief(h.pending, ctx).brief;
     expect(brief).toContain('The person wants this finished today (Tuesday, 31 December 2030).');
     expect(brief).not.toContain('1 day ago');
+  });
+});
+// TASK-991: a repeat routine's prompt may ask for the date of its last completed pass. The host fills it from the
+// routine's own fire records, before any webhook payload is rendered; a task's check-in never reads it.
+describe('the host-supplied last completed run (TASK-991)', () => {
+  const ASKS = { promptBody: 'Last: {{lastCompletedRun}}.' };
+  async function seedFire(agentId: string, routineId: string, firedAt: string, status: 'ok' | 'silenced' | 'error', runAs: string, error: string | null = null) {
+    await sql`INSERT INTO routines_v1_fires (agent_id, routine_id, fired_at, trigger_source, status, error, run_as_user_id)
+      VALUES (${agentId}, ${routineId}, ${firedAt}, 'tick', ${status}, ${error}, ${runAs})`.execute(f.db);
+  }
+  it('a prompt that asks for it before any run completed gets "never"', async () => {
+    const h = await setup({ definition: ASKS });
+    await h.fire(h.accepted);
+    expect(h.pending.get(h.accepted.reqId)?.renderedPrompt).toBe('Last: never.');
+    expect(h.invoked.mock.calls[0]![1]).toEqual({ message: { role: 'user', content: 'Last: never.' } });
+  });
+  it('it is the start date of the newest run that finished ok or silenced, as the person the run acts as', async () => {
+    const h = await setup({ definition: ASKS });
+    const r = h.row.routineId;
+    await seedFire('a', r, '2030-12-20T10:00:00Z', 'ok', 'owner');
+    await seedFire('a', r, '2030-12-28T10:00:00Z', 'silenced', 'owner');
+    // Newer, and none of them a pass that completed as the owner.
+    await seedFire('a', r, '2030-12-29T10:00:00Z', 'error', 'owner', 'terminated: stopped');
+    await seedFire('a', r, '2030-12-31T10:00:00Z', 'error', 'owner', RUN_INTERRUPTED);
+    await seedFire('a', r, '2030-12-30T10:00:00Z', 'silenced', 'someone-else');
+    await seedFire('a', 'other', '2030-12-31T09:00:00Z', 'silenced', 'owner');
+    await seedFire('b', r, '2030-12-31T09:00:00Z', 'silenced', 'owner');
+    await h.fire(h.accepted);
+    expect(h.pending.get(h.accepted.reqId)?.renderedPrompt).toBe('Last: 2030-12-28.');
+  });
+  it("counts a run by its start, from the store's own writes, and never one a restart cut off", async () => {
+    const h = await setup({ definition: ASKS });
+    // The setup's run, accepted at `now` (2031-01-01T00:00Z), ends silenced, as the turn-end subscriber records it.
+    // finishDispatch stamps its end from the wall clock, years before `now`, so only the start can show 2031-01-01.
+    expect(await f.store.finishDispatch({ dispatchId: h.accepted.dispatchId, outcome: { status: 'silenced', conversationId: 'c', error: null, renderedPrompt: 'p', warning: null } })).toBe(true);
+    const accept = async (requestId: string, at: string) => (await f.store.acceptDispatch({ ...h.row, expectedRevision: h.row.revision, actorUserId: 'owner', requestId, source: 'manual', now: new Date(at) }))!.accepted;
+    await accept('cut-off', '2031-01-02T00:00:00Z');
+    expect(await f.store.interruptAbandonedDispatches()).toBe(1);
+    const next = await accept('next', '2031-01-03T00:00:00Z');
+    await h.fire(next);
+    expect(h.pending.get(next.reqId)?.renderedPrompt).toBe('Last: 2031-01-01.');
+  });
+  it('a prompt without the token never reads run history', async () => {
+    const lastCompletedRun = vi.fn(async () => null);
+    const h = await setup({ lastCompletedRun });
+    await h.fire(h.accepted);
+    expect(lastCompletedRun).not.toHaveBeenCalled();
+    expect(h.pending.get(h.accepted.reqId)?.renderedPrompt).toBe(h.row.promptBody);
+  });
+  it("a task's check-in never reads or renders it, even when its instructions name it", async () => {
+    const lastCompletedRun = vi.fn(async () => new Date('2030-12-28T10:00:00Z'));
+    const h = await setup({ definition: { kind: 'stay-on-top', goodWhen: 'All good.', trigger: { kind: 'interval', every: '15m' }, silenceToken: null, conversation: 'per-fire', ...ASKS }, lastCompletedRun });
+    await h.fire(h.accepted);
+    expect(lastCompletedRun).not.toHaveBeenCalled();
+    expect(h.invoked.mock.calls[0]![1]).toEqual({ message: { role: 'user', content: renderCheckInMessage({ source: 'manual', agentNotes: null, reports: [], replies: [], missesInARow: 0, steps: null, doneClaimed: false }) } });
+  });
+  it('a payload can neither supply it nor have its own text rendered as it', async () => {
+    const h = await setup({ definition: { promptBody: 'Last: {{lastCompletedRun}}; title: {{payload.title}}' } });
+    await h.fire(h.accepted, { title: '{{lastCompletedRun}}', lastCompletedRun: '2099-01-01' });
+    expect(h.pending.get(h.accepted.reqId)?.renderedPrompt).toBe('Last: never; title: {{lastCompletedRun}}');
+    expect(h.invoked.mock.calls[0]![1]).toEqual({ message: { role: 'user', content: 'Last: never; title: {{lastCompletedRun}}' } });
+  });
+  it('a failed read fails the fire before the agent runs', async () => {
+    const h = await setup({ definition: ASKS, lastCompletedRun: async () => { throw new Error('database unavailable'); } });
+    const result = await h.fire(h.accepted);
+    expect(result).toMatchObject({ status: 'error', error: 'database unavailable', conversationId: null, renderedPrompt: null });
+    expect(h.invoked).not.toHaveBeenCalled();
+    expect(h.pending.size).toBe(0);
+    expect(await f.store.recentFires(h.row)).toMatchObject([{ status: 'error', error: 'database unavailable' }]);
   });
 });
 describe('connector skips per fire (slice 6)', () => {

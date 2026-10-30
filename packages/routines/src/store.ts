@@ -257,6 +257,14 @@ export interface RoutinesStore extends ReturnType<typeof createWebhookHealthStor
    */
   recentReports(input: RoutineKey & Actor & { limit: number }): Promise<Array<{ firedAt: Date; report: FireReport }>>;
   /**
+   * TASK-991. The start of this routine's newest run that finished `ok` or
+   * `silenced` as `actorUserId` — TASK-936's rule, so an earlier owner's runs
+   * never count — or null. A run that failed or was cut off (`error`, including
+   * the sweep's `RUN_INTERRUPTED`) never counts. Reads the routine's fire rows
+   * only, newest first through `routines_v1_fires_by_routine`.
+   */
+  lastCompletedRun(input: RoutineKey & Actor): Promise<Date | null>;
+  /**
    * TASK-908. Whether `conversationId` is a task check-in's conversation on
    * `agentId`: some run of that agent, open or finished, is bound to it, and
    * its accepted kind is task or unknown (TASK-919). Read only from routines'
@@ -1700,6 +1708,21 @@ export function createRoutinesStore(db: DB, executorId?: string): RoutinesStore 
         firedAt: r.fired_at,
         report: { status: r.report_status, update: r.report_update, ask: r.report_ask, reading: readingOf(r.report_reading_value, r.report_reading_label) },
       }]);
+    },
+
+    async lastCompletedRun(input) {
+      // `fired_at` is the run's start: finishDispatch copies it from the dispatch's accepted_at.
+      // (agent_id, routine_id) and the order match routines_v1_fires_by_routine, so the scan walks
+      // this routine's runs newest first and stops at the first that completed as the reader.
+      const row = await db.selectFrom('routines_v1_fires').select('fired_at')
+        .where('agent_id', '=', input.agentId)
+        .where('routine_id', '=', input.routineId)
+        .where('status', 'in', ['ok', 'silenced'])
+        .where('run_as_user_id', '=', input.actorUserId)
+        .orderBy('fired_at', 'desc')
+        .limit(1)
+        .executeTakeFirst();
+      return row?.fired_at ?? null;
     },
 
     async recentReplies(input) {

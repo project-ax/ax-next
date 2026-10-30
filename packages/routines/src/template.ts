@@ -14,6 +14,10 @@
  *
  * Missing fields, non-object intermediates, and null/undefined
  * terminals all collapse to the empty string. The walk never throws.
+ *
+ * One host value, never from the payload: `{{lastCompletedRun}}`
+ * (TASK-991), filled by `fire.ts` from this routine's own fire records
+ * BEFORE the payload pass, so payload text can't produce or re-render it.
  */
 // Single regex matches BOTH emission shapes so substitution is a
 // single-pass walk over `body`. The optional capture group is `undefined`
@@ -51,4 +55,32 @@ function walkOrEmpty(root: unknown, raw: string): string {
   if (typeof cur === 'string') return cur;
   if (typeof cur === 'number' || typeof cur === 'boolean') return String(cur);
   return JSON.stringify(cur);
+}
+
+/**
+ * TASK-991. The token a repeat routine's prompt writes to get the date of its
+ * last completed run. Whitespace inside the braces is tolerated, as in the
+ * payload tokens. It shares no namespace with the payload: `{{payload.X}}` is
+ * never this token, and `renderTemplate` never fills this one.
+ */
+export const LAST_COMPLETED_RUN_TOKEN = '{{lastCompletedRun}}';
+// Two regexes: a global one for the replace, and a plain one for the test,
+// since `.test()` on a global regex is stateful (`lastIndex`).
+const LAST_COMPLETED_RUN_RE = /\{\{\s*lastCompletedRun\s*\}\}/;
+const LAST_COMPLETED_RUN_ALL_RE = /\{\{\s*lastCompletedRun\s*\}\}/g;
+
+/** Whether `body` asks for the date of the routine's last completed run. */
+export function usesLastCompletedRun(body: string): boolean {
+  return LAST_COMPLETED_RUN_RE.test(body);
+}
+
+/**
+ * Fills every `{{lastCompletedRun}}` in `body` with `lastCompletedRun`'s UTC
+ * date (`YYYY-MM-DD`), or `never` when there is none. Host-only and fixed
+ * format: the value holds no braces, so the payload pass that follows finds no
+ * token in it. A replacer function, so no `$` pattern in a value is expanded.
+ */
+export function renderLastCompletedRun(body: string, lastCompletedRun: Date | null): string {
+  const value = lastCompletedRun === null ? 'never' : lastCompletedRun.toISOString().slice(0, 10);
+  return body.replace(LAST_COMPLETED_RUN_ALL_RE, () => value);
 }
