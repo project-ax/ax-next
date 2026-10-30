@@ -771,11 +771,12 @@ memory:
   # Both-or-neither: set `server` AND `exportPath`, or leave both empty —
   # `helm template` fails if exactly one is set. Empty means no file view of
   # facts anywhere: runners get no `/memory` mount and nothing is written
-  # into agents' workspaces; recall and the Memory tab still work. On GKE, provision a
-  # DEDICATED Filestore share for this — see `deploy/GKE.md`. When set, it
-  # must NOT be the same server+exportPath as `sandbox.filestore.exportPath`
-  # (the separate durable per-agent user-files mount); the chart fails
-  # template if they collide, whichever one was configured second.
+  # into agents' workspaces; recall and the Memory tab still work. On GKE,
+  # provision a DEDICATED Filestore share for this — see `deploy/GKE.md`.
+  # When set, it must NOT be the same server+exportPath as
+  # `sandbox.filestore.exportPath` (the separate durable per-agent user-files
+  # mount); the chart fails template if they collide, whichever one was
+  # configured second.
   exports:
     server: ''
     exportPath: ''
