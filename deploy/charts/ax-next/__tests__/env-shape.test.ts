@@ -38,8 +38,13 @@ const presetSourcePath = resolve(repoRoot, 'presets/k8s/src/index.ts');
 const templatesDir = resolve(chartDir, 'templates');
 
 const KIND_DEV_VALUES = resolve(chartDir, 'kind-dev-values.yaml');
+// Every render needs a durable /files home (TASK-992). A values FILE, passed
+// first, so kind-dev-values.yaml passed later and any --set still win over it.
+const FILESTORE_FIXTURE = resolve(here, 'fixtures/filestore-values.yaml');
 
 const REQUIRED = [
+  '-f',
+  FILESTORE_FIXTURE,
   '--set',
   'credentials.key=test',
   '--set',
@@ -241,6 +246,10 @@ describeIfHelm('host deployment env vs preset loader', () => {
       'AX_HTTP_HOST',
       'AX_HTTP_PORT',
       'AX_HTTP_COOKIE_KEY',
+      // TASK-992: every agent's durable /files home is required, so the
+      // loader refuses to boot without these and every render stamps them.
+      'AX_FILESTORE_SERVER',
+      'AX_FILESTORE_EXPORT_PATH',
     ]);
 
     const requiredForKindDev = [...required].filter((v) => ALWAYS_REQUIRED.has(v));

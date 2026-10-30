@@ -307,19 +307,23 @@ sandbox:
   # OUTSIDE the git-tracked agent-state tier. These files are live: written
   # straight to NFS, durable across sessions, with no git round-trip.
   #
-  # Set `server` to enable. When `server` is empty (the default), NO durable
-  # mount is wired — the host loads no mount resolver and sessions get only the
-  # default emptyDir tiers (graceful degradation; AX_USERFILES_ROOT stays unset).
+  # REQUIRED (TASK-992). `/files` is each agent's only durable copy of its
+  # files, so there is no "off" setting: `helm template` / `helm install`
+  # fail while `server` or `exportPath` is empty, and the message says what to
+  # set. The default here is empty on purpose, because no address would be
+  # right for everyone.
   #
-  # Filestore provisioning is OUT-OF-BAND (terraform/gcloud) — the chart only
-  # consumes the address; it does not create the instance. See the runbook.
+  # Provisioning the export is OUT-OF-BAND (gcloud on GKE: deploy/GKE.md,
+  # "Provision the user-files Filestore"; on kind: `make dev-kind-memory-nfs`).
+  # The chart only consumes the address; it does not create the instance.
   # Each agent is confined to its own `subPath=<agentId>` subtree of the export
   # (cross-tenant isolation). The runner pod's egress is opened to JUST this
   # server IP on the NFS ports (see networkpolicies/sandbox-restrict.yaml).
   filestore:
-    # Filestore instance IP (or DNS). Empty = feature disabled.
+    # NFS server IP (or DNS): on GKE, the Filestore instance's IP. Required.
     server: ""
-    # Export path on the Filestore instance, e.g. /vol1 (the share name).
+    # Export path on the server, e.g. /vol1 (the Filestore share name, with a
+    # leading slash). Required.
     exportPath: "/vol1"
     # Where the durable mount appears inside the sandbox. This is also the
     # agent's cwd and HOME.
@@ -361,9 +365,9 @@ sandbox:
     # for a link at the right moment could in principle win that race. The
     # host-mounted reader does not have that gap. Tracked in TASK-915.
     #
-    # Requires `server` to be set as well (an empty server means no export to
-    # mount). Opening this also opens the HOST pod's egress to the Filestore IP
-    # on the NFS ports — see networkpolicies/agent-runtime-network.yaml.
+    # It mounts the export named by `server` + `exportPath` above. Opening this
+    # also opens the HOST pod's egress to the Filestore IP on the NFS ports —
+    # see networkpolicies/agent-runtime-network.yaml.
     hostReadPath: ""
 
   # ─── Dev-services in the sandbox (REQUIRES Kubernetes 1.29+) ───

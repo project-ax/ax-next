@@ -25,8 +25,13 @@ import { HELM_REQUIRED_MESSAGE, resolveHelmGate } from './helm-required.js';
 const here = dirname(fileURLToPath(import.meta.url));
 const chartDir = resolve(here, '..');
 const KIND_DEV_VALUES = resolve(chartDir, 'kind-dev-values.yaml');
+// Every render needs a durable /files home (TASK-992). A values FILE, passed
+// first, so overlay files passed later and any --set still win over it.
+const FILESTORE_FIXTURE = resolve(here, 'fixtures/filestore-values.yaml');
 
 const REQUIRED = [
+  '-f',
+  FILESTORE_FIXTURE,
   '--set',
   'credentials.key=test',
   '--set',

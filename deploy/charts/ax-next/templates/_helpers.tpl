@@ -572,6 +572,35 @@ validator). Invoked from host/deployment.yaml, which always renders.
 {{- end -}}
 
 {{/*
+ax-next.validateFilestore — every agent's durable home is required (TASK-992).
+
+Each agent's `/files` directory is a per-agent `subPath` of the NFS export in
+sandbox.filestore (a Filestore share on GKE, the dev NFS server on kind). It is
+the agent's only durable copy of its files, so there is no "off" setting: a
+render without a server or an export path fails here, at template time, instead
+of booting a host that cannot open a session. The k8s preset's env loader
+refuses to start without AX_FILESTORE_SERVER, and both sandbox providers refuse
+an owned session without a /files mount; this is the same rule, caught first.
+
+Read through `dig`: `helm upgrade --reuse-values` renders with the OLD
+release's values, so an empty or missing server / exportPath there gets this
+message rather than a nil-pointer error. (The `sandbox.filestore` map itself
+has been in values.yaml since TASK-163; a release with no map at all would
+trip a NetworkPolicy template's direct read first.)
+
+Invoked from host/deployment.yaml, which always renders.
+*/}}
+{{- define "ax-next.validateFilestore" -}}
+{{- $sandbox := .Values.sandbox | default dict -}}
+{{- if not (dig "filestore" "server" "" $sandbox) -}}
+{{- fail "sandbox.filestore.server is empty. Every agent's home directory (/files) lives on an NFS export, and the chart will not render without one. On GKE, create a Filestore instance and set sandbox.filestore.server to its IP (deploy/GKE.md, \"Provision the user-files Filestore\"). On kind, run make dev-kind-memory-nfs; kind-dev-values.yaml already points at it." -}}
+{{- end -}}
+{{- if not (dig "filestore" "exportPath" "" $sandbox) -}}
+{{- fail "sandbox.filestore.exportPath is empty. Set it to the Filestore share name with a leading slash, for example /vol1." -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
 ax-next.validateAllowedModels — fail the render on a config.models.default
 entry that isn't a `provider/model-id` ref.
 

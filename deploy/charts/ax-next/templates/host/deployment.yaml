@@ -2,6 +2,7 @@
 {{- include "ax-next.validateHostReplicas" . -}}
 {{- include "ax-next.validatePreset" . -}}
 {{- include "ax-next.validateBlobBackend" . -}}
+{{- include "ax-next.validateFilestore" . -}}
 {{- include "ax-next.validateProxyTransport" . -}}
 {{- include "ax-next.validateDevServicesKubeVersion" . -}}
 {{- include "ax-next.validateAllowedModels" . -}}
@@ -328,16 +329,18 @@ spec:
             {{- end }}
             {{- end }}
 
-            {{- if .Values.sandbox.filestore.server }}
-            # filestore-user-files (design §4) — the durable per-agent user-files
-            # mount backed by a Google Cloud Filestore (managed NFS) export. The
-            # preset's loader reads AX_FILESTORE_SERVER/EXPORT_PATH/MOUNT_PATH and
-            # loads @ax/workspace-filestore (the `sandbox:resolve-mounts`
-            # registrant); @ax/sandbox-k8s realizes each session's per-agent
-            # `nfs` mount. Stamped ONLY when an operator set the Filestore server
-            # — otherwise no resolver loads and sessions get the default emptyDir
-            # tiers (AX_USERFILES_ROOT unset). Filestore provisioning is
-            # out-of-band (terraform/gcloud); the chart only consumes the address.
+            # filestore-user-files (design §4) — every agent's durable home,
+            # `/files`, a per-agent `subPath` of an NFS export (a Google Cloud
+            # Filestore share on GKE, the dev NFS server on kind). The preset's
+            # loader reads AX_FILESTORE_SERVER/EXPORT_PATH/MOUNT_PATH and loads
+            # @ax/workspace-filestore (the `sandbox:resolve-mounts` registrant);
+            # @ax/sandbox-k8s realizes each session's per-agent `nfs` mount.
+            # Always stamped (TASK-992): the home is required, so
+            # ax-next.validateFilestore has already failed the render if the
+            # server or export path is empty, the loader refuses to boot without
+            # them, and the provider refuses an owned session with no /files
+            # mount. Provisioning the export is out-of-band (gcloud on GKE, see
+            # deploy/GKE.md); the chart only consumes the address.
             - name: AX_FILESTORE_SERVER
               value: {{ .Values.sandbox.filestore.server | quote }}
             - name: AX_FILESTORE_EXPORT_PATH
@@ -359,7 +362,6 @@ spec:
             # no-follow walk in @ax/user-files-read). Read-only end to end.
             - name: AX_FILESTORE_HOST_READ_PATH
               value: {{ .Values.sandbox.filestore.hostReadPath | quote }}
-            {{- end }}
             {{- end }}
 
             {{- if eq (.Values.host.preset | default "memory") "memory" }}

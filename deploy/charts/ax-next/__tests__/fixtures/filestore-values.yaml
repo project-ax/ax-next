@@ -1,0 +1,7 @@
+# Chart-test fixture (TASK-992): every render needs a durable /files home now.
+# Suites pass this with -f FIRST, so kind-dev-values.yaml / gke-values.yaml
+# passed later override it, and any --set overrides both.
+sandbox:
+  filestore:
+    server: 10.9.8.7
+    exportPath: /vol1

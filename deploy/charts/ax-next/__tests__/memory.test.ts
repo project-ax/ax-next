@@ -17,8 +17,13 @@ const memoryPresetSourcePath = resolve(repoRoot, 'presets/memory/src/index.ts');
 const serveSourcePath = resolve(repoRoot, 'packages/cli/src/commands/serve.ts');
 
 const KIND_DEV_VALUES = resolve(chartDir, 'kind-dev-values.yaml');
+// Every render needs a durable /files home (TASK-992). A values FILE, passed
+// first, so overlay files passed later and any --set still win over it.
+const FILESTORE_FIXTURE = resolve(here, 'fixtures/filestore-values.yaml');
 
 const REQUIRED = [
+  '-f',
+  FILESTORE_FIXTURE,
   '--set',
   'credentials.key=test',
   '--set',
@@ -209,21 +214,35 @@ describeIfHelm('memory preset opt-in (TASK-496)', () => {
     ).toBeDefined();
   });
 
-  it('TASK-576: gke-values.yaml alone pins and renders facts memory, exports optional', () => {
+  it('gke-values.yaml plus a Filestore server renders facts memory, exports optional', () => {
     const gke = readFileSync(resolve(chartDir, 'gke-values.yaml'), 'utf8');
     const parsed = loadAll(gke)[0] as { host?: { preset?: string } };
     expect(parsed.host?.preset, 'gke-values.yaml pins host.preset explicitly').toBe('memory');
-    const { container, spec } = hostSpec(hostDeployment(render(['-f', resolve(chartDir, 'gke-values.yaml')])));
+    const { container, spec } = hostSpec(hostDeployment(render([
+      '-f',
+      resolve(chartDir, 'gke-values.yaml'),
+      '--set',
+      'sandbox.filestore.server=10.9.8.7',
+    ])));
     const env = envMap(container);
     expect(env.get('AX_PRESET')).toBe('memory');
     expect(env.has('AX_MEMORY_EXPORT_NFS_SERVER')).toBe(false);
     expect((spec.volumes ?? []).find((v) => v.name === 'memory-exports')).toBeUndefined();
   });
 
+  it('gke-values.yaml alone fails until a Filestore server is set', () => {
+    // TASK-992: the committed overlay is a template and ships `server: ""`;
+    // the real address lives in the operator's gke-values.local.yaml.
+    const out = renderFails(['-f', resolve(chartDir, 'gke-values.yaml')]);
+    expect(out).toContain('sandbox.filestore.server is empty');
+  });
+
   it('TASK-576: gke-values.yaml with memory.exports set renders memory', () => {
     const { container } = hostSpec(hostDeployment(render([
       '-f',
       resolve(chartDir, 'gke-values.yaml'),
+      '--set',
+      'sandbox.filestore.server=10.9.8.7',
       '--set',
       'memory.exports.server=192.0.2.3',
       '--set',
@@ -256,13 +275,21 @@ describeIfHelm('memory preset opt-in (TASK-496)', () => {
     }
   });
 
-  it('TASK-576: memory.exports does NOT collide with the default (disabled) sandbox.filestore', () => {
-    // sandbox.filestore.exportPath defaults to "/vol1" even when the feature
-    // is off (server empty) — that must never trip the overlap guard.
+  it('memory.exports and sandbox.filestore on one server with different export paths render (the kind layout)', () => {
+    // One NFS server, two exports: the overlap guard compares server AND
+    // export path, so a shared server alone must never trip it.
     const { container } = hostSpec(hostDeployment(render([
-      '-f', KIND_DEV_VALUES, '--set', 'memory.exports.exportPath=/vol1',
+      '--set', 'sandbox.filestore.server=10.96.200.49',
+      '--set', 'sandbox.filestore.exportPath=/files',
+      '--set', 'memory.exports.server=10.96.200.49',
+      '--set', 'memory.exports.exportPath=/memory',
     ])));
-    expect(envMap(container).get('AX_PRESET')).toBe('memory');
+    const env = envMap(container);
+    expect(env.get('AX_PRESET')).toBe('memory');
+    expect(env.get('AX_FILESTORE_SERVER')).toBe('10.96.200.49');
+    expect(env.get('AX_FILESTORE_EXPORT_PATH')).toBe('/files');
+    expect(env.get('AX_MEMORY_EXPORT_NFS_SERVER')).toBe('10.96.200.49');
+    expect(env.get('AX_MEMORY_EXPORT_NFS_PATH')).toBe('/memory');
   });
 
   it('memory mode stamps AX_PRESET + all four memory env vars from values', () => {
