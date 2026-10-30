@@ -288,7 +288,7 @@ describe('createMemoryExporter', () => {
     await exporter.shutdown();
   });
 
-  it('a background volume sync failure logs its errno, never the path or fact text', async () => {
+  it('a background volume sync failure logs its Node error code, never the path or fact text', async () => {
     const st = await stubExportBus();
     st.setScan(async () => ({ statements: [FACT] }));
     const parent = await mkdtemp(join(tmpdir(), 'ax-vol-'));
@@ -304,19 +304,20 @@ describe('createMemoryExporter', () => {
     await exporter.shutdown();
     const failures = logs.filter((l) => l.event === MEMORY_EXPORT_FAILED_EVENT);
     expect(failures).toHaveLength(1);
-    // Not a PluginError, so `code` stays 'unknown'; the Node errno says what actually went wrong.
+    // Not a PluginError, so `code` stays 'unknown'; the Node error code says what actually went wrong.
     expect(failures[0]!.bindings.code).toBe('unknown');
-    expect(failures[0]!.bindings.errno).toMatch(/^E[A-Z]+$/);
+    expect(failures[0]!.bindings.errorCode).toMatch(/^E[A-Z]+$/);
     const logged = JSON.stringify(failures[0]!.bindings);
     expect(logged).not.toContain('not-a-dir');
     expect(logged).not.toContain(parent);
     expect(logged).not.toContain('tea');
   });
 
-  it('a PluginError failure logs no errno', async () => {
+  it('a PluginError failure logs only its own code, even an errno-shaped one', async () => {
     const st = await stubExportBus();
     st.setScan(async () => {
-      throw new PluginError({ code: 'unavailable', plugin: 'engine', message: 'down' });
+      // Errno-shaped on purpose: without the PluginError guard it would be echoed as errorCode too.
+      throw new PluginError({ code: 'EACCES', plugin: 'engine', message: 'down' });
     });
     const logs: LoggedEvent[] = [];
     const exporter = createMemoryExporter(st.bus, { debounceMs: 1, volume: st.volume });
@@ -324,8 +325,8 @@ describe('createMemoryExporter', () => {
     await exporter.shutdown();
     const failures = logs.filter((l) => l.event === MEMORY_EXPORT_FAILED_EVENT);
     expect(failures).toHaveLength(1);
-    expect(failures[0]!.bindings.code).toBe('unavailable');
-    expect(failures[0]!.bindings).not.toHaveProperty('errno');
+    expect(failures[0]!.bindings.code).toBe('EACCES');
+    expect(failures[0]!.bindings).not.toHaveProperty('errorCode');
   });
 
   it('an unauthorized concurrent flush cannot piggyback on an authorized in-flight pass', async () => {
