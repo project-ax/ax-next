@@ -178,9 +178,43 @@ describe('assertConfigDirOutsideAgentHome', () => {
     });
   });
 
-  it('refuses a config dir that does not exist', async () => {
+  it('refuses a config dir that does not exist, naming the errno', async () => {
     await expect(assertConfigDirOutsideAgentHome(envWith(path.join(t, 'nope')))).rejects.toThrow(
-      /^refusing to start: CLAUDE_CONFIG_DIR \(.+\) does not exist/,
+      /^refusing to start: CLAUDE_CONFIG_DIR \(.+\) does not exist or cannot be resolved \(ENOENT\)/,
     );
+  });
+
+  // Only a missing path (ENOENT) may fall back to its parent. Any other
+  // resolution error means the guard cannot know where the path really lands,
+  // so it refuses rather than comparing a guess.
+  describe('refuses a home or transcripts root it cannot resolve', () => {
+    let cfg: string;
+    beforeEach(async () => {
+      cfg = await mkdirp(t, 'runner', '.ax', 'session');
+    });
+
+    it('a home that is a symlink loop (ELOOP)', async () => {
+      const loop = path.join(t, 'loop');
+      await fs.symlink(loop, loop);
+      await expect(
+        assertConfigDirOutsideAgentHome(envWith(cfg, { userFilesRoot: loop })),
+      ).rejects.toThrow(/^refusing to start: the agent's home \(.+\) cannot be resolved: .+ gave ELOOP/);
+    });
+
+    it('a home under a regular file (ENOTDIR)', async () => {
+      const file = path.join(t, 'plain-file');
+      await fs.writeFile(file, '');
+      await expect(
+        assertConfigDirOutsideAgentHome(envWith(cfg, { userFilesRoot: path.join(file, 'home') })),
+      ).rejects.toThrow(/^refusing to start: the agent's home \(.+\) cannot be resolved: .+ gave ENOTDIR/);
+    });
+
+    it('a transcripts root under a regular file (ENOTDIR)', async () => {
+      const file = path.join(t, 'plain-file');
+      await fs.writeFile(file, '');
+      await expect(
+        assertConfigDirOutsideAgentHome({ ...envWith(cfg), transcriptsRoot: path.join(file, 'transcripts') }),
+      ).rejects.toThrow(/^refusing to start: AX_TRANSCRIPTS_ROOT \(.+\) cannot be resolved: .+ gave ENOTDIR/);
+    });
   });
 });

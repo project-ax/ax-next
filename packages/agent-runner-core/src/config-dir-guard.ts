@@ -46,9 +46,9 @@ export async function assertConfigDirOutsideAgentHome(
   let realConfig: string;
   try {
     realConfig = await fs.realpath(env.claudeConfigDir);
-  } catch {
+  } catch (err) {
     throw new Error(
-      `refusing to start: CLAUDE_CONFIG_DIR (${env.claudeConfigDir}) does not exist or cannot be resolved. ` +
+      `refusing to start: CLAUDE_CONFIG_DIR (${env.claudeConfigDir}) does not exist or cannot be resolved (${errnoOf(err)}). ` +
         'The sandbox creates it before starting the runner, so a missing one means the sandbox is misconfigured.',
     );
   }
@@ -57,7 +57,7 @@ export async function assertConfigDirOutsideAgentHome(
     [runnerHomeDir(env), env.userFilesRoot].filter((root): root is string => root !== undefined),
   );
   const realRoots: string[] = [];
-  for (const root of roots) realRoots.push(await realpathOfPossiblyMissing(root));
+  for (const root of roots) realRoots.push(await realpathOfPossiblyMissing(root, "the agent's home"));
 
   for (const realRoot of realRoots) {
     if (overlaps(realConfig, realRoot)) {
@@ -71,7 +71,7 @@ export async function assertConfigDirOutsideAgentHome(
   }
 
   if (env.transcriptsRoot === undefined) return;
-  const realTranscripts = await realpathOfPossiblyMissing(env.transcriptsRoot);
+  const realTranscripts = await realpathOfPossiblyMissing(env.transcriptsRoot, 'AX_TRANSCRIPTS_ROOT');
   for (const realRoot of realRoots) {
     if (overlaps(realTranscripts, realRoot)) {
       throw new Error(
@@ -94,16 +94,35 @@ function overlaps(a: string, b: string): boolean {
  * sandbox has not created yet still compares correctly when its path runs
  * through a symlink — a plain `path.resolve` would miss a home that would land
  * inside the config dir that way.
+ *
+ * Only ENOENT falls back to the parent. Any other error (EACCES, ELOOP,
+ * ENOTDIR, ...) means the real path is unknowable, so this throws a
+ * `refusing to start: <label>` error instead of comparing a guess.
  */
-async function realpathOfPossiblyMissing(p: string): Promise<string> {
-  const abs = path.resolve(p);
-  try {
-    return await fs.realpath(abs);
-  } catch {
-    const parent = path.dirname(abs);
-    if (parent === abs) return abs;
-    return path.join(await realpathOfPossiblyMissing(parent), path.basename(abs));
-  }
+async function realpathOfPossiblyMissing(p: string, label: string): Promise<string> {
+  const resolve = async (abs: string): Promise<string> => {
+    try {
+      return await fs.realpath(abs);
+    } catch (err) {
+      const code = errnoOf(err);
+      if (code !== 'ENOENT') {
+        throw new Error(
+          `refusing to start: ${label} (${p}) cannot be resolved: ${abs} gave ${code}. ` +
+            'Without its real path the overlap check cannot run.',
+        );
+      }
+      const parent = path.dirname(abs);
+      if (parent === abs) return abs;
+      return path.join(await resolve(parent), path.basename(abs));
+    }
+  };
+  return resolve(path.resolve(p));
+}
+
+/** The errno code of a filesystem error (`ENOENT`, `ELOOP`, ...), or `unknown error`. */
+function errnoOf(err: unknown): string {
+  const code = (err as NodeJS.ErrnoException | undefined)?.code;
+  return typeof code === 'string' ? code : 'unknown error';
 }
 
 /** `child` is `parent` or lies beneath it. Names like `..foo` and a `/` parent are handled. */
