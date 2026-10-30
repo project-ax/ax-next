@@ -1,6 +1,6 @@
 
 import { execFileSync, spawnSync } from 'node:child_process';
-import { cpSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -618,7 +618,7 @@ describeIfHelm('kind memory overlay (TASK-519)', () => {
     // device numbers with the parent, so it calls a correctly mounted PVC
     // "not a mountpoint" and the server would never start.
     // An exact match on the mount-point field (5), not a substring.
-    expect(sh).toMatch(/\bawk\b[^\n]*\$5 == p[^\n]*\/proc\/self\/mountinfo/);
+    expect(sh).toMatch(/\bawk\b[^\n]*\$5 == p[^\n]*"\$\{2:-\/proc\/self\/mountinfo\}"/);
     expect(sh).toMatch(/^if ! is_mounted "\$FILES_DIR"; then$/m);
     expect(sh).not.toMatch(/\bmountpoint\b[^\n]*FILES_DIR/);
     const lines = sh.split('\n');
@@ -631,6 +631,34 @@ describeIfHelm('kind memory overlay (TASK-519)', () => {
     for (const step of ['> /etc/exports', 'exportfs -ra', 'rpc.nfsd -N']) {
       expect(sh.indexOf(step), `${step} is in the entrypoint`).toBeGreaterThan(-1);
       expect(refusal, `the refusal comes before ${step}`).toBeLessThan(sh.indexOf(step));
+    }
+  });
+
+  it('is_mounted really decides from the mount table (run against fixture mountinfo files)', () => {
+    // The text checks above cannot catch a guard that always succeeds (say,
+    // `END { exit 0 }`). Run the entrypoint's own function body instead.
+    const sh = readFileSync(KIND_NFS_ENTRYPOINT, 'utf8');
+    const fn = /^is_mounted\(\) \{\n[\s\S]*?\n\}$/m.exec(sh)?.[0];
+    expect(fn, 'is_mounted() is defined in the entrypoint').toBeDefined();
+    const dir = mkdtempSync(join(tmpdir(), 'ax-kind-nfs-mountinfo-'));
+    try {
+      const withPvc = join(dir, 'with-pvc');
+      const withoutPvc = join(dir, 'without-pvc');
+      const rootLine = '22 1 0:21 / / rw,relatime - overlay overlay rw';
+      const emptyDirLine = '30 22 8:1 /pods/x/volumes/empty /exports rw,relatime - ext4 /dev/sda1 rw';
+      const pvcLine = '31 30 8:1 /local-path/pvc-1 /exports/files rw,relatime - ext4 /dev/sda1 rw';
+      // A look-alike path: a substring match would wrongly accept it.
+      const lookAlike = '32 30 8:1 /local-path/pvc-2 /exports/files-old rw,relatime - ext4 /dev/sda1 rw';
+      writeFileSync(withPvc, [rootLine, emptyDirLine, pvcLine].join('\n') + '\n');
+      writeFileSync(withoutPvc, [rootLine, emptyDirLine, lookAlike].join('\n') + '\n');
+      const run = (file: string) =>
+        spawnSync('sh', ['-c', `${fn}\nis_mounted /exports/files "$1"`, 'sh', file], {
+          encoding: 'utf8',
+        }).status;
+      expect(run(withPvc), 'PVC mounted at /exports/files').toBe(0);
+      expect(run(withoutPvc), 'only the emptyDir (and a look-alike) mounted').not.toBe(0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 

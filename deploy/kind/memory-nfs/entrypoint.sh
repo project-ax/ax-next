@@ -21,8 +21,10 @@ FILES_DIR="$EXPORT_ROOT/files"
 # purpose. busybox's `mountpoint` compares device numbers with the parent
 # directory, and on kind the PVC and the emptyDir come from the same node
 # filesystem, so it would call a correctly mounted PVC a plain directory.
+# The optional $2 names a different mount table, only so the chart tests can
+# run this exact function against fixture files.
 is_mounted() {
-  awk -v p="$1" '$5 == p { found = 1 } END { exit !found }' /proc/self/mountinfo
+  awk -v p="$1" '$5 == p { found = 1 } END { exit !found }' "${2:-/proc/self/mountinfo}"
 }
 
 # Agent homes are the one thing on this server worth keeping. Without the PVC
