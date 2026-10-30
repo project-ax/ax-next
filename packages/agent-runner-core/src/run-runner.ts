@@ -381,8 +381,10 @@ export interface RunnerSeams {
   /**
    * Loop-specific scaffolding for the freshly-materialized workspace, run
    * inside the materialize step (so a failure is bootstrap-fatal) and after
-   * the .gitignore scaffold. Where a loop redirects its own transcript writes
-   * into the governed tier.
+   * the .gitignore scaffold. Where a loop lays down its own transcript
+   * directory (the claude-sdk loop links the SDK's projects dir to the
+   * sandbox's transcripts root). It runs before the resume restore writes
+   * the rebuilt transcript.
    */
   afterMaterialize?: (env: RunnerEnv) => Promise<void>;
   /**
@@ -682,10 +684,10 @@ async function runRunnerInner(
   // consumers (FAULTA-3).
   let transcriptSessionId: string | null = runnerSessionId;
 
-  // Phase E (2026-05-09): the replay-at-boot path is gone. Transcripts
-  // live in the runner's native ~/.claude/projects/<sessionId>.jsonl
-  // file (HOME-redirected into the workspace by Phase C), and the host
-  // reads them back via @ax/workspace-* on demand (Phase D). The runner
+  // Phase E (2026-05-09): the replay-at-boot path is gone. The runner-local
+  // transcript is the SDK's own jsonl under `$CLAUDE_CONFIG_DIR/projects`
+  // (or the sandbox's transcripts root it links to); the host store is the
+  // source of truth, rebuilt into that file on resume. The runner
   // never re-emits prior user turns into the loop's prompt iterator: the
   // SDK's own `resume(sessionId)` rehydrates the entire conversation
   // from disk when `runnerSessionId` is set above, and a null
@@ -1238,8 +1240,8 @@ async function runRunnerInner(
   //
   // Phase E (2026-05-09): no more replay-from-DB. The SDK's
   // `resume(sessionId)` rehydrates the transcript from its own on-disk
-  // store (~/.claude/projects/<sessionId>.jsonl, HOME-redirected into
-  // the workspace by Phase C) when `runnerSessionId !== null`. This pull
+  // store (`$CLAUDE_CONFIG_DIR/projects/<cwd-slug>/<sessionId>.jsonl`,
+  // rebuilt from the host store on resume) when `runnerSessionId !== null`. This pull
   // surfaces only live inbox messages; prior turns are the loop's
   // responsibility to surface to the model.
   async function nextMessage(): Promise<LoopUserMessage | null> {
@@ -1512,8 +1514,7 @@ async function runRunnerInner(
   //
   // This is ONLY the agent's working frame. The GOVERNED frame
   // (`env.workspaceRoot`=/agent — the validated, git-backed tier) is unchanged
-  // and still drives every other path: git status/bundle, the transcript
-  // `$CLAUDE_CONFIG_DIR/projects → <workspaceRoot>/.claude/projects` symlink, the
+  // and still drives every other path: git status/bundle, the
   // prompt-engine's `${workspaceRoot}/.ax` reads, uploads materialization, and —
   // critically — the PreToolUse re-rooter's TARGET, so `.ax/**`+`.claude/**`
   // self-edits land back on /agent even though cwd is now ungoverned NFS (§14).

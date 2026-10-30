@@ -59,6 +59,16 @@ export interface RunnerEnv {
    */
   claudeConfigDir: string;
   /**
+   * Optional, absolute directory where the Claude SDK's per-session transcript
+   * working copy lives (`AX_TRANSCRIPTS_ROOT`, TASK-994). k8s stamps
+   * `/tmp/transcripts` (the pod's disk-backed emptyDir: `/home/runner` is tmpfs
+   * and counts against the pod's memory limit). Absent means "use the SDK's own
+   * `$CLAUDE_CONFIG_DIR/projects`", which is already per-session under the
+   * subprocess sandbox. The claude-sdk runner's `transcript-dir.ts` consumes it;
+   * the DB, not this directory, is the transcript's source of truth.
+   */
+  transcriptsRoot?: string;
+  /**
    * Per-session credential-proxy TCP endpoint (subprocess sandbox).
    * Mutually exclusive with `proxyUnixSocket`. When present, the SDK calls
    * api.anthropic.com directly through HTTPS_PROXY (set by sandbox-
@@ -203,6 +213,15 @@ export function readRunnerEnv(env: NodeJS.ProcessEnv = process.env): RunnerEnv {
     );
   }
   result.proxyToken = proxyToken;
+  // No default — see RunnerEnv.transcriptsRoot. A relative value would resolve
+  // against whichever cwd the runner happens to have, so refuse it at the edge.
+  const transcriptsRoot = opt('AX_TRANSCRIPTS_ROOT');
+  if (transcriptsRoot !== undefined) {
+    if (!path.isAbsolute(transcriptsRoot)) {
+      throw new InvalidEnvError('AX_TRANSCRIPTS_ROOT', 'expected an absolute path');
+    }
+    result.transcriptsRoot = transcriptsRoot;
+  }
   const memoryRoot = opt('AX_MEMORY_ROOT');
   if (memoryRoot !== undefined) result.memoryRoot = memoryRoot;
   return result;

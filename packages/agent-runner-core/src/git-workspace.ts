@@ -224,8 +224,7 @@ const WORKSPACE_GITIGNORE_ENTRIES = [
 export async function scaffoldWorkspaceGitignore(root: string): Promise<void> {
   // Ensure the workspace root exists before we append `.gitignore`. In
   // production materializeWorkspace's `git clone` already created it, but this
-  // scaffolder must not assume an earlier step did so (the same self-
-  // sufficiency scaffoldSdkProjectsSymlink documents) — otherwise it ENOENTs on
+  // scaffolder must not assume an earlier step did so — otherwise it ENOENTs on
   // a root that nothing else happened to create. Recursive mkdir is a no-op
   // when the clone already made it.
   await fs.mkdir(root, { recursive: true });
@@ -237,77 +236,6 @@ export async function scaffoldWorkspaceGitignore(root: string): Promise<void> {
   const leadingNewline = existing.length > 0 && !existing.endsWith('\n') ? '\n' : '';
   const header = present.has(WORKSPACE_GITIGNORE_HEADER) ? '' : `${WORKSPACE_GITIGNORE_HEADER}\n`;
   await fs.appendFile(gitignorePath, `${leadingNewline}${header}${missing.join('\n')}\n`);
-}
-
-/**
- * Lay down `$CLAUDE_CONFIG_DIR/projects` as a symlink pointing INTO the
- * workspace at `<workspaceRoot>/.claude/projects` so the Anthropic SDK's
- * native turn-transcript writes land at a path the runner's out-of-git
- * transcript pipeline knows.
- *
- * Background: Phase 0 set `CLAUDE_CONFIG_DIR=<sandbox-HOME>/.ax/session`
- * so skill-discovery's `'user'` setting source resolves to a host-owned
- * root SEPARATE from the workspace's `'project'` source. That split is
- * load-bearing — see proxy-startup.ts (CLAUDE_CONFIG_DIR allowlist entry)
- * and main.ts (the (a)/(b) comment block in the query() env literal).
- *
- * Side effect: the SDK ALSO derives its per-session jsonl path from
- * CLAUDE_CONFIG_DIR — `$CLAUDE_CONFIG_DIR/projects/<encoded-cwd>/
- * <sid>.jsonl`. After Phase 0 those writes landed OUTSIDE the workspace,
- * where the runner's transcript readers don't look.
- *
- * Why this still matters after TASK-67/70 (transcript out of git): the
- * jsonl no longer needs to be COMMITTED — `.claude/projects/` is gitignored
- * and the transcript ships as opaque rows via session.append-transcript,
- * NOT a git bundle. But the per-turn delta-ship + uuid-wait readers
- * (`locateJsonl` in the SDK runner's jsonl-transcript-source.ts,
- * turn-end-uuid.ts) readdir-walk `<workspaceRoot>/.claude/projects`, and the
- * resume rebuild (`restoreTranscriptForResume`) WRITES the reconstructed
- * jsonl there for the SDK to read back through THIS symlink. So the redirect
- * is still load-bearing for path locality; only the "so git add -A sees it"
- * reason is gone.
- *
- * The SDK's `projectsDir = join(configDir, "projects")` is hard-coded
- * (no separable env override), so we redirect the I/O at the filesystem
- * layer instead. Must run AFTER materializeWorkspace clones the baseline
- * bundle into `/agent` (a pre-clone scaffold would leave the target
- * non-empty and `git clone` would refuse it).
- *
- * Symlink target style: this link lives OUTSIDE the workspace (in
- * `$CLAUDE_CONFIG_DIR`), so the target must be the ABSOLUTE workspace
- * path. (A relative target is not possible here — the two roots are
- * unrelated filesystem subtrees by design.)
- *
- * Idempotent. A correct symlink already in place is left untouched (so
- * concurrent re-entry doesn't briefly orphan it); anything else at the
- * symlink path (regular file, dangling link, or directory left by an
- * interrupted previous session) is dropped and recreated.
- */
-export async function scaffoldSdkProjectsSymlink(
-  workspaceRoot: string,
-  claudeConfigDir: string,
-): Promise<void> {
-  const targetDir = path.join(workspaceRoot, '.claude', 'projects');
-  const linkPath = path.join(claudeConfigDir, 'projects');
-  // Target dir must exist before the SDK opens a file under it — the
-  // SDK's `mkdir(dirname, { recursive: true })` over a symlink whose
-  // target dir is missing would hit ENOENT on the chain.
-  await fs.mkdir(targetDir, { recursive: true, mode: 0o755 });
-  // Parent of the symlink: the sandbox init container usually
-  // pre-creates this (it stamps `mkdir -p .../session/skills` for the
-  // skill-discovery surface), but the scaffolder must not assume so —
-  // a future sandbox provider may only stamp the bare HOME root.
-  await fs.mkdir(claudeConfigDir, { recursive: true, mode: 0o755 });
-  const existing = await fs.readlink(linkPath).catch(() => null);
-  if (existing === targetDir) return;
-  await fs.rm(linkPath, { recursive: true, force: true });
-  try {
-    await fs.symlink(targetDir, linkPath);
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
-    const raced = await fs.readlink(linkPath).catch(() => null);
-    if (raced !== targetDir) throw err;
-  }
 }
 
 // ---------------------------------------------------------------------------

@@ -85,6 +85,28 @@ describe('readRunnerEnv', () => {
     },
   );
 
+  it('reads transcriptsRoot when AX_TRANSCRIPTS_ROOT is set, omits it otherwise', () => {
+    expect(
+      readRunnerEnv({ ...PROXY_TCP, AX_TRANSCRIPTS_ROOT: '/tmp/transcripts' }).transcriptsRoot,
+    ).toBe('/tmp/transcripts');
+    expect('transcriptsRoot' in readRunnerEnv(PROXY_TCP)).toBe(false);
+    expect(
+      'transcriptsRoot' in readRunnerEnv({ ...PROXY_TCP, AX_TRANSCRIPTS_ROOT: '' }),
+    ).toBe(false);
+  });
+
+  it.each(['transcripts', './transcripts', '~/transcripts'])(
+    'rejects a relative AX_TRANSCRIPTS_ROOT (%s)',
+    (v) => {
+      expect(() => readRunnerEnv({ ...PROXY_TCP, AX_TRANSCRIPTS_ROOT: v })).toThrow(
+        InvalidEnvError,
+      );
+      expect(() => readRunnerEnv({ ...PROXY_TCP, AX_TRANSCRIPTS_ROOT: v })).toThrow(
+        /AX_TRANSCRIPTS_ROOT/,
+      );
+    },
+  );
+
   it('reads memoryRoot when AX_MEMORY_ROOT is set, omits it otherwise', () => {
     expect(
       readRunnerEnv({ ...PROXY_TCP, AX_MEMORY_ROOT: '/memory' }).memoryRoot,

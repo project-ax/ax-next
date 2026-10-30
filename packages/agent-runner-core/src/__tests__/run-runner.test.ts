@@ -58,7 +58,6 @@ vi.mock('../git-workspace.js', async (importOriginal) => {
     ...actual,
     materializeWorkspace: vi.fn().mockResolvedValue({ baselineCommit: 'oid-0' }),
     scaffoldWorkspaceGitignore: vi.fn().mockResolvedValue(undefined),
-    scaffoldSdkProjectsSymlink: vi.fn().mockResolvedValue(undefined),
     commitTurnAndBundle: vi.fn().mockResolvedValue(null),
     // Only reached when a test hands commitTurnAndBundle a bundle (the
     // TASK-720 save-refusal cases); there is no real repo at /tmp/workspace.

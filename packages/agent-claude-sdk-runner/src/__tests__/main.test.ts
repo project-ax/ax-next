@@ -1182,13 +1182,13 @@ describe('main()', () => {
     // ...and it waited for the turn's FINAL assistant uuid ('B'), NOT the
     // intermediate tool_use line ('A'). This is the TASK-11 guard.
     expect(waitForTranscriptUuidMock).toHaveBeenCalledWith(
-      '/tmp/workspace/.claude/projects',
+      `${CONFIG_DIR}/projects`,
       'sdk-sess-1',
       'B-closingtext',
       expect.objectContaining({ timeoutMs: expect.any(Number) }),
     );
     expect(waitForTranscriptUuidMock).not.toHaveBeenCalledWith(
-      '/tmp/workspace/.claude/projects',
+      `${CONFIG_DIR}/projects`,
       'sdk-sess-1',
       'A-tooluse',
       expect.anything(),
@@ -2183,12 +2183,12 @@ describe('main()', () => {
     // Both turn-end turnId reads targeted the SDK session id (transcriptSessionId),
     // NOT the (null) boot runnerSessionId.
     expect(readLastTurnUuidMock).toHaveBeenCalledWith(
-      '/tmp/workspace/.claude/projects',
+      `${CONFIG_DIR}/projects`,
       'sdk-fresh-id',
       'user',
     );
     expect(readLastTurnUuidMock).toHaveBeenCalledWith(
-      '/tmp/workspace/.claude/projects',
+      `${CONFIG_DIR}/projects`,
       'sdk-fresh-id',
       'assistant',
     );
@@ -3758,15 +3758,15 @@ describe('main()', () => {
       expect(rc).toBe(0);
 
       // The guard ran via the DB-backed restore (the bound id, against the
-      // workspace-scoped source main() constructs from env.workspaceRoot —
-      // the source now owns "which workspace", not a raw workspaceRoot arg).
+      // source main() constructs over the transcript directory — no
+      // AX_TRANSCRIPTS_ROOT here, so the SDK's own $CLAUDE_CONFIG_DIR/projects).
       // Two checks restore the original claim: the call got a well-shaped
       // source (below), AND that source was built from the right root (the
       // spy on createJsonlTranscriptSource — otherwise a source of the right
       // SHAPE but the wrong workspace would pass silently).
       // (No AX_USERFILES_ROOT in this env, so the SDK's cwd IS the workspace.)
       expect(createJsonlTranscriptSourceSpy).toHaveBeenCalledWith(
-        '/tmp/workspace/.claude/projects',
+        `${CONFIG_DIR}/projects`,
         '/tmp/workspace',
       );
       expect(restoreTranscriptForResumeMock).toHaveBeenCalledWith(
@@ -4162,7 +4162,7 @@ describe('main()', () => {
       expect(options.cwd).toBe('/ephemeral');
       expect(options.env.HOME).toBe('/ephemeral');
       expect(options.additionalDirectories).toContain('/tmp/workspace');
-      expect(createJsonlTranscriptSourceSpy).toHaveBeenCalledWith('/tmp/workspace/.claude/projects', '/ephemeral');
+      expect(createJsonlTranscriptSourceSpy).toHaveBeenCalledWith(`${CONFIG_DIR}/projects`, '/ephemeral');
       const hook = options.hooks.PreToolUse[0].hooks[0];
       const result = await hook({ hook_event_name: 'PreToolUse', tool_name: 'Write', tool_input: { file_path: '/ephemeral/.ax/SOUL.md', content: 'Identity' } }, 'test-scratch-identity', {});
       expect(result.hookSpecificOutput.updatedInput.file_path).toBe('/tmp/workspace/.ax/SOUL.md');
@@ -4222,7 +4222,7 @@ describe('main()', () => {
       // Rooted at the governed tier (where the projects symlink lands), slugged
       // by the SDK's actual cwd — the same value, not a parallel computation.
       expect(createJsonlTranscriptSourceSpy).toHaveBeenCalledWith(
-        '/tmp/workspace/.claude/projects',
+        `${CONFIG_DIR}/projects`,
         queryArg.options.cwd,
       );
     });
@@ -4892,6 +4892,115 @@ describe('main()', () => {
       // The refusal came before the runner wrote anything into the agent's files.
       expect(await fs.readdir(files)).toEqual(['.claude']);
       expect(await fs.readdir(planted)).toEqual([]);
+    });
+
+    // TASK-994: where the SDK's transcript working copy lives. With a stamped
+    // AX_TRANSCRIPTS_ROOT the SDK's hard-coded `$CLAUDE_CONFIG_DIR/projects`
+    // is a link to it and EVERY reader/writer uses the link target; without
+    // one the SDK's own per-session projects dir is used as a plain directory.
+    describe('transcript directory', () => {
+      // A tool-using turn on a bound conversation: exercises the flush wait,
+      // both turn-end id reads, the resume restore's source and (via the
+      // non-conversation variant below) the local resumable-transcript scan.
+      function conversationHost(opts: {
+        conversationId: string | null;
+        runnerSessionId: string | null;
+      }): void {
+        fakeClient = buildFakeClient();
+        fakeClient.call.mockImplementation(async (action: string) => {
+          if (action === 'session.get-config') {
+            return {
+              userId: 'u-test',
+              agentId: 'a-test',
+              agentConfig: {
+                displayName: 'Test Agent',
+                systemPromptAugment: '',
+                allowedTools: [],
+                mcpConfigIds: [],
+                model: 'anthropic/claude-sonnet-4-7',
+                runner: 'claude-sdk',
+              },
+              conversationId: opts.conversationId,
+              runnerSessionId: opts.runnerSessionId,
+            };
+          }
+          if (action === 'workspace.materialize') return { bundleBytes: '' };
+          if (action === 'tool.list') return { tools: [] };
+          if (action === 'conversation.store-runner-session') return { ok: true };
+          throw new Error(`unexpected call: ${action}`);
+        });
+        fakeInbox = buildFakeInbox([userEntry('hi'), cancelEntry]);
+        queryMock.mockImplementation(
+          ({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) =>
+            (async function* () {
+              const it = prompt[Symbol.asyncIterator]();
+              await it.next();
+              yield systemInit('sdk-sess-t');
+              yield assistantText('ok', 'asst-uuid');
+              yield resultSuccess();
+              await it.next();
+            })(),
+        );
+      }
+
+      it("with AX_TRANSCRIPTS_ROOT, the SDK's projects dir links to it and every transcript reader uses it", async () => {
+        const t = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'ax-main-tr-'));
+        onTestFinished(() => fs.rm(t, { recursive: true, force: true }));
+        const root = nodePath.join(t, 'transcripts');
+        // Its own config dir: the link into `root` must not outlive `t` inside
+        // the shared CONFIG_DIR, where it would dangle for every later test.
+        const cfg = nodePath.join(t, 'cfg');
+        await fs.mkdir(cfg);
+        setEnv({ ...COMPLETE_ENV, CLAUDE_CONFIG_DIR: cfg, AX_TRANSCRIPTS_ROOT: root });
+        conversationHost({ conversationId: 'cnv-t', runnerSessionId: null });
+
+        const { rc } = await runMain();
+
+        expect(rc).toBe(0);
+        const link = nodePath.join(cfg, 'projects');
+        expect((await fs.lstat(link)).isSymbolicLink()).toBe(true);
+        expect(await fs.readlink(link)).toBe(root);
+        expect(createJsonlTranscriptSourceSpy).toHaveBeenCalledWith(root, '/tmp/workspace');
+        expect(waitForTranscriptUuidMock).toHaveBeenCalledWith(
+          root,
+          'sdk-sess-t',
+          'asst-uuid',
+          expect.anything(),
+        );
+        expect(readLastTurnUuidMock).toHaveBeenCalledWith(root, 'sdk-sess-t', 'assistant');
+      });
+
+      it('with AX_TRANSCRIPTS_ROOT, the local resumable-transcript scan reads the root', async () => {
+        const t = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'ax-main-tr-'));
+        onTestFinished(() => fs.rm(t, { recursive: true, force: true }));
+        const root = nodePath.join(t, 'transcripts');
+        const cfg = nodePath.join(t, 'cfg');
+        await fs.mkdir(cfg);
+        setEnv({ ...COMPLETE_ENV, CLAUDE_CONFIG_DIR: cfg, AX_TRANSCRIPTS_ROOT: root });
+        conversationHost({ conversationId: null, runnerSessionId: 'sdk-bound' });
+
+        const { rc } = await runMain();
+
+        expect(rc).toBe(0);
+        expect(hasResumableTranscriptMock).toHaveBeenCalledWith(root, 'sdk-bound');
+      });
+
+      it('without AX_TRANSCRIPTS_ROOT, transcripts stay in the per-session $CLAUDE_CONFIG_DIR/projects as a plain directory', async () => {
+        const cfg = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'ax-main-cfg2-'));
+        onTestFinished(() => fs.rm(cfg, { recursive: true, force: true }));
+        setEnv({ ...COMPLETE_ENV, CLAUDE_CONFIG_DIR: cfg });
+        conversationHost({ conversationId: 'cnv-t', runnerSessionId: null });
+
+        const { rc } = await runMain();
+
+        expect(rc).toBe(0);
+        const projects = nodePath.join(cfg, 'projects');
+        const st = await fs.lstat(projects);
+        expect(st.isDirectory()).toBe(true);
+        expect(st.isSymbolicLink()).toBe(false);
+        expect(createJsonlTranscriptSourceSpy).toHaveBeenCalledWith(projects, '/tmp/workspace');
+        expect(readLastTurnUuidMock).toHaveBeenCalledWith(projects, 'sdk-sess-t', 'assistant');
+      });
     });
   });
 
