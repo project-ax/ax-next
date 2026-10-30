@@ -1,30 +1,23 @@
 /**
- * Memory — the human's tier: "Rules you gave me".
+ * The Instructions section of an agent's settings page: what a person told the
+ * agent, kept word for word.
  *
- * Verbatim, always injected, and the one file in the memory tree that no
- * automatic writer may touch. Today that tier is served by @ax/memory's
- * `memory:rules:read` / `memory:rules:write` (registered when its `rules`
- * option is on), and the no-automatic-writer promise is enforced below it:
- * the rules file is in core's `RUNNER_IMMUTABLE_PATHS`, so an agent's sandbox
- * can never author it, and @ax/memory writes it only through that write
- * hook, on a person's Save. That is what earns us the right to say "nothing it does afterwards
- * rewrites them" here.
+ * Instructions are a row in `@ax/agents` (TASK-989), written only by a person's
+ * Save — through the server's scan, with a compare-and-set — and never by the
+ * agent: its `update_identity` tool refuses the section. That is what earns us
+ * the right to say "nothing it does afterwards rewrites them" here. (The
+ * component and its `rules` read keep their old names; the wire shape did.)
  *
- * This component is the Instructions section of an agent's settings page
- * (TASK-888). It used to live at the top of the rail's Memory tab, on every
- * deployment; it moved so the rail stays about what the agent DID and the
- * page holds what you TOLD it. It used to carry a second section, "What it
- * worked out", over `memory:learned:read`; that hook's only provider,
- * @ax/memory-strata, was deleted in TASK-608 and the section went with it.
+ * It used to live at the top of the rail's Memory tab, on every deployment; it
+ * moved so the rail stays about what the agent DID and the page holds what you
+ * TOLD it (TASK-888).
  *
- * THE THIRD THING THE TIER HAS TO SAY (TASK-417). Not every deployment runs a
- * rules provider at all, and a deployment without one registers no
- * `memory:rules:read`. The tab used to receive a bare `MemoryDoc[]` from the
- * server and could not tell that apart from "the read broke" or from "there
- * is genuinely nothing here", so it said the most confident thing available —
- * "try again in a moment", a promise nothing can keep. The tier now takes a
- * `WorkspaceReadStatus` and writes the sentence that is actually true. The
- * retry appears only where retrying can work.
+ * THE THIRD THING THE TIER HAS TO SAY (TASK-417). The read can come back
+ * `ok`, `failed` (we have somewhere to keep Instructions and could not read it)
+ * or `unavailable` (this deployment has nowhere to keep them). The tab used to
+ * say the most confident thing available over all three — "try again in a
+ * moment", a promise nothing can keep. It now writes the sentence that is
+ * actually true, and the retry appears only where retrying can work.
  */
 import { useEffect, useRef, useState } from 'react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
@@ -117,7 +110,7 @@ export function AgentInstructions({
  *   `failed`      — we have somewhere to keep rules and could not read it. The
  *                   rules are still on disk; this is a blip. A retry can clear
  *                   it, so there is a button when the caller gave us one.
- *   `unavailable` — this deployment runs no memory backend. There is nothing to
+ *   `unavailable` — this deployment keeps no identity store. There is nothing to
  *                   come back to, so "try again in a moment" would be a promise
  *                   we cannot keep — the exact bug TASK-417 fixes. No button,
  *                   and we say plainly that it is how the server is set up
@@ -150,8 +143,7 @@ export function RulesWithoutEditor({
         <AlertDescription className="flex flex-col items-start gap-2">
           {status === 'unavailable' ? (
             <span>
-              Memory rules for {agentName} aren&apos;t switched on for this
-              workspace yet. Ask your workspace administrator about enabling them.
+              Instructions for {agentName} aren’t available right now.
             </span>
           ) : (
             <span>

@@ -1,19 +1,15 @@
 /**
- * `putAgentIdentity` and the one refusal a person can act on (TASK-719).
+ * `getAgentIdentity` / `putAgentIdentity` — the admin form's two identity
+ * fields, which are `@ax/agents` rows now (TASK-989).
  *
- * The route answers 413 `{ error: 'storage-full', message }` when the storage
- * limit turns the identity save away. This used to become
- * `Error("save agent identity: 400: <the veto's own message>")`, and AgentForm
- * printed that whole string in its destructive Alert: a status, a colon, and a
- * sentence worded for the agent that writes files.
+ * The route answers `{ identity, soul }` and accepts exactly that. A scan
+ * refusal comes back as 400 `{ error: <a sentence for the person> }`, and the
+ * thrown message carries it.
  *
- * Drives the REAL `putAgentIdentity` against a stubbed global `fetch`.
+ * Drives the REAL functions against a stubbed global `fetch`.
  */
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { putAgentIdentity } from '../admin';
-import { HttpError } from '../http';
-import { StorageFullError } from '../storage-full';
-import { STORAGE_FULL_IDENTITY } from '../storage-copy';
+import { getAgentIdentity, putAgentIdentity } from '../admin';
 
 const fetchMock = vi.fn();
 vi.stubGlobal('fetch', fetchMock);
@@ -25,52 +21,57 @@ function reply(status: number, body: unknown): void {
   );
 }
 
-const put = () => putAgentIdentity('agt-1', { identity: 'I am Ada.', soul: 'Kind.', operating: '' });
+const put = () => putAgentIdentity('agt-1', { identity: 'I am Ada.', soul: 'Kind.' });
+
+describe('getAgentIdentity', () => {
+  it('returns identity and soul', async () => {
+    reply(200, { identity: 'I am Ada.', soul: 'Kind.' });
+    await expect(getAgentIdentity('agt-1')).resolves.toEqual({
+      identity: 'I am Ada.',
+      soul: 'Kind.',
+    });
+    const [url] = fetchMock.mock.calls[0] as [string];
+    expect(url).toBe('/admin/agents/agt-1/identity');
+  });
+
+  it('rejects on a 503 rather than returning two blank fields', async () => {
+    reply(503, { error: 'identity-unavailable' });
+    await expect(getAgentIdentity('agt-1')).rejects.toThrow();
+  });
+});
 
 describe('putAgentIdentity', () => {
-  it('resolves on a 200', async () => {
+  it('resolves on a 200 and sends exactly identity and soul', async () => {
     reply(200, { ok: true });
     await expect(put()).resolves.toBeUndefined();
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(url).toBe('/admin/agents/agt-1/identity');
     expect(init.method).toBe('PUT');
+    expect(JSON.parse(init.body as string)).toEqual({ identity: 'I am Ada.', soul: 'Kind.' });
   });
 
-  it("throws a StorageFullError whose message IS the server's sentence on a 413 storage-full", async () => {
-    reply(413, {
-      error: 'storage-full',
-      message: "The agent was saved, but its identity wasn't, because storage is full.",
+  it('rejects with a message containing the server’s sentence on a 400 refusal', async () => {
+    reply(400, {
+      error:
+        'That didn’t pass the safety check, so nothing was saved: it tries to override the rules.',
     });
     const err = await put().catch((e: unknown) => e);
-    expect(err).toBeInstanceOf(StorageFullError);
-    // What AgentForm prints is `err.message`. No status, no colon, no code.
+    expect(err).toBeInstanceOf(Error);
+    // The sentence is already worded for the person; no status in front of it.
     expect((err as Error).message).toBe(
-      "The agent was saved, but its identity wasn't, because storage is full.",
-    );
-    expect((err as StorageFullError).status).toBe(413);
-  });
-
-  it('says the IDENTITY sentence when the server sent none', async () => {
-    reply(413, { error: 'storage-full' });
-    const err = await put().catch((e: unknown) => e);
-    expect(err).toBeInstanceOf(StorageFullError);
-    expect((err as Error).message).toBe(STORAGE_FULL_IDENTITY);
-  });
-
-  it("keeps a validator's 400 exactly as it was: status and reason", async () => {
-    reply(400, { error: '.ax/SOUL.md: prompt-injection signature' });
-    const err = await put().catch((e: unknown) => e);
-    expect(err).not.toBeInstanceOf(StorageFullError);
-    expect(err).not.toBeInstanceOf(HttpError);
-    expect((err as Error).message).toBe(
-      'save agent identity: 400: .ax/SOUL.md: prompt-injection signature',
+      'That didn’t pass the safety check, so nothing was saved: it tries to override the rules.',
     );
   });
 
-  it('keeps the detail of a 413 that is not this refusal (the body is read once for each look)', async () => {
-    reply(413, { error: 'body-too-large' });
+  it('keeps the status and code when the body has a short reason', async () => {
+    reply(503, { error: 'identity-unavailable' });
     const err = await put().catch((e: unknown) => e);
-    expect(err).not.toBeInstanceOf(StorageFullError);
-    expect((err as Error).message).toBe('save agent identity: 413: body-too-large');
+    expect((err as Error).message).toBe('save agent identity: 503: identity-unavailable');
+  });
+
+  it('keeps the status alone when the body is not JSON', async () => {
+    reply(502, '<html>bad gateway</html>');
+    const err = await put().catch((e: unknown) => e);
+    expect((err as Error).message).toBe('save agent identity: 502');
   });
 });

@@ -58,13 +58,13 @@ type FormState = {
   displayName: string;
   visibility: 'personal' | 'team';
   teamId: string;
-  /** The agent's `.ax/` identity files (TASK-142), replacing the old single
-   *  "system prompt" field. `identity` ← IDENTITY.md, `soul` ← SOUL.md,
-   *  `operating` ← the optional advanced AGENTS.md override. Loaded async on
-   *  edit-open via getAgentIdentity; saved via putAgentIdentity. */
+  /** The agent's identity and soul (TASK-142, replacing the old single
+   *  "system prompt" field) — `@ax/agents` rows since TASK-989. Loaded async
+   *  on edit-open via getAgentIdentity; saved via putAgentIdentity. The
+   *  people's Instructions are not here: they live on the agent's settings
+   *  page. */
   identity: string;
   soul: string;
-  operating: string;
   model: string;
   allowedTools: string;
 };
@@ -75,7 +75,6 @@ const emptyForm = (): FormState => ({
   teamId: '',
   identity: '',
   soul: '',
-  operating: '',
   // Empty until GET /admin/agents/models resolves — this deployment's
   // allow-list decides what a valid model is, not a constant in the SPA.
   model: '',
@@ -86,11 +85,10 @@ const formFromAgent = (a: AdminAgent): FormState => ({
   displayName: a.displayName,
   visibility: a.visibility,
   teamId: a.visibility === 'team' ? a.ownerId : '',
-  // Identity files are loaded separately (getAgentIdentity) once the form
+  // Identity and soul are loaded separately (getAgentIdentity) once the form
   // opens — start blank and fill them in when the fetch resolves.
   identity: '',
   soul: '',
-  operating: '',
   model: a.model,
   allowedTools: (a.allowedTools ?? []).join(', '),
 });
@@ -184,10 +182,16 @@ export function AgentForm({ isAdmin }: { isAdmin: boolean }) {
   const editRequest = useRef(0);
   useEffect(() => () => { editRequest.current += 1; }, []);
   const [error, setError] = useState<string | null>(null);
-  // Whether the agent's `.ax/` identity files are still loading (edit view).
-  // The identity textareas are disabled until the fetch resolves so a save
-  // can't race a half-loaded form and blank a file the user never saw.
+  // Whether the agent's identity and soul are still loading (edit view). The
+  // textareas are disabled until the fetch resolves so a save can't race a
+  // half-loaded form and blank text the user never saw.
   const [identityLoading, setIdentityLoading] = useState(false);
+  // Whether that load FAILED. The fields stay disabled and Save skips the
+  // identity write: blank fields written back over text we never read would
+  // erase it. The rest of the form still saves.
+  const [identityLoadFailed, setIdentityLoadFailed] = useState(false);
+  const identityFieldsLocked =
+    editing !== 'new' && (identityLoading || identityLoadFailed);
   // The agent awaiting delete confirmation (null = no dialog). Styled-confirm
   // pattern (TASK-117: project-wide styled Dialog) — no OS `window.confirm`.
   const [pendingDelete, setPendingDelete] = useState<AdminAgent | null>(null);
@@ -227,29 +231,31 @@ export function AgentForm({ isAdmin }: { isAdmin: boolean }) {
       });
   }, [editing]);
 
-  // TASK-142 — load the agent's `.ax/` identity files when editing an existing
-  // agent. A new agent has no files yet (its workspace is seeded on first save),
-  // so we skip the fetch for 'new'. The `cancelled` guard drops a stale resolve
-  // if the user navigates away (or to another agent) before it lands, so we
-  // never splice one agent's identity into another's form.
+  // TASK-142 — load the agent's identity and soul when editing an existing
+  // agent. A new agent has none yet (its first save writes them), so we skip
+  // the fetch for 'new'. The `cancelled` guard drops a stale resolve if the
+  // user navigates away (or to another agent) before it lands, so we never
+  // splice one agent's identity into another's form.
   useEffect(() => {
+    setIdentityLoadFailed(false);
     if (editing === null || editing === 'new') return;
     const agentId = editing.id;
     let cancelled = false;
     setIdentityLoading(true);
     void getAgentIdentity(agentId)
-      .then((files) => {
+      .then((loaded) => {
         if (cancelled) return;
         setForm((f) => ({
           ...f,
-          identity: files.identity,
-          soul: files.soul,
-          operating: files.operating,
+          identity: loaded.identity,
+          soul: loaded.soul,
         }));
       })
       .catch(() => {
-        // Best-effort: a load failure leaves the fields blank (editable). The
-        // save still works — it just writes what's on screen.
+        // Not best-effort (TASK-989): the fields stay disabled and the save
+        // leaves the identity alone, because blank fields over text we could
+        // not read are one Save away from erasing it.
+        if (!cancelled) setIdentityLoadFailed(true);
       })
       .finally(() => {
         if (!cancelled) setIdentityLoading(false);
@@ -403,15 +409,16 @@ if (base.model !== editing.model) patch.model = base.model;
         setBusy(false);
         return;
       }
-      // TASK-142 — save the agent's `.ax/` identity files (IDENTITY.md /
-      // SOUL.md / AGENTS.md) through workspace:apply (→ validator-identity). A
-      // separate PUT after the agent exists (new agents are created first). The
-      // server creates AGENTS.md only when `operating` is non-empty.
-      await putAgentIdentity(agentId, {
-        identity: form.identity,
-        soul: form.soul,
-        operating: form.operating,
-      });
+      // TASK-142 — save the agent's identity and soul (scanned server-side
+      // before they are stored). A separate PUT after the agent exists (new
+      // agents are created first). Skipped when the load failed: those fields
+      // are blank placeholders, not the agent's text.
+      if (!identityLoadFailed) {
+        await putAgentIdentity(agentId, {
+          identity: form.identity,
+          soul: form.soul,
+        });
+      }
       await refresh();
       setEditing(null);
     } catch (err) {
@@ -666,10 +673,9 @@ if (base.model !== editing.model) patch.model = base.model;
             )}
           </div>
 
-          {/* Identity files (TASK-142). The agent's identity lives in its
-              `.ax/` files, not a single "system prompt" string. Identity ←
-              IDENTITY.md, Soul ← SOUL.md, Operating instructions (advanced) ←
-              the optional AGENTS.md override. */}
+          {/* Identity and soul (TASK-142; `@ax/agents` rows since TASK-989).
+              The people's Instructions are edited on the agent's settings
+              page, not here. */}
           <div className="flex flex-col gap-2">
             <Label htmlFor="agent-identity">Identity</Label>
             <Textarea
@@ -677,15 +683,17 @@ if (base.model !== editing.model) patch.model = base.model;
               rows={4}
               placeholder="Who this agent is — name, what it is, how it presents itself."
               value={form.identity}
-              disabled={editing !== 'new' && identityLoading}
+              disabled={identityFieldsLocked}
               onChange={(e) =>
                 setForm((f) => ({ ...f, identity: e.target.value }))
               }
             />
             <p className="text-xs text-muted-foreground">
               {editing !== 'new' && identityLoading
-                ? 'Loading the agent’s identity files…'
-                : 'Saved to the agent’s .ax/IDENTITY.md.'}
+                ? 'Loading the agent’s identity…'
+                : editing !== 'new' && identityLoadFailed
+                  ? 'We couldn’t load this agent’s identity, so saving leaves it as it is.'
+                  : 'How this agent describes itself. It can update this as it grows.'}
             </p>
           </div>
 
@@ -697,38 +705,13 @@ if (base.model !== editing.model) patch.model = base.model;
               rows={5}
               placeholder="This agent’s values, voice, and the boundaries it holds."
               value={form.soul}
-              disabled={editing !== 'new' && identityLoading}
+              disabled={identityFieldsLocked}
               onChange={(e) =>
                 setForm((f) => ({ ...f, soul: e.target.value }))
               }
             />
             <p className="text-xs text-muted-foreground">
-              Saved to the agent’s .ax/SOUL.md.
-            </p>
-          </div>
-
-          {/* Operating instructions — advanced, optional → .ax/AGENTS.md. */}
-          <div className="flex flex-col gap-2">
-            <Label htmlFor="agent-operating">
-              Operating instructions{' '}
-              <span className="font-normal text-muted-foreground">
-                (advanced, optional)
-              </span>
-            </Label>
-            <Textarea
-              id="agent-operating"
-              rows={4}
-              placeholder="Default behaviors and house rules that override how this agent operates. Leave blank for none."
-              value={form.operating}
-              disabled={editing !== 'new' && identityLoading}
-              onChange={(e) =>
-                setForm((f) => ({ ...f, operating: e.target.value }))
-              }
-            />
-            <p className="text-xs text-muted-foreground">
-              Only created when you enter something here (the agent’s
-              .ax/AGENTS.md). The fixed safety floor always applies and can’t be
-              overridden.
+              Its values and the boundaries it holds. It can update this too.
             </p>
           </div>
 

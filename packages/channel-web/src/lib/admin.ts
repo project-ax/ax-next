@@ -23,8 +23,6 @@
  * `lib/auth.ts`.
  */
 import type { AdminTeamWire } from '@ax/teams';
-import { STORAGE_FULL_IDENTITY } from './storage-copy';
-import { readStorageFull } from './storage-full';
 
 const writeHeaders = {
   'content-type': 'application/json',
@@ -39,9 +37,9 @@ export interface AdminAgent {
   ownerType: 'user' | 'team';
   visibility: 'personal' | 'team';
   displayName: string;
-  // TASK-142: no `systemPrompt` — an agent's identity lives in its `.ax/` files
-  // (IDENTITY.md / SOUL.md / AGENTS.md), edited via the identity file editor
-  // (getAgentIdentity / putAgentIdentity below), not this record.
+  // TASK-142: no `systemPrompt` — an agent's identity and soul are `@ax/agents`
+  // rows, edited via the identity editor (getAgentIdentity / putAgentIdentity
+  // below), not this record.
   allowedTools: string[];
   mcpConfigIds: string[];
   model: string;
@@ -67,59 +65,51 @@ export interface AdminAgentInput {
 }
 
 /**
- * The agent's identity files, read from / written to its `.ax/` directory via
- * the workspace hooks (TASK-142). `identity` ← `.ax/IDENTITY.md`, `soul` ←
- * `.ax/SOUL.md`, `operating` ← `.ax/AGENTS.md` (the optional advanced
- * operating-instructions override). Each is '' when the file is absent.
+ * An agent's identity (who it is) and soul (its values and the boundaries it
+ * holds). Both are rows owned by `@ax/agents` (TASK-989); each is '' when the
+ * agent has none yet. The people's Instructions are not here — they are edited
+ * on the agent's settings page.
  */
-export interface AgentIdentityFiles {
+export interface AgentIdentity {
   identity: string;
   soul: string;
-  operating: string;
 }
 
-/** GET the agent's `.ax/` identity files for the editor. */
-export async function getAgentIdentity(id: string): Promise<AgentIdentityFiles> {
+/** GET the agent's identity and soul for the editor. A 503 (no identity store,
+ * or the read failed) rejects, so the form never shows two blank fields over
+ * text it could not read. */
+export async function getAgentIdentity(id: string): Promise<AgentIdentity> {
   const res = await fetch(`/admin/agents/${encodeURIComponent(id)}/identity`, {
     credentials: 'include',
   });
   if (!res.ok) throw new Error(`get agent identity: ${res.status}`);
-  return (await res.json()) as AgentIdentityFiles;
+  return (await res.json()) as AgentIdentity;
 }
 
-/** PUT the agent's `.ax/` identity files (IDENTITY.md / SOUL.md / AGENTS.md).
- * The server writes through `workspace:apply` (→ validator-identity). `operating`
- * is created only when non-empty; clearing it deletes `.ax/AGENTS.md`.
+/** PUT the agent's identity and soul. The server scans both before saving
+ * (prompt-injection, credential-exfiltration and hidden-character checks).
  *
- * A 413 `storage-full` (the storage limit turned the save away, TASK-719) throws
- * a `StorageFullError`, whose `message` IS the sentence to show: no status, no
- * colon, no code. AgentForm prints `err.message`, so it needs no branch of its
- * own. Every other failure keeps its `save agent identity: <status>: <reason>`
- * shape (a validator's 400 carries the reason the person can act on). */
-export async function putAgentIdentity(
-  id: string,
-  files: AgentIdentityFiles,
-): Promise<void> {
-  const path = `/admin/agents/${encodeURIComponent(id)}/identity`;
-  const res = await fetch(path, {
+ * A 400 means the text itself was turned away: the server's `error` is a whole
+ * sentence for the person ("…so nothing was saved: …"), and it IS the message,
+ * so AgentForm prints `err.message` with no branch of its own. Every other
+ * failure keeps its `save agent identity: <status>: <reason>` shape. */
+export async function putAgentIdentity(id: string, identity: AgentIdentity): Promise<void> {
+  const res = await fetch(`/admin/agents/${encodeURIComponent(id)}/identity`, {
     method: 'PUT',
     headers: writeHeaders,
     credentials: 'include',
-    body: JSON.stringify(files),
+    body: JSON.stringify({ identity: identity.identity, soul: identity.soul }),
   });
   if (!res.ok) {
-    // `clone()`: looking for the refusal reads the body, and the detail below
-    // reads it again for any failure that is not this one.
-    const full = await readStorageFull(path, res.clone(), STORAGE_FULL_IDENTITY);
-    if (full !== null) throw full;
-    let detail = '';
+    let reason = '';
     try {
-      const body = (await res.json()) as { error?: string };
-      detail = body.error ? `: ${body.error}` : '';
+      const body = (await res.json()) as { error?: unknown };
+      if (typeof body.error === 'string') reason = body.error;
     } catch {
       // non-JSON body — fall through with the status only.
     }
-    throw new Error(`save agent identity: ${res.status}${detail}`);
+    if (res.status === 400 && reason !== '') throw new Error(reason);
+    throw new Error(`save agent identity: ${res.status}${reason ? `: ${reason}` : ''}`);
   }
 }
 

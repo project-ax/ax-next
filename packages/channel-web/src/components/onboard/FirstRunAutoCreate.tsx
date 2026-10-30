@@ -13,10 +13,12 @@ import { logRequestFailure } from '../../lib/http';
 
 /**
  * First-run: no form (TASK-140, conversational-agent-identity). We create a
- * BARE agent server-side — POST /api/agents/bootstrap, which also seeds
- * `.ax/BOOTSTRAP.md` — then select it, hydrate the agent store, and hand
- * control to the workspace. The new agent wakes up in bootstrap mode and
- * figures out who it is through conversation (the runner injects BOOTSTRAP.md).
+ * BARE agent server-side — POST /api/agents/bootstrap, which also marks its
+ * onboarding state `pending` (TASK-989) — then select it, hydrate the agent
+ * store, and hand control to the workspace. The new agent wakes up in
+ * bootstrap mode and figures out who it is through conversation (the runner
+ * composes the bootstrap prompt and the agent saves what it learns with
+ * `update_identity`).
  * This replaces the retired 3-field name→soul→purpose wizard.
  *
  * Despite the name it also runs the explicit "+ New agent…" create (`mode`

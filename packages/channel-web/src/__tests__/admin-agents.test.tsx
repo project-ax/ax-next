@@ -3,8 +3,8 @@
  *
  * Covers AgentForm CRUD flow against the real `/admin/agents` wire shape
  * (camelCase: displayName / allowedTools / mcpConfigIds / model / visibility /
- * teamId / ...). TASK-142: the agent's identity lives in its `.ax/` files,
- * edited via the file editor + a separate PUT to /admin/agents/:id/identity —
+ * teamId / ...). TASK-142: the agent's identity lives in the agents store,
+ * edited via the identity editor + a separate PUT to /admin/agents/:id/identity —
  * not a `systemPrompt` field on this wire.
  *
  * TASK-799: the form no longer assigns connectors at all — people add them
@@ -129,10 +129,11 @@ describe('AdminSettings — agents tab', () => {
     fireEvent.click(screen.getByText(/New agent/i));
     expect(screen.getByLabelText(/name/i)).toBeTruthy();
     // TASK-142: the single "system prompt" textarea is replaced by the
-    // file-based identity editor (Identity / Soul / Operating instructions).
+    // identity editor (Identity / Soul). TASK-989: no operating-instructions
+    // field — people's Instructions live on the agent's settings page.
     expect(screen.getByLabelText('Identity')).toBeTruthy();
     expect(screen.getByLabelText('Soul')).toBeTruthy();
-    expect(screen.getByLabelText(/Operating instructions/)).toBeTruthy();
+    expect(screen.queryByLabelText(/Operating instructions/)).toBeNull();
   });
 
 
@@ -296,7 +297,7 @@ describe('AdminSettings — agents tab', () => {
       const body = JSON.parse(String((put![1] as RequestInit).body));
       expect(body.identity).toBe('I am new-bot.');
       expect(body.soul).toBe('I am helpful.');
-      expect(body.operating).toBe('');
+      expect(body).toEqual({ identity: 'I am new-bot.', soul: 'I am helpful.' });
     });
     // TASK-799 — connectors are added from the workspace rail, never here.
     expect(
@@ -304,15 +305,15 @@ describe('AdminSettings — agents tab', () => {
     ).toBe(false);
   });
 
-  // TASK-719 — the storage limit turned the identity save away. The agent row
-  // was already created (the form saves in that order), so the person must be
-  // told, in one plain sentence, that the AGENT is saved and its IDENTITY is not — not handed `save agent identity: 413:
-  // storage-full`, and not a sentence worded for the agent that writes files.
-  it('says a full storage limit in plain words when the identity save is refused', async () => {
+  // TASK-989 — the safety check turned the identity save away. The agent row
+  // was already created (the form saves in that order); the person is told, in
+  // the server's one plain sentence, that nothing was saved — not handed
+  // `save agent identity: 400: ...`.
+  it('says what the safety check refused in plain words when the identity save is refused', async () => {
     fetchMock.mockReset();
     globalThis.fetch = fetchMock as unknown as typeof fetch;
     const sentence =
-      "The agent was saved, but its identity wasn't, because storage is full. An admin can make room.";
+      'That didn’t pass the safety check, so nothing was saved: it tries to override the rules.';
     fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       const method = init?.method ?? 'GET';
@@ -324,8 +325,8 @@ describe('AdminSettings — agents tab', () => {
       }
       if (/\/identity$/.test(url) && method === 'PUT') {
         return Promise.resolve(
-          new Response(JSON.stringify({ error: 'storage-full', message: sentence }), {
-            status: 413,
+          new Response(JSON.stringify({ error: sentence }), {
+            status: 400,
             headers: { 'content-type': 'application/json' },
           }),
         );
@@ -356,7 +357,7 @@ describe('AdminSettings — agents tab', () => {
       expect(screen.getByRole('alert').textContent).toBe(sentence);
     });
     expect(screen.queryByText(/save agent identity/i)).toBeNull();
-    expect(screen.queryByText(/413/)).toBeNull();
+    expect(screen.queryByText(/400/)).toBeNull();
     // The form stays open with what was typed: nothing was thrown away.
     expect((screen.getByLabelText('Identity') as HTMLTextAreaElement).value).toBe('I am new-bot.');
   });
@@ -446,7 +447,7 @@ describe('AdminSettings — agents tab', () => {
         return Promise.resolve(
           method === 'PUT'
             ? jsonOk({ ok: true })
-            : jsonOk({ identity: '', soul: '', operating: '' }),
+            : jsonOk({ identity: '', soul: '' }),
         );
       }
       if (/\/admin\/teams(\?|$)/.test(url)) {
@@ -505,9 +506,9 @@ describe('AdminSettings — agents tab', () => {
       }
       if (/\/admin\/skills(\?|$)/.test(url)) return Promise.resolve(jsonOk({ skills: [] }));
       if (/authored-skills/.test(url)) return Promise.resolve(jsonOk({ skills: [] }));
-      // TASK-142 — the edit view loads the agent's `.ax/` identity files.
+      // TASK-142 — the edit view loads the agent's identity and soul.
       if (/\/identity$/.test(url)) {
-        return Promise.resolve(jsonOk({ identity: 'I am probe.', soul: '', operating: '' }));
+        return Promise.resolve(jsonOk({ identity: 'I am probe.', soul: '' }));
       }
       return Promise.resolve(jsonOk({ teams: [] }));
     });
