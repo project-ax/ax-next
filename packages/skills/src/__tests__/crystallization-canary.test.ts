@@ -461,8 +461,11 @@ describe('skill-crystallization wiring canary (TASK-178)', () => {
     expect(p).toContain('"never" means no pass has completed yet');
     // "On or after", never strictly "after": the date is a UTC day and evidence is day-granular,
     // so evidence recorded later on a pass's own day would never be "after" again (TASK-991 review).
-    expect(p).toContain('If no evidence row is dated on or after that date, you are done');
+    expect(p).toContain('If no such row is dated on or after that date, you are done');
     expect(p).not.toMatch(/dated after that date/);
+    // Only conversation-numbered rows short-circuit-count: a pass's own turns are recorded with no
+    // conversation ("-"), and "on or after" would let them re-trigger a full pass every day.
+    expect(p).toContain('Only rows with a conversation number (such as #1) count here; rows marked "-", which include everything these reflection passes record, do not.');
     expect(p).not.toMatch(/last-run|\.json\b|\.ax\b/);
     expect(p).not.toMatch(/\bwrit(?:e|es|ing|ten)\b/i);
     // Silence token contract: the prompt instructs the turn to end by replying

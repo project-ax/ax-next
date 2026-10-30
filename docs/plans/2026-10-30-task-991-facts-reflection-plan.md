@@ -450,6 +450,7 @@ Needs `security-checklist` (a model-facing prompt). Fold its answers into the PR
 
 - [ ] **Step 3: Implement**
   - Create `reflection-prompt-history.ts` as specified.
+  - **Superseded in review (two rounds):** Step 1 as shipped compares "dated **on or after**" the date (day granularity: strict "after" could stop full passes for good), and counts only rows with a conversation number (a pass's own `-` rows would otherwise re-trigger a full pass daily). `reflection-prompt.ts` is the source of truth; the text below is the original plan.
   - In `SKILL_REFLECTION_PROMPT`, replace Step 1's body and Step 4's body with exactly this text. Steps 2, 3, the intro and Hard limits are unchanged:
     ```
     ## Step 1 — Short-circuit
