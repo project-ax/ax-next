@@ -4724,9 +4724,9 @@ describe('main()', () => {
   // into the runner's own env. The runner MUST forward that value to the
   // SDK subprocess via `options.env`. If it doesn't, the SDK's `'user'`
   // setting source falls back to `<HOME>/.claude` — and because main.ts
-  // overrides HOME=workspaceRoot for the Phase C jsonl redirect, `'user'`
-  // would collapse onto `'project'`'s `<cwd>/.claude/` and the host-
-  // installed-skills surface would be unreachable.
+  // sets HOME to the agent's home (`runnerHomeDir`), `'user'` would land in
+  // an agent-writable `<home>/.claude/` and the host-installed-skills
+  // surface would be unreachable.
   //
   // The forwarding is structural — it lives in proxy-startup's
   // ENV_ALLOWLIST. This test pins the end-to-end shape by setting

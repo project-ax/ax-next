@@ -1400,7 +1400,7 @@ async function runRunnerInner(
   // Single-session / non-conversation runs (conversationId === null) can't
   // reach the host transcript store, so they keep the legacy on-disk scan
   // (the loop's `hasLocalTranscript` seam) as the guard — the transcript, if
-  // any, is the materialized-workspace copy.
+  // any, is the one the loop's transcript source finds on local disk.
   let resumeSessionId = runnerSessionId;
   if (runnerSessionId !== null) {
     let resumable: boolean;

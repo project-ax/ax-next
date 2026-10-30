@@ -44,7 +44,8 @@ A runner is built by wiring three things through this package:
   `write(sessionId, bytes)` persists reconstructed bytes on resume. Core never
   names the destination itself — the SDK-backed implementation
   (`createJsonlTranscriptSource`) writes into the SDK's private
-  `.claude/projects/<slug>/` layout; a runner that owns its own message
+  `$CLAUDE_CONFIG_DIR/projects/<slug>/` layout (a link into
+  `AX_TRANSCRIPTS_ROOT` when the sandbox stamps one); a runner that owns its own message
   format can implement the same two methods however it likes. The delta-ship
   protocol on top (`shipTranscriptDelta` / `restoreTranscriptForResume`,
   prefix-hash integrity check, resync-on-mismatch) is identical either way.
