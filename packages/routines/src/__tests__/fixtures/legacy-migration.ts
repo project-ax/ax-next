@@ -1,11 +1,12 @@
 // Frozen origin/main schema fixture. Never used by production.
 import { sql, type Kysely, type Generated, type ColumnType } from 'kysely';
+import { SKILL_REFLECTION_ROUTINE_NAME, SKILL_REFLECTION_STRATA_SEED_HASH } from '../../reflection-prompt.js';
+// The seed a pre-v2 database actually held (2026-09-27), never the live prompt: this fixture is
+// frozen, so a later prompt change must not rewrite what "legacy" looks like.
 import {
-  SKILL_REFLECTION_PROMPT,
-  SKILL_REFLECTION_ROUTINE_NAME,
-  SKILL_REFLECTION_SEED_HASH,
-  SKILL_REFLECTION_STRATA_SEED_HASH,
-} from '../../reflection-prompt.js';
+  SKILL_REFLECTION_MARKER_PROMPT as SKILL_REFLECTION_PROMPT,
+  SKILL_REFLECTION_MARKER_SEED_HASH as SKILL_REFLECTION_SEED_HASH,
+} from '../../reflection-prompt-history.js';
 
 // Heartbeat default seed content — mirrors heartbeat-template.ts (which is
 // deleted in Task 7; keep both in sync until then).

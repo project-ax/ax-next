@@ -557,6 +557,18 @@ describe('version 21 refreshes the untouched skill-reflection seed (TASK-991)', 
     expect(await versions()).toEqual([2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21]);
   });
 
+  it('a pre-v2 database still holding the 2026-09-27 seed ends at the current prompt and seed hash (TASK-991)', async () => {
+    await legacyMigration(db as never);
+    // The frozen fixture seeds what a pre-v2 deployment actually held, never the live prompt.
+    const legacy = (await sql<{ prompt_body: string; spec_hash: string }>`SELECT prompt_body, spec_hash FROM default_routines_v1 WHERE name='skill-reflection'`.execute(db)).rows[0];
+    expect(legacy).toEqual({ prompt_body: SKILL_REFLECTION_MARKER_PROMPT, spec_hash: SKILL_REFLECTION_MARKER_SEED_HASH });
+    await runRoutinesMigration(db);
+    const row = await reflection();
+    expect(row.prompt_body).toBe(SKILL_REFLECTION_PROMPT);
+    expect(row.spec_hash).toBe(SKILL_REFLECTION_SEED_HASH);
+    expect(row.enabled).toBe(false);
+  });
+
   it('version 21 swaps a re-sent seed but keeps the operator\'s hash and switch', async () => {
     // Turning reflection on re-sends the whole definition through routines:upsert-default, which
     // keeps the prompt as sent (here, the unedited seed) and replaces spec_hash with a real hash.
