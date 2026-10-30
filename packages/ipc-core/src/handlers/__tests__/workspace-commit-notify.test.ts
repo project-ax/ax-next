@@ -691,16 +691,14 @@ describe('workspace.commit-notify handler — pre-apply veto', () => {
 });
 
 // ---------------------------------------------------------------------------
-// TASK-486 / TASK-494 — the runner-immutable guard.
+// TASK-486 / TASK-494 → TASK-989 / TASK-991 — the runner-immutable guard is gone.
 //
-// The facts export (`permanent/memory/facts/**`) is a host-owned projection of
-// the fact store. It is NOT policy-visible, so no `workspace:pre-apply`
-// subscriber can see or veto it — which is exactly why the guard has to live in
-// the handler, ahead of the apply. These tests pin the three things that make
-// it a guard rather than a comment: the apply never runs, the refusal is scoped
-// to the offending path, and a legitimate memory write is untouched.
-// (`memory/system/rules.md` was guarded here too until TASK-989 moved the
-// people's Instructions into @ax/agents; nothing reads that file now.)
+// It refused runner-originated writes to two host-owned paths:
+// `memory/system/rules.md` (until TASK-989 moved the people's Instructions into
+// @ax/agents) and the facts export `permanent/memory/facts/**` (until TASK-991
+// wrote the export only to the read-only `/memory` volume). Nothing reads
+// either from a workspace now, so these tests pin that a turn touching them
+// applies like any other.
 // ---------------------------------------------------------------------------
 
 /**
