@@ -591,6 +591,9 @@ validator). Invoked from host/deployment.yaml, which always renders.
 {{- $ws := .Values.workspace | default dict -}}
 {{- $mp := dig "mountPath" "/var/lib/ax-next/workspaces" $ws -}}
 {{- $root := dig "fs" "root" "" .Values.blob -}}
+{{- if and (not $root) (ne (dig "backend" "" $ws) "local") -}}
+{{- fail "blob.fs.root is empty. Blobs (attachments, artifacts, skill files) live on the host disk at blob.fs.root. On this deployment the workspace backend is not local, so the host never mounted a workspace volume and blobs were on the container's scratch disk, which is wiped on restart. Set blob.fs.root to a path on a persistent volume, or use blob.backend=s3." -}}
+{{- end -}}
 {{- if not $root -}}
 {{- fail (printf "blob.fs.root is empty. Blobs (attachments, artifacts, skill files) live on the host disk at blob.fs.root, and the chart no longer works that out from workspace.mountPath. This deployment's existing blobs are at %s/blobs: pass --set blob.fs.root=%s/blobs once (--reuse-values keeps it after that). An empty value usually means helm upgrade --reuse-values carried it forward from an older chart." $mp $mp) -}}
 {{- end -}}

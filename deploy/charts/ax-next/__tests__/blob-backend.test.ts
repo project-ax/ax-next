@@ -228,6 +228,23 @@ describeIfHelm('ax-next chart: blob backend wiring (out-of-git Part A)', () => {
     expect(custom.stderr).toContain('--set blob.fs.root=/data/ws/blobs');
   });
 
+  it('an empty blob.fs.root on a non-local workspace backend does not claim a workspace-volume path', () => {
+    // A git-protocol deployment never mounted the workspace PVC on the host; the
+    // old preset derived /var/lib/ax-next/blobs on the container's scratch
+    // disk. Pointing it at <mountPath>/blobs would be false advice.
+    const r = helmTemplateExpectFailure([
+      '--set', 'workspace.backend=git-protocol',
+      '--set', 'gitServer.enabled=true',
+      '--set', 'gitServer.storage=10Gi',
+      '--set', 'blob.fs.root=',
+    ]);
+    expect(r.status).not.toBe(0);
+    expect(r.stderr).toContain('blob.fs.root is empty');
+    expect(r.stderr).toContain("container's scratch disk");
+    expect(r.stderr).toContain('persistent volume');
+    expect(r.stderr).not.toContain(PINNED_ROOT);
+  });
+
   it('a blob.fs.root off the workspace volume fails the render', () => {
     for (const root of [
       '/mnt/custom-blobs',
