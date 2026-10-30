@@ -23,8 +23,10 @@ const execute = (call: ToolCall) => h.bus.call<ToolCall, RoutineView>(`tool:exec
 describe('routine tools through real policy, decisions, agents and database', () => {
   it('registers eight strict host tools without workspace flush or identity inputs', async () => {
     h = await createRoutineHarness();
-    expect(h.descriptors.map(d => d.name).sort()).toEqual(['routine_create','routine_delete','routine_fire_now','routine_get','routine_list','routine_read_update','routine_report','routine_update']);
-    for (const d of h.descriptors) {
+    // The harness boots the real @ax/agents, which registers the agent's own two identity tools (TASK-989).
+    const routineTools = h.descriptors.filter(d => !['update_identity', 'complete_bootstrap'].includes(d.name));
+    expect(routineTools.map(d => d.name).sort()).toEqual(['routine_create','routine_delete','routine_fire_now','routine_get','routine_list','routine_read_update','routine_report','routine_update']);
+    for (const d of routineTools) {
       expect(d.executesIn).toBe('host'); expect(d).not.toHaveProperty('flushWorkspace');
       expect(d.inputSchema).toMatchObject({ additionalProperties: false });
       for (const field of ['actor','agentId','ownerUserId','admin','ref','source','payload','secret']) expect(JSON.stringify(d.inputSchema)).not.toContain(`"${field}"`);

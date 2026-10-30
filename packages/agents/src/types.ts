@@ -99,10 +99,12 @@ export interface Agent {
  */
 export interface AgentInput {
   displayName: string;
-  // TASK-142: there is no `systemPrompt` field anymore. An agent's identity
-  // lives in its `.ax/` files (IDENTITY.md / SOUL.md / AGENTS.md) — the single
-  // source of truth (Invariant #4). A new agent is created bare; its identity
-  // is authored through the conversational bootstrap or the admin file editor.
+  // There is no `systemPrompt` field (TASK-142). An agent's identity, soul and
+  // its people's Instructions are this plugin's identity rows, read and
+  // written only through `agents:identity:get|set` (TASK-989; Invariant #4).
+  // A new agent is created bare; its identity is authored in its first-run
+  // conversation, by the agent itself (`update_identity`) or in the admin
+  // identity editor, and its Instructions on its settings page.
   allowedTools: string[];
   mcpConfigIds: string[];
   model: string;
@@ -221,6 +223,19 @@ export interface CreateInput {
   input: AgentInput;
   /** Optional transaction handle from db:transact's run callback. */
   tx?: Transaction<unknown>;
+  /**
+   * TASK-989 — the agent's onboarding state at birth. `'pending'` starts a
+   * first-run setup: the agent's first conversations run its bootstrap script
+   * until it calls `complete_bootstrap`. Only the conversational "create an
+   * agent by talking to it" route passes it; absent or `'none'` means no
+   * setup (the Default Agent, admin-created agents). Any other value is
+   * `invalid-payload`, refused before anything is written.
+   *
+   * Top level, NOT on `AgentInput`, so `agents:update` and the admin routes'
+   * strict bodies cannot set it. Written in the same transaction as the agent
+   * row (the caller's `tx` when given), so the agent never exists without it.
+   */
+  bootstrap?: CreateBootstrap;
 }
 
 export interface CreateOutput {
@@ -385,6 +400,144 @@ export interface CanSetSharedCredentialInput {
 export interface CanSetSharedCredentialOutput {
   allowed: boolean;
 }
+
+// --- agents:identity:get | set | complete-bootstrap (TASK-989) ---------------
+//
+// An agent's identity (who it is: name, emoji, vibe), its soul (its values and
+// boundaries), its people's Instructions (standing instructions only people
+// write) and its onboarding state. This plugin is the only store of them
+// (Invariant #4); nothing reads a file for them any more.
+//
+// Every write goes through `agents:identity:set`, which normalises each
+// section (trailing whitespace trimmed), caps the Instructions, runs each
+// non-empty section through `identity:scan` (FAIL CLOSED: a missing scanner,
+// a throw or any answer but `{ verdict: 'clean' }` refuses the whole patch)
+// and compare-and-sets on `revision`. A saved write and a completed first-run
+// setup fire `system-prompt:augment-changed { agentId }` so live sessions
+// rebuild their prompt at their next turn.
+//
+// ACL on all three: `input.agentId` must equal `ctx.agentId`, and `ctx.userId`
+// must reach the agent (`checkAccess`: the personal owner, or a member of the
+// owning team). Malformed input is `invalid-payload`, an unknown agent
+// `not-found`, an unreachable one `forbidden`; every other answer is an
+// outcome, never a throw, so callers map it without parsing error text.
+//
+// Storage-agnostic: `revision` is an opaque change counter (callers only hand
+// it back as `expectedRevision`), not a version id; no field names a file,
+// path, row or column. The alternate impl is a team-level profile service.
+
+export const AGENTS_IDENTITY_GET_HOOK = 'agents:identity:get';
+export const AGENTS_IDENTITY_SET_HOOK = 'agents:identity:set';
+export const AGENTS_IDENTITY_COMPLETE_BOOTSTRAP_HOOK = 'agents:identity:complete-bootstrap';
+/** Registered by @ax/validator-identity; called once per non-empty section of a write. */
+export const IDENTITY_SCAN_HOOK = 'identity:scan';
+
+/** The three texts, in the fixed order a write scans them. */
+export const IDENTITY_SECTIONS = ['identity', 'soul', 'instructions'] as const;
+export type IdentitySection = (typeof IDENTITY_SECTIONS)[number];
+
+/**
+ * `none`: never in a first-run setup. `pending`: in one (set only at create by
+ * the conversational route). `done`: finished it (`complete-bootstrap`, a
+ * one-way compare-and-set — nothing sets `pending` again).
+ */
+export type BootstrapState = 'none' | 'pending' | 'done';
+
+/** The Instructions' cap, in JS string length (as memory's Rules had). */
+export const INSTRUCTIONS_MAX_CHARS = 16_384;
+
+export interface AgentIdentityRecord {
+  identity: string;
+  soul: string;
+  instructions: string;
+  bootstrap: BootstrapState;
+  /** Change counter: +1 on every saved write and completed setup. Opaque. */
+  revision: number;
+}
+
+export interface IdentityGetInput {
+  agentId: string;
+}
+
+/** An agent with nothing saved reads as empty texts, `none`, revision 0. */
+export type IdentityGetOutput = AgentIdentityRecord;
+
+export interface IdentitySetInput {
+  agentId: string;
+  /** At least one section. A section set to '' (or whitespace) is cleared. */
+  patch: Partial<Record<IdentitySection, string>>;
+  /** The `revision` this write was based on; a non-negative safe integer. */
+  expectedRevision: number;
+}
+
+/**
+ * Why a write was refused: `too-long` (Instructions over the cap), `content`
+ * (the scan refused it), `scan-unavailable` (the scan could not answer, so
+ * nothing could be checked or saved).
+ */
+export type IdentityRefusalCode = 'too-long' | 'content' | 'scan-unavailable';
+
+/**
+ * `saved`: the patch landed (revision bumped, change announced). `unchanged`:
+ * every patched section already said that. `conflict`: `expectedRevision` is
+ * stale; `record` is the current one to rebase on. `refused`: nothing was
+ * saved; `section` is the first section that failed, `reason` a short
+ * sentence safe to show a person or the agent.
+ */
+export type IdentitySetOutput =
+  | { outcome: 'saved' | 'unchanged' | 'conflict'; record: AgentIdentityRecord }
+  | { outcome: 'refused'; section: IdentitySection; code: IdentityRefusalCode; reason: string };
+
+export interface IdentityCompleteBootstrapInput {
+  agentId: string;
+}
+
+/**
+ * `completed`: this call moved `pending → done` (exactly one caller ever
+ * gets it). `already-done`: an earlier call did. `not-pending`: the agent was
+ * never in a first-run setup. `needs-identity-and-soul`: still pending, but
+ * the identity or the soul is empty. `record` is the current one.
+ */
+export interface IdentityCompleteBootstrapOutput {
+  outcome: 'completed' | 'already-done' | 'not-pending' | 'needs-identity-and-soul';
+  record: AgentIdentityRecord;
+}
+
+/** The onboarding states `agents:create` accepts. */
+export type CreateBootstrap = 'none' | 'pending';
+
+// Runtime `returns` contracts for the three hooks. Field names mirror the
+// interfaces above; `return-schemas.test.ts` is the drift guard.
+const AgentIdentityRecordObject = z.object({
+  identity: z.string(),
+  soul: z.string(),
+  instructions: z.string(),
+  bootstrap: z.enum(['none', 'pending', 'done']),
+  revision: z.number().int().nonnegative(),
+});
+
+export const AgentIdentityRecordSchema: ZodType<AgentIdentityRecord> = AgentIdentityRecordObject;
+
+export const IdentityGetOutputSchema: ZodType<IdentityGetOutput> = AgentIdentityRecordObject;
+
+export const IdentitySetOutputSchema: ZodType<IdentitySetOutput> = z.union([
+  z.object({
+    outcome: z.enum(['saved', 'unchanged', 'conflict']),
+    record: AgentIdentityRecordObject,
+  }),
+  z.object({
+    outcome: z.literal('refused'),
+    section: z.enum(IDENTITY_SECTIONS),
+    code: z.enum(['too-long', 'content', 'scan-unavailable']),
+    reason: z.string(),
+  }),
+]);
+
+export const IdentityCompleteBootstrapOutputSchema: ZodType<IdentityCompleteBootstrapOutput> =
+  z.object({
+    outcome: z.enum(['completed', 'already-done', 'not-pending', 'needs-identity-and-soul']),
+    record: AgentIdentityRecordObject,
+  });
 
 // --- Subscriber payloads -----------------------------------------------------
 

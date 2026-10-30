@@ -72,6 +72,7 @@ async function dropAllTables(): Promise<void> {
   const c = new pgmod.default.Client({ connectionString });
   await c.connect();
   try {
+    await c.query('DROP TABLE IF EXISTS agents_v1_identity');
     await c.query('DROP TABLE IF EXISTS agents_v1_agents');
     await c.query('DROP TABLE IF EXISTS auth_better_v1_verifications');
     await c.query('DROP TABLE IF EXISTS auth_better_v1_accounts');
@@ -326,6 +327,35 @@ describe('@ax/agents admin routes', () => {
     expect(agent.displayName).toBe('Created');
     expect(agent.ownerType).toBe('user');
     expect(agent.visibility).toBe('personal');
+  });
+
+  // TASK-989 — only the conversational "create an agent by talking to it"
+  // route starts a first-run setup. The admin form never does, and its strict
+  // body cannot ask for one.
+  it('POST /admin/agents refuses a bootstrap field', async () => {
+    const cookie = await signIn(stack);
+    for (const bootstrap of ['pending', 'none']) {
+      const r = await http(stack.port, 'POST', '/admin/agents', {
+        cookie,
+        body: { ...makeBody(), bootstrap },
+      });
+      expect(r.status).toBe(400);
+    }
+    const list = await http(stack.port, 'GET', '/admin/agents', { cookie });
+    expect((list.body as { agents: unknown[] }).agents).toEqual([]);
+  });
+
+  it('an admin-created agent is not bootstrapping', async () => {
+    const cookie = await signIn(stack);
+    const r = await http(stack.port, 'POST', '/admin/agents', { cookie, body: makeBody() });
+    expect(r.status).toBe(201);
+    const agent = (r.body as { agent: SerializedAgent }).agent;
+    const identity = await stack.harness.bus.call<{ agentId: string }, { bootstrap: string }>(
+      'agents:identity:get',
+      stack.harness.ctx({ agentId: agent.id, userId: agent.ownerId }),
+      { agentId: agent.id },
+    );
+    expect(identity).toEqual({ identity: '', soul: '', instructions: '', bootstrap: 'none', revision: 0 });
   });
 
   // PR 2 — the runner id is a first-class agent field on the admin wire.

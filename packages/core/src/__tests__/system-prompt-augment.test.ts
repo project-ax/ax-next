@@ -1,11 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import {
+  SYSTEM_PROMPT_AUGMENT_CHANGED_HOOK,
   SYSTEM_PROMPT_AUGMENT_MAX_BODY_CHARS,
   SYSTEM_PROMPT_AUGMENT_OPTIONAL_PREFIX,
   SYSTEM_PROMPT_AUGMENT_REQUIRED_PREFIX,
   SYSTEM_PROMPT_LANDED_HOOK,
   SystemPromptAugmentOutputSchema,
   SystemPromptLandedPayloadSchema,
+  type SystemPromptAugmentChangedPayload,
 } from '../index.js';
 
 describe('system-prompt augment contract (W1)', () => {
@@ -43,6 +45,19 @@ describe('system-prompt augment contract (W1)', () => {
   it('carries no length limit of its own (the orchestrator reports size separately)', () => {
     const big = 'x'.repeat(SYSTEM_PROMPT_AUGMENT_MAX_BODY_CHARS + 1);
     expect(SystemPromptAugmentOutputSchema.safeParse({ recall: big }).success).toBe(true);
+  });
+});
+
+describe('system-prompt:augment-changed contract (TASK-989)', () => {
+  // A misspelled event name fails silently both ways (the producer fires into
+  // nothing, the subscriber waits forever), so the one spelling lives here.
+  it('pins the augment-changed event name', () => {
+    expect(SYSTEM_PROMPT_AUGMENT_CHANGED_HOOK).toBe('system-prompt:augment-changed');
+  });
+
+  it('carries only the agent id', () => {
+    const payload: SystemPromptAugmentChangedPayload = { agentId: 'agt_1' };
+    expect(Object.keys(payload)).toEqual(['agentId']);
   });
 });
 

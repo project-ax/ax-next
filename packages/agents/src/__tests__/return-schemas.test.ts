@@ -1,5 +1,84 @@
 import { describe, it, expect } from 'vitest';
-import { ResolveOutputSchema, type Agent, type ResolveOutput } from '../types.js';
+import {
+  AgentIdentityRecordSchema,
+  IdentityCompleteBootstrapOutputSchema,
+  IdentityGetOutputSchema,
+  IdentitySetOutputSchema,
+  ResolveOutputSchema,
+  type Agent,
+  type AgentIdentityRecord,
+  type IdentityCompleteBootstrapOutput,
+  type IdentitySetOutput,
+  type ResolveOutput,
+} from '../types.js';
+
+// TASK-989 — the three identity hooks' `returns` contracts.
+describe('identity return schemas', () => {
+  const record: AgentIdentityRecord = {
+    identity: 'I am Pip',
+    soul: 'Kind',
+    instructions: 'Be brief.',
+    bootstrap: 'pending',
+    revision: 3,
+  };
+
+  it('a record round-trips without losing a field', () => {
+    expect(AgentIdentityRecordSchema.parse(record)).toEqual(record);
+    expect(IdentityGetOutputSchema.parse(record)).toEqual(record);
+  });
+
+  it.each([
+    ['a fractional revision', { ...record, revision: 1.5 }],
+    ['a negative revision', { ...record, revision: -1 }],
+    ['a string revision', { ...record, revision: '3' }],
+    ['an unknown bootstrap state', { ...record, bootstrap: 'weird' }],
+    ['a missing section', { identity: 'x', soul: 'y', bootstrap: 'none', revision: 0 }],
+    ['a non-string section', { ...record, soul: null }],
+  ])('a record with %s fails', (_label, value) => {
+    expect(AgentIdentityRecordSchema.safeParse(value).success).toBe(false);
+    expect(IdentityGetOutputSchema.safeParse(value).success).toBe(false);
+  });
+
+  it.each<[string, IdentitySetOutput]>([
+    ['saved', { outcome: 'saved', record }],
+    ['unchanged', { outcome: 'unchanged', record }],
+    ['conflict', { outcome: 'conflict', record }],
+    ['refused too-long', { outcome: 'refused', section: 'instructions', code: 'too-long', reason: 'r' }],
+    ['refused content', { outcome: 'refused', section: 'soul', code: 'content', reason: 'r' }],
+    ['refused scan-unavailable', { outcome: 'refused', section: 'identity', code: 'scan-unavailable', reason: 'r' }],
+  ])('set output %s parses unchanged', (_label, value) => {
+    expect(IdentitySetOutputSchema.parse(value)).toEqual(value);
+  });
+
+  it.each([
+    ['a saved outcome with a fractional revision', { outcome: 'saved', record: { ...record, revision: 1.5 } }],
+    ['an unknown outcome', { outcome: 'maybe', record }],
+    ['a refusal naming an unknown section', { outcome: 'refused', section: 'bootstrap', code: 'content', reason: 'r' }],
+    ['a refusal with an unknown code', { outcome: 'refused', section: 'soul', code: 'nope', reason: 'r' }],
+    ['a refusal without a reason', { outcome: 'refused', section: 'soul', code: 'content' }],
+    ['a saved outcome without a record', { outcome: 'saved' }],
+  ])('set output with %s fails', (_label, value) => {
+    expect(IdentitySetOutputSchema.safeParse(value).success).toBe(false);
+  });
+
+  it.each<IdentityCompleteBootstrapOutput['outcome']>([
+    'completed',
+    'already-done',
+    'not-pending',
+    'needs-identity-and-soul',
+  ])('complete-bootstrap output %s parses unchanged', (outcome) => {
+    const value: IdentityCompleteBootstrapOutput = { outcome, record };
+    expect(IdentityCompleteBootstrapOutputSchema.parse(value)).toEqual(value);
+  });
+
+  it('complete-bootstrap output rejects an unknown outcome or a bad record', () => {
+    expect(IdentityCompleteBootstrapOutputSchema.safeParse({ outcome: 'done', record }).success).toBe(false);
+    expect(
+      IdentityCompleteBootstrapOutputSchema.safeParse({ outcome: 'completed', record: { ...record, revision: 1.5 } })
+        .success,
+    ).toBe(false);
+  });
+});
 
 describe('agents return schemas', () => {
   const agent: Agent = {

@@ -34,6 +34,7 @@ afterEach(async () => {
   while (opened.length > 0) {
     const k = opened.pop()!;
     try {
+      await k.schema.dropTable('agents_v1_identity').ifExists().execute();
       await k.schema.dropTable('agents_v1_agents').ifExists().execute();
     } catch {
       /* drained pool — ignore */
@@ -435,5 +436,64 @@ describe('runAgentsMigration', () => {
       .execute();
     const rows = await db.selectFrom('agents_v1_agents').selectAll().execute();
     expect(rows).toHaveLength(1);
+  });
+
+  // TASK-989 — identity, soul, Instructions and onboarding state.
+  it('creates agents_v1_identity and refuses an unknown bootstrap state', async () => {
+    const db = makeKysely();
+    await runAgentsMigration(db);
+    await runAgentsMigration(db); // idempotent
+
+    const cols = await sql<{ column_name: string; data_type: string; column_default: string | null }>`
+      SELECT column_name, data_type, column_default FROM information_schema.columns
+       WHERE table_name = 'agents_v1_identity' ORDER BY ordinal_position
+    `.execute(db);
+    expect(cols.rows.map((c) => [c.column_name, c.data_type])).toEqual([
+      ['agent_id', 'text'],
+      ['identity', 'text'],
+      ['soul', 'text'],
+      ['instructions', 'text'],
+      ['bootstrap', 'text'],
+      // int4 on purpose: node-postgres hands int8 back as a string.
+      ['revision', 'integer'],
+      ['updated_at', 'timestamp with time zone'],
+    ]);
+
+    // A bare row reads as the reset state: empty texts, 'none', revision 0.
+    await sql`INSERT INTO agents_v1_identity (agent_id) VALUES ('a1')`.execute(db);
+    const bare = await sql<Record<string, unknown>>`
+      SELECT identity, soul, instructions, bootstrap, revision FROM agents_v1_identity WHERE agent_id = 'a1'
+    `.execute(db);
+    expect(bare.rows).toEqual([
+      { identity: '', soul: '', instructions: '', bootstrap: 'none', revision: 0 },
+    ]);
+
+    const violation = async (statement: ReturnType<typeof sql>): Promise<unknown> => {
+      try {
+        await statement.execute(db);
+      } catch (err) {
+        return err;
+      }
+      return undefined;
+    };
+    const weird = await violation(
+      sql`INSERT INTO agents_v1_identity (agent_id, bootstrap) VALUES ('a2', 'weird')`,
+    );
+    expect(weird).toMatchObject({ code: '23514', constraint: 'agents_v1_identity_bootstrap_check' });
+    const negative = await violation(
+      sql`INSERT INTO agents_v1_identity (agent_id, revision) VALUES ('a3', -1)`,
+    );
+    expect(negative).toMatchObject({ code: '23514', constraint: 'agents_v1_identity_revision_check' });
+    // agent_id is the primary key: one row per agent.
+    const twice = await violation(sql`INSERT INTO agents_v1_identity (agent_id) VALUES ('a1')`);
+    expect(twice).toMatchObject({ code: '23505' });
+
+    // No foreign key to agents_v1_agents: dropping the agents table must never
+    // be blocked by identity rows (every downstream teardown does exactly that).
+    const fks = await sql<{ n: number }>`
+      SELECT count(*)::int AS n FROM information_schema.table_constraints
+       WHERE table_name = 'agents_v1_identity' AND constraint_type = 'FOREIGN KEY'
+    `.execute(db);
+    expect(fks.rows[0]?.n).toBe(0);
   });
 });

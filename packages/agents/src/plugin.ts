@@ -28,10 +28,19 @@ import {
   type AgentStore,
 } from './store.js';
 import { randomBytes } from 'node:crypto';
+import { createIdentityService } from './identity/service.js';
+import { createIdentityStore } from './identity/store.js';
+import { registerIdentityTools } from './identity/tools.js';
 import {
+  AGENTS_IDENTITY_COMPLETE_BOOTSTRAP_HOOK,
+  AGENTS_IDENTITY_GET_HOOK,
+  AGENTS_IDENTITY_SET_HOOK,
   CanManageRoutinesInputSchema,
   CanManageRoutinesOutputSchema,
   AgentsResolveAuthoredSkillsOutputSchema,
+  IdentityCompleteBootstrapOutputSchema,
+  IdentityGetOutputSchema,
+  IdentitySetOutputSchema,
   ResolveOutputSchema,
 } from './types.js';
 import type {
@@ -49,6 +58,7 @@ import type {
   AttachConnectorInput,
   AttachConnectorOutput,
   AuthoredResolvedSkill,
+  AgentIdentityRecord,
   CanManageConnectorsInput,
   CanManageConnectorsOutput,
   CanSetSharedCredentialInput,
@@ -61,6 +71,8 @@ import type {
   DetachConnectorOutput,
   EnsureWebhookTokenInput,
   EnsureWebhookTokenOutput,
+  IdentityCompleteBootstrapOutput,
+  IdentitySetOutput,
   ListForUserInput,
   ListForUserOutput,
   ListPersonalOwnersInput,
@@ -81,9 +93,14 @@ const PLUGIN_NAME = '@ax/agents';
 // ---------------------------------------------------------------------------
 // @ax/agents plugin
 //
-// Registers the five `agents:*` service hooks. The ACL gate
+// Registers the `agents:*` service hooks. The ACL gate
 // (`checkAccess`) runs on every `agents:resolve`; create/update/delete
 // each enforce their own ownership rules inline before persisting.
+//
+// TASK-989: also the only store of an agent's identity, soul, its people's
+// Instructions and its onboarding state (`agents:identity:*`, identity/).
+// Every write is scanned through `identity:scan` (fail closed) and announces
+// `system-prompt:augment-changed`.
 //
 // Manifest decisions:
 //   - `calls: ['database:get-instance']` is the ONLY hard dep. We DO NOT
@@ -144,6 +161,13 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
         'agents:list-personal-owners',
         'agents:list-authored-skills',
         'agents:resolve-authored-skills',
+        // TASK-989 — identity, soul, Instructions and onboarding state, and
+        // the agent's own two host tools (identity/tools.ts).
+        'agents:identity:get',
+        'agents:identity:set',
+        'agents:identity:complete-bootstrap',
+        'tool:execute:update_identity',
+        'tool:execute:complete_bootstrap',
       ],
       // database:get-instance is hard. http:register-route + auth:require-user
       // are hard NOW because we mount admin routes; the plugin won't boot
@@ -214,6 +238,22 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
           hook: 'models:get-policy',
           degradation:
             "the model allow-list, the Default model and the runner rule fall back to the built-in list (today's behaviour)",
+        },
+        {
+          // TASK-989 — registered by @ax/validator-identity, which both
+          // production assemblies load. Optional only so a harness without it
+          // still boots: every write then fails CLOSED at call time.
+          hook: 'identity:scan',
+          degradation:
+            'every identity, soul and Instructions write is refused (fail closed): nothing can be saved without the content check',
+        },
+        {
+          // TASK-989 — the tool catalog (@ax/mcp-client's dispatcher, which
+          // calls nothing, so this edge closes no cycle). Optional so the
+          // many harnesses that boot @ax/agents without a catalog still boot.
+          hook: 'tool:register',
+          degradation:
+            'update_identity and complete_bootstrap are not offered to agents; their tool:execute services still answer',
         },
       ],
       subscribes: ['bootstrap:reset-cleanup', 'connectors:deleted'],
@@ -649,6 +689,37 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
         { returns: AgentsResolveAuthoredSkillsOutputSchema },
       );
 
+      // TASK-989 — identity, soul, people's Instructions and onboarding state.
+      // Inputs are validated inside the service (they arrive unnarrowed);
+      // `returns` schemas pin the outcome shapes callers map without parsing
+      // error text.
+      const identityService = createIdentityService({
+        bus,
+        agents: localStore,
+        identity: createIdentityStore(db),
+      });
+      bus.registerService<unknown, AgentIdentityRecord>(
+        AGENTS_IDENTITY_GET_HOOK,
+        PLUGIN_NAME,
+        async (ctx, input) => identityService.get(ctx, input),
+        { returns: IdentityGetOutputSchema },
+      );
+      bus.registerService<unknown, IdentitySetOutput>(
+        AGENTS_IDENTITY_SET_HOOK,
+        PLUGIN_NAME,
+        async (ctx, input) => identityService.set(ctx, input),
+        { returns: IdentitySetOutputSchema },
+      );
+      bus.registerService<unknown, IdentityCompleteBootstrapOutput>(
+        AGENTS_IDENTITY_COMPLETE_BOOTSTRAP_HOOK,
+        PLUGIN_NAME,
+        async (ctx, input) => identityService.completeBootstrap(ctx, input),
+        { returns: IdentityCompleteBootstrapOutputSchema },
+      );
+      // The agent's own tools over the same service: `update_identity`
+      // (identity or soul, never Instructions) and `complete_bootstrap`.
+      await registerIdentityTools(bus, identityService, initCtx);
+
       // Mount /admin/agents[/:id]. Routes are registered LAST so the bus
       // calls inside their handlers reach our own services, which were
       // registered above. The unregister callbacks are tracked so a
@@ -660,13 +731,14 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
       // reset-bootstrap --force`, drop every agent row so the wizard's
       // model step can re-create the default chat agent without
       // tripping any uniqueness constraints. The reset is a deliberate
-      // "redo from scratch" — operator paid the I6 escape hatch.
+      // "redo from scratch" — operator paid the I6 escape hatch. The
+      // identity rows (TASK-989) go in the same statement.
       const localDb = db;
       bus.subscribe(
         'bootstrap:reset-cleanup',
         RESET_CLEANUP_KEY,
         async () => {
-          await sql`TRUNCATE agents_v1_agents`.execute(localDb);
+          await sql`TRUNCATE agents_v1_identity, agents_v1_agents`.execute(localDb);
           return undefined;
         },
       );
@@ -793,6 +865,7 @@ async function createAgent(
   input: CreateInput,
   cfg: { policy: ModelPolicy },
 ): Promise<CreateOutput> {
+  const startsSetup = parseCreateBootstrap(input);
   const validated = validateCreateInput(input.input, {
     allowedModels: cfg.policy.allowed,
   });
@@ -827,6 +900,7 @@ async function createAgent(
   }
   const createArgs: Parameters<AgentStore['create']>[0] = { ownerId, ownerType, validated };
   if (input.tx !== undefined) createArgs.tx = input.tx;
+  if (startsSetup) createArgs.bootstrap = 'pending';
   const agent = await store.create(createArgs);
   // Fire subscriber event so callers (e.g., @ax/routines) can seed
   // per-agent state (e.g., default routine materializations). Payload is intentionally
@@ -851,6 +925,23 @@ async function createAgent(
     await bus.fire('agents:created', ctx, createdEvent);
   }
   return { agent };
+}
+
+/**
+ * TASK-989 — `agents:create`'s top-level `bootstrap`: absent or `'none'` (no
+ * first-run setup) → false; `'pending'` → true; anything else is refused
+ * before anything is written. The value arrives off the bus unnarrowed.
+ */
+function parseCreateBootstrap(input: CreateInput): boolean {
+  const raw: unknown = (input as { bootstrap?: unknown }).bootstrap;
+  if (raw === undefined || raw === 'none') return false;
+  if (raw === 'pending') return true;
+  throw new PluginError({
+    code: 'invalid-payload',
+    plugin: PLUGIN_NAME,
+    hookName: 'agents:create',
+    message: "bootstrap must be 'none' or 'pending' when present",
+  });
 }
 
 async function updateAgent(
