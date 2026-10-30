@@ -185,6 +185,11 @@ interface SessionCreateInput {
       mcpConfigIds: string[];
       model: string;
       runner: string;
+      // TASK-989 — the agent's identity from @ax/agents, frozen at spawn.
+      // Forwarded verbatim; the session store validates its shape.
+      identity?:
+        | { identity: string; soul: string; instructions: string; bootstrapMode: boolean }
+        | undefined;
     };
     conversationId?: string;
     // TASK-181 — host-derived session origin ('routine' | 'user'), forwarded

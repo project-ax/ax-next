@@ -1,18 +1,22 @@
 /**
- * The always-injected memory block — design §4.1, `system-prompt:augment:required:memory`.
+ * The always-injected memory block — design §4.1, `system-prompt:augment:optional:memory`.
  *
- * Four parts, in this order, each from ONE store query, with **no embedding,
+ * Three parts, in this order, each from ONE store query, with **no embedding,
  * no rerank and no model call anywhere on the path**:
  *
  * | Part | Source |
  * |---|---|
- * | **Rules** | the human-tier file, verbatim |
  * | **Profile** | active rows, `about = user:<caller>`, slot rows only, ≤ 10 |
  * | **Recent** | the last 3 conversations, 3 statements each, dated |
  * | **Digest** | distinct non-speaker subjects, ranked, top ~20 |
  *
- * Soft cap ~800 tokens; over it, parts drop **digest → recent → profile** and
- * Rules never drops.
+ * Soft cap ~800 tokens; over it, parts drop **digest → recent → profile**. The
+ * degraded notice and the section heading never drop.
+ *
+ * The person's own standing instructions are not here. They live in
+ * `@ax/agents` and reach the prompt through the session config (TASK-989), so
+ * this provider is OPTIONAL: if it fails, the turn runs without recalled
+ * memory and with the person's Instructions intact.
  *
  * ## Why chat start, and why there is no per-turn refresh
  *
@@ -24,18 +28,17 @@
  *
  * ## This is a prompt-injection sink, and it is the one the design exists for
  *
- * Everything below `## Rules From Your User` is untrusted text on its way into
- * the most privileged position in the prompt. Three structural defences, and
+ * Everything in the block is untrusted text on its way into the most
+ * privileged position in the prompt. Three structural defences, and
  * each is pinned by a test:
  *
  * 1. **Escaping has one owner** — `render.ts`. Pipes escaped, line breaks and
  *    control characters collapsed, per-value length capped. A statement cannot
  *    forge a table row or a markdown heading because it cannot contain a line
  *    break to anchor one.
- * 2. **Provenance is not flattened.** The human tier and the store are
- *    different sections from different sources with different writability, and
- *    within the store every line carries the `human`/`agent`/`extracted` tag
- *    the engine recorded. See {@link STORE_SECTION_PREAMBLE}.
+ * 2. **Provenance is not flattened.** Every line carries the
+ *    `human`/`agent`/`extracted` tag the engine recorded. See
+ *    {@link STORE_SECTION_PREAMBLE}.
  * 3. **Nothing in the store sections is rendered as an instruction.** They sit
  *    under a heading that names them as recalled observations, and memory
  *    carries no capability: no tool, path or permission travels with a
@@ -49,7 +52,7 @@
 import {
   isOwnerlessId,
   PluginError,
-  SYSTEM_PROMPT_AUGMENT_REQUIRED_PREFIX,
+  SYSTEM_PROMPT_AUGMENT_OPTIONAL_PREFIX,
   SystemPromptAugmentOutputSchema,
   type AgentContext,
   type HookBus,
@@ -75,10 +78,13 @@ import {
 } from './render.js';
 
 /**
- * The hook this module registers: a REQUIRED provider of the shared
- * system-prompt augment contract (`system-prompt:augment:required:<plugin>`).
+ * The hook this module registers: an OPTIONAL provider of the shared
+ * system-prompt augment contract (`system-prompt:augment:optional:<plugin>`).
+ * Optional because memory no longer carries the person's Instructions (the
+ * kernel reserves the required class for providers that do): a memory hiccup
+ * must not suppress the rest of the prompt.
  */
-export const SYSTEM_PROMPT_AUGMENT_HOOK = `${SYSTEM_PROMPT_AUGMENT_REQUIRED_PREFIX}memory`;
+export const SYSTEM_PROMPT_AUGMENT_HOOK = `${SYSTEM_PROMPT_AUGMENT_OPTIONAL_PREFIX}memory`;
 
 /**
  * Logged when the augment coerces a degraded flag that is not a string
@@ -151,14 +157,6 @@ function coerceDegraded(ctx: AgentContext, degraded: unknown): unknown[] {
     // and must never be the thing that fails the turn.
   }
   return [];
-}
-
-/** The human tier, read through the shared contract rather than the filesystem. */
-export const RULES_READ_HOOK = 'memory:rules:read';
-
-/** `memory:rules:read`'s shape, declared structurally — no cross-plugin import. */
-interface RulesReadOutput {
-  body: string;
 }
 
 /** The subset of the engine's `FactRecord` this module reads. */
@@ -239,9 +237,6 @@ export const DEFAULTS = {
   // first anyway.
   digestScanRows: 200,
 } as const;
-
-/** Heading for the human tier. Matches Strata's, so the two blocks read alike. */
-const RULES_HEADING = '## Rules From Your User';
 
 /** Heading the three store-derived sections live under. */
 const STORE_HEADING = '## What I Remember';
@@ -485,8 +480,7 @@ function renderDigest(
  * Render the degradation signal — design §4.4, "a signal, not a quieter
  * answer".
  *
- * It is rendered IN the block, and it is in the never-dropped tier alongside
- * Rules. An augment that quietly injected a thinner memory because the store
+ * It is rendered IN the block, and it is in the never-dropped tier. An augment that quietly injected a thinner memory because the store
  * answered in degraded mode would be the exact failure the `degraded` array
  * exists to prevent: the model would reason from a partial memory believing
  * it was the whole one.
@@ -541,20 +535,17 @@ export interface AssembledBlock {
 
 /**
  * Join the parts and drop from the tail of the drop order until the block
- * fits — **digest first, then recent, then profile. Rules never drop, and
- * neither does the degraded notice.**
+ * fits — **digest first, then recent, then profile. The degraded notice never
+ * drops.**
  *
  * The order is a trust and a cost ordering at once: the digest is a derived
  * index the agent can re-reach through the tool, recent is the most
- * replaceable of the statement sections, the profile is the smallest and
- * highest-value, and Rules is the only thing in the block a person wrote on
- * purpose.
+ * replaceable of the statement sections, and the profile is the smallest and
+ * highest-value.
  *
- * It is a SOFT cap. If Rules alone exceeds it, Rules still renders in full —
- * truncating a person's own instructions mid-sentence turns "do not email
- * anyone without asking" into "do not email anyone", which is a worse failure
- * than a long prompt. Everything droppable is gone by then, which is the
- * budget doing its job.
+ * It is a SOFT cap. If the never-dropped parts alone exceed it, they still
+ * render in full. Everything droppable is gone by then, which is the budget
+ * doing its job.
  */
 export function assembleUnderCap(parts: BlockPart[], maxTokens: number): AssembledBlock {
   const join = (ps: BlockPart[]): string => ps.map((p) => p.body).join('\n\n');
@@ -574,40 +565,11 @@ export function assembleUnderCap(parts: BlockPart[], maxTokens: number): Assembl
 }
 
 /**
- * Read the human tier through `memory:rules:read`.
- *
- * Two outcomes that look alike and are not, and the difference is the whole
- * reason this is not one `try`:
- *
- * - **No provider registered.** A configuration state, not a failure: the
- *   preset simply has no rules tier. The block renders without a Rules
- *   section. Declared as `optionalCalls` on the manifest so the gap is
- *   visible without reading this function.
- * - **A provider that THREW.** A failure, and it propagates. Rules is the
- *   user's own standing instruction and it is the one part of the block that
- *   never drops; rendering the recalled-observation sections while silently
- *   omitting the instructions that govern them is the worst available
- *   outcome, because the model would act on memory with the constraints on
- *   that memory missing. The whole augment fails instead, the orchestrator
- *   logs it, and the turn runs with no injected memory at all — fail closed.
- */
-async function readRulesBody(bus: HookBus, ctx: AgentContext): Promise<string> {
-  if (!bus.hasService(RULES_READ_HOOK)) return '';
-  const out = await bus.call<{ agentId: string }, RulesReadOutput | null>(
-    RULES_READ_HOOK,
-    ctx,
-    { agentId: ctx.agentId },
-  );
-  const body = out?.body;
-  return typeof body === 'string' ? body : '';
-}
-
-/**
  * Build the whole block. Exported for tests and for the plugin registration.
  *
- * Returns `''` when there is nothing to say — no rules, no statements. An
- * empty contribution is dropped by the orchestrator, so an agent with no
- * memory yet gets a prompt byte-identical to the un-augmented one.
+ * Returns `''` when there is nothing to say — no statements. An empty
+ * contribution is dropped by the orchestrator, so an agent with no memory yet
+ * gets a prompt byte-identical to the un-augmented one.
  */
 export async function buildMemoryBlock(
   bus: HookBus,
@@ -615,28 +577,6 @@ export async function buildMemoryBlock(
   factsRecallHook: string,
   config: MemoryBlockConfig = {},
 ): Promise<string> {
-  const { rules, rest } = await buildMemoryBlockSplit(bus, ctx, factsRecallHook, config);
-  return [rules, rest].filter((b) => b !== '').join('\n\n');
-}
-
-/**
- * The block as two halves (TASK-524): `rules` is the `## Rules From Your User`
- * section, `rest` is everything the budget kept after it (degraded notice and
- * the store sections). The budget runs over the WHOLE block first, so
- * `[rules, rest]` joined with `'\n\n'` (empties dropped) is exactly
- * {@link buildMemoryBlock}'s output — normal mode does not change by a byte.
- */
-export interface MemoryBlockSplit {
-  rules: string;
-  rest: string;
-}
-
-async function buildMemoryBlockSplit(
-  bus: HookBus,
-  ctx: AgentContext,
-  factsRecallHook: string,
-  config: MemoryBlockConfig,
-): Promise<MemoryBlockSplit> {
   const cfg = { ...DEFAULTS, ...config };
   const access = await resolveMemoryAccess(bus, ctx);
   const ownerUserId = access.userId;
@@ -729,8 +669,6 @@ async function buildMemoryBlockSplit(
     ...recentChainOuts.flatMap((out) => out.statements),
   ]);
 
-  const rules = await readRulesBody(bus, ctx);
-
   // Degradation from any of them is degradation of the block.
   const degraded = [
     ...profileOut.degraded,
@@ -749,11 +687,9 @@ async function buildMemoryBlockSplit(
   );
   const digest = renderDigest(digestOut.statements, speakerSubject, cfg.digestSubjects);
 
-  const rulesSection = rules.trim() === '' ? '' : `${RULES_HEADING}\n\n${rules.trim()}`;
   const hasStoreContent = profile !== '' || recent !== '' || digest !== '';
   const storeHeader = hasStoreContent ? `${STORE_HEADING}\n\n${STORE_SECTION_PREAMBLE}` : '';
 
-  const rulesPart: BlockPart = { id: 'rules', body: rulesSection, droppable: false };
   const degradedPart: BlockPart = {
     id: 'degraded',
     body: renderDegraded(degraded),
@@ -761,7 +697,6 @@ async function buildMemoryBlockSplit(
   };
 
   const allParts: BlockPart[] = [
-    rulesPart,
     { id: 'store-header', body: storeHeader, droppable: false },
     degradedPart,
     // Drop order is the reverse of this list's tail: digest, then recent,
@@ -772,17 +707,6 @@ async function buildMemoryBlockSplit(
   ];
   const assembled = assembleUnderCap(allParts, cfg.maxTokens);
 
-  // Split what the budget kept into the Rules section and everything after it.
-  // `rulesPart` is non-droppable and first, so it is either kept whole or was
-  // empty to begin with; the rest re-joins in the same order and separator.
-  const split = (kept: string[]): MemoryBlockSplit => ({
-    rules: kept.includes('rules') ? rulesPart.body : '',
-    rest: allParts
-      .filter((p) => p.id !== 'rules' && p.body !== '' && kept.includes(p.id))
-      .map((p) => p.body)
-      .join('\n\n'),
-  });
-
   // A store heading whose every section the budget dropped is a promise with
   // nothing behind it — and worse, it asserts to the model that it is looking
   // at what we remember when it is looking at nothing. Re-assemble without it.
@@ -790,14 +714,14 @@ async function buildMemoryBlockSplit(
   // rendered text for a `###`, which the degraded notice also uses.
   const storeSections = ['profile', 'recent', 'digest'];
   if (storeHeader !== '' && !assembled.kept.some((id) => storeSections.includes(id))) {
-    return split(assembleUnderCap([rulesPart, degradedPart], cfg.maxTokens).kept);
+    return assembleUnderCap([degradedPart], cfg.maxTokens).body;
   }
-  return split(assembled.kept);
+  return assembled.body;
 }
 
 /**
  * Register the memory plugin's system-prompt augment provider
- * (`system-prompt:augment:required:memory`).
+ * (`system-prompt:augment:optional:memory`).
  *
  * ⚠ **It is a `call`, not a `fire`, and that matters here.** The orchestrator
  * reaches this through `bus.call`, so the block is either built or the call
@@ -807,15 +731,13 @@ async function buildMemoryBlockSplit(
  * be skipped belongs in a `fire()` subscriber, and building the prompt
  * qualifies.
  *
- * It registers as a REQUIRED provider because it carries the person's Rules.
- * A throw (e.g. the Rules-read fail-closed) skips the whole augment for that
- * spawn rather than running the turn with the recalled half but not the Rules.
+ * It registers as an OPTIONAL provider: recalled facts are the only thing it
+ * carries (the person's Instructions moved to `@ax/agents`, TASK-989), so a
+ * throw skips just this augment for that spawn and the turn runs without
+ * recalled memory.
  *
- * Output is `{ rules, recall }`: `rules` is the `## Rules From Your User`
- * section (the only part admitted to bootstrap mode, TASK-524), `recall` is
- * everything recalled from the store. Empty parts are omitted; the orchestrator
- * joins the present ones with '\n\n', so normal mode is byte-identical to the
- * old single block.
+ * Output is `{ recall }` — everything recalled from the store — or `{}` when
+ * there is nothing to say.
  */
 export function registerSystemPromptAugment(
   bus: HookBus,
@@ -836,11 +758,8 @@ export function registerSystemPromptAugment(
       if (typeof ctx.userId !== 'string' || ctx.userId === '' || isOwnerlessId(ctx.userId)) {
         return {};
       }
-      const { rules, rest } = await buildMemoryBlockSplit(bus, ctx, factsRecallHook, config);
-      const out: SystemPromptAugmentOutput = {};
-      if (rules !== '') out.rules = rules;
-      if (rest !== '') out.recall = rest;
-      return out;
+      const recall = await buildMemoryBlock(bus, ctx, factsRecallHook, config);
+      return recall === '' ? {} : { recall };
     },
     { returns: SystemPromptAugmentOutputSchema },
   );

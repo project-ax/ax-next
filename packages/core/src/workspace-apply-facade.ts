@@ -129,12 +129,12 @@ export function registerWorkspaceApplyFacade(
       //    Errors (e.g. parent-mismatch) propagate UNCHANGED so a caller can
       //    key off `code: 'parent-mismatch'` + the error's
       //    `cause.actualParent` and retry. The callers that do:
-      //    `@ax/memory` (`rules.ts`, `memory:rules:write`), `channel-web`
-      //    (workspace-cas, used by the agent bootstrap and identity routes),
-      //    `@ax/routines-admin-routes`, and `@ax/ipc-core`'s
+      //    `@ax/memory`'s facts exporter (`exporter.ts`) and `@ax/ipc-core`'s
       //    workspace.commit-notify. NOT `@ax/attachments`, which an earlier
       //    version of this comment named — TASK-68 moved it to `blob:put`
-      //    and off this path entirely.
+      //    and off this path entirely. (Nor `memory:rules:write` or
+      //    channel-web's `workspace-cas.ts`: TASK-989 deleted both — identity
+      //    and Instructions live in @ax/agents now.)
       const applied = await bus.call<WorkspaceApplyInput, WorkspaceApplyOutput>(
         'workspace:apply-internal',
         ctx,

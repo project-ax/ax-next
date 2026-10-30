@@ -18,21 +18,32 @@ import type { AgentMessage } from '@ax/core';
 // never into HTML. Branding lives at the hook surface (@ax/chat-orchestrator →
 // sandbox:open-session) where the flow is observable; carrying the brand all
 // the way through every plain `string` field would balloon the type for
-// limited gain. (TASK-142 dropped the legacy `systemPrompt` field — identity
-// now lives in the agent's `.ax/` files.)
+// limited gain. (TASK-142 dropped the legacy `systemPrompt` field; TASK-989
+// carries identity, soul and people's Instructions from @ax/agents in the
+// optional `identity` object, read once at spawn.)
 // ---------------------------------------------------------------------------
 
+/** TASK-989 — the agent's identity from @ax/agents, frozen at spawn. Prose for
+ * the LLM prompt only; never interpolated into a shell command, path or HTML. */
+export interface AgentIdentityConfig {
+  identity: string;
+  soul: string;
+  instructions: string;
+  /** Host decision: bootstrap pending AND a person present. */
+  bootstrapMode: boolean;
+}
+
 export interface AgentConfig {
-  /** The agent's display name — the runner's fallback identity, used when the
-   * agent has no `.ax/IDENTITY.md` of its own (TASK-142). Intended destination
-   * is the LLM prompt. */
+  /** The agent's display name — the runner's fallback identity line, used when
+   * the agent has no identity text of its own (TASK-142, TASK-989). Intended
+   * destination is the LLM prompt. */
   displayName: string;
   /** The joined host `system-prompt:augment:*` contributions (e.g. @ax/memory's
    * memory block), prepended on top of the composed system prompt. Empty when no
    * augment provider contributes. Intended destination is the LLM prompt. */
   systemPromptAugment: string;
   /** The `rules` section of the host `system-prompt:augment:*` contributions
-   * (the person's own Rules) that the runner prepends in bootstrap mode.
+   * that the runner prepends in bootstrap mode.
    * Optional: absent means '' (no bootstrap augment) — session rows persisted
    * before this field existed don't carry it. Intended destination is the
    * LLM prompt, same untrusted-string handling as `systemPromptAugment`. */
@@ -49,6 +60,9 @@ export interface AgentConfig {
   /** Runner id (e.g. `'claude-sdk'`) the host resolves to a binary path via
    * `ChatOrchestratorConfig.runnerBinaries`. Allow-listed at agent creation. */
   runner: string;
+  /** TASK-989 — optional: absent on session rows written before this field and
+   * when the host has no identity store (the runner then uses `displayName`). */
+  identity?: AgentIdentityConfig;
 }
 
 // ---------------------------------------------------------------------------
@@ -331,6 +345,15 @@ export const SessionGetConfigOutputSchema = z.object({
     // z.string(), not a zod enum — wire is a transport boundary; the
     // authoritative allow-list (SUPPORTED_RUNNERS) lives in @ax/agents.
     runner: z.string(),
+    // TASK-989 — optional; a z.object would silently strip it if undeclared.
+    identity: z
+      .object({
+        identity: z.string(),
+        soul: z.string(),
+        instructions: z.string(),
+        bootstrapMode: z.boolean(),
+      })
+      .optional(),
   }),
   conversationId: z.string().nullable(),
 }) as unknown as ZodType<SessionGetConfigOutput>;

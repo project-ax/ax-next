@@ -96,8 +96,9 @@ function resyncEnvelopeFromCause(cause: unknown): { actualParent?: string } {
 //      + committer == ax-runner. Reject loud on drift.
 //   6. walkBundleChanges: build the canonical FileChange[] for the per-turn diff.
 //   6b. findRunnerImmutableViolations: refuse the turn outright if it touches
-//      a path a sandbox may never author (`memory/system/rules.md`, the
-//      human-owned memory tier — see RUNNER_IMMUTABLE_PATHS in @ax/core). NOT
+//      a path a sandbox may never author (the host-owned facts export,
+//      `permanent/memory/facts/**` — see RUNNER_IMMUTABLE_PREFIXES in
+//      @ax/core). NOT
 //      a subscriber veto: it runs ahead of the pre-apply fire and returns, so
 //      nothing downstream can swallow it.
 //   7. filterToPolicy: narrow that diff to the policy-visible paths — the
@@ -405,23 +406,24 @@ async function commitBundleCore(
       throw err;
     }
 
-    // ---- runner-immutable guard (TASK-486): refuse before anything else
-    //      gets a say. ----
+    // ---- runner-immutable guard (TASK-486, TASK-494): refuse before
+    //      anything else gets a say. ----
     //
     // This handler is the ONE apply path a sandbox can originate, so it is the
-    // one place the human-owned memory tier can be defended.
-    // `/agent/memory/system/rules.md` is injected verbatim at the top of every
-    // prompt (@ax/memory's `system-prompt:augment:required:memory`, "## Rules From Your User"), the
-    // runner's whole-tree stage picks it up, and `filterToPolicy` below does
-    // NOT match it — so before this block existed, a change to it reached
+    // one place host-owned paths can be defended. Today that is the facts
+    // export (`permanent/memory/facts/**`), a read-only projection of the fact
+    // store that only @ax/memory's exporter may write. The runner's whole-tree
+    // stage would pick up a sandbox edit there, and `filterToPolicy` below does
+    // NOT match it — so without this block, such a change would reach
     // `workspace:apply-bundle` without a single subscriber having seen it.
-    // Content injected into one conversation that steers one file write became
-    // a permanent instruction.
+    // (It first guarded `memory/system/rules.md`, the Rules tier @ax/memory
+    // injected at the top of every prompt; TASK-989 moved Instructions into
+    // @ax/agents and nothing reads that file now.)
     //
     // Deliberately AHEAD of the `workspace:pre-apply` fire, and not inside a
     // subscriber. `HookBus.fire` reads a subscriber throw as a clean pass, so
     // a guard that lives in a subscriber and throws is a guard that silently
-    // isn't one. A subscriber could not tell this apply from the Rules UI's
+    // isn't one. A subscriber could not tell this apply from the exporter's
     // host-side write anyway — its only discriminator would be `reason`, which
     // the runner supplies, i.e. the lock's key handed to the thing it locks
     // out. An inline `return` here is unbypassable by construction.
@@ -437,10 +439,13 @@ async function commitBundleCore(
     // `discardPaths` becomes revert targets INSIDE the sandbox, so the
     // pre-apply branch below re-checks that a subscriber only named paths we
     // actually sent it. This branch needs no such check and deliberately has
-    // none: `findRunnerImmutableViolations` returns members of a fixed set in
-    // @ax/core, never a caller-chosen string, so what goes out here (and into
-    // the log line, and into the reason the agent reads) can only ever be that
-    // literal. Nothing the runner supplies reaches any of the three.
+    // none: `findRunnerImmutableViolations` only returns paths taken from
+    // `allChanges` — this turn's own diff, already checked canonical by the
+    // guard above — that also match a fixed prefix in @ax/core. So what goes
+    // out here (and into the log line, and into the reason the agent reads) is
+    // a subset of what the runner itself sent: it can name nothing the sandbox
+    // did not already hold, and it can only revert files under the guarded
+    // subtree.
     const immutableHits = findRunnerImmutableViolations(allChanges);
     if (immutableHits.length > 0) {
       ctx.logger.warn('workspace_runner_immutable_refused', {

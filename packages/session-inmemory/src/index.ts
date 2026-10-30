@@ -1,6 +1,7 @@
 export { createSessionInmemoryPlugin } from './plugin.js';
 export type {
   AgentConfig,
+  AgentIdentityConfig,
   ClaimResult,
   InboxEntry,
   SessionClaimWorkInput,

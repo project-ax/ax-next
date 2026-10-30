@@ -708,6 +708,91 @@ describe('@ax/session-postgres plugin', () => {
     expect((caught as PluginError).code).toBe('invalid-payload');
   });
 
+  // TASK-989 — agentConfig.identity (the agent's identity from @ax/agents,
+  // frozen at spawn) must survive validateOwner's rebuild, the JSONB hop and
+  // the stripping get-config returns schema.
+  it('round-trips agentConfig.identity through session:create → session:get-config', async () => {
+    const h = await makeHarness();
+    const identity = {
+      identity: 'I am Test Agent.',
+      soul: 'Calm and curious.',
+      instructions: 'Reply in English.',
+      bootstrapMode: true,
+    };
+    await h.bus.call<SessionCreateInput, SessionCreateOutput>(
+      'session:create',
+      h.ctx(),
+      {
+        sessionId: 's-identity',
+        workspaceRoot: '/tmp/ws',
+        owner: {
+          ...OWNER,
+          // An unknown extra key inside identity is dropped by the rebuild.
+          agentConfig: { ...OWNER.agentConfig, identity: { ...identity, extra: 'x' } as typeof identity },
+        },
+      },
+    );
+    const result = await h.bus.call<SessionGetConfigInput, SessionGetConfigOutput>(
+      'session:get-config',
+      h.ctx({ sessionId: 's-identity' }),
+      {},
+    );
+    expect(result.agentConfig.identity).toEqual(identity);
+  });
+
+  it('a session without identity reads back without one', async () => {
+    const h = await makeHarness();
+    await h.bus.call<SessionCreateInput, SessionCreateOutput>(
+      'session:create',
+      h.ctx(),
+      { sessionId: 's-no-identity', workspaceRoot: '/tmp/ws', owner: OWNER },
+    );
+    const result = await h.bus.call<SessionGetConfigInput, SessionGetConfigOutput>(
+      'session:get-config',
+      h.ctx({ sessionId: 's-no-identity' }),
+      {},
+    );
+    expect('identity' in result.agentConfig).toBe(false);
+  });
+
+  it('rejects a malformed owner.agentConfig.identity', async () => {
+    const h = await makeHarness();
+    const bad: unknown[] = [
+      'I am Test Agent.',
+      null,
+      { identity: '', soul: 7, instructions: '', bootstrapMode: false },
+      { identity: '', soul: '', instructions: '' },
+      { identity: '', soul: '', instructions: '', bootstrapMode: 'yes' },
+    ];
+    for (const [i, identity] of bad.entries()) {
+      let caught: unknown;
+      try {
+        await h.bus.call<SessionCreateInput, SessionCreateOutput>(
+          'session:create',
+          h.ctx(),
+          {
+            sessionId: `s-bad-identity-${i}`,
+            workspaceRoot: '/tmp/ws',
+            owner: {
+              ...OWNER,
+              agentConfig: {
+                ...OWNER.agentConfig,
+                identity: identity as NonNullable<SessionGetConfigOutput['agentConfig']['identity']>,
+              },
+            },
+          },
+        );
+      } catch (err) {
+        caught = err;
+      }
+      expect(caught).toBeInstanceOf(PluginError);
+      expect((caught as PluginError).code).toBe('invalid-payload');
+      expect((caught as PluginError).message).toBe(
+        `'owner.agentConfig.identity' must be { identity, soul, instructions: string; bootstrapMode: boolean } when present`,
+      );
+    }
+  });
+
   it('session:create -> session:get-config round-trips owner.agentConfig.systemPromptBootstrapAugment', async () => {
     const h = await makeHarness();
     const owner = {

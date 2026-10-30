@@ -16,7 +16,7 @@ const PLUGIN_NAME = '@ax/agents';
 // because length limits and regex tests don't translate cleanly to SQL.
 //
 // TASK-142: the legacy `system_prompt` column + its validator are gone —
-// identity lives in the agent's `.ax/` files now (Invariant #4).
+// identity lives in `agents_v1_identity` now (TASK-989; identity/store.ts).
 // ---------------------------------------------------------------------------
 
 const DISPLAY_NAME_MIN = 1;
@@ -587,6 +587,13 @@ export interface AgentStoreCreateArgs {
   ownerType: 'user' | 'team';
   validated: ValidatedAgentInput;
   tx?: Transaction<unknown>;
+  /**
+   * TASK-989 — start a first-run setup: the agent's identity row is written
+   * with `bootstrap = 'pending'` on the SAME executor as the agent row (the
+   * caller's `tx`, else a transaction of our own), so the two commit or roll
+   * back together. Absent: no identity row (the agent reads as `none`).
+   */
+  bootstrap?: 'pending';
 }
 
 export interface ConnectorEditResult {
@@ -609,7 +616,11 @@ export interface AgentStore {
    * already verified ACL on the existing row.
    */
   update(agentId: string, patch: Partial<ValidatedAgentInput>): Promise<Agent>;
-  /** Idempotent — no row → returns false. */
+  /**
+   * Idempotent — no row → returns false. ONE transaction: the agent row is
+   * locked first, then its identity row (TASK-989) and the agent row are
+   * deleted together.
+   */
   deleteById(agentId: string): Promise<boolean>;
   /**
    * Lookup by opaque webhook token. Returns null on miss (no oracle —
@@ -702,6 +713,58 @@ export interface AgentStore {
   listPersonalAgentOwners(): Promise<Array<{ agentId: string; ownerUserId: string }>>;
 }
 
+/** The agent row's INSERT, on whichever executor `create` hands it. */
+async function insertAgentRow(
+  exec: Kysely<AgentsDatabase>,
+  id: string,
+  now: Date,
+  ownerId: string,
+  ownerType: 'user' | 'team',
+  validated: ValidatedAgentInput,
+): Promise<Agent> {
+  const row = await exec
+    .insertInto('agents_v1_agents')
+    .values({
+      agent_id: id,
+      owner_id: ownerId,
+      owner_type: ownerType,
+      visibility: validated.visibility,
+      display_name: validated.displayName,
+      // Kysely's pg dialect serializes JSONB on the way down; pass the
+      // arrays directly. (Verified vs. session-postgres patterns.)
+      allowed_tools: JSON.stringify(validated.allowedTools) as unknown,
+      mcp_config_ids: JSON.stringify(validated.mcpConfigIds) as unknown,
+      model: validated.model,
+      runner: validated.runner,
+      workspace_ref: validated.workspaceRef,
+      skill_attachments: JSON.stringify([]) as unknown,
+      connector_attachments: JSON.stringify([]) as unknown,
+      connector_exclusions: JSON.stringify([]) as unknown,
+      created_at: now,
+      updated_at: now,
+    } as never)
+    .returning([
+      'agent_id',
+      'owner_id',
+      'owner_type',
+      'visibility',
+      'display_name',
+      'allowed_tools',
+      'mcp_config_ids',
+      'model',
+      'runner',
+      'workspace_ref',
+      'webhook_token',
+      'skill_attachments',
+      'connector_attachments',
+      'connector_exclusions',
+      'created_at',
+      'updated_at',
+    ])
+    .executeTakeFirstOrThrow();
+  return rowToAgent(row as AgentsRow);
+}
+
 export function createAgentStore(db: Kysely<AgentsDatabase>): AgentStore {
   return {
     async getById(agentId) {
@@ -720,51 +783,23 @@ export function createAgentStore(db: Kysely<AgentsDatabase>): AgentStore {
       return rows.map(rowToAgent);
     },
 
-    async create({ ownerId, ownerType, validated, tx }) {
+    async create({ ownerId, ownerType, validated, tx, bootstrap }) {
       const id = mintAgentId();
       const now = new Date();
-      const exec = (tx ?? db) as Kysely<AgentsDatabase>;
-      const row = await exec
-        .insertInto('agents_v1_agents')
-        .values({
-          agent_id: id,
-          owner_id: ownerId,
-          owner_type: ownerType,
-          visibility: validated.visibility,
-          display_name: validated.displayName,
-          // Kysely's pg dialect serializes JSONB on the way down; pass the
-          // arrays directly. (Verified vs. session-postgres patterns.)
-          allowed_tools: JSON.stringify(validated.allowedTools) as unknown,
-          mcp_config_ids: JSON.stringify(validated.mcpConfigIds) as unknown,
-          model: validated.model,
-          runner: validated.runner,
-          workspace_ref: validated.workspaceRef,
-          skill_attachments: JSON.stringify([]) as unknown,
-          connector_attachments: JSON.stringify([]) as unknown,
-          connector_exclusions: JSON.stringify([]) as unknown,
-          created_at: now,
-          updated_at: now,
-        } as never)
-        .returning([
-          'agent_id',
-          'owner_id',
-          'owner_type',
-          'visibility',
-          'display_name',
-          'allowed_tools',
-          'mcp_config_ids',
-          'model',
-          'runner',
-          'workspace_ref',
-          'webhook_token',
-          'skill_attachments',
-          'connector_attachments',
-          'connector_exclusions',
-          'created_at',
-          'updated_at',
-        ])
-        .executeTakeFirstOrThrow();
-      return rowToAgent(row as AgentsRow);
+      const insert = async (exec: Kysely<AgentsDatabase>): Promise<Agent> => {
+        const agent = await insertAgentRow(exec, id, now, ownerId, ownerType, validated);
+        if (bootstrap === 'pending') {
+          await exec
+            .insertInto('agents_v1_identity')
+            .values({ agent_id: id, bootstrap: 'pending' })
+            .execute();
+        }
+        return agent;
+      };
+      if (tx !== undefined) return insert(tx as unknown as Kysely<AgentsDatabase>);
+      // Two rows must land together; one row needs no transaction of its own.
+      if (bootstrap === 'pending') return db.transaction().execute((trx) => insert(trx));
+      return insert(db);
     },
 
     async update(agentId, patch) {
@@ -815,13 +850,26 @@ export function createAgentStore(db: Kysely<AgentsDatabase>): AgentStore {
     },
 
     async deleteById(agentId) {
-      const result = await db
-        .deleteFrom('agents_v1_agents')
-        .where('agent_id', '=', agentId)
-        .executeTakeFirst();
-      // postgres returns BigInt for numAffectedRows; coerce to number for the
-      // boolean check.
-      return Number(result.numDeletedRows ?? 0n) > 0;
+      return db.transaction().execute(async (trx) => {
+        // Lock the agent row FIRST: an identity write holds KEY SHARE on it
+        // for its whole transaction (identity/store.ts), so it either commits
+        // before this lock is granted (and its row is deleted below) or waits
+        // until this commits and then finds no agent. No orphan either way.
+        await trx
+          .selectFrom('agents_v1_agents')
+          .select('agent_id')
+          .where('agent_id', '=', agentId)
+          .forUpdate()
+          .execute();
+        await trx.deleteFrom('agents_v1_identity').where('agent_id', '=', agentId).execute();
+        const result = await trx
+          .deleteFrom('agents_v1_agents')
+          .where('agent_id', '=', agentId)
+          .executeTakeFirst();
+        // postgres returns BigInt for numAffectedRows; coerce to number for the
+        // boolean check.
+        return Number(result.numDeletedRows ?? 0n) > 0;
+      });
     },
 
     async getByWebhookToken(token) {

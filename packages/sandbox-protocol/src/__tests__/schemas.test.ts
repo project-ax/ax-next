@@ -438,6 +438,67 @@ describe('AgentConfigSchema', () => {
     }
   });
 
+  // TASK-989 — the agent's identity from @ax/agents, frozen at spawn.
+  it('accepts agentConfig.identity', () => {
+    const identity = {
+      identity: 'I am Helper.',
+      soul: 'Calm and curious.',
+      instructions: 'Reply in English.',
+      bootstrapMode: false,
+    };
+    const result = AgentConfigSchema.safeParse({
+      displayName: 'Helper',
+      systemPromptAugment: '',
+      allowedTools: [],
+      mcpConfigIds: [],
+      model: 'claude',
+      runner: 'claude-sdk',
+      identity,
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.identity).toEqual(identity);
+    }
+  });
+
+  it('accepts a config without identity', () => {
+    const result = AgentConfigSchema.safeParse({
+      displayName: 'Helper',
+      systemPromptAugment: '',
+      allowedTools: [],
+      mcpConfigIds: [],
+      model: 'claude',
+      runner: 'claude-sdk',
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect('identity' in result.data).toBe(false);
+    }
+  });
+
+  it('rejects identity with a non-string soul or without bootstrapMode', () => {
+    const base = {
+      displayName: 'Helper',
+      systemPromptAugment: '',
+      allowedTools: [],
+      mcpConfigIds: [],
+      model: 'claude',
+      runner: 'claude-sdk',
+    };
+    expect(
+      AgentConfigSchema.safeParse({
+        ...base,
+        identity: { identity: '', soul: 7, instructions: '', bootstrapMode: false },
+      }).success,
+    ).toBe(false);
+    expect(
+      AgentConfigSchema.safeParse({
+        ...base,
+        identity: { identity: '', soul: '', instructions: '' },
+      }).success,
+    ).toBe(false);
+  });
+
   it('rejects a non-string systemPromptBootstrapAugment', () => {
     const result = AgentConfigSchema.safeParse({
       displayName: 'Helper',

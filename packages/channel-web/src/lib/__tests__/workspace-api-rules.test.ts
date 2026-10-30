@@ -1,19 +1,19 @@
 /**
- * `workspaceApi.saveRules` and the one refusal a person can act on (TASK-719).
+ * `workspaceApi.saveRules` and the refusals a person can act on (TASK-989).
  *
- * The route answers 413 `{ error: 'storage-full', message }` when the storage
- * limit turns a Save away. `req()` used to flatten every non-ok status into a
- * `WorkspaceApiError(path, status)` without reading the body, so a full disk
- * arrived as a bare status and the editor said "The server ran into a problem.
- * Please try again." Trying again cannot work until an admin makes room.
+ * The Instructions are an `@ax/agents` row, scanned before they are saved. The
+ * route answers 422 `content-refused` when the scan turns a Save away, and 400
+ * `invalid-body` (with the store's own sentence as `detail`) when the text is
+ * over the cap. `req()` flattens every non-ok status into a
+ * `WorkspaceApiError(path, status)`, whose copy for a 422 would be "We could
+ * not reach the server just now" — wrong for text that was reached and
+ * refused. So `saveRules` words those two itself.
  *
  * Drives the REAL `saveRules` against a stubbed global `fetch`.
  */
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { workspaceApi, WorkspaceApiError } from '../workspace-api';
+import { workspaceApi, WorkspaceApiError, INSTRUCTIONS_REFUSED } from '../workspace-api';
 import { HttpError } from '../http';
-import { StorageFullError } from '../storage-full';
-import { STORAGE_FULL_RULES } from '../storage-copy';
 
 const fetchMock = vi.fn();
 vi.stubGlobal('fetch', fetchMock);
@@ -36,41 +36,45 @@ describe('workspaceApi.saveRules', () => {
     expect(init.method).toBe('PUT');
   });
 
-  it("rejects with a StorageFullError wearing the server's sentence on a 413 storage-full", async () => {
-    reply(413, {
-      error: 'storage-full',
-      message: "We couldn't save your rules because your storage is full. Ask an admin.",
-    });
+  it('a 422 rejects with the fixed refusal sentence', async () => {
+    reply(422, { error: 'content-refused' });
     const err = await save().catch((e: unknown) => e);
-    expect(err).toBeInstanceOf(StorageFullError);
-    expect((err as StorageFullError).sentence).toBe(
-      "We couldn't save your rules because your storage is full. Ask an admin.",
-    );
-    // Still an HttpError: the 401 latch and every `instanceof HttpError` branch hold.
     expect(err).toBeInstanceOf(HttpError);
-    expect((err as HttpError).status).toBe(413);
+    expect((err as HttpError).status).toBe(422);
+    expect((err as HttpError).message).toBe(INSTRUCTIONS_REFUSED);
   });
 
-  it('says the RULES sentence, not the message one, when the server sent none', async () => {
-    reply(413, { error: 'storage-full' });
+  it('the refusal sentence is the agreed copy', () => {
+    expect(INSTRUCTIONS_REFUSED).toBe(
+      'Part of this looks like something we block — like telling the agent to ignore its rules, sending passwords or keys somewhere, or hidden characters. Reword that part and try again.',
+    );
+  });
+
+  it('a too-long 400 rejects with the store’s own sentence', async () => {
+    reply(400, {
+      error: 'invalid-body',
+      detail: 'Instructions must be 16,384 characters or fewer.',
+    });
     const err = await save().catch((e: unknown) => e);
-    expect(err).toBeInstanceOf(StorageFullError);
-    expect((err as StorageFullError).sentence).toBe(STORAGE_FULL_RULES);
+    expect(err).toBeInstanceOf(HttpError);
+    expect((err as HttpError).status).toBe(400);
+    expect((err as HttpError).message).toBe('Instructions must be 16,384 characters or fewer.');
   });
 
   it('leaves every other refusal the WorkspaceApiError it always was', async () => {
     for (const [status, body] of [
       [500, { error: 'internal' }],
-      [503, { error: 'memory-unavailable' }],
+      [503, { error: 'instructions-unavailable' }],
+      [409, { error: 'conflict' }],
+      // A 400 with no sentence to show is not this refusal.
       [400, { error: 'invalid-body' }],
-      // The other 413 (and one we cannot read) is not this refusal.
-      [413, { error: 'body-too-large' }],
-      [413, '<html>too large</html>'],
+      [400, { error: 'invalid-json' }],
+      // A body we cannot read.
+      [400, '<html>nope</html>'],
     ] as const) {
       reply(status, body);
       const err = await save().catch((e: unknown) => e);
       expect(err, `${status} ${JSON.stringify(body)}`).toBeInstanceOf(WorkspaceApiError);
-      expect(err).not.toBeInstanceOf(StorageFullError);
       expect((err as WorkspaceApiError).status).toBe(status);
     }
   });

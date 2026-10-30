@@ -24,10 +24,11 @@
  *   - AW-12 — the halted/paused agent state and its files: `pause`, `restart`.
  *
  * `saveMemory` came back with AW-13, as `saveRules` — a narrower name, because
- * only ONE of the two things the Memory tab shows is writable by a person. The
- * agent's own working notes are not, and a method that could write either would
- * be the first step back toward the editor that promised more than the storage
- * keeps.
+ * only ONE of the two things a person sees about an agent's memory and
+ * instructions is writable by them. The agent's own working notes are not, and
+ * a method that could write either would be the first step back toward the
+ * editor that promised more than the storage keeps. (Since TASK-989 what
+ * `saveRules` writes is the agent's Instructions, a row in `@ax/agents`.)
  *
  * `stopAll` / `setScenario` / `createAgent` were demo-strip and prototype
  * plumbing. They are not planned; the create flow already ships elsewhere.
@@ -52,7 +53,6 @@ import { toWorkspaceTaskKind as toTaskKind } from './task-kinds';
 import { attachmentRefBlock } from './attachment-upload';
 import { HttpError, httpErrorMessage, httpFetch, REQUEST_TIMEOUT_MS, withRequestTimeout } from './http';
 import { readStorageFull } from './storage-full';
-import { STORAGE_FULL_RULES } from './storage-copy';
 /*
   The Fault A reason-code → authored-label table, read rather than re-declared.
   A second copy here would be invariant 4 violated in the one place the drift is
@@ -845,18 +845,46 @@ function isFactMemoryPage(b: unknown): b is FactMemoryPage {
   );
 }
 
+/**
+ * What a person is told when the safety check blocks part of their
+ * Instructions (422 `content-refused`). One fixed sentence: the scanner's own
+ * reason is not part of the wire, and the editor puts its "We could not save
+ * that, so nothing changed." in front of it.
+ */
+export const INSTRUCTIONS_REFUSED =
+  'Part of this looks like something we block — like telling the agent to ignore its rules, sending passwords or keys somewhere, or hidden characters. Reword that part and try again.';
+
+/** The two Instructions refusals a person can act on; `null` for any other. */
+async function instructionsRefusal(agentId: string, res: Response): Promise<Error | null> {
+  const route = `/api/workspace/agents/${encodeURIComponent(agentId)}/memory/rules`;
+  if (res.status === 422) return new HttpError(route, 422, INSTRUCTIONS_REFUSED);
+  if (res.status === 400) {
+    try {
+      const b = (await res.json()) as { error?: unknown; detail?: unknown };
+      if (b.error === 'invalid-body' && typeof b.detail === 'string' && b.detail !== '') {
+        return new HttpError(route, 400, b.detail);
+      }
+    } catch {
+      // not JSON — not a refusal we can word.
+    }
+  }
+  return null;
+}
+
 async function req<T>(
   path: string,
   init?: {
     method?: string;
     body?: unknown;
     /**
-     * Opt in to reading a 413 `storage-full` refusal (TASK-719), naming the
-     * sentence to wear when the server sent none. Only a route that can be
-     * refused for storage passes it: for every other call a 413 stays a bare
-     * `WorkspaceApiError`, exactly as before, and its body is never read.
+     * Opt in to wording a refusal itself: called with a copy of a non-ok
+     * response, it returns the error to throw, or `null` to leave the
+     * `WorkspaceApiError` it always was. Only a route whose refusals a person
+     * can act on passes it (the Instructions Save, TASK-989): for every other
+     * call a non-ok status stays a bare `WorkspaceApiError`, and its body is
+     * never read.
      */
-    storageFull?: string;
+    refusal?: (res: Response) => Promise<Error | null>;
     /**
      * Opt in to a deadline (TASK-937): the whole request (the fetch, the
      * `storageFull` read, the body) gives up after this many ms with a
@@ -875,9 +903,9 @@ async function req<T>(
       ...(signal === undefined ? {} : { signal }),
     });
     if (!res.ok) {
-      if (init?.storageFull !== undefined) {
-        const full = await readStorageFull(`/api/workspace${path}`, res, init.storageFull);
-        if (full !== null) throw full;
+      if (init?.refusal !== undefined) {
+        const refused = await init.refusal(res.clone());
+        if (refused !== null) throw refused;
       }
       throw new WorkspaceApiError(path, res.status);
     }
@@ -1798,23 +1826,22 @@ export const workspaceApi = {
     }),
 
   /**
-   * Save the human-owned memory tier (AW-13).
+   * Save the agent's Instructions (AW-13; an `@ax/agents` row since TASK-989).
    *
-   * Named for what it can write. The server hands the text to
-   * `memory:rules:write`, the one writer of the one memory file the rollup and
-   * the GC are forbidden to touch — which is what makes "your rules are kept
-   * word for word" something we are allowed to say.
+   * Named for what it can write: the one section of the agent's identity record
+   * that people write and the agent cannot — which is what makes "your
+   * instructions are kept word for word" something we are allowed to say.
    *
-   * Rejects with a `StorageFullError` (an `HttpError`, so every existing
-   * branch on one still holds) when the storage limit turned the Save away:
-   * that one carries the sentence to show, and trying again cannot work until
-   * an admin makes room. Any other failure is the `WorkspaceApiError` it
-   * always was.
+   * Two refusals are worded here because a person can act on them. A 422
+   * (`content-refused`: the safety check blocked part of the text) rejects with
+   * an `HttpError` whose message is `INSTRUCTIONS_REFUSED`. A 400 `invalid-body`
+   * that carries the store's own sentence (over the length cap) rejects with
+   * that sentence. Any other failure is the `WorkspaceApiError` it always was.
    */
   saveRules: (agentId: string, body: string) =>
     req<{ saved: true; body: string }>(
       `/agents/${encodeURIComponent(agentId)}/memory/rules`,
-      { method: 'PUT', body: { body }, storageFull: STORAGE_FULL_RULES },
+      { method: 'PUT', body: { body }, refusal: (res) => instructionsRefusal(agentId, res) },
     ),
 
   recallMemory: (agentId: string, input: FactRecallQuery) =>

@@ -20,15 +20,25 @@ export const OWNER_MISSING = 'owner-missing';
 // resolveAgent → session:create call site in @ax/chat-orchestrator.
 // ---------------------------------------------------------------------------
 
+/** TASK-989 — the agent's identity from @ax/agents, frozen at spawn. Prose for
+ * the LLM prompt only; never interpolated into a shell command, path or HTML. */
+export interface AgentIdentityConfig {
+  identity: string;
+  soul: string;
+  instructions: string;
+  /** Host decision: bootstrap pending AND a person present. */
+  bootstrapMode: boolean;
+}
+
 export interface AgentConfig {
-  /** The agent's display name — the runner's fallback identity when the agent
-   * has no `.ax/IDENTITY.md` (TASK-142). */
+  /** The agent's display name — the runner's fallback identity line when the
+   * agent has no identity text of its own (TASK-142, TASK-989). */
   displayName: string;
   /** The joined host `system-prompt:augment:*` contributions, prepended on top of the
    * composed prompt. Empty when no augment provider contributes. */
   systemPromptAugment: string;
   /** The `rules` section of the host `system-prompt:augment:*` contributions
-   * (the person's own Rules) that the runner prepends in bootstrap mode.
+   * that the runner prepends in bootstrap mode.
    * Optional: absent means '' (no bootstrap augment) — session rows persisted
    * before this field existed don't carry it. Same untrusted-string handling
    * as `systemPromptAugment` — flows into the LLM prompt only. */
@@ -42,6 +52,9 @@ export interface AgentConfig {
   /** Runner id (e.g. `'claude-sdk'`) the host resolves to a binary path via
    * `ChatOrchestratorConfig.runnerBinaries`. Allow-listed at agent creation. */
   runner: string;
+  /** TASK-989 — optional: absent on session rows written before this field and
+   * when the host has no identity store (the runner then uses `displayName`). */
+  identity?: AgentIdentityConfig;
 }
 
 // ---------------------------------------------------------------------------

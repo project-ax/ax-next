@@ -37,9 +37,7 @@ export {
   findRunnerImmutableViolations,
   POLICY_PREFIXES,
   POLICY_EXACT_PATHS,
-  RUNNER_IMMUTABLE_PATHS,
   MEMORY_FACTS_EXPORT_ROOT,
-  MEMORY_RULES_PATH,
   RUNNER_IMMUTABLE_PREFIXES,
 } from './workspace-policy.js';
 export { registerWorkspaceApplyFacade } from './workspace-apply-facade.js';
@@ -62,6 +60,7 @@ export type {
   BlobRef,
 } from './blob-collect-refs.js';
 export {
+  SYSTEM_PROMPT_AUGMENT_CHANGED_HOOK,
   SYSTEM_PROMPT_AUGMENT_MAX_BODY_CHARS,
   SYSTEM_PROMPT_AUGMENT_OPTIONAL_PREFIX,
   SYSTEM_PROMPT_AUGMENT_REQUIRED_PREFIX,
@@ -70,6 +69,7 @@ export {
   SystemPromptLandedPayloadSchema,
 } from './system-prompt-augment.js';
 export type {
+  SystemPromptAugmentChangedPayload,
   SystemPromptAugmentInput,
   SystemPromptAugmentOutput,
   SystemPromptLandedPayload,

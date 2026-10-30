@@ -5,14 +5,18 @@ import {
   makeAgentContext,
   createLogger,
   reject,
+  SYSTEM_PROMPT_AUGMENT_CHANGED_HOOK,
   type AgentMessage,
   type AgentOutcome,
   type ServiceHandler,
+  type SystemPromptAugmentChangedPayload,
 } from '@ax/core';
+import type { AgentConfig } from '@ax/sandbox-protocol';
 import { createTestHarness } from '@ax/test-harness';
 import { createChatOrchestratorPlugin } from '../index.js';
 import {
   withBrokerDefaults,
+  identityToolScope,
   sessionNeedsCredentialRotation,
   CHAT_START_SUBSCRIBER_TIMEOUT_MS,
   CONNECTORS_SKIPPED_SUBSCRIBER_TIMEOUT_MS,
@@ -7052,6 +7056,121 @@ describe('withBrokerDefaults', () => {
 });
 
 // ---------------------------------------------------------------------------
+// identityToolScope — TASK-989. Which of @ax/agents' two identity tools a
+// session is offered: `update_identity` whenever a person is present,
+// `complete_bootstrap` only in bootstrap mode (pending AND a person present).
+// An offered tool joins a non-wildcard allowedTools (the withBrokerDefaults
+// rule), or an allowlisted agent could never finish its first-run setup. A
+// tool NOT offered is hidden through disallowedTools, but only where it would
+// otherwise show: a wildcard agent sees the whole catalog, an allowlisted one
+// only what it lists. The integration tests in 'TASK-989 identity at spawn'
+// prove it is wired into session-open; these pin the helper's contract.
+// ---------------------------------------------------------------------------
+describe('identityToolScope (TASK-989)', () => {
+  const WILDCARD = { allowedTools: [] as string[], mcpConfigIds: [] as string[] };
+  const BASH_ONLY = { allowedTools: ['Bash'], mcpConfigIds: [] as string[] };
+  const ATTENDED_NORMAL = { attended: true, bootstrapMode: false };
+  const ATTENDED_BOOTSTRAP = { attended: true, bootstrapMode: true };
+  const UNATTENDED = { attended: false, bootstrapMode: false };
+
+  it('wildcard, person present, normal mode: hides only complete_bootstrap', () => {
+    expect(identityToolScope(WILDCARD, [], undefined, ATTENDED_NORMAL)).toEqual({
+      allowedTools: [],
+      disallowedTools: ['complete_bootstrap'],
+    });
+  });
+
+  it('wildcard, person present, bootstrap mode: offers both, hides nothing', () => {
+    const scoped = identityToolScope(WILDCARD, [], undefined, ATTENDED_BOOTSTRAP);
+    expect(scoped.allowedTools).toEqual([]);
+    expect(scoped.disallowedTools).toBeUndefined();
+  });
+
+  it('wildcard, no person present: hides both', () => {
+    expect(identityToolScope(WILDCARD, [], undefined, UNATTENDED)).toEqual({
+      allowedTools: [],
+      disallowedTools: ['update_identity', 'complete_bootstrap'],
+    });
+  });
+
+  it('a restrictive allowedTools in bootstrap mode gets both tools appended', () => {
+    const scoped = identityToolScope(BASH_ONLY, ['Bash'], undefined, ATTENDED_BOOTSTRAP);
+    expect(scoped.allowedTools).toEqual(['Bash', 'update_identity', 'complete_bootstrap']);
+    expect(scoped.disallowedTools).toBeUndefined();
+  });
+
+  it('a restrictive allowedTools in normal mode gets update_identity only', () => {
+    const scoped = identityToolScope(BASH_ONLY, ['Bash'], undefined, ATTENDED_NORMAL);
+    expect(scoped.allowedTools).toEqual(['Bash', 'update_identity']);
+    expect(scoped.disallowedTools).toBeUndefined();
+  });
+
+  it('a restrictive allowedTools with no person present gets nothing and needs no hiding', () => {
+    const scoped = identityToolScope(BASH_ONLY, ['Bash'], undefined, UNATTENDED);
+    expect(scoped.allowedTools).toEqual(['Bash']);
+    expect(scoped.disallowedTools).toBeUndefined();
+  });
+
+  it('an agent that lists update_identity itself has it hidden when no person is present', () => {
+    const agent = { allowedTools: ['Bash', 'update_identity'], mcpConfigIds: [] as string[] };
+    expect(identityToolScope(agent, ['Bash', 'update_identity'], undefined, UNATTENDED)).toEqual({
+      allowedTools: ['Bash', 'update_identity'],
+      disallowedTools: ['update_identity'],
+    });
+  });
+
+  it('a bootstrap flag with no person present offers nothing', () => {
+    const scoped = identityToolScope(BASH_ONLY, ['Bash'], undefined, {
+      attended: false,
+      bootstrapMode: true,
+    });
+    expect(scoped.allowedTools).toEqual(['Bash']);
+    expect(scoped.disallowedTools).toBeUndefined();
+  });
+
+  it('keeps an existing disallowedTools first and adds no duplicate', () => {
+    expect(identityToolScope(WILDCARD, [], ['x'], UNATTENDED).disallowedTools).toEqual([
+      'x',
+      'update_identity',
+      'complete_bootstrap',
+    ]);
+    expect(
+      identityToolScope(WILDCARD, [], ['complete_bootstrap'], ATTENDED_NORMAL).disallowedTools,
+    ).toEqual(['complete_bootstrap']);
+  });
+
+  it('returns disallowedTools unchanged when it hides nothing', () => {
+    expect(
+      identityToolScope(BASH_ONLY, ['Bash'], ['x'], ATTENDED_BOOTSTRAP).disallowedTools,
+    ).toEqual(['x']);
+  });
+
+  it('dedups a tool the list already carries and keeps the order', () => {
+    const agent = { allowedTools: ['update_identity', 'Bash'], mcpConfigIds: [] as string[] };
+    expect(
+      identityToolScope(agent, ['update_identity', 'Bash'], undefined, ATTENDED_BOOTSTRAP)
+        .allowedTools,
+    ).toEqual(['update_identity', 'Bash', 'complete_bootstrap']);
+  });
+
+  it('treats an mcpConfigIds-only agent as non-wildcard', () => {
+    const agent = { allowedTools: [] as string[], mcpConfigIds: ['mcp-1'] };
+    const scoped = identityToolScope(agent, ['search_catalog'], undefined, ATTENDED_NORMAL);
+    expect(scoped.allowedTools).toEqual(['search_catalog', 'update_identity']);
+    expect(scoped.disallowedTools).toBeUndefined();
+  });
+
+  it('does not mutate its inputs', () => {
+    const allowed = ['Bash'];
+    const denied = ['x'];
+    identityToolScope(BASH_ONLY, allowed, denied, ATTENDED_BOOTSTRAP);
+    identityToolScope(WILDCARD, [], denied, UNATTENDED);
+    expect(allowed).toEqual(['Bash']);
+    expect(denied).toEqual(['x']);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // sessionNeedsCredentialRotation — the I10 per-turn rotation gate predicate
 // (design §7b). The gate runs over the MERGED `unionedCreds` set (after
 // foldConnectorCaps), not `agent.requiredCredentials` — a connector-sourced
@@ -7117,14 +7236,27 @@ describe('sessionNeedsCredentialRotation', () => {
 // replaced the old workspace:applied .ax/draft-skills trigger.)
 // ---------------------------------------------------------------------------
 describe('chat-orchestrator session-dirty re-spawn (skills:proposed)', () => {
-  function ctxWith(o: { sessionId: string; conversationId?: string; reqId: string }) {
+  function ctxWith(o: {
+    sessionId: string;
+    conversationId?: string;
+    reqId: string;
+    /** Host-set origin; `'routine'` marks a run with no person present. */
+    source?: 'routine' | 'user';
+    /** When given, every log line the turn writes is pushed here. */
+    lines?: string[];
+  }) {
+    const lines = o.lines;
     return makeAgentContext({
       sessionId: o.sessionId,
       agentId: 'test-agent',
       userId: 'test-user',
       ...(o.conversationId !== undefined ? { conversationId: o.conversationId } : {}),
+      ...(o.source !== undefined ? { source: o.source } : {}),
       reqId: o.reqId,
-      logger: createLogger({ reqId: o.reqId, writer: () => undefined }),
+      logger: createLogger({
+        reqId: o.reqId,
+        writer: lines !== undefined ? (line) => lines.push(line) : () => undefined,
+      }),
     });
   }
 
@@ -7145,15 +7277,30 @@ describe('chat-orchestrator session-dirty re-spawn (skills:proposed)', () => {
     });
   }
 
+  // What the orchestrator handed `sandbox:open-session` — the part these tests
+  // read (the frozen config and the conversation the runner resumes).
+  interface KeepaliveOpenInput {
+    owner: { agentConfig: AgentConfig; conversationId?: string };
+  }
+
   // A keepalive harness: one conversation, one warm sandbox handle, a
   // bind-session that marks the bound session alive (so turn 2 routes warm
-  // unless the dirty-set forces a fresh spawn). Tracks open / terminate counts.
-  async function makeKeepaliveHarness(extraServices: Record<string, ServiceHandler> = {}) {
+  // unless the dirty-set forces a fresh spawn). Tracks open / terminate counts
+  // and every `sandbox:open-session` input. `opts.onOpen` runs inside the
+  // open stub, i.e. while that turn's session is opening.
+  async function makeKeepaliveHarness(
+    extraServices: Record<string, ServiceHandler> = {},
+    opts: { onOpen?: () => Promise<void> } = {},
+  ) {
     const conv: Record<string, { activeSessionId: string | null }> = {
       'conv-1': { activeSessionId: null },
     };
     const live = new Set<string>();
-    const counters = { opens: 0, terminates: [] as string[] };
+    const counters = {
+      opens: 0,
+      terminates: [] as string[],
+      openInputs: [] as KeepaliveOpenInput[],
+    };
 
     // Each spawn gets a distinct trivial handle (kill resolves exited).
     function makeHandle() {
@@ -7195,8 +7342,10 @@ describe('chat-orchestrator session-dirty re-spawn (skills:proposed)', () => {
         live.add(i.sessionId); // and mark it alive
         return undefined;
       },
-      'sandbox:open-session': async () => {
+      'sandbox:open-session': async (_c, input: unknown) => {
         counters.opens += 1;
+        counters.openInputs.push(input as KeepaliveOpenInput);
+        await opts.onOpen?.();
         return { runnerEndpoint: 'unix:///tmp/m.sock', handle: makeHandle() };
       },
       'proxy:open-session': async () => ({
@@ -7979,6 +8128,352 @@ describe('chat-orchestrator session-dirty re-spawn (skills:proposed)', () => {
 
     expect(counters.opens).toBe(2);
     expect(augment.calls.n).toBe(2);
+  });
+
+  // -------------------------------------------------------------------------
+  // TASK-989 — identity at spawn. Every fresh spawn reads the agent's
+  // identity, soul, Instructions and first-run state from @ax/agents
+  // (`agents:identity:get`) and freezes them into `agentConfig.identity`; the
+  // host decides bootstrap mode (pending AND a person present) and which
+  // identity tools the session is offered. A saved change fires
+  // `system-prompt:augment-changed`, so the NEXT turn runs on a fresh runner
+  // that resumes the conversation with the new text — the TASK-612 mechanism
+  // above. A failed read ends the turn before anything opens: a turn never
+  // runs without the people's Instructions.
+  // -------------------------------------------------------------------------
+  describe('TASK-989 identity at spawn', () => {
+    interface IdentityRecordStub {
+      identity: string;
+      soul: string;
+      instructions: string;
+      bootstrap: string;
+      revision: number;
+    }
+
+    const RECORD: IdentityRecordStub = {
+      identity: 'I am Pip',
+      soul: 'Kind',
+      instructions: 'Be brief',
+      bootstrap: 'none',
+      revision: 3,
+    };
+
+    /** A mutable stand-in for @ax/agents' store, recording every read. */
+    function identityStore(record: Partial<IdentityRecordStub> = {}) {
+      const current: IdentityRecordStub = { ...RECORD, ...record };
+      const reads: Array<{ agentId: string; source: string | undefined; input: unknown }> = [];
+      const service: ServiceHandler = async (ctx, input) => {
+        reads.push({ agentId: ctx.agentId, source: ctx.source, input });
+        return { ...current };
+      };
+      return { current, reads, service };
+    }
+
+    /** What @ax/agents fires after a saved write, from a host ctx. */
+    async function announceIdentityChange(bus: HookBus) {
+      const payload: SystemPromptAugmentChangedPayload = { agentId: 'test-agent' };
+      await bus.fire(
+        SYSTEM_PROMPT_AUGMENT_CHANGED_HOOK,
+        makeAgentContext({
+          sessionId: 'identity-save',
+          agentId: 'test-agent',
+          userId: 'test-user',
+          reqId: 'identity-save',
+          logger: createLogger({ reqId: 'identity-save', writer: () => undefined }),
+        }),
+        payload,
+      );
+    }
+
+    async function routineTurn(h: { bus: HookBus }, reqId: string) {
+      fireTurnEnd(h.bus, 's-1', reqId);
+      await h.bus.call<unknown, AgentOutcome>(
+        'agent:invoke',
+        ctxWith({ sessionId: 's-1', conversationId: 'conv-1', reqId, source: 'routine' }),
+        { message: { role: 'user', content: 'Scheduled check-in.' } },
+      );
+    }
+
+    it('freezes identity, soul and Instructions into agentConfig.identity', async () => {
+      const store = identityStore();
+      const { h, counters } = await makeKeepaliveHarness({ 'agents:identity:get': store.service });
+
+      await turn(h, 'req-1');
+
+      const cfg = counters.openInputs[0]!.owner.agentConfig;
+      expect(cfg.identity).toEqual({
+        identity: 'I am Pip',
+        soul: 'Kind',
+        instructions: 'Be brief',
+        bootstrapMode: false,
+      });
+      // TEST_AGENT carries a restrictive allowedTools: update_identity is
+      // offered anyway (a person is present), complete_bootstrap is not.
+      expect(cfg.allowedTools).toContain('update_identity');
+      expect(cfg.allowedTools).not.toContain('complete_bootstrap');
+      // Neither would otherwise show, so nothing is hidden.
+      expect('disallowedTools' in cfg).toBe(false);
+      // Read once, for the turn's own agent, with the turn's own ctx.
+      expect(store.reads).toEqual([
+        { agentId: 'test-agent', source: undefined, input: { agentId: 'test-agent' } },
+      ]);
+    });
+
+    for (const bootstrap of ['none', 'done']) {
+      it(`an agent whose first-run state is '${bootstrap}' runs normal mode without complete_bootstrap`, async () => {
+        const store = identityStore({ bootstrap });
+        const { h, counters } = await makeKeepaliveHarness({
+          'agents:identity:get': store.service,
+        });
+
+        await turn(h, 'req-1');
+
+        const cfg = counters.openInputs[0]!.owner.agentConfig;
+        expect(cfg.identity?.bootstrapMode).toBe(false);
+        expect(cfg.allowedTools).toContain('update_identity');
+        expect(cfg.allowedTools).not.toContain('complete_bootstrap');
+      });
+    }
+
+    it('a pending agent with a person present runs bootstrap mode and is offered complete_bootstrap', async () => {
+      const store = identityStore({ identity: '', soul: '', bootstrap: 'pending', revision: 0 });
+      const { h, counters } = await makeKeepaliveHarness({ 'agents:identity:get': store.service });
+
+      await turn(h, 'req-1');
+
+      const cfg = counters.openInputs[0]!.owner.agentConfig;
+      expect(cfg.identity).toEqual({
+        identity: '',
+        soul: '',
+        instructions: 'Be brief',
+        bootstrapMode: true,
+      });
+      // Restrictive allowedTools, and still both tools: the agent can save
+      // itself and finish its first-run setup.
+      expect(cfg.allowedTools).toEqual(
+        expect.arrayContaining(['file.read', 'update_identity', 'complete_bootstrap']),
+      );
+      expect('disallowedTools' in cfg).toBe(false);
+    });
+
+    it('a routine run never bootstraps and is offered neither identity tool', async () => {
+      const store = identityStore({ bootstrap: 'pending' });
+      const { h, counters } = await makeKeepaliveHarness({ 'agents:identity:get': store.service });
+
+      await routineTurn(h, 'req-r1');
+
+      const cfg = counters.openInputs[0]!.owner.agentConfig;
+      // The people's Instructions still reach an unattended run; bootstrap
+      // mode never does.
+      expect(cfg.identity).toEqual({
+        identity: 'I am Pip',
+        soul: 'Kind',
+        instructions: 'Be brief',
+        bootstrapMode: false,
+      });
+      expect(cfg.allowedTools).not.toContain('update_identity');
+      expect(cfg.allowedTools).not.toContain('complete_bootstrap');
+      // The routine's own tools are untouched (withBrokerDefaults' routineRun).
+      expect(cfg.allowedTools).toContain('routine_report');
+      expect(store.reads.map((r) => r.source)).toEqual(['routine']);
+    });
+
+    it('a routine run of a wildcard agent hides both identity tools from its whole catalog', async () => {
+      const store = identityStore({ bootstrap: 'pending' });
+      const { h, counters } = await makeKeepaliveHarness({
+        'agents:resolve': async () => ({
+          agent: { ...TEST_AGENT, allowedTools: [], mcpConfigIds: [] },
+        }),
+        'agents:identity:get': store.service,
+      });
+
+      await routineTurn(h, 'req-r1');
+
+      const cfg = counters.openInputs[0]!.owner.agentConfig;
+      expect(cfg.allowedTools).toEqual([]); // still the wildcard
+      expect(cfg.disallowedTools).toEqual(['update_identity', 'complete_bootstrap']);
+    });
+
+    it('a wildcard agent keeps its catalog and hides complete_bootstrap after the tool-policy denies', async () => {
+      const store = identityStore();
+      const { h, counters } = await makeKeepaliveHarness({
+        'agents:resolve': async () => ({
+          agent: { ...TEST_AGENT, allowedTools: [], mcpConfigIds: [] },
+        }),
+        'agents:identity:get': store.service,
+        'tool-policy:list-agent-overrides': async () => ({
+          overrides: [{ toolKey: 'Bash', verdict: 'deny', ceiling: 'allow', origin: 'user' }],
+        }),
+      });
+
+      await turn(h, 'req-1');
+
+      const cfg = counters.openInputs[0]!.owner.agentConfig;
+      expect(cfg.allowedTools).toEqual([]);
+      expect(cfg.disallowedTools).toEqual(['Bash', 'complete_bootstrap']);
+    });
+
+    it('an identity change between turns runs the next turn on a fresh runner with the new identity', async () => {
+      const store = identityStore({ identity: 'v1' });
+      const { h, counters } = await makeKeepaliveHarness({ 'agents:identity:get': store.service });
+
+      await turn(h, 'req-1');
+      expect(counters.opens).toBe(1);
+      expect(counters.openInputs[0]!.owner.agentConfig.identity?.identity).toBe('v1');
+
+      // The agent saved a new identity between turns; @ax/agents announces it.
+      store.current.identity = 'v2';
+      await announceIdentityChange(h.bus);
+
+      await turn(h, 'req-2');
+      expect(counters.opens).toBe(2); // a fresh runner…
+      expect(counters.terminates).toContain('s-1'); // …in place of the stale one…
+      const respawned = counters.openInputs[1]!.owner;
+      expect(respawned.agentConfig.identity?.identity).toBe('v2'); // …built with the new identity…
+      expect(respawned.conversationId).toBe('conv-1'); // …resuming the same conversation.
+
+      // One change costs one re-spawn, and a routed turn reads nothing.
+      await turn(h, 'req-3');
+      expect(counters.opens).toBe(2);
+      expect(store.reads).toHaveLength(2);
+    });
+
+    it('a change during a turn does not touch that turn', async () => {
+      const store = identityStore({ identity: 'v1' });
+      const bus: { current?: HookBus } = {};
+      let fired = false;
+      const { h, counters } = await makeKeepaliveHarness(
+        { 'agents:identity:get': store.service },
+        {
+          // The save lands while turn 1's session is opening.
+          onOpen: async () => {
+            if (fired || bus.current === undefined) return;
+            fired = true;
+            store.current.identity = 'v2';
+            await announceIdentityChange(bus.current);
+          },
+        },
+      );
+      bus.current = h.bus;
+
+      await turn(h, 'req-1');
+      expect(fired).toBe(true);
+      // Turn 1 ran to its end on the identity it was built with.
+      expect(counters.opens).toBe(1);
+      expect(counters.terminates).toEqual([]);
+      expect(counters.openInputs[0]!.owner.agentConfig.identity?.identity).toBe('v1');
+
+      // The next turn picks the change up.
+      await turn(h, 'req-2');
+      expect(counters.opens).toBe(2);
+      expect(counters.openInputs[1]!.owner.agentConfig.identity?.identity).toBe('v2');
+    });
+
+    it('a save that lands while the identity is being read still reaches the next turn', async () => {
+      // The read has already answered v1 when the save lands. The session's
+      // generation is snapshotted BEFORE the read, so this spawn counts as
+      // stale and the next turn re-spawns instead of keeping v1.
+      const bus: { current?: HookBus } = {};
+      const current: IdentityRecordStub = { ...RECORD, identity: 'v1' };
+      let fired = false;
+      const { h, counters } = await makeKeepaliveHarness({
+        'agents:identity:get': async () => {
+          const answer = { ...current };
+          if (!fired && bus.current !== undefined) {
+            fired = true;
+            current.identity = 'v2';
+            await announceIdentityChange(bus.current);
+          }
+          return answer;
+        },
+      });
+      bus.current = h.bus;
+
+      await turn(h, 'req-1');
+      expect(fired).toBe(true);
+      expect(counters.openInputs[0]!.owner.agentConfig.identity?.identity).toBe('v1');
+
+      await turn(h, 'req-2');
+      expect(counters.opens).toBe(2);
+      expect(counters.openInputs[1]!.owner.agentConfig.identity?.identity).toBe('v2');
+    });
+
+    const FAILED_READS: Array<[string, ServiceHandler]> = [
+      [
+        'the read throws',
+        async () => {
+          throw new Error('db down: SECRET-INSTRUCTIONS');
+        },
+      ],
+      ['the reply is not an object', async () => null],
+      ['a text is not a string', async () => ({ ...RECORD, instructions: 42 })],
+      ['a text is missing', async () => ({ identity: 'I am Pip', soul: 'Kind', bootstrap: 'none', revision: 0 })],
+      ['the first-run state is unknown', async () => ({ ...RECORD, bootstrap: 'maybe' })],
+    ];
+
+    for (const [label, service] of FAILED_READS) {
+      it(`an identity read failure ends the turn before any session opens (${label})`, async () => {
+        let proxyOpens = 0;
+        const { h, counters } = await makeKeepaliveHarness({
+          'agents:identity:get': service,
+          'proxy:open-session': async () => {
+            proxyOpens += 1;
+            return {
+              proxyEndpoint: 'tcp://127.0.0.1:1',
+              caCertPem: 'CA',
+              envMap: {},
+              proxyAuthToken: 'a'.repeat(32),
+            };
+          },
+        });
+        const turnErrors: unknown[] = [];
+        const ends: unknown[] = [];
+        h.bus.subscribe('chat:turn-error', 'obs', async (_c, p: unknown) => {
+          turnErrors.push(p);
+          return undefined;
+        });
+        h.bus.subscribe('chat:end', 'obs', async (_c, p: unknown) => {
+          ends.push(p);
+          return undefined;
+        });
+        const lines: string[] = [];
+
+        const outcome = await h.bus.call<unknown, AgentOutcome>(
+          'agent:invoke',
+          ctxWith({ sessionId: 's-1', conversationId: 'conv-1', reqId: 'req-1', lines }),
+          { message: { role: 'user', content: 'hi' } },
+        );
+
+        const expected = { kind: 'terminated', reason: 'system-prompt:identity-unavailable' };
+        expect(outcome).toEqual(expected);
+        // The browser hears about it once, and audit sees exactly one chat:end.
+        expect(turnErrors).toEqual([
+          { reqId: 'req-1', reason: 'system-prompt:identity-unavailable' },
+        ]);
+        expect(ends).toEqual([{ outcome: expected }]);
+        // Nothing opened, so there is nothing to close.
+        expect(counters.opens).toBe(0);
+        expect(proxyOpens).toBe(0);
+        // Logged by error name/code only — never message text.
+        const failed = lines.filter((l) => l.includes('"agent_identity_read_failed"'));
+        expect(failed).toHaveLength(1);
+        expect(failed[0]).toContain('"agentId":"test-agent"');
+        expect(failed[0]).not.toContain('SECRET');
+      });
+    }
+
+    it('without agents:identity:get the spawn is unchanged', async () => {
+      const { h, counters } = await makeKeepaliveHarness();
+
+      await turn(h, 'req-1');
+
+      const cfg = counters.openInputs[0]!.owner.agentConfig;
+      expect('identity' in cfg).toBe(false);
+      expect(cfg.allowedTools).toEqual(
+        withBrokerDefaults(TEST_AGENT.allowedTools, TEST_AGENT.mcpConfigIds),
+      );
+      expect('disallowedTools' in cfg).toBe(false);
+    });
   });
 });
 

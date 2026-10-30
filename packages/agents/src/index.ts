@@ -2,8 +2,44 @@ export { createAgentsPlugin } from './plugin.js';
 export {
   runAgentsMigration,
   type AgentsDatabase,
+  type AgentsIdentityRow,
   type AgentsRow,
 } from './migrations.js';
+// TASK-989 — the identity hooks' contract (names, caps, outcome schemas).
+export {
+  AGENTS_IDENTITY_COMPLETE_BOOTSTRAP_HOOK,
+  AGENTS_IDENTITY_GET_HOOK,
+  AGENTS_IDENTITY_SET_HOOK,
+  AgentIdentityRecordSchema,
+  IDENTITY_SCAN_HOOK,
+  IDENTITY_SECTIONS,
+  INSTRUCTIONS_MAX_CHARS,
+  IdentityCompleteBootstrapOutputSchema,
+  IdentityGetOutputSchema,
+  IdentitySetOutputSchema,
+  type AgentIdentityRecord,
+  type BootstrapState,
+  type CreateBootstrap,
+  type IdentityCompleteBootstrapInput,
+  type IdentityCompleteBootstrapOutput,
+  type IdentityGetInput,
+  type IdentityGetOutput,
+  type IdentityRefusalCode,
+  type IdentitySection,
+  type IdentitySetInput,
+  type IdentitySetOutput,
+} from './types.js';
+// TASK-989 — the agent's own identity tools.
+export {
+  COMPLETE_BOOTSTRAP_DESCRIPTOR,
+  COMPLETE_BOOTSTRAP_TOOL,
+  UPDATE_IDENTITY_DESCRIPTOR,
+  UPDATE_IDENTITY_TOOL,
+  type CompleteBootstrapError,
+  type CompleteBootstrapResult,
+  type UpdateIdentityError,
+  type UpdateIdentityResult,
+} from './identity/tools.js';
 export {
   createAgentStore,
   mintAgentId,

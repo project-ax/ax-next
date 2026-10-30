@@ -12,10 +12,10 @@
 // there is no untrusted-input path into the prompt here. It is plain prose
 // for the LLM; not interpolated into a shell, path, SQL, or URL.
 //
-// The composed system prompt is always a plain string (the file-based
-// prompt-engine assembles it from the agent's `.ax/` identity files + these
-// notes — see prompt-engine.ts). The legacy `claude_code` preset / string-
-// fallback path was removed in the conversational-agent-identity Phase 4
+// The composed system prompt is always a plain string (the prompt-engine
+// assembles it from the session config's identity, soul and Instructions +
+// these notes — see prompt-engine.ts). The legacy `claude_code` preset /
+// string-fallback path was removed in the conversational-agent-identity Phase 4
 // (TASK-142) when the `system_prompt` column was dropped.
 // ---------------------------------------------------------------------------
 
@@ -28,9 +28,9 @@ import { draftPrefix } from '@ax/tool-skill-propose';
 
 /**
  * The shape the SDK's `options.systemPrompt` accepts that we produce. We only
- * ever emit a plain string — the file-based prompt-engine composes one from
- * the agent's identity files + the runner's operational notes. (The SDK also
- * accepts presets / `string[]`; we no longer use them.)
+ * ever emit a plain string — the prompt-engine composes one from the session
+ * config's identity + the runner's operational notes. (The SDK also accepts
+ * presets / `string[]`; we no longer use them.)
  */
 export type SdkSystemPrompt = string;
 
@@ -53,9 +53,9 @@ export type SdkSystemPrompt = string;
 // runner-conditional prompt would fork behavior at exactly the seam the
 // two-runner parity bar exists to keep honest.
 //
-// PRECEDENCE: composed AFTER the safety floor (which no file can suppress) and
-// BEFORE `.ax/AGENTS.md` (the agent's override layer) — defaults first, then
-// the overrides that act on them. See `composeNormalModePrompt`.
+// PRECEDENCE: composed AFTER the safety floor (which nothing can suppress) and
+// BEFORE the people's Instructions (the override layer, TASK-989) — defaults
+// first, then the overrides that act on them. See `composeNormalModePrompt`.
 //
 // Both are FIXED runner-authored strings with no interpolation: no untrusted
 // input path, nothing to escape.
@@ -63,8 +63,8 @@ export type SdkSystemPrompt = string;
 
 /**
  * Default working behavior — scope, honesty about what was verified, and which
- * tool to reach for. Overridable by `.ax/AGENTS.md`; the safety floor above it
- * is not.
+ * tool to reach for. Overridable by the people's Instructions; the safety floor
+ * above it is not.
  *
  * The evidence line ("done, fixed, tested … only when tool output supports the
  * claim") is the load-bearing one: a model without harness post-training will
@@ -76,7 +76,7 @@ export function workPolicyNote(): string {
   return [
     `## How you work`,
     ``,
-    `These are defaults. \`.ax/AGENTS.md\` below can override any of them; the`,
+    `These are defaults. Instructions from your people below can override any of them; the`,
     `operating floor above them cannot be overridden.`,
     ``,
     `- Keep every explicit requirement of the request in view until it is done,`,
@@ -107,7 +107,7 @@ export function workPolicyNote(): string {
  *
  * DIVERGENCE from the upstream prompt (deliberate): its "never coin acronyms /
  * state facts literally / no metaphors or idioms" clauses are dropped. They
- * would fight the agent-authored `.ax/SOUL.md` that gives an agent its voice.
+ * would fight the soul an agent writes for itself, which gives it its voice.
  * Structure is ours to set; style is the agent's. The upstream `<user_guide>`
  * and `<browser_verification>` sections are dropped as inapplicable, and the
  * subagent / background-task lines with them — we register no such tools.
@@ -116,7 +116,7 @@ export function communicationNote(): string {
   return [
     `## How you communicate`,
     ``,
-    `Defaults, and \`.ax/AGENTS.md\` below can override them.`,
+    `Defaults, and Instructions from your people below can override them.`,
     ``,
     `- Write every user-facing message for a reader who has not seen your tool`,
     `  calls, your notes, or the files you opened. Restate what you did and what`,
@@ -188,30 +188,6 @@ export function workspaceNote(workspaceRoot: string, cwd: string = workspaceRoot
     `own \`.ax/…\` and \`.claude/…\` files. Open a shared file as`,
     `\`${workspaceRoot}/.ax/uploads/…\` — NEVER relative to \`${cwd}\`, and NEVER under`,
     `a home directory like \`~\` or \`/home/…\`.`,
-  ].join(' ');
-}
-
-/**
- * Bootstrap-mode path note, for when the working directory (`cwd`, e.g. the
- * durable `/files` mount) is NOT the governed root (`workspaceRoot`, where
- * `.ax/` lives).
- *
- * Bootstrap mode injects none of the normal-mode operational notes, so nothing
- * else tells the model where `.ax/` really is. The file tools are re-rooted to
- * the governed tier for it, but a Bash command string is not (tool-policy
- * rewrites only path-typed fields), so the script's relative
- * `rm .ax/BOOTSTRAP.md` ran against `<cwd>/.ax` and the agent never graduated.
- * Both paths are host-controlled (env), never model/user input.
- */
-export function bootstrapPathNote(workspaceRoot: string, cwd: string): string {
-  return [
-    `Where your \`.ax/\` files are: your working directory is \`${cwd}\`, but`,
-    `\`.ax/BOOTSTRAP.md\`, \`.ax/IDENTITY.md\` and \`.ax/SOUL.md\` live under`,
-    `\`${workspaceRoot}/.ax/\`, NOT \`${cwd}/.ax/\`. The file tools (Read, Write, Edit)`,
-    `find them for you; Bash does not — it reads a path exactly as written,`,
-    `relative to \`${cwd}\`. So in a Bash command always use the full path (when you`,
-    `are done: \`rm ${workspaceRoot}/.ax/BOOTSTRAP.md\`), and never create a \`.ax\``,
-    `folder in \`${cwd}\`.`,
   ].join(' ');
 }
 
@@ -397,8 +373,8 @@ export function memoryExportNote(root: string): string {
  * tools aren't wired). Returns a single string joined by blank lines —
  * always non-empty.
  *
- * Consumed by the file-based prompt-engine's normal mode (`prompt-engine.ts`),
- * so the operational notes are assembled in exactly one place.
+ * Consumed by the prompt-engine's normal mode (`prompt-engine.ts`), so the
+ * operational notes are assembled in exactly one place.
  */
 export function operationalNotes(
   workspaceRoot: string,

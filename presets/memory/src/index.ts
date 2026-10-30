@@ -171,7 +171,6 @@ export function createMemoryPlugins(config: MemoryPresetConfig): Plugin[] {
         : {}),
     }),
     createMemoryPlugin({
-      rules: true,
       // Always export: the workspace facts view (permanent/memory/facts/**)
       // needs no volume. The volume only adds the runner's /memory mount.
       exports:

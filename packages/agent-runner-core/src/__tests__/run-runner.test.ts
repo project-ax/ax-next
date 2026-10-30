@@ -284,9 +284,9 @@ describe('runRunner — bootstrap-safe augment (TASK-524)', () => {
 
 describe('runRunner — prompt working frame', () => {
   it('hands the prompt engine the durable mount as cwd, distinct from the governed root', async () => {
-    // Bootstrap mode needs to know the two differ: its script says `rm
-    // .ax/BOOTSTRAP.md`, which a Bash command resolves against cwd (/files),
-    // not the governed root (/tmp/workspace), unless the prompt says otherwise.
+    // The workspace note states both roots when they differ, so the model opens
+    // a shared `.ax/uploads/…` file under the governed root (/tmp/workspace),
+    // not under its working directory (/files) where it does not exist (TASK-164).
     const { buildSystemPrompt } = await import('../prompt-engine.js');
     const mock = buildSystemPrompt as unknown as Mock;
     mock.mockClear();
@@ -295,7 +295,7 @@ describe('runRunner — prompt working frame', () => {
     expect(await runRunner(() => loop, seams(env))).toBe(0);
     expect(mock).toHaveBeenCalledOnce();
     const args = mock.mock.calls[0]!;
-    expect(args[2]).toBe('/tmp/workspace'); // workspaceRoot: where .ax/ lives
+    expect(args[2]).toBe('/tmp/workspace'); // workspaceRoot: the governed root
     expect(args[5]).toBe('/files'); //          userFilesRoot
     expect(args[6]).toBe('/files'); //          cwd
   });
@@ -2329,5 +2329,55 @@ describe('routine prompt availability from filtered catalog', () => {
       expect(await runRunner(() => ({ run: async () => 0 }), seams(fakeEnv))).toBe(0);
       expect(vi.mocked(buildSystemPrompt).mock.calls.at(-1)?.[9]).toBe(expected);
     }
+  });
+});
+
+describe('identity prompt inputs (TASK-989)', () => {
+  const IDENTITY = { identity: 'I am Pip', soul: 'Kind', instructions: 'Be brief', bootstrapMode: false };
+  // The top-level beforeEach has just rebuilt fakeClient; wrap THAT implementation
+  // on every call, so overrides from one case never leak into the next.
+  let base: (action: string, input: unknown) => Promise<unknown>;
+  beforeEach(() => {
+    base = fakeClient.call.getMockImplementation()! as typeof base;
+  });
+
+  /** Boot the shell with these agentConfig overrides and this host catalog; return
+   *  the arguments it handed the prompt engine. */
+  async function promptArgs(agentConfig: Record<string, unknown>, catalog: string[]): Promise<unknown[]> {
+    fakeClient.call.mockImplementation(async (action: string, input: unknown) => {
+      if (action === 'tool.list') {
+        return { tools: catalog.map((name) => ({ name, executesIn: 'host', inputSchema: {} })) };
+      }
+      const result = (await base(action, input)) as Record<string, unknown>;
+      if (action === 'session.get-config') {
+        return { ...result, agentConfig: { ...(result.agentConfig as object), ...agentConfig } };
+      }
+      return result;
+    });
+    const { buildSystemPrompt } = await import('../prompt-engine.js');
+    const mock = vi.mocked(buildSystemPrompt);
+    mock.mockClear();
+    expect(await runRunner(() => ({ run: async () => 0 }), seams(fakeEnv))).toBe(0);
+    expect(mock).toHaveBeenCalledOnce();
+    return mock.mock.calls[0]!;
+  }
+
+  it('hands the session config identity to the prompt engine as it arrived', async () => {
+    const args = await promptArgs({ identity: IDENTITY }, []);
+    expect(args[10]).toEqual(IDENTITY);
+  });
+
+  it('passes no identity when the session config has none, so the engine default applies', async () => {
+    const args = await promptArgs({}, []);
+    expect(args).toHaveLength(12);
+    expect(args[10]).toBeUndefined();
+  });
+
+  it('says update_identity is available only when it survived the catalog filters', async () => {
+    const catalog = ['update_identity', 'web_search'];
+    expect((await promptArgs({ allowedTools: [] }, catalog))[11]).toBe(true);
+    expect((await promptArgs({ allowedTools: ['web_search'] }, catalog))[11]).toBe(false);
+    expect((await promptArgs({ disallowedTools: ['update_identity'] }, catalog))[11]).toBe(false);
+    expect((await promptArgs({}, ['web_search']))[11]).toBe(false);
   });
 });

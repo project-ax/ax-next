@@ -151,6 +151,13 @@ export const ERROR_LABELS: Record<string, string> = {
   'system-prompt:brief-missing': 'This task’s instructions didn’t load, so the check-in didn’t run.',
   'system-prompt:brief-too-long':
     'This task’s instructions are too long to load, so the check-in didn’t run. Shorten “What should … do?” in Edit and the next check-in will run.',
+  // TASK-989 — the agent's identity and Instructions live in the database now,
+  // and the host could not read them when it went to start the turn, so the
+  // turn never began (nothing ran, nothing to undo). Unlike the brief-* codes
+  // above this is a read failure, which can clear on its own, so a retry is a
+  // fair thing to suggest.
+  'system-prompt:identity-unavailable':
+    'We couldn’t load this agent’s identity and instructions, so it didn’t start. Try again in a moment.',
 };
 
 /**

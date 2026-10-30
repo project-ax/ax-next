@@ -107,6 +107,7 @@ afterEach(async () => {
   const cleanup = new (await import('pg')).default.Client({ connectionString });
   await cleanup.connect();
   try {
+    await cleanup.query('DROP TABLE IF EXISTS agents_v1_identity');
     await cleanup.query('DROP TABLE IF EXISTS agents_v1_agents');
   } finally {
     await cleanup.end().catch(() => {});
@@ -146,6 +147,13 @@ describe('@ax/agents plugin manifest + lifecycle', () => {
         'agents:list-personal-owners',
         'agents:list-authored-skills',
         'agents:resolve-authored-skills',
+        // TASK-989 — identity, soul, Instructions and onboarding state, and
+        // the agent's own two host tools.
+        'agents:identity:get',
+        'agents:identity:set',
+        'agents:identity:complete-bootstrap',
+        'tool:execute:update_identity',
+        'tool:execute:complete_bootstrap',
       ],
       // database:get-instance + http:register-route + auth:require-user are
       // hard. teams:is-member is graceful (handled inside checkAccess via
@@ -196,6 +204,16 @@ describe('@ax/agents plugin manifest + lifecycle', () => {
           hook: 'models:get-policy',
           degradation:
             "the model allow-list, the Default model and the runner rule fall back to the built-in list (today's behaviour)",
+        },
+        {
+          hook: 'identity:scan',
+          degradation:
+            'every identity, soul and Instructions write is refused (fail closed): nothing can be saved without the content check',
+        },
+        {
+          hook: 'tool:register',
+          degradation:
+            'update_identity and complete_bootstrap are not offered to agents; their tool:execute services still answer',
         },
       ],
       subscribes: ['bootstrap:reset-cleanup', 'connectors:deleted'],
@@ -258,6 +276,77 @@ describe('@ax/agents plugin manifest + lifecycle', () => {
       SELECT count(*)::text AS count FROM agents_v1_agents
     `.execute(db);
     expect(count.rows[0]?.count).toBe('0');
+  });
+
+  // TASK-989 — identity rows have no FK to the agent row (a FK would break
+  // every downstream DROP TABLE agents_v1_agents teardown), so the purge is
+  // ours to do, inside the same transaction as the agent row's delete.
+  it('agents:delete purges the identity row', async () => {
+    const h = await makeHarness({
+      extraServices: { 'identity:scan': async () => ({ verdict: 'clean' }) },
+    });
+    const ctx = h.ctx({ userId: 'u1' });
+    const actor = { userId: 'u1', isAdmin: false };
+    const doomed = await h.bus.call<CreateInput, CreateOutput>('agents:create', ctx, {
+      actor,
+      input: makeInput(),
+      bootstrap: 'pending',
+    });
+    const survivor = await h.bus.call<CreateInput, CreateOutput>('agents:create', ctx, {
+      actor,
+      input: makeInput({ displayName: 'Survivor' }),
+      bootstrap: 'pending',
+    });
+    const doomedId = doomed.agent.id;
+    await h.bus.call('agents:identity:set', h.ctx({ userId: 'u1', agentId: doomedId }), {
+      agentId: doomedId,
+      patch: { soul: 'Kind' },
+      expectedRevision: 0,
+    });
+
+    const { sql } = await import('kysely');
+    const { db } = await h.bus.call<unknown, { db: import('kysely').Kysely<unknown> }>(
+      'database:get-instance',
+      h.ctx(),
+      {},
+    );
+    const rowsFor = async (agentId: string): Promise<number> => {
+      const r = await sql<{ n: number }>`
+        SELECT count(*)::int AS n FROM agents_v1_identity WHERE agent_id = ${agentId}
+      `.execute(db);
+      return r.rows[0]!.n;
+    };
+    expect(await rowsFor(doomedId)).toBe(1);
+
+    await h.bus.call<DeleteInput, void>('agents:delete', ctx, { actor, agentId: doomedId });
+    expect(await rowsFor(doomedId)).toBe(0);
+    expect(await rowsFor(survivor.agent.id)).toBe(1);
+  });
+
+  it('bootstrap:reset-cleanup empties the identity table', async () => {
+    const h = await makeHarness();
+    const ctx = h.ctx({ userId: 'u1' });
+    for (const displayName of ['One', 'Two']) {
+      await h.bus.call<CreateInput, CreateOutput>('agents:create', ctx, {
+        actor: { userId: 'u1', isAdmin: false },
+        input: makeInput({ displayName }),
+        bootstrap: 'pending',
+      });
+    }
+    const { sql } = await import('kysely');
+    const { db } = await h.bus.call<unknown, { db: import('kysely').Kysely<unknown> }>(
+      'database:get-instance',
+      h.ctx(),
+      {},
+    );
+    const count = async (): Promise<number> => {
+      const r = await sql<{ n: number }>`SELECT count(*)::int AS n FROM agents_v1_identity`.execute(db);
+      return r.rows[0]!.n;
+    };
+    expect(await count()).toBe(2);
+    const fired = await h.bus.fire('bootstrap:reset-cleanup', h.ctx(), {});
+    expect(fired.rejected).toBe(false);
+    expect(await count()).toBe(0);
   });
 });
 

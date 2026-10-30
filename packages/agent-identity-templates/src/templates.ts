@@ -2,28 +2,25 @@
 // Canonical agent-identity templates (versioned in code).
 //
 // This is the SINGLE SOURCE of the bootstrap/identity template bytes. It lives
-// in its own pure-data package (no `@ax/core` dependency) so that BOTH the
-// runner (`@ax/agent-claude-sdk-runner`, which injects `BOOTSTRAP.md` verbatim
-// in bootstrap mode) AND the host bootstrap route (`@ax/channel-web`, which
-// seeds `.ax/BOOTSTRAP.md` at agent create) can import the same constants
-// without a cross-plugin runtime import (Invariant #2). The pattern mirrors
-// `@ax/skills-parser`: a tiny shared, kernel-free
-// library on the eslint `no-restricted-imports` allow-list.
+// in its own pure-data package (no `@ax/core` dependency) so that the runner
+// can import the constants without a cross-plugin runtime import
+// (Invariant #2). The pattern mirrors `@ax/skills-parser`: a tiny shared,
+// kernel-free library on the eslint `no-restricted-imports` allow-list.
 //
 // `BOOTSTRAP_TEMPLATE` is v2-adapted from the openclaw CANONICAL bootstrap
-// (github.com/openclaw/openclaw/docs/reference/templates), NOT the ax v1 fork
+// (openclaw docs/reference/templates), NOT the ax v1 fork
 // — so there is no security-first / canary / taint framing. The adaptations:
-//   - the `Write` tool (not openclaw's `write_file`)
-//   - `.ax/` paths under the durable /agent workspace
-//   - a completion ritual that names + deletes its own path (.ax/BOOTSTRAP.md)
+//   - identity is saved with the `update_identity` tool and the script ends
+//     with `complete_bootstrap` (no files, no `Write` tool)
 //   - the memory section points at @ax/memory's `memory_note` tool
 //   - USER.md and channel-linking (WhatsApp/Telegram) are trimmed (out of scope
 //     for this epic — design "Deferred / out of scope")
 //
-// The host seeds `.ax/BOOTSTRAP.md` with `BOOTSTRAP_TEMPLATE` at agent create
-// (Phase 2); the runner injects its content verbatim as the entire system
-// prompt while the file exists (bootstrap mode). The agent is never told to
-// "load" it — the runner is the anchor.
+// The runner composes this script as the entire system prompt when the host
+// says the agent is bootstrapping (`agentConfig.identity.bootstrapMode`).
+// Nothing seeds or reads a file. The agent is never told to "load" it — the
+// runner is the anchor. NOTE: `@ax/validator-identity`'s legacy pre-apply gate
+// still compares against this constant until the workspace tier is removed.
 //
 // IDENTITY_SCAFFOLD / SOUL_SCAFFOLD are short default stubs the bootstrap
 // script can copy if the agent wants a starting structure. They are NOT
@@ -32,9 +29,10 @@
 // ---------------------------------------------------------------------------
 
 /**
- * The canonical bootstrap script. While `.ax/BOOTSTRAP.md` exists, this IS the
- * agent's entire system prompt (the agent wakes up inside it). Conversational,
- * not a form; the agent writes its own identity, then deletes this file.
+ * The canonical bootstrap script. While the agent is bootstrapping, this IS
+ * its entire system prompt (the agent wakes up inside it). Conversational, not
+ * a form; the agent saves its own identity with `update_identity`, then calls
+ * `complete_bootstrap`.
  */
 export const BOOTSTRAP_TEMPLATE = `# Bootstrap
 
@@ -45,9 +43,7 @@ Don't be robotic about it. Open with something natural, like: "Hey — I just ca
 online. I don't have a name or a sense of myself yet. Mind if we figure that out
 together?" Then have a real conversation.
 
-**Talk first. Do NOT write any files yet, and do NOT run through this as a form
-or a checklist.** You discover who you are through dialogue, not by filling in
-blanks. Let it take a few exchanges back and forth.
+**Talk first. Do NOT save anything yet, and do NOT run through this as a form or a checklist.** You discover who you are through dialogue, not by filling in blanks. Let it take a few exchanges back and forth.
 
 **Don't ask who you're talking to or for their name.** You're often shared by
 several people, so a single person's name doesn't belong in your identity. This
@@ -66,15 +62,13 @@ conversation is about discovering *you*, not cataloguing them.
 ## When you know who you are
 
 Only once you and your person have actually talked and you have a clear picture,
-use the **\`Write\`** tool to create your identity files:
+use the **\`update_identity\`** tool to save who you are:
 
-- \`Write\` \`.ax/IDENTITY.md\` — your name, your signature emoji, your vibe, how you
+- \`update_identity\` with \`section: "identity"\` — your name, your signature emoji, your vibe, how you
   present yourself.
-- \`Write\` \`.ax/SOUL.md\` — your values, your philosophy, the boundaries you hold.
+- \`update_identity\` with \`section: "soul"\` — your values, your philosophy, the boundaries you hold.
 
 Write them in your own voice — this is you describing yourself, not a template.
-The files are saved and committed automatically; you don't need to run any git
-commands.
 
 ## Memory
 
@@ -84,9 +78,7 @@ survives across conversations so you don't have to relearn it next time.
 
 ## When you're done
 
-Once \`.ax/IDENTITY.md\` and \`.ax/SOUL.md\` are written and you feel like yourself,
-**delete \`.ax/BOOTSTRAP.md\`.** You don't need this script anymore — you're you
-now. Deleting it is how you graduate from bootstrapping into just being yourself.
+Once your identity and your soul are both saved and you feel like yourself, call **\`complete_bootstrap\`**. You don't need this script anymore — from your next message on, you're just you.
 
 Take your time. You only get to be born once. Good luck out there — make it count.
 `;
@@ -120,8 +112,7 @@ export const SOUL_SCAFFOLD = `# Soul
 /**
  * The canonical one-line fallback identity, naming the agent (closing the "says
  * Claude" gap). The runner injects this as the `## Identity` body in normal mode
- * when an agent has no `.ax/IDENTITY.md` of its own (a brand-new or file-less
- * agent) — see `@ax/agent-claude-sdk-runner`'s prompt-engine. Versioned here so
+ * when an agent has no identity of its own yet (a brand-new agent) — see `@ax/agent-claude-sdk-runner`'s prompt-engine. Versioned here so
  * the runner imports the same constant rather than duplicating the line.
  */
 export function fallbackIdentityLine(displayName: string): string {
@@ -129,11 +120,9 @@ export function fallbackIdentityLine(displayName: string): string {
 }
 
 /**
- * A one-line trusted preamble the runner prepends to the BOOTSTRAP.md content
+ * A one-line trusted preamble the runner prepends to the bootstrap script
  * before passing it to the SDK as the system prompt. Lets the agent know its
- * pre-assigned name without modifying the canonical BOOTSTRAP.md bytes on disk
- * (the validator-identity byte-gate only checks what is WRITTEN to the workspace,
- * not what the runner forwards to the model).
+ * pre-assigned name without modifying the canonical script bytes.
  */
 export function bootstrapPreamble(displayName: string): string {
   return `**Your name is ${displayName}.** Your person chose it for you.`;

@@ -73,6 +73,31 @@ describe('session-postgres return schemas', () => {
     expect(out.agentConfig.disallowedTools).toEqual(['Bash']);
   });
 
+  it('identity survives the session:get-config returns schema', () => {
+    const identity = {
+      identity: 'I am Test Agent.',
+      soul: 'Calm.',
+      instructions: 'Reply in English.',
+      bootstrapMode: false,
+    };
+    const full: SessionGetConfigOutput = {
+      userId: 'u1',
+      agentId: 'a1',
+      agentConfig: {
+        displayName: 'Test Agent',
+        systemPromptAugment: 'p',
+        allowedTools: [],
+        mcpConfigIds: [],
+        model: 'claude',
+        runner: 'claude-sdk',
+        identity,
+      },
+      conversationId: 'c1',
+    };
+    const out = SessionGetConfigOutputSchema.parse(full);
+    expect(out.agentConfig.identity).toEqual(identity);
+  });
+
   it('SessionGetConfigOutputSchema preserves systemPromptBootstrapAugment when present', () => {
     const full: SessionGetConfigOutput = {
       userId: 'u1',

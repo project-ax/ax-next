@@ -28,6 +28,21 @@ import { z } from 'zod';
 /** Skill / MCP-server id shape — lowercase, digit/hyphen, ≤64 chars. */
 const ID_RE = /^[a-z][a-z0-9-]{0,63}$/;
 
+/** TASK-989 — the agent's identity from @ax/agents, frozen at spawn. Prose for
+ *  the LLM prompt only; never interpolated into a shell command, path or HTML.
+ *  Optional on `AgentConfigSchema`: absent on session rows written before this
+ *  field and when the host has no identity store — the runner then composes
+ *  normal mode with the display-name identity line. No `.max()` caps: sizes
+ *  are bounded when the text is written, not on the wire. */
+export const AgentIdentityConfigSchema = z.object({
+  identity: z.string(),
+  soul: z.string(),
+  instructions: z.string(),
+  /** Host decision: bootstrap pending AND a person present. */
+  bootstrapMode: z.boolean(),
+});
+export type AgentIdentityConfig = z.infer<typeof AgentIdentityConfigSchema>;
+
 // Owner triple's agentConfig — forwarded into `session:create` so the v2
 // session row is written atomically. The session-postgres / session-inmemory
 // plugins declare the same shape; the orchestrator constructs it.
@@ -35,10 +50,10 @@ export const AgentConfigSchema = z.object({
   displayName: z.string(),
   systemPromptAugment: z.string(),
   /** The `rules` section of the host `system-prompt:augment:*` contributions
-   * (the person's own Rules) that the runner prepends in bootstrap mode.
-   * Optional: absent means '' (no bootstrap augment) — session rows persisted
-   * before this field existed don't carry it. Flows into the LLM prompt like
-   * `systemPromptAugment`; never interpolate into shell/paths/HTML. */
+   * that the runner prepends in bootstrap mode. Optional: absent means ''
+   * (no bootstrap augment) — session rows persisted before this field existed
+   * don't carry it. Flows into the LLM prompt like `systemPromptAugment`;
+   * never interpolate into shell/paths/HTML. */
   systemPromptBootstrapAugment: z.string().optional(),
   allowedTools: z.array(z.string()),
   /** Canonical AX tool names (e.g. `Bash`, `web_search`, `mcp.<id>.<tool>`)
@@ -56,6 +71,9 @@ export const AgentConfigSchema = z.object({
    * (`SUPPORTED_RUNNERS`) lives in `@ax/agents` — a second enum here would
    * need editing again in PR 3 for no safety gain. */
   runner: z.string(),
+  /** TASK-989 — see `AgentIdentityConfigSchema`. Optional: absent → normal
+   * mode with the display-name identity line. */
+  identity: AgentIdentityConfigSchema.optional(),
 });
 export type AgentConfig = z.infer<typeof AgentConfigSchema>;
 

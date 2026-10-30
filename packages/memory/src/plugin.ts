@@ -72,7 +72,6 @@ import {
   MEMORY_RECALL_RECEIPTS_HOOK,
   readRecallReceipts,
 } from './recall-receipts.js';
-import { registerRulesHooks, RULES_WRITE_HOOK } from './rules.js';
 import { filterTranscriptTurns, type UntrustedMessage } from './transcript.js';
 import {
   createMemoryExporter,
@@ -90,7 +89,6 @@ import type {
 } from '@ax/sandbox-mount-protocol';
 import {
   registerSystemPromptAugment,
-  RULES_READ_HOOK,
   SYSTEM_PROMPT_AUGMENT_HOOK,
   type MemoryBlockConfig,
 } from './augment.js';
@@ -362,7 +360,6 @@ export interface MemoryPluginConfig {
    */
   block?: MemoryBlockConfig;
   exports?: MemoryExportConfig;
-  rules?: boolean;
 }
 
 const DEFAULT_MAX_RECALL_LIMIT = 100;
@@ -506,14 +503,6 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
   const parsedMemoryOps = parseModelRef(memoryOpsModel);
   const memoryOpsHook = `llm:call:${parsedMemoryOps.provider}`;
 
-  if (config.rules !== undefined && typeof config.rules !== 'boolean') {
-    throw new PluginError({
-      code: 'invalid-payload',
-      plugin: PLUGIN_NAME,
-      message: `rules must be a boolean when set (got ${typeof config.rules})`,
-    });
-  }
-
   const exportsCfg = config.exports;
   if (
     exportsCfg !== undefined &&
@@ -559,7 +548,6 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
         MEMORY_NOTE_TOOL_HOOK,
         ...(exportsCfg !== undefined ? [MEMORY_EXPORT_FLUSH_HOOK] : []),
         ...(exportsCfg?.volume !== undefined ? ['sandbox:memory-mounts'] : []),
-        ...(config.rules === true ? [RULES_READ_HOOK, RULES_WRITE_HOOK] : []),
       ],
       // Hard dependencies, all six — plus the export projection's four when
       // `exports` is configured (TASK-494): this plugin has nothing to fall
@@ -577,9 +565,7 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
         AGENTS_RESOLVE_HOOK,
         ...(exportsCfg !== undefined
           ? [FACTS_SCAN_HOOK, 'workspace:list', 'workspace:read', 'workspace:apply']
-          : config.rules === true
-            ? ['workspace:read', 'workspace:apply']
-            : []),
+          : []),
       ],
       // The extraction provider is OPTIONAL, and that asymmetry with the
       // three engine hooks above is deliberate. A memory surface with no
@@ -594,24 +580,11 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
       // air-gapped install with no LLM provider could not load `@ax/memory`
       // at all.
       //
-      // The human tier is a SOFT dependency too, and the distinction is
-      // deliberate. `memory:rules:*` stays the shared contract across memory
-      // implementations (design §10.4). This plugin provides it only with
-      // `rules: true`, so a preset can legitimately load `@ax/memory` without one —
-      // and a hard `calls` entry would turn that configuration into a boot
-      // failure. Absent, the injected block simply has no Rules section. A
-      // provider that THROWS is a different story and is not swallowed; see
-      // `readRulesBody`.
       optionalCalls: [
         {
           hook: memoryOpsHook,
           degradation:
             'no memory is extracted from conversations at chat:end; memory:remember and memory:forget are unaffected, and every skipped turn emits memory_observer_failed',
-        },
-        {
-          hook: RULES_READ_HOOK,
-          degradation:
-            "the always-injected memory block renders no '## Rules From Your User' section; the person's own standing instructions are not in the prompt, and nothing else changes",
         },
         // TASK-625. All three are needed together; without any one of them
         // the plugin keeps the chat:end-only path it always had.
@@ -678,7 +651,7 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
       }
 
       // ---------------------------------------------------------------
-      // system-prompt:augment:required:memory — the always-injected block (design §4.1).
+      // system-prompt:augment:optional:memory — the always-injected block (design §4.1).
       // A `call`, not a `fire`: see `registerSystemPromptAugment`.
       // ---------------------------------------------------------------
       registerSystemPromptAugment(bus, FACTS_RECALL_HOOK, config.block ?? {});
@@ -1605,7 +1578,6 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
         },
       );
 
-      if (config.rules === true) registerRulesHooks(bus);
       await registerMemoryRecall(bus);
       await registerMemoryUse(bus);
       await registerMemoryNote(bus, onFactsChanged, (ctx, query) => readPriorRows(bus, ctx, query));

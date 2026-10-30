@@ -218,7 +218,7 @@ describe('AgentForm — team picker', () => {
   });
 });
 
-describe('AgentForm — file-based identity editor (TASK-142)', () => {
+describe('AgentForm — identity editor (TASK-142, TASK-989)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(listAgentModelOptions).mockResolvedValue({ models: MODEL_OPTIONS, defaultModel: 'anthropic/claude-sonnet-4-6' });
@@ -228,11 +228,10 @@ describe('AgentForm — file-based identity editor (TASK-142)', () => {
     vi.mocked(putAgentIdentity).mockResolvedValue(undefined);
   });
 
-  it('opening edit loads the agent’s .ax/ identity files into the three fields', async () => {
+  it('opening edit loads the agent’s identity and soul into the two fields', async () => {
     vi.mocked(getAgentIdentity).mockResolvedValue({
       identity: 'I am Ada.',
       soul: 'I value clarity.',
-      operating: 'Always use metric units.',
     });
     render(<AgentForm isAdmin />);
     await waitFor(() => expect(screen.getByText('Research Bot')).toBeTruthy());
@@ -241,7 +240,6 @@ describe('AgentForm — file-based identity editor (TASK-142)', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'edit' }));
 
-    // The editor reads the files via workspace:read (mocked at the wire).
     await waitFor(() =>
       expect(getAgentIdentity).toHaveBeenCalledWith('agent-1'),
     );
@@ -253,16 +251,66 @@ describe('AgentForm — file-based identity editor (TASK-142)', () => {
     expect((screen.getByLabelText('Soul') as HTMLTextAreaElement).value).toBe(
       'I value clarity.',
     );
-    expect(
-      (screen.getByLabelText(/Operating instructions/) as HTMLTextAreaElement).value,
-    ).toBe('Always use metric units.');
   });
 
-  it('saving writes the edited identity files back via putAgentIdentity (workspace:apply)', async () => {
+  it('has no operating-instructions field and names no .ax files', async () => {
+    vi.mocked(getAgentIdentity).mockResolvedValue({ identity: 'I am Ada.', soul: 'Kind.' });
+    const { container } = render(<AgentForm isAdmin />);
+    await waitFor(() => expect(screen.getByText('Research Bot')).toBeTruthy());
+    openAgentDetails();
+    fireEvent.click(screen.getByRole('button', { name: 'edit' }));
+    await waitFor(() =>
+      expect((screen.getByLabelText('Identity') as HTMLTextAreaElement).value).toBe('I am Ada.'),
+    );
+
+    expect(screen.queryByLabelText(/Operating instructions/)).toBeNull();
+    expect(container.textContent ?? '').not.toMatch(/\.ax\//);
+    expect(container.textContent ?? '').not.toMatch(/AGENTS\.md|IDENTITY\.md|SOUL\.md/);
+    // The two help lines say what each field is, in the agreed words.
+    expect(
+      screen.getByText('How this agent describes itself. It can update this as it grows.'),
+    ).toBeTruthy();
+    expect(
+      screen.getByText('Its values and the boundaries it holds. It can update this too.'),
+    ).toBeTruthy();
+  });
+
+  it('shows the loading line while the identity loads', async () => {
+    vi.mocked(getAgentIdentity).mockReturnValue(new Promise(() => {}));
+    render(<AgentForm isAdmin />);
+    await waitFor(() => expect(screen.getByText('Research Bot')).toBeTruthy());
+    openAgentDetails();
+    fireEvent.click(screen.getByRole('button', { name: 'edit' }));
+    expect(await screen.findByText('Loading the agent’s identity…')).toBeTruthy();
+    expect((screen.getByLabelText('Identity') as HTMLTextAreaElement).disabled).toBe(true);
+    expect((screen.getByLabelText('Soul') as HTMLTextAreaElement).disabled).toBe(true);
+  });
+
+  it('when the identity fails to load, the fields stay disabled and Save leaves the identity alone', async () => {
+    vi.mocked(getAgentIdentity).mockRejectedValue(new Error('get agent identity: 503'));
+    render(<AgentForm isAdmin />);
+    await waitFor(() => expect(screen.getByText('Research Bot')).toBeTruthy());
+    openAgentDetails();
+    fireEvent.click(screen.getByRole('button', { name: 'edit' }));
+
+    expect(
+      await screen.findByText(
+        'We couldn’t load this agent’s identity, so saving leaves it as it is.',
+      ),
+    ).toBeTruthy();
+    expect((screen.getByLabelText('Identity') as HTMLTextAreaElement).disabled).toBe(true);
+    expect((screen.getByLabelText('Soul') as HTMLTextAreaElement).disabled).toBe(true);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(patchAgent).toHaveBeenCalled());
+    // A blank form written back over text we never read is the bug this stops.
+    expect(putAgentIdentity).not.toHaveBeenCalled();
+  });
+
+  it('saves identity and soul only', async () => {
     vi.mocked(getAgentIdentity).mockResolvedValue({
       identity: 'I am Ada.',
       soul: 'old soul',
-      operating: '',
     });
     render(<AgentForm isAdmin />);
     await waitFor(() => expect(screen.getByText('Research Bot')).toBeTruthy());
@@ -276,12 +324,8 @@ describe('AgentForm — file-based identity editor (TASK-142)', () => {
       ),
     );
 
-    // Edit the soul + add an operating override.
     fireEvent.change(screen.getByLabelText('Soul'), {
       target: { value: 'I value rigor.' },
-    });
-    fireEvent.change(screen.getByLabelText(/Operating instructions/), {
-      target: { value: 'Prefer SI units.' },
     });
 
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
@@ -290,7 +334,6 @@ describe('AgentForm — file-based identity editor (TASK-142)', () => {
       expect(putAgentIdentity).toHaveBeenCalledWith('agent-1', {
         identity: 'I am Ada.',
         soul: 'I value rigor.',
-        operating: 'Prefer SI units.',
       }),
     );
   });
@@ -307,7 +350,6 @@ describe('AgentForm — identity save decoupled from tools gate (TASK-147)', () 
     vi.mocked(getAgentIdentity).mockResolvedValue({
       identity: 'I am Bare.',
       soul: 'old soul',
-      operating: '',
     });
   });
 
@@ -337,7 +379,6 @@ describe('AgentForm — identity save decoupled from tools gate (TASK-147)', () 
       expect(putAgentIdentity).toHaveBeenCalledWith('agent-bare', {
         identity: 'I am Bare.',
         soul: 'I value freedom.',
-        operating: '',
       }),
     );
     expect(
@@ -425,7 +466,7 @@ describe('AgentForm — model policy (Default, moved notice, PATCH body)', () =>
     vi.mocked(patchAgent).mockResolvedValue(undefined);
     vi.mocked(putAgentIdentity).mockResolvedValue(undefined);
     vi.mocked(createAgent).mockResolvedValue(AGENT);
-    vi.mocked(getAgentIdentity).mockResolvedValue({ identity: '', soul: '', operating: '' });
+    vi.mocked(getAgentIdentity).mockResolvedValue({ identity: '', soul: '' });
   });
 
   const modelSelect = () => document.querySelector<HTMLSelectElement>('#agent-model')!;
@@ -515,7 +556,7 @@ describe('AgentForm — model policy (Default, moved notice, PATCH body)', () =>
 it('opens resolved agent details so a stored removed model is shown as the Default', async () => {
   vi.mocked(listAgentModelOptions).mockResolvedValue({ models: MODEL_OPTIONS, defaultModel: 'anthropic/claude-sonnet-4-6' });
   vi.mocked(listTeams).mockResolvedValue([]);
-  vi.mocked(getAgentIdentity).mockResolvedValue({ identity: '', soul: '', operating: '' });
+  vi.mocked(getAgentIdentity).mockResolvedValue({ identity: '', soul: '' });
   mockList.mockResolvedValue([{ ...AGENT, model: 'openrouter/removed' }]);
   vi.mocked(getAdminAgent).mockResolvedValue({ ...AGENT, requestedModel: 'openrouter/removed' });
   render(<AgentForm isAdmin />);
@@ -591,7 +632,7 @@ describe('AgentForm — no per-agent connector assignment (TASK-799)', () => {
     vi.clearAllMocks();
     vi.mocked(listAgentModelOptions).mockResolvedValue({ models: MODEL_OPTIONS, defaultModel: 'anthropic/claude-sonnet-4-6' });
     vi.mocked(listTeams).mockResolvedValue(TEAMS);
-    vi.mocked(getAgentIdentity).mockResolvedValue({ identity: '', soul: '', operating: '' });
+    vi.mocked(getAgentIdentity).mockResolvedValue({ identity: '', soul: '' });
     mockList.mockResolvedValue([PERSONAL_AGENT, TEAM_AGENT]);
   });
 

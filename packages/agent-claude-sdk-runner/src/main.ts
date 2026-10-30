@@ -655,7 +655,7 @@ export function createClaudeSdkLoop(deps: RunnerDeps): Loop {
           // `result`; a message that gets its own turn echoes AFTER it; and
           // without the flag a fold emits nothing at all.
           extraArgs: { 'replay-user-messages': null },
-          // The file-based prompt-engine composed this at spawn for this session
+          // The prompt-engine composed this at spawn for this session
           // (the shell's `buildSystemPrompt` call). It also folds in the
           // ephemeral-scratch / python-venv operational notes (paired with
           // additionalDirectories above) and handles the SDK quirk that `append`

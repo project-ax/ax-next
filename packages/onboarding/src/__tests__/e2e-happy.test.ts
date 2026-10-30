@@ -70,6 +70,7 @@ async function dropTables(): Promise<void> {
   try {
     await sql`DROP TABLE IF EXISTS bootstrap_state`.execute(k);
     await sql`DROP TABLE IF EXISTS storage_postgres_v1_kv`.execute(k);
+    await sql`DROP TABLE IF EXISTS agents_v1_identity`.execute(k);
     await sql`DROP TABLE IF EXISTS agents_v1_agents`.execute(k);
     await sql`DROP TABLE IF EXISTS auth_better_v1_verifications`.execute(k);
     await sql`DROP TABLE IF EXISTS auth_better_v1_accounts`.execute(k);
@@ -263,11 +264,30 @@ describe('Onboarding wizard — end-to-end happy path canary', () => {
       //    model = the chosen defaultModel ('anthropic/claude-sonnet-4-6').
       const agentsOut = await harness.bus.call<
         { userId: string; teamIds: string[] },
-        { agents: Array<{ displayName: string; model: string }> }
+        { agents: Array<{ id: string; displayName: string; model: string }> }
       >('agents:list-for-user', harness.ctx(), { userId: adminUserId, teamIds: [] });
       expect(agentsOut.agents).toHaveLength(1);
       expect(agentsOut.agents[0].displayName).toBe('Default Agent');
       expect(agentsOut.agents[0].model).toBe('anthropic/claude-sonnet-4-6');
+
+      // d2) TASK-989 — the Default Agent is not in a first-run setup: only the
+      //     conversational "create an agent by talking to it" route starts one.
+      const defaultAgentId = agentsOut.agents[0].id;
+      const identityOut = await harness.bus.call<
+        { agentId: string },
+        { identity: string; soul: string; instructions: string; bootstrap: string; revision: number }
+      >(
+        'agents:identity:get',
+        harness.ctx({ agentId: defaultAgentId, userId: adminUserId }),
+        { agentId: defaultAgentId },
+      );
+      expect(identityOut).toEqual({
+        identity: '',
+        soul: '',
+        instructions: '',
+        bootstrap: 'none',
+        revision: 0,
+      });
 
       // e) storage:get('settings:fast-model') — returns the chosen fastModel
       //    as the canonical `provider/model-id` ref that @ax/conversation-

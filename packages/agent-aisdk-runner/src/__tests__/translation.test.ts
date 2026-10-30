@@ -374,7 +374,7 @@ describe('composeInstructions', () => {
     expect(composeInstructions('be helpful.', '')).toBe('be helpful.');
   });
 
-  // The composed prompt carries agent-authored `.ax/` files, so it is
+  // The composed prompt carries agent-authored identity text, so it is
   // uncontrolled input. The first version of this used `/\s+$/`, which CodeQL
   // correctly flagged as polynomial-ReDoS (js/polynomial-redos): quadratic on a
   // string of many repeated whitespace chars. `trimEnd()` is linear. This
@@ -387,7 +387,7 @@ describe('composeInstructions', () => {
     // failed.) Measured on this input: the regex took ~1.8s, trimEnd ~0ms.
     //
     // Reachable in practice: the composed prompt concatenates agent-authored
-    // `.ax/` files, so an agent can put 60k tabs in its own SOUL.md and stall
+    // identity text, so an agent can put 60k tabs in its own soul and stall
     // its own turn.
     const evil = '\t'.repeat(60_000) + 'x';
     const started = Date.now();

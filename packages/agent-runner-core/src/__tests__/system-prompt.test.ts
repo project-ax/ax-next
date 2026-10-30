@@ -264,15 +264,17 @@ describe('workPolicyNote (default operating behavior)', () => {
     expect(note).toMatch(/echo/);
   });
 
-  it('names AGENTS.md as the override layer and the floor as non-overridable', () => {
+  it('the defaults point at Instructions, not .ax files, and the floor stays non-overridable', () => {
     const note = flat(workPolicyNote());
-    expect(note).toContain('.ax/AGENTS.md');
-    expect(note).toMatch(/floor/i);
+    expect(note).toContain(
+      'These are defaults. Instructions from your people below can override any of them; the operating floor above them cannot be overridden.',
+    );
+    expect(note).not.toContain('.ax/');
   });
 
   it('stays bounded — a policy block, not a wall of rules', () => {
     // Same intent as the safety-floor length guard: everything endlessly
-    // customizable belongs in AGENTS.md, not in runner-authored prose.
+    // customizable belongs in the people's Instructions, not in runner-authored prose.
     expect(workPolicyNote().length).toBeLessThan(2000);
   });
 });
@@ -303,15 +305,17 @@ describe('communicationNote (default reply style)', () => {
   it('does NOT flatten agent personality', () => {
     // Deliberate divergence from the upstream prompt: its "never coin
     // acronyms / state facts literally / no metaphors" clauses would fight
-    // the agent-authored SOUL.md that gives an agent its voice. Style is the
-    // agent's; structure is ours.
+    // the soul an agent writes for itself, which gives it its voice. Style is
+    // the agent's; structure is ours.
     const note = flat(communicationNote()).toLowerCase();
     expect(note).not.toContain('metaphor');
     expect(note).not.toContain('acronym');
   });
 
-  it('names AGENTS.md as the override layer', () => {
-    expect(flat(communicationNote())).toContain('.ax/AGENTS.md');
+  it('the defaults point at Instructions, not .ax files', () => {
+    const note = flat(communicationNote());
+    expect(note).toContain('Defaults, and Instructions from your people below can override them.');
+    expect(note).not.toContain('.ax/');
   });
 
   it('stays bounded', () => {

@@ -1,13 +1,16 @@
-import { sql, type Kysely } from 'kysely';
+import { sql, type Generated, type Kysely } from 'kysely';
 
 /**
  * Per-plugin migration. @ax/agents owns tables under the `agents_v1_`
  * prefix — never reach into them from another plugin (Invariant I4 — one
- * source of truth per concept). Schema version is forward-only via a
- * future `v2` side-table, never an in-place ALTER.
+ * source of truth per concept). Every statement runs on every boot, so each
+ * one is forward-only and safe to re-run: new tables (`IF NOT EXISTS`),
+ * additive columns (`ADD COLUMN IF NOT EXISTS`), idempotent rewrites.
  *
- * Single table:
- *   agents_v1_agents  — agent entity, owned by user_id OR team_id.
+ * Tables:
+ *   agents_v1_agents    — agent entity, owned by user_id OR team_id.
+ *   agents_v1_identity  — the agent's identity, soul, its people's
+ *                         Instructions and its onboarding state (TASK-989).
  *
  * No FK to auth_better_v1_users / teams_v1_teams. Cross-plugin FKs would
  * require shared schema migrations, which violates I4 (no shared rows).
@@ -106,13 +109,11 @@ export async function runAgentsMigration<DB>(db: Kysely<DB>): Promise<void> {
   `.execute(db);
 
   // TASK-142 (conversational-agent-identity Phase 4): DROP the legacy
-  // `system_prompt` column. Identity now lives exclusively in the agent's
-  // `.ax/` files (IDENTITY.md / SOUL.md / AGENTS.md) — the single source of
-  // truth (Invariant #4). Every agent was migrated to `.ax/` files in Phase 2
-  // (#304) and every reader was repointed in Phases 1–4, so the column carries
-  // nothing live. `DROP COLUMN IF EXISTS` makes this idempotent + forward-only:
-  // a brand-new DB never had the column (we removed it from CREATE TABLE
-  // above); an already-deployed DB drops it here once.
+  // `system_prompt` column. The column carries nothing live (identity moved
+  // out of it in TASK-142, and into `agents_v1_identity` below in TASK-989).
+  // `DROP COLUMN IF EXISTS` makes this idempotent + forward-only: a brand-new
+  // DB never had the column (we removed it from CREATE TABLE above); an
+  // already-deployed DB drops it here once.
   await sql`
     ALTER TABLE agents_v1_agents
       DROP COLUMN IF EXISTS system_prompt
@@ -149,6 +150,45 @@ export async function runAgentsMigration<DB>(db: Kysely<DB>): Promise<void> {
        SET model = 'anthropic/' || model
      WHERE model NOT LIKE '%/%'
   `.execute(db);
+
+  // TASK-989: the agent's identity and soul (how it describes itself), its
+  // people's Instructions, and its onboarding state, one row per agent. Read
+  // and written only through `agents:identity:get|set|complete-bootstrap`;
+  // the queries live in identity/store.ts.
+  //
+  // Its own table, not columns on agents_v1_agents: `agents:resolve` and the
+  // lists `selectAll` that table on every call, and these texts may reach
+  // hundreds of KiB together.
+  //
+  // Rows are LAZY: an agent with no row reads as empty texts, `bootstrap =
+  // 'none'` and `revision = 0` (that is also the reset for agents that existed
+  // before this table: nothing is backfilled from their old files). A row
+  // appears on the first saved write, or at create time for an agent that
+  // starts a first-run setup (`bootstrap = 'pending'`).
+  //
+  // `revision` counts saved changes (an optimistic-concurrency token for
+  // `agents:identity:set`, NOT a history: no old text is kept). INTEGER, not
+  // BIGINT: node-postgres hands int8 back as a string.
+  //
+  // No FOREIGN KEY to agents_v1_agents, on purpose: a FK breaks every
+  // downstream `DROP TABLE agents_v1_agents` teardown. `deleteById` purges the
+  // row in the same transaction as the agent row instead, and
+  // `bootstrap:reset-cleanup` truncates both tables.
+  await sql`
+    CREATE TABLE IF NOT EXISTS agents_v1_identity (
+      agent_id     TEXT PRIMARY KEY,
+      identity     TEXT NOT NULL DEFAULT '',
+      soul         TEXT NOT NULL DEFAULT '',
+      instructions TEXT NOT NULL DEFAULT '',
+      bootstrap    TEXT NOT NULL DEFAULT 'none',
+      revision     INTEGER NOT NULL DEFAULT 0,
+      updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      CONSTRAINT agents_v1_identity_bootstrap_check
+        CHECK (bootstrap IN ('none', 'pending', 'done')),
+      CONSTRAINT agents_v1_identity_revision_check
+        CHECK (revision >= 0)
+    )
+  `.execute(db);
 }
 
 /**
@@ -175,6 +215,22 @@ export interface AgentsRow {
   updated_at: Date;
 }
 
+/**
+ * `agents_v1_identity` row (TASK-989). Every column but the key has a default,
+ * so an insert may name only `agent_id`. `bootstrap` is CHECKed to
+ * 'none' | 'pending' | 'done'; identity/store.ts narrows it on read.
+ */
+export interface AgentsIdentityRow {
+  agent_id: string;
+  identity: Generated<string>;
+  soul: Generated<string>;
+  instructions: Generated<string>;
+  bootstrap: Generated<string>;
+  revision: Generated<number>;
+  updated_at: Generated<Date>;
+}
+
 export interface AgentsDatabase {
   agents_v1_agents: AgentsRow;
+  agents_v1_identity: AgentsIdentityRow;
 }

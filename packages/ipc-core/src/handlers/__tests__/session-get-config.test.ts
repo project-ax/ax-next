@@ -166,6 +166,45 @@ describe('session.get-config handler', () => {
     ).toBe('rules-content');
   });
 
+  // TASK-989 — the agent's identity from @ax/agents, frozen at spawn, must
+  // reach the runner: the session store rebuild and the wire response schema
+  // (a stripping z.object) both have to carry it.
+  it('session.get-config passes agentConfig.identity through to the runner', async () => {
+    const { bus, ctx } = await makeEnv();
+    const identity = {
+      identity: 'I am Test Agent.',
+      soul: 'Calm and curious.',
+      instructions: 'Reply in English.',
+      bootstrapMode: false,
+    };
+    await bus.call<SessionCreateInput, SessionCreateOutput>(
+      'session:create',
+      ctx('init'),
+      {
+        sessionId: 's-identity',
+        workspaceRoot: '/tmp/ws',
+        owner: { ...OWNER, agentConfig: { ...OWNER.agentConfig, identity } },
+      },
+    );
+    const result = await sessionGetConfigHandler({}, ctx('s-identity'), bus);
+    expect(result.status).toBe(200);
+    expect(
+      (result.body as { agentConfig: { identity?: unknown } }).agentConfig.identity,
+    ).toEqual(identity);
+  });
+
+  it('leaves agentConfig.identity absent when the owner never carried one', async () => {
+    const { bus, ctx } = await makeEnv();
+    await bus.call<SessionCreateInput, SessionCreateOutput>(
+      'session:create',
+      ctx('init'),
+      { sessionId: 's-no-identity', workspaceRoot: '/tmp/ws', owner: OWNER },
+    );
+    const result = await sessionGetConfigHandler({}, ctx('s-no-identity'), bus);
+    expect(result.status).toBe(200);
+    expect('identity' in (result.body as { agentConfig: object }).agentConfig).toBe(false);
+  });
+
   it('leaves agentConfig.systemPromptBootstrapAugment absent when the owner never carried one', async () => {
     const { bus, ctx } = await makeEnv();
     await bus.call<SessionCreateInput, SessionCreateOutput>(

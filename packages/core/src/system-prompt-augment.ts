@@ -64,6 +64,38 @@ export const SystemPromptAugmentOutputSchema = z
 export type SystemPromptAugmentOutput = z.infer<typeof SystemPromptAugmentOutputSchema>;
 
 // ---------------------------------------------------------------------------
+// `system-prompt:augment-changed` (TASK-612, moved to the kernel by TASK-989).
+//
+// A running sandbox's system prompt is fixed when it spawns. When something
+// that prompt carries changes, the owner fires this so a prompt built before
+// now is known to be stale: the orchestrator retires that agent's live
+// sessions at their next turn boundary and the fresh spawn re-builds the
+// prompt (and resumes the conversation). Nothing changes mid-turn.
+//
+// Producers today: @ax/agents, on every saved identity / soul / Instructions
+// write and on a completed first-run setup. Any augment provider may announce
+// its own change the same way. Generic on purpose: the payload is the agent
+// id only, so no subscriber can key off content or storage.
+//
+// Fired on the in-process bus, so only this host process hears it. That is
+// complete because the host is single-replica (the k8s chart refuses more —
+// TASK-617); a multi-replica host would have to carry it across replicas.
+//
+// Lives in the kernel because producers and the subscriber must share one
+// spelling and plugins may not import each other (invariant 2): a misspelled
+// event name fails silently in both directions.
+// ---------------------------------------------------------------------------
+
+/** Fired (bus.fire) when something an agent's system prompt carries changed — its identity,
+ *  soul, Instructions or bootstrap state, or an augment provider's content. Live sessions of
+ *  that agent re-spawn at their next turn (TASK-612). */
+export const SYSTEM_PROMPT_AUGMENT_CHANGED_HOOK = 'system-prompt:augment-changed';
+
+export interface SystemPromptAugmentChangedPayload {
+  agentId: string;
+}
+
+// ---------------------------------------------------------------------------
 // `chat:system-prompt-landed` (TASK-908). Fired by the orchestrator on the
 // fresh-spawn path right after the augment is built and before any proxy or
 // sandbox session opens. `providers` holds the full service names of the

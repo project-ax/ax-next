@@ -995,6 +995,57 @@ describe('session.get-config', () => {
     expect(r.success).toBe(false);
   });
 
+  // TASK-989 — the agent's identity from @ax/agents, frozen at spawn.
+  it('accepts agentConfig.identity', () => {
+    const identity = {
+      identity: 'I am Test Agent.',
+      soul: 'Calm and curious.',
+      instructions: 'Reply in English.',
+      bootstrapMode: true,
+    };
+    const parsed = SessionGetConfigResponseSchema.parse({
+      userId: 'u-1',
+      agentId: 'a-1',
+      agentConfig: { ...baseConfig, identity },
+      conversationId: null,
+      runnerSessionId: null,
+    });
+    expect(parsed.agentConfig.identity).toEqual(identity);
+  });
+
+  it('accepts a config without identity', () => {
+    const parsed = SessionGetConfigResponseSchema.parse({
+      userId: 'u-1',
+      agentId: 'a-1',
+      agentConfig: baseConfig,
+      conversationId: null,
+      runnerSessionId: null,
+    });
+    expect('identity' in parsed.agentConfig).toBe(false);
+  });
+
+  it('rejects identity with a non-string soul or without bootstrapMode', () => {
+    const nonStringSoul = SessionGetConfigResponseSchema.safeParse({
+      userId: 'u-1',
+      agentId: 'a-1',
+      agentConfig: {
+        ...baseConfig,
+        identity: { identity: '', soul: 7, instructions: '', bootstrapMode: false },
+      },
+      conversationId: null,
+      runnerSessionId: null,
+    });
+    expect(nonStringSoul.success).toBe(false);
+    const noBootstrapMode = SessionGetConfigResponseSchema.safeParse({
+      userId: 'u-1',
+      agentId: 'a-1',
+      agentConfig: { ...baseConfig, identity: { identity: '', soul: '', instructions: '' } },
+      conversationId: null,
+      runnerSessionId: null,
+    });
+    expect(noBootstrapMode.success).toBe(false);
+  });
+
   it('preserves agentConfig.systemPromptBootstrapAugment when present', () => {
     const parsed = SessionGetConfigResponseSchema.parse({
       userId: 'u-1',

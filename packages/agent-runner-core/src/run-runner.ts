@@ -206,6 +206,10 @@ export interface TurnUsage {
 const MAX_TOKEN_COUNT = 1_000_000_000;
 /** Mirrors the wire schema's `model` max length. A longer ref fails validation. */
 const MAX_MODEL_REF_LENGTH = 200;
+/** Local mirror of the host tool @ax/agents registers for an agent to rewrite
+ *  its own identity or soul (TASK-989). Mirrored, not imported: the runner
+ *  imports no plugin (Invariant #2). */
+const UPDATE_IDENTITY_TOOL_NAME = 'update_identity';
 
 /**
  * One token count made safe for the wire: an unreadable value (NaN, Infinity,
@@ -1553,20 +1557,23 @@ async function runRunnerInner(
       })
     : null;
 
-  // Conversational-agent-identity: the file-based prompt-engine reads
-  // `${workspaceRoot}/.ax/` and composes the system prompt for THIS turn —
-  // bootstrap mode (BOOTSTRAP.md verbatim) or normal mode (safety floor + the
-  // agent's IDENTITY/SOUL/AGENTS files + evolution guidance + operational
-  // notes; a file-less agent falls back to its displayName identity line).
+  // Conversational-agent-identity (TASK-989): the prompt-engine composes the
+  // system prompt for THIS spawn from the frozen session config — it reads no
+  // files. `agentConfig.identity` carries the agent's identity and soul and its
+  // people's Instructions from @ax/agents, plus the host's bootstrap-mode
+  // decision (bootstrap pending AND a person present). Bootstrap mode is the
+  // canonical bootstrap script then the Instructions; normal mode is the safety
+  // floor + defaults + Instructions + identity + soul + evolution guidance (only
+  // when `update_identity` survived the catalog filters above) + operational
+  // notes. A session config without `identity` passes `undefined` and the
+  // engine's default applies: normal mode with the displayName identity line.
   // `agentConfig.systemPromptAugment` carries the host `system-prompt:augment:*`
-  // contributions, prepended on top in normal mode (and their `rules`
-  // and `brief` sections, `systemPromptBootstrapAugment`, are prepended in bootstrap mode); `agentConfig.displayName` is
-  // the host-controlled fallback identity used when no IDENTITY.md exists. Both
-  // are intended for the LLM and never interpolated into shell, paths, or HTML.
-  // The `.ax/` files are agent-authored (untrusted): the hardcoded safety floor
-  // is always injected in normal mode and no file can suppress it. Computed
-  // before the loop starts because the engine reads files (async) and an SDK
-  // options literal can't await inline.
+  // contributions, prepended on top in normal mode (and their bootstrap-safe
+  // `rules` and `brief` sections, `systemPromptBootstrapAugment`, are prepended
+  // in bootstrap mode). All of it is prose for the LLM, never interpolated into
+  // shell, paths, or HTML. The identity and soul are model-written (untrusted
+  // even though the host scans every write): the hardcoded safety floor sits
+  // above them in normal mode and nothing in them can suppress it.
   const composedSystemPrompt = await buildSystemPrompt(
     agentConfig.displayName,
     agentConfig.systemPromptAugment,
@@ -1582,12 +1589,20 @@ async function runRunnerInner(
     // governed root, not the new cwd.
     homeDir,
     env.memoryRoot,
-    // TASK-524: the bootstrap-safe slice of the augment (the person's Rules
-    // and, in a task check-in, the task's brief),
-    // the ONLY augment content bootstrap mode admits. Optional on the wire —
+    // TASK-524: the bootstrap-safe slice of the augment (the kernel `rules`
+    // and `brief` sections; people's Instructions now arrive in
+    // `agentConfig.identity` instead, TASK-989), the ONLY augment content
+    // bootstrap mode admits. Optional on the wire —
     // a session frozen before TASK-524 carries none, which means none.
     agentConfig.systemPromptBootstrapAugment ?? '',
     tools.some(tool => ['routine_list', 'routine_get', 'routine_create', 'routine_update', 'routine_delete', 'routine_fire_now'].includes(tool.name)),
+    // TASK-989: the identity frozen at spawn — possibly absent (session rows
+    // from before the field, or a host with no identity store).
+    agentConfig.identity,
+    // The evolution guidance names `update_identity`, so it follows the
+    // FILTERED catalog: a session that isn't offered the tool (an unattended
+    // run, a restrictive allow-list) is never told about it.
+    tools.some((tool) => tool.name === UPDATE_IDENTITY_TOOL_NAME),
   );
 
   // Turn boundary (Phase 3). Replaces the legacy PostToolUse-based

@@ -634,13 +634,16 @@ export type ConversationDrainSaveRefusalsResponse = z.infer<
 //
 // The response carries the FROZEN agent config snapshot (per Invariant
 // I10 — switching agents = new session, not mutate). `displayName` is the
-// agent's display name (the runner's fallback identity when no `.ax/IDENTITY.md`
-// exists) and `systemPromptAugment` carries the host `system-prompt:augment`
-// contribution (e.g. @ax/memory's memory block). Both flow into the LLM's
-// prompt; the runner must NOT interpolate them into shell commands, file paths,
-// or HTML. TASK-142 dropped the legacy `systemPrompt` field when the
-// `agents_v1_agents.system_prompt` column was removed — identity now lives in
-// the agent's `.ax/` files (Invariant #4).
+// agent's display name (the runner's fallback identity line when the agent has
+// no identity text), `systemPromptAugment` carries the host
+// `system-prompt:augment` contribution (e.g. @ax/memory's memory block), and
+// `identity` (TASK-989) carries the agent's identity, soul and people's
+// Instructions from @ax/agents plus the host's bootstrap-mode decision, read
+// once at spawn. All of them flow into the LLM's prompt; the runner must NOT
+// interpolate them into shell commands, file paths, or HTML. TASK-142 dropped
+// the legacy `systemPrompt` field when the `agents_v1_agents.system_prompt`
+// column was removed; TASK-989 moved identity out of the agent's `.ax/` files
+// into @ax/agents (Invariant #4).
 //
 // Phase E (2026-05-09): the response also carries `runnerSessionId`.
 // The IPC handler composes from two bus hooks (`session:get-config` +
@@ -654,16 +657,32 @@ export type ConversationDrainSaveRefusalsResponse = z.infer<
 export const SessionGetConfigRequestSchema = z.object({}).strict();
 export type SessionGetConfigRequest = z.infer<typeof SessionGetConfigRequestSchema>;
 
+/** TASK-989 — the agent's identity from @ax/agents, frozen at spawn. Prose for
+ *  the LLM prompt only; never interpolated into a shell command, path or HTML.
+ *  Optional on `AgentConfigSchema`: absent on session rows written before this
+ *  field and when the host has no identity store — the runner then composes
+ *  normal mode with the display-name identity line. No `.max()` caps: sizes
+ *  are bounded when the text is written, not on the wire. */
+export const AgentIdentityConfigSchema = z.object({
+  identity: z.string(),
+  soul: z.string(),
+  instructions: z.string(),
+  /** Host decision: bootstrap pending AND a person present. */
+  bootstrapMode: z.boolean(),
+});
+export type AgentIdentityConfig = z.infer<typeof AgentIdentityConfigSchema>;
+
 export const AgentConfigSchema = z.object({
-  /** The agent's display name — the runner's fallback identity, used only when
-   * the agent has no `.ax/IDENTITY.md` of its own (TASK-142). */
+  /** The agent's display name — the runner's fallback identity line, used only
+   * when the agent has no identity text of its own (TASK-142, TASK-989). */
   displayName: z.string(),
   /** The joined host `system-prompt:augment:*` contributions (e.g. @ax/memory's
    * memory block), prepended on top of the composed system prompt in normal mode.
    * Empty string when no augment provider contributes (or a required one failed). */
   systemPromptAugment: z.string(),
   /** The `rules` section of the host `system-prompt:augment:*` contributions
-   * (the person's own Rules) that the runner prepends in bootstrap mode.
+   * that the runner prepends in bootstrap mode. (The people's Instructions no
+   * longer arrive here — they travel in `identity.instructions`, TASK-989.)
    * Optional: absent means '' (no bootstrap augment) — session rows persisted
    * before this field existed don't carry it. Flows into the LLM prompt like
    * `systemPromptAugment`; the runner must NOT interpolate it into shell
@@ -685,6 +704,9 @@ export const AgentConfigSchema = z.object({
    * (`SUPPORTED_RUNNERS`) lives in `@ax/agents` — a second enum here would
    * need editing again in PR 3 for no safety gain. */
   runner: z.string(),
+  /** TASK-989 — see `AgentIdentityConfigSchema`. Optional: absent → normal
+   * mode with the display-name identity line. */
+  identity: AgentIdentityConfigSchema.optional(),
 });
 export type AgentConfig = z.infer<typeof AgentConfigSchema>;
 

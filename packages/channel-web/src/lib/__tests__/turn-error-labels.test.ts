@@ -204,3 +204,21 @@ describe('turnErrorText — a task check-in its instructions blocked (TASK-911)'
     expect(turnErrorText('system-prompt:other')).toBe(DEFAULT_TURN_ERROR);
   });
 });
+
+describe('turnErrorText — the agent’s identity could not be read at spawn (TASK-989)', () => {
+  const text = turnErrorText('system-prompt:identity-unavailable');
+
+  it('says what happened plainly, not the generic "stopped unexpectedly" line', () => {
+    expect(text).not.toBe(DEFAULT_TURN_ERROR);
+    expect(text).toMatch(/couldn’t load this agent’s identity and instructions/);
+    expect(text).toMatch(/didn’t start/);
+  });
+
+  it('suggests a retry, because a read failure can clear', () => {
+    expect(text).toMatch(/Try again/);
+  });
+
+  it('never prints the reason code', () => {
+    expect(text).not.toContain('identity-unavailable');
+  });
+});
