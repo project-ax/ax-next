@@ -46,6 +46,8 @@ Goals
 - Identity, onboarding state and Instructions (memory rules merged with
   `AGENTS.md`, §6) become DB rows written through hooks, validated at write time.
 - One obvious answer to "where does X live?" for the agent and for us.
+- A brand-new agent's `/files` is empty: nothing the platform runs writes into
+  it. Only the agent's own work (and people, via the agent) puts files there.
 
 Non-goals
 - File history / versioning / undo for `/files` (git never provided it to users).
@@ -241,7 +243,7 @@ conversation; keeping a file is deliberate.
 
 | Today | Target |
 |---|---|
-| `.ax/skill-reflection/last-run.json` | plain file `/files/.skill-reflection/last-run.json` (no security gate). Update the seeded routine prompt (`routines/src/reflection-prompt.ts:72,91`) via a `prompt_body` migration; bump `SKILL_REFLECTION_SEED_HASH`. |
+| `.ax/skill-reflection/last-run.json` | **Deleted — no marker** (decided 2026-10-30). The routines plugin already records every fire in the DB (`routines:recent-fires`); when the skill-reflection routine fires, the host puts the date of the last completed pass (or "never") into the prompt from those records. The agent writes nothing. Update the seeded prompt (`routines/src/reflection-prompt.ts:72,91`: Step 1 reads the date from the prompt; Step 4 no longer writes a file) via a `prompt_body` migration; bump `SKILL_REFLECTION_SEED_HASH`. |
 | Ordinary work product under `/agent` | `/files` |
 | `.claude/*`, root `CLAUDE.md` vetoes (`validator-skill` pre-apply) | deleted; replaced by tests in §11 |
 
@@ -260,6 +262,10 @@ Decided 2026-10-30: plain reset; nobody is using ax yet.
 - Runner refuses to start if `CLAUDE_CONFIG_DIR` is unset or resolves inside
   `/files` (otherwise an agent-planted `/files/.claude/settings.json` would load
   as user settings — hooks run commands).
+- Test: after a brand-new agent's first chat, its `/files` is empty. In
+  particular the SDK's side files (`.claude.json`, `.claude/backups/`, today
+  landing in HOME = `/files`, `agent-claude-sdk-runner/src/main.ts:402`) go to
+  `CLAUDE_CONFIG_DIR` on tmpfs, and tool caches/venvs go to `/tmp`.
 - Canary test: plant `/files/.ax/SOUL.md`, `/files/CLAUDE.md`,
   `/files/.claude/settings.json`, `/files/.mcp.json`; assert no effect on the
   prompt, SDK settings or MCP servers.
@@ -335,7 +341,7 @@ Already dead, ignore: `agent-native-runner`, `tool-file-io(-impl)`,
 ## 16. Rollout (PR slicing from review)
 
 1. Identity, Instructions + onboarding to DB (§5, §6), including the reset.
-2. Exporter volume-only; reflection marker moved (§6a, §9).
+2. Exporter volume-only; reflection marker replaced by host-supplied last-pass date (§6a, §9).
 3. Pin blob root; home required in chart/presets; kind NFS; Filestore backups;
    `/files` quota meter (§4, §12, §13).
 4. Atomic removal of the git tier and uploads change (§7, §8, §11, §14) — one
