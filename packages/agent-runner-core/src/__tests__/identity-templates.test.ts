@@ -14,18 +14,19 @@ describe('BOOTSTRAP_TEMPLATE (v2-adapted from openclaw canonical)', () => {
     expect(t).toMatch(/do not.*(form|interrogat)|not.*(a form|robotic)/);
   });
 
-  it('uses the v2 `Write` tool and `.ax/` paths — never the v1 `write_file`', () => {
-    expect(BOOTSTRAP_TEMPLATE).toContain('Write');
-    expect(BOOTSTRAP_TEMPLATE).toContain('.ax/IDENTITY.md');
-    expect(BOOTSTRAP_TEMPLATE).toContain('.ax/SOUL.md');
+  it('saves identity and soul with update_identity — never the v1 `write_file`', () => {
+    expect(BOOTSTRAP_TEMPLATE).toContain('update_identity');
+    expect(BOOTSTRAP_TEMPLATE).toContain('section: "identity"');
+    expect(BOOTSTRAP_TEMPLATE).toContain('section: "soul"');
     // The v1/openclaw write tool name must be gone.
     expect(BOOTSTRAP_TEMPLATE).not.toContain('write_file');
   });
 
-  it('names its own path so the completion ritual self-deletes the bootstrap script', () => {
-    expect(BOOTSTRAP_TEMPLATE).toContain('.ax/BOOTSTRAP.md');
-    const t = BOOTSTRAP_TEMPLATE.toLowerCase();
-    expect(t).toContain('delete');
+  it('finishes with complete_bootstrap and names no files or Write tool (TASK-989)', () => {
+    expect(BOOTSTRAP_TEMPLATE).toContain('complete_bootstrap');
+    expect(BOOTSTRAP_TEMPLATE).not.toMatch(/\.ax\//);
+    expect(BOOTSTRAP_TEMPLATE).not.toContain('BOOTSTRAP.md');
+    expect(BOOTSTRAP_TEMPLATE).not.toContain('`Write`');
   });
 
   it('adapts the memory section to @ax/memory (memory_note), not raw memory files', () => {

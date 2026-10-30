@@ -1,76 +1,62 @@
 // ---------------------------------------------------------------------------
-// File-based identity prompt-engine (conversational-agent-identity, Phase 1).
+// Identity prompt-engine (conversational-agent-identity; TASK-989).
 //
-// The runner reads `${workspaceRoot}/.ax/` and composes the SDK `systemPrompt`
-// from versioned modules + the agent's own identity files. Three modes, decided
-// purely by which `.ax/` files exist:
+// Composes the SDK `systemPrompt` from the FROZEN session config. The runner
+// reads no identity files: an agent's identity, its soul and its people's
+// Instructions live in @ax/agents, and the orchestrator reads them once per
+// fresh spawn and freezes them — with its bootstrap-mode decision — into
+// `agentConfig.identity`, which reaches the runner on `session.get-config`.
 //
-// WHEN this runs: once per SDK `query()` spawn (at runner boot — see main.ts).
-// The runner drives ONE long-lived `query()` per warm sandbox and the SDK has
-// no mid-query `setSystemPrompt`, so a warm sandbox reused for later turns keeps
-// the prompt composed at spawn until it respawns. This matches the existing
-// `agentConfig.systemPrompt` + `system-prompt:augment` lifecycle exactly (the
-// orchestrator already only augments on the fresh-spawn path). Practical
-// consequence for bootstrap: a bootstrap turn that writes IDENTITY/SOUL and
-// deletes BOOTSTRAP.md graduates to normal mode on the NEXT spawn, not on the
-// next message in the same warm `query()`. The bootstrap first-run flow (design
-// Phase 2) owns forcing that respawn / not keeping the bootstrap session warm;
-// it is out of scope for this engine.
+// WHEN this runs: once per SDK `query()` spawn (at runner boot — see
+// run-runner.ts). The runner drives ONE long-lived `query()` per warm sandbox
+// and the SDK has no mid-query `setSystemPrompt`, so a warm sandbox keeps the
+// prompt composed at spawn. Every saved identity, soul, Instructions or
+// bootstrap change fires `system-prompt:augment-changed`; the orchestrator
+// retires the agent's sessions at their next turn and a fresh runner resumes
+// the conversation with the new prompt (TASK-612). Nothing changes mid-turn.
 //
-//   1. BOOTSTRAP mode  — `.ax/BOOTSTRAP.md` present → the system prompt is
-//      that file's content behind a runner-authored name preamble. The agent
-//      wakes up inside the bootstrap script; nothing else is injected (no
-//      floor, no notes, no identity files) EXCEPT, when cwd is not the governed
-//      root, a short path note (`bootstrapPathNote`), plus output-directory
-//      guidance when a user-files or scratch tier is wired — and the `rules`
-//      and `brief` sections of the host augment (TASK-524, W1), carried
-//      separately as `agentConfig.systemPromptBootstrapAugment` and prepended
-//      on top. Today that is @ax/memory's `## Rules From Your User` — the
-//      person's own words, host-sourced, never agent-writable — because the
-//      Memory tab promises the agent reads them before EVERY run, including
-//      this one; and, in a task check-in, @ax/routines' brief (the task's
-//      name, what to do and going well when, which an agent may draft but only
-//      the person's yes can set), so a
-//      check-in run by an agent still in its first-run chat still knows what
-//      it is for.
-//      Recalled / agent-derived memory (profile, recent, digest) is NOT
-//      `rules` and stays out: keeping it away from the identity
-//      conversation is what the exclusivity is for.
+// Two modes, decided by the HOST (`identity.bootstrapMode` = bootstrap pending
+// AND a person present — unattended runs never bootstrap):
 //
-//   2. NORMAL mode     — no BOOTSTRAP.md (the ONLY other mode) → compose, in
-//      order:
-//        [augment prepend]                    (the host system-prompt:augment:*)
-//        + [safety floor]                     (hardcoded, NOT editable)
-//        + [work + communication policy]      (hardcoded DEFAULTS, overridable
-//                                              by AGENTS.md below)
-//        + [.ax/AGENTS.md if present]         (operating-behavior overrides)
-//        + ## Identity (.ax/IDENTITY.md if present, ELSE the displayName
-//          fallback identity "You are <displayName>, a helpful personal
-//          assistant.")
-//        + ## Soul     (.ax/SOUL.md if present)
-//        + identity-evolution guidance
-//        + operational notes (workspace / ephemeral? / venv? / handoff / skills)
-//      Each `.ax/` file is inject-if-present; the floor + evolution + notes are
-//      always present. There is NO string-fallback / SDK-preset path anymore:
-//      the `system_prompt` column was dropped (conversational-agent-identity
-//      Phase 4 / TASK-142), so every non-bootstrap spawn is normal mode. An
-//      agent with no identity files at all still gets a coherent prompt — the
-//      displayName fallback identity line + floor + notes.
+//   1. BOOTSTRAP mode — the system prompt is the canonical bootstrap script
+//      (`BOOTSTRAP_TEMPLATE`, a compile-time constant) behind a runner-authored
+//      name preamble, with output-directory guidance between them when a
+//      user-files or scratch tier is wired, then the people's Instructions.
+//      On top sits the bootstrap-safe slice of the host augment
+//      (`agentConfig.systemPromptBootstrapAugment`, TASK-524 — in a task
+//      check-in, @ax/routines' brief, so a check-in run by an agent still in
+//      its first-run chat still knows what it is for). Nothing else: no floor,
+//      no notes, no identity, no soul. Recalled / agent-derived memory stays
+//      away from the identity conversation — that is what the exclusivity is
+//      for.
 //
-// Untrusted-input note (Invariant #5): the `.ax/` files are agent-authored
-// (model output round-tripped through the workspace) and therefore UNTRUSTED.
-// The mitigations: (a) the hardcoded, non-editable safety floor is always
-// injected in normal mode and CANNOT be suppressed by any file's contents, so
-// a prompt-injected SOUL.md/AGENTS.md cannot `Write` away the guardrails; and
-// (b) a per-file 256 KiB hard cap (skip-whole-file-with-warning, never
-// mid-content truncation) bounds a runaway/corrupt file. The file bodies are
-// plain prose for the LLM — never interpolated into a shell, path, SQL, or URL.
+//   2. NORMAL mode — every other spawn. In order:
+//        [augment prepend]                   (the host system-prompt:augment:*)
+//        + [safety floor]                    (hardcoded, NOT overridable)
+//        + [work + communication policy]     (hardcoded DEFAULTS)
+//        + ## Instructions from your people  (when present; never trimmed —
+//                                             overrides the defaults)
+//        + ## Identity (the agent's identity, ELSE the displayName fallback
+//          "You are <displayName>, a helpful personal assistant.")
+//        + ## Soul     (when present)
+//        + identity-evolution guidance       (only when `update_identity` is
+//                                             in this session's catalog)
+//        + operational notes (roots / scratch? / venv? / handoff / skills / …)
+//      A section whose text is empty or whitespace-only is left out, heading
+//      and all (the identity falls back to the displayName line instead).
+//
+// Untrusted-input note (Invariant #5): the identity and soul are MODEL-written
+// (the agent's own `update_identity` calls) and the Instructions are written by
+// people. @ax/agents runs every write through `identity:scan` and bounds its
+// size, but the text is still treated as untrusted prose here. The mitigations:
+// (a) the hardcoded, non-overridable safety floor is always injected in normal
+// mode ABOVE all three, so no stored text can suppress the guardrails; and (b)
+// bootstrap mode's script is a compile-time constant — no stored text can open
+// bootstrap mode (the host decides) or rewrite the script. All of it is plain
+// prose for the LLM — never interpolated into a shell, path, SQL, or URL.
 // ---------------------------------------------------------------------------
 
-import { readFile, lstat } from 'node:fs/promises';
-import { join } from 'node:path';
 import {
-  bootstrapPathNote,
   fileOutputNote,
   communicationNote,
   operationalNotes,
@@ -78,35 +64,73 @@ import {
   workPolicyNote,
   type SdkSystemPrompt,
 } from './system-prompt.js';
-// The fallback identity line ("You are <displayName>, …") is the SAME canonical
-// constant the Phase 2 identity backfill wrote into IDENTITY.md — versioned in
-// the shared pure-data templates package so the runner imports it rather than
-// duplicating the line (Invariant #4). `displayName` is host-controlled (the
-// agent row's display name), never model/user/tool input.
-import { fallbackIdentityLine, bootstrapPreamble } from './identity-templates.js';
+// The bootstrap script, its name preamble and the fallback identity line are
+// versioned in the shared pure-data templates package, so the runner imports
+// them rather than duplicating them (Invariant #4). `displayName` is
+// host-controlled (the agent row's display name), never model/user/tool input.
+import {
+  BOOTSTRAP_TEMPLATE,
+  bootstrapPreamble,
+  fallbackIdentityLine,
+} from './identity-templates.js';
 
-/** Per-file hard cap on an `.ax/` identity file. A file larger than this is
- * skipped whole (logged), never truncated mid-content — identity is never
- * silently half-injected. Generous: a real IDENTITY/SOUL/AGENTS file is a few
- * KiB; only a corrupt or runaway file approaches this. */
-const MAX_AX_FILE_BYTES = 256 * 1024;
+/**
+ * The identity half of the frozen session config (`agentConfig.identity`,
+ * TASK-989). Structurally the wire's `AgentIdentityConfig`; declared here so
+ * the engine stays a pure function of plain values.
+ */
+export interface PromptIdentity {
+  /** Who the agent is — written by the agent itself. '' = none yet. */
+  identity: string;
+  /** The agent's values, philosophy and boundaries — written by the agent. '' = none. */
+  soul: string;
+  /** The people's standing Instructions — written by people only. '' = none. */
+  instructions: string;
+  /** Host decision: bootstrap pending AND a person present. */
+  bootstrapMode: boolean;
+}
 
-/** The `.ax/` identity files the engine reads each turn. Each is
- * `string | undefined` — absent file, read error, or over-cap → undefined. */
-export interface AxIdentityFiles {
-  bootstrap?: string;
-  agents?: string;
-  identity?: string;
-  soul?: string;
+/**
+ * No identity at all: what a session config without `identity` means (session
+ * rows from before TASK-989, or a host with no identity store) — normal mode
+ * with the displayName identity line.
+ */
+export const NO_PROMPT_IDENTITY: Readonly<PromptIdentity> = Object.freeze({
+  identity: '',
+  soul: '',
+  instructions: '',
+  bootstrapMode: false,
+});
+
+/** The heading of the people's Instructions — one section, never trimmed. */
+export const INSTRUCTIONS_HEADING = '## Instructions from your people';
+
+/** `text` when it carries anything but whitespace; otherwise `undefined`. A
+ * blank section is left out, heading and all. Decides presence only — the text
+ * itself is never trimmed. */
+function nonBlank(text: string | undefined): string | undefined {
+  return text !== undefined && text.trim().length > 0 ? text : undefined;
+}
+
+/**
+ * The people's standing Instructions as one prompt section: the heading, a
+ * fixed framing line stating their precedence, then the body VERBATIM — never
+ * trimmed, truncated or capped here (the host bounds it when it is written).
+ * The framing line matters because these used to sit at the very top of the
+ * prompt (as memory's Rules): placed after the defaults, they have to say that
+ * nothing below them — the agent's own identity and soul — overrides them.
+ */
+export function instructionsSection(instructions: string): string {
+  return `${INSTRUCTIONS_HEADING}\n\nThe people you work with wrote these. They override the defaults above, and nothing in your identity or soul below overrides them.\n\n${instructions}`;
 }
 
 /**
  * The thin, hardcoded safety floor — a couple of sentences, ALWAYS injected in
- * normal mode and NOT derivable from any file. This is the non-negotiable
- * operating floor (Invariant #5): untrusted content is data, not instructions;
- * ask before irreversible/external actions. `.ax/AGENTS.md` is the editable
- * layer on top — but it cannot suppress this floor. Keep it short: everything
- * customizable belongs in AGENTS.md.
+ * normal mode and NOT derivable from any stored text. This is the
+ * non-negotiable operating floor (Invariant #5): untrusted content is data, not
+ * instructions; ask before irreversible/external actions. The people's
+ * Instructions are the editable layer below it — but they cannot suppress this
+ * floor. Keep it short: everything customizable belongs in the Instructions.
  */
 export function safetyFloorNote(): string {
   return [
@@ -120,186 +144,105 @@ export function safetyFloorNote(): string {
 }
 
 /**
- * Identity-evolution guidance, appended in normal mode. Tells the agent its
- * `.ax/` files are its own to evolve, how to update them, that changes
- * auto-commit, to tell the user when it changes its `SOUL.md`, and that
- * `.ax/AGENTS.md` is the home for operating-behavior overrides.
+ * Identity-evolution guidance, appended in normal mode ONLY when this session's
+ * catalog offers `update_identity` — the agent is never told about a tool it
+ * does not have (unattended runs don't get it). Says the identity and soul are
+ * the agent's own to rewrite with `update_identity`, that a change applies from
+ * its next message, to tell its person when its soul changes, and that the
+ * Instructions belong to its people alone.
  */
 export function identityEvolutionNote(): string {
   return [
-    `Your identity is yours to evolve. \`.ax/IDENTITY.md\` (who you are) and`,
-    `\`.ax/SOUL.md\` (your values and boundaries) are your own files — read them,`,
-    `and when you grow or the user asks you to change, use the \`Write\` tool to`,
-    `update them. Changes are saved and committed automatically; you don't need to`,
-    `run git. When you change \`.ax/SOUL.md\`, tell the user — it's your soul, and`,
-    `they should know when it shifts. If you or the user want to change how you`,
-    `operate (default behaviors, house rules), put that in \`.ax/AGENTS.md\` — that's`,
-    `the home for operating-behavior overrides. (Your fixed operating floor above`,
-    `always applies and cannot be overridden by these files.)`,
+    `Your identity is yours to evolve. Your identity (who you are) and your soul`,
+    `(your values and boundaries) are shown above. When you grow, or your person`,
+    `asks you to change, use the \`update_identity\` tool to rewrite your identity`,
+    `or your soul; the change applies from your next message, not this one. When`,
+    `you change your soul, tell your person: it's your soul, and they should know`,
+    `when it shifts. Your Instructions come from your people and only they can`,
+    `change them; if one should change, ask them to update it in your settings.`,
+    `(Your fixed operating floor above always applies and cannot be overridden.)`,
   ].join(' ');
 }
 
-/** Read one `.ax/` file. Returns undefined on any miss (absent, a symlink, not
- * a regular file, over the hard cap, or read error).
- *
- * `lstat` (NOT `stat`) runs BEFORE `readFile` for two reasons:
- *
- *  1. Security — `.ax/` files are agent-writable, so the agent could point
- *     `.ax/SOUL.md` at a symlink to a regular file OUTSIDE the workspace
- *     (`/proc/self/environ`, the runner's auth/proxy token file, `~/.ssh/...`).
- *     `stat` follows the link and `readFile` would inject that target's bytes
- *     straight into the system prompt — a workspace escape + secret leak to the
- *     model. `lstat` reports the LINK itself: `isFile()` is false for any
- *     symlink, so a symlinked identity path is rejected and the target is never
- *     opened. Identity reads stay strictly inside `.ax/`.
- *
- *  2. Memory/liveness — the size/type gate also bounds reads: a multi-GB blob,
- *     a directory, or a device at an identity path is skipped on type/size
- *     BEFORE any content is loaded, so a runaway/corrupt file can't OOM or hang
- *     runner startup.
- *
- * Skipping the whole file (rather than truncating) keeps identity from being
- * half-injected; every skip is logged so a corrupt/hostile file is visible. */
-async function readAxFile(axDir: string, name: string): Promise<string | undefined> {
-  const path = join(axDir, name);
-  let info;
-  try {
-    info = await lstat(path);
-  } catch {
-    // ENOENT (file absent) is the common case; any lstat error → treat as absent.
-    return undefined;
-  }
-  if (!info.isFile()) {
-    // A symlink (isFile() is false under lstat), directory, device, or socket
-    // at an identity path is never legitimate — skip without reading. This is
-    // the symlink-escape guard: a symlink to a secret file outside `.ax/` is
-    // rejected here, so its target never reaches the prompt.
-    console.warn(
-      `prompt-engine: .ax/${name} is not a regular file (symlink/dir/device); skipping (not injecting it this turn)`,
-    );
-    return undefined;
-  }
-  if (info.size > MAX_AX_FILE_BYTES) {
-    // Bound memory before reading: skip the whole oversized file rather than
-    // truncate mid-content (a half-injected identity is worse than an absent
-    // one). Logged so the oversize is visible.
-    console.warn(
-      `prompt-engine: .ax/${name} is ${info.size} bytes (> ${MAX_AX_FILE_BYTES}); skipping (not injecting it this turn)`,
-    );
-    return undefined;
-  }
-  try {
-    return await readFile(path, 'utf8');
-  } catch {
-    // A race (file removed/replaced between lstat and read) or permission error
-    // → treat as absent. The size + non-symlink were already verified by lstat;
-    // a TOCTOU swap to a symlink between lstat and open is not exploitable here
-    // because the value only flows into the LLM prompt as prose (no shell/path
-    // re-resolution), and the read would have to win a sub-ms race on a file
-    // only this session can write.
-    return undefined;
-  }
-}
-
-/**
- * Read the `.ax/` identity files under `workspaceRoot` (defaults to
- * `/agent`). Absent files, read errors, and over-cap files map to
- * undefined. An absent `.ax/` directory simply yields all-undefined.
- */
-export async function readAxIdentityFiles(workspaceRoot: string): Promise<AxIdentityFiles> {
-  const axDir = join(workspaceRoot, '.ax');
-  const [bootstrap, agents, identity, soul] = await Promise.all([
-    readAxFile(axDir, 'BOOTSTRAP.md'),
-    readAxFile(axDir, 'AGENTS.md'),
-    readAxFile(axDir, 'IDENTITY.md'),
-    readAxFile(axDir, 'SOUL.md'),
-  ]);
-  const out: AxIdentityFiles = {};
-  if (bootstrap !== undefined) out.bootstrap = bootstrap;
-  if (agents !== undefined) out.agents = agents;
-  if (identity !== undefined) out.identity = identity;
-  if (soul !== undefined) out.soul = soul;
-  return out;
-}
-
 export interface ComposeNormalModeInput {
-  /** Prepended on top of everything — carries the joined host `system-prompt:augment:*`
-   * contributions. Empty string => no prepend slot. */
+  /** Prepended on top of everything — carries the joined host
+   * `system-prompt:augment:*` contributions. Empty string => no prepend slot. */
   prepend?: string;
-  /** `.ax/AGENTS.md` body, if present. */
-  agents?: string;
-  /** `.ax/IDENTITY.md` body, if present. */
-  identity?: string;
-  /** `.ax/SOUL.md` body, if present. */
+  /** The people's Instructions, injected verbatim. Absent or blank => no section. */
+  instructions?: string;
+  /** The `## Identity` body: the agent's identity, or the caller's displayName
+   * fallback line. Blank => no heading. */
+  identity: string;
+  /** The agent's soul. Absent or blank => no `## Soul` section. */
   soul?: string;
   /** The pre-assembled operational notes block. */
   notes: string;
+  /** True when this session's (filtered) tool catalog offers `update_identity`;
+   * gates the identity-evolution guidance. */
+  identityToolAvailable: boolean;
 }
 
 /**
  * Compose the normal-mode system prompt in the pinned order:
  *   [prepend] + [safety floor] + [work policy] + [communication policy] +
- *   [AGENTS.md?] + ## Identity + ## Soul + evolution guidance +
- *   operational notes.
+ *   [## Instructions from your people] + ## Identity + [## Soul] +
+ *   [evolution guidance] + operational notes.
  *
- * The safety floor, the two policy notes, evolution guidance, and notes are
- * ALWAYS present. The
- * `.ax/` file slots are inject-if-present; their headings (`## Identity`,
- * `## Soul`, `## Operating overrides`) appear only when the corresponding body
- * is present (no empty sections). The AGENTS.md body itself is injected
- * verbatim under its heading — it's the operating-overrides layer.
+ * The safety floor, the two policy notes and the notes are ALWAYS present. The
+ * Instructions, Identity and Soul sections appear only when their text is
+ * present (no empty sections); the evolution guidance only when the session
+ * offers `update_identity`.
  */
 export function composeNormalModePrompt(input: ComposeNormalModeInput): string {
   const parts: string[] = [];
   if (input.prepend !== undefined && input.prepend.length > 0) {
     parts.push(input.prepend);
   }
-  // Floor first among runner-authored content so a long evolved SOUL.md can't
-  // displace it from the model's primacy window.
+  // Floor first among runner-authored content so a long soul or long
+  // Instructions can't displace it from the model's primacy window.
   parts.push(safetyFloorNote());
-  // The default operating policy sits BETWEEN the floor and AGENTS.md, and the
-  // order is the precedence: the floor cannot be overridden, these are defaults,
-  // and `.ax/AGENTS.md` is the agent's override layer — so the overrides follow
-  // the defaults they act on. Both notes say so in their own first line, so the
-  // model reads the precedence rather than having to infer it from position.
+  // The default operating policy sits BETWEEN the floor and the Instructions,
+  // and the order is the precedence: the floor cannot be overridden, these are
+  // defaults, and the people's Instructions override them — so the overrides
+  // follow the defaults they act on. Both notes say so in their own first line,
+  // so the model reads the precedence rather than having to infer it.
   parts.push(workPolicyNote());
   parts.push(communicationNote());
-  if (input.agents !== undefined && input.agents.length > 0) {
-    // Headed, not raw. The two policy notes above are `##` sections, so a bare
-    // AGENTS body would read as more bullets belonging to the last one instead
-    // of as the layer that overrides it. The heading is the section boundary;
-    // the body itself is still injected verbatim.
-    parts.push(`## Operating overrides\n\n${input.agents}`);
+  const instructions = nonBlank(input.instructions);
+  if (instructions !== undefined) parts.push(instructionsSection(instructions));
+  const identity = nonBlank(input.identity);
+  if (identity !== undefined) parts.push(`## Identity\n\n${identity}`);
+  const soul = nonBlank(input.soul);
+  if (soul !== undefined) parts.push(`## Soul\n\n${soul}`);
+  if (input.identityToolAvailable) {
+    parts.push(identityEvolutionNote());
   }
-  if (input.identity !== undefined && input.identity.length > 0) {
-    parts.push(`## Identity\n\n${input.identity}`);
-  }
-  if (input.soul !== undefined && input.soul.length > 0) {
-    parts.push(`## Soul\n\n${input.soul}`);
-  }
-  parts.push(identityEvolutionNote());
   parts.push(input.notes);
   return parts.join('\n\n');
 }
 
 /**
- * Build the SDK `systemPrompt` for this spawn, reading `${workspaceRoot}/.ax/`
- * and dispatching by mode (see the file header). Async because it reads the
- * identity files from the durable workspace. Always returns a plain string —
- * there is no SDK-preset / string-fallback path (TASK-142 dropped it).
+ * Build the SDK `systemPrompt` for this spawn from the frozen session config,
+ * dispatching by mode (see the file header). Reads nothing from disk; async so
+ * the call site's contract is unchanged. Always returns a plain string — there
+ * is no SDK-preset / string-fallback path (TASK-142 dropped it).
  *
  * @param displayName the agent's display name — the runner's FALLBACK identity,
- *   used in normal mode only when the agent has no `.ax/IDENTITY.md` of its own
+ *   used in normal mode only when the agent has no identity text of its own
  *   ("You are <displayName>, a helpful personal assistant."). Host-controlled.
- * @param augment the joined host `system-prompt:augment:*` contributions (e.g. the
- *   @ax/memory block), prepended on top in normal mode. Empty string =>
- *   no prepend. NEVER used in bootstrap mode.
- * @param bootstrapAugment the `rules` + `brief` SUBSET of those contributions
+ * @param augment the joined host `system-prompt:augment:*` contributions,
+ *   prepended on top in normal mode. Empty string => no prepend. NEVER used in
+ *   bootstrap mode.
+ * @param workspaceRoot the governed root (`/agent` by default) — named by the
+ *   operational notes; nothing is read from it.
+ * @param bootstrapAugment the bootstrap-safe SUBSET of those contributions
  *   (TASK-524), prepended on top in bootstrap mode only. It is a subset, so
  *   normal mode ignores it (the full `augment` already carries it). Empty
- *   string => bootstrap prompt byte-identical to before TASK-524.
- * @param workspaceRoot the durable workspace root (`/agent` by default);
- *   `.ax/` lives directly under it.
+ *   string => no bootstrap prepend.
+ * @param identity the session config's `agentConfig.identity` (TASK-989).
+ *   `undefined` (a session without one) means `NO_PROMPT_IDENTITY`.
+ * @param identityToolAvailable true when this session's filtered tool catalog
+ *   offers `update_identity` — gates the identity-evolution guidance.
  */
 export async function buildSystemPrompt(
   displayName: string,
@@ -309,48 +252,35 @@ export async function buildSystemPrompt(
   pythonVenvActive = false,
   userFilesRoot: string | undefined = undefined,
   // filestore-user-files Phase 2 (TASK-164): the agent's effective working
-  // directory (cwd). Defaults to `workspaceRoot` (today). When a durable mount
-  // moved cwd to /files, the workspace operational note states both the
-  // working dir and the governed root. `.ax/` identity reads always use
-  // `workspaceRoot` regardless — the governed tier never moves.
+  // directory (cwd). Defaults to `workspaceRoot`. When a durable mount moved cwd
+  // to /files, the workspace operational note states both the working dir and
+  // the governed root.
   cwd: string = workspaceRoot,
   memoryRoot: string | undefined = undefined,
   bootstrapAugment = '',
   routineToolsAvailable = false,
+  identity: Readonly<PromptIdentity> = NO_PROMPT_IDENTITY,
+  identityToolAvailable = false,
 ): Promise<SdkSystemPrompt> {
-  const files = await readAxIdentityFiles(workspaceRoot);
-
-  // Bootstrap mode is exclusive: the BOOTSTRAP.md content IS the prompt, plus
-  // filesystem guidance and the `rules` augment slice (TASK-524).
-  //
-  // TRUST NOTE (TASK-142, conversational-agent-identity Phase 3↔4): `.ax/` files
-  // are agent-writable, but a re-created/forged `.ax/BOOTSTRAP.md` can no longer
-  // re-open the bootstrap window: `@ax/validator-identity` (Phase 3 / TASK-141)
-  // is wired as a `workspace:pre-apply` subscriber and HARD-VETOES any agent
-  // `put` to BOOTSTRAP.md whose bytes don't match the canonical host-seeded
-  // template — so the only BOOTSTRAP.md this branch ever runs verbatim is the
-  // trusted compile-time script (floor-by-design) or the host's own seed. The
-  // un-gated-bootstrap-trust window flagged in Phase 1 is therefore CLOSED.
-  //
-  // The canonical template doesn't encode the agent's pre-assigned name (the
-  // validator gate checks bytes on disk — it only covers WRITEs, not what we
-  // forward to the SDK). Prepend a trusted runner-authored preamble so the agent
-  // knows its display name from the first message. When a durable mount moved
-  // cwd off the governed root, the same preamble slot also carries the one
-  // fact the script can't: Bash (unlike the file tools) is not re-rooted, so
-  // `.ax/` paths in a shell command must be absolute or the completion step
-  // (`rm .ax/BOOTSTRAP.md`) hits the wrong directory and bootstrap never ends.
-  if (files.bootstrap !== undefined) {
-    const pathNote = cwd === workspaceRoot ? '' : `\n\n${bootstrapPathNote(workspaceRoot, cwd)}`;
+  // Bootstrap mode is exclusive: the canonical script IS the prompt, behind the
+  // runner-authored name preamble (the script doesn't encode the agent's
+  // pre-assigned name), with output-directory guidance, then the people's
+  // Instructions — TASK-524's promise that their standing instructions reach
+  // the first-run chat too. The script finishes with a tool call
+  // (`complete_bootstrap`), not a file operation, so it needs no path guidance.
+  if (identity.bootstrapMode) {
+    const parts = [bootstrapPreamble(displayName)];
     const outputNote = fileOutputNote(workspaceRoot, ephemeralRoot, userFilesRoot);
-    const script = `${bootstrapPreamble(displayName)}${pathNote}${outputNote.length > 0 ? `\n\n${outputNote}` : ''}\n\n${files.bootstrap}`;
+    if (outputNote.length > 0) parts.push(outputNote);
+    parts.push(BOOTSTRAP_TEMPLATE);
+    const instructions = nonBlank(identity.instructions);
+    if (instructions !== undefined) parts.push(instructionsSection(instructions));
+    const script = parts.join('\n\n');
     return bootstrapAugment.length > 0 ? `${bootstrapAugment}\n\n${script}` : script;
   }
 
-  // Normal mode — the ONLY other mode. Compose from the identity files + the
-  // hardcoded floor + notes. When the agent has no IDENTITY.md, fall back to the
-  // displayName identity line so a file-less agent still gets a coherent "who am
-  // I". (SOUL.md / AGENTS.md remain inject-if-present.)
+  // Normal mode — the ONLY other mode. An agent with no identity text yet falls
+  // back to the displayName line, so it still gets a coherent "who am I".
   const notes = operationalNotes(
     workspaceRoot,
     ephemeralRoot,
@@ -359,12 +289,12 @@ export async function buildSystemPrompt(
     cwd,
     memoryRoot,
   );
-  const identity = files.identity ?? fallbackIdentityLine(displayName);
   return composeNormalModePrompt({
     prepend: augment,
-    ...(files.agents !== undefined ? { agents: files.agents } : {}),
-    identity,
-    ...(files.soul !== undefined ? { soul: files.soul } : {}),
+    instructions: identity.instructions,
+    identity: nonBlank(identity.identity) ?? fallbackIdentityLine(displayName),
+    soul: identity.soul,
     notes: routineToolsAvailable ? `${notes}\n\n${routineNote()}` : notes,
+    identityToolAvailable,
   });
 }
