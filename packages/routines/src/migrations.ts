@@ -6,6 +6,10 @@ import {
   SKILL_REFLECTION_ROUTINE_NAME,
   SKILL_REFLECTION_SEED_HASH,
 } from './reflection-prompt.js';
+import {
+  SKILL_REFLECTION_MARKER_PROMPT,
+  SKILL_REFLECTION_MARKER_SEED_HASH,
+} from './reflection-prompt-history.js';
 
 export interface RoutinesDefinitionsRow {
   task_check_in_requested: Generated<boolean>;
@@ -407,7 +411,33 @@ export async function runRoutinesMigration(db: Kysely<RoutinesDatabase>): Promis
       await sql`ALTER TABLE routines_v1_definitions ADD COLUMN webhook_health jsonb, ADD COLUMN webhook_health_generation text NOT NULL DEFAULT gen_random_uuid()::text`.execute(trx);
       await sql`INSERT INTO routines_schema_versions(version) VALUES(20)`.execute(trx);
     }
+    if (!await done(21)) {
+      await refreshReflectionSeed(trx);
+      await sql`INSERT INTO routines_schema_versions(version) VALUES(21)`.execute(trx);
+    }
   });
+}
+
+/** Version 21 (TASK-991). The 2026-09-27 reflection seed told the agent to keep
+ * a marker file; the host now supplies the last completed pass date
+ * (`{{lastCompletedRun}}`). Rewrites the catalog row only while its prompt is
+ * still exactly that seed. Turning reflection on means re-sending the whole
+ * definition through `routines:upsert-default`, which replaces `spec_hash`
+ * with a real hash, so the match is on the prompt, not the hash: a re-sent,
+ * unedited seed is swapped; an edited prompt is left alone. An untouched
+ * seed's hash moves to the new seed hash; an operator's stays. `updated_at`
+ * moves so `refreshStale` re-copies the prompt into every agent's materialized
+ * row (defaults.test.ts pins that). Agent-authored copies of the prompt are
+ * theirs and are not touched.
+ */
+async function refreshReflectionSeed(db: Kysely<RoutinesDatabase>): Promise<void> {
+  await sql`
+    UPDATE default_routines_v1
+       SET prompt_body = ${SKILL_REFLECTION_PROMPT},
+           spec_hash = CASE WHEN spec_hash = ${SKILL_REFLECTION_MARKER_SEED_HASH} THEN ${SKILL_REFLECTION_SEED_HASH} ELSE spec_hash END,
+           updated_at = now()
+     WHERE name = ${SKILL_REFLECTION_ROUTINE_NAME} AND prompt_body = ${SKILL_REFLECTION_MARKER_PROMPT}
+  `.execute(db);
 }
 
 /** Version 16 (TASK-919). A run's accepted kind never follows its mutable

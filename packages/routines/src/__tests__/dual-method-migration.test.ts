@@ -8,6 +8,8 @@ import { editableDefinition } from '@ax/routines-contract';
 import { runRoutinesMigration, type RoutinesDatabase } from '../migrations.js';
 import { createRoutinesStore } from '../store.js';
 import { inputHash } from '../definition.js';
+import { SKILL_REFLECTION_PROMPT, SKILL_REFLECTION_SEED_HASH } from '../reflection-prompt.js';
+import { SKILL_REFLECTION_MARKER_PROMPT, SKILL_REFLECTION_MARKER_SEED_HASH } from '../reflection-prompt-history.js';
 
 const frozenSql = readFileSync(new URL('./fixtures/schema-v14.sql', import.meta.url), 'utf8');
 const frozen = JSON.parse(readFileSync(new URL('./fixtures/schema-v14-operations.json', import.meta.url), 'utf8'));
@@ -59,7 +61,14 @@ describe('independent-method migration from a genuine v14 database', () => {
       expect(row?.nextRunAt?.toISOString() ?? null).toBe(old.next_run_at);
     }
     const defaults = await db.selectFrom('default_routines_v1').selectAll().orderBy('name').execute();
-    expect(jsonValue(defaults)).toEqual(frozen.defaults);
+    // TASK-991 (v21): only the genuine 2026-09-27 reflection seed moves (prompt, seed hash, updated_at).
+    // The fixture came from a real v14 binary, so these two lines also prove the frozen constants
+    // are byte for byte what deployments hold.
+    const frozenReflection = frozen.defaults.find((d: { name: string }) => d.name === 'skill-reflection');
+    expect(frozenReflection.prompt_body).toBe(SKILL_REFLECTION_MARKER_PROMPT);
+    expect(frozenReflection.spec_hash).toBe(SKILL_REFLECTION_MARKER_SEED_HASH);
+    expect(jsonValue(defaults)).toEqual(frozen.defaults.map((d: Record<string, unknown>) => d.name !== 'skill-reflection' ? d
+      : { ...d, prompt_body: SKILL_REFLECTION_PROMPT, spec_hash: SKILL_REFLECTION_SEED_HASH, updated_at: expect.any(String) }));
     expect(await store.findOne({ agentId: 'fixture-agent', routineId: 'fixture-default-heartbeat' })).toMatchObject({
       definitionId: 'default-heartbeat-2026-05-19',
       schedule: { kind: 'interval', every: '24h' }, webhook: null,
