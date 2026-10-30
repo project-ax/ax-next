@@ -1,5 +1,5 @@
-import { readFile, readdir } from 'node:fs/promises';
-import { join } from 'node:path';
+import { readFile } from 'node:fs/promises';
+import { locateJsonl } from './jsonl-transcript-source.js';
 
 /**
  * Read the runner-native jsonl transcript for the given sessionId and return
@@ -7,22 +7,22 @@ import { join } from 'node:path';
  * event.turn-end emission to surface the just-written turn's uuid so
  * subscribers can refer back (e.g., conversations:drop-turn).
  *
- * The Claude SDK writes to `${HOME}/.claude/projects/<cwd-slug>/<sessionId>.jsonl`.
+ * The Claude SDK writes to `<transcript dir>/<cwd-slug>/<sessionId>.jsonl`.
  * We don't know the slug a priori (the SDK encodes the cwd as a directory
  * name and the slug is not surfaced on the wire), so we readdir-walk
- * `${workspaceRoot}/.claude/projects` and pick the first directory that
- * contains a file named `${sessionId}.jsonl`.
+ * `transcriptDir` and pick the first directory that contains a file named
+ * `${sessionId}.jsonl`.
  *
  * Returns undefined on missing file, parse error, or no matching line —
  * non-fatal. The caller (event.turn-end emitter) emits without turnId in
  * that case and downstream subscribers fall through to their old behavior.
  */
 export async function readLastTurnUuid(
-  workspaceRoot: string,
+  transcriptDir: string,
   sessionId: string,
   type: 'assistant' | 'user' | 'tool',
 ): Promise<string | undefined> {
-  const jsonlPath = await locateJsonl(workspaceRoot, sessionId);
+  const jsonlPath = await locateJsonl(transcriptDir, sessionId);
   if (jsonlPath === null) return undefined;
   let text: string;
   try {
@@ -75,14 +75,14 @@ export async function readLastTurnUuid(
  * the final message's uuid is robust to any number of intermediate lines.
  */
 export async function waitForTranscriptUuid(
-  workspaceRoot: string,
+  transcriptDir: string,
   sessionId: string,
   targetUuid: string,
   opts: { timeoutMs: number; intervalMs: number },
 ): Promise<boolean> {
   const start = Date.now();
   for (;;) {
-    if (await transcriptHasUuid(workspaceRoot, sessionId, targetUuid)) {
+    if (await transcriptHasUuid(transcriptDir, sessionId, targetUuid)) {
       return true;
     }
     if (Date.now() - start >= opts.timeoutMs) return false;
@@ -97,11 +97,11 @@ export async function waitForTranscriptUuid(
  * (the target may be the very line still being flushed — keep polling).
  */
 async function transcriptHasUuid(
-  workspaceRoot: string,
+  transcriptDir: string,
   sessionId: string,
   targetUuid: string,
 ): Promise<boolean> {
-  const jsonlPath = await locateJsonl(workspaceRoot, sessionId);
+  const jsonlPath = await locateJsonl(transcriptDir, sessionId);
   if (jsonlPath === null) return false;
   let text: string;
   try {
@@ -142,10 +142,10 @@ async function transcriptHasUuid(
  * not mask an earlier durable message.
  */
 export async function hasResumableTranscript(
-  workspaceRoot: string,
+  transcriptDir: string,
   sessionId: string,
 ): Promise<boolean> {
-  const jsonlPath = await locateJsonl(workspaceRoot, sessionId);
+  const jsonlPath = await locateJsonl(transcriptDir, sessionId);
   if (jsonlPath === null) return false;
   let text: string;
   try {
@@ -165,27 +165,4 @@ export async function hasResumableTranscript(
     }
   }
   return false;
-}
-
-async function locateJsonl(
-  workspaceRoot: string,
-  sessionId: string,
-): Promise<string | null> {
-  const projectsDir = join(workspaceRoot, '.claude', 'projects');
-  let entries: string[];
-  try {
-    entries = await readdir(projectsDir);
-  } catch {
-    return null;
-  }
-  for (const slug of entries) {
-    const candidate = join(projectsDir, slug, `${sessionId}.jsonl`);
-    try {
-      await readFile(candidate, 'utf-8');
-      return candidate;
-    } catch {
-      continue;
-    }
-  }
-  return null;
 }

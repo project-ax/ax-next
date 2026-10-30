@@ -15,7 +15,7 @@ import {
 } from '../turn-end-uuid.js';
 
 function writeJsonl(root: string, sessionId: string, body: string): void {
-  const projDir = join(root, '.claude', 'projects', 'my-proj');
+  const projDir = join(root, 'transcripts', 'my-proj');
   mkdirSync(projDir, { recursive: true });
   writeFileSync(join(projDir, `${sessionId}.jsonl`), body);
 }
@@ -24,7 +24,7 @@ describe('readLastTurnUuid', () => {
   it('returns the uuid of the last assistant line in the jsonl', async () => {
     const root = mkdtempSync(join(tmpdir(), 'ax-runner-uuid-'));
     try {
-      const projDir = join(root, '.claude', 'projects', 'my-proj');
+      const projDir = join(root, 'transcripts', 'my-proj');
       mkdirSync(projDir, { recursive: true });
       const file = join(projDir, 'sess.jsonl');
       writeFileSync(
@@ -35,7 +35,7 @@ describe('readLastTurnUuid', () => {
           JSON.stringify({ type: 'assistant', uuid: 'a2', message: { id: 'm2' } }),
         ].join('\n') + '\n',
       );
-      const uuid = await readLastTurnUuid(root, 'sess', 'assistant');
+      const uuid = await readLastTurnUuid(join(root, 'transcripts'), 'sess', 'assistant');
       expect(uuid).toBe('a2');
     } finally {
       rmSync(root, { recursive: true, force: true });
@@ -45,11 +45,11 @@ describe('readLastTurnUuid', () => {
   it('returns undefined when no matching line', async () => {
     const root = mkdtempSync(join(tmpdir(), 'ax-runner-uuid-'));
     try {
-      const projDir = join(root, '.claude', 'projects', 'my-proj');
+      const projDir = join(root, 'transcripts', 'my-proj');
       mkdirSync(projDir, { recursive: true });
       const file = join(projDir, 'sess.jsonl');
       writeFileSync(file, JSON.stringify({ type: 'user', uuid: 'u1' }) + '\n');
-      expect(await readLastTurnUuid(root, 'sess', 'assistant')).toBeUndefined();
+      expect(await readLastTurnUuid(join(root, 'transcripts'), 'sess', 'assistant')).toBeUndefined();
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -67,7 +67,7 @@ describe('readLastTurnUuid', () => {
     // drop-turn. The function fails closed instead.
     const root = mkdtempSync(join(tmpdir(), 'ax-runner-uuid-'));
     try {
-      const projDir = join(root, '.claude', 'projects', 'my-proj');
+      const projDir = join(root, 'transcripts', 'my-proj');
       mkdirSync(projDir, { recursive: true });
       const file = join(projDir, 'sess.jsonl');
       writeFileSync(
@@ -77,7 +77,7 @@ describe('readLastTurnUuid', () => {
           '{"type":"assistant","uuid":"a2","message":{', // truncated
         ].join('\n') + '\n',
       );
-      expect(await readLastTurnUuid(root, 'sess', 'assistant')).toBeUndefined();
+      expect(await readLastTurnUuid(join(root, 'transcripts'), 'sess', 'assistant')).toBeUndefined();
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -98,7 +98,7 @@ describe('hasResumableTranscript', () => {
     const root = mkdtempSync(join(tmpdir(), 'ax-runner-resumable-'));
     try {
       writeJsonl(root, 'sess', '');
-      expect(await hasResumableTranscript(root, 'sess')).toBe(false);
+      expect(await hasResumableTranscript(join(root, 'transcripts'), 'sess')).toBe(false);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -116,7 +116,7 @@ describe('hasResumableTranscript', () => {
           JSON.stringify({ type: 'ai-title', aiTitle: 'x' }),
         ].join('\n') + '\n',
       );
-      expect(await hasResumableTranscript(root, 'sess')).toBe(false);
+      expect(await hasResumableTranscript(join(root, 'transcripts'), 'sess')).toBe(false);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -132,7 +132,7 @@ describe('hasResumableTranscript', () => {
           '\n' +
           '{"type":"user","message":{"role":"user","content":[{', // truncated
       );
-      expect(await hasResumableTranscript(root, 'sess')).toBe(false);
+      expect(await hasResumableTranscript(join(root, 'transcripts'), 'sess')).toBe(false);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -142,7 +142,7 @@ describe('hasResumableTranscript', () => {
     const root = mkdtempSync(join(tmpdir(), 'ax-runner-resumable-'));
     try {
       writeJsonl(root, 'sess', '{this is not valid json\n');
-      expect(await hasResumableTranscript(root, 'sess')).toBe(false);
+      expect(await hasResumableTranscript(join(root, 'transcripts'), 'sess')).toBe(false);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -163,7 +163,7 @@ describe('hasResumableTranscript', () => {
           }) +
           '\n',
       );
-      expect(await hasResumableTranscript(root, 'sess')).toBe(true);
+      expect(await hasResumableTranscript(join(root, 'transcripts'), 'sess')).toBe(true);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -181,7 +181,7 @@ describe('hasResumableTranscript', () => {
           '\n' +
           '{"type":"last-prompt","lastP', // truncated trailing line
       );
-      expect(await hasResumableTranscript(root, 'sess')).toBe(true);
+      expect(await hasResumableTranscript(join(root, 'transcripts'), 'sess')).toBe(true);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -202,7 +202,7 @@ describe('waitForTranscriptUuid', () => {
   it('resolves true once the target uuid lands', async () => {
     const root = mkdtempSync(join(tmpdir(), 'ax-runner-wait-'));
     try {
-      const projDir = join(root, '.claude', 'projects', 'my-proj');
+      const projDir = join(root, 'transcripts', 'my-proj');
       mkdirSync(projDir, { recursive: true });
       const file = join(projDir, 'sess.jsonl');
       writeFileSync(file, '');
@@ -219,7 +219,7 @@ describe('waitForTranscriptUuid', () => {
         );
       }, 80);
       try {
-        const landed = await waitForTranscriptUuid(root, 'sess', 'final-uuid', {
+        const landed = await waitForTranscriptUuid(join(root, 'transcripts'), 'sess', 'final-uuid', {
           timeoutMs: 2000,
           intervalMs: 10,
         });
@@ -235,7 +235,7 @@ describe('waitForTranscriptUuid', () => {
   it('waits for the SPECIFIC target uuid — is NOT fooled by an intermediate line already on disk (TASK-11)', async () => {
     const root = mkdtempSync(join(tmpdir(), 'ax-runner-wait-'));
     try {
-      const projDir = join(root, '.claude', 'projects', 'my-proj');
+      const projDir = join(root, 'transcripts', 'my-proj');
       mkdirSync(projDir, { recursive: true });
       const file = join(projDir, 'sess.jsonl');
       // The state at `result` for a tool turn: the INTERMEDIATE tool_use
@@ -260,7 +260,7 @@ describe('waitForTranscriptUuid', () => {
       );
       // With only A present, a SHORT wait for the FINAL uuid (B) must TIME OUT
       // (false) — proving it did NOT short-circuit on the intermediate line.
-      const early = await waitForTranscriptUuid(root, 'sess', 'B-closingtext', {
+      const early = await waitForTranscriptUuid(join(root, 'transcripts'), 'sess', 'B-closingtext', {
         timeoutMs: 60,
         intervalMs: 10,
       });
@@ -274,7 +274,7 @@ describe('waitForTranscriptUuid', () => {
           message: { id: 'm2', content: [{ type: 'text', text: 'done' }] },
         }) + '\n',
       );
-      const landed = await waitForTranscriptUuid(root, 'sess', 'B-closingtext', {
+      const landed = await waitForTranscriptUuid(join(root, 'transcripts'), 'sess', 'B-closingtext', {
         timeoutMs: 500,
         intervalMs: 10,
       });
@@ -287,7 +287,7 @@ describe('waitForTranscriptUuid', () => {
   it('resolves false when the target uuid never lands within the timeout', async () => {
     const root = mkdtempSync(join(tmpdir(), 'ax-runner-wait-'));
     try {
-      const projDir = join(root, '.claude', 'projects', 'my-proj');
+      const projDir = join(root, 'transcripts', 'my-proj');
       mkdirSync(projDir, { recursive: true });
       const file = join(projDir, 'sess.jsonl');
       // Only an unrelated prior line exists; the target never lands.
@@ -297,7 +297,7 @@ describe('waitForTranscriptUuid', () => {
           '\n',
       );
       const started = Date.now();
-      const landed = await waitForTranscriptUuid(root, 'sess', 'never', {
+      const landed = await waitForTranscriptUuid(join(root, 'transcripts'), 'sess', 'never', {
         timeoutMs: 80,
         intervalMs: 10,
       });

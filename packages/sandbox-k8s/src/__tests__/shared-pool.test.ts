@@ -98,6 +98,20 @@ describe('shared Agent Sandbox pool', () => {
     expect(f.custom.deleteNamespacedCustomObject).toHaveBeenCalledWith(expect.objectContaining({ plural: 'sandboxclaims',
       body: { propagationPolicy: 'Foreground', preconditions: { uid: uid.claim } } }));
   });
+  // TASK-994 — the standby template replaces the runner env, so a pooled runner
+  // learns its transcripts root only from the bootstrap; the standby must still
+  // carry the disk /tmp that root lives on.
+  it('delivers AX_TRANSCRIPTS_ROOT through the bootstrap onto the standby disk /tmp', async () => {
+    const f = fixture(); const api = await createSharedPoolSessionApi(f.pods, f.custom, f.direct, f.storage, config);
+    await api.createNamespacedPod({ namespace: config.namespace, body: sessionPod() });
+    expect(f.storage.assign).toHaveBeenCalledWith('gvisor-node', expect.objectContaining({ bootstrap: expect.objectContaining({
+      env: expect.objectContaining({ AX_TRANSCRIPTS_ROOT: '/tmp/transcripts' }) }) }));
+    const spec = buildSharedTemplate(config, '/runner.js').resource.spec.podTemplate.spec as unknown as {
+      containers: { volumeMounts: { name: string; mountPath: string }[] }[]; volumes: { name: string; emptyDir?: { medium?: string } }[] };
+    const tmp = spec.containers[0]!.volumeMounts.find(m => m.mountPath === '/tmp');
+    const volume = spec.volumes.find(v => v.name === tmp?.name);
+    expect(volume?.emptyDir).toBeDefined(); expect(volume!.emptyDir!.medium).toBeUndefined();
+  });
   it.each(['pod', 'sandbox', 'claim'])('fails closed when the assigned %s changes', async kind => {
     const f = fixture(); const api = await createSharedPoolSessionApi(f.pods, f.custom, f.direct, f.storage, config);
     await api.createNamespacedPod({ namespace: config.namespace, body: sessionPod() });

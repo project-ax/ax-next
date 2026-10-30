@@ -35,6 +35,7 @@ import {
   saveRefusedNoticeFromCodes,
 } from './save-refused-notice.js';
 import { commitTrace } from './commit-trace.js';
+import { assertConfigDirOutsideAgentHome } from './config-dir-guard.js';
 import { readRunnerEnv, runnerHomeDir, type RunnerEnv } from './env.js';
 import {
   commitTurnAndBundle,
@@ -380,8 +381,10 @@ export interface RunnerSeams {
   /**
    * Loop-specific scaffolding for the freshly-materialized workspace, run
    * inside the materialize step (so a failure is bootstrap-fatal) and after
-   * the .gitignore scaffold. Where a loop redirects its own transcript writes
-   * into the governed tier.
+   * the .gitignore scaffold. Where a loop lays down its own transcript
+   * directory (the claude-sdk loop links the SDK's projects dir to the
+   * sandbox's transcripts root). It runs before the resume restore writes
+   * the rebuilt transcript.
    */
   afterMaterialize?: (env: RunnerEnv) => Promise<void>;
   /**
@@ -408,6 +411,19 @@ async function runRunnerInner(
   let env: RunnerEnv;
   try {
     env = readEnv();
+  } catch (err) {
+    process.stderr.write(
+      `runner: ${err instanceof Error ? err.message : String(err)}\n`,
+    );
+    return 2;
+  }
+
+  // TASK-994 (design §11): the SDK loads $CLAUDE_CONFIG_DIR as its own trusted
+  // configuration, so it must not overlap the agent's home. Checked before
+  // every other boot step — in particular before the installed-skills
+  // materialization below writes into $CLAUDE_CONFIG_DIR/skills.
+  try {
+    await assertConfigDirOutsideAgentHome(env);
   } catch (err) {
     process.stderr.write(
       `runner: ${err instanceof Error ? err.message : String(err)}\n`,
@@ -566,11 +582,11 @@ async function runRunnerInner(
     // bundled back to the host. Must run AFTER the clone for the same reason
     // as the skill-surface scaffold (it appends to any baseline .gitignore).
     await scaffoldWorkspaceGitignore(env.workspaceRoot);
-    // Whatever the loop needs scaffolded into the freshly-cloned tree before
-    // it starts — typically redirecting the loop's own transcript writes into
-    // the workspace. Loop-shaped by nature (it knows where its SDK writes), so
-    // it is a seam; it runs INSIDE this try, so a failure is bootstrap-fatal
-    // exactly like the clone itself.
+    // Whatever the loop needs laid down before it starts — typically its own
+    // runner-private transcript directory (never the workspace). Loop-shaped
+    // by nature (it knows where its SDK writes), so it is a seam; it runs
+    // INSIDE this try, so a failure is bootstrap-fatal exactly like the clone
+    // itself.
     if (seams.afterMaterialize !== undefined) {
       await seams.afterMaterialize(env);
     }
@@ -668,10 +684,10 @@ async function runRunnerInner(
   // consumers (FAULTA-3).
   let transcriptSessionId: string | null = runnerSessionId;
 
-  // Phase E (2026-05-09): the replay-at-boot path is gone. Transcripts
-  // live in the runner's native ~/.claude/projects/<sessionId>.jsonl
-  // file (HOME-redirected into the workspace by Phase C), and the host
-  // reads them back via @ax/workspace-* on demand (Phase D). The runner
+  // Phase E (2026-05-09): the replay-at-boot path is gone. The runner-local
+  // transcript is the SDK's own jsonl under `$CLAUDE_CONFIG_DIR/projects`
+  // (or the sandbox's transcripts root it links to); the host store is the
+  // source of truth, rebuilt into that file on resume. The runner
   // never re-emits prior user turns into the loop's prompt iterator: the
   // SDK's own `resume(sessionId)` rehydrates the entire conversation
   // from disk when `runnerSessionId` is set above, and a null
@@ -1224,8 +1240,8 @@ async function runRunnerInner(
   //
   // Phase E (2026-05-09): no more replay-from-DB. The SDK's
   // `resume(sessionId)` rehydrates the transcript from its own on-disk
-  // store (~/.claude/projects/<sessionId>.jsonl, HOME-redirected into
-  // the workspace by Phase C) when `runnerSessionId !== null`. This pull
+  // store (`$CLAUDE_CONFIG_DIR/projects/<cwd-slug>/<sessionId>.jsonl`,
+  // rebuilt from the host store on resume) when `runnerSessionId !== null`. This pull
   // surfaces only live inbox messages; prior turns are the loop's
   // responsibility to surface to the model.
   async function nextMessage(): Promise<LoopUserMessage | null> {
@@ -1384,7 +1400,7 @@ async function runRunnerInner(
   // Single-session / non-conversation runs (conversationId === null) can't
   // reach the host transcript store, so they keep the legacy on-disk scan
   // (the loop's `hasLocalTranscript` seam) as the guard — the transcript, if
-  // any, is the materialized-workspace copy.
+  // any, is the one the loop's transcript source finds on local disk.
   let resumeSessionId = runnerSessionId;
   if (runnerSessionId !== null) {
     let resumable: boolean;
@@ -1498,8 +1514,7 @@ async function runRunnerInner(
   //
   // This is ONLY the agent's working frame. The GOVERNED frame
   // (`env.workspaceRoot`=/agent — the validated, git-backed tier) is unchanged
-  // and still drives every other path: git status/bundle, the transcript
-  // `$CLAUDE_CONFIG_DIR/projects → <workspaceRoot>/.claude/projects` symlink, the
+  // and still drives every other path: git status/bundle, the
   // prompt-engine's `${workspaceRoot}/.ax` reads, uploads materialization, and —
   // critically — the PreToolUse re-rooter's TARGET, so `.ax/**`+`.claude/**`
   // self-edits land back on /agent even though cwd is now ungoverned NFS (§14).

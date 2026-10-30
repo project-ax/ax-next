@@ -3,7 +3,7 @@
 //
 // The claude-sdk runner's transcript machinery exists to chase a file the SDK
 // owns: `locateJsonl`'s readdir-walk of the SDK's private cwd-slug encoding,
-// `scaffoldSdkProjectsSymlink`, and `waitForTranscriptUuid`. This runner owns
+// `prepareTranscriptDir`, and `waitForTranscriptUuid`. This runner owns
 // its messages, so there is nothing to chase.
 //
 // THAT DELETES A RACE, NOT JUST CODE. `waitForTranscriptUuid` exists because

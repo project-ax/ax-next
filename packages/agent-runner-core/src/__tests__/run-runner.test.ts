@@ -1,4 +1,4 @@
-import { describe, expect, it, vi, beforeEach, type Mock } from 'vitest';
+import { afterAll, describe, expect, it, vi, beforeEach, type Mock } from 'vitest';
 import { IpcRequestError, type IpcClient, type IpcClientOptions } from '@ax/ipc-protocol';
 import type { RunnerEnv } from '../env.js';
 import type { Loop, LoopContext, RunnerDeps, RunnerSeams, TranscriptSource } from '../index.js';
@@ -58,7 +58,6 @@ vi.mock('../git-workspace.js', async (importOriginal) => {
     ...actual,
     materializeWorkspace: vi.fn().mockResolvedValue({ baselineCommit: 'oid-0' }),
     scaffoldWorkspaceGitignore: vi.fn().mockResolvedValue(undefined),
-    scaffoldSdkProjectsSymlink: vi.fn().mockResolvedValue(undefined),
     commitTurnAndBundle: vi.fn().mockResolvedValue(null),
     // Only reached when a test hands commitTurnAndBundle a bundle (the
     // TASK-720 save-refusal cases); there is no real repo at /tmp/workspace.
@@ -80,6 +79,14 @@ function scriptInbox(entries: unknown[]): void {
   });
 }
 
+// TASK-994: runRunner refuses to start unless CLAUDE_CONFIG_DIR names an
+// existing directory outside the agent's home — the sandbox always provides
+// one. A real runner-private temp dir stands in for it.
+const CONFIG_DIR = await fs.mkdtemp(path.join(os.tmpdir(), 'ax-run-runner-cfg-'));
+afterAll(async () => {
+  await fs.rm(CONFIG_DIR, { recursive: true, force: true });
+});
+
 /** The minimal shape readRunnerEnv produces (see env.ts). */
 function fakeEnv(): RunnerEnv {
   return {
@@ -87,6 +94,7 @@ function fakeEnv(): RunnerEnv {
     sessionId: 'sess-1',
     authToken: 'tok-123',
     workspaceRoot: '/tmp/workspace',
+    claudeConfigDir: CONFIG_DIR,
     proxyEndpoint: 'http://127.0.0.1:8443',
   };
 }
@@ -307,6 +315,47 @@ describe('runRunner', () => {
     // No IPC client was ever built, so no event.chat-end could have shipped.
     expect(createIpcClientMock).not.toHaveBeenCalled();
     expect(fakeClient.event).not.toHaveBeenCalled();
+  });
+
+  // TASK-994 (design §11): the SDK loads $CLAUDE_CONFIG_DIR as its own trusted
+  // config, so one inside the agent's files would turn anything the agent
+  // writes there into settings, hooks, skills or MCP servers. The guard runs
+  // before every other boot step, including the installed-skills
+  // materialization that writes into $CLAUDE_CONFIG_DIR/skills.
+  it("refuses to start before any IPC or filesystem work when CLAUDE_CONFIG_DIR is inside the agent's files", async () => {
+    const t = await fs.mkdtemp(path.join(os.tmpdir(), 'ax-run-runner-guard-'));
+    const files = path.join(t, 'files');
+    const cfg = path.join(files, '.claude');
+    await fs.mkdir(cfg, { recursive: true });
+    const { writeProxyCaFromEnv } = await import('../proxy-ca-from-env.js');
+    const { setupProxy } = await import('../proxy-startup.js');
+    const { materializeInstalledSkillsFromEnv } = await import('../installed-skills.js');
+    vi.mocked(writeProxyCaFromEnv).mockClear();
+    vi.mocked(setupProxy).mockClear();
+    vi.mocked(materializeInstalledSkillsFromEnv).mockClear();
+    const createTranscriptSource = vi.fn(() => transcriptSource);
+    const makeLoop = vi.fn();
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      const code = await runRunner(makeLoop, {
+        ...seams(() => ({ ...fakeEnv(), userFilesRoot: files, claudeConfigDir: cfg })),
+        createTranscriptSource,
+      });
+      expect(code).toBe(2);
+      expect(stderr.mock.calls.map((c) => String(c[0])).join('')).toMatch(/CLAUDE_CONFIG_DIR/);
+      expect(createTranscriptSource).not.toHaveBeenCalled();
+      expect(writeProxyCaFromEnv).not.toHaveBeenCalled();
+      expect(setupProxy).not.toHaveBeenCalled();
+      expect(materializeInstalledSkillsFromEnv).not.toHaveBeenCalled();
+      expect(createIpcClientMock).not.toHaveBeenCalled();
+      expect(makeLoop).not.toHaveBeenCalled();
+      expect(fakeClient.event).not.toHaveBeenCalled();
+      expect(await fs.readdir(files)).toEqual(['.claude']);
+      expect(await fs.readdir(cfg)).toEqual([]);
+    } finally {
+      stderr.mockRestore();
+      await fs.rm(t, { recursive: true, force: true });
+    }
   });
 
   it('returns 2, closes the client, and fires NO chat-end when boot fails AFTER the client exists', async () => {

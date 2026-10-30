@@ -62,8 +62,8 @@ export interface TranscriptSource {
   read(sessionId: string): Promise<Buffer | null>;
   /**
    * Persist reconstructed transcript bytes for `sessionId` on resume. The
-   * SDK source writes them where the SDK expects (`.claude/projects/<slug>/`,
-   * creating the dir); a runner that owns its messages loads them into memory
+   * SDK source writes them where the SDK expects
+   * (`<transcript dir>/<slug>/`, creating the dir); a runner that owns its messages loads them into memory
    * and writes nothing. Core must never name the destination itself — that is
    * exactly the runner-private layout this seam exists to hide.
    */

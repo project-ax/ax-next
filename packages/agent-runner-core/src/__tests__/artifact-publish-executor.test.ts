@@ -182,6 +182,31 @@ describe('artifact_publish executor', () => {
     });
   });
 
+  describe('the facts export (/memory) is unreachable', () => {
+    it('refuses a real file in a sibling memory tree, directly and through a link in the agent files', async () => {
+      const t = await fs.mkdtemp(path.join(os.tmpdir(), 'ax-mem-'));
+      const filesRoot = path.join(t, 'files');
+      await fs.mkdir(filesRoot, { recursive: true });
+      const factFile = await write(t, 'memory/facts/a.md', 'real fact bytes');
+      // Constructed the way run-runner.ts does: durable + scratch roots only.
+      const exec = createArtifactPublishExecutor({
+        userFilesRoot: filesRoot,
+        ephemeralRoot: ephemeral,
+      });
+
+      await expect(exec(call({ path: factFile }))).rejects.toThrow(
+        /artifact-path-not-publishable/,
+      );
+
+      // The link path passes the lexical allowlist (it is under the files
+      // root), so it is the realpath containment re-check that refuses it.
+      await fs.symlink(path.join(t, 'memory'), path.join(filesRoot, 'mem'));
+      await expect(
+        exec(call({ path: path.join(filesRoot, 'mem/facts/a.md') })),
+      ).rejects.toThrow(/^artifact_publish: resolved outside the publishable tier/);
+    });
+  });
+
   describe('rejection messages', () => {
     it('name the real roots of this session, not literals from another shape', async () => {
       await expect(executor()(call({ path: '/etc/passwd' }))).rejects.toThrow(

@@ -13,6 +13,7 @@ const PROXY_TCP = {
   AX_WORKSPACE_ROOT: '/tmp/workspace',
   AX_PROXY_ENDPOINT: 'http://127.0.0.1:54321',
   AX_PROXY_TOKEN: TOKEN,
+  CLAUDE_CONFIG_DIR: '/home/runner/.ax/session',
 };
 
 // Canonical Phase 2 bridge-mode fixture (AX_PROXY_UNIX_SOCKET only).
@@ -23,6 +24,7 @@ const PROXY_UNIX = {
   AX_WORKSPACE_ROOT: '/tmp/workspace',
   AX_PROXY_UNIX_SOCKET: '/var/run/ax/proxy.sock',
   AX_PROXY_TOKEN: TOKEN,
+  CLAUDE_CONFIG_DIR: '/home/runner/.ax/session',
 };
 
 describe('readRunnerEnv', () => {
@@ -32,6 +34,7 @@ describe('readRunnerEnv', () => {
       sessionId: 'sess-1',
       authToken: 'tok-123',
       workspaceRoot: '/tmp/workspace',
+      claudeConfigDir: '/home/runner/.ax/session',
       proxyEndpoint: 'http://127.0.0.1:54321',
       proxyToken: TOKEN,
     });
@@ -66,6 +69,44 @@ describe('readRunnerEnv', () => {
     ).toBe(false);
   });
 
+  it('reads claudeConfigDir from CLAUDE_CONFIG_DIR', () => {
+    expect(readRunnerEnv({ ...PROXY_TCP }).claudeConfigDir).toBe('/home/runner/.ax/session');
+  });
+
+  // TASK-994: the SDK resolves a relative CLAUDE_CONFIG_DIR against ITS cwd —
+  // the agent's home — while the runner's guard would resolve it against the
+  // runner's own cwd and look in the wrong place. So a relative value (or a
+  // `~` one, which nothing expands) is refused outright.
+  it.each(['.claude', '~/.claude', 'home/.ax/session'])(
+    'rejects a relative CLAUDE_CONFIG_DIR %j — it would resolve against the SDK cwd (the agent home)',
+    (v) => {
+      expect(() => readRunnerEnv({ ...PROXY_TCP, CLAUDE_CONFIG_DIR: v })).toThrow(InvalidEnvError);
+      expect(() => readRunnerEnv({ ...PROXY_TCP, CLAUDE_CONFIG_DIR: v })).toThrow(/CLAUDE_CONFIG_DIR/);
+    },
+  );
+
+  it('reads transcriptsRoot when AX_TRANSCRIPTS_ROOT is set, omits it otherwise', () => {
+    expect(
+      readRunnerEnv({ ...PROXY_TCP, AX_TRANSCRIPTS_ROOT: '/tmp/transcripts' }).transcriptsRoot,
+    ).toBe('/tmp/transcripts');
+    expect('transcriptsRoot' in readRunnerEnv(PROXY_TCP)).toBe(false);
+    expect(
+      'transcriptsRoot' in readRunnerEnv({ ...PROXY_TCP, AX_TRANSCRIPTS_ROOT: '' }),
+    ).toBe(false);
+  });
+
+  it.each(['transcripts', './transcripts', '~/transcripts'])(
+    'rejects a relative AX_TRANSCRIPTS_ROOT (%s)',
+    (v) => {
+      expect(() => readRunnerEnv({ ...PROXY_TCP, AX_TRANSCRIPTS_ROOT: v })).toThrow(
+        InvalidEnvError,
+      );
+      expect(() => readRunnerEnv({ ...PROXY_TCP, AX_TRANSCRIPTS_ROOT: v })).toThrow(
+        /AX_TRANSCRIPTS_ROOT/,
+      );
+    },
+  );
+
   it('reads memoryRoot when AX_MEMORY_ROOT is set, omits it otherwise', () => {
     expect(
       readRunnerEnv({ ...PROXY_TCP, AX_MEMORY_ROOT: '/memory' }).memoryRoot,
@@ -82,6 +123,7 @@ describe('readRunnerEnv', () => {
       sessionId: 'sess-1',
       authToken: 'tok-123',
       workspaceRoot: '/tmp/workspace',
+      claudeConfigDir: '/home/runner/.ax/session',
       proxyUnixSocket: '/var/run/ax/proxy.sock',
       proxyToken: TOKEN,
     });
@@ -111,6 +153,7 @@ describe('readRunnerEnv', () => {
       AX_WORKSPACE_ROOT: '/tmp/ws',
       AX_PROXY_ENDPOINT: 'http://127.0.0.1:8443',
       AX_PROXY_TOKEN: TOKEN,
+      CLAUDE_CONFIG_DIR: '/home/runner/.ax/session',
       AX_LLM_PROXY_URL: 'http://legacy.local',
     });
     expect((env as Record<string, unknown>).llmProxyUrl).toBeUndefined();
@@ -130,11 +173,14 @@ describe('readRunnerEnv', () => {
   });
 
   // Phase 3: AX_WORKSPACE_ROOT became optional (defaults to /agent —
-  // the sandbox's canonical mount). The other three remain required.
+  // the sandbox's canonical mount). The others remain required.
+  // CLAUDE_CONFIG_DIR (TASK-994): without it the SDK falls back to
+  // `$HOME/.claude` — the agent's own files — for its trusted config.
   for (const name of [
     'AX_RUNNER_ENDPOINT',
     'AX_SESSION_ID',
     'AX_AUTH_TOKEN',
+    'CLAUDE_CONFIG_DIR',
   ] as const) {
     it(`throws MissingEnvError naming ${name} when unset`, () => {
       const env = { ...PROXY_TCP };

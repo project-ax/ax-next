@@ -86,12 +86,12 @@ describe('createJsonlTranscriptSource().write', () => {
   it('refuses a foreign transcript and leaves NO jsonl behind', async () => {
     const root = await mkdtemp(join(tmpdir(), 'ax-csdk-xrunner-'));
     try {
-      const source = createJsonlTranscriptSource(root);
+      const source = createJsonlTranscriptSource(join(root, 'transcripts'), root);
       const outcome = await source.write('sess-from-aisdk', AISDK_TRANSCRIPT);
       expect(outcome).toBe('unusable');
       // Nothing may be left at the path the SDK reads — otherwise a later boot
       // could still find the foreign file and crash on it.
-      await expect(readdir(join(root, '.claude', 'projects'))).rejects.toThrow();
+      await expect(readdir(join(root, 'transcripts'))).rejects.toThrow();
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -100,7 +100,7 @@ describe('createJsonlTranscriptSource().write', () => {
   it('still adopts a genuine SDK transcript', async () => {
     const root = await mkdtemp(join(tmpdir(), 'ax-csdk-xrunner-'));
     try {
-      const source = createJsonlTranscriptSource(root);
+      const source = createJsonlTranscriptSource(join(root, 'transcripts'), root);
       const outcome = await source.write('sess-native', SDK_TRANSCRIPT);
       expect(outcome).toBe('accepted');
       // And it lands where `read` finds it again — the resume path end to end.

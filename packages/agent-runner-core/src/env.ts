@@ -2,7 +2,8 @@
 // Runner env read + validate — claude-sdk variant.
 //
 // Reads the host-injected per-session proxy fields plus the runner
-// endpoint, session id, auth token, and workspace root. The proxy fields
+// endpoint, session id, auth token, workspace root and SDK config dir
+// (CLAUDE_CONFIG_DIR). The proxy fields
 // are populated when @ax/credential-proxy is loaded.
 // Exactly one of AX_PROXY_ENDPOINT (subprocess sandbox, TCP) or
 // AX_PROXY_UNIX_SOCKET (k8s sandbox, Unix socket → bridge) is required —
@@ -15,6 +16,8 @@
 // almost always a wiring bug, not an intentional value. Failing loud here
 // beats a confusing downstream error.
 // ---------------------------------------------------------------------------
+
+import * as path from 'node:path';
 
 export interface RunnerEnv {
   runnerEndpoint: string;
@@ -44,6 +47,27 @@ export interface RunnerEnv {
    * is cwd/HOME; when absent the runner uses the supplied session scratch tier.
    */
   userFilesRoot?: string;
+  /**
+   * The runner-private directory the SDK loads as its own trusted configuration
+   * (`CLAUDE_CONFIG_DIR`): installed skills, connector `.mcp.json`, settings,
+   * `.claude.json`, and its session state. k8s pins `/home/runner/.ax/session`;
+   * subprocess uses `<per-session HOME>/.ax/session`. Required and absolute
+   * (TASK-994): unset, the SDK falls back to `$HOME/.claude`, which is the
+   * agent's own files; relative, the SDK resolves it against its cwd, which
+   * is also the agent's home. `assertConfigDirOutsideAgentHome` checks at
+   * startup that it exists and does not overlap the agent's home.
+   */
+  claudeConfigDir: string;
+  /**
+   * Optional, absolute directory where the Claude SDK's per-session transcript
+   * working copy lives (`AX_TRANSCRIPTS_ROOT`, TASK-994). k8s stamps
+   * `/tmp/transcripts` (the pod's disk-backed emptyDir: `/home/runner` is tmpfs
+   * and counts against the pod's memory limit). Absent means "use the SDK's own
+   * `$CLAUDE_CONFIG_DIR/projects`", which is already per-session under the
+   * subprocess sandbox. The claude-sdk runner's `transcript-dir.ts` consumes it;
+   * the DB, not this directory, is the transcript's source of truth.
+   */
+  transcriptsRoot?: string;
   /**
    * Per-session credential-proxy TCP endpoint (subprocess sandbox).
    * Mutually exclusive with `proxyUnixSocket`. When present, the SDK calls
@@ -149,7 +173,16 @@ export function readRunnerEnv(env: NodeJS.ProcessEnv = process.env): RunnerEnv {
     // different path can still override via AX_WORKSPACE_ROOT, but the
     // default lines up with what `pod-spec.ts` actually mounts.
     workspaceRoot: opt('AX_WORKSPACE_ROOT') ?? '/agent',
+    // No default — see RunnerEnv.claudeConfigDir. Both sandboxes always set it.
+    claudeConfigDir: need('CLAUDE_CONFIG_DIR'),
   };
+  // `~/.claude` counts as relative: nothing expands the `~`.
+  if (!path.isAbsolute(result.claudeConfigDir)) {
+    throw new InvalidEnvError(
+      'CLAUDE_CONFIG_DIR',
+      "expected an absolute path — a relative one resolves against the SDK's working directory, which is the agent's home",
+    );
+  }
   // No default — see the RunnerEnv.ephemeralRoot doc. Absent means "no
   // scratch tier wired", which the runner treats as "don't widen the
   // agent's filesystem reach".
@@ -180,6 +213,15 @@ export function readRunnerEnv(env: NodeJS.ProcessEnv = process.env): RunnerEnv {
     );
   }
   result.proxyToken = proxyToken;
+  // No default — see RunnerEnv.transcriptsRoot. A relative value would resolve
+  // against whichever cwd the runner happens to have, so refuse it at the edge.
+  const transcriptsRoot = opt('AX_TRANSCRIPTS_ROOT');
+  if (transcriptsRoot !== undefined) {
+    if (!path.isAbsolute(transcriptsRoot)) {
+      throw new InvalidEnvError('AX_TRANSCRIPTS_ROOT', 'expected an absolute path');
+    }
+    result.transcriptsRoot = transcriptsRoot;
+  }
   const memoryRoot = opt('AX_MEMORY_ROOT');
   if (memoryRoot !== undefined) result.memoryRoot = memoryRoot;
   return result;

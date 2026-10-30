@@ -27,7 +27,6 @@ import {
   runRunner,
   waitForAssignment,
   runnerHomeDir,
-  scaffoldSdkProjectsSymlink,
   type Loop,
   type LoopContext,
   type RunnerDeps,
@@ -51,6 +50,7 @@ import {
   waitForTranscriptUuid,
 } from './turn-end-uuid.js';
 import { createJsonlTranscriptSource } from './jsonl-transcript-source.js';
+import { prepareTranscriptDir, sdkTranscriptDir } from './transcript-dir.js';
 import { createTurnUsageAccumulator } from './turn-usage.js';
 import { createConnectorAuthReporter } from './connector-auth-report.js';
 
@@ -237,8 +237,9 @@ export function createClaudeSdkLoop(deps: RunnerDeps): Loop {
       //
       // Phase E (2026-05-09): no more replay-from-DB. The SDK's
       // `resume(sessionId)` rehydrates the transcript from its own on-disk
-      // store (~/.claude/projects/<sessionId>.jsonl, HOME-redirected into
-      // the workspace by Phase C) when `resumeSessionId !== null`. The
+      // store (`$CLAUDE_CONFIG_DIR/projects/<cwd-slug>/<sessionId>.jsonl`,
+      // rebuilt from the host store by the shell's resume restore) when
+      // `resumeSessionId !== null`. The
       // generator only yields live inbox messages; prior turns are the
       // SDK's responsibility to surface to the model.
       async function* userMessages(): AsyncGenerator<SDKUserMessage> {
@@ -342,7 +343,7 @@ export function createClaudeSdkLoop(deps: RunnerDeps): Loop {
           spawnClaudeCodeProcess: (options) => interruptProcesses.spawn(options),
           // Phase C: SDK resume(sessionId). When the conversation has a
           // bound runner session id, the SDK rehydrates the transcript
-          // from its own on-disk store under HOME (workspaceRoot, see
+          // from its own on-disk store (`$CLAUDE_CONFIG_DIR/projects`, see
           // below). Spread-conditional so the field is OMITTED on first
           // boot — the SDK's `resume?: string` typing is "string or
           // missing", not "string or null"; passing `undefined` would be
@@ -357,8 +358,8 @@ export function createClaudeSdkLoop(deps: RunnerDeps): Loop {
           // The env literal here partitions into two distinct concerns that
           // happen to share the same SDK subprocess env namespace:
           //
-          // (a) Phase C — HOME redirect for the SDK subprocess (jsonl
-          //     persistence). See per-bullet rationale below.
+          // (a) Phase C — HOME redirect for the SDK subprocess. See
+          //     per-bullet rationale below.
           //
           // (b) Phase 0 skill discovery (I-P0-1 / I-P0-3) — CLAUDE_CONFIG_DIR
           //     forwarded from the sandbox-provided runner env so the SDK's
@@ -366,60 +367,47 @@ export function createClaudeSdkLoop(deps: RunnerDeps): Loop {
           //     (`<sandbox-HOME>/.ax/session`) that's SEPARATE from the
           //     workspace's `'project'` source (`<cwd>/.claude/skills`).
           //     Without the forward, the SDK falls back to `<HOME>/.claude`,
-          //     which — because the (a) override below sets HOME=workspaceRoot
-          //     — collapses onto the project-source path, making the two
-          //     setting sources indistinguishable and rendering the host-
+          //     which — because the (a) override below sets HOME to the
+          //     agent's home — collapses onto the project-source path, making
+          //     the two setting sources indistinguishable and rendering the host-
           //     installed-skills surface unreachable. The forward itself
           //     lives in proxy-startup.ts (ENV_ALLOWLIST) so the value
           //     arrives via `...proxyStartup.providerEnv` below.
           //
           // (a)/(b) interact via the SDK's per-session jsonl path. The
           // SDK derives `$CLAUDE_CONFIG_DIR/projects/<encoded-cwd>/
-          // <sid>.jsonl` from the same var that drives skill discovery,
-          // so once (b) moved CLAUDE_CONFIG_DIR outside the workspace,
-          // the SDK's turn-transcript writes went with it — and the
-          // turn-end `git add -A` stopped capturing them. The fix lives
-          // upstream of this env literal: scaffoldSdkProjectsSymlink (in
-          // git-workspace.ts, called from the shell's materialize block)
-          // creates `$CLAUDE_CONFIG_DIR/projects` as a symlink into
-          // `<workspaceRoot>/.claude/projects`, so the writes land inside
-          // `/agent` and the bundler picks them up. The (b) split
-          // and the jsonl capture are restored independently; no env
-          // change here.
+          // <sid>.jsonl` from the same var that drives skill discovery.
+          // `prepareTranscriptDir` (transcript-dir.ts, called from the
+          // shell's afterMaterialize) makes that path a link to the
+          // sandbox's transcripts root (`AX_TRANSCRIPTS_ROOT`) when one is
+          // stamped, and every transcript reader uses the link TARGET. The
+          // (b) split and the jsonl location are independent; no env change
+          // here.
           //
           // Phase C: HOME redirect for the SDK subprocess.
           //   - The k8s sandbox pod sets HOME=/nonexistent at the pod level
           //     so `git` (and any other tool the runner spawns) can't
           //     accidentally read a global ~/.gitconfig — git-paranoia.
-          //   - The SDK needs HOME pointed at the workspace so its native
-          //     ~/.claude/projects/<sessionId>.jsonl lands where the
-          //     turn-end `git status + git add -A + bundle` captures it,
-          //     closing the jsonl gap that workspace Phase 3 set up the
-          //     plumbing for.
+          //   - HOME is the agent's home (`sdkHome`) for tools that read it
+          //     (`~/bin`, dotfiles). The SDK's own state is NOT in HOME: with
+          //     CLAUDE_CONFIG_DIR set, its `.claude.json`, backups, sessions
+          //     and transcripts all land in CLAUDE_CONFIG_DIR (measured against
+          //     SDK 0.2.119). The runner refuses to start without it
+          //     (`assertConfigDirOutsideAgentHome`). The one remaining HOME
+          //     write is the CLI's env-paths cache (MCP logs): on Linux it
+          //     follows XDG_CACHE_HOME (`buildToolCacheEnv`, scratch tier); on
+          //     macOS it is `HOME/Library/Caches`.
           //   - The runner-process git operations inherit HOME=/nonexistent
           //     from process.env (we don't override their env), so the
           //     redirect is targeted to this SDK subprocess only.
-          //   - Side effect: the SDK's auxiliary files (`.claude.json`,
-          //     `.claude/backups/`, etc.) also land in the workspace.
-          //     Acceptable trade-off (Q1 of the Phase C plan): the `.ax/`
-          //     filter in workspace:pre-apply doesn't subscribe validators
-          //     to them, and we can split with a symlink/copy step in a
-          //     follow-up if needed.
           //   - HOME is spread AFTER ...proxyStartup.providerEnv so this
           //     value wins on conflict. providerEnv currently doesn't set
           //     HOME, but defensive ordering matches the intent: we
           //     explicitly redirect HOME for the SDK subprocess.
           //   - filestore-user-files Phase 2 (TASK-164): HOME is `sdkHome` — the
           //     durable `/files` NFS mount when AX_USERFILES_ROOT is wired,
-          //     else `/agent` (today). So `~/bin`, dotfiles, and tool caches go to
-          //     durable NFS rather than the git-bundled tier. Skill discovery is
-          //     unaffected (CLAUDE_CONFIG_DIR, forwarded separately, drives it —
-          //     not HOME), and the SDK's per-session jsonl still lands on /agent
-          //     because the `$CLAUDE_CONFIG_DIR/projects` symlink targets
-          //     `<workspaceRoot>/.claude/projects` regardless of cwd (only the
-          //     `<encoded-cwd>` subdir name changes; the conversations readdir-walk
-          //     is slug-agnostic). The SDK aux files (`.claude.json`, backups) now
-          //     land on /files instead — acceptable (never validated/bundled).
+          //     else the scratch/workspace tier. Skill discovery is unaffected
+          //     (CLAUDE_CONFIG_DIR, forwarded separately, drives it — not HOME).
           //   - We DO NOT override CLAUDE_CONFIG_DIR here — the sandbox
           //     plugin's value (carried through proxyStartup.providerEnv)
           //     is the source of truth for the (b) split above. If a future
@@ -496,8 +484,7 @@ export function createClaudeSdkLoop(deps: RunnerDeps): Loop {
           // The set, deduped (cwd is excluded; the SDK already grants it):
           //   - The governed tier `env.workspaceRoot` (=/agent). In Phase 2 cwd is
           //     /files, so /agent is NO LONGER the cwd and MUST be listed — it
-          //     holds `.ax/uploads` (materialized attachments), the transcript
-          //     `.claude/projects` symlink target, and every `.ax/**`+`.claude/**`
+          //     holds `.ax/uploads` (materialized attachments) and every `.ax/**`+`.claude/**`
           //     path the PreToolUse re-rooter rewrites BACK to /agent (§14). Without
           //     it those re-rooted writes would be denied. (When userFilesRoot is
           //     unset, /agent IS the cwd, so it drops out via the dedup.)
@@ -1028,7 +1015,7 @@ export function createClaudeSdkLoop(deps: RunnerDeps): Loop {
               const sessionId = ctx.getTranscriptSessionId();
               if (lastAssistantUuid !== undefined && sessionId !== null) {
                 const landed = await waitForTranscriptUuid(
-                  env.workspaceRoot,
+                  sdkTranscriptDir(env),
                   sessionId,
                   lastAssistantUuid,
                   { timeoutMs: flushTimeoutMs, intervalMs: flushIntervalMs },
@@ -1048,7 +1035,7 @@ export function createClaudeSdkLoop(deps: RunnerDeps): Loop {
               // to 'user' here — that mapping is SDK-private and belongs in
               // this adapter rather than in the shell's vocabulary.
               readLastTurnUuid(
-                env.workspaceRoot,
+                sdkTranscriptDir(env),
                 sessionId,
                 role === 'tool' ? 'user' : role,
               ),
@@ -1075,50 +1062,25 @@ export async function main(): Promise<number> {
     // @ax/agent-runner-core; locating the SDK's jsonl (its private cwd-slug
     // encoding) is SDK-specific and hides behind this source.
     //
-    // Rooted at the governed tier (the `$CLAUDE_CONFIG_DIR/projects` symlink
-    // target) but slugged by the SDK's actual cwd — run-runner's `homeDir`, i.e.
+    // Rooted at the transcript directory (`sdkTranscriptDir`: the stamped
+    // AX_TRANSCRIPTS_ROOT, else the SDK's own `$CLAUDE_CONFIG_DIR/projects`)
+    // but slugged by the SDK's actual cwd — run-runner's `homeDir`, i.e.
     // selected by runnerHomeDir, which becomes `query({ cwd })`. Slugging
-    // by workspaceRoot instead wrote the resume-restore where the SDK never
-    // looked whenever a /files mount was wired ("No conversation found").
+    // by any other directory wrote the resume-restore where the SDK never
+    // looked ("No conversation found").
     createTranscriptSource: (env) =>
-      createJsonlTranscriptSource(
-        env.workspaceRoot,
-        runnerHomeDir(env),
-      ),
+      createJsonlTranscriptSource(sdkTranscriptDir(env), runnerHomeDir(env)),
     // F2a guard, non-conversation branch: the legacy on-disk scan of the
-    // materialized workspace's jsonl.
+    // transcript directory's jsonl.
     hasLocalTranscript: (env, sessionId) =>
-      hasResumableTranscript(env.workspaceRoot, sessionId),
+      hasResumableTranscript(sdkTranscriptDir(env), sessionId),
+    // Lay down the transcript directory (and the `$CLAUDE_CONFIG_DIR/projects`
+    // link to AX_TRANSCRIPTS_ROOT when one is stamped). Bootstrap-fatal, and
+    // it runs before the resume restore writes the rebuilt jsonl. See
+    // transcript-dir.ts and the (a)/(b) comment block around the query() env
+    // literal above.
     afterMaterialize: async (env) => {
-      // Redirect the SDK's turn-transcript jsonl writes into the workspace.
-      // Phase 0 set CLAUDE_CONFIG_DIR OUTSIDE /agent so the `'user'`
-      // skill-discovery source could be distinct from the `'project'` source,
-      // but the SDK ALSO derives `$CLAUDE_CONFIG_DIR/projects/<encoded-cwd>/
-      // <sid>.jsonl` from the same var — the transcript writes moved with it.
-      // A filesystem-level redirect (a symlink at `$CLAUDE_CONFIG_DIR/projects`
-      // pointing into `<workspaceRoot>/.claude/projects`) lands those writes
-      // inside the workspace.
-      //
-      // This symlink stays LOAD-BEARING after TASK-67/70 — but NOT for git:
-      // `.claude/projects/` is gitignored (the shell's .gitignore scaffold runs
-      // just before this), so the jsonl never rides a commit/bundle anymore.
-      // Its purpose now is PATH LOCALITY for the out-of-git transcript
-      // pipeline: the per-turn delta-ship + uuid-wait readers
-      // (jsonl-transcript-source.ts `locateJsonl`, turn-end-uuid.ts)
-      // readdir-walk `<workspaceRoot>/.claude/projects`, and resume
-      // (`restoreTranscriptForResume`) WRITES the rebuilt jsonl there for the
-      // SDK to read back via this same symlink. Remove it and both the
-      // delta-ship and resume go blind. See scaffoldSdkProjectsSymlink's doc
-      // and the (a)/(b) comment block around the query() env literal above.
-      //
-      // Guard: CLAUDE_CONFIG_DIR is sandbox-injected. If a future sandbox
-      // provider doesn't set it, fall through to the pre-Phase-0 behavior
-      // (the HOME redirect sends the SDK's jsonls to `<HOME>/.claude/
-      // projects/...` which IS inside workspaceRoot already).
-      const claudeConfigDir = process.env.CLAUDE_CONFIG_DIR;
-      if (claudeConfigDir) {
-        await scaffoldSdkProjectsSymlink(env.workspaceRoot, claudeConfigDir);
-      }
+      await prepareTranscriptDir(env);
     },
     // Phase 2: feature-detect whether the pinned claude-agent-sdk supports
     // `document` content blocks. The SDK exposes its accepted block types via

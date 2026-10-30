@@ -119,22 +119,18 @@ const ENV_ALLOWLIST = new Set<string>([
   // own env so the SDK's `'user'` setting source resolves to a host-owned
   // root that is SEPARATE from the workspace's `'project'` source. Without
   // forwarding it here the SDK falls back to `<HOME>/.claude` — and because
-  // main.ts overrides HOME=workspaceRoot for the Phase C jsonl redirect,
-  // the `'user'` root would collapse onto the workspace's `<cwd>/.claude/`
+  // main.ts overrides HOME to the agent's home, the `'user'` root would
+  // collapse onto the workspace's `<cwd>/.claude/`
   // path, making the two setting sources indistinguishable and rendering
   // the host-installed-skills surface unreachable.
   //
-  // Side effect of this forward (Phase E follow-up): the SDK ALSO derives
-  // its per-session turn-transcript jsonl path from this var
-  // (`$CLAUDE_CONFIG_DIR/projects/<encoded-cwd>/<sid>.jsonl`), so a
-  // CLAUDE_CONFIG_DIR pointing OUTSIDE the workspace breaks the
-  // turn-end `git add -A + bundle` capture of those jsonls. The fix is
-  // paired with this forward: main.ts calls
-  // `scaffoldSdkProjectsSymlink` after materialize to point
-  // `$CLAUDE_CONFIG_DIR/projects` at `<workspaceRoot>/.claude/projects`
-  // via symlink. Both halves are needed — forwarding without the
-  // symlink loses transcripts; the symlink without the forward
-  // collapses the `'user'`/`'project'` skill split.
+  // The SDK ALSO keeps its `.claude.json`, backups, session state and
+  // per-session transcript jsonl
+  // (`$CLAUDE_CONFIG_DIR/projects/<encoded-cwd>/<sid>.jsonl`) under this var,
+  // so forwarding it is what keeps them out of the agent's home. runRunner
+  // refuses to start without it (`assertConfigDirOutsideAgentHome`), and the
+  // claude-sdk runner's `prepareTranscriptDir` points the projects dir at the
+  // sandbox's transcripts root after materialize.
   'CLAUDE_CONFIG_DIR',
 ]);
 

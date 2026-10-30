@@ -28,7 +28,6 @@ export * from './identity-templates.js';
 export {
   commitTurnAndBundle,
   materializeWorkspace,
-  scaffoldSdkProjectsSymlink,
   scaffoldWorkspaceGitignore,
 } from './git-workspace.js';
 export {
