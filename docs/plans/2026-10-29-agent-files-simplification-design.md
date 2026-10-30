@@ -145,6 +145,11 @@ Agent-facing tools (host-executed)
   bootstrap.
 - **`update_identity` is not offered in unattended runs** (routine- or
   task-sourced sessions with no person present). Decided 2026-10-29.
+- **As built (TASK-989):** the tools pass both filters through the
+  orchestrator's session-open union, and are hidden from wildcard catalogs via
+  `disallowedTools`. Bootstrap mode also adds a host-authored "Saved so far:
+  your identity (yes|not yet), your soul (yes|not yet)" line (never the saved
+  text).
 - When the agent changes its own identity, the host (not the model) records an
   entry in the agent's activity, shown on Today to the agent's owner (decided
   2026-10-30). It says which section changed. No Undo: the owner fixes the text
@@ -162,6 +167,9 @@ Prompt
   built with; at turn start the orchestrator compares with the current revision
   and, if different, starts a fresh runner that resumes the SDK session. One
   prompt-cache miss per change. Nothing changes mid-turn.
+- **As built (TASK-989):** refresh = `system-prompt:augment-changed` plus the
+  TASK-612 generation. `revision` is the write CAS counter and is not on the
+  wire. `complete_bootstrap` is offered only in bootstrap mode.
 - Templates: rewrite `BOOTSTRAP_TEMPLATE` to use `update_identity` +
   `complete_bootstrap`; delete `bootstrapPathNote`; rewrite
   `identityEvolutionNote` (it currently says "use Write … committed
@@ -185,6 +193,8 @@ truth (Invariant 4). They merge into one **Instructions** field:
 - **People only.** Written through `agents:identity:set` from the settings page;
   `update_identity` cannot touch it, so the agent can never rewrite its own
   standing instructions. What the agent learns goes to facts and skills.
+- **As built (TASK-989):** today's rules had no content scan; Instructions are
+  now scanned like every other section.
 - Same 16,384-character cap and scan as today's rules; same edit permissions as
   today's settings-page Instructions section.
 - Prompt: one section, "Instructions from your people", after the defaults,
@@ -361,5 +371,7 @@ Already dead, ignore: `agent-native-runner`, `tool-file-io(-impl)`,
 - `/tmp` emptyDir size limit now that it holds venvs, caches, uploads, transcripts.
 - Whether old transcripts that contain `Write .ax/SOUL.md` get a deny-with-hint
   pointing at `update_identity`.
+  - **As built (TASK-989):** no deny-with-hint for `Write .ax/SOUL.md`; the
+    removal card deletes that tier.
 - How the local CLI sandbox maps the layout (no mount namespace; `/memory`
   absent there today).

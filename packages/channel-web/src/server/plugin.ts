@@ -93,15 +93,10 @@ const PLUGIN_NAME = '@ax/channel-web';
 //     routines:get and routines:recent-fires), and answer 404 without it.
 //     TASK-953 adds no hard call either: a task's owner copies it through the
 //     optional routines:duplicate, answering 503 without it.
-//     TASK-234 (AW-13) adds no hard call either: the Memory tab's
-//     memory:rules:read / memory:rules:write are @ax/memory's, registered only
-//     when its `rules` option is on, and @ax/memory itself is optional.
-//     (memory:learned:read went with @ax/memory-strata, deleted in TASK-608.)
-//     Declaring them in `calls` would make the kernel's verifyCalls refuse to
-//     boot a deployment that simply chose not to run memory. So the routes
-//     gate on bus.hasService and the write answers 503 when nothing is there
-//     to keep the promise — and they are declared in `optionalCalls` (TASK-770;
-//     the manifest-declarations guard test keeps every gated hook listed).
+//     TASK-234 (AW-13) added no hard call either: the Memory tab's reads were
+//     optional hooks gated on bus.hasService (TASK-770). TASK-989 removed the
+//     memory:rules:* pair (Instructions are @ax/agents rows now);
+//     memory:learned:read went with @ax/memory-strata (TASK-608).
 //     TASK-235 (AW-14) adds no hard call either: the rail's four blocks read
 //     tool-policy:*, agent-activity:get, tool:list, the two grant records and
 //     decisions:count, every one of them optional and every one of them with a
@@ -120,7 +115,7 @@ const PLUGIN_NAME = '@ax/channel-web';
 //     memory:conversation-activity (TASK-626 — per-connection only, in
 //     memory-events.ts; filtered by conversationId + userId, ids only).
 //     Its memory:status read is an optionalCall, not a call, same reasoning
-//     as the memory:rules:* hooks above: the route gates on bus.hasService
+//     as the other optional reads above: the route gates on bus.hasService
 //     and answers 503 without it.
 // ---------------------------------------------------------------------------
 
