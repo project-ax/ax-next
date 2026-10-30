@@ -35,8 +35,10 @@ export interface WorkspaceLocaldirConfig {
  * emits ONE per-agent `localDir` mount so the canary + local dev loop get a
  * durable per-agent `/files` WITHOUT a real NFS server.
  *
- * Returns `[]` (a graceful no-mount, never an error) when the session owner has
- * no usable `agentId` — an anonymous CLI session simply gets no durable mount.
+ * Returns `[]` (never an error here) when the session owner has no usable
+ * `agentId`. The sandbox provider then refuses to open that session, because
+ * every owned session needs its durable `/files` home (TASK-992); host-read and
+ * agent-delete cleanup treat it as a no-mount.
  */
 export function createWorkspaceLocaldirPlugin(
   config: WorkspaceLocaldirConfig,

@@ -550,13 +550,35 @@ password (lookup-stable) when minio.enabled and the operator didn't supply one.
 
 {{/*
 Validate blob.backend wiring (out-of-git design Part A). Fails fast at template
-time on two misconfigurations the operator can't recover from at runtime:
+time on misconfigurations the operator can't recover from at runtime:
   - blob.backend=s3 with neither an explicit blob.s3.endpoint NOR minio.enabled
     → the host pod boots with no endpoint and no in-cluster MinIO to fall back
     to; the SDK would try AWS's real endpoint, which is never what a self-host /
     kind / GCS deploy wants.
   - blob.backend=s3 with an empty blob.s3.bucket AND minio.enabled=false → the
     preset's loader throws `AX_BLOB_S3_BUCKET is required` at boot.
+  - blob.backend=fs with an empty blob.fs.root (TASK-992). The root is pinned
+    in values.yaml and the preset no longer derives one, so empty is never
+    right. It almost always means `helm upgrade --reuse-values` carried a
+    pre-TASK-992 release's `root: ""` forward (it renders with the OLD
+    release's values, not this chart's defaults). The message prints the path
+    the preset used to derive with the local workspace backend,
+    `<workspace.mountPath>/blobs`, so pinning it moves nothing. Any other
+    workspace.backend (git-protocol, or absent) gets a separate message: the
+    preset used /var/lib/ax-next/blobs there, on the container's scratch disk,
+    so there were no durable blobs to keep, and the advice is s3. When the
+    cleanup card removes the workspace values, revisit this split: every empty
+    root would then get the non-local message (the local-message test goes red).
+  - blob.backend=fs with a root that is not under workspace.mountPath, while
+    workspace.backend=local mounts the workspace PVC there. The host has no
+    other volume a blob root could live on, so such a root is the container's
+    scratch disk: existing blobs vanish from view and new ones are lost on
+    restart. This is the hazard the pin itself creates: an install with a
+    custom workspace.mountPath that upgrades with `-f` values picks up the
+    pinned default, which is off its PVC.
+Workspace values are read through `dig`, so the last guard switches itself off
+when the workspace settings go away; the chart test "AX_BLOB_FS_ROOT lies on
+the host PVC mount" is the backstop then.
 Belt-and-suspenders for the values schema (helm has no native enum-with-prereqs
 validator). Invoked from host/deployment.yaml, which always renders.
 */}}
@@ -568,6 +590,48 @@ validator). Invoked from host/deployment.yaml, which always renders.
 {{- if and (not .Values.blob.s3.bucket) (not (include "ax-next.bool" .Values.minio.enabled)) -}}
 {{- fail "blob.backend=s3 requires blob.s3.bucket to be set" -}}
 {{- end -}}
+{{- else if eq .Values.blob.backend "fs" -}}
+{{- $ws := .Values.workspace | default dict -}}
+{{- $mp := dig "mountPath" "/var/lib/ax-next/workspaces" $ws -}}
+{{- $root := dig "fs" "root" "" .Values.blob -}}
+{{- if and (not $root) (ne (dig "backend" "" $ws) "local") -}}
+{{- fail "blob.fs.root is empty. Blobs (attachments, artifacts, skill files) live on the host disk at blob.fs.root. On this deployment the workspace backend is not local, so the host never mounted a workspace volume and blobs were on the container's scratch disk, which is wiped on restart. The chart gives this host no volume for blobs, so use blob.backend=s3 to keep them. To keep the old behaviour (blobs lost on every restart), set blob.fs.root=/var/lib/ax-next/blobs explicitly." -}}
+{{- end -}}
+{{- if not $root -}}
+{{- fail (printf "blob.fs.root is empty. Blobs (attachments, artifacts, skill files) live on the host disk at blob.fs.root, and the chart no longer works that out from workspace.mountPath. This deployment's existing blobs are at %s/blobs: pass --set blob.fs.root=%s/blobs once (--reuse-values keeps it after that). An empty value usually means helm upgrade --reuse-values carried it forward from an older chart." $mp $mp) -}}
+{{- end -}}
+{{- if and (eq (dig "backend" "" $ws) "local") (or (not (hasPrefix (printf "%s/" (trimSuffix "/" $mp)) $root)) (regexMatch "(^|/)\\.\\.(/|$)" $root)) -}}
+{{- fail (printf "blob.fs.root (%s) is not on the host's workspace volume (mounted at %s), so blobs would land on the container's scratch disk and vanish on restart. Set blob.fs.root to a path under %s; this deployment's existing blobs are at %s/blobs." $root $mp $mp $mp) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+ax-next.validateFilestore — every agent's durable home is required (TASK-992).
+
+Each agent's `/files` directory is a per-agent `subPath` of the NFS export in
+sandbox.filestore (a Filestore share on GKE, the dev NFS server on kind). It is
+the agent's only durable copy of its files, so there is no "off" setting: a
+render without a server or an export path fails here, at template time, instead
+of booting a host that cannot open a session. The k8s preset's env loader
+refuses to start without AX_FILESTORE_SERVER, and both sandbox providers refuse
+an owned session without a /files mount; this is the same rule, caught first.
+
+Read through `dig`: `helm upgrade --reuse-values` renders with the OLD
+release's values, so an empty or missing server / exportPath there gets this
+message rather than a nil-pointer error. (The `sandbox.filestore` map itself
+has been in values.yaml since TASK-163; a release with no map at all would
+trip a NetworkPolicy template's direct read first.)
+
+Invoked from host/deployment.yaml, which always renders.
+*/}}
+{{- define "ax-next.validateFilestore" -}}
+{{- $sandbox := .Values.sandbox | default dict -}}
+{{- if not (dig "filestore" "server" "" $sandbox) -}}
+{{- fail "sandbox.filestore.server is empty. Every agent's home directory (/files) lives on an NFS export, and the chart will not render without one. On GKE, create a Filestore instance and set sandbox.filestore.server to its IP (deploy/GKE.md, \"Provision the user-files Filestore\"). On kind, run make dev-kind-memory-nfs; kind-dev-values.yaml already points at it." -}}
+{{- end -}}
+{{- if not (dig "filestore" "exportPath" "" $sandbox) -}}
+{{- fail "sandbox.filestore.exportPath is empty. Set it to the Filestore share name with a leading slash, for example /vol1." -}}
 {{- end -}}
 {{- end -}}
 

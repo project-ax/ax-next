@@ -304,7 +304,9 @@ Decided 2026-10-30: plain reset; nobody is using ax yet.
   the workspace config would point prod at an empty `/var/lib/ax-next/blobs`.
   Set `AX_BLOB_FS_ROOT` explicitly. Keep the `ax-next-workspace` PVC (holds `blobs/`).
 - **Filestore backups** added to `backups.sh` (enable/status/drill); today only
-  the workspace PVC is snapshotted.
+  the two host disks (workspace and facts) are snapshotted. Filestore backups
+  were deferred on 2026-10-30 to a separate card (Basic-tier Filestore has no
+  backup schedule, so the mechanism is its own decision).
 - Chart: remove git-server templates, its NetworkPolicy rules, auth secret,
   image value, host env vars.
 - Host and runner share one image: each deploying PR follows "delete runner pods

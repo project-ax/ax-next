@@ -118,7 +118,7 @@ help:
 	@echo "  dev-mount-up       Patch the deployment to add the dev-web mount."
 	@echo "  dev-mount-down     Remove the dev-web mount from the deployment."
 	@echo "  rollout            Restart the host deployment and wait for it."
-	@echo "  dev-kind-memory-nfs  Build+load+apply the dev NFS server that facts memory needs on kind."
+	@echo "  dev-kind-memory-nfs  Build+load+apply the dev NFS server on kind (facts memory's /memory, every agent's /files)."
 	@echo "  gke-deploy         Build+push linux/amd64 image (tag=git SHA) + upgrade the GKE release."
 	@echo "                     Needs GKE_CONTEXT=<your context>; it never follows your current one."
 	@echo ""
@@ -268,15 +268,19 @@ rollout: kube-guard
 	$(KUBECTL) -n $(NAMESPACE) rollout status  deployment/$(DEPLOYMENT) --timeout=120s
 
 # ----------------------------------------------------------------------------
-# dev-kind-memory-nfs — stand up the dev-only in-cluster NFS server that the
-# facts-memory preset needs (TASK-576: `host.preset: memory` is now the
-# chart's default, and `kind-dev-values.yaml` points `memory.exports` at this
-# server's pinned ClusterIP). Run this BEFORE the first `helm install` on a
-# fresh kind cluster, or the host pod hangs on a mount it can't reach. See
+# dev-kind-memory-nfs — stand up the dev-only in-cluster NFS server. It serves
+# two exports: `/memory` for the facts-memory preset (TASK-576: `host.preset:
+# memory` is the chart's default) and `/files`, every agent's durable home
+# (TASK-992: the chart requires `sandbox.filestore`). `kind-dev-values.yaml`
+# points both `memory.exports` and `sandbox.filestore` at this server's pinned
+# ClusterIP. Run this BEFORE the first `helm install` on a fresh kind cluster,
+# or the host pod hangs on a mount it can't reach. See
 # `deploy/kind/memory-nfs/README.md` for what this stands up and why it's
-# dev-only (privileged, unauthenticated, backed by an emptyDir).
+# dev-only (privileged, unauthenticated, exported to the node only). `/memory`
+# is an emptyDir; `/files` is the ax-next-files-nfs PVC, kept across restarts.
 #
-# Idempotent: `kubectl apply` on an already-running server is a no-op.
+# Idempotent: `kubectl apply` on an already-running server is a no-op, and it
+# never deletes the PVC.
 # ----------------------------------------------------------------------------
 MEMORY_NFS_IMAGE := ax-next/memory-nfs:dev
 

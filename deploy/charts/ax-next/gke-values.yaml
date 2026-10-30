@@ -73,7 +73,7 @@ host:
 #   >>> OPTIONAL EDIT: provision a SEPARATE Filestore instance/share for
 #   memory (a second `gcloud filestore instances create`, or a second share
 #   on an existing multi-share instance) — this must NOT be the same server +
-#   exportPath as any `sandbox.filestore.*` you configure. See deploy/GKE.md
+#   exportPath as `sandbox.filestore.*` (the agents' /files home, below). See deploy/GKE.md
 #   ("Memory: facts memory is the default") for the walkthrough, including
 #   the credential you still need (provider:openrouter, via Admin → AI model
 #   keys).
@@ -113,7 +113,10 @@ gitServer:
 blob:
   backend: fs                 # blobs on the host PVC (sibling of the workspace)
   fs:
-    root: ""                  # "" → <workspace.mountPath>/blobs
+    # Pinned (TASK-992): the path the chart used to derive from
+    # workspace.mountPath. Do not change it on a live deployment; a new root
+    # starts an empty blob store. See values.yaml (blob.fs.root).
+    root: /var/lib/ax-next/workspaces/blobs
 
 minio:
   enabled: false              # dev-only object store; prod uses fs (above)
@@ -130,6 +133,13 @@ sandbox:
   # cluster must be 1.29+ (Autopilot is) — the chart preflights it.
   devServices:
     enabled: false
+  # The agents' durable home (/files). REQUIRED: the chart will not render
+  # without a server. Provision it first (deploy/GKE.md, "Provision the
+  # user-files Filestore") and put its IP in gke-values.local.yaml.
+  filestore:
+    server: ""              # >>> EDIT (required) in gke-values.local.yaml: the Filestore IP
+    exportPath: "/vol1"     # the share name from `gcloud filestore instances describe`
+    hostReadPath: ""        # >>> EDIT (recommended) "/user-files" in gke-values.local.yaml
 
 # ─── Credential-proxy: TCP listener + ClusterIP Service ──────────
 # The prod-gVisor transport (TASK-149). Runner pods reach the proxy over the

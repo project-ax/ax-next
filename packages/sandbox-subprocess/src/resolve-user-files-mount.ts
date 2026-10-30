@@ -17,8 +17,9 @@ import type {
 // `sandbox:resolve-mounts` is listed in this provider's `optionalCalls`: when a
 // mount-resolver plugin (`@ax/workspace-localdir` in the CLI preset) is loaded,
 // we call it during session open and realize the mounts it returns. When no
-// resolver is loaded, we degrade gracefully — no durable user-files mount, the
-// runner behaves exactly as before (no AX_USERFILES_ROOT).
+// resolver is loaded, or it returns no user-files mount, this helper answers
+// `{}`. It does not decide what that means: open-session REFUSES an owned
+// session without a home (TASK-992).
 //
 // The subprocess sandbox SHARES the host filesystem (there is no container
 // boundary), so it can realize only the `localDir` kind — `mkdir -p hostPath`,
@@ -38,7 +39,7 @@ export interface ResolvedUserFilesMount {
   /**
    * The path to stamp as `AX_USERFILES_ROOT` — the realized location of the
    * `role:'user-files'` mount. Undefined when no resolver is loaded or it
-   * returned no user-files mount (graceful no-mount).
+   * returned no user-files mount; open-session refuses an owned session then.
    */
   userFilesRoot?: string;
 }
@@ -49,8 +50,10 @@ export interface ResolvedUserFilesMount {
  * `mkdir -p` of each `localDir` mount's `hostPath`. Returns the `AX_USERFILES_ROOT`
  * value (the realized path of the `role:'user-files'` mount), if any.
  *
- * - No resolver loaded → `{}` (no durable mount; pre-existing behavior).
+ * - No resolver loaded → `{}` (no durable mount).
  * - Resolver returns `[]` (e.g. anonymous, no agentId) → `{}`.
+ * - `{}` is not a session the caller may open: open-session refuses an OWNED
+ *   session without a user-files root (`home-unavailable`, TASK-992).
  * - An unrealizable `kind` (anything but `localDir`) → throws PluginError.
  */
 export async function resolveUserFilesMount(

@@ -9,7 +9,7 @@ vi.mock('@ax/sandbox-k8s', async importOriginal => {
 const { createK8sPlugins, loadK8sConfigFromEnv } = await import('../index.js');
 const environment = () => ({ DATABASE_URL: 'postgres://u:p@db:5432/ax', AX_K8S_HOST_IPC_URL: 'http://host:8080',
   AX_WORKSPACE_BACKEND: 'local', AX_WORKSPACE_ROOT: '/tmp/ax-preset', AX_HTTP_HOST: '0.0.0.0', AX_HTTP_PORT: '8080',
-  AX_HTTP_COOKIE_KEY: '0'.repeat(64), K8S_SANDBOX_BACKEND: 'agent-sandbox', K8S_PROXY_ENDPOINT: 'http://proxy:8888',
+  AX_HTTP_COOKIE_KEY: '0'.repeat(64), AX_BLOB_FS_ROOT: '/tmp/ax-preset/blobs', K8S_SANDBOX_BACKEND: 'agent-sandbox', K8S_PROXY_ENDPOINT: 'http://proxy:8888',
   K8S_SHARED_POOL_REPLICAS: '2', K8S_SHARED_POOL_PREFIX: 'shared', K8S_SHARED_POOL_STORAGE_NAMESPACE: 'storage',
   K8S_SHARED_POOL_SERVER_NAME: 'storage.storage.svc', AX_FILESTORE_SERVER: '10.0.0.9', AX_FILESTORE_EXPORT_PATH: '/files',
   AX_MEMORY_EXPORT_NFS_SERVER: '10.0.0.10', AX_MEMORY_EXPORT_NFS_PATH: '/memory' });
@@ -26,6 +26,6 @@ describe('shared pool production assembly', () => {
   });
   it('refuses enabling the shared path without its durable mount resolver', () => {
     const env: NodeJS.ProcessEnv = environment(); delete env.AX_FILESTORE_SERVER;
-    expect(() => loadK8sConfigFromEnv(env)).toThrow('configured Filestore');
+    expect(() => loadK8sConfigFromEnv(env)).toThrow(/AX_FILESTORE_SERVER is required/);
   });
 });

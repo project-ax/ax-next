@@ -41,8 +41,13 @@ const chartDir = resolve(here, '..');
 
 const RELEASE = 'ax-test';
 const JOB_NAME = `${RELEASE}-ax-next-pg-init`;
+// Every render needs a durable /files home (TASK-992). A values FILE, passed
+// first, so any --set still wins over it.
+const FILESTORE_FIXTURE = resolve(here, 'fixtures/filestore-values.yaml');
 
 const REQUIRED = [
+  '-f',
+  FILESTORE_FIXTURE,
   '--set',
   'credentials.key=test',
   '--set',

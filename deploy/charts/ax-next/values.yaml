@@ -196,7 +196,8 @@ gitServer:
 #
 #   - `fs` (default): @ax/blob-store-fs writes content-addressed files on
 #     the host PVC. Single-replica only (RWO PVC), cheapest, zero new deps.
-#     `root` defaults to a sibling dir on the workspace PVC.
+#     `root` is pinned below, in a sibling dir of the workspace repos on the
+#     workspace PVC.
 #   - `s3`: @ax/blob-store-s3 talks to one S3-compatible bucket. Multi-
 #     replica-safe. Dev/test: point at the in-cluster MinIO (set
 #     `minio.enabled=true` and `blob.backend=s3`; see kind-dev-values.yaml).
@@ -214,9 +215,23 @@ gitServer:
 blob:
   backend: fs            # fs | s3
   fs:
-    # Empty → preset derives <workspace.mountPath>/blobs (a sibling dir on
-    # the host PVC for the local workspace backend).
-    root: ""
+    # Where the blobs live: a directory on the host's `<release>-workspace`
+    # PVC (mounted at workspace.mountPath), next to the workspace repos.
+    #
+    # Pinned (TASK-992). It used to be left empty and derived from
+    # workspace.mountPath; this is the same path, written down, so the blob
+    # store no longer depends on the workspace settings. Do not change it on
+    # an existing deployment: a different root starts an empty blob store, and
+    # the blobs already stored (every attachment, artifact and skill file)
+    # stop being found. With the local workspace backend, the chart refuses a
+    # root that is not on the workspace volume.
+    #
+    # `helm upgrade --reuse-values` renders with the running release's values,
+    # not these defaults, so a release from before TASK-992 still carries
+    # `root: ""` and the render fails, printing the exact
+    # `--set blob.fs.root=<path>` to pass once. After that, --reuse-values
+    # keeps it.
+    root: /var/lib/ax-next/workspaces/blobs
   s3:
     bucket: ""           # required when backend=s3 AND minio.enabled=false
     endpoint: ""         # MinIO Service URL (auto when minio.enabled) / GCS / AWS / R2
@@ -307,19 +322,23 @@ sandbox:
   # OUTSIDE the git-tracked agent-state tier. These files are live: written
   # straight to NFS, durable across sessions, with no git round-trip.
   #
-  # Set `server` to enable. When `server` is empty (the default), NO durable
-  # mount is wired — the host loads no mount resolver and sessions get only the
-  # default emptyDir tiers (graceful degradation; AX_USERFILES_ROOT stays unset).
+  # REQUIRED (TASK-992). `/files` is each agent's only durable copy of its
+  # files, so there is no "off" setting: `helm template` / `helm install`
+  # fail while `server` or `exportPath` is empty, and the message says what to
+  # set. The default here is empty on purpose, because no address would be
+  # right for everyone.
   #
-  # Filestore provisioning is OUT-OF-BAND (terraform/gcloud) — the chart only
-  # consumes the address; it does not create the instance. See the runbook.
+  # Provisioning the export is OUT-OF-BAND (gcloud on GKE: deploy/GKE.md,
+  # "Provision the user-files Filestore"; on kind: `make dev-kind-memory-nfs`).
+  # The chart only consumes the address; it does not create the instance.
   # Each agent is confined to its own `subPath=<agentId>` subtree of the export
   # (cross-tenant isolation). The runner pod's egress is opened to JUST this
   # server IP on the NFS ports (see networkpolicies/sandbox-restrict.yaml).
   filestore:
-    # Filestore instance IP (or DNS). Empty = feature disabled.
+    # NFS server IP (or DNS): on GKE, the Filestore instance's IP. Required.
     server: ""
-    # Export path on the Filestore instance, e.g. /vol1 (the share name).
+    # Export path on the server, e.g. /vol1 (the Filestore share name, with a
+    # leading slash). Required.
     exportPath: "/vol1"
     # Where the durable mount appears inside the sandbox. This is also the
     # agent's cwd and HOME.
@@ -361,9 +380,9 @@ sandbox:
     # for a link at the right moment could in principle win that race. The
     # host-mounted reader does not have that gap. Tracked in TASK-915.
     #
-    # Requires `server` to be set as well (an empty server means no export to
-    # mount). Opening this also opens the HOST pod's egress to the Filestore IP
-    # on the NFS ports — see networkpolicies/agent-runtime-network.yaml.
+    # It mounts the export named by `server` + `exportPath` above. Opening this
+    # also opens the HOST pod's egress to the Filestore IP on the NFS ports —
+    # see networkpolicies/agent-runtime-network.yaml.
     hostReadPath: ""
 
   # ─── Dev-services in the sandbox (REQUIRES Kubernetes 1.29+) ───

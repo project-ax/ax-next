@@ -1,18 +1,43 @@
-# In-cluster NFSv4 server for the memory preset on kind — dev only.
+# In-cluster NFSv4 server for kind — dev only. It serves two exports:
+#
+#   /memory  facts memory's per-agent projection (`memory.exports`), and
+#   /files   every agent's durable home (`sandbox.filestore`, TASK-992).
 #
 # kubelet mounts `nfs:` volumes from the NODE's network namespace, not the
 # pod's, so the server has to be reachable without cluster DNS. A Service with
 # a pinned ClusterIP does that: kube-proxy programs the node's iptables for it,
-# and `kind-memory-values.yaml` can name the address as a plain IP.
+# and `kind-dev-values.yaml` can name the address as a plain IP.
 #
 # The pod is privileged because the kernel nfsd needs it (mounting
 # /proc/fs/nfsd, binding 2049). That is precisely the kind of thing we'd never
 # put in the chart — which is why it lives here, outside it.
 #
-# The export is an emptyDir: the facts database on the host's PVC is the
+# /memory lives on an emptyDir: the facts database on the host's PVC is the
 # source of truth, so a pod restart loses no data. It does leave the host's
 # mount with stale handles (restart the host after it), and each agent's
 # export stays empty until that agent's memory next changes (TASK-529).
+#
+# /files is different: it is the ONLY copy of each agent's files, so it lives
+# on its own PVC (ax-next-files-nfs, below) and survives NFS-pod restarts. The
+# entrypoint refuses to start if that PVC is not mounted at /exports/files.
+# `kubectl delete -f` on this file deletes the PVC too, and every agent's
+# files with it.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ax-next-files-nfs
+  namespace: ax-next
+  labels:
+    app.kubernetes.io/name: ax-next-memory-nfs
+spec:
+  # No storageClassName: kind's default class (`standard`, local-path)
+  # provisions it on the node's disk when the pod first schedules.
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
+---
 apiVersion: v1
 kind: Service
 metadata:
@@ -22,8 +47,8 @@ metadata:
     app.kubernetes.io/name: ax-next-memory-nfs
 spec:
   type: ClusterIP
-  # Must stay inside kind's default service CIDR (10.96.0.0/16) and match
-  # memory.exports.server in kind-memory-values.yaml.
+  # Must stay inside kind's default service CIDR (10.96.0.0/16) and match both
+  # memory.exports.server and sandbox.filestore.server in kind-dev-values.yaml.
   clusterIP: 10.96.200.49
   selector:
     app.kubernetes.io/name: ax-next-memory-nfs
@@ -42,6 +67,8 @@ metadata:
     app.kubernetes.io/name: ax-next-memory-nfs
 spec:
   replicas: 1
+  # Recreate, not a rolling update: two servers must never sit behind the
+  # Service at once, each keeping its own NFSv4 state over the same /files.
   strategy:
     type: Recreate
   selector:
@@ -63,6 +90,17 @@ spec:
             - name: nfs
               containerPort: 2049
               protocol: TCP
+          # Not started until /exports/files is really exported. An image built
+          # before /files existed still listens on 2049 but exports only
+          # /exports, and the kernel would then serve /exports/files from the
+          # emptyDir directory UNDER the PVC mount — agents' files would vanish
+          # with the pod. This keeps such a pod out of the Service; rebuild the
+          # image (`make dev-kind-memory-nfs`) to fix it.
+          startupProbe:
+            exec:
+              command: ["sh", "-c", "exportfs | grep -qE '^/exports/files([[:space:]]|$)'"]
+            periodSeconds: 2
+            failureThreshold: 30
           readinessProbe:
             tcpSocket:
               port: 2049
@@ -70,6 +108,11 @@ spec:
           volumeMounts:
             - name: exports
               mountPath: /exports
+            - name: files
+              mountPath: /exports/files
       volumes:
         - name: exports
           emptyDir: {}
+        - name: files
+          persistentVolumeClaim:
+            claimName: ax-next-files-nfs

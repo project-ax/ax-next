@@ -1,6 +1,6 @@
 
 import { execFileSync, spawnSync } from 'node:child_process';
-import { cpSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -17,8 +17,13 @@ const memoryPresetSourcePath = resolve(repoRoot, 'presets/memory/src/index.ts');
 const serveSourcePath = resolve(repoRoot, 'packages/cli/src/commands/serve.ts');
 
 const KIND_DEV_VALUES = resolve(chartDir, 'kind-dev-values.yaml');
+// Every render needs a durable /files home (TASK-992). A values FILE, passed
+// first, so overlay files passed later and any --set still win over it.
+const FILESTORE_FIXTURE = resolve(here, 'fixtures/filestore-values.yaml');
 
 const REQUIRED = [
+  '-f',
+  FILESTORE_FIXTURE,
   '--set',
   'credentials.key=test',
   '--set',
@@ -209,21 +214,35 @@ describeIfHelm('memory preset opt-in (TASK-496)', () => {
     ).toBeDefined();
   });
 
-  it('TASK-576: gke-values.yaml alone pins and renders facts memory, exports optional', () => {
+  it('gke-values.yaml plus a Filestore server renders facts memory, exports optional', () => {
     const gke = readFileSync(resolve(chartDir, 'gke-values.yaml'), 'utf8');
     const parsed = loadAll(gke)[0] as { host?: { preset?: string } };
     expect(parsed.host?.preset, 'gke-values.yaml pins host.preset explicitly').toBe('memory');
-    const { container, spec } = hostSpec(hostDeployment(render(['-f', resolve(chartDir, 'gke-values.yaml')])));
+    const { container, spec } = hostSpec(hostDeployment(render([
+      '-f',
+      resolve(chartDir, 'gke-values.yaml'),
+      '--set',
+      'sandbox.filestore.server=10.9.8.7',
+    ])));
     const env = envMap(container);
     expect(env.get('AX_PRESET')).toBe('memory');
     expect(env.has('AX_MEMORY_EXPORT_NFS_SERVER')).toBe(false);
     expect((spec.volumes ?? []).find((v) => v.name === 'memory-exports')).toBeUndefined();
   });
 
+  it('gke-values.yaml alone fails until a Filestore server is set', () => {
+    // TASK-992: the committed overlay is a template and ships `server: ""`;
+    // the real address lives in the operator's gke-values.local.yaml.
+    const out = renderFails(['-f', resolve(chartDir, 'gke-values.yaml')]);
+    expect(out).toContain('sandbox.filestore.server is empty');
+  });
+
   it('TASK-576: gke-values.yaml with memory.exports set renders memory', () => {
     const { container } = hostSpec(hostDeployment(render([
       '-f',
       resolve(chartDir, 'gke-values.yaml'),
+      '--set',
+      'sandbox.filestore.server=10.9.8.7',
       '--set',
       'memory.exports.server=192.0.2.3',
       '--set',
@@ -256,13 +275,21 @@ describeIfHelm('memory preset opt-in (TASK-496)', () => {
     }
   });
 
-  it('TASK-576: memory.exports does NOT collide with the default (disabled) sandbox.filestore', () => {
-    // sandbox.filestore.exportPath defaults to "/vol1" even when the feature
-    // is off (server empty) — that must never trip the overlap guard.
+  it('memory.exports and sandbox.filestore on one server with different export paths render (the kind layout)', () => {
+    // One NFS server, two exports: the overlap guard compares server AND
+    // export path, so a shared server alone must never trip it.
     const { container } = hostSpec(hostDeployment(render([
-      '-f', KIND_DEV_VALUES, '--set', 'memory.exports.exportPath=/vol1',
+      '--set', 'sandbox.filestore.server=10.96.200.49',
+      '--set', 'sandbox.filestore.exportPath=/files',
+      '--set', 'memory.exports.server=10.96.200.49',
+      '--set', 'memory.exports.exportPath=/memory',
     ])));
-    expect(envMap(container).get('AX_PRESET')).toBe('memory');
+    const env = envMap(container);
+    expect(env.get('AX_PRESET')).toBe('memory');
+    expect(env.get('AX_FILESTORE_SERVER')).toBe('10.96.200.49');
+    expect(env.get('AX_FILESTORE_EXPORT_PATH')).toBe('/files');
+    expect(env.get('AX_MEMORY_EXPORT_NFS_SERVER')).toBe('10.96.200.49');
+    expect(env.get('AX_MEMORY_EXPORT_NFS_PATH')).toBe('/memory');
   });
 
   it('memory mode stamps AX_PRESET + all four memory env vars from values', () => {
@@ -470,6 +497,30 @@ describeIfHelm('memory preset opt-in (TASK-496)', () => {
 // ---------------------------------------------------------------------------
 const KIND_MEMORY_VALUES = resolve(chartDir, 'kind-memory-values.yaml');
 const KIND_NFS_MANIFEST = resolve(repoRoot, 'deploy/kind/memory-nfs/nfs-server.yaml');
+const KIND_NFS_ENTRYPOINT = resolve(repoRoot, 'deploy/kind/memory-nfs/entrypoint.sh');
+
+type NfsVolume = {
+  name?: string;
+  emptyDir?: Record<string, unknown>;
+  persistentVolumeClaim?: { claimName?: string };
+};
+type NfsPodSpec = {
+  containers?: Array<{ volumeMounts?: Array<{ name?: string; mountPath?: string }> }>;
+  volumes?: NfsVolume[];
+};
+
+function kindNfsDocs(): K8sDoc[] {
+  return (loadAll(readFileSync(KIND_NFS_MANIFEST, 'utf8')) as Array<K8sDoc | null>).filter(
+    (d): d is K8sDoc => d != null && typeof d === 'object',
+  );
+}
+
+function kindNfsClusterIP(): string {
+  const service = kindNfsDocs().find((d) => d.kind === 'Service');
+  const clusterIP = (service?.spec as { clusterIP?: string } | undefined)?.clusterIP;
+  expect(clusterIP).toMatch(/^10\.96\.\d+\.\d+$/);
+  return clusterIP!;
+}
 
 describeIfHelm('kind memory overlay (TASK-519)', () => {
   it('renders with no --set at all — the overlay is complete on its own (TASK-523)', () => {
@@ -495,5 +546,139 @@ describeIfHelm('kind memory overlay (TASK-519)', () => {
     expect(exportsVol?.nfs?.server).toBe(clusterIP);
     expect(exportsVol?.nfs?.path).toBe('/memory');
     expect(envMap(container).get('AX_MEMORY_EXPORT_NFS_SERVER')).toBe(clusterIP);
+  });
+
+  // TASK-992: the same dev server also serves every agent's durable home.
+  it('points sandbox.filestore at the same dev NFS Service, on its own /files export', () => {
+    // REQUIRED passes the chart-test fixture first (another server, /vol1);
+    // kind-dev-values.yaml, passed after it, must override both.
+    const { container, spec } = hostSpec(hostDeployment(render(['-f', KIND_DEV_VALUES])));
+    const env = envMap(container);
+    const clusterIP = kindNfsClusterIP();
+    expect(env.get('AX_FILESTORE_SERVER')).toBe(clusterIP);
+    expect(env.get('AX_FILESTORE_EXPORT_PATH')).toBe('/files');
+    expect(env.get('AX_MEMORY_EXPORT_NFS_PATH')).toBe('/memory');
+    expect(env.get('AX_FILESTORE_EXPORT_PATH')).not.toBe(env.get('AX_MEMORY_EXPORT_NFS_PATH'));
+    expect(env.get('AX_FILESTORE_HOST_READ_PATH')).toBe('/user-files');
+
+    const readVol = (spec.volumes ?? []).find((v) => v.name === 'user-files-read') as
+      | { nfs?: { server?: string; path?: string; readOnly?: boolean } }
+      | undefined;
+    expect(readVol?.nfs).toMatchObject({ server: clusterIP, path: '/files', readOnly: true });
+    expect((container.volumeMounts ?? []).find((m) => m.name === 'user-files-read'))
+      .toMatchObject({ mountPath: '/user-files', readOnly: true });
+  });
+
+  it('the dev NFS server keeps /files on a PVC, not the emptyDir', () => {
+    const docs = kindNfsDocs();
+    const pvc = docs.find((d) => d.kind === 'PersistentVolumeClaim');
+    expect(pvc, 'nfs-server.yaml declares a PersistentVolumeClaim').toBeDefined();
+    const claimName = pvc!.metadata?.name;
+    // deploy/kind/memory-nfs/README.md's wipe recipe deletes it by this name.
+    expect(claimName).toBe('ax-next-files-nfs');
+
+    const dep = docs.find((d) => d.kind === 'Deployment');
+    expect(pvc!.metadata).toMatchObject({ namespace: (dep?.metadata as { namespace?: string })?.namespace });
+    // No storageClassName at all, so kind's default class provisions it. An
+    // empty string would instead disable provisioning and leave it Pending.
+    expect((pvc!.spec as { storageClassName?: string }).storageClassName).toBeUndefined();
+
+    const podSpec = (dep?.spec as { template?: { spec?: NfsPodSpec } } | undefined)?.template?.spec;
+    const volumes = podSpec?.volumes ?? [];
+    const mounts = podSpec?.containers?.[0]?.volumeMounts ?? [];
+    const mountPathsOf = (vol: NfsVolume | undefined) =>
+      mounts.filter((m) => vol !== undefined && m.name === vol.name).map((m) => m.mountPath);
+
+    const claimVol = volumes.find((v) => v.persistentVolumeClaim?.claimName === claimName);
+    expect(claimVol, 'the Deployment has a volume backed by that claim').toBeDefined();
+    expect(mountPathsOf(claimVol)).toEqual(['/exports/files']);
+
+    const scratchVol = volumes.find((v) => v.emptyDir !== undefined);
+    expect(scratchVol, 'the /memory projection stays on an emptyDir').toBeDefined();
+    expect(mountPathsOf(scratchVol)).toEqual(['/exports']);
+  });
+
+  it('the entrypoint exports /exports/files separately, to the node only', () => {
+    const sh = readFileSync(KIND_NFS_ENTRYPOINT, 'utf8');
+    expect(sh).toContain('FILES_DIR="$EXPORT_ROOT/files"');
+    expect(sh).toContain('"$EXPORT_ROOT $NODE_ADDR(');
+    expect(sh).toContain('"$FILES_DIR $NODE_ADDR(');
+    // Explicit fsids: on kind both directories sit on one node filesystem, so
+    // a device-derived fsid cannot tell the two exports apart.
+    expect(sh).toMatch(/"\$EXPORT_ROOT \$NODE_ADDR\([^)]*\bfsid=0\b/);
+    expect(sh).toMatch(/"\$FILES_DIR \$NODE_ADDR\([^)]*\bfsid=1\b/);
+    // Never a wildcard client: only the node (kubelet) may mount.
+    expect(sh).not.toContain('*(');
+  });
+
+  it('the entrypoint refuses to serve /files when the PVC is not mounted there (an old manifest)', () => {
+    const sh = readFileSync(KIND_NFS_ENTRYPOINT, 'utf8');
+    // The kernel's mount table, not busybox `mountpoint`: on kind the PVC and
+    // the emptyDir live on the SAME node filesystem, and busybox compares
+    // device numbers with the parent, so it calls a correctly mounted PVC
+    // "not a mountpoint" and the server would never start.
+    // An exact match on the mount-point field (5), not a substring.
+    expect(sh).toMatch(/\bawk\b[^\n]*\$5 == p[^\n]*"\$\{2:-\/proc\/self\/mountinfo\}"/);
+    expect(sh).toMatch(/^if ! is_mounted "\$FILES_DIR"; then$/m);
+    expect(sh).not.toMatch(/\bmountpoint\b[^\n]*FILES_DIR/);
+    const lines = sh.split('\n');
+    const at = lines.findIndex((l) => l.includes('refusing to serve agent homes from scratch space'));
+    expect(at, 'the refusal message is in the entrypoint').toBeGreaterThan(-1);
+    expect(lines[at]).toMatch(/^\s*echo .*>&2\s*$/);
+    expect(lines[at + 1]?.trim()).toBe('exit 1');
+    // ...and it refuses before anything is exported or served.
+    const refusal = sh.indexOf(lines[at]!);
+    for (const step of ['> /etc/exports', 'exportfs -ra', 'rpc.nfsd -N']) {
+      expect(sh.indexOf(step), `${step} is in the entrypoint`).toBeGreaterThan(-1);
+      expect(refusal, `the refusal comes before ${step}`).toBeLessThan(sh.indexOf(step));
+    }
+  });
+
+  it('is_mounted really decides from the mount table (run against fixture mountinfo files)', () => {
+    // The text checks above cannot catch a guard that always succeeds (say,
+    // `END { exit 0 }`). Run the entrypoint's own function body instead.
+    const sh = readFileSync(KIND_NFS_ENTRYPOINT, 'utf8');
+    const fn = /^is_mounted\(\) \{\n[\s\S]*?\n\}$/m.exec(sh)?.[0];
+    expect(fn, 'is_mounted() is defined in the entrypoint').toBeDefined();
+    const dir = mkdtempSync(join(tmpdir(), 'ax-kind-nfs-mountinfo-'));
+    try {
+      const withPvc = join(dir, 'with-pvc');
+      const withoutPvc = join(dir, 'without-pvc');
+      const rootLine = '22 1 0:21 / / rw,relatime - overlay overlay rw';
+      const emptyDirLine = '30 22 8:1 /pods/x/volumes/empty /exports rw,relatime - ext4 /dev/sda1 rw';
+      const pvcLine = '31 30 8:1 /local-path/pvc-1 /exports/files rw,relatime - ext4 /dev/sda1 rw';
+      // A look-alike path: a substring match would wrongly accept it.
+      const lookAlike = '32 30 8:1 /local-path/pvc-2 /exports/files-old rw,relatime - ext4 /dev/sda1 rw';
+      writeFileSync(withPvc, [rootLine, emptyDirLine, pvcLine].join('\n') + '\n');
+      writeFileSync(withoutPvc, [rootLine, emptyDirLine, lookAlike].join('\n') + '\n');
+      const run = (file: string) =>
+        spawnSync('sh', ['-c', `${fn}\nis_mounted /exports/files "$1"`, 'sh', file], {
+          encoding: 'utf8',
+        }).status;
+      expect(run(withPvc), 'PVC mounted at /exports/files').toBe(0);
+      expect(run(withoutPvc), 'only the emptyDir (and a look-alike) mounted').not.toBe(0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('the dev NFS pod does not start serving until /exports/files is really exported (a stale image)', () => {
+    // The entrypoint guard cannot see the other way round: the NEW manifest
+    // running an image built before TASK-992. That image still listens on 2049
+    // but exports only /exports, and the kernel then serves /exports/files from
+    // the emptyDir directory UNDER the PVC mount, so agents' files would vanish
+    // with the pod. A startup probe on the export list keeps such a pod out of
+    // the Service; the tcpSocket readiness probe alone would pass it.
+    const dep = kindNfsDocs().find((d) => d.kind === 'Deployment');
+    type Probe = { exec?: { command?: string[] }; tcpSocket?: { port?: number } };
+    const container = (
+      dep?.spec as {
+        template?: { spec?: { containers?: Array<{ startupProbe?: Probe; readinessProbe?: Probe }> } };
+      } | undefined
+    )?.template?.spec?.containers?.[0];
+    const startup = (container?.startupProbe?.exec?.command ?? []).join(' ');
+    expect(startup).toContain('exportfs');
+    expect(startup).toContain('^/exports/files');
+    expect(container?.readinessProbe?.tcpSocket?.port).toBe(2049);
   });
 });

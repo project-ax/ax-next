@@ -1,4 +1,12 @@
+import { randomBytes } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
+import {
+  PluginError,
+  type AgentContext,
+  type Logger,
+  type ServiceHandler,
+} from '@ax/core';
+import type { ResolveMountsInput } from '@ax/sandbox-mount-protocol';
 import { createTestHarness } from '@ax/test-harness';
 import { createSessionInmemoryPlugin } from '@ax/session-inmemory';
 import { createSandboxK8sPlugin } from '../plugin.js';
@@ -27,8 +35,31 @@ const TEST_HOST_IPC_URL = 'http://test-host:8080';
 // re-validation at the open-session boundary accepts.
 const PINNED_SVC_IMAGE = 'docker.io/library/postgres@sha256:' + 'a'.repeat(64);
 
-async function makeHarness(api: MockK8sApi) {
+// TASK-992 — an owned session (one with `owner`) is REFUSED unless a
+// `sandbox:resolve-mounts` resolver gives the agent a `role: 'user-files'`
+// mount, so every harness below that opens one registers this stub. The server
+// is a reserved `.invalid` name on purpose: pod-spec refuses a memory mount that
+// aliases a writable NFS source on the SAME server, so borrowing the memory
+// fixtures' server would fire that refusal and mask the case under test.
+const USER_FILES_RESOLVER: Record<string, ServiceHandler> = {
+  'sandbox:resolve-mounts': async (_ctx, input) => ({
+    mounts: [
+      {
+        kind: 'nfs',
+        role: 'user-files',
+        mountPath: '/files',
+        server: 'files.example.invalid',
+        exportPath: '/vol1',
+        subPath: (input as ResolveMountsInput).owner.agentId,
+        readOnly: false,
+      },
+    ],
+  }),
+};
+
+async function makeHarness(api: MockK8sApi, services?: Record<string, ServiceHandler>) {
   return createTestHarness({
+    ...(services !== undefined ? { services } : {}),
     plugins: [
       createSessionInmemoryPlugin(),
       createSandboxK8sPlugin({
@@ -53,6 +84,27 @@ function readyPod(podIP = '10.42.0.5') {
       conditions: [{ type: 'Ready', status: 'True' }],
     },
   };
+}
+
+interface LoggedLine {
+  msg: string;
+  bindings?: Record<string, unknown>;
+}
+
+/** Wraps ctx.logger so it, and every child logger, records its error() lines. */
+function recordErrorLines(ctx: AgentContext): { ctx: AgentContext; errors: LoggedLine[] } {
+  const errors: LoggedLine[] = [];
+  const wrap = (inner: Logger): Logger => ({
+    debug: (msg, bindings) => inner.debug(msg, bindings),
+    info: (msg, bindings) => inner.info(msg, bindings),
+    warn: (msg, bindings) => inner.warn(msg, bindings),
+    error: (msg, bindings) => {
+      errors.push({ msg, ...(bindings !== undefined ? { bindings } : {}) });
+      inner.error(msg, bindings);
+    },
+    child: (bindings) => wrap(inner.child(bindings)),
+  });
+  return { ctx: { ...ctx, logger: wrap(ctx.logger) }, errors };
 }
 
 describe('sandbox:open-session (k8s)', () => {
@@ -356,7 +408,7 @@ describe('sandbox:open-session (k8s)', () => {
     // surfaced as runner-owned-sessions-k8s-gap.test.ts:137.
     const api = makeMockK8sApi();
     api.setReadResponses(readyPod());
-    const h = await makeHarness(api);
+    const h = await makeHarness(api, USER_FILES_RESOLVER);
     const ctx = h.ctx();
     await h.bus.call(
       'sandbox:open-session',
@@ -396,7 +448,7 @@ describe('sandbox:open-session (k8s)', () => {
   it('omits conversationId when owner has no conversationId (back-compat with non-orchestrator callers)', async () => {
     const api = makeMockK8sApi();
     api.setReadResponses(readyPod());
-    const h = await makeHarness(api);
+    const h = await makeHarness(api, USER_FILES_RESOLVER);
     const ctx = h.ctx();
     await h.bus.call(
       'sandbox:open-session',
@@ -894,6 +946,178 @@ describe('sandbox:open-session (k8s)', () => {
     });
   });
 
+  // TASK-992 — the durable /files home is REQUIRED. Every production session is
+  // owned (chat-orchestrator always sets `owner`), and an owned session that
+  // would come up without a `role: 'user-files'` mount is refused: the session
+  // minted before the resolve is rolled back and no pod is created.
+  describe('an owned session needs a durable /files home', () => {
+    // A real minted id (how @ax/agents mints them), so the resolver gate would
+    // accept it: these refusals are about the missing home, never about the id.
+    // Distinctive enough to prove the refusal message never echoes it.
+    const AGENT_ID = `agt_${randomBytes(16).toString('base64url')}`;
+    const OWNER = {
+      userId: 'u1',
+      agentId: AGENT_ID,
+      agentConfig: {
+        displayName: 'A',
+        systemPromptAugment: '',
+        allowedTools: [],
+        mcpConfigIds: [],
+        model: 'claude',
+        runner: 'claude-sdk',
+      },
+    };
+    const NO_RESOLVER_MESSAGE =
+      'no durable home for this session: nothing registers sandbox:resolve-mounts, so the agent would have no /files. ' +
+      'Configure sandbox.filestore (the k8s preset then loads @ax/workspace-filestore).';
+    const NO_HOME_MOUNT_MESSAGE =
+      'no durable home for this session: the sandbox:resolve-mounts resolver returned no /files mount for this agent.';
+
+    async function expectRefused(
+      services: Record<string, ServiceHandler> | undefined,
+      expected: { message: string; resolverLoaded: boolean },
+    ): Promise<void> {
+      const api = makeMockK8sApi();
+      api.setReadResponses(readyPod());
+      const createPod = vi.spyOn(api, 'createNamespacedPod');
+      const h = await makeHarness(api, services);
+      const spy = vi.spyOn(h.bus, 'call');
+      const { ctx, errors } = recordErrorLines(h.ctx());
+
+      const err = await h.bus
+        .call('sandbox:open-session', ctx, {
+          sessionId: 'sess-homeless',
+          workspaceRoot: '/tmp/ws',
+          runnerBinary: '/opt/ax/runner.js',
+          proxyConfig: TEST_PROXY_CONFIG,
+          owner: OWNER,
+        })
+        .then(
+          () => {
+            throw new Error('expected open-session to refuse');
+          },
+          (e: unknown) => e,
+        );
+
+      expect(err).toBeInstanceOf(PluginError);
+      expect(err).toMatchObject({
+        code: 'home-unavailable',
+        plugin: '@ax/sandbox-k8s',
+        hookName: 'sandbox:open-session',
+        message: expected.message,
+      });
+      // Fixed text only: the agentId rides the structured log, never the message.
+      expect((err as Error).message).not.toContain(AGENT_ID);
+      expect(errors).toContainEqual({
+        msg: 'home_unavailable',
+        bindings: { agentId: AGENT_ID, resolverLoaded: expected.resolverLoaded },
+      });
+
+      // No pod.
+      expect(createPod).not.toHaveBeenCalled();
+      expect(api.creates).toHaveLength(0);
+
+      // The session minted before the resolve is terminated exactly once, so no
+      // live token outlives the refusal.
+      const createIndex = spy.mock.calls.findIndex(([hook]) => hook === 'session:create');
+      expect(createIndex).toBeGreaterThanOrEqual(0);
+      const minted = await (spy.mock.results[createIndex]!.value as Promise<{ sessionId: string }>);
+      const terminated = spy.mock.calls
+        .filter(([hook]) => hook === 'session:terminate')
+        .map(([, , input]) => (input as { sessionId: string }).sessionId);
+      expect(terminated).toEqual([minted.sessionId]);
+      expect(
+        await h.bus.call('session:is-alive', h.ctx(), { sessionId: minted.sessionId }),
+      ).toEqual({ alive: false });
+      await h.close();
+    }
+
+    it('refuses an owned session when no home resolver is registered', async () => {
+      await expectRefused(undefined, { message: NO_RESOLVER_MESSAGE, resolverLoaded: false });
+    });
+
+    it('refuses an owned session when the resolver yields no user-files mount', async () => {
+      // What a resolver answers when the agentId fails its subtree-key gate.
+      await expectRefused(
+        { 'sandbox:resolve-mounts': async () => ({ mounts: [] }) },
+        { message: NO_HOME_MOUNT_MESSAGE, resolverLoaded: true },
+      );
+    });
+
+    it('refuses when the resolver yields only a mount without role user-files', async () => {
+      await expectRefused(
+        {
+          'sandbox:resolve-mounts': async () => ({
+            mounts: [
+              {
+                kind: 'nfs',
+                mountPath: '/files',
+                server: 'files.example.invalid',
+                exportPath: '/vol1',
+                subPath: AGENT_ID,
+                readOnly: false,
+              },
+            ],
+          }),
+        },
+        { message: NO_HOME_MOUNT_MESSAGE, resolverLoaded: true },
+      );
+    });
+
+    it('refuses when only the memory view resolves (a memory mount is not a home)', async () => {
+      // The memory view joins the same mounts array as the home. However the
+      // two steps are ordered, it must never count as the agent's /files home.
+      await expectRefused(
+        {
+          'sandbox:memory-mounts': async () => ({
+            mounts: [
+              {
+                kind: 'nfs',
+                role: 'memory',
+                mountPath: '/memory',
+                server: '10.0.0.3',
+                exportPath: '/vol1/memory',
+                subPath: 'deadbeef/permanent/memory/facts',
+                readOnly: true,
+              },
+            ],
+          }),
+        },
+        { message: NO_RESOLVER_MESSAGE, resolverLoaded: false },
+      );
+    });
+
+    it('refuses, and still rolls the session back, when the resolver output is malformed', async () => {
+      // The output crossed a plugin boundary unchecked; a malformed one must be
+      // a refusal with the rollback, not a TypeError that skips it.
+      await expectRefused(
+        { 'sandbox:resolve-mounts': async () => ({ mounts: 'nope' }) },
+        { message: NO_HOME_MOUNT_MESSAGE, resolverLoaded: true },
+      );
+    });
+
+    it('an ownerless session still opens without a resolver (unchanged)', async () => {
+      const api = makeMockK8sApi();
+      api.setReadResponses(readyPod());
+      const h = await makeHarness(api);
+      expect(h.bus.hasService('sandbox:resolve-mounts')).toBe(false);
+      const result = await h.bus.call<unknown, OpenSessionResult>('sandbox:open-session', h.ctx(), {
+        sessionId: 'sess-ownerless',
+        workspaceRoot: '/tmp/ws',
+        runnerBinary: '/opt/ax/runner.js',
+        proxyConfig: TEST_PROXY_CONFIG,
+      });
+      expect(result.runnerEndpoint).toBe(TEST_HOST_IPC_URL);
+      expect(api.creates).toHaveLength(1);
+      const body = api.creates[0]!.body as {
+        spec: { containers: Array<{ env: Array<{ name: string; value: string }> }> };
+      };
+      const env = Object.fromEntries(body.spec.containers[0]!.env.map((e) => [e.name, e.value]));
+      expect(env.AX_USERFILES_ROOT).toBeUndefined();
+      await h.close();
+    });
+  });
+
   describe('sandbox:memory-mounts realization', () => {
     const OWNER = {
       userId: 'u1',
@@ -927,6 +1151,7 @@ describe('sandbox:open-session (k8s)', () => {
     async function harnessWithMemory(api: MockK8sApi, mounts: unknown) {
       return createTestHarness({
         services: {
+          ...USER_FILES_RESOLVER,
           'sandbox:memory-mounts': async () => ({ mounts }),
         },
         plugins: [
@@ -957,17 +1182,19 @@ describe('sandbox:open-session (k8s)', () => {
           initContainers?: Array<{ name: string }>;
         };
       };
-      const mount = (body.spec.containers[0]!.volumeMounts ?? []).find(
-        (m) => m.mountPath === '/memory',
-      );
+      const runnerMounts = body.spec.containers[0]!.volumeMounts ?? [];
+      const mount = runnerMounts.find((m) => m.mountPath === '/memory');
       expect(mount).toMatchObject({ mountPath: '/memory', readOnly: true });
       const env = Object.fromEntries(
         body.spec.containers[0]!.env.map((e) => [e.name, e.value]),
       );
       expect(env.AX_MEMORY_ROOT).toBe('/memory');
+      // Only the writable /files home is chowned; the read-only memory view
+      // never is (it has nothing for the runner to write).
+      const filesVolume = runnerMounts.find((m) => m.mountPath === '/files')!.name;
       expect(
-        (body.spec.initContainers ?? []).every((c) => !c.name.endsWith('-chown')),
-      ).toBe(true);
+        (body.spec.initContainers ?? []).filter((c) => c.name.endsWith('-chown')).map((c) => c.name),
+      ).toEqual([`${filesVolume}-chown`]);
       await h.close();
     });
 
@@ -976,6 +1203,7 @@ describe('sandbox:open-session (k8s)', () => {
       api.setReadResponses(readyPod());
       const h = await createTestHarness({
         services: {
+          ...USER_FILES_RESOLVER,
           'sandbox:memory-mounts': async () => {
             throw new Error('memory resolver boom');
           },
@@ -1031,6 +1259,7 @@ describe('sandbox:open-session (k8s)', () => {
       api.setReadResponses(readyPod());
       const h = await createTestHarness({
         services: {
+          ...USER_FILES_RESOLVER,
           'sandbox:memory-mounts': async () =>
             Array.isArray(resolved) ? { mounts: resolved } : resolved,
         },
@@ -1047,9 +1276,11 @@ describe('sandbox:open-session (k8s)', () => {
         ],
       });
       const spy = vi.spyOn(h.bus, 'call');
+      // Refused by the memory-mount check itself, not by an earlier gate (the
+      // durable-home refusal would also reject, and mask the row).
       await expect(
         h.bus.call<unknown, OpenSessionResult>('sandbox:open-session', h.ctx(), INPUT),
-      ).rejects.toThrow();
+      ).rejects.toMatchObject({ code: 'invalid-return' });
       expect(api.creates).toHaveLength(0);
       expect(
         spy.mock.calls.some(

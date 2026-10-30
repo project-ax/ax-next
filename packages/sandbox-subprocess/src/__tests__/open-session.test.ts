@@ -1,11 +1,14 @@
 import { describe, it, expect, vi } from 'vitest';
+import { randomBytes } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { PluginError } from '@ax/core';
+import { PluginError, type Plugin, type ServiceHandler } from '@ax/core';
+import type { ResolveMountsInput } from '@ax/sandbox-mount-protocol';
 import { createTestHarness } from '@ax/test-harness';
 import { createSessionInmemoryPlugin } from '@ax/session-inmemory';
 import { createIpcServerPlugin } from '@ax/ipc-server';
+import { createWorkspaceLocaldirPlugin } from '@ax/workspace-localdir';
 import { createSandboxSubprocessPlugin } from '../plugin.js';
 import type { OpenSessionResult } from '../open-session.js';
 import { TEST_PROXY_CONFIG } from './proxy-config.js';
@@ -61,7 +64,10 @@ async function mkWorkspace(): Promise<string> {
   return dir;
 }
 
-async function makeHarness() {
+async function makeHarness(
+  extraServices: Record<string, ServiceHandler> = {},
+  extraPlugins: Plugin[] = [],
+) {
   return createTestHarness({
     services: {
       // Satisfy ipc-server's verifyCalls — these are never driven by these tests.
@@ -73,13 +79,35 @@ async function makeHarness() {
       // ipc-server's dispatcher declares workspace:read as a required call
       // (DISPATCHER_DEPENDENCIES); these IPC-only boots never hit /workspace.read.
       'workspace:read': async () => ({ found: false }),
+      ...extraServices,
     },
     plugins: [
       createSessionInmemoryPlugin(),
       createIpcServerPlugin(),
+      ...extraPlugins,
       createSandboxSubprocessPlugin(),
     ],
   });
+}
+
+// TASK-992 — an owned session (one with `owner`) is REFUSED unless a
+// `sandbox:resolve-mounts` resolver gives the agent a `/files` directory, so the
+// owner tests register this stub. It hands out `<root>/<agentId>`, the way
+// @ax/workspace-localdir does.
+function userFilesResolver(root: string): Record<string, ServiceHandler> {
+  return {
+    'sandbox:resolve-mounts': async (_ctx, input) => ({
+      mounts: [
+        {
+          kind: 'localDir',
+          role: 'user-files',
+          mountPath: '/files',
+          hostPath: path.join(root, (input as ResolveMountsInput).owner.agentId),
+          readOnly: false,
+        },
+      ],
+    }),
+  };
 }
 
 // Poll until `target` no longer exists on disk (the async 'close' cleanup
@@ -906,7 +934,8 @@ describe('sandbox:open-session', () => {
     // 137. The k8s sibling carries the same fix; both must update in
     // the same PR (no half-wired sandbox windows).
     const ws = await mkWorkspace();
-    const h = await makeHarness();
+    const filesRoot = await mkWorkspace();
+    const h = await makeHarness(userFilesResolver(filesRoot));
     const ctx = h.ctx();
     const result = await h.bus.call<unknown, OpenSessionResult>(
       'sandbox:open-session',
@@ -942,6 +971,7 @@ describe('sandbox:open-session', () => {
     await result.handle.kill();
     await result.handle.exited;
     await fs.rm(ws, { recursive: true, force: true });
+    await fs.rm(filesRoot, { recursive: true, force: true });
   });
 
   // ---------------------------------------------------------------------
@@ -1053,7 +1083,8 @@ describe('sandbox:open-session', () => {
 
   it('omits conversationId when owner has no conversationId (back-compat with non-orchestrator callers)', async () => {
     const ws = await mkWorkspace();
-    const h = await makeHarness();
+    const filesRoot = await mkWorkspace();
+    const h = await makeHarness(userFilesResolver(filesRoot));
     const ctx = h.ctx();
     const result = await h.bus.call<unknown, OpenSessionResult>(
       'sandbox:open-session',
@@ -1088,6 +1119,166 @@ describe('sandbox:open-session', () => {
     await result.handle.kill();
     await result.handle.exited;
     await fs.rm(ws, { recursive: true, force: true });
+    await fs.rm(filesRoot, { recursive: true, force: true });
+  });
+
+  // TASK-992 — the durable /files home is REQUIRED. An owned session that would
+  // come up without a user-files directory is refused BEFORE session:create
+  // mints a token: nothing is minted, no listener binds, nothing spawns, and the
+  // per-session tempdir made just before the resolve is removed again.
+  describe('an owned session needs a durable /files home', () => {
+    // A real minted id (how @ax/agents mints them), so the resolver gate would
+    // accept it: these refusals are about the missing home, never about the id.
+    // Distinctive enough to prove the refusal message never echoes it.
+    const AGENT_ID = `agt_${randomBytes(16).toString('base64url')}`;
+    const ownerFor = (agentId: string) => ({
+      userId: 'u-1',
+      agentId,
+      agentConfig: {
+        displayName: 'Test Agent',
+        systemPromptAugment: '',
+        allowedTools: [],
+        mcpConfigIds: [],
+        model: 'anthropic/claude-sonnet-4-7',
+        runner: 'claude-sdk',
+      },
+    });
+    const REFUSAL_MESSAGE =
+      'no durable home for this session: no sandbox:resolve-mounts resolver gave this agent a /files directory. ' +
+      'Load @ax/workspace-localdir (the CLI always does).';
+
+    async function expectRefused(
+      resolverServices: Record<string, ServiceHandler>,
+      resolverLoaded: boolean,
+    ): Promise<void> {
+      const ws = await mkWorkspace();
+      // Stubbed lifecycle hooks (not session-inmemory) so the test can see that
+      // none of them ran: no token minted, no listener bound — hence nothing
+      // spawned, since spawn comes after both.
+      const sessionCreate = vi.fn(async (_ctx: unknown, input: { sessionId: string }) => ({
+        sessionId: input.sessionId,
+        token: 'tok-' + input.sessionId,
+      }));
+      const ipcStart = vi.fn(async () => ({ running: true }));
+      const h = await createTestHarness({
+        services: {
+          'session:create': sessionCreate as never,
+          'session:terminate': vi.fn(async () => ({})) as never,
+          'ipc:start': ipcStart as never,
+          'ipc:stop': vi.fn(async () => ({})) as never,
+          ...resolverServices,
+        },
+        plugins: [createSandboxSubprocessPlugin()],
+      });
+      // open-session makes the per-session tempdir (`ax-ipc-*`) before it
+      // resolves the home; record it so we can check the refusal removed it.
+      const mkdtemp = vi.spyOn(fs, 'mkdtemp');
+      // The operator only sees `sandbox-open-failed` upstream, so the refusal
+      // must leave its own log line (matching sandbox-k8s's home_unavailable).
+      const errors: Array<{ msg: string; fields: Record<string, unknown> | undefined }> = [];
+      const base = h.ctx().logger;
+      const logger = {
+        ...base,
+        error: (msg: string, fields?: Record<string, unknown>) => {
+          errors.push({ msg, fields });
+        },
+        child: () => logger,
+      } as typeof base;
+      let caught: unknown;
+      let made: string[] = [];
+      try {
+        const opened = await h.bus.call<unknown, OpenSessionResult>('sandbox:open-session', h.ctx({ logger }), {
+          sessionId: 'sub-homeless',
+          workspaceRoot: ws,
+          runnerBinary: ECHO_STUB,
+          proxyConfig: TEST_PROXY_CONFIG,
+          owner: ownerFor(AGENT_ID),
+        });
+        // Only reached on a regression: reap the runner so it doesn't outlive the test.
+        await opened.handle.kill();
+        await opened.handle.exited;
+      } catch (err) {
+        caught = err;
+      } finally {
+        made = await Promise.all(mkdtemp.mock.results.map((r) => r.value as Promise<string>));
+        mkdtemp.mockRestore();
+      }
+
+      expect(caught).toBeInstanceOf(PluginError);
+      expect(caught).toMatchObject({
+        code: 'home-unavailable',
+        plugin: '@ax/sandbox-subprocess',
+        hookName: 'sandbox:open-session',
+        message: REFUSAL_MESSAGE,
+      });
+      expect((caught as Error).message).not.toContain(AGENT_ID);
+      expect(errors).toContainEqual({
+        msg: 'home_unavailable',
+        fields: { agentId: AGENT_ID, resolverLoaded },
+      });
+      expect(sessionCreate).not.toHaveBeenCalled();
+      expect(ipcStart).not.toHaveBeenCalled();
+
+      const socketDirs = made.filter((p) => path.basename(p).startsWith('ax-ipc-'));
+      expect(socketDirs).toHaveLength(1);
+      await expect(fs.stat(socketDirs[0]!)).rejects.toMatchObject({ code: 'ENOENT' });
+
+      await h.close();
+      await fs.rm(ws, { recursive: true, force: true });
+    }
+
+    it('refuses an owned session when no home resolver is registered', async () => {
+      await expectRefused({}, false);
+    });
+
+    it('refuses an owned session when the resolver yields no mounts', async () => {
+      // What a resolver answers when the agentId fails its subtree-key gate.
+      await expectRefused({ 'sandbox:resolve-mounts': async () => ({ mounts: [] }) }, true);
+    });
+
+    it('with the real @ax/workspace-localdir resolver: a minted id gets its home, an id the gate rejects is refused', async () => {
+      const ws = await mkWorkspace();
+      const filesRoot = await mkWorkspace();
+      const h = await makeHarness({}, [createWorkspaceLocaldirPlugin({ root: filesRoot })]);
+      try {
+        const result = await h.bus.call<unknown, OpenSessionResult>('sandbox:open-session', h.ctx(), {
+          sessionId: 'sub-gate-ok',
+          workspaceRoot: ws,
+          runnerBinary: ECHO_STUB,
+          proxyConfig: TEST_PROXY_CONFIG,
+          owner: ownerFor(AGENT_ID),
+        });
+        // The resolver accepted the id and the provider realized its home.
+        expect((await fs.stat(path.join(filesRoot, AGENT_ID))).isDirectory()).toBe(true);
+        await result.handle.kill();
+        await result.handle.exited;
+
+        // A dot is outside the gate's base64url alphabet: the resolver answers
+        // [] and the session is refused rather than opened without a home.
+        const refused = await h.bus
+          .call<unknown, OpenSessionResult>('sandbox:open-session', h.ctx(), {
+            sessionId: 'sub-gate-rejected',
+            workspaceRoot: ws,
+            runnerBinary: ECHO_STUB,
+            proxyConfig: TEST_PROXY_CONFIG,
+            owner: ownerFor('agt.outside-the-gate'),
+          })
+          .then(
+            async (opened) => {
+              // Only reached on a regression: reap the runner, then fail below.
+              await opened.handle.kill();
+              await opened.handle.exited;
+              return opened;
+            },
+            (err: unknown) => err,
+          );
+        expect(refused).toMatchObject({ code: 'home-unavailable', message: REFUSAL_MESSAGE });
+      } finally {
+        await h.close();
+        await fs.rm(ws, { recursive: true, force: true });
+        await fs.rm(filesRoot, { recursive: true, force: true });
+      }
+    });
   });
 
   // ---------------------------------------------------------------------

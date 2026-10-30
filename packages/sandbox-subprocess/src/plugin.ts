@@ -55,24 +55,22 @@ export function createSandboxSubprocessPlugin(): Plugin {
         'ipc:start',
         'ipc:stop',
       ],
-      // filestore-user-files (design §4): when a mount-resolver plugin
-      // (@ax/workspace-localdir) is loaded, open-session calls
-      // `sandbox:resolve-mounts` to learn the per-agent durable mount and
-      // realizes each `localDir` by `mkdir -p`. Optional — without a resolver
-      // the session gets only the default per-session tempdir tiers; no durable
-      // per-agent user-files mount (AX_USERFILES_ROOT stays unset).
-      // `sandbox:resolve-mounts` is the durable per-agent mount resolver. It's
-      // optional for open-session (no resolver → no AX_USERFILES_ROOT) AND for
-      // both §11 host-side ops below: `sandbox:read-user-files` and the
-      // `agents:deleted` cleanup both call it to learn WHERE an agent's files
-      // live, and degrade to a no-op when no resolver is loaded.
+      // filestore-user-files (design §4): `sandbox:resolve-mounts` is the
+      // durable per-agent mount resolver (@ax/workspace-localdir, which the CLI
+      // always loads). open-session calls it for every owned session and
+      // realizes each `localDir` mount by `mkdir -p`. It stays an OPTIONAL call
+      // because boot does not need it, but open-session REFUSES an owned
+      // session that gets no `role:'user-files'` directory (TASK-992: the
+      // durable /files home is required). The two §11 host-side ops below,
+      // `sandbox:read-user-files` and the `agents:deleted` cleanup, call it to
+      // learn WHERE an agent's files live and keep degrading gracefully when no
+      // resolver is loaded.
       optionalCalls: [
         {
           hook: 'sandbox:resolve-mounts',
           degradation:
-            'no durable per-agent user-files mount; AX_USERFILES_ROOT unset; ' +
-            'host-read returns unavailable (this deployment keeps no durable ' +
-            'files) and agent-delete cleanup is a no-op',
+            'open-session REFUSES owned sessions (no durable /files home); ' +
+            'host-read answers unavailable and agent-delete cleanup is a no-op',
         },
       ],
       // filestore-user-files §11 cleanup: when an agent is deleted, reclaim its

@@ -516,6 +516,26 @@ live Secret, or a restore after losing the namespace. Every one of those turns a
 wrong backup into everyone's Google login breaking at once. Checking on each
 upgrade is the cheap moment to notice.
 
+### 4d. Upgrading past TASK-992: pin the blob root once
+
+The agents' `/files` home is now required, and the chart no longer works out the
+blob root from the workspace settings. If you upgrade an existing release with
+`--reuse-values`, do this once:
+
+- Add `--set blob.fs.root=/var/lib/ax-next/workspaces/blobs` to the **first**
+  `helm upgrade` after this change. Without it the render refuses, on purpose,
+  and prints that exact line.
+- After that, `--reuse-values` keeps the pin. You don't need to repeat it.
+- Upgrades that pass `-f gke-values.yaml` already carry the pin.
+- The live release must also have `sandbox.filestore.server` set (see
+  "Provision the user-files Filestore" in Step 6), or the render refuses too.
+
+Check the live values first. This is read-only:
+
+```bash
+helm get values ax-next -n ax-next --kube-context <your GKE context> -o yaml | grep -A4 'filestore:'
+```
+
 ---
 
 ## Step 5 — Static IP, DNS, and the managed certificate
@@ -555,6 +575,40 @@ EOF
 
 ## Step 6 — Edit the overlay and install
 
+### Provision the user-files Filestore (required)
+
+Every agent gets a home directory, `/files`, where it keeps the user's working
+files. It lives on an NFS export, which on GKE is a Filestore share, and it is
+the only durable copy of those files. So it is not optional: the chart refuses
+to render (`helm template` and `helm install` both fail) until
+`sandbox.filestore.server` points at one.
+
+Give it a **dedicated** instance. It is separate from the memory share in
+[Provision the NFS export](#provision-the-nfs-export) below, and the chart
+checks that the two never name the same server + export path.
+
+```bash
+gcloud filestore instances create ax-next-files \
+  --project=$PROJECT_ID \
+  --zone=us-central1-a \
+  --tier=BASIC_HDD \
+  --file-share=name=vol1,capacity=1TB \
+  --network=name=default
+```
+
+Read back its IP. It goes into `gke-values.local.yaml` in the next step:
+
+```bash
+gcloud filestore instances describe ax-next-files \
+  --project=$PROJECT_ID --zone=us-central1-a \
+  --format='value(networks[0].ipAddresses[0])'
+```
+
+The share name `vol1` is the export path `/vol1`, which `gke-values.yaml`
+already sets.
+
+### Write the overrides and install
+
 Keep your real values **out of the tracked template.** Rather than editing
 `gke-values.yaml` in place, put just the keys you're changing into a gitignored
 override file and layer it on top. (`*.local.yaml` is gitignored, so your
@@ -576,6 +630,13 @@ http:
     - https://your.domain.example      # MUST exactly match the origin, or the CSRF gate 403s
 onboarding:
   publicBaseUrl: https://your.domain.example
+# REQUIRED: every agent's home directory (/files). The chart will not render
+# without it. See "Provision the user-files Filestore" above.
+sandbox:
+  filestore:
+    server: <the IP from the command above>
+    # Read-only host mount for the Files tab: see values.yaml's hostReadPath note.
+    hostReadPath: /user-files
 # OPTIONAL (both-or-neither): gives runner pods a read-only /memory view.
 # Facts memory renders and runs without it. See "Memory: facts memory is the
 # default" below.
@@ -656,7 +717,7 @@ The host writes each agent's memory as an export on an NFS share and mounts
 it read-only into runner pods at `/memory`. On GKE that share is a Filestore
 instance. Provision a **dedicated** one — a second `gcloud filestore
 instances create`, or a second share on an existing multi-share instance —
-separate from any Filestore you point `sandbox.filestore.*` at. The chart
+separate from the user-files Filestore above. The chart
 checks this: `helm template` fails if `memory.exports` and
 `sandbox.filestore` ever end up naming the same server + export path.
 

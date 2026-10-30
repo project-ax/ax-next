@@ -15,6 +15,7 @@ import {
 import { createStorageSqlitePlugin } from '@ax/storage-sqlite';
 import { createSessionInmemoryPlugin } from '@ax/session-inmemory';
 import { createSandboxSubprocessPlugin } from '@ax/sandbox-subprocess';
+import { createWorkspaceLocaldirPlugin } from '@ax/workspace-localdir';
 import { createIpcServerPlugin } from '@ax/ipc-server';
 import { createMcpClientPlugin } from '@ax/mcp-client';
 import {
@@ -404,6 +405,7 @@ describe('@ax/preset-k8s multi-tenant ACL gate (stub runner)', () => {
           backend: 'local',
           repoRoot: path.join(tmp, 'repo-stub'),
         },
+        blob: { backend: 'fs', root: path.join(tmp, 'blobs') },
         sandbox: { namespace: 'ax-next', image: 'ax-next/agent:stub' },
         ipc: { hostIpcUrl: 'http://ax-next-host.ax-next.svc.cluster.local:80' },
         chat: { runnerBinaries: { 'claude-sdk': stubRunnerPath }, chatTimeoutMs: 60_000 },
@@ -454,6 +456,10 @@ describe('@ax/preset-k8s multi-tenant ACL gate (stub runner)', () => {
         createStorageSqlitePlugin({ databasePath: sqlitePath }),
         createSessionInmemoryPlugin(),
         createSandboxSubprocessPlugin(),
+        // The durable /files home every owned session needs (TASK-992). The
+        // subprocess sandbox can't realize the preset's nfs resolver, so
+        // `filestore` stays unset and the local-directory resolver stands in.
+        createWorkspaceLocaldirPlugin({ root: path.join(tmp, 'user-files') }),
         createIpcServerPlugin(),
         createDispatcherDepsStubPlugin(['workspace:read']),
         createMultiTenantProxyPlugin({

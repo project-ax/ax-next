@@ -288,23 +288,28 @@ export interface K8sPresetConfig {
   /**
    * Blob backend selection (out-of-git design Part A). Discriminated on
    * `backend`. Exactly one of @ax/blob-store-fs / @ax/blob-store-s3 registers
-   * the storage-agnostic `blob:*` hook. Optional — when omitted, the preset
-   * defaults to the `fs` backend rooted at a sibling dir on the workspace PVC
-   * (the cheapest single-replica posture, matching the chart default).
+   * the storage-agnostic `blob:*` hook. REQUIRED — there is no derived
+   * default: the fs root is whatever the deployment names, never a path
+   * guessed from the workspace config. (A blob root that silently moved with
+   * the workspace config would orphan every stored blob.)
    *
    * The Helm chart drives this via `blob.backend: fs|s3` + the env vars
    * `AX_BLOB_BACKEND` / `AX_BLOB_FS_ROOT` / `AX_BLOB_S3_*`; the host entrypoint
    * reads those (via `blobConfigFromEnv`) and constructs this config.
    */
-  blob?: K8sBlobConfig;
+  blob: K8sBlobConfig;
   /**
    * filestore-user-files (design §4) — the durable per-agent user-files mount
    * backed by a Google Cloud Filestore (managed NFS) export. When set, the
    * preset loads `@ax/workspace-filestore` (registers `sandbox:resolve-mounts`),
    * which hands each agent an `nfs` mount at `mountPath` (default `/files`)
-   * confined to its own `subPath=<agentId>` subtree. When OMITTED, no resolver
-   * loads — sessions get only the default emptyDir tiers (graceful degradation;
-   * AX_USERFILES_ROOT stays unset). The chart drives this via
+   * confined to its own `subPath=<agentId>` subtree. Every real deployment
+   * sets it: `loadK8sConfigFromEnv` refuses to boot without
+   * `AX_FILESTORE_SERVER`, and the sandbox providers refuse an owned session
+   * that has no durable home. The field stays optional on this TYPE only so
+   * test compositions can bring `@ax/workspace-localdir` instead; with neither
+   * resolver loaded, owned sessions are refused rather than opened without a
+   * `/files` home. The chart drives this via
    * `sandbox.filestore.{server,exportPath,mountPath}` → the env vars
    * `AX_FILESTORE_SERVER` / `AX_FILESTORE_EXPORT_PATH` / `AX_FILESTORE_MOUNT_PATH`.
    *
@@ -745,12 +750,13 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   }
 
   // filestore-user-files (design §4) — the durable per-agent user-files mount
-  // resolver. When the deployment configured a Filestore export, load
-  // @ax/workspace-filestore: it registers `sandbox:resolve-mounts`, which
-  // @ax/sandbox-k8s calls (optionalCall) to realize each session's per-agent
-  // `nfs` mount. The NFS sibling of the CLI's @ax/workspace-localdir — exactly
-  // one mount resolver loads per deployment. Omitted (no Filestore configured)
-  // → no resolver, sessions degrade to emptyDir-only (AX_USERFILES_ROOT unset).
+  // resolver. When a Filestore export is configured (always, via the env
+  // loader), load @ax/workspace-filestore: it registers
+  // `sandbox:resolve-mounts`, which @ax/sandbox-k8s calls (optionalCall) to
+  // realize each session's per-agent `nfs` mount. The NFS sibling of the CLI's @ax/workspace-localdir — exactly
+  // one mount resolver loads per deployment. The env loader always supplies it;
+  // a test composition that omits it gets no resolver, and the sandbox
+  // provider then refuses owned sessions (there is no emptyDir-only fallback).
   if (config.filestore !== undefined) {
     plugins.push(
       createWorkspaceFilestorePlugin({
@@ -770,19 +776,16 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   // backend registers blob:put/get/stat/delete per deployment — registering
   // two would make bootstrap throw (the kernel rejects duplicate registrants).
   // Mirrors the workspace local/git-protocol and storage sqlite/postgres
-  // splits. When `config.blob` is omitted we default to the `fs` backend
-  // rooted at a sibling dir on the workspace PVC (matches the chart default
-  // and `blobConfigFromEnv`). The s3 backend (MinIO dev / GCS+Workload-Identity
-  // prod) is the multi-replica-safe path.
-  const blobConfig: K8sBlobConfig =
-    config.blob ??
-    {
-      backend: 'fs',
-      root:
-        config.workspace.backend === 'local'
-          ? `${config.workspace.repoRoot}/blobs`
-          : '/var/lib/ax-next/blobs',
-    };
+  // splits. `config.blob` is required: the fs root is explicit config (the
+  // chart stamps it from `blob.fs.root`), never derived from the workspace
+  // config. The s3 backend (MinIO dev / GCS+Workload-Identity prod) is the
+  // multi-replica-safe path.
+  if ((config.blob as K8sBlobConfig | undefined) === undefined) {
+    throw new Error(
+      'K8sPresetConfig.blob is required: pass the blob backend explicitly (the chart stamps AX_BLOB_FS_ROOT from blob.fs.root)',
+    );
+  }
+  const blobConfig: K8sBlobConfig = config.blob;
   if (blobConfig.backend === 's3') {
     const s3Cfg: Parameters<typeof createBlobStoreS3Plugin>[0] = {
       bucket: blobConfig.bucket,
@@ -1613,9 +1616,10 @@ export function workspaceConfigFromEnv(
 // calling `createK8sPlugins`.
 //
 //   AX_BLOB_BACKEND               fs | s3   (default: fs)
-//   AX_BLOB_FS_ROOT               fs root (default: <workspaceRoot>/blobs for
-//                                 the local workspace backend, else
-//                                 /var/lib/ax-next/blobs)
+//   AX_BLOB_FS_ROOT               fs root. REQUIRED when backend === 'fs'
+//                                 (fs is the default, so unset BACKEND needs
+//                                 it too). No derived default: the chart
+//                                 stamps it from blob.fs.root.
 //   AX_BLOB_S3_BUCKET             required when backend === 's3'
 //   AX_BLOB_S3_ENDPOINT           optional (MinIO Service URL / GCS endpoint)
 //   AX_BLOB_S3_REGION             optional (default applied by the plugin)
@@ -1638,26 +1642,22 @@ export function workspaceConfigFromEnv(
  *
  * @param env - the env map to read from. Defaults to `process.env`. Pass an
  *   explicit object to keep tests deterministic.
- * @param workspace - the already-resolved workspace config, used to derive the
- *   default fs root (a sibling dir on the workspace PVC for the local backend).
+ *
+ * The fs root is read from `AX_BLOB_FS_ROOT` and nothing else; the workspace
+ * config plays no part in it.
  */
 export function blobConfigFromEnv(
   env: NodeJS.ProcessEnv = process.env,
-  workspace: K8sWorkspaceConfig = workspaceConfigFromEnv(env),
 ): K8sBlobConfig {
   const rawBackend = env.AX_BLOB_BACKEND;
   const backend = rawBackend === undefined || rawBackend === '' ? 'fs' : rawBackend;
 
   if (backend === 'fs') {
-    const explicitRoot = env.AX_BLOB_FS_ROOT;
-    if (explicitRoot !== undefined && explicitRoot !== '') {
-      return { backend: 'fs', root: explicitRoot };
+    const root = env.AX_BLOB_FS_ROOT;
+    if (root === undefined || root === '') {
+      throw new Error('AX_BLOB_BACKEND=fs requires AX_BLOB_FS_ROOT to be set');
     }
-    const defaultRoot =
-      workspace.backend === 'local'
-        ? `${workspace.repoRoot}/blobs`
-        : '/var/lib/ax-next/blobs';
-    return { backend: 'fs', root: defaultRoot };
+    return { backend: 'fs', root };
   }
 
   if (backend === 's3') {
@@ -1710,6 +1710,10 @@ export function blobConfigFromEnv(
 //   - AX_HTTP_HOST / AX_HTTP_PORT  — public-facing http listener
 //   - AX_HTTP_COOKIE_KEY           — 32-byte signing key (hex / base64)
 //   - AX_HTTP_ALLOWED_ORIGINS      — CSRF allow-list (comma-separated)
+//   - AX_FILESTORE_SERVER /        — the durable per-agent /files NFS export
+//     AX_FILESTORE_EXPORT_PATH       (every agent needs a home)
+//   - AX_BLOB_FS_ROOT              — the blob directory, when AX_BLOB_BACKEND is
+//                                    fs (the default); no derived default
 //
 // Auth providers are NOT env-driven anymore: @ax/auth-better reads from
 // the `auth_providers` DB table, populated by `/admin/auth/providers/*`
@@ -1805,42 +1809,44 @@ export function loadK8sConfigFromEnv(
   }
 
   // filestore-user-files (design §4) — the durable per-agent user-files mount.
-  // Configured ONLY when a Filestore server is set; `server` + `exportPath` are
-  // both required together (a server with no export, or vice versa, is a wiring
-  // bug we fail loud on). `mountPath` defaults in the plugin (`/files`).
-  // Omitted entirely when no server is set → the preset loads no mount resolver
-  // and sessions degrade to emptyDir-only.
-  let filestore: K8sPresetConfig['filestore'];
+  // REQUIRED: every agent session gets a durable `/files` home, so a deployment
+  // with no Filestore export is a wiring bug and we refuse to boot rather than
+  // degrade to emptyDir-only. `server` + `exportPath` are both required;
+  // `mountPath` defaults in the plugin (`/files`).
   const filestoreServer = env.AX_FILESTORE_SERVER;
-  if (filestoreServer !== undefined && filestoreServer !== '') {
-    const exportPath = env.AX_FILESTORE_EXPORT_PATH;
-    if (exportPath === undefined || exportPath === '') {
-      throw new Error(
-        'AX_FILESTORE_EXPORT_PATH is required when AX_FILESTORE_SERVER is set',
-      );
-    }
-    filestore = { server: filestoreServer, exportPath };
-    if (env.AX_FILESTORE_MOUNT_PATH !== undefined && env.AX_FILESTORE_MOUNT_PATH !== '') {
-      filestore.mountPath = env.AX_FILESTORE_MOUNT_PATH;
-    }
-    // Host-mounted host-read (the chart's `sandbox.filestore.hostReadPath`).
-    // It lives on `sandbox`, not on `filestore`, because it configures the
-    // SANDBOX PROVIDER's realization of `sandbox:read-user-files` — the
-    // filestore plugin (the mount RESOLVER) has no opinion about it. Only read
-    // when a Filestore server is set: a host-read root with no export behind it
-    // would point the reader at an empty directory and every browse would
-    // answer "nothing here", which is the exact lie the Files surface refuses
-    // to tell.
-    if (
-      env.AX_FILESTORE_HOST_READ_PATH !== undefined &&
-      env.AX_FILESTORE_HOST_READ_PATH !== ''
-    ) {
-      sandbox.userFilesHostReadRoot = env.AX_FILESTORE_HOST_READ_PATH;
-    }
+  if (filestoreServer === undefined || filestoreServer === '') {
+    throw new Error(
+      'AX_FILESTORE_SERVER is required: every agent needs a durable /files home on an NFS export (the chart sets it from sandbox.filestore.server)',
+    );
+  }
+  const filestoreExportPath = env.AX_FILESTORE_EXPORT_PATH;
+  if (filestoreExportPath === undefined || filestoreExportPath === '') {
+    throw new Error(
+      'AX_FILESTORE_EXPORT_PATH is required when AX_FILESTORE_SERVER is set',
+    );
+  }
+  const filestore: NonNullable<K8sPresetConfig['filestore']> = {
+    server: filestoreServer,
+    exportPath: filestoreExportPath,
+  };
+  if (env.AX_FILESTORE_MOUNT_PATH !== undefined && env.AX_FILESTORE_MOUNT_PATH !== '') {
+    filestore.mountPath = env.AX_FILESTORE_MOUNT_PATH;
+  }
+  // Host-mounted host-read (the chart's `sandbox.filestore.hostReadPath`).
+  // It lives on `sandbox`, not on `filestore`, because it configures the
+  // SANDBOX PROVIDER's realization of `sandbox:read-user-files` — the
+  // filestore plugin (the mount RESOLVER) has no opinion about it. Optional:
+  // a host-read root with no export behind it would point the reader at an
+  // empty directory, but the export is always configured now, so this is just
+  // the opt-in for browsing it from the host pod.
+  if (
+    env.AX_FILESTORE_HOST_READ_PATH !== undefined &&
+    env.AX_FILESTORE_HOST_READ_PATH !== ''
+  ) {
+    sandbox.userFilesHostReadRoot = env.AX_FILESTORE_HOST_READ_PATH;
   }
 
   if (env.K8S_SHARED_POOL_REPLICAS !== undefined) {
-    if (!filestore) throw new Error('shared pools require configured Filestore storage');
     sandbox.sharedPool = {
       replicas: Number(env.K8S_SHARED_POOL_REPLICAS), prefix: env.K8S_SHARED_POOL_PREFIX ?? '',
       storageNamespace: env.K8S_SHARED_POOL_STORAGE_NAMESPACE ?? '',
@@ -1995,19 +2001,17 @@ export function loadK8sConfigFromEnv(
     auth.secret = authSecret;
   }
 
-  // Resolve the workspace config once — both the config object and the blob
-  // backend's default fs-root derivation need it.
-  const workspaceConfig = workspaceConfigFromEnv(env);
-
   const config: K8sPresetConfig = {
     database: { connectionString: databaseUrl },
     eventbus: { connectionString: databaseUrl },
     session: { connectionString: databaseUrl },
-    workspace: workspaceConfig,
-    // Blob backend (out-of-git design Part A). Defaults to fs rooted at a
-    // sibling dir on the workspace PVC; s3 (MinIO dev / GCS+Workload-Identity
-    // prod) when AX_BLOB_BACKEND=s3.
-    blob: blobConfigFromEnv(env, workspaceConfig),
+    workspace: workspaceConfigFromEnv(env),
+    // Blob backend (out-of-git design Part A). fs needs an explicit
+    // AX_BLOB_FS_ROOT (no derived default); s3 (MinIO dev / GCS+Workload-
+    // Identity prod) when AX_BLOB_BACKEND=s3.
+    blob: blobConfigFromEnv(env),
+    // Required: every agent has a durable /files home (validated above).
+    filestore,
     ipc,
     http: {
       host: httpHost,
@@ -2023,10 +2027,6 @@ export function loadK8sConfigFromEnv(
     config.auth = auth;
   }
   if (Object.keys(sandbox).length > 0) config.sandbox = sandbox;
-  // filestore-user-files: attach only when a Filestore export was configured
-  // (the loader's "optional unless populated" pattern). Omitted → no mount
-  // resolver loads.
-  if (filestore !== undefined) config.filestore = filestore;
   if (Object.keys(chat).length > 0) config.chat = chat;
   if (env.AX_PROXY_SOCKET_PATH !== undefined && env.AX_PROXY_SOCKET_PATH !== '') {
     config.credentialProxy = { socketPath: env.AX_PROXY_SOCKET_PATH };

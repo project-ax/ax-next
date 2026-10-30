@@ -192,8 +192,8 @@ plugin sets:
 - `allowPrivilegeEscalation: false`
 - `capabilities: { drop: ['ALL'] }`
 - `readOnlyRootFilesystem: true` with `emptyDir`-backed `/tmp`, `/agent` and
-  `/ephemeral` (plus a tmpfs `/home/runner`); the durable `/files` mount, when
-  configured, is NFS and per-agent `subPath`-confined
+  `/ephemeral` (plus a tmpfs `/home/runner`); the durable `/files` mount
+  (required) is NFS and per-agent `subPath`-confined
 - `automountServiceAccountToken: false`
 - `hostNetwork: false`
 - `restartPolicy: 'Never'`

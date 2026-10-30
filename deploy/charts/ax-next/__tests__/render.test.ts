@@ -25,9 +25,14 @@ import { HELM_REQUIRED_MESSAGE, resolveHelmGate } from './helm-required.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const chartDir = resolve(here, '..');
+// Every render needs a durable /files home (TASK-992). A values FILE, passed
+// first, so overlay files passed later and any --set still win over it.
+const FILESTORE_FIXTURE = resolve(here, 'fixtures/filestore-values.yaml');
 
 /** Stable required values so each test only sets what it's actually checking. */
 const REQUIRED = [
+  '-f',
+  FILESTORE_FIXTURE,
   '--set',
   'credentials.key=test',
   '--set',
@@ -1185,10 +1190,26 @@ describeIfHelm('ax-next chart: sandbox.filestore wiring', () => {
     expect(env.AX_FILESTORE_MOUNT_PATH).toBe('/files');
   });
 
-  it('omits AX_FILESTORE_* when no Filestore server is configured (default)', () => {
-    const env = hostEnv(helmTemplate([]));
-    expect(env.AX_FILESTORE_SERVER).toBeUndefined();
-    expect(env.AX_FILESTORE_EXPORT_PATH).toBeUndefined();
+  // TASK-992: the durable home is required. There is no "no Filestore" render
+  // any more: an empty server or export path fails the template, and the
+  // message names the fix rather than leaving the operator to guess.
+  it('fails the render when sandbox.filestore.server is empty, and says what to do', () => {
+    const { status, stderr } = helmTemplateExpectFailure([
+      '--set',
+      'sandbox.filestore.server=',
+    ]);
+    expect(status).not.toBe(0);
+    expect(stderr).toContain('sandbox.filestore.server is empty');
+    expect(stderr).toContain('deploy/GKE.md');
+  });
+
+  it('fails the render when sandbox.filestore.exportPath is empty', () => {
+    const { status, stderr } = helmTemplateExpectFailure([
+      '--set',
+      'sandbox.filestore.exportPath=',
+    ]);
+    expect(status).not.toBe(0);
+    expect(stderr).toContain('sandbox.filestore.exportPath is empty');
   });
 
   it('opens runner egress to ONLY the Filestore IP on :2049 + :111 (TCP+UDP)', () => {
@@ -1211,15 +1232,6 @@ describeIfHelm('ax-next chart: sandbox.filestore wiring', () => {
     expect(portKeys).toEqual(['TCP:111', 'TCP:2049', 'UDP:111', 'UDP:2049']);
     // The Filestore rule targets a /32 ipBlock — never a CIDR/internet wildcard.
     expect((fsRule?.to ?? []).every((t) => t.ipBlock?.cidr === '10.9.8.7/32')).toBe(true);
-  });
-
-  it('does NOT open any Filestore egress when no server is configured (default)', () => {
-    const np = sandboxRestrict(helmTemplate([]));
-    const egress = (np?.spec?.egress as Array<{
-      to?: Array<{ ipBlock?: { cidr?: string } }>;
-    }>) ?? [];
-    const hasIpBlock = egress.some((r) => (r.to ?? []).some((t) => t.ipBlock !== undefined));
-    expect(hasIpBlock).toBe(false);
   });
 
   // ---- the host-mounted read (sandbox.filestore.hostReadPath) ------------

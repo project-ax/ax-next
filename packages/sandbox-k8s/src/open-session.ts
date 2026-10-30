@@ -57,6 +57,31 @@ import { CLAIM_AGENT_LABEL } from './storage-node/protocol.js';
 const PLUGIN_NAME = '@ax/sandbox-k8s';
 const HOOK_NAME = 'sandbox:open-session';
 
+// TASK-992 — the two `home-unavailable` refusals (step 2c). Fixed text on
+// purpose: neither may carry the agentId or anything else a caller supplied.
+const HOME_RESOLVER_MISSING =
+  'no durable home for this session: nothing registers sandbox:resolve-mounts, so the agent would have no /files. ' +
+  'Configure sandbox.filestore (the k8s preset then loads @ax/workspace-filestore).';
+const HOME_NOT_RESOLVED =
+  'no durable home for this session: the sandbox:resolve-mounts resolver returned no /files mount for this agent.';
+
+/**
+ * True iff the resolver's output carries a `role: 'user-files'` mount: the
+ * agent's durable `/files` home. Takes `unknown` on purpose: the value crossed a
+ * plugin boundary unchecked, so anything malformed counts as "no home" (a
+ * refusal that still rolls the session back), never a TypeError that skips the
+ * rollback.
+ */
+function hasUserFilesMount(mounts: unknown): boolean {
+  return (
+    Array.isArray(mounts) &&
+    mounts.some(
+      (m: unknown) =>
+        typeof m === 'object' && m !== null && (m as { role?: unknown }).role === 'user-files',
+    )
+  );
+}
+
 // OpenSessionInputSchema + its OpenSessionInput / OpenSessionParsed types now
 // live in @ax/sandbox-protocol (imported above) — re-exported here so existing
 // importers of this module keep resolving. NOTE the behavior change from
@@ -195,17 +220,16 @@ export function createOpenSession(deps: OpenSessionDeps) {
     }
 
     // 2b. filestore-user-files (design §4/§6) — resolve the durable per-agent
-    //     mounts via the optional `sandbox:resolve-mounts` hook. When a resolver
-    //     plugin is loaded (@ax/workspace-filestore in the k8s preset) and the
-    //     session has an owner, call it and pass the returned mounts to
+    //     mounts via `sandbox:resolve-mounts` (@ax/workspace-filestore in the
+    //     k8s preset) when the session has an owner, and pass them to
     //     buildPodSpec, which realizes the `nfs` kind as an inline pod volume +
-    //     subPath mount and stamps AX_USERFILES_ROOT. No resolver / no owner →
-    //     no mounts (graceful degradation; the pod keeps its emptyDir-only
-    //     shape). The session was minted at step 2; on a resolve failure roll it
-    //     back so we don't orphan a live token, mirroring the buildPodSpec
-    //     failure handler below.
+    //     subPath mount and stamps AX_USERFILES_ROOT. Step 2c below refuses an
+    //     owned session that ends up without its `/files` home. The session was
+    //     minted at step 2; on a resolve failure roll it back so we don't orphan
+    //     a live token, mirroring the buildPodSpec failure handler below.
+    const resolverLoaded = deps.bus.hasService('sandbox:resolve-mounts');
     let mounts: MountSpec[] = [];
-    if (input.owner !== undefined && deps.bus.hasService('sandbox:resolve-mounts')) {
+    if (input.owner !== undefined && resolverLoaded) {
       try {
         const resolved = await deps.bus.call<ResolveMountsInput, ResolveMountsOutput>(
           'sandbox:resolve-mounts',
@@ -227,6 +251,38 @@ export function createOpenSession(deps: OpenSessionDeps) {
         throw err;
       }
     }
+
+    // 2c. TASK-992 — the durable home is REQUIRED. An owned session (every
+    //     production session: chat-orchestrator always sets `owner`) must get a
+    //     `role: 'user-files'` mount; without one the agent would run with no
+    //     /files and lose whatever it saved there. So refuse it, whether nothing
+    //     registers the resolver or the resolver gave this agent no home (it
+    //     answers `[]` for an agentId that fails its subtree-key check). Check
+    //     the ROLE, not the length: the memory view below joins this same array.
+    //     Roll the minted session back like every failure path here. The agentId
+    //     goes to the structured log only; the message is fixed text, so nothing
+    //     a caller or a model supplied can reach it. Ownerless sessions are
+    //     unchanged (no production caller opens one).
+    if (input.owner !== undefined && !hasUserFilesMount(mounts)) {
+      podLog.error('home_unavailable', {
+        agentId: input.owner.agentId,
+        resolverLoaded,
+      });
+      await deps.bus
+        .call<SessionTerminateInput, Record<string, never>>(
+          'session:terminate',
+          ctx,
+          { sessionId: created.sessionId },
+        )
+        .catch(() => undefined);
+      throw new PluginError({
+        code: 'home-unavailable',
+        plugin: PLUGIN_NAME,
+        hookName: HOOK_NAME,
+        message: resolverLoaded ? HOME_NOT_RESOLVED : HOME_RESOLVER_MISSING,
+      });
+    }
+
     if (input.owner !== undefined && deps.bus.hasService('sandbox:memory-mounts')) {
       try {
         const resolved: unknown = await deps.bus.call<ResolveMountsInput, ResolveMountsOutput>(
