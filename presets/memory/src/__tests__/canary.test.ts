@@ -492,6 +492,9 @@ describe('@ax/preset-memory canary', () => {
     expect(def.promptBody).toContain('2 or more different conversation numbers');
     expect(def.promptBody).not.toContain('memory/docs');
     expect(def.promptBody).not.toContain('source_conversations');
+    // TASK-991: the host supplies the last-pass date; there is no marker file to keep.
+    expect(def.promptBody).toContain('{{lastCompletedRun}}');
+    expect(def.promptBody).not.toContain('last-run.json');
     expect(bus.hasService('tool:execute:memory_recall')).toBe(true);
 
     const input = { name: 'skill-reflection', description: 'reflection', trigger: { kind: 'interval', every: '24h' }, promptBody: 'reflect', conversation: 'per-fire' };

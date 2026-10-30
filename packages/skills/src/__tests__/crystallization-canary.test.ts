@@ -50,7 +50,9 @@
  *   4. recurrence prompt-guard — assert SKILL_REFLECTION_PROMPT carries the
  *      ≥2-distinct-conversations clause, the anti-pattern list, prefer-patch,
  *      and the ≤3-ops cap, so the IP can't silently regress. Behavioral gating
- *      is the manual walk, NOT this unit test (logged below).
+ *      is the manual walk, NOT this unit test (logged below). It also asserts
+ *      that the prompt names no file and takes its last-pass date from the
+ *      host (TASK-991), and a fire test proves the host really fills it in.
  *
  * Why this is a TEST-only import of @ax/routines: it's a devDependency, imported
  * only here. eslint's no-restricted-imports cross-plugin guard does not apply
@@ -453,12 +455,51 @@ describe('skill-crystallization wiring canary (TASK-178)', () => {
     expect(p).toMatch(/one-off\/transient errors/);
     // Instruction-only by default.
     expect(p).toMatch(/INSTRUCTION-ONLY/);
-    // Short-circuit marker + silence token contract: the prompt instructs the
-    // turn to end by replying with the REFLECTION_DONE token (the closing
-    // sentence carries a trailing period; the routine's silence detection
-    // matches the token itself, seeded as silence_token = 'REFLECTION_DONE').
-    expect(p).toMatch(/\.ax\/skill-reflection\/last-run\.json/);
+    // TASK-991: no marker file. The host fills {{lastCompletedRun}} from the routine's own run
+    // history; the prompt names no file and asks for no write.
+    expect(p).toContain('Your last completed reflection pass: {{lastCompletedRun}}.');
+    expect(p).toContain('"never" means no pass has completed yet');
+    expect(p).not.toMatch(/last-run|\.json\b|\.ax\b/);
+    expect(p).not.toMatch(/\bwrit(?:e|es|ing|ten)\b/i);
+    // Silence token contract: the prompt instructs the turn to end by replying
+    // with the REFLECTION_DONE token (the closing sentence carries a trailing
+    // period; the routine's silence detection matches the token itself, seeded
+    // as silence_token = 'REFLECTION_DONE').
     expect(p).toContain('REFLECTION_DONE');
     expect(p.trim()).toMatch(/REFLECTION_DONE\.?$/);
+  });
+
+  it('reflection reads its last completed pass from the routine\'s own run history (TASK-991)', async () => {
+    const fire = await makeFireBus(async () => ({ kind: 'complete', messages: [] }));
+    const row = await fire.bus.call<unknown, { routineId: string; revision: string }>('routines:create', fire.owner, {
+      agentId: fire.agentId, requestId: 'create-reflection',
+      definition: { name: 'skill-reflection', promptBody: SKILL_REFLECTION_PROMPT, trigger: { kind: 'interval', every: '24h' }, conversation: 'per-fire', silenceToken: 'REFLECTION_DONE', silenceMaxChars: 4000 },
+    });
+    type Fire = { status: string; firedAt: string; renderedPrompt: string | null };
+    const fireNow = (requestId: string) => fire.bus.call('routines:fire-now', fire.owner, {
+      agentId: fire.agentId, routineId: row.routineId, expectedRevision: row.revision, requestId,
+    });
+    const recentFires = async () => (await fire.bus.call<unknown, { fires: Fire[] }>(
+      'routines:recent-fires', fire.owner, { agentId: fire.agentId, routineId: row.routineId },
+    )).fires;
+
+    // The first pass: nothing has completed yet, and the host says so.
+    await fireNow('fire-1');
+    let fires: Fire[] = [];
+    await vi.waitFor(async () => {
+      fires = await recentFires();
+      expect(fires[0]?.status).toBe('silenced');
+    }, { timeout: FIRE_RECORDED_TIMEOUT_MS });
+    expect(fires[0]?.renderedPrompt).toContain('Your last completed reflection pass: never.');
+    expect(fires[0]?.renderedPrompt).not.toContain('{{lastCompletedRun}}');
+
+    // The next pass gets the (UTC) start date of the silenced pass before it.
+    await fireNow('fire-2');
+    await vi.waitFor(async () => {
+      fires = await recentFires();
+      expect(fires).toHaveLength(2);
+      expect(fires[0]?.status).toBe('silenced');
+    }, { timeout: FIRE_RECORDED_TIMEOUT_MS });
+    expect(fires[0]?.renderedPrompt).toContain(`Your last completed reflection pass: ${fires[1]?.firedAt.slice(0, 10)}.`);
   });
 });
