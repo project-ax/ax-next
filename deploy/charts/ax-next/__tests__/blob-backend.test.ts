@@ -233,6 +233,8 @@ describeIfHelm('ax-next chart: blob backend wiring (out-of-git Part A)', () => {
       '/mnt/custom-blobs',
       // A sibling that merely shares the mount path's spelling is still off it.
       '/var/lib/ax-next/workspaces-old/blobs',
+      // A `..` segment climbs back off the volume despite the matching prefix.
+      '/var/lib/ax-next/workspaces/../blobs',
     ]) {
       const r = helmTemplateExpectFailure(['--set', `blob.fs.root=${root}`]);
       expect(r.status, root).not.toBe(0);

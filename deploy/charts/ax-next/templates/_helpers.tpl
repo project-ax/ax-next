@@ -594,7 +594,7 @@ validator). Invoked from host/deployment.yaml, which always renders.
 {{- if not $root -}}
 {{- fail (printf "blob.fs.root is empty. Blobs (attachments, artifacts, skill files) live on the host disk at blob.fs.root, and the chart no longer works that out from workspace.mountPath. This deployment's existing blobs are at %s/blobs: pass --set blob.fs.root=%s/blobs once (--reuse-values keeps it after that). An empty value usually means helm upgrade --reuse-values carried it forward from an older chart." $mp $mp) -}}
 {{- end -}}
-{{- if and (eq (dig "backend" "" $ws) "local") (not (hasPrefix (printf "%s/" (trimSuffix "/" $mp)) $root)) -}}
+{{- if and (eq (dig "backend" "" $ws) "local") (or (not (hasPrefix (printf "%s/" (trimSuffix "/" $mp)) $root)) (regexMatch "(^|/)\\.\\.(/|$)" $root)) -}}
 {{- fail (printf "blob.fs.root (%s) is not on the host's workspace volume (mounted at %s), so blobs would land on the container's scratch disk and vanish on restart. Set blob.fs.root to a path under %s; this deployment's existing blobs are at %s/blobs." $root $mp $mp $mp) -}}
 {{- end -}}
 {{- end -}}
