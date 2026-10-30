@@ -35,9 +35,11 @@ import { runnerHomeDir, type RunnerEnv } from './env.js';
 /**
  * Throws when `env.claudeConfigDir` does not exist, or when its real path is
  * the agent's home, inside it, or contains it; and likewise when
- * `env.transcriptsRoot` is set and overlaps the agent's home. Every message
- * starts with `refusing to start: CLAUDE_CONFIG_DIR` or
- * `refusing to start: AX_TRANSCRIPTS_ROOT`.
+ * `env.transcriptsRoot` is set and overlaps the agent's home. Also throws when
+ * any of those paths (or a home root) has a `..` segment or cannot be
+ * resolved. Every message starts with `refusing to start: ` followed by the
+ * input at fault: `CLAUDE_CONFIG_DIR`, `AX_TRANSCRIPTS_ROOT`, or
+ * `the agent's home (` for a home root.
  */
 export async function assertConfigDirOutsideAgentHome(
   env: Pick<
