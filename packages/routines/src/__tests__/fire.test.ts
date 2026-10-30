@@ -319,6 +319,14 @@ describe('the host-supplied last completed run (TASK-991)', () => {
     await h.fire(h.accepted);
     expect(h.pending.get(h.accepted.reqId)?.renderedPrompt).toBe('Last: 2030-12-28.');
   });
+  it('a run that finished ok counts, even when a silenced run is older: a routine without a silence token only ever ends ok', async () => {
+    const h = await setup({ definition: ASKS });
+    const r = h.row.routineId;
+    await seedFire('a', r, '2030-12-20T10:00:00Z', 'silenced', 'owner');
+    await seedFire('a', r, '2030-12-27T10:00:00Z', 'ok', 'owner');
+    await h.fire(h.accepted);
+    expect(h.pending.get(h.accepted.reqId)?.renderedPrompt).toBe('Last: 2030-12-27.');
+  });
   it("counts a run by its start, from the store's own writes, and never one a restart cut off", async () => {
     const h = await setup({ definition: ASKS });
     // The setup's run, accepted at `now` (2031-01-01T00:00Z), ends silenced, as the turn-end subscriber records it.
