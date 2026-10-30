@@ -26,7 +26,7 @@ const SCHEDULED_MESSAGE = [
   '- 2026-10-22 13:30 UTC, on-track:',
   '  > Queue is empty.',
   '',
-  'Work on the task now, then finish with one routine_report.',
+  'Work on the task now, then finish with one routine_report. Write its update and ask for the person in everyday words, with no tool names, ids or code.',
 ].join('\n');
 const lines = (text: string): string[] => text.split('\n');
 const report = (update: string, minute: number) =>
@@ -43,7 +43,7 @@ describe('the check-in message (TASK-908)', () => {
       'You have no saved notes yet.',
       'The person hasn’t replied on this task yet.',
       'No earlier reports yet.',
-      'Work on the task now, then finish with one routine_report.',
+      'Work on the task now, then finish with one routine_report. Write its update and ask for the person in everyday words, with no tool names, ids or code.',
     ].join('\n\n'));
   });
 
@@ -149,7 +149,7 @@ describe('the check-in message carries the person’s replies (TASK-931)', () =>
       '- 2026-10-22 13:30 UTC, on-track:',
       '  > Queue is empty.',
       '',
-      'Work on the task now, then finish with one routine_report.',
+      'Work on the task now, then finish with one routine_report. Write its update and ask for the person in everyday words, with no tool names, ids or code.',
     ].join('\n'));
   });
 
@@ -214,7 +214,7 @@ describe('the check-in message carries the person’s replies (TASK-931)', () =>
     expect(parts[2]).toMatch(/^Your notes from earlier check-ins\./);
     expect(parts[3]).toBe(`${HEADING}\n- 2026-10-22 13:50 UTC (new since your last report):\n  > Hi.`);
     expect(parts[4]).toMatch(/^Your recent reports, newest first\./);
-    expect(parts[5]).toBe('Work on the task now, then finish with one routine_report.');
+    expect(parts[5]).toBe('Work on the task now, then finish with one routine_report. Write its update and ask for the person in everyday words, with no tool names, ids or code.');
   });
 });
 
@@ -374,7 +374,7 @@ describe("a get-done task's steps in its check-in message (TASK-948)", () => {
       '- 2026-10-24 09:02 UTC, on-track:',
       '  > Exported every article.',
       '',
-      'Work on the task now, then finish with one routine_report.',
+      'Work on the task now, then finish with one routine_report. Write its update and ask for the person in everyday words, with no tool names, ids or code.',
     ].join('\n'));
   });
 });

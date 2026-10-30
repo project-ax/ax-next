@@ -5,7 +5,7 @@ import {
   ROUTINE_REPORT_UPDATE_MAX_CHARS, RoutineDefinitionSchema, RoutineFireReportViewSchema,
   RoutineFireViewSchema, RoutineReadingSchema, RoutineReadingViewSchema, RoutineReportFieldShape, RoutineReportInputSchema,
   RoutineReportOutputSchema, RoutineReportStatusSchema, RoutineReportToolInputSchema,
-  RoutineListToolOutputSchema, RoutineTaskViewSchema, RoutineToolDescriptions, RoutineUpdateToolOutputSchema, RoutineViewSchema, firstHiddenCharacter,
+  RoutineListToolOutputSchema, RoutineTaskViewSchema, RoutineToolDescriptions, RoutineToolJsonSchemas, RoutineUpdateToolOutputSchema, RoutineViewSchema, firstHiddenCharacter,
 } from '../index.js';
 
 // A task's report is text an agent writes during a check-in (TASK-907). The host
@@ -540,5 +540,18 @@ describe('a report\u2019s reading (TASK-952)', () => {
       expect(RoutineReportInputSchema.safeParse({ ...input, reading: bad }).success, name).toBe(false);
       expect(refused(withReading(bad)), name).toBe(true);
     }
+  });
+});
+
+// A Stay-on-top task's page once read "Called routine_fire_now for Walk ping
+// (requestId: …)" with the ask "Please approve the routine_fire_now…": the
+// agent wrote its update for itself. The person reading it isn't technical.
+describe('a task’s report is written for the person, not the agent', () => {
+  it('the tool and its update and ask fields say: everyday words, no tool names, ids or code', () => {
+    expect(RoutineToolDescriptions.routine_report).toContain('The person isn’t technical, so write both in everyday words');
+    expect(RoutineToolDescriptions.routine_report).toContain('Never put tool names, ids, request ids, code or raw error text in them');
+    const { update, ask } = RoutineToolJsonSchemas.routine_report.properties;
+    expect(update.description).toContain('No tool names, ids or code.');
+    expect(ask.description).toContain('No tool names, ids or code.');
   });
 });

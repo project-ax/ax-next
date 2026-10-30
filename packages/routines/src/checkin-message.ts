@@ -193,6 +193,6 @@ export function renderCheckInMessage(input: CheckInMessageInput): string {
   const replies = repliesParagraph(input.replies, input.reports[0]?.firedAt);
   return [
     opening(input.source), ...(claimed === null ? [] : [claimed]), ...(missed === null ? [] : [missed]), ...(steps === null ? [] : [steps]),
-    notes, replies, recent, ...(input.updates ? [input.updates] : []), 'Work on the task now, then finish with one routine_report.',
+    notes, replies, recent, ...(input.updates ? [input.updates] : []), 'Work on the task now, then finish with one routine_report. Write its update and ask for the person in everyday words, with no tool names, ids or code.',
   ].join('\n\n');
 }
