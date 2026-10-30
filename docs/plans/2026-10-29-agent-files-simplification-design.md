@@ -170,6 +170,16 @@ Prompt
 - **As built (TASK-989):** refresh = `system-prompt:augment-changed` plus the
   TASK-612 generation. `revision` is the write CAS counter and is not on the
   wire. `complete_bootstrap` is offered only in bootstrap mode.
+- **As built (TASK-989), team agents:** `update_identity` is offered to team
+  agents too. The admin identity editor still refuses team agents (TASK-465:
+  a *person* changing a shared agent's persona should need a team role, which
+  doesn't exist yet). The agent evolving itself is a different act, and §5
+  intends it. It's also what team agents could already do before this change:
+  the old `workspace:pre-apply` gate allowed `.ax/IDENTITY.md`, `SOUL.md` and
+  even `AGENTS.md` writes with no owner-type check. This change narrows that,
+  because the agent can no longer touch Instructions. The gate stays out of
+  `agents:identity:set`, because team members legitimately save team
+  Instructions through that hook. Revisit together with the team role model.
 - Templates: rewrite `BOOTSTRAP_TEMPLATE` to use `update_identity` +
   `complete_bootstrap`; delete `bootstrapPathNote`; rewrite
   `identityEvolutionNote` (it currently says "use Write … committed
