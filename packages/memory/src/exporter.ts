@@ -85,9 +85,15 @@ export function createMemoryExporter(bus: HookBus, config: MemoryExportConfig) {
   function fail(ctx: AgentContext, err: unknown): void {
     try {
       const code = err instanceof PluginError ? err.code : 'unknown';
+      // A volume sync failure is a plain Node error, so `code` alone says only
+      // 'unknown'. Its errno (EACCES, ENOSPC, …) says what went wrong without
+      // the message, which carries the full path. Only an errno-shaped string
+      // is logged: anything else under `code` is not ours to echo.
+      const errno = errnoOf(err);
       ctx.logger.warn(MEMORY_EXPORT_FAILED_EVENT, {
         agentId: ctx.agentId,
         code,
+        ...(errno === undefined ? {} : { errno }),
       });
     } catch {
     }
@@ -243,4 +249,12 @@ export function createMemoryExporter(bus: HookBus, config: MemoryExportConfig) {
       }
     },
   };
+}
+
+const ERRNO_RE = /^E[A-Z0-9]{1,31}$/;
+
+function errnoOf(err: unknown): string | undefined {
+  if (err instanceof PluginError || typeof err !== 'object' || err === null) return undefined;
+  const code = (err as { code?: unknown }).code;
+  return typeof code === 'string' && ERRNO_RE.test(code) ? code : undefined;
 }

@@ -288,6 +288,46 @@ describe('createMemoryExporter', () => {
     await exporter.shutdown();
   });
 
+  it('a background volume sync failure logs its errno, never the path or fact text', async () => {
+    const st = await stubExportBus();
+    st.setScan(async () => ({ statements: [FACT] }));
+    const parent = await mkdtemp(join(tmpdir(), 'ax-vol-'));
+    dirs.push(parent);
+    const hostRoot = join(parent, 'not-a-dir');
+    await writeFile(hostRoot, 'occupied');
+    const logs: LoggedEvent[] = [];
+    const exporter = createMemoryExporter(st.bus, {
+      debounceMs: 1,
+      volume: { hostRoot, backing: BACKING },
+    });
+    exporter.schedule(makeCtx(ALICE, AGENT, logs));
+    await exporter.shutdown();
+    const failures = logs.filter((l) => l.event === MEMORY_EXPORT_FAILED_EVENT);
+    expect(failures).toHaveLength(1);
+    // Not a PluginError, so `code` stays 'unknown'; the Node errno says what actually went wrong.
+    expect(failures[0]!.bindings.code).toBe('unknown');
+    expect(failures[0]!.bindings.errno).toMatch(/^E[A-Z]+$/);
+    const logged = JSON.stringify(failures[0]!.bindings);
+    expect(logged).not.toContain('not-a-dir');
+    expect(logged).not.toContain(parent);
+    expect(logged).not.toContain('tea');
+  });
+
+  it('a PluginError failure logs no errno', async () => {
+    const st = await stubExportBus();
+    st.setScan(async () => {
+      throw new PluginError({ code: 'unavailable', plugin: 'engine', message: 'down' });
+    });
+    const logs: LoggedEvent[] = [];
+    const exporter = createMemoryExporter(st.bus, { debounceMs: 1, volume: st.volume });
+    exporter.schedule(makeCtx(ALICE, AGENT, logs));
+    await exporter.shutdown();
+    const failures = logs.filter((l) => l.event === MEMORY_EXPORT_FAILED_EVENT);
+    expect(failures).toHaveLength(1);
+    expect(failures[0]!.bindings.code).toBe('unavailable');
+    expect(failures[0]!.bindings).not.toHaveProperty('errno');
+  });
+
   it('an unauthorized concurrent flush cannot piggyback on an authorized in-flight pass', async () => {
     const st = await stubExportBus();
     let gate: (() => void) | undefined;
