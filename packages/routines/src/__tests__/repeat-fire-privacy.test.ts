@@ -16,7 +16,7 @@ it('keeps a queued app body out of fire diagnostics and pending history', async 
     nextRunAt:null,lastRunAt:null,lastStatus:null,lastError:null,lastWarning:null,task:null,noRecentUpdate:null,steps:[],finishBy:null,finishByTimeZone:null,done:null,
   }};
   const finishDispatch=vi.fn(async()=>true);
-  const fire=createFireRoutine({bus,pending:new Map(),store:{finishDispatch,bindDispatchConversation:async()=>{},recentReports:async()=>[],recentReplies:async()=>[],taskEventsForDispatch:async()=>[]},purgeAgent:async()=>{}});
+  const fire=createFireRoutine({bus,pending:new Map(),store:{finishDispatch,bindDispatchConversation:async()=>{},recentReports:async()=>[],recentReplies:async()=>[],taskEventsForDispatch:async()=>[],lastCompletedRun:async()=>null},purgeAgent:async()=>{}});
   const output=vi.spyOn(process.stderr,'write').mockImplementation(()=>true);
   try {
     expect((await fire(accepted,{title:'PRIVATE app title'})).renderedPrompt).toBeNull();

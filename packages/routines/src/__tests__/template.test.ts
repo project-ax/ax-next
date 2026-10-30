@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { renderTemplate } from '../template.js';
+import { LAST_COMPLETED_RUN_TOKEN, renderLastCompletedRun, renderTemplate, usesLastCompletedRun } from '../template.js';
 
 describe('renderTemplate', () => {
   it('substitutes a top-level string', () => {
@@ -140,5 +140,38 @@ describe('renderTemplate', () => {
     const payload = Object.fromEntries(new URLSearchParams('__proto__=attacker'));
     expect(renderTemplate('{{payload.__proto__}}', { payload }))
       .toBe('attacker');
+  });
+});
+
+// TASK-991: the one host value. fire.ts fills it from the routine's own fire records, before the payload pass.
+describe('renderLastCompletedRun (TASK-991)', () => {
+  it('fills every occurrence with the run\'s UTC date, or "never"', () => {
+    expect(LAST_COMPLETED_RUN_TOKEN).toBe('{{lastCompletedRun}}');
+    expect(renderLastCompletedRun('a {{lastCompletedRun}} b {{ lastCompletedRun }}', null)).toBe('a never b never');
+    // Under a non-UTC zone, or CI (which runs in UTC) couldn't tell a local-date mutant apart:
+    // 23:30 in New York on the 28th is the 29th in UTC. Node re-reads TZ when it is assigned.
+    const tz = process.env.TZ;
+    process.env.TZ = 'America/New_York';
+    try {
+      const run = new Date('2030-12-28T23:30:00-05:00');
+      expect(run.getDate()).toBe(28); // the zone took effect
+      expect(renderLastCompletedRun('last: {{lastCompletedRun}}', run)).toBe('last: 2030-12-29'); // UTC date
+    } finally {
+      if (tz === undefined) delete process.env.TZ;
+      else process.env.TZ = tz;
+    }
+  });
+
+  it('finds the host token only, never a payload field of the same name', () => {
+    expect(usesLastCompletedRun(LAST_COMPLETED_RUN_TOKEN)).toBe(true);
+    // Asked twice of the same text: a stateful (global) regex would answer false the second time.
+    expect(usesLastCompletedRun('x {{ lastCompletedRun }}')).toBe(true);
+    expect(usesLastCompletedRun('x {{ lastCompletedRun }}')).toBe(true);
+    expect(usesLastCompletedRun('x {{payload.lastCompletedRun}}')).toBe(false);
+    expect(usesLastCompletedRun('no token here')).toBe(false);
+  });
+
+  it('the payload pass never fills it', () => {
+    expect(renderTemplate('{{lastCompletedRun}}', { payload: { lastCompletedRun: 'x' } })).toBe('{{lastCompletedRun}}');
   });
 });

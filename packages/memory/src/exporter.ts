@@ -1,18 +1,7 @@
-import { createHash } from 'node:crypto';
-
-import {
-  MEMORY_FACTS_EXPORT_ROOT,
-  PluginError,
-  type AgentContext,
-  type HookBus,
-  type WorkspaceListOutput,
-  type WorkspaceReadOutput,
-  type WorkspaceVersion,
-} from '@ax/core';
+import { PluginError, type AgentContext, type HookBus } from '@ax/core';
 
 import { memoryReadScope, resolveMemoryAccess } from './access.js';
 import { buildFactsExport, type ExportFact } from './export-render.js';
-import { parseFactsPath, type FactsChange, type FactsPath } from './export-paths.js';
 import { syncFactsVolume, type MemoryVolumeConfig } from './export-volume.js';
 import { PLUGIN_NAME } from './plugin-name.js';
 
@@ -20,17 +9,16 @@ export const FACTS_SCAN_HOOK = 'memory:facts:scan';
 export const MEMORY_EXPORT_FLUSH_HOOK = 'memory:export:flush';
 export const MEMORY_EXPORT_FAILED_EVENT = 'memory_export_failed';
 
-const WORKSPACE_LIST_HOOK = 'workspace:list';
-const WORKSPACE_READ_HOOK = 'workspace:read';
-const WORKSPACE_APPLY_HOOK = 'workspace:apply';
-
 const DEFAULT_DEBOUNCE_MS = 250;
 const SCAN_PAGE_LIMIT = 200;
-const MAX_ATTEMPTS = 3;
 
 export interface MemoryExportConfig {
   debounceMs?: number;
-  volume?: MemoryVolumeConfig;
+  /**
+   * Required: the volume is the only place the export is written (TASK-991).
+   * There is no copy in the agent's workspace.
+   */
+  volume: MemoryVolumeConfig;
 }
 
 interface EngineScanOutput {
@@ -48,16 +36,16 @@ interface AgentExportState {
   lastError: unknown;
 }
 
-function invalidReturn(message: string, hookName: string = FACTS_SCAN_HOOK): PluginError {
+function invalidReturn(message: string): PluginError {
   return new PluginError({
     code: 'invalid-return',
     plugin: PLUGIN_NAME,
-    hookName,
+    hookName: FACTS_SCAN_HOOK,
     message,
   });
 }
 
-export function createMemoryExporter(bus: HookBus, config: MemoryExportConfig = {}) {
+export function createMemoryExporter(bus: HookBus, config: MemoryExportConfig) {
   const debounceMs = config.debounceMs ?? DEFAULT_DEBOUNCE_MS;
   if (!Number.isFinite(debounceMs) || debounceMs < 0) {
     throw new PluginError({
@@ -97,9 +85,16 @@ export function createMemoryExporter(bus: HookBus, config: MemoryExportConfig = 
   function fail(ctx: AgentContext, err: unknown): void {
     try {
       const code = err instanceof PluginError ? err.code : 'unknown';
+      // A volume sync failure is a plain Node error, so `code` alone says only
+      // 'unknown'. Its Node error code (EACCES, ENOSPC, …) says what went
+      // wrong without the message, which carries the full path. Only an
+      // errno-shaped string is logged: anything else under `code` is not ours
+      // to echo.
+      const errorCode = nodeErrorCodeOf(err);
       ctx.logger.warn(MEMORY_EXPORT_FAILED_EVENT, {
         agentId: ctx.agentId,
         code,
+        ...(errorCode === undefined ? {} : { errorCode }),
       });
     } catch {
     }
@@ -138,178 +133,15 @@ export function createMemoryExporter(bus: HookBus, config: MemoryExportConfig = 
     }
   }
 
-  async function listPaths(ctx: AgentContext, version?: string): Promise<string[]> {
-    const input: { pathGlob: string; version?: string } = {
-      pathGlob: `${MEMORY_FACTS_EXPORT_ROOT}/**`,
-    };
-    if (version !== undefined) input.version = version;
-    const list = await bus.call<typeof input, WorkspaceListOutput | null>(
-      WORKSPACE_LIST_HOOK,
-      ctx,
-      input,
-    );
-    if (list === null || typeof list !== 'object' || !Array.isArray(list.paths)) {
-      throw invalidReturn(`${WORKSPACE_LIST_HOOK} returned no path list`);
-    }
-    return list.paths;
-  }
-
-  async function readFile(
-    ctx: AgentContext,
-    path: FactsPath,
-    version: string | undefined,
-    existing: Map<FactsPath, Uint8Array>,
-  ): Promise<string | undefined> {
-    const readInput: { path: string; version?: string } = { path };
-    if (version !== undefined) readInput.version = version;
-    const read = await bus.call<typeof readInput, WorkspaceReadOutput | null>(
-      WORKSPACE_READ_HOOK,
-      ctx,
-      readInput,
-    );
-    if (read === null || typeof read !== 'object' || typeof read.found !== 'boolean') {
-      throw invalidReturn(`${WORKSPACE_READ_HOOK} returned an unreadable result`, WORKSPACE_READ_HOOK);
-    }
-    if (!read.found) {
-      if (version !== undefined) {
-        throw invalidReturn(
-          `${WORKSPACE_READ_HOOK} lost a file pinned at ${version}: ${path}`,
-          WORKSPACE_READ_HOOK,
-        );
-      }
-      return undefined;
-    }
-    if (!(read.bytes instanceof Uint8Array)) {
-      throw invalidReturn(`${WORKSPACE_READ_HOOK} returned non-bytes content for ${path}`, WORKSPACE_READ_HOOK);
-    }
-    if (typeof read.version !== 'string' || read.version === '') {
-      throw invalidReturn(`${WORKSPACE_READ_HOOK} returned no version for ${path}`, WORKSPACE_READ_HOOK);
-    }
-    if (version !== undefined && read.version !== version) {
-      throw invalidReturn(
-        `${WORKSPACE_READ_HOOK} returned a different version than requested for ${path}`,
-        WORKSPACE_READ_HOOK,
-      );
-    }
-    existing.set(path, read.bytes);
-    return read.version;
-  }
-
-  async function collectExisting(
-    ctx: AgentContext,
-    paths: string[],
-    pin: string | undefined,
-  ): Promise<{ pin: string | undefined; existing: Map<FactsPath, Uint8Array> }> {
-    const existing = new Map<FactsPath, Uint8Array>();
-    for (const raw of paths) {
-      const path = parseFactsPath(raw);
-      if (path === undefined) continue;
-      const version = await readFile(ctx, path, pin, existing);
-      if (pin === undefined && version !== undefined) pin = version;
-    }
-    return { pin, existing };
-  }
-
-  async function readBaseline(
-    ctx: AgentContext,
-    parentHint: string | null | undefined,
-  ): Promise<{ parent: WorkspaceVersion | null; existing: Map<FactsPath, Uint8Array> }> {
-    if (typeof parentHint === 'string') {
-      const paths = await listPaths(ctx, parentHint);
-      const { existing } = await collectExisting(ctx, paths, parentHint);
-      return { parent: parentHint as WorkspaceVersion, existing };
-    }
-
-    const paths = await listPaths(ctx);
-    const existing = new Map<FactsPath, Uint8Array>();
-    let pin: string | undefined;
-    for (const raw of paths) {
-      const path = parseFactsPath(raw);
-      if (path === undefined) continue;
-      const version = await readFile(ctx, path, pin, existing);
-      if (pin === undefined && version !== undefined) {
-        pin = version;
-        const pinnedPaths = await listPaths(ctx, pin);
-        existing.clear();
-        const collected = await collectExisting(ctx, pinnedPaths, pin);
-        return { parent: pin as WorkspaceVersion, existing: collected.existing };
-      }
-    }
-    if (parentHint === null) return { parent: null, existing };
-    return { parent: (pin as WorkspaceVersion | undefined) ?? null, existing };
-  }
-
-  async function attemptOnce(
-    ctx: AgentContext,
-    parentHint: string | null | undefined,
-  ): Promise<{ changed: boolean }> {
+  // One pass, no retry: a failure is logged by `fail()` and the next schedule
+  // or flush tries again. The volume sync works out what changed by itself.
+  async function runPass(ctx: AgentContext): Promise<{ changed: boolean }> {
     const access = await resolveMemoryAccess(bus, ctx);
     const rows = await scanAll(ctx, memoryReadScope(access));
     const desired = buildFactsExport(rows, access);
-    const { parent, existing } = await readBaseline(ctx, parentHint);
-
-    const changes: FactsChange[] = [];
-    const encoder = new TextEncoder();
-    for (const [path, content] of desired) {
-      const bytes = encoder.encode(content);
-      const current = existing.get(path);
-      if (
-        current !== undefined &&
-        createHash('sha256').update(current).digest('hex') ===
-          createHash('sha256').update(bytes).digest('hex')
-      ) {
-        continue;
-      }
-      changes.push({ path, kind: 'put', content: bytes });
-    }
-    for (const path of existing.keys()) {
-      if (!desired.has(path)) changes.push({ path, kind: 'delete' });
-    }
-
-    if (changes.length > 0) {
-      await resolveMemoryAccess(bus, ctx);
-      const applied = await bus.call<
-        { changes: FactsChange[]; parent: WorkspaceVersion | null; reason: string },
-        { version?: unknown } | null
-      >(WORKSPACE_APPLY_HOOK, ctx, {
-        changes,
-        parent,
-        reason: 'memory:export',
-      });
-      if (
-        applied === null ||
-        typeof applied !== 'object' ||
-        typeof applied.version !== 'string' ||
-        applied.version === ''
-      ) {
-        throw invalidReturn(`${WORKSPACE_APPLY_HOOK} returned no usable version`);
-      }
-    }
-
-    if (config.volume !== undefined) {
-      await resolveMemoryAccess(bus, ctx);
-      await syncFactsVolume(config.volume, ctx.agentId, desired);
-    }
-
-    return { changed: changes.length > 0 };
-  }
-
-  async function runPass(ctx: AgentContext): Promise<{ changed: boolean }> {
-    let lastError: unknown;
-    let parentHint: string | null | undefined;
-    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-      try {
-        return await attemptOnce(ctx, parentHint);
-      } catch (err) {
-        lastError = err;
-        if (!(err instanceof PluginError && err.code === 'parent-mismatch')) throw err;
-        const actual = (err.cause as { actualParent?: unknown } | undefined)?.actualParent;
-        parentHint =
-          typeof actual === 'string' && actual !== '' ? actual : actual === null ? null : undefined;
-        if (attempt === MAX_ATTEMPTS) throw err;
-      }
-    }
-    throw lastError;
+    // Again before publishing: access can be revoked while the scan runs.
+    await resolveMemoryAccess(bus, ctx);
+    return syncFactsVolume(config.volume, ctx.agentId, desired);
   }
 
   function ensureRunning(state: AgentExportState): Promise<void> {
@@ -418,4 +250,12 @@ export function createMemoryExporter(bus: HookBus, config: MemoryExportConfig = 
       }
     },
   };
+}
+
+const ERRNO_RE = /^E[A-Z0-9]{1,31}$/;
+
+function nodeErrorCodeOf(err: unknown): string | undefined {
+  if (err instanceof PluginError || typeof err !== 'object' || err === null) return undefined;
+  const code = (err as { code?: unknown }).code;
+  return typeof code === 'string' && ERRNO_RE.test(code) ? code : undefined;
 }

@@ -326,7 +326,7 @@ export const WorkspaceCommitNotifyResponseSchema = z.discriminatedUnion(
       // sentence; `code` is what the runner keys on to tell the person, so it
       // never has to match prose. Absent when the veto named none, and on
       // every other rejected branch (parent-mismatch, baseline drift, author
-      // verification, runner-immutable). A label only: it grants nothing, and
+      // verification). A label only: it grants nothing, and
       // a runner that does not know a code treats the refusal as it always
       // did. Bounded to a lowercase slug since it crosses the trust boundary.
       code: z

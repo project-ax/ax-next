@@ -492,6 +492,9 @@ describe('@ax/preset-memory canary', () => {
     expect(def.promptBody).toContain('2 or more different conversation numbers');
     expect(def.promptBody).not.toContain('memory/docs');
     expect(def.promptBody).not.toContain('source_conversations');
+    // TASK-991: the host supplies the last-pass date; there is no marker file to keep.
+    expect(def.promptBody).toContain('{{lastCompletedRun}}');
+    expect(def.promptBody).not.toContain('last-run.json');
     expect(bus.hasService('tool:execute:memory_recall')).toBe(true);
 
     const input = { name: 'skill-reflection', description: 'reflection', trigger: { kind: 'interval', every: '24h' }, promptBody: 'reflect', conversation: 'per-fire' };
@@ -1345,6 +1348,10 @@ describe('@ax/preset-memory canary', () => {
     expect(fs.existsSync(path.join(exportedDir, 'profile.md'))).toBe(true);
     const profileBytes = fs.readFileSync(path.join(exportedDir, 'profile.md'), 'utf-8');
     expect(profileBytes).toContain('Porto');
+    // TASK-991: the volume is the only copy; nothing lands in the agent's workspace.
+    const gitCopy = await bus.call<{ path: string }, { found: boolean }>(
+      'workspace:read', ctxFor(aliceAgentId, ALICE), { path: 'permanent/memory/facts/profile.md' });
+    expect(gitCopy.found).toBe(false);
 
     const open = await bus.call<Record<string, unknown>, { runnerEndpoint: string }>(
       'sandbox:open-session',
@@ -1937,9 +1944,9 @@ describe('@ax/preset-memory canary', () => {
   });
 });
 
-// TASK-576: the NFS export volume is optional. Without it the assembly still
-// boots, recall works and the workspace facts export still runs; runners just
-// get no /memory mount.
+// TASK-576/TASK-991: the NFS export volume is optional. Without it the assembly still
+// boots and recall works, but there is no file view of facts anywhere: no export
+// hooks, nothing in the workspace, no /memory mount.
 describe('@ax/preset-memory canary without the export volume', () => {
   beforeAll(async () => {
     await boot({ withVolume: false });
@@ -1950,9 +1957,9 @@ describe('@ax/preset-memory canary without the export volume', () => {
     await teardown();
   }, 120_000);
 
-  it('boots with no sandbox:memory-mounts; remember, recall and the workspace export still work; no /memory on the pod', async () => {
+  it('boots with no export hooks; remember and recall work; no facts file anywhere; no /memory on the pod', async () => {
     expect(bus.hasService('sandbox:memory-mounts')).toBe(false);
-    expect(bus.hasService('memory:export:flush')).toBe(true);
+    expect(bus.hasService('memory:export:flush')).toBe(false);
     expect(bus.hasService('memory:facts:recall')).toBe(true);
 
     const lisbon = await apiJson(
@@ -1972,14 +1979,12 @@ describe('@ax/preset-memory canary without the export volume', () => {
     const stmts = recalled.json.statements as Array<{ value: string }>;
     expect(stmts.some((st) => st.value === 'Lisbon')).toBe(true);
 
-    await bus.call('memory:export:flush', ctxFor(aliceAgentId, ALICE), {});
     const read = await bus.call<{ path: string }, { found: boolean; bytes?: Uint8Array }>(
       'workspace:read',
       ctxFor(aliceAgentId, ALICE),
       { path: 'permanent/memory/facts/profile.md' },
     );
-    expect(read.found).toBe(true);
-    expect(new TextDecoder().decode(read.bytes)).toContain('Lisbon');
+    expect(read.found).toBe(false);
     expect(fs.existsSync(exportHostRoot)).toBe(false);
 
     await bus.call('sandbox:open-session', ctxFor(aliceAgentId, ALICE), {

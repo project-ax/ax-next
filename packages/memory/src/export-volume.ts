@@ -2,9 +2,9 @@ import { randomUUID } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import { isAbsolute, join, parse, posix, resolve, sep } from 'node:path';
 
-import { MEMORY_FACTS_EXPORT_ROOT, safePath } from '@ax/core';
+import { safePath } from '@ax/core';
 import type { NfsMountSpec } from '@ax/sandbox-mount-protocol';
-import { volumeAgentKey } from '@ax/sandbox-protocol';
+import { MEMORY_FACTS_EXPORT_ROOT, volumeAgentKey } from '@ax/sandbox-protocol';
 export { volumeAgentKey } from '@ax/sandbox-protocol';
 
 import { parseFactsPath, type FactsPath } from './export-paths.js';
@@ -77,11 +77,12 @@ async function ensureDirComponent(parent: string, name: string, anchor: string):
   return dir;
 }
 
+/** `changed` is true iff a file was written into place or removed. */
 export async function syncFactsVolume(
   volume: MemoryVolumeConfig,
   agentId: string,
   desired: ReadonlyMap<FactsPath, string>,
-): Promise<void> {
+): Promise<{ changed: boolean }> {
   validateVolumeConfig(volume);
   const hostRoot = resolve(volume.hostRoot);
   await fs.mkdir(hostRoot, { recursive: true });
@@ -112,6 +113,7 @@ export async function syncFactsVolume(
   const factsReal = await fs.realpath(factsDir);
   assertConfined(agentReal, factsReal);
 
+  let changed = false;
   const keep = new Set<string>();
   for (const [factsPath, content] of desiredChecked) {
     const rel = factsPath.slice(MEMORY_FACTS_EXPORT_ROOT.length + 1);
@@ -132,6 +134,7 @@ export async function syncFactsVolume(
     try {
       await fs.writeFile(tmp, content, { encoding: 'utf-8', flag: 'wx' });
       await fs.rename(tmp, target);
+      changed = true;
     } catch (err) {
       await fs.rm(tmp, { force: true }).catch(() => undefined);
       throw err;
@@ -156,8 +159,10 @@ export async function syncFactsVolume(
       const parsed = parseFactsPath(`${MEMORY_FACTS_EXPORT_ROOT}/${rel}`);
       if (parsed !== undefined && !desiredChecked.has(parsed)) {
         await fs.unlink(entryPath);
+        changed = true;
       }
     }
   };
   await walk(factsDir);
+  return { changed };
 }

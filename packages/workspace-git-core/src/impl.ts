@@ -1053,11 +1053,11 @@ export function registerWorkspaceGitHooks(
             hookName: 'workspace:apply-internal',
             message: `expected parent ${currentVersion === null ? 'null' : currentVersion}, got ${input.parent === null ? 'null' : input.parent}`,
             // The freshly-read mirror head so a rebase-on-mismatch consumer
-            // can recover — `@ax/memory`'s facts exporter and ipc-core's
-            // commit-notify, each of which reads `cause.actualParent` and
-            // retries with it. (NOT attachments:commit, which an earlier
-            // version of this comment named — TASK-68 moved it to blob:put and
-            // off this path.) Mirrors the apply-bundle
+            // can recover — ipc-core's commit-notify, which reads
+            // `cause.actualParent` and retries with it. (NOT attachments:commit,
+            // which an earlier version of this comment named — TASK-68 moved it
+            // to blob:put and off this path; nor @ax/memory's facts exporter,
+            // which TASK-991 moved to the memory volume.) Mirrors the apply-bundle
             // parent-CAS (Site 1, below) and the multi-replica backend's
             // `parentMismatch` contract. The `workspace:apply` facade forwards
             // this error UNCHANGED, so the cause must originate here.
@@ -1335,9 +1335,10 @@ export function registerWorkspaceGitHooks(
       // against the current head — so it is deliberately left unvalidated:
       // narrowing it would turn a garbage parent's `parent-mismatch` into a
       // different code, and that code is the workspace-CAS rebase-retry
-      // contract: @ax/memory's facts exporter and ipc-core's commit-notify
-      // both key on it. NOT @ax/attachments, which an earlier draft of this
-      // comment credited — TASK-68 moved it to blob:put and off this path.)
+      // contract: ipc-core's commit-notify keys on it. NOT @ax/attachments,
+      // which an earlier draft of this comment credited — TASK-68 moved it to
+      // blob:put and off this path — nor @ax/memory's facts exporter, which
+      // TASK-991 moved to the memory volume.)
       requireOid(input.baselineCommit, 'workspace:apply-bundle', 'baselineCommit');
       return mutex.run(async () => {
         await ensureAgentRepo(gitdir, 'workspace:apply-bundle');

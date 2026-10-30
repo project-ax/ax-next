@@ -691,23 +691,20 @@ describe('workspace.commit-notify handler — pre-apply veto', () => {
 });
 
 // ---------------------------------------------------------------------------
-// TASK-486 / TASK-494 — the runner-immutable guard.
+// TASK-486 / TASK-494 → TASK-989 / TASK-991 — the runner-immutable guard is gone.
 //
-// The facts export (`permanent/memory/facts/**`) is a host-owned projection of
-// the fact store. It is NOT policy-visible, so no `workspace:pre-apply`
-// subscriber can see or veto it — which is exactly why the guard has to live in
-// the handler, ahead of the apply. These tests pin the three things that make
-// it a guard rather than a comment: the apply never runs, the refusal is scoped
-// to the offending path, and a legitimate memory write is untouched.
-// (`memory/system/rules.md` was guarded here too until TASK-989 moved the
-// people's Instructions into @ax/agents; nothing reads that file now.)
+// It refused runner-originated writes to two host-owned paths:
+// `memory/system/rules.md` (until TASK-989 moved the people's Instructions into
+// @ax/agents) and the facts export `permanent/memory/facts/**` (until TASK-991
+// wrote the export only to the read-only `/memory` volume). Nothing reads
+// either from a workspace now, so these tests pin that a turn touching them
+// applies like any other.
 // ---------------------------------------------------------------------------
 
 /**
  * Like `makePhase3Probe`, but hands back the `workspace:apply-bundle` spy so a
- * test can assert the apply NEVER RAN. "accepted:false" alone would also be
- * true of a guard that refused the response after landing the write, which is
- * the failure this whole card is about.
+ * test can assert whether the apply ran. "accepted:false" alone would also be
+ * true of a refusal that came after the write had landed.
  */
 function makeSpyingPhase3Probe(name: string): {
   plugin: Plugin;
@@ -737,7 +734,7 @@ function makeSpyingPhase3Probe(name: string): {
   return { plugin, applyBundle };
 }
 
-describe('workspace.commit-notify handler — runner-immutable paths (TASK-486)', () => {
+describe('workspace.commit-notify handler — formerly runner-immutable paths are ordinary agent writes (TASK-989, TASK-991)', () => {
   async function driveTurn(
     changes: Array<{ path: string; kind: 'put' | 'delete'; content?: Uint8Array }>,
     label: string,
@@ -771,9 +768,7 @@ describe('workspace.commit-notify handler — runner-immutable paths (TASK-486)'
     });
 
     const result = await workspaceCommitNotifyHandler(
-      // The runner picks `reason` — pinned here to the most obviously
-      // trustworthy-looking string it could send, because the guard must not
-      // consult it. A `reason`-based allowlist would hand the sandbox the key.
+      // The runner picks `reason`; nothing here may key on it.
       { parentVersion: null, reason: 'turn', bundleBytes: 'UEFDSwAAAAA=' },
       ctx,
       bus,
@@ -792,89 +787,24 @@ describe('workspace.commit-notify handler — runner-immutable paths (TASK-486)'
         { path: 'memory/docs/entity/acme.md', kind: 'put', content: new Uint8Array([2]) },
         { path: 'memory/system/rules.md', kind: 'put', content: new Uint8Array([3]) },
       ],
-      'immutable-allowed',
+      'old-rules-path',
     );
 
     expect(result.body).toMatchObject({ accepted: true });
     expect(applyBundle).toHaveBeenCalledTimes(1);
   });
 
-  it('refuses a runner-originated write under the facts export root (TASK-494)', async () => {
-    const { result, applyBundle, warn } = await driveTurn(
-      [
-        {
-          path: 'permanent/memory/facts/profile.md',
-          kind: 'put',
-          content: new TextEncoder().encode('# forged\n'),
-        },
-      ],
-      'immutable-facts-put',
-    );
-
-    expect(result.status).toBe(200);
-    expect(result.body).toMatchObject({
-      accepted: false,
-      recoverable: false,
-      discardPaths: ['permanent/memory/facts/profile.md'],
-    });
-    // The load-bearing assertion: the write never landed.
-    expect(applyBundle).not.toHaveBeenCalled();
-    expect(warn).toHaveBeenCalledWith(
-      'workspace_runner_immutable_refused',
-      expect.objectContaining({ paths: ['permanent/memory/facts/profile.md'] }),
-    );
-    // The agent is told what it did wrong — `recoverable: false` makes this
-    // reason its only channel.
-    expect((result.body as { reason: string }).reason).toContain(
-      'permanent/memory/facts/profile.md',
-    );
-  });
-
-  it('refuses a delete and a bare-root replacement under the facts export root', async () => {
+  it('accepts writes under the old facts export path — the export left the workspace (TASK-991)', async () => {
+    // The host writes the facts export only to the read-only `/memory` volume
+    // now, and nothing reads `permanent/memory/facts/**` from a workspace, so a
+    // runner write there is an ordinary agent write.
     const { result, applyBundle } = await driveTurn(
       [
+        { path: 'permanent/memory/facts/profile.md', kind: 'put', content: new Uint8Array([1]) },
         { path: 'permanent/memory/facts/user/2026-09.md', kind: 'delete' },
-        { path: 'permanent/memory/facts', kind: 'put', content: new Uint8Array([1]) },
-      ],
-      'immutable-facts-del-root',
-    );
-
-    expect(result.body).toMatchObject({
-      accepted: false,
-      recoverable: false,
-      discardPaths: [
-        'permanent/memory/facts',
-        'permanent/memory/facts/user/2026-09.md',
-      ],
-    });
-    expect(applyBundle).not.toHaveBeenCalled();
-  });
-
-  it('refuses a runner write that would replace a reserved ancestor directory', async () => {
-    const { result, applyBundle } = await driveTurn(
-      [
-        { path: 'permanent', kind: 'put', content: new Uint8Array([1]) },
-        { path: 'permanent/memory', kind: 'delete' },
-        { path: 'src/ok.ts', kind: 'put', content: new Uint8Array([2]) },
-      ],
-      'immutable-facts-ancestors',
-    );
-
-    expect(result.body).toMatchObject({
-      accepted: false,
-      recoverable: false,
-      discardPaths: ['permanent', 'permanent/memory'],
-    });
-    expect(applyBundle).not.toHaveBeenCalled();
-  });
-
-  it('leaves neighbouring permanent-memory writes alone', async () => {
-    const { result, applyBundle } = await driveTurn(
-      [
-        { path: 'permanent/memory/facts-backup/profile.md', kind: 'put', content: new Uint8Array([1]) },
         { path: 'permanent/memory/system/user.md', kind: 'put', content: new Uint8Array([2]) },
       ],
-      'immutable-facts-sibling',
+      'old-facts-path',
     );
 
     expect(result.body).toMatchObject({ accepted: true });

@@ -2,7 +2,7 @@ import { mkdtemp, rm, mkdir, readFile, symlink, writeFile, stat } from 'node:fs/
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { MEMORY_FACTS_EXPORT_ROOT } from '@ax/core';
+import { MEMORY_FACTS_EXPORT_ROOT } from '@ax/sandbox-protocol';
 
 import { factsPath, type FactsPath } from '../export-paths.js';
 import {
@@ -101,6 +101,30 @@ describe('syncFactsVolume', () => {
     await syncFactsVolume(volume, 'agent-1', desired);
     const after = await stat(target);
     expect(after.mtimeMs).toBe(before.mtimeMs);
+  });
+
+  it('reports changed only when a file was written or removed', async () => {
+    const profile = factsPath({ kind: 'profile' });
+    const journal = factsPath({ kind: 'journal', speaker: 'user', month: '2026-09' });
+    const both = new Map<FactsPath, string>([
+      [profile, '# Profile\n\n- a\n'],
+      [journal, '# User memories — 2026-09\n\n- x\n'],
+    ]);
+    await expect(syncFactsVolume(volume, 'agent-1', both)).resolves.toEqual({ changed: true });
+    await expect(syncFactsVolume(volume, 'agent-1', both)).resolves.toEqual({ changed: false });
+
+    // A file the export does not own is neither removed nor counted.
+    await writeFile(join(agentFactsDir('agent-1'), 'notes.txt'), 'not ours');
+    await expect(syncFactsVolume(volume, 'agent-1', both)).resolves.toEqual({ changed: false });
+
+    const edited = new Map(both).set(profile, '# Profile\n\n- b\n');
+    await expect(syncFactsVolume(volume, 'agent-1', edited)).resolves.toEqual({ changed: true });
+
+    const dropped = new Map<FactsPath, string>([[profile, '# Profile\n\n- b\n']]);
+    await expect(syncFactsVolume(volume, 'agent-1', dropped)).resolves.toEqual({ changed: true });
+    await expect(stat(join(agentFactsDir('agent-1'), 'user/2026-09.md'))).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
   });
 
   it('removes only known obsolete FactsPaths and leaves foreign files alone', async () => {

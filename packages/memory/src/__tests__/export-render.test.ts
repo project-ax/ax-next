@@ -3,7 +3,7 @@ import { PluginError } from '@ax/core';
 
 import type { MemoryAccess } from '../access.js';
 import { buildFactsExport, type ExportFact } from '../export-render.js';
-import { MEMORY_FACTS_EXPORT_ROOT } from '@ax/core';
+import { MEMORY_FACTS_EXPORT_ROOT } from '@ax/sandbox-protocol';
 
 const ROOT = MEMORY_FACTS_EXPORT_ROOT;
 const PERSONAL: MemoryAccess = { userId: 'alice', visibility: 'personal' };

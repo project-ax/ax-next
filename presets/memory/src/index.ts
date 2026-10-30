@@ -43,10 +43,10 @@ export const MEMORY_RERANK_MODEL = 'voyageai/rerank-2.5:nitro';
 export interface MemoryPresetConfig extends K8sPresetConfig {
   factsDatabasePath: string;
   /**
-   * The NFS-backed read-only `/memory` view for runners. Optional: without it
-   * the memory plugin still exports each agent's facts into the workspace
-   * (`permanent/memory/facts/**`), recall and the Memory tab work, but runners
-   * get no `/memory` mount (`sandbox:memory-mounts` is not registered).
+   * The NFS-backed read-only `/memory` view for runners — the only file view
+   * of an agent's facts. Optional: without it there is no file view of facts at
+   * all (`memory:export:flush` and `sandbox:memory-mounts` are not registered,
+   * and runners get no `/memory` mount); recall and the Memory tab still work.
    */
   memoryExportVolume?: MemoryVolumeConfig;
   /** Test seam: the fetch the embed/rerank drivers use. Production leaves it unset. */
@@ -171,12 +171,11 @@ export function createMemoryPlugins(config: MemoryPresetConfig): Plugin[] {
         : {}),
     }),
     createMemoryPlugin({
-      // Always export: the workspace facts view (permanent/memory/facts/**)
-      // needs no volume. The volume only adds the runner's /memory mount.
-      exports:
-        config.memoryExportVolume !== undefined
-          ? { volume: config.memoryExportVolume }
-          : {},
+      // The facts export is written only to the memory volume (TASK-991). Without one there is no
+      // file view of facts for people or agents; recall and the Memory tab are unaffected.
+      ...(config.memoryExportVolume !== undefined
+        ? { exports: { volume: config.memoryExportVolume } }
+        : {}),
       ...(config.onObserverDetached !== undefined
         ? { onObserverDetached: config.onObserverDetached }
         : {}),

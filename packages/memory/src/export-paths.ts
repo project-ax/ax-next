@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { MEMORY_FACTS_EXPORT_ROOT } from '@ax/core';
+import { MEMORY_FACTS_EXPORT_ROOT } from '@ax/sandbox-protocol';
 
 declare const factsPathBrand: unique symbol;
 
@@ -7,10 +7,6 @@ export type FactsPath =
   `${typeof MEMORY_FACTS_EXPORT_ROOT}/${string}` & {
     readonly [factsPathBrand]: true;
   };
-
-export type FactsChange =
-  | { path: FactsPath; kind: 'put'; content: Uint8Array }
-  | { path: FactsPath; kind: 'delete' };
 
 export function subjectSlug(subject: string): string {
   return /^[a-z0-9_-]{1,62}$/.test(subject)

@@ -8,6 +8,7 @@ import { runRoutinesMigration, type RoutinesDatabase } from '../migrations.js';
 import { createRoutinesStore, taskConversationQuery } from '../store.js';
 import { runRoutinesMigration as legacyMigration } from './fixtures/legacy-migration.js';
 import { SKILL_REFLECTION_PROMPT, SKILL_REFLECTION_SEED_HASH, SKILL_REFLECTION_STRATA_SEED_HASH } from '../reflection-prompt.js';
+import { SKILL_REFLECTION_MARKER_PROMPT, SKILL_REFLECTION_MARKER_SEED_HASH } from '../reflection-prompt-history.js';
 let container: StartedPostgreSqlContainer; let db: Kysely<RoutinesDatabase>;
 beforeAll(async () => { container = await startTestContainer(new PostgreSqlContainer('postgres:16-alpine')); db = new Kysely({ dialect: new PostgresDialect({ pool: new pg.Pool({ connectionString: container.getConnectionUri() }) }) }); }, 120_000);
 afterAll(async () => { await db?.destroy(); if (container) await stopPostgresContainer(container); }, 60_000);
@@ -73,7 +74,7 @@ describe('versioned routines migration', () => {
     await runRoutinesMigration(db); await runRoutinesMigration(db);
     expect((await sql`SELECT kind, good_when FROM routines_v1_definitions WHERE routine_id='r_old'`.execute(db)).rows).toEqual([{ kind: 'repeat', good_when: null }]);
     expect(await createRoutinesStore(db).findOne({ agentId: 'a', routineId: 'r_old' })).toMatchObject({ kind: 'repeat', goodWhen: null });
-    expect(await versions()).toEqual([2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]);
+    expect(await versions()).toEqual([2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21]);
   });
   it('refuses an unknown kind at the database', async () => {
     await runRoutinesMigration(db);
@@ -86,7 +87,7 @@ describe('versioned routines migration', () => {
     if (dropCheck) await sql`ALTER TABLE routines_v1_definitions DROP CONSTRAINT routines_v1_definitions_kind_chk`.execute(db);
     await sql`DELETE FROM routines_schema_versions WHERE version = 3`.execute(db);
     await runRoutinesMigration(db);
-    expect(await versions()).toEqual([2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]);
+    expect(await versions()).toEqual([2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21]);
     expect(await kindChecks()).toBe(1);
     expect((await sql`SELECT kind, good_when FROM routines_v1_definitions`.execute(db)).rows).toEqual([{ kind: 'stay-on-top', good_when: 'Nothing waits a day.' }]);
   });
@@ -98,7 +99,7 @@ describe('versioned routines migration', () => {
     await sql`INSERT INTO routines_v1_dispatches (dispatch_id,agent_id,routine_id,revision,req_id,accepted_at,completed_at,trigger_source) VALUES ('d_open','a','r_task','rev_task','req_open','2031-01-01T00:00:00Z',NULL,'tick')`.execute(db);
     await sql`INSERT INTO routines_v1_fires (agent_id,routine_id,dispatch_id,fired_at,trigger_source,conversation_id,status) VALUES ('a','r_task','d_done','2030-12-31T23:45:00Z','tick','c_done','ok')`.execute(db);
     await runRoutinesMigration(db); await runRoutinesMigration(db);
-    expect(await versions()).toEqual([2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]);
+    expect(await versions()).toEqual([2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21]);
     expect(await reportColumns()).toEqual({
       dispatches: [{ dispatch_id: 'd_open', conversation_id: null, report: null }],
       definitions: [{ task_status: null, task_update: null, task_ask: null, task_reported_at: null, task_report_accepted_at: null, agent_notes: null }],
@@ -121,7 +122,7 @@ describe('versioned routines migration', () => {
     await sql`DROP INDEX routines_v1_dispatches_conversation`.execute(db);
     await sql`DELETE FROM routines_schema_versions WHERE version = 5`.execute(db);
     await runRoutinesMigration(db); await runRoutinesMigration(db);
-    expect(await versions()).toEqual([2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]);
+    expect(await versions()).toEqual([2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21]);
     expect((await sql`SELECT 1 FROM pg_indexes WHERE indexname='routines_v1_dispatches_conversation'`.execute(db)).rows).toHaveLength(1);
     expect((await sql`SELECT dispatch_id FROM routines_v1_dispatches`.execute(db)).rows).toEqual([{ dispatch_id: 'd_done' }]);
     // The planner may still pick a scan on a tiny table; with scans priced out, the store's own query reads the index.
@@ -156,7 +157,7 @@ describe('versioned routines migration', () => {
     const before = await reportColumns();
     await sql`DELETE FROM routines_schema_versions WHERE version = 4`.execute(db);
     await runRoutinesMigration(db);
-    expect(await versions()).toEqual([2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]);
+    expect(await versions()).toEqual([2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21]);
     expect(await constraintCount('routines_v1_definitions_task_status_chk', 'routines_v1_definitions')).toBe(1);
     expect(await constraintCount('routines_v1_fires_report_status_chk', 'routines_v1_fires')).toBe(1);
     expect((await sql`SELECT 1 FROM pg_indexes WHERE indexname='routines_v1_dispatches_open_conversation'`.execute(db)).rows).toHaveLength(1);
@@ -172,14 +173,14 @@ describe('versioned routines migration', () => {
     // A version-5 task whose check-in left notes.
     await insertTask(sql`,agent_notes`, sql`,'Order 1234 waits on a refund.'`);
     await runRoutinesMigration(db); await runRoutinesMigration(db);
-    expect(await versions()).toEqual([2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]);
+    expect(await versions()).toEqual([2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21]);
     expect(await cleared()).toEqual([{ agent_notes: 'Order 1234 waits on a refund.', agent_notes_cleared_at: null }]);
     expect(await createRoutinesStore(db).findOne({ agentId: 'a', routineId: 'r_task' })).toMatchObject({ routineId: 'r_task', kind: 'stay-on-top' });
     // Finishing version 6 over the column it added keeps the column's values.
     await sql`UPDATE routines_v1_definitions SET agent_notes = NULL, agent_notes_cleared_at = '2031-01-01T00:00:00Z' WHERE routine_id='r_task'`.execute(db);
     await sql`DELETE FROM routines_schema_versions WHERE version = 6`.execute(db);
     await runRoutinesMigration(db);
-    expect(await versions()).toEqual([2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]);
+    expect(await versions()).toEqual([2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21]);
     expect(await cleared()).toEqual([{ agent_notes: null, agent_notes_cleared_at: new Date('2031-01-01T00:00:00Z') }]);
   });
   it('version 7 adds the miss columns; existing rows read back with none (TASK-930)', async () => {
@@ -191,7 +192,7 @@ describe('versioned routines migration', () => {
     // A version-6 task.
     await insertTask();
     await runRoutinesMigration(db); await runRoutinesMigration(db);
-    expect(await versions()).toEqual([2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]);
+    expect(await versions()).toEqual([2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21]);
     expect(await missColumns()).toEqual([{ task_misses_in_a_row: 0, task_miss_reason: null, task_miss_at: null, task_auto_paused_at: null }]);
     expect(await constraintCount(MISS_REASON_CHECK, 'routines_v1_definitions')).toBe(1);
     expect((await createRoutinesStore(db).findOne({ agentId: 'a', routineId: 'r_task' }))?.noRecentUpdate).toBeNull();
@@ -202,7 +203,7 @@ describe('versioned routines migration', () => {
       if (dropCheck) await sql`ALTER TABLE routines_v1_definitions DROP CONSTRAINT routines_v1_definitions_task_miss_reason_chk`.execute(db);
       await sql`DELETE FROM routines_schema_versions WHERE version = 7`.execute(db);
       await runRoutinesMigration(db);
-      expect(await versions(), `check dropped=${dropCheck}`).toEqual([2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]);
+      expect(await versions(), `check dropped=${dropCheck}`).toEqual([2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21]);
       expect(await constraintCount(MISS_REASON_CHECK, 'routines_v1_definitions'), `check dropped=${dropCheck}`).toBe(1);
       expect(await missColumns(), `check dropped=${dropCheck}`).toEqual([{ task_misses_in_a_row: 2, task_miss_reason: 'interrupted', task_miss_at: at, task_auto_paused_at: null }]);
     }
@@ -215,7 +216,7 @@ describe('versioned routines migration', () => {
     // A version-7 task.
     await insertTask();
     await runRoutinesMigration(db); await runRoutinesMigration(db);
-    expect(await versions()).toEqual([2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]);
+    expect(await versions()).toEqual([2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21]);
     expect((await sql`SELECT column_name, data_type, is_nullable FROM information_schema.columns
       WHERE table_schema=current_schema() AND table_name='routines_v1_replies' ORDER BY ordinal_position`.execute(db)).rows).toEqual([
       { column_name: 'reply_id', data_type: 'text', is_nullable: 'NO' },
@@ -239,7 +240,7 @@ describe('versioned routines migration', () => {
     // Finishing version 8 over the table it made keeps its rows.
     await sql`DELETE FROM routines_schema_versions WHERE version = 8`.execute(db);
     await runRoutinesMigration(db);
-    expect(await versions()).toEqual([2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]);
+    expect(await versions()).toEqual([2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21]);
     expect((await sql`SELECT reply_id, body FROM routines_v1_replies`.execute(db)).rows).toEqual([{ reply_id: 'reply_1', body: 'I answered Acme.' }]);
     expect(await createRoutinesStore(db).findOne({ agentId: 'a', routineId: 'r_task' })).toMatchObject({ routineId: 'r_task', kind: 'stay-on-top' });
   });
@@ -254,7 +255,7 @@ describe('versioned routines migration', () => {
     await sql`INSERT INTO routines_v1_fires (agent_id,routine_id,dispatch_id,fired_at,trigger_source,conversation_id,status,report_status,report_update) VALUES ('a','r_task','d_done','2030-12-31T23:45:00Z','tick','c_done','ok','on-track','Queue is empty.')`.execute(db);
     await sql`INSERT INTO routines_v1_fires (agent_id,routine_id,dispatch_id,fired_at,trigger_source,conversation_id,status) VALUES ('a','r_gone','d_gone','2030-12-31T23:30:00Z','tick','c_gone','ok')`.execute(db);
     await runRoutinesMigration(db); await runRoutinesMigration(db);
-    expect(await versions()).toEqual([2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]);
+    expect(await versions()).toEqual([2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21]);
     expect((await sql`SELECT table_name, data_type, is_nullable FROM information_schema.columns
       WHERE table_schema=current_schema() AND column_name='run_as_user_id' ORDER BY table_name`.execute(db)).rows).toEqual([
       { table_name: 'routines_v1_dispatches', data_type: 'text', is_nullable: 'YES' },
@@ -273,7 +274,7 @@ describe('versioned routines migration', () => {
     await sql`UPDATE routines_v1_definitions SET owner_user_id = 'someone-else' WHERE routine_id = 'r_task'`.execute(db);
     await sql`DELETE FROM routines_schema_versions WHERE version = 9`.execute(db);
     await runRoutinesMigration(db);
-    expect(await versions()).toEqual([2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]);
+    expect(await versions()).toEqual([2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21]);
     expect(await runAs()).toEqual(backfilled);
   });
   it('version 10 adds the reading columns; existing rows read back with none, and a re-run keeps values (TASK-952)', async () => {
@@ -291,7 +292,7 @@ describe('versioned routines migration', () => {
     // A version-9 row.
     await insertTask();
     await runRoutinesMigration(db); await runRoutinesMigration(db);
-    expect(await versions()).toEqual([2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]);
+    expect(await versions()).toEqual([2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21]);
     expect((await sql`SELECT table_name, column_name, data_type, is_nullable FROM information_schema.columns
       WHERE table_schema=current_schema() AND column_name LIKE '%reading%' ORDER BY table_name, column_name`.execute(db)).rows).toEqual([
       { table_name: 'routines_v1_definitions', column_name: 'task_reading_label', data_type: 'text', is_nullable: 'YES' },
@@ -309,7 +310,7 @@ describe('versioned routines migration', () => {
     await sql`UPDATE routines_v1_definitions SET task_reading_value = 3, task_reading_label = 'Open tickets', task_reading_reported_at = ${at} WHERE routine_id='r_task'`.execute(db);
     await sql`DELETE FROM routines_schema_versions WHERE version = 10`.execute(db);
     await runRoutinesMigration(db);
-    expect(await versions()).toEqual([2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]);
+    expect(await versions()).toEqual([2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21]);
     expect(await reading()).toEqual([{ task_reading_value: 3, task_reading_label: 'Open tickets', task_reading_reported_at: at }]);
   });
   it('version 11 lets a task be get-done and gives every task an empty checklist; a re-run keeps both (TASK-948)', async () => {
@@ -323,7 +324,7 @@ describe('versioned routines migration', () => {
     await insertTask();
     await expect(insertKind('r_early', 'get-done')).rejects.toMatchObject({ code: '23514', constraint: 'routines_v1_definitions_kind_chk' });
     await runRoutinesMigration(db); await runRoutinesMigration(db);
-    expect(await versions()).toEqual([2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]);
+    expect(await versions()).toEqual([2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21]);
     expect(await kindChecks()).toBe(1);
     expect((await sql`SELECT data_type, is_nullable, column_default FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='routines_v1_definitions' AND column_name='task_steps'`.execute(db)).rows)
       .toEqual([{ data_type: 'jsonb', is_nullable: 'NO', column_default: "'[]'::jsonb" }]);
@@ -335,7 +336,7 @@ describe('versioned routines migration', () => {
     await sql`UPDATE routines_v1_definitions SET task_steps = ${JSON.stringify(kept)}::jsonb WHERE routine_id = 'r_get_done'`.execute(db);
     await sql`DELETE FROM routines_schema_versions WHERE version = 11`.execute(db);
     await runRoutinesMigration(db);
-    expect(await versions()).toEqual([2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]);
+    expect(await versions()).toEqual([2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21]);
     expect(await kindChecks()).toBe(1);
     expect(await stepsOf('r_get_done')).toEqual(kept);
     await expect(insertKind('r_nope_2', 'nope')).rejects.toMatchObject({ code: '23514', constraint: 'routines_v1_definitions_kind_chk' });
@@ -349,7 +350,7 @@ describe('versioned routines migration', () => {
     // A version-11 task.
     await insertTask();
     await runRoutinesMigration(db); await runRoutinesMigration(db);
-    expect(await versions()).toEqual([2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]);
+    expect(await versions()).toEqual([2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21]);
     expect((await sql`SELECT data_type, is_nullable, column_default FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='routines_v1_definitions' AND column_name='finish_by'`.execute(db)).rows)
       .toEqual([{ data_type: 'text', is_nullable: 'YES', column_default: null }]);
     expect(await constraintCount(FINISH_BY_CHECK, 'routines_v1_definitions')).toBe(1);
@@ -359,7 +360,7 @@ describe('versioned routines migration', () => {
     await sql`UPDATE routines_v1_definitions SET finish_by = '2026-11-14' WHERE routine_id='r_task'`.execute(db);
     await sql`DELETE FROM routines_schema_versions WHERE version = 12`.execute(db);
     await runRoutinesMigration(db);
-    expect(await versions()).toEqual([2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]);
+    expect(await versions()).toEqual([2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21]);
     expect(await constraintCount(FINISH_BY_CHECK, 'routines_v1_definitions')).toBe(1);
     expect(await finishBy()).toEqual([{ finish_by: '2026-11-14' }]);
   });
@@ -389,7 +390,7 @@ describe('versioned routines migration', () => {
     // A version-12 row.
     await insertTask();
     await runRoutinesMigration(db); await runRoutinesMigration(db);
-    expect(await versions()).toEqual([2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]);
+    expect(await versions()).toEqual([2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21]);
     expect((await sql`SELECT column_name, data_type, is_nullable, column_default FROM information_schema.columns
       WHERE table_schema=current_schema() AND table_name='routines_v1_definitions'
         AND column_name IN ('task_done_claimed_at', 'task_completed_at', 'task_completed_by_user_id') ORDER BY column_name`.execute(db)).rows).toEqual([
@@ -404,7 +405,7 @@ describe('versioned routines migration', () => {
     await sql`UPDATE routines_v1_definitions SET task_done_claimed_at = ${at}, task_completed_at = ${at}, task_completed_by_user_id = 'owner' WHERE routine_id='r_task'`.execute(db);
     await sql`DELETE FROM routines_schema_versions WHERE version = 13`.execute(db);
     await runRoutinesMigration(db);
-    expect(await versions()).toEqual([2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]);
+    expect(await versions()).toEqual([2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21]);
     expect(await doneColumns()).toEqual([{ task_done_claimed_at: at, task_completed_at: at, task_completed_by_user_id: 'owner' }]);
   });
   it('version 14 gives a finish date the zone it was set from, nullable with no default or check; a re-run keeps every value (TASK-955)', async () => {
@@ -416,7 +417,7 @@ describe('versioned routines migration', () => {
     // A version-13 row.
     await insertTask();
     await runRoutinesMigration(db); await runRoutinesMigration(db);
-    expect(await versions()).toEqual([2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]);
+    expect(await versions()).toEqual([2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21]);
     expect((await sql`SELECT column_name, data_type, is_nullable, column_default FROM information_schema.columns
       WHERE table_schema=current_schema() AND table_name='routines_v1_definitions' AND column_name='finish_by_time_zone'`.execute(db)).rows)
       .toEqual([{ column_name: 'finish_by_time_zone', data_type: 'text', is_nullable: 'YES', column_default: null }]);
@@ -425,7 +426,7 @@ describe('versioned routines migration', () => {
     await sql`UPDATE routines_v1_definitions SET finish_by = '2026-10-25', finish_by_time_zone = 'America/Los_Angeles' WHERE routine_id='r_task'`.execute(db);
     await sql`DELETE FROM routines_schema_versions WHERE version = 14`.execute(db);
     await runRoutinesMigration(db);
-    expect(await versions()).toEqual([2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]);
+    expect(await versions()).toEqual([2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21]);
     expect(await zoneOf('r_task')).toEqual([{ finish_by: '2026-10-25', finish_by_time_zone: 'America/Los_Angeles' }]);
     // No check of any kind. A zone no calendar has goes in: the read refuses it instead (`storedFinishByTimeZone`,
     // store.ts). So does a zone beside no date: code from before this version clears the date alone (its Remove date,
@@ -515,7 +516,7 @@ describe('version 16 immutable dispatch kinds (TASK-919)', () => {
     await runRoutinesMigration(db);
     expect((await sql`SELECT kind FROM routines_v1_dispatches WHERE dispatch_id='known-stay-on-top'`.execute(db)).rows)
       .toEqual([{ kind: 'stay-on-top' }]);
-    expect(await versions()).toEqual([2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]);
+    expect(await versions()).toEqual([2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21]);
   });
 
   it('allows an older binary to omit kind, leaving unknown history refused without a repeat default', async () => {
@@ -526,5 +527,69 @@ describe('version 16 immutable dispatch kinds (TASK-919)', () => {
     expect((await sql`SELECT kind FROM routines_v1_dispatches WHERE dispatch_id='old-binary'`.execute(db)).rows)
       .toEqual([{ kind: null }]);
     expect(await createRoutinesStore(db).isTaskConversation({ agentId: 'a', conversationId: 'c-old-binary' })).toBe(true);
+  });
+});
+
+describe('version 21 refreshes the untouched skill-reflection seed (TASK-991)', () => {
+  // In the PAST on purpose: the container's now() is real time, so a moved updated_at is later than this.
+  const PAST = '2020-01-01T00:00:00Z';
+  const reflection = () => db.selectFrom('default_routines_v1').selectAll().where('name', '=', 'skill-reflection').executeTakeFirstOrThrow();
+  /** A version-20 database whose catalog row `shape` has set, upgraded again; returns the row as v21 found it. */
+  const upgradeFromVersion20 = async (shape: () => Promise<unknown>) => {
+    await runRoutinesMigration(db);
+    await shape();
+    await sql`DELETE FROM routines_schema_versions WHERE version = 21`.execute(db);
+    const before = await reflection();
+    await runRoutinesMigration(db);
+    return before;
+  };
+
+  it('version 21 swaps the untouched 2026-09-27 reflection seed and moves its seed hash (TASK-991)', async () => {
+    await upgradeFromVersion20(() => sql`UPDATE default_routines_v1
+      SET prompt_body=${SKILL_REFLECTION_MARKER_PROMPT}, spec_hash=${SKILL_REFLECTION_MARKER_SEED_HASH}, updated_at=${PAST}
+      WHERE name='skill-reflection'`.execute(db));
+    const row = await reflection();
+    expect(row.prompt_body).toBe(SKILL_REFLECTION_PROMPT);
+    expect(row.spec_hash).toBe(SKILL_REFLECTION_SEED_HASH);
+    // Moved, so refreshStale re-copies the prompt into every agent's materialized row.
+    expect(row.updated_at.getTime()).toBeGreaterThan(Date.parse(PAST));
+    expect(row.enabled).toBe(false);
+    expect(await versions()).toEqual([2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21]);
+  });
+
+  it('a pre-v2 database still holding the 2026-09-27 seed ends at the current prompt and seed hash (TASK-991)', async () => {
+    await legacyMigration(db as never);
+    // The frozen fixture seeds what a pre-v2 deployment actually held, never the live prompt.
+    const legacy = (await sql<{ prompt_body: string; spec_hash: string }>`SELECT prompt_body, spec_hash FROM default_routines_v1 WHERE name='skill-reflection'`.execute(db)).rows[0];
+    expect(legacy).toEqual({ prompt_body: SKILL_REFLECTION_MARKER_PROMPT, spec_hash: SKILL_REFLECTION_MARKER_SEED_HASH });
+    await runRoutinesMigration(db);
+    const row = await reflection();
+    expect(row.prompt_body).toBe(SKILL_REFLECTION_PROMPT);
+    expect(row.spec_hash).toBe(SKILL_REFLECTION_SEED_HASH);
+    expect(row.enabled).toBe(false);
+  });
+
+  it('version 21 swaps a re-sent seed but keeps the operator\'s hash and switch', async () => {
+    // Turning reflection on re-sends the whole definition through routines:upsert-default, which
+    // keeps the prompt as sent (here, the unedited seed) and replaces spec_hash with a real hash.
+    await upgradeFromVersion20(() => sql`UPDATE default_routines_v1
+      SET prompt_body=${SKILL_REFLECTION_MARKER_PROMPT}, spec_hash='h_operator', enabled=true, updated_at=${PAST}
+      WHERE name='skill-reflection'`.execute(db));
+    const row = await reflection();
+    expect(row.prompt_body).toBe(SKILL_REFLECTION_PROMPT);
+    expect(row.spec_hash).toBe('h_operator');
+    expect(row.enabled).toBe(true);
+    expect(row.updated_at.getTime()).toBeGreaterThan(Date.parse(PAST));
+  });
+
+  it('version 21 leaves an edited prompt alone', async () => {
+    const before = await upgradeFromVersion20(() => sql`UPDATE default_routines_v1
+      SET prompt_body='my prompt', spec_hash=${SKILL_REFLECTION_MARKER_SEED_HASH}, updated_at=${PAST}
+      WHERE name='skill-reflection'`.execute(db));
+    const row = await reflection();
+    expect(row).toEqual(before);
+    expect(row.prompt_body).toBe('my prompt');
+    expect(row.spec_hash).toBe(SKILL_REFLECTION_MARKER_SEED_HASH);
+    expect(row.updated_at.toISOString()).toBe(new Date(PAST).toISOString());
   });
 });

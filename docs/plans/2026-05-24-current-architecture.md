@@ -569,8 +569,8 @@ profiles exist (three, counting the memory preset below):
   `@ax/memory` (facts memory, Rules, exports). `host.preset=k8s` /
   `AX_PRESET=k8s` now fail loudly (render error / exit 2) with a pointer to
   the runbook. The
-  NFS export volume (the runner's read-only `/memory` view) is optional; without
-  it facts are still exported into the workspace. Switching an existing
+  NFS export volume (the runner's read-only `/memory` view) is optional and is
+  the only file view of facts; without it there is none, and recall still works. Switching an existing
   deployment is an operator runbook (deploy/README.md), not code.
 
 `@ax/cli` and `presets/**` are the only packages allowed to import sibling

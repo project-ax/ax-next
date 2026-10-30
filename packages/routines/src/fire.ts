@@ -1,7 +1,7 @@
 import { makeAgentContext, PluginError, type HookBus } from '@ax/core';
 import type { StoredRoutine, AcceptedDispatch, FireSource, DispatchMiss } from './types.js';
 import type { FireResult } from './tick.js';
-import { renderTemplate } from './template.js';
+import { renderLastCompletedRun, renderTemplate, usesLastCompletedRun } from './template.js';
 import { createRoutineLifetime, type RoutineLifetime } from './lifetime.js';
 import type { RoutinesStore } from './store.js';
 import { briefRunError, briefRunMiss, isTaskRun } from './brief.js';
@@ -138,10 +138,11 @@ export interface FireDeps {
    * subscriber (`ok` / `silenced`) or the invoke-failure path here (`error`).
    * `Map#delete` returns true to exactly one of them. It also binds each
    * fire's conversation onto its dispatch row before the invoke (TASK-907),
-   * and reads a task's latest reports (TASK-908) and its owner's own latest
-   * replies on it (TASK-931) for its check-in message.
+   * reads a task's latest reports (TASK-908) and its owner's own latest
+   * replies on it (TASK-931) for its check-in message, and reads a repeat
+   * routine's last completed run when its prompt asks for it (TASK-991).
    */
-  store: Pick<RoutinesStore, 'finishDispatch' | 'bindDispatchConversation' | 'recentReports' | 'recentReplies' | 'taskEventsForDispatch'>;
+  store: Pick<RoutinesStore, 'finishDispatch' | 'bindDispatchConversation' | 'recentReports' | 'recentReplies' | 'taskEventsForDispatch' | 'lastCompletedRun'>;
   purgeAgent: (agentId: string) => Promise<void>;
   /**
    * How long after an invoke settles `complete` to wait for its turn end
@@ -302,9 +303,23 @@ export function createFireRoutine(deps: FireDeps) {
         updates,
       });
     } else {
+      // TASK-991: the host value first. A prompt that asks for
+      // `{{lastCompletedRun}}` gets the start date of this routine's newest
+      // run that completed as the person this one acts as (the accepted row's
+      // owner; runs made as anyone else don't count), read from the routine's
+      // own fire records and nothing else. Rendered BEFORE the payload pass,
+      // so a payload can't supply the value and its text is never scanned for
+      // the token (template.ts, K9). A failed read is recorded like any other
+      // setup failure, and the agent never starts.
+      let body = row.promptBody;
+      if (usesLastCompletedRun(body)) {
+        try {
+          body = renderLastCompletedRun(body, await deps.store.lastCompletedRun({ agentId: row.agentId, routineId: row.routineId, actorUserId: row.ownerUserId }));
+        } catch (err) { return fail(err); }
+      }
       // Phase D: render whenever payload is provided, regardless of source.
       // Only the webhook path passes a payload; fire-now and the tick pass none.
-      prompt = payload !== undefined ? renderTemplate(row.promptBody, { payload }) : row.promptBody;
+      prompt = payload !== undefined ? renderTemplate(body, { payload }) : body;
     }
     // TASK-908 decisions row 13: no run of a task keeps its check-in message,
     // whatever its outcome. Every member of a team agent can read a routine's
