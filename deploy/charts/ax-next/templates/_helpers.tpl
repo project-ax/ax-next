@@ -563,9 +563,12 @@ time on misconfigurations the operator can't recover from at runtime:
     pre-TASK-992 release's `root: ""` forward (it renders with the OLD
     release's values, not this chart's defaults). The message prints the path
     the preset used to derive with the local workspace backend,
-    `<workspace.mountPath>/blobs`, so pinning it moves nothing. (With
-    git-protocol the preset used /var/lib/ax-next/blobs, on the container's
-    scratch disk, so there were no durable blobs to keep.)
+    `<workspace.mountPath>/blobs`, so pinning it moves nothing. Any other
+    workspace.backend (git-protocol, or absent) gets a separate message: the
+    preset used /var/lib/ax-next/blobs there, on the container's scratch disk,
+    so there were no durable blobs to keep, and the advice is s3. When the
+    cleanup card removes the workspace values, revisit this split: every empty
+    root would then get the non-local message (the local-message test goes red).
   - blob.backend=fs with a root that is not under workspace.mountPath, while
     workspace.backend=local mounts the workspace PVC there. The host has no
     other volume a blob root could live on, so such a root is the container's
@@ -592,7 +595,7 @@ validator). Invoked from host/deployment.yaml, which always renders.
 {{- $mp := dig "mountPath" "/var/lib/ax-next/workspaces" $ws -}}
 {{- $root := dig "fs" "root" "" .Values.blob -}}
 {{- if and (not $root) (ne (dig "backend" "" $ws) "local") -}}
-{{- fail "blob.fs.root is empty. Blobs (attachments, artifacts, skill files) live on the host disk at blob.fs.root. On this deployment the workspace backend is not local, so the host never mounted a workspace volume and blobs were on the container's scratch disk, which is wiped on restart. Set blob.fs.root to a path on a persistent volume, or use blob.backend=s3." -}}
+{{- fail "blob.fs.root is empty. Blobs (attachments, artifacts, skill files) live on the host disk at blob.fs.root. On this deployment the workspace backend is not local, so the host never mounted a workspace volume and blobs were on the container's scratch disk, which is wiped on restart. The chart gives this host no volume for blobs, so use blob.backend=s3 to keep them. To keep the old behaviour (blobs lost on every restart), set blob.fs.root=/var/lib/ax-next/blobs explicitly." -}}
 {{- end -}}
 {{- if not $root -}}
 {{- fail (printf "blob.fs.root is empty. Blobs (attachments, artifacts, skill files) live on the host disk at blob.fs.root, and the chart no longer works that out from workspace.mountPath. This deployment's existing blobs are at %s/blobs: pass --set blob.fs.root=%s/blobs once (--reuse-values keeps it after that). An empty value usually means helm upgrade --reuse-values carried it forward from an older chart." $mp $mp) -}}

@@ -241,7 +241,8 @@ describeIfHelm('ax-next chart: blob backend wiring (out-of-git Part A)', () => {
     expect(r.status).not.toBe(0);
     expect(r.stderr).toContain('blob.fs.root is empty');
     expect(r.stderr).toContain("container's scratch disk");
-    expect(r.stderr).toContain('persistent volume');
+    expect(r.stderr).toContain('blob.backend=s3');
+    expect(r.stderr).toContain('blob.fs.root=/var/lib/ax-next/blobs');
     expect(r.stderr).not.toContain(PINNED_ROOT);
   });
 
