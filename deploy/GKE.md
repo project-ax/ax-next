@@ -747,7 +747,7 @@ memory:
 ```
 
 Both-or-neither: leave both empty and facts memory still renders and runs
-(runners just get no `/memory` mount); set only one and `helm template` /
+(there's just no file view of facts: runners get no `/memory` mount); set only one and `helm template` /
 `helm install` fail loudly, naming both fields.
 
 ### The facts database PVC

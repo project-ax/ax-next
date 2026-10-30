@@ -62,8 +62,8 @@ host:
   # recall via embeddings + reranking. Renders and boots with no extra
   # values: the facts database lives on its own PVC (`memory.facts`).
   # `memory.exports` (an NFS export) is OPTIONAL — set it to give runner
-  # pods a read-only `/memory` view; leave it empty and recall and the
-  # Memory tab still work.
+  # pods a read-only `/memory` view of each agent's facts, the only file
+  # view of them; leave it empty and recall and the Memory tab still work.
   #
   # "k8s" (the legacy Strata memory) was removed in TASK-608 and now fails
   # `helm template` on purpose, with a message pointing here. If you're
@@ -765,12 +765,13 @@ memory:
   facts:
     storage: 10Gi
     storageClassName: ''
-  # OPTIONAL NFS export the host writes each agent's memory projection to
-  # (mounted read-write on the host, read-only on runner pods at `/memory`).
+  # OPTIONAL NFS export the host writes each agent's facts to, as files —
+  # the only file view of them (mounted read-write on the host, read-only on
+  # runner pods at `/memory`).
   # Both-or-neither: set `server` AND `exportPath`, or leave both empty —
-  # `helm template` fails if exactly one is set. Empty means runners get no
-  # `/memory` mount; recall and the Memory tab still work, and each agent's
-  # facts are still exported into its workspace. On GKE, provision a
+  # `helm template` fails if exactly one is set. Empty means no file view of
+  # facts anywhere: runners get no `/memory` mount and nothing is written
+  # into agents' workspaces; recall and the Memory tab still work. On GKE, provision a
   # DEDICATED Filestore share for this — see `deploy/GKE.md`. When set, it
   # must NOT be the same server+exportPath as `sandbox.filestore.exportPath`
   # (the separate durable per-agent user-files mount); the chart fails
