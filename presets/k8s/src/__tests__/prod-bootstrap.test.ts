@@ -170,6 +170,7 @@ describe('@ax/preset-k8s production bootstrap (testcontainer + fake-k8s)', () =>
       eventbus: { connectionString },
       session: { connectionString },
       workspace: { backend: 'local', repoRoot: path.join(tmp, 'repo') },
+      blob: { backend: 'fs', root: path.join(tmp, 'blobs') },
       sandbox: { namespace: 'ax-next', image: 'ax-next/agent:stub' },
       ipc: {
         host: '127.0.0.1',
@@ -450,6 +451,9 @@ describe('@ax/preset-k8s production bootstrap (testcontainer + fake-k8s)', () =>
       const env: NodeJS.ProcessEnv = {
         DATABASE_URL: connectionString,
         AX_K8S_HOST_IPC_URL: 'http://ax-next-host.ax-next.svc.cluster.local:80',
+        AX_BLOB_FS_ROOT: path.join(tmp, 'blobs-env'),
+        AX_FILESTORE_SERVER: '10.9.8.7',
+        AX_FILESTORE_EXPORT_PATH: '/vol1',
         AX_WORKSPACE_BACKEND: 'local',
         AX_WORKSPACE_ROOT: path.join(tmp, 'repo-env'),
         AX_HTTP_HOST: '127.0.0.1',

@@ -35,6 +35,7 @@ function stubConfig(): K8sPresetConfig {
     eventbus: { connectionString: 'postgres://stub:5432/stub' },
     session: { connectionString: 'postgres://stub:5432/stub' },
     workspace: { backend: 'local', repoRoot: '/tmp/preset-k8s-stub' },
+    blob: { backend: 'fs', root: '/tmp/preset-k8s-stub/blobs' },
     sandbox: { namespace: 'ax-next', image: 'ax-next/agent:stub' },
     ipc: { hostIpcUrl: 'http://ax-next-host.ax-next.svc.cluster.local:80' },
     http: {
@@ -49,6 +50,9 @@ function stubConfig(): K8sPresetConfig {
 const minRequired = (extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv => ({
   DATABASE_URL: 'postgres://u:p@db:5432/ax_next',
   AX_K8S_HOST_IPC_URL: 'http://ax-next-host.ax-next.svc:80',
+  AX_BLOB_FS_ROOT: '/var/lib/ax-next/workspaces/blobs',
+  AX_FILESTORE_SERVER: '10.9.8.7',
+  AX_FILESTORE_EXPORT_PATH: '/vol1',
   AX_WORKSPACE_BACKEND: 'git-protocol',
   AX_WORKSPACE_GIT_SERVER_URL: 'http://git-server:7780',
   AX_WORKSPACE_GIT_SERVER_TOKEN: 't',

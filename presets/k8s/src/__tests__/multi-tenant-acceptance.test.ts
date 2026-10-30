@@ -404,6 +404,7 @@ describe('@ax/preset-k8s multi-tenant ACL gate (stub runner)', () => {
           backend: 'local',
           repoRoot: path.join(tmp, 'repo-stub'),
         },
+        blob: { backend: 'fs', root: path.join(tmp, 'blobs') },
         sandbox: { namespace: 'ax-next', image: 'ax-next/agent:stub' },
         ipc: { hostIpcUrl: 'http://ax-next-host.ax-next.svc.cluster.local:80' },
         chat: { runnerBinaries: { 'claude-sdk': stubRunnerPath }, chatTimeoutMs: 60_000 },

@@ -14,6 +14,7 @@ const baseK8s: K8sPresetConfig = {
   eventbus: { connectionString: 'postgres://stub:5432/stub' },
   session: { connectionString: 'postgres://stub:5432/stub' },
   workspace: { backend: 'local', repoRoot: '/tmp/preset-memory-stub/ws' },
+  blob: { backend: 'fs', root: '/tmp/preset-memory-stub/ws/blobs' },
   ipc: { hostIpcUrl: 'http://ax-next-host.ax-next.svc.cluster.local:80' },
   chat: { runnerBinaries: { 'claude-sdk': '/tmp/stub-runner.js' } },
   http: {
@@ -333,6 +334,9 @@ describe('loadMemoryConfigFromEnv', () => {
     AX_K8S_HOST_IPC_URL: 'http://host:80',
     AX_WORKSPACE_BACKEND: 'local',
     AX_WORKSPACE_ROOT: '/var/lib/ax-next/workspaces',
+    AX_BLOB_FS_ROOT: '/var/lib/ax-next/workspaces/blobs',
+    AX_FILESTORE_SERVER: '10.9.8.7',
+    AX_FILESTORE_EXPORT_PATH: '/vol1',
     AX_HTTP_HOST: '0.0.0.0',
     AX_HTTP_PORT: '9090',
     AX_HTTP_COOKIE_KEY: '0'.repeat(64),

@@ -239,6 +239,7 @@ export async function createBank({ sample, directory, env, clients, providerFetc
   const plugins = createMemoryPlugins({
     database: { connectionString: 'postgres://unused' }, eventbus: { connectionString: 'postgres://unused' }, session: { connectionString: 'postgres://unused' },
     workspace: { backend: 'local', repoRoot: join(directory, 'workspace') },
+    blob: { backend: 'fs', root: join(directory, 'blobs') },
     ipc: { hostIpcUrl: 'http://127.0.0.1:1' },
     http: { host: '127.0.0.1', port: 0, cookieKey: '0'.repeat(64), allowedOrigins: [] },
     factsDatabasePath: join(directory, 'facts.db'),

@@ -53,6 +53,7 @@ const stubConfig: K8sPresetConfig = {
   eventbus: { connectionString: 'postgres://stub:5432/stub' },
   session: { connectionString: 'postgres://stub:5432/stub' },
   workspace: { backend: 'local', repoRoot: '/tmp/preset-k8s-stub' },
+  blob: { backend: 'fs', root: '/tmp/preset-k8s-stub/blobs' },
   sandbox: { namespace: 'ax-next', image: 'ax-next/agent:stub' },
   ipc: { hostIpcUrl: 'http://ax-next-host.ax-next.svc.cluster.local:80' },
   // Override the runner binary so resolution doesn't depend on whether
@@ -441,6 +442,9 @@ describe('@ax/preset-k8s wiring', () => {
     const baseEnv: NodeJS.ProcessEnv = {
       DATABASE_URL: 'postgres://u:p@db:5432/ax_next',
       AX_K8S_HOST_IPC_URL: 'http://ax-next-host.ax-next.svc:80',
+      AX_BLOB_FS_ROOT: '/var/lib/ax-next/workspaces/blobs',
+      AX_FILESTORE_SERVER: '10.9.8.7',
+      AX_FILESTORE_EXPORT_PATH: '/vol1',
       AX_WORKSPACE_BACKEND: 'git-protocol',
       AX_WORKSPACE_GIT_SERVER_URL: 'http://git-server:7780',
       AX_WORKSPACE_GIT_SERVER_TOKEN: 't',
@@ -1247,6 +1251,9 @@ describe('@ax/preset-k8s — onboarding wiring (I3: half-wired window closed)', 
     const env: NodeJS.ProcessEnv = {
       DATABASE_URL: 'postgres://u:p@db:5432/ax_next',
       AX_K8S_HOST_IPC_URL: 'http://ax-next-host.ax-next.svc:80',
+      AX_BLOB_FS_ROOT: '/var/lib/ax-next/workspaces/blobs',
+      AX_FILESTORE_SERVER: '10.9.8.7',
+      AX_FILESTORE_EXPORT_PATH: '/vol1',
       AX_WORKSPACE_BACKEND: 'git-protocol',
       AX_WORKSPACE_GIT_SERVER_URL: 'http://git-server:7780',
       AX_WORKSPACE_GIT_SERVER_TOKEN: 't',
@@ -1265,6 +1272,9 @@ describe('@ax/preset-k8s — onboarding wiring (I3: half-wired window closed)', 
     const env: NodeJS.ProcessEnv = {
       DATABASE_URL: 'postgres://u:p@db:5432/ax_next',
       AX_K8S_HOST_IPC_URL: 'http://ax-next-host.ax-next.svc:80',
+      AX_BLOB_FS_ROOT: '/var/lib/ax-next/workspaces/blobs',
+      AX_FILESTORE_SERVER: '10.9.8.7',
+      AX_FILESTORE_EXPORT_PATH: '/vol1',
       AX_WORKSPACE_BACKEND: 'git-protocol',
       AX_WORKSPACE_GIT_SERVER_URL: 'http://git-server:7780',
       AX_WORKSPACE_GIT_SERVER_TOKEN: 't',
@@ -1286,6 +1296,9 @@ describe('@ax/preset-k8s — onboarding wiring (I3: half-wired window closed)', 
     const env: NodeJS.ProcessEnv = {
       DATABASE_URL: 'postgres://u:p@db:5432/ax_next',
       AX_K8S_HOST_IPC_URL: 'http://ax-next-host.ax-next.svc:80',
+      AX_BLOB_FS_ROOT: '/var/lib/ax-next/workspaces/blobs',
+      AX_FILESTORE_SERVER: '10.9.8.7',
+      AX_FILESTORE_EXPORT_PATH: '/vol1',
       AX_WORKSPACE_BACKEND: 'local',
       AX_WORKSPACE_ROOT: '/var/lib/ax-next/workspaces',
       AX_SKILLS_BUNDLE_ROOT: '/var/lib/ax-next/workspaces/skill-bundles',
@@ -1315,6 +1328,9 @@ describe('@ax/preset-k8s — onboarding wiring (I3: half-wired window closed)', 
     const env: NodeJS.ProcessEnv = {
       DATABASE_URL: 'postgres://u:p@db:5432/ax_next',
       AX_K8S_HOST_IPC_URL: 'http://ax-next-host.ax-next.svc:80',
+      AX_BLOB_FS_ROOT: '/var/lib/ax-next/workspaces/blobs',
+      AX_FILESTORE_SERVER: '10.9.8.7',
+      AX_FILESTORE_EXPORT_PATH: '/vol1',
       AX_WORKSPACE_BACKEND: 'git-protocol',
       AX_WORKSPACE_GIT_SERVER_URL: 'http://git-server:7780',
       AX_WORKSPACE_GIT_SERVER_TOKEN: 't',
@@ -1336,6 +1352,9 @@ describe('@ax/preset-k8s — onboarding wiring (I3: half-wired window closed)', 
     const env: NodeJS.ProcessEnv = {
       DATABASE_URL: 'postgres://u:p@db:5432/ax_next',
       AX_K8S_HOST_IPC_URL: 'http://ax-next-host.ax-next.svc:80',
+      AX_BLOB_FS_ROOT: '/var/lib/ax-next/workspaces/blobs',
+      AX_FILESTORE_SERVER: '10.9.8.7',
+      AX_FILESTORE_EXPORT_PATH: '/vol1',
       AX_WORKSPACE_BACKEND: 'git-protocol',
       AX_WORKSPACE_GIT_SERVER_URL: 'http://git-server:7780',
       AX_WORKSPACE_GIT_SERVER_TOKEN: 't',
@@ -1360,6 +1379,9 @@ describe('@ax/preset-k8s — onboarding wiring (I3: half-wired window closed)', 
     const env: NodeJS.ProcessEnv = {
       DATABASE_URL: 'postgres://u:p@db:5432/ax_next',
       AX_K8S_HOST_IPC_URL: 'http://ax-next-host.ax-next.svc:80',
+      AX_BLOB_FS_ROOT: '/var/lib/ax-next/workspaces/blobs',
+      AX_FILESTORE_SERVER: '10.9.8.7',
+      AX_FILESTORE_EXPORT_PATH: '/vol1',
       AX_WORKSPACE_BACKEND: 'git-protocol',
       AX_WORKSPACE_GIT_SERVER_URL: 'http://git-server:7780',
       AX_WORKSPACE_GIT_SERVER_TOKEN: 't',
@@ -1388,6 +1410,9 @@ describe('@ax/preset-k8s — onboarding wiring (I3: half-wired window closed)', 
     const env: NodeJS.ProcessEnv = {
       DATABASE_URL: 'postgres://u:p@db:5432/ax_next',
       AX_K8S_HOST_IPC_URL: 'http://ax-next-host.ax-next.svc:80',
+      AX_BLOB_FS_ROOT: '/var/lib/ax-next/workspaces/blobs',
+      AX_FILESTORE_SERVER: '10.9.8.7',
+      AX_FILESTORE_EXPORT_PATH: '/vol1',
       AX_WORKSPACE_BACKEND: 'git-protocol',
       AX_WORKSPACE_GIT_SERVER_URL: 'http://git-server:7780',
       AX_WORKSPACE_GIT_SERVER_TOKEN: 't',
@@ -1407,6 +1432,9 @@ describe('@ax/preset-k8s — onboarding wiring (I3: half-wired window closed)', 
     const env: NodeJS.ProcessEnv = {
       DATABASE_URL: 'postgres://u:p@db:5432/ax_next',
       AX_K8S_HOST_IPC_URL: 'http://ax-next-host.ax-next.svc:80',
+      AX_BLOB_FS_ROOT: '/var/lib/ax-next/workspaces/blobs',
+      AX_FILESTORE_SERVER: '10.9.8.7',
+      AX_FILESTORE_EXPORT_PATH: '/vol1',
       AX_WORKSPACE_BACKEND: 'git-protocol',
       AX_WORKSPACE_GIT_SERVER_URL: 'http://git-server:7780',
       AX_WORKSPACE_GIT_SERVER_TOKEN: 't',
@@ -1424,6 +1452,9 @@ describe('@ax/preset-k8s — onboarding wiring (I3: half-wired window closed)', 
     const env: NodeJS.ProcessEnv = {
       DATABASE_URL: 'postgres://u:p@db:5432/ax_next',
       AX_K8S_HOST_IPC_URL: 'http://ax-next-host.ax-next.svc:80',
+      AX_BLOB_FS_ROOT: '/var/lib/ax-next/workspaces/blobs',
+      AX_FILESTORE_SERVER: '10.9.8.7',
+      AX_FILESTORE_EXPORT_PATH: '/vol1',
       AX_WORKSPACE_BACKEND: 'git-protocol',
       AX_WORKSPACE_GIT_SERVER_URL: 'http://git-server:7780',
       AX_WORKSPACE_GIT_SERVER_TOKEN: 't',
@@ -1585,6 +1616,7 @@ describe('@ax/preset-k8s workspace backend selection', () => {
     const plugins = createK8sPlugins({
       ...stubConfig,
       workspace: { backend: 'local', repoRoot: '/tmp/preset-k8s-stub' },
+      blob: { backend: 'fs', root: '/tmp/preset-k8s-stub/blobs' },
     });
     const names = new Set(plugins.map((p) => p.manifest.name));
     expect(names.has('@ax/workspace-git')).toBe(true);
@@ -1632,6 +1664,7 @@ describe('@ax/preset-k8s workspace backend selection', () => {
     const localPlugins = createK8sPlugins({
       ...stubConfig,
       workspace: { backend: 'local', repoRoot: '/tmp/preset-k8s-stub' },
+      blob: { backend: 'fs', root: '/tmp/preset-k8s-stub/blobs' },
     });
     const gitProtocolPlugins = createK8sPlugins({
       ...stubConfig,
@@ -1788,6 +1821,9 @@ describe('loadK8sConfigFromEnv', () => {
   const minRequired = (extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv => ({
     DATABASE_URL: 'postgres://u:p@db:5432/ax_next',
     AX_K8S_HOST_IPC_URL: 'http://ax-next-host.ax-next.svc:80',
+    AX_BLOB_FS_ROOT: '/var/lib/ax-next/workspaces/blobs',
+    AX_FILESTORE_SERVER: '10.9.8.7',
+    AX_FILESTORE_EXPORT_PATH: '/vol1',
     AX_WORKSPACE_BACKEND: 'git-protocol',
     AX_WORKSPACE_GIT_SERVER_URL: 'http://git-server:7780',
     AX_WORKSPACE_GIT_SERVER_TOKEN: 't',
@@ -2188,6 +2224,9 @@ describe('@ax/preset-k8s — allow_user_installed_skills flag (TASK-38)', () => 
   const baseEnv = (): NodeJS.ProcessEnv => ({
     DATABASE_URL: 'postgres://u:p@db:5432/ax_next',
     AX_K8S_HOST_IPC_URL: 'http://ax-next-host.ax-next.svc:80',
+    AX_BLOB_FS_ROOT: '/var/lib/ax-next/workspaces/blobs',
+    AX_FILESTORE_SERVER: '10.9.8.7',
+    AX_FILESTORE_EXPORT_PATH: '/vol1',
     AX_WORKSPACE_BACKEND: 'git-protocol',
     AX_WORKSPACE_GIT_SERVER_URL: 'http://git-server:7780',
     AX_WORKSPACE_GIT_SERVER_TOKEN: 't',
@@ -2273,6 +2312,7 @@ describe('@ax/preset-k8s — filestore mount wiring', () => {
     AX_HTTP_PORT: '9090',
     AX_HTTP_COOKIE_KEY: HEX_KEY,
     AX_HTTP_ALLOWED_ORIGINS: '',
+    AX_BLOB_FS_ROOT: '/var/lib/ax-next/workspaces/blobs',
   };
 
   it('loads @ax/workspace-filestore (exactly one resolve-mounts registrant) when filestore is configured', () => {
@@ -2286,7 +2326,7 @@ describe('@ax/preset-k8s — filestore mount wiring', () => {
     expect(resolvers.map((p) => p.manifest.name)).toEqual(['@ax/workspace-filestore']);
   });
 
-  it('loads NO mount resolver when filestore is omitted (graceful degradation)', () => {
+  it('createK8sPlugins loads no resolver when filestore is omitted (owned sessions are then refused by the provider)', () => {
     const plugins = createK8sPlugins(stubConfig);
     const resolvers = plugins.filter((p) =>
       p.manifest.registers.includes('sandbox:resolve-mounts'),
@@ -2316,8 +2356,8 @@ describe('@ax/preset-k8s — filestore mount wiring', () => {
     });
   });
 
-  it('loadK8sConfigFromEnv leaves filestore unset when AX_FILESTORE_SERVER is absent', () => {
-    expect(loadK8sConfigFromEnv(baseEnv).filestore).toBeUndefined();
+  it('loadK8sConfigFromEnv throws when AX_FILESTORE_SERVER is absent', () => {
+    expect(() => loadK8sConfigFromEnv(baseEnv)).toThrow(/AX_FILESTORE_SERVER is required/);
   });
 
   it('loadK8sConfigFromEnv throws when AX_FILESTORE_SERVER is set without AX_FILESTORE_EXPORT_PATH', () => {

@@ -256,6 +256,8 @@ async function boot(opts: { withVolume: boolean } = { withVolume: true }): Promi
     eventbus: { connectionString },
     session: { connectionString },
     workspace: { backend: 'local', repoRoot: path.join(tmp, 'repo') },
+    // Explicit now; this is the path the preset used to derive from repoRoot.
+    blob: { backend: 'fs', root: path.join(tmp, 'repo', 'blobs') },
     sandbox: {
       namespace: 'ax-next',
       image: 'ax-next/agent:stub',
