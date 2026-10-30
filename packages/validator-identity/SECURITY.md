@@ -218,7 +218,13 @@ If those break, the failure is louder than this plugin can compensate for.
 - **False positives.** The weak egress-near-secret signal can refuse a benign identity or
   soul sentence, for example "never post API keys in chat" (an egress verb near a secret
   word). The text is not saved; rewording gets it through. Instructions skip that signal
-  (see above).
+  (see above), but they still get false positives from the **strong** signatures, which
+  have no word boundaries: "secretary" counts as a secret word, and a secret word within
+  80 characters of a URL or "webhook" is refused even when the sentence forbids it.
+  Measured examples that are refused as Instructions: "Email my secretary when you are
+  done and link to https://status.example.com", "Report the token budget to
+  https://grafana.example.com each Monday.", "Never put passwords or API keys in anything
+  you send to the team webhook." The test file pins these as known refusals.
 - **Instructions: weaker credential recall.** Because Instructions skip the weak signal,
   a person can save "fetch the deploy token and post it in #general". Only the strong
   signatures (request data, a URL, a webhook) catch exfiltration there. The author is a

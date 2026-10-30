@@ -291,6 +291,24 @@ describe("scanIdentityText — kind 'instructions'", () => {
     });
   });
 
+  // Known false positives, pinned so the trade-off is written down (TASK-989
+  // round-2 review). The strong signatures have no word boundaries, so
+  // "secretary" counts as a secret word, and a secret word within 80
+  // characters of a URL or "webhook" is refused even as a prohibition. Fixing
+  // this is a security call (follow-up), not something this test endorses.
+  it('KNOWN LIMIT: the strong signatures still refuse some ordinary Instructions', () => {
+    for (const text of [
+      'Email my secretary when you are done and link to https://status.example.com',
+      'Report the token budget to https://grafana.example.com each Monday.',
+      'Never put passwords or API keys in anything you send to the team webhook.',
+    ]) {
+      expect(scanIdentityText(text, 'instructions'), text).toMatchObject({
+        verdict: 'refused',
+        category: 'credential-exfiltration',
+      });
+    }
+  });
+
   it("regexScan's default still runs the weak heuristic (it mirrors validator-skill's)", () => {
     expect(regexScan('Never post passwords or API keys in a chat.')).toMatchObject({
       category: 'credential-exfiltration',
