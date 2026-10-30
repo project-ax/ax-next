@@ -7,13 +7,20 @@ import {
 } from '../index.js';
 
 describe('agent-identity-templates', () => {
-  it('BOOTSTRAP_TEMPLATE names its own deletable path and uses the Write tool', () => {
-    expect(BOOTSTRAP_TEMPLATE).toContain('.ax/BOOTSTRAP.md');
-    expect(BOOTSTRAP_TEMPLATE).toContain('`Write`');
-    expect(BOOTSTRAP_TEMPLATE).toContain('.ax/IDENTITY.md');
-    expect(BOOTSTRAP_TEMPLATE).toContain('.ax/SOUL.md');
+  it('the bootstrap script saves with update_identity and finishes with complete_bootstrap', () => {
+    expect(BOOTSTRAP_TEMPLATE).toContain('update_identity');
+    expect(BOOTSTRAP_TEMPLATE).toContain('section: "identity"');
+    expect(BOOTSTRAP_TEMPLATE).toContain('section: "soul"');
+    expect(BOOTSTRAP_TEMPLATE).toContain('complete_bootstrap');
+    expect(BOOTSTRAP_TEMPLATE).toContain('memory_note');
     // Conversational, not a form (the openclaw canonical posture).
     expect(BOOTSTRAP_TEMPLATE).toContain('Talk first');
+  });
+
+  it('it names no files and no Write tool', () => {
+    expect(BOOTSTRAP_TEMPLATE).not.toMatch(/\.ax\//);
+    expect(BOOTSTRAP_TEMPLATE).not.toContain('BOOTSTRAP.md');
+    expect(BOOTSTRAP_TEMPLATE).not.toContain('`Write`');
   });
 
   it('scaffolds are non-empty markdown', () => {
