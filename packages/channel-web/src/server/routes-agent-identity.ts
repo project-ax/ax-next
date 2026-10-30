@@ -2,69 +2,54 @@ import {
   PluginError,
   isRejection,
   makeAgentContext,
-  makeReqId,
   type AgentContext,
   type HookBus,
 } from '@ax/core';
 import { z } from 'zod';
-import { STORAGE_FULL_IDENTITY } from '../lib/storage-full-copy.js';
+import { readAgentIdentity, writeAgentIdentity } from './identity-write.js';
 import type { RouteRequest, RouteResponse } from './routes-chat.js';
-import { isStorageFullRefusal } from './storage-full-refusal.js';
-import { actualParentFromMismatch, NO_ACTUAL_PARENT } from './workspace-cas.js';
 
 const PLUGIN_NAME = '@ax/channel-web';
 
 // ---------------------------------------------------------------------------
-// GET/PUT /admin/agents/:id/identity — the file-based admin identity editor
-// (TASK-142, conversational-agent-identity Phase 4).
+// GET/PUT /admin/agents/:id/identity — the admin form's identity editor
+// (TASK-142; moved onto @ax/agents by TASK-989).
 //
-// The admin AgentForm replaces the single "system prompt" textarea with three
-// fields — Identity / Soul / Operating instructions (advanced) — backed by the
-// agent's `.ax/` files. These routes are the BFF for that editor:
+// An agent's identity (who it is) and soul (its values and boundaries) are
+// rows owned by `@ax/agents`. These routes are the BFF for the admin form's
+// two fields:
 //
-//   GET  → reads `.ax/IDENTITY.md` + `.ax/SOUL.md` + `.ax/AGENTS.md` via
-//          `workspace:read` (each missing file maps to '').
-//   PUT  → writes the three files via `workspace:apply` — which fires
-//          `workspace:pre-apply` → `@ax/validator-identity` (the injection scan
-//          + bootstrap-window policy). The advanced "Operating instructions"
-//          field maps to `.ax/AGENTS.md` and is OPT-IN: a non-empty value is
-//          written, an empty value DELETES the file (never creates an empty one).
+//   GET  → `agents:identity:get` → `{ identity, soul }`. A read that fails, or
+//          a deployment with no identity store, answers 503 — never two blank
+//          fields, which a Save would write back over the real text.
+//   PUT  → `agents:identity:set` with exactly `{ identity, soul }`, through
+//          `identity-write.ts` (read the revision, write with it, retry a lost
+//          compare-and-set). The Instructions are NOT this editor's: people
+//          edit them on the agent's settings page, and an old client's
+//          `operating` field is dropped.
 //
-// Boundary review: no new service-hook signature — these are HTTP routes
-// calling the EXISTING `workspace:read` / `workspace:apply` hooks (the same
-// pattern as routes-agent-bootstrap). The plugin manifest's `calls` gains
-// `workspace:read` (apply is already declared).
+// Boundary review: no new service-hook signature — HTTP routes over the
+// `agents:identity:*` hooks (TASK-989's boundary review covers those).
 //
 // Security review (see PR body):
-//   - Sandbox: the route writes ONLY `.ax/IDENTITY.md` / `.ax/SOUL.md` /
-//     `.ax/AGENTS.md` — a HARDCODED three-path allow-list, NEVER a caller-
-//     supplied path (the client sends file *contents*). The `@ax/core` apply
-//     facade additionally filters `workspace:pre-apply` to `.ax/**`. The route
-//     CANNOT write `.ax/BOOTSTRAP.md` (the floor-suppression primitive) — it's
-//     not in the allow-list, and validator-identity hard-vetoes a non-canonical
-//     BOOTSTRAP.md put as defense-in-depth. The workspace ctx carries the
-//     agent's REAL owner id (never a synthetic actor).
-//   - Injection: the three bodies are UNTRUSTED browser strings. They flow only
-//     into `workspace:apply` (→ validator-identity's injection scan, the gate
-//     this exists for) and ultimately into the agent's OWN system prompt next
-//     spawn — never interpolated into a shell, SQL, path, or HTML by this route.
-//     Each field is size-bounded (32 KiB, matching the old admin systemPrompt
-//     cap). The route does NOT bypass the validator: it goes through the
-//     standard apply facade.
-//   - ACL: the authenticated userId is server-forced from the auth cookie;
-//     `agents:resolve(agentId, userId)` gates access (owner / team-member only →
-//     403 otherwise). CSRF is enforced by @ax/http-server on PUT.
+//   - The two bodies are UNTRUSTED browser strings. Each is capped at 32,768
+//     characters here; `agents:identity:set` then runs every non-empty
+//     section through `identity:scan` (prompt-injection, credential-exfiltration
+//     and hidden-character checks, fail closed) before anything is saved. The
+//     text reaches only the agent's own system prompt at its next spawn — never
+//     a shell, SQL, path or HTML from this route. A refusal answers 400 with
+//     the scanner's fixed reason; the text itself is never logged.
+//   - ACL: the userId is server-forced from the auth cookie; `agents:resolve`
+//     gates the agent (owner / team member → 403 otherwise), team agents are
+//     refused below, and the identity hooks check access again on the ctx,
+//     which carries the agent and the ACTING person — never a synthetic actor.
+//     CSRF is enforced by @ax/http-server on PUT.
 // ---------------------------------------------------------------------------
 
-// The three editable identity files, mapped to the editor's fields. BOOTSTRAP.md
-// is deliberately NOT here — it is host-seeded only and a `put` is vetoed.
-const IDENTITY_PATH = '.ax/IDENTITY.md';
-const SOUL_PATH = '.ax/SOUL.md';
-const AGENTS_PATH = '.ax/AGENTS.md';
-
-// Per-field byte cap — matches the legacy admin systemPrompt cap (32 KiB). A
-// real identity file is a few KiB; this bounds a runaway/hostile paste.
-const MAX_FIELD_BYTES = 32 * 1024;
+// Per-field cap, in characters (JS string length) — the legacy admin
+// systemPrompt cap. A real identity is a few thousand; this bounds a runaway or
+// hostile paste well under `identity:scan`'s 262,144-byte limit.
+const MAX_FIELD_CHARS = 32 * 1024;
 
 // Locally-declared hook payload shapes (Invariant #2 — the hook bus is the
 // contract; each side names only the shape it needs).
@@ -79,41 +64,23 @@ interface AgentsResolveInput {
   userId: string;
 }
 interface AgentsResolveOutput {
-  agent: { id: string; ownerId: string; ownerType: 'user' | 'team' };
-}
-type WorkspaceReadResult =
-  | { found: true; bytes: Uint8Array }
-  | { found: false };
-interface WorkspaceReadInput {
-  path: string;
-}
-interface WorkspaceApplyChange {
-  path: string;
-  kind: 'put' | 'delete';
-  content?: Uint8Array;
-}
-// `parent` is the storage-agnostic version token the apply CAS-checks against
-// (opaque — never resolved as a path). null = "the workspace has no commits
-// yet" (a brand-new agent); a token = an existing head. We start at null and
-// retry once with the tier's actual head on a CAS miss (see save()).
-interface WorkspaceApplyInput {
-  changes: WorkspaceApplyChange[];
-  parent: string | null;
-  reason?: string;
+  agent: { id: string; ownerType: 'user' | 'team' };
 }
 
-// PUT body: the three editor fields. `operating` is optional/opt-in (→
-// `.ax/AGENTS.md`). Each is length-bounded; unknown body fields are stripped.
+// PUT body: the editor's two fields, each length-bounded. Unknown fields
+// (an old client's `operating`) are stripped.
 const IdentityBody = z
   .object({
-    identity: z.string().max(MAX_FIELD_BYTES, 'identity too large'),
-    soul: z.string().max(MAX_FIELD_BYTES, 'soul too large'),
-    operating: z.string().max(MAX_FIELD_BYTES, 'operating too large').optional(),
+    identity: z.string().max(MAX_FIELD_CHARS, 'identity too large'),
+    soul: z.string().max(MAX_FIELD_CHARS, 'soul too large'),
   })
   .strip();
 
-const enc = (s: string): Uint8Array => new TextEncoder().encode(s);
-const dec = (b: Uint8Array): string => new TextDecoder('utf-8').decode(b);
+/** An error's name and code — never its message, which may quote text. */
+function errorFields(err: unknown): { name: string; code?: string } {
+  const name = err instanceof Error ? err.name : typeof err;
+  return err instanceof PluginError ? { name, code: err.code } : { name };
+}
 
 export interface AgentIdentityRoutesDeps {
   bus: HookBus;
@@ -124,13 +91,13 @@ export function makeAgentIdentityHandlers(deps: AgentIdentityRoutesDeps) {
   const { bus, initCtx } = deps;
 
   /** Authenticate, then ACL-gate the agent via `agents:resolve` under the
-   * authenticated user. Returns the resolved agent (carrying its REAL owner id
-   * for routing the workspace ctx) or null (a response was already written). */
+   * authenticated user. Returns the agent and the acting user, or null (a
+   * response was already written). */
   async function authorizeAgent(
     req: RouteRequest,
     res: RouteResponse,
     agentId: string | undefined,
-  ): Promise<{ agentId: string; ownerUserId: string } | null> {
+  ): Promise<{ agentId: string; userId: string } | null> {
     if (agentId === undefined || agentId.length === 0) {
       res.status(400).json({ error: 'invalid-payload' });
       return null;
@@ -160,39 +127,21 @@ export function makeAgentIdentityHandlers(deps: AgentIdentityRoutesDeps) {
         initCtx,
         { agentId, userId },
       );
-      // Team agents are refused. The reason is NOT routing — that reason was
-      // true once and is not any more. `workspaceCtx` below routes by
-      // `ctx.agentId` alone (TASK-257), so there is no shard to guess and no
-      // per-owner repo to pick.
-      //
-      // What still blocks it is ATTRIBUTION. For `ownerType: 'team'`,
-      // `agent.ownerId` is a **teamId**, not a userId (`@ax/agents`
-      // `plugin.ts` sets `ownerId = validated.teamId` on the team branch).
-      // `ctx.userId` is what lands in `delta.author.userId` on every write,
-      // and it has to be a real user — putting a teamId there mints a
-      // synthetic actor in the audit trail.
-      //
-      // Lifting this is a product decision, not a code cleanup. It was made
-      // (TASK-465, 2026-09-28): KEEP the refusal. The two halves now have
-      // answers, but the second one depends on something that does not
-      // exist yet:
-      //   (a) Attribution — credit the ACTING member (`userId` above, which
-      //       agents:resolve has already proven is a member), never the
-      //       team id. Never route `out.agent.ownerId` into ctx.userId here.
-      //   (b) Authority — owners/admins of the team only (or an explicit
-      //       grant), NOT any member. A shared agent's name and persona are
-      //       how every other member recognises it.
-      // Revisit when a team ROLE model exists (today agents:resolve only
-      // answers "is a member", with no owner/admin distinction). Then allow
-      // team owners/admins (or an explicit grant) and pass the acting
-      // member through as the workspace ctx's userId. Until then, refuse —
-      // `returns 403 for a team agent` in routes-agent-identity.test.ts pins
-      // this for both GET and PUT. See TASK-414, TASK-465.
+      // Team agents are refused. A decision, not a technical limit
+      // (TASK-465, 2026-09-28; kept by TASK-989): a shared agent's name and
+      // persona are how every member recognises it, so changing them should
+      // take a team owner or admin (or an explicit grant), NOT any member —
+      // and agents:resolve answers only "is a member", with no role. Revisit
+      // when a team ROLE model exists; then allow owners/admins and pass the
+      // ACTING member as the ctx's userId, never the team id
+      // (`agent.ownerId` is a teamId on a team agent). `returns 403 for a
+      // team agent` in routes-agent-identity.test.ts pins this for GET and
+      // PUT. See TASK-414, TASK-465.
       if (out.agent.ownerType !== 'user') {
         res.status(403).json({ error: 'forbidden' });
         return null;
       }
-      return { agentId, ownerUserId: out.agent.ownerId };
+      return { agentId, userId };
     } catch (err) {
       if (err instanceof PluginError && err.code === 'forbidden') {
         res.status(403).json({ error: 'forbidden' });
@@ -210,38 +159,11 @@ export function makeAgentIdentityHandlers(deps: AgentIdentityRoutesDeps) {
     }
   }
 
-  /** Build the ctx so `workspace:read`/`workspace:apply` land in THIS
-   * agent's `/agent` (routed by ctx.agentId alone — TASK-257). ctx.userId no
-   * longer selects the repo, but it still must be the agent's REAL owner
-   * (never a synthetic actor) — it is the attribution recorded in
-   * `delta.author`. */
-  function workspaceCtx(agentId: string, ownerUserId: string): AgentContext {
-    return makeAgentContext({
-      reqId: makeReqId(),
-      sessionId: 'agent-identity-editor',
-      agentId,
-      userId: ownerUserId,
-    });
-  }
-
-  async function readFile(ctx: AgentContext, path: string): Promise<string> {
-    try {
-      const out = await bus.call<WorkspaceReadInput, WorkspaceReadResult>(
-        'workspace:read',
-        ctx,
-        { path },
-      );
-      return out.found ? dec(out.bytes) : '';
-    } catch (err) {
-      // A read failure (no workspace backend, transient error) degrades to an
-      // empty field rather than a 500 — the editor still opens.
-      initCtx.logger.warn('agent_identity_read_failed', {
-        plugin: PLUGIN_NAME,
-        path,
-        err: err instanceof Error ? err.message : String(err),
-      });
-      return '';
-    }
+  /** The ctx the identity hooks authorize on: THIS agent, and the person
+   * acting — who `agents:resolve` just admitted (on a personal agent, its
+   * owner). Never `initCtx`, whose agent and user are channel-web's own. */
+  function editorCtx(agentId: string, userId: string): AgentContext {
+    return makeAgentContext({ sessionId: 'agent-identity-editor', agentId, userId });
   }
 
   return {
@@ -249,13 +171,22 @@ export function makeAgentIdentityHandlers(deps: AgentIdentityRoutesDeps) {
     async show(req: RouteRequest, res: RouteResponse): Promise<void> {
       const auth = await authorizeAgent(req, res, req.params.id);
       if (auth === null) return;
-      const ctx = workspaceCtx(auth.agentId, auth.ownerUserId);
-      const [identity, soul, operating] = await Promise.all([
-        readFile(ctx, IDENTITY_PATH),
-        readFile(ctx, SOUL_PATH),
-        readFile(ctx, AGENTS_PATH),
-      ]);
-      res.status(200).json({ identity, soul, operating });
+      let view: Awaited<ReturnType<typeof readAgentIdentity>>;
+      try {
+        view = await readAgentIdentity(bus, editorCtx(auth.agentId, auth.userId), auth.agentId);
+      } catch (err) {
+        initCtx.logger.warn('agent_identity_read_failed', {
+          plugin: PLUGIN_NAME,
+          agentId: auth.agentId,
+          ...errorFields(err),
+        });
+        view = 'unavailable';
+      }
+      if (view === 'unavailable') {
+        res.status(503).json({ error: 'identity-unavailable' });
+        return;
+      }
+      res.status(200).json({ identity: view.identity, soul: view.soul });
     },
 
     /** PUT /admin/agents/:id/identity */
@@ -264,7 +195,7 @@ export function makeAgentIdentityHandlers(deps: AgentIdentityRoutesDeps) {
       if (auth === null) return;
 
       // Parse + validate (length-bounded). Unknown fields stripped.
-      let body: { identity: string; soul: string; operating?: string | undefined };
+      let body: { identity: string; soul: string };
       try {
         const raw =
           req.body.length === 0 ? {} : (JSON.parse(req.body.toString('utf8')) as unknown);
@@ -279,92 +210,52 @@ export function makeAgentIdentityHandlers(deps: AgentIdentityRoutesDeps) {
         return;
       }
 
-      const ctx = workspaceCtx(auth.agentId, auth.ownerUserId);
-
-      // IDENTITY.md + SOUL.md are always written (put). AGENTS.md is opt-in: a
-      // non-empty value is written; an empty value DELETES the file (never
-      // creates an empty one — `.ax/AGENTS.md` exists only when there's a real
-      // per-agent override, per the design).
-      const changes: WorkspaceApplyChange[] = [
-        { path: IDENTITY_PATH, kind: 'put', content: enc(body.identity) },
-        { path: SOUL_PATH, kind: 'put', content: enc(body.soul) },
-      ];
-      const operating = body.operating ?? '';
-      if (operating.trim().length > 0) {
-        changes.push({ path: AGENTS_PATH, kind: 'put', content: enc(operating) });
-      } else {
-        // Idempotent delete — a no-op when AGENTS.md doesn't exist (the
-        // validator allows deleting an identity file in any window state).
-        changes.push({ path: AGENTS_PATH, kind: 'delete' });
-      }
-
+      let result: Awaited<ReturnType<typeof writeAgentIdentity>>;
       try {
-        // First attempt with parent:null — correct for a never-committed
-        // workspace (the git backend lazy-creates `main`). For an agent whose
-        // `/agent` already has history (the seeded BOOTSTRAP.md, transcripts,
-        // a prior identity edit) — i.e. essentially every real agent — this is a
-        // CAS miss; retry ONCE with the tier's actual head from
-        // `cause.actualParent` (the established workspace-CAS rebase contract).
-        try {
-          await bus.call<WorkspaceApplyInput, unknown>('workspace:apply', ctx, {
-            changes,
-            parent: null,
-            reason: 'agent-identity-edit',
-          });
-        } catch (applyErr) {
-          const actual = actualParentFromMismatch(applyErr);
-          if (actual === NO_ACTUAL_PARENT) throw applyErr; // not a CAS miss → real failure
-          await bus.call<WorkspaceApplyInput, unknown>('workspace:apply', ctx, {
-            changes,
-            parent: actual,
-            reason: 'agent-identity-edit',
-          });
-        }
-        res.status(200).json({ ok: true });
+        result = await writeAgentIdentity(bus, editorCtx(auth.agentId, auth.userId), auth.agentId, {
+          identity: body.identity,
+          soul: body.soul,
+        });
       } catch (err) {
-        // The storage limit said no (TASK-719). It is a `rejected` like a
-        // validator's veto, and used to fall into the branch below: a 400 that
-        // carried the veto's own message, a sentence worded for the AGENT that
-        // writes files, shown to a person in the form's Alert. It must be told
-        // apart FIRST, and only by the code the veto carries — never by who said
-        // it or by its words — because everything else in that branch means "fix
-        // what you wrote", which is the wrong advice for a full disk.
-        //
-        // The sentence is true as sent because of the order the screen saves in
-        // (see STORAGE_FULL_IDENTITY): the agent row and its connectors are
-        // written BEFORE this PUT, and the apply is all-or-nothing, so a refusal
-        // leaves none of the three identity files written.
-        if (isStorageFullRefusal(err)) {
-          res.status(413).json({ error: 'storage-full', message: STORAGE_FULL_IDENTITY });
-          return;
-        }
-        // A validator-identity veto (injection scan / non-canonical BOOTSTRAP)
-        // surfaces from the @ax/core apply facade as PluginError{code:'rejected'}
-        // whose `message` is the validator's reason → 400 with that reason (no
-        // internal detail beyond the validator's own message). A raw rejection
-        // (a direct subscriber path) is handled too, defensively.
-        if (err instanceof PluginError && err.code === 'rejected') {
-          res.status(400).json({ error: err.message });
-          return;
-        }
-        if (isRejection(err)) {
-          const reason =
-            typeof (err as { reason?: unknown }).reason === 'string'
-              ? (err as { reason: string }).reason
-              : 'rejected';
-          res.status(400).json({ error: reason });
-          return;
-        }
-        if (err instanceof PluginError && err.code === 'invalid-payload') {
-          res.status(400).json({ error: err.message });
-          return;
-        }
         initCtx.logger.warn('agent_identity_save_failed', {
           plugin: PLUGIN_NAME,
           agentId: auth.agentId,
-          err: err instanceof Error ? { name: err.name, message: err.message } : String(err),
+          ...errorFields(err),
         });
         res.status(500).json({ error: 'save-failed' });
+        return;
+      }
+
+      switch (result.kind) {
+        case 'saved':
+          res.status(200).json({ ok: true });
+          return;
+        case 'conflict':
+          // Lost the compare-and-set three times running: nothing was saved.
+          res.status(409).json({ error: 'conflict' });
+          return;
+        case 'unavailable':
+          res.status(503).json({ error: 'identity-unavailable' });
+          return;
+        case 'refused':
+          if (result.code === 'scan-unavailable') {
+            // The safety check could not run, so nothing was saved (fail
+            // closed). Not the person's text to fix.
+            res.status(503).json({ error: 'identity-unavailable' });
+            return;
+          }
+          if (result.code === 'content') {
+            // The scanner's reason is a fixed, short sentence of its own —
+            // never the text it refused.
+            res.status(400).json({
+              error: `That didn’t pass the safety check, so nothing was saved: ${result.reason}`,
+            });
+            return;
+          }
+          // `too-long` caps the Instructions, which this editor never sends;
+          // the store's own sentence says what to fix.
+          res.status(400).json({ error: result.reason });
+          return;
       }
     },
   };

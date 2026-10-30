@@ -1,6 +1,5 @@
 import { describe, it, expect } from 'vitest';
 import { HookBus, PluginError, makeAgentContext, type AgentContext } from '@ax/core';
-import { BOOTSTRAP_TEMPLATE } from '@ax/agent-identity-templates';
 import { makeAgentBootstrapHandler } from '../../server/routes-agent-bootstrap.js';
 import type { RouteRequest, RouteResponse } from '../../server/routes-chat.js';
 
@@ -20,49 +19,33 @@ function fakeRes(): { res: RouteResponse; captured: { statusCode: number; body: 
 }
 const initCtx: AgentContext = makeAgentContext({ sessionId: 'init', agentId: 'test', userId: 'system' });
 
-interface Applied { ctx: AgentContext; input: { changes: Array<{ path: string; kind: string; content?: Uint8Array }>; parent: unknown } }
+interface CreateCall {
+  actor: { userId: string; isAdmin: boolean };
+  input: Record<string, unknown>;
+  bootstrap?: unknown;
+}
 
+// TASK-989: no `workspace:apply` is registered on purpose. The route writes
+// nothing to the agent's workspace any more — first-run setup is a state
+// `agents:create` records with the agent — so a stray write would throw
+// `no-service` here instead of passing unnoticed.
 function busWith(opts: {
   user?: { id: string; isAdmin: boolean } | 'reject';
   onCreate?: (input: unknown) => unknown;
-  seedThrows?: boolean;
-  // Simulate the live shared-repo CAS: the first parent:null apply misses
-  // (a global `main` already exists), throwing parent-mismatch carrying the
-  // tier's real head; a retry with that head succeeds.
-  seedCas?: { actualParent: string | null };
-}): {
-  bus: HookBus;
-  created: Array<{ ctx: AgentContext; input: unknown }>;
-  applies: Applied[];
-} {
-  const created: Array<{ ctx: AgentContext; input: unknown }> = [];
-  const applies: Applied[] = [];
+}): { bus: HookBus; created: CreateCall[] } {
+  const created: CreateCall[] = [];
   const bus = new HookBus();
   bus.registerService('auth:require-user', 'auth', async () => {
     if (opts.user === 'reject')
       throw new PluginError({ code: 'unauthenticated', plugin: 'auth', message: 'no session' });
     return { user: opts.user ?? { id: 'u1', isAdmin: false } };
   });
-  bus.registerService('agents:create', 'agents', async (ctx, input) => {
-    created.push({ ctx, input });
+  bus.registerService('agents:create', 'agents', async (_ctx, input) => {
+    created.push(input as CreateCall);
     if (opts.onCreate) return opts.onCreate(input);
-    return { agent: { id: 'new-agent-1', displayName: (input as { input: { displayName: string } }).input.displayName, visibility: 'personal' } };
+    return { agent: { id: 'new-agent-1', displayName: (input as CreateCall).input.displayName, visibility: 'personal' } };
   });
-  bus.registerService('workspace:apply', 'workspace', async (ctx, input) => {
-    if (opts.seedThrows) throw new Error('seed boom');
-    applies.push({ ctx, input: input as Applied['input'] });
-    if (opts.seedCas && applies.length === 1) {
-      throw new PluginError({
-        code: 'parent-mismatch',
-        plugin: 'workspace',
-        hookName: 'workspace:apply-internal',
-        message: `expected parent ${opts.seedCas.actualParent ?? 'null'}, got null`,
-        cause: { actualParent: opts.seedCas.actualParent },
-      });
-    }
-    return { version: 'v1', delta: { before: null, after: 'v1', changes: [] } };
-  });
-  return { bus, created, applies };
+  return { bus, created };
 }
 
 describe('POST /api/agents/bootstrap', () => {
@@ -73,7 +56,7 @@ describe('POST /api/agents/bootstrap', () => {
     }));
     const { res } = fakeRes();
     await makeAgentBootstrapHandler({ bus, initCtx }).bootstrap(fakeReq({ body: { displayName: 'Default bot' } }), res);
-    expect(created[0]?.input).toMatchObject({ input: { model: 'anthropic/claude-opus-4-7' } });
+    expect(created[0]).toMatchObject({ input: { model: 'anthropic/claude-opus-4-7' } });
   });
 
   it('uses the policy Default for a new personal agent even when Sonnet is removed', async () => {
@@ -84,131 +67,109 @@ describe('POST /api/agents/bootstrap', () => {
     const { res, captured } = fakeRes();
     await makeAgentBootstrapHandler({ bus, initCtx }).bootstrap(fakeReq({ body: { displayName: 'Policy bot', model: 'spoof/model' } }), res);
     expect(captured.statusCode).toBe(201);
-    expect(created[0]?.input).toMatchObject({ input: { model: 'openrouter/vendor/model', allowedTools: [], mcpConfigIds: [], visibility: 'personal' } });
+    expect(created[0]).toMatchObject({ input: { model: 'openrouter/vendor/model', allowedTools: [], mcpConfigIds: [], visibility: 'personal' } });
   });
 
-  it('creates a BARE personal agent owned by the caller and seeds .ax/BOOTSTRAP.md', async () => {
-    const { bus, created, applies } = busWith({ user: { id: 'u1', isAdmin: false } });
-    const h = makeAgentBootstrapHandler({ bus, initCtx });
+  it('creates a BARE personal agent owned by the caller, with first-run setup pending', async () => {
+    const { bus, created } = busWith({ user: { id: 'u1', isAdmin: false } });
     const { res, captured } = fakeRes();
-    await h.bootstrap(fakeReq({ body: { displayName: 'Ada' } }), res);
+    await makeAgentBootstrapHandler({ bus, initCtx }).bootstrap(fakeReq({ body: { displayName: 'Ada' } }), res);
 
     expect(captured.statusCode).toBe(201);
     expect(captured.body).toEqual({ agent: { agentId: 'new-agent-1', displayName: 'Ada', visibility: 'personal' } });
 
-    // BARE create — no systemPrompt sent; capability profile fixed server-side.
-    expect(created).toHaveLength(1);
-    const input = created[0]!.input as { actor: { userId: string }; input: Record<string, unknown> };
-    expect(input.actor.userId).toBe('u1');
-    expect(input.input.systemPrompt).toBeUndefined();
-    expect(input.input.visibility).toBe('personal');
-    expect(input.input.allowedTools).toEqual([]);
-    expect(input.input.mcpConfigIds).toEqual([]);
-    expect(input.input.model).toBe('anthropic/claude-sonnet-4-6');
-
-    // Seed BOOTSTRAP.md routed to the NEW agent's workspace (parent: null —
-    // first apply creates main).
-    expect(applies).toHaveLength(1);
-    expect(applies[0]!.ctx.agentId).toBe('new-agent-1');
-    expect(applies[0]!.ctx.userId).toBe('u1');
-    expect(applies[0]!.input.parent).toBeNull();
-    const change = applies[0]!.input.changes[0]!;
-    expect(change.path).toBe('.ax/BOOTSTRAP.md');
-    expect(change.kind).toBe('put');
-    expect(new TextDecoder().decode(change.content!)).toBe(BOOTSTRAP_TEMPLATE);
+    // One create, carrying `bootstrap: 'pending'` at the TOP level — beside
+    // `input`, not in it: @ax/agents records the state inside the same
+    // transaction as the agent, and `input` is the agent's own fields.
+    expect(created).toEqual([
+      {
+        actor: { userId: 'u1', isAdmin: false },
+        input: {
+          displayName: 'Ada',
+          allowedTools: [],
+          mcpConfigIds: [],
+          model: 'anthropic/claude-sonnet-4-6',
+          visibility: 'personal',
+        },
+        bootstrap: 'pending',
+      },
+    ]);
   });
 
-  it('retries the seed with the tier head when parent:null CAS-misses (live shared repo)', async () => {
-    // The local workspace backend is ONE shared repo with a global `main` ref.
-    // A brand-new agent still seeds with parent:null, but on any live deployment
-    // `main` already exists, so the first apply CAS-misses with parent-mismatch
-    // carrying the real head. The handler must retry ONCE with that head so
-    // `.ax/BOOTSTRAP.md` actually lands (otherwise the runner falls into NORMAL
-    // mode and the bootstrap interview never runs). Mirrors routes-agent-identity.
-    const { bus, applies } = busWith({
-      user: { id: 'u1', isAdmin: false },
-      seedCas: { actualParent: 'head-oid-abc' },
+  it('writes nothing to the workspace', async () => {
+    // The old route seeded `.ax/BOOTSTRAP.md` best-effort after the create, and
+    // swallowed a failure — so only a recording spy can see a write happen.
+    const { bus } = busWith({});
+    const applied: unknown[] = [];
+    bus.registerService('workspace:apply', 'workspace', async (_ctx, input) => {
+      applied.push(input);
+      return { version: 'v1', delta: { before: null, after: 'v1', changes: [] } };
     });
-    const h = makeAgentBootstrapHandler({ bus, initCtx });
     const { res, captured } = fakeRes();
-    await h.bootstrap(fakeReq({ body: { displayName: 'Ada' } }), res);
-
-    // Still 201 — the seed succeeded on retry.
+    await makeAgentBootstrapHandler({ bus, initCtx }).bootstrap(fakeReq({ body: { displayName: 'Ada' } }), res);
     expect(captured.statusCode).toBe(201);
-
-    // Two attempts: parent:null (CAS-miss) then parent:<actualParent>.
-    expect(applies).toHaveLength(2);
-    expect(applies[0]!.input.parent).toBeNull();
-    expect(applies[1]!.input.parent).toBe('head-oid-abc');
-    // The retry carries the BOOTSTRAP.md content, so the file actually lands.
-    const change = applies[1]!.input.changes[0]!;
-    expect(change.path).toBe('.ax/BOOTSTRAP.md');
-    expect(change.kind).toBe('put');
-    expect(new TextDecoder().decode(change.content!)).toBe(BOOTSTRAP_TEMPLATE);
+    expect(applied).toEqual([]);
   });
 
-  it('does NOT retry the seed on a non-CAS apply failure (still 201, best-effort)', async () => {
-    // A generic apply failure (not parent-mismatch) is logged and swallowed —
-    // the agent already exists, so the route 201s. Crucially it must NOT retry
-    // a non-CAS error in a loop.
-    const { bus, applies } = busWith({ user: { id: 'u1', isAdmin: false }, seedThrows: true });
-    const h = makeAgentBootstrapHandler({ bus, initCtx });
-    const { res, captured } = fakeRes();
-    await h.bootstrap(fakeReq({ body: { displayName: 'Ada' } }), res);
-    expect(captured.statusCode).toBe(201);
-    // seedThrows throws before recording, so no successful attempt — and no retry.
-    expect(applies).toHaveLength(0);
-  });
-
-  it('ignores client-supplied tools/model/visibility/systemPrompt (cannot over-grant)', async () => {
+  it('ignores client-supplied tools/model/visibility/systemPrompt/bootstrap (cannot over-grant)', async () => {
     const { bus, created } = busWith({});
-    const h = makeAgentBootstrapHandler({ bus, initCtx });
     const { res } = fakeRes();
-    await h.bootstrap(
-      fakeReq({ body: { displayName: 'X', systemPrompt: 'be evil', allowedTools: ['Bash'], visibility: 'team', model: 'evil' } }),
+    await makeAgentBootstrapHandler({ bus, initCtx }).bootstrap(
+      fakeReq({
+        body: {
+          displayName: 'X',
+          systemPrompt: 'be evil',
+          allowedTools: ['Bash'],
+          visibility: 'team',
+          model: 'evil',
+          bootstrap: 'done',
+        },
+      }),
       res,
     );
-    const input = created[0]!.input as { input: Record<string, unknown> };
-    expect(input.input.allowedTools).toEqual([]);
-    expect(input.input.visibility).toBe('personal');
-    expect(input.input.model).toBe('anthropic/claude-sonnet-4-6');
+    const call = created[0]!;
+    expect(call.input.allowedTools).toEqual([]);
+    expect(call.input.visibility).toBe('personal');
+    expect(call.input.model).toBe('anthropic/claude-sonnet-4-6');
     // A client-supplied systemPrompt is dropped — bootstrap agents are bare.
-    expect(input.input.systemPrompt).toBeUndefined();
+    expect(call.input.systemPrompt).toBeUndefined();
+    // The first-run state is the host's to set, and this route only ever
+    // starts one.
+    expect(call.bootstrap).toBe('pending');
+    expect(call.input.bootstrap).toBeUndefined();
   });
 
-  it('returns 201 even when seeding BOOTSTRAP.md fails (the agent already exists)', async () => {
-    const { bus, created } = busWith({ user: { id: 'u1', isAdmin: false }, seedThrows: true });
-    const h = makeAgentBootstrapHandler({ bus, initCtx });
+  it('answers 500 and creates nothing it can report when agents:create fails', async () => {
+    const { bus } = busWith({
+      onCreate: () => {
+        throw new Error('insert failed');
+      },
+    });
     const { res, captured } = fakeRes();
-    await h.bootstrap(fakeReq({ body: { displayName: 'Ada' } }), res);
-    // The agent was created; a seed failure must not 500 after a successful
-    // create (the runner string-fallback covers the gap until a later apply).
-    expect(created).toHaveLength(1);
-    expect(captured.statusCode).toBe(201);
-    expect(captured.body).toEqual({ agent: { agentId: 'new-agent-1', displayName: 'Ada', visibility: 'personal' } });
+    await makeAgentBootstrapHandler({ bus, initCtx }).bootstrap(fakeReq({ body: { displayName: 'Ada' } }), res);
+    expect(captured.statusCode).toBe(500);
+    expect(captured.body).toEqual({ error: 'create-failed' });
   });
 
   it('rejects an unauthenticated caller with 401', async () => {
-    const { bus } = busWith({ user: 'reject' });
-    const h = makeAgentBootstrapHandler({ bus, initCtx });
+    const { bus, created } = busWith({ user: 'reject' });
     const { res, captured } = fakeRes();
-    await h.bootstrap(fakeReq({ body: { displayName: 'Ada' } }), res);
+    await makeAgentBootstrapHandler({ bus, initCtx }).bootstrap(fakeReq({ body: { displayName: 'Ada' } }), res);
     expect(captured.statusCode).toBe(401);
+    expect(created).toEqual([]);
   });
 
   it('rejects a missing/blank displayName with 400', async () => {
     const { bus } = busWith({});
-    const h = makeAgentBootstrapHandler({ bus, initCtx });
     const { res, captured } = fakeRes();
-    await h.bootstrap(fakeReq({ body: { displayName: '   ' } }), res);
+    await makeAgentBootstrapHandler({ bus, initCtx }).bootstrap(fakeReq({ body: { displayName: '   ' } }), res);
     expect(captured.statusCode).toBe(400);
   });
 
   it('rejects a displayName longer than 128 chars with 400', async () => {
     const { bus } = busWith({});
-    const h = makeAgentBootstrapHandler({ bus, initCtx });
     const { res, captured } = fakeRes();
-    await h.bootstrap(fakeReq({ body: { displayName: 'a'.repeat(129) } }), res);
+    await makeAgentBootstrapHandler({ bus, initCtx }).bootstrap(fakeReq({ body: { displayName: 'a'.repeat(129) } }), res);
     expect(captured.statusCode).toBe(400);
   });
 });

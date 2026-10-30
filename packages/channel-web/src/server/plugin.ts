@@ -162,19 +162,13 @@ export function createChannelWebServerPlugin(
         'agents:list-for-user',
         // First-run personal-agent bootstrap (POST /api/agents/bootstrap)
         // creates the user's own agent with the wildcard tool scope, exactly
-        // like onboarding's Default Agent. Hard dep — the route is dead
+        // like onboarding's Default Agent, in first-run setup
+        // (`bootstrap: 'pending'`, TASK-989). Hard dep — the route is dead
         // without it.
         'agents:create',
-        // TASK-140: the bootstrap route seeds .ax/BOOTSTRAP.md into the new
-        // agent's /agent via workspace:apply. TASK-142: the admin identity
-        // editor (PUT /admin/agents/:id/identity) also writes the agent's
-        // .ax/IDENTITY|SOUL|AGENTS.md through workspace:apply (→ pre-apply →
-        // validator-identity). channel-web only loads in the k8s preset, which
+        // The workspace Files tab reads one of the agent's files
+        // (GET …/files/*). channel-web only loads in the k8s preset, which
         // always loads a workspace backend, so this is a hard dep.
-        'workspace:apply',
-        // TASK-142: the admin identity editor (GET /admin/agents/:id/identity)
-        // reads the agent's .ax/ files via workspace:read. Same hard-dep
-        // rationale as workspace:apply (k8s preset always has a backend).
         'workspace:read',
         // TASK-233 (AW-12): the workspace Files tab lists the agent's own
         // tree. Same hard-dep rationale as workspace:read — every preset that
@@ -736,15 +730,19 @@ export function createChannelWebServerPlugin(
           degradation: 'POST …/memory/uncorrect answers 503 memory-unavailable',
         },
         {
-          // TASK-234 (AW-13) — registered by @ax/memory only with its `rules`
-          // option on.
-          hook: 'memory:rules:read',
-          degradation: 'the Memory tab shows the rules document as unavailable',
+          // TASK-989 — an agent's identity, soul and Instructions are
+          // @ax/agents rows. Read by the admin identity editor (GET
+          // /admin/agents/:id/identity) and the settings page's Instructions
+          // (the Memory tab's `rules` doc).
+          hook: 'agents:identity:get',
+          degradation:
+            'the admin identity editor answers 503 and the Instructions section reads as unavailable',
         },
         {
-          hook: 'memory:rules:write',
-          degradation:
-            'PUT …/memory/rules answers 503 memory-unavailable (never a false "saved")',
+          // Written by the same two editors (PUT /admin/agents/:id/identity,
+          // PUT …/memory/rules) — scanned and compare-and-set by @ax/agents.
+          hook: 'agents:identity:set',
+          degradation: 'saving identity or Instructions answers 503 (never a false "saved")',
         },
         {
           // The Files tab's user-files tier and its downloads.
@@ -923,11 +921,11 @@ export function createChannelWebServerPlugin(
 
       // First-run personal-agent bootstrap (TASK-140). The SPA's first-run
       // auto-create POSTs { displayName } here; the handler creates a BARE
-      // agent (no systemPrompt), fixes visibility + owner + wildcard tools
-      // server-side, and seeds .ax/BOOTSTRAP.md into the new agent's workspace.
-      // CSRF-gated automatically by @ax/http-server on state-changing methods.
-      // Ships with its consumer (the SPA surface) in the same PR (I3 — no
-      // half-wired surface).
+      // agent (no systemPrompt), fixing visibility + owner + wildcard tools
+      // server-side, in first-run setup (`bootstrap: 'pending'`, recorded by
+      // agents:create — TASK-989). CSRF-gated automatically by
+      // @ax/http-server on state-changing methods. Ships with its consumer
+      // (the SPA surface) in the same PR (I3 — no half-wired surface).
       const agentBootstrap = makeAgentBootstrapHandler({ bus, initCtx });
       const agentBootstrapRoute = await bus.call<unknown, { unregister: () => void }>(
         'http:register-route',
@@ -943,11 +941,11 @@ export function createChannelWebServerPlugin(
       );
       unregisterRoutes.push(agentBootstrapRoute.unregister);
 
-      // TASK-142 — the admin file-based identity editor. GET reads the agent's
-      // .ax/IDENTITY|SOUL|AGENTS.md (workspace:read); PUT writes them
-      // (workspace:apply → pre-apply → validator-identity). Owner-scoped via
-      // agents:resolve; CSRF-gated on PUT by @ax/http-server. Ships with its
-      // consumer (AgentForm's file editor) in the same PR (I3).
+      // TASK-142 — the admin identity editor. GET reads the agent's identity
+      // and soul (agents:identity:get); PUT saves them (agents:identity:set,
+      // scanned and compare-and-set by @ax/agents — TASK-989). Owner-scoped
+      // via agents:resolve; CSRF-gated on PUT by @ax/http-server. Ships with
+      // its consumer (AgentForm's identity fields) in the same PR (I3).
       const agentIdentity = makeAgentIdentityHandlers({ bus, initCtx });
       for (const [method, handler] of [
         ['GET', agentIdentity.show],

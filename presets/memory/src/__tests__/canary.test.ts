@@ -518,7 +518,8 @@ describe('@ax/preset-memory canary', () => {
 
     // TASK-612: the real save route announces the change, for the right
     // agent, so the orchestrator can retire that agent's live sessions at
-    // their next turn and the new Rules reach the conversation.
+    // their next turn and the new Instructions reach the conversation. Since
+    // TASK-989 the announcement comes from @ax/agents' identity store.
     const announced: unknown[] = [];
     bus.subscribe('system-prompt:augment-changed', 'canary-rules-spy', async (_ctx, payload) => {
       announced.push(payload);
@@ -539,12 +540,14 @@ describe('@ax/preset-memory canary', () => {
     const mem2 = again.json.memory as { rules?: { doc?: { body?: string } | null } };
     expect(mem2.rules?.doc?.body).toContain('Be brief.');
 
-    const read = await bus.call<
-      { path: string },
-      { found: boolean; bytes?: Uint8Array }
-    >('workspace:read', ctxFor(aliceAgentId, ALICE), { path: 'memory/system/rules.md' });
-    expect(read.found).toBe(true);
-    expect(Buffer.from(read.bytes!).toString('utf-8')).toContain('Be brief.');
+    // TASK-989: the Instructions are an @ax/agents row — the one store the
+    // prompt is built from — not a file in the agent's workspace.
+    const stored = await bus.call<{ agentId: string }, { instructions: string }>(
+      'agents:identity:get',
+      ctxFor(aliceAgentId, ALICE),
+      { agentId: aliceAgentId },
+    );
+    expect(stored.instructions).toContain('Be brief.');
   });
 
   it('remember → recall → history → forget over the real routes', async () => {
@@ -1463,17 +1466,15 @@ describe('@ax/preset-memory canary', () => {
     }
   });
 
-  it('automatic writers never touch the rules file', async () => {
-    const read = async () => {
-      const r = await bus.call<{ path: string }, { found: boolean; bytes?: Uint8Array }>(
-        'workspace:read',
+  it('automatic writers never touch the person\'s Instructions', async () => {
+    const read = () =>
+      bus.call<{ agentId: string }, { instructions: string; revision: number }>(
+        'agents:identity:get',
         ctxFor(aliceAgentId, ALICE),
-        { path: 'memory/system/rules.md' },
+        { agentId: aliceAgentId },
       );
-      return r.found ? Buffer.from(r.bytes!).toString('utf-8') : null;
-    };
-    const beforeBytes = await read();
-    expect(beforeBytes, 'rules file has the expected human text before writers run').toContain(
+    const before = await read();
+    expect(before.instructions, 'the Instructions hold the human text before writers run').toContain(
       'Be brief.',
     );
 
@@ -1496,7 +1497,10 @@ describe('@ax/preset-memory canary', () => {
     await settleObserver();
     await bus.call('memory:export:flush', ctxFor(aliceAgentId, ALICE), {});
 
-    expect(await read()).toBe(beforeBytes);
+    // Neither the text nor the change counter moved: nothing wrote the row.
+    const after = await read();
+    expect(after.instructions).toBe(before.instructions);
+    expect(after.revision).toBe(before.revision);
   });
 
   // -------------------------------------------------------------------------

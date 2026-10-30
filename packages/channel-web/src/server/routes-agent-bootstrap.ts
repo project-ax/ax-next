@@ -3,14 +3,11 @@ import {
   isModelRef,
   isRejection,
   makeAgentContext,
-  makeReqId,
   type AgentContext,
   type HookBus,
 } from '@ax/core';
-import { BOOTSTRAP_TEMPLATE } from '@ax/agent-identity-templates';
 import { z } from 'zod';
 import type { RouteRequest, RouteResponse } from './routes-chat.js';
-import { actualParentFromMismatch, NO_ACTUAL_PARENT } from './workspace-cas.js';
 
 const PLUGIN_NAME = '@ax/channel-web';
 
@@ -19,45 +16,39 @@ const DEFAULT_PERSONAL_AGENT_MODEL = 'anthropic/claude-sonnet-4-6';
 
 // ---------------------------------------------------------------------------
 // POST /api/agents/bootstrap — first-run personal-agent bootstrap (TASK-140,
-// conversational-agent-identity Phase 2).
+// conversational-agent-identity Phase 2; TASK-989).
 //
 // The SPA first-run POSTs ONLY a `displayName` here (no form, no system
-// prompt). The handler creates a BARE agent (no `systemPrompt`) and then seeds
-// the canonical `BOOTSTRAP_TEMPLATE` into the new agent's
-// `/agent/.ax/BOOTSTRAP.md` via `workspace:apply`. The new agent wakes up
-// in bootstrap mode (the runner injects BOOTSTRAP.md verbatim) and discovers
-// its identity through conversation, writing its own `.ax/IDENTITY.md` +
-// `.ax/SOUL.md`.
+// prompt). The handler creates a BARE agent with `agents:create` and asks for
+// it to start in first-run setup: `bootstrap: 'pending'`, which @ax/agents
+// records in the same transaction as the agent row. While an agent is pending
+// and a person is present, the host runs its sessions in bootstrap mode — the
+// runner composes the bootstrap script, and the agent discovers its identity
+// through conversation, saves it with `update_identity` and finishes with
+// `complete_bootstrap`. This route is the ONLY caller that starts one: the
+// onboarding Default Agent and admin-created agents are `none`. Nothing is
+// written to the agent's workspace: this route used to seed a bootstrap file
+// there, best-effort, and a silent failure of that seed left a new agent in
+// normal mode.
 //
 // The handler FIXES the capability profile server-side — wildcard tool scope
 // (allowedTools=[] AND mcpConfigIds=[]), `personal` visibility, owner = caller,
-// and the default model — so a client cannot over-grant by spoofing
-// tools/visibility/model. This is the same capability profile onboarding gives
-// the "Default Agent" (completion-tx.ts). We can't reuse POST /admin/agents
-// because that route deliberately rejects the wildcard (admin-routes.ts); the
-// service hook `agents:create` allows it.
+// the default model, and the first-run state — so a client cannot over-grant
+// by spoofing tools/visibility/model/bootstrap. This is the same capability
+// profile onboarding gives the "Default Agent" (completion-tx.ts). We can't
+// reuse POST /admin/agents because that route deliberately rejects the
+// wildcard (admin-routes.ts); the service hook `agents:create` allows it.
 //
-// Seeding owner (design open-question #1): HOST-AT-CREATE. The seed
-// `workspace:apply` starts with parent:null (lazy-creates `main` on a
-// never-committed workspace) and retries once against the tier's actual head on
-// a CAS miss — the local backend is a single shared repo whose `main` already
-// exists on any live deployment, so the first attempt nearly always misses (see
-// the seed below). No runner-first-session fallback is needed.
-//
-// Boundary review: no new service-hook signature — this is an HTTP route
-// calling the EXISTING `agents:create` + `workspace:apply` hooks. The plugin
-// manifest's `calls` list gains `workspace:apply` (see plugin.ts). `agents:create`
-// has no `systemPrompt` field at all (removed in TASK-142); identity lives in the
-// agent's `.ax/` files, not a column.
+// Boundary review: no new service-hook signature — an HTTP route calling the
+// EXISTING `agents:create`, with its top-level `bootstrap` field (TASK-989's
+// boundary review covers that field).
 //
 // Security review (see PR body): `displayName` is an untrusted browser string —
 // zod-validated (length-bounded) and passed to `agents:create` as DATA (stored,
-// never interpolated into a shell command, SQL, or prompt by this route). The
-// seeded `BOOTSTRAP_TEMPLATE` is a compile-time TRUSTED constant (no
-// interpolation of caller input). `workspace:apply` is policy-filtered to
-// `.ax/**` by the @ax/core facade. Everything that grants capability
-// (tools/visibility/owner/model) is fixed here, not read from the body. CSRF is
-// enforced by @ax/http-server's subscriber on state-changing methods; the
+// never interpolated into a shell command, SQL, or prompt by this route).
+// Everything that grants capability (tools/visibility/owner/model) or picks
+// the prompt mode (`bootstrap`) is fixed here, never read from the body. CSRF
+// is enforced by @ax/http-server's subscriber on state-changing methods; the
 // handler does not re-implement it.
 // ---------------------------------------------------------------------------
 
@@ -73,25 +64,17 @@ interface AgentsCreateInput {
   actor: { userId: string; isAdmin: boolean };
   input: {
     displayName: string;
-    // BARE agent: no systemPrompt. Identity comes from the seeded
-    // `.ax/BOOTSTRAP.md` (then the agent's own `.ax/IDENTITY.md`/`SOUL.md`),
-    // not a column. `agents:create` has no `systemPrompt` field (removed in
-    // TASK-142), so there is nothing to omit here.
+    // BARE agent: no systemPrompt. Its identity and soul are @ax/agents rows
+    // the agent writes itself during first-run setup. `agents:create` has no
+    // `systemPrompt` field (removed in TASK-142), so there is nothing to omit.
     allowedTools: string[];
     mcpConfigIds: string[];
     model: string;
     visibility: 'personal' | 'team';
   };
-}
-
-// Locally-declared workspace:apply payload (Invariant #2 — the hook bus is the
-// contract; this route names only the shape it needs to seed one file).
-interface WorkspaceApplyInput {
-  changes: Array<{ path: string; kind: 'put'; content: Uint8Array }>;
-  // `null` for the first write to a never-committed workspace; a version token
-  // on the CAS-retry against an existing shared `main` head (see the seed below).
-  parent: string | null;
-  reason?: string;
+  // TASK-989 — beside `input`, not in it: the first-run state, recorded with
+  // the agent in one transaction. Only this route ever sends `pending`.
+  bootstrap: 'pending';
 }
 interface AgentsCreateAgent {
   id: string;
@@ -170,9 +153,10 @@ export function makeAgentBootstrapHandler(deps: AgentBootstrapDeps) {
       }
 
       // 3) Create a BARE agent — no systemPrompt; wildcard tool scope, personal
-      //    visibility, owner = caller. Identical capability profile to the
-      //    onboarding Default Agent (minus the prompt). The admin HTTP route
-      //    rejects the wildcard; the service hook allows it.
+      //    visibility, owner = caller — in first-run setup. Identical
+      //    capability profile to the onboarding Default Agent (minus the
+      //    prompt). The admin HTTP route rejects the wildcard; the service
+      //    hook allows it.
       try {
         const out = await bus.call<AgentsCreateInput, AgentsCreateOutput>(
           'agents:create',
@@ -186,67 +170,13 @@ export function makeAgentBootstrapHandler(deps: AgentBootstrapDeps) {
               model,
               visibility: 'personal',
             },
+            bootstrap: 'pending',
           },
         );
 
-        // 4) Seed `.ax/BOOTSTRAP.md` into the NEW agent's durable workspace.
-        //    The ctx carries agentId so `workspace:apply` routes to THIS
-        //    agent's `/agent` (TASK-257: keyed by agentId alone, not by the
-        //    caller's userId too). BEST-EFFORT: the agent already exists and the
-        //    SPA will open a chat regardless — a seed failure is logged, never a
-        //    500. But the seed landing is what puts the agent in bootstrap mode
-        //    (the runner injects BOOTSTRAP.md verbatim); if it never lands, the
-        //    runner falls into NORMAL mode and the identity interview never runs.
-        //    The template is a trusted compile-time constant.
-        const newAgentId = out.agent.id;
-        try {
-          const seedCtx = makeAgentContext({
-            reqId: makeReqId(),
-            sessionId: 'agent-bootstrap-seed',
-            agentId: newAgentId,
-            userId: actor.id,
-          });
-          const seedChanges: WorkspaceApplyInput['changes'] = [
-            {
-              path: '.ax/BOOTSTRAP.md',
-              kind: 'put',
-              content: new TextEncoder().encode(BOOTSTRAP_TEMPLATE),
-            },
-          ];
-          // First attempt with parent:null — correct for a never-committed
-          // workspace (the git backend lazy-creates `main`). The local backend
-          // is a SINGLE shared repo with one global `main` ref, so on any live
-          // deployment `main` already exists and this CAS-misses; retry ONCE
-          // with the tier's actual head from `cause.actualParent` (the
-          // established workspace-CAS rebase contract — mirrors
-          // routes-agent-identity). Without this retry the seed fails for every
-          // agent created after the very first ever, silently breaking bootstrap.
-          try {
-            await bus.call<WorkspaceApplyInput, unknown>('workspace:apply', seedCtx, {
-              changes: seedChanges,
-              parent: null,
-              reason: 'agent-bootstrap-seed',
-            });
-          } catch (applyErr) {
-            const actual = actualParentFromMismatch(applyErr);
-            if (actual === NO_ACTUAL_PARENT) throw applyErr; // not a CAS miss → real failure
-            await bus.call<WorkspaceApplyInput, unknown>('workspace:apply', seedCtx, {
-              changes: seedChanges,
-              parent: actual,
-              reason: 'agent-bootstrap-seed',
-            });
-          }
-        } catch (seedErr) {
-          initCtx.logger.warn('agent_bootstrap_seed_failed', {
-            plugin: PLUGIN_NAME,
-            agentId: newAgentId,
-            err: seedErr instanceof Error ? { name: seedErr.name, message: seedErr.message } : String(seedErr),
-          });
-        }
-
         res.status(201).json({
           agent: {
-            agentId: newAgentId,
+            agentId: out.agent.id,
             displayName: out.agent.displayName,
             visibility: out.agent.visibility,
           },

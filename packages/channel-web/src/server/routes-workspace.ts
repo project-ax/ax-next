@@ -22,7 +22,8 @@
  * GET  /api/workspace/agents/:agentId/download/user-files/*
  *                                      — one of those files, as BYTES
  * PUT  /api/workspace/agents/:agentId/memory/rules
- *                                      — save the human-owned memory tier
+ *                                      — save the agent's Instructions (an
+ *                                        @ax/agents row; TASK-989)
  * GET  /api/workspace/decisions        — THE Today queue (one collection)
  * POST /api/workspace/decisions/:decisionId/approve
  * POST /api/workspace/decisions/:decisionId/dismiss
@@ -277,11 +278,10 @@ import { checkInSchedule, describeCheckIns } from '../lib/task-schedule.js';
 // kinds, and a kind this page doesn't know as the never-finishing one.
 import { toTaskKind, toWorkspaceTaskKind } from '../lib/task-kinds.js';
 import { KICKOFF_TEXT } from '../lib/bootstrap-kickoff.js';
-// The sentence a full storage limit answers a Rules Save with (TASK-719), and
-// the one test for "this refusal is the storage limit". The sentence is shared
-// with the browser's fallback so there is one copy of the words.
-import { STORAGE_FULL_RULES } from '../lib/storage-full-copy.js';
-import { isStorageFullRefusal } from './storage-full-refusal.js';
+// TASK-989 — the agent's Instructions are an @ax/agents row; this is the one
+// door channel-web reads and writes them through (shared with the admin
+// identity editor).
+import { readAgentIdentity, writeAgentIdentity } from './identity-write.js';
 // The renderer's own ceiling for the untrusted `detail` line. Imported rather
 // than restated so the host and the browser cannot drift about where that
 // sentence ends (invariant 4) — the module is pure constants and one pure
@@ -901,28 +901,6 @@ interface ConnectorToolLabelsOutput {
 }
 
 /**
- * The Memory tab's human-tier hooks (AW-13), registered today by @ax/memory
- * when its `rules` option is on. Duck-typed like every other
- * hook on this surface (I2). Note what these payloads do NOT carry: no path,
- * no revision, no tier vocabulary — the human tier could be a database row
- * tomorrow and this file would not change.
- */
-interface MemoryAgentInput {
-  agentId: string;
-}
-interface MemoryRulesReadOutput {
-  body: string;
-}
-interface MemoryRulesWriteInput {
-  agentId: string;
-  body: string;
-}
-interface MemoryRulesWriteOutput {
-  written: boolean;
-  /** What is stored now, normalized by the writer. See `SaveRulesResult`. */
-  body: string;
-}
-/**
  * The memory engine's `memory:status` — ctx-only (it answers for the caller
  * ctx's user), so the input is empty. Its reply is declared here for the
  * reader but validated as `unknown` at the call site, because it crossed the
@@ -1427,15 +1405,15 @@ export type AgentUserFilesResponse =
  */
 export const RULES_DOC_NAME = 'Your rules';
 
-/** `PUT /api/workspace/agents/:agentId/memory/rules` — the human tier saved. */
+/** `PUT /api/workspace/agents/:agentId/memory/rules` — the Instructions saved. */
 export interface SaveRulesResult {
   saved: true;
   /**
    * What is stored now. The editor adopts THIS rather than the text it sent,
-   * because the writer normalizes (trailing whitespace → one newline) and an
-   * editor comparing its own text against a normalized store shows "unsaved
-   * changes" forever. Returning it keeps one source of truth for the stored
-   * form instead of asking the client to reimplement the rule.
+   * because the store normalizes (it trims trailing whitespace) and an editor
+   * comparing its own text against a normalized store shows "unsaved changes"
+   * forever. Returning it keeps one source of truth for the stored form
+   * instead of asking the client to reimplement the rule.
    */
   body: string;
 }
@@ -4508,11 +4486,12 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
    * workspace is addressed, one tab follows and the other quietly reads a
    * different agent's tree.
    *
-   * `memory:rules:write` reaches `workspace:apply`, which routes on
-   * `agentId` — hand it the wrong ctx and the write lands in another agent's
-   * workspace. Constructing it HERE, from the authenticated caller and the
-   * agent they just passed the ACL for, is what keeps that honest; reusing
-   * `initCtx` (agentId `@ax/channel-web`, userId `system`) would not.
+   * The workspace and memory hooks route on `agentId`, and the
+   * `agents:identity:*` hooks behind the Instructions act on `ctx.agentId`
+   * alone — hand any of them the wrong ctx and the read or write lands on
+   * another agent. Constructing it HERE, from the authenticated caller and
+   * the agent they just passed the ACL for, is what keeps that honest;
+   * reusing `initCtx` (agentId `@ax/channel-web`, userId `system`) would not.
    *
    * The `userId` on this ctx no longer picks the repo — since TASK-257 the
    * workspace partition is `agentId` alone, so every user authorized to reach
@@ -4520,7 +4499,8 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
    * reasons, which is why it stays the AUTHENTICATED caller and never a
    * lookup of some notional owner: `workspace:apply` stamps it into
    * `delta.author`, making it the only record of WHO changed a shared file;
-   * and the memory hooks carry it through to their own ctx checks.
+   * and the memory and identity hooks authorize on it themselves (personal
+   * owner or team member — the same answer `agents:resolve` gave).
    *
    * The workspace root is inherited from `initCtx` so the CLI preset — which
    * has no workspace backend and writes memory to the host filesystem — lands
@@ -5373,13 +5353,17 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
   /**
    * The Memory tab's two reads, each carrying HOW IT WENT.
    *
-   * A FAILED rules read ships no rules doc rather than an empty one. This is
-   * the difference between "you have written no rules" and "we could not read
-   * your rules", and getting it wrong is destructive: an empty editor over
+   * The human-owned doc (`rules` on the wire) is the agent's Instructions —
+   * the standing instructions its people write, an @ax/agents row read with
+   * `agents:identity:get` (TASK-989). Nothing else here reads that row.
+   *
+   * A FAILED read ships no rules doc rather than an empty one. This is the
+   * difference between "you have written no Instructions" and "we could not
+   * read them", and getting it wrong is destructive: an empty editor over
    * unreadable storage invites the user to type something, press Save, and
-   * overwrite rules they still have. The UI renders the absent doc as "we are
-   * not showing the editor right now", not as a blank box. Same discipline the
-   * rest of this surface uses — a zero is a claim.
+   * overwrite Instructions they still have. The UI renders the absent doc as
+   * "we are not showing the editor right now", not as a blank box. Same
+   * discipline the rest of this surface uses — a zero is a claim.
    *
    * IT USED TO RETURN A BARE `MemoryDoc[]`, and that shape could not say which
    * of three things had happened (TASK-417). `return []` covered both "no
@@ -5410,25 +5394,21 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
     const agentId = agent.id;
     const ctx = agentWorkspaceCtx(agentId, userId);
 
-    let rules: AgentMemoryRead['rules'] = { status: 'unavailable', doc: null };
-    if (bus.hasService('memory:rules:read')) {
-      try {
-        const out = await bus.call<MemoryAgentInput, MemoryRulesReadOutput>(
-          'memory:rules:read',
-          ctx,
-          { agentId },
-        );
-        rules = {
-          status: 'ok',
-          doc: { name: RULES_DOC_NAME, scope: 'rules', body: out.body },
-        };
-      } catch (err) {
-        initCtx.logger.warn('workspace_memory_rules_read_failed', {
-          agentId,
-          error: err instanceof Error ? err.message : String(err),
-        });
-        rules = { status: 'failed', doc: null };
-      }
+    let rules: AgentMemoryRead['rules'];
+    try {
+      const view = await readAgentIdentity(bus, ctx, agentId);
+      rules =
+        view === 'unavailable'
+          ? { status: 'unavailable', doc: null }
+          : { status: 'ok', doc: { name: RULES_DOC_NAME, scope: 'rules', body: view.instructions } };
+    } catch (err) {
+      // By name and code only: an error's message may quote the text.
+      initCtx.logger.warn('workspace_instructions_read_failed', {
+        agentId,
+        name: err instanceof Error ? err.name : typeof err,
+        ...(err instanceof PluginError ? { code: err.code } : {}),
+      });
+      rules = { status: 'failed', doc: null };
     }
 
     const factsAvailable = bus.hasService('memory:recall');
@@ -9426,15 +9406,22 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
     },
 
     /**
-     * PUT /api/workspace/agents/:agentId/memory/rules — save the human tier.
+     * PUT /api/workspace/agents/:agentId/memory/rules — save the agent's
+     * Instructions (the route keeps its old name; TASK-989).
      *
-     * This route does not write a file. It calls `memory:rules:write`, which
-     * owns the one path in the memory tree no automatic writer may touch
-     * (AW-13). Two sources of truth for "where the user's rules live" is
-     * exactly the bug the tier exists to prevent.
+     * The Instructions are an @ax/agents row that people write, here:
+     * `agents:identity:set` with exactly `{ instructions }`, by way of
+     * `identity-write.ts` (read the revision, write with it, retry a lost
+     * compare-and-set — the agent may be rewriting its own soul at the same
+     * moment, and both changes land). The agent cannot write them — its
+     * `update_identity` tool refuses the section — and the admin identity
+     * editor sends only identity and soul. The store caps them at 16,384
+     * characters and runs them through `identity:scan` (fail closed) before
+     * saving, and its own access check — personal owner or team member — is
+     * the same answer `agents:resolve` gave below.
      *
-     * `body` is the user's own text. It is stored verbatim and rendered as
-     * text; nothing here parses it, and nothing builds markup from it.
+     * `body` is the user's own text. It is stored as text and rendered as
+     * text; nothing here parses it, builds markup from it, or logs it.
      */
     async saveRules(req: RouteRequest, res: RouteResponse): Promise<void> {
       const userId = await authOr401(bus, initCtx, req, res);
@@ -9449,13 +9436,6 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
       const agent = await resolveAgentOr404(bus, initCtx, agentId, userId, res);
       if (agent === null) return;
 
-      if (!bus.hasService('memory:rules:write')) {
-        // No memory plugin is loaded. Saying "saved" would be the exact lie
-        // this whole task exists to stop telling.
-        res.status(503).json({ error: 'memory-unavailable' });
-        return;
-      }
-
       let parsed: unknown;
       try {
         parsed = JSON.parse(req.body.toString('utf-8'));
@@ -9469,38 +9449,44 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
         return;
       }
 
-      let stored: string;
-      try {
-        stored = (
-          await bus.call<MemoryRulesWriteInput, MemoryRulesWriteOutput>(
-            'memory:rules:write',
-            agentWorkspaceCtx(agentId, userId),
-            { agentId, body },
-          )
-        ).body;
-      } catch (err) {
-        // A rejected payload is the caller's fault (too long, malformed);
-        // anything else is ours. Either way the user is TOLD — a Save that
-        // silently failed is how a hand-written rule goes missing.
-        if (err instanceof PluginError && err.code === 'invalid-payload') {
-          res.status(400).json({ error: 'invalid-body', detail: err.message });
+      // A store fault is rethrown (http-server answers a generic 500): the
+      // person is TOLD the Save failed — a Save that silently failed is how a
+      // hand-written instruction goes missing.
+      const result = await writeAgentIdentity(bus, agentWorkspaceCtx(agentId, userId), agentId, {
+        instructions: body,
+      });
+      switch (result.kind) {
+        case 'saved':
+          res
+            .status(200)
+            .json({ saved: true, body: result.record.instructions } satisfies SaveRulesResult);
           return;
-        }
-        // The storage limit said no (TASK-719). The write goes through
-        // `workspace:apply`, whose pre-apply veto disk-quota answers with
-        // `code: 'storage-full'`. This used to rethrow like any other veto and
-        // surface as a 500, which the editor read as "the server ran into a
-        // problem, try again" — a false hope: nothing changes until an admin
-        // makes room. So it is its own answer, with ONE fixed sentence. The
-        // veto's message is worded for the agent and is never sent.
-        if (isStorageFullRefusal(err)) {
-          res.status(413).json({ error: 'storage-full', message: STORAGE_FULL_RULES });
+        case 'conflict':
+          // Lost the compare-and-set three times running: nothing was saved.
+          res.status(409).json({ error: 'conflict' });
           return;
-        }
-        throw err;
+        case 'unavailable':
+          // No identity store on this deployment. Saying "saved" would be
+          // the exact lie this route exists not to tell.
+          res.status(503).json({ error: 'instructions-unavailable' });
+          return;
+        case 'refused':
+          if (result.code === 'too-long') {
+            // The store's own sentence, which says what to fix.
+            res.status(400).json({ error: 'invalid-body', detail: result.reason });
+            return;
+          }
+          if (result.code === 'content') {
+            // The editor shows one fixed sentence about what the check looks
+            // for; the scanner's reason is not part of this wire.
+            res.status(422).json({ error: 'content-refused' });
+            return;
+          }
+          // The safety check could not run, so nothing was saved (fail
+          // closed). Not the person's text to fix.
+          res.status(503).json({ error: 'instructions-unavailable' });
+          return;
       }
-
-      res.status(200).json({ saved: true, body: stored } satisfies SaveRulesResult);
     },
 
     async recallFacts(req: RouteRequest, res: RouteResponse): Promise<void> {

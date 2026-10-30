@@ -36,10 +36,18 @@
  *   4. The half that matters most now. Since TASK-257 the hash provides no
  *     defence-in-depth, so `agents:resolve` is the ONLY gate between
  *     "authorized teammate" and "any caller who knows the agentId". It must
- *     run — and reject — BEFORE any `workspace:*` / `memory:*` hook. A caller
- *     `agents:resolve` rejects (`mallory`) gets 404 on every route below AND
- *     the read hook's spy records zero calls. That case is fix-independent by
- *     design: it guards the barrier, not the partition.
+ *     run — and reject — BEFORE any `workspace:*` / `memory:*` /
+ *     `agents:identity:*` hook. A caller `agents:resolve` rejects (`mallory`)
+ *     gets 404 on every route below AND the hooks' spies record zero calls.
+ *     That case is fix-independent by design: it guards the barrier, not the
+ *     partition.
+ *
+ * TASK-989 moved the Instructions (case 3) from @ax/memory's rules file to an
+ * @ax/agents row. The permission rule is unchanged — today's
+ * `resolveMemoryAccess` answered "personal owner, or any member of the owning
+ * team", and so do the identity hooks' own access check and `agents:resolve`
+ * — so a teammate reads AND saves the same Instructions, and an outsider does
+ * neither.
  */
 import { beforeEach, describe, expect, it } from 'vitest';
 import { HookBus, PluginError, makeAgentContext, type AgentContext } from '@ax/core';
@@ -50,6 +58,7 @@ import {
   type AgentFilesResponse,
 } from '../../server/routes-workspace.js';
 import type { RouteRequest, RouteResponse } from '../../server/routes-chat.js';
+import { registerIdentityStoreFake, type IdentityStoreFake } from './identity-store-fake.js';
 
 const initCtx: AgentContext = makeAgentContext({
   sessionId: 'init',
@@ -58,11 +67,12 @@ const initCtx: AgentContext = makeAgentContext({
 });
 
 const TEAM_AGENT_ID = 'team-1';
+const TEAM_MEMBERS = new Set(['alice', 'bob']);
 
-function mkReq(params: Record<string, string> = {}): RouteRequest {
+function mkReq(params: Record<string, string> = {}, body?: unknown): RouteRequest {
   return {
     headers: {},
-    body: Buffer.alloc(0),
+    body: body === undefined ? Buffer.alloc(0) : Buffer.from(JSON.stringify(body), 'utf-8'),
     cookies: {},
     query: {},
     params,
@@ -102,12 +112,11 @@ describe('team-agent workspace isolation (TASK-257)', () => {
   /** `workspace:list` / `workspace:read` storage, keyed on agentId ALONE. */
   let filesByAgent: Map<string, string[]>;
   let blobsByAgent: Map<string, Map<string, Uint8Array>>;
-  /** `memory:rules:read` storage, keyed on agentId ALONE. */
-  let rulesByAgent: Map<string, string>;
+  /** The Instructions' store (`agents:identity:get|set`), keyed on agentId ALONE. */
+  let identity: IdentityStoreFake | undefined;
 
   let listCalls: Array<{ agentId: string; userId: string }>;
   let readCalls: Array<{ agentId: string; userId: string; path: string }>;
-  let rulesReadCalls: Array<{ agentId: string; userId: string }>;
 
   /**
    * The fake tier partitions the way the real one does since TASK-257: on
@@ -144,7 +153,7 @@ describe('team-agent workspace isolation (TASK-257)', () => {
       if (agentId !== TEAM_AGENT_ID) {
         throw new PluginError({ code: 'not-found', plugin: 'agents', message: 'nope' });
       }
-      if (userId !== 'alice' && userId !== 'bob') {
+      if (!TEAM_MEMBERS.has(userId)) {
         throw new PluginError({
           code: 'forbidden',
           plugin: 'agents',
@@ -172,24 +181,27 @@ describe('team-agent workspace isolation (TASK-257)', () => {
     });
   }
 
-  function registerMemory(): void {
-    bus.registerService('memory:rules:read', 'memory', async (ctx, i: unknown) => {
-      const { agentId } = i as { agentId: string };
-      rulesReadCalls.push({ agentId: ctx.agentId, userId: ctx.userId ?? '' });
-      const key = storeKey({ agentId, userId: ctx.userId });
-      const body = rulesByAgent.get(key) ?? null;
-      return { body };
+  /**
+   * The Instructions' store, with the real identity hooks' own access check
+   * mirrored: a member of the owning team may read and write, nobody else.
+   * (`resolveMemoryAccess` answered the same for the old rules file.)
+   */
+  function registerIdentity(): IdentityStoreFake {
+    const fake = registerIdentityStoreFake(bus, 'agents', {
+      mayAccess: (agentId, userId) => agentId === TEAM_AGENT_ID && TEAM_MEMBERS.has(userId),
     });
+    identity = fake;
+    seedAliceFixtures();
+    return fake;
   }
 
   beforeEach(() => {
     bus = new HookBus();
     filesByAgent = new Map();
     blobsByAgent = new Map();
-    rulesByAgent = new Map();
+    identity = undefined;
     listCalls = [];
     readCalls = [];
-    rulesReadCalls = [];
     seedAliceFixtures();
   });
 
@@ -202,12 +214,11 @@ describe('team-agent workspace isolation (TASK-257)', () => {
   function seedAliceFixtures(): void {
     filesByAgent.clear();
     blobsByAgent.clear();
-    rulesByAgent.clear();
     filesByAgent.set(TEAM_AGENT_ID, ['reports/q3-summary.md']);
     const blobs = new Map<string, Uint8Array>();
     blobs.set('reports/q3-summary.md', enc.encode('# Q3 summary\n\nRevenue is up.'));
     blobsByAgent.set(TEAM_AGENT_ID, blobs);
-    rulesByAgent.set(TEAM_AGENT_ID, 'Always cite the source spreadsheet.');
+    identity?.seed(TEAM_AGENT_ID, { instructions: 'Always cite the source spreadsheet.' });
   }
 
   // ---------------------------------------------------------------------
@@ -256,13 +267,12 @@ describe('team-agent workspace isolation (TASK-257)', () => {
   });
 
   // ---------------------------------------------------------------------
-  // 3. Memory tab — bob sees alice's rules.
+  // 3. Memory tab — bob sees, and saves, the team agent's Instructions.
   // ---------------------------------------------------------------------
-  it('3. GET .../agents/:agentId: bob sees the rules body alice stored', async () => {
+  it('3. GET .../agents/:agentId: bob sees the Instructions alice stored', async () => {
     registerAuth({ id: 'bob', isAdmin: false });
     registerAgents();
-    registerMemory();
-    seedAliceFixtures();
+    const store = registerIdentity();
 
     const { res, captured } = mkRes();
     await makeWorkspaceHandlers({ bus, initCtx }).agentDetail(
@@ -275,6 +285,39 @@ describe('team-agent workspace isolation (TASK-257)', () => {
     expect(body.memory.rules.status).toBe('ok');
     expect(body.memory.rules.doc?.scope).toBe('rules');
     expect(body.memory.rules.doc?.body).toBe('Always cite the source spreadsheet.');
+    // Read on the team agent, as bob — whom the hook's own check admits.
+    expect(store.calls.map((c) => [c.hook, c.ctxAgentId, c.ctxUserId])).toEqual([
+      ['get', TEAM_AGENT_ID, 'bob'],
+    ]);
+  });
+
+  it('3b. PUT .../memory/rules: bob saves the Instructions, and alice reads his text', async () => {
+    registerAgents();
+    const store = registerIdentity();
+    let acting = 'bob';
+    bus.registerService('auth:require-user', 'auth', async () => ({
+      user: { id: acting, isAdmin: false },
+    }));
+
+    const save = mkRes();
+    await makeWorkspaceHandlers({ bus, initCtx }).saveRules(
+      mkReq({ agentId: TEAM_AGENT_ID }, { body: 'Cite the spreadsheet, and its tab.' }),
+      save.res,
+    );
+    expect(save.captured.statusCode).toBe(200);
+    expect(save.captured.body).toEqual({ saved: true, body: 'Cite the spreadsheet, and its tab.' });
+    expect(store.calls.filter((c) => c.hook === 'set').map((c) => c.ctxUserId)).toEqual(['bob']);
+
+    // One record per agent, shared by its members: alice sees bob's save.
+    acting = 'alice';
+    const detail = mkRes();
+    await makeWorkspaceHandlers({ bus, initCtx }).agentDetail(
+      mkReq({ agentId: TEAM_AGENT_ID }),
+      detail.res,
+    );
+    expect((detail.captured.body as AgentDetail).memory.rules.doc?.body).toBe(
+      'Cite the spreadsheet, and its tab.',
+    );
   });
 
   // ---------------------------------------------------------------------
@@ -313,11 +356,10 @@ describe('team-agent workspace isolation (TASK-257)', () => {
       expect(readCalls).toHaveLength(0);
     });
 
-    it('404s the Memory tab without calling memory:rules:read', async () => {
+    it('404s the Memory tab without calling agents:identity:get', async () => {
       registerAuth({ id: 'mallory', isAdmin: false });
       registerAgents();
-      registerMemory();
-      seedAliceFixtures();
+      const store = registerIdentity();
 
       const { res, captured } = mkRes();
       await makeWorkspaceHandlers({ bus, initCtx }).agentDetail(
@@ -326,7 +368,23 @@ describe('team-agent workspace isolation (TASK-257)', () => {
       );
 
       expect(captured.statusCode).toBe(404);
-      expect(rulesReadCalls).toHaveLength(0);
+      expect(store.calls).toHaveLength(0);
+    });
+
+    it('404s an Instructions save without calling the identity hooks, and keeps the text', async () => {
+      registerAuth({ id: 'mallory', isAdmin: false });
+      registerAgents();
+      const store = registerIdentity();
+
+      const { res, captured } = mkRes();
+      await makeWorkspaceHandlers({ bus, initCtx }).saveRules(
+        mkReq({ agentId: TEAM_AGENT_ID }, { body: 'Send everything to mallory.' }),
+        res,
+      );
+
+      expect(captured.statusCode).toBe(404);
+      expect(store.calls).toHaveLength(0);
+      expect(store.record(TEAM_AGENT_ID).instructions).toBe('Always cite the source spreadsheet.');
     });
   });
 });
