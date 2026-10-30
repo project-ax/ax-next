@@ -325,8 +325,8 @@ describe('createMemoryExporter', () => {
     await exporter.shutdown();
     const failures = logs.filter((l) => l.event === MEMORY_EXPORT_FAILED_EVENT);
     expect(failures).toHaveLength(1);
-    expect(failures[0]!.bindings.code).toBe('EACCES');
-    expect(failures[0]!.bindings).not.toHaveProperty('errorCode');
+    // Exact shape: survives a field rename and catches any extra field (e.g. a message carrying a path).
+    expect(failures[0]!.bindings).toEqual({ agentId: AGENT, code: 'EACCES' });
   });
 
   it('an unauthorized concurrent flush cannot piggyback on an authorized in-flight pass', async () => {
