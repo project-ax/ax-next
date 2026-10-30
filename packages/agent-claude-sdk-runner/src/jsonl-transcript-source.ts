@@ -6,25 +6,28 @@ import type {
 } from '@ax/agent-runner-core';
 
 /**
- * Locate the runner-native jsonl for `sessionId`. The SDK writes to
- * `${HOME}/.claude/projects/<cwd-slug>/<sessionId>.jsonl`; we don't know the
- * slug a priori (it's the SDK's encoding of realpath(cwd)), so we readdir-walk
- * `<workspaceRoot>/.claude/projects` and pick the dir holding the file. Returns
- * null when no such file exists yet. (Same walk as `turn-end-uuid.ts`.)
+ * Locate the runner-native jsonl for `sessionId`. The SDK writes
+ * `<transcript dir>/<cwd-slug>/<sessionId>.jsonl`; we don't know the slug a
+ * priori (it's the SDK's encoding of realpath(cwd)), so we readdir-walk
+ * `transcriptDir` and pick the dir holding the file. Returns null when no such
+ * file exists yet. The single copy of this walk: `turn-end-uuid.ts` imports it.
+ *
+ * `transcriptDir` is the directory that directly holds the slug dirs. When the
+ * sandbox stamps a transcripts root it is the link TARGET, not the
+ * `$CLAUDE_CONFIG_DIR/projects` link path (see `transcript-dir.ts`).
  */
 export async function locateJsonl(
-  workspaceRoot: string,
+  transcriptDir: string,
   sessionId: string,
 ): Promise<string | null> {
-  const projectsDir = join(workspaceRoot, '.claude', 'projects');
   let entries: string[];
   try {
-    entries = await readdir(projectsDir);
+    entries = await readdir(transcriptDir);
   } catch {
     return null;
   }
   for (const slug of entries) {
-    const candidate = join(projectsDir, slug, `${sessionId}.jsonl`);
+    const candidate = join(transcriptDir, slug, `${sessionId}.jsonl`);
     try {
       await stat(candidate);
       return candidate;
@@ -71,13 +74,11 @@ export function encodeProjectSlug(cwdRealpath: string): string {
 
 /**
  * Write reconstructed transcript bytes to
- * `<workspaceRoot>/.claude/projects/<slug>/<sessionId>.jsonl` — the path the
- * SDK reads on `query({ resume })`. The slug is the SDK's encoding of
- * realpath(`sdkCwd`), the directory the runner passes to `query({ cwd })` — NOT
- * of `workspaceRoot`. The two are the same dir only when no durable user-files
- * mount is wired; with one, cwd is `/files` while `workspaceRoot` (where
- * `$CLAUDE_CONFIG_DIR/projects` symlinks to) stays `/agent`. realpath resolves
- * any symlink the SDK would also resolve.
+ * `<transcriptDir>/<slug>/<sessionId>.jsonl` — the path the SDK reads on
+ * `query({ resume })` (directly, or through the `$CLAUDE_CONFIG_DIR/projects`
+ * link). The slug is the SDK's encoding of realpath(`sdkCwd`), the directory
+ * the runner passes to `query({ cwd })`, NOT of the transcript directory.
+ * realpath resolves any symlink the SDK would also resolve.
  */
 /**
  * Does this transcript announce that some OTHER runner wrote it?
@@ -126,7 +127,7 @@ export function isForeignRunnerTranscript(bytes: Buffer): boolean {
 }
 
 async function writeJsonl(
-  workspaceRoot: string,
+  transcriptDir: string,
   sdkCwd: string,
   sessionId: string,
   bytes: Buffer,
@@ -148,7 +149,7 @@ async function writeJsonl(
     cwdReal = sdkCwd;
   }
   const slug = encodeProjectSlug(cwdReal);
-  const dir = join(workspaceRoot, '.claude', 'projects', slug);
+  const dir = join(transcriptDir, slug);
   await mkdir(dir, { recursive: true, mode: 0o755 });
   const jsonlPath = join(dir, `${sessionId}.jsonl`);
   await writeFile(jsonlPath, bytes);
@@ -158,26 +159,25 @@ async function writeJsonl(
 /**
  * The Claude Agent SDK writes `${CLAUDE_CONFIG_DIR}/projects/<cwd-slug>/<sid>.jsonl`.
  * We don't know the slug a priori (it's the SDK's encoding of realpath(cwd)),
- * so we readdir-walk the projects dir and pick the dir holding the file.
+ * so we readdir-walk the transcript directory and pick the dir holding the file.
  *
- * `workspaceRoot` is where the projects dir lives; `sdkCwd` is the directory the
- * SDK subprocess runs in (what `write` slugs), which defaults to `workspaceRoot`
- * for callers with no separate working frame.
+ * `transcriptDir` directly holds the slug dirs; `sdkCwd` is the directory the
+ * SDK subprocess runs in (what `write` slugs).
  */
 export function createJsonlTranscriptSource(
-  workspaceRoot: string,
-  sdkCwd: string = workspaceRoot,
+  transcriptDir: string,
+  sdkCwd: string,
 ): TranscriptSource {
   return {
     // The seam is BYTES, not a path (see TranscriptSource in
     // @ax/agent-runner-core): locate the jsonl, then read it. A missing file is
     // `null` — "nothing to ship this turn", not an error.
     read: async (sessionId: string) => {
-      const jsonlPath = await locateJsonl(workspaceRoot, sessionId);
+      const jsonlPath = await locateJsonl(transcriptDir, sessionId);
       if (jsonlPath === null) return null;
       return readFile(jsonlPath);
     },
     write: (sessionId: string, bytes: Buffer) =>
-      writeJsonl(workspaceRoot, sdkCwd, sessionId, bytes),
+      writeJsonl(transcriptDir, sdkCwd, sessionId, bytes),
   };
 }

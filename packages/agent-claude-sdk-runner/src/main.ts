@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import * as path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import {
   query,
@@ -1028,7 +1029,7 @@ export function createClaudeSdkLoop(deps: RunnerDeps): Loop {
               const sessionId = ctx.getTranscriptSessionId();
               if (lastAssistantUuid !== undefined && sessionId !== null) {
                 const landed = await waitForTranscriptUuid(
-                  env.workspaceRoot,
+                  path.join(env.workspaceRoot, '.claude', 'projects'),
                   sessionId,
                   lastAssistantUuid,
                   { timeoutMs: flushTimeoutMs, intervalMs: flushIntervalMs },
@@ -1048,7 +1049,7 @@ export function createClaudeSdkLoop(deps: RunnerDeps): Loop {
               // to 'user' here — that mapping is SDK-private and belongs in
               // this adapter rather than in the shell's vocabulary.
               readLastTurnUuid(
-                env.workspaceRoot,
+                path.join(env.workspaceRoot, '.claude', 'projects'),
                 sessionId,
                 role === 'tool' ? 'user' : role,
               ),
@@ -1082,13 +1083,16 @@ export async function main(): Promise<number> {
     // looked whenever a /files mount was wired ("No conversation found").
     createTranscriptSource: (env) =>
       createJsonlTranscriptSource(
-        env.workspaceRoot,
+        path.join(env.workspaceRoot, '.claude', 'projects'),
         runnerHomeDir(env),
       ),
     // F2a guard, non-conversation branch: the legacy on-disk scan of the
     // materialized workspace's jsonl.
     hasLocalTranscript: (env, sessionId) =>
-      hasResumableTranscript(env.workspaceRoot, sessionId),
+      hasResumableTranscript(
+        path.join(env.workspaceRoot, '.claude', 'projects'),
+        sessionId,
+      ),
     afterMaterialize: async (env) => {
       // Redirect the SDK's turn-transcript jsonl writes into the workspace.
       // Phase 0 set CLAUDE_CONFIG_DIR OUTSIDE /agent so the `'user'`

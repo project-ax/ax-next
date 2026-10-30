@@ -195,9 +195,9 @@ vi.mock('../jsonl-transcript-source.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../jsonl-transcript-source.js')>();
   return {
     ...actual,
-    createJsonlTranscriptSource: (workspaceRoot: string, sdkCwd?: string) => {
-      createJsonlTranscriptSourceSpy(workspaceRoot, sdkCwd);
-      return actual.createJsonlTranscriptSource(workspaceRoot, sdkCwd);
+    createJsonlTranscriptSource: (transcriptDir: string, sdkCwd: string) => {
+      createJsonlTranscriptSourceSpy(transcriptDir, sdkCwd);
+      return actual.createJsonlTranscriptSource(transcriptDir, sdkCwd);
     },
   };
 });
@@ -1182,13 +1182,13 @@ describe('main()', () => {
     // ...and it waited for the turn's FINAL assistant uuid ('B'), NOT the
     // intermediate tool_use line ('A'). This is the TASK-11 guard.
     expect(waitForTranscriptUuidMock).toHaveBeenCalledWith(
-      '/tmp/workspace',
+      '/tmp/workspace/.claude/projects',
       'sdk-sess-1',
       'B-closingtext',
       expect.objectContaining({ timeoutMs: expect.any(Number) }),
     );
     expect(waitForTranscriptUuidMock).not.toHaveBeenCalledWith(
-      '/tmp/workspace',
+      '/tmp/workspace/.claude/projects',
       'sdk-sess-1',
       'A-tooluse',
       expect.anything(),
@@ -2183,12 +2183,12 @@ describe('main()', () => {
     // Both turn-end turnId reads targeted the SDK session id (transcriptSessionId),
     // NOT the (null) boot runnerSessionId.
     expect(readLastTurnUuidMock).toHaveBeenCalledWith(
-      '/tmp/workspace',
+      '/tmp/workspace/.claude/projects',
       'sdk-fresh-id',
       'user',
     );
     expect(readLastTurnUuidMock).toHaveBeenCalledWith(
-      '/tmp/workspace',
+      '/tmp/workspace/.claude/projects',
       'sdk-fresh-id',
       'assistant',
     );
@@ -3766,7 +3766,7 @@ describe('main()', () => {
       // SHAPE but the wrong workspace would pass silently).
       // (No AX_USERFILES_ROOT in this env, so the SDK's cwd IS the workspace.)
       expect(createJsonlTranscriptSourceSpy).toHaveBeenCalledWith(
-        '/tmp/workspace',
+        '/tmp/workspace/.claude/projects',
         '/tmp/workspace',
       );
       expect(restoreTranscriptForResumeMock).toHaveBeenCalledWith(
@@ -4162,7 +4162,7 @@ describe('main()', () => {
       expect(options.cwd).toBe('/ephemeral');
       expect(options.env.HOME).toBe('/ephemeral');
       expect(options.additionalDirectories).toContain('/tmp/workspace');
-      expect(createJsonlTranscriptSourceSpy).toHaveBeenCalledWith('/tmp/workspace', '/ephemeral');
+      expect(createJsonlTranscriptSourceSpy).toHaveBeenCalledWith('/tmp/workspace/.claude/projects', '/ephemeral');
       const hook = options.hooks.PreToolUse[0].hooks[0];
       const result = await hook({ hook_event_name: 'PreToolUse', tool_name: 'Write', tool_input: { file_path: '/ephemeral/.ax/SOUL.md', content: 'Identity' } }, 'test-scratch-identity', {});
       expect(result.hookSpecificOutput.updatedInput.file_path).toBe('/tmp/workspace/.ax/SOUL.md');
@@ -4222,7 +4222,7 @@ describe('main()', () => {
       // Rooted at the governed tier (where the projects symlink lands), slugged
       // by the SDK's actual cwd — the same value, not a parallel computation.
       expect(createJsonlTranscriptSourceSpy).toHaveBeenCalledWith(
-        '/tmp/workspace',
+        '/tmp/workspace/.claude/projects',
         queryArg.options.cwd,
       );
     });
