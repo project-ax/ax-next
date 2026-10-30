@@ -116,8 +116,8 @@ describe('createMemoryPlugins without the export volume', () => {
     const memory = memoryPlugin(noVolumeConfig);
     expect(memory).toBeDefined();
     expect(memory?.manifest.registers).not.toContain('sandbox:memory-mounts');
-    // The workspace facts export still runs (exports configured, no volume).
-    expect(memory?.manifest.registers).toContain('memory:export:flush');
+    // No volume, no file view of facts (TASK-991): neither export hook is registered.
+    expect(memory?.manifest.registers).not.toContain('memory:export:flush');
   });
 
   it('registers sandbox:memory-mounts when the volume is configured', () => {
