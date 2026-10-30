@@ -979,7 +979,8 @@ describe('sandbox:open-session', () => {
     // validateOwner rebuild, the get-config returns schema) would silently
     // strip an undeclared field — this pins the whole path.
     const ws = await mkWorkspace();
-    const h = await makeHarness();
+    const filesRoot = await mkWorkspace();
+    const h = await makeHarness(userFilesResolver(filesRoot));
     const identity = {
       identity: 'I am Test Agent.',
       soul: 'Calm and curious.',
@@ -1020,6 +1021,7 @@ describe('sandbox:open-session', () => {
     await result.handle.kill();
     await result.handle.exited;
     await fs.rm(ws, { recursive: true, force: true });
+    await fs.rm(filesRoot, { recursive: true, force: true });
   });
 
   // ---------------------------------------------------------------------
