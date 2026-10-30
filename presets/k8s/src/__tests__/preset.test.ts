@@ -2360,6 +2360,14 @@ describe('@ax/preset-k8s — filestore mount wiring', () => {
     expect(() => loadK8sConfigFromEnv(baseEnv)).toThrow(/AX_FILESTORE_SERVER is required/);
   });
 
+  it('loadK8sConfigFromEnv treats an empty AX_FILESTORE_SERVER as absent', () => {
+    // The chart's old default was server: "" — an empty string must not
+    // slip through as "configured".
+    expect(() =>
+      loadK8sConfigFromEnv({ ...baseEnv, AX_FILESTORE_SERVER: '', AX_FILESTORE_EXPORT_PATH: '/vol1' }),
+    ).toThrow(/AX_FILESTORE_SERVER is required/);
+  });
+
   it('loadK8sConfigFromEnv throws when AX_FILESTORE_SERVER is set without AX_FILESTORE_EXPORT_PATH', () => {
     expect(() =>
       loadK8sConfigFromEnv({ ...baseEnv, AX_FILESTORE_SERVER: '10.0.0.2' }),

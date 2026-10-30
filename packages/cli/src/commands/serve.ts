@@ -44,6 +44,9 @@ env (required):
   AX_WORKSPACE_GIT_HTTP_URL   (when backend=http)
   AX_WORKSPACE_GIT_HTTP_TOKEN (when backend=http)
   AX_CREDENTIALS_KEY          used by @ax/credentials at init
+  AX_BLOB_FS_ROOT             blob directory (when AX_BLOB_BACKEND is fs, the default)
+  AX_FILESTORE_SERVER         NFS server for every agent's durable /files home
+  AX_FILESTORE_EXPORT_PATH    the NFS export path on that server, e.g. /vol1
 
 env (optional):
   AX_PRESET                   'memory' (the default and only value — facts memory).

@@ -751,9 +751,9 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
 
   // filestore-user-files (design §4) — the durable per-agent user-files mount
   // resolver. When a Filestore export is configured (always, via the env
-  // loader), load @ax/workspace-filestore: it registers `sandbox:resolve-mounts`, which
-  // @ax/sandbox-k8s calls (optionalCall) to realize each session's per-agent
-  // `nfs` mount. The NFS sibling of the CLI's @ax/workspace-localdir — exactly
+  // loader), load @ax/workspace-filestore: it registers
+  // `sandbox:resolve-mounts`, which @ax/sandbox-k8s calls (optionalCall) to
+  // realize each session's per-agent `nfs` mount. The NFS sibling of the CLI's @ax/workspace-localdir — exactly
   // one mount resolver loads per deployment. The env loader always supplies it;
   // a test composition that omits it gets no resolver, and the sandbox
   // provider then refuses owned sessions (there is no emptyDir-only fallback).
