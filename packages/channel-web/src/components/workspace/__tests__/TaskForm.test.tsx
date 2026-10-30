@@ -46,11 +46,11 @@ describe('task form validation', () => {
     expect(screen.getByText('Tell Caveman what to do.')).toBeVisible();
     expect(screen.getByText('Say how we’ll know this task is going well.')).toBeVisible();
     expect(name).toHaveAccessibleDescription('Give it a name.');
-    // Both draw the destructive outline from their Field's invalid state, as the InputGroup does.
+    // Both draw the destructive outline from aria-invalid, as every Input and Textarea does.
     for (const control of [name, screen.getByLabelText('What should Caveman do?')]) {
       expect(control).toHaveAttribute('aria-invalid', 'true');
       expect(control.closest('[data-slot="field"]')).toHaveAttribute('data-invalid', 'true');
-      expect(control).toHaveClass('group-data-[invalid=true]/field:border-destructive');
+      expect(control).toHaveClass('aria-[invalid=true]:border-destructive');
     }
     expect(screen.getByLabelText('What should Caveman do?')).toHaveAccessibleDescription('Tell Caveman what to do.');
     await waitFor(() => expect(name).toHaveFocus());

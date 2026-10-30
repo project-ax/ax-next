@@ -64,6 +64,18 @@ describe('Usage follow-ups', () => {
     await waitFor(() => expect(calls).toHaveLength(2));
     expect(calls[1]!.body).toEqual({ prices: [] });
   });
+  it('a new price’s empty model isn’t marked wrong until something wrong is typed', () => {
+    render(<UsagePricesCard prices={[]} onSaved={vi.fn()} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Add model price' }));
+    const model = screen.getByLabelText('Model reference');
+    expect(model).not.toHaveAttribute('aria-invalid');
+    expect(screen.getByRole('button', { name: 'Save model price' })).toBeDisabled();
+    fireEvent.change(model, { target: { value: '-bad' } });
+    expect(model).toHaveAttribute('aria-invalid', 'true');
+    fireEvent.change(model, { target: { value: '' } });
+    expect(model).not.toHaveAttribute('aria-invalid');
+  });
+
   it('renaming an edited price replaces its previous model entry', async () => {
     const calls = wire();
     const old = {model:'vendor/old',inputUsdPerMillion:1,outputUsdPerMillion:2,cacheReadUsdPerMillion:0,cacheWriteUsdPerMillion:0};
