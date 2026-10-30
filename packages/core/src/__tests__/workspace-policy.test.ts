@@ -5,7 +5,6 @@ import {
   MEMORY_FACTS_EXPORT_ROOT,
   POLICY_EXACT_PATHS,
   POLICY_PREFIXES,
-  RUNNER_IMMUTABLE_PATHS,
   RUNNER_IMMUTABLE_PREFIXES,
 } from '../workspace-policy.js';
 import type { FileChange } from '../workspace.js';
@@ -18,20 +17,20 @@ const put = (path: string): FileChange => ({
 const del = (path: string): FileChange => ({ path, kind: 'delete' });
 
 // ---------------------------------------------------------------------------
-// TASK-486. These two lists answer different questions and must not be
-// conflated: `filterToPolicy` decides what pre-apply subscribers SEE,
+// These two lists answer different questions and must not be conflated:
+// `filterToPolicy` decides what pre-apply subscribers SEE,
 // `findRunnerImmutableViolations` decides what a runner-originated apply may
 // CONTAIN. The first test below is the one that explains why the second list
 // has to exist at all.
 // ---------------------------------------------------------------------------
 
-describe('workspace-policy — the human memory tier is NOT policy-visible', () => {
-  it('filterToPolicy drops memory/system/rules.md', () => {
-    // This is the hole. No `workspace:pre-apply` subscriber is ever handed
-    // this path, so no subscriber can veto it — which is why the guard lives
-    // in the commit handler and not in a validator plugin. If this assertion
-    // ever flips, revisit whether the separate guard is still the right shape.
-    expect(filterToPolicy([put('memory/system/rules.md')])).toEqual([]);
+describe('workspace-policy — the facts export is NOT policy-visible', () => {
+  it('filterToPolicy drops a write under the facts-export root', () => {
+    // No `workspace:pre-apply` subscriber is ever handed this path, so no
+    // subscriber can veto it — which is why the guard lives in the commit
+    // handler and not in a validator plugin. If this assertion ever flips,
+    // revisit whether the separate guard is still the right shape.
+    expect(filterToPolicy([put('permanent/memory/facts/profile.md')])).toEqual([]);
   });
 
   it('the policy-visible set is unchanged by this card', () => {
@@ -47,18 +46,6 @@ describe('workspace-policy — the human memory tier is NOT policy-visible', () 
 });
 
 describe('findRunnerImmutableViolations', () => {
-  it('names the human tier on a put', () => {
-    expect(findRunnerImmutableViolations([put('memory/system/rules.md')])).toEqual([
-      'memory/system/rules.md',
-    ]);
-  });
-
-  it('names it on a delete as well', () => {
-    expect(findRunnerImmutableViolations([del('memory/system/rules.md')])).toEqual([
-      'memory/system/rules.md',
-    ]);
-  });
-
   it('returns nothing for an ordinary turn', () => {
     expect(
       findRunnerImmutableViolations([put('src/main.ts'), put('.ax/notes/a.md')]),
@@ -66,9 +53,8 @@ describe('findRunnerImmutableViolations', () => {
   });
 
   it('leaves the agent-owned memory files alone', () => {
-    // The consolidator rewrites these every pass; they are the agent's own
-    // memory, not the human's. Guarding `memory/**` wholesale would refuse
-    // every consolidation the runner ships.
+    // These are the agent's own files. Guarding `memory/**` wholesale would
+    // refuse ordinary writes the runner ships.
     expect(
       findRunnerImmutableViolations([
         put('memory/system/user.md'),
@@ -80,31 +66,27 @@ describe('findRunnerImmutableViolations', () => {
     ).toEqual([]);
   });
 
-  it('matches the exact path only — no prefix or suffix near-misses', () => {
-    // `walkBundleChanges` emits canonical repo-relative posix paths, so an
-    // exact-set match is the whole comparison. These neighbours are ordinary
-    // files and must not be refused.
+  it('memory/system/rules.md is an ordinary path now (TASK-989)', () => {
+    // Nothing reads the old Rules file any more: the people's Instructions
+    // live in @ax/agents and reach the runner frozen in its session config,
+    // so a runner write here is just a file, not a standing prompt line.
+    const content = new Uint8Array([1]);
     expect(
       findRunnerImmutableViolations([
-        put('memory/system/rules.md.bak'),
-        put('memory/system/rules.mdx'),
-        put('docs/memory/system/rules.md'),
-        put('memory/system/rules'),
+        { path: 'memory/system/rules.md', kind: 'put', content },
       ]),
     ).toEqual([]);
+    expect(findRunnerImmutableViolations([del('memory/system/rules.md')])).toEqual([]);
   });
 
   it('de-duplicates and sorts, so discardPaths is stable', () => {
     expect(
       findRunnerImmutableViolations([
-        put('memory/system/rules.md'),
-        del('memory/system/rules.md'),
+        put('permanent/memory/facts/user/b.md'),
+        put('permanent/memory/facts/a.md'),
+        del('permanent/memory/facts/user/b.md'),
       ]),
-    ).toEqual(['memory/system/rules.md']);
-  });
-
-  it('exports the list built from MEMORY_RULES_PATH, the literal @ax/memory imports', () => {
-    expect([...RUNNER_IMMUTABLE_PATHS]).toEqual(['memory/system/rules.md']);
+    ).toEqual(['permanent/memory/facts/a.md', 'permanent/memory/facts/user/b.md']);
   });
 });
 
