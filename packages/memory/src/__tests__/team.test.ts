@@ -124,7 +124,7 @@ describe('@ax/memory — access resolves on every operation, and fails closed', 
     [
       'the injected block',
       (h: MemoryHarness, ctx: AgentContext) =>
-        h.bus.call('system-prompt:augment:required:memory', ctx, {}),
+        h.bus.call('system-prompt:augment:optional:memory', ctx, {}),
     ],
   ])('denies a non-member on %s before any engine call', async (_label, op) => {
     const h = await teamHarness();

@@ -61,12 +61,14 @@ describe('createMemoryPlugins composition', () => {
     expect(n).toContain('@ax/channel-web');
   });
 
-  it('enables the rules capability on @ax/memory', () => {
+  it('@ax/memory registers no rules hooks (Instructions live in @ax/agents)', () => {
     const memory = createMemoryPlugins(baseConfig).find(
       (p) => p.manifest.name === '@ax/memory',
     );
-    expect(memory?.manifest.registers).toContain('memory:rules:read');
-    expect(memory?.manifest.registers).toContain('memory:rules:write');
+    expect(memory).toBeDefined();
+    expect(memory?.manifest.registers).not.toContain('memory:rules:read');
+    expect(memory?.manifest.registers).not.toContain('memory:rules:write');
+    expect(memory?.manifest.registers).toContain('system-prompt:augment:optional:memory');
   });
 
   it('loads no Strata plugin in either assembly, even with hostLlmTools set (TASK-608)', () => {

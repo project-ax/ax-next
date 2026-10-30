@@ -320,23 +320,3 @@ export async function engineRecord(
 ): Promise<{ records: Array<{ id: string }> }> {
   return bus.call('memory:facts:record', ctx, { statements });
 }
-
-/**
- * Register a stand-in `memory:rules:read`.
- *
- * The human tier's provider is this plugin's own `rules.ts`, but only when
- * `rules: true` (as `presets/memory` sets it; `@ax/memory-strata` provided it
- * until TASK-608). Design §10.4 keeps `memory:rules:*` a shared contract, so
- * the block reaches it through the bus either way. A test that wants a Rules section
- * registers this; a test that wants the no-provider case simply does not.
- */
-export function registerRulesStub(
-  bus: HookBus,
-  body: string | (() => Promise<string>),
-): void {
-  bus.registerService<{ agentId: string }, { body: string }>(
-    'memory:rules:read',
-    '@ax/test-rules-stub',
-    async () => ({ body: typeof body === 'string' ? body : await body() }),
-  );
-}

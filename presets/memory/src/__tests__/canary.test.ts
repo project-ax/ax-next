@@ -208,7 +208,6 @@ let shutdown: () => Promise<void>;
 let httpPort = 0;
 let tmp = '';
 let container: StartedPostgreSqlContainer | null = null;
-let memoryPlugin: Plugin | undefined;
 let exportHostRoot = '';
 // TASK-717: the assembly mounts the SPA catchall exactly as the production
 // host does (AX_STATIC_FILES_DIR), and reads the durable user-files tier from
@@ -320,7 +319,6 @@ async function boot(opts: { withVolume: boolean } = { withVolume: true }): Promi
   const names = all.map((p) => p.manifest.name);
   expect(new Set(names).size).toBe(names.length);
   pluginNames = names;
-  memoryPlugin = all.find((p) => p.manifest.name === '@ax/memory');
 
   const httpPlugin = all.find((p) => p.manifest.name === '@ax/http-server') as
     | (Plugin & { boundPort?: () => number })
@@ -457,8 +455,7 @@ describe('@ax/preset-memory canary', () => {
     await teardown();
   }, 120_000);
 
-  it('boots the real assembly: memory hooks + rules + tools, no strata/PG facts', () => {
-    expect(memoryPlugin?.manifest.registers).toContain('memory:rules:read');
+  it('boots the real assembly: memory hooks + identity + tools, no strata/PG facts', () => {
     expect(bus.hasService('memory:facts:record')).toBe(true);
     expect(bus.hasService('memory:facts:recall')).toBe(true);
     expect(bus.hasService('memory:facts:supersede')).toBe(true);
@@ -467,8 +464,12 @@ describe('@ax/preset-memory canary', () => {
     expect(bus.hasService('memory:facts:revert')).toBe(true);
     expect(bus.hasService('memory:uncorrect')).toBe(true);
     expect(bus.hasService('memory:facts:clear')).toBe(true);
-    expect(bus.hasService('memory:rules:read')).toBe(true);
-    expect(bus.hasService('memory:rules:write')).toBe(true);
+    // Rules left @ax/memory (TASK-989); the Instructions live in @ax/agents.
+    expect(bus.hasService('memory:rules:read')).toBe(false);
+    expect(bus.hasService('memory:rules:write')).toBe(false);
+    expect(bus.hasService('agents:identity:get')).toBe(true);
+    expect(bus.hasService('identity:scan')).toBe(true);
+    expect(bus.hasService('tool:execute:update_identity')).toBe(true);
     expect(bus.hasService('tool:execute:memory_note')).toBe(true);
     expect(bus.hasService('tool:execute:memory_recall')).toBe(true);
     expect(bus.hasService('memory:export:flush')).toBe(true);

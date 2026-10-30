@@ -27,9 +27,10 @@ describe('@ax/memory — manifest', () => {
       'memory:status',
       // TASK-628: the recall receipts behind "used N memories".
       'memory:recall-receipts',
-      // TASK-491, design 4.1. A REQUIRED provider of the shared system-prompt
-      // augment contract (W1): it carries the Rules, so a throw skips the augment.
-      'system-prompt:augment:required:memory',
+      // TASK-491, design 4.1. An OPTIONAL provider of the shared system-prompt
+      // augment contract: recalled facts only. The Rules went to @ax/agents
+      // (TASK-989), and with them the required class.
+      'system-prompt:augment:optional:memory',
       'tool:execute:memory_recall',
       'tool:execute:memory_use',
       'tool:execute:memory_note',
@@ -74,7 +75,7 @@ describe('@ax/memory — manifest', () => {
         'memory:uncorrect',
         'memory:status',
         'memory:recall-receipts',
-        'system-prompt:augment:required:memory',
+        'system-prompt:augment:optional:memory',
         'tool:register',
         'tool:execute:memory_recall',
         'tool:execute:memory_use',
@@ -109,7 +110,6 @@ describe('@ax/memory — manifest', () => {
     // without one — a CI host, a canary, an air-gapped install.
     expect(manifest.optionalCalls?.map((oc) => oc.hook)).toEqual([
       'llm:call:openrouter',
-      'memory:rules:read',
       'conversations:get',
       'storage:get',
       'storage:set',
@@ -128,11 +128,10 @@ describe('@ax/memory — manifest', () => {
     const off = createMemoryPlugin({ incremental: false }).manifest.optionalCalls;
     expect(off?.map((oc) => oc.hook)).toEqual([
       'llm:call:openrouter',
-      'memory:rules:read',
       'storage:get',
       'storage:set',
     ]);
-    for (const entry of off!.slice(2)) {
+    for (const entry of off!.slice(1)) {
       expect(entry.degradation).not.toMatch(/chat:end/);
       expect(entry.degradation).toMatch(/recall receipts/);
     }
@@ -155,7 +154,7 @@ describe('@ax/memory — manifest', () => {
     const { manifest } = createMemoryPlugin({ memoryOpsModel: 'anthropic/claude-haiku-4-5' });
     expect(manifest.optionalCalls?.map((oc) => oc.hook).slice(0, 2)).toEqual([
       'llm:call:anthropic',
-      'memory:rules:read',
+      'conversations:get',
     ]);
   });
 
@@ -166,17 +165,31 @@ describe('@ax/memory — manifest', () => {
     expect(() => createMemoryPlugin({ memoryOpsModel: 'glm-5.3-flash' })).toThrow();
   });
 
-  // The human tier is the ONE soft dependency, and the asymmetry is the
-  // point: `memory:rules:*` stays a shared contract across memory
-  // implementations (§10.4); this plugin provides it only with `rules: true`, so a
-  // preset may legitimately load `@ax/memory` without one. A hard `calls`
-  // entry would turn that configuration into a boot failure.
-  it('names the human tier as the one OPTIONAL dependency, with its degradation spelled out', () => {
-    const { manifest } = createMemoryPlugin({ incremental: false });
-    // Two plus `storage:get`/`storage:set`, which the recall receipts use (TASK-628).
-    expect(manifest.optionalCalls).toHaveLength(4);
-    expect(manifest.optionalCalls![1]!.hook).toBe('memory:rules:read');
-    expect(manifest.optionalCalls![1]!.degradation).toMatch(/Rules From Your User/);
+  // The human tier left with TASK-989: the person's Instructions are @ax/agents'
+  // rows, not a memory file, so memory neither registers nor reads `memory:rules:*`.
+  it('no longer registers or calls anything under memory:rules:*', () => {
+    for (const config of [{}, { incremental: false }, { memoryOpsModel: 'anthropic/claude-haiku-4-5' }]) {
+      const { manifest } = createMemoryPlugin(config);
+      const names = [
+        ...manifest.registers,
+        ...manifest.calls,
+        ...(manifest.optionalCalls ?? []).map((oc) => oc.hook),
+      ];
+      expect(names.filter((n) => n.startsWith('memory:rules:'))).toEqual([]);
+    }
+  });
+
+  it('ignores a leftover rules option like any other unknown key', () => {
+    const { manifest } = createMemoryPlugin({ rules: true } as never);
+    expect(manifest.registers.filter((n) => n.startsWith('memory:rules:'))).toEqual([]);
+  });
+});
+
+describe('createMemoryPlugin config validation', () => {
+  it('rejects a non-object exports block at construction', () => {
+    expect(() => createMemoryPlugin({ exports: 'on' as never })).toThrowError(/exports/);
+    expect(() => createMemoryPlugin({ exports: [] as never })).toThrowError(/exports/);
+    expect(() => createMemoryPlugin({ exports: null as never })).toThrowError(/exports/);
   });
 });
 

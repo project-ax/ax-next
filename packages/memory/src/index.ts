@@ -58,24 +58,12 @@ export {
 } from './render.js';
 export {
   SYSTEM_PROMPT_AUGMENT_HOOK,
-  RULES_READ_HOOK,
   buildMemoryBlock,
   assembleUnderCap,
   rankDigestSubjects,
   registerSystemPromptAugment,
   DEFAULTS as MEMORY_BLOCK_DEFAULTS,
 } from './augment.js';
-export {
-  RULES_WRITE_HOOK,
-  MAX_RULES_CHARS,
-  registerRulesHooks,
-} from './rules.js';
-export type {
-  MemoryRulesReadInput,
-  MemoryRulesReadOutput,
-  MemoryRulesWriteInput,
-  MemoryRulesWriteOutput,
-} from './rules.js';
 export type {
   MemoryBlockConfig,
   BlockPart,

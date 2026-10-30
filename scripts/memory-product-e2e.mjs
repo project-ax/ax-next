@@ -265,8 +265,8 @@ export async function createBank({ sample, directory, env, clients, providerFetc
     },
     async injected() {
       await bus.call('memory:export:flush', ctx(), {});
-      const result = await bus.call('system-prompt:augment:required:memory', ctx(), {});
-      return [result.rules, result.recall].filter(Boolean).join('\n\n');
+      const result = await bus.call('system-prompt:augment:optional:memory', ctx(), {});
+      return result.recall ?? '';
     },
     async close() { await drain(); await kernel.shutdown(); await drain(); },
   };
