@@ -4894,6 +4894,99 @@ describe('main()', () => {
       expect(await fs.readdir(planted)).toEqual([]);
     });
 
+    /** Every path under `dir`, relative and sorted. Directories end in '/'. */
+    async function listTree(dir: string, rel = ''): Promise<string[]> {
+      const out: string[] = [];
+      for (const e of await fs.readdir(nodePath.join(dir, rel), { withFileTypes: true })) {
+        const p = rel === '' ? e.name : `${rel}/${e.name}`;
+        out.push(...(e.isDirectory() ? [`${p}/`, ...(await listTree(dir, p))] : [p]));
+      }
+      return out.sort();
+    }
+
+    // Whatever the agent leaves in its own home must not become the runner's or
+    // the SDK's trusted configuration. The plants are the real-binary canary's
+    // (agent-files-guards-real-sdk.e2e.test.ts), plus a connector `.mcp.json` in
+    // the shape the runner's OWN projection loader accepts. The SDK is a mock
+    // here, so this pins what the runner hands it; the e2e pins what the CLI
+    // then does with that.
+    it('files planted in the agent home reach neither the runner prompt nor the SDK options, and the runner writes nothing there', async () => {
+      const t = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'ax-main-canary-'));
+      onTestFinished(() => fs.rm(t, { recursive: true, force: true }));
+      const files = nodePath.join(t, 'files');
+      const agent = nodePath.join(t, 'agent');
+      const cfg = nodePath.join(t, 'cfg');
+      const markers = nodePath.join(t, 'markers');
+      await fs.mkdir(agent);
+      await fs.mkdir(nodePath.join(cfg, 'skills'), { recursive: true });
+      await fs.mkdir(markers);
+      const hook = (event: string) => ({
+        hooks: [{ type: 'command', command: `touch '${nodePath.join(markers, `settings-${event}`)}'` }],
+      });
+      const stdioServer = (marker: string) => ({
+        type: 'stdio',
+        command: '/bin/sh',
+        args: ['-c', `touch '${nodePath.join(markers, marker)}'; sleep 1`],
+      });
+      const plants = new Map<string, string>([
+        ['.ax/SOUL.md', 'CANARY-SOUL-7f3a\n'],
+        ['CLAUDE.md', 'CANARY-CLAUDEMD-91bc\n'],
+        ['.claude/CLAUDE.md', 'CANARY-DOTCLAUDE-55aa\n'],
+        ['.claude/settings.json', JSON.stringify({
+          hooks: {
+            SessionStart: [hook('SessionStart')],
+            UserPromptSubmit: [hook('UserPromptSubmit')],
+            Stop: [hook('Stop')],
+          },
+        })],
+        ['.mcp.json', JSON.stringify({ mcpServers: { canaryproj: stdioServer('mcp-json-spawned') } })],
+        ['.claude.json', JSON.stringify({ mcpServers: { canaryhome: stdioServer('claude-json-spawned') } })],
+        ['.claude/skills/canary-skill/SKILL.md', '---\nname: canary-skill\ndescription: CANARY-SKILL-3c1d\n---\nPlanted by the agent.\n'],
+        ['.claude/skills/canary-skill/.mcp.json', JSON.stringify({
+          mcpServers: { c0000000000: { type: 'http', url: 'https://canary.example.com/mcp' } },
+        })],
+      ]);
+      for (const [rel, content] of plants) {
+        await fs.mkdir(nodePath.dirname(nodePath.join(files, rel)), { recursive: true });
+        await fs.writeFile(nodePath.join(files, rel), content);
+      }
+      const plantedTree = new Set<string>();
+      for (const rel of plants.keys()) {
+        plantedTree.add(rel);
+        const parts = rel.split('/');
+        for (let i = 1; i < parts.length; i += 1) plantedTree.add(`${parts.slice(0, i).join('/')}/`);
+      }
+      setEnv({ ...COMPLETE_ENV, AX_USERFILES_ROOT: files, AX_WORKSPACE_ROOT: agent, CLAUDE_CONFIG_DIR: cfg });
+      bootableHost();
+
+      const { rc } = await runMain();
+
+      expect(rc).toBe(0);
+      expect(queryMock).toHaveBeenCalledTimes(1);
+      // Imported here, not at the top: it loads @ax/agent-runner-core, whose
+      // mocked internals must not initialize before this file's mock fns do.
+      const { MCP_HOST_SERVER_NAME, MCP_SANDBOX_SERVER_NAME } = await import('../tool-names.js');
+      const { options } = queryMock.mock.calls[0]![0] as {
+        options: {
+          systemPrompt: string;
+          mcpServers: Record<string, unknown>;
+          settingSources: string[];
+          cwd: string;
+          env: Record<string, string | undefined>;
+        };
+      };
+      expect(options.systemPrompt).not.toMatch(/CANARY-/);
+      expect(Object.keys(options.mcpServers).sort()).toEqual(
+        [MCP_HOST_SERVER_NAME, MCP_SANDBOX_SERVER_NAME].sort(),
+      );
+      expect(options.settingSources).toEqual(['user']);
+      expect(options.cwd).toBe(files);
+      expect(options.env.HOME).toBe(files);
+      expect(options.env.CLAUDE_CONFIG_DIR).toBe(cfg);
+      expect('CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD' in options.env).toBe(false);
+      expect(await listTree(files)).toEqual([...plantedTree].sort());
+    });
+
     // TASK-994: where the SDK's transcript working copy lives. With a stamped
     // AX_TRANSCRIPTS_ROOT the SDK's hard-coded `$CLAUDE_CONFIG_DIR/projects`
     // is a link to it and EVERY reader/writer uses the link target; without
