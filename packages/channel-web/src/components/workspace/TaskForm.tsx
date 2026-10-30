@@ -78,11 +78,6 @@ const KIND_HELP: Record<Kind, string> = {
   repeat: 'Does the same job on a schedule.',
 };
 const CUSTOM = '__custom';
-/**
- * Input and Textarea don't draw aria-invalid themselves (InputGroup does), so a
- * control here takes the destructive outline from its Field's invalid state.
- */
-const INVALID_OUTLINE = 'group-data-[invalid=true]/field:border-destructive group-data-[invalid=true]/field:focus-visible:ring-destructive';
 type Chip = 'agent' | 'schedule' | 'hours' | 'updates';
 
 /** A pill that opens a small popover. Its name carries its current value. */
@@ -244,7 +239,7 @@ export function TaskForm({
     return (
       <Field key={options.key} data-invalid={invalid(field) || undefined} data-disabled={disabled || undefined}>
         <FieldLabel htmlFor={inputId}>{label}</FieldLabel>
-        <Input id={inputId} className={INVALID_OUTLINE} ref={options.focus === false ? undefined : register(field)} value={value}
+        <Input id={inputId} ref={options.focus === false ? undefined : register(field)} value={value}
           onChange={event => onChange(event.target.value)} disabled={disabled}
           aria-invalid={invalid(field) || undefined} aria-describedby={describedBy(field, helpId)}
           {...(options.type ? { type: options.type } : {})}
@@ -306,7 +301,7 @@ export function TaskForm({
       <FieldGroup className="gap-3">
         <Field data-invalid={invalid('name') || undefined} data-disabled={disabled || undefined}>
           <FieldLabel htmlFor={`${id}-name`} className="sr-only">Name</FieldLabel>
-          <Input id={`${id}-name`} ref={register('name')} placeholder="Name" value={form.name} className={INVALID_OUTLINE}
+          <Input id={`${id}-name`} ref={register('name')} placeholder="Name" value={form.name}
             maxLength={ROUTINE_NAME_MAX_CHARS} disabled={disabled}
             onChange={event => update('name', event.target.value)}
             aria-invalid={invalid('name') || undefined} aria-describedby={describedBy('name')} />
@@ -314,7 +309,7 @@ export function TaskForm({
         </Field>
         <Field data-invalid={invalid('promptBody') || undefined} data-disabled={disabled || undefined}>
           <FieldLabel htmlFor={`${id}-promptBody`} className="sr-only">What should {agentName} do?</FieldLabel>
-          <Textarea id={`${id}-promptBody`} ref={register('promptBody')} rows={3} className={INVALID_OUTLINE}
+          <Textarea id={`${id}-promptBody`} ref={register('promptBody')} rows={3}
             placeholder={`What should ${agentName} do?`} value={form.promptBody} disabled={disabled}
             onChange={event => update('promptBody', event.target.value)}
             aria-invalid={invalid('promptBody') || undefined} aria-describedby={describedBy('promptBody')} />
@@ -417,7 +412,7 @@ export function TaskForm({
                 {(['start', 'end'] as const).map(edge => (
                   <Field key={edge} data-invalid={invalid('hours') || undefined}>
                     <FieldLabel htmlFor={`${id}-hours-${edge}`}>{edge === 'start' ? 'Start' : 'End'}</FieldLabel>
-                    <Input id={`${id}-hours-${edge}`} className={INVALID_OUTLINE} value={form.activeHours?.[edge] ?? ''} placeholder={edge === 'start' ? '09:00' : '17:00'}
+                    <Input id={`${id}-hours-${edge}`} value={form.activeHours?.[edge] ?? ''} placeholder={edge === 'start' ? '09:00' : '17:00'}
                       disabled={disabled} aria-invalid={invalid('hours') || undefined}
                       aria-describedby={invalid('hours') ? popoverErrorId('hours') : undefined}
                       onChange={event => { if (form.activeHours) update('activeHours', { ...form.activeHours, [edge]: event.target.value }); }} />

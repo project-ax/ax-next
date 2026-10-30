@@ -44,6 +44,9 @@ export function UsagePricesCard({
   const [error, setError] = useState<string | null>(null);
   const validModel =
     draft !== null && /^[a-zA-Z0-9][a-zA-Z0-9/_.:@+-]{0,199}$/.test(draft.model.trim());
+  // A new price starts with no model: that's unfinished, not wrong, so it
+  // isn't marked until something is typed. Save still waits for a valid one.
+  const modelInvalid = draft !== null && draft.model.trim() !== '' && !validModel;
   const validRates =
     draft !== null &&
     rates.every(
@@ -158,13 +161,13 @@ export function UsagePricesCard({
             }}
           >
             <FieldGroup>
-              <Field data-invalid={!validModel || undefined}>
+              <Field data-invalid={modelInvalid || undefined}>
                 <FieldLabel htmlFor="price-model">Model reference</FieldLabel>
                 <Input
                   id="price-model"
                   value={draft.model}
                   onChange={(e) => setDraft({ ...draft, model: e.target.value })}
-                  aria-invalid={!validModel || undefined}
+                  aria-invalid={modelInvalid || undefined}
                   aria-describedby="price-model-help"
                 />
                 <FieldDescription id="price-model-help">
