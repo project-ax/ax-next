@@ -43,13 +43,15 @@ written only through hooks. Everything else is plain files on NFS.**
 Goals
 - Delete the git workspace tier, `.ax/`, and every hook, IPC action and package
   that exists only to serve it.
-- Identity, onboarding state and memory rules become DB rows written through
-  hooks, validated at write time.
+- Identity, onboarding state and Instructions (memory rules merged with
+  `AGENTS.md`, §6) become DB rows written through hooks, validated at write time.
 - One obvious answer to "where does X live?" for the agent and for us.
+- A brand-new agent's `/files` is empty: nothing the platform runs writes into
+  it. Only the agent's own work (and people, via the agent) puts files there.
 
 Non-goals
 - File history / versioning / undo for `/files` (git never provided it to users).
-- Version history for DB-backed, hook-written content (identity, memory rules).
+- Version history for DB-backed, hook-written content (identity, Instructions).
   A later design may add history for everything written through hooks; this
   design stores none (decided 2026-10-30).
 - Sharing files between agents or people (W2/W3 territory; reverted in #1004).
@@ -105,13 +107,14 @@ Decisions and reasons:
 - **git stays installed in the runner image** (agents `git clone` for their own
   work; the prompt suggests it). Only the git-server image/templates go.
 
-## 5. Identity and onboarding → DB
+## 5. Identity, Instructions and onboarding → DB
 
 Owner: `@ax/agents` (Invariant 4).
 
 Storage
-- Identity sections: `identity`, `soul`, `operatingNotes` (was `AGENTS.md`), text,
-  per agent, with a monotonically increasing `revision`.
+- Identity sections: `identity`, `soul` (the agent describing itself), text, per
+  agent, plus `instructions` (people's standing instructions, §6), with a
+  monotonically increasing `revision` covering all three.
 - No version history is stored (decided 2026-10-30; see §3 non-goals). `revision`
   is only a change counter used for the prompt refresh below.
 - Onboarding state: `bootstrap: 'none' | 'pending' | 'done'`, set inside the
@@ -120,10 +123,10 @@ Storage
   admin-created agents get `none`.
 
 Service hooks (names indicative; boundary review in the PR)
-- `agents:identity:get {agentId} → {identity, soul, operatingNotes, bootstrap, revision}`
+- `agents:identity:get {agentId} → {identity, soul, instructions, bootstrap, revision}`
 - `agents:identity:set {agentId, patch, expectedRevision}` — calls the scan hook,
   fails closed; on success fires `system-prompt:augment-changed` so live
-  sessions pick up the change (same mechanism Rules use).
+  sessions pick up the change (the mechanism memory rules use today).
 - `agents:identity:complete-bootstrap {agentId}` — requires non-empty identity
   and soul; compare-and-set `pending → done`; second caller gets "already done".
 - `identity:scan` registered by `@ax/validator-identity` (precedent:
@@ -133,7 +136,7 @@ Service hooks (names indicative; boundary review in the PR)
   service; avoid leaky names (`path`, `.ax`, `AGENTS.md`, git `version`/`parent`).
 
 Agent-facing tools (host-executed)
-- `update_identity({section: 'identity'|'soul'|'operatingNotes', content})` plus
+- `update_identity({section: 'identity'|'soul', content})` plus
   an optional `{old, new}` edit form. Returns the saved text and says "applies
   from your next message".
 - `complete_bootstrap()` — offered only while `bootstrap = 'pending'`.
@@ -167,17 +170,34 @@ Prompt
 UI
 - Identity editor and bootstrap routes (`routes-agent-identity.ts`,
   `routes-agent-bootstrap.ts`) call the identity hooks. Admin `AgentForm.tsx`
-  stops showing `.ax/*.md` file names.
+  stops showing `.ax/*.md` file names and loses its "advanced operating
+  instructions" field (§6).
 
-## 6. Memory rules → DB
+## 6. Instructions: memory rules + `AGENTS.md` merged (decided 2026-10-30)
 
-- `@ax/memory` stores rules itself (e.g. via `storage:get/set`) instead of
-  `workspace:read/apply` on `memory/system/rules.md`. `memory:rules:read/write`
-  hook signatures are already storage-agnostic — internal change, no boundary
-  review.
-- No runner write path exists at all, so `RUNNER_IMMUTABLE_PATHS` and
-  `MEMORY_RULES_PATH` go away.
-- Purge on `agents:deleted`.
+Today two places hold people's standing instructions: memory rules (settings
+page "Instructions", `@ax/memory`, people-only) and `AGENTS.md` (admin form
+"advanced operating instructions", agent-writable). Same concept, two sources of
+truth (Invariant 4). They merge into one **Instructions** field:
+
+- Stored by `@ax/agents` as the `instructions` section (§5). Always on — no
+  longer depends on a memory option.
+- **People only.** Written through `agents:identity:set` from the settings page;
+  `update_identity` cannot touch it, so the agent can never rewrite its own
+  standing instructions. What the agent learns goes to facts and skills.
+- Same 16,384-character cap and scan as today's rules; same edit permissions as
+  today's settings-page Instructions section.
+- Prompt: one section, "Instructions from your people", after the defaults,
+  overriding them, never trimmed. Replaces both the `AGENTS.md` override layer
+  and the `## Rules From Your User` memory block section.
+- One editor: the settings page Instructions section (`AgentInstructions.tsx`).
+  The admin form's operating-instructions field goes away.
+- `@ax/memory` loses rules entirely: `memory:rules:read/write`, its rules
+  augment rendering and its `rules` option are deleted. `RUNNER_IMMUTABLE_PATHS`
+  and `MEMORY_RULES_PATH` go away. `@ax/memory` keeps facts only.
+
+## 6a. Facts export
+
 - Facts export: drop the git copy (`permanent/memory/facts/**`); the read-only
   `/memory` mount is the only file view. Deployments without memory exports have
   no file view of facts — recall still works. State this in the chart docs.
@@ -223,7 +243,7 @@ conversation; keeping a file is deliberate.
 
 | Today | Target |
 |---|---|
-| `.ax/skill-reflection/last-run.json` | plain file `/files/.skill-reflection/last-run.json` (no security gate). Update the seeded routine prompt (`routines/src/reflection-prompt.ts:72,91`) via a `prompt_body` migration; bump `SKILL_REFLECTION_SEED_HASH`. |
+| `.ax/skill-reflection/last-run.json` | **Deleted — no marker** (decided 2026-10-30). The routines plugin already records every fire in the DB (`routines:recent-fires`); when the skill-reflection routine fires, the host puts the date of the last completed pass (or "never") into the prompt from those records. The agent writes nothing. Update the seeded prompt (`routines/src/reflection-prompt.ts:72,91`: Step 1 reads the date from the prompt; Step 4 no longer writes a file) via a `prompt_body` migration; bump `SKILL_REFLECTION_SEED_HASH`. |
 | Ordinary work product under `/agent` | `/files` |
 | `.claude/*`, root `CLAUDE.md` vetoes (`validator-skill` pre-apply) | deleted; replaced by tests in §11 |
 
@@ -231,7 +251,7 @@ conversation; keeping a file is deliberate.
 
 Decided 2026-10-30: plain reset; nobody is using ax yet.
 - Existing agents: identity empty, `bootstrap = 'none'` (fallback identity line
-  from `fallbackIdentityLine(displayName)`), memory rules empty.
+  from `fallbackIdentityLine(displayName)`), Instructions empty.
 - Delete host bare repos (`ws-*.git`) and `disk_quota` rows with
   `kind='workspace'`. Write the runbook step.
 - Old conversations stay readable; uploads in them degrade (§7).
@@ -242,6 +262,10 @@ Decided 2026-10-30: plain reset; nobody is using ax yet.
 - Runner refuses to start if `CLAUDE_CONFIG_DIR` is unset or resolves inside
   `/files` (otherwise an agent-planted `/files/.claude/settings.json` would load
   as user settings — hooks run commands).
+- Test: after a brand-new agent's first chat, its `/files` is empty. In
+  particular the SDK's side files (`.claude.json`, `.claude/backups/`, today
+  landing in HOME = `/files`, `agent-claude-sdk-runner/src/main.ts:402`) go to
+  `CLAUDE_CONFIG_DIR` on tmpfs, and tool caches/venvs go to `/tmp`.
 - Canary test: plant `/files/.ax/SOUL.md`, `/files/CLAUDE.md`,
   `/files/.claude/settings.json`, `/files/.mcp.json`; assert no effect on the
   prompt, SDK settings or MCP servers.
@@ -316,14 +340,14 @@ Already dead, ignore: `agent-native-runner`, `tool-file-io(-impl)`,
 
 ## 16. Rollout (PR slicing from review)
 
-1. Identity + onboarding to DB (§5), including the reset for identity.
-2. Rules to DB; exporter volume-only; reflection marker moved (§6, §9).
+1. Identity, Instructions + onboarding to DB (§5, §6), including the reset.
+2. Exporter volume-only; reflection marker replaced by host-supplied last-pass date (§6a, §9).
 3. Pin blob root; home required in chart/presets; kind NFS; Filestore backups;
    `/files` quota meter (§4, §12, §13).
 4. Atomic removal of the git tier and uploads change (§7, §8, §11, §14) — one
    PR, since removing only the runner side leaves dead host handlers.
 5. Chart/ops cleanup and reset runbook (§10, §13).
-6. `(walk)` card on kind: bootstrap, identity edit, rules, Files tab, uploads,
+6. `(walk)` card on kind: bootstrap, identity edit, Instructions, Files tab, uploads,
    resume, quota.
 
 ## 17. Left to the builder
