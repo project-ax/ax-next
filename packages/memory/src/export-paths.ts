@@ -8,10 +8,6 @@ export type FactsPath =
     readonly [factsPathBrand]: true;
   };
 
-export type FactsChange =
-  | { path: FactsPath; kind: 'put'; content: Uint8Array }
-  | { path: FactsPath; kind: 'delete' };
-
 export function subjectSlug(subject: string): string {
   return /^[a-z0-9_-]{1,62}$/.test(subject)
     ? `v-${subject}`

@@ -1,11 +1,12 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { MEMORY_FACTS_EXPORT_ROOT, type AgentContext } from '@ax/core';
-import { createWorkspaceGitPlugin } from '@ax/workspace-git';
 
 import { MEMORY_EXPORT_FLUSH_HOOK } from '../exporter.js';
+import { volumeAgentKey } from '../export-volume.js';
+import { createMemoryPlugin } from '../plugin.js';
 import {
   ALICE,
   BOB,
@@ -15,6 +16,7 @@ import {
 } from './harness.js';
 
 const ROOT = MEMORY_FACTS_EXPORT_ROOT;
+const BACKING = { server: 'nfs.internal', exportPath: '/srv/ax/memory' };
 const dirs: string[] = [];
 const harnesses: MemoryHarness[] = [];
 
@@ -24,67 +26,50 @@ afterEach(async () => {
 });
 
 async function makeExportHarness(options: Parameters<typeof makeMemoryHarness>[1] = {}) {
-  const repoRoot = await mkdtemp(join(tmpdir(), 'ax-export-ws-'));
-  dirs.push(repoRoot);
-  const h = await makeMemoryHarness({ exports: { debounceMs: 5 } }, options);
+  const hostRoot = await mkdtemp(join(tmpdir(), 'ax-export-vol-'));
+  dirs.push(hostRoot);
+  const h = await makeMemoryHarness(
+    { exports: { debounceMs: 5, volume: { hostRoot, backing: BACKING } } },
+    options,
+  );
   harnesses.push(h);
-  const ws = createWorkspaceGitPlugin({ repoRoot });
-  await ws.init({ bus: h.bus });
   const flush = (ctx?: AgentContext) =>
     h.bus.call<Record<string, never>, { changed: boolean }>(
       MEMORY_EXPORT_FLUSH_HOOK,
       ctx ?? h.ctx(),
       {},
     );
+  // The agent's own slot in the volume. Facts paths (`${ROOT}/…`) are relative to it.
+  const agentDir = (ctx?: AgentContext): string =>
+    join(hostRoot, volumeAgentKey((ctx ?? h.ctx()).agentId));
   const listPaths = async (ctx?: AgentContext): Promise<string[]> => {
-    const out = await h.bus.call<{ pathGlob: string }, { paths: string[] }>(
-      'workspace:list',
-      ctx ?? h.ctx(),
-      { pathGlob: `${ROOT}/**` },
-    );
-    return out.paths;
+    const paths: string[] = [];
+    const walk = async (dir: string, rel: string): Promise<void> => {
+      const entries = await readdir(dir, { withFileTypes: true }).catch(
+        (err: NodeJS.ErrnoException) => {
+          if (err.code === 'ENOENT') return [];
+          throw err;
+        },
+      );
+      for (const entry of entries) {
+        if (entry.isDirectory()) await walk(join(dir, entry.name), `${rel}/${entry.name}`);
+        else paths.push(`${rel}/${entry.name}`);
+      }
+    };
+    await walk(join(agentDir(ctx), ...ROOT.split('/')), ROOT);
+    return paths;
   };
-  const readText = async (path: string, ctx?: AgentContext): Promise<string> => {
-    const out = await h.bus.call<{ path: string }, { found: boolean; bytes?: Uint8Array }>(
-      'workspace:read',
-      ctx ?? h.ctx(),
-      { path },
-    );
-    if (!out.found) throw new Error(`not found: ${path}`);
-    return Buffer.from(out.bytes!).toString('utf-8');
-  };
-  return { h, flush, listPaths, readText };
+  const readText = (path: string, ctx?: AgentContext): Promise<string> =>
+    readFile(join(agentDir(ctx), ...path.split('/')), 'utf-8');
+  return { h, hostRoot, flush, listPaths, readText };
 }
 
 function thisMonth(): string {
   return new Date().toISOString().slice(0, 7);
 }
 
-describe('memory facts export — real engine + real workspace-git', () => {
-  it('a first export into a workspace that already has commits succeeds and preserves existing files', async () => {
-    const { h, flush, listPaths, readText } = await makeExportHarness();
-    await h.bus.call(
-      'workspace:apply',
-      h.ctx(),
-      {
-        parent: null,
-        reason: 'seed',
-        changes: [
-          { path: '.ax/IDENTITY.md', kind: 'put', content: Buffer.from('# me\n') },
-        ],
-      },
-    );
-    await h.remember({ about: 'user', relation: 'lives in', value: 'seeded-tea' });
-    const result = await flush();
-    expect(result.changed).toBe(true);
-    expect(await readText('.ax/IDENTITY.md')).toBe('# me\n');
-    const paths = await listPaths();
-    expect(paths).toContain(`${ROOT}/profile.md`);
-    const profile = await readText(`${ROOT}/profile.md`);
-    expect(profile).toContain('seeded-tea');
-  });
-
-  it('publishes profile/recent/journal files through the real workspace', async () => {
+describe('memory facts export — real engine + real volume', () => {
+  it('publishes profile/recent/journal files into the volume', async () => {
     const { h, flush, listPaths, readText } = await makeExportHarness();
     await h.remember({ about: 'user', relation: 'lives in', value: 'Seattle' });
     const result = await flush();
@@ -204,51 +189,28 @@ describe('memory facts export — real engine + real workspace-git', () => {
     expect(t2).not.toContain('agent1-tea');
   });
 
-  it('an unchanged projection makes no second apply and returns changed:false', async () => {
+  it('an unchanged projection returns changed:false', async () => {
     const { h, flush } = await makeExportHarness();
-    let applies = 0;
-    h.bus.subscribe('workspace:applied', 'test', async () => {
-      applies += 1;
-    });
     await h.remember({ about: 'user', relation: 'likes', value: 'tea' });
-    await flush();
-    expect(applies).toBe(1);
-    const again = await flush();
-    expect(again.changed).toBe(false);
-    expect(applies).toBe(1);
+    expect(await flush()).toEqual({ changed: true });
+    expect(await flush()).toEqual({ changed: false });
   });
 
   it('a revoked member is refused before anything is published', async () => {
-    const { h, flush } = await makeExportHarness({
+    const { h, hostRoot, flush } = await makeExportHarness({
       agent: { visibility: 'team' },
     });
     h.teamMembers.delete(BOB);
     await expect(flush(h.ctx({ userId: BOB }))).rejects.toMatchObject({
       code: 'forbidden',
     });
+    expect(await readdir(hostRoot)).toEqual([]);
   });
 });
 
 describe('sandbox:memory-mounts resolver', () => {
   async function makeVolumeHarness(options: Parameters<typeof makeMemoryHarness>[1] = {}) {
-    const repoRoot = await mkdtemp(join(tmpdir(), 'ax-export-ws-'));
-    const hostRoot = await mkdtemp(join(tmpdir(), 'ax-export-vol-'));
-    dirs.push(repoRoot, hostRoot);
-    const h = await makeMemoryHarness(
-      {
-        exports: {
-          debounceMs: 5,
-          volume: {
-            hostRoot,
-            backing: { server: 'nfs.internal', exportPath: '/srv/ax/memory' },
-          },
-        },
-      },
-      options,
-    );
-    const ws = createWorkspaceGitPlugin({ repoRoot });
-    await ws.init({ bus: h.bus });
-    harnesses.push(h);
+    const { h, hostRoot } = await makeExportHarness(options);
     const resolveMounts = (owner: { agentId: string; userId: string }) =>
       h.bus.call<unknown, { mounts: Array<Record<string, unknown>> }>(
         'sandbox:memory-mounts',
@@ -288,20 +250,17 @@ describe('sandbox:memory-mounts resolver', () => {
   });
 
   it('a volume sync failure means no mount is returned', async () => {
-    const repoRoot = await mkdtemp(join(tmpdir(), 'ax-export-ws-'));
-    const badHostRoot = join(await mkdtemp(join(tmpdir(), 'ax-export-vol-')), 'occupied');
-    dirs.push(repoRoot, badHostRoot);
-    const { writeFile } = await import('node:fs/promises');
+    const parent = await mkdtemp(join(tmpdir(), 'ax-export-vol-'));
+    dirs.push(parent);
+    const badHostRoot = join(parent, 'occupied');
     await writeFile(badHostRoot, 'not a dir');
     const h = await makeMemoryHarness({
       exports: {
         debounceMs: 5,
-        volume: { hostRoot: badHostRoot, backing: { server: 'nfs.internal', exportPath: '/srv/ax/memory' } },
+        volume: { hostRoot: badHostRoot, backing: BACKING },
       },
     });
     harnesses.push(h);
-    const ws = createWorkspaceGitPlugin({ repoRoot });
-    await ws.init({ bus: h.bus });
     await expect(
       h.bus.call('sandbox:memory-mounts', h.ctx(), {
         owner: { agentId: 'agent-1', userId: ALICE },
@@ -324,15 +283,6 @@ describe('sandbox:memory-mounts resolver', () => {
     const b = await resolveMounts({ agentId: 'agent-1', userId: BOB });
     expect(a.mounts[0]!.subPath).toBe(b.mounts[0]!.subPath);
   });
-
-  it('no volume configured → the hook is not registered', async () => {
-    const { h } = await makeExportHarness();
-    await expect(
-      h.bus.call('sandbox:memory-mounts', h.ctx(), {
-        owner: { agentId: 'agent-1', userId: ALICE },
-      }),
-    ).rejects.toThrow();
-  });
 });
 
 describe('memory export wiring', () => {
@@ -345,11 +295,37 @@ describe('memory export wiring', () => {
     );
   });
 
-  it('plugin without exports config registers no flush service', async () => {
+  it('exports without a volume is refused at construction (TASK-991)', () => {
+    expect(() => createMemoryPlugin({ exports: {} as never })).toThrowError(/exports\.volume/);
+    expect(() => createMemoryPlugin({ exports: { debounceMs: 5 } as never })).toThrowError(
+      /exports\.volume/,
+    );
+    expect(() => createMemoryPlugin({ exports: { volume: null } as never })).toThrowError(
+      /exports\.volume/,
+    );
+  });
+
+  it('an export-configured plugin calls no workspace hook and registers flush + mounts together', () => {
+    const { manifest } = createMemoryPlugin({
+      exports: { volume: { hostRoot: '/tmp/x', backing: BACKING } },
+    });
+    expect(manifest.calls.filter((h) => h.startsWith('workspace:'))).toEqual([]);
+    expect(manifest.calls).toContain('memory:facts:scan');
+    expect(manifest.registers).toEqual(
+      expect.arrayContaining([MEMORY_EXPORT_FLUSH_HOOK, 'sandbox:memory-mounts']),
+    );
+  });
+
+  it('a plugin without exports registers neither the flush hook nor the mount resolver', async () => {
     const h: MemoryHarness = await makeMemoryHarness();
     harnesses.push(h);
+    await expect(h.bus.call(MEMORY_EXPORT_FLUSH_HOOK, h.ctx(), {})).rejects.toMatchObject({
+      code: 'no-service',
+    });
     await expect(
-      h.bus.call(MEMORY_EXPORT_FLUSH_HOOK, h.ctx(), {}),
-    ).rejects.toThrow();
+      h.bus.call('sandbox:memory-mounts', h.ctx(), {
+        owner: { agentId: 'agent-1', userId: ALICE },
+      }),
+    ).rejects.toMatchObject({ code: 'no-service' });
   });
 });

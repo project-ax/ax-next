@@ -103,6 +103,30 @@ describe('syncFactsVolume', () => {
     expect(after.mtimeMs).toBe(before.mtimeMs);
   });
 
+  it('reports changed only when a file was written or removed', async () => {
+    const profile = factsPath({ kind: 'profile' });
+    const journal = factsPath({ kind: 'journal', speaker: 'user', month: '2026-09' });
+    const both = new Map<FactsPath, string>([
+      [profile, '# Profile\n\n- a\n'],
+      [journal, '# User memories — 2026-09\n\n- x\n'],
+    ]);
+    await expect(syncFactsVolume(volume, 'agent-1', both)).resolves.toEqual({ changed: true });
+    await expect(syncFactsVolume(volume, 'agent-1', both)).resolves.toEqual({ changed: false });
+
+    // A file the export does not own is neither removed nor counted.
+    await writeFile(join(agentFactsDir('agent-1'), 'notes.txt'), 'not ours');
+    await expect(syncFactsVolume(volume, 'agent-1', both)).resolves.toEqual({ changed: false });
+
+    const edited = new Map(both).set(profile, '# Profile\n\n- b\n');
+    await expect(syncFactsVolume(volume, 'agent-1', edited)).resolves.toEqual({ changed: true });
+
+    const dropped = new Map<FactsPath, string>([[profile, '# Profile\n\n- b\n']]);
+    await expect(syncFactsVolume(volume, 'agent-1', dropped)).resolves.toEqual({ changed: true });
+    await expect(stat(join(agentFactsDir('agent-1'), 'user/2026-09.md'))).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
+  });
+
   it('removes only known obsolete FactsPaths and leaves foreign files alone', async () => {
     const desired = new Map<FactsPath, string>([
       [factsPath({ kind: 'profile' }), '# Profile\n\nnew\n'],

@@ -1,5 +1,5 @@
 import Database from 'better-sqlite3';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -11,9 +11,9 @@ import {
   type AgentContext,
   type Logger,
 } from '@ax/core';
-import { createWorkspaceGitPlugin } from '@ax/workspace-git';
 
 import { MEMORY_EXPORT_FLUSH_HOOK } from '../exporter.js';
+import { volumeAgentKey } from '../export-volume.js';
 import { createMemoryPlugin } from '../plugin.js';
 import { NO_CREDENTIAL_EVENT, NOTE_FAILED_EVENT } from '../failure.js';
 import {
@@ -642,13 +642,15 @@ describe('the note tool degrades, loudly and without leaking', () => {
 });
 
 describe('a note feeds the derived export', () => {
-  it('a valid note lands in the exported projection on the real workspace', async () => {
-    const repoRoot = await mkdtemp(join(tmpdir(), 'ax-note-ws-'));
-    dirs.push(repoRoot);
-    const h = await makeMemoryHarness({ exports: { debounceMs: 5 } });
+  const backing = { server: 'nfs.internal', exportPath: '/srv/ax/memory' };
+
+  it('a valid note lands in the exported projection', async () => {
+    const hostRoot = await mkdtemp(join(tmpdir(), 'ax-note-vol-'));
+    dirs.push(hostRoot);
+    const h = await makeMemoryHarness({
+      exports: { debounceMs: 5, volume: { hostRoot, backing } },
+    });
     harnesses.push(h);
-    const ws = createWorkspaceGitPlugin({ repoRoot });
-    await ws.init({ bus: h.bus });
 
     expect(await note(h, { about: 'user', relation: 'lives in', value: 'Osaka' })).toEqual({
       ok: true,
@@ -659,17 +661,27 @@ describe('a note feeds the derived export', () => {
       {},
     );
     expect(flush.changed).toBe(true);
-    const out = await h.bus.call<{ path: string }, { found: boolean; bytes?: Uint8Array }>(
-      'workspace:read',
-      h.ctx(),
-      { path: `${MEMORY_FACTS_EXPORT_ROOT}/profile.md` },
+    const profile = await readFile(
+      join(
+        hostRoot,
+        volumeAgentKey(h.ctx().agentId),
+        ...MEMORY_FACTS_EXPORT_ROOT.split('/'),
+        'profile.md',
+      ),
+      'utf-8',
     );
-    expect(out.found).toBe(true);
-    expect(Buffer.from(out.bytes!).toString('utf-8')).toContain('Osaka');
+    expect(profile).toContain('Osaka');
   });
 
   it('a failed projection does not fail the note or lose the row', async () => {
-    const h = await makeMemoryHarness({ exports: { debounceMs: 5 } });
+    const parent = await mkdtemp(join(tmpdir(), 'ax-note-vol-'));
+    dirs.push(parent);
+    // A regular file where the volume's root should be: every sync fails.
+    const hostRoot = join(parent, 'occupied');
+    await writeFile(hostRoot, 'not a dir');
+    const h = await makeMemoryHarness({
+      exports: { debounceMs: 5, volume: { hostRoot, backing } },
+    });
     harnesses.push(h);
 
     expect(await note(h, { about: 'user', relation: 'lives in', value: 'Osaka' })).toEqual({

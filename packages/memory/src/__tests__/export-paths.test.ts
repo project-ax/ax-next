@@ -8,7 +8,6 @@ import {
   factsPath,
   parseFactsPath,
   subjectSlug,
-  type FactsChange,
   type FactsPath,
 } from '../export-paths.js';
 
@@ -126,11 +125,6 @@ describe('FactsPath branding (type-level)', () => {
     expectTypeOf<'permanent/memory/facts/profile.md'>().not.toExtend<FactsPath>();
     expectTypeOf<'permanent/memory/system/rules.md'>().not.toExtend<FactsPath>();
     expectTypeOf<'memory/system/rules.md'>().not.toExtend<FactsPath>();
-  });
-
-  it('a FactsChange path is a FactsPath, and a raw string cannot stand in for one', () => {
-    expectTypeOf<FactsChange['path']>().toExtend<FactsPath>();
-    expectTypeOf<string>().not.toExtend<FactsChange['path']>();
   });
 
   it('the type assertions above compile for real under tsc', { timeout: 30_000 }, () => {

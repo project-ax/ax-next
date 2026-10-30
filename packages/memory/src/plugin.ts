@@ -359,6 +359,12 @@ export interface MemoryPluginConfig {
    * see `augment.ts`'s `DEFAULTS`.
    */
   block?: MemoryBlockConfig;
+  /**
+   * Writes each agent's facts as files to the memory volume (`/memory` in
+   * runners) — the only file view of facts — and registers
+   * `memory:export:flush` and `sandbox:memory-mounts`. Without it there is no
+   * file view; recall is unaffected.
+   */
   exports?: MemoryExportConfig;
 }
 
@@ -514,7 +520,14 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
       message: 'exports must be an object when set',
     });
   }
-  if (exportsCfg?.volume !== undefined) validateVolumeConfig(exportsCfg.volume);
+  if (exportsCfg !== undefined && (exportsCfg.volume === undefined || exportsCfg.volume === null)) {
+    throw new PluginError({
+      code: 'invalid-payload',
+      plugin: PLUGIN_NAME,
+      message: 'exports.volume is required: the facts export is written only to the memory volume',
+    });
+  }
+  if (exportsCfg !== undefined) validateVolumeConfig(exportsCfg.volume);
   let exporterRef: ReturnType<typeof createMemoryExporter> | undefined;
   let schedulerRef: IncrementalScheduler | undefined;
   // userIds whose last observer LLM call failed for want of a credential.
@@ -546,15 +559,14 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
         MEMORY_RECALL_TOOL_HOOK,
         'tool:execute:memory_use',
         MEMORY_NOTE_TOOL_HOOK,
-        ...(exportsCfg !== undefined ? [MEMORY_EXPORT_FLUSH_HOOK] : []),
-        ...(exportsCfg?.volume !== undefined ? ['sandbox:memory-mounts'] : []),
+        ...(exportsCfg !== undefined ? [MEMORY_EXPORT_FLUSH_HOOK, 'sandbox:memory-mounts'] : []),
       ],
-      // Hard dependencies, all six — plus the export projection's four when
-      // `exports` is configured (TASK-494): this plugin has nothing to fall
-      // back on. A memory surface with no store behind it cannot degrade into
-      // anything honest — it can only answer "no memories" to a question it
-      // never asked anyone. Failing at boot with `missing-service` is the
-      // outcome that gets noticed.
+      // Hard dependencies, all seven — plus `memory:facts:scan` when `exports`
+      // is configured (the volume export, TASK-991): this plugin has nothing
+      // to fall back on. A memory surface with no store behind it cannot
+      // degrade into anything honest — it can only answer "no memories" to a
+      // question it never asked anyone. Failing at boot with `missing-service`
+      // is the outcome that gets noticed.
       calls: [
         FACTS_RECALL_HOOK,
         FACTS_RECORD_HOOK,
@@ -563,9 +575,7 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
         FACTS_REVERT_HOOK,
         'tool:register',
         AGENTS_RESOLVE_HOOK,
-        ...(exportsCfg !== undefined
-          ? [FACTS_SCAN_HOOK, 'workspace:list', 'workspace:read', 'workspace:apply']
-          : []),
+        ...(exportsCfg !== undefined ? [FACTS_SCAN_HOOK] : []),
       ],
       // The extraction provider is OPTIONAL, and that asymmetry with the
       // three engine hooks above is deliberate. A memory surface with no
@@ -614,14 +624,12 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
         exporter?.schedule(ctx);
       };
 
-      if (exporter !== undefined) {
+      if (exportsCfg !== undefined && exporter !== undefined) {
         bus.registerService<Record<string, never>, { changed: boolean }>(
           MEMORY_EXPORT_FLUSH_HOOK,
           PLUGIN_NAME,
           async (ctx) => exporter.flush(ctx),
         );
-      }
-      if (exportsCfg?.volume !== undefined && exporter !== undefined) {
         const volume = exportsCfg.volume;
         bus.registerService<ResolveMountsInput, ResolveMountsOutput>(
           'sandbox:memory-mounts',
