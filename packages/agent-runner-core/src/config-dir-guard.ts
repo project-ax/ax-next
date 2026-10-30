@@ -12,6 +12,8 @@
 //
 // Both sides are compared as real paths, so a symlink on either side (or a
 // platform alias such as macOS /var -> /private/var) cannot hide an overlap.
+// A path with a `..` segment is refused before any of that: `link/..` reads
+// as one directory and lands in another, depending on where `link` points.
 // The config dir must already exist: the sandbox creates it before it starts
 // the runner, and creating it here would mean writing before refusing.
 //
@@ -43,6 +45,13 @@ export async function assertConfigDirOutsideAgentHome(
     'claudeConfigDir' | 'transcriptsRoot' | 'userFilesRoot' | 'ephemeralRoot' | 'workspaceRoot'
   >,
 ): Promise<void> {
+  const roots = new Set(
+    [runnerHomeDir(env), env.userFilesRoot].filter((root): root is string => root !== undefined),
+  );
+  refuseDotDot(env.claudeConfigDir, 'CLAUDE_CONFIG_DIR');
+  if (env.transcriptsRoot !== undefined) refuseDotDot(env.transcriptsRoot, 'AX_TRANSCRIPTS_ROOT');
+  for (const root of roots) refuseDotDot(root, "the agent's home");
+
   let realConfig: string;
   try {
     realConfig = await fs.realpath(env.claudeConfigDir);
@@ -53,9 +62,6 @@ export async function assertConfigDirOutsideAgentHome(
     );
   }
 
-  const roots = new Set(
-    [runnerHomeDir(env), env.userFilesRoot].filter((root): root is string => root !== undefined),
-  );
   const realRoots: string[] = [];
   for (const root of roots) realRoots.push(await realpathOfPossiblyMissing(root, "the agent's home"));
 
@@ -80,6 +86,21 @@ export async function assertConfigDirOutsideAgentHome(
           "Point AX_TRANSCRIPTS_ROOT at a runner-private directory outside the agent's files (k8s: /tmp/transcripts).",
       );
     }
+  }
+}
+
+/**
+ * Throws when `p` has a `..` segment. `path.resolve` collapses `link/..` by
+ * spelling, but the kernel follows `link` first and steps up from where it
+ * lands, so the lexical reading can name the wrong directory. No sandbox
+ * builds a guarded path with `..` in it, so this refuses rather than guessing.
+ */
+function refuseDotDot(p: string, label: string): void {
+  if (p.split(/[\\/]/).includes('..')) {
+    throw new Error(
+      `refusing to start: ${label} (${p}) contains a '..' segment, so its real location cannot be checked. ` +
+        'Use an absolute path without `..`.',
+    );
   }
 }
 

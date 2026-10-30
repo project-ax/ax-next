@@ -178,6 +178,50 @@ describe('assertConfigDirOutsideAgentHome', () => {
     });
   });
 
+  // `path.resolve` collapses `link/..` by spelling, but the kernel follows
+  // `link` first and then steps up from where it lands. So a `..` segment can
+  // put a path somewhere a lexical reading would never guess. Every guarded
+  // path is refused outright when it carries one; no sandbox builds one.
+  describe("refuses a guarded path with a '..' segment", () => {
+    let cfg: string;
+    beforeEach(async () => {
+      cfg = await mkdirp(t, 'runner', '.ax', 'session');
+    });
+
+    it('a transcripts root whose `..` steps out of a symlink into the home', async () => {
+      // `<t>/tmp/link -> <t>/files/sub`, so `<t>/tmp/link/../transcripts` is
+      // really `<t>/files/transcripts`, though it reads as `<t>/tmp/transcripts`.
+      await mkdirp(t, 'tmp');
+      await fs.symlink(await mkdirp(home, 'sub'), path.join(t, 'tmp', 'link'));
+      await expect(
+        assertConfigDirOutsideAgentHome({ ...envWith(cfg), transcriptsRoot: `${t}/tmp/link/../transcripts` }),
+      ).rejects.toThrow(/^refusing to start: AX_TRANSCRIPTS_ROOT \(.+\) contains a '\.\.' segment/);
+    });
+
+    it('a home whose `..` steps out of a symlink to above the config dir', async () => {
+      // `<t>/tmp/link3 -> <cfg>`, so `<t>/tmp/link3/..` is really `<t>/runner/.ax`,
+      // which contains the config dir, though it reads as `<t>/tmp`.
+      await mkdirp(t, 'tmp');
+      await fs.symlink(cfg, path.join(t, 'tmp', 'link3'));
+      await expect(
+        assertConfigDirOutsideAgentHome(envWith(cfg, { userFilesRoot: `${t}/tmp/link3/..` })),
+      ).rejects.toThrow(/^refusing to start: the agent's home \(.+\) contains a '\.\.' segment/);
+    });
+
+    it('a config dir, even one that resolves somewhere harmless', async () => {
+      await mkdirp(t, 'runner', 'x');
+      await expect(
+        assertConfigDirOutsideAgentHome(envWith(`${t}/runner/x/../.ax/session`)),
+      ).rejects.toThrow(/^refusing to start: CLAUDE_CONFIG_DIR \(.+\) contains a '\.\.' segment/);
+    });
+
+    it('accepts a name that merely starts with dots (`..cache`)', async () => {
+      await expect(
+        assertConfigDirOutsideAgentHome(envWith(cfg, { userFilesRoot: path.join(t, '..cache') })),
+      ).resolves.toBeUndefined();
+    });
+  });
+
   it('refuses a config dir that does not exist, naming the errno', async () => {
     await expect(assertConfigDirOutsideAgentHome(envWith(path.join(t, 'nope')))).rejects.toThrow(
       /^refusing to start: CLAUDE_CONFIG_DIR \(.+\) does not exist or cannot be resolved \(ENOENT\)/,
