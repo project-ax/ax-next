@@ -128,13 +128,14 @@ export function registerWorkspaceApplyFacade(
       // 2. apply via the backend's internal hook with the FULL change set.
       //    Errors (e.g. parent-mismatch) propagate UNCHANGED so a caller can
       //    key off `code: 'parent-mismatch'` + the error's
-      //    `cause.actualParent` and retry. The callers that do:
-      //    `@ax/memory`'s facts exporter (`exporter.ts`) and `@ax/ipc-core`'s
-      //    workspace.commit-notify. NOT `@ax/attachments`, which an earlier
-      //    version of this comment named — TASK-68 moved it to `blob:put`
-      //    and off this path entirely. (Nor `memory:rules:write` or
-      //    channel-web's `workspace-cas.ts`: TASK-989 deleted both — identity
-      //    and Instructions live in @ax/agents now.)
+      //    `cause.actualParent` and retry. The caller that does:
+      //    `@ax/ipc-core`'s workspace.commit-notify. NOT `@ax/attachments`,
+      //    which an earlier version of this comment named — TASK-68 moved it
+      //    to `blob:put` and off this path entirely. (Nor `memory:rules:write`
+      //    or channel-web's `workspace-cas.ts`: TASK-989 deleted both —
+      //    identity and Instructions live in @ax/agents now. Nor `@ax/memory`'s
+      //    facts exporter: TASK-991 writes the export only to the memory
+      //    volume.)
       const applied = await bus.call<WorkspaceApplyInput, WorkspaceApplyOutput>(
         'workspace:apply-internal',
         ctx,

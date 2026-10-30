@@ -703,9 +703,8 @@ describe('workspace.commit-notify handler — pre-apply veto', () => {
 
 /**
  * Like `makePhase3Probe`, but hands back the `workspace:apply-bundle` spy so a
- * test can assert the apply NEVER RAN. "accepted:false" alone would also be
- * true of a guard that refused the response after landing the write, which is
- * the failure this whole card is about.
+ * test can assert whether the apply ran. "accepted:false" alone would also be
+ * true of a refusal that came after the write had landed.
  */
 function makeSpyingPhase3Probe(name: string): {
   plugin: Plugin;
@@ -769,9 +768,7 @@ describe('workspace.commit-notify handler — formerly runner-immutable paths ar
     });
 
     const result = await workspaceCommitNotifyHandler(
-      // The runner picks `reason` — pinned here to the most obviously
-      // trustworthy-looking string it could send, because the guard must not
-      // consult it. A `reason`-based allowlist would hand the sandbox the key.
+      // The runner picks `reason`; nothing here may key on it.
       { parentVersion: null, reason: 'turn', bundleBytes: 'UEFDSwAAAAA=' },
       ctx,
       bus,
@@ -790,7 +787,7 @@ describe('workspace.commit-notify handler — formerly runner-immutable paths ar
         { path: 'memory/docs/entity/acme.md', kind: 'put', content: new Uint8Array([2]) },
         { path: 'memory/system/rules.md', kind: 'put', content: new Uint8Array([3]) },
       ],
-      'immutable-allowed',
+      'old-rules-path',
     );
 
     expect(result.body).toMatchObject({ accepted: true });

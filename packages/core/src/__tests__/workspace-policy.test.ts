@@ -40,4 +40,10 @@ describe('workspace-policy', () => {
     expect(core).not.toHaveProperty('RUNNER_IMMUTABLE_PREFIXES');
     expect(core).not.toHaveProperty('RUNNER_IMMUTABLE_PATHS');
   });
+
+  it('the facts-export layout constant lives in @ax/sandbox-protocol only (TASK-991)', () => {
+    // One literal, one home (invariant 4): the volume writer and the mount
+    // resolvers import it from @ax/sandbox-protocol.
+    expect(core).not.toHaveProperty('MEMORY_FACTS_EXPORT_ROOT');
+  });
 });
