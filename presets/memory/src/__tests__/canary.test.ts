@@ -856,6 +856,13 @@ describe('@ax/preset-memory canary', () => {
     expect(recallDesc, 'memory_recall descriptor').toBeDefined();
     expect(noteDesc?.executesIn).toBe('host');
     expect(recallDesc?.executesIn).toBe('host');
+    // TASK-989 — the identity tools are advertised in the real catalog too,
+    // not just callable by name (a tool the model is never shown is dead).
+    for (const name of ['update_identity', 'complete_bootstrap']) {
+      const desc = listed.tools.find((t) => t.name === name);
+      expect(desc, `${name} descriptor`).toBeDefined();
+      expect(desc?.executesIn).toBe('host');
+    }
     expect(Object.keys(noteDesc?.inputSchema?.properties ?? {}).sort()).toEqual([
       'about',
       'relation',

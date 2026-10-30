@@ -11,6 +11,11 @@ import { HttpError } from '@/lib/http';
 import { INSTRUCTIONS_REFUSED } from '@/lib/workspace-api';
 import { AgentInstructions } from '../AgentInstructions';
 
+// TASK-417: the unavailable case says it is how the server is set up, and never
+// hints that waiting will help.
+const UNAVAILABLE_COPY =
+  'Instructions for Quill aren’t available because this server isn’t set up to keep them.';
+
 /**
  * A read that WORKED, with whatever the rules happen to hold.
  *
@@ -263,15 +268,16 @@ describe('AgentInstructions', () => {
       // And no prose retry either — the wording is the whole bug.
       expect(screen.queryByText(/try again in a moment/iu)).toBeNull();
       expect(
-        screen.getByText('Instructions for Quill aren’t available right now.'),
+        screen.getByText(UNAVAILABLE_COPY),
       ).toBeInTheDocument();
       expect(screen.queryByText(/This copy of AX/iu)).toBeNull();
+      expect(screen.queryByText(/right now|in a moment|later/iu)).toBeNull();
     });
 
     it('does not make the reader feel they broke something', () => {
       render(<AgentInstructions agentName="Quill" memory={unavailable()} />);
       expect(
-        screen.getByText('Instructions for Quill aren’t available right now.'),
+        screen.getByText(UNAVAILABLE_COPY),
       ).toBeInTheDocument();
       // A setup choice on the server, not a malfunction: register stays neutral.
       expect(screen.getByRole('alert').className).not.toContain('destructive');

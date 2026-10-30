@@ -13,10 +13,13 @@ import { PluginError, type AgentContext, type HookBus } from '@ax/core';
 // A save is a server-side read-then-write: read the current `revision`, hand
 // it back as `expectedRevision`, and on a `conflict` (someone else — often the
 // agent editing its own soul — saved in between) read again and retry, up to
-// IDENTITY_WRITE_ATTEMPTS times. A patch names only the sections the person
-// edited, so a retry keeps the other writer's change. That is the
-// last-writer-wins people had before; the `revision` never reaches the
-// browser.
+// IDENTITY_WRITE_ATTEMPTS times. The retry only gets the write past the
+// compare-and-set; it does not merge. A patch overwrites every section it
+// names: the admin PUT always sends both `identity` and `soul`, so a Save from
+// a stale form replaces a concurrent agent edit to either (as the old
+// three-file write did), while the Instructions route sends only
+// `instructions` and leaves the other sections alone. Last writer wins, per
+// section sent. The `revision` never reaches the browser.
 //
 // The payload shapes are declared here, not imported (Invariant 2 — the hook
 // bus is the contract). The replies crossed the bus and are checked before

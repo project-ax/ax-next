@@ -143,7 +143,8 @@ export function RulesWithoutEditor({
         <AlertDescription className="flex flex-col items-start gap-2">
           {status === 'unavailable' ? (
             <span>
-              Instructions for {agentName} aren’t available right now.
+              Instructions for {agentName} aren’t available because this server
+              isn’t set up to keep them.
             </span>
           ) : (
             <span>
