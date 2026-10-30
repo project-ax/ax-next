@@ -69,10 +69,13 @@ helm dependency update deploy/charts/ax-next
 kubectl --context kind-ax-next-dev create namespace ax-next-runners
 kubectl --context kind-ax-next-dev create namespace ax-next
 
-# 5. Bring up the dev NFS server (TASK-576: `host.preset: memory` — facts
-#    memory — is the chart-wide default now, and `kind-dev-values.yaml`
-#    points memory.exports at this server, so it has to exist before the
-#    chart installs, or the host pod hangs on a mount it can't reach).
+# 5. Bring up the dev NFS server. It serves two exports, and
+#    `kind-dev-values.yaml` points the chart at both: `/memory` for facts
+#    memory (TASK-576: `host.preset: memory` is the chart-wide default), and
+#    `/files`, every agent's home directory (TASK-992: the chart won't render
+#    without `sandbox.filestore`). It has to exist before the chart installs,
+#    or the host pod hangs on a mount it can't reach. `/files` lives on a PVC
+#    (`ax-next-files-nfs`), so it survives NFS-pod restarts.
 #    Equivalent to `make dev-kind-memory-nfs`. See `deploy/kind/memory-nfs/`
 #    for what this stands up and why it's dev-only.
 docker build -t ax-next/memory-nfs:dev deploy/kind/memory-nfs
@@ -205,7 +208,7 @@ The erase runs in a throwaway pod that mounts the PVC. This only works because t
 
 On **GKE** it's the Filestore share you set as `memory.exports.server` + `memory.exports.exportPath`. The throwaway pod mounts exactly that path, so the erase is scoped to the memory-exports share and nothing else on the instance. kubelet does the NFS mount from the node, so NetworkPolicies don't get in the way.
 
-On **kind** it's the dev NFS server in `deploy/kind/memory-nfs/`, which is backed by an `emptyDir`. Deleting its pod empties it: the Deployment starts a new pod with a fresh, empty `emptyDir`, and the entrypoint recreates `/exports/memory`.
+On **kind** it's the `/memory` export of the dev NFS server in `deploy/kind/memory-nfs/`, which is backed by an `emptyDir`. Deleting its pod empties `/memory` only: the Deployment starts a new pod with a fresh, empty `emptyDir`, and the entrypoint recreates `/exports/memory`. The same server's `/files` export (every agent's home directory) lives on the `ax-next-files-nfs` PVC and is kept. Wiping it is a separate step; see `deploy/kind/memory-nfs/README.md`.
 
 **GKE** (facts file and Filestore memory export in one pod; fill in your two values):
 
@@ -270,7 +273,8 @@ YAML
 kubectl --context kind-ax-next-dev -n ax-next wait --for=jsonpath='{.status.phase}'=Succeeded pod/memory-reset --timeout=180s
 kubectl --context kind-ax-next-dev -n ax-next delete pod memory-reset
 
-# The dev NFS export: deleting the pod empties its emptyDir.
+# The dev NFS /memory export: deleting the pod empties its emptyDir.
+# (/files is on a PVC and is kept.)
 kubectl --context kind-ax-next-dev -n ax-next delete pod -l app.kubernetes.io/name=ax-next-memory-nfs
 kubectl --context kind-ax-next-dev -n ax-next rollout status deploy/ax-next-memory-nfs
 ```

@@ -497,6 +497,30 @@ describeIfHelm('memory preset opt-in (TASK-496)', () => {
 // ---------------------------------------------------------------------------
 const KIND_MEMORY_VALUES = resolve(chartDir, 'kind-memory-values.yaml');
 const KIND_NFS_MANIFEST = resolve(repoRoot, 'deploy/kind/memory-nfs/nfs-server.yaml');
+const KIND_NFS_ENTRYPOINT = resolve(repoRoot, 'deploy/kind/memory-nfs/entrypoint.sh');
+
+type NfsVolume = {
+  name?: string;
+  emptyDir?: Record<string, unknown>;
+  persistentVolumeClaim?: { claimName?: string };
+};
+type NfsPodSpec = {
+  containers?: Array<{ volumeMounts?: Array<{ name?: string; mountPath?: string }> }>;
+  volumes?: NfsVolume[];
+};
+
+function kindNfsDocs(): K8sDoc[] {
+  return (loadAll(readFileSync(KIND_NFS_MANIFEST, 'utf8')) as Array<K8sDoc | null>).filter(
+    (d): d is K8sDoc => d != null && typeof d === 'object',
+  );
+}
+
+function kindNfsClusterIP(): string {
+  const service = kindNfsDocs().find((d) => d.kind === 'Service');
+  const clusterIP = (service?.spec as { clusterIP?: string } | undefined)?.clusterIP;
+  expect(clusterIP).toMatch(/^10\.96\.\d+\.\d+$/);
+  return clusterIP!;
+}
 
 describeIfHelm('kind memory overlay (TASK-519)', () => {
   it('renders with no --set at all — the overlay is complete on its own (TASK-523)', () => {
@@ -522,5 +546,111 @@ describeIfHelm('kind memory overlay (TASK-519)', () => {
     expect(exportsVol?.nfs?.server).toBe(clusterIP);
     expect(exportsVol?.nfs?.path).toBe('/memory');
     expect(envMap(container).get('AX_MEMORY_EXPORT_NFS_SERVER')).toBe(clusterIP);
+  });
+
+  // TASK-992: the same dev server also serves every agent's durable home.
+  it('points sandbox.filestore at the same dev NFS Service, on its own /files export', () => {
+    // REQUIRED passes the chart-test fixture first (another server, /vol1);
+    // kind-dev-values.yaml, passed after it, must override both.
+    const { container, spec } = hostSpec(hostDeployment(render(['-f', KIND_DEV_VALUES])));
+    const env = envMap(container);
+    const clusterIP = kindNfsClusterIP();
+    expect(env.get('AX_FILESTORE_SERVER')).toBe(clusterIP);
+    expect(env.get('AX_FILESTORE_EXPORT_PATH')).toBe('/files');
+    expect(env.get('AX_MEMORY_EXPORT_NFS_PATH')).toBe('/memory');
+    expect(env.get('AX_FILESTORE_EXPORT_PATH')).not.toBe(env.get('AX_MEMORY_EXPORT_NFS_PATH'));
+    expect(env.get('AX_FILESTORE_HOST_READ_PATH')).toBe('/user-files');
+
+    const readVol = (spec.volumes ?? []).find((v) => v.name === 'user-files-read') as
+      | { nfs?: { server?: string; path?: string; readOnly?: boolean } }
+      | undefined;
+    expect(readVol?.nfs).toMatchObject({ server: clusterIP, path: '/files', readOnly: true });
+    expect((container.volumeMounts ?? []).find((m) => m.name === 'user-files-read'))
+      .toMatchObject({ mountPath: '/user-files', readOnly: true });
+  });
+
+  it('the dev NFS server keeps /files on a PVC, not the emptyDir', () => {
+    const docs = kindNfsDocs();
+    const pvc = docs.find((d) => d.kind === 'PersistentVolumeClaim');
+    expect(pvc, 'nfs-server.yaml declares a PersistentVolumeClaim').toBeDefined();
+    const claimName = pvc!.metadata?.name;
+    // deploy/kind/memory-nfs/README.md's wipe recipe deletes it by this name.
+    expect(claimName).toBe('ax-next-files-nfs');
+
+    const dep = docs.find((d) => d.kind === 'Deployment');
+    expect(pvc!.metadata).toMatchObject({ namespace: (dep?.metadata as { namespace?: string })?.namespace });
+    // No storageClassName at all, so kind's default class provisions it. An
+    // empty string would instead disable provisioning and leave it Pending.
+    expect((pvc!.spec as { storageClassName?: string }).storageClassName).toBeUndefined();
+
+    const podSpec = (dep?.spec as { template?: { spec?: NfsPodSpec } } | undefined)?.template?.spec;
+    const volumes = podSpec?.volumes ?? [];
+    const mounts = podSpec?.containers?.[0]?.volumeMounts ?? [];
+    const mountPathsOf = (vol: NfsVolume | undefined) =>
+      mounts.filter((m) => vol !== undefined && m.name === vol.name).map((m) => m.mountPath);
+
+    const claimVol = volumes.find((v) => v.persistentVolumeClaim?.claimName === claimName);
+    expect(claimVol, 'the Deployment has a volume backed by that claim').toBeDefined();
+    expect(mountPathsOf(claimVol)).toEqual(['/exports/files']);
+
+    const scratchVol = volumes.find((v) => v.emptyDir !== undefined);
+    expect(scratchVol, 'the /memory projection stays on an emptyDir').toBeDefined();
+    expect(mountPathsOf(scratchVol)).toEqual(['/exports']);
+  });
+
+  it('the entrypoint exports /exports/files separately, to the node only', () => {
+    const sh = readFileSync(KIND_NFS_ENTRYPOINT, 'utf8');
+    expect(sh).toContain('FILES_DIR="$EXPORT_ROOT/files"');
+    expect(sh).toContain('"$EXPORT_ROOT $NODE_ADDR(');
+    expect(sh).toContain('"$FILES_DIR $NODE_ADDR(');
+    // Explicit fsids: on kind both directories sit on one node filesystem, so
+    // a device-derived fsid cannot tell the two exports apart.
+    expect(sh).toMatch(/"\$EXPORT_ROOT \$NODE_ADDR\([^)]*\bfsid=0\b/);
+    expect(sh).toMatch(/"\$FILES_DIR \$NODE_ADDR\([^)]*\bfsid=1\b/);
+    // Never a wildcard client: only the node (kubelet) may mount.
+    expect(sh).not.toContain('*(');
+  });
+
+  it('the entrypoint refuses to serve /files when the PVC is not mounted there (an old manifest)', () => {
+    const sh = readFileSync(KIND_NFS_ENTRYPOINT, 'utf8');
+    // The kernel's mount table, not busybox `mountpoint`: on kind the PVC and
+    // the emptyDir live on the SAME node filesystem, and busybox compares
+    // device numbers with the parent, so it calls a correctly mounted PVC
+    // "not a mountpoint" and the server would never start.
+    // An exact match on the mount-point field (5), not a substring.
+    expect(sh).toMatch(/\bawk\b[^\n]*\$5 == p[^\n]*\/proc\/self\/mountinfo/);
+    expect(sh).toMatch(/^if ! is_mounted "\$FILES_DIR"; then$/m);
+    expect(sh).not.toMatch(/\bmountpoint\b[^\n]*FILES_DIR/);
+    const lines = sh.split('\n');
+    const at = lines.findIndex((l) => l.includes('refusing to serve agent homes from scratch space'));
+    expect(at, 'the refusal message is in the entrypoint').toBeGreaterThan(-1);
+    expect(lines[at]).toMatch(/^\s*echo .*>&2\s*$/);
+    expect(lines[at + 1]?.trim()).toBe('exit 1');
+    // ...and it refuses before anything is exported or served.
+    const refusal = sh.indexOf(lines[at]!);
+    for (const step of ['> /etc/exports', 'exportfs -ra', 'rpc.nfsd -N']) {
+      expect(sh.indexOf(step), `${step} is in the entrypoint`).toBeGreaterThan(-1);
+      expect(refusal, `the refusal comes before ${step}`).toBeLessThan(sh.indexOf(step));
+    }
+  });
+
+  it('the dev NFS pod does not start serving until /exports/files is really exported (a stale image)', () => {
+    // The entrypoint guard cannot see the other way round: the NEW manifest
+    // running an image built before TASK-992. That image still listens on 2049
+    // but exports only /exports, and the kernel then serves /exports/files from
+    // the emptyDir directory UNDER the PVC mount, so agents' files would vanish
+    // with the pod. A startup probe on the export list keeps such a pod out of
+    // the Service; the tcpSocket readiness probe alone would pass it.
+    const dep = kindNfsDocs().find((d) => d.kind === 'Deployment');
+    type Probe = { exec?: { command?: string[] }; tcpSocket?: { port?: number } };
+    const container = (
+      dep?.spec as {
+        template?: { spec?: { containers?: Array<{ startupProbe?: Probe; readinessProbe?: Probe }> } };
+      } | undefined
+    )?.template?.spec?.containers?.[0];
+    const startup = (container?.startupProbe?.exec?.command ?? []).join(' ');
+    expect(startup).toContain('exportfs');
+    expect(startup).toContain('^/exports/files');
+    expect(container?.readinessProbe?.tcpSocket?.port).toBe(2049);
   });
 });

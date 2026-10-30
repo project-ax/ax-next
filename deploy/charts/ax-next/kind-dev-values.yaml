@@ -16,10 +16,12 @@
 # + `kubectl rollout restart deployment/<release>-host`.
 #
 # ─── Memory (TASK-576, folds in the former kind-memory-values.yaml
-# overlay from TASK-519) ────────────────────────────────────────────
+# overlay from TASK-519) and the agents' /files home (TASK-992) ─────
 # `host.preset: memory` is the chart-wide default now, so this file only
 # needs to point it at kind's dev NFS server instead of a real Filestore
-# export. That server is a plain Deployment + Service the kind bring-up flow
+# export. The same server also serves every agent's durable home (`/files`,
+# `sandbox.filestore` below), which the chart requires. That server is a
+# plain Deployment + Service (and a PVC for /files) the kind bring-up flow
 # applies before `helm template`/`helm install` — see
 # `deploy/kind/memory-nfs/` and the Makefile target `dev-kind-memory-nfs`.
 # kubelet mounts NFS from the NODE, which cannot resolve cluster DNS, so this
@@ -101,6 +103,14 @@ sandbox:
   # crashes at boot with `missing AX_PROXY_*`. Real clusters should
   # switch the proxy to TCP listen mode + Service.
   proxySocketHostPath: "/var/lib/ax-next-proxy"
+  # The agents' durable home (/files): the same dev NFS server as memory.exports
+  # (pinned ClusterIP, for the same node-DNS reason), on its own PVC-backed export
+  # so it survives NFS-pod restarts. hostReadPath matches production: the Files
+  # tab reads through the host's read-only mount, not a pod per click.
+  filestore:
+    server: 10.96.200.49
+    exportPath: /files
+    hostReadPath: /user-files
 
 postgres:
   external:
