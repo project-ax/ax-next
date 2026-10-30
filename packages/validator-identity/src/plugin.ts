@@ -1,11 +1,29 @@
 // ---------------------------------------------------------------------------
-// @ax/validator-identity — a `workspace:pre-apply` subscriber that gates an
-// agent's writes to its own identity files under /agent/.ax/.
+// @ax/validator-identity — two jobs:
 //
-// The runner injects these files VERBATIM into the composed systemPrompt every
-// spawn (conversational-agent-identity epic, Phase 1), so a self-edit is a
-// self-modification of the agent's own system prompt. This validator is the
-// gate on that:
+//   1. `identity:scan` service (TASK-989) — the write-time check on an agent's
+//      identity, soul and Instructions. @ax/agents stores them and calls this
+//      on every write, from the agent's own `update_identity` tool and from
+//      people's editors alike, and refuses the write on anything but `clean`
+//      (it also fails closed when this service is missing or throws). The
+//      text is frozen into the session config at spawn and composed VERBATIM
+//      into the system prompt, so this scan is the prompt-injection gate on
+//      it. The check is `scanIdentityText` in identity-safety-scan.ts: no
+//      I/O, no bus calls; the one side effect is an `identity_scan_refused`
+//      log line carrying the category only. A refusal is an ANSWER, not a
+//      throw; only a malformed payload throws.
+//
+//   2. The legacy `workspace:pre-apply` gate on the agent's identity FILES
+//      under /agent/.ax/, described below. Since TASK-989 the runner composes
+//      identity from the session config and no longer reads these files, so
+//      the gate guards files nobody uses; it is left in place and goes with
+//      the git tier (agent-files-simplification design §14). Do not add new
+//      readers of `.ax/`.
+//
+// The rest of this header describes job 2 as it was designed, when the runner
+// injected these files VERBATIM into the composed systemPrompt every spawn
+// (conversational-agent-identity epic, Phase 1), so a self-edit was a
+// self-modification of the agent's own system prompt:
 //
 //   - .ax/BOOTSTRAP.md is HOST-SEEDED (created at agent-create, deleted by the
 //     agent on completion). Its PRESENCE in the committed workspace is the one
@@ -35,11 +53,12 @@
 //     import). A signature is a HARD veto, regardless of window — this is the
 //     prompt-injection mitigation for self-edits.
 //
-// Capability budget: subscribe `workspace:pre-apply` + an OPTIONAL
-// `workspace:read` call. NO spawn, NO file I/O, NO network. If `workspace:read`
-// is unavailable the window is treated as CLOSED (fail-closed toward the
-// stricter post-bootstrap policy — identity writes still pass, but we never
-// grant a bootstrap-only allowance we can't verify). See SECURITY.md.
+// Capability budget: register `identity:scan` (pure), subscribe
+// `workspace:pre-apply` + an OPTIONAL `workspace:read` call. NO spawn, NO file
+// I/O, NO network. If `workspace:read` is unavailable the window is treated as
+// CLOSED (fail-closed toward the stricter post-bootstrap policy — identity
+// writes still pass, but we never grant a bootstrap-only allowance we can't
+// verify). See SECURITY.md.
 // ---------------------------------------------------------------------------
 
 import type {
@@ -49,15 +68,41 @@ import type {
   Plugin,
   WorkspaceVersion,
 } from '@ax/core';
-import { reject } from '@ax/core';
+import { PluginError, reject } from '@ax/core';
 // `@ax/agent-identity-templates` is a pure-data package (no @ax/core dep) on the
 // eslint no-restricted-imports allow-list — the SAME canonical bootstrap script
-// the host seeds (channel-web) and the runner injects. We compare an agent's
-// BOOTSTRAP.md `put` against it byte-for-byte (see the BOOTSTRAP branch below).
+// the runner composes in bootstrap mode (before TASK-989 the host also seeded
+// it as .ax/BOOTSTRAP.md). We compare an agent's BOOTSTRAP.md `put` against it
+// byte-for-byte (see the BOOTSTRAP branch below).
 import { BOOTSTRAP_TEMPLATE } from '@ax/agent-identity-templates';
-import { regexScan } from './identity-safety-scan.js';
+import {
+  regexScan,
+  scanIdentityText,
+  type IdentityScanOutput,
+} from './identity-safety-scan.js';
 
 const PLUGIN_NAME = '@ax/validator-identity';
+
+const IDENTITY_SCAN_HOOK = 'identity:scan';
+
+/**
+ * The `identity:scan` payload's text, or an `invalid-payload` throw. The
+ * caller is another plugin, but the payload is still checked here rather than
+ * trusted: a missing or non-string `text` must not reach the scan and come
+ * back looking like a verdict. The message is fixed and never quotes the input.
+ */
+function scanTextFrom(input: unknown): string {
+  if (typeof input === 'object' && input !== null) {
+    const text = (input as { text?: unknown }).text;
+    if (typeof text === 'string') return text;
+  }
+  throw new PluginError({
+    code: 'invalid-payload',
+    plugin: PLUGIN_NAME,
+    hookName: IDENTITY_SCAN_HOOK,
+    message: `${IDENTITY_SCAN_HOOK} expects { text: string }`,
+  });
+}
 
 // The host-seeded bootstrap script. Present in the committed workspace ⇔ the
 // agent is still bootstrapping.
@@ -117,7 +162,11 @@ export function createValidatorIdentityPlugin(): Plugin {
     manifest: {
       name: PLUGIN_NAME,
       version: '0.0.0',
-      registers: [],
+      // `identity:scan` — the write-time check @ax/agents calls (TASK-989).
+      // ONE authoritative scanner, a service hook like validator-skill's
+      // `skills:scan`. @ax/agents declares it as an optionalCall and fails
+      // closed without it.
+      registers: [IDENTITY_SCAN_HOOK],
       calls: [],
       // The bootstrap-window signal needs the committed state at `parent`. Both
       // presets register workspace:read (CLI=@ax/workspace-git, k8s=git-server
@@ -134,6 +183,23 @@ export function createValidatorIdentityPlugin(): Plugin {
       subscribes: ['workspace:pre-apply'],
     },
     init({ bus }) {
+      // --- Job 1: identity:scan (TASK-989) ---------------------------------
+      // A refusal is the answer, not an error: the caller maps it to "not
+      // saved". The log carries the category only — never the text, which is
+      // untrusted and may be a person's private Instructions.
+      bus.registerService<unknown, IdentityScanOutput>(
+        IDENTITY_SCAN_HOOK,
+        PLUGIN_NAME,
+        async (ctx, input) => {
+          const result = scanIdentityText(scanTextFrom(input));
+          if (result.verdict === 'refused') {
+            ctx.logger.warn('identity_scan_refused', { category: result.category });
+          }
+          return result;
+        },
+      );
+
+      // --- Job 2: the legacy pre-apply gate on .ax/ identity files ---------
       bus.subscribe<PreApplyPayload>(
         'workspace:pre-apply',
         PLUGIN_NAME,
