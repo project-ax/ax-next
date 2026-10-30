@@ -516,6 +516,26 @@ live Secret, or a restore after losing the namespace. Every one of those turns a
 wrong backup into everyone's Google login breaking at once. Checking on each
 upgrade is the cheap moment to notice.
 
+### 4d. Upgrading past TASK-992: pin the blob root once
+
+The agents' `/files` home is now required, and the chart no longer works out the
+blob root from the workspace settings. If you upgrade an existing release with
+`--reuse-values`, do this once:
+
+- Add `--set blob.fs.root=/var/lib/ax-next/workspaces/blobs` to the **first**
+  `helm upgrade` after this change. Without it the render refuses, on purpose,
+  and prints that exact line.
+- After that, `--reuse-values` keeps the pin. You don't need to repeat it.
+- Upgrades that pass `-f gke-values.yaml` already carry the pin.
+- The live release must also have `sandbox.filestore.server` set (see
+  "Provision the user-files Filestore" in Step 6), or the render refuses too.
+
+Check the live values first. This is read-only:
+
+```bash
+helm get values ax-next -n ax-next --kube-context <your GKE context> -o yaml | grep -A4 'filestore:'
+```
+
 ---
 
 ## Step 5 — Static IP, DNS, and the managed certificate

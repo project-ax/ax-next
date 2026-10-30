@@ -518,6 +518,10 @@ helm upgrade ax-next deploy/charts/ax-next \
   ...
 ```
 
+Upgrading an existing release past TASK-992 with `--reuse-values`? Add
+`--set blob.fs.root=/var/lib/ax-next/workspaces/blobs` once. The render refuses
+without it. See [GKE.md, "Upgrading past TASK-992"](GKE.md#4d-upgrading-past-task-992-pin-the-blob-root-once).
+
 Both keys are lookup-stable in the chart: if you forget to pass them on
 upgrade and the secret already exists, the existing values get reused.
 But that's a safety net, not the primary contract — pass them explicitly

@@ -311,7 +311,7 @@ export async function main(opts: MainOptions): Promise<number> {
 
   // filestore-user-files (design §4) — the CLI/subprocess mount resolver.
   // Registers `sandbox:resolve-mounts`, which @ax/sandbox-subprocess calls
-  // (optionalCall) to learn each session's durable per-agent `/workspace` mount
+  // (optionalCall) to learn each session's durable per-agent `/files` mount
   // and realizes it by `mkdir -p`ing `<root>/<agentId>`. The local-FS sibling
   // of @ax/workspace-filestore (NFS, k8s preset) — exactly one loads per
   // deployment. Root lives beside the sqlite/workspace state; override with
