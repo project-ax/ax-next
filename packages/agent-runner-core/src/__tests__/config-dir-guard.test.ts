@@ -208,6 +208,14 @@ describe('assertConfigDirOutsideAgentHome', () => {
       ).rejects.toThrow(/^refusing to start: the agent's home \(.+\) contains a '\.\.' segment/);
     });
 
+    it('a scratch home (no durable home wired) whose `..` steps out of a symlink', async () => {
+      await mkdirp(t, 'tmp');
+      await fs.symlink(cfg, path.join(t, 'tmp', 'link3'));
+      await expect(
+        assertConfigDirOutsideAgentHome(envWith(cfg, { ephemeralRoot: `${t}/tmp/link3/..` })),
+      ).rejects.toThrow(/^refusing to start: the agent's home \(.+\) contains a '\.\.' segment/);
+    });
+
     it('a config dir, even one that resolves somewhere harmless', async () => {
       await mkdirp(t, 'runner', 'x');
       await expect(
