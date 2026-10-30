@@ -263,9 +263,12 @@ Decided 2026-10-30: plain reset; nobody is using ax yet.
   `/files` (otherwise an agent-planted `/files/.claude/settings.json` would load
   as user settings — hooks run commands).
 - Test: after a brand-new agent's first chat, its `/files` is empty. In
-  particular the SDK's side files (`.claude.json`, `.claude/backups/`, today
-  landing in HOME = `/files`, `agent-claude-sdk-runner/src/main.ts:402`) go to
-  `CLAUDE_CONFIG_DIR` on tmpfs, and tool caches/venvs go to `/tmp`.
+  particular the SDK's side files (`.claude.json`, `backups/`, `projects/`,
+  `sessions/`) already land in `CLAUDE_CONFIG_DIR` whenever it is set (measured
+  2026-10-30, SDK 0.2.119), and the runner refuses to start without it, so they
+  never reach `/files`. The one exception is the MCP-log cache, which follows
+  `XDG_CACHE_HOME` on Linux but uses `HOME/Library/Caches` on macOS (local CLI
+  only). Tool caches/venvs go to `/tmp`.
 - Canary test: plant `/files/.ax/SOUL.md`, `/files/CLAUDE.md`,
   `/files/.claude/settings.json`, `/files/.mcp.json`; assert no effect on the
   prompt, SDK settings or MCP servers.
