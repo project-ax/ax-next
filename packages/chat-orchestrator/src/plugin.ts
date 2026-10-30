@@ -1,4 +1,9 @@
-import type { AgentOutcome, Plugin } from '@ax/core';
+import {
+  SYSTEM_PROMPT_AUGMENT_CHANGED_HOOK,
+  type AgentOutcome,
+  type Plugin,
+  type SystemPromptAugmentChangedPayload,
+} from '@ax/core';
 import {
   AGENT_INVOKE_TIMEOUT_MS,
   createOrchestrator,
@@ -99,6 +104,17 @@ export function createChatOrchestratorPlugin(
           degradation:
             'a routine whose connector sign-in expired is not run without it: the session open fails and the run ends connector-needs-reconnect, as it did before slice 6',
         },
+        {
+          // TASK-989 — every FRESH spawn reads the agent's identity, soul,
+          // people's Instructions and first-run state from @ax/agents and
+          // freezes them into `agentConfig.identity`; bootstrap mode and the
+          // identity tools' visibility follow from it. A failed read ends the
+          // turn (`system-prompt:identity-unavailable`) — only an ABSENT hook
+          // degrades. No cycle: @ax/agents calls nothing this plugin registers.
+          hook: 'agents:identity:get',
+          degradation:
+            'no identity, soul or Instructions reach the prompt: every session composes normal mode with the display-name identity line, and no identity tool is offered or hidden',
+        },
       ],
       // ----- fired events (the manifest has no `fires` list; recorded here) -----
       //
@@ -138,8 +154,8 @@ export function createChatOrchestratorPlugin(
       // discovered at spawn time with `bus.listServices()`, the same way
       // `credentials:login:*` is, so it stays out of `calls` AND
       // `optionalCalls`: its names are only known at runtime, and boot must
-      // not require them. @ax/memory registers the required one; the CLI
-      // canary, the single-tenant preset and any deploy without memory stay
+      // not require them. @ax/memory and @ax/routines register providers; the
+      // CLI canary, the single-tenant preset and any deploy without them stay
       // functional with none registered (no augment).
       //
       // We gate each call with `bus.hasService(...)` at runtime to keep
@@ -198,7 +214,7 @@ export function createChatOrchestratorPlugin(
         'session:terminate',
         'event.http-egress',
         'skills:proposed',
-        'system-prompt:augment-changed',
+        SYSTEM_PROMPT_AUGMENT_CHANGED_HOOK,
         'agents:deleted',
         // TASK-833 — fired by @ax/connectors after a delete purged the key.
         'connectors:deleted',
@@ -231,7 +247,7 @@ export function createChatOrchestratorPlugin(
           // exit that builds a `terminated` outcome MUST call fireTurnError
           // before it fires chat:end, or that turn is invisible to the
           // browser forever. `turn-error-discipline.test.ts` enforces that
-          // over all sixteen of them, rather than leaving it to be noticed.
+          // over all seventeen of them, rather than leaving it to be noticed.
           //
           // See AGENT_INVOKE_TIMEOUT_MS — the orchestrator
           // bounds every phase of a turn itself and fires `chat:turn-error` on
@@ -340,13 +356,17 @@ export function createChatOrchestratorPlugin(
         },
       );
 
-      // TASK-612 — an augment provider (the Rules providers today) says this
-      // agent's system-prompt augment changed. Mark-only: the agent's live
-      // sessions are retired at their NEXT turn and the fresh spawn
-      // re-augments. Never terminates here — a mid-turn terminate hangs the
+      // TASK-612 — something this agent's system prompt carries changed.
+      // @ax/agents fires it (TASK-989) on every saved identity, soul or
+      // Instructions write and every completed first-run setup; any augment
+      // provider may announce its own change the same way. The name and
+      // payload are @ax/core's, shared with the producers (a misspelled event
+      // fails silently both ways). Mark-only: the agent's live sessions are
+      // retired at their NEXT turn and the fresh spawn re-reads the identity
+      // and re-augments. Never terminates here — a mid-turn terminate hangs the
       // SSE (the Fault-A class bug). Observation-only; never vetoes.
-      bus.subscribe<{ agentId: string }>(
-        'system-prompt:augment-changed',
+      bus.subscribe<SystemPromptAugmentChangedPayload>(
+        SYSTEM_PROMPT_AUGMENT_CHANGED_HOOK,
         PLUGIN_NAME,
         async (ctx, payload) => {
           orch.onSystemPromptAugmentChanged(ctx, payload);

@@ -72,7 +72,9 @@ import {
 //        - `ctx.conversationId` set AND its `active_session_id` is alive
 //          → route into THAT session's inbox, skip sandbox:open-session.
 //        - otherwise → open a fresh sandbox.
-//   3.5 (fresh path) build the system-prompt contributions (W1), then fire
+//   3.5 (fresh path) read the agent's identity (`agents:identity:get`,
+//        TASK-989) — a failed read ends the turn here — then build the
+//        system-prompt contributions (W1), then fire
 //        `chat:system-prompt-landed` (veto-capable); a veto ends the turn
 //        here, before any proxy or sandbox session exists (TASK-908).
 //   4. (fresh path) sandbox:open-session — bind IPC listener, spawn runner.
@@ -93,9 +95,9 @@ import {
 // The IPC server (Task 4) fires `chat:end` when the runner POSTs
 // /event.chat-end. The orchestrator's own subscriber captures the outcome
 // and resolves the awaiting deferred. Error-ish paths (chat:start rejection,
-// a `chat:system-prompt-landed` veto, sandbox-open failure, queue-work
-// failure, chat timeout, sandbox early exit) synthesize a terminated outcome
-// and fire chat:end themselves —
+// a failed identity read, a `chat:system-prompt-landed` veto, sandbox-open
+// failure, queue-work failure, chat timeout, sandbox early exit) synthesize a
+// terminated outcome and fire chat:end themselves —
 // audit-log style subscribers always see exactly one chat:end per agent:invoke.
 // Happy-path chat:end is fired by the IPC server, NOT the orchestrator;
 // double-firing would double-count in audit-log.
@@ -446,6 +448,41 @@ interface AgentsResolveOutput {
   agent: AgentRecord;
 }
 
+// agents:identity:get — TASK-989, registered by @ax/agents (the only store of
+// an agent's identity, soul, people's Instructions and first-run state). Read
+// once per FRESH spawn and frozen into `agentConfig.identity`; a routed turn
+// reads nothing. Optional peer (`optionalCalls`): absent, the spawn carries no
+// identity and no identity tool is offered or hidden. I2: no @ax/agents
+// import — the shape is duplicated here, and only the fields read here are
+// declared (`revision` is the hook's write-CAS counter and never leaves it).
+const AGENTS_IDENTITY_GET_HOOK = 'agents:identity:get';
+interface AgentsIdentityGetInput {
+  agentId: string;
+}
+const IDENTITY_BOOTSTRAP_STATES = ['none', 'pending', 'done'] as const;
+interface AgentIdentityAtSpawn {
+  identity: string;
+  soul: string;
+  instructions: string;
+  bootstrap: (typeof IDENTITY_BOOTSTRAP_STATES)[number];
+}
+
+/**
+ * The reply's three texts and its first-run state, or `null` when the reply
+ * is not that shape. Strict on purpose: a malformed reply must end the turn
+ * (fail closed) rather than spawn without the people's Instructions.
+ */
+function parseIdentityAtSpawn(raw: unknown): AgentIdentityAtSpawn | null {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return null;
+  const { identity, soul, instructions, bootstrap } = raw as Record<string, unknown>;
+  if (typeof identity !== 'string' || typeof soul !== 'string' || typeof instructions !== 'string') {
+    return null;
+  }
+  const state = IDENTITY_BOOTSTRAP_STATES.find((s) => s === bootstrap);
+  if (state === undefined) return null;
+  return { identity, soul, instructions, bootstrap: state };
+}
+
 // skills:resolve — registered by @ax/skills. Duplicated structurally per I2
 // (no @ax/skills import). The orchestrator calls this when the agent has
 // skillAttachments and the service is registered.
@@ -677,9 +714,9 @@ interface SessionIsAliveOutput {
 //   - `system-prompt:augment:required:<name>` — may return `rules`, `context`,
 //     `recall`. If it fails, the WHOLE augment is skipped for that spawn
 //     (every provider, normal and bootstrap): context or recall without the
-//     Rules that govern them is the worst outcome. @ax/memory registers here.
-//     A required provider that returns no `rules`, or no required provider
-//     at all, is NOT a failure.
+//     Rules that govern them is the worst outcome. Register here only if you
+//     carry `rules`. A required provider that returns no `rules`, or no
+//     required provider at all, is NOT a failure.
 //   - `system-prompt:augment:optional:<name>` — `brief`, `context` and
 //     `recall`. A failure drops just this provider's blocks.
 //
@@ -714,10 +751,12 @@ interface SessionIsAliveOutput {
 // Note: augmentation applies ONLY on the fresh-spawn path. The routed-into-
 // existing-sandbox path reuses the originally-frozen `agentConfig.systemPromptAugment`
 // that was baked into the runner's session at first spawn; the prompt is never
-// shifted under a running runner. When a provider's content changes (a person
-// edits Rules), it fires `system-prompt:augment-changed { agentId }` and the
-// orchestrator retires that agent's live sessions at their NEXT turn boundary,
-// so the fresh spawn re-augments (TASK-612).
+// shifted under a running runner. When something the prompt carries changes —
+// the agent's identity, soul, Instructions or first-run state (@ax/agents,
+// TASK-989), or a provider's own content — its owner fires
+// `system-prompt:augment-changed { agentId }` and the orchestrator retires that
+// agent's live sessions at their NEXT turn boundary, so the fresh spawn
+// re-reads the identity and re-augments (TASK-612).
 // Providers read ctx (userId, agentId, sessionId, etc.) — the input is empty.
 type AugmentClass = 'required' | 'optional';
 type AugmentFailureReason = 'threw' | 'deadline' | 'invalid' | 'too_large';
@@ -1500,6 +1539,79 @@ export function withBrokerDefaults(
   return out;
 }
 
+// TASK-989 — @ax/agents' two host-executed identity tools. Local mirror of its
+// tool names (I2), like ALWAYS_ON_BROKER_TOOLS. `update_identity` lets the
+// agent rewrite its own identity or soul (never the people's Instructions);
+// `complete_bootstrap` ends its first-run setup.
+const UPDATE_IDENTITY_TOOL = 'update_identity';
+const COMPLETE_BOOTSTRAP_TOOL = 'complete_bootstrap';
+
+/**
+ * Which identity tools a session is offered, computed at session-open
+ * (TASK-989) and applied only when `agents:identity:get` exists.
+ *
+ * - `update_identity` is offered iff a person is present (`attended`): an
+ *   unattended run (`ctx.source === 'routine'` — routines and task check-ins)
+ *   never rewrites the agent's identity.
+ * - `complete_bootstrap` is offered iff `attended && bootstrapMode`: there is
+ *   nothing to finish outside a first-run chat.
+ *
+ * An offered tool is appended (deduped, order-stable) to a NON-WILDCARD
+ * `allowedTools` — the withBrokerDefaults rule, and for the same reason: the
+ * host's `tool:list` (`filterByAgentScope`) and the runner both filter by that
+ * list, so without this an allowlisted agent could never save itself or finish
+ * its first-run setup. A wildcard agent (`agent.allowedTools` AND
+ * `agent.mcpConfigIds` both empty) already sees the whole catalog and is left
+ * alone.
+ *
+ * A tool NOT offered is appended to `disallowedTools` (catalog hygiene — the
+ * runner drops those) only where it would otherwise be visible: a wildcard
+ * agent, or one whose `allowedTools` names it. Never by shrinking
+ * `allowedTools`, which could empty it into the wildcard. The executors refuse
+ * an unattended call anyway; visibility isn't a grant either way.
+ *
+ * `disallowedTools` keeps its existing entries first and is returned unchanged
+ * (possibly `undefined`) when nothing is hidden, so a frozen snapshot that
+ * needed nothing is byte-identical to before.
+ */
+export function identityToolScope(
+  agent: { allowedTools: readonly string[]; mcpConfigIds: readonly string[] },
+  allowedTools: readonly string[],
+  disallowedTools: readonly string[] | undefined,
+  opts: { attended: boolean; bootstrapMode: boolean },
+): { allowedTools: string[]; disallowedTools: string[] | undefined } {
+  // Mirrors the empty-empty check in withBrokerDefaults / `filterByAgentScope`.
+  const wildcard = agent.allowedTools.length === 0 && agent.mcpConfigIds.length === 0;
+  const offers: ReadonlyArray<readonly [string, boolean]> = [
+    [UPDATE_IDENTITY_TOOL, opts.attended],
+    [COMPLETE_BOOTSTRAP_TOOL, opts.attended && opts.bootstrapMode],
+  ];
+  const allowed = [...allowedTools];
+  const listed = new Set(allowedTools);
+  const denied = new Set(disallowedTools ?? []);
+  const hidden: string[] = [];
+  for (const [tool, offered] of offers) {
+    if (offered) {
+      if (!wildcard && !listed.has(tool)) {
+        allowed.push(tool);
+        listed.add(tool);
+      }
+    } else if ((wildcard || listed.has(tool)) && !denied.has(tool)) {
+      hidden.push(tool);
+      denied.add(tool);
+    }
+  }
+  return {
+    allowedTools: allowed,
+    disallowedTools:
+      hidden.length > 0
+        ? [...(disallowedTools ?? []), ...hidden]
+        : disallowedTools === undefined
+          ? undefined
+          : [...disallowedTools],
+  };
+}
+
 /**
  * I10 — does this session need per-turn credential rotation?
  *
@@ -1998,15 +2110,17 @@ export function createOrchestrator(
   const respawnSessions = new Set<string>();
 
   // TASK-612 — the second reason a warm session is retired at its next turn:
-  // its system prompt is older than the agent's augment. An augment provider
-  // (today @ax/memory's Rules provider) fires
-  // `system-prompt:augment-changed { agentId }` when a person edits something
-  // the prompt carries; that bumps the agent's generation. Every fresh spawn
-  // records the generation it was built at, snapshotted BEFORE the augment
-  // call so a save that lands mid-build still counts as newer. A session this
-  // process did not spawn has no record and counts as stale once the agent has
-  // any change — conservative, worst case one extra re-spawn. Counters, not
-  // timestamps, so there is no clock to skew. In-memory + single-replica, same
+  // its system prompt is older than something it carries. @ax/agents fires
+  // `system-prompt:augment-changed { agentId }` (TASK-989) on every saved
+  // identity, soul or Instructions write — the agent's own or a person's —
+  // and on a completed first-run setup; any augment provider may announce its
+  // own change the same way. That bumps the agent's generation. Every fresh
+  // spawn records the generation it was built at, snapshotted BEFORE the
+  // identity read and the augment call so a save that lands mid-build still
+  // counts as newer. A session this process did not spawn has no record and
+  // counts as stale once the agent has any change — conservative, worst case
+  // one extra re-spawn. Counters, not timestamps, so there is no clock to
+  // skew. In-memory + single-replica, same
   // posture as `respawnSessions` and the warm-session map. A second host
   // replica would not see a save handled by another replica, which is one of
   // the reasons the k8s chart refuses to render replicas > 1
@@ -2504,9 +2618,11 @@ export function createOrchestrator(
     //    live edits to the agent row (via /admin/agents PATCH in Task 9)
     //    do not affect in-flight sessions.
     const agentConfig: AgentConfig = {
-      // The runner's fallback identity (used when the agent has no
-      // `.ax/IDENTITY.md`). TASK-142 dropped the `system_prompt` column —
-      // identity lives in the agent's `.ax/` files now.
+      // The runner's fallback identity line, used when the agent has no saved
+      // identity (or the host has no identity store). The identity itself —
+      // with the soul, the people's Instructions and bootstrap mode — is read
+      // from @ax/agents on the fresh-spawn path below and frozen onto
+      // `identity` (TASK-989).
       displayName: agent.displayName,
       // Seeded empty; the system-prompt contribution step below sets it on
       // the fresh-spawn path (the runner prepends it on top in normal mode).
@@ -2691,8 +2807,10 @@ export function createOrchestrator(
               // terminate in the workspace:applied subscriber.
               //
               // TASK-612: same treatment when the session's system prompt
-              // predates a change to the agent's augment (a person edited
-              // Rules). The fresh spawn re-runs the system-prompt contributions.
+              // predates a change to something it carries (TASK-989: the
+              // agent's identity, soul, Instructions or first-run state). The
+              // fresh spawn re-reads the identity, re-runs the system-prompt
+              // contributions and resumes the conversation.
               //
               // TASK-806: and when a connector skipped at spawn (never signed
               // in) has been signed in since. The fresh spawn folds it.
@@ -2944,31 +3062,90 @@ export function createOrchestrator(
       return outcome;
     }
 
-    // System-prompt contributions (W1). Fresh-spawn path only: a routed
-    // agent:invoke reuses an existing live sandbox whose systemPromptAugment was
-    // baked into the runner at first spawn, and the runner never reloads it.
-    // The prompt is never changed under a running runner. When the augment
-    // itself changes (a person edited Rules — `system-prompt:augment-changed`,
-    // TASK-612), the routing above retires the session at its next turn and
-    // this path runs again, which is how "reads them before every run" on the
-    // Memory tab stays true.
+    // The system prompt's inputs: the agent's identity (TASK-989), then the
+    // system-prompt contributions (W1). Fresh-spawn path only: a routed
+    // agent:invoke reuses an existing live sandbox whose prompt inputs were
+    // baked into the runner at first spawn, and the runner never reloads them.
+    // The prompt is never changed under a running runner. When something it
+    // carries changes (`system-prompt:augment-changed`, TASK-612 — @ax/agents
+    // fires it on every saved identity, soul or Instructions write and on a
+    // completed first-run setup), the routing above retires the session at its
+    // next turn and this path runs again, so the change reaches the agent's
+    // next message.
     //
-    // Snapshot the agent's augment generation BEFORE the calls: a change that
-    // lands while the augment is being built is then newer than this spawn,
-    // and the next turn re-spawns instead of keeping a prompt that missed it.
-    // Recorded into `augmentGenBySession` only once the sandbox has opened,
-    // so a spawn that fails early leaves no entry behind.
+    // Snapshot the agent's generation BEFORE the identity read and the augment
+    // calls: a change that lands while either is in flight is then newer than
+    // this spawn, and the next turn re-spawns instead of keeping a prompt that
+    // missed it. Recorded into `augmentGenBySession` only once the sandbox has
+    // opened, so a spawn that fails early leaves no entry behind.
     const augmentGenAtSpawn = augmentGenByAgent.get(ctx.agentId) ?? 0;
+
+    // TASK-989 — the agent's identity, soul, people's Instructions and
+    // first-run state, read from @ax/agents and frozen into
+    // `agentConfig.identity`; the runner composes the prompt from it. The host
+    // decides bootstrap mode here, once: the first-run setup is pending AND a
+    // person is present. An unattended run (`ctx.source === 'routine'`, stamped
+    // host-side only — routines and task check-ins) never bootstraps, and still
+    // gets the Instructions. The identity tools the session is offered follow
+    // from the same two facts (identityToolScope, applied after the tool-policy
+    // denies below).
     //
+    // A failed read — a throw, or a reply that isn't three texts and a known
+    // first-run state — ENDS THE TURN, unlike an augment provider's failure: a
+    // turn that ran without the people's Instructions is the worst outcome
+    // here, not a degradation. It ends before any proxy or sandbox session
+    // opens, with a `system-prompt:` reason (a pre-assembly refusal, like the
+    // landed veto below). Without the hook (a preset with no identity store)
+    // there is no identity and no scope change: the runner composes normal
+    // mode with the display-name line.
+    const attended = ctx.source !== 'routine';
+    if (bus.hasService(AGENTS_IDENTITY_GET_HOOK)) {
+      let read: AgentIdentityAtSpawn | null = null;
+      try {
+        read = parseIdentityAtSpawn(
+          await bus.call<AgentsIdentityGetInput, unknown>(AGENTS_IDENTITY_GET_HOOK, ctx, {
+            agentId: ctx.agentId,
+          }),
+        );
+        if (read === null) {
+          ctx.logger.warn('agent_identity_read_failed', {
+            agentId: ctx.agentId,
+            name: 'invalid-reply',
+          });
+        }
+      } catch (err) {
+        // Name/code only — never the message, never any identity text.
+        ctx.logger.warn('agent_identity_read_failed', {
+          agentId: ctx.agentId,
+          ...errorLogFields(err),
+        });
+      }
+      if (read === null) {
+        const outcome: AgentOutcome = {
+          kind: 'terminated',
+          reason: 'system-prompt:identity-unavailable',
+        };
+        // TASK-22 — pre-waiter early-return: surface on the SSE.
+        await fireTurnError(ctx, ctx.reqId, outcome.reason);
+        await fireChatEvent('chat:end', ctx, { outcome });
+        return outcome;
+      }
+      agentConfig.identity = {
+        identity: read.identity,
+        soul: read.soul,
+        instructions: read.instructions,
+        bootstrapMode: attended && read.bootstrap === 'pending',
+      };
+    }
+
     // Discovery, the per-provider steps, the required/optional failure rule
     // and section ordering live in `buildSystemPromptAugment` (see the comment
     // above it). The result lands on `agentConfig.systemPromptAugment` (its
-    // own field since TASK-142; the runner prepends it on top of the composed
-    // `.ax/` identity prompt in normal mode), and the `rules` and `brief`
-    // bodies alone on `agentConfig.systemPromptBootstrapAugment` (TASK-524),
-    // which is all the
-    // runner prepends in bootstrap mode. A failed required provider leaves
-    // both at their seeded `''`.
+    // own field since TASK-142; the runner prepends it on top of the prompt it
+    // composes from `agentConfig.identity` in normal mode), and the `rules` and
+    // `brief` bodies alone on `agentConfig.systemPromptBootstrapAugment`
+    // (TASK-524), which is all the runner prepends in bootstrap mode. A failed
+    // required provider leaves both at their seeded `''`.
     //
     // A provider's failure never aborts the chat: every failure is logged and
     // degrades to less (or no) augment. Surfacing it as `terminated` would
@@ -3063,6 +3240,23 @@ export function createOrchestrator(
         ctx.logger.warn('tool_policy_overrides_read_failed', {
           err: err instanceof Error ? err : new Error(String(err)),
         });
+      }
+    }
+
+    // TASK-989 — the identity tools this session is offered: `update_identity`
+    // when a person is present, `complete_bootstrap` only in bootstrap mode
+    // (see identityToolScope). AFTER the tool-policy denies, so those stay first
+    // in `disallowedTools` and a deny of an offered tool still hides it. Only
+    // when the identity read above ran — `agentConfig.identity` is set exactly
+    // then — so a preset with no identity store keeps today's scope.
+    if (agentConfig.identity !== undefined) {
+      const scoped = identityToolScope(agent, agentConfig.allowedTools, agentConfig.disallowedTools, {
+        attended,
+        bootstrapMode: agentConfig.identity.bootstrapMode,
+      });
+      agentConfig.allowedTools = scoped.allowedTools;
+      if (scoped.disallowedTools !== undefined) {
+        agentConfig.disallowedTools = scoped.disallowedTools;
       }
     }
 
