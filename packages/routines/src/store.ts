@@ -258,9 +258,12 @@ export interface RoutinesStore extends ReturnType<typeof createWebhookHealthStor
   recentReports(input: RoutineKey & Actor & { limit: number }): Promise<Array<{ firedAt: Date; report: FireReport }>>;
   /**
    * TASK-991. The start of this routine's newest run that finished `ok` or
-   * `silenced` as `actorUserId` — TASK-936's rule, so an earlier owner's runs
-   * never count — or null. A run that failed or was cut off (`error`, including
-   * the sweep's `RUN_INTERRUPTED`) never counts. `ok` counts as completed, not
+   * `silenced` as `actorUserId`, or null. Only the run's own `run_as_user_id`
+   * is compared: unlike `recentReports`/`recentReplies` there is no join on the
+   * routine's current owner. The fire path passes the firing run's owner, so a
+   * run made as someone else (an earlier owner) never counts for it. A run
+   * that failed or was cut off (`error`, including the sweep's
+   * `RUN_INTERRUPTED`) never counts. `ok` counts as completed, not
    * just `silenced`: `{{lastCompletedRun}}` is a token any repeat routine may
    * use, and a routine without a silence token ends every normal run `ok`.
    * Reads the routine's fire rows only, newest first through

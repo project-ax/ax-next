@@ -306,11 +306,11 @@ export function createFireRoutine(deps: FireDeps) {
       // TASK-991: the host value first. A prompt that asks for
       // `{{lastCompletedRun}}` gets the start date of this routine's newest
       // run that completed as the person this one acts as (the accepted row's
-      // owner, TASK-936's rule), read from the routine's own fire records and
-      // nothing else. Rendered BEFORE the payload pass, so a payload can't
-      // supply the value and its text is never scanned for the token
-      // (template.ts, K9). A failed read is recorded like any other setup
-      // failure, and the agent never starts.
+      // owner; runs made as anyone else don't count), read from the routine's
+      // own fire records and nothing else. Rendered BEFORE the payload pass,
+      // so a payload can't supply the value and its text is never scanned for
+      // the token (template.ts, K9). A failed read is recorded like any other
+      // setup failure, and the agent never starts.
       let body = row.promptBody;
       if (usesLastCompletedRun(body)) {
         try {
