@@ -81,23 +81,22 @@ export function createSandboxK8sPlugin(
       // host-side hooks are subprocess-impl-specific. Once the pod-side
       // HTTP server lands, the orchestration sketch may grow.
       calls: ['session:create', 'session:terminate'],
-      // filestore-user-files (design §4): when a mount-resolver plugin
-      // (@ax/workspace-filestore) is loaded, open-session calls
-      // `sandbox:resolve-mounts` and realizes each `nfs` mount as an inline
-      // pod volume + subPath mount. Optional — without a resolver the pod gets
-      // only the default emptyDir tiers; no durable per-agent user-files mount.
-      // `sandbox:resolve-mounts` is the durable per-agent mount resolver. It's
-      // optional for open-session (no resolver → no AX_USERFILES_ROOT) AND for
-      // both §11 host-side ops below: `sandbox:read-user-files` and the
-      // `agents:deleted` cleanup both call it to learn an agent's
-      // server/exportPath/subPath, and degrade to a no-op when no resolver is
-      // loaded.
+      // filestore-user-files (design §4): `sandbox:resolve-mounts` is the
+      // durable per-agent mount resolver (@ax/workspace-filestore in the k8s
+      // preset). open-session calls it for every owned session and realizes
+      // each `nfs` mount as an inline pod volume + subPath mount. It stays an
+      // OPTIONAL call because boot does not need it, but open-session REFUSES
+      // an owned session that gets no `role:'user-files'` mount (TASK-992: the
+      // durable /files home is required). The two §11 host-side ops below,
+      // `sandbox:read-user-files` and the `agents:deleted` cleanup, call it to
+      // learn an agent's server/exportPath/subPath and keep degrading
+      // gracefully when no resolver is loaded.
       optionalCalls: [
         {
           hook: 'sandbox:resolve-mounts',
           degradation:
-            'no durable per-agent user-files mount; AX_USERFILES_ROOT unset; ' +
-            'host-read returns absent and agent-delete cleanup is a no-op',
+            'open-session REFUSES owned sessions (no durable /files home); ' +
+            'host-read answers unavailable and agent-delete cleanup is a no-op',
         },
         {
           hook: 'sandbox:memory-mounts',

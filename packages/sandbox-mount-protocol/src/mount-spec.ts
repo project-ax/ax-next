@@ -120,10 +120,13 @@ export type MountSpec = NfsMountSpec | LocalDirMountSpec;
 //
 // A mount-resolver plugin registers this; a sandbox provider lists it in
 // `optionalCalls` and calls it during session open to learn which durable
-// per-agent mounts to realize. When no resolver is loaded, the provider
-// degrades to the default emptyDir tiers (no durable user-files mount). A
-// resolver returns `[]` when it has nothing to contribute (e.g. an anonymous
-// CLI session with no `agentId`) — that is a no-mount, not an error.
+// per-agent mounts to realize. The durable home is REQUIRED (TASK-992): a
+// provider REFUSES an owned session (`owner` set) unless the resolved mounts
+// include a `role: 'user-files'` mount, and that includes the case where no
+// resolver is loaded at all. A resolver returns `[]` when it has nothing to
+// contribute (e.g. an `agentId` that fails its per-tenant subtree-key check).
+// For session open that `[]` is a refusal; only the host-side ops (host-read
+// and agent-delete cleanup, design §11) treat it as a no-mount.
 // ---------------------------------------------------------------------------
 
 /**
@@ -154,8 +157,10 @@ export interface ResolveMountsInput {
 
 /**
  * Output of `sandbox:resolve-mounts`: the durable per-agent mounts the
- * provider should realize. May be empty (the resolver has nothing to
- * contribute — a graceful no-mount, never an error).
+ * provider should realize. May be empty when the resolver has nothing to
+ * contribute. That is never an error for the resolver to report, but session
+ * open REFUSES an owned session whose mounts carry no `role: 'user-files'`
+ * mount; host-read and agent-delete cleanup treat it as a no-mount.
  */
 export interface ResolveMountsOutput {
   mounts: MountSpec[];

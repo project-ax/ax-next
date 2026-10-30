@@ -560,6 +560,11 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
         // stub-runner binary; the runner reads AX_TEST_STUB_SCRIPT (set by
         // test-proxy via envMap) and emits the script entries over IPC.
         createSandboxSubprocessPlugin(),
+        // sandbox:resolve-mounts — the durable /files home every owned session
+        // needs (TASK-992). The subprocess sandbox can't realize the preset's
+        // nfs resolver, so this canary leaves `filestore` unset and brings the
+        // local-directory resolver instead.
+        createWorkspaceLocaldirPlugin({ root: path.join(tmp, 'user-files') }),
         // IPC listener the runner subprocess connects back to.
         createIpcServerPlugin(),
         // ipc-server's dispatcher requires a workspace:read producer
@@ -748,6 +753,8 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
           createStorageSqlitePlugin({ databasePath: sqlitePath }),
           createSessionInmemoryPlugin(),
           createSandboxSubprocessPlugin(),
+          // The durable /files home (TASK-992), as in the local canary above.
+          createWorkspaceLocaldirPlugin({ root: path.join(tmp, 'user-files') }),
           createIpcServerPlugin(),
           // git-protocol backend keeps @ax/workspace-git-server (provides
           // workspace:read). The only other dispatcher dep this list drops —

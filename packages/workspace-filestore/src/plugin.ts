@@ -36,8 +36,10 @@ export interface WorkspaceFilestoreConfig {
  * host-internal `sandbox:resolve-mounts` hook and emits ONE per-agent `nfs`
  * mount keyed off `owner.agentId` (the `subPath`).
  *
- * Returns `[]` (a graceful no-mount, never an error) when the session owner has
- * no usable `agentId`.
+ * Returns `[]` (never an error here) when the session owner has no usable
+ * `agentId`. The sandbox provider then refuses to open that session, because
+ * every owned session needs its durable `/files` home (TASK-992); host-read and
+ * agent-delete cleanup treat it as a no-mount.
  */
 export function createWorkspaceFilestorePlugin(
   config: WorkspaceFilestoreConfig,

@@ -20,6 +20,7 @@ import {
 } from '@ax/core';
 import { createSessionInmemoryPlugin } from '@ax/session-inmemory';
 import { createSandboxSubprocessPlugin } from '@ax/sandbox-subprocess';
+import { createWorkspaceLocaldirPlugin } from '@ax/workspace-localdir';
 import { createIpcServerPlugin } from '@ax/ipc-server';
 import { createMcpClientPlugin } from '@ax/mcp-client';
 import { createUsageLimitsPlugin } from '@ax/usage-limits';
@@ -378,6 +379,9 @@ describe('@ax/preset-k8s usage limits canary (stub runner + postgres)', () => {
       usage,
       createSessionInmemoryPlugin(),
       countingSandboxPlugin(sandbox),
+      // The durable /files home every owned session needs (TASK-992); the
+      // subprocess sandbox realizes this local-directory resolver, not nfs.
+      createWorkspaceLocaldirPlugin({ root: path.join(tmp, 'user-files') }),
       createIpcServerPlugin(),
       createDispatcherDepsStubPlugin(),
       createScriptedProxyPlugin(proxyState),
