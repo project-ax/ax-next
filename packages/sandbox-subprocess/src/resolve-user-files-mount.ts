@@ -50,8 +50,10 @@ export interface ResolvedUserFilesMount {
  * `mkdir -p` of each `localDir` mount's `hostPath`. Returns the `AX_USERFILES_ROOT`
  * value (the realized path of the `role:'user-files'` mount), if any.
  *
- * - No resolver loaded → `{}` (no durable mount; pre-existing behavior).
+ * - No resolver loaded → `{}` (no durable mount).
  * - Resolver returns `[]` (e.g. anonymous, no agentId) → `{}`.
+ * - `{}` is not a session the caller may open: open-session refuses an OWNED
+ *   session without a user-files root (`home-unavailable`, TASK-992).
  * - An unrealizable `kind` (anything but `localDir`) → throws PluginError.
  */
 export async function resolveUserFilesMount(

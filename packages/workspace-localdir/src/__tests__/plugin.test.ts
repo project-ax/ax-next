@@ -15,7 +15,8 @@ import { createWorkspaceLocaldirPlugin } from '../plugin.js';
 // Emits ONE per-agent `localDir` mount rooted under a real dev-host directory,
 // keyed off `owner.agentId` (validated `^[A-Za-z0-9_-]+$` — the base64url
 // alphabet, matching real `agt_<base64url>` ids). Returns `[]` when the owner
-// has no agentId (anonymous CLI session → graceful no-mount). This is the
+// has no agentId (no mount; the sandbox then refuses an owned session as
+// home-unavailable, TASK-992). This is the
 // canary/dev path — it gives a durable per-agent `/files` without a real
 // NFS server.
 // ---------------------------------------------------------------------------
