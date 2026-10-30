@@ -2,7 +2,6 @@ import {
   PluginError,
   assertNoRetiredRoutinePuts,
   clampCodeUnits,
-  findRunnerImmutableViolations,
   type AgentContext,
   type FileChange,
   type HookBus,
@@ -95,12 +94,6 @@ function resyncEnvelopeFromCause(cause: unknown): { actualParent?: string } {
 //   5. verifyBundleAuthor: walk every commit in baseline..HEAD and check author
 //      + committer == ax-runner. Reject loud on drift.
 //   6. walkBundleChanges: build the canonical FileChange[] for the per-turn diff.
-//   6b. findRunnerImmutableViolations: refuse the turn outright if it touches
-//      a path a sandbox may never author (the host-owned facts export,
-//      `permanent/memory/facts/**` — see RUNNER_IMMUTABLE_PREFIXES in
-//      @ax/core). NOT
-//      a subscriber veto: it runs ahead of the pre-apply fire and returns, so
-//      nothing downstream can swallow it.
 //   7. filterToPolicy: narrow that diff to the policy-visible paths — the
 //      `.ax/**` and `.claude/**` prefixes PLUS the root exact paths `CLAUDE.md`
 //      and `CLAUDE.local.md`. Validators are policy, and policy covers the
@@ -404,78 +397,6 @@ async function commitBundleCore(
         return { status: 200, body: WorkspaceCommitNotifyResponseSchema.parse(body) };
       }
       throw err;
-    }
-
-    // ---- runner-immutable guard (TASK-486, TASK-494): refuse before
-    //      anything else gets a say. ----
-    //
-    // This handler is the ONE apply path a sandbox can originate, so it is the
-    // one place host-owned paths can be defended. Today that is the facts
-    // export (`permanent/memory/facts/**`), a read-only projection of the fact
-    // store that only @ax/memory's exporter may write. The runner's whole-tree
-    // stage would pick up a sandbox edit there, and `filterToPolicy` below does
-    // NOT match it — so without this block, such a change would reach
-    // `workspace:apply-bundle` without a single subscriber having seen it.
-    // (It first guarded `memory/system/rules.md`, the Rules tier @ax/memory
-    // injected at the top of every prompt; TASK-989 moved Instructions into
-    // @ax/agents and nothing reads that file now.)
-    //
-    // Deliberately AHEAD of the `workspace:pre-apply` fire, and not inside a
-    // subscriber. `HookBus.fire` reads a subscriber throw as a clean pass, so
-    // a guard that lives in a subscriber and throws is a guard that silently
-    // isn't one. A subscriber could not tell this apply from the exporter's
-    // host-side write anyway — its only discriminator would be `reason`, which
-    // the runner supplies, i.e. the lock's key handed to the thing it locks
-    // out. An inline `return` here is unbypassable by construction.
-    //
-    // Refuse rather than strip, because stripping is not available on this
-    // path: `workspace:apply-bundle` takes the runner's opaque bundle, not a
-    // change list, so there is no set to subtract from. The refusal takes the
-    // same shape as the pre-apply veto below, `discardPaths` included, so the
-    // runner reverts exactly this file to its baseline and keeps the rest of
-    // the turn's work (TASK-287) — which also means the next turn's re-stage
-    // cannot re-submit it and wedge the agent (B1).
-    //
-    // `discardPaths` becomes revert targets INSIDE the sandbox, so the
-    // pre-apply branch below re-checks that a subscriber only named paths we
-    // actually sent it. This branch needs no such check and deliberately has
-    // none: `findRunnerImmutableViolations` only returns paths taken from
-    // `allChanges` — this turn's own diff, already checked canonical by the
-    // guard above — that also match a fixed prefix in @ax/core. So what goes
-    // out here (and into the log line, and into the reason the agent reads) is
-    // a subset of what the runner itself sent: it can name nothing the sandbox
-    // did not already hold, and it can only revert files under the guarded
-    // subtree.
-    const immutableHits = findRunnerImmutableViolations(allChanges);
-    if (immutableHits.length > 0) {
-      ctx.logger.warn('workspace_runner_immutable_refused', {
-        action: 'workspace.commit-notify',
-        paths: immutableHits,
-      });
-      const body = {
-        accepted: false as const,
-        // Named, not vague: `recoverable: false` makes this reason the one
-        // channel by which the agent learns what it did wrong (see
-        // `rejectionReason` in the runner's commit-notify-resync). The path is
-        // one the runner already holds, so naming it leaks nothing.
-        reason:
-          `refused: ${immutableHits.join(', ')} belongs to the user, not the agent — ` +
-          'only a person can change it, from the Memory tab',
-        recoverable: false as const,
-        discardPaths: immutableHits,
-      };
-      const checked = WorkspaceCommitNotifyResponseSchema.safeParse(body);
-      if (!checked.success) {
-        logInternalError(
-          ctx.logger,
-          'workspace.commit-notify',
-          new Error(
-            `response shape drift (runner-immutable): ${zodSummary(checked.error)}`,
-          ),
-        );
-        return internalError();
-      }
-      return { status: 200, body: checked.data };
     }
 
     // Filter to policy-visible paths for the pre-apply hook — the `.ax/**` and

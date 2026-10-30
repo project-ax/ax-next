@@ -70,90 +70,18 @@ export function filterToPolicy(changes: readonly FileChange[]): FileChange[] {
 }
 
 // ---------------------------------------------------------------------------
-// Runner-immutable paths — the writes the sandbox may never author (TASK-486,
-// TASK-494).
-//
-// Separate from the policy-visible set above, and deliberately so. That set
-// answers "which changes do pre-apply subscribers get to look at"; this one
-// answers "which changes may a RUNNER-ORIGINATED apply contain at all". The
-// second question has no subscriber, no veto knob and no transform step — the
-// host refuses the turn.
-//
-// WHAT IT GUARDS. The facts-export subtree (`permanent/memory/facts/**`,
-// TASK-494) is a host-owned, read-only projection of @ax/memory's fact store,
-// regenerated wholesale, so a runner write under it is never legitimate. The
-// sandbox could otherwise write it: `commitTurnAndBundle` stages `/agent` with
-// `git add -A`, so any file under it rides the per-turn bundle to
-// `workspace.commit-notify`. `filterToPolicy` does not match it, so no
-// `workspace:pre-apply` subscriber would ever see it — and the apply lands the
-// FULL change set.
-//
-// (This list also held `memory/system/rules.md`, the human-owned Rules tier
-// that @ax/memory injected at the top of every prompt — TASK-486's
-// persistence vector. TASK-989 moved the people's Instructions into
-// @ax/agents and nothing reads that file any more, so it is an ordinary path
-// now and was dropped from the guard.)
-//
-// WHY A COMMIT-PATH GUARD AND NOT A `workspace:pre-apply` SUBSCRIBER. A
-// subscriber sees `{changes, parent, reason}` and cannot tell a runner-
-// originated apply from a host-originated one except by `reason` — which comes
-// straight off the runner's own wire request. An allowlist on it would hand the
-// sandbox the key to its own lock. Origin has to be structural: it is decided
-// by WHICH code path is running, and the only runner-originated apply path is
-// `workspace.commit-notify`. The host's own writer (@ax/memory's facts
-// exporter, via `workspace:apply`) goes through the in-process facade and is
-// untouched by this list, which is exactly the intended split.
-//
-// WHY THE LITERAL LIVES HERE. @ax/memory owns the concept, but @ax/ipc-core
-// may not import a plugin (Invariant 2) and this module is already the one
-// place workspace path policy lives (Invariant 4). So the literal lives here as
-// `MEMORY_FACTS_EXPORT_ROOT`, and @ax/memory builds every export path from
-// THAT constant (`export-paths.ts`, `exporter.ts`) — one literal, consumed in
-// both directions, so the guard and the writer cannot drift.
-//
-// SCOPE. The prefix rule covers the subtree and the bare root, while leaving
-// `permanent/memory/` siblings like `facts-backup/` untouched — and not
-// `memory/**`, which is the agent's own to write. The ANCESTORS of the export
-// root (`permanent`, `permanent/memory`) are refused too: a runner `put` of a
-// file or symlink at one of those paths would otherwise replace the
-// directory the export must own before the first export ever lands.
-//
-// Paths are posix — the exact shape `walkBundleChanges` emits
-// (`git diff-tree -r --name-status -z` reports repo-relative paths with no
-// `./` prefix), so a literal prefix match is the whole comparison. No globs.
+// The runner-immutable guard is gone (TASK-486/TASK-494 -> TASK-989/TASK-991).
+// It refused runner-originated commits that touched two host-owned paths: the
+// Rules file (dropped by TASK-989, which moved Instructions into @ax/agents)
+// and the facts-export subtree (dropped by TASK-991, which writes the export
+// only to the read-only `/memory` volume). With neither left, a check that
+// could never fire would be half-wired code, so it was deleted rather than
+// kept empty. `permanent/memory/facts/**` in a workspace is an ordinary agent
+// path now.
 // ---------------------------------------------------------------------------
 
-export const MEMORY_FACTS_EXPORT_ROOT = 'permanent/memory/facts' as const;
-
-export const RUNNER_IMMUTABLE_PREFIXES = [`${MEMORY_FACTS_EXPORT_ROOT}/`] as const;
-
 /**
- * The paths in `changes` a runner-originated apply may not author, sorted and
- * de-duplicated.
- *
- * Empty array = nothing to refuse. Matches BOTH `put` and `delete`: deleting
- * a host-owned export file is the same damage as overwriting it, and
- * `git add -A` stages a deletion just as readily.
- *
- * Returns the offending paths (rather than a boolean) so the caller can hand
- * them back as `discardPaths` — the refusal is then scoped to exactly this file
- * and the rest of the turn's work survives in the sandbox (TASK-287).
+ * Where each agent's facts live inside its slot of the memory export volume.
+ * Kept here only until it moves to `@ax/sandbox-protocol` (TASK-991).
  */
-export function findRunnerImmutableViolations(
-  changes: readonly FileChange[],
-): string[] {
-  const hits = new Set<string>();
-  for (const c of changes) {
-    if (
-      RUNNER_IMMUTABLE_PREFIXES.some(
-        (p) =>
-          c.path === p.slice(0, -1) ||
-          c.path.startsWith(p) ||
-          p.slice(0, -1).startsWith(`${c.path}/`),
-      )
-    ) {
-      hits.add(c.path);
-    }
-  }
-  return [...hits].sort();
-}
+export const MEMORY_FACTS_EXPORT_ROOT = 'permanent/memory/facts' as const;

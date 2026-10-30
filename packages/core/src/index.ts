@@ -34,11 +34,9 @@ export {
 } from './workspace.js';
 export {
   filterToPolicy,
-  findRunnerImmutableViolations,
   POLICY_PREFIXES,
   POLICY_EXACT_PATHS,
   MEMORY_FACTS_EXPORT_ROOT,
-  RUNNER_IMMUTABLE_PREFIXES,
 } from './workspace-policy.js';
 export { registerWorkspaceApplyFacade } from './workspace-apply-facade.js';
 export type { WorkspacePreApplyPayload } from './workspace-apply-facade.js';
