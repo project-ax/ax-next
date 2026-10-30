@@ -223,6 +223,19 @@ describe('checkPublishablePath', () => {
     });
   });
 
+  describe('the facts export (/memory) is not publishable — design §11', () => {
+    it('rejects /memory and anything under it with k8s-shaped roots', () => {
+      expect(checkPublishablePath('/memory/facts/a.md', BOTH).ok).toBe(false);
+      expect(checkPublishablePath('/memory', BOTH).ok).toBe(false);
+    });
+
+    it('rejects a sibling memory tree next to subprocess-shaped roots', () => {
+      const base = '/tmp/ax-sbx-123';
+      const roots = { userFilesRoot: `${base}/files`, ephemeralRoot: `${base}/ephemeral` };
+      expect(checkPublishablePath(`${base}/memory/facts/a.md`, roots).ok).toBe(false);
+    });
+  });
+
   it('exposes the caps', () => {
     expect(MAX_ARTIFACT_BYTES).toBe(100 * 1024 * 1024);
     expect(MAX_DISPLAY_NAME_CHARS).toBe(256);
