@@ -47,7 +47,7 @@ import { readAlertVariant } from '@/lib/read-register';
 import { routeLinkProps } from '@/lib/route-link';
 import { TASK_GROUP_LABELS } from '@/lib/task-groups';
 import { readingText } from '@/lib/task-reading';
-import { updateText } from '@/lib/task-updates';
+import { runFailureText, updateText } from '@/lib/task-updates';
 import type { DecisionQueue } from '@/lib/workspace-decisions';
 import type { WorkspaceGrant } from '@/lib/workspace-grant-store';
 import type { WorkspaceRoute } from '@/lib/workspace-route';
@@ -330,7 +330,7 @@ function CheckinSummary({ page }: { page: TaskCheckin }) {
       )}
       {checkIn.status === 'error' && (
         <p className="whitespace-pre-wrap break-words text-[12px] text-muted-foreground">
-          {checkIn.error ?? NO_REASON}
+          {checkIn.error === null ? NO_REASON : runFailureText(checkIn.error)}
         </p>
       )}
       <p className="break-words text-[12px] text-muted-foreground">

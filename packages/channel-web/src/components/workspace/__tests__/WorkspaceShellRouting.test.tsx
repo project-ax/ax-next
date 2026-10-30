@@ -276,6 +276,51 @@ describe('landing on a URL', () => {
     ).toBeTruthy();
   });
 
+  it('a needs-you row’s Reply opens the task with its reply box focused, once', async () => {
+    tasksMock.mockResolvedValue({
+      tasks: [
+        {
+          agentId: 'a1',
+          agentName: 'Quill',
+          routineId: 't1',
+          name: 'Zero open support tickets',
+          enabled: true,
+          kind: 'stay-on-top',
+          steps: null,
+          finishBy: null,
+          task: {
+            status: 'needs-you',
+            update: '3 open.',
+            ask: 'Draft a reply?',
+            reading: null,
+            doneClaimed: false,
+            reportedAt: new Date(2026, 9, 22, 10, 2).toISOString(),
+          },
+          noRecentUpdate: null,
+          doneAt: null,
+          canMarkDone: true,
+        },
+      ],
+      unavailableAgents: [],
+    });
+    renderAt('/workspace/tasks');
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Reply' }));
+    // The same address a plain visit has: the focus is shell memory, never the URL.
+    await waitFor(() => expect(window.location.pathname).toBe('/workspace/tasks/a1/t1'));
+    const box = await screen.findByRole('textbox', { name: 'Reply to Quill about this task' });
+    await waitFor(() => expect(document.activeElement).toBe(box));
+
+    // Back to Tasks and in again by the row's link: a plain visit, so nothing takes focus.
+    act(() => {
+      window.history.back();
+      window.dispatchEvent(new PopStateEvent('popstate'));
+    });
+    fireEvent.click(await screen.findByRole('link', { name: /Zero open support tickets/ }));
+    const again = await screen.findByRole('textbox', { name: 'Reply to Quill about this task' });
+    expect(document.activeElement).not.toBe(again);
+  });
+
   it('the Tasks row leaves an address behind', async () => {
     renderAt('/workspace');
     await screen.findByRole('heading', { name: 'Today' });

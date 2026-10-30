@@ -14,6 +14,9 @@
  * TASK-911), and which check-ins can't be linked to because they share a
  * conversation (`sharedConversationIds`).
  *
+ * And it words a failed check-in's reason (`runFailureText`, 2026-10-29): the
+ * one place the routines store's own sentences become the page's.
+ *
  * Pure, with relative imports only: the server-side wire types live next door.
  */
 import type { TaskDetailReport, TaskReply, TaskUpdate } from './workspace-types.js';
@@ -80,6 +83,70 @@ export function foldTimeline(
     }
   }
   return items;
+}
+
+/**
+ * The routines store's own words for a run that a restart cut off
+ * (`RUN_INTERRUPTED`) and one that closed before it could start (`RUN_CLOSED`),
+ * byte for byte. The wire carries no reason code for a failed run, only its
+ * fenced `error` line, so the two known sentences are matched as text. A
+ * change to either string in `@ax/routines` makes these read as written again,
+ * which is honest, just less plain.
+ */
+const STORE_INTERRUPTED = 'The routine run was interrupted by a host restart.';
+const STORE_CLOSED = 'The routine run closed before it could start.';
+
+/** What the reason is about: a task's check-in, or a Repeat job's run. */
+export type RunNoun = 'check-in' | 'run';
+
+const INTERRUPTED_TEXT: Record<RunNoun, string> = {
+  'check-in': 'Stopped early because we restarted. It tries again next time.',
+  run: 'Stopped early because we restarted. It runs again next time.',
+};
+const FAILED_TEXT: Record<RunNoun, string> = {
+  'check-in': 'Something went wrong, so this check-in didn’t finish.',
+  run: 'Something went wrong, so this run didn’t finish.',
+};
+const NO_REASON_TEXT = 'No reason was recorded.';
+
+/**
+ * A failed check-in's (or a Repeat job's run's) reason in plain words: the
+ * store's two sentences, which speak of routines and hosts, as the page says
+ * them, in the surface's own noun ("this check-in", or "this run" for a
+ * Repeat job); no reason as "No reason was recorded."; any other reason as it
+ * was written.
+ */
+export function runFailureText(error: string | null, noun: RunNoun = 'check-in'): string {
+  if (error === null) return NO_REASON_TEXT;
+  if (error === STORE_INTERRUPTED) return INTERRUPTED_TEXT[noun];
+  if (error === STORE_CLOSED) return FAILED_TEXT[noun];
+  return error;
+}
+
+/**
+ * The timeline without the entry the latest card already shows above it, so
+ * the check-ins list never repeats it: the newest check-in, wherever it sits
+ * (a reply sent since can be above it), when it says what the card says
+ * (same status, same words). Anything else stays: a reply, an older check-in
+ * that happened to say the same, or a newest check-in that says something
+ * else. Never mutates what it was given.
+ */
+export function withoutLatest(
+  items: readonly TimelineItem[],
+  task: Pick<TaskDetailReport, 'status' | 'update'> | null,
+): TimelineItem[] {
+  const at = items.findIndex((item) => item.kind === 'update');
+  const newest = items[at];
+  if (task === null || newest?.kind !== 'update' || newest.update.report === null) return [...items];
+  const { report } = newest.update;
+  return report.status === task.status && report.update === task.update
+    ? [...items.slice(0, at), ...items.slice(at + 1)]
+    : [...items];
+}
+
+/** How many check-ins and replies a run of timeline items holds, a fold counting each check-in it hides. */
+export function entryCount(items: readonly TimelineItem[]): number {
+  return items.reduce((n, item) => n + (item.kind === 'fold' ? item.updates.length : 1), 0);
 }
 
 /** What an Updates entry says: the agent's update, or why there isn't one (TASK-910's words, now shared with a check-in's page). */

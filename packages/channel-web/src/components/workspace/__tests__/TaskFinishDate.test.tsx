@@ -1,5 +1,5 @@
 /**
- * TaskFinishDate: a get-done task's "Finish by" line and its date field, on the
+ * TaskFinishDate: a get-done task's finish-date chip and its date field, on the
  * task's own page (TASK-951).
  *
  * Driven through the real component with only `setTaskFinishBy` mocked, so each
@@ -90,14 +90,29 @@ afterEach(() => {
 });
 
 describe('TaskFinishDate — what it shows', () => {
-  it('shows the date and the days left, with Change described by that line', () => {
+  it('shows the date and the days left as a chip, which is Change, described by the whole line', () => {
     renderField(FB);
     const line = finishByLine(FB);
-    expect(screen.getByText(line)).toBeTruthy();
-    const described = button('Change').getAttribute('aria-describedby');
-    expect(described).not.toBeNull();
-    expect(document.getElementById(described!)?.textContent).toContain(line);
+    const chip = button('Change finish date');
+    // "Nov 14 · 9 days" on screen; the whole line is its description, and its tooltip.
+    expect(chip.textContent).toBe('Nov 14 · 9 daysChange finish date');
+    expect(chip).toHaveAccessibleDescription(line);
+    expect(screen.getByText(line)).toHaveClass('sr-only');
     expect(screen.queryByLabelText('Finish by')).toBeNull();
+  });
+
+  it('opens its field in a popover under the chip, and a click outside closes it without a request', () => {
+    renderField(FB);
+    fireEvent.click(button('Change finish date'));
+    expect(screen.getByRole('dialog')).toContainElement(field());
+    expect(document.activeElement).toBe(field());
+    const elsewhere = button('Elsewhere');
+    fireEvent.pointerDown(elsewhere);
+    elsewhere.focus();
+    fireEvent.focusIn(elsewhere);
+    expect(screen.queryByLabelText('Finish by')).toBeNull();
+    expect(document.activeElement).toBe(elsewhere);
+    expect(setMock).not.toHaveBeenCalled();
   });
 
   it('offers Add a finish date when there is none, and no Remove date in its field', () => {
@@ -132,13 +147,13 @@ describe('TaskFinishDate — setting and removing', () => {
     expect(setMock).toHaveBeenCalledTimes(1);
     // With the browser's own zone, which the host counts in when the task has none (TASK-955).
     expect(setMock).toHaveBeenCalledWith('a1', 't1', '2026-11-14', 'America/Los_Angeles');
-    expect(document.activeElement).toBe(button('Change'));
+    expect(document.activeElement).toBe(button('Change finish date'));
   });
 
   it('changes and removes a date', async () => {
     setMock.mockResolvedValueOnce({ finishBy: null });
     const { onSaved } = renderField(FB);
-    fireEvent.click(button('Change'));
+    fireEvent.click(button('Change finish date'));
     expect(field().value).toBe('2026-11-14');
     fireEvent.click(button('Remove date'));
     await waitFor(() => expect(screen.queryByLabelText('Finish by')).toBeNull());
@@ -171,8 +186,8 @@ describe('TaskFinishDate — setting and removing', () => {
   // flaked when its check landed in that frame. Watching the DOM pins the moment the
   // field goes, which no amount of waiting can: focus must already be on the button.
   it.each<[string, TaskFinishBy | null, string, string]>([
-    ['Save', null, 'Add a finish date', 'Change'],
-    ['Remove date', FB, 'Change', 'Add a finish date'],
+    ['Save', null, 'Add a finish date', 'Change finish date'],
+    ['Remove date', FB, 'Change finish date', 'Add a finish date'],
   ])('%s hands focus back in the same commit that closes the field', async (press, initial, opener, after) => {
     setMock.mockResolvedValueOnce({ finishBy: initial === null ? FB : null });
     renderField(initial);
@@ -223,18 +238,18 @@ describe('TaskFinishDate — setting and removing', () => {
 
   it('Cancel and Escape close the field with no request, and focus goes back', () => {
     renderField(FB);
-    fireEvent.click(button('Change'));
+    fireEvent.click(button('Change finish date'));
     pick('2026-11-20');
     fireEvent.click(button('Cancel'));
     expect(screen.queryByLabelText('Finish by')).toBeNull();
-    expect(document.activeElement).toBe(button('Change'));
-    expect(screen.getByText(finishByLine(FB))).toBeTruthy();
+    expect(document.activeElement).toBe(button('Change finish date'));
+    expect(button('Change finish date')).toHaveAccessibleDescription(finishByLine(FB));
 
-    fireEvent.click(button('Change'));
+    fireEvent.click(button('Change finish date'));
     expect(field().value).toBe('2026-11-14');
     fireEvent.keyDown(field(), { key: 'Escape' });
     expect(screen.queryByLabelText('Finish by')).toBeNull();
-    expect(document.activeElement).toBe(button('Change'));
+    expect(document.activeElement).toBe(button('Change finish date'));
     expect(setMock).not.toHaveBeenCalled();
   });
 });
@@ -251,7 +266,7 @@ describe('TaskFinishDate — when the host says no', () => {
   ])('a %i says %s', async (status, line, dead) => {
     setMock.mockRejectedValueOnce(new WorkspaceApiError('/p', status));
     renderField(FB);
-    fireEvent.click(button('Change'));
+    fireEvent.click(button('Change finish date'));
     pick('2026-11-20');
     fireEvent.click(button('Save'));
     await screen.findByText(line);
@@ -284,13 +299,13 @@ describe('TaskFinishDate — when the host says no', () => {
   ])('keeps a %i refusal on screen after Cancel, and no longer offers to change the date', async (status, line) => {
     setMock.mockRejectedValueOnce(new WorkspaceApiError('/p', status));
     renderField(FB);
-    fireEvent.click(button('Change'));
+    fireEvent.click(button('Change finish date'));
     fireEvent.click(button('Save'));
     await screen.findByText(line);
     fireEvent.click(button('Cancel'));
     expect(screen.queryByLabelText('Finish by')).toBeNull();
     expect(screen.getByText(line)).toBeTruthy();
-    expect(button('Change').disabled).toBe(true);
+    expect(button('Change finish date').disabled).toBe(true);
     // A disabled button can't take focus, so the message does.
     expect(document.activeElement).toBe(screen.getByText(line));
   });
@@ -301,7 +316,7 @@ describe('TaskFinishDate — when the host says no', () => {
   ])('puts focus on the %i refusal when Escape closes the field', async (status, line) => {
     setMock.mockRejectedValueOnce(new WorkspaceApiError('/p', status));
     renderField(FB);
-    fireEvent.click(button('Change'));
+    fireEvent.click(button('Change finish date'));
     fireEvent.click(button('Save'));
     await screen.findByText(line);
     fireEvent.keyDown(field(), { key: 'Escape' });
@@ -324,12 +339,12 @@ describe('TaskFinishDate — when the host says no', () => {
   it('drops a refusal that pressing again could fix when the field is cancelled', async () => {
     setMock.mockRejectedValueOnce(new WorkspaceApiError('/p', 500));
     renderField(FB);
-    fireEvent.click(button('Change'));
+    fireEvent.click(button('Change finish date'));
     fireEvent.click(button('Save'));
     await screen.findByText(UNCONFIRMED);
     fireEvent.click(button('Cancel'));
     expect(screen.queryByText(UNCONFIRMED)).toBeNull();
-    expect(button('Change').disabled).toBe(false);
+    expect(button('Change finish date').disabled).toBe(false);
   });
 
   it('clears an old refusal when the person picks another date', async () => {

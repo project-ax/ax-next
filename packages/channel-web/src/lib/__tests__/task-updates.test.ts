@@ -1,11 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import type { RoutineReportStatus } from '@ax/routines-contract';
 import {
+  entryCount,
   foldTimeline,
   latestUpdateCheckIn,
   missCheckIn,
+  runFailureText,
   sharedConversationIds,
   updateText,
+  withoutLatest,
 } from '../task-updates.js';
 import type { TaskReply, TaskUpdate } from '../workspace-types.js';
 
@@ -281,5 +284,72 @@ describe('missCheckIn', () => {
     expect(
       missCheckIn({ at: AT }, [u('on-track', { conversationId: 'conv-miss' }), missed()]),
     ).toBeNull();
+  });
+});
+
+describe('runFailureText (2026-10-29)', () => {
+  it('words the routines store’s own sentences plainly, and keeps any other reason as recorded', () => {
+    expect(runFailureText('The routine run was interrupted by a host restart.')).toBe(
+      'Stopped early because we restarted. It tries again next time.',
+    );
+    expect(runFailureText('The routine run closed before it could start.')).toBe(
+      'Something went wrong, so this check-in didn’t finish.',
+    );
+    expect(runFailureText(null)).toBe('No reason was recorded.');
+    expect(runFailureText('The mailbox said no.')).toBe('The mailbox said no.');
+  });
+
+  it('says a Repeat job’s run as a run', () => {
+    expect(runFailureText('The routine run was interrupted by a host restart.', 'run')).toBe(
+      'Stopped early because we restarted. It runs again next time.',
+    );
+    expect(runFailureText('The routine run closed before it could start.', 'run')).toBe(
+      'Something went wrong, so this run didn’t finish.',
+    );
+    expect(runFailureText(null, 'run')).toBe('No reason was recorded.');
+    expect(runFailureText('Slack wasn’t reachable.', 'run')).toBe('Slack wasn’t reachable.');
+    // A check-in is the default.
+    expect(runFailureText('The routine run closed before it could start.', 'check-in')).toBe(
+      runFailureText('The routine run closed before it could start.'),
+    );
+  });
+});
+
+describe('withoutLatest and entryCount (2026-10-29)', () => {
+  const said = (status: RoutineReportStatus, update: string): TaskUpdate => ({
+    firedAt: '2026-10-22T10:00:00.000Z',
+    status: 'ok',
+    error: null,
+    report: { status, update, reading: null },
+    conversationId: null,
+  });
+
+  it('drops the newest entry only when it says what the latest card says', () => {
+    const items = foldTimeline([said('off-track', 'A'), said('off-track', 'B')], []);
+    expect(withoutLatest(items, { status: 'off-track', update: 'A' })).toEqual(items.slice(1));
+    expect(withoutLatest(items, { status: 'on-track', update: 'A' })).toEqual(items);
+    expect(withoutLatest(items, { status: 'off-track', update: 'B' })).toEqual(items);
+    expect(withoutLatest(items, null)).toEqual(items);
+  });
+
+  it('drops the latest card’s entry even when a newer reply sits above it, and never the reply', () => {
+    const reply: TaskReply = { sentAt: '2026-10-22T11:00:00.000Z', text: 'A', byYou: true };
+    const items = foldTimeline([said('off-track', 'A'), said('off-track', 'B')], [reply]);
+    expect(items.map((i) => i.kind)).toEqual(['reply', 'update', 'update']);
+    const before = [...items];
+    expect(withoutLatest(items, { status: 'off-track', update: 'A' })).toEqual([items[0], items[2]]);
+    expect(items).toEqual(before);
+  });
+
+  it('only the newest check-in can be the latest card’s: an older one saying the same stays', () => {
+    const items = foldTimeline([said('off-track', 'B'), said('off-track', 'A')], []);
+    expect(withoutLatest(items, { status: 'off-track', update: 'A' })).toEqual(items);
+  });
+
+  it('counts a fold as the check-ins it holds', () => {
+    const quiet = [1, 2, 3, 4].map(() => said('on-track', 'Fine'));
+    const items = foldTimeline(quiet, []);
+    expect(items.map((i) => i.kind)).toEqual(['update', 'fold']);
+    expect(entryCount(items)).toBe(4);
   });
 });

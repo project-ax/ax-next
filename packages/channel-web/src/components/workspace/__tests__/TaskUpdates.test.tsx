@@ -7,10 +7,10 @@
  * The copy is asserted verbatim because it is decided (TASK-910 decisions rows
  * 13 and 14). Its apostrophe is U+2019, not the ASCII one.
  */
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, within } from '@testing-library/react';
 import type { WorkspaceRoute } from '@/lib/workspace-route';
-import { updateStamp } from '@/lib/workspace-time';
+import { compactStamp, fullStamp, localTime, monthDay, updateStamp } from '@/lib/workspace-time';
 import type { TaskReply, TaskUpdate } from '@/lib/workspace-types';
 import { TaskUpdates } from '../TaskUpdates';
 
@@ -31,6 +31,11 @@ function update(over: Partial<TaskUpdate> = {}): TaskUpdate {
 function onTrack(n: number): TaskUpdate {
   const at = new Date(NOW.getTime() - n * 3_600_000).toISOString();
   return update({ firedAt: at, report: { status: 'on-track', update: `Update ${n}`, reading: null } });
+}
+
+/** A row's time as its text reads: the short form shown, then the whole date, hidden. */
+function stampText(iso: string): string {
+  return `${compactStamp(iso, NOW)}${fullStamp(iso)}`;
 }
 
 function renderThread(updates: TaskUpdate[], replies: TaskReply[] = []) {
@@ -64,11 +69,12 @@ describe('TaskUpdates (TASK-910)', () => {
     expect(within(section).getByRole('heading', { level: 2, name: 'Updates' })).toBeInTheDocument();
     const items = within(section).getAllByRole('listitem');
     expect(items).toHaveLength(2);
+    // One line each: the mark's word (hidden), what it said, then its time.
     expect(items[0]!.textContent).toBe(
-      `${updateStamp('2026-10-22T14:00:00.000Z', NOW)}Needs youThree invoices are overdue.`,
+      `Needs youThree invoices are overdue.${stampText('2026-10-22T14:00:00.000Z')}`,
     );
     expect(items[1]!.textContent).toBe(
-      `${updateStamp('2026-10-21T14:00:00.000Z', NOW)}Off trackThe queue is backing up.`,
+      `Off trackThe queue is backing up.${stampText('2026-10-21T14:00:00.000Z')}`,
     );
     // The mark is a shape, so each entry says its state in words too.
     expect(within(items[0]!).getByText('Needs you')).toHaveClass('sr-only');
@@ -247,16 +253,17 @@ describe('TaskUpdates (TASK-910)', () => {
       };
     }
 
-    it('a reply shows its time, You and the text, with no mark and no link', () => {
+    it('a reply shows You, the text and its time, with no mark and no link', () => {
       renderThread([update({ firedAt: '2026-10-22T14:00:00.000Z', conversationId: 'c1' })], [reply()]);
       const items = screen.getAllByRole('listitem');
       expect(items).toHaveLength(2);
       const item = items[0]!;
       expect(item.textContent).toBe(
-        `${updateStamp('2026-10-22T14:30:00.000Z', NOW)}You Refunds under $100 are fine.`,
+        `YouRefunds under $100 are fine.${stampText('2026-10-22T14:30:00.000Z')}`,
       );
       expect(within(item).queryByRole('link')).toBeNull();
-      expect(item.querySelector('.sr-only')).toBeNull();
+      // Nothing hidden but the time's whole date.
+      expect([...item.querySelectorAll('.sr-only')].map((e) => e.parentElement?.tagName)).toEqual(['TIME']);
     });
 
     it('someone else’s reply says so', () => {
@@ -268,7 +275,7 @@ describe('TaskUpdates (TASK-910)', () => {
     it('a reply that can’t be shown says so', () => {
       renderThread([], [reply({ text: null })]);
       expect(screen.getByRole('listitem').textContent).toBe(
-        `${updateStamp('2026-10-22T14:30:00.000Z', NOW)}You We can’t show this reply.`,
+        `YouWe can’t show this reply.${stampText('2026-10-22T14:30:00.000Z')}`,
       );
     });
 
@@ -277,7 +284,7 @@ describe('TaskUpdates (TASK-910)', () => {
       const { container } = renderThread([], [reply({ text })]);
       const p = container.querySelector('li p') as HTMLElement;
       expect(p).toHaveClass('whitespace-pre-wrap');
-      expect(p.textContent).toBe(`You ${text}`);
+      expect(p.textContent).toBe(text);
       expect(container.querySelector('img, strong')).toBeNull();
     });
 
@@ -323,6 +330,120 @@ describe('TaskUpdates (TASK-910)', () => {
       ]);
       expect(screen.getByText('Answered two.').textContent).toBe(`Answered two. · ${label}: 3`);
       expect(container.querySelector('img')).toBeNull();
+    });
+  });
+
+  describe('on the task page (2026-10-29)', () => {
+    function renderPageThread(
+      updates: TaskUpdate[],
+      over: { latest?: { status: 'needs-you' | 'on-track' | 'off-track'; update: string | null } | null; shown?: number; collapsed?: boolean },
+    ) {
+      return render(
+        <TaskUpdates updates={updates} replies={[]} now={NOW} agentId="a1" routineId="t1" onNavigate={vi.fn()} {...over} />,
+      );
+    }
+    const offTrack = (n: number) =>
+      update({
+        firedAt: new Date(NOW.getTime() - n * 3_600_000).toISOString(),
+        report: { status: 'off-track', update: `Report ${n}`, reading: null },
+      });
+
+    it('leaves out the entry the latest card shows, and only that one', () => {
+      renderPageThread([offTrack(1), offTrack(2)], { latest: { status: 'off-track', update: 'Report 1' } });
+      expect(screen.queryByText('Report 1')).toBeNull();
+      expect(screen.getByText('Report 2')).toBeInTheDocument();
+    });
+
+    it('keeps the newest entry when it isn’t what the latest card says', () => {
+      renderPageThread([offTrack(1), offTrack(2)], { latest: { status: 'off-track', update: 'Something newer' } });
+      expect(screen.getByText('Report 1')).toBeInTheDocument();
+    });
+
+    it('shows the newest few, and the rest behind N earlier, which opens in place', () => {
+      renderPageThread([offTrack(1), offTrack(2), offTrack(3), offTrack(4), offTrack(5)], { shown: 3 });
+      expect(screen.getAllByText(/^Report \d$/).map((e) => e.textContent)).toEqual(['Report 1', 'Report 2', 'Report 3']);
+      const earlier = screen.getByRole('button', { name: '2 earlier' });
+      expect(earlier).toHaveAttribute('aria-expanded', 'false');
+      fireEvent.click(earlier);
+      expect(earlier).toHaveAttribute('aria-expanded', 'true');
+      expect(screen.getAllByText(/^Report \d$/)).toHaveLength(5);
+    });
+
+    it('N earlier counts each check-in a quiet fold holds, and keeps the fold', () => {
+      renderPageThread([offTrack(1), onTrack(2), onTrack(3), onTrack(4), onTrack(5)], { shown: 1 });
+      // Report 1, then Update 2 with Updates 3-5 folded: four entries wait.
+      fireEvent.click(screen.getByRole('button', { name: '4 earlier' }));
+      expect(screen.getByRole('button', { name: '3 earlier check-ins, all on track' })).toBeInTheDocument();
+    });
+
+    it('a Done task’s list starts closed behind N check-ins', () => {
+      renderPageThread([offTrack(1), offTrack(2)], { collapsed: true });
+      expect(screen.queryByText('Report 1')).toBeNull();
+      fireEvent.click(screen.getByRole('button', { name: '2 check-ins' }));
+      expect(screen.getByText('Report 1')).toBeInTheDocument();
+      expect(screen.getByText('Report 2')).toBeInTheDocument();
+    });
+
+    it.each([
+      ['The routine run was interrupted by a host restart.', 'Stopped early because we restarted. It tries again next time.'],
+      ['The routine run closed before it could start.', 'Something went wrong, so this check-in didn’t finish.'],
+      ['The mailbox said no.', 'The mailbox said no.'],
+    ])('a failed check-in’s reason reads plainly: %s', (error, said) => {
+      renderThread([update({ status: 'error', error, report: null })]);
+      expect(screen.getByText(said)).toHaveClass('text-muted-foreground');
+      expect(screen.queryByText(/routine run/)).toBeNull();
+    });
+  });
+
+  it('a failed check-in’s reason is on a line of its own, never clipped with the update', () => {
+    const reason = 'The mailbox said no. '.repeat(20).trim();
+    renderThread([
+      update({
+        status: 'error',
+        error: reason,
+        report: { status: 'off-track', update: 'Got partway through the inbox.', reading: null },
+      }),
+    ]);
+    const line = screen.getByText(reason);
+    expect(line.closest('[class*="line-clamp"]')).toBeNull();
+    expect(line).toHaveClass('whitespace-pre-wrap', 'break-words');
+    // The update it came with is still the clamped line.
+    expect(screen.getByText('Got partway through the inbox.').closest('[class*="line-clamp"]')).not.toBeNull();
+  });
+
+  describe('the row time (2026-10-29)', () => {
+    // Pinned, so "today" and "this past week" are the same days wherever the suite runs.
+    let savedTz: string | undefined;
+    beforeEach(() => {
+      savedTz = process.env.TZ;
+      process.env.TZ = 'America/New_York';
+    });
+    afterEach(() => {
+      if (savedTz === undefined) delete process.env.TZ;
+      else process.env.TZ = savedTz;
+    });
+
+    it('is short on screen, and its whole date is its tooltip and its hidden text', () => {
+      const today = '2026-10-22T14:00:00.000Z';
+      const lastWeek = new Date(NOW.getTime() - 3 * 86_400_000).toISOString();
+      const older = new Date(NOW.getTime() - 20 * 86_400_000).toISOString();
+      const { container } = renderThread([
+        update({ firedAt: today }),
+        update({ firedAt: lastWeek }),
+        update({ firedAt: older, report: { status: 'off-track', update: 'Old.', reading: null } }),
+      ]);
+      const times = [...container.querySelectorAll('time')];
+      expect(times.map((t) => t.getAttribute('dateTime'))).toEqual([today, lastWeek, older]);
+      expect(times.map((t) => t.querySelector('[aria-hidden="true"]')?.textContent)).toEqual([
+        localTime(today),
+        `${new Date(lastWeek).toLocaleDateString(undefined, { weekday: 'short' })} ${localTime(lastWeek)}`,
+        monthDay(older),
+      ]);
+      for (const t of times) {
+        const full = fullStamp(t.getAttribute('dateTime')!);
+        expect(t).toHaveAttribute('title', full);
+        expect(within(t).getByText(full!)).toHaveClass('sr-only');
+      }
     });
   });
 });

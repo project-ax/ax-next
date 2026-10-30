@@ -17,9 +17,12 @@
 import { describe, expect, it } from 'vitest';
 import {
   checkInWhen,
+  compactStamp,
+  fullStamp,
   localDayKey,
   localDayLabel,
   localTime,
+  monthDay,
   relativeDay,
   timeAgo,
   updateStamp,
@@ -236,5 +239,69 @@ describe('timeAgo', () => {
     // The row then shows no time at all, never "Invalid Date".
     expect(timeAgo('', now)).toBeNull();
     expect(timeAgo('not a date', now)).toBeNull();
+  });
+});
+
+/**
+ * The task page's compact row stamps (2026-10-29). Every case runs in a pinned
+ * zone, with both instants as UTC strings, so the reader's calendar is the
+ * only thing deciding today, the last six days and older.
+ */
+describe('compactStamp, fullStamp and monthDay', () => {
+  function inZone(tz: string, run: () => void) {
+    const saved = process.env.TZ;
+    process.env.TZ = tz;
+    try {
+      run();
+    } finally {
+      if (saved === undefined) delete process.env.TZ;
+      else process.env.TZ = saved;
+    }
+  }
+
+  it('today is the time, the six days before are the weekday and the time, older is the month and day', () => {
+    inZone('America/New_York', () => {
+      const now = new Date('2026-10-30T16:00:00.000Z'); // Fri Oct 30, 12:00 PM
+      expect(compactStamp('2026-10-30T13:05:00.000Z', now, 'en-US')).toBe('9:05 AM');
+      expect(compactStamp('2026-10-29T23:13:00.000Z', now, 'en-US')).toBe('Thu 7:13 PM');
+      expect(compactStamp('2026-10-24T14:00:00.000Z', now, 'en-US')).toBe('Sat 10:00 AM');
+      // Seven days back is a date, not a weekday that would read as this week's.
+      expect(compactStamp('2026-10-23T14:00:00.000Z', now, 'en-US')).toBe('Oct 23');
+      // A stamp ahead of today (a reader's clock behind the host's) is a date too.
+      expect(compactStamp('2026-10-31T14:00:00.000Z', now, 'en-US')).toBe('Oct 31');
+    });
+  });
+
+  it('decides the day on the reader’s calendar, not UTC’s', () => {
+    // 03:30Z on the 30th is still the 29th in Los Angeles, and already the 30th in Kolkata.
+    const now = new Date('2026-10-30T18:00:00.000Z');
+    inZone('America/Los_Angeles', () => {
+      expect(compactStamp('2026-10-30T03:30:00.000Z', now, 'en-US')).toBe('Thu 8:30 PM');
+    });
+    inZone('Asia/Kolkata', () => {
+      expect(compactStamp('2026-10-30T03:30:00.000Z', now, 'en-US')).toBe('9:00 AM');
+    });
+  });
+
+  it('a clock change in between still counts calendar days', () => {
+    // US clocks go back on Sun Nov 1 2026: that day is 25 hours long.
+    inZone('America/Los_Angeles', () => {
+      const now = new Date('2026-11-07T08:30:00.000Z'); // Sat Nov 7, 12:30 AM PST
+      expect(compactStamp('2026-11-01T07:30:00.000Z', now, 'en-US')).toBe('Sun 12:30 AM');
+      expect(compactStamp('2026-10-31T07:30:00.000Z', now, 'en-US')).toBe('Oct 31');
+    });
+  });
+
+  it('fullStamp says the whole date for hidden text and the tooltip; monthDay is finishByShort’s form', () => {
+    inZone('America/New_York', () => {
+      expect(fullStamp('2026-10-23T23:13:00.000Z', 'en-US')).toBe('Fri, Oct 23, 2026, 7:13 PM');
+      expect(monthDay('2026-10-25T15:00:00.000Z', 'en-US')).toBe('Oct 25');
+    });
+  });
+
+  it('an instant it can’t read gives no stamp, never Invalid Date', () => {
+    expect(compactStamp('nope', new Date())).toBeNull();
+    expect(fullStamp('nope')).toBeNull();
+    expect(monthDay('nope')).toBe('');
   });
 });

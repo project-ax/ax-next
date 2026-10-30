@@ -850,6 +850,8 @@ describe('ACCENT_SOFT_PAIRS covers every soft tint the tree paints as text', () 
       'components/settings/ConnectorToolPermissions.tsx',
       'components/ui/badge.tsx',
       'components/workspace/bits.tsx',
+      // The Tasks status pill ("Needs you"), the same --warning on --warning-soft pair.
+      'components/workspace/task-bits.tsx',
     ]);
   });
 

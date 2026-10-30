@@ -81,7 +81,10 @@ describe('TaskReadingBlock (TASK-952)', () => {
     expect(line).toHaveAttribute('fill', 'none');
     expect(line).toHaveAttribute('stroke', 'currentColor');
     expect(line).toHaveAttribute('points', sparklinePoints([12, 9, 5, 3], 96, 24, 2));
-    expect(within(region).getByText('Earlier: 12 · 9 · 5')).toBeInTheDocument();
+    // Seen as well as heard: a small muted row, not hidden text.
+    const earlier = within(region).getByText('Earlier: 12 · 9 · 5');
+    expect(earlier).not.toHaveClass('sr-only');
+    expect(earlier).toHaveClass('text-[12px]', 'text-muted-foreground');
   });
 
   it('a first reading draws no line and has nothing earlier', () => {

@@ -570,3 +570,53 @@ describe('completed reply receipts (TASK-940)', () => {
     expect(screen.getByRole('status')).toHaveTextContent(receipt!);
   });
 });
+
+describe('TaskReplyBox — compact, on the task page (2026-10-29)', () => {
+  function renderCompact(enabled = true) {
+    const onSent = vi.fn();
+    render(
+      <TaskReplyBox compact agentId="a1" routineId="t1" agentName="Quill" enabled={enabled} canStart onSent={onSent} />,
+    );
+    return { onSent };
+  }
+
+  it('is one line with a hidden label and an icon Send, its helper its hidden description', () => {
+    renderCompact();
+    expect(box()).toHaveAttribute('rows', '1');
+    expect(box()).toHaveAttribute('placeholder', 'Reply…');
+    expect(screen.getByText('Reply to Quill about this task')).toHaveClass('sr-only');
+    expect(sendButton()).toHaveAttribute('aria-label', 'Send');
+    expect(sendButton()).toBeDisabled();
+    const helper = screen.getByText(
+      'Quill reads your replies every time it checks in. Sending one starts a check-in, or queues it if one is running.',
+    );
+    expect(helper).toHaveClass('sr-only');
+    expect(box()).toHaveAccessibleDescription(helper.textContent!);
+  });
+
+  it('an empty box’s Send says why it can’t send, in a tooltip', async () => {
+    renderCompact();
+    act(() => sendButton().parentElement!.focus());
+    expect(await screen.findByRole('tooltip')).toHaveTextContent('Write a reply first.');
+  });
+
+  it('shows the paused line, since a reply then waits for Resume', () => {
+    renderCompact(false);
+    expect(screen.getByText('It’s paused, so Quill will read this once you resume it.')).not.toHaveClass('sr-only');
+  });
+
+  it('Enter sends; Shift+Enter doesn’t; the sent line and the request id work as the full box’s', async () => {
+    sendMock.mockRejectedValueOnce(new WorkspaceApiError('/r', 503)).mockResolvedValueOnce({ checkIn: 'queued' });
+    const { onSent } = renderCompact();
+    type('Hold refunds.');
+    fireEvent.keyDown(box(), { key: 'Enter', shiftKey: true });
+    expect(sendMock).not.toHaveBeenCalled();
+    fireEvent.keyDown(box(), { key: 'Enter' });
+    expect(await screen.findByText(UNCONFIRMED)).toBeInTheDocument();
+    fireEvent.keyDown(box(), { key: 'Enter' });
+    await waitFor(() => expect(onSent).toHaveBeenCalledWith('queued'));
+    expect(sendMock.mock.calls[1]![2].requestId).toBe(sendMock.mock.calls[0]![2].requestId);
+    expect(screen.getByRole('status')).toHaveTextContent('Sent. Quill’s next check-in is queued. It will read your reply then.');
+    expect(box().value).toBe('');
+  });
+});
