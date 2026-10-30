@@ -91,6 +91,9 @@ async function seedAgent(h: TestHarness, name: string): Promise<Seeded> {
   const created = await h.bus.call<unknown, AgentCreateOutput>('agents:create', ctx, {
     actor: { userId: USER, isAdmin: false },
     input: agentInput(name),
+    // TASK-989: a pending agent gets its `agents_v1_identity` row at create,
+    // so the schema-wide scan below has an identity row to find and to purge.
+    bootstrap: 'pending',
   });
   const agentId = created.agent.id;
 
@@ -236,6 +239,7 @@ describe('deleting an agent through agents:delete leaves nothing of it in the da
       // The seed must have landed in every table the walk named, or "nothing
       // left" below would be true of an empty database.
       const walkTables = [
+        'agents_v1_identity.agent_id',
         'conversations_v1_conversations.conversation_id',
         'conversations_v1_events.conversation_id',
         'conversations_v1_transcripts.conversation_id',

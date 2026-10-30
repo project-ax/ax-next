@@ -309,16 +309,30 @@ const PLUGINS_TO_DROP = new Set<string>([
 // cli dep cycle the import would create.
 const PERMISSIVE_AGENTS_STUB_NAME = '@ax/preset-k8s/test/permissive-agents-stub';
 
+// TASK-989: the orchestrator freezes the agent's identity at spawn through
+// `agents:identity:get` (and fails the turn if it cannot read it), so every
+// chat flowing through this stub proves the new hook is reached. The counter
+// is the witness; module-level so a test can read it after the turn.
+let identityGetCalls = 0;
+
 function createPermissiveAgentsStubPlugin(): Plugin {
   return {
     manifest: {
       name: PERMISSIVE_AGENTS_STUB_NAME,
       version: '0.0.0',
-      registers: ['agents:resolve'],
+      registers: ['agents:resolve', 'agents:identity:get'],
       calls: [],
       subscribes: [],
     },
     init({ bus }) {
+      bus.registerService(
+        'agents:identity:get',
+        PERMISSIVE_AGENTS_STUB_NAME,
+        async () => {
+          identityGetCalls += 1;
+          return { identity: '', soul: '', instructions: '', bootstrap: 'none', revision: 0 };
+        },
+      );
       bus.registerService(
         'agents:resolve',
         PERMISSIVE_AGENTS_STUB_NAME,
@@ -598,9 +612,13 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
           workspace: { rootPath: tmp },
         });
 
+        const identityReadsBefore = identityGetCalls;
         const outcome: AgentOutcome = await bus.call('agent:invoke', ctx, {
           message: { role: 'user', content: 'hi' },
         });
+        // TASK-989: the turn read the agent's identity through the real
+        // orchestrator (frozen into the session at spawn).
+        expect(identityGetCalls).toBeGreaterThan(identityReadsBefore);
 
         // Chat outcome assertions — the load-bearing "did a chat actually
         // run" check. Anything short of `kind === 'complete'` means the
