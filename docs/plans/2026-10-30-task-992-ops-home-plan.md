@@ -1,8 +1,8 @@
-# TASK-992 — Pin the blob root, require the durable `/files` home, kind NFS (Filestore backups gated) — Implementation Plan
+# TASK-992 — Pin the blob root, require the durable `/files` home, kind NFS — Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-> **STATUS: the Filestore-backups third of the card is BLOCKED on a human decision** (see "Gated: Filestore backups" at the end). Production's `/files` share is a BASIC_HDD Filestore. Google offers no backup schedule for that tier, and Backup and DR does not cover Basic tiers. So "enable/status/drill matching the disk snapshots" needs a cost, custom-code or IAM call. Tasks 1–6 do not depend on that answer. If the human chooses to split the card, they can ship as written.
+> **STATUS: Filestore backups were descoped by the human on 2026-10-30** ("Skip this for now… We'll implement backups later"). They are deferred to a separate later card filed by the orchestrator; TASK-995 does NOT wait on it. This plan ships Tasks 1–6 only. The research the planner did on backup mechanisms is kept in the decisions shard.
 
 **Goal:** Make the blob directory explicit config, byte-identical to today's derived path. Make every agent session's durable `/files` home mandatory at chart render, host boot and session open. Give kind a durable `/files` NFS export.
 
@@ -366,7 +366,8 @@ sandbox:
 **Files:**
 - Modify: `deploy/charts/ax-next/SECURITY.md:195`. Change "the durable `/files` mount, when configured, is NFS and per-agent `subPath`-confined" to "the durable `/files` mount (required) is NFS and per-agent `subPath`-confined".
 - Modify: `packages/cli/src/main.ts:314`, comment only: "durable per-agent `/workspace` mount" → "`/files` mount". The CLI's behaviour is unchanged (decisions shard).
-- Modify: `docs/plans/2026-10-29-agent-files-simplification-design.md` §13 (:303-304). The design says "today only the workspace PVC is snapshotted"; `backups.sh` snapshots the workspace AND facts disks (`KINDS="workspace facts"`, backups.sh:100). Make it "today only the two host disks (workspace and facts) are snapshotted". Add one sentence: Filestore has no backup schedule on Basic tiers and Backup and DR covers only Zonal, Regional and Enterprise, so the mechanism is a separate decision (TASK-992 decisions shard).
+- Modify: `docs/plans/2026-10-29-agent-files-simplification-design.md` §13 (:303-304). The design says "today only the workspace PVC is snapshotted"; `backups.sh` snapshots the workspace AND facts disks (`KINDS="workspace facts"`, backups.sh:100). Make it "today only the two host disks (workspace and facts) are snapshotted". Add one sentence: Filestore backups were deferred by the human on 2026-10-30 to a separate card (Basic-tier Filestore has no backup schedule, so the mechanism is its own decision).
+- Modify: `deploy/GKE.md`, the upgrade guidance (near "Pass the **same** values on **every** `helm upgrade`", ~:427, or the nearest upgrade section): add a short, plain note that the first upgrade after TASK-992 must carry `--set blob.fs.root=/var/lib/ax-next/workspaces/blobs` when it uses `--reuse-values` (the render refuses otherwise, on purpose), and that `-f gke-values.yaml` upgrades already get the pinned value. Also a matching line in `deploy/README.md`'s upgrade/redeploy section if one exists.
 - Create (scratch, NOT in the repo): `<scratchpad>/TASK-992/pr-body-deploy-notes.md`, for the PR body.
 
 - [ ] **Step 1: Make the three edits.** Then run `git grep -nE 'graceful degradation|emptyDir[- ]only|Empty = feature disabled|derives <workspace' -- ':!.claude/memory/**' ':!docs/plans/2026-0*'`. Every remaining hit must describe host-read or cleanup, not session open or the blob root.
@@ -383,25 +384,6 @@ sandbox:
 
 ---
 
-## Gated: Filestore backups — NOT planned, awaiting a human decision
+## Out of scope
 
-The card asks for `backups.sh` Filestore `enable`/`status`/`drill` "matching the existing workspace-PVC snapshot ones", documented in GKE.md. Research on 2026-10-30, from Google's docs and the local gcloud SDK 570 offline help, found:
-
-- **Filestore has no native backup schedule.** Google's documented path is Cloud Scheduler plus Cloud Run functions, one to create backups and one to delete old ones. That is custom code. Snapshots are not available on Basic tiers.
-- **Backup and DR ("enhanced backups") schedules Filestore with retention and no code, but only on Zonal, Regional and Enterprise.** It does not cover Basic. One doc page still calls it "Restricted GA (requires additional access)". Its setup would be `backup-vaults create` (min enforced retention 1d), `backup-plans create --resource-type=file.googleapis.com/Instance --backup-rule=...,recurrence=DAILY,...` and `backup-plan-associations create`. Restore is only to a NEW instance of capacity >= the source.
-- **Production's `/files` share is BASIC_HDD 1 TiB in us-central1-a.** Source: user memory note `project_filestore_workspace_chown_pr365.md`, 2026-06-24. Not re-verified, and no prod access from this card.
-- **Native backups (`gcloud filestore backups create`) work on every tier, Basic included.** They are on-demand, retained until deleted, and support labels. `backups list --filter='labels.k=v AND sourceInstance~/instances/I$' --sort-by=~createTime` lists them. A Basic backup restores only into Basic tiers.
-- **Drill cost:** a scratch BASIC_HDD 1 TiB costs about $0.22/hour.
-
-Decided regardless of the mechanism (for whoever plans it next):
-- Discover the instance from the live host's `AX_FILESTORE_SERVER` and `AX_FILESTORE_EXPORT_PATH` via kubectl jsonpath on `deploy/ax-next-host`. Match BOTH IP and share name in `gcloud filestore instances list`, and refuse on 0 or 2+ matches. Get the project from the existing PVC discovery; `--project` stays an assertion.
-- Use new subcommands (`filestore-enable`, `filestore-status`, `filestore-drill`, `filestore-drill-cleanup`) so the existing tested commands are untouched.
-- The drill namespace is PSS `restricted`, which forbids inline `nfs:` volumes. So the restored share mounts through a static NFS PersistentVolume plus claim, like the disk drill's static PVs.
-- The files verifier is its own POSIX script with its own test. It never follows symlinks, never opens FIFOs, caps the bytes read per file, and tolerates newlines in file names.
-- Extend the stub `gcloud`/`kubectl` and `WRITE_RE`. Rewrite GKE.md's "What is not covered: Filestore" and :1136 only once backups exist.
-
-Options for the human:
-1. **Move `/files` to a ZONAL Filestore and use a Backup and DR plan.** Google runs the schedule and retention, there is no custom code, and the vault can lock retention. Cost: about $0.35/hour (≈$256/month) for 1 TiB, against ≈$164/month for BASIC_HDD, plus Backup and DR fees. It also needs a one-time data copy and a `sandbox.filestore.server` change in prod, and the "Restricted GA" access note must be checked.
-2. **Keep BASIC_HDD: native backups, Cloud Scheduler plus a small Cloud Run function** (Google's documented path). This is custom code in prod, plus a service account with Filestore backup permissions.
-3. **Keep BASIC_HDD: native backups via config-only Cloud Scheduler HTTP jobs.** For example, seven weekday slots, each deleting then re-creating a fixed backup ID. No code, but a new service account with a custom Filestore-backup role, 14 jobs, and 7-day retention instead of 14.
-4. **Keep BASIC_HDD: on-demand only.** `filestore-enable` takes a backup now and `filestore-status` alarms past 36h, with the schedule left to an operator cron or CI job. No new IAM, but no real schedule.
+- Filestore backups: deferred by the human on 2026-10-30, tracked separately (the orchestrator files the card). See the decisions shard for the mechanism research.
