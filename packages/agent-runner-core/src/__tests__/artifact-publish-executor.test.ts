@@ -198,10 +198,12 @@ describe('artifact_publish executor', () => {
         /artifact-path-not-publishable/,
       );
 
+      // The link path passes the lexical allowlist (it is under the files
+      // root), so it is the realpath containment re-check that refuses it.
       await fs.symlink(path.join(t, 'memory'), path.join(filesRoot, 'mem'));
       await expect(
         exec(call({ path: path.join(filesRoot, 'mem/facts/a.md') })),
-      ).rejects.toThrow();
+      ).rejects.toThrow(/^artifact_publish: resolved outside the publishable tier/);
     });
   });
 
