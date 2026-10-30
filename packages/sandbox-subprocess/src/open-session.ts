@@ -430,6 +430,12 @@ export async function openSessionImpl(
         ? await resolveUserFilesMount(ctx, bus, input.owner, PLUGIN_NAME)
         : {};
     if (input.owner !== undefined && resolved.userFilesRoot === undefined) {
+      // Upstream only reports `sandbox-open-failed`, so this line is what
+      // tells the operator why. The agentId goes in the structured log only.
+      ctx.logger.error('home_unavailable', {
+        agentId: input.owner.agentId,
+        resolverLoaded: bus.hasService('sandbox:resolve-mounts'),
+      });
       throw new PluginError({
         code: 'home-unavailable',
         plugin: PLUGIN_NAME,

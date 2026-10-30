@@ -1147,7 +1147,10 @@ describe('sandbox:open-session', () => {
       'no durable home for this session: no sandbox:resolve-mounts resolver gave this agent a /files directory. ' +
       'Load @ax/workspace-localdir (the CLI always does).';
 
-    async function expectRefused(resolverServices: Record<string, ServiceHandler>): Promise<void> {
+    async function expectRefused(
+      resolverServices: Record<string, ServiceHandler>,
+      resolverLoaded: boolean,
+    ): Promise<void> {
       const ws = await mkWorkspace();
       // Stubbed lifecycle hooks (not session-inmemory) so the test can see that
       // none of them ran: no token minted, no listener bound — hence nothing
@@ -1170,10 +1173,21 @@ describe('sandbox:open-session', () => {
       // open-session makes the per-session tempdir (`ax-ipc-*`) before it
       // resolves the home; record it so we can check the refusal removed it.
       const mkdtemp = vi.spyOn(fs, 'mkdtemp');
+      // The operator only sees `sandbox-open-failed` upstream, so the refusal
+      // must leave its own log line (matching sandbox-k8s's home_unavailable).
+      const errors: Array<{ msg: string; fields: Record<string, unknown> | undefined }> = [];
+      const base = h.ctx().logger;
+      const logger = {
+        ...base,
+        error: (msg: string, fields?: Record<string, unknown>) => {
+          errors.push({ msg, fields });
+        },
+        child: () => logger,
+      } as typeof base;
       let caught: unknown;
       let made: string[] = [];
       try {
-        const opened = await h.bus.call<unknown, OpenSessionResult>('sandbox:open-session', h.ctx(), {
+        const opened = await h.bus.call<unknown, OpenSessionResult>('sandbox:open-session', h.ctx({ logger }), {
           sessionId: 'sub-homeless',
           workspaceRoot: ws,
           runnerBinary: ECHO_STUB,
@@ -1198,6 +1212,10 @@ describe('sandbox:open-session', () => {
         message: REFUSAL_MESSAGE,
       });
       expect((caught as Error).message).not.toContain(AGENT_ID);
+      expect(errors).toContainEqual({
+        msg: 'home_unavailable',
+        fields: { agentId: AGENT_ID, resolverLoaded },
+      });
       expect(sessionCreate).not.toHaveBeenCalled();
       expect(ipcStart).not.toHaveBeenCalled();
 
@@ -1210,12 +1228,12 @@ describe('sandbox:open-session', () => {
     }
 
     it('refuses an owned session when no home resolver is registered', async () => {
-      await expectRefused({});
+      await expectRefused({}, false);
     });
 
     it('refuses an owned session when the resolver yields no mounts', async () => {
       // What a resolver answers when the agentId fails its subtree-key gate.
-      await expectRefused({ 'sandbox:resolve-mounts': async () => ({ mounts: [] }) });
+      await expectRefused({ 'sandbox:resolve-mounts': async () => ({ mounts: [] }) }, true);
     });
 
     it('with the real @ax/workspace-localdir resolver: a minted id gets its home, an id the gate rejects is refused', async () => {
