@@ -15,6 +15,12 @@
 // The config dir must already exist: the sandbox creates it before it starts
 // the runner, and creating it here would mean writing before refusing.
 //
+// `AX_TRANSCRIPTS_ROOT`, when set, gets the same check: the CLI reads
+// `$CLAUDE_CONFIG_DIR/projects` back on resume, and that directory then links
+// into the transcripts root, so a root in the agent's home would be an
+// agent-writable place the CLI loads from. It may not exist yet (the runner
+// creates it later), so it is resolved like a missing home.
+//
 // Deliberately not checked: the governed workspace root (TASK-995 removes it,
 // and the pre-apply vetoes gate `.claude/**` writes there until then), and a
 // scratch tier that is not the home.
@@ -26,11 +32,16 @@ import { runnerHomeDir, type RunnerEnv } from './env.js';
 
 /**
  * Throws when `env.claudeConfigDir` does not exist, or when its real path is
- * the agent's home, inside it, or contains it. Every message starts with
- * `refusing to start: CLAUDE_CONFIG_DIR`.
+ * the agent's home, inside it, or contains it; and likewise when
+ * `env.transcriptsRoot` is set and overlaps the agent's home. Every message
+ * starts with `refusing to start: CLAUDE_CONFIG_DIR` or
+ * `refusing to start: AX_TRANSCRIPTS_ROOT`.
  */
 export async function assertConfigDirOutsideAgentHome(
-  env: Pick<RunnerEnv, 'claudeConfigDir' | 'userFilesRoot' | 'ephemeralRoot' | 'workspaceRoot'>,
+  env: Pick<
+    RunnerEnv,
+    'claudeConfigDir' | 'transcriptsRoot' | 'userFilesRoot' | 'ephemeralRoot' | 'workspaceRoot'
+  >,
 ): Promise<void> {
   let realConfig: string;
   try {
@@ -45,9 +56,11 @@ export async function assertConfigDirOutsideAgentHome(
   const roots = new Set(
     [runnerHomeDir(env), env.userFilesRoot].filter((root): root is string => root !== undefined),
   );
-  for (const root of roots) {
-    const realRoot = await realpathOfPossiblyMissing(root);
-    if (isSameOrInside(realConfig, realRoot) || isSameOrInside(realRoot, realConfig)) {
+  const realRoots: string[] = [];
+  for (const root of roots) realRoots.push(await realpathOfPossiblyMissing(root));
+
+  for (const realRoot of realRoots) {
+    if (overlaps(realConfig, realRoot)) {
       throw new Error(
         `refusing to start: CLAUDE_CONFIG_DIR resolves to ${realConfig}, which overlaps the agent's home ${realRoot}. ` +
           'Anything the agent writes there (settings.json hooks, CLAUDE.md, skills, MCP servers in .claude.json) ' +
@@ -56,6 +69,23 @@ export async function assertConfigDirOutsideAgentHome(
       );
     }
   }
+
+  if (env.transcriptsRoot === undefined) return;
+  const realTranscripts = await realpathOfPossiblyMissing(env.transcriptsRoot);
+  for (const realRoot of realRoots) {
+    if (overlaps(realTranscripts, realRoot)) {
+      throw new Error(
+        `refusing to start: AX_TRANSCRIPTS_ROOT resolves to ${realTranscripts}, which overlaps the agent's home ${realRoot}. ` +
+          'The SDK reads session transcripts back from there on resume, so the agent could plant one. ' +
+          "Point AX_TRANSCRIPTS_ROOT at a runner-private directory outside the agent's files (k8s: /tmp/transcripts).",
+      );
+    }
+  }
+}
+
+/** One path is the other, or lies beneath it. */
+function overlaps(a: string, b: string): boolean {
+  return isSameOrInside(a, b) || isSameOrInside(b, a);
 }
 
 /**

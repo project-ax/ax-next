@@ -17,9 +17,13 @@ import type { RunnerEnv } from '../env.js';
 // there also checks that the guard compares real paths on both sides.
 // ---------------------------------------------------------------------------
 
-type GuardEnv = Pick<RunnerEnv, 'claudeConfigDir' | 'userFilesRoot' | 'ephemeralRoot' | 'workspaceRoot'>;
+type GuardEnv = Pick<
+  RunnerEnv,
+  'claudeConfigDir' | 'transcriptsRoot' | 'userFilesRoot' | 'ephemeralRoot' | 'workspaceRoot'
+>;
 
 const OVERLAP = /^refusing to start: CLAUDE_CONFIG_DIR resolves to .+, which overlaps the agent's home /;
+const TRANSCRIPTS_OVERLAP = /^refusing to start: AX_TRANSCRIPTS_ROOT resolves to .+, which overlaps the agent's home /;
 
 let t: string;
 let home: string;
@@ -130,6 +134,47 @@ describe('assertConfigDirOutsideAgentHome', () => {
       await expect(
         assertConfigDirOutsideAgentHome(envWith(cfg, { ephemeralRoot: scratch })),
       ).rejects.toThrow(OVERLAP);
+    });
+  });
+
+  // The CLI reads `$CLAUDE_CONFIG_DIR/projects` back on resume, and with
+  // AX_TRANSCRIPTS_ROOT set that directory is a link into the transcripts root.
+  // A transcripts root in the agent's home would be an agent-writable place the
+  // CLI loads from.
+  describe('AX_TRANSCRIPTS_ROOT', () => {
+    let cfg: string;
+    beforeEach(async () => {
+      cfg = await mkdirp(t, 'runner', '.ax', 'session');
+    });
+
+    it('accepts a transcripts root that is unset', async () => {
+      await expect(assertConfigDirOutsideAgentHome(envWith(cfg))).resolves.toBeUndefined();
+    });
+
+    it('accepts a sibling of the home (the production shape, not created yet)', async () => {
+      await expect(
+        assertConfigDirOutsideAgentHome({ ...envWith(cfg), transcriptsRoot: path.join(t, 'tmp', 'transcripts') }),
+      ).resolves.toBeUndefined();
+    });
+
+    it('refuses one inside the home', async () => {
+      await expect(
+        assertConfigDirOutsideAgentHome({ ...envWith(cfg), transcriptsRoot: path.join(home, 'transcripts') }),
+      ).rejects.toThrow(TRANSCRIPTS_OVERLAP);
+    });
+
+    it('refuses one containing the home', async () => {
+      await expect(
+        assertConfigDirOutsideAgentHome({ ...envWith(cfg), transcriptsRoot: t }),
+      ).rejects.toThrow(TRANSCRIPTS_OVERLAP);
+    });
+
+    it('refuses one that reaches the home through a symlink', async () => {
+      const link = path.join(t, 'tmp-link');
+      await fs.symlink(home, link);
+      await expect(
+        assertConfigDirOutsideAgentHome({ ...envWith(cfg), transcriptsRoot: path.join(link, 'transcripts') }),
+      ).rejects.toThrow(TRANSCRIPTS_OVERLAP);
     });
   });
 
