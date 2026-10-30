@@ -170,6 +170,7 @@ describe('setupProxy', () => {
       sessionId: 's',
       authToken: 'ipc-bearer',
       workspaceRoot: '/ws',
+      claudeConfigDir: '/home/runner/.ax/session',
       proxyEndpoint: 'http://127.0.0.1:54321',
     };
     const out = await setupProxy(env);
@@ -204,6 +205,7 @@ describe('setupProxy', () => {
       sessionId: 's',
       authToken: 'ipc-bearer',
       workspaceRoot: '/ws',
+      claudeConfigDir: '/home/runner/.ax/session',
       proxyEndpoint: 'http://127.0.0.1:9000',
       proxyToken: token,
     };
@@ -223,6 +225,7 @@ describe('setupProxy', () => {
       sessionId: 's',
       authToken: 'ipc-bearer',
       workspaceRoot: '/ws',
+      claudeConfigDir: '/home/runner/.ax/session',
       proxyEndpoint: 'http://127.0.0.1:9000',
     };
     const out = await setupProxy(env);
@@ -246,6 +249,7 @@ describe('setupProxy', () => {
       sessionId: 's',
       authToken: 'ipc-bearer',
       workspaceRoot: '/ws',
+      claudeConfigDir: '/home/runner/.ax/session',
       proxyEndpoint: 'http://127.0.0.1:54321',
     };
     const out = await setupProxy(env);
@@ -272,6 +276,7 @@ describe('setupProxy', () => {
       sessionId: 's',
       authToken: 'ipc-bearer',
       workspaceRoot: '/ws',
+      claudeConfigDir: '/home/runner/.ax/session',
       proxyEndpoint: 'http://127.0.0.1:54321',
     };
     const realLookingKeys = [
@@ -311,6 +316,7 @@ describe('setupProxy', () => {
       sessionId: 's',
       authToken: 'ipc-bearer-secret',
       workspaceRoot: '/ws',
+      claudeConfigDir: '/home/runner/.ax/session',
       proxyEndpoint: 'http://127.0.0.1:54321',
     };
     const out = await setupProxy(env);
@@ -340,6 +346,7 @@ describe('setupProxy', () => {
         sessionId: 's',
         authToken: 'ipc-bearer',
         workspaceRoot: '/ws',
+        claudeConfigDir: '/home/runner/.ax/session',
         proxyEndpoint: 'http://127.0.0.1:54321',
       };
       const out = await setupProxy(env);
@@ -373,6 +380,7 @@ describe('setupProxy', () => {
       sessionId: 's',
       authToken: 'ipc-bearer',
       workspaceRoot: '/ws',
+      claudeConfigDir: '/home/runner/.ax/session',
       proxyEndpoint: 'http://127.0.0.1:54321',
     };
     const out = await setupProxy(env);
@@ -399,6 +407,7 @@ describe('setupProxy', () => {
       sessionId: 's',
       authToken: 'ipc-bearer',
       workspaceRoot: '/ws',
+      claudeConfigDir: '/home/runner/.ax/session',
       proxyEndpoint: 'http://127.0.0.1:54321',
     };
     const out = await setupProxy(env);
@@ -422,6 +431,7 @@ describe('setupProxy', () => {
       sessionId: 's',
       authToken: 'ipc-bearer',
       workspaceRoot: '/ws',
+      claudeConfigDir: '/home/runner/.ax/session',
       proxyEndpoint: 'http://127.0.0.1:54321',
     };
     const out = await setupProxy(env);
@@ -434,6 +444,7 @@ describe('setupProxy', () => {
       sessionId: 's',
       authToken: 'ipc-bearer',
       workspaceRoot: '/ws',
+      claudeConfigDir: '/home/runner/.ax/session',
       proxyEndpoint: 'http://127.0.0.1:54321',
       proxyUnixSocket: '/var/run/ax/proxy.sock',
     };
@@ -495,6 +506,7 @@ describe('setupProxy', () => {
         sessionId: 's',
         authToken: 'ipc-bearer',
         workspaceRoot: '/ws',
+        claudeConfigDir: '/home/runner/.ax/session',
         proxyUnixSocket: sockPath,
       };
       // setupProxy starts the bridge, then throws while building the
@@ -544,6 +556,7 @@ describe('setupProxy', () => {
         sessionId: 's',
         authToken: 'ipc-bearer',
         workspaceRoot: '/ws',
+        claudeConfigDir: '/home/runner/.ax/session',
         proxyUnixSocket: sockPath,
       };
       const out = await setupProxy(env);
@@ -592,6 +605,7 @@ describe('setupProxy', () => {
         sessionId: 's',
         authToken: 'ipc-bearer',
         workspaceRoot: '/ws',
+        claudeConfigDir: '/home/runner/.ax/session',
         proxyUnixSocket: sockPath,
         proxyToken: token,
       };

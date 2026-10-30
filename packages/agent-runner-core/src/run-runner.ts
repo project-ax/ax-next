@@ -35,6 +35,7 @@ import {
   saveRefusedNoticeFromCodes,
 } from './save-refused-notice.js';
 import { commitTrace } from './commit-trace.js';
+import { assertConfigDirOutsideAgentHome } from './config-dir-guard.js';
 import { readRunnerEnv, runnerHomeDir, type RunnerEnv } from './env.js';
 import {
   commitTurnAndBundle,
@@ -408,6 +409,19 @@ async function runRunnerInner(
   let env: RunnerEnv;
   try {
     env = readEnv();
+  } catch (err) {
+    process.stderr.write(
+      `runner: ${err instanceof Error ? err.message : String(err)}\n`,
+    );
+    return 2;
+  }
+
+  // TASK-994 (design §11): the SDK loads $CLAUDE_CONFIG_DIR as its own trusted
+  // configuration, so it must not overlap the agent's home. Checked before
+  // every other boot step — in particular before the installed-skills
+  // materialization below writes into $CLAUDE_CONFIG_DIR/skills.
+  try {
+    await assertConfigDirOutsideAgentHome(env);
   } catch (err) {
     process.stderr.write(
       `runner: ${err instanceof Error ? err.message : String(err)}\n`,

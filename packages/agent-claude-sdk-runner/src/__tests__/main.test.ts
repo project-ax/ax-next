@@ -1,4 +1,4 @@
-import { promises as fs } from 'node:fs';
+import { mkdtempSync, promises as fs } from 'node:fs';
 import * as os from 'node:os';
 import * as nodePath from 'node:path';
 import type { SDKMessage, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
@@ -10,11 +10,13 @@ import type {
   InboxLoopOptions,
 } from '@ax/agent-runner-core';
 import {
+  afterAll,
   afterEach,
   beforeEach,
   describe,
   expect,
   it,
+  onTestFinished,
   vi,
   type Mock,
 } from 'vitest';
@@ -224,6 +226,14 @@ vi.mock('../turn-end-uuid.js', async (importOriginal) => {
   };
 });
 
+// TASK-994: the runner refuses to start unless CLAUDE_CONFIG_DIR names an
+// existing directory outside the agent's home — the sandbox always provides
+// one. A real runner-private temp dir stands in for it.
+const CONFIG_DIR = mkdtempSync(nodePath.join(os.tmpdir(), 'ax-main-cfg-'));
+afterAll(async () => {
+  await fs.rm(CONFIG_DIR, { recursive: true, force: true });
+});
+
 const COMPLETE_ENV = {
   AX_RUNNER_ENDPOINT: 'unix:///tmp/ax.sock',
   AX_SESSION_ID: 'sess-1',
@@ -232,6 +242,7 @@ const COMPLETE_ENV = {
   AX_PROXY_ENDPOINT: 'http://127.0.0.1:8443',
   AX_PROXY_TOKEN: 'feedfacefeedfacefeedfacefeedface',
   ANTHROPIC_API_KEY: 'ax-cred:0123456789abcdef0123456789abcdef',
+  CLAUDE_CONFIG_DIR: CONFIG_DIR,
 } as const;
 
 const ORIGINAL_ENV = process.env;
@@ -4725,7 +4736,11 @@ describe('main()', () => {
 
   describe('Phase 0: CLAUDE_CONFIG_DIR forward for skill discovery (I-P0-1)', () => {
     it('forwards CLAUDE_CONFIG_DIR from sandbox env to SDK subprocess', async () => {
-      const sandboxConfigDir = '/tmp/sandbox-home-xyz/.ax/session';
+      // A real directory: the runner refuses to start on one that is missing.
+      const sandboxHome = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'ax-sandbox-home-'));
+      onTestFinished(() => fs.rm(sandboxHome, { recursive: true, force: true }));
+      const sandboxConfigDir = nodePath.join(sandboxHome, '.ax', 'session');
+      await fs.mkdir(sandboxConfigDir, { recursive: true });
       setEnv({ ...COMPLETE_ENV, CLAUDE_CONFIG_DIR: sandboxConfigDir });
       fakeClient = buildFakeClient();
       fakeClient.call.mockImplementation(async (action: string) => {
@@ -4786,6 +4801,97 @@ describe('main()', () => {
       expect(queryArg.options.env.CLAUDE_CONFIG_DIR).not.toBe(
         queryArg.options.env.HOME,
       );
+    });
+  });
+
+  // ---------------------------------------------------------------------
+  // TASK-994 (design §11): the SDK loads $CLAUDE_CONFIG_DIR as its own
+  // trusted configuration (settings.json hooks, CLAUDE.md, skills, MCP
+  // servers in .claude.json). Unset, it falls back to `$HOME/.claude` — the
+  // agent's own files. So the runner refuses to start unless the directory
+  // is set, absolute, exists, and sits outside the agent's home.
+  // ---------------------------------------------------------------------
+  describe('agent files §11 guards', () => {
+    // A host that would happily run a turn, so a refusal can only come from
+    // CLAUDE_CONFIG_DIR — never from an incidental boot failure.
+    function bootableHost(): void {
+      fakeClient = buildFakeClient();
+      fakeClient.call.mockImplementation(async (action: string) => {
+        if (action === 'session.get-config') {
+          return {
+            userId: 'u-test',
+            agentId: 'a-test',
+            agentConfig: {
+              displayName: 'Test Agent',
+              systemPromptAugment: '',
+              allowedTools: [],
+              mcpConfigIds: [],
+              model: 'anthropic/claude-sonnet-4-7',
+              runner: 'claude-sdk',
+            },
+            conversationId: null,
+            runnerSessionId: null,
+          };
+        }
+        if (action === 'tool.list') return { tools: [] };
+        throw new Error(`unexpected call: ${action}`);
+      });
+      fakeInbox = buildFakeInbox([userEntry('hi'), cancelEntry]);
+      queryMock.mockImplementation(
+        ({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) =>
+          (async function* () {
+            const it = prompt[Symbol.asyncIterator]();
+            await it.next();
+            yield assistantText('ok');
+            yield resultSuccess();
+            await it.next();
+          })(),
+      );
+    }
+
+    async function runMain(): Promise<{ rc: number; stderr: string }> {
+      const spy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+      try {
+        const { main } = await import('../main.js');
+        const rc = await main();
+        return { rc, stderr: spy.mock.calls.map((c) => String(c[0])).join('') };
+      } finally {
+        spy.mockRestore();
+      }
+    }
+
+    it('refuses to start when CLAUDE_CONFIG_DIR is unset', async () => {
+      setEnv({ ...COMPLETE_ENV, CLAUDE_CONFIG_DIR: undefined });
+      bootableHost();
+
+      const { rc, stderr } = await runMain();
+
+      expect(rc).toBe(2);
+      expect(stderr).toMatch(/missing required env: CLAUDE_CONFIG_DIR/);
+      expect(createIpcClientMock).not.toHaveBeenCalled();
+      expect(queryMock).not.toHaveBeenCalled();
+    });
+
+    it("refuses to start when CLAUDE_CONFIG_DIR reaches the agent's files through a symlink", async () => {
+      const t = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'ax-main-guard-'));
+      onTestFinished(() => fs.rm(t, { recursive: true, force: true }));
+      const files = nodePath.join(t, 'files');
+      const planted = nodePath.join(files, '.claude');
+      await fs.mkdir(planted, { recursive: true });
+      const link = nodePath.join(t, 'link');
+      await fs.symlink(planted, link);
+      setEnv({ ...COMPLETE_ENV, AX_USERFILES_ROOT: files, CLAUDE_CONFIG_DIR: link });
+      bootableHost();
+
+      const { rc, stderr } = await runMain();
+
+      expect(rc).toBe(2);
+      expect(stderr).toMatch(/refusing to start: CLAUDE_CONFIG_DIR resolves to .+ which overlaps the agent's home/);
+      expect(createIpcClientMock).not.toHaveBeenCalled();
+      expect(queryMock).not.toHaveBeenCalled();
+      // The refusal came before the runner wrote anything into the agent's files.
+      expect(await fs.readdir(files)).toEqual(['.claude']);
+      expect(await fs.readdir(planted)).toEqual([]);
     });
   });
 
