@@ -32,4 +32,17 @@ describe('bootstrap process capabilities', () => {
       expect(BootstrapAssignmentSchema.safeParse(assignment({ AX_PROXY_TOKEN: token })).success).toBe(false);
     },
   );
+  // TASK-994 — sandbox-k8s stamps AX_TRANSCRIPTS_ROOT on every runner pod, and a
+  // pooled runner takes its env only from this assignment, so the name must be
+  // listed. Only its one pod-private value is accepted: anything else could put
+  // the SDK's transcripts in the agent's durable files or on the tmpfs HOME.
+  it('accepts the pinned AX_TRANSCRIPTS_ROOT (TASK-994)', () => {
+    expect(BootstrapAssignmentSchema.safeParse(assignment({ AX_TRANSCRIPTS_ROOT: '/tmp/transcripts' })).success).toBe(true);
+  });
+  it.each(['/files/transcripts', '/home/runner/.ax/session/projects', '/tmp/transcripts/../../files'])(
+    'rejects AX_TRANSCRIPTS_ROOT %j (TASK-994)',
+    (value) => {
+      expect(BootstrapAssignmentSchema.safeParse(assignment({ AX_TRANSCRIPTS_ROOT: value })).success).toBe(false);
+    },
+  );
 });

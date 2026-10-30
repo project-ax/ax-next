@@ -333,6 +333,32 @@ describe('buildPodSpec', () => {
     );
   });
 
+  it('stamps AX_TRANSCRIPTS_ROOT=/tmp/transcripts on the pod-private disk /tmp', () => {
+    // TASK-994: the claude-sdk runner keeps the SDK's transcript working copy
+    // under AX_TRANSCRIPTS_ROOT. It must sit on a disk emptyDir: the tmpfs HOME
+    // (`medium: Memory`) counts against the pod's memory limit. Resolve the
+    // mount that actually holds the path (the deepest one), so a later mount
+    // at /tmp/transcripts, or a /tmp moved to tmpfs, turns this red.
+    const spec = buildPodSpec('t', baseInput, baseResolved());
+    const podSpec = spec.spec as {
+      containers: Array<{
+        env: Array<{ name: string; value: string }>;
+        volumeMounts: Array<{ name: string; mountPath: string }>;
+      }>;
+      volumes: Array<{ name: string; emptyDir?: { medium?: string } }>;
+    };
+    const runner = podSpec.containers[0]!;
+    const root = runner.env.find((e) => e.name === 'AX_TRANSCRIPTS_ROOT')?.value;
+    expect(root).toBe('/tmp/transcripts');
+    const holder = runner.volumeMounts
+      .filter((m) => root === m.mountPath || root!.startsWith(`${m.mountPath}/`))
+      .sort((a, b) => b.mountPath.length - a.mountPath.length)[0];
+    expect(holder?.mountPath).toBe('/tmp');
+    const volume = podSpec.volumes.find((v) => v.name === holder!.name);
+    expect(volume?.emptyDir).toBeDefined();
+    expect(volume!.emptyDir!.medium).toBeUndefined();
+  });
+
   it('carries paranoid git env on the runner container', () => {
     // Phase 3: the sandbox materializes /agent from a host-streamed
     // baseline bundle and ships per-turn diffs as `git bundle`. To do that
