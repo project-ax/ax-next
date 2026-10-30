@@ -974,6 +974,54 @@ describe('sandbox:open-session', () => {
     await fs.rm(filesRoot, { recursive: true, force: true });
   });
 
+  it('owner.agentConfig.identity round-trips through sandbox:open-session → session:get-config (TASK-989)', async () => {
+    // Every hop (OpenSessionInputSchema's z.object, the session store's
+    // validateOwner rebuild, the get-config returns schema) would silently
+    // strip an undeclared field — this pins the whole path.
+    const ws = await mkWorkspace();
+    const h = await makeHarness();
+    const identity = {
+      identity: 'I am Test Agent.',
+      soul: 'Calm and curious.',
+      instructions: 'Reply in English.',
+      bootstrapMode: true,
+    };
+    const result = await h.bus.call<unknown, OpenSessionResult>(
+      'sandbox:open-session',
+      h.ctx(),
+      {
+        sessionId: 'sub-identity',
+        workspaceRoot: ws,
+        runnerBinary: ECHO_STUB,
+        proxyConfig: TEST_PROXY_CONFIG,
+        owner: {
+          userId: 'u-1',
+          agentId: 'agt-1',
+          agentConfig: {
+            displayName: 'Test Agent',
+            systemPromptAugment: '',
+            allowedTools: [],
+            mcpConfigIds: [],
+            model: 'anthropic/claude-sonnet-4-7',
+            runner: 'claude-sdk',
+            identity,
+          },
+        },
+      },
+    );
+
+    const cfg = await h.bus.call<unknown, { agentConfig: { identity?: unknown } }>(
+      'session:get-config',
+      h.ctx({ sessionId: 'sub-identity' }),
+      {},
+    );
+    expect(cfg.agentConfig.identity).toEqual(identity);
+
+    await result.handle.kill();
+    await result.handle.exited;
+    await fs.rm(ws, { recursive: true, force: true });
+  });
+
   // ---------------------------------------------------------------------
   // I-P0-3 / I-P0-4: per-session HOME + CLAUDE_CONFIG_DIR + workspace
   // skills symlink.

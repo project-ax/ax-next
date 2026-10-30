@@ -20,6 +20,7 @@ import {
   OWNER_MISSING,
   UNKNOWN_SESSION,
   type AgentConfig,
+  type AgentIdentityConfig,
   type SessionStore,
 } from './store.js';
 
@@ -230,6 +231,15 @@ export const SessionGetConfigOutputSchema = z.object({
     // z.string(), not a zod enum — wire is a transport boundary; the
     // authoritative allow-list (SUPPORTED_RUNNERS) lives in @ax/agents.
     runner: z.string(),
+    // TASK-989 — optional; a z.object would silently strip it if undeclared.
+    identity: z
+      .object({
+        identity: z.string(),
+        soul: z.string(),
+        instructions: z.string(),
+        bootstrapMode: z.boolean(),
+      })
+      .optional(),
   }),
   conversationId: z.string().nullable(),
 }) as unknown as ZodType<SessionGetConfigOutput>;
@@ -435,6 +445,10 @@ function validateOwner(
       message: `'owner.agentConfig.mcpConfigIds' must be a string[]`,
     });
   }
+  // identity — TASK-989 — optional (absent on rows persisted before this field
+  // and when the host has no identity store). Prompt prose only; the shape
+  // check here is defensive, sizes were bounded when the text was written.
+  const identity = parseOptionalIdentity(cfg.identity, hookName);
   // conversationId — optional. Accept `string|null|undefined`. Reject
   // empty strings so a wiring bug fails loud rather than silently
   // storing an unbound session.
@@ -492,9 +506,42 @@ function validateOwner(
       mcpConfigIds: cfg.mcpConfigIds as string[],
       model: cfg.model as string,
       runner: cfg.runner as string,
+      ...(identity !== undefined ? { identity } : {}),
     },
     conversationId,
     source,
+  };
+}
+
+// TASK-989 — `owner.agentConfig.identity` must be absent or exactly an object
+// with three strings and a boolean. Rebuilt field by field so unknown keys
+// never reach the JSONB snapshot. Mirrors @ax/session-inmemory.
+function parseOptionalIdentity(
+  raw: unknown,
+  hookName: string,
+): AgentIdentityConfig | undefined {
+  if (raw === undefined) return undefined;
+  const r = raw as Record<string, unknown> | null;
+  if (
+    typeof raw !== 'object' ||
+    r === null ||
+    typeof r.identity !== 'string' ||
+    typeof r.soul !== 'string' ||
+    typeof r.instructions !== 'string' ||
+    typeof r.bootstrapMode !== 'boolean'
+  ) {
+    throw new PluginError({
+      code: 'invalid-payload',
+      plugin: PLUGIN_NAME,
+      hookName,
+      message: `'owner.agentConfig.identity' must be { identity, soul, instructions: string; bootstrapMode: boolean } when present`,
+    });
+  }
+  return {
+    identity: r.identity,
+    soul: r.soul,
+    instructions: r.instructions,
+    bootstrapMode: r.bootstrapMode,
   };
 }
 
