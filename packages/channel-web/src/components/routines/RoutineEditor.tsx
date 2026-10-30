@@ -1,16 +1,12 @@
-import { useEffect, useId, useMemo, useRef, useState } from 'react';
+import { useEffect, useId, useState } from 'react';
 import { ChevronRight } from 'lucide-react';
 import {
   RoutineDefinitionSchema,
   activeHoursWriteIssue,
-  repeatScheduleWriteIssue,
-  type RoutineSchedule,
-  type WebhookTrigger,
   editableDefinition,
   isTaskKind,
   ROUTINE_GOOD_WHEN_MAX_CHARS,
   type RoutineDefinition,
-  type RoutinePatch,
   type RoutineView,
   type RoutineUpsertDefaultInput,
 } from '@ax/routines-contract';
@@ -37,13 +33,15 @@ import {
 } from '@/components/ui/collapsible';
 import { Separator } from '@/components/ui/separator';
 import { Skeleton } from '@/components/ui/skeleton';
-import { routineApi, RoutineApiError } from '@/lib/routines';
+import { routineApi } from '@/lib/routines';
 import { describeCron } from '@/lib/cron-describe';
 import { TASK_KIND_LABELS } from '@/lib/task-kinds';
 import { browserTimeZone } from '@/lib/task-finish-by';
+import { TaskForm, type TaskAgentChoice } from '@/components/workspace/TaskForm';
 import { ActiveHoursDaySelector } from './ActiveHoursDaySelector';
 import { WebhookSignatureFields } from './WebhookSignatureFields';
 import { WebhookAddressFields } from './WebhookAddressFields';
+import { changed, useRoutineDraft } from './use-routine-draft';
 
 interface Props {
   mode: 'create' | 'edit';
@@ -51,6 +49,8 @@ interface Props {
   agentName: string;
   routine?: Pick<RoutineView, 'routineId'> | undefined;
   taskMode?: boolean;
+  /** Tasks only: the agents a new task may go to, drawn as the form's agent chip. */
+  agentChoices?: TaskAgentChoice | undefined;
   onSaved: (routine: RoutineView) => void;
   onCancel: () => void;
   onPendingChange?: ((pending: boolean) => void) | undefined;
@@ -80,30 +80,6 @@ const empty = (taskMode = false): RoutineDefinition => ({
   kind: taskMode ? 'stay-on-top' : 'repeat',
   goodWhen: taskMode ? '' : null,
 });
-const editableKeys = [
-  'name',
-  'description',
-  'promptBody',
-  'enabled',
-  'schedule',
-  'webhook',
-  'activeHours',
-  'silenceToken',
-  'silenceMaxChars',
-  'conversation',
-  'kind',
-  'goodWhen',
-] as const;
-function changed(
-  form: RoutineDefinition,
-  loaded: RoutineDefinition,
-): RoutinePatch {
-  const patch: RoutinePatch = {};
-  for (const key of editableKeys)
-    if (JSON.stringify(form[key]) !== JSON.stringify(loaded[key]))
-      Object.assign(patch, { [key]: form[key] });
-  return patch;
-}
 export function RoutineEditor(props: Props) {
   const [loadedState, setLoaded] = useState<RoutineView | null>(null);
   const loaded = props.mode === 'edit' && loadedState?.agentId === props.agentId && loadedState.routineId === props.routine?.routineId ? loadedState : null;
@@ -139,33 +115,32 @@ export function RoutineEditor(props: Props) {
     ) : (
       <Skeleton aria-label="Loading routine" className="h-64 w-full" />
     );
-  return (
-    <RoutineForm
-      key={loaded?.revision ?? 'create'}
-      agentId={props.agentId}
-      routineId={loaded?.routineId}
-      agentName={props.agentName}
-      initial={loaded ? editableDefinition(loaded) : empty(props.taskMode)}
-      taskMode={props.taskMode === true}
-      canEdit={loaded?.permissions.edit ?? true}
-      mode={props.mode}
-      onCancel={props.onCancel}
-      onSaved={result => props.onSaved(result as RoutineView)}
-      onReload={() => setGeneration((v) => v + 1)}
-      onPendingChange={props.onPendingChange}
-      save={async (definition, requestId) =>
-        loaded
-          ? routineApi.update({
-              agentId: props.agentId,
-              routineId: loaded.routineId,
-              requestId,
-              expectedRevision: loaded.revision,
-              patch: changed(definition, editableDefinition(loaded)),
-            })
-          : routineApi.create({ agentId: props.agentId, requestId, definition })
-      }
-    />
-  );
+  const shared = {
+    initial: loaded ? editableDefinition(loaded) : empty(props.taskMode),
+    agentId: props.agentId,
+    routineId: loaded?.routineId,
+    agentName: props.agentName,
+    canEdit: loaded?.permissions.edit ?? true,
+    mode: props.mode,
+    onCancel: props.onCancel,
+    onSaved: (result: unknown) => props.onSaved(result as RoutineView),
+    onReload: () => setGeneration((v) => v + 1),
+    onPendingChange: props.onPendingChange,
+    save: async (definition: RoutineDefinition, requestId: string) =>
+      loaded
+        ? routineApi.update({
+            agentId: props.agentId,
+            routineId: loaded.routineId,
+            requestId,
+            expectedRevision: loaded.revision,
+            patch: changed(definition, editableDefinition(loaded)),
+          })
+        : routineApi.create({ agentId: props.agentId, requestId, definition }),
+  };
+  // A task gets the minimal Tasks form; both send the same definition through `save`.
+  return props.taskMode
+    ? <TaskForm key={loaded?.revision ?? 'create'} {...shared} agentChoices={props.agentChoices} />
+    : <RoutineForm key={loaded?.revision ?? 'create'} {...shared} />;
 }
 /** Defaults share the fields; their existing catalog remains interval-only. */
 export function DefaultRoutineEditor(props: DefaultProps) {
@@ -195,7 +170,6 @@ function RoutineForm({
   agentName,
   mode,
   defaults = false,
-  taskMode = false,
   canEdit = true,
   save,
   onSaved,
@@ -209,7 +183,6 @@ function RoutineForm({
   agentName: string;
   mode: 'create' | 'edit';
   defaults?: boolean;
-  taskMode?: boolean;
   canEdit?: boolean;
   save: (definition: RoutineDefinition, requestId: string) => Promise<unknown>;
   onSaved: (result: unknown) => void;
@@ -218,49 +191,12 @@ function RoutineForm({
   onPendingChange?: ((pending: boolean) => void) | undefined;
 }) {
   const id = useId();
-  const [form, setForm] = useState(initial);
-  const [eventsDraft, setEventsDraft] = useState(
-    (initial.webhook?.events ?? []).join(', '),
-  );
-  const [error, setError] = useState<string | null>(null);
-  const [invalidField, setInvalidField] = useState<string | undefined>();
-  const [conflict, setConflict] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [uncertain, setUncertain] = useState(false);
   const [optional, setOptional] = useState(false);
-  const [addressBusy, setAddressBusy] = useState(false);
-  const scheduleDraft = useRef<RoutineSchedule>(initial.schedule ?? { kind: 'interval', every: '1h' });
-  const webhookDraft = useRef<WebhookTrigger>(initial.webhook ?? { kind: 'webhook', path: '/project-updates' });
-  const hoursDraft = useRef(initial.activeHours);
-  const flight = useRef(false);
-  // Exact payload and request ID survive a response-loss retry. Draft controls freeze meanwhile.
-  const operation = useRef<{
-    requestId: string;
-    definition: RoutineDefinition;
-  } | null>(null);
-  // Keep separators in the input; normalize only the definition being validated/saved.
-  const draftDefinition = useMemo(() => {
-    if (form.webhook === null) return form;
-    const { events: _events, ...webhook } = form.webhook;
-    const events = eventsDraft
-      .split(',')
-      .map((event) => event.trim())
-      .filter(Boolean);
-    return { ...form, webhook: events.length ? { ...webhook, events } : webhook };
-  }, [form, eventsDraft]);
-  const validation = useMemo(() => {
-    const parsed = RoutineDefinitionSchema.safeParse(draftDefinition);
-    if (parsed.success) {
-      const issue = activeHoursWriteIssue(parsed.data.activeHours);
-      if (issue !== null) return { success: false as const, error: { issues: [{ path: ['activeHours', 'end'], message: issue }] } };
-    }
-    if (parsed.success && parsed.data.kind === 'repeat') {
-      const issue = repeatScheduleWriteIssue(parsed.data.schedule, mode === 'edit' ? initial.schedule : undefined);
-      if (issue !== null) return { success: false as const, error: { issues: [{ path: ['schedule', 'expr'], message: issue }] } };
-    }
-    return parsed;
-  }, [draftDefinition, initial.schedule, mode]);
-  const dirty = Object.keys(changed(draftDefinition, initial)).length > 0;
+  const {
+    form, eventsDraft, draftDefinition, validation, dirty, disabled, error, invalidField,
+    conflict, busy, uncertain, addressBusy, setAddressBusy, update, editEvents,
+    toggleSchedule, toggleWebhook, submit,
+  } = useRoutineDraft({ initial, mode, canEdit, save, onSaved, onPendingChange });
   // Neither the host (core's TOOL_FIELDS) nor RoutineApiError can name
   // goodWhen, so its invalid state is the contract's own check here, which
   // already keeps Save off (TASK-953, row 10).
@@ -268,33 +204,6 @@ function RoutineForm({
     !validation.success && (dirty || activeHoursWriteIssue(draftDefinition.activeHours) !== null) ? validation.error.issues[0] : undefined;
   const goodWhenInvalid = firstIssue?.path[0] === 'goodWhen';
   const activeDaysInvalid = (firstIssue?.path[0] === 'activeHours' && firstIssue?.path[1] === 'days') || invalidField === 'activeHours.days';
-  const disabled = busy || uncertain || addressBusy || !canEdit;
-  useEffect(() => {
-    onPendingChange?.(busy || uncertain || addressBusy);
-  }, [busy, uncertain, addressBusy, onPendingChange]);
-  function update<K extends keyof RoutineDefinition>(
-    key: K,
-    value: RoutineDefinition[K],
-  ) {
-    if (key === 'schedule' && value !== null) scheduleDraft.current = value as RoutineSchedule;
-    if (key === 'webhook' && value !== null) webhookDraft.current = value as WebhookTrigger;
-    if (key === 'activeHours') hoursDraft.current = value as RoutineDefinition['activeHours'];
-    setForm((f) => ({ ...f, [key]: value }));
-    setError(null);
-    setInvalidField(undefined);
-  }
-  function toggleSchedule(on: boolean) {
-    if (!on) {
-      if (form.schedule !== null) scheduleDraft.current = form.schedule;
-      hoursDraft.current = form.activeHours;
-    }
-    setForm(f => ({ ...f, schedule: on ? scheduleDraft.current : null, activeHours: on ? hoursDraft.current : null }));
-    setError(null); setInvalidField(undefined);
-  }
-  function toggleWebhook(on: boolean) {
-    if (!on && form.webhook !== null) webhookDraft.current = form.webhook;
-    update('webhook', on ? webhookDraft.current : null);
-  }
   function textField(
     label: string,
     value: string | number,
@@ -321,42 +230,6 @@ function RoutineForm({
         />
       </Field>
     );
-  }
-  async function submit() {
-    if (
-      flight.current ||
-      !canEdit ||
-      (!operation.current &&
-        (!validation.success || (mode === 'edit' && !dirty)))
-    )
-      return;
-    flight.current = true;
-    setBusy(true);
-    setError(null);
-    setConflict(false);
-    operation.current ??= {
-      requestId: crypto.randomUUID(),
-      definition: validation.success ? validation.data : draftDefinition,
-    };
-    try {
-      const result = await save(operation.current.definition, operation.current.requestId);
-      operation.current = null;
-      setUncertain(false);
-      onSaved(result);
-    } catch (e) {
-      const safe = e instanceof RoutineApiError;
-      setError(safe ? e.message : 'We couldn’t save this routine. Try again.');
-      setInvalidField(safe ? e.field : undefined);
-      setConflict(safe && e.code === 'revision-conflict');
-      if (!safe || e.status === 0 || e.status >= 500) setUncertain(true);
-      else {
-        operation.current = null;
-        setUncertain(false);
-      }
-    } finally {
-      flight.current = false;
-      setBusy(false);
-    }
   }
   const savedWebhook =
     initial.webhook !== null &&
@@ -463,7 +336,7 @@ function RoutineForm({
                         update('activeHours', { ...form.activeHours, end: v });
                     },
                   )}
-                  {!taskMode && textField(
+                  {textField(
                     'Active hours time zone',
                     form.activeHours.tz,
                     'activeHours.tz',
@@ -483,28 +356,7 @@ function RoutineForm({
         void submit();
       }}
     >
-      {taskMode && <Field>
-        <FieldLabel>What kind of help do you need?</FieldLabel>
-        <ToggleGroup type="single" aria-label="Task kind" value={form.kind} disabled={disabled}
-          className="flex-wrap justify-start" onValueChange={value => {
-            if (value !== 'repeat' && value !== 'stay-on-top' && value !== 'get-done') return;
-            if (value === 'repeat') {
-              const { respondWithin: _respondWithin, ...webhook } = webhookDraft.current;
-              webhookDraft.current = webhook;
-            }
-            setForm(f => ({ ...f, kind: value, goodWhen: value === 'repeat' ? null : (f.goodWhen ?? ''),
-              schedule: value === 'repeat' ? f.schedule : (f.schedule ?? { kind: 'interval', every: '1h' }),
-              webhook: value === 'repeat' && f.webhook !== null ? webhookDraft.current : f.webhook,
-              conversation: value === 'repeat' ? f.conversation : 'per-fire' }));
-            setError(null); setInvalidField(undefined);
-          }}>
-          {(['stay-on-top', 'get-done', 'repeat'] as const).map(kind => <ToggleGroupItem key={kind} value={kind}>{TASK_KIND_LABELS[kind]}</ToggleGroupItem>)}
-        </ToggleGroup>
-      </Field>}
-      {taskMode && mode === 'edit' && form.kind !== initial.kind && <Alert><AlertDescription>
-        Changing the kind clears steps, latest update, notes, claim, Done status, and finish date.
-      </AlertDescription></Alert>}
-      {!taskMode && isTaskKind(form.kind) && (
+      {isTaskKind(form.kind) && (
         <p className="text-sm text-muted-foreground">
           {TASK_KIND_LABELS[form.kind]}
         </p>
@@ -567,11 +419,7 @@ function RoutineForm({
             </Field>
           </FieldSet>
         )}
-        {!taskMode ? scheduleFields : form.schedule !== null && !optional && (
-          form.schedule.kind === 'interval'
-            ? textField('Interval', form.schedule.every, 'schedule.every', value => update('schedule', { kind: 'interval', every: value }))
-            : <FieldDescription>Custom schedule. Open More options to review its time zone and cron expression.</FieldDescription>
-        )}
+        {scheduleFields}
         {form.webhook !== null && (
           <>
             {isTaskKind(form.kind) && <>
@@ -595,19 +443,14 @@ function RoutineForm({
                 'Events (comma-separated)',
                 eventsDraft,
                 'webhook.events',
-                (v) => {
-                  setEventsDraft(v);
-                  setError(null);
-                  setInvalidField(undefined);
-                },
+                editEvents,
               )}
             </FieldGroup>
             {agentId && canEdit && <WebhookAddressFields key={`${agentId}/${routineId ?? 'create'}`} agentId={agentId} routineId={initial.webhook === null ? undefined : routineId}
               path={form.webhook.path} saved={savedWebhook} disabled={disabled} onPendingChange={setAddressBusy} />}
           </>
         )}
-        {taskMode && hoursFields}
-        {!taskMode && conversationFields}
+        {conversationFields}
         <Collapsible open={optional} onOpenChange={setOptional}>
           <CollapsibleTrigger asChild>
             <Button
@@ -615,18 +458,14 @@ function RoutineForm({
               variant="ghost"
               className="w-full justify-between"
             >
-              {taskMode ? 'More options' : 'Optional settings'}
+              Optional settings
               <ChevronRight data-icon="inline-end" />
             </Button>
           </CollapsibleTrigger>
           <CollapsibleContent className="pt-3">
             <FieldGroup className="gap-4">
-              {taskMode && scheduleFields}
-              {taskMode && form.kind === 'repeat' && conversationFields}
-              {taskMode && form.activeHours && textField('Active hours time zone', form.activeHours.tz, 'activeHours.tz', value => { if (form.activeHours) update('activeHours', { ...form.activeHours, tz: value }); })}
-              {!taskMode && hoursFields}
-              {(!taskMode || form.kind === 'repeat') && <>
-{textField(
+              {hoursFields}
+              {textField(
                 'Silence token',
                 form.silenceToken ?? '',
                 'silenceToken',
@@ -640,13 +479,12 @@ function RoutineForm({
                 (v) => update('silenceMaxChars', Number(v)),
                 { type: 'number' },
               )}
-              </>}
               {form.webhook !== null && (
                 <>
                   <WebhookSignatureFields
                     value={form.webhook.hmac}
                     disabled={disabled}
-                    taskMode={taskMode}
+                    taskMode={false}
                     invalidField={invalidField ?? firstIssue?.path.join('.')}
                     onChange={value => {
                       if (form.webhook === null) return;
@@ -723,7 +561,7 @@ function RoutineForm({
               : uncertain
                 ? 'Retry save'
                 : mode === 'create'
-                  ? taskMode ? 'Start task' : 'Create routine'
+                  ? 'Create routine'
                   : 'Save'}
           </Button>
         </div>
