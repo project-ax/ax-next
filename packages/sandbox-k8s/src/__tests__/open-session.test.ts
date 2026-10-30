@@ -1065,8 +1065,8 @@ describe('sandbox:open-session (k8s)', () => {
     });
 
     it('refuses when only the memory view resolves (a memory mount is not a home)', async () => {
-      // The memory mount joins the same mounts array, so a length check would
-      // wrongly count it as a home. The check is on the role.
+      // The memory view joins the same mounts array as the home. However the
+      // two steps are ordered, it must never count as the agent's /files home.
       await expectRefused(
         {
           'sandbox:memory-mounts': async () => ({
