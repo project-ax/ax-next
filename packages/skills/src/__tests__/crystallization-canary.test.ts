@@ -459,6 +459,10 @@ describe('skill-crystallization wiring canary (TASK-178)', () => {
     // history; the prompt names no file and asks for no write.
     expect(p).toContain('Your last completed reflection pass: {{lastCompletedRun}}.');
     expect(p).toContain('"never" means no pass has completed yet');
+    // "On or after", never strictly "after": the date is a UTC day and evidence is day-granular,
+    // so evidence recorded later on a pass's own day would never be "after" again (TASK-991 review).
+    expect(p).toContain('If no evidence row is dated on or after that date, you are done');
+    expect(p).not.toMatch(/dated after that date/);
     expect(p).not.toMatch(/last-run|\.json\b|\.ax\b/);
     expect(p).not.toMatch(/\bwrit(?:e|es|ing|ten)\b/i);
     // Silence token contract: the prompt instructs the turn to end by replying

@@ -22,8 +22,12 @@
  *   - Last completed pass: the prompt asks for `{{lastCompletedRun}}`; the host
  *     fills it from this routine's own fire records (the start date of its
  *     newest run that finished ok or silenced) or "never" (TASK-991,
- *     `template.ts`). When `memory_recall` shows no evidence dated after it, the
- *     pass ends with REFLECTION_DONE. The agent writes no file.
+ *     `template.ts`). When `memory_recall` shows no evidence dated on or after
+ *     it, the pass ends with REFLECTION_DONE. "On or after", not "after": the
+ *     date is a UTC day and evidence is day-granular, so evidence recorded later
+ *     on the day of a pass would never be "after" any later pass's date (every
+ *     silenced pass counts) and full passes could stop for good. An extra full
+ *     pass is the safe direction. The agent writes no file.
  *   - Recurrence gate: a procedure must appear in ≥2 DISTINCT past conversations
  *     before it may be crystallized (the structural inversion of Hermes). The
  *     signal is the `memory_recall` tool's per-answer conversation numbers
@@ -72,7 +76,7 @@ export const SKILL_REFLECTION_PROMPT = `You are running an autonomous self-impro
 Your job: graduate procedures you have PROVEN repeatedly into durable skills, and fix skills you've found wrong. A pass that changes nothing is the correct, common outcome — do NOT invent work.
 
 ## Step 1 — Short-circuit
-Your last completed reflection pass: ${LAST_COMPLETED_RUN_TOKEN}. That date comes from this routine's own run history; "never" means no pass has completed yet. If it says never, go straight to Step 2. Otherwise call the \`memory_recall\` tool with a query such as "procedures, workflows and step-by-step ways of doing things". If no evidence row is dated after that date, you are done: reply with exactly REFLECTION_DONE and stop. Otherwise continue.
+Your last completed reflection pass: ${LAST_COMPLETED_RUN_TOKEN}. That date comes from this routine's own run history; "never" means no pass has completed yet. If it says never, go straight to Step 2. Otherwise call the \`memory_recall\` tool with a query such as "procedures, workflows and step-by-step ways of doing things". If no evidence row is dated on or after that date, you are done: reply with exactly REFLECTION_DONE and stop. Otherwise continue.
 
 ## Step 2 — Find recurring procedures
 Use \`memory_recall\` to look for procedures: repeated ways of doing a task, and the corrections that shaped them. Search with a few focused queries, one per candidate procedure. For each candidate, CONFIRM it actually recurred: it must appear in at least 2 DISTINCT past conversations.
