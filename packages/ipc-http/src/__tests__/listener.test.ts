@@ -199,10 +199,12 @@ describe('createHttpListener', () => {
     // 5 MiB > MAX_FRAME (4 MiB). Claim 5 MiB via Content-Length and send an
     // empty body — fail-fast path. (Sending the actual 5 MiB races against
     // the server's `Connection: close` + 413 write and ECONNRESETs the
-    // writer; the unix-socket listener test uses the same trick.)
+    // writer; the unix-socket listener test uses the same trick.) Any routed
+    // JSON action works: the body is read before its handler runs, so no
+    // tool:list producer is needed.
     const r = await requestTo(harness.port, {
       method: 'POST',
-      path: '/workspace.commit-notify',
+      path: '/tool.list',
       headers: {
         'content-type': 'application/json',
         authorization: `Bearer ${harness.token}`,
@@ -217,7 +219,7 @@ describe('createHttpListener', () => {
     harness = await makeHarness();
     const r = await requestTo(harness.port, {
       method: 'POST',
-      path: '/workspace.commit-notify',
+      path: '/tool.list',
       headers: {
         'content-type': 'application/json',
         authorization: `Bearer ${harness.token}`,
@@ -225,5 +227,35 @@ describe('createHttpListener', () => {
       body: '{not json',
     });
     expect(r.status).toBe(400);
+  });
+
+  // TASK-995: the git workspace tier's actions are gone. The previous
+  // release's runner streamed its end-of-turn save to `/workspace.commit-bundle`
+  // as octet-stream; over this transport it must get the dispatcher's 404 for
+  // an unknown path (after auth), not a 415 from the rule of a route that no
+  // longer exists, and without a token it is still a 401.
+  it('answers a removed action sent as octet-stream with 404 after auth, and 401 without a token', async () => {
+    harness = await makeHarness();
+    const withToken = await requestTo(harness.port, {
+      method: 'POST',
+      path: '/workspace.commit-bundle?reason=turn',
+      headers: {
+        'content-type': 'application/octet-stream',
+        authorization: `Bearer ${harness.token}`,
+      },
+      body: Buffer.from('PACK-bundle-bytes', 'utf8'),
+    });
+    expect(withToken.status).toBe(404);
+    expect(JSON.parse(withToken.body)).toEqual({
+      error: { code: 'NOT_FOUND', message: 'unknown path: /workspace.commit-bundle' },
+    });
+
+    const noToken = await requestTo(harness.port, {
+      method: 'POST',
+      path: '/workspace.commit-bundle',
+      headers: { 'content-type': 'application/octet-stream' },
+      body: Buffer.from('x'),
+    });
+    expect(noToken.status).toBe(401);
   });
 });

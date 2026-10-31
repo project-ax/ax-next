@@ -6,13 +6,6 @@ import {
   ToolExecuteHostResponseSchema,
   ToolListRequestSchema,
   ToolListResponseSchema,
-  WorkspaceCommitNotifyRequestSchema,
-  WorkspaceCommitNotifyResponseSchema,
-  WorkspaceCommitBundleQuerySchema,
-  WORKSPACE_COMMIT_BUNDLE_MAX_BYTES,
-  WorkspaceMaterializeRequestSchema,
-  WorkspaceReadRequestSchema,
-  WorkspaceReadResponseSchema,
   SessionNextMessageResponseSchema,
   SessionGetConfigResponseSchema,
   ConversationStoreRunnerSessionRequestSchema,
@@ -20,8 +13,6 @@ import {
   ToolDescriptorSchema,
   ToolCallSchema,
   AgentMessageSchema,
-  asWorkspaceVersion,
-  type WorkspaceVersion,
 } from '../actions.js';
 import {
   EventStreamChunkSchema,
@@ -119,17 +110,34 @@ describe('tool.list', () => {
           name: 'http-fetch',
           inputSchema: { type: 'object' },
           executesIn: 'host',
-          // BUG-W2: the runner parses tool.list through this schema, so a
-          // ToolDescriptor field missing here is stripped before the runner
-          // sees it. Keep flushWorkspaceBeforeCall in the populated fixture so
-          // a future drop of the field from the schema fails the round-trip.
-          flushWorkspaceBeforeCall: true,
         },
       ],
     });
     expect(res.tools).toHaveLength(2);
     expect(res.tools[1]?.executesIn).toBe('host');
-    expect(res.tools[1]?.flushWorkspaceBeforeCall).toBe(true);
+  });
+
+  // TASK-995: the "flush the workspace before this host tool" flag went with
+  // the workspace. A descriptor from an older host that still carries it
+  // parses (the schema strips unknown keys, as it always has) and the runner
+  // never sees the flag.
+  it('has no flushWorkspaceBeforeCall field, and strips one an older host still sends', () => {
+    expect(Object.keys(ToolDescriptorSchema.shape)).not.toContain('flushWorkspaceBeforeCall');
+    const res = ToolListResponseSchema.parse({
+      tools: [
+        {
+          name: 'http-fetch',
+          inputSchema: { type: 'object' },
+          executesIn: 'host',
+          flushWorkspaceBeforeCall: true,
+        },
+      ],
+    });
+    expect(res.tools[0]).toEqual({
+      name: 'http-fetch',
+      inputSchema: { type: 'object' },
+      executesIn: 'host',
+    });
   });
 
   it('requires executesIn on a descriptor', () => {
@@ -171,211 +179,6 @@ describe('tool.list', () => {
       countable: 'a'.repeat(41),
     });
     expect(r.success).toBe(false);
-  });
-});
-
-describe('workspace.commit-notify', () => {
-  it('accepts the accepted shape with version and delta:null', () => {
-    const parsed = WorkspaceCommitNotifyResponseSchema.parse({
-      accepted: true,
-      version: 'v-token-abc',
-      delta: null,
-    });
-    expect(parsed.accepted).toBe(true);
-    if (parsed.accepted) {
-      expect(parsed.version).toBe('v-token-abc');
-      expect(parsed.delta).toBeNull();
-      // Brand check: the transform gives parsed.version the
-      // WorkspaceVersion brand so callers don't need a cast.
-      const branded: WorkspaceVersion = parsed.version;
-      expect(branded).toBe('v-token-abc');
-    }
-  });
-
-  it('brands version via asWorkspaceVersion helper', () => {
-    const v: WorkspaceVersion = asWorkspaceVersion('raw-from-backend');
-    expect(v).toBe('raw-from-backend');
-  });
-
-  it('accepts the rejected shape with a reason', () => {
-    const parsed = WorkspaceCommitNotifyResponseSchema.parse({
-      accepted: false,
-      reason: 'stale parent',
-    });
-    expect(parsed.accepted).toBe(false);
-    if (!parsed.accepted) {
-      expect(parsed.reason).toBe('stale parent');
-    }
-  });
-
-  it('rejects a malformed response', () => {
-    const r = WorkspaceCommitNotifyResponseSchema.safeParse({
-      accepted: true,
-      version: 'v1',
-      // missing delta
-    });
-    expect(r.success).toBe(false);
-  });
-
-  it('round-trips a request payload (Phase 3 bundleBytes shape)', () => {
-    const parsed = WorkspaceCommitNotifyRequestSchema.parse({
-      parentVersion: null,
-      reason: 'turn',
-      bundleBytes: '',
-    });
-    expect(parsed.parentVersion).toBeNull();
-    expect(parsed.reason).toBe('turn');
-    expect(parsed.bundleBytes).toBe('');
-  });
-
-  it('round-trips a non-empty bundle as base64 string', () => {
-    const b64 = Buffer.from('PACK\x00\x00').toString('base64');
-    const parsed = WorkspaceCommitNotifyRequestSchema.parse({
-      parentVersion: 'v-token-1',
-      reason: 'turn',
-      bundleBytes: b64,
-    });
-    expect(parsed.parentVersion).toBe('v-token-1');
-    expect(parsed.bundleBytes).toBe(b64);
-  });
-
-  it('rejects a request missing bundleBytes', () => {
-    expect(
-      WorkspaceCommitNotifyRequestSchema.safeParse({
-        parentVersion: null,
-        reason: 'turn',
-      }).success,
-    ).toBe(false);
-  });
-
-  it('rejects a request missing reason', () => {
-    expect(
-      WorkspaceCommitNotifyRequestSchema.safeParse({
-        parentVersion: null,
-        bundleBytes: '',
-      }).success,
-    ).toBe(false);
-  });
-
-  it('rejects a request with non-string bundleBytes', () => {
-    expect(
-      WorkspaceCommitNotifyRequestSchema.safeParse({
-        parentVersion: null,
-        reason: 'turn',
-        bundleBytes: 42,
-      }).success,
-    ).toBe(false);
-  });
-});
-
-describe('workspace commit answer — veto code (TASK-720)', () => {
-  it('the rejected answer carries an optional machine code', () => {
-    const parsed = WorkspaceCommitNotifyResponseSchema.parse({
-      accepted: false,
-      reason: 'Storage for this workspace is full.',
-      recoverable: false,
-      code: 'storage-full',
-    });
-    expect(parsed.accepted).toBe(false);
-    if (!parsed.accepted) expect(parsed.code).toBe('storage-full');
-  });
-
-  it('the rejected answer without a code parses with no code key', () => {
-    const parsed = WorkspaceCommitNotifyResponseSchema.parse({
-      accepted: false,
-      reason: 'veto',
-    });
-    expect('code' in parsed).toBe(false);
-  });
-
-  it('refuses a code that is not a short lowercase slug', () => {
-    for (const code of ['', 'Storage Full', 'x'.repeat(65), 'a/b', 'storage_full']) {
-      expect(
-        WorkspaceCommitNotifyResponseSchema.safeParse({
-          accepted: false,
-          reason: 'veto',
-          code,
-        }).success,
-      ).toBe(false);
-    }
-  });
-});
-
-describe('workspace.commit-bundle (TASK-720)', () => {
-  it('caps one save at 100 MiB', () => {
-    expect(WORKSPACE_COMMIT_BUNDLE_MAX_BYTES).toBe(100 * 1024 * 1024);
-  });
-
-  it('query: reason required, parentVersion absent means null', () => {
-    const parsed = WorkspaceCommitBundleQuerySchema.parse({
-      reason: 'turn',
-      parentVersion: null,
-    });
-    expect(parsed).toEqual({ reason: 'turn', parentVersion: null });
-    expect(
-      WorkspaceCommitBundleQuerySchema.parse({ reason: 'turn', parentVersion: 'v-1' }),
-    ).toEqual({ reason: 'turn', parentVersion: 'v-1' });
-  });
-
-  it('query: refuses a missing, empty or over-long reason', () => {
-    for (const reason of [null, '', 'r'.repeat(201)]) {
-      expect(
-        WorkspaceCommitBundleQuerySchema.safeParse({ reason, parentVersion: null }).success,
-      ).toBe(false);
-    }
-    expect(
-      WorkspaceCommitBundleQuerySchema.safeParse({ reason: 'r'.repeat(200), parentVersion: null })
-        .success,
-    ).toBe(true);
-  });
-
-  it('query: a PRESENT parentVersion must be non-empty and bounded', () => {
-    for (const parentVersion of ['', 'v'.repeat(513)]) {
-      expect(
-        WorkspaceCommitBundleQuerySchema.safeParse({ reason: 'turn', parentVersion }).success,
-      ).toBe(false);
-    }
-    expect(
-      WorkspaceCommitBundleQuerySchema.safeParse({ reason: 'turn', parentVersion: 'v'.repeat(512) })
-        .success,
-    ).toBe(true);
-  });
-
-  it('query: no other field is meaningful (.strict)', () => {
-    expect(
-      WorkspaceCommitBundleQuerySchema.safeParse({
-        reason: 'turn',
-        parentVersion: null,
-        workspaceId: 'someone-else',
-      }).success,
-    ).toBe(false);
-  });
-
-  it('is a registered sandbox→host action with the upload ceiling', () => {
-    expect(IPC_TIMEOUTS_MS['workspace.commit-bundle']).toBe(120_000);
-  });
-});
-
-describe('workspace.materialize', () => {
-  // NOTE (BUG-W3): the materialize RESPONSE is no longer JSON — the host
-  // streams the raw git bundle as an `application/octet-stream` body and the
-  // runner's `callBinary` drains it to a temp file. There is therefore no
-  // response Zod schema to test here; the binary wire path is covered by
-  // ipc-client.test.ts (callBinary) and the host round-trip in @ax/ipc-core.
-  // Only the REQUEST stays JSON ({}), tested below.
-
-  it('request schema accepts an empty object', () => {
-    expect(WorkspaceMaterializeRequestSchema.parse({})).toEqual({});
-  });
-
-  it('request schema rejects extra fields (.strict)', () => {
-    // The session's bearer token already identifies the workspace; any
-    // request field would be a vector for "fetch SOMEONE ELSE'S baseline."
-    // Closing that door at the schema layer makes the invariant load-bearing.
-    expect(
-      WorkspaceMaterializeRequestSchema.safeParse({ workspaceId: 'other' })
-        .success,
-    ).toBe(false);
   });
 });
 
@@ -669,21 +472,32 @@ describe('events', () => {
     expect(r.success).toBe(false);
   });
 
-  // TASK-720: the end-of-turn save refusal rides the turn-end as a closed code.
-  it('EventTurnEnd carries each saveRefused code and nothing else', () => {
-    for (const code of ['storage-full', 'too-large', 'refused'] as const) {
-      const parsed = EventTurnEndSchema.parse({ reason: 'user-message-wait', saveRefused: code });
-      expect(parsed.saveRefused).toBe(code);
-    }
-    // Prose (the veto's model-facing reason) must never pass as a code.
-    expect(
-      EventTurnEndSchema.safeParse({
-        reason: 'user-message-wait',
-        saveRefused: 'Storage is full; tell the person.',
-      }).success,
-    ).toBe(false);
-    const absent = EventTurnEndSchema.parse({ reason: 'user-message-wait' });
-    expect('saveRefused' in absent).toBe(false);
+  // TASK-995: the workspace save is gone, and so is the `saveRefused` code a
+  // refused save rode on (TASK-720). A runner from the previous release can
+  // still send it during a rolling deploy. Refusing that turn-end would lose
+  // the turn, so the field is stripped like any other unknown key, whatever it
+  // holds, and the rest of the event survives intact.
+  it.each([
+    ['a retired code', 'storage-full'],
+    ['prose', 'Storage is full; tell the person.'],
+    ['a non-string', 42],
+  ])('EventTurnEnd strips a saveRefused an older runner still sends (%s)', (_label, value) => {
+    const r = EventTurnEndSchema.safeParse({
+      reqId: 'r1',
+      reason: 'complete',
+      role: 'assistant',
+      contentBlocks: [{ type: 'text', text: 'hi' }],
+      saveRefused: value,
+    });
+    expect(r.success).toBe(true);
+    if (!r.success) return;
+    expect('saveRefused' in r.data).toBe(false);
+    expect(r.data).toEqual({
+      reqId: 'r1',
+      reason: 'complete',
+      role: 'assistant',
+      contentBlocks: [{ type: 'text', text: 'hi' }],
+    });
   });
 
   it('EventTurnEnd accepts optional turnId', () => {
@@ -842,33 +656,21 @@ describe('events', () => {
     expect(r.success).toBe(false);
   });
 
-  // TASK-731: the final/idle flush after the last turn-end has no turn-end to
-  // ride, so its refusal rides chat-end. Same closed code set as turn-end.
-  it('EventChatEnd carries each saveRefused code', () => {
-    for (const code of ['storage-full', 'too-large', 'refused'] as const) {
-      const parsed = EventChatEndSchema.parse({
-        outcome: { kind: 'complete', messages: [] },
-        saveRefused: code,
-      });
-      expect(parsed.saveRefused).toBe(code);
-    }
-  });
-
-  it('EventChatEnd rejects a saveRefused value outside the closed set (prose included)', () => {
-    for (const bad of ['Storage is full; tell the person.', 'bogus', '', 42]) {
-      const r = EventChatEndSchema.safeParse({
-        outcome: { kind: 'complete', messages: [] },
-        saveRefused: bad,
-      });
-      expect(r.success).toBe(false);
-    }
-  });
-
-  it('EventChatEnd without saveRefused parses with the key absent', () => {
-    const parsed = EventChatEndSchema.parse({
+  // TASK-995: the final/idle save is gone too, so the `saveRefused` that rode
+  // chat-end (TASK-731) is stripped like turn-end's. Refusing the chat-end
+  // would cost the `chat:end` that resolves the person's waiting turn.
+  it.each([
+    ['a retired code', 'too-large'],
+    ['prose', 'Storage is full; tell the person.'],
+    ['a non-string', 42],
+  ])('EventChatEnd strips a saveRefused an older runner still sends (%s)', (_label, value) => {
+    const r = EventChatEndSchema.safeParse({
       outcome: { kind: 'complete', messages: [] },
+      saveRefused: value,
     });
-    expect('saveRefused' in parsed).toBe(false);
+    expect(r.success).toBe(true);
+    if (!r.success) return;
+    expect(r.data).toEqual({ outcome: { kind: 'complete', messages: [] } });
   });
 });
 
@@ -1199,17 +1001,11 @@ describe('timeouts', () => {
     expect(Object.isFrozen(IPC_TIMEOUTS_MS)).toBe(true);
   });
 
-  it('IPC_TIMEOUTS_MS has the twenty-two expected keys (TASK-749 adds conversation.drain-save-refusals; TASK-720 adds workspace.commit-bundle; TASK-68 adds blob.*; TASK-67 adds the resume-transcript callers; TASK-74 adds skill.propose; egress-note adds proxy.drain-egress-blocks; cross-runner reconstruction adds session.get-display-history)', () => {
+  it('IPC_TIMEOUTS_MS has the sixteen expected keys (TASK-68 adds blob.*; TASK-67 adds the resume-transcript callers; TASK-74 adds skill.propose; egress-note adds proxy.drain-egress-blocks; cross-runner reconstruction adds session.get-display-history; TASK-995 removes the five workspace.* actions and conversation.drain-save-refusals)', () => {
     const expected = [
       'tool.pre-call',
       'tool.execute-host',
       'tool.list',
-      'workspace.commit-notify',
-      // TASK-720: the binary end-of-turn save (raw bundle body, 100 MiB).
-      'workspace.commit-bundle',
-      'workspace.materialize',
-      'workspace.export-baseline-bundle',
-      'workspace.read',
       'session.next-message',
       'session.get-config',
       'conversation.store-runner-session',
@@ -1230,8 +1026,6 @@ describe('timeouts', () => {
       // Cross-runner history reconstruction: a runner handed another runner's
       // transcript rebuilds the thread from the runner-neutral display log.
       'session.get-display-history',
-      // TASK-749: the runner takes the refused saves its model was not told about.
-      'conversation.drain-save-refusals',
     ].sort();
     expect(Object.keys(IPC_TIMEOUTS_MS).sort()).toEqual(expected);
   });
@@ -1242,14 +1036,11 @@ describe('timeouts', () => {
       'tool.pre-call',
       'tool.execute-host',
       'tool.list',
-      'workspace.commit-notify',
-      'workspace.materialize',
-      'workspace.read',
       'session.next-message',
       'session.get-config',
       'conversation.store-runner-session',
     ];
-    expect(names).toHaveLength(9);
+    expect(names).toHaveLength(6);
   });
 });
 
@@ -1309,61 +1100,6 @@ describe('AgentMessageSchema — Phase 2 contentBlocks', () => {
   });
 });
 
-describe('workspace.read schemas (Phase 2)', () => {
-  it('round-trips request schema with a workspace-relative path', () => {
-    const parsed = WorkspaceReadRequestSchema.parse({
-      path: '.ax/uploads/c1/t1/x.pdf',
-    });
-    expect(parsed.path).toBe('.ax/uploads/c1/t1/x.pdf');
-  });
-
-  it('rejects empty path', () => {
-    expect(() => WorkspaceReadRequestSchema.parse({ path: '' })).toThrow();
-  });
-
-  it('round-trips found response', () => {
-    const parsed = WorkspaceReadResponseSchema.parse({
-      found: true,
-      bytesBase64: 'aGk=',
-    });
-    expect(parsed).toEqual({ found: true, bytesBase64: 'aGk=' });
-  });
-
-  it('round-trips not-found response', () => {
-    const parsed = WorkspaceReadResponseSchema.parse({ found: false });
-    expect(parsed.found).toBe(false);
-  });
-
-  it.each([
-    '/etc/passwd',
-    '/agent/workspace/x.pdf',
-    '\\\\windows\\path',
-    'C:/abs/path',
-    '../escape',
-    'workspace/../etc/passwd',
-    'workspace/foo\0bar',
-  ])('request schema rejects non-workspace-relative path %j', (badPath) => {
-    expect(() => WorkspaceReadRequestSchema.parse({ path: badPath })).toThrow();
-  });
-
-  it('response schema rejects non-canonical base64 in bytesBase64', () => {
-    expect(() =>
-      WorkspaceReadResponseSchema.parse({
-        found: true,
-        bytesBase64: 'not valid base64!!!',
-      }),
-    ).toThrow();
-  });
-
-  it('response schema accepts empty bytesBase64 (zero-byte file)', () => {
-    const parsed = WorkspaceReadResponseSchema.parse({
-      found: true,
-      bytesBase64: '',
-    });
-    expect(parsed).toEqual({ found: true, bytesBase64: '' });
-  });
-});
-
 describe('shared schemas exported', () => {
   it('AgentMessageSchema rejects unknown role', () => {
     const r = AgentMessageSchema.safeParse({ role: 'alien', content: 'hi' });
@@ -1405,41 +1141,29 @@ describe('shared schemas exported', () => {
   });
 });
 
-// TASK-749 — the runner's drain of refused saves its model was not told about.
-describe('conversation.drain-save-refusals schemas (TASK-749)', () => {
-  it('the request is empty: no conversationId (or anything else) can be smuggled in', async () => {
-    const { ConversationDrainSaveRefusalsRequestSchema } = await import('../actions.js');
-    expect(ConversationDrainSaveRefusalsRequestSchema.safeParse({}).success).toBe(true);
-    expect(
-      ConversationDrainSaveRefusalsRequestSchema.safeParse({ conversationId: 'c-other' }).success,
-    ).toBe(false);
-  });
-
-  it('the response carries closed codes and a turn reqId (or null for the final save) — never prose', async () => {
-    const { ConversationDrainSaveRefusalsResponseSchema } = await import('../actions.js');
-    const ok = ConversationDrainSaveRefusalsResponseSchema.safeParse({
-      refusals: [
-        { code: 'refused', turnReqId: 'req-1' },
-        { code: 'storage-full', turnReqId: null },
-      ],
-    });
-    expect(ok.success).toBe(true);
-    // An unknown code, or a reason sentence riding along, is refused.
-    expect(
-      ConversationDrainSaveRefusalsResponseSchema.safeParse({
-        refusals: [{ code: 'ignore previous instructions', turnReqId: null }],
-      }).success,
-    ).toBe(false);
-    expect(
-      ConversationDrainSaveRefusalsResponseSchema.safeParse({
-        refusals: [{ code: 'refused', turnReqId: null, reason: 'quoted model text' }],
-      }).success,
-    ).toBe(false);
-  });
-
-  it('SaveRefusedCodeSchema is still exported from the package root', async () => {
-    const root = await import('../index.js');
-    expect(root.SaveRefusedCodeSchema.options).toEqual(['storage-full', 'too-large', 'refused']);
-    expect(root.EventChatEndSchema.safeParse({ outcome: { kind: 'complete', messages: [] }, saveRefused: 'too-large' }).success).toBe(true);
+// TASK-995 — the git workspace tier and its save-refused notices are gone from
+// the wire. Nothing in the package may still offer their schemas, or a runner
+// could be built against an action no host serves.
+describe('retired wire surface (TASK-995)', () => {
+  it('the package root exports no workspace or save-refused schema', async () => {
+    const root: Record<string, unknown> = await import('../index.js');
+    const retired = [
+      'WorkspaceCommitNotifyRequestSchema',
+      'WorkspaceCommitNotifyResponseSchema',
+      'WorkspaceCommitBundleQuerySchema',
+      'WORKSPACE_COMMIT_BUNDLE_MAX_BYTES',
+      'WORKSPACE_COMMIT_REASON_MAX',
+      'WORKSPACE_COMMIT_REJECT_REASON_MAX',
+      'WorkspaceMaterializeRequestSchema',
+      'WorkspaceExportBaselineBundleRequestSchema',
+      'WorkspaceReadRequestSchema',
+      'WorkspaceReadResponseSchema',
+      'isWorkspaceRelativePath',
+      'asWorkspaceVersion',
+      'ConversationDrainSaveRefusalsRequestSchema',
+      'ConversationDrainSaveRefusalsResponseSchema',
+      'SaveRefusedCodeSchema',
+    ];
+    expect(retired.filter((name) => name in root)).toEqual([]);
   });
 });

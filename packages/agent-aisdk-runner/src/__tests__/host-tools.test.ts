@@ -67,13 +67,13 @@ const SANDBOX_TOOL: ToolDescriptor = {
   inputSchema: { type: 'object' },
   executesIn: 'sandbox',
 };
-// A descriptor that still carries the retired flush flag (TASK-995).
-const HOST_TOOL_FLAGGED: ToolDescriptor = {
+// A host tool that reads files the agent just wrote: the kind that once had
+// the runner flush its git workspace first (retired in TASK-995).
+const HOST_TOOL_READS_FILES: ToolDescriptor = {
   name: 'host_reads_files',
   description: 'a host tool that reads files the agent just wrote',
   inputSchema: { type: 'object' },
   executesIn: 'host',
-  flushWorkspaceBeforeCall: true,
 };
 // A connector-backed MCP tool arrives here as an ordinary host-tool
 // descriptor — connectors are host-side in @ax/mcp-client (constraint 6).
@@ -248,7 +248,7 @@ describe('buildHostTools', () => {
     const tools = buildHostTools({
       policy: fakePolicy(),
       client,
-      tools: [HOST_TOOL_A, HOST_TOOL_B, HOST_TOOL_FLAGGED, CONNECTOR_TOOL],
+      tools: [HOST_TOOL_A, HOST_TOOL_B, HOST_TOOL_READS_FILES, CONNECTOR_TOOL],
       holdLatch, onHold: () => {}, onToolFailure: () => {},
     });
     const names = Object.keys(tools);
@@ -296,18 +296,18 @@ describe('buildHostTools', () => {
     );
   });
 
-  // TASK-995: there is no workspace to flush. `flushWorkspaceBeforeCall` is
-  // still a legal descriptor field until the IPC schema drops it, so a
-  // descriptor carrying it must forward exactly like any other host tool —
-  // straight to `tool.execute-host`, with nothing run first. `flushWorkspace`
-  // is the option the old gate read; nothing may call it now.
-  it('forwards a host tool that sets flushWorkspaceBeforeCall straight to tool.execute-host', async () => {
+  // TASK-995: there is no workspace to flush, and the descriptor field that
+  // asked for a flush is gone from the wire. A host tool that reads the
+  // agent's files forwards like any other — straight to `tool.execute-host`,
+  // with nothing run first. `flushWorkspace` is the option the old gate read;
+  // nothing may call it now.
+  it('forwards a host tool that reads the agent\'s files straight to tool.execute-host, with no flush first', async () => {
     const { client, calls } = mkClient(async () => ({ output: 'host-ok' }));
     let flushed = false;
     const tools = buildHostTools({
       policy: fakePolicy(),
       client,
-      tools: [HOST_TOOL_FLAGGED],
+      tools: [HOST_TOOL_READS_FILES],
       idGen: () => 'id-1',
       holdLatch, onHold: () => {}, onToolFailure: () => {},
       ...({

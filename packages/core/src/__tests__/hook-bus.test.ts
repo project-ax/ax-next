@@ -348,43 +348,27 @@ describe('HookBus — service-boundary enforcement', () => {
   });
 });
 
-describe('HookBus — a scoped rejection survives the fire (TASK-287)', () => {
-  it('spreads offendingPaths through, like it does Hold', () => {
-    // Same mechanism `Hold` depends on. A bus that reconstructed
-    // `{rejected, reason, source}` would silently drop this field and the
-    // workspace veto would go back to being unscoped — with nothing going red.
-    const bus = new HookBus();
-    bus.subscribe('workspace:pre-apply', '@ax/test-scoped-rejecter', async () =>
-      reject({ reason: 'CLAUDE.md: host-only', offendingPaths: ['CLAUDE.md'] }),
-    );
-    return bus
-      .fire('workspace:pre-apply', silentCtx(), { changes: [] })
-      .then((result) => {
-        expect(isRejection(result)).toBe(true);
-        if (result.rejected !== true) return;
-        expect(result.offendingPaths).toEqual(['CLAUDE.md']);
-        expect(result.source).toBe('@ax/test-scoped-rejecter');
-      });
-  });
-
-  it('spreads a veto code through too, and adds none when the veto had none (TASK-719)', async () => {
-    // The facades read `pre.code`; a bus that rebuilt the rejection field by
-    // field would drop it and every over-limit write would go back to an
-    // uncoded, unclassifiable "rejected".
+describe('HookBus — a rejection’s extra fields survive the fire', () => {
+  it('spreads a veto code through, and adds none when the veto had none (TASK-719)', async () => {
+    // Same mechanism `Hold` depends on. The blob facade reads `pre.code` from a
+    // `blob:pre-put` veto; a bus that rebuilt the rejection field by field
+    // would drop it and every over-limit write would go back to an uncoded,
+    // unclassifiable "rejected".
     const coded = new HookBus();
-    coded.subscribe('workspace:pre-apply', '@ax/test-coded-rejecter', async () =>
+    coded.subscribe('blob:pre-put', '@ax/test-coded-rejecter', async () =>
       reject({ reason: 'full', code: 'storage-full' }),
     );
-    const withCode = await coded.fire('workspace:pre-apply', silentCtx(), { changes: [] });
+    const withCode = await coded.fire('blob:pre-put', silentCtx(), { size: 1 });
     expect(withCode.rejected).toBe(true);
     if (withCode.rejected !== true) return;
     expect(withCode.code).toBe('storage-full');
+    expect(withCode.source).toBe('@ax/test-coded-rejecter');
 
     const plain = new HookBus();
-    plain.subscribe('workspace:pre-apply', '@ax/test-plain-rejecter', async () =>
+    plain.subscribe('blob:pre-put', '@ax/test-plain-rejecter', async () =>
       reject({ reason: 'no' }),
     );
-    const withoutCode = await plain.fire('workspace:pre-apply', silentCtx(), { changes: [] });
+    const withoutCode = await plain.fire('blob:pre-put', silentCtx(), { size: 1 });
     expect(withoutCode.rejected).toBe(true);
     expect('code' in withoutCode).toBe(false);
   });

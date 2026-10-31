@@ -66,7 +66,6 @@ async function makeHarness(userFilesRootDir: string) {
         toolCalls: [],
       }),
       'tool:list': async () => ({ tools: [] }),
-      'workspace:read': async () => ({ found: false }),
     },
     plugins: [
       createSessionInmemoryPlugin(),

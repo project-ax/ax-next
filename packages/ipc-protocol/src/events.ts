@@ -1,7 +1,6 @@
 import { z } from 'zod';
 import { AgentMessageSchema, ToolCallSchema } from './actions.js';
 import { CONTENT_BLOCKS_MAX, ContentBlockSchema } from './content-blocks.js';
-import { SaveRefusedCodeSchema } from './save-refused.js';
 
 // ---------------------------------------------------------------------------
 // Sandbox → host events (fire-and-forget)
@@ -12,6 +11,9 @@ import { SaveRefusedCodeSchema } from './save-refused.js';
 //
 // Envelopes are not `.strict()`: events are the most likely surface to
 // grow additive fields, and we want those adds to be forward-compatible.
+// The same rule covers a field that goes away: an older runner that still
+// sends it (TASK-995: `saveRefused` on turn-end and chat-end) has it
+// stripped, and the rest of its event is kept rather than refused.
 // ---------------------------------------------------------------------------
 
 /**
@@ -101,10 +103,6 @@ const TokenCountSchema = z.number().int().nonnegative().max(1_000_000_000);
  * optional in the schema until the producer ships — Task 4 only LOCKS the
  * shape so the producer/consumer can land without further protocol churn.
  */
-// SaveRefusedCodeSchema (TASK-720/731) lives in ./save-refused.js: the
-// `conversation.drain-save-refusals` action (TASK-749) shares it, and
-// actions.ts cannot import this module (this module imports it).
-
 export const EventTurnEndSchema = z.object({
   reqId: z.string().optional(),
   reason: z.enum(['user-message-wait', 'error', 'complete']),
@@ -148,19 +146,6 @@ export const EventTurnEndSchema = z.object({
    * strings are rejected so a misbehaving producer can't trip the
    * downstream "drop most recent turn" fallback. */
   turnId: z.string().min(1).optional(),
-  /**
-   * The host refused this turn's end-of-turn workspace save, so the runner
-   * undid the turn's file changes (TASK-720). Before this field the refusal
-   * was silent to the person: the refusal's own reason is prose written for
-   * the model, and the model's turn is already over when the save runs.
-   *
-   * A closed code (see SaveRefusedCodeSchema), never prose. The host also
-   * persists it as a `save-refused` display event, so the notice survives a
-   * reload (TASK-731).
-   * Absent means the save went through, had nothing to save, or failed in a
-   * way the runner keeps and retries next turn.
-   */
-  saveRefused: SaveRefusedCodeSchema.optional(),
   /**
    * The reqIds of OTHER user messages this turn answered (TASK-708). A runner
    * whose model folds a message that arrived mid-turn into the running turn
@@ -206,18 +191,6 @@ export type AgentOutcome = z.infer<typeof AgentOutcomeSchema>;
 
 export const EventChatEndSchema = z.object({
   outcome: AgentOutcomeSchema,
-  /**
-   * The host refused the runner's FINAL/idle save, the flush after the last
-   * turn-end (TASK-731). That flush bundles everything since the baseline, so
-   * it can carry files from earlier replies whose own save came back `kept`
-   * (host unreachable), plus late/background writes: files the person may
-   * have watched being made. There is no turn-end left to carry the code and
-   * no stream is open, so it rides here and the host persists it as a
-   * `save-refused` display event for the next read of the thread.
-   * Same closed code set as `EventTurnEnd.saveRefused`. Absent means the
-   * final save went through, had nothing to save, or never ran.
-   */
-  saveRefused: SaveRefusedCodeSchema.optional(),
 });
 export type EventChatEnd = z.infer<typeof EventChatEndSchema>;
 

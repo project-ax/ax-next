@@ -21,12 +21,12 @@ export interface HandlerErr {
   body: { error: { code: IpcErrorCode; message: string } };
 }
 
-// A raw-binary success response. Used by `workspace.materialize`, whose body
-// is a `git bundle` that grows unbounded with workspace age — base64-in-JSON
-// inflated it ~33% and forced whole-buffer reads under the 4 MiB response cap,
-// crashing the runner on boot (BUG-W3). Streaming the raw bytes drops the tax
-// and the cap. `binary` is the body; the dispatcher writes it with
-// `contentType` and no JSON envelope. Distinguished from HandlerOk by the
+// A raw-binary success response. Used by `blob.get` (a stored blob) and
+// `session.get-transcript` (the joined resume transcript), whose bodies can be
+// far larger than the 4 MiB JSON response cap — base64-in-JSON would inflate
+// them ~33% and force whole-buffer reads under that cap (the failure that first
+// produced this shape, BUG-W3). `binary` is the body; the dispatcher writes it
+// with `contentType` and no JSON envelope. Distinguished from HandlerOk by the
 // presence of `binary` (HandlerOk has `body`, HandlerErr has `body.error`).
 export interface HandlerBinary {
   status: number;

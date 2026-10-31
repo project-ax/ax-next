@@ -1,10 +1,8 @@
 import type { AgentContext, HookBus } from '@ax/core';
 import {
   EventTurnEndSchema,
-  SaveRefusedCodeSchema,
   sanitizeActivityPhrase,
   type EventTurnEnd,
-  type SaveRefusedCode,
 } from '@ax/ipc-protocol';
 import { zodSummary, validationError } from '../errors.js';
 import type { HandlerErr } from './types.js';
@@ -19,7 +17,7 @@ import type { HandlerErr } from './types.js';
 //      via `conversations:append-event` — AWAITED, isolated to JUST the
 //      persist (NOT the whole chat:turn-end broadcast, which carries the
 //      title-LLM subscriber and would otherwise block every turn's ack). The
-//      dispatcher awaits this handler before the 202 (EventSpec.awaitFire), so
+//      dispatcher awaits this handler before the 202 (EventSpec.persist), so
 //      a completed turn is durable in the redisplay SoT before the runner sees
 //      it acked. The persist hook is an OPTIONAL dependency: deployments
 //      without @ax/conversations (the single-session CLI) simply skip it.
@@ -27,10 +25,9 @@ import type { HandlerErr } from './types.js';
 //      the runner with a non-2xx instead of falsely acking a turn that never
 //      reached the log (no silent omission — B3).
 //
-//      TASK-731: when the runner reports `saveRefused`, a `save-refused`
-//      display event follows the turn row (best-effort, never re-thrown), so
-//      the notice survives a reload instead of living only on the `done`
-//      frame.
+//      TASK-995 removed the refused-save notice row TASK-731 wrote here, with
+//      the workspace save it reported. The schema strips the field an older
+//      runner may still send, so nothing below ever sees it.
 //
 //   2. Fire `chat:turn-end` (fire-and-forget broadcast) for every OTHER
 //      observer — last_activity bump, clear-active-req-id, the buffer
@@ -71,72 +68,6 @@ interface AppendEventCall {
 }
 
 /**
- * TASK-731 — the `conversations:append-event` input for a `save-refused`
- * display event. Duck-typed like AppendEventCall (no import from
- * @ax/conversations — invariant 2). `key` is the fold key: rows with the same
- * key fold to the later one on read.
- */
-export interface AppendSaveRefusedCall {
-  conversationId: string;
-  kind: 'save-refused';
-  key: string;
-  payload: { code: SaveRefusedCode };
-}
-
-const SAVE_REFUSED_CODES: ReadonlySet<string> = new Set(
-  SaveRefusedCodeSchema.options,
-);
-
-/**
- * TASK-731 — write one `save-refused` display event, best-effort.
- *
- * Shared by the turn-end persist (key = the turn's reqId) and the chat-end
- * persist (key = a host-minted `final:<uuid>`). It never throws, and that is
- * deliberate:
- *   - on turn-end the `turn` row has already landed, so a throw would 5xx a
- *     turn the log already holds, and the runner's retry would write that
- *     turn row twice;
- *   - on chat-end a throw must not cost the `chat:end` that resolves the
- *     person's waiting turn;
- *   - the live `done` frame still carries the per-turn notice, so a lost row
- *     costs the notice only on a later reload.
- * The failure is logged at error so it is not silent.
- */
-export async function appendSaveRefusedBestEffort(
-  ctx: AgentContext,
-  bus: HookBus,
-  code: unknown,
-  key: string,
-): Promise<void> {
-  const conversationId = ctx.conversationId;
-  if (
-    conversationId === undefined ||
-    typeof code !== 'string' ||
-    !SAVE_REFUSED_CODES.has(code) ||
-    !bus.hasService('conversations:append-event')
-  ) {
-    return;
-  }
-  try {
-    await bus.call<AppendSaveRefusedCall, void>(
-      'conversations:append-event',
-      ctx,
-      {
-        conversationId,
-        kind: 'save-refused',
-        key,
-        payload: { code: code as SaveRefusedCode },
-      },
-    );
-  } catch (err) {
-    ctx.logger.error('save_refused_persist_failed', {
-      code,
-      err: err instanceof Error ? err : new Error(String(err)),
-    });
-  }
-}
-
-/**
  * (1) Persist-before-ack — the display-log append, ISOLATED and AWAITED before
  * the 202. ONLY this runs in the awaited path (the dispatcher's `persist`
  * slot); the broadcast (fireEventTurnEnd) does NOT, so a slow observer (e.g.
@@ -170,17 +101,6 @@ export async function persistEventTurnEnd(
       role: p.role,
       payload: { blocks: p.contentBlocks },
     });
-  }
-  // TASK-731: the refused-save notice, AFTER the turn row so it sorts after
-  // the reply it belongs to. Also written when there was no turn row (a
-  // turn-end with no blocks still carries the code). Keyed on the turn's
-  // reqId: both turn-ends of one turn (tool, then assistant) carry the code,
-  // and the read folds them to the later row. Best-effort (see the helper);
-  // a failure of the TURN append above still re-throws, as before.
-  if (p.saveRefused !== undefined) {
-    const key =
-      typeof p.reqId === 'string' && p.reqId.length > 0 ? p.reqId : '';
-    await appendSaveRefusedBestEffort(ctx, bus, p.saveRefused, key);
   }
 }
 

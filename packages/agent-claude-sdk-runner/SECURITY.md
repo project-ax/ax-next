@@ -31,8 +31,8 @@ This package is the sandbox-side runner that wraps `@anthropic-ai/claude-agent-s
 
 - **Sandbox:** The `PreToolUse` hook no longer rewrites `.ax/**`, `.claude/**`
   or `CLAUDE.md` paths into a separate git-backed tree, and the host MCP server
-  no longer flushes a workspace before a host tool that sets
-  `flushWorkspaceBeforeCall`. Nothing is widened: the SDK's file tools reach
+  no longer flushes a workspace before a host tool (the descriptor flag that
+  asked for that flush is gone from the wire too). Nothing is widened: the SDK's file tools reach
   `cwd` (the agent's home) plus `additionalDirectories` = the session scratch
   root and, when mounted, the read-only memory root. That is one directory
   fewer than before (the git tree is gone). The SDK subprocess runs with

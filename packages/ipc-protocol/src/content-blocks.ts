@@ -198,21 +198,6 @@ export function attachmentBlockFromArtifact(value: unknown): AttachmentBlock | n
 }
 
 /**
- * Workspace-relative path check for the `workspace.read` request: refuses
- * absolute paths, `..` traversal segments, Windows drive roots, and NUL bytes
- * at the wire boundary.
- */
-export function isWorkspaceRelativePath(value: string): boolean {
-  if (value.startsWith('/') || value.startsWith('\\')) return false;
-  if (value.includes('\0')) return false;
-  if (/^[A-Za-z]:[\\/]/.test(value)) return false;
-  for (const seg of value.split(/[\\/]/)) {
-    if (seg === '..') return false;
-  }
-  return true;
-}
-
-/**
  * The most content blocks one `event.turn-end`, or one `AgentMessage`, may
  * carry on the IPC wire (TASK-945). Runner data is untrusted. An array over
  * its `.max()` is refused right after its size issue, before any element is

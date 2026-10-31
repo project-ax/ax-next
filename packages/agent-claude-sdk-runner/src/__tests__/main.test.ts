@@ -3877,8 +3877,8 @@ describe('main()', () => {
 
     // TASK-995: there is no workspace to flush before a host tool reads the
     // agent's files; they are already where the host reads them. A host tool
-    // whose descriptor still says `flushWorkspaceBeforeCall` forwards straight
-    // to `tool.execute-host`, with no other IPC call first.
+    // that reads them forwards straight to `tool.execute-host`, with no other
+    // IPC call first.
     it('a host tool call has no workspace flush precondition', async () => {
       setEnv(COMPLETE_ENV);
       wireHomeClient(
@@ -3888,7 +3888,6 @@ describe('main()', () => {
             description: 'a host tool that reads files the agent wrote',
             inputSchema: { type: 'object', properties: { q: { type: 'string' } } },
             executesIn: 'host',
-            flushWorkspaceBeforeCall: true,
           },
         ],
         (action) => (action === 'tool.execute-host' ? { output: 'host-ok' } : undefined),

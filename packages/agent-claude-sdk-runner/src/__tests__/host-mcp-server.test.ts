@@ -50,13 +50,13 @@ const SANDBOX_TOOL: ToolDescriptor = {
   inputSchema: { type: 'object' },
   executesIn: 'sandbox',
 };
-// A descriptor that still carries the retired flush flag (TASK-995).
-const HOST_TOOL_FLAGGED: ToolDescriptor = {
+// A host tool that reads files the agent just wrote: the kind that once had
+// the runner flush its git workspace first (retired in TASK-995).
+const HOST_TOOL_READS_FILES: ToolDescriptor = {
   name: 'host_reads_files',
   description: 'a host tool that reads files the agent just wrote',
   inputSchema: { type: 'object' },
   executesIn: 'host',
-  flushWorkspaceBeforeCall: true,
 };
 
 // Shape of the SDK tool entry we care about in tests. The full type is
@@ -215,12 +215,12 @@ describe('buildHostToolEntries', () => {
     }
   });
 
-  // TASK-995: there is no workspace to flush. `flushWorkspaceBeforeCall` is
-  // still a legal descriptor field until the IPC schema drops it, so a
-  // descriptor carrying it must forward exactly like any other host tool —
-  // straight to `tool.execute-host`, with nothing run first. The fourth
-  // argument is what the old flush gate took; nothing may call it now.
-  it('forwards a host tool that sets flushWorkspaceBeforeCall straight to tool.execute-host', async () => {
+  // TASK-995: there is no workspace to flush, and the descriptor field that
+  // asked for a flush is gone from the wire. A host tool that reads the
+  // agent's files forwards like any other — straight to `tool.execute-host`,
+  // with nothing run first. The fourth argument is what the old flush gate
+  // took; nothing may call it now.
+  it("forwards a host tool that reads the agent's files straight to tool.execute-host, with no flush first", async () => {
     const { client, calls } = mkClient(async () => ({ output: 'host-ok' }));
     let flushed = false;
     const legacyFlush = async () => {
@@ -231,7 +231,7 @@ describe('buildHostToolEntries', () => {
       buildHostToolEntries as unknown as (
         ...args: unknown[]
       ) => ReturnType<typeof buildHostToolEntries>
-    )(client, [HOST_TOOL_FLAGGED], () => 'id-1', legacyFlush);
+    )(client, [HOST_TOOL_READS_FILES], () => 'id-1', legacyFlush);
     const result = (await (entries[0] as ToolEntry).handler({ q: 'x' }, {})) as {
       content: Array<{ type: string; text: string }>;
       isError?: boolean;

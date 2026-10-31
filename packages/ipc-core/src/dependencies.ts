@@ -12,8 +12,8 @@ import type { OptionalCall } from '@ax/core';
 //     optionalCalls: [...DISPATCHER_DEPENDENCIES.optionalCalls],
 //
 // rather than each hand-maintaining its own list (which is how they drifted:
-// they declared only the obvious session/tool calls and silently omitted the
-// workspace, conversation, and session-config services the handlers reach).
+// they declared only the obvious session/tool calls and silently omitted
+// other services the handlers reach).
 //
 // `dependency-sync.test.ts` keeps this honest against the handler source — a
 // new handler that grows a `bus.call(...)` the metadata doesn't cover fails
@@ -29,8 +29,11 @@ import type { OptionalCall } from '@ax/core';
 //   - Does the dispatcher reach the hook unconditionally (no `hasService`
 //     guard, no conditional branch)? If yes → required.
 //   - Is the producer guaranteed present wherever a transport loads? Required
-//     hooks must be — every required producer below ships in the k8s preset
-//     (session-postgres, mcp-client, conversations, the workspace backend).
+//     hooks must be — every required producer below ships wherever a
+//     transport loads (the k8s preset and the CLI: a session backend for the
+//     `session:*` hooks, mcp-client's tool dispatcher for `tool:list`).
+//     TASK-995 dropped `workspace:read` from this list along with the git
+//     workspace tier.
 //
 // Anything guarded or branch-conditional is optional, with a `degradation`
 // note describing what the dispatcher gives up when the producer is absent.
@@ -74,11 +77,6 @@ export const DISPATCHER_DEPENDENCIES: DispatcherDependencies = {
     'tool:list',
     // session.get-config — returns the runner's agent config for boot.
     'session:get-config',
-    // workspace.read — reads a single workspace path (no guard, no fallback).
-    // Present in both transport consumers (CLI loads @ax/workspace-git; the
-    // k8s preset loads a workspace backend) — every IPC deployment has a
-    // workspace, so required is safe here.
-    'workspace:read',
   ],
   optionalCalls: [
     {
@@ -108,27 +106,12 @@ export const DISPATCHER_DEPENDENCIES: DispatcherDependencies = {
         'event.turn-end skips persisting the turn into the display event log; redisplay falls back to parsing the runner-native jsonl (no host-only UI events on reload). Unreachable in single-session deployments that never load @ax/conversations.',
     },
     {
-      hook: 'workspace:export-baseline-bundle',
-      degradation:
-        'workspace.materialize / workspace.commit-notify treat the backend as non-bundle: materialize reconstructs the baseline from workspace:list + workspace:read, and commit-notify rejects bundle-wire writes (read-only / probe path). workspace.export-baseline-bundle (the commit-notify re-sync fetch) returns 500 — unreachable when the backend never enters the bundle re-sync path.',
-    },
-    {
-      hook: 'workspace:apply-bundle',
-      degradation:
-        'workspace.commit-notify cannot apply a runner bundle-wire write to the storage tier; only reached on the bundle path when export-baseline-bundle is present.',
-    },
-    {
-      hook: 'workspace:list',
-      degradation:
-        'workspace.materialize cannot reconstruct a baseline bundle on a non-bundle backend (the list+read fallback); only reached when workspace:export-baseline-bundle is absent.',
-    },
-    {
       // TASK-68 (out-of-git Part C): the runner-side blob store callers. Reached
       // unconditionally on the /blob.put and /blob.get routes, but those routes
       // only fire in a deployment that loaded a blob backend (the k8s preset
       // registers @ax/blob-store-fs). The single-session CLI never publishes an
-      // artifact or materializes uploads from the store, so making these
-      // required would fail the CLI's bootstrap verifyCalls.
+      // artifact or copies uploads from the store, so making these required
+      // would fail the CLI's bootstrap verifyCalls.
       hook: 'blob:put',
       degradation:
         'POST /blob.put returns 500 — the runner cannot store an artifact/upload blob; unreachable in deployments with no blob backend.',
@@ -136,7 +119,7 @@ export const DISPATCHER_DEPENDENCIES: DispatcherDependencies = {
     {
       hook: 'blob:get',
       degradation:
-        'POST /blob.get returns 500 — the runner cannot materialize /ephemeral/uploads or stream a stored blob; unreachable in deployments with no blob backend.',
+        'POST /blob.get returns 500 — the runner cannot copy uploads into the scratch uploads directory or stream a stored blob; unreachable in deployments with no blob backend.',
     },
     {
       hook: 'artifacts:publish-blob',
@@ -146,7 +129,7 @@ export const DISPATCHER_DEPENDENCIES: DispatcherDependencies = {
     {
       hook: 'attachments:list-for-conversation',
       degradation:
-        'POST /attachments.list returns 500 — the runner cannot enumerate a conversation\'s uploads to materialize /ephemeral/uploads; unreachable in single-session deployments.',
+        'POST /attachments.list returns 500 — the runner cannot enumerate a conversation\'s uploads to copy into the scratch uploads directory; unreachable in single-session deployments.',
     },
     {
       // TASK-74 (out-of-git Part D): the skill authoring chokepoint. Reached on
@@ -168,15 +151,6 @@ export const DISPATCHER_DEPENDENCIES: DispatcherDependencies = {
       hook: 'proxy:drain-session-egress-blocks',
       degradation:
         'POST /proxy.drain-egress-blocks returns { hosts: [] } without calling the hook — no egress proxy means no allowlist blocks to surface; the agent simply gets no egress-block note.',
-    },
-    {
-      // TASK-749: the runner drains the refused saves its model was not told
-      // about. Reached on /conversation.drain-save-refusals, but only in a
-      // conversation-scoped deployment that loaded @ax/conversations; the
-      // handler short-circuits to `{ refusals: [] }` via hasService otherwise.
-      hook: 'conversations:drain-save-refusals',
-      degradation:
-        'POST /conversation.drain-save-refusals returns { refusals: [] } without calling the hook — no conversation store means no persisted refusals; a refused final/idle save is then never told to the model.',
     },
     {
       // TASK-67 (out-of-git Part B / B2): the runner-side resume-transcript

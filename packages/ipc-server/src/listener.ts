@@ -10,7 +10,11 @@ import { authenticate, checkContentType, dispatch, writeJsonError } from '@ax/ip
 // inbound gates, in order:
 //
 //   1. Method gate       — only POST / GET. Other methods → 405.
-//   2. Content-Type gate — POST must carry application/json. Otherwise → 415.
+//   2. Content-Type gate — a POST to a routed path must carry
+//                          application/json (octet-stream for the binary
+//                          actions). Otherwise → 415. A path the dispatcher
+//                          does not route skips this gate and gets its 404
+//                          after auth (TASK-995).
 //   3. Auth gate         — `Authorization: Bearer <token>` resolves via the
 //                          session:resolve-token hook. Missing / malformed /
 //                          unknown → 401 (token value NEVER echoed — I9).
@@ -30,13 +34,13 @@ import { authenticate, checkContentType, dispatch, writeJsonError } from '@ax/ip
 // client's own timeout is always the binding one and the server never resets an
 // in-flight request mid-flight:
 //   - session.next-message: a 30 s long-poll held open with no data.
-//   - workspace.materialize (BUG-W3): the host may spend up to the client's
-//     120 s materialize budget building/streaming a large aged bundle; before
-//     the first response byte the socket is IDLE (request received, response
-//     not started), so a 60 s idle timeout would destroy the socket mid-build
-//     → ECONNRESET → retry → rebuild → loop → boot crash, relocating the very
-//     crash BUG-W3 fixes. 130 s sits just above the 120 s client budget so the
-//     client times out first (clean) instead of the server resetting.
+//   - the binary actions (blob.put / blob.get and the transcript ships) have
+//     a 120 s client budget, and while the host stores or fetches a large
+//     body the socket can sit IDLE (request received, response not started).
+//     A shorter idle timeout would destroy the socket mid-request →
+//     ECONNRESET → retry → the same work again. 130 s sits just above the
+//     120 s client budget so the client times out first (clean) instead of
+//     the server resetting.
 // ---------------------------------------------------------------------------
 
 const IDLE_TIMEOUT_MS = 130_000;
@@ -82,7 +86,8 @@ export async function createListener(opts: CreateListenerOptions): Promise<Liste
 
     // 2. content-type gate (POST only). Shared with @ax/ipc-http via
     //    checkContentType so the rule (JSON, except octet-stream for the
-    //    binary blob.put action) lives in one place alongside the routing table.
+    //    binary actions; unrouted paths pass through to the dispatcher's 404)
+    //    lives in one place alongside the routing table.
     {
       const url = new URL(req.url ?? '/', 'http://ipc.local');
       const ctCheck = checkContentType(
@@ -146,7 +151,7 @@ export async function createListener(opts: CreateListenerOptions): Promise<Liste
     // `ownerlessIdFor(sessionId)` is per-session, so two owner-less sessions
     // can never share a partition anywhere — including in stores that have
     // never heard of the helper — and `isOwnerlessId` lets the stores that
-    // need a REAL owner (both workspace backends, skill.propose,
+    // need a REAL owner (@ax/memory, @ax/disk-quota, skill.propose,
     // connector_propose) refuse outright. The substitution happens HERE, at
     // the one boundary that mints these contexts, rather than at each
     // consumer: a boundary is auditable, while a set of consumers is a census
@@ -199,8 +204,8 @@ export async function createListener(opts: CreateListenerOptions): Promise<Liste
   };
 
   // Idle socket timeout (see IDLE_TIMEOUT_MS). Must outlast the longest
-  // client-side per-action budget (materialize 120 s; long-poll 30 s) so the
-  // server never resets an in-flight request before the client gives up.
+  // client-side per-action budget (the binary actions' 120 s; long-poll 30 s)
+  // so the server never resets an in-flight request before the client gives up.
   server.setTimeout(IDLE_TIMEOUT_MS);
 
   // Best-effort cleanup of a stale socket file from a prior crashed listener.

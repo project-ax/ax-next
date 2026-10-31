@@ -146,7 +146,26 @@ describe('createListener', () => {
     });
   });
 
-  it('rejects POST with Content-Type: text/plain with 415', async () => {
+  it('rejects POST with Content-Type: text/plain to a routed action with 415', async () => {
+    const h = await makeHarness();
+    harnesses.push(h);
+    const res = await requestOverSocket(h.socketPath, {
+      method: 'POST',
+      path: '/tool.list',
+      headers: {
+        'Content-Type': 'text/plain',
+        Authorization: `Bearer ${h.token}`,
+      },
+      body: 'hello',
+    });
+    expect(res.status).toBe(415);
+    expect(JSON.parse(res.body).error.code).toBe('VALIDATION');
+  });
+
+  it('answers an unrouted path the dispatcher 404 after auth, whatever its content type (TASK-995)', async () => {
+    // The content-type rule belongs to the routes. A path nothing routes — e.g.
+    // an action TASK-995 removed, which an older runner may still send as
+    // octet-stream — is not judged by it: auth runs, then the dispatcher's 404.
     const h = await makeHarness();
     harnesses.push(h);
     const res = await requestOverSocket(h.socketPath, {
@@ -157,8 +176,15 @@ describe('createListener', () => {
       },
       body: 'hello',
     });
-    expect(res.status).toBe(415);
-    expect(JSON.parse(res.body).error.code).toBe('VALIDATION');
+    expect(res.status).toBe(404);
+    expect(JSON.parse(res.body).error.code).toBe('NOT_FOUND');
+
+    const unauthenticated = await requestOverSocket(h.socketPath, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain' },
+      body: 'hello',
+    });
+    expect(unauthenticated.status).toBe(401);
   });
 
   it('rejects POST without Authorization with 401 SESSION_INVALID', async () => {
@@ -218,15 +244,15 @@ describe('createListener', () => {
 
   it('rejects POST with a 5 MiB body (Content-Length) with 413', async () => {
     // Body-size fail-fast happens inside the dispatcher's body reader —
-    // route at a real protocol path so we reach it. Any known-action path
-    // works; /workspace.commit-notify rejects on body shape before reaching
-    // the workspace bus, so we don't need a registered workspace plugin.
+    // route at a real protocol path so we reach it. Any routed JSON action
+    // works: the body is read before its handler runs, so no tool:list
+    // producer is needed.
     const h = await makeHarness();
     harnesses.push(h);
     // Claim 5 MiB via Content-Length, send the empty body — fail-fast path.
     const res = await requestOverSocket(h.socketPath, {
       method: 'POST',
-      path: '/workspace.commit-notify',
+      path: '/tool.list',
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${h.token}`,
@@ -245,7 +271,7 @@ describe('createListener', () => {
     harnesses.push(h);
     const res = await requestOverSocket(h.socketPath, {
       method: 'POST',
-      path: '/workspace.commit-notify',
+      path: '/tool.list',
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${h.token}`,
@@ -263,13 +289,13 @@ describe('createListener', () => {
     const socketPath = path.join(tempDir, 'ipc.sock');
     const h = await createTestHarness({
       // @ax/ipc-server declares required `calls` (spread from
-      // DISPATCHER_DEPENDENCIES) — stub the producers the auto-loaded session
-      // plugin doesn't cover, to satisfy bootstrap's verifyCalls. No request
-      // path hits them in this test. (optionalCalls like
-      // conversations:store-runner-session never fail the boot, so no stub.)
+      // DISPATCHER_DEPENDENCIES) — stub the one producer the auto-loaded
+      // session plugin doesn't cover, to satisfy bootstrap's verifyCalls. No
+      // request path hits it in this test. (optionalCalls like
+      // conversations:store-runner-session never fail the boot, so no stub.
+      // There is no workspace producer: TASK-995 removed that requirement.)
       services: {
         'tool:list': async () => ({ tools: [] }),
-        'workspace:read': async () => ({ found: false }),
       },
       plugins: [createSessionInmemoryPlugin(), createIpcServerPlugin()],
     });
@@ -293,7 +319,6 @@ describe('createListener', () => {
     const h = await createTestHarness({
       services: {
         'tool:list': async () => ({ tools: [] }),
-        'workspace:read': async () => ({ found: false }),
       },
       plugins: [createSessionInmemoryPlugin(), createIpcServerPlugin()],
     });

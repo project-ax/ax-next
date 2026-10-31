@@ -95,25 +95,6 @@ export interface Rejection {
   readonly reason: string;
   readonly source?: string;
   /**
-   * The specific inputs this rejection is ABOUT — for a payload carrying a set
-   * of items, the subset that actually offended. Purely a statement of fact:
-   * "these, not the rest." It grants nothing and relaxes nothing; the veto is
-   * exactly as strict either way.
-   *
-   * Why it exists: a veto over a batch used to be indistinguishable from a veto
-   * over the whole batch, so the only safe response was to throw the batch
-   * away. On `workspace:pre-apply` that meant one refused `CLAUDE.md` write
-   * discarded every unrelated file the agent had written — see the handler in
-   * `@ax/ipc-core`, which narrows the runner's rollback to exactly these paths.
-   *
-   * Advisory and OPTIONAL. A consumer that doesn't understand it must fall back
-   * to its existing whole-batch behaviour (fail-closed), and every consumer is
-   * free to ignore it — a subscriber naming paths is not authorising anything.
-   * Consumers that act on it MUST validate the entries against the payload they
-   * actually sent; nothing here is trusted input.
-   */
-  readonly offendingPaths?: readonly string[];
-  /**
    * A short, stable, machine-readable name for WHY this was refused (e.g.
    * `'storage-full'`), so a caller that must react differently to one kind of
    * veto — say, turn it into a specific HTTP status — can key on the code
@@ -134,28 +115,23 @@ export interface Rejection {
 export function reject(opts: {
   reason: string;
   source?: string;
-  offendingPaths?: readonly string[];
   code?: string;
 }): Rejection {
   // Build only the keys that are actually present. An explicit `undefined`
   // property is NOT the same as an absent one once this crosses a zod parse or
   // a `toEqual`, and every existing caller passes none of the optional fields.
+  // (TASK-995 removed `offendingPaths`, the scoped veto TASK-287 added for the
+  // workspace save: its one reader went with the git tier.)
   const r: {
     rejected: true;
     reason: string;
     source?: string;
-    offendingPaths?: readonly string[];
     code?: string;
   } = { rejected: true, reason: opts.reason };
   if (opts.source !== undefined) r.source = opts.source;
-  // Same rule as `offendingPaths` below: an empty code carries no information,
-  // so absent and empty are the same thing.
+  // An empty code carries no information, so absent and empty are the same
+  // thing.
   if (opts.code !== undefined && opts.code.length > 0) r.code = opts.code;
-  // An empty array carries no information and would read as "some paths, none
-  // of them" downstream. Drop it so absent and empty are the same thing.
-  if (opts.offendingPaths !== undefined && opts.offendingPaths.length > 0) {
-    r.offendingPaths = opts.offendingPaths;
-  }
   return r;
 }
 

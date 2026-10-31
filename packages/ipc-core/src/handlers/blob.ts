@@ -125,7 +125,8 @@ export const blobPutHandler: BinaryActionHandler = async (
 //
 // JSON request `{sha256}` → raw octet-stream response body (the blob bytes,
 // streamed to a temp file on the runner via callBinary). Used at session start
-// to materialize `/ephemeral/uploads` from the store. The sha is wire-validated
+// to copy the conversation's uploads into the runner's scratch uploads
+// directory. The sha is wire-validated
 // (`^[a-f0-9]{64}$`) so a malformed key can't reach the filesystem shard; the
 // store re-validates with the identical regex AND re-verifies the digest on read
 // (TASK-65). A missing blob → 404 (not a 500 — it's an expected outcome when a

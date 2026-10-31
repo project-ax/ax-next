@@ -3,11 +3,7 @@ import { promises as fsp } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { describe, it, expect, afterEach } from 'vitest';
-import {
-  isOwnerlessId,
-  type WorkspaceReadInput,
-  type WorkspaceReadOutput,
-} from '@ax/core';
+import { isOwnerlessId, type ToolDescriptor } from '@ax/core';
 import { createTestHarness } from '@ax/test-harness';
 import { createSessionInmemoryPlugin } from '@ax/session-inmemory';
 import type {
@@ -18,16 +14,17 @@ import type {
 import { createListener, type Listener } from '../listener.js';
 
 // ---------------------------------------------------------------------------
-// TASK-411 — two owner-less sessions must not share a workspace tree.
+// TASK-411 — two owner-less sessions must not share an agent partition.
 //
 // The unix-socket half of the same bug @ax/ipc-http's
 // `ownerless-tenant-isolation.test.ts` pins for TCP. When
 // `session:resolve-token` resolved a session with no owner (canary /
 // `ax serve` / pre-9.5), this listener stamped the CONSTANT `'ipc-server'`
-// into `ctx.agentId` / `ctx.userId`. Every agent-partitioned store keys on
-// the agent id (`sha256(JSON.stringify([agentId]))` in both workspace
-// backends and both memory-index backends), so one literal meant ONE
-// partition shared by every owner-less session in the deployment.
+// into `ctx.agentId` / `ctx.userId`. Agent-partitioned stores key on the agent
+// id (`sha256(JSON.stringify([agentId]))` in both memory-index backends, as in
+// the git workspace backends until TASK-995 removed them; the tool catalog
+// filters per agent), so one literal meant ONE partition shared by every
+// owner-less session in the deployment.
 //
 // THE ASYMMETRY IS THE POINT OF HAVING BOTH FILES. The guards that DID check
 // for an unbound owner — `skill.propose` and `connector_propose` — spelled out
@@ -38,11 +35,13 @@ import { createListener, type Listener } from '../listener.js';
 // same properties, and neither transport's old literal survives.
 //
 // DIRECTION PINNED, and ANTI-VACUITY: see the header of the @ax/ipc-http
-// sibling. Short version — an owner-less session gets an EMPTY workspace, not
+// sibling. Short version — an owner-less session gets an EMPTY partition, not
 // another session's; the cases labelled ANTI-VACUITY pass before AND after the
-// fix on purpose, because a backend that answered "not found" to everybody, or
-// one that partitioned per session rather than per agent, would each pass half
-// of this file and be broken.
+// fix on purpose, because a store that answered "nothing" to everybody, or one
+// that partitioned per session rather than per agent, would each pass half of
+// this file and be broken. THE PROBE is `/tool.list` with a stub `tool:list`
+// that records the `ctx.agentId` it was served under (TASK-995 retired the
+// `/workspace.read` probe with the git workspace tier).
 //
 // One structural difference from the TCP sibling: this listener binds ONE unix
 // socket per session and enforces a cross-session gate, so each session needs
@@ -59,7 +58,7 @@ const AGENT_CONFIG: AgentConfig = {
   runner: 'claude-sdk',
 };
 
-const SECRET_PATH = 'notes/secret.txt';
+const PRIVATE_TOOL = 'tenant_private_tool';
 
 interface SessionHandle {
   sessionId: string;
@@ -68,8 +67,8 @@ interface SessionHandle {
 }
 
 interface Fixture {
-  /** agentId -> path -> contents. The modelled per-agent partition. */
-  trees: Map<string, Map<string, string>>;
+  /** agentId -> the tool names in that agent's catalog. The modelled per-agent partition. */
+  catalogs: Map<string, string[]>;
   /** The `ctx.agentId` the listener stamped for a given sessionId. */
   agentIdFor: Map<string, string>;
   openSession: (opts: {
@@ -83,24 +82,29 @@ async function makeFixture(): Promise<Fixture> {
   const harness = await createTestHarness({
     plugins: [createSessionInmemoryPlugin()],
   });
-  const trees = new Map<string, Map<string, string>>();
+  const catalogs = new Map<string, string[]>();
   const agentIdFor = new Map<string, string>();
   const listeners: Listener[] = [];
   const tempDirs: string[] = [];
 
-  harness.bus.registerService<WorkspaceReadInput, WorkspaceReadOutput>(
-    'workspace:read',
-    'stub-partitioned-workspace',
-    async (ctx, input) => {
+  harness.bus.registerService<Record<string, never>, { tools: ToolDescriptor[] }>(
+    'tool:list',
+    'stub-partitioned-catalog',
+    async (ctx) => {
       agentIdFor.set(ctx.sessionId, ctx.agentId);
-      const contents = trees.get(ctx.agentId)?.get(input.path);
-      if (contents === undefined) return { found: false };
-      return { found: true, bytes: Buffer.from(contents, 'utf8') };
+      const names = catalogs.get(ctx.agentId) ?? [];
+      return {
+        tools: names.map((name) => ({
+          name,
+          inputSchema: { type: 'object' },
+          executesIn: 'host' as const,
+        })),
+      };
     },
   );
 
   return {
-    trees,
+    catalogs,
     agentIdFor,
     openSession: async ({ sessionId, owner }) => {
       const { token } = await harness.bus.call<
@@ -172,32 +176,23 @@ function postJson(
   });
 }
 
-async function readWorkspace(
-  s: SessionHandle,
-): Promise<{ found: boolean; text?: string }> {
-  const res = await postJson(s.socketPath, '/workspace.read', s.token, {
-    path: SECRET_PATH,
-  });
+/** The tool names the session's partition holds, as `/tool.list` reports them. */
+async function listTools(s: SessionHandle): Promise<string[]> {
+  const res = await postJson(s.socketPath, '/tool.list', s.token, {});
   expect(res.status).toBe(200);
-  const body = JSON.parse(res.body) as
-    | { found: true; bytesBase64: string }
-    | { found: false };
-  if (!body.found) return { found: false };
-  return {
-    found: true,
-    text: Buffer.from(body.bytesBase64, 'base64').toString('utf8'),
-  };
+  const body = JSON.parse(res.body) as { tools: Array<{ name: string }> };
+  return body.tools.map((t) => t.name);
 }
 
-function seedPartitionOf(fx: Fixture, sessionId: string, contents: string): void {
+function seedPartitionOf(fx: Fixture, sessionId: string, toolName: string): void {
   const agentId = fx.agentIdFor.get(sessionId);
-  expect(agentId, `no workspace:read recorded for ${sessionId}`).toBeDefined();
-  const tree = fx.trees.get(agentId as string) ?? new Map<string, string>();
-  tree.set(SECRET_PATH, contents);
-  fx.trees.set(agentId as string, tree);
+  expect(agentId, `no tool:list recorded for ${sessionId}`).toBeDefined();
+  const catalog = fx.catalogs.get(agentId as string) ?? [];
+  catalog.push(toolName);
+  fx.catalogs.set(agentId as string, catalog);
 }
 
-describe('@ax/ipc-server: owner-less sessions do not share a workspace tree', () => {
+describe('@ax/ipc-server: owner-less sessions do not share an agent partition', () => {
   let fx: Fixture | null = null;
 
   afterEach(async () => {
@@ -210,8 +205,8 @@ describe('@ax/ipc-server: owner-less sessions do not share a workspace tree', ()
     const s1 = await fx.openSession({ sessionId: 's-ownerless-1' });
     const s2 = await fx.openSession({ sessionId: 's-ownerless-2' });
 
-    await readWorkspace(s1);
-    await readWorkspace(s2);
+    await listTools(s1);
+    await listTools(s2);
 
     const a1 = fx.agentIdFor.get('s-ownerless-1');
     const a2 = fx.agentIdFor.get('s-ownerless-2');
@@ -222,25 +217,22 @@ describe('@ax/ipc-server: owner-less sessions do not share a workspace tree', ()
     expect(a1).not.toBe(a2);
   });
 
-  it("an owner-less session cannot read another owner-less session's file", async () => {
+  it("an owner-less session cannot see another owner-less session's partition", async () => {
     fx = await makeFixture();
     const a = await fx.openSession({ sessionId: 's-tenant-a' });
     const b = await fx.openSession({ sessionId: 's-tenant-b' });
 
-    expect((await readWorkspace(a)).found).toBe(false);
-    seedPartitionOf(fx, 's-tenant-a', 'tenant A private data');
+    expect(await listTools(a)).toEqual([]);
+    seedPartitionOf(fx, 's-tenant-a', PRIVATE_TOOL);
 
-    expect(await readWorkspace(a)).toEqual({
-      found: true,
-      text: 'tenant A private data',
-    });
-    expect(await readWorkspace(b)).toEqual({ found: false });
+    expect(await listTools(a)).toEqual([PRIVATE_TOOL]);
+    expect(await listTools(b)).toEqual([]);
   });
 
   it('stamps an OWNER-LESS-marked id, not a transport-named constant', async () => {
     fx = await makeFixture();
     const s = await fx.openSession({ sessionId: 's-marked' });
-    await readWorkspace(s);
+    await listTools(s);
 
     const agentId = fx.agentIdFor.get('s-marked') as string;
     expect(isOwnerlessId(agentId)).toBe(true);
@@ -251,43 +243,34 @@ describe('@ax/ipc-server: owner-less sessions do not share a workspace tree', ()
     expect(agentId).not.toBe('ipc-http');
   });
 
-  it('ANTI-VACUITY: an OWNED session still reads its own agent file', async () => {
+  it("ANTI-VACUITY: an OWNED session still sees its own agent's partition", async () => {
     fx = await makeFixture();
     const s = await fx.openSession({
       sessionId: 's-owned',
       owner: { userId: 'usr_1', agentId: 'agt_real_a' },
     });
-    fx.trees.set('agt_real_a', new Map([[SECRET_PATH, 'agent A file']]));
+    fx.catalogs.set('agt_real_a', [PRIVATE_TOOL]);
 
-    expect(await readWorkspace(s)).toEqual({
-      found: true,
-      text: 'agent A file',
-    });
+    expect(await listTools(s)).toEqual([PRIVATE_TOOL]);
     expect(fx.agentIdFor.get('s-owned')).toBe('agt_real_a');
   });
 
-  it('ANTI-VACUITY: two sessions of the SAME agent share one tree', async () => {
+  it('ANTI-VACUITY: two sessions of the SAME agent share one partition', async () => {
     fx = await makeFixture();
     const s1 = await fx.openSession({
       sessionId: 's-same-agent-1',
       owner: { userId: 'usr_1', agentId: 'agt_real_a' },
     });
     // A different USER reaching the same agent: the partition is agentId
-    // alone (TASK-257), so a team agent's files stay shared.
+    // alone (TASK-257), so a team agent's data stays shared.
     const s2 = await fx.openSession({
       sessionId: 's-same-agent-2',
       owner: { userId: 'usr_2', agentId: 'agt_real_a' },
     });
-    fx.trees.set('agt_real_a', new Map([[SECRET_PATH, 'shared agent file']]));
+    fx.catalogs.set('agt_real_a', [PRIVATE_TOOL]);
 
-    expect(await readWorkspace(s1)).toEqual({
-      found: true,
-      text: 'shared agent file',
-    });
-    expect(await readWorkspace(s2)).toEqual({
-      found: true,
-      text: 'shared agent file',
-    });
+    expect(await listTools(s1)).toEqual([PRIVATE_TOOL]);
+    expect(await listTools(s2)).toEqual([PRIVATE_TOOL]);
   });
 
   it('ANTI-VACUITY: a DIFFERENT owned agent still gets nothing', async () => {
@@ -296,9 +279,9 @@ describe('@ax/ipc-server: owner-less sessions do not share a workspace tree', ()
       sessionId: 's-owned-b',
       owner: { userId: 'usr_2', agentId: 'agt_real_b' },
     });
-    fx.trees.set('agt_real_a', new Map([[SECRET_PATH, 'agent A file']]));
+    fx.catalogs.set('agt_real_a', [PRIVATE_TOOL]);
 
-    expect(await readWorkspace(other)).toEqual({ found: false });
+    expect(await listTools(other)).toEqual([]);
   });
 
   it('refuses skill.propose on an owner-less session (the ipc-server half of the asymmetry)', async () => {

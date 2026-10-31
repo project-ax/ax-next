@@ -28,17 +28,9 @@ import { artifactPublishHandler } from './handlers/artifact-publish.js';
 import { attachmentsListHandler } from './handlers/attachments-list.js';
 import { skillProposeHandler } from './handlers/skill-propose.js';
 import { proxyDrainEgressBlocksHandler } from './handlers/proxy-drain-egress-blocks.js';
-import { conversationDrainSaveRefusalsHandler } from './handlers/conversation-drain-save-refusals.js';
 import { toolPreCallHandler } from './handlers/tool-pre-call.js';
 import { toolExecuteHostHandler } from './handlers/tool-execute-host.js';
 import { toolListHandler } from './handlers/tool-list.js';
-import {
-  workspaceCommitBundleHandler,
-  workspaceCommitNotifyHandler,
-} from './handlers/workspace-commit-notify.js';
-import { workspaceMaterializeHandler } from './handlers/workspace-materialize.js';
-import { workspaceExportBaselineBundleHandler } from './handlers/workspace-export-baseline-bundle.js';
-import { workspaceReadHandler } from './handlers/workspace-read.js';
 import { sessionNextMessageHandler } from './handlers/session-next-message.js';
 import { sessionGetConfigHandler } from './handlers/session-get-config.js';
 import { conversationStoreRunnerSessionHandler } from './handlers/conversation-store-runner-session.js';
@@ -60,7 +52,6 @@ import {
 import {
   validateEventChatEnd,
   fireEventChatEnd,
-  persistEventChatEnd,
 } from './handlers/event-chat-end.js';
 import {
   validateEventStreamChunk,
@@ -87,11 +78,14 @@ import {
 //     write 202 → fire subscriber asynchronously. Subscriber failures are
 //     logged but NEVER reach the client (D4: events are fire-and-forget).
 //
-// Unknown path → 404 VALIDATION. Body-parsing errors bubble up to this
-// function's try/catch and become 4xx/5xx per the readJsonBody contract
-// (the listener's gate already covered the fail-fast Content-Length case;
-// mid-stream overflow still possible here if the client streams a body
-// with a lying Content-Length).
+// Unknown path → 404 NOT_FOUND, without reading the body. That includes the
+// git workspace tier's actions and the save-refused drain, removed in
+// TASK-995: a runner from the previous release that still calls one gets
+// this clean 404. Body-parsing errors bubble up to this function's try/catch
+// and become 4xx/5xx per the readJsonBody contract (the listener's gate
+// already covered the fail-fast Content-Length case; mid-stream overflow
+// still possible here if the client streams a body with a lying
+// Content-Length).
 // ---------------------------------------------------------------------------
 
 const ACTIONS = new Map<string, {
@@ -101,16 +95,6 @@ const ACTIONS = new Map<string, {
 ACTIONS.set('/tool.pre-call', { method: 'POST', handler: toolPreCallHandler });
 ACTIONS.set('/tool.execute-host', { method: 'POST', handler: toolExecuteHostHandler });
 ACTIONS.set('/tool.list', { method: 'POST', handler: toolListHandler });
-// Legacy JSON carrier of the end-of-turn save (base64 bundle inside the 4 MiB
-// frame). Current runners use the binary `/workspace.commit-bundle` below; this
-// stays registered for sandboxes started by the previous release (TASK-720).
-ACTIONS.set('/workspace.commit-notify', { method: 'POST', handler: workspaceCommitNotifyHandler });
-ACTIONS.set('/workspace.materialize', { method: 'POST', handler: workspaceMaterializeHandler });
-ACTIONS.set('/workspace.export-baseline-bundle', {
-  method: 'POST',
-  handler: workspaceExportBaselineBundleHandler,
-});
-ACTIONS.set('/workspace.read', { method: 'POST', handler: workspaceReadHandler });
 ACTIONS.set('/session.get-config', { method: 'POST', handler: sessionGetConfigHandler });
 ACTIONS.set('/conversation.store-runner-session', {
   method: 'POST',
@@ -128,12 +112,6 @@ ACTIONS.set('/skill.propose', { method: 'POST', handler: skillProposeHandler });
 // Agent-visible egress-block note: the runner drains its session's allowlist-
 // blocked hosts at PostToolUse. Empty JSON request, `{ hosts: string[] }` back.
 ACTIONS.set('/proxy.drain-egress-blocks', { method: 'POST', handler: proxyDrainEgressBlocksHandler });
-// TASK-749: the runner takes the refused saves its model was not told about
-// (empty JSON request; conversation from ctx; `{ refusals }` of closed codes back).
-ACTIONS.set('/conversation.drain-save-refusals', {
-  method: 'POST',
-  handler: conversationDrainSaveRefusalsHandler,
-});
 // TASK-67 (out-of-git Part B / B2): resume-transcript actions. get-transcript
 // takes a JSON request and returns a BINARY response (HandlerBinary) — still an
 // ordinary ACTION (the REQUEST body is JSON). append-transcript and
@@ -152,9 +130,7 @@ ACTIONS.set('/session.get-display-history', {
 // Maximum inbound body for the raw-body REQUEST-direction channel (every
 // BINARY_ACTIONS entry). Matches the artifact_publish executor's 100 MiB size
 // cap so the host never admits a body larger than the runner would ever
-// legitimately send, and `WORKSPACE_COMMIT_BUNDLE_MAX_BYTES` in @ax/ipc-protocol
-// (the runner's pre-send check for the end-of-turn save) must never exceed it —
-// a test pins that. This is the inbound mirror of the runner's outbound size
+// legitimately send. This is the inbound mirror of the runner's outbound size
 // checks — defense in depth at the host boundary, far above the 4 MiB JSON
 // MAX_FRAME (the whole point of the binary channel). Over it → 413.
 export const MAX_BLOB_BODY_BYTES = 100 * 1024 * 1024;
@@ -163,8 +139,7 @@ export const MAX_BLOB_BODY_BYTES = 100 * 1024 * 1024;
 // JSON), read via `readRawBody` under MAX_BLOB_BODY_BYTES instead of the 4 MiB
 // JSON cap. `blob.put` streams artifact bytes inbound; the two transcript-ship
 // actions stream jsonl bytes inbound (their `fromSeq`/`prefixHash` integrity
-// metadata travels as query params — see `sessionAppendTranscriptHandler`);
-// `workspace.commit-bundle` streams the end-of-turn git bundle inbound.
+// metadata travels as query params — see `sessionAppendTranscriptHandler`).
 const BINARY_ACTIONS = new Map<string, {
   method: 'POST';
   handler: BinaryActionHandler;
@@ -176,13 +151,6 @@ BINARY_ACTIONS.set('/blob.put', { method: 'POST', handler: blobPutHandler });
 // overflow the 4 MiB JSON cap and terminate the runner.
 BINARY_ACTIONS.set('/session.append-transcript', { method: 'POST', handler: sessionAppendTranscriptHandler });
 BINARY_ACTIONS.set('/session.replace-transcript', { method: 'POST', handler: sessionReplaceTranscriptHandler });
-// TASK-720: the end-of-turn workspace save. The JSON `/workspace.commit-notify`
-// capped one save at about 3 MiB of compressed objects (base64 inside the 4 MiB
-// frame); over it the save failed, the runner's baseline never moved, and every
-// later save re-carried the same blob, so the agent's persistence wedged for
-// good. The raw bundle is the body here; `reason` / `parentVersion` ride as
-// query params (see `workspaceCommitBundleHandler`).
-BINARY_ACTIONS.set('/workspace.commit-bundle', { method: 'POST', handler: workspaceCommitBundleHandler });
 
 type EventSpec = {
   method: 'POST';
@@ -199,11 +167,9 @@ type EventSpec = {
    * clear-reqId / titles / evictor) stays OFF the ack path so a slow observer
    * can't delay the runner's ack or its downstream done-frame. A `persist`
    * THROW propagates → the dispatcher returns a non-2xx (no false ack of an
-   * unpersisted turn — B3 no-omission) + logs loudly. `event.chat-end` also
-   * uses it (TASK-731) for the refused-final-save notice, a persist that
-   * never throws. Absent for every other event (those keep the prompt-202
-   * fire-and-forget shape; stream chunks / tool-post-call are high-frequency
-   * and NOT gated by no-omission).
+   * unpersisted turn — B3 no-omission) + logs loudly. Absent for every other
+   * event (those keep the prompt-202 fire-and-forget shape; stream chunks /
+   * tool-post-call are high-frequency and NOT gated by no-omission).
    */
   persist?: (ctx: AgentContext, bus: HookBus, payload: unknown) => Promise<void>;
 };
@@ -227,12 +193,6 @@ EVENTS.set('/event.chat-end', {
   method: 'POST',
   validate: validateEventChatEnd,
   fire: fireEventChatEnd,
-  // TASK-731: a refused final/idle save becomes a durable `save-refused`
-  // display event before chat:end fires. Unlike turn-end's persist this one
-  // NEVER throws (best-effort, logged), so it cannot turn chat-end into a
-  // 500; without `saveRefused` it returns at once, so the ack is as prompt
-  // as before. `fire` still runs detached after the 202, as it always has.
-  persist: persistEventChatEnd,
 });
 EVENTS.set('/event.stream-chunk', {
   method: 'POST',
@@ -264,13 +224,29 @@ export const DISPATCHER_PATHS: {
   events: [...EVENTS.keys()],
 };
 
+function isRoutedPath(pathname: string): boolean {
+  return (
+    DISPATCHER_PATHS.get.includes(pathname) ||
+    ACTIONS.has(pathname) ||
+    BINARY_ACTIONS.has(pathname) ||
+    EVENTS.has(pathname)
+  );
+}
+
 /**
  * Pre-dispatch Content-Type gate (TASK-68). The two transports (ipc-server unix,
  * ipc-http TCP) share this so the rule lives in ONE place alongside the routing
- * table. A POST must carry `application/json` — EXCEPT a binary action
- * (`/blob.put`), whose REQUEST body is a raw `application/octet-stream` stream
- * (the REQUEST-direction binary channel). GET carries no body. Returns
- * `{ ok: true }` to proceed or `{ ok: false }` with the 415 message.
+ * table. A POST to a routed path must carry `application/json` — EXCEPT a
+ * binary action (`/blob.put`, the transcript ships), whose REQUEST body is a raw
+ * `application/octet-stream` stream (the REQUEST-direction binary channel). GET
+ * carries no body. Returns `{ ok: true }` to proceed or `{ ok: false }` with the
+ * 415 message.
+ *
+ * A path the dispatcher does not route has no body type to enforce, so it is
+ * let through: auth still runs first, and the dispatcher answers it with its
+ * 404 without reading the body (TASK-995). Without this, a runner from the
+ * previous release that streams its old end-of-turn save as octet-stream would
+ * be told its content type is wrong (415) instead of that the action is gone.
  */
 export function checkContentType(
   method: string | undefined,
@@ -278,6 +254,7 @@ export function checkContentType(
   contentType: string,
 ): { ok: true } | { ok: false; message: string } {
   if (method !== 'POST') return { ok: true };
+  if (!isRoutedPath(pathname)) return { ok: true };
   const ct = contentType.toLowerCase();
   if (BINARY_ACTIONS.has(pathname)) {
     if (ct.startsWith('application/octet-stream')) return { ok: true };

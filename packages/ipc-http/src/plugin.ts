@@ -21,9 +21,9 @@ const PLUGIN_NAME = '@ax/ipc-http';
 // since both wrap the same dispatcher). We don't hand-maintain a per-transport
 // list: that's exactly how the two manifests drifted from the dispatcher.
 // Subscriber hooks the dispatcher fires (`tool:pre-call`, `tool:post-call`,
-// `chat:turn-end`, `chat:end`, `chat:stream-chunk`, `workspace:applied`) are
-// NOT declared — subscriber hooks don't need a registered service and
-// `bus.fire` with no subscribers is a safe no-op. `tool:execute:<name>` is
+// `chat:turn-end`, `chat:end`, `chat:stream-chunk`) are NOT declared —
+// subscriber hooks don't need a registered service and `bus.fire` with no
+// subscribers is a safe no-op. `tool:execute:<name>` is
 // resolved dynamically at dispatch time (DISPATCHER_DEPENDENCIES.
 // dynamicCallPatterns) and is deliberately not in `calls`.
 // ---------------------------------------------------------------------------
