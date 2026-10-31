@@ -41,8 +41,8 @@ import { createK8sPlugins, type K8sPresetConfig } from '../index.js';
 // an injected clock (manifest asserted identical to the preset's) so a test
 // can step past the 24 h grace window instead of sleeping through it.
 //
-// Stubbed: `conversations:get` (attachments hard-calls it for downloads, which
-// this canary never does), `http:register-route` and `auth:require-user`
+// Stubbed: `conversations:get` (the owner gate `artifacts:publish-blob` asks
+// first; USER_A owns `conv-a`), `http:register-route` and `auth:require-user`
 // (disk-quota mounts its storage routes at init; they have their own suite).
 // The "agent delete" is the `conversations:purged` notice @ax/conversations
 // fires after a hard delete, fired here directly.
@@ -105,8 +105,12 @@ function createStubsPlugin(): Plugin {
       bus.registerService('auth:require-user', name, async () => {
         throw new PluginError({ code: 'unauthenticated', plugin: name, message: 'no http plane' });
       });
-      bus.registerService('conversations:get', name, async () => {
-        throw new PluginError({ code: 'not-found', plugin: name, message: 'no conversations' });
+      // The owner gate `artifacts:publish-blob` asks before `blob:stat`: USER_A
+      // owns `conv-a`, and nobody owns anything else.
+      bus.registerService('conversations:get', name, async (ctx, input) => {
+        const { conversationId } = input as { conversationId: string };
+        if (ctx.userId === USER_A && conversationId === 'conv-a') return { conversationId };
+        throw new PluginError({ code: 'not-found', plugin: name, message: 'no such conversation' });
       });
     },
   };
@@ -321,13 +325,12 @@ describe('@ax/preset-k8s blob ledger release canary (TASK-776)', () => {
     expect(await blobRows()).toEqual([{ owner: USER_A, source: `blob:${sha}` }]);
   });
 
-  it('artifacts:publish-blob refuses a sha that is not stored and writes no row (D10)', async () => {
-    const missing = sha256Hex(randomBytes(64));
+  async function publishBlobError(userId: string, sha256: string): Promise<PluginError> {
     let err: unknown;
     try {
-      await live().bus.call('artifacts:publish-blob', ctxFor(USER_A), {
+      await live().bus.call('artifacts:publish-blob', ctxFor(userId), {
         conversationId: 'conv-a',
-        sha256: missing,
+        sha256,
         path: 'out/report.md',
         displayName: 'report.md',
         mediaType: 'text/markdown',
@@ -337,10 +340,28 @@ describe('@ax/preset-k8s blob ledger release canary (TASK-776)', () => {
       err = e;
     }
     expect(err).toBeInstanceOf(PluginError);
-    expect((err as PluginError).code).toBe('not-found');
+    return err as PluginError;
+  }
+
+  async function artifactRowCount(): Promise<string> {
     const rows = await sql<{ n: string }>`
       SELECT count(*)::text AS n FROM attachments_v1_artifacts
     `.execute(await db());
-    expect(rows.rows[0]!.n).toBe('0');
+    return rows.rows[0]!.n;
+  }
+
+  it('artifacts:publish-blob refuses a sha that is not stored and writes no row (D10)', async () => {
+    // The owner of the conversation gets past the owner gate, so the refusal
+    // is the store's answer.
+    expect((await publishBlobError(USER_A, sha256Hex(randomBytes(64)))).code).toBe('not-found');
+    expect(await artifactRowCount()).toBe('0');
+  });
+
+  it('artifacts:publish-blob refuses a non-owner before asking the store, stored sha or not', async () => {
+    const stored = await attach(USER_A, 'conv-a', randomBytes(1000));
+    // The same answer either way: a refused caller cannot learn whether a sha is stored.
+    expect((await publishBlobError(USER_B, sha256Hex(randomBytes(64)))).code).toBe('forbidden');
+    expect((await publishBlobError(USER_B, stored)).code).toBe('forbidden');
+    expect(await artifactRowCount()).toBe('0');
   });
 });
