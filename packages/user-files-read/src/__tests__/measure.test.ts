@@ -153,27 +153,38 @@ describe.skipIf(!ON_LINUX)(`measureConfinedUserFiles — on disk (${SKIP_REASON}
     const releases: Array<() => void> = [];
     let hang = true;
     vi.spyOn(nodeFs.promises, 'open').mockImplementation(async (p, flags, mode) => {
-      if (hang) {
+      // Only the root's open hangs, so nothing else in the worker is parked.
+      if (hang && String(p) === root) {
         await new Promise<void>((r) => releases.push(r));
       }
       return realOpen(p, flags, mode);
     });
 
-    const stuck = Array.from({ length: MAX_CONCURRENT_USAGE_WALKS }, () => measureConfinedUserFiles(root));
-    // Let every stuck walk reach its open.
-    await new Promise((r) => setTimeout(r, 20));
-    expect(releases).toHaveLength(MAX_CONCURRENT_USAGE_WALKS);
+    // A tight time budget too: a walk's time budget must never be what frees
+    // its place (a stuck call never gets back to check it).
+    const stuck = Array.from({ length: MAX_CONCURRENT_USAGE_WALKS }, () =>
+      measureConfinedUserFiles(root, limits({ maxMs: 1 })),
+    );
+    try {
+      // Let every stuck walk reach its open.
+      await new Promise((r) => setTimeout(r, 20));
+      expect(releases).toHaveLength(MAX_CONCURRENT_USAGE_WALKS);
 
-    await expect(measureConfinedUserFiles(root)).rejects.toMatchObject({
-      name: 'UserFilesReadError',
-      code: 'walk-busy',
-    });
-    // Refused before touching the disk: no further open was attempted.
-    expect(releases).toHaveLength(MAX_CONCURRENT_USAGE_WALKS);
+      const third = measureConfinedUserFiles(root);
+      // Refused before touching the disk. Checked BEFORE awaiting it, so an
+      // uncapped walk fails here at once (its open parks in the spy) instead
+      // of hanging until the test's timeout.
+      expect(releases).toHaveLength(MAX_CONCURRENT_USAGE_WALKS);
+      await expect(third).rejects.toMatchObject({ name: 'UserFilesReadError', code: 'walk-busy' });
+    } finally {
+      // Whatever happened above, release the stuck walks so their places are
+      // free for every later test in this file.
+      hang = false;
+      for (const r of releases) r();
+      await Promise.allSettled(stuck);
+    }
 
-    // The export comes back: the stuck walks finish and free their places.
-    hang = false;
-    for (const r of releases) r();
+    // The export came back: the stuck walks finished and freed their places.
     for (const r of await Promise.all(stuck)) expect(r.complete).toBe(true);
     await expect(measureConfinedUserFiles(root)).resolves.toMatchObject({ complete: true });
   });

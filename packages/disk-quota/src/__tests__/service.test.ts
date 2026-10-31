@@ -1655,6 +1655,39 @@ describe('agent files (TASK-993)', () => {
     expect(w.lines.some((l) => l.msg === 'disk_quota_files_sweep_skipped')).toBe(true);
   });
 
+  it('a transient provider failure (a busy walk) never switches agent-files metering off', async () => {
+    // What the bus delivers when the provider rethrows the walk's own error:
+    // an `unknown` PluginError whose cause carries `walk-busy`. Only the
+    // deployment-wide `user-files-usage-unavailable` may stop the meter.
+    let busy = true;
+    const w = makeWorld({
+      services: {
+        [AGENT_FILES_USAGE_HOOK]: async () => {
+          if (busy) {
+            throw new PluginError({
+              code: 'unknown',
+              plugin: '@ax/sandbox-k8s',
+              hookName: AGENT_FILES_USAGE_HOOK,
+              message: 'too many usage walks are already running in this process',
+              cause: Object.assign(new Error('busy'), { code: 'walk-busy' }),
+            });
+          }
+          return { bytes: 3 * MB };
+        },
+        ...owners({ agt_1: ALICE }),
+      },
+    });
+    w.svc.scheduleAgentFilesMeasure(w.ctx('alice', 'agt_1'));
+    await w.svc.drain();
+    expect(warned(w, 'disk_quota_files_measure_failed')).toBe(true);
+    expect(await fileRows()).toEqual([]);
+
+    busy = false;
+    w.svc.scheduleAgentFilesMeasure(w.ctx('alice', 'agt_1'));
+    await w.svc.drain();
+    expect((await w.store.usageFor('alice')).workspaceBytes).toBe(3 * MB);
+  });
+
   it('a store failure is a warn, never a throw', async () => {
     const w = makeWorld({
       store: failingStore,

@@ -85,11 +85,17 @@ describe('blob.put handler (raw-body REQUEST channel)', () => {
         reasonCode: 'storage-full',
       });
     });
-    const result = (await blobPutHandler(Buffer.from('x'), fakeCtx(), bus as never)) as HandlerErr;
+    const ctx = fakeCtx() as unknown as { logger: { warn: ReturnType<typeof vi.fn> } };
+    const result = (await blobPutHandler(Buffer.from('x'), ctx as never, bus as never)) as HandlerErr;
     expect(result.status).toBe(409);
     expect(result.body).toEqual({
       error: { code: 'HOOK_REJECTED', message: BLOB_PUT_STORAGE_FULL_FOR_AGENT },
     });
+    // The operator still sees which policy refused, and the original sentence.
+    expect(ctx.logger.warn).toHaveBeenCalledWith(
+      'blob_put_refused',
+      expect.objectContaining({ reasonCode: 'storage-full', reason: personFacing }),
+    );
     expect(BLOB_PUT_STORAGE_FULL_FOR_AGENT).toMatch(/do not delete or move any files on your own/i);
     expect(BLOB_PUT_STORAGE_FULL_FOR_AGENT).not.toMatch(/try again|clean up files it no longer needs/i);
   });
