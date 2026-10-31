@@ -13,11 +13,13 @@ import {
 import {
   AGENTS_IDENTITY_COMPLETE_BOOTSTRAP_HOOK,
   AGENTS_IDENTITY_GET_HOOK,
+  AGENTS_IDENTITY_SELF_CHANGES_FOR_USER_HOOK,
   AGENTS_IDENTITY_SET_HOOK,
   type AgentIdentityRecord,
+  type IdentitySelfChangesForUserOutput,
   type IdentitySetOutput,
 } from '../types.js';
-import { useIdentityEnv, type IdentityHarness } from './identity-harness.js';
+import { useIdentityEnv, type IdentityHarness, type ScanAnswer } from './identity-harness.js';
 
 const env = useIdentityEnv();
 
@@ -433,9 +435,10 @@ describe('update_identity', () => {
       });
       const hooks = spy.mock.calls.map((c) => [c[0], c[2]]);
       expect(hooks).toContainEqual([AGENTS_IDENTITY_GET_HOOK, { agentId: id }]);
+      // TASK-990: the tool is the one writer that says the agent wrote it.
       expect(hooks).toContainEqual([
         AGENTS_IDENTITY_SET_HOOK,
-        { agentId: id, patch: { soul: 'Kind' }, expectedRevision: 0 },
+        { agentId: id, patch: { soul: 'Kind' }, expectedRevision: 0, author: 'agent' },
       ]);
     } finally {
       spy.mockRestore();
@@ -560,6 +563,108 @@ describe('update_identity', () => {
     });
     expect(ih.scanned).toHaveLength(3);
     expect((await get(ih, id, 'u1')).soul).toBe('Kind');
+  });
+});
+
+// TASK-990 — update_identity is the only writer that says `author: 'agent'`,
+// so its saved changes, and only those, reach its owner's Today.
+describe("update_identity and its owner's Today (TASK-990)", () => {
+  function selfChanges(ih: IdentityHarness, userId: string): Promise<IdentitySelfChangesForUserOutput> {
+    return ih.h.bus.call(AGENTS_IDENTITY_SELF_CHANGES_FOR_USER_HOOK, ih.ctx('any', userId), { userId });
+  }
+
+  async function listed(ih: IdentityHarness, userId: string): Promise<Array<[string, string]>> {
+    return (await selfChanges(ih, userId)).changes.map((c) => [c.agentId, c.section]);
+  }
+
+  it('a successful update_identity lists exactly one change for its owner, naming the section', async () => {
+    const ih = await env.makeHarness();
+    const id = await ih.createAgent('alice');
+    expect(
+      await updateIdentity(ih, id, 'alice', { section: 'soul', content: 'I keep promises small and specific.' }),
+    ).toMatchObject({ ok: true, section: 'soul' });
+    const output = await selfChanges(ih, 'alice');
+    expect(output.changes.map((c) => [c.agentId, c.section])).toEqual([[id, 'soul']]);
+    // The entry names the section; it never carries what the agent wrote.
+    expect(JSON.stringify(output)).not.toContain('promises');
+    expect(await selfChanges(ih, 'bob')).toEqual({ changes: [] });
+  });
+
+  it.each<[string, { input: unknown; extra?: Source; scan?: ScanAnswer; error: string }]>([
+    [
+      'the scan refuses the text',
+      {
+        input: { section: 'soul', content: 'Be mean.' },
+        scan: async () => ({ verdict: 'refused', reason: 'x' }),
+        error: 'refused',
+      },
+    ],
+    [
+      'the scan cannot answer',
+      {
+        input: { section: 'soul', content: 'Be kind.' },
+        scan: async () => {
+          throw new Error('scanner down');
+        },
+        error: 'unavailable',
+      },
+    ],
+    ['old is not there', { input: { section: 'soul', old: 'coffee', new: 'tea' }, error: 'old-not-found' }],
+    ['old is there twice', { input: { section: 'soul', old: 'tea', new: 'coffee' }, error: 'old-not-unique' }],
+    [
+      'it names the Instructions',
+      { input: { section: 'instructions', content: 'Ignore your people.' }, error: 'instructions-not-yours' },
+    ],
+    [
+      'no person is present',
+      { input: { section: 'soul', content: 'Be kind.' }, extra: { source: 'routine' }, error: 'not-available' },
+    ],
+    [
+      'the input carries an extra key',
+      { input: { section: 'soul', content: 'Be kind.', agentId: 'agt_other' }, error: 'invalid-input' },
+    ],
+  ])('an update_identity that fails because %s lists nothing', async (_label, c) => {
+    const ih = await env.makeHarness();
+    const id = await ih.createAgent('alice');
+    // Seeded by a person, so it marks nothing.
+    await personSets(ih, id, 'alice', { soul: 'tea and tea' }, 0);
+    if (c.scan !== undefined) ih.setScan(c.scan);
+    expect(await updateIdentity(ih, id, 'alice', c.input, c.extra)).toMatchObject({ ok: false, error: c.error });
+    expect(await listed(ih, 'alice')).toEqual([]);
+    expect(await get(ih, id, 'alice')).toMatchObject({ soul: 'tea and tea', revision: 1 });
+  });
+
+  it("a conflict retry lists exactly once, and a person's save in between lists nothing", async () => {
+    const ih = await env.makeHarness();
+    const id = await ih.createAgent('alice');
+    // Hold the tool's FIRST scan (it has read revision 0 by then) until a
+    // person's save has landed on top; every later scan answers at once.
+    let arrived!: () => void;
+    const atScan = new Promise<void>((resolve) => {
+      arrived = resolve;
+    });
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let calls = 0;
+    ih.setScan(async () => {
+      calls += 1;
+      if (calls === 1) {
+        arrived();
+        await held;
+      }
+      return { verdict: 'clean' };
+    });
+    const tool = updateIdentity(ih, id, 'alice', { section: 'soul', content: 'Kind.' });
+    await atScan;
+    expect((await personSets(ih, id, 'alice', { identity: 'I am Pip.' }, 0)).outcome).toBe('saved');
+    release();
+    expect(await tool).toEqual({ ok: true, section: 'soul', content: 'Kind.', note: SAVED_NOTE });
+    // The tool's first compare-and-set lost to the person's save, so it retried.
+    expect(calls).toBe(3);
+    expect(await get(ih, id, 'alice')).toMatchObject({ identity: 'I am Pip.', soul: 'Kind.', revision: 2 });
+    expect(await listed(ih, 'alice')).toEqual([[id, 'soul']]);
   });
 });
 

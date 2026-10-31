@@ -6,6 +6,7 @@ import {
   type AgentIdentityRecord,
   type IdentityCompleteBootstrapOutput,
   type IdentitySetOutput,
+  type SelfSection,
 } from '../types.js';
 
 // ---------------------------------------------------------------------------
@@ -30,6 +31,11 @@ import {
 // its own, that nothing was saved. A hook's `forbidden`, `not-found` or
 // `invalid-payload` throw is `not-allowed` (retrying cannot help); any other
 // throw is `unavailable` (it may).
+//
+// TASK-990 — update_identity is the ONLY writer that sends `author: 'agent'`
+// (a constant here, never read from the tool input). That is what puts a
+// saved change on its owner's Today, as "changed its personality" or
+// "changed how it describes itself".
 // ---------------------------------------------------------------------------
 
 const PLUGIN_NAME = '@ax/agents';
@@ -119,8 +125,6 @@ export type CompleteBootstrapResult =
 interface ToolCallInput {
   input?: unknown;
 }
-
-type SelfSection = 'identity' | 'soul';
 
 type UpdateRequest =
   | { section: SelfSection; form: 'content'; content: string }
@@ -273,12 +277,19 @@ async function runUpdateIdentity(
         next = current.slice(0, at) + request.replacement + current.slice(at + request.old.length);
       }
       const out = await bus.call<
-        { agentId: string; patch: Partial<Record<SelfSection, string>>; expectedRevision: number },
+        {
+          agentId: string;
+          patch: Partial<Record<SelfSection, string>>;
+          expectedRevision: number;
+          author: 'agent';
+        },
         IdentitySetOutput
       >(AGENTS_IDENTITY_SET_HOOK, ctx, {
         agentId: ctx.agentId,
         patch: { [section]: next },
         expectedRevision: record.revision,
+        // The agent is changing itself: its owner sees it on Today (TASK-990).
+        author: 'agent',
       });
       if (out.outcome === 'conflict') continue;
       if (out.outcome === 'refused') {

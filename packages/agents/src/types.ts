@@ -415,7 +415,9 @@ export interface CanSetSharedCredentialOutput {
 // `content` for a `refused` verdict, `scan-unavailable` for everything else)
 // and compare-and-sets on `revision`. A saved write and a completed first-run
 // setup fire `system-prompt:augment-changed { agentId }` so live sessions
-// rebuild their prompt at their next turn.
+// rebuild their prompt at their next turn. A write says who made it
+// (`author`, TASK-990): only the agent's own saves are listed on its owner's
+// Today.
 //
 // ACL on all three: `input.agentId` must equal `ctx.agentId`, and `ctx.userId`
 // must reach the agent (`checkAccess`: the personal owner, or a member of the
@@ -473,12 +475,34 @@ export interface IdentityGetInput {
 /** An agent with nothing saved reads as empty texts, `none`, revision 0. */
 export type IdentityGetOutput = AgentIdentityRecord;
 
+/**
+ * Who is writing (TASK-990). `'agent'` is the agent changing itself, and only
+ * its own `update_identity` tool says so; every other writer (the identity
+ * editor, the Instructions editor) is a `'person'`.
+ *
+ * Boundary review: a team-level profile service would need the same field, to
+ * tell people when a profile changed itself. No backend vocabulary; no
+ * subscriber sees it (`system-prompt:augment-changed` is unchanged). Not an
+ * IPC action: the sandbox reaches `agents:identity:set` only through
+ * `tool:execute:update_identity`, which refuses extra input keys and sends
+ * `'agent'` itself.
+ */
+export type IdentityAuthor = 'agent' | 'person';
+
 export interface IdentitySetInput {
   agentId: string;
   /** At least one section. A section set to '' (or whitespace) is cleared. */
   patch: Partial<Record<IdentitySection, string>>;
   /** The `revision` this write was based on; a non-negative safe integer. */
   expectedRevision: number;
+  /**
+   * Who is writing. Absent = 'person'. Only the agent's own update_identity
+   * sends 'agent'; an 'agent' patch may name only identity and soul. An
+   * agent's saved change, outside its first-run setup, marks each section it
+   * changed, and its owner's Today lists it
+   * (`agents:identity:self-changes-for-user`).
+   */
+  author?: IdentityAuthor;
 }
 
 /**

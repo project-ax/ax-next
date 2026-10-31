@@ -25,6 +25,7 @@ export {
   type AgentIdentityRecord,
   type BootstrapState,
   type CreateBootstrap,
+  type IdentityAuthor,
   type IdentityCompleteBootstrapInput,
   type IdentityCompleteBootstrapOutput,
   type IdentityGetInput,

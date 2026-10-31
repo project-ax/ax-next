@@ -1,5 +1,5 @@
 import { PluginError } from '@ax/core';
-import { sql, type Kysely } from 'kysely';
+import { sql, type Kysely, type RawBuilder } from 'kysely';
 import type { AgentsDatabase } from '../migrations.js';
 import { scopedAgents } from '../scope.js';
 import {
@@ -8,6 +8,7 @@ import {
   SELF_SECTIONS,
   type AgentIdentityRecord,
   type BootstrapState,
+  type IdentityAuthor,
   type IdentityCompleteBootstrapOutput,
   type IdentitySection,
   type IdentitySelfChange,
@@ -42,6 +43,12 @@ export interface IdentityStoreSetArgs {
   /** Already normalised and checked by the service. At least one section. */
   patch: Partial<Record<IdentitySection, string>>;
   expectedRevision: number;
+  /**
+   * TASK-990 — who is writing. An `'agent'` save, outside first-run setup,
+   * also marks each section it changes. The service never passes an
+   * `'agent'` patch that names the Instructions.
+   */
+  author: IdentityAuthor;
 }
 
 export interface IdentityStoreSetResult {
@@ -63,7 +70,9 @@ export interface IdentityStore {
    * identity row is created if absent and locked FOR UPDATE, then
    * `conflict` (stale `expectedRevision`), `unchanged` (every patched section
    * already says that) or `saved` (revision + 1). Throws `not-found` when the
-   * agent row is gone.
+   * agent row is gone. A `saved` write by the agent itself, outside its
+   * first-run setup, also marks each section it changed (TASK-990), in the
+   * same UPDATE.
    */
   set(args: IdentityStoreSetArgs): Promise<IdentityStoreSetResult>;
   /**
@@ -88,6 +97,20 @@ interface SelfChangeMark {
   agentId: string;
   section: SelfSection;
   at: Date;
+}
+
+/**
+ * TASK-990 — a "changed by the agent" mark for each section `changes` holds,
+ * set to the UPDATE's own now(). Only the identity and the soul have one.
+ */
+function selfChangeMarks(changes: Partial<Record<IdentitySection, string>>): {
+  identity_changed_by_agent_at?: RawBuilder<Date>;
+  soul_changed_by_agent_at?: RawBuilder<Date>;
+} {
+  return {
+    ...(changes.identity !== undefined ? { identity_changed_by_agent_at: sql<Date>`now()` } : {}),
+    ...(changes.soul !== undefined ? { soul_changed_by_agent_at: sql<Date>`now()` } : {}),
+  };
 }
 
 /** Newest first, then by agentId, then in SELF_SECTIONS order. */
@@ -147,7 +170,7 @@ export function createIdentityStore(db: Kysely<AgentsDatabase>): IdentityStore {
   return {
     get,
 
-    async set({ agentId, patch, expectedRevision }) {
+    async set({ agentId, patch, expectedRevision, author }) {
       return db.transaction().execute(async (trx) => {
         // KEY SHARE is the lock a foreign-key check takes: it conflicts only
         // with deleteById's FOR UPDATE, so a delete either finishes first (and
@@ -190,10 +213,17 @@ export function createIdentityStore(db: Kysely<AgentsDatabase>): IdentityStore {
         if (Object.keys(changes).length === 0) {
           return { kind: 'unchanged', record: current };
         }
+        // TASK-990: the agent's own change, outside its first-run setup, marks
+        // each section it actually changes — in this same UPDATE, so the text
+        // and its mark commit together or not at all. (`bootstrap` was read
+        // under the row lock above.)
+        const marks =
+          author === 'agent' && current.bootstrap !== 'pending' ? selfChangeMarks(changes) : {};
         const updated = await trx
           .updateTable('agents_v1_identity')
           .set({
             ...changes,
+            ...marks,
             revision: sql<number>`revision + 1`,
             updated_at: sql<Date>`now()`,
           })
