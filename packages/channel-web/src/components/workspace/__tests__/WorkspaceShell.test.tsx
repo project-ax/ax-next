@@ -39,6 +39,8 @@ vi.mock('@/lib/workspace-api', async () => {
       // The mount read-back for grants raised while the workspace was closed
       // (TASK-373). Default empty below; the tests that care override it.
       grants: vi.fn(),
+      // What agents changed about themselves, read on each Today entry (TASK-990).
+      selfChanges: vi.fn(),
       tasks: vi.fn(),
       // A reply sent from a task's block on Today (TASK-933).
       sendTaskReply: vi.fn(),
@@ -55,6 +57,7 @@ vi.mock('@/lib/workspace-api', async () => {
 const boardMock = vi.mocked(workspaceApi.board);
 const decisionsMock = vi.mocked(workspaceApi.decisions);
 const grantsMock = vi.mocked(workspaceApi.grants);
+const selfChangesMock = vi.mocked(workspaceApi.selfChanges);
 const tasksMock = vi.mocked(workspaceApi.tasks);
 const sendTaskReplyMock = vi.mocked(workspaceApi.sendTaskReply);
 const agentMock = vi.mocked(workspaceApi.agent);
@@ -97,6 +100,8 @@ beforeEach(() => {
   decisionsMock.mockResolvedValue({ decisions: [] });
   grantsMock.mockReset();
   grantsMock.mockResolvedValue({ grants: [] });
+  selfChangesMock.mockReset();
+  selfChangesMock.mockResolvedValue({ changes: [] });
   tasksMock.mockReset();
   tasksMock.mockResolvedValue({ tasks: [], unavailableAgents: [] });
   // The grant store is module-level and this file raises rows into it; a
@@ -990,5 +995,55 @@ describe('tasks on Today, and one count (TASK-933)', () => {
 
     await waitFor(() => expect(tasksMock).toHaveBeenCalledTimes(2));
     expect(sendTaskReplyMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("agents' changes to themselves on Today (TASK-990)", () => {
+  const quill = {
+    id: 'a-quill',
+    name: 'Quill',
+    state: 'resting' as const,
+    now: null,
+    counter: null,
+    startedAt: null,
+    stoppedReason: null,
+  };
+  const soulChange = {
+    agentId: 'a-quill',
+    section: 'soul' as const,
+    changedAt: new Date().toISOString(),
+  };
+  const identityChange = { ...soulChange, section: 'identity' as const };
+
+  it("shows the agents' self-changes, and the Needs you count ignores them", async () => {
+    boardMock.mockResolvedValue({ agents: [quill] });
+    decisionsMock.mockResolvedValue({
+      decisions: [decisionFixture({ id: 'd1', agentId: 'a-quill' })],
+    });
+    selfChangesMock.mockResolvedValue({ changes: [soulChange, identityChange] });
+
+    renderShell();
+
+    expect(await screen.findByText('changed its personality')).toBeTruthy();
+    expect(screen.getByText('changed how it describes itself')).toBeTruthy();
+    expect(screen.getByText('One thing is waiting on you.')).toBeTruthy();
+    expect(screen.getByRole('radio', { name: /Needs you/ }).textContent).toBe('Needs you1');
+  });
+
+  it('Review opens Settings on the Agents tab', async () => {
+    boardMock.mockResolvedValue({ agents: [quill] });
+    selfChangesMock.mockResolvedValue({ changes: [soulChange] });
+    const onOpenAdminSettings = vi.fn();
+
+    render(
+      <UserProvider value={user}>
+        <WorkspaceShell onOpenAdminSettings={onOpenAdminSettings} />
+      </UserProvider>,
+    );
+
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'Review: Quill changed its personality' }),
+    );
+    expect(onOpenAdminSettings).toHaveBeenCalledWith('agents');
   });
 });

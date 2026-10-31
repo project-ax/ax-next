@@ -38,6 +38,7 @@ import {
 } from '@/lib/workspace-api';
 import { useDecisionQueue } from '@/lib/workspace-decisions';
 import { tasksForToday, useTasks } from '@/lib/workspace-tasks';
+import { useSelfChanges } from '@/lib/workspace-self-changes';
 import { waitingOnYou } from '@/lib/today-queue';
 import { continuationActions } from '@/lib/continuation-actions';
 import { resumeParkedTurn } from '@/lib/workspace-resume';
@@ -286,6 +287,9 @@ function Inner({
     again, are the way to those.
   */
   const taskRead = useTasks();
+  // What the person's agents changed about themselves, read on each Today entry
+  // (TASK-990). An FYI under the queue: it feeds neither `pending` nor `waitingOnYou`.
+  const selfChanges = useSelfChanges(route.kind === 'today');
   // What Today and the badge read from it (not `today`: that's the date helper above).
   const tasksOnToday = tasksForToday(taskRead.state);
   const retryTaskRead = taskRead.retry;
@@ -912,6 +916,12 @@ function Inner({
                   onRetryTasks={taskRead.retry}
                   onReplied={taskRead.reload}
                   onPollTasks={taskRead.retry}
+                  selfChanges={selfChanges}
+                  onReviewSelfChange={
+                    onOpenAdminSettings === undefined
+                      ? undefined
+                      : () => onOpenAdminSettings('agents')
+                  }
                 />
               </div>
               <HomeComposer agents={board.agents} onSend={startTurn} />

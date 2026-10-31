@@ -4,12 +4,12 @@
  * One fetch of `/state` feeds Today, the sidebar, and an agent's tab, because
  * they are three views of one roster rather than three rosters.
  *
- * IT IS THE ROSTER AND NOTHING ELSE. The other two collections this surface
- * shows have producers of their own — `useActivityFeed` over
- * `GET /api/workspace/activity`, and `useDecisionQueue` over
- * `GET /api/workspace/decisions` — because each of them needs something a field
- * on a state blob cannot give it (a cursor; a place to put the three writes).
- * One collection, one producer, one hook.
+ * IT IS THE ROSTER AND NOTHING ELSE. The other collections this surface
+ * shows have producers of their own — `useDecisionQueue` over
+ * `GET /api/workspace/decisions`, and `useSelfChanges` over
+ * `GET /api/workspace/self-changes` — because each of them needs something a
+ * field on a state blob cannot give it (a place to put the three writes; a
+ * read of its own on each Today entry). One collection, one producer, one hook.
  *
  * Read-only on purpose. The mutations that used to live here (approve, dismiss,
  * undo, stop-all, scenario switching) called a mock route that no longer
