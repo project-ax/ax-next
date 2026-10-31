@@ -86,7 +86,7 @@ describe('auth', () => {
 });
 
 describe('GET /settings/storage', () => {
-  it('reports the signed-in person\'s numbers, with the default 1 GB limit and an 80% warning', async () => {
+  it('reports the signed-in person\'s numbers, with the default 10 GB limit and an 80% warning', async () => {
     const b = await boot({
       'workspace:usage': (async () => ({ bytes: 300 * MB })) as ServiceHandler,
     });
@@ -422,7 +422,7 @@ describe('PUT /admin/storage/limits', () => {
     await storeFiles(b, 'alice', 60 * MB);
     const alice = b.harness.ctx({ userId: 'alice' });
 
-    // Default 1 GB: a 5 MB upload passes.
+    // Default 10 GB: a 5 MB upload passes.
     expect((await b.harness.bus.fire('blob:pre-put', alice, { size: 5 * MB })).rejected).toBe(false);
 
     await b.request('PUT', '/admin/storage/limits', { body: { limitMb: 64 } });

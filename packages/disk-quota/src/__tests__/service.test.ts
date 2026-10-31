@@ -349,7 +349,8 @@ describe('the blob gate', () => {
   it('a corrupt stored limit falls back to the default; it does not open the gate or close it', async () => {
     const w = makeWorld();
     w.storage.set(LIMITS_STORAGE_KEY, new TextEncoder().encode('{nope'));
-    await w.seedFiles('alice', 1000 * MB);
+    // The default limit is 10 GiB (10240 MB): 24 MB of room is left.
+    await w.seedFiles('alice', 10216 * MB);
     expect((await w.svc.admitBlobWrite(w.ctx('alice'), 24 * MB)).ok).toBe(true);
     expect((await w.svc.admitBlobWrite(w.ctx('alice'), 25 * MB)).ok).toBe(false);
   });
