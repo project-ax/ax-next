@@ -48,7 +48,12 @@ const REQUIRED = [
 type K8sDoc = {
   apiVersion?: string;
   kind?: string;
-  metadata?: { name?: string; labels?: Record<string, string>; annotations?: Record<string, string> };
+  metadata?: {
+    name?: string;
+    namespace?: string;
+    labels?: Record<string, string>;
+    annotations?: Record<string, string>;
+  };
   // `any` here is deliberate: tests reach deep into `spec` and a more
   // precise type would require modeling every k8s resource shape we
   // assert on. The yaml is parsed as opaque; assertions narrow by use.
