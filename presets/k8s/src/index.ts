@@ -5,8 +5,6 @@ import { createDatabasePostgresPlugin } from '@ax/database-postgres';
 import { createStoragePostgresPlugin } from '@ax/storage-postgres';
 import { createEventbusPostgresPlugin } from '@ax/eventbus-postgres';
 import { createSessionPostgresPlugin } from '@ax/session-postgres';
-import { createWorkspaceGitPlugin } from '@ax/workspace-git';
-import { createWorkspaceGitServerPlugin } from '@ax/workspace-git-server';
 import { createWorkspaceFilestorePlugin } from '@ax/workspace-filestore';
 import { createSandboxK8sPlugin, type SharedPoolConfig } from '@ax/sandbox-k8s';
 import { createChatOrchestratorPlugin } from '@ax/chat-orchestrator';
@@ -61,8 +59,8 @@ import { createBlobStoreFsPlugin } from '@ax/blob-store-fs';
 import { createBlobStoreS3Plugin } from '@ax/blob-store-s3';
 
 // ---------------------------------------------------------------------------
-// @ax/preset-k8s — production assembly: postgres trio + workspace-git +
-// sandbox-k8s + claude-sdk runner.
+// @ax/preset-k8s — production assembly: postgres trio + the per-agent /files
+// mount resolver + sandbox-k8s + the runners.
 //
 // Per architecture doc Section 9, a preset is a meta-package: bumping its
 // version ships a coordinated release of "k8s mode is now this set of plugin
@@ -75,7 +73,7 @@ import { createBlobStoreS3Plugin } from '@ax/blob-store-s3';
 //     test, but it can't run multi-replica because session/storage/eventbus
 //     are in-process.
 //   - The k8s profile swaps in the postgres trio (cross-process state),
-//     workspace-git (durable workspace versioning), and sandbox-k8s (pods
+//     the Filestore /files mount resolver, and sandbox-k8s (pods
 //     instead of subprocesses).
 //   - The CLI is the one place permitted to import plugins directly
 //     (eslint allowlist); presets/** is in the same allowlist for the same
@@ -86,7 +84,7 @@ import { createBlobStoreS3Plugin } from '@ax/blob-store-s3';
 // to readers. We mirror the CLI's order for the equivalent plugins:
 //   1. database / storage / credentials (stateful base layer)
 //   2. eventbus / session (cross-process coordination)
-//   3. workspace (versioned content)
+//   3. per-agent /files mount resolver + blob store
 //   4. audit-log (subscribes to event.http-egress; calls storage:set)
 //   5. http-server / auth / teams (control plane access — Week 9.5)
 //   6. sandbox / ipc-http / chat-orchestrator (chat plane)
@@ -189,25 +187,9 @@ function parseCookieKeyString(raw: string): Buffer {
 }
 
 /**
- * Discriminated union for the workspace backend. `local` keeps the
- * single-replica on-PVC bare repo path; `git-protocol` talks to the
- * dedicated sharded git-server storage tier via
- * @ax/workspace-git-server (production multi-replica path).
- *
- * The earlier `http` backend (the all-in-one git-server pod served by
- * `@ax/workspace-git-http`) was retired 2026-05-04: it never grew bundle-
- * wire support, so multi-turn writes silently failed. Both surviving
- * backends register the Phase 3 bundle hooks.
- */
-export type K8sWorkspaceConfig =
-  | { backend: 'local'; repoRoot: string }
-  | { backend: 'git-protocol'; baseUrl: string; token: string };
-
-/**
  * Discriminated union for the blob backend (out-of-git design Part A). Exactly
  * one registers the storage-agnostic `blob:*` hook per deployment, mirroring
- * the workspace `local` / `git-protocol` split and the storage
- * `sqlite` / `postgres` split.
+ * the storage `sqlite` / `postgres` split.
  *
  *   - `fs`: `@ax/blob-store-fs` writes content-addressed files under `root`
  *     (single-replica RWO PVC; the default — cheapest, zero new deps).
@@ -264,34 +246,12 @@ export interface K8sPresetConfig {
     poolMax?: number;
   };
   /**
-   * Workspace backend selection. Two flavors:
-   *
-   *   - `local`: `@ax/workspace-git` writes bare repos on the host pod's PVC.
-   *     Single-replica deploys only — two hosts mounting the same RWO PVC
-   *     would race. `repoRoot` is the directory hosting one
-   *     `<repoRoot>/<workspaceId>.git` per agentId; the plugin idempotently
-   *     `git init`s each on first use. Both backends partition on `agentId`
-   *     and name workspaces identically (TASK-257 + TASK-396) — picking
-   *     `local` is a scaling decision, not a tenancy one.
-   *
-   *   - `git-protocol`: `@ax/workspace-git-server` talks to the dedicated
-   *     git-server storage tier (the chart's StatefulSet, or any external
-   *     server speaking the same wire — Gitea, etc.). Multi-replica capable.
-   *     `baseUrl` + `token` point at the storage tier.
-   *
-   * The Helm chart drives this via `workspace.backend: local|git-protocol`
-   * and the env vars `AX_WORKSPACE_BACKEND` / `AX_WORKSPACE_ROOT` /
-   * `AX_WORKSPACE_GIT_SERVER_URL` / `AX_WORKSPACE_GIT_SERVER_TOKEN`. The host
-   * entrypoint reads those and constructs this config.
-   */
-  workspace: K8sWorkspaceConfig;
-  /**
    * Blob backend selection (out-of-git design Part A). Discriminated on
    * `backend`. Exactly one of @ax/blob-store-fs / @ax/blob-store-s3 registers
    * the storage-agnostic `blob:*` hook. REQUIRED — there is no derived
    * default: the fs root is whatever the deployment names, never a path
-   * guessed from the workspace config. (A blob root that silently moved with
-   * the workspace config would orphan every stored blob.)
+   * guessed from other config. (A blob root that silently moved would orphan
+   * every stored blob.)
    *
    * The Helm chart drives this via `blob.backend: fs|s3` + the env vars
    * `AX_BLOB_BACKEND` / `AX_BLOB_FS_ROOT` / `AX_BLOB_S3_*`; the host entrypoint
@@ -729,26 +689,6 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
     }),
   );
 
-  // ----- 3. workspace ----------------------------------------------------
-  // Discriminated on `backend`. `local` wants a filesystem path;
-  // `git-protocol` wants a URL + bearer token. Both register the full
-  // six-hook bundle-aware contract (the four base hooks +
-  // workspace:apply-bundle + workspace:export-baseline-bundle).
-  if (config.workspace.backend === 'git-protocol') {
-    plugins.push(
-      createWorkspaceGitServerPlugin({
-        baseUrl: config.workspace.baseUrl,
-        token: config.workspace.token,
-      }),
-    );
-  } else {
-    plugins.push(
-      createWorkspaceGitPlugin({
-        repoRoot: config.workspace.repoRoot,
-      }),
-    );
-  }
-
   // filestore-user-files (design §4) — the durable per-agent user-files mount
   // resolver. When a Filestore export is configured (always, via the env
   // loader), load @ax/workspace-filestore: it registers
@@ -775,10 +715,9 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   // The storage-agnostic content-addressed blob:* substrate. Exactly ONE
   // backend registers blob:put/get/stat/delete per deployment — registering
   // two would make bootstrap throw (the kernel rejects duplicate registrants).
-  // Mirrors the workspace local/git-protocol and storage sqlite/postgres
-  // splits. `config.blob` is required: the fs root is explicit config (the
-  // chart stamps it from `blob.fs.root`), never derived from the workspace
-  // config. The s3 backend (MinIO dev / GCS+Workload-Identity prod) is the
+  // Mirrors the storage sqlite/postgres split. `config.blob` is required: the
+  // fs root is explicit config (the chart stamps it from `blob.fs.root`),
+  // never derived from other config. The s3 backend (MinIO dev / GCS+Workload-Identity prod) is the
   // multi-replica-safe path.
   if ((config.blob as K8sBlobConfig | undefined) === undefined) {
     throw new Error(
@@ -1282,8 +1221,8 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   // ----- 9. conversations ------------------------------------------------
   // Registers `conversations:*` (create/get/list/delete/get-by-req-id +
   // bind-session/unbind-session + Phase B/F additions). Calls
-  // `agents:resolve`, `database:get-instance`, `workspace:list/read`
-  // — all already loaded above; topo-sort handles the ordering.
+  // `agents:resolve` and `database:get-instance`
+  // — both already loaded above; topo-sort handles the ordering.
   //
   // Defaults `defaultRunnerType: 'claude-sdk'` (the only runner shipped
   // today). Auto-titling (@ax/llm-anthropic + @ax/conversation-titles)
@@ -1355,10 +1294,9 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   // ----- 9a. attachments ----------------------------------------------------
   // The attachments & artifacts subsystem. Service hooks
   // (attachments:store-temp / commit / download / list-for-conversation +
-  // artifacts:publish-blob). TASK-68: commit/download/publish now ride the
+  // artifacts:publish-blob). commit/download/publish ride the
   // content-addressed blob store (the selected blob:* backend registered at
-  // step 3b above — fs or s3) instead of git — the bytes never touch the chat
-  // mirror, killing the parent-mismatch transcript-loss race. The IPC
+  // step 3b above — fs or s3); attachments are addressed by ID. The IPC
   // dispatcher's blob.put/blob.get/artifact.publish/attachments.list actions
   // drive these from the runner.
   plugins.push(createAttachmentsPlugin());
@@ -1369,7 +1307,7 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   // TASK-74 (out-of-git Part D): registers the `skill_propose` tool descriptor —
   // gated on open mode (allow_user_installed_skills), the design's tie for
   // agent skill authoring. The sandbox-side executor (runner) reads
-  // /ephemeral/skill-draft/<id>/ and ships skill.propose → the host's
+  // <home>/.skill-draft/<id>/ and ships skill.propose → the host's
   // skills:propose gate (above). The gate + the skills:scan veto
   // (validator-skill) + the skills:list-authored projection (re-backing
   // agents:resolve-authored-skills) are all wired, so the authoring chokepoint
@@ -1537,79 +1475,6 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
 }
 
 // ---------------------------------------------------------------------------
-// Env → workspace-config helper.
-//
-// The Helm chart writes these env vars onto the host pod (see
-// deploy/charts/ax-next/templates/host/deployment.yaml). The host entrypoint
-// reads them via this helper to build the discriminated `workspace` config
-// before calling `createK8sPlugins`.
-//
-//   AX_WORKSPACE_BACKEND          local | git-protocol  (default: local)
-//   AX_WORKSPACE_ROOT             required when backend === 'local'
-//   AX_WORKSPACE_GIT_SERVER_URL   required when backend === 'git-protocol'
-//   AX_WORKSPACE_GIT_SERVER_TOKEN required when backend === 'git-protocol'
-//
-// We throw loudly on missing/unknown values rather than silently defaulting
-// — a misconfigured workspace backend is a deploy-time bug, not a runtime
-// surprise we want to paper over. Error messages never echo the token (an
-// errant log line carrying the bearer token through the kernel's logger is
-// the supply-chain failure we're trying NOT to ship).
-// ---------------------------------------------------------------------------
-
-/**
- * Read the `AX_WORKSPACE_*` env vars and return a `K8sWorkspaceConfig`.
- *
- * Defaults to `local` when `AX_WORKSPACE_BACKEND` is unset (matches the
- * chart's default). Throws when the chosen backend's required vars are
- * missing or when the backend value is unknown. Thrown messages never
- * contain the bearer token literal.
- *
- * @param env - the env map to read from. Defaults to `process.env`. Pass an
- *   explicit object to keep tests deterministic (don't rely on the real
- *   `process.env` leaking between cases).
- */
-export function workspaceConfigFromEnv(
-  env: NodeJS.ProcessEnv = process.env,
-): K8sWorkspaceConfig {
-  // Treat empty string as unset. Helm templates frequently render
-  // `value: "{{ .Values.workspace.backend }}"` with an empty value when
-  // the user hasn't overridden it; we want that case to default to local
-  // rather than fall through to the unknown-backend branch.
-  const rawBackend = env.AX_WORKSPACE_BACKEND;
-  const backend = rawBackend === undefined || rawBackend === '' ? 'local' : rawBackend;
-
-  if (backend === 'local') {
-    const repoRoot = env.AX_WORKSPACE_ROOT;
-    if (repoRoot === undefined || repoRoot === '') {
-      throw new Error(
-        'AX_WORKSPACE_BACKEND=local requires AX_WORKSPACE_ROOT to be set',
-      );
-    }
-    return { backend: 'local', repoRoot };
-  }
-
-  if (backend === 'git-protocol') {
-    const baseUrl = env.AX_WORKSPACE_GIT_SERVER_URL;
-    const token = env.AX_WORKSPACE_GIT_SERVER_TOKEN;
-    if (baseUrl === undefined || baseUrl === '') {
-      throw new Error(
-        'AX_WORKSPACE_BACKEND=git-protocol requires AX_WORKSPACE_GIT_SERVER_URL to be set',
-      );
-    }
-    if (token === undefined || token === '') {
-      throw new Error(
-        'AX_WORKSPACE_BACKEND=git-protocol requires AX_WORKSPACE_GIT_SERVER_TOKEN to be set',
-      );
-    }
-    return { backend: 'git-protocol', baseUrl, token };
-  }
-
-  throw new Error(
-    `unknown AX_WORKSPACE_BACKEND=${backend}; expected 'local' or 'git-protocol'`,
-  );
-}
-
-// ---------------------------------------------------------------------------
 // Env → blob-config helper (out-of-git design Part A).
 //
 // The Helm chart writes these env vars onto the host pod. The host entrypoint
@@ -1629,7 +1494,7 @@ export function workspaceConfigFromEnv(
 //   AX_BLOB_S3_SECRET_ACCESS_KEY  optional — DEV / MinIO only (from a Secret)
 //   AX_BLOB_S3_KEY_PREFIX         optional namespace within the bucket
 //
-// Like `workspaceConfigFromEnv`, we throw loudly on missing required values
+// We throw loudly on missing required values
 // rather than silently default. Thrown messages NEVER contain the secret-key
 // literal — an errant log line carrying the MinIO secret through the kernel's
 // logger is exactly the supply-chain failure we're trying NOT to ship. The
@@ -1644,8 +1509,7 @@ export function workspaceConfigFromEnv(
  * @param env - the env map to read from. Defaults to `process.env`. Pass an
  *   explicit object to keep tests deterministic.
  *
- * The fs root is read from `AX_BLOB_FS_ROOT` and nothing else; the workspace
- * config plays no part in it.
+ * The fs root is read from `AX_BLOB_FS_ROOT` and nothing else.
  */
 export function blobConfigFromEnv(
   env: NodeJS.ProcessEnv = process.env,
@@ -1698,16 +1562,12 @@ export function blobConfigFromEnv(
 
 // ---------------------------------------------------------------------------
 // Full env loader. Builds a `K8sPresetConfig` from the env vars the Helm chart
-// stamps onto the host pod. Mirrors `workspaceConfigFromEnv`'s posture: throw
-// loudly on missing required values rather than silently default.
+// stamps onto the host pod. Throws loudly on missing required values rather
+// than silently defaulting.
 //
 // Required env (per the chart):
 //   - DATABASE_URL                — postgres DSN (database/eventbus/session)
 //   - AX_K8S_HOST_IPC_URL          — cluster URL runners use to reach @ax/ipc-http
-//   - AX_WORKSPACE_BACKEND        — local | git-protocol (default: local)
-//       and the per-backend vars (delegated to workspaceConfigFromEnv):
-//         - local:        AX_WORKSPACE_ROOT
-//         - git-protocol: AX_WORKSPACE_GIT_SERVER_URL / AX_WORKSPACE_GIT_SERVER_TOKEN
 //   - AX_HTTP_HOST / AX_HTTP_PORT  — public-facing http listener
 //   - AX_HTTP_COOKIE_KEY           — 32-byte signing key (hex / base64)
 //   - AX_HTTP_ALLOWED_ORIGINS      — CSRF allow-list (comma-separated)
@@ -2006,7 +1866,6 @@ export function loadK8sConfigFromEnv(
     database: { connectionString: databaseUrl },
     eventbus: { connectionString: databaseUrl },
     session: { connectionString: databaseUrl },
-    workspace: workspaceConfigFromEnv(env),
     // Blob backend (out-of-git design Part A). fs needs an explicit
     // AX_BLOB_FS_ROOT (no derived default); s3 (MinIO dev / GCS+Workload-
     // Identity prod) when AX_BLOB_BACKEND=s3.

@@ -170,7 +170,6 @@ describe('@ax/preset-k8s blob GC report-mode canary (TASK-777)', () => {
       database: { connectionString },
       eventbus: { connectionString: 'postgres://stub:5432/stub' },
       session: { connectionString: 'postgres://stub:5432/stub' },
-      workspace: { backend: 'local', repoRoot: path.join(tmp, 'repos') },
       blob: { backend: 'fs', root: blobRoot },
       sandbox: { namespace: 'ax-next', image: 'ax-next/agent:stub' },
       ipc: { hostIpcUrl: 'http://ax-next-host.ax-next.svc.cluster.local:80' },

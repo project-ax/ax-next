@@ -39,10 +39,6 @@ env (required):
   AX_HTTP_HOST                public http listener bind host
   AX_HTTP_PORT                public http listener bind port
   AX_HTTP_COOKIE_KEY          32-byte signing key (64 hex / 44 base64 chars)
-  AX_WORKSPACE_BACKEND        'local' | 'http' | 'git-protocol'
-  AX_WORKSPACE_ROOT           (when backend=local)
-  AX_WORKSPACE_GIT_HTTP_URL   (when backend=http)
-  AX_WORKSPACE_GIT_HTTP_TOKEN (when backend=http)
   AX_CREDENTIALS_KEY          used by @ax/credentials at init
   AX_BLOB_FS_ROOT             blob directory (when AX_BLOB_BACKEND is fs, the default)
   AX_FILESTORE_SERVER         NFS server for every agent's durable /files home

@@ -31,7 +31,6 @@ const stubConfig: K8sPresetConfig = {
   database: { connectionString: 'postgres://stub:5432/stub' },
   eventbus: { connectionString: 'postgres://stub:5432/stub' },
   session: { connectionString: 'postgres://stub:5432/stub' },
-  workspace: { backend: 'local', repoRoot: '/tmp/preset-k8s-stub' },
   blob: { backend: 'fs', root: '/tmp/preset-k8s-stub/blobs' },
   sandbox: { namespace: 'ax-next', image: 'ax-next/agent:stub' },
   ipc: { hostIpcUrl: 'http://ax-next-host.ax-next.svc.cluster.local:80' },

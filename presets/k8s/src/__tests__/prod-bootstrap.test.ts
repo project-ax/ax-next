@@ -25,7 +25,7 @@ import { startTestContainer } from '@ax/test-harness';
 //
 // The existing acceptance.test.ts canary imports createK8sPlugins but DROPS
 // the entire production backend (postgres trio, real k8s sandbox, http/auth,
-// channel-web, conversations, agents, workspace-git, ipc-http, skills,
+// channel-web, conversations, agents, ipc-http, skills,
 // attachments, ...) and substitutes CLI-equivalent in-memory/subprocess
 // flavors. That verifies chat-path manifest drift, but it NEVER boots the
 // production assembly: every prod plugin's init() running together, the real
@@ -160,8 +160,8 @@ describe('@ax/preset-k8s production bootstrap (testcontainer + fake-k8s)', () =>
   /**
    * Build a K8sPresetConfig whose backend-bound fields point at hermetic test
    * infra: the real testcontainer DSN (postgres trio), a tmpdir
-   * credential-proxy socket + CA dir, port 0 for both listeners, the local
-   * workspace backend on a tmpdir, and a stub runner binary. `titles` is set
+   * credential-proxy socket + CA dir, port 0 for both listeners, a tmpdir blob
+   * root, and a stub runner binary. `titles` is set
    * (matching the ANTHROPIC_API_KEY env) so the full prod branch loads.
    */
   function makeConfig(connectionString: string): K8sPresetConfig {
@@ -169,7 +169,6 @@ describe('@ax/preset-k8s production bootstrap (testcontainer + fake-k8s)', () =>
       database: { connectionString },
       eventbus: { connectionString },
       session: { connectionString },
-      workspace: { backend: 'local', repoRoot: path.join(tmp, 'repo') },
       blob: { backend: 'fs', root: path.join(tmp, 'blobs') },
       sandbox: { namespace: 'ax-next', image: 'ax-next/agent:stub' },
       ipc: {
@@ -213,7 +212,6 @@ describe('@ax/preset-k8s production bootstrap (testcontainer + fake-k8s)', () =>
     '@ax/credential-proxy',
     '@ax/eventbus-postgres',
     '@ax/session-postgres',
-    '@ax/workspace-git',
     '@ax/audit-log',
     '@ax/routines',
     '@ax/routines-admin-routes',
@@ -454,8 +452,6 @@ describe('@ax/preset-k8s production bootstrap (testcontainer + fake-k8s)', () =>
         AX_BLOB_FS_ROOT: path.join(tmp, 'blobs-env'),
         AX_FILESTORE_SERVER: '10.9.8.7',
         AX_FILESTORE_EXPORT_PATH: '/vol1',
-        AX_WORKSPACE_BACKEND: 'local',
-        AX_WORKSPACE_ROOT: path.join(tmp, 'repo-env'),
         AX_HTTP_HOST: '127.0.0.1',
         AX_HTTP_PORT: '0',
         // PORT drives @ax/ipc-http's bind port via loadK8sConfigFromEnv. We
@@ -477,7 +473,7 @@ describe('@ax/preset-k8s production bootstrap (testcontainer + fake-k8s)', () =>
       const config = loadK8sConfigFromEnv(env);
       // The env loader produced the production-shaped config.
       expect(config.database.connectionString).toBe(connectionString);
-      expect(config.workspace.backend).toBe('local');
+      expect('workspace' in config).toBe(false);
       expect(config.titles).toBeDefined(); // ANTHROPIC_API_KEY present
       expect(config.ipc.port).toBe(8080); // loader parsed PORT before override
       // Override to an OS-assigned port so the real ipc-http listener binds

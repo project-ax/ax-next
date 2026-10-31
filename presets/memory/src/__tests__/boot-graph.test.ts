@@ -20,7 +20,6 @@ const baseK8s: K8sPresetConfig = {
   database: { connectionString: 'postgres://stub:5432/stub' },
   eventbus: { connectionString: 'postgres://stub:5432/stub' },
   session: { connectionString: 'postgres://stub:5432/stub' },
-  workspace: { backend: 'local', repoRoot: '/tmp/preset-memory-boot/ws' },
   blob: { backend: 'fs', root: '/tmp/preset-memory-boot/ws/blobs' },
   sandbox: { namespace: 'ax-next', image: 'ax-next/agent:stub' },
   ipc: { hostIpcUrl: 'http://ax-next-host.ax-next.svc.cluster.local:80' },
@@ -48,8 +47,6 @@ const withoutVolume: MemoryPresetConfig = (() => {
 const deployedEnv: NodeJS.ProcessEnv = {
   DATABASE_URL: 'postgres://stub:5432/stub',
   AX_K8S_HOST_IPC_URL: 'http://ax-next-host.ax-next.svc.cluster.local:80',
-  AX_WORKSPACE_BACKEND: 'local',
-  AX_WORKSPACE_ROOT: '/tmp/preset-memory-boot/ws',
   AX_BLOB_FS_ROOT: '/tmp/preset-memory-boot/ws/blobs',
   AX_HTTP_HOST: '0.0.0.0',
   AX_HTTP_PORT: '9090',

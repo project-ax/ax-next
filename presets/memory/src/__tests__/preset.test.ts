@@ -13,7 +13,6 @@ const baseK8s: K8sPresetConfig = {
   database: { connectionString: 'postgres://stub:5432/stub' },
   eventbus: { connectionString: 'postgres://stub:5432/stub' },
   session: { connectionString: 'postgres://stub:5432/stub' },
-  workspace: { backend: 'local', repoRoot: '/tmp/preset-memory-stub/ws' },
   blob: { backend: 'fs', root: '/tmp/preset-memory-stub/ws/blobs' },
   ipc: { hostIpcUrl: 'http://ax-next-host.ax-next.svc.cluster.local:80' },
   chat: { runnerBinaries: { 'claude-sdk': '/tmp/stub-runner.js' } },
@@ -130,7 +129,7 @@ describe('createMemoryPlugins without the export volume', () => {
     expect(() =>
       createMemoryPlugins({
         ...noVolumeConfig,
-        factsDatabasePath: '/tmp/preset-memory-stub/ws/facts.db',
+        factsDatabasePath: '/tmp/preset-memory-stub/ws/blobs/facts.db',
       }),
     ).toThrow(/factsDatabasePath/);
     expect(() =>
@@ -242,7 +241,7 @@ describe('createMemoryPlugins guards', () => {
     expect(() =>
       createMemoryPlugins({
         ...baseConfig,
-        workspace: { backend: 'local', repoRoot: '/' },
+        blob: { backend: 'fs', root: '/' },
       }),
     ).toThrow(/hostRoot/);
     expect(() =>
@@ -255,7 +254,7 @@ describe('createMemoryPlugins guards', () => {
 
   it.each([
     '/tmp/preset-memory-stub/exports/facts.db',
-    '/tmp/preset-memory-stub/ws/facts.db',
+    '/tmp/preset-memory-stub/ws/blobs/facts.db',
     '/tmp/preset-memory-stub/userfiles/facts.db',
   ])('rejects factsDatabasePath inside an exposed tree: %s', (factsDatabasePath) => {
     expect(() =>
@@ -277,16 +276,16 @@ describe('createMemoryPlugins guards', () => {
     ).not.toThrow();
   });
 
-  it('rejects hostRoot overlapping the workspace repoRoot or userFilesHostReadRoot', () => {
+  it('rejects hostRoot overlapping the fs blob root or userFilesHostReadRoot', () => {
     expect(() =>
       createMemoryPlugins({
         ...baseConfig,
         memoryExportVolume: {
-          hostRoot: '/tmp/preset-memory-stub/ws/exports',
+          hostRoot: '/tmp/preset-memory-stub/ws/blobs/exports',
           backing: { server: 'nfs.example.invalid', exportPath: '/e' },
         },
       }),
-    ).toThrow(/hostRoot/);
+    ).toThrow(/hostRoot must not equal or overlap the fs blob root/);
     expect(() =>
       createMemoryPlugins({
         ...baseConfig,
@@ -334,8 +333,6 @@ describe('loadMemoryConfigFromEnv', () => {
   const baseEnv: NodeJS.ProcessEnv = {
     DATABASE_URL: 'postgres://x',
     AX_K8S_HOST_IPC_URL: 'http://host:80',
-    AX_WORKSPACE_BACKEND: 'local',
-    AX_WORKSPACE_ROOT: '/var/lib/ax-next/workspaces',
     AX_BLOB_FS_ROOT: '/var/lib/ax-next/workspaces/blobs',
     AX_FILESTORE_SERVER: '10.9.8.7',
     AX_FILESTORE_EXPORT_PATH: '/vol1',
@@ -418,7 +415,7 @@ describe('loadMemoryConfigFromEnv', () => {
     expect(() =>
       loadMemoryConfigFromEnv({
         ...baseEnv,
-        AX_MEMORY_EXPORT_HOST_ROOT: '/var/lib/ax-next/workspaces/exports',
+        AX_MEMORY_EXPORT_HOST_ROOT: '/var/lib/ax-next/workspaces/blobs/exports',
       }),
     ).toThrow(/hostRoot/);
   });

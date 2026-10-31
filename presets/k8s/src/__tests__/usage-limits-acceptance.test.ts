@@ -99,7 +99,6 @@ const PLUGINS_TO_DROP = new Set<string>([
   '@ax/connectors',
   '@ax/mcp-oauth',
   '@ax/agents',
-  '@ax/workspace-git',
   '@ax/ipc-http',
   '@ax/mcp-client',
   '@ax/onboarding',
@@ -232,16 +231,6 @@ function createControlPlaneStubPlugin(mountedPaths: string[]): Plugin {
   };
 }
 
-function createDispatcherDepsStubPlugin(): Plugin {
-  const name = '@ax/preset-k8s/test/usage-dispatcher-deps-stub';
-  return {
-    manifest: { name, version: '0.0.0', registers: ['workspace:read'], calls: [], subscribes: [] },
-    init({ bus }) {
-      bus.registerService('workspace:read', name, async () => ({ found: false }));
-    },
-  };
-}
-
 // Same never-validated PEM shape the harness's test-proxy uses.
 const DUMMY_CA_PEM =
   '-----BEGIN CERTIFICATE-----\n' +
@@ -346,7 +335,6 @@ describe('@ax/preset-k8s usage limits canary (stub runner + postgres)', () => {
       database: { connectionString },
       eventbus: { connectionString: 'postgres://stub:5432/stub' },
       session: { connectionString: 'postgres://stub:5432/stub' },
-      workspace: { backend: 'local', repoRoot: path.join(tmp, 'repo-stub') },
       blob: { backend: 'fs', root: path.join(tmp, 'blobs') },
       sandbox: { namespace: 'ax-next', image: 'ax-next/agent:stub' },
       ipc: { hostIpcUrl: 'http://ax-next-host.ax-next.svc.cluster.local:80' },
@@ -382,7 +370,6 @@ describe('@ax/preset-k8s usage limits canary (stub runner + postgres)', () => {
       // subprocess sandbox realizes this local-directory resolver, not nfs.
       createWorkspaceLocaldirPlugin({ root: path.join(tmp, 'user-files') }),
       createIpcServerPlugin(),
-      createDispatcherDepsStubPlugin(),
       createScriptedProxyPlugin(proxyState),
       createPermissiveAgentsStubPlugin(),
       createControlPlaneStubPlugin(mountedPaths),

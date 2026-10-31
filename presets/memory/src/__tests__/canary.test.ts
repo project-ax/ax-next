@@ -254,8 +254,7 @@ async function boot(opts: { withVolume: boolean } = { withVolume: true }): Promi
     database: { connectionString },
     eventbus: { connectionString },
     session: { connectionString },
-    workspace: { backend: 'local', repoRoot: path.join(tmp, 'repo') },
-    // Explicit now; this is the path the preset used to derive from repoRoot.
+    // Explicit: the blob root is whatever the deployment names.
     blob: { backend: 'fs', root: path.join(tmp, 'repo', 'blobs') },
     sandbox: {
       namespace: 'ax-next',
@@ -1348,10 +1347,9 @@ describe('@ax/preset-memory canary', () => {
     expect(fs.existsSync(path.join(exportedDir, 'profile.md'))).toBe(true);
     const profileBytes = fs.readFileSync(path.join(exportedDir, 'profile.md'), 'utf-8');
     expect(profileBytes).toContain('Porto');
-    // TASK-991: the volume is the only copy; nothing lands in the agent's workspace.
-    const gitCopy = await bus.call<{ path: string }, { found: boolean }>(
-      'workspace:read', ctxFor(aliceAgentId, ALICE), { path: 'permanent/memory/facts/profile.md' });
-    expect(gitCopy.found).toBe(false);
+    // TASK-991: the volume is the only copy. There is no workspace hook left
+    // for a second copy to land in (TASK-995).
+    expect(bus.hasService('workspace:read')).toBe(false);
 
     const open = await bus.call<Record<string, unknown>, { runnerEndpoint: string }>(
       'sandbox:open-session',
@@ -2031,12 +2029,6 @@ describe('@ax/preset-memory canary without the export volume', () => {
     const stmts = recalled.json.statements as Array<{ value: string }>;
     expect(stmts.some((st) => st.value === 'Lisbon')).toBe(true);
 
-    const read = await bus.call<{ path: string }, { found: boolean; bytes?: Uint8Array }>(
-      'workspace:read',
-      ctxFor(aliceAgentId, ALICE),
-      { path: 'permanent/memory/facts/profile.md' },
-    );
-    expect(read.found).toBe(false);
     expect(fs.existsSync(exportHostRoot)).toBe(false);
 
     await bus.call('sandbox:open-session', ctxFor(aliceAgentId, ALICE), {
