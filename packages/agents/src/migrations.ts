@@ -10,7 +10,9 @@ import { sql, type Generated, type Kysely } from 'kysely';
  * Tables:
  *   agents_v1_agents    — agent entity, owned by user_id OR team_id.
  *   agents_v1_identity  — the agent's identity, soul, its people's
- *                         Instructions and its onboarding state (TASK-989).
+ *                         Instructions and its onboarding state (TASK-989),
+ *                         and when the agent itself last changed its identity
+ *                         or its soul (TASK-990).
  *
  * No FK to auth_better_v1_users / teams_v1_teams. Cross-plugin FKs would
  * require shared schema migrations, which violates I4 (no shared rows).
@@ -189,6 +191,24 @@ export async function runAgentsMigration<DB>(db: Kysely<DB>): Promise<void> {
         CHECK (revision >= 0)
     )
   `.execute(db);
+
+  // TASK-990: the last time the agent itself changed this section, outside
+  // first-run setup; not a history. Each column holds one instant, which the
+  // agent's next change to that section overwrites, and no text. It is written
+  // in the same UPDATE as the text, and only for a saved
+  // `agents:identity:set` with `author: 'agent'` (which only the agent's own
+  // update_identity tool sends), so a person's save never sets it.
+  // `agents:identity:self-changes-for-user` lists the recent ones on the
+  // owner's Today. NULL means the agent never changed that section, and is
+  // what every row written before this column reads as.
+  await sql`
+    ALTER TABLE agents_v1_identity
+      ADD COLUMN IF NOT EXISTS identity_changed_by_agent_at TIMESTAMPTZ
+  `.execute(db);
+  await sql`
+    ALTER TABLE agents_v1_identity
+      ADD COLUMN IF NOT EXISTS soul_changed_by_agent_at TIMESTAMPTZ
+  `.execute(db);
 }
 
 /**
@@ -228,6 +248,10 @@ export interface AgentsIdentityRow {
   bootstrap: Generated<string>;
   revision: Generated<number>;
   updated_at: Generated<Date>;
+  /** TASK-990: when the agent itself last changed its identity (see the migration). */
+  identity_changed_by_agent_at: Generated<Date | null>;
+  /** TASK-990: when the agent itself last changed its soul (see the migration). */
+  soul_changed_by_agent_at: Generated<Date | null>;
 }
 
 export interface AgentsDatabase {

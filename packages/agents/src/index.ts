@@ -6,9 +6,11 @@ export {
   type AgentsRow,
 } from './migrations.js';
 // TASK-989 — the identity hooks' contract (names, caps, outcome schemas).
+// TASK-990 — plus the agents' own changes to themselves, for Today.
 export {
   AGENTS_IDENTITY_COMPLETE_BOOTSTRAP_HOOK,
   AGENTS_IDENTITY_GET_HOOK,
+  AGENTS_IDENTITY_SELF_CHANGES_FOR_USER_HOOK,
   AGENTS_IDENTITY_SET_HOOK,
   AgentIdentityRecordSchema,
   IDENTITY_SCAN_HOOK,
@@ -16,7 +18,10 @@ export {
   INSTRUCTIONS_MAX_CHARS,
   IdentityCompleteBootstrapOutputSchema,
   IdentityGetOutputSchema,
+  IdentitySelfChangesForUserOutputSchema,
   IdentitySetOutputSchema,
+  SELF_CHANGE_WINDOW_DAYS,
+  SELF_SECTIONS,
   type AgentIdentityRecord,
   type BootstrapState,
   type CreateBootstrap,
@@ -26,8 +31,12 @@ export {
   type IdentityGetOutput,
   type IdentityRefusalCode,
   type IdentitySection,
+  type IdentitySelfChange,
+  type IdentitySelfChangesForUserInput,
+  type IdentitySelfChangesForUserOutput,
   type IdentitySetInput,
   type IdentitySetOutput,
+  type SelfSection,
 } from './types.js';
 // TASK-989 — the agent's own identity tools.
 export {

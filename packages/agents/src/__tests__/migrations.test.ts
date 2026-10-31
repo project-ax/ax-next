@@ -457,6 +457,9 @@ describe('runAgentsMigration', () => {
       // int4 on purpose: node-postgres hands int8 back as a string.
       ['revision', 'integer'],
       ['updated_at', 'timestamp with time zone'],
+      // TASK-990 — added by ALTER TABLE, so they come last.
+      ['identity_changed_by_agent_at', 'timestamp with time zone'],
+      ['soul_changed_by_agent_at', 'timestamp with time zone'],
     ]);
 
     // A bare row reads as the reset state: empty texts, 'none', revision 0.
@@ -495,5 +498,40 @@ describe('runAgentsMigration', () => {
        WHERE table_name = 'agents_v1_identity' AND constraint_type = 'FOREIGN KEY'
     `.execute(db);
     expect(fks.rows[0]?.n).toBe(0);
+  });
+
+  // TASK-990 — the last time the agent itself changed each section (outside
+  // first-run setup). Additive + idempotent; an existing row reads null.
+  it('adds the two self-change columns to agents_v1_identity as nullable timestamptz, idempotently', async () => {
+    const db = makeKysely();
+    await runAgentsMigration(db);
+    // Simulate a DB deployed BEFORE TASK-990: drop both columns, seed a row.
+    await sql`ALTER TABLE agents_v1_identity DROP COLUMN identity_changed_by_agent_at`.execute(db);
+    await sql`ALTER TABLE agents_v1_identity DROP COLUMN soul_changed_by_agent_at`.execute(db);
+    await sql`INSERT INTO agents_v1_identity (agent_id, identity, soul) VALUES ('a-old', 'I am Pip', 'Kind')`.execute(
+      db,
+    );
+    await runAgentsMigration(db);
+    await runAgentsMigration(db); // second run is a no-op
+
+    const cols = await sql<{ column_name: string; data_type: string; is_nullable: 'YES' | 'NO' }>`
+      SELECT column_name, data_type, is_nullable
+        FROM information_schema.columns
+       WHERE table_name = 'agents_v1_identity'
+         AND column_name IN ('identity_changed_by_agent_at', 'soul_changed_by_agent_at')
+       ORDER BY column_name
+    `.execute(db);
+    expect(cols.rows).toEqual([
+      { column_name: 'identity_changed_by_agent_at', data_type: 'timestamp with time zone', is_nullable: 'YES' },
+      { column_name: 'soul_changed_by_agent_at', data_type: 'timestamp with time zone', is_nullable: 'YES' },
+    ]);
+
+    const row = await sql<Record<string, unknown>>`
+      SELECT identity, soul, identity_changed_by_agent_at, soul_changed_by_agent_at
+        FROM agents_v1_identity WHERE agent_id = 'a-old'
+    `.execute(db);
+    expect(row.rows).toEqual([
+      { identity: 'I am Pip', soul: 'Kind', identity_changed_by_agent_at: null, soul_changed_by_agent_at: null },
+    ]);
   });
 });

@@ -551,6 +551,72 @@ export const IdentityCompleteBootstrapOutputSchema: ZodType<IdentityCompleteBoot
     record: AgentIdentityRecordObject,
   });
 
+// --- agents:identity:self-changes-for-user (TASK-990) -------------------------
+//
+// The changes a person's own agents made to themselves, for Today: for each of
+// the person's PERSONAL agents, the last time the agent itself changed its
+// identity or its soul, outside its first-run setup. Only the agent's own
+// `update_identity` tool writes such a change (an `agents:identity:set` with
+// `author: 'agent'`); a person's editor save never does. channel-web words
+// each item itself, keyed by `section` ("changed its personality"), and never
+// counts one as waiting on anyone.
+//
+// Contract:
+//   - Input is exactly `{ userId }`, a non-empty string; anything else is
+//     `invalid-payload`. Like `agents:list-for-user`, the caller supplies the
+//     person: the hook is host-only, and its one caller (channel-web) passes
+//     the authenticated id. There is no ctx ACL.
+//   - Personal agents the person owns, only. Team agents are left out until
+//     the team role model says who answers for a shared persona.
+//   - A section's change is listed only inside SELF_CHANGE_WINDOW_DAYS, on the
+//     database clock and per section. At most one item per (agent, section):
+//     the newest. Ordered newest first, then by agentId, then by section.
+//   - An item is exactly { agentId, section, changedAt }. No text — identity,
+//     soul, Instructions or anything the agent wrote — is stored for an item,
+//     or sent with one.
+//
+// Boundary review:
+//   - Alternate impl: a notifications/inbox service that stores agent-authored
+//     events, or a team-level profile service.
+//   - Leaky names: none. `section` is the identity vocabulary, `changedAt` an
+//     ISO 8601 instant; no table, column or row id appears.
+//   - Subscriber risk: none (a service hook).
+//   - Wire surface: none. Host-only, not an IPC action.
+
+export const AGENTS_IDENTITY_SELF_CHANGES_FOR_USER_HOOK = 'agents:identity:self-changes-for-user';
+
+/** What an agent may change about itself: never its people's Instructions. */
+export const SELF_SECTIONS = ['identity', 'soul'] as const;
+export type SelfSection = (typeof SELF_SECTIONS)[number];
+
+/** How many days an agent's change to itself stays listed (database clock). */
+export const SELF_CHANGE_WINDOW_DAYS = 7;
+
+export interface IdentitySelfChange {
+  agentId: string;
+  section: SelfSection;
+  /** When the agent last changed this section: an ISO 8601 instant. */
+  changedAt: string;
+}
+
+export interface IdentitySelfChangesForUserInput {
+  userId: string;
+}
+
+export interface IdentitySelfChangesForUserOutput {
+  changes: IdentitySelfChange[];
+}
+
+export const IdentitySelfChangesForUserOutputSchema: ZodType<IdentitySelfChangesForUserOutput> = z.object({
+  changes: z.array(
+    z.object({
+      agentId: z.string().min(1),
+      section: z.enum(SELF_SECTIONS),
+      changedAt: z.string().datetime(),
+    }),
+  ),
+});
+
 // --- Subscriber payloads -----------------------------------------------------
 
 /**

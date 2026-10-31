@@ -10,6 +10,7 @@ import type { AgentStore } from '../store.js';
 import {
   AGENTS_IDENTITY_COMPLETE_BOOTSTRAP_HOOK,
   AGENTS_IDENTITY_GET_HOOK,
+  AGENTS_IDENTITY_SELF_CHANGES_FOR_USER_HOOK,
   AGENTS_IDENTITY_SET_HOOK,
   IDENTITY_SCAN_HOOK,
   IDENTITY_SECTIONS,
@@ -19,6 +20,7 @@ import {
   type IdentityRefusalCode,
   type IdentityScanPayload,
   type IdentitySection,
+  type IdentitySelfChangesForUserOutput,
   type IdentitySetOutput,
 } from '../types.js';
 import type { IdentityStore } from './store.js';
@@ -37,6 +39,10 @@ import type { IdentityStore } from './store.js';
 // Never logged: identity, soul or Instructions text, or a scanner's reason.
 // Logged: agentId, section names, revision, refusal code, scan category, an
 // error's name/code.
+//
+// TASK-990 — `agents:identity:self-changes-for-user` lists a person's personal
+// agents' recent changes to themselves. Its input names the person (there is
+// no agent in it, so none of the order above applies).
 // ---------------------------------------------------------------------------
 
 const PLUGIN_NAME = '@ax/agents';
@@ -56,6 +62,7 @@ export interface IdentityService {
   get(ctx: AgentContext, input: unknown): Promise<AgentIdentityRecord>;
   set(ctx: AgentContext, input: unknown): Promise<IdentitySetOutput>;
   completeBootstrap(ctx: AgentContext, input: unknown): Promise<IdentityCompleteBootstrapOutput>;
+  selfChangesForUser(ctx: AgentContext, input: unknown): Promise<IdentitySelfChangesForUserOutput>;
 }
 
 export interface IdentityServiceDeps {
@@ -97,6 +104,19 @@ function parseAgentIdInput(ctx: AgentContext, input: unknown, hookName: string):
     throw invalid(hookName, 'input carries a field this hook does not take');
   }
   return requireContextAgent(ctx, input.agentId, hookName);
+}
+
+/** Exactly `{ userId }`, a non-empty string. */
+function parseUserIdInput(input: unknown, hookName: string): string {
+  if (!isPlainObject(input)) throw invalid(hookName, 'input must be an object carrying userId');
+  if (Object.keys(input).some((key) => key !== 'userId')) {
+    throw invalid(hookName, 'input carries a field this hook does not take');
+  }
+  const userId = input.userId;
+  if (typeof userId !== 'string' || userId.length === 0) {
+    throw invalid(hookName, 'userId must be a non-empty string');
+  }
+  return userId;
 }
 
 interface ParsedSet {
@@ -322,6 +342,13 @@ export function createIdentityService(deps: IdentityServiceDeps): IdentityServic
         await announce(ctx, agentId);
       }
       return { outcome: result.kind, record: result.record };
+    },
+
+    async selfChangesForUser(_ctx, input) {
+      // No ctx ACL, like `agents:list-for-user`: the hook is host-only, and its
+      // caller (channel-web's authenticated route) supplies the person.
+      const userId = parseUserIdInput(input, AGENTS_IDENTITY_SELF_CHANGES_FOR_USER_HOOK);
+      return { changes: await deps.identity.listSelfChanges(userId) };
     },
   };
 }

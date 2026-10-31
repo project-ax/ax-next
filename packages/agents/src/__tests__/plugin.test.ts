@@ -152,6 +152,8 @@ describe('@ax/agents plugin manifest + lifecycle', () => {
         'agents:identity:get',
         'agents:identity:set',
         'agents:identity:complete-bootstrap',
+        // TASK-990 — a person's personal agents' recent changes to themselves.
+        'agents:identity:self-changes-for-user',
         'tool:execute:update_identity',
         'tool:execute:complete_bootstrap',
       ],
