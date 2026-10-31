@@ -44,8 +44,8 @@ export function sdkTranscriptDir(
  * `$CLAUDE_CONFIG_DIR/projects` there is nothing to link: it stays a plain
  * directory and keeps its contents.
  *
- * Runs from the `afterMaterialize` seam, so a failure is bootstrap-fatal (exit
- * 2) and happens before the resume restore writes anything.
+ * Runs from the shell's `prepareSession` seam, so a failure is bootstrap-fatal
+ * (exit 2) and happens before the resume restore writes anything.
  */
 export async function prepareTranscriptDir(
   env: Pick<RunnerEnv, 'claudeConfigDir' | 'transcriptsRoot'>,

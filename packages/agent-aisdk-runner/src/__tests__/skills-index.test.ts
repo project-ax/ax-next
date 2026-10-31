@@ -105,17 +105,17 @@ describe('discoverInstalledSkills', () => {
   // I₃ — THE security assertion of this file.
   //
   // `$CLAUDE_CONFIG_DIR/skills/` (0555, host-projected) is the SOLE discovery
-  // path. `.claude/skills/` in the workspace is AGENT-WRITABLE and pass-through
-  // in @ax/validator-skill; reading it would let the agent write
+  // path. `.claude/skills/` in the agent's home is AGENT-WRITABLE, and nothing
+  // checks what lands there; reading it would let the agent write
   // `.claude/skills/evil/SKILL.md` and have it discovered — bypassing the host
   // projection, the quarantine scan, and the approved_caps intersection in one
   // move. That is exactly why the claude-sdk runner dropped `'project'` from
   // `settingSources` in Phase 3, and this runner must not reintroduce it.
   //
   // The decoy is planted where every plausible wrong implementation would look:
-  // the process cwd, $HOME, and $AX_WORKSPACE_ROOT all point at the workspace.
+  // the process cwd, $HOME and $AX_USERFILES_ROOT all point at the home.
   // -------------------------------------------------------------------------
-  it('never discovers a workspace .claude/skills/ decoy', async () => {
+  it('never discovers a .claude/skills/ decoy in the agent home', async () => {
     await plantSkill('legit', { description: 'The host-projected one' });
 
     const decoyDir = path.join(workspace, '.claude', 'skills', 'evil');
@@ -128,7 +128,7 @@ describe('discoverInstalledSkills', () => {
 
     process.chdir(workspace);
     vi.stubEnv('HOME', workspace);
-    vi.stubEnv('AX_WORKSPACE_ROOT', workspace);
+    vi.stubEnv('AX_USERFILES_ROOT', workspace);
 
     const skills = await discoverInstalledSkills({ configDir });
 

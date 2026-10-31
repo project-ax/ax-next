@@ -19,13 +19,11 @@
 // The runner composes this script as the entire system prompt when the host
 // says the agent is bootstrapping (`agentConfig.identity.bootstrapMode`).
 // Nothing seeds or reads a file. The agent is never told to "load" it — the
-// runner is the anchor. NOTE: `@ax/validator-identity`'s legacy pre-apply gate
-// still compares against this constant until the workspace tier is removed.
+// runner is the anchor.
 //
-// IDENTITY_SCAFFOLD / SOUL_SCAFFOLD are short default stubs the bootstrap
-// script can copy if the agent wants a starting structure. They are NOT
-// auto-written by the runner; they exist so the template can reference a
-// concrete shape.
+// There are no identity or soul stub files: both are rows the agent writes
+// with `update_identity` (TASK-989), so the stubs went with the file tier
+// (TASK-995).
 // ---------------------------------------------------------------------------
 
 /**
@@ -84,35 +82,9 @@ Take your time. You only get to be born once. Good luck out there — make it co
 `;
 
 /**
- * A short default IDENTITY.md stub. Optional starting structure for the agent;
- * never auto-written by the runner.
- */
-export const IDENTITY_SCAFFOLD = `# Identity
-
-- **Name:**
-- **Emoji:**
-- **What I am:**
-- **Vibe:**
-- **How I present myself:**
-`;
-
-/**
- * A short default SOUL.md stub. Optional starting structure for the agent;
- * never auto-written by the runner.
- */
-export const SOUL_SCAFFOLD = `# Soul
-
-## What I value
-
-## How I behave
-
-## Boundaries I hold
-`;
-
-/**
  * The canonical one-line fallback identity, naming the agent (closing the "says
  * Claude" gap). The runner injects this as the `## Identity` body in normal mode
- * when an agent has no identity of its own yet (a brand-new agent) — see `@ax/agent-claude-sdk-runner`'s prompt-engine. Versioned here so
+ * when an agent has no identity of its own yet (a brand-new agent) — see `@ax/agent-runner-core`'s prompt-engine. Versioned here so
  * the runner imports the same constant rather than duplicating the line.
  */
 export function fallbackIdentityLine(displayName: string): string {

@@ -190,10 +190,10 @@ describe('hasResumableTranscript', () => {
 
 describe('waitForTranscriptUuid', () => {
   // The Anthropic SDK writes the turn's FINAL assistant line to the jsonl
-  // AFTER it yields `result` to the runner. The per-turn commit must wait for
-  // THAT line, else the just-finished reply is missing from the committed
-  // bundle and only surfaces at the next turn / idle-reap (the multi-minute
-  // lag). We wait for the SPECIFIC uuid of the turn's last assistant message
+  // AFTER it yields `result` to the runner. The per-turn transcript ship must
+  // wait for THAT line, else the just-finished reply is missing from what
+  // reaches the host store and only surfaces at the next turn / idle-reap (the
+  // multi-minute lag). We wait for the SPECIFIC uuid of the turn's last assistant message
   // (captured in-band from SDKAssistantMessage.uuid), NOT merely "any new
   // assistant line": a tool-using turn writes an INTERMEDIATE tool_use
   // assistant line during the turn, so "any new line" short-circuits on it and

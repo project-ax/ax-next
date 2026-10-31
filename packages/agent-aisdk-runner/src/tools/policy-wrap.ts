@@ -91,7 +91,10 @@ export type ToolRunResult = string | ToolFailure;
 
 /** What a tool implementation actually does, once the policy has allowed it. */
 export type ToolRunner = (
-  /** The re-rooted input — `verdict.updatedInput` when the policy rewrote it. */
+  /**
+   * The input to run: the model's own, or `verdict.updatedInput` when a host
+   * subscriber rewrote the call (`modifiedCall`). Nothing else changes it.
+   */
   input: Record<string, unknown>,
   ctx: { toolCallId: string; abortSignal?: AbortSignal | undefined },
 ) => Promise<ToolRunResult>;
@@ -185,10 +188,9 @@ export function wrapWithPolicy(
       return holdText(verdict.note);
     }
 
-    // The policy re-roots governed paths (`.ax/**`, `.claude/**`) onto the
-    // validated tier and lets host subscribers rewrite the call. The executor
-    // MUST see that rewritten input — running the raw input would let a
-    // mis-rooted `.ax/uploads/...` write land outside the governed tree.
+    // A host subscriber may rewrite the call (`modifiedCall`); the executor
+    // MUST run that rewritten input, since it is what the host approved. The
+    // policy itself never rewrites a path (TASK-995).
     const effectiveInput =
       verdict.updatedInput ?? (asRecord(input));
 

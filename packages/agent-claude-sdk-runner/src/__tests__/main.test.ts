@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdtempSync, promises as fs } from 'node:fs';
+import { mkdirSync, mkdtempSync, promises as fs } from 'node:fs';
 import * as os from 'node:os';
 import * as nodePath from 'node:path';
 import type { SDKMessage, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
@@ -86,46 +86,6 @@ vi.mock('@ax/ipc-protocol', async (importOriginal) => {
   };
 });
 
-// Phase 3: the runner now spawns `git` for session-start materialize +
-// turn-end commit/bundle/rollback. Mocking these out keeps these unit
-// tests fast, hermetic, and free of stderr noise from git ops failing
-// against the test's fake AX_WORKSPACE_ROOT (`/tmp/workspace`).
-//
-// The REAL git-workspace ops are exercised in `git-workspace.test.ts`
-// against real tempdirs + git binary; the workspace-commit-notify
-// handler tests cover the host-side bundler. This file focuses on
-// main.ts's control-flow shape (env → boot → SDK loop → events).
-//
-// TASK-3 runner-core move: `git-workspace.ts` now lives in `@ax/agent-runner-core`,
-// re-exported through its barrel (`materializeWorkspace`/`commitTurnAndBundle`)
-// AND consumed *internally* by that package's own `commit-notify-resync.ts`
-// (`advanceBaseline`/`rollbackToBaseline`/`resyncBaselineAndReplay`, never
-// exported through the barrel). Mocking the barrel alone would not reach that
-// internal call — commitNotifyWithResync is left "actual" below and would call
-// the real git ops. So this mock targets an explicitly-declared internal
-// subpath (`@ax/agent-runner-core/internal/git-workspace.js`, see that
-// package's `exports` map) rather than the public barrel — the same module
-// identity the barrel re-export AND commit-notify-resync.ts's internal
-// `./git-workspace.js` import both resolve to, so ONE mock here intercepts
-// both call sites exactly as the pre-move single-package mock did.
-const materializeMock = vi.fn().mockResolvedValue({ baselineCommit: 'mock-baseline-oid' });
-const commitTurnAndBundleMock = vi.fn().mockResolvedValue(null);
-const advanceBaselineMock = vi.fn().mockResolvedValue(undefined);
-const rollbackToBaselineMock = vi.fn().mockResolvedValue(undefined);
-const resyncBaselineAndReplayMock = vi.fn().mockResolvedValue(undefined);
-vi.mock('@ax/agent-runner-core/internal/git-workspace.js', async (importOriginal) => {
-  const actual =
-    await importOriginal<typeof import('@ax/agent-runner-core/internal/git-workspace.js')>();
-  return {
-    ...actual,
-    materializeWorkspace: materializeMock,
-    commitTurnAndBundle: commitTurnAndBundleMock,
-    advanceBaseline: advanceBaselineMock,
-    rollbackToBaseline: rollbackToBaselineMock,
-    resyncBaselineAndReplay: resyncBaselineAndReplayMock,
-  };
-});
-
 // Mock the venv scaffold (it spawns `uv`) and `createInboxLoop` (session-start
 // inbox wiring) so these unit tests stay hermetic. `buildPythonVenvEnv` /
 // `pythonVenvDir` stay real (a separate module) so the env-literal assertions
@@ -133,9 +93,8 @@ vi.mock('@ax/agent-runner-core/internal/git-workspace.js', async (importOriginal
 //
 // TASK-67 runner-core extraction (task 8): the boot sequence these back now
 // runs inside @ax/agent-runner-core's own `run-runner.ts`, which imports its
-// siblings by relative path (`./python-venv.js`, …) — a mock on the package
-// BARREL would never be reached, exactly like the git-workspace case above.
-// So each of these targets the explicitly-declared internal subpath (see that
+// siblings by relative path (`./python-venv.js`, …), so a mock on the package
+// BARREL would never be reached. Each of these targets the explicitly-declared internal subpath (see that
 // package's `exports` map), which is the same module identity the barrel
 // re-export and run-runner.ts's relative import both resolve to.
 const scaffoldPythonVenvMock = vi.fn().mockResolvedValue(true);
@@ -183,7 +142,8 @@ vi.mock('@ax/agent-runner-core/internal/transcript-delta.js', async (importOrigi
 });
 
 // TranscriptSource split (runner-core extraction fix round 2): main() builds
-// ONE `transcriptSource` from `env.workspaceRoot` and threads it into every
+// ONE `transcriptSource` (the transcript directory, slugged by the SDK's cwd,
+// which is the agent's home) and threads it into every
 // shipTranscriptDelta/restoreTranscriptForResume call. shipTranscriptDelta /
 // restoreTranscriptForResume are mocked wholesale above, so nothing exercises
 // the source's real read()/write() closures in this suite — but a
@@ -204,17 +164,17 @@ vi.mock('../jsonl-transcript-source.js', async (importOriginal) => {
 });
 
 // Mock the transcript-flush seam. `readLastTurnUuid` defaults to undefined
-// (the fake AX_WORKSPACE_ROOT has no jsonl — matching real behavior).
+// (the fake transcript directory has no jsonl — matching real behavior).
 // `waitForTranscriptUuid` defaults to a fast no-op (true = landed) so tests
 // that yield an assistant turn don't pay a real poll/timeout; the dedicated
 // flush-ordering test overrides it to observe WHEN main() invokes it relative
-// to the commit, and WHICH uuid it targets. The wait's real polling/timeout
+// to the transcript ship, and WHICH uuid it targets. The wait's real polling/timeout
 // behavior is covered in turn-end-uuid.test.ts.
 const readLastTurnUuidMock = vi.fn().mockResolvedValue(undefined);
 const waitForTranscriptUuidMock = vi.fn().mockResolvedValue(true);
 // F2a resume guard: default to "resumable" so the resume-path tests below see
 // `resume` passed through; the guard test overrides it to false. The fake
-// AX_WORKSPACE_ROOT has no real jsonl, so the real impl would always report
+// transcript directory has no real jsonl, so the real impl would always report
 // false and strip every resume — mock it out like the other transcript reads.
 const hasResumableTranscriptMock = vi.fn().mockResolvedValue(true);
 vi.mock('../turn-end-uuid.js', async (importOriginal) => {
@@ -235,11 +195,26 @@ afterAll(async () => {
   await fs.rm(CONFIG_DIR, { recursive: true, force: true });
 });
 
+// TASK-995: the agent's home (AX_USERFILES_ROOT) and the session scratch root
+// (AX_EPHEMERAL_ROOT) are required; there is no fallback for either. Real
+// directories, so anything the runner writes lands inside this suite's temp
+// dir. The home stays empty: nothing the runner does writes there (the §11
+// tests below check that against a home with files in it).
+const SANDBOX_DIR = mkdtempSync(nodePath.join(os.tmpdir(), 'ax-main-sbx-'));
+const HOME_DIR = nodePath.join(SANDBOX_DIR, 'files');
+const SCRATCH_DIR = nodePath.join(SANDBOX_DIR, 'tmp');
+mkdirSync(HOME_DIR);
+mkdirSync(SCRATCH_DIR);
+afterAll(async () => {
+  await fs.rm(SANDBOX_DIR, { recursive: true, force: true });
+});
+
 const COMPLETE_ENV = {
   AX_RUNNER_ENDPOINT: 'unix:///tmp/ax.sock',
   AX_SESSION_ID: 'sess-1',
   AX_AUTH_TOKEN: 'tok-123',
-  AX_WORKSPACE_ROOT: '/tmp/workspace',
+  AX_USERFILES_ROOT: HOME_DIR,
+  AX_EPHEMERAL_ROOT: SCRATCH_DIR,
   AX_PROXY_ENDPOINT: 'http://127.0.0.1:8443',
   AX_PROXY_TOKEN: 'feedfacefeedfacefeedfacefeedface',
   ANTHROPIC_API_KEY: 'ax-cred:0123456789abcdef0123456789abcdef',
@@ -263,22 +238,13 @@ function buildFakeClient(overrides: Partial<FakeClient> = {}): FakeClient {
   const client: FakeClient = {
     call: vi.fn(),
     callGet: vi.fn(),
-    // Two actions stream a binary bundle to a temp file: workspace.materialize
-    // (session-start clone, BUG-W3) and workspace.export-baseline-bundle (the
-    // commit-notify re-sync fetch). materializeWorkspace / resyncBaselineAndReplay
-    // are mocked in this suite, so the path values are inert; we just need
-    // callBinary to resolve with the {path,bytes} shape and return a distinct,
-    // recognizable path per action so the resync assertions can pin which file
-    // the runner fetched.
+    // Binary calls stream to or from a temp file. A plain turn makes none:
+    // `blob.get` (an upload copied into the scratch root) is the only one a
+    // test here expects, and that test answers it itself. Anything else is a
+    // setup bug, so say which action it was.
     callBinary: vi.fn().mockImplementation(async (action: string) => {
-      if (action === 'workspace.export-baseline-bundle') {
-        return { path: '/tmp/fake-resync-baseline.bundle', bytes: 64 };
-      }
-      return { path: '/tmp/fake-materialize.bundle', bytes: 0 };
+      throw new Error(`unexpected binary call: ${action}`);
     }),
-    // The end-of-turn save rides the binary `workspace.commit-bundle` upload
-    // (TASK-720). Tests that ship a bundle answer it themselves; anything else
-    // reaching here is a setup bug, so say which action it was.
     callBinaryUpload: vi.fn().mockImplementation(async (action: string) => {
       throw new Error(`unexpected upload: ${action}`);
     }),
@@ -385,7 +351,7 @@ function systemInit(sessionId: string): SDKMessage {
     session_id: sessionId,
     apiKeySource: 'user',
     claude_code_version: '0.0.0-test',
-    cwd: '/tmp/workspace',
+    cwd: HOME_DIR,
     tools: [],
     mcp_servers: [],
     model: 'claude-sonnet-4-7',
@@ -457,16 +423,6 @@ const cancelEntry: InboxLoopEntry = { type: 'cancel' };
 
 beforeEach(() => {
   queryMock.mockReset();
-  materializeMock.mockReset();
-  materializeMock.mockResolvedValue({ baselineCommit: 'mock-baseline-oid' });
-  commitTurnAndBundleMock.mockReset();
-  commitTurnAndBundleMock.mockResolvedValue(null);
-  advanceBaselineMock.mockReset();
-  advanceBaselineMock.mockResolvedValue(undefined);
-  rollbackToBaselineMock.mockReset();
-  rollbackToBaselineMock.mockResolvedValue(undefined);
-  resyncBaselineAndReplayMock.mockReset();
-  resyncBaselineAndReplayMock.mockResolvedValue(undefined);
   readLastTurnUuidMock.mockReset();
   readLastTurnUuidMock.mockResolvedValue(undefined);
   waitForTranscriptUuidMock.mockReset();
@@ -516,15 +472,8 @@ describe('main()', () => {
           runnerSessionId: null,
         };
       }
-      if (action === 'workspace.materialize') return { bundleBytes: '' };
       if (action === 'tool.list') return { tools: [] };
       throw new Error(`unexpected call: ${action}`);
-    });
-    fakeClient.callBinaryUpload.mockImplementation(async (action: string) => {
-      if (action === 'workspace.commit-bundle') {
-        return { accepted: true, version: 'v1', delta: null };
-      }
-      throw new Error(`unexpected upload: ${action}`);
     });
     fakeInbox = buildFakeInbox([userEntry('please summarize'), cancelEntry]);
 
@@ -554,36 +503,14 @@ describe('main()', () => {
 
     expect(rc).toBe(0);
 
-    // Two JSON calls at boot: session.get-config + tool.list. (Materialize is
-    // NOT a JSON `call` — it streams a binary bundle via `callBinary`, BUG-W3.)
+    // Two JSON calls at boot: session.get-config + tool.list. Nothing streams
+    // as a binary either way (TASK-995: no workspace to materialize at boot or
+    // to bundle at the turn boundary).
     expect(fakeClient.call).toHaveBeenCalledTimes(2);
     expect(fakeClient.call).toHaveBeenCalledWith('session.get-config', {});
     expect(fakeClient.call).toHaveBeenCalledWith('tool.list', {});
-    // Materialize goes through callBinary (drained to a temp file).
-    expect(fakeClient.callBinary).toHaveBeenCalledTimes(1);
-    expect(fakeClient.callBinary).toHaveBeenCalledWith('workspace.materialize', {});
-    // Materialize must be called BEFORE tool.list so the workspace exists by
-    // the time the SDK query opens. callBinary and call are separate mocks, so
-    // compare invocation order across both.
-    const materializeOrder = fakeClient.callBinary.mock.invocationCallOrder[0];
-    const toolListIdx = fakeClient.call.mock.calls.findIndex(
-      (c) => c[0] === 'tool.list',
-    );
-    const toolListOrder = fakeClient.call.mock.invocationCallOrder[toolListIdx];
-    expect(materializeOrder).toBeLessThan(toolListOrder);
-    // Materialize was actually invoked on the workspace root with the streamed
-    // bundle file path callBinary returned.
-    expect(materializeMock).toHaveBeenCalledTimes(1);
-    expect(materializeMock).toHaveBeenCalledWith({
-      root: '/tmp/workspace',
-      bundlePath: '/tmp/fake-materialize.bundle',
-    });
-    // Empty turns (no file changes accumulated) skip commit-notify; the
-    // event.turn-end below is the heartbeat the host keys off (Task 7c).
-    const commitNotifies = fakeClient.callBinaryUpload.mock.calls.filter(
-      (c) => c[0] === 'workspace.commit-bundle',
-    );
-    expect(commitNotifies).toHaveLength(0);
+    expect(fakeClient.callBinary).not.toHaveBeenCalled();
+    expect(fakeClient.callBinaryUpload).not.toHaveBeenCalled();
 
     const turnEnds = fakeClient.event.mock.calls.filter(
       // Exclude the TASK-66 user display turn-end (role:'user', emitted when
@@ -678,14 +605,14 @@ describe('main()', () => {
     // wants the raw Anthropic id with the `anthropic/` prefix stripped.
     expect(queryArg.options.model).toBe('claude-sonnet-4-7');
     // Phase 3: 'user' is the SOLE source — $CLAUDE_CONFIG_DIR/skills/ (host-
-    // controlled read-only projection, 0555). 'project' was dropped because
-    // .claude/skills/ is agent-writable and not on the validator's veto list,
-    // so a project-discoverable workspace skills dir would bypass the host
-    // projection + quarantine gate.
+    // controlled read-only projection, 0555). 'project' was dropped because it
+    // would load `.claude/**`, `CLAUDE.md` and `.mcp.json` from the agent's
+    // home, which the agent writes freely — skills there would bypass the host
+    // projection and its quarantine gate.
     expect(queryArg.options.settingSources).toEqual(['user']);
     // TASK-142: the composed system prompt is always a plain STRING now (the
-    // SDK-preset / string-fallback path was removed). With no `.ax/` identity
-    // files, the runner composes normal mode with the displayName fallback
+    // SDK-preset / string-fallback path was removed). With no identity in the
+    // session config, the runner composes normal mode with the displayName fallback
     // identity line + the operational notes.
     expect(typeof queryArg.options.systemPrompt).toBe('string');
     expect(queryArg.options.systemPrompt).toContain(
@@ -702,25 +629,25 @@ describe('main()', () => {
       COMPLETE_ENV.ANTHROPIC_API_KEY,
     );
 
-    // TASK-19: the SDK subprocess runs with HOME=<workspaceRoot>, and
-    // `$HOME/bin` (the git-bundled workspace tier, so binaries the agent
-    // installs there persist between sessions) must be on PATH — APPENDED at
+    // TASK-19: the SDK subprocess runs with HOME = the agent's home, and
+    // `$HOME/bin` (in the durable home, so binaries the agent installs there
+    // persist between sessions) must be on PATH — APPENDED at
     // the END (not prepended: $HOME is model-writable + restored, so a leading
     // entry would let an injected binary shadow trusted tools — I5). The SDK
     // Bash tool is a non-interactive shell that never sources a .bashrc, so
     // this env PATH is the load-bearing mechanism. A regression that drops the
     // $HOME/bin append fails here.
-    expect(queryArg.options.env.HOME).toBe(COMPLETE_ENV.AX_WORKSPACE_ROOT);
+    expect(queryArg.options.env.HOME).toBe(COMPLETE_ENV.AX_USERFILES_ROOT);
     expect(queryArg.options.env.PATH).toBeDefined();
     expect(
       queryArg.options.env.PATH?.endsWith(
-        `:${COMPLETE_ENV.AX_WORKSPACE_ROOT}/bin`,
+        `:${COMPLETE_ENV.AX_USERFILES_ROOT}/bin`,
       ),
     ).toBe(true);
     // And it must NOT be at the front (the shadowing guard).
     expect(
       queryArg.options.env.PATH?.startsWith(
-        `${COMPLETE_ENV.AX_WORKSPACE_ROOT}/bin:`,
+        `${COMPLETE_ENV.AX_USERFILES_ROOT}/bin:`,
       ),
     ).toBe(false);
 
@@ -865,7 +792,6 @@ describe('main()', () => {
           runnerSessionId: null,
         };
       }
-      if (action === 'workspace.materialize') return { bundleBytes: '' };
       if (action === 'tool.list') return { tools: [] };
       throw new Error(`unexpected call: ${action}`);
     });
@@ -912,7 +838,6 @@ describe('main()', () => {
           runnerSessionId: null,
         };
       }
-      if (action === 'workspace.materialize') return { bundleBytes: '' };
       if (action === 'tool.list') return { tools: [] };
       throw new Error(`unexpected call: ${action}`);
     });
@@ -986,7 +911,6 @@ describe('main()', () => {
             runnerSessionId: null,
           };
         }
-        if (action === 'workspace.materialize') return { bundleBytes: '' };
         if (action === 'tool.list') return { tools: [] };
         throw new Error(`unexpected call: ${action}`);
       });
@@ -1040,7 +964,6 @@ describe('main()', () => {
           runnerSessionId: null,
         };
       }
-      if (action === 'workspace.materialize') return { bundleBytes: '' };
       // Advertise skill_propose so the draft executor is wired this session.
       if (action === 'tool.list') {
         return {
@@ -1048,12 +971,6 @@ describe('main()', () => {
         };
       }
       throw new Error(`unexpected call: ${action}`);
-    });
-    fakeClient.callBinaryUpload.mockImplementation(async (action: string) => {
-      if (action === 'workspace.commit-bundle') {
-        return { accepted: true, version: 'v1', delta: null };
-      }
-      throw new Error(`unexpected upload: ${action}`);
     });
     fakeInbox = buildFakeInbox([userEntry('hi'), cancelEntry]);
     queryMock.mockImplementation(
@@ -1082,40 +999,37 @@ describe('main()', () => {
     expect(queryArg.options.settingSources).toEqual(['user']);
     expect(queryArg.options.settingSources).not.toContain('project');
     expect(queryArg.options.settingSources).not.toContain('/files');
-    // It IS reachable by the file tools (durable read/write). filestore-user-files
-    // Phase 2 (TASK-164) made /files the SDK cwd/HOME, so the file tools reach
-    // it implicitly (the SDK always grants cwd) — it's therefore no longer listed
-    // in additionalDirectories (the governed AX_WORKSPACE_ROOT tier is, since it is
-    // no longer the cwd). Either way HR1 holds: reachable by tools, never a source.
+    // It IS reachable by the file tools (durable read/write): /files is the
+    // SDK's cwd and HOME (TASK-164), which the SDK always grants, so it is not
+    // listed again — the scratch root is the only additional directory. Either
+    // way HR1 holds: reachable by tools, never a source.
     expect(queryArg.options.cwd).toBe('/files');
-    expect(queryArg.options.additionalDirectories).not.toContain('/files');
-    expect(queryArg.options.additionalDirectories).toContain(
-      COMPLETE_ENV.AX_WORKSPACE_ROOT,
-    );
+    expect(queryArg.options.additionalDirectories).toEqual([COMPLETE_ENV.AX_EPHEMERAL_ROOT]);
     // The skill-draft prefix advertised to the model is rooted at the DURABLE
     // mount (drafts persist), not the ephemeral tier.
     expect(queryArg.options.systemPrompt).toContain('/files/.skill-draft/<id>/');
   });
 
-  it('per-turn commit waits for the turn FINAL assistant line (not the intermediate tool_use line) before committing (TASK-11 / keepalive durability)', async () => {
+  it('the per-turn transcript ship waits for the turn FINAL assistant line (not the intermediate tool_use line) (TASK-11 / keepalive durability)', async () => {
     // Regression for TASK-11 + the 1–2.5 min `conversations:get` lag under
     // idle-keepalive. The Anthropic SDK writes the turn's FINAL assistant line
-    // to the jsonl AFTER yielding `result`, so the per-turn commit — which runs
-    // in the `result` handler — used to stage the workspace BEFORE the reply
-    // landed and ship a bundle missing it. Under keepalive the warm runner
-    // doesn't drain (no final commit) until idle-reap, so the reply stayed
-    // unreadable for the whole idle window.
+    // to the jsonl AFTER yielding `result`, so the per-turn transcript ship —
+    // which runs at the `result` boundary — used to read the jsonl BEFORE the
+    // reply landed and ship a delta missing it. Under keepalive the warm
+    // runner doesn't drain (no final ship) until idle-reap, so the reply
+    // stayed unreadable for the whole idle window.
     //
     // The original fix waited for "any NEW assistant line", but a TOOL-using
     // turn emits an INTERMEDIATE tool_use assistant line BEFORE the closing
-    // text — so the wait short-circuited on the tool_use line and the commit
+    // text — so the wait short-circuited on the tool_use line and the ship
     // STILL dropped the closing text (the persisted `[user, tool_use,
-    // tool_result]` shape in TASK-11). The fix waits for the SPECIFIC uuid of
-    // the turn's LAST assistant message (SDKAssistantMessage.uuid).
+    // tool_result]` shape in TASK-11). The fix waits, in the loop's
+    // `beforeTranscriptShip` seam, for the SPECIFIC uuid of the turn's LAST
+    // assistant message (SDKAssistantMessage.uuid).
     //
     // Here we drive a tool turn (tool_use msg uuid='A' → tool_result → closing
     // text msg uuid='B' → result) and assert: (1) the wait runs before the
-    // commit, and (2) it targets 'B' (the final message), NOT 'A'.
+    // ship, and (2) it targets 'B' (the final message), NOT 'A'.
     setEnv(COMPLETE_ENV);
 
     const order: string[] = [];
@@ -1123,9 +1037,9 @@ describe('main()', () => {
       order.push('flush-wait');
       return true;
     });
-    commitTurnAndBundleMock.mockImplementation(async () => {
-      order.push('commit');
-      return null;
+    shipTranscriptDeltaMock.mockImplementation(async () => {
+      order.push('ship');
+      return { outcome: 'appended', sentOffset: 10, sentSeq: 1 };
     });
 
     fakeClient = buildFakeClient();
@@ -1142,12 +1056,14 @@ describe('main()', () => {
             model: 'anthropic/claude-sonnet-4-7',
             runner: 'claude-sdk',
           },
-          conversationId: null,
+          // Bound to a conversation, so the turn's transcript ships.
+          conversationId: 'cnv-flush',
           runnerSessionId: null,
         };
       }
-      if (action === 'workspace.materialize') return { bundleBytes: '' };
       if (action === 'tool.list') return { tools: [] };
+      if (action === 'attachments.list') return { files: [] };
+      if (action === 'conversation.store-runner-session') return { ok: true };
       throw new Error(`unexpected call: ${action}`);
     });
     fakeInbox = buildFakeInbox([userEntry('run date'), cancelEntry]);
@@ -1178,11 +1094,11 @@ describe('main()', () => {
     expect(rc).toBe(0);
 
     const firstFlush = order.indexOf('flush-wait');
-    const firstCommit = order.indexOf('commit');
+    const firstShip = order.indexOf('ship');
     // The flush wait ran for this turn...
     expect(firstFlush).toBeGreaterThanOrEqual(0);
-    // ...and the per-turn commit happened only AFTER it.
-    expect(firstCommit).toBeGreaterThan(firstFlush);
+    // ...and the per-turn transcript ship happened only AFTER it.
+    expect(firstShip).toBeGreaterThan(firstFlush);
     // ...and it waited for the turn's FINAL assistant uuid ('B'), NOT the
     // intermediate tool_use line ('A'). This is the TASK-11 guard.
     expect(waitForTranscriptUuidMock).toHaveBeenCalledWith(
@@ -1267,250 +1183,21 @@ describe('main()', () => {
     });
   }
 
-  it('Phase 3 turn end: bundle ships → commit-notify → host accepts → advance baseline', async () => {
-    // The new shape: at SDK `result`, runner calls commitTurnAndBundle.
-    // If non-null, runner ships workspace.commit-notify with bundleBytes.
-    // On host accept, runner advances baseline; on veto, runner rolls
-    // back. Fully replaces the legacy diff-accumulator path.
-    setEnv(COMPLETE_ENV);
-    commitTurnAndBundleMock.mockResolvedValueOnce(Buffer.from('FAKE_BUNDLE_B64'));
+  // The claude-sdk loop's session preparation lays down the SDK transcript
+  // directory (`prepareTranscriptDir`, wired as runRunner's `prepareSession`
+  // seam). It is bootstrap-fatal and runs BEFORE the resume restore writes the
+  // rebuilt jsonl there (#1085): a runner that cannot lay down its own
+  // transcript directory must not restore into it or start a turn.
+  it('bootstrap failure: the transcript directory cannot be laid down → exit 2 before the resume restore, no query', async () => {
+    const t = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'ax-main-prep-'));
+    onTestFinished(() => fs.rm(t, { recursive: true, force: true }));
+    // `$CLAUDE_CONFIG_DIR/projects` is a regular file, so the directory the
+    // SDK writes its jsonl under cannot be created.
+    const cfg = nodePath.join(t, 'cfg');
+    await fs.mkdir(cfg);
+    await fs.writeFile(nodePath.join(cfg, 'projects'), 'not a directory');
+    setEnv({ ...COMPLETE_ENV, CLAUDE_CONFIG_DIR: cfg });
     fakeClient = buildFakeClient();
-    fakeClient.call.mockImplementation(async (action: string) => {
-      if (action === 'session.get-config') {
-        return {
-          userId: 'u',
-          agentId: 'a',
-          agentConfig: {
-            displayName: 'Test Agent',
-            systemPromptAugment: '',
-            allowedTools: [],
-            mcpConfigIds: [],
-            model: 'anthropic/claude-sonnet-4-7',
-            runner: 'claude-sdk',
-          },
-          conversationId: null,
-          runnerSessionId: null,
-        };
-      }
-      if (action === 'workspace.materialize') return { bundleBytes: 'B64' };
-      if (action === 'tool.list') return { tools: [] };
-      throw new Error(`unexpected: ${action}`);
-    });
-    fakeClient.callBinaryUpload.mockImplementation(async (action: string) => {
-      if (action === 'workspace.commit-bundle') {
-        return { accepted: true, version: 'v-new', delta: null };
-      }
-      throw new Error(`unexpected upload: ${action}`);
-    });
-    fakeInbox = buildFakeInbox([userEntry('hi'), cancelEntry]);
-    queryMock.mockImplementation(
-      ({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => {
-        return (async function* () {
-          const it = prompt[Symbol.asyncIterator]();
-          await it.next();
-          yield assistantText('done');
-          yield resultSuccess();
-          await it.next();
-        })();
-      },
-    );
-
-    const { main } = await import('../main.js');
-    const rc = await main();
-    expect(rc).toBe(0);
-
-    // commit-notify was sent with bundleBytes from commitTurnAndBundle.
-    const commitCalls = fakeClient.callBinaryUpload.mock.calls.filter(
-      (c) => c[0] === 'workspace.commit-bundle',
-    );
-    expect(commitCalls).toHaveLength(1);
-    // parentVersion is the materialize-time baselineCommit, not null.
-    // The runner threads the materialized OID through so the host's
-    // export-baseline-bundle({version: parent}) reproduces a bundle
-    // whose tip matches the runner's local baseline ref. Without this,
-    // the FIRST commit-notify of a session whose workspace already has
-    // history fails with "Repository lacks these prerequisite commits"
-    // (see the materialize/commit-notify OID-drift fix).
-    expect(commitCalls[0]?.slice(1)).toEqual([
-      Buffer.from('FAKE_BUNDLE_B64'),
-      { reason: 'turn', parentVersion: 'mock-baseline-oid' },
-    ]);
-    // advanceBaseline called on accept.
-    expect(advanceBaselineMock).toHaveBeenCalledTimes(1);
-    expect(rollbackToBaselineMock).not.toHaveBeenCalled();
-  });
-
-  it('Phase 3 turn end: empty turn (commitTurnAndBundle returns null) → no commit-notify', async () => {
-    setEnv(COMPLETE_ENV);
-    // Default mock returns null — empty turn.
-    fakeClient = buildFakeClient();
-    fakeClient.call.mockImplementation(async (action: string) => {
-      if (action === 'session.get-config') {
-        return {
-          userId: 'u',
-          agentId: 'a',
-          agentConfig: {
-            displayName: 'Test Agent',
-            systemPromptAugment: '',
-            allowedTools: [],
-            mcpConfigIds: [],
-            model: 'anthropic/claude-sonnet-4-7',
-            runner: 'claude-sdk',
-          },
-          conversationId: null,
-          runnerSessionId: null,
-        };
-      }
-      if (action === 'workspace.materialize') return { bundleBytes: 'B64' };
-      if (action === 'tool.list') return { tools: [] };
-      throw new Error(`unexpected: ${action}`);
-    });
-    fakeInbox = buildFakeInbox([userEntry('hi'), cancelEntry]);
-    queryMock.mockImplementation(
-      ({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => {
-        return (async function* () {
-          const it = prompt[Symbol.asyncIterator]();
-          await it.next();
-          yield assistantText('done');
-          yield resultSuccess();
-          await it.next();
-        })();
-      },
-    );
-    const { main } = await import('../main.js');
-    expect(await main()).toBe(0);
-    const commitCalls = fakeClient.callBinaryUpload.mock.calls.filter(
-      (c) => c[0] === 'workspace.commit-bundle',
-    );
-    expect(commitCalls).toHaveLength(0);
-    expect(advanceBaselineMock).not.toHaveBeenCalled();
-    expect(rollbackToBaselineMock).not.toHaveBeenCalled();
-  });
-
-  it('Phase 3 turn end: host vetoes → rollback called, baseline NOT advanced', async () => {
-    setEnv(COMPLETE_ENV);
-    commitTurnAndBundleMock.mockResolvedValueOnce(Buffer.from('BUNDLE_VETO'));
-    fakeClient = buildFakeClient();
-    fakeClient.call.mockImplementation(async (action: string) => {
-      if (action === 'session.get-config') {
-        return {
-          userId: 'u',
-          agentId: 'a',
-          agentConfig: {
-            displayName: 'Test Agent',
-            systemPromptAugment: '',
-            allowedTools: [],
-            mcpConfigIds: [],
-            model: 'anthropic/claude-sonnet-4-7',
-            runner: 'claude-sdk',
-          },
-          conversationId: null,
-          runnerSessionId: null,
-        };
-      }
-      if (action === 'workspace.materialize') return { bundleBytes: 'B64' };
-      if (action === 'tool.list') return { tools: [] };
-      throw new Error(`unexpected: ${action}`);
-    });
-    fakeClient.callBinaryUpload.mockImplementation(async (action: string) => {
-      if (action === 'workspace.commit-bundle') {
-        return { accepted: false, reason: 'policy violation' };
-      }
-      throw new Error(`unexpected upload: ${action}`);
-    });
-    fakeInbox = buildFakeInbox([userEntry('hi'), cancelEntry]);
-    const stderrSpy = vi
-      .spyOn(process.stderr, 'write')
-      .mockImplementation(() => true);
-    queryMock.mockImplementation(
-      ({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => {
-        return (async function* () {
-          const it = prompt[Symbol.asyncIterator]();
-          await it.next();
-          yield assistantText('done');
-          yield resultSuccess();
-          await it.next();
-        })();
-      },
-    );
-    try {
-      const { main } = await import('../main.js');
-      expect(await main()).toBe(0);
-      expect(rollbackToBaselineMock).toHaveBeenCalledTimes(1);
-      expect(advanceBaselineMock).not.toHaveBeenCalled();
-      const stderrText = stderrSpy.mock.calls.map((c) => String(c[0])).join('');
-      expect(stderrText).toContain('policy violation');
-    } finally {
-      stderrSpy.mockRestore();
-    }
-  });
-
-  it('Phase 3 turn end: commit-notify IPC error → preserve working tree (no rollback, no advance)', async () => {
-    setEnv(COMPLETE_ENV);
-    commitTurnAndBundleMock.mockResolvedValueOnce(Buffer.from('BUNDLE_NETERR'));
-    fakeClient = buildFakeClient();
-    fakeClient.call.mockImplementation(async (action: string) => {
-      if (action === 'session.get-config') {
-        return {
-          userId: 'u',
-          agentId: 'a',
-          agentConfig: {
-            displayName: 'Test Agent',
-            systemPromptAugment: '',
-            allowedTools: [],
-            mcpConfigIds: [],
-            model: 'anthropic/claude-sonnet-4-7',
-            runner: 'claude-sdk',
-          },
-          conversationId: null,
-          runnerSessionId: null,
-        };
-      }
-      if (action === 'workspace.materialize') return { bundleBytes: 'B64' };
-      if (action === 'tool.list') return { tools: [] };
-      throw new Error(`unexpected: ${action}`);
-    });
-    fakeClient.callBinaryUpload.mockImplementation(async (action: string) => {
-      if (action === 'workspace.commit-bundle') {
-        throw new Error('connect ECONNREFUSED');
-      }
-      throw new Error(`unexpected upload: ${action}`);
-    });
-    fakeInbox = buildFakeInbox([userEntry('hi'), cancelEntry]);
-    const stderrSpy = vi
-      .spyOn(process.stderr, 'write')
-      .mockImplementation(() => true);
-    queryMock.mockImplementation(
-      ({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => {
-        return (async function* () {
-          const it = prompt[Symbol.asyncIterator]();
-          await it.next();
-          yield assistantText('done');
-          yield resultSuccess();
-          await it.next();
-        })();
-      },
-    );
-    try {
-      const { main } = await import('../main.js');
-      expect(await main()).toBe(0);
-      // Network error: no rollback (preserve tree), no advance.
-      expect(advanceBaselineMock).not.toHaveBeenCalled();
-      expect(rollbackToBaselineMock).not.toHaveBeenCalled();
-    } finally {
-      stderrSpy.mockRestore();
-    }
-  });
-
-  it('bootstrap failure: workspace.materialize IPC error → exit 2, no query, materialize stderr', async () => {
-    // Phase 3: materialize failure is bootstrap-fatal. The runner cannot
-    // operate against an undefined workspace state — better to exit loud
-    // than to desync silently from the host's view of the lineage.
-    setEnv(COMPLETE_ENV);
-    fakeClient = buildFakeClient();
-    // Materialize streams via callBinary now (BUG-W3) — simulate the IPC
-    // failure there (e.g. host bundler error surfaced through the drain).
-    fakeClient.callBinary.mockRejectedValue(new Error('host bundler exploded'));
     fakeClient.call.mockImplementation(async (action: string) => {
       if (action === 'session.get-config') {
         return {
@@ -1524,8 +1211,9 @@ describe('main()', () => {
             model: 'anthropic/claude-sonnet-4-7',
             runner: 'claude-sdk',
           },
-          conversationId: null,
-          runnerSessionId: null,
+          // Bound and resumable: the restore would run next.
+          conversationId: 'cnv-prep',
+          runnerSessionId: 'sdk-sess-prep',
         };
       }
       throw new Error(`unexpected call: ${action}`);
@@ -1544,63 +1232,14 @@ describe('main()', () => {
       const stderrMessages = stderrSpy.mock.calls
         .map((c) => String(c[0]))
         .join('');
-      expect(stderrMessages).toContain('workspace.materialize failed');
-      expect(stderrMessages).toContain('host bundler exploded');
+      expect(stderrMessages).toContain('session preparation failed');
+      expect(stderrMessages).toContain('EEXIST');
 
+      expect(restoreTranscriptForResumeMock).not.toHaveBeenCalled();
       expect(queryMock).not.toHaveBeenCalled();
+      // Boot failure: no chat-end (the host synthesizes one from exit 2).
+      expect(fakeClient.event).not.toHaveBeenCalled();
       expect(fakeClient.close).toHaveBeenCalledTimes(1);
-    } finally {
-      stderrSpy.mockRestore();
-    }
-  });
-
-  it('bootstrap failure: materializeWorkspace throws → exit 2, no query', async () => {
-    // Distinct from the IPC-error case: the IPC succeeds (bundle bytes
-    // returned), but the runner-side `git clone` blows up. Same fatal
-    // semantics — we can't proceed against a broken /agent.
-    setEnv(COMPLETE_ENV);
-    materializeMock.mockRejectedValueOnce(new Error('git clone failed: bad bundle'));
-    fakeClient = buildFakeClient();
-    fakeClient.call.mockImplementation(async (action: string) => {
-      if (action === 'session.get-config') {
-        return {
-          userId: 'u-test',
-          agentId: 'a-test',
-          agentConfig: {
-            displayName: 'Test Agent',
-            systemPromptAugment: '',
-            allowedTools: [],
-            mcpConfigIds: [],
-            model: 'anthropic/claude-sonnet-4-7',
-            runner: 'claude-sdk',
-          },
-          conversationId: null,
-          runnerSessionId: null,
-        };
-      }
-      if (action === 'workspace.materialize') {
-        return { bundleBytes: 'malformed' };
-      }
-      throw new Error(`unexpected call: ${action}`);
-    });
-    fakeInbox = buildFakeInbox([]);
-
-    const stderrSpy = vi
-      .spyOn(process.stderr, 'write')
-      .mockImplementation(() => true);
-
-    try {
-      const { main } = await import('../main.js');
-      const rc = await main();
-      expect(rc).toBe(2);
-
-      const stderrMessages = stderrSpy.mock.calls
-        .map((c) => String(c[0]))
-        .join('');
-      expect(stderrMessages).toContain('workspace.materialize failed');
-      expect(stderrMessages).toContain('git clone failed: bad bundle');
-
-      expect(queryMock).not.toHaveBeenCalled();
     } finally {
       stderrSpy.mockRestore();
     }
@@ -1626,7 +1265,6 @@ describe('main()', () => {
           runnerSessionId: null,
         };
       }
-      if (action === 'workspace.materialize') return { bundleBytes: '' };
       if (action === 'tool.list') return { tools: [] };
       throw new Error(`unexpected call: ${action}`);
     });
@@ -1712,7 +1350,6 @@ describe('main()', () => {
           runnerSessionId: null,
         };
       }
-      if (action === 'workspace.materialize') return { bundleBytes: '' };
       if (action === 'tool.list') return { tools: [] };
       throw new Error(`unexpected call: ${action}`);
     });
@@ -1844,7 +1481,6 @@ describe('main()', () => {
           runnerSessionId: null,
         };
       }
-      if (action === 'workspace.materialize') return { bundleBytes: '' };
       if (action === 'tool.list') return { tools: [] };
       if (action === 'tool.pre-call') {
         const { call } = payload as { call: { id: string } };
@@ -1884,7 +1520,7 @@ describe('main()', () => {
             hook_event_name: 'PreToolUse',
             session_id: 'sess-1',
             transcript_path: '/tmp/t.jsonl',
-            cwd: '/tmp/workspace',
+            cwd: HOME_DIR,
             tool_name: name,
             tool_input: {},
             tool_use_id: id,
@@ -2033,7 +1669,6 @@ describe('main()', () => {
           runnerSessionId: null,
         };
       }
-      if (action === 'workspace.materialize') return { bundleBytes: '' };
       if (action === 'tool.list') return { tools: [] };
       if (action === 'tool.pre-call') {
         const { call } = payload as { call: { id: string } };
@@ -2063,7 +1698,7 @@ describe('main()', () => {
             hook_event_name: 'PreToolUse',
             session_id: 'sess-1',
             transcript_path: '/tmp/t.jsonl',
-            cwd: '/tmp/workspace',
+            cwd: HOME_DIR,
             tool_name: name,
             tool_input: {},
             tool_use_id: id,
@@ -2154,8 +1789,8 @@ describe('main()', () => {
           runnerSessionId: null,
         };
       }
-      if (action === 'workspace.materialize') return { bundleBytes: '' };
       if (action === 'tool.list') return { tools: [] };
+      if (action === 'attachments.list') return { files: [] };
       if (action === 'conversation.store-runner-session') return { ok: true };
       throw new Error(`unexpected call: ${action}`);
     });
@@ -2244,7 +1879,6 @@ describe('main()', () => {
           runnerSessionId: null,
         };
       }
-      if (action === 'workspace.materialize') return { bundleBytes: '' };
       if (action === 'tool.list') return { tools: [] };
       throw new Error(`unexpected call: ${action}`);
     });
@@ -2357,7 +1991,6 @@ describe('main()', () => {
           runnerSessionId: null,
         };
       }
-      if (action === 'workspace.materialize') return { bundleBytes: '' };
       if (action === 'tool.list') return { tools: [] };
       throw new Error(`unexpected call: ${action}`);
     });
@@ -2418,7 +2051,6 @@ describe('main()', () => {
           runnerSessionId: null,
         };
       }
-      if (action === 'workspace.materialize') return { bundleBytes: '' };
       if (action === 'tool.list') return { tools: [] };
       throw new Error(`unexpected call: ${action}`);
     });
@@ -2547,7 +2179,6 @@ describe('main()', () => {
           runnerSessionId: null,
         };
       }
-      if (action === 'workspace.materialize') return { bundleBytes: '' };
       if (action === 'tool.list') return { tools: [] };
       throw new Error(`unexpected call: ${action}`);
     });
@@ -2673,7 +2304,6 @@ describe('main()', () => {
           runnerSessionId: null,
         };
       }
-      if (action === 'workspace.materialize') return { bundleBytes: '' };
       if (action === 'tool.list') return { tools: [] };
       throw new Error(`unexpected call: ${action}`);
     });
@@ -2731,7 +2361,6 @@ describe('main()', () => {
             runnerSessionId: null,
           };
         }
-        if (action === 'workspace.materialize') return { bundleBytes: '' };
         if (action === 'tool.list') return { tools: [] };
         throw new Error(`unexpected call: ${action}`);
       });
@@ -2843,7 +2472,6 @@ describe('main()', () => {
           runnerSessionId: null,
         };
       }
-      if (action === 'workspace.materialize') return { bundleBytes: '' };
       if (action === 'tool.list') return { tools: [] };
       throw new Error(`unexpected call: ${action}`);
     });
@@ -2890,8 +2518,8 @@ describe('main()', () => {
   //
   // The Task 15 replay path is gone. The SDK's `resume(sessionId)`
   // rehydrates the transcript from its own on-disk store
-  // (~/.claude/projects/<sessionId>.jsonl, HOME-redirected into the
-  // workspace by Phase C); the runner never re-emits prior user turns
+  // (`$CLAUDE_CONFIG_DIR/projects/<cwd-slug>/<sessionId>.jsonl`, rebuilt from
+  // the host store on resume); the runner never re-emits prior user turns
   // into the prompt iterator. The bind state (`runnerSessionId`) rides
   // on the `session.get-config` response now — there's no separate
   // `conversation.fetch-history` IPC at boot.
@@ -2922,7 +2550,6 @@ describe('main()', () => {
           runnerSessionId: null,
         };
       }
-      if (action === 'workspace.materialize') return { bundleBytes: '' };
       if (action === 'tool.list') return { tools: [] };
       if (action === 'conversation.fetch-history') {
         throw new Error('runner must NOT call fetch-history (Phase E)');
@@ -2955,8 +2582,8 @@ describe('main()', () => {
   it('Phase E: boot does NOT call conversation.fetch-history when conversationId is set + runnerSessionId is null (no resume path)', async () => {
     // The runner used to fetch history here to seed the prompt iterator
     // with prior user turns. Phase E drops that path entirely — the
-    // SDK starts fresh, and the prior conversation's jsonl files (if
-    // any) are picked up by the workspace-jsonl reader independently.
+    // SDK starts fresh; a prior transcript, if any, lives in the host store
+    // and only a resume rebuilds it.
     setEnv(COMPLETE_ENV);
     fakeClient = buildFakeClient();
     fakeClient.call.mockImplementation(async (action: string) => {
@@ -2976,8 +2603,8 @@ describe('main()', () => {
           runnerSessionId: null,
         };
       }
-      if (action === 'workspace.materialize') return { bundleBytes: '' };
       if (action === 'tool.list') return { tools: [] };
+      if (action === 'attachments.list') return { files: [] };
       if (action === 'conversation.fetch-history') {
         throw new Error('runner must NOT call fetch-history (Phase E)');
       }
@@ -3028,8 +2655,8 @@ describe('main()', () => {
           runnerSessionId: 'sdk-sess-resume',
         };
       }
-      if (action === 'workspace.materialize') return { bundleBytes: '' };
       if (action === 'tool.list') return { tools: [] };
+      if (action === 'attachments.list') return { files: [] };
       if (action === 'conversation.fetch-history') {
         throw new Error('runner must NOT call fetch-history (Phase E)');
       }
@@ -3079,8 +2706,8 @@ describe('main()', () => {
           runnerSessionId: null,
         };
       }
-      if (action === 'workspace.materialize') return { bundleBytes: '' };
       if (action === 'tool.list') return { tools: [] };
+      if (action === 'attachments.list') return { files: [] };
       if (action === 'conversation.store-runner-session') return { ok: true };
       throw new Error(`unexpected call: ${action}`);
     });
@@ -3136,8 +2763,8 @@ describe('main()', () => {
           runnerSessionId: 'sdk-sess-resume',
         };
       }
-      if (action === 'workspace.materialize') return { bundleBytes: '' };
       if (action === 'tool.list') return { tools: [] };
+      if (action === 'attachments.list') return { files: [] };
       if (action === 'conversation.store-runner-session') return { ok: true };
       throw new Error(`unexpected call: ${action}`);
     });
@@ -3193,8 +2820,8 @@ describe('main()', () => {
       setEnv(COMPLETE_ENV);
       // TASK-67 / F2a: the bind is deferred to a DURABLE TRANSCRIPT — it fires
       // after shipTranscriptDelta returns 'appended'/'resynced' (the rows are
-      // in the host store), replacing the old bind-after-commit-accepted. The
-      // mock defaults to 'appended', so the bind fires this turn.
+      // in the host store). The mock defaults to 'appended', so the bind fires
+      // this turn.
       fakeClient = buildFakeClient();
       fakeClient.call.mockImplementation(async (action: string) => {
         if (action === 'session.get-config') {
@@ -3213,18 +2840,12 @@ describe('main()', () => {
             runnerSessionId: null,
           };
         }
-        if (action === 'workspace.materialize') return { bundleBytes: '' };
         if (action === 'tool.list') return { tools: [] };
+        if (action === 'attachments.list') return { files: [] };
         if (action === 'conversation.store-runner-session') {
           return { ok: true };
         }
         throw new Error(`unexpected call: ${action}`);
-      });
-      fakeClient.callBinaryUpload.mockImplementation(async (action: string) => {
-        if (action === 'workspace.commit-bundle') {
-          return { accepted: true, version: 'v1', delta: null };
-        }
-        throw new Error(`unexpected upload: ${action}`);
       });
       fakeInbox = buildFakeInbox([userEntry('go'), cancelEntry]);
       queryMock.mockImplementation(
@@ -3306,10 +2927,10 @@ describe('main()', () => {
             runnerSessionId: null,
           };
         }
-        if (action === 'workspace.materialize') return { bundleBytes: '' };
         if (action === 'tool.list') return { tools: [] };
+        if (action === 'attachments.list') return { files: [] };
         if (action === 'conversation.store-runner-session') {
-          throw new Error('runner must NOT bind before a durable commit (F2a)');
+          throw new Error('runner must NOT bind before a durable transcript (F2a)');
         }
         throw new Error(`unexpected call: ${action}`);
       });
@@ -3357,7 +2978,6 @@ describe('main()', () => {
             runnerSessionId: null,
           };
         }
-        if (action === 'workspace.materialize') return { bundleBytes: '' };
         if (action === 'tool.list') return { tools: [] };
         if (action === 'conversation.store-runner-session') {
           throw new Error(
@@ -3394,9 +3014,8 @@ describe('main()', () => {
       // The SDK's resume(sessionId) flow can re-emit system/init within the
       // same query(). The FIRST init is the load-bearing one — its session_id
       // is captured into transcriptSessionId and a later init must NOT change
-      // it. The bind itself fires once, after the first accepted commit (F2a).
+      // it. The bind itself fires once, after the first durable ship (F2a).
       setEnv(COMPLETE_ENV);
-      commitTurnAndBundleMock.mockResolvedValue(Buffer.from('YnVuZGxl'));
       fakeClient = buildFakeClient();
       fakeClient.call.mockImplementation(async (action: string) => {
         if (action === 'session.get-config') {
@@ -3415,18 +3034,12 @@ describe('main()', () => {
             runnerSessionId: null,
           };
         }
-        if (action === 'workspace.materialize') return { bundleBytes: '' };
         if (action === 'tool.list') return { tools: [] };
+        if (action === 'attachments.list') return { files: [] };
         if (action === 'conversation.store-runner-session') {
           return { ok: true };
         }
         throw new Error(`unexpected call: ${action}`);
-      });
-      fakeClient.callBinaryUpload.mockImplementation(async (action: string) => {
-        if (action === 'workspace.commit-bundle') {
-          return { accepted: true, version: 'v1', delta: null };
-        }
-        throw new Error(`unexpected upload: ${action}`);
       });
       fakeInbox = buildFakeInbox([userEntry('first'), cancelEntry]);
       queryMock.mockImplementation(
@@ -3460,20 +3073,20 @@ describe('main()', () => {
       });
     });
 
-    it('F2a: a transient bind failure is non-fatal and self-heals on the NEXT turn’s accepted commit (final bundle is null)', async () => {
-      // F2a (supersedes the Phase E FATAL posture): the bind now fires AFTER
-      // the turn already streamed to the user (post-accepted-commit), so
-      // terminating on a TRANSIENT bind failure would be incoherent. The
-      // failure is logged and the flag left unset, so a LATER accepted commit
-      // retries. This models production: the per-turn commit captures the turn,
-      // the final drain commit is empty (null) — so the retry must come from
-      // turn 2's commit, not the final one.
+    it('F2a: a transient bind failure is non-fatal and self-heals on the NEXT turn’s durable transcript ship (the final ship is a noop)', async () => {
+      // F2a (supersedes the Phase E FATAL posture): the bind fires AFTER the
+      // turn already streamed to the user (once its transcript is durable on
+      // the host), so terminating on a TRANSIENT bind failure would be
+      // incoherent. The failure is logged and the flag left unset, so a LATER
+      // durable ship retries. This models production: each turn's ship appends
+      // its lines and the final drain ship has nothing left — so the retry must
+      // come from turn 2's ship, not the final one.
       setEnv(COMPLETE_ENV);
-      // turn-1 per-turn bundle, turn-2 per-turn bundle, final drain → null.
-      commitTurnAndBundleMock
-        .mockResolvedValueOnce(Buffer.from('YnVuZGxl-1'))
-        .mockResolvedValueOnce(Buffer.from('YnVuZGxl-2'))
-        .mockResolvedValue(null);
+      // turn-1 ship appends, turn-2 ship appends, final drain → noop.
+      shipTranscriptDeltaMock
+        .mockResolvedValueOnce({ outcome: 'appended', sentOffset: 10, sentSeq: 1 })
+        .mockResolvedValueOnce({ outcome: 'appended', sentOffset: 20, sentSeq: 2 })
+        .mockResolvedValue({ outcome: 'noop', sentOffset: 20, sentSeq: 2 });
       let bindAttempts = 0;
       fakeClient = buildFakeClient();
       fakeClient.call.mockImplementation(async (action: string) => {
@@ -3493,8 +3106,8 @@ describe('main()', () => {
             runnerSessionId: null,
           };
         }
-        if (action === 'workspace.materialize') return { bundleBytes: '' };
         if (action === 'tool.list') return { tools: [] };
+        if (action === 'attachments.list') return { files: [] };
         if (action === 'conversation.store-runner-session') {
           bindAttempts++;
           // Transient (NOT a 409) on the first attempt; succeeds on the second.
@@ -3502,12 +3115,6 @@ describe('main()', () => {
           return { ok: true };
         }
         throw new Error(`unexpected call: ${action}`);
-      });
-      fakeClient.callBinaryUpload.mockImplementation(async (action: string) => {
-        if (action === 'workspace.commit-bundle') {
-          return { accepted: true, version: 'v1', delta: null };
-        }
-        throw new Error(`unexpected upload: ${action}`);
       });
       fakeInbox = buildFakeInbox([userEntry('one'), userEntry('two'), cancelEntry]);
       queryMock.mockImplementation(
@@ -3531,7 +3138,7 @@ describe('main()', () => {
       // Non-fatal: the run completes despite the first bind failing.
       expect(rc).toBe(0);
 
-      // Retried on turn 2's accepted commit and eventually bound.
+      // Retried on turn 2's ship and eventually bound.
       const bindCalls = fakeClient.call.mock.calls.filter(
         (c) => c[0] === 'conversation.store-runner-session',
       );
@@ -3553,10 +3160,9 @@ describe('main()', () => {
     it('F2a: a 409 bind CONFLICT is terminal — the losing runner exits 1 (terminated) instead of orphaning its transcript', async () => {
       // A concurrent fresh-boot race: another runner already bound this
       // conversation to a DIFFERENT id, so our store-runner-session is rejected
-      // 409. Retrying is futile and continuing would commit an orphan
+      // 409. Retrying is futile and continuing would ship an orphan
       // transcript — the run must terminate so the loser stops.
       setEnv(COMPLETE_ENV);
-      commitTurnAndBundleMock.mockResolvedValue(Buffer.from('YnVuZGxl'));
       fakeClient = buildFakeClient();
       fakeClient.call.mockImplementation(async (action: string) => {
         if (action === 'session.get-config') {
@@ -3575,8 +3181,8 @@ describe('main()', () => {
             runnerSessionId: null,
           };
         }
-        if (action === 'workspace.materialize') return { bundleBytes: '' };
         if (action === 'tool.list') return { tools: [] };
+        if (action === 'attachments.list') return { files: [] };
         if (action === 'conversation.store-runner-session') {
           throw new IpcRequestError(
             'HOOK_REJECTED',
@@ -3585,12 +3191,6 @@ describe('main()', () => {
           );
         }
         throw new Error(`unexpected call: ${action}`);
-      });
-      fakeClient.callBinaryUpload.mockImplementation(async (action: string) => {
-        if (action === 'workspace.commit-bundle') {
-          return { accepted: true, version: 'v1', delta: null };
-        }
-        throw new Error(`unexpected upload: ${action}`);
       });
       fakeInbox = buildFakeInbox([userEntry('go'), cancelEntry]);
       queryMock.mockImplementation(
@@ -3632,8 +3232,9 @@ describe('main()', () => {
   // When `runnerSessionId` is non-null on the `session.get-config`
   // response, the runner passes it as `options.resume` to `query()`.
   // The SDK rehydrates the conversation from its own on-disk transcript
-  // (~/.claude/projects/<sessionId>.jsonl, HOME-redirected into the
-  // workspace by Phase C) — there's no DB replay layer to consult.
+  // (`$CLAUDE_CONFIG_DIR/projects/<cwd-slug>/<sessionId>.jsonl`, which the
+  // shell rebuilds from the host store first) — there's no DB replay layer
+  // to consult.
   //
   // Phase E (2026-05-09): runnerSessionId now rides the
   // session.get-config response directly (composed by the host's IPC
@@ -3663,8 +3264,8 @@ describe('main()', () => {
             runnerSessionId: 'sdk-sess-resume',
           };
         }
-        if (action === 'workspace.materialize') return { bundleBytes: '' };
         if (action === 'tool.list') return { tools: [] };
+        if (action === 'attachments.list') return { files: [] };
         if (action === 'conversation.store-runner-session') {
           return { ok: true };
         }
@@ -3736,8 +3337,8 @@ describe('main()', () => {
             runnerSessionId: 'sdk-sess-missing',
           };
         }
-        if (action === 'workspace.materialize') return { bundleBytes: '' };
         if (action === 'tool.list') return { tools: [] };
+        if (action === 'attachments.list') return { files: [] };
         if (action === 'conversation.store-runner-session') {
           return { ok: true };
         }
@@ -3767,11 +3368,11 @@ describe('main()', () => {
       // Two checks restore the original claim: the call got a well-shaped
       // source (below), AND that source was built from the right root (the
       // spy on createJsonlTranscriptSource — otherwise a source of the right
-      // SHAPE but the wrong workspace would pass silently).
-      // (No AX_USERFILES_ROOT in this env, so the SDK's cwd IS the workspace.)
+      // SHAPE but the wrong directory would pass silently). It is slugged by
+      // the SDK's cwd: the agent's home.
       expect(createJsonlTranscriptSourceSpy).toHaveBeenCalledWith(
         `${CONFIG_DIR}/projects`,
-        '/tmp/workspace',
+        COMPLETE_ENV.AX_USERFILES_ROOT,
       );
       expect(restoreTranscriptForResumeMock).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -3790,10 +3391,10 @@ describe('main()', () => {
       expect(queryArg.options.resume).toBeUndefined();
     });
 
-    it('TASK-67: a conversation-scoped turn ships the resume-transcript DELTA at the result boundary (replaces commitTurnAndBundle for the jsonl)', async () => {
-      // The result boundary now ships the jsonl delta to the host store
-      // (session.append-transcript via shipTranscriptDelta) instead of
-      // committing the jsonl to git. The bind fires off the durable transcript.
+    it('TASK-67: a conversation-scoped turn ships the resume-transcript DELTA at the result boundary', async () => {
+      // The result boundary ships the jsonl delta to the host store
+      // (session.append-transcript via shipTranscriptDelta), its source of
+      // truth. The bind fires off the durable transcript.
       setEnv(COMPLETE_ENV);
       fakeClient = buildFakeClient();
       fakeClient.call.mockImplementation(async (action: string) => {
@@ -3813,8 +3414,8 @@ describe('main()', () => {
             runnerSessionId: null,
           };
         }
-        if (action === 'workspace.materialize') return { bundleBytes: '' };
         if (action === 'tool.list') return { tools: [] };
+        if (action === 'attachments.list') return { files: [] };
         if (action === 'conversation.store-runner-session') return { ok: true };
         throw new Error(`unexpected call: ${action}`);
       });
@@ -3846,13 +3447,9 @@ describe('main()', () => {
       };
       expect(shipArg.sessionId).toBe('sdk-sess-ship');
       expect(shipArg.state).toEqual({ sentOffset: 0, sentSeq: 0 });
-      // The jsonl is NOT committed to git as the resume backing — no
-      // commit-notify carries it (commitTurnAndBundle is null on a pure chat
-      // turn now that .claude/projects is gitignored).
-      const commitNotifies = fakeClient.callBinaryUpload.mock.calls.filter(
-        (c) => c[0] === 'workspace.commit-bundle',
-      );
-      expect(commitNotifies).toHaveLength(0);
+      // That is the only way the transcript leaves the sandbox: nothing else
+      // is uploaded (shipTranscriptDelta is mocked here, so no upload at all).
+      expect(fakeClient.callBinaryUpload).not.toHaveBeenCalled();
       // The bind fired off the durable transcript ship.
       const binds = fakeClient.call.mock.calls.filter(
         (c) => c[0] === 'conversation.store-runner-session',
@@ -3884,8 +3481,8 @@ describe('main()', () => {
             runnerSessionId: null,
           };
         }
-        if (action === 'workspace.materialize') return { bundleBytes: '' };
         if (action === 'tool.list') return { tools: [] };
+        if (action === 'attachments.list') return { files: [] };
         if (action === 'conversation.store-runner-session') {
           return { ok: true };
         }
@@ -3951,8 +3548,8 @@ describe('main()', () => {
             runnerSessionId: '', // <- the load-bearing input
           };
         }
-        if (action === 'workspace.materialize') return { bundleBytes: '' };
         if (action === 'tool.list') return { tools: [] };
+        if (action === 'attachments.list') return { files: [] };
         if (action === 'conversation.store-runner-session') {
           return { ok: true };
         }
@@ -3981,23 +3578,19 @@ describe('main()', () => {
   });
 
   // ---------------------------------------------------------------------
-  // Phase C: HOME redirect for the SDK subprocess.
+  // Phase C: HOME for the SDK subprocess.
   //
-  // The Anthropic SDK writes its native session jsonl to
-  // ~/.claude/projects/<sessionId>.jsonl. In the k8s sandbox, the runner
-  // pod sets HOME=/nonexistent at the pod level so `git` (and any other
-  // tool the runner spawns) can't accidentally read a global ~/.gitconfig.
-  // The SDK can't write its jsonl into /nonexistent, so the targeted fix
-  // is to point HOME at the workspace root for the SDK subprocess only —
-  // the `env:` we pass into `query({ options: { env } })`. This way the
-  // jsonl lands inside the workspace where the turn-end
-  // `git status + git add -A + bundle` flow captures it. The runner
-  // process's own git operations still see HOME=/nonexistent because
-  // we don't override their env.
+  // The SDK subprocess gets HOME = the agent's home (`/files` in k8s, the
+  // `env:` we pass into `query({ options: { env } })`), so tools that read
+  // HOME (`~/bin`, dotfiles) find the agent's own durable files. The SDK's own
+  // state does not follow HOME: with CLAUDE_CONFIG_DIR set, its `.claude.json`,
+  // sessions and transcripts land there, outside the home (see the §11
+  // tests). The runner process keeps its own HOME (k8s: /home/runner), so a
+  // child the runner itself spawns never reads agent-written dotfiles.
   // ---------------------------------------------------------------------
 
-  describe('Phase C: HOME redirect for SDK subprocess', () => {
-    it('happy path: SDK env.HOME is set to workspaceRoot and ANTHROPIC_API_KEY is preserved', async () => {
+  describe('Phase C: HOME for the SDK subprocess', () => {
+    it('happy path: SDK env.HOME is the agent home and ANTHROPIC_API_KEY is preserved', async () => {
       setEnv(COMPLETE_ENV);
       fakeClient = buildFakeClient();
       fakeClient.call.mockImplementation(async (action: string) => {
@@ -4017,7 +3610,6 @@ describe('main()', () => {
             runnerSessionId: null,
           };
         }
-        if (action === 'workspace.materialize') return { bundleBytes: '' };
         if (action === 'tool.list') return { tools: [] };
         throw new Error(`unexpected call: ${action}`);
       });
@@ -4044,13 +3636,10 @@ describe('main()', () => {
           env: { HOME?: string; ANTHROPIC_API_KEY?: string };
         };
       };
-      // HOME = workspaceRoot is for Phase C jsonl-redirect (the SDK's
-      // native ~/.claude/projects/<sessionId>.jsonl writes land where
-      // the turn-end git status + bundle flow captures them).
-      // Skill-discovery's `'user'` root is the separately-forwarded
-      // CLAUDE_CONFIG_DIR — see the I-P0-1 test below — which must NOT
-      // collapse onto this HOME path.
-      expect(queryArg.options.env.HOME).toBe('/tmp/workspace');
+      // HOME is the agent's home. Skill discovery's `'user'` root and the
+      // SDK's own state are the separately-forwarded CLAUDE_CONFIG_DIR — see
+      // the I-P0-1 test below — which must NOT collapse onto this HOME path.
+      expect(queryArg.options.env.HOME).toBe(COMPLETE_ENV.AX_USERFILES_ROOT);
       // ANTHROPIC_API_KEY is preserved through the spread — the
       // proxyStartup.providerEnv merge intent is documented here so
       // a future refactor that drops the spread still trips this test.
@@ -4060,10 +3649,10 @@ describe('main()', () => {
     });
 
     it('HOME override is per-SDK-subprocess only: process.env.HOME is NOT mutated by main()', async () => {
-      // The runner-process git operations inherit HOME=/nonexistent
-      // from process.env (pod-level setting). Mutating process.env.HOME
-      // here would defeat the git-paranoia posture for the runner's
-      // own git operations.
+      // The runner process keeps its own HOME (k8s: /home/runner, the
+      // pod-level setting). Mutating process.env.HOME here would hand every
+      // child the runner itself spawns the agent's home, and with it the
+      // agent-written dotfiles there.
       setEnv(COMPLETE_ENV);
       const homeBefore = process.env.HOME;
       fakeClient = buildFakeClient();
@@ -4084,7 +3673,6 @@ describe('main()', () => {
             runnerSessionId: null,
           };
         }
-        if (action === 'workspace.materialize') return { bundleBytes: '' };
         if (action === 'tool.list') return { tools: [] };
         throw new Error(`unexpected call: ${action}`);
       });
@@ -4109,15 +3697,18 @@ describe('main()', () => {
     });
   });
 
-  describe('filestore-user-files Phase 2 (TASK-164): cwd=HOME=/files + re-root', () => {
-    // When AX_USERFILES_ROOT is wired, the SDK subprocess's cwd + HOME move to
-    // the durable /files NFS mount; the governed /agent tier (here
-    // /tmp/workspace) plus /ephemeral are granted via additionalDirectories; and
-    // the PreToolUse re-rooter broadens to the full .ax/**+.claude/** policy. The
-    // UNSET path (today's behavior) is covered by the Phase C tests above.
-    function wirePlan2Client() {
+  describe('the agent home (TASK-164, TASK-995): cwd = HOME = the home, and nothing is re-rooted', () => {
+    // The SDK subprocess's cwd and HOME are the agent's durable home
+    // (AX_USERFILES_ROOT, `/files` in k8s). There is no second tree the runner
+    // manages: the scratch root (AX_EPHEMERAL_ROOT) and the read-only memory
+    // root are the only directories granted beyond it, and a path is never
+    // rewritten on its way to the host.
+    function wireHomeClient(
+      extraTools: unknown[] = [],
+      answer: (action: string, payload: unknown) => unknown = () => undefined,
+    ) {
       fakeClient = buildFakeClient();
-      fakeClient.call.mockImplementation(async (action: string) => {
+      fakeClient.call.mockImplementation(async (action: string, payload: unknown) => {
         if (action === 'session.get-config') {
           return {
             userId: 'u-test',
@@ -4134,8 +3725,9 @@ describe('main()', () => {
             runnerSessionId: null,
           };
         }
-        if (action === 'workspace.materialize') return { bundleBytes: '' };
-        if (action === 'tool.list') return { tools: [] };
+        if (action === 'tool.list') return { tools: extraTools };
+        const answered = answer(action, payload);
+        if (answered !== undefined) return answered;
         throw new Error(`unexpected call: ${action}`);
       });
       fakeInbox = buildFakeInbox([userEntry('hi'), cancelEntry]);
@@ -4152,119 +3744,39 @@ describe('main()', () => {
       );
     }
 
-    it('uses scratch for cwd/HOME and the transcript slug without a user-files mount, while re-rooting identity writes', async () => {
-      setEnv({ ...COMPLETE_ENV, AX_EPHEMERAL_ROOT: '/ephemeral' });
-      wirePlan2Client();
-      const originalCall = fakeClient.call.getMockImplementation()!;
-      fakeClient.call.mockImplementation(async (action: string, ...args: unknown[]) => {
-        if (action === 'tool.pre-call') return { verdict: 'allow' };
-        return originalCall(action, ...args);
-      });
-      const { main } = await import('../main.js');
-      expect(await main()).toBe(0);
-      const options = queryMock.mock.calls[0]?.[0].options;
-      expect(options.cwd).toBe('/ephemeral');
-      expect(options.env.HOME).toBe('/ephemeral');
-      expect(options.additionalDirectories).toContain('/tmp/workspace');
-      expect(createJsonlTranscriptSourceSpy).toHaveBeenCalledWith(`${CONFIG_DIR}/projects`, '/ephemeral');
-      const hook = options.hooks.PreToolUse[0].hooks[0];
-      const result = await hook({ hook_event_name: 'PreToolUse', tool_name: 'Write', tool_input: { file_path: '/ephemeral/.ax/SOUL.md', content: 'Identity' } }, 'test-scratch-identity', {});
-      expect(result.hookSpecificOutput.updatedInput.file_path).toBe('/tmp/workspace/.ax/SOUL.md');
-    });
-
-    it('moves cwd + HOME to AX_USERFILES_ROOT and grants /agent + /ephemeral', async () => {
-      setEnv({
-        ...COMPLETE_ENV,
-        AX_EPHEMERAL_ROOT: '/ephemeral',
-        AX_USERFILES_ROOT: '/files',
-      });
-      wirePlan2Client();
+    it('runs the SDK with HOME = cwd = the agent home, CLAUDE_CONFIG_DIR outside it, and additionalDirectories = [scratch, memory]', async () => {
+      setEnv({ ...COMPLETE_ENV, AX_MEMORY_ROOT: '/memory' });
+      wireHomeClient();
 
       const { main } = await import('../main.js');
       expect(await main()).toBe(0);
 
-      const queryArg = queryMock.mock.calls[0]?.[0] as {
+      const { options } = queryMock.mock.calls[0]![0] as {
         options: {
           cwd: string;
-          env: { HOME?: string; PATH?: string };
+          env: Record<string, string | undefined>;
           additionalDirectories?: string[];
-        };
-      };
-      // cwd + HOME are the durable user-files mount.
-      expect(queryArg.options.cwd).toBe('/files');
-      expect(queryArg.options.env.HOME).toBe('/files');
-      // The governed tier (/tmp/workspace = AX_WORKSPACE_ROOT) is no longer the
-      // cwd, so it MUST be granted explicitly — it holds the transcript
-      // symlink and every re-rooted .ax/**+.claude/** write. (Uploads are
-      // copied into the scratch root, which is granted below.)
-      expect(queryArg.options.additionalDirectories).toContain('/tmp/workspace');
-      expect(queryArg.options.additionalDirectories).toContain('/ephemeral');
-      // /files is the cwd, so it is NOT duplicated in the list.
-      expect(queryArg.options.additionalDirectories).not.toContain('/files');
-      // ~/bin follows HOME → /files/bin (durable NFS), appended to PATH.
-      expect(queryArg.options.env.PATH?.endsWith(':/files/bin')).toBe(true);
-    });
-
-    it('builds the transcript source for the dir the SDK runs in, so a resumed turn finds its jsonl', async () => {
-      // The SDK reads `projects/<slug(cwd)>/<sid>.jsonl`. With a durable mount
-      // cwd is /files, NOT the governed /agent the source is rooted at, so the
-      // source must be told the cwd or the resume-restore writes under a slug
-      // the SDK never opens ("No conversation found with session ID").
-      setEnv({
-        ...COMPLETE_ENV,
-        AX_EPHEMERAL_ROOT: '/ephemeral',
-        AX_USERFILES_ROOT: '/files',
-      });
-      wirePlan2Client();
-
-      const { main } = await import('../main.js');
-      expect(await main()).toBe(0);
-
-      const queryArg = queryMock.mock.calls[0]?.[0] as {
-        options: { cwd: string };
-      };
-      expect(queryArg.options.cwd).toBe('/files');
-      // Rooted at the governed tier (where the projects symlink lands), slugged
-      // by the SDK's actual cwd — the same value, not a parallel computation.
-      expect(createJsonlTranscriptSourceSpy).toHaveBeenCalledWith(
-        `${CONFIG_DIR}/projects`,
-        queryArg.options.cwd,
-      );
-    });
-
-    it('grants AX_MEMORY_ROOT via additionalDirectories only — never cwd/HOME/settingSources', async () => {
-      setEnv({
-        ...COMPLETE_ENV,
-        AX_EPHEMERAL_ROOT: '/ephemeral',
-        AX_USERFILES_ROOT: '/files',
-        AX_MEMORY_ROOT: '/memory',
-      });
-      wirePlan2Client();
-
-      const { main } = await import('../main.js');
-      expect(await main()).toBe(0);
-
-      const queryArg = queryMock.mock.calls[0]?.[0] as {
-        options: {
-          cwd: string;
-          env: { HOME?: string };
           settingSources: string[];
-          additionalDirectories?: string[];
         };
       };
-      expect(queryArg.options.additionalDirectories).toContain('/memory');
-      expect(queryArg.options.cwd).toBe('/files');
-      expect(queryArg.options.env.HOME).toBe('/files');
-      expect(queryArg.options.settingSources).toEqual(['user']);
+      expect(options.cwd).toBe(HOME_DIR);
+      expect(options.env.HOME).toBe(HOME_DIR);
+      // The SDK's own trusted configuration is runner-private and outside the
+      // home (the startup guard refuses anything else).
+      expect(options.env.CLAUDE_CONFIG_DIR).toBe(CONFIG_DIR);
+      const configFromHome = nodePath.relative(HOME_DIR, CONFIG_DIR);
+      expect(configFromHome.startsWith('..') && !nodePath.isAbsolute(configFromHome)).toBe(true);
+      // Beyond the cwd, the file tools reach the scratch root and the
+      // read-only memory root, and nothing else. The home is not listed twice.
+      expect(options.additionalDirectories).toEqual([SCRATCH_DIR, '/memory']);
+      expect(options.settingSources).toEqual(['user']);
+      // ~/bin follows HOME and is appended to PATH.
+      expect(options.env.PATH?.endsWith(`:${HOME_DIR}/bin`)).toBe(true);
     });
 
     it('omits the memory root when AX_MEMORY_ROOT is unset (no permission widening)', async () => {
-      setEnv({
-        ...COMPLETE_ENV,
-        AX_EPHEMERAL_ROOT: '/ephemeral',
-        AX_USERFILES_ROOT: '/files',
-      });
-      wirePlan2Client();
+      setEnv(COMPLETE_ENV);
+      wireHomeClient();
 
       const { main } = await import('../main.js');
       expect(await main()).toBe(0);
@@ -4272,37 +3784,149 @@ describe('main()', () => {
       const queryArg = queryMock.mock.calls[0]?.[0] as {
         options: { additionalDirectories?: string[] };
       };
-      expect(queryArg.options.additionalDirectories).not.toContain('/memory');
+      expect(queryArg.options.additionalDirectories).toEqual([SCRATCH_DIR]);
     });
 
-    it('UNSET (no AX_USERFILES_ROOT): cwd=HOME=scratch and agent state stays separately accessible', async () => {
-      setEnv({ ...COMPLETE_ENV, AX_EPHEMERAL_ROOT: '/ephemeral' });
-      wirePlan2Client();
+    it('builds the transcript source for the dir the SDK runs in, so a resumed turn finds its jsonl', async () => {
+      // The SDK reads `projects/<slug(cwd)>/<sid>.jsonl`, and its cwd is the
+      // agent's home, so the source must be slugged by that same directory or
+      // the resume-restore writes under a slug the SDK never opens ("No
+      // conversation found with session ID").
+      setEnv(COMPLETE_ENV);
+      wireHomeClient();
 
       const { main } = await import('../main.js');
       expect(await main()).toBe(0);
 
       const queryArg = queryMock.mock.calls[0]?.[0] as {
+        options: { cwd: string };
+      };
+      expect(queryArg.options.cwd).toBe(HOME_DIR);
+      // Rooted at the transcript directory, slugged by the SDK's actual cwd —
+      // the same value, not a parallel computation.
+      expect(createJsonlTranscriptSourceSpy).toHaveBeenCalledWith(
+        `${CONFIG_DIR}/projects`,
+        queryArg.options.cwd,
+      );
+    });
+
+    it.each(['AX_USERFILES_ROOT', 'AX_EPHEMERAL_ROOT'])(
+      'refuses to start without %s: there is no fallback home or scratch root',
+      async (name) => {
+        setEnv({ ...COMPLETE_ENV, [name]: undefined });
+        fakeClient = buildFakeClient();
+        fakeInbox = buildFakeInbox([]);
+        const stderrSpy = vi
+          .spyOn(process.stderr, 'write')
+          .mockImplementation(() => true);
+        try {
+          const { main } = await import('../main.js');
+          expect(await main()).toBe(2);
+          expect(stderrSpy.mock.calls.map((c) => String(c[0])).join('')).toContain(
+            `missing required env: ${name}`,
+          );
+          expect(createIpcClientMock).not.toHaveBeenCalled();
+          expect(queryMock).not.toHaveBeenCalled();
+        } finally {
+          stderrSpy.mockRestore();
+        }
+      },
+    );
+
+    // The hook main() wires is the one the SDK runs. A configuration-looking
+    // path reaches the host exactly as the model wrote it, and the SDK gets no
+    // `updatedInput` (TASK-995: nothing is re-rooted; see pre-tool-use.test.ts
+    // for the full set of shapes).
+    it('the wired PreToolUse hook hands .ax/, .claude/ and CLAUDE.md paths to the host as written', async () => {
+      setEnv(COMPLETE_ENV);
+      wireHomeClient([], (action) =>
+        action === 'tool.pre-call' ? { verdict: 'allow' } : undefined,
+      );
+
+      const { main } = await import('../main.js');
+      expect(await main()).toBe(0);
+
+      const { options } = queryMock.mock.calls[0]![0] as {
         options: {
-          cwd: string;
-          env: { HOME?: string; PATH?: string };
-          additionalDirectories?: string[];
+          hooks: {
+            PreToolUse: Array<{
+              hooks: Array<(input: unknown, id: string, opts: unknown) => Promise<unknown>>;
+            }>;
+          };
         };
       };
-      expect(queryArg.options.cwd).toBe('/ephemeral');
-      expect(queryArg.options.env.HOME).toBe('/ephemeral');
-      expect(queryArg.options.additionalDirectories).toEqual(['/tmp/workspace']);
-      expect(queryArg.options.env.PATH?.endsWith(':/ephemeral/bin')).toBe(true);
+      const hook = options.hooks.PreToolUse[0]!.hooks[0]!;
+      for (const filePath of [`${HOME_DIR}/.ax/SOUL.md`, '.claude/settings.json', 'CLAUDE.md']) {
+        const id = `tu-${filePath}`;
+        const out = await hook(
+          { hook_event_name: 'PreToolUse', tool_name: 'Write', tool_input: { file_path: filePath, content: 'x' } },
+          id,
+          { signal: new AbortController().signal },
+        );
+        expect(out, filePath).toEqual({
+          hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow' },
+        });
+        const preCall = fakeClient.call.mock.calls.filter((c) => c[0] === 'tool.pre-call').at(-1);
+        expect(preCall?.[1], filePath).toEqual({
+          call: { id, name: 'Write', input: { file_path: filePath, content: 'x' } },
+        });
+      }
+    });
+
+    // TASK-995: there is no workspace to flush before a host tool reads the
+    // agent's files; they are already where the host reads them. A host tool
+    // whose descriptor still says `flushWorkspaceBeforeCall` forwards straight
+    // to `tool.execute-host`, with no other IPC call first.
+    it('a host tool call has no workspace flush precondition', async () => {
+      setEnv(COMPLETE_ENV);
+      wireHomeClient(
+        [
+          {
+            name: 'host_reads_files',
+            description: 'a host tool that reads files the agent wrote',
+            inputSchema: { type: 'object', properties: { q: { type: 'string' } } },
+            executesIn: 'host',
+            flushWorkspaceBeforeCall: true,
+          },
+        ],
+        (action) => (action === 'tool.execute-host' ? { output: 'host-ok' } : undefined),
+      );
+
+      const { main } = await import('../main.js');
+      expect(await main()).toBe(0);
+
+      // The host MCP server main() built for this session (the SDK mock keeps
+      // the tool entries it was handed).
+      const sdk = await import('@anthropic-ai/claude-agent-sdk');
+      const hostServer = (sdk.createSdkMcpServer as unknown as Mock).mock.calls
+        .map((c) => c[0] as {
+          name: string;
+          tools: Array<{ name: string; handler: (args: unknown, extra: unknown) => Promise<unknown> }>;
+        })
+        .filter((c) => c.name === 'ax-host-tools')
+        .at(-1);
+      const hostTool = hostServer?.tools.find((t) => t.name === 'host_reads_files');
+      expect(hostTool).toBeDefined();
+
+      const before = fakeClient.call.mock.calls.length;
+      const result = await hostTool!.handler({ q: 'x' }, {});
+      expect(fakeClient.call.mock.calls.slice(before).map((c) => c[0])).toEqual(['tool.execute-host']);
+      expect(fakeClient.call.mock.calls.at(-1)?.[1]).toMatchObject({
+        call: { name: 'host_reads_files', input: { q: 'x' } },
+      });
+      expect(fakeClient.callBinary).not.toHaveBeenCalled();
+      expect(fakeClient.callBinaryUpload).not.toHaveBeenCalled();
+      expect(result).toEqual({ content: [{ type: 'text', text: 'host-ok' }] });
     });
   });
 
   describe('Python venv activation', () => {
-    // Same scaffolding as the HOME-redirect happy path, but with an ephemeral
-    // root + a forwarded proxy CA so buildPythonVenvEnv produces the full set.
+    // Same scaffolding as the HOME happy path, plus a forwarded proxy CA so
+    // buildPythonVenvEnv produces the full set. The venv lives in the scratch
+    // root, which every session has (TASK-995).
     function venvEnv() {
       return {
         ...COMPLETE_ENV,
-        AX_EPHEMERAL_ROOT: '/ephemeral',
         SSL_CERT_FILE: '/etc/ax/proxy-ca.crt',
       };
     }
@@ -4325,7 +3949,6 @@ describe('main()', () => {
             runnerSessionId: null,
           };
         }
-        if (action === 'workspace.materialize') return { bundleBytes: '' };
         if (action === 'tool.list') return { tools: [] };
         throw new Error(`unexpected call: ${action}`);
       });
@@ -4351,19 +3974,19 @@ describe('main()', () => {
       const { main } = await import('../main.js');
       expect(await main()).toBe(0);
 
-      expect(scaffoldPythonVenvMock).toHaveBeenCalledWith('/ephemeral');
+      expect(scaffoldPythonVenvMock).toHaveBeenCalledWith(SCRATCH_DIR);
       const queryArg = queryMock.mock.calls[0]?.[0] as {
         options: { env: Record<string, string> };
       };
-      expect(queryArg.options.env.VIRTUAL_ENV).toBe('/ephemeral/py');
+      expect(queryArg.options.env.VIRTUAL_ENV).toBe(`${SCRATCH_DIR}/py`);
       // TASK-19: the venv bin stays at the FRONT (the venv must win for
-      // python/pip), and $HOME/bin (the persisted workspace tier) is APPENDED
-      // at the END — installed agent tools are discoverable but can't shadow
-      // the trusted venv/base bins.
-      expect(queryArg.options.env.PATH.startsWith('/ephemeral/py/bin:')).toBe(
+      // python/pip), and $HOME/bin (in the durable home) is APPENDED at the
+      // END — installed agent tools are discoverable but can't shadow the
+      // trusted venv/base bins.
+      expect(queryArg.options.env.PATH.startsWith(`${SCRATCH_DIR}/py/bin:`)).toBe(
         true,
       );
-      expect(queryArg.options.env.PATH.endsWith(':/ephemeral/bin')).toBe(
+      expect(queryArg.options.env.PATH.endsWith(`:${HOME_DIR}/bin`)).toBe(
         true,
       );
       expect(queryArg.options.env.PIP_CERT).toBe('/etc/ax/proxy-ca.crt');
@@ -4384,24 +4007,9 @@ describe('main()', () => {
         options: { env: Record<string, string> };
       };
       expect(queryArg.options.env.VIRTUAL_ENV).toBeUndefined();
-      expect(queryArg.options.env.PATH.startsWith('/ephemeral/py/bin')).toBe(
+      expect(queryArg.options.env.PATH.startsWith(`${SCRATCH_DIR}/py/bin`)).toBe(
         false,
       );
-    });
-
-    it('does not scaffold or activate when no ephemeral root is wired', async () => {
-      setEnv(COMPLETE_ENV); // no AX_EPHEMERAL_ROOT
-      scaffoldPythonVenvMock.mockResolvedValue(true);
-      wireClient();
-
-      const { main } = await import('../main.js');
-      expect(await main()).toBe(0);
-
-      expect(scaffoldPythonVenvMock).not.toHaveBeenCalled();
-      const queryArg = queryMock.mock.calls[0]?.[0] as {
-        options: { env: Record<string, string> };
-      };
-      expect(queryArg.options.env.VIRTUAL_ENV).toBeUndefined();
     });
 
     it('startup does NOT block on the venv scaffold (turn proceeds while it is still pending)', async () => {
@@ -4421,7 +4029,7 @@ describe('main()', () => {
       expect(await main()).toBe(0);
 
       // The scaffold WAS kicked off (fire-and-forget), just not awaited.
-      expect(scaffoldPythonVenvMock).toHaveBeenCalledWith('/ephemeral');
+      expect(scaffoldPythonVenvMock).toHaveBeenCalledWith(SCRATCH_DIR);
       // The turn ran before the scaffold resolved, so the venv env was NOT
       // wired this turn (pythonVenvReady never flipped).
       const queryArg = queryMock.mock.calls[0]?.[0] as {
@@ -4456,7 +4064,7 @@ describe('main()', () => {
       const queryArg = queryMock.mock.calls[0]?.[0] as {
         options: { env: Record<string, string> };
       };
-      expect(queryArg.options.env.VIRTUAL_ENV).toBe('/ephemeral/py');
+      expect(queryArg.options.env.VIRTUAL_ENV).toBe(`${SCRATCH_DIR}/py`);
 
       scaffoldPythonVenvMock.mockReset();
       scaffoldPythonVenvMock.mockResolvedValue(true);
@@ -4483,7 +4091,6 @@ describe('main()', () => {
           runnerSessionId: null,
         };
       }
-      if (action === 'workspace.materialize') return { bundleBytes: '' };
       if (action === 'tool.list') {
         return {
           tools: [
@@ -4501,12 +4108,6 @@ describe('main()', () => {
         };
       }
       throw new Error(`unexpected call: ${action}`);
-    });
-    fakeClient.callBinaryUpload.mockImplementation(async (action: string) => {
-      if (action === 'workspace.commit-bundle') {
-        return { accepted: true, version: 'v1', delta: null };
-      }
-      throw new Error(`unexpected upload: ${action}`);
     });
     fakeInbox = buildFakeInbox([cancelEntry]);
 
@@ -4559,7 +4160,6 @@ describe('main()', () => {
           runnerSessionId: null,
         };
       }
-      if (action === 'workspace.materialize') return { bundleBytes: '' };
       if (action === 'tool.list') return { tools: [] };
       if (action === 'attachments.list') {
         return AttachmentsListResponseSchema.parse({
@@ -4568,21 +4168,14 @@ describe('main()', () => {
           ],
         });
       }
-      if (action === 'conversation.drain-save-refusals') return { refusals: [] };
       throw new Error(`unexpected call: ${action}`);
     });
     fakeClient.callBinary.mockImplementation(async (action: string, payload: unknown) => {
-      if (action !== 'blob.get') return { path: '/tmp/fake-materialize.bundle', bytes: 0 };
+      if (action !== 'blob.get') throw new Error(`unexpected binary call: ${action}`);
       expect(payload).toEqual({ sha256 });
       const tmp = nodePath.join(scratch, 'blob-get.tmp');
       await fs.writeFile(tmp, png);
       return { path: tmp, bytes: png.length };
-    });
-    fakeClient.callBinaryUpload.mockImplementation(async (action: string) => {
-      if (action === 'workspace.commit-bundle') {
-        return { accepted: true, version: 'v1', delta: null };
-      }
-      throw new Error(`unexpected upload: ${action}`);
     });
     return { scratch };
   }
@@ -4642,10 +4235,10 @@ describe('main()', () => {
       },
     ]);
 
-    // The bytes came from the runner's own copy, flat in `<scratch>/uploads/` —
-    // never from a workspace read.
+    // The bytes came from the runner's own copy, flat in `<scratch>/uploads/`,
+    // fetched once from the blob store and never through any other read.
     expect(await fs.readFile(nodePath.join(scratch, 'uploads', 'img.png'))).toEqual(png);
-    expect(fakeClient.call.mock.calls.some((c) => c[0] === 'workspace.read')).toBe(false);
+    expect(fakeClient.callBinary.mock.calls.map((c) => c[0])).toEqual(['blob.get']);
   });
 
   it('Phase 2: preserves typed user text alongside translated attachment blocks', async () => {
@@ -4739,7 +4332,6 @@ describe('main()', () => {
             runnerSessionId: null,
           };
         }
-        if (action === 'workspace.materialize') return { bundleBytes: '' };
         if (action === 'tool.list') return { tools: [] };
         throw new Error(`unexpected call: ${action}`);
       });
@@ -4773,10 +4365,11 @@ describe('main()', () => {
       // and the entire Phase 0 / Phase 1 host-installed-skills surface
       // goes silently dark.
       expect(queryArg.options.env.CLAUDE_CONFIG_DIR).toBe(sandboxConfigDir);
-      // Sanity: the HOME redirect is still in place — these two env vars
-      // partition the design (HOME for jsonl, CLAUDE_CONFIG_DIR for skill
-      // discovery) and must NOT collapse onto each other.
-      expect(queryArg.options.env.HOME).toBe('/tmp/workspace');
+      // Sanity: HOME is still the agent's home — these two env vars
+      // partition the design (HOME is the agent's own files; CLAUDE_CONFIG_DIR
+      // is the SDK's trusted configuration and its jsonl) and must NOT
+      // collapse onto each other.
+      expect(queryArg.options.env.HOME).toBe(COMPLETE_ENV.AX_USERFILES_ROOT);
       expect(queryArg.options.env.CLAUDE_CONFIG_DIR).not.toBe(
         queryArg.options.env.HOME,
       );
@@ -4893,10 +4486,10 @@ describe('main()', () => {
       const t = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'ax-main-canary-'));
       onTestFinished(() => fs.rm(t, { recursive: true, force: true }));
       const files = nodePath.join(t, 'files');
-      const agent = nodePath.join(t, 'agent');
+      const scratch = nodePath.join(t, 'tmp');
       const cfg = nodePath.join(t, 'cfg');
       const markers = nodePath.join(t, 'markers');
-      await fs.mkdir(agent);
+      await fs.mkdir(scratch);
       await fs.mkdir(nodePath.join(cfg, 'skills'), { recursive: true });
       await fs.mkdir(markers);
       const hook = (event: string) => ({
@@ -4935,7 +4528,7 @@ describe('main()', () => {
         const parts = rel.split('/');
         for (let i = 1; i < parts.length; i += 1) plantedTree.add(`${parts.slice(0, i).join('/')}/`);
       }
-      setEnv({ ...COMPLETE_ENV, AX_USERFILES_ROOT: files, AX_WORKSPACE_ROOT: agent, CLAUDE_CONFIG_DIR: cfg });
+      setEnv({ ...COMPLETE_ENV, AX_USERFILES_ROOT: files, AX_EPHEMERAL_ROOT: scratch, CLAUDE_CONFIG_DIR: cfg });
       bootableHost();
 
       const { rc } = await runMain();
@@ -4951,6 +4544,7 @@ describe('main()', () => {
           mcpServers: Record<string, unknown>;
           settingSources: string[];
           cwd: string;
+          additionalDirectories?: string[];
           env: Record<string, string | undefined>;
         };
       };
@@ -4961,6 +4555,8 @@ describe('main()', () => {
       expect(options.settingSources).toEqual(['user']);
       expect(options.cwd).toBe(files);
       expect(options.env.HOME).toBe(files);
+      // The scratch root is the only directory granted beyond the home.
+      expect(options.additionalDirectories).toEqual([scratch]);
       expect(options.env.CLAUDE_CONFIG_DIR).toBe(cfg);
       expect('CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD' in options.env).toBe(false);
       expect(await listTree(files)).toEqual([...plantedTree].sort());
@@ -4996,8 +4592,8 @@ describe('main()', () => {
               runnerSessionId: opts.runnerSessionId,
             };
           }
-          if (action === 'workspace.materialize') return { bundleBytes: '' };
           if (action === 'tool.list') return { tools: [] };
+          if (action === 'attachments.list') return { files: [] };
           if (action === 'conversation.store-runner-session') return { ok: true };
           throw new Error(`unexpected call: ${action}`);
         });
@@ -5032,7 +4628,7 @@ describe('main()', () => {
         const link = nodePath.join(cfg, 'projects');
         expect((await fs.lstat(link)).isSymbolicLink()).toBe(true);
         expect(await fs.readlink(link)).toBe(root);
-        expect(createJsonlTranscriptSourceSpy).toHaveBeenCalledWith(root, '/tmp/workspace');
+        expect(createJsonlTranscriptSourceSpy).toHaveBeenCalledWith(root, COMPLETE_ENV.AX_USERFILES_ROOT);
         expect(waitForTranscriptUuidMock).toHaveBeenCalledWith(
           root,
           'sdk-sess-t',
@@ -5070,7 +4666,7 @@ describe('main()', () => {
         const st = await fs.lstat(projects);
         expect(st.isDirectory()).toBe(true);
         expect(st.isSymbolicLink()).toBe(false);
-        expect(createJsonlTranscriptSourceSpy).toHaveBeenCalledWith(projects, '/tmp/workspace');
+        expect(createJsonlTranscriptSourceSpy).toHaveBeenCalledWith(projects, COMPLETE_ENV.AX_USERFILES_ROOT);
         expect(readLastTurnUuidMock).toHaveBeenCalledWith(projects, 'sdk-sess-t', 'assistant');
       });
     });
@@ -5118,7 +4714,6 @@ describe('main()', () => {
             runnerSessionId: null,
           };
         }
-        if (action === 'workspace.materialize') return { bundleBytes: '' };
         if (action === 'tool.list') return { tools: [] };
         throw new Error(`unexpected call: ${action}`);
       });
@@ -5166,396 +4761,6 @@ describe('main()', () => {
     }
   });
 
-  it('Phase 3 turn end: concurrent-writer advance → resync + retry → host accepts second attempt', async () => {
-    // Regression for the stuck-loop bug: when workspace.commit-notify returns
-    // accepted:false with actualParent (the concurrent-writer advance case, NO
-    // inline bundle — it's fetched out-of-band), the runner should binary-fetch
-    // the baseline bundle for actualParent, call resyncBaselineAndReplay with
-    // the FETCHED FILE, re-bundle, and retry the commit-notify with the new
-    // parentVersion. On accept it advances baseline. True veto (no actualParent)
-    // and network errors are unchanged.
-    setEnv(COMPLETE_ENV);
-
-    // First commitTurnAndBundle returns the initial bundle; after resync it
-    // returns a rebased bundle.
-    commitTurnAndBundleMock
-      .mockResolvedValueOnce(Buffer.from('BUNDLE_FIRST'))
-      .mockResolvedValueOnce(Buffer.from('BUNDLE_REBASED'));
-
-    let commitNotifyCallCount = 0;
-    fakeClient = buildFakeClient();
-    fakeClient.call.mockImplementation(async (action: string) => {
-      if (action === 'session.get-config') {
-        return {
-          userId: 'u',
-          agentId: 'a',
-          agentConfig: {
-            displayName: 'Test Agent',
-            systemPromptAugment: '',
-            allowedTools: [],
-            mcpConfigIds: [],
-            model: 'anthropic/claude-sonnet-4-7',
-            runner: 'claude-sdk',
-          },
-          conversationId: null,
-          runnerSessionId: null,
-        };
-      }
-      if (action === 'workspace.materialize') return { bundleBytes: 'B64' };
-      if (action === 'tool.list') return { tools: [] };
-      throw new Error(`unexpected: ${action}`);
-    });
-    fakeClient.callBinaryUpload.mockImplementation(async (action: string) => {
-      if (action === 'workspace.commit-bundle') {
-        commitNotifyCallCount++;
-        if (commitNotifyCallCount === 1) {
-          // Concurrent writer advanced the mirror: resync path. Only the head
-          // signal is returned; the runner fetches the bundle out-of-band.
-          return {
-            accepted: false,
-            actualParent: 'newhead',
-          };
-        }
-        // Second attempt: accept
-        return { accepted: true, version: 'newhead2' };
-      }
-      throw new Error(`unexpected upload: ${action}`);
-    });
-
-    fakeInbox = buildFakeInbox([userEntry('hi'), cancelEntry]);
-    queryMock.mockImplementation(
-      ({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => {
-        return (async function* () {
-          const it = prompt[Symbol.asyncIterator]();
-          await it.next();
-          yield assistantText('done');
-          yield resultSuccess();
-          await it.next();
-        })();
-      },
-    );
-
-    const { main } = await import('../main.js');
-    const rc = await main();
-    expect(rc).toBe(0);
-
-    // The baseline bundle for the advanced head was fetched out-of-band via the
-    // binary action (NOT inline in the commit-notify JSON response).
-    expect(fakeClient.callBinary).toHaveBeenCalledWith(
-      'workspace.export-baseline-bundle',
-      { version: 'newhead' },
-    );
-
-    // resyncBaselineAndReplay was called once with the FETCHED bundle file, the
-    // original parentVersion as oldBaseline, and 'newhead' as newBaseline.
-    expect(resyncBaselineAndReplayMock).toHaveBeenCalledTimes(1);
-    expect(resyncBaselineAndReplayMock).toHaveBeenCalledWith({
-      root: '/tmp/workspace',
-      bundlePath: '/tmp/fake-resync-baseline.bundle',
-      oldBaseline: 'mock-baseline-oid',
-      newBaseline: 'newhead',
-    });
-
-    // Two commit-notify calls were made.
-    const commitCalls = fakeClient.callBinaryUpload.mock.calls.filter(
-      (c) => c[0] === 'workspace.commit-bundle',
-    );
-    expect(commitCalls).toHaveLength(2);
-
-    // First call used the original parentVersion (materialize-time OID).
-    expect(commitCalls[0]?.slice(1)).toEqual([
-      Buffer.from('BUNDLE_FIRST'),
-      { reason: 'turn', parentVersion: 'mock-baseline-oid' },
-    ]);
-
-    // Second call used the concurrent writer's new head as parentVersion.
-    expect(commitCalls[1]?.slice(1)).toEqual([
-      Buffer.from('BUNDLE_REBASED'),
-      { reason: 'turn', parentVersion: 'newhead' },
-    ]);
-
-    // After accept, baseline was advanced (not rolled back).
-    expect(advanceBaselineMock).toHaveBeenCalledTimes(1);
-    expect(rollbackToBaselineMock).not.toHaveBeenCalled();
-  });
-
-  it('Phase 3 turn end: concurrent-writer advance → resync → empty rebased bundle promotes parentVersion (next turn uses new baseline)', async () => {
-    // Regression for the `reb === null` path: after a resync, if the rebased
-    // turn produces no new commit (commitTurnAndBundle returns null) the runner
-    // must promote parentVersion to the new baseline. Otherwise the NEXT turn's
-    // commit-notify would send the stale parent and trigger a spurious re-sync.
-    setEnv(COMPLETE_ENV);
-
-    // Turn 1: initial bundle, then null after resync (empty rebased bundle).
-    // Turn 2: a normal bundle.
-    commitTurnAndBundleMock
-      .mockResolvedValueOnce(Buffer.from('BUNDLE_FIRST'))
-      .mockResolvedValueOnce(null)
-      .mockResolvedValueOnce(Buffer.from('BUNDLE_TURN2'));
-
-    let commitNotifyCallCount = 0;
-    fakeClient = buildFakeClient();
-    fakeClient.call.mockImplementation(async (action: string) => {
-      if (action === 'session.get-config') {
-        return {
-          userId: 'u',
-          agentId: 'a',
-          agentConfig: {
-            displayName: 'Test Agent',
-            systemPromptAugment: '',
-            allowedTools: [],
-            mcpConfigIds: [],
-            model: 'anthropic/claude-sonnet-4-7',
-            runner: 'claude-sdk',
-          },
-          conversationId: null,
-          runnerSessionId: null,
-        };
-      }
-      if (action === 'workspace.materialize') return { bundleBytes: 'B64' };
-      if (action === 'tool.list') return { tools: [] };
-      throw new Error(`unexpected: ${action}`);
-    });
-    fakeClient.callBinaryUpload.mockImplementation(async (action: string) => {
-      if (action === 'workspace.commit-bundle') {
-        commitNotifyCallCount++;
-        if (commitNotifyCallCount === 1) {
-          // Turn 1: concurrent writer advanced the mirror → resync signal
-          // (head only; bundle fetched out-of-band).
-          return {
-            accepted: false,
-            actualParent: 'newhead',
-          };
-        }
-        // Turn 2's commit-notify accepts.
-        return { accepted: true, version: 'newhead2' };
-      }
-      throw new Error(`unexpected upload: ${action}`);
-    });
-
-    fakeInbox = buildFakeInbox([userEntry('hi'), userEntry('hi2'), cancelEntry]);
-    queryMock.mockImplementation(
-      ({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => {
-        return (async function* () {
-          const it = prompt[Symbol.asyncIterator]();
-          await it.next(); // pull turn 1
-          yield assistantText('done1');
-          yield resultSuccess();
-          await it.next(); // pull turn 2
-          yield assistantText('done2');
-          yield resultSuccess();
-          await it.next(); // pull → cancel
-        })();
-      },
-    );
-
-    const { main } = await import('../main.js');
-    const rc = await main();
-    expect(rc).toBe(0);
-
-    // Resync ran once for turn 1, using the out-of-band-fetched bundle file.
-    expect(fakeClient.callBinary).toHaveBeenCalledWith(
-      'workspace.export-baseline-bundle',
-      { version: 'newhead' },
-    );
-    expect(resyncBaselineAndReplayMock).toHaveBeenCalledTimes(1);
-    expect(resyncBaselineAndReplayMock).toHaveBeenCalledWith({
-      root: '/tmp/workspace',
-      bundlePath: '/tmp/fake-resync-baseline.bundle',
-      oldBaseline: 'mock-baseline-oid',
-      newBaseline: 'newhead',
-    });
-
-    const commitCalls = fakeClient.callBinaryUpload.mock.calls.filter(
-      (c) => c[0] === 'workspace.commit-bundle',
-    );
-    // Turn 1 made ONE commit-notify (reb===null breaks before any retry).
-    // Turn 2 made the second.
-    expect(commitCalls).toHaveLength(2);
-    expect(commitCalls[0]?.slice(1)).toEqual([
-      Buffer.from('BUNDLE_FIRST'),
-      { reason: 'turn', parentVersion: 'mock-baseline-oid' },
-    ]);
-    // THE REGRESSION ASSERTION: turn 2 uses the promoted baseline ('newhead'),
-    // NOT the stale 'mock-baseline-oid'.
-    expect(commitCalls[1]?.slice(1)).toEqual([
-      Buffer.from('BUNDLE_TURN2'),
-      { reason: 'turn', parentVersion: 'newhead' },
-    ]);
-
-    // Turn 2's accept advanced baseline; nothing was rolled back.
-    expect(advanceBaselineMock).toHaveBeenCalledTimes(1);
-    expect(rollbackToBaselineMock).not.toHaveBeenCalled();
-  });
-
-  it('Phase 3 turn end: concurrent-writer advance with no actualParent (true veto) → rollback, no resync', async () => {
-    // A rejected commit-notify with NO actualParent is a true policy veto —
-    // not a concurrent-writer race. The runner must rollback (unchanged behavior).
-    setEnv(COMPLETE_ENV);
-    commitTurnAndBundleMock.mockResolvedValueOnce(Buffer.from('BUNDLE_VETO2'));
-    fakeClient = buildFakeClient();
-    fakeClient.call.mockImplementation(async (action: string) => {
-      if (action === 'session.get-config') {
-        return {
-          userId: 'u',
-          agentId: 'a',
-          agentConfig: {
-            displayName: 'Test Agent',
-            systemPromptAugment: '',
-            allowedTools: [],
-            mcpConfigIds: [],
-            model: 'anthropic/claude-sonnet-4-7',
-            runner: 'claude-sdk',
-          },
-          conversationId: null,
-          runnerSessionId: null,
-        };
-      }
-      if (action === 'workspace.materialize') return { bundleBytes: 'B64' };
-      if (action === 'tool.list') return { tools: [] };
-      throw new Error(`unexpected: ${action}`);
-    });
-    fakeClient.callBinaryUpload.mockImplementation(async (action: string) => {
-      if (action === 'workspace.commit-bundle') {
-        // True veto: no actualParent
-        return { accepted: false, reason: 'security veto' };
-      }
-      throw new Error(`unexpected upload: ${action}`);
-    });
-    fakeInbox = buildFakeInbox([userEntry('hi'), cancelEntry]);
-    const stderrSpy = vi
-      .spyOn(process.stderr, 'write')
-      .mockImplementation(() => true);
-    queryMock.mockImplementation(
-      ({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => {
-        return (async function* () {
-          const it = prompt[Symbol.asyncIterator]();
-          await it.next();
-          yield assistantText('done');
-          yield resultSuccess();
-          await it.next();
-        })();
-      },
-    );
-    try {
-      const { main } = await import('../main.js');
-      expect(await main()).toBe(0);
-      // No resync attempted on a true veto.
-      expect(resyncBaselineAndReplayMock).not.toHaveBeenCalled();
-      // Rollback called.
-      expect(rollbackToBaselineMock).toHaveBeenCalledTimes(1);
-      expect(advanceBaselineMock).not.toHaveBeenCalled();
-      const stderrText = stderrSpy.mock.calls.map((c) => String(c[0])).join('');
-      expect(stderrText).toContain('security veto');
-    } finally {
-      stderrSpy.mockRestore();
-    }
-  });
-
-  it('F-2: FINAL commit-notify re-syncs on a concurrent-writer advance (was log-only)', async () => {
-    // Regression for F-2: the post-`result` final/idle commit used to only log
-    // on !accepted, so a concurrent writer racing the final commit silently
-    // dropped the final turn's tail. After the fix, the final commit runs the
-    // same shared re-sync+retry helper as the per-turn commit.
-    //
-    // The per-turn commit produces NO bundle (commitTurnAndBundle → null), so
-    // no per-turn commit-notify fires. The FINAL commit produces a bundle, the
-    // host returns the concurrent-writer envelope, the helper re-syncs +
-    // re-bundles + retries, and the retry is accepted.
-    setEnv(COMPLETE_ENV);
-    commitTurnAndBundleMock
-      .mockResolvedValueOnce(null) // per-turn: empty → no per-turn commit-notify
-      .mockResolvedValueOnce(Buffer.from('BUNDLE_FINAL')) // final commit
-      .mockResolvedValueOnce(Buffer.from('BUNDLE_FINAL_REBASED')); // re-bundle after resync
-
-    let commitNotifyCallCount = 0;
-    fakeClient = buildFakeClient();
-    fakeClient.call.mockImplementation(async (action: string) => {
-      if (action === 'session.get-config') {
-        return {
-          userId: 'u',
-          agentId: 'a',
-          agentConfig: {
-            displayName: 'Test Agent',
-            systemPromptAugment: '',
-            allowedTools: [],
-            mcpConfigIds: [],
-            model: 'anthropic/claude-sonnet-4-7',
-            runner: 'claude-sdk',
-          },
-          conversationId: null,
-          runnerSessionId: null,
-        };
-      }
-      if (action === 'workspace.materialize') return { bundleBytes: 'B64' };
-      if (action === 'tool.list') return { tools: [] };
-      throw new Error(`unexpected: ${action}`);
-    });
-    fakeClient.callBinaryUpload.mockImplementation(async (action: string) => {
-      if (action === 'workspace.commit-bundle') {
-        commitNotifyCallCount++;
-        if (commitNotifyCallCount === 1) {
-          // Concurrent writer advanced the mirror under the final commit
-          // (head-only signal; bundle fetched out-of-band).
-          return {
-            accepted: false,
-            actualParent: 'v2',
-          };
-        }
-        return { accepted: true, version: 'v2' };
-      }
-      throw new Error(`unexpected upload: ${action}`);
-    });
-
-    fakeInbox = buildFakeInbox([userEntry('hi'), cancelEntry]);
-    queryMock.mockImplementation(
-      ({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => {
-        return (async function* () {
-          const it = prompt[Symbol.asyncIterator]();
-          await it.next();
-          yield assistantText('done');
-          yield resultSuccess();
-          await it.next();
-        })();
-      },
-    );
-
-    const { main } = await import('../main.js');
-    expect(await main()).toBe(0);
-
-    // The FINAL commit re-synced exactly once, against the materialize baseline,
-    // using the out-of-band-fetched bundle file.
-    expect(fakeClient.callBinary).toHaveBeenCalledWith(
-      'workspace.export-baseline-bundle',
-      { version: 'v2' },
-    );
-    expect(resyncBaselineAndReplayMock).toHaveBeenCalledTimes(1);
-    expect(resyncBaselineAndReplayMock).toHaveBeenCalledWith({
-      root: '/tmp/workspace',
-      bundlePath: '/tmp/fake-resync-baseline.bundle',
-      oldBaseline: 'mock-baseline-oid',
-      newBaseline: 'v2',
-    });
-
-    const commitCalls = fakeClient.callBinaryUpload.mock.calls.filter(
-      (c) => c[0] === 'workspace.commit-bundle',
-    );
-    // Two commit-notify calls: the rejected final + the accepted retry.
-    expect(commitCalls).toHaveLength(2);
-    expect(commitCalls[0]?.slice(1)).toEqual([
-      Buffer.from('BUNDLE_FINAL'),
-      { reason: 'turn', parentVersion: 'mock-baseline-oid' },
-    ]);
-    // The retry used the concurrent writer's new head + the re-bundle.
-    expect(commitCalls[1]?.slice(1)).toEqual([
-      Buffer.from('BUNDLE_FINAL_REBASED'),
-      { reason: 'turn', parentVersion: 'v2' },
-    ]);
-
-    expect(advanceBaselineMock).toHaveBeenCalledTimes(1);
-    expect(rollbackToBaselineMock).not.toHaveBeenCalled();
-  });
-
   // -------------------------------------------------------------------------
   // TASK-688 — Stop. The shell routes an `interrupt` inbox entry to the handler
   // this loop registers; the handler is `Query.interrupt()`, and nothing else.
@@ -5598,7 +4803,6 @@ describe('main()', () => {
             runnerSessionId: null,
           };
         }
-        if (action === 'workspace.materialize') return { bundleBytes: '' };
         if (action === 'tool.list') return { tools: [] };
         throw new Error(`unexpected call: ${action}`);
       });

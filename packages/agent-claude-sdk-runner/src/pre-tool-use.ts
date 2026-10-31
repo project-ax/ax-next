@@ -13,8 +13,11 @@
 // place as a belt-and-suspenders allow-path for tools the SDK routes there
 // directly (third-party MCP, etc.).
 //
-// The policy itself (re-root + `tool.pre-call` adjudication) now lives in
-// `@ax/agent-runner-core`'s `tool-policy.ts`, shared with other runners.
+// The policy itself (`tool.pre-call` adjudication) lives in
+// `@ax/agent-runner-core`'s `tool-policy.ts`, shared with other runners. It
+// sends the call exactly as the model wrote it — no path is rewritten
+// (TASK-995) — so `updatedInput` below only ever carries a host
+// `modifiedCall`.
 import type { HookCallback } from '@anthropic-ai/claude-agent-sdk';
 import {
   createToolPolicy,

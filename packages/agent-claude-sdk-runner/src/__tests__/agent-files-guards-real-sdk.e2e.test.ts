@@ -139,7 +139,7 @@ async function newPod(name: string): Promise<Pod> {
   await fs.mkdir(path.join(pod.cfg, 'skills'), { recursive: true });
   await fs.mkdir(pod.scratch, { recursive: true });
   await fs.mkdir(pod.tmp, { recursive: true });
-  // What the runner's afterMaterialize does before the SDK starts.
+  // What the runner's `prepareSession` seam does before the SDK starts.
   await prepareTranscriptDir({ claudeConfigDir: pod.cfg, transcriptsRoot: pod.transcripts });
   return pod;
 }

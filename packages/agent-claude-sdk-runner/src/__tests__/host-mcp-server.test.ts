@@ -50,8 +50,9 @@ const SANDBOX_TOOL: ToolDescriptor = {
   inputSchema: { type: 'object' },
   executesIn: 'sandbox',
 };
-const HOST_TOOL_FLUSH: ToolDescriptor = {
-  name: 'host_reads_workspace',
+// A descriptor that still carries the retired flush flag (TASK-995).
+const HOST_TOOL_FLAGGED: ToolDescriptor = {
+  name: 'host_reads_files',
   description: 'a host tool that reads files the agent just wrote',
   inputSchema: { type: 'object' },
   executesIn: 'host',
@@ -214,169 +215,36 @@ describe('buildHostToolEntries', () => {
     }
   });
 
-  // BUG-W2 regression: a host tool that reads workspace files the agent wrote
-  // earlier in the SAME turn must have the runner flush its live tree to the
-  // host mirror BEFORE the forward, or the host reads a stale mirror and misses
-  // the just-written file.
-  it('flushes the workspace BEFORE forwarding a flushWorkspaceBeforeCall tool', async () => {
-    const order: string[] = [];
-    const { client } = mkClient(async () => {
-      order.push('forward');
-      return { output: 'ok' };
-    });
-    const flushWorkspace = async () => {
-      order.push('flush');
-      return { outcome: 'accepted' as const };
-    };
-    const entries = buildHostToolEntries(
-      client,
-      [HOST_TOOL_FLUSH],
-      () => 'id-1',
-      flushWorkspace,
-    );
-    await (entries[0] as ToolEntry).handler({}, {});
-    // Flush must complete before the host call goes out — order is the contract.
-    expect(order).toEqual(['flush', 'forward']);
-  });
-
-  it('forwards on a no-op flush (already synced on a prior turn)', async () => {
-    const { client, calls } = mkClient(async () => ({ output: 'ok' }));
-    const flushWorkspace = async () => ({ outcome: 'noop' as const });
-    const entries = buildHostToolEntries(
-      client,
-      [HOST_TOOL_FLUSH],
-      () => 'id-1',
-      flushWorkspace,
-    );
-    const result = (await (entries[0] as ToolEntry).handler({}, {})) as {
-      content: Array<{ type: string; text: string }>;
-      isError?: boolean;
-    };
-    expect(calls.map((c) => c.action)).toEqual(['tool.execute-host']);
-    expect(result.isError).toBeUndefined();
-  });
-
-  it('does NOT flush for a host tool without flushWorkspaceBeforeCall', async () => {
-    let flushed = false;
-    const { client, calls } = mkClient(async () => ({ output: 'ok' }));
-    const flushWorkspace = async () => {
-      flushed = true;
-      return { outcome: 'accepted' as const };
-    };
-    const entries = buildHostToolEntries(
-      client,
-      [HOST_TOOL_A],
-      () => 'id-1',
-      flushWorkspace,
-    );
-    await (entries[0] as ToolEntry).handler({}, {});
-    expect(flushed).toBe(false);
-    expect(calls.map((c) => c.action)).toEqual(['tool.execute-host']);
-  });
-
-  it('forwards anyway when a flagged tool has no flushWorkspace wired', async () => {
-    const { client, calls } = mkClient(async () => ({ output: 'ok' }));
-    // No flushWorkspace arg — e.g. a workspace-less deployment. The flag is a
-    // no-op and the call still forwards.
-    const entries = buildHostToolEntries(client, [HOST_TOOL_FLUSH], () => 'id-1');
-    const result = (await (entries[0] as ToolEntry).handler({}, {})) as {
-      content: Array<{ type: string; text: string }>;
-    };
-    expect(calls.map((c) => c.action)).toEqual(['tool.execute-host']);
-    expect(result.content[0]?.text).toBe('ok');
-  });
-
-  // BUG-W2 follow-up (Codex review): the flush is a PRECONDITION. A flagged
-  // tool must NOT be forwarded when the flush didn't actually sync the mirror —
-  // forwarding would read a stale (kept) or rolled-back (older committed) state.
-  it.each(['kept', 'rolled-back'] as const)(
-    'does NOT forward and returns isError when the flush is %s',
-    async (outcome) => {
-      const order: string[] = [];
-      const { client } = mkClient(async () => {
-        order.push('forward');
-        return { output: 'host-ok' };
-      });
-      const flushWorkspace = async () => {
-        order.push('flush');
-        return { outcome };
-      };
-      const entries = buildHostToolEntries(
-        client,
-        [HOST_TOOL_FLUSH],
-        () => 'id-1',
-        flushWorkspace,
-      );
-      const result = (await (entries[0] as ToolEntry).handler({}, {})) as {
-        content: Array<{ type: string; text: string }>;
-        isError?: boolean;
-      };
-      // Flushed, but did NOT forward — and surfaced a retryable error.
-      expect(order).toEqual(['flush']);
-      expect(result.isError).toBe(true);
-      expect(result.content[0]?.text).toContain(outcome);
-    },
-  );
-
-  // TASK-240: a veto rolls the turn back — under `recoverable: false` with a
-  // HARD reset, so the file the agent just wrote is gone. A bare `rolled-back`
-  // tells the model that something failed but not what to change, and the
-  // reason reaches no other channel it can read. It must ride the tool result.
-  it('puts the host\'s veto reason in the isError tool result', async () => {
+  // TASK-995: there is no workspace to flush. `flushWorkspaceBeforeCall` is
+  // still a legal descriptor field until the IPC schema drops it, so a
+  // descriptor carrying it must forward exactly like any other host tool —
+  // straight to `tool.execute-host`, with nothing run first. The fourth
+  // argument is what the old flush gate took; nothing may call it now.
+  it('forwards a host tool that sets flushWorkspaceBeforeCall straight to tool.execute-host', async () => {
     const { client, calls } = mkClient(async () => ({ output: 'host-ok' }));
-    const flushWorkspace = async () => ({
-      outcome: 'rolled-back' as const,
-      rejectionReason:
-        '.claude/settings.json: agent writes to the SDK config are refused',
-    });
-    const entries = buildHostToolEntries(
-      client,
-      [HOST_TOOL_FLUSH],
-      () => 'id-1',
-      flushWorkspace,
-    );
-    const result = (await (entries[0] as ToolEntry).handler({}, {})) as {
+    let flushed = false;
+    const legacyFlush = async () => {
+      flushed = true;
+      return { outcome: 'kept' as const };
+    };
+    const entries = (
+      buildHostToolEntries as unknown as (
+        ...args: unknown[]
+      ) => ReturnType<typeof buildHostToolEntries>
+    )(client, [HOST_TOOL_FLAGGED], () => 'id-1', legacyFlush);
+    const result = (await (entries[0] as ToolEntry).handler({ q: 'x' }, {})) as {
       content: Array<{ type: string; text: string }>;
       isError?: boolean;
     };
-    expect(calls.map((c) => c.action)).toEqual([]);
-    expect(result.isError).toBe(true);
-    const text = result.content[0]?.text ?? '';
-    // The reason itself, verbatim — not a summary and not just the outcome.
-    expect(text).toContain(
-      '.claude/settings.json: agent writes to the SDK config are refused',
-    );
-    // And we tell the model the turn was rolled back rather than "try again",
-    // which is useless advice against a policy veto: the same retry is vetoed
-    // the same way.
-    expect(text).toContain('rolled back');
-    expect(text).not.toContain('please try again');
-  });
-
-  it('does NOT forward and returns isError when the flush throws', async () => {
-    const order: string[] = [];
-    const { client } = mkClient(async () => {
-      order.push('forward');
-      return { output: 'host-ok' };
-    });
-    const flushWorkspace = async (): Promise<{ outcome: 'accepted' }> => {
-      order.push('flush-throw');
-      throw new Error('commit-notify unreachable');
-    };
-    const entries = buildHostToolEntries(
-      client,
-      [HOST_TOOL_FLUSH],
-      () => 'id-1',
-      flushWorkspace,
-    );
-    const result = (await (entries[0] as ToolEntry).handler({}, {})) as {
-      content: Array<{ type: string; text: string }>;
-      isError?: boolean;
-    };
-    // A thrown flush is "not synced" — skip the forward, surface a clear error.
-    expect(order).toEqual(['flush-throw']);
-    expect(result.isError).toBe(true);
-    expect(result.content[0]?.text).toContain('error');
+    expect(flushed).toBe(false);
+    expect(calls).toEqual([
+      {
+        action: 'tool.execute-host',
+        payload: { call: { id: 'id-1', name: 'host_reads_files', input: { q: 'x' } } },
+      },
+    ]);
+    expect(result.isError).toBeUndefined();
+    expect(result.content[0]?.text).toBe('host-ok');
   });
 
   it('tolerates a missing description by falling back to empty string', () => {

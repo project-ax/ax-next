@@ -48,13 +48,11 @@
 //      workflow (I-P0-1, docs/plans/2026-05-17-skill-install-phase-0-impl.md)
 //      flips Skill from "denied at every layer" to "the intended SDK-native
 //      skill-discovery path." Skill is now in `allowedTools` and the SDK
-//      reads skills from $CLAUDE_CONFIG_DIR/skills/ (host-controlled) and
-//      <workspace>/.claude/skills/ (a narrow symlink to .ax/draft-skills,
-//      gated at workspace:pre-apply by @ax/validator-skill — see commit
-//      521f206c, which vetoes agent writes to .claude/settings.json,
-//      CLAUDE.md, and other SDK-config paths that would let an agent
-//      escalate via the now-enabled user/project setting sources).
-//      Skill is NOT a nested-agent bypass; `Task` still is.
+//      reads skills ONLY from $CLAUDE_CONFIG_DIR/skills/ (the host's
+//      read-only projection): `settingSources` is `['user']`, so nothing
+//      the agent writes in its home (`.claude/skills/`, `.claude/settings.json`,
+//      `CLAUDE.md`) is loaded. Skill is NOT a nested-agent bypass; `Task`
+//      still is.
 //
 //   4. Connector MCP tools (TASK-734). Connector MCP servers run INSIDE the
 //      sandbox via the per-directory `.mcp.json` the runner materializes

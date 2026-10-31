@@ -63,10 +63,10 @@ describe('artifact_publish end-to-end (sandbox dispatch)', () => {
     );
     const [entry] = buildSandboxToolEntries(dispatcher, [ARTIFACT_PUBLISH_DESCRIPTOR]);
 
-    // Governed agent state: not merely absent from an allowlist, but on a root
-    // the executor was never handed.
+    // Not merely absent from an allowlist, but on a root the executor was
+    // never handed.
     const result = await entry.handler(
-      { path: '/agent/.ax/sessions/leak.jsonl' },
+      { path: '/srv/another-agent/notes/leak.jsonl' },
       { signal: undefined } as never,
     );
 

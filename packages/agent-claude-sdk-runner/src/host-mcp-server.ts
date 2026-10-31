@@ -38,7 +38,6 @@ import {
   type ToolDescriptor,
 } from '@ax/ipc-protocol';
 import { z } from 'zod';
-import { flushPreconditionMessage, type HostToolFlush } from '@ax/agent-runner-core';
 import { MCP_HOST_SERVER_NAME } from './tool-names.js';
 
 export interface CreateHostMcpServerOptions {
@@ -47,15 +46,6 @@ export interface CreateHostMcpServerOptions {
   tools: ToolDescriptor[];
   /** Test seam: override the per-call id generator. */
   idGen?: () => string;
-  /**
-   * Flush the live workspace (commit + push to the host mirror) before
-   * forwarding a host tool whose descriptor declares
-   * `flushWorkspaceBeforeCall`, returning the flush outcome plus, on a
-   * refusal, the host's stated reason. Omitted in deployments without a
-   * workspace (the flag then simply has no effect). See the precondition gate
-   * in the per-tool handler below.
-   */
-  flushWorkspace?: () => Promise<HostToolFlush>;
 }
 
 /**
@@ -148,7 +138,6 @@ export function buildHostToolEntries(
   client: IpcClient,
   tools: ToolDescriptor[],
   idGen: () => string = () => randomUUID(),
-  flushWorkspace?: () => Promise<HostToolFlush>,
 ): Array<SdkMcpToolDefinition> {
   const hostTools = tools.filter((t) => t.executesIn === 'host');
   return hostTools.map((t) =>
@@ -158,48 +147,6 @@ export function buildHostToolEntries(
       shapeFromInputSchema(t.inputSchema),
       async (args) => {
         try {
-          // Flush the live workspace BEFORE forwarding when this host tool
-          // declares it reads workspace files the agent may have written this
-          // turn. Under runner-owned sessions the host reads the committed +
-          // pushed mirror, which lags the live tree until a turn-boundary
-          // commit — without the flush the host read misses a just-written
-          // file (BUG-W2).
-          //
-          // The flush is a PRECONDITION, not best-effort: we forward ONLY when
-          // it actually synced the mirror. `accepted` = pushed; `noop` =
-          // nothing staged because it was already committed+pushed on a prior
-          // turn (mirror already current). Anything else means the host would
-          // read a stale-or-worse state, so we DON'T forward:
-          //   - `kept` (host unreachable / 5xx): committed locally but never
-          //     pushed → host read would 404.
-          //   - `rolled-back` (workspace veto / resync exhausted): the live
-          //     tree was reset to baseline, so the just-authored file is GONE
-          //     and the mirror still lacks it — forwarding could even install
-          //     an OLDER committed draft with the freshly-requested grants.
-          //   - thrown: git/IPC error mid-flush.
-          // In those cases we surface a clear tool error instead of forwarding
-          // into a stale read (BUG-W2 follow-up; Codex review) — carrying the
-          // host's own reason for the refusal when it gave one, so a veto is
-          // something the model can act on rather than a bare `rolled-back`.
-          if (t.flushWorkspaceBeforeCall === true && flushWorkspace !== undefined) {
-            let flush: { outcome: HostToolFlush['outcome'] | 'error'; rejectionReason?: string };
-            try {
-              flush = await flushWorkspace();
-            } catch (flushErr) {
-              process.stderr.write(
-                `runner: workspace flush before '${t.name}' failed: ${flushErr instanceof Error ? flushErr.message : String(flushErr)}\n`,
-              );
-              flush = { outcome: 'error' };
-            }
-            if (flush.outcome !== 'accepted' && flush.outcome !== 'noop') {
-              return {
-                content: [
-                  { type: 'text', text: flushPreconditionMessage(t.name, flush) },
-                ],
-                isError: true,
-              };
-            }
-          }
           const raw = await client.call('tool.execute-host', {
             call: { id: idGen(), name: t.name, input: args },
           });
@@ -226,11 +173,6 @@ export function createHostMcpServer(
   return createSdkMcpServer({
     name: MCP_HOST_SERVER_NAME,
     version: '0.0.0',
-    tools: buildHostToolEntries(
-      opts.client,
-      opts.tools,
-      opts.idGen,
-      opts.flushWorkspace,
-    ),
+    tools: buildHostToolEntries(opts.client, opts.tools, opts.idGen),
   });
 }
