@@ -119,7 +119,8 @@ spec:
     # hangs at the CNI layer and the pod never becomes Ready, which looks
     # nothing like a NetworkPolicy problem when you are staring at it.
     #
-    # Scoped exactly like the runner's rule in sandbox-restrict.yaml: the single
+    # Scoped exactly like the one-shot user-files pods' rule (`-userfiles-nfs`
+    # in sandbox-restrict.yaml; runner pods have none since TASK-1003): the single
     # Filestore IP as a /32 ipBlock — not a CIDR, not the internet — on just
     # 2049 (nfsd) and 111 (rpcbind), both protocols. Rendered ONLY when the
     # host-read mount is actually enabled (invariant I5: capabilities

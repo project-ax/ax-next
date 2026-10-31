@@ -1212,26 +1212,129 @@ describeIfHelm('ax-next chart: sandbox.filestore wiring', () => {
     expect(stderr).toContain('sandbox.filestore.exportPath is empty');
   });
 
-  it('opens runner egress to ONLY the Filestore IP on :2049 + :111 (TCP+UDP)', () => {
-    const np = sandboxRestrict(helmTemplate(FILESTORE));
-    expect(np, 'sandbox-restrict NetworkPolicy renders').toBeDefined();
-    const egress = (np?.spec?.egress as Array<{
-      to?: Array<{ ipBlock?: { cidr?: string } }>;
-      ports?: Array<{ port?: number; protocol?: string }>;
-    }>) ?? [];
-
-    const fsRule = egress.find((r) =>
-      (r.to ?? []).some((t) => t.ipBlock?.cidr === '10.9.8.7/32'),
+  // TASK-1003: a runner's `/files` is an inline `nfs:` pod volume, which the
+  // kubelet mounts from the NODE's network namespace. The runner pod itself
+  // never needs to talk NFS, and a runner that could would be able to mount the
+  // WHOLE export and skip its per-agent `subPath`. So runner pods get no NFS
+  // egress at all; only the one-shot user-files pods keep theirs (below).
+  function userfilesNfs(docs: K8sDoc[]) {
+    return docs.find(
+      (d) =>
+        d.kind === 'NetworkPolicy' &&
+        String(d.metadata?.name ?? '').endsWith('-userfiles-nfs'),
     );
-    expect(fsRule, 'an egress rule scoped to the Filestore /32 exists').toBeDefined();
+  }
 
-    // Exactly the NFS ports — 2049 + 111, both protocols. Nothing wider.
-    const portKeys = (fsRule?.ports ?? [])
-      .map((p) => `${p.protocol}:${p.port}`)
-      .sort();
-    expect(portKeys).toEqual(['TCP:111', 'TCP:2049', 'UDP:111', 'UDP:2049']);
-    // The Filestore rule targets a /32 ipBlock — never a CIDR/internet wildcard.
-    expect((fsRule?.to ?? []).every((t) => t.ipBlock?.cidr === '10.9.8.7/32')).toBe(true);
+  type EgressRule = {
+    to?: Array<{ ipBlock?: { cidr?: string } }>;
+    ports?: Array<{ port?: number; protocol?: string }>;
+  };
+
+  // Both pool modes: the non-shared path used to carry the rule inline in
+  // sandbox-restrict, the shared-pool path in a separate `-cold-nfs` policy
+  // that selected every non-standby execution pod (cold runners included).
+  const SHARED_POOL = [
+    '--set', 'sandbox.backend=agent-sandbox',
+    '--set', 'credentialProxy.tcp.enabled=true',
+    '--set', 'sandbox.sharedPool.enabled=true',
+    '--set', 'sandbox.sharedPool.clientTlsSecret=controller-tls',
+    '--set', 'sandbox.sharedPool.serverTlsSecret=storage-tls',
+    '--kube-version', '1.36.4-gke.1247000',
+  ];
+
+  for (const [mode, extra] of [
+    ['direct sessions', [] as string[]],
+    ['shared pool', SHARED_POOL],
+  ] as const) {
+    it(`gives runner pods NO egress to the Filestore (${mode})`, () => {
+      const docs = helmTemplate([...FILESTORE, ...extra]);
+      const np = sandboxRestrict(docs);
+      expect(np, 'sandbox-restrict NetworkPolicy renders').toBeDefined();
+      const egress = (np?.spec?.egress as EgressRule[]) ?? [];
+      expect(
+        egress.some((r) => (r.to ?? []).some((t) => t.ipBlock?.cidr === '10.9.8.7/32')),
+        'sandbox-restrict has no rule to the Filestore /32',
+      ).toBe(false);
+      const ports = egress.flatMap((r) => r.ports ?? []).map((p) => p.port);
+      expect(ports).not.toContain(2049);
+      expect(ports).not.toContain(111);
+
+      // No OTHER policy in the runner namespace may hand a runner pod NFS reach
+      // either. NetworkPolicies are additive, so any policy whose selector a
+      // runner pod satisfies would quietly re-open it.
+      const runnerLabels: Record<string, string> = {
+        'app.kubernetes.io/component': 'ax-next-runner',
+        'ax.io/plane': 'execution',
+      };
+      const runnerNs = np?.metadata?.namespace;
+      const opensNfs = docs.filter((d) => {
+        if (d.kind !== 'NetworkPolicy' || d.metadata?.namespace !== runnerNs) return false;
+        const rules = (d.spec?.egress as EgressRule[] | undefined) ?? [];
+        return rules.some((r) => (r.ports ?? []).some((p) => p.port === 2049 || p.port === 111));
+      });
+      for (const policy of opensNfs) {
+        const sel = (policy.spec?.podSelector ?? {}) as {
+          matchLabels?: Record<string, string>;
+          matchExpressions?: unknown[];
+        };
+        // matchLabels decide it: a runner pod carries no `ax.io/shared-standby`
+        // label, so the DoesNotExist expression these policies use never
+        // excludes one.
+        const labels = sel.matchLabels ?? {};
+        const matchesRunner = Object.entries(labels).every(([k, v]) => runnerLabels[k] === v);
+        expect(matchesRunner, `${String(policy.metadata?.name)} must not select runner pods`).toBe(
+          false,
+        );
+      }
+    });
+
+    it(`keeps the one-shot user-files pods' egress to ONLY the Filestore IP on :2049 + :111 (${mode})`, () => {
+      const np = userfilesNfs(helmTemplate([...FILESTORE, ...extra]));
+      expect(np, 'userfiles-nfs NetworkPolicy renders').toBeDefined();
+      expect(np?.metadata?.namespace).toBe('ax-next-runners');
+      expect(np?.spec?.policyTypes).toEqual(['Egress']);
+      expect(np?.spec?.podSelector).toEqual({
+        matchLabels: {
+          'ax.io/plane': 'execution',
+          'app.kubernetes.io/component': 'ax-next-userfiles',
+        },
+        matchExpressions: [{ key: 'ax.io/shared-standby', operator: 'DoesNotExist' }],
+      });
+      const egress = (np?.spec?.egress as EgressRule[]) ?? [];
+      expect(egress).toHaveLength(1);
+      expect(egress[0]?.to).toEqual([{ ipBlock: { cidr: '10.9.8.7/32' } }]);
+      expect((egress[0]?.ports ?? []).map((p) => `${p.protocol}:${p.port}`).sort()).toEqual([
+        'TCP:111',
+        'TCP:2049',
+        'UDP:111',
+        'UDP:2049',
+      ]);
+    });
+  }
+
+  it('does not render the retired -cold-nfs policy (it only ever rendered with a shared pool)', () => {
+    const docs = helmTemplate([...FILESTORE, ...SHARED_POOL]);
+    expect(
+      docs.some(
+        (d) => d.kind === 'NetworkPolicy' && String(d.metadata?.name ?? '').endsWith('-cold-nfs'),
+      ),
+    ).toBe(false);
+  });
+
+  // The selector above keys off pod labels that @ax/sandbox-k8s writes. If
+  // either literal drifts, the policy silently stops matching the one-shot pods
+  // (their reads and cleanups break) or starts matching runners (the reach this
+  // card removed comes back). Read the source so a relabel reddens here.
+  it('selects on the component labels @ax/sandbox-k8s actually stamps', () => {
+    const repoRoot = resolve(chartDir, '../../..');
+    const oneshot = readFileSync(
+      resolve(repoRoot, 'packages/sandbox-k8s/src/user-files-ops.ts'),
+      'utf8',
+    );
+    const runner = readFileSync(resolve(repoRoot, 'packages/sandbox-k8s/src/pod-spec.ts'), 'utf8');
+    expect(oneshot).toContain("'app.kubernetes.io/component': 'ax-next-userfiles'");
+    expect(runner).toContain("'app.kubernetes.io/component': 'ax-next-runner'");
+    expect(runner).not.toContain("'app.kubernetes.io/component': 'ax-next-userfiles'");
   });
 
   // ---- the host-mounted read (sandbox.filestore.hostReadPath) ------------

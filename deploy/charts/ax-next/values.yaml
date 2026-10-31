@@ -332,8 +332,11 @@ sandbox:
   # "Provision the user-files Filestore"; on kind: `make dev-kind-memory-nfs`).
   # The chart only consumes the address; it does not create the instance.
   # Each agent is confined to its own `subPath=<agentId>` subtree of the export
-  # (cross-tenant isolation). The runner pod's egress is opened to JUST this
-  # server IP on the NFS ports (see networkpolicies/sandbox-restrict.yaml).
+  # (cross-tenant isolation). Runner pods get NO NFS egress: the kubelet mounts
+  # their volume from the node. Only the one-shot user-files pods may reach
+  # this server IP on the NFS ports (`-userfiles-nfs` in
+  # networkpolicies/sandbox-restrict.yaml). On GKE, also restrict the export
+  # itself to the node IP range: deploy/GKE.md, "Restrict the user-files export".
   filestore:
     # NFS server IP (or DNS): on GKE, the Filestore instance's IP. Required.
     server: ""

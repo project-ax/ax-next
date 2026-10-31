@@ -19,6 +19,7 @@ EGRESS:
   - Nothing else. No egress to the broader cluster, the k8s apiserver,
     or the internet. Tools that need network reach (npm install, curl)
     will fail until the web-proxy lands in Week 10+.
+  - In particular, no NFS. Runner volumes are kubelet mounts (TASK-1003).
 
 This NetworkPolicy lives in the runner namespace
 (.Values.namespace.runner) so it applies to pods the host creates there.
@@ -71,29 +72,12 @@ spec:
         - port: {{ .Values.credentialProxy.tcp.port | default 8888 }}
           protocol: TCP
     {{- end }}
-    {{- if and .Values.sandbox.filestore.server (not (include "ax-next.bool" .Values.sandbox.sharedPool.enabled)) }}
-    # filestore-user-files (design §4/§9) — the durable per-agent user-files
-    # mount is a Google Cloud Filestore (managed NFS) export. The otherwise
-    # internet-fenced runner needs NFS reach to mount it, so we open egress to
-    # JUST the Filestore IP on JUST the NFS ports: 2049 (nfsd) + 111 (rpcbind /
-    # portmapper), both TCP and UDP. This is a DELIBERATE, documented widening
-    # of the runner's egress lock — scoped to the single Filestore IP (a /32
-    # ipBlock), NOT a CIDR, NOT the internet (invariant I5: capabilities
-    # minimized). A server-unreachable mount surfaces as a sandbox-open error,
-    # not a silent hang.
-    - to:
-        - ipBlock:
-            cidr: {{ printf "%s/32" .Values.sandbox.filestore.server | quote }}
-      ports:
-        - port: 2049
-          protocol: TCP
-        - port: 2049
-          protocol: UDP
-        - port: 111
-          protocol: TCP
-        - port: 111
-          protocol: UDP
-    {{- end }}
+    # No NFS rule here, on purpose (TASK-1003). A runner's `/files` (and
+    # `/memory`) is an inline `nfs:` pod volume, and the KUBELET mounts it
+    # from the node's network namespace, so this pod-level policy never sees
+    # that traffic. A runner that could open its own NFS connection could
+    # mount the WHOLE export and step around its per-agent `subPath`. The
+    # one-shot user-files pods keep their NFS reach in `-userfiles-nfs` below.
     # DNS (cluster DNS lives in kube-system).
     - ports:
         - port: 53
@@ -101,20 +85,33 @@ spec:
         - port: 53
           protocol: TCP
 {{- end }}
-{{- if and (include "ax-next.bool" .Values.networkPolicies.enabled) (include "ax-next.bool" .Values.sandbox.sharedPool.enabled) .Values.sandbox.filestore.server }}
+{{- if and (include "ax-next.bool" .Values.networkPolicies.enabled) .Values.sandbox.filestore.server }}
 ---
-# Shared runners must never contact NFS directly: a user-space NFS client
-# could bypass per-agent directory mounts. Preserve the existing cold-path
-# allowance only for auxiliary pods and sessions with service sidecars.
+# TASK-1003 — NFS egress for the one-shot user-files pods ONLY.
+#
+# @ax/sandbox-k8s runs a short-lived pod (component `ax-next-userfiles`) to
+# read or clean up an agent's files when the host has no read mount of its
+# own. Those pods keep the Filestore reach they had before this policy split
+# out of `sandbox-restrict`: the single Filestore IP (a /32) on 2049 (nfsd)
+# and 111 (rpcbind), both protocols.
+#
+# Runner pods (component `ax-next-runner`) and shared-pool standbys do NOT
+# match, so they get no NFS egress at all. NetworkPolicies only ever add
+# allows, so this selector is the whole fence: widen it and runners can talk
+# NFS again. The chart tests read both component labels out of the
+# sandbox-k8s source so a relabel shows up there first.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: {{ include "ax-next.fullname" . }}-cold-nfs
+  name: {{ include "ax-next.fullname" . }}-userfiles-nfs
   namespace: {{ include "ax-next.runnerNamespace" . }}
+  labels:
+    {{- include "ax-next.labels" . | nindent 4 }}
 spec:
   podSelector:
     matchLabels:
       ax.io/plane: execution
+      app.kubernetes.io/component: ax-next-userfiles
     matchExpressions:
       - {key: ax.io/shared-standby, operator: DoesNotExist}
   policyTypes: [Egress]
