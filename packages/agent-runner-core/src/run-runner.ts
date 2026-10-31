@@ -580,7 +580,8 @@ async function runRunnerInner(
   // that names an id not in it (a new upload on a warm runner) triggers another
   // call, which copies only what is new and keeps every name already given out.
   // Calls are serialized, so two pulls can never copy one upload twice under
-  // two names. Gated on a bound conversation: a session without one has no
+  // two names: LoopContext does not forbid a loop from pulling twice at once,
+  // (pinned by the "serializes overlapping copies" test). Gated on a bound conversation: a session without one has no
   // uploads.
   const knownUploads = new Map<string, MaterializedUpload>();
   const uploadsDir = scratchUploadsDir(env.ephemeralRoot);

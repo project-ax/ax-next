@@ -329,6 +329,53 @@ describe('runRunner — uploads', () => {
     ]);
   });
 
+  it('serializes overlapping copies: two concurrent pulls never copy one upload twice', async () => {
+    // LoopContext does not forbid a loop from pulling twice at once. Two
+    // queued messages each name an upload the runner has no copy of; if both
+    // pulls copied at the same time, each would fetch both uploads and the
+    // second copy of each would land as `notes (3).txt`, `notes (4).txt`.
+    const original = fakeClient.call.getMockImplementation()!;
+    let listCount = 0;
+    fakeClient.call.mockImplementation(async (action: string, ...args: unknown[]) => {
+      if (action === 'session.get-config') return { ...(await original(action, ...args)), conversationId: 'c1' };
+      if (action === 'attachments.list') {
+        listCount += 1;
+        const ids = listCount === 1 ? [] : ['att-a', 'att-b'];
+        return AttachmentsListResponseSchema.parse({ files: ids.map(listed) });
+      }
+      return original(action, ...args);
+    });
+    const originalBinary = fakeClient.callBinary.getMockImplementation()!;
+    fakeClient.callBinary.mockImplementation(async (action: string, payload: unknown) => {
+      if (action !== 'blob.get') return originalBinary(action, payload);
+      // Slow enough that two unserialized copies overlap.
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      const tmp = path.join(blobTmp, `${randomName()}.bin`);
+      await fs.writeFile(tmp, NOTES);
+      return { path: tmp, bytes: NOTES.length };
+    });
+    scriptInbox([
+      { type: 'user-message', payload: { role: 'user', content: 'a', contentBlocks: [attachmentBlock('att-a')] }, reqId: 'r1', cursor: 1 },
+      { type: 'user-message', payload: { role: 'user', content: 'b', contentBlocks: [attachmentBlock('att-b')] }, reqId: 'r2', cursor: 2 },
+    ]);
+    const loop: Loop = {
+      run: async (ctx) => {
+        await Promise.all([ctx.nextMessage(), ctx.nextMessage()]);
+        return 0;
+      },
+    };
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      expect(await runRunner(() => loop, seams(() => ({ ...fakeEnv(), ephemeralRoot: scratch })))).toBe(0);
+    } finally {
+      stderr.mockRestore();
+    }
+    const blobGets = fakeClient.callBinary.mock.calls.filter((c) => c[0] === 'blob.get');
+    expect(blobGets).toHaveLength(2);
+    expect((await fs.readdir(path.join(scratch, 'uploads'))).sort()).toEqual(['notes (2).txt', 'notes.txt']);
+    expect(await fs.readdir(blobTmp)).toEqual([]);
+  });
+
   it('an attachment the host does not list reaches the model as a mention, with no workspace read', async () => {
     const seen = await pullOne({ lists: [[]], blocks: [attachmentBlock('att-ghost')] });
     expect(seen).toEqual([

@@ -288,6 +288,17 @@ export async function materializeUploads(opts: MaterializeUploadsOptions): Promi
     opts.warn(`runner: ${dir} is not a usable directory; no uploads copied: ${message(err)}`);
     return;
   }
+  // Known race, accepted: the agent runs as the same uid and can swap `dir`
+  // for a symlink between this check and a copy below; the exclusive create
+  // guards only the last path component. The copy then lands wherever the
+  // link points — a place the agent could already write, being the same uid,
+  // so it gains no reach — and `known` records a path that now resolves
+  // through the link. What protects the model is translation, not this check:
+  // it re-hashes the copy (and checks it is a regular file of the listed size)
+  // every time it uses one, so whatever sits at that path reaches the model as
+  // the person's file only while its bytes ARE the person's, and as "could not
+  // be loaded" otherwise. Closing the race here would need directory-relative
+  // opens (`openat`), which Node's fs API does not offer.
 
   // Names are handed out over the whole list, in list order, from one set of
   // claimed names: every name a copy already holds, plus the name each earlier
