@@ -48,6 +48,17 @@ describe('attachments.list handler', () => {
     expect(result.body).toEqual({ files: [entry] });
   });
 
+  // The wire schema strips unknown keys: a host-side `path` (or any other
+  // backend field) on an entry never reaches the runner.
+  it('strips unknown keys such as path from list entries', async () => {
+    const bus = fakeBus(async () => ({ files: [{ ...entry, path: 'x' }] }));
+    const { ctx } = fakeCtx('c1');
+    const result = (await attachmentsListHandler({ conversationId: 'c1' }, ctx, bus as never)) as HandlerOk;
+    expect(result.status).toBe(200);
+    expect(result.body).toEqual({ files: [entry] });
+    expect('path' in (result.body as { files: object[] }).files[0]!).toBe(false);
+  });
+
   it('returns an empty list cleanly (no uploads)', async () => {
     const bus = fakeBus(async () => ({ files: [] }));
     const { ctx } = fakeCtx('c1');

@@ -371,6 +371,16 @@ export function createPublishArtifactBlobHandler(deps: PublishArtifactBlobDeps) 
     ctx: AgentContext,
     input: ArtifactsPublishBlobInput,
   ): Promise<ArtifactsPublishBlobOutput> {
+    // Ownership first: a caller refused here must not learn, from a not-found
+    // vs forbidden split, whether a sha is in the store.
+    if (!(await callerOwnsConversation(deps.bus, ctx, input.conversationId))) {
+      throw new PluginError({
+        code: 'forbidden',
+        plugin: PLUGIN_NAME,
+        hookName: 'artifacts:publish-blob',
+        message: 'artifacts can be published only into a conversation the caller owns',
+      });
+    }
     const stat = await deps.bus.call<BlobStatInput, BlobStatOutput>('blob:stat', ctx, {
       sha256: input.sha256,
     });
@@ -380,14 +390,6 @@ export function createPublishArtifactBlobHandler(deps: PublishArtifactBlobDeps) 
         plugin: PLUGIN_NAME,
         hookName: 'artifacts:publish-blob',
         message: 'artifact bytes are not in the blob store',
-      });
-    }
-    if (!(await callerOwnsConversation(deps.bus, ctx, input.conversationId))) {
-      throw new PluginError({
-        code: 'forbidden',
-        plugin: PLUGIN_NAME,
-        hookName: 'artifacts:publish-blob',
-        message: 'artifacts can be published only into a conversation the caller owns',
       });
     }
     const artifactId = createHash('sha256')

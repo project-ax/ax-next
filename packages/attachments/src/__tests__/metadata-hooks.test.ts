@@ -190,7 +190,9 @@ describe('artifacts:publish-blob handler', () => {
 
   it('a blob:stat failure propagates and writes no row (never "assume it is there")', async () => {
     const { db, store } = await freshSetup();
+    // Ownership is checked first now, so the caller must own c-1 to reach blob:stat.
     const bus = new HookBus();
+    bus.registerService('conversations:get', 'test-conversations', async () => ({}));
     bus.registerService('blob:stat', 'test-blob', async () => {
       throw new Error('blob store unreachable');
     });
@@ -242,6 +244,25 @@ describe('artifacts:publish-blob handler', () => {
       }),
     ).rejects.toMatchObject({ code: 'forbidden', hookName: 'artifacts:publish-blob' });
     expect(await artifactRowCount(db)).toBe(0);
+  });
+
+  // A refused caller must not learn whether a sha is in the store: the owner
+  // gate answers first, so blob:stat is never reached for a foreign conversation.
+  it('checks conversation ownership before blob:stat (no sha-existence oracle)', async () => {
+    const { store } = await freshSetup();
+    const { bus, stats } = makeBlobStatBus();
+    const handler = createPublishArtifactBlobHandler({ store, bus });
+    await expect(
+      handler(makeCtx('u-1'), {
+        conversationId: 'c-other',
+        sha256: SHA,
+        path: 'out/probe.bin',
+        displayName: 'probe.bin',
+        mediaType: 'application/octet-stream',
+        size: 1,
+      }),
+    ).rejects.toMatchObject({ code: 'forbidden', hookName: 'artifacts:publish-blob' });
+    expect(stats).toEqual([]);
   });
 
   it("another user's publish of the same key leaves the owner's row unchanged", async () => {
