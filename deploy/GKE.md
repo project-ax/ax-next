@@ -771,7 +771,7 @@ probe() {
   esac
   kubectl --context "$GKE_CONTEXT" -n ax-next-runners delete pod \
     "files-mount-probe-$1" --ignore-not-found --wait --timeout=120s \
-    || { echo "probe: the previous probe pod is still terminating; rerun in a minute" >&2; return 2; }
+    || { echo "probe: could not delete the previous probe pod (see the error above)" >&2; return 2; }
   kubectl --context "$GKE_CONTEXT" -n ax-next-runners create -f - <<EOF || return 2
 apiVersion: v1
 kind: Pod
@@ -809,9 +809,10 @@ EOF
 }
 ```
 
-A pass prints `MOUNT-OK` and returns 0. Exit 2 means the probe never ran (a
-typo, or the previous probe pod still terminating), so it says nothing about the
-mount; just rerun it. Exit 1 means it ran and failed, and it prints the
+A pass prints `MOUNT-OK` and returns 0. Exit 2 means the probe never ran, so it
+says nothing about the mount. Read kubectl's error above it: a typo, an old
+probe pod still terminating (rerun in a minute), or something that a rerun
+won't fix (auth, admission, a missing `gvisor` RuntimeClass). Exit 1 means it ran and failed, and it prints the
 pod's description first. Read its `Node:` line and Events before you blame the
 network. The phase alone won't tell you: a mount failure also shows as
 `Pending`.
@@ -863,15 +864,24 @@ EOF
 Then repeat whatever failed: `probe gvisor` if it was the probe, the real turn
 if it was the turn.
 
-- **It now passes:** the kubelet's mount *does* go through the pod's policy on
-  your cluster. Tell us; that is worth knowing. Keep `tmp-runner-nfs-rollback`
-  until a fixed chart ships, then delete it.
-- **It still fails:** the policy was not the cause. Delete
-  `tmp-runner-nfs-rollback` right away (it only hands runners NFS reach for
-  nothing). Then read the probe's describe output, or, if it was the turn that
-  failed, `kubectl describe` that session's runner pod in `ax-next-runners`.
+- **It now passes:** confirm it both ways before you believe it. Delete the
+  policy and probe (it should fail again), then re-apply it and probe (it should
+  pass). If that holds, the kubelet's mount *does* go through the pod's policy
+  on your cluster. Keep `tmp-runner-nfs-rollback`, **do not start Half 2** (a
+  node-only export would refuse those mounts too), and tell us.
+- **It still fails:** the policy was not the cause. Delete it right away (it
+  only hands runners NFS reach for nothing), then read the probe's describe
+  output, or the failed session's runner pod if it was the turn:
 
-Either way, don't start Half 2 until Half 1's probe and real turn both pass.
+  ```bash
+  kubectl --context "$GKE_CONTEXT" -n ax-next-runners delete networkpolicy tmp-runner-nfs-rollback
+  kubectl --context "$GKE_CONTEXT" -n ax-next-runners get pods \
+    -l app.kubernetes.io/component=ax-next-runner          # find the session's pod
+  kubectl --context "$GKE_CONTEXT" -n ax-next-runners describe pod <that pod>
+  ```
+
+Only start Half 2 once Half 1's probe and real turn both pass with no
+temporary policy in place.
 
 **Half 2: the export.** Write the same `files-export.json` as in
 [Provision the user-files Filestore](#provision-the-user-files-filestore-required),
@@ -887,10 +897,15 @@ gcloud filestore instances describe ax-next-files --project=$PROJECT_ID \
 
 Then `probe gvisor` **and** `probe host`, and do the real turn again.
 
+If both probes pass but the real turn cannot write `/files`, the range is not
+the problem, so don't widen it. Check `READ_WRITE` and `NO_ROOT_SQUASH` in the
+`describe` output above, fix `files-export.json`, and run the `update` again.
+
 If either probe shows a **mount failure** (exit 1 with a `FailedMount` event),
-widen the export back to every private address and run the same `update`. That is as open as it was before, for every client that uses
-private addresses, which in a default VPC is all of them. Keep the capacity and
-`NO_ROOT_SQUASH`; only the ranges change:
+widen the export back to every private address and run the same `update`. That
+is as open as it was before, for every client that uses private addresses,
+which in a default VPC is all of them. Keep the capacity and `NO_ROOT_SQUASH`;
+only the ranges change:
 
 ```bash
 jq '.["--file-share"]["nfs-export-options"][0]["ip-ranges"] = ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"]' \
@@ -899,14 +914,15 @@ jq '.["--file-share"]["nfs-export-options"][0]["ip-ranges"] = ["10.0.0.0/8", "17
        --zone=$FS_ZONE --flags-file=files-export-rollback.json
 ```
 
-Then re-run the probe that failed. If it now passes, the node range was too
-narrow: compare pre-check 3's output with the node that probe ran on, and tell
-us. If it still fails, the export was not the cause. Put the node-only
-`files-export.json` back with the same `update` and read the describe output.
-
 If your VPC also uses non-private ranges, add them to that list, or edit the
 instance in the Cloud console and grant access to all clients on the VPC
 network. `files-export-before.json` is your record of the old settings.
+
+Then re-run the probe that failed. If it now passes, the node range was too
+narrow: re-run pre-check 3, check the probe's `Node:` address against
+`$NODE_RANGE`, and tell us. If it still fails, the export was not the cause.
+Put the node-only `files-export.json` back with the same `update` and read the
+describe output.
 
 ### Alert before the user-files share fills up
 

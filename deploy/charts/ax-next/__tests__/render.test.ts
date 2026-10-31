@@ -1376,8 +1376,19 @@ describeIfHelm('ax-next chart: sandbox.filestore wiring', () => {
     ['pods only, on 2049', { to: [{ namespaceSelector: {} }], ports: [{ port: 2049 }] }, false],
     ['HTTPS only', { ports: [{ port: 443 }] }, false],
     ['an endPort range below 2049', { ports: [{ port: 1000, endPort: 2048 }] }, false],
+    ['every UDP port (protocol only)', { ports: [{ protocol: 'UDP' }] }, true],
+    [
+      'the internet minus an unrelated range',
+      { to: [{ ipBlock: { cidr: '0.0.0.0/0', except: ['192.168.0.0/16'] } }] },
+      true,
+    ],
+    [
+      'a selector peer next to a wider CIDR',
+      { to: [{ namespaceSelector: {} }, { ipBlock: { cidr: '10.0.0.0/8' } }], ports: [{ port: 2049 }] },
+      true,
+    ],
   ] as Array<[string, FullEgressRule, boolean]>)(
-    'NFS-reach detector: %s -> %s',
+    'NFS-reach detector: %s',
     (_name, rule, expected) => {
       expect(ruleCouldReachNfs(rule, '10.9.8.7')).toBe(expected);
     },
