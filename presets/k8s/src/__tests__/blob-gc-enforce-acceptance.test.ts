@@ -543,9 +543,9 @@ describe('@ax/preset-k8s blob GC enforce-mode canary (TASK-778)', () => {
     // A holder row written long after the put, with no put of its own.
     await sql`
       INSERT INTO attachments_v1_files
-        (attachment_id, conversation_id, user_id, sha256, path, display_name, media_type, size_bytes)
+        (attachment_id, conversation_id, user_id, sha256, display_name, media_type, size_bytes)
       VALUES
-        ('att-late', 'conv-late', ${USER_A}, ${sha}, 'late.bin', 'late.bin', 'application/octet-stream', ${bytes.length})
+        ('att-late', 'conv-late', ${USER_A}, ${sha}, 'late.bin', 'application/octet-stream', ${bytes.length})
     `.execute(await db());
 
     clockSkewMs = T_PURGE;
