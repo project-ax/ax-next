@@ -315,14 +315,16 @@ jobs:
           # chart/values/preset file or this workflow changed — the chart
           # render depends on deploy/charts/** (the chart) and
           # presets/k8s/src/index.ts (env-shape.test.ts scans it for the
-          # host Deployment's env contract).
+          # host Deployment's env contract). The sandbox-k8s pod builders
+          # are in too: render.test.ts reads their component labels, which
+          # the `-userfiles-nfs` NetworkPolicy selects on (TASK-1003).
           if [ "$EVENT_NAME" != "pull_request" ]; then
             echo "relevant=true" >> "$GITHUB_OUTPUT"
             echo "Push event — rendering chart."
             exit 0
           fi
           changed=$(git diff --name-only "$BASE_SHA"...HEAD)
-          if printf '%s\n' "$changed" | grep -Eq '^(deploy/charts/|presets/k8s/|\.github/workflows/ci\.yml$)'; then
+          if printf '%s\n' "$changed" | grep -Eq '^(deploy/charts/|presets/k8s/|packages/sandbox-k8s/src/|\.github/workflows/ci\.yml$)'; then
             echo "relevant=true" >> "$GITHUB_OUTPUT"
             echo "Chart-relevant files changed — rendering chart."
           else

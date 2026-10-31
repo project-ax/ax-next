@@ -124,7 +124,7 @@ needs to be redone. Don't loosen this without a fresh threat-model pass.
 
 ## NetworkPolicies — what crosses
 
-Two policies, both gated by `.Values.networkPolicies.enabled` (default
+Three policies, all gated by `.Values.networkPolicies.enabled` (default
 `true`). Default-on means a typo in values misses the perimeter; we accept
 that over the alternative (default-off and an operator forgets to flip it).
 
@@ -160,10 +160,10 @@ carry `component: ax-next-runner`, so they do not match. NetworkPolicies only
 add allows, so this selector is the whole fence. The chart tests read both
 labels out of the sandbox-k8s source, so a relabel fails there first.
 
-On GKE the export itself is the second layer: it admits only the cluster's
-node IP range, so an NFS connection from a pod IP is refused even if a policy
-ever lets it out. See `deploy/GKE.md`, "Restrict the user-files export to the
-nodes".
+On GKE the export itself can be the second layer, once an operator applies
+`deploy/GKE.md`, "Restrict the user-files export to the nodes": it then admits
+only the cluster's node IP range, so an NFS connection from a pod IP is refused
+even if a policy ever lets it out. The chart cannot check that this was done.
 
 ### `agent-runtime-network.yaml` — host pod fence
 

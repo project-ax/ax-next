@@ -539,11 +539,14 @@ helm get values ax-next -n ax-next --kube-context <your GKE context> -o yaml | g
 ### 4e. Upgrading past TASK-1003: runners lose NFS egress
 
 From this chart on, runner pods get no NFS egress. Their `/files` is a kubelet
-mount, so they should not need any, but we have not watched that happen on GKE
-yet. Follow
+mount, so they should not need any. The best evidence so far: the shared-pool
+storage helper has mounted this same share through a kubelet `nfs:` volume
+since 2026-10-02, under a policy that allows it no NFS egress at all. But no
+cold runner has been watched doing it on GKE yet. Follow
 [Applying it to an existing deployment](#applying-it-to-an-existing-deployment):
-upgrade, start the probe runner, confirm `/files` mounts, and roll back if it
-doesn't. The same section restricts the Filestore export to the node range.
+upgrade, run the probe, confirm `/files` mounts, and use the surgical rollback
+(not `helm rollback`) if it doesn't. The same section restricts the Filestore
+export to the node range.
 
 ---
 
@@ -604,12 +607,17 @@ itself. The details, and why `no_root_squash` stays, are in
 [Restrict the user-files export to the nodes](#restrict-the-user-files-export-to-the-nodes).
 
 ```bash
-# The node subnet's primary range (read-only lookups).
-NODE_SUBNET=$(gcloud container clusters describe <cluster-name> \
-  --region $REGION --project $PROJECT_ID --format='value(subnetwork)')
+export CLUSTER=<cluster-name>
+export CLUSTER_LOCATION=<the cluster's zone, or its region if it is regional>
+
+# The node subnet's primary range (read-only lookups). --location takes a zone
+# or a region; --region would 404 on a zonal cluster and leave this empty.
+NODE_SUBNET=$(gcloud container clusters describe "$CLUSTER" \
+  --location "$CLUSTER_LOCATION" --project $PROJECT_ID --format='value(subnetwork)')
 NODE_RANGE=$(gcloud compute networks subnets describe "$NODE_SUBNET" \
   --region $REGION --project $PROJECT_ID --format='value(ipCidrRange)')
-echo "$NODE_RANGE"
+: "${NODE_RANGE:?NODE_RANGE is empty. Stop: do not write an export with no range.}"
+echo "node range: $NODE_RANGE"
 
 cat > files-export.json <<EOF
 {
@@ -660,28 +668,45 @@ that pod. So we close it twice:
    node address. On a VPC-native cluster, pods get addresses from a separate
    secondary range, so a pod's own NFS connection is refused.
 
-**Why `no_root_squash` stays.** The first time an agent's folder is mounted, the
-kubelet creates it as `root:root`. A small init step running as root then hands
-it to the runner's user (uid 1000), and that `chown` only works without root
-squash. With only node addresses admitted, root on the share means root on a
-node, and root on a node can already read every kubelet mount on it. Squashing
-would add little and would break every new agent's `/files`.
+**Why `no_root_squash` stays.** Two jobs need root on the share. The first time
+an agent's folder is mounted, the kubelet creates it as `root:root`, and a small
+init step running as root hands it to the runner's user (uid 1000). And when an
+agent is deleted, a reclaim pod running as root removes its folder, including
+anything the agent locked down with `chmod`. Root squash breaks both. It also
+would not buy much. This kind of NFS trusts whatever user id the client
+claims, and every agent's files belong to uid 1000. So any client the export
+admits can already read and write every agent's files by claiming uid 1000;
+squashing root would only protect the few root-owned entries. The real control
+is *which clients are admitted*: node addresses only, never a pod.
 
-**What this cannot see.** The node range is the whole subnet, so any other VM
-in that subnet can still mount the share. And if your cluster rewrites pod
-traffic to the node's address on its way to the Filestore IP (IP masquerade,
-check 3 below), the export cannot tell a pod from a node and the NetworkPolicy
-is the only layer left.
+**What this cannot see.** Anything that holds a node address is admitted with
+full access: root on any node, any `hostNetwork` pod, and any other VM in the
+node subnet. And if your cluster rewrites pod traffic to the node's address on
+its way to the Filestore IP (IP masquerade, pre-check 4 below), the export
+cannot tell a pod from a node and the NetworkPolicy is the only layer left.
 
 #### Applying it to an existing deployment
 
 Do the two halves separately, chart first, and check after each. Nothing here
-deletes data; each step has its own rollback. Every command names your GKE
-context explicitly. Don't lean on whatever `kubectl` happens to point at.
+deletes data, and each half has its own rollback that touches nothing else.
+Every command names your GKE context explicitly. Don't lean on whatever
+`kubectl` happens to point at. Run it all in **one** shell; later steps reuse
+the variables.
 
 ```bash
 export GKE_CONTEXT=<your GKE context>
-export FS_ZONE=us-central1-a
+export CLUSTER=<cluster-name>
+export CLUSTER_LOCATION=<the cluster's zone, or its region if it is regional>
+export FS_ZONE=us-central1-a       # the Filestore instance's zone
+
+FS_VALUES=$(helm get values ax-next -n ax-next --kube-context "$GKE_CONTEXT" -a -o json)
+FS_IP=$(echo "$FS_VALUES" | jq -r '.sandbox.filestore.server')
+FS_PATH=$(echo "$FS_VALUES" | jq -r '.sandbox.filestore.exportPath')
+PROBE_IMAGE=$(kubectl --context "$GKE_CONTEXT" -n ax-next get deploy ax-next-host \
+  -o jsonpath='{.spec.template.spec.containers[0].image}')
+HOST_NODE=$(kubectl --context "$GKE_CONTEXT" -n ax-next get pods \
+  -l app.kubernetes.io/name=ax-next-host -o jsonpath='{.items[0].spec.nodeName}')
+: "${FS_IP:?}" "${FS_PATH:?}" "${PROBE_IMAGE:?}" "${HOST_NODE:?}"
 ```
 
 **Pre-checks (read-only):**
@@ -689,55 +714,67 @@ export FS_ZONE=us-central1-a
 ```bash
 # 1. VPC-native: must print True. If it doesn't, pods and nodes are not in
 #    separate ranges and the export restriction cannot separate them. Stop.
-gcloud container clusters describe <cluster-name> --region $REGION \
+gcloud container clusters describe "$CLUSTER" --location "$CLUSTER_LOCATION" \
   --project $PROJECT_ID --format='value(ipAllocationPolicy.useIpAliases)'
 
-# 2. The ranges. The pod range must NOT sit inside the node range.
-NODE_SUBNET=$(gcloud container clusters describe <cluster-name> \
-  --region $REGION --project $PROJECT_ID --format='value(subnetwork)')
+# 2. The node range. An empty answer means a wrong name or location. Stop.
+NODE_SUBNET=$(gcloud container clusters describe "$CLUSTER" \
+  --location "$CLUSTER_LOCATION" --project $PROJECT_ID --format='value(subnetwork)')
 NODE_RANGE=$(gcloud compute networks subnets describe "$NODE_SUBNET" \
   --region $REGION --project $PROJECT_ID --format='value(ipCidrRange)')
-gcloud container clusters describe <cluster-name> --region $REGION \
-  --project $PROJECT_ID --format='value(clusterIpv4Cidr)'   # the pod range
+: "${NODE_RANGE:?NODE_RANGE is empty. Stop.}"
 echo "node range: $NODE_RANGE"
 
-# 3. IP masquerade. With no ip-masq-agent ConfigMap, GKE leaves traffic to
+# 3. The premise: EVERY node's address is inside that range, in every node pool.
+#    One node outside it would lose its mounts. Must print "all nodes inside".
+kubectl --context "$GKE_CONTEXT" get nodes \
+  -o jsonpath='{range .items[*]}{.status.addresses[?(@.type=="InternalIP")].address}{"\n"}{end}' \
+  | python3 -c 'import ipaddress,sys
+net = ipaddress.ip_network(sys.argv[1])
+out = [a for a in sys.stdin.read().split() if ipaddress.ip_address(a) not in net]
+print("OUTSIDE the node range:", out) if out else print("all nodes inside", net)
+sys.exit(1 if out else 0)' "$NODE_RANGE"
+
+# 4. IP masquerade. With no ip-masq-agent ConfigMap, GKE leaves traffic to
 #    private ranges (10/8, 172.16/12, 192.168/16, ...) unrewritten, so a pod
 #    keeps its own address. If the ConfigMap exists, the Filestore IP must fall
 #    inside one of its nonMasqueradeCIDRs.
 kubectl --context "$GKE_CONTEXT" -n kube-system get configmap ip-masq-agent -o yaml
 
-# 4. The share as it is today. Note the capacity: the update below must repeat
-#    it exactly. Save this output; it is your record of the old settings.
+# 5. The share as it is today. Note the capacity: the update below must repeat
+#    it exactly. Keep this file; it is your record of the old settings.
 gcloud filestore instances describe ax-next-files --project=$PROJECT_ID \
   --zone=$FS_ZONE --format=json | tee files-export-before.json
 ```
 
-**Half 1: the chart.** Upgrade as usual (`helm upgrade` with your usual values).
-Then start a cold runner and confirm `/files` still mounts. The probe below is a
-pod labelled exactly like a runner, so the runner NetworkPolicy fences it the
-same way. It mounts the share read-only and lists it:
+**The probe.** A runner-labelled pod that mounts the share read-only and lists
+it, so the runner NetworkPolicy fences it exactly like a runner. Define it once.
+`probe gvisor` lands on the runner node pool; `probe host` lands on the host's
+node in the default pool. Each mount is fresh, which is the point: a pod that
+is already running keeps the mount it has, so it proves nothing here.
 
 ```bash
-FS_VALUES=$(helm get values ax-next -n ax-next --kube-context "$GKE_CONTEXT" -a -o json)
-FS_IP=$(echo "$FS_VALUES" | jq -r '.sandbox.filestore.server')
-FS_PATH=$(echo "$FS_VALUES" | jq -r '.sandbox.filestore.exportPath')
-kubectl --context "$GKE_CONTEXT" -n ax-next-runners apply -f - <<EOF
+probe() {
+  case "$1" in
+    gvisor) placement='runtimeClassName: gvisor' ;;
+    host)   placement="nodeName: $HOST_NODE" ;;
+  esac
+  kubectl --context "$GKE_CONTEXT" -n ax-next-runners apply -f - <<EOF
 apiVersion: v1
 kind: Pod
 metadata:
-  name: files-mount-probe
+  name: files-mount-probe-$1
   labels:
     ax.io/plane: execution
     app.kubernetes.io/component: ax-next-runner
 spec:
-  runtimeClassName: gvisor
+  $placement
   restartPolicy: Never
   automountServiceAccountToken: false
   securityContext: {runAsNonRoot: true, runAsUser: 1000, runAsGroup: 1000}
   containers:
     - name: probe
-      image: $IMAGE:$TAG
+      image: $PROBE_IMAGE
       command: ["/bin/sh", "-c", "ls /files >/dev/null && echo MOUNT-OK"]
       securityContext: {allowPrivilegeEscalation: false, capabilities: {drop: [ALL]}, readOnlyRootFilesystem: true}
       volumeMounts: [{name: files, mountPath: /files, readOnly: true}]
@@ -745,24 +782,56 @@ spec:
     - name: files
       nfs: {server: "$FS_IP", path: "$FS_PATH", readOnly: true}
 EOF
-kubectl --context "$GKE_CONTEXT" -n ax-next-runners wait pod/files-mount-probe \
-  --for=jsonpath='{.status.phase}'=Succeeded --timeout=180s
-kubectl --context "$GKE_CONTEXT" -n ax-next-runners logs files-mount-probe   # MOUNT-OK
-kubectl --context "$GKE_CONTEXT" -n ax-next-runners delete pod files-mount-probe
+  kubectl --context "$GKE_CONTEXT" -n ax-next-runners wait "pod/files-mount-probe-$1" \
+    --for=jsonpath='{.status.phase}'=Succeeded --timeout=180s \
+    && kubectl --context "$GKE_CONTEXT" -n ax-next-runners logs "files-mount-probe-$1"
+  kubectl --context "$GKE_CONTEXT" -n ax-next-runners delete pod "files-mount-probe-$1" --wait=false
+}
 ```
 
-Then do one real turn: ask an agent to write a file into `/files` and check
-it appears in its Files tab. With shared pools on, most sessions never use a
-cold runner; a session with a service-sidecar connector does (see
-[SHARED-POOL-ACCEPTANCE.md](SHARED-POOL-ACCEPTANCE.md)).
+A pass prints `MOUNT-OK`. A fail times out with the pod stuck in
+`ContainerCreating`; `kubectl describe` shows `mount failed` (run it before the
+probe's own `delete`, or re-run the `apply` half by hand).
 
-If the probe stays `ContainerCreating` (look for `mount failed` in
-`kubectl describe`) or the turn cannot write `/files`, roll back the chart
-right away: `helm rollback ax-next <previous revision> -n ax-next --kube-context "$GKE_CONTEXT"`.
+**Half 1: the chart.** Upgrade as usual (`helm upgrade` with your usual values).
+Then `probe gvisor`, and do one real turn: ask an agent to write a file into
+`/files` and check it appears in its Files tab. With shared pools on, most
+sessions never use a cold runner; a session with a service-sidecar connector
+does (see [SHARED-POOL-ACCEPTANCE.md](SHARED-POOL-ACCEPTANCE.md)).
+
+If the probe or the turn fails, **do not `helm rollback`**. That would also roll
+back the image, and with it any database migration that shipped in the same
+upgrade. Put back just the old reach instead, with a temporary policy. It gives
+runner pods what the chart used to give them, and nothing else:
+
+```bash
+kubectl --context "$GKE_CONTEXT" -n ax-next-runners apply -f - <<EOF
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: tmp-runner-nfs-rollback
+spec:
+  podSelector:
+    matchLabels: {ax.io/plane: execution}
+  policyTypes: [Egress]
+  egress:
+    - to: [{ipBlock: {cidr: "$FS_IP/32"}}]
+      ports:
+        - {port: 2049, protocol: TCP}
+        - {port: 2049, protocol: UDP}
+        - {port: 111, protocol: TCP}
+        - {port: 111, protocol: UDP}
+EOF
+```
+
+Then tell us. A failure here means the kubelet's mount *does* go through the
+pod's policy on your cluster, which is worth knowing. Delete
+`tmp-runner-nfs-rollback` once a fixed chart ships.
 
 **Half 2: the export.** Write the same `files-export.json` as in
 [Provision the user-files Filestore](#provision-the-user-files-filestore-required),
-with the **capacity from pre-check 4**, then:
+with the **capacity from pre-check 5** and the `$NODE_RANGE` from pre-check 2,
+then:
 
 ```bash
 gcloud filestore instances update ax-next-files --project=$PROJECT_ID \
@@ -771,16 +840,23 @@ gcloud filestore instances describe ax-next-files --project=$PROJECT_ID \
   --zone=$FS_ZONE --format='yaml(fileShares)'   # shows your node range + NO_ROOT_SQUASH
 ```
 
-Run the probe and the real turn again. Also open an agent's Files tab (that is
-the host's read mount, if you set `hostReadPath`). With shared pools on, check
-the storage helper is still Ready:
-`kubectl --context "$GKE_CONTEXT" -n ax-sandbox-system get ds`.
+Then `probe gvisor` **and** `probe host`, and do the real turn again.
 
-If anything fails to mount, put the pod range back next to the node range
-(`"ip-ranges": ["$NODE_RANGE", "<pod range>"]`) and run the same `update`. For
-the exact old behaviour (every client on the VPC), edit the instance in the
-Cloud console and choose to grant access to all clients on the VPC network.
-`files-export-before.json` is your record of what it looked like.
+If either probe fails, widen the export back to every private address and run
+the same `update`. That is as open as it was before, for every client that uses
+private addresses, which in a default VPC is all of them. Keep the capacity and
+`NO_ROOT_SQUASH`; only the ranges change:
+
+```bash
+jq '.["--file-share"]["nfs-export-options"][0]["ip-ranges"] = ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"]' \
+  files-export.json > files-export-rollback.json
+gcloud filestore instances update ax-next-files --project=$PROJECT_ID \
+  --zone=$FS_ZONE --flags-file=files-export-rollback.json
+```
+
+If your VPC also uses non-private ranges, add them to that list, or edit the
+instance in the Cloud console and grant access to all clients on the VPC
+network. `files-export-before.json` is your record of the old settings.
 
 ### Alert before the user-files share fills up
 

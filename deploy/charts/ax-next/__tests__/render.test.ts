@@ -1235,6 +1235,45 @@ describeIfHelm('ax-next chart: sandbox.filestore wiring', () => {
     ports?: Array<{ port?: number; protocol?: string }>;
   };
 
+  type FullEgressRule = {
+    to?: Array<{ ipBlock?: { cidr?: string; except?: string[] }; podSelector?: unknown; namespaceSelector?: unknown }>;
+    ports?: Array<{ port?: number | string; endPort?: number; protocol?: string }>;
+  };
+
+  function ipv4ToInt(ip: string): number {
+    return ip.split('.').reduce((acc, octet) => acc * 256 + Number(octet), 0);
+  }
+
+  function cidrContains(cidr: string, ip: string): boolean {
+    if (cidr.includes(':')) return false; // IPv6 block cannot hold an IPv4 address
+    const [base, bitsText] = cidr.split('/');
+    const bits = Number(bitsText ?? '32');
+    const size = 2 ** (32 - bits);
+    const start = Math.floor(ipv4ToInt(base ?? '') / size) * size;
+    const addr = ipv4ToInt(ip);
+    return addr >= start && addr < start + size;
+  }
+
+  function ruleCouldReachNfs(rule: FullEgressRule, ip: string): boolean {
+    const ports = rule.ports ?? [];
+    const coversNfsPort =
+      ports.length === 0 ||
+      ports.some((p) => {
+        // A named or missing port is treated as reaching: we cannot rule it out.
+        if (typeof p.port !== 'number') return true;
+        const end = p.endPort ?? p.port;
+        return [2049, 111].some((n) => n >= (p.port as number) && n <= end);
+      });
+    if (!coversNfsPort) return false;
+    const to = rule.to ?? [];
+    if (to.length === 0) return true;
+    return to.some((peer) => {
+      const block = peer.ipBlock;
+      if (block?.cidr === undefined) return false; // pod/namespace selectors match pods, not the Filestore
+      return cidrContains(block.cidr, ip) && !(block.except ?? []).some((e) => cidrContains(e, ip));
+    });
+  }
+
   // Both pool modes: the non-shared path used to carry the rule inline in
   // sandbox-restrict, the shared-pool path in a separate `-cold-nfs` policy
   // that selected every non-standby execution pod (cold runners included).
@@ -1265,31 +1304,24 @@ describeIfHelm('ax-next chart: sandbox.filestore wiring', () => {
       expect(ports).not.toContain(111);
 
       // No OTHER policy in the runner namespace may hand a runner pod NFS reach
-      // either. NetworkPolicies are additive, so any policy whose selector a
-      // runner pod satisfies would quietly re-open it.
-      const runnerLabels: Record<string, string> = {
-        'app.kubernetes.io/component': 'ax-next-runner',
-        'ax.io/plane': 'execution',
-      };
+      // either. NetworkPolicies are additive, so this is an allowlist: every
+      // egress rule that COULD reach the Filestore on an NFS port must sit in a
+      // policy whose selector requires the one-shot component label. "Could
+      // reach" counts a rule with no ports (all ports), an endPort range, an
+      // empty `to` (anywhere), and any ipBlock that contains the IP.
       const runnerNs = np?.metadata?.namespace;
-      const opensNfs = docs.filter((d) => {
-        if (d.kind !== 'NetworkPolicy' || d.metadata?.namespace !== runnerNs) return false;
-        const rules = (d.spec?.egress as EgressRule[] | undefined) ?? [];
-        return rules.some((r) => (r.ports ?? []).some((p) => p.port === 2049 || p.port === 111));
-      });
-      for (const policy of opensNfs) {
-        const sel = (policy.spec?.podSelector ?? {}) as {
-          matchLabels?: Record<string, string>;
-          matchExpressions?: unknown[];
-        };
-        // matchLabels decide it: a runner pod carries no `ax.io/shared-standby`
-        // label, so the DoesNotExist expression these policies use never
-        // excludes one.
-        const labels = sel.matchLabels ?? {};
-        const matchesRunner = Object.entries(labels).every(([k, v]) => runnerLabels[k] === v);
-        expect(matchesRunner, `${String(policy.metadata?.name)} must not select runner pods`).toBe(
-          false,
-        );
+      for (const policy of docs) {
+        if (policy.kind !== 'NetworkPolicy' || policy.metadata?.namespace !== runnerNs) continue;
+        const rules = (policy.spec?.egress as FullEgressRule[] | undefined) ?? [];
+        const reaches = rules.some((r) => ruleCouldReachNfs(r, '10.9.8.7'));
+        if (!reaches) continue;
+        const labels =
+          (policy.spec?.podSelector as { matchLabels?: Record<string, string> } | undefined)
+            ?.matchLabels ?? {};
+        expect(
+          labels['app.kubernetes.io/component'],
+          `${String(policy.metadata?.name)} opens NFS to the Filestore and must select only the one-shot user-files pods`,
+        ).toBe('ax-next-userfiles');
       }
     });
 
@@ -1339,7 +1371,14 @@ describeIfHelm('ax-next chart: sandbox.filestore wiring', () => {
     const runner = readFileSync(resolve(repoRoot, 'packages/sandbox-k8s/src/pod-spec.ts'), 'utf8');
     expect(oneshot).toContain("'app.kubernetes.io/component': 'ax-next-userfiles'");
     expect(runner).toContain("'app.kubernetes.io/component': 'ax-next-runner'");
-    expect(runner).not.toContain("'app.kubernetes.io/component': 'ax-next-userfiles'");
+    // The one-shot label must be stamped by user-files-ops.ts and nowhere else
+    // in the provider's source, or some other pod (a runner, a prep pod) would
+    // inherit the NFS egress the policy grants.
+    const srcDir = resolve(repoRoot, 'packages/sandbox-k8s/src');
+    const stampers = readdirSync(srcDir, { recursive: true, encoding: 'utf8' })
+      .filter((f) => f.endsWith('.ts') && !f.includes('__tests__'))
+      .filter((f) => readFileSync(resolve(srcDir, f), 'utf8').includes("'ax-next-userfiles'"));
+    expect(stampers).toEqual(['user-files-ops.ts']);
   });
 
   // ---- the host-mounted read (sandbox.filestore.hostReadPath) ------------
