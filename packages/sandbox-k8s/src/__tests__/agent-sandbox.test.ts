@@ -53,7 +53,7 @@ function mocks() {
 }
 
 function pod() {
-  return buildPodSpec('test', { sessionId: 's', workspaceRoot: '/agent',
+  return buildPodSpec('test', { sessionId: 's',
     runnerBinary: '/runner.js', authToken: 'session-secret', runnerEndpoint: config.hostIpcUrl }, config);
 }
 
@@ -156,7 +156,7 @@ describe('Agent Sandbox lifecycle', () => {
     try {
       const ctx = h.ctx();
       const result = await h.bus.call<unknown, OpenSessionResult>('sandbox:open-session', ctx,
-        { sessionId: ctx.sessionId, workspaceRoot: '/agent', runnerBinary, proxyConfig });
+        { sessionId: ctx.sessionId, workspaceRoot: '/tmp/ws', runnerBinary, proxyConfig });
       const body = mock.custom.createNamespacedCustomObject.mock.calls[0]![0].body as ReturnType<typeof buildSandboxResource>;
       const containers = body.spec.podTemplate.spec.containers as Array<{ args: string[]; env: Array<{ name: string; value: string }> }>;
       expect(containers[0]!.args).toEqual(['node', runnerBinary]);
@@ -188,7 +188,7 @@ describe('Agent Sandbox lifecycle', () => {
     try {
       const ctx = h.ctx();
       await expect(h.bus.call('sandbox:open-session', ctx, { sessionId: ctx.sessionId,
-        workspaceRoot: '/agent', runnerBinary: '/runner.js', proxyConfig })).rejects.toThrow();
+        workspaceRoot: '/tmp/ws', runnerBinary: '/runner.js', proxyConfig })).rejects.toThrow();
       // Got past input validation to the Sandbox create (and failed THERE), so
       // the rollback below is the one under test, not an invalid-payload refusal.
       expect(mock.custom.createNamespacedCustomObject).toHaveBeenCalledTimes(1);
@@ -206,7 +206,7 @@ describe('Agent Sandbox lifecycle', () => {
     try {
       const ctx = h.ctx();
       const result = await h.bus.call<unknown, OpenSessionResult>('sandbox:open-session', ctx,
-        { sessionId: ctx.sessionId, workspaceRoot: '/agent', runnerBinary: '/runner.js', proxyConfig });
+        { sessionId: ctx.sessionId, workspaceRoot: '/tmp/ws', runnerBinary: '/runner.js', proxyConfig });
       await result.handle.kill();
       expect(await h.bus.call('session:is-alive', ctx, { sessionId: ctx.sessionId })).toEqual({ alive: false });
       mock.setPhase('Succeeded');
@@ -217,7 +217,7 @@ describe('Agent Sandbox lifecycle', () => {
 
 describe('Agent Sandbox mount preparation', () => {
   function mountedPod() {
-    return buildPodSpec('test', { sessionId: 's', workspaceRoot: '/agent', runnerBinary: '/runner.js',
+    return buildPodSpec('test', { sessionId: 's', runnerBinary: '/runner.js',
       authToken: 'session-secret', runnerEndpoint: config.hostIpcUrl,
       mounts: [{ kind: 'nfs', role: 'user-files', server: '10.1.1.1', exportPath: '/files', mountPath: '/files', subPath: 'agent-one', readOnly: false }],
     }, config);
@@ -247,7 +247,7 @@ describe('Agent Sandbox mount preparation', () => {
 
   it('preserves read-only memory and non-root native service sidecars without preparation', async () => {
     const api = makeMockK8sApi();
-    const original = buildPodSpec('test', { sessionId: 's', workspaceRoot: '/agent', runnerBinary: '/runner.js',
+    const original = buildPodSpec('test', { sessionId: 's', runnerBinary: '/runner.js',
       authToken: 'secret', runnerEndpoint: config.hostIpcUrl,
       mounts: [{ kind: 'nfs', role: 'memory', server: '10.1.1.2', exportPath: '/memory',
         mountPath: '/memory', subPath: 'agent-one', readOnly: true }],

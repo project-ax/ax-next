@@ -97,6 +97,9 @@ describe('validateMcpEntry golden-vectors drift guard (runner side)', () => {
     // Standby consumes the shared assignment wire schema, not McpServerSchema.
     // It is the single transport endpoint allowed to import the protocol; the
     // independent MCP validator and both runners remain covered by this guard.
+    // POD_SCRATCH_ROOT (TASK-995) belongs to the same assignment contract: the
+    // allowlist pins AX_EPHEMERAL_ROOT to it, and standby pre-copies the venv
+    // template there.
     const assignmentEndpoint = path.join(repoRoot, 'packages', 'agent-runner-core', 'src', 'standby.ts');
     const assignmentSource = readFileSync(assignmentEndpoint, 'utf-8');
     const assignmentImportRe = /import\s*\{([^}]+)\}\s*from\s*['"]@ax\/sandbox-protocol['"]/g;
@@ -106,7 +109,7 @@ describe('validateMcpEntry golden-vectors drift guard (runner side)', () => {
     )].flatMap(match => match[1]!.split(',').map(name => name.trim()).filter(Boolean));
     expect(assignmentImports.sort()).toEqual([
       'BOOTSTRAP_ACK', 'BOOTSTRAP_FILE', 'BOOTSTRAP_MAX_BYTES',
-      'BOOTSTRAP_ROOT', 'BootstrapAssignmentSchema',
+      'BOOTSTRAP_ROOT', 'BootstrapAssignmentSchema', 'POD_SCRATCH_ROOT',
     ]);
     const offenders = srcRoots
       .flatMap((srcRoot) => collectTsFiles(srcRoot))

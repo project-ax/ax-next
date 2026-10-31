@@ -358,9 +358,10 @@ export function createOpenSession(deps: OpenSessionDeps) {
     //    below — best-effort terminate, then re-throw.
     let podSpec;
     try {
+      // `input.workspaceRoot` (the host's cwd) went to session:create above
+      // and stops there: it names nothing inside the runner pod.
       podSpec = buildPodSpec(podName, {
         sessionId: created.sessionId,
-        workspaceRoot: input.workspaceRoot,
         runnerBinary: input.runnerBinary,
         authToken: created.token,
         runnerEndpoint: deps.config.hostIpcUrl,
@@ -400,10 +401,10 @@ export function createOpenSession(deps: OpenSessionDeps) {
         // AX_USERFILES_ROOT. Spread-when-present mirrors services/installedSkills
         // — a dropped field here silently disables the durable mount.
         ...(mounts.length > 0 ? { mounts } : {}),
-        // Debug: forward the opt-in per-turn commit/resync trace flag from the
-        // host env (set AX_COMMIT_TRACE=1 on the host deployment) into the
-        // runner pod, so commit-trace.ts's decision trace is reachable in k8s
-        // — the path was otherwise observable only on failure (the TASK-11
+        // Debug: forward the opt-in per-turn transcript-persistence trace flag
+        // from the host env (set AX_COMMIT_TRACE=1 on the host deployment) into
+        // the runner pod, so commit-trace.ts's decision trace is reachable in
+        // k8s — the path was otherwise observable only on failure (the TASK-11
         // diagnosis blocker). Forwards ONLY this one debug boolean, nothing
         // else from the host env; off (absent) by default.
         ...(process.env.AX_COMMIT_TRACE !== undefined

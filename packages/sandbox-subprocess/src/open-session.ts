@@ -46,7 +46,8 @@ import {
 // Trust boundary (I5): every tunable at this surface is either validated or
 // drawn from the same allowlist as `sandbox:spawn`. A caller cannot inject
 // env, argv, or cwd — argv is fixed to `node <runnerBinary>`, cwd is
-// `workspaceRoot`, and env is the session-scoped quadruple plus the allowlist.
+// `workspaceRoot`, and env is the session-scoped set built below plus the
+// allowlist.
 // ---------------------------------------------------------------------------
 
 const PLUGIN_NAME = '@ax/sandbox-subprocess';
@@ -311,8 +312,8 @@ export async function openSessionImpl(
   const homeDir = path.join(socketDir, 'home');
   const claudeConfigDir = path.join(homeDir, '.ax', 'session');
   const installedSkillsDir = path.join(claudeConfigDir, 'skills');
-  // Session-scoped scratch root — the subprocess analogue of k8s's
-  // `/ephemeral` emptyDir. Nested inside the 0700 per-session tempdir so
+  // Session-scoped scratch root — the subprocess analogue of k8s's disk
+  // `/tmp` emptyDir. Nested inside the 0700 per-session tempdir so
   // (a) it's writable by the runner uid, (b) it's isolated from other
   // sessions, and (c) the existing `fs.rm(socketDir, { recursive: true })`
   // cleanup reaps it — no separate teardown. Stamped onto the runner env as
@@ -323,14 +324,11 @@ export async function openSessionImpl(
     await fs.mkdir(installedSkillsDir, { recursive: true, mode: 0o755 });
     await fs.mkdir(ephemeralDir, { recursive: true, mode: 0o700 });
 
-    // Phase 3 redesign: skill discovery is now SOLELY via the read-only user
-    // projection ($CLAUDE_CONFIG_DIR/skills/, 0555 — materialized below from
-    // input.installedSkills + the authored-draft union). The workspace
-    // `.claude/skills` symlink and the SDK `'project'` settingSource were both
-    // removed in Phase 3 (scaffoldWorkspaceSkillSurface was deleted and
-    // `'project'` was dropped from settingSources in the runner). The note that
-    // was here (I-P0-4) described the old pre-Phase-3 arrangement; it no longer
-    // applies.
+    // Skill discovery is SOLELY via the read-only user projection
+    // ($CLAUDE_CONFIG_DIR/skills/, 0555 — materialized below from
+    // input.installedSkills + the authored-draft union): the runner passes
+    // `settingSources: ['user']`, so nothing in the runner's cwd or the
+    // agent's home is a skill source.
 
     // Phase 1 (skill-install): materialize installed-skill SKILL.md bodies
     // into $CLAUDE_CONFIG_DIR/skills/<id>/SKILL.md. The SDK's 'user' source
@@ -339,9 +337,9 @@ export async function openSessionImpl(
     //
     // chmod 0555 the parent skills dir AFTER all writes so the runner's own
     // tool calls (echo > path, mkdir, etc.) can't extend or overwrite the
-    // directory. Workspace:apply has no path to HOME, so the workspace side
-    // defense is automatic; chmod is the belt against tool-bash. We chmod
-    // LAST because mkdir + writeFile both need write permission.
+    // directory: the agent's shell runs as the same uid, so the mode bits are
+    // the belt against tool-bash. We chmod LAST because mkdir + writeFile both
+    // need write permission.
     if (input.installedSkills !== undefined && input.installedSkills.length > 0) {
       for (const skill of input.installedSkills) {
         // The zod schema already validates id shape, but double-check at the
@@ -543,19 +541,21 @@ export async function openSessionImpl(
     AX_RUNNER_ENDPOINT: runnerEndpoint,
     AX_SESSION_ID: created.sessionId,
     AX_AUTH_TOKEN: created.token,
-    AX_WORKSPACE_ROOT: input.workspaceRoot,
+    // No workspace root: `input.workspaceRoot` is only the child's cwd
+    // (spawn below), and the runner reads no root from it.
+    //
     // Session-scoped scratch root (mkdir'd above, inside the 0700 tempdir).
-    // The runner reads this as the SDK's extra writable directory; absent
-    // it, the runner wouldn't grant any scratch dir. Diverges from k8s
-    // (which uses the fixed `/ephemeral` mount) the same way HOME does —
-    // each provider picks a path that exists and is writable for it.
+    // The runner requires it (uploads, caches, venvs and artifacts live
+    // there) and refuses to start without one. Diverges from k8s (which uses
+    // the fixed `/tmp` mount) the same way HOME does — each provider picks a
+    // path that exists and is writable for it.
     AX_EPHEMERAL_ROOT: ephemeralDir,
     // Durable per-agent user-files root (filestore-user-files Phase 1), the
-    // `role:'user-files'` mount realized + mkdir'd at step 3b above. Every
-    // owned session has one (3b refuses an owned session without it); only an
-    // ownerless session leaves it absent, and the runner then doesn't widen the
-    // agent's filesystem reach or advertise a user-files location, exactly like
-    // an unset AX_EPHEMERAL_ROOT. Spread conditionally so that env stays clean.
+    // `role:'user-files'` mount realized + mkdir'd at step 3b above: the
+    // agent's home. Every owned session has one (3b refuses an owned session
+    // without it); only an ownerless session leaves it absent, and the runner
+    // refuses to start without a home (exit 2). Spread conditionally so that
+    // env stays clean.
     ...(userFilesRoot !== undefined ? { AX_USERFILES_ROOT: userFilesRoot } : {}),
     // I-P0-3: override HOME (which is in the allowlist; sessionEnv merges
     // LAST so this wins) and set CLAUDE_CONFIG_DIR so the SDK's `'user'`
@@ -565,21 +565,20 @@ export async function openSessionImpl(
     // AX_TRANSCRIPTS_ROOT is stamped for this sandbox).
     HOME: homeDir,
     CLAUDE_CONFIG_DIR: claudeConfigDir,
-    // Git author/committer identity for the runner's turn-end commits.
-    // Mirrors the k8s side's gitParanoidEnv (sandbox-k8s/pod-spec.ts) so the
-    // host's `verifyBundleAuthor` accepts the bundle regardless of which
-    // sandbox provider produced it — without this, git falls through to the
-    // host operator's ~/.gitconfig and every subprocess chat fails at the
-    // turn boundary with `expected ax-runner <ax-runner@example.com>`.
+    // Git hardening + a fixed author/committer identity for the agent's own
+    // git work (clones, local repos). Mirrors the k8s side's gitParanoidEnv
+    // (sandbox-k8s/pod-spec.ts). Without it git falls through to the host
+    // operator's ~/.gitconfig; with the global config pointed at /dev/null,
+    // the pinned identity is what lets `git commit` work at all.
     //
     // HOME deliberately diverges between providers: subprocess uses the
     // per-session tempdir set above; k8s pins `/home/runner` (a tmpfs
     // mount). Don't unify them — the path only has to exist and be writable
     // by the runner, and the provider already picked the right one.
     //
-    // safe.directory=* is defense-in-depth here. Subprocess's workspaceRoot
-    // is usually owned by the same uid running the runner so git's
-    // "dubious ownership" guard wouldn't fire today; the env stamp keeps
+    // safe.directory=* is defense-in-depth here. The agent's repos (under its
+    // home or the scratch root) are owned by the uid running the runner, so
+    // git's "dubious ownership" guard wouldn't fire today; the env stamp keeps
     // parity with k8s and hardens against future bind-mount / permission
     // scenarios.
     GIT_CONFIG_NOSYSTEM: '1',

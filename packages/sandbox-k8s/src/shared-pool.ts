@@ -41,7 +41,7 @@ export async function retireSharedClaims(custom: SandboxCustomApi, config: Resol
 /** A class contains execution settings only. Agent ids and credentials never enter its hash or template. */
 export function buildSharedTemplate(config: ResolvedSandboxK8sConfig, runnerBinary: string) {
   const pool = config.sharedPool!;
-  const pod = buildPodSpec('standby', { sessionId: 'unused', authToken: 'unused', workspaceRoot: '/agent',
+  const pod = buildPodSpec('standby', { sessionId: 'unused', authToken: 'unused',
     runnerBinary, runnerEndpoint: config.hostIpcUrl }, config);
   delete pod.metadata.labels['ax.io/session-id'];
   pod.metadata.labels[STANDBY_LABEL] = pool.prefix;

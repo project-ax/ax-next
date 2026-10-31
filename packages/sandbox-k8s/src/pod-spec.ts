@@ -5,9 +5,9 @@
 // model output (I5): no service-account token, gVisor as the container
 // runtime, root filesystem read-only, all linux capabilities dropped,
 // runs as a non-root UID. Anything a session legitimately writes lives
-// under the emptyDir mounts at /tmp, /agent and /ephemeral, the tmpfs at
-// /home/runner, or — when an operator configured one — the durable per-agent
-// /files NFS mount the `sandbox:resolve-mounts` resolver contributes.
+// on the size-capped disk emptyDir at /tmp (the session's scratch root),
+// the tmpfs at /home/runner, or the durable per-agent /files NFS mount (the
+// agent's home) that the `sandbox:resolve-mounts` resolver contributes.
 //
 // The runner is purely an IPC client. The URL it reaches (the host pod's
 // IPC listener — @ax/ipc-http) is fixed at preset-config time and stamped
@@ -16,9 +16,23 @@
 
 import { createHash } from 'node:crypto';
 import { posix } from 'node:path';
-import { buildGitCredentialEnv, type ServiceDescriptorParsed } from '@ax/sandbox-protocol';
+import {
+  buildGitCredentialEnv,
+  POD_SCRATCH_ROOT,
+  type ServiceDescriptorParsed,
+} from '@ax/sandbox-protocol';
 import type { MountSpec } from '@ax/sandbox-mount-protocol';
 import type { ResolvedSandboxK8sConfig } from './config.js';
+
+/**
+ * Size limit on the runner's disk `/tmp` emptyDir (the scratch root). It holds
+ * the session's uploads, SDK transcripts, npm/uv caches, venvs and clones, so
+ * it is the one runner volume that can grow without bound. Past the limit the
+ * kubelet evicts this pod, before a runaway agent fills the node's disk and
+ * DiskPressure evicts its neighbours. 10 GiB leaves room for a large venv plus
+ * a clone, and matches the per-person `/files` default (TASK-993).
+ */
+export const TMP_SIZE_LIMIT = '10Gi';
 
 const K8S_LABEL_MAX_BYTES = 63;
 const K8S_LABEL_HASH_SUFFIX_BYTES = 8;
@@ -103,7 +117,6 @@ export interface PodProxyConfig {
 
 export interface BuildPodSpecInput {
   sessionId: string;
-  workspaceRoot: string;
   runnerBinary: string;
   authToken: string;
   /**
@@ -115,10 +128,10 @@ export interface BuildPodSpecInput {
   requestId?: string;
   /**
    * Overrides for env vars the runner reads. The pod build always sets
-   * AX_SESSION_ID, AX_AUTH_TOKEN, AX_WORKSPACE_ROOT, AX_RUNNER_ENDPOINT,
-   * and AX_REQUEST_ID; callers can layer additional non-secret env on
-   * top (e.g. AX_PROXY_UNIX_SOCKET pointing at the in-pod credential-
-   * proxy socket).
+   * AX_SESSION_ID, AX_AUTH_TOKEN, AX_EPHEMERAL_ROOT, AX_TRANSCRIPTS_ROOT,
+   * AX_RUNNER_BINARY, AX_RUNNER_ENDPOINT and (when known) AX_REQUEST_ID;
+   * callers can layer additional non-secret env on top (e.g. the opt-in
+   * AX_COMMIT_TRACE debug flag).
    */
   extraEnv?: Record<string, string>;
   /**
@@ -139,7 +152,7 @@ export interface BuildPodSpecInput {
    * tree read-only. Capped at 96 KiB total payload — it's a single env-var
    * string subject to the kernel's per-exec-string limit (MAX_ARG_STRLEN,
    * ~128 KiB); throws if exceeded. Large reference data belongs in the
-   * workspace, not the skill bundle.
+   * agent's files, not the skill bundle.
    *
    * The env var is consumed BY THE RUNNER, not forwarded into the SDK
    * subprocess — it is NOT in ENV_ALLOWLIST.
@@ -400,7 +413,7 @@ interface RealizedMounts {
 
 // The non-root uid/gid the runner (and every sandbox container) runs as — see
 // CONTAINER_SECURITY. The durable user-files chown init aligns the per-agent
-// NFS subPath dir to this owner so the runner can write its own `/workspace`.
+// NFS subPath dir to this owner so the runner can write its own `/files`.
 const RUNNER_UID = 1000;
 const RUNNER_GID = 1000;
 
@@ -467,8 +480,8 @@ function buildUserFilesChownInit(
  * error if a future MountSpec member is added without handling here.
  *
  * Volume names are derived `ax-mount-<i>` (DNS-1123-safe, ≤63 bytes) so they
- * never collide with the fixed tier volumes (`tmp`/`home`/`agent`/`ephemeral`)
- * or the `svc-*` service volumes.
+ * never collide with the fixed volumes (`tmp`/`home`) or the `svc-*` service
+ * volumes.
  */
 function isPathOverlap(a: string, b: string): boolean {
   return a === '/' || b === '/' || a === b || a.startsWith(`${b}/`) || b.startsWith(`${a}/`);
@@ -602,7 +615,7 @@ export function buildPodSpec(
   // safely under that with headroom for JSON overhead. (This is tighter than
   // the pre-bundle 256 KiB cap, which already exceeded the exec limit; bundles
   // legitimately need more files but each must stay small — large reference
-  // data belongs in the workspace, not an env var.) Throw before building the
+  // data belongs in the agent's files, not an env var.) Throw before building the
   // spec so the caller sees a clear error rather than a silent runtime failure.
   let installedSkillsEnv: EnvVar | undefined;
   if (input.installedSkills !== undefined && input.installedSkills.length > 0) {
@@ -614,26 +627,26 @@ export function buildPodSpec(
     }
     installedSkillsEnv = { name: 'AX_INSTALLED_SKILLS_JSON', value: encoded };
   }
-  // Phase 3: the sandbox now spawns the in-image `git` binary to materialize
-  // /agent at session start and to bundle per-turn diffs at turn end.
-  // These env vars are the locked-down rails — they prevent git-init from
-  // reading user-global config, refuse interactive prompts, and pin commit
-  // author/committer to `ax-runner` so the host bundler can verify
-  // provenance before applying. See SECURITY.md for the threat-model walk.
+  // git ships in the runner image for the agent's own work: clones and local
+  // repos under /files or the scratch /tmp. These env vars are its locked-down
+  // rails — no system or user-global config, no interactive credential
+  // prompt, and a fixed author/committer. With the global config pointed at
+  // /dev/null git has no identity of its own, so the pinned one is also what
+  // lets `git commit` work at all. See SECURITY.md for the threat-model walk.
   //
   // PATH is intentionally NOT pinned here: the sandbox image's ENTRYPOINT
   // composes PATH (Node + git on the locked-down image), and overriding it
   // from the pod-spec would force operators to know the image's bin layout.
   // The image is the trust root for binary lookup (I5).
-  // I-P0-3 (skill-install Phase 0): HOME is now a writable, per-session
-  // tmpfs mount at /home/runner (volume `home`, emptyDir Memory). This
-  // gives the Claude Agent SDK's `'user'` setting source a real path to
-  // walk for $HOME/.claude/skills/, isolated to the pod and discarded on
-  // exit. The previous /nonexistent value made the SDK either ENOENT or
-  // worse, fall through to whatever HOME the image ships with.
-  // CLAUDE_CONFIG_DIR points the SDK's `'project'` setting source at
-  // /home/runner/.ax/session/skills/ — also tmpfs, also ephemeral.
-  // Phase 1 (skill materialization) writes there; Phase 0 leaves it empty.
+  // I-P0-3 (skill-install Phase 0): HOME is a writable, per-session tmpfs
+  // mount at /home/runner (volume `home`, emptyDir Memory), isolated to the
+  // pod and discarded on exit. The previous /nonexistent value made the SDK
+  // either ENOENT or worse, fall through to whatever HOME the image ships
+  // with. (The runner gives the SDK subprocess the agent's /files as HOME;
+  // this HOME stays the runner's own.) CLAUDE_CONFIG_DIR is where the SDK
+  // reads its trusted configuration, the `'user'` setting source: installed
+  // skills under skills/, settings, session state. It is also tmpfs, outside
+  // the agent's home, and the runner refuses to start if the two overlap.
   const gitParanoidEnv: EnvVar[] = [
     { name: 'GIT_CONFIG_NOSYSTEM', value: '1' },
     { name: 'GIT_CONFIG_GLOBAL', value: '/dev/null' },
@@ -644,15 +657,13 @@ export function buildPodSpec(
     { name: 'GIT_AUTHOR_EMAIL', value: 'ax-runner@example.com' },
     { name: 'GIT_COMMITTER_NAME', value: 'ax-runner' },
     { name: 'GIT_COMMITTER_EMAIL', value: 'ax-runner@example.com' },
-    // Bypass git's "dubious ownership" guard for /agent (and /tmp,
-    // where the materialize bundle lands). The runner runs as UID 1000;
-    // /agent is an emptyDir whose mount point may end up owned by
-    // root (the runner-side bridge can't chown it without privilege),
-    // and modern git refuses to operate on a repo whose dir owner !=
-    // the running uid. We can't relax the security context to fix
-    // ownership; safe.directory=* is the documented escape hatch.
-    // Sandbox isolation already constrains what git can reach inside
-    // the pod — it sees only the explicit volume mounts.
+    // Bypass git's "dubious ownership" guard for the agent's own repos.
+    // The runner runs as UID 1000, but a mount point (an emptyDir root, a
+    // share directory) may be owned by root, and modern git refuses to
+    // operate on a repo whose dir owner != the running uid. We can't relax
+    // the security context to fix ownership; safe.directory=* is the
+    // documented escape hatch. Sandbox isolation already constrains what
+    // git can reach inside the pod — it sees only the explicit volume mounts.
     { name: 'GIT_CONFIG_KEY_0', value: 'safe.directory' },
     { name: 'GIT_CONFIG_VALUE_0', value: '*' },
   ];
@@ -798,30 +809,22 @@ export function buildPodSpec(
     }
   }
 
-  // The runner pod's filesystem namespace is its own — the host's
-  // `input.workspaceRoot` (e.g. process.cwd() = `/opt/ax-next/host`) is
-  // meaningless inside it AND lives under `readOnlyRootFilesystem: true`,
-  // so any attempt to write the materialized bundle there fails with
-  // EROFS at session start. The runner has /agent as its writable
-  // mount; that's where the workspace must live. Hardcode `/agent`
-  // here so the runner never sees the host's path. (env.ts already
-  // defaults to /agent if unset, but stamping it explicitly makes
-  // the contract observable in `kubectl describe pod`.)
-  const RUNNER_WORKSPACE_ROOT = '/agent';
-  // Session-scoped scratch tier (the `/ephemeral` emptyDir mounted below).
-  // Stamped explicitly so the contract is observable in `kubectl describe
-  // pod` AND so the runner can wire it into the SDK's additionalDirectories
-  // + system prompt. The runner treats AX_EPHEMERAL_ROOT as optional with
-  // NO default (see @ax/agent-claude-sdk-runner env.ts), so this stamp is
-  // the only thing that turns the scratch tier on for k8s sessions.
-  const RUNNER_EPHEMERAL_ROOT = '/ephemeral';
-  // SDK transcripts go on the disk /tmp emptyDir, not the tmpfs HOME (which counts against pod memory).
-  const RUNNER_TRANSCRIPTS_ROOT = '/tmp/transcripts';
+  // The session's scratch root: the size-capped disk emptyDir mounted at /tmp
+  // below. The runner requires AX_EPHEMERAL_ROOT (it refuses to start without
+  // one) and keeps uploads, tool caches, venvs and artifacts under it.
+  // POD_SCRATCH_ROOT is shared with the bootstrap allowlist and the warm
+  // standby's venv template, so a pooled session gets the same path. Stamped
+  // explicitly so the contract is observable in `kubectl describe pod`. No
+  // workspace root is stamped: the host's own cwd (OpenSessionInput's
+  // `workspaceRoot`) names nothing in this pod's filesystem namespace, and
+  // the runner reads none.
+  const RUNNER_SCRATCH_ROOT = POD_SCRATCH_ROOT;
+  // SDK transcripts go on the disk scratch root, not the tmpfs HOME (which counts against pod memory).
+  const RUNNER_TRANSCRIPTS_ROOT = `${POD_SCRATCH_ROOT}/transcripts`;
   const env: EnvVar[] = [
     { name: 'AX_SESSION_ID', value: input.sessionId },
     { name: 'AX_AUTH_TOKEN', value: input.authToken },
-    { name: 'AX_WORKSPACE_ROOT', value: RUNNER_WORKSPACE_ROOT },
-    { name: 'AX_EPHEMERAL_ROOT', value: RUNNER_EPHEMERAL_ROOT },
+    { name: 'AX_EPHEMERAL_ROOT', value: RUNNER_SCRATCH_ROOT },
     { name: 'AX_TRANSCRIPTS_ROOT', value: RUNNER_TRANSCRIPTS_ROOT },
     { name: 'AX_RUNNER_BINARY', value: input.runnerBinary },
     { name: 'AX_RUNNER_ENDPOINT', value: input.runnerEndpoint },
@@ -854,10 +857,9 @@ export function buildPodSpec(
   // `sandbox:resolve-mounts` resolver contributed (inline nfs volume + subPath
   // volumeMount). Throws on an unrealizable kind. Empty/absent → no change.
   const realizedMounts = realizeMounts(input.mounts ?? [], config.image);
-  // Stamp the user-files mount path as AX_USERFILES_ROOT so the runner can add
-  // it to additionalDirectories + advertise it. Like AX_EPHEMERAL_ROOT, the
-  // env is the ONLY thing that turns the tier on for the runner — the mount
-  // alone is inert until the runner reads this. Appended to `env` below.
+  // Stamp the user-files mount path as AX_USERFILES_ROOT: the runner makes it
+  // the agent's home (HOME and cwd of the SDK subprocess) and refuses to start
+  // without one. The mount alone is inert until the runner reads this.
   if (realizedMounts.userFilesRoot !== undefined) {
     env.push({ name: 'AX_USERFILES_ROOT', value: realizedMounts.userFilesRoot });
   }
@@ -924,7 +926,10 @@ export function buildPodSpec(
         },
         securityContext: containerSecurity,
         volumeMounts: [
-          { name: 'tmp', mountPath: '/tmp' },
+          // The session's scratch root (AX_EPHEMERAL_ROOT): uploads, SDK
+          // transcripts, caches, venvs, clones. A disk emptyDir with a size
+          // limit (volumes below); gone with the pod.
+          { name: 'tmp', mountPath: POD_SCRATCH_ROOT },
           // I-P0-3: per-session HOME on tmpfs. Mounted on both the main
           // container AND the sdk-scaffold init container (the init step
           // creates the .ax/session/skills/ directory before the SDK
@@ -932,14 +937,6 @@ export function buildPodSpec(
           // below — tmpfs keeps it fast + ephemeral and never touches
           // the node's disk.
           { name: 'home', mountPath: '/home/runner' },
-          // Phase 3: split the legacy /workspace mount in two. /agent
-          // is the git working tree (materialized at session start, the
-          // source of every per-turn bundle). /ephemeral is caches and
-          // scratch the runner doesn't want to round-trip through the
-          // host. Splitting them keeps the storage tier bounded and gives
-          // the runner an explicit "this won't survive" signal.
-          { name: 'agent', mountPath: '/agent' },
-          { name: 'ephemeral', mountPath: '/ephemeral' },
           // Shared credential-proxy directory (Phase 1a, k8s side).
           // Conditionally mounted only when the host advertised a
           // `proxySocketHostPath` — without that, the volume entry below
@@ -958,23 +955,20 @@ export function buildPodSpec(
             ? [{ name: 'proxy-socket', mountPath: '/var/run/ax' }]
             : []),
           // filestore-user-files (design §4) — the durable per-agent mount(s).
-          // Each pins its per-agent `subPath` subtree at the mount path
-          // (`/workspace`). RW for the runner (readOnly:false). Empty when no
+          // Each pins its per-agent `subPath` subtree at the mount path: the
+          // agent's home at `/files` (RW) and the read-only `/memory` export,
+          // a sibling, never nested (see realizeMounts). Empty when no
           // resolver contributed a mount.
           ...realizedMounts.volumeMounts,
         ],
       },
     ],
-    // I-P0-3/4 (skill-install Phase 0): the sdk-scaffold init container
+    // I-P0-3 (skill-install Phase 0): the sdk-scaffold init container
     // runs before the main runner container and prepares the $HOME
     // skill-discovery shape the Claude Agent SDK's `'user'` source walks
-    // ($CLAUDE_CONFIG_DIR/skills). It is restricted to /home/runner
-    // (the tmpfs HOME mount) on purpose: writing into /agent here
-    // collides with the runner's `git clone` of the materialized
-    // workspace bundle (clone refuses a non-empty target). The
-    // `.claude/skills → ../.ax/draft-skills` symlink the SDK's `'project'`
-    // source needs is created by the runner main AFTER materialize, in
-    // `git-workspace.ts`'s `scaffoldWorkspaceSkillSurface`.
+    // ($CLAUDE_CONFIG_DIR/skills). It mounts only /home/runner (the tmpfs
+    // HOME) on purpose: the agent's /files and the scratch /tmp are the
+    // agent's to write, not a setup step's.
     initContainers: [
       {
         name: 'sdk-scaffold',
@@ -1012,15 +1006,17 @@ export function buildPodSpec(
       ...sidecarRender.initContainers,
     ],
     volumes: [
-      { name: 'tmp', emptyDir: {} },
+      // The scratch root, on the node's disk (no `medium`): tmpfs would count
+      // against the pod's memory limit, and this holds the session's
+      // transcripts and uploads. The kubelet evicts the pod past the size
+      // limit rather than let one session fill the node (see TMP_SIZE_LIMIT).
+      { name: 'tmp', emptyDir: { sizeLimit: TMP_SIZE_LIMIT } },
       // I-P0-3: tmpfs HOME for the runner. emptyDir w/ medium: Memory
       // means the kubelet allocates an in-RAM tmpfs (no disk hit, no
-      // persistence past pod termination, no cross-pod visibility). The
-      // SDK's user-scope skill discovery walks $HOME/.claude/skills/
-      // here; Phase 0 leaves it empty.
+      // persistence past pod termination, no cross-pod visibility). It
+      // holds CLAUDE_CONFIG_DIR (installed skills, SDK state) and the
+      // proxy CA in TCP mode.
       { name: 'home', emptyDir: { medium: 'Memory' } },
-      { name: 'agent', emptyDir: {} },
-      { name: 'ephemeral', emptyDir: {} },
       // TASK-151 — one emptyDir per service writablePaths entry (I5). Named
       // `svc-<service>-<i>` to match the sidecar's volumeMounts.
       ...sidecarRender.volumes,

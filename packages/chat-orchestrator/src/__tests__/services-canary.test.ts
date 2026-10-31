@@ -280,7 +280,6 @@ describe('dev-services-in-sandbox CI canary (TASK-155)', () => {
       'ax-runner-canary',
       {
         sessionId: 'svc-canary-happy',
-        workspaceRoot: '/agent',
         runnerBinary: '/app/runner.js',
         authToken: 'tok',
         runnerEndpoint: 'http://host.ax-next.svc:9090',

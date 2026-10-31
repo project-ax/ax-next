@@ -5,7 +5,6 @@ import { buildPodSpec } from '../pod-spec.js';
 
 const baseInput = {
   sessionId: 'sess',
-  workspaceRoot: '/tmp/ws',
   runnerBinary: '/opt/runner.js',
   authToken: 'tok',
   runnerEndpoint: 'http://ax-next-host.ax-next.svc.cluster.local:80',
@@ -294,43 +293,55 @@ describe('buildPodSpec', () => {
     expect(new Set(labels).size).toBe(inputs.length);
   });
 
-  it('mounts /agent (workspace) and /ephemeral (scratch) emptyDirs', () => {
-    // Phase 3: the legacy single /workspace mount is replaced by two
-    // emptyDirs. /agent holds the git working tree (materialize source,
-    // turn-end commit/bundle target). /ephemeral holds caches and scratch
-    // (anything not part of the workspace lineage). Splitting them keeps
-    // the storage tier bounded by what's actually persisted across turns.
+  it('mounts no /agent or /ephemeral and caps the disk /tmp at 10Gi', () => {
+    // TASK-995: the git working tree is gone, and the separate scratch tier
+    // merged into /tmp. /tmp now holds uploads, SDK transcripts, tool
+    // caches, venvs and clones, so it gets a size limit: a runaway agent
+    // gets its own pod evicted instead of filling the node's disk. It stays
+    // on disk (no `medium`), because tmpfs counts against the pod's memory.
     const spec = buildPodSpec('h', baseInput, baseResolved());
-    const containers = (
-      spec.spec as {
-        containers: Array<{ volumeMounts?: Array<{ name: string; mountPath: string }> }>;
-      }
-    ).containers;
-    const mounts = containers[0]!.volumeMounts ?? [];
-    expect(mounts.find((m) => m.mountPath === '/agent')).toBeDefined();
-    expect(mounts.find((m) => m.mountPath === '/ephemeral')).toBeDefined();
-    // No legacy /workspace mount.
-    expect(mounts.find((m) => m.mountPath === '/workspace')).toBeUndefined();
+    const podSpec = spec.spec as {
+      containers: Array<{ volumeMounts: Array<{ name: string; mountPath: string }> }>;
+      volumes: Array<{ name: string; emptyDir?: { medium?: string; sizeLimit?: string } }>;
+    };
+    const names = podSpec.volumes.map((v) => v.name);
+    expect(names).not.toContain('agent');
+    expect(names).not.toContain('ephemeral');
+    const tmp = podSpec.volumes.find((v) => v.name === 'tmp');
+    expect(tmp?.emptyDir?.sizeLimit).toBe('10Gi');
+    expect(tmp?.emptyDir?.medium).toBeUndefined();
+    // Everything the runner can write, exactly, for a pod with no resolver
+    // mounts, services or proxy socket: the disk /tmp and the tmpfs HOME. A
+    // new writable mount has to change this list on purpose.
+    expect(podSpec.containers[0]!.volumeMounts).toEqual([
+      { name: 'tmp', mountPath: '/tmp' },
+      { name: 'home', mountPath: '/home/runner' },
+    ]);
+    expect(podSpec.volumes).toEqual([
+      { name: 'tmp', emptyDir: { sizeLimit: '10Gi' } },
+      { name: 'home', emptyDir: { medium: 'Memory' } },
+    ]);
+  });
 
-    const volumes = (spec.spec as { volumes?: Array<{ name: string; emptyDir?: object }> })
-      .volumes ?? [];
-    const agent = volumes.find((v) => v.name === 'agent');
-    expect(agent?.emptyDir).toBeDefined();
-    const ephemeral = volumes.find((v) => v.name === 'ephemeral');
-    expect(ephemeral?.emptyDir).toBeDefined();
-    // No legacy `workspace` volume.
-    expect(volumes.find((v) => v.name === 'workspace')).toBeUndefined();
-
-    // The mount alone is inert — the runner only wires the scratch tier
-    // into the SDK (additionalDirectories + system-prompt note) when
-    // AX_EPHEMERAL_ROOT is stamped. Assert the env points at the mount so
-    // the two halves can't drift apart.
+  it('stamps AX_EPHEMERAL_ROOT=/tmp and no workspace root', () => {
+    // The runner requires AX_EPHEMERAL_ROOT and keeps all session scratch
+    // under it, so it must name the disk /tmp mount above. Every AX_ control
+    // variable a base pod carries is listed: the host's own cwd
+    // (OpenSessionInput.workspaceRoot) never reaches the pod, and no git
+    // working tree is named any more.
+    const spec = buildPodSpec('e', baseInput, baseResolved());
     const env = (
       spec.spec as { containers: Array<{ env: Array<{ name: string; value: string }> }> }
     ).containers[0]!.env;
-    expect(env.find((e) => e.name === 'AX_EPHEMERAL_ROOT')?.value).toBe(
-      '/ephemeral',
-    );
+    expect(env.find((e) => e.name === 'AX_EPHEMERAL_ROOT')?.value).toBe('/tmp');
+    expect(env.map((e) => e.name).filter((n) => n.startsWith('AX_')).sort()).toEqual([
+      'AX_AUTH_TOKEN',
+      'AX_EPHEMERAL_ROOT',
+      'AX_RUNNER_BINARY',
+      'AX_RUNNER_ENDPOINT',
+      'AX_SESSION_ID',
+      'AX_TRANSCRIPTS_ROOT',
+    ]);
   });
 
   it('stamps AX_TRANSCRIPTS_ROOT=/tmp/transcripts on the pod-private disk /tmp', () => {
@@ -360,13 +371,11 @@ describe('buildPodSpec', () => {
   });
 
   it('carries paranoid git env on the runner container', () => {
-    // Phase 3: the sandbox materializes /agent from a host-streamed
-    // baseline bundle and ships per-turn diffs as `git bundle`. To do that
-    // it spawns the in-image `git` binary. These env vars are the locked-
-    // down rails per design doc Phase 3 / SECURITY.md — they prevent
-    // git-init from reading user-global config, refuse remote helpers,
-    // and pin commit author/committer to `ax-runner` so the host bundler
-    // can verify provenance before applying.
+    // git ships in the runner image for the agent's own work (clones, local
+    // repos). These env vars are its locked-down rails (SECURITY.md): no
+    // system or user-global config, no interactive credential prompt, and a
+    // fixed author/committer, which is also what lets `git commit` work at
+    // all with the global config pointed at /dev/null.
     const spec = buildPodSpec('g', baseInput, baseResolved());
     const env = (
       spec.spec as { containers: Array<{ env: Array<{ name: string; value: string }> }> }
@@ -450,9 +459,9 @@ describe('buildPodSpec', () => {
     });
 
     it('does NOT stamp GIT_SSL_CAINFO when proxyConfig is absent (no MITM, no extra CA)', () => {
-      // Outside a proxied session git talks to the in-cluster workspace git
-      // server over plain HTTP / its own trust store — pinning a CA path
-      // that doesn't exist would break it. Only stamp when the proxy is on.
+      // Without the proxy there is no MITM cert to trust, and pinning a CA
+      // path that doesn't exist would break every HTTPS call git makes with
+      // its own trust store. Only stamp when the proxy is on.
       const spec = buildPodSpec('p', baseInput, baseResolved());
       const env = (
         spec.spec as { containers: Array<{ env: Array<{ name: string }> }> }
@@ -719,9 +728,10 @@ describe('buildPodSpec', () => {
     });
 
     it('sets CLAUDE_CONFIG_DIR to /home/runner/.ax/session', () => {
-      // The SDK's `'project'` setting source reads
-      // $CLAUDE_CONFIG_DIR/skills/ — point it at the per-session HOME
-      // subdir so Phase 1 (skill materialization) writes there.
+      // The SDK's `'user'` setting source reads $CLAUDE_CONFIG_DIR (installed
+      // skills under skills/, settings, session state). Point it at the
+      // per-session tmpfs HOME, outside the agent's /files, so Phase 1 (skill
+      // materialization) writes there and nothing the agent writes loads.
       const spec = buildPodSpec('pod-ccd', baseInput, baseResolved());
       const env = (
         spec.spec as { containers: Array<{ env: Array<{ name: string; value: string }> }> }
@@ -732,14 +742,9 @@ describe('buildPodSpec', () => {
 
     it('includes an init container that scaffolds the user-source skills dir', () => {
       // The init container creates the empty $CLAUDE_CONFIG_DIR/skills dir
-      // the SDK's `'user'` source walks at startup. The matching
-      // `.claude/skills → ../.ax/draft-skills` symlink (`'project'` source)
-      // is laid down by the runner AFTER `materializeWorkspace` clones
-      // the baseline bundle — see
-      // `git-workspace.ts#scaffoldWorkspaceSkillSurface`. Doing it here
-      // would non-empty `/agent` before the runner's `git clone`
-      // and crash the runner with "destination path '/agent'
-      // already exists and is not an empty directory."
+      // the SDK's `'user'` source walks at startup. It needs the tmpfs HOME
+      // and nothing else: the agent's /files and the scratch /tmp are the
+      // agent's to write, not a setup step's.
       const spec = buildPodSpec('pod-init', baseInput, baseResolved());
       const init = (
         spec.spec as {
@@ -754,17 +759,12 @@ describe('buildPodSpec', () => {
       const scaffold = init.find((c) => c.name === 'sdk-scaffold');
       expect(scaffold).toBeDefined();
 
-      const mounts = (scaffold!.volumeMounts ?? []).map((m) => m.name);
-      expect(mounts).toContain('home');
-      // Regression guard: the init container MUST NOT mount /agent.
-      // Mounting it here lets a future maintainer reintroduce the
-      // pre-clone scaffold that broke chat post-Phase-0.
-      expect(mounts).not.toContain('agent');
+      // Only the tmpfs HOME: the scaffold step has no business in the agent's
+      // files or the scratch root (capabilities minimized, I5).
+      expect(scaffold!.volumeMounts).toEqual([{ name: 'home', mountPath: '/home/runner' }]);
 
       const cmdJoined = (scaffold!.command ?? []).concat(scaffold!.args ?? []).join(' ');
       expect(cmdJoined).toContain('/home/runner/.ax/session/skills');
-      // Regression guard: no writes to /agent here.
-      expect(cmdJoined).not.toMatch(/\/agent/);
     });
 
     it('init container runs as the same non-root user as the main container', () => {

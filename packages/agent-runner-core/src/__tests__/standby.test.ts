@@ -40,7 +40,13 @@ describe('single-use standby activation', () => {
     vi.mocked(scaffoldPythonVenv).mockImplementation(() => new Promise(resolve => { finishCopy = resolve; }));
     const waiting = waitForAssignment({ ...f, pollMs: 1 });
     await f.publish();
-    expect(scaffoldPythonVenv).toHaveBeenCalledWith('/ephemeral', { offlineOnly: true });
+    // TASK-995 — the venv template goes in the pod's disk /tmp, the one scratch
+    // root an assignment can pin as AX_EPHEMERAL_ROOT (sandbox-protocol's
+    // bootstrap test pins the same literal), so the session that takes over
+    // this pod finds it ready instead of copying it again. No
+    // @ax/sandbox-protocol import here: the runner-side independence guard
+    // (agent-claude-sdk-runner mcp-server-drift.test.ts) allows only standby.ts.
+    expect(scaffoldPythonVenv).toHaveBeenCalledWith('/tmp', { offlineOnly: true });
     expect(f.env.AX_AUTH_TOKEN).toBeUndefined();
     await expect(stat(join(f.root, 'accepted.json'))).rejects.toMatchObject({ code: 'ENOENT' });
     finishCopy(true);

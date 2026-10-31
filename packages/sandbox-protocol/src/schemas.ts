@@ -16,9 +16,8 @@ import { z } from 'zod';
 // is made in one place and can't silently diverge between backends.
 //
 // This package is on the eslint no-restricted-imports allow-list, same class
-// as @ax/ipc-protocol and @ax/workspace-protocol: a pure wire-schema package
-// is the sanctioned way to share a contract without a cross-plugin runtime
-// coupling (invariant I2).
+// as @ax/ipc-protocol: a pure wire-schema package is the sanctioned way to
+// share a contract without a cross-plugin runtime coupling (invariant I2).
 //
 // Field naming stays backend-agnostic (invariant I1): `endpoint` (TCP) and
 // `unixSocketPath` are the two transport-neutral proxy reach forms; no
