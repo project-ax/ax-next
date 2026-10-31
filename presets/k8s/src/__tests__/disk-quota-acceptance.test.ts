@@ -443,7 +443,7 @@ describe('@ax/preset-k8s disk quota canary (real git + blob store + postgres)', 
 
   /** Room for HEADROOM_BYTES and no more: any real write is refused. */
   const seedNearlyFull = (ownerId: string): Promise<void> => seedLedger(ownerId, HEADROOM_BYTES);
-  /** Exactly at the limit: writes and turns are both refused. */
+  /** Exactly at the limit: every write is refused (turns still go through, TASK-993). */
   const seedFull = (ownerId: string): Promise<void> => seedLedger(ownerId, 0);
 
   /** Write the limits setting the way an admin change lands (the storage key),
@@ -912,60 +912,38 @@ describe('@ax/preset-k8s disk quota canary (real git + blob store + postgres)', 
   );
 
   // -------------------------------------------------------------------------
-  // 5. THE FRONT DOOR -- the real chat:start hook the orchestrator fires
-  //    before any sandbox exists
+  // 5. THE FRONT DOOR STAYS OPEN -- the real chat:start hook the orchestrator
+  //    fires before any sandbox exists. Over quota blocks writes, never a turn
+  //    (TASK-993): a full person can still ask their agent to tidy up.
   // -------------------------------------------------------------------------
 
-  it('(5) chat:start: a full owner is turned away with storage-full, judged per owner, admitted again once the limit is raised', async () => {
+  it('(5) a full owner can still start a turn; only their writes are refused', async () => {
     const { bus } = live();
     agentOwners.set('dq-agt-turn-a', { ownerId: USER_A, ownerType: 'user' });
-    agentOwners.set('dq-agt-turn-b', { ownerId: USER_B, ownerType: 'user' });
     agentOwners.set('dq-agt-turn-team-full', { ownerId: 'tm2', ownerType: 'team' });
-    agentOwners.set('dq-agt-turn-team-roomy', { ownerId: 'tm3', ownerType: 'team' });
     const start = (userId: string, agentId: string) =>
       bus.fire('chat:start', ctxFor(userId, agentId), {
         message: { role: 'user', content: 'hi' },
       });
 
-    // Nobody is full yet: every turn passes.
-    for (const [userId, agentId] of [
-      [USER_A, 'dq-agt-turn-a'],
-      [USER_B, 'dq-agt-turn-b'],
-      [USER_B, 'dq-agt-turn-team-full'],
-    ] as const) {
-      expect(await start(userId, agentId), `${userId} on ${agentId}`).toMatchObject({
-        rejected: false,
-      });
-    }
-
-    // A and the team `tm2` are at their limit; B and the team `tm3` have room.
+    // A and the team `tm2` are exactly at their limit.
     await seedFull(USER_A);
     await seedFull('team:tm2');
 
-    // The veto is a CODE (`chat:start:storage-full` once the orchestrator
-    // prefixes it), and it comes from this plugin.
-    expect(await start(USER_A, 'dq-agt-turn-a')).toMatchObject({
-      rejected: true,
-      reason: 'storage-full',
-      source: DISK_QUOTA_PLUGIN,
-    });
-    // B has room to spare, on their own agent.
-    expect(await start(USER_B, 'dq-agt-turn-b')).toMatchObject({ rejected: false });
-    // A team agent's turn is judged by the TEAM's total, whoever sends it: B
-    // has room but the team does not...
-    expect(await start(USER_B, 'dq-agt-turn-team-full')).toMatchObject({
-      rejected: true,
-      reason: 'storage-full',
-      source: DISK_QUOTA_PLUGIN,
-    });
-    // ...and A is full but a team with room is not.
-    expect(await start(USER_A, 'dq-agt-turn-team-roomy')).toMatchObject({ rejected: false });
-
-    // An admin raises the limit (storage:set + clock past the cache): the very
-    // next turn, on this very kernel, passes.
-    await setLimits({ limitMb: 4096 });
+    // A full person's turn goes through, on their own agent...
     expect(await start(USER_A, 'dq-agt-turn-a')).toMatchObject({ rejected: false });
+    // ...and on a full team's agent, whoever sends it.
     expect(await start(USER_B, 'dq-agt-turn-team-full')).toMatchObject({ rejected: false });
+
+    // The write gate still holds: A's next upload is refused, before the
+    // backend, and nothing is charged for it.
+    const used = await usedBy(USER_A);
+    const refused = randomBytes(4096);
+    const err = await refusalOf(blobPut(USER_A, refused));
+    expect(err.code).toBe('rejected');
+    expect(err.message).toBe(blobFullMessage(used, MIN_LIMIT_BYTES));
+    expect(await blobStat(sha256Hex(refused))).toEqual({ found: false });
+    expect(await usedBy(USER_A)).toBe(used);
   });
 
   // -------------------------------------------------------------------------

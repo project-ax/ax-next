@@ -50,15 +50,15 @@ import type { BlobRow, DiskQuotaStore } from './store.js';
  * STORAGE_FULL_REASON`, so a caller that must treat "full" differently (an HTTP
  * status, a banner) keys on the code instead of matching the sentence. The
  * fail-closed "could not check your storage" refusal has NO code: it is not the
- * same thing, and a caller keyed on `storage-full` must not see it. A refusal of
- * a TURN carries `STORAGE_FULL_REASON` as its reason, because the orchestrator
- * surfaces it as `chat:start:<code>` and channel-web owns the sentence.
+ * same thing, and a caller keyed on `storage-full` must not see it. Only WRITES
+ * are ever refused: a full person's turn is never turned away (TASK-993).
  */
 export type AdmitDecision = { ok: true } | { ok: false; reason: string; code?: string };
 
 /**
- * The stable code for "this person's storage is full": the `chat:start` veto
- * reason, and the `code` on a write refused for the same cause.
+ * The stable code for "this person's storage is full": the `code` on a write
+ * refused for that cause. (It is no longer a `chat:start` veto reason, TASK-993;
+ * channel-web keeps its `chat:start:storage-full` label for replayed history.)
  */
 export const STORAGE_FULL_REASON = 'storage-full';
 
@@ -85,8 +85,6 @@ export interface BlobReleaseResult {
 export interface DiskQuotaService {
   admitWorkspaceWrite(ctx: AgentContext, sizeBytes: number): Promise<AdmitDecision>;
   admitBlobWrite(ctx: AgentContext, sizeBytes: number): Promise<AdmitDecision>;
-  /** `chat:start`: turn a full person's next message away with a clear code. Fails OPEN. */
-  admitTurn(ctx: AgentContext): Promise<AdmitDecision>;
   recordBlobStored(ctx: AgentContext, payload: unknown): Promise<void>;
   /** Fire-and-track: never awaited by the caller, never throws. */
   scheduleWorkspaceMeasure(ctx: AgentContext): void;
@@ -260,31 +258,6 @@ export function createDiskQuotaService(deps: {
     } catch (err) {
       log(ctx, 'error', 'disk_quota_admit_failed', { kind: 'blob', err });
       return { ok: false, reason: STORAGE_UNAVAILABLE_MESSAGE };
-    }
-  }
-
-  // The FRONT DOOR: once a person's storage is full, their next turn is turned
-  // away at `chat:start` with a plain sentence. The write gates above are the
-  // hard guard. A refused end-of-turn save is reported under its reply
-  // (`saveRefused` on `event.turn-end`, TASK-720); this gate stops a full person
-  // starting another turn whose files could not be kept either.
-  //
-  // It fails OPEN, the opposite of the write gates, on purpose: this gate exists
-  // to give a clear message, not to guard the disk (the write gates do that and
-  // fail closed), and a storage hiccup must not stop people chatting.
-  async function admitTurn(ctx: AgentContext): Promise<AdmitDecision> {
-    try {
-      const owner = await ownerOf(ctx);
-      if (owner === undefined) return OK;
-      const [current, usage] = await Promise.all([limits.get(), store.usageFor(owner)]);
-      const { limitBytes } = limitBytesOf(current);
-      if (usage.workspaceBytes + usage.fileBytes >= limitBytes) {
-        return { ok: false, reason: STORAGE_FULL_REASON };
-      }
-      return OK;
-    } catch (err) {
-      log(ctx, 'warn', 'disk_quota_turn_check_failed', { err });
-      return OK;
     }
   }
 
@@ -674,7 +647,6 @@ export function createDiskQuotaService(deps: {
   return {
     admitWorkspaceWrite,
     admitBlobWrite,
-    admitTurn,
     recordBlobStored,
     scheduleWorkspaceMeasure,
     releaseWorkspace,

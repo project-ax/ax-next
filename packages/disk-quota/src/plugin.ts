@@ -27,7 +27,6 @@ const SUBSCRIBED = [
   'workspace:applied',
   'blob:pre-put',
   'blob:stored',
-  'chat:start',
   'workspace:deleted',
 ] as const;
 
@@ -44,13 +43,12 @@ const SUBSCRIBED = [
 //     `blob:put` facade before any backend is touched) are refused when
 //     `used + incoming > limit`. The gates fail CLOSED: if the check itself
 //     breaks, the write is refused.
-//   - TURNS AWAY a full person's next message at `chat:start` (reason
-//     `storage-full`, which channel-web turns into a sentence). The refused
-//     end-of-turn save itself is reported under that reply (the veto's `code`
-//     rides the commit answer, the runner reports it on `event.turn-end` as
-//     `saveRefused`, TASK-720); this gate is what stops the person starting
-//     another turn whose files cannot be kept either. This one fails OPEN: it
-//     exists for the message; the write gates above are the guard.
+//   - NEVER turns a turn away (TASK-993). It does not subscribe to
+//     `chat:start`: a full person can still talk to their agent, and ask it to
+//     tidy up its files, while their uploads and published files stay refused
+//     by the write gates above. A refused end-of-turn save is still reported
+//     under its reply (the veto's `code` rides the commit answer, the runner
+//     reports it on `event.turn-end` as `saveRefused`, TASK-720).
 //   - METERS what was stored. `blob:stored` charges the writer (one row per
 //     owner and sha, so a re-put is free); `workspace:applied` re-measures
 //     that agent's repo in the background; a periodic sweep backfills every
@@ -248,18 +246,6 @@ export function createDiskQuotaPlugin(config: DiskQuotaPluginConfig = {}): DiskQ
         bus.subscribe<unknown>('blob:pre-put', PLUGIN_NAME, async (ctx, payload) => {
           const decision = await svc.admitBlobWrite(ctx, sizeField(payload, 'size'));
           if (!decision.ok) return vetoFor(decision);
-          return undefined;
-        });
-        // The front door. The write gates above are the hard guard; a refused
-        // end-of-turn save is reported under the reply it belonged to
-        // (`saveRefused` on `event.turn-end`, TASK-720). Turning their NEXT
-        // message away here, with a code channel-web turns into a sentence
-        // (`chat:start:storage-full`), stops a full person running another turn
-        // whose files would be thrown away too. Fails OPEN (see admitTurn): it
-        // exists for the message, not for the disk.
-        bus.subscribe<unknown>('chat:start', PLUGIN_NAME, async (ctx) => {
-          const decision = await svc.admitTurn(ctx);
-          if (!decision.ok) return reject({ reason: decision.reason });
           return undefined;
         });
         // Observers: never awaited past the cheap ledger write, never throw.

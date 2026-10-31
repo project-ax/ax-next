@@ -68,13 +68,17 @@ function setup(initial?: unknown) {
 }
 
 describe('the defaults and bounds', () => {
-  it('are 1 GB and a warning at 80%, with the documented bounds', () => {
-    expect(DEFAULT_LIMITS).toEqual({ limitMb: 1024, warnPercent: 80, graceMs: 86_400_000 });
+  it('are 10 GB and a warning at 80%, with the documented bounds', () => {
+    // TASK-993: agent files (clones, dependencies, work product) count now.
+    expect(DEFAULT_LIMITS).toEqual({ limitMb: 10240, warnPercent: 80, graceMs: 86_400_000 });
     expect(LIMIT_BOUNDS).toEqual({
       limitMb: { min: 64, max: 10_485_760 },
       warnPercent: { min: 1, max: 99 },
       graceMs: { min: 3_600_000, max: 2_592_000_000 },
     });
+    // The default is itself a value an admin could save.
+    expect(LIMIT_BOUNDS.limitMb.min).toBeLessThanOrEqual(DEFAULT_LIMITS.limitMb);
+    expect(DEFAULT_LIMITS.limitMb).toBeLessThanOrEqual(LIMIT_BOUNDS.limitMb.max);
     expect(LIMITS_STORAGE_KEY).toBe('settings:disk-quota');
   });
 

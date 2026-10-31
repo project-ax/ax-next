@@ -240,6 +240,7 @@ describe('the blob gate', () => {
     // The sentence is for the person; the code is for whoever must react to it
     // without matching prose (an HTTP status, a specific banner).
     expect(d).toEqual({ ok: false, reason: blobFullMessage(60 * MB, 64 * MB), code: 'storage-full' });
+    expect(STORAGE_FULL_REASON).toBe('storage-full');
     expect((d as { reason: string }).reason).toContain('60 MB of 64 MB');
   });
 
@@ -268,11 +269,11 @@ describe('the blob gate', () => {
     expect(await w.svc.admitBlobWrite(w.ctx('bob'), 60 * MB)).toEqual({ ok: true });
   });
 
-  it('uses the default 1024 MB limit when nothing is set', async () => {
+  it('uses the default 10240 MB limit when nothing is set', async () => {
     const w = makeWorld();
-    await w.seedFiles('alice', 1000 * MB);
-    expect((await w.svc.admitBlobWrite(w.ctx('alice'), 24 * MB)).ok).toBe(true);
-    expect((await w.svc.admitBlobWrite(w.ctx('alice'), 24 * MB + 1)).ok).toBe(false);
+    await w.seedFiles('alice', 10_000 * MB);
+    expect((await w.svc.admitBlobWrite(w.ctx('alice'), 240 * MB)).ok).toBe(true);
+    expect((await w.svc.admitBlobWrite(w.ctx('alice'), 240 * MB + 1)).ok).toBe(false);
   });
 
   it('does not attribute (or refuse) a write with no person behind it, even a huge one', async () => {
@@ -520,73 +521,6 @@ describe('the workspace gate', () => {
     for (const bad of [Number.NaN, -1e12, 'x' as unknown as number]) {
       expect((await w.svc.admitWorkspaceWrite(w.ctx('alice'), bad)).ok, String(bad)).toBe(false);
     }
-  });
-});
-
-// The front door (chat:start). The write gates are the hard guard; but the
-// runner's end-of-turn save happens AFTER the reply is shown and its refusal
-// reason is never surfaced there, so a full person would lose files silently.
-// Turning the NEXT message away with a clear sentence is how they find out.
-describe('the turn gate (chat:start)', () => {
-  it('admits a person with room to spare, and one who is close but not full', async () => {
-    const w = makeWorld();
-    await w.setLimitMb(64);
-    await w.seedFiles('alice', 63 * MB);
-    expect(await w.svc.admitTurn(w.ctx('alice'))).toEqual({ ok: true });
-  });
-
-  it("refuses a full person's turn with the stable code, and only THEIRS", async () => {
-    const w = makeWorld();
-    await w.setLimitMb(64);
-    await w.seedFiles('alice', 64 * MB);
-    expect(await w.svc.admitTurn(w.ctx('alice'))).toEqual({ ok: false, reason: STORAGE_FULL_REASON });
-    expect(STORAGE_FULL_REASON).toBe('storage-full');
-    expect(await w.svc.admitTurn(w.ctx('bob'))).toEqual({ ok: true });
-  });
-
-  it('counts workspace and file bytes together, like the write gates', async () => {
-    const w = makeWorld();
-    await w.setLimitMb(64);
-    await w.seedFiles('alice', 30 * MB);
-    await w.seedWorkspace('alice', 'agt_1', 34 * MB);
-    expect((await w.svc.admitTurn(w.ctx('alice', 'agt_1'))).ok).toBe(false);
-  });
-
-  it("charges a team agent's turn to the team, so every member is judged by the team total", async () => {
-    const w = makeWorld({
-      services: {
-        'agents:resolve': (async () => ({
-          agent: { ownerId: 'team-9', ownerType: 'team' },
-        })) as Handler,
-      },
-    });
-    await w.setLimitMb(64);
-    await w.seedWorkspace('team:team-9', 'agt_team', 64 * MB);
-    expect((await w.svc.admitTurn(w.ctx('alice', 'agt_team'))).ok).toBe(false);
-    expect((await w.svc.admitTurn(w.ctx('bob', 'agt_team'))).ok).toBe(false);
-  });
-
-  it('admits a turn with nobody to charge (a system run)', async () => {
-    const w = makeWorld();
-    await w.setLimitMb(64);
-    expect(await w.svc.admitTurn(w.ctx('system'))).toEqual({ ok: true });
-  });
-
-  it('takes a raised limit straight away', async () => {
-    const w = makeWorld();
-    await w.setLimitMb(64);
-    await w.seedFiles('alice', 64 * MB);
-    expect((await w.svc.admitTurn(w.ctx('alice'))).ok).toBe(false);
-    await w.limits.set({ limitMb: 128 });
-    expect((await w.svc.admitTurn(w.ctx('alice'))).ok).toBe(true);
-  });
-
-  it('FAILS OPEN when the check itself breaks (the write gates, which fail closed, still guard the disk), and says so', async () => {
-    const w = makeWorld({ store: failingStore });
-    expect(await w.svc.admitTurn(w.ctx('alice'))).toEqual({ ok: true });
-    expect(w.lines.some((l) => l.level === 'warn' && l.msg === 'disk_quota_turn_check_failed')).toBe(true);
-    // ...while the same broken store still refuses a WRITE.
-    expect((await w.svc.admitBlobWrite(w.ctx('alice'), 1)).ok).toBe(false);
   });
 });
 
@@ -908,10 +842,8 @@ describe('releaseWorkspace (an agent was deleted)', () => {
     await w.setLimitMb(64);
     await w.seedWorkspace('alice', 'agt_1', 64 * MB);
     expect((await w.svc.admitBlobWrite(w.ctx('alice'), 5 * MB)).ok).toBe(false);
-    expect((await w.svc.admitTurn(w.ctx('alice'))).ok).toBe(false);
     await w.svc.releaseWorkspace('agt_1');
     expect((await w.svc.admitBlobWrite(w.ctx('alice'), 5 * MB)).ok).toBe(true);
-    expect((await w.svc.admitTurn(w.ctx('alice'))).ok).toBe(true);
   });
 
   it("keys on the agent alone: a team's row goes too, with no owner lookup at all", async () => {

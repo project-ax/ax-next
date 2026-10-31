@@ -88,7 +88,7 @@ async function dbOf(b: Booted): Promise<Kysely<unknown>> {
 }
 
 describe('manifest', () => {
-  it('subscribes to the two write gates + two meters + the chat:start front door + workspace:deleted, registers nothing, declares its calls', () => {
+  it('subscribes to the two write gates + two meters + workspace:deleted (never chat:start), registers nothing, declares its calls', () => {
     const m = createDiskQuotaPlugin().manifest;
     expect(m.name).toBe('@ax/disk-quota');
     expect(m.version).toBe('0.0.0');
@@ -98,7 +98,6 @@ describe('manifest', () => {
       'workspace:applied',
       'blob:pre-put',
       'blob:stored',
-      'chat:start',
       'workspace:deleted',
     ]);
     expect(m.calls).toEqual([
@@ -304,29 +303,20 @@ describe('the workspace:deleted subscriber, end to end through the bus', () => {
   });
 });
 
-describe('the chat:start front door, end to end through the bus', () => {
-  it('turns a FULL person away with the stable code; someone with room, and someone else, get through', async () => {
+// TASK-993: a full person can still talk to their agent (and ask it to tidy its
+// files up); only the bytes they would add are refused.
+describe('over quota blocks writes, not chat', () => {
+  it('a FULL owner still starts a turn: chat:start is never vetoed (TASK-993), and their uploads are refused', async () => {
     const b = await boot();
     await setLimitMb(b, 64);
     const alice = b.harness.ctx({ userId: 'alice', agentId: 'agt_1' });
-    const bob = b.harness.ctx({ userId: 'bob', agentId: 'agt_2' });
-    await blobStored(b, alice, 63 * MB);
-    expect((await chatStart(b, alice)).rejected).toBe(false);
-
-    await blobStored(b, alice, 1 * MB, 'b');
-    expect(await chatStart(b, alice)).toMatchObject({
+    await blobStored(b, alice, 64 * MB);
+    expect(await chatStart(b, alice)).toMatchObject({ rejected: false });
+    expect(await blobPrePut(b, alice, 1)).toMatchObject({
       rejected: true,
-      reason: 'storage-full',
       source: '@ax/disk-quota',
+      code: 'storage-full',
     });
-    expect((await chatStart(b, bob)).rejected).toBe(false);
-  });
-
-  it('lets the turn through when the check itself breaks (the write gates still fail closed)', async () => {
-    const b = await boot();
-    await (await dbOf(b)).destroy();
-    expect((await chatStart(b, b.harness.ctx({ userId: 'alice', agentId: 'agt_1' }))).rejected).toBe(false);
-    expect((await blobPrePut(b, b.harness.ctx({ userId: 'alice' }), 1)).rejected).toBe(true);
   });
 });
 

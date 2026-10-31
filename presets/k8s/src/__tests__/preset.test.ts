@@ -997,9 +997,10 @@ describe('@ax/preset-k8s wiring', () => {
       'workspace:applied',
       'blob:pre-put',
       'blob:stored',
-      'chat:start',
       'workspace:deleted',
     ]);
+    // TASK-993: over quota blocks writes, never a turn.
+    expect(quota!.manifest.subscribes).not.toContain('chat:start');
     expect(quota!.manifest.calls).toEqual([
       'database:get-instance',
       'storage:get',
@@ -1031,11 +1032,6 @@ describe('@ax/preset-k8s wiring', () => {
     expect(ws).toHaveLength(1);
     expect(ws[0]!.manifest.registers).toContain('workspace:apply-internal');
     expect(plugins.map((p) => p.manifest.name)).toContain('@ax/ipc-http');
-    // chat:start (the front door that tells a full person why their message
-    // was turned away) is fired by agent:invoke's owner.
-    expect(
-      plugins.find((p) => p.manifest.registers.includes('agent:invoke'))?.manifest.name,
-    ).toBe('@ax/chat-orchestrator');
     // The workspace measurement + owner attribution the plugin uses.
     expect(ws[0]!.manifest.registers).toContain('workspace:usage');
     expect(plugins.some((p) => p.manifest.registers.includes('agents:resolve'))).toBe(true);
