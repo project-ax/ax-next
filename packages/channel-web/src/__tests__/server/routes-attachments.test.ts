@@ -521,6 +521,53 @@ describe('@ax/channel-web GET /api/files', () => {
     expect(await theirs.text()).toBe('NOT-YOURS-BYTES');
   });
 
+  it('takes the caller from the session, never from a userId in the query', async () => {
+    const booted = await boot({
+      user: { id: 'u1', isAdmin: false },
+      conversationOwners: { c1: 'u1', c3: 'u2' },
+    });
+    harnesses.push(booted.harness);
+    const theirs = await commitUpload(booted.harness, 'u2', 'c3', {
+      name: 'theirs.txt',
+      type: 'text/plain',
+      body: 'NOT-YOURS-BYTES',
+    });
+    const mine = await commitUpload(booted.harness, 'u1', 'c1', {
+      name: 'mine.txt',
+      type: 'text/plain',
+      body: 'MY-BYTES',
+    });
+
+    // Signed in as u1, claiming to be u2: still u1, so u2's file stays shut...
+    const forged = await getFile(booted.port, `conversationId=c3&id=${theirs}&userId=u2`);
+    expect(forged.status).toBe(404);
+    expect(await forged.text()).not.toContain('NOT-YOURS-BYTES');
+    // ...and u1's own file is still served, so the query did not make the
+    // request u2's (nor break it).
+    const own = await getFile(booted.port, `conversationId=c1&id=${mine}&userId=u2`);
+    expect(own.status).toBe(200);
+    expect(await own.text()).toBe('MY-BYTES');
+  });
+
+  it('sanitizes a name carrying a quote and CRLF in the Content-Disposition header', async () => {
+    const booted = await boot({
+      user: { id: 'u1', isAdmin: false },
+      conversationOwners: { c1: 'u1' },
+    });
+    harnesses.push(booted.harness);
+    const id = await commitUpload(booted.harness, 'u1', 'c1', {
+      name: 'a"b\r\nX-Injected: 1;c.txt',
+      type: 'text/plain',
+      body: 'hi',
+    });
+
+    const r = await getFile(booted.port, `conversationId=c1&id=${id}`);
+    expect(r.status).toBe(200);
+    expect(r.headers.get('content-disposition')).toBe('attachment; filename="a_b__X-Injected_ 1_c.txt"');
+    expect(r.headers.get('x-injected')).toBeNull();
+    expect(await r.text()).toBe('hi');
+  });
+
   it('answers 400 when the request does not name a well-formed id and a conversation', async () => {
     const booted = await boot({
       user: { id: 'u1', isAdmin: false },

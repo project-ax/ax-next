@@ -316,8 +316,16 @@ describe('generated file download chips', () => {
       { type: 'tool_result', tool_use_id: 'publish-1', is_error: true, content: JSON.stringify(published) },
       { type: 'tool_result', tool_use_id: 'publish-1', held: true, content: JSON.stringify(published) },
       { type: 'tool_result', tool_use_id: 'unrelated', content: JSON.stringify(published) },
+      // Positive control in the same turn: one valid id block still renders a
+      // chip, so the absence of budget.csv is the filter's doing and not a
+      // turn (or thread) that renders nothing at all.
+      { ...file, attachmentId: 'fedcba9876543210fedcba9876543210', filename: 'control.csv' },
     ]);
     expect(JSON.stringify(detail.thread)).not.toContain('budget.csv');
+    const view = render(<AgentConversation {...conversationProps(detail)} />);
+    expect(screen.getAllByRole('button', { name: /^Download / })).toHaveLength(1);
+    expect(screen.getByRole('button', { name: 'Download control.csv' })).toBeVisible();
+    view.unmount();
   });
 });
 
