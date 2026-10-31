@@ -1369,10 +1369,10 @@ describeIfHelm('ax-next chart: sandbox.filestore wiring', () => {
     ['the exact /32 on 2049', { to: [{ ipBlock: { cidr: '10.9.8.7/32' } }], ports: [{ port: 2049 }] }, true],
     [
       'the internet minus the Filestore range',
-      { to: [{ ipBlock: { cidr: '0.0.0.0/0', except: ['10.9.0.0/16'] } }] },
+      { to: [{ ipBlock: { cidr: '0.0.0.0/0', except: ['10.0.0.0/8'] } }] },
       false,
     ],
-    ['a different /32', { to: [{ ipBlock: { cidr: '10.9.8.8/32' } }], ports: [{ port: 2049 }] }, false],
+    ['a different /32', { to: [{ ipBlock: { cidr: '10.0.0.5/32' } }], ports: [{ port: 2049 }] }, false],
     ['pods only, on 2049', { to: [{ namespaceSelector: {} }], ports: [{ port: 2049 }] }, false],
     ['HTTPS only', { ports: [{ port: 443 }] }, false],
     ['an endPort range below 2049', { ports: [{ port: 1000, endPort: 2048 }] }, false],
