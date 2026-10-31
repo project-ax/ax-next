@@ -945,7 +945,9 @@ describe('main()', () => {
   // promotes it. If a regression added /files as a skill source, a draft on
   // durable SHARED NFS would be discovered + executed un-gated — this guards it.
   it('with AX_USERFILES_ROOT set, /files reaches the file tools but is NEVER a skill/setting source (HR1)', async () => {
-    setEnv({ ...COMPLETE_ENV, AX_USERFILES_ROOT: '/files' });
+    // The home must exist (the runner refuses to start otherwise), so this is
+    // the suite's real home dir, which is named `files` like the k8s mount.
+    setEnv({ ...COMPLETE_ENV });
     fakeClient = buildFakeClient();
     fakeClient.call.mockImplementation(async (action: string) => {
       if (action === 'session.get-config') {
@@ -995,19 +997,19 @@ describe('main()', () => {
         systemPrompt: string;
       };
     };
-    // The sole skill/setting source stays 'user' — /files is NOT added.
+    // The sole skill/setting source stays 'user' — the home is NOT added.
     expect(queryArg.options.settingSources).toEqual(['user']);
     expect(queryArg.options.settingSources).not.toContain('project');
-    expect(queryArg.options.settingSources).not.toContain('/files');
+    expect(queryArg.options.settingSources).not.toContain(HOME_DIR);
     // It IS reachable by the file tools (durable read/write): /files is the
     // SDK's cwd and HOME (TASK-164), which the SDK always grants, so it is not
     // listed again — the scratch root is the only additional directory. Either
     // way HR1 holds: reachable by tools, never a source.
-    expect(queryArg.options.cwd).toBe('/files');
+    expect(queryArg.options.cwd).toBe(HOME_DIR);
     expect(queryArg.options.additionalDirectories).toEqual([COMPLETE_ENV.AX_EPHEMERAL_ROOT]);
     // The skill-draft prefix advertised to the model is rooted at the DURABLE
     // mount (drafts persist), not the ephemeral tier.
-    expect(queryArg.options.systemPrompt).toContain('/files/.skill-draft/<id>/');
+    expect(queryArg.options.systemPrompt).toContain(`${HOME_DIR}/.skill-draft/<id>/`);
   });
 
   it('the per-turn transcript ship waits for the turn FINAL assistant line (not the intermediate tool_use line) (TASK-11 / keepalive durability)', async () => {

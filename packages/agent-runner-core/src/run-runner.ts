@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { promises as fs } from 'node:fs';
 import { ChatEndHistory } from './chat-end-history.js';
 import {
   createIpcClient,
@@ -397,6 +398,27 @@ async function runRunnerInner(
   } catch (err) {
     process.stderr.write(
       `runner: ${err instanceof Error ? err.message : String(err)}\n`,
+    );
+    return 2;
+  }
+
+  // TASK-995: the home is the agent's cwd and the only place its work persists,
+  // and the sandbox mounts it before starting the runner. Without it every
+  // file the agent writes would fail (or, were anything to create the path,
+  // land on disk that dies with the pod), so refuse to start rather than run
+  // an agent that cannot keep anything. Never created here.
+  const home = runnerHomeDir(env);
+  let homeIsDir = false;
+  let homeErr = 'not a directory';
+  try {
+    homeIsDir = (await fs.stat(home)).isDirectory();
+  } catch (err) {
+    homeErr = (err as NodeJS.ErrnoException).code ?? String(err);
+  }
+  if (!homeIsDir) {
+    process.stderr.write(
+      `runner: refusing to start: the agent's home (${home}) is not an existing directory (${homeErr}). ` +
+        'The sandbox mounts it before starting the runner, so a missing one means the sandbox is misconfigured.\n',
     );
     return 2;
   }

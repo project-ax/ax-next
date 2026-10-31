@@ -513,6 +513,55 @@ describe('runRunner', () => {
     }
   });
 
+  // TASK-995: the home is the agent's cwd and the only place its work
+  // persists. A sandbox that did not mount it would otherwise boot an agent
+  // whose every file write fails, or (were anything to create it) silently
+  // land on ephemeral disk. Refused right after the config-dir guard, before
+  // any IPC or other boot work.
+  it.each([
+    ['does not exist', async (t: string) => path.join(t, 'files')],
+    [
+      'is a regular file',
+      async (t: string) => {
+        const p = path.join(t, 'files');
+        await fs.writeFile(p, 'not a directory');
+        return p;
+      },
+    ],
+    [
+      'is a symlink to a regular file',
+      async (t: string) => {
+        await fs.writeFile(path.join(t, 'target'), 'x');
+        const p = path.join(t, 'files');
+        await fs.symlink(path.join(t, 'target'), p);
+        return p;
+      },
+    ],
+  ])("refuses to start when the agent's home %s", async (_label, makeHome) => {
+    const t = await fs.mkdtemp(path.join(os.tmpdir(), 'ax-run-runner-home-'));
+    const home = await makeHome(t);
+    const createTranscriptSource = vi.fn(() => transcriptSource);
+    const makeLoop = vi.fn();
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      const code = await runRunner(makeLoop, {
+        ...seams(() => ({ ...fakeEnv(), userFilesRoot: home })),
+        createTranscriptSource,
+      });
+      expect(code).toBe(2);
+      const out = stderr.mock.calls.map((c) => String(c[0])).join('');
+      expect(out).toContain(`refusing to start: the agent's home (${home}) is not an existing directory`);
+      expect(createTranscriptSource).not.toHaveBeenCalled();
+      expect(createIpcClientMock).not.toHaveBeenCalled();
+      expect(makeLoop).not.toHaveBeenCalled();
+      // Nothing created it.
+      expect((await fs.lstat(home).catch(() => null))?.isDirectory() ?? false).toBe(false);
+    } finally {
+      stderr.mockRestore();
+      await fs.rm(t, { recursive: true, force: true });
+    }
+  });
+
   it('returns 2, closes the client, and fires NO chat-end when boot fails AFTER the client exists', async () => {
     // The load-bearing half of the contract. A bootstrap failure past the IPC
     // client (here: tool.list) must NOT emit event.chat-end — the orchestrator's
