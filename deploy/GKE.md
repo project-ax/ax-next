@@ -705,8 +705,8 @@ export CLUSTER_LOCATION=<zone-or-region>   # the cluster's zone, or its region i
 export FS_ZONE=us-central1-a       # the Filestore instance's zone
 
 FS_VALUES=$(helm get values ax-next -n ax-next --kube-context "$GKE_CONTEXT" -a -o json)
-FS_IP=$(echo "$FS_VALUES" | jq -r '.sandbox.filestore.server')
-FS_PATH=$(echo "$FS_VALUES" | jq -r '.sandbox.filestore.exportPath')
+FS_IP=$(echo "$FS_VALUES" | jq -r '.sandbox.filestore.server // empty')
+FS_PATH=$(echo "$FS_VALUES" | jq -r '.sandbox.filestore.exportPath // empty')
 PROBE_IMAGE=$(kubectl --context "$GKE_CONTEXT" -n ax-next get deploy ax-next-host \
   -o jsonpath='{.spec.template.spec.containers[0].image}')
 echo "filestore: $FS_IP:$FS_PATH  probe image: $PROBE_IMAGE"   # none may be empty
@@ -770,7 +770,7 @@ probe() {
     *) echo "usage: probe gvisor|host" >&2; return 2 ;;
   esac
   kubectl --context "$GKE_CONTEXT" -n ax-next-runners delete pod \
-    "files-mount-probe-$1" --ignore-not-found --wait
+    "files-mount-probe-$1" --ignore-not-found --wait --timeout=120s
   kubectl --context "$GKE_CONTEXT" -n ax-next-runners create -f - <<EOF || return 2
 apiVersion: v1
 kind: Pod
@@ -809,10 +809,17 @@ EOF
 ```
 
 A pass prints `MOUNT-OK` and returns 0. A fail returns non-zero and prints the
-pod's description first. Read it before you blame the network: only a pod stuck
-in `ContainerCreating` with a `mount failed` event is a mount problem. `Pending`
-means it never got a node, and `Failed` means the mount worked but listing
-`/files` did not.
+pod's description first. Read its `Node:` line and Events before you blame the
+network. The phase alone won't tell you: a mount failure also shows as
+`Pending`.
+
+- `FailedMount` / `MountVolume.SetUp failed ... mount failed`, with the
+  container waiting in `ContainerCreating`: **a mount problem.** This is the
+  only case the rollbacks below are for.
+- `Node: <none>` and `FailedScheduling`: it never got a node. Not a mount problem.
+- `ErrImagePull` / `ImagePullBackOff`: the image could not be pulled.
+- The container `Terminated` with a non-zero exit code: the mount worked, but
+  listing `/files` did not.
 
 **Half 1: the chart.** Upgrade as usual (`helm upgrade` with your usual values).
 Then `probe gvisor`, and do one real turn: ask an agent to write a file into
@@ -849,9 +856,12 @@ spec:
 EOF
 ```
 
-Run `probe gvisor` again; it should now pass. Then tell us. A mount failure
-that this policy fixes means the kubelet's mount *does* go through the pod's
-policy on your cluster, which is worth knowing. Delete
+Then repeat whatever failed: `probe gvisor` if it was the probe, the real turn
+if it was the turn. If it now passes, tell us: the kubelet's mount *does* go
+through the pod's policy on your cluster, which is worth knowing. If it still
+fails, the policy was not the cause. Delete `tmp-runner-nfs-rollback` right away
+(it only hands runners NFS reach for nothing) and read the probe's describe
+output. Delete
 `tmp-runner-nfs-rollback` once a fixed chart ships.
 
 **Half 2: the export.** Write the same `files-export.json` as in

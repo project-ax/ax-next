@@ -125,10 +125,12 @@ needs to be redone. Don't loosen this without a fresh threat-model pass.
 ## NetworkPolicies — what crosses
 
 The three policies below are gated by `.Values.networkPolicies.enabled`
-(default `true`). The chart can render others too (the shared-pool storage
-helper's `-storage`, gated by `sandbox.sharedPool.enabled`, and the
-experimental git-server policy); see their templates. Default-on means a typo in values misses the perimeter; we accept
-that over the alternative (default-off and an operator forgets to flip it).
+(default `true`). Default-on means a typo in values misses the perimeter; we
+accept that over the alternative (default-off and an operator forgets to flip
+it). The chart can render others too: the shared-pool storage helper's
+`-storage` (gated by `sandbox.sharedPool.enabled` alone) and the experimental
+git-server policy (gated by `networkPolicies.enabled` and `gitServer.enabled`).
+See their templates.
 
 ### `sandbox-restrict.yaml` — runner pod fence
 

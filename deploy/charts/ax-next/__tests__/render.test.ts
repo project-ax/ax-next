@@ -1311,11 +1311,13 @@ describeIfHelm('ax-next chart: sandbox.filestore wiring', () => {
       // empty `to` (anywhere), and any ipBlock that contains the IP.
       const runnerNs = np?.metadata?.namespace;
       expect(runnerNs).toBe('ax-next-runners');
+      const reaching: string[] = [];
       for (const policy of docs) {
         if (policy.kind !== 'NetworkPolicy' || policy.metadata?.namespace !== runnerNs) continue;
         const rules = (policy.spec?.egress as FullEgressRule[] | undefined) ?? [];
         const reaches = rules.some((r) => ruleCouldReachNfs(r, '10.9.8.7'));
         if (!reaches) continue;
+        reaching.push(String(policy.metadata?.name));
         const labels =
           (policy.spec?.podSelector as { matchLabels?: Record<string, string> } | undefined)
             ?.matchLabels ?? {};
@@ -1324,6 +1326,9 @@ describeIfHelm('ax-next chart: sandbox.filestore wiring', () => {
           `${String(policy.metadata?.name)} opens NFS to the Filestore and must select only the one-shot user-files pods`,
         ).toBe('ax-next-userfiles');
       }
+      // And the detector must actually find the one policy that legitimately
+      // reaches NFS, or a broken `ruleCouldReachNfs` would pass everything.
+      expect(reaching).toEqual(['ax-test-ax-next-userfiles-nfs']);
     });
 
     it(`keeps the one-shot user-files pods' egress to ONLY the Filestore IP on :2049 + :111 (${mode})`, () => {
