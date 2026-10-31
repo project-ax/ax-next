@@ -740,6 +740,13 @@ export function createChannelWebServerPlugin(
           degradation: 'saving identity or Instructions answers 503 (never a false "saved")',
         },
         {
+          // TASK-990 — what an agent changed about its own identity or soul,
+          // for the Today screen.
+          hook: 'agents:identity:self-changes-for-user',
+          degradation:
+            'Today shows no changes agents made to themselves (GET /api/workspace/self-changes answers an empty list)',
+        },
+        {
           // The Files tab's user-files tier and its downloads.
           hook: 'sandbox:read-user-files',
           degradation:

@@ -2,10 +2,11 @@
 // by @ax/agents, read and written only through the three identity hooks.
 import { describe, expect, it } from 'vitest';
 import type { Kysely } from 'kysely';
-import { PluginError } from '@ax/core';
+import { PluginError, type Logger } from '@ax/core';
 import {
   AGENTS_IDENTITY_COMPLETE_BOOTSTRAP_HOOK,
   AGENTS_IDENTITY_GET_HOOK,
+  AGENTS_IDENTITY_SELF_CHANGES_FOR_USER_HOOK,
   AGENTS_IDENTITY_SET_HOOK,
   INSTRUCTIONS_MAX_CHARS,
   type AgentIdentityRecord,
@@ -13,11 +14,12 @@ import {
   type CreateOutput,
   type IdentityCompleteBootstrapOutput,
   type IdentitySection,
+  type IdentitySelfChangesForUserOutput,
   type IdentitySetOutput,
   type ListForUserInput,
   type ListForUserOutput,
 } from '../types.js';
-import { makeAgentInput, useIdentityEnv, type IdentityHarness } from './identity-harness.js';
+import { CLEAN, makeAgentInput, useIdentityEnv, type IdentityHarness } from './identity-harness.js';
 
 const env = useIdentityEnv();
 
@@ -570,5 +572,180 @@ describe('agents:identity:complete-bootstrap', () => {
     // A later write keeps the agent done.
     await set(ih, id, 'u1', { soul: 'Kinder' }, 2);
     expect((await get(ih, id, 'u1')).bootstrap).toBe('done');
+  });
+});
+
+// TASK-990 — the agent's own saves (`author: 'agent'`, which only its
+// update_identity tool sends) leave a per-section mark its owner's Today
+// lists; a person's save never does.
+describe('agents:identity:set — who wrote it (TASK-990)', () => {
+  /** Read the revision, then set — with `author` only when one is given. */
+  async function setAs(
+    ih: IdentityHarness,
+    agentId: string,
+    userId: string,
+    patch: Partial<Record<IdentitySection, string>>,
+    author?: unknown,
+  ): Promise<IdentitySetOutput> {
+    const { revision } = await get(ih, agentId, userId);
+    return ih.h.bus.call(AGENTS_IDENTITY_SET_HOOK, ih.ctx(agentId, userId), {
+      agentId,
+      patch,
+      expectedRevision: revision,
+      ...(author !== undefined ? { author } : {}),
+    });
+  }
+
+  function selfChanges(ih: IdentityHarness, userId: string): Promise<IdentitySelfChangesForUserOutput> {
+    return ih.h.bus.call(AGENTS_IDENTITY_SELF_CHANGES_FOR_USER_HOOK, ih.ctx('any', userId), { userId });
+  }
+
+  async function listed(ih: IdentityHarness, userId: string): Promise<Array<[string, string]>> {
+    return (await selfChanges(ih, userId)).changes.map((c) => [c.agentId, c.section]);
+  }
+
+  it("an agent's saved write lists its section; a person's write lists nothing", async () => {
+    const ih = await env.makeHarness();
+    const id = await ih.createAgent('alice');
+    expect((await setAs(ih, id, 'alice', { identity: 'I am Pip' })).outcome).toBe('saved');
+    expect(await listed(ih, 'alice')).toEqual([]);
+    // Saying 'person' is the same as saying nothing.
+    expect((await setAs(ih, id, 'alice', { identity: 'I am Pip, still' }, 'person')).outcome).toBe('saved');
+    expect(await listed(ih, 'alice')).toEqual([]);
+    expect((await setAs(ih, id, 'alice', { soul: 'Kind' }, 'agent')).outcome).toBe('saved');
+    expect(await listed(ih, 'alice')).toEqual([[id, 'soul']]);
+  });
+
+  it('"author" is "agent" or "person", and an agent\'s write may not name the Instructions', async () => {
+    const ih = await env.makeHarness();
+    const id = await ih.createAgent('alice');
+    const refused: Array<[unknown, Partial<Record<IdentitySection, string>>]> = [
+      ['robot', { soul: 'Kind' }],
+      ['AGENT', { soul: 'Kind' }],
+      ['', { soul: 'Kind' }],
+      [null, { soul: 'Kind' }],
+      [1, { soul: 'Kind' }],
+      ['agent', { instructions: 'x' }],
+      ['agent', { soul: 'Kind', instructions: 'x' }],
+    ];
+    for (const [author, patch] of refused) {
+      const err = await rejection(setAs(ih, id, 'alice', patch, author));
+      expect(err.code, JSON.stringify([author, patch])).toBe('invalid-payload');
+    }
+    // Refused before anything was scanned or saved.
+    expect(ih.scanned).toEqual([]);
+    expect(await get(ih, id, 'alice')).toEqual(EMPTY);
+    expect(await listed(ih, 'alice')).toEqual([]);
+    // A person may still write the Instructions.
+    expect((await setAs(ih, id, 'alice', { instructions: 'x' }, 'person')).outcome).toBe('saved');
+  });
+
+  it("only the sections an agent's write actually changes are listed", async () => {
+    const ih = await env.makeHarness();
+    const id = await ih.createAgent('alice');
+    await setAs(ih, id, 'alice', { identity: 'Pip' });
+    expect((await setAs(ih, id, 'alice', { identity: 'Pip', soul: 'Kind' }, 'agent')).outcome).toBe('saved');
+    expect(await listed(ih, 'alice')).toEqual([[id, 'soul']]);
+
+    // One write that changes both marks both, at the same instant.
+    const both = await setAs(ih, id, 'alice', { identity: 'Pip the second', soul: 'Kinder' }, 'agent');
+    expect(both.outcome).toBe('saved');
+    const changes = (await selfChanges(ih, 'alice')).changes;
+    expect(changes.map((c) => [c.agentId, c.section])).toEqual([
+      [id, 'identity'],
+      [id, 'soul'],
+    ]);
+    expect(changes[0]!.changedAt).toBe(changes[1]!.changedAt);
+  });
+
+  it("an agent's write that changes nothing lists nothing", async () => {
+    const ih = await env.makeHarness();
+    const id = await ih.createAgent('alice');
+    await setAs(ih, id, 'alice', { soul: 'Kind' });
+    expect((await setAs(ih, id, 'alice', { soul: 'Kind' }, 'agent')).outcome).toBe('unchanged');
+    expect(await listed(ih, 'alice')).toEqual([]);
+  });
+
+  it("an agent's writes during first-run setup list nothing; after it they do", async () => {
+    const ih = await env.makeHarness();
+    const id = await ih.createAgent('alice', { bootstrap: 'pending' });
+    expect((await setAs(ih, id, 'alice', { identity: 'I am Pip' }, 'agent')).outcome).toBe('saved');
+    expect((await setAs(ih, id, 'alice', { soul: 'Kind' }, 'agent')).outcome).toBe('saved');
+    expect(await listed(ih, 'alice')).toEqual([]);
+    expect((await complete(ih, id, 'alice')).outcome).toBe('completed');
+    // Finishing the setup is not a change the agent made to itself either.
+    expect(await listed(ih, 'alice')).toEqual([]);
+    expect((await setAs(ih, id, 'alice', { soul: 'Kinder' }, 'agent')).outcome).toBe('saved');
+    expect(await listed(ih, 'alice')).toEqual([[id, 'soul']]);
+  });
+
+  it('a refused or stale agent write lists nothing', async () => {
+    const ih = await env.makeHarness();
+    const id = await ih.createAgent('alice');
+    ih.setScan(async () => ({ verdict: 'refused', reason: 'x' }));
+    expect((await setAs(ih, id, 'alice', { soul: 'Mean' }, 'agent')).outcome).toBe('refused');
+    expect(await listed(ih, 'alice')).toEqual([]);
+
+    ih.setScan(CLEAN);
+    const stale = await ih.h.bus.call<unknown, IdentitySetOutput>(AGENTS_IDENTITY_SET_HOOK, ih.ctx(id, 'alice'), {
+      agentId: id,
+      patch: { soul: 'Kind' },
+      expectedRevision: 5,
+      author: 'agent',
+    });
+    expect(stale.outcome).toBe('conflict');
+    expect(await listed(ih, 'alice')).toEqual([]);
+  });
+
+  it('the same section changed again stays one entry, at the newer time', async () => {
+    const ih = await env.makeHarness();
+    const id = await ih.createAgent('alice');
+    await setAs(ih, id, 'alice', { soul: 'Kind' }, 'agent');
+    const [first] = (await selfChanges(ih, 'alice')).changes;
+    await setAs(ih, id, 'alice', { soul: 'Kinder' }, 'agent');
+    const again = (await selfChanges(ih, 'alice')).changes;
+    expect(again.map((c) => [c.agentId, c.section])).toEqual([[id, 'soul']]);
+    expect(Date.parse(again[0]!.changedAt)).toBeGreaterThanOrEqual(Date.parse(first!.changedAt));
+
+    // The mark moves to the newest change rather than keeping the first: age
+    // it out of the window, change the soul again, and it is listed afresh.
+    await env.query(
+      "UPDATE agents_v1_identity SET soul_changed_by_agent_at = now() - interval '30 days' WHERE agent_id = $1",
+      [id],
+    );
+    expect(await listed(ih, 'alice')).toEqual([]);
+    await setAs(ih, id, 'alice', { soul: 'Kindest' }, 'agent');
+    expect(await listed(ih, 'alice')).toEqual([[id, 'soul']]);
+  });
+
+  it('the saved log says who wrote it, and never the text', async () => {
+    const ih = await env.makeHarness();
+    const id = await ih.createAgent('alice');
+    const lines: Array<[string, string, Record<string, unknown> | undefined]> = [];
+    const logger: Logger = {
+      debug: (msg, bindings) => lines.push(['debug', msg, bindings]),
+      info: (msg, bindings) => lines.push(['info', msg, bindings]),
+      warn: (msg, bindings) => lines.push(['warn', msg, bindings]),
+      error: (msg, bindings) => lines.push(['error', msg, bindings]),
+      child: () => logger,
+    };
+    const ctx = ih.h.ctx({ sessionId: 's', agentId: id, userId: 'alice', logger });
+    await ih.h.bus.call(AGENTS_IDENTITY_SET_HOOK, ctx, {
+      agentId: id,
+      patch: { identity: 'Secret identity text' },
+      expectedRevision: 0,
+    });
+    await ih.h.bus.call(AGENTS_IDENTITY_SET_HOOK, ctx, {
+      agentId: id,
+      patch: { soul: 'Secret soul text' },
+      expectedRevision: 1,
+      author: 'agent',
+    });
+    const saved = lines.filter(([, msg]) => msg === 'agent_identity_saved').map(([level, , b]) => [level, b]);
+    expect(saved).toEqual([
+      ['info', { agentId: id, sections: ['identity'], revision: 1, author: 'person' }],
+      ['info', { agentId: id, sections: ['soul'], revision: 2, author: 'agent' }],
+    ]);
+    expect(JSON.stringify(lines)).not.toContain('Secret');
   });
 });

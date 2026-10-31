@@ -1,6 +1,7 @@
 import { CHAT_CONTENT_CLASS } from './ChatComposer';
 /**
- * Today — the queue of things waiting on a human, and nothing else.
+ * Today — the queue of things waiting on a human and, below it, the changes
+ * agents made to themselves, which are never counted as waiting.
  *
  * Four deliberate properties:
  *
@@ -9,8 +10,8 @@ import { CHAT_CONTENT_CLASS } from './ChatComposer';
  *      claims made here are ones derived directly from rows that were counted.
  *
  *   2. There is no "Done" filter. Done was a third renderer over the same event
- *      stream that Activity already owns; the reassurance it carried lives in
- *      the sub-line instead, and the footer links to the real feed.
+ *      stream that Activity used to own (retired in TASK-972); the reassurance
+ *      it carried lives in the sub-line instead.
  *
  *   3. Nothing here is a fixture. The rows are real `@ax/decisions` rows served
  *      by `GET /api/workspace/decisions`, and acting on one posts to the host.
@@ -37,6 +38,7 @@ import { readAlertVariant } from '@/lib/read-register';
 import {
   isJustResolved,
   isOpenDecision,
+  type SelfChange,
   type TaskRow,
   type UnavailableAgent,
 } from '@/lib/workspace-types';
@@ -48,6 +50,8 @@ import { useTaskReplyPoll } from '@/lib/use-task-poll';
 import { DecisionRow } from './DecisionRow';
 import { GrantRow } from './GrantRow';
 import { TodayTaskGroup } from './TodayTaskGroup';
+import { AgentSelfChanges } from './AgentSelfChanges';
+import { selfChangeRows } from '@/lib/workspace-self-changes';
 import {
   DECISION_READ_FAILED,
   DECISION_SESSION_EXPIRED,
@@ -168,6 +172,14 @@ interface Props {
   onReplied: () => void;
   /** A bounded reply poll tick: join an in-flight tasks read. */
   onPollTasks: () => void;
+  /**
+   * What the person's agents changed about themselves lately (TASK-990). An
+   * FYI drawn below the queue: it is never an input to `waitingOnYou`, the
+   * headline, the summary or the empty-queue claim.
+   */
+  selfChanges?: readonly SelfChange[] | undefined;
+  /** Review a self-change: the shell opens Settings on the Agents tab. Absent → no Review button. */
+  onReviewSelfChange?: (() => void) | undefined;
 }
 
 export function TodayView({
@@ -199,6 +211,8 @@ export function TodayView({
   onRetryTasks,
   onReplied,
   onPollTasks,
+  selfChanges = [],
+  onReviewSelfChange,
 }: Props) {
   // This owner outlives task rows: an older run can remove a row before the
   // reply's check-in reports its next ask. Working/route exit stops the clock.
@@ -656,6 +670,13 @@ export function TodayView({
         {hint !== null && <span>{hint}</span>}
 
       </div>
+
+      {/*
+        TASK-990 — an FYI, not a row in the queue. Last child, outside the
+        consent region and whichever filter is on; the changes never reach
+        `waitingOnYou`, the headline or the summary above.
+      */}
+      <AgentSelfChanges rows={selfChangeRows(selfChanges, agents)} onReview={onReviewSelfChange} />
     </div>
   );
 }

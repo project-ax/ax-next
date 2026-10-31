@@ -113,6 +113,8 @@ CounterRow,
   TaskRow,
   TaskRowReport,
   TasksResponse,
+  SelfChange,
+  SelfChangesResponse,
   UserFilesAnswer,
   WorkspaceAgent,
   WorkspaceFileBody,
@@ -133,6 +135,8 @@ export type {
   PastConversation,
   PermissionRow,
   RailActivity,
+  SelfChange,
+  SelfChangesResponse,
   ThreadAttachment,
   ThreadMessage,
   UserFileEntry,
@@ -601,6 +605,21 @@ function isTaskRow(v: unknown): boolean {
 
 function isUnavailableAgent(v: unknown): boolean {
   return isRecord(v) && isString(v.agentId) && isString(v.agentName);
+}
+
+/** One row of `/self-changes`: the three fields Today draws from, and a section this build knows. */
+function isSelfChange(v: unknown): boolean {
+  return (
+    isRecord(v) &&
+    isString(v.agentId) &&
+    v.agentId !== '' &&
+    (v.section === 'identity' || v.section === 'soul') &&
+    isString(v.changedAt)
+  );
+}
+
+function isSelfChangesResponse(b: unknown): boolean {
+  return isRecord(b) && Array.isArray(b.changes) && b.changes.every(isSelfChange);
 }
 
 function isTasksResponse(b: unknown): boolean {
@@ -1495,6 +1514,20 @@ export const workspaceApi = {
         ),
     );
   },
+
+  /**
+   * What this person's agents changed about themselves with `update_identity`
+   * in the last week (TASK-990). No parameters: the server answers only for
+   * the caller. Every row must carry the three fields Today draws from —
+   * `agentId`, a known `section`, a string `changedAt` — or the read is a
+   * `WorkspaceShapeError`, never a half-readable list.
+   */
+  selfChanges: async () =>
+    checkedRead<SelfChangesResponse>(
+      '/self-changes',
+      await req<unknown>('/self-changes'),
+      isSelfChangesResponse,
+    ),
 
   /** One row, re-read by id. See `DecisionRead` for why this exists. */
   decision: async (id: string) => {

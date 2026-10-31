@@ -840,3 +840,82 @@ describe('while the first tasks read runs (TASK-939)', () => {
     expect(screen.getByRole('button', { name: /Quill/ })).toBeInTheDocument();
   });
 });
+
+/*
+  TASK-990 — what an agent changed about ITSELF is an FYI under the queue. It is
+  worded by the host from a closed section, it never counts as waiting on
+  anyone, and it does not depend on the queue's filter.
+*/
+describe('the changes agents made to themselves', () => {
+  const HEADING = 'Changes your agents made to themselves';
+  const NOTE = 'Just so you know — nothing to do here. You can edit any of it in Settings.';
+  const soulChange = {
+    agentId: 'a-quill',
+    section: 'soul' as const,
+    changedAt: new Date().toISOString(),
+  };
+
+  it('shows each self-change in host words', () => {
+    renderToday({
+      selfChanges: [soulChange, { ...soulChange, section: 'identity' }],
+      onReviewSelfChange: vi.fn(),
+    });
+    expect(screen.getByText(HEADING)).toBeInTheDocument();
+    expect(screen.getByText(NOTE)).toBeInTheDocument();
+    expect(screen.getByText('changed its personality')).toBeInTheDocument();
+    expect(screen.getByText('changed how it describes itself')).toBeInTheDocument();
+    expect(screen.getAllByText('Quill')).toHaveLength(2);
+  });
+
+  it('never counts as waiting', () => {
+    const first = renderToday({ selfChanges: [soulChange] });
+    expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('Nothing is waiting on you.');
+    expect(screen.queryByText(/\d waiting on you/)).toBeNull();
+    // Positive control: the row really rendered, so "not waiting" is meaningful.
+    expect(screen.getByText('changed its personality')).toBeInTheDocument();
+    first.unmount();
+
+    renderToday({ decisions: [decision()], selfChanges: [soulChange] });
+    expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('One thing is waiting on you.');
+    expect(screen.getByText('1 waiting on you')).toBeInTheDocument();
+    expect(screen.getByText('changed its personality')).toBeInTheDocument();
+  });
+
+  it('shows under the Working filter too', () => {
+    renderToday({ filter: 'working', selfChanges: [soulChange] });
+    expect(screen.getByText(HEADING)).toBeInTheDocument();
+  });
+
+  it('draws no section when there is nothing to say', () => {
+    const first = renderToday();
+    expect(screen.queryByText(HEADING)).toBeNull();
+    first.unmount();
+    renderToday({ selfChanges: [] });
+    expect(screen.queryByText(HEADING)).toBeNull();
+  });
+
+  it('does not draw a change for an agent that is not on the roster', () => {
+    renderToday({
+      selfChanges: [
+        { ...soulChange, agentId: 'a-gone', section: 'soul' },
+        { ...soulChange, section: 'identity' },
+      ],
+    });
+    // The rostered agent's row renders; the gone agent's soul row does not.
+    expect(screen.getByText('changed how it describes itself')).toBeInTheDocument();
+    expect(screen.getAllByText('Quill')).toHaveLength(1);
+    expect(screen.queryByText('changed its personality')).toBeNull();
+  });
+
+  it('Review calls onReviewSelfChange, and without it there is no Review button', () => {
+    const onReview = vi.fn();
+    const first = renderToday({ selfChanges: [soulChange], onReviewSelfChange: onReview });
+    fireEvent.click(screen.getByRole('button', { name: 'Review: Quill changed its personality' }));
+    expect(onReview).toHaveBeenCalledTimes(1);
+    first.unmount();
+
+    renderToday({ selfChanges: [soulChange] });
+    expect(screen.getByText('changed its personality')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^Review/ })).toBeNull();
+  });
+});

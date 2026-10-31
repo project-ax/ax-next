@@ -1641,6 +1641,81 @@ describe('@ax/preset-memory canary', () => {
       expect([403, 404]).toContain(foreign.status);
       expect((await getIdentity(aliceAgentId, ALICE)).identity).toContain('lighthouse');
     });
+
+    // TASK-990 — an agent's own identity/soul change reaches its owner's Today
+    // through the real hook and the real route; nothing else does.
+    it("identity: an agent's own change shows on its owner's Today; a person's edit, a refused change and first-run setup don't (TASK-990)", async () => {
+      const made = await bus.call<
+        { actor: { userId: string; isAdmin: boolean }; input: Record<string, unknown> },
+        { agent: { id: string } }
+      >('agents:create', ctxFor('seed', ALICE), {
+        actor: { userId: ALICE, isAdmin: false },
+        input: {
+          displayName: 'Wren',
+          allowedTools: [],
+          mcpConfigIds: [],
+          model: 'anthropic/claude-sonnet-4-6',
+          visibility: 'personal',
+        },
+      });
+      const id = made.agent.id;
+      type Row = { agentId: string; section: string; changedAt: string };
+      const rowsFor = (json: Record<string, unknown>, agentId: string): Row[] =>
+        (json.changes as Row[]).filter((r) => r.agentId === agentId);
+      const read = (user: string | null) =>
+        apiJson('GET', '/api/workspace/self-changes', user);
+
+      // 1. A fresh agent has nothing to show.
+      const first = await read(ALICE);
+      expect(first.status).toBe(200);
+      expect(rowsFor(first.json, id)).toEqual([]);
+
+      // 2. A person's save in the editor records nothing.
+      const put = await apiJson('PUT', `/admin/agents/${id}/identity`, ALICE, {
+        identity: 'Wren, a careful helper.',
+        soul: 'Be plain.',
+      });
+      expect(put.status).toBe(200);
+      expect(rowsFor((await read(ALICE)).json, id)).toEqual([]);
+
+      // 3. A refused tool save records nothing.
+      const refused = await runTool('update_identity', id, ALICE, {
+        section: 'soul',
+        content: INJECTION,
+      });
+      expect(refused).toMatchObject({ ok: false, error: 'refused' });
+      expect(rowsFor((await read(ALICE)).json, id)).toEqual([]);
+
+      // 4. The agent's own soul save is listed, with no text in the reply.
+      const saved = await runTool('update_identity', id, ALICE, {
+        section: 'soul',
+        content: 'I value plain words and short answers.',
+      });
+      expect(saved.ok).toBe(true);
+      const after = await read(ALICE);
+      expect(after.status).toBe(200);
+      expect(rowsFor(after.json, id)).toEqual([
+        { agentId: id, section: 'soul', changedAt: expect.any(String) },
+      ]);
+      expect(JSON.stringify(after.json)).not.toContain('plain words');
+
+      // 5. Someone else never sees it; no session is a 401.
+      const eve = await read(EVE);
+      expect(eve.status).toBe(200);
+      expect(rowsFor(eve.json, id)).toEqual([]);
+      expect((await read(null)).status).toBe(401);
+
+      // 6. First-run setup is not a change worth telling anyone about.
+      const sprout = await apiJson('POST', '/api/agents/bootstrap', ALICE, { displayName: 'Sprout' });
+      expect(sprout.status).toBe(201);
+      const sproutId = (sprout.json.agent as { agentId: string }).agentId;
+      const setup = await runTool('update_identity', sproutId, ALICE, {
+        section: 'soul',
+        content: 'I am gentle and I ask before I assume.',
+      });
+      expect(setup.ok).toBe(true);
+      expect(rowsFor((await read(ALICE)).json, sproutId)).toEqual([]);
+    });
   });
 
   it('automatic writers never touch the person\'s Instructions', async () => {

@@ -3,11 +3,13 @@ import {
   AgentIdentityRecordSchema,
   IdentityCompleteBootstrapOutputSchema,
   IdentityGetOutputSchema,
+  IdentitySelfChangesForUserOutputSchema,
   IdentitySetOutputSchema,
   ResolveOutputSchema,
   type Agent,
   type AgentIdentityRecord,
   type IdentityCompleteBootstrapOutput,
+  type IdentitySelfChangesForUserOutput,
   type IdentitySetOutput,
   type ResolveOutput,
 } from '../types.js';
@@ -77,6 +79,34 @@ describe('identity return schemas', () => {
       IdentityCompleteBootstrapOutputSchema.safeParse({ outcome: 'completed', record: { ...record, revision: 1.5 } })
         .success,
     ).toBe(false);
+  });
+});
+
+// TASK-990 — `agents:identity:self-changes-for-user`'s `returns` contract.
+describe('self-changes return schema', () => {
+  const change = { agentId: 'agt_1', section: 'soul', changedAt: '2026-10-30T12:34:56.789Z' } as const;
+
+  it('a list of changes round-trips without losing a field', () => {
+    const value: IdentitySelfChangesForUserOutput = {
+      changes: [change, { agentId: 'agt_2', section: 'identity', changedAt: '2026-10-29T08:00:00.000Z' }],
+    };
+    expect(IdentitySelfChangesForUserOutputSchema.parse(value)).toEqual(value);
+    expect(IdentitySelfChangesForUserOutputSchema.parse({ changes: [] })).toEqual({ changes: [] });
+  });
+
+  it.each([
+    ['an unknown section', { ...change, section: 'instructions' }],
+    ['an empty agentId', { ...change, agentId: '' }],
+    ['a missing changedAt', { agentId: 'agt_1', section: 'soul' }],
+    ['a changedAt that is not an ISO instant', { ...change, changedAt: 'yesterday' }],
+    ['a changedAt that is a number', { ...change, changedAt: 1_793_356_496_789 }],
+  ])('a change with %s fails', (_label, bad) => {
+    expect(IdentitySelfChangesForUserOutputSchema.safeParse({ changes: [bad] }).success).toBe(false);
+  });
+
+  it('an answer without a changes list fails', () => {
+    expect(IdentitySelfChangesForUserOutputSchema.safeParse({}).success).toBe(false);
+    expect(IdentitySelfChangesForUserOutputSchema.safeParse({ changes: change }).success).toBe(false);
   });
 });
 

@@ -1,12 +1,18 @@
 import { PluginError } from '@ax/core';
-import { sql, type Kysely } from 'kysely';
+import { sql, type Kysely, type RawBuilder } from 'kysely';
 import type { AgentsDatabase } from '../migrations.js';
+import { scopedAgents } from '../scope.js';
 import {
   IDENTITY_SECTIONS,
+  SELF_CHANGE_WINDOW_DAYS,
+  SELF_SECTIONS,
   type AgentIdentityRecord,
   type BootstrapState,
+  type IdentityAuthor,
   type IdentityCompleteBootstrapOutput,
   type IdentitySection,
+  type IdentitySelfChange,
+  type SelfSection,
 } from '../types.js';
 
 // ---------------------------------------------------------------------------
@@ -16,6 +22,9 @@ import {
 // Plain storage: no ACL, no scan, no normalisation, no announcement — the
 // service (service.ts) does those before it gets here. Rows are lazy (see the
 // migration): an agent with no row reads as EMPTY_IDENTITY.
+//
+// TASK-990 — `listSelfChanges` reads the per-section "changed by the agent"
+// marks, through `scopedAgents` (the tenant-scope helper).
 // ---------------------------------------------------------------------------
 
 const PLUGIN_NAME = '@ax/agents';
@@ -34,6 +43,12 @@ export interface IdentityStoreSetArgs {
   /** Already normalised and checked by the service. At least one section. */
   patch: Partial<Record<IdentitySection, string>>;
   expectedRevision: number;
+  /**
+   * TASK-990 — who is writing. An `'agent'` save, outside first-run setup,
+   * also marks each section it changes. The service never passes an
+   * `'agent'` patch that names the Instructions.
+   */
+  author: IdentityAuthor;
 }
 
 export interface IdentityStoreSetResult {
@@ -55,7 +70,9 @@ export interface IdentityStore {
    * identity row is created if absent and locked FOR UPDATE, then
    * `conflict` (stale `expectedRevision`), `unchanged` (every patched section
    * already says that) or `saved` (revision + 1). Throws `not-found` when the
-   * agent row is gone.
+   * agent row is gone. A `saved` write by the agent itself, outside its
+   * first-run setup, also marks each section it changed (TASK-990), in the
+   * same UPDATE.
    */
   set(args: IdentityStoreSetArgs): Promise<IdentityStoreSetResult>;
   /**
@@ -65,9 +82,44 @@ export interface IdentityStore {
    * they see `done`. A miss is classified from a fresh read.
    */
   completeBootstrap(agentId: string): Promise<IdentityStoreCompleteResult>;
+  /**
+   * TASK-990 — the recent changes `userId`'s PERSONAL agents made to their own
+   * identity or soul: one item per section whose mark is newer than
+   * SELF_CHANGE_WINDOW_DAYS before the database's now(), judged per section.
+   * Newest first, then by agentId, then by section. No text.
+   */
+  listSelfChanges(userId: string): Promise<IdentitySelfChange[]>;
 }
 
 const COLUMNS = ['identity', 'soul', 'instructions', 'bootstrap', 'revision'] as const;
+
+interface SelfChangeMark {
+  agentId: string;
+  section: SelfSection;
+  at: Date;
+}
+
+/**
+ * TASK-990 — a "changed by the agent" mark for each section `changes` holds,
+ * set to the UPDATE's own now(). Only the identity and the soul have one.
+ */
+function selfChangeMarks(changes: Partial<Record<IdentitySection, string>>): {
+  identity_changed_by_agent_at?: RawBuilder<Date>;
+  soul_changed_by_agent_at?: RawBuilder<Date>;
+} {
+  return {
+    ...(changes.identity !== undefined ? { identity_changed_by_agent_at: sql<Date>`now()` } : {}),
+    ...(changes.soul !== undefined ? { soul_changed_by_agent_at: sql<Date>`now()` } : {}),
+  };
+}
+
+/** Newest first, then by agentId, then in SELF_SECTIONS order. */
+function newestFirst(a: SelfChangeMark, b: SelfChangeMark): number {
+  const byTime = b.at.getTime() - a.at.getTime();
+  if (byTime !== 0) return byTime;
+  if (a.agentId !== b.agentId) return a.agentId < b.agentId ? -1 : 1;
+  return SELF_SECTIONS.indexOf(a.section) - SELF_SECTIONS.indexOf(b.section);
+}
 
 interface IdentityColumns {
   identity: string;
@@ -118,7 +170,7 @@ export function createIdentityStore(db: Kysely<AgentsDatabase>): IdentityStore {
   return {
     get,
 
-    async set({ agentId, patch, expectedRevision }) {
+    async set({ agentId, patch, expectedRevision, author }) {
       return db.transaction().execute(async (trx) => {
         // KEY SHARE is the lock a foreign-key check takes: it conflicts only
         // with deleteById's FOR UPDATE, so a delete either finishes first (and
@@ -161,10 +213,17 @@ export function createIdentityStore(db: Kysely<AgentsDatabase>): IdentityStore {
         if (Object.keys(changes).length === 0) {
           return { kind: 'unchanged', record: current };
         }
+        // TASK-990: the agent's own change, outside its first-run setup, marks
+        // each section it actually changes — in this same UPDATE, so the text
+        // and its mark commit together or not at all. (`bootstrap` was read
+        // under the row lock above.)
+        const marks =
+          author === 'agent' && current.bootstrap !== 'pending' ? selfChangeMarks(changes) : {};
         const updated = await trx
           .updateTable('agents_v1_identity')
           .set({
             ...changes,
+            ...marks,
             revision: sql<number>`revision + 1`,
             updated_at: sql<Date>`now()`,
           })
@@ -201,6 +260,40 @@ export function createIdentityStore(db: Kysely<AgentsDatabase>): IdentityStore {
             ? 'not-pending'
             : 'needs-identity-and-soul';
       return { kind, record: current };
+    },
+
+    async listSelfChanges(userId) {
+      // `teamIds: []` on purpose: personal agents only. "Its owner" is clear
+      // only for a personal agent, and the editor a change would send someone
+      // to refuses team agents (see the TASK-990 decisions shard).
+      const since = sql<Date>`now() - make_interval(days => ${SELF_CHANGE_WINDOW_DAYS})`;
+      const rows = await scopedAgents(db, { userId, teamIds: [] })
+        .innerJoin('agents_v1_identity', 'agents_v1_identity.agent_id', 'agents_v1_agents.agent_id')
+        .clearSelect()
+        // Each section is judged on its own: an old mark on one never hides,
+        // or lets through, the other.
+        .select([
+          'agents_v1_agents.agent_id as agentId',
+          sql<Date | null>`CASE WHEN agents_v1_identity.identity_changed_by_agent_at > ${since}
+            THEN agents_v1_identity.identity_changed_by_agent_at END`.as('identityAt'),
+          sql<Date | null>`CASE WHEN agents_v1_identity.soul_changed_by_agent_at > ${since}
+            THEN agents_v1_identity.soul_changed_by_agent_at END`.as('soulAt'),
+        ])
+        .where((eb) =>
+          eb.or([
+            eb('agents_v1_identity.identity_changed_by_agent_at', '>', since),
+            eb('agents_v1_identity.soul_changed_by_agent_at', '>', since),
+          ]),
+        )
+        .execute();
+      const marks: SelfChangeMark[] = [];
+      for (const row of rows) {
+        if (row.identityAt !== null) marks.push({ agentId: row.agentId, section: 'identity', at: row.identityAt });
+        if (row.soulAt !== null) marks.push({ agentId: row.agentId, section: 'soul', at: row.soulAt });
+      }
+      return marks
+        .sort(newestFirst)
+        .map(({ agentId, section, at }) => ({ agentId, section, changedAt: at.toISOString() }));
     },
   };
 }

@@ -10,15 +10,18 @@ import type { AgentStore } from '../store.js';
 import {
   AGENTS_IDENTITY_COMPLETE_BOOTSTRAP_HOOK,
   AGENTS_IDENTITY_GET_HOOK,
+  AGENTS_IDENTITY_SELF_CHANGES_FOR_USER_HOOK,
   AGENTS_IDENTITY_SET_HOOK,
   IDENTITY_SCAN_HOOK,
   IDENTITY_SECTIONS,
   INSTRUCTIONS_MAX_CHARS,
   type AgentIdentityRecord,
+  type IdentityAuthor,
   type IdentityCompleteBootstrapOutput,
   type IdentityRefusalCode,
   type IdentityScanPayload,
   type IdentitySection,
+  type IdentitySelfChangesForUserOutput,
   type IdentitySetOutput,
 } from '../types.js';
 import type { IdentityStore } from './store.js';
@@ -36,7 +39,13 @@ import type { IdentityStore } from './store.js';
 //
 // Never logged: identity, soul or Instructions text, or a scanner's reason.
 // Logged: agentId, section names, revision, refusal code, scan category, an
-// error's name/code.
+// error's name/code, who wrote it (`author`).
+//
+// TASK-990 — `set` takes `author` ('agent' | 'person'; absent = 'person'). The
+// agent's own tool sends 'agent', and the store then marks each section the
+// save changed (outside first-run setup). `agents:identity:self-changes-for-user`
+// lists those marks for the person who owns the agent. Its input names the
+// person (there is no agent in it, so none of the order above applies).
 // ---------------------------------------------------------------------------
 
 const PLUGIN_NAME = '@ax/agents';
@@ -56,6 +65,7 @@ export interface IdentityService {
   get(ctx: AgentContext, input: unknown): Promise<AgentIdentityRecord>;
   set(ctx: AgentContext, input: unknown): Promise<IdentitySetOutput>;
   completeBootstrap(ctx: AgentContext, input: unknown): Promise<IdentityCompleteBootstrapOutput>;
+  selfChangesForUser(ctx: AgentContext, input: unknown): Promise<IdentitySelfChangesForUserOutput>;
 }
 
 export interface IdentityServiceDeps {
@@ -99,17 +109,38 @@ function parseAgentIdInput(ctx: AgentContext, input: unknown, hookName: string):
   return requireContextAgent(ctx, input.agentId, hookName);
 }
 
+/** Exactly `{ userId }`, a non-empty string. */
+function parseUserIdInput(input: unknown, hookName: string): string {
+  if (!isPlainObject(input)) throw invalid(hookName, 'input must be an object carrying userId');
+  if (Object.keys(input).some((key) => key !== 'userId')) {
+    throw invalid(hookName, 'input carries a field this hook does not take');
+  }
+  const userId = input.userId;
+  if (typeof userId !== 'string' || userId.length === 0) {
+    throw invalid(hookName, 'userId must be a non-empty string');
+  }
+  return userId;
+}
+
 interface ParsedSet {
   agentId: string;
   patch: Partial<Record<IdentitySection, string>>;
   expectedRevision: number;
+  author: IdentityAuthor;
 }
+
+const SET_INPUT_KEYS = ['agentId', 'patch', 'expectedRevision', 'author'];
 
 function parseSetInput(ctx: AgentContext, input: unknown): ParsedSet {
   const hook = AGENTS_IDENTITY_SET_HOOK;
   if (!isPlainObject(input)) throw invalid(hook, 'input must be an object');
-  if (Object.keys(input).some((key) => !['agentId', 'patch', 'expectedRevision'].includes(key))) {
+  if (Object.keys(input).some((key) => !SET_INPUT_KEYS.includes(key))) {
     throw invalid(hook, 'input carries a field this hook does not take');
+  }
+  // TASK-990: who is writing. Absent is a person (both editors send nothing).
+  const author = input.author;
+  if (author !== undefined && author !== 'agent' && author !== 'person') {
+    throw invalid(hook, 'author must be "agent" or "person"');
   }
   const agentId = requireContextAgent(ctx, input.agentId, hook);
   const raw = input.patch;
@@ -131,7 +162,14 @@ function parseSetInput(ctx: AgentContext, input: unknown): ParsedSet {
   ) {
     throw invalid(hook, 'expectedRevision must be a non-negative integer');
   }
-  return { agentId, patch, expectedRevision };
+  // Every saved agent write is disclosed on its owner's Today, and only the
+  // identity and soul have a mark: so an agent write that names the
+  // Instructions (its people's, never its own) is refused here, not only by
+  // the tool.
+  if (author === 'agent' && patch.instructions !== undefined) {
+    throw invalid(hook, "an agent's own write may change only its identity and soul");
+  }
+  return { agentId, patch, expectedRevision, author: author ?? 'person' };
 }
 
 function errorFields(err: unknown): { name: string; code?: string } {
@@ -256,7 +294,7 @@ export function createIdentityService(deps: IdentityServiceDeps): IdentityServic
     },
 
     async set(ctx, input) {
-      const { agentId, patch, expectedRevision } = parseSetInput(ctx, input);
+      const { agentId, patch, expectedRevision, author } = parseSetInput(ctx, input);
       await requireAccess(ctx, agentId, AGENTS_IDENTITY_SET_HOOK);
 
       // Normalise: trailing whitespace goes, so a whitespace-only section is
@@ -301,12 +339,13 @@ export function createIdentityService(deps: IdentityServiceDeps): IdentityServic
         }
       }
 
-      const result = await deps.identity.set({ agentId, patch: normalised, expectedRevision });
+      const result = await deps.identity.set({ agentId, patch: normalised, expectedRevision, author });
       if (result.kind === 'saved') {
         ctx.logger.info('agent_identity_saved', {
           agentId,
           sections: Object.keys(normalised),
           revision: result.record.revision,
+          author,
         });
         await announce(ctx, agentId);
       }
@@ -322,6 +361,13 @@ export function createIdentityService(deps: IdentityServiceDeps): IdentityServic
         await announce(ctx, agentId);
       }
       return { outcome: result.kind, record: result.record };
+    },
+
+    async selfChangesForUser(_ctx, input) {
+      // No ctx ACL, like `agents:list-for-user`: the hook is host-only, and its
+      // caller (channel-web's authenticated route) supplies the person.
+      const userId = parseUserIdInput(input, AGENTS_IDENTITY_SELF_CHANGES_FOR_USER_HOOK);
+      return { changes: await deps.identity.listSelfChanges(userId) };
     },
   };
 }

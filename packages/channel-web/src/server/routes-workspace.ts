@@ -30,7 +30,9 @@
  * POST /api/workspace/decisions/:decisionId/undo
  * GET  /api/workspace/grants           — pending capability grants for the
  *                                        caller (TASK-373)
- * POST /api/workspace/route            — "which agent should hear this?"
+ * GET  /api/workspace/self-changes     — what the caller's agents changed about
+ *                                        themselves, last 7 days (TASK-990)
+ * POST /api/workspace/route           — "which agent should hear this?"
  *
  * The agent-centric workspace surface (TASK-230 / plan task AW-9). This is the
  * BFF that turns the host's existing reads — the agent roster, the conversation
@@ -63,8 +65,7 @@
  *     that is every `/api/workspace/agents/:agentId…` route — the detail
  *     panel, `files`, `files/*`, `user-files`, `user-files/*`,
  *     `download/files/*`, `download/user-files/*`, `rail`, `grants/revoke`
- *     and `memory/rules` — plus the agent-scoped branch of `/activity`, and
- *     the task page's nine routes, `/tasks/:agentId/:routineId`, its
+ *     and `memory/rules` — plus the task page's nine routes, `/tasks/:agentId/:routineId`, its
  *     `/notes` (TASK-910), its `/checkins/:conversationId` (TASK-911), its
  *     `/replies` (TASK-931), its `/steps` (TASK-949), its `/finish-by`
  *     (TASK-951), its `/complete` and `/reopen` (TASK-950), and its
@@ -117,14 +118,17 @@
  *     records zero calls.
  *
  *     Everything NOT in that list is gated DIFFERENTLY on purpose, and none
- *     of it reads workspace files or memory. `/state`, `/route`, `/tasks` and
- *     the UNSCOPED branch of `/activity` fan out over `agents:list-for-user` —
+ *     of it reads workspace files or memory. `/state`, `/route` and `/tasks`
+ *     fan out over `agents:list-for-user` —
  *     there the roster IS the ACL, and it is a different predicate
  *     (server-derived teamIds vs. a live `teams:is-member` call), one that is
  *     strictly narrower in practice. `/tasks` is checked again per agent:
  *     `routines:list` runs `agents:resolve` for the caller itself and shows a
  *     task's state only to its owner (TASK-907). `/grants` filters the
- *     in-memory card-owner map on the authenticated userId. The `/decisions`
+ *     in-memory card-owner map on the authenticated userId. `/self-changes`
+ *     takes no parameters either: it asks `@ax/agents` about the authenticated
+ *     userId only, which scopes to that person's personal agents (TASK-990).
+ *     The `/decisions`
  *     LIST route reads the caller's OWN decisions first and then drops rows
  *     whose agent it cannot reach, so a resolve failure there is a filtered
  *     row rather than a 404 — note that is the list route only;
@@ -145,19 +149,13 @@
  *   - I2 — no cross-plugin imports. Every hook is a duck-typed `bus.call`, and
  *     the request/response shapes come from routes-chat.js.
  *
- * The activity feed is one collection with ONE producer — the route above, not
- * a field on `/state`. Two producers over one collection is invariant 4
- * violated in the BFF, and a sub-array of a state blob cannot be paginated.
- * `/state`'s per-agent liveness probe is already an N+1; the feed's fan-out
- * lives on its own route rather than making that worse.
- *
- * It has one producer and TWO SOURCES, which is a different thing: routine
- * fires (`routines:recent-fires-for-agent`) and decision receipts
- * (`decisions:recent-receipts-for-agent`), merged here by instant. A reader
- * does not care whether their agent did something on a schedule or because
- * they said yes to it, so both belong in one time-ordered list. Both sources
- * are asked the same paged question so the merge cannot lose a row at the
- * seam, and neither owns the collection — this route does.
+ * Each collection has ONE producer route, never a field on `/state`:
+ * `/decisions`, `/tasks`, `/grants`, `/self-changes`. Two producers over one
+ * collection is invariant 4 violated in the BFF, and a sub-array of a state
+ * blob cannot be paginated. `/state`'s per-agent liveness probe is already an
+ * N+1; each collection's fan-out lives on its own route rather than making
+ * that worse. The Activity feed that first set this rule was retired in
+ * TASK-972.
  *
  * The Today queue is the same story and the same rule: `GET
  * /api/workspace/decisions` is its one producer. The in-thread approval card
@@ -247,6 +245,8 @@ import type {
   RailActivity,
   TaskCheckin,
   TaskCompleteResponse,
+  SelfChange,
+  SelfChangesResponse,
   TaskDetail,
   TaskDuplicateResponse,
   TaskFinishBy,
@@ -6748,6 +6748,66 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
     },
 
     /**
+     * GET /api/workspace/self-changes — what this person's agents changed
+     * about themselves with `update_identity` lately (TASK-990).
+     *
+     * Posture copied from `/grants`: NO PARAMETERS. The one person it can ask
+     * about is the authenticated caller, passed to `@ax/agents` as `{ userId }`
+     * and nothing else, so a `?userId=` or a path param has nothing to land on.
+     *
+     * Three fields per row, rebuilt one by one: `agentId`, `section`,
+     * `changedAt`. The reply is never spread, so a stray field on the hook's
+     * answer (text the agent wrote, say) cannot reach the browser; the words
+     * Today shows are the host's, picked client-side by `section`. A row that
+     * does not parse is dropped. A failed read is a 503, not an empty list —
+     * `[]` would read as "nothing changed". With no @ax/agents (a deployment
+     * without the hook) it is a plain 200 `[]`.
+     */
+    async selfChanges(req: RouteRequest, res: RouteResponse): Promise<void> {
+      const userId = await authOr401(bus, initCtx, req, res);
+      if (userId === null) return;
+
+      if (!bus.hasService('agents:identity:self-changes-for-user')) {
+        res.status(200).json({ changes: [] } satisfies SelfChangesResponse);
+        return;
+      }
+      let raw: unknown;
+      try {
+        raw = await bus.call<{ userId: string }, unknown>(
+          'agents:identity:self-changes-for-user',
+          initCtx,
+          { userId },
+        );
+      } catch (err) {
+        initCtx.logger.warn('workspace_self_changes_read_failed', {
+          name: err instanceof Error ? err.name : 'unknown',
+          code: err instanceof PluginError ? err.code : undefined,
+        });
+        res.status(503).json({ error: 'self-changes-unavailable' });
+        return;
+      }
+      const rows = (raw as { changes?: unknown } | null)?.changes;
+      if (!Array.isArray(rows)) {
+        initCtx.logger.warn('workspace_self_changes_read_failed', {
+          name: 'MalformedReply',
+          code: undefined,
+        });
+        res.status(503).json({ error: 'self-changes-unavailable' });
+        return;
+      }
+      const changes: SelfChange[] = [];
+      for (const row of rows as unknown[]) {
+        if (typeof row !== 'object' || row === null) continue;
+        const r = row as Record<string, unknown>;
+        if (typeof r.agentId !== 'string' || r.agentId === '') continue;
+        if (r.section !== 'identity' && r.section !== 'soul') continue;
+        if (typeof r.changedAt !== 'string' || Number.isNaN(Date.parse(r.changedAt))) continue;
+        changes.push({ agentId: r.agentId, section: r.section, changedAt: r.changedAt });
+      }
+      res.status(200).json({ changes } satisfies SelfChangesResponse);
+    },
+
+    /**
      * POST /api/workspace/grants/decline — "Not now", written down (TASK-444).
      *
      * A deferral, and a need-triggered one. The marker says WHEN the person
@@ -9974,6 +10034,14 @@ export async function registerWorkspaceRoutes(
       method: 'GET',
       path: '/api/workspace/grants',
       handler: handlers.grants as unknown as RouteHandler,
+    },
+    {
+      // TASK-990 — what the caller's agents changed about themselves. Its only
+      // consumer is the Today screen, below the queue; it never feeds the
+      // waiting count.
+      method: 'GET',
+      path: '/api/workspace/self-changes',
+      handler: handlers.selfChanges as unknown as RouteHandler,
     },
     {
       // TASK-444 — "Not now", recorded. It can only ever decline something

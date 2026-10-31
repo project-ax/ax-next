@@ -1422,6 +1422,26 @@ export interface TasksResponse {
   unavailableAgents: UnavailableAgent[];
 }
 
+/** Which part of itself an agent changed (TASK-990). A closed set: the words on screen are keyed by it. */
+export type SelfChangeSection = 'identity' | 'soul';
+
+/**
+ * One thing an agent changed about itself with `update_identity` (TASK-990):
+ * who, which section, when. Three fields and nothing the agent wrote — the
+ * words Today shows are the host's, picked by `section`.
+ */
+export interface SelfChange {
+  agentId: string;
+  section: SelfChangeSection;
+  /** ISO 8601. */
+  changedAt: string;
+}
+
+/** `GET /api/workspace/self-changes`: the caller's own agents, newest first. */
+export interface SelfChangesResponse {
+  changes: SelfChange[];
+}
+
 /**
  * A task's latest report, for its own page (TASK-910). `update`, `ask`,
  * `agentNotes` and the reading's label (TASK-952) are text the agent wrote;

@@ -1060,6 +1060,11 @@ describe('@ax/channel-web server plugin (integration)', () => {
           degradation: 'saving identity or Instructions answers 503 (never a false "saved")',
         },
         {
+          hook: 'agents:identity:self-changes-for-user',
+          degradation:
+            'Today shows no changes agents made to themselves (GET /api/workspace/self-changes answers an empty list)',
+        },
+        {
           hook: 'sandbox:read-user-files',
           degradation:
             'the user-files listing and its downloads answer 503 user-files-unavailable (never an empty listing)',

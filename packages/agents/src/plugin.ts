@@ -34,12 +34,14 @@ import { registerIdentityTools } from './identity/tools.js';
 import {
   AGENTS_IDENTITY_COMPLETE_BOOTSTRAP_HOOK,
   AGENTS_IDENTITY_GET_HOOK,
+  AGENTS_IDENTITY_SELF_CHANGES_FOR_USER_HOOK,
   AGENTS_IDENTITY_SET_HOOK,
   CanManageRoutinesInputSchema,
   CanManageRoutinesOutputSchema,
   AgentsResolveAuthoredSkillsOutputSchema,
   IdentityCompleteBootstrapOutputSchema,
   IdentityGetOutputSchema,
+  IdentitySelfChangesForUserOutputSchema,
   IdentitySetOutputSchema,
   ResolveOutputSchema,
 } from './types.js';
@@ -72,6 +74,7 @@ import type {
   EnsureWebhookTokenInput,
   EnsureWebhookTokenOutput,
   IdentityCompleteBootstrapOutput,
+  IdentitySelfChangesForUserOutput,
   IdentitySetOutput,
   ListForUserInput,
   ListForUserOutput,
@@ -166,6 +169,9 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
         'agents:identity:get',
         'agents:identity:set',
         'agents:identity:complete-bootstrap',
+        // TASK-990 — a person's personal agents' recent changes to themselves
+        // (Today's FYI rows; channel-web's GET /api/workspace/self-changes).
+        'agents:identity:self-changes-for-user',
         'tool:execute:update_identity',
         'tool:execute:complete_bootstrap',
       ],
@@ -716,9 +722,17 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
         async (ctx, input) => identityService.completeBootstrap(ctx, input),
         { returns: IdentityCompleteBootstrapOutputSchema },
       );
-      // The agent's own tools over the three hooks just registered (they call
-      // them on the bus): `update_identity` (identity or soul, never
-      // Instructions) and `complete_bootstrap`.
+      // TASK-990 — the per-section marks an agent's own saves leave, listed for
+      // its owner (personal agents, last SELF_CHANGE_WINDOW_DAYS days).
+      bus.registerService<unknown, IdentitySelfChangesForUserOutput>(
+        AGENTS_IDENTITY_SELF_CHANGES_FOR_USER_HOOK,
+        PLUGIN_NAME,
+        async (ctx, input) => identityService.selfChangesForUser(ctx, input),
+        { returns: IdentitySelfChangesForUserOutputSchema },
+      );
+      // The agent's own tools over the get / set / complete-bootstrap hooks
+      // just registered (they call them on the bus): `update_identity`
+      // (identity or soul, never Instructions) and `complete_bootstrap`.
       await registerIdentityTools(bus, initCtx);
 
       // Mount /admin/agents[/:id]. Routes are registered LAST so the bus
