@@ -335,8 +335,11 @@ export type ReadUserFilesHandler = ServiceHandler<ReadUserFilesInput, ReadUserFi
 //   may stop asking for the life of the process after the first one (the
 //   storage meter does). A provider that can measure some agents and not
 //   others must use another code for the ones it can't.
-// - `walk-busy` — this process already has its maximum of usage walks running
-//   (they may be stuck on a hung export); try again later.
+// - this process already has its maximum of measurements running (they may be
+//   stuck on a hung export): a transient failure, so try again later. Today it
+//   is the walk's own error (`@ax/user-files-read` code `walk-busy`, which the
+//   bus delivers as the cause of an `unknown` PluginError), and a caller must
+//   never treat it like `user-files-usage-unavailable`.
 // - a missing export or an unreadable root throws the walk's own error.
 // An agent folder that does not exist yet (the agent has never run) is 0: that
 // is a true reading, not a failure.

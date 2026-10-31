@@ -39,7 +39,8 @@ import { assertWalkPlatform, errnoOf, fdPath } from './walk-read.js';
 //   its listing), so depth is what bounds descriptors per walk.
 // - `maxMs` (default 120 s): a slow export (NFS) can make even a bounded walk
 //   take minutes. Checked every 256 entries.
-// The caller bounds concurrency (at most two walks host-wide).
+// Concurrency is bounded HERE, per process (`MAX_CONCURRENT_USAGE_WALKS`,
+// below), not only by the caller: see that constant for why.
 //
 // PARTIAL. When a bound is hit, or an entry or folder can't be read for any
 // reason other than having vanished or been swapped, the walk keeps what it
@@ -50,7 +51,8 @@ import { assertWalkPlatform, errnoOf, fdPath } from './walk-read.js';
 // ERRORS. A missing home folder under an export that exists is 0 (the agent
 // has never run). A missing export, or a root that can't be opened, examined
 // or listed, throws `UserFilesReadError` with the errno's name: a broken read
-// is never a reading of 0.
+// is never a reading of 0. A walk refused because the per-process cap is full
+// throws `UserFilesReadError` code `walk-busy` (transient).
 //
 // KNOWN RESIDUAL. An agent can remove read/search permission from its own
 // folders and hide what is in them. The reading is then partial (and the
@@ -154,8 +156,9 @@ function frameFor(fh: fs.FileHandle, depth: number): Frame {
  * `maxMs` (checked between entries) nor a caller's timeout ends the walk. A
  * caller that gave up (a bus timeout) frees its own concurrency slot while the
  * walk is still stuck, and the next request starts another. Counted here, stuck
- * walks can never hold more than this many threads, whatever the callers do;
- * the rest of the host (other file reads, DNS lookups, crypto) keeps running.
+ * USAGE walks can never hold more than this many threads, whatever the callers
+ * do. (The /files reader walks the same export with no such cap, so a hung
+ * export can still tie up the rest of the pool through it.)
  */
 export const MAX_CONCURRENT_USAGE_WALKS = 2;
 let usageWalksInFlight = 0;

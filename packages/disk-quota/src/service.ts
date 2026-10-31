@@ -154,6 +154,9 @@ export const AGENT_FILES_USAGE_HOOK = 'sandbox:user-files-usage';
  * At most this many agent-files measurements run at once in this process,
  * turn ends and the sweep together. Each is a directory walk of a tree an
  * agent controls, so a burst of turn ends must not become a burst of walks.
+ * The provider's walk has its own per-process cap of 2 (`@ax/user-files-read`
+ * MAX_CONCURRENT_USAGE_WALKS), which this plugin can't see across the hook
+ * boundary: raising this past 2 only buys walk-busy warns.
  */
 export const FILES_MEASURE_CONCURRENCY = 2;
 /**
