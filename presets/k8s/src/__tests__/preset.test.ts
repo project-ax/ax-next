@@ -998,6 +998,9 @@ describe('@ax/preset-k8s wiring', () => {
       'blob:pre-put',
       'blob:stored',
       'workspace:deleted',
+      // TASK-993: the agent-files meter (assistant turn end) and its release.
+      'chat:turn-end',
+      'agents:deleted',
     ]);
     // TASK-993: over quota blocks writes, never a turn.
     expect(quota!.manifest.subscribes).not.toContain('chat:start');
@@ -1007,6 +1010,14 @@ describe('@ax/preset-k8s wiring', () => {
       'storage:set',
       'http:register-route',
       'auth:require-user',
+    ]);
+    expect((quota!.manifest.optionalCalls ?? []).map((c) => c.hook)).toEqual([
+      'workspace:usage',
+      'agents:resolve',
+      'agents:list-personal-owners',
+      'auth:get-user',
+      'blob:stat',
+      'sandbox:user-files-usage',
     ]);
     for (const hook of quota!.manifest.calls) {
       const owners = plugins
@@ -1036,6 +1047,22 @@ describe('@ax/preset-k8s wiring', () => {
     expect(ws[0]!.manifest.registers).toContain('workspace:usage');
     expect(plugins.some((p) => p.manifest.registers.includes('agents:resolve'))).toBe(true);
     expect(plugins.some((p) => p.manifest.registers.includes('agents:list-personal-owners'))).toBe(true);
+  });
+
+  it('every hook @ax/disk-quota needs to meter agent files is produced in this preset (TASK-993)', () => {
+    const plugins = createK8sPlugins(stubConfig);
+    const quota = plugins.find((p) => p.manifest.name === '@ax/disk-quota')!;
+    const optional = (quota.manifest.optionalCalls ?? []).map((c) => c.hook);
+    expect(optional).toContain('sandbox:user-files-usage');
+    const registrants = (hook: string): string[] =>
+      plugins.filter((p) => p.manifest.registers.includes(hook)).map((p) => p.manifest.name);
+    // The meter's one producer in the production preset: the k8s provider walks
+    // the host-mounted export. A second registrant would be a second answer.
+    expect(registrants('sandbox:user-files-usage')).toEqual(['@ax/sandbox-k8s']);
+    // `agents:deleted` (which drops the agent-files row) is fired by the delete.
+    expect(registrants('agents:delete')).toEqual(['@ax/agents']);
+    // `chat:turn-end` reaches the meter through @ax/ipc-core, fired by ipc-http.
+    expect(plugins.map((p) => p.manifest.name)).toContain('@ax/ipc-http');
   });
 
   it("reads resting once a turn's reply is done, while the runner stays warm (TASK-686)", async () => {

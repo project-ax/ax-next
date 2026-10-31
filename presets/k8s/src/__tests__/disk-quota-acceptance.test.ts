@@ -31,7 +31,10 @@ import {
   workspaceFullMessage,
   type DiskQuotaPlugin,
 } from '@ax/disk-quota';
+import { createSandboxSubprocessPlugin } from '@ax/sandbox-subprocess';
+import { createSessionInmemoryPlugin } from '@ax/session-inmemory';
 import { startTestContainer, stopPostgresContainer } from '@ax/test-harness';
+import { createWorkspaceLocaldirPlugin } from '@ax/workspace-localdir';
 
 import { createK8sPlugins, type K8sPresetConfig } from '../index.js';
 
@@ -52,6 +55,16 @@ import { createK8sPlugins, type K8sPresetConfig } from '../index.js';
 //   FREE   -- `agents:deleted` makes the preset's @ax/workspace-git remove that
 //             agent's repo and fire `workspace:deleted`, which makes the plugin
 //             drop the agent's ledger row (TASK-719). Blob bytes are NOT freed.
+//
+// TASK-993 adds agent FILES (each agent's durable /files folder) to the same
+// per-person budget, METERED but not write-enforced: every assistant
+// `chat:turn-end` (and the sweep) makes the plugin measure the folder through
+// `sandbox:user-files-usage` and charge the agent's owner, and `agents:deleted`
+// drops that row. There is NO `chat:start` gate any more: a full person can
+// still talk to their agent (and ask it to tidy up); only the two write gates
+// above refuse. Block (7) proves that loop with a real directory, through the
+// subprocess provider's implementation of the hook (the production k8s
+// provider walks an NFS mount; its own suite covers that). Linux only.
 //
 // The package tests prove each half against fakes. This canary proves the
 // LOOP through the real chokepoints: the preset's own @ax/workspace-git (a
@@ -82,6 +95,9 @@ import { createK8sPlugins, type K8sPresetConfig } from '../index.js';
 // ---------------------------------------------------------------------------
 
 const DISK_QUOTA_PLUGIN = '@ax/disk-quota';
+
+/** Same guard as @ax/user-files-read's walk tests: the walk needs /proc/self/fd. */
+const ON_LINUX = process.platform === 'linux' && nodeFs.existsSync('/proc/self/fd');
 
 const PLUGINS_TO_DROP = new Set<string>([
   // Postgres pair we DON'T need: nothing here uses the cross-replica eventbus
@@ -219,6 +235,30 @@ function createControlPlaneStubPlugin(mountedRoutes: string[]): Plugin {
 }
 
 /**
+ * @ax/sandbox-subprocess hard-calls ipc:start/ipc:stop for its LIVE session
+ * path. Nothing here opens a session -- the usage meter never enters a sandbox
+ * -- but bootstrap's verifyCalls walk is static, so the producers must exist.
+ * Stubbed rather than satisfied with @ax/ipc-server (which would drag in the
+ * whole tool-dispatcher chain). Same stub as acceptance.test.ts' F4 canary.
+ */
+function createIpcStubPlugin(): Plugin {
+  const name = '@ax/preset-k8s/test/disk-quota-ipc-stub';
+  return {
+    manifest: {
+      name,
+      version: '0.0.0',
+      registers: ['ipc:start', 'ipc:stop'],
+      calls: [],
+      subscribes: [],
+    },
+    init({ bus }) {
+      bus.registerService('ipc:start', name, async () => ({ socketPath: '/dev/null' }));
+      bus.registerService('ipc:stop', name, async () => undefined);
+    },
+  };
+}
+
+/**
  * A one-shot gate on `workspace:applied` for ONE agent, armed by the test that
  * needs to hold that agent's post-write notice (and with it @ax/disk-quota's
  * re-measure, which it triggers) shut until the test says go. Unarmed, or for
@@ -345,7 +385,7 @@ describe('@ax/preset-k8s disk quota canary (real git + blob store + postgres)', 
     };
   }
 
-  async function bootKernel(): Promise<Kernel> {
+  async function bootKernel(opts: { userFilesRoot?: string } = {}): Promise<Kernel> {
     const presetPlugins = createK8sPlugins(presetConfig());
     const presetDiskQuota = presetPlugins.find((p) => p.manifest.name === DISK_QUOTA_PLUGIN);
     // The production preset registers the plugin (the half this canary exists
@@ -375,6 +415,18 @@ describe('@ax/preset-k8s disk quota canary (real git + blob store + postgres)', 
       diskQuota,
       createAgentsStubPlugin(),
       createControlPlaneStubPlugin(mountedRoutes),
+      // Block (7) only: a real per-agent /files home on a temp directory and
+      // the subprocess provider that measures it. The canary's preset config
+      // has no `filestore`, and @ax/sandbox-k8s is dropped, so this is the only
+      // `sandbox:resolve-mounts` and `sandbox:user-files-usage` on the bus.
+      ...(opts.userFilesRoot !== undefined
+        ? [
+            createWorkspaceLocaldirPlugin({ root: opts.userFilesRoot }),
+            createSessionInmemoryPlugin(),
+            createIpcStubPlugin(),
+            createSandboxSubprocessPlugin(),
+          ]
+        : []),
     ];
     const bus = new HookBus();
     const handle = await bootstrap({ bus, plugins, config: {} });
@@ -1320,7 +1372,8 @@ describe('@ax/preset-k8s disk quota canary (real git + blob store + postgres)', 
   });
 
   // -------------------------------------------------------------------------
-  // 6. PERSISTENCE and RUNTIME CHANGE (keep last: it restarts the kernel)
+  // 6. PERSISTENCE and RUNTIME CHANGE (it restarts the kernel; (7) follows it
+  //    and swaps in its own, so nothing may come after (7))
   // -------------------------------------------------------------------------
 
   it('(6) the ledger survives a restart, and raising the limit admits the owner again with no restart', async () => {
@@ -1366,6 +1419,144 @@ describe('@ax/preset-k8s disk quota canary (real git + blob store + postgres)', 
     await live().diskQuota.drain();
     expect(await ledgerRow(USER_A, `workspace:${agentId}`)).toMatchObject({
       kind: 'workspace',
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // 7. AGENT FILES (TASK-993) -- chat:turn-end -> sandbox:user-files-usage ->
+  //    an `agent-files:<agentId>` ledger row, charged to the agent's owner;
+  //    `agents:deleted` removes the folder and the row. A REAL directory under
+  //    a temp root, walked by the real @ax/sandbox-subprocess implementation
+  //    of the hook. Last in the file: it replaces the shared kernel.
+  // -------------------------------------------------------------------------
+
+  describe.skipIf(!ON_LINUX)('(7) agent files are metered and count toward the limit', () => {
+    let userFilesRoot = '';
+
+    beforeAll(async () => {
+      userFilesRoot = path.join(tmp, 'user-files');
+      await fs.mkdir(userFilesRoot, { recursive: true });
+      await live().shutdown();
+      kernel = null;
+      kernel = await bootKernel({ userFilesRoot });
+    });
+
+    /** What the walk should say: allocated bytes of `dir` and everything in it,
+     *  by `lstat` (a link counts as itself and is never followed). */
+    async function allocatedBytes(dir: string): Promise<number> {
+      const allocated = (st: nodeFs.Stats): number =>
+        Number.isFinite(st.blocks) ? st.blocks * 512 : st.size;
+      let total = allocated(await fs.lstat(dir));
+      for (const entry of await fs.readdir(dir)) {
+        const child = path.join(dir, entry);
+        const st = await fs.lstat(child);
+        total += st.isDirectory() ? await allocatedBytes(child) : allocated(st);
+      }
+      return total;
+    }
+
+    /** The assistant turn end the runner's commit path ends in, through the real bus. */
+    function turnEnd(userId: string, agentId: string) {
+      return live().bus.fire('chat:turn-end', ctxFor(userId, agentId), {
+        reason: 'user-message-wait',
+        role: 'assistant',
+      });
+    }
+
+    async function exists(p: string): Promise<boolean> {
+      try {
+        await fs.lstat(p);
+        return true;
+      } catch {
+        return false;
+      }
+    }
+
+    it('(7a) agent files are metered at turn end and count toward the owner; uploads are refused, chat is not, and cleaning up makes room', async () => {
+      const owner = 'dq-user-files';
+      const agentId = 'dq-agt-files';
+      agentOwners.set(agentId, { ownerId: owner, ownerType: 'user' });
+      const home = path.join(userFilesRoot, agentId);
+      const sibling = path.join(userFilesRoot, 'dq-agt-other');
+      await fs.mkdir(path.join(home, 'sub'), { recursive: true });
+      await fs.mkdir(sibling, { recursive: true });
+      await fs.writeFile(path.join(home, 'report.bin'), randomBytes(MB));
+      await fs.writeFile(path.join(home, 'sub', 'notes.txt'), 'some notes');
+      // Another agent's folder, and a link inside this one that points at it:
+      // neither the sibling nor the link's target may be counted for this agent.
+      await fs.writeFile(path.join(sibling, 'big.bin'), randomBytes(2 * MB));
+      await fs.symlink('../dq-agt-other', path.join(home, 'peek'));
+
+      const source = `agent-files:${agentId}`;
+      expect(await ledgerRow(owner, source), 'nothing is metered before a turn ends').toBeUndefined();
+
+      await turnEnd(owner, agentId);
+      await live().diskQuota.drain();
+      const first = await ledgerRow(owner, source);
+      expect(first).toMatchObject({ ownerId: owner, kind: 'agent-files' });
+      const expected = await allocatedBytes(home);
+      expect(expected).toBeGreaterThanOrEqual(MB);
+      expect(expected, 'the sibling (2 MiB) is not in the oracle').toBeLessThan(2 * MB);
+      expect(first!.bytes).toBe(expected);
+
+      // Counts toward the owner: the same budget the upload gate enforces.
+      await setLimits({ limitMb: MIN_LIMIT_MB });
+      await seedNearlyFull(owner);
+      const upload = randomBytes(100_000);
+      const refused = await refusalOf(blobPut(owner, upload));
+      expect(refused.code).toBe('rejected');
+      expect(refused.message).toBe(
+        blobFullMessage(MIN_LIMIT_BYTES - HEADROOM_BYTES, MIN_LIMIT_BYTES),
+      );
+      // ...but the person can still talk to their agent (and ask it to tidy up).
+      expect(
+        await live().bus.fire('chat:start', ctxFor(owner, agentId), {
+          message: { role: 'user', content: 'please clean up my files' },
+        }),
+      ).toMatchObject({ rejected: false });
+
+      // The agent cleans up: the next turn end shrinks the row and frees room.
+      await fs.rm(path.join(home, 'report.bin'));
+      await turnEnd(owner, agentId);
+      await live().diskQuota.drain();
+      const after = await ledgerRow(owner, source);
+      expect(after!.bytes).toBe(await allocatedBytes(home));
+      expect(after!.bytes).toBeLessThan(first!.bytes);
+      const admitted = await blobPut(owner, upload);
+      expect(admitted.size).toBe(upload.length);
+    });
+
+    it('(7b) deleting the agent removes its files and its row, and a late turn end writes nothing', async () => {
+      const owner = 'dq-user-gone';
+      const agentId = 'dq-agt-gone';
+      // Kept resolvable on purpose, so it is the tombstone (not a failed
+      // owner lookup) that keeps the late measurements from writing a row.
+      agentOwners.set(agentId, { ownerId: owner, ownerType: 'user' });
+      const home = path.join(userFilesRoot, agentId);
+      await fs.mkdir(home, { recursive: true });
+      await fs.writeFile(path.join(home, 'data.bin'), randomBytes(MB));
+      const source = `agent-files:${agentId}`;
+
+      await turnEnd(owner, agentId);
+      await live().diskQuota.drain();
+      expect(await ledgerRow(owner, source), 'metered before the delete').toMatchObject({
+        kind: 'agent-files',
+      });
+
+      await live().bus.fire('agents:deleted', ctxFor(owner, 'dq-agents-delete'), {
+        agentId,
+        ownerId: owner,
+        ownerType: 'user',
+      });
+      expect(await exists(home), "@ax/sandbox-subprocess removed the agent's folder").toBe(false);
+      expect(await ledgerRow(owner, source), 'the row is gone').toBeUndefined();
+
+      // A warm runner's late turn end, then a sweep that still lists the agent.
+      await turnEnd(owner, agentId);
+      await live().diskQuota.drain();
+      sweepAgents = [{ agentId, ownerUserId: owner }];
+      await live().diskQuota.reconcile();
+      expect(await ledgerRow(owner, source), 'nothing is metered for a deleted agent').toBeUndefined();
     });
   });
 });
