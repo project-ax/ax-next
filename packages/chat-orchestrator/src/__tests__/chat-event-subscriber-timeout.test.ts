@@ -196,7 +196,6 @@ describe('chat-orchestrator — chat event subscriber bound (TASK-551)', () => {
           allowedHosts: [],
           requiredCredentials: {},
           skillAttachments: [],
-          workspaceRef: null,
           createdAt: new Date(0),
           updatedAt: new Date(0),
         },

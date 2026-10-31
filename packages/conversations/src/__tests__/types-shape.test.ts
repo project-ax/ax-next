@@ -2,10 +2,11 @@ import { describe, it, expect } from 'vitest';
 import { rowToConversation } from '../store.js';
 
 // ---------------------------------------------------------------------------
-// Phase B (2026-04-29). The Conversation public type gains four nullable
-// fields — runnerType, runnerSessionId, workspaceRef, lastActivityAt.
-// rowToConversation maps them through. Testing in isolation here keeps the
-// row-mapping contract honest without spinning up a postgres container.
+// Phase B (2026-04-29). The Conversation public type gains three nullable
+// fields — runnerType, runnerSessionId, lastActivityAt. rowToConversation
+// maps them through. (Phase B also added workspaceRef; TASK-995 removed it.)
+// Testing in isolation here keeps the row-mapping contract honest without
+// spinning up a postgres container.
 // ---------------------------------------------------------------------------
 
 describe('rowToConversation Phase A fields', () => {
@@ -19,7 +20,6 @@ describe('rowToConversation Phase A fields', () => {
     active_req_id: null,
     runner_type: null,
     runner_session_id: null,
-    workspace_ref: null,
     last_activity_at: null,
     external_key: null,
     deleted_at: null,
@@ -41,7 +41,7 @@ describe('rowToConversation Phase A fields', () => {
 });
 
 describe('rowToConversation Phase B fields', () => {
-  it('maps runner_type / runner_session_id / workspace_ref / last_activity_at', () => {
+  it('maps runner_type / runner_session_id / last_activity_at, and has no workspaceRef', () => {
     const now = new Date('2026-04-29T12:00:00Z');
     const conv = rowToConversation({
       conversation_id: 'cnv_abc',
@@ -52,7 +52,6 @@ describe('rowToConversation Phase B fields', () => {
       active_req_id: null,
       runner_type: 'claude-sdk',
       runner_session_id: 'sess_xyz',
-      workspace_ref: 'wsp_local',
       last_activity_at: now,
       hidden: false,
       external_key: null,
@@ -62,8 +61,9 @@ describe('rowToConversation Phase B fields', () => {
     });
     expect(conv.runnerType).toBe('claude-sdk');
     expect(conv.runnerSessionId).toBe('sess_xyz');
-    expect(conv.workspaceRef).toBe('wsp_local');
     expect(conv.lastActivityAt).toBe(now.toISOString());
+    // TASK-995: the frozen workspaceRef copy is gone from the public type.
+    expect(conv).not.toHaveProperty('workspaceRef');
   });
 
   it('maps null Phase B fields as null', () => {
@@ -77,7 +77,6 @@ describe('rowToConversation Phase B fields', () => {
       active_req_id: null,
       runner_type: null,
       runner_session_id: null,
-      workspace_ref: null,
       last_activity_at: null,
       hidden: false,
       external_key: null,
@@ -87,7 +86,6 @@ describe('rowToConversation Phase B fields', () => {
     });
     expect(conv.runnerType).toBeNull();
     expect(conv.runnerSessionId).toBeNull();
-    expect(conv.workspaceRef).toBeNull();
     expect(conv.lastActivityAt).toBeNull();
   });
 });

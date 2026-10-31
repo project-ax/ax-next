@@ -397,7 +397,6 @@ interface AgentRecord {
    * this side only looks the id up and fails loudly on a miss.
    */
   runner: string;
-  workspaceRef: string | null;
   /**
    * Phase 2 — egress allowlist. Hostnames the per-session proxy permits the
    * runner to reach (exact match). Empty/undefined means "no egress" (the
@@ -644,11 +643,6 @@ interface HttpEgressEventLike {
     | 'proxy-auth';
 }
 
-// Minimal structural view of @ax/core's `WorkspaceDelta` — the B3
-// workspace:applied subscriber only reads the committing session and the
-// changed paths. Structural (no @ax/core type import) per the file's
-// hook-payload-shape convention; @ax/core's WorkspaceDelta is the canonical
-// shape, validated upstream at the fire site.
 // TASK-74 — the `skills:proposed` notify the host fires after a successful
 // skills:propose write. Storage-agnostic ids; the orchestrator marks the
 // PROPOSING session (read from ctx.sessionId, stamped by the IPC server from the
@@ -1258,9 +1252,9 @@ export const AGENT_INVOKE_TIMEOUT_MS = Number.POSITIVE_INFINITY;
  * named itself (`hook_subscriber_stalled`) with 45 s of runway before it is
  * cut off. It is a hang backstop, not a latency budget — and it is not
  * measured against a real cold start. It was sized while memory-strata's k8s
- * bootstrap (deleted in TASK-608) was a subscriber — a `workspace:list`, N
- * `workspace:read`s and two `workspace:apply`s, each separately bounded at
- * 120 s with nothing bounding their sum, so a large or cold tier could be cut
+ * bootstrap (deleted in TASK-608) was a subscriber — a workspace listing, N
+ * file reads and two writes, each separately bounded at 120 s with nothing
+ * bounding their sum, so a large or cold tier could be cut
  * off while HEALTHY, not hung. No current subscriber does that much. The
  * `hook_subscriber_timed_out` line makes a cut-off countable — if it shows up
  * on healthy first turns, raise this, do not remove it.
@@ -1934,7 +1928,8 @@ export function createOrchestrator(
   // design §D6), so we MARK the proposing session dirty and let the next turn's
   // routing retire it + fresh-spawn (safe between turns; a mid-turn terminate
   // would hang the SSE — the Fault-A class bug). This REPLACES the old
-  // workspace:applied `.ax/draft-skills` trigger (skill authoring left git).
+  // trigger on committed draft-skill files (TASK-74 moved skill authoring to
+  // the skills store).
   //
   // The proposing session is `ctx.sessionId` — the IPC server stamped the
   // runner's bearer-resolved session onto ctx before the skill.propose handler
@@ -2104,7 +2099,7 @@ export function createOrchestrator(
   // Sessions that proposed a skill this turn must re-spawn next turn (the runner
   // reads skills only at spawn, "frozen at spawn", design §D6). Populated by the
   // skills:proposed subscriber (MARK-ONLY — see onSkillsProposed; TASK-74
-  // replaced the old workspace:applied .ax/draft-skills trigger), consumed
+  // replaced the old trigger on committed draft-skill files), consumed
   // (terminate + fresh spawn) at the next turn's routing decision. In-memory +
   // single-replica — same posture as the warm-session map.
   const respawnSessions = new Set<string>();
@@ -2803,8 +2798,8 @@ export function createOrchestrator(
               // B3: this session's agent's draft-skills changed since it
               // spawned (the runner freezes the projection at spawn). Retire it
               // and fall through to a fresh spawn that re-derives the
-              // projection. Safe HERE (between turns), unlike a mid-commit
-              // terminate in the workspace:applied subscriber.
+              // projection. Safe HERE (between turns), unlike a mid-turn
+              // terminate, which would hang the SSE (the Fault-A class bug).
               //
               // TASK-612: same treatment when the session's system prompt
               // predates a change to something it carries (TASK-989: the
@@ -4060,16 +4055,6 @@ export function createOrchestrator(
     //    owner row from the `owner` field below), starts the IPC
     //    listener, and spawns the runner subprocess. The token never
     //    returns here — it flows only into the child env (I9).
-    //
-    //    Workspace resolution: agent.workspaceRef is currently a
-    //    pass-through field. Wiring `workspace:resolve-ref` is a separate
-    //    concern that becomes load-bearing only when @ax/workspace-git
-    //    grows multi-ref support; for the MVP we use ctx.workspace
-    //    (already populated upstream, e.g. from the channel's session
-    //    bootstrap) and leave workspaceRef unconsumed. A subscriber
-    //    of `agents:resolved` could observe a mismatch — that's a Task
-    //    16+ concern, called out here so a future reader doesn't think
-    //    workspaceRef is silently dropped.
     let handle: OpenSessionHandle;
     try {
       // TASK-97 — the sandbox materializes skill AND connector entries through
@@ -4744,10 +4729,10 @@ export function createOrchestrator(
     //    skill; signal not-authored so the route falls back to the catalog grant.
     //
     //    FIX 2 (catalog isolation): wrap the bus.call in try/catch. If
-    //    agents:resolve-authored-skills throws (workspace:list/read hiccup,
+    //    agents:resolve-authored-skills throws (a skills-store read hiccup,
     //    quarantine-get error, etc.) we return not-authored so the route falls
     //    back to the independent catalog grant — catalog approvals must not be
-    //    broken by workspace or DB outages that are unrelated to the catalog path.
+    //    broken by store or DB outages that are unrelated to the catalog path.
     let drafts: AuthoredResolvedSkillForOrch[] = [];
     if (bus.hasService('agents:resolve-authored-skills')) {
       try {
@@ -4761,7 +4746,7 @@ export function createOrchestrator(
         drafts = r.skills;
       } catch (err) {
         // Resolve failure: treat as "not an authored skill" so the catalog grant
-        // path stays available. A workspace/DB hiccup here must not block
+        // path stays available. A store/DB hiccup here must not block
         // catalog-skill approvals (they are independent).
         ctx.logger.warn('authored_grant_resolve_failed', {
           agentId: input.agentId,

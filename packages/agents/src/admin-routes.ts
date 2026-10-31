@@ -103,7 +103,6 @@ export interface RouteResponse {
 // SDK built-ins parse without an out-of-band case-mapping table.
 const TOOL_NAME_RE = /^[A-Za-z][A-Za-z0-9_.-]{0,63}$/;
 const MCP_ID_RE = /^[a-z0-9][a-z0-9_.-]{0,63}$/;
-const WORKSPACE_REF_RE = /^[A-Za-z0-9_./-]+$/;
 
 const displayNameSchema = z
   .string()
@@ -140,13 +139,6 @@ const visibilitySchema = z.enum(['personal', 'team']);
 
 const teamIdSchema = z.string().min(1).max(128);
 
-const workspaceRefSchema = z
-  .string()
-  .min(1)
-  .max(256)
-  .regex(WORKSPACE_REF_RE, 'workspaceRef has invalid shape')
-  .nullable();
-
 /**
  * Body schema for `POST /admin/agents`. Matches AgentInput exactly so the
  * shape passes through `agents:create` without further translation.
@@ -163,7 +155,6 @@ const createBodySchema = z
     runner: runnerSchema.optional(),
     visibility: visibilitySchema,
     teamId: teamIdSchema.optional(),
-    workspaceRef: workspaceRefSchema.optional(),
   })
   .strict()
   .superRefine((value, ctx) => {
@@ -196,7 +187,6 @@ const updateBodySchema = z
     mcpConfigIds: mcpConfigIdsSchema.optional(),
     model: modelSchema.optional(),
     runner: runnerSchema.optional(),
-    workspaceRef: workspaceRefSchema.optional(),
   })
   .strict();
 
@@ -377,8 +367,6 @@ function serializeAgent(a: Agent): Record<string, unknown> {
     model: a.model,
     runner: a.runner,
     ...(a.requestedModel !== undefined ? { requestedModel: a.requestedModel } : {}),
-
-    workspaceRef: a.workspaceRef,
     skillAttachments: a.skillAttachments,
     connectorAttachments: a.connectorAttachments,
     connectorExclusions: a.connectorExclusions,
@@ -840,7 +828,7 @@ export function createAdminAgentRouteHandlers(deps: AdminRouteDeps) {
       // For user-scope promotion, resolve the agent owner BEFORE checking
       // authored skills so we give a clear "team-agent-user-scope-unsupported"
       // response rather than a confusing "authored-skill-not-found" (team agents
-      // have no single-owner workspace so list-authored-skills returns []).
+      // have no single owner, so agents:list-authored-skills returns []).
       let userScopeOwnerId: string | undefined;
       if (body.targetScope === 'user') {
         const { agents: personalOwners } = await deps.bus.call<

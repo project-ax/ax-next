@@ -29,7 +29,7 @@ function buildMocks(opts: {
       agent: {
         id: 'agent-1', ownerId: 'user-1', ownerType: 'user', visibility: 'personal',
         displayName: 'A', allowedTools: [], mcpConfigIds: [],
-        model: 'anthropic/claude-sonnet-4-7', runner: 'claude-sdk', workspaceRef: null,
+        model: 'anthropic/claude-sonnet-4-7', runner: 'claude-sdk',
       },
     }),
     'agents:resolve-authored-skills': async () => {

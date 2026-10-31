@@ -72,7 +72,7 @@ async function makeHarness(policy: MockResolvePolicy): Promise<{
       'agents:resolve': async (
         _ctx,
         input: unknown,
-      ): Promise<{ agent: { id: string; workspaceRef: string | null } }> => {
+      ): Promise<{ agent: { id: string } }> => {
         const call = input as MockResolveCall;
         resolveCalls.push(call);
         const decision = policy.decide(call);
@@ -80,7 +80,7 @@ async function makeHarness(policy: MockResolvePolicy): Promise<{
           if (policy.onAllow !== undefined) {
             await policy.onAllow(call);
           }
-          return { agent: { id: call.agentId, workspaceRef: null } };
+          return { agent: { id: call.agentId } };
         }
         if (decision === 'notfound') {
           throw new PluginError({

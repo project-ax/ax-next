@@ -100,6 +100,53 @@ describe('runAgentsMigration', () => {
     expect(after.rows).toHaveLength(0);
   });
 
+  // TASK-995: the git workspace tier is gone, and the agent's `workspace_ref`
+  // with it. Nothing ever read the column (the orchestrator left it
+  // unconsumed), so it goes the TASK-142 way: out of CREATE TABLE, plus an
+  // idempotent DROP COLUMN IF EXISTS for databases an earlier release made.
+  async function agentColumnNames(db: Kysely<AgentsDatabase>): Promise<string[]> {
+    const cols = await sql<{ column_name: string }>`
+      SELECT column_name FROM information_schema.columns
+       WHERE table_name = 'agents_v1_agents'
+    `.execute(db);
+    return cols.rows.map((r) => r.column_name);
+  }
+
+  it('TASK-995: a fresh database has no workspace_ref column', async () => {
+    const db = makeKysely();
+    await runAgentsMigration(db);
+    expect(await agentColumnNames(db)).not.toContain('workspace_ref');
+  });
+
+  it('an agents table with workspace_ref upgrades: column dropped; a second run is a no-op', async () => {
+    const db = makeKysely();
+    await runAgentsMigration(db);
+    // The table as an earlier release left it: the column is there, and an
+    // agent row holds a value in it.
+    await sql`ALTER TABLE agents_v1_agents ADD COLUMN IF NOT EXISTS workspace_ref TEXT`.execute(db);
+    await sql`
+      INSERT INTO agents_v1_agents
+        (agent_id, owner_id, owner_type, visibility, display_name,
+         allowed_tools, mcp_config_ids, model, workspace_ref)
+      VALUES ('a-old', 'u1', 'user', 'personal', 'Old',
+              '[]'::jsonb, '[]'::jsonb, 'anthropic/claude-opus-4-7', 'refs/old')
+    `.execute(db);
+    expect(await agentColumnNames(db)).toContain('workspace_ref');
+
+    await runAgentsMigration(db);
+    expect(await agentColumnNames(db)).not.toContain('workspace_ref');
+
+    // A second run finds nothing to drop and does not throw.
+    await runAgentsMigration(db);
+    expect(await agentColumnNames(db)).not.toContain('workspace_ref');
+
+    // The agent itself survives the drop.
+    const rows = await sql<{ agent_id: string; display_name: string }>`
+      SELECT agent_id, display_name FROM agents_v1_agents
+    `.execute(db);
+    expect(rows.rows).toEqual([{ agent_id: 'a-old', display_name: 'Old' }]);
+  });
+
   it('CHECK constraint rejects bad owner_type', async () => {
     const db = makeKysely();
     await runAgentsMigration(db);
@@ -116,7 +163,6 @@ describe('runAgentsMigration', () => {
           allowed_tools: JSON.stringify([]) as unknown,
           mcp_config_ids: JSON.stringify([]) as unknown,
           model: 'claude-opus-4-7',
-          workspace_ref: null,
           created_at: new Date(),
           updated_at: new Date(),
         } as never)
@@ -144,7 +190,6 @@ describe('runAgentsMigration', () => {
           allowed_tools: JSON.stringify([]) as unknown,
           mcp_config_ids: JSON.stringify([]) as unknown,
           model: 'claude-opus-4-7',
-          workspace_ref: null,
           created_at: new Date(),
           updated_at: new Date(),
         } as never)
@@ -171,7 +216,6 @@ describe('runAgentsMigration', () => {
           allowed_tools: JSON.stringify([]) as unknown,
           mcp_config_ids: JSON.stringify([]) as unknown,
           model: 'claude-opus-4-7',
-          workspace_ref: null,
           created_at: new Date(),
           updated_at: new Date(),
         } as never)
@@ -197,7 +241,6 @@ describe('runAgentsMigration', () => {
           allowed_tools: JSON.stringify([]) as unknown,
           mcp_config_ids: JSON.stringify([]) as unknown,
           model: 'claude-opus-4-7',
-          workspace_ref: null,
           created_at: new Date(),
           updated_at: new Date(),
         },
@@ -210,7 +253,6 @@ describe('runAgentsMigration', () => {
           allowed_tools: JSON.stringify([]) as unknown,
           mcp_config_ids: JSON.stringify([]) as unknown,
           model: 'claude-opus-4-7',
-          workspace_ref: null,
           created_at: new Date(),
           updated_at: new Date(),
         },
@@ -283,7 +325,6 @@ describe('runAgentsMigration', () => {
         allowed_tools: JSON.stringify([]) as unknown,
         mcp_config_ids: JSON.stringify([]) as unknown,
         model: 'claude-opus-4-7',
-        workspace_ref: null,
         created_at: new Date(),
         updated_at: new Date(),
       } as never)
@@ -315,7 +356,6 @@ describe('runAgentsMigration', () => {
         allowed_tools: JSON.stringify([]) as unknown,
         mcp_config_ids: JSON.stringify([]) as unknown,
         model: 'anthropic/claude-opus-4-7',
-        workspace_ref: null,
         created_at: new Date(),
         updated_at: new Date(),
       } as never)
@@ -366,9 +406,9 @@ describe('runAgentsMigration', () => {
     await sql`
       INSERT INTO agents_v1_agents
         (agent_id, owner_id, owner_type, visibility, display_name,
-         allowed_tools, mcp_config_ids, model, workspace_ref, created_at, updated_at)
+         allowed_tools, mcp_config_ids, model, created_at, updated_at)
       VALUES ('a-legacy', 'u1', 'user', 'personal', 'Legacy',
-              '[]'::jsonb, '[]'::jsonb, 'anthropic/claude-opus-4-7', NULL, NOW(), NOW())
+              '[]'::jsonb, '[]'::jsonb, 'anthropic/claude-opus-4-7', NOW(), NOW())
     `.execute(k);
 
     await runAgentsMigration(k); // re-run — ADD COLUMN IF NOT EXISTS fires.
@@ -385,14 +425,14 @@ describe('runAgentsMigration', () => {
     await sql`
       INSERT INTO agents_v1_agents
         (agent_id, owner_id, owner_type, visibility, display_name,
-         allowed_tools, mcp_config_ids, model, workspace_ref, created_at, updated_at)
+         allowed_tools, mcp_config_ids, model, created_at, updated_at)
       VALUES
         ('a-bare', 'u1', 'user', 'personal', 'Bare',
-         '[]'::jsonb, '[]'::jsonb, 'claude-sonnet-4-6', NULL, NOW(), NOW()),
+         '[]'::jsonb, '[]'::jsonb, 'claude-sonnet-4-6', NOW(), NOW()),
         ('a-prefixed', 'u2', 'user', 'personal', 'Prefixed',
-         '[]'::jsonb, '[]'::jsonb, 'anthropic/claude-opus-4-7', NULL, NOW(), NOW()),
+         '[]'::jsonb, '[]'::jsonb, 'anthropic/claude-opus-4-7', NOW(), NOW()),
         ('a-nested', 'u3', 'user', 'personal', 'Nested',
-         '[]'::jsonb, '[]'::jsonb, 'openrouter/x-ai/grok-4.6', NULL, NOW(), NOW())
+         '[]'::jsonb, '[]'::jsonb, 'openrouter/x-ai/grok-4.6', NOW(), NOW())
     `.execute(k);
 
     await runAgentsMigration(k);
@@ -429,7 +469,6 @@ describe('runAgentsMigration', () => {
         allowed_tools: JSON.stringify([]) as unknown,
         mcp_config_ids: JSON.stringify([]) as unknown,
         model: 'claude-opus-4-7',
-        workspace_ref: null,
         created_at: new Date(),
         updated_at: new Date(),
       } as never)

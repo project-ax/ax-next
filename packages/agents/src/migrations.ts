@@ -5,7 +5,8 @@ import { sql, type Generated, type Kysely } from 'kysely';
  * prefix — never reach into them from another plugin (Invariant I4 — one
  * source of truth per concept). Every statement runs on every boot, so each
  * one is forward-only and safe to re-run: new tables (`IF NOT EXISTS`),
- * additive columns (`ADD COLUMN IF NOT EXISTS`), idempotent rewrites.
+ * additive columns (`ADD COLUMN IF NOT EXISTS`), idempotent rewrites, and
+ * drops of columns nothing reads any more (`DROP COLUMN IF EXISTS`).
  *
  * Tables:
  *   agents_v1_agents    — agent entity, owned by user_id OR team_id.
@@ -40,7 +41,6 @@ export async function runAgentsMigration<DB>(db: Kysely<DB>): Promise<void> {
       allowed_tools JSONB NOT NULL,
       mcp_config_ids JSONB NOT NULL,
       model TEXT NOT NULL,
-      workspace_ref TEXT,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       CONSTRAINT agents_v1_owner_type_check
@@ -119,6 +119,16 @@ export async function runAgentsMigration<DB>(db: Kysely<DB>): Promise<void> {
   await sql`
     ALTER TABLE agents_v1_agents
       DROP COLUMN IF EXISTS system_prompt
+  `.execute(db);
+
+  // TASK-995: DROP the `workspace_ref` column the same way. It was an opaque
+  // pointer at the agent's version-controlled workspace, a tier TASK-995
+  // deletes, and nothing ever read it (the orchestrator left it unconsumed).
+  // It is out of CREATE TABLE above, so a brand-new DB never has it; an
+  // already-deployed DB drops it here once, and every later boot is a no-op.
+  await sql`
+    ALTER TABLE agents_v1_agents
+      DROP COLUMN IF EXISTS workspace_ref
   `.execute(db);
 
   // PR 2 of the provider-agnostic runner sequence
@@ -226,7 +236,6 @@ export interface AgentsRow {
   model: string;
   /** Runner id (`claude-sdk`), never a path. See the migration comment. */
   runner: string;
-  workspace_ref: string | null;
   webhook_token: string | null;
   skill_attachments: unknown; // JSONB; validated by store
   connector_attachments: unknown; // JSONB; validated by store (TASK-107)

@@ -30,7 +30,6 @@ import type {
 
 interface MockAgent {
   id: string;
-  workspaceRef: string | null;
   runner?: string;
 }
 
@@ -136,7 +135,7 @@ describe('conversations:get-metadata', () => {
   it('returns the metadata projection (no turns)', async () => {
     const { h } = await makeHarness({
       agents: new Map([
-        ['agt_demo', { id: 'agt_demo', workspaceRef: 'wsp_demo', runner: 'claude-sdk' }],
+        ['agt_demo', { id: 'agt_demo', runner: 'claude-sdk' }],
       ]),
     });
     const conv = await h.bus.call<CreateInput, CreateOutput>(
@@ -155,19 +154,20 @@ describe('conversations:get-metadata', () => {
       agentId: 'agt_demo',
       runnerType: 'claude-sdk',
       runnerSessionId: null,
-      workspaceRef: 'wsp_demo',
       title: null,
       lastActivityAt: null,
     });
     expect(md.createdAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
     // Projection contract: explicitly no turns key.
     expect((md as Record<string, unknown>).turns).toBeUndefined();
+    // TASK-995: and no workspaceRef — the frozen copy is gone.
+    expect(md).not.toHaveProperty('workspaceRef');
   });
 
   it('returns not-found for a foreign user', async () => {
     const { h } = await makeHarness({
       agents: new Map([
-        ['agt_demo', { id: 'agt_demo', workspaceRef: null }],
+        ['agt_demo', { id: 'agt_demo' }],
       ]),
     });
     const conv = await h.bus.call<CreateInput, CreateOutput>(
@@ -187,7 +187,7 @@ describe('conversations:get-metadata', () => {
   it('returns not-found for a tombstoned row', async () => {
     const { h } = await makeHarness({
       agents: new Map([
-        ['agt_demo', { id: 'agt_demo', workspaceRef: null }],
+        ['agt_demo', { id: 'agt_demo' }],
       ]),
     });
     const conv = await h.bus.call<CreateInput, CreateOutput>(
@@ -219,7 +219,7 @@ describe('conversations:get-metadata', () => {
     // the gate's call shape: when the row IS owned by the caller, a
     // forbid from agents:resolve propagates as 'forbidden'.
     const allowMap = new Map<string, MockAgent>([
-      ['agt_demo', { id: 'agt_demo', workspaceRef: null }],
+      ['agt_demo', { id: 'agt_demo' }],
     ]);
     const { h: hAllow } = await makeHarness({ agents: allowMap });
     const conv = await hAllow.bus.call<CreateInput, CreateOutput>(
@@ -249,7 +249,7 @@ describe('conversations:get-metadata', () => {
   it('returns not-found for a foreign user with a code, not just a message', async () => {
     const { h } = await makeHarness({
       agents: new Map([
-        ['agt_demo', { id: 'agt_demo', workspaceRef: null }],
+        ['agt_demo', { id: 'agt_demo' }],
       ]),
     });
     const conv = await h.bus.call<CreateInput, CreateOutput>(

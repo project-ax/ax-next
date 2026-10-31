@@ -285,7 +285,6 @@ interface SerializedAgent {
   mcpConfigIds: string[];
   model: string;
   runner: string;
-  workspaceRef: string | null;
   skillAttachments: SerializedSkillAttachment[];
   connectorAttachments: string[];
 }
@@ -343,6 +342,57 @@ describe('@ax/agents admin routes', () => {
     }
     const list = await http(stack.port, 'GET', '/admin/agents', { cookie });
     expect((list.body as { agents: unknown[] }).agents).toEqual([]);
+  });
+
+  // TASK-995: the agent record has no workspaceRef any more. Both bodies are
+  // `.strict()`, so a body that still sends one gets what any unknown key
+  // gets — a 400 — and nothing is written. No new strictness: this pins the
+  // schema's existing behaviour for the removed field.
+  it('POST /admin/agents with a workspaceRef → 400 like any unknown key; nothing is created', async () => {
+    const cookie = await signIn(stack);
+    const withRef = await http(stack.port, 'POST', '/admin/agents', {
+      cookie,
+      body: { ...makeBody(), workspaceRef: 'refs/heads/main' },
+    });
+    const withUnknown = await http(stack.port, 'POST', '/admin/agents', {
+      cookie,
+      body: { ...makeBody(), notAField: 'x' },
+    });
+    expect(withRef.status).toBe(400);
+    expect(withUnknown.status).toBe(400);
+    expect((withRef.body as { error: string }).error).toMatch(/unrecognized key/i);
+    expect((withUnknown.body as { error: string }).error).toMatch(/unrecognized key/i);
+    const list = await http(stack.port, 'GET', '/admin/agents', { cookie });
+    expect((list.body as { agents: unknown[] }).agents).toEqual([]);
+  });
+
+  it('PATCH /admin/agents/:id with a workspaceRef → 400 like any unknown key; nothing changes', async () => {
+    const cookie = await signIn(stack);
+    const created = await http(stack.port, 'POST', '/admin/agents', {
+      cookie,
+      body: makeBody({ displayName: 'Original' }),
+    });
+    const id = (created.body as { agent: SerializedAgent }).agent.id;
+    for (const workspaceRef of ['refs/heads/main', null]) {
+      const r = await http(stack.port, 'PATCH', `/admin/agents/${id}`, {
+        cookie,
+        body: { displayName: 'Renamed', workspaceRef },
+      });
+      expect(r.status).toBe(400);
+      expect((r.body as { error: string }).error).toMatch(/unrecognized key/i);
+    }
+    const shown = await http(stack.port, 'GET', `/admin/agents/${id}`, { cookie });
+    expect((shown.body as { agent: SerializedAgent }).agent.displayName).toBe('Original');
+  });
+
+  it('an agent record carries no workspaceRef', async () => {
+    const cookie = await signIn(stack);
+    const created = await http(stack.port, 'POST', '/admin/agents', { cookie, body: makeBody() });
+    expect(created.status).toBe(201);
+    const agent = (created.body as { agent: Record<string, unknown> }).agent;
+    expect(agent).not.toHaveProperty('workspaceRef');
+    const shown = await http(stack.port, 'GET', `/admin/agents/${String(agent['id'])}`, { cookie });
+    expect((shown.body as { agent: Record<string, unknown> }).agent).not.toHaveProperty('workspaceRef');
   });
 
   it('an admin-created agent is not bootstrapping', async () => {

@@ -34,7 +34,6 @@ import type {
 
 interface MockAgent {
   id: string;
-  workspaceRef: string | null;
 }
 
 let container: StartedPostgreSqlContainer;
@@ -103,7 +102,7 @@ describe('conversations:store-runner-session', () => {
   it('binds runner_session_id on first call; idempotent on repeat with same id', async () => {
     const h = await makeHarness({
       agents: new Map([
-        ['agt_demo', { id: 'agt_demo', workspaceRef: null }],
+        ['agt_demo', { id: 'agt_demo' }],
       ]),
     });
     const conv = await h.bus.call<CreateInput, CreateOutput>(
@@ -135,7 +134,7 @@ describe('conversations:store-runner-session', () => {
   it('throws conflict on re-bind to a different runnerSessionId', async () => {
     const h = await makeHarness({
       agents: new Map([
-        ['agt_demo', { id: 'agt_demo', workspaceRef: null }],
+        ['agt_demo', { id: 'agt_demo' }],
       ]),
     });
     const conv = await h.bus.call<CreateInput, CreateOutput>(
@@ -168,7 +167,7 @@ describe('conversations:store-runner-session', () => {
   it('throws not-found on foreign user / unknown id / tombstoned row', async () => {
     const h = await makeHarness({
       agents: new Map([
-        ['agt_demo', { id: 'agt_demo', workspaceRef: null }],
+        ['agt_demo', { id: 'agt_demo' }],
       ]),
     });
     const conv = await h.bus.call<CreateInput, CreateOutput>(
@@ -212,7 +211,7 @@ describe('conversations:store-runner-session', () => {
   it('rejects empty / oversize runnerSessionId at the boundary', async () => {
     const h = await makeHarness({
       agents: new Map([
-        ['agt_demo', { id: 'agt_demo', workspaceRef: null }],
+        ['agt_demo', { id: 'agt_demo' }],
       ]),
     });
     const conv = await h.bus.call<CreateInput, CreateOutput>(

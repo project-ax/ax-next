@@ -19,7 +19,6 @@ import {
   validateOptionalOrigin,
   validateRunnerType,
   validateTitle,
-  validateWorkspaceRefForFreeze,
   type ConversationStore,
   type PendingPurgeKind,
   type StoredEvent,
@@ -27,7 +26,6 @@ import {
 import {
   AppendTranscriptOutputSchema,
   CONVERSATIONS_PURGED_CHUNK_SIZE,
-  DrainSaveRefusalsOutputSchema,
   GetMetadataOutputSchema,
   GetTranscriptOutputSchema,
   ReplaceTranscriptOutputSchema,
@@ -40,8 +38,6 @@ import type {
   AppendTranscriptOutput,
   BindSessionInput,
   BindSessionOutput,
-  DrainSaveRefusalsInput,
-  DrainSaveRefusalsOutput,
   GetTranscriptInput,
   GetTranscriptOutput,
   ReplaceTranscriptInput,
@@ -281,12 +277,6 @@ export function createConversationsPlugin(
         // CLOSED: the caller (the subscribers) AND the consumer
         // (conversations:get reading the log) ship in this same PR.
         'conversations:append-event',
-        // TASK-749 (2026-10-02): take the refused saves the MODEL has not
-        // been told about (the TASK-731 `save-refused` rows above a
-        // per-conversation watermark) and mark them told. Caller: ipc-core's
-        // `conversation.drain-save-refusals`, which the runner calls as it
-        // builds each turn — closed in the same PR.
-        'conversations:drain-save-refusals',
         // TASK-67 (out-of-git Part B / B2, 2026-05-30): the resume transcript
         // store (the resume SoT). Host-internal, ctx-scoped — the untrusted
         // runner reaches them ONLY via the host's session.* IPC handlers
@@ -301,12 +291,10 @@ export function createConversationsPlugin(
       calls: [
         'agents:resolve',
         'database:get-instance',
-        // TASK-75 (2026-05-30): the last `workspace:*` callers in this plugin
-        // are gone. conversations:get's git-jsonl fallback was deleted in
-        // TASK-70 (the resume jsonl left git in TASK-67), and conversations:
-        // drop-turn now rewrites the transcript-ROW store instead of the git
-        // workspace jsonl — so `workspace:list`/`read`/`apply` are no longer
-        // called and are dropped from the manifest (I5: minimal capabilities).
+        // No workspace hooks (TASK-75): TASK-70 deleted conversations:get's
+        // old transcript-file fallback, and conversations:drop-turn rewrites
+        // the transcript-ROW store, so this plugin never reads or writes an
+        // agent's files (I5: minimal capabilities).
       ],
       // Task 14 (Week 10–12): subscribe to session:terminate so a sandbox
       // teardown clears active_session_id on every bound conversation row.
@@ -477,17 +465,6 @@ export function createConversationsPlugin(
         'conversations:append-event',
         PLUGIN_NAME,
         async (ctx, input) => appendEvent(localStore, ctx, input),
-      );
-
-      // TASK-749: refused saves the model has not been told about yet.
-      // userId-scoped like store-runner-session (no agents:resolve — the
-      // orchestrator gated the user at agent:invoke; the runner reaches it
-      // only through an IPC action that takes the conversationId from ctx).
-      bus.registerService<DrainSaveRefusalsInput, DrainSaveRefusalsOutput>(
-        'conversations:drain-save-refusals',
-        PLUGIN_NAME,
-        async (ctx, input) => drainSaveRefusals(localStore, ctx, input),
-        { returns: DrainSaveRefusalsOutputSchema },
       );
 
       // TASK-67 (out-of-git Part B / B2): the resume transcript store. All
@@ -954,46 +931,6 @@ async function appendEvent(
   });
 }
 
-/**
- * Prefix of the fold key ipc-core mints for a final/idle `save-refused` row
- * (TASK-731, `final:<uuid>`). Duplicated rather than imported (no
- * cross-plugin imports); built by concatenation for the same
- * dependency-sync reason as ipc-core's copy.
- */
-const FINAL_SAVE_REFUSED_KEY_PREFIX = 'final' + ':';
-
-/** TASK-749 — at most this many refusals are handed back per drain. */
-const MAX_DRAINED_SAVE_REFUSALS = 64;
-
-/**
- * conversations:drain-save-refusals handler (TASK-749). The refused saves the
- * model has not been told about, oldest first, marked told. A final/idle row
- * comes back with `turnReqId: null`; a per-turn row with the turn's reqId (or
- * `''`). Only the newest {@link MAX_DRAINED_SAVE_REFUSALS} are returned — the
- * rest are still marked told; the model is told about refusals, not given an
- * audit log, and the notice says the same thing for one or for fifty.
- */
-async function drainSaveRefusals(
-  store: ConversationStore,
-  ctx: AgentContext,
-  input: DrainSaveRefusalsInput,
-): Promise<DrainSaveRefusalsOutput> {
-  const hookName = 'conversations:drain-save-refusals';
-  const conversationId = requireBoundedString(
-    input.conversationId,
-    'conversationId',
-    hookName,
-  );
-  const userId = requireBoundedString(ctx.userId, 'ctx.userId', hookName);
-  const drained = await store.drainSaveRefusals({ conversationId, userId });
-  return {
-    refusals: drained.slice(-MAX_DRAINED_SAVE_REFUSALS).map(({ key, code }) => ({
-      code,
-      turnReqId: key.startsWith(FINAL_SAVE_REFUSED_KEY_PREFIX) ? null : key,
-    })),
-  };
-}
-
 // ---------------------------------------------------------------------------
 // TASK-67 — resume transcript store (out-of-git Part B / B2 + B3 detector).
 // ---------------------------------------------------------------------------
@@ -1352,24 +1289,19 @@ interface ResolveInput {
  * Narrow shape of what conversations needs from `agents:resolve`. The
  * upstream type publishes more — we deliberately read only what we
  * use, so a future field change in @ax/agents doesn't ripple.
- *
- * `workspaceRef` is read defensively: if the resolved agent omits it (a
- * test mock returning a stub) we treat it as null. Frozen-as-of-create
- * includes "frozen as null" — Phase C tolerates NULL on read.
  */
 interface ResolvedAgentShape {
   agent: {
     id?: string;
-    workspaceRef?: string | null;
     /**
      * `agents.runner` — which runner will serve this agent's turns. Seeds
      * `runner_type` at create so the row is truthful from its first turn
      * rather than from a host-wide guess; `conversations:bind-session`
      * keeps it current afterwards.
      *
-     * Duck-typed here, like `workspaceRef` above, rather than imported from
-     * @ax/agents (I2 — the hook bus is the contract). Optional because this
-     * shape describes only the fields we read.
+     * Duck-typed here rather than imported from @ax/agents (I2 — the hook
+     * bus is the contract). Optional because this shape describes only the
+     * fields we read.
      */
     runner?: string;
   };
@@ -1420,10 +1352,9 @@ async function createConversation(
 ): Promise<CreateOutput> {
   const title = validateTitle(input.title ?? null);
   // J1: ACL gate BEFORE persisting. The agent must be reachable to the
-  // creator; otherwise no conversation should ever exist for it. Phase B
-  // (I5): we capture the resolved agent here — its workspaceRef gets
-  // frozen onto the new row, mirroring I10. One bus call total; no
-  // separate agents:get round-trip.
+  // creator; otherwise no conversation should ever exist for it. We keep the
+  // resolved agent: its runner seeds the new row's runner_type. One bus call
+  // total; no separate agents:get round-trip.
   const agent = await assertAgentReachable(
     bus,
     ctx,
@@ -1431,7 +1362,6 @@ async function createConversation(
     input.userId,
     'conversations:create',
   );
-  const workspaceRef = validateWorkspaceRefForFreeze(agent.workspaceRef);
   // Phase D (2026-05-17): routines call with `hidden: true` for per-fire
   // conversations. Default false matches the store contract. validate
   // boolean-ness at the boundary so an external caller passing a truthy
@@ -1450,7 +1380,6 @@ async function createConversation(
     agentId: input.agentId,
     title,
     runnerType: validateRunnerType(agent.runner ?? null),
-    workspaceRef,
     hidden,
     ...(origin === undefined ? {} : { origin }),
   });
@@ -1623,12 +1552,11 @@ async function getConversation(
   }
 
   // No display-event rows → nothing to redisplay. The legacy fallback that
-  // re-read the runner's native jsonl over git (`workspace:list` /
-  // `workspace:read`) is GONE (TASK-70 / out-of-git Phase 5): the resume
-  // jsonl left git in TASK-67, so the `.claude/projects/` glob no longer hits
-  // a git-tracked file, and there is no production data with pre-TASK-66
-  // (event-log-less) conversations to fall back FOR. The display event log
-  // (TASK-66) is now the sole redisplay source of truth.
+  // re-read the runner's native jsonl from the agent's files is GONE (TASK-70 /
+  // out-of-git Phase 5): the resume jsonl moved to the transcript store in
+  // TASK-67, and there is no production data with pre-TASK-66 (event-log-less)
+  // conversations to fall back FOR. The display event log (TASK-66) is now the
+  // sole redisplay source of truth.
   return {
     conversation: conv,
     turns: [],
@@ -1640,10 +1568,10 @@ async function getConversation(
 // TASK-66 — read-side projection from the display event log.
 //
 // `turn` events project to the existing `Turn[]` wire shape (unchanged
-// renderer path); host-only events (`permission-card` / `turn-error` /
-// `save-refused`) project to `displayEvents`, folded to their terminal state
-// per (kind, foldKey). A `save-refused` row passes through as is (TASK-731):
-// its two per-turn rows share the turn's reqId and fold to the later one.
+// renderer path); host-only events (`permission-card` / `turn-error`)
+// project to `displayEvents`, folded to their terminal state per (kind,
+// foldKey). Old `save-refused` rows (retired in TASK-995) never get here:
+// the store leaves them out of `listEvents`.
 // ---------------------------------------------------------------------------
 
 /**
@@ -1983,7 +1911,6 @@ async function findOrCreateConversation(
     bus, ctx, input.agentId, input.userId, hookName,
   );
   const title = validateTitle(input.fallback.title ?? null);
-  const workspaceRef = validateWorkspaceRefForFreeze(agent.workspaceRef);
   // Phase D (2026-05-17): see createConversation for rationale.
   const hidden = validateOptionalBoolean(input.fallback.hidden, 'hidden') ?? false;
   // AW-6: see createConversation.
@@ -1997,7 +1924,6 @@ async function findOrCreateConversation(
       agentId: input.agentId,
       title,
       runnerType: validateRunnerType(agent.runner ?? null),
-      workspaceRef,
       hidden,
       ...(origin === undefined ? {} : { origin }),
     },
@@ -2025,14 +1951,14 @@ async function dropTurn(
     return;
   }
 
-  // TASK-75 (out-of-git follow-up): the resume transcript left git in TASK-67
-  // and now lives in the `conversations:get-transcript`/transcript-row store.
-  // The pre-TASK-67 path read+rewrote the SDK jsonl in the git workspace
-  // (workspace:list/read/apply over `.claude/projects/**/<sid>.jsonl`); after
-  // the migration that glob hits a gitignored file → 0 paths → a SILENT no-op,
-  // so the silenced routine turn survived on resume. Read the joined jsonl
-  // bytes from the rows, run the same pure byte-rewrite, and write the survivors
-  // back via replaceTranscript (the existing DELETE + re-INSERT seam).
+  // TASK-75 (out-of-git follow-up): since TASK-67 the resume transcript lives
+  // in the `conversations:get-transcript`/transcript-row store. The pre-TASK-67
+  // path read+rewrote the SDK jsonl among the agent's files
+  // (`.claude/projects/**/<sid>.jsonl`); after the move that glob matched
+  // nothing → a SILENT no-op, so the silenced routine turn survived on resume.
+  // Read the joined jsonl bytes from the rows, run the same pure byte-rewrite,
+  // and write the survivors back via replaceTranscript (the existing DELETE +
+  // re-INSERT seam).
   const bytes = await store.getTranscriptBytes(conv.conversationId);
   if (bytes.length === 0) return;
 

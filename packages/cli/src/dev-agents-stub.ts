@@ -95,8 +95,9 @@ export function createDevAgentsStubPlugin(
   cfg: DevAgentsStubConfig = {},
 ): Plugin {
   const defaultAgentId = cfg.defaultAgentId ?? 'dev';
-  // TASK-142: no system_prompt — the dev agent's identity comes from its `.ax/`
-  // files (or, when it has none, the runner's displayName fallback identity).
+  // TASK-142: no system_prompt. This stub registers no `agents:identity:get`,
+  // so the dev agent has no identity, soul or Instructions rows (TASK-989):
+  // its prompt uses the display-name identity line.
   const allowedTools = [...(cfg.allowedTools ?? [])];
   const mcpConfigIds = [...(cfg.mcpConfigIds ?? [])];
   const model = cfg.model ?? 'anthropic/claude-sonnet-4-6';
@@ -136,7 +137,6 @@ export function createDevAgentsStubPlugin(
               mcpConfigIds,
               model,
               runner,
-              workspaceRef: null,
               allowedHosts: [...allowedHosts],
               requiredCredentials: { ...requiredCredentials },
               createdAt: new Date(),
@@ -148,8 +148,7 @@ export function createDevAgentsStubPlugin(
 
       // Register agents:resolve-authored-skills so the orchestrator's
       // bus.hasService('agents:resolve-authored-skills') guard is satisfied.
-      // TASK-74: authored skills now live in the @ax/skills DB store (the
-      // .ax/draft-skills git workspace projection is retired). The single-tenant
+      // TASK-74: authored skills live in the @ax/skills DB store. The single-tenant
       // CLI dev loop has NO @ax/skills store, so there are no authored skills to
       // discover — return [] (skill authoring requires the production k8s path's
       // skill_propose host hook + skills store). The service still EXISTS so the

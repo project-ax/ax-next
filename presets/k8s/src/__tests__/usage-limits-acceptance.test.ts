@@ -189,7 +189,6 @@ function createPermissiveAgentsStubPlugin(): Plugin {
             mcpConfigIds: [] as string[],
             runner: 'claude-sdk',
             model: 'anthropic/claude-sonnet-4-6',
-            workspaceRef: null,
             allowedHosts: [] as string[],
             requiredCredentials: {} as Record<string, { ref: string; kind: string }>,
             createdAt: new Date(0),

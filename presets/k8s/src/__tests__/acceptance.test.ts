@@ -352,7 +352,6 @@ function createPermissiveAgentsStubPlugin(): Plugin {
               mcpConfigIds: [] as string[],
               runner: 'claude-sdk',
               model: 'claude-sonnet-4-7',
-              workspaceRef: null,
               // The test-proxy ignores allowedHosts/requiredCredentials —
               // the orchestrator just forwards them through to the runner
               // env. Empty values keep the surface area minimal.
@@ -2182,7 +2181,6 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
                   mcpConfigIds: [] as string[],
                   runner: 'claude-sdk',
                   model: 'claude-sonnet-4-7',
-                  workspaceRef: null,
                   allowedHosts: [] as string[],
                   requiredCredentials: {} as Record<
                     string,
@@ -2614,7 +2612,6 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
                   mcpConfigIds: [] as string[],
                   runner: 'claude-sdk',
                   model: 'claude-sonnet-4-7',
-                  workspaceRef: null,
                   allowedHosts: [] as string[],
                   requiredCredentials: {} as Record<
                     string,
@@ -3330,7 +3327,6 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
                   mcpConfigIds: [] as string[],
                   runner: 'claude-sdk',
                   model: 'claude-sonnet-4-7',
-                  workspaceRef: null,
                   allowedHosts: [] as string[],
                   requiredCredentials: {} as Record<
                     string,

@@ -49,7 +49,6 @@ function withConversations(
         agentId: 'a1',
         runnerType: null,
         runnerSessionId: null,
-        workspaceRef: null,
         title: null,
         lastActivityAt: null,
         createdAt: T0,

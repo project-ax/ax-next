@@ -34,7 +34,6 @@ async function seedAgent(id: string) {
     agent_id: id, owner_id: 'u1', owner_type: 'user', visibility: 'personal',
     display_name: 'a', allowed_tools: JSON.stringify([]),
     mcp_config_ids: JSON.stringify([]), model: 'anthropic/claude-opus-4-7',
-    workspace_ref: null,
   } as never).execute();
 }
 

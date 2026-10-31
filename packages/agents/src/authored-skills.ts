@@ -4,10 +4,9 @@ import type { AuthoredSkillSummary } from './types.js';
 
 /**
  * Authored-skill readers (TASK-74 re-backing). The source of truth is the
- * @ax/skills DB store (the `skills:list-authored` hook) — the `.ax/draft-skills`
- * git WORKSPACE projection (the old `listAuthoredBundles` + workspace:list/read
- * scan) is RETIRED (one source of truth, invariant I4). Both readers here now
- * read the same DB rows; nothing scans the workspace.
+ * @ax/skills DB store (the `skills:list-authored` hook), the one place an
+ * agent's authored skills live (invariant I4). Both readers here read the
+ * same DB rows.
  */
 
 /** One authored skill row, as @ax/skills' skills:list-authored returns it.

@@ -27,7 +27,6 @@ import type {
 
 interface MockAgent {
   id: string;
-  workspaceRef: string | null;
 }
 
 let container: StartedPostgreSqlContainer;
@@ -96,7 +95,7 @@ describe('chat:turn-end → last_activity_at', () => {
   it('bumps last_activity_at on a turn with content blocks', async () => {
     const h = await makeHarness({
       agents: new Map([
-        ['agt_demo', { id: 'agt_demo', workspaceRef: null }],
+        ['agt_demo', { id: 'agt_demo' }],
       ]),
     });
     const conv = await h.bus.call<CreateInput, CreateOutput>(
@@ -128,7 +127,7 @@ describe('chat:turn-end → last_activity_at', () => {
   it('does NOT bump last_activity_at on a heartbeat turn-end (no contentBlocks)', async () => {
     const h = await makeHarness({
       agents: new Map([
-        ['agt_demo', { id: 'agt_demo', workspaceRef: null }],
+        ['agt_demo', { id: 'agt_demo' }],
       ]),
     });
     const conv = await h.bus.call<CreateInput, CreateOutput>(
@@ -153,7 +152,7 @@ describe('chat:turn-end → last_activity_at', () => {
   it('does NOT bump last_activity_at when ctx.conversationId is unset', async () => {
     const h = await makeHarness({
       agents: new Map([
-        ['agt_demo', { id: 'agt_demo', workspaceRef: null }],
+        ['agt_demo', { id: 'agt_demo' }],
       ]),
     });
     const conv = await h.bus.call<CreateInput, CreateOutput>(

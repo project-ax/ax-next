@@ -46,7 +46,9 @@ describe('@ax/conversations plugin manifest', () => {
         // log. Caller (this plugin's own subscribers) + consumer
         // (conversations:get) both ship in the same PR.
         'conversations:append-event',
-        'conversations:drain-save-refusals',
+        // (TASK-995 removed TASK-749's 'conversations:drain-save-refusals':
+        // nothing refuses a save any more, so there is nothing to drain.)
+        //
         // TASK-67 (2026-05-30): the resume transcript store (resume SoT).
         // Host-internal; callers are the host's session.* IPC handlers,
         // consumers are the runner delta-ship + resume rebuild (same PR).

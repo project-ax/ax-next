@@ -23,7 +23,6 @@ const DISPLAY_NAME_MIN = 1;
 const DISPLAY_NAME_MAX = 128;
 const ALLOWED_TOOLS_MAX = 100;
 const MCP_CONFIG_IDS_MAX = 50;
-const WORKSPACE_REF_MAX = 256;
 // allowedTools is a union of host tool names (lowercase) AND Claude Agent SDK built-ins
 // (`Bash`, `Read`, `WebFetch`, `Skill`, …, PascalCase). The agent layer
 // relaxes the leading-letter case so SDK built-ins parse without an
@@ -34,7 +33,6 @@ const TOOL_NAME_RE = /^[A-Za-z][A-Za-z0-9_.-]{0,63}$/;
 // @ax/mcp-client/config.ts). mcpConfigIds is dead vocabulary pending its own
 // removal; the regex stays so existing rows keep parsing.
 const MCP_ID_RE = /^[a-z0-9][a-z0-9_.-]{0,63}$/;
-const WORKSPACE_REF_RE = /^[A-Za-z0-9_./-]+$/;
 
 // Model ids are `provider/model-id` refs (design doc §6). No bare ids: there
 // is deliberately no runtime "no slash means anthropic" fallback, so an
@@ -330,22 +328,6 @@ function validateVisibility(value: unknown): 'personal' | 'team' {
   return value;
 }
 
-function validateWorkspaceRef(value: unknown): string | null {
-  if (value === null || value === undefined) return null;
-  if (typeof value !== 'string') {
-    throw invalid('workspaceRef must be a string or null');
-  }
-  if (value.length === 0 || value.length > WORKSPACE_REF_MAX) {
-    throw invalid(
-      `workspaceRef must be 1-${WORKSPACE_REF_MAX} chars`,
-    );
-  }
-  if (!WORKSPACE_REF_RE.test(value)) {
-    throw invalid(`workspaceRef must match ${WORKSPACE_REF_RE.source}`);
-  }
-  return value;
-}
-
 function validateTeamId(value: unknown): string {
   if (typeof value !== 'string' || value.length === 0 || value.length > 128) {
     throw invalid('teamId must be a 1-128 char string');
@@ -359,7 +341,6 @@ interface ValidatedAgentInput {
   mcpConfigIds: string[];
   model: string;
   runner: RunnerId;
-  workspaceRef: string | null;
   visibility: 'personal' | 'team';
   teamId: string | null;
 }
@@ -385,7 +366,6 @@ export function validateCreateInput(
     mcpConfigIds: validateMcpConfigIds(input.mcpConfigIds),
     model,
     runner,
-    workspaceRef: validateWorkspaceRef(input.workspaceRef ?? null),
     visibility,
     teamId,
   };
@@ -429,9 +409,6 @@ export function validateUpdatePatch(
   } else if (patch.runner !== undefined) {
     out.runner = validateRunner(patch.runner, SUPPORTED_RUNNERS);
     if (vctx.currentModel !== undefined) assertRunnerCanRun(out.runner, vctx.currentModel);
-  }
-  if (patch.workspaceRef !== undefined) {
-    out.workspaceRef = validateWorkspaceRef(patch.workspaceRef);
   }
   return out;
 }
@@ -573,7 +550,6 @@ function rowToAgent(row: AgentsRow): Agent {
     mcpConfigIds,
     model: row.model,
     runner: row.runner,
-    workspaceRef: row.workspace_ref,
     skillAttachments,
     connectorAttachments,
     connectorExclusions,
@@ -736,7 +712,6 @@ async function insertAgentRow(
       mcp_config_ids: JSON.stringify(validated.mcpConfigIds) as unknown,
       model: validated.model,
       runner: validated.runner,
-      workspace_ref: validated.workspaceRef,
       skill_attachments: JSON.stringify([]) as unknown,
       connector_attachments: JSON.stringify([]) as unknown,
       connector_exclusions: JSON.stringify([]) as unknown,
@@ -753,7 +728,6 @@ async function insertAgentRow(
       'mcp_config_ids',
       'model',
       'runner',
-      'workspace_ref',
       'webhook_token',
       'skill_attachments',
       'connector_attachments',
@@ -814,7 +788,6 @@ export function createAgentStore(db: Kysely<AgentsDatabase>): AgentStore {
       }
       if (patch.model !== undefined) setClause.model = patch.model;
       if (patch.runner !== undefined) setClause.runner = patch.runner;
-      if (patch.workspaceRef !== undefined) setClause.workspace_ref = patch.workspaceRef;
 
       const row = await db
         .updateTable('agents_v1_agents')
@@ -830,7 +803,6 @@ export function createAgentStore(db: Kysely<AgentsDatabase>): AgentStore {
           'mcp_config_ids',
           'model',
           'runner',
-          'workspace_ref',
           'webhook_token',
           'skill_attachments',
           'connector_attachments',
@@ -1001,7 +973,6 @@ export function createAgentStore(db: Kysely<AgentsDatabase>): AgentStore {
           'mcp_config_ids',
           'model',
           'runner',
-          'workspace_ref',
           'webhook_token',
           'skill_attachments',
           'connector_attachments',

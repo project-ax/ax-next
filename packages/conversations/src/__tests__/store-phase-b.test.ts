@@ -16,19 +16,18 @@ import {
 import {
   createConversationStore,
   validateRunnerType,
-  validateWorkspaceRefForFreeze,
 } from '../store.js';
 
 // ---------------------------------------------------------------------------
 // Phase B (2026-04-29) — store-level tests for the three new methods:
-// getMetadata, storeRunnerSession, bumpLastActivity. Plus the two new
-// validators. Real postgres via testcontainers (I12 — schema is the
+// getMetadata, storeRunnerSession, bumpLastActivity. Plus the runnerType
+// validator. Real postgres via testcontainers (I12 — schema is the
 // contract; mocking it would falsify the contract).
 //
-// store.create gains runnerType + workspaceRef args in Task 5; these
-// tests use the original three-arg shape so freshly-created rows have
-// runner_type = workspace_ref = NULL (the pre-Phase-B-row case). The
-// frozen-value paths get verified in Task 5's create-freezes tests.
+// These tests use the three-arg store.create shape (no runnerType), so
+// freshly-created rows have runner_type = NULL (the pre-Phase-B-row case).
+// The seeded-value path is verified in create-freezes.test.ts. (TASK-995
+// removed the workspaceRef arg and its validator.)
 // ---------------------------------------------------------------------------
 
 let container: StartedPostgreSqlContainer;
@@ -90,32 +89,6 @@ describe('validateRunnerType', () => {
   });
 });
 
-describe('validateWorkspaceRefForFreeze', () => {
-  it('mirrors agents/store WORKSPACE_REF_RE — accepts safe ids and paths', () => {
-    expect(validateWorkspaceRefForFreeze('foo/bar.git')).toBe('foo/bar.git');
-    expect(validateWorkspaceRefForFreeze('wsp_demo')).toBe('wsp_demo');
-    expect(validateWorkspaceRefForFreeze('a'.repeat(256))).toBe(
-      'a'.repeat(256),
-    );
-    expect(validateWorkspaceRefForFreeze(null)).toBeNull();
-    expect(validateWorkspaceRefForFreeze(undefined)).toBeNull();
-  });
-
-  it('rejects empty / oversize / illegal chars', () => {
-    expect(() => validateWorkspaceRefForFreeze('')).toThrow(/workspaceRef/);
-    expect(() => validateWorkspaceRefForFreeze('foo bar')).toThrow(
-      /workspaceRef/,
-    );
-    expect(() => validateWorkspaceRefForFreeze('foo;bar')).toThrow(
-      /workspaceRef/,
-    );
-    expect(() => validateWorkspaceRefForFreeze('a'.repeat(257))).toThrow(
-      /workspaceRef/,
-    );
-    expect(() => validateWorkspaceRefForFreeze(42)).toThrow(/workspaceRef/);
-  });
-});
-
 describe('store.getMetadata', () => {
   it('returns the metadata projection — no turns', async () => {
     const db = makeKysely();
@@ -134,13 +107,14 @@ describe('store.getMetadata', () => {
       agentId: 'a1',
       runnerType: null,
       runnerSessionId: null,
-      workspaceRef: null,
       title: null,
       lastActivityAt: null,
     });
     expect(md?.createdAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
     // Projection contract: no turns key (I6 — no turns in metadata).
     expect((md as Record<string, unknown>).turns).toBeUndefined();
+    // TASK-995: and no workspaceRef.
+    expect(md).not.toHaveProperty('workspaceRef');
   });
 
   it('returns null for unknown / tombstoned ids', async () => {

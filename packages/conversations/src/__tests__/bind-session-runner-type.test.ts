@@ -38,7 +38,6 @@ import type {
 
 interface MockAgent {
   id: string;
-  workspaceRef: string | null;
   runner?: string;
 }
 
@@ -103,7 +102,7 @@ afterAll(async () => {
 });
 
 const AGENTS = new Map<string, MockAgent>([
-  ['agt_x', { id: 'agt_x', workspaceRef: null, runner: 'claude-sdk' }],
+  ['agt_x', { id: 'agt_x', runner: 'claude-sdk' }],
 ]);
 
 async function seedConversation(h: TestHarness): Promise<string> {

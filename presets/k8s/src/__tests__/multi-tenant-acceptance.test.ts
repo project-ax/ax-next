@@ -51,7 +51,7 @@ import { createK8sPlugins, type K8sPresetConfig } from '../index.js';
 // ---------------------------------------------------------------------------
 
 // AgentRecord shape — minimum the orchestrator USES is { id, ownerId,
-// systemPrompt, allowedTools, mcpConfigIds, model, workspaceRef }. We
+// systemPrompt, allowedTools, mcpConfigIds, model }. We
 // include the broader optional fields because dev-agents-stub does and
 // the type-level `agent.allowedHosts ?? []` reads through them.
 interface TestAgentRecord {
@@ -65,7 +65,6 @@ interface TestAgentRecord {
   mcpConfigIds: string[];
   model: string;
   runner: string;
-  workspaceRef: string | null;
   allowedHosts: string[];
   requiredCredentials: Record<string, { ref: string; kind: string }>;
   createdAt: Date;
@@ -83,7 +82,6 @@ const AGENT_A: TestAgentRecord = {
   mcpConfigIds: [],
   model: 'stub-model',
   runner: 'claude-sdk',
-  workspaceRef: null,
   allowedHosts: [],
   requiredCredentials: {},
   createdAt: new Date(0),
@@ -101,7 +99,6 @@ const AGENT_B: TestAgentRecord = {
   mcpConfigIds: [],
   model: 'stub-model',
   runner: 'claude-sdk',
-  workspaceRef: null,
   allowedHosts: [],
   requiredCredentials: {},
   createdAt: new Date(0),
