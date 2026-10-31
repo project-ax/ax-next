@@ -39,6 +39,15 @@ import { constants as fsConstants, promises as fs } from 'node:fs';
 import * as path from 'node:path';
 import { AttachmentsListResponseSchema, type IpcClient } from '@ax/ipc-protocol';
 
+/**
+ * Where a session's upload copies live: `uploads/` under its scratch root. The
+ * one definition, so the directory the runner writes and the directory the
+ * files note names to the model (`filesNote`) cannot drift.
+ */
+export function scratchUploadsDir(scratchRoot: string): string {
+  return path.join(scratchRoot, 'uploads');
+}
+
 /** One upload copied into the sandbox, by attachment id. */
 export interface MaterializedUpload {
   attachmentId: string;

@@ -7,8 +7,8 @@
 // reaches for `pip install`, not `uv run --with`. So we make the familiar
 // path work: provision a seeded venv (seed => pip inside the venv) and put it
 // on the SDK subprocess PATH. Then `pip install X` writes into the venv and
-// `python script.py` imports it. The venv lives on the ephemeral tier (dies at
-// session end, never round-trips to the host).
+// `python script.py` imports it. The venv lives in the session scratch root
+// (gone at session end, and never in the agent's home).
 //
 // Provisioning is OFFLINE on the happy path: we copy a relocatable, pre-seeded
 // venv template baked into the image at build time (see scaffoldPythonVenv +

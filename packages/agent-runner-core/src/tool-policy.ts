@@ -1,7 +1,14 @@
-// Runner-agnostic tool policy. Re-roots governed paths, then adjudicates the
-// call against the host's `tool.pre-call` hook. The SDK's PreToolUse hook and
-// the aisdk runner's per-tool `execute` wrapper are both thin adapters over
-// this — one policy, two runners (see the 2026-08-18 design, §2 and §3).
+// Runner-agnostic tool policy. Adjudicates each call against the host's
+// `tool.pre-call` hook. The SDK's PreToolUse hook and the aisdk runner's
+// per-tool `execute` wrapper are both thin adapters over this — one policy,
+// two runners (see the 2026-08-18 design, §2 and §3).
+//
+// The call goes to the host exactly as the model wrote it. No path is rewritten
+// (TASK-995): there is no separate agent-state directory, so a file with a
+// configuration-looking name (`CLAUDE.md`, `.claude/settings.json`) is an
+// ordinary file in the agent's home, and nothing loads it — the SDK reads its
+// trusted configuration only from CLAUDE_CONFIG_DIR (see config-dir-guard.ts).
+// Only the host may change the call (`modifiedCall`).
 //
 // Fail-closed: an IPC failure denies, so a racing disconnection cannot
 // bypass host subscribers. A fail-closed deny is tagged `cause:'unavailable'`
@@ -13,7 +20,6 @@ import {
   type IpcClient,
   type ToolPreCallResponse,
 } from '@ax/ipc-protocol';
-import { resolveGovernedPaths } from './governed-paths.js';
 import { buildEgressBlockNote } from './egress-note.js';
 
 /**
@@ -88,11 +94,6 @@ export interface ToolPolicy {
 
 export interface CreateToolPolicyOptions {
   client: IpcClient;
-  /** The governed root (`/agent`) re-rooting targets. Never cwd. */
-  workspaceRoot: string;
-  /** Widen from the `.ax/uploads/` safety-net to the full validator policy. */
-  broaden?: boolean;
-  recognizedRoots?: readonly string[];
   idGen?: () => string;
   /** Drain the hosts this session was allowlist-blocked on since the last call. */
   drainEgressBlocks?: () => Promise<string[]>;
@@ -108,8 +109,6 @@ export interface CreateToolPolicyOptions {
 
 export function createToolPolicy(opts: CreateToolPolicyOptions): ToolPolicy {
   const idGen = opts.idGen ?? ((): string => randomUUID());
-  const broaden = opts.broaden ?? false;
-  const recognizedRoots = opts.recognizedRoots ?? [];
   const warn =
     opts.warn ??
     ((m: string): void => {
@@ -118,18 +117,13 @@ export function createToolPolicy(opts: CreateToolPolicyOptions): ToolPolicy {
 
   return {
     async preToolUse(axToolName, toolInput, toolUseId) {
-      const resolved = resolveGovernedPaths(toolInput, opts.workspaceRoot, {
-        broaden,
-        recognizedRoots,
-      });
-
       let parsed: ToolPreCallResponse;
       try {
         const raw = await opts.client.call('tool.pre-call', {
           call: {
             id: toolUseId ?? idGen(),
             name: axToolName,
-            input: resolved.input,
+            input: toolInput,
           },
         });
         // Defence in depth — and the narrowing from `call()`'s `unknown`. The
@@ -188,9 +182,6 @@ export function createToolPolicy(opts: CreateToolPolicyOptions): ToolPolicy {
           decision: 'allow',
           updatedInput: parsed.modifiedCall!.input as Record<string, unknown>,
         };
-      }
-      if (resolved.changed) {
-        return { decision: 'allow', updatedInput: resolved.input };
       }
       return { decision: 'allow' };
     },

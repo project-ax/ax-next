@@ -1,13 +1,12 @@
 import { defineConfig } from 'vitest/config';
 
-// `src/__tests__/git-workspace.test.ts` spawns real `git` subprocesses — 44 of
-// its cases already say so out loud, with `}, REAL_GIT_TIMEOUT_MS)` against a
-// file-local `const REAL_GIT_TIMEOUT_MS = 30_000`. Until TASK-400 the package
-// config said nothing, so every case that did NOT carry that argument, and every
-// hook, ran on vitest's 5s/10s defaults. 30s matches what this package's own
-// tests already ask for and the figure `packages/workspace-git*` settled on for
-// real-`git` work (TASK-73, PR #146); `hookTimeout` is double, so a bare
-// teardown never gets less room than the case it is cleaning up after.
+// Until TASK-400 the package config said nothing, so every case and hook ran on
+// vitest's 5s/10s defaults while the real-subprocess suites here asked for 30s
+// case by case. 30s is the figure those suites settled on; `hookTimeout` is
+// double, so a bare teardown never gets less room than the case it is cleaning
+// up after. (The suite that motivated it, the runner's real-`git` workspace
+// tests, went with the workspace tier in TASK-995; the values stay as the
+// package's floor for its filesystem and child-process tests.)
 export default defineConfig({
   test: {
     include: ['src/**/__tests__/**/*.test.ts'],

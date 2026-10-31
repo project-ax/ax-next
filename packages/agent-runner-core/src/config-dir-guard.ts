@@ -4,10 +4,10 @@
 // The SDK loads `$CLAUDE_CONFIG_DIR` as its own trusted configuration:
 // settings.json (hooks), CLAUDE.md, skills, and MCP servers in `.claude.json`.
 // Both runners also read installed skills and connector `.mcp.json` files from
-// it. The agent's home — the durable `/files` mount, or session scratch when no
-// durable mount is wired — is where the agent writes freely. If the two
+// it. The agent's home — the durable `/files` mount (`AX_USERFILES_ROOT`,
+// required since TASK-995) — is where the agent writes freely. If the two
 // overlap, a file the agent writes becomes trusted configuration: in this
-// session, and in every later one when the home is durable. So the runner
+// session, and in every later one, because the home is durable. So the runner
 // refuses to start.
 //
 // Both sides are compared as real paths, so a symlink on either side (or a
@@ -23,9 +23,12 @@
 // agent-writable place the CLI loads from. It may not exist yet (the runner
 // creates it later), so it is resolved like a missing home.
 //
-// Deliberately not checked: the governed workspace root (TASK-995 removes it,
-// and the pre-apply vetoes gate `.claude/**` writes there until then), and a
-// scratch tier that is not the home.
+// The home is the only root checked. The scratch root (`AX_EPHEMERAL_ROOT`,
+// k8s `/tmp`) is deliberately not: it is never the home any more, it holds the
+// transcripts root by design (k8s `/tmp/transcripts`), and it is gone with the
+// session, so nothing planted there reaches a later one. (A conversation's
+// resume rewrites its transcript there from the host store before the SDK
+// starts.)
 // ---------------------------------------------------------------------------
 
 import { promises as fs } from 'node:fs';
@@ -36,23 +39,18 @@ import { runnerHomeDir, type RunnerEnv } from './env.js';
  * Throws when `env.claudeConfigDir` does not exist, or when its real path is
  * the agent's home, inside it, or contains it; and likewise when
  * `env.transcriptsRoot` is set and overlaps the agent's home. Also throws when
- * any of those paths (or a home root) has a `..` segment or cannot be
+ * any of those paths (or the home) has a `..` segment or cannot be
  * resolved. Every message starts with `refusing to start: ` followed by the
  * input at fault: `CLAUDE_CONFIG_DIR`, `AX_TRANSCRIPTS_ROOT`, or
- * `the agent's home (` for a home root.
+ * `the agent's home (` for the home.
  */
 export async function assertConfigDirOutsideAgentHome(
-  env: Pick<
-    RunnerEnv,
-    'claudeConfigDir' | 'transcriptsRoot' | 'userFilesRoot' | 'ephemeralRoot' | 'workspaceRoot'
-  >,
+  env: Pick<RunnerEnv, 'claudeConfigDir' | 'transcriptsRoot' | 'userFilesRoot'>,
 ): Promise<void> {
-  const roots = new Set(
-    [runnerHomeDir(env), env.userFilesRoot].filter((root): root is string => root !== undefined),
-  );
+  const home = runnerHomeDir(env);
   refuseDotDot(env.claudeConfigDir, 'CLAUDE_CONFIG_DIR');
   if (env.transcriptsRoot !== undefined) refuseDotDot(env.transcriptsRoot, 'AX_TRANSCRIPTS_ROOT');
-  for (const root of roots) refuseDotDot(root, "the agent's home");
+  refuseDotDot(home, "the agent's home");
 
   let realConfig: string;
   try {
@@ -64,30 +62,24 @@ export async function assertConfigDirOutsideAgentHome(
     );
   }
 
-  const realRoots: string[] = [];
-  for (const root of roots) realRoots.push(await realpathOfPossiblyMissing(root, "the agent's home"));
-
-  for (const realRoot of realRoots) {
-    if (overlaps(realConfig, realRoot)) {
-      throw new Error(
-        `refusing to start: CLAUDE_CONFIG_DIR resolves to ${realConfig}, which overlaps the agent's home ${realRoot}. ` +
-          'Anything the agent writes there (settings.json hooks, CLAUDE.md, skills, MCP servers in .claude.json) ' +
-          "would load as the SDK's own trusted configuration. Point CLAUDE_CONFIG_DIR at a runner-private " +
-          "directory outside the agent's files (k8s: /home/runner/.ax/session).",
-      );
-    }
+  const realHome = await realpathOfPossiblyMissing(home, "the agent's home");
+  if (overlaps(realConfig, realHome)) {
+    throw new Error(
+      `refusing to start: CLAUDE_CONFIG_DIR resolves to ${realConfig}, which overlaps the agent's home ${realHome}. ` +
+        'Anything the agent writes there (settings.json hooks, CLAUDE.md, skills, MCP servers in .claude.json) ' +
+        "would load as the SDK's own trusted configuration. Point CLAUDE_CONFIG_DIR at a runner-private " +
+        "directory outside the agent's files (k8s: /home/runner/.ax/session).",
+    );
   }
 
   if (env.transcriptsRoot === undefined) return;
   const realTranscripts = await realpathOfPossiblyMissing(env.transcriptsRoot, 'AX_TRANSCRIPTS_ROOT');
-  for (const realRoot of realRoots) {
-    if (overlaps(realTranscripts, realRoot)) {
-      throw new Error(
-        `refusing to start: AX_TRANSCRIPTS_ROOT resolves to ${realTranscripts}, which overlaps the agent's home ${realRoot}. ` +
-          'The SDK reads session transcripts back from there on resume, so the agent could plant one. ' +
-          "Point AX_TRANSCRIPTS_ROOT at a runner-private directory outside the agent's files (k8s: /tmp/transcripts).",
-      );
-    }
+  if (overlaps(realTranscripts, realHome)) {
+    throw new Error(
+      `refusing to start: AX_TRANSCRIPTS_ROOT resolves to ${realTranscripts}, which overlaps the agent's home ${realHome}. ` +
+        'The SDK reads session transcripts back from there on resume, so the agent could plant one. ' +
+        "Point AX_TRANSCRIPTS_ROOT at a runner-private directory outside the agent's files (k8s: /tmp/transcripts).",
+    );
   }
 }
 

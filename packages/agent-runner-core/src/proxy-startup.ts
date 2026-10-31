@@ -115,14 +115,13 @@ const ENV_ALLOWLIST = new Set<string>([
   'http_proxy',
   'https_proxy',
   // Skill discovery (I-P0-1 / I-P0-3): the sandbox plugin (subprocess or
-  // k8s) injects CLAUDE_CONFIG_DIR=<homeDir>/.ax/session into the runner's
-  // own env so the SDK's `'user'` setting source resolves to a host-owned
-  // root that is SEPARATE from the workspace's `'project'` source. Without
-  // forwarding it here the SDK falls back to `<HOME>/.claude` — and because
-  // main.ts overrides HOME to the agent's home, the `'user'` root would
-  // collapse onto the workspace's `<cwd>/.claude/`
-  // path, making the two setting sources indistinguishable and rendering
-  // the host-installed-skills surface unreachable.
+  // k8s) injects CLAUDE_CONFIG_DIR (k8s `/home/runner/.ax/session`, outside
+  // the agent's home) into the runner's own env so the SDK's `'user'` setting
+  // source resolves to a host-owned root. Without forwarding it here the SDK
+  // falls back to `<HOME>/.claude` — and because the runner sets the SDK's
+  // HOME to the agent's home, the `'user'` root would collapse onto
+  // `<home>/.claude/`, a directory the agent writes, turning its files into
+  // trusted settings and hiding the host-installed skills.
   //
   // The SDK ALSO keeps its `.claude.json`, backups, session state and
   // per-session transcript jsonl
@@ -130,16 +129,18 @@ const ENV_ALLOWLIST = new Set<string>([
   // so forwarding it is what keeps them out of the agent's home. runRunner
   // refuses to start without it (`assertConfigDirOutsideAgentHome`), and the
   // claude-sdk runner's `prepareTranscriptDir` points the projects dir at the
-  // sandbox's transcripts root after materialize.
+  // sandbox's transcripts root from the `prepareSession` seam, before the loop
+  // starts.
   'CLAUDE_CONFIG_DIR',
 ]);
 
 // Prefix allowlist:
-//   - GIT_* — git ops invoked by the Bash tool. sandbox-k8s/pod-spec
-//             stamps GIT_CONFIG_COUNT / GIT_CONFIG_KEY_<n> /
-//             GIT_CONFIG_VALUE_<n> with safe.directory=* so git on the
-//             kubelet-owned /agent mount doesn't hit "dubious
-//             ownership."
+//   - GIT_* — git ops invoked by the Bash tool (agents clone and commit
+//             their own repositories). sandbox-k8s/pod-spec stamps
+//             GIT_CONFIG_COUNT / GIT_CONFIG_KEY_<n> / GIT_CONFIG_VALUE_<n>
+//             with safe.directory=* so git in a repository on the NFS-backed
+//             `/files` home, whose owner may not match the runner's uid,
+//             doesn't hit "dubious ownership."
 //   - LC_*  — locale categories (LC_CTYPE, LC_COLLATE, etc.).
 const ENV_ALLOWLIST_PREFIXES = ['GIT_', 'LC_'] as const;
 
@@ -263,7 +264,8 @@ export async function setupProxy(env: RunnerEnv): Promise<ProxyStartup> {
     // exactly — keys not present here are NOT inherited from
     // process.env. Without forwarding PATH, the SDK's Bash tool executes
     // `ls` and gets exit code 127 (command not found); without the GIT_*
-    // family, git ops in /agent fail "dubious ownership."
+    // family, git ops in a repository on the `/files` home fail "dubious
+    // ownership."
     //
     // Capability minimization (I5): control-plane vars that ARE in the
     // runner's process.env (notably AX_AUTH_TOKEN, the IPC bearer) stay

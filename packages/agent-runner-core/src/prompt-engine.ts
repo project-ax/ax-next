@@ -20,8 +20,8 @@
 //
 //   1. BOOTSTRAP mode — the system prompt is the canonical bootstrap script
 //      (`BOOTSTRAP_TEMPLATE`, a compile-time constant) behind a runner-authored
-//      name preamble, with output-directory guidance between them when a
-//      user-files or scratch tier is wired, then a runner-authored progress
+//      name preamble, with output-directory guidance (the agent's home)
+//      between them, then a runner-authored progress
 //      line (`bootstrapProgressNote`: whether an identity and a soul are saved
 //      yet — yes / not yet, never their text), then the people's Instructions
 //      (with a first-run framing line — there are no defaults above them and
@@ -45,7 +45,8 @@
 //        + ## Soul     (when present)
 //        + identity-evolution guidance       (only when `update_identity` is
 //                                             in this session's catalog)
-//        + operational notes (roots / scratch? / venv? / handoff / skills / …)
+//        + operational notes (files / scratch / venv? / memory? / handoff /
+//                             skills / …)
 //      A section whose text is empty or whitespace-only is left out, heading
 //      and all (the identity falls back to the displayName line instead).
 //
@@ -268,8 +269,11 @@ export function composeNormalModePrompt(input: ComposeNormalModeInput): string {
  * @param augment the joined host `system-prompt:augment:*` contributions,
  *   prepended on top in normal mode. Empty string => no prepend. NEVER used in
  *   bootstrap mode.
- * @param workspaceRoot the governed root (`/agent` by default) — named by the
- *   operational notes; nothing is read from it.
+ * @param home the agent's home and working directory (AX_USERFILES_ROOT) —
+ *   named by the notes; nothing is read from it.
+ * @param scratch the session scratch root (AX_EPHEMERAL_ROOT), which holds the
+ *   conversation's shared uploads — named by the notes.
+ * @param memoryRoot the read-only memory export, when one is mounted.
  * @param bootstrapAugment the bootstrap-safe SUBSET of those contributions
  *   (TASK-524), prepended on top in bootstrap mode only. It is a subset, so
  *   normal mode ignores it (the full `augment` already carries it). Empty
@@ -282,15 +286,9 @@ export function composeNormalModePrompt(input: ComposeNormalModeInput): string {
 export async function buildSystemPrompt(
   displayName: string,
   augment: string,
-  workspaceRoot: string,
-  ephemeralRoot: string | undefined,
+  home: string,
+  scratch: string,
   pythonVenvActive = false,
-  userFilesRoot: string | undefined = undefined,
-  // filestore-user-files Phase 2 (TASK-164): the agent's effective working
-  // directory (cwd). Defaults to `workspaceRoot`. When a durable mount moved cwd
-  // to /files, the workspace operational note states both the working dir and
-  // the governed root.
-  cwd: string = workspaceRoot,
   memoryRoot: string | undefined = undefined,
   bootstrapAugment = '',
   routineToolsAvailable = false,
@@ -306,8 +304,7 @@ export async function buildSystemPrompt(
   // (`complete_bootstrap`), not a file operation, so it needs no path guidance.
   if (identity.bootstrapMode) {
     const parts = [bootstrapPreamble(displayName)];
-    const outputNote = fileOutputNote(workspaceRoot, ephemeralRoot, userFilesRoot);
-    if (outputNote.length > 0) parts.push(outputNote);
+    parts.push(fileOutputNote(home));
     parts.push(BOOTSTRAP_TEMPLATE);
     parts.push(bootstrapProgressNote(identity));
     const instructions = nonBlank(identity.instructions);
@@ -318,14 +315,7 @@ export async function buildSystemPrompt(
 
   // Normal mode — the ONLY other mode. An agent with no identity text yet falls
   // back to the displayName line, so it still gets a coherent "who am I".
-  const notes = operationalNotes(
-    workspaceRoot,
-    ephemeralRoot,
-    pythonVenvActive,
-    userFilesRoot,
-    cwd,
-    memoryRoot,
-  );
+  const notes = operationalNotes(home, scratch, pythonVenvActive, memoryRoot);
   return composeNormalModePrompt({
     prepend: augment,
     instructions: identity.instructions,

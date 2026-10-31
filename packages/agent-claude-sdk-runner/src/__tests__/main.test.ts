@@ -691,9 +691,12 @@ describe('main()', () => {
     expect(queryArg.options.systemPrompt).toContain(
       'You are Test Agent, a helpful personal assistant.',
     );
-    // The workspace note is always present (steers attachment-path resolution
-    // away from home dirs); it references the `.ax/uploads/` namespace.
-    expect(queryArg.options.systemPrompt).toContain('.ax/uploads');
+    // The files note is always present (TASK-995): it names the agent's home
+    // and the scratch `uploads/` directory holding the files shared in this
+    // chat, and nothing of the retired `.ax/` tree.
+    expect(queryArg.options.systemPrompt).toContain('is your home and working directory');
+    expect(queryArg.options.systemPrompt).toContain('/uploads/`');
+    expect(queryArg.options.systemPrompt).not.toContain('.ax/');
     expect(queryArg.options.env.ANTHROPIC_BASE_URL).toBeUndefined();
     expect(queryArg.options.env.ANTHROPIC_API_KEY).toBe(
       COMPLETE_ENV.ANTHROPIC_API_KEY,

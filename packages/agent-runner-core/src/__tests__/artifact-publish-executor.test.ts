@@ -6,10 +6,10 @@ import { createArtifactPublishExecutor } from '../artifact-publish-executor.js';
 
 // The executor validates against the session's REAL roots, so these tests use
 // real temp directories as the roots and pass real absolute paths — the same
-// thing the model does, since the operating notes hand it the real paths. The
-// previous version of this file passed sandbox-absolute literals (`/agent/...`,
-// `/ephemeral/...`) that the executor mapped back onto temp dirs, which is
-// exactly the indirection that let the advertised paths and the real ones drift.
+// thing the model does, since the operating notes hand it the real paths. An
+// earlier version of this file passed sandbox-absolute literals that the
+// executor mapped back onto temp dirs, which is exactly the indirection that let
+// the advertised paths and the real ones drift.
 
 let files: string;
 let ephemeral: string;
@@ -162,20 +162,18 @@ describe('artifact_publish executor', () => {
     await expect(executor()(call({}))).rejects.toThrow(/path/);
   });
 
-  describe('the governed tier is unreachable', () => {
-    // `/agent/workspace/**` was the old carve-out and pointed at a directory
-    // nothing creates. With the governed root no longer passed to the executor
-    // at all, agent state is out of reach of a "publish your instructions"
-    // injection by construction rather than by an allowlist entry.
-    it('rejects agent state even when it exists on disk', async () => {
-      const governed = await fs.mkdtemp(path.join(os.tmpdir(), 'ax-agent-'));
-      await fs.mkdir(path.join(governed, '.ax'), { recursive: true });
-      await fs.writeFile(path.join(governed, '.ax/SOUL.md'), 'my soul');
-      await fs.mkdir(path.join(governed, 'workspace'), { recursive: true });
-      await fs.writeFile(path.join(governed, 'workspace/Q4.pdf'), 'x');
+  describe('a path outside both roots is unreachable', () => {
+    // Only the roots the executor is handed are publishable, so anything else
+    // on disk is out of reach of a "publish your instructions" injection by
+    // construction rather than by an allowlist entry.
+    it('rejects it even when it exists on disk', async () => {
+      const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'ax-outside-'));
+      await fs.mkdir(path.join(outside, 'private'), { recursive: true });
+      await fs.writeFile(path.join(outside, 'private/notes.md'), 'my notes');
+      await fs.writeFile(path.join(outside, 'Q4.pdf'), 'x');
 
-      for (const p of ['.ax/SOUL.md', 'workspace/Q4.pdf']) {
-        await expect(executor()(call({ path: path.join(governed, p) }))).rejects.toThrow(
+      for (const p of ['private/notes.md', 'Q4.pdf']) {
+        await expect(executor()(call({ path: path.join(outside, p) }))).rejects.toThrow(
           /artifact-path-not-publishable/,
         );
       }

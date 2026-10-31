@@ -6,7 +6,7 @@ import {
   type IpcClientOptions,
 } from '@ax/ipc-protocol';
 import type { RunnerEnv } from '../env.js';
-import type { Loop, LoopContext, RunnerDeps, RunnerSeams, TranscriptSource } from '../index.js';
+import type { EndTurnInput, Loop, LoopContext, RunnerDeps, RunnerSeams, TranscriptSource } from '../index.js';
 import { createHash } from 'node:crypto';
 import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
@@ -20,9 +20,10 @@ import * as path from 'node:path';
 //       orchestrator's handle.exited watcher synthesizes the terminated
 //       outcome, so chat:end still fires exactly once per agent:invoke).
 //
-// Everything the boot sequence touches on the way to the loop (git, the proxy
+// Everything the boot sequence touches on the way to the loop (the proxy
 // bridge, the skills projection, the prompt engine, the IPC socket) is mocked
-// out — those modules have their own suites; this one is about the shell.
+// out — those modules have their own suites; this one is about the shell. The
+// agent's home and the scratch root are real temp directories.
 // ---------------------------------------------------------------------------
 
 type FakeClient = { call: Mock; callBinary: Mock; event: Mock; close: Mock } & IpcClient;
@@ -56,24 +57,8 @@ vi.mock('../prompt-engine.js', () => ({
 vi.mock('../inbox-loop.js', () => ({
   createInboxLoop: vi.fn(() => ({ next: vi.fn(), cursor: 0 })),
 }));
-// git-workspace.js is imported both by the shell and (internally) by
-// commit-notify-resync.ts — one mock at the module covers both call sites.
-vi.mock('../git-workspace.js', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../git-workspace.js')>();
-  return {
-    ...actual,
-    materializeWorkspace: vi.fn().mockResolvedValue({ baselineCommit: 'oid-0' }),
-    scaffoldWorkspaceGitignore: vi.fn().mockResolvedValue(undefined),
-    commitTurnAndBundle: vi.fn().mockResolvedValue(null),
-    // Only reached when a test hands commitTurnAndBundle a bundle (the
-    // TASK-720 save-refusal cases); there is no real repo at /tmp/workspace.
-    advanceBaseline: vi.fn().mockResolvedValue(undefined),
-    rollbackToBaseline: vi.fn().mockResolvedValue(undefined),
-  };
-});
 
 const { runRunner } = await import('../run-runner.js');
-const { commitTurnAndBundle } = await import('../git-workspace.js');
 const { createInboxLoop } = await import('../inbox-loop.js');
 
 /** Drive the shell's message pump with a scripted inbox. */
@@ -87,10 +72,21 @@ function scriptInbox(entries: unknown[]): void {
 
 // TASK-994: runRunner refuses to start unless CLAUDE_CONFIG_DIR names an
 // existing directory outside the agent's home — the sandbox always provides
-// one. A real runner-private temp dir stands in for it.
-const CONFIG_DIR = await fs.mkdtemp(path.join(os.tmpdir(), 'ax-run-runner-cfg-'));
+// one. A real runner-private temp dir stands in for it. TASK-995: the agent's
+// home (`/files`) and the scratch root (`/tmp`) are required too, so the
+// sandbox layout is three sibling temp dirs.
+const SANDBOX = await fs.mkdtemp(path.join(os.tmpdir(), 'ax-run-runner-'));
+const CONFIG_DIR = path.join(SANDBOX, 'home-runner', '.ax', 'session');
+const HOME = path.join(SANDBOX, 'files');
+const SCRATCH = path.join(SANDBOX, 'tmp');
+await fs.mkdir(CONFIG_DIR, { recursive: true });
+await fs.mkdir(HOME, { recursive: true });
+// The scratch root also gets the session venv. Mark it present so the shell
+// does not start a `uv venv` child that outlives the test.
+await fs.mkdir(path.join(SCRATCH, 'py'), { recursive: true });
+await fs.writeFile(path.join(SCRATCH, 'py', 'pyvenv.cfg'), '');
 afterAll(async () => {
-  await fs.rm(CONFIG_DIR, { recursive: true, force: true });
+  await fs.rm(SANDBOX, { recursive: true, force: true });
 });
 
 /** The minimal shape readRunnerEnv produces (see env.ts). */
@@ -99,7 +95,8 @@ function fakeEnv(): RunnerEnv {
     runnerEndpoint: 'unix:///tmp/ax.sock',
     sessionId: 'sess-1',
     authToken: 'tok-123',
-    workspaceRoot: '/tmp/workspace',
+    userFilesRoot: HOME,
+    ephemeralRoot: SCRATCH,
     claudeConfigDir: CONFIG_DIR,
     proxyEndpoint: 'http://127.0.0.1:8443',
   };
@@ -172,20 +169,24 @@ beforeEach(() => {
         };
       }
       if (action === 'tool.list') return { tools: [] };
+      // A conversation-bound boot copies the conversation's uploads.
+      if (action === 'attachments.list') return { files: [] };
       throw new Error(`unexpected call: ${action}`);
     }),
     callGet: vi.fn(),
-    callBinary: vi.fn().mockResolvedValue({ path: '/tmp/fake.bundle', bytes: 0 }),
+    callBinary: vi.fn(async (action: string) => {
+      throw new Error(`unexpected binary call: ${action}`);
+    }),
     event: vi.fn().mockResolvedValue(undefined),
     close: vi.fn().mockResolvedValue(undefined),
   } as unknown as FakeClient;
 });
 
 describe('runRunner — generated file publication', () => {
-  it.each([
-    ['durable', 'allow'], ['durable', 'reject'], ['durable', 'hold'],
-    ['scratch', 'allow'], ['scratch', 'reject'], ['scratch', 'hold'],
-  ] as const)('uses the policy gate (%s, %s) and persists chips before SSE completion', async (tier, verdict) => {
+  // New files in the agent's home are attached to the turn that made them. The
+  // home is the only tracked root since TASK-995 made it required: a session
+  // can no longer come up without one and fall back to scratch `artifacts/`.
+  it.each(['allow', 'reject', 'hold'] as const)('uses the policy gate (%s) and persists chips before SSE completion', async (verdict) => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'ax-files-shell-'));
     const original = fakeClient.call.getMockImplementation()!;
     fakeClient.call.mockImplementation(async (action: string, ...args: unknown[]) => {
@@ -195,13 +196,12 @@ describe('runRunner — generated file publication', () => {
         : verdict === 'reject' ? { verdict: 'reject', reason: 'blocked' }
           : { verdict: 'hold', decisionId: 'd1', note: 'approval required' };
       if (action === 'artifact.publish') return { artifactId: 'id', downloadUrl: 'ax://artifact/id' };
-      if (action === 'attachments.list') return { files: [] };
       return original(action, ...args);
     });
     const upload = vi.fn(async () => ({ sha256: 'a'.repeat(64), size: 6 }));
     fakeClient.callBinaryUpload = upload;
     const loop: Loop = { run: async ctx => {
-      await fs.writeFile(path.join(root, tier === 'scratch' ? 'artifacts/report.txt' : 'report.txt'), 'report');
+      await fs.writeFile(path.join(root, 'report.txt'), 'report');
       await ctx.endTurn({
         contentBlocks: [{ type: 'text', text: 'Here is your report.' }],
         toolResultBlocks: [], usage: null, readTurnId: async () => undefined,
@@ -209,9 +209,7 @@ describe('runRunner — generated file publication', () => {
       return 0;
     } };
     try {
-      expect(await runRunner(() => loop, seams(() => ({ ...fakeEnv(),
-        ...(tier === 'scratch' ? { ephemeralRoot: root } : { userFilesRoot: root }),
-      })))).toBe(0);
+      expect(await runRunner(() => loop, seams(() => ({ ...fakeEnv(), userFilesRoot: root })))).toBe(0);
       const first = fakeClient.event.mock.calls.find(call => call[0] === 'event.turn-end')!;
       expect(first[1].role).toBe('tool');
       if (verdict === 'allow') {
@@ -272,7 +270,6 @@ describe('runRunner — uploads', () => {
         const ids = lists.length > 1 ? lists.shift()! : lists[0]!;
         return AttachmentsListResponseSchema.parse({ files: ids.map(listed) });
       }
-      if (action === 'conversation.drain-save-refusals') return { refusals: [] };
       return original(action, ...args);
     });
     const originalBinary = fakeClient.callBinary.getMockImplementation()!;
@@ -343,16 +340,23 @@ describe('runRunner — uploads', () => {
 });
 
 describe('runRunner — working directory', () => {
-  it.each([
-    [{ ephemeralRoot: '/tmp/scratch' }, '/tmp/scratch'],
-    [{ ephemeralRoot: '/tmp/scratch', userFilesRoot: '/tmp/files' }, '/tmp/files'],
-    [{}, '/tmp/workspace'],
-  ] as const)('selects the supplied user-files or scratch tier while preserving agent state', async (roots, expected) => {
-    const makeLoop = vi.fn((_deps: RunnerDeps) => ({ run: async () => 0 }));
-    expect(await runRunner(makeLoop, seams(() => ({ ...fakeEnv(), ...roots })))).toBe(0);
-    expect(makeLoop.mock.calls[0]?.[0]).toMatchObject({ homeDir: expected, env: { workspaceRoot: '/tmp/workspace' } });
+  // TASK-995: the agent's home is AX_USERFILES_ROOT, with no fallback, and the
+  // scratch root is separate from it. Loops use `homeDir` for the SDK's
+  // HOME/cwd; the prompt engine names both roots.
+  it('hands the loop and the prompt engine the agent home, and the scratch root beside it', async () => {
     const { buildSystemPrompt } = await import('../prompt-engine.js');
-    expect(vi.mocked(buildSystemPrompt).mock.calls.at(-1)?.[6]).toBe(expected);
+    vi.mocked(buildSystemPrompt).mockClear();
+    const makeLoop = vi.fn((_deps: RunnerDeps) => ({ run: async () => 0 }));
+    expect(await runRunner(makeLoop, seams(fakeEnv))).toBe(0);
+    const deps = makeLoop.mock.calls[0]![0];
+    expect(deps.homeDir).toBe(HOME);
+    expect(deps.env).toMatchObject({ userFilesRoot: HOME, ephemeralRoot: SCRATCH });
+    expect(deps.env).not.toHaveProperty('workspaceRoot');
+    // The host-tool workspace flush is gone with the workspace.
+    expect(deps).not.toHaveProperty('flushWorkspaceForHostTool');
+    const args = vi.mocked(buildSystemPrompt).mock.calls.at(-1)!;
+    expect(args[2]).toBe(HOME); //    home
+    expect(args[3]).toBe(SCRATCH); // scratch
   });
 });
 
@@ -395,31 +399,13 @@ describe('runRunner — bootstrap-safe augment (TASK-524)', () => {
     configWith({ systemPromptBootstrapAugment: 'RULES' });
     const args = await lastPromptArgs();
     expect(args[1]).toBe('RULES\n\nFACTS');
-    expect(args[8]).toBe('RULES');
+    expect(args[6]).toBe('RULES');
   });
 
   it('a session frozen before TASK-524 (no field) means no bootstrap augment', async () => {
     configWith({});
     const args = await lastPromptArgs();
-    expect(args[8]).toBe('');
-  });
-});
-
-describe('runRunner — prompt working frame', () => {
-  it('hands the prompt engine the durable mount as cwd, distinct from the governed root', async () => {
-    // The prompt engine is told both roots and the working directory, and the
-    // working directory is the durable mount (TASK-164).
-    const { buildSystemPrompt } = await import('../prompt-engine.js');
-    const mock = buildSystemPrompt as unknown as Mock;
-    mock.mockClear();
-    const loop: Loop = { run: vi.fn().mockResolvedValue(0) };
-    const env = (): RunnerEnv => ({ ...fakeEnv(), userFilesRoot: '/files' });
-    expect(await runRunner(() => loop, seams(env))).toBe(0);
-    expect(mock).toHaveBeenCalledOnce();
-    const args = mock.mock.calls[0]!;
-    expect(args[2]).toBe('/tmp/workspace'); // workspaceRoot: the governed root
-    expect(args[5]).toBe('/files'); //          userFilesRoot
-    expect(args[6]).toBe('/files'); //          cwd
+    expect(args[6]).toBe('');
   });
 });
 
@@ -1807,593 +1793,237 @@ describe('runRunner', () => {
       expect(EventTurnEndSchema.safeParse(assistant).success).toBe(true);
     });
   });
-
-  // TASK-720. The end-of-turn save runs BEFORE this turn's `event.turn-end`,
-  // so a refusal rides that turn-end as a closed `saveRefused` code — the only
-  // way the person learns the files were taken back. Only a TERMINAL refusal
-  // sets it; a save that landed, a host that could not be reached (the files
-  // ride the next turn) and a recoverable race do not.
-  describe('save refusal on turn-end (TASK-720)', () => {
-    /** One turn whose save gets `answer` from the host; returns turn-ends by role. */
-    async function turnWithSave(
-      answer: () => Promise<unknown>,
-      opts: { toolResults?: boolean } = {},
-    ): Promise<{ tool?: Record<string, unknown>; assistant?: Record<string, unknown> }> {
-      fakeClient.event.mockClear();
-      (commitTurnAndBundle as unknown as Mock).mockResolvedValueOnce(Buffer.from('BUNDLE'));
-      const upload = vi.fn(async (action: string) => {
-        if (action === 'workspace.commit-bundle') return answer();
-        throw new Error(`unexpected upload: ${action}`);
-      });
-      (fakeClient as unknown as { callBinaryUpload: unknown }).callBinaryUpload = upload;
-      scriptInbox([
-        { type: 'user-message', payload: { role: 'user', content: 'hi' }, reqId: 'req-u', cursor: 1 },
-      ]);
-      const loop: Loop = {
-        run: vi.fn(async (ctx: LoopContext) => {
-          await ctx.nextMessage();
-          await ctx.endTurn({
-            contentBlocks: [{ type: 'text', text: 'done' }],
-            toolResultBlocks:
-              opts.toolResults === true
-                ? [{ type: 'tool_result', tool_use_id: 't1', content: 'ok' }]
-                : [],
-            readTurnId: async () => undefined,
-            usage: null,
-          });
-          return 0;
-        }),
-      };
-      const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
-      try {
-        expect(await runRunner(() => loop, seams(fakeEnv))).toBe(0);
-      } finally {
-        stderr.mockRestore();
-      }
-      expect(upload).toHaveBeenCalledWith('workspace.commit-bundle', Buffer.from('BUNDLE'), {
-        reason: 'turn',
-        parentVersion: 'oid-0',
-      });
-      const out: { tool?: Record<string, unknown>; assistant?: Record<string, unknown> } = {};
-      for (const c of fakeClient.event.mock.calls) {
-        if (c[0] !== 'event.turn-end') continue;
-        const p = c[1] as Record<string, unknown>;
-        if (p.role === 'tool') out.tool = p;
-        if (p.role === 'assistant') out.assistant = p;
-      }
-      return out;
-    }
-
-    it("a storage-full veto rides the assistant turn-end as 'storage-full'", async () => {
-      const { assistant } = await turnWithSave(async () => ({
-        accepted: false,
-        reason: 'The workspace is full.',
-        recoverable: false,
-        code: 'storage-full',
-      }));
-      expect(assistant?.saveRefused).toBe('storage-full');
-      const { EventTurnEndSchema } = await import('@ax/ipc-protocol');
-      expect(EventTurnEndSchema.safeParse(assistant).success).toBe(true);
-    });
-
-    it("a host 413 (save too large) rides it as 'too-large'", async () => {
-      const { IpcRequestError } = await import('@ax/ipc-protocol');
-      const { assistant } = await turnWithSave(async () => {
-        throw new IpcRequestError('PAYLOAD_TOO_LARGE', 413, 'body too large');
-      });
-      expect(assistant?.saveRefused).toBe('too-large');
-    });
-
-    it("any other terminal veto (no code, or an unknown one) rides it as 'refused'", async () => {
-      for (const code of [undefined, 'something-new']) {
-        const { assistant } = await turnWithSave(async () => ({
-          accepted: false,
-          reason: 'CLAUDE.md: SDK-config paths are host-only',
-          recoverable: false,
-          ...(code !== undefined ? { code } : {}),
-        }));
-        expect(assistant?.saveRefused).toBe('refused');
-      }
-    });
-
-    it('BOTH turn-ends of the turn carry it, because the stream closes on the first', async () => {
-      // A turn with tool results emits role='tool' and then role='assistant'
-      // under the SAME reqId. channel-web's SSE `done` subscriber closes on the
-      // FIRST one it sees and unsubscribes, so a code that rides only the
-      // assistant turn-end is never written to the frame — and a turn a save
-      // can be refused on is exactly a turn that used tools. Each side was
-      // tested in isolation and passed while the seam lost the notice.
-      const { tool, assistant } = await turnWithSave(
-        async () => ({ accepted: false, reason: 'no', recoverable: false }),
-        { toolResults: true },
-      );
-      expect(tool).toBeDefined();
-      expect(tool?.saveRefused).toBe('refused');
-      expect(assistant?.saveRefused).toBe('refused');
-    });
-
-    it('an accepted save, an unreachable host, and a recoverable race carry NO saveRefused key', async () => {
-      const answers: Array<() => Promise<unknown>> = [
-        async () => ({ accepted: true, version: 'v2', delta: null }),
-        async () => {
-          throw new Error('ECONNRESET');
-        },
-        async () => ({ accepted: false, reason: 'bundle prerequisite not satisfied (baseline drift)' }),
-      ];
-      for (const answer of answers) {
-        const { assistant } = await turnWithSave(answer);
-        expect(assistant).toBeDefined();
-        expect('saveRefused' in assistant!).toBe(false);
-      }
-    });
-
-    // TASK-731. The final/idle save runs after the last turn-end. It bundles
-    // everything since the baseline, so it can carry files from an earlier
-    // reply whose own save came back `kept` (host unreachable). Its refusal
-    // has no turn-end to ride, so it rides `event.chat-end`, and the host
-    // persists it for the next read of the thread.
-    async function runWithFinalSave(
-      answer: () => Promise<unknown>,
-    ): Promise<{ chatEnd: Record<string, unknown> | undefined; stderrText: string }> {
-      fakeClient.event.mockClear();
-      (commitTurnAndBundle as unknown as Mock).mockResolvedValueOnce(Buffer.from('FINAL'));
-      (fakeClient as unknown as { callBinaryUpload: unknown }).callBinaryUpload = vi.fn(answer);
-      const loop: Loop = { run: vi.fn().mockResolvedValue(0) };
-      const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
-      let stderrText = '';
-      try {
-        expect(await runRunner(() => loop, seams(fakeEnv))).toBe(0);
-        stderrText = stderr.mock.calls.map((c) => String(c[0])).join('');
-      } finally {
-        stderr.mockRestore();
-      }
-      expect(fakeClient.event.mock.calls.some((c) => c[0] === 'event.turn-end')).toBe(false);
-      const call = fakeClient.event.mock.calls.find((c) => c[0] === 'event.chat-end');
-      return { chatEnd: call?.[1] as Record<string, unknown> | undefined, stderrText };
-    }
-
-    // Against the pre-TASK-731 runner this fails: chat-end carried only
-    // `{ outcome }` and the code went to stderr alone.
-    it('a refused FINAL (post-loop) save rides event.chat-end as saveRefused (TASK-731)', async () => {
-      const { chatEnd, stderrText } = await runWithFinalSave(async () => ({
-        accepted: false,
-        reason: 'The workspace is full.',
-        recoverable: false,
-        code: 'storage-full',
-      }));
-      expect(chatEnd?.saveRefused).toBe('storage-full');
-      expect((chatEnd?.outcome as { kind: string }).kind).toBe('complete');
-      const { EventChatEndSchema } = await import('@ax/ipc-protocol');
-      expect(EventChatEndSchema.safeParse(chatEnd).success).toBe(true);
-      // The stderr line stays, as a log.
-      expect(stderrText).toMatch(/final save refused \(storage-full\)/);
-    });
-
-    // Against the pre-TASK-731 runner this fails: the 413 never reached
-    // chat-end at all.
-    it("a FINAL save over the size cap rides chat-end as 'too-large' (TASK-731)", async () => {
-      const { IpcRequestError } = await import('@ax/ipc-protocol');
-      const { chatEnd } = await runWithFinalSave(async () => {
-        throw new IpcRequestError('PAYLOAD_TOO_LARGE', 413, 'body too large');
-      });
-      expect(chatEnd?.saveRefused).toBe('too-large');
-    });
-
-    // Passes against the unfixed runner too (chat-end never had the key);
-    // it guards the fix from over-reaching: only a TERMINAL final refusal
-    // sets it.
-    it('an accepted, unreachable, or recoverable FINAL save puts NO saveRefused key on chat-end (TASK-731)', async () => {
-      const answers: Array<() => Promise<unknown>> = [
-        async () => ({ accepted: true, version: 'v2', delta: null }),
-        async () => {
-          throw new Error('ECONNRESET');
-        },
-        async () => ({ accepted: false, reason: 'bundle prerequisite not satisfied (baseline drift)' }),
-      ];
-      for (const answer of answers) {
-        const { chatEnd } = await runWithFinalSave(answer);
-        expect(chatEnd).toBeDefined();
-        expect('saveRefused' in chatEnd!).toBe(false);
-      }
-    });
-
-    // Passes against the unfixed runner too; it pins that the fix reads the
-    // FINAL commit's result only. A per-turn refusal already rode its
-    // turn-end and the host already persisted it under the turn's reqId, so
-    // repeating it on chat-end would draw the notice twice.
-    it('a per-turn refusal does NOT leak onto chat-end when the final save is empty (TASK-731)', async () => {
-      await turnWithSave(async () => ({
-        accepted: false,
-        reason: 'The workspace is full.',
-        recoverable: false,
-        code: 'storage-full',
-      }));
-      const call = fakeClient.event.mock.calls.find((c) => c[0] === 'event.chat-end');
-      expect(call).toBeDefined();
-      expect('saveRefused' in (call![1] as Record<string, unknown>)).toBe(false);
-    });
-  });
-
-  // TASK-732. The end-of-turn refusal above reaches the PERSON on the turn-end.
-  // The MODEL had stopped talking by then, so it hears about it at the start of
-  // its NEXT turn — or it would carry on as if the files were saved.
-  describe('refused save is told to the model next turn (TASK-732)', () => {
-    const NOTICE_HEAD = 'System message (not from the user): Some or all of the file changes you made in an earlier turn were not saved.';
-
-    /**
-     * Turn 1's save gets `answer`; turns 2 and 3 save nothing. Returns what
-     * `nextMessage()` handed the loop for turns 2 and 3.
-     */
-    async function threeTurns(
-      answer: () => Promise<unknown>,
-      second: unknown = { type: 'user-message', payload: { role: 'user', content: 'and now?' }, reqId: 'req-2', cursor: 2 },
-    ): Promise<{ second: unknown; third: unknown }> {
-      (commitTurnAndBundle as unknown as Mock).mockResolvedValueOnce(Buffer.from('BUNDLE'));
-      (fakeClient as unknown as { callBinaryUpload: unknown }).callBinaryUpload = vi.fn(
-        async (action: string) => {
-          if (action === 'workspace.commit-bundle') return answer();
-          throw new Error(`unexpected upload: ${action}`);
-        },
-      );
-      scriptInbox([
-        { type: 'user-message', payload: { role: 'user', content: 'write it' }, reqId: 'req-1', cursor: 1 },
-        second,
-        { type: 'user-message', payload: { role: 'user', content: 'thanks' }, reqId: 'req-3', cursor: 3 },
-      ]);
-      const seen: unknown[] = [];
-      const end = (ctx: LoopContext) =>
-        ctx.endTurn({
-          contentBlocks: [{ type: 'text', text: 'done' }],
-          toolResultBlocks: [],
-          readTurnId: async () => undefined,
-          usage: null,
-        });
-      const loop: Loop = {
-        run: vi.fn(async (ctx: LoopContext) => {
-          await ctx.nextMessage();
-          await end(ctx);
-          seen.push(await ctx.nextMessage());
-          await end(ctx);
-          seen.push(await ctx.nextMessage());
-          await end(ctx);
-          return 0;
-        }),
-      };
-      const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
-      try {
-        expect(await runRunner(() => loop, seams(fakeEnv))).toBe(0);
-      } finally {
-        stderr.mockRestore();
-      }
-      return { second: seen[0], third: seen[1] };
-    }
-
-    it('prepends the notice, with the host reason, to the next user message', async () => {
-      const { second } = await threeTurns(async () => ({
-        accepted: false,
-        reason: 'The workspace is full.',
-        recoverable: false,
-        code: 'storage-full',
-      }));
-      const content = (second as { content: unknown }).content;
-      expect(typeof content).toBe('string');
-      expect((content as string).startsWith(NOTICE_HEAD)).toBe(true);
-      expect(content as string).toContain('"The workspace is full."');
-      // The person's own words are still there, after the notice.
-      expect((content as string).endsWith('\n\nand now?')).toBe(true);
-    });
-
-    it('tells it ONCE: the turn after carries no notice', async () => {
-      const { third } = await threeTurns(async () => ({
-        accepted: false,
-        reason: 'no',
-        recoverable: false,
-      }));
-      expect(third).toEqual({ content: 'thanks', id: expect.any(String) });
-    });
-
-    it('a save too big to carry (host 413) is told too', async () => {
-      const { IpcRequestError } = await import('@ax/ipc-protocol');
-      const { second } = await threeTurns(async () => {
-        throw new IpcRequestError('PAYLOAD_TOO_LARGE', 413, 'body too large');
-      });
-      expect((second as { content: string }).content).toContain('too large to save');
-    });
-
-    it('reaches a host-started decision turn too', async () => {
-      const { second } = await threeTurns(
-        async () => ({ accepted: false, reason: 'no', recoverable: false }),
-        { type: 'decision-resolved', decisionId: 'dec_1', outcome: 'approved', note: 'They said yes.' },
-      );
-      const content = (second as { content: string }).content;
-      expect(content.startsWith(NOTICE_HEAD)).toBe(true);
-      expect(content.endsWith('\n\nSystem message (not from the user): They said yes.')).toBe(true);
-    });
-
-    it('an accepted save, an unreachable host, and a recoverable race tell it nothing', async () => {
-      const answers: Array<() => Promise<unknown>> = [
-        async () => ({ accepted: true, version: 'v2', delta: null }),
-        async () => {
-          throw new Error('ECONNRESET');
-        },
-        async () => ({ accepted: false, reason: 'bundle prerequisite not satisfied (baseline drift)' }),
-      ];
-      for (const answer of answers) {
-        const { second } = await threeTurns(answer);
-        expect(second).toEqual({ content: 'and now?', id: expect.any(String) });
-      }
-    });
-
-    it('a message pulled AHEAD of the refused turn\'s close goes out bare; the notice rides the next one, even past an accepted save', async () => {
-      // The Claude Agent SDK pulls its next prompt while a turn streams
-      // (TASK-573), so turn 2's message can be built before turn 1's close
-      // learns the save was refused. The notice must not be lost — and an
-      // accepted save on turn 2 must not clear it: turn 1's files are still gone.
-      (commitTurnAndBundle as unknown as Mock)
-        .mockResolvedValueOnce(Buffer.from('BUNDLE-1')) // turn 1's close
-        .mockResolvedValueOnce(Buffer.from('BUNDLE-2')); // turn 2's close
-      const answers = [
-        { accepted: false, reason: 'no', recoverable: false }, // turn 1: refused
-        { accepted: true, version: 'v2', delta: null }, // turn 2: accepted
-      ];
-      (fakeClient as unknown as { callBinaryUpload: unknown }).callBinaryUpload = vi.fn(
-        async () => answers.shift(),
-      );
-      scriptInbox([
-        { type: 'user-message', payload: { role: 'user', content: 'write it' }, reqId: 'req-1', cursor: 1 },
-        { type: 'user-message', payload: { role: 'user', content: 'pulled early' }, reqId: 'req-2', cursor: 2 },
-        { type: 'user-message', payload: { role: 'user', content: 'thanks' }, reqId: 'req-3', cursor: 3 },
-      ]);
-      const seen: unknown[] = [];
-      const end = (ctx: LoopContext) =>
-        ctx.endTurn({
-          contentBlocks: [{ type: 'text', text: 'done' }],
-          toolResultBlocks: [],
-          readTurnId: async () => undefined,
-          usage: null,
-        });
-      const loop: Loop = {
-        run: vi.fn(async (ctx: LoopContext) => {
-          await ctx.nextMessage();
-          // Pull ahead: turn 2's message is built BEFORE turn 1 closes.
-          seen.push(await ctx.nextMessage());
-          await end(ctx); // turn 1 closes: refused
-          await end(ctx); // turn 2 closes: accepted
-          seen.push(await ctx.nextMessage());
-          await end(ctx);
-          return 0;
-        }),
-      };
-      const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
-      try {
-        expect(await runRunner(() => loop, seams(fakeEnv))).toBe(0);
-      } finally {
-        stderr.mockRestore();
-      }
-      expect(answers).toHaveLength(0);
-      expect(seen[0]).toEqual({ content: 'pulled early', id: expect.any(String) });
-      const third = (seen[1] as { content: string }).content;
-      expect(third.startsWith(NOTICE_HEAD)).toBe(true);
-      expect(third.endsWith('\n\nthanks')).toBe(true);
-    });
-
-    it('keeps the notice out of the person-facing chat-end history', async () => {
-      fakeClient.event.mockClear();
-      await threeTurns(async () => ({ accepted: false, reason: 'no', recoverable: false }));
-      const chatEnd = fakeClient.event.mock.calls.find((c) => c[0] === 'event.chat-end');
-      expect(chatEnd).toBeDefined();
-      expect(JSON.stringify(chatEnd![1])).not.toContain('System message');
-    });
-  });
 });
 
-// TASK-749. TASK-732 tells the model about refusals THIS process saw. A refused
-// final/idle save, or a per-turn refusal on a runner that exited before its
-// next message, has no later turn in its own process; the host keeps those and
-// the runner that serves the next turn drains them
-// (`conversation.drain-save-refusals`) as it builds each turn.
-describe('runRunner — refused saves the host kept for the model (TASK-749)', () => {
-  const NOTICE_HEAD = 'System message (not from the user): Some or all of the file changes you made in an earlier turn were not saved.';
+// TASK-995: the git workspace tier is gone. A runner boots, runs turns and
+// ends its chat without materializing, committing or bundling anything, and
+// without the save-refused pipeline that hung off those saves. What remains at
+// a turn boundary is the transcript ship (the DB is its source of truth).
+describe('runRunner — no workspace tier (TASK-995)', () => {
+  /** Every IPC action the runner sends, in order, whatever the channel. */
+  let actions: string[];
+  let transcriptBytes: Buffer;
+  let uploads: Array<{ action: string; query: unknown }>;
+  const source: TranscriptSource = {
+    read: vi.fn(async () => transcriptBytes),
+    write: vi.fn(async () => 'accepted' as const),
+  };
 
-  /**
-   * A conversation-bound runner (so it drains). `drains` answers each
-   * `conversation.drain-save-refusals` call in order (then `{ refusals: [] }`);
-   * a function answer may throw. `answers` are the end-of-turn save answers,
-   * one per turn that has a bundle (`bundles` of them, from turn 1).
-   */
-  async function run(opts: {
-    inbox: unknown[];
-    drains: Array<unknown | (() => unknown)>;
-    answers?: Array<() => Promise<unknown>>;
-    bundles?: number;
-  }): Promise<{ seen: unknown[]; drainCalls: unknown[][] }> {
-    const original = fakeClient.call.getMockImplementation()!;
-    const drainCalls: unknown[][] = [];
-    const drains = [...opts.drains];
+  beforeEach(() => {
+    actions = [];
+    uploads = [];
+    transcriptBytes = Buffer.from('{"type":"user"}\n{"type":"assistant"}\n', 'utf8');
+    vi.mocked(source.read).mockReset().mockImplementation(async () => transcriptBytes);
+    vi.mocked(source.write).mockReset().mockImplementation(async () => 'accepted');
+    const call = fakeClient.call.getMockImplementation()!;
     fakeClient.call.mockImplementation(async (action: string, ...args: unknown[]) => {
-      if (action === 'session.get-config') return { ...(await original(action, ...args)), conversationId: 'c1' };
-      if (action === 'attachments.list') return { files: [] };
-      if (action === 'conversation.drain-save-refusals') {
-        drainCalls.push(args);
-        const next = drains.shift();
-        if (next === undefined) return { refusals: [] };
-        return typeof next === 'function' ? (next as () => unknown)() : next;
-      }
-      return original(action, ...args);
+      actions.push(action);
+      if (action === 'session.get-config') return { ...(await call(action, ...args)), conversationId: 'c1' };
+      if (action === 'conversation.store-runner-session') return {};
+      return call(action, ...args);
     });
-    for (let i = 0; i < (opts.bundles ?? 0); i += 1) {
-      (commitTurnAndBundle as unknown as Mock).mockResolvedValueOnce(Buffer.from(`BUNDLE-${i}`));
-    }
-    const answers = [...(opts.answers ?? [])];
+    const binary = fakeClient.callBinary.getMockImplementation()!;
+    fakeClient.callBinary.mockImplementation(async (action: string, ...args: unknown[]) => {
+      actions.push(action);
+      return binary(action, ...args);
+    });
     (fakeClient as unknown as { callBinaryUpload: unknown }).callBinaryUpload = vi.fn(
-      async (action: string) => {
-        if (action === 'workspace.commit-bundle') return answers.shift()!();
+      async (action: string, _body: Buffer, query: unknown) => {
+        actions.push(action);
+        uploads.push({ action, query });
+        if (action === 'session.append-transcript') return { outcome: 'appended', maxSeq: 2 };
         throw new Error(`unexpected upload: ${action}`);
       },
     );
-    scriptInbox(opts.inbox);
+    const event = fakeClient.event.getMockImplementation();
+    fakeClient.event.mockImplementation(async (action: string, ...args: unknown[]) => {
+      actions.push(action);
+      return event?.(action, ...args);
+    });
+  });
+
+  /** One conversation-bound turn with tool results, then the inbox cancels. */
+  async function oneTurn(end: Partial<EndTurnInput> = {}): Promise<number> {
+    scriptInbox([
+      { type: 'user-message', payload: { role: 'user', content: 'write the report' }, reqId: 'req-1', cursor: 1 },
+    ]);
+    const loop: Loop = {
+      run: vi.fn(async (ctx: LoopContext) => {
+        await ctx.nextMessage();
+        ctx.setTranscriptSessionId('sess-x');
+        await ctx.endTurn({
+          contentBlocks: [{ type: 'text', text: 'done' }],
+          toolResultBlocks: [{ type: 'tool_result', tool_use_id: 't1', content: 'ok' }],
+          readTurnId: async () => undefined,
+          usage: null,
+          ...end,
+        });
+        return (await ctx.nextMessage()) === null ? 0 : 1;
+      }),
+    };
+    return runRunner(() => loop, { ...seams(fakeEnv), createTranscriptSource: () => source });
+  }
+
+  it('boots, runs a turn and ends the chat without any workspace.* or drain-save-refusals call', async () => {
+    expect(await oneTurn()).toBe(0);
+    expect(actions.filter((a) => a.startsWith('workspace.'))).toEqual([]);
+    expect(actions).not.toContain('conversation.drain-save-refusals');
+    // Not vacuous: the run went the whole way — boot, the uploads copy, the
+    // transcript ship and the bind, both turn-ends, the final ship and the one
+    // chat-end.
+    expect(actions).toEqual([
+      'session.get-config',
+      'attachments.list',
+      'tool.list',
+      'session.append-transcript',
+      'conversation.store-runner-session',
+      'event.turn-end',
+      'event.turn-end',
+      'session.append-transcript',
+      'event.chat-end',
+    ]);
+  });
+
+  it('turn-end and chat-end events carry no saveRefused', async () => {
+    expect(await oneTurn()).toBe(0);
+    const payloads = fakeClient.event.mock.calls
+      .filter((c) => c[0] === 'event.turn-end' || c[0] === 'event.chat-end')
+      .map((c) => c[1] as Record<string, unknown>);
+    expect(payloads.map((p) => p.role ?? 'chat-end')).toEqual(['tool', 'assistant', 'chat-end']);
+    for (const p of payloads) expect(p).not.toHaveProperty('saveRefused');
+  });
+
+  it('hands the loop each message as the person wrote it, with no notice prepended', async () => {
+    scriptInbox([
+      { type: 'user-message', payload: { role: 'user', content: 'first' }, reqId: 'req-1', cursor: 1 },
+      { type: 'user-message', payload: { role: 'user', content: 'second' }, reqId: 'req-2', cursor: 2 },
+    ]);
     const seen: unknown[] = [];
     const loop: Loop = {
       run: vi.fn(async (ctx: LoopContext) => {
         for (;;) {
           const msg = await ctx.nextMessage();
           if (msg === null) return 0;
-          seen.push(msg);
-          await ctx.endTurn({
-            contentBlocks: [{ type: 'text', text: 'done' }],
-            toolResultBlocks: [],
-            readTurnId: async () => undefined,
-            usage: null,
-          });
+          seen.push(msg.content);
+          await ctx.endTurn({ contentBlocks: [], toolResultBlocks: [], readTurnId: async () => undefined, usage: null });
         }
       }),
     };
-    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
-    try {
-      expect(await runRunner(() => loop, seams(fakeEnv))).toBe(0);
-    } finally {
-      stderr.mockRestore();
-    }
-    return { seen, drainCalls };
-  }
-
-  const msg = (content: string, reqId: string, cursor: number) => ({
-    type: 'user-message',
-    payload: { role: 'user', content },
-    reqId,
-    cursor,
+    expect(await runRunner(() => loop, { ...seams(fakeEnv), createTranscriptSource: () => source })).toBe(0);
+    expect(seen).toEqual(['first', 'second']);
   });
 
-  it('a fresh runner tells the model, on its first turn, about a final/idle refusal the host kept — once', async () => {
-    const { seen, drainCalls } = await run({
-      inbox: [msg('hello again', 'req-9', 1), msg('and now?', 'req-10', 2)],
-      drains: [{ refusals: [{ code: 'storage-full', turnReqId: null }] }],
+  it('runs beforeTranscriptShip before the turn ships its transcript', async () => {
+    const order: string[] = [];
+    vi.mocked(source.read).mockImplementation(async () => {
+      order.push('read');
+      return transcriptBytes;
     });
-    const first = (seen[0] as { content: string }).content;
-    expect(first.startsWith(NOTICE_HEAD)).toBe(true);
-    expect(first).toContain('The storage limit for this workspace was reached.');
-    expect(first.endsWith('\n\nhello again')).toBe(true);
-    // Told once: the host marked it told, and the next turn is bare.
-    expect(seen[1]).toEqual({ content: 'and now?', id: expect.any(String) });
-    // The drain names nothing: the host takes the conversation from ctx.
-    expect(drainCalls).toEqual([[{}], [{}]]);
-  });
-
-  it('a per-turn refusal from a runner that is gone is told too (its key is not one of ours)', async () => {
-    const { seen } = await run({
-      inbox: [msg('hi', 'req-5', 1)],
-      drains: [{ refusals: [{ code: 'too-large', turnReqId: 'req-4' }] }],
-    });
-    const first = (seen[0] as { content: string }).content;
-    expect(first.startsWith(NOTICE_HEAD)).toBe(true);
-    expect(first).toContain('too large to save at once');
-  });
-
-  it('a refusal this process already told the model about is not told again when the host hands it back', async () => {
-    const { seen } = await run({
-      inbox: [msg('write it', 'req-1', 1), msg('and now?', 'req-2', 2), msg('thanks', 'req-3', 3)],
-      bundles: 1,
-      answers: [async () => ({ accepted: false, reason: 'no', recoverable: false })],
-      drains: [
-        { refusals: [] }, // turn 1: nothing kept yet
-        { refusals: [{ code: 'refused', turnReqId: 'req-1' }] }, // turn 2: our own turn-1 refusal
-        { refusals: [{ code: 'refused', turnReqId: 'req-1' }] }, // turn 3: handed back again (late row)
-      ],
-    });
-    const second = (seen[1] as { content: string }).content;
-    // ONE notice, the in-process one (it carries the host's reason).
-    expect(second.split('System message (not from the user)')).toHaveLength(2);
-    expect(second).toContain('"no"');
-    expect(second.endsWith('\n\nand now?')).toBe(true);
-    expect(seen[2]).toEqual({ content: 'thanks', id: expect.any(String) });
-  });
-
-  it('pull-ahead: a message built before the refused turn closes, then the host handing that refusal back, still tells it ONCE', async () => {
-    // The Claude Agent SDK pulls its next prompt while a turn streams, so turn
-    // 2's message (and its drain) runs before turn 1's close. The drain for
-    // turn 3 then sees turn 1's row; the in-process notice must be the only one.
-    const original = fakeClient.call.getMockImplementation()!;
-    const drains: unknown[] = [
-      { refusals: [] }, // turn 1
-      { refusals: [] }, // turn 2, pulled ahead: the row does not exist yet
-      { refusals: [{ code: 'refused', turnReqId: 'req-1' }] }, // turn 3
-    ];
-    fakeClient.call.mockImplementation(async (action: string, ...args: unknown[]) => {
-      if (action === 'session.get-config') return { ...(await original(action, ...args)), conversationId: 'c1' };
-      if (action === 'attachments.list') return { files: [] };
-      if (action === 'conversation.drain-save-refusals') return drains.shift() ?? { refusals: [] };
-      return original(action, ...args);
-    });
-    (commitTurnAndBundle as unknown as Mock).mockResolvedValueOnce(Buffer.from('BUNDLE-1'));
-    (fakeClient as unknown as { callBinaryUpload: unknown }).callBinaryUpload = vi.fn(
-      async () => ({ accepted: false, reason: 'no', recoverable: false }),
-    );
-    scriptInbox([msg('write it', 'req-1', 1), msg('pulled early', 'req-2', 2), msg('thanks', 'req-3', 3)]);
-    const seen: unknown[] = [];
-    const end = (ctx: LoopContext) =>
-      ctx.endTurn({
-        contentBlocks: [{ type: 'text', text: 'done' }],
-        toolResultBlocks: [],
-        readTurnId: async () => undefined,
-        usage: null,
-      });
-    const loop: Loop = {
-      run: vi.fn(async (ctx: LoopContext) => {
-        await ctx.nextMessage();
-        seen.push(await ctx.nextMessage()); // pulled ahead of turn 1's close
-        await end(ctx); // turn 1 closes: refused
-        await end(ctx); // turn 2 closes: nothing to save
-        seen.push(await ctx.nextMessage());
-        await end(ctx);
-        return 0;
-      }),
-    };
-    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
-    try {
-      expect(await runRunner(() => loop, seams(fakeEnv))).toBe(0);
-    } finally {
-      stderr.mockRestore();
-    }
-    expect(drains).toHaveLength(0);
-    expect(seen[0]).toEqual({ content: 'pulled early', id: expect.any(String) });
-    const third = (seen[1] as { content: string }).content;
-    expect(third.split('System message (not from the user)')).toHaveLength(2);
-    expect(third).toContain('"no"');
-    expect(third.endsWith('\n\nthanks')).toBe(true);
-  });
-
-  it('reaches a host-started decision turn too', async () => {
-    const { seen } = await run({
-      inbox: [{ type: 'decision-resolved', decisionId: 'dec_1', outcome: 'approved', note: 'They said yes.' }],
-      drains: [{ refusals: [{ code: 'refused', turnReqId: null }] }],
-    });
-    const first = (seen[0] as { content: string }).content;
-    expect(first.startsWith(NOTICE_HEAD)).toBe(true);
-    expect(first.endsWith('\n\nSystem message (not from the user): They said yes.')).toBe(true);
-  });
-
-  it('a failed drain never fails the turn: the message goes out bare', async () => {
-    const { seen } = await run({
-      inbox: [msg('hello', 'req-1', 1)],
-      drains: [
-        () => {
-          throw new Error('host returned 503');
+    expect(
+      await oneTurn({
+        beforeTranscriptShip: async () => {
+          order.push('beforeTranscriptShip');
         },
-      ],
-    });
-    expect(seen[0]).toEqual({ content: 'hello', id: expect.any(String) });
+      }),
+    ).toBe(0);
+    // The turn's own ship reads after the wait; the final ship reads again.
+    expect(order).toEqual(['beforeTranscriptShip', 'read', 'read']);
+    expect(uploads[0]).toMatchObject({ action: 'session.append-transcript', query: { fromSeq: '0' } });
   });
 
-  it('a run bound to no conversation never drains', async () => {
-    scriptInbox([msg('hello', 'req-1', 1)]);
-    const loop: Loop = {
-      run: vi.fn(async (ctx: LoopContext) => {
-        await ctx.nextMessage();
-        return 0;
-      }),
-    };
-    expect(await runRunner(() => loop, seams(fakeEnv))).toBe(0);
-    expect(fakeClient.call.mock.calls.map((c) => c[0])).not.toContain('conversation.drain-save-refusals');
+  it('a 4xx from the bind still terminates the run (the loser of a bind race stops)', async () => {
+    const call = fakeClient.call.getMockImplementation()!;
+    fakeClient.call.mockImplementation(async (action: string, ...args: unknown[]) => {
+      if (action === 'conversation.store-runner-session') {
+        throw new IpcRequestError('HOOK_REJECTED', 409, 'bound to another session');
+      }
+      return call(action, ...args);
+    });
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      expect(await oneTurn()).toBe(1);
+    } finally {
+      stderr.mockRestore();
+    }
+    expect(actions).not.toContain('event.turn-end');
+    const chatEnd = fakeClient.event.mock.calls.find((c) => c[0] === 'event.chat-end')!;
+    expect(chatEnd[1]).toMatchObject({ outcome: { kind: 'terminated' } });
+  });
+
+  // `prepareSession` is where a loop lays down what it needs before it starts —
+  // the claude-sdk loop links the SDK's projects dir to the transcripts root.
+  // It must run before the resume restore writes the rebuilt transcript there
+  // (#1085), and a failure is fatal before the loop exists.
+  describe('prepareSession', () => {
+    function resumable(): void {
+      const call = fakeClient.call.getMockImplementation()!;
+      fakeClient.call.mockImplementation(async (action: string, ...args: unknown[]) => {
+        const out = await call(action, ...args);
+        return action === 'session.get-config' ? { ...(out as object), runnerSessionId: 'sess-old' } : out;
+      });
+      const binary = fakeClient.callBinary.getMockImplementation()!;
+      fakeClient.callBinary.mockImplementation(async (action: string, ...args: unknown[]) => {
+        if (action !== 'session.get-transcript') return binary(action, ...args);
+        actions.push(action);
+        const tmp = path.join(SANDBOX, `restore-${Math.random().toString(16).slice(2)}.jsonl`);
+        await fs.writeFile(tmp, transcriptBytes);
+        return { path: tmp, bytes: transcriptBytes.length };
+      });
+    }
+
+    it('runs before the resume restore writes the transcript', async () => {
+      resumable();
+      const order: string[] = [];
+      const prepareSession = vi.fn(async () => {
+        order.push('prepareSession');
+      });
+      vi.mocked(source.write).mockImplementation(async () => {
+        order.push('restore');
+        return 'accepted';
+      });
+      const makeLoop = vi.fn((_deps: RunnerDeps) => ({ run: async () => 0 }));
+      expect(
+        await runRunner(makeLoop, {
+          ...seams(fakeEnv),
+          createTranscriptSource: () => source,
+          prepareSession,
+        }),
+      ).toBe(0);
+      expect(prepareSession).toHaveBeenCalledOnce();
+      expect(prepareSession).toHaveBeenCalledWith(
+        expect.objectContaining({ userFilesRoot: HOME, ephemeralRoot: SCRATCH }),
+      );
+      expect(order).toEqual(['prepareSession', 'restore']);
+      expect(actions).toContain('session.get-transcript');
+      expect(makeLoop.mock.calls[0]![0].resumeSessionId).toBe('sess-old');
+    });
+
+    it('a prepareSession failure exits 2 before the resume restore', async () => {
+      resumable();
+      const prepareSession = vi.fn().mockRejectedValue(new Error('cannot link the transcripts dir'));
+      const makeLoop = vi.fn();
+      const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+      let code = -1;
+      try {
+        code = await runRunner(makeLoop, {
+          ...seams(fakeEnv),
+          createTranscriptSource: () => source,
+          prepareSession,
+        });
+        expect(stderr.mock.calls.map((c) => String(c[0])).join('')).toContain('cannot link the transcripts dir');
+      } finally {
+        stderr.mockRestore();
+      }
+      expect(code).toBe(2);
+      expect(prepareSession).toHaveBeenCalledOnce();
+      expect(actions).not.toContain('session.get-transcript');
+      expect(source.write).not.toHaveBeenCalled();
+      expect(makeLoop).not.toHaveBeenCalled();
+      // Bootstrap-fatal: the client is closed and no chat-end is sent (the
+      // orchestrator synthesizes the terminated outcome from exit 2).
+      expect(fakeClient.close).toHaveBeenCalledOnce();
+      expect(actions).not.toContain('event.chat-end');
+    });
   });
 });
 
@@ -2449,7 +2079,7 @@ describe('routine prompt availability from filtered catalog', () => {
         return result;
       });
       expect(await runRunner(() => ({ run: async () => 0 }), seams(fakeEnv))).toBe(0);
-      expect(vi.mocked(buildSystemPrompt).mock.calls.at(-1)?.[9]).toBe(expected);
+      expect(vi.mocked(buildSystemPrompt).mock.calls.at(-1)?.[7]).toBe(expected);
     }
   });
 });
@@ -2486,20 +2116,20 @@ describe('identity prompt inputs (TASK-989)', () => {
 
   it('hands the session config identity to the prompt engine as it arrived', async () => {
     const args = await promptArgs({ identity: IDENTITY }, []);
-    expect(args[10]).toEqual(IDENTITY);
+    expect(args[8]).toEqual(IDENTITY);
   });
 
   it('passes no identity when the session config has none, so the engine default applies', async () => {
     const args = await promptArgs({}, []);
-    expect(args).toHaveLength(12);
-    expect(args[10]).toBeUndefined();
+    expect(args).toHaveLength(10);
+    expect(args[8]).toBeUndefined();
   });
 
   it('says update_identity is available only when it survived the catalog filters', async () => {
     const catalog = ['update_identity', 'web_search'];
-    expect((await promptArgs({ allowedTools: [] }, catalog))[11]).toBe(true);
-    expect((await promptArgs({ allowedTools: ['web_search'] }, catalog))[11]).toBe(false);
-    expect((await promptArgs({ disallowedTools: ['update_identity'] }, catalog))[11]).toBe(false);
-    expect((await promptArgs({}, ['web_search']))[11]).toBe(false);
+    expect((await promptArgs({ allowedTools: [] }, catalog))[9]).toBe(true);
+    expect((await promptArgs({ allowedTools: ['web_search'] }, catalog))[9]).toBe(false);
+    expect((await promptArgs({ disallowedTools: ['update_identity'] }, catalog))[9]).toBe(false);
+    expect((await promptArgs({}, ['web_search']))[9]).toBe(false);
   });
 });

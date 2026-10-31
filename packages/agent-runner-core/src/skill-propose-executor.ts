@@ -1,19 +1,19 @@
 // ---------------------------------------------------------------------------
 // Sandbox-side executor for the `skill_propose` tool (TASK-74, out-of-git
 // Part D / §D1; filestore-user-files Phase 3 / TASK-165). The model writes a
-// skill bundle into the draft dir `<root>/.skill-draft/<id>/` — where `<root>` is
-// the DURABLE per-agent user-files mount (`AX_USERFILES_ROOT`, e.g. `/files`)
-// when one is wired, else the ephemeral scratch tier (graceful fallback) — then
+// skill bundle into the draft dir `<home>/.skill-draft/<id>/` — where `<home>`
+// is the agent's home, its durable per-agent files (`AX_USERFILES_ROOT`, e.g.
+// `/files`; required since TASK-995, so there is no scratch fallback) — then
 // calls this tool with that directory path. The sandbox-MCP bridge dispatches
 // here via the runner's local-dispatcher (mirror of artifact_publish).
 //
 // We:
-//   1. validate the draft path (checkDraftPath, against the ACTIVE draft root —
-//      durable when wired, else ephemeral: `<root>/.skill-draft/<id>/`);
+//   1. validate the draft path (checkDraftPath, against the home:
+//      `<home>/.skill-draft/<id>/`);
 //   2. read SKILL.md + the extra files from the draft dir — SKILL.md is
 //      lstat-hardened (a SKILL.md-as-symlink is rejected, HR2/§7.2) and the
 //      extra-file walk already rejects symlinks; this matters because the draft
-//      now lives on a DURABLE SHARED NFS mount where a symlink could otherwise
+//      lives on a DURABLE SHARED NFS mount where a symlink could otherwise
 //      point a read at an arbitrary host file;
 //   3. split SKILL.md into frontmatter (manifestYaml) + body (bodyMd);
 //   4. structurally validate the extra files (path/size — re-implemented at this
@@ -87,16 +87,10 @@ function validateExtraFile(relPath: string, contents: string): string | null {
 }
 
 export interface CreateSkillProposeExecutorOptions {
-  /** Durable per-agent user-files root (`AX_USERFILES_ROOT`, e.g. `/files`).
-   * When set it is the PREFERRED draft root (drafts persist across sessions); the
-   * executor reads `<userFilesRoot>/.skill-draft/<id>/`. Absent ⇒ no durable
-   * mount; fall back to `ephemeralRoot`. (filestore-user-files Phase 3 / §7.) */
-  userFilesRoot?: string;
-  /** Ephemeral scratch root the model's draft can also map onto when no durable
-   * mount is wired (`<ephemeralRoot>/.skill-draft/<id>/`). The FALLBACK draft root.
-   * When BOTH userFilesRoot and ephemeralRoot are undefined, skill_propose is
-   * rejected (no draft tier wired). */
-  ephemeralRoot?: string;
+  /** The agent's home (`AX_USERFILES_ROOT`, e.g. `/files`) — the draft root.
+   * The executor reads `<userFilesRoot>/.skill-draft/<id>/` and nothing else, so
+   * a draft persists across sessions. (filestore-user-files Phase 3 / §7.) */
+  userFilesRoot: string;
   /** IPC client to the host. The executor posts skill.propose. When undefined
    * (validation-only tests) the executor returns a synthetic verdict. */
   client?: Pick<IpcClient, 'call'>;
@@ -122,18 +116,12 @@ export function createSkillProposeExecutor(opts: CreateSkillProposeExecutorOptio
       throw new Error('skill_propose: input.path is required (string)');
     }
 
-    // The active draft root: the durable per-agent mount when wired (drafts
-    // persist across sessions), else the ephemeral scratch tier (fallback). When
-    // neither is wired there is no place to read a draft from — reject.
-    const draftRoot = opts.userFilesRoot ?? opts.ephemeralRoot;
-    if (draftRoot === undefined) {
-      throw new Error(
-        'skill_propose: no durable user-files or ephemeral tier is available in this deployment',
-      );
-    }
+    // The draft root is the agent's home: drafts persist across sessions.
+    const draftRoot = opts.userFilesRoot;
 
     // Validate against the SAME root the executor will read from — a path rooted
-    // at a different tier is rejected (the executor never reads off-root).
+    // anywhere else (the scratch root included) is rejected; the executor never
+    // reads off-root.
     const check = checkDraftPath(input.path, draftRoot);
     if (!check.ok) {
       throw new Error(check.reason);

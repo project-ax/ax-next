@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { InvalidEnvError, MissingEnvError, readRunnerEnv } from '../env.js';
+import { InvalidEnvError, MissingEnvError, readRunnerEnv, runnerHomeDir } from '../env.js';
 
 // A well-formed per-session proxy token (what credential-proxy mints:
 // 16 random bytes, lowercase hex).
@@ -10,7 +10,8 @@ const PROXY_TCP = {
   AX_RUNNER_ENDPOINT: 'unix:///tmp/ax.sock',
   AX_SESSION_ID: 'sess-1',
   AX_AUTH_TOKEN: 'tok-123',
-  AX_WORKSPACE_ROOT: '/tmp/workspace',
+  AX_USERFILES_ROOT: '/files',
+  AX_EPHEMERAL_ROOT: '/tmp',
   AX_PROXY_ENDPOINT: 'http://127.0.0.1:54321',
   AX_PROXY_TOKEN: TOKEN,
   CLAUDE_CONFIG_DIR: '/home/runner/.ax/session',
@@ -21,7 +22,8 @@ const PROXY_UNIX = {
   AX_RUNNER_ENDPOINT: 'unix:///tmp/ax.sock',
   AX_SESSION_ID: 'sess-1',
   AX_AUTH_TOKEN: 'tok-123',
-  AX_WORKSPACE_ROOT: '/tmp/workspace',
+  AX_USERFILES_ROOT: '/files',
+  AX_EPHEMERAL_ROOT: '/tmp',
   AX_PROXY_UNIX_SOCKET: '/var/run/ax/proxy.sock',
   AX_PROXY_TOKEN: TOKEN,
   CLAUDE_CONFIG_DIR: '/home/runner/.ax/session',
@@ -33,40 +35,57 @@ describe('readRunnerEnv', () => {
       runnerEndpoint: 'unix:///tmp/ax.sock',
       sessionId: 'sess-1',
       authToken: 'tok-123',
-      workspaceRoot: '/tmp/workspace',
+      userFilesRoot: '/files',
+      ephemeralRoot: '/tmp',
       claudeConfigDir: '/home/runner/.ax/session',
       proxyEndpoint: 'http://127.0.0.1:54321',
       proxyToken: TOKEN,
     });
   });
 
-  it('reads ephemeralRoot when AX_EPHEMERAL_ROOT is set, omits it otherwise', () => {
-    // Present → carried through verbatim.
-    expect(
-      readRunnerEnv({ ...PROXY_TCP, AX_EPHEMERAL_ROOT: '/ephemeral' })
-        .ephemeralRoot,
-    ).toBe('/ephemeral');
-    // Absent → the field is omitted entirely (no `/ephemeral` default).
-    // A default would be actively harmful in the subprocess sandbox, where
-    // the host root is read-only; "absent" cleanly means "no scratch tier".
-    expect('ephemeralRoot' in readRunnerEnv(PROXY_TCP)).toBe(false);
-    // Empty string is treated as unset (consistent with opt()).
-    expect(
-      'ephemeralRoot' in readRunnerEnv({ ...PROXY_TCP, AX_EPHEMERAL_ROOT: '' }),
-    ).toBe(false);
+  // TASK-995: the agent's home (`AX_USERFILES_ROOT`, k8s `/files`) and the
+  // scratch root (`AX_EPHEMERAL_ROOT`, k8s `/tmp`) are both required. There is
+  // no fallback home any more: without `/files` the SDK's home would land in
+  // scratch, and without scratch there is nowhere for uploads, transcripts,
+  // caches or the venv.
+  it('requires AX_USERFILES_ROOT', () => {
+    const env: Record<string, string | undefined> = { ...PROXY_TCP };
+    delete env.AX_USERFILES_ROOT;
+    expect(() => readRunnerEnv(env)).toThrow(MissingEnvError);
+    expect(() => readRunnerEnv(env)).toThrow(/AX_USERFILES_ROOT/);
   });
 
-  it('reads userFilesRoot when AX_USERFILES_ROOT is set, omits it otherwise', () => {
-    // Present → carried through verbatim (the durable per-agent user-files mount).
-    expect(
-      readRunnerEnv({ ...PROXY_TCP, AX_USERFILES_ROOT: '/files' }).userFilesRoot,
-    ).toBe('/files');
-    // Absent → omitted entirely (no default; "no durable mount wired").
-    expect('userFilesRoot' in readRunnerEnv(PROXY_TCP)).toBe(false);
-    // Empty string is treated as unset (consistent with opt()).
-    expect(
-      'userFilesRoot' in readRunnerEnv({ ...PROXY_TCP, AX_USERFILES_ROOT: '' }),
-    ).toBe(false);
+  it('requires AX_EPHEMERAL_ROOT', () => {
+    const env: Record<string, string | undefined> = { ...PROXY_TCP };
+    delete env.AX_EPHEMERAL_ROOT;
+    expect(() => readRunnerEnv(env)).toThrow(MissingEnvError);
+    expect(() => readRunnerEnv(env)).toThrow(/AX_EPHEMERAL_ROOT/);
+  });
+
+  // A relative root would resolve against whichever cwd a process happens to
+  // have — the runner's and the SDK subprocess's differ — so it is refused at
+  // the edge, like CLAUDE_CONFIG_DIR and AX_TRANSCRIPTS_ROOT.
+  it.each([
+    ['AX_USERFILES_ROOT', 'files'],
+    ['AX_USERFILES_ROOT', './files'],
+    ['AX_USERFILES_ROOT', '~/files'],
+    ['AX_EPHEMERAL_ROOT', 'tmp'],
+    ['AX_EPHEMERAL_ROOT', './tmp'],
+    ['AX_EPHEMERAL_ROOT', '~/tmp'],
+  ])('rejects a relative %s (%s)', (name, value) => {
+    expect(() => readRunnerEnv({ ...PROXY_TCP, [name]: value })).toThrow(InvalidEnvError);
+    expect(() => readRunnerEnv({ ...PROXY_TCP, [name]: value })).toThrow(new RegExp(name));
+  });
+
+  it('ignores AX_WORKSPACE_ROOT', () => {
+    const env = readRunnerEnv({ ...PROXY_TCP, AX_WORKSPACE_ROOT: '/agent' });
+    expect('workspaceRoot' in env).toBe(false);
+    expect(JSON.stringify(env)).not.toContain('/agent');
+  });
+
+  it('runnerHomeDir is the agent home, whatever the scratch root', () => {
+    const env = readRunnerEnv({ ...PROXY_TCP, AX_USERFILES_ROOT: '/srv/home', AX_EPHEMERAL_ROOT: '/srv/scratch' });
+    expect(runnerHomeDir(env)).toBe('/srv/home');
   });
 
   it('reads claudeConfigDir from CLAUDE_CONFIG_DIR', () => {
@@ -122,7 +141,8 @@ describe('readRunnerEnv', () => {
       runnerEndpoint: 'unix:///tmp/ax.sock',
       sessionId: 'sess-1',
       authToken: 'tok-123',
-      workspaceRoot: '/tmp/workspace',
+      userFilesRoot: '/files',
+      ephemeralRoot: '/tmp',
       claudeConfigDir: '/home/runner/.ax/session',
       proxyUnixSocket: '/var/run/ax/proxy.sock',
       proxyToken: TOKEN,
@@ -150,7 +170,8 @@ describe('readRunnerEnv', () => {
       AX_RUNNER_ENDPOINT: 'unix:///tmp/sock',
       AX_AUTH_TOKEN: 't',
       AX_SESSION_ID: 's',
-      AX_WORKSPACE_ROOT: '/tmp/ws',
+      AX_USERFILES_ROOT: '/files',
+      AX_EPHEMERAL_ROOT: '/tmp',
       AX_PROXY_ENDPOINT: 'http://127.0.0.1:8443',
       AX_PROXY_TOKEN: TOKEN,
       CLAUDE_CONFIG_DIR: '/home/runner/.ax/session',
@@ -166,21 +187,23 @@ describe('readRunnerEnv', () => {
       AX_RUNNER_ENDPOINT: 'unix:///tmp/sock',
       AX_AUTH_TOKEN: 't',
       AX_SESSION_ID: 's',
-      AX_WORKSPACE_ROOT: '/tmp/ws',
+      AX_USERFILES_ROOT: '/files',
+      AX_EPHEMERAL_ROOT: '/tmp',
       AX_LLM_PROXY_URL: 'http://legacy.local',
     };
     expect(() => readRunnerEnv(env)).toThrow(MissingEnvError);
   });
 
-  // Phase 3: AX_WORKSPACE_ROOT became optional (defaults to /agent —
-  // the sandbox's canonical mount). The others remain required.
   // CLAUDE_CONFIG_DIR (TASK-994): without it the SDK falls back to
-  // `$HOME/.claude` — the agent's own files — for its trusted config.
+  // `$HOME/.claude` — the agent's own files — for its trusted config. The
+  // home and scratch roots (TASK-995): see the cases above.
   for (const name of [
     'AX_RUNNER_ENDPOINT',
     'AX_SESSION_ID',
     'AX_AUTH_TOKEN',
     'CLAUDE_CONFIG_DIR',
+    'AX_USERFILES_ROOT',
+    'AX_EPHEMERAL_ROOT',
   ] as const) {
     it(`throws MissingEnvError naming ${name} when unset`, () => {
       const env = { ...PROXY_TCP };
@@ -207,30 +230,6 @@ describe('readRunnerEnv', () => {
       }
     });
   }
-
-  it('defaults workspaceRoot to /agent when AX_WORKSPACE_ROOT is unset', () => {
-    // Lines up with the sandbox-k8s pod-spec mount. An operator can still
-    // override (e.g., for the subprocess sandbox where the workspace lives
-    // on the host filesystem), but the default matches the canonical k8s
-    // sandbox shape so misconfigured deploys land in a working spot.
-    const env = { ...PROXY_TCP };
-    delete (env as Record<string, string | undefined>).AX_WORKSPACE_ROOT;
-    expect(readRunnerEnv(env).workspaceRoot).toBe('/agent');
-  });
-
-  it('defaults workspaceRoot to /agent when AX_WORKSPACE_ROOT is empty string', () => {
-    // Empty-string env is semantically the same as missing — see the
-    // `opt()` helper in env.ts. Confirms the fallback path covers it.
-    const env = { ...PROXY_TCP, AX_WORKSPACE_ROOT: '' };
-    expect(readRunnerEnv(env).workspaceRoot).toBe('/agent');
-  });
-
-  it('still honors AX_WORKSPACE_ROOT when explicitly set', () => {
-    expect(
-      readRunnerEnv({ ...PROXY_TCP, AX_WORKSPACE_ROOT: '/tmp/custom-ws' })
-        .workspaceRoot,
-    ).toBe('/tmp/custom-ws');
-  });
 
   it('throws when neither AX_PROXY_ENDPOINT nor AX_PROXY_UNIX_SOCKET is set', () => {
     const env = { ...PROXY_TCP };

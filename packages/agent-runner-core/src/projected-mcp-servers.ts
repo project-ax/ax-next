@@ -22,9 +22,8 @@
 // its own MCP clients — `tools/connector-tools.ts`). Moved here from the
 // claude-sdk runner in TASK-826 so both runners share it. Trust shape:
 //   - Reads ONLY `$CLAUDE_CONFIG_DIR/skills/*/.mcp.json` — the host-written,
-//     0555/0444 projection. Never the agent-writable workspace (`.claude/`,
-//     cwd), which is the same I3 rule that keeps 'project' out of
-//     settingSources.
+//     0555/0444 projection. Never the agent's own home (`.claude/`, cwd), which
+//     is the same I3 rule that keeps 'project' out of settingSources.
 //   - Real directories and regular files only; a symlink is not a
 //     materialized bundle (lstat, no follow).
 //   - Only keys shaped like a host-minted connector namespace (`c` + 10 hex)

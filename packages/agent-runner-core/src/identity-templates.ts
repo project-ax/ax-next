@@ -6,13 +6,13 @@
 // kernel-free package so the template stays pure data with no cross-plugin
 // runtime import (Invariant #2). The runner
 // keeps importing from this module path (`./identity-templates.js`) so its own
-// call sites + tests are unchanged.
+// call sites + tests are unchanged. Only what the prompt engine composes is
+// re-exported: identity and soul are rows the agent writes with
+// `update_identity` (TASK-989), so the runner writes no identity stub files.
 // ---------------------------------------------------------------------------
 
 export {
   BOOTSTRAP_TEMPLATE,
-  IDENTITY_SCAFFOLD,
-  SOUL_SCAFFOLD,
   fallbackIdentityLine,
   bootstrapPreamble,
 } from '@ax/agent-identity-templates';

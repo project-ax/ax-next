@@ -1,14 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import { ChatEndHistory } from './chat-end-history.js';
-import { promises as fsp } from 'node:fs';
-import * as path from 'node:path';
 import {
   createIpcClient,
   IpcRequestError,
   type ContentBlock,
-  type ConversationDrainSaveRefusalsResponse,
   type IpcClient,
-  type SaveRefusedCode,
   type SessionGetConfigResponse,
   type ToolListResponse,
 } from '@ax/ipc-protocol';
@@ -18,30 +14,14 @@ import { createArtifactPublishExecutor } from './artifact-publish-executor.js';
 import { trackGeneratedFiles, publishedAttachments } from './generated-files.js';
 import { createToolPolicy } from './tool-policy.js';
 import { translateContentBlocks } from './attachment-translation.js';
-import {
-  commitNotifyWithResync,
-  flushWorkspaceToHost,
-  saveRefusedFrom,
-  type HostToolFlush,
-} from './commit-notify-resync.js';
-import {
-  prependNotice,
-  saveRefusedNotice,
-  saveRefusedNoticeFromCodes,
-} from './save-refused-notice.js';
 import { commitTrace } from './commit-trace.js';
 import { assertConfigDirOutsideAgentHome } from './config-dir-guard.js';
 import { readRunnerEnv, runnerHomeDir, type RunnerEnv } from './env.js';
-import {
-  commitTurnAndBundle,
-  materializeWorkspace,
-  scaffoldWorkspaceGitignore,
-} from './git-workspace.js';
 import { decisionResolvedTurn } from './decision-turn.js';
 import { createInboxLoop, type InboxLoopEntry } from './inbox-loop.js';
 import { materializeInstalledSkillsFromEnv } from './installed-skills.js';
 import { createLocalDispatcher, type LocalDispatcher } from './local-dispatcher.js';
-import { materializeUploads, type MaterializedUpload } from './materialize-uploads.js';
+import { materializeUploads, scratchUploadsDir, type MaterializedUpload } from './materialize-uploads.js';
 import { buildSystemPrompt } from './prompt-engine.js';
 import { writeProxyCaFromEnv } from './proxy-ca-from-env.js';
 import { setupProxy, type ProxyStartup } from './proxy-startup.js';
@@ -70,11 +50,12 @@ import {
 // placeholder that the proxy substitutes for the real key mid-flight. If the
 // sandbox is compromised, the real key never entered this process.
 //
-// Shape: `runRunner` boots the session (env, proxy, IPC, workspace
-// materialize, uploads, skills, tool catalog, prompt composition, inbox) and
-// then hands a `LoopContext` to ONE loop implementation. The loop owns the
-// provider SDK and the message pump; the shell owns everything either side of
-// it — including the turn-end commit/ship and the single `event.chat-end`.
+// Shape: `runRunner` boots the session (env, proxy, IPC, the loop's own
+// session preparation, uploads, skills, tool catalog, prompt composition,
+// inbox) and then hands a `LoopContext` to ONE loop implementation. The loop
+// owns the provider SDK and the message pump; the shell owns everything either
+// side of it — including the turn-end transcript ship and the single
+// `event.chat-end`.
 //
 // Exit codes (the spawning host branches on these):
 //   0 — chat completed normally (inbox returned cancel; loop drained).
@@ -100,7 +81,7 @@ import {
 export interface RunnerDeps {
   /** The authed IPC client back to the host. */
   client: IpcClient;
-  /** The validated runner env (workspace/ephemeral/user-files roots, proxy). */
+  /** The validated runner env (the home and scratch roots, proxy). */
   env: RunnerEnv;
   /** The frozen per-session agent config the orchestrator wrote. */
   agentConfig: SessionGetConfigResponse['agentConfig'];
@@ -109,19 +90,13 @@ export interface RunnerDeps {
   tools: ToolListResponse['tools'];
   /** Executors for tools marked `executesIn: 'sandbox'`. */
   localDispatcher: LocalDispatcher;
-  /**
-   * Mid-turn workspace flush for host tools that declare
-   * `flushWorkspaceBeforeCall`. Serialized internally.
-   */
-  flushWorkspaceForHostTool: () => Promise<HostToolFlush>;
   /** Proxy bootstrap result — the env the loop must pass to its SDK. */
   proxyStartup: ProxyStartup;
   /** True once the session Python venv exists (created or pre-present). */
   pythonVenvReady: boolean;
   /**
-   * The agent's WORKING frame — the durable per-agent user-files mount when
-   * one was wired, otherwise session scratch. Loops use it for cwd/HOME.
-   * Ad-hoc callers with neither tier retain the governed-root fallback.
+   * The agent's home (`runnerHomeDir`: the durable per-agent user-files root).
+   * Loops use it for the SDK's cwd/HOME.
    */
   homeDir: string;
   /** The system prompt the file-based prompt-engine composed for this session. */
@@ -247,11 +222,11 @@ export interface EndTurnInput {
   lastAssistantUuid?: string;
   /**
    * Loop-side work that must complete BEFORE the transcript ships — typically
-   * waiting for the loop's own delayed transcript write to land. Runs inside
-   * the same best-effort try as the ship/commit, exactly where the wait sat
-   * when this lived in the loop.
+   * waiting for the loop's own delayed transcript write to land, so the turn's
+   * closing reply is in what ships. Runs inside the same best-effort try as
+   * the ship.
    */
-  beforeCommit?: () => Promise<void>;
+  beforeTranscriptShip?: () => Promise<void>;
   /**
    * Reads the id of the last transcript entry for `sessionId` carrying the
    * given DISPLAY role — the same role the shell is about to stamp on
@@ -308,7 +283,7 @@ export interface LoopContext {
   onInterrupt(handler: () => void): () => void;
   /** Emit an assistant delta to the host (event.stream-chunk). */
   emitChunk(chunk: StreamChunk): Promise<void>;
-  /** Close a turn: ships the transcript delta, commits, emits turn-end. */
+  /** Close a turn: ships the transcript delta, emits the turn-ends. */
   endTurn(input: EndTurnInput): Promise<void>;
   /**
    * Publish a transcript the loop deliberately REWROTE, replacing the host's
@@ -374,14 +349,14 @@ export interface RunnerSeams {
    */
   hasLocalTranscript: (env: RunnerEnv, sessionId: string) => Promise<boolean>;
   /**
-   * Loop-specific scaffolding for the freshly-materialized workspace, run
-   * inside the materialize step (so a failure is bootstrap-fatal) and after
-   * the .gitignore scaffold. Where a loop lays down its own transcript
-   * directory (the claude-sdk loop links the SDK's projects dir to the
-   * sandbox's transcripts root). It runs before the resume restore writes
-   * the rebuilt transcript.
+   * Loop-specific session setup, run once at boot right after the session
+   * config arrives. Where a loop lays down what it needs before it starts —
+   * the claude-sdk loop links the SDK's projects dir to the sandbox's
+   * transcripts root. It runs before the resume restore writes the rebuilt
+   * transcript there (#1085), and a failure is bootstrap-fatal (exit 2, no
+   * `event.chat-end`).
    */
-  afterMaterialize?: (env: RunnerEnv) => Promise<void>;
+  prepareSession?: (env: RunnerEnv) => Promise<void>;
   /**
    * Whether the loop's provider accepts `document` content blocks in a user
    * message. Drives attachment translation. Defaults to false.
@@ -538,99 +513,60 @@ async function runRunnerInner(
     return 2;
   }
 
-  // Phase 3: materialize /agent from a host-streamed baseline bundle
-  // BEFORE the loop opens. Failure here is bootstrap-fatal — the
-  // runner has nowhere to write tool output and can't bundle turn-end
-  // diffs without a working tree.
-  //
-  // Why fatal vs. fall-through to `git init`: a materialize failure means
-  // the host either crashed mid-bundle, or its workspace plugin returned
-  // a malformed response. Either is a strong signal something is wrong
-  // upstream; falling through would silently desync the runner from the
-  // host's view of the workspace lineage. Better to fail loud and let
-  // the operator see the error.
-  // The materialize-time tip OID seeds parentVersion below. When the
-  // workspace already has prior history (any session beyond the first
-  // ever), this is the workspace's actual HEAD — not null. Sending
-  // null on the first commit-notify of a non-first session would make
-  // the host export the deterministic empty baseline whose tip
-  // doesn't match our local baseline ref, and the bundler would
-  // reject our thin bundle with "Repository lacks these prerequisite
-  // commits".
-  let initialBaselineCommit: string;
-  // Set true once the session Python venv exists (created or pre-present).
-  // Gates the venv env wiring + system-prompt note below.
-  let pythonVenvReady = false;
+  // Whatever the loop needs laid down before it starts — the claude-sdk loop
+  // links the SDK's projects dir to the sandbox's transcripts root. Loop-shaped
+  // by nature (it knows where its SDK writes), so it is a seam. Bootstrap-fatal:
+  // a loop that cannot find its own transcript would resume nothing. It runs
+  // before the resume restore below writes the rebuilt transcript (#1085).
   try {
-    // The materialize bundle is streamed as a raw octet-stream body and drained
-    // to a temp file (BUG-W3 — bypasses the 4 MiB JSON response cap that an aged
-    // workspace's bundle would blow). materializeWorkspace clones from the file
-    // and owns its deletion.
-    const mat = await client.callBinary('workspace.materialize', {});
-    const out = await materializeWorkspace({
-      root: env.workspaceRoot,
-      bundlePath: mat.path,
-    });
-    initialBaselineCommit = out.baselineCommit;
-    // Ensure dependency/build artifacts (node_modules, venvs, __pycache__,
-    // fetch caches) are git-ignored so agent tooling output isn't committed +
-    // bundled back to the host. Must run AFTER the clone for the same reason
-    // as the skill-surface scaffold (it appends to any baseline .gitignore).
-    await scaffoldWorkspaceGitignore(env.workspaceRoot);
-    // Whatever the loop needs laid down before it starts — typically its own
-    // runner-private transcript directory (never the workspace). Loop-shaped
-    // by nature (it knows where its SDK writes), so it is a seam; it runs
-    // INSIDE this try, so a failure is bootstrap-fatal exactly like the clone
-    // itself.
-    if (seams.afterMaterialize !== undefined) {
-      await seams.afterMaterialize(env);
+    if (seams.prepareSession !== undefined) {
+      await seams.prepareSession(env);
     }
   } catch (err) {
     process.stderr.write(
-      `runner: workspace.materialize failed: ${err instanceof Error ? err.message : String(err)}\n`,
+      `runner: session preparation failed: ${err instanceof Error ? err.message : String(err)}\n`,
     );
     await client.close();
     return 2;
   }
 
-  // Create a session-scoped Python venv on the ephemeral tier so the agent's
+  // Create a session-scoped Python venv in the scratch root so the agent's
   // `pip install` + `import` Just Work. The image bakes a relocatable, pre-
-  // seeded venv template; scaffoldPythonVenv copies it onto the ephemeral tier
+  // seeded venv template; scaffoldPythonVenv copies it into the scratch root
   // OFFLINE (~1s) — see python-venv.ts. (Fallback when no template is baked:
   // an online `uv venv --seed`, which fetches from pypi and is slow/may hang
   // when pypi egress is denied — local dev only.)
   //
-  // BOUNDED-WAIT (and OUTSIDE the materialize try — a venv failure must NOT
-  // abort the session): we wait up to `venvReadyWaitMs` so the fast baked-
-  // template copy resolves before the FIRST turn (so its `pip` is on PATH),
-  // while the slow online fallback (or a hung uv) exceeds the budget and stays
-  // non-blocking — `pythonVenvReady` flips when/if it later succeeds, and turns
-  // before then simply skip the venv env wiring (opt-in via `pip install`). This
-  // bound is what keeps a denied-pypi fallback from stalling the cold-start
-  // turn. AX_VENV_READY_WAIT_MS tunes it (tests set 0 to assert non-blocking).
-  if (env.ephemeralRoot) {
-    const parsedVenvWait = Number.parseInt(
-      process.env.AX_VENV_READY_WAIT_MS ?? '',
-      10,
-    );
-    const venvReadyWaitMs = Number.isFinite(parsedVenvWait)
-      ? parsedVenvWait
-      : 5000;
-    const scaffoldDone = scaffoldPythonVenv(env.ephemeralRoot)
-      .then((ok) => {
-        pythonVenvReady = ok;
-      })
-      .catch(() => {
-        /* scaffoldPythonVenv never throws; defensive */
-      });
-    await Promise.race([
-      scaffoldDone,
-      new Promise<void>((resolve) => {
-        const t = setTimeout(resolve, venvReadyWaitMs);
-        t.unref?.();
-      }),
-    ]);
-  }
+  // BOUNDED-WAIT (and never fatal — a venv failure must NOT abort the
+  // session): we wait up to `venvReadyWaitMs` so the fast baked-template copy
+  // resolves before the FIRST turn (so its `pip` is on PATH), while the slow
+  // online fallback (or a hung uv) exceeds the budget and stays non-blocking —
+  // `pythonVenvReady` flips when/if it later succeeds, and turns before then
+  // simply skip the venv env wiring (opt-in via `pip install`). This bound is
+  // what keeps a denied-pypi fallback from stalling the cold-start turn.
+  // AX_VENV_READY_WAIT_MS tunes it (tests set 0 to assert non-blocking).
+  let pythonVenvReady = false;
+  const parsedVenvWait = Number.parseInt(
+    process.env.AX_VENV_READY_WAIT_MS ?? '',
+    10,
+  );
+  const venvReadyWaitMs = Number.isFinite(parsedVenvWait)
+    ? parsedVenvWait
+    : 5000;
+  const scaffoldDone = scaffoldPythonVenv(env.ephemeralRoot)
+    .then((ok) => {
+      pythonVenvReady = ok;
+    })
+    .catch(() => {
+      /* scaffoldPythonVenv never throws; defensive */
+    });
+  await Promise.race([
+    scaffoldDone,
+    new Promise<void>((resolve) => {
+      const t = setTimeout(resolve, venvReadyWaitMs);
+      t.unref?.();
+    }),
+  ]);
 
   // TASK-995: copy the bound conversation's uploads into `<scratch>/uploads/`,
   // flat (`report.pdf`, `report (2).pdf`), so the agent can open them. The blob
@@ -644,22 +580,14 @@ async function runRunnerInner(
   // that names an id not in it (a new upload on a warm runner) triggers another
   // call, which copies only what is new and keeps every name already given out.
   // Calls are serialized, so two pulls can never copy one upload twice under
-  // two names. Gated on a bound conversation (a session without one has no
-  // uploads) and on a scratch root (`AX_EPHEMERAL_ROOT`): a session wired
-  // without one copies nothing, says so once, and every attachment reaches the
-  // model as "could not be loaded".
+  // two names. Gated on a bound conversation: a session without one has no
+  // uploads.
   const knownUploads = new Map<string, MaterializedUpload>();
-  const uploadsDir =
-    env.ephemeralRoot !== undefined ? path.join(env.ephemeralRoot, 'uploads') : undefined;
-  if (conversationId !== null && uploadsDir === undefined) {
-    process.stderr.write(
-      'runner: no scratch root (AX_EPHEMERAL_ROOT); uploads are not copied into the sandbox\n',
-    );
-  }
+  const uploadsDir = scratchUploadsDir(env.ephemeralRoot);
   let uploadsChain: Promise<void> = Promise.resolve();
   const materializeUploadsForConversation = (): Promise<void> => {
     const run = uploadsChain.then(async () => {
-      if (conversationId === null || uploadsDir === undefined) return;
+      if (conversationId === null) return;
       const before = knownUploads.size;
       try {
         await materializeUploads({
@@ -746,67 +674,15 @@ async function runRunnerInner(
     tools = tools.filter((t) => !deny.has(t.name));
   }
 
-  // Tracks the last accepted workspace version so the host's optimistic-
-  // concurrency check sees a coherent lineage across turns. Initialized
-  // to the materialize-time baseline OID so the FIRST commit-notify of
-  // this session reports a parent that matches what the host's
-  // workspace-export-baseline-bundle hook will reproduce. Declared here
-  // (ahead of the loop) so the mid-turn host-tool flush below and the
-  // turn-end commit share the same chained `parentVersion`.
-  let parentVersion: string | null = initialBaselineCommit;
-
   // TASK-67: the runner-local resume-transcript ship state, threaded across
-  // turns exactly like `parentVersion`. `sentOffset` is the transcript byte
-  // offset already shipped to the host store; `sentSeq` is the host's row count
-  // (max seq). Fresh boot starts at {0,0}; a resume seeds it from the rebuilt
-  // transcript (set in the F2a block below, after restoreTranscriptForResume
-  // runs).
+  // turns. `sentOffset` is the transcript byte offset already shipped to the
+  // host store; `sentSeq` is the host's row count (max seq). Fresh boot starts
+  // at {0,0}; a resume seeds it from the rebuilt transcript (set in the F2a
+  // block below, after restoreTranscriptForResume runs).
   let transcriptShipState: TranscriptShipState = { sentOffset: 0, sentSeq: 0 };
 
-  // Mid-turn flush for host tools that declare `flushWorkspaceBeforeCall`.
-  // The runner commits + pushes its live /agent tree to the host mirror
-  // BEFORE the host tool runs, so a host read of a file the agent just wrote
-  // this turn sees it instead of the stale committed mirror (BUG-W2). Threads the
-  // advanced version back into `parentVersion` so the turn-end commit chains,
-  // and returns the flush outcome so the forwarder can gate the call on it.
-  //
-  // Serialized via `flushChain`: `commitTurnAndBundle` runs git ops on the one
-  // /agent repo and reads+mutates the shared `parentVersion`. If the loop
-  // ever dispatches two flagged host tools concurrently, unserialized flushes
-  // would race the git index and the parent token; chaining makes the
-  // read-flush-write critical section atomic. The turn-end commit runs at the
-  // turn boundary (after all tool calls), so it never overlaps a flush.
-  let flushChain: Promise<unknown> = Promise.resolve();
-  const flushWorkspaceForHostTool = (): Promise<HostToolFlush> => {
-    const run = flushChain.then(async () => {
-      const result = await flushWorkspaceToHost({
-        client,
-        root: env.workspaceRoot,
-        parentVersion,
-        reason: 'turn',
-      });
-      parentVersion = result.parentVersion;
-      // Pass the host's refusal reason through to the forwarder; it is what the
-      // model reads when a veto discards the file it just wrote.
-      return {
-        outcome: result.outcome,
-        ...(result.rejectionReason !== undefined
-          ? { rejectionReason: result.rejectionReason }
-          : {}),
-      };
-    });
-    // Keep the chain alive whether this run resolves or rejects, so one failed
-    // flush doesn't permanently wedge the next.
-    flushChain = run.then(
-      () => undefined,
-      () => undefined,
-    );
-    return run;
-  };
-
   // Phase 2: sandbox-MCP bridge. The local-dispatcher holds executors for
-  // tools marked `executesIn: 'sandbox'`. Today only `artifact_publish`
-  // uses this path; future sandbox tools register here too.
+  // tools marked `executesIn: 'sandbox'` (`artifact_publish`, `skill_propose`).
   const localDispatcher = createLocalDispatcher();
   if (tools.some((t) => t.name === ARTIFACT_PUBLISH_TOOL_NAME && t.executesIn === 'sandbox')) {
     // TASK-68: the executor streams artifact bytes to the host blob store
@@ -815,37 +691,27 @@ async function runRunnerInner(
     //
     // It also needs the session's REAL roots, because the allowlist validates
     // against them rather than against hardcoded sandbox-absolute literals: the
-    // durable tier is publishable in full (it is the agent's cwd — the usual
-    // home of a deliverable) and the scratch tier only under `artifacts/`. Both
-    // spread-when-present, same as the skill_propose executor below; the
-    // governed root is deliberately NOT passed, because no path under it is
-    // publishable any more.
+    // home is publishable in full (the usual home of a deliverable) and the
+    // scratch root only under `artifacts/` — never its uploads or transcripts.
     localDispatcher.register(
       ARTIFACT_PUBLISH_TOOL_NAME,
       createArtifactPublishExecutor({
-        ...(env.userFilesRoot !== undefined ? { userFilesRoot: env.userFilesRoot } : {}),
-        ...(env.ephemeralRoot !== undefined ? { ephemeralRoot: env.ephemeralRoot } : {}),
+        userFilesRoot: env.userFilesRoot,
+        ephemeralRoot: env.ephemeralRoot,
         client,
         conversationId,
       }),
     );
   }
   // TASK-74 — skill_propose executor (sandbox-executed, like artifact_publish):
-  // reads the agent's draft under `<root>/.skill-draft/<id>/`, validates it, and
+  // reads the agent's draft under `<home>/.skill-draft/<id>/`, validates it, and
   // ships it to the host gate over the skill.propose IPC action. The draft root is
-  // the DURABLE per-agent mount when wired (AX_USERFILES_ROOT) so drafts persist
-  // across sessions, else the ephemeral scratch tier (fallback) — TASK-165 / §7.
-  // Needs both roots (the executor picks userFilesRoot ?? ephemeralRoot) + the IPC
-  // client; scope is host-derived. Both spread-when-present so an absent tier is
-  // simply not passed.
+  // the agent's home, so drafts persist across sessions (TASK-165 / §7); scope is
+  // host-derived.
   if (tools.some((t) => t.name === SKILL_PROPOSE_TOOL_NAME && t.executesIn === 'sandbox')) {
     localDispatcher.register(
       SKILL_PROPOSE_TOOL_NAME,
-      createSkillProposeExecutor({
-        ...(env.userFilesRoot !== undefined ? { userFilesRoot: env.userFilesRoot } : {}),
-        ...(env.ephemeralRoot !== undefined ? { ephemeralRoot: env.ephemeralRoot } : {}),
-        client,
-      }),
+      createSkillProposeExecutor({ userFilesRoot: env.userFilesRoot, client }),
     );
   }
 
@@ -856,30 +722,22 @@ async function runRunnerInner(
   // declares it; conservative default false.
   const SUPPORTS_DOCUMENT_BLOCKS = seams.supportsDocumentBlocks ?? false;
 
-  // Phase 3: workspace commits are turn-end via git-status against
-  // /agent (`commitTurnAndBundle` at the turn boundary).
-  // The legacy PostToolUse-based diff accumulator is gone — git status
-  // catches ALL writes regardless of tool, including the Bash deletes
-  // and MCP writes the legacy path missed. (`parentVersion` is declared
-  // above, before the dispatcher, so the mid-turn host-tool flush
-  // shares the same chained version.)
-
   // Phase C: bind the loop's session_id to our conversation row.
   //
-  // The loop's SDK owns durable transcripts on disk (under HOME, which we
-  // redirect into the workspace in a sibling task). We capture the session_id
-  // the loop reports at its first init and POST it to the host so a future
-  // runner restart can `resume(sessionId)` — read back via the
+  // The loop keeps a transcript under that session id (the claude-sdk loop's
+  // jsonl under the sandbox's transcripts root; the host store is its source
+  // of truth). We capture the session_id the loop reports and POST it to the
+  // host so a future runner can `resume(sessionId)` — read back via the
   // runnerSessionId field on the next session.get-config response (Phase E).
+  // When the bind happens is `bindRunnerSessionIfNeeded`'s business (F2a:
+  // only once the transcript is durable on the host).
   //
-  // Once-only: a loop can re-emit init on a resume path. Only the FIRST init
-  // is load-bearing for the bind — the runner sets the flag BEFORE the await
-  // so a re-entrant init can't double-fire even if the IPC is in flight.
+  // Once-only: a loop can re-emit init on a resume path. Only the FIRST bind
+  // is load-bearing.
   //
-  // Non-fatal: if the bind fails, we lose the resume optimization on
-  // next restart (the SDK starts a fresh session and writes a new jsonl,
-  // which the workspace-jsonl reader still picks up alongside any
-  // earlier jsonl files). The chat itself continues uninterrupted.
+  // Non-fatal unless the host refuses outright: if the bind fails transiently,
+  // the next ship retries it; at worst a later runner starts a fresh session
+  // instead of resuming. The chat itself continues uninterrupted.
   let runnerSessionIdSent = false;
   // Host-side bookkeeping for the final event.chat-end outcome. The loop's SDK
   // maintains its OWN transcript internally; this array is only the shape
@@ -910,79 +768,6 @@ async function runRunnerInner(
   // an unset reqId causes the chunk to be skipped (no `event.stream-chunk`
   // with a missing reqId — the host's router can't route it).
   let currentReqId: string | undefined;
-
-  // TASK-732: the model-facing notice for an end-of-turn save the host refused.
-  // `closeTurn` sets it after the refusal undid the turn's files — the model
-  // had stopped talking by then, so it cannot be told in that turn — and the
-  // next turn `nextMessage` starts takes it (prepended to that turn's content)
-  // and clears it, so the model is told exactly once.
-  //
-  // Taken when the next turn's message is BUILT, not when its pull began: a
-  // loop that pulls ahead (the Claude Agent SDK) has a pull pending all through
-  // a turn, and the notice is only set at that turn's close. A message that
-  // arrives before the close (folded into the running turn, or racing the
-  // commit) therefore goes out without it, and the notice rides the message
-  // after — late, but not lost. A notice still pending when another refusal
-  // lands is replaced by the newer one; an accepted save never clears it,
-  // because the files it reports are still gone.
-  //
-  // That covers refusals THIS process saw. The FINAL/idle commit after the loop
-  // drains, and a per-turn refusal on a runner that exits before its next
-  // message, leave no later turn in their process; the host keeps those
-  // (TASK-731's `save-refused` rows) and this process drains them as it builds
-  // each turn (TASK-749, `withSaveRefusedNotice`).
-  let pendingSaveRefusedNotice: string | undefined;
-
-  // TASK-749: the fold key the host stores each per-turn refusal of THIS
-  // process under — the turn's reqId, or '' for a turn that had none (the
-  // same derivation as ipc-core's turn-end persist). A drained refusal with
-  // one of these keys is one this process already told (or will tell) the
-  // model about in-process, so it is dropped rather than told twice.
-  //
-  // Imprecise for dark turns: every reqId-less turn shares the `''` key (the
-  // host folds them that way, TASK-731), so once this process has refused a
-  // dark turn, another process's orphaned dark-turn refusal is dropped too.
-  // Dark turns are decision-resolved turns with no continuation id, so this
-  // costs an advisory notice in a narrow case; the person still sees the row.
-  const refusedTurnKeys = new Set<string>();
-
-  /**
-   * TASK-749: take the refused saves the host kept for the model
-   * (`conversation.drain-save-refusals`), minus the ones this process saw
-   * itself. Best-effort: a failed drain leaves the rows untold on the host for
-   * a later turn, and never fails this one. Conversation-bound runs only.
-   */
-  async function drainHostSaveRefusals(): Promise<SaveRefusedCode[]> {
-    if (conversationId === null) return [];
-    try {
-      const resp = (await client.call(
-        'conversation.drain-save-refusals',
-        {},
-      )) as ConversationDrainSaveRefusalsResponse;
-      return resp.refusals
-        .filter((r) => r.turnReqId === null || !refusedTurnKeys.has(r.turnReqId))
-        .map((r) => r.code);
-    } catch (err) {
-      process.stderr.write(
-        `runner: drain-save-refusals failed (continuing): ${err instanceof Error ? err.message : String(err)}\n`,
-      );
-      return [];
-    }
-  }
-
-  /**
-   * Prepend the refused-save notice for this turn, if any, and clear it. The
-   * in-process notice wins when there is one (it carries the host's reason);
-   * otherwise refusals the host kept for the model are told by code. Either
-   * way the model reads ONE notice.
-   */
-  async function withSaveRefusedNotice(content: unknown): Promise<unknown> {
-    const drained = await drainHostSaveRefusals();
-    const notice = pendingSaveRefusedNotice ?? saveRefusedNoticeFromCodes(drained);
-    pendingSaveRefusedNotice = undefined;
-    if (notice === undefined) return content;
-    return prependNotice(content, notice);
-  }
 
   // TASK-573: a reqId belongs to the TURN its message starts, and a turn owns
   // it until its `endTurn` has emitted the turn-end — not merely until the next
@@ -1281,10 +1066,7 @@ async function runRunnerInner(
           typeof entry.reqId === 'string' && entry.reqId.length > 0 ? entry.reqId : undefined;
         adoptReqIdForTurn({ reqId: continuationReqId });
         chatEndHistory.push({ role: 'user', content });
-        return {
-          content: await withSaveRefusedNotice(content),
-          id: trackMessage(continuationReqId),
-        };
+        return { content, id: trackMessage(continuationReqId) };
       }
       if (entry.payload === undefined) continue;
       // Capture the host-minted reqId so subsequent stream-chunk
@@ -1349,20 +1131,12 @@ async function runRunnerInner(
       // by conversationId, one-shot keep-warm, clear-active-req-id), closing
       // the live stream before the turn even runs. See orchestrator.
 
-      // chatEndHistory above stays the person's words; the refused-save
-      // notice (TASK-732) is for the model only.
-      return {
-        content: await withSaveRefusedNotice(messageContent),
-        id: trackMessage(messageReqId),
-      };
+      return { content: messageContent, id: trackMessage(messageReqId) };
     }
   }
 
   let exitCode = 0;
   let terminatedReason: string | undefined;
-  // TASK-731: set iff the host refused the FINAL/idle save (the flush after
-  // the last turn-end); read by the single `event.chat-end` at the bottom.
-  let finalSaveRefused: SaveRefusedCode | undefined;
   let terminatedError:
     | { name: string; message: string; stack?: string }
     | undefined;
@@ -1372,8 +1146,8 @@ async function runRunnerInner(
   // conversation found with session ID: X" whenever the bound session has NO
   // parseable transcript on disk where the SDK looks for it.
   //
-  // The transcript now lives OUT OF GIT, as rows in the host store (TASK-67).
-  // So on resume we REBUILD the transcript from the store FIRST —
+  // The transcript lives as rows in the host store (TASK-67), its source of
+  // truth. So on resume we REBUILD the transcript from the store FIRST —
   // `restoreTranscriptForResume` fetches the joined bytes and writes them via
   // the loop's transcript source (the path the SDK reads) — then seed
   // `transcriptShipState` so the delta-ship picks up where the store
@@ -1429,29 +1203,30 @@ async function runRunnerInner(
   }
 
   // F2a root fix: bind the conversation row → runner-native transcript ONCE,
-  // after the first host-ACCEPTED turn-end commit — NOT at the loop's init.
-  // Binding at init persisted `runner_session_id` ~1s into the turn, BEFORE the
-  // transcript is durable on the host (commits fire only at turn-end). A turn
-  // killed in that window left a binding that points at nothing, so the retry's
-  // `query({ resume })` crashed with "No conversation found". Deferring the bind
-  // to a host-accepted commit makes `runner_session_id` set IFF a resumable
-  // transcript exists → a killed-before-commit turn leaves it NULL → the retry
-  // starts fresh cleanly. Gated to the fresh-boot case (`runnerSessionId` null);
-  // a resumed session is already bound on the host.
+  // after the host first ACCEPTS this transcript (an appended or resynced
+  // turn-end ship) — NOT at the loop's init. Binding at init persisted
+  // `runner_session_id` ~1s into the turn, BEFORE the transcript was durable on
+  // the host. A turn killed in that window left a binding that points at
+  // nothing, so the retry's `query({ resume })` crashed with "No conversation
+  // found". Deferring the bind to a host-accepted ship makes
+  // `runner_session_id` set IFF a resumable transcript exists → a turn killed
+  // before its ship leaves it NULL → the retry starts fresh cleanly. Gated to
+  // the fresh-boot case (`runnerSessionId` null); a resumed session is already
+  // bound on the host.
   //
   // Failure handling distinguishes two cases:
   //   - definitive host rejection (4xx IpcRequestError — don't-retry per the
   //     IPC taxonomy): the conversation can't be bound to this id. The chief
   //     case is 409 conflict (HOOK_REJECTED) — the host already bound this
   //     conversation to a DIFFERENT id, a concurrent fresh-boot race in which
-  //     another runner won; we are the loser and continuing to stream/commit
+  //     another runner won; we are the loser and continuing to stream and ship
   //     under our orphan transcript would diverge the conversation. (404/400
   //     are likewise unrecoverable.) RE-THROW so the run terminates (host
   //     chat:end outcome `terminated`, surfaced by F2b) rather than silently
-  //     committing an orphan. The host's once-only bind invariant relies on
+  //     shipping an orphan. The host's once-only bind invariant relies on
   //     the loser stopping here.
   //   - anything else (network / 5xx / timeout): transient — leave the flag
-  //     unset so the next accepted commit (or the final commit) retries; the
+  //     unset so the next accepted ship (or the final one) retries; the
   //     turn already streamed to the user, so failing the run now would be
   //     incoherent.
   async function bindRunnerSessionIfNeeded(): Promise<void> {
@@ -1473,9 +1248,8 @@ async function runRunnerInner(
       runnerSessionIdSent = true;
     } catch (err) {
       // 4xx (e.g. 409 conflict, 404 not-found) is a definitive host rejection —
-      // not retryable; terminate rather than orphan. (commitNotifyWithResync
-      // swallows its own IPC errors, so a 4xx in the surrounding commit try can
-      // only originate from this bind.) 5xx was already retried by the client.
+      // not retryable; terminate rather than orphan. 5xx was already retried by
+      // the client.
       if (
         err instanceof IpcRequestError &&
         err.status >= 400 &&
@@ -1484,49 +1258,37 @@ async function runRunnerInner(
         throw err;
       }
       process.stderr.write(
-        `runner: conversation.store-runner-session failed (will retry on next commit): ${err instanceof Error ? err.message : String(err)}\n`,
+        `runner: conversation.store-runner-session failed (will retry on the next transcript ship): ${err instanceof Error ? err.message : String(err)}\n`,
       );
     }
   }
 
-  // filestore-user-files Phase 2 (TASK-164) — the agent's WORKING FRAME.
+  // filestore-user-files Phase 2 (TASK-164) — the agent's home.
   //
-  // When the sandbox wired a durable per-agent user-files mount
-  // (AX_USERFILES_ROOT, e.g. `/files`), the loop's subprocess cwd + HOME
-  // move there, so relative-path file work, builds, `git clone .`, `~/bin`, and
-  // tool caches all default to durable NFS instead of the ephemeral `/agent`
-  // emptyDir. Without a durable mount, use session scratch; only ad-hoc callers
-  // that wire neither tier fall back to the governed root.
-  //
-  // This is ONLY the agent's working frame. The GOVERNED frame
-  // (`env.workspaceRoot`=/agent — the validated, git-backed tier) is unchanged
-  // and still drives every other path: git status/bundle, the
-  // prompt-engine's `${workspaceRoot}/.ax` reads, and — critically — the
-  // PreToolUse re-rooter's TARGET, so `.ax/**`+`.claude/**`
-  // self-edits land back on /agent even though cwd is now ungoverned NFS (§14).
+  // The loop's SDK subprocess runs with cwd + HOME = the durable per-agent
+  // user-files mount (AX_USERFILES_ROOT, e.g. `/files`), so relative-path file
+  // work, builds, `git clone .` and `~/bin` all land on durable NFS. TASK-995
+  // made the mount required: there is no fallback home and no second tree the
+  // runner manages. A file with a configuration-looking name (`CLAUDE.md`,
+  // `.claude/settings.json`) is an ordinary file here that nothing loads: the
+  // SDK reads settings only from CLAUDE_CONFIG_DIR, which
+  // `assertConfigDirOutsideAgentHome` keeps out of the home.
   const homeDir = runnerHomeDir(env);
   // Automatic publication goes through the same policy gate as a model call.
   // A denied/held publish never uploads bytes or sidesteps an approval.
-  const generatedFilePolicy = createToolPolicy({ client, workspaceRoot: env.workspaceRoot });
+  const generatedFilePolicy = createToolPolicy({ client });
   const publishGeneratedFile = createArtifactPublishExecutor({
-    ...(env.userFilesRoot !== undefined ? { userFilesRoot: env.userFilesRoot } : {}),
-    ...(env.ephemeralRoot !== undefined ? { ephemeralRoot: env.ephemeralRoot } : {}),
+    userFilesRoot: env.userFilesRoot,
+    ephemeralRoot: env.ephemeralRoot,
     client, conversationId,
   });
-  const generatedRoot = env.userFilesRoot ?? (env.ephemeralRoot !== undefined
-    ? path.join(env.ephemeralRoot, 'artifacts') : undefined);
-  const canPublishGenerated = generatedRoot !== undefined && conversationId !== null &&
+  // New files the turn left in the home are attached to it (the home is where
+  // the notes tell the model to put finished files).
+  const canPublishGenerated = conversationId !== null &&
     localDispatcher.has(ARTIFACT_PUBLISH_TOOL_NAME);
-  // Create the designated scratch output directory before the baseline scan,
-  // so files from the first turn are new rather than an unavailable baseline.
-  if (canPublishGenerated && env.userFilesRoot === undefined) {
-    await fsp.mkdir(generatedRoot, { recursive: true }).catch(() => {
-      process.stderr.write('runner: could not prepare generated file directory\n');
-    });
-  }
   const generatedFiles = canPublishGenerated
     ? await trackGeneratedFiles({
-        root: generatedRoot,
+        root: homeDir,
         warn: () => process.stderr.write('runner: could not attach a generated file\n'),
         publish: async call => {
           const verdict = await generatedFilePolicy.preToolUse(call.name, call.input, call.id);
@@ -1559,17 +1321,11 @@ async function runRunnerInner(
   const composedSystemPrompt = await buildSystemPrompt(
     agentConfig.displayName,
     agentConfig.systemPromptAugment,
-    env.workspaceRoot,
+    // The agent's home (its cwd) and the scratch root whose `uploads/` holds
+    // the files people share in this conversation (TASK-995).
+    homeDir,
     env.ephemeralRoot,
     pythonVenvReady,
-    // filestore-user-files Phase 1: advertise the durable per-agent mount when
-    // the sandbox wired one.
-    env.userFilesRoot,
-    // filestore-user-files Phase 2 (TASK-164): the agent's effective working
-    // directory. When it differs from the governed root, the workspace note
-    // states both so the model resolves shared `.ax/uploads/…` files under the
-    // governed root, not the new cwd.
-    homeDir,
     env.memoryRoot,
     // TASK-524: the bootstrap-safe slice of the augment (the kernel `rules`
     // and `brief` sections; people's Instructions now arrive in
@@ -1587,30 +1343,6 @@ async function runRunnerInner(
     tools.some((tool) => tool.name === UPDATE_IDENTITY_TOOL_NAME),
   );
 
-  // Turn boundary (Phase 3). Replaces the legacy PostToolUse-based
-  // diff observer with `git status` + bundle:
-  //   1. Stage everything in /agent (`git add -A`) — catches
-  //      ALL writes, regardless of which tool wrote (Bash, MCP,
-  //      SDK Write/Edit/MultiEdit, raw fs, jsonl). Closes the
-  //      Bash-delete + MCP-write + jsonl gaps that motivated
-  //      the redesign.
-  //   2. If nothing's staged → empty turn → skip commit-notify
-  //      entirely (same heartbeat-only semantic the legacy path
-  //      had for empty diffs).
-  //   3. Otherwise: commit, build a thin `baseline..main` bundle,
-  //      ship as `workspace.commit-notify`.
-  //   4. On accept: advance refs/heads/baseline so the next turn
-  //      bundles from the new state.
-  //   5. On veto: roll the working tree back to baseline (the
-  //      agent's writes for this turn are undone).
-  //   6. On IPC error (host unreachable, 5xx): preserve the
-  //      working tree as-is. Don't advance baseline; don't
-  //      rollback. The next turn's `git add -A` will accumulate
-  //      this turn's changes plus the next turn's, and we ship
-  //      the combined bundle. Best-effort retry by accumulation.
-  //
-  // Failures here MUST NOT terminate the chat — `event.turn-end`
-  // is still the heartbeat the host keys off.
   /**
    * `LoopContext.replaceTranscript` — see its doc comment for the contract.
    *
@@ -1668,27 +1400,19 @@ async function runRunnerInner(
     // Attach to the FIRST persisted turn-end: that is the one that closes SSE
     // and triggers the live client's history re-read. No new wire/event shape.
     const toolResultBlocks = [...input.toolResultBlocks, ...explicitFiles.blocks, ...generatedBlocks];
-    // Set by the end-of-turn commit below iff the host refused the save; read
-    // by the assistant turn-end. Scoped to THIS turn: a later turn's turn-end
-    // must not repeat an earlier refusal.
-    let saveRefused: SaveRefusedCode | undefined;
     try {
       commitTrace(
-        `[commit-trace] per-turn result: session=${transcriptSessionId ?? 'null'} contentBlocks=${input.contentBlocks.length} toolResults=${input.toolResultBlocks.length} finalAsstUuid=${input.lastAssistantUuid ?? '-'} parent=${parentVersion ?? 'null'}\n`,
+        `[commit-trace] per-turn result: session=${transcriptSessionId ?? 'null'} contentBlocks=${input.contentBlocks.length} toolResults=${input.toolResultBlocks.length} finalAsstUuid=${input.lastAssistantUuid ?? '-'}\n`,
       );
       // Let the loop wait for its own delayed transcript write to land so this
-      // turn's closing reply is captured by the commit/bundle below.
-      if (input.beforeCommit !== undefined) {
-        await input.beforeCommit();
+      // turn's closing reply is in the ship below.
+      if (input.beforeTranscriptShip !== undefined) {
+        await input.beforeTranscriptShip();
       }
-      // TASK-67: ship the resume-transcript DELTA (the loop's transcript, now
-      // out of git). Replaces the per-turn commit/bundle of the jsonl: the new
-      // lines append as opaque rows in the host store, O(1) per turn. The
-      // bind-after-DURABLE (F2a) moves here — the transcript is durable once
-      // the host accepts the append/replace, mirroring today's
-      // bind-after-commit-accepted. Non-transcript /agent state (identity,
-      // Pattern A) still rides commitTurnAndBundle below (the jsonl is
-      // gitignored, so that commit is usually empty on a chat turn).
+      // TASK-67: ship the resume-transcript DELTA (the loop's transcript). The
+      // new lines append as opaque rows in the host store, its source of truth,
+      // O(1) per turn. The transcript is durable once the host accepts the
+      // append/resync, so that is when the runner session binds (F2a).
       if (transcriptSessionId !== null && conversationId !== null) {
         const shipped = await shipTranscriptDelta({
           client,
@@ -1707,58 +1431,11 @@ async function runRunnerInner(
           await bindRunnerSessionIfNeeded();
         }
       }
-      // Commit + bundle any NON-transcript /agent change (identity,
-      // Pattern A project code). With transcripts (TASK-67), blobs/
-      // attachments (TASK-68), and skills (TASK-69) all off git, this is
-      // the WHOLE of what the per-turn commit carries now — and a pure
-      // chat turn changes none of it: `.claude/projects/` is gitignored,
-      // so nothing stages → `commitTurnAndBundle` returns null →
-      // commit-notify is SKIPPED. The commit fires ONLY on a non-empty
-      // /agent diff (TASK-70 Phase-5 gate; the empty-diff skip is the
-      // `git diff --cached --quiet` short-circuit inside
-      // commitTurnAndBundle).
-      const bundle = await commitTurnAndBundle({
-        root: env.workspaceRoot,
-        reason: 'turn',
-      });
-      commitTrace(
-        `[commit-trace] per-turn commitTurnAndBundle → ${bundle === null ? 'EMPTY (no staged diff; commit-notify SKIPPED)' : `${bundle.length}B`}\n`,
-      );
-      if (bundle !== null) {
-        // Bounded re-sync + retry. On a concurrent-writer advance the host
-        // returns accepted:false with actualParent + baselineBundleBytes;
-        // the shared helper rebases our turn commit onto the new head and
-        // retries (up to MAX_RESYNC_ATTEMPTS). A true policy veto rolls
-        // back; a network/5xx error keeps the tree intact for accumulation
-        // next turn. Same helper drives the final/idle commit below.
-        const result = await commitNotifyWithResync({
-          client,
-          root: env.workspaceRoot,
-          bundle,
-          parentVersion,
-          reason: 'turn',
-        });
-        parentVersion = result.parentVersion;
-        // TASK-720: a TERMINAL refusal (the host objected, or the save was too
-        // big to carry) just took this turn's files back. The person is told
-        // now — the code rides this turn's `event.turn-end`s below as
-        // `saveRefused`, and the host persists it as a display event so it
-        // survives a reload (TASK-731). The model has stopped talking, so it is
-        // told at the start of its NEXT turn (TASK-732,
-        // `pendingSaveRefusedNotice`).
-        saveRefused = saveRefusedFrom(result);
-        pendingSaveRefusedNotice = saveRefusedNotice(result) ?? pendingSaveRefusedNotice;
-        // TASK-749: the host keeps this refusal for the model too; remember
-        // its key so a later drain does not tell the model twice.
-        if (saveRefused !== undefined) refusedTurnKeys.add(currentReqId ?? '');
-        commitTrace(
-          `[commit-trace] per-turn DONE outcome=${result.outcome} parent=${parentVersion ?? 'null'}\n`,
-        );
-      }
     } catch (err) {
-      // A 4xx from bindRunnerSessionIfNeeded (e.g. conversation owned by
-      // another session) is terminal — propagate it past this
-      // commit-failure catch so the run ends `terminated` instead of
+      // A 4xx IpcRequestError is a definitive host refusal (don't-retry per
+      // the IPC taxonomy) — chiefly bindRunnerSessionIfNeeded's, when another
+      // runner already bound this conversation. It is terminal: propagate it
+      // past this best-effort catch so the run ends `terminated` instead of
       // silently orphaning.
       if (
         err instanceof IpcRequestError &&
@@ -1767,11 +1444,12 @@ async function runRunnerInner(
       ) {
         throw err;
       }
-      // commitTurnAndBundle itself failed (git binary missing,
-      // /agent in a weird state, etc.). Non-fatal; the next
-      // turn will retry.
+      // Anything else (the loop's wait threw, the host was unreachable after
+      // retries) is non-fatal: the next ship re-sends everything past the last
+      // accepted offset, and the final ship after the loop drains is the
+      // safety net.
       process.stderr.write(
-        `runner: commitTurnAndBundle failed: ${err instanceof Error ? err.message : String(err)}\n`,
+        `runner: turn-end transcript ship failed: ${err instanceof Error ? err.message : String(err)}\n`,
       );
     }
 
@@ -1820,17 +1498,6 @@ async function runRunnerInner(
           // request's freshly-minted reqId, dead to those subscribers.
           ...(currentReqId !== undefined ? { reqId: currentReqId } : {}),
           ...(turnId !== undefined ? { turnId } : {}),
-          // TASK-720: the refusal rides BOTH turn-ends of this turn, not only
-          // the assistant one below. A turn a save can be refused on is a turn
-          // that wrote files, i.e. one that ran tools, i.e. one that emits this
-          // event FIRST — and channel-web's SSE `done` subscriber closes the
-          // stream on the first `chat:turn-end` carrying this reqId (the reply
-          // itself already streamed as chunks). A code that rode only the
-          // assistant turn-end reached an unsubscribed subscriber, so the
-          // person was never told. The host persists it from each turn-end
-          // (TASK-731), keyed on this turn's reqId, so the two rows fold to
-          // one on read: carrying it twice costs nothing.
-          ...(saveRefused !== undefined ? { saveRefused } : {}),
           // TASK-708: messages this turn answered that have no turn-end of
           // their own. On both turn-ends, like the reqId, so a subscriber
           // that acts on the first one sees them.
@@ -1863,11 +1530,6 @@ async function runRunnerInner(
           ? { contentBlocks: input.contentBlocks }
           : {}),
         ...(turnUsage !== undefined ? { usage: turnUsage } : {}),
-        // TASK-720: on both turn-ends of this turn — see the role='tool' event
-        // above for why the first one has to carry it too. Usage is the field
-        // that must stay assistant-only (the tool turn-end is the same turn and
-        // metering both would double-charge it); this one is not metered.
-        ...(saveRefused !== undefined ? { saveRefused } : {}),
         // See reqId rationale on the tool turn-end above.
         ...(currentReqId !== undefined ? { reqId: currentReqId } : {}),
         ...(assistantTurnId !== undefined ? { turnId: assistantTurnId } : {}),
@@ -1921,7 +1583,6 @@ async function runRunnerInner(
     agentConfig,
     tools,
     localDispatcher,
-    flushWorkspaceForHostTool,
     proxyStartup,
     pythonVenvReady,
     homeDir,
@@ -1940,24 +1601,14 @@ async function runRunnerInner(
       terminatedReason = outcome.reason;
     }
 
-    // Final commit: the loop's SDK subprocess writes the assistant response to
-    // the transcript AFTER yielding `result` to Node.js. The per-turn commit in
-    // the turn handler fires before those writes land, so the assistant
-    // response is always missing from the committed state. Committing here
-    // — after the loop fully drains — captures the SDK's delayed
-    // writes. If nothing changed vs. the last per-turn commit (e.g. the
-    // SDK flushed everything before `result`), `git add -A` produces an
-    // empty diff and no commit is created (commitTurnAndBundle short-
-    // circuits on empty diffs).
-    commitTrace(
-      `[commit-trace] for-await drained → final flush (parent=${parentVersion ?? 'null'})\n`,
-    );
+    // Final transcript ship: the loop's SDK subprocess may write the closing
+    // assistant line AFTER yielding `result` to Node.js, so a per-turn ship can
+    // race it. Shipping once more here — after the loop fully drains —
+    // captures that tail.
+    commitTrace('[commit-trace] for-await drained → final transcript ship\n');
     try {
-      // TASK-67: final transcript flush. The SDK writes the closing assistant
-      // line AFTER yielding `result`, so the per-turn ship may have raced it;
-      // this final ship (after the loop fully drains) captures the tail.
-      // `shipTranscriptDelta` is a noop when the per-turn ship already sent
-      // everything (no new complete line past sentOffset).
+      // TASK-67: `shipTranscriptDelta` is a noop when the per-turn ship already
+      // sent everything (no new complete line past sentOffset).
       if (transcriptSessionId !== null && conversationId !== null) {
         const shipped = await shipTranscriptDelta({
           client,
@@ -1978,43 +1629,6 @@ async function runRunnerInner(
           await bindRunnerSessionIfNeeded();
         }
       }
-      // Commit + bundle any NON-transcript /agent change (see per-turn site).
-      const finalBundle = await commitTurnAndBundle({
-        root: env.workspaceRoot,
-        reason: 'turn',
-      });
-      commitTrace(
-        `[commit-trace] final commitTurnAndBundle → ${finalBundle === null ? 'EMPTY (no staged diff; commit-notify SKIPPED)' : `${finalBundle.length}B`}\n`,
-      );
-      if (finalBundle !== null) {
-        const result = await commitNotifyWithResync({
-          client,
-          root: env.workspaceRoot,
-          bundle: finalBundle,
-          parentVersion,
-          reason: 'turn',
-        });
-        parentVersion = result.parentVersion;
-        commitTrace(
-          `[commit-trace] final DONE outcome=${result.outcome} parent=${parentVersion ?? 'null'}\n`,
-        );
-        // TASK-731: no turn-end follows the final/idle commit, so its refusal
-        // rides `event.chat-end` below instead, and the host persists it for
-        // the next read of the thread (no stream is open by then). This is
-        // not a corner case: the final flush bundles baseline..main, so it can
-        // carry files from an EARLIER reply whose own save came back `kept`
-        // (host unreachable, retried here), plus late/background writes.
-        // Those can be files the person watched being made. The stderr line
-        // stays as an operator log. No later turn runs in this process, so
-        // the MODEL is told by the next runner that serves this conversation:
-        // the host keeps the row, and that runner drains it (TASK-749).
-        finalSaveRefused = saveRefusedFrom(result);
-        if (finalSaveRefused !== undefined) {
-          process.stderr.write(
-            `runner: final save refused (${finalSaveRefused}); the unsaved files were rolled back and the notice rides event.chat-end\n`,
-          );
-        }
-      }
     } catch (err) {
       // Propagate a terminal bind rejection (4xx) past this best-effort catch
       // so the run ends `terminated` rather than orphaning (see per-turn site).
@@ -2025,7 +1639,7 @@ async function runRunnerInner(
       ) {
         throw err;
       }
-      process.stderr.write(`runner: final transcript flush / commit failed: ${err instanceof Error ? err.message : String(err)}\n`);
+      process.stderr.write(`runner: final transcript ship failed: ${err instanceof Error ? err.message : String(err)}\n`);
     }
   } catch (err) {
     exitCode = 1;
@@ -2065,15 +1679,8 @@ async function runRunnerInner(
       process.stderr.write(JSON.stringify({ event: 'chat_end_history_bounded', sessionId: env.sessionId.slice(0, 128), dropped: chatEndHistory.dropped, shortened: chatEndHistory.shortened }) + '\n');
     } catch { /* best-effort diagnostic */ }
   }
-  // TASK-731: a refused final/idle save rides here (see the final commit
-  // above). Absent when that save went through, had nothing to save, never
-  // ran, or failed in a way that is not a refusal. A per-turn refusal never
-  // lands here: it already rode its own turn-end.
   await client
-    .event('event.chat-end', {
-      outcome,
-      ...(finalSaveRefused !== undefined ? { saveRefused: finalSaveRefused } : {}),
-    })
+    .event('event.chat-end', { outcome })
     .catch(error => logEventRefusal('event.chat-end', error));
   await client.close().catch(() => {
     /* close is best-effort; a clean chat shouldn't exit non-zero on teardown */

@@ -8,6 +8,7 @@ import {
   collisionName,
   materializeUploads,
   sanitizeUploadName,
+  scratchUploadsDir,
   type MaterializedUpload,
 } from '../materialize-uploads.js';
 
@@ -94,6 +95,15 @@ async function run(listed: Listed[], known = new Map<string, MaterializedUpload>
 
 const names = (known: Map<string, MaterializedUpload>): Record<string, string> =>
   Object.fromEntries([...known].map(([id, u]) => [id, path.basename(u.path)]));
+
+describe('scratchUploadsDir', () => {
+  // The one definition of where the copies land: the runner writes there, and
+  // the files note names it to the model.
+  it('is `uploads/` directly under the scratch root', () => {
+    expect(scratchUploadsDir('/tmp')).toBe('/tmp/uploads');
+    expect(scratchUploadsDir('/var/scratch-9/')).toBe('/var/scratch-9/uploads');
+  });
+});
 
 describe('sanitizeUploadName', () => {
   it.each([

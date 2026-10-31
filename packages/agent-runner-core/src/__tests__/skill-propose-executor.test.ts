@@ -1,14 +1,13 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { promises as fs } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { createSkillProposeExecutor } from '../skill-propose-executor.js';
 import type { ToolCall } from '@ax/ipc-protocol';
 
-// The draft root is now dynamic (filestore-user-files Phase 3 / TASK-165): drafts
-// stage under `<root>/.skill-draft/<id>/` where `root` = AX_USERFILES_ROOT (durable
-// mount, surfaced to the executor as `userFilesRoot`) ?? the ephemeral scratch root.
-// The dotted subdir is `.skill-draft` regardless of root.
+// Drafts stage under `<home>/.skill-draft/<id>/`, where the home is the agent's
+// own files (AX_USERFILES_ROOT, surfaced to the executor as `userFilesRoot`).
+// TASK-995 made the home required, so there is no scratch fallback any more.
 const DRAFT_SUBDIR = '.skill-draft';
 
 let root: string;
@@ -47,14 +46,14 @@ const draftPathUnder = (baseRoot: string, id: string): string =>
   `${baseRoot}/${DRAFT_SUBDIR}/${id}`;
 
 describe('createSkillProposeExecutor', () => {
-  it('reads the draft, splits SKILL.md, ships skill.propose, returns the verdict (ephemeral root)', async () => {
+  it('reads the draft, splits SKILL.md, ships skill.propose, returns the verdict', async () => {
     await writeDraft(root, 'commit-style', {
       'SKILL.md': SKILL_MD,
       'scripts/helper.py': 'print("hi")\n',
     });
     const calls: Array<{ action: string; payload: unknown }> = [];
     const exec = createSkillProposeExecutor({
-      ephemeralRoot: root,
+      userFilesRoot: root,
       client: {
         call: async (action: string, payload: unknown) => {
           calls.push({ action, payload });
@@ -80,21 +79,25 @@ describe('createSkillProposeExecutor', () => {
     expect(p.files).toEqual([{ path: 'scripts/helper.py', contents: 'print("hi")\n' }]);
   });
 
-  it('prefers the durable userFilesRoot over the ephemeral root when both are wired', async () => {
-    // Stage under the DURABLE root; the path is validated + read there even though
-    // an ephemeral root is also configured.
-    await writeDraft(root, 'linear', { 'SKILL.md': SKILL_MD });
-    const exec = createSkillProposeExecutor({
-      ephemeralRoot: '/some/other/ephemeral',
-      userFilesRoot: root,
-      client: { call: async () => ({ skillId: 'linear', status: 'active' }) } as never,
-    });
-    const out = await exec(call(draftPathUnder(root, 'linear')));
-    expect(out).toEqual({ skillId: 'linear', status: 'active' });
+  it('reads drafts only under the home: a complete draft under another root is refused', async () => {
+    // A well-formed draft in a second directory (the scratch root, say) is not
+    // a draft the executor will read: the path is checked against the home.
+    const scratch = await fs.mkdtemp(path.join(os.tmpdir(), 'ax-skill-propose-scratch-'));
+    try {
+      await writeDraft(scratch, 'linear', { 'SKILL.md': SKILL_MD });
+      const call_ = vi.fn();
+      const exec = createSkillProposeExecutor({ userFilesRoot: root, client: { call: call_ } as never });
+      await expect(exec(call(draftPathUnder(scratch, 'linear')))).rejects.toThrow(
+        /skill-draft-path-not-allowed/,
+      );
+      expect(call_).not.toHaveBeenCalled();
+    } finally {
+      await fs.rm(scratch, { recursive: true, force: true });
+    }
   });
 
   it('rejects a path outside the active <root>/.skill-draft/ prefix', async () => {
-    const exec = createSkillProposeExecutor({ ephemeralRoot: root });
+    const exec = createSkillProposeExecutor({ userFilesRoot: root });
     await expect(exec(call(`${root}/artifacts/x`))).rejects.toThrow(
       /skill-draft-path-not-allowed/,
     );
@@ -102,30 +105,23 @@ describe('createSkillProposeExecutor', () => {
 
   it('rejects a missing SKILL.md', async () => {
     await writeDraft(root, 'linear', { 'notes.md': 'x' });
-    const exec = createSkillProposeExecutor({ ephemeralRoot: root });
+    const exec = createSkillProposeExecutor({ userFilesRoot: root });
     await expect(exec(call(draftPathUnder(root, 'linear')))).rejects.toThrow(/SKILL\.md not found/);
   });
 
   it('rejects a SKILL.md without a frontmatter fence', async () => {
     await writeDraft(root, 'linear', { 'SKILL.md': '# no frontmatter\n' });
     const exec = createSkillProposeExecutor({
-      ephemeralRoot: root,
+      userFilesRoot: root,
       client: { call: async () => ({}) } as never,
     });
     await expect(exec(call(draftPathUnder(root, 'linear')))).rejects.toThrow(/frontmatter fence/);
   });
 
-  it('rejects when no draft tier (neither durable nor ephemeral) is wired', async () => {
-    const exec = createSkillProposeExecutor({});
-    await expect(exec(call('/ephemeral/.skill-draft/linear'))).rejects.toThrow(
-      /no durable user-files or ephemeral tier|draft tier/i,
-    );
-  });
-
   it('rejects a reserved extra-file path (.mcp.json is generated)', async () => {
     await writeDraft(root, 'linear', { 'SKILL.md': SKILL_MD, '.mcp.json': '{}' });
     const exec = createSkillProposeExecutor({
-      ephemeralRoot: root,
+      userFilesRoot: root,
       client: { call: async () => ({}) } as never,
     });
     await expect(exec(call(draftPathUnder(root, 'linear')))).rejects.toThrow(/reserved bundle path/);
@@ -135,14 +131,14 @@ describe('createSkillProposeExecutor', () => {
     await writeDraft(root, 'linear', { 'SKILL.md': SKILL_MD });
     await fs.symlink('/etc/passwd', path.join(root, DRAFT_SUBDIR, 'linear', 'leak.txt'));
     const exec = createSkillProposeExecutor({
-      ephemeralRoot: root,
+      userFilesRoot: root,
       client: { call: async () => ({}) } as never,
     });
     await expect(exec(call(draftPathUnder(root, 'linear')))).rejects.toThrow(/symlink/);
   });
 
   // HR2 (design §7.2): SKILL.md itself, read at the top of the executor, must be
-  // lstat-hardened. On a durable shared NFS mount a SKILL.md symlink could point
+  // lstat-hardened. On the durable NFS home a SKILL.md symlink could point
   // the read at an arbitrary host file (e.g. /etc/passwd) and ship its bytes to
   // the host gate as the proposed manifest — reject it like the extra-file walk.
   it('rejects a SKILL.md that is a symlink (HR2 lstat hardening)', async () => {
@@ -153,7 +149,7 @@ describe('createSkillProposeExecutor', () => {
     await fs.writeFile(target, SKILL_MD);
     await fs.symlink(target, path.join(dir, 'SKILL.md'));
     const exec = createSkillProposeExecutor({
-      ephemeralRoot: root,
+      userFilesRoot: root,
       client: { call: async () => ({ skillId: 'linear', status: 'active' }) } as never,
     });
     await expect(exec(call(draftPathUnder(root, 'linear')))).rejects.toThrow(/symlink/i);

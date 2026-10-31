@@ -10,7 +10,7 @@ import {
 
 describe('pythonVenvDir', () => {
   it('locates the venv at `<ephemeralRoot>/py`', () => {
-    expect(pythonVenvDir('/ephemeral')).toBe('/ephemeral/py');
+    expect(pythonVenvDir('/tmp')).toBe('/tmp/py');
   });
 });
 
@@ -34,26 +34,26 @@ describe('buildPythonVenvEnv', () => {
 
   it('prepends the venv bin dir to PATH and sets VIRTUAL_ENV', () => {
     const env = buildPythonVenvEnv({
-      ephemeralRoot: '/ephemeral',
+      ephemeralRoot: '/tmp',
       currentPath: '/usr/local/bin:/usr/bin',
       caCertFile: undefined,
     });
-    expect(env.PATH).toBe('/ephemeral/py/bin:/usr/local/bin:/usr/bin');
-    expect(env.VIRTUAL_ENV).toBe('/ephemeral/py');
+    expect(env.PATH).toBe('/tmp/py/bin:/usr/local/bin:/usr/bin');
+    expect(env.VIRTUAL_ENV).toBe('/tmp/py');
   });
 
   it('uses the bin dir alone when there is no existing PATH', () => {
     const env = buildPythonVenvEnv({
-      ephemeralRoot: '/ephemeral',
+      ephemeralRoot: '/tmp',
       currentPath: undefined,
       caCertFile: undefined,
     });
-    expect(env.PATH).toBe('/ephemeral/py/bin');
+    expect(env.PATH).toBe('/tmp/py/bin');
   });
 
   it('sets PIP_CERT + REQUESTS_CA_BUNDLE to the proxy CA when present', () => {
     const env = buildPythonVenvEnv({
-      ephemeralRoot: '/ephemeral',
+      ephemeralRoot: '/tmp',
       currentPath: '/usr/bin',
       caCertFile: '/etc/ax/proxy-ca.crt',
     });
@@ -63,7 +63,7 @@ describe('buildPythonVenvEnv', () => {
 
   it('omits the CA vars when no CA path is available', () => {
     const env = buildPythonVenvEnv({
-      ephemeralRoot: '/ephemeral',
+      ephemeralRoot: '/tmp',
       currentPath: '/usr/bin',
       caCertFile: undefined,
     });
