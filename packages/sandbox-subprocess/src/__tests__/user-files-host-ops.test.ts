@@ -10,6 +10,7 @@ import type {
 } from '@ax/sandbox-mount-protocol';
 import {
   cleanupUserFiles,
+  measureUserFiles,
   ownerFromAgentId,
   readUserFiles,
 } from '../user-files-host-ops.js';
@@ -374,6 +375,93 @@ describe('readUserFiles unrealizable kind', () => {
     await expect(readUserFiles(ctx(), bus, PLUGIN, input)).rejects.toBeInstanceOf(
       PluginError,
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// TASK-993 — `sandbox:user-files-usage`: how much an agent's /files holds, for
+// the storage limit. Measured at the resolved `localDir` hostPath.
+// ---------------------------------------------------------------------------
+describe('measureUserFiles (subprocess, TASK-993)', () => {
+  /** Allocated bytes of the tree at `dir`, never following a link. */
+  async function lstatOracle(dir: string): Promise<number> {
+    const st = await fs.lstat(dir);
+    let total = st.blocks * 512;
+    if (!st.isDirectory()) return total;
+    for (const name of await fs.readdir(dir)) total += await lstatOracle(path.join(dir, name));
+    return total;
+  }
+
+  it('no resolver means home-unavailable', async () => {
+    await expect(
+      measureUserFiles(ctx(), new HookBus(), PLUGIN, silentLog, { agentId: 'agent-a' }),
+    ).rejects.toMatchObject({ code: 'home-unavailable' });
+  });
+
+  it('an nfs mount is unrealizable here', async () => {
+    const bus = new HookBus();
+    bus.registerService<ResolveMountsInput, ResolveMountsOutput>(
+      'sandbox:resolve-mounts',
+      'mock-nfs',
+      async () => ({
+        mounts: [
+          {
+            kind: 'nfs',
+            mountPath: '/workspace',
+            server: 'files.example.invalid',
+            exportPath: '/vol1/agents',
+            subPath: 'agent-a',
+            readOnly: true,
+            role: 'user-files',
+          },
+        ],
+      }),
+    );
+    await expect(
+      measureUserFiles(ctx(), bus, PLUGIN, silentLog, { agentId: 'agent-a' }),
+    ).rejects.toMatchObject({ code: 'unrealizable-mount-kind' });
+  });
+
+  it('invalid-input: a missing or empty agentId is refused before the resolver is asked', async () => {
+    const bus = new HookBus();
+    let asked = 0;
+    bus.registerService<ResolveMountsInput, ResolveMountsOutput>(
+      'sandbox:resolve-mounts',
+      'mock-localdir',
+      async () => {
+        asked++;
+        return { mounts: [] };
+      },
+    );
+    for (const input of [{ agentId: '' }, {}, undefined, { agentId: 7 }]) {
+      await expect(
+        measureUserFiles(ctx(), bus, PLUGIN, silentLog, input as unknown as { agentId: string }),
+      ).rejects.toMatchObject({ code: 'invalid-input' });
+    }
+    expect(asked).toBe(0);
+  });
+
+  it.skipIf(!ON_LINUX)('measures the resolved hostPath', async () => {
+    const dir = await seedAgentFiles('agent-a');
+    await fs.writeFile(path.join(dir, 'docs', 'big.bin'), Buffer.alloc(256 * 1024, 7));
+    // A sibling agent's files are not this agent's.
+    const other = await seedAgentFiles('agent-b');
+    await fs.writeFile(path.join(other, 'huge.bin'), Buffer.alloc(4 * 1024 * 1024, 1));
+    const out = await measureUserFiles(ctx(), busWithLocaldir(), PLUGIN, silentLog, {
+      agentId: 'agent-a',
+    });
+    expect(out).toEqual({ bytes: await lstatOracle(dir) });
+    expect(out.bytes).toBeGreaterThanOrEqual(256 * 1024);
+    expect(out.bytes).toBeLessThan(4 * 1024 * 1024);
+  });
+
+  it.skipIf(!ON_LINUX)('a folder that does not exist yet is 0', async () => {
+    // The agent has never had a session, so its folder was never made. The
+    // folder that would hold it (the resolver's root) is there.
+    const out = await measureUserFiles(ctx(), busWithLocaldir(), PLUGIN, silentLog, {
+      agentId: 'agent-never-ran',
+    });
+    expect(out).toEqual({ bytes: 0 });
   });
 });
 

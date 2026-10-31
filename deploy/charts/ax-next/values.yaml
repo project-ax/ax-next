@@ -380,6 +380,10 @@ sandbox:
     # for a link at the right moment could in principle win that race. The
     # host-mounted reader does not have that gap. Tracked in TASK-915.
     #
+    # This mount is also what lets the storage limit count each agent's
+    # files. Leave it empty and agents' files are not measured at all
+    # (uploads and published files still are).
+    #
     # It mounts the export named by `server` + `exportPath` above. Opening this
     # also opens the HOST pod's egress to the Filestore IP on the NFS ports —
     # see networkpolicies/agent-runtime-network.yaml.

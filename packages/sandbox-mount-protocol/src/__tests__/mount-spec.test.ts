@@ -12,6 +12,9 @@ import type {
   ReadUserFilesOutput,
   ReadUserFilesHandler,
   UserFileDirEntry,
+  UserFilesUsageInput,
+  UserFilesUsageOutput,
+  UserFilesUsageHandler,
 } from '../index.js';
 
 // This package is pure TS types — the contract IS the type (no zod, no runtime).
@@ -275,6 +278,33 @@ describe('sandbox:read-user-files signature (TASK-167 §11 host-read)', () => {
     });
     const handler: ReadUserFilesHandler = raw;
     const back: ServiceHandler<ReadUserFilesInput, ReadUserFilesOutput> = handler;
+    expect(typeof back).toBe('function');
+  });
+});
+
+describe('sandbox:user-files-usage signature (TASK-993)', () => {
+  it('input is just the agentId: no owner, no path, no backend field', () => {
+    const input: UserFilesUsageInput = { agentId: 'agent-abc' };
+    expect(Object.keys(input)).toEqual(['agentId']);
+    // @ts-expect-error — the meter takes an agentId, not the session owner.
+    const wrong: UserFilesUsageInput = { owner: { agentId: 'agent-abc' } };
+    expect(wrong).toBeDefined();
+  });
+
+  it('output is just the allocated byte total', () => {
+    const out: UserFilesUsageOutput = { bytes: 4096 };
+    expect(Object.keys(out)).toEqual(['bytes']);
+    // @ts-expect-error — a byte total is a number, never a string.
+    const wrong: UserFilesUsageOutput = { bytes: '4096' };
+    expect(wrong).toBeDefined();
+  });
+
+  it('UserFilesUsageHandler is a @ax/core ServiceHandler over the in/out pair', () => {
+    const raw: ServiceHandler<UserFilesUsageInput, UserFilesUsageOutput> = async () => ({
+      bytes: 0,
+    });
+    const handler: UserFilesUsageHandler = raw;
+    const back: ServiceHandler<UserFilesUsageInput, UserFilesUsageOutput> = handler;
     expect(typeof back).toBe('function');
   });
 });

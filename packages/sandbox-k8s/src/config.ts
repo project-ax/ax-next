@@ -149,6 +149,12 @@ export interface SandboxK8sConfig {
    * cold-start-prone cluster is seconds per interaction. The chart sets this
    * whenever the Filestore export is also mounted into the host Deployment.
    *
+   * `sandbox:user-files-usage` (TASK-993, the storage limit's count of an
+   * agent's files) measures through this mount too, walking
+   * `<userFilesHostReadRoot>/<agentId>` without following links. It has no pod
+   * fallback (a pod per turn end is far too expensive for a meter): unset, it
+   * throws `user-files-usage-unavailable` and agents' files go unmeasured.
+   *
    * WHAT THIS COSTS, stated plainly: without it the host has NO access to any
    * agent subtree and cross-tenant isolation is STRUCTURAL. With it the host
    * can read every agent's files and that isolation becomes CODE — the route's

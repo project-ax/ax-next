@@ -13,8 +13,10 @@ import type {
   ResolveMountsInput,
   ResolveMountsOutput,
   UserFileDirEntry,
+  UserFilesUsageInput,
+  UserFilesUsageOutput,
 } from '@ax/sandbox-mount-protocol';
-import { readConfinedUserFiles } from '@ax/user-files-read';
+import { measureConfinedUserFiles, readConfinedUserFiles } from '@ax/user-files-read';
 import * as path from 'node:path';
 import type { ResolvedSandboxK8sConfig } from './config.js';
 import type { K8sCoreApi } from './k8s-api.js';
@@ -22,9 +24,9 @@ import { killPod } from './kill.js';
 import { watchPodExit } from './lifecycle.js';
 
 // ---------------------------------------------------------------------------
-// user-files-ops — the k8s provider's realizations of the two
-// filestore-user-files deferred mechanisms (design §11), against an `nfs`
-// (Google Cloud Filestore) export:
+// user-files-ops — the k8s provider's three host-side user-files ops (the two
+// filestore-user-files deferred mechanisms of design §11, plus the meter),
+// against an `nfs` (Google Cloud Filestore) export:
 //
 //   1. cleanup  — an `agents:deleted` subscriber `rm -rf`s the agent's durable
 //                 `/workspace` subtree (`subPath=<agentId>`) via a SHORT-LIVED
@@ -42,11 +44,18 @@ import { watchPodExit } from './lifecycle.js';
 //                 racing to register one service hook would be load-order
 //                 dependent, and picking pod-vs-host-mount is a k8s deployment
 //                 detail this provider already owns.
+//   3. usage   — `sandbox:user-files-usage` sums the allocated bytes of an
+//                 agent's subtree for the storage limit (TASK-993). Host mount
+//                 ONLY: it walks `<userFilesHostReadRoot>/<subPath>` with
+//                 `@ax/user-files-read`'s confined, bounded, no-follow walk.
+//                 With the root unset it throws `user-files-usage-unavailable`
+//                 — a pod per turn end would be far too expensive for a meter.
 //
-// Both reuse the EXISTING `sandbox:resolve-mounts` hook to learn the agent's
-// `server`/`exportPath`/`subPath` (keyed off `owner.agentId`) — the design's
-// "owner-keyed and reusable" promise. The k8s sandbox has no host-FS share, so
-// each op runs a one-shot pod that mounts the WHOLE export inline (the same
+// All three reuse the EXISTING `sandbox:resolve-mounts` hook to learn the
+// agent's `server`/`exportPath`/`subPath` (keyed off `owner.agentId`) — the
+// design's "owner-keyed and reusable" promise. Without the host mount, the k8s
+// host has no share of the export, so a pod-backed op runs a one-shot pod that
+// mounts the WHOLE export inline (the same
 // `{ nfs: { server, path: exportPath } }` volume the runner uses) and operates
 // on JUST the per-agent `subPath` subtree inside it.
 //
@@ -64,7 +73,8 @@ import { watchPodExit } from './lifecycle.js';
 //     a sibling's (cross-tenant safety).
 //   - cleanup mounts the export read-WRITE (it must delete); host-read mounts it
 //     read-only (`readOnly: true` on the volumeMount AND requested from the
-//     resolver) so the web-UI path never gains write (design §11).
+//     resolver) so the web-UI path never gains write (design §11). usage asks
+//     the resolver for read-only too, and its walk opens nothing but folders.
 //   - An unrealizable kind (anything but `nfs`) is an EXPLICIT error (design
 //     §10), never a silent skip.
 // ---------------------------------------------------------------------------
@@ -784,6 +794,72 @@ export async function readUserFiles(
       () => undefined,
     );
   }
+}
+
+/**
+ * Realize `sandbox:user-files-usage` (TASK-993): the allocated bytes of an
+ * agent's durable subtree, for the storage limit.
+ *
+ * HOST MOUNT ONLY. The meter runs at every assistant turn end and on the
+ * periodic sweep; the one-shot pod that serves a Files-tab click would be a pod
+ * create + poll + log read + delete per turn, per agent. So with
+ * `userFilesHostReadRoot` unset this throws `user-files-usage-unavailable` and
+ * creates nothing (it is not even handed the k8s API).
+ *
+ * The walk is `@ax/user-files-read`'s `measureConfinedUserFiles`: every folder
+ * below the root opened relative to its parent's held descriptor with
+ * `O_NOFOLLOW`, nothing but folders ever opened, entries sized with `lstat`,
+ * bounded by entries, depth and time. A link to a sibling agent's folder counts
+ * as the link. A bounded or partly unreadable reading is a lower bound; it is
+ * returned, and logged as `user_files_usage_partial`. A failure to read the
+ * root or the export throws (the bus wraps it): a broken read is never 0.
+ */
+export async function measureUserFiles(
+  ctx: AgentContext,
+  bus: HookBus,
+  config: ResolvedSandboxK8sConfig,
+  log: Logger,
+  input: UserFilesUsageInput,
+): Promise<UserFilesUsageOutput> {
+  const agentId: unknown = (input as Partial<UserFilesUsageInput> | undefined)?.agentId;
+  if (typeof agentId !== 'string' || agentId.length === 0) {
+    throw new PluginError({
+      code: 'invalid-input',
+      plugin: PLUGIN_NAME,
+      message: 'sandbox:user-files-usage needs a non-empty agentId',
+    });
+  }
+  const mount = await resolveNfsUserFilesMount(
+    ctx,
+    bus,
+    ownerFromAgentId(agentId, ctx.userId),
+    /* readOnly */ true,
+  );
+  if (mount === undefined) {
+    throw new PluginError({
+      code: 'home-unavailable',
+      plugin: PLUGIN_NAME,
+      message: "this agent has no durable /files home configured, so its files can't be measured",
+    });
+  }
+  assertSafeSubPath(mount.subPath);
+  if (config.userFilesHostReadRoot === '') {
+    throw new PluginError({
+      code: 'user-files-usage-unavailable',
+      plugin: PLUGIN_NAME,
+      message:
+        'measuring agent files needs the read-only host mount: set sandbox.filestore.hostReadPath',
+    });
+  }
+  // `subPath` is ONE validated segment, so the join stays inside this agent's
+  // own folder on the export.
+  const reading = await measureConfinedUserFiles(
+    path.join(config.userFilesHostReadRoot, mount.subPath),
+  );
+  if (!reading.complete) {
+    log.warn('user_files_usage_partial', { agentId, entries: reading.entries });
+  }
+  return { bytes: reading.bytes };
 }
 
 /**

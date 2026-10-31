@@ -3,11 +3,14 @@ import { OpenSessionResultSchema } from '@ax/sandbox-protocol';
 import type {
   ReadUserFilesInput,
   ReadUserFilesOutput,
+  UserFilesUsageInput,
+  UserFilesUsageOutput,
 } from '@ax/sandbox-mount-protocol';
 import type { ZodType } from 'zod';
 import { openSessionImpl, type OpenSessionResult } from './open-session.js';
 import {
   cleanupUserFiles,
+  measureUserFiles,
   ownerFromAgentId,
   readUserFiles,
 } from './user-files-host-ops.js';
@@ -45,7 +48,14 @@ export function createSandboxSubprocessPlugin(): Plugin {
       // host's READ-ONLY view of an agent's durable user-files mount, so the
       // web UI can serve those files without entering a live sandbox. Realized
       // by reading the resolved `localDir` hostPath read-only.
-      registers: ['sandbox:open-session', 'sandbox:read-user-files'],
+      //
+      // `sandbox:user-files-usage` (TASK-993): how much that same hostPath
+      // holds, for the storage limit, via the same confined no-follow walk.
+      registers: [
+        'sandbox:open-session',
+        'sandbox:read-user-files',
+        'sandbox:user-files-usage',
+      ],
       // open-session mints a session + token, starts the IPC listener, then
       // spawns the runner. Declaring these calls lets bootstrap's verifyCalls
       // catch a missing producer at boot instead of first-call time.
@@ -61,16 +71,18 @@ export function createSandboxSubprocessPlugin(): Plugin {
       // realizes each `localDir` mount by `mkdir -p`. It stays an OPTIONAL call
       // because boot does not need it, but open-session REFUSES an owned
       // session that gets no `role:'user-files'` directory (TASK-992: the
-      // durable /files home is required). The two §11 host-side ops below,
-      // `sandbox:read-user-files` and the `agents:deleted` cleanup, call it to
-      // learn WHERE an agent's files live and keep degrading gracefully when no
-      // resolver is loaded.
+      // durable /files home is required). The host-side ops below,
+      // `sandbox:read-user-files`, `sandbox:user-files-usage` and the
+      // `agents:deleted` cleanup, call it to learn WHERE an agent's files live
+      // and keep degrading gracefully when no resolver is loaded (the meter by
+      // throwing, never by answering 0).
       optionalCalls: [
         {
           hook: 'sandbox:resolve-mounts',
           degradation:
             'open-session REFUSES owned sessions (no durable /files home); ' +
-            'host-read answers unavailable and agent-delete cleanup is a no-op',
+            'host-read answers unavailable, the usage meter throws ' +
+            'home-unavailable, and agent-delete cleanup is a no-op',
         },
       ],
       // filestore-user-files §11 cleanup: when an agent is deleted, reclaim its
@@ -101,6 +113,16 @@ export function createSandboxSubprocessPlugin(): Plugin {
         'sandbox:read-user-files',
         PLUGIN_NAME,
         async (ctx, input) => readUserFiles(ctx, bus, PLUGIN_NAME, input),
+      );
+
+      // TASK-993 usage meter. Read-only (the walk opens nothing but folders);
+      // a missing home throws rather than answering 0. The walk bounds itself
+      // at 120 s; the timeout is the bus-side backstop above that.
+      bus.registerService<UserFilesUsageInput, UserFilesUsageOutput>(
+        'sandbox:user-files-usage',
+        PLUGIN_NAME,
+        async (ctx, input) => measureUserFiles(ctx, bus, PLUGIN_NAME, ctx.logger, input),
+        { timeoutMs: 180_000 },
       );
 
       // §11 cleanup-on-agent-delete. rm -rf the agent's durable user-files
