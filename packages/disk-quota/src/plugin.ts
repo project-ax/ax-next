@@ -52,13 +52,20 @@ const SUBSCRIBED = [
 //     once, coalesced per agent) and charges it to the AGENT'S owner
 //     (`team:<id>` for a team agent; nobody when the owner cannot be
 //     resolved). Agent files are metered, not write-enforced: they count
-//     toward the limit that the write gates above enforce. A periodic sweep
-//     backfills every personal agent's workspace and `/files` and repairs
-//     drift.
+//     toward the limit that the write gates above enforce. (A team agent's
+//     files are charged to `team:<id>`, while the upload gate charges the
+//     person uploading, so a team agent's files never refuse anyone's upload.
+//     A deployment that cannot measure, k8s without the host read mount,
+//     answers `user-files-usage-unavailable` once and is not asked again.)
+//     A periodic sweep backfills every personal agent's workspace and
+//     `/files` and repairs drift.
 //   - RELEASES what a deleted agent held. `workspace:deleted` (the agent's repo
 //     is gone) drops its workspace row; `agents:deleted` tombstones the agent
 //     in this process (a late turn end or sweep measures nothing), waits out a
-//     measurement in flight, and drops its agent-files row.
+//     measurement in flight, and drops its agent-files row. Known gap (as
+//     TASK-719 accepted for workspace rows): if that delete fails, or the
+//     host restarts mid-release, the row stays and nothing repairs it; the
+//     error log `disk_quota_release_failed` is the only trace.
 //   - RELEASES blob charges nobody holds any more (design D6,
 //     docs/plans/2026-10-03-blob-gc-design.md). The same periodic sweep runs a
 //     blob pass: `blob:<sha>` rows older than the grace window (`graceMs` in

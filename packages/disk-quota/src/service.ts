@@ -156,6 +156,13 @@ export const AGENT_FILES_USAGE_HOOK = 'sandbox:user-files-usage';
  * agent controls, so a burst of turn ends must not become a burst of walks.
  */
 export const FILES_MEASURE_CONCURRENCY = 2;
+/**
+ * The provider's error code for "this deployment cannot measure agent files at
+ * all" (k8s without the read-only host mount). A fact about the deployment, not
+ * a failed measurement: after the first one this process stops asking, and logs
+ * it once at info instead of a warn on every turn end.
+ */
+export const FILES_USAGE_UNAVAILABLE_CODE = 'user-files-usage-unavailable';
 
 /**
  * A user id that names a person the ledger can be charged to. The empty id and
@@ -470,6 +477,10 @@ export function createDiskQuotaService(deps: {
 
   /** Every agent-files walk in this process runs through this. */
   const filesLimiter = createLimiter(FILES_MEASURE_CONCURRENCY);
+  /** Set once the provider says this deployment cannot measure agent files. */
+  let filesUsageUnavailable = false;
+  const filesMeasurable = (): boolean =>
+    !filesUsageUnavailable && bus.hasService(AGENT_FILES_USAGE_HOOK);
   const DELETED_WHILE_QUEUED = Symbol('deleted-while-queued');
 
   /**
@@ -481,7 +492,7 @@ export function createDiskQuotaService(deps: {
   async function measureAgentFilesOnce(ctx: AgentContext, ownerOverride?: string): Promise<boolean> {
     const agentId = ctx.agentId;
     try {
-      if (!bus.hasService(AGENT_FILES_USAGE_HOOK)) return false;
+      if (!filesMeasurable()) return false;
       if (!usableAgentId(agentId) || deletedAgents.has(agentId)) return false;
       const owner = ownerOverride ?? (await resolveAgentOwner(ctx));
       if (owner === undefined) {
@@ -512,6 +523,17 @@ export function createDiskQuotaService(deps: {
       await store.upsertUsage(owner, agentFilesSource(agentId), 'agent-files', bytes);
       return true;
     } catch (err) {
+      if (
+        err !== null &&
+        typeof err === 'object' &&
+        (err as { code?: unknown }).code === FILES_USAGE_UNAVAILABLE_CODE
+      ) {
+        if (!filesUsageUnavailable) {
+          filesUsageUnavailable = true;
+          log(ctx, 'info', 'disk_quota_files_usage_unavailable', { agentId });
+        }
+        return false;
+      }
       log(ctx, 'warn', 'disk_quota_files_measure_failed', { agentId, err });
       return false;
     }
@@ -559,7 +581,7 @@ export function createDiskQuotaService(deps: {
   function scheduleAgentFilesMeasure(ctx: AgentContext): void {
     const agentId = ctx.agentId;
     if (!usableAgentId(agentId) || deletedAgents.has(agentId)) return;
-    if (!bus.hasService(AGENT_FILES_USAGE_HOOK)) return;
+    if (!filesMeasurable()) return;
     track(measureAgentFiles(ctx), ctx);
   }
 
@@ -632,7 +654,7 @@ export function createDiskQuotaService(deps: {
     try {
       if (
         !bus.hasService('agents:list-personal-owners') ||
-        !bus.hasService(AGENT_FILES_USAGE_HOOK)
+        !filesMeasurable()
       ) {
         log(sweepCtx, 'debug', 'disk_quota_files_sweep_skipped');
         return { measured: 0, failed: 0 };

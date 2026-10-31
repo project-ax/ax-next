@@ -5,6 +5,7 @@ import {
   BLOB_COLLECT_REFS_MAX_CANDIDATES,
   HookBus,
   makeAgentContext,
+  PluginError,
   reject,
   type AgentContext,
   type BlobRef,
@@ -27,6 +28,7 @@ import {
   BLOB_ALLOCATION_UNIT,
   createDiskQuotaService,
   FILES_MEASURE_CONCURRENCY,
+  FILES_USAGE_UNAVAILABLE_CODE,
   OWNER_CACHE_MAX,
   STORAGE_FULL_REASON,
   SWEEP_CONCURRENCY,
@@ -1613,6 +1615,39 @@ describe('agent files (TASK-993)', () => {
     const line = w.lines.find((l) => l.level === 'warn' && l.msg === 'disk_quota_files_measure_failed');
     expect(line?.bindings).toMatchObject({ agentId: 'agt_1' });
     expect(line?.bindings?.err).toBeInstanceOf(Error);
+  });
+
+  it('a deployment that cannot measure agent files says so once at info, then stops asking', async () => {
+    // k8s without the read-only host mount: every call would throw the same
+    // code. That is a fact about the deployment, so it must not become a warn
+    // per turn end (and per agent per sweep) that reads like a fault.
+    let calls = 0;
+    const w = makeWorld({
+      services: {
+        [AGENT_FILES_USAGE_HOOK]: async () => {
+          calls++;
+          throw new PluginError({
+            code: FILES_USAGE_UNAVAILABLE_CODE,
+            plugin: '@ax/sandbox-k8s',
+            hookName: AGENT_FILES_USAGE_HOOK,
+            message: 'no host read root',
+          });
+        },
+        ...owners({ agt_1: ALICE, agt_2: ALICE }),
+        ...personal([{ agentId: 'agt_1', ownerUserId: 'alice' }]),
+      },
+    });
+    w.svc.scheduleAgentFilesMeasure(w.ctx('alice', 'agt_1'));
+    await w.svc.drain();
+    w.svc.scheduleAgentFilesMeasure(w.ctx('alice', 'agt_2'));
+    await w.svc.drain();
+    await w.svc.reconcile();
+
+    expect(calls).toBe(1);
+    expect(await fileRows()).toEqual([]);
+    expect(w.lines.filter((l) => l.msg === 'disk_quota_files_usage_unavailable')).toHaveLength(1);
+    expect(w.lines.find((l) => l.msg === 'disk_quota_files_usage_unavailable')?.level).toBe('info');
+    expect(warned(w, 'disk_quota_files_measure_failed')).toBe(false);
   });
 
   it('a store failure is a warn, never a throw', async () => {
