@@ -155,6 +155,17 @@ Agent-facing tools (host-executed)
   2026-10-30). It says which section changed. No Undo: the owner fixes the text
   in the identity editor like any other edit. Writes made by a person through
   the editor don't create an entry.
+- **As built (TASK-990):** there is no activity feed to add to (TASK-972 retired
+  it). The entry is a per-section "last changed by the agent" time on the
+  agent's identity row, written in the same transaction as the text, only for
+  `update_identity` saves (`author: 'agent'` on `agents:identity:set`), and not
+  during first-run setup. Today reads `agents:identity:self-changes-for-user`
+  through `GET /api/workspace/self-changes`: the owner's personal agents, last 7
+  days, newest change per section, worded by the host ("changed its
+  personality", "changed how it describes itself"), and never counted as
+  waiting on you. Team agents are left out until the team role model exists.
+  The §16.6 walk should check that an agent's soul change shows on Today and a
+  person's edit doesn't.
 
 Prompt
 - The host freezes the current identity text and bootstrap state into the
