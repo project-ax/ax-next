@@ -26,9 +26,6 @@ async function makeHarness(): Promise<TestHarness> {
         const call = input as { agentId: string };
         return { agent: { id: call.agentId, visibility: 'personal' } };
       },
-      'workspace:list': async () => ({ paths: [] as string[] }),
-      'workspace:read': async () => ({ found: false }) as const,
-      'workspace:apply': async () => ({ version: 'v-stub', delta: { before: null, after: 'v-stub', changes: [] } }),
     },
     plugins: [createDatabasePostgresPlugin({ connectionString }), createConversationsPlugin()],
   });

@@ -49,12 +49,6 @@ async function makeHarness(args: {
         }
         return { agent };
       },
-      // Phase D — manifest declares calls on workspace:list /
-      // workspace:read; bootstrap verifies them at boot. Default to
-      // "no jsonl" stubs. Phase B adds workspace:apply for drop-turn.
-      'workspace:list': async () => ({ paths: [] as string[] }),
-      'workspace:read': async () => ({ found: false }) as const,
-      'workspace:apply': async () => ({ version: 'v-stub', delta: { before: null, after: 'v-stub', changes: [] } }),
     },
     plugins: [
       createDatabasePostgresPlugin({ connectionString }),

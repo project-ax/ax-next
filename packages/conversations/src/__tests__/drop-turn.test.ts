@@ -20,12 +20,11 @@ import type {
 // ---------------------------------------------------------------------------
 // TASK-75 — drop-turn against the out-of-git transcript-row store.
 //
-// Pre-TASK-67, drop-turn rewrote the runner's native jsonl in the git
-// workspace (workspace:list/read/apply over `.claude/projects/**/<sid>.jsonl`).
-// TASK-67 moved the resume transcript into `conversations_v1_transcripts` rows
-// and gitignored `.claude/projects/`, so the workspace glob now returns ZERO
-// paths and drop-turn SILENTLY NO-OPS — a silenced routine turn survives on
-// resume. This suite seeds the transcript ROWS (via conversations:replace-
+// Pre-TASK-67, drop-turn rewrote the runner's native jsonl among the agent's
+// files (`.claude/projects/**/<sid>.jsonl`). TASK-67 moved the resume
+// transcript into `conversations_v1_transcripts` rows, so that glob returned
+// ZERO paths and drop-turn SILENTLY NO-OPED — a silenced routine turn survived
+// on resume. This suite seeds the transcript ROWS (via conversations:replace-
 // transcript) and asserts the dropped turn is gone from
 // conversations:get-transcript. The "drops the line whose uuid matches turnId"
 // + "drops the most recent turn" cases FAIL pre-fix (both turns survive the

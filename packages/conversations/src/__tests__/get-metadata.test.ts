@@ -88,13 +88,6 @@ async function makeHarness(args: {
         }
         return { agent };
       },
-      // Phase D — manifest verifies calls on workspace:list /
-      // workspace:read. get-metadata doesn't trigger them, but the
-      // bootstrap check requires them registered. Phase B adds
-      // workspace:apply for drop-turn; stub for bootstrap.
-      'workspace:list': async () => ({ paths: [] as string[] }),
-      'workspace:read': async () => ({ found: false }) as const,
-      'workspace:apply': async () => ({ version: 'v-stub', delta: { before: null, after: 'v-stub', changes: [] } }),
     },
     plugins: [
       createDatabasePostgresPlugin({ connectionString }),
