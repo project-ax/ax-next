@@ -123,6 +123,16 @@ describe('sanitizeUploadName', () => {
     // Line and paragraph separators and C1 controls would break the one-line
     // mention the model reads, just like a newline.
     ['a b c\u0085d.txt', 'abcd.txt'],
+    // Bidi overrides and isolates would let a name read differently from what
+    // it is ('invoice\u202Efdp.exe' displays as 'invoiceexe.pdf'); zero-width
+    // characters hide inside a name. All dropped, so the name the model reads
+    // is the name on disk.
+    ['invoice\u202Efdp.exe', 'invoicefdp.exe'],
+    ['a\u202Ab\u202Bc\u202Cd\u202De\u2066f\u2067g\u2068h\u2069i.txt', 'abcdefghi.txt'],
+    ['a\u200Bb\u200Cc\u200Dd\uFEFFe.txt', 'abcde.txt'],
+    // A straight quote would close the mention's quoted name early, and the
+    // path repeats the name, so the copy is named with a typographic one.
+    ["Bob's report.pdf", 'Bob\u2019s report.pdf'],
   ])('%j becomes %j', (input, want) => {
     expect(sanitizeUploadName(input)).toBe(want);
   });

@@ -31,7 +31,7 @@
 import { createHash } from 'node:crypto';
 import { constants as fsConstants, promises as fs } from 'node:fs';
 import type { AttachmentBlock, ContentBlock } from '@ax/ipc-protocol';
-import { stripControlChars, type MaterializedUpload } from './materialize-uploads.js';
+import { cleanNameText, truncateUtf8, type MaterializedUpload } from './materialize-uploads.js';
 
 // 64 KiB. Text content under this size is inlined into the prompt directly so
 // weaker models don't need to know about the Read tool. At ~25K tokens worst
@@ -82,18 +82,36 @@ export interface AttachmentMentionFields {
   mediaType: string;
 }
 
+/** Longest file name, in UTF-8 bytes, a mention shows (the on-disk cap too). */
+const MENTION_NAME_MAX_BYTES = 200;
+
+/** `value` cut to `MENTION_NAME_MAX_BYTES` on a code-point boundary, `…` marking a cut. */
+function capMentionName(value: string): string {
+  if (Buffer.byteLength(value, 'utf8') <= MENTION_NAME_MAX_BYTES) return value;
+  // The ellipsis is three bytes; the result stays within the cap.
+  return truncateUtf8(value, MENTION_NAME_MAX_BYTES - 3) + '\u2026';
+}
+
 /**
  * The one-line mention: `User attached '<filename>' at <path> (<mediaType>)`,
  * or, with no usable copy, `User attached '<filename>' (<mediaType>), but the
- * file could not be loaded.` Control characters are dropped so it stays one line.
+ * file could not be loaded.`
+ *
+ * Every field is untrusted text (the person named the file; the type and path
+ * derive from it), so each goes through `cleanNameText`: control characters are
+ * dropped so the mention stays one line, bidi controls and zero-width
+ * characters so it reads as what it is, and `'` becomes `’` so a name cannot
+ * close its own quotes and pose as the mention's words. A real copy's path
+ * never holds a `'` (the on-disk name gets the same cleaning), so the path the
+ * model reads is still the path on disk. The name is capped at 200 UTF-8 bytes.
  */
 export function formatAttachmentMention(att: AttachmentMentionFields): string {
-  const filename = stripControlChars(att.filename);
-  const mediaType = stripControlChars(att.mediaType);
+  const filename = capMentionName(cleanNameText(att.filename));
+  const mediaType = cleanNameText(att.mediaType);
   if (att.path === null) {
     return `User attached '${filename}' (${mediaType}), but the file could not be loaded.`;
   }
-  return `User attached '${filename}' at ${stripControlChars(att.path)} (${mediaType})`;
+  return `User attached '${filename}' at ${cleanNameText(att.path)} (${mediaType})`;
 }
 
 /** An inlined text attachment: the mention, a blank line, then the content. */

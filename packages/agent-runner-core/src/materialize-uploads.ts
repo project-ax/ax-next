@@ -12,8 +12,9 @@
 //
 // Nothing is ever deleted, overwritten or followed:
 //   - Names come from the person's own file name, which is hostile input. The
-//     sanitizer keeps only the last path segment and drops control characters,
-//     so every name is one plain entry directly inside `uploadsDir`.
+//     sanitizer keeps only the last path segment, drops control, bidi and
+//     zero-width characters, and turns `'` into `’` (the model reads names
+//     quoted), so every name is one plain entry directly inside `uploadsDir`.
 //   - `uploadsDir` sits in agent-writable scratch. The agent may already have
 //     put a file, or a symlink, under the name we want. `COPYFILE_EXCL` creates
 //     the destination exclusively — it fails on ANY existing entry, a symlink
@@ -100,19 +101,51 @@ export const MAX_TAKEN_NAME_ATTEMPTS = 32;
 const FALLBACK_NAME = 'file';
 
 /**
- * Remove characters that would split a name across lines or hide in a
- * terminal: C0 controls, DEL, C1 controls, and the Unicode line and paragraph
- * separators. A lone surrogate becomes U+FFFD, which is how it would be written
- * to disk anyway, so the name in memory is the name on disk.
+ * Code points dropped from any name the model reads: the bidi embeddings and
+ * overrides (U+202A–U+202E) and isolates (U+2066–U+2069), which make a name
+ * display differently from what it is (`invoice\u202Efdp.exe` shows as
+ * `invoiceexe.pdf`); the bidi marks U+200E, U+200F and U+061C; and the
+ * zero-width characters U+200B–U+200D, U+2060 and U+FEFF, which hide inside a
+ * name.
+ */
+function isInvisibleFormatChar(cp: number): boolean {
+  return (
+    (cp >= 0x202a && cp <= 0x202e) ||
+    (cp >= 0x2066 && cp <= 0x2069) ||
+    (cp >= 0x200b && cp <= 0x200f) ||
+    cp === 0x061c ||
+    cp === 0x2060 ||
+    cp === 0xfeff
+  );
+}
+
+/**
+ * Remove characters that would split a name across lines or hide in it: C0
+ * controls, DEL, C1 controls, the Unicode line and paragraph separators, bidi
+ * controls and zero-width characters (see `isInvisibleFormatChar`). A lone
+ * surrogate becomes U+FFFD, which is how it would be written to disk anyway,
+ * so the name in memory is the name on disk.
  */
 export function stripControlChars(value: string): string {
   let out = '';
   for (const ch of value) {
     const cp = ch.codePointAt(0)!;
     if (cp <= 0x1f || (cp >= 0x7f && cp <= 0x9f) || cp === 0x2028 || cp === 0x2029) continue;
-    out += cp >= 0xd800 && cp <= 0xdfff ? '�' : ch;
+    if (isInvisibleFormatChar(cp)) continue;
+    out += cp >= 0xd800 && cp <= 0xdfff ? '\uFFFD' : ch;
   }
   return out;
+}
+
+/**
+ * `stripControlChars`, then every straight quote `'` becomes U+2019 `’`. The
+ * model reads a name as `'<name>'` in its attachment mention, so a straight
+ * quote in the name would close it early and let the rest of the name pose as
+ * the mention's own words. The on-disk name gets the same treatment, because
+ * the mention's path repeats it.
+ */
+export function cleanNameText(value: string): string {
+  return stripControlChars(value).replace(/'/g, '\u2019');
 }
 
 /** Split at the last dot, where that dot is neither the first nor the last character. */
@@ -123,7 +156,7 @@ function splitExtension(name: string): { stem: string; ext: string } {
 }
 
 /** The longest prefix of `value` that fits in `maxBytes` of UTF-8, cut between code points. */
-function truncateUtf8(value: string, maxBytes: number): string {
+export function truncateUtf8(value: string, maxBytes: number): string {
   let out = '';
   let bytes = 0;
   for (const ch of value) {
@@ -137,13 +170,14 @@ function truncateUtf8(value: string, maxBytes: number): string {
 
 /**
  * The on-disk name for an upload: the last segment of `filename` (split on `/`
- * and `\`), control characters dropped, trimmed, and capped at 200 UTF-8 bytes
+ * and `\`), control, bidi and zero-width characters dropped, `'` made `’`
+ * (`cleanNameText`), trimmed, and capped at 200 UTF-8 bytes
  * on a code-point boundary, keeping an extension of up to 16 bytes. Empty, `.`
  * and `..` become `file`. The result is always one plain directory entry.
  */
 export function sanitizeUploadName(filename: string): string {
   const segments = filename.split(/[/\\]/);
-  let name = stripControlChars(segments[segments.length - 1] ?? '').trim();
+  let name = cleanNameText(segments[segments.length - 1] ?? '').trim();
   if (Buffer.byteLength(name, 'utf8') > NAME_MAX_BYTES) {
     const { stem, ext } = splitExtension(name);
     const extBytes = Buffer.byteLength(ext, 'utf8');
