@@ -9,7 +9,10 @@ import { httpFetch, HttpError } from '@/lib/http';
 import { filenameFromContentDisposition } from '@/lib/workspace-api';
 import type { ThreadAttachment } from '@/lib/workspace-types';
 
-/** Durable outputs use conversation-scoped downloads, never model-authored URLs. */
+/**
+ * Durable outputs use conversation-scoped downloads, never model-authored URLs:
+ * the file is fetched by its attachment id within this conversation.
+ */
 export function GeneratedFileChip({ file, conversationId }: {
   file: ThreadAttachment;
   conversationId: string;
@@ -28,13 +31,13 @@ export function GeneratedFileChip({ file, conversationId }: {
     : null;
 
   async function download() {
-    if (inFlight.current || file.path === null) return;
+    if (inFlight.current || file.attachmentId === null) return;
     inFlight.current = true;
     setBusy(true);
     setError(null);
     try {
       const response = await httpFetch(
-        `/api/files?path=${encodeURIComponent(file.path)}&conversationId=${encodeURIComponent(conversationId)}`,
+        `/api/files?conversationId=${encodeURIComponent(conversationId)}&id=${encodeURIComponent(file.attachmentId)}`,
       );
       if (!response.ok) throw new HttpError('file download', response.status);
       saveBlob(await response.blob(),
@@ -53,7 +56,7 @@ export function GeneratedFileChip({ file, conversationId }: {
 
   return (
     <div className="flex w-full max-w-xs flex-col gap-2">
-      <Button type="button" variant="outline" disabled={busy || file.path === null}
+      <Button type="button" variant="outline" disabled={busy || file.attachmentId === null}
         aria-label={`${busy ? 'Downloading' : 'Download'} ${name}`}
         aria-busy={busy} onClick={() => void download()}
         className="h-auto min-h-11 w-full justify-start gap-3 px-3 py-2 text-left">

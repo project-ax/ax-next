@@ -48,8 +48,8 @@ function fixture(options: {
   bus.registerService('attachments:commit', 'test-attachments', async (_ctx, input) => {
     calls.attachments.push(input);
     return {
-      path: '.ax/uploads/conversation/turn/safe.txt', displayName: 'safe.txt',
-      sizeBytes: 12, mediaType: 'text/plain', sha256: 'test-sha',
+      attachmentId: (input as { attachmentId: string }).attachmentId, filename: 'safe.txt',
+      sizeBytes: 12, mediaType: 'text/plain', sha256: 'a'.repeat(64),
     };
   });
   bus.registerService('agent:invoke', 'test-orchestrator', async (ctx: AgentContext, input) => {

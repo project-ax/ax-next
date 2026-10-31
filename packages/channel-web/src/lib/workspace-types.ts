@@ -621,24 +621,29 @@ export interface AgentRailData {
 }
 
 /**
- * One file the person attached to a message, as the transcript remembers it
- * (TASK-424).
+ * One file in the thread — one the person attached to a message, or one the
+ * agent published — as the transcript remembers it (TASK-424).
  *
  * This is the user's own record of what they sent, so it is carried on the
  * message rather than derived at render time: the walk found a turn whose image
  * reached the model and left NOTHING on screen, which made the agent look like
  * it was describing a picture nobody had sent.
  *
- * `path` is `null` in exactly one case — the live frame, between the composer
- * handing the message over and `attachments:commit` minting a durable
- * workspace path. The name and type are known from the person's own pick in
+ * `attachmentId` is what `GET /api/files` takes, together with the
+ * conversation the file belongs to. It is opaque: the client only hands it
+ * back, never parses it. `displayName` is the stored `filename` — the person's
+ * own name for the file, or a name the agent chose — and is untrusted text.
+ *
+ * `attachmentId` is `null` in exactly one case — the live frame, between the
+ * composer handing the message over and the next read bringing back the
+ * committed copy. The name and type are known from the person's own pick in
  * that window, and a chip that names the file is the honest thing to draw;
- * the thumbnail arrives with the path on the next read. Null is therefore
+ * the thumbnail arrives with the id on the next read. Null is therefore
  * "no download URL yet", never "no attachment" — the renderer must still show
  * the name.
  */
 export interface ThreadAttachment {
-  path: string | null;
+  attachmentId: string | null;
   displayName: string;
   mediaType: string;
   sizeBytes?: number;

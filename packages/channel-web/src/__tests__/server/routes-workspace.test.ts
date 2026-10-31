@@ -1034,8 +1034,8 @@ describe('channel-web agent-workspace BFF', () => {
           { type: 'text', text: KICKOFF_TEXT },
           {
             type: 'attachment',
-            path: 'uploads/c1/notes.txt',
-            displayName: 'notes.txt',
+            attachmentId: '3f1c2b9e-0d4a-4e7b-9c51-2a8f6e1d7b40',
+            filename: 'notes.txt',
             mediaType: 'text/plain',
             sizeBytes: 12,
           },
@@ -1059,6 +1059,155 @@ describe('channel-web agent-workspace BFF', () => {
     expect(body.thread.map((m) => m.kind)).toEqual(['user', 'agent']);
     expect(body.thread[0]).toMatchObject({ kind: 'user', text: KICKOFF_TEXT });
     expect(body.thread[0]).toHaveProperty('attachments');
+  });
+
+  /*
+    TASK-995 — a file in the thread is addressed by its attachment id, which is
+    the one thing `GET /api/files` takes besides the conversation. The person's
+    chip carries that id, the name they picked and the size.
+
+    A block in the pre-id shape (a `path`, no id) draws no chip at all: the
+    conversations read turns those into text before they get here, and a peer
+    that did not would otherwise hand the client a chip with nothing to
+    download it by.
+  */
+  it('(TASK-995) carries the attachment id on a file the person sent, and no chip for a block without one', async () => {
+    registerAuth({ id: 'u1', isAdmin: false });
+    conversations = [conv({ conversationId: 'c1', agentId: 'a1' })];
+    turnsByConversation.set('c1', [
+      {
+        turnId: 't1',
+        turnIndex: 0,
+        role: 'user',
+        contentBlocks: [
+          { type: 'text', text: 'two files' },
+          {
+            type: 'attachment',
+            attachmentId: '3f1c2b9e-0d4a-4e7b-9c51-2a8f6e1d7b40',
+            filename: 'notes.txt',
+            mediaType: 'text/plain',
+            sizeBytes: 12,
+          },
+          {
+            type: 'attachment',
+            path: '.ax/uploads/c1/t1/old.txt',
+            displayName: 'old.txt',
+            mediaType: 'text/plain',
+            sizeBytes: 3,
+          },
+        ],
+        createdAt: '2026-08-01T10:00:00.000Z',
+      },
+    ]);
+
+    const h = makeWorkspaceHandlers({ bus, initCtx });
+    const { res, captured } = mkRes();
+    await h.agentDetail(mkReq({ agentId: 'a1' }), res);
+    const body = captured.body as { thread: Array<Record<string, unknown>> };
+
+    expect(body.thread).toHaveLength(1);
+    expect(body.thread[0]!.attachments).toStrictEqual([
+      {
+        attachmentId: '3f1c2b9e-0d4a-4e7b-9c51-2a8f6e1d7b40',
+        displayName: 'notes.txt',
+        mediaType: 'text/plain',
+        sizeBytes: 12,
+      },
+    ]);
+  });
+
+  /*
+    TASK-995 — a published file's chip comes from the runner's own block AND
+    can be recovered from the `artifact_publish` result. Both name the same
+    artifact id, so it is drawn once. Two different artifacts that share a NAME
+    are two files and keep two chips: the key is the id, not the label.
+  */
+  it('(TASK-995) draws one chip per published artifact, keyed by its id', async () => {
+    registerAuth({ id: 'u1', isAdmin: false });
+    conversations = [conv({ conversationId: 'c1', agentId: 'a1' })];
+    // The artifact_publish result object, as the runner's executor returns it.
+    const budget = {
+      artifactId: '0123456789abcdef0123456789abcdef',
+      downloadUrl: 'ax://artifact/0123456789abcdef0123456789abcdef',
+      path: 'reports/budget.csv',
+      displayName: 'budget.csv',
+      mediaType: 'text/csv',
+      sizeBytes: 128,
+      sha256: 'a'.repeat(64),
+    };
+    const archived = {
+      ...budget,
+      artifactId: 'fedcba9876543210fedcba9876543210',
+      downloadUrl: 'ax://artifact/fedcba9876543210fedcba9876543210',
+      path: 'archive/budget.csv',
+      sizeBytes: 64,
+    };
+    turnsByConversation.set('c1', [
+      {
+        turnId: 't1',
+        turnIndex: 0,
+        role: 'user',
+        contentBlocks: [{ type: 'text', text: 'Make a budget.' }],
+        createdAt: '2026-08-01T10:00:00.000Z',
+      },
+      {
+        turnId: 't2',
+        turnIndex: 1,
+        role: 'assistant',
+        contentBlocks: [
+          { type: 'tool_use', id: 'publish-1', name: 'artifact_publish', input: {} },
+          {
+            type: 'tool_use',
+            id: 'publish-2',
+            name: 'mcp__ax-sandbox-tools__artifact_publish',
+            input: {},
+          },
+        ],
+        createdAt: '2026-08-01T10:00:02.000Z',
+      },
+      {
+        turnId: 't3',
+        turnIndex: 2,
+        role: 'tool',
+        contentBlocks: [
+          { type: 'tool_result', tool_use_id: 'publish-1', content: JSON.stringify(budget) },
+          {
+            type: 'tool_result',
+            tool_use_id: 'publish-2',
+            content: [{ type: 'text', text: JSON.stringify(archived) }],
+          },
+          {
+            type: 'attachment',
+            attachmentId: '0123456789abcdef0123456789abcdef',
+            filename: 'budget.csv',
+            mediaType: 'text/csv',
+            sizeBytes: 128,
+          },
+        ],
+        createdAt: '2026-08-01T10:00:03.000Z',
+      },
+    ]);
+
+    const h = makeWorkspaceHandlers({ bus, initCtx });
+    const { res, captured } = mkRes();
+    await h.agentDetail(mkReq({ agentId: 'a1' }), res);
+    const body = captured.body as { thread: Array<Record<string, unknown>> };
+
+    const files = body.thread.flatMap((m) => (m.attachments as unknown[] | undefined) ?? []);
+    expect(files).toStrictEqual([
+      {
+        attachmentId: '0123456789abcdef0123456789abcdef',
+        displayName: 'budget.csv',
+        mediaType: 'text/csv',
+        sizeBytes: 128,
+      },
+      {
+        attachmentId: 'fedcba9876543210fedcba9876543210',
+        displayName: 'budget.csv',
+        mediaType: 'text/csv',
+        sizeBytes: 64,
+      },
+    ]);
   });
 
   /*

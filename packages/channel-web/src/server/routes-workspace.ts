@@ -200,7 +200,11 @@ import type {
   RoutineTasksForConversationsOutput,
   RoutineView,
 } from '@ax/routines-contract';
-import { AttachmentBlockSchema } from '@ax/ipc-protocol';
+import {
+  AttachmentBlockSchema,
+  attachmentBlockFromArtifact,
+  type AttachmentBlock,
+} from '@ax/ipc-protocol';
 import {
   PluginError,
   SafeToolError,
@@ -685,12 +689,15 @@ type TurnBlock = {
   content?: unknown;
   /**
    * `attachment`: a file the person sent, as `routes-chat.ts` writes it after
-   * `attachments:commit` (TASK-424). `path` is workspace-relative and is what
-   * `GET /api/files` takes; `displayName` is the person's own filename and is
-   * therefore untrusted text, rendered as a React child and never as markup.
+   * `attachments:commit` (TASK-424), or a file the runner published.
+   * `attachmentId` is opaque and is what `GET /api/files` takes;
+   * `filename` is the person's own name for the file (or one the agent chose)
+   * and is therefore untrusted text, rendered as a React child and never as
+   * markup. `turnAttachments` re-checks the whole block against
+   * `AttachmentBlockSchema` before any of it travels.
    */
-  path?: string;
-  displayName?: string;
+  attachmentId?: string;
+  filename?: string;
   mediaType?: string;
   sizeBytes?: number;
 };
@@ -3788,41 +3795,40 @@ function turnToolCalls(
  * that did six things could render as if the agent had said nothing at all.
  */
 /**
- * The files a user turn carried, as the transcript stored them (TASK-424).
+ * The files a turn carried, as the transcript stored them (TASK-424): the
+ * person's uploads on a user turn, the runner's published files on a tool turn.
  *
  * The transcript is the person's own record of their conversation, and it was
  * silently omitting something they did: the model received the image and
  * described it while the thread showed no trace of it at all. This is the read
  * that puts it back.
  *
- * EVERY FIELD IS CHECKED rather than spread. These blocks are persisted turn
- * content — the same wire that carries model output — so a block missing a
- * `path` or carrying a non-string `displayName` is dropped here rather than
- * reaching the client as a half-shaped row that the renderer then has to guess
- * about. `sizeBytes` is the one optional: it is a nicety on the chip, and a
- * chip without it still names the file.
+ * EVERY FIELD IS CHECKED rather than spread: each block is parsed against
+ * `AttachmentBlockSchema`, the same strict shape stored turns are validated
+ * against. These blocks are persisted turn content — the same wire that
+ * carries model output — so a block with a malformed id, an empty name, or a
+ * leftover `path` (the pre-id shape) is dropped here rather than reaching the
+ * client as a half-shaped row that the renderer then has to guess about. Only
+ * what the chip needs travels.
  */
-function turnAttachments(blocks: TurnBlock[]): ThreadAttachment[] {
+function turnAttachments(blocks: readonly TurnBlock[]): ThreadAttachment[] {
   const out: ThreadAttachment[] = [];
   for (const block of blocks) {
     if (block.type !== 'attachment') continue;
-    if (typeof block.path !== 'string' || block.path.length === 0) continue;
-    if (typeof block.displayName !== 'string' || block.displayName.length === 0) {
-      continue;
-    }
-    if (typeof block.mediaType !== 'string' || block.mediaType.length === 0) {
-      continue;
-    }
-    out.push({
-      path: block.path,
-      displayName: block.displayName,
-      mediaType: block.mediaType,
-      ...(typeof block.sizeBytes === 'number' && Number.isFinite(block.sizeBytes)
-        ? { sizeBytes: block.sizeBytes }
-        : {}),
-    });
+    const parsed = AttachmentBlockSchema.safeParse(block);
+    if (parsed.success) out.push(threadAttachment(parsed.data));
   }
   return out;
+}
+
+/** The chip's copy of a validated `attachment` block: id, name, type, size. */
+function threadAttachment(block: AttachmentBlock): ThreadAttachment {
+  return {
+    attachmentId: block.attachmentId,
+    displayName: block.filename,
+    mediaType: block.mediaType,
+    sizeBytes: block.sizeBytes,
+  };
 }
 
 /**
@@ -3991,8 +3997,9 @@ function buildThread(
     if (turn.role === 'tool') {
       // Runner-authored output references and successful explicit publications.
       // Arbitrary assistant attachment blocks are still ignored. The download
-      // endpoint independently checks conversation access and a durable row.
-      const files = turnAttachments(blocks.filter(block => AttachmentBlockSchema.safeParse(block).success));
+      // endpoint independently checks conversation access and a durable row,
+      // so a chip here only ever names an id; it grants nothing.
+      const files = turnAttachments(blocks);
       for (const block of blocks) {
         if (block.type !== 'tool_result' || block.is_error || block.held ||
           !publishIds.has(block.tool_use_id ?? '')) continue;
@@ -4002,14 +4009,16 @@ function buildThread(
             'text' in c && typeof c.text === 'string' ? [c.text] : []) : [];
         for (const text of texts) {
           try {
-            const value: unknown = JSON.parse(text);
-            if (value === null || typeof value !== 'object') continue;
-            const file = AttachmentBlockSchema.safeParse({ ...value, type: 'attachment' });
-            if (file.success) files.push(...turnAttachments([file.data]));
+            // The publish result object → a chip, every field re-validated;
+            // its sandbox-relative `path` is dropped.
+            const file = attachmentBlockFromArtifact(JSON.parse(text));
+            if (file !== null) files.push(threadAttachment(file));
           } catch { /* A failed/non-JSON publication has no download. */ }
         }
       }
-      const attachments = [...new Map(files.map(file => [file.path, file])).values()];
+      // The runner's block and the publish result name the same artifact id:
+      // one chip per id. Two files that merely share a name keep two chips.
+      const attachments = [...new Map(files.map(file => [file.attachmentId, file])).values()];
       const text = renderableText(blocks);
       if (attachments.length > 0 || text.length > 0) dated.push({
         at: turn.createdAt,

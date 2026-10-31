@@ -5,6 +5,7 @@ import {
   type AgentContext,
   type HookBus,
 } from '@ax/core';
+import { AttachmentIdSchema } from '@ax/ipc-protocol';
 import { sanitizeContentDispositionFilename } from './content-disposition.js';
 import { parseSingleFileMultipart } from './multipart.js';
 
@@ -14,7 +15,9 @@ import { parseSingleFileMultipart } from './multipart.js';
 // Routes:
 //   - POST /api/attachments   — multipart upload, 25 MiB cap, MIME allowlist.
 //                               Calls attachments:store-temp.
-//   - GET  /api/files         — ACL'd byte download. Calls attachments:download.
+//   - GET  /api/files?conversationId=<c>&id=<attachmentId>
+//                             — ACL'd byte download of an upload or a
+//                               published file. Calls attachments:download.
 //
 // Both endpoints require auth. POST is CSRF-gated by the http-server's
 // subscriber (Origin + X-Requested-With check). GET is read-only and
@@ -23,19 +26,22 @@ import { parseSingleFileMultipart } from './multipart.js';
 // never mutates).
 //
 // Boundary review (I1-I5):
-//   - I1: payload field names — path, conversationId, attachmentId,
-//     sizeBytes, mediaType, displayName, expiresAt — are workspace +
-//     attachment vocabulary. No backend leak.
-//   - I2: this file imports only @ax/core (and the local multipart helper).
-//     All other plugins reached via bus.call.
+//   - I1: payload field names — conversationId, attachmentId, sizeBytes,
+//     mediaType, displayName, expiresAt — are attachment vocabulary. A file
+//     is addressed by its opaque id, never by a sandbox or storage path.
+//   - I2: this file imports only @ax/core and the @ax/ipc-protocol wire
+//     schema (plus the local helpers). All other plugins reached via
+//     bus.call.
 //   - I3: full POST + GET surface lands in the same PR with canary
 //     coverage (Phase 3 closes the half-wired window opened by Phase 1).
-//   - I4: attachment metadata is the conversation transcript; no
-//     side-table here. GET /api/files's path-scope ACL reads transcripts
-//     via conversations:get inside attachments:download.
+//   - I4: attachment metadata lives in @ax/attachments; no side-table here.
+//     attachments:download is the ACL: it serves a row only when the caller
+//     owns the conversation (conversations:get) and the row belongs to that
+//     conversation and to them.
 //   - I5: 25 MiB body cap per-route; MIME allowlist enforced by
 //     attachments:store-temp; 200 MiB per-user pending quota inside the
-//     hook; auth required for both; CSRF gated for POST.
+//     hook; auth required for both; CSRF gated for POST; the download's id
+//     is shape-checked here before the hook sees it.
 // ---------------------------------------------------------------------------
 
 const PLUGIN_NAME = '@ax/channel-web';
@@ -93,7 +99,9 @@ interface StoreTempOutput {
 }
 
 interface DownloadInput {
-  path: string;
+  /** An upload's or a published file's id. */
+  attachmentId: string;
+  /** The conversation being read; the file must belong to it. */
   conversationId: string;
   userId: string;
 }
@@ -211,23 +219,25 @@ export function createAttachmentsRouteHandlers(deps: AttachmentsRouteDeps) {
       }
     },
 
-    /** GET /api/files — ACL'd download. */
+    /** GET /api/files?conversationId=<c>&id=<attachmentId> — ACL'd download. */
     async getFile(req: RouteRequest, res: RouteResponse): Promise<void> {
       const userId = await authOr401(bus, initCtx, req, res);
       if (userId === null) return;
 
-      // 2) Validate query params at the route layer. The hook re-validates
-      //    inside attachments:download; this is the cheap first reject
-      //    for malformed shapes. http-server lowercases query-param keys
-      //    before delivering them.
-      const path = req.query['path'];
+      // 2) Validate query params at the route layer. A request that does
+      //    not name a conversation and a well-formed attachment id is
+      //    malformed (400) — that includes the retired `?path=` form. The
+      //    hook re-checks the id itself; this is the cheap first reject, and
+      //    it means nothing path-shaped ever reaches it. http-server
+      //    lowercases query-param keys before delivering them.
+      const attachmentId = AttachmentIdSchema.safeParse(req.query['id']);
       const conversationId = req.query['conversationid'];
-      if (typeof path !== 'string' || path.length === 0) {
-        res.status(404).json({ error: 'not-found' });
-        return;
-      }
-      if (typeof conversationId !== 'string' || conversationId.length === 0) {
-        res.status(404).json({ error: 'not-found' });
+      if (
+        !attachmentId.success ||
+        typeof conversationId !== 'string' ||
+        conversationId.length === 0
+      ) {
+        res.status(400).json({ error: 'invalid-payload' });
         return;
       }
 
@@ -241,7 +251,7 @@ export function createAttachmentsRouteHandlers(deps: AttachmentsRouteDeps) {
         const out = await bus.call<DownloadInput, DownloadOutput>(
           'attachments:download',
           ctx,
-          { path, conversationId, userId },
+          { attachmentId: attachmentId.data, conversationId, userId },
         );
         // Stream-equivalent body write. The framework's HttpResponse.body
         // is single-shot; bytes are flushed atomically. For 25 MiB this
@@ -256,9 +266,11 @@ export function createAttachmentsRouteHandlers(deps: AttachmentsRouteDeps) {
           .body(out.bytes, out.mediaType);
       } catch (err) {
         if (err instanceof PluginError) {
-          // Uniform 404 for every forbidden / not-found condition (the hook
-          // itself collapses cross-tenant + missing-path + symlink etc into
-          // a not-found posture; we mirror that at the HTTP layer).
+          // Uniform 404, with no bytes, for every forbidden / not-found
+          // condition: the hook answers `not-found` for a foreign or missing
+          // conversation, an id from another conversation, and a purged
+          // blob alike, and a `forbidden` from any other implementation is
+          // folded in too — a 403 would tell a stranger the file exists.
           if (err.code === 'not-found' || err.code === 'forbidden') {
             res.status(404).json({ error: 'not-found' });
             return;

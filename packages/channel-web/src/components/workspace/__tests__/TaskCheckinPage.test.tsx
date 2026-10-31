@@ -332,7 +332,7 @@ describe('TaskCheckinPage (TASK-911)', () => {
           thread: [
             {
               ...SAID,
-              attachments: [{ path: 'out/report.csv', displayName: 'report.csv', mediaType: 'text/csv' }],
+              attachments: [{ attachmentId: 'f00dfeedf00dfeedf00dfeedf00dfeed', displayName: 'report.csv', mediaType: 'text/csv' }],
             },
           ],
         }),
@@ -343,7 +343,7 @@ describe('TaskCheckinPage (TASK-911)', () => {
       fireEvent.click(within(transcript()).getByRole('button', { name: 'Download report.csv' }));
       await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
       expect(fetchMock).toHaveBeenCalledWith(
-        '/api/files?path=out%2Freport.csv&conversationId=c1',
+        '/api/files?conversationId=c1&id=f00dfeedf00dfeedf00dfeedf00dfeed',
         expect.anything(),
       );
       await waitFor(() => expect(saveBlob).toHaveBeenCalledTimes(1));

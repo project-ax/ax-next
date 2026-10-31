@@ -1709,7 +1709,7 @@ describe('@ax/channel-web server plugin (integration)', () => {
       // handler maps that to a 5xx via the unhandled-error path — but
       // it's NOT a 404, which is what proves the route exists.
       const get = await fetch(
-        `http://127.0.0.1:${booted.port}/api/files?path=foo&conversationId=cnv_test`,
+        `http://127.0.0.1:${booted.port}/api/files?conversationId=cnv_test&id=att-1`,
       );
       expect(get.status).not.toBe(404);
     });

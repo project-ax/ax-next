@@ -223,8 +223,9 @@ interface Props {
    *
    * Needed to draw a person's own attachments (TASK-424): `GET /api/files`
    * scopes every download to a conversation, so without this id a committed
-   * file has a path and still no URL. A null id is not an error here — the
-   * chip falls back to naming the file, which is the whole point of the card.
+   * file has an attachment id and still no URL. A null id is not an error
+   * here — the chip falls back to naming the file, which is the whole point of
+   * the card.
    */
   conversationId: string | null;
   decisions: Decision[];
@@ -1052,7 +1053,7 @@ function Message({
 }: {
   m: ThreadMessage;
   agent: Pick<WorkspaceAgent, 'id' | 'name'>;
-  /** See `Props.conversationId` — what turns an attachment path into a URL. */
+  /** See `Props.conversationId` — what turns an attachment id into a URL. */
   conversationId: string | null;
   decisions: Decision[];
   onApprove: (id: string, scope?: 'once' | 'agent-routines') => void;
@@ -1116,16 +1117,19 @@ function Message({
                 place, and a fourth call site inherits it for free.
 
                 This is still the honest place to say what CANNOT reach here.
-                `turnAttachments` runs on `turn.role === 'user'` ONLY, and user
-                turns are persisted host-side by `@ax/chat-orchestrator` from
-                the person's own content blocks — the runner never writes one
-                (see its TASK-66 note). So a model that emits an `attachment`
-                block of its own gets no chip, no `<img>` and no
-                `/api/files` URL out of this renderer: the assistant branch
-                below never asks for attachments at all. Nothing on this path
-                is model- or tool-authored, which is the one reason a label
-                here is safe to draw when a step label built from tool input
-                would not be.
+                These chips come from user turns only, and user turns are
+                persisted host-side by `@ax/chat-orchestrator` from the
+                person's own content blocks — the runner never writes one (see
+                its TASK-66 note), and the chat route refuses an `attachment`
+                block in the request body, so every id here came out of
+                `attachments:commit`. A model that emits an `attachment` block
+                of its own gets no chip, no `<img>` and no `/api/files` URL out
+                of this renderer: `buildThread` never asks an assistant turn
+                for attachments at all (the files a runner publishes draw as
+                download chips on the agent's message, not here). Nothing on
+                this path is model- or tool-authored, which is the one reason a
+                label here is safe to draw when a step label built from tool
+                input would not be.
               */
               return (
               <AttachmentChip
@@ -1134,10 +1138,10 @@ function Message({
                   carry the same file twice, and a key that was just the name
                   would be a duplicate React key across siblings.
                 */
-                key={`${i}-${a.path ?? a.displayName}`}
-                {...(a.path !== null && conversationId !== null
+                key={`${i}-${a.attachmentId ?? a.displayName}`}
+                {...(a.attachmentId !== null && conversationId !== null
                   ? {
-                      path: a.path,
+                      attachmentId: a.attachmentId,
                       conversationId,
                       displayName: a.displayName,
                       mediaType: a.mediaType,
@@ -1147,10 +1151,11 @@ function Message({
                     }
                   : {
                       /*
-                        No path yet (the live frame, before the commit), or no
-                        conversation to scope a download to. We still know WHAT
-                        they sent, so we say so — the alternative is the bug
-                        this card is about, in a smaller window.
+                        No id yet (the live frame, before the re-read brings
+                        back the committed copy), or no conversation to scope a
+                        download to. We still know WHAT they sent, so we say
+                        so — the alternative is the bug this card is about, in
+                        a smaller window.
                       */
                       variant: 'pending' as const,
                       displayName: a.displayName,
@@ -1437,7 +1442,7 @@ function Message({
         {conversationId !== null && (m.attachments?.length ?? 0) > 0 && (
           <div className="mt-3 flex flex-wrap gap-2">
             {m.attachments?.map((file, i) => (
-              <GeneratedFileChip key={`${i}-${file.path}`} file={file} conversationId={conversationId} />
+              <GeneratedFileChip key={`${i}-${file.attachmentId ?? file.displayName}`} file={file} conversationId={conversationId} />
             ))}
           </div>
         )}

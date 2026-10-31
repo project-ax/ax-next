@@ -4,7 +4,7 @@ import { GeneratedFileChip } from '../GeneratedFileChip';
 import { saveBlob } from '@/lib/file-download';
 
 vi.mock('@/lib/file-download', () => ({ saveBlob: vi.fn() }));
-const file = { path: 'reports/a & b.csv', displayName: 'budget.csv', mediaType: 'text/csv', sizeBytes: 2048 };
+const file = { attachmentId: '0123456789abcdef0123456789abcdef', displayName: 'budget.csv', mediaType: 'text/csv', sizeBytes: 2048 };
 beforeEach(() => { vi.mocked(saveBlob).mockClear(); });
 afterEach(() => { vi.unstubAllGlobals(); });
 
@@ -19,7 +19,18 @@ describe('GeneratedFileChip', () => {
       expect(saveBlob).toHaveBeenLastCalledWith(expect.any(Blob), 'safe.csv');
       view.unmount();
     }
-    expect(fetch).toHaveBeenCalledWith('/api/files?path=reports%2Fa%20%26%20b.csv&conversationId=c%20%26%201', { credentials: 'include' });
+    // Addressed by the artifact's id within its conversation, never by a path.
+    expect(fetch).toHaveBeenCalledWith('/api/files?conversationId=c%20%26%201&id=0123456789abcdef0123456789abcdef', { credentials: 'include' });
+  });
+
+  it('asks for nothing while the file has no id to download by', () => {
+    const fetch = vi.fn();
+    vi.stubGlobal('fetch', fetch);
+    render(<GeneratedFileChip file={{ ...file, attachmentId: null }} conversationId="c1" />);
+    const button = screen.getByRole('button', { name: 'Download budget.csv' });
+    expect(button).toBeDisabled();
+    fireEvent.click(button);
+    expect(fetch).not.toHaveBeenCalled();
   });
 
   it('prevents overlapping downloads and gives a failed download a retry', async () => {

@@ -1405,12 +1405,13 @@ export function AgentView({
     /*
       TASK-424 — the person's file goes into the bubble with their words.
 
-      `path: null` is the honest shape here and not a placeholder: the durable
-      workspace path is minted by `attachments:commit` on the server, so in
-      this window there is nothing to build a download URL from. The chip falls
-      back to naming the file, and the picture arrives with the re-read on
-      `done`. What must never happen — and is what this card is about — is the
-      message rendering as if no file had been sent at all.
+      `attachmentId: null` is the honest shape here and not a placeholder: the
+      file only becomes downloadable once `attachments:commit` has filed it
+      under this conversation on the server, and only the re-read on `done`
+      says that happened. The chip falls back to naming the file, and the
+      picture arrives with the re-read. What must never happen — and is what
+      this card is about — is the message rendering as if no file had been
+      sent at all.
     */
     liveThread.push({
       kind: 'user',
@@ -1419,7 +1420,7 @@ export function AgentView({
       ...(sent.attachments.length > 0
         ? {
             attachments: sent.attachments.map((a) => ({
-              path: null,
+              attachmentId: null,
               displayName: a.displayName,
               mediaType: a.mediaType,
             })),

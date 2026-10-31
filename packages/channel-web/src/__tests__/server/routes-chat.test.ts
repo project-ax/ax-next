@@ -2325,19 +2325,21 @@ describe('@ax/channel-web GET /api/chat/agents', () => {
 // POST /api/chat/messages — attachment_ref handling (Phase 3, Task 4).
 //
 // The wire schema accepts `attachment_ref` blocks. The handler commits each
-// one via `attachments:commit` (which validates ownership, applies the
-// bytes to the workspace, and returns a stable workspace path), then
-// replaces the ref with a canonical `attachment` block BEFORE dispatching
-// agent:invoke. Failure modes:
+// one via `attachments:commit` (which checks the staged upload is the
+// caller's, stores its bytes, and answers with the upload's id and display
+// metadata), then replaces the ref with a canonical `attachment` block —
+// addressed by that id, never by a path — BEFORE dispatching agent:invoke.
+// Failure modes:
 //
+//   - a client-sent `attachment` block → 400 invalid-content-block, before
+//     anything is committed (only a committed ref may become one)
 //   - attachmentId not found in temp store → 400 attachment-not-found
 //   - attachmentId belongs to a different user → 400 attachment-foreign-user
 //   - cumulative attachment bytes > 100 MiB → 413 attachment-total-too-large
 //
 // Atomicity: commits are per-row atomic; a partial-fail leaves the
-// successful commits orphaned in the workspace (the temp janitor reaps
-// stale temps; the orphan blobs sit until the next git GC). Acceptable
-// per the Phase-3 design.
+// successful commits stored with no transcript block pointing at them (the
+// temp janitor reaps stale temps). Acceptable per the Phase-3 design.
 // ---------------------------------------------------------------------------
 
 describe('POST /api/chat/messages — attachment_ref handling', () => {
@@ -2351,13 +2353,16 @@ describe('POST /api/chat/messages — attachment_ref handling', () => {
     });
   }
 
-  it('commits attachment_ref blocks and dispatches agent:invoke with attachment blocks', async () => {
+  it('rewrites an attachment_ref into an id block', async () => {
     const booted = await boot({
       user: { id: 'userA', isAdmin: false },
       allowedFor: new Set(['userA']),
       includeAttachments: true,
     });
     harnesses.push(booted.harness);
+    // A pass-through spy: the real @ax/attachments still answers every call;
+    // the spy only records what the route asked it.
+    const busCalls = vi.spyOn(booted.harness.bus, 'call');
 
     // Pre-stage a temp via attachments:store-temp.
     const stored = await booted.harness.bus.call<
@@ -2378,32 +2383,93 @@ describe('POST /api/chat/messages — attachment_ref handling', () => {
       ],
     });
     expect(r.status).toBe(202);
+    const { conversationId } = (await r.json()) as { conversationId: string };
 
     // agent:invoke dispatch is async — wait a tick.
     await new Promise((resolve) => setTimeout(resolve, 50));
 
     expect(booted.chatRunCaptures).toHaveLength(1);
-    const cap = booted.chatRunCaptures[0]!;
-    const msg = cap.input.message;
+    const msg = booted.chatRunCaptures[0]!.input.message;
     expect(msg.role).toBe('user');
     // `content` carries the typed text; `contentBlocks` carries the
     // committed attachment only. Including the text-block here as well
     // would duplicate the user's prompt once the runner prepends `content`.
     expect(msg.content).toBe('hi here is a doc');
-    expect(msg.contentBlocks).toBeTruthy();
-    expect(msg.contentBlocks).toHaveLength(1);
-    const att = msg.contentBlocks![0]!;
-    expect(att.type).toBe('attachment');
-    expect(att.mediaType).toBe('application/pdf');
-    expect(att.displayName).toBe('note.pdf');
-    expect(typeof att.path).toBe('string');
-    // Path shape: .ax/uploads/<conversationId>/<turnId>/<sanitized-filename>
-    // — sanitized filename has an 8-hex prefix per
-    // `sanitizeFilenameComponent` in @ax/attachments.
-    expect(att.path).toMatch(
-      /^\.ax\/uploads\/[^/]+\/[^/]+\/[0-9a-f]{8}__note\.pdf$/,
-    );
+    // The block the orchestrator stores and the runner reads: the upload's
+    // own id plus what the person picked — and no path, anywhere. 15 is
+    // `'hello pdf bytes'.length`.
+    expect(msg.contentBlocks).toStrictEqual([
+      {
+        type: 'attachment',
+        attachmentId: stored.attachmentId,
+        filename: 'note.pdf',
+        mediaType: 'application/pdf',
+        sizeBytes: 15,
+      },
+    ]);
+    // The commit names the upload and the conversation it was sent in —
+    // nothing that would only make sense for building a path.
+    const commits = busCalls.mock.calls
+      .filter(([hook]) => hook === 'attachments:commit')
+      .map(([, , input]) => input);
+    expect(commits).toStrictEqual([
+      { attachmentId: stored.attachmentId, conversationId },
+    ]);
     expect(typeof msg.turnId).toBe('string');
+  });
+
+  it('refuses a client-sent attachment block with 400 and commits nothing', async () => {
+    const booted = await boot({
+      user: { id: 'userA', isAdmin: false },
+      allowedFor: new Set(['userA']),
+      includeAttachments: true,
+    });
+    harnesses.push(booted.harness);
+    const busCalls = vi.spyOn(booted.harness.bus, 'call');
+    const stored = await booted.harness.bus.call<unknown, { attachmentId: string }>(
+      'attachments:store-temp',
+      userCtx('userA'),
+      {
+        bytes: Buffer.from('hello pdf bytes'),
+        displayName: 'note.pdf',
+        mediaType: 'application/pdf',
+      },
+    );
+
+    // A well-formed `attachment` block is still not the client's to send: it
+    // would point the transcript (and the runner) at an id this person never
+    // committed into this conversation. It rides AFTER a legitimate ref, so a
+    // refusal that only fires mid-loop would already have committed the ref.
+    const r = await postMessage(booted.port, {
+      conversationId: null,
+      agentId: 'agt_test',
+      contentBlocks: [
+        { type: 'text', text: 'see this' },
+        { type: 'attachment_ref', attachmentId: stored.attachmentId },
+        {
+          type: 'attachment',
+          attachmentId: 'someone-elses-upload',
+          filename: 'payroll.pdf',
+          mediaType: 'application/pdf',
+          sizeBytes: 10,
+        },
+      ],
+    });
+    expect(r.status).toBe(400);
+    expect(await r.json()).toEqual({ error: 'invalid-content-block' });
+
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(busCalls.mock.calls.filter(([hook]) => hook === 'attachments:commit')).toEqual([]);
+    expect(booted.chatRunCaptures).toHaveLength(0);
+    expect(await countConversations()).toBe(0);
+
+    // Nothing was redeemed: the same staged upload still commits on a clean send.
+    const retry = await postMessage(booted.port, {
+      conversationId: null,
+      agentId: 'agt_test',
+      contentBlocks: [{ type: 'attachment_ref', attachmentId: stored.attachmentId }],
+    });
+    expect(retry.status).toBe(202);
   });
 
   it('returns 400 attachment-not-found for an unknown attachmentId', async () => {

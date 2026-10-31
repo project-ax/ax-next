@@ -9,17 +9,17 @@ import { cn } from '@/lib/utils';
  *
  * Two variants:
  *
- *   - `downloadable` (default): given a workspace-relative `path` plus a
- *     `conversationId`, builds a `GET /api/files?…` URL and renders the
- *     name + a download action (image preview for `image/*`).
+ *   - `downloadable` (default): given the file's `attachmentId` plus the
+ *     `conversationId` it belongs to, builds a
+ *     `GET /api/files?conversationId=…&id=…` URL and renders the name + a
+ *     download action (image preview for `image/*`). The id is opaque — the
+ *     chip only hands it back to the server, which checks the file belongs
+ *     to that conversation and to the person asking.
  *
  *   - `pending`: the live-frame variant — used right after a user hits
- *     send, when the attachment is still in `MessagePrimitive.Attachments`
- *     and we only have the attachmentId (not the workspace path). Renders
- *     name + icon only; no download. After page reload, the history-load
- *     path rewrites attachments into `file` parts carrying
- *     `ax://attachment-path/<base64(path)>`, and the chip becomes the
- *     downloadable variant.
+ *     send, before the next read brings back the committed copy of the
+ *     message. Renders name + icon only; no download. The re-read hands the
+ *     chip the file's id, and it becomes the downloadable variant.
  *
  * `displayName` is CLAMPED here, in the component, rather than at each call
  * site. A filename comes off a person's own disk and has no length limit, and
@@ -37,8 +37,8 @@ import { cn } from '@/lib/utils';
 export type AttachmentChipProps =
   | {
       variant?: 'downloadable';
-      /** Workspace-relative path (e.g. ".ax/uploads/<conv>/<turn>/<file>"). */
-      path: string;
+      /** The file's attachment id. Opaque: only ever handed back to `/api/files`. */
+      attachmentId: string;
       displayName: string;
       mediaType: string;
       conversationId: string;
@@ -63,8 +63,8 @@ function formatSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-function downloadUrl(path: string, conversationId: string): string {
-  return `/api/files?path=${encodeURIComponent(path)}&conversationId=${encodeURIComponent(conversationId)}`;
+function downloadUrl(conversationId: string, attachmentId: string): string {
+  return `/api/files?conversationId=${encodeURIComponent(conversationId)}&id=${encodeURIComponent(attachmentId)}`;
 }
 
 export const AttachmentChip: FC<AttachmentChipProps> = (props) => {
@@ -92,10 +92,10 @@ export const AttachmentChip: FC<AttachmentChipProps> = (props) => {
     );
   }
 
-  const { path, mediaType, conversationId, sizeBytes } = props;
+  const { attachmentId, mediaType, conversationId, sizeBytes } = props;
   const isImage = mediaType.startsWith('image/');
   const Icon = pickIcon(mediaType);
-  const href = downloadUrl(path, conversationId);
+  const href = downloadUrl(conversationId, attachmentId);
 
   const onDownload = () => {
     // Use window.open with a sandboxed target so the browser's
