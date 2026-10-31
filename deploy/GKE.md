@@ -607,6 +607,64 @@ gcloud filestore instances describe ax-next-files \
 The share name `vol1` is the export path `/vol1`, which `gke-values.yaml`
 already sets.
 
+### Alert before the user-files share fills up
+
+Each person's storage limit counts their agents' `/files` too, but only as a
+measurement: the host re-measures an agent's folder after each turn and on a
+six-hourly sweep. Filestore has no per-folder limit and the agent writes to the
+share directly, so one busy agent can run past its owner's limit between
+measurements, and enough of them can fill the share for everyone. We'd rather
+hear about that from a graph than from a full disk.
+
+Nothing in this repo creates alerts, so create this one by hand, once. Save it
+as `files-capacity-alert.json`:
+
+```json
+{
+  "displayName": "ax-next user-files share above 80%",
+  "combiner": "OR",
+  "conditions": [
+    {
+      "displayName": "Filestore ax-next-files used_bytes_percent > 80",
+      "conditionThreshold": {
+        "filter": "resource.type = \"filestore_instance\" AND resource.label.instance_name = \"ax-next-files\" AND metric.type = \"file.googleapis.com/nfs/server/used_bytes_percent\"",
+        "comparison": "COMPARISON_GT",
+        "thresholdValue": 80,
+        "duration": "300s",
+        "aggregations": [
+          { "alignmentPeriod": "300s", "perSeriesAligner": "ALIGN_MEAN" }
+        ]
+      }
+    }
+  ],
+  "notificationChannels": [
+    "projects/<PROJECT_ID>/notificationChannels/<CHANNEL_ID>"
+  ]
+}
+```
+
+```bash
+gcloud alpha monitoring policies create \
+  --project=$PROJECT_ID \
+  --policy-from-file=files-capacity-alert.json
+```
+
+Prefer clicking? In the Console, go to Monitoring > Alerting > Create policy,
+pick the Filestore instance's percent-used metric for `ax-next-files`, and
+alert when it stays above 80 for 5 minutes.
+
+When it fires, grow the share first, then find out why:
+
+```bash
+gcloud filestore instances update ax-next-files \
+  --project=$PROJECT_ID --zone=us-central1-a \
+  --file-share=name=vol1,capacity=<larger, e.g. 2TB>
+```
+
+A Basic HDD share grows in place and can never shrink, so grow it in sensible
+steps. Then open Settings > Storage to see who uses the most, and ask them (or
+their agent) to tidy up.
+
 ### Write the overrides and install
 
 Keep your real values **out of the tracked template.** Rather than editing
@@ -649,9 +707,11 @@ memory:
 ```
 
 About `workspace.storage`: `100Gi` is a starting point, so edit it to taste. Blobs
-(attachments and artifacts) share this volume with the agent workspaces, and the
-per-person storage limit (default 1 GB, Settings > Storage) multiplies across
-people, so size the volume for the number of people you expect.
+(attachments and artifacts) share this volume with the agent workspaces. The
+per-person storage limit (default 10 GB, Settings > Storage) covers a person's
+uploads and published files on this volume AND their agents' files on the
+user-files share, and it multiplies across people, so size both for the number
+of people you expect.
 
 Helm needs the (conditioned-off) Postgres subchart present in `charts/` before it
 will render, so build dependencies once:
