@@ -168,8 +168,8 @@ describe('lib/http — what a failed request is allowed to say', () => {
   });
 
   it('keeps 503 distinct from the rest of the 5xx band', () => {
-    // "no workspace backend in this deployment" is not "the server broke",
-    // and `workspace-files.ts` branches on exactly that difference.
+    // "no file area in this deployment" is not "the server broke",
+    // and `user-files.ts` branches on exactly that difference.
     expect(httpErrorMessage(503)).not.toBe(HTTP_SERVER_ERROR);
   });
 });

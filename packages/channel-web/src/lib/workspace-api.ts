@@ -74,7 +74,6 @@ import { stepDetail } from './workspace-steps';
 // three kinds is a drift waiting to happen.
 import { isRenderableGrant } from './workspace-grant-store';
 import type { PermissionRequest, PhaseKind, SseFrame } from '../server/types';
-import { asSaveRefusedCode, type SaveRefusedCode } from './save-refused';
 import type { PostMessageResponse } from '@/wire/chat';
 import type {
   AgentAbilitiesRead,
@@ -117,8 +116,6 @@ CounterRow,
   SelfChangesResponse,
   UserFilesAnswer,
   WorkspaceAgent,
-  WorkspaceFileBody,
-  WorkspaceFileSummary,
   WorkspaceReadStatus,
 } from '@/lib/workspace-types';
 
@@ -142,8 +139,6 @@ export type {
   UserFileEntry,
   UserFilesAnswer,
   WorkspaceAgent,
-  WorkspaceFileBody,
-  WorkspaceFileSummary,
   WorkspaceReadStatus,
 };
 
@@ -258,13 +253,6 @@ export interface GrantsPage {
   grants: PendingGrant[];
 }
 
-/** One listing of an agent's files — see `workspaceApi.files`. */
-export interface AgentFilesPage {
-  files: WorkspaceFileSummary[];
-  /** `true` when the agent has more files than one response will carry. */
-  truncated: boolean;
-}
-
 export interface AgentDetail {
   agent: WorkspaceAgent;
   /**
@@ -330,9 +318,9 @@ const writeHeaders = {
  * number — and six surfaces were printing it at readers in a mono span. The
  * raw form survives as `detail`, for `console` only.
  *
- * Still its own class rather than a bare `HttpError` so `workspace-files.ts`
- * can keep saying "a 503 from THIS api means no workspace backend" without
- * that claim leaking to every other route in the app.
+ * Still its own class rather than a bare `HttpError` so `user-files.ts`
+ * can keep saying "a 503 from THIS api means no file area" without that claim
+ * leaking to every other route in the app.
  */
 export class WorkspaceApiError extends HttpError {
   constructor(path: string, status: number) {
@@ -1035,23 +1023,11 @@ export interface SendMessageInput {
   attachmentIds?: readonly string[];
 }
 
-/** What a normally-ended turn can still have to say. See `StreamHandlers.onDone`. */
-export interface TurnDoneInfo {
-  saveRefused?: SaveRefusedCode;
-}
-
 export interface StreamHandlers {
   /** One text delta. Called many times; concatenate in order. */
   onText: (chunk: string) => void;
-  /**
-   * The turn ended normally.
-   *
-   * `info.saveRefused` (TASK-720): the reply finished, but the host refused to
-   * save the files it changed and they were undone. One of three closed codes,
-   * checked here before it is handed on — an unknown value is dropped, not
-   * passed along. Absent in the ordinary case, and `info` itself may be.
-   */
-  onDone: (info?: TurnDoneInfo) => void;
+  /** The turn ended normally. */
+  onDone: () => void;
   /**
    * The agent called a tool (TASK-352). NON-TERMINAL — the turn carries on.
    *
@@ -1155,19 +1131,6 @@ export interface StreamHandlers {
  */
 export const WORKSPACE_STREAM_LOST =
   'the reply stream ended without finishing';
-
-/**
- * Which of the agent's two file tiers a read is addressed to.
- *
- * `workspace` — the git-backed tier AX manages and governs.
- * `user-files` — the agent's DURABLE tier: its cwd and HOME, where a
- *                deliverable lands when nobody said where.
- *
- * Two names rather than a boolean, because they are two BACKENDS and the
- * surface fails them independently; a `governed: boolean` would read as two
- * modes of one store, which is the thing the Files tab is careful not to say.
- */
-export type FileTier = 'workspace' | 'user-files';
 
 /**
  * `attachment; filename="notes.md"` → `notes.md`.
@@ -1573,40 +1536,15 @@ export const workspaceApi = {
     ),
 
   /**
-   * What this agent has written, in the workspace it owns (AW-12).
+   * One path in the agent's files — its cwd and HOME.
    *
-   * Its OWN request, not a field on `agent(id)`. A `files: []` inside the
-   * detail response could not distinguish "has written nothing" from "we
-   * could not read the workspace", and the tab has to say which.
-   */
-  files: (agentId: string) =>
-    req<AgentFilesPage>(`/agents/${encodeURIComponent(agentId)}/files`),
-
-  /**
-   * One of those files.
+   * One call for both a directory listing and a file body, because the server
+   * is the one that knows which a path is.
    *
-   * `path` is encoded WHOLE — slashes included — so the server receives one
-   * splat segment and decodes it exactly once. Encoding per-segment would
-   * leave real slashes on the wire, and then `a/../b` and `a%2F..%2Fb` would
-   * take different code paths to the same read. One shape, one decode.
-   */
-  file: (agentId: string, path: string) =>
-    req<WorkspaceFileBody>(
-      `/agents/${encodeURIComponent(agentId)}/files/${encodeURIComponent(path)}`,
-    ),
-
-  /**
-   * One path in the agent's DURABLE user-files tier — its cwd and HOME.
-   *
-   * A different backend from `files`/`file` above, not a different view of the
-   * same one: those read the git-backed tier AX manages, this reads the tier
-   * the agent actually works in. One call for both a directory listing and a
-   * file body, because the server is the one that knows which a path is.
-   *
-   * `relPath` is encoded WHOLE — slashes included — for the same reason `file`
-   * does it: the server receives one splat and decodes it exactly once.
-   * Encoding per-segment would leave real slashes on the wire and let
-   * `a/../b` and `a%2F..%2Fb` reach the same read down two different paths.
+   * `relPath` is encoded WHOLE — slashes included — so the server receives one
+   * splat and decodes it exactly once. Encoding per-segment would leave real
+   * slashes on the wire and let `a/../b` and `a%2F..%2Fb` reach the same read
+   * down two different paths.
    */
   userFiles: (agentId: string, relPath: string) =>
     req<UserFilesAnswer>(
@@ -1615,22 +1553,17 @@ export const workspaceApi = {
     ),
 
   /**
-   * The BYTES of one file, from whichever tier it lives in.
-   * See `FileTier` and `filenameFromContentDisposition` below this object.
+   * The BYTES of one file in the agent's files.
+   * See `filenameFromContentDisposition` below this object.
    *
-   * The sibling of `file`/`userFiles` above, and the only read on this surface
-   * that does not come back as JSON: those two answer with TEXT and say when
-   * they could not — `clipped: 'binary'` for a PDF, a clipped head for a long
-   * one. This is the way to the file itself.
+   * The sibling of `userFiles` above, and the only read on this surface that
+   * does not come back as JSON: that one answers with TEXT and says when it
+   * could not — `clipped: 'binary'` for a PDF, a clipped head for a long one.
+   * This is the way to the file itself.
    *
-   * `tier` picks the ROUTE, not a query parameter, because the two tiers are
-   * two backends: `workspace` is the git-backed tier AX manages, `user-files`
-   * is the agent's own cwd and HOME. They fail independently on this surface
-   * on purpose, and a shared route would have made which-backend a
-   * caller-supplied string the server then had to validate.
-   *
-   * `path` is encoded WHOLE — slashes included — for exactly the reason `file`
-   * gives: the server receives one splat segment and decodes it exactly once.
+   * `path` is encoded WHOLE — slashes included — for exactly the reason
+   * `userFiles` gives: the server receives one splat segment and decodes it
+   * exactly once.
    *
    * NOT `res.json()`. A non-ok answer becomes a `WorkspaceApiError` carrying
    * its status, so the caller can tell "too big to send" from "not there any
@@ -1638,12 +1571,10 @@ export const workspaceApi = {
    */
   downloadFile: async (
     agentId: string,
-    tier: FileTier,
     path: string,
   ): Promise<{ blob: Blob; filename: string }> => {
-    const segment = tier === 'workspace' ? 'files' : 'user-files';
     const route =
-      `/agents/${encodeURIComponent(agentId)}/download/${segment}/` +
+      `/agents/${encodeURIComponent(agentId)}/download/user-files/` +
       encodeURIComponent(path);
     const res = await httpFetch(`/api/workspace${route}`);
     if (!res.ok) throw new WorkspaceApiError(route, res.status);
@@ -2266,8 +2197,7 @@ async function streamReply(
   const end = await readSseFrames(res.body, (frame: SseFrame) => {
     if ('done' in frame && frame.done === true) {
       terminated = true;
-      const saveRefused = asSaveRefusedCode(frame.saveRefused);
-      onDone(saveRefused !== undefined ? { saveRefused } : undefined);
+      onDone();
       return 'stop';
     }
     if ('error' in frame && typeof frame.error === 'string') {

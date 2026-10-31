@@ -1,61 +1,34 @@
 // @vitest-environment node
 /**
- * TASK-257 pins the workspace partition key to `agentId` ALONE — was
- * `sha256([userId, agentId])`. On a TEAM agent, every user authorized to
- * reach that agent now shares one workspace: files and memory written by one
- * teammate are visible to another. Before TASK-257 each caller hashed into
- * their own private, empty shard, so a teammate opening the Files tab on a
- * shared agent saw nothing there — the bug this key change fixes.
+ * Every user authorized to reach an agent shares that agent's files and
+ * Instructions. On a TEAM agent, files and Instructions written by one
+ * teammate are visible to another, and the partition is `agentId` ALONE
+ * (TASK-257; the git-backed workspace tier it was written for was removed in
+ * TASK-995, and the Files tab now reads the agent's home through
+ * `sandbox:read-user-files`).
  *
- * ⚠ WHAT THIS FILE DOES AND DOES NOT PROVE. Read this before trusting it.
+ * WHAT THIS FILE DOES AND DOES NOT PROVE. It tests the ROUTE PLUMBING and the
+ * ACL, not the partition derivation: the fake reader below stands in for the
+ * sandbox provider, which this package does not depend on.
  *
- * It tests the ROUTE PLUMBING and the ACL, not the partition derivation. The
- * fakes below stand in for `@ax/workspace-git-server`, and `@ax/channel-web`
- * does not depend on that package at all — so the real `workspaceIdFor` is
- * never called here, and cases 1-3 would pass just as green against the
- * pre-TASK-257 derivation. They are NOT the tests that would have caught the
- * bug. (An earlier version of this comment claimed they were, on the strength
- * of a "mutant" that flipped `storeKey` — the test's own double. Mutating the
- * harness proves the harness is load-bearing in the harness. It says nothing
- * about production. Flagged in review; corrected here.)
- *
- * THE TESTS THAT DO CATCH IT, both of which go red against `[userId, agentId]`:
- *   - `workspace-git-server/src/client/__tests__/plugin.test.ts`, block 3b —
- *     boots a real git server and drives the REAL derivation: bob reads
- *     alice's bytes on a shared agentId, and exactly one bare repo exists.
- *   - `workspace-git-server/src/client/__tests__/workspace-id.test.ts` —
- *     pinned outputs plus the userId-invariance cases.
- *
- * WHAT THIS FILE IS STILL WORTH, which is why it exists:
- *   1-3. The route hands the workspace hooks a ctx carrying the TARGET
+ *   1-2. The route hands the reader an owner and a ctx carrying the TARGET
  *     agent's id rather than, say, `initCtx` or something derived from the
- *     caller — so once the tier partitions on agentId, a teammate's read
- *     genuinely lands on the agent's tree. That is the plumbing half of the
- *     acceptance criterion, and it would catch a regression that re-derived
- *     the ctx from the caller.
- *   4. The half that matters most now. Since TASK-257 the hash provides no
- *     defence-in-depth, so `agents:resolve` is the ONLY gate between
+ *     caller, so a teammate's read genuinely lands on the agent's files.
+ *   3. The Instructions (an @ax/agents row since TASK-989) are one record per
+ *     agent: a teammate reads AND saves the same text, and an outsider does
+ *     neither.
+ *   4. The half that matters most. `agents:resolve` is the ONLY gate between
  *     "authorized teammate" and "any caller who knows the agentId". It must
- *     run — and reject — BEFORE any `workspace:*` / `memory:*` /
+ *     run, and reject, BEFORE any `sandbox:read-user-files` /
  *     `agents:identity:*` hook. A caller `agents:resolve` rejects (`mallory`)
  *     gets 404 on every route below AND the hooks' spies record zero calls.
- *     That case is fix-independent by design: it guards the barrier, not the
- *     partition.
- *
- * TASK-989 moved the Instructions (case 3) from @ax/memory's rules file to an
- * @ax/agents row. The permission rule is unchanged — today's
- * `resolveMemoryAccess` answered "personal owner, or any member of the owning
- * team", and so do the identity hooks' own access check and `agents:resolve`
- * — so a teammate reads AND saves the same Instructions, and an outsider does
- * neither.
  */
 import { beforeEach, describe, expect, it } from 'vitest';
 import { HookBus, PluginError, makeAgentContext, type AgentContext } from '@ax/core';
 import {
   makeWorkspaceHandlers,
   type AgentDetail,
-  type AgentFileResponse,
-  type AgentFilesResponse,
+  type AgentUserFilesResponse,
 } from '../../server/routes-workspace.js';
 import type { RouteRequest, RouteResponse } from '../../server/routes-chat.js';
 import { registerIdentityStoreFake, type IdentityStoreFake } from './identity-store-fake.js';
@@ -106,31 +79,28 @@ function mkRes(): { res: RouteResponse; captured: CapturedRes } {
 
 const enc = new TextEncoder();
 
-describe('team-agent workspace isolation (TASK-257)', () => {
+describe('team-agent files and Instructions are shared per agent (TASK-257)', () => {
   let bus: HookBus;
 
-  /** `workspace:list` / `workspace:read` storage, keyed on agentId ALONE. */
-  let filesByAgent: Map<string, string[]>;
-  let blobsByAgent: Map<string, Map<string, Uint8Array>>;
+  /** `sandbox:read-user-files` storage, keyed on agentId ALONE. */
+  let filesByAgent: Map<string, Map<string, Uint8Array>>;
   /** The Instructions' store (`agents:identity:get|set`), keyed on agentId ALONE. */
   let identity: IdentityStoreFake | undefined;
 
-  let listCalls: Array<{ agentId: string; userId: string }>;
-  let readCalls: Array<{ agentId: string; userId: string; path: string }>;
+  let readCalls: Array<{
+    agentId: string;
+    userId: string;
+    ownerAgentId: string;
+    relPath: string | undefined;
+  }>;
 
   /**
-   * The fake tier partitions the way the real one does since TASK-257: on
-   * `agentId` ALONE. Keep it that way — it is what makes cases 1-3 a question
-   * about the ctx the ROUTE builds rather than about the fake's own keying.
-   *
-   * Do not read a mutation of this function as evidence about production:
-   * flipping it to `${ctx.userId}|${ctx.agentId}` does redden cases 1-3, but
-   * it reddens them by changing the test double, not the shipped derivation
-   * (which this package cannot even import). See the header.
+   * The fake reader partitions on the OWNER's `agentId` ALONE, as the real
+   * provider does. Keep it that way — it is what makes cases 1-2 a question
+   * about the owner the ROUTE builds rather than about the fake's own keying.
+   * Flipping it would redden them by changing the test double, not the
+   * shipped code. See the header.
    */
-  function storeKey(ctx: { agentId: string; userId?: string | null }): string {
-    return ctx.agentId;
-  }
 
   function registerAuth(user: { id: string; isAdmin: boolean } | null): void {
     bus.registerService('auth:require-user', 'auth', async () => {
@@ -166,18 +136,28 @@ describe('team-agent workspace isolation (TASK-257)', () => {
     });
   }
 
-  function registerWorkspace(): void {
-    bus.registerService('workspace:list', 'workspace', async (ctx) => {
-      listCalls.push({ agentId: ctx.agentId, userId: ctx.userId ?? '' });
-      const key = storeKey(ctx);
-      return { paths: filesByAgent.get(key) ?? [] };
-    });
-    bus.registerService('workspace:read', 'workspace', async (ctx, i: unknown) => {
-      const { path } = i as { path: string };
-      readCalls.push({ agentId: ctx.agentId, userId: ctx.userId ?? '', path });
-      const key = storeKey(ctx);
-      const bytes = blobsByAgent.get(key)?.get(path);
-      return bytes === undefined ? { found: false } : { found: true, bytes };
+  /** A stand-in for whichever sandbox provider is loaded. */
+  function registerReader(): void {
+    bus.registerService('sandbox:read-user-files', 'sandbox', async (ctx, i: unknown) => {
+      const { owner, relPath } = i as { owner: { agentId: string }; relPath?: string };
+      readCalls.push({
+        agentId: ctx.agentId,
+        userId: ctx.userId ?? '',
+        ownerAgentId: owner.agentId,
+        relPath,
+      });
+      const files = filesByAgent.get(owner.agentId);
+      if (files === undefined) return { kind: 'absent' };
+      if (relPath === undefined) {
+        return {
+          kind: 'dir',
+          entries: [...files.keys()].map((name) => ({ name, kind: 'file' as const })),
+        };
+      }
+      const bytes = files.get(relPath);
+      return bytes === undefined
+        ? { kind: 'absent' }
+        : { kind: 'file', contents: bytes, truncated: false };
     });
   }
 
@@ -198,9 +178,7 @@ describe('team-agent workspace isolation (TASK-257)', () => {
   beforeEach(() => {
     bus = new HookBus();
     filesByAgent = new Map();
-    blobsByAgent = new Map();
     identity = undefined;
-    listCalls = [];
     readCalls = [];
     seedAliceFixtures();
   });
@@ -213,57 +191,61 @@ describe('team-agent workspace isolation (TASK-257)', () => {
    */
   function seedAliceFixtures(): void {
     filesByAgent.clear();
-    blobsByAgent.clear();
-    filesByAgent.set(TEAM_AGENT_ID, ['reports/q3-summary.md']);
-    const blobs = new Map<string, Uint8Array>();
-    blobs.set('reports/q3-summary.md', enc.encode('# Q3 summary\n\nRevenue is up.'));
-    blobsByAgent.set(TEAM_AGENT_ID, blobs);
+    filesByAgent.set(
+      TEAM_AGENT_ID,
+      new Map([['q3-summary.md', enc.encode('# Q3 summary\n\nRevenue is up.')]]),
+    );
     identity?.seed(TEAM_AGENT_ID, { instructions: 'Always cite the source spreadsheet.' });
   }
 
   // ---------------------------------------------------------------------
   // 1. Files listing — bob sees alice's files.
   // ---------------------------------------------------------------------
-  it('1. GET .../files: bob (a different authorized user) sees alice-written files', async () => {
+  it('1. GET .../user-files: bob (a different authorized user) sees alice-written files', async () => {
     registerAuth({ id: 'bob', isAdmin: false });
     registerAgents();
-    registerWorkspace();
-    seedAliceFixtures();
+    registerReader();
 
     const { res, captured } = mkRes();
-    await makeWorkspaceHandlers({ bus, initCtx }).agentFiles(
+    await makeWorkspaceHandlers({ bus, initCtx }).agentUserFiles(
       mkReq({ agentId: TEAM_AGENT_ID }),
       res,
     );
 
     expect(captured.statusCode).toBe(200);
-    const body = captured.body as AgentFilesResponse;
-    expect(body.files.length).toBeGreaterThan(0);
-    expect(body.files.map((f) => f.path)).toContain('reports/q3-summary.md');
+    const body = captured.body as AgentUserFilesResponse;
+    if (body.kind !== 'dir') throw new Error('expected dir');
+    expect(body.entries.map((e) => e.path)).toContain('q3-summary.md');
+    // Read on the team agent's own owner and ctx, as bob.
+    expect(readCalls[0]).toMatchObject({
+      agentId: TEAM_AGENT_ID,
+      userId: 'bob',
+      ownerAgentId: TEAM_AGENT_ID,
+    });
   });
 
   // ---------------------------------------------------------------------
   // 2. File body — bob reads alice's bytes.
   // ---------------------------------------------------------------------
-  it('2. GET .../files/*: bob reads the bytes alice wrote', async () => {
+  it('2. GET .../user-files/*: bob reads the bytes alice wrote', async () => {
     registerAuth({ id: 'bob', isAdmin: false });
     registerAgents();
-    registerWorkspace();
-    seedAliceFixtures();
+    registerReader();
 
     const { res, captured } = mkRes();
-    await makeWorkspaceHandlers({ bus, initCtx }).agentFile(
-      mkReq({ agentId: TEAM_AGENT_ID, '*': 'reports%2Fq3-summary.md' }),
+    await makeWorkspaceHandlers({ bus, initCtx }).agentUserFile(
+      mkReq({ agentId: TEAM_AGENT_ID, '*': 'q3-summary.md' }),
       res,
     );
 
     expect(captured.statusCode).toBe(200);
     expect(captured.body).toEqual({
-      path: 'reports/q3-summary.md',
-      name: 'reports/q3-summary.md',
+      kind: 'file',
+      path: 'q3-summary.md',
+      name: 'q3-summary.md',
       body: '# Q3 summary\n\nRevenue is up.',
       clipped: null,
-    } satisfies AgentFileResponse);
+    } satisfies AgentUserFilesResponse);
   });
 
   // ---------------------------------------------------------------------
@@ -324,32 +306,45 @@ describe('team-agent workspace isolation (TASK-257)', () => {
   // 4. The ACL is the only barrier, and it still bites for an outsider.
   // ---------------------------------------------------------------------
   describe('4. mallory (not an authorized team member) is rejected before any read', () => {
-    it('404s the files listing without calling workspace:list', async () => {
+    it('404s the files listing without calling sandbox:read-user-files', async () => {
       registerAuth({ id: 'mallory', isAdmin: false });
       registerAgents();
-      registerWorkspace();
-      seedAliceFixtures();
+      registerReader();
 
       const { res, captured } = mkRes();
-      await makeWorkspaceHandlers({ bus, initCtx }).agentFiles(
+      await makeWorkspaceHandlers({ bus, initCtx }).agentUserFiles(
         mkReq({ agentId: TEAM_AGENT_ID }),
         res,
       );
 
       expect(captured.statusCode).toBe(404);
-      expect(listCalls).toHaveLength(0);
+      expect(readCalls).toHaveLength(0);
     });
 
-    it('404s a file read without calling workspace:read', async () => {
+    it('404s a file read without calling sandbox:read-user-files', async () => {
       registerAuth({ id: 'mallory', isAdmin: false });
       registerAgents();
-      registerWorkspace();
-      seedAliceFixtures();
+      registerReader();
 
       const { res, captured } = mkRes();
-      await makeWorkspaceHandlers({ bus, initCtx }).agentFile(
-        mkReq({ agentId: TEAM_AGENT_ID, '*': 'reports%2Fq3-summary.md' }),
+      await makeWorkspaceHandlers({ bus, initCtx }).agentUserFile(
+        mkReq({ agentId: TEAM_AGENT_ID, '*': 'q3-summary.md' }),
         res,
+      );
+
+      expect(captured.statusCode).toBe(404);
+      expect(readCalls).toHaveLength(0);
+    });
+
+    it('404s a download without calling sandbox:read-user-files', async () => {
+      registerAuth({ id: 'mallory', isAdmin: false });
+      registerAgents();
+      registerReader();
+
+      const { res, captured } = mkRes();
+      await makeWorkspaceHandlers({ bus, initCtx }).agentUserFileDownload(
+        mkReq({ agentId: TEAM_AGENT_ID, '*': 'q3-summary.md' }),
+        res as never,
       );
 
       expect(captured.statusCode).toBe(404);

@@ -161,15 +161,6 @@ export function createChannelWebServerPlugin(
         // (`bootstrap: 'pending'`, TASK-989). Hard dep — the route is dead
         // without it.
         'agents:create',
-        // The workspace Files tab reads one of the agent's files
-        // (GET …/files/*). channel-web only loads in the k8s preset, which
-        // always loads a workspace backend, so this is a hard dep.
-        'workspace:read',
-        // TASK-233 (AW-12): the workspace Files tab lists the agent's own
-        // tree. Same hard-dep rationale as workspace:read — every preset that
-        // loads channel-web loads a workspace backend, and all four base
-        // hooks are registered by the same plugin.
-        'workspace:list',
         'conversations:get-by-req-id',
         'conversations:create',
         'conversations:get',

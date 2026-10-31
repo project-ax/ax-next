@@ -31,7 +31,6 @@ import type {
 import { createAttachmentsPlugin } from '@ax/attachments';
 import type { AttachmentsConfig } from '@ax/attachments';
 import {
-  createMockWorkspacePlugin,
   createTestHarness,
   type TestHarness,
   stopPostgresContainer,
@@ -340,10 +339,9 @@ interface BootArgs {
   /** TASK-498 — see `chatRunMockPlugin`'s `rejects`. */
   dispatchRejects?: boolean;
   /**
-   * Phase 3 (attachments): when true, boot `@ax/attachments` alongside a
-   * permissive in-memory workspace stub (so `attachments:commit`'s
-   * `workspace:apply` calls — which pass `parent: null` — don't hit
-   * `createMockWorkspacePlugin`'s parent-CAS check on the second commit).
+   * Phase 3 (attachments): when true, boot `@ax/attachments` alongside an
+   * in-memory blob store (the content-addressed store its commit/download
+   * path rides).
    */
   includeAttachments?: boolean;
   /** Phase 3 (attachments): per-test attachments config (e.g. maxFileBytes). */
@@ -361,31 +359,24 @@ interface BootResult {
   approvalEffects: Array<{ ctx: AgentContext; input: unknown }>;
 }
 
-// In-memory store stub used by the Phase-3 attachment-ref tests. TASK-68:
-// `attachments:commit` now writes upload bytes to the content-addressed blob
-// store (blob:put) + a metadata row, NOT the git workspace. For the chat-route
-// tests we only need blob:put/blob:get to behave as a black-box content store;
-// the workspace:* hooks stay registered for OTHER plugins booted here that still
-// call them (chat-orchestrator etc.). Mirrors the inline stub in
-// `packages/attachments/src/__tests__/contract.test.ts`.
+// In-memory blob store used by the Phase-3 attachment-ref tests. TASK-68:
+// `attachments:commit` writes upload bytes to the content-addressed blob store
+// (blob:put) + a metadata row. For the chat-route tests we only need
+// blob:put/blob:get to behave as a black-box content store. Mirrors the inline
+// stub in `packages/attachments/src/__tests__/contract.test.ts`.
 // TASK-690: when set, the mock `blob:put` below refuses like the real facade does
 // after a `blob:pre-put` veto. Reset by the storage-full test itself.
 let blobPutRefusal: string | undefined;
 
-function permissiveWorkspacePlugin(): Plugin {
-  const blobs = new Map<string, Uint8Array>();
+function blobStorePlugin(): Plugin {
   const cas = new Map<string, Uint8Array>();
   return {
     manifest: {
-      name: 'mock-workspace-permissive',
+      name: 'mock-blob-store',
       version: '0.0.0',
       registers: [
-        'workspace:apply',
-        'workspace:read',
-        'workspace:list',
-        'workspace:diff',
         // TASK-68: the content-addressed blob store the attachments commit/
-        // download path now rides.
+        // download path rides.
         'blob:put',
         'blob:get',
         'blob:stat',
@@ -394,64 +385,18 @@ function permissiveWorkspacePlugin(): Plugin {
       subscribes: [],
     },
     init({ bus }) {
-      bus.registerService(
-        'workspace:apply',
-        'mock-workspace-permissive',
-        async (_ctx, input: unknown) => {
-          const { changes } = input as {
-            changes: Array<{
-              path: string;
-              kind: 'put' | 'delete';
-              content?: Uint8Array;
-            }>;
-          };
-          for (const change of changes) {
-            if (change.kind === 'put' && change.content !== undefined) {
-              blobs.set(change.path, change.content);
-            } else if (change.kind === 'delete') {
-              blobs.delete(change.path);
-            }
-          }
-          return {
-            version: 'v-permissive',
-            delta: { before: null, after: 'v-permissive', changes: [] },
-          };
-        },
-      );
-      bus.registerService(
-        'workspace:read',
-        'mock-workspace-permissive',
-        async (_ctx, input: unknown) => {
-          const { path } = input as { path: string };
-          const bytes = blobs.get(path);
-          if (bytes === undefined) return { found: false };
-          return { found: true, bytes };
-        },
-      );
-      bus.registerService(
-        'workspace:list',
-        'mock-workspace-permissive',
-        async () => ({ paths: [] as string[] }),
-      );
-      bus.registerService(
-        'workspace:diff',
-        'mock-workspace-permissive',
-        async () => ({
-          delta: { before: null, after: 'v-permissive', changes: [] },
-        }),
-      );
       // Content-addressed in-memory blob store (length+first-byte key is enough
       // for these tests — they don't assert cross-content de-dup).
       bus.registerService(
         'blob:put',
-        'mock-workspace-permissive',
+        'mock-blob-store',
         async (_ctx, input: unknown) => {
           // TASK-690: the real `blob:put` throws code 'rejected' when a
           // `blob:pre-put` subscriber (the per-person storage limit) refuses.
           if (blobPutRefusal !== undefined) {
             throw new PluginError({
               code: 'rejected',
-              plugin: 'mock-workspace-permissive',
+              plugin: 'mock-blob-store',
               hookName: 'blob:put',
               message: blobPutRefusal,
             });
@@ -466,7 +411,7 @@ function permissiveWorkspacePlugin(): Plugin {
       );
       bus.registerService(
         'blob:get',
-        'mock-workspace-permissive',
+        'mock-blob-store',
         async (_ctx, input: unknown) => {
           const bytes = cas.get((input as { sha256: string }).sha256);
           return bytes === undefined ? { found: false } : { bytes };
@@ -476,7 +421,7 @@ function permissiveWorkspacePlugin(): Plugin {
       // exists); these tests never publish, the stub just has to register.
       bus.registerService(
         'blob:stat',
-        'mock-workspace-permissive',
+        'mock-blob-store',
         async (_ctx, input: unknown) => {
           const bytes = cas.get((input as { sha256: string }).sha256);
           return bytes === undefined ? { found: false } : { size: bytes.length };
@@ -568,13 +513,6 @@ async function boot(args: BootArgs): Promise<BootResult> {
   const chatRunCaptures: ChatRunCapture[] = [];
   const grantCaptures: GrantCapture[] = [];
   const approvalEffects: Array<{ ctx: AgentContext; input: unknown }> = [];
-  // When the attachments plugin is booted, swap in the permissive
-  // workspace stub — `createMockWorkspacePlugin`'s parent-CAS rejects
-  // the second `attachments:commit` (parent: null vs latest: 'mock-0').
-  const workspacePlugin =
-    args.includeAttachments === true
-      ? permissiveWorkspacePlugin()
-      : createMockWorkspacePlugin();
   const plugins: Plugin[] = [
     http,
     createDatabasePostgresPlugin({ connectionString }),
@@ -588,19 +526,12 @@ async function boot(args: BootArgs): Promise<BootResult> {
         ? { teamAgentsFor: args.teamAgentsFor }
         : {}),
     }),
-    // Phase D — @ax/conversations declares `workspace:list` /
-    // `workspace:read` calls (used by conversations:get to read
-    // runner-native jsonl). Bootstrap verifies them at boot, so
-    // every harness that boots conversations needs a workspace
-    // plugin registered. Empty mock workspace = no jsonl found =
-    // empty turns, which is what these tests expect.
-    workspacePlugin,
     createConversationsPlugin({ purgeSweepIntervalMs: 0 }),
     chatRunMockPlugin(chatRunCaptures, args.dispatchRejects === true),
     grantMockPlugin(grantCaptures),
   ];
   if (args.includeAttachments === true) {
-    plugins.push(createAttachmentsPlugin(args.attachmentsConfig ?? {}));
+    plugins.push(blobStorePlugin(), createAttachmentsPlugin(args.attachmentsConfig ?? {}));
   } else {
     // Channel-web declares `attachments:*` as hard calls (Phase 3) — when
     // the real plugin isn't loaded, bootstrap still needs SOMEONE

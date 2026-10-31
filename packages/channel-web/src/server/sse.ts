@@ -14,7 +14,6 @@ import type { ChunkBuffer } from './chunk-buffer.js';
 // the stream opens (step 3a), the filter after (step 4a-ter).
 import { filterDeclinedGrants, readGrantDeclines } from './grant-declines.js';
 import type { StoredDecline } from './grant-declines.js';
-import { asSaveRefusedCode } from '../lib/save-refused.js';
 import type { PermissionRequest, PhaseEvent, SseFrame, StreamChunk } from './types.js';
 
 // ---------------------------------------------------------------------------
@@ -32,9 +31,8 @@ import type { PermissionRequest, PhaseEvent, SseFrame, StreamChunk } from './typ
 //      by reqId) AND a `chat:turn-end` subscriber (filtered by
 //      conversationId, and by the payload's reqId when it names one —
 //      TASK-569). The chunk subscriber emits one `data:` frame
-//      per chunk; the turn-end subscriber emits a final `done: true`
-//      (with `saveRefused` when the runner reported that the turn's files
-//      could not be saved — TASK-720) and closes.
+//      per chunk; the turn-end subscriber emits a final `done: true` and
+//      closes.
 //
 // Subscribers are unwired on:
 //   - `done: true` emitted (turn-end)
@@ -496,7 +494,6 @@ export function createSseHandler(deps: SseHandlerDeps) {
     deps.bus.subscribe<{
       reqId?: string;
       reason?: string;
-      saveRefused?: unknown;
       foldedReqIds?: unknown;
     }>(
       'chat:turn-end',
@@ -514,20 +511,11 @@ export function createSseHandler(deps: SseHandlerDeps) {
         ) {
           return undefined;
         }
-        // TASK-720 — the host refused this turn's end-of-turn save and the
-        // runner undid its file changes. Forward the code ONLY when it is one
-        // of the three: the payload is typed loosely and the runner is
-        // untrusted, so nothing it wrote beyond a closed code reaches a page.
-        const saveRefused = asSaveRefusedCode(payload?.saveRefused);
         // Emit the done frame, evict the buffer (this turn is over),
         // then close. The eviction here is the success path; the TTL
         // sweep in chunk-buffer is the fallback for browsers that
         // never get here (closed mid-stream).
-        safeWrite({
-          reqId,
-          done: true,
-          ...(saveRefused !== undefined ? { saveRefused } : {}),
-        });
+        safeWrite({ reqId, done: true });
         deps.buffer.evictReqId(reqId);
         cleanup();
         try {

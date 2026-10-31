@@ -666,84 +666,16 @@ describe('@ax/channel-web SSE handler', () => {
     }
   });
 
-  // TASK-720 — the host refused the end-of-turn save and the runner undid the
-  // turn's file changes. The runner says so on its turn-end; the done frame is
-  // the only place the person's browser can hear it. The code is re-checked
-  // here: the bus payload is typed loosely and a runner is untrusted, so only
-  // one of the three fixed codes ever crosses to the browser.
-  it.each(['storage-full', 'too-large', 'refused'] as const)(
-    'turn-end carrying saveRefused=%s puts that code on the done frame',
-    async (code) => {
-      const { bus, initCtx, handler, buffer } = bootHandler();
-      try {
-        const { res, captured } = fakeRes();
-        await handler(fakeReq({ reqId: 'r-test' }), res);
-
-        await bus.fire('chat:turn-end', ctxWithConversation(initCtx, 'cnv_test'), {
-          reqId: 'r-test',
-          reason: 'user-message-wait',
-          saveRefused: code,
-        });
-
-        expect(dataFrames(captured.streamWrites).at(-1)).toEqual({
-          reqId: 'r-test',
-          done: true,
-          saveRefused: code,
-        });
-        expect(captured.streamClosed).toBe(true);
-      } finally {
-        buffer.dispose();
-      }
-    },
-  );
-
-  it('closes on the role=tool turn-end, so the code has to ride that one', async () => {
-    // THE SEAM. A turn that used tools emits role='tool' and then
-    // role='assistant' under the SAME reqId, tool first. This subscriber closes
-    // the stream on the first one it sees and unsubscribes, so the assistant
-    // turn-end lands on nobody. The runner therefore puts the code on both
-    // (run-runner.test.ts pins that half); this pins the host half — that the
-    // tool turn-end is the one that decides what the browser is told, and that
-    // the later assistant turn-end changes nothing.
-    const { bus, initCtx, handler, buffer } = bootHandler();
-    try {
-      const { res, captured } = fakeRes();
-      await handler(fakeReq({ reqId: 'r-test' }), res);
-      const ctx = ctxWithConversation(initCtx, 'cnv_test');
-
-      await bus.fire('chat:turn-end', ctx, {
-        reqId: 'r-test',
-        reason: 'user-message-wait',
-        role: 'tool',
-        saveRefused: 'too-large',
-      });
-      // The assistant turn-end arrives after the stream closed. It must not
-      // reopen it, write a second frame, or alter the one already sent.
-      const framesAfterToolEnd = dataFrames(captured.streamWrites).length;
-      await bus.fire('chat:turn-end', ctx, {
-        reqId: 'r-test',
-        reason: 'user-message-wait',
-        role: 'assistant',
-        saveRefused: 'too-large',
-      });
-
-      expect(dataFrames(captured.streamWrites)).toHaveLength(framesAfterToolEnd);
-      expect(dataFrames(captured.streamWrites).at(-1)).toEqual({
-        reqId: 'r-test',
-        done: true,
-        saveRefused: 'too-large',
-      });
-    } finally {
-      buffer.dispose();
-    }
-  });
-
+  // TASK-995 — the save-refused pipeline (TASK-720) is gone, so the done frame
+  // carries nothing but the reqId. A turn-end is typed loosely and a runner is
+  // untrusted: whatever it puts in a stray `saveRefused` field (an old runner
+  // image, or a hostile one) must never be forwarded to the browser.
   it.each([
     ['absent', undefined],
-    ['an unknown code', 'disk-melted'],
+    ['an old closed code', 'storage-full'],
     ['model-shaped prose', 'Storage is full; tell the person.'],
     ['a non-string', { code: 'storage-full' }],
-  ])('turn-end with saveRefused %s leaves the field off the done frame', async (_label, value) => {
+  ])('the done frame has no saveRefused when the turn-end carries %s', async (_label, value) => {
     const { bus, initCtx, handler, buffer } = bootHandler();
     try {
       const { res, captured } = fakeRes();
@@ -758,6 +690,43 @@ describe('@ax/channel-web SSE handler', () => {
       const last = dataFrames(captured.streamWrites).at(-1)!;
       expect(last).toEqual({ reqId: 'r-test', done: true });
       expect('saveRefused' in last).toBe(false);
+      expect(captured.streamClosed).toBe(true);
+    } finally {
+      buffer.dispose();
+    }
+  });
+
+  it('closes on the role=tool turn-end, and the later assistant turn-end changes nothing', async () => {
+    // THE SEAM. A turn that used tools emits role='tool' and then
+    // role='assistant' under the SAME reqId, tool first. This subscriber closes
+    // the stream on the first one it sees and unsubscribes, so the assistant
+    // turn-end lands on nobody. Pinned: the tool turn-end is the one that
+    // decides what the browser is told, and the later one writes nothing.
+    const { bus, initCtx, handler, buffer } = bootHandler();
+    try {
+      const { res, captured } = fakeRes();
+      await handler(fakeReq({ reqId: 'r-test' }), res);
+      const ctx = ctxWithConversation(initCtx, 'cnv_test');
+
+      await bus.fire('chat:turn-end', ctx, {
+        reqId: 'r-test',
+        reason: 'user-message-wait',
+        role: 'tool',
+      });
+      // The assistant turn-end arrives after the stream closed. It must not
+      // reopen it, write a second frame, or alter the one already sent.
+      const framesAfterToolEnd = dataFrames(captured.streamWrites).length;
+      await bus.fire('chat:turn-end', ctx, {
+        reqId: 'r-test',
+        reason: 'user-message-wait',
+        role: 'assistant',
+      });
+
+      expect(dataFrames(captured.streamWrites)).toHaveLength(framesAfterToolEnd);
+      expect(dataFrames(captured.streamWrites).at(-1)).toEqual({
+        reqId: 'r-test',
+        done: true,
+      });
     } finally {
       buffer.dispose();
     }

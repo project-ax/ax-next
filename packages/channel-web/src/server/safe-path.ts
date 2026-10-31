@@ -1,6 +1,6 @@
 /**
  * Path safety for the one route on this surface that takes a path from the
- * caller: `GET /api/workspace/agents/:agentId/files/*`.
+ * caller: `GET /api/workspace/agents/:agentId/user-files/*` (and its download sibling).
  *
  * `safePath` below is a PORT of `~/dev/ai/ax/src/utils/safe-path.ts` (v1's
  * SC-SEC-004 helper, which CLAUDE.md names as worth carrying over) rather than
@@ -18,8 +18,8 @@
  * REJECTS whenever sanitizing changed anything. The containment logic stays
  * the reviewed v1 code; the verdict is ours.
  *
- * There is no filesystem here. `workspace:read` takes a logical,
- * workspace-relative key, and the backend behind it may be git, a bucket, or
+ * There is no filesystem here. `sandbox:read-user-files` takes a logical,
+ * home-relative key, and the provider behind it may be a mount, a bucket, or
  * a table (invariant 1). `VIRTUAL_ROOT` exists only to give `safePath`'s
  * containment check something to contain against — it is never opened, never
  * stat'ed, and never leaves this module.

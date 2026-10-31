@@ -123,8 +123,8 @@ describe('toReadOutcome', () => {
 
   /*
     Everything with a status we have no special reading of is a blip. 503 is
-    included on purpose: `workspace-files.ts` gives it a sentence of its own
-    ("no workspace backend in this deployment"), but that is a COPY decision on
+    included on purpose: `user-files.ts` gives it a sentence of its own
+    ("no file area in this deployment"), but that is a COPY decision on
     one surface, and a surface without that reading should still offer a retry
     rather than invent a fourth kind here.
   */

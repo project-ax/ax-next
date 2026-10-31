@@ -101,7 +101,7 @@ const POLL_FAILURES_BEFORE_NOTE = 3;
  * `failed` is everything else: an unreachable host, a 500, a body we could not
  * parse. Those are blips, and trying again is exactly right for them.
  *
- * Modelled on `FilesError` in `workspace-files.ts`, which draws the same line
+ * Modelled on `UserFilesError` in `user-files.ts`, which draws the same line
  * at 503 for the same reason. The route answers 401 from `authOr401` alone —
  * i.e. `auth:require-user` rejected — so a 401 is evidence about the SESSION
  * and never about this route's own authority.
