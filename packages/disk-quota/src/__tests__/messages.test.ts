@@ -74,6 +74,12 @@ describe('the refusal sentences', () => {
     expect(blobFullMessage(MB, MB).toLowerCase()).not.toMatch(/delet|remov/);
   });
 
+  it('the git-save one still never tells anyone to delete anything (TASK-995 rewrites it)', () => {
+    expect(workspaceFullMessage(MB, MB).toLowerCase()).not.toMatch(
+      /delet|remove some|free up|clean/,
+    );
+  });
+
   it('the unavailable one never tells a person to delete anything', () => {
     expect(STORAGE_UNAVAILABLE_MESSAGE.toLowerCase()).not.toMatch(/delet|remov|clean/);
   });
