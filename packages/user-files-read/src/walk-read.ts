@@ -177,7 +177,7 @@ for (const [name, n] of Object.entries(osConstants.errno)) {
  * reads `ESTALE` here, which the ESTALE retry needs and `WalkReadError.code`
  * promises.
  */
-function errnoOf(err: unknown): string | undefined {
+export function errnoOf(err: unknown): string | undefined {
   const e = err as { code?: unknown; errno?: unknown } | null;
   const code = e?.code;
   if (typeof code === 'string' && /^E[A-Z0-9]+$/.test(code)) return code;
@@ -205,7 +205,22 @@ function fail(what: string, err: unknown, depth: number): WalkReadError {
 // `self`, not our pid. Descriptors belong to the process, so it names the same
 // directory, and it can never name another process: under a /proc from a
 // different pid namespace, our pid may belong to someone else.
-const fdPath = (fd: number): string => `/proc/self/fd/${fd}`;
+export const fdPath = (fd: number): string => `/proc/self/fd/${fd}`;
+
+/**
+ * Refuse to walk anywhere a descriptor-relative walk can't work: off Linux,
+ * and on a Linux host without procfs mounted. Without /proc every
+ * `/proc/self/fd/...` open is ENOENT, so a walk that ran anyway would answer
+ * "absent" (or, for the usage meter, 0) for a tree it never saw.
+ */
+export function assertWalkPlatform(): void {
+  if (process.platform !== 'linux' || !existsSync('/proc/self/fd')) {
+    throw new WalkReadError('the confined walk needs Linux /proc', {
+      code: 'unsupported-platform',
+      depth: -1,
+    });
+  }
+}
 
 /**
  * Read `parts` under the trusted `root`, opening every component relative to
@@ -228,12 +243,7 @@ export async function readConfinedByWalk(
   if (!Number.isSafeInteger(opts.maxEntries) || opts.maxEntries < 1 || opts.maxEntries > MAX_WALK_ENTRIES) {
     throw new RangeError(`maxEntries must be an integer from 1 to ${MAX_WALK_ENTRIES}`);
   }
-  if (process.platform !== 'linux' || !existsSync('/proc/self/fd')) {
-    throw new WalkReadError('readConfinedByWalk needs Linux /proc', {
-      code: 'unsupported-platform',
-      depth: -1,
-    });
-  }
+  assertWalkPlatform();
 
   try {
     return await walkOnce(root, parts, opts, O_PATH);
