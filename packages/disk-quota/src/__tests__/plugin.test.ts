@@ -88,7 +88,7 @@ async function dbOf(b: Booted): Promise<Kysely<unknown>> {
 }
 
 describe('manifest', () => {
-  it('subscribes to the two write gates + two meters + workspace:deleted (never chat:start), registers nothing, declares its calls', () => {
+  it('subscribes to the two write gates + the meters + the two deletes (never chat:start), registers nothing, declares its calls', () => {
     const m = createDiskQuotaPlugin().manifest;
     expect(m.name).toBe('@ax/disk-quota');
     expect(m.version).toBe('0.0.0');
@@ -99,6 +99,8 @@ describe('manifest', () => {
       'blob:pre-put',
       'blob:stored',
       'workspace:deleted',
+      'chat:turn-end',
+      'agents:deleted',
     ]);
     expect(m.calls).toEqual([
       'database:get-instance',
@@ -113,6 +115,7 @@ describe('manifest', () => {
       'agents:list-personal-owners',
       'auth:get-user',
       'blob:stat',
+      'sandbox:user-files-usage',
     ]);
     for (const c of m.optionalCalls ?? []) expect(c.degradation.length).toBeGreaterThan(20);
   });
@@ -189,6 +192,8 @@ const chatStart = (b: Booted, ctx: AgentContext) =>
   b.harness.bus.fire('chat:start', ctx, { message: { role: 'user', content: 'hi' } });
 const workspaceDeleted = (b: Booted, ctx: AgentContext, payload: unknown) =>
   b.harness.bus.fire('workspace:deleted', ctx, payload);
+const turnEnd = (b: Booted, ctx: AgentContext, role: 'tool' | 'assistant') =>
+  b.harness.bus.fire('chat:turn-end', ctx, { reqId: 'r1', reason: 'user-message-wait', role });
 
 // The two write gates say WHY in a machine-readable code as well as in prose,
 // so a caller that must react to "full" specifically (an HTTP status, say) does
@@ -316,6 +321,90 @@ describe('over quota blocks writes, not chat', () => {
       rejected: true,
       source: '@ax/disk-quota',
       code: 'storage-full',
+    });
+  });
+});
+
+// TASK-993: every agent's `/files` is measured after each turn through the
+// provider's `sandbox:user-files-usage`, charged to the agent's owner, and
+// dropped when the agent is deleted.
+describe('agent files, end to end through the bus', () => {
+  const agentFiles = (
+    bytes: { value: number },
+    calls: string[] = [],
+  ): Record<string, ServiceHandler> => ({
+    'sandbox:user-files-usage': (async (_ctx: AgentContext, input: { agentId: string }) => {
+      calls.push(input.agentId);
+      return { bytes: bytes.value };
+    }) as ServiceHandler,
+    'agents:resolve': (async () => ({ agent: { ownerId: 'alice', ownerType: 'user' } })) as ServiceHandler,
+  });
+
+  it('chat:turn-end measures on the assistant turn end and not on the tool one', async () => {
+    const calls: string[] = [];
+    const b = await boot(agentFiles({ value: 3 * MB }, calls));
+    const alice = b.harness.ctx({ userId: 'alice', agentId: 'agt_1' });
+
+    expect(await turnEnd(b, alice, 'tool')).toMatchObject({ rejected: false });
+    await b.plugin.drain();
+    expect(calls).toEqual([]);
+    expect((await mine(b, 'alice')).workspaceBytes).toBe(0);
+
+    expect(await turnEnd(b, alice, 'assistant')).toMatchObject({ rejected: false });
+    await b.plugin.drain();
+    expect(calls).toEqual(['agt_1']);
+    expect((await mine(b, 'alice')).workspaceBytes).toBe(3 * MB);
+  });
+
+  it("agents:deleted drops the agent's agent-files row through the bus", async () => {
+    const calls: string[] = [];
+    const b = await boot(agentFiles({ value: 5 * MB }, calls));
+    const alice = b.harness.ctx({ userId: 'alice', agentId: 'agt_1' });
+    await turnEnd(b, alice, 'assistant');
+    await b.plugin.drain();
+    expect((await mine(b, 'alice')).workspaceBytes).toBe(5 * MB);
+
+    // Whoever fires it (a system context, in real life) is not the owner.
+    const fired = await b.harness.bus.fire('agents:deleted', b.harness.ctx({ userId: 'system' }), {
+      agentId: 'agt_1',
+      ownerId: 'alice',
+      ownerType: 'user',
+    });
+    expect(fired.rejected).toBe(false);
+    expect((await mine(b, 'alice')).workspaceBytes).toBe(0);
+
+    // A warm runner's late turn end after the delete writes nothing.
+    await turnEnd(b, alice, 'assistant');
+    await b.plugin.drain();
+    expect((await mine(b, 'alice')).workspaceBytes).toBe(0);
+    expect(calls).toEqual(['agt_1']);
+  });
+
+  it('a malformed agents:deleted payload deletes nothing and does not throw', async () => {
+    const b = await boot(agentFiles({ value: 5 * MB }));
+    const alice = b.harness.ctx({ userId: 'alice', agentId: 'agt_1' });
+    await turnEnd(b, alice, 'assistant');
+    await b.plugin.drain();
+    const sys = b.harness.ctx({ userId: 'system' });
+    for (const payload of [undefined, null, 'agt_1', {}, { agentId: '' }, { agentId: 5 }]) {
+      await expect(
+        b.harness.bus.fire('agents:deleted', sys, payload),
+        JSON.stringify(payload),
+      ).resolves.toMatchObject({ rejected: false });
+    }
+    expect((await mine(b, 'alice')).workspaceBytes).toBe(5 * MB);
+  });
+
+  it('GET /settings/storage counts agent files under workspaceBytes', async () => {
+    const b = await boot(agentFiles({ value: 5 * MB }));
+    const alice = b.harness.ctx({ userId: 'alice', agentId: 'agt_1' });
+    await turnEnd(b, alice, 'assistant');
+    await b.plugin.drain();
+    await blobStored(b, alice, 2 * MB);
+    expect(await mine(b, 'alice')).toMatchObject({
+      usedBytes: 7 * MB,
+      workspaceBytes: 5 * MB,
+      fileBytes: 2 * MB,
     });
   });
 });
@@ -589,12 +678,21 @@ describe('lifecycle', () => {
   });
 
   it('shutdown unregisters its routes and its subscribers', async () => {
-    const b = await boot();
+    let measured = 0;
+    const b = await boot({
+      'sandbox:user-files-usage': (async () => {
+        measured++;
+        return { bytes: 1 };
+      }) as ServiceHandler,
+      'agents:resolve': (async () => ({ agent: { ownerId: 'alice', ownerType: 'user' } })) as ServiceHandler,
+    });
     await setLimitMb(b, 64);
     const alice = b.harness.ctx({ userId: 'alice', agentId: 'agt_1' });
     await blobStored(b, alice, 64 * MB);
     expect((await blobPrePut(b, alice, 1)).rejected).toBe(true);
-    expect((await chatStart(b, alice)).rejected).toBe(true);
+    await turnEnd(b, alice, 'assistant');
+    await b.plugin.drain();
+    expect(measured).toBe(1);
     await b.harness.close({ onError: () => {} });
     expect(b.unregistered.sort()).toEqual(
       ['GET /admin/storage', 'GET /settings/storage', 'PUT /admin/storage/limits', 'POST /admin/storage/ref-holders/forget'].sort(),
@@ -602,7 +700,10 @@ describe('lifecycle', () => {
     // No gate left: the (now closed) plugin is gone rather than refusing.
     expect(await blobPrePut(b, alice, 1)).toEqual({ rejected: false, payload: { size: 1 } });
     expect((await preApply(b, alice, 1)).rejected).toBe(false);
-    expect((await chatStart(b, alice)).rejected).toBe(false);
+    // ...and no meter: a turn end after shutdown walks nothing.
+    await turnEnd(b, alice, 'assistant');
+    await b.plugin.drain();
+    expect(measured).toBe(1);
   });
 
   it('a failed init unwinds: routes it registered are removed and no gate is left behind', async () => {

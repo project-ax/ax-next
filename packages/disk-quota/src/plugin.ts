@@ -1,11 +1,4 @@
-import {
-  makeAgentContext,
-  reject,
-  type HookBus,
-  type Plugin,
-  type Rejection,
-  type WorkspaceDeletedPayload,
-} from '@ax/core';
+import { makeAgentContext, reject, type HookBus, type Plugin, type Rejection } from '@ax/core';
 import type { Kysely } from 'kysely';
 import { createLimitsStore } from './config.js';
 import { runDiskQuotaMigration, type DiskQuotaDatabase } from './migrations.js';
@@ -28,6 +21,8 @@ const SUBSCRIBED = [
   'blob:pre-put',
   'blob:stored',
   'workspace:deleted',
+  'chat:turn-end',
+  'agents:deleted',
 ] as const;
 
 // ---------------------------------------------------------------------------
@@ -51,9 +46,19 @@ const SUBSCRIBED = [
 //     reports it on `event.turn-end` as `saveRefused`, TASK-720).
 //   - METERS what was stored. `blob:stored` charges the writer (one row per
 //     owner and sha, so a re-put is free); `workspace:applied` re-measures
-//     that agent's repo in the background; a periodic sweep backfills every
-//     personal agent and repairs drift. `workspace:deleted` (the agent's repo is
-//     gone) drops that agent's row, so a deleted agent stops charging its owner.
+//     that agent's repo in the background; each assistant `chat:turn-end`
+//     re-measures that agent's `/files` in the background through the
+//     provider's `sandbox:user-files-usage` (TASK-993; at most two walks at
+//     once, coalesced per agent) and charges it to the AGENT'S owner
+//     (`team:<id>` for a team agent; nobody when the owner cannot be
+//     resolved). Agent files are metered, not write-enforced: they count
+//     toward the limit that the write gates above enforce. A periodic sweep
+//     backfills every personal agent's workspace and `/files` and repairs
+//     drift.
+//   - RELEASES what a deleted agent held. `workspace:deleted` (the agent's repo
+//     is gone) drops its workspace row; `agents:deleted` tombstones the agent
+//     in this process (a late turn end or sweep measures nothing), waits out a
+//     measurement in flight, and drops its agent-files row.
 //   - RELEASES blob charges nobody holds any more (design D6,
 //     docs/plans/2026-10-03-blob-gc-design.md). The same periodic sweep runs a
 //     blob pass: `blob:<sha>` rows older than the grace window (`graceMs` in
@@ -89,7 +94,7 @@ export interface DiskQuotaPluginConfig {
 export interface DiskQuotaPlugin extends Plugin {
   /** Resolves once background measurements and any running sweep have settled. */
   drain(): Promise<void>;
-  /** Run the sweep (workspaces, then the blob pass) now. Resolves all zeros before init. */
+  /** Run the sweep (workspaces, agent files, then the blob pass) now. Resolves all zeros before init. */
   reconcile(): Promise<ReconcileResult>;
 }
 
@@ -99,13 +104,24 @@ function sizeField(payload: unknown, key: string): number {
 }
 
 /**
- * The `agentId` of a `workspace:deleted` payload as sent, else undefined. The
- * type says what a well-behaved publisher sends; the value is still untrusted,
- * so it comes back as `unknown` for the service to validate.
+ * The `agentId` of a payload as sent (`workspace:deleted`, `agents:deleted`),
+ * else undefined. The value is untrusted, so it comes back as `unknown` for
+ * the service to validate.
  */
 function agentIdField(payload: unknown): unknown {
   if (payload === null || typeof payload !== 'object') return undefined;
-  return (payload as Partial<WorkspaceDeletedPayload>).agentId;
+  return (payload as { agentId?: unknown }).agentId;
+}
+
+/**
+ * True for the runner's TOOL turn end. The runner sends one per turn with
+ * `role: 'tool'` before the assistant one, so skipping it measures once per
+ * turn. Read structurally: anything else (the assistant turn end, or a payload
+ * with no role) measures.
+ */
+function isToolTurnEnd(payload: unknown): boolean {
+  if (payload === null || typeof payload !== 'object') return false;
+  return (payload as { role?: unknown }).role === 'tool';
 }
 
 /**
@@ -193,6 +209,11 @@ export function createDiskQuotaPlugin(config: DiskQuotaPluginConfig = {}): DiskQ
           degradation:
             "Charges for files nobody references any more are kept, because the sweep cannot confirm the bytes are gone; they count toward their owner's storage limit until a blob store answers.",
         },
+        {
+          hook: 'sandbox:user-files-usage',
+          degradation:
+            "Files in each agent's home folder are not measured, so they don't count toward their owner's storage limit; uploads, published files and git workspaces still do.",
+        },
       ],
       subscribes: [...SUBSCRIBED],
     },
@@ -265,6 +286,22 @@ export function createDiskQuotaPlugin(config: DiskQuotaPluginConfig = {}): DiskQ
         // validates it, never throws, and logs its own failures.
         bus.subscribe<unknown>('workspace:deleted', PLUGIN_NAME, async (_ctx, payload) => {
           await svc.releaseWorkspace(agentIdField(payload));
+          return undefined;
+        });
+        // A turn just ended: re-measure that agent's `/files` (the agent may
+        // have cloned, installed or cleaned up) off the turn's path. The ctx is
+        // host-stamped (agentId/userId); only `role` is read from the
+        // runner-reported payload.
+        bus.subscribe<unknown>('chat:turn-end', PLUGIN_NAME, async (ctx, payload) => {
+          if (!isToolTurnEnd(payload)) svc.scheduleAgentFilesMeasure(ctx);
+          return undefined;
+        });
+        // The agent is gone (fired after its row is deleted): drop its
+        // agent-files row, for whichever owner it was charged to. Awaited, so the
+        // deleter's bounded fire covers the wait for a walk in flight. The
+        // payload is untrusted; the service validates it and never throws.
+        bus.subscribe<unknown>('agents:deleted', PLUGIN_NAME, async (_ctx, payload) => {
+          await svc.releaseAgentFiles(agentIdField(payload));
           return undefined;
         });
 

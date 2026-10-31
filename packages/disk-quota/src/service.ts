@@ -11,8 +11,8 @@ import {
 } from '@ax/core';
 import { limitBytesOf, type LimitsStore } from './config.js';
 import { blobFullMessage, STORAGE_UNAVAILABLE_MESSAGE, workspaceFullMessage } from './messages.js';
-import { mapBounded, PLUGIN_NAME } from './shared.js';
-import type { BlobRow, DiskQuotaStore } from './store.js';
+import { createLimiter, mapBounded, PLUGIN_NAME } from './shared.js';
+import { agentFilesSource, type BlobRow, type DiskQuotaStore } from './store.js';
 
 // ---------------------------------------------------------------------------
 // The gates and the meters, kept apart from the plugin wiring so they can be
@@ -26,8 +26,15 @@ import type { BlobRow, DiskQuotaStore } from './store.js';
 //                         repo off the write's critical path.
 //   releaseWorkspace    — `workspace:deleted`: the agent's repo is gone, so
 //                         drop its row and give the owner the room back.
+//   scheduleAgentFilesMeasure — `chat:turn-end` (the assistant one): measure
+//                         that agent's `/files` through
+//                         `sandbox:user-files-usage`, off the turn's path, and
+//                         charge it to the agent's OWNER (TASK-993).
+//   releaseAgentFiles   — `agents:deleted`: tombstone the agent, wait out a
+//                         measurement in flight, drop its agent-files row.
 //   reconcile           — the periodic sweep: every personal agent's
-//                         workspace, then the BLOB PASS (releaseBlobs).
+//                         workspace, then every personal agent's `/files`,
+//                         then the BLOB PASS (releaseBlobs).
 //   releaseBlobs        — drop an (owner, blob:<sha>) charge once it is past
 //                         the grace window and no holder says that owner
 //                         still holds the sha (design D6), but never so that
@@ -63,9 +70,15 @@ export type AdmitDecision = { ok: true } | { ok: false; reason: string; code?: s
 export const STORAGE_FULL_REASON = 'storage-full';
 
 export interface ReconcileResult {
-  /** Workspaces measured and recorded. */
+  /**
+   * Measurements recorded: workspaces AND agent files (one per agent per
+   * pass that ran, TASK-993).
+   */
   measured: number;
-  /** Agents the sweep tried but could not measure. */
+  /**
+   * Measurements the sweep tried but could not record, of either kind (a
+   * deleted agent still listed counts here too).
+   */
   failed: number;
   /** Blob ledger rows (one owner's charge for one sha) the blob pass released. */
   blobsReleased: number;
@@ -96,9 +109,23 @@ export interface DiskQuotaService {
    */
   releaseWorkspace(agentId: unknown): Promise<void>;
   /**
-   * Sweep every personal agent (skipped, measured: 0, when a hook it needs is
-   * absent), then run the blob pass, which needs neither of those hooks.
-   * Never throws.
+   * `chat:turn-end`: measure this context's agent's `/files` in the
+   * background (coalesced per agent, at most FILES_MEASURE_CONCURRENCY walks
+   * at once) and charge it to the agent's owner. Fire-and-track: never awaited
+   * by the caller, never throws.
+   */
+  scheduleAgentFilesMeasure(ctx: AgentContext): void;
+  /**
+   * `agents:deleted`: the agent is gone for good. Tombstone it (nothing
+   * measures it again in this process), wait out a measurement in flight, and
+   * drop its agent-files row for every owner. Takes the raw payload field:
+   * anything that is not a non-empty string does nothing. Never throws.
+   */
+  releaseAgentFiles(agentId: unknown): Promise<void>;
+  /**
+   * Sweep every personal agent's workspace, then every personal agent's
+   * `/files` (each pass skipped, adding 0, when a hook it needs is absent),
+   * then run the blob pass, which needs none of those hooks. Never throws.
    */
   reconcile(): Promise<ReconcileResult>;
   /** The blob pass on its own (reconcile runs it). Never throws. */
@@ -115,6 +142,20 @@ export const OWNER_CACHE_MAX = 5000;
 export const SWEEP_CONCURRENCY = 2;
 /** The blob pass asks `blob:stat` about this many unheld shas at once. */
 export const BLOB_STAT_CONCURRENCY = 8;
+
+/**
+ * The provider hook that measures one agent's `/files` (TASK-993): input
+ * `{ agentId }`, answer `{ bytes }` (allocated bytes). Host-internal, registered
+ * by the sandbox provider. Called by name and its answer read as `unknown`:
+ * this plugin imports nothing from the provider's package.
+ */
+export const AGENT_FILES_USAGE_HOOK = 'sandbox:user-files-usage';
+/**
+ * At most this many agent-files measurements run at once in this process,
+ * turn ends and the sweep together. Each is a directory walk of a tree an
+ * agent controls, so a burst of turn ends must not become a burst of walks.
+ */
+export const FILES_MEASURE_CONCURRENCY = 2;
 
 /**
  * A user id that names a person the ledger can be charged to. The empty id and
@@ -186,31 +227,54 @@ export function createDiskQuotaService(deps: {
   // ---- who pays ------------------------------------------------------------
 
   const ownerCache = new Map<string, string>();
+  /**
+   * Agents `agents:deleted` has announced. Never cleared (agent ids are never
+   * reused; the TASK-719 precedent), so a warm runner's late turn end or a
+   * sweep that listed the agent just before the delete measures nothing.
+   */
+  const deletedAgents = new Set<string>();
 
-  async function ownerOf(ctx: AgentContext): Promise<string | undefined> {
+  /**
+   * The agent's own owner per `agents:resolve` (`team:<id>` for a team agent),
+   * cached; undefined when there is no usable agent, no resolver, or no usable
+   * answer. No fallback to the acting user: see ownerOf for that.
+   */
+  async function resolveAgentOwner(ctx: AgentContext): Promise<string | undefined> {
     const agentId = ctx.agentId;
-    if (usableAgentId(agentId) && bus.hasService('agents:resolve')) {
-      const cached = ownerCache.get(agentId);
-      if (cached !== undefined) return cached;
-      try {
-        const out = await bus.call<
-          { agentId: string; userId: string },
-          { agent?: { ownerId?: unknown; ownerType?: unknown } } | null
-        >('agents:resolve', ctx, { agentId, userId: ctx.userId });
-        const agent = out?.agent;
-        if (typeof agent?.ownerId === 'string' && agent.ownerId.length > 0) {
-          const owner = agent.ownerType === 'team' ? `team:${agent.ownerId}` : agent.ownerId;
+    if (!usableAgentId(agentId) || !bus.hasService('agents:resolve')) return undefined;
+    const cached = ownerCache.get(agentId);
+    if (cached !== undefined) return cached;
+    try {
+      const out = await bus.call<
+        { agentId: string; userId: string },
+        { agent?: { ownerId?: unknown; ownerType?: unknown } } | null
+      >('agents:resolve', ctx, { agentId, userId: ctx.userId });
+      const agent = out?.agent;
+      if (typeof agent?.ownerId === 'string' && agent.ownerId.length > 0) {
+        const owner = agent.ownerType === 'team' ? `team:${agent.ownerId}` : agent.ownerId;
+        // A resolve that was in flight across the delete must not re-cache it.
+        if (!deletedAgents.has(agentId)) {
           if (ownerCache.size >= OWNER_CACHE_MAX) ownerCache.clear();
           ownerCache.set(agentId, owner);
-          return owner;
         }
-        log(ctx, 'debug', 'disk_quota_owner_unusable', { agentId });
-      } catch (err) {
-        // Not resolvable (no such agent, no access, resolver down): the acting
-        // user pays instead. A wrong-but-real owner beats an unmetered write.
-        log(ctx, 'debug', 'disk_quota_owner_fallback', { agentId, err });
+        return owner;
       }
+      log(ctx, 'debug', 'disk_quota_owner_unusable', { agentId });
+    } catch (err) {
+      log(ctx, 'debug', 'disk_quota_owner_unresolved', { agentId, err });
     }
+    return undefined;
+  }
+
+  /**
+   * Who a WRITE in this context is charged to: the agent's owner, else (not
+   * resolvable: no such agent, no access, resolver down) the acting user. A
+   * wrong-but-real owner beats an unmetered write. The agent-files meter does
+   * NOT use this: it charges resolveAgentOwner or nobody.
+   */
+  async function ownerOf(ctx: AgentContext): Promise<string | undefined> {
+    const owner = await resolveAgentOwner(ctx);
+    if (owner !== undefined) return owner;
     return isAttributableUser(ctx.userId) ? ctx.userId : undefined;
   }
 
@@ -402,6 +466,131 @@ export function createDiskQuotaService(deps: {
     }
   }
 
+  // ---- agent files (TASK-993) ---------------------------------------------
+
+  /** Every agent-files walk in this process runs through this. */
+  const filesLimiter = createLimiter(FILES_MEASURE_CONCURRENCY);
+  const DELETED_WHILE_QUEUED = Symbol('deleted-while-queued');
+
+  /**
+   * Measure one agent's `/files` and record it for its owner (`ownerOverride`,
+   * the sweep's listed owner, else resolveAgentOwner: never the acting user).
+   * Resolves true only when a row was written. NEVER throws: a failure keeps
+   * the previous figure and is one warn.
+   */
+  async function measureAgentFilesOnce(ctx: AgentContext, ownerOverride?: string): Promise<boolean> {
+    const agentId = ctx.agentId;
+    try {
+      if (!bus.hasService(AGENT_FILES_USAGE_HOOK)) return false;
+      if (!usableAgentId(agentId) || deletedAgents.has(agentId)) return false;
+      const owner = ownerOverride ?? (await resolveAgentOwner(ctx));
+      if (owner === undefined) {
+        // Nobody to charge. Charging the acting user instead would leave a
+        // second row for the same files once the owner resolves again.
+        log(ctx, 'debug', 'disk_quota_files_unattributed', { agentId });
+        return false;
+      }
+      // Deleted while it queued for a slot: do not walk a tree that is being
+      // removed (and do not make the release wait for that walk).
+      const out = await filesLimiter.run(async () =>
+        deletedAgents.has(agentId)
+          ? DELETED_WHILE_QUEUED
+          : bus.call<{ agentId: string }, unknown>(AGENT_FILES_USAGE_HOOK, ctx, { agentId }),
+      );
+      if (out === DELETED_WHILE_QUEUED) return false;
+      const bytes =
+        out !== null && typeof out === 'object' ? (out as { bytes?: unknown }).bytes : undefined;
+      if (typeof bytes !== 'number' || !Number.isFinite(bytes) || bytes < 0) {
+        log(ctx, 'warn', 'disk_quota_files_usage_invalid', { agentId });
+        return false;
+      }
+      // Deleted while we walked: write nothing. This check and the start of
+      // the upsert are in the same tick, and a release that tombstoned the
+      // agent before this point waits for this whole measurement
+      // (measuringFiles) before it deletes, so the row cannot outlive it.
+      if (deletedAgents.has(agentId)) return false;
+      await store.upsertUsage(owner, agentFilesSource(agentId), 'agent-files', bytes);
+      return true;
+    } catch (err) {
+      log(ctx, 'warn', 'disk_quota_files_measure_failed', { agentId, err });
+      return false;
+    }
+  }
+
+  interface FilesMeasuring {
+    again: boolean;
+    ctx: AgentContext;
+    owner: string | undefined;
+    done: Promise<boolean>;
+  }
+  // One agent-files measurement per agent at a time, turn ends AND the sweep,
+  // so a release can wait for whatever is in flight. A request that lands while
+  // one runs asks for one fresh measurement afterwards (with its own ctx and
+  // owner), so a slow, stale reading is never the last one written.
+  const measuringFiles = new Map<string, FilesMeasuring>();
+
+  /** Resolves true when the LAST measurement of the loop recorded a row. Never rejects. */
+  function measureAgentFiles(ctx: AgentContext, ownerOverride?: string): Promise<boolean> {
+    const agentId = ctx.agentId;
+    const running = measuringFiles.get(agentId);
+    if (running !== undefined) {
+      running.again = true;
+      running.ctx = ctx;
+      running.owner = ownerOverride;
+      return running.done;
+    }
+    const state = { again: false, ctx, owner: ownerOverride } as FilesMeasuring;
+    measuringFiles.set(agentId, state);
+    state.done = (async () => {
+      let ok = false;
+      try {
+        do {
+          state.again = false;
+          ok = await measureAgentFilesOnce(state.ctx, state.owner);
+        } while (state.again);
+      } finally {
+        measuringFiles.delete(agentId);
+      }
+      return ok;
+    })();
+    return state.done;
+  }
+
+  function scheduleAgentFilesMeasure(ctx: AgentContext): void {
+    const agentId = ctx.agentId;
+    if (!usableAgentId(agentId) || deletedAgents.has(agentId)) return;
+    if (!bus.hasService(AGENT_FILES_USAGE_HOOK)) return;
+    track(measureAgentFiles(ctx), ctx);
+  }
+
+  async function releaseAgentFiles(agentId: unknown): Promise<void> {
+    const ctx = makeAgentContext({
+      sessionId: 'disk-quota-release',
+      agentId: PLUGIN_NAME,
+      userId: 'system',
+      ...sweepLogger,
+    });
+    try {
+      if (typeof agentId !== 'string' || agentId.length === 0) {
+        log(ctx, 'warn', 'disk_quota_agents_deleted_invalid');
+        return;
+      }
+      // Before any await: from here on nothing starts measuring this agent,
+      // and nothing in flight writes past its pre-upsert check.
+      deletedAgents.add(agentId);
+      ownerCache.delete(agentId);
+      // A measurement already past that check is inside this loop; let it land,
+      // then delete. `done` never rejects; the `.catch` makes that a guarantee.
+      await measuringFiles.get(agentId)?.done.catch(() => false);
+      const removed = await store.deleteAgentFilesUsage(agentId);
+      log(ctx, 'debug', 'disk_quota_agent_files_released', { agentId, removed });
+    } catch (err) {
+      // An error, not a warn: a row left behind keeps charging the owner for
+      // files that are gone. `agentId` is a validated string on every path here.
+      log(ctx, 'error', 'disk_quota_release_failed', { agentId, err });
+    }
+  }
+
   function sweepContext(): AgentContext {
     return makeAgentContext({
       sessionId: 'disk-quota-sweep',
@@ -418,29 +607,11 @@ export function createDiskQuotaService(deps: {
         log(sweepCtx, 'debug', 'disk_quota_sweep_skipped');
         return { measured: 0, failed: 0 };
       }
-      const out = await bus.call<Record<string, never>, { agents?: unknown }>(
-        'agents:list-personal-owners',
-        sweepCtx,
-        {},
-      );
-      const listed: Array<{ agentId: string; ownerUserId: string }> = [];
-      if (Array.isArray(out?.agents)) {
-        for (const a of out.agents as Array<{ agentId?: unknown; ownerUserId?: unknown }>) {
-          if (usableAgentId(a?.agentId) && isAttributableUser(a?.ownerUserId)) {
-            listed.push({ agentId: a.agentId, ownerUserId: a.ownerUserId });
-          }
-        }
-      }
+      const listed = await listPersonalAgents(sweepCtx);
       let measured = 0;
       let failed = 0;
       await mapBounded(listed, SWEEP_CONCURRENCY, async (a) => {
-        const agentCtx = makeAgentContext({
-          sessionId: 'disk-quota-sweep',
-          agentId: a.agentId,
-          userId: a.ownerUserId,
-          ...sweepLogger,
-        });
-        if (await measureOnce(agentCtx, a.ownerUserId)) measured++;
+        if (await measureOnce(agentSweepContext(a), a.ownerUserId)) measured++;
         else failed++;
       });
       log(sweepCtx, 'info', 'disk_quota_sweep_done', { measured, failed });
@@ -449,6 +620,66 @@ export function createDiskQuotaService(deps: {
       log(sweepCtx, 'warn', 'disk_quota_sweep_failed', { err });
       return { measured: 0, failed: 0 };
     }
+  }
+
+  /**
+   * Every personal agent's `/files`, charged to its listed owner, through the
+   * same per-agent coalescing as the turn-end meter (so a release waits for a
+   * sweep walk too). Needs the listing AND the provider; skipped otherwise.
+   */
+  async function sweepAgentFiles(): Promise<{ measured: number; failed: number }> {
+    const sweepCtx = sweepContext();
+    try {
+      if (
+        !bus.hasService('agents:list-personal-owners') ||
+        !bus.hasService(AGENT_FILES_USAGE_HOOK)
+      ) {
+        log(sweepCtx, 'debug', 'disk_quota_files_sweep_skipped');
+        return { measured: 0, failed: 0 };
+      }
+      const listed = await listPersonalAgents(sweepCtx);
+      let measured = 0;
+      let failed = 0;
+      await mapBounded(listed, SWEEP_CONCURRENCY, async (a) => {
+        if (await measureAgentFiles(agentSweepContext(a), a.ownerUserId)) measured++;
+        else failed++;
+      });
+      log(sweepCtx, 'info', 'disk_quota_files_sweep_done', { measured, failed });
+      return { measured, failed };
+    } catch (err) {
+      log(sweepCtx, 'warn', 'disk_quota_files_sweep_failed', { err });
+      return { measured: 0, failed: 0 };
+    }
+  }
+
+  /** Personal agents with a usable id and a person as owner; malformed entries dropped. */
+  async function listPersonalAgents(
+    sweepCtx: AgentContext,
+  ): Promise<Array<{ agentId: string; ownerUserId: string }>> {
+    const out = await bus.call<Record<string, never>, { agents?: unknown }>(
+      'agents:list-personal-owners',
+      sweepCtx,
+      {},
+    );
+    const listed: Array<{ agentId: string; ownerUserId: string }> = [];
+    if (Array.isArray(out?.agents)) {
+      for (const a of out.agents as Array<{ agentId?: unknown; ownerUserId?: unknown }>) {
+        if (usableAgentId(a?.agentId) && isAttributableUser(a?.ownerUserId)) {
+          listed.push({ agentId: a.agentId, ownerUserId: a.ownerUserId });
+        }
+      }
+    }
+    return listed;
+  }
+
+  /** One agent's own sweep context: measured AS its owner, in a sweep session. */
+  function agentSweepContext(a: { agentId: string; ownerUserId: string }): AgentContext {
+    return makeAgentContext({
+      sessionId: 'disk-quota-sweep',
+      agentId: a.agentId,
+      userId: a.ownerUserId,
+      ...sweepLogger,
+    });
   }
 
   /**
@@ -639,9 +870,15 @@ export function createDiskQuotaService(deps: {
   }
 
   async function reconcile(): Promise<ReconcileResult> {
-    const sweep = await sweepWorkspaces();
+    const workspaces = await sweepWorkspaces();
+    const files = await sweepAgentFiles();
     const blobs = await releaseBlobs();
-    return { ...sweep, blobsReleased: blobs.released, blobReleaseAborted: blobs.aborted };
+    return {
+      measured: workspaces.measured + files.measured,
+      failed: workspaces.failed + files.failed,
+      blobsReleased: blobs.released,
+      blobReleaseAborted: blobs.aborted,
+    };
   }
 
   return {
@@ -650,6 +887,8 @@ export function createDiskQuotaService(deps: {
     recordBlobStored,
     scheduleWorkspaceMeasure,
     releaseWorkspace,
+    scheduleAgentFilesMeasure,
+    releaseAgentFiles,
     reconcile,
     releaseBlobs,
     ownerOf,

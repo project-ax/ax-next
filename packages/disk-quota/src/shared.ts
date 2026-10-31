@@ -29,6 +29,32 @@ export async function mapBounded<T, R>(
   return out;
 }
 
+/**
+ * At most `max` of the functions handed to `run` are running at once (at least
+ * one); the rest wait their turn, first come first served. A function that
+ * throws or rejects still frees its slot, and `run` passes its outcome through.
+ */
+export function createLimiter(max: number): { run<T>(fn: () => Promise<T>): Promise<T> } {
+  const limit = Math.max(1, Math.floor(max));
+  let active = 0;
+  const waiting: Array<() => void> = [];
+  return {
+    async run<T>(fn: () => Promise<T>): Promise<T> {
+      if (active < limit) active++;
+      // A finishing run hands its slot straight to the next waiter, so
+      // `active` is not decremented in between and nobody can jump the queue.
+      else await new Promise<void>((resolve) => waiting.push(resolve));
+      try {
+        return await fn();
+      } finally {
+        const next = waiting.shift();
+        if (next !== undefined) next();
+        else active--;
+      }
+    },
+  };
+}
+
 /** Every body on this surface is a couple of numbers. */
 export const STORAGE_BODY_MAX_BYTES = 4 * 1024;
 
