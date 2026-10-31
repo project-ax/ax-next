@@ -1,6 +1,13 @@
 import { z } from 'zod';
 import { asWorkspaceVersion, HOLD_NOTE_MAX, type WorkspaceVersion } from '@ax/core';
-import { CONTENT_BLOCKS_MAX, ContentBlockSchema, isWorkspaceRelativePath } from './content-blocks.js';
+import {
+  ATTACHMENT_FILENAME_MAX,
+  ATTACHMENT_MEDIA_TYPE_MAX,
+  AttachmentIdSchema,
+  CONTENT_BLOCKS_MAX,
+  ContentBlockSchema,
+  isWorkspaceRelativePath,
+} from './content-blocks.js';
 import { SaveRefusedCodeSchema } from './save-refused.js';
 
 // Re-export so existing consumers importing from `@ax/ipc-protocol` keep
@@ -21,20 +28,16 @@ export { asWorkspaceVersion, type WorkspaceVersion };
 export const AgentMessageSchema = z.object({
   role: z.enum(['user', 'assistant']),
   content: z.string(),
-  // Phase 2 (attachments). Optional richer payload — when present, the
-  // runner prefers this over `content`. The chat-messages handler does
-  // not emit this yet (Phase 3); shipping the schema first lets the
-  // runner translation pass be testable. Backward-compat: omitting the
-  // field reproduces the prior string-only shape exactly.
+  // Phase 2 (attachments). Optional richer payload — the chat-messages
+  // handler sends the person's `attachment` blocks here (addressed by id).
+  // When present, the runner prefers this over `content`. Omitting the
+  // field reproduces the string-only shape exactly.
   contentBlocks: z.array(ContentBlockSchema).max(CONTENT_BLOCKS_MAX).optional(),
   /**
-   * Phase 3 (attachments, 2026-05-18). Server-minted user-turn id, used
-   * by the runner to bind the user message to the same turn the host
-   * committed attachments under. The chat-messages handler mints this
-   * BEFORE calling `attachments:commit` so the committed file path
-   * (`.ax/uploads/<conversationId>/<turnId>/<file>`) and the SDK turn
-   * that references it agree. Optional for backward-compat with code
-   * paths that don't carry attachments (existing canary tests).
+   * Phase 3 (attachments, 2026-05-18). Server-minted user-turn id the
+   * chat-messages handler stamps on each user message. Attachments do not
+   * depend on it: they are committed and addressed by their own id.
+   * Optional; paths that mint no turn id omit it.
    */
   turnId: z.string().optional(),
 });
@@ -497,23 +500,18 @@ export type WorkspaceExportBaselineBundleRequest = z.infer<
 // workspace.read — Phase 2 (attachments translation, D3).
 //
 // Exposes the host's `workspace:read` service hook to runners over IPC.
-// The runner's attachment-translation pass uses this to fetch attachment
-// bytes that the host committed via `attachments:commit` after session
-// start (the runner's /agent doesn't auto-sync mid-session).
 //
 // Auth: caller's bearer token resolves to a session row; the host-side
 // handler uses the session's workspaceId to scope `workspace:read`.
 // Cross-session reads are impossible — there's no session id on the wire.
 //
-// Payload: path is workspace-relative (matches what attachment blocks
-// carry, e.g. ".ax/uploads/<conv>/<turn>/file.pdf"). Bytes ride
-// base64-encoded for JSON safety.
+// Payload: a workspace-relative path. Bytes ride base64-encoded for JSON
+// safety.
 export const WorkspaceReadRequestSchema = z.object({
-  // Defense in depth at the wire boundary: the same workspace-relative
-  // path rule the AttachmentBlock schema enforces. A malformed runner
-  // call (absolute path, `..` traversal, drive root, NUL byte) surfaces
-  // as a clean 400 VALIDATION here rather than as a confusing
-  // git-cat-file error one hop later.
+  // Defense in depth at the wire boundary (`isWorkspaceRelativePath`). A
+  // malformed runner call (absolute path, `..` traversal, drive root, NUL
+  // byte) surfaces as a clean 400 VALIDATION here rather than as a
+  // confusing backend error one hop later.
   path: z
     .string()
     .min(1)
@@ -851,9 +849,13 @@ export type BlobGetRequest = z.infer<typeof BlobGetRequestSchema>;
 //
 // Field names are storage-agnostic (I1): `conversationId` scopes ownership,
 // `sha256` is the content hash linking the row to the stored blob, `path` is
-// the workspace-relative display/scope key the transcript + download ACL use,
-// `displayName`/`mediaType` are untrusted display text (the renderer treats
-// them as untrusted; never shell-interpolated). No backend vocabulary.
+// the file's location relative to its publish root, used only as the row's
+// re-publish key (publishing the same file again updates its row) and never
+// handed back out — the chat chip and the download address the artifact by
+// `artifactId`. `displayName`/`mediaType` are untrusted display text (the
+// renderer treats them as untrusted; never shell-interpolated); they are capped
+// at the `attachment` block's limits so every recorded artifact can become a
+// chip. No backend vocabulary.
 // ---------------------------------------------------------------------------
 
 export const ArtifactPublishRequestSchema = z
@@ -861,8 +863,8 @@ export const ArtifactPublishRequestSchema = z
     conversationId: z.string().min(1).max(256),
     sha256: z.string().regex(SHA256_RE),
     path: z.string().min(1).max(1024),
-    displayName: z.string().min(1).max(1024),
-    mediaType: z.string().min(1).max(256),
+    displayName: z.string().min(1).max(ATTACHMENT_FILENAME_MAX),
+    mediaType: z.string().min(1).max(ATTACHMENT_MEDIA_TYPE_MAX),
     size: z.number().int().nonnegative(),
   })
   .strict();
@@ -876,15 +878,18 @@ export type ArtifactPublishResponse = z.infer<typeof ArtifactPublishResponseSche
 
 // ---------------------------------------------------------------------------
 // attachments.list — TASK-68 (out-of-git Part C, inbound). At session start —
-// and on a warm-runner rebind bringing a new upload (TASK-78) — the runner
-// enumerates the bound conversation's uploads so it can pull each blob
-// (`blob.get`) and materialize the read-only working copy at the path advertised
-// to the model. The host scopes the query to ctx.userId (the bearer token's
-// user) AND the requested conversationId.
+// and when a later message brings an upload the runner has not seen — the
+// runner enumerates its bound conversation's uploads so it can pull each blob
+// (`blob.get`) and keep a working copy inside the sandbox. The host serves
+// only the conversation the session is bound to (`ctx.conversationId`, from
+// the bearer token — any other is refused) and only rows owned by ctx.userId.
 //
-// `path` is the workspace-relative key (`.ax/uploads/<conv>/<turnId>/<file>`)
-// the runner materializes at `<workspaceRoot>/.ax/uploads/...`; `sha256`
-// addresses the blob; the rest is display metadata. No backend vocabulary (I1).
+// Each entry: `attachmentId` (the id the transcript's `attachment` block
+// carries, so a turn's block finds its copy), `filename` (display name; the
+// runner sanitizes it before using it on disk), `sha256` (addresses the blob,
+// and lets the runner check its copy is intact), `mediaType`, `sizeBytes`.
+// Oldest first, so a fresh runner given the same list derives the same names.
+// No path and no backend vocabulary (I1).
 // ---------------------------------------------------------------------------
 
 export const AttachmentsListRequestSchema = z
@@ -897,10 +902,10 @@ export type AttachmentsListRequest = z.infer<typeof AttachmentsListRequestSchema
 export const AttachmentsListResponseSchema = z.object({
   files: z.array(
     z.object({
-      path: z.string(),
+      attachmentId: AttachmentIdSchema,
+      filename: z.string().min(1).max(ATTACHMENT_FILENAME_MAX),
       sha256: z.string().regex(SHA256_RE),
-      mediaType: z.string(),
-      displayName: z.string(),
+      mediaType: z.string().min(1).max(ATTACHMENT_MEDIA_TYPE_MAX),
       sizeBytes: z.number().int().nonnegative(),
     }),
   ),

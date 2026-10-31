@@ -4,23 +4,25 @@ import {
 } from '@ax/ipc-protocol';
 import { PluginError } from '@ax/core';
 import { zodSummary, internalError, logInternalError, mapPluginError, validationError } from '../errors.js';
+import { refuseUnboundConversation } from './bound-conversation.js';
 import type { ActionHandler } from './types.js';
 
 // ---------------------------------------------------------------------------
 // POST /attachments.list — TASK-68, out-of-git Part C (inbound).
 //
-// At session start — and again on a warm-runner rebind that brings a new upload
-// (TASK-78) — the runner enumerates the bound conversation's uploads so it can
-// pull each blob (`blob.get`) and materialize the read-only working copy at the
-// path advertised to the model. Each entry carries the workspace-relative `path`
-// (`.ax/uploads/<conv>/<turn>/<file>`, which the runner materializes at
-// `<workspaceRoot>/.ax/uploads/...`), the `sha256` that addresses the blob, and
-// display metadata.
+// At session start — and again when a later message brings an upload the
+// runner has not seen — the runner enumerates its conversation's uploads so it
+// can pull each blob (`blob.get`) and keep a working copy inside the sandbox.
+// Each entry carries the `attachmentId` the transcript's `attachment` block
+// names, the `sha256` that addresses the blob, and display metadata. No path:
+// where the copy lands is the runner's business.
 //
-// Authz: the host-side `attachments:list-for-conversation` hook reads
-// `ctx.userId` (the session bearer's user) and the requested conversationId, and
-// returns the empty set for a conversation the user doesn't own — a foreign
-// runner learns nothing about another user's uploads.
+// Authz, two layers:
+//   1. Here: the requested conversation must be the one the session is bound
+//      to (`refuseUnboundConversation`). A runner cannot list another
+//      conversation, not even another one of the same person's.
+//   2. The host-side `attachments:list-for-conversation` hook returns only rows
+//      owned by `ctx.userId`.
 // ---------------------------------------------------------------------------
 
 interface AttachmentsListForConversationInput {
@@ -28,10 +30,10 @@ interface AttachmentsListForConversationInput {
 }
 interface AttachmentsListForConversationOutput {
   files: Array<{
-    path: string;
+    attachmentId: string;
+    filename: string;
     sha256: string;
     mediaType: string;
-    displayName: string;
     sizeBytes: number;
   }>;
 }
@@ -41,6 +43,13 @@ export const attachmentsListHandler: ActionHandler = async (rawPayload, ctx, bus
   if (!parsed.success) {
     return validationError(`attachments.list: ${zodSummary(parsed.error)}`);
   }
+  const refused = refuseUnboundConversation(
+    ctx,
+    parsed.data.conversationId,
+    'attachments.list',
+    'attachments_list_foreign_conversation_refused',
+  );
+  if (refused !== null) return refused;
   let out: AttachmentsListForConversationOutput;
   try {
     out = await bus.call<
@@ -56,6 +65,8 @@ export const attachmentsListHandler: ActionHandler = async (rawPayload, ctx, bus
     logInternalError(ctx.logger, 'attachments.list', err);
     return internalError();
   }
+  // Re-check the host's answer against the wire schema before it reaches the
+  // runner, which names files after these entries.
   const checked = AttachmentsListResponseSchema.safeParse(out);
   if (!checked.success) {
     logInternalError(

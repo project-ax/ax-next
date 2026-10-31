@@ -69,6 +69,23 @@ describe('TASK-68 blob.* / metadata IPC schemas', () => {
         ArtifactPublishRequestSchema.safeParse({ ...valid, oid: 'deadbeef' }).success,
       ).toBe(false);
     });
+    // Every recorded artifact must be able to become an `attachment` chip, so
+    // the display fields stop at the block's limits.
+    it('caps displayName and mediaType at the attachment block limits', () => {
+      expect(
+        ArtifactPublishRequestSchema.safeParse({ ...valid, mediaType: 'm'.repeat(256) }).success,
+      ).toBe(false);
+      expect(
+        ArtifactPublishRequestSchema.safeParse({ ...valid, displayName: 'd'.repeat(1025) }).success,
+      ).toBe(false);
+      expect(
+        ArtifactPublishRequestSchema.safeParse({
+          ...valid,
+          mediaType: 'm'.repeat(255),
+          displayName: 'd'.repeat(1024),
+        }).success,
+      ).toBe(true);
+    });
   });
 
   describe('ArtifactPublishResponseSchema', () => {
@@ -89,30 +106,53 @@ describe('TASK-68 blob.* / metadata IPC schemas', () => {
     it('rejects an empty conversationId', () => {
       expect(AttachmentsListRequestSchema.safeParse({ conversationId: '' }).success).toBe(false);
     });
-    it('accepts a files list with sha256 + display metadata', () => {
-      const r = AttachmentsListResponseSchema.safeParse({
-        files: [
-          {
-            path: '.ax/uploads/c1/t1/a.png',
-            sha256: VALID_SHA,
-            mediaType: 'image/png',
-            displayName: 'a.png',
-            sizeBytes: 99,
-          },
-        ],
-      });
+    const entry = {
+      attachmentId: '3f1c2b9e-7d4a-4c1e-9b8f-2a6d5e4c3b1a',
+      filename: 'a.png',
+      sha256: VALID_SHA,
+      mediaType: 'image/png',
+      sizeBytes: 99,
+    };
+    it('accepts a files list of id + filename + sha256 + display metadata', () => {
+      const r = AttachmentsListResponseSchema.safeParse({ files: [entry] });
       expect(r.success).toBe(true);
+      expect(r.success && r.data.files).toEqual([entry]);
     });
     it('accepts an empty files list', () => {
       expect(AttachmentsListResponseSchema.safeParse({ files: [] }).success).toBe(true);
     });
     it('rejects a file entry with a malformed sha256', () => {
-      const r = AttachmentsListResponseSchema.safeParse({
-        files: [
-          { path: 'x', sha256: SHORT_SHA, mediaType: 'image/png', displayName: 'a', sizeBytes: 1 },
-        ],
-      });
-      expect(r.success).toBe(false);
+      expect(
+        AttachmentsListResponseSchema.safeParse({ files: [{ ...entry, sha256: SHORT_SHA }] }).success,
+      ).toBe(false);
+    });
+    it.each(['../x', 'a/b', '', 'a'.repeat(129)])(
+      'rejects a file entry whose attachmentId is %j',
+      (attachmentId) => {
+        expect(
+          AttachmentsListResponseSchema.safeParse({ files: [{ ...entry, attachmentId }] }).success,
+        ).toBe(false);
+      },
+    );
+    it('rejects the old path-keyed entry', () => {
+      expect(
+        AttachmentsListResponseSchema.safeParse({
+          files: [
+            {
+              path: '.ax/uploads/c1/t1/a.png',
+              sha256: VALID_SHA,
+              mediaType: 'image/png',
+              displayName: 'a.png',
+              sizeBytes: 99,
+            },
+          ],
+        }).success,
+      ).toBe(false);
+    });
+    it('rejects an empty filename', () => {
+      expect(
+        AttachmentsListResponseSchema.safeParse({ files: [{ ...entry, filename: '' }] }).success,
+      ).toBe(false);
     });
   });
 

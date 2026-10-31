@@ -73,9 +73,9 @@ export const IPC_TIMEOUTS_MS = Object.freeze({
   // single indexed insert host-side. 10 s is generous.
   'artifact.publish': 10_000,
   // `attachments.list` — runner-boot enumerate of the bound conversation's
-  // uploads (path + sha256 + display metadata) so it can pull each blob and
-  // materialize `/ephemeral/uploads`. Small JSON response (one row per upload).
-  // 10 s is generous for a single conversation's upload set.
+  // uploads (id + sha256 + display metadata) so it can pull each blob into its
+  // own working copy. Small JSON response (one row per upload). 10 s is
+  // generous for a single conversation's upload set.
   'attachments.list': 10_000,
   // TASK-67 (out-of-git Part B / B2): resume-transcript callers.
   //

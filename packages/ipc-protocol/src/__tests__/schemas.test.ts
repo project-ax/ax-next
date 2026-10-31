@@ -1269,15 +1269,33 @@ describe('AgentMessageSchema — Phase 2 contentBlocks', () => {
         { type: 'text' as const, text: 'see attached' },
         {
           type: 'attachment' as const,
-          path: '.ax/uploads/c1/t1/x.pdf',
-          displayName: 'X.pdf',
+          attachmentId: '3f1c2b9e-7d4a-4c1e-9b8f-2a6d5e4c3b1a',
+          filename: 'X.pdf',
           mediaType: 'application/pdf',
           sizeBytes: 100,
         },
       ],
     };
     const parsed = AgentMessageSchema.parse(msg);
-    expect(parsed.contentBlocks).toHaveLength(2);
+    expect(parsed.contentBlocks).toEqual(msg.contentBlocks);
+  });
+
+  it('rejects a queued message still carrying a path-shaped attachment block', () => {
+    expect(
+      AgentMessageSchema.safeParse({
+        role: 'user',
+        content: '',
+        contentBlocks: [
+          {
+            type: 'attachment',
+            path: '.ax/uploads/c1/t1/x.pdf',
+            displayName: 'X.pdf',
+            mediaType: 'application/pdf',
+            sizeBytes: 100,
+          },
+        ],
+      }).success,
+    ).toBe(false);
   });
 
   it('rejects contentBlocks with invalid variant', () => {

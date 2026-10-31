@@ -76,11 +76,14 @@ function fileRow(id: string, conversationId: string, userId: string, sha256: str
     conversationId,
     userId,
     sha256,
-    path: `${id}.txt`,
     displayName: `${id}.txt`,
     mediaType: 'text/plain',
     sizeBytes: 1,
   };
+}
+
+function artifactRow(id: string, conversationId: string, userId: string, sha256: string) {
+  return { ...fileRow(id, conversationId, userId, sha256), path: `${id}.txt` };
 }
 
 beforeAll(async () => {
@@ -112,8 +115,8 @@ describe('AttachmentsStore.blobRefs', () => {
   it('returns every row of BOTH tables that points at a candidate, with its owner', async () => {
     const h = await makeHarness();
     const store = createAttachmentsStore(await dbOf(h));
-    await store.upsertFile(fileRow('f1', 'c1', 'u1', A));
-    await store.upsertArtifact(fileRow('r1', 'c1', 'u2', B));
+    await store.insertFile(fileRow('f1', 'c1', 'u1', A));
+    await store.upsertArtifact(artifactRow('r1', 'c1', 'u2', B));
     const refs = await store.blobRefs([A, B, C]);
     expect(refs).toHaveLength(2);
     expect(refs).toContainEqual({ sha256: A, userIds: ['u1'] });
@@ -123,9 +126,9 @@ describe('AttachmentsStore.blobRefs', () => {
   it('returns one entry per row, so every user holding the same bytes appears', async () => {
     const h = await makeHarness();
     const store = createAttachmentsStore(await dbOf(h));
-    await store.upsertFile(fileRow('f1', 'c1', 'u1', A));
-    await store.upsertFile(fileRow('f2', 'c2', 'u2', A));
-    await store.upsertArtifact(fileRow('r1', 'c3', 'u3', A));
+    await store.insertFile(fileRow('f1', 'c1', 'u1', A));
+    await store.insertFile(fileRow('f2', 'c2', 'u2', A));
+    await store.upsertArtifact(artifactRow('r1', 'c3', 'u3', A));
     const refs = await store.blobRefs([A]);
     expect(refs.every((r) => r.sha256 === A)).toBe(true);
     expect(refs.flatMap((r) => r.userIds).sort()).toEqual(['u1', 'u2', 'u3']);
@@ -134,8 +137,8 @@ describe('AttachmentsStore.blobRefs', () => {
   it('leaves out rows whose sha is not a candidate', async () => {
     const h = await makeHarness();
     const store = createAttachmentsStore(await dbOf(h));
-    await store.upsertFile(fileRow('f1', 'c1', 'u1', A));
-    await store.upsertArtifact(fileRow('r1', 'c1', 'u1', D));
+    await store.insertFile(fileRow('f1', 'c1', 'u1', A));
+    await store.upsertArtifact(artifactRow('r1', 'c1', 'u1', D));
     expect(await store.blobRefs([B, C])).toEqual([]);
     expect(await store.blobRefs([])).toEqual([]);
   });
@@ -145,9 +148,9 @@ describe('@ax/attachments as a blob:collect-refs holder', () => {
   it('appends one ok answer covering both tables, per user', async () => {
     const h = await makeHarness();
     const store = createAttachmentsStore(await dbOf(h));
-    await store.upsertFile(fileRow('f1', 'c1', 'u1', A));
-    await store.upsertFile(fileRow('f2', 'c2', 'u2', A));
-    await store.upsertArtifact(fileRow('r1', 'c1', 'u3', B));
+    await store.insertFile(fileRow('f1', 'c1', 'u1', A));
+    await store.insertFile(fileRow('f2', 'c2', 'u2', A));
+    await store.upsertArtifact(artifactRow('r1', 'c1', 'u3', B));
 
     const out = await ask(h, [A, B, C]);
     expect(out.answers).toHaveLength(1);
@@ -168,7 +171,7 @@ describe('@ax/attachments as a blob:collect-refs holder', () => {
     // filter by conversation state would answer ok:false instead of refs.
     const h = await makeHarness();
     const store = createAttachmentsStore(await dbOf(h));
-    await store.upsertFile(fileRow('f1', 'c-soft-deleted', 'u1', A));
+    await store.insertFile(fileRow('f1', 'c-soft-deleted', 'u1', A));
     const out = await ask(h, [A]);
     const read = readBlobCollectRefsAnswers(out, [A]);
     expect(read.failed).toEqual([]);

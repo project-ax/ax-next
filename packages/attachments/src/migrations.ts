@@ -3,8 +3,8 @@ import { sql, type Kysely } from 'kysely';
 /**
  * @ax/attachments owns tables under the `attachments_v1_` prefix
  * (Invariant I4 — one source of truth per concept). The greenfield
- * posture matches @ax/conversations: pure-additive ALTERs in place
- * forever; no v1 → v2 split.
+ * posture matches @ax/conversations: forward-only, idempotent ALTERs in
+ * place; no v1 → v2 split.
  *
  * Tables:
  *   attachments_v1_temps — pending uploads keyed by attachmentId.
@@ -32,26 +32,28 @@ export interface AttachmentTempsTable {
 // ---------------------------------------------------------------------------
 // TASK-68 (out-of-git Part C): durable metadata rows for committed uploads and
 // published artifacts. The BYTES live in the content-addressed blob store
-// (blob:put); these rows map (conversationId, path) → sha256 + display metadata
-// so the download ACL and the runner's session-start materialization can resolve
-// a path back to its blob. NO bytes here — that's the blob store's job (one
-// source of truth per concept, I4).
+// (blob:put); these rows map an id → owner, conversation, sha256 + display
+// metadata, so the download ACL and the runner's upload copies can resolve an
+// id back to its blob. NO bytes here — that's the blob store's job (one source
+// of truth per concept, I4).
 //
-// `sha256` is the OWN content digest of the file (storage-agnostic identity, the
-// same value the alternate @ax/attachments-pg-bytea-only impl would compute), NOT
-// a git sha / backend pointer — so it's allowed (I1). The `path` is the
-// workspace-relative key the transcript + download ACL already use.
+// Both tables are keyed by the id the transcript's `attachment` block carries:
+// `attachment_id` for an upload (the id it was staged under), `artifact_id` for
+// a published artifact. `sha256` is the OWN content digest of the file
+// (storage-agnostic identity, the same value the alternate
+// @ax/attachments-pg-bytea-only impl would compute), NOT a git sha / backend
+// pointer — so it's allowed (I1). Artifacts also keep `path`, the file's place
+// under its publish root: the re-publish key, never handed out.
 //
 // Files (inbound uploads) and artifacts (outbound deliverables) get separate
-// tables — same shape but distinct lifecycles + namespaces. Both are owned by
-// @ax/attachments (which also owns the download ACL that resolves either).
+// tables — distinct lifecycles + namespaces. Both are owned by @ax/attachments
+// (which also owns the download ACL that resolves either).
 // ---------------------------------------------------------------------------
 export interface AttachmentFilesTable {
   attachment_id: string;
   conversation_id: string;
   user_id: string;
   sha256: string;
-  path: string;
   display_name: string;
   media_type: string;
   size_bytes: number;
@@ -102,22 +104,30 @@ export async function runAttachmentsMigration<DB>(
       ON attachments_v1_temps (expires_at)
   `.execute(db);
 
-  // Committed uploads. (conversation_id, path) is the natural key the download
-  // ACL + the runner's materialize loop resolve against; UNIQUE so a re-commit
-  // of the same path upserts rather than duplicating.
+  // Committed uploads, keyed by the id they were staged under. The download
+  // ACL and the runner's upload list resolve against that id.
   await sql`
     CREATE TABLE IF NOT EXISTS attachments_v1_files (
       attachment_id   TEXT PRIMARY KEY,
       conversation_id TEXT NOT NULL,
       user_id         TEXT NOT NULL,
       sha256          TEXT NOT NULL,
-      path            TEXT NOT NULL,
       display_name    TEXT NOT NULL,
       media_type      TEXT NOT NULL,
       size_bytes      BIGINT NOT NULL CHECK (size_bytes >= 0),
-      created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      UNIQUE (conversation_id, path)
+      created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
+  `.execute(db);
+
+  // TASK-995: uploads are addressed by id, so the workspace-relative `path`
+  // key (`.ax/uploads/<conv>/<turn>/<file>`) has no reader or writer left.
+  // Forward-only + idempotent: a fresh install never had the column (it is
+  // gone from CREATE TABLE above); an existing table drops it once, and its
+  // UNIQUE (conversation_id, path) constraint with it. Existing rows keep
+  // their id and still resolve.
+  await sql`
+    ALTER TABLE attachments_v1_files
+      DROP COLUMN IF EXISTS path
   `.execute(db);
 
   await sql`
@@ -134,7 +144,9 @@ export async function runAttachmentsMigration<DB>(
       ON attachments_v1_files (sha256)
   `.execute(db);
 
-  // Published artifacts. Same shape; separate namespace + lifecycle (outbound).
+  // Published artifacts. Separate namespace + lifecycle (outbound). Their
+  // (conversation_id, path) stays UNIQUE: it is the re-publish key, so
+  // publishing the same file again updates its row instead of adding one.
   await sql`
     CREATE TABLE IF NOT EXISTS attachments_v1_artifacts (
       artifact_id     TEXT PRIMARY KEY,

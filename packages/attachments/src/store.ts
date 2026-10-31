@@ -1,6 +1,6 @@
-import { sql, type Kysely } from 'kysely';
+import { sql, type Kysely, type Selectable } from 'kysely';
 import type { BlobRef } from '@ax/core';
-import type { AttachmentsDatabase } from './migrations.js';
+import type { AttachmentFilesTable, AttachmentsDatabase } from './migrations.js';
 
 export interface TempInsert {
   attachmentId: string;
@@ -28,29 +28,30 @@ export type InsertTempIfWithinQuotaResult =
   | { ok: false; reason: 'quota-exceeded' };
 
 // TASK-68: durable metadata for a committed upload / published artifact. The
-// bytes are in the blob store (sha256-addressed); this is the row that maps
-// (conversationId, path) → sha256 + display metadata.
+// bytes are in the blob store (sha256-addressed); this is the row that maps an
+// id → owner, conversation, sha256 + display metadata.
 export interface FileRowInsert {
   id: string;
   conversationId: string;
   userId: string;
   sha256: string;
-  path: string;
   displayName: string;
   mediaType: string;
   sizeBytes: number;
 }
 
-export interface FileRow {
-  id: string;
-  conversationId: string;
-  userId: string;
-  sha256: string;
+export type FileRow = FileRowInsert;
+
+/**
+ * A published artifact also records the file's location relative to its
+ * publish root: the re-publish key (publishing the same file again updates the
+ * row). It never leaves this plugin.
+ */
+export interface ArtifactRowInsert extends FileRowInsert {
   path: string;
-  displayName: string;
-  mediaType: string;
-  sizeBytes: number;
 }
+
+export type ArtifactRow = ArtifactRowInsert;
 
 /**
  * Pure data access over `attachments_v1_temps`. No policy, no ACL — handlers
@@ -81,22 +82,31 @@ export interface AttachmentsStore {
 
   // --- TASK-68: committed-upload (`files`) metadata ---
   /**
-   * Upsert a committed-upload row. Idempotent on (conversationId, path): a
-   * re-commit of the same path (same turn replay) updates the existing row
-   * rather than duplicating. Content-addressed bytes already live in the blob
-   * store; this only records ownership + display metadata.
+   * Record a committed upload under its attachment id. An id that already has
+   * a row is left untouched (never overwritten), and the call returns `false`
+   * so the caller can tell a replay from a first commit. Content-addressed
+   * bytes already live in the blob store; this only records ownership +
+   * display metadata.
    */
-  upsertFile(input: FileRowInsert): Promise<void>;
-  /** Resolve a committed upload by (conversationId, path). Null if absent. */
-  getFileByPath(conversationId: string, path: string): Promise<FileRow | null>;
-  /** All committed uploads for a conversation owned by `userId` (empty if none / foreign). */
+  insertFile(input: FileRowInsert): Promise<boolean>;
+  /** Resolve a committed upload by its attachment id. Null if absent. */
+  getFileById(id: string): Promise<FileRow | null>;
+  /**
+   * All committed uploads for a conversation owned by `userId` (empty if none /
+   * foreign), oldest first, ties broken by id — a stable order, so a runner
+   * that names its copies in list order derives the same names every time.
+   */
   listFilesForConversation(conversationId: string, userId: string): Promise<FileRow[]>;
 
   // --- TASK-68: published-artifact metadata ---
-  /** Upsert a published-artifact row. Idempotent on (conversationId, path). */
-  upsertArtifact(input: FileRowInsert): Promise<void>;
-  /** Resolve a published artifact by (conversationId, path). Null if absent. */
-  getArtifactByPath(conversationId: string, path: string): Promise<FileRow | null>;
+  /**
+   * Upsert a published-artifact row, idempotent on (conversationId, path).
+   * Returns `false` — and changes nothing — when that key already belongs to a
+   * row another user wrote: a write never takes over someone else's row.
+   */
+  upsertArtifact(input: ArtifactRowInsert): Promise<boolean>;
+  /** Resolve a published artifact by its id. Null if absent. */
+  getArtifactById(id: string): Promise<ArtifactRow | null>;
 
   // --- TASK-718: conversation purge ---
   /**
@@ -126,6 +136,18 @@ export interface AttachmentsStore {
 // Postgres caps one statement at 65535 bind parameters. The plugin already caps
 // what it accepts far below that; this keeps the store safe for any caller.
 const PURGE_ID_CHUNK = 1000;
+
+function fileRowFrom(row: Selectable<AttachmentFilesTable>): FileRow {
+  return {
+    id: row.attachment_id,
+    conversationId: row.conversation_id,
+    userId: row.user_id,
+    sha256: row.sha256,
+    displayName: row.display_name,
+    mediaType: row.media_type,
+    sizeBytes: Number(row.size_bytes),
+  };
+}
 
 export function createAttachmentsStore(
   db: Kysely<AttachmentsDatabase>,
@@ -237,54 +259,35 @@ export function createAttachmentsStore(
       return Number(result.numDeletedRows ?? 0);
     },
 
-    async upsertFile(input) {
-      await db
+    async insertFile(input) {
+      const inserted = await db
         .insertInto('attachments_v1_files')
         .values({
           attachment_id: input.id,
           conversation_id: input.conversationId,
           user_id: input.userId,
           sha256: input.sha256,
-          path: input.path,
           display_name: input.displayName,
           media_type: input.mediaType,
           size_bytes: input.sizeBytes,
           created_at: new Date(),
         })
-        // Idempotent on (conversation_id, path): a re-commit of the same path
-        // (turn replay) refreshes the metadata + content hash rather than
-        // failing the unique constraint or duplicating the row.
-        .onConflict((oc) =>
-          oc.columns(['conversation_id', 'path']).doUpdateSet({
-            attachment_id: input.id,
-            user_id: input.userId,
-            sha256: input.sha256,
-            display_name: input.displayName,
-            media_type: input.mediaType,
-            size_bytes: input.sizeBytes,
-          }),
-        )
-        .execute();
+        // First commit wins. A replay of the same id (a retried send whose
+        // temp row survived) must not move or rewrite the existing row.
+        .onConflict((oc) => oc.column('attachment_id').doNothing())
+        .returning('attachment_id')
+        .executeTakeFirst();
+      return inserted !== undefined;
     },
 
-    async getFileByPath(conversationId, path) {
+    async getFileById(id) {
       const row = await db
         .selectFrom('attachments_v1_files')
         .selectAll()
-        .where('conversation_id', '=', conversationId)
-        .where('path', '=', path)
+        .where('attachment_id', '=', id)
         .executeTakeFirst();
       if (!row) return null;
-      return {
-        id: row.attachment_id,
-        conversationId: row.conversation_id,
-        userId: row.user_id,
-        sha256: row.sha256,
-        path: row.path,
-        displayName: row.display_name,
-        mediaType: row.media_type,
-        sizeBytes: Number(row.size_bytes),
-      };
+      return fileRowFrom(row);
     },
 
     async listFilesForConversation(conversationId, userId) {
@@ -294,21 +297,13 @@ export function createAttachmentsStore(
         .where('conversation_id', '=', conversationId)
         .where('user_id', '=', userId)
         .orderBy('created_at', 'asc')
+        .orderBy('attachment_id', 'asc')
         .execute();
-      return rows.map((row) => ({
-        id: row.attachment_id,
-        conversationId: row.conversation_id,
-        userId: row.user_id,
-        sha256: row.sha256,
-        path: row.path,
-        displayName: row.display_name,
-        mediaType: row.media_type,
-        sizeBytes: Number(row.size_bytes),
-      }));
+      return rows.map(fileRowFrom);
     },
 
     async upsertArtifact(input) {
-      await db
+      const written = await db
         .insertInto('attachments_v1_artifacts')
         .values({
           artifact_id: input.id,
@@ -321,25 +316,32 @@ export function createAttachmentsStore(
           size_bytes: input.sizeBytes,
           created_at: new Date(),
         })
+        // Re-publishing the same file refreshes its row — but only for the user
+        // who owns that row. Another user's write to the same key updates
+        // nothing (and RETURNING comes back empty), so it can never take the
+        // row over.
         .onConflict((oc) =>
-          oc.columns(['conversation_id', 'path']).doUpdateSet({
-            artifact_id: input.id,
-            user_id: input.userId,
-            sha256: input.sha256,
-            display_name: input.displayName,
-            media_type: input.mediaType,
-            size_bytes: input.sizeBytes,
-          }),
+          oc
+            .columns(['conversation_id', 'path'])
+            .doUpdateSet({
+              artifact_id: input.id,
+              sha256: input.sha256,
+              display_name: input.displayName,
+              media_type: input.mediaType,
+              size_bytes: input.sizeBytes,
+            })
+            .where('attachments_v1_artifacts.user_id', '=', input.userId),
         )
-        .execute();
+        .returning('artifact_id')
+        .executeTakeFirst();
+      return written !== undefined;
     },
 
-    async getArtifactByPath(conversationId, path) {
+    async getArtifactById(id) {
       const row = await db
         .selectFrom('attachments_v1_artifacts')
         .selectAll()
-        .where('conversation_id', '=', conversationId)
-        .where('path', '=', path)
+        .where('artifact_id', '=', id)
         .executeTakeFirst();
       if (!row) return null;
       return {
@@ -369,9 +371,9 @@ export function createAttachmentsStore(
           // (one sha256 can back another tenant's file), so deleting by sha256
           // would need a cross-plugin reference authority, and a
           // check-then-delete would race a concurrent commit of the same bytes.
-          // With the rows gone no path maps to the sha, so the bytes are
-          // unreachable, not leaked-and-readable. Reclaiming them is a
-          // follow-up card, not this delete.
+          // With the rows gone no id maps to the sha, so the bytes are
+          // unreachable, not leaked-and-readable. Reclaiming them is the blob
+          // sweeper's job (blob:collect-refs), not this delete.
           const f = await trx
             .deleteFrom('attachments_v1_files')
             .where('conversation_id', 'in', chunk)
