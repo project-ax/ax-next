@@ -75,6 +75,7 @@ describe('registerWorkspaceRoutes (no flag)', () => {
     expect(routes).toContain('GET /api/workspace/agents/:agentId');
     expect(routes).toContain('POST /api/workspace/route');
     expect(routes).toContain('GET /api/workspace/grants');
+    expect(routes).toContain('GET /api/workspace/self-changes');
   });
 
   // Slice 3 — the agent's connector routes, exactly: the rail's row menu needs
