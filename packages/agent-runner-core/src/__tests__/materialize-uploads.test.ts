@@ -5,6 +5,8 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { AttachmentsListResponseSchema } from '@ax/ipc-protocol';
 import {
+  MAX_TAKEN_NAME_ATTEMPTS,
+  MAX_UPLOADS_PER_CALL,
   collisionName,
   materializeUploads,
   sanitizeUploadName,
@@ -473,6 +475,46 @@ describe('materializeUploads', () => {
     expect(names(known)).toEqual({ a: 'x.txt', c: 'x (3).txt' });
     await run(list.map((f) => ({ ...f, missing: false })), known);
     expect(names(known)).toEqual({ a: 'x.txt', b: 'x (2).txt', c: 'x (3).txt' });
+  });
+
+  it('copies at most MAX_UPLOADS_PER_CALL uploads per call, in list order; the next call takes the rest', async () => {
+    expect(MAX_UPLOADS_PER_CALL).toBe(256);
+    const list: Listed[] = Array.from({ length: MAX_UPLOADS_PER_CALL + 2 }, (_, i) => ({
+      attachmentId: `att-${String(i).padStart(4, '0')}`,
+      filename: 'image.png',
+      bytes: Buffer.from(`bytes-${i}`),
+    }));
+    const known = new Map<string, MaterializedUpload>();
+    const first = await run(list, known);
+    expect(known.size).toBe(MAX_UPLOADS_PER_CALL);
+    expect(first.client.callBinary).toHaveBeenCalledTimes(MAX_UPLOADS_PER_CALL);
+    expect(known.has(list[MAX_UPLOADS_PER_CALL - 1]!.attachmentId)).toBe(true);
+    expect(known.has(list[MAX_UPLOADS_PER_CALL]!.attachmentId)).toBe(false);
+    expect(first.warnings).toEqual([expect.stringContaining(`${MAX_UPLOADS_PER_CALL}`)]);
+
+    await run(list, known);
+    expect(known.size).toBe(list.length);
+    // Same names as one unbounded pass would give.
+    expect(path.basename(known.get(list[MAX_UPLOADS_PER_CALL + 1]!.attachmentId)!.path)).toBe(
+      `image (${MAX_UPLOADS_PER_CALL + 2}).png`,
+    );
+  });
+
+  it('gives up on an upload after MAX_TAKEN_NAME_ATTEMPTS names the agent has taken', async () => {
+    expect(MAX_TAKEN_NAME_ATTEMPTS).toBe(32);
+    await fs.mkdir(uploadsDir);
+    const squatted = MAX_TAKEN_NAME_ATTEMPTS + 8;
+    for (let n = 1; n <= squatted; n += 1) {
+      await fs.writeFile(path.join(uploadsDir, n === 1 ? 'r.pdf' : collisionName('r.pdf', n)), 'AGENT');
+    }
+    const { known, warnings } = await run([
+      { attachmentId: 'r', filename: 'r.pdf', bytes: Buffer.from('REPORT') },
+      { attachmentId: 'ok', filename: 'ok.txt', bytes: Buffer.from('OK') },
+    ]);
+    expect(names(known)).toEqual({ ok: 'ok.txt' });
+    expect(warnings).toEqual([expect.stringContaining('no free name for upload r')]);
+    expect((await fs.readdir(uploadsDir)).length).toBe(squatted + 1);
+    expect(await fs.readdir(blobTmp)).toEqual([]);
   });
 
   it.skipIf(process.getuid?.() === 0)(

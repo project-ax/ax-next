@@ -7,8 +7,9 @@
 //
 // An `attachment` block names its file by id. Its bytes come from the copy
 // materializeUploads made in `<scratch>/uploads/` (`uploads`, by id):
-//   - image/*: the bytes as an Anthropic `image` block.
-//   - application/pdf, when the loop supports `document` blocks: a `document`.
+//   - image/* of at most 25 MiB: the bytes as an Anthropic `image` block.
+//   - application/pdf of at most 25 MiB, when the loop supports `document`
+//     blocks: a `document`.
 //   - a text type (text/*, JSON, XML, YAML) of at most 64 KiB: the content,
 //     inlined after a one-line mention, so a weaker model has the bytes in
 //     front of it instead of having to think of opening the file.
@@ -37,6 +38,15 @@ import { stripControlChars, type MaterializedUpload } from './materialize-upload
 // case for dense ASCII this stays a tiny fraction of any production context.
 // Larger files get a mention; the model opens them itself.
 export const MAX_INLINE_BYTES = 64 * 1024;
+
+// 25 MiB: the most bytes translation holds in memory to pass an image or PDF
+// through. It is the host's per-upload cap — `POST /api/attachments` refuses a
+// body over 25 MiB (channel-web routes-attachments.ts) and
+// `attachments:store-temp` defaults to the same — so every real upload fits.
+// A listed size above it (a host configured past its own route cap, or a host
+// bug) gets the path mention instead, still verified by a streamed hash, and is
+// never buffered whole. (`blob.get` itself streams to disk under 512 MiB.)
+export const MAX_PASS_THROUGH_BYTES = 25 * 1024 * 1024;
 
 // MIME types whose bytes are safely renderable as UTF-8 text in a prompt.
 // Kept small and explicit rather than pattern-matching every
@@ -163,8 +173,9 @@ async function translateAttachment(
     };
   }
   const { mediaType } = upload;
-  const isImage = mediaType.startsWith('image/');
-  const isDocument = mediaType === 'application/pdf' && opts.supportsDocumentBlocks;
+  const fitsInMemory = upload.sizeBytes <= MAX_PASS_THROUGH_BYTES;
+  const isImage = mediaType.startsWith('image/') && fitsInMemory;
+  const isDocument = mediaType === 'application/pdf' && opts.supportsDocumentBlocks && fitsInMemory;
   const isInlineText = isInlineableTextMediaType(mediaType) && upload.sizeBytes <= MAX_INLINE_BYTES;
   const fields = { filename: upload.filename, path: upload.path, mediaType };
 

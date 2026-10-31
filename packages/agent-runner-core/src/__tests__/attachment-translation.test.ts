@@ -7,6 +7,7 @@ import * as path from 'node:path';
 import type { ContentBlock } from '@ax/ipc-protocol';
 import {
   MAX_INLINE_BYTES,
+  MAX_PASS_THROUGH_BYTES,
   formatAttachmentInline,
   formatAttachmentMention,
   translateContentBlocks,
@@ -181,6 +182,22 @@ describe('translateContentBlocks', () => {
     expect(await translate([block(doc)], [doc], false)).toEqual([
       { type: 'text', text: `User attached 'x.pdf' at ${doc.path} (application/pdf)` },
     ]);
+  });
+
+  it('caps pass-through at the 25 MiB upload cap: a bigger image or PDF is a mention, never buffered', async () => {
+    // The host's web upload route refuses a body over 25 MiB, so no real
+    // upload is bigger; a listed size above that is not buffered whole.
+    expect(MAX_PASS_THROUGH_BYTES).toBe(25 * 1024 * 1024);
+    const over = Buffer.alloc(MAX_PASS_THROUGH_BYTES + 1, 0x41);
+    const img = await copy('att-img', 'huge.png', over, 'image/png');
+    const doc = await copy('att-pdf', 'huge.pdf', over, 'application/pdf');
+    expect(await translate([block(img), block(doc)], [img, doc])).toEqual([
+      { type: 'text', text: `User attached 'huge.png' at ${img.path} (image/png)` },
+      { type: 'text', text: `User attached 'huge.pdf' at ${doc.path} (application/pdf)` },
+    ]);
+    // Still verified before the path is named as the person's file.
+    await fs.writeFile(img.path, Buffer.alloc(MAX_PASS_THROUGH_BYTES + 1, 0x42));
+    expect(await translate([block(img)], [img])).toEqual([unavailable('huge.png', 'image/png')]);
   });
 
   it('mentions a type it cannot inline, with the path to open', async () => {

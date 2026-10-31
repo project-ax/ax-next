@@ -81,6 +81,21 @@ const NAME_MAX_BYTES = 200;
 const EXTENSION_MAX_BYTES = 16;
 /** Highest collision number tried: `name (999).ext`. */
 const MAX_COLLISION = 999;
+/**
+ * Most uploads one call fetches. A conversation's uploads are bounded only by
+ * the person's patience, so one call is bounded here instead; the rest are
+ * fetched by the next call, in list order, under the names one unbounded pass
+ * would give them. (The runner calls again whenever a message names an upload
+ * it has no copy of.)
+ */
+export const MAX_UPLOADS_PER_CALL = 256;
+/**
+ * Most names, per upload, that may turn out to exist on disk already before
+ * the upload is given up on. Names other uploads hold are skipped without a
+ * syscall; only entries someone else created (the agent) count, so this caps
+ * what squatting names can cost, not how many same-named uploads there are.
+ */
+export const MAX_TAKEN_NAME_ATTEMPTS = 32;
 /** What an unusable name becomes. */
 const FALLBACK_NAME = 'file';
 
@@ -183,7 +198,7 @@ function nextUnclaimedName(
 /**
  * Copy `src` into `dir` under `slot`, or, when that entry already exists on
  * disk, under the next unclaimed name. Every name tried is added to `claimed`.
- * Null if none is free.
+ * Null if none is free, or after MAX_TAKEN_NAME_ATTEMPTS names already on disk.
  */
 async function copyUnderFreeName(
   src: string,
@@ -193,7 +208,7 @@ async function copyUnderFreeName(
   claimed: Set<string>,
 ): Promise<string | null> {
   let current: { name: string; n: number } | null = slot;
-  while (current !== null) {
+  for (let taken = 0; current !== null && taken < MAX_TAKEN_NAME_ATTEMPTS; taken += 1) {
     const dest = entryPath(dir, current.name);
     try {
       // Exclusive create: fails with EEXIST on any existing entry, including a
@@ -251,8 +266,16 @@ export async function materializeUploads(opts: MaterializeUploadsOptions): Promi
   const claimed = new Set<string>();
   for (const upload of opts.known.values()) claimed.add(path.basename(upload.path));
 
+  let fetched = 0;
   for (const file of files) {
     if (opts.known.has(file.attachmentId)) continue;
+    if (fetched === MAX_UPLOADS_PER_CALL) {
+      opts.warn(
+        `runner: copied the first ${MAX_UPLOADS_PER_CALL} new uploads; the rest wait for the next pull`,
+      );
+      break;
+    }
+    fetched += 1;
     const base = sanitizeUploadName(file.filename);
     const slot = nextUnclaimedName(base, claimed, 1);
     if (slot === null) {
