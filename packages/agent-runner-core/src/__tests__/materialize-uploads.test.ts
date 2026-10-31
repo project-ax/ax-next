@@ -435,6 +435,46 @@ describe('materializeUploads', () => {
     expect(await fs.readdir(blobTmp)).toEqual([]);
   });
 
+  it('a failed fetch still holds its name, so the names match a fresh pod that had every blob', async () => {
+    const list: Listed[] = [
+      { attachmentId: 'a', filename: 'report.pdf', bytes: Buffer.from('A') },
+      { attachmentId: 'b', filename: 'report.pdf', bytes: Buffer.from('B') },
+      { attachmentId: 'c', filename: 'report.pdf', bytes: Buffer.from('C') },
+    ];
+
+    // The reference: a fresh pod where every blob is there.
+    const fresh = await run(list);
+    const freshNames = names(fresh.known);
+    expect(freshNames).toEqual({ a: 'report.pdf', b: 'report (2).pdf', c: 'report (3).pdf' });
+    await fs.rm(uploadsDir, { recursive: true });
+
+    // A's blob is missing at first: B and C still get the names they get on
+    // the fresh pod, and A's later retry gets A's.
+    const known = new Map<string, MaterializedUpload>();
+    await run(
+      list.map((f) => (f.attachmentId === 'a' ? { ...f, missing: true } : f)),
+      known,
+    );
+    expect(names(known)).toEqual({ b: freshNames.b, c: freshNames.c });
+    await run(list, known);
+    expect(names(known)).toEqual(freshNames);
+    expect(await fs.readFile(path.join(uploadsDir, 'report.pdf'), 'utf8')).toBe('A');
+    expect(await fs.readFile(path.join(uploadsDir, 'report (2).pdf'), 'utf8')).toBe('B');
+  });
+
+  it('a failed middle fetch does not shift the names after it', async () => {
+    const list: Listed[] = [
+      { attachmentId: 'a', filename: 'x.txt', bytes: Buffer.from('A') },
+      { attachmentId: 'b', filename: 'x.txt', bytes: Buffer.from('B'), missing: true },
+      { attachmentId: 'c', filename: 'x.txt', bytes: Buffer.from('C') },
+    ];
+    const known = new Map<string, MaterializedUpload>();
+    await run(list, known);
+    expect(names(known)).toEqual({ a: 'x.txt', c: 'x (3).txt' });
+    await run(list.map((f) => ({ ...f, missing: false })), known);
+    expect(names(known)).toEqual({ a: 'x.txt', b: 'x (2).txt', c: 'x (3).txt' });
+  });
+
   it.skipIf(process.getuid?.() === 0)(
     'a copy that fails leaves no temp file and does not stop the others',
     async () => {

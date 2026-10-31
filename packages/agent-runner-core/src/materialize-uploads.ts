@@ -22,9 +22,10 @@
 //   - There is no wipe. A later call writes only attachments it has not copied,
 //     and keeps the names it already handed out.
 //
-// Names are deterministic: the list order is fixed (oldest first, then id), so
-// a fresh pod given the same list derives the same names, and a resumed
-// transcript's mentions still point at the right files.
+// Names are deterministic: the list order is fixed (oldest first, then id) and
+// names are assigned over the whole list in that order, a failed fetch still
+// holding its name, so a fresh pod given the same list derives the same names
+// and a resumed transcript's mentions still point at the right files.
 //
 // The copy is a convenience for the agent, not a trusted source: it is
 // agent-writable. Translation (attachment-translation.ts) re-checks a copy's
@@ -32,7 +33,8 @@
 //
 // Best-effort: a list failure, a missing blob or a failed copy is logged and
 // skipped, never fatal. A skipped upload stays out of `known`, so the next call
-// tries it again, and translation degrades it to a "could not be loaded" line.
+// tries it again (under the same name), and translation degrades it to a
+// "could not be loaded" line until then.
 // ---------------------------------------------------------------------------
 
 import { constants as fsConstants, promises as fs } from 'node:fs';
@@ -161,19 +163,48 @@ function entryPath(dir: string, name: string): string {
   return dest;
 }
 
-/** Copy `src` to the first free name for `base` in `dir`; null if none is free. */
-async function copyUnderFreeName(src: string, dir: string, base: string): Promise<string | null> {
-  for (let n = 1; n <= MAX_COLLISION; n += 1) {
-    const dest = entryPath(dir, n === 1 ? base : collisionName(base, n));
+/**
+ * The first name for `base`, from collision number `from` on, that no upload
+ * has claimed: `base` itself for n = 1, then `collisionName(base, n)`. Null
+ * when every number up to MAX_COLLISION is taken.
+ */
+function nextUnclaimedName(
+  base: string,
+  claimed: ReadonlySet<string>,
+  from: number,
+): { name: string; n: number } | null {
+  for (let n = from; n <= MAX_COLLISION; n += 1) {
+    const name = n === 1 ? base : collisionName(base, n);
+    if (!claimed.has(name)) return { name, n };
+  }
+  return null;
+}
+
+/**
+ * Copy `src` into `dir` under `slot`, or, when that entry already exists on
+ * disk, under the next unclaimed name. Every name tried is added to `claimed`.
+ * Null if none is free.
+ */
+async function copyUnderFreeName(
+  src: string,
+  dir: string,
+  base: string,
+  slot: { name: string; n: number },
+  claimed: Set<string>,
+): Promise<string | null> {
+  let current: { name: string; n: number } | null = slot;
+  while (current !== null) {
+    const dest = entryPath(dir, current.name);
     try {
       // Exclusive create: fails with EEXIST on any existing entry, including a
       // symlink, so a planted link is never followed and nothing is replaced.
       await fs.copyFile(src, dest, fsConstants.COPYFILE_EXCL);
       return dest;
     } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === 'EEXIST') continue;
-      throw err;
+      if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
     }
+    current = nextUnclaimedName(base, claimed, current.n + 1);
+    if (current !== null) claimed.add(current.name);
   }
   return null;
 }
@@ -209,14 +240,31 @@ export async function materializeUploads(opts: MaterializeUploadsOptions): Promi
     return;
   }
 
-  // In list order, so names come out the same however the list is replayed.
+  // Names are handed out over the whole list, in list order, from one set of
+  // claimed names: every name a copy already holds, plus the name each earlier
+  // file in this list was given. A file claims its name BEFORE its bytes are
+  // fetched and keeps the claim when the fetch fails, so a missing blob never
+  // shifts the names after it: B gets the name it gets on a fresh pod that has
+  // every blob, and A's later retry gets A's. (The only deviation is a name the
+  // agent has since taken on disk: the exclusive create refuses it and the
+  // copy moves on to the next unclaimed name.)
+  const claimed = new Set<string>();
+  for (const upload of opts.known.values()) claimed.add(path.basename(upload.path));
+
   for (const file of files) {
     if (opts.known.has(file.attachmentId)) continue;
+    const base = sanitizeUploadName(file.filename);
+    const slot = nextUnclaimedName(base, claimed, 1);
+    if (slot === null) {
+      opts.warn(`runner: no free name for upload ${file.attachmentId} in ${dir}`);
+      continue;
+    }
+    claimed.add(slot.name);
     let tempPath: string | undefined;
     try {
       const got = await opts.client.callBinary('blob.get', { sha256: file.sha256 });
       tempPath = got.path;
-      const dest = await copyUnderFreeName(tempPath, dir, sanitizeUploadName(file.filename));
+      const dest = await copyUnderFreeName(tempPath, dir, base, slot, claimed);
       if (dest === null) {
         opts.warn(`runner: no free name for upload ${file.attachmentId} in ${dir}`);
         continue;
