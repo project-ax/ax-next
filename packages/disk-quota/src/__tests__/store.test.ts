@@ -104,8 +104,21 @@ describe('upsertUsage', () => {
     // The narrow table really does refuse the new kind (the test's own premise).
     await expect(store.upsertUsage('alice', agentFilesSource('agt_1'), 'agent-files', 1)).rejects.toThrow();
 
+    const kindCheckOid = async (): Promise<string> => {
+      const r = await sql<{ oid: string }>`
+        SELECT oid::text AS oid FROM pg_constraint
+         WHERE conrelid = 'disk_quota_v1_usage'::regclass
+           AND conname = 'disk_quota_v1_usage_kind_check'
+      `.execute(db);
+      return r.rows[0]!.oid;
+    };
     await runDiskQuotaMigration(db);
+    const widened = await kindCheckOid();
     await runDiskQuotaMigration(db);
+    // "Once": a second boot leaves the widened constraint alone. A migration
+    // that dropped and re-added it every boot (a table lock and a full rescan
+    // on every host start) would give it a new oid here.
+    expect(await kindCheckOid()).toBe(widened);
 
     await store.upsertUsage('alice', agentFilesSource('agt_1'), 'agent-files', 5 * MB);
     expect((await store.usageFor('alice')).workspaceBytes).toBe(5 * MB);

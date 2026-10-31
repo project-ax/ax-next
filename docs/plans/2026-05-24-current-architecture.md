@@ -531,10 +531,14 @@ and consumer. Treat their *shape* as a contract; changing it is a boundary revie
   - **A refusal for a full disk carries a code.** The veto is `Rejection.code:
     'storage-full'`, which both `@ax/core` facades forward as
     `PluginError.reasonCode` (`code` stays `'rejected'`). The Rules,
-    agent-identity and routines routes key on `reasonCode`, never on the sentence
-    or the plugin name, and answer `413 { error: 'storage-full', message }` (the
-    chat send and skills routes had their own 413s already). The fail-closed
-    "could not check your storage" refusal has no code.
+    agent-identity and routines routes that used to key on it no longer write
+    through the storage limit (TASK-989), so the routes that still answer
+    `413 { error: 'storage-full', message }` are the chat send (an attachment)
+    and the skills routes. `@ax/ipc-core`'s `blob.put` keys on `reasonCode` to
+    give the AGENT its own fixed sentence (TASK-993): don't delete or move files
+    on your own; tell the person they can ask you to clean up specific files, or
+    ask an admin. The fail-closed "could not check your storage" refusal has no
+    code.
 
 ### Stable — covered by ARCH-13's long-tail rollout
 

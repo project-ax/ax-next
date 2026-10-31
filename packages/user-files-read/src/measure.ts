@@ -55,6 +55,11 @@ import { assertWalkPlatform, errnoOf, fdPath } from './walk-read.js';
 // KNOWN RESIDUAL. An agent can remove read/search permission from its own
 // folders and hide what is in them. The reading is then partial (and the
 // caller logs that), and the export's capacity alert is the backstop.
+// Also: on a filesystem whose directory entries come back with an unknown type
+// (DT_UNKNOWN), Node's `Dir.read()` lstats each entry synchronously on the
+// event loop, and an entry deleted in that window rejects the whole read. Linux
+// NFS normally fills in entry types (READDIRPLUS), and the /files reader has
+// the same exposure.
 // ---------------------------------------------------------------------------
 
 export interface UsageWalkLimits {
