@@ -50,14 +50,16 @@ is validated to `^[A-Za-z0-9_-]+$` (the base64url alphabet — single segment, n
 
 ## Network capability
 
-The realized NFS mount is a **new outbound network capability** for the sandbox:
-the runner pod must reach the Filestore server on NFS (TCP/UDP `:2049`) and
-rpcbind (`:111`). This is a deliberate, documented widening of the otherwise
-locked-down runner egress, scoped in the deploy chart's `sandbox-restrict`
-NetworkPolicy to the **single Filestore IP on those two ports only** — not a CIDR,
-not the internet. See `deploy/charts/ax-next/templates/networkpolicies/sandbox-restrict.yaml`.
-A Filestore server-unreachable failure surfaces as a sandbox-open error, not a
-silent hang (design §9).
+The realized mount is an inline `nfs:` pod volume, and the **kubelet** mounts it
+from the node's network namespace. The runner pod itself gets **no** NFS egress
+(TASK-1003): a runner that could open its own NFS connection could mount the
+whole export and step around its per-agent `subPath`. Only the one-shot
+user-files pods keep egress to the single Filestore IP on `:2049` and `:111`
+(the chart's `-userfiles-nfs` NetworkPolicy in
+`deploy/charts/ax-next/templates/networkpolicies/sandbox-restrict.yaml`). On GKE
+the export also admits only the cluster's node IP range (`deploy/GKE.md`,
+"Restrict the user-files export to the nodes"). A Filestore server-unreachable
+failure surfaces as a sandbox-open error, not a silent hang (design §9).
 
 ## Supply chain
 

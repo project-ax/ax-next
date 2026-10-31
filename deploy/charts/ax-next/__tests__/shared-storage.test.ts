@@ -17,7 +17,7 @@ type Doc = { kind: string; metadata: { name: string; namespace?: string }; spec:
   template: { spec: { hostNetwork: boolean; hostPID: boolean; runtimeClassName?: string; containers: Container[]; volumes: Volume[] } };
   ingress: { from: { namespaceSelector: { matchLabels: Record<string, string> } }[]; ports: Port[] }[];
   egress: { ports: Port[] }[];
-  podSelector: { matchExpressions?: { key: string; operator: string }[] };
+  podSelector: { matchLabels?: Record<string, string>; matchExpressions?: { key: string; operator: string }[] };
 }; rules?: { apiGroups: string[]; resources: string[]; verbs: string[] }[] };
 const render = (extra: string[] = []): Doc[] => loadAll(execFileSync('helm', [...base, ...extra],
   { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 32 * 1024 * 1024 })).filter(Boolean) as Doc[];
@@ -72,7 +72,11 @@ describe('shared storage deployment', () => {
     const runners = docs.find(d => d.kind === 'NetworkPolicy' && d.metadata.name.endsWith('sandbox-restrict'))!;
     expect(runners.spec.egress.flatMap(r => r.ports).map(p => p.port)).not.toContain(9443);
     expect(runners.spec.egress.flatMap(r => r.ports).map(p => p.port)).not.toContain(2049);
-    const cold = docs.find(d => d.kind === 'NetworkPolicy' && d.metadata.name.endsWith('cold-nfs'))!;
-    expect(cold.spec.podSelector.matchExpressions).toEqual([{ key: 'ax.io/shared-standby', operator: 'DoesNotExist' }]);
+    // TASK-1003: only the one-shot user-files pods keep NFS egress; no runner,
+    // standby or cold, matches it (the old `-cold-nfs` policy matched cold runners).
+    expect(docs.some(d => d.kind === 'NetworkPolicy' && d.metadata.name.endsWith('cold-nfs'))).toBe(false);
+    const nfs = docs.find(d => d.kind === 'NetworkPolicy' && d.metadata.name.endsWith('userfiles-nfs'))!;
+    expect(nfs.spec.podSelector.matchLabels).toEqual({ 'ax.io/plane': 'execution', 'app.kubernetes.io/component': 'ax-next-userfiles' });
+    expect(nfs.spec.podSelector.matchExpressions).toEqual([{ key: 'ax.io/shared-standby', operator: 'DoesNotExist' }]);
   });
 });

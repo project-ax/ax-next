@@ -124,9 +124,13 @@ needs to be redone. Don't loosen this without a fresh threat-model pass.
 
 ## NetworkPolicies — what crosses
 
-Two policies, both gated by `.Values.networkPolicies.enabled` (default
-`true`). Default-on means a typo in values misses the perimeter; we accept
-that over the alternative (default-off and an operator forgets to flip it).
+The three policies below are gated by `.Values.networkPolicies.enabled`
+(default `true`). Default-on means a typo in values misses the perimeter; we
+accept that over the alternative (default-off and an operator forgets to flip
+it). The chart can render others too: the shared-pool storage helper's
+`-storage` (gated by `sandbox.sharedPool.enabled` alone) and the experimental
+git-server policy (gated by `networkPolicies.enabled` and `gitServer.enabled`).
+See their templates.
 
 ### `sandbox-restrict.yaml` — runner pod fence
 
@@ -144,6 +148,26 @@ Applies to pods labeled `ax.io/plane: execution` in
 - **Egress denied to:** the broader cluster, the k8s apiserver, the public
   internet. Tools that need network reach (npm install, curl) WILL fail
   until the web-proxy lands in Week 10+. That's by design.
+- **No NFS, on purpose (TASK-1003).** A runner's `/files` and `/memory` are
+  inline `nfs:` volumes. The kubelet mounts them from the node's network
+  namespace, so the runner pod itself never needs to speak NFS. If it could,
+  it could mount the whole export and skip its per-agent `subPath`.
+
+### `-userfiles-nfs` (in `sandbox-restrict.yaml`) — one-shot file pods only
+
+Selects `ax.io/plane: execution` **and**
+`app.kubernetes.io/component: ax-next-userfiles` (and never a shared-pool
+standby). Those are the short-lived pods `@ax/sandbox-k8s` runs to read or
+clean up an agent's files when the host has no read mount. They keep egress to
+the single Filestore IP (a `/32`) on 2049 and 111, TCP and UDP. Runner pods
+carry `component: ax-next-runner`, so they do not match. NetworkPolicies only
+add allows, so this selector is the whole fence. The chart tests read both
+labels out of the sandbox-k8s source, so a relabel fails there first.
+
+On GKE the export itself can be the second layer, once an operator applies
+`deploy/GKE.md`, "Restrict the user-files export to the nodes": it then admits
+only the cluster's node IP range, so an NFS connection from a pod IP is refused
+even if a policy ever lets it out. The chart cannot check that this was done.
 
 ### `agent-runtime-network.yaml` — host pod fence
 
