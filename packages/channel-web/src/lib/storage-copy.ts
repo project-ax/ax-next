@@ -7,12 +7,10 @@
  *
  * The reader is a person who wants to know if they can keep working, or an
  * admin deciding how much room to give everyone. So: plain sentences, no
- * jokes, and no advice we cannot stand behind. In particular NOTHING here
- * tells a person to delete anything. Deleting a whole agent does give its
- * workspace back, but that throws the agent away, and no smaller chore helps
- * (files stay in the history; attachments and artifacts cannot be deleted), so
- * "delete some files" would be a false promise. What is true is: ask an admin
- * for more room.
+ * jokes, and no advice we cannot stand behind. There is no delete button, and
+ * nothing here tells a person to delete or remove anything themselves. What is
+ * true: the agent can tidy up files it no longer needs (ask it, in chat; chat
+ * keeps working when storage is full), and an admin can raise the limit.
  */
 import {
   STORAGE_LIMIT_BOUNDS,
@@ -179,10 +177,10 @@ export function statusLabel(status: StorageStatus): string {
 
 export const NEAR_LIMIT_TITLE = "You're getting close to your limit";
 export const NEAR_LIMIT_BODY =
-  "Once it's full, new file changes and uploads won't be saved. Ask an admin for more room before that happens.";
+  "Once it's full, new uploads and published files won't be saved. To make room, ask your agent to clean up files it no longer needs, or ask an admin for more room.";
 export const FULL_TITLE = 'Your storage is full';
 export const FULL_BODY =
-  "Nothing new can be saved right now, including changes to your agents' files and new uploads, and new messages are held until there's more room. Ask an admin for more room.";
+  "New uploads and published files can't be saved until there's room. You can keep chatting. To make room, ask your agent to clean up files it no longer needs, or ask an admin for more room.";
 
 /**
  * The default for a message the server turned away because the attachment
@@ -192,17 +190,7 @@ export const FULL_BODY =
  * promise the draft or the files are still there: that depends on the screen.
  */
 export const STORAGE_FULL_SEND =
-  "We couldn't send that message because your storage is full. Nothing new can be saved right now, including uploads. Ask an admin for more room, then try again.";
-
-/**
- * The same refusal on the two saves that are not a message: the Rules editor
- * and the agent form's identity fields (TASK-719). The HOST sends these
- * sentences (`413 storage-full`), and `lib/storage-full.ts` prefers what it
- * sent; these are what a person reads if it is missing. They live in a file of
- * their own only because the host has to import the same words and cannot
- * import this one (see `storage-full-copy.ts`).
- */
-export { STORAGE_FULL_IDENTITY, STORAGE_FULL_RULES } from './storage-full-copy';
+  "We couldn't send that message because your storage is full, so its attachment couldn't be saved. Messages without attachments still go through. To make room, ask your agent to clean up files it no longer needs, or ask an admin for more room.";
 
 // ---------------------------------------------------------------------------
 // Limits

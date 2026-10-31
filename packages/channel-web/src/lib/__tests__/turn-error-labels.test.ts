@@ -72,11 +72,9 @@ describe('turnErrorText — usage limits (TASK-692)', () => {
 });
 
 /*
-  The storage limit's front door (TASK-690). @ax/disk-quota vetoes a turn at
-  `chat:start` with the reason `storage-full` once a person's storage is full,
-  so the sentence lives here. It must not promise a remedy that does not exist:
-  only deleting a whole agent gives space back (no smaller chore does), so it
-  says "ask an admin".
+  The storage limit's old front door (TASK-690). No longer emitted live since
+  TASK-993 (chat is never turned away); the label stays so a refusal persisted
+  before then replays as itself (the TASK-806 pattern).
 */
 describe('turnErrorText — storage full (TASK-690)', () => {
   const code = 'chat:start:storage-full';

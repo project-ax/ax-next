@@ -1,9 +1,10 @@
 /**
  * The one refusal a person meets from a route about storage (TASK-690):
  * `413 { error: 'storage-full', message }`, answered when a write would put
- * them over their limit. First the SEND route (committing an attachment), then,
- * in TASK-719, the two saves that go through `workspace:apply`: the Rules
- * editor and the agent form's identity fields.
+ * them over their limit. Since TASK-989 and TASK-993 only the SEND route
+ * (committing an attachment) answers it: the Rules editor and the agent form's
+ * identity fields no longer go through the storage limit, and chat itself is
+ * never turned away.
  *
  * `workspaceApi.sendMessage` used to turn every non-ok status into a bare
  * `HttpError`, which is all a status can say: a 413 read as "we could not reach
@@ -41,10 +42,9 @@ export class StorageFullError extends HttpError {
  *
  * `fallback` is the sentence to wear when the server sent none. It defaults to
  * the one about a MESSAGE that did not send, which is only true on the send
- * path; every other surface names its own (`STORAGE_FULL_RULES`,
- * `STORAGE_FULL_IDENTITY`), because "we couldn't send that message" under a
- * Save button would be a lie of its own. Reads the body, so a caller that still
- * wants it afterwards passes `res.clone()`.
+ * path; any other surface would name its own, because "we couldn't send that
+ * message" under a Save button would be a lie of its own. Reads the body, so a
+ * caller that still wants it afterwards passes `res.clone()`.
  */
 export async function readStorageFull(
   path: string,
@@ -63,10 +63,10 @@ export async function readStorageFull(
 
 /**
  * The same recognition as `readStorageFull`, for a caller that has ALREADY read
- * the body and cannot read it twice (`lib/routines.ts` reads its error body once
- * and decides what it says from that: the refusal, a string reason, or an object
- * message). One rule for what "the storage refusal" looks like, so a second
- * reader cannot grow its own idea of it: 413, and `error === 'storage-full'`.
+ * the body and cannot read it twice. (Routines used to be that caller; they no
+ * longer read this refusal, so today only `readStorageFull` reaches it.) One
+ * rule for what "the storage refusal" looks like, so a second reader cannot
+ * grow its own idea of it: 413, and `error === 'storage-full'`.
  */
 export function storageFullFromBody(
   path: string,

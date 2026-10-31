@@ -55,12 +55,12 @@ describe('the refusal sentences', () => {
     );
   });
 
-  it('the upload one names the numbers and points at an admin', () => {
+  it('the upload one names the numbers and points at the agent and an admin', () => {
     const m = blobFullMessage(1.5 * GB, 2 * GB);
-    expect(m).toBe(
-      "You've used all of your storage (1.5 GB of 2 GB), so that file wasn't saved. " +
-        'An admin can make more room, and then you can try again.',
-    );
+    expect(m).toContain('1.5 GB of 2 GB');
+    expect(m).toMatch(/ask your agent to clean up files it no longer needs/i);
+    expect(m).toMatch(/ask an admin for more room/i);
+    expect(m).toMatch(/try again/i);
   });
 
   it('the unavailable one asks for a retry and names no numbers', () => {
@@ -70,13 +70,11 @@ describe('the refusal sentences', () => {
     expect(STORAGE_UNAVAILABLE_MESSAGE).not.toMatch(/\d/);
   });
 
-  it('none of them tells anyone to delete anything (no small chore makes room)', () => {
-    for (const m of [
-      workspaceFullMessage(MB, MB),
-      blobFullMessage(MB, MB),
-      STORAGE_UNAVAILABLE_MESSAGE,
-    ]) {
-      expect(m.toLowerCase()).not.toMatch(/delet|remove some|free up|clean/);
-    }
+  it('the upload sentence never tells a person to delete or remove anything', () => {
+    expect(blobFullMessage(MB, MB).toLowerCase()).not.toMatch(/delet|remov/);
+  });
+
+  it('the unavailable one never tells a person to delete anything', () => {
+    expect(STORAGE_UNAVAILABLE_MESSAGE.toLowerCase()).not.toMatch(/delet|remov|clean/);
   });
 });

@@ -6,8 +6,6 @@ import {
   NEAR_LIMIT_TITLE,
   FULL_BODY,
   FULL_TITLE,
-  STORAGE_FULL_IDENTITY,
-  STORAGE_FULL_RULES,
   STORAGE_FULL_SEND,
   UNUSED_FILES_FAILED,
   UNUSED_FILES_NOT_CHECKED,
@@ -167,23 +165,31 @@ describe('the sentences a person reads', () => {
     ['full title', FULL_TITLE],
     ['full body', FULL_BODY],
     ['storage-full send refusal', STORAGE_FULL_SEND],
-    ['storage-full rules refusal', STORAGE_FULL_RULES],
-    ['storage-full identity refusal', STORAGE_FULL_IDENTITY],
   ];
 
-  it('says what the status is, what happens at the limit, and who can help', () => {
+  it('says what the status is and what happens at the limit', () => {
     expect(NEAR_LIMIT_TITLE).toBe("You're getting close to your limit");
     expect(NEAR_LIMIT_BODY).toMatch(/won't be saved/);
-    expect(NEAR_LIMIT_BODY).toMatch(/ask an admin for more room/i);
     expect(FULL_TITLE).toBe('Your storage is full');
-    expect(FULL_BODY).toMatch(/nothing new can be saved/i);
-    expect(FULL_BODY).toMatch(/ask an admin for more room/i);
+    expect(FULL_BODY).toMatch(/can't be saved until there's room/i);
   });
 
-  it.each(sentences)('%s never tells anyone to delete anything', (_name, text) => {
-    // Only deleting a whole agent frees space, and no smaller chore does, so
-    // that advice would be a false promise.
-    expect(text).not.toMatch(/\b(delet|remov|clear|clean|free up|free some|make (some )?space|tidy)/i);
+  it.each(sentences)('%s never tells a person to delete or remove anything', (_name, text) => {
+    // There is no delete button. The remedy is to ask the agent to tidy up its
+    // own files, or to ask an admin for more room.
+    expect(text).not.toMatch(/\b(delet|remov)/i);
+  });
+
+  it('the near-limit, full and send sentences point at the agent and an admin', () => {
+    for (const text of [NEAR_LIMIT_BODY, FULL_BODY, STORAGE_FULL_SEND]) {
+      expect(text).toMatch(/ask your agent to clean up files it no longer needs/i);
+      expect(text).toMatch(/ask an admin for more room/i);
+    }
+  });
+
+  it('the full notice says chat still works', () => {
+    expect(FULL_BODY).toMatch(/keep chatting/i);
+    expect(FULL_BODY).not.toMatch(/held|turned away/i);
   });
 
   it.each(sentences)('%s uses no jargon', (_name, text) => {
@@ -192,27 +198,8 @@ describe('the sentences a person reads', () => {
 
   it('the storage-full refusal says the message was not sent, and who can help', () => {
     expect(STORAGE_FULL_SEND).toMatch(/storage is full/i);
-    expect(STORAGE_FULL_SEND).toMatch(/ask an admin for more room/i);
-  });
-
-  /*
-    TASK-719. Each one names what did NOT get saved, why, and who can help, and
-    says nothing more than the code behind it can promise. The identity one is
-    the delicate one: it says the AGENT was saved (true only because the form
-    creates or patches it first) and that the IDENTITY was not, and it points at
-    the edit screen rather than at "Save again", which on a brand-new agent
-    would make a second agent.
-  */
-  it('the rules refusal says the rules were not saved, why, and who can help', () => {
-    expect(STORAGE_FULL_RULES).toBe(
-      "We couldn't save your rules because your storage is full. An admin can make more room, then you can try again.",
-    );
-  });
-
-  it('the identity refusal says the agent was saved, its identity was not, and who can help', () => {
-    expect(STORAGE_FULL_IDENTITY).toBe(
-      "The agent was saved, but its identity wasn't, because storage is full. An admin can make more room, then you can edit the agent and save its identity again.",
-    );
+    expect(STORAGE_FULL_SEND).toMatch(/couldn't send that message/i);
+    expect(STORAGE_FULL_SEND).toMatch(/without attachments still go through/i);
   });
 
   it('carry no number, so nothing can go stale when the limit changes', () => {

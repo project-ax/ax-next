@@ -83,14 +83,10 @@ export const ERROR_LABELS: Record<string, string> = {
   // it holds the message rather than let an unmetered turn through.
   'chat:start:usage-check-unavailable':
     "We couldn't check your usage just now, so we held this message to be safe. Try again in a moment.",
-  // TASK-690 — the storage limit's front door. Files an agent writes are
-  // checked when they are saved, but the runner's end-of-turn save happens
-  // AFTER the reply is shown, so a refusal there would be silent. @ax/disk-quota
-  // therefore also vetoes the turn at `chat:start` once a person's storage is
-  // full, and this is what they read. It never says "delete something": only
-  // deleting a whole agent gives space back (no smaller chore does), so the
-  // one true next step for most people is an admin. The settings side is
-  // `components/admin/StorageTab.tsx`.
+  // TASK-690 — the storage limit's old front door. No longer emitted live
+  // since TASK-993: chat is never turned away for a full store. Kept so a
+  // refusal persisted before then replays as itself (the TASK-806 pattern).
+  // The settings side is `components/admin/StorageTab.tsx`.
   'chat:start:storage-full':
     'Your storage is full, so nothing new can be saved right now. Ask an admin for more room, then try again.',
   // TASK-784 — the runner exited with its fatal code before the turn ended:
