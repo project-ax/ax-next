@@ -13,9 +13,10 @@ export function agentFilesSource(agentId: string): string {
 
 export interface OwnerUsage {
   /**
-   * Bytes held by the owner's agents: their `/files` (kind `agent-files`) and,
-   * until TASK-995, their git workspaces (kind `workspace`). Shown to people as
-   * "Agent files".
+   * Bytes held by the owner's agents: their `/files` (kind `agent-files`).
+   * Shown to people as "Agent files". The name is older than the figure: it
+   * also counted git workspaces until TASK-995, and it stays because it is the
+   * wire name the storage routes answer with.
    */
   workspaceBytes: number;
   /** Bytes of the owner's uploaded and published files (blobs). */
@@ -37,24 +38,24 @@ export interface DiskQuotaStore {
   /**
    * Record that `source` holds `bytes` for `ownerId`. Idempotent: the same
    * (owner, source) is ONE row whose bytes are replaced, never added to, so
-   * re-putting the same blob or re-measuring a workspace cannot double count.
+   * re-putting the same blob or re-measuring an agent's files cannot double
+   * count.
    */
   upsertUsage(ownerId: string, source: string, kind: UsageKind, bytes: number): Promise<void>;
   /**
-   * Drop the workspace row for `agentId`, whichever owner it is charged to (a
-   * team agent's row sits under `team:<id>`, a fallback-charged one under the
-   * acting user), and resolve how many rows went. Keyed on the AGENT alone on
-   * purpose: the agent is already deleted, so nobody can ask who owned it.
-   * Blob rows are never touched. Idempotent: a second call returns 0.
-   */
-  deleteWorkspaceUsage(agentId: string): Promise<number>;
-  /**
    * Drop the `agent-files:<agentId>` row for `agentId`, whichever owner it is
-   * charged to, and resolve how many rows went (TASK-993). Keyed on the AGENT
-   * alone, like deleteWorkspaceUsage, and for the same reason. Rows of any
-   * other kind are never touched. Idempotent: a second call returns 0.
+   * charged to (a team agent's row sits under `team:<id>`), and resolve how
+   * many rows went (TASK-993). Keyed on the AGENT alone on purpose: the agent
+   * is already deleted, so nobody can ask who owned it. Rows of any other kind
+   * are never touched. Idempotent: a second call returns 0.
    */
   deleteAgentFilesUsage(agentId: string): Promise<number>;
+  /**
+   * The owner's agent files and uploads. Only those two kinds count: a
+   * `workspace` row (the retired git tier) is not charged to anyone. Boot
+   * deletes those rows anyway (migrations.ts), so they never reach the
+   * ordering or the totals below either.
+   */
   usageFor(ownerId: string): Promise<OwnerUsage>;
   /** The biggest owners first (by agent + file bytes, ties by id). */
   topOwners(limit: number): Promise<OwnerUsageRow[]>;
@@ -127,21 +128,11 @@ export function createDiskQuotaStore(db: Kysely<DiskQuotaDatabase>): DiskQuotaSt
         .execute();
     },
 
-    async deleteWorkspaceUsage(agentId) {
+    async deleteAgentFilesUsage(agentId) {
       // Plain equality on the whole source, not LIKE: the agent id is data, so a
       // `%` or `_` in it must not reach a neighbour's row. The primary key leads
       // with `owner_id`, so this is a scan of a small table; an agent delete is
       // rare and nobody waits on it, so it does not earn an index of its own.
-      const res = await db
-        .deleteFrom('disk_quota_v1_usage')
-        .where('source', '=', `workspace:${agentId}`)
-        .where('kind', '=', 'workspace')
-        .executeTakeFirst();
-      return Number(res.numDeletedRows);
-    },
-
-    async deleteAgentFilesUsage(agentId) {
-      // Plain equality, not LIKE, for the same reason as deleteWorkspaceUsage.
       const res = await db
         .deleteFrom('disk_quota_v1_usage')
         .where('source', '=', agentFilesSource(agentId))
@@ -153,7 +144,7 @@ export function createDiskQuotaStore(db: Kysely<DiskQuotaDatabase>): DiskQuotaSt
     async usageFor(ownerId) {
       const res = await sql<{ workspace_bytes: string | null; file_bytes: string | null }>`
         SELECT
-          SUM(bytes) FILTER (WHERE kind IN ('workspace', 'agent-files')) AS workspace_bytes,
+          SUM(bytes) FILTER (WHERE kind = 'agent-files') AS workspace_bytes,
           SUM(bytes) FILTER (WHERE kind = 'blob') AS file_bytes
         FROM disk_quota_v1_usage
         WHERE owner_id = ${ownerId}
@@ -171,7 +162,7 @@ export function createDiskQuotaStore(db: Kysely<DiskQuotaDatabase>): DiskQuotaSt
       }>`
         SELECT
           owner_id,
-          SUM(bytes) FILTER (WHERE kind IN ('workspace', 'agent-files')) AS workspace_bytes,
+          SUM(bytes) FILTER (WHERE kind = 'agent-files') AS workspace_bytes,
           SUM(bytes) FILTER (WHERE kind = 'blob') AS file_bytes
         FROM disk_quota_v1_usage
         GROUP BY owner_id

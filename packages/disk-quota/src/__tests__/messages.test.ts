@@ -1,10 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import {
-  blobFullMessage,
-  formatBytes,
-  STORAGE_UNAVAILABLE_MESSAGE,
-  workspaceFullMessage,
-} from '../messages.js';
+import { blobFullMessage, formatBytes, STORAGE_UNAVAILABLE_MESSAGE } from '../messages.js';
 
 const MB = 1024 * 1024;
 const GB = 1024 * MB;
@@ -46,15 +41,6 @@ describe('formatBytes', () => {
 });
 
 describe('the refusal sentences', () => {
-  it('the workspace one names the numbers, says the changes were removed, and points at an admin', () => {
-    const m = workspaceFullMessage(1024 * MB, 1024 * MB);
-    expect(m).toBe(
-      'The storage limit has been reached (1 GB of 1 GB used), so this turn\'s file changes were not saved and have been removed. ' +
-        "Please don't try to save them again. " +
-        'Let the person know their storage is full and that an admin can make more room.',
-    );
-  });
-
   it('the upload one names the numbers and points at the agent and an admin', () => {
     const m = blobFullMessage(1.5 * GB, 2 * GB);
     expect(m).toContain('1.5 GB of 2 GB');
@@ -72,12 +58,6 @@ describe('the refusal sentences', () => {
 
   it('the upload sentence never tells a person to delete or remove anything', () => {
     expect(blobFullMessage(MB, MB).toLowerCase()).not.toMatch(/delet|remov/);
-  });
-
-  it('the git-save one still never tells anyone to delete anything (TASK-995 rewrites it)', () => {
-    expect(workspaceFullMessage(MB, MB).toLowerCase()).not.toMatch(
-      /delet|remove some|free up|clean/,
-    );
   });
 
   it('the unavailable one never tells a person to delete anything', () => {

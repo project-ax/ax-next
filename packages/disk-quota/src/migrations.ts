@@ -6,8 +6,8 @@ import { sql, type ColumnType, type Kysely } from 'kysely';
  * place. No foreign keys into other plugins' tables: `owner_id` is either the
  * auth provider's opaque user id or `team:<id>`, and a usage row must survive
  * whatever another plugin does to its own rows. Three things remove a usage row:
- *   - a `workspace:deleted` notice (the agent's repo is gone, so its bytes are
- *     free) drops that agent's `workspace:<agentId>` row for every owner;
+ *   - every boot drops every `workspace` row (TASK-995, see the end of
+ *     runDiskQuotaMigration);
  *   - an `agents:deleted` notice (the agent and its `/files` are gone) drops
  *     that agent's `agent-files:<agentId>` row for every owner (TASK-993);
  *   - the periodic sweep's BLOB PASS (design D6) drops an `(owner,
@@ -24,10 +24,11 @@ import { sql, type ColumnType, type Kysely } from 'kysely';
  * Tables:
  *   disk_quota_v1_usage — one row per (owner, source). `source` is
  *     `agent-files:<agentId>` (kind `agent-files`: everything in that agent's
- *     `/files`, re-measured whole, TASK-993), `workspace:<agentId>` (the whole
- *     git repo, re-measured; the git tier, until TASK-995) or `blob:<sha256>`
- *     (counted once per owner however often it is re-put; a re-put refreshes
- *     `updated_at`, which restarts the grace window). The primary key's
+ *     `/files`, re-measured whole, TASK-993) or `blob:<sha256>` (counted once
+ *     per owner however often it is re-put; a re-put refreshes `updated_at`,
+ *     which restarts the grace window). Kind `workspace` (`workspace:<agentId>`,
+ *     an agent's whole git repo) is the retired git tier: nothing writes it any
+ *     more, and boot deletes what an older release left. The primary key's
  *     `owner_id` prefix serves the per-owner sum; the all-owner admin view and
  *     the blob pass's stale-row scan are each over a small table, so no
  *     further index is added.
@@ -41,7 +42,11 @@ import { sql, type ColumnType, type Kysely } from 'kysely';
  */
 type BigIntColumn = ColumnType<string, number | string, number | string>;
 
-export type UsageKind = 'workspace' | 'blob' | 'agent-files';
+/**
+ * The kinds this release writes. The table's CHECK also admits `workspace`,
+ * the retired git tier (see runDiskQuotaMigration), which nothing writes.
+ */
+export type UsageKind = 'blob' | 'agent-files';
 
 export interface DiskQuotaUsageTable {
   owner_id: string;
@@ -114,4 +119,15 @@ export async function runDiskQuotaMigration<DB>(db: Kysely<DB>): Promise<void> {
       last_seen_at   TIMESTAMPTZ NOT NULL DEFAULT now()
     )
   `.execute(db);
+  // TASK-995: the git workspace tier is gone, and with it everything that
+  // re-measured a `workspace:<agentId>` row or released one when its agent was
+  // deleted. A row left behind would charge its owner for a repo that no
+  // longer exists, forever, and could refuse their uploads. The rows are
+  // derived data, so drop them on every boot: an older release, rolled back
+  // to, re-measures its own, and the next boot of this one drops them again.
+  //
+  // The CHECK above still admits 'workspace', for that rolled-back release:
+  // narrowing it would make its writes fail. Idempotent, and safe for two
+  // replicas at once.
+  await sql`DELETE FROM disk_quota_v1_usage WHERE kind = 'workspace'`.execute(db);
 }

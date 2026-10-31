@@ -247,18 +247,16 @@ export async function main(opts: MainOptions): Promise<number> {
   // Audit log is part of the canary loop.
   plugins.push(auditLogPlugin());
 
-  // Phase 3: validator-skill subscribes to workspace:pre-apply and
-  // vetoes SKILL.md changes with malformed YAML frontmatter. CLI/k8s
-  // parity — same plugin set so dev runs catch the same SKILL.md
-  // shape failures production would.
+  // validator-skill registers `skills:scan`, the content scan @ax/skills runs
+  // on every proposed skill. CLI/k8s parity — same plugin set so dev runs
+  // quarantine the same skills production would.
   plugins.push(createValidatorSkillPlugin());
 
-  // validator-identity's main job (TASK-989) is `identity:scan`: the pure,
+  // validator-identity registers `identity:scan` (TASK-989): the pure,
   // write-time injection check @ax/agents runs on every identity, soul and
   // Instructions save, failing closed without it — so it must load here too,
-  // or no agent identity can be saved in CLI dev. Its legacy second job is a
-  // workspace:pre-apply gate on the retired .ax/ identity files (the runner
-  // no longer reads them; it goes with the git tier).
+  // or no agent identity can be saved in CLI dev. Both validators subscribe
+  // to nothing since TASK-995 removed the git tier and its pre-apply vetoes.
   plugins.push(createValidatorIdentityPlugin());
 
   // TASK-150: validator-service registers `services:validate` — the neutral

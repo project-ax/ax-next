@@ -1,14 +1,13 @@
 // ---------------------------------------------------------------------------
 // The sentences a refused write carries.
 //
-// A refusal's `reason` is PROSE, not a code, and it is shown verbatim: to the
-// agent on the runner-commit path (which relays it to the person), and to the
+// A refusal's `reason` is PROSE, not a code, and it is shown verbatim to the
 // person on the upload paths. So these are written for a non-technical reader.
 //
 // There is no delete button, so a person-facing sentence never says "delete" or
 // "remove". What is true: the agent can clean up files it no longer needs (a
 // person asks it, in chat), and an admin can raise the limit. The upload one
-// says both. The git-tier sentence below is TASK-995's to rewrite.
+// says both.
 // ---------------------------------------------------------------------------
 
 const UNITS = ['B', 'KB', 'MB', 'GB', 'TB'] as const;
@@ -34,21 +33,6 @@ export function formatBytes(n: number): string {
     unit++;
   }
   return `${Number.isInteger(rounded) ? rounded.toFixed(0) : rounded.toFixed(1)} ${UNITS[unit]}`;
-}
-
-/**
- * Model-facing: the agent reads this as the reason its turn's file changes
- * were refused, and relays it. The runner discards refused work (it is not
- * retried), so the sentence says the changes are gone and asks the agent not
- * to try again.
- */
-export function workspaceFullMessage(usedBytes: number, limitBytes: number): string {
-  return (
-    `The storage limit has been reached (${formatBytes(usedBytes)} of ${formatBytes(limitBytes)} used), ` +
-    "so this turn's file changes were not saved and have been removed. " +
-    "Please don't try to save them again. " +
-    "Let the person know their storage is full and that an admin can make more room."
-  );
 }
 
 /**

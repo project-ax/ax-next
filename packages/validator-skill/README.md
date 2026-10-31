@@ -1,25 +1,36 @@
 # `@ax/validator-skill`
 
-The `workspace:pre-apply` subscriber that vetoes broken skills before they land in the workspace.
+The safety scan for skills an agent writes.
 
-When the agent writes a `SKILL.md` file under `.ax/draft-skills/<name>/`, this plugin parses the YAML frontmatter at the top and checks that `name` and `description` are present and non-empty. If they aren't, the apply gets vetoed with a clear reason — the agent sees the rejection in the next turn and (hopefully) tries again with valid frontmatter.
+When an agent proposes a skill (the `skill_propose` tool), `@ax/skills` hands the whole
+bundle's text to `skills:scan` before it stores anything. This plugin answers with a
+verdict: `clean`, or `hit` plus a short reason. A hit doesn't throw the skill away. The
+skill is stored but **quarantined**, so it isn't loaded into the agent's sessions.
 
 ## What it does
 
-- Subscribes to `workspace:pre-apply`.
-- For each `put` change matching `.ax/draft-skills/<name>/SKILL.md`: parse the YAML frontmatter, veto on malformed input.
-- Pass through everything else (other `.ax/` files, deletes, non-SKILL paths).
+- Registers the `skills:scan` service.
+- Scans the SKILL.md frontmatter, the body and every extra file's contents, all joined
+  into one text, so an injection tucked into a helper script is caught too.
+- **Layer 1** is a small set of regexes for the obvious signatures: instruction
+  overrides ("ignore all previous instructions"), a secret headed somewhere it
+  shouldn't go, and hidden or obfuscated text.
+- **Layer 2** asks a fast model, but only when Layer 1 found nothing and
+  `llm:call:anthropic` is loaded. If the model is missing, slow or broken, the scan falls
+  back to the Layer-1 verdict. It never blocks authoring.
 
 ## What it doesn't do
 
-- It doesn't validate skill semantics. A skill named `my-evil-skill` with description `does evil things` passes — semantic validation is a separate concern (and a separate plugin, in Phase 4+).
-- It doesn't validate the body of the SKILL.md, only the frontmatter.
-- It doesn't read the filesystem, make network calls, or spawn processes. It's a pure function of bytes-in to decision-out.
+- It doesn't refuse anything. Accept-and-annotate: the verdict goes back to
+  `@ax/skills`, which decides what a quarantine means.
+- It isn't the security boundary. A skill only gets real reach through the capabilities
+  a person approves (the egress proxy, credential injection, the approval wall). The scan
+  is defense in depth and a signal for the people reviewing skills.
+- It doesn't read the filesystem, open sockets or spawn processes.
 
-## Why so narrow
-
-We wanted the first real `workspace:pre-apply` subscriber to be obviously correct. Frontmatter parsing is small enough to read in one sitting and reason about. Once we have it landing in production, future validators (identity, schema, drift detection) build on the same hook surface — they get the same `.ax/`-filtered FileChange[] and decide allow/veto.
-
-If we tried to do everything in one validator we'd end up with a soup. Better to keep them small and let the bus compose them.
+It used to guard one more door: a veto on agent writes to Claude Agent SDK settings
+files (`.claude/settings.json`, `CLAUDE.md` and friends) in the agent's git workspace.
+That workspace is gone (TASK-995). Those files are now ordinary files in the agent's
+home, and the runner never loads them as settings. See `SECURITY.md`.
 
 See `SECURITY.md` for the threat model.

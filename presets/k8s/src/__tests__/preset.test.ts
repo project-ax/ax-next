@@ -985,7 +985,7 @@ describe('@ax/preset-k8s wiring', () => {
     }
   });
 
-  it('loads @ax/disk-quota next to BOTH gates it depends on: workspace:pre-apply and blob:put (TASK-690)', () => {
+  it('loads @ax/disk-quota next to the gate it depends on: blob:put (TASK-690)', () => {
     const plugins = createK8sPlugins(stubConfig);
     const quota = plugins.find((p) => p.manifest.name === '@ax/disk-quota');
     expect(quota).toBeDefined();
@@ -993,11 +993,8 @@ describe('@ax/preset-k8s wiring', () => {
     // can be sized and nothing can call around the gate.
     expect(quota!.manifest.registers).toEqual([]);
     expect(quota!.manifest.subscribes).toEqual([
-      'workspace:pre-apply',
-      'workspace:applied',
       'blob:pre-put',
       'blob:stored',
-      'workspace:deleted',
       // TASK-993: the agent-files meter (assistant turn end) and its release.
       'chat:turn-end',
       'agents:deleted',
@@ -1012,7 +1009,6 @@ describe('@ax/preset-k8s wiring', () => {
       'auth:require-user',
     ]);
     expect((quota!.manifest.optionalCalls ?? []).map((c) => c.hook)).toEqual([
-      'workspace:usage',
       'agents:resolve',
       'agents:list-personal-owners',
       'auth:get-user',
@@ -1028,23 +1024,14 @@ describe('@ax/preset-k8s wiring', () => {
     }
 
     // The gate is only real if the hooks it subscribes to are FIRED by
-    // something in this preset:
-    //   - blob:pre-put / blob:stored come from the blob:put FACADE, which
-    //     every blob backend registers behind (blob:put-internal). A backend
-    //     that registered a bare blob:put would silently switch the limit off
-    //     for every upload.
-    //   - workspace:pre-apply / workspace:applied come from the @ax/core
-    //     workspace:apply facade (in-process writers) and @ax/ipc-http's
-    //     commit-notify (the runner). Local backend registers the facade.
+    // something in this preset: blob:pre-put / blob:stored come from the
+    // blob:put FACADE, which every blob backend registers behind
+    // (blob:put-internal). A backend that registered a bare blob:put would
+    // silently switch the limit off for every upload.
     const blobBackends = plugins.filter((p) => p.manifest.registers.includes('blob:put'));
     expect(blobBackends).toHaveLength(1);
     expect(blobBackends[0]!.manifest.registers).toContain('blob:put-internal');
-    const ws = plugins.filter((p) => p.manifest.registers.includes('workspace:apply'));
-    expect(ws).toHaveLength(1);
-    expect(ws[0]!.manifest.registers).toContain('workspace:apply-internal');
-    expect(plugins.map((p) => p.manifest.name)).toContain('@ax/ipc-http');
-    // The workspace measurement + owner attribution the plugin uses.
-    expect(ws[0]!.manifest.registers).toContain('workspace:usage');
+    // The owner attribution and the fleet listing the plugin uses.
     expect(plugins.some((p) => p.manifest.registers.includes('agents:resolve'))).toBe(true);
     expect(plugins.some((p) => p.manifest.registers.includes('agents:list-personal-owners'))).toBe(true);
   });
@@ -1562,40 +1549,28 @@ describe('@ax/preset-k8s — routines Phase B core (half-wired window closes her
   });
 });
 
-// Phase 3 conversational-agent-identity (2026-06-03). @ax/validator-identity is
-// a workspace:pre-apply subscriber alongside validator-skill. It gates the agent's writes to its own /agent/.ax/
-// identity files under the bootstrap-window policy. No half-wired window: it
-// loads in the preset here AND is exercised end-to-end through the Phase-3
-// commit-notify canary (acceptance.test.ts boots the full k8s preset, so every
-// workspace:apply runs through this subscriber).
-describe('@ax/preset-k8s — validator-identity (Phase 3)', () => {
+// @ax/validator-identity registers `identity:scan` (TASK-989), the write-time
+// injection check @ax/agents runs on every identity, soul and Instructions save
+// and fails closed without. Its gate on the identity files in the git workspace
+// went with that tier (TASK-995), so it subscribes to nothing and calls nothing.
+describe('@ax/preset-k8s — validator-identity', () => {
   it('@ax/validator-identity is present in the default plugin set', () => {
     const plugins = createK8sPlugins(stubConfig);
     const names = plugins.map((p) => p.manifest.name);
     expect(names).toContain('@ax/validator-identity');
   });
 
-  it('@ax/validator-identity subscribes to workspace:pre-apply', () => {
+  it('registers identity:scan for @ax/agents and nothing else: no calls, no subscriptions', () => {
     const plugins = createK8sPlugins(stubConfig);
     const v = plugins.find((p) => p.manifest.name === '@ax/validator-identity');
     expect(v, '@ax/validator-identity plugin').toBeDefined();
-    expect(v!.manifest.subscribes).toContain('workspace:pre-apply');
-  });
-
-  it('@ax/validator-identity declares workspace:read as an OPTIONAL call (degrades, never crashes bootstrap)', () => {
-    const plugins = createK8sPlugins(stubConfig);
-    const v = plugins.find((p) => p.manifest.name === '@ax/validator-identity');
-    expect(v, '@ax/validator-identity plugin').toBeDefined();
+    expect(v!.manifest.registers).toEqual(['identity:scan']);
     expect(v!.manifest.calls).toEqual([]);
-    expect((v!.manifest.optionalCalls ?? []).map((o) => o.hook)).toContain(
-      'workspace:read',
-    );
-    // The optionalCall must be satisfiable in this preset (a backend registers
-    // workspace:read) so the bootstrap window is actually resolvable in prod.
-    const allRegistered = new Set<string>(
-      plugins.flatMap((p) => p.manifest.registers),
-    );
-    expect(allRegistered.has('workspace:read')).toBe(true);
+    expect(v!.manifest.optionalCalls ?? []).toEqual([]);
+    expect(v!.manifest.subscribes).toEqual([]);
+    // Its one caller is in this preset, so the scan is reachable.
+    const agents = plugins.find((p) => p.manifest.name === '@ax/agents');
+    expect((agents!.manifest.optionalCalls ?? []).map((o) => o.hook)).toContain('identity:scan');
   });
 });
 

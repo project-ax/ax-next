@@ -24,177 +24,27 @@ async function bootstrapWith(plugins: Plugin[]): Promise<Env> {
   return { bus, ctx };
 }
 
-const enc = new TextEncoder();
-
 describe('createValidatorSkillPlugin — manifest', () => {
-  it('registers skills:scan, subscribes workspace:pre-apply, optionalCalls llm only', () => {
+  it('registers skills:scan, subscribes to nothing, optionalCalls llm only', () => {
     const p = createValidatorSkillPlugin();
     expect(p.manifest.name).toBe('@ax/validator-skill');
     expect(p.manifest.registers).toEqual(['skills:scan']);
-    expect(p.manifest.subscribes).toEqual(['workspace:pre-apply']);
+    expect(p.manifest.subscribes).toEqual([]);
     expect(p.manifest.calls).toEqual([]);
     expect((p.manifest.optionalCalls ?? []).map((o) => o.hook).sort()).toEqual([
       'llm:call:anthropic',
     ]);
   });
-});
 
-// ---------------------------------------------------------------------------
-// SDK-config hard veto on workspace:pre-apply (the security boundary, kept).
-//
-// The Claude Agent SDK reads these paths from project root when
-// `settingSources: ['user', 'project']` is enabled. An agent write to any of
-// them escalates SDK behavior. Veto unconditionally. (TASK-74 removed the
-// SKILL.md scan branch from this subscriber — that moved to skills:scan — but
-// the SDK-config veto is unchanged.)
-// ---------------------------------------------------------------------------
-
-describe('SDK-config hard veto (workspace:pre-apply)', () => {
-  const AUDIT_DOC = 'docs/notes/2026-05-17-sdk-setting-sources-audit.md';
-
-  it('allows changes that touch no protected path', async () => {
-    const { bus, ctx } = await bootstrapWith([createValidatorSkillPlugin()]);
-    const decision = await bus.fire('workspace:pre-apply', ctx, {
-      changes: [
-        { path: '.ax/CLAUDE.md', kind: 'put', content: enc.encode('# memory') },
-        { path: '.ax/IDENTITY.md', kind: 'put', content: enc.encode('# id') },
-      ],
-      parent: null,
-      reason: 'turn',
-    });
-    expect(decision.rejected).toBe(false);
-  });
-
-  // Exact-file vetoes.
-  for (const protectedPath of [
-    '.claude/settings.json',
-    '.claude/settings.local.json',
-    '.claude/CLAUDE.md',
-    'CLAUDE.md',
-    'CLAUDE.local.md',
-  ]) {
-    it(`vetoes write to ${protectedPath}`, async () => {
-      const { bus, ctx } = await bootstrapWith([createValidatorSkillPlugin()]);
-      const decision = await bus.fire('workspace:pre-apply', ctx, {
-        changes: [{ path: protectedPath, kind: 'put', content: enc.encode('# whatever') }],
-        parent: null,
-        reason: 'turn',
-      });
-      expect(decision.rejected).toBe(true);
-      if (decision.rejected) {
-        expect(decision.reason).toContain(protectedPath);
-        expect(decision.reason).toContain(AUDIT_DOC);
-        // TASK-287: naming the path is what lets the runner drop this file
-        // instead of the agent's whole turn. The veto itself is unchanged.
-        expect(decision.offendingPaths).toEqual([protectedPath]);
-      }
-    });
-  }
-
-  // Directory-prefix vetoes.
-  for (const { dir, sample } of [
-    { dir: '.claude/agents/', sample: '.claude/agents/some-agent.md' },
-    { dir: '.claude/commands/', sample: '.claude/commands/deploy.md' },
-    { dir: '.claude/rules/', sample: '.claude/rules/style.md' },
-  ]) {
-    it(`vetoes write under ${dir}`, async () => {
-      const { bus, ctx } = await bootstrapWith([createValidatorSkillPlugin()]);
-      const decision = await bus.fire('workspace:pre-apply', ctx, {
-        changes: [{ path: sample, kind: 'put', content: enc.encode('# hostile content') }],
-        parent: null,
-        reason: 'turn',
-      });
-      expect(decision.rejected).toBe(true);
-      if (decision.rejected) {
-        expect(decision.reason).toContain(sample);
-        expect(decision.reason).toContain(AUDIT_DOC);
-        expect(decision.offendingPaths).toEqual([sample]);
-      }
-    });
-  }
-
-  it('TASK-287: names ONLY the refused path out of a mixed batch', async () => {
-    // The realistic turn: the agent wrote some real work and also CLAUDE.md.
-    // Everything the veto does not name survives the rollback.
-    const { bus, ctx } = await bootstrapWith([createValidatorSkillPlugin()]);
-    const decision = await bus.fire('workspace:pre-apply', ctx, {
-      changes: [
-        { path: '.ax/notes/keep.md', kind: 'put', content: enc.encode('notes') },
-        { path: 'CLAUDE.md', kind: 'put', content: enc.encode('# agent-authored') },
-        { path: '.ax/notes/also-keep.md', kind: 'put', content: enc.encode('more') },
-      ],
-      parent: null,
-      reason: 'turn',
-    });
-    expect(decision.rejected).toBe(true);
-    if (decision.rejected) {
-      expect(decision.offendingPaths).toEqual(['CLAUDE.md']);
-    }
-  });
-
-  it('vetoes nested writes under .claude/agents/ subdirectories', async () => {
-    const { bus, ctx } = await bootstrapWith([createValidatorSkillPlugin()]);
-    const decision = await bus.fire('workspace:pre-apply', ctx, {
-      changes: [
-        { path: '.claude/agents/sub/deep/hostile.md', kind: 'put', content: enc.encode('# any depth') },
-      ],
-      parent: null,
-      reason: 'turn',
-    });
-    expect(decision.rejected).toBe(true);
-  });
-
-  it('allows write to .claude/skills/<name>/SKILL.md (skill body is not an SDK-config path)', async () => {
-    const { bus, ctx } = await bootstrapWith([createValidatorSkillPlugin()]);
-    const md = '---\nname: my-skill\ndescription: a useful skill\n---\n';
-    const decision = await bus.fire('workspace:pre-apply', ctx, {
-      changes: [{ path: '.claude/skills/my-skill/SKILL.md', kind: 'put', content: enc.encode(md) }],
-      parent: null,
-      reason: 'turn',
-    });
-    expect(decision.rejected).toBe(false);
-  });
-
-  it('SDK-config deletes are NOT vetoed — only puts', async () => {
-    const { bus, ctx } = await bootstrapWith([createValidatorSkillPlugin()]);
-    const decision = await bus.fire('workspace:pre-apply', ctx, {
-      changes: [
-        { path: '.claude/settings.json', kind: 'delete' },
-        { path: '.claude/agents/foo.md', kind: 'delete' },
-        { path: 'CLAUDE.md', kind: 'delete' },
-      ],
-      parent: null,
-      reason: 'turn',
-    });
-    expect(decision.rejected).toBe(false);
-  });
-
-  it('vetoes when ANY protected SDK-config path is in a mixed batch', async () => {
-    const { bus, ctx } = await bootstrapWith([createValidatorSkillPlugin()]);
-    const decision = await bus.fire('workspace:pre-apply', ctx, {
-      changes: [
-        { path: '.ax/notes.md', kind: 'put', content: enc.encode('# innocent') },
-        { path: '.claude/settings.json', kind: 'put', content: enc.encode('{}') },
-      ],
-      parent: null,
-      reason: 'turn',
-    });
-    expect(decision.rejected).toBe(true);
-    if (decision.rejected) {
-      expect(decision.reason).toContain('.claude/settings.json');
-    }
-  });
-
-  it('does NOT veto .claude-plugin/ (different path entirely)', async () => {
-    const { bus, ctx } = await bootstrapWith([createValidatorSkillPlugin()]);
-    const decision = await bus.fire('workspace:pre-apply', ctx, {
-      changes: [
-        { path: '.claude-plugin/marketplace.json', kind: 'put', content: enc.encode('{}') },
-      ],
-      parent: null,
-      reason: 'turn',
-    });
-    expect(decision.rejected).toBe(false);
+  // TASK-995: the SDK-config veto rode the git workspace's pre-apply event, and
+  // that tier is gone. The bus does not hold a plugin to its manifest, so this
+  // records what init REALLY subscribes to: nothing.
+  it('init subscribes to no event at all', async () => {
+    const bus = new HookBus();
+    const subscribe = vi.spyOn(bus, 'subscribe');
+    await bootstrap({ bus, plugins: [createValidatorSkillPlugin()], config: {} });
+    expect(subscribe.mock.calls.map(([hook, owner]) => `${owner} ${hook}`)).toEqual([]);
+    expect(bus.hasService('skills:scan')).toBe(true);
   });
 });
 

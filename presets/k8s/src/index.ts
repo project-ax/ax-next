@@ -814,17 +814,15 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   // keep audit-log near the storage layer because that's its only call.
   plugins.push(auditLogPlugin());
 
-  // Phase 3: validator-skill subscribes to workspace:pre-apply and
-  // vetoes SKILL.md changes with malformed YAML frontmatter. Push
-  // order isn't load-bearing (kernel sequences subscribers via
-  // manifest), but we keep it adjacent to audit-log because both are
-  // observe-only hook subscribers with no dependencies of their own.
+  // validator-skill registers `skills:scan`, the content scan @ax/skills runs
+  // on every proposed skill (accept-but-annotate: a hit quarantines). Push
+  // order isn't load-bearing; we keep it next to audit-log because both are
+  // small plugins with no dependencies of their own.
   plugins.push(createValidatorSkillPlugin());
-  // validator-identity's main job (TASK-989) is `identity:scan`: the pure,
+  // validator-identity registers `identity:scan` (TASK-989): the pure,
   // write-time injection check @ax/agents runs on every identity, soul and
-  // Instructions save, failing closed without it. Its legacy second job is a
-  // workspace:pre-apply gate on the retired /agent/.ax/ identity files (the
-  // runner no longer reads them; it goes with the git tier).
+  // Instructions save, failing closed without it. Both validators subscribe to
+  // nothing since TASK-995 removed the git tier and its pre-apply vetoes.
   plugins.push(createValidatorIdentityPlugin());
   // TASK-150: validator-service registers `services:validate` — the neutral
   // dev-SERVICE descriptor validator (digest-pin I8, descriptor caps, named
@@ -1050,22 +1048,18 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   plugins.push(createUsageLimitsPlugin());
 
   // ----- 7d. per-owner storage limit (TASK-690, agent files TASK-993) -----
-  // Prod keeps every agent workspace (bare git repos), every agent's `/files`
-  // folder and every uploaded or published file on shared volumes; this is the
-  // ONE per-person budget over all of it: blobs, each agent's `/files`, and
-  // (until TASK-995) git workspaces. GATES the two places that write bytes
-  // the host can refuse: `workspace:pre-apply` (veto; fires on the runner's
-  // commit AND on every in-process workspace:apply) and `blob:pre-put` (veto;
-  // fired by the `blob:put` facade every blob backend registers behind). Fails
-  // CLOSED. `chat:start` is NEVER vetoed: a full person can still talk to their
-  // agent and ask it to tidy up. METERS `blob:stored` (a ledger row per owner
-  // and sha256), `workspace:applied` (re-measures that agent's workspace
-  // through the optional `workspace:usage`, which only the local git backend
-  // registers today) and each assistant `chat:turn-end` (re-measures that
-  // agent's `/files` through `sandbox:user-files-usage`, which @ax/sandbox-k8s
+  // Prod keeps every agent's `/files` folder and every uploaded or published
+  // file on shared volumes; this is the ONE per-person budget over both. GATES
+  // the one write the host can refuse: `blob:pre-put` (veto; fired by the
+  // `blob:put` facade every blob backend registers behind). Fails CLOSED.
+  // `chat:start` is NEVER vetoed: a full person can still talk to their agent
+  // and ask it to tidy up. METERS `blob:stored` (a ledger row per owner and
+  // sha256) and each assistant `chat:turn-end` (re-measures that agent's
+  // `/files` through `sandbox:user-files-usage`, which @ax/sandbox-k8s
   // registers; metered, not write-enforced), plus a periodic sweep that
   // backfills every personal agent. `agents:deleted` drops the agent-files
-  // row. Reuses the shared postgres pool (tables `disk_quota_v1_*`); the limit
+  // row. Its git-workspace gate and meter went with that tier (TASK-995); boot
+  // deletes the rows they left. Reuses the shared postgres pool (tables `disk_quota_v1_*`); the limit
   // lives in the admin-editable `settings:disk-quota` storage key. Mounts GET
   // /settings/storage (a person's own numbers) and GET /admin/storage + PUT
   // /admin/storage/limits, so it hard-depends on http:register-route +

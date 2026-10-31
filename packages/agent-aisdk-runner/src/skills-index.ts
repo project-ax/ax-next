@@ -20,9 +20,9 @@
 //
 // I₃ — SECURITY, the constraint that outranks everything else here:
 // `$CLAUDE_CONFIG_DIR/skills/` is the SOLE discovery path. We never read
-// `.claude/skills/` from the workspace. That directory is AGENT-WRITABLE and
-// pass-through in `@ax/validator-skill` — reading it would let an agent write
-// `.claude/skills/evil/SKILL.md` and have it discovered, walking straight past
+// `.claude/skills/` from the agent's home. That directory is AGENT-WRITABLE,
+// and nothing on the host checks what lands there — reading it would let an
+// agent write `.claude/skills/evil/SKILL.md` and have it discovered, walking straight past
 // the host projection, the quarantine scan, and the `approved_caps`
 // intersection. It is exactly why the claude-sdk runner dropped `'project'`
 // from `settingSources` in Phase 3, and this runner must not reintroduce the

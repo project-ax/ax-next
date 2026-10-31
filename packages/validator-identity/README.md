@@ -1,14 +1,8 @@
 # @ax/validator-identity
 
-Two jobs, one small regex scanner:
-
-1. **`identity:scan`**: the write-time check on an agent's identity, soul and
-   Instructions. `@ax/agents` calls it on every write, whether the agent or a person
-   made it.
-2. **A legacy `workspace:pre-apply` gate** on the agent's identity files under
-   `/agent/.ax/`. Since TASK-989 identity lives in `@ax/agents` and the runner no longer
-   reads those files, so this gate now guards files nobody uses. It goes away with the
-   git workspace.
+One job, one small regex scanner: **`identity:scan`**, the write-time check on an
+agent's identity, soul and Instructions. `@ax/agents` calls it on every write, whether
+the agent or a person made it.
 
 ## `identity:scan` — the write-time check
 
@@ -49,41 +43,27 @@ throwing scanner means nothing is saved either: `@ax/agents` fails closed. The s
 pure (no I/O, no bus calls) and logs `identity_scan_refused` with the category only,
 never the text.
 
-## The legacy pre-apply gate
+## Retired: the identity-file gate (TASK-995)
 
-This is the original job, from when the runner read identity out of markdown files:
-`IDENTITY.md`, `SOUL.md`, and (optionally) `AGENTS.md` under `/agent/.ax/`. The runner
-injected those files **verbatim into the system prompt**, so a write to one of them was
-the agent rewriting its own system prompt. This gate was modeled line-for-line on
-`@ax/validator-skill`. The runner no longer reads the files; the policy below still runs
-on every `.ax/` write until the git tier is removed.
-
-- **Bootstrap window** — while the host-seeded `.ax/BOOTSTRAP.md` is present in the
-  committed workspace: the agent may write `IDENTITY.md` / `SOUL.md` and may **delete**
-  `BOOTSTRAP.md` (the completion ritual).
-- **After bootstrap** — writes to `IDENTITY.md` / `SOUL.md` / `AGENTS.md` are **allowed
-  but flagged** (a structured `identity_self_edit` audit log; git history is the audit
-  trail).
-- **Always** — a `put` to `.ax/BOOTSTRAP.md` is allowed **only** when its bytes match the
-  canonical `BOOTSTRAP_TEMPLATE` (the host's seed); any other content is **hard-vetoed**.
-  An identity write carrying a **prompt-injection signature** (or non-UTF-8 bytes) is
-  **hard-vetoed** too.
-
-The bootstrap window is read from the committed state at the apply's `parent` (via an
-optional `workspace:read`), never inferred from the change set — so a re-created
-`BOOTSTRAP.md` cannot re-open the window.
+This plugin started life guarding markdown files: the agent's identity, soul and
+bootstrap script, which the runner once read out of the agent's git workspace and put in
+the system prompt word for word. It vetoed risky writes to them, with a bootstrap window
+and a byte-exact check on the bootstrap script. Since TASK-989 identity lives in
+`@ax/agents` and the runner no longer reads those files; TASK-995 removed the git
+workspace, and the gate went with it. A file by one of those names in the agent's home is
+an ordinary file now, and the runner's agent-files canary plants one to prove it changes
+nothing. See [SECURITY.md](./SECURITY.md).
 
 ## Capabilities
 
-Registers `identity:scan` (pure, no I/O). Subscribes `workspace:pre-apply` + one optional
-`workspace:read` call. No process spawn, no filesystem I/O, no network, no env access.
-See [SECURITY.md](./SECURITY.md) for the three-threat-model walk.
+Registers `identity:scan` (pure, no I/O). No calls, no subscriptions, no process spawn,
+no filesystem I/O, no network, no env access. See [SECURITY.md](./SECURITY.md) for the
+three-threat-model walk.
 
 ## Wiring
 
 Loaded in both the CLI preset (`@ax/cli`) and the k8s preset (`@ax/preset-k8s`, which
 `@ax/preset-memory` builds on). `@ax/agents` calls `identity:scan` (declared as an
 `optionalCall`, failing closed without it), and the `@ax/preset-memory` canary drives it
-through the real assembly. The pre-apply gate is exercised by the Phase-3 commit-notify
-canary in `presets/k8s/src/__tests__/acceptance.test.ts`. It is a leaf plugin — nothing
-imports it at runtime except the presets.
+through the real assembly. It is a leaf plugin — nothing imports it at runtime except the
+presets.

@@ -1,32 +1,26 @@
 // ---------------------------------------------------------------------------
-// @ax/validator-skill — two surfaces:
+// @ax/validator-skill — the `skills:scan` service: the skill content safety
+// scan (TASK-74). Skill authoring runs through the `skill_propose`
+// chokepoint, and @ax/skills' `skills:propose` calls this scan there, on the
+// whole bundle's text. Accept-but-annotate: it returns a verdict
+// (clean | hit{reason}); the gate quarantines on a hit, and the validator
+// NEVER refuses on content.
 //
-//   1. `workspace:pre-apply` subscriber — VETOES agent writes to Claude Agent
-//      SDK setting-source paths (`.claude/settings.json`, `.claude/agents/`,
-//      `CLAUDE.md`, etc.). These become live config when Phase 0 enables
-//      `settingSources: ['user', 'project']`, so any agent-authored write would
-//      let the model bootstrap new sub-agents, slash-commands, ruleset files, or
-//      rewrite its own SDK settings. See
-//      docs/notes/2026-05-17-sdk-setting-sources-audit.md. This is the security
-//      boundary and is UNCONDITIONAL — it fires for every workspace:pre-apply
-//      caller (agent bundle, host-internal transcript/upload commits).
-//
-//   2. `skills:scan` service — the skill content safety scan (TASK-74,
-//      out-of-git Part D). The skill authoring substrate moved OFF git (the
-//      `.ax/draft-skills/<id>/SKILL.md` workspace projection is retired), onto
-//      the `skill_propose` chokepoint. The scan's HOME moves with it: instead of
-//      matching a git SKILL.md path on `workspace:pre-apply`, the validator now
-//      registers `skills:scan` and `@ax/skills`' `skills:propose` calls it at the
-//      chokepoint. Accept-but-annotate: it returns a verdict (clean | hit{reason})
-//      — the gate quarantines on a hit; the validator NEVER vetoes on content.
+// Until TASK-995 it also had a veto on the git workspace's pre-apply event,
+// refusing agent writes to the Claude Agent SDK's setting-source paths
+// (`.claude/settings.json`, `.claude/agents/`, `CLAUDE.md` and friends). That
+// tier is gone, and with it the event. Those names are now ordinary files in
+// the agent's home, and nothing loads them as settings: the SDK runner reads
+// user settings only (`settingSources: ['user']`), from a CLAUDE_CONFIG_DIR
+// it refuses to start without and that may not sit inside the home. The
+// runner's own tests pin both, with a real-SDK canary that plants those files.
 //
 // Capability budget: NO spawn, NO file I/O. Network access is gated behind the
 // soft-dep `llm:call:anthropic` which degrades gracefully when unavailable (CLI
 // preset). See SECURITY.md for the threat-model walk.
 // ---------------------------------------------------------------------------
 
-import type { FileChange, Plugin, WorkspaceVersion } from '@ax/core';
-import { reject } from '@ax/core';
+import type { Plugin } from '@ax/core';
 import { regexScan, llmScan } from './skill-safety-scan.js';
 
 const PLUGIN_NAME = '@ax/validator-skill';
@@ -43,39 +37,6 @@ interface SkillsScanInput {
 interface SkillsScanOutput {
   verdict: 'clean' | 'hit';
   reason?: string;
-}
-
-// SDK setting-source paths the Claude Agent SDK reads from project root
-// when `settingSources: ['user', 'project']` is enabled (Phase 0). An
-// agent write to any of these escalates SDK behavior — new sub-agents,
-// new slash-commands, prompt-injected rules, or a settings.json that
-// re-enables disabled tools. Veto unconditionally.
-//
-// Source-of-truth and per-path rationale:
-// docs/notes/2026-05-17-sdk-setting-sources-audit.md
-const SDK_CONFIG_EXACT_PATHS = new Set<string>([
-  '.claude/settings.json',
-  '.claude/settings.local.json',
-  '.claude/CLAUDE.md',
-  'CLAUDE.md',
-  'CLAUDE.local.md',
-]);
-
-const SDK_CONFIG_DIR_PREFIXES = [
-  '.claude/agents/',
-  '.claude/commands/',
-  '.claude/rules/',
-] as const;
-
-function isProtectedSdkConfigPath(p: string): boolean {
-  if (SDK_CONFIG_EXACT_PATHS.has(p)) return true;
-  return SDK_CONFIG_DIR_PREFIXES.some((prefix) => p.startsWith(prefix));
-}
-
-interface PreApplyPayload {
-  changes: FileChange[];
-  parent: WorkspaceVersion | null;
-  reason: string;
 }
 
 export interface ValidatorSkillConfig {
@@ -110,45 +71,9 @@ export function createValidatorSkillPlugin(cfg: ValidatorSkillConfig = {}): Plug
           degradation: 'Layer-2 LLM scan is skipped; the regex layer still runs',
         },
       ],
-      // The SDK-config hard veto stays on workspace:pre-apply (it guards every
-      // commit, not just skills — transcript/upload writes too).
-      subscribes: ['workspace:pre-apply'],
+      subscribes: [],
     },
     init({ bus }) {
-      // --- Surface 1: SDK-config hard veto on workspace:pre-apply ----------
-      // UNCONDITIONAL security boundary. Rejects an agent write to any Claude
-      // Agent SDK setting-source path. The skill SKILL.md scan branch that used
-      // to live here is GONE (TASK-74): skill authoring left git, so a
-      // `.ax/draft-skills/<id>/SKILL.md` write no longer occurs — the scan moved
-      // to the `skills:scan` service below. This subscriber is now ONLY the
-      // SDK-config veto.
-      bus.subscribe<PreApplyPayload>(
-        'workspace:pre-apply',
-        PLUGIN_NAME,
-        async (_ctx, input) => {
-          for (const c of input.changes) {
-            if (c.kind !== 'put') continue;
-            if (isProtectedSdkConfigPath(c.path)) {
-              return reject({
-                reason:
-                  `${c.path}: SDK-config paths are host-only; agent ` +
-                  `writes would escalate SDK behavior. See ` +
-                  `docs/notes/2026-05-17-sdk-setting-sources-audit.md.`,
-                // Name the one path we are refusing (TASK-287). The refusal is
-                // unchanged — this path is as forbidden as it ever was — but
-                // saying WHICH path lets the runner drop just this file
-                // instead of every file the agent wrote. `CLAUDE.md` is on
-                // this list and is an entirely ordinary thing for a coding
-                // agent to write, so the collateral was routine.
-                offendingPaths: [c.path],
-              });
-            }
-          }
-          return undefined; // pass-through — no transform.
-        },
-      );
-
-      // --- Surface 2: skills:scan service (the propose-chokepoint scan) ----
       // Accept-but-annotate. Regex-first (Layer 1); LLM (Layer 2) only when
       // regex is clean AND the soft-dep llm:call:anthropic is loaded. Scans the
       // full bundle TEXT (SKILL.md frontmatter + body + extra-file contents) so

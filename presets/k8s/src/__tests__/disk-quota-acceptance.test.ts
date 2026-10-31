@@ -1,5 +1,4 @@
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { spawn } from 'node:child_process';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createHash, randomBytes } from 'node:crypto';
 import * as nodeFs from 'node:fs';
 import * as fs from 'node:fs/promises';
@@ -15,22 +14,12 @@ import { sql, type Kysely } from 'kysely';
 import {
   HookBus,
   PluginError,
-  asWorkspaceVersion,
   bootstrap,
   makeAgentContext,
   type AgentContext,
   type Plugin,
-  type WorkspaceApplyInput,
-  type WorkspaceApplyOutput,
-  type WorkspaceVersion,
 } from '@ax/core';
-import { workspaceCommitNotifyHandler } from '@ax/ipc-core';
-import {
-  blobFullMessage,
-  createDiskQuotaPlugin,
-  workspaceFullMessage,
-  type DiskQuotaPlugin,
-} from '@ax/disk-quota';
+import { blobFullMessage, createDiskQuotaPlugin, type DiskQuotaPlugin } from '@ax/disk-quota';
 import { createSandboxSubprocessPlugin } from '@ax/sandbox-subprocess';
 import { createSessionInmemoryPlugin } from '@ax/session-inmemory';
 import { startTestContainer, stopPostgresContainer } from '@ax/test-harness';
@@ -42,38 +31,31 @@ import { createK8sPlugins, type K8sPresetConfig } from '../index.js';
 // TASK-690 -- per-owner storage limit canary (Invariant 3: no half-wired
 // plugins).
 //
-// @ax/disk-quota only means something when it sits on the REAL write paths:
+// @ax/disk-quota only means something when it sits on the REAL write path:
 //
 //   GATE   -- `blob:pre-put` (fired by the @ax/core `blob:put` facade the blob
-//             backend registers behind) and `workspace:pre-apply` (fired by
-//             the @ax/core `workspace:apply` facade AND by @ax/ipc-core's
-//             runner commit handler) refuse a write that would put its owner
-//             past the limit.
-//   METER  -- `blob:stored` charges the writer; `workspace:applied` makes the
-//             plugin re-measure that agent's repo through the backend's
-//             `workspace:usage`; a periodic sweep backfills and repairs.
-//   FREE   -- `agents:deleted` makes the preset's @ax/workspace-git remove that
-//             agent's repo and fire `workspace:deleted`, which makes the plugin
-//             drop the agent's ledger row (TASK-719). Blob bytes are NOT freed.
+//             backend registers behind) refuses an upload or a published file
+//             that would put its owner past the limit.
+//   METER  -- `blob:stored` charges the writer.
 //
 // TASK-993 adds agent FILES (each agent's durable /files folder) to the same
 // per-person budget, METERED but not write-enforced: every assistant
 // `chat:turn-end` (and the sweep) makes the plugin measure the folder through
 // `sandbox:user-files-usage` and charge the agent's owner, and `agents:deleted`
 // drops that row. There is NO `chat:start` gate any more: a full person can
-// still talk to their agent (and ask it to tidy up); only the two write gates
-// above refuse. Block (7) proves that loop with a real directory, through the
+// still talk to their agent (and ask it to tidy up); only the upload gate
+// above refuses. Block (7) proves that loop with a real directory, through the
 // subprocess provider's implementation of the hook (the production k8s
 // provider walks an NFS mount; its own suite covers that). Linux only.
 //
+// TASK-995 removed the git workspace tier, and with it the canary's git half
+// (its gate, meter and release are gone from @ax/disk-quota; boot deletes the
+// rows it left, which the package's own tests cover).
+//
 // The package tests prove each half against fakes. This canary proves the
-// LOOP through the real chokepoints: the preset's own @ax/workspace-git (a
-// local backend on a temp repoRoot, real bare git repos), its own
-// @ax/blob-store-fs (a temp root), its own @ax/database-postgres +
-// @ax/storage-postgres pointed at a postgres testcontainer, the real
-// @ax/disk-quota, and the real host-side commit-notify handler fed real git
-// thin bundles. No sandbox is spawned: the "runner" is `git` in a temp dir,
-// exactly like acceptance.test.ts' Phase 3 canaries.
+// LOOP through the real chokepoints: the preset's own @ax/blob-store-fs (a
+// temp root), its own @ax/database-postgres + @ax/storage-postgres pointed at
+// a postgres testcontainer, and the real @ax/disk-quota.
 //
 // Assembly follows usage-limits-acceptance.test.ts: take
 // createK8sPlugins(...) (so preset drift breaks this file), drop what needs
@@ -161,7 +143,6 @@ const HEADROOM_BYTES = 10_000;
 
 const USER_A = 'dq-user-a';
 const USER_B = 'dq-user-b';
-const ADMIN = 'dq-admin';
 
 // ---------------------------------------------------------------------------
 // Test-only plugins
@@ -258,86 +239,6 @@ function createIpcStubPlugin(): Plugin {
   };
 }
 
-/**
- * A one-shot gate on `workspace:applied` for ONE agent, armed by the test that
- * needs to hold that agent's post-write notice (and with it @ax/disk-quota's
- * re-measure, which it triggers) shut until the test says go. Unarmed, or for
- * any other agent, it lets everything through untouched.
- *
- * It only works because the kernel boots this plugin FIRST: subscribers run in
- * registration order, so the gate is reached before disk-quota's own
- * `workspace:applied` subscriber and nothing measures while it is shut.
- */
-let appliedGate: { agentId: string; entered: () => void; opened: Promise<void> } | null = null;
-
-function createAppliedGatePlugin(): Plugin {
-  const name = '@ax/preset-k8s/test/disk-quota-applied-gate';
-  return {
-    manifest: {
-      name,
-      version: '0.0.0',
-      registers: [],
-      calls: [],
-      subscribes: ['workspace:applied'],
-    },
-    init({ bus }) {
-      bus.subscribe<unknown>('workspace:applied', name, async (ctx) => {
-        const gate = appliedGate;
-        if (gate === null || gate.agentId !== ctx.agentId) return undefined;
-        appliedGate = null;
-        gate.entered();
-        await gate.opened;
-        return undefined;
-      });
-    },
-  };
-}
-
-// ---------------------------------------------------------------------------
-// Real git, playing the runner
-// ---------------------------------------------------------------------------
-
-interface SpawnResult {
-  code: number | null;
-  stdout: string;
-  stderr: string;
-}
-
-async function git(args: readonly string[], cwd?: string): Promise<SpawnResult> {
-  return new Promise((resolve, reject) => {
-    const child = spawn('git', [...args], { cwd, env: process.env });
-    let stdout = '';
-    let stderr = '';
-    child.stdout.on('data', (c: Buffer) => (stdout += c.toString('utf8')));
-    child.stderr.on('data', (c: Buffer) => (stderr += c.toString('utf8')));
-    child.once('error', reject);
-    child.once('close', (code) => resolve({ code, stdout, stderr }));
-  });
-}
-
-async function gitOrThrow(args: readonly string[], cwd?: string): Promise<SpawnResult> {
-  const r = await git(args, cwd);
-  if (r.code !== 0) throw new Error(`git ${args.join(' ')} exited ${r.code}: ${r.stderr}`);
-  return r;
-}
-
-/** `git bundle create - baseline..main main`, base64 (the runner's wire shape). */
-async function thinBundleB64(wt: string): Promise<string> {
-  return new Promise<string>((resolve, reject) => {
-    const child = spawn('git', ['-C', wt, 'bundle', 'create', '-', 'baseline..main', 'main']);
-    const chunks: Buffer[] = [];
-    let stderr = '';
-    child.stdout.on('data', (c: Buffer) => chunks.push(c));
-    child.stderr.on('data', (c: Buffer) => (stderr += c.toString('utf8')));
-    child.once('error', reject);
-    child.once('close', (code) =>
-      code === 0
-        ? resolve(Buffer.concat(chunks).toString('base64'))
-        : reject(new Error(`bundle exit=${code}: ${stderr}`)),
-    );
-  });
-}
-
 // ---------------------------------------------------------------------------
 
 function sha256Hex(bytes: Uint8Array): string {
@@ -358,11 +259,10 @@ interface LedgerRow {
   bytes: number;
 }
 
-describe('@ax/preset-k8s disk quota canary (real git + blob store + postgres)', () => {
+describe('@ax/preset-k8s disk quota canary (real blob store + agent files + postgres)', () => {
   let pgContainer: StartedPostgreSqlContainer | null = null;
   let connectionString = '';
   let tmp = '';
-  let repoRoot = '';
   let originalCredKey: string | undefined;
   let kernel: Kernel | null = null;
   // Injected clock for @ax/disk-quota: real time plus a skew the tests advance
@@ -376,7 +276,7 @@ describe('@ax/preset-k8s disk quota canary (real git + blob store + postgres)', 
       database: { connectionString },
       eventbus: { connectionString: 'postgres://stub:5432/stub' },
       session: { connectionString: 'postgres://stub:5432/stub' },
-      workspace: { backend: 'local', repoRoot },
+      workspace: { backend: 'local', repoRoot: path.join(tmp, 'repos') },
       blob: { backend: 'fs', root: path.join(tmp, 'blobs') },
       sandbox: { namespace: 'ax-next', image: 'ax-next/agent:stub' },
       ipc: { hostIpcUrl: 'http://ax-next-host.ax-next.svc.cluster.local:80' },
@@ -398,19 +298,12 @@ describe('@ax/preset-k8s disk quota canary (real git + blob store + postgres)', 
     const kept = presetPlugins.filter((p) => !PLUGINS_TO_DROP.has(p.manifest.name));
     // The real things this canary exists to exercise are the preset's own.
     const keptNames = kept.map((p) => p.manifest.name);
-    for (const name of [
-      '@ax/database-postgres',
-      '@ax/storage-postgres',
-      '@ax/workspace-git',
-      '@ax/blob-store-fs',
-    ]) {
+    for (const name of ['@ax/database-postgres', '@ax/storage-postgres', '@ax/blob-store-fs']) {
       expect(keptNames, `createK8sPlugins must load ${name}`).toContain(name);
     }
 
     const mountedRoutes: string[] = [];
     const plugins: Plugin[] = [
-      // First on purpose: see createAppliedGatePlugin.
-      createAppliedGatePlugin(),
       ...kept,
       diskQuota,
       createAgentsStubPlugin(),
@@ -525,47 +418,6 @@ describe('@ax/preset-k8s disk quota canary (real git + blob store + postgres)', 
     return live().bus.call('blob:stat', ctxFor('system', 'canary'), { sha256 });
   }
 
-  async function workspaceApply(
-    ctx: AgentContext,
-    files: Record<string, Uint8Array>,
-    parent: WorkspaceVersion | null,
-  ): Promise<WorkspaceApplyOutput> {
-    return live().bus.call<WorkspaceApplyInput, WorkspaceApplyOutput>('workspace:apply', ctx, {
-      changes: Object.entries(files).map(([p, content]) => ({
-        path: p,
-        kind: 'put' as const,
-        content,
-      })),
-      parent,
-      reason: 'disk-quota canary',
-    });
-  }
-
-  async function workspaceUsage(ctx: AgentContext): Promise<number> {
-    const out = await live().bus.call<Record<string, never>, { bytes: number }>(
-      'workspace:usage',
-      ctx,
-      {},
-    );
-    return out.bytes;
-  }
-
-  async function workspaceList(ctx: AgentContext): Promise<string[]> {
-    const out = await live().bus.call<Record<string, never>, { paths: string[] }>(
-      'workspace:list',
-      ctx,
-      {},
-    );
-    return [...out.paths].sort();
-  }
-
-  async function workspaceRead(
-    ctx: AgentContext,
-    p: string,
-  ): Promise<{ found: true; bytes: Uint8Array; version?: string } | { found: false }> {
-    return live().bus.call('workspace:read', ctx, { path: p });
-  }
-
   /** A write that must be refused: the PluginError the facade throws. */
   async function refusalOf(write: Promise<unknown>): Promise<PluginError> {
     try {
@@ -577,58 +429,10 @@ describe('@ax/preset-k8s disk quota canary (real git + blob store + postgres)', 
     throw new Error('expected the write to be refused, but it went through');
   }
 
-  /**
-   * Play the runner: build a real thin bundle of `files` on top of the
-   * workspace's baseline at `parent` (null = the first commit) and hand it to
-   * the real host-side commit-notify handler.
-   */
-  async function runnerCommit(
-    ctx: AgentContext,
-    parent: string | null,
-    files: Record<string, Uint8Array>,
-  ): Promise<{ status: number; body: Record<string, unknown> }> {
-    const { bus } = live();
-    const baseline = await bus.call<{ version: WorkspaceVersion | null }, { bundleBytes: string }>(
-      'workspace:export-baseline-bundle',
-      ctx,
-      { version: parent === null ? null : asWorkspaceVersion(parent) },
-    );
-    const root = await fs.mkdtemp(path.join(tmp, 'runner-'));
-    try {
-      const baselineBundle = path.join(root, 'baseline.bundle');
-      await fs.writeFile(baselineBundle, Buffer.from(baseline.bundleBytes, 'base64'));
-      const wt = path.join(root, 'wt');
-      await gitOrThrow(['clone', '--branch', 'main', baselineBundle, wt]);
-      await gitOrThrow(['-C', wt, 'update-ref', 'refs/heads/baseline', 'HEAD']);
-      await gitOrThrow(['-C', wt, 'config', 'user.name', 'ax-runner']);
-      await gitOrThrow(['-C', wt, 'config', 'user.email', 'ax-runner@example.com']);
-      await gitOrThrow(['-C', wt, 'config', 'commit.gpgsign', 'false']);
-      for (const [p, content] of Object.entries(files)) {
-        const abs = path.join(wt, p);
-        await fs.mkdir(path.dirname(abs), { recursive: true });
-        await fs.writeFile(abs, content);
-      }
-      await gitOrThrow(['-C', wt, 'add', '-A']);
-      await gitOrThrow(['-C', wt, 'commit', '-m', 'turn']);
-      const bundleB64 = await thinBundleB64(wt);
-      const result = await workspaceCommitNotifyHandler(
-        { parentVersion: parent, reason: 'turn', bundleBytes: bundleB64 },
-        ctx,
-        bus,
-      );
-      if (!('body' in result)) throw new Error('commit-notify answered with a binary body');
-      return { status: result.status, body: result.body as Record<string, unknown> };
-    } finally {
-      await fs.rm(root, { recursive: true, force: true });
-    }
-  }
-
   // ---- lifecycle -------------------------------------------------------------
 
   beforeAll(async () => {
     tmp = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'ax-disk-quota-canary-')));
-    repoRoot = path.join(tmp, 'repos');
-    await fs.mkdir(repoRoot, { recursive: true });
     originalCredKey = process.env.AX_CREDENTIALS_KEY;
     // @ax/credentials (kept from the preset) throws at init without it.
     process.env.AX_CREDENTIALS_KEY = '42'.repeat(32);
@@ -640,7 +444,6 @@ describe('@ax/preset-k8s disk quota canary (real git + blob store + postgres)', 
   beforeEach(async () => {
     agentOwners.clear();
     sweepAgents = [];
-    appliedGate = null;
     await live().diskQuota.drain();
     await sql`TRUNCATE disk_quota_v1_usage`.execute(await db());
     await setLimits({ limitMb: MIN_LIMIT_MB, warnPercent: 80 });
@@ -698,7 +501,7 @@ describe('@ax/preset-k8s disk quota canary (real git + blob store + postgres)', 
     expect(err.code).toBe('rejected');
     expect(err.message).toBe(blobFullMessage(used, MIN_LIMIT_BYTES));
     // It says what is true (storage is used up) and does NOT send anyone off
-    // to delete things: deleting a whole agent gives its workspace back, but
+    // to delete things: deleting a whole agent gives its files back, but
     // attachments and artifacts cannot be deleted, so there is no small chore
     // that makes room.
     expect(err.message.toLowerCase()).toContain('storage');
@@ -725,243 +528,6 @@ describe('@ax/preset-k8s disk quota canary (real git + blob store + postgres)', 
     expect(await blobStat(sysPut.sha256)).toEqual({ size: sys.length });
     expect(await ledger('system')).toEqual([]);
   });
-
-  // -------------------------------------------------------------------------
-  // 2. WORKSPACES, in-process -- the @ax/core workspace:apply facade
-  // -------------------------------------------------------------------------
-
-  it('(2) workspace:apply: metered from the real repo, refused with the head unchanged past the limit', async () => {
-    const agentId = 'dq-agt-a';
-    agentOwners.set(agentId, { ownerId: USER_A, ownerType: 'user' });
-    const asA = ctxFor(USER_A, agentId);
-    const report = randomBytes(300_000);
-
-    const first = await workspaceApply(asA, { 'docs/report.bin': report }, null);
-    await live().diskQuota.drain();
-    // METER: the ledger row is what the backend's workspace:usage measures --
-    // the whole repo, so more than the bytes we wrote.
-    const measured = await workspaceUsage(asA);
-    expect(measured).toBeGreaterThan(report.length);
-    expect(await ledgerRow(USER_A, `workspace:${agentId}`)).toEqual({
-      ownerId: USER_A,
-      source: `workspace:${agentId}`,
-      kind: 'workspace',
-      bytes: measured,
-    });
-
-    // A change made by someone else (an admin fixing a file) is charged to the
-    // agent's OWNER.
-    const asAdmin = ctxFor(ADMIN, agentId);
-    const second = await workspaceApply(
-      asAdmin,
-      { 'docs/notes.txt': new TextEncoder().encode('hello') },
-      first.version,
-    );
-    await live().diskQuota.drain();
-    expect(await ledger(ADMIN)).toEqual([]);
-    expect((await ledgerRow(USER_A, `workspace:${agentId}`))?.bytes).toBe(
-      await workspaceUsage(asA),
-    );
-
-    // GATE: nearly full, and the next change no longer fits.
-    await seedNearlyFull(USER_A);
-    const used = await usedBy(USER_A);
-    const usageBefore = await workspaceUsage(asA);
-    const err = await refusalOf(
-      workspaceApply(asA, { 'docs/more.bin': randomBytes(300_000) }, second.version),
-    );
-    expect(err.code).toBe('rejected');
-    expect(err.message).toBe(workspaceFullMessage(used, MIN_LIMIT_BYTES));
-    expect(err.message).toContain('not saved');
-    // Nothing landed: same files, same head, same size on disk.
-    expect(await workspaceList(asA)).toEqual(['docs/notes.txt', 'docs/report.bin']);
-    expect(await workspaceRead(asA, 'docs/more.bin')).toEqual({ found: false });
-    expect(await workspaceRead(asA, 'docs/report.bin')).toMatchObject({
-      found: true,
-      version: second.version,
-    });
-    expect(await workspaceUsage(asA)).toBe(usageBefore);
-    await live().diskQuota.drain();
-    expect(await usedBy(USER_A)).toBe(used);
-
-    // Another person's agent, same moment: unaffected.
-    agentOwners.set('dq-agt-b', { ownerId: USER_B, ownerType: 'user' });
-    await workspaceApply(ctxFor(USER_B, 'dq-agt-b'), { 'docs/b.bin': randomBytes(300_000) }, null);
-    await live().diskQuota.drain();
-    expect(await ledgerRow(USER_B, 'workspace:dq-agt-b')).toMatchObject({ kind: 'workspace' });
-  });
-
-  it('(2b) a team agent charges the team, and a full team refuses its members', async () => {
-    const teamAgent = 'dq-agt-team';
-    agentOwners.set(teamAgent, { ownerId: 'tm1', ownerType: 'team' });
-    const asA = ctxFor(USER_A, teamAgent);
-
-    const first = await workspaceApply(asA, { 'shared/plan.bin': randomBytes(100_000) }, null);
-    await live().diskQuota.drain();
-    // Charged to `team:<id>` -- not to the person who happened to make the change.
-    expect(await ledger(USER_A)).toEqual([]);
-    expect(await ledgerRow('team:tm1', `workspace:${teamAgent}`)).toEqual({
-      ownerId: 'team:tm1',
-      source: `workspace:${teamAgent}`,
-      kind: 'workspace',
-      bytes: await workspaceUsage(asA),
-    });
-
-    // The team is full. A has plenty of room of their own, and it is the
-    // team's budget that decides.
-    await seedNearlyFull('team:tm1');
-    const teamUsed = await usedBy('team:tm1');
-    const err = await refusalOf(
-      workspaceApply(asA, { 'shared/more.bin': randomBytes(100_000) }, first.version),
-    );
-    expect(err.code).toBe('rejected');
-    expect(err.message).toBe(workspaceFullMessage(teamUsed, MIN_LIMIT_BYTES));
-
-    // ...while A's own agent is still writable.
-    agentOwners.set('dq-agt-a-own', { ownerId: USER_A, ownerType: 'user' });
-    await workspaceApply(
-      ctxFor(USER_A, 'dq-agt-a-own'),
-      { 'mine.bin': randomBytes(100_000) },
-      null,
-    );
-    await live().diskQuota.drain();
-    expect(await ledgerRow(USER_A, 'workspace:dq-agt-a-own')).toMatchObject({
-      kind: 'workspace',
-    });
-  });
-
-  // -------------------------------------------------------------------------
-  // 3. WORKSPACES, from the runner -- the real workspace.commit-notify handler
-  //    fed a real git thin bundle. This is the test that proves the refusal
-  //    reaches the runner in the shape it acts on.
-  // -------------------------------------------------------------------------
-
-  it('(3) runner commit: accepted and metered under the limit; refused as a plain non-recoverable answer past it', async () => {
-    const agentId = 'dq-agt-runner';
-    agentOwners.set(agentId, { ownerId: USER_A, ownerType: 'user' });
-    const ctx = ctxFor(USER_A, agentId);
-    expect(await ledger(USER_A)).toEqual([]);
-
-    const turn1 = await runnerCommit(ctx, null, { 'work/report.bin': randomBytes(200_000) });
-    expect(turn1.status).toBe(200);
-    expect(turn1.body).toMatchObject({ accepted: true });
-    const v1 = turn1.body.version as string;
-    await live().diskQuota.drain();
-    // METER: the row moved from nothing to what the backend measures.
-    const row = await ledgerRow(USER_A, `workspace:${agentId}`);
-    expect(row?.bytes).toBe(await workspaceUsage(ctx));
-    expect(row?.bytes).toBeGreaterThan(200_000);
-
-    // GATE: the owner is nearly full, the same kind of commit comes back refused.
-    await seedNearlyFull(USER_A);
-    const used = await usedBy(USER_A);
-    const turn2 = await runnerCommit(ctx, v1, { 'work/more.bin': randomBytes(200_000) });
-    expect(turn2.status).toBe(200);
-    // `recoverable: false` is what makes the runner throw the work away and
-    // hand the reason to the agent; no `discardPaths`, because it is the whole
-    // turn that does not fit, not one file. `code` is the machine-readable
-    // twin of that prose (TASK-720): the runner maps it to `saveRefused` on
-    // event.turn-end so the PERSON learns their files were not saved, instead
-    // of the refusal reaching the model and stopping there.
-    expect(turn2.body).toEqual({
-      accepted: false,
-      recoverable: false,
-      code: 'storage-full',
-      reason: workspaceFullMessage(used, MIN_LIMIT_BYTES),
-    });
-    expect(turn2.body).not.toHaveProperty('discardPaths');
-    expect(turn2.body.reason).toContain('were not saved');
-    // The workspace head did not advance.
-    expect(await workspaceRead(ctx, 'work/report.bin')).toMatchObject({
-      found: true,
-      version: v1,
-    });
-    expect(await workspaceRead(ctx, 'work/more.bin')).toEqual({ found: false });
-    await live().diskQuota.drain();
-    expect(await usedBy(USER_A)).toBe(used);
-  });
-
-  // -------------------------------------------------------------------------
-  // 4. THE SWEEP -- backfill and repair
-  // -------------------------------------------------------------------------
-
-  it('(4) the sweep backfills a repo the write path never saw, and repairs a stale figure', async () => {
-    const agentId = 'dq-agt-sweep';
-    const ctx = ctxFor(USER_A, agentId);
-    const { bus } = live();
-    const rawApply = async (
-      p: string,
-      parent: WorkspaceVersion | null,
-    ): Promise<WorkspaceApplyOutput> =>
-      bus.call<WorkspaceApplyInput, WorkspaceApplyOutput>('workspace:apply-internal', ctx, {
-        changes: [{ path: p, kind: 'put', content: randomBytes(150_000) }],
-        parent,
-        reason: 'predates the quota',
-      });
-
-    // A repo that predates the plugin: written through the backend's raw hook,
-    // which fires none of the policy or notify hooks, so nothing metered it.
-    const first = await rawApply('legacy/old.bin', null);
-    await live().diskQuota.drain();
-    expect(await ledger(USER_A)).toEqual([]);
-
-    sweepAgents = [{ agentId, ownerUserId: USER_A }];
-    expect(await live().diskQuota.reconcile()).toEqual({ measured: 1, failed: 0, blobsReleased: 0, blobReleaseAborted: false });
-    const backfilled = await ledgerRow(USER_A, `workspace:${agentId}`);
-    expect(backfilled?.bytes).toBe(await workspaceUsage(ctx));
-    expect(backfilled?.bytes).toBeGreaterThan(150_000);
-
-    // Drift: the repo grows behind the plugin's back; the ledger is stale until
-    // the next sweep.
-    await rawApply('legacy/new.bin', first.version);
-    expect((await ledgerRow(USER_A, `workspace:${agentId}`))?.bytes).toBe(backfilled?.bytes);
-    expect(await live().diskQuota.reconcile()).toEqual({ measured: 1, failed: 0, blobsReleased: 0, blobReleaseAborted: false });
-    const repaired = await ledgerRow(USER_A, `workspace:${agentId}`);
-    expect(repaired?.bytes).toBe(await workspaceUsage(ctx));
-    expect(repaired!.bytes).toBeGreaterThan(backfilled!.bytes);
-  });
-
-  // chmod cannot lock root out, so the "unmeasurable repo" needs a non-root user.
-  it.skipIf(process.getuid?.() === 0)(
-    '(4b) an agent whose repo cannot be measured does not stop the sweep for the others',
-    async () => {
-      const { bus } = live();
-      const dirs = new Map<string, string>();
-      for (const agentId of ['dq-agt-sw-ok1', 'dq-agt-sw-bad', 'dq-agt-sw-ok2']) {
-        const before = new Set(await fs.readdir(repoRoot));
-        await bus.call<WorkspaceApplyInput, WorkspaceApplyOutput>(
-          'workspace:apply-internal',
-          ctxFor(USER_A, agentId),
-          {
-            changes: [{ path: 'f.bin', kind: 'put', content: randomBytes(50_000) }],
-            parent: null,
-            reason: 'predates the quota',
-          },
-        );
-        const created = (await fs.readdir(repoRoot)).filter((n) => !before.has(n));
-        expect(created, `one new repo for ${agentId}`).toHaveLength(1);
-        dirs.set(agentId, path.join(repoRoot, created[0]!));
-      }
-      const badDir = dirs.get('dq-agt-sw-bad')!;
-      await fs.chmod(badDir, 0o000);
-      try {
-        // The unmeasurable one is listed FIRST: a sweep that gave up at the
-        // first failure would measure nothing.
-        sweepAgents = [
-          { agentId: 'dq-agt-sw-bad', ownerUserId: USER_A },
-          { agentId: 'dq-agt-sw-ok1', ownerUserId: USER_A },
-          { agentId: 'dq-agt-sw-ok2', ownerUserId: USER_A },
-        ];
-        expect(await live().diskQuota.reconcile()).toEqual({ measured: 2, failed: 1, blobsReleased: 0, blobReleaseAborted: false });
-      } finally {
-        await fs.chmod(badDir, 0o755);
-      }
-      expect((await ledger(USER_A)).map((r) => r.source)).toEqual([
-        'workspace:dq-agt-sw-ok1',
-        'workspace:dq-agt-sw-ok2',
-      ]);
-    },
-  );
 
   // -------------------------------------------------------------------------
   // 5. THE FRONT DOOR STAYS OPEN -- the real chat:start hook the orchestrator
@@ -999,387 +565,11 @@ describe('@ax/preset-k8s disk quota canary (real git + blob store + postgres)', 
   });
 
   // -------------------------------------------------------------------------
-  // 5b. AGENT DELETE -- `agents:deleted` frees the agent's workspace. The real
-  //     bus fans the event to the preset's own @ax/workspace-git (removes the
-  //     repo, refuses late writes, fires `workspace:deleted`), which reaches the
-  //     real @ax/disk-quota (drops the ledger row). No stub sits between them:
-  //     the only test-only pieces are the agent-owner lookup and the gates in
-  //     (5b-c).
-  // -------------------------------------------------------------------------
-
-  describe('(5b) deleting an agent frees its storage', () => {
-    interface SeededAgent {
-      id: string;
-      /** The agent's bare repo on disk. */
-      dir: string;
-      /** The head after its one write: what a warm runner would still name as parent. */
-      version: WorkspaceVersion;
-      /** Its `workspace:<id>` ledger row, as metered from the real repo. */
-      row: LedgerRow;
-    }
-    interface Seeded {
-      owner: string;
-      a: SeededAgent;
-      b: SeededAgent;
-      blobSource: string;
-      /** The owner's blob row: nothing in this feature ever frees it. */
-      blobRow: LedgerRow;
-    }
-
-    const tick = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 50));
-    let deleteSeq = 0;
-
-    /** How long (5b-c) waits for a gate it is counting on before it says which one never opened. */
-    const GATE_TIMEOUT_MS = 5_000;
-
-    /**
-     * Wait for a gate to be reached, or fail in a few seconds with `problem`
-     * instead of waiting out vitest's 60 s test timeout (which gives a generic
-     * message and never reaches the test's `finally`).
-     */
-    async function gateReached(gate: Promise<void>, problem: string): Promise<void> {
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      const timedOut = new Promise<never>((_resolve, reject) => {
-        timer = setTimeout(() => reject(new Error(problem)), GATE_TIMEOUT_MS);
-      });
-      try {
-        await Promise.race([gate, timedOut]);
-      } finally {
-        clearTimeout(timer);
-      }
-    }
-
-    async function exists(p: string): Promise<boolean> {
-      try {
-        await fs.access(p);
-        return true;
-      } catch {
-        return false;
-      }
-    }
-
-    /** Every entry in the repo root, sorted: the repos, and nothing else made behind them. */
-    async function repoDirs(): Promise<string[]> {
-      return (await fs.readdir(repoRoot)).sort();
-    }
-
-    async function requireRow(ownerId: string, source: string): Promise<LedgerRow> {
-      const row = await ledgerRow(ownerId, source);
-      if (row === undefined) throw new Error(`no ledger row for ${ownerId} / ${source}`);
-      return row;
-    }
-
-    /**
-     * An agent's first write creates its repo, in a directory named after a hash
-     * of its id: find it the way (4b) does, as the one entry that was not there
-     * before.
-     */
-    async function firstWrite(
-      ctx: AgentContext,
-      files: Record<string, Uint8Array>,
-    ): Promise<{ dir: string; version: WorkspaceVersion }> {
-      const before = new Set(await fs.readdir(repoRoot));
-      const out = await workspaceApply(ctx, files, null);
-      const created = (await fs.readdir(repoRoot)).filter((n) => !before.has(n));
-      expect(created, `one new repo for ${ctx.agentId}`).toHaveLength(1);
-      return { dir: path.join(repoRoot, created[0]!), version: out.version };
-    }
-
-    /**
-     * Owner O with two agents that each made a real write (so each has a repo
-     * on disk and a metered `workspace:<id>` row) and one uploaded blob (a blob
-     * row). Everything is written through the real facades and drained.
-     */
-    async function seedOwnerWithTwoAgents(): Promise<Seeded> {
-      const owner = USER_A;
-      // A fresh pair of ids per test: a deleted agent stays deleted for the life
-      // of the host (workspace-git's tombstone), and the kernel is shared.
-      deleteSeq += 1;
-      const ids = { a: `dq-del-agt-a-${deleteSeq}`, b: `dq-del-agt-b-${deleteSeq}` };
-      agentOwners.set(ids.a, { ownerId: owner, ownerType: 'user' });
-      agentOwners.set(ids.b, { ownerId: owner, ownerType: 'user' });
-
-      const blob = await blobPut(owner, randomBytes(200_000));
-      const wa = await firstWrite(ctxFor(owner, ids.a), { 'docs/a.bin': randomBytes(300_000) });
-      const wb = await firstWrite(ctxFor(owner, ids.b), { 'docs/b.bin': randomBytes(150_000) });
-      await live().diskQuota.drain();
-
-      const seeded: Seeded = {
-        owner,
-        a: { id: ids.a, ...wa, row: await requireRow(owner, `workspace:${ids.a}`) },
-        b: { id: ids.b, ...wb, row: await requireRow(owner, `workspace:${ids.b}`) },
-        blobSource: `blob:${blob.sha256}`,
-        blobRow: await requireRow(owner, `blob:${blob.sha256}`),
-      };
-      // The starting point is honest: three rows, and the owner's usage is
-      // exactly their sum. Each workspace row is the whole repo (more than the
-      // bytes written into it).
-      expect(seeded.a.row.bytes).toBeGreaterThan(300_000);
-      expect(seeded.b.row.bytes).toBeGreaterThan(150_000);
-      expect(await usedBy(owner)).toBe(
-        seeded.a.row.bytes + seeded.b.row.bytes + seeded.blobRow.bytes,
-      );
-      return seeded;
-    }
-
-    /** What @ax/agents fires once the agent's row is gone, through the real bus. */
-    function agentDeleted(agentId: string, ownerId: string) {
-      return live().bus.fire('agents:deleted', ctxFor(ownerId, 'dq-agents-delete'), {
-        agentId,
-        ownerId,
-        ownerType: 'user',
-      });
-    }
-
-    /** B's repo and row, and the owner's blob row, exactly as they were seeded. */
-    async function expectSiblingsIntact(t: Seeded): Promise<void> {
-      expect(await exists(t.b.dir)).toBe(true);
-      expect(await ledgerRow(t.owner, `workspace:${t.b.id}`)).toEqual(t.b.row);
-      expect(await ledgerRow(t.owner, t.blobSource)).toEqual(t.blobRow);
-      const asB = ctxFor(t.owner, t.b.id);
-      expect(await workspaceRead(asB, 'docs/b.bin')).toMatchObject({
-        found: true,
-        version: t.b.version,
-      });
-      // The row still matches what is really on disk.
-      expect(await workspaceUsage(asB)).toBe(t.b.row.bytes);
-    }
-
-    /**
-     * Hold `gitdir`'s write mutex open. The first file read under it is the
-     * `resolveHead` a write makes INSIDE the mutex, so the write that trips the
-     * gate is holding the mutex, and anything else for that agent (the delete)
-     * queues behind it. Same trick as workspace-git-core's own delete tests, and
-     * it works here because `node:fs` is one shared module. Only that gitdir is
-     * gated, and only its first read.
-     */
-    function holdRepoMutexOnFirstRead(gitdir: string): {
-      entered: Promise<void>;
-      release: () => void;
-      restore: () => void;
-    } {
-      const realReadFile = nodeFs.promises.readFile.bind(nodeFs.promises);
-      let enter!: () => void;
-      const entered = new Promise<void>((resolve) => (enter = resolve));
-      let release!: () => void;
-      const opened = new Promise<void>((resolve) => (release = resolve));
-      let tripped = false;
-      const spy = vi.spyOn(nodeFs.promises, 'readFile').mockImplementation((async (
-        p: Parameters<typeof realReadFile>[0],
-        ...rest: unknown[]
-      ) => {
-        if (!tripped && typeof p === 'string' && p.startsWith(`${gitdir}/`)) {
-          tripped = true;
-          enter();
-          await opened;
-        }
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        return realReadFile(p, ...(rest as any));
-      }) as typeof nodeFs.promises.readFile);
-      return { entered, release, restore: () => spy.mockRestore() };
-    }
-
-    it('(5b-a) agents:deleted removes that agent\'s repo and its ledger row; the sibling agent and the owner\'s blobs are untouched, and the owner\'s usage falls by exactly what the workspace held', async () => {
-      const t = await seedOwnerWithTwoAgents();
-      const usedBefore = await usedBy(t.owner);
-      const dirsBefore = await repoDirs();
-
-      const fired = await agentDeleted(t.a.id, t.owner);
-      expect(fired).toMatchObject({ rejected: false });
-
-      // A's repo is gone from the disk, and A's row from the ledger.
-      expect(await exists(t.a.dir)).toBe(false);
-      expect(await ledgerRow(t.owner, `workspace:${t.a.id}`)).toBeUndefined();
-      // Nothing else in the repo root went with it.
-      expect(await repoDirs()).toEqual(
-        dirsBefore.filter((name) => path.join(repoRoot, name) !== t.a.dir),
-      );
-      // B and the blob are exactly as they were.
-      await expectSiblingsIntact(t);
-      // The owner got back exactly A's workspace bytes: no more, no less.
-      expect(await usedBy(t.owner)).toBe(usedBefore - t.a.row.bytes);
-      expect(await usedBy(t.owner)).toBe(t.b.row.bytes + t.blobRow.bytes);
-    });
-
-    it('(5b-a2) the room is real: an owner too full to save a change can save it once another agent is deleted', async () => {
-      const t = await seedOwnerWithTwoAgents();
-      const asB = ctxFor(t.owner, t.b.id);
-      const change = { 'docs/more.bin': randomBytes(200_000) };
-
-      // Nearly full: B's next change does not fit, and the refusal is the
-      // storage-full one (the code, not just the sentence).
-      await seedNearlyFull(t.owner);
-      const refused = await refusalOf(workspaceApply(asB, change, t.b.version));
-      expect(refused.code).toBe('rejected');
-      expect(refused.reasonCode).toBe('storage-full');
-
-      // A's workspace goes away: the same change now fits.
-      await agentDeleted(t.a.id, t.owner);
-      const saved = await workspaceApply(asB, change, t.b.version);
-      expect(await workspaceRead(asB, 'docs/more.bin')).toMatchObject({
-        found: true,
-        version: saved.version,
-      });
-    });
-
-    it('(5b-b) a write for the deleted agent afterwards is refused with agent-deleted: no directory comes back and no ledger row appears', async () => {
-      const t = await seedOwnerWithTwoAgents();
-      const asA = ctxFor(t.owner, t.a.id);
-      await agentDeleted(t.a.id, t.owner);
-      expect(await exists(t.a.dir), 'the delete removed the repo').toBe(false);
-      const dirsAfterDelete = await repoDirs();
-
-      // The write a warm runner would still send: a first commit that would
-      // succeed on a fresh repo.
-      const fresh = await refusalOf(
-        workspaceApply(asA, { 'late/report.bin': randomBytes(100_000) }, null),
-      );
-      expect(fresh.code).toBe('agent-deleted');
-      // ...and one naming the parent it last knew.
-      const stale = await refusalOf(
-        workspaceApply(asA, { 'late/more.bin': randomBytes(100_000) }, t.a.version),
-      );
-      expect(stale.code).toBe('agent-deleted');
-      // Reads and measurements are refused too, and none of them makes a repo.
-      await expect(workspaceRead(asA, 'docs/a.bin')).rejects.toMatchObject({
-        code: 'agent-deleted',
-      });
-      await expect(workspaceList(asA)).rejects.toMatchObject({ code: 'agent-deleted' });
-      await expect(workspaceUsage(asA)).rejects.toMatchObject({ code: 'agent-deleted' });
-
-      // Let any background measurement a write could have triggered land.
-      await live().diskQuota.drain();
-      expect(await exists(t.a.dir)).toBe(false);
-      expect(await repoDirs()).toEqual(dirsAfterDelete);
-      expect(await ledgerRow(t.owner, `workspace:${t.a.id}`)).toBeUndefined();
-
-      // The sibling is unaffected and still takes writes.
-      await expectSiblingsIntact(t);
-      const asB = ctxFor(t.owner, t.b.id);
-      await workspaceApply(asB, { 'docs/next.bin': randomBytes(50_000) }, t.b.version);
-      await live().diskQuota.drain();
-      expect((await requireRow(t.owner, `workspace:${t.b.id}`)).bytes).toBeGreaterThan(
-        t.b.row.bytes,
-      );
-    });
-
-    it('(5b-c) a write that holds the mutex when the delete arrives lands, and its late measurement cannot bring the ledger row back', async () => {
-      const t = await seedOwnerWithTwoAgents();
-      const asA = ctxFor(t.owner, t.a.id);
-
-      // Two gates make the interleaving exact instead of a race:
-      //   1. The repo mutex is held open, so the write is INSIDE it (and will
-      //      succeed: it names the right parent) when the delete arrives.
-      //   2. The write's `workspace:applied` notice is held shut, so
-      //      disk-quota's re-measure of the write cannot start until the whole
-      //      delete has finished. The measurement therefore lands strictly
-      //      AFTER the delete: the order that would resurrect the row if
-      //      workspace:usage answered 0 for a deleted agent.
-      const mutexGate = holdRepoMutexOnFirstRead(t.a.dir);
-      let openApplied!: () => void;
-      let appliedReached!: () => void;
-      const appliedEntered = new Promise<void>((resolve) => (appliedReached = resolve));
-      appliedGate = {
-        agentId: t.a.id,
-        entered: appliedReached,
-        opened: new Promise<void>((resolve) => (openApplied = resolve)),
-      };
-      // Started work the `finally` waits out, so a failure here cannot leave a
-      // write or a delete still running into the next test.
-      const inFlight: Array<Promise<unknown>> = [];
-      try {
-        const write = workspaceApply(asA, { 'docs/late.bin': randomBytes(100_000) }, t.a.version);
-        const writeOutcome = write.then(
-          (value) => ({ ok: true as const, value }),
-          (error: unknown) => ({ ok: false as const, error }),
-        );
-        inFlight.push(writeOutcome);
-        await gateReached(
-          mutexGate.entered,
-          'this test needs workspace-git-core to read through fs.promises.readFile inside the per-agent mutex, ' +
-            "so the write can be held there; the write never reached its first read under the agent's repo",
-        );
-
-        // The delete arrives while the write holds the mutex. It sets its
-        // tombstone and queues behind the write; nothing is removed yet.
-        const delivered = agentDeleted(t.a.id, t.owner);
-        inFlight.push(delivered);
-        await tick();
-        expect(await exists(t.a.dir), 'the delete waits for the write holding the mutex').toBe(true);
-        expect(await ledgerRow(t.owner, `workspace:${t.a.id}`)).toEqual(t.a.row);
-
-        // Let the write finish. It commits, then parks at the applied gate.
-        mutexGate.release();
-        await gateReached(
-          appliedEntered,
-          "this test needs the released write to commit and fire workspace:applied, and its gate plugin to be booted before @ax/disk-quota's own workspace:applied subscriber; the write never reached the applied gate",
-        );
-        await delivered;
-
-        // The delete is complete (repo removed, then row released), and the
-        // write's measurement has not even started.
-        expect(await exists(t.a.dir)).toBe(false);
-        expect(await ledgerRow(t.owner, `workspace:${t.a.id}`)).toBeUndefined();
-
-        // Now the notice reaches disk-quota and the late measurement runs.
-        openApplied();
-        const outcome = await writeOutcome;
-        expect(outcome.ok, 'the in-flight write itself succeeded').toBe(true);
-        await live().diskQuota.drain();
-
-        // The measurement was refused, not answered with 0: no row came back
-        // (the harm), and the reason is that measuring a deleted agent throws.
-        expect(await ledgerRow(t.owner, `workspace:${t.a.id}`)).toBeUndefined();
-        expect(await exists(t.a.dir)).toBe(false);
-        await expect(workspaceUsage(asA)).rejects.toMatchObject({ code: 'agent-deleted' });
-        await expectSiblingsIntact(t);
-        expect(await usedBy(t.owner)).toBe(t.b.row.bytes + t.blobRow.bytes);
-      } finally {
-        // An assertion that failed while a gate was shut must not leave the
-        // parked write hanging the rest of the file.
-        mutexGate.release();
-        openApplied();
-        mutexGate.restore();
-        appliedGate = null;
-        await Promise.allSettled(inFlight);
-      }
-    });
-
-    it('(5b-d) delivering the same agents:deleted again is a harmless no-op', async () => {
-      const t = await seedOwnerWithTwoAgents();
-      await agentDeleted(t.a.id, t.owner);
-      // The first delivery really did the work, so there is something for the
-      // second to be a no-op about.
-      expect(await exists(t.a.dir)).toBe(false);
-      expect(await ledgerRow(t.owner, `workspace:${t.a.id}`)).toBeUndefined();
-      const usedAfterFirst = await usedBy(t.owner);
-      const dirsAfterFirst = await repoDirs();
-
-      await expect(agentDeleted(t.a.id, t.owner)).resolves.toMatchObject({ rejected: false });
-      await live().diskQuota.drain();
-      expect(await repoDirs()).toEqual(dirsAfterFirst);
-      expect(await usedBy(t.owner)).toBe(usedAfterFirst);
-      await expectSiblingsIntact(t);
-
-      // An agent that never wrote a byte (no repo, no row) is just as quiet.
-      await expect(agentDeleted(`dq-del-agt-never-wrote-${deleteSeq}`, t.owner)).resolves.toMatchObject({
-        rejected: false,
-      });
-      expect(await repoDirs()).toEqual(dirsAfterFirst);
-      expect(await usedBy(t.owner)).toBe(usedAfterFirst);
-      await expectSiblingsIntact(t);
-    });
-  });
-
-  // -------------------------------------------------------------------------
   // 6. PERSISTENCE and RUNTIME CHANGE (it restarts the kernel; (7) follows it
   //    and swaps in its own, so nothing may come after (7))
   // -------------------------------------------------------------------------
 
   it('(6) the ledger survives a restart, and raising the limit admits the owner again with no restart', async () => {
-    const agentId = 'dq-agt-persist';
-    agentOwners.set(agentId, { ownerId: USER_A, ownerType: 'user' });
-
     // Fill A the honest way, with real bytes: 62 MB against the 64 MB limit.
     const big = randomBytes(62 * MB);
     const bigPut = await blobPut(USER_A, big);
@@ -1391,7 +581,7 @@ describe('@ax/preset-k8s disk quota canary (real git + blob store + postgres)', 
     // Tear the whole host down: every plugin's shutdown, the pg pool closed,
     // nothing held in memory survives. Then boot a brand-new set of plugins
     // (fresh plugin instance, fresh limits and owner caches) on the SAME
-    // postgres, repo root and blob root.
+    // postgres and blob root.
     await live().shutdown();
     kernel = null;
     kernel = await bootKernel();
@@ -1400,12 +590,6 @@ describe('@ax/preset-k8s disk quota canary (real git + blob store + postgres)', 
     const afterBlob = await refusalOf(blobPut(USER_A, three));
     expect(afterBlob.code).toBe('rejected');
     expect(afterBlob.message).toBe(blobFullMessage(big.length, MIN_LIMIT_BYTES));
-    // The same ledger gates the workspace side too.
-    const afterWorkspace = await refusalOf(
-      workspaceApply(ctxFor(USER_A, agentId), { 'big.bin': three }, null),
-    );
-    expect(afterWorkspace.code).toBe('rejected');
-    expect(afterWorkspace.message).toBe(workspaceFullMessage(big.length, MIN_LIMIT_BYTES));
 
     // An admin raises the limit (a partial setting: only limitMb). No restart:
     // the next write, on this very kernel, is admitted.
@@ -1414,11 +598,6 @@ describe('@ax/preset-k8s disk quota canary (real git + blob store + postgres)', 
     expect(await ledgerRow(USER_A, `blob:${admitted.sha256}`)).toMatchObject({
       kind: 'blob',
       bytes: three.length,
-    });
-    await workspaceApply(ctxFor(USER_A, agentId), { 'big.bin': three }, null);
-    await live().diskQuota.drain();
-    expect(await ledgerRow(USER_A, `workspace:${agentId}`)).toMatchObject({
-      kind: 'workspace',
     });
   });
 
@@ -1455,7 +634,7 @@ describe('@ax/preset-k8s disk quota canary (real git + blob store + postgres)', 
       return total;
     }
 
-    /** The assistant turn end the runner's commit path ends in, through the real bus. */
+    /** The runner's assistant turn end, through the real bus. */
     function turnEnd(userId: string, agentId: string) {
       return live().bus.fire('chat:turn-end', ctxFor(userId, agentId), {
         reason: 'user-message-wait',
