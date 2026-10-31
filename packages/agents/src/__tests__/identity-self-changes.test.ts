@@ -3,7 +3,11 @@
 // are seeded with raw SQL here; the writer (an `author: 'agent'` save) is
 // covered in identity.test.ts and identity-tools.test.ts.
 import { describe, expect, it } from 'vitest';
+import { Kysely, PostgresDialect } from 'kysely';
+import pg from 'pg';
 import { PluginError } from '@ax/core';
+import type { AgentsDatabase } from '../migrations.js';
+import { createIdentityStore } from '../identity/store.js';
 import {
   AGENTS_IDENTITY_SELF_CHANGES_FOR_USER_HOOK,
   AGENTS_IDENTITY_SET_HOOK,
@@ -70,6 +74,8 @@ describe('agents:identity:self-changes-for-user', () => {
       [a2, 'identity'],
       [a1, 'soul'],
     ]);
+    // (Through the hook's `returns` schema, which strips extra keys; the store
+    // itself is checked in the next case.)
     for (const change of out.changes) {
       expect(Object.keys(change).sort()).toEqual(['agentId', 'changedAt', 'section']);
     }
@@ -83,6 +89,26 @@ describe('agents:identity:self-changes-for-user', () => {
     const soulAt = Date.parse(soul.changedAt);
     expect(soulAt).toBeGreaterThanOrEqual(before - DAY_MS);
     expect(soulAt).toBeLessThanOrEqual(after - DAY_MS);
+  });
+
+  it('the store itself returns exactly three keys per change', async () => {
+    const ih = await env.makeHarness();
+    const a1 = await ih.createAgent('alice');
+    await mark(a1, 'soul', '1 hour');
+    const db = new Kysely<AgentsDatabase>({
+      dialect: new PostgresDialect({
+        pool: new pg.Pool({ connectionString: env.connectionString(), max: 1 }),
+      }),
+    });
+    try {
+      const changes = await createIdentityStore(db).listSelfChanges('alice');
+      expect(changes).toHaveLength(1);
+      for (const change of changes) {
+        expect(Object.keys(change).sort()).toEqual(['agentId', 'changedAt', 'section']);
+      }
+    } finally {
+      await db.destroy();
+    }
   });
 
   it('an agent with no identity row, or no mark, lists nothing', async () => {

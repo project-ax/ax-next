@@ -871,11 +871,14 @@ describe('the changes agents made to themselves', () => {
     const first = renderToday({ selfChanges: [soulChange] });
     expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('Nothing is waiting on you.');
     expect(screen.queryByText(/\d waiting on you/)).toBeNull();
+    // Positive control: the row really rendered, so "not waiting" is meaningful.
+    expect(screen.getByText('changed its personality')).toBeInTheDocument();
     first.unmount();
 
     renderToday({ decisions: [decision()], selfChanges: [soulChange] });
     expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('One thing is waiting on you.');
     expect(screen.getByText('1 waiting on you')).toBeInTheDocument();
+    expect(screen.getByText('changed its personality')).toBeInTheDocument();
   });
 
   it('shows under the Working filter too', () => {
@@ -892,8 +895,15 @@ describe('the changes agents made to themselves', () => {
   });
 
   it('does not draw a change for an agent that is not on the roster', () => {
-    renderToday({ selfChanges: [{ ...soulChange, agentId: 'a-gone' }] });
-    expect(screen.queryByText(HEADING)).toBeNull();
+    renderToday({
+      selfChanges: [
+        { ...soulChange, agentId: 'a-gone', section: 'soul' },
+        { ...soulChange, section: 'identity' },
+      ],
+    });
+    // The rostered agent's row renders; the gone agent's soul row does not.
+    expect(screen.getByText('changed how it describes itself')).toBeInTheDocument();
+    expect(screen.getAllByText('Quill')).toHaveLength(1);
     expect(screen.queryByText('changed its personality')).toBeNull();
   });
 

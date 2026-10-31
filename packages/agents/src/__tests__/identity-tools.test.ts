@@ -585,9 +585,30 @@ describe("update_identity and its owner's Today (TASK-990)", () => {
     ).toMatchObject({ ok: true, section: 'soul' });
     const output = await selfChanges(ih, 'alice');
     expect(output.changes.map((c) => [c.agentId, c.section])).toEqual([[id, 'soul']]);
+    // (Goes through the hook's `returns` schema, which strips undeclared keys:
+    // this checks the schema, not the store. The store is checked directly in
+    // identity-self-changes.test.ts.)
     // The entry names the section; it never carries what the agent wrote.
     expect(JSON.stringify(output)).not.toContain('promises');
     expect(await selfChanges(ih, 'bob')).toEqual({ changes: [] });
+  });
+
+  it('a successful update_identity of the identity section lists exactly that section', async () => {
+    const ih = await env.makeHarness();
+    const id = await ih.createAgent('alice');
+    expect(
+      await updateIdentity(ih, id, 'alice', { section: 'identity', content: 'I am Pip, the helper.' }),
+    ).toMatchObject({ ok: true, section: 'identity' });
+    expect(await listed(ih, 'alice')).toEqual([[id, 'identity']]);
+  });
+
+  it("a tool input claiming `author: 'person'` is refused and lists nothing", async () => {
+    const ih = await env.makeHarness();
+    const id = await ih.createAgent('alice');
+    expect(
+      await updateIdentity(ih, id, 'alice', { section: 'soul', content: 'Be kind.', author: 'person' }),
+    ).toMatchObject({ ok: false });
+    expect(await listed(ih, 'alice')).toEqual([]);
   });
 
   it.each<[string, { input: unknown; extra?: Source; scan?: ScanAnswer; error: string }]>([

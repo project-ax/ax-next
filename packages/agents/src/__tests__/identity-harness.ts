@@ -81,6 +81,8 @@ export function makeAgentInput(overrides: Partial<AgentInput> = {}): AgentInput 
 export function useIdentityEnv(): {
   makeHarness(opts?: IdentityHarnessOptions): Promise<IdentityHarness>;
   query<R>(text: string, values?: unknown[]): Promise<R[]>;
+  /** The suite's Postgres connection string (valid after beforeAll). */
+  connectionString(): string;
 } {
   let container: StartedPostgreSqlContainer | undefined;
   let connectionString = '';
@@ -192,5 +194,5 @@ export function useIdentityEnv(): {
     };
   }
 
-  return { makeHarness, query };
+  return { makeHarness, query, connectionString: () => connectionString };
 }
