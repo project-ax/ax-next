@@ -1310,6 +1310,7 @@ describeIfHelm('ax-next chart: sandbox.filestore wiring', () => {
       // reach" counts a rule with no ports (all ports), an endPort range, an
       // empty `to` (anywhere), and any ipBlock that contains the IP.
       const runnerNs = np?.metadata?.namespace;
+      expect(runnerNs).toBe('ax-next-runners');
       for (const policy of docs) {
         if (policy.kind !== 'NetworkPolicy' || policy.metadata?.namespace !== runnerNs) continue;
         const rules = (policy.spec?.egress as FullEgressRule[] | undefined) ?? [];

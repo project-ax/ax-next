@@ -116,8 +116,8 @@ spec:
     # host/deployment.yaml) so the web UI can browse an agent's durable files
     # without spending a pod per click. That mount is a kubelet mount, made from
     # the node's network namespace, so this pod-level rule is probably not what
-    # carries it (#504 added it unverified; since TASK-1003 runner pods mount
-    # the same share with no NFS egress). It stays as-is by decision, until a
+    # carries it (#504 added it unverified; since TASK-1003 runner pods are
+    # expected to mount the same share with no NFS egress). It stays as-is by decision, until a
     # GKE check shows it is unneeded.
     #
     # Scoped exactly like the one-shot user-files pods' rule (`-userfiles-nfs`
