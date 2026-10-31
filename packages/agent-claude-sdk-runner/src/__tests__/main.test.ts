@@ -4530,7 +4530,17 @@ describe('main()', () => {
         const parts = rel.split('/');
         for (let i = 1; i < parts.length; i += 1) plantedTree.add(`${parts.slice(0, i).join('/')}/`);
       }
-      setEnv({ ...COMPLETE_ENV, AX_USERFILES_ROOT: files, AX_EPHEMERAL_ROOT: scratch, CLAUDE_CONFIG_DIR: cfg });
+      setEnv({
+        ...COMPLETE_ENV,
+        AX_USERFILES_ROOT: files,
+        AX_EPHEMERAL_ROOT: scratch,
+        CLAUDE_CONFIG_DIR: cfg,
+        // Set in the runner's own env so the assertion below proves it is
+        // dropped on the way to the SDK, not merely never set: with it, the CLI
+        // loads CLAUDE.md and rules from every `additionalDirectories` entry,
+        // and the scratch root is agent-writable (see the real-binary canary).
+        CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD: '1',
+      });
       bootableHost();
 
       const { rc } = await runMain();

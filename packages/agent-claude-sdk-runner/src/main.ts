@@ -480,11 +480,20 @@ export function createClaudeSdkLoop(deps: RunnerDeps): Loop {
           //
           // Each entry is host-controlled env (never model/user input); an
           // omitted entry grants no phantom directory. The matching system-prompt
-          // notes (the shell's composed prompt) name the same roots. Neither is a
-          // settings source, and nothing sets
-          // CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD, the variable that asks
-          // the CLI to load CLAUDE.md from these directories (the §11 canary in
-          // main.test.ts pins that it is absent).
+          // notes (the shell's composed prompt) name the same roots.
+          //
+          // The scratch root is agent-writable, so what the CLI reads from an
+          // added directory matters. Measured on the real binary (SDK 0.2.119):
+          // it loads `.claude/skills/` from one only under the 'project'
+          // setting source, and CLAUDE.md, `.claude/CLAUDE.md` and
+          // `.claude/rules/` only when CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD
+          // is set (CLAUDE.local.md also needs 'local'). It never reads an added
+          // directory's settings files, `.mcp.json`, agents or commands. We pass
+          // `settingSources: ['user']`, and the variable never reaches the SDK
+          // (the proxy-startup env allowlist drops it; main.test.ts pins that).
+          // The real-binary canary (agent-files-guards-real-sdk.e2e.test.ts)
+          // plants every one of these in the scratch root and pins that none
+          // takes effect, with controls that make each gate's loads visible.
           ...((): { additionalDirectories?: string[] } => {
             const extra: string[] = [];
             for (const dir of [env.ephemeralRoot, env.memoryRoot]) {
