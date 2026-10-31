@@ -64,6 +64,16 @@ interface BlobPutOutput {
   size: number;
 }
 
+/**
+ * What the agent is told when a file it is saving is refused because the
+ * person's storage is full. Addressed to the model: it must not decide on its
+ * own which of the person's files to delete to make room.
+ */
+export const BLOB_PUT_STORAGE_FULL_FOR_AGENT =
+  "blob.put: the file was not saved because the person's storage is full. " +
+  'Do not delete or move any files on your own to make room. Tell the person: ' +
+  'they can ask you to clean up specific files they no longer need, or ask an admin for more room.';
+
 export const blobPutHandler: BinaryActionHandler = async (
   body,
   ctx,
@@ -77,11 +87,18 @@ export const blobPutHandler: BinaryActionHandler = async (
     });
   } catch (err) {
     // A `blob:pre-put` veto (a storage limit, TASK-690) is an answer, not a
-    // fault: hand the runner the subscriber's host-authored reason so the agent
-    // can tell the person. Everything else stays a sanitized 500.
+    // fault: hand the runner a reason so the agent can tell the person.
+    // Everything else stays a sanitized 500.
     if (err instanceof PluginError && err.code === 'rejected') {
       ctx.logger.warn('blob_put_refused', { action: 'blob.put', reason: err.message });
-      return hookRejected(err.message);
+      // A FULL disk gets a fixed, agent-addressed sentence (TASK-993) instead
+      // of the person-facing one, which says "ask your agent to clean up
+      // files". Read by the model, that is an instruction to itself to delete
+      // the person's files and retry, with nobody there to say which (a
+      // routine run). Any other policy refusal still passes its own reason.
+      return hookRejected(
+        err.reasonCode === 'storage-full' ? BLOB_PUT_STORAGE_FULL_FOR_AGENT : err.message,
+      );
     }
     logInternalError(ctx.logger, 'blob.put', err);
     return internalError();
