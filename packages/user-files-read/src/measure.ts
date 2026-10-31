@@ -144,6 +144,23 @@ function frameFor(fh: fs.FileHandle, depth: number): Frame {
 }
 
 /**
+ * At most this many usage walks run at once in this process, counted from the
+ * start of each walk until the walk ITSELF ends; a further call is refused with
+ * code `walk-busy`.
+ *
+ * Why here and not only in the caller: every fs call the walk makes holds one
+ * libuv threadpool thread (4 by default) while it runs. On a hard-mounted
+ * export that hangs, a single `readdir` or `lstat` never returns, so neither
+ * `maxMs` (checked between entries) nor a caller's timeout ends the walk. A
+ * caller that gave up (a bus timeout) frees its own concurrency slot while the
+ * walk is still stuck, and the next request starts another. Counted here, stuck
+ * walks can never hold more than this many threads, whatever the callers do;
+ * the rest of the host (other file reads, DNS lookups, crypto) keeps running.
+ */
+export const MAX_CONCURRENT_USAGE_WALKS = 2;
+let usageWalksInFlight = 0;
+
+/**
  * Sum the allocated bytes of the agent-written tree at the trusted `root`,
  * never leaving it and never following a link. See the file header.
  */
@@ -156,7 +173,24 @@ export async function measureConfinedUserFiles(
   checkLimit('maxDepth', limits.maxDepth, 0);
   checkLimit('maxMs', limits.maxMs, 1);
   assertWalkPlatform();
+  if (usageWalksInFlight >= MAX_CONCURRENT_USAGE_WALKS) {
+    throw new UserFilesReadError('too many usage walks are already running in this process', {
+      code: 'walk-busy',
+    });
+  }
+  usageWalksInFlight++;
+  try {
+    return await walkUsage(root, limits, clock);
+  } finally {
+    usageWalksInFlight--;
+  }
+}
 
+async function walkUsage(
+  root: string,
+  limits: UsageWalkLimits,
+  clock: () => number,
+): Promise<UsageReading> {
   const start = clock();
   const stack: Frame[] = [];
   let bytes = 0;

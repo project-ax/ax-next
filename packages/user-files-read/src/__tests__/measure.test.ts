@@ -20,6 +20,7 @@ import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   DEFAULT_USAGE_WALK_LIMITS,
+  MAX_CONCURRENT_USAGE_WALKS,
   UserFilesReadError,
   measureConfinedUserFiles,
   type UsageWalkLimits,
@@ -142,6 +143,39 @@ describe.skipIf(!ON_LINUX)(`measureConfinedUserFiles — on disk (${SKIP_REASON}
       }
     }
     rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it('AVAILABILITY: walks stuck on a hung export can never hold more than MAX_CONCURRENT_USAGE_WALKS at once', async () => {
+    // A hard-mounted export that hangs: the root open never returns. The
+    // callers' timeouts cannot end such a walk, so the cap has to count the
+    // walk itself, or each new turn end parks another threadpool thread.
+    const realOpen = nodeFs.promises.open;
+    const releases: Array<() => void> = [];
+    let hang = true;
+    vi.spyOn(nodeFs.promises, 'open').mockImplementation(async (p, flags, mode) => {
+      if (hang) {
+        await new Promise<void>((r) => releases.push(r));
+      }
+      return realOpen(p, flags, mode);
+    });
+
+    const stuck = Array.from({ length: MAX_CONCURRENT_USAGE_WALKS }, () => measureConfinedUserFiles(root));
+    // Let every stuck walk reach its open.
+    await new Promise((r) => setTimeout(r, 20));
+    expect(releases).toHaveLength(MAX_CONCURRENT_USAGE_WALKS);
+
+    await expect(measureConfinedUserFiles(root)).rejects.toMatchObject({
+      name: 'UserFilesReadError',
+      code: 'walk-busy',
+    });
+    // Refused before touching the disk: no further open was attempted.
+    expect(releases).toHaveLength(MAX_CONCURRENT_USAGE_WALKS);
+
+    // The export comes back: the stuck walks finish and free their places.
+    hang = false;
+    for (const r of releases) r();
+    for (const r of await Promise.all(stuck)) expect(r.complete).toBe(true);
+    await expect(measureConfinedUserFiles(root)).resolves.toMatchObject({ complete: true });
   });
 
   it('sums allocated bytes of every file and folder, the root included', async () => {
