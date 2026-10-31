@@ -10,13 +10,16 @@ import { ARTIFACT_PUBLISH_DESCRIPTOR } from '@ax/tool-artifact-publish';
 // IS the durable user-files tier — the same thing the sandbox provider stamps as
 // AX_USERFILES_ROOT and the operating notes hand to the model.
 let userFilesRoot: string;
+let ephemeralRoot: string;
 
 beforeEach(async () => {
   userFilesRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'ax-e2e-'));
+  ephemeralRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'ax-e2e-scratch-'));
 });
 
 afterEach(async () => {
   await fs.rm(userFilesRoot, { recursive: true, force: true });
+  await fs.rm(ephemeralRoot, { recursive: true, force: true });
 });
 
 describe('artifact_publish end-to-end (sandbox dispatch)', () => {
@@ -31,7 +34,7 @@ describe('artifact_publish end-to-end (sandbox dispatch)', () => {
     const dispatcher = createLocalDispatcher();
     dispatcher.register(
       ARTIFACT_PUBLISH_DESCRIPTOR.name,
-      createArtifactPublishExecutor({ userFilesRoot }),
+      createArtifactPublishExecutor({ userFilesRoot, ephemeralRoot }),
     );
     const [entry] = buildSandboxToolEntries(dispatcher, [ARTIFACT_PUBLISH_DESCRIPTOR]);
 
@@ -59,7 +62,7 @@ describe('artifact_publish end-to-end (sandbox dispatch)', () => {
     const dispatcher = createLocalDispatcher();
     dispatcher.register(
       ARTIFACT_PUBLISH_DESCRIPTOR.name,
-      createArtifactPublishExecutor({ userFilesRoot }),
+      createArtifactPublishExecutor({ userFilesRoot, ephemeralRoot }),
     );
     const [entry] = buildSandboxToolEntries(dispatcher, [ARTIFACT_PUBLISH_DESCRIPTOR]);
 

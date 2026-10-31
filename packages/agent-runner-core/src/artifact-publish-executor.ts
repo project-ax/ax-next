@@ -59,16 +59,16 @@ function mediaTypeFromExtension(filename: string): string {
 export interface CreateArtifactPublishExecutorOptions {
   /**
    * The agent's home (`AX_USERFILES_ROOT`). Publishable in full — it is the
-   * agent's cwd and holds only user content. The runner always passes it;
-   * nothing under a root left out can be published.
+   * agent's cwd and holds only user content. Required: the runner refuses to
+   * start without it.
    */
-  userFilesRoot?: string;
+  userFilesRoot: string;
   /**
    * Session scratch root (`AX_EPHEMERAL_ROOT`). Only `<root>/artifacts/**` is
    * publishable — the rest of it is uploads, transcripts, the venv, caches and
-   * build trees. The runner always passes it.
+   * build trees. Required: the runner refuses to start without it.
    */
-  ephemeralRoot?: string;
+  ephemeralRoot: string;
   /**
    * IPC client to the host. The executor streams artifact bytes to `blob.put`
    * and records the metadata row via `artifact.publish`. When undefined (older
@@ -93,14 +93,6 @@ export interface ArtifactPublishOutput {
   mediaType: string;
   sizeBytes: number;
   sha256: string;
-}
-
-/** The session's publishable roots, in the shape the allowlist validates against. */
-function publishRoots(opts: CreateArtifactPublishExecutorOptions): PublishRoots {
-  return {
-    ...(opts.userFilesRoot !== undefined ? { userFilesRoot: opts.userFilesRoot } : {}),
-    ...(opts.ephemeralRoot !== undefined ? { ephemeralRoot: opts.ephemeralRoot } : {}),
-  };
 }
 
 export function createArtifactPublishExecutor(
@@ -133,7 +125,10 @@ export function createArtifactPublishExecutor(
       );
     }
 
-    const roots = publishRoots(opts);
+    const roots: PublishRoots = {
+      userFilesRoot: opts.userFilesRoot,
+      ephemeralRoot: opts.ephemeralRoot,
+    };
     const check = checkPublishablePath(input.path, roots);
     if (!check.ok) {
       throw new Error(check.reason);

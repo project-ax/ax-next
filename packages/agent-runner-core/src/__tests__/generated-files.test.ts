@@ -16,11 +16,12 @@ afterEach(async () => { await Promise.all(roots.splice(0).map(dir => fs.rm(dir, 
 describe('generated files', () => {
   it('publishes new nested files durably once, leaving existing files and caches alone', async () => {
     const dir = await root();
+    const scratch = await root();
     await fs.writeFile(path.join(dir, 'old.txt'), 'old');
     const call = vi.fn(async () => ({ artifactId: 'id', downloadUrl: 'ax://artifact/id' }));
     const callBinaryUpload = vi.fn(async () => ({ sha256: 'a'.repeat(64), size: 5 }));
     const tracker = await trackGeneratedFiles({ root: dir, warn: vi.fn(),
-      publish: createArtifactPublishExecutor({ userFilesRoot: dir, conversationId: 'c1', client: { call, callBinaryUpload } }),
+      publish: createArtifactPublishExecutor({ userFilesRoot: dir, ephemeralRoot: scratch, conversationId: 'c1', client: { call, callBinaryUpload } }),
     });
     for (const sub of ['reports', '.config', 'node_modules', 'venv', '__pycache__']) {
       await fs.mkdir(path.join(dir, sub));

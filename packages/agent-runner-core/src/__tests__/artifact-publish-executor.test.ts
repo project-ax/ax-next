@@ -252,13 +252,6 @@ describe('artifact_publish executor', () => {
         new RegExp(files.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
       );
     });
-
-    it('say plainly when the deployment wires no publishable location', async () => {
-      const bare = createArtifactPublishExecutor({});
-      await expect(bare(call({ path: '/anything/at/all.pdf' }))).rejects.toThrow(
-        /no publishable location wired/,
-      );
-    });
   });
 });
 
@@ -332,10 +325,11 @@ describe('artifact_publish executor — durable blob store path (TASK-68)', () =
     expect(calls.publish[0]).toMatchObject({ path: 'report.pdf' });
   });
 
-  it('rejects the scratch namespace when no scratch tier is wired', async () => {
+  it("rejects another scratch root's artifacts/ (only this session's is publishable)", async () => {
     const { client } = mockClient();
     const exec = createArtifactPublishExecutor({
       userFilesRoot: files,
+      ephemeralRoot: await fs.mkdtemp(path.join(os.tmpdir(), 'ax-eph-other-')),
       client,
       conversationId: 'conv-1',
     });
@@ -344,9 +338,11 @@ describe('artifact_publish executor — durable blob store path (TASK-68)', () =
     ).rejects.toThrow(/artifact-path-not-publishable/);
   });
 
-  it('rejects the durable tier when no durable mount is wired', async () => {
-    const { client } = mockClient();
+  it("rejects another agent's home (only this session's is publishable)", async () => {
+    await write(files, 'x.pdf', 'not this session');
+    const { client, calls } = mockClient();
     const exec = createArtifactPublishExecutor({
+      userFilesRoot: await fs.mkdtemp(path.join(os.tmpdir(), 'ax-files-other-')),
       ephemeralRoot: ephemeral,
       client,
       conversationId: 'conv-1',
@@ -354,6 +350,7 @@ describe('artifact_publish executor — durable blob store path (TASK-68)', () =
     await expect(exec(call({ path: path.join(files, 'x.pdf') }))).rejects.toThrow(
       /artifact-path-not-publishable/,
     );
+    expect(calls.put).toHaveLength(0);
   });
 
   it('validates before any blob.put — a symlink never reaches the host', async () => {
