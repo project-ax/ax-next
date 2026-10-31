@@ -55,7 +55,7 @@
     "@ax/validator-identity": "workspace:*",
     "@ax/validator-service": "workspace:*",
     "@ax/validator-skill": "workspace:*",
-    "zod": "^3.23.8"
+    "zod": "^4.6.6"
   },
   "devDependencies": {
     "@testcontainers/postgresql": "11.14.0",
