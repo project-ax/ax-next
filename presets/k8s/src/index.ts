@@ -1059,8 +1059,9 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   // registers; metered, not write-enforced), plus a periodic sweep that
   // backfills every personal agent. `agents:deleted` drops the agent-files
   // row. Its git-workspace gate and meter went with that tier (TASK-995); boot
-  // deletes the rows they left. Reuses the shared postgres pool (tables `disk_quota_v1_*`); the limit
-  // lives in the admin-editable `settings:disk-quota` storage key. Mounts GET
+  // deletes the rows they left, and no figure counts one. Reuses the shared
+  // postgres pool (tables `disk_quota_v1_*`); the limit lives in the
+  // admin-editable `settings:disk-quota` storage key. Mounts GET
   // /settings/storage (a person's own numbers) and GET /admin/storage + PUT
   // /admin/storage/limits, so it hard-depends on http:register-route +
   // auth:require-user.

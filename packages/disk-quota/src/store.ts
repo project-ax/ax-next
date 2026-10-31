@@ -53,12 +53,14 @@ export interface DiskQuotaStore {
   /**
    * The owner's agent files and uploads. Only those two kinds count: a
    * `workspace` row (the retired git tier) is not charged to anyone. Boot
-   * deletes those rows anyway (migrations.ts), so they never reach the
-   * ordering or the totals below either.
+   * deletes those rows (migrations.ts), but an older replica still running
+   * during a rolling deploy can write one after that, so `topOwners` and
+   * `totals` filter to the same two kinds (`COUNTED_KINDS_SQL`).
    */
   usageFor(ownerId: string): Promise<OwnerUsage>;
   /** The biggest owners first (by agent + file bytes, ties by id). */
   topOwners(limit: number): Promise<OwnerUsageRow[]>;
+  /** Owners holding counted bytes, and the sum of what `topOwners` shows. */
   totals(): Promise<UsageTotals>;
 
   // ---- the blob pass (design D6) ------------------------------------------
@@ -99,6 +101,13 @@ export interface BlobRow {
 }
 
 const BLOB_SOURCE_RE = '^blob:[0-9a-f]{64}$';
+
+/**
+ * The kinds a person is charged for, and so the only ones the admin list and
+ * totals add up. Same two as `usageFor`'s FILTERs: the totals are the sum of
+ * what the list shows.
+ */
+const COUNTED_KINDS_SQL = sql`kind IN ('agent-files', 'blob')`;
 
 /** pg returns SUM(bigint) as a numeric string (or null over zero rows). */
 function num(v: unknown): number {
@@ -165,6 +174,7 @@ export function createDiskQuotaStore(db: Kysely<DiskQuotaDatabase>): DiskQuotaSt
           SUM(bytes) FILTER (WHERE kind = 'agent-files') AS workspace_bytes,
           SUM(bytes) FILTER (WHERE kind = 'blob') AS file_bytes
         FROM disk_quota_v1_usage
+        WHERE ${COUNTED_KINDS_SQL}
         GROUP BY owner_id
         ORDER BY SUM(bytes) DESC, owner_id ASC
         LIMIT ${cap}
@@ -180,6 +190,7 @@ export function createDiskQuotaStore(db: Kysely<DiskQuotaDatabase>): DiskQuotaSt
       const res = await sql<{ owners: string; bytes: string | null }>`
         SELECT COUNT(DISTINCT owner_id) AS owners, SUM(bytes) AS bytes
         FROM disk_quota_v1_usage
+        WHERE ${COUNTED_KINDS_SQL}
       `.execute(db);
       const row = res.rows[0];
       return { owners: num(row?.owners), bytes: num(row?.bytes) };

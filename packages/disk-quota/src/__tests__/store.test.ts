@@ -312,6 +312,30 @@ describe('topOwners and totals', () => {
     expect((await store.topOwners(2)).length).toBe(2);
     expect(await store.totals()).toEqual({ owners: 5, bytes: 10 + 20 + 30 + 40 + 50 + 1 });
   });
+
+  // TASK-995: the boot DELETE drops leftover `workspace` rows, but an older
+  // replica still running during a rolling deploy can write one afterwards.
+  // Such a row is charged to nobody (usageFor), so the admin list and totals
+  // must not count it either: no inflated total, no skewed order, and no
+  // 0 / 0 row for an owner who holds nothing else.
+  it('ignore a leftover workspace row: no ordering weight, no extra owner, no bytes', async () => {
+    await store.upsertUsage('alice', agentFilesSource('agt_1'), 'agent-files', 40);
+    await store.upsertUsage('alice', 'blob:aaa', 'blob', 3);
+    await store.upsertUsage('bob', 'blob:bbb', 'blob', 20);
+    const before = await store.totals();
+    await sql`
+      INSERT INTO disk_quota_v1_usage (owner_id, source, kind, bytes) VALUES
+        ('bob', 'workspace:agt_2', 'workspace', 1000),
+        ('carol', 'workspace:agt_3', 'workspace', 5000)
+    `.execute(db);
+
+    expect(await store.topOwners(10)).toEqual([
+      { ownerId: 'alice', workspaceBytes: 40, fileBytes: 3 },
+      { ownerId: 'bob', workspaceBytes: 0, fileBytes: 20 },
+    ]);
+    expect(await store.totals()).toEqual(before);
+    expect(before).toEqual({ owners: 2, bytes: 63 });
+  });
 });
 
 // The blob pass (design D6). Rows are aged by hand: `upsertUsage` stamps the
