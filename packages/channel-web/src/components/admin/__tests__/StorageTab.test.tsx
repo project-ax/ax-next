@@ -268,27 +268,32 @@ describe('StorageTab — Your storage, for everyone', () => {
     await renderPerson();
     const alert = within(myCard()).getByRole('alert');
     expect(alert).toHaveTextContent("You're getting close to your limit");
-    expect(alert).toHaveTextContent("new file changes and uploads won't be saved");
-    expect(alert).toHaveTextContent('Ask an admin for more room');
+    expect(alert).toHaveTextContent("new uploads and published files won't be saved");
+    expect(alert.textContent ?? '').toMatch(/ask your agent to clean up files it no longer needs/i);
+    expect(alert.textContent ?? '').toMatch(/ask an admin for more room/i);
     // The default register: a heads-up, not an emergency.
     expect(alert).not.toHaveClass('text-destructive');
   });
 
-  it('says plainly that nothing new can be saved when it is full', async () => {
+  it('says plainly that uploads cannot be saved when it is full, and that chat still works', async () => {
     mine = makeMine({ usedBytes: 5 * GB, status: 'full' });
     await renderPerson();
     const alert = within(myCard()).getByRole('alert');
     expect(alert).toHaveTextContent('Your storage is full');
-    expect(alert).toHaveTextContent('Nothing new can be saved');
-    expect(alert).toHaveTextContent('Ask an admin for more room');
+    expect(alert).toHaveTextContent("New uploads and published files can't be saved");
+    expect(alert.textContent ?? '').toMatch(/keep chatting/i);
+    expect(alert.textContent ?? '').toMatch(/ask an admin for more room/i);
     expect(alert).toHaveClass('text-destructive');
   });
 
-  it('never tells anyone to delete anything, because no small chore gives room back', async () => {
+  it('points at the agent and an admin, and never says delete', async () => {
     for (const status of ['near-limit', 'full'] as const) {
       mine = makeMine({ usedBytes: 5 * GB, status });
       const { unmount } = await renderPerson();
-      expect(myCard().textContent ?? '').not.toMatch(/delet|remov|clean|free up|make space/i);
+      const text = myCard().textContent ?? '';
+      expect(text).toMatch(/ask your agent to clean up files it no longer needs/i);
+      expect(text).toMatch(/ask an admin for more room/i);
+      expect(text).not.toMatch(/delet|remov/i);
       unmount();
     }
   });

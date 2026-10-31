@@ -1,6 +1,6 @@
 import { defineConfig } from 'vitest/config';
 
-// Both test files leave the process. Each shells out to `mkfifo` through
+// The test files leave the process. Each shells out to `mkfifo` through
 // `spawnSync` (TASK-400), and confined-read.test.ts's race test runs a second
 // node process that swaps a directory for a symlink while the reader reads.
 // That race test bounds itself at 15s of reads and sets its own 30s timeout;

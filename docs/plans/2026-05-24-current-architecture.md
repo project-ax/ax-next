@@ -441,9 +441,10 @@ and consumer. Treat their *shape* as a contract; changing it is a boundary revie
     `{ blocked: true, reason }`; blocked means suspended or past 2x the daily
     limit. Spend is the larger of runner-reported and proxy-measured, plus helper
     calls. Design and the residual gaps: `2026-09-29-provider-call-metering.md`.
-- **Storage limit (TASK-690, `@ax/disk-quota`):** a per-owner limit on the ONE
-  shared volume that holds every agent workspace and every blob. Design note:
-  `2026-09-29-workspace-disk-quota.md`.
+- **Storage limit (TASK-690, `@ax/disk-quota`):** one per-owner budget that
+  spans blobs, each agent's `/files` (TASK-993) and, until TASK-995 removes the
+  git tier, agent workspaces. Design note: `2026-09-29-workspace-disk-quota.md`;
+  the `/files` half is design §12 of `2026-10-29-agent-files-simplification-design.md`.
   - `workspace:pre-apply` payload gained an optional **`sizeBytes`** ("roughly
     how many bytes this write adds"). It is set on BOTH firing sites: the
     `@ax/core` `workspace:apply` facade (sum of the put contents, full change
@@ -471,11 +472,29 @@ and consumer. Treat their *shape* as a contract; changing it is a boundary revie
     `conversations:drain-save-refusals`, a per-conversation watermark, closed
     codes only) as it builds each turn, dropping the ones keyed to its own
     turns, so a final/idle refusal or one whose runner exited is told once.
-  - `chat:start` veto reason **`storage-full`** (owned by `@ax/disk-quota`,
-    surfaces as `chat:start:storage-full`, channel-web maps it to a sentence):
-    the front door for a person whose storage is full, so they do not start
-    another turn whose files cannot be kept. Unlike the write gates it fails
-    **open**.
+  - **Over the limit, chat still works (TASK-993).** The `chat:start`
+    `storage-full` veto is gone, so a person whose storage is full can still ask
+    their agent to tidy up. `blob:pre-put` still refuses their uploads and
+    published files, and the Storage tab warns. channel-web keeps the
+    `chat:start:storage-full` label only so a refusal persisted before TASK-993
+    replays as itself.
+  - **Agent files are metered, not write-enforced (TASK-993).** The host-internal
+    service hook **`sandbox:user-files-usage { agentId } → { bytes }`** (not an
+    IPC action; types in `@ax/sandbox-mount-protocol`) is registered by
+    `@ax/sandbox-k8s` and `@ax/sandbox-subprocess`. Both answer with
+    `@ax/user-files-read`'s `measureConfinedUserFiles`: allocated bytes, every
+    folder opened through its held parent descriptor with `O_NOFOLLOW`, bounded
+    by entries/depth/time (a bounded reading is a logged lower bound). k8s
+    measures only through the read-only host mount
+    (`sandbox.filestore.hostReadPath`) and otherwise throws
+    `user-files-usage-unavailable` rather than start a pod. `@ax/disk-quota`
+    calls it (an `optionalCall`) after each assistant `chat:turn-end` and on its
+    sweep, coalesced per agent and at most two at once, and writes an
+    `agent-files:<agentId>` row (kind `agent-files`) charged to the owner
+    `agents:resolve` names, folded into the "Agent files" total.
+    `agents:deleted` drops that row. Filestore has no per-folder limit and the
+    sandbox writes NFS directly, so an agent can overshoot between measurements;
+    the Filestore capacity alert in `deploy/GKE.md` is the backstop.
   - The runner's save is the BINARY action **`workspace.commit-bundle`** (raw
     bundle body, `parentVersion`/`reason` query, up to 100 MiB, TASK-720). The
     JSON `workspace.commit-notify` (base64 inside the 4 MiB frame, so about
@@ -498,21 +517,29 @@ and consumer. Treat their *shape* as a contract; changing it is a boundary revie
   - The gate fails closed and is not a reservation (concurrent writes can each
     pass; overshoot is bounded by concurrent writes x the per-write cap). The
     limit is the admin-editable `settings:disk-quota`.
-  - **What frees storage (TASK-719).** For a person, only deleting a whole agent:
-    its repo is removed and `workspace:deleted { agentId }` makes the plugin drop
-    that agent's `workspace:<agentId>` row. Almost nothing frees blob bytes:
+  - **What frees storage (TASK-719, TASK-993).** The agent cleaning up its own
+    `/files`, which is re-measured at the next turn end or sweep; and deleting a
+    whole agent: its repo is removed and `workspace:deleted { agentId }` makes
+    the plugin drop that agent's `workspace:<agentId>` row, while `agents:deleted`
+    drops its `agent-files:<agentId>` row. Almost nothing frees blob bytes:
     `blob:delete` has one caller, the branding logo, which is unmetered; there is
     no blob GC; attachments and artifacts cannot be deleted; and git history keeps
-    everything inside a workspace. That is why the refusal sentences never tell a
-    person to delete anything: deleting an agent throws the agent away, and no
-    smaller chore helps.
+    everything inside a workspace. So the refusal sentences tell a person to ask
+    their agent to clean up files it no longer needs, or to ask an admin for more
+    room. There is no delete button in the Files tab (a host write path into an
+    agent-writable tree), and the copy never suggests deleting an agent.
   - **A refusal for a full disk carries a code.** The veto is `Rejection.code:
     'storage-full'`, which both `@ax/core` facades forward as
     `PluginError.reasonCode` (`code` stays `'rejected'`). The Rules,
-    agent-identity and routines routes key on `reasonCode`, never on the sentence
-    or the plugin name, and answer `413 { error: 'storage-full', message }` (the
-    chat send and skills routes had their own 413s already). The fail-closed
-    "could not check your storage" refusal has no code.
+    agent-identity and routines routes that used to key on it no longer write
+    through the storage limit (TASK-989). The chat send (an attachment) and
+    the skills routes still answer 413 with a `storage-full` code (each in its
+    own body shape), keyed on `code === 'rejected'` rather than on
+    `reasonCode`. `@ax/ipc-core`'s `blob.put` keys on `reasonCode` to
+    give the AGENT its own fixed sentence (TASK-993): don't delete or move files
+    on your own; tell the person they can ask you to clean up specific files, or
+    ask an admin. The fail-closed "could not check your storage" refusal has no
+    code.
 
 ### Stable — covered by ARCH-13's long-tail rollout
 

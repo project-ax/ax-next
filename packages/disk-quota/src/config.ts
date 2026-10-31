@@ -29,7 +29,9 @@ export interface DiskQuotaLimits {
 }
 
 export const DEFAULT_LIMITS: Readonly<DiskQuotaLimits> = Object.freeze({
-  limitMb: 1024,
+  // 10 GiB: agent files (clones, dependencies, work product) count toward it
+  // now (TASK-993; why this number: .claude/memory/decisions/2026-10-30-TASK-993.md).
+  limitMb: 10240,
   warnPercent: 80,
   graceMs: 86_400_000, // 24 h
 });

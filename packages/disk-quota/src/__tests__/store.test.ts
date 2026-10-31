@@ -4,7 +4,7 @@ import { Kysely, PostgresDialect, sql } from 'kysely';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import pg from 'pg';
 import { runDiskQuotaMigration, type DiskQuotaDatabase } from '../migrations.js';
-import { createDiskQuotaStore, type DiskQuotaStore } from '../store.js';
+import { agentFilesSource, createDiskQuotaStore, type DiskQuotaStore } from '../store.js';
 
 let container: StartedPostgreSqlContainer;
 let db: Kysely<DiskQuotaDatabase>;
@@ -83,6 +83,60 @@ describe('upsertUsage', () => {
     await expect(
       sql`INSERT INTO disk_quota_v1_usage (owner_id, source, kind, bytes) VALUES ('a', 's', 'blob', -1)`.execute(db),
     ).rejects.toThrow();
+    await expect(
+      sql`INSERT INTO disk_quota_v1_usage (owner_id, source, kind, bytes) VALUES ('a', 's', 'bogus', 1)`.execute(db),
+    ).rejects.toThrow();
+    // TASK-993: an agent's `/files` is its own kind.
+    await sql`INSERT INTO disk_quota_v1_usage (owner_id, source, kind, bytes) VALUES ('a', 'agent-files:agt_1', 'agent-files', 1)`.execute(
+      db,
+    );
+  });
+
+  // A database migrated by an earlier release still carries the two-kind CHECK
+  // (CREATE TABLE IF NOT EXISTS does nothing to an existing table), so the
+  // migration has to widen it in place, under the same name, exactly once.
+  it('a table created before agent files is widened in place, once', async () => {
+    await sql`
+      ALTER TABLE disk_quota_v1_usage
+        DROP CONSTRAINT disk_quota_v1_usage_kind_check,
+        ADD CONSTRAINT disk_quota_v1_usage_kind_check CHECK (kind IN ('workspace', 'blob'))
+    `.execute(db);
+    // The narrow table really does refuse the new kind (the test's own premise).
+    await expect(store.upsertUsage('alice', agentFilesSource('agt_1'), 'agent-files', 1)).rejects.toThrow();
+
+    const kindCheckOid = async (): Promise<string> => {
+      const r = await sql<{ oid: string }>`
+        SELECT oid::text AS oid FROM pg_constraint
+         WHERE conrelid = 'disk_quota_v1_usage'::regclass
+           AND conname = 'disk_quota_v1_usage_kind_check'
+      `.execute(db);
+      return r.rows[0]!.oid;
+    };
+    await runDiskQuotaMigration(db);
+    const widened = await kindCheckOid();
+    await runDiskQuotaMigration(db);
+    // "Once": a second boot leaves the widened constraint alone. A migration
+    // that dropped and re-added it every boot (a table lock and a full rescan
+    // on every host start) would give it a new oid here.
+    expect(await kindCheckOid()).toBe(widened);
+
+    await store.upsertUsage('alice', agentFilesSource('agt_1'), 'agent-files', 5 * MB);
+    expect((await store.usageFor('alice')).workspaceBytes).toBe(5 * MB);
+    const defs = await sql<{ def: string }>`
+      SELECT pg_get_constraintdef(oid) AS def FROM pg_constraint
+       WHERE conrelid = 'disk_quota_v1_usage'::regclass
+         AND conname = 'disk_quota_v1_usage_kind_check'
+    `.execute(db);
+    expect(defs.rows).toHaveLength(1);
+    expect(defs.rows[0]!.def).toContain('agent-files');
+    // Only one kind check on the table: the widening replaced, it did not add.
+    const kindChecks = await sql<{ conname: string }>`
+      SELECT conname FROM pg_constraint
+       WHERE conrelid = 'disk_quota_v1_usage'::regclass
+         AND contype = 'c'
+         AND pg_get_constraintdef(oid) LIKE '%kind%'
+    `.execute(db);
+    expect(kindChecks.rows.map((r) => r.conname)).toEqual(['disk_quota_v1_usage_kind_check']);
   });
 });
 
@@ -112,6 +166,16 @@ describe('usageFor', () => {
     await store.upsertUsage('t1', 'blob:x', 'blob', 1);
     expect(await store.usageFor('team:t1')).toEqual({ workspaceBytes: 9, fileBytes: 0 });
     expect(await store.usageFor('t1')).toEqual({ workspaceBytes: 0, fileBytes: 1 });
+  });
+
+  // TASK-993: the person-facing "Agent files" figure is workspaceBytes, and an
+  // agent's `/files` is agent files, never uploads.
+  it('usageFor counts agent files under workspaceBytes, never fileBytes', async () => {
+    expect(agentFilesSource('agt_1')).toBe('agent-files:agt_1');
+    await store.upsertUsage('alice', agentFilesSource('agt_1'), 'agent-files', 40);
+    await store.upsertUsage('alice', 'workspace:agt_1', 'workspace', 2);
+    await store.upsertUsage('alice', 'blob:aaa', 'blob', 3);
+    expect(await store.usageFor('alice')).toEqual({ workspaceBytes: 42, fileBytes: 3 });
   });
 });
 
@@ -175,7 +239,72 @@ describe('deleteWorkspaceUsage', () => {
   });
 });
 
+// TASK-993: an agent delete frees its `/files`, so its `agent-files:` row goes
+// too, for whichever owner it is charged to.
+describe('deleteAgentFilesUsage', () => {
+  const sha = 'b'.repeat(64);
+
+  it("drops that agent's row for every owner, and nothing else", async () => {
+    await store.upsertUsage('alice', agentFilesSource('agt_a'), 'agent-files', 10 * MB);
+    await store.upsertUsage('team:t1', agentFilesSource('agt_a'), 'agent-files', 20 * MB);
+    // The same agent's git row is TASK-995's (released by workspace:deleted).
+    await store.upsertUsage('alice', 'workspace:agt_a', 'workspace', 1 * MB);
+    await store.upsertUsage('alice', `blob:${sha}`, 'blob', 4 * MB);
+    // A neighbour, and an agent whose id merely BEGINS with the deleted one's.
+    await store.upsertUsage('alice', agentFilesSource('agt_b'), 'agent-files', 5 * MB);
+    await store.upsertUsage('alice', agentFilesSource('agt_ab'), 'agent-files', 3 * MB);
+
+    expect(await store.deleteAgentFilesUsage('agt_a')).toBe(2);
+    expect(await store.deleteAgentFilesUsage('agt_a')).toBe(0);
+
+    const left = await db.selectFrom('disk_quota_v1_usage').select(['owner_id', 'source']).execute();
+    expect(left.map((r) => `${r.owner_id} ${r.source}`).sort()).toEqual(
+      [
+        'alice agent-files:agt_ab',
+        'alice agent-files:agt_b',
+        `alice blob:${sha}`,
+        'alice workspace:agt_a',
+      ].sort(),
+    );
+  });
+
+  it('treats the agent id as data: wildcards and quotes match no other agent', async () => {
+    await store.upsertUsage('alice', agentFilesSource('agt_a'), 'agent-files', 1);
+    await store.upsertUsage('alice', agentFilesSource('agt_b'), 'agent-files', 2);
+    for (const hostile of ['%', 'agt_%', 'agt__', "x' OR '1'='1", '']) {
+      expect(await store.deleteAgentFilesUsage(hostile), hostile).toBe(0);
+    }
+    expect((await store.usageFor('alice')).workspaceBytes).toBe(3);
+  });
+
+  it('never deletes a row of another kind, even one whose source reads like agent files', async () => {
+    await sql`INSERT INTO disk_quota_v1_usage (owner_id, source, kind, bytes) VALUES ('alice', 'agent-files:agt_k', 'blob', 9)`.execute(
+      db,
+    );
+    expect(await store.deleteAgentFilesUsage('agt_k')).toBe(0);
+    expect((await store.usageFor('alice')).fileBytes).toBe(9);
+  });
+
+  it('deleteWorkspaceUsage never touches an agent-files row', async () => {
+    await store.upsertUsage('alice', agentFilesSource('agt_a'), 'agent-files', 7);
+    await store.upsertUsage('alice', 'workspace:agt_a', 'workspace', 1);
+    expect(await store.deleteWorkspaceUsage('agt_a')).toBe(1);
+    expect(await store.usageFor('alice')).toEqual({ workspaceBytes: 7, fileBytes: 0 });
+  });
+});
+
 describe('topOwners and totals', () => {
+  it('orders by a total that includes agent files', async () => {
+    await store.upsertUsage('files-heavy', 'blob:a', 'blob', 300);
+    await store.upsertUsage('agent-heavy', agentFilesSource('agt_1'), 'agent-files', 250);
+    await store.upsertUsage('agent-heavy', 'workspace:agt_1', 'workspace', 100);
+    await store.upsertUsage('agent-heavy', 'blob:b', 'blob', 1);
+    expect(await store.topOwners(10)).toEqual([
+      { ownerId: 'agent-heavy', workspaceBytes: 350, fileBytes: 1 },
+      { ownerId: 'files-heavy', workspaceBytes: 0, fileBytes: 300 },
+    ]);
+  });
+
   it('orders by total (workspace + files) descending, ties by owner id', async () => {
     await store.upsertUsage('small', 'blob:a', 'blob', 10);
     await store.upsertUsage('big-files', 'blob:b', 'blob', 900);

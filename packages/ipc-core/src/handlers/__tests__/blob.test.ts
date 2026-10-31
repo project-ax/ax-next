@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { PluginError } from '@ax/core';
-import { blobGetHandler, blobPutHandler } from '../blob.js';
+import { BLOB_PUT_STORAGE_FULL_FOR_AGENT, blobGetHandler, blobPutHandler } from '../blob.js';
 import type { HandlerBinary, HandlerErr, HandlerOk } from '../types.js';
 
 const VALID_SHA = 'a'.repeat(64);
@@ -53,13 +53,62 @@ describe('blob.put handler (raw-body REQUEST channel)', () => {
     // A storage-limit veto is not a fault: the runner must be able to tell
     // the agent (and through it the person) why the artifact was not saved.
     // A bare 500 reads as "the host broke" and tells nobody anything.
-    const reason = "You've used all of your storage (1 GB of 1 GB), so that file wasn't saved.";
+    // A refusal with no reason code (the fail-closed "could not check" one):
+    // its own sentence passes through.
+    const reason = "We couldn't check your storage just now, so that file wasn't saved. Please try again in a moment.";
     const bus = fakeBus(async () => {
       throw new PluginError({
         code: 'rejected',
         plugin: '@ax/blob-store-fs',
         hookName: 'blob:put',
         message: reason,
+      });
+    });
+    const result = (await blobPutHandler(Buffer.from('x'), fakeCtx(), bus as never)) as HandlerErr;
+    expect(result.status).toBe(409);
+    expect(result.body).toEqual({ error: { code: 'HOOK_REJECTED', message: reason } });
+  });
+
+  it('TASK-993: a FULL-disk refusal tells the agent not to delete files on its own, instead of relaying the person-facing remedy', async () => {
+    // The person-facing sentence says "ask your agent to clean up files it no
+    // longer needs ... Then try again". Handed to the model verbatim, that reads
+    // as an instruction to delete the person's files and retry.
+    const personFacing =
+      "You've used all of your storage (1 GB of 1 GB), so that file wasn't saved. " +
+      'To make room, ask your agent to clean up files it no longer needs, or ask an admin for more room. Then try again.';
+    const bus = fakeBus(async () => {
+      throw new PluginError({
+        code: 'rejected',
+        plugin: '@ax/core',
+        hookName: 'blob:put',
+        message: personFacing,
+        reasonCode: 'storage-full',
+      });
+    });
+    const ctx = fakeCtx() as unknown as { logger: { warn: ReturnType<typeof vi.fn> } };
+    const result = (await blobPutHandler(Buffer.from('x'), ctx as never, bus as never)) as HandlerErr;
+    expect(result.status).toBe(409);
+    expect(result.body).toEqual({
+      error: { code: 'HOOK_REJECTED', message: BLOB_PUT_STORAGE_FULL_FOR_AGENT },
+    });
+    // The operator still sees which policy refused, and the original sentence.
+    expect(ctx.logger.warn).toHaveBeenCalledWith(
+      'blob_put_refused',
+      expect.objectContaining({ reasonCode: 'storage-full', reason: personFacing }),
+    );
+    expect(BLOB_PUT_STORAGE_FULL_FOR_AGENT).toMatch(/do not delete or move any files on your own/i);
+    expect(BLOB_PUT_STORAGE_FULL_FOR_AGENT).not.toMatch(/try again|clean up files it no longer needs/i);
+  });
+
+  it('TASK-993: a refusal with some OTHER reason code still passes its own sentence', async () => {
+    const reason = 'Some other policy said no, for its own reasons.';
+    const bus = fakeBus(async () => {
+      throw new PluginError({
+        code: 'rejected',
+        plugin: '@ax/core',
+        hookName: 'blob:put',
+        message: reason,
+        reasonCode: 'some-other-policy',
       });
     });
     const result = (await blobPutHandler(Buffer.from('x'), fakeCtx(), bus as never)) as HandlerErr;

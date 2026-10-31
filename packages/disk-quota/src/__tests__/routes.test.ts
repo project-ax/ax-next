@@ -86,7 +86,7 @@ describe('auth', () => {
 });
 
 describe('GET /settings/storage', () => {
-  it('reports the signed-in person\'s numbers, with the default 1 GB limit and an 80% warning', async () => {
+  it('reports the signed-in person\'s numbers, with the default 10 GB limit and an 80% warning', async () => {
     const b = await boot({
       'workspace:usage': (async () => ({ bytes: 300 * MB })) as ServiceHandler,
     });
@@ -99,8 +99,8 @@ describe('GET /settings/storage', () => {
       status: 200,
       json: {
         usedBytes: 400 * MB,
-        limitBytes: 1024 * MB,
-        warnBytes: Math.floor((1024 * MB * 80) / 100),
+        limitBytes: 10240 * MB,
+        warnBytes: Math.floor((10240 * MB * 80) / 100),
         workspaceBytes: 300 * MB,
         fileBytes: 100 * MB,
         status: 'ok',
@@ -211,7 +211,7 @@ describe('GET /admin/storage', () => {
     expect(r.status).toBe(200);
     expect(r.json).toEqual({
       limits: { limitMb: 64, warnPercent: 50, graceMs: 86_400_000 },
-      defaults: { limitMb: 1024, warnPercent: 80, graceMs: 86_400_000 },
+      defaults: { limitMb: 10240, warnPercent: 80, graceMs: 86_400_000 },
       bounds: {
         limitMb: { min: 64, max: 10_485_760 },
         warnPercent: { min: 1, max: 99 },
@@ -291,7 +291,7 @@ describe('GET /admin/storage', () => {
     const b = await boot();
     const r = await b.request('GET', '/admin/storage');
     expect(r.json).toMatchObject({
-      limits: { limitMb: 1024, warnPercent: 80, graceMs: 86_400_000 },
+      limits: { limitMb: 10240, warnPercent: 80, graceMs: 86_400_000 },
       owners: [],
       ownerCount: 0,
       totalBytes: 0,
@@ -422,7 +422,7 @@ describe('PUT /admin/storage/limits', () => {
     await storeFiles(b, 'alice', 60 * MB);
     const alice = b.harness.ctx({ userId: 'alice' });
 
-    // Default 1 GB: a 5 MB upload passes.
+    // Default 10 GB: a 5 MB upload passes.
     expect((await b.harness.bus.fire('blob:pre-put', alice, { size: 5 * MB })).rejected).toBe(false);
 
     await b.request('PUT', '/admin/storage/limits', { body: { limitMb: 64 } });

@@ -302,3 +302,61 @@ export type ReadUserFilesOutput =
  * invokes via `bus.call<ReadUserFilesInput, ReadUserFilesOutput>`.
  */
 export type ReadUserFilesHandler = ServiceHandler<ReadUserFilesInput, ReadUserFilesOutput>;
+
+// ---------------------------------------------------------------------------
+// `sandbox:user-files-usage` — how much an agent's durable /files holds
+// (TASK-993), so the storage limit can count it.
+//
+// HOST-INTERNAL, NOT AN IPC ACTION. Like `sandbox:read-user-files` it is
+// registered by the sandbox provider that owns host-read and called on the
+// host (by `@ax/disk-quota`); it never crosses the sandbox edge, so there is
+// no untrusted wire here and no schema. The tree it measures IS untrusted
+// (agent-written), and the realizations treat it so.
+//
+// THE ANSWER is allocated bytes (what the files take up on disk, not their
+// apparent length), summed over the agent's own folder. A realization never
+// follows a symlink: a link counts as the link itself, so a link to a sibling
+// agent's folder (or to `/`) adds nothing of theirs. A realization may bound
+// its walk (entries, depth, time) against a hostile tree; a bounded reading is
+// a LOWER bound, the tree holds at least that much, and the realization logs
+// that it was partial rather than saying so here (the one caller cannot do
+// anything different with the bit).
+//
+// ERRORS. A realization THROWS, never answers 0, when it cannot measure:
+// - `invalid-input` — `agentId` is missing or empty.
+// - `home-unavailable` — this deployment resolves no durable /files home for
+//   the agent (no `sandbox:resolve-mounts` resolver, or no `role: 'user-files'`
+//   mount).
+// - `unrealizable-mount-kind` — the resolved mount is a kind this provider
+//   cannot reach (a mis-wired composition).
+// - `user-files-usage-unavailable` — the provider has no cheap way to reach
+//   the files (the k8s provider without its read-only host mount); it does not
+//   fall back to anything expensive. DEPLOYMENT-WIDE, never per agent: a caller
+//   may stop asking for the life of the process after the first one (the
+//   storage meter does). A provider that can measure some agents and not
+//   others must use another code for the ones it can't.
+// - this process already has its maximum of measurements running (they may be
+//   stuck on a hung export): a transient failure, so try again later. Today it
+//   is the walk's own error (`@ax/user-files-read` code `walk-busy`, which the
+//   bus delivers as the cause of an `unknown` PluginError), and a caller must
+//   never treat it like `user-files-usage-unavailable`.
+// - a missing export or an unreadable root throws the walk's own error.
+// An agent folder that does not exist yet (the agent has never run) is 0: that
+// is a true reading, not a failure.
+// ---------------------------------------------------------------------------
+
+/** Input to `sandbox:user-files-usage`: just the agent whose /files to measure. */
+export interface UserFilesUsageInput {
+  agentId: string;
+}
+
+/** Output of `sandbox:user-files-usage`: allocated bytes, possibly a lower bound. */
+export interface UserFilesUsageOutput {
+  bytes: number;
+}
+
+/**
+ * The full `sandbox:user-files-usage` handler signature — a provider satisfies
+ * it via `registerService<UserFilesUsageInput, UserFilesUsageOutput>`.
+ */
+export type UserFilesUsageHandler = ServiceHandler<UserFilesUsageInput, UserFilesUsageOutput>;

@@ -7,6 +7,8 @@ import type {
   ReadUserFilesOutput,
   ResolveMountsInput,
   ResolveMountsOutput,
+  UserFilesUsageInput,
+  UserFilesUsageOutput,
 } from '@ax/sandbox-mount-protocol';
 import { createSandboxK8sPlugin } from '../plugin.js';
 import { RUNNER_COMPONENT_SELECTOR } from '../sweep.js';
@@ -156,6 +158,39 @@ describe('createSandboxK8sPlugin — §11 host-read + cleanup wiring', () => {
     const api = makeMockK8sApi();
     const h = await makeWiredHarness(api);
     expect(h.bus.hasService('sandbox:read-user-files')).toBe(true);
+    await h.close();
+  });
+
+  it('registers sandbox:user-files-usage (TASK-993)', async () => {
+    const api = makeMockK8sApi();
+    const plugin = createSandboxK8sPlugin({
+      api,
+      namespace: 'ax-test',
+      hostIpcUrl: TEST_HOST_IPC_URL,
+      orphanSweepIntervalMs: 0,
+    });
+    // The manifest says so (bootstrap's verifyCalls reads this, so a disk-quota
+    // that calls it is satisfied at boot) and so does the bus.
+    expect(plugin.manifest.registers).toContain('sandbox:user-files-usage');
+    const h = await makeWiredHarness(api);
+    expect(h.bus.hasService('sandbox:user-files-usage')).toBe(true);
+    await h.close();
+  });
+
+  it('sandbox:user-files-usage without a host read root is user-files-usage-unavailable, and creates NO pod', async () => {
+    // The pod-per-call realization is fine for a click in the Files tab and far
+    // too expensive for a meter that runs at every turn end. So there is no pod
+    // fallback here: an unset root is an error, never a pod and never a 0.
+    const api = makeMockK8sApi();
+    const h = await makeWiredHarness(api);
+    await expect(
+      h.bus.call<UserFilesUsageInput, UserFilesUsageOutput>(
+        'sandbox:user-files-usage',
+        h.ctx(),
+        { agentId: 'agt_Meter' },
+      ),
+    ).rejects.toMatchObject({ code: 'user-files-usage-unavailable' });
+    expect(api.creates).toHaveLength(0);
     await h.close();
   });
 

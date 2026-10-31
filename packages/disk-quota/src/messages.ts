@@ -5,12 +5,10 @@
 // agent on the runner-commit path (which relays it to the person), and to the
 // person on the upload paths. So these are written for a non-technical reader.
 //
-// One thing they never say is "delete something to make room". Deleting a whole
-// agent does give its workspace back, but that throws the agent away, and no
-// smaller chore makes room: attachments and artifacts cannot be deleted, and git
-// history keeps every blob inside a workspace. So that advice would send someone
-// on a hunt that mostly cannot end. What is true is that an admin can raise the
-// limit.
+// There is no delete button, so a person-facing sentence never says "delete" or
+// "remove". What is true: the agent can clean up files it no longer needs (a
+// person asks it, in chat), and an admin can raise the limit. The upload one
+// says both. The git-tier sentence below is TASK-995's to rewrite.
 // ---------------------------------------------------------------------------
 
 const UNITS = ['B', 'KB', 'MB', 'GB', 'TB'] as const;
@@ -53,11 +51,16 @@ export function workspaceFullMessage(usedBytes: number, limitBytes: number): str
   );
 }
 
-/** Person-facing: shown when an upload or a published file is refused. */
+/**
+ * Person-facing: shown when an upload is refused (the chat send's attachment,
+ * the skills routes). An agent's own refused publish reaches the agent as
+ * `@ax/ipc-core`'s agent-addressed sentence instead (TASK-993).
+ */
 export function blobFullMessage(usedBytes: number, limitBytes: number): string {
   return (
     `You've used all of your storage (${formatBytes(usedBytes)} of ${formatBytes(limitBytes)}), ` +
-    "so that file wasn't saved. An admin can make more room, and then you can try again."
+    "so that file wasn't saved. To make room, ask your agent to clean up files it no longer needs, " +
+    'or ask an admin for more room. Then try again.'
   );
 }
 

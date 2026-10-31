@@ -12,6 +12,7 @@ import { resolveConfig } from '../config.js';
 import {
   buildCleanupCommand,
   cleanupUserFiles,
+  measureUserFiles,
   ownerFromAgentId,
   parseReadOutput,
   readUserFiles,
@@ -34,6 +35,8 @@ const CONFIG = resolveConfig({ hostIpcUrl: 'http://h:80', namespace: 'ax-test' }
 // Linux /proc. Off Linux it throws `unsupported-platform` (TASK-899), so the
 // tests that read real files skip there. CI runs them on ubuntu.
 const ON_LINUX = process.platform === 'linux' && existsSync('/proc/self/fd');
+// Root reads through a mode-000 folder, so permission tests skip as root.
+const IS_ROOT = process.getuid?.() === 0;
 
 function ctx() {
   return makeAgentContext({ sessionId: 's', agentId: 'a', userId: 'u1' });
@@ -690,6 +693,200 @@ describe('readUserFiles (host-mounted realization)', () => {
     });
     // The default config has no host-read root, so the pod path is still live.
     expect(api.creates).toHaveLength(1);
+  });
+
+  // -------------------------------------------------------------------------
+  // TASK-993 — `sandbox:user-files-usage`: how much an agent's /files holds,
+  // for the storage limit. Host mount only: never a pod per turn end.
+  // -------------------------------------------------------------------------
+  describe('measureUserFiles (TASK-993)', () => {
+    /** Allocated bytes of the tree at `dir`, never following a link: the
+     *  root plus every entry, sized with lstat. */
+    async function lstatOracle(dir: string): Promise<number> {
+      const st = await fs.lstat(dir);
+      let total = st.blocks * 512;
+      if (!st.isDirectory()) return total;
+      for (const name of await fs.readdir(dir)) total += await lstatOracle(path.join(dir, name));
+      return total;
+    }
+
+    /** A logger that keeps its warnings, so a test can read them. */
+    function captureLog(): { log: Logger; warns: Array<[string, unknown]> } {
+      const warns: Array<[string, unknown]> = [];
+      const make = (): Logger => ({
+        debug: () => undefined,
+        info: () => undefined,
+        warn: (msg, bindings) => {
+          warns.push([msg, bindings]);
+        },
+        error: () => undefined,
+        child: () => make(),
+      });
+      return { log: make(), warns };
+    }
+
+    it('measureUserFiles: no resolver means home-unavailable', async () => {
+      await expect(
+        measureUserFiles(ctx(), new HookBus(), hostReadConfig(), log, { agentId: 'agent-abc' }),
+      ).rejects.toMatchObject({ code: 'home-unavailable' });
+    });
+
+    it('a resolver with no user-files mount means home-unavailable', async () => {
+      const bus = new HookBus();
+      bus.registerService<ResolveMountsInput, ResolveMountsOutput>(
+        'sandbox:resolve-mounts',
+        'mock-filestore',
+        async () => ({ mounts: [] }),
+      );
+      await expect(
+        measureUserFiles(ctx(), bus, hostReadConfig(), log, { agentId: 'agent-abc' }),
+      ).rejects.toMatchObject({ code: 'home-unavailable' });
+    });
+
+    it('without a host read root it throws user-files-usage-unavailable', async () => {
+      // `measureUserFiles` takes no k8s API, so it cannot fall back to a pod;
+      // plugin.test.ts pins that the registered hook creates none.
+      const { bus } = busWithNfs('files.example.invalid');
+      await expect(
+        measureUserFiles(ctx(), bus, CONFIG, log, { agentId: 'agent-abc' }),
+      ).rejects.toMatchObject({ code: 'user-files-usage-unavailable' });
+    });
+
+    it('asks the resolver for a READ-ONLY realization', async () => {
+      const { bus, seen } = busWithNfs('files.example.invalid');
+      // Off Linux the walk itself throws unsupported-platform; the resolve
+      // happens first either way.
+      await measureUserFiles(ctx(), bus, hostReadConfig(), log, { agentId: 'agent-abc' }).catch(
+        () => undefined,
+      );
+      expect(seen.readOnly).toBe(true);
+    });
+
+    it('an unsafe subPath is refused before any read', async () => {
+      const bus = new HookBus();
+      bus.registerService<ResolveMountsInput, ResolveMountsOutput>(
+        'sandbox:resolve-mounts',
+        'mock-filestore',
+        async (_c, input) => ({
+          mounts: [
+            {
+              kind: 'nfs',
+              mountPath: '/workspace',
+              server: 'files.example.invalid',
+              exportPath: '/vol1/agents',
+              subPath: `../${input.owner.agentId}`,
+              readOnly: true,
+              role: 'user-files',
+            },
+          ],
+        }),
+      );
+      await expect(
+        measureUserFiles(ctx(), bus, hostReadConfig(), log, { agentId: 'agent-abc' }),
+      ).rejects.toMatchObject({ code: 'unsafe-subpath' });
+    });
+
+    it('a localDir mount is unrealizable here', async () => {
+      const bus = new HookBus();
+      bus.registerService<ResolveMountsInput, ResolveMountsOutput>(
+        'sandbox:resolve-mounts',
+        'mock-localdir',
+        async () => ({
+          mounts: [
+            {
+              kind: 'localDir',
+              mountPath: '/workspace',
+              hostPath: '/x/agent-abc',
+              readOnly: true,
+              role: 'user-files',
+            },
+          ],
+        }),
+      );
+      await expect(
+        measureUserFiles(ctx(), bus, hostReadConfig(), log, { agentId: 'agent-abc' }),
+      ).rejects.toMatchObject({ code: 'unrealizable-mount-kind' });
+    });
+
+    it('a missing or empty agentId is invalid-input', async () => {
+      const { bus, seen } = busWithNfs('files.example.invalid');
+      for (const input of [{ agentId: '' }, {}, undefined, { agentId: 7 }]) {
+        await expect(
+          measureUserFiles(
+            ctx(),
+            bus,
+            hostReadConfig(),
+            log,
+            input as unknown as { agentId: string },
+          ),
+        ).rejects.toMatchObject({ code: 'invalid-input' });
+      }
+      // Refused before the resolver was even asked.
+      expect(seen.readOnly).toBeUndefined();
+    });
+
+    it.skipIf(!ON_LINUX)('measures <hostReadRoot>/<subPath>: bytes equal the lstat oracle', async () => {
+      const dir = await seed('agent-abc');
+      await fs.writeFile(path.join(dir, 'docs', 'big.bin'), Buffer.alloc(256 * 1024, 7));
+      const { bus } = busWithNfs('files.example.invalid');
+      const out = await measureUserFiles(ctx(), bus, hostReadConfig(), log, {
+        agentId: 'agent-abc',
+      });
+      expect(out).toEqual({ bytes: await lstatOracle(dir) });
+      expect(out.bytes).toBeGreaterThanOrEqual(256 * 1024);
+    });
+
+    it.skipIf(!ON_LINUX)("CROSS-TENANT: a sibling agent's folder, even behind a symlink in this one, is never counted", async () => {
+      const mine = await seed('agent-abc');
+      const other = await seed('agent-xyz');
+      // The sibling holds far more than this agent's own folder.
+      const SIBLING_BYTES = 4 * 1024 * 1024;
+      await fs.writeFile(path.join(other, 'huge.bin'), Buffer.alloc(SIBLING_BYTES, 1));
+      // Links planted in this agent's own folder: to the sibling, to the
+      // export root, and to the host's `/`. Each counts as the link itself.
+      await fs.symlink(other, path.join(mine, 'escape'));
+      await fs.symlink('..', path.join(mine, 'up'));
+      await fs.symlink('/', path.join(mine, 'slash'));
+      const { bus } = busWithNfs('files.example.invalid');
+      const out = await measureUserFiles(ctx(), bus, hostReadConfig(), log, {
+        agentId: 'agent-abc',
+      });
+      expect(out.bytes).toBe(await lstatOracle(mine));
+      expect(out.bytes).toBeLessThan(SIBLING_BYTES);
+    });
+
+    it.skipIf(!ON_LINUX || IS_ROOT)('a partial reading still answers bytes and logs user_files_usage_partial', async () => {
+      const dir = await seed('agent-abc');
+      const locked = path.join(dir, 'locked');
+      await fs.mkdir(locked);
+      const HIDDEN_BYTES = 256 * 1024;
+      await fs.writeFile(path.join(locked, 'hidden.bin'), Buffer.alloc(HIDDEN_BYTES, 3));
+      await fs.chmod(locked, 0o000);
+      try {
+        const { bus } = busWithNfs('files.example.invalid');
+        const { log: captured, warns } = captureLog();
+        const out = await measureUserFiles(ctx(), bus, hostReadConfig(), captured, {
+          agentId: 'agent-abc',
+        });
+        // A lower bound: what could be seen is counted, the locked folder's
+        // contents are not, and the gap is logged rather than silent.
+        expect(out.bytes).toBeGreaterThan(0);
+        expect(out.bytes).toBeLessThan(HIDDEN_BYTES);
+        const partial = warns.filter(([msg]) => msg === 'user_files_usage_partial');
+        expect(partial).toHaveLength(1);
+        expect(partial[0]![1]).toEqual({ agentId: 'agent-abc', entries: expect.any(Number) });
+      } finally {
+        await fs.chmod(locked, 0o755);
+      }
+    });
+
+    it.skipIf(!ON_LINUX)('a complete reading logs no partial warning', async () => {
+      await seed('agent-abc');
+      const { bus } = busWithNfs('files.example.invalid');
+      const { log: captured, warns } = captureLog();
+      await measureUserFiles(ctx(), bus, hostReadConfig(), captured, { agentId: 'agent-abc' });
+      expect(warns).toEqual([]);
+    });
   });
 });
 

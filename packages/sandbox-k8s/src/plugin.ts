@@ -4,6 +4,8 @@ import { OpenSessionResultSchema } from '@ax/sandbox-protocol';
 import type {
   ReadUserFilesInput,
   ReadUserFilesOutput,
+  UserFilesUsageInput,
+  UserFilesUsageOutput,
 } from '@ax/sandbox-mount-protocol';
 import type { ZodType } from 'zod';
 import { resolveConfig, type SandboxK8sConfig } from './config.js';
@@ -19,6 +21,7 @@ import {
 import { startOrphanSweeper, type OrphanSweeperHandle } from './sweep.js';
 import {
   cleanupUserFiles,
+  measureUserFiles,
   ownerFromAgentId,
   readUserFiles,
 } from './user-files-ops.js';
@@ -75,7 +78,17 @@ export function createSandboxK8sPlugin(
       // the host pod (`userFilesHostReadRoot`) or, when that is unset, by a
       // short-lived pod that mounts the export read-only. Single-homed
       // registration either way — see user-files-ops.ts.
-      registers: ['sandbox:open-session', 'sandbox:read-user-files', 'sandbox:session-status'],
+      //
+      // `sandbox:user-files-usage` (TASK-993): how much an agent's durable
+      // subtree holds, for the storage limit. Host mount ONLY — with
+      // `userFilesHostReadRoot` unset it throws `user-files-usage-unavailable`
+      // rather than run a pod per turn end.
+      registers: [
+        'sandbox:open-session',
+        'sandbox:read-user-files',
+        'sandbox:session-status',
+        'sandbox:user-files-usage',
+      ],
       // Mirrors sandbox-subprocess. We DON'T list ipc:start / ipc:stop /
       // llm-proxy:start because the k8s pod runs its own listeners — those
       // host-side hooks are subprocess-impl-specific. Once the pod-side
@@ -87,16 +100,18 @@ export function createSandboxK8sPlugin(
       // each `nfs` mount as an inline pod volume + subPath mount. It stays an
       // OPTIONAL call because boot does not need it, but open-session REFUSES
       // an owned session that gets no `role:'user-files'` mount (TASK-992: the
-      // durable /files home is required). The two §11 host-side ops below,
-      // `sandbox:read-user-files` and the `agents:deleted` cleanup, call it to
-      // learn an agent's server/exportPath/subPath and keep degrading
-      // gracefully when no resolver is loaded.
+      // durable /files home is required). The host-side ops below,
+      // `sandbox:read-user-files`, `sandbox:user-files-usage` and the
+      // `agents:deleted` cleanup, call it to learn an agent's
+      // server/exportPath/subPath and keep degrading gracefully when no
+      // resolver is loaded (the meter by throwing, never by answering 0).
       optionalCalls: [
         {
           hook: 'sandbox:resolve-mounts',
           degradation:
             'open-session REFUSES owned sessions (no durable /files home); ' +
-            'host-read answers unavailable and agent-delete cleanup is a no-op',
+            'host-read answers unavailable, the usage meter throws ' +
+            'home-unavailable, and agent-delete cleanup is a no-op',
         },
         {
           hook: 'sandbox:memory-mounts',
@@ -201,6 +216,16 @@ export function createSandboxK8sPlugin(
         'sandbox:read-user-files',
         PLUGIN_NAME,
         async (ctx, input) => readUserFiles(ctx, bus, api, config, ctx.logger, input),
+        { timeoutMs: 180_000 },
+      );
+
+      // TASK-993 usage meter. Read-only, host mount only, never a pod (the
+      // handler is not even given the k8s API). The walk bounds itself at
+      // 120 s; the timeout is the bus-side backstop above that.
+      bus.registerService<UserFilesUsageInput, UserFilesUsageOutput>(
+        'sandbox:user-files-usage',
+        PLUGIN_NAME,
+        async (ctx, input) => measureUserFiles(ctx, bus, config, ctx.logger, input),
         { timeoutMs: 180_000 },
       );
 

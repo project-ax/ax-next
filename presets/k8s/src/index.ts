@@ -1049,21 +1049,27 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   // on http:register-route + auth:require-user.
   plugins.push(createUsageLimitsPlugin());
 
-  // ----- 7d. per-owner storage limit (TASK-690) ---------------------------
-  // Prod keeps every agent workspace (bare git repos) and every uploaded or
-  // published file on ONE shared volume; this is the per-person limit on it.
-  // GATES the two places bytes are written: `workspace:pre-apply` (veto; fires
-  // on the runner's commit AND on every in-process workspace:apply) and
-  // `blob:pre-put` (veto; fired by the `blob:put` facade every blob backend
-  // registers behind). Fails CLOSED. METERS `blob:stored` (a ledger row per
-  // owner and sha256) and `workspace:applied` (re-measures that agent's
-  // workspace through the optional `workspace:usage`, which only the local git
-  // backend registers today), plus a periodic sweep that backfills every
-  // personal agent. Reuses the shared postgres pool (tables
-  // `disk_quota_v1_*`); the limit lives in the admin-editable
-  // `settings:disk-quota` storage key. Mounts GET /settings/storage (a person's
-  // own numbers) and GET /admin/storage + PUT /admin/storage/limits, so it
-  // hard-depends on http:register-route + auth:require-user.
+  // ----- 7d. per-owner storage limit (TASK-690, agent files TASK-993) -----
+  // Prod keeps every agent workspace (bare git repos), every agent's `/files`
+  // folder and every uploaded or published file on shared volumes; this is the
+  // ONE per-person budget over all of it: blobs, each agent's `/files`, and
+  // (until TASK-995) git workspaces. GATES the two places that write bytes
+  // the host can refuse: `workspace:pre-apply` (veto; fires on the runner's
+  // commit AND on every in-process workspace:apply) and `blob:pre-put` (veto;
+  // fired by the `blob:put` facade every blob backend registers behind). Fails
+  // CLOSED. `chat:start` is NEVER vetoed: a full person can still talk to their
+  // agent and ask it to tidy up. METERS `blob:stored` (a ledger row per owner
+  // and sha256), `workspace:applied` (re-measures that agent's workspace
+  // through the optional `workspace:usage`, which only the local git backend
+  // registers today) and each assistant `chat:turn-end` (re-measures that
+  // agent's `/files` through `sandbox:user-files-usage`, which @ax/sandbox-k8s
+  // registers; metered, not write-enforced), plus a periodic sweep that
+  // backfills every personal agent. `agents:deleted` drops the agent-files
+  // row. Reuses the shared postgres pool (tables `disk_quota_v1_*`); the limit
+  // lives in the admin-editable `settings:disk-quota` storage key. Mounts GET
+  // /settings/storage (a person's own numbers) and GET /admin/storage + PUT
+  // /admin/storage/limits, so it hard-depends on http:register-route +
+  // auth:require-user.
   plugins.push(createDiskQuotaPlugin());
 
   // ----- 7e. blob GC, REPORT MODE (TASK-777; blob GC design D4/D5/D8) -----

@@ -14,6 +14,14 @@ describe('sandbox-subprocess registration', () => {
     expect(bus.hasService('sandbox:open-session')).toBe(true);
   });
 
+  it('registers sandbox:user-files-usage, in the manifest and on the bus (TASK-993)', async () => {
+    const bus = new HookBus();
+    const plugin = createSandboxSubprocessPlugin();
+    expect(plugin.manifest.registers).toContain('sandbox:user-files-usage');
+    await plugin.init({ bus, config: {} });
+    expect(bus.hasService('sandbox:user-files-usage')).toBe(true);
+  });
+
   it('no longer registers the deleted sandbox:spawn hook', async () => {
     const bus = new HookBus();
     await createSandboxSubprocessPlugin().init({ bus, config: {} });

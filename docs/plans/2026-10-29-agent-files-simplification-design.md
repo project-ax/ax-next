@@ -327,6 +327,26 @@ Decided 2026-10-30: plain reset; nobody is using ax yet.
 - `disk-quota` switches its `workspace:deleted` subscriber to `agents:deleted`.
 - Filestore capacity alert as the noisy-neighbour backstop. Decided 2026-10-29.
 - Delete TASK-720 save-refused plumbing.
+- **As built (TASK-993):** `sandbox:user-files-usage` is answered by
+  `@ax/user-files-read`'s `measureConfinedUserFiles` (allocated bytes; every
+  folder opened through its held parent descriptor with `O_NOFOLLOW`; bounded
+  by entries, depth and time, a bounded reading logged as partial). k8s
+  measures only through the read-only host mount (`hostReadPath`) and throws
+  `user-files-usage-unavailable` without it. `@ax/disk-quota` measures after
+  each assistant `chat:turn-end` and on its sweep, into a new ledger kind
+  `agent-files` (`agent-files:<agentId>`) charged to the agent's owner and
+  folded into "Agent files". Default limit is now 10 GiB. A missing mount, a
+  missing export or an unreadable home is an error; an agent folder that does
+  not exist yet (no session yet) is 0.
+- **As built (TASK-993):** `storage-full-copy.ts` was already dead (no caller
+  since TASK-989) and is deleted; the live copy is channel-web's
+  `lib/storage-copy.ts` and disk-quota's `blobFullMessage`, both now pointing at
+  the agent and an admin. `agents:deleted` drops the `agent-files` row; the git
+  `workspace:deleted` subscriber stays until TASK-995 (git removal), as does the
+  TASK-720 plumbing.
+- **As built (TASK-993):** the Filestore capacity alert is documented in
+  `deploy/GKE.md` ("Alert before the user-files share fills up"); alerting is
+  not managed in this repo.
 
 ## 13. Ops
 

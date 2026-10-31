@@ -14,8 +14,8 @@
  * that one is worded for the model (it names paths and says what to try) and
  * never crosses to a person (TASK-719). No codes, no blame.
  *
- * `storage-full` mirrors `STORAGE_FULL_RULES` (`lib/storage-full-copy.ts`):
- * only an admin can make room, so it says that rather than inventing a chore.
+ * `storage-full` is the git-tier refusal: only an admin can make room for a
+ * refused git save, so it says that rather than inventing a chore.
  * `too-large` carries the one number here because it is not an admin's to
  * change — it is the most one reply can save (the host's 100 MiB upload
  * budget), and "try smaller files" is useless without a sense of how small.

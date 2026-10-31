@@ -5,25 +5,31 @@ import {
   type HookBus,
   type Logger,
 } from '@ax/core';
-import { readConfinedUserFiles } from '@ax/user-files-read';
+import { measureConfinedUserFiles, readConfinedUserFiles } from '@ax/user-files-read';
 import type {
   MountSpec,
   ReadUserFilesInput,
   ReadUserFilesOutput,
   ResolveMountsInput,
   ResolveMountsOutput,
+  UserFilesUsageInput,
+  UserFilesUsageOutput,
 } from '@ax/sandbox-mount-protocol';
 
 // ---------------------------------------------------------------------------
-// user-files-host-ops — the subprocess provider's HOST-SIDE realizations of
-// the two filestore-user-files deferred mechanisms (design §11):
+// user-files-host-ops — the subprocess provider's three HOST-SIDE user-files
+// ops (the two filestore-user-files deferred mechanisms of design §11, plus
+// the meter):
 //
 //   1. host-read   — `sandbox:read-user-files` reads an agent's durable
 //                    user-files subtree READ-ONLY, for the web UI.
 //   2. cleanup     — an `agents:deleted` subscriber `rm -rf`s the agent's
 //                    durable user-files subtree.
+//   3. usage       — `sandbox:user-files-usage` sums the allocated bytes of
+//                    that subtree for the storage limit (TASK-993), with
+//                    `@ax/user-files-read`'s confined, bounded, no-follow walk.
 //
-// Both reuse the EXISTING `sandbox:resolve-mounts` hook to learn WHERE an
+// All three reuse the EXISTING `sandbox:resolve-mounts` hook to learn WHERE an
 // agent's files live (`subPath`/`hostPath` keyed off `owner.agentId`) — the
 // design's "owner-keyed and reusable" promise. The subprocess sandbox shares
 // the host filesystem, so realization is direct: read/delete the resolved
@@ -33,6 +39,9 @@ import type {
 // realizable here and is an EXPLICIT error, never a silent skip (design §10).
 //
 // SECURITY (design §9 + §11):
+//   - usage opens nothing but folders, each relative to its parent's held
+//     descriptor with `O_NOFOLLOW`, so a planted or swapped link can't make it
+//     count (or even list) a sibling's subtree. It never opens a file at all.
 //   - host-read NEVER opens a writable handle — it only `readFile`/`readdir`s,
 //     so write access is never granted (design §11: "without granting write").
 //     Structurally, not by discipline: `@ax/user-files-read` has no write
@@ -148,6 +157,55 @@ export async function readUserFiles(
   );
   if (root === undefined) return { kind: 'unavailable' };
   return readConfinedUserFiles(root, input.relPath);
+}
+
+/**
+ * Realize `sandbox:user-files-usage` (TASK-993) for the subprocess provider:
+ * resolve the agent's `localDir` user-files mount READ-ONLY and sum the
+ * allocated bytes under its `hostPath`.
+ *
+ * The walk is `@ax/user-files-read`'s `measureConfinedUserFiles`, shared with
+ * the k8s provider's host-mounted realization: no link followed, nothing but
+ * folders opened, bounded by entries, depth and time. A bounded or partly
+ * unreadable reading is a lower bound; it is returned and logged as
+ * `user_files_usage_partial`. A folder that does not exist yet (the agent has
+ * never run) is 0. No home resolved throws `home-unavailable`, and a broken
+ * read throws: neither is ever answered as 0.
+ */
+export async function measureUserFiles(
+  ctx: AgentContext,
+  bus: HookBus,
+  pluginName: string,
+  log: Logger,
+  input: UserFilesUsageInput,
+): Promise<UserFilesUsageOutput> {
+  const agentId: unknown = (input as Partial<UserFilesUsageInput> | undefined)?.agentId;
+  if (typeof agentId !== 'string' || agentId.length === 0) {
+    throw new PluginError({
+      code: 'invalid-input',
+      plugin: pluginName,
+      message: 'sandbox:user-files-usage needs a non-empty agentId',
+    });
+  }
+  const root = await resolveUserFilesHostPath(
+    ctx,
+    bus,
+    ownerFromAgentId(agentId, ctx.userId),
+    pluginName,
+    /* readOnly */ true,
+  );
+  if (root === undefined) {
+    throw new PluginError({
+      code: 'home-unavailable',
+      plugin: pluginName,
+      message: "this agent has no durable /files home configured, so its files can't be measured",
+    });
+  }
+  const reading = await measureConfinedUserFiles(root);
+  if (!reading.complete) {
+    log.warn('user_files_usage_partial', { agentId, entries: reading.entries });
+  }
+  return { bytes: reading.bytes };
 }
 
 /**

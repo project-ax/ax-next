@@ -5,6 +5,7 @@ import {
   BLOB_COLLECT_REFS_MAX_CANDIDATES,
   HookBus,
   makeAgentContext,
+  PluginError,
   reject,
   type AgentContext,
   type BlobRef,
@@ -22,15 +23,18 @@ import {
   workspaceFullMessage,
 } from '../messages.js';
 import {
+  AGENT_FILES_USAGE_HOOK,
   blobCharge,
   BLOB_ALLOCATION_UNIT,
   createDiskQuotaService,
+  FILES_MEASURE_CONCURRENCY,
+  FILES_USAGE_UNAVAILABLE_CODE,
   OWNER_CACHE_MAX,
   STORAGE_FULL_REASON,
   SWEEP_CONCURRENCY,
   type DiskQuotaService,
 } from '../service.js';
-import { createDiskQuotaStore, type DiskQuotaStore } from '../store.js';
+import { agentFilesSource, createDiskQuotaStore, type DiskQuotaStore } from '../store.js';
 
 const MB = 1_048_576;
 
@@ -196,6 +200,9 @@ const failingStore: DiskQuotaStore = {
   async deleteWorkspaceUsage() {
     throw new Error('db down');
   },
+  async deleteAgentFilesUsage() {
+    throw new Error('db down');
+  },
   async staleBlobShas() {
     throw new Error('db down');
   },
@@ -237,6 +244,7 @@ describe('the blob gate', () => {
     // The sentence is for the person; the code is for whoever must react to it
     // without matching prose (an HTTP status, a specific banner).
     expect(d).toEqual({ ok: false, reason: blobFullMessage(60 * MB, 64 * MB), code: 'storage-full' });
+    expect(STORAGE_FULL_REASON).toBe('storage-full');
     expect((d as { reason: string }).reason).toContain('60 MB of 64 MB');
   });
 
@@ -265,11 +273,11 @@ describe('the blob gate', () => {
     expect(await w.svc.admitBlobWrite(w.ctx('bob'), 60 * MB)).toEqual({ ok: true });
   });
 
-  it('uses the default 1024 MB limit when nothing is set', async () => {
+  it('uses the default 10240 MB limit when nothing is set', async () => {
     const w = makeWorld();
-    await w.seedFiles('alice', 1000 * MB);
-    expect((await w.svc.admitBlobWrite(w.ctx('alice'), 24 * MB)).ok).toBe(true);
-    expect((await w.svc.admitBlobWrite(w.ctx('alice'), 24 * MB + 1)).ok).toBe(false);
+    await w.seedFiles('alice', 10_000 * MB);
+    expect((await w.svc.admitBlobWrite(w.ctx('alice'), 240 * MB)).ok).toBe(true);
+    expect((await w.svc.admitBlobWrite(w.ctx('alice'), 240 * MB + 1)).ok).toBe(false);
   });
 
   it('does not attribute (or refuse) a write with no person behind it, even a huge one', async () => {
@@ -341,7 +349,8 @@ describe('the blob gate', () => {
   it('a corrupt stored limit falls back to the default; it does not open the gate or close it', async () => {
     const w = makeWorld();
     w.storage.set(LIMITS_STORAGE_KEY, new TextEncoder().encode('{nope'));
-    await w.seedFiles('alice', 1000 * MB);
+    // The default limit is 10 GiB (10240 MB): 24 MB of room is left.
+    await w.seedFiles('alice', 10216 * MB);
     expect((await w.svc.admitBlobWrite(w.ctx('alice'), 24 * MB)).ok).toBe(true);
     expect((await w.svc.admitBlobWrite(w.ctx('alice'), 25 * MB)).ok).toBe(false);
   });
@@ -517,73 +526,6 @@ describe('the workspace gate', () => {
     for (const bad of [Number.NaN, -1e12, 'x' as unknown as number]) {
       expect((await w.svc.admitWorkspaceWrite(w.ctx('alice'), bad)).ok, String(bad)).toBe(false);
     }
-  });
-});
-
-// The front door (chat:start). The write gates are the hard guard; but the
-// runner's end-of-turn save happens AFTER the reply is shown and its refusal
-// reason is never surfaced there, so a full person would lose files silently.
-// Turning the NEXT message away with a clear sentence is how they find out.
-describe('the turn gate (chat:start)', () => {
-  it('admits a person with room to spare, and one who is close but not full', async () => {
-    const w = makeWorld();
-    await w.setLimitMb(64);
-    await w.seedFiles('alice', 63 * MB);
-    expect(await w.svc.admitTurn(w.ctx('alice'))).toEqual({ ok: true });
-  });
-
-  it("refuses a full person's turn with the stable code, and only THEIRS", async () => {
-    const w = makeWorld();
-    await w.setLimitMb(64);
-    await w.seedFiles('alice', 64 * MB);
-    expect(await w.svc.admitTurn(w.ctx('alice'))).toEqual({ ok: false, reason: STORAGE_FULL_REASON });
-    expect(STORAGE_FULL_REASON).toBe('storage-full');
-    expect(await w.svc.admitTurn(w.ctx('bob'))).toEqual({ ok: true });
-  });
-
-  it('counts workspace and file bytes together, like the write gates', async () => {
-    const w = makeWorld();
-    await w.setLimitMb(64);
-    await w.seedFiles('alice', 30 * MB);
-    await w.seedWorkspace('alice', 'agt_1', 34 * MB);
-    expect((await w.svc.admitTurn(w.ctx('alice', 'agt_1'))).ok).toBe(false);
-  });
-
-  it("charges a team agent's turn to the team, so every member is judged by the team total", async () => {
-    const w = makeWorld({
-      services: {
-        'agents:resolve': (async () => ({
-          agent: { ownerId: 'team-9', ownerType: 'team' },
-        })) as Handler,
-      },
-    });
-    await w.setLimitMb(64);
-    await w.seedWorkspace('team:team-9', 'agt_team', 64 * MB);
-    expect((await w.svc.admitTurn(w.ctx('alice', 'agt_team'))).ok).toBe(false);
-    expect((await w.svc.admitTurn(w.ctx('bob', 'agt_team'))).ok).toBe(false);
-  });
-
-  it('admits a turn with nobody to charge (a system run)', async () => {
-    const w = makeWorld();
-    await w.setLimitMb(64);
-    expect(await w.svc.admitTurn(w.ctx('system'))).toEqual({ ok: true });
-  });
-
-  it('takes a raised limit straight away', async () => {
-    const w = makeWorld();
-    await w.setLimitMb(64);
-    await w.seedFiles('alice', 64 * MB);
-    expect((await w.svc.admitTurn(w.ctx('alice'))).ok).toBe(false);
-    await w.limits.set({ limitMb: 128 });
-    expect((await w.svc.admitTurn(w.ctx('alice'))).ok).toBe(true);
-  });
-
-  it('FAILS OPEN when the check itself breaks (the write gates, which fail closed, still guard the disk), and says so', async () => {
-    const w = makeWorld({ store: failingStore });
-    expect(await w.svc.admitTurn(w.ctx('alice'))).toEqual({ ok: true });
-    expect(w.lines.some((l) => l.level === 'warn' && l.msg === 'disk_quota_turn_check_failed')).toBe(true);
-    // ...while the same broken store still refuses a WRITE.
-    expect((await w.svc.admitBlobWrite(w.ctx('alice'), 1)).ok).toBe(false);
   });
 });
 
@@ -905,10 +847,8 @@ describe('releaseWorkspace (an agent was deleted)', () => {
     await w.setLimitMb(64);
     await w.seedWorkspace('alice', 'agt_1', 64 * MB);
     expect((await w.svc.admitBlobWrite(w.ctx('alice'), 5 * MB)).ok).toBe(false);
-    expect((await w.svc.admitTurn(w.ctx('alice'))).ok).toBe(false);
     await w.svc.releaseWorkspace('agt_1');
     expect((await w.svc.admitBlobWrite(w.ctx('alice'), 5 * MB)).ok).toBe(true);
-    expect((await w.svc.admitTurn(w.ctx('alice'))).ok).toBe(true);
   });
 
   it("keys on the agent alone: a team's row goes too, with no owner lookup at all", async () => {
@@ -1489,5 +1429,481 @@ describe('the blob pass (reconcile releases blob charges nobody holds)', () => {
       blobReleaseAborted: true,
     });
     expect(await rows()).toEqual(['alice blob:a']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Agent files (TASK-993): every agent's `/files`, measured through
+// `sandbox:user-files-usage` after each turn and on the sweep, charged to the
+// agent's OWNER (never to whoever chatted, never to anybody when the owner is
+// unknown), and dropped for good on `agents:deleted`.
+// ---------------------------------------------------------------------------
+describe('agent files (TASK-993)', () => {
+  type Owner = { ownerId: string; ownerType: 'user' | 'team' };
+  const ALICE: Owner = { ownerId: 'alice', ownerType: 'user' };
+
+  const fileRows = async () =>
+    (
+      await db
+        .selectFrom('disk_quota_v1_usage')
+        .select(['owner_id', 'source', 'kind', 'bytes'])
+        .orderBy('owner_id')
+        .orderBy('source')
+        .execute()
+    ).map((r) => ({ owner: r.owner_id, source: r.source, kind: r.kind, bytes: Number(r.bytes) }));
+
+  const owners = (map: Record<string, Owner>): Record<string, Handler> => ({
+    'agents:resolve': async (_c, input: { agentId: string }) => {
+      const agent = map[input.agentId];
+      if (agent === undefined) throw new Error('no such agent');
+      return { agent };
+    },
+  });
+
+  const filesOf = (bytes: Record<string, number>, seen?: string[]): Record<string, Handler> => ({
+    [AGENT_FILES_USAGE_HOOK]: async (_c, input: { agentId: string }) => {
+      seen?.push(input.agentId);
+      return { bytes: bytes[input.agentId] ?? 0 };
+    },
+  });
+
+  const personal = (agents: Array<{ agentId: string; ownerUserId: string }>): Record<string, Handler> => ({
+    'agents:list-personal-owners': async () => ({ agents }),
+  });
+
+  /**
+   * A provider that holds every call until `open()`, and counts how many calls
+   * are inside it at once.
+   */
+  function gatedProvider(answer: (agentId: string) => unknown) {
+    let open!: () => void;
+    const gate = new Promise<void>((r) => {
+      open = r;
+    });
+    const state = { calls: [] as string[], inFlight: 0, maxInFlight: 0 };
+    const handler: Handler = async (_c, input: { agentId: string }) => {
+      state.calls.push(input.agentId);
+      state.inFlight++;
+      state.maxInFlight = Math.max(state.maxInFlight, state.inFlight);
+      try {
+        await gate;
+        return answer(input.agentId);
+      } finally {
+        state.inFlight--;
+      }
+    };
+    return { state, handler, open: () => open() };
+  }
+
+  const settle = () => new Promise((r) => setTimeout(r, 20));
+  const warned = (w: World, msg: string) => w.lines.some((l) => l.level === 'warn' && l.msg === msg);
+
+  it("a turn end records an agent-files row charged to the agent's owner", async () => {
+    const seen: string[] = [];
+    const w = makeWorld({ services: { ...filesOf({ agt_1: 12 * MB }, seen), ...owners({ agt_1: ALICE }) } });
+    w.svc.scheduleAgentFilesMeasure(w.ctx('alice', 'agt_1'));
+    await w.svc.drain();
+    expect(seen).toEqual(['agt_1']);
+    expect(await fileRows()).toEqual([
+      { owner: 'alice', source: agentFilesSource('agt_1'), kind: 'agent-files', bytes: 12 * MB },
+    ]);
+    expect(await w.store.usageFor('alice')).toEqual({ workspaceBytes: 12 * MB, fileBytes: 0 });
+  });
+
+  it('a turn end charges the team for a team agent, never the member who chatted', async () => {
+    const w = makeWorld({
+      services: {
+        ...filesOf({ agt_team: 30 * MB }),
+        ...owners({ agt_team: { ownerId: 't1', ownerType: 'team' } }),
+      },
+    });
+    w.svc.scheduleAgentFilesMeasure(w.ctx('bob', 'agt_team'));
+    await w.svc.drain();
+    expect(await fileRows()).toEqual([
+      { owner: 'team:t1', source: 'agent-files:agt_team', kind: 'agent-files', bytes: 30 * MB },
+    ]);
+    expect(await w.store.usageFor('bob')).toEqual({ workspaceBytes: 0, fileBytes: 0 });
+  });
+
+  it("the owner's total includes agent files, so an upload is refused once they fill the limit", async () => {
+    const w = makeWorld({ services: { ...filesOf({ agt_1: 63 * MB }), ...owners({ agt_1: ALICE }) } });
+    await w.setLimitMb(64);
+    expect(await w.svc.admitBlobWrite(w.ctx('alice'), 2 * MB)).toEqual({ ok: true });
+    w.svc.scheduleAgentFilesMeasure(w.ctx('alice', 'agt_1'));
+    await w.svc.drain();
+    expect(await w.svc.admitBlobWrite(w.ctx('alice'), 2 * MB)).toMatchObject({
+      ok: false,
+      code: STORAGE_FULL_REASON,
+    });
+  });
+
+  it('an agent whose owner cannot be resolved is charged to nobody (not the acting user), and is not even measured', async () => {
+    const seen: string[] = [];
+    const throwing = makeWorld({
+      services: {
+        ...filesOf({ agt_x: 9 * MB }, seen),
+        'agents:resolve': async () => {
+          throw new Error('resolver down');
+        },
+      },
+    });
+    throwing.svc.scheduleAgentFilesMeasure(throwing.ctx('alice', 'agt_x'));
+    await throwing.svc.drain();
+    // The gates DO fall back to the acting user for the same context; the
+    // agent-files meter deliberately does not.
+    expect(await throwing.svc.ownerOf(throwing.ctx('alice', 'agt_x'))).toBe('alice');
+
+    const unusable = makeWorld({
+      services: { ...filesOf({ agt_x: 9 * MB }, seen), 'agents:resolve': async () => ({ agent: {} }) },
+    });
+    unusable.svc.scheduleAgentFilesMeasure(unusable.ctx('alice', 'agt_x'));
+    await unusable.svc.drain();
+
+    const noResolver = makeWorld({ services: filesOf({ agt_x: 9 * MB }, seen) });
+    noResolver.svc.scheduleAgentFilesMeasure(noResolver.ctx('alice', 'agt_x'));
+    await noResolver.svc.drain();
+
+    expect(await fileRows()).toEqual([]);
+    expect(seen).toEqual([]);
+  });
+
+  it('no provider: nothing is measured and nothing throws', async () => {
+    const w = makeWorld({
+      services: { ...owners({ agt_1: ALICE }), ...personal([{ agentId: 'agt_1', ownerUserId: 'alice' }]) },
+    });
+    expect(() => w.svc.scheduleAgentFilesMeasure(w.ctx('alice', 'agt_1'))).not.toThrow();
+    await expect(w.svc.drain()).resolves.toBeUndefined();
+    expect(await w.svc.reconcile()).toEqual({
+      measured: 0,
+      failed: 0,
+      blobsReleased: 0,
+      blobReleaseAborted: false,
+    });
+    expect(await fileRows()).toEqual([]);
+    // A deployment without the hook is supported, not a fault.
+    expect(w.lines.filter((l) => l.level === 'warn' || l.level === 'error')).toEqual([]);
+  });
+
+  it('skips a context with no usable agent', async () => {
+    const seen: string[] = [];
+    const w = makeWorld({ services: { ...filesOf({}, seen), ...owners({}) } });
+    w.svc.scheduleAgentFilesMeasure(w.ctx('alice', ''));
+    w.svc.scheduleAgentFilesMeasure(w.ctx('alice', 'ownerless:s1'));
+    await w.svc.drain();
+    expect(seen).toEqual([]);
+    expect(await fileRows()).toEqual([]);
+  });
+
+  it('a provider error keeps the previous figure and logs disk_quota_files_measure_failed', async () => {
+    let fail = false;
+    const w = makeWorld({
+      services: {
+        [AGENT_FILES_USAGE_HOOK]: async () => {
+          if (fail) throw new Error('home-unavailable');
+          return { bytes: 5 * MB };
+        },
+        ...owners({ agt_1: ALICE }),
+      },
+    });
+    w.svc.scheduleAgentFilesMeasure(w.ctx('alice', 'agt_1'));
+    await w.svc.drain();
+    expect((await w.store.usageFor('alice')).workspaceBytes).toBe(5 * MB);
+
+    fail = true;
+    w.svc.scheduleAgentFilesMeasure(w.ctx('alice', 'agt_1'));
+    await expect(w.svc.drain()).resolves.toBeUndefined();
+    expect((await w.store.usageFor('alice')).workspaceBytes).toBe(5 * MB);
+    const line = w.lines.find((l) => l.level === 'warn' && l.msg === 'disk_quota_files_measure_failed');
+    expect(line?.bindings).toMatchObject({ agentId: 'agt_1' });
+    expect(line?.bindings?.err).toBeInstanceOf(Error);
+  });
+
+  it('a deployment that cannot measure agent files says so once, then stops asking', async () => {
+    // k8s without the read-only host mount: every call would throw the same
+    // code. That is a fact about the deployment, so it must not become a warn
+    // per turn end (and per agent per sweep) that reads like a fault.
+    let calls = 0;
+    const w = makeWorld({
+      services: {
+        [AGENT_FILES_USAGE_HOOK]: async () => {
+          calls++;
+          throw new PluginError({
+            code: FILES_USAGE_UNAVAILABLE_CODE,
+            plugin: '@ax/sandbox-k8s',
+            hookName: AGENT_FILES_USAGE_HOOK,
+            message: 'no host read root',
+          });
+        },
+        ...owners({ agt_1: ALICE, agt_2: ALICE }),
+        ...personal([{ agentId: 'agt_1', ownerUserId: 'alice' }]),
+      },
+    });
+    w.svc.scheduleAgentFilesMeasure(w.ctx('alice', 'agt_1'));
+    await w.svc.drain();
+    w.svc.scheduleAgentFilesMeasure(w.ctx('alice', 'agt_2'));
+    await w.svc.drain();
+    await w.svc.reconcile();
+
+    expect(calls).toBe(1);
+    expect(await fileRows()).toEqual([]);
+    const unavailable = w.lines.filter((l) => l.msg === 'disk_quota_files_usage_unavailable');
+    expect(unavailable).toHaveLength(1);
+    expect(unavailable[0]!.level).toBe('warn');
+    // The provider's sentence (which names the missing setting) reaches the log.
+    expect(unavailable[0]!.bindings?.err).toBeInstanceOf(PluginError);
+    expect(warned(w, 'disk_quota_files_measure_failed')).toBe(false);
+    // The sweep did not even try: it skipped the files pass outright.
+    expect(w.lines.some((l) => l.msg === 'disk_quota_files_sweep_skipped')).toBe(true);
+  });
+
+  it('a transient provider failure (a busy walk) never switches agent-files metering off', async () => {
+    // What the bus delivers when the provider rethrows the walk's own error:
+    // an `unknown` PluginError whose cause carries `walk-busy`. Only the
+    // deployment-wide `user-files-usage-unavailable` may stop the meter.
+    let busy = true;
+    const w = makeWorld({
+      services: {
+        [AGENT_FILES_USAGE_HOOK]: async () => {
+          if (busy) {
+            throw new PluginError({
+              code: 'unknown',
+              plugin: '@ax/sandbox-k8s',
+              hookName: AGENT_FILES_USAGE_HOOK,
+              message: 'too many usage walks are already running in this process',
+              cause: Object.assign(new Error('busy'), { code: 'walk-busy' }),
+            });
+          }
+          return { bytes: 3 * MB };
+        },
+        ...owners({ agt_1: ALICE }),
+      },
+    });
+    w.svc.scheduleAgentFilesMeasure(w.ctx('alice', 'agt_1'));
+    await w.svc.drain();
+    expect(warned(w, 'disk_quota_files_measure_failed')).toBe(true);
+    expect(await fileRows()).toEqual([]);
+
+    busy = false;
+    w.svc.scheduleAgentFilesMeasure(w.ctx('alice', 'agt_1'));
+    await w.svc.drain();
+    expect((await w.store.usageFor('alice')).workspaceBytes).toBe(3 * MB);
+  });
+
+  it('a store failure is a warn, never a throw', async () => {
+    const w = makeWorld({
+      store: failingStore,
+      services: { ...filesOf({ agt_1: MB }), ...owners({ agt_1: ALICE }) },
+    });
+    w.svc.scheduleAgentFilesMeasure(w.ctx('alice', 'agt_1'));
+    await expect(w.svc.drain()).resolves.toBeUndefined();
+    expect(warned(w, 'disk_quota_files_measure_failed')).toBe(true);
+  });
+
+  it('answers that are not a size record nothing', async () => {
+    for (const answer of [
+      { bytes: -1 },
+      { bytes: Number.NaN },
+      { bytes: Number.POSITIVE_INFINITY },
+      { bytes: '5' },
+      {},
+      null,
+      'lots',
+    ]) {
+      const w = makeWorld({
+        services: { [AGENT_FILES_USAGE_HOOK]: async () => answer, ...owners({ agt_1: ALICE }) },
+      });
+      w.svc.scheduleAgentFilesMeasure(w.ctx('alice', 'agt_1'));
+      await w.svc.drain();
+      expect(await fileRows(), JSON.stringify(answer)).toEqual([]);
+      expect(warned(w, 'disk_quota_files_usage_invalid'), JSON.stringify(answer)).toBe(true);
+    }
+  });
+
+  it('coalesces: three turn ends while one is measuring cause exactly one more measurement', async () => {
+    let calls = 0;
+    let open!: () => void;
+    const gate = new Promise<void>((r) => {
+      open = r;
+    });
+    const w = makeWorld({
+      services: {
+        [AGENT_FILES_USAGE_HOOK]: async () => {
+          const n = ++calls;
+          if (n === 1) {
+            await gate; // the slow, stale reading
+            return { bytes: 10 };
+          }
+          return { bytes: 99 };
+        },
+        ...owners({ agt_1: ALICE }),
+      },
+    });
+    w.svc.scheduleAgentFilesMeasure(w.ctx('alice', 'agt_1'));
+    await settle();
+    expect(calls).toBe(1);
+    w.svc.scheduleAgentFilesMeasure(w.ctx('alice', 'agt_1'));
+    w.svc.scheduleAgentFilesMeasure(w.ctx('alice', 'agt_1'));
+    w.svc.scheduleAgentFilesMeasure(w.ctx('alice', 'agt_1'));
+    await settle();
+    expect(calls).toBe(1); // nobody walks the same tree twice at once
+    open();
+    await w.svc.drain();
+    expect(calls).toBe(2);
+    expect((await w.store.usageFor('alice')).workspaceBytes).toBe(99);
+  });
+
+  it('never more than FILES_MEASURE_CONCURRENCY measurements at once across agents', async () => {
+    const ids = ['agt_0', 'agt_1', 'agt_2', 'agt_3', 'agt_4'];
+    const g = gatedProvider(() => ({ bytes: MB }));
+    const w = makeWorld({
+      services: {
+        [AGENT_FILES_USAGE_HOOK]: g.handler,
+        ...owners(Object.fromEntries(ids.map((id) => [id, ALICE]))),
+      },
+    });
+    for (const id of ids) w.svc.scheduleAgentFilesMeasure(w.ctx('alice', id));
+    await settle();
+    expect(FILES_MEASURE_CONCURRENCY).toBe(2);
+    expect(g.state.calls).toHaveLength(2); // the other three wait their turn
+    g.open();
+    await w.svc.drain();
+    expect(g.state.maxInFlight).toBe(2);
+    expect([...g.state.calls].sort()).toEqual(ids);
+    expect((await fileRows()).map((r) => r.source)).toEqual(ids.map((id) => agentFilesSource(id)));
+  });
+
+  it("the sweep measures every listed personal agent's files with the listed owner", async () => {
+    const asked: Array<{ agentId: string; userId: string; sessionId: string }> = [];
+    const w = makeWorld({
+      services: {
+        ...personal([
+          { agentId: 'a1', ownerUserId: 'alice' },
+          { agentId: 'a2', ownerUserId: 'alice' },
+          { agentId: 'b1', ownerUserId: 'bob' },
+        ]),
+        // No agents:resolve: the listed owner is who pays.
+        [AGENT_FILES_USAGE_HOOK]: async (c, input: { agentId: string }) => {
+          asked.push({ agentId: input.agentId, userId: c.userId, sessionId: c.sessionId });
+          if (input.agentId === 'a2') throw new Error('unreadable');
+          return { bytes: input.agentId === 'a1' ? 4 * MB : 6 * MB };
+        },
+      },
+    });
+    // No workspace:usage either, so every count below is agent files.
+    expect(await w.svc.reconcile()).toEqual({
+      measured: 2,
+      failed: 1,
+      blobsReleased: 0,
+      blobReleaseAborted: false,
+    });
+    expect(await fileRows()).toEqual([
+      { owner: 'alice', source: 'agent-files:a1', kind: 'agent-files', bytes: 4 * MB },
+      { owner: 'bob', source: 'agent-files:b1', kind: 'agent-files', bytes: 6 * MB },
+    ]);
+    expect(asked.sort((x, y) => x.agentId.localeCompare(y.agentId))).toEqual([
+      { agentId: 'a1', userId: 'alice', sessionId: 'disk-quota-sweep' },
+      { agentId: 'a2', userId: 'alice', sessionId: 'disk-quota-sweep' },
+      { agentId: 'b1', userId: 'bob', sessionId: 'disk-quota-sweep' },
+    ]);
+  });
+
+  it('the sweep does not even list agents without the provider', async () => {
+    let listed = 0;
+    const w = makeWorld({
+      services: {
+        'agents:list-personal-owners': async () => {
+          listed++;
+          return { agents: [{ agentId: 'a1', ownerUserId: 'alice' }] };
+        },
+      },
+    });
+    expect(await w.svc.reconcile()).toMatchObject({ measured: 0, failed: 0 });
+    expect(listed).toBe(0);
+  });
+
+  it('releaseAgentFiles waits for an in-flight measurement, drops the row for every owner, and nothing brings it back', async () => {
+    const g = gatedProvider(() => ({ bytes: 40 * MB }));
+    const w = makeWorld({
+      services: {
+        [AGENT_FILES_USAGE_HOOK]: g.handler,
+        // Still resolvable after the delete: the TOMBSTONE, not the resolver,
+        // is what keeps the row from coming back.
+        ...owners({ agt_1: ALICE }),
+        ...personal([{ agentId: 'agt_1', ownerUserId: 'alice' }]),
+      },
+    });
+    // A stale copy charged elsewhere goes too: the release keys on the agent.
+    await realStore.upsertUsage('team:t1', agentFilesSource('agt_1'), 'agent-files', 3 * MB);
+    // Neighbours stay, and so does the git row (workspace:deleted owns that).
+    await realStore.upsertUsage('alice', agentFilesSource('agt_2'), 'agent-files', 2 * MB);
+    await w.seedWorkspace('alice', 'agt_1', 1 * MB);
+
+    w.svc.scheduleAgentFilesMeasure(w.ctx('alice', 'agt_1'));
+    await settle();
+    expect(g.state.calls).toEqual(['agt_1']); // measuring the tree as it was
+
+    let releasedYet = false;
+    const released = w.svc.releaseAgentFiles('agt_1').then(() => {
+      releasedYet = true;
+    });
+    await settle();
+    expect(releasedYet).toBe(false); // it waits for the walk in flight
+    g.open();
+    await released;
+    await w.svc.drain();
+    const left = async () => (await fileRows()).map((r) => `${r.owner} ${r.source}`);
+    expect(await left()).toEqual(['alice agent-files:agt_2', 'alice workspace:agt_1']);
+
+    // A warm runner's late turn end, then a sweep that still lists the agent.
+    w.svc.scheduleAgentFilesMeasure(w.ctx('alice', 'agt_1'));
+    await w.svc.drain();
+    expect(await w.svc.reconcile()).toMatchObject({ measured: 0 });
+    expect(await left()).toEqual(['alice agent-files:agt_2', 'alice workspace:agt_1']);
+    expect(g.state.calls).toEqual(['agt_1']); // never even walked again
+  });
+
+  it('an agent deleted while its measurement waits for a slot is never walked', async () => {
+    const g = gatedProvider(() => ({ bytes: MB }));
+    const w = makeWorld({
+      services: {
+        [AGENT_FILES_USAGE_HOOK]: g.handler,
+        ...owners({ agt_a: ALICE, agt_b: ALICE, agt_1: ALICE }),
+      },
+    });
+    w.svc.scheduleAgentFilesMeasure(w.ctx('alice', 'agt_a'));
+    w.svc.scheduleAgentFilesMeasure(w.ctx('alice', 'agt_b'));
+    await settle();
+    w.svc.scheduleAgentFilesMeasure(w.ctx('alice', 'agt_1')); // queued behind both
+    await settle();
+    expect(g.state.calls).toEqual(['agt_a', 'agt_b']);
+
+    const released = w.svc.releaseAgentFiles('agt_1');
+    g.open();
+    await released;
+    await w.svc.drain();
+    expect(g.state.calls).toEqual(['agt_a', 'agt_b']);
+    expect((await fileRows()).map((r) => r.source)).toEqual(['agent-files:agt_a', 'agent-files:agt_b']);
+  });
+
+  it('releaseAgentFiles ignores a malformed id and never throws', async () => {
+    const w = makeWorld({ services: { ...filesOf({ agt_1: 7 * MB }), ...owners({ agt_1: ALICE }) } });
+    await realStore.upsertUsage('alice', agentFilesSource('agt_1'), 'agent-files', 3 * MB);
+    for (const bad of [undefined, null, '', 5, {}, ['agt_1'], true]) {
+      await expect(w.svc.releaseAgentFiles(bad), String(bad)).resolves.toBeUndefined();
+    }
+    expect((await w.store.usageFor('alice')).workspaceBytes).toBe(3 * MB);
+    expect(warned(w, 'disk_quota_agents_deleted_invalid')).toBe(true);
+    // The junk tombstoned nothing: the agent still measures.
+    w.svc.scheduleAgentFilesMeasure(w.ctx('alice', 'agt_1'));
+    await w.svc.drain();
+    expect((await w.store.usageFor('alice')).workspaceBytes).toBe(7 * MB);
+  });
+
+  it('releaseAgentFiles swallows a store failure and names the agent in an error line', async () => {
+    const w = makeWorld({ store: failingStore });
+    await expect(w.svc.releaseAgentFiles('agt_1')).resolves.toBeUndefined();
+    const line = w.lines.find((l) => l.level === 'error' && l.msg === 'disk_quota_release_failed');
+    expect(line?.bindings).toMatchObject({ agentId: 'agt_1' });
+    expect(line?.bindings?.err).toBeInstanceOf(Error);
   });
 });

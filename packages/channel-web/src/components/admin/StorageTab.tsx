@@ -23,10 +23,9 @@
  * Card titles carry `role="heading"` (level 2) so the outline stays h1 -> h2
  * without the `h5` that `AlertTitle` would add (see TASK-446).
  *
- * NOTHING HERE TELLS A PERSON TO DELETE THINGS. Deleting a whole agent does give
- * its workspace back, but that throws the agent away, and attachments and
- * artifacts cannot be deleted, so "delete something" would be a false promise
- * for most people. The way out is an admin.
+ * NOTHING HERE TELLS A PERSON TO DELETE THINGS, and there is no delete button.
+ * The way out is to ask their agent to clean up files it no longer needs, or
+ * to ask an admin for more room (the sentences live in `lib/storage-copy.ts`).
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Alert, AlertDescription } from '@/components/ui/alert';

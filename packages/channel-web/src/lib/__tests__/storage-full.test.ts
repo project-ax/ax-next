@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { HttpError } from '../http';
-import { STORAGE_FULL_RULES, STORAGE_FULL_SEND } from '../storage-copy';
+import { STORAGE_FULL_SEND } from '../storage-copy';
+
+const OTHER_FALLBACK = "Some other surface's sentence.";
 import {
   MAX_SERVER_SENTENCE_CHARS,
   StorageFullError,
@@ -49,10 +51,10 @@ describe('readStorageFull', () => {
     const err = await readStorageFull(
       '/api/workspace/agents/a1/memory/rules',
       res(413, { error: 'storage-full' }),
-      STORAGE_FULL_RULES,
+      OTHER_FALLBACK,
     );
     expect(err).toBeInstanceOf(StorageFullError);
-    expect(err!.sentence).toBe(STORAGE_FULL_RULES);
+    expect(err!.sentence).toBe(OTHER_FALLBACK);
     expect(err!.sentence).not.toBe(STORAGE_FULL_SEND);
   });
 
@@ -60,7 +62,7 @@ describe('readStorageFull', () => {
     const err = await readStorageFull(
       '/p',
       res(413, { error: 'storage-full', message: 'The server said this.' }),
-      STORAGE_FULL_RULES,
+      OTHER_FALLBACK,
     );
     expect(err!.sentence).toBe('The server said this.');
   });
@@ -106,8 +108,8 @@ describe('storageFullFromBody', () => {
   ];
 
   it.each(cases)('agrees with readStorageFull on %s', async (_name, status, body) => {
-    const fromBody = storageFullFromBody('/p', status, body, STORAGE_FULL_RULES);
-    const fromRes = await readStorageFull('/p', res(status, body), STORAGE_FULL_RULES);
+    const fromBody = storageFullFromBody('/p', status, body, OTHER_FALLBACK);
+    const fromRes = await readStorageFull('/p', res(status, body), OTHER_FALLBACK);
     expect(fromBody === null).toBe(fromRes === null);
     expect(fromBody?.sentence).toBe(fromRes?.sentence);
     expect(fromBody?.status).toBe(fromRes?.status);
