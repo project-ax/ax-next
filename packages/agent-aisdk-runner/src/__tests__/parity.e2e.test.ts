@@ -987,6 +987,44 @@ describe('aisdk runner — parity', () => {
     expect(JSON.stringify(events)).not.toContain('pwn');
   });
 
+  // TASK-995: the agent's home is agent-writable and nothing on it is
+  // configuration. Instruction-looking files planted there (and in the scratch
+  // root) must never reach the model. The host-side augment is the positive
+  // control: it proves the assertion reads the prompt the model was really sent.
+  it('never sends instruction-looking files planted in the home or scratch root to the model', async () => {
+    const plants: Array<[string, string, string]> = [
+      [homeDir, 'AGENTS.md', 'CANARY-AISDK-AGENTS-4b1e'],
+      [homeDir, 'CLAUDE.md', 'CANARY-AISDK-CLAUDEMD-93f0'],
+      [homeDir, '.claude/CLAUDE.md', 'CANARY-AISDK-DOTCLAUDE-2a7c'],
+      [homeDir, '.ax/SOUL.md', 'CANARY-AISDK-SOUL-c58d'],
+      [homeDir, '.ax/AGENTS.md', 'CANARY-AISDK-AXAGENTS-71e2'],
+      [scratchDir, 'AGENTS.md', 'CANARY-AISDK-SCRATCH-AGENTS-0d94'],
+      [scratchDir, 'CLAUDE.md', 'CANARY-AISDK-SCRATCH-CLAUDEMD-e6b3'],
+    ];
+    for (const [dir, rel, text] of plants) {
+      await fs.mkdir(path.dirname(path.join(dir, rel)), { recursive: true });
+      await fs.writeFile(path.join(dir, rel), `${text}\n`);
+    }
+    const augment = 'AUGMENT-SENTINEL-8e21';
+    (sessionConfig.agentConfig as Record<string, unknown>).systemPromptAugment = augment;
+    // Two model calls, so the second request (after a tool result) is checked too.
+    scriptedModel.mockReturnValue(
+      modelReplaying([toolStep('Bash', { command: 'true' }), textStep('done')]),
+    );
+    inboxEntries = [userMessage('hi')];
+
+    await expect(main()).resolves.toBe(0);
+
+    expect(sentPrompts).toHaveLength(2);
+    const sent = JSON.stringify(sentPrompts);
+    expect(sent).toContain(augment);
+    const leaked = plants.map(([, , text]) => text).filter((text) => sent.includes(text));
+    expect(leaked).toEqual([]);
+    // Nor anywhere the host sees (stream chunks, turn-end, transcript).
+    expect(JSON.stringify(events)).not.toMatch(/CANARY-AISDK-/);
+    expect(Buffer.concat(shippedTranscript).toString('utf8')).not.toMatch(/CANARY-AISDK-/);
+  });
+
   it('resumes from the host transcript across a runner restart', async () => {
     // Turn 1 on a fresh session.
     scriptedModel.mockReturnValue(modelReplaying([textStep('first reply')]));
