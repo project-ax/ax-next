@@ -4,7 +4,7 @@ import type { OpenSessionInput } from '@ax/sandbox-protocol';
 // ---------------------------------------------------------------------------
 // @ax/sandbox-mount-protocol — the sandbox per-agent mount contract
 // (filestore-user-files epic, design §4; follows the
-// @ax/workspace-bundle-protocol / @ax/sandbox-protocol precedent)
+// @ax/sandbox-protocol precedent)
 //
 // This package holds the HOST-INTERNAL `sandbox:resolve-mounts` service-hook
 // contract: the `MountSpec` discriminated union a mount-resolver plugin
@@ -22,8 +22,8 @@ import type { OpenSessionInput } from '@ax/sandbox-protocol';
 // clean: a sandbox provider that doesn't support a durable mount simply
 // never imports this package and never lists `sandbox:resolve-mounts` in
 // its `optionalCalls`, so it never sees the vocabulary and never pays for
-// the abstraction. (Mirrors exactly what ARCH-3 did for the git-vocabulary
-// bundle types in @ax/workspace-bundle-protocol.)
+// the abstraction. (ARCH-3 did the same for the git-vocabulary bundle types
+// in the since-deleted @ax/workspace-bundle-protocol.)
 //
 // Pure TS types, NO zod: this is consumed only as an in-process hook-bus
 // generic (`bus.call<In, Out>` / `registerService<In, Out>`), where the TS

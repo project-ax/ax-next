@@ -174,9 +174,8 @@ kind get clusters | grep -q '^ax-next-dev$' || kind create cluster --name ax-nex
 docker build -t ax-next/agent:dev -f container/agent/Dockerfile .
 kind load docker-image ax-next/agent:dev --name ax-next-dev
 
-# 3. Build + load the storage-tier image (only needed for workspace.backend=http scenarios)
-docker build -t ax-next/git-server:dev -f container/git-server/Dockerfile .
-kind load docker-image ax-next/git-server:dev --name ax-next-dev
+# 3. (Retired in TASK-995.) There is no git-server image any more; every
+#    agent's files live on the filestore NFS home, so there is nothing to build here.
 
 # 3b. Prune the untagged layers each `kind load` orphans on the node.
 #     A walk loops through §5 many times; without this the kind node fills
@@ -189,7 +188,7 @@ kubectl --context kind-ax-next-dev get ns ax-next-runners >/dev/null 2>&1 || kub
 
 # 5. Install or upgrade. `upgrade --install` is idempotent.
 #    The flags below are the kind canary set; layer scenario-specific
-#    --set flags on top (replicas, workspace.backend, channel-web, etc.).
+#    --set flags on top (replicas, channel-web, etc.).
 helm --kube-context kind-ax-next-dev upgrade --install ax-next deploy/charts/ax-next \
   --namespace ax-next --create-namespace \
   -f deploy/charts/ax-next/kind-dev-values.yaml \
@@ -205,7 +204,7 @@ kubectl --context kind-ax-next-dev wait -n ax-next --for=condition=Ready pod \
   -l app.kubernetes.io/component=ax-next-host --timeout=180s
 ```
 
-For more elaborate scenarios (multi-replica + `workspace.backend=http`, channel-web, etc.) the helm flags differ — copy the matching block from `deploy/MANUAL-ACCEPTANCE.md` if it covers your case, or adapt from `deploy/charts/ax-next/values.yaml`.
+For more elaborate scenarios (multi-replica, channel-web, etc.) the helm flags differ — copy the matching block from `deploy/MANUAL-ACCEPTANCE.md` if it covers your case, or adapt from `deploy/charts/ax-next/values.yaml`.
 
 **The workspace is the only web interface, and it is always on.**
 TASK-360 deleted the legacy chat screen and removed the `agentWorkspace` flag
@@ -264,7 +263,7 @@ Notes on common gotchas in the driver:
 
 Use when the fix touches:
 
-- `container/agent/Dockerfile` or `container/git-server/Dockerfile`
+- `container/agent/Dockerfile`
 - `deploy/charts/ax-next/templates/**`
 - `deploy/charts/ax-next/values.yaml` or any `-f` overlay
 - Any code under `packages/agent-claude-sdk-runner/` (runner pods bake this)
@@ -305,7 +304,7 @@ Use when the fix is **host-side TypeScript only** — no Dockerfile change, no c
 
 ### Caveat: runner pods are excluded
 
-Runner pods are spawned by `@ax/sandbox-k8s/src/pod-spec.ts` with a hardcoded volume list (`tmp`, `permanent`, `ephemeral` emptyDirs). There's no env-var hook for an extra hostPath mount today. So the fast loop covers only the host pod's code. If the fix is in `packages/agent-claude-sdk-runner/` (or anything else loaded by the runner binary), use the rebuild loop instead.
+Runner pods are spawned by `@ax/sandbox-k8s/src/pod-spec.ts` with a hardcoded volume list (the `/tmp` scratch emptyDir, the in-memory home, and the filestore-backed `/files`). There's no env-var hook for an extra hostPath mount today. So the fast loop covers only the host pod's code. If the fix is in `packages/agent-claude-sdk-runner/` (or anything else loaded by the runner binary), use the rebuild loop instead.
 
 If unsure: the runner binary path is whatever the host's startup resolves via `require.resolve('@ax/agent-claude-sdk-runner/dist/main.js')`. Anything in that package and its workspace deps is runner-side.
 

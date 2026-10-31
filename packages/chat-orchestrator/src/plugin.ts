@@ -198,7 +198,7 @@ export function createChatOrchestratorPlugin(
       // re-derives (a skill is visible only at spawn, design §D6). Mark-only here
       // — the terminate happens at the next turn's routing, safely between turns.
       // In-memory + single-replica. REPLACES the old workspace:applied
-      // .ax/draft-skills trigger (skill authoring left git).
+      // draft-skills trigger (skill authoring left git long ago).
       //
       // TASK-97 (connectors-first-class) adds the connector reads to the
       // conditionally-called category — `connectors:list-effective` (TASK-739,

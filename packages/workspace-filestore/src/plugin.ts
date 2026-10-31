@@ -31,8 +31,8 @@ export interface WorkspaceFilestoreConfig {
 /**
  * Production / k8s workspace-mount resolver, backed by a shared Google Cloud
  * Filestore (managed NFS) export. The NFS sibling of `@ax/workspace-localdir`
- * (local FS) — exactly one of the two loads per deployment, mirroring the
- * `@ax/workspace-git` ↔ `@ax/workspace-git-server` preset-swap. Registers the
+ * (local FS) — exactly one of the two loads per deployment (the k8s preset
+ * loads this one, the CLI the other). Registers the
  * host-internal `sandbox:resolve-mounts` hook and emits ONE per-agent `nfs`
  * mount keyed off `owner.agentId` (the `subPath`).
  *

@@ -30,8 +30,7 @@ export interface WorkspaceLocaldirConfig {
 /**
  * CLI / single-host dev workspace-mount resolver. The local-FS sibling of
  * `@ax/workspace-filestore` (NFS) — exactly one of the two loads per
- * deployment, mirroring the `@ax/workspace-git` ↔ `@ax/workspace-git-server`
- * preset-swap. Registers the host-internal `sandbox:resolve-mounts` hook and
+ * deployment (the CLI loads this one, the k8s preset the other). Registers the host-internal `sandbox:resolve-mounts` hook and
  * emits ONE per-agent `localDir` mount so the canary + local dev loop get a
  * durable per-agent `/files` WITHOUT a real NFS server.
  *

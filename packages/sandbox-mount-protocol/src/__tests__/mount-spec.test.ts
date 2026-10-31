@@ -21,7 +21,7 @@ import type {
 // `sandbox:resolve-mounts` is a HOST-INTERNAL service hook consumed as a
 // `registerService<In,Out>` / `bus.call<In,Out>` generic; it never crosses the
 // sandbox edge, so there is no untrusted wire to validate here (mirrors
-// @ax/workspace-bundle-protocol — ARCH-3 / invariant I1). These tests pin the
+// the since-deleted @ax/workspace-bundle-protocol — ARCH-3 / invariant I1). These tests pin the
 // contract: a typed literal must satisfy each member of the union, the
 // discriminator must be the ONLY safe key to branch on, and the hook signature
 // must line up with @ax/core's ServiceHandler and @ax/sandbox-protocol's owner.

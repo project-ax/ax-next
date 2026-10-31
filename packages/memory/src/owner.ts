@@ -46,8 +46,8 @@ import { PLUGIN_NAME } from './plugin-name.js';
  *    canary and `ax serve` mint them. It is a perfectly good non-empty string
  *    that simply isn't anybody's, so a null check does not catch it; that is
  *    the whole reason `isOwnerlessId` lives in the kernel. Memory joins the
- *    REFUSE side of that split (`@ax/workspace-git-core`,
- *    `@ax/workspace-git-server`, `skill.propose`, `connector_propose`) rather
+ *    REFUSE side of that split (`skill.propose`,
+ *    `connector_propose`, and formerly the git workspace backends) rather
  *    than the merely-partition side (where the `@ax/memory-facts-*` engines
  *    themselves sit, as Strata's index backends did before TASK-608):
  *    a private per-session partition of a person's *memory* is a store that

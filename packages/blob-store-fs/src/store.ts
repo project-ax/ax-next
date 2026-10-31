@@ -8,8 +8,8 @@ import { PluginError } from '@ax/core';
 //
 // Objects live at <root>/<sha[0:2]>/<sha[2:4]>/<sha>, keyed by the lowercase-hex
 // sha256 of their bytes. This is the content-addressed store from
-// workspace-git-server/src/server/lfs.ts with the git/LFS HTTP protocol framing
-// removed — it already did sha256 addressing, streamed I/O, atomic
+// the former git workspace server's LFS handler (deleted in TASK-995) with the
+// git/LFS HTTP protocol framing removed — it already did sha256 addressing, streamed I/O, atomic
 // temp-then-rename, and digest verification. Here it becomes a backend for the
 // storage-agnostic blob:* service hook.
 //

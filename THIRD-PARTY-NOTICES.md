@@ -41,13 +41,13 @@ the `workPolicyNote()` and `communicationNote()` functions.
 - Rewritten from the upstream MiniJinja template into two plain TypeScript
   functions. The template placeholders (`${{ tools.by_kind.read }}` and friends)
   are resolved to our fixed tool names — `Read`, `Edit`, `Glob`, `Grep`, `Bash`.
-- Added a precedence sentence to each note naming `.ax/AGENTS.md` as the layer
+- Added a precedence sentence to each note naming "Instructions from your people" as the layer
   that can override it and the safety floor as the layer that cannot. Our prompt
   is composed from an agent's own identity files; upstream's is not, so upstream
   had nothing to say here.
 - **Dropped** the `<communication>` clauses forbidding coined acronyms, metaphors
-  and idioms, and requiring facts be stated literally. Our agents author their own
-  `.ax/SOUL.md`; a rule flattening voice would fight the thing that gives them one.
+  and idioms, and requiring facts be stated literally. Our agents set their own
+  identity through `update_identity`; a rule flattening voice would fight the thing that gives them one.
   We kept the structural half — write for a reader who hasn't seen your tool calls,
   lead with the answer, make the final message stand alone.
 - **Dropped** `<background_tasks>` and the subagent/delegation lines: we register

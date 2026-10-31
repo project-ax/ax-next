@@ -107,9 +107,9 @@ export async function runCompletionTransaction(
         actor: { userId: input.adminUserId, isAdmin: true },
         input: {
           displayName: 'Default Agent',
-          // TASK-142: a BARE agent — no system prompt. Its identity lives in its
-          // `.ax/` files, authored through the conversational bootstrap or the
-          // admin file editor. The runner's fallback identity is the
+          // TASK-142: a BARE agent — no system prompt. Its identity lives in the
+          // database (`agents:update-identity`), authored through the
+          // conversational bootstrap or the settings screen. The runner's fallback identity is the
           // displayName until then.
           allowedTools: [],
           mcpConfigIds: [],

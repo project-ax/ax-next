@@ -183,8 +183,7 @@ export function makeAgentContext(opts: MakeAgentContextOptions): AgentContext {
 // What used to go in them was a per-transport CONSTANT — `'ipc-http'` /
 // `'ipc-server'`, substituted by each listener. That is the bug this section
 // exists to make unrepeatable. Agent-partitioned stores key on `agentId`
-// (`sha256(JSON.stringify([agentId]))` in @ax/workspace-git-core,
-// @ax/workspace-git-server and both @ax/memory-facts-* backends), so ONE
+// (`sha256(JSON.stringify([agentId]))` in both @ax/memory-facts-* backends), so ONE
 // literal means ONE partition shared by every owner-less session in the
 // deployment, across every user. A null check does not catch it: the value is
 // a perfectly good non-empty string. It just isn't anybody's.
@@ -197,11 +196,11 @@ export function makeAgentContext(opts: MakeAgentContextOptions): AgentContext {
 //      is the part that does not depend on a census of gates.
 //   2. RECOGNISABILITY — `isOwnerlessId` lets a store that requires a real
 //      owner refuse outright rather than mint a private-but-pointless
-//      partition. Both workspace backends do exactly that.
+//      partition. The refusing guards listed below do exactly that.
 //
 // This lives in the kernel on purpose. It was previously impossible to check
 // for without hard-coding another plugin's constant (Invariant 2), which is
-// why @ax/workspace-git-core declined to and why two of the three guards that
+// why some stores declined to and why two of the three guards that
 // did check named `'ipc-server'` and not `'ipc-http'`. A kernel concept has
 // one spelling and every package may import it.
 //
@@ -212,15 +211,14 @@ export function makeAgentContext(opts: MakeAgentContextOptions): AgentContext {
 // ⚠ NOT AN ACCESS CONTROL. This marks the ABSENCE of an owner; it does not
 // establish the presence of one. A caller carrying a real-looking `agentId`
 // is not thereby authorized to reach that agent — the `agents:resolve` ACL
-// the workspace routes run before every per-agent read is the barrier that
+// the per-agent routes run before every per-agent read is the barrier that
 // decides that, and it stays load-bearing.
 //
-// ⚠ WHO ACTUALLY REFUSES, as of TASK-411 — because "owner-less gets nothing"
-// is true of the workspace tier and NOT of everything:
+// ⚠ WHO ACTUALLY REFUSES — because "owner-less gets nothing"
+// is true of the callers below and NOT of everything. (TASK-411 listed the git
+// workspace backends here too; TASK-995 deleted them.)
 //
-//   - REFUSE: `@ax/workspace-git-core` (`requireAgent`) and
-//     `@ax/workspace-git-server` (`resolveWorkspaceId`), plus `skill.propose`
-//     and `connector_propose`.
+//   - REFUSE: `skill.propose` and `connector_propose`, and `@ax/memory`.
 //   - MERELY PARTITION: both `@ax/memory-facts-*` backends hash `agentId`
 //     the same way with no gate of their own. An owner-less caller that
 //     reached them directly would get a private, per-session key rather than
@@ -235,7 +233,7 @@ export function makeAgentContext(opts: MakeAgentContextOptions): AgentContext {
 // sessionId, and `ax serve` lets a client CHOOSE one — two owner-less callers
 // inside that one trust domain who pick the same sessionId get the same key.
 // Strictly better than the single deployment-wide bucket this replaced, and
-// the workspace tier fails closed regardless, but it is the reason the
+// the refusing callers fail closed regardless, but it is the reason the
 // memory-index gate is a live follow-up and not a decoration.
 // ---------------------------------------------------------------------------
 

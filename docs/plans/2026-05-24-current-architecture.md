@@ -36,16 +36,17 @@ deferred," below. We reflect their outcomes here.
 - **The kernel does not run chat.** `@ax/core` has no chat loop. The old
   `chat-loop.ts` was deleted. The kernel is now: bootstrap + manifest validation,
   the hook bus (with timeout + return-schema enforcement), identity/context
-  primitives, IPC framing/wire primitives, and the storage-neutral workspace
-  contract (types, policy filter, apply facade). The kernel's acceptance test no
+  primitives, and IPC framing/wire primitives. (It used to carry a
+  storage-neutral workspace contract too; TASK-995 deleted it along with the whole
+  git workspace tier, see Section 5.) The kernel's acceptance test no
   longer asserts a chat outcome — it asserts that `bootstrap()` refuses to start a
   plugin set with unmet `calls:`.
 
 - **Host vs. runner is the central split.** The model agent loop runs in a
   **runner** (`@ax/agent-claude-sdk-runner`) inside a sandbox (subprocess locally,
   pod in k8s), driving the Claude Agent SDK. The **host** is everything outside
-  the sandbox: orchestration, tools, workspace, credentials, conversations,
-  channels. The runner reaches the host only over a narrow authenticated IPC wire.
+  the sandbox: orchestration, tools, credentials, conversations, channels, and the
+  agent's durable files. The runner reaches the host only over a narrow authenticated IPC wire.
 
 - **`@ax/chat-orchestrator` owns the per-chat control plane.** It registers the
   host-side `agent:invoke` service hook (not the `chat:run` the 04-22 doc named).
@@ -53,16 +54,25 @@ deferred," below. We reflect their outcomes here.
   or reuse a sandbox, enqueue the user turn, wait for the runner's `chat:end`,
   clean up.
 
-- **The transcript lives where the SDK writes it, and the host reads it back.**
-  The runner owns the session; the durable conversation transcript is the
-  committed `.claude/projects/*/<sessionId>.jsonl` in the workspace, read by
-  `conversations:get`. There is no host-side replayed message array.
+- **The SDK writes the transcript; the host stores it as rows.** The runner owns
+  the session and the SDK writes its jsonl under `AX_TRANSCRIPTS_ROOT` (k8s:
+  `/tmp/transcripts`). At each turn end the runner ships the new lines to the
+  host (`session.append-transcript`), and `conversations:get` reads the stored
+  rows. There is no host-side replayed message array, and no git history.
+
+- **Agent files are a plain directory, not a repository.** Each agent has one
+  durable files home (`/files` in a sandbox, backed by the filestore NFS export
+  or a local directory). Four tiers exist: that home, a size-capped scratch root
+  (`AX_EPHEMERAL_ROOT`, `/tmp` on k8s, holding `uploads/` and `transcripts/`), the
+  runner's own HOME, and the database. Nothing is committed, versioned or
+  governed by path rules. The runner refuses to boot without both
+  `AX_USERFILES_ROOT` and `AX_EPHEMERAL_ROOT`.
 
 - **Boundaries are now schema-enforced.** Service hooks reachable over IPC, plus
   the security/tenant-boundary hooks, plus the long tail, carry `returns` zod
   schemas (ARCH-6/12/13). The IPC dispatcher's dependency surface is declared in
-  one place (ARCH-2). Git-vocabulary and sandbox/IPC payload shapes live in
-  dedicated `*-protocol` packages, not in the kernel (ARCH-3/5).
+  one place (ARCH-2). Sandbox/IPC payload shapes live in dedicated `*-protocol`
+  packages, not in the kernel (ARCH-5).
 
 ---
 
@@ -85,16 +95,16 @@ This is the load-bearing structural fact of v2 as-built, and it's the thing the
   │                                │        │     │                        │
   │  @ax/ipc-http / @ax/ipc-server │◀───────┼─────┘ IPC (auth'd wire)      │
   │   dispatcher → host services   │  back- │   tool.list / tool.execute   │
-  │   (tool / workspace / session  │ channel│   / workspace.read /         │
-  │    / conversations)            │        │    .materialize / .commit    │
+  │   (tool / session /            │ channel│   / session.get-config /     │
+  │    conversations)              │        │    .append-transcript        │
   └───────────────────────────────┘        └──────────────────────────────┘
 ```
 
 **The host never runs the model.** It hands the runner a session (bearer token,
-config, workspace baseline) and waits. The runner drives the SDK, which spawns
+config, mount list) and waits. The runner drives the SDK, which spawns
 the bundled `claude` CLI, runs the agentic turn loop, and calls back to the host
 over IPC for the things only the host can do safely: list tools, execute
-host-side tools, read/materialize/commit the workspace, claim the next queued
+host-side tools, ship transcript lines, claim the next queued
 message, report stream chunks and turn/chat end.
 
 Why it's shaped this way: the trust boundary is the sandbox edge (04-22 doc
@@ -102,7 +112,7 @@ Why it's shaped this way: the trust boundary is the sandbox edge (04-22 doc
 untrusted model-driven loop has *no* in-process access to credentials, the DB,
 other tenants' data, or the host filesystem — it has a bearer token and a socket,
 and every reach is a validated IPC action. The host code that does have that
-access (orchestrator, tools, workspace) is small, first-party, and never executes
+access (orchestrator, tools, credentials) is small, first-party, and never executes
 model output directly.
 
 ### What runs where
@@ -114,8 +124,8 @@ model output directly.
 | Sandbox spawn / pod lifecycle | **Host** — `@ax/sandbox-subprocess` / `@ax/sandbox-k8s` | registers `sandbox:open-session` |
 | IPC wire (runner ↔ host) | **Host** — `@ax/ipc-server` (unix) / `@ax/ipc-http` (tcp); dispatcher in `@ax/ipc-core` | auth + per-action handlers |
 | Host tool execution | **Host** — `@ax/web-tools`, `@ax/tool-artifact-publish`, `@ax/memory`, `@ax/skill-broker` (catalog: `@ax/mcp-client`'s tool-dispatcher plugin) | `tool:execute:<name>`. Host MCP servers (`/admin/mcp-servers`, `ax-next mcp`) were retired in TASK-792; MCP reaches agents only through connectors. |
-| Workspace versioning | **Host** — `@ax/workspace-git` (local) / `@ax/workspace-git-server` (git-protocol) | opaque `WorkspaceVersion` |
-| Conversation/transcript metadata | **Host** — `@ax/conversations` | reads committed jsonl |
+| Agent files mount | **Host** — `@ax/workspace-filestore` (k8s, NFS) / `@ax/workspace-localdir` (local) | each registers only `sandbox:resolve-mounts`; no versioning, no apply path |
+| Conversation/transcript metadata | **Host** — `@ax/conversations` | reads the transcript rows the runner shipped |
 | Credentials / egress proxy | **Host** — `@ax/credentials*`, `@ax/credential-proxy` | runner sees only `ax-cred:<hex>` placeholders; the proxy swaps one in only for the session that owns it, on egress to that credential's bound `allowedHosts` (TASK-687) — being on the session allowlist is not enough |
 
 ---
@@ -157,14 +167,13 @@ are now precisely:
    `FrameDecoder`, `MAX_FRAME`) and the `WireRequest`/`WireResponse` zod schemas.
    NOT the dispatcher or transport — those are plugins.
 
-5. **The storage-neutral workspace contract** (`workspace.ts`,
-   `workspace-policy.ts`, `workspace-apply-facade.ts`). The opaque
-   `WorkspaceVersion` brand, the `FileChange`/`WorkspaceDelta` types, the
-   `returns` schemas for read/list/apply/diff, the policy filter, and the
-   `registerWorkspaceApplyFacade` chokepoint that fires `workspace:pre-apply` →
-   internal apply → `workspace:applied`. This is the one place a multi-plugin
-   data contract lives in core, and it's deliberately backend-agnostic (no
-   sha/branch/bundle/ref — see ARCH-3).
+5. **No workspace contract.** Until TASK-995 the kernel carried a storage-neutral
+   workspace contract (`workspace.ts`, `workspace-policy.ts`,
+   `workspace-apply-facade.ts`) and a `workspace:pre-apply` → apply →
+   `workspace:applied` chokepoint. Nothing in production called it once agent files
+   moved to a plain directory, so it was deleted. A future multi-plugin data
+   contract earns its place in core the same way that one did: by having a real
+   second caller.
 
 What is **not** in the kernel anymore (vs. the 04-22 doc Section 3): the chat
 loop. Its responsibilities dispersed — orchestration to `@ax/chat-orchestrator`,
@@ -264,8 +273,9 @@ three shapes:
 
 - **GET action:** `/session.next-message` (claims the next queued work item).
 - **POST actions** (synchronous response): `/tool.pre-call`, `/tool.execute-host`,
-  `/tool.list`, `/workspace.commit-notify`, `/workspace.materialize`,
-  `/workspace.read`, `/session.get-config`, `/conversation.store-runner-session`.
+  `/tool.list`, `/session.get-config`, `/conversation.store-runner-session`, plus
+  the transcript, artifact-publish, attachment-list and skill-propose actions.
+  (The `/workspace.*` actions, including commit-notify, are gone: TASK-995.)
 - **POST events** (fire-and-forget 202, subscriber fired async):
   `/event.tool-post-call`, `/event.turn-end`, `/event.chat-end`,
   `/event.stream-chunk`, `/event.connector-auth-failure` (TASK-842: a
@@ -275,8 +285,8 @@ three shapes:
 ### ARCH-2: one source of truth for the dispatcher's dependencies
 
 Both transports used to hand-maintain their own `manifest.calls` and drifted —
-they declared the obvious session/tool calls and silently omitted the workspace,
-conversation, and session-config services the handlers reach. ARCH-2 fixed this:
+they declared the obvious session/tool calls and silently omitted the
+conversation and session-config services the handlers reach. ARCH-2 fixed this:
 `@ax/ipc-core` exports a single `DISPATCHER_DEPENDENCIES` const with
 `requiredCalls`, `optionalCalls` (with degradation notes), and `dynamicCallPatterns`
 (the `tool:execute:` prefix, resolved per-tool at dispatch time). Both transports
@@ -289,7 +299,7 @@ wherever a transport loads?* The local CLI loads `@ax/ipc-server` **without**
 `@ax/conversations`, so `conversations:store-runner-session` and
 `conversations:get-metadata` are optional (the route 500s / degrades when absent),
 while `session:resolve-token`, `session:claim-work`, `tool:list`,
-`session:get-config`, and `workspace:read` are required (present in every IPC
+and `session:get-config` are required (present in every IPC
 deployment).
 
 ---
@@ -297,47 +307,47 @@ deployment).
 ## Section 5 — Transcript & source-of-truth rules
 
 This is the area where the runner-owned-session design (Phase A/C, the 2026-05-01
-workspace redesign) most diverges from anything in the 04-22 doc, so it's worth
+redesign) most diverges from anything in the 04-22 doc, so it's worth
 stating plainly.
 
 - **The runner owns the session.** The Claude Agent SDK assigns a `sessionId`
   and writes the conversation transcript as a jsonl file under
-  `<HOME>/.claude/projects/*/<sessionId>.jsonl`. The runner runs with `HOME` set
-  to a workspace path so that file lands *in the versioned workspace*.
+  `AX_TRANSCRIPTS_ROOT` (k8s: `/tmp/transcripts`, on the pod-private scratch
+  root; the SDK's `projects/` directory is linked there). When that variable is
+  unset, the jsonl stays in `$CLAUDE_CONFIG_DIR/projects`.
 
-- **The durable transcript is the committed jsonl, full stop.** There is no
-  host-side replayed message array and no `runner:read-transcript` host hook (an
-  earlier plan had one; it never shipped — Phase C was superseded). The host reads
-  history by having `conversations:get` glob the committed
-  `.claude/projects/*/<sessionId>.jsonl` and parse it (`@ax/agent-claude-sdk-runner-host`
-  exposes the parser). Transcript parsing **whitelists** turn-bearing entry types
-  (`user`/`assistant`/`tool`) because the SDK adds bookkeeping kinds
-  (`queue-operation`, `last-prompt`, `attachment`) over time.
+- **The durable transcript is host-side rows, shipped by the runner.** There is
+  no host-side replayed message array and no `runner:read-transcript` host hook.
+  The runner ships the new jsonl lines to the host at each turn end
+  (`session.append-transcript`, integrity-checked), and fetches the rebuilt bytes
+  back on resume (`session.get-transcript`). Transcript parsing **whitelists**
+  turn-bearing entry types (`user`/`assistant`/`tool`) because the SDK adds
+  bookkeeping kinds (`queue-operation`, `last-prompt`, `attachment`) over time.
 
-- **Commits happen at turn-end, not mid-turn.** The runner commits the workspace
-  (including the jsonl) via `/workspace.commit-notify` only when a turn ends. A
-  turn killed before its first commit never persists a transcript — which is why
-  the `runner_session_id` binding moved from `system/init` to the **first
-  host-accepted turn-end commit** (F2a). Binding at init pointed at a transcript
-  that didn't exist yet; a retry then resumed a session id with no parseable
-  transcript and the SDK hard-crashed ("No conversation found with session ID").
-  Now `runner_session_id` is set iff a resumable transcript is durable, so a retry
-  cleanly starts fresh.
+- **Shipping happens at turn-end, not mid-turn.** A turn killed before its first
+  ship never persists a transcript, which is why the `runner_session_id` binding
+  moved from `system/init` to the **first host-accepted turn-end ship** (F2a).
+  Binding at init pointed at a transcript that didn't exist yet; a retry then
+  resumed a session id with no parseable transcript and the SDK hard-crashed
+  ("No conversation found with session ID"). Now `runner_session_id` is set iff a
+  resumable transcript is durable, so a retry cleanly starts fresh.
 
 - **One writer per concept (I4).** `active_session_id` / `active_req_id` (routing)
   live on the conversation row via `conversations:bind-session`. The
   `runner_session_id` (SDK resume pointer) is written once via
   `conversations:store-runner-session`. The transcript content lives only in the
-  workspace. Audit records live under the `chat:<reqId>` storage namespace owned
-  by `@ax/audit-log`. No two plugins store the same fact.
+  host's transcript rows. Audit records live under the `chat:<reqId>` storage
+  namespace owned by `@ax/audit-log`. No two plugins store the same fact.
 
-- **Attachments are reconstructed on read.** Under runner-owned sessions the jsonl
-  stores the runner's text-mention translation of an upload, not the original
-  `attachment` block. `conversations:get` reconstructs the chip from that mention
-  (path-prefix-gated to the conversation's own uploads), so the original wire
-  shape needn't be persisted — and already-broken chats are fixed retroactively
-  with no migration. The `formatAttachmentMention`/`parseAttachmentMention` pair
-  in `@ax/ipc-protocol` keeps producer (runner) and consumer (host) from drifting.
+- **Attachments are referenced by ID.** An upload is stored once and the user
+  message carries one ID-based attachment block, the same shape artifact chips
+  use. Chips render from the stored block; download is by ID, with an ownership
+  and hash check. The runner gets a per-turn scratch copy under
+  `<scratch>/uploads/` so the model can read it, but that copy is a convenience,
+  never the record. The old path-mention reconstruction
+  (`formatAttachmentMention`/`parseAttachmentMention`) is gone; legacy turns
+  that only have the text form still render as text, and a client cannot send an
+  attachment block of its own (the host builds them).
 
 ---
 
@@ -353,15 +363,13 @@ and consumer. Treat their *shape* as a contract; changing it is a boundary revie
 
 - **`models:get-policy`** (`@ax/model-policy`) — which models may be chosen and which is the Default, `{} → { allowed, default, source: 'admin' | 'builtin', version }`. Soft-consumed by `@ax/agents` for write validation, the picker and the lazy swap in `agents:resolve`; absent, agents use their built-in list. **`models:list-available:<provider>`** (`@ax/llm-anthropic`, `@ax/llm-openrouter`) — the live admin catalog, `{} → { status: 'live' | 'no-key' | 'error', models: { ref, label }[] }`, called by `@ax/model-policy`.
 - **Orchestration:** `agent:invoke`, `agent:interrupt` (`@ax/chat-orchestrator`).
-- **Workspace:** `workspace:read`, `workspace:list`, `workspace:apply` (via the
-  core facade), and `workspace:diff`. The `workspace:pre-apply` / `workspace:applied`
-  subscriber pair is the policy/scanner chokepoint (and, since TASK-690, the
-  storage-limit gate: `workspace:pre-apply` carries `sizeBytes`). `blob:put`
-  is the same shape (facade over `blob:put-internal`, see "Storage limit"
-  below). The bundle fast-path hooks
-  (`workspace:apply-bundle`, `workspace:export-baseline-bundle`) are **optional**
-  and git-specific; their payload types live in `@ax/workspace-bundle-protocol`
-  (ARCH-3), not core, because they carry git vocabulary.
+- **Agent files:** there are no `workspace:*` hooks any more (TASK-995 deleted
+  `read`, `list`, `apply`, `diff`, `pre-apply`, `applied`, `deleted`, `usage` and
+  the bundle fast-path pair, plus `@ax/workspace-bundle-protocol`). The mount
+  plugins (`@ax/workspace-filestore`, `@ax/workspace-localdir`) register only
+  `sandbox:resolve-mounts`. `blob:put` is the one remaining facade (veto
+  `blob:pre-put`, backend `blob:put-internal`, notify `blob:stored`; see "Storage
+  limit" below).
 - **Session:** `session:create`, `session:resolve-token`, `session:claim-work`,
   `session:queue-work`, `session:get-config`, `session:is-alive`,
   `session:terminate`. Two backends register these (`@ax/session-inmemory`,
@@ -381,28 +389,18 @@ and consumer. Treat their *shape* as a contract; changing it is a boundary revie
   delete, no retention), sessions (terminated first, which revokes the runner's
   token), skills, connectors, host grants, decisions, MCP handshakes, remembered
   facts, routines, the durable-files directory (a reclaim pod that runs as root
-  with `DAC_OVERRIDE` + `FOWNER` only), the orchestrator's warm sandboxes and, since
-  TASK-719, the agent's git workspace repository: `@ax/workspace-git` removes
-  `<repoRoot>/ws-<hash>.git` under the agent's write mutex, refuses every later
-  hook for that agent with `PluginError` `agent-deleted` (so a warm runner's late
-  commit cannot recreate it) until the host restarts (the tombstone is an
-  in-memory set, one per host process; after a restart no warm runner holding
-  that agent's token remains, because the delete terminated its sessions and
-  killed its sandboxes, but a restart in the middle of a delete is untested), then
-  fires the subscriber hook
-  `workspace:deleted { agentId }`, which is how `@ax/disk-quota` learns to drop that
-  agent's ledger row. A failed `rm` fires nothing, so the row keeps counting bytes
-  that are still on disk.
+  with `DAC_OVERRIDE` + `FOWNER` only) and the orchestrator's warm sandboxes.
+  `@ax/disk-quota` drops its `agent-files:<agentId>` ledger row on the same hook.
+  (Until TASK-995 the agent's git repository was removed here too, and fired
+  `workspace:deleted`; both are gone.)
   Rows keyed only on a conversation id are cleaned by a second hook,
   `conversations:purged { conversationIds }`, which `@ax/conversations` fires
   after its purge commits (at most 500 ids per fire; today `@ax/attachments`
   subscribes). `scripts/__tests__/agent-keyed-tables-are-cleaned.test.js` fails
   the PR that adds an agent-scoped table with no cleanup. **Not covered yet**
   (no delete hook exists, or the store is shared): blob bytes behind attachments
-  and skills, `routines_v1_fires` history (kept on purpose), key-value leftovers,
-  and the repos of agents deleted before TASK-719 shipped (an orphan `ws-*.git` and
-  a counted ledger row until an operator cleans them by hand). The multi-replica
-  `@ax/workspace-git-server` backend does not subscribe yet.
+  and skills, `routines_v1_fires` history (kept on purpose), and key-value
+  leftovers.
 - **Credentials:** `credentials:get`, `credentials:resolve:<kind>`,
   `credentials:list`, `credentials:list-kinds`, plus the `credentials:store-blob:*`
   storage seam.
@@ -442,36 +440,17 @@ and consumer. Treat their *shape* as a contract; changing it is a boundary revie
     limit. Spend is the larger of runner-reported and proxy-measured, plus helper
     calls. Design and the residual gaps: `2026-09-29-provider-call-metering.md`.
 - **Storage limit (TASK-690, `@ax/disk-quota`):** one per-owner budget that
-  spans blobs, each agent's `/files` (TASK-993) and, until TASK-995 removes the
-  git tier, agent workspaces. Design note: `2026-09-29-workspace-disk-quota.md`;
-  the `/files` half is design §12 of `2026-10-29-agent-files-simplification-design.md`.
-  - `workspace:pre-apply` payload gained an optional **`sizeBytes`** ("roughly
-    how many bytes this write adds"). It is set on BOTH firing sites: the
-    `@ax/core` `workspace:apply` facade (sum of the put contents, full change
-    set) and `@ax/ipc-core`'s commit-notify (decoded bundle length, derived
-    host-side, never runner-claimed). The subscriber's veto reason is **prose**:
-    on the runner path it rides `accepted:false, recoverable:false` (the runner
-    resets the tree; the reason reaches the agent as `rejectionReason` on the
-    mid-turn flush before a host tool); in-process callers get `PluginError`
-    `rejected`. The veto's machine `code` rides the commit answer too, and a
-    refused END-OF-TURN save reaches the person as `event.turn-end`
-    `saveRefused` (`storage-full` | `too-large` | `refused`) → the SSE `done`
-    frame → a fixed sentence under the reply (TASK-720). It is also persisted
-    (TASK-731): `@ax/ipc-core` appends a `save-refused` display event
-    (`payload: { code }`, folded on the turn's reqId) before acking the
-    turn-end, and channel-web's thread read interleaves it like a `turn-error`,
-    so it survives a reload. The final/idle commit after the last turn-end
-    (which bundles `baseline..main`, so it can carry earlier replies' files
-    whose save came back `kept`) reports its refusal on `event.chat-end`
-    `saveRefused`; no stream is open then, so it is persisted only and seen on
-    the next read.
-    The MODEL is told at the start of its next turn: in-process when the same
-    runner serves it (TASK-732, the host's reason fenced and NFKC-folded), and
-    otherwise from the host (TASK-749): the runner drains the `save-refused`
-    rows it has not been told about (`conversation.drain-save-refusals` →
-    `conversations:drain-save-refusals`, a per-conversation watermark, closed
-    codes only) as it builds each turn, dropping the ones keyed to its own
-    turns, so a final/idle refusal or one whose runner exited is told once.
+  spans blobs (uploads and published files) and each agent's `/files` (TASK-993).
+  Design note: `2026-09-29-workspace-disk-quota.md` (history; its git-workspace
+  half is gone, TASK-995); the `/files` half is design §12 of
+  `2026-10-29-agent-files-simplification-design.md`.
+  - **There is no save-refused path any more (TASK-995).** The runner no longer
+    commits anything, so no write is vetoed at save time and no
+    `event.turn-end` / `event.chat-end` `saveRefused` field exists. The
+    `conversations:drain-save-refusals` hook, its IPC action and the `workspace_ref`
+    and `save_refused_drained_seq` columns were dropped. Only the stored
+    `'save-refused'` display-event kind is still tolerated so old conversations
+    replay; nothing writes it.
   - **Over the limit, chat still works (TASK-993).** The `chat:start`
     `storage-full` veto is gone, so a person whose storage is full can still ask
     their agent to tidy up. `blob:pre-put` still refuses their uploads and
@@ -495,41 +474,28 @@ and consumer. Treat their *shape* as a contract; changing it is a boundary revie
     `agents:deleted` drops that row. Filestore has no per-folder limit and the
     sandbox writes NFS directly, so an agent can overshoot between measurements;
     the Filestore capacity alert in `deploy/GKE.md` is the backstop.
-  - The runner's save is the BINARY action **`workspace.commit-bundle`** (raw
-    bundle body, `parentVersion`/`reason` query, up to 100 MiB, TASK-720). The
-    JSON `workspace.commit-notify` (base64 inside the 4 MiB frame, so about
-    3 MiB per save) stays only for sandboxes from the previous release. A save
-    over the cap is not sent and a host 413 is not retried: both roll the turn
-    back and report `too-large`, instead of the old silent wedge.
-  - **`blob:put` is a facade** (`registerBlobPutFacade` in `@ax/core`, like
-    `workspace:apply`): veto `blob:pre-put { size }` → the backend's
+  - **`blob:put` is a facade** (`registerBlobPutFacade` in `@ax/core`): veto `blob:pre-put { size }` → the backend's
     `blob:put-internal` → notify `blob:stored { sha256, size }`. Both backends
     (`@ax/blob-store-fs`, `-s3`) register the `-internal` hook. A refusal is
     `PluginError` `rejected` carrying the sentence: the IPC `blob.put` and
     `skill.propose` handlers answer 409, the skills routes and the chat send
     answer 413 `storage-full`. `@ax/skills` now passes the owning person to the
     write (`writeTree(files, ownerUserId?)`); a `system` ctx is not attributed.
-  - **`workspace:usage {} → { bytes }`** (optional service hook; routes by
-    `ctx.agentId`): how much storage the agent's workspace occupies, history
-    included. Registered by the local git backend only; the multi-replica
-    backend does not register it yet, so the plugin degrades to not measuring
-    workspaces there.
   - The gate fails closed and is not a reservation (concurrent writes can each
     pass; overshoot is bounded by concurrent writes x the per-write cap). The
     limit is the admin-editable `settings:disk-quota`.
-  - **What frees storage (TASK-719, TASK-993).** The agent cleaning up its own
-    `/files`, which is re-measured at the next turn end or sweep; and deleting a
-    whole agent: its repo is removed and `workspace:deleted { agentId }` makes
-    the plugin drop that agent's `workspace:<agentId>` row, while `agents:deleted`
-    drops its `agent-files:<agentId>` row. Almost nothing frees blob bytes:
-    `blob:delete` has one caller, the branding logo, which is unmetered; there is
-    no blob GC; attachments and artifacts cannot be deleted; and git history keeps
-    everything inside a workspace. So the refusal sentences tell a person to ask
+  - **What frees storage (TASK-993).** The agent cleaning up its own `/files`,
+    which is re-measured at the next turn end or sweep; and deleting a whole
+    agent, where `agents:deleted` drops its `agent-files:<agentId>` row. (Boot
+    also deletes any leftover `workspace` ledger rows from the git era.) Almost
+    nothing frees blob bytes: `blob:delete` has one caller, the branding logo,
+    which is unmetered; there is no blob GC; and attachments and artifacts cannot
+    be deleted. So the refusal sentences tell a person to ask
     their agent to clean up files it no longer needs, or to ask an admin for more
     room. There is no delete button in the Files tab (a host write path into an
     agent-writable tree), and the copy never suggests deleting an agent.
   - **A refusal for a full disk carries a code.** The veto is `Rejection.code:
-    'storage-full'`, which both `@ax/core` facades forward as
+    'storage-full'`, which the `@ax/core` blob facade forwards as
     `PluginError.reasonCode` (`code` stays `'rejected'`). The Rules,
     agent-identity and routines routes that used to key on it no longer write
     through the storage limit (TASK-989). The chat send (an attachment) and
@@ -564,9 +530,9 @@ intentionally unschema'd — there's nothing to validate.
   hostile to streaming text. It is **not** the chat-stream transport. Today the
   eventbus's only production use is cross-replica re-broadcast of small events
   (e.g. `session:terminate`, live title refresh).
-- **Workspace `local` backend** (`@ax/workspace-git` on an RWO PVC) is
-  single-replica by construction; `git-protocol` (`@ax/workspace-git-server`) is
-  the multi-replica-capable path.
+- **Agent files** no longer pin the host to one replica: `/files` is a
+  filestore (NFS) export that every host and runner pod can mount. (The old
+  RWO-PVC git workspace backend, which did, is gone.)
 
 ---
 
@@ -576,15 +542,15 @@ The 04-22 doc's "deployment shapes fall out of plugin selection" held. Two
 profiles exist (three, counting the memory preset below):
 
 - **Local / CLI** — `@ax/cli` assembles: `storage-sqlite`, `session-inmemory`,
-  `sandbox-subprocess`, `ipc-server` (unix socket), `workspace-git` (local),
+  `sandbox-subprocess`, `ipc-server` (unix socket), `workspace-localdir`,
   `chat-orchestrator`, the credential proxy, mcp-client, `llm-anthropic`,
   web-tools, and the sqlite facts engine (no memory product layer yet).
   Single laptop; drives the canary.
 - **k8s** — `presets/k8s` assembles the production BASE set (no longer
   bootable on its own; `presets/memory` composes it): the Postgres trio
   (`database-postgres` + `storage-postgres` + `eventbus-postgres` +
-  `session-postgres`), `workspace-git` (local PVC) **or** `workspace-git-server`
-  (git-protocol), `sandbox-k8s`, `ipc-http` (TCP), `chat-orchestrator`
+  `session-postgres`), `workspace-filestore` (the NFS-backed `/files` home),
+  `sandbox-k8s`, `ipc-http` (TCP), `chat-orchestrator`
   (keepAlive), `http-server` (public listener), `auth-better`, `teams`,
   `onboarding`, `agents`, `skills`, `conversations`, `attachments`,
   `channel-web`, `conversation-titles`, and (env-gated on
@@ -618,26 +584,23 @@ are CSRF-gated by an `@ax/http-server` subscriber.
 
 Shared payload shapes that would otherwise be duplicated (and drift) across
 plugins live in dedicated packages on the cross-plugin-import allowlist. The
-decision rule for the workspace surface: a *wire* shape → `@ax/ipc-protocol`
-(zod-validated, untrusted runner↔host wire); an in-process *hook-bus* type → its
-own `*-protocol` package; never the storage-neutral kernel (I1 forbids
-sha/branch/bundle/ref/commit in `@ax/core`).
+decision rule: a *wire* shape → `@ax/ipc-protocol` (zod-validated, untrusted
+runner↔host wire); an in-process *hook-bus* type → its own `*-protocol` package;
+never the storage-neutral kernel (I1 forbids backend vocabulary in `@ax/core`).
 
 - **`@ax/ipc-protocol`** — the zod-validated untrusted wire shapes (request/
-  response framing payloads, attachment-mention format).
+  response framing payloads, the ID-based attachment block).
 - **`@ax/sandbox-protocol`** (ARCH-5) — `ProxyConfigSchema`, `InstalledSkillSchema`,
   `McpServerSchema`, `AgentConfigSchema`, `OpenSessionInputSchema`,
   `OpenSessionResultSchema`. Zod schemas, no `@ax/core` dep. Both sandbox backends
   and the orchestrator (type-only) share them; convergence picked the *stricter*
   proxy-config schema (exactly-one-of endpoint/socket).
-- **`@ax/workspace-protocol`** — the workspace wire shapes.
-- **`@ax/workspace-bundle-protocol`** (ARCH-3) — the 4 git-bundle hook-payload
-  types (`WorkspaceApplyBundle*`, `WorkspaceExportBaselineBundle*`). **Pure TS
-  types, no zod** (the contract is an in-process `bus.call<In,Out>` generic, not an
-  untrusted wire — the wire is already `@ax/ipc-protocol`), but **does** depend on
-  `@ax/core` type-only for the neutral `WorkspaceVersion`. Moved out of the kernel
-  precisely because `bundleBytes`/`baselineCommit` are git vocabulary that leaked
-  into the storage-neutral surface.
+- **`@ax/sandbox-mount-protocol`** — the mount list and the
+  `sandbox:resolve-mounts` / `sandbox:user-files-usage` hook types the two sandbox
+  backends and the mount plugins share.
+
+`@ax/workspace-protocol` and `@ax/workspace-bundle-protocol` (the ARCH-3 git-bundle
+payload types) were deleted in TASK-995 with the tier they served.
 
 `@ax/agent-claude-sdk-runner`'s hand-rolled, non-zod `validateMcpEntry` is the one
 deliberate duplication — it's defense-in-depth on the *sandbox side* of the trust
@@ -654,8 +617,7 @@ These are **not done** and shouldn't be described as such. They sit in Backlog.
   single-replica *guard*, not a broker. Multi-replica chat needs a real
   cross-replica stream transport (a Redis stream or pg-logical channel — **not**
   the 8000-byte-capped Postgres NOTIFY eventbus). **Gated** on a multi-replica
-  workspace backend existing first (today `workspace.backend=local` is RWO/single-
-  node). Until then, the chart's `replicas > 1` guard stays and chat streaming is
+  stream transport existing first. Until then, the chart's `replicas > 1` guard stays and chat streaming is
   single-replica.
 
 - **ARCH-10 — compatibility-matrix generator.** The architecture spec lists a

@@ -130,10 +130,10 @@ reached the agent.
 
 The **user's own** attachment chip (composer chip and the chip on the user message) is
 **display-only** — a `div`, no anchor/handler — so clicking it does nothing, by design (you
-uploaded it; why download it). Test download against a chip the *system reconstructs*: the
+uploaded it; why download it). Test download against a chip the *system renders from the stored block* (ID-based; download is by ID): the
 reloaded chip in #8(c), or an **artifact** chip from #7.
 
-- **Steps:** in the reloaded #8 session (or on a #7 artifact), click the reconstructed chip.
+- **Steps:** in the reloaded #8 session (or on a #7 artifact), click the reloaded chip.
 - **PASS:** a download fires — confirm a `2xx` blob fetch in `browser_network_requests`
   (verify the actual path against the network log; the endpoint is not assumed here);
   content matches what was uploaded/published.

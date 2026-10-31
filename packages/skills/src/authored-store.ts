@@ -1,8 +1,8 @@
 /**
  * @ax/skills authored-skills store (TASK-74, out-of-git Part D).
  *
- * The single source of truth for agent-authored skills, replacing the
- * `.ax/draft-skills/<id>/` git workspace. Operates on `skills_v1_authored`,
+ * The single source of truth for agent-authored skills, which replaced a
+ * per-agent drafts directory in the old git workspace (gone since TASK-995). Operates on `skills_v1_authored`,
  * scoped to `(owner_user_id, agent_id)` — the per-(user, agent) draft namespace.
  *
  * The hybrid materialization gate (design §D3) classifies a proposal at write
