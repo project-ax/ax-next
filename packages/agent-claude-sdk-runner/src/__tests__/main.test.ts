@@ -1,8 +1,9 @@
+import { createHash } from 'node:crypto';
 import { mkdtempSync, promises as fs } from 'node:fs';
 import * as os from 'node:os';
 import * as nodePath from 'node:path';
 import type { SDKMessage, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
-import { IpcRequestError } from '@ax/ipc-protocol';
+import { AttachmentsListResponseSchema, IpcRequestError } from '@ax/ipc-protocol';
 import type { IpcClient, IpcClientOptions } from '@ax/ipc-protocol';
 import type {
   InboxLoop,
@@ -4190,8 +4191,9 @@ describe('main()', () => {
       expect(queryArg.options.cwd).toBe('/files');
       expect(queryArg.options.env.HOME).toBe('/files');
       // The governed tier (/tmp/workspace = AX_WORKSPACE_ROOT) is no longer the
-      // cwd, so it MUST be granted explicitly — it holds .ax/uploads, the
-      // transcript symlink, and every re-rooted .ax/**+.claude/** write.
+      // cwd, so it MUST be granted explicitly — it holds the transcript
+      // symlink and every re-rooted .ax/**+.claude/** write. (Uploads are
+      // copied into the scratch root, which is granted below.)
       expect(queryArg.options.additionalDirectories).toContain('/tmp/workspace');
       expect(queryArg.options.additionalDirectories).toContain('/ephemeral');
       // /files is the cwd, so it is NOT duplicated in the list.
@@ -4526,17 +4528,16 @@ describe('main()', () => {
     );
   });
 
-  it('Phase 2: translates attachment contentBlocks to Anthropic image blocks before yielding to SDK', async () => {
-    // TASK-78: uploads materialize at the advertised `<workspaceRoot>/.ax/uploads/`,
-    // and the attachment-translation reader reads the bytes from THERE (not via
-    // workspace.read). Use a real temp workspace and pre-write the materialized
-    // file so the reader finds it — exactly what materializeUploads does at boot.
-    const workspaceRoot = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'ax-main-att-'));
-    const png = Buffer.from('fake-png-bytes');
-    const materialized = nodePath.join(workspaceRoot, '.ax', 'uploads', 'c1', 't1', 'img.png');
-    await fs.mkdir(nodePath.dirname(materialized), { recursive: true });
-    await fs.writeFile(materialized, png);
-    setEnv({ ...COMPLETE_ENV, AX_WORKSPACE_ROOT: workspaceRoot });
+  /**
+   * A conversation-bound host with one uploaded image. The runner copies it
+   * into `<scratch>/uploads/` at boot (`attachments.list` → `blob.get`) and
+   * translates the message's block by attachment id from that copy.
+   */
+  async function hostWithUploadedImage(png: Buffer): Promise<{ scratch: string }> {
+    const scratch = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'ax-main-att-'));
+    onTestFinished(() => fs.rm(scratch, { recursive: true, force: true }));
+    setEnv({ ...COMPLETE_ENV, AX_EPHEMERAL_ROOT: scratch });
+    const sha256 = createHash('sha256').update(png).digest('hex');
     fakeClient = buildFakeClient();
     fakeClient.call.mockImplementation(async (action: string) => {
       if (action === 'session.get-config') {
@@ -4551,13 +4552,28 @@ describe('main()', () => {
             model: 'anthropic/claude-sonnet-4-7',
             runner: 'claude-sdk',
           },
-          conversationId: null,
+          conversationId: 'cnv-att',
           runnerSessionId: null,
         };
       }
       if (action === 'workspace.materialize') return { bundleBytes: '' };
       if (action === 'tool.list') return { tools: [] };
+      if (action === 'attachments.list') {
+        return AttachmentsListResponseSchema.parse({
+          files: [
+            { attachmentId: 'att-img', filename: 'img.png', sha256, mediaType: 'image/png', sizeBytes: png.length },
+          ],
+        });
+      }
+      if (action === 'conversation.drain-save-refusals') return { refusals: [] };
       throw new Error(`unexpected call: ${action}`);
+    });
+    fakeClient.callBinary.mockImplementation(async (action: string, payload: unknown) => {
+      if (action !== 'blob.get') return { path: '/tmp/fake-materialize.bundle', bytes: 0 };
+      expect(payload).toEqual({ sha256 });
+      const tmp = nodePath.join(scratch, 'blob-get.tmp');
+      await fs.writeFile(tmp, png);
+      return { path: tmp, bytes: png.length };
     });
     fakeClient.callBinaryUpload.mockImplementation(async (action: string) => {
       if (action === 'workspace.commit-bundle') {
@@ -4565,6 +4581,20 @@ describe('main()', () => {
       }
       throw new Error(`unexpected upload: ${action}`);
     });
+    return { scratch };
+  }
+
+  const imageBlock = (png: Buffer) => ({
+    type: 'attachment' as const,
+    attachmentId: 'att-img',
+    filename: 'img.png',
+    mediaType: 'image/png',
+    sizeBytes: png.length,
+  });
+
+  it('Phase 2: translates attachment contentBlocks to Anthropic image blocks before yielding to SDK', async () => {
+    const png = Buffer.from('fake-png-bytes');
+    const { scratch } = await hostWithUploadedImage(png);
 
     // Inject a user message with an image attachment in its contentBlocks.
     const userMsgWithAttachment: InboxLoopEntry = {
@@ -4572,15 +4602,7 @@ describe('main()', () => {
       payload: {
         role: 'user',
         content: '',
-        contentBlocks: [
-          {
-            type: 'attachment',
-            path: '.ax/uploads/c1/t1/img.png',
-            displayName: 'img.png',
-            mediaType: 'image/png',
-            sizeBytes: png.length,
-          },
-        ],
+        contentBlocks: [imageBlock(png)],
       },
       reqId: 'req-attachment',
     };
@@ -4617,69 +4639,25 @@ describe('main()', () => {
       },
     ]);
 
-    // The upload bytes came from the materialized file at the advertised path —
-    // NOT via workspace.read (uploads no longer route through it).
-    expect(fakeClient.call).not.toHaveBeenCalledWith('workspace.read', {
-      path: '.ax/uploads/c1/t1/img.png',
-    });
-
-    await fs.rm(workspaceRoot, { recursive: true, force: true });
+    // The bytes came from the runner's own copy, flat in `<scratch>/uploads/` —
+    // never from a workspace read.
+    expect(await fs.readFile(nodePath.join(scratch, 'uploads', 'img.png'))).toEqual(png);
+    expect(fakeClient.call.mock.calls.some((c) => c[0] === 'workspace.read')).toBe(false);
   });
 
   it('Phase 2: preserves typed user text alongside translated attachment blocks', async () => {
-    // TASK-78: materialized upload bytes are read from `<workspaceRoot>/.ax/uploads/`.
-    const workspaceRoot = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'ax-main-att-'));
     const png = Buffer.from('fake-png-bytes');
-    const materialized = nodePath.join(workspaceRoot, '.ax', 'uploads', 'c1', 't1', 'img.png');
-    await fs.mkdir(nodePath.dirname(materialized), { recursive: true });
-    await fs.writeFile(materialized, png);
-    setEnv({ ...COMPLETE_ENV, AX_WORKSPACE_ROOT: workspaceRoot });
-    fakeClient = buildFakeClient();
-    fakeClient.call.mockImplementation(async (action: string) => {
-      if (action === 'session.get-config') {
-        return {
-          userId: 'u-test',
-          agentId: 'a-test',
-          agentConfig: {
-            displayName: 'Test Agent',
-            systemPromptAugment: '',
-            allowedTools: [],
-            mcpConfigIds: [],
-            model: 'anthropic/claude-sonnet-4-7',
-            runner: 'claude-sdk',
-          },
-          conversationId: null,
-          runnerSessionId: null,
-        };
-      }
-      if (action === 'workspace.materialize') return { bundleBytes: '' };
-      if (action === 'tool.list') return { tools: [] };
-      throw new Error(`unexpected call: ${action}`);
-    });
-    fakeClient.callBinaryUpload.mockImplementation(async (action: string) => {
-      if (action === 'workspace.commit-bundle') {
-        return { accepted: true, version: 'v1', delta: null };
-      }
-      throw new Error(`unexpected upload: ${action}`);
-    });
+    await hostWithUploadedImage(png);
 
-    // The future Phase 3 chat-messages handler will send BOTH typed text
-    // AND attachment blocks for a single user turn. Confirm the runner
-    // emits text-first then translated blocks rather than discarding text.
+    // The chat-messages handler sends BOTH typed text AND attachment blocks
+    // for a single user turn. Confirm the runner emits text-first then
+    // translated blocks rather than discarding text.
     const userMsg: InboxLoopEntry = {
       type: 'user-message',
       payload: {
         role: 'user',
         content: 'what is in this image?',
-        contentBlocks: [
-          {
-            type: 'attachment',
-            path: '.ax/uploads/c1/t1/img.png',
-            displayName: 'img.png',
-            mediaType: 'image/png',
-            sizeBytes: png.length,
-          },
-        ],
+        contentBlocks: [imageBlock(png)],
       },
       reqId: 'req-mixed',
     };
@@ -4714,8 +4692,6 @@ describe('main()', () => {
         },
       },
     ]);
-
-    await fs.rm(workspaceRoot, { recursive: true, force: true });
   });
 
   // ---------------------------------------------------------------------

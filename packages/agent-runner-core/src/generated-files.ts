@@ -1,7 +1,12 @@
 import { randomUUID } from 'node:crypto';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
-import { AttachmentBlockSchema, type AttachmentBlock, type ContentBlock, type ToolCall } from '@ax/ipc-protocol';
+import {
+  attachmentBlockFromArtifact,
+  type AttachmentBlock,
+  type ContentBlock,
+  type ToolCall,
+} from '@ax/ipc-protocol';
 import type { ArtifactPublishOutput } from './artifact-publish-executor.js';
 
 // /files is also HOME. Configuration, SDK state and dependencies are not
@@ -32,37 +37,38 @@ async function snapshot(root: string): Promise<Set<string>> {
   return files;
 }
 
-/** Only reference files after both bytes and ownership metadata are durable. */
-export function artifactAttachment(file: ArtifactPublishOutput): AttachmentBlock {
-  return {
-    type: 'attachment',
-    path: file.path,
-    displayName: file.displayName,
-    mediaType: file.mediaType,
-    sizeBytes: file.sizeBytes,
-  };
-}
-
-/** The model's explicit publish call can supply the chip without a second upload. */
-export function publishedAttachments(calls: ContentBlock[], results: ContentBlock[]): AttachmentBlock[] {
+/**
+ * Download chips for the model's explicit `artifact_publish` calls this turn,
+ * and the root-relative paths they came from (so auto-attach skips them).
+ *
+ * A chip names the artifact by id (`artifactId`); where the file sat in the
+ * sandbox never leaves it (Invariant 1). The result rides a tool_result, so
+ * every field is re-checked: one that cannot make a valid chip yields nothing.
+ */
+export function publishedAttachments(
+  calls: ContentBlock[],
+  results: ContentBlock[],
+): { blocks: AttachmentBlock[]; paths: string[] } {
   const ids = new Set(calls.flatMap(block => block.type === 'tool_use' &&
     (block.name === 'artifact_publish' || block.name === 'mcp__ax-sandbox-tools__artifact_publish')
     ? [block.id] : []));
-  const out: AttachmentBlock[] = [];
+  const blocks: AttachmentBlock[] = [];
+  const paths: string[] = [];
   for (const block of results) {
     if (block.type !== 'tool_result' || block.is_error || block.held || !ids.has(block.tool_use_id)) continue;
     const texts = typeof block.content === 'string' ? [block.content]
       : block.content.flatMap(c => c.type === 'text' ? [c.text] : []);
     for (const text of texts) {
-      try {
-        const value: unknown = JSON.parse(text);
-        if (value === null || typeof value !== 'object') continue;
-        const parsed = AttachmentBlockSchema.safeParse({ ...value, type: 'attachment' });
-        if (parsed.success) out.push(parsed.data);
-      } catch { /* A non-artifact tool result has no chip. */ }
+      let value: unknown;
+      try { value = JSON.parse(text); } catch { continue; /* A non-artifact tool result has no chip. */ }
+      const chip = attachmentBlockFromArtifact(value);
+      if (chip === null) continue;
+      blocks.push(chip);
+      const published = (value as { path?: unknown }).path;
+      if (typeof published === 'string') paths.push(published);
     }
   }
-  return out;
+  return { blocks, paths };
 }
 
 export interface GeneratedFiles {
@@ -97,7 +103,11 @@ export async function trackGeneratedFiles(opts: {
             id: randomUUID(), name: 'artifact_publish',
             input: { path: path.join(opts.root, relative) },
           });
-          blocks.push(artifactAttachment(file));
+          // Only reference a file once its bytes and ownership row are durable,
+          // and only by a chip that will pass the host's block check.
+          const chip = attachmentBlockFromArtifact(file);
+          if (chip === null) throw new Error('publish result cannot name the artifact');
+          blocks.push(chip);
         } catch { failed = true; opts.warn(); }
       }
       baseline = current;

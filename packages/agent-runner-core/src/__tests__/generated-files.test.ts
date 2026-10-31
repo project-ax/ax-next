@@ -27,7 +27,8 @@ describe('generated files', () => {
       await fs.writeFile(path.join(dir, sub, 'result.txt'), 'hello');
     }
     const blocks = await tracker.collect();
-    expect(blocks).toEqual([{ type: 'attachment', path: 'reports/result.txt', displayName: 'result.txt', mediaType: 'text/plain', sizeBytes: 5 }]);
+    // The chip names the artifact by id; where it sat in the sandbox stays here.
+    expect(blocks).toEqual([{ type: 'attachment', attachmentId: 'id', filename: 'result.txt', mediaType: 'text/plain', sizeBytes: 5 }]);
     expect(callBinaryUpload).toHaveBeenCalledOnce();
     expect(call).toHaveBeenCalledWith('artifact.publish', expect.objectContaining({ conversationId: 'c1', path: 'reports/result.txt' }));
     expect(await tracker.collect()).toEqual([]);
@@ -69,13 +70,73 @@ describe('generated files', () => {
   });
 
   it('recognizes only successful publish results, including SDK text blocks', () => {
-    const file = { path: 'a.txt', displayName: 'a.txt', mediaType: 'text/plain', sizeBytes: 0 };
     expect(publishedAttachments([
       { type: 'tool_use', id: 'p', name: 'mcp__ax-sandbox-tools__artifact_publish', input: {} },
     ], [
-      { type: 'tool_result', tool_use_id: 'p', content: [{ type: 'text', text: JSON.stringify(file) }] },
-      { type: 'tool_result', tool_use_id: 'unknown', content: JSON.stringify(file) },
-      { type: 'tool_result', tool_use_id: 'p', is_error: true, content: JSON.stringify(file) },
-    ])).toEqual([{ type: 'attachment', ...file }]);
+      { type: 'tool_result', tool_use_id: 'p', content: [{ type: 'text', text: JSON.stringify(RESULT) }] },
+      { type: 'tool_result', tool_use_id: 'unknown', content: JSON.stringify(RESULT) },
+      { type: 'tool_result', tool_use_id: 'p', is_error: true, content: JSON.stringify(RESULT) },
+    ])).toEqual({ blocks: [CHIP], paths: ['out/a.txt'] });
+  });
+
+  it('artifact chips carry the artifactId, not a path', () => {
+    const { blocks } = publishedAttachments(
+      [{ type: 'tool_use', id: 'p', name: 'artifact_publish', input: {} }],
+      [{ type: 'tool_result', tool_use_id: 'p', content: JSON.stringify(RESULT) }],
+    );
+    expect(blocks).toEqual([CHIP]);
+    expect(blocks.every(block => !('path' in block))).toBe(true);
+  });
+
+  it('a publish result that cannot name its artifact attaches nothing', () => {
+    // The result rides a tool_result, so every field is checked again here.
+    for (const bad of [{ ...RESULT, artifactId: '../x' }, { ...RESULT, displayName: '' }, { path: 'out/a.txt' }]) {
+      expect(publishedAttachments(
+        [{ type: 'tool_use', id: 'p', name: 'artifact_publish', input: {} }],
+        [{ type: 'tool_result', tool_use_id: 'p', content: JSON.stringify(bad) }],
+      )).toEqual({ blocks: [], paths: [] });
+    }
+  });
+
+  it('auto-attach skips, by path, a file the model already published', async () => {
+    const dir = await root();
+    const publish = vi.fn();
+    const tracker = await trackGeneratedFiles({ root: dir, publish, warn: vi.fn() });
+    await fs.mkdir(path.join(dir, 'out'));
+    await fs.writeFile(path.join(dir, 'out', 'a.txt'), 'a');
+    const explicit = publishedAttachments(
+      [{ type: 'tool_use', id: 'p', name: 'artifact_publish', input: {} }],
+      [{ type: 'tool_result', tool_use_id: 'p', content: JSON.stringify(RESULT) }],
+    );
+    expect(await tracker.collect(explicit.paths)).toEqual([]);
+    expect(publish).not.toHaveBeenCalled();
+  });
+
+  it('a generated file whose publish result cannot be a chip is reported, not attached', async () => {
+    const dir = await root();
+    const publish = vi.fn(async () => ({ ...RESULT, artifactId: 'not/an/id' }));
+    const warn = vi.fn();
+    const tracker = await trackGeneratedFiles({ root: dir, publish, warn });
+    await fs.writeFile(path.join(dir, 'new.txt'), 'n');
+    expect(await tracker.collect()).toEqual([expect.objectContaining({ type: 'text' })]);
+    expect(warn).toHaveBeenCalled();
   });
 });
+
+/** An `artifact_publish` result as the executor returns it. */
+const RESULT = {
+  artifactId: '0123456789abcdef',
+  downloadUrl: 'ax://artifact/0123456789abcdef',
+  path: 'out/a.txt',
+  displayName: 'a.txt',
+  mediaType: 'text/plain',
+  sizeBytes: 1,
+  sha256: 'a'.repeat(64),
+};
+const CHIP = {
+  type: 'attachment',
+  attachmentId: '0123456789abcdef',
+  filename: 'a.txt',
+  mediaType: 'text/plain',
+  sizeBytes: 1,
+};

@@ -1,183 +1,233 @@
 // ---------------------------------------------------------------------------
-// TASK-68 (out-of-git Part C): materialize a conversation's committed uploads
-// into the sandbox's working copy so the agent can Read them.
+// Copy the bound conversation's uploads into the sandbox, flat, so the agent can
+// open them: `<scratch>/uploads/report.pdf`, `report (2).pdf`, … (TASK-995).
 //
-// TASK-78 (bug fix): materialize at the SAME path advertised to the model —
-// `<workspaceRoot>/.ax/uploads/<conv>/<turn>/<file>` (the absolute form of the
-// `.ax/uploads/...` key the system-prompt workspace note tells the agent to
-// open). Previously we wrote under `<ephemeralRoot>/uploads/` (a DIFFERENT root,
-// `.ax/` dropped), so an agent that followed the prompt and Read
-// `/agent/.ax/uploads/...` — or `cat`'d it via Bash, whose command string is
-// not re-rooted — found nothing. Anchoring the materialized path to the
-// advertised path removes that mismatch.
+// The bytes live in the host's content-addressed blob store; the sandbox only
+// needs a readable working copy. Each call:
+//   1. lists the conversation's uploads (`attachments.list`, oldest first),
+//   2. skips every attachment id it already copied (`known`),
+//   3. fetches each new one (`blob.get`, streamed to a temp file the IPC client
+//      hands us), and
+//   4. copies it to `<uploadsDir>/<name>` under the first free name.
 //
-// Uploads left git. The durable home is the content-addressed blob store; the
-// sandbox only needs a READABLE working copy. On each (re)materialize the runner:
-//   1. WIPES `<workspaceRoot>/.ax/uploads/` so no stale cross-conversation
-//      residue from a prior session/conversation survives on the persistent
-//      `/agent` tier or a warm runner,
-//   2. enumerates the bound conversation's uploads (`attachments.list`),
-//   3. pulls each blob (`blob.get` — the response-direction binary channel,
-//      streamed to a temp file), and
-//   4. writes it to `<workspaceRoot>/.ax/uploads/<conv>/<turn>/<file>`.
+// Nothing is ever deleted, overwritten or followed:
+//   - Names come from the person's own file name, which is hostile input. The
+//     sanitizer keeps only the last path segment and drops control characters,
+//     so every name is one plain entry directly inside `uploadsDir`.
+//   - `uploadsDir` sits in agent-writable scratch. The agent may already have
+//     put a file, or a symlink, under the name we want. `COPYFILE_EXCL` creates
+//     the destination exclusively — it fails on ANY existing entry, a symlink
+//     included (dangling or not) — and we move on to the next free name.
+//   - `uploadsDir` itself must be a real directory, not a symlink to one.
+//   - There is no wipe. A later call writes only attachments it has not copied,
+//     and keeps the names it already handed out.
 //
-// `.ax/uploads/` is git-ignored by scaffoldWorkspaceGitignore, so these bytes do
-// NOT round-trip into the commit/bundle (which would re-create the git-era blob
-// duplication TASK-68 removed). The blob store stays the single source of truth.
+// Names are deterministic: the list order is fixed (oldest first, then id), so
+// a fresh pod given the same list derives the same names, and a resumed
+// transcript's mentions still point at the right files.
 //
-// Best-effort: a missing/failed blob is skipped + logged, never fatal — the same
-// degradation posture as the workspace materialize (a single missing upload must
-// not abort the whole session boot). The transcript still carries the upload's
-// provenance, and the download path serves the bytes from the blob store
-// directly, so a skipped materialization only affects in-sandbox Read access.
+// The copy is a convenience for the agent, not a trusted source: it is
+// agent-writable. Translation (attachment-translation.ts) re-checks a copy's
+// hash before handing its bytes to the model as the person's file.
 //
-// Path safety: the `path` comes from the host's `attachments.list` (server-minted
-// `.ax/uploads/<conv>/<turn>/<file>` with a sanitized filename), but we STILL
-// reject any `..` segment and confine every write under
-// `<workspaceRoot>/.ax/uploads` — defense in depth against a compromised host or
-// a future path shape.
+// Best-effort: a list failure, a missing blob or a failed copy is logged and
+// skipped, never fatal. A skipped upload stays out of `known`, so the next call
+// tries it again, and translation degrades it to a "could not be loaded" line.
 // ---------------------------------------------------------------------------
 
-import { promises as fs } from 'node:fs';
+import { constants as fsConstants, promises as fs } from 'node:fs';
 import * as path from 'node:path';
-import type { IpcClient } from '@ax/ipc-protocol';
-import { AttachmentsListResponseSchema } from '@ax/ipc-protocol';
+import { AttachmentsListResponseSchema, type IpcClient } from '@ax/ipc-protocol';
 
-export interface MaterializeUploadsDeps {
+/** One upload copied into the sandbox, by attachment id. */
+export interface MaterializedUpload {
+  attachmentId: string;
+  /** The person's name for the file, as the host listed it (display only). */
+  filename: string;
+  /** Absolute path of the copy inside the sandbox. */
+  path: string;
+  /** Content digest of the person's file, from the host's list. */
+  sha256: string;
+  mediaType: string;
+  sizeBytes: number;
+}
+
+export interface MaterializeUploadsOptions {
   client: Pick<IpcClient, 'call' | 'callBinary'>;
+  /** The conversation this session is bound to; the host lists no other. */
   conversationId: string;
-  /**
-   * The workspace root (AX_WORKSPACE_ROOT, e.g. `/agent`). Uploads land at
-   * `<workspaceRoot>/.ax/uploads/` — the absolute form of the `.ax/uploads/...`
-   * key the model is told to open (see system-prompt.ts `workspaceNote`).
-   */
-  workspaceRoot: string;
-  /**
-   * Optional warning logger. Defaults to a stderr line, matching the rest of
-   * the runner — `console.error` appears nowhere in this package. Runner
-   * stderr is captured out-of-band (a host debug log under the subprocess
-   * sandbox, pod logs under k8s), and nothing parses it, so the text is
-   * free-form.
-   */
-  warn?: (msg: string) => void;
+  /** Absolute directory the copies land in: `<scratch>/uploads`. */
+  uploadsDir: string;
+  /** Uploads already copied, by attachment id. New entries are added in place. */
+  known: Map<string, MaterializedUpload>;
+  /** Runner stderr line. Never fatal. */
+  warn: (msg: string) => void;
 }
 
-const UPLOADS_KEY_PREFIX = '.ax/uploads/';
+/** Longest name, in UTF-8 bytes, before any ` (n)` suffix. */
+const NAME_MAX_BYTES = 200;
+/** Longest extension (dot included), in UTF-8 bytes, that the length cap keeps. */
+const EXTENSION_MAX_BYTES = 16;
+/** Highest collision number tried: `name (999).ext`. */
+const MAX_COLLISION = 999;
+/** What an unusable name becomes. */
+const FALLBACK_NAME = 'file';
 
 /**
- * The on-disk uploads base for a workspace root: `<workspaceRoot>/.ax/uploads`.
- * Centralised so the materialize loop, the residue wipe, and any reader resolve
- * the same directory.
+ * Remove characters that would split a name across lines or hide in a
+ * terminal: C0 controls, DEL, C1 controls, and the Unicode line and paragraph
+ * separators. A lone surrogate becomes U+FFFD, which is how it would be written
+ * to disk anyway, so the name in memory is the name on disk.
  */
-export function uploadsBaseDir(workspaceRoot: string): string {
-  return path.join(workspaceRoot, '.ax', 'uploads');
-}
-
-/**
- * Resolve the on-disk materialized path for a transcript upload key, confined
- * under `<uploadsBase>`. Returns null if the key is malformed or would escape.
- *
- * `uploadsBase` is `<workspaceRoot>/.ax/uploads`; the key is
- * `.ax/uploads/<conv>/<turn>/<file>`. We strip the `.ax/uploads/` key prefix and
- * re-join the remainder under the base — so the materialized path keeps the
- * advertised `.ax/uploads/` shape (the base already carries it).
- */
-export function resolveMaterializedPath(
-  uploadsBase: string,
-  transcriptPath: string,
-): string | null {
-  if (!transcriptPath.startsWith(UPLOADS_KEY_PREFIX)) return null;
-  const rel = transcriptPath.slice(UPLOADS_KEY_PREFIX.length); // <conv>/<turn>/<file>
-  if (rel.length === 0) return null;
-  const segments = rel.split('/');
-  for (const seg of segments) {
-    if (seg === '' || seg === '..' || seg === '.') return null;
+export function stripControlChars(value: string): string {
+  let out = '';
+  for (const ch of value) {
+    const cp = ch.codePointAt(0)!;
+    if (cp <= 0x1f || (cp >= 0x7f && cp <= 0x9f) || cp === 0x2028 || cp === 0x2029) continue;
+    out += cp >= 0xd800 && cp <= 0xdfff ? '�' : ch;
   }
-  const abs = path.join(uploadsBase, ...segments);
-  // Final containment check (belt + suspenders): the joined path must stay under
-  // the uploads base.
-  const baseWithSep = uploadsBase.endsWith(path.sep) ? uploadsBase : uploadsBase + path.sep;
-  if (!abs.startsWith(baseWithSep)) return null;
-  return abs;
+  return out;
+}
+
+/** Split at the last dot, where that dot is neither the first nor the last character. */
+function splitExtension(name: string): { stem: string; ext: string } {
+  const dot = name.lastIndexOf('.');
+  if (dot <= 0 || dot === name.length - 1) return { stem: name, ext: '' };
+  return { stem: name.slice(0, dot), ext: name.slice(dot) };
+}
+
+/** The longest prefix of `value` that fits in `maxBytes` of UTF-8, cut between code points. */
+function truncateUtf8(value: string, maxBytes: number): string {
+  let out = '';
+  let bytes = 0;
+  for (const ch of value) {
+    const size = Buffer.byteLength(ch, 'utf8');
+    if (bytes + size > maxBytes) break;
+    out += ch;
+    bytes += size;
+  }
+  return out;
 }
 
 /**
- * Materialize the conversation's uploads into `<workspaceRoot>/.ax/uploads/`.
- * Returns the count materialized. Best-effort — never throws; a per-file failure
- * is logged and skipped.
- *
- * Idempotent + safe to re-run on a warm-runner rebind (a later turn that brings
- * a new upload): the uploads dir is wiped first, then the FULL current upload set
- * for this conversation is written, so the set on disk always matches the host's
- * authoritative list — no stale cross-conversation residue, no missing
- * just-uploaded file.
+ * The on-disk name for an upload: the last segment of `filename` (split on `/`
+ * and `\`), control characters dropped, trimmed, and capped at 200 UTF-8 bytes
+ * on a code-point boundary, keeping an extension of up to 16 bytes. Empty, `.`
+ * and `..` become `file`. The result is always one plain directory entry.
  */
-export async function materializeUploads(deps: MaterializeUploadsDeps): Promise<number> {
-  const warn = deps.warn ?? ((m: string) => process.stderr.write(m + '\n'));
-  const uploadsBase = uploadsBaseDir(deps.workspaceRoot);
+export function sanitizeUploadName(filename: string): string {
+  const segments = filename.split(/[/\\]/);
+  let name = stripControlChars(segments[segments.length - 1] ?? '').trim();
+  if (Buffer.byteLength(name, 'utf8') > NAME_MAX_BYTES) {
+    const { stem, ext } = splitExtension(name);
+    const extBytes = Buffer.byteLength(ext, 'utf8');
+    name =
+      ext !== '' && extBytes <= EXTENSION_MAX_BYTES
+        ? truncateUtf8(stem, NAME_MAX_BYTES - extBytes) + ext
+        : truncateUtf8(name, NAME_MAX_BYTES);
+    name = name.trim();
+  }
+  return name === '' || name === '.' || name === '..' ? FALLBACK_NAME : name;
+}
 
-  let files: Array<{ path: string; sha256: string }>;
+/**
+ * The `n`th name for `name` (n ≥ 2): ` (n)` goes before the last extension
+ * dot — `report (2).pdf`, `notes (2)`, `.bashrc (2)`, `archive.tar (2).gz`.
+ */
+export function collisionName(name: string, n: number): string {
+  const { stem, ext } = splitExtension(name);
+  return `${stem} (${n})${ext}`;
+}
+
+/**
+ * `<dir>/<name>` for a resolved `dir`, refusing any name that is not exactly
+ * one entry inside it. The sanitizer already guarantees that; this is the
+ * containment check that does not depend on it.
+ */
+function entryPath(dir: string, name: string): string {
+  const dest = path.join(dir, name);
+  if (path.dirname(dest) !== dir || path.basename(dest) !== name) {
+    throw new Error('upload name is not a single directory entry');
+  }
+  return dest;
+}
+
+/** Copy `src` to the first free name for `base` in `dir`; null if none is free. */
+async function copyUnderFreeName(src: string, dir: string, base: string): Promise<string | null> {
+  for (let n = 1; n <= MAX_COLLISION; n += 1) {
+    const dest = entryPath(dir, n === 1 ? base : collisionName(base, n));
+    try {
+      // Exclusive create: fails with EEXIST on any existing entry, including a
+      // symlink, so a planted link is never followed and nothing is replaced.
+      await fs.copyFile(src, dest, fsConstants.COPYFILE_EXCL);
+      return dest;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'EEXIST') continue;
+      throw err;
+    }
+  }
+  return null;
+}
+
+function message(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+/**
+ * Copy the conversation's uploads that `known` does not have yet into
+ * `uploadsDir`, recording each in `known`. Best-effort; never throws.
+ */
+export async function materializeUploads(opts: MaterializeUploadsOptions): Promise<void> {
+  let files;
   try {
-    const raw = await deps.client.call('attachments.list', {
-      conversationId: deps.conversationId,
-    });
+    const raw = await opts.client.call('attachments.list', { conversationId: opts.conversationId });
     files = AttachmentsListResponseSchema.parse(raw).files;
   } catch (err) {
-    warn(
-      `runner: attachments.list failed; skipping upload materialization: ${
-        err instanceof Error ? err.message : String(err)
-      }`,
-    );
-    return 0;
+    opts.warn(`runner: attachments.list failed; no uploads copied into the sandbox: ${message(err)}`);
+    return;
   }
+  if (files.every((file) => opts.known.has(file.attachmentId))) return;
 
-  // Wipe any prior residue under `.ax/uploads/` BEFORE writing this
-  // conversation's set. On a warm runner — or a `/agent` tier that persisted
-  // from a prior conversation — stale uploads from another conversation could
-  // otherwise linger and be Read by the agent (a cross-conversation leak). We
-  // let the per-file mkdir below re-create what's needed. Best-effort: a wipe
-  // failure is logged, not fatal (we still try to materialize on top).
+  // Normalized once: `lstat("dir/")` would resolve a symlinked `dir` before
+  // looking, so a trailing slash must never reach the check below.
+  const dir = path.resolve(opts.uploadsDir);
   try {
-    await fs.rm(uploadsBase, { recursive: true, force: true });
+    await fs.mkdir(dir, { recursive: true, mode: 0o700 });
+    const st = await fs.lstat(dir);
+    if (!st.isDirectory()) throw new Error('not a directory');
   } catch (err) {
-    warn(
-      `runner: failed to clear stale uploads under ${uploadsBase}: ${
-        err instanceof Error ? err.message : String(err)
-      }`,
-    );
+    opts.warn(`runner: ${dir} is not a usable directory; no uploads copied: ${message(err)}`);
+    return;
   }
 
-  if (files.length === 0) return 0;
-
-  let materialized = 0;
+  // In list order, so names come out the same however the list is replayed.
   for (const file of files) {
-    const dest = resolveMaterializedPath(uploadsBase, file.path);
-    if (dest === null) {
-      warn(`runner: skipping upload with unsafe path '${file.path}'`);
-      continue;
-    }
+    if (opts.known.has(file.attachmentId)) continue;
     let tempPath: string | undefined;
     try {
-      const got = await deps.client.callBinary('blob.get', { sha256: file.sha256 });
+      const got = await opts.client.callBinary('blob.get', { sha256: file.sha256 });
       tempPath = got.path;
-      await fs.mkdir(path.dirname(dest), { recursive: true });
-      // Copy the streamed temp file to the destination (rename can fail across
-      // devices; copyFile is safe everywhere), then drop the temp.
-      await fs.copyFile(tempPath, dest);
-      materialized += 1;
+      const dest = await copyUnderFreeName(tempPath, dir, sanitizeUploadName(file.filename));
+      if (dest === null) {
+        opts.warn(`runner: no free name for upload ${file.attachmentId} in ${dir}`);
+        continue;
+      }
+      opts.known.set(file.attachmentId, {
+        attachmentId: file.attachmentId,
+        filename: file.filename,
+        path: dest,
+        sha256: file.sha256,
+        mediaType: file.mediaType,
+        sizeBytes: file.sizeBytes,
+      });
     } catch (err) {
-      warn(
-        `runner: failed to materialize upload '${file.path}': ${
-          err instanceof Error ? err.message : String(err)
-        }`,
-      );
+      opts.warn(`runner: could not copy upload ${file.attachmentId} into the sandbox: ${message(err)}`);
     } finally {
       if (tempPath !== undefined) {
         await fs.unlink(tempPath).catch(() => {
-          /* best-effort cleanup of the blob.get temp file */
+          /* best-effort: the blob.get temp file is ours to remove */
         });
       }
     }
   }
-  return materialized;
 }

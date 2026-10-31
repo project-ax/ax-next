@@ -3,7 +3,12 @@ import { createHash } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import type { IpcClient, IpcClientOptions } from '@ax/ipc-protocol';
+import {
+  AttachmentsListResponseSchema,
+  type AttachmentsListResponse,
+  type IpcClient,
+  type IpcClientOptions,
+} from '@ax/ipc-protocol';
 import type { InboxLoopEntry } from '@ax/agent-runner-core';
 import { startMcpTestServer, type McpTestServer } from './helpers/mcp-test-server.js';
 import { MAX_TOOLS_PER_SESSION } from '../tools/connector-tools.js';
@@ -54,13 +59,7 @@ let preCallVerdicts: Record<string, { verdict: 'allow' | 'reject'; reason?: stri
 /** Hosts `proxy.drain-egress-blocks` reports. */
 let egressBlockedHosts: string[];
 /** What `attachments.list` reports, and the bytes `blob.get` serves for each. */
-let uploadedFiles: Array<{
-  path: string;
-  sha256: string;
-  mediaType: string;
-  displayName: string;
-  sizeBytes: number;
-}>;
+let uploadedFiles: AttachmentsListResponse['files'];
 let blobBytes: Map<string, Buffer>;
 
 vi.mock('@ax/ipc-protocol', async (importOriginal) => {
@@ -321,12 +320,11 @@ beforeEach(async () => {
         case 'tool.list':
           return { tools: toolCatalog };
         case 'attachments.list':
-          // Shape matters: `AttachmentsListResponseSchema` is `{ files: [...] }`.
-          // An `{ attachments: [] }` fake parses as a FAILURE, and
-          // materializeUploads swallows it — so the whole upload path silently
-          // never ran and every row logged "attachments.list failed". Caught in
-          // review; the row below now depends on this being right.
-          return { files: uploadedFiles };
+          // Shape matters: an `{ attachments: [] }` fake once parsed as a
+          // FAILURE, and materializeUploads swallows it — so the whole upload
+          // path silently never ran and every row logged "attachments.list
+          // failed". Built through the real schema so that cannot recur.
+          return AttachmentsListResponseSchema.parse({ files: uploadedFiles });
         case 'tool.pre-call': {
           const name = (payload as { call: { name: string } }).call.name;
           const v = preCallVerdicts[name];
@@ -563,7 +561,11 @@ describe('aisdk runner — parity', () => {
     await expect(fs.readFile(path.join(workspaceRoot, '.ax/SOUL.md'), 'utf8')).resolves.toBe('Identity');
     await expect(fs.stat(path.join(scratch, '.ax'))).rejects.toMatchObject({ code: 'ENOENT' });
     expect(JSON.stringify(turnEnds()[0])).toContain(scratch);
-    expect(turnEnds()[0]?.contentBlocks).toContainEqual(expect.objectContaining({ type: 'attachment', path: 'calculator.html' }));
+    // The chip names the artifact by id; its sandbox path stays in the sandbox.
+    expect(turnEnds()[0]?.contentBlocks).toContainEqual({
+      type: 'attachment', attachmentId: 'artifact-1', filename: 'calculator.html',
+      mediaType: 'application/octet-stream', sizeBytes: 8,
+    });
   });
 
   it('routes a model tool call through tool.pre-call and back as a tool result', async () => {
@@ -739,23 +741,25 @@ describe('aisdk runner — parity', () => {
   });
 
   // The upload + attachment-translation row. This one exercises the whole
-  // chain for real: attachments.list -> blob.get -> materialize under
-  // .ax/uploads/ -> the shell's translate pass (Anthropic-shaped blocks) ->
-  // this runner's toUserModelMessage adapter -> an AI SDK image part in the
-  // prompt the provider actually receives.
+  // chain for real: attachments.list -> blob.get -> a flat copy in
+  // <scratch>/uploads/ -> the shell's translate pass, by attachment id
+  // (Anthropic-shaped blocks) -> this runner's toUserModelMessage adapter ->
+  // an AI SDK image part in the prompt the provider actually receives.
   //
   // It is also the row that a wrong-shaped `attachments.list` fake silently
   // disabled for the whole suite until review caught it.
   it('materializes an upload and hands the model a real image part', async () => {
+    const scratch = path.join(tmp, 'scratch');
+    await fs.mkdir(scratch);
+    process.env.AX_EPHEMERAL_ROOT = scratch;
     const png = Buffer.from('\u0089PNG\r\n\u001a\nfake-image-bytes', 'binary');
     const sha256 = createHash('sha256').update(png).digest('hex');
-    const relPath = '.ax/uploads/conv-1/turn-1/shot.png';
     uploadedFiles = [
       {
-        path: relPath,
+        attachmentId: 'att-shot',
+        filename: 'shot.png',
         sha256,
         mediaType: 'image/png',
-        displayName: 'shot.png',
         sizeBytes: png.length,
       },
     ];
@@ -771,8 +775,8 @@ describe('aisdk runner — parity', () => {
           contentBlocks: [
             {
               type: 'attachment',
-              path: relPath,
-              displayName: 'shot.png',
+              attachmentId: 'att-shot',
+              filename: 'shot.png',
               mediaType: 'image/png',
               sizeBytes: png.length,
             },
@@ -783,8 +787,8 @@ describe('aisdk runner — parity', () => {
 
     await expect(main()).resolves.toBe(0);
 
-    // The bytes really landed on disk where the prompt says they are.
-    const onDisk = await fs.readFile(path.join(workspaceRoot, relPath));
+    // The bytes really landed in the sandbox, flat, under the person's name.
+    const onDisk = await fs.readFile(path.join(scratch, 'uploads', 'shot.png'));
     expect(onDisk.equals(png)).toBe(true);
 
     // And the model was handed an AI SDK image part, not a text mention.

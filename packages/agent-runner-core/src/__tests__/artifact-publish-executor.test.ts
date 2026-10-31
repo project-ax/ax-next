@@ -182,6 +182,47 @@ describe('artifact_publish executor', () => {
     });
   });
 
+  // TASK-995: the scratch root also holds the person's uploads (`uploads/`)
+  // and the SDK's conversation log (`transcripts/`), right next to the one
+  // publishable part of it, `artifacts/`. Neither may leave the sandbox as an
+  // artifact, directly or through a link the agent plants in `artifacts/`.
+  describe('uploads and transcripts in the scratch root are unpublishable', () => {
+    let scratch: string;
+    beforeEach(async () => {
+      scratch = path.join(await fs.mkdtemp(path.join(os.tmpdir(), 'ax-scratch-')), 'tmp');
+      await write(scratch, 'uploads/a.pdf', 'the person file');
+      await write(scratch, 'transcripts/s.jsonl', '{"type":"user"}\n');
+      await fs.mkdir(path.join(scratch, 'artifacts'), { recursive: true });
+    });
+    const exec = () => createArtifactPublishExecutor({ userFilesRoot: files, ephemeralRoot: scratch });
+
+    it('refuses them directly', async () => {
+      for (const rel of ['uploads/a.pdf', 'transcripts/s.jsonl']) {
+        await expect(exec()(call({ path: path.join(scratch, rel) }))).rejects.toThrow(
+          /artifact-path-not-publishable/,
+        );
+      }
+    });
+
+    it('refuses a symlink in artifacts/ that points at one of them', async () => {
+      await fs.symlink(path.join(scratch, 'transcripts/s.jsonl'), path.join(scratch, 'artifacts/x'));
+      await fs.symlink(path.join(scratch, 'uploads/a.pdf'), path.join(scratch, 'artifacts/y.pdf'));
+      for (const rel of ['artifacts/x', 'artifacts/y.pdf']) {
+        await expect(exec()(call({ path: path.join(scratch, rel) }))).rejects.toThrow(/symlink/i);
+      }
+    });
+
+    it('refuses a symlinked directory in artifacts/ that leads into one of them', async () => {
+      await fs.symlink(path.join(scratch, 'transcripts'), path.join(scratch, 'artifacts/t'));
+      await fs.symlink(path.join(scratch, 'uploads'), path.join(scratch, 'artifacts/u'));
+      for (const rel of ['artifacts/t/s.jsonl', 'artifacts/u/a.pdf']) {
+        await expect(exec()(call({ path: path.join(scratch, rel) }))).rejects.toThrow(
+          /resolved outside the publishable tier/i,
+        );
+      }
+    });
+  });
+
   describe('the facts export (/memory) is unreachable', () => {
     it('refuses a real file in a sibling memory tree, directly and through a link in the agent files', async () => {
       const t = await fs.mkdtemp(path.join(os.tmpdir(), 'ax-mem-'));

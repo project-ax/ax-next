@@ -1,7 +1,13 @@
-import { afterAll, describe, expect, it, vi, beforeEach, type Mock } from 'vitest';
-import { IpcRequestError, type IpcClient, type IpcClientOptions } from '@ax/ipc-protocol';
+import { afterAll, afterEach, describe, expect, it, vi, beforeEach, type Mock } from 'vitest';
+import {
+  AttachmentsListResponseSchema,
+  IpcRequestError,
+  type IpcClient,
+  type IpcClientOptions,
+} from '@ax/ipc-protocol';
 import type { RunnerEnv } from '../env.js';
 import type { Loop, LoopContext, RunnerDeps, RunnerSeams, TranscriptSource } from '../index.js';
+import { createHash } from 'node:crypto';
 import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -210,12 +216,129 @@ describe('runRunner — generated file publication', () => {
       expect(first[1].role).toBe('tool');
       if (verdict === 'allow') {
         expect(upload).toHaveBeenCalledOnce();
-        expect(first[1].contentBlocks).toContainEqual({ type: 'attachment', path: 'report.txt', displayName: 'report.txt', mediaType: 'text/plain', sizeBytes: 6 });
+        expect(first[1].contentBlocks).toContainEqual({ type: 'attachment', attachmentId: 'id', filename: 'report.txt', mediaType: 'text/plain', sizeBytes: 6 });
       } else {
         expect(upload).not.toHaveBeenCalled();
         expect(first[1].contentBlocks.some((block: { type: string }) => block.type === 'attachment')).toBe(false);
       }
     } finally { await fs.rm(root, { recursive: true, force: true }); }
+  });
+});
+
+describe('runRunner — uploads', () => {
+  // Uploads are copied into `<scratch>/uploads/` at boot, and again when a
+  // message names an attachment the sandbox has no copy of yet (a later turn's
+  // upload on a warm runner). Each turn's attachment blocks are translated by
+  // id from those copies.
+  let scratch: string;
+  let blobTmp: string;
+  beforeEach(async () => {
+    scratch = await fs.mkdtemp(path.join(os.tmpdir(), 'ax-run-uploads-'));
+    blobTmp = await fs.mkdtemp(path.join(os.tmpdir(), 'ax-run-blobs-'));
+    // A scratch root also gets the session venv. Mark it present so the shell
+    // does not start a `uv venv` child that outlives the test.
+    await fs.mkdir(path.join(scratch, 'py'));
+    await fs.writeFile(path.join(scratch, 'py', 'pyvenv.cfg'), '');
+  });
+  afterEach(async () => {
+    await fs.rm(scratch, { recursive: true, force: true });
+    await fs.rm(blobTmp, { recursive: true, force: true });
+  });
+
+  const NOTES = Buffer.from('hello from the person');
+  const sha = (b: Buffer) => createHash('sha256').update(b).digest('hex');
+  const listed = (attachmentId: string) => ({
+    attachmentId,
+    filename: 'notes.txt',
+    sha256: sha(NOTES),
+    mediaType: 'text/plain',
+    sizeBytes: NOTES.length,
+  });
+  const attachmentBlock = (attachmentId: string) => ({
+    type: 'attachment',
+    attachmentId,
+    filename: 'notes.txt',
+    mediaType: 'text/plain',
+    sizeBytes: NOTES.length,
+  });
+
+  /** One conversation-bound run that pulls one message carrying `blocks`. */
+  async function pullOne(opts: { lists: string[][]; blocks: unknown[] }): Promise<unknown> {
+    const original = fakeClient.call.getMockImplementation()!;
+    const lists = [...opts.lists];
+    fakeClient.call.mockImplementation(async (action: string, ...args: unknown[]) => {
+      if (action === 'session.get-config') return { ...(await original(action, ...args)), conversationId: 'c1' };
+      if (action === 'attachments.list') {
+        const ids = lists.length > 1 ? lists.shift()! : lists[0]!;
+        return AttachmentsListResponseSchema.parse({ files: ids.map(listed) });
+      }
+      if (action === 'conversation.drain-save-refusals') return { refusals: [] };
+      return original(action, ...args);
+    });
+    const originalBinary = fakeClient.callBinary.getMockImplementation()!;
+    fakeClient.callBinary.mockImplementation(async (action: string, payload: unknown) => {
+      if (action !== 'blob.get') return originalBinary(action, payload);
+      expect(payload).toEqual({ sha256: sha(NOTES) });
+      const tmp = path.join(blobTmp, `${randomName()}.bin`);
+      await fs.writeFile(tmp, NOTES);
+      return { path: tmp, bytes: NOTES.length };
+    });
+    scriptInbox([
+      { type: 'user-message', payload: { role: 'user', content: 'see this', contentBlocks: opts.blocks }, reqId: 'r1', cursor: 1 },
+    ]);
+    let seen: unknown;
+    const loop: Loop = {
+      run: async (ctx) => {
+        seen = (await ctx.nextMessage())?.content;
+        return 0;
+      },
+    };
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      expect(await runRunner(() => loop, seams(() => ({ ...fakeEnv(), ephemeralRoot: scratch })))).toBe(0);
+    } finally {
+      stderr.mockRestore();
+    }
+    return seen;
+  }
+
+  let counter = 0;
+  const randomName = () => `blob-${counter++}`;
+  const listCalls = () => fakeClient.call.mock.calls.filter((c) => c[0] === 'attachments.list');
+  const inlined = () =>
+    `User attached 'notes.txt' at ${path.join(scratch, 'uploads', 'notes.txt')} (text/plain)\n\n${NOTES.toString('utf8')}`;
+
+  it('re-materializes when a queued message carries an unknown attachmentId', async () => {
+    // Nothing was uploaded when the runner booted; the message brings one.
+    const seen = await pullOne({ lists: [[], ['att-new']], blocks: [attachmentBlock('att-new')] });
+    expect(listCalls()).toEqual([
+      ['attachments.list', { conversationId: 'c1' }],
+      ['attachments.list', { conversationId: 'c1' }],
+    ]);
+    expect(await fs.readFile(path.join(scratch, 'uploads', 'notes.txt'))).toEqual(NOTES);
+    expect(seen).toEqual([
+      { type: 'text', text: 'see this' },
+      { type: 'text', text: inlined() },
+    ]);
+    expect(await fs.readdir(blobTmp)).toEqual([]);
+  });
+
+  it('does not list again when every attachment in a message already has a copy', async () => {
+    const seen = await pullOne({ lists: [['att-1']], blocks: [attachmentBlock('att-1')] });
+    expect(listCalls()).toHaveLength(1);
+    expect(seen).toEqual([
+      { type: 'text', text: 'see this' },
+      { type: 'text', text: inlined() },
+    ]);
+  });
+
+  it('an attachment the host does not list reaches the model as a mention, with no workspace read', async () => {
+    const seen = await pullOne({ lists: [[]], blocks: [attachmentBlock('att-ghost')] });
+    expect(seen).toEqual([
+      { type: 'text', text: 'see this' },
+      { type: 'text', text: "User attached 'notes.txt' (text/plain), but the file could not be loaded." },
+    ]);
+    expect(fakeClient.call.mock.calls.some((c) => c[0] === 'workspace.read')).toBe(false);
   });
 });
 
@@ -284,9 +407,8 @@ describe('runRunner — bootstrap-safe augment (TASK-524)', () => {
 
 describe('runRunner — prompt working frame', () => {
   it('hands the prompt engine the durable mount as cwd, distinct from the governed root', async () => {
-    // The workspace note states both roots when they differ, so the model opens
-    // a shared `.ax/uploads/…` file under the governed root (/tmp/workspace),
-    // not under its working directory (/files) where it does not exist (TASK-164).
+    // The prompt engine is told both roots and the working directory, and the
+    // working directory is the durable mount (TASK-164).
     const { buildSystemPrompt } = await import('../prompt-engine.js');
     const mock = buildSystemPrompt as unknown as Mock;
     mock.mockClear();

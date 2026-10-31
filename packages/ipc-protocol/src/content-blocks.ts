@@ -212,51 +212,6 @@ export function isWorkspaceRelativePath(value: string): boolean {
   return true;
 }
 
-// ---------------------------------------------------------------------------
-// Attachment text-mention — the lossy, model-facing form of an attachment.
-//
-// When the runner can't (or shouldn't) inline an attachment's bytes for the
-// model — a PDF without document-block support, an oversized text file, an
-// unrecognized binary — it emits this one-line mention instead of the
-// `attachment` block, naming where the file sits inside the sandbox.
-//
-// Model-facing only. The display transcript stores the `attachment` block
-// itself (the host persists the user turn), so nothing parses this string
-// back.
-// ---------------------------------------------------------------------------
-
-export interface AttachmentMentionFields {
-  displayName: string;
-  /** Where the runner put the file, as the model should open it. */
-  path: string;
-  mediaType: string;
-}
-
-/** Render the canonical one-line attachment mention. */
-export function formatAttachmentMention(att: AttachmentMentionFields): string {
-  return `User attached '${att.displayName}' at ${att.path} (${att.mediaType})`;
-}
-
-// ---------------------------------------------------------------------------
-// Inlined-attachment text block — the model-facing form when the runner CAN
-// inline an attachment's bytes (a small text/json/yaml/csv file). The model
-// gets the content directly in the prompt (weak-model accommodation): the
-// mention line first, a blank separator, then the file content. The blank
-// line makes the boundary obvious to the model and keeps the mention a single
-// line. Model-facing only, like the mention above.
-// ---------------------------------------------------------------------------
-
-/**
- * Render an inlined-attachment text block: the mention on the first line, a
- * blank separator, then the file content.
- */
-export function formatAttachmentInline(
-  fields: AttachmentMentionFields,
-  content: string,
-): string {
-  return `${formatAttachmentMention(fields)}\n\n${content}`;
-}
-
 /**
  * The most content blocks one `event.turn-end`, or one `AgentMessage`, may
  * carry on the IPC wire (TASK-945). Runner data is untrusted. An array over

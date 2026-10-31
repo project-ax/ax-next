@@ -17,12 +17,13 @@ export { createLocalDispatcher } from './local-dispatcher.js';
 export type { LocalDispatcher } from './local-dispatcher.js';
 export { writeProxyCaFromEnv } from './proxy-ca-from-env.js';
 export { translateContentBlocks } from './attachment-translation.js';
-export type { WorkspaceReader } from './attachment-translation.js';
+export type { TranslationOptions } from './attachment-translation.js';
 export {
+  collisionName,
   materializeUploads,
-  resolveMaterializedPath,
-  uploadsBaseDir,
+  sanitizeUploadName,
 } from './materialize-uploads.js';
+export type { MaterializedUpload, MaterializeUploadsOptions } from './materialize-uploads.js';
 export { buildPythonVenvEnv, scaffoldPythonVenv } from './python-venv.js';
 export * from './identity-templates.js';
 export {
