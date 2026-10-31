@@ -4291,6 +4291,108 @@ describe('main()', () => {
     ]);
   });
 
+  // Design §3: a brand-new agent's /files is EMPTY after its first chat. The
+  // turn below asks for nothing to be created, and carries an upload — which
+  // used to be copied under the home (`.ax/uploads/…`) and now goes to the
+  // scratch root. Every other directory the runner owns (transcripts, the SDK's
+  // config dir) is outside the home too. So the home's recursive listing is
+  // the witness: it would see a `.gitignore`, `.ax/`, `.claude/`, an identity
+  // file, a probe, or a copy of the upload — anything the runner scaffolds
+  // there. Dotfiles are listed, and the directory is read AFTER the turn ended.
+  it("a brand-new agent's home is still empty after its first chat turn, upload included", async () => {
+    const t = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'ax-main-empty-home-'));
+    onTestFinished(() => fs.rm(t, { recursive: true, force: true }));
+    const files = nodePath.join(t, 'files');
+    const scratch = nodePath.join(t, 'tmp');
+    const cfg = nodePath.join(t, 'cfg');
+    await fs.mkdir(files);
+    await fs.mkdir(scratch);
+    await fs.mkdir(cfg);
+    setEnv({
+      ...COMPLETE_ENV,
+      AX_USERFILES_ROOT: files,
+      AX_EPHEMERAL_ROOT: scratch,
+      AX_TRANSCRIPTS_ROOT: nodePath.join(scratch, 'transcripts'),
+      CLAUDE_CONFIG_DIR: cfg,
+    });
+    const bytes = Buffer.from('quarterly numbers\n');
+    const sha256 = createHash('sha256').update(bytes).digest('hex');
+    fakeClient = buildFakeClient();
+    fakeClient.call.mockImplementation(async (action: string) => {
+      if (action === 'session.get-config') {
+        return {
+          userId: 'u-test',
+          agentId: 'a-test',
+          agentConfig: {
+            displayName: 'Test Agent',
+            systemPromptAugment: '',
+            allowedTools: [],
+            mcpConfigIds: [],
+            model: 'anthropic/claude-sonnet-4-7',
+            runner: 'claude-sdk',
+          },
+          conversationId: 'cnv-empty-home',
+          runnerSessionId: null,
+        };
+      }
+      if (action === 'tool.list') return { tools: [] };
+      if (action === 'attachments.list') {
+        return AttachmentsListResponseSchema.parse({
+          files: [
+            { attachmentId: 'att-notes', filename: 'notes.txt', sha256, mediaType: 'text/plain', sizeBytes: bytes.length },
+          ],
+        });
+      }
+      throw new Error(`unexpected call: ${action}`);
+    });
+    fakeClient.callBinary.mockImplementation(async (action: string, payload: unknown) => {
+      if (action !== 'blob.get') throw new Error(`unexpected binary call: ${action}`);
+      expect(payload).toEqual({ sha256 });
+      const tmpFile = nodePath.join(scratch, 'blob-get.tmp');
+      await fs.writeFile(tmpFile, bytes);
+      return { path: tmpFile, bytes: bytes.length };
+    });
+    fakeInbox = buildFakeInbox([
+      {
+        type: 'user-message',
+        payload: {
+          role: 'user',
+          content: 'what do these numbers say?',
+          contentBlocks: [
+            {
+              type: 'attachment',
+              attachmentId: 'att-notes',
+              filename: 'notes.txt',
+              mediaType: 'text/plain',
+              sizeBytes: bytes.length,
+            },
+          ],
+        },
+        reqId: 'req-empty-home',
+      },
+      cancelEntry,
+    ]);
+    queryMock.mockImplementation(({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) =>
+      (async function* () {
+        const it = prompt[Symbol.asyncIterator]();
+        await it.next();
+        yield assistantText('ok');
+        yield resultSuccess();
+        await it.next();
+      })(),
+    );
+
+    const { main } = await import('../main.js');
+    const rc = await main();
+
+    expect(rc).toBe(0);
+    expect(queryMock).toHaveBeenCalledTimes(1);
+    // The upload IS on disk, and it is in the scratch root...
+    expect(await fs.readFile(nodePath.join(scratch, 'uploads', 'notes.txt'))).toEqual(bytes);
+    // ...and the home holds nothing at all.
+    expect(await fs.readdir(files, { recursive: true })).toEqual([]);
+  });
+
   // ---------------------------------------------------------------------
   // Phase 0 — skill discovery (I-P0-1 / I-P0-3): the sandbox plugin
   // (subprocess or k8s) injects CLAUDE_CONFIG_DIR=<sandbox-HOME>/.ax/session

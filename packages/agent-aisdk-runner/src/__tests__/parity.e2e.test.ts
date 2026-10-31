@@ -453,6 +453,12 @@ describe('aisdk runner — parity', () => {
     expect(chatEnd()).toEqual({
       outcome: { kind: 'complete', messages: expect.any(Array) },
     });
+
+    // Design §3: a brand-new agent's home is still empty after its first chat.
+    // The turn asked for nothing to be created, so any entry here — dotfiles
+    // included — is something the runner scaffolded there (`.gitignore`,
+    // `.ax/`, `.claude/`, identity files, a probe).
+    expect(await fs.readdir(homeDir, { recursive: true })).toEqual([]);
   });
 
   // TASK-692 (per-user spend limits). The assistant turn-end carries what the
@@ -790,6 +796,9 @@ describe('aisdk runner — parity', () => {
     // The bytes really landed in the sandbox, flat, under the person's name.
     const onDisk = await fs.readFile(path.join(scratchDir, 'uploads', 'shot.png'));
     expect(onDisk.equals(png)).toBe(true);
+    // ...and nowhere in the agent's home (design §3: a brand-new agent's
+    // files stay empty).
+    expect(await fs.readdir(homeDir, { recursive: true })).toEqual([]);
 
     // And the model was handed an AI SDK image part, not a text mention.
     const first = JSON.parse(JSON.stringify(sentPrompts[0]));
