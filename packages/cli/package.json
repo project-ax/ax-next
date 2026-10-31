@@ -36,8 +36,6 @@
     "@ax/database-postgres": "workspace:*",
     "@ax/onboarding": "workspace:*",
     "@ax/sandbox-subprocess": "workspace:*",
-    "@ax/workspace-git": "workspace:*",
-    "@ax/workspace-git-core": "workspace:*",
     "@ax/workspace-localdir": "workspace:*",
     "@ax/session-inmemory": "workspace:*",
     "@ax/ipc-server": "workspace:*",

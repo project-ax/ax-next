@@ -20,8 +20,6 @@
     { "path": "../database-postgres" },
     { "path": "../onboarding" },
     { "path": "../sandbox-subprocess" },
-    { "path": "../workspace-git" },
-    { "path": "../workspace-git-core" },
     { "path": "../workspace-localdir" },
     { "path": "../session-inmemory" },
     { "path": "../ipc-server" },

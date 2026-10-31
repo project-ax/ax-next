@@ -18,7 +18,7 @@ import { defineConfig } from 'vitest/config';
 //   warm-up is 408ms on an idle machine (`no-raw-nul-bytes`, which reads every
 //   tracked non-binary file), so this is ~73x headroom on measured worst-case
 //   work. It matches the precedent set for the repo's other subprocess-heavy
-//   suites (`packages/workspace-git*`, TASK-73).
+//   suites (the since-deleted `workspace-git*` packages, TASK-73).
 // - `hookTimeout: 120_000` — `eslint-ignores-worktrees.test.js` warms the flat
 //   config in a `beforeAll` that declares 120_000 explicitly. A hook's own
 //   argument overrides this value, so what this governs is the BARE hooks

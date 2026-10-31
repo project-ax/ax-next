@@ -11,7 +11,6 @@
 "@ax/storage-postgres": minor
 "@ax/eventbus-postgres": minor
 "@ax/session-postgres": minor
-"@ax/workspace-git": minor
 "@ax/sandbox-k8s": minor
 "@ax/preset-k8s": minor
 ---

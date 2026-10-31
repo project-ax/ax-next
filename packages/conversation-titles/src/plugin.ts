@@ -101,7 +101,7 @@ interface TurnEndPayload {
  * an assistant turn.
  *
  * Why: under runner-owned-sessions the transcript lives in the runner's
- * native jsonl, synced to the host via `workspace.commit-notify`. That sync
+ * native jsonl, synced to the host via `session.append-transcript`. That sync
  * can lag the `chat:turn-end` event by up to ~1s. On a SINGLE-turn
  * conversation that lag is fatal — `conversations:get` returns an empty (or
  * user-only) transcript at the ONLY moment we'd ever title the chat, because

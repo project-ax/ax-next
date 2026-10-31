@@ -2,7 +2,7 @@
 //
 // Why this exists (TASK-218). Four tracked files --
 // packages/memory-strata/src/__tests__/agent-tier-sync.test.ts (deleted in TASK-608),
-// packages/workspace-git-server/src/{client,shared}/__tests__/workspace-id.test.ts,
+// packages/workspace-git-server/src/{client,shared}/__tests__/workspace-id.test.ts (package deleted in TASK-995),
 // packages/workspace-git-server/src/server/__tests__/integration/argv-injection.test.ts
 // -- carried a LITERAL NUL byte inside a string literal instead of the
 // \u0000 escape. file(1) reported them as `data`, and plain grep/rg

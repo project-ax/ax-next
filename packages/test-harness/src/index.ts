@@ -4,10 +4,8 @@ export * from './harness.js';
 export * from './mock-services.js';
 export { signInAsAdmin } from './sign-in.js';
 export type { SignInAsAdminOptions, SignInAsAdminResult } from './sign-in.js';
-export { createMockWorkspacePlugin } from './mock-workspace.js';
 export { createTestHostToolPlugin } from './test-host-tool.js';
 export { createTestProxyPlugin, TEST_PROXY_AUTH_TOKEN } from './test-proxy-plugin.js';
-export { runWorkspaceContract } from './workspace-contract.js';
 export { bootPluginGraph } from './boot-plugin-graph.js';
 export {
   stopPostgresContainer,

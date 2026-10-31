@@ -41,6 +41,7 @@
 import { constants as fsConstants, promises as fs } from 'node:fs';
 import * as path from 'node:path';
 import { AttachmentsListResponseSchema, type IpcClient } from '@ax/ipc-protocol';
+import { replaceSurfaceRewriters } from '@ax/core/surface-text';
 
 /**
  * Where a session's upload copies live: `uploads/` under its scratch root. The
@@ -101,40 +102,15 @@ export const MAX_TAKEN_NAME_ATTEMPTS = 32;
 const FALLBACK_NAME = 'file';
 
 /**
- * Code points dropped from any name the model reads: the bidi embeddings and
- * overrides (U+202A–U+202E) and isolates (U+2066–U+2069), which make a name
- * display differently from what it is (`invoice\u202Efdp.exe` shows as
- * `invoiceexe.pdf`); the bidi marks U+200E, U+200F and U+061C; and the
- * zero-width characters U+200B–U+200D, U+2060 and U+FEFF, which hide inside a
- * name.
- */
-function isInvisibleFormatChar(cp: number): boolean {
-  return (
-    (cp >= 0x202a && cp <= 0x202e) ||
-    (cp >= 0x2066 && cp <= 0x2069) ||
-    (cp >= 0x200b && cp <= 0x200f) ||
-    cp === 0x061c ||
-    cp === 0x2060 ||
-    cp === 0xfeff
-  );
-}
-
-/**
  * Remove characters that would split a name across lines or hide in it: C0
  * controls, DEL, C1 controls, the Unicode line and paragraph separators, bidi
- * controls and zero-width characters (see `isInvisibleFormatChar`). A lone
+ * controls and zero-width characters. The class has one owner,
+ * `@ax/core/surface-text` (TASK-562); this file does not keep a copy. A lone
  * surrogate becomes U+FFFD, which is how it would be written to disk anyway,
  * so the name in memory is the name on disk.
  */
 export function stripControlChars(value: string): string {
-  let out = '';
-  for (const ch of value) {
-    const cp = ch.codePointAt(0)!;
-    if (cp <= 0x1f || (cp >= 0x7f && cp <= 0x9f) || cp === 0x2028 || cp === 0x2029) continue;
-    if (isInvisibleFormatChar(cp)) continue;
-    out += cp >= 0xd800 && cp <= 0xdfff ? '\uFFFD' : ch;
-  }
-  return out;
+  return replaceSurfaceRewriters(value, '').replace(/\p{Surrogate}/gu, '\uFFFD');
 }
 
 /**

@@ -429,7 +429,7 @@ jobs:
       # apt RUN layer's cache key is base-digest + command string, neither of
       # which moves on a source-only change), defeating the whole guard. So we
       # always re-resolve the apt index in the runtime stage while still
-      # caching the costly build. (Both Dockerfiles name their final stage
+      # caching the costly build. (The Dockerfile names its final stage
       # `runtime`.)
       - name: Build agent image (verifies apt/digest pins)
         if: steps.changes.outputs.relevant == 'true'
@@ -442,17 +442,6 @@ jobs:
           no-cache-filters: runtime
           cache-from: type=gha,scope=agent
           cache-to: type=gha,mode=max,scope=agent
-      - name: Build git-server image
-        if: steps.changes.outputs.relevant == 'true'
-        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
-        with:
-          context: .
-          file: container/git-server/Dockerfile
-          push: false
-          load: false
-          no-cache-filters: runtime
-          cache-from: type=gha,scope=git-server
-          cache-to: type=gha,mode=max,scope=git-server
 
   semgrep:
     runs-on: ubuntu-latest

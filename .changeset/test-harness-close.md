@@ -1,7 +1,6 @@
 ---
 '@ax/core': minor
 '@ax/test-harness': minor
-'@ax/workspace-git-http': patch
 ---
 
 Add `Plugin.shutdown?()` + `TestHarness.close()` so test suites can drain

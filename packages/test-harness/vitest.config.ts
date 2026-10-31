@@ -32,7 +32,7 @@ import { defineConfig } from 'vitest/config';
 //   run measured the old stdio mcp-server-stub `echo` test at 9087ms against
 //   ~90ms idle (TASK-537), so 30s is now ~3.3x the measured worst case, not 5.6x. It is also
 //   exactly what this repo already chose for its
-//   other subprocess-heavy suites — `packages/workspace-git*` (TASK-73, PR #146)
+//   other subprocess-heavy suites — the since-deleted `workspace-git*` packages (TASK-73, PR #146)
 //   and the `scripts` root (TASK-331) — and this package is that same class: it
 //   spawns real Node subprocesses (the stub runner) and drives them over real
 //   pipes and sockets. (It also used to spawn a streamable-HTTP MCP stub; that
