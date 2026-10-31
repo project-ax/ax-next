@@ -196,6 +196,9 @@ const failingStore: DiskQuotaStore = {
   async deleteWorkspaceUsage() {
     throw new Error('db down');
   },
+  async deleteAgentFilesUsage() {
+    throw new Error('db down');
+  },
   async staleBlobShas() {
     throw new Error('db down');
   },
