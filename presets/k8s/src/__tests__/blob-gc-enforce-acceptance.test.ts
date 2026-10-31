@@ -269,12 +269,11 @@ describe('@ax/preset-k8s blob GC enforce-mode canary (TASK-778)', () => {
       { attachmentId: string }
     >('attachments:store-temp', ctx, { bytes, displayName: 'pic.png', mediaType: 'image/png' });
     const out = await b.call<
-      { attachmentId: string; conversationId: string; turnId: string },
+      { attachmentId: string; conversationId: string },
       { sha256: string }
     >('attachments:commit', ctx, {
       attachmentId: temp.attachmentId,
       conversationId,
-      turnId: `turn-${seq}`,
     });
     return out.sha256;
   }

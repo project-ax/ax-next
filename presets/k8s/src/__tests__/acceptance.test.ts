@@ -24,7 +24,10 @@ import {
 import { createAttachmentsPlugin } from '@ax/attachments';
 import { createBlobStoreFsPlugin } from '@ax/blob-store-fs';
 import { createToolArtifactPublishPlugin } from '@ax/tool-artifact-publish';
-import { createArtifactPublishExecutor } from '@ax/agent-claude-sdk-runner';
+import {
+  createArtifactPublishExecutor,
+  type CreateArtifactPublishExecutorOptions,
+} from '@ax/agent-claude-sdk-runner';
 import { createChannelWebServerPlugin } from '@ax/channel-web/server';
 import { createDatabasePostgresPlugin } from '@ax/database-postgres';
 import { createHttpServerPlugin } from '@ax/http-server';
@@ -575,6 +578,24 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
           .reverse()
           .find((m) => m.role === 'assistant');
         expect(lastAssistant?.content).toContain(CANARY_TEXT);
+
+        // A brand-new agent's /files is still empty after its first chat
+        // (design §3). The turn asked the agent to create nothing, so nothing
+        // may appear in the home: no `.gitignore`, no `.ax/`, no `.claude/`, no
+        // identity files, no copy of an upload (those go to scratch now). The
+        // agent's home is the per-agent directory the localdir resolver mounted;
+        // reading it back is the only witness that sees what the sandbox and
+        // the host actually left behind. Dotfiles count — `readdir` lists them.
+        //
+        // The directory must EXIST first: a missing one would also read as "no
+        // files" if we caught the error, and would hide a home that moved.
+        const userFilesRoot = path.join(tmp, 'user-files');
+        expect(await fs.readdir(userFilesRoot)).toEqual(['preset-test-agent']);
+        expect(
+          await fs.readdir(path.join(userFilesRoot, 'preset-test-agent'), {
+            recursive: true,
+          }),
+        ).toEqual([]);
 
         // chat:end fires EXACTLY once per agent:invoke (I1). The recorder
         // is an independent witness — audit-log no longer subscribes to
@@ -1132,33 +1153,32 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
   );
 
   // ---------------------------------------------------------------------------
-  // Phase 3 canary — attachments round-trip (I3 anchor, 2026-05-18).
+  // Phase 3 canary — attachments round-trip (I3 anchor, 2026-05-18; ID-based
+  // contract, TASK-995).
   //
-  // Closes the half-wired window opened by Phase 1: until now, the
-  // @ax/attachments hooks were reachable on the bus but no test exercised the
-  // full HTTP round-trip. This canary boots http-server + channel-web +
-  // attachments + conversations + workspace-git against a real Postgres
-  // testcontainer and drives the pipeline:
+  // Closes the half-wired window opened by Phase 1: the @ax/attachments hooks
+  // were reachable on the bus, but nothing exercised the full HTTP round-trip.
+  // This canary boots http-server + channel-web + attachments + conversations
+  // against a real Postgres testcontainer and drives the pipeline:
   //
   //   1. POST /api/attachments — multipart upload "hello attached" → 200 + attachmentId.
-  //   2. POST /api/chat/messages with `attachment_ref` → 202 + conversationId
-  //      (route calls attachments:commit which writes bytes to
-  //      .ax/uploads/<conversationId>/<turnId>/<file> via workspace:apply).
-  //   3. Seed the runner-native jsonl with the user turn carrying the
-  //      `attachment` block at the committed path — what the real runner
-  //      would write after its HOME-redirect picks up the user message.
-  //      This is the same `workspace:apply` pattern the Phase D canary uses;
-  //      the chat path here doesn't actually run a runner (agent:invoke is
-  //      stubbed) so the jsonl needs to be seeded by the test.
-  //   4. GET /api/files for the attachment path → 200 + bytes match.
-  //   5. GET /api/files for an unscoped path → 404 (path-scope ACL).
-  //   6. GET /api/files for the same path from a foreign user → 404
-  //      (conversation-ownership ACL collapses cross-tenant to not-found).
+  //   2. POST /api/chat/messages with `attachment_ref` → 202 + conversationId.
+  //      The route calls attachments:commit by `{attachmentId, conversationId}`
+  //      and hands the agent a stored block
+  //      `{type:'attachment', attachmentId, filename, mediaType, sizeBytes}` —
+  //      the same id the upload was staged under, and no path.
+  //   3. attachments:list-for-conversation (what the runner asks at session
+  //      start) names the upload by that id; the user turn is stored with the
+  //      block and read back unchanged. agent:invoke is stubbed, so the test
+  //      persists the turn the orchestrator would.
+  //   4. GET /api/files?id=<attachmentId>&conversationId=<c> → 200 + bytes.
+  //   5. The same id through ANOTHER conversation of the same user → 404 (and
+  //      `not-found` at the hook), also when a forged chip in that conversation
+  //      names the id.
+  //   6. The same request from a foreign user → 404 (cross-tenant collapses to
+  //      not-found); the retired `?path=` form → 400; an unknown id → 404.
   //
-  // Defers the artifact_publish round-trip to a follow-up canary: stubbing
-  // the runner end-to-end so an assistant turn lands a `tool_result` is
-  // significantly more wiring than the user-attachment path; the ArtifactChip
-  // surface is independently covered by component tests (Tasks 12 + 15).
+  // The artifact_publish round-trip is the sibling canary below.
   //
   // Same posture as the Phase D + F canaries — boot a hand-crafted plugin
   // list directly rather than going through createK8sPlugins (the preset's
@@ -1171,8 +1191,8 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
     { timeout: 180_000 },
     async () => {
       const connectionString = await ensurePostgresStarted();
-      // workspace-git's bare repo lives under here; one canary, one
-      // directory tree the finally-block can rm -rf.
+      // The blob store's root lives under here; one canary, one directory tree
+      // the finally-block can rm -rf.
       const workspaceRoot = await fs.realpath(
         await fs.mkdtemp(path.join(os.tmpdir(), 'ax-phase-3-canary-')),
       );
@@ -1423,30 +1443,30 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
         expect(uploadJson.sizeBytes).toBe(ATTACHMENT_BYTES.length);
 
         // 2. POST /api/chat/messages with the attachment_ref. The route
-        // commits the attachment to the workspace and dispatches
-        // agent:invoke (our stub) — returns 202 with conversationId.
-        const chatResp = await fetch(
-          `http://127.0.0.1:${port}/api/chat/messages`,
-          {
+        // commits the upload into the new conversation (attachments:commit by
+        // `{attachmentId, conversationId}`) and dispatches agent:invoke (our
+        // stub) — returns 202 with conversationId.
+        const postChat = async (
+          contentBlocks: unknown[],
+          conversationId: string | null,
+          user: string = USER,
+        ): Promise<Response> =>
+          fetch(`http://127.0.0.1:${port}/api/chat/messages`, {
             method: 'POST',
-            body: JSON.stringify({
-              conversationId: null,
-              agentId: AGENT,
-              contentBlocks: [
-                { type: 'text', text: 'here is a note' },
-                {
-                  type: 'attachment_ref',
-                  attachmentId: uploadJson.attachmentId,
-                },
-              ],
-            }),
+            body: JSON.stringify({ conversationId, agentId: AGENT, contentBlocks }),
             headers: {
               'content-type': 'application/json',
               origin: REQUEST_ORIGIN,
               'x-requested-with': 'ax-admin',
-              'x-test-user': USER,
+              'x-test-user': user,
             },
-          },
+          });
+        const chatResp = await postChat(
+          [
+            { type: 'text', text: 'here is a note' },
+            { type: 'attachment_ref', attachmentId: uploadJson.attachmentId },
+          ],
+          null,
         );
         expect(chatResp.status).toBe(202);
         const chatJson = (await chatResp.json()) as {
@@ -1456,12 +1476,27 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
         expect(typeof chatJson.conversationId).toBe('string');
         const conversationId = chatJson.conversationId;
 
-        // 3a. Locate the committed attachment via attachments:list-for-
-        // conversation (TASK-68: the bytes live in the blob store + a metadata
-        // row now, NOT a git file, so workspace:list won't find them). The
-        // commit handler mints a random filename prefix
-        // (sanitizeFilenameComponent), so we read the path from the row rather
-        // than reconstructing it. The hook is scoped to ctx.userId.
+        // 3a. The block the agent is handed is the ID block: the same id the
+        // upload was staged under, display metadata, and NO path of any kind
+        // (Invariant 1: a stored or wire block never names a sandbox location).
+        expect(dispatchedMessages.length).toBe(1);
+        const dispatched = dispatchedMessages[0] as {
+          message: { contentBlocks?: Array<Record<string, unknown>> };
+        };
+        expect(dispatched.message.contentBlocks).toEqual([
+          {
+            type: 'attachment',
+            attachmentId: uploadJson.attachmentId,
+            filename: 'note.txt',
+            mediaType: uploadJson.mediaType,
+            sizeBytes: ATTACHMENT_BYTES.length,
+          },
+        ]);
+        const attachmentBlock = dispatched.message.contentBlocks![0]!;
+
+        // 3b. The conversation's committed uploads, as the runner asks for them
+        // at session start (IPC `attachments.list` is a thin wrapper over this
+        // hook): addressed by the same id, scoped to ctx.userId.
         const listCtx = makeAgentContext({
           sessionId: 'phase-3-canary-lookup',
           agentId: AGENT,
@@ -1470,20 +1505,27 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
         });
         const listed = await bus.call<
           { conversationId: string },
-          { files: Array<{ path: string; sha256: string; mediaType: string; displayName: string; sizeBytes: number }> }
+          {
+            files: Array<{
+              attachmentId: string;
+              filename: string;
+              sha256: string;
+              mediaType: string;
+              sizeBytes: number;
+            }>;
+          }
         >('attachments:list-for-conversation', listCtx, { conversationId });
-        expect(listed.files.length).toBe(1);
-        const attachmentPath = listed.files[0]!.path;
-        expect(attachmentPath.endsWith('__note.txt')).toBe(true);
+        expect(listed.files).toHaveLength(1);
+        expect(listed.files[0]).toMatchObject({
+          attachmentId: uploadJson.attachmentId,
+          filename: 'note.txt',
+          sizeBytes: ATTACHMENT_BYTES.length,
+        });
+        expect(listed.files[0]).not.toHaveProperty('path');
 
-        // 3b. Seed the transcript. attachments:download calls
-        // conversations:get internally to check that the requested path
-        // appears in the transcript; conversations:get reads the DISPLAY EVENT
-        // LOG (TASK-66) — the legacy workspace-jsonl read is gone (TASK-70 /
-        // out-of-git Phase 5). Without seeding the transcript would be empty
-        // (we stubbed agent:invoke, so no runner ran), so we append the user
-        // turn the orchestrator would persist in production — a text block + an
-        // `attachment` block at the committed path.
+        // 3c. Persist the user turn the orchestrator would store (agent:invoke
+        // is stubbed, so no runner ran), then read it back: the stored block
+        // keeps its id and carries no path.
         await bus.call<
           ConversationsAppendEventInput,
           ConversationsAppendEventOutput
@@ -1492,24 +1534,9 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
           kind: 'turn',
           role: 'user',
           payload: {
-            blocks: [
-              { type: 'text', text: 'here is a note' },
-              {
-                type: 'attachment',
-                path: attachmentPath,
-                displayName: 'note.txt',
-                mediaType: 'text/plain',
-                sizeBytes: ATTACHMENT_BYTES.length,
-              },
-            ],
+            blocks: [{ type: 'text', text: 'here is a note' }, attachmentBlock],
           },
         });
-
-        // 3c. Sanity-check: conversations:get returns the seeded transcript
-        // with the attachment block. This is the same path
-        // attachments:download takes — verifying it here catches a
-        // jsonl-seed bug before the download assertion below would have
-        // to disambiguate it from an ACL bug.
         const got = await bus.call<
           ConversationsGetInput,
           ConversationsGetOutput
@@ -1518,64 +1545,92 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
           userId: USER,
         });
         expect(got.turns.length).toBe(1);
-        const blocks = got.turns[0]!.contentBlocks;
-        const attachmentBlock = blocks.find((b) => b.type === 'attachment');
-        expect(attachmentBlock).toBeTruthy();
-        if (attachmentBlock?.type === 'attachment') {
-          expect(attachmentBlock.path).toBe(attachmentPath);
-        }
-
-        // 4. GET /api/files for the user's attachment — 200 + bytes match.
-        const downloadResp = await fetch(
-          `http://127.0.0.1:${port}/api/files?` +
-            new URLSearchParams({
-              path: attachmentPath,
-              conversationId,
-            }).toString(),
-          {
-            method: 'GET',
-            headers: { 'x-test-user': USER },
-          },
+        const storedAttachment = got.turns[0]!.contentBlocks.find(
+          (b) => b.type === 'attachment',
         );
+        expect(storedAttachment).toEqual(attachmentBlock);
+        expect(storedAttachment).not.toHaveProperty('path');
+
+        const download = (
+          id: string,
+          conversation: string,
+          user: string = USER,
+        ): Promise<Response> =>
+          fetch(
+            `http://127.0.0.1:${port}/api/files?` +
+              new URLSearchParams({ id, conversationId: conversation }).toString(),
+            { method: 'GET', headers: { 'x-test-user': user } },
+          );
+
+        // 4. Download by id — 200 + bytes match, served as an attachment.
+        const downloadResp = await download(uploadJson.attachmentId, conversationId);
         expect(downloadResp.status).toBe(200);
+        expect(downloadResp.headers.get('x-content-type-options')).toBe('nosniff');
+        expect(downloadResp.headers.get('content-disposition')).toMatch(/^attachment;/);
         expect(await downloadResp.text()).toBe(ATTACHMENT_BYTES);
 
-        // 5. GET /api/files for an unscoped path → 404. Path is well-formed
-        // but is not under .ax/uploads/<conversationId>/ and is not
-        // referenced from any transcript block (path-scope ACL).
-        const unscopedResp = await fetch(
-          `http://127.0.0.1:${port}/api/files?` +
-            new URLSearchParams({
-              path: 'secrets/api-keys.txt',
-              conversationId,
-            }).toString(),
-          {
-            method: 'GET',
-            headers: { 'x-test-user': USER },
-          },
+        // 5. The same id asked for through ANOTHER conversation of the same
+        // user → 404, no bytes. This is the row's conversation check, not the
+        // owner gate: USER owns both conversations.
+        const secondChat = await postChat(
+          [{ type: 'text', text: 'a different conversation' }],
+          null,
         );
-        expect(unscopedResp.status).toBe(404);
+        expect(secondChat.status).toBe(202);
+        const secondConversationId = (
+          (await secondChat.json()) as { conversationId: string }
+        ).conversationId;
+        expect(secondConversationId).not.toBe(conversationId);
+        const crossResp = await download(uploadJson.attachmentId, secondConversationId);
+        expect(crossResp.status).toBe(404);
+        expect(await crossResp.text()).not.toContain(ATTACHMENT_BYTES);
+        // ... at the hook too: `not-found`, not `forbidden` (no existence leak).
+        await expect(
+          bus.call<
+            { attachmentId: string; conversationId: string; userId: string },
+            unknown
+          >('attachments:download', listCtx, {
+            attachmentId: uploadJson.attachmentId,
+            conversationId: secondConversationId,
+            userId: USER,
+          }),
+        ).rejects.toMatchObject({ code: 'not-found' });
 
-        // 6. GET /api/files from a foreign user → 404. The conversation
-        // belongs to USER; OTHER_USER's conversations:get returns
-        // not-found, which the download handler collapses to its
-        // uniform-404 posture (existence-leak prevention).
-        const foreignResp = await fetch(
-          `http://127.0.0.1:${port}/api/files?` +
-            new URLSearchParams({
-              path: attachmentPath,
-              conversationId,
-            }).toString(),
-          {
-            method: 'GET',
-            headers: { 'x-test-user': OTHER_USER },
-          },
-        );
+        // 5b. A FORGED chip: a turn in the second conversation that names the
+        // first conversation's attachment id. Storing it changes nothing — the
+        // download decides by the row, never by what a transcript claims.
+        await bus.call<
+          ConversationsAppendEventInput,
+          ConversationsAppendEventOutput
+        >('conversations:append-event', listCtx, {
+          conversationId: secondConversationId,
+          kind: 'turn',
+          role: 'user',
+          payload: { blocks: [attachmentBlock] },
+        });
+        const forgedResp = await download(uploadJson.attachmentId, secondConversationId);
+        expect(forgedResp.status).toBe(404);
+
+        // 6. A foreign user, through the conversation that really holds the
+        // file → 404. The conversation belongs to USER; OTHER_USER's
+        // conversations:get answers not-found, which the download collapses to
+        // its uniform 404 (existence-leak prevention).
+        const foreignResp = await download(uploadJson.attachmentId, conversationId, OTHER_USER);
         expect(foreignResp.status).toBe(404);
 
-        // The chat-messages route did dispatch agent:invoke — proves the
-        // happy-path through the producer, even though our stub is a no-op.
-        expect(dispatchedMessages.length).toBe(1);
+        // 7. Malformed requests never reach the hook: the retired `?path=`
+        // form, and an id nobody uploaded.
+        const pathFormResp = await fetch(
+          `http://127.0.0.1:${port}/api/files?` +
+            new URLSearchParams({ path: 'note.txt', conversationId }).toString(),
+          { method: 'GET', headers: { 'x-test-user': USER } },
+        );
+        expect(pathFormResp.status).toBe(400);
+        const unknownResp = await download('0123456789abcdef', conversationId);
+        expect(unknownResp.status).toBe(404);
+
+        // The chat-messages route dispatched agent:invoke for both messages.
+        expect(dispatchedMessages.length).toBe(2);
       } finally {
         if (handle !== null) await handle.shutdown();
         await fs.rm(workspaceRoot, { recursive: true, force: true });
@@ -1589,21 +1644,24 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
   );
 
   // ---------------------------------------------------------------------------
-  // Phase 3 follow-up F2 — artifact_publish round-trip canary.
+  // Phase 3 follow-up F2 — artifact_publish round-trip canary (ID-based
+  // contract, TASK-995).
   //
   // Sibling of the attachments canary above. Same scaffolding posture: a
   // hand-crafted plugin list (not createK8sPlugins) wired to the channel-web
   // server. What's different:
   //
-  //   - No multipart upload. The "artifact" file is pre-committed via
-  //     `workspace:apply` directly, mirroring what the runner's
-  //     artifact_publish tool does in production.
-  //   - The seeded jsonl carries BOTH a `tool_use` block (the model's call to
-  //     artifact_publish) AND a `tool_result` block whose `content` is a JSON
-  //     string carrying the artifact's `path`. The download ACL's
-  //     `checkPathScope` reads that JSON-encoded path and admits the file —
-  //     this is the artifact-block branch of the same ACL that the upload
-  //     canary exercises via the attachment-block branch.
+  //   - No multipart upload. The deliverable is a file in the agent's home,
+  //     published through the REAL runner executor (createArtifactPublishExecutor)
+  //     whose IPC client is wired straight to blob:put / artifacts:publish-blob,
+  //     the hooks the `blob.put` and `artifact.publish` handlers drive. The id it
+  //     returns is the one the host minted.
+  //   - The stored assistant turn carries a `tool_use` block, a `tool_result`
+  //     whose content is the executor's JSON, AND the download chip: one
+  //     `attachment` block whose `attachmentId` is the artifactId. No path.
+  //   - The chip downloads BY ID (GET /api/files?id=...), and only through the
+  //     conversation the row belongs to: another conversation of the same user,
+  //     and another user, both get 404.
   //   - We also assert that `conversations:get` surfaces the tool_use +
   //     tool_result blocks intact, since channel-web's MarkdownText resolves
   //     ax://artifact/<id> links by looking up the tool_result in the
@@ -1619,6 +1677,11 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
       );
       const runnerCheckoutRoot = await fs.realpath(
         await fs.mkdtemp(path.join(os.tmpdir(), 'ax-phase-3-artifact-runner-')),
+      );
+      // The session scratch root (AX_EPHEMERAL_ROOT): the executor requires both
+      // roots, and only `<scratch>/artifacts/**` is publishable from it.
+      const scratchRoot = await fs.realpath(
+        await fs.mkdtemp(path.join(os.tmpdir(), 'ax-phase-3-artifact-scratch-')),
       );
 
       const originalAllowNoOrigins = process.env.AX_HTTP_ALLOW_NO_ORIGINS;
@@ -1863,14 +1926,11 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
         const chatJson = (await chatResp.json()) as { conversationId: string };
         const conversationId = chatJson.conversationId;
 
-        // 2. Stage the deliverable in the agent's DURABLE user-files tier —
-        // the tier artifacts are published from, and the same one the agent's
-        // cwd points at in production. It is deliberately outside git: the
+        // 2. Stage the deliverable in the agent's home (/files), the tier
+        // artifacts are published from and the agent's cwd in production. The
         // artifact's durability comes from the blob store at publish time
-        // (TASK-68), not from a commit, so there is nothing to seed into the
-        // workspace tier here. `ARTIFACT_PATH` is the row key the executor
-        // returns — relative to the tier root, which is what the download
-        // ACL and the ArtifactChip match on.
+        // (TASK-68). `ARTIFACT_PATH` is the row's re-publish key, relative to
+        // the home; it never leaves the host as part of a chip.
         const seedCtx = makeAgentContext({
           sessionId: 'phase-3-artifact-canary',
           agentId: AGENT,
@@ -1885,15 +1945,40 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
         });
         await fs.writeFile(artifactAbsPath, ARTIFACT_BYTES);
 
-        // 3 + 4. Publish the artifact and seed the transcript. The
-        // download path-scope ACL scans conversations:get, which now reads the
-        // DISPLAY EVENT LOG (TASK-66) — the legacy workspace-jsonl read is gone
-        // (TASK-70 / out-of-git Phase 5). So we append the assistant turn the
-        // orchestrator would persist in production: a tool_use call + a
-        // tool_result whose JSON `content.path` matches ARTIFACT_PATH (the
-        // artifact-block branch of checkPathScope) + the closing text.
+        // 3. Publish through the REAL runner executor. Its IPC client is wired
+        // straight to the host hooks the two IPC handlers drive: `blob.put` is
+        // `blob:put`, and `artifact.publish` is `artifacts:publish-blob`
+        // (answering `{artifactId, downloadUrl}` as the handler does). So the
+        // id the executor returns is the one the HOST minted.
+        const hostClient = {
+          callBinaryUpload: async (action: string, bytes: Uint8Array) => {
+            expect(action).toBe('blob.put');
+            return bus.call<{ bytes: Uint8Array }, { sha256: string; size: number }>(
+              'blob:put',
+              seedCtx,
+              { bytes: new Uint8Array(bytes) },
+            );
+          },
+          call: async (action: string, payload: unknown) => {
+            expect(action).toBe('artifact.publish');
+            const out = await bus.call<unknown, { artifactId: string }>(
+              'artifacts:publish-blob',
+              seedCtx,
+              payload,
+            );
+            return {
+              artifactId: out.artifactId,
+              downloadUrl: `ax://artifact/${out.artifactId}`,
+            };
+          },
+        };
         const executor = createArtifactPublishExecutor({
           userFilesRoot: runnerCheckoutRoot,
+          ephemeralRoot: scratchRoot,
+          client: hostClient as unknown as NonNullable<
+            CreateArtifactPublishExecutorOptions['client']
+          >,
+          conversationId,
         });
         const artifactResult = await executor({
           id: 'toolu_1',
@@ -1903,9 +1988,9 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
           input: { path: artifactAbsPath, displayName: 'summary.md' },
         });
 
-        // Lock-down: ArtifactChip + checkPathScope's artifact-block branch
-        // consume this shape.
-        expect(artifactResult.artifactId).toMatch(/^[0-9a-f]{16}$/);
+        // Lock-down: the chip is built from this shape. The id is opaque (the
+        // host decides its form); it only has to be a well-formed attachment id.
+        expect(artifactResult.artifactId).toMatch(/^[A-Za-z0-9_-]{1,128}$/);
         expect(artifactResult.downloadUrl).toBe(
           `ax://artifact/${artifactResult.artifactId}`,
         );
@@ -1915,31 +2000,20 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
         expect(artifactResult.sizeBytes).toBe(ARTIFACT_BYTES.byteLength);
         expect(artifactResult.sha256).toMatch(/^[0-9a-f]{64}$/);
 
-        // TASK-68: in production the executor streams the bytes to blob.put and
-        // posts artifact.publish over IPC; the host inserts the artifact row +
-        // stores the blob. This canary runs the executor WITHOUT an IPC client
-        // (validation-only), so we simulate the host side directly on the bus:
-        // store the bytes in the blob store and record the artifact row. The
-        // download (step 5) then resolves path → artifact row → blob:get.
-        const put = await bus.call<
-          { bytes: Uint8Array },
-          { sha256: string; size: number }
-        >('blob:put', seedCtx, { bytes: new Uint8Array(ARTIFACT_BYTES) });
-        await bus.call<
-          { conversationId: string; sha256: string; path: string; displayName: string; mediaType: string; size: number },
-          { artifactId: string }
-        >('artifacts:publish-blob', seedCtx, {
-          conversationId,
-          sha256: put.sha256,
-          path: ARTIFACT_PATH,
-          displayName: 'summary.md',
-          mediaType: 'text/markdown',
-          size: ARTIFACT_BYTES.byteLength,
-        });
+        // The tool-turn chip: ONE `attachment` block, id = the artifact's id,
+        // display metadata only. No path (the tool_result text above keeps the
+        // model-facing `path`; the chip drops it).
+        const chip = {
+          type: 'attachment' as const,
+          attachmentId: artifactResult.artifactId,
+          filename: artifactResult.displayName,
+          mediaType: artifactResult.mediaType,
+          sizeBytes: artifactResult.sizeBytes,
+        };
 
-        // Append the user turn, then the assistant turn carrying all three
-        // blocks (tool_use + tool_result + closing text), to the display event
-        // log — exactly what the orchestrator/runner persist in production.
+        // 4. Append the user turn, then the assistant turn carrying the
+        // tool_use + tool_result + chip + closing text, to the display event log
+        // — exactly what the orchestrator/runner persist in production.
         await bus.call<
           ConversationsAppendEventInput,
           ConversationsAppendEventOutput
@@ -1962,13 +2036,14 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
                 type: 'tool_use',
                 id: 'toolu_1',
                 name: 'artifact_publish',
-                input: { path: ARTIFACT_PATH, displayName: 'summary.md' },
+                input: { path: artifactAbsPath, displayName: 'summary.md' },
               },
               {
                 type: 'tool_result',
                 tool_use_id: 'toolu_1',
                 content: JSON.stringify(artifactResult),
               },
+              chip,
               {
                 type: 'text',
                 text: `Done. See [download](${artifactResult.downloadUrl}).`,
@@ -1977,20 +2052,55 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
           },
         });
 
-        // 5. GET /api/files for the artifact path → 200 + bytes match.
-        const downloadResp = await fetch(
-          `http://127.0.0.1:${port}/api/files?` +
-            new URLSearchParams({
-              path: ARTIFACT_PATH,
-              conversationId,
-            }).toString(),
-          { method: 'GET', headers: { 'x-test-user': USER } },
-        );
+        const download = (
+          id: string,
+          conversation: string,
+          user: string = USER,
+        ): Promise<Response> =>
+          fetch(
+            `http://127.0.0.1:${port}/api/files?` +
+              new URLSearchParams({ id, conversationId: conversation }).toString(),
+            { method: 'GET', headers: { 'x-test-user': user } },
+          );
+
+        // 5. Download by id (the chip's attachmentId) → 200 + bytes match.
+        const downloadResp = await download(chip.attachmentId, conversationId);
         expect(downloadResp.status).toBe(200);
         expect(await downloadResp.text()).toBe(ARTIFACT_BYTES_TEXT);
 
-        // 6. conversations:get returns the tool_use + tool_result blocks so
-        //    MarkdownText's Anchor can resolve ax://artifact/<id> links.
+        // 5b. The same id through another conversation of the same user, and
+        // through the right conversation as someone else → 404.
+        const otherChat = await fetch(
+          `http://127.0.0.1:${port}/api/chat/messages`,
+          {
+            method: 'POST',
+            body: JSON.stringify({
+              conversationId: null,
+              agentId: AGENT,
+              contentBlocks: [{ type: 'text', text: 'something else' }],
+            }),
+            headers: {
+              'content-type': 'application/json',
+              origin: REQUEST_ORIGIN,
+              'x-requested-with': 'ax-admin',
+              'x-test-user': USER,
+            },
+          },
+        );
+        expect(otherChat.status).toBe(202);
+        const otherConversationId = (
+          (await otherChat.json()) as { conversationId: string }
+        ).conversationId;
+        expect(otherConversationId).not.toBe(conversationId);
+        expect((await download(chip.attachmentId, otherConversationId)).status).toBe(404);
+        expect(
+          (await download(chip.attachmentId, conversationId, 'phase-3-artifact-other-user'))
+            .status,
+        ).toBe(404);
+
+        // 6. conversations:get returns the tool_use + tool_result blocks and the
+        //    id chip, so MarkdownText's Anchor can resolve ax://artifact/<id>
+        //    links and the chat renders the download chip.
         const got = await bus.call<
           ConversationsGetInput,
           ConversationsGetOutput
@@ -2013,10 +2123,14 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
         );
         expect(toolUse).toBeTruthy();
         expect(toolResult).toBeTruthy();
+        const storedChip = blocks.find((b) => b.type === 'attachment');
+        expect(storedChip).toEqual(chip);
+        expect(storedChip).not.toHaveProperty('path');
       } finally {
         if (handle !== null) await handle.shutdown();
         await fs.rm(workspaceRoot, { recursive: true, force: true });
         await fs.rm(runnerCheckoutRoot, { recursive: true, force: true });
+        await fs.rm(scratchRoot, { recursive: true, force: true });
         if (originalAllowNoOrigins === undefined) {
           delete process.env.AX_HTTP_ALLOW_NO_ORIGINS;
         } else {

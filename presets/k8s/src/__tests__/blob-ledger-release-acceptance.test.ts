@@ -183,12 +183,11 @@ describe('@ax/preset-k8s blob ledger release canary (TASK-776)', () => {
       { attachmentId: string }
     >('attachments:store-temp', ctx, { bytes, displayName: 'notes.txt', mediaType: 'text/plain' });
     const out = await bus.call<
-      { attachmentId: string; conversationId: string; turnId: string },
+      { attachmentId: string; conversationId: string },
       { sha256: string }
     >('attachments:commit', ctx, {
       attachmentId: temp.attachmentId,
       conversationId,
-      turnId: `turn-${seq}`,
     });
     return out.sha256;
   }
