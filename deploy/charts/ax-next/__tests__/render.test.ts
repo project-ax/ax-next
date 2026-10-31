@@ -1355,6 +1355,34 @@ describeIfHelm('ax-next chart: sandbox.filestore wiring', () => {
     });
   }
 
+  // The allowlist above only ever meets the chart's own rules (an exact /32 on
+  // the NFS ports, and rules on other ports), so pin the detector's other
+  // shapes here directly. Without this, narrowing `ruleCouldReachNfs` would
+  // leave every chart test green.
+  it.each([
+    ['all ports, anywhere', {}, true],
+    ['NFS port, anywhere', { ports: [{ port: 2049 }] }, true],
+    ['rpcbind, anywhere', { ports: [{ port: 111, protocol: 'UDP' }] }, true],
+    ['all ports, a wider CIDR', { to: [{ ipBlock: { cidr: '10.0.0.0/8' } }] }, true],
+    ['an endPort range over 2049', { ports: [{ port: 2000, endPort: 3000 }] }, true],
+    ['a named port', { ports: [{ port: 'nfs' }] }, true],
+    ['the exact /32 on 2049', { to: [{ ipBlock: { cidr: '10.9.8.7/32' } }], ports: [{ port: 2049 }] }, true],
+    [
+      'the internet minus the Filestore range',
+      { to: [{ ipBlock: { cidr: '0.0.0.0/0', except: ['10.9.0.0/16'] } }] },
+      false,
+    ],
+    ['a different /32', { to: [{ ipBlock: { cidr: '10.9.8.8/32' } }], ports: [{ port: 2049 }] }, false],
+    ['pods only, on 2049', { to: [{ namespaceSelector: {} }], ports: [{ port: 2049 }] }, false],
+    ['HTTPS only', { ports: [{ port: 443 }] }, false],
+    ['an endPort range below 2049', { ports: [{ port: 1000, endPort: 2048 }] }, false],
+  ] as Array<[string, FullEgressRule, boolean]>)(
+    'NFS-reach detector: %s -> %s',
+    (_name, rule, expected) => {
+      expect(ruleCouldReachNfs(rule, '10.9.8.7')).toBe(expected);
+    },
+  );
+
   it('does not render the retired -cold-nfs policy (it only ever rendered with a shared pool)', () => {
     const docs = helmTemplate([...FILESTORE, ...SHARED_POOL]);
     expect(
