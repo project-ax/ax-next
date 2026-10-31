@@ -1617,7 +1617,7 @@ describe('agent files (TASK-993)', () => {
     expect(line?.bindings?.err).toBeInstanceOf(Error);
   });
 
-  it('a deployment that cannot measure agent files says so once at info, then stops asking', async () => {
+  it('a deployment that cannot measure agent files says so once, then stops asking', async () => {
     // k8s without the read-only host mount: every call would throw the same
     // code. That is a fact about the deployment, so it must not become a warn
     // per turn end (and per agent per sweep) that reads like a fault.
@@ -1645,9 +1645,14 @@ describe('agent files (TASK-993)', () => {
 
     expect(calls).toBe(1);
     expect(await fileRows()).toEqual([]);
-    expect(w.lines.filter((l) => l.msg === 'disk_quota_files_usage_unavailable')).toHaveLength(1);
-    expect(w.lines.find((l) => l.msg === 'disk_quota_files_usage_unavailable')?.level).toBe('info');
+    const unavailable = w.lines.filter((l) => l.msg === 'disk_quota_files_usage_unavailable');
+    expect(unavailable).toHaveLength(1);
+    expect(unavailable[0]!.level).toBe('warn');
+    // The provider's sentence (which names the missing setting) reaches the log.
+    expect(unavailable[0]!.bindings?.err).toBeInstanceOf(PluginError);
     expect(warned(w, 'disk_quota_files_measure_failed')).toBe(false);
+    // The sweep did not even try: it skipped the files pass outright.
+    expect(w.lines.some((l) => l.msg === 'disk_quota_files_sweep_skipped')).toBe(true);
   });
 
   it('a store failure is a warn, never a throw', async () => {

@@ -39,8 +39,9 @@ import type { ActionHandler, HandlerResult } from './types.js';
 // `ctx.userId` (the invoking person) is who @ax/disk-quota charges. A runner
 // looping on this action with no matching `artifact.publish` row is exactly the
 // fill-the-disk shape the limit exists for. A refusal comes back as 409
-// HOOK_REJECTED with the subscriber's host-authored reason, so the agent can
-// tell the person, instead of a bare 500.
+// HOOK_REJECTED with a reason the agent can pass on, instead of a bare 500:
+// the subscriber's own sentence, except for a full disk, which gets
+// BLOB_PUT_STORAGE_FULL_FOR_AGENT (TASK-993).
 // ---------------------------------------------------------------------------
 
 // Binary actions receive the raw REQUEST body PLUS the parsed request URL, so
@@ -90,7 +91,11 @@ export const blobPutHandler: BinaryActionHandler = async (
     // fault: hand the runner a reason so the agent can tell the person.
     // Everything else stays a sanitized 500.
     if (err instanceof PluginError && err.code === 'rejected') {
-      ctx.logger.warn('blob_put_refused', { action: 'blob.put', reason: err.message });
+      ctx.logger.warn('blob_put_refused', {
+        action: 'blob.put',
+        reason: err.message,
+        ...(err.reasonCode !== undefined ? { reasonCode: err.reasonCode } : {}),
+      });
       // A FULL disk gets a fixed, agent-addressed sentence (TASK-993) instead
       // of the person-facing one, which says "ask your agent to clean up
       // files". Read by the model, that is an instruction to itself to delete

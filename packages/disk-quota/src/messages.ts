@@ -51,7 +51,11 @@ export function workspaceFullMessage(usedBytes: number, limitBytes: number): str
   );
 }
 
-/** Person-facing: shown when an upload or a published file is refused. */
+/**
+ * Person-facing: shown when an upload is refused (the chat send's attachment,
+ * the skills routes). An agent's own refused publish reaches the agent as
+ * `@ax/ipc-core`'s agent-addressed sentence instead (TASK-993).
+ */
 export function blobFullMessage(usedBytes: number, limitBytes: number): string {
   return (
     `You've used all of your storage (${formatBytes(usedBytes)} of ${formatBytes(limitBytes)}), ` +

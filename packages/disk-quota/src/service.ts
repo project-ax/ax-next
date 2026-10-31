@@ -158,9 +158,9 @@ export const AGENT_FILES_USAGE_HOOK = 'sandbox:user-files-usage';
 export const FILES_MEASURE_CONCURRENCY = 2;
 /**
  * The provider's error code for "this deployment cannot measure agent files at
- * all" (k8s without the read-only host mount). A fact about the deployment, not
- * a failed measurement: after the first one this process stops asking, and logs
- * it once at info instead of a warn on every turn end.
+ * all" (k8s without the read-only host mount). Deployment-wide by contract
+ * (`@ax/sandbox-mount-protocol`): after the first one this process stops
+ * asking, and warns once instead of on every turn end.
  */
 export const FILES_USAGE_UNAVAILABLE_CODE = 'user-files-usage-unavailable';
 
@@ -530,7 +530,9 @@ export function createDiskQuotaService(deps: {
       ) {
         if (!filesUsageUnavailable) {
           filesUsageUnavailable = true;
-          log(ctx, 'info', 'disk_quota_files_usage_unavailable', { agentId });
+          // Once per process, so a warn is not noise; `err` carries the fix
+          // (the provider names the setting that is missing).
+          log(ctx, 'warn', 'disk_quota_files_usage_unavailable', { agentId, err });
         }
         return false;
       }

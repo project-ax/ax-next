@@ -331,7 +331,12 @@ export type ReadUserFilesHandler = ServiceHandler<ReadUserFilesInput, ReadUserFi
 //   cannot reach (a mis-wired composition).
 // - `user-files-usage-unavailable` — the provider has no cheap way to reach
 //   the files (the k8s provider without its read-only host mount); it does not
-//   fall back to anything expensive.
+//   fall back to anything expensive. DEPLOYMENT-WIDE, never per agent: a caller
+//   may stop asking for the life of the process after the first one (the
+//   storage meter does). A provider that can measure some agents and not
+//   others must use another code for the ones it can't.
+// - `walk-busy` — this process already has its maximum of usage walks running
+//   (they may be stuck on a hung export); try again later.
 // - a missing export or an unreadable root throws the walk's own error.
 // An agent folder that does not exist yet (the agent has never run) is 0: that
 // is a true reading, not a failure.

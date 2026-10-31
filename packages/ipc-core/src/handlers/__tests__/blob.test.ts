@@ -53,7 +53,9 @@ describe('blob.put handler (raw-body REQUEST channel)', () => {
     // A storage-limit veto is not a fault: the runner must be able to tell
     // the agent (and through it the person) why the artifact was not saved.
     // A bare 500 reads as "the host broke" and tells nobody anything.
-    const reason = "You've used all of your storage (1 GB of 1 GB), so that file wasn't saved.";
+    // A refusal with no reason code (the fail-closed "could not check" one):
+    // its own sentence passes through.
+    const reason = "We couldn't check your storage just now, so that file wasn't saved. Please try again in a moment.";
     const bus = fakeBus(async () => {
       throw new PluginError({
         code: 'rejected',
@@ -90,6 +92,22 @@ describe('blob.put handler (raw-body REQUEST channel)', () => {
     });
     expect(BLOB_PUT_STORAGE_FULL_FOR_AGENT).toMatch(/do not delete or move any files on your own/i);
     expect(BLOB_PUT_STORAGE_FULL_FOR_AGENT).not.toMatch(/try again|clean up files it no longer needs/i);
+  });
+
+  it('TASK-993: a refusal with some OTHER reason code still passes its own sentence', async () => {
+    const reason = 'Some other policy said no, for its own reasons.';
+    const bus = fakeBus(async () => {
+      throw new PluginError({
+        code: 'rejected',
+        plugin: '@ax/core',
+        hookName: 'blob:put',
+        message: reason,
+        reasonCode: 'some-other-policy',
+      });
+    });
+    const result = (await blobPutHandler(Buffer.from('x'), fakeCtx(), bus as never)) as HandlerErr;
+    expect(result.status).toBe(409);
+    expect(result.body).toEqual({ error: { code: 'HOOK_REJECTED', message: reason } });
   });
 
   it('sanitizes a store returning a malformed sha (shape drift) to 500', async () => {
