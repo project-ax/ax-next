@@ -62,10 +62,13 @@ export const attachmentsListHandler: ActionHandler = async (rawPayload, ctx, bus
       conversationId: parsed.data.conversationId,
     });
   } catch (err) {
+    // Log first: the real bus wraps every plain throw (a DB outage) into
+    // PluginError{code:'unknown'}, so logging only the non-PluginError branch
+    // would leave a 500 the host never records (TASK-1010).
+    logInternalError(ctx.logger, 'attachments.list', err);
     if (err instanceof PluginError) {
       return mapPluginError(err);
     }
-    logInternalError(ctx.logger, 'attachments.list', err);
     return internalError();
   }
   // Re-check the host's answer against the wire schema before it reaches the

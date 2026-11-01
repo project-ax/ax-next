@@ -355,11 +355,14 @@ export interface PublishArtifactBlobDeps {
  * The row is only written once `blob:stat` confirms the store holds the sha
  * (TASK-776, blob-gc design D10). Without that, a runner could publish a row
  * for bytes that were never put or have since been purged, and the person gets
- * a download link that 404s. It does NOT check that THIS runner put the sha: a
- * sha256 cannot be guessed, so a runner that can name one already has the
- * bytes, and referencing identical bytes is the same as dedup. A `blob:stat`
- * failure propagates — "could not check" must never turn into "assume it is
- * there".
+ * a download link that 404s. A `blob:stat` failure propagates — "could not
+ * check" must never turn into "assume it is there".
+ *
+ * This hook does NOT check that the caller put the sha, and a sha is not proof
+ * the caller holds the bytes: hashes leak into model-visible text, and the
+ * store is shared. That check is the untrusted caller's boundary, ipc-core's
+ * `artifact.publish`, which accepts only a sha its own session's `blob.put`
+ * returned (TASK-1010). A host-side caller must pass a sha it put itself.
  *
  * Where the row lands decides who can download it (`attachments:download`
  * resolves the id, then requires the row's conversation and owner to match),

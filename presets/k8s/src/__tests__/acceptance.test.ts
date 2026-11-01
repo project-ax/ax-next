@@ -1990,31 +1990,53 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
         });
         await fs.writeFile(artifactAbsPath, ARTIFACT_BYTES);
 
-        // 3. Publish through the REAL runner executor. Its IPC client is wired
-        // straight to the host hooks the two IPC handlers drive: `blob.put` is
-        // `blob:put`, and `artifact.publish` is `artifacts:publish-blob`
-        // (answering `{artifactId, downloadUrl}` as the handler does). So the
-        // id the executor returns is the one the HOST minted.
+        // 3. Publish through the REAL runner executor, whose IPC client drives
+        // the REAL ipc-core dispatcher: `blob.put` then `artifact.publish`,
+        // both from one session bound to this conversation (TASK-1010: publish
+        // accepts only a sha that session's own blob.put returned). So the id
+        // the executor returns is the one the HOST minted.
+        const ipcPost = async (
+          sessionId: string,
+          action: string,
+          body: Uint8Array | string,
+          contentType: string,
+        ): Promise<{ status: number; text: string }> => {
+          const ipcCtx = makeAgentContext({
+            sessionId,
+            agentId: AGENT,
+            userId: USER,
+            conversationId,
+            workspace: { rootPath: workspaceRoot },
+          });
+          const srv = nodeHttp.createServer((req, res) => {
+            void dispatchIpc(req, res, ipcCtx, bus);
+          });
+          await new Promise<void>((r) => srv.listen(0, '127.0.0.1', () => r()));
+          try {
+            const ipcPort = (srv.address() as { port: number }).port;
+            const resp = await fetch(`http://127.0.0.1:${ipcPort}/${action}`, {
+              method: 'POST',
+              headers: { 'content-type': contentType },
+              body,
+            });
+            return { status: resp.status, text: await resp.text() };
+          } finally {
+            await new Promise<void>((r) => srv.close(() => r()));
+          }
+        };
+        const RUNNER_SESSION = 'phase-3-artifact-canary-runner';
         const hostClient = {
           callBinaryUpload: async (action: string, bytes: Uint8Array) => {
             expect(action).toBe('blob.put');
-            return bus.call<{ bytes: Uint8Array }, { sha256: string; size: number }>(
-              'blob:put',
-              seedCtx,
-              { bytes: new Uint8Array(bytes) },
-            );
+            const r = await ipcPost(RUNNER_SESSION, action, bytes, 'application/octet-stream');
+            expect(r.status).toBe(200);
+            return JSON.parse(r.text) as { sha256: string; size: number };
           },
           call: async (action: string, payload: unknown) => {
             expect(action).toBe('artifact.publish');
-            const out = await bus.call<unknown, { artifactId: string }>(
-              'artifacts:publish-blob',
-              seedCtx,
-              payload,
-            );
-            return {
-              artifactId: out.artifactId,
-              downloadUrl: `ax://artifact/${out.artifactId}`,
-            };
+            const r = await ipcPost(RUNNER_SESSION, action, JSON.stringify(payload), 'application/json');
+            expect(r.status).toBe(200);
+            return JSON.parse(r.text) as { artifactId: string; downloadUrl: string };
           },
         };
         const executor = createArtifactPublishExecutor({
@@ -2032,6 +2054,27 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
           // and what it actually wrote to, in every sandbox shape.
           input: { path: artifactAbsPath, displayName: 'summary.md' },
         });
+
+        // 3b. TASK-1010: a session that never put the bytes cannot publish
+        // them, even knowing the sha, and its answer equals an unknown sha's.
+        const publishAs = (sessionId: string, sha256: string) =>
+          ipcPost(
+            sessionId,
+            'artifact.publish',
+            JSON.stringify({
+              conversationId,
+              sha256,
+              path: 'reports/laundered.md',
+              displayName: 'laundered.md',
+              mediaType: 'text/markdown',
+              size: ARTIFACT_BYTES.byteLength,
+            }),
+            'application/json',
+          );
+        const launder = await publishAs('phase-3-artifact-canary-other', artifactResult.sha256);
+        expect(launder.status).toBe(404);
+        const unknownSha = await publishAs('phase-3-artifact-canary-other', 'f'.repeat(64));
+        expect(unknownSha).toEqual(launder);
 
         // Lock-down: the chip is built from this shape. The id is opaque (the
         // host decides its form); it only has to be a well-formed attachment id.
