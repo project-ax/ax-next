@@ -10,7 +10,7 @@
 #   - usually don't have gVisor — runtimeClassName forced to ""
 #   - usually don't have a CNI that enforces NetworkPolicy — set enabled=false
 #     so it's clear we're NOT enforcing rather than silently no-op'ing
-#   - have small node disk — workspace storage cut to 1Gi
+#   - have small node disk — MinIO storage cut to 1Gi
 #
 # Code changes are picked up after `kind load docker-image ax-next/agent:dev`
 # + `kubectl rollout restart deployment/<release>-host`.
@@ -64,27 +64,11 @@ host:
     - name: LOG_LEVEL
       value: "debug"
 
-workspace:
-  backend: git-protocol
-  storage: 1Gi
-  storageClassName: ""
-
-# Stand up the dedicated git-server StatefulSet tier alongside the
-# host. Combined with `workspace.backend: git-protocol` above, the host
-# pod's @ax/workspace-git-server plugin routes every workspace op there.
-gitServer:
-  enabled: true
-  storage: 1Gi
-
-gitServerImage:
-  repository: ax-next/git-server
-  tag: dev
-  pullPolicy: IfNotPresent
-
 # ─── Blob store (out-of-git design Part A) ───────────────────────
 # Dev parity with prod object storage: run the in-cluster MinIO and point
-# @ax/blob-store-s3 at it. The MinIO root credentials (generated, lookup-
-# stable Secret) are wired into both the MinIO server and the host's S3
+# @ax/blob-store-s3 at it. With s3 blobs the host keeps nothing on local
+# disk, so no `<release>-workspace` PVC renders here. The MinIO root
+# credentials (generated, lookup-stable Secret) are wired into both the MinIO server and the host's S3
 # client automatically — you don't set them here. (Prod uses GCS+Workload-
 # Identity instead and leaves minio.enabled=false / sets blob.s3.* explicitly.)
 blob:

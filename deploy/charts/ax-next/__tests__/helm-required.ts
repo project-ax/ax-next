@@ -2,8 +2,7 @@
 //
 // Both render.test.ts and env-shape.test.ts shell out to `helm template` to
 // exercise the chart's render-time `{{ fail }}` guards (single-replica chat
-// guard, gitServer.storage-required, workspace.backend wiring,
-// terminationGracePeriodSeconds floor). When helm is NOT on PATH every assertion
+// guard, blob-root and filestore guards). When helm is NOT on PATH every assertion
 // is `describe.skip`-ped with a friendly warning — convenient for local dev on a
 // box without helm, but a trap for CI: a green run no longer proves the guards
 // ran.

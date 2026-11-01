@@ -12,11 +12,6 @@ Allows the host pod to do its job:
         sandbox.filestore.hostReadPath are both set — the host mounts the
         export read-only to serve the Files browser). Scoped to the Filestore
         /32 on the NFS ports only.
-      - git-server StatefulSet (only when gitServer.enabled +
-        workspace.backend=git-protocol — same-namespace, port from
-        .Values.gitServer.port). Without this rule the host's
-        @ax/workspace-git-server calls would be denied at the CNI layer
-        when networkPolicies.enabled=true.
 */}}
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -138,18 +133,5 @@ spec:
           protocol: TCP
         - port: 111
           protocol: UDP
-    {{- end }}
-    {{- if and (eq .Values.workspace.backend "git-protocol") (include "ax-next.bool" .Values.gitServer.enabled) }}
-    # Sharded git-server StatefulSet (workspace.backend == git-protocol).
-    # Same-namespace, pinned by the git-server-experimental component
-    # label. Without this rule the host's @ax/workspace-git-server traffic
-    # would be denied at the CNI layer.
-    - to:
-        - podSelector:
-            matchLabels:
-              {{- include "ax-next.selectorLabels" (dict "component" "git-server-experimental" "context" $) | nindent 14 }}
-      ports:
-        - port: {{ .Values.gitServer.port }}
-          protocol: TCP
     {{- end }}
 {{- end }}

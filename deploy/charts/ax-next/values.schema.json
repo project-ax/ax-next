@@ -55,15 +55,6 @@
         }
       }
     },
-    "gitServer": {
-      "type": "object",
-      "properties": {
-        "enabled": {
-          "type": "boolean",
-          "description": "Deploy the git-server storage tier (StatefulSet, Services, auth Secret, NetworkPolicy)."
-        }
-      }
-    },
     "ingress": {
       "type": "object",
       "properties": {
