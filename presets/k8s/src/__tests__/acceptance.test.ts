@@ -7,7 +7,7 @@ import { existsSync } from 'node:fs';
 import * as os from 'node:os';
 import * as nodeHttp from 'node:http';
 import { dispatch as dispatchIpc } from '@ax/ipc-core';
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 
 import {
   PostgreSqlContainer,
@@ -2845,6 +2845,87 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
         // 7. An unauthenticated request never reaches the tier at all.
         const anon = await fetch(`${base}/${AGENT}/user-files`);
         expect(anon.status).toBe(401);
+
+        // 8. STREAMED DOWNLOAD (TASK-1014): 50 MiB, far past the preview's 1 MiB
+        //    cap and the old one-shot reply, comes down whole and byte-identical
+        //    with an exact Content-Length. The channel-web route reads it a
+        //    megabyte at a time through sandbox:read-user-file-range.
+        const BIG_BYTES = 50 * 1024 * 1024;
+        const big = randomBytes(BIG_BYTES);
+        const bigSha = createHash('sha256').update(big).digest('hex');
+        await fs.writeFile(path.join(agentDir, 'reports', 'big.bin'), big);
+        const downloadBase = `http://127.0.0.1:${port}/api/workspace/agents/${AGENT}/download/user-files`;
+        const bigUrl = `${downloadBase}/${encodeURIComponent('reports/big.bin')}`;
+        const bigResp = await fetch(bigUrl, asUser(USER));
+        expect(bigResp.status).toBe(200);
+        expect(bigResp.headers.get('content-length')).toBe(String(BIG_BYTES));
+        expect(bigResp.headers.get('cache-control')).toBe('private, no-store');
+        expect(bigResp.headers.get('content-disposition')).toBe(
+          'attachment; filename="big.bin"',
+        );
+        const bigBody = Buffer.from(await bigResp.arrayBuffer());
+        expect(bigBody.length).toBe(BIG_BYTES);
+        expect(createHash('sha256').update(bigBody).digest('hex')).toBe(bigSha);
+
+        // 9. The planted `escape` symlink (step 5) is as dead to the download
+        //    route as it is to the browse route: the same 404, nothing leaked.
+        const dlThroughLink = await fetch(
+          `${downloadBase}/${encodeURIComponent('escape/secret.txt')}`,
+          asUser(USER),
+        );
+        expect(dlThroughLink.status).toBe(404);
+        expect(await dlThroughLink.json()).toEqual({ error: 'file-not-found' });
+
+        // 10. A file that vanishes MID-STREAM is never a complete 200. Hold the
+        //     client back after the first chunk so backpressure keeps the host
+        //     from reading ahead, delete the file, then let the client drain.
+        //     The next range read finds nothing, the host destroys the
+        //     connection, and the client sees an incomplete response with fewer
+        //     bytes than Content-Length promised.
+        const midStream = await new Promise<{ complete: boolean; received: number }>(
+          (resolve, reject) => {
+            let received = 0;
+            let paused = false;
+            const req = nodeHttp.get(
+              bigUrl,
+              { headers: { 'x-test-user': USER } },
+              (res) => {
+                if (res.statusCode !== 200) {
+                  reject(new Error(`expected 200, got ${String(res.statusCode)}`));
+                  res.resume();
+                  return;
+                }
+                res.on('data', (chunk: Buffer) => {
+                  received += chunk.length;
+                  if (paused) return;
+                  paused = true;
+                  res.pause();
+                  fs.unlink(path.join(agentDir, 'reports', 'big.bin')).then(
+                    () => {
+                      // Give the host a beat to hit its backpressure stall.
+                      setTimeout(() => res.resume(), 200);
+                    },
+                    reject,
+                  );
+                });
+                // A destroyed connection surfaces as 'aborted' (and, on newer
+                // Node, an 'error'); either way `complete` stays false.
+                const settle = (): void =>
+                  resolve({ complete: res.complete, received });
+                res.on('end', settle);
+                res.on('close', settle);
+                res.on('error', () => undefined);
+              },
+            );
+            req.on('error', () => undefined);
+            req.setTimeout(60_000, () => {
+              req.destroy();
+              reject(new Error('mid-stream deletion download timed out'));
+            });
+          },
+        );
+        expect(midStream.complete).toBe(false);
+        expect(midStream.received).toBeLessThan(BIG_BYTES);
       } finally {
         if (handle !== null) await handle.shutdown();
         if (originalAllowNoOrigins === undefined) {
