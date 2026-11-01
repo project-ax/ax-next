@@ -182,11 +182,14 @@ beforeEach(() => {
   } as unknown as FakeClient;
 });
 
-describe('runRunner — generated file publication', () => {
-  // New files in the agent's home are attached to the turn that made them. The
-  // home is the only tracked root since TASK-995 made it required: a session
-  // can no longer come up without one and fall back to scratch `artifacts/`.
-  it.each(['allow', 'reject', 'hold'] as const)('uses the policy gate (%s) and persists chips before SSE completion', async (verdict) => {
+describe('runRunner — generated file attachment', () => {
+  // New files in the agent's home are attached to the turn that made them, by
+  // reference (TASK-1012): the chip names the file by its key in the agent's
+  // files, and nothing is copied into the blob store, so the file is charged
+  // once. The home is the only tracked root since TASK-995 made it required: a
+  // session can no longer come up without one and fall back to scratch
+  // `artifacts/`.
+  it.each(['allow', 'reject', 'hold'] as const)('uses the policy gate (%s) and attaches a reference, never a blob copy', async (verdict) => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'ax-files-shell-'));
     const original = fakeClient.call.getMockImplementation()!;
     fakeClient.call.mockImplementation(async (action: string, ...args: unknown[]) => {
@@ -195,7 +198,6 @@ describe('runRunner — generated file publication', () => {
       if (action === 'tool.pre-call') return verdict === 'allow' ? { verdict: 'allow' }
         : verdict === 'reject' ? { verdict: 'reject', reason: 'blocked' }
           : { verdict: 'hold', decisionId: 'd1', note: 'approval required' };
-      if (action === 'artifact.publish') return { artifactId: 'id', downloadUrl: 'ax://artifact/id' };
       return original(action, ...args);
     });
     const upload = vi.fn(async () => ({ sha256: 'a'.repeat(64), size: 6 }));
@@ -210,14 +212,25 @@ describe('runRunner — generated file publication', () => {
     } };
     try {
       expect(await runRunner(() => loop, seams(() => ({ ...fakeEnv(), userFilesRoot: root })))).toBe(0);
+      // No copy, whatever the verdict: no blob, no artifact row.
+      expect(upload).not.toHaveBeenCalled();
+      expect(fakeClient.call.mock.calls.some(c => c[0] === 'artifact.publish')).toBe(false);
+      // The chip rides the FIRST turn-end, the one that closes SSE.
       const first = fakeClient.event.mock.calls.find(call => call[0] === 'event.turn-end')!;
       expect(first[1].role).toBe('tool');
+      const chip = { type: 'agent_file', path: 'report.txt', mediaType: 'text/plain', sizeBytes: 6 };
+      const gated = fakeClient.call.mock.calls.filter(c => c[0] === 'tool.pre-call');
+      expect(gated).toEqual([['tool.pre-call', {
+        call: { id: expect.any(String), name: 'artifact_publish', input: { path: path.join(root, 'report.txt') } },
+      }]]);
+      const reported = fakeClient.event.mock.calls.filter(c => c[0] === 'event.tool-post-call');
       if (verdict === 'allow') {
-        expect(upload).toHaveBeenCalledOnce();
-        expect(first[1].contentBlocks).toContainEqual({ type: 'attachment', attachmentId: 'id', filename: 'report.txt', mediaType: 'text/plain', sizeBytes: 6 });
+        expect(first[1].contentBlocks).toContainEqual(chip);
+        // The gated call's outcome is the chip it attached.
+        expect(reported).toEqual([['event.tool-post-call', { call: gated[0]![1].call, output: chip }]]);
       } else {
-        expect(upload).not.toHaveBeenCalled();
-        expect(first[1].contentBlocks.some((block: { type: string }) => block.type === 'attachment')).toBe(false);
+        expect(first[1].contentBlocks.some((block: { type: string }) => block.type === 'agent_file')).toBe(false);
+        expect(reported).toEqual([]);
       }
     } finally { await fs.rm(root, { recursive: true, force: true }); }
   });

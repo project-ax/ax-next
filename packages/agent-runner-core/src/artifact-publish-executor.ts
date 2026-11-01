@@ -51,7 +51,12 @@ const EXTENSION_TO_MEDIA_TYPE: Record<string, string> = {
   '.mov': 'video/quicktime',
 };
 
-function mediaTypeFromExtension(filename: string): string {
+/**
+ * A file's media type, from its extension alone (no content sniffing). Also
+ * labels the files auto-attach references (`generated-files.ts`), so an
+ * automatic chip and an explicit publish of the same file agree.
+ */
+export function mediaTypeFromExtension(filename: string): string {
   const ext = path.extname(filename).toLowerCase();
   return EXTENSION_TO_MEDIA_TYPE[ext] ?? 'application/octet-stream';
 }

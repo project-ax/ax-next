@@ -1297,29 +1297,30 @@ async function runRunnerInner(
   // SDK reads settings only from CLAUDE_CONFIG_DIR, which
   // `assertConfigDirOutsideAgentHome` keeps out of the home.
   const homeDir = runnerHomeDir(env);
-  // Automatic publication goes through the same policy gate as a model call.
-  // A denied/held publish never uploads bytes or sidesteps an approval.
-  const generatedFilePolicy = createToolPolicy({ client });
-  const publishGeneratedFile = createArtifactPublishExecutor({
-    userFilesRoot: env.userFilesRoot,
-    ephemeralRoot: env.ephemeralRoot,
-    client, conversationId,
-  });
   // New files the turn left in the home are attached to it (the home is where
-  // the notes tell the model to put finished files).
+  // the notes tell the model to put finished files), BY REFERENCE (TASK-1012):
+  // the chip names the file by its key in the agent's files and the person
+  // downloads the file itself, live. No bytes move, so nothing is uploaded and
+  // nothing is charged twice.
+  //
+  // Each chip still goes through the policy gate a model's own artifact_publish
+  // call gets, so a person's "publish a file for you to open" setting means the
+  // same for automatic chips: a denied or held call attaches nothing and never
+  // sidesteps an approval. The gate's `updatedInput` is ignored on purpose: a
+  // reference names the file the turn created, never a substitute.
+  const generatedFilePolicy = createToolPolicy({ client });
   const canPublishGenerated = conversationId !== null &&
     localDispatcher.has(ARTIFACT_PUBLISH_TOOL_NAME);
   const generatedFiles = canPublishGenerated
     ? await trackGeneratedFiles({
         root: homeDir,
         warn: () => process.stderr.write('runner: could not attach a generated file\n'),
-        publish: async call => {
+        admit: async call => {
           const verdict = await generatedFilePolicy.preToolUse(call.name, call.input, call.id);
-          if (verdict.decision !== 'allow') throw new Error('publication not allowed');
-          const checkedCall = { ...call, input: verdict.updatedInput ?? call.input };
-          const output = await publishGeneratedFile(checkedCall);
-          await generatedFilePolicy.postToolUse(call.name, call.id, checkedCall.input, output, false);
-          return output;
+          if (verdict.decision !== 'allow') throw new Error('attachment not allowed');
+        },
+        attached: async (call, chip) => {
+          await generatedFilePolicy.postToolUse(call.name, call.id, call.input, chip, false);
         },
       })
     : null;

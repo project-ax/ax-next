@@ -244,6 +244,17 @@ export async function translateContentBlocks(
       });
       continue;
     }
+    // `agent_file` is runner OUTPUT: a tool turn's chip for a file the agent
+    // made (TASK-1012). It should never reach the runner in a message: the host
+    // refuses it from the browser, and stored tool turns are never replayed
+    // (each loop resumes from its own transcript, and the display-history
+    // rebuild keeps only user/assistant text). If one does, it's a host bug.
+    // A fixed mention, never the raw block: the Anthropic SDK refuses an
+    // unknown block type, which would fail the whole turn.
+    if (block.type === 'agent_file') {
+      out.push({ type: 'text', text: '[runner: agent_file reference not expected in a message]' });
+      continue;
+    }
     out.push(block as AnthropicUserContentBlock);
   }
   return out;
