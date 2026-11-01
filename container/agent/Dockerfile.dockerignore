@@ -39,6 +39,3 @@
 .worktrees
 landing
 design_handoff_tide
-
-# Sibling container images — separate Dockerfiles, separate concerns.
-container/git-server

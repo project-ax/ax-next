@@ -284,9 +284,8 @@ jobs:
       - run: pnpm audit --audit-level moderate
 
   # Renders the Helm chart and runs its render-time guard suite. Without this
-  # lane those guards (single-replica chat guard, gitServer.storage-required,
-  # workspace.backend wiring, terminationGracePeriodSeconds floor) only execute
-  # where helm happens to be on PATH — i.e. never in the test job above, which
+  # lane those guards (single-replica chat guard, blob-root and filestore guards)
+  # only execute where helm happens to be on PATH — i.e. never in the test job above, which
   # ships no helm. The chart-render vitest suite `describe.skip`s when helm is
   # absent, so a green CI run did NOT prove the guards ran. Here we install a
   # pinned helm and set AX_REQUIRE_HELM=1 so a missing helm is a HARD FAILURE,

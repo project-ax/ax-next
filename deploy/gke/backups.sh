@@ -134,7 +134,7 @@ Commands
   status          Read-only health check: is the schedule attached, is it
                   producing snapshots, are Cloud SQL backups on. Exits 1 if not.
   drill           Restore the newest snapshot of each disk to scratch disks,
-                  mount them in a throwaway pod, check the git repos and
+                  mount them in a throwaway pod, check the blobs hash to their names and
                   facts.db open, then delete everything it made.
   drill-cleanup   Remove anything a drill left behind. Pass --project ID and it
                   works even when the deployment (and so its PVCs) is gone.
@@ -711,7 +711,7 @@ metadata:
 EOF
 }
 
-# The restored repositories are written by agents, so they are untrusted. The
+# The restored disks hold agent- and user-written content, so they are untrusted. The
 # pod has no use for a network (the image is pulled by the node), so give it
 # none. The selector is our pod's own label: this is safe to apply in ANY
 # namespace, including the live one, because no other pod carries it.
