@@ -701,6 +701,7 @@ export function AgentConversation({
               m={m}
               agent={agent}
               conversationId={conversationId}
+              fileRecheckKey={thread.length}
               decisions={decisions}
               onApprove={onApprove}
               onDismiss={onDismiss}
@@ -1032,6 +1033,7 @@ function Message({
   m,
   agent,
   conversationId,
+  fileRecheckKey,
   decisions,
   onApprove,
   onDismiss,
@@ -1046,6 +1048,14 @@ function Message({
   agent: Pick<WorkspaceAgent, 'id' | 'name'>;
   /** See `Props.conversationId` — what turns an attachment id into a URL. */
   conversationId: string | null;
+  /**
+   * TASK-1017 — the thread's length, handed to every agent-file chip so it
+   * checks its file again when this moves. It moves when a turn starts (the
+   * live frames appear), when it ends (they go) and when the re-read lands,
+   * so a file the agent deleted in a later turn reads "No longer available"
+   * once that turn is over. A streamed token does not move it.
+   */
+  fileRecheckKey: number;
   decisions: Decision[];
   onApprove: (id: string, scope?: 'once' | 'agent-routines') => void;
   onDismiss: (id: string) => void;
@@ -1404,7 +1414,7 @@ function Message({
         {conversationId !== null && (m.attachments?.length ?? 0) > 0 && (
           <div className="mt-3 flex flex-wrap gap-2">
             {m.attachments?.map((file, i) => (
-              <GeneratedFileChip key={`${i}-${file.attachmentId ?? file.agentFilePath ?? file.displayName}`} file={file} conversationId={conversationId} />
+              <GeneratedFileChip key={`${i}-${file.attachmentId ?? file.agentFilePath ?? file.displayName}`} file={file} conversationId={conversationId} recheckKey={fileRecheckKey} />
             ))}
           </div>
         )}

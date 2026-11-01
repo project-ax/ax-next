@@ -3032,15 +3032,38 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
         }
         expect((await fetch(chipUrl)).status).toBe(401);
 
+        // 11c-status (TASK-1017). The chip asks whether its file is still there
+        //      before anyone clicks: the download's ACL, then a length-0 range
+        //      read through the same real reader, so no byte of the file comes
+        //      back. The owner gets 200 {available:true}, never cached; someone
+        //      else gets the download's 404.
+        const statusBase = `http://127.0.0.1:${port}/api/workspace/conversations/${chipConversationId}/status/user-files`;
+        const statusUrl = `${statusBase}/${encodeURIComponent(CHIP_KEY)}`;
+        const chipStatus = await fetch(statusUrl, asUser(USER));
+        expect(chipStatus.status).toBe(200);
+        expect(chipStatus.headers.get('cache-control')).toBe('private, no-store');
+        expect(await chipStatus.json()).toEqual({ available: true });
+        const foreignStatus = await fetch(statusUrl, asUser(OTHER_USER));
+        expect(foreignStatus.status).toBe(404);
+        expect(await foreignStatus.json()).toEqual({ error: 'file-not-found' });
+
         // 11d. The chip is a reference, not a copy. A key that is now a folder
         //      is a 400 `not-a-file`; the file swapped for a symlink to a
         //      sibling file is a 404, and so is the file once it is deleted.
+        //      The status route says the same, so the chip can say "No longer
+        //      available" before a click.
         const folderChip = await fetch(
           `${chipBase}/${encodeURIComponent('reports')}`,
           asUser(USER),
         );
         expect(folderChip.status).toBe(400);
         expect(await folderChip.json()).toEqual({ error: 'not-a-file' });
+        const folderStatus = await fetch(
+          `${statusBase}/${encodeURIComponent('reports')}`,
+          asUser(USER),
+        );
+        expect(folderStatus.status).toBe(400);
+        expect(await folderStatus.json()).toEqual({ error: 'not-a-file' });
 
         const chipFile = path.join(agentDir, ...CHIP_KEY.split('/'));
         await fs.rm(chipFile);
@@ -3048,11 +3071,17 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
         const linkedChip = await fetch(chipUrl, asUser(USER));
         expect(linkedChip.status).toBe(404);
         expect(await linkedChip.json()).toEqual({ error: 'file-not-found' });
+        const linkedStatus = await fetch(statusUrl, asUser(USER));
+        expect(linkedStatus.status).toBe(404);
+        expect(await linkedStatus.json()).toEqual({ error: 'file-not-found' });
 
         await fs.rm(chipFile);
         const goneChip = await fetch(chipUrl, asUser(USER));
         expect(goneChip.status).toBe(404);
         expect(await goneChip.json()).toEqual({ error: 'file-not-found' });
+        const goneStatus = await fetch(statusUrl, asUser(USER));
+        expect(goneStatus.status).toBe(404);
+        expect(await goneStatus.json()).toEqual({ error: 'file-not-found' });
       } finally {
         if (handle !== null) await handle.shutdown();
         if (originalAllowNoOrigins === undefined) {

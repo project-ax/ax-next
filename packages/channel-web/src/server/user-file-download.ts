@@ -47,6 +47,10 @@
  * filename, a byte, or an error's message: a message from `fs` quotes the
  * path, and the path is somebody's file name.
  *
+ * A FILE'S STATUS (TASK-1017) lives here too, in `sendUserFileStatus`: the
+ * same range read, asked for no bytes at all, so a chat file chip can say
+ * "No longer available" before anyone clicks it.
+ *
  * Invariant 2: this module imports no other plugin. The response is the same
  * duck-typed mirror of `@ax/http-server`'s adapter the rest of this package
  * uses, and the hook's types are type-only imports from its contract package.
@@ -240,6 +244,103 @@ export async function sendUserFileDownload(args: SendUserFileDownloadArgs): Prom
     if (outcome.reason === 'client-gone' || outcome.reason === 'changed') {
       ctx.logger.info(INCOMPLETE, { agentId, ...outcome });
     } else ctx.logger.warn(INCOMPLETE, { agentId, ...outcome });
+  }
+}
+
+export interface SendUserFileStatusArgs {
+  bus: HookBus;
+  /** The AGENT's ctx, as for a download: the provider reads under it, and the logs go to it. */
+  ctx: AgentContext;
+  /** The session owner the provider keys the agent's mount on. */
+  owner: ReadUserFileRangeInput['owner'];
+  /** Already validated by the caller (`workspaceFilePath`). */
+  relPath: string;
+  /** A status is JSON and one header. Nothing here ever streams a body. */
+  res: Pick<StreamingDownloadResponse, 'status' | 'header' | 'json'>;
+}
+
+/**
+ * Say whether one file is still there, without reading a byte of it
+ * (TASK-1017).
+ *
+ * A chat file chip asks when it mounts and again after each turn, so a file
+ * the agent has since deleted reads "No longer available" before anyone
+ * clicks. It is ONE `sandbox:read-user-file-range` call with `length: 0`: the
+ * provider confines and walks the path exactly as for a download (no link
+ * followed at any depth), fstats the file and reads none of it. On k8s that
+ * call is the host mount's or nothing, so it starts no pod: without the mount
+ * it throws `user-files-download-unavailable` and creates nothing.
+ *
+ * The answers are the download's, minus the body and the ceiling:
+ *
+ *   - a file                       → 200 { available: true }, never cached
+ *   - absent                       → 404 file-not-found
+ *   - a folder                     → 400 not-a-file
+ *   - unavailable, no range service,
+ *     or no host mount             → 503 user-files-unavailable
+ *   - any other throw, or an
+ *     answer it cannot read        → 503 file-read-failed, logged by its codes
+ *
+ * No 413: a status says whether the file is there, not whether it is small
+ * enough to download whole. A click on the chip still says that.
+ *
+ * What it LOGS differs from a download on purpose. A deployment with no file
+ * area, no range service or no host mount is not logged at all: every chip
+ * asks after every turn, so a warning per ask would repeat a fact about the
+ * deployment, not report a read that failed. A read that did fail is logged
+ * the way a download logs it, by its codes only.
+ *
+ * The caller has ALREADY authenticated the person, ACL-resolved the agent and
+ * validated `relPath`. Never rejects.
+ */
+export async function sendUserFileStatus(args: SendUserFileStatusArgs): Promise<void> {
+  const { bus, ctx, owner, relPath, res } = args;
+
+  if (!bus.hasService('sandbox:read-user-file-range')) {
+    res.status(503).json({ error: 'user-files-unavailable' });
+    return;
+  }
+
+  let answer: ReadUserFileRangeOutput;
+  try {
+    answer = await bus.call<ReadUserFileRangeInput, ReadUserFileRangeOutput>(
+      'sandbox:read-user-file-range',
+      ctx,
+      // `length: 0` answers `size` and `version` without reading: only the
+      // file's kind is wanted here.
+      { owner, relPath, offset: 0, length: 0 },
+    );
+  } catch (err) {
+    if (codeOf(err) === 'user-files-download-unavailable') {
+      res.status(503).json({ error: 'user-files-unavailable' });
+      return;
+    }
+    ctx.logger.warn(READ_FAILED, { agentId: owner.agentId, ...errorCodes(err) });
+    res.status(503).json({ error: 'file-read-failed' });
+    return;
+  }
+
+  const kind: unknown = typeof answer === 'object' && answer !== null ? answer.kind : undefined;
+  switch (kind) {
+    case 'file':
+      // Only ever true now: no cache may hand it back once the file is gone.
+      res.status(200).header('cache-control', 'private, no-store').json({ available: true });
+      return;
+    case 'absent':
+      // "Never written", "since deleted" and "a link" are one answer, as for
+      // a download.
+      res.status(404).json({ error: 'file-not-found' });
+      return;
+    case 'dir':
+      res.status(400).json({ error: 'not-a-file' });
+      return;
+    case 'unavailable':
+      res.status(503).json({ error: 'user-files-unavailable' });
+      return;
+    default:
+      // A provider bug. "We could not tell" is never "it is gone".
+      ctx.logger.warn(READ_FAILED, { agentId: owner.agentId, code: 'invalid-answer' });
+      res.status(503).json({ error: 'file-read-failed' });
   }
 }
 
