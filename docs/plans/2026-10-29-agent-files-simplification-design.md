@@ -391,6 +391,20 @@ Decided 2026-10-30: plain reset; nobody is using ax yet.
   uploads are unchanged. Files auto-attached before this change keep their blob
   and its charge (no migration: their artifact rows live until the agent is
   deleted).
+- **As built (TASK-1017):** approving a held auto-attach no longer risks a blob
+  copy. The runner remembers the holds it raised itself. When the approval
+  reaches the session that raised it, the runner re-sends the identical call to
+  the gate before the next model turn, and an `allow` attaches the same
+  `agent_file` reference: no blob, charged once. The model reads a fixed
+  "that is handled for you" note instead of the host's "make that call again".
+  Accepted residual: a cold session (the hold was raised by an earlier session)
+  still attaches nothing on approval. A stored `agent_file` block that fails
+  today's key rule reads as "<name> (this file is no longer available)" and its
+  turn stays. Chips check whether their file still exists through
+  `GET /api/workspace/conversations/:id/status/user-files/*` (a length-0 range
+  read: no bytes, no pod) when they appear and after each turn, so a deleted
+  file says "No longer available" before anyone clicks. `workspaceFilePath`
+  keeps refusing `:`.
 
 ## 13. Ops
 
