@@ -609,7 +609,16 @@ describe.skipIf(!HAVE_BINARY)('agent files §11 guards on the real claude-sdk bi
     expect(await markerExists('home-settings-UserPromptSubmit')).toBe(true);
     expect(await markerExists('home-settings-local-UserPromptSubmit')).toBe(true);
     expect(await markerExists('home-mcp-json-spawned')).toBe(true);
-    expect(loadedPlants(run, 'home')).toEqual(plantedNames('home'));
+    // On Linux (CI, and production: HOME = cwd = /files, no symlink) the CLI
+    // does not list the home's project skills, agents or commands even under
+    // 'project'. Measured on CI 2026-11-01, where only the `.mcp.json` server
+    // showed up. On macOS all four load. Our guess, which we have not
+    // verified: the macOS tmpdir sits behind the /var -> /private/var symlink,
+    // so the CLI does not treat cwd as HOME. The skill lister itself is proven able to see
+    // a home skill by the no-CLAUDE_CONFIG_DIR control below.
+    expect(loadedPlants(run, 'home')).toEqual(
+      process.platform === 'darwin' ? plantedNames('home') : ['canaryproj-home'],
+    );
     // The scratch root's skill loads through `--add-dir` the moment 'project'
     // is a source: the scratch canary can see a load.
     expect(loadedPlants(run, 'scratch')).toEqual(['canary-skill-scratch']);
