@@ -548,9 +548,12 @@ export function createChannelWebServerPlugin(
           // is no live session to bind to; without the bind the id is
           // unstreamable. Either way the approve answers `streamReqId: null`
           // and the turn runs dark exactly as before.
+          // TASK-1012 — a chat file chip's download reads it too: it is how
+          // that route learns the conversation is the caller's own, and whose
+          // agent's files to read. Without it the route answers 503.
           hook: 'conversations:get-metadata',
           degradation:
-            'approvals never stream the continuation live (the turn still runs; it renders on the next read)',
+            'approvals never stream the continuation live (the turn still runs; it renders on the next read), and a chat file chip download (GET /api/workspace/conversations/:conversationId/download/user-files/*) answers 503 agent-unavailable',
         },
         {
           // Same approve path: the bind itself.
@@ -747,8 +750,10 @@ export function createChannelWebServerPlugin(
           // TASK-1014 — the Files tab's downloads: the whole file, one range
           // at a time (`server/user-file-download.ts`). Separate from the
           // preview read above, so either can be missing without the other.
+          // TASK-1012's chat file chips download through the same helper.
           hook: 'sandbox:read-user-file-range',
-          degradation: 'Files tab downloads answer 503 user-files-unavailable (previews still work)',
+          degradation:
+            'Files tab downloads and chat file chip downloads answer 503 user-files-unavailable (previews still work)',
         },
       ],
       subscribes: [

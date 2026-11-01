@@ -20,6 +20,10 @@
  *                                        file as text
  * GET  /api/workspace/agents/:agentId/download/user-files/*
  *                                      — one of those files, as BYTES
+ * GET  /api/workspace/conversations/:conversationId/download/user-files/*
+ *                                      — the same BYTES for a chat file chip,
+ *                                        from the conversation's own agent
+ *                                        (TASK-1012)
  * PUT  /api/workspace/agents/:agentId/memory/rules
  *                                      — save the agent's Instructions (an
  *                                        @ax/agents row; TASK-989)
@@ -69,7 +73,11 @@
  *     `/replies` (TASK-931), its `/steps` (TASK-949), its `/finish-by`
  *     (TASK-951), its `/complete` and `/reopen` (TASK-950), and its
  *     `/duplicate` (TASK-953), which reach the agent's tasks rather than its
- *     files. The order on each is:
+ *     files — plus the chat file chip's download,
+ *     `/conversations/:conversationId/download/user-files/*` (TASK-1012),
+ *     which names no agent: `conversations:get-metadata` must first find the
+ *     caller's own conversation (404 otherwise), and the resolve runs on the
+ *     agent that conversation names. The order on each is:
  *     `authOr401` → empty-id 400 → `resolveAgentOr404` → (path validation)
  *     → read. Nothing reads before the resolve. The task page then shows
  *     only the caller's own task (`isOwnTask`), and reads no run history and
@@ -7861,6 +7869,97 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
     },
 
     /**
+     * GET /api/workspace/conversations/:conversationId/download/user-files/*
+     * — a chat file chip's download (TASK-1012).
+     *
+     * A file the agent makes in its home during a turn gets a chip that names
+     * it by its key there (an `agent_file` block), and the chip downloads it
+     * here, live, from the file itself. There is no copy, so a file deleted
+     * since is a 404 and a file changed since downloads as it is now. The
+     * bytes half is the Files tab's own (`sendUserFileDownload`), so the
+     * answers and the confinement are the ones the Files tab already has.
+     *
+     * THE CHIP ACL is two checks, and both run before the path is looked at:
+     *
+     *   1. The conversation is the caller's own: `conversations:get-metadata`,
+     *      which answers `not-found` for a missing, deleted or foreign row
+     *      (and passes on `forbidden` when the conversation's agent is out of
+     *      reach).
+     *   2. The caller can still reach that conversation's agent:
+     *      `resolveAgentOr404`, the Files tab's own gate.
+     *
+     * The agent ALWAYS comes from the conversation, never from the URL or the
+     * block or anything else the browser sent. So the most a forged key can
+     * reach is a file this person could already download from that agent's
+     * Files tab.
+     *
+     * Both checks come before path validation, as in `agentUserFileDownload`:
+     * a caller poking at somebody else's conversation gets the same 404 for a
+     * malformed key as for a well-formed one. An outage is a 503, never a 404
+     * ("we could not check" is not "it isn't yours") and never a 500.
+     */
+    async conversationAgentFileDownload(
+      req: RouteRequest,
+      res: DownloadRouteResponse,
+    ): Promise<void> {
+      const userId = await authOr401(bus, initCtx, req, res);
+      if (userId === null) return;
+      const conversationId = req.params.conversationId ?? '';
+      if (conversationId.length === 0) {
+        res.status(400).json({ error: 'missing-conversation-id' });
+        return;
+      }
+      // An optional call (see the manifest): without it there is no way to
+      // know whose conversation this is, which is "unavailable", not "absent".
+      if (!bus.hasService('conversations:get-metadata')) {
+        res.status(503).json({ error: 'agent-unavailable' });
+        return;
+      }
+
+      // ACL, half 1: whose conversation, and so which agent's files. The hook
+      // decides on the `userId` in its input (the session's), not on the ctx.
+      let conversationAgentId: string;
+      try {
+        const md = await bus.call<
+          { conversationId: string; userId: string },
+          { agentId: string }
+        >('conversations:get-metadata', initCtx, { conversationId, userId });
+        conversationAgentId = md.agentId;
+      } catch (err) {
+        if (isBenignConversationRead(err)) {
+          res.status(404).json({ error: 'file-not-found' });
+          return;
+        }
+        initCtx.logger.warn('workspace_conversation_file_acl_failed', { conversationId });
+        res.status(503).json({ error: 'agent-unavailable' });
+        return;
+      }
+
+      // ACL, half 2: the conversation's agent, never one the request names.
+      const agent = await resolveAgentOr404(bus, initCtx, conversationAgentId, userId, res);
+      if (agent === null) return;
+
+      // Only now the key. `workspaceFilePath` decodes the splat exactly once
+      // (the chip encoded the whole key once) and refuses the empty root.
+      const relPath = workspaceFilePath(req.params['*'] ?? '');
+      if (relPath === null) {
+        res.status(400).json({ error: 'invalid-path' });
+        return;
+      }
+
+      // The Files tab's download, on the agent's own ctx and owner. It owns
+      // every answer from here on (404 / 400 not-a-file / 413 / 503).
+      await sendUserFileDownload({
+        bus,
+        ctx: agentWorkspaceCtx(agent.id, userId),
+        owner: userFilesOwner(agent, userId),
+        relPath,
+        downloadName: basenameOf(relPath),
+        res,
+      });
+    },
+
+    /**
      * GET /api/workspace/agents/:agentId/rail — the right-hand rail.
      *
      * THE ACL FOR `agent-activity:get` LIVES HERE. That hook has none of its
@@ -9721,6 +9820,17 @@ export async function registerWorkspaceRoutes(
       method: 'GET',
       path: '/api/workspace/agents/:agentId/download/user-files/*',
       handler: handlers.agentUserFileDownload as unknown as RouteHandler,
+    },
+    {
+      /*
+        TASK-1012 — a chat file chip's download: the same bytes as the route
+        above, but reached by CONVERSATION. The agent is the conversation's
+        own, so nothing in this URL names one. Same splat rules: a bare `*` as
+        the final segment, its remainder under `req.params['*']`, undecoded.
+      */
+      method: 'GET',
+      path: '/api/workspace/conversations/:conversationId/download/user-files/*',
+      handler: handlers.conversationAgentFileDownload as unknown as RouteHandler,
     },
     {
       method: 'GET',

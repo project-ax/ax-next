@@ -105,6 +105,17 @@ describe('registerWorkspaceRoutes (no flag)', () => {
     ]);
   });
 
+  // TASK-1012 — the chat file chip's download. The only route keyed on a
+  // conversation rather than an agent, and it only reads.
+  it('mounts one conversation-scoped route, the file chip download, and it only reads', async () => {
+    const conversationRoutes = (await registeredRoutes()).filter((r) =>
+      r.path.startsWith('/api/workspace/conversations/'),
+    );
+    expect(conversationRoutes).toEqual([
+      { method: 'GET', path: '/api/workspace/conversations/:conversationId/download/user-files/*' },
+    ]);
+  });
+
   it('mounts the whole decisions collection', async () => {
     const decisions = (await registeredRoutes())
       .filter((r) => r.path.startsWith('/api/workspace/decisions'))
