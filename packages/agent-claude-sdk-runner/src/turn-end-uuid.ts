@@ -57,20 +57,20 @@ export async function readLastTurnUuid(
  *
  * Why this exists: the Anthropic Agent SDK writes the turn's FINAL assistant
  * jsonl line AFTER it yields the `result` message to the runner's Node loop.
- * The runner's per-turn commit (`commitTurnAndBundle`) runs in the `result`
- * handler, so without this wait it stages the workspace BEFORE the closing
- * line lands — the reply is missing from the committed bundle and only becomes
- * durable (readable via `conversations:get`) at the NEXT turn's commit or at
+ * The shell's per-turn transcript ship runs at that `result` boundary, so
+ * without this wait it reads the jsonl BEFORE the closing line lands — the
+ * reply is missing from what reaches the host store and only becomes durable
+ * (readable via `conversations:get`) at the NEXT turn's ship or at
  * session-close. Under idle-keepalive that defers durability by the whole idle
- * window (minutes). Polling for the line and committing only after it lands
- * closes that gap.
+ * window (minutes). Polling for the line and shipping only after it lands
+ * closes that gap (main.ts's `beforeTranscriptShip`).
  *
  * `targetUuid` is the uuid of the turn's LAST assistant message — captured
  * in-band from `SDKAssistantMessage.uuid` (the same id the SDK writes to the
  * jsonl line). We wait for THIS SPECIFIC line, NOT merely "any new assistant
  * line": a tool-using turn writes an INTERMEDIATE tool_use assistant line
  * DURING the turn, so a "wait for any new line" check short-circuits on it and
- * the per-turn commit drops the closing-text line that lands afterward
+ * the per-turn ship drops the closing-text line that lands afterward
  * (TASK-11 — the persisted `[user, tool_use, tool_result]` shape). Targeting
  * the final message's uuid is robust to any number of intermediate lines.
  */
@@ -133,7 +133,7 @@ async function transcriptHasUuid(
  * the live SDK (0.2.119) on 2026-05-24.
  *
  * Callers gate `resume` on this so a bound session that has no resumable
- * transcript in the materialized workspace degrades to a fresh start instead
+ * transcript in the transcript directory degrades to a fresh start instead
  * of a hard exit. Mirrors `locateJsonl`'s readdir-walk (the SDK encodes cwd
  * into the project dir name, which we don't know a priori).
  *

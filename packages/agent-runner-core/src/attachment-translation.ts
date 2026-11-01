@@ -1,52 +1,55 @@
 // ---------------------------------------------------------------------------
-// Phase 2 — attachment-translation pass.
+// Attachment translation.
 //
-// Maps `ContentBlock[]` (the canonical stored-transcript shape) onto the
-// Anthropic SDK's user-message content shape, one block at a time. Runs
-// at user-message handoff to the SDK (and again on transcript replay).
+// Maps `ContentBlock[]` (the canonical stored shape) onto the Anthropic SDK's
+// user-message content shape, one block at a time, when a user message is
+// handed to the loop.
 //
-// Translation rules per the design doc + weak-model accommodation:
-//   - `text` / `tool_use` / `tool_result` / etc.: pass through unchanged.
-//   - `attachment` with mediaType image/*: read bytes via injected reader,
-//     emit Anthropic `image` block with base64 source.
-//   - `attachment` with mediaType application/pdf AND
-//     `supportsDocumentBlocks`: read bytes, emit `document` block.
-//   - `attachment` with a text-ish mediaType (text/*, application/json,
-//     application/xml, application/yaml) AND sizeBytes ≤ MAX_INLINE_BYTES:
-//     read bytes, inline as a text block with a provenance preamble so
-//     the model gets the content directly. Critical for weaker models
-//     that can't reliably figure out "the file is at <path>, I should
-//     call Read" — the bytes are just there in the prompt.
-//   - Anything else (including missing bytes for image/pdf, oversized
-//     text, unrecognized binary types): text mention
-//     `"User attached '<displayName>' at <path> (<mediaType>)"`.
+// An `attachment` block names its file by id. Its bytes come from the copy
+// materializeUploads made in `<scratch>/uploads/` (`uploads`, by id):
+//   - image/* of at most 25 MiB: the bytes as an Anthropic `image` block.
+//   - application/pdf of at most 25 MiB, when the loop supports `document`
+//     blocks: a `document`.
+//   - a text type (text/*, JSON, XML, YAML) of at most 64 KiB: the content,
+//     inlined after a one-line mention, so a weaker model has the bytes in
+//     front of it instead of having to think of opening the file.
+//   - anything else: a one-line mention with the path the model can open.
 //
-// The stored-transcript shape is NEVER modified — translation transforms
-// blocks only on the way to the SDK. Web-UI download paths (Phase 3) read
-// from the stored transcript and resolve the `attachment.path` via
-// `attachments:download`, unaffected by what the runner did mid-turn.
+// The copy sits in agent-writable scratch, so it is checked before it is
+// trusted as the person's file. It is opened without following a symlink and
+// without blocking on a pipe, must be a regular file of the listed size, and
+// its bytes must hash to the listed sha256. A copy that fails any of that —
+// rewritten, swapped for a link, deleted — and an id with no copy at all reach
+// the model only as "User attached '<name>' (<type>), but the file could not
+// be loaded." Content the agent wrote never comes back to it labelled as the
+// person's upload.
 //
-// Byte fetch is via injected `readWorkspace` — the runner wires this to
-// `client.call('workspace.read', { path })` at startup, but the
-// translation function itself stays pure-function-testable.
+// The stored transcript is never modified: translation shapes blocks only on
+// the way to the loop. Downloads go through the host by id.
 // ---------------------------------------------------------------------------
 
-import {
-  formatAttachmentInline,
-  formatAttachmentMention,
-  type AttachmentBlock,
-  type ContentBlock,
-} from '@ax/ipc-protocol';
+import { createHash } from 'node:crypto';
+import { constants as fsConstants, promises as fs } from 'node:fs';
+import type { AttachmentBlock, ContentBlock } from '@ax/ipc-protocol';
+import { cleanNameText, truncateUtf8, type MaterializedUpload } from './materialize-uploads.js';
 
-// 64 KiB. Text content under this size is inlined into the SDK prompt
-// directly so weaker models don't need to know about the Read tool. At
-// ~25K tokens worst case for dense ASCII this stays a tiny fraction of
-// any production Claude context. Files above this fall back to a text
-// mention; a future "fetch_attachment" tool can serve the long tail.
+// 64 KiB. Text content under this size is inlined into the prompt directly so
+// weaker models don't need to know about the Read tool. At ~25K tokens worst
+// case for dense ASCII this stays a tiny fraction of any production context.
+// Larger files get a mention; the model opens them itself.
 export const MAX_INLINE_BYTES = 64 * 1024;
 
+// 25 MiB: the most bytes translation holds in memory to pass an image or PDF
+// through. It is the host's per-upload cap — `POST /api/attachments` refuses a
+// body over 25 MiB (channel-web routes-attachments.ts) and
+// `attachments:store-temp` defaults to the same — so every real upload fits.
+// A listed size above it (a host configured past its own route cap, or a host
+// bug) gets the path mention instead, still verified by a streamed hash, and is
+// never buffered whole. (`blob.get` itself streams to disk under 512 MiB.)
+export const MAX_PASS_THROUGH_BYTES = 25 * 1024 * 1024;
+
 // MIME types whose bytes are safely renderable as UTF-8 text in a prompt.
-// We keep the list small and explicit rather than pattern-matching every
+// Kept small and explicit rather than pattern-matching every
 // `application/*+json` variant — adding a type is a one-line change.
 function isInlineableTextMediaType(mediaType: string): boolean {
   if (mediaType.startsWith('text/')) return true;
@@ -58,116 +61,166 @@ function isInlineableTextMediaType(mediaType: string): boolean {
   );
 }
 
-export interface WorkspaceReader {
-  (path: string): Promise<
-    { found: true; bytesBase64: string } | { found: false }
-  >;
-}
-
 export interface TranslationOptions {
-  readWorkspace: WorkspaceReader;
+  /** Uploads copied into the sandbox for this conversation, by attachment id. */
+  uploads: ReadonlyMap<string, MaterializedUpload>;
+  /** Whether the loop's provider accepts `document` content blocks. */
   supportsDocumentBlocks: boolean;
 }
 
-// Anthropic SDK shape — the union we emit. Loose typing here keeps the
-// runner decoupled from the pinned SDK's internal types; the SDK
-// accepts any compatible shape on the `message.content` field.
+// ---------------------------------------------------------------------------
+// The model-facing text of an attachment. Model-facing only: the display
+// transcript stores the `attachment` block itself, and nothing parses these
+// strings back.
+// ---------------------------------------------------------------------------
+
+export interface AttachmentMentionFields {
+  /** The person's name for the file. */
+  filename: string;
+  /** Absolute path of the sandbox copy the model can open; null when there is none. */
+  path: string | null;
+  mediaType: string;
+}
+
+/** Longest file name, in UTF-8 bytes, a mention shows (the on-disk cap too). */
+const MENTION_NAME_MAX_BYTES = 200;
+
+/** `value` cut to `MENTION_NAME_MAX_BYTES` on a code-point boundary, `…` marking a cut. */
+function capMentionName(value: string): string {
+  if (Buffer.byteLength(value, 'utf8') <= MENTION_NAME_MAX_BYTES) return value;
+  // The ellipsis is three bytes; the result stays within the cap.
+  return truncateUtf8(value, MENTION_NAME_MAX_BYTES - 3) + '\u2026';
+}
+
+/**
+ * The one-line mention: `User attached '<filename>' at <path> (<mediaType>)`,
+ * or, with no usable copy, `User attached '<filename>' (<mediaType>), but the
+ * file could not be loaded.`
+ *
+ * Every field is untrusted text (the person named the file; the type and path
+ * derive from it), so each goes through `cleanNameText`: control characters are
+ * dropped so the mention stays one line, bidi controls and zero-width
+ * characters so it reads as what it is, and `'` becomes `’` so a name cannot
+ * close its own quotes and pose as the mention's words. A real copy's path
+ * never holds a `'` (the on-disk name gets the same cleaning), so the path the
+ * model reads is still the path on disk. The name is capped at 200 UTF-8 bytes.
+ */
+export function formatAttachmentMention(att: AttachmentMentionFields): string {
+  const filename = capMentionName(cleanNameText(att.filename));
+  const mediaType = cleanNameText(att.mediaType);
+  if (att.path === null) {
+    return `User attached '${filename}' (${mediaType}), but the file could not be loaded.`;
+  }
+  return `User attached '${filename}' at ${cleanNameText(att.path)} (${mediaType})`;
+}
+
+/** An inlined text attachment: the mention, a blank line, then the content. */
+export function formatAttachmentInline(fields: AttachmentMentionFields, content: string): string {
+  return `${formatAttachmentMention(fields)}\n\n${content}`;
+}
+
+// Anthropic SDK shape — the union we emit. Loose typing keeps the runner
+// decoupled from the pinned SDK's internal types; the SDK accepts any
+// compatible shape on the `message.content` field.
 type AnthropicUserContentBlock =
   | { type: 'text'; text: string }
-  | {
-      type: 'image';
-      source: { type: 'base64'; media_type: string; data: string };
-    }
-  | {
-      type: 'document';
-      source: { type: 'base64'; media_type: string; data: string };
-    }
+  | { type: 'image'; source: { type: 'base64'; media_type: string; data: string } }
+  | { type: 'document'; source: { type: 'base64'; media_type: string; data: string } }
   // Pass-through for blocks we don't touch (tool_use, thinking, etc.).
   // The SDK validates these by its own schema downstream.
   | Record<string, unknown>;
 
-function textMention(att: AttachmentBlock): { type: 'text'; text: string } {
-  // Shared producer of the mention string — the conversations read path
-  // reconstructs the `attachment` block from it via `parseAttachmentMention`,
-  // so the format must stay in lockstep. See @ax/ipc-protocol/content-blocks.
-  return { type: 'text', text: formatAttachmentMention(att) };
+const READ_CHUNK_BYTES = 64 * 1024;
+
+/**
+ * Check a copy is still the person's file and, when `keepBytes`, return its
+ * bytes. Null for anything else: missing, a symlink (O_NOFOLLOW), not a regular
+ * file (a pipe is opened O_NONBLOCK so it cannot hang us), the wrong size, or
+ * bytes that do not hash to the listed sha256. The bytes returned are the
+ * bytes that were hashed, read through one descriptor.
+ */
+async function verifiedCopy(
+  upload: MaterializedUpload,
+  keepBytes: boolean,
+): Promise<{ bytes: Buffer | null } | null> {
+  let handle: fs.FileHandle;
+  try {
+    handle = await fs.open(
+      upload.path,
+      fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK,
+    );
+  } catch {
+    return null;
+  }
+  try {
+    const st = await handle.stat();
+    if (!st.isFile() || st.size !== upload.sizeBytes) return null;
+    const hash = createHash('sha256');
+    const kept = keepBytes ? Buffer.alloc(upload.sizeBytes) : null;
+    const chunk = Buffer.alloc(READ_CHUNK_BYTES);
+    let total = 0;
+    for (;;) {
+      const { bytesRead } = await handle.read(chunk, 0, chunk.length, total);
+      if (bytesRead === 0) break;
+      // Grew since the stat: not the file that was listed.
+      if (total + bytesRead > upload.sizeBytes) return null;
+      hash.update(chunk.subarray(0, bytesRead));
+      kept?.set(chunk.subarray(0, bytesRead), total);
+      total += bytesRead;
+    }
+    if (total !== upload.sizeBytes || hash.digest('hex') !== upload.sha256) return null;
+    return { bytes: kept };
+  } catch {
+    return null;
+  } finally {
+    await handle.close().catch(() => {
+      /* nothing left to do with it */
+    });
+  }
 }
 
 async function translateAttachment(
   att: AttachmentBlock,
   opts: TranslationOptions,
 ): Promise<AnthropicUserContentBlock> {
-  const isImage = att.mediaType.startsWith('image/');
-  const isPdf = att.mediaType === 'application/pdf';
-  const isInlineableText =
-    isInlineableTextMediaType(att.mediaType) &&
-    att.sizeBytes <= MAX_INLINE_BYTES;
+  const upload = opts.uploads.get(att.attachmentId);
+  if (upload === undefined) {
+    return {
+      type: 'text',
+      text: formatAttachmentMention({ filename: att.filename, path: null, mediaType: att.mediaType }),
+    };
+  }
+  const { mediaType } = upload;
+  const fitsInMemory = upload.sizeBytes <= MAX_PASS_THROUGH_BYTES;
+  const isImage = mediaType.startsWith('image/') && fitsInMemory;
+  const isDocument = mediaType === 'application/pdf' && opts.supportsDocumentBlocks && fitsInMemory;
+  const isInlineText = isInlineableTextMediaType(mediaType) && upload.sizeBytes <= MAX_INLINE_BYTES;
+  const fields = { filename: upload.filename, path: upload.path, mediaType };
 
-  // Anything not in the "fetch and inline" set short-circuits to text
-  // mention without paying the IPC cost.
-  if (!isImage && !(isPdf && opts.supportsDocumentBlocks) && !isInlineableText) {
-    return textMention(att);
+  const copy = await verifiedCopy(upload, isImage || isDocument || isInlineText);
+  if (copy === null) {
+    return { type: 'text', text: formatAttachmentMention({ ...fields, path: null }) };
   }
-  // IPC failures (host down, retries exhausted, schema-drift rejection)
-  // degrade to a text mention so the model still sees the attachment's
-  // provenance even when bytes are unavailable. Throwing here would abort
-  // the entire user-message handoff to the SDK and terminate the turn —
-  // disproportionate for a single missing image.
-  let read: { found: true; bytesBase64: string } | { found: false };
-  try {
-    read = await opts.readWorkspace(att.path);
-  } catch {
-    return textMention(att);
-  }
-  if (!read.found) {
-    return textMention(att);
+  if (copy.bytes === null) {
+    return { type: 'text', text: formatAttachmentMention(fields) };
   }
   if (isImage) {
     return {
       type: 'image',
-      source: {
-        type: 'base64',
-        media_type: att.mediaType,
-        data: read.bytesBase64,
-      },
+      source: { type: 'base64', media_type: mediaType, data: copy.bytes.toString('base64') },
     };
   }
-  if (isPdf && opts.supportsDocumentBlocks) {
+  if (isDocument) {
     return {
       type: 'document',
-      source: {
-        type: 'base64',
-        media_type: 'application/pdf',
-        data: read.bytesBase64,
-      },
+      source: { type: 'base64', media_type: 'application/pdf', data: copy.bytes.toString('base64') },
     };
   }
-  // Inlineable text branch. Decode permissively — invalid UTF-8 sequences
-  // become U+FFFD rather than throwing, so a mis-labeled binary file
-  // produces noisy output rather than a turn-fatal error. The model can
-  // see the noise and infer what happened; we don't pretend it's clean
-  // content. (mediaType is server-claimed; we trust the claim and let
-  // the model handle any mismatch — same posture the design doc takes
-  // on MIME-spoofing.)
-  //
-  // The preamble is the canonical `formatAttachmentMention` line (carries
-  // the workspace path) followed by the bytes — see `formatAttachmentInline`.
-  // The model still gets the full content; the path-bearing first line lets
-  // the conversations read path (`reconstructAttachmentBlocks`) rebuild the
-  // download chip on reload AND strip this whole model-view block so the raw
-  // inlined text never leaks into the user-visible transcript (TASK-21).
-  const content = Buffer.from(read.bytesBase64, 'base64').toString('utf8');
-  return {
-    type: 'text',
-    text: formatAttachmentInline(
-      {
-        displayName: att.displayName,
-        path: att.path,
-        mediaType: att.mediaType,
-      },
-      content,
-    ),
-  };
+  // Inlineable text. Decode permissively: invalid UTF-8 becomes U+FFFD rather
+  // than throwing, so a mislabelled binary file produces visible noise rather
+  // than a failed turn. The media type is the host's record of the upload;
+  // the model sees any mismatch for itself.
+  return { type: 'text', text: formatAttachmentInline(fields, copy.bytes.toString('utf8')) };
 }
 
 export async function translateContentBlocks(
@@ -182,9 +235,8 @@ export async function translateContentBlocks(
     }
     // `attachment_ref` is a transit-only variant — it should never reach
     // the runner. If it does, it's a host bug; emit a defensive text
-    // mention so we don't crash mid-turn, and log via a thrown Error
-    // would be safer but turn-fatal. Trade-off: silent skip is wrong
-    // (model gets nothing), text mention preserves provenance.
+    // mention so we don't crash mid-turn (throwing would be turn-fatal, and
+    // a silent skip would leave the model with nothing).
     if (block.type === 'attachment_ref') {
       out.push({
         type: 'text',

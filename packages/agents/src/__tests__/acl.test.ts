@@ -42,7 +42,6 @@ function makePersonalAgent(overrides: Partial<Agent> = {}): Agent {
     mcpConfigIds: [],
     model: 'anthropic/claude-opus-4-7',
     runner: 'claude-sdk',
-    workspaceRef: null,
     skillAttachments: [],
     connectorAttachments: [],
     connectorExclusions: [],

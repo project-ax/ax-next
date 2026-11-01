@@ -8,7 +8,7 @@ import { defineConfig } from 'vitest/config';
 // that spawns a subprocess must not run on vitest's 5s / 10s defaults
 // (`scripts/__tests__/out-of-process-test-timeouts.test.js`), so this package
 // takes the same 30s / 60s this repo already chose for its other
-// subprocess-heavy suites (`packages/test-harness`, `packages/workspace-git*`).
+// subprocess-heavy suites (`packages/test-harness`, `agent-runner-core`).
 // 30s is generous on purpose: the git test costs ~150ms idle and carries its own
 // 20s SIGKILL timer, so a genuine hang still fails loudly rather than being
 // masked. Every hook in this package is bare, so `hookTimeout` governs all of

@@ -73,8 +73,10 @@ describe('classifySdkToolName', () => {
     // Skill was previously in DISABLED_BUILTINS on the "nested-agent
     // bypass" rationale. Phase 0 (docs/plans/2026-05-17-skill-install-
     // phase-0-impl.md) makes Skill the intended SDK-native skill-discovery
-    // path, gated by validator-skill's veto on writes to .claude/settings.json
-    // and other SDK-config paths (commit 521f206c). This test pins the
+    // path. What keeps an agent from planting its own skills or settings is
+    // that the SDK reads user settings only, from a CLAUDE_CONFIG_DIR outside
+    // the agent's home (TASK-994/995; validator-skill's write veto on
+    // .claude/settings.json went with the git tier). This test pins the
     // new classification so a revert that re-adds Skill to DISABLED_BUILTINS
     // would fail loudly here rather than silently re-disabling skill
     // discovery.

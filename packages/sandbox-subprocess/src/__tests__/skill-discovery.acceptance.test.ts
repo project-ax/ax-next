@@ -10,39 +10,36 @@ import type { OpenSessionResult } from '../open-session.js';
 import { TEST_PROXY_CONFIG } from './proxy-config.js';
 
 // ---------------------------------------------------------------------------
-// Phase 0 acceptance — SDK skill discovery (I-P0-1/3/4/5).
+// Phase 0 acceptance — SDK skill discovery (I-P0-1/3/5).
 //
-// This is the "canary" integration test for Phase 0. It exercises the full
-// sandbox-subprocess + env-contract wiring chain by:
+// This is the "canary" integration test for skill discovery. The runner
+// passes `settingSources: ['user']`, so the SDK finds skills in exactly one
+// place: the host-owned, read-only `$CLAUDE_CONFIG_DIR/skills/` projection
+// that sandbox:open-session materializes from `installedSkills` before it
+// spawns the runner. The test exercises the full sandbox-subprocess +
+// env-contract chain from the CHILD's side:
 //
-//   1. Writing a workspace-authored skill at `.ax/draft-skills/canary-skill/SKILL.md`
-//      (the host-owned location).
-//   2. Laying down `<workspace>/.claude/skills → ../.ax/draft-skills` — the
-//      shape the runner's `scaffoldWorkspaceSkillSurface` produces after
-//      `materializeWorkspace`. Echo-stub doesn't run materialize, so we
-//      reproduce the runner's post-materialize on-disk shape directly
-//      from the test. The host side stopped doing this in mirror-of-PR
-//      #99 (it collided with the runner's `git clone` of the bundle).
-//   3. Opening a sandbox session against that workspace.
-//   4. Having the spawned echo-stub act as the SDK would: readlink the
-//      symlink and read the SKILL.md file through it. The stub also
-//      stats `$CLAUDE_CONFIG_DIR/skills/` (the empty install target).
+//   1. Open a sandbox session that installs a canary skill.
+//   2. Have the spawned echo-stub act as the SDK would: follow its own
+//      CLAUDE_CONFIG_DIR to `skills/canary-skill/SKILL.md` and read it, and
+//      stat the skills dir.
 //
-// If any of these probes fail, the SDK booting in this child would not
-// see the workspace skill — which is what Phase 0 promises. The real-SDK
-// turn lives in deploy/MANUAL-ACCEPTANCE.md (the "Phase 0: SDK skill
-// discovery" bullet under the first-use wizard scenario).
+// If either probe fails, the SDK booting in this child would not see the
+// skill. The runner's cwd plays no part: nothing in it loads as
+// configuration (the §11 guards). The real-SDK turn lives in
+// deploy/MANUAL-ACCEPTANCE.md (the "Phase 0: SDK skill discovery" bullet
+// under the first-use wizard scenario).
 //
 // We deliberately skip stub-runner / chat-pipeline here: the orchestrator
 // chain isn't load-bearing for this contract; echo-stub via openSession()
-// is the lightest seam that exercises both the symlink and the env.
+// is the lightest seam that exercises both the materialized skill and the env.
 // ---------------------------------------------------------------------------
 
 const ECHO_STUB = fileURLToPath(new URL('./fixtures/echo-stub.mjs', import.meta.url));
 
 const CANARY_SKILL_BODY = `---
 name: canary-skill
-description: Phase-0 canary — asserts the SDK can discover workspace-authored skills via the symlinked .claude/skills/ path.
+description: Phase-0 canary — asserts the SDK can discover a host-installed skill under $CLAUDE_CONFIG_DIR/skills/.
 ---
 
 # Canary Skill
@@ -63,9 +60,6 @@ async function makeHarness() {
         toolCalls: [],
       }),
       'tool:list': async () => ({ tools: [] }),
-      // ipc-server's dispatcher declares workspace:read as a required call
-      // (DISPATCHER_DEPENDENCIES); this IPC-only boot never hits /workspace.read.
-      'workspace:read': async () => ({ found: false }),
     },
     plugins: [
       createSessionInmemoryPlugin(),
@@ -162,14 +156,12 @@ function readStdoutLines(
 
 type ProbeField<T> = { value: T | null; error: string | null };
 interface SkillProbe {
-  workspaceRoot: string | null;
-  workspaceSkillsSymlinkTarget: ProbeField<string>;
   canaryReadFile: ProbeField<string>;
   installedSkillsDir: ProbeField<{ isDirectory: boolean }>;
 }
 
 describe('Phase 0: SDK skill discovery acceptance', () => {
-  it('runner subprocess sees workspace SKILL.md via the symlinked .claude/skills path', async () => {
+  it('runner subprocess sees the installed SKILL.md under its own $CLAUDE_CONFIG_DIR/skills', async () => {
     const ws = await mkWorkspace();
     // Track the spawned session so cleanup runs even if an early assertion
     // throws. Without this guard, a failing expect() in the middle of the
@@ -177,33 +169,27 @@ describe('Phase 0: SDK skill discovery acceptance', () => {
     // plus the workspace tempdir — destabilizing later tests in the run.
     let result: OpenSessionResult | undefined;
     try {
-      // 1. Author a canary skill at the host-owned `.ax/draft-skills/` location —
-      //    same shape an agent would write through the workspace plugin.
-      const canaryDir = path.join(ws, '.ax', 'draft-skills', 'canary-skill');
-      await fs.mkdir(canaryDir, { recursive: true });
-      await fs.writeFile(path.join(canaryDir, 'SKILL.md'), CANARY_SKILL_BODY);
-
-      // 2. Lay down `.claude/skills → ../.ax/draft-skills`. In production the
-      //    runner main does this via `scaffoldWorkspaceSkillSurface` right
-      //    after `materializeWorkspace` (see PR #99). Echo-stub never
-      //    calls materialize, so we reproduce the post-materialize shape
-      //    here. The two-line setup is the contract under test: if the
-      //    on-disk shape matches, the SDK's `'project'` source resolves.
-      await fs.mkdir(path.join(ws, '.claude'), { recursive: true });
-      await fs.symlink('../.ax/draft-skills', path.join(ws, '.claude', 'skills'));
-
       const h = await makeHarness();
       const ctx = h.ctx();
-      // 3. Open the sandbox. open-session allocates a per-session HOME
-      //    with `$CLAUDE_CONFIG_DIR/skills/` and leaves the workspace
-      //    untouched (the scaffold above is the only `.claude` content).
+      // 1. Open the sandbox with a canary skill installed. open-session
+      //    allocates a per-session HOME, materializes the skill under
+      //    `$CLAUDE_CONFIG_DIR/skills/canary-skill/` and locks it read-only,
+      //    all before the child spawns.
       result = await h.bus.call<unknown, OpenSessionResult>(
         'sandbox:open-session',
         ctx,
-        { sessionId: 'p0-canary', workspaceRoot: ws, runnerBinary: ECHO_STUB, proxyConfig: TEST_PROXY_CONFIG },
+        {
+          sessionId: 'p0-canary',
+          workspaceRoot: ws,
+          runnerBinary: ECHO_STUB,
+          proxyConfig: TEST_PROXY_CONFIG,
+          installedSkills: [
+            { id: 'canary-skill', files: [{ path: 'SKILL.md', contents: CANARY_SKILL_BODY }] },
+          ],
+        },
       );
 
-      // 3. echo-stub emits env (line 1) then probe (line 2). Parse both.
+      // 2. echo-stub emits env (line 1) then probe (line 2). Parse both.
       const [envLine, probeLine] = await readStdoutLines(result, 2);
       const env = JSON.parse(envLine) as Record<string, string | null>;
       const probe = JSON.parse(probeLine) as SkillProbe;
@@ -213,26 +199,23 @@ describe('Phase 0: SDK skill discovery acceptance', () => {
       expect(env.CLAUDE_CONFIG_DIR).toBe(
         path.join(env.HOME as string, '.ax', 'session'),
       );
-      expect(probe.workspaceRoot).toBe(ws);
 
-      // I-P0-4: the symlink the SDK's 'project' source walks resolves to
-      // `../.ax/draft-skills` (relative target, so it survives a remount).
-      expect(probe.workspaceSkillsSymlinkTarget.error).toBeNull();
-      expect(probe.workspaceSkillsSymlinkTarget.value).toBe('../.ax/draft-skills');
-
-      // I-P0-5: the workspace-authored SKILL.md is reachable through the
-      // symlink — which is the exact path the SDK walks at startup. If this
-      // read fails, the SDK won't see the skill either.
+      // I-P0-5: the installed SKILL.md is reachable from the child at the
+      // exact path the SDK walks at startup. If this read fails, the SDK
+      // won't see the skill either.
       expect(probe.canaryReadFile.error).toBeNull();
       expect(probe.canaryReadFile.value).toContain('name: canary-skill');
       expect(probe.canaryReadFile.value).toContain(
         'When asked, mention "canary-skill" by name.',
       );
 
-      // I-P0-3: `$CLAUDE_CONFIG_DIR/skills/` is pre-created. Phase 0 leaves
-      // it empty; Phase 1+ will populate it with host-installed skills.
+      // I-P0-3: `$CLAUDE_CONFIG_DIR/skills/` exists as a directory.
       expect(probe.installedSkillsDir.error).toBeNull();
       expect(probe.installedSkillsDir.value).toEqual({ isDirectory: true });
+
+      // The runner's cwd is not a skill source, and open-session put nothing
+      // there for one.
+      await expect(fs.readdir(ws)).resolves.toEqual([]);
     } finally {
       if (result !== undefined) {
         await result.handle.kill();

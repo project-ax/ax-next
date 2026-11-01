@@ -25,7 +25,7 @@ Two layers, in order:
 
 ### Path traversal — none
 
-Request paths route through a fixed in-code map in `@ax/ipc-core/src/dispatcher.ts`: `/tool.list`, `/tool.pre-call`, `/tool.execute-host`, `/workspace.commit-notify`, `/workspace.materialize`, `/session.next-message`, `/session.get-config`, `/conversation.store-runner-session`, plus four event endpoints. Anything else hits the unknown-path branch and returns 404 with `unknown path: <pathname>`. There is no filesystem lookup keyed off the URL.
+Request paths route through a fixed in-code map in `@ax/ipc-core/src/dispatcher.ts` (`DISPATCHER_PATHS`): the `tool.*`, `session.*`, `blob.*`, `artifact.publish`, `attachments.list`, `skill.propose`, `proxy.drain-egress-blocks` and `conversation.store-runner-session` actions, plus five event endpoints. Anything else hits the unknown-path branch and returns 404 with `unknown path: <pathname>`, after auth and without reading the body. That includes the git workspace actions removed in TASK-995, which a runner from an older release may still call. There is no filesystem lookup keyed off the URL.
 
 ### Process spawn — none
 
@@ -129,7 +129,7 @@ The auth boundary is the allow-list. A token is only mintable via `session:creat
 
 ### Long-poll cap lives in the dispatcher, not here
 
-`/session.next-message` long-polls. The 30 s cap (I12) is enforced inside the handler in `@ax/ipc-core`; this listener bumps Node's idle timeout to 60 s so the long-poll isn't killed mid-flight. If a future Node default changes either side, the test in `@ax/ipc-server` (and the analogous one we'll add for HTTP) catches it.
+`/session.next-message` long-polls. The 30 s cap (I12) is enforced inside the handler in `@ax/ipc-core`; this listener sets Node's idle timeout to 130 s, above the longest client budget (the binary actions' 120 s), so neither the long-poll nor a large upload or download is killed mid-flight. If a future Node default changes either side, the test in `@ax/ipc-server` (and the analogous one we'll add for HTTP) catches it.
 
 ## Boundary review
 

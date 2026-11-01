@@ -54,15 +54,15 @@ import { toUserModelMessage } from './user-message.js';
 // ---------------------------------------------------------------------------
 // Runner entry binary (aisdk variant) — the second runner.
 //
-// Everything that is NOT the agent loop — env read, IPC client, workspace
-// materialize, uploads, skills projection, inbox wiring, turn-end commit and
-// ship, `event.chat-end`, and the 0/1/2 exit-code contract — lives in
+// Everything that is NOT the agent loop — env read, IPC client, uploads,
+// skills projection, inbox wiring, the turn-end transcript ship,
+// `event.chat-end`, and the 0/1/2 exit-code contract — lives in
 // `runRunner` (@ax/agent-runner-core), shared with
 // @ax/agent-claude-sdk-runner. This file is the loop it drives: an `ai@7`
 // `ToolLoopAgent`, our own tool set, and the message pump.
 //
 // The two runners must be HOST-INDISTINGUISHABLE: same IPC events, same
-// transcript contract, same workspace choreography, same security policy. That
+// transcript contract, same file layout, same security policy. That
 // constraint is the point — it is what keeps a second runner from becoming a
 // second architecture. Where they differ is documented in README.md.
 //
@@ -77,7 +77,7 @@ import { toUserModelMessage } from './user-message.js';
 //     tool added later on a bypass path fails to start rather than quietly
 //     skipping the gate.
 //   - Skills come ONLY from the read-only `$CLAUDE_CONFIG_DIR/skills/`
-//     projection, never from the agent-writable workspace (see skills-index.ts).
+//     projection, never from the agent-writable home (see skills-index.ts).
 //
 // Exit codes (owned by runRunner):
 //   0 — chat completed normally (inbox returned cancel; loop drained).
@@ -134,7 +134,6 @@ export function createAiSdkLoop(deps: AiSdkLoopDeps): Loop {
     agentConfig,
     tools: catalog,
     localDispatcher,
-    flushWorkspaceForHostTool,
     proxyStartup,
     pythonVenvReady,
     homeDir,
@@ -181,11 +180,11 @@ export function createAiSdkLoop(deps: AiSdkLoopDeps): Loop {
       //
       //   tty hints    — an overridable FLOOR, so a real forwarded TERM wins
       //   proxy env    — HTTPS_PROXY + the ax-cred placeholders + CA paths
-      //   HOME         — the agent's working frame
-      //   tool caches  — npx/uvx caches onto the ephemeral tier, not HOME
+      //   HOME         — the agent's home (`/files` in k8s), also Bash's cwd
+      //   tool caches  — npx/uvx caches onto the scratch root, not HOME
       //   python venv  — PATH + VIRTUAL_ENV + pip CA trust, when ready
       //   $HOME/bin    — APPENDED, never prepended: HOME is model-writable and
-      //                  restored across sessions, so a leading entry would let
+      //                  outlives the session, so a leading entry would let
       //                  an injected `$HOME/bin/git` shadow the trusted binary.
       const pythonVenvEnv = buildPythonVenvEnv({
         ephemeralRoot: pythonVenvReady ? env.ephemeralRoot : undefined,
@@ -206,19 +205,14 @@ export function createAiSdkLoop(deps: AiSdkLoopDeps): Loop {
         ),
       };
 
-      // ONE policy instance, shared by every tool. The re-root target is always
-      // the GOVERNED tier (`env.workspaceRoot`, /agent) — never cwd — so a
-      // `.ax/**` or `.claude/**` self-edit lands back on the validated,
-      // git-backed tree even when the agent's working frame is the ungoverned
-      // NFS mount. `broaden` widens from the `.ax/uploads/` safety net to the
-      // full validator policy exactly when that mount is wired (TASK-164 §14).
+      // ONE policy instance, shared by every tool. It sends each call to
+      // `tool.pre-call` exactly as the model wrote it (TASK-995: no path is
+      // rewritten), so the host adjudicates the call the tool will really run;
+      // only a host `modifiedCall` changes it. A write to `.ax/**`,
+      // `.claude/**` or `CLAUDE.md` is an ordinary file in the home, and
+      // nothing on this runner loads it (skills come only from the projection).
       const policy = createToolPolicy({
         client,
-        workspaceRoot: env.workspaceRoot,
-        broaden: homeDir !== env.workspaceRoot,
-        recognizedRoots: [homeDir, env.ephemeralRoot].filter(
-          (r): r is string => r !== undefined,
-        ),
         drainEgressBlocks: async () => {
           const r = (await client.call('proxy.drain-egress-blocks', {})) as {
             hosts: string[];
@@ -294,7 +288,6 @@ export function createAiSdkLoop(deps: AiSdkLoopDeps): Loop {
             policy,
             client,
             tools: catalog,
-            flushWorkspace: flushWorkspaceForHostTool,
             holdLatch,
             onHold,
             onToolFailure,
@@ -680,9 +673,9 @@ export function createAiSdkLoop(deps: AiSdkLoopDeps): Loop {
             contentBlocks,
             toolResultBlocks,
             usage: turnUsage,
-            // NO `beforeCommit`. Its absence is the point: the claude-sdk loop
-            // must wait for the SDK to flush its jsonl before the shell can ship
-            // (the TASK-11 / PR #163 / F-1-F-2 lineage). Here the messages are
+            // NO `beforeTranscriptShip`. Its absence is the point: the claude-sdk
+            // loop must wait for the SDK to flush its jsonl before the shell can
+            // ship (the TASK-11 / PR #163 / F-1-F-2 lineage). Here the messages are
             // already in `transcript` by the time this line runs — durability is
             // a function return, not a poll. Do not "restore" a wait here.
             readTurnId: async (_sessionId, role) =>
@@ -712,8 +705,7 @@ export function composeInstructions(prompt: string, section: string): string {
   // agent-authored identity text, so it counts as uncontrolled input, and a
   // trailing-whitespace regex is quadratic on a string of many repeated
   // whitespace chars (CodeQL js/polynomial-redos — it flagged exactly this).
-  // `governed-paths.ts` already dodges the same rule for trailing slashes with
-  // a loop; `trimEnd` is the native, linear equivalent here.
+  // `trimEnd` is the native, linear way to drop it.
   return `${prompt.trimEnd()}\n\n${section}`;
 }
 
@@ -771,7 +763,7 @@ export async function main(): Promise<number> {
     // array. A non-conversation session therefore always starts fresh, which
     // is the correct (and only possible) answer here.
     hasLocalTranscript: async () => false,
-    // No `afterMaterialize`: there is no SDK `projects/` symlink to scaffold
+    // No `prepareSession`: there is no SDK `projects/` symlink to lay down
     // because there is no on-disk transcript to redirect.
     //
     // Anthropic through the AI SDK accepts PDFs as `file` content parts, so the

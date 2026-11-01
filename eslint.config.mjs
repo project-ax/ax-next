@@ -14,10 +14,6 @@
 //                           plugins and sandbox-side runners need it to
 //                           speak the IPC contract. It has no runtime
 //                           behavior, just Zod schemas + inferred types.
-//   @ax/workspace-protocol — same shape as ipc-protocol but for the
-//                            workspace HTTP transport. Pure schemas + codec
-//                            helpers + per-action timeouts. Imported by
-//                            both the host plugin and the pod-side server.
 //   @ax/sandbox-protocol  — same class again: the shared zod contract for the
 //                            `sandbox:open-session` payload (ProxyConfig,
 //                            installed skills, MCP server specs, the input
@@ -28,18 +24,6 @@
 //                            (type-only) to construct the payload. Single
 //                            source of truth that keeps the two backends from
 //                            drifting in validation strictness.
-//   @ax/workspace-bundle-protocol
-//                         — the git-runner bundle-wire contract: payload types
-//                           for the OPTIONAL git thin-bundle fast-path hooks
-//                           (workspace:apply-bundle, :export-baseline-bundle).
-//                           These carry git vocabulary (bundleBytes,
-//                           baselineCommit), so they live here rather than in
-//                           the storage-neutral @ax/core kernel (invariant I1).
-//                           Pure TS types (no zod — consumed only as in-process
-//                           hook-bus generics; the untrusted WIRE shape is
-//                           @ax/ipc-protocol). Imported by the git workspace
-//                           backends and the host's commit-notify / materialize
-//                           handlers; a non-git backend never imports it.
 //   @ax/ipc-core          — kernel-adjacent shared library: transport-agnostic
 //                           IPC dispatcher, auth middleware, body reader,
 //                           response/error helpers, and per-action handlers.
@@ -101,15 +85,7 @@
 //   packages/*/src/**/__tests__/**  — test files may reach into peer
 //                                     plugins to drive realistic integration
 //                                     scenarios. Glob covers nested test
-//                                     dirs (e.g. workspace-git-http's
-//                                     server/__tests__/).
-//   packages/workspace-git/src/**           — wrapper over @ax/workspace-git-core;
-//                                             the import is the wrapper's whole job.
-//   packages/workspace-git-http/src/server/** — pod-side server wraps
-//                                               @ax/workspace-git-core on its own
-//                                               side of the HTTP boundary. Host
-//                                               plugin (./src/, NOT ./src/server/)
-//                                               must NOT import core.
+//                                     dirs (e.g. a nested server/__tests__/).
 
 import tseslint from 'typescript-eslint';
 
@@ -136,9 +112,7 @@ group: [
   '!@ax/core',
   '!@ax/test-harness',
   '!@ax/ipc-protocol',
-  '!@ax/workspace-protocol',
   '!@ax/sandbox-protocol',
-  '!@ax/workspace-bundle-protocol',
   '!@ax/ipc-core',
   '!@ax/agent-claude-sdk-runner-host',
   '!@ax/routines-contract',
@@ -148,7 +122,7 @@ group: [
 ],
 allowTypeImports: true,
 message:
-  'Cross-plugin runtime imports are forbidden. Plugins communicate through the hook bus only. See CLAUDE.md invariant 2. Type-only imports (`import type {...}` / `export type {...}`) are allowed — boundary types are how plugins agree on a shared contract without runtime coupling. The only @ax/* runtime imports allowed in plugin code are @ax/core, @ax/test-harness, @ax/ipc-protocol + @ax/workspace-protocol + @ax/sandbox-protocol + @ax/workspace-bundle-protocol + @ax/routines-contract (wire / hook-bus contracts), @ax/ipc-core (transport-agnostic IPC library), @ax/agent-claude-sdk-runner-host (pure-function jsonl→Turn[] parser), @ax/skills-parser (pure-function SKILL.md parser + capability types shared between @ax/skills and @ax/agents), @ax/agent-identity-templates (pure-data bootstrap/identity template strings shared between @ax/agent-claude-sdk-runner and @ax/channel-web), and @ax/user-files-read (the one confined reader, a per-component no-follow walk, for an agent durable user-files subtree, shared by both sandbox providers)',
+  'Cross-plugin runtime imports are forbidden. Plugins communicate through the hook bus only. See CLAUDE.md invariant 2. Type-only imports (`import type {...}` / `export type {...}`) are allowed — boundary types are how plugins agree on a shared contract without runtime coupling. The only @ax/* runtime imports allowed in plugin code are @ax/core, @ax/test-harness, @ax/ipc-protocol + @ax/sandbox-protocol + @ax/routines-contract (wire / hook-bus contracts), @ax/ipc-core (transport-agnostic IPC library), @ax/agent-claude-sdk-runner-host (pure-function jsonl→Turn[] parser), @ax/skills-parser (pure-function SKILL.md parser + capability types shared between @ax/skills and @ax/agents), @ax/agent-identity-templates (pure-data bootstrap/identity template strings shared between @ax/agent-claude-sdk-runner and @ax/channel-web), and @ax/user-files-read (the one confined reader, a per-component no-follow walk, for an agent durable user-files subtree, shared by both sandbox providers)',
 };
 
 export default tseslint.config(
@@ -254,8 +228,7 @@ export default tseslint.config(
       // ends in `-core`, not `-runner`) — see the file-header note.
       'packages/agent-runner-core/**',
       // Glob includes both `src/__tests__/**` and `src/**/__tests__/**` so
-      // nested test dirs (e.g. workspace-git-http/src/server/__tests__/)
-      // are covered.
+      // nested test dirs (e.g. `src/server/__tests__/`) are covered.
       'packages/*/src/__tests__/**',
       'packages/*/src/**/__tests__/**',
       // @ax/test-harness is test infrastructure — its production source
@@ -263,14 +236,6 @@ export default tseslint.config(
       // (http-server's signCookieValue, etc.) so test code can drive the
       // bus surface without re-implementing crypto. Not subject to I2.
       'packages/test-harness/src/**',
-      // The workspace-git wrapper's whole job is to delegate to
-      // workspace-git-core; allow it explicitly.
-      'packages/workspace-git/src/**',
-      // The pod-side server in workspace-git-http wraps workspace-git-core
-      // on its own side of the HTTP boundary. The HOST plugin (./src/, NOT
-      // ./src/server/) is still subject to the rule and must NOT import
-      // core — that's invariant I2 in this slice.
-      'packages/workspace-git-http/src/server/**',
     ],
     rules: {
       '@typescript-eslint/no-restricted-imports': 'off',

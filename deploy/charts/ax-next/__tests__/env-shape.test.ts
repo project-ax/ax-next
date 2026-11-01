@@ -125,7 +125,7 @@ if (GATE.mode === 'require-missing') {
 function collectLoaderEnvReads(): { all: Set<string>; required: Set<string> } {
   const src = readFileSync(presetSourcePath, 'utf8');
   // Match `env.NAME` where NAME is upper-snake_case identifiers — the env
-  // reads inside loadK8sConfigFromEnv / workspaceConfigFromEnv. The match
+  // reads inside loadK8sConfigFromEnv and its helpers. The match
   // is intentionally broad: we want every env var the preset's loaders
   // touch, regardless of which helper they live in.
   const all = new Set<string>();
@@ -134,7 +134,7 @@ function collectLoaderEnvReads(): { all: Set<string>; required: Set<string> } {
   }
   // "Required" = the loader throws when the var is missing. Detect via
   // the `'<NAME> is required'` error-message convention — both
-  // loadK8sConfigFromEnv and workspaceConfigFromEnv use it (matched in
+  // the loader helpers use it (matched in
   // either direction: `'NAME is required'` or `requires NAME to be set`).
   const required = new Set<string>();
   for (const m of src.matchAll(/['"]([A-Z][A-Z0-9_]*) is required/g)) {
@@ -182,6 +182,13 @@ const EXTERNAL_READERS: ReadonlySet<string> = new Set([
   'AX_MEMORY_EXPORT_HOST_ROOT',
   'AX_MEMORY_EXPORT_NFS_SERVER',
   'AX_MEMORY_EXPORT_NFS_PATH',
+  // Stamped by the chart until the chart-cleanup card removes them; nothing
+  // reads them since TASK-995 (the git workspace tier, and the loader that
+  // consumed these four, are gone).
+  'AX_WORKSPACE_ROOT',
+  'AX_WORKSPACE_BACKEND',
+  'AX_WORKSPACE_GIT_SERVER_URL',
+  'AX_WORKSPACE_GIT_SERVER_TOKEN',
 ]);
 
 // The subchart fetch this file used to run in its own `beforeAll` — a copy of

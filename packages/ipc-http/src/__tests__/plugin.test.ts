@@ -20,27 +20,25 @@ import { createIpcHttpPlugin } from '../plugin.js';
 // declared REQUIRED `calls` entry is registered by SOME plugin. The harness
 // only auto-loads @ax/session-inmemory (covers session:resolve-token,
 // session:claim-work, session:get-config), so we hand-roll a tiny stub plugin
-// to register the remaining required producers (tool:list, workspace:read).
-// The stub never gets called by these tests (we only hit /healthz pre-auth) —
-// its sole job is to satisfy verifyCalls. optionalCalls (e.g.
-// conversations:store-runner-session) never fail the boot, so they need no
-// stub.
+// to register the one remaining required producer (tool:list). The stub never
+// gets called by these tests (we only hit /healthz pre-auth) — its sole job is
+// to satisfy verifyCalls. optionalCalls (e.g. conversations:store-runner-session)
+// never fail the boot, so they need no stub. There is no workspace producer on
+// this bus on purpose: TASK-995 removed the git workspace tier, and the
+// transport must boot without one.
 // ---------------------------------------------------------------------------
 
 const stubProducers: Plugin = {
   manifest: {
     name: '@ax/test-stub-producers',
     version: '0.0.0',
-    registers: ['tool:list', 'workspace:read'],
+    registers: ['tool:list'],
     calls: [],
     subscribes: [],
   },
   init({ bus }) {
     bus.registerService('tool:list', '@ax/test-stub-producers', async () => ({
       tools: [],
-    }));
-    bus.registerService('workspace:read', '@ax/test-stub-producers', async () => ({
-      found: false,
     }));
   },
 };
@@ -97,5 +95,14 @@ describe('createIpcHttpPlugin', () => {
     expect(plugin.manifest.optionalCalls).toEqual([
       ...DISPATCHER_DEPENDENCIES.optionalCalls,
     ]);
+  });
+
+  it('declares no workspace:* hook, required or optional (TASK-995)', () => {
+    const plugin = createIpcHttpPlugin({ host: '127.0.0.1', port: 0 });
+    const hooks = [
+      ...plugin.manifest.calls,
+      ...(plugin.manifest.optionalCalls ?? []).map((oc) => oc.hook),
+    ];
+    expect(hooks.filter((h) => h.startsWith('workspace:'))).toEqual([]);
   });
 });

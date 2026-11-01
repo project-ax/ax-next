@@ -147,30 +147,6 @@ function validateDescriptor(input: unknown): ToolDescriptor {
     });
   }
 
-  if (
-    d.flushWorkspaceBeforeCall !== undefined &&
-    typeof d.flushWorkspaceBeforeCall !== 'boolean'
-  ) {
-    throw new PluginError({
-      code: 'invalid-payload',
-      plugin: PLUGIN_NAME,
-      hookName: 'tool:register',
-      message: `tool '${d.name}': flushWorkspaceBeforeCall must be a boolean when provided`,
-    });
-  }
-
-  // The flush only runs in the host-tool forwarder, so the flag is meaningless
-  // on a sandbox tool. Reject it there rather than silently ignoring it, so the
-  // capability boundary ("this HOST tool reads the workspace") stays explicit.
-  if (d.flushWorkspaceBeforeCall === true && d.executesIn !== 'host') {
-    throw new PluginError({
-      code: 'invalid-payload',
-      plugin: PLUGIN_NAME,
-      hookName: 'tool:register',
-      message: `tool '${d.name}': flushWorkspaceBeforeCall is only valid for executesIn:'host' tools`,
-    });
-  }
-
   if (d.activityPhrase !== undefined && typeof d.activityPhrase !== 'string') {
     throw new PluginError({
       code: 'invalid-payload',
@@ -205,6 +181,9 @@ function validateDescriptor(input: unknown): ToolDescriptor {
     });
   }
 
+  // Built field by field, so a field this function does not know is dropped,
+  // never carried into the catalog (e.g. the workspace-flush flag TASK-995
+  // retired with the git workspace).
   const descriptor: ToolDescriptor = {
     name: d.name,
     inputSchema: d.inputSchema as Record<string, unknown>,
@@ -212,11 +191,6 @@ function validateDescriptor(input: unknown): ToolDescriptor {
   };
   if (typeof d.description === 'string') {
     descriptor.description = d.description;
-  }
-  // Carry the flush flag only when explicitly true — the runner treats a
-  // missing/false field as "no flush", so we don't store a redundant false.
-  if (d.flushWorkspaceBeforeCall === true) {
-    descriptor.flushWorkspaceBeforeCall = true;
   }
   if (typeof d.activityPhrase === 'string') {
     descriptor.activityPhrase = d.activityPhrase;

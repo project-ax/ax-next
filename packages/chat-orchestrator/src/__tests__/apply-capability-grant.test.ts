@@ -31,7 +31,6 @@ function buildMocks(opts: {
         mcpConfigIds: [],
         model: 'anthropic/claude-sonnet-4-7',
         runner: 'claude-sdk',
-        workspaceRef: null,
       },
     }),
     // TASK-100 — a skill declares no capabilities; it resolves to id + body +

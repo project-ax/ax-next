@@ -146,19 +146,20 @@ describe('buildBuiltinTools — the registered set', () => {
   });
 });
 
-// resolveGovernedPaths (@ax/agent-runner-core) re-roots ONLY the keys in its
-// PATH_INPUT_KEYS set — `file_path`, `path`, `notebook_path`. Rename a field
-// here and the re-rooter silently stops firing: governed writes land on the
-// ungoverned tier and nothing else fails. Hence this test.
-describe('input field names — the path re-rooter contract', () => {
+// These are the Claude built-ins' own field names, and the two runners must be
+// host-indistinguishable: a `tool.pre-call` subscriber that reads a Write's
+// `file_path` must find it under the same name from either runner. Rename a
+// field here and that rule silently stops applying on this runner, with
+// nothing else failing. Hence this test.
+describe('input field names — the same as the Claude built-ins', () => {
   it.each(['Read', 'Write', 'Edit'])(
     '%s takes its target as `file_path` (required)',
     (name) => {
       const { properties, required } = schemaOf(name);
       expect(Object.keys(properties)).toContain('file_path');
       expect(required).toContain('file_path');
-      // `path` would be re-rooted too, but the Claude built-ins spell a file
-      // target `file_path`; two spellings for one concept is invariant-4 rot.
+      // The Claude built-ins spell a file target `file_path`; a second
+      // spelling for one concept is invariant-4 rot.
       expect(Object.keys(properties)).not.toContain('path');
     },
   );

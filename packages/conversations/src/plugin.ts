@@ -5,11 +5,7 @@ import {
   type HookBus,
   type Plugin,
 } from '@ax/core';
-import {
-  AttachmentBlockSchema,
-  parseAttachmentMention,
-  type ContentBlock,
-} from '@ax/ipc-protocol';
+import { type ContentBlock } from '@ax/ipc-protocol';
 import { type Kysely } from 'kysely';
 import {
   runConversationsMigration,
@@ -23,7 +19,6 @@ import {
   validateOptionalOrigin,
   validateRunnerType,
   validateTitle,
-  validateWorkspaceRefForFreeze,
   type ConversationStore,
   type PendingPurgeKind,
   type StoredEvent,
@@ -31,7 +26,6 @@ import {
 import {
   AppendTranscriptOutputSchema,
   CONVERSATIONS_PURGED_CHUNK_SIZE,
-  DrainSaveRefusalsOutputSchema,
   GetMetadataOutputSchema,
   GetTranscriptOutputSchema,
   ReplaceTranscriptOutputSchema,
@@ -44,8 +38,6 @@ import type {
   AppendTranscriptOutput,
   BindSessionInput,
   BindSessionOutput,
-  DrainSaveRefusalsInput,
-  DrainSaveRefusalsOutput,
   GetTranscriptInput,
   GetTranscriptOutput,
   ReplaceTranscriptInput,
@@ -285,12 +277,6 @@ export function createConversationsPlugin(
         // CLOSED: the caller (the subscribers) AND the consumer
         // (conversations:get reading the log) ship in this same PR.
         'conversations:append-event',
-        // TASK-749 (2026-10-02): take the refused saves the MODEL has not
-        // been told about (the TASK-731 `save-refused` rows above a
-        // per-conversation watermark) and mark them told. Caller: ipc-core's
-        // `conversation.drain-save-refusals`, which the runner calls as it
-        // builds each turn — closed in the same PR.
-        'conversations:drain-save-refusals',
         // TASK-67 (out-of-git Part B / B2, 2026-05-30): the resume transcript
         // store (the resume SoT). Host-internal, ctx-scoped — the untrusted
         // runner reaches them ONLY via the host's session.* IPC handlers
@@ -305,12 +291,10 @@ export function createConversationsPlugin(
       calls: [
         'agents:resolve',
         'database:get-instance',
-        // TASK-75 (2026-05-30): the last `workspace:*` callers in this plugin
-        // are gone. conversations:get's git-jsonl fallback was deleted in
-        // TASK-70 (the resume jsonl left git in TASK-67), and conversations:
-        // drop-turn now rewrites the transcript-ROW store instead of the git
-        // workspace jsonl — so `workspace:list`/`read`/`apply` are no longer
-        // called and are dropped from the manifest (I5: minimal capabilities).
+        // No workspace hooks (TASK-75): TASK-70 deleted conversations:get's
+        // old transcript-file fallback, and conversations:drop-turn rewrites
+        // the transcript-ROW store, so this plugin never reads or writes an
+        // agent's files (I5: minimal capabilities).
       ],
       // Task 14 (Week 10–12): subscribe to session:terminate so a sandbox
       // teardown clears active_session_id on every bound conversation row.
@@ -448,9 +432,9 @@ export function createConversationsPlugin(
 
       // Phase B (2026-05-14): runner-native jsonl rewrite. Drops the line
       // whose uuid matches turnId (or the most recent turn if turnId is
-      // empty), then workspace:apply's the rewritten bytes. Half-wired
-      // window CLOSED — first caller is @ax/routines silence-token logic
-      // (Task 13).
+      // empty), then writes the surviving lines back to the transcript rows
+      // (TASK-75). Half-wired window CLOSED — first caller is @ax/routines
+      // silence-token logic (Task 13).
       bus.registerService<DropTurnInput, DropTurnOutput>(
         'conversations:drop-turn',
         PLUGIN_NAME,
@@ -481,17 +465,6 @@ export function createConversationsPlugin(
         'conversations:append-event',
         PLUGIN_NAME,
         async (ctx, input) => appendEvent(localStore, ctx, input),
-      );
-
-      // TASK-749: refused saves the model has not been told about yet.
-      // userId-scoped like store-runner-session (no agents:resolve — the
-      // orchestrator gated the user at agent:invoke; the runner reaches it
-      // only through an IPC action that takes the conversationId from ctx).
-      bus.registerService<DrainSaveRefusalsInput, DrainSaveRefusalsOutput>(
-        'conversations:drain-save-refusals',
-        PLUGIN_NAME,
-        async (ctx, input) => drainSaveRefusals(localStore, ctx, input),
-        { returns: DrainSaveRefusalsOutputSchema },
       );
 
       // TASK-67 (out-of-git Part B / B2): the resume transcript store. All
@@ -898,8 +871,8 @@ async function handleTurnEnd(
   if (blocks === undefined || blocks.length === 0) return;
 
   // Phase D (2026-05-02): we no longer write a conversation_turns row
-  // here. Transcripts are sourced from the runner's native jsonl via
-  // conversations:get → workspace:read. The bump remains because
+  // here. Redisplay reads the display event log (TASK-66), filled through
+  // `conversations:append-event`. The bump remains because
   // sidebar ordering keys off last_activity_at (I8). Subscriber-must-
   // not-throw posture: log + swallow on bump failure.
   try {
@@ -956,46 +929,6 @@ async function appendEvent(
     ...(input.key !== undefined ? { foldKey: input.key } : {}),
     payload: input.payload,
   });
-}
-
-/**
- * Prefix of the fold key ipc-core mints for a final/idle `save-refused` row
- * (TASK-731, `final:<uuid>`). Duplicated rather than imported (no
- * cross-plugin imports); built by concatenation for the same
- * dependency-sync reason as ipc-core's copy.
- */
-const FINAL_SAVE_REFUSED_KEY_PREFIX = 'final' + ':';
-
-/** TASK-749 — at most this many refusals are handed back per drain. */
-const MAX_DRAINED_SAVE_REFUSALS = 64;
-
-/**
- * conversations:drain-save-refusals handler (TASK-749). The refused saves the
- * model has not been told about, oldest first, marked told. A final/idle row
- * comes back with `turnReqId: null`; a per-turn row with the turn's reqId (or
- * `''`). Only the newest {@link MAX_DRAINED_SAVE_REFUSALS} are returned — the
- * rest are still marked told; the model is told about refusals, not given an
- * audit log, and the notice says the same thing for one or for fifty.
- */
-async function drainSaveRefusals(
-  store: ConversationStore,
-  ctx: AgentContext,
-  input: DrainSaveRefusalsInput,
-): Promise<DrainSaveRefusalsOutput> {
-  const hookName = 'conversations:drain-save-refusals';
-  const conversationId = requireBoundedString(
-    input.conversationId,
-    'conversationId',
-    hookName,
-  );
-  const userId = requireBoundedString(ctx.userId, 'ctx.userId', hookName);
-  const drained = await store.drainSaveRefusals({ conversationId, userId });
-  return {
-    refusals: drained.slice(-MAX_DRAINED_SAVE_REFUSALS).map(({ key, code }) => ({
-      code,
-      turnReqId: key.startsWith(FINAL_SAVE_REFUSED_KEY_PREFIX) ? null : key,
-    })),
-  };
 }
 
 // ---------------------------------------------------------------------------
@@ -1356,24 +1289,19 @@ interface ResolveInput {
  * Narrow shape of what conversations needs from `agents:resolve`. The
  * upstream type publishes more — we deliberately read only what we
  * use, so a future field change in @ax/agents doesn't ripple.
- *
- * `workspaceRef` is read defensively: if the resolved agent omits it (a
- * test mock returning a stub) we treat it as null. Frozen-as-of-create
- * includes "frozen as null" — Phase C tolerates NULL on read.
  */
 interface ResolvedAgentShape {
   agent: {
     id?: string;
-    workspaceRef?: string | null;
     /**
      * `agents.runner` — which runner will serve this agent's turns. Seeds
      * `runner_type` at create so the row is truthful from its first turn
      * rather than from a host-wide guess; `conversations:bind-session`
      * keeps it current afterwards.
      *
-     * Duck-typed here, like `workspaceRef` above, rather than imported from
-     * @ax/agents (I2 — the hook bus is the contract). Optional because this
-     * shape describes only the fields we read.
+     * Duck-typed here rather than imported from @ax/agents (I2 — the hook
+     * bus is the contract). Optional because this shape describes only the
+     * fields we read.
      */
     runner?: string;
   };
@@ -1424,10 +1352,9 @@ async function createConversation(
 ): Promise<CreateOutput> {
   const title = validateTitle(input.title ?? null);
   // J1: ACL gate BEFORE persisting. The agent must be reachable to the
-  // creator; otherwise no conversation should ever exist for it. Phase B
-  // (I5): we capture the resolved agent here — its workspaceRef gets
-  // frozen onto the new row, mirroring I10. One bus call total; no
-  // separate agents:get round-trip.
+  // creator; otherwise no conversation should ever exist for it. We keep the
+  // resolved agent: its runner seeds the new row's runner_type. One bus call
+  // total; no separate agents:get round-trip.
   const agent = await assertAgentReachable(
     bus,
     ctx,
@@ -1435,7 +1362,6 @@ async function createConversation(
     input.userId,
     'conversations:create',
   );
-  const workspaceRef = validateWorkspaceRefForFreeze(agent.workspaceRef);
   // Phase D (2026-05-17): routines call with `hidden: true` for per-fire
   // conversations. Default false matches the store contract. validate
   // boolean-ness at the boundary so an external caller passing a truthy
@@ -1454,7 +1380,6 @@ async function createConversation(
     agentId: input.agentId,
     title,
     runnerType: validateRunnerType(agent.runner ?? null),
-    workspaceRef,
     hidden,
     ...(origin === undefined ? {} : { origin }),
   });
@@ -1619,21 +1544,19 @@ async function getConversation(
     },
   });
   if (events.length > 0) {
-    const turns = projectEventTurns(events);
     return {
       conversation: conv,
-      turns: reconstructAttachmentBlocks(turns, conv.conversationId),
+      turns: projectEventTurns(events),
       displayEvents: projectDisplayEvents(events),
     };
   }
 
   // No display-event rows → nothing to redisplay. The legacy fallback that
-  // re-read the runner's native jsonl over git (`workspace:list` /
-  // `workspace:read`) is GONE (TASK-70 / out-of-git Phase 5): the resume
-  // jsonl left git in TASK-67, so the `.claude/projects/` glob no longer hits
-  // a git-tracked file, and there is no production data with pre-TASK-66
-  // (event-log-less) conversations to fall back FOR. The display event log
-  // (TASK-66) is now the sole redisplay source of truth.
+  // re-read the runner's native jsonl from the agent's files is GONE (TASK-70 /
+  // out-of-git Phase 5): the resume jsonl moved to the transcript store in
+  // TASK-67, and there is no production data with pre-TASK-66 (event-log-less)
+  // conversations to fall back FOR. The display event log (TASK-66) is now the
+  // sole redisplay source of truth.
   return {
     conversation: conv,
     turns: [],
@@ -1645,10 +1568,10 @@ async function getConversation(
 // TASK-66 — read-side projection from the display event log.
 //
 // `turn` events project to the existing `Turn[]` wire shape (unchanged
-// renderer path); host-only events (`permission-card` / `turn-error` /
-// `save-refused`) project to `displayEvents`, folded to their terminal state
-// per (kind, foldKey). A `save-refused` row passes through as is (TASK-731):
-// its two per-turn rows share the turn's reqId and fold to the later one.
+// renderer path); host-only events (`permission-card` / `turn-error`)
+// project to `displayEvents`, folded to their terminal state per (kind,
+// foldKey). Old `save-refused` rows (retired in TASK-995) never get here:
+// the store leaves them out of `listEvents`.
 // ---------------------------------------------------------------------------
 
 /**
@@ -1659,7 +1582,9 @@ async function getConversation(
  *
  * Each event's `payload` is `{ blocks: ContentBlock[] }` (see the persist
  * subscriber). `validateContentBlocks` re-validates against the canonical
- * schema on read — we never trust the JSONB column blindly (I5 / J2).
+ * schema on read — we never trust the JSONB column blindly (I5 / J2). Old
+ * path-shaped `attachment` blocks are turned into text first (see
+ * `degradeLegacyAttachmentBlocks`), so they cost their chip, not their turn.
  */
 function projectEventTurns(events: StoredEvent[]): Turn[] {
   const turns: Turn[] = [];
@@ -1669,7 +1594,9 @@ function projectEventTurns(events: StoredEvent[]): Turn[] {
     const rawBlocks = (ev.payload as { blocks?: unknown }).blocks;
     let contentBlocks: ContentBlock[];
     try {
-      contentBlocks = validateContentBlocks(rawBlocks ?? []);
+      contentBlocks = validateContentBlocks(
+        degradeLegacyAttachmentBlocks(rawBlocks ?? []),
+      );
     } catch {
       // A corrupt / hand-edited row must not crash redisplay; skip it.
       continue;
@@ -1684,6 +1611,45 @@ function projectEventTurns(events: StoredEvent[]): Turn[] {
     turnIndex++;
   }
   return turns;
+}
+
+/** Longest legacy file name `legacyAttachmentText` will repeat back. */
+const LEGACY_ATTACHMENT_NAME_MAX = 255;
+
+/**
+ * TASK-995: `attachment` blocks are addressed by id now. Turns stored before
+ * that carry `{ type: 'attachment', path, displayName, … }` — an upload's
+ * `.ax/uploads/…` key, or an artifact chip's path — which no longer parses, and
+ * a block that fails validation would drop its WHOLE turn, text included. So
+ * any `attachment` block without a string `attachmentId` becomes a text line
+ * naming the file. Its download is gone either way (design §10); the
+ * conversation around it survives.
+ *
+ * There is deliberately no path → id upgrade: that would keep path lookups
+ * alive for the download route.
+ */
+function degradeLegacyAttachmentBlocks(rawBlocks: unknown): unknown {
+  if (!Array.isArray(rawBlocks)) return rawBlocks;
+  return rawBlocks.map((block: unknown) => {
+    if (block === null || typeof block !== 'object' || Array.isArray(block)) return block;
+    const b = block as Record<string, unknown>;
+    if (b['type'] !== 'attachment' || typeof b['attachmentId'] === 'string') return block;
+    return { type: 'text', text: legacyAttachmentText(b) };
+  });
+}
+
+/**
+ * `<name> (this file is no longer available)`. The name is the block's old
+ * `displayName` — the person's own file name, or a model-chosen artifact
+ * label — kept to one line (control characters dropped) and to a file-name
+ * length; anything else reads `A file`.
+ */
+function legacyAttachmentText(block: Record<string, unknown>): string {
+  const raw = block['displayName'];
+  const name = typeof raw === 'string' ? raw.replace(/[\u0000-\u001f\u007f]/g, '').trim() : '';
+  const shown =
+    name.length > 0 && name.length <= LEGACY_ATTACHMENT_NAME_MAX ? name : 'A file';
+  return `${shown} (this file is no longer available)`;
 }
 
 /**
@@ -1719,129 +1685,6 @@ function projectDisplayEvents(events: StoredEvent[]): ConversationDisplayEvent[]
   return [...folded.values()]
     .sort((a, b) => a.seq - b.seq)
     .map((f) => f.event);
-}
-
-/**
- * Restore user-facing `attachment` chips that runner translation strips out.
- *
- * Under runner-owned-sessions the jsonl persists the runner's MODEL-facing
- * translation of an attachment — a one-line text mention (`User attached '…'
- * at <path> (<mime>)`, see `formatAttachmentMention`) — not the original
- * `attachment` block. The chat UI renders an `attachment` block as a download
- * chip but a `text` block as raw text, so a reopened chat would otherwise show
- * the mention verbatim. We rebuild the block from the mention here, on read,
- * which also retroactively fixes chats stored before this landed (no
- * migration — the read derives the chip every time).
- *
- * Safety — the jsonl is untrusted (I5; the SDK is third-party and the model
- * output it transcribes is adversarial):
- *   - only `role: 'user'` turns are touched. The model authors assistant /
- *     tool lines, so it cannot inject a chip into a user turn.
- *   - the parsed path must sit under THIS conversation's own upload prefix
- *     (`.ax/uploads/<conversationId>/`), so a crafted mention can't aim the
- *     download chip at another conversation or an arbitrary file.
- *   - the rebuilt block must round-trip `AttachmentBlockSchema` (which rejects
- *     absolute paths, `..`, drive roots, NUL) or the original text is kept.
- *
- * `sizeBytes` is unrecoverable from the mention (and unused by the render
- * path), so it's set to 0. A single `text` block may carry the user's typed
- * prompt and the mention on separate lines (the SDK concatenates the runner's
- * separate text blocks), so we split per line, convert only matching lines,
- * and keep the rest as text — preserving order.
- *
- * TASK-21 — inlined-attachment blocks. For a small text/json/yaml/csv file the
- * runner doesn't emit the bare mention; it INLINES the file: the canonical
- * mention on the first line, a BLANK line, then the file content (see
- * `formatAttachmentInline`). On reload the whole thing would otherwise render
- * as raw text — both a missing download chip AND the runner's model-view
- * content (preamble + bytes) leaking into the user-visible transcript.
- *
- * Why per-block (and not per-array-element-of-the-whole-turn) is enough:
- * the runner emits the typed prompt and EACH attachment as SEPARATE elements
- * of the user message's content array (main.ts), and the display-event-log
- * projection (`projectEventTurns`) keeps each array element as its OWN
- * ContentBlock — it only ever coalesces *assistant* lines sharing a
- * `message.id`, never user content. So two attachments arrive as two separate
- * text blocks here, each handled independently; the only fusion we must
- * tolerate within ONE text block is the SDK joining a typed prompt with a
- * trailing line (the `prompt\nmention` case).
- *
- * We discriminate by the line *after* a converted mention:
- *   - mention followed by a BLANK line ⇒ inlined-attachment preamble. The
- *     blank + the file content after it is the runner's model-view text, which
- *     must NOT reach the user. `formatAttachmentInline` always emits exactly
- *     `mention\n\n<content>`, so the blank-line follow is the reliable signal.
- *     Because the content is OPAQUE (it can contain anything, including lines
- *     that themselves look like in-prefix mentions), we STOP processing this
- *     block entirely — everything from the blank line on is dropped. We do not
- *     try to re-parse a "next attachment" out of opaque bytes: that would let
- *     crafted file content terminate the suppression and leak the rest of the
- *     bytes (a real prompt-injection-flavored leak). A genuine second
- *     attachment lands in its own separate block, so dropping the tail here
- *     loses nothing real.
- *   - mention NOT followed by a blank line (it's the last line, or the next
- *     line is itself another mention / user text) ⇒ a bare mention. We convert
- *     just that line and keep scanning. This preserves the pre-TASK-21 per-line
- *     behavior for the bare-mention and `prompt\nmention` cases and reconstructs
- *     every chip when several bare mentions land in one block.
- */
-function reconstructAttachmentBlocks(
-  turns: Turn[],
-  conversationId: string,
-): Turn[] {
-  const prefix = `.ax/uploads/${conversationId}/`;
-  return turns.map((t) => {
-    if (t.role !== 'user') return t;
-    let changed = false;
-    const rebuilt: ContentBlock[] = [];
-    for (const block of t.contentBlocks) {
-      if (block.type !== 'text') {
-        rebuilt.push(block);
-        continue;
-      }
-      const out: ContentBlock[] = [];
-      let textBuf: string[] = [];
-      const flushText = (): void => {
-        const joined = textBuf.join('\n');
-        if (joined.length > 0) out.push({ type: 'text', text: joined });
-        textBuf = [];
-      };
-      const lines = block.text.split('\n');
-      for (let i = 0; i < lines.length; i++) {
-        const line = lines[i]!;
-        const mention = parseAttachmentMention(line);
-        if (mention !== null && mention.path.startsWith(prefix)) {
-          const parsed = AttachmentBlockSchema.safeParse({
-            type: 'attachment',
-            path: mention.path,
-            displayName: mention.displayName,
-            mediaType: mention.mediaType,
-            sizeBytes: 0,
-          });
-          if (parsed.success) {
-            flushText();
-            out.push(parsed.data);
-            changed = true;
-            // Inlined-attachment shape: the mention is immediately followed by
-            // a blank line (the `\n\n` separator `formatAttachmentInline`
-            // always emits). The rest of the block is the runner's opaque
-            // model-view file content — STOP here and drop it so it never
-            // reaches the user. We deliberately do NOT scan back into the
-            // content for a "next" mention: crafted bytes could spoof one and
-            // resume surfacing the remaining content. A real second attachment
-            // is its own block, so nothing is lost. A bare mention has no
-            // blank-line follow, so we continue scanning this block.
-            if (lines[i + 1] === '') break;
-            continue;
-          }
-        }
-        textBuf.push(line);
-      }
-      flushText();
-      for (const b of out) rebuilt.push(b);
-    }
-    return changed ? { ...t, contentBlocks: rebuilt } : t;
-  });
 }
 
 async function listConversations(
@@ -2068,7 +1911,6 @@ async function findOrCreateConversation(
     bus, ctx, input.agentId, input.userId, hookName,
   );
   const title = validateTitle(input.fallback.title ?? null);
-  const workspaceRef = validateWorkspaceRefForFreeze(agent.workspaceRef);
   // Phase D (2026-05-17): see createConversation for rationale.
   const hidden = validateOptionalBoolean(input.fallback.hidden, 'hidden') ?? false;
   // AW-6: see createConversation.
@@ -2082,7 +1924,6 @@ async function findOrCreateConversation(
       agentId: input.agentId,
       title,
       runnerType: validateRunnerType(agent.runner ?? null),
-      workspaceRef,
       hidden,
       ...(origin === undefined ? {} : { origin }),
     },
@@ -2110,14 +1951,14 @@ async function dropTurn(
     return;
   }
 
-  // TASK-75 (out-of-git follow-up): the resume transcript left git in TASK-67
-  // and now lives in the `conversations:get-transcript`/transcript-row store.
-  // The pre-TASK-67 path read+rewrote the SDK jsonl in the git workspace
-  // (workspace:list/read/apply over `.claude/projects/**/<sid>.jsonl`); after
-  // the migration that glob hits a gitignored file → 0 paths → a SILENT no-op,
-  // so the silenced routine turn survived on resume. Read the joined jsonl
-  // bytes from the rows, run the same pure byte-rewrite, and write the survivors
-  // back via replaceTranscript (the existing DELETE + re-INSERT seam).
+  // TASK-75 (out-of-git follow-up): since TASK-67 the resume transcript lives
+  // in the `conversations:get-transcript`/transcript-row store. The pre-TASK-67
+  // path read+rewrote the SDK jsonl among the agent's files
+  // (`.claude/projects/**/<sid>.jsonl`); after the move that glob matched
+  // nothing → a SILENT no-op, so the silenced routine turn survived on resume.
+  // Read the joined jsonl bytes from the rows, run the same pure byte-rewrite,
+  // and write the survivors back via replaceTranscript (the existing DELETE +
+  // re-INSERT seam).
   const bytes = await store.getTranscriptBytes(conv.conversationId);
   if (bytes.length === 0) return;
 

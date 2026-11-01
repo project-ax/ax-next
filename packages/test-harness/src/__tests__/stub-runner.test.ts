@@ -74,7 +74,9 @@ async function startFakeServer(): Promise<FakeServer> {
       }
       calls.push({ method: req.method ?? '', url: req.url ?? '', body });
       const handler = handlers.get(action);
-      if (handler !== undefined) {
+      // The action comes from the request URL: call only a function this
+      // test registered for it (CodeQL js/unvalidated-dynamic-method-call).
+      if (typeof handler === 'function') {
         handler(body, res);
         return;
       }
@@ -123,9 +125,9 @@ function spawnStub(
   if (server !== undefined) {
     env.AX_RUNNER_ENDPOINT = `unix://${server.socketPath}`;
   }
+  // What both sandbox providers stamp (TASK-995: no workspace root any more).
   env.AX_SESSION_ID = 'sess-stub-test';
   env.AX_AUTH_TOKEN = TOKEN;
-  env.AX_WORKSPACE_ROOT = '/tmp/stub-workspace';
   for (const [k, v] of Object.entries(envOverrides)) {
     if (v === undefined) {
       delete env[k];
@@ -333,6 +335,32 @@ describe('stub-runner', () => {
     const { code, stderr } = await stub.exit;
     expect(code).toBe(2);
     expect(stderr).toMatch(/AX_TEST_STUB_SCRIPT/);
+  });
+
+  // TASK-995 — the sandboxes no longer stamp a workspace root (the git tier is
+  // gone), so the stub has to boot on the env they still provide: the
+  // endpoint, the session id and the token (plus the test's script).
+  it('boots on the endpoint, session id, auth token and script alone', async () => {
+    const server = await startFakeServer();
+    servers.push(server);
+    const script: StubRunnerScript = { entries: [{ kind: 'finish', reason: 'end_turn' }] };
+    const stub = spawnStub(server, { AX_TEST_STUB_SCRIPT: encodeScript(script) });
+    children.push(stub.child);
+    const { code, stderr } = await stub.exit;
+    expect(code, `stderr: ${stderr}`).toBe(0);
+    expect(server.calls.filter((c) => c.url === '/event.chat-end')).toHaveLength(1);
+  });
+
+  it.each(['AX_SESSION_ID', 'AX_AUTH_TOKEN'])('still exits 2 at boot when %s is missing', async (name) => {
+    const server = await startFakeServer();
+    servers.push(server);
+    const script: StubRunnerScript = { entries: [{ kind: 'finish', reason: 'end_turn' }] };
+    const stub = spawnStub(server, { AX_TEST_STUB_SCRIPT: encodeScript(script), [name]: undefined });
+    children.push(stub.child);
+    const { code, stderr } = await stub.exit;
+    expect(code).toBe(2);
+    expect(stderr).toContain(`missing required env: ${name}`);
+    expect(server.calls).toHaveLength(0);
   });
 
   it('fires event.turn-end (assistant, with usage) at its place in the script, before chat-end', async () => {

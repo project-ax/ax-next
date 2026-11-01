@@ -95,8 +95,8 @@ const KEPT_ON_PURPOSE = {
 //     and a counted disk-quota row until an operator cleans them by hand
 //
 // No longer here: the agent's git workspace repository, and the memory files
-// inside it. `@ax/workspace-git` removes the repo when `agents:deleted` fires
-// (TASK-719) and then fires `workspace:deleted`, which drops its disk-quota row.
+// inside it. The git workspace tier (`@ax/workspace-git`) was deleted in
+// TASK-995; before that it removed the repo on `agents:deleted` (TASK-719).
 
 /** Directories never scanned. */
 const SKIP_DIRS = new Set(['node_modules', 'dist', '__tests__', 'test', 'tests', 'coverage']);

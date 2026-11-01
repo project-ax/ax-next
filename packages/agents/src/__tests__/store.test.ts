@@ -204,10 +204,20 @@ describe('validation', () => {
     ).toThrow(/at most 50 entries/);
   });
 
-  it('rejects bad workspaceRef chars', () => {
-    expect(() =>
-      validateCreateInput(makeInput({ workspaceRef: 'has spaces' }), vctx),
-    ).toThrow(/workspaceRef/);
+  // TASK-995: workspaceRef is gone. A hook caller that still sends one — even
+  // a malformed one — is neither refused nor stored: the validators build the
+  // row from the fields they know, as they do for any other unknown key.
+  it('ignores a workspaceRef a caller still sends, on create and on update', () => {
+    const created = validateCreateInput(
+      { ...makeInput(), workspaceRef: 'has spaces' } as unknown as AgentInput,
+      vctx,
+    );
+    expect(created).not.toHaveProperty('workspaceRef');
+    const patched = validateUpdatePatch(
+      { workspaceRef: 'has spaces' } as unknown as Partial<AgentInput>,
+      vctx,
+    );
+    expect(patched).toEqual({});
   });
 
   it('requires teamId for team visibility', () => {
@@ -229,7 +239,6 @@ describe('validation', () => {
     const v = validateCreateInput(makeInput(), vctx);
     expect(v.displayName).toBe('My Agent');
     expect(v.allowedTools).toEqual(['bash.run', 'fs.read']);
-    expect(v.workspaceRef).toBeNull();
   });
 
   it('rejects duplicate allowedTools', () => {

@@ -67,12 +67,13 @@ const SANDBOX_TOOL: ToolDescriptor = {
   inputSchema: { type: 'object' },
   executesIn: 'sandbox',
 };
-const HOST_TOOL_FLUSH: ToolDescriptor = {
-  name: 'host_reads_workspace',
+// A host tool that reads files the agent just wrote: the kind that once had
+// the runner flush its git workspace first (retired in TASK-995).
+const HOST_TOOL_READS_FILES: ToolDescriptor = {
+  name: 'host_reads_files',
   description: 'a host tool that reads files the agent just wrote',
   inputSchema: { type: 'object' },
   executesIn: 'host',
-  flushWorkspaceBeforeCall: true,
 };
 // A connector-backed MCP tool arrives here as an ordinary host-tool
 // descriptor — connectors are host-side in @ax/mcp-client (constraint 6).
@@ -247,7 +248,7 @@ describe('buildHostTools', () => {
     const tools = buildHostTools({
       policy: fakePolicy(),
       client,
-      tools: [HOST_TOOL_A, HOST_TOOL_B, HOST_TOOL_FLUSH, CONNECTOR_TOOL],
+      tools: [HOST_TOOL_A, HOST_TOOL_B, HOST_TOOL_READS_FILES, CONNECTOR_TOOL],
       holdLatch, onHold: () => {}, onToolFailure: () => {},
     });
     const names = Object.keys(tools);
@@ -295,159 +296,36 @@ describe('buildHostTools', () => {
     );
   });
 
-  describe('flushWorkspaceBeforeCall precondition gate (BUG-W2)', () => {
-    it('flushes the workspace BEFORE forwarding when the descriptor requires it', async () => {
-      const order: string[] = [];
-      const { client } = mkClient(async () => {
-        order.push('forward');
-        return { output: 'ok' };
-      });
-      const flushWorkspace = async () => {
-        order.push('flush');
-        return { outcome: 'accepted' as const };
-      };
-      const tools = buildHostTools({
-        policy: fakePolicy(),
-        client,
-        tools: [HOST_TOOL_FLUSH],
-        flushWorkspace,
-        holdLatch, onHold: () => {}, onToolFailure: () => {},
-      });
-      await unwrap(tools['host_reads_workspace']?.execute)({}, OPTS);
-      expect(order).toEqual(['flush', 'forward']);
+  // TASK-995: there is no workspace to flush, and the descriptor field that
+  // asked for a flush is gone from the wire. A host tool that reads the
+  // agent's files forwards like any other — straight to `tool.execute-host`,
+  // with nothing run first. `flushWorkspace` is the option the old gate read;
+  // nothing may call it now.
+  it('forwards a host tool that reads the agent\'s files straight to tool.execute-host, with no flush first', async () => {
+    const { client, calls } = mkClient(async () => ({ output: 'host-ok' }));
+    let flushed = false;
+    const tools = buildHostTools({
+      policy: fakePolicy(),
+      client,
+      tools: [HOST_TOOL_READS_FILES],
+      idGen: () => 'id-1',
+      holdLatch, onHold: () => {}, onToolFailure: () => {},
+      ...({
+        flushWorkspace: async () => {
+          flushed = true;
+          return { outcome: 'kept' as const };
+        },
+      } as object),
     });
-
-    it('forwards on a no-op flush (already synced on a prior turn)', async () => {
-      const { client, calls } = mkClient(async () => ({ output: 'ok' }));
-      const flushWorkspace = async () => ({ outcome: 'noop' as const });
-      const tools = buildHostTools({
-        policy: fakePolicy(),
-        client,
-        tools: [HOST_TOOL_FLUSH],
-        flushWorkspace,
-        holdLatch, onHold: () => {}, onToolFailure: () => {},
-      });
-      const out = await unwrap(tools['host_reads_workspace']?.execute)({}, OPTS);
-      expect(calls.map((c) => c.action)).toEqual(['tool.execute-host']);
-      expect(out).toBe('ok');
-    });
-
-    it('does NOT flush for a host tool without flushWorkspaceBeforeCall', async () => {
-      let flushed = false;
-      const { client, calls } = mkClient(async () => ({ output: 'ok' }));
-      const flushWorkspace = async () => {
-        flushed = true;
-        return { outcome: 'accepted' as const };
-      };
-      const tools = buildHostTools({
-        policy: fakePolicy(),
-        client,
-        tools: [HOST_TOOL_A],
-        flushWorkspace,
-        holdLatch, onHold: () => {}, onToolFailure: () => {},
-      });
-      await unwrap(tools['memory.recall']?.execute)({}, OPTS);
-      expect(flushed).toBe(false);
-      expect(calls.map((c) => c.action)).toEqual(['tool.execute-host']);
-    });
-
-    it('forwards anyway when a flagged tool has no flushWorkspace wired', async () => {
-      const { client, calls } = mkClient(async () => ({ output: 'ok' }));
-      const tools = buildHostTools({
-        policy: fakePolicy(),
-        client,
-        tools: [HOST_TOOL_FLUSH],
-        holdLatch, onHold: () => {}, onToolFailure: () => {},
-      });
-      const out = await unwrap(tools['host_reads_workspace']?.execute)({}, OPTS);
-      expect(calls.map((c) => c.action)).toEqual(['tool.execute-host']);
-      expect(out).toBe('ok');
-    });
-
-    it.each(['kept', 'rolled-back'] as const)(
-      'does NOT forward and raises a retryable tool error when the flush is %s',
-      async (outcome) => {
-        const order: string[] = [];
-        const { client } = mkClient(async () => {
-          order.push('forward');
-          return { output: 'host-ok' };
-        });
-        const flushWorkspace = async () => {
-          order.push('flush');
-          return { outcome };
-        };
-        const tools = buildHostTools({
-          policy: fakePolicy(),
-          client,
-          tools: [HOST_TOOL_FLUSH],
-          flushWorkspace,
-          holdLatch, onHold: () => {}, onToolFailure: () => {},
-        });
-        // Throws, so the host records `is_error` and the UI renders a FAILED
-        // tool — matching the SDK runner's `{ isError: true }` shim. The turn
-        // survives: ai@7 turns this into an error-text tool result and keeps
-        // looping, so the model reads the message and can retry.
-        await expect(
-          unwrap(tools['host_reads_workspace']?.execute)({}, OPTS),
-        ).rejects.toThrow(new RegExp(outcome));
-        // Flushed, but did NOT forward.
-        expect(order).toEqual(['flush']);
+    const out = await unwrap(tools['host_reads_files']?.execute)({ q: 'x' }, OPTS);
+    expect(flushed).toBe(false);
+    expect(calls).toEqual([
+      {
+        action: 'tool.execute-host',
+        payload: { call: { id: 'id-1', name: 'host_reads_files', input: { q: 'x' } } },
       },
-    );
-
-    // TASK-240: parity with the SDK runner — the host's veto reason must reach
-    // the model, not die in the runner. Both loops render the same sentence, so
-    // an agent gets the same account of why its work was refused either way.
-    it("puts the host's veto reason in the thrown tool error", async () => {
-      const { client, calls } = mkClient(async () => ({ output: 'host-ok' }));
-      const flushWorkspace = async () => ({
-        outcome: 'rolled-back' as const,
-        rejectionReason:
-          '.claude/settings.json: agent writes to the SDK config are refused',
-      });
-      const tools = buildHostTools({
-        policy: fakePolicy(),
-        client,
-        tools: [HOST_TOOL_FLUSH],
-        flushWorkspace,
-        holdLatch, onHold: () => {}, onToolFailure: () => {},
-      });
-      const err = await unwrap(tools['host_reads_workspace']?.execute)({}, OPTS).then(
-        () => null,
-        (e: unknown) => e as Error,
-      );
-      expect(err?.message).toContain(
-        '.claude/settings.json: agent writes to the SDK config are refused',
-      );
-      expect(err?.message).toContain("The turn's commit was rolled back.");
-      // Same omission as the SDK runner's twin: retrying an identical vetoed
-      // change gets vetoed identically, so we do not tell the model to.
-      expect(err?.message).not.toContain('please try again');
-      expect(calls.map((c) => c.action)).toEqual([]);
-    });
-
-    it('does NOT forward and raises a retryable tool error when the flush throws', async () => {
-      const order: string[] = [];
-      const { client } = mkClient(async () => {
-        order.push('forward');
-        return { output: 'host-ok' };
-      });
-      const flushWorkspace = async (): Promise<{ outcome: 'accepted' }> => {
-        order.push('flush-throw');
-        throw new Error('commit-notify unreachable');
-      };
-      const tools = buildHostTools({
-        policy: fakePolicy(),
-        client,
-        tools: [HOST_TOOL_FLUSH],
-        flushWorkspace,
-        holdLatch, onHold: () => {}, onToolFailure: () => {},
-      });
-      await expect(
-        unwrap(tools['host_reads_workspace']?.execute)({}, OPTS),
-      ).rejects.toThrow(/flush outcome: error/);
-      expect(order).toEqual(['flush-throw']);
-    });
+    ]);
+    expect(out).toBe('host-ok');
   });
 });
 

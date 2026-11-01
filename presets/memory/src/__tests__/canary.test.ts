@@ -254,8 +254,7 @@ async function boot(opts: { withVolume: boolean } = { withVolume: true }): Promi
     database: { connectionString },
     eventbus: { connectionString },
     session: { connectionString },
-    workspace: { backend: 'local', repoRoot: path.join(tmp, 'repo') },
-    // Explicit now; this is the path the preset used to derive from repoRoot.
+    // Explicit: the blob root is whatever the deployment names.
     blob: { backend: 'fs', root: path.join(tmp, 'repo', 'blobs') },
     sandbox: {
       namespace: 'ax-next',
@@ -1348,10 +1347,9 @@ describe('@ax/preset-memory canary', () => {
     expect(fs.existsSync(path.join(exportedDir, 'profile.md'))).toBe(true);
     const profileBytes = fs.readFileSync(path.join(exportedDir, 'profile.md'), 'utf-8');
     expect(profileBytes).toContain('Porto');
-    // TASK-991: the volume is the only copy; nothing lands in the agent's workspace.
-    const gitCopy = await bus.call<{ path: string }, { found: boolean }>(
-      'workspace:read', ctxFor(aliceAgentId, ALICE), { path: 'permanent/memory/facts/profile.md' });
-    expect(gitCopy.found).toBe(false);
+    // TASK-991: the volume is the only copy. There is no workspace hook left
+    // for a second copy to land in (TASK-995).
+    expect(bus.hasService('workspace:read')).toBe(false);
 
     const open = await bus.call<Record<string, unknown>, { runnerEndpoint: string }>(
       'sandbox:open-session',
@@ -1760,13 +1758,18 @@ describe('@ax/preset-memory canary', () => {
   //
   // In production `createMemoryPlugins` re-appends @ax/channel-web AFTER the
   // k8s base, whose last plugin is @ax/static-files. Both own a trailing-`*`
-  // splat (`/*` and `/api/workspace/agents/:agentId/files/*`), the router used
-  // to break that tie by registration order, and so every path-taking Files
-  // route answered 200 with the SPA's index.html: the tab LISTED, and opening
-  // any folder or file died on a JSON SyntaxError over `<!DOCTYPE`. Every unit
-  // test in channel-web passed, because none of them had a catchall next to
-  // the routes. This block is the one that does, on the real assembly, over a
-  // real socket.
+  // splat (`/*` and `/api/workspace/agents/:agentId/user-files/*`), the router
+  // used to break that tie by registration order, and so every path-taking
+  // Files route answered 200 with the SPA's index.html: the tab LISTED, and
+  // opening any folder or file died on a JSON SyntaxError over `<!DOCTYPE`.
+  // Every unit test in channel-web passed, because none of them had a
+  // catchall next to the routes. This block is the one that does, on the real
+  // assembly, over a real socket.
+  //
+  // TASK-995 removed the git-backed `/files` and `/download/files` routes, and
+  // with them this block's governed-tier cases. What is left is the agent's
+  // own files (`/user-files`), plus a check that the removed routes answer the
+  // API's JSON 404 and not the shell.
   // -------------------------------------------------------------------------
   describe('TASK-717: Files-tab splat routes behind the SPA catchall', () => {
     let aliceFiles = '';
@@ -1789,14 +1792,6 @@ describe('@ax/preset-memory canary', () => {
       return out.agent.id;
     }
 
-    async function putGoverned(agentId: string, userId: string, rel: string, text: string) {
-      await bus.call('workspace:apply', ctxFor(agentId, userId), {
-        parent: null,
-        changes: [{ path: rel, kind: 'put', content: new TextEncoder().encode(text) }],
-        reason: 'TASK-717 seed',
-      });
-    }
-
     async function raw(p: string, user: string | null = ALICE) {
       const r = await fetch(url(p), {
         headers: user === null ? {} : { 'x-test-user': user },
@@ -1816,9 +1811,6 @@ describe('@ax/preset-memory canary', () => {
     beforeAll(async () => {
       aliceFiles = await mkAgent(ALICE, 'Alice files');
       bobFiles = await mkAgent(BOB, 'Bob files');
-      await putGoverned(aliceFiles, ALICE, 'docs/inner.txt', 'governed-inner\n');
-      await putGoverned(bobFiles, BOB, 'secret.txt', 'BOB-GOVERNED-SECRET\n');
-
       const aliceDurable = path.join(userFilesRoot, aliceFiles);
       const bobDurable = path.join(userFilesRoot, bobFiles);
       await fsp.mkdir(path.join(aliceDurable, 'docs'), { recursive: true });
@@ -1849,23 +1841,19 @@ describe('@ax/preset-memory canary', () => {
       }
     });
 
-    it('the governed tier: read and download answer, not index.html', async () => {
-      const listing = await json(`/api/workspace/agents/${aliceFiles}/files`);
-      expect(listing.status).toBe(200);
-
-      const file = await json(`/api/workspace/agents/${aliceFiles}/files/docs/inner.txt`);
-      expect(file.status).toBe(200);
-      expect(file.body).toMatchObject({ path: 'docs/inner.txt', body: 'governed-inner\n', clipped: null });
-
-      const dl = await raw(`/api/workspace/agents/${aliceFiles}/download/files/docs/inner.txt`);
-      expect(dl.status).toBe(200);
-      expect(dl.type).toContain('application/octet-stream');
-      expect(dl.headers.get('content-disposition')).toContain('attachment; filename="inner.txt"');
-      expect(dl.text).toBe('governed-inner\n');
-      expect(dl.text).not.toContain('AX-SPA-SHELL');
+    it('the removed git-backed Files routes answer the API\u2019s JSON 404, not the shell', async () => {
+      for (const p of [
+        `/api/workspace/agents/${aliceFiles}/files`,
+        `/api/workspace/agents/${aliceFiles}/files/docs/inner.txt`,
+        `/api/workspace/agents/${aliceFiles}/download/files/docs/inner.txt`,
+      ]) {
+        const r = await json(p);
+        expect(r.status, p).toBe(404);
+        expect(r.body, p).toEqual({ error: 'not-found' });
+      }
     });
 
-    it.skipIf(!ON_LINUX)('the durable tier: folder, file and download answer, not index.html', async () => {
+    it.skipIf(!ON_LINUX)('the agent\u2019s files: folder, file and download answer, not index.html', async () => {
       const root = await json(`/api/workspace/agents/${aliceFiles}/user-files`);
       expect(root.status).toBe(200);
       expect(root.body.kind).toBe('dir');
@@ -1887,9 +1875,7 @@ describe('@ax/preset-memory canary', () => {
 
     it('an unauthenticated caller gets the routes own JSON 401 on every splat route, not the shell', async () => {
       for (const p of [
-        `/api/workspace/agents/${aliceFiles}/files/docs/inner.txt`,
         `/api/workspace/agents/${aliceFiles}/user-files/docs`,
-        `/api/workspace/agents/${aliceFiles}/download/files/docs/inner.txt`,
         `/api/workspace/agents/${aliceFiles}/download/user-files/docs/inner.txt`,
       ]) {
         const r = await json(p, null);
@@ -1915,9 +1901,7 @@ describe('@ax/preset-memory canary', () => {
       // collapsed by the URL parser before the router sees them; what survives
       // is the encoded-slash family, which the handler must decode exactly once.
       const ROUTES = [
-        (a: string, tail: string) => `/api/workspace/agents/${a}/files/${tail}`,
         (a: string, tail: string) => `/api/workspace/agents/${a}/user-files/${tail}`,
-        (a: string, tail: string) => `/api/workspace/agents/${a}/download/files/${tail}`,
         (a: string, tail: string) => `/api/workspace/agents/${a}/download/user-files/${tail}`,
       ];
 
@@ -1959,7 +1943,7 @@ describe('@ax/preset-memory canary', () => {
         expect(JSON.stringify(r.body)).not.toContain('BOB-');
       });
 
-      it('the durable-tier download of the root is a 400, not the shell', async () => {
+      it('the download of the root is a 400, not the shell', async () => {
         const r = await json(`/api/workspace/agents/${aliceFiles}/download/user-files/`);
         expect(r.status).toBe(400);
       });
@@ -1981,15 +1965,11 @@ describe('@ax/preset-memory canary', () => {
       it("Alice cannot open Bob's agent on any splat route, and cannot tell it from an agent that does not exist", async () => {
         const missing = 'agt_does_not_exist';
         const tails = [
-          ['files', 'secret.txt'],
           ['user-files', 'secret.txt'],
-          ['download/files', 'secret.txt'],
           ['download/user-files', 'secret.txt'],
           // A MALFORMED path must not read differently from a well-formed one
           // on someone else's agent: 400-vs-404 there is a free oracle.
-          ['files', '..%2Fsecret.txt'],
           ['user-files', '..%2Fsecret.txt'],
-          ['download/files', '..%2Fsecret.txt'],
           ['download/user-files', '..%2Fsecret.txt'],
         ] as const;
         for (const [seg, tail] of tails) {
@@ -2003,14 +1983,9 @@ describe('@ax/preset-memory canary', () => {
       });
 
       it.skipIf(!ON_LINUX)('a third user sees Alice as absent too, and Bob still reads his own files', async () => {
-        const eve = await json(`/api/workspace/agents/${aliceFiles}/files/docs/inner.txt`, EVE);
+        const eve = await json(`/api/workspace/agents/${aliceFiles}/user-files/docs`, EVE);
         expect(eve.status).toBe(404);
-        const eveDurable = await json(`/api/workspace/agents/${aliceFiles}/user-files/docs`, EVE);
-        expect(eveDurable.status).toBe(404);
 
-        const bob = await json(`/api/workspace/agents/${bobFiles}/files/secret.txt`, BOB);
-        expect(bob.status).toBe(200);
-        expect(bob.body).toMatchObject({ body: 'BOB-GOVERNED-SECRET\n' });
         const bobDurable = await json(`/api/workspace/agents/${bobFiles}/user-files/secret.txt`, BOB);
         expect(bobDurable.status).toBe(200);
         expect(bobDurable.body).toMatchObject({ kind: 'file', body: 'BOB-DURABLE-SECRET\n' });
@@ -2054,12 +2029,6 @@ describe('@ax/preset-memory canary without the export volume', () => {
     const stmts = recalled.json.statements as Array<{ value: string }>;
     expect(stmts.some((st) => st.value === 'Lisbon')).toBe(true);
 
-    const read = await bus.call<{ path: string }, { found: boolean; bytes?: Uint8Array }>(
-      'workspace:read',
-      ctxFor(aliceAgentId, ALICE),
-      { path: 'permanent/memory/facts/profile.md' },
-    );
-    expect(read.found).toBe(false);
     expect(fs.existsSync(exportHostRoot)).toBe(false);
 
     await bus.call('sandbox:open-session', ctxFor(aliceAgentId, ALICE), {

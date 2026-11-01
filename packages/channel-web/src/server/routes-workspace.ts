@@ -14,11 +14,10 @@
  * POST /api/workspace/tasks/:agentId/:routineId/reopen — "Not yet", or reopen a Done task, with a reply (TASK-950)
  * POST /api/workspace/tasks/:agentId/:routineId/duplicate — copy that task, paused, its steps unticked (TASK-953)
  * GET  /api/workspace/tasks/:agentId/:routineId/checkins/:conversationId — one check-in's transcript, read-only (TASK-911)
- * GET  /api/workspace/agents/:agentId/files
- *                                      — what the agent has written
- * GET  /api/workspace/agents/:agentId/files/*
- *                                      — one of those files, as text
- * GET  /api/workspace/agents/:agentId/download/files/*
+ * GET  /api/workspace/agents/:agentId/user-files
+ * GET  /api/workspace/agents/:agentId/user-files/*
+ *                                      — the agent's home: a directory, or one
+ *                                        file as text
  * GET  /api/workspace/agents/:agentId/download/user-files/*
  *                                      — one of those files, as BYTES
  * PUT  /api/workspace/agents/:agentId/memory/rules
@@ -59,12 +58,12 @@
  * Security posture (matches routes-connections.ts):
  *   - identity is ALWAYS the authenticated user (auth:require-user → 401).
  *     `userId` is never read from the body, query, or params.
- *   - every read of an agent's WORKSPACE or MEMORY is gated by
+ *   - every read of an agent's FILES or MEMORY is gated by
  *     `agents:resolve`, STRICTLY BEFORE the read; any PluginError → 404 (not
  *     403 — we don't tell a foreign caller whether an id exists). Concretely,
  *     that is every `/api/workspace/agents/:agentId…` route — the detail
- *     panel, `files`, `files/*`, `user-files`, `user-files/*`,
- *     `download/files/*`, `download/user-files/*`, `rail`, `grants/revoke`
+ *     panel, `user-files`, `user-files/*`,
+ *     `download/user-files/*`, `rail`, `grants/revoke`
  *     and `memory/rules` — plus the task page's nine routes, `/tasks/:agentId/:routineId`, its
  *     `/notes` (TASK-910), its `/checkins/:conversationId` (TASK-911), its
  *     `/replies` (TASK-931), its `/steps` (TASK-949), its `/finish-by`
@@ -107,18 +106,16 @@
  *     page's 404 before the service is asked, and only the owner's
  *     `forbidden` is a 403.
  *
- *     ⚠ Since TASK-257 (2026-09-17) this gate is the ONLY barrier on those
- *     routes. The workspace tier used to hash the CALLER's userId into the
- *     repo id, so a non-owner who slipped past the ACL still landed in their
- *     own empty shard; the partition is now `agentId` alone, because shared
- *     team files and per-caller isolation are contradictory requirements. Do
- *     not bypass this gate, do not make it best-effort, and do not move it
- *     after a read. `routes-workspace-team-agent.test.ts` pins it from the
- *     outside: a caller `agents:resolve` rejects gets a 404 AND the read hook
- *     records zero calls.
+ *     ⚠ This gate is the ONLY barrier on those routes. An agent's files are
+ *     shared by every user authorized to reach that agent (the partition is
+ *     `agentId` alone), so a non-owner who slipped past the ACL would read the
+ *     owner's files. Do not bypass this gate, do not make it best-effort, and
+ *     do not move it after a read. `routes-workspace-team-agent.test.ts` pins
+ *     it from the outside: a caller `agents:resolve` rejects gets a 404 AND
+ *     the read hook records zero calls.
  *
  *     Everything NOT in that list is gated DIFFERENTLY on purpose, and none
- *     of it reads workspace files or memory. `/state`, `/route` and `/tasks`
+ *     of it reads files or memory. `/state`, `/route` and `/tasks`
  *     fan out over `agents:list-for-user` —
  *     there the roster IS the ACL, and it is a different predicate
  *     (server-derived teamIds vs. a live `teams:is-member` call), one that is
@@ -200,7 +197,11 @@ import type {
   RoutineTasksForConversationsOutput,
   RoutineView,
 } from '@ax/routines-contract';
-import { AttachmentBlockSchema } from '@ax/ipc-protocol';
+import {
+  AttachmentBlockSchema,
+  attachmentBlockFromArtifact,
+  type AttachmentBlock,
+} from '@ax/ipc-protocol';
 import {
   PluginError,
   SafeToolError,
@@ -297,10 +298,6 @@ import {
   type ConnectorCredentialSlot,
 } from '../lib/connectors.js';
 import { OAUTH_CLIENT_SECRET_SLOT } from '../lib/connector-credential-slots.js';
-// The closed-code check and the one builder of a save-refused row's id
-// (TASK-731), shared with the browser, which matches its live copy against
-// that same id.
-import { asSaveRefusedCode, saveRefusedRowId } from '../lib/save-refused.js';
 import {
   CONNECTOR_TOOL_NAMESPACE_RE,
   connectorNamesFromRows,
@@ -334,9 +331,8 @@ import { listTeamIdsForUser, type RouteRequest, type RouteResponse } from './rou
 import { sanitizeContentDispositionFilename } from './content-disposition.js';
 import { workspaceFilePath } from './safe-path.js';
 import { attachMemoryUsed, parseRecallReceiptsReply } from './memory-used.js';
-// Type-only: the `sandbox:read-user-files` hook-bus contract. The DURABLE
-// user-files tier is read through this hook rather than through `workspace:*`,
-// which is the git-backed governed tier. Types only, so no runtime coupling
+// Type-only: the `sandbox:read-user-files` hook-bus contract. The agent's
+// files are read through this hook. Types only, so no runtime coupling
 // (invariant I2) — the bus is still the API.
 import type {
   ReadUserFilesInput,
@@ -610,28 +606,6 @@ interface AgentsListForUserOutput {
   }>;
 }
 
-/**
- * `workspace:list` / `workspace:read`, duck-typed like every other hook on
- * this surface (I2 — no cross-plugin imports; the shapes are @ax/core's).
- *
- * Note what is NOT here: no `version`, no glob. This surface reads the CURRENT
- * snapshot and does its own filtering, because the exclusion rule below has to
- * be the SAME predicate for the listing and the read (invariant 4). Pushing it
- * into a `pathGlob` would mean two spellings of "what we serve" — one in a
- * glob string the backend interprets, one in the read path's guard — and the
- * two backends in this repo do not even agree on glob syntax.
- */
-interface WorkspaceListInput {
-  pathGlob?: string;
-}
-interface WorkspaceListOutput {
-  paths: string[];
-}
-interface WorkspaceReadInput {
-  path: string;
-}
-type WorkspaceReadResult = { found: true; bytes: Uint8Array } | { found: false };
-
 /** The subset of @ax/conversations' `Conversation` this surface reads. */
 interface ConversationRow {
   conversationId: string;
@@ -685,12 +659,15 @@ type TurnBlock = {
   content?: unknown;
   /**
    * `attachment`: a file the person sent, as `routes-chat.ts` writes it after
-   * `attachments:commit` (TASK-424). `path` is workspace-relative and is what
-   * `GET /api/files` takes; `displayName` is the person's own filename and is
-   * therefore untrusted text, rendered as a React child and never as markup.
+   * `attachments:commit` (TASK-424), or a file the runner published.
+   * `attachmentId` is opaque and is what `GET /api/files` takes;
+   * `filename` is the person's own name for the file (or one the agent chose)
+   * and is therefore untrusted text, rendered as a React child and never as
+   * markup. `turnAttachments` re-checks the whole block against
+   * `AttachmentBlockSchema` before any of it travels.
    */
-  path?: string;
-  displayName?: string;
+  attachmentId?: string;
+  filename?: string;
   mediaType?: string;
   sizeBytes?: number;
 };
@@ -709,8 +686,8 @@ interface ConversationsGetInput {
  * One host-only display event off `conversations:get` (TASK-66's redisplay
  * log, folded to its terminal state per key by the projection).
  *
- * Narrowed to what this surface draws: `turn-error` (TASK-498) and
- * `save-refused` (TASK-731). `permission-card` rides the same array and is deliberately
+ * Narrowed to what this surface draws: `turn-error` (TASK-498).
+ * `permission-card` rides the same array and is deliberately
  * NOT read here — the in-thread approval card is already built from the
  * decisions queue (`approvalMessages` below), and a second producer for one
  * row is exactly the drift invariant 4 forbids.
@@ -720,7 +697,7 @@ interface ConversationsGetInput {
  * before it leaves here, never spread.
  */
 interface DisplayEventRow {
-  kind: 'permission-card' | 'turn-error' | 'save-refused';
+  kind: 'permission-card' | 'turn-error';
   key: string;
   payload: Record<string, unknown>;
   createdAt: string;
@@ -1295,89 +1272,42 @@ export interface AgentDetail {
 }
 
 /**
- * `GET /api/workspace/agents/:agentId/files` — one row per file the agent has
- * in its workspace, minus the machinery.
+ * `GET /api/workspace/agents/:agentId/user-files[/*]` — the agent's files.
  *
- * Two fields, and they are not the same field twice:
- *
- *   - `path` is the KEY. It is the RAW workspace path, echoed back verbatim,
- *     and it is what the client puts back on the wire to open the file. It is
- *     never rendered. Same call as `ActivityEvent.id`: fencing a key can
- *     collapse two distinct paths onto one, and a label that cannot be used to
- *     fetch anything is not a key.
- *   - `name` is the LABEL, and it is fenced (see `fenceLine`). A filename is
- *     authored by the agent, in the agent's own workspace, with no validation
- *     beyond "git accepted it" — which is exactly the Trojan-source surface
- *     (CVE-2021-42574) that a file listing is famous for. `report.md` written
- *     with a U+202E in front of it renders as something else entirely.
- *
- * There is no size and no timestamp, because `workspace:list` reports neither
- * and a made-up "2 KB" is a claim.
- */
-export interface WorkspaceFileSummary {
-  path: string;
-  name: string;
-}
-
-export interface AgentFilesResponse {
-  files: WorkspaceFileSummary[];
-  /**
-   * `true` when the agent has more files than we are willing to put in one
-   * response. The tab says so out loud — a silently short list is a list that
-   * lies about what the agent has written.
-   */
-  truncated: boolean;
-}
-
-/**
- * `GET /api/workspace/agents/:agentId/files/*` — one file's text.
- *
- * `body` is `null` only when there is nothing text-shaped to show, and
- * `clipped` always says which of the two reasons applies. `clipped: null` with
- * a `body` means "this is the whole file", and that is a promise we keep.
- */
-export interface AgentFileResponse {
-  /** The raw key again, so the client can tell which request this answers. */
-  path: string;
-  /** The fenced label. */
-  name: string;
-  body: string | null;
-  clipped: 'binary' | 'too-large' | null;
-}
-
-/**
- * `GET /api/workspace/agents/:agentId/user-files[/*]` — the DURABLE tier.
- *
- * A different tier from `/files` above, and the distinction is the whole
- * reason this exists. `/files` reads `workspace:*`, which is the git-backed
- * `/agent` tier — AX's own machinery plus whatever the agent committed. THIS
- * reads the agent's durable user-files tier, which since TASK-164 is the
- * agent's cwd and HOME: it is where a deliverable lands when nobody said
- * otherwise, and until now it was invisible in the UI.
+ * This is the agent's cwd and HOME: it is where a deliverable lands when
+ * nobody said otherwise.
  *
  * It is a TREE, not a list, because that is what the backing hook answers:
  * `sandbox:read-user-files` returns one directory's immediate children, not a
  * recursive walk. So one shape covers both answers and the client navigates.
  *
- * `path` / `name` keep the same split as `WorkspaceFileSummary`, for the same
- * reason: `path` is the raw key the client puts back on the wire and is never
- * rendered; `name` is the fenced label. On this tier the filenames are, if
- * anything, MORE agent-authored than on the other one — nothing here has been
- * through a git commit — so the Trojan-source fence (CVE-2021-42574) is not
- * optional.
+ * `path` is the raw key the client puts back on the wire and is never
+ * rendered; `name` is the fenced label. Fencing a key can collapse two
+ * distinct paths onto one, and a label that cannot be used to fetch anything
+ * is not a key. Filenames are authored by the agent with no validation, which
+ * is exactly the Trojan-source surface (CVE-2021-42574) a file listing is
+ * famous for (`report.md` written with a U+202E in front of it renders as
+ * something else entirely), so the fence is not optional.
  */
 export interface UserFileEntry {
-  /** RAW key, relative to the tier root. `docs/note.md`. Never rendered. */
+  /** RAW key, relative to the root. `docs/note.md`. Never rendered. */
   path: string;
   /** The fenced label — one path segment. */
   name: string;
   kind: 'file' | 'dir';
 }
 
+/**
+ * Why a file body is `null` or short: `'binary'` (not text), `'too-large'`
+ * (cut at `FILE_BODY_MAX_BYTES`), or `null` for "this is the whole file", a
+ * promise we keep.
+ */
+export type FileBodyClipped = 'binary' | 'too-large' | null;
+
 export type AgentUserFilesResponse =
   | {
       kind: 'dir';
-      /** The raw key this answers for. `''` is the tier root. */
+      /** The raw key this answers for. `''` is the root. */
       path: string;
       /** The fenced label — the last segment, or `''` at the root. */
       name: string;
@@ -1395,7 +1325,7 @@ export type AgentUserFilesResponse =
       path: string;
       name: string;
       body: string | null;
-      clipped: 'binary' | 'too-large' | null;
+      clipped: FileBodyClipped;
     };
 
 /**
@@ -2882,14 +2812,13 @@ export const FILE_LABEL_MAX_CHARS = 120;
 export const CONVERSATION_TITLE_MAX_CHARS = 120;
 
 /**
- * How many rows one listing will carry, and how much of one file we will send.
+ * How much of one file we will send.
  *
- * Both are bounds on somebody else's output. An agent can write a hundred
- * thousand files and a gigabyte into one of them; neither number is a reason
- * for this process to build a hundred-megabyte JSON string. When either bound
- * bites, the response SAYS SO rather than quietly serving less than it claims.
+ * A bound on somebody else's output. An agent can write a gigabyte into one
+ * file; that is no reason for this process to build a gigabyte JSON string.
+ * When the bound bites, the response SAYS SO (`clipped: 'too-large'`) rather
+ * than quietly serving less than it claims.
  */
-export const WORKSPACE_FILES_MAX = 500;
 export const FILE_BODY_MAX_BYTES = 128 * 1024;
 
 /** How far in we look for a NUL before calling a file "not text". */
@@ -2897,43 +2826,6 @@ const BINARY_PROBE_BYTES = 8000;
 
 /** What a row says when the agent's filename fences down to nothing legible. */
 export const UNREADABLE_FILE_NAME = 'A file with no readable name';
-
-/**
- * The one predicate for "is this the agent's work, or is it our machinery?".
- *
- * Used by BOTH the listing and the read. One predicate, deliberately: an
- * exclusion only the listing enforces is not an exclusion, it is a cosmetic
- * filter with a direct-URL bypass sitting behind it.
- *
- *   - `.ax/**`     — identity, routines, uploads. Ours, and edited elsewhere.
- *   - `.claude/**` — runner machinery.
- *   - `memory/**`  — the Memory tab owns this, and it has DIFFERENT editing
- *                    rules (AW-13: one tier is human-owned and kept word for
- *                    word, the rest is the agent's own notes). Two tabs making
- *                    two different promises about one file is how a
- *                    hand-written rule gets eaten.
- *
- * `permanent/memory/**` is listed alongside `memory/**` because the memory
- * package has TWO layouts for the same tier: `memory/**` in the workspace tree
- * the agent actually reads, and `permanent/memory/**` in the host-local
- * scratch the CLI preset writes when there is no workspace backend. The plan
- * for this task named only the second, which never appears in a
- * `workspace:list` from a real backend — so naming only it would have excluded
- * nothing at all where it matters. Both are here.
- */
-export const WORKSPACE_FILES_HIDDEN_PREFIXES: readonly string[] = [
-  '.ax/',
-  '.claude/',
-  'memory/',
-  'permanent/memory/',
-];
-
-export function isServableWorkspaceFile(path: string): boolean {
-  if (path.length === 0) return false;
-  return !WORKSPACE_FILES_HIDDEN_PREFIXES.some(
-    (prefix) => path === prefix.slice(0, -1) || path.startsWith(prefix),
-  );
-}
 
 /**
  * A file's text, with the characters that rewrite a surface removed.
@@ -2958,14 +2850,14 @@ const FILE_DECODER = new TextDecoder('utf-8');
 /**
  * Bytes → what the Files tab can honestly show.
  *
- * A workspace holds whatever the agent put in it, which includes PNGs, PDFs
+ * An agent's home holds whatever the agent put in it, which includes PNGs, PDFs
  * and sqlite files. Decoding one of those as UTF-8 produces a page of
  * replacement characters that LOOKS like a corrupted document — so we say
  * "this is not a text file" instead, and let the tab render that.
  */
 export function decodeFileBody(bytes: Uint8Array): {
   body: string | null;
-  clipped: AgentFileResponse['clipped'];
+  clipped: FileBodyClipped;
 } {
   const probe = bytes.subarray(0, Math.min(bytes.length, BINARY_PROBE_BYTES));
   if (probe.includes(0)) return { body: null, clipped: 'binary' };
@@ -3016,7 +2908,7 @@ const DOWNLOAD_CONTENT_TYPE = 'application/octet-stream';
 /**
  * One file's bytes, as a download, with the headers that keep it one.
  *
- * `path` is the RAW workspace key. Only its last segment reaches the header,
+ * `path` is the RAW file key. Only its last segment reaches the header,
  * and only after `sanitizeContentDispositionFilename` — the name is
  * agent-authored, and `Content-Disposition` is a header a newline can end.
  */
@@ -3045,7 +2937,7 @@ function sendFileDownload(
 }
 
 /**
- * How many children of one durable-tier directory a response will carry.
+ * How many children of one directory a response will carry.
  *
  * Smaller than the reader's own cap on purpose: the reader bounds what this
  * PROCESS reads off an NFS mount, this bounds what one HTTP response carries.
@@ -3060,7 +2952,7 @@ export function basenameOf(rawPath: string): string {
   return cut === -1 ? rawPath : rawPath.slice(cut + 1);
 }
 
-/** One durable-tier child → one row. The key raw and joined, the label fenced. */
+/** One directory child → one row. The key raw and joined, the label fenced. */
 export function toUserFileEntry(
   parentPath: string,
   entry: { name: string; kind: 'file' | 'dir' },
@@ -3069,14 +2961,6 @@ export function toUserFileEntry(
     path: parentPath === '' ? entry.name : `${parentPath}/${entry.name}`,
     name: fenceLine(entry.name, FILE_LABEL_MAX_CHARS) ?? UNREADABLE_FILE_NAME,
     kind: entry.kind,
-  };
-}
-
-/** One workspace path → one row. The key raw, the label fenced. */
-export function toFileSummary(path: string): WorkspaceFileSummary {
-  return {
-    path,
-    name: fenceLine(path, FILE_LABEL_MAX_CHARS) ?? UNREADABLE_FILE_NAME,
   };
 }
 
@@ -3788,41 +3672,40 @@ function turnToolCalls(
  * that did six things could render as if the agent had said nothing at all.
  */
 /**
- * The files a user turn carried, as the transcript stored them (TASK-424).
+ * The files a turn carried, as the transcript stored them (TASK-424): the
+ * person's uploads on a user turn, the runner's published files on a tool turn.
  *
  * The transcript is the person's own record of their conversation, and it was
  * silently omitting something they did: the model received the image and
  * described it while the thread showed no trace of it at all. This is the read
  * that puts it back.
  *
- * EVERY FIELD IS CHECKED rather than spread. These blocks are persisted turn
- * content — the same wire that carries model output — so a block missing a
- * `path` or carrying a non-string `displayName` is dropped here rather than
- * reaching the client as a half-shaped row that the renderer then has to guess
- * about. `sizeBytes` is the one optional: it is a nicety on the chip, and a
- * chip without it still names the file.
+ * EVERY FIELD IS CHECKED rather than spread: each block is parsed against
+ * `AttachmentBlockSchema`, the same strict shape stored turns are validated
+ * against. These blocks are persisted turn content — the same wire that
+ * carries model output — so a block with a malformed id, an empty name, or a
+ * leftover `path` (the pre-id shape) is dropped here rather than reaching the
+ * client as a half-shaped row that the renderer then has to guess about. Only
+ * what the chip needs travels.
  */
-function turnAttachments(blocks: TurnBlock[]): ThreadAttachment[] {
+function turnAttachments(blocks: readonly TurnBlock[]): ThreadAttachment[] {
   const out: ThreadAttachment[] = [];
   for (const block of blocks) {
     if (block.type !== 'attachment') continue;
-    if (typeof block.path !== 'string' || block.path.length === 0) continue;
-    if (typeof block.displayName !== 'string' || block.displayName.length === 0) {
-      continue;
-    }
-    if (typeof block.mediaType !== 'string' || block.mediaType.length === 0) {
-      continue;
-    }
-    out.push({
-      path: block.path,
-      displayName: block.displayName,
-      mediaType: block.mediaType,
-      ...(typeof block.sizeBytes === 'number' && Number.isFinite(block.sizeBytes)
-        ? { sizeBytes: block.sizeBytes }
-        : {}),
-    });
+    const parsed = AttachmentBlockSchema.safeParse(block);
+    if (parsed.success) out.push(threadAttachment(parsed.data));
   }
   return out;
+}
+
+/** The chip's copy of a validated `attachment` block: id, name, type, size. */
+function threadAttachment(block: AttachmentBlock): ThreadAttachment {
+  return {
+    attachmentId: block.attachmentId,
+    displayName: block.filename,
+    mediaType: block.mediaType,
+    sizeBytes: block.sizeBytes,
+  };
 }
 
 /**
@@ -3916,54 +3799,12 @@ function errorMessages(
 }
 
 /**
- * The refused saves this conversation recorded, as thread rows (TASK-731).
- *
- * The host refused a reply's end-of-turn save (or the runner's last flush,
- * which has no turn) and the runner undid those files. TASK-720 told the
- * person on the live `done` frame only; the host now persists the refusal as
- * a `save-refused` display event so a reload still shows it.
- *
- * WHAT TRAVELS: the closed `code`, and nothing else from the payload. The
- * sentence is the renderer's job (`save-refused-copy.ts`), so no stored string
- * can ever reach a reader. Same posture as `errorMessages`: every field
- * checked, never spread; a row with no instant to sort on, a key that cannot
- * make a stable id, or a code that is not exactly one of the three is dropped
- * rather than half-drawn. An EMPTY key is kept, for the turn-error reason: the
- * persist side writes `''` for a turn with no reqId and folds on it.
- *
- * The id is `saveRefusedRowId(key)` — the per-turn key is the reqId, which
- * `AgentView` uses to stop drawing its live copy once this row lands. Like the
- * turn-error id it is opaque to the client beyond that one equality check.
- */
-function saveRefusedMessages(
-  events: readonly DisplayEventRow[],
-): Array<{ at: string; msg: ThreadMessage }> {
-  const out: Array<{ at: string; msg: ThreadMessage }> = [];
-  for (const ev of events) {
-    if (ev.kind !== 'save-refused') continue;
-    if (typeof ev.key !== 'string') continue;
-    if (typeof ev.createdAt !== 'string' || ev.createdAt.length === 0) continue;
-    const payload: unknown = ev.payload;
-    if (payload === null || typeof payload !== 'object') continue;
-    const code = asSaveRefusedCode((payload as Record<string, unknown>).code);
-    if (code === undefined) continue;
-    out.push({
-      at: ev.createdAt,
-      msg: { kind: 'save-refused', id: saveRefusedRowId(ev.key), code },
-    });
-  }
-  return out;
-}
-
-/**
- * Interleave the turns with the host-only rows (turn failures, refused
- * saves), by instant.
+ * Interleave the turns with the host-only rows (turn failures), by instant.
  *
  * TURNS WIN A TIE. A turn-error is the thing that ENDED a turn, so when its
  * timestamp collides with a turn's it belongs after it, never before — an
  * error drawn above the message it answers reads as a failure that happened
- * first. A refused save is written after the reply it is about, so the same
- * rule puts it under that reply.
+ * first.
  */
 function buildThread(
   turns: TurnRow[],
@@ -3991,8 +3832,9 @@ function buildThread(
     if (turn.role === 'tool') {
       // Runner-authored output references and successful explicit publications.
       // Arbitrary assistant attachment blocks are still ignored. The download
-      // endpoint independently checks conversation access and a durable row.
-      const files = turnAttachments(blocks.filter(block => AttachmentBlockSchema.safeParse(block).success));
+      // endpoint independently checks conversation access and a durable row,
+      // so a chip here only ever names an id; it grants nothing.
+      const files = turnAttachments(blocks);
       for (const block of blocks) {
         if (block.type !== 'tool_result' || block.is_error || block.held ||
           !publishIds.has(block.tool_use_id ?? '')) continue;
@@ -4002,14 +3844,16 @@ function buildThread(
             'text' in c && typeof c.text === 'string' ? [c.text] : []) : [];
         for (const text of texts) {
           try {
-            const value: unknown = JSON.parse(text);
-            if (value === null || typeof value !== 'object') continue;
-            const file = AttachmentBlockSchema.safeParse({ ...value, type: 'attachment' });
-            if (file.success) files.push(...turnAttachments([file.data]));
+            // The publish result object → a chip, every field re-validated;
+            // its sandbox-relative `path` is dropped.
+            const file = attachmentBlockFromArtifact(JSON.parse(text));
+            if (file !== null) files.push(threadAttachment(file));
           } catch { /* A failed/non-JSON publication has no download. */ }
         }
       }
-      const attachments = [...new Map(files.map(file => [file.path, file])).values()];
+      // The runner's block and the publish result name the same artifact id:
+      // one chip per id. Two files that merely share a name keep two chips.
+      const attachments = [...new Map(files.map(file => [file.attachmentId, file])).values()];
       const text = renderableText(blocks);
       if (attachments.length > 0 || text.length > 0) dated.push({
         at: turn.createdAt,
@@ -4080,13 +3924,8 @@ function buildThread(
     the event log and is authoritative — several turns legitimately share one
     instant, and a comparator over the whole list could reorder them. So the
     turns keep their order and the failures are slotted in around them.
-    (Refused saves ride the same merge. The sort is stable, so at one instant
-    a turn-error comes before a refused save.)
   */
-  const failures = [
-    ...errorMessages(displayEvents),
-    ...saveRefusedMessages(displayEvents),
-  ].sort((a, b) =>
+  const failures = errorMessages(displayEvents).sort((a, b) =>
     a.at < b.at ? -1 : a.at > b.at ? 1 : 0,
   );
   let f = 0;
@@ -4479,32 +4318,28 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
   }
 
   /**
-   * The owner-routed context for one agent's workspace.
+   * The owner-routed context for one agent.
    *
    * Used by the memory tier AND the Files tab, because they are two views of
-   * ONE store: build them separately and the day someone changes how a
-   * workspace is addressed, one tab follows and the other quietly reads a
-   * different agent's tree.
+   * the same agent: build them separately and the day someone changes how an
+   * agent is addressed, one tab follows and the other quietly reads a
+   * different agent.
    *
-   * The workspace and memory hooks route on `agentId`, and the
+   * The memory and files hooks route on `agentId`, and the
    * `agents:identity:*` hooks behind the Instructions act on `ctx.agentId`
    * alone — hand any of them the wrong ctx and the read or write lands on
    * another agent. Constructing it HERE, from the authenticated caller and
    * the agent they just passed the ACL for, is what keeps that honest;
    * reusing `initCtx` (agentId `@ax/channel-web`, userId `system`) would not.
    *
-   * The `userId` on this ctx no longer picks the repo — since TASK-257 the
-   * workspace partition is `agentId` alone, so every user authorized to reach
-   * an agent reads and writes the same tree. It still matters, for two
-   * reasons, which is why it stays the AUTHENTICATED caller and never a
-   * lookup of some notional owner: `workspace:apply` stamps it into
-   * `delta.author`, making it the only record of WHO changed a shared file;
-   * and the memory and identity hooks authorize on it themselves (personal
-   * owner or team member — the same answer `agents:resolve` gave).
+   * The `userId` on this ctx stays the AUTHENTICATED caller and never a
+   * lookup of some notional owner: the memory and identity hooks authorize on
+   * it themselves (personal owner or team member — the same answer
+   * `agents:resolve` gave).
    *
-   * The workspace root is inherited from `initCtx` so the CLI preset — which
-   * has no workspace backend and writes memory to the host filesystem — lands
-   * in the same root everything else in that preset uses.
+   * The ctx's scratch root is inherited from `initCtx` so the CLI preset —
+   * which writes memory to the host filesystem — lands in the same root
+   * everything else in that preset uses.
    */
   function agentWorkspaceCtx(agentId: string, callerUserId: string): AgentContext {
     return makeAgentContext({
@@ -5248,7 +5083,7 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
   }
 
   /**
-   * The body behind both durable-tier routes: authenticate, ACL, validate the
+   * The body behind both files routes: authenticate, ACL, validate the
    * path, read, answer.
    *
    * ONE function for the root and the splat because they are one answer with
@@ -5256,7 +5091,7 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
    * wrong is to write it twice.
    *
    * `rawSplat` arrives from `@ax/http-server` VERBATIM — undecoded, slashes
-   * intact — so `workspaceFilePath` owns the single decode. `''` means the tier
+   * intact — so `workspaceFilePath` owns the single decode. `''` means the
    * root and skips the decode entirely: there is nothing to decode, and running
    * a validator over the empty string to get `null` back would turn the root
    * listing into a 400.
@@ -5289,7 +5124,7 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
     }
 
     if (!bus.hasService('sandbox:read-user-files')) {
-      // No sandbox provider that can read the tier. An empty listing here
+      // No sandbox provider that can read the files. An empty listing here
       // would say "this agent has written nothing", which is a claim about the
       // agent when the truth is a fact about the deployment (H7).
       res.status(503).json({ error: 'user-files-unavailable' });
@@ -5303,7 +5138,7 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
     );
 
     if (out.kind === 'unavailable') {
-      // There is no durable tier for this agent ANYWHERE in this deployment —
+      // There is no file area for this agent ANYWHERE in this deployment —
       // decided before any path was looked at, so it is the same answer for
       // every path and reports nothing about which ones exist. It used to
       // arrive as `absent` and leave the tab hedging "either your agent wrote
@@ -5315,7 +5150,7 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
     }
 
     if (out.kind === 'absent') {
-      // The tier exists and this path is not in it. Still ONE answer for
+      // The file area exists and this path is not in it. Still ONE answer for
       // "never written", "since deleted" and "resolved outside your subtree" —
       // that collapse is deliberate, and it is what stops the response code
       // from reporting on paths in someone else's subtree.
@@ -7952,141 +7787,15 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
     },
 
     /**
-     * GET /api/workspace/agents/:agentId/files — what this agent has written.
+     * GET /api/workspace/agents/:agentId/user-files — the root of the agent's
+     * home.
      *
-     * STRICT, like the scoped activity read and unlike the roster fan-out: on
-     * this tab the listing IS the page. A swallowed failure would render
-     * "{agent} has not written anything yet" over a workspace we simply could
-     * not read, and the reader would have no way to tell the difference (H7).
-     * So a throw propagates and the tab shows an error.
+     * The Files tab, and the place that holds the agent's actual deliverables:
+     * the agent's home is its cwd and HOME, so a file it writes without saying
+     * where lands here.
      *
-     * NOTE ON ISOLATION. BOTH workspace backends now partition by `agentId`
-     * — `git-protocol` by shard (TASK-257), `local` by one bare repo per
-     * agent (TASK-396) — so this listing is genuinely one agent's tree on
-     * either, shared by every user authorized to reach that agent.
-     *
-     * This comment used to say the opposite about `local`, and it was right:
-     * that backend kept ONE tree for the whole deployment and this route
-     * served it to whoever asked. It took a user being shown another user's
-     * agent's file on a live deployment before anyone fixed the thing the
-     * comment had been describing.
-     *
-     * The isolation is the BACKEND's partition plus the `agents:resolve` ACL
-     * above — not this route's filtering, of which there is none: a tree has
-     * no per-user prefix to scope by, and deliberately so. What this route
-     * owes them is an honest ctx: `agentWorkspaceCtx(agentId, userId)`, built
-     * from the session's identity and the agent `agents:resolve` just
-     * approved, never from anything the request supplied.
-     */
-    async agentFiles(req: RouteRequest, res: RouteResponse): Promise<void> {
-      const userId = await authOr401(bus, initCtx, req, res);
-      if (userId === null) return;
-      const agentId = req.params.agentId ?? '';
-      if (agentId.length === 0) {
-        res.status(400).json({ error: 'missing-agent-id' });
-        return;
-      }
-      // ACL first: a not-accessible agent → 404, before we touch any storage.
-      const agent = await resolveAgentOr404(bus, initCtx, agentId, userId, res);
-      if (agent === null) return;
-
-      if (!bus.hasService('workspace:list')) {
-        // No workspace backend is loaded. An empty list here would say "this
-        // agent has written nothing", which is a claim about the agent when
-        // the truth is a fact about the deployment.
-        res.status(503).json({ error: 'workspace-unavailable' });
-        return;
-      }
-
-      const out = await bus.call<WorkspaceListInput, WorkspaceListOutput>(
-        'workspace:list',
-        agentWorkspaceCtx(agentId, userId),
-        {},
-      );
-      const servable = (out.paths ?? []).filter(isServableWorkspaceFile);
-      res.status(200).json({
-        files: servable.slice(0, WORKSPACE_FILES_MAX).map(toFileSummary),
-        truncated: servable.length > WORKSPACE_FILES_MAX,
-      } satisfies AgentFilesResponse);
-    },
-
-    /**
-     * GET /api/workspace/agents/:agentId/files/* — one file's text.
-     *
-     * The only route on this surface that takes a PATH from the caller, which
-     * makes it the one worth reading twice. The order below is the security
-     * property, not a style choice:
-     *
-     *   1. authenticate    — identity is the session's, never the request's.
-     *   2. ACL             — `agents:resolve`, and a failure is 404.
-     *   3. validate path   — `workspaceFilePath`, which decodes exactly once.
-     *   4. apply the same exclusion the listing uses.
-     *   5. only now, read.
-     *
-     * Steps 2 and 3 are in that order deliberately. Validating first means a
-     * caller poking at someone else's agent learns which of their paths are
-     * well-formed — a 400 for one path and a 404 for another is an oracle,
-     * and building one out of an error code is free for the attacker.
-     *
-     * The splat arrives from `@ax/http-server` VERBATIM: undecoded, slashes
-     * intact (router.ts says so, and `@ax/static-files` depends on it). That
-     * is why `workspaceFilePath` owns the single decode.
-     */
-    async agentFile(req: RouteRequest, res: RouteResponse): Promise<void> {
-      const userId = await authOr401(bus, initCtx, req, res);
-      if (userId === null) return;
-      const agentId = req.params.agentId ?? '';
-      if (agentId.length === 0) {
-        res.status(400).json({ error: 'missing-agent-id' });
-        return;
-      }
-      const agent = await resolveAgentOr404(bus, initCtx, agentId, userId, res);
-      if (agent === null) return;
-
-      const path = workspaceFilePath(req.params['*'] ?? '');
-      if (path === null) {
-        res.status(400).json({ error: 'invalid-path' });
-        return;
-      }
-      if (!isServableWorkspaceFile(path)) {
-        // Not 403: from the caller's side this is simply not a file this
-        // surface has, and the listing agrees — it never offered one.
-        res.status(404).json({ error: 'file-not-found' });
-        return;
-      }
-
-      if (!bus.hasService('workspace:read')) {
-        res.status(503).json({ error: 'workspace-unavailable' });
-        return;
-      }
-
-      const out = await bus.call<WorkspaceReadInput, WorkspaceReadResult>(
-        'workspace:read',
-        agentWorkspaceCtx(agentId, userId),
-        { path },
-      );
-      if (!out.found) {
-        res.status(404).json({ error: 'file-not-found' });
-        return;
-      }
-
-      res.status(200).json({
-        path,
-        name: fenceLine(path, FILE_LABEL_MAX_CHARS) ?? UNREADABLE_FILE_NAME,
-        ...decodeFileBody(out.bytes),
-      } satisfies AgentFileResponse);
-    },
-
-    /**
-     * GET /api/workspace/agents/:agentId/user-files — the DURABLE tier root.
-     *
-     * The other half of the Files tab, and the half that holds the agent's
-     * actual deliverables: this tier is the agent's cwd and HOME, so a file it
-     * writes without saying where lands here, not in the git-backed tier the
-     * `/files` routes above read.
-     *
-     * A thin wrapper over the splat handler with an empty path — the tier root
-     * is just the directory whose key is `''`, and giving it its own body would
+     * A thin wrapper over the splat handler with an empty path — the root is
+     * just the directory whose key is `''`, and giving it its own body would
      * be two code paths for one answer.
      */
     async agentUserFiles(req: RouteRequest, res: RouteResponse): Promise<void> {
@@ -8094,14 +7803,13 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
     },
 
     /**
-     * GET /api/workspace/agents/:agentId/user-files/* — one path in the tier.
+     * GET /api/workspace/agents/:agentId/user-files/* — one path in the home.
      *
      * Answers a DIRECTORY listing or a FILE body depending on what the path
      * turns out to be, because the caller navigating a tree does not know
      * which it clicked until we tell it.
      *
-     * The step order is the security property, copied deliberately from
-     * `agentFile` above:
+     * The step order is the security property, not a style choice:
      *
      *   1. authenticate    — identity is the session's, never the request's.
      *   2. ACL             — `agents:resolve`, and a failure is 404.
@@ -8123,113 +7831,20 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
      * deliberate: one place decides, and it is the place that already owns the
      * per-agent mount for the live session.
      *
-     * Note what is NOT filtered here: `isServableWorkspaceFile`'s `.ax/`,
-     * `.claude/`, `memory/` exclusions are about the OTHER tier's machinery,
-     * which the runner's PreToolUse re-rooter keeps off this one anyway.
-     * Applying them here would hide a directory the user themselves named
-     * `memory/`, which on their own file area is just a lie about their files.
+     * Note what is NOT filtered here: nothing is hidden by name. A directory
+     * the user themselves named `memory/` or `.claude/` is their own file, and
+     * hiding it would be a lie about their files.
      */
     async agentUserFile(req: RouteRequest, res: RouteResponse): Promise<void> {
       await readUserFilesPath(req, res, req.params['*'] ?? '');
     },
 
     /**
-     * GET /api/workspace/agents/:agentId/download/files/* — the BYTES of one
-     * governed-tier file.
-     *
-     * The read route above answers with TEXT and says so when it could not:
-     * `clipped: 'binary'` for a PDF, `clipped: 'too-large'` for a long log. An
-     * agent that made you a spreadsheet therefore showed up on this surface as
-     * the word "binary", with no way to get the thing itself. This is that way.
-     *
-     * It is a SIBLING of the read, not a mode of it: the same auth, the same
-     * ACL, the same single decode, the same exclusion — and a different
-     * response, because bytes and a JSON envelope are different answers. The
-     * five steps are copied from `agentFile` deliberately, ordering included:
-     *
-     *   1. authenticate    — identity is the session's, never the request's.
-     *   2. ACL             — `agents:resolve`, and a failure is 404.
-     *   3. validate path   — `workspaceFilePath`, which decodes exactly once.
-     *   4. apply the same exclusion the listing uses.
-     *   5. only now, read.
-     *
-     * Steps 2-before-3 is the oracle argument from `agentFile`, and it is not
-     * weaker here: a 400-vs-404 split on somebody else's agent would still say
-     * which of their paths are well-formed.
-     */
-    async agentFileDownload(
-      req: RouteRequest,
-      res: DownloadRouteResponse,
-    ): Promise<void> {
-      const userId = await authOr401(bus, initCtx, req, res);
-      if (userId === null) return;
-      const agentId = req.params.agentId ?? '';
-      if (agentId.length === 0) {
-        res.status(400).json({ error: 'missing-agent-id' });
-        return;
-      }
-      const agent = await resolveAgentOr404(bus, initCtx, agentId, userId, res);
-      if (agent === null) return;
-
-      const path = workspaceFilePath(req.params['*'] ?? '');
-      if (path === null) {
-        res.status(400).json({ error: 'invalid-path' });
-        return;
-      }
-      if (!isServableWorkspaceFile(path)) {
-        // Same answer the read route gives, for the same reason: the listing
-        // never offered this file, so from the caller's side it is not here.
-        // A download route that served `.ax/IDENTITY.md` would be a bypass of
-        // an exclusion the other route enforces, which is how a cosmetic
-        // filter is born.
-        res.status(404).json({ error: 'file-not-found' });
-        return;
-      }
-
-      if (!bus.hasService('workspace:read')) {
-        res.status(503).json({ error: 'workspace-unavailable' });
-        return;
-      }
-
-      const out = await bus.call<WorkspaceReadInput, WorkspaceReadResult>(
-        'workspace:read',
-        agentWorkspaceCtx(agentId, userId),
-        { path },
-      );
-      if (!out.found) {
-        res.status(404).json({ error: 'file-not-found' });
-        return;
-      }
-
-      /*
-        No truncation question on this tier: `workspace:read` answers with the
-        WHOLE blob (the 128 KiB `clipped` bound is the READ route's JSON
-        envelope, not the backend's), so nothing here can be a prefix. The
-        durable tier below is the one that has to check.
-
-        Said plainly, because it is the other side of that coin: this tier has
-        no read cap at all, so a huge committed file is a huge buffer in this
-        process. That is NOT new — the read route above already pulls the same
-        whole blob into memory and only clips on the way out — and it is not
-        something this route can fix without breaking the one promise it makes,
-        which is that what you get is the file. A bound belongs on the backend
-        or on a streaming read, not here.
-      */
-      sendFileDownload(res, path, out.bytes);
-    },
-
-    /**
      * GET /api/workspace/agents/:agentId/download/user-files/* — the BYTES of
-     * one durable-tier file.
+     * one file in the agent's home.
      *
-     * The other tier's download, and a separate route for the same reason the
-     * reads are separate: a different backend behind it, failing
-     * independently. Folding both into one route with a `?tier=` would put a
-     * caller-supplied string in charge of which backend we read, which is a
-     * choice we would then have to validate; two registered paths make it a
-     * fact about the route table instead.
-     *
-     * TWO THINGS THIS ROUTE DOES THAT ITS GOVERNED SIBLING DOES NOT:
+     * A sibling of the read, not a mode of it: bytes and a JSON envelope are
+     * different answers. It differs from the read in two ways:
      *
      *   - It refuses a DIRECTORY. The read route answers a listing there,
      *     because a caller walking a tree does not know which it clicked. A
@@ -8260,13 +7875,13 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
         res.status(400).json({ error: 'missing-agent-id' });
         return;
       }
-      // ACL FIRST — see `agentUserFile`. This tier is ONE export holding every
+      // ACL FIRST — see `agentUserFile`. The home is ONE export holding every
       // tenant's subtree, so a 400-vs-404 split below this line would be an
       // oracle over somebody else's files.
       const agent = await resolveAgentOr404(bus, initCtx, agentId, userId, res);
       if (agent === null) return;
 
-      // No root download: the tier root is a directory, and `workspaceFilePath`
+      // No root download: the root is a directory, and `workspaceFilePath`
       // rejects the empty string, so this is the same 400 a malformed path gets.
       const relPath = workspaceFilePath(req.params['*'] ?? '');
       if (relPath === null) {
@@ -8286,7 +7901,7 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
       );
 
       if (out.kind === 'unavailable') {
-        // Same split as the listing route: no durable tier in this deployment
+        // Same split as the listing route: no file area in this deployment
         // is a 503, not a 404. Path-independent, so it is not an oracle.
         res.status(503).json({ error: 'user-files-unavailable' });
         return;
@@ -10128,31 +9743,9 @@ export async function registerWorkspaceRoutes(
       handler: handlers.taskCheckin as unknown as RouteHandler,
     },
     {
-      method: 'GET',
-      path: '/api/workspace/agents/:agentId/files',
-      handler: handlers.agentFiles as unknown as RouteHandler,
-    },
-    {
       /*
-        The splat is a bare `*`, and it MUST be the final segment —
-        `@ax/http-server`'s router only recognises that spelling (a
-        `/*path` segment compiles to a LITERAL and the route then matches
-        nothing but the URL `/files/*path`). The captured remainder lands
-        under `req.params['*']`, undecoded.
-
-        Registered after the exact `/files` route above only for
-        readability: the router tries every non-splat pattern before any
-        splat, so `/files` can never be swallowed by this one.
-      */
-      method: 'GET',
-      path: '/api/workspace/agents/:agentId/files/*',
-      handler: handlers.agentFile as unknown as RouteHandler,
-    },
-    {
-      /*
-        The DURABLE tier's root. Sibling of `/files` above and a different
-        backend: `/files` reads `workspace:*` (the git-backed governed tier),
-        this reads `sandbox:read-user-files` (the agent's cwd and HOME).
+        The agent's files: the root of its home (cwd and HOME). Read through
+        `sandbox:read-user-files`.
       */
       method: 'GET',
       path: '/api/workspace/agents/:agentId/user-files',
@@ -10160,11 +9753,13 @@ export async function registerWorkspaceRoutes(
     },
     {
       /*
-        Same splat rules as `/files/*`: a bare `*` as the FINAL segment is
-        the only spelling `@ax/http-server`'s router recognises, and the
-        captured remainder lands under `req.params['*']` undecoded. The
-        router tries every non-splat pattern before any splat, so the exact
-        `/user-files` route above can never be swallowed by this one.
+        The splat is a bare `*`, and it MUST be the final segment —
+        `@ax/http-server`'s router only recognises that spelling (a
+        `/*path` segment compiles to a LITERAL and the route then matches
+        nothing but the URL `/user-files/*path`). The captured remainder
+        lands under `req.params['*']`, undecoded. The router tries every
+        non-splat pattern before any splat, so the exact `/user-files`
+        route above can never be swallowed by this one.
       */
       method: 'GET',
       path: '/api/workspace/agents/:agentId/user-files/*',
@@ -10172,11 +9767,10 @@ export async function registerWorkspaceRoutes(
     },
     {
       /*
-        THE BYTES, for each tier. Two routes, because they are two backends
-        — the same reason `/files` and `/user-files` are two routes.
+        THE BYTES of one file in the agent's home.
 
-        `download` sits where `files`/`user-files` sit, not after them, and
-        that placement is load-bearing: `/files/download/*` would be
+        `download` sits where `user-files` sits, not after it, and that
+        placement is load-bearing: `/user-files/download/*` would be
         ambiguous with a file the agent actually named `download/…`, and the
         splat would hand both to the same handler. Here the segment is part
         of the ROUTE, so no path an agent can write can collide with it.
@@ -10186,11 +9780,6 @@ export async function registerWorkspaceRoutes(
         recognises, and the remainder arrives under `req.params['*']`
         undecoded.
       */
-      method: 'GET',
-      path: '/api/workspace/agents/:agentId/download/files/*',
-      handler: handlers.agentFileDownload as unknown as RouteHandler,
-    },
-    {
       method: 'GET',
       path: '/api/workspace/agents/:agentId/download/user-files/*',
       handler: handlers.agentUserFileDownload as unknown as RouteHandler,

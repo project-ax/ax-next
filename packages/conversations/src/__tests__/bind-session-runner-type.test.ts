@@ -38,7 +38,6 @@ import type {
 
 interface MockAgent {
   id: string;
-  workspaceRef: string | null;
   runner?: string;
 }
 
@@ -62,12 +61,6 @@ async function makeHarness(
         }
         return { agent };
       },
-      'workspace:list': async () => ({ paths: [] as string[] }),
-      'workspace:read': async () => ({ found: false }) as const,
-      'workspace:apply': async () => ({
-        version: 'v-stub',
-        delta: { before: null, after: 'v-stub', changes: [] },
-      }),
     },
     plugins: [
       createDatabasePostgresPlugin({ connectionString }),
@@ -103,7 +96,7 @@ afterAll(async () => {
 });
 
 const AGENTS = new Map<string, MockAgent>([
-  ['agt_x', { id: 'agt_x', workspaceRef: null, runner: 'claude-sdk' }],
+  ['agt_x', { id: 'agt_x', runner: 'claude-sdk' }],
 ]);
 
 async function seedConversation(h: TestHarness): Promise<string> {

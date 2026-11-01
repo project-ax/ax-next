@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { setTimeout } from 'node:timers/promises';
 import {
   BOOTSTRAP_ROOT, BOOTSTRAP_FILE, BOOTSTRAP_ACK, BOOTSTRAP_MAX_BYTES,
-  BootstrapAssignmentSchema,
+  BootstrapAssignmentSchema, POD_SCRATCH_ROOT,
 } from '@ax/sandbox-protocol';
 import { scaffoldPythonVenv } from './python-venv.js';
 
@@ -18,10 +18,11 @@ export async function waitForAssignment(options: {
   const file = join(root, BOOTSTRAP_FILE);
   if (!env.AX_INSTANCE_ID) throw new Error('standby instance identity missing');
   // Image-only preparation, before reading tenant configuration or credentials.
-  // The shared template and bootstrap schema fix the ephemeral tier at this path.
+  // The shared template and bootstrap schema fix the session scratch root at
+  // this path (the pod's disk /tmp), so the session finds the venv ready.
   // Await completion so the session cannot race a half-copied venv; failure is
   // best-effort and the ordinary session scaffold retains its existing fallback.
-  await scaffoldPythonVenv('/ephemeral', { offlineOnly: true }).catch(() => false);
+  await scaffoldPythonVenv(POD_SCRATCH_ROOT, { offlineOnly: true }).catch(() => false);
   for (;;) {
     options.signal?.throwIfAborted();
     let handle;

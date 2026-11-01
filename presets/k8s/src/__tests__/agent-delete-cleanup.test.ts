@@ -128,13 +128,24 @@ async function seedAgent(h: TestHarness, name: string): Promise<Seeded> {
   for (const conversationId of conversationIds) {
     for (const table of ['attachments_v1_artifacts', 'attachments_v1_files']) {
       const idColumn = table === 'attachments_v1_artifacts' ? 'artifact_id' : 'attachment_id';
-      await sql`
-        INSERT INTO ${sql.table(table)}
-          (${sql.ref(idColumn)}, conversation_id, user_id, sha256, path, display_name, media_type, size_bytes)
-        VALUES
-          (${`${table}-${conversationId}`}, ${conversationId}, ${USER}, ${'ab'.repeat(32)},
-           ${'notes.txt'}, ${'notes.txt'}, ${'text/plain'}, ${5})
-      `.execute(db);
+      const id = `${table}-${conversationId}`;
+      const sha = 'ab'.repeat(32);
+      // Artifact rows keep the publish key `path`; upload rows are addressed by
+      // id alone (TASK-995) and have no such column.
+      await (table === 'attachments_v1_artifacts'
+        ? sql`
+            INSERT INTO ${sql.table(table)}
+              (${sql.ref(idColumn)}, conversation_id, user_id, sha256, path, display_name, media_type, size_bytes)
+            VALUES
+              (${id}, ${conversationId}, ${USER}, ${sha}, ${'notes.txt'}, ${'notes.txt'}, ${'text/plain'}, ${5})
+          `
+        : sql`
+            INSERT INTO ${sql.table(table)}
+              (${sql.ref(idColumn)}, conversation_id, user_id, sha256, display_name, media_type, size_bytes)
+            VALUES
+              (${id}, ${conversationId}, ${USER}, ${sha}, ${'notes.txt'}, ${'text/plain'}, ${5})
+          `
+      ).execute(db);
     }
   }
 

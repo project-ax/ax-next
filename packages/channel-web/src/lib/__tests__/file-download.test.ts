@@ -56,19 +56,19 @@ describe('workspaceApi.downloadFile', () => {
     return spy;
   }
 
-  it('addresses the GOVERNED tier, with the path encoded whole', async () => {
+  it('addresses the agent\u2019s files, with the path encoded whole', async () => {
     const spy = stubFetch(
       new Response('hi', {
         status: 200,
         headers: { 'content-disposition': 'attachment; filename="plan.md"' },
       }),
     );
-    const got = await workspaceApi.downloadFile('a 1', 'workspace', 'notes/plan.md');
+    const got = await workspaceApi.downloadFile('a 1', 'notes/plan.md');
     // Slashes ENCODED — the server gets one splat segment and decodes exactly
     // once. Real slashes on the wire would let `a/../b` and `a%2F..%2Fb` reach
     // the same read down two different paths.
     expect(spy.mock.calls[0]?.[0]).toBe(
-      '/api/workspace/agents/a%201/download/files/notes%2Fplan.md',
+      '/api/workspace/agents/a%201/download/user-files/notes%2Fplan.md',
     );
     expect(got.filename).toBe('plan.md');
     // The BYTES, not a decoded string: this route serves PDFs and zips, and
@@ -78,17 +78,20 @@ describe('workspaceApi.downloadFile', () => {
     expect(got.blob.size).toBe(2);
   });
 
-  it('addresses the DURABLE tier on its own route, not a query parameter', async () => {
+  it('has no tier argument and no git download route to address', async () => {
+    // The git-backed `/download/files/*` route was removed in TASK-995, so
+    // there is exactly one route and the path is the only thing that varies.
     const spy = stubFetch(new Response('hi', { status: 200 }));
-    await workspaceApi.downloadFile('a1', 'user-files', 'reports/summary.md');
+    await workspaceApi.downloadFile('a1', 'reports/summary.md');
     expect(spy.mock.calls[0]?.[0]).toBe(
       '/api/workspace/agents/a1/download/user-files/reports%2Fsummary.md',
     );
+    expect(spy.mock.calls[0]?.[0]).not.toContain('/download/files/');
   });
 
   it('falls back to a plain name when the server sent no filename', async () => {
     stubFetch(new Response('hi', { status: 200 }));
-    const got = await workspaceApi.downloadFile('a1', 'workspace', 'x.md');
+    const got = await workspaceApi.downloadFile('a1', 'x.md');
     expect(got.filename).toBe(FALLBACK_SAVED_FILENAME);
   });
 
@@ -97,7 +100,7 @@ describe('workspaceApi.downloadFile', () => {
     // a flattened `Error('download failed')` could not tell them apart.
     stubFetch(new Response('{"error":"file-too-large"}', { status: 413 }));
     await expect(
-      workspaceApi.downloadFile('a1', 'user-files', 'huge.csv'),
+      workspaceApi.downloadFile('a1', 'huge.csv'),
     ).rejects.toMatchObject({ name: 'WorkspaceApiError', status: 413 });
   });
 
@@ -106,7 +109,7 @@ describe('workspaceApi.downloadFile', () => {
     // `window.open` would have shown a person in an otherwise empty tab.
     stubFetch(new Response('{"error":"file-not-found"}', { status: 404 }));
     const err = await workspaceApi
-      .downloadFile('a1', 'workspace', 'gone.md')
+      .downloadFile('a1', 'gone.md')
       .catch((e: unknown) => e);
     expect(err).toBeInstanceOf(WorkspaceApiError);
     expect((err as Error).message).toBe(HTTP_NOT_FOUND);
@@ -201,7 +204,6 @@ describe('useFileDownload', () => {
       useFileDownload({
         agentId: 'a1',
         agentName: 'Scout',
-        tier: 'workspace',
         path: 'q3.pdf',
       }),
     );
@@ -222,7 +224,6 @@ describe('useFileDownload', () => {
       useFileDownload({
         agentId: 'a1',
         agentName: 'Scout',
-        tier: 'workspace',
         path: 'q3.pdf',
       }),
     );

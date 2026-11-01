@@ -56,11 +56,12 @@ export async function runConversationsMigration<DB>(
   `.execute(db);
 
   // Phase B (2026-04-29) — runner-owned-sessions metadata. Pure-additive
-  // ALTER on v1 (not a v2 side-table): all four columns are new and
-  // nullable, no data migration, no breaking change. ax-next is greenfield
-  // (confirmed 2026-04-29) so the original "v2 side-table, never an
-  // in-place ALTER" rule — which existed to protect production data — does
-  // not apply. We ALTER v1 in place forever.
+  // ALTER on v1 (not a v2 side-table): every column is new and nullable, no
+  // data migration, no breaking change. ax-next is greenfield (confirmed
+  // 2026-04-29) so the original "v2 side-table, never an in-place ALTER"
+  // rule — which existed to protect production data — does not apply. We
+  // ALTER v1 in place forever. (Phase B also added `workspace_ref`, a frozen
+  // copy of the agent's; TASK-995 drops it, below.)
   //
   //   runner_type:        which runner LAST served this conversation — i.e.
   //                       whose format the stored transcript is in. Written
@@ -78,10 +79,6 @@ export async function runConversationsMigration<DB>(
   //   runner_session_id:  the runner's native session id. Bound once on
   //                       the first turn via
   //                       conversations:store-runner-session.
-  //   workspace_ref:      frozen copy of agents.workspaceRef at create.
-  //                       TEXT NULL to match the upstream type — JSONB
-  //                       NOT NULL would force a backfill on every agent
-  //                       without a workspaceRef.
   //   last_activity_at:   bumped by the chat:turn-end subscriber on every
   //                       non-heartbeat turn. Sidebar ordering only —
   //                       opaque to correctness (I8).
@@ -91,7 +88,6 @@ export async function runConversationsMigration<DB>(
     ALTER TABLE conversations_v1_conversations
       ADD COLUMN IF NOT EXISTS runner_type TEXT,
       ADD COLUMN IF NOT EXISTS runner_session_id TEXT,
-      ADD COLUMN IF NOT EXISTS workspace_ref TEXT,
       ADD COLUMN IF NOT EXISTS last_activity_at TIMESTAMPTZ
   `.execute(db);
 
@@ -151,21 +147,27 @@ export async function runConversationsMigration<DB>(
       ADD COLUMN IF NOT EXISTS external_key TEXT
   `.execute(db);
 
-  // TASK-749 (2026-10-02). How far the MODEL has been told about this
-  // conversation's refused saves: the highest `save-refused` display-event seq
-  // a runner has drained (conversation.drain-save-refusals). The rows
-  // themselves stay the one source of truth (TASK-731); this only marks them
-  // told, so each is delivered to the model once. NULL reads as 0 (nothing
-  // told yet). Additive, nullable, no backfill; idempotent (I11).
-  await sql`
-    ALTER TABLE conversations_v1_conversations
-      ADD COLUMN IF NOT EXISTS save_refused_drained_seq BIGINT
-  `.execute(db);
-
   await sql`
     CREATE UNIQUE INDEX IF NOT EXISTS conversations_v1_external_key_unique
       ON conversations_v1_conversations (user_id, agent_id, external_key)
       WHERE external_key IS NOT NULL AND deleted_at IS NULL
+  `.execute(db);
+
+  // TASK-995: DROP two columns whose last reader and writer are gone (the
+  // TASK-142 precedent in @ax/agents' migration):
+  //   workspace_ref:            Phase B's frozen copy of the agent's
+  //                             workspaceRef. No caller ever used it, and the
+  //                             agent field it copied is gone too.
+  //   save_refused_drained_seq: TASK-749's mark of how far the model had been
+  //                             told about refused saves. Nothing refuses a
+  //                             save any more, so there is nothing to tell.
+  // Both are out of the ADD COLUMN statements above, so a brand-new DB never
+  // has them; an already-deployed DB drops them here once, and every later
+  // boot is a no-op (IF EXISTS).
+  await sql`
+    ALTER TABLE conversations_v1_conversations
+      DROP COLUMN IF EXISTS workspace_ref,
+      DROP COLUMN IF EXISTS save_refused_drained_seq
   `.execute(db);
 
   // Phase E (2026-05-09): drop the now-dead transcript table. Phase D
@@ -183,8 +185,8 @@ export async function runConversationsMigration<DB>(
   // display frames the host already emits over SSE so reload == live by
   // construction: `turn` rows carry the model/tool content (the folded
   // terminal ContentBlock[] the runner sends at the result boundary);
-  // `permission-card` / `turn-error` / `save-refused` rows carry the
-  // HOST-only UI events the SDK jsonl never sees.
+  // `permission-card` / `turn-error` rows carry the HOST-only UI events the
+  // SDK jsonl never sees.
   //
   //   seq:        per-conversation monotonic int (1-based). The PK is the
   //               composite (conversation_id, seq) so ordering + dedup are
@@ -194,10 +196,14 @@ export async function runConversationsMigration<DB>(
   //               colliding. The PK is the last-resort integrity backstop —
   //               a violation means a writer skipped the lock.
   //   event_kind: display-semantic enum — 'turn' | 'permission-card' |
-  //               'turn-error' | 'save-refused' (TASK-731: a refused
-  //               end-of-turn or final save, payload `{ code }`).
-  //               CHECK-constrained so a malformed kind can't land; the
-  //               widening step below brings older tables up to date.
+  //               'turn-error'. CHECK-constrained so a malformed kind can't
+  //               land. The CHECK also admits 'save-refused' (TASK-731: a
+  //               refused end-of-turn or final save, payload `{ code }`).
+  //               Those rows predate TASK-995; nothing writes or reads them
+  //               any more (the store refuses the kind on write and leaves
+  //               it out of every read), and the CHECK keeps the value so
+  //               they stay valid. The widening step below brings tables
+  //               older than TASK-731 up to the same constraint.
   //               Storage-agnostic (I1): no backend vocabulary.
   //   role:       turn role for 'turn' rows ('user'|'assistant'|'tool');
   //               NULL for host-only events.
@@ -231,7 +237,9 @@ export async function runConversationsMigration<DB>(
   // TASK-731: widen the event_kind CHECK on a table created before
   // 'save-refused' existed. CREATE TABLE IF NOT EXISTS above does nothing to
   // an existing table, so a DB migrated by an earlier release still carries
-  // the three-kind constraint and would refuse every save-refused row.
+  // the three-kind constraint. (TASK-995 retired the kind but keeps this
+  // step: every table then has the same single constraint whatever its age,
+  // and an image rolled back to before TASK-995 can still write the kind.)
   //
   // The constraint was declared inline, so Postgres auto-named it
   // `conversations_v1_events_event_kind_check` (pinned by a test). We
@@ -357,7 +365,6 @@ export interface ConversationsRow {
   // populated lazily. See migration block above for semantics.
   runner_type: string | null;
   runner_session_id: string | null;
-  workspace_ref: string | null;
   last_activity_at: Date | null;
   hidden: boolean;
   // AW-6 (2026-08-21). The channel that opened the conversation. NULL on every
@@ -368,10 +375,6 @@ export interface ConversationsRow {
   // lookup handle. See migration block above for semantics. NULL for
   // non-routine conversations.
   external_key: string | null;
-  // TASK-749. Highest `save-refused` event seq the model has been told about
-  // (drainSaveRefusals). NULL = none yet. BIGINT, so it may surface as a
-  // string.
-  save_refused_drained_seq: string | number | null;
   deleted_at: Date | null;
   created_at: Date;
   updated_at: Date;

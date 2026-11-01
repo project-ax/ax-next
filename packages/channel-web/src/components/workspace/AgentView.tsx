@@ -77,7 +77,6 @@ import { continuationActions } from '@/lib/continuation-actions';
 import type { SendableAttachment } from '@/lib/workspace-attachments';
 import type { PhaseKind } from '@/server/types';
 import { STOPPED_NOTICE, STOP_COPY, STOP_FALLBACK_MS } from './stop-copy';
-import { saveRefusedRowId, type SaveRefusedCode } from '@/lib/save-refused';
 import { AgentConversation, approvalReadFrom, type ApprovalRead } from './AgentConversation';
 import { AgentFiles } from './AgentFiles';
 import { SkippedConnectorsNotice } from './SkippedConnectorsNotice';
@@ -642,25 +641,6 @@ export function AgentView({
   */
   const [stopping, setStopping] = useState(false);
   const [stopNotice, setStopNotice] = useState<string | null>(null);
-  /*
-    TASK-720 — "the files from this reply weren't saved", the LIVE copy. Set
-    when a turn's `done` carries a `saveRefused` code, keyed by the
-    conversation the turn ran in so it is only drawn there, cleared by the next
-    send, the next stream, or an agent switch.
-
-    It is a bridge, not the record (TASK-731). The host persists the refusal as
-    a display event, and the thread read draws it as a row whose id is
-    `saveRefusedRowId(reqId)` — that row is what survives a reload. This copy
-    covers the gap between `done` and the re-read, and stops being drawn once
-    the thread holds the row for its `reqId` (see where `liveThread` is built).
-    If the persist failed, it is still the only notice, for this view's life.
-  */
-  const [saveRefusedNotice, setSaveRefusedNotice] = useState<{
-    conversationId: string;
-    /** The turn it is about — what the persisted row's id is built from. */
-    reqId: string;
-    code: SaveRefusedCode;
-  } | null>(null);
   interface PendingStop {
     conversationId: string;
     /** The host answered `interrupted: true` — a stop really was queued. */
@@ -836,7 +816,6 @@ export function AgentView({
     // pressed on.
     cancelStop();
     setStopNotice(null);
-    setSaveRefusedNotice(null);
   }, [agentId, cancelStop]);
 
   /*
@@ -877,10 +856,6 @@ export function AgentView({
       // old turn's note.
       cancelStop();
       setStopNotice(null);
-      setSaveRefusedNotice(null);
-      // The conversation this turn runs in — what a save-refused notice from
-      // its `done` belongs to.
-      const turnConversation = conversationRef.current;
       setStreaming(true);
       setStreamed('');
       setLiveCalls([]);
@@ -907,7 +882,7 @@ export function AgentView({
           same rule from `ctx.contentSeen`; here it falls out of the shape.
         */
         onPhase: (next) => setPhase(next),
-        onDone: (info) => {
+        onDone: () => {
           /*
             TASK-688 — was this turn ended BY a Stop? Only if the host said it
             queued one (`confirmed`). A Stop whose answer has not landed yet is
@@ -928,12 +903,6 @@ export function AgentView({
           resetLiveTurn();
           setTurnsEnded((n) => n + 1);
           if (stoppedIn !== null) setStopNotice(stoppedIn);
-          // TASK-720 — the reply finished but its files were not kept.
-          // `streamReply` has already checked the code is one of the three.
-          const refused = info?.saveRefused;
-          if (refused !== undefined && turnConversation !== null) {
-            setSaveRefusedNotice({ conversationId: turnConversation, reqId, code: refused });
-          }
           // The durable thread is the source of truth — re-read it rather than
           // keeping our transient copy around to drift. `rereading` bridges the
           // gap until it lands (TASK-689): `load` settles after BOTH of its
@@ -1177,10 +1146,8 @@ export function AgentView({
       const files = attachments ?? [];
       setSent({ text, attachments: files, resendable: true });
       setTurnError(null);
-      // The last turn's "you stopped this" is history the moment they say more,
-      // and so is its "files weren't saved" (TASK-720).
+      // The last turn's "you stopped this" is history the moment they say more.
       setStopNotice(null);
-      setSaveRefusedNotice(null);
       try {
         const { conversationId, reqId } = await workspaceApi.sendMessage({
           agentId,
@@ -1405,12 +1372,13 @@ export function AgentView({
     /*
       TASK-424 — the person's file goes into the bubble with their words.
 
-      `path: null` is the honest shape here and not a placeholder: the durable
-      workspace path is minted by `attachments:commit` on the server, so in
-      this window there is nothing to build a download URL from. The chip falls
-      back to naming the file, and the picture arrives with the re-read on
-      `done`. What must never happen — and is what this card is about — is the
-      message rendering as if no file had been sent at all.
+      `attachmentId: null` is the honest shape here and not a placeholder: the
+      file only becomes downloadable once `attachments:commit` has filed it
+      under this conversation on the server, and only the re-read on `done`
+      says that happened. The chip falls back to naming the file, and the
+      picture arrives with the re-read. What must never happen — and is what
+      this card is about — is the message rendering as if no file had been
+      sent at all.
     */
     liveThread.push({
       kind: 'user',
@@ -1419,7 +1387,7 @@ export function AgentView({
       ...(sent.attachments.length > 0
         ? {
             attachments: sent.attachments.map((a) => ({
-              path: null,
+              attachmentId: null,
               displayName: a.displayName,
               mediaType: a.mediaType,
             })),
@@ -1485,36 +1453,6 @@ export function AgentView({
   */
   if (stopNotice !== null && stopNotice === detail.conversationId) {
     liveThread.push({ kind: 'stopped', id: 'stopped-notice', text: STOPPED_NOTICE });
-  }
-  /*
-    "The files from this reply weren't saved" (TASK-720), by the same rules as
-    the Stop note above: at the end, only in the conversation it was earned in,
-    one fixed sentence per code.
-
-    TASK-731 — and only until the durable row for this turn is in the thread.
-    The host persists the refusal before it acks the turn-end, so the post-done
-    re-read normally already has it, and drawing both would say it twice. The
-    match is by id, built in one place (`saveRefusedRowId`), and keyed on THIS
-    turn's reqId: a row from an earlier turn does not stand in for this one,
-    and a re-read that lacks the row (the persist is best-effort) keeps the
-    live copy.
-  */
-  const persistedSaveRefused =
-    saveRefusedNotice !== null &&
-    detail.thread.some(
-      (m) =>
-        m.kind === 'save-refused' && m.id === saveRefusedRowId(saveRefusedNotice.reqId),
-    );
-  if (
-    saveRefusedNotice !== null &&
-    saveRefusedNotice.conversationId === detail.conversationId &&
-    !persistedSaveRefused
-  ) {
-    liveThread.push({
-      kind: 'save-refused',
-      id: 'save-refused-notice',
-      code: saveRefusedNotice.code,
-    });
   }
 
   /*

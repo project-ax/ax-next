@@ -7,14 +7,13 @@
 // The fire-and-forget audit event and the Bash egress-block drain both live in
 // the shared policy now — see tool-policy.ts's `postToolUse`.
 //
-// Phase 3 simplification: this hook USED to also drive workspace-diff
-// observation (record file-mutating SDK tool outputs into a per-turn
-// diff accumulator, drained at turn end). That's gone — the runner now
-// detects workspace changes via `git status` against /agent at turn
-// end (`commitTurnAndBundle` in main.ts). git status catches ALL
-// writes regardless of tool, including the Bash deletes and MCP writes
-// the legacy observer missed. PostToolUse only emits the audit event
-// now; nothing else.
+// This hook USED to also drive workspace-diff observation (record
+// file-mutating SDK tool outputs into a per-turn diff accumulator, drained at
+// turn end). That's gone, and nothing replaced it per tool: the agent's files
+// are its home, written live, and new files the turn left there are attached
+// at the turn boundary by the shell (generated-files.ts in
+// @ax/agent-runner-core), whatever tool wrote them. PostToolUse only emits
+// the audit event and the egress-block note.
 //
 // Key properties:
 //   * Fire-and-forget: the policy `void`s the event promise. A dropped

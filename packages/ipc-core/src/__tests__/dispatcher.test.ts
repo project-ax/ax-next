@@ -9,11 +9,7 @@ import type {
   ToolDescriptor,
 } from '@ax/ipc-protocol';
 import { PRE_CALL_REJECT_REASON_MAX } from '@ax/ipc-protocol';
-import {
-  createMockWorkspacePlugin,
-  createTestHarness,
-  type TestHarness,
-} from '@ax/test-harness';
+import { createTestHarness, type TestHarness } from '@ax/test-harness';
 import { createSessionInmemoryPlugin } from '@ax/session-inmemory';
 import type {
   SessionCreateInput,
@@ -27,12 +23,6 @@ import type {
 // @ax/ipc-core. Tests are exempt from cross-plugin import lint rules
 // (eslint.config.mjs allowlists `packages/*/src/__tests__/**`).
 import { createListener, type Listener } from '@ax/ipc-server';
-import type { Plugin } from '@ax/core';
-import type {
-  WorkspaceExportBaselineBundleInput,
-  WorkspaceExportBaselineBundleOutput,
-} from '@ax/workspace-bundle-protocol';
-import { buildBaselineBundle } from '../handlers/workspace-materialize.js';
 
 // ---------------------------------------------------------------------------
 // Dispatcher tests
@@ -145,43 +135,6 @@ function doRequest(
         });
       },
     );
-    req.on('error', reject);
-    if (method === 'POST' && body !== undefined) req.write(body);
-    req.end();
-  });
-}
-
-interface RawResponse {
-  status: number;
-  contentType: string | undefined;
-  body: Buffer;
-}
-
-/** Like doRequest but preserves raw bytes + content-type (for binary responses). */
-function doRequestRaw(
-  socketPath: string,
-  method: string,
-  reqPath: string,
-  token: string,
-  body?: string,
-): Promise<RawResponse> {
-  return new Promise<RawResponse>((resolve, reject) => {
-    const headers: Record<string, string> = { Authorization: `Bearer ${token}` };
-    if (method === 'POST') {
-      headers['Content-Type'] = 'application/json';
-      headers['Content-Length'] = String(Buffer.byteLength(body ?? '', 'utf8'));
-    }
-    const req = http.request({ socketPath, path: reqPath, method, headers }, (res) => {
-      const chunks: Buffer[] = [];
-      res.on('data', (chunk: Buffer) => chunks.push(chunk));
-      res.on('end', () => {
-        resolve({
-          status: res.statusCode ?? 0,
-          contentType: res.headers['content-type'],
-          body: Buffer.concat(chunks),
-        });
-      });
-    });
     req.on('error', reject);
     if (method === 'POST' && body !== undefined) req.write(body);
     req.end();
@@ -396,122 +349,6 @@ describe('dispatcher', () => {
     const res = await doRequest(s.socketPath, 'POST', '/tool.list', s.token, '{}');
     expect(res.status).toBe(200);
     expect(JSON.parse(res.body)).toEqual({ tools: descriptors });
-  });
-
-  // -------------------------------------------------------------------------
-  // /workspace.commit-notify
-  // -------------------------------------------------------------------------
-
-  it('POST /workspace.commit-notify — empty-bundle short-circuit (Phase 3)', async () => {
-    // The full bundle round-trip (verify → walk → pre-apply → apply →
-    // applied) is exercised in detail by the handler-level tests at
-    // packages/ipc-core/src/handlers/__tests__/workspace-commit-notify.test.ts.
-    // Here we just smoke-test the dispatcher routing + schema +
-    // empty-bundle short-circuit against a real socket.
-    const s = await setup({ plugins: [createMockWorkspacePlugin()] });
-    setups.push(s);
-    const req = {
-      parentVersion: 'v-existing',
-      reason: 'turn',
-      bundleBytes: '',
-    };
-    const res = await doRequest(
-      s.socketPath,
-      'POST',
-      '/workspace.commit-notify',
-      s.token,
-      JSON.stringify(req),
-    );
-    expect(res.status).toBe(200);
-    const parsed = JSON.parse(res.body) as {
-      accepted: true;
-      version: string;
-      delta: null;
-    };
-    expect(parsed.accepted).toBe(true);
-    expect(parsed.version).toBe('v-existing');
-    expect(parsed.delta).toBeNull();
-  });
-
-  // -------------------------------------------------------------------------
-  // /workspace.materialize — binary octet-stream response (BUG-W3)
-  // -------------------------------------------------------------------------
-
-  it('POST /workspace.materialize — streams a raw git-bundle octet-stream body', async () => {
-    // BUG-W3: the materialize response is no longer JSON {bundleBytes:<base64>}.
-    // The dispatcher writes the raw bundle bytes with Content-Type
-    // application/octet-stream so the runner can stream it straight to disk
-    // (bypassing the 4 MiB JSON response cap that crashed the runner on an aged
-    // workspace). Here we assert the dispatcher's binary write path end-to-end
-    // over a real socket: octet-stream content-type + a real git-bundle body
-    // (the bundle magic header), NOT a JSON envelope.
-    const s = await setup({ plugins: [createMockWorkspacePlugin()] });
-    setups.push(s);
-    const res = await doRequestRaw(
-      s.socketPath,
-      'POST',
-      '/workspace.materialize',
-      s.token,
-      '{}',
-    );
-    expect(res.status).toBe(200);
-    expect(res.contentType).toBe('application/octet-stream');
-    expect(res.body.length).toBeGreaterThan(0);
-    // A git bundle starts with the `# v2 git bundle` / `# v3 git bundle` magic.
-    const head = res.body.toString('utf8', 0, 16);
-    expect(head).toMatch(/^# v\d git bundle/);
-    // It is NOT a JSON envelope.
-    expect(() => JSON.parse(res.body.toString('utf8'))).toThrow();
-  });
-
-  // -------------------------------------------------------------------------
-  // /workspace.export-baseline-bundle — binary octet-stream response (the
-  // commit-notify re-sync fetch; same bug class as materialize BUG-W3)
-  // -------------------------------------------------------------------------
-
-  it('POST /workspace.export-baseline-bundle — streams a raw git-bundle octet-stream body', async () => {
-    // The re-sync baseline bundle rides the binary octet-stream body (NOT a
-    // base64-in-JSON field that blew the runner's 4 MiB response cap). Drive
-    // the dispatcher's binary write path end-to-end over a real socket with a
-    // backend that produces a real bundle for the requested version.
-    const bundleB64 = await buildBaselineBundle({
-      paths: ['.ax/CLAUDE.md'],
-      read: async () => Buffer.from('# memory at the advanced head'),
-    });
-    const probe: Plugin = {
-      manifest: {
-        name: '@ax/test-dispatcher-ebb-backend',
-        version: '0.0.0',
-        registers: ['workspace:export-baseline-bundle'],
-        calls: [],
-        subscribes: [],
-      },
-      init({ bus }) {
-        bus.registerService<
-          WorkspaceExportBaselineBundleInput,
-          WorkspaceExportBaselineBundleOutput
-        >(
-          'workspace:export-baseline-bundle',
-          '@ax/test-dispatcher-ebb-backend',
-          async () => ({ bundleBytes: bundleB64 }),
-        );
-      },
-    };
-    const s = await setup({ plugins: [probe] });
-    setups.push(s);
-    const res = await doRequestRaw(
-      s.socketPath,
-      'POST',
-      '/workspace.export-baseline-bundle',
-      s.token,
-      JSON.stringify({ version: 'newhead' }),
-    );
-    expect(res.status).toBe(200);
-    expect(res.contentType).toBe('application/octet-stream');
-    expect(res.body.length).toBeGreaterThan(0);
-    const head = res.body.toString('utf8', 0, 16);
-    expect(head).toMatch(/^# v\d git bundle/);
-    expect(() => JSON.parse(res.body.toString('utf8'))).toThrow();
   });
 
   // -------------------------------------------------------------------------
@@ -1232,21 +1069,31 @@ describe('dispatcher', () => {
   });
 
   // -------------------------------------------------------------------------
-  // TASK-731 — a refused save is persisted as a `save-refused` display event,
-  // so the notice survives a reload. Per-turn: from event.turn-end, keyed on
-  // the turn's reqId, AFTER the turn row. Final/idle: from event.chat-end,
-  // keyed on a host-minted `final:<uuid>`. Both best-effort.
+  // TASK-995 — the save-refused notices are gone (TASK-731 wrote one per
+  // refused workspace save). A runner from the previous release can still put
+  // `saveRefused` on its turn-end or chat-end during a rolling deploy. The
+  // event must still be acked and broadcast (losing a turn-end loses the turn;
+  // losing a chat-end loses the reply's outcome), the field must be dropped
+  // before any subscriber sees it, and nothing may be persisted for it.
   // -------------------------------------------------------------------------
 
-  const outcome731 = { kind: 'complete' as const, messages: [] };
+  const outcome995 = { kind: 'complete' as const, messages: [] };
 
-  it('POST /event.turn-end with saveRefused — appends the turn row, THEN a save-refused row keyed on reqId (TASK-731)', async () => {
+  it('POST /event.turn-end from an older runner still carrying saveRefused — 202, only the turn row persists, the broadcast has no saveRefused (TASK-995)', async () => {
     const appendCalls: unknown[] = [];
-    const conv = await setupConvSession('conv-731a', 's-731a', {
+    const conv = await setupConvSession('conv-995a', 's-995a', {
       'conversations:append-event': async (_ctx, input) => {
         appendCalls.push(input);
         return undefined;
       },
+    });
+    let broadcast!: (v: unknown) => void;
+    const turnEndPayload = new Promise<unknown>((r) => {
+      broadcast = r;
+    });
+    setups[setups.length - 1]!.harness.bus.subscribe('chat:turn-end', 'probe', async (_ctx, payload) => {
+      broadcast(payload);
+      return undefined;
     });
     try {
       const res = await doRequest(
@@ -1255,7 +1102,7 @@ describe('dispatcher', () => {
         '/event.turn-end',
         conv.token,
         JSON.stringify({
-          reqId: 'r-731',
+          reqId: 'r-995a',
           reason: 'complete' as const,
           role: 'assistant' as const,
           contentBlocks: [{ type: 'text', text: 'hi' }],
@@ -1265,26 +1112,25 @@ describe('dispatcher', () => {
       expect(res.status).toBe(202);
       expect(appendCalls).toEqual([
         {
-          conversationId: 'conv-731a',
+          conversationId: 'conv-995a',
           kind: 'turn',
           role: 'assistant',
           payload: { blocks: [{ type: 'text', text: 'hi' }] },
         },
-        {
-          conversationId: 'conv-731a',
-          kind: 'save-refused',
-          key: 'r-731',
-          payload: { code: 'storage-full' },
-        },
       ]);
+      const payload = (await turnEndPayload) as Record<string, unknown>;
+      expect(payload).toMatchObject({ reqId: 'r-995a', reason: 'complete' });
+      expect('saveRefused' in payload).toBe(false);
     } finally {
       await conv.close();
     }
   });
 
-  it('POST /event.turn-end with saveRefused and no reqId / no blocks — still writes the notice, keyed on the empty string (TASK-731)', async () => {
+  it('POST /event.turn-end carrying only a saveRefused the old schema refused (prose) — 202 and nothing persisted (TASK-995)', async () => {
+    // Before TASK-995 a non-code value was a 400 (and a code with no blocks
+    // still wrote a notice row). Now the field is simply not part of the event.
     const appendCalls: unknown[] = [];
-    const conv = await setupConvSession('conv-731b', 's-731b', {
+    const conv = await setupConvSession('conv-995b', 's-995b', {
       'conversations:append-event': async (_ctx, input) => {
         appendCalls.push(input);
         return undefined;
@@ -1296,120 +1142,23 @@ describe('dispatcher', () => {
         'POST',
         '/event.turn-end',
         conv.token,
-        JSON.stringify({ reason: 'user-message-wait' as const, saveRefused: 'too-large' }),
-      );
-      expect(res.status).toBe(202);
-      expect(appendCalls).toEqual([
-        {
-          conversationId: 'conv-731b',
-          kind: 'save-refused',
-          key: '',
-          payload: { code: 'too-large' },
-        },
-      ]);
-    } finally {
-      await conv.close();
-    }
-  });
-
-  it('POST /event.turn-end without saveRefused — only the turn row (TASK-731)', async () => {
-    const appendCalls: Array<{ kind: string }> = [];
-    const conv = await setupConvSession('conv-731c', 's-731c', {
-      'conversations:append-event': async (_ctx, input) => {
-        appendCalls.push(input as { kind: string });
-        return undefined;
-      },
-    });
-    try {
-      const res = await doRequest(
-        conv.socketPath,
-        'POST',
-        '/event.turn-end',
-        conv.token,
         JSON.stringify({
-          reqId: 'r-731c',
-          reason: 'complete' as const,
-          role: 'assistant' as const,
-          contentBlocks: [{ type: 'text', text: 'hi' }],
+          reason: 'user-message-wait' as const,
+          saveRefused: 'Storage is full; tell the person.',
         }),
       );
       expect(res.status).toBe(202);
-      expect(appendCalls.map((c) => c.kind)).toEqual(['turn']);
+      expect(appendCalls).toEqual([]);
     } finally {
       await conv.close();
     }
   });
 
-  it('POST /event.turn-end and /event.chat-end with saveRefused but no conversation — writes nothing (TASK-731)', async () => {
+  it('POST /event.chat-end from an older runner still carrying saveRefused — 202, nothing persisted, chat:end fires with the outcome only (TASK-995)', async () => {
     const appendCalls: unknown[] = [];
-    const s = await setup({
-      services: {
-        'conversations:append-event': async (_ctx, input) => {
-          appendCalls.push(input);
-          return undefined;
-        },
-      },
-    });
-    setups.push(s);
-    const r1 = await doRequest(
-      s.socketPath,
-      'POST',
-      '/event.turn-end',
-      s.token,
-      JSON.stringify({ reqId: 'r', reason: 'complete' as const, saveRefused: 'refused' }),
-    );
-    const r2 = await doRequest(
-      s.socketPath,
-      'POST',
-      '/event.chat-end',
-      s.token,
-      JSON.stringify({ outcome: outcome731, saveRefused: 'refused' }),
-    );
-    expect(r1.status).toBe(202);
-    expect(r2.status).toBe(202);
-    expect(appendCalls).toEqual([]);
-  });
-
-  it('POST /event.turn-end — a failed notice append is swallowed: the turn row landed, the ack stays 202 (TASK-731)', async () => {
-    // Re-throwing here would 5xx a turn-end whose turn row is already in the
-    // log, and the runner's retry would then write that turn row twice.
-    const kinds: string[] = [];
-    const conv = await setupConvSession('conv-731d', 's-731d', {
+    const conv = await setupConvSession('conv-995c', 's-995c', {
       'conversations:append-event': async (_ctx, input) => {
-        const kind = (input as { kind: string }).kind;
-        kinds.push(kind);
-        if (kind === 'save-refused') throw new Error('db hiccup');
-        return undefined;
-      },
-    });
-    try {
-      const res = await doRequest(
-        conv.socketPath,
-        'POST',
-        '/event.turn-end',
-        conv.token,
-        JSON.stringify({
-          reqId: 'r-731d',
-          reason: 'complete' as const,
-          role: 'assistant' as const,
-          contentBlocks: [{ type: 'text', text: 'hi' }],
-          saveRefused: 'refused',
-        }),
-      );
-      expect(res.status).toBe(202);
-      expect(kinds).toEqual(['turn', 'save-refused']);
-    } finally {
-      await conv.close();
-    }
-  });
-
-  it('POST /event.chat-end with saveRefused — persists ONE final:<uuid>-keyed row before chat:end fires (TASK-731)', async () => {
-    const order: string[] = [];
-    const appendCalls: Array<{ key?: string }> = [];
-    const conv = await setupConvSession('conv-731e', 's-731e', {
-      'conversations:append-event': async (_ctx, input) => {
-        order.push('append');
-        appendCalls.push(input as { key?: string });
+        appendCalls.push(input);
         return undefined;
       },
     });
@@ -1418,7 +1167,6 @@ describe('dispatcher', () => {
       ended = r;
     });
     setups[setups.length - 1]!.harness.bus.subscribe('chat:end', 'probe', async (_ctx, payload) => {
-      order.push('chat:end');
       ended(payload);
       return undefined;
     });
@@ -1428,83 +1176,11 @@ describe('dispatcher', () => {
         'POST',
         '/event.chat-end',
         conv.token,
-        JSON.stringify({ outcome: outcome731, saveRefused: 'storage-full' }),
+        JSON.stringify({ outcome: outcome995, saveRefused: 'too-large' }),
       );
       expect(res.status).toBe(202);
-      // The chat:end payload is unchanged apart from the extra optional field.
-      expect(await endPayload).toEqual({ outcome: outcome731, saveRefused: 'storage-full' });
-      expect(order).toEqual(['append', 'chat:end']);
-      expect(appendCalls).toEqual([
-        {
-          conversationId: 'conv-731e',
-          kind: 'save-refused',
-          key: expect.stringMatching(/^final:[0-9a-f-]{36}$/),
-          payload: { code: 'storage-full' },
-        },
-      ]);
-    } finally {
-      await conv.close();
-    }
-  });
-
-  it('POST /event.chat-end without saveRefused — writes no row (TASK-731)', async () => {
-    const appendCalls: unknown[] = [];
-    const conv = await setupConvSession('conv-731f', 's-731f', {
-      'conversations:append-event': async (_ctx, input) => {
-        appendCalls.push(input);
-        return undefined;
-      },
-    });
-    let ended!: () => void;
-    const endFired = new Promise<void>((r) => {
-      ended = r;
-    });
-    setups[setups.length - 1]!.harness.bus.subscribe('chat:end', 'probe', async () => {
-      ended();
-      return undefined;
-    });
-    try {
-      const res = await doRequest(
-        conv.socketPath,
-        'POST',
-        '/event.chat-end',
-        conv.token,
-        JSON.stringify({ outcome: outcome731 }),
-      );
-      expect(res.status).toBe(202);
-      await endFired;
+      expect(await endPayload).toEqual({ outcome: outcome995 });
       expect(appendCalls).toEqual([]);
-    } finally {
-      await conv.close();
-    }
-  });
-
-  it('POST /event.chat-end — a failed notice append is swallowed: still 202, chat:end still fires (TASK-731)', async () => {
-    // chat:end is what resolves the orchestrator's waiting agent:invoke. A
-    // failed notice row must never cost the person the reply's outcome.
-    const conv = await setupConvSession('conv-731g', 's-731g', {
-      'conversations:append-event': async () => {
-        throw new Error('db hiccup');
-      },
-    });
-    let ended!: () => void;
-    const endFired = new Promise<void>((r) => {
-      ended = r;
-    });
-    setups[setups.length - 1]!.harness.bus.subscribe('chat:end', 'probe', async () => {
-      ended();
-      return undefined;
-    });
-    try {
-      const res = await doRequest(
-        conv.socketPath,
-        'POST',
-        '/event.chat-end',
-        conv.token,
-        JSON.stringify({ outcome: outcome731, saveRefused: 'too-large' }),
-      );
-      expect(res.status).toBe(202);
-      await endFired;
     } finally {
       await conv.close();
     }
@@ -1720,6 +1396,90 @@ describe('dispatcher', () => {
       'application/octet-stream',
     );
     expect(res.status).toBe(415);
+  });
+
+  // -------------------------------------------------------------------------
+  // TASK-995 — the git workspace tier's six actions are gone. A runner from
+  // the previous release can still call them during a rolling deploy. Each gets
+  // the same clear 404 any unknown path gets (never a 415, a 5xx, a hang or a
+  // crash), and no hook behind the old route is reached. The producers below
+  // are registered on purpose: a route that still existed would call one.
+  // -------------------------------------------------------------------------
+
+  function retiredHookProbes(called: string[]): Record<
+    string,
+    (ctx: unknown, input: unknown) => Promise<unknown>
+  > {
+    const probe = (hook: string, out: unknown) => async () => {
+      called.push(hook);
+      return out;
+    };
+    return {
+      'workspace:read': probe('workspace:read', { found: false }),
+      'workspace:list': probe('workspace:list', { paths: [] }),
+      'workspace:apply-bundle': probe('workspace:apply-bundle', {}),
+      'workspace:export-baseline-bundle': probe('workspace:export-baseline-bundle', {
+        bundleBytes: '',
+      }),
+      'conversations:drain-save-refusals': probe('conversations:drain-save-refusals', {
+        refusals: [],
+      }),
+    };
+  }
+
+  it.each([
+    ['/workspace.materialize', {}],
+    ['/workspace.commit-notify', { parentVersion: null, reason: 'turn', bundleBytes: '' }],
+    ['/workspace.commit-bundle', {}],
+    ['/workspace.export-baseline-bundle', { version: 'v1' }],
+    ['/workspace.read', { path: 'notes.md' }],
+    ['/conversation.drain-save-refusals', {}],
+  ])('POST %s (removed in TASK-995) → 404 NOT_FOUND unknown path, no hook reached', async (reqPath, body) => {
+    const called: string[] = [];
+    const s = await setup({ services: retiredHookProbes(called) });
+    setups.push(s);
+    const res = await doRequest(s.socketPath, 'POST', reqPath, s.token, JSON.stringify(body));
+    expect(res.status).toBe(404);
+    const parsed = JSON.parse(res.body);
+    expect(parsed.error.code).toBe('NOT_FOUND');
+    expect(parsed.error.message).toBe(`unknown path: ${reqPath}`);
+    expect(called).toEqual([]);
+  });
+
+  it('POST /workspace.commit-bundle with the octet-stream body an older runner sends → the same 404, not a 415 (TASK-995)', async () => {
+    // The previous release's runner streamed its end-of-turn save as a raw
+    // octet-stream body. The content-type gate keys on the routing table, so
+    // a path that is no longer routed must not be judged by the rule of the
+    // route it used to be: it falls through to the dispatcher's 404.
+    const called: string[] = [];
+    const s = await setup({ services: retiredHookProbes(called) });
+    setups.push(s);
+    const res = await doRawUpload(
+      s.socketPath,
+      '/workspace.commit-bundle?reason=turn',
+      s.token,
+      Buffer.from('PACK-bundle-bytes', 'utf8'),
+    );
+    expect(res.status).toBe(404);
+    const parsed = JSON.parse(res.body);
+    expect(parsed.error.code).toBe('NOT_FOUND');
+    expect(parsed.error.message).toBe('unknown path: /workspace.commit-bundle');
+    expect(called).toEqual([]);
+  });
+
+  it('an unrouted path with a non-JSON content type still meets the auth gate first (TASK-995)', async () => {
+    // Letting an unrouted path past the content-type gate must not let it past
+    // auth: without a valid token it is a 401, exactly as for a routed path.
+    const s = await setup({});
+    setups.push(s);
+    const res = await doRawUpload(
+      s.socketPath,
+      '/workspace.commit-bundle',
+      'not-a-real-token',
+      Buffer.from('x'),
+    );
+    expect(res.status).toBe(401);
+    expect(res.body).not.toContain('not-a-real-token');
   });
 
   // -------------------------------------------------------------------------

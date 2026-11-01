@@ -6,8 +6,8 @@
 //
 // The validation order is unchanged (it's the security floor):
 //   1. Allowlist (pure-path) — the session's REAL roots: <userFilesRoot>/** plus
-//      <ephemeralRoot>/artifacts/**. See @ax/tool-artifact-publish for why the
-//      governed tier is no longer on the list at all.
+//      <ephemeralRoot>/artifacts/**. See @ax/tool-artifact-publish for why only
+//      those.
 //   2. lstat → catches a symlinked final component before any byte read.
 //   3. realpath containment → catches a symlinked INTERMEDIATE directory, which
 //      the textual check structurally cannot see (step 1 does no I/O) and which
@@ -16,12 +16,10 @@
 //   5. read + sha256.
 //   6. mediaType sniff (extension only — no content sniffing v1).
 //
-// What CHANGED: durability. Before, the executor just returned metadata and the
-// turn-end git commit captured the bytes (fuzzy, late). Now the executor STREAMS
-// the bytes to the host's content-addressed blob store (blob.put — the new
-// REQUEST-direction binary IPC channel) and records the metadata row
-// (artifact.publish). Durability is observable EXACTLY at this function's return:
-// a blob.put success means the bytes are durable, independent of any commit.
+// Durability: the executor STREAMS the bytes to the host's content-addressed
+// blob store (blob.put — the REQUEST-direction binary IPC channel) and records
+// the metadata row (artifact.publish). Durability is observable EXACTLY at this
+// function's return: a blob.put success means the bytes are durable.
 // ---------------------------------------------------------------------------
 
 import { createHash } from 'node:crypto';
@@ -60,18 +58,17 @@ function mediaTypeFromExtension(filename: string): string {
 
 export interface CreateArtifactPublishExecutorOptions {
   /**
-   * Durable per-agent user-files root (`AX_USERFILES_ROOT`). Publishable in
-   * full — it is the agent's cwd and holds only user content. Undefined when no
-   * durable mount is wired, and then nothing under it can be published (there is
-   * no such directory to publish from).
+   * The agent's home (`AX_USERFILES_ROOT`). Publishable in full — it is the
+   * agent's cwd and holds only user content. Required: the runner refuses to
+   * start without it.
    */
-  userFilesRoot?: string;
+  userFilesRoot: string;
   /**
    * Session scratch root (`AX_EPHEMERAL_ROOT`). Only `<root>/artifacts/**` is
-   * publishable — the rest of the tier is venv, caches and build trees.
-   * Undefined when no scratch tier is wired.
+   * publishable — the rest of it is uploads, transcripts, the venv, caches and
+   * build trees. Required: the runner refuses to start without it.
    */
-  ephemeralRoot?: string;
+  ephemeralRoot: string;
   /**
    * IPC client to the host. The executor streams artifact bytes to `blob.put`
    * and records the metadata row via `artifact.publish`. When undefined (older
@@ -96,14 +93,6 @@ export interface ArtifactPublishOutput {
   mediaType: string;
   sizeBytes: number;
   sha256: string;
-}
-
-/** The session's publishable roots, in the shape the allowlist validates against. */
-function publishRoots(opts: CreateArtifactPublishExecutorOptions): PublishRoots {
-  return {
-    ...(opts.userFilesRoot !== undefined ? { userFilesRoot: opts.userFilesRoot } : {}),
-    ...(opts.ephemeralRoot !== undefined ? { ephemeralRoot: opts.ephemeralRoot } : {}),
-  };
 }
 
 export function createArtifactPublishExecutor(
@@ -136,7 +125,10 @@ export function createArtifactPublishExecutor(
       );
     }
 
-    const roots = publishRoots(opts);
+    const roots: PublishRoots = {
+      userFilesRoot: opts.userFilesRoot,
+      ephemeralRoot: opts.ephemeralRoot,
+    };
     const check = checkPublishablePath(input.path, roots);
     if (!check.ok) {
       throw new Error(check.reason);

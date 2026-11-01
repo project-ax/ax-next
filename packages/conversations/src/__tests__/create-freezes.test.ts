@@ -12,25 +12,32 @@ import {
 } from '@ax/test-harness';
 import { createDatabasePostgresPlugin } from '@ax/database-postgres';
 import { createConversationsPlugin } from '../plugin.js';
-import type { CreateInput, CreateOutput } from '../types.js';
+import type {
+  CreateInput,
+  CreateOutput,
+  FindOrCreateInput,
+  FindOrCreateOutput,
+} from '../types.js';
 
 // ---------------------------------------------------------------------------
-// `conversations:create` seeds runner_type and workspace_ref from the RESOLVED
-// AGENT.
+// `conversations:create` seeds runner_type from the RESOLVED AGENT.
 //
-// `workspace_ref` is frozen at create (I10). `runner_type` is not, and that is
-// the correction this suite encodes: it used to be frozen from a host-wide
-// `ConversationsConfig.defaultRunnerType`, which was right while one host meant
-// one runner. PR #399 made the runner a per-AGENT choice, and an agent's runner
-// can be switched at any time — so create seeds it from the agent, and
-// `conversations:bind-session` refreshes it every turn (see
-// bind-session-runner-type.test.ts).
+// `runner_type` is not frozen, and that is the correction this suite encodes:
+// it used to be frozen from a host-wide `ConversationsConfig.defaultRunnerType`,
+// which was right while one host meant one runner. PR #399 made the runner a
+// per-AGENT choice, and an agent's runner can be switched at any time — so
+// create seeds it from the agent, and `conversations:bind-session` refreshes it
+// every turn (see bind-session-runner-type.test.ts).
+//
+// TASK-995: create no longer freezes a `workspace_ref` onto the row. That copy
+// of the agent's workspaceRef was never read, and both are gone.
 // ---------------------------------------------------------------------------
 
 interface MockAgent {
   id: string;
-  workspaceRef: string | null;
   runner?: string;
+  /** Only a stale agents plugin would still report one; create ignores it. */
+  workspaceRef?: unknown;
 }
 
 let container: StartedPostgreSqlContainer;
@@ -53,14 +60,6 @@ async function makeHarness(args: {
         }
         return { agent };
       },
-      // Phase D — conversations:get reads transcripts from the
-      // workspace's runner-native jsonl. These tests don't exercise
-      // that path, so default both hooks to "no jsonl found" → empty
-      // turns. Tests that need turns wire up real bytes. Phase B adds
-      // workspace:apply for drop-turn; stub for bootstrap.
-      'workspace:list': async () => ({ paths: [] as string[] }),
-      'workspace:read': async () => ({ found: false }) as const,
-      'workspace:apply': async () => ({ version: 'v-stub', delta: { before: null, after: 'v-stub', changes: [] } }),
     },
     plugins: [
       createDatabasePostgresPlugin({ connectionString }),
@@ -101,7 +100,7 @@ describe('conversations:create — seeding from the resolved agent', () => {
   it('seeds runner_type from the AGENT, not from a host-wide default', async () => {
     const h = await makeHarness({
       agents: new Map([
-        ['agt_demo', { id: 'agt_demo', workspaceRef: 'wsp_demo', runner: 'aisdk' }],
+        ['agt_demo', { id: 'agt_demo', runner: 'aisdk' }],
       ]),
     });
     const conv = await h.bus.call<CreateInput, CreateOutput>(
@@ -112,22 +111,37 @@ describe('conversations:create — seeding from the resolved agent', () => {
     // The regression this pins: this used to be 'claude-sdk' for EVERY
     // conversation, including ones an aisdk agent went on to serve.
     expect(conv.runnerType).toBe('aisdk');
-    expect(conv.workspaceRef).toBe('wsp_demo');
   });
 
-  it('freezes workspace_ref = null when the agent had no workspaceRef', async () => {
+  it('ignores a workspaceRef the resolved agent still reports, even a malformed one (TASK-995)', async () => {
+    // Before TASK-995 a malformed value failed the create (the freeze
+    // validated it). Now nothing reads it, so it can neither fail the
+    // create nor reach the conversation, by either create path.
     const h = await makeHarness({
       agents: new Map([
-        ['agt_no_ws', { id: 'agt_no_ws', workspaceRef: null, runner: 'claude-sdk' }],
+        ['agt_stale', { id: 'agt_stale', workspaceRef: 'has spaces', runner: 'claude-sdk' }],
       ]),
     });
     const conv = await h.bus.call<CreateInput, CreateOutput>(
       'conversations:create',
       h.ctx({ userId: 'userA' }),
-      { userId: 'userA', agentId: 'agt_no_ws' },
+      { userId: 'userA', agentId: 'agt_stale' },
     );
-    expect(conv.workspaceRef).toBeNull();
+    expect(conv).not.toHaveProperty('workspaceRef');
     expect(conv.runnerType).toBe('claude-sdk');
+
+    const found = await h.bus.call<FindOrCreateInput, FindOrCreateOutput>(
+      'conversations:find-or-create',
+      h.ctx({ userId: 'userA' }),
+      {
+        userId: 'userA',
+        agentId: 'agt_stale',
+        externalKey: 'routine:stale-ref',
+        fallback: { title: null },
+      },
+    );
+    expect(found.created).toBe(true);
+    expect(found.conversation).not.toHaveProperty('workspaceRef');
   });
 
   it('records runner_type = null when the agent reports no runner', async () => {
@@ -136,7 +150,7 @@ describe('conversations:create — seeding from the resolved agent', () => {
     // value got onto every row in the first place.
     const h = await makeHarness({
       agents: new Map([
-        ['agt_bare', { id: 'agt_bare', workspaceRef: null }],
+        ['agt_bare', { id: 'agt_bare' }],
       ]),
     });
     const conv = await h.bus.call<CreateInput, CreateOutput>(
@@ -152,7 +166,7 @@ describe('conversations:create — seeding from the resolved agent', () => {
   it('conversations:create respects optional hidden flag', async () => {
     const h = await makeHarness({
       agents: new Map([
-        ['agt_a', { id: 'agt_a', workspaceRef: 'wsp_demo', runner: 'claude-sdk' }],
+        ['agt_a', { id: 'agt_a', runner: 'claude-sdk' }],
       ]),
     });
     const conv = await h.bus.call<CreateInput, CreateOutput>(
@@ -171,7 +185,7 @@ describe('conversations:create — seeding from the resolved agent', () => {
   it('conversations:create defaults hidden to false when omitted', async () => {
     const h = await makeHarness({
       agents: new Map([
-        ['agt_a', { id: 'agt_a', workspaceRef: 'wsp_demo', runner: 'claude-sdk' }],
+        ['agt_a', { id: 'agt_a', runner: 'claude-sdk' }],
       ]),
     });
     const conv = await h.bus.call<CreateInput, CreateOutput>(

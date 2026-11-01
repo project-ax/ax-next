@@ -11,16 +11,11 @@ const descriptor: ToolDescriptor = {
   description: 'search GitHub',
   inputSchema: { type: 'object', properties: { q: { type: 'string' } }, required: ['q'] },
   executesIn: 'host',
-  // BUG-W2: this field was missing from the local ToolDescriptorSchema, so the
-  // tool:list return-validation silently dropped it and the runner never saw
-  // it (the pre-call workspace flush never fired). Keep it in the
-  // "fully-populated" descriptor so the round-trip test below would catch the
-  // strip — the bus validates tool:list output against ToolListOutputSchema, so
-  // a field absent from that schema is dropped before it reaches the wire.
-  flushWorkspaceBeforeCall: true,
-  // TASK-229 T1: same drift-guard rationale as flushWorkspaceBeforeCall above —
-  // a field missing from the local ToolDescriptorSchema (tool-dispatcher-plugin.ts)
-  // is silently dropped from tool:list output.
+  // TASK-229 T1: keep every optional field in the "fully-populated" descriptor
+  // so the round-trip test below catches a strip. The bus validates tool:list
+  // output against ToolListOutputSchema, so a field absent from that schema is
+  // dropped before it reaches the wire (BUG-W2: how a descriptor field once
+  // went missing).
   activityPhrase: 'Reading email',
   countable: 'messages',
 };
@@ -58,5 +53,14 @@ describe('tool-dispatcher return schemas', () => {
   it('tool:list rejects a missing inputSchema', () => {
     const { inputSchema: _omit, ...rest } = descriptor;
     expect(ToolListOutputSchema.safeParse({ tools: [rest] }).success).toBe(false);
+  });
+
+  it('tool:list strips the retired flushWorkspaceBeforeCall (TASK-995)', () => {
+    // Nothing honours the flag since the git workspace tier went away, so it
+    // must not reach the wire claiming a flush that no runner performs.
+    const parsed = ToolListOutputSchema.parse({
+      tools: [{ ...descriptor, flushWorkspaceBeforeCall: true }],
+    });
+    expect(parsed).toEqual({ tools: [descriptor] });
   });
 });

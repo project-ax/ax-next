@@ -86,7 +86,7 @@ describe('createJsonlTranscriptSource', () => {
 
 describe('encodeProjectSlug', () => {
   it('mirrors the SDK encoding (realpath cwd → non-alnum to dash)', () => {
-    expect(encodeProjectSlug('/agent')).toBe('-agent');
+    expect(encodeProjectSlug('/files')).toBe('-files');
     expect(encodeProjectSlug('/var/lib/ax')).toBe('-var-lib-ax');
   });
 

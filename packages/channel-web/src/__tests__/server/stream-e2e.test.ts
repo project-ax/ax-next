@@ -18,7 +18,6 @@ import { createHttpServerPlugin, type HttpServerPlugin } from '@ax/http-server';
 import { createConversationsPlugin } from '@ax/conversations';
 import type { CreateInput, CreateOutput } from '@ax/conversations';
 import {
-  createMockWorkspacePlugin,
   createTestHarness,
   type TestHarness,
   stopPostgresContainer,
@@ -214,8 +213,6 @@ function agentsMockPlugin(args: { allowedFor: Set<string> }): Plugin {
       bus.registerService('agents:create', 'mock-agents', async () => ({
         agent: { id: 'agt_new', displayName: 'New', visibility: 'personal' },
       }));
-      // (workspace:apply — channel-web's TASK-140 hard call — is provided by
-      // createMockWorkspacePlugin in this harness, not here.)
     },
   };
 }
@@ -256,9 +253,6 @@ async function boot(args: BootArgs): Promise<{
       createDatabasePostgresPlugin({ connectionString }),
       authMockPlugin({ user: args.user }),
       agentsMockPlugin({ allowedFor: args.allowedFor }),
-      // Phase D — conversations plugin needs workspace:list/read
-      // registered to satisfy bootstrap's verifyCalls.
-      createMockWorkspacePlugin(),
       createConversationsPlugin({ purgeSweepIntervalMs: 0 }),
       chatRunMockPlugin(),
       attachmentsMockPlugin(),

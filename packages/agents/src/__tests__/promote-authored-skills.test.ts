@@ -4,14 +4,8 @@
  * Uses the same multi-plugin harness as authored-skills.test.ts. Each test
  * uses a fresh harness for isolation.
  *
- * The mock workspace plugin partitions its store on `ctx.agentId` (TASK-413 —
- * the shared workspace contract requires tenant isolation of every backend, so
- * the mock can no longer pool). That is transparent here: this file's
- * production path makes no `workspace:*` call at all — `@ax/agents` stopped
- * making them when the `.ax/draft-skills` scan was retired — and every seed
- * runs under the one agentId the test created. It used to say the mock was a
- * SINGLE shared store where ctx only touched `delta.author`; ctx IS routing
- * now.
+ * No workspace plugin is loaded: the workspace tier was removed (TASK-995),
+ * and this production path never made a `workspace:*` call.
  *
  * Key invariant under test: admin-supplied capability grants REPLACE the
  * authored file's declared capabilities (half-trust). A skill authored with
@@ -25,7 +19,6 @@ import {
 } from '@testcontainers/postgresql';
 import {
   createTestHarness,
-  createMockWorkspacePlugin,
   mockBlobStoreServices,
   type TestHarness,
   stopPostgresContainer,
@@ -94,7 +87,6 @@ async function makeHarness(authActor: AuthActor): Promise<TestHarness> {
       createDatabasePostgresPlugin({ connectionString }),
       createAgentsPlugin(),
       createSkillsPlugin(),
-      createMockWorkspacePlugin(),
     ],
   });
   harnesses.push(h);
@@ -377,7 +369,6 @@ describe('POST /admin/agents/:id/authored-skills/promote', () => {
         createDatabasePostgresPlugin({ connectionString }),
         createAgentsPlugin(),
         createSkillsPlugin(),
-        createMockWorkspacePlugin(),
       ],
     });
     harnesses.push(h);

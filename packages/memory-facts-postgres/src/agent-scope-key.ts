@@ -23,11 +23,11 @@ import { createHash } from 'node:crypto';
  * file. Tenancy is load-bearing here in a way it was not on sqlite.
  *
  * ⚠ LOCKSTEP — this is BYTE-FOR-BYTE the same derivation as
- * `@ax/memory-facts-sqlite`'s `agent-scope-key.ts` (and the file tier's
- * `workspaceIdFor` / `workspaceIdForAgent` in `@ax/workspace-git-server` /
- * `@ax/workspace-git-core`): same `sha256(JSON.stringify([agentId]))`, same
+ * `@ax/memory-facts-sqlite`'s `agent-scope-key.ts`: same
+ * `sha256(JSON.stringify([agentId]))`, same
  * 16-hex truncation, so this engine's partition lines up with its own sqlite
- * twin and with the file tier. (The `@ax/memory-strata-index-*` copies were
+ * twin. (The file tier's copies in the git workspace packages were deleted in
+ * TASK-995, and the `@ax/memory-strata-index-*` copies were
  * deleted in TASK-608.) Invariant 2 (no cross-plugin
  * imports) forbids importing that helper, so this package carries its own
  * copy.

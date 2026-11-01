@@ -25,8 +25,8 @@ import { TEST_PROXY_CONFIG } from './proxy-config.js';
 //
 // Env-injection test reads the stub's stdout directly via the (testing-only)
 // `handle.child` field on the returned handle. Alternative would be to have
-// the stub write to `${AX_WORKSPACE_ROOT}/env.json`; stdout is simpler and
-// keeps the workspaceRoot clean for other tests running in parallel.
+// the stub write an env.json into its cwd; stdout is simpler and keeps the
+// workspaceRoot clean for other tests running in parallel.
 // ---------------------------------------------------------------------------
 
 // The contract returns `runnerEndpoint` as a URI. For this provider it is
@@ -76,9 +76,6 @@ async function makeHarness(
         toolCalls: [],
       }),
       'tool:list': async () => ({ tools: [] }),
-      // ipc-server's dispatcher declares workspace:read as a required call
-      // (DISPATCHER_DEPENDENCIES); these IPC-only boots never hit /workspace.read.
-      'workspace:read': async () => ({ found: false }),
       ...extraServices,
     },
     plugins: [
@@ -194,11 +191,21 @@ describe('sandbox:open-session', () => {
       { sessionId: 'env-1', workspaceRoot: ws, runnerBinary: ECHO_STUB, proxyConfig: TEST_PROXY_CONFIG },
     );
     const line = await readFirstStdoutLine(result);
-    const parsed = JSON.parse(line) as Record<string, string | null>;
+    const parsed = JSON.parse(line) as Record<string, string | null> & { AX_NAMES: string[] };
+    // Every AX_ control variable an ownerless session's child gets. The
+    // runner's cwd is `workspaceRoot`, but no workspace root is stamped: the
+    // runner reads none (TASK-995 removed the git tier it served).
+    expect(parsed.AX_NAMES).toEqual([
+      'AX_AUTH_TOKEN',
+      'AX_EPHEMERAL_ROOT',
+      'AX_PROXY_ENDPOINT',
+      'AX_PROXY_TOKEN',
+      'AX_RUNNER_ENDPOINT',
+      'AX_SESSION_ID',
+    ]);
     expect(parsed.AX_RUNNER_ENDPOINT).toBe(result.runnerEndpoint);
     expect(parsed.AX_RUNNER_ENDPOINT).toMatch(/^unix:\/\//);
     expect(parsed.AX_SESSION_ID).toBe('env-1');
-    expect(parsed.AX_WORKSPACE_ROOT).toBe(ws);
     expect(typeof parsed.AX_AUTH_TOKEN).toBe('string');
     expect((parsed.AX_AUTH_TOKEN ?? '').length).toBeGreaterThan(0);
     // The token must NOT be echoed in the returned surface.
@@ -221,12 +228,11 @@ describe('sandbox:open-session', () => {
   });
 
   it('stamps git author/committer identity + paranoid config on the child env (parity with k8s)', async () => {
-    // Mirrors `sandbox-k8s/pod-spec.ts`'s gitParanoidEnv block. Without this,
-    // the runner's turn-end git commit falls through to whatever's sitting
-    // in the host operator's ~/.gitconfig, the bundle reaches commit-notify
-    // with the wrong author, and the host's verifyBundleAuthor rejects it
-    // with `expected ax-runner <ax-runner@example.com>` — bricking every
-    // subprocess chat.
+    // Mirrors `sandbox-k8s/pod-spec.ts`'s gitParanoidEnv block, for the
+    // agent's own git work (clones, local repos). Without it, git reads
+    // whatever's sitting in the host operator's ~/.gitconfig; with the global
+    // config pointed at /dev/null, the pinned identity is what lets
+    // `git commit` work at all.
     //
     // HOME deliberately diverges between providers (subprocess uses the
     // per-session tempdir; k8s pins /home/runner) — only the GIT_* vars
@@ -1025,17 +1031,13 @@ describe('sandbox:open-session', () => {
   });
 
   // ---------------------------------------------------------------------
-  // I-P0-3 / I-P0-4: per-session HOME + CLAUDE_CONFIG_DIR + workspace
-  // skills symlink.
+  // I-P0-3: per-session HOME + CLAUDE_CONFIG_DIR.
   //
-  // The Claude Agent SDK's skill discovery walks two paths:
-  //   - `'project'` source → `<cwd>/.claude/skills/`
-  //   - `'user'` source    → `$CLAUDE_CONFIG_DIR/skills/` (fallback: `$HOME/.claude/skills/`)
-  //
-  // The sandbox MUST point both at host-controlled directories so the
-  // developer's personal `~/.claude/skills/` never leaks into the
-  // sandbox, and so the agent can't drop arbitrary content into
-  // `.claude/skills/` (that surface is owned by the host validator).
+  // The runner passes `settingSources: ['user']`, so the Claude Agent SDK
+  // discovers skills in one place: `$CLAUDE_CONFIG_DIR/skills/`. The
+  // sandbox points it at a host-controlled per-session directory, so the
+  // developer's personal `~/.claude/skills/` never leaks into the sandbox,
+  // and nothing the agent writes in its cwd loads as configuration.
   // ---------------------------------------------------------------------
 
   it('allocates a per-session HOME and sets CLAUDE_CONFIG_DIR under it (I-P0-3)', async () => {
@@ -1097,24 +1099,16 @@ describe('sandbox:open-session', () => {
   });
 
   it('leaves <workspace> empty before the runner spawns (I-P0-4)', async () => {
-    // Regression guard for PR #99's k8s fix mirrored on the subprocess side:
-    // open-session used to scaffold `<workspace>/.claude/skills →
-    // ../.ax/draft-skills` before spawning the runner. The runner's own
-    // `materializeWorkspace` then `git clone`s into `<workspace>`, which
-    // refuses ANY non-empty target — chat sat on "Starting sandbox…" forever.
-    // The scaffold moved to the runner main
-    // (`scaffoldWorkspaceSkillSurface` in @ax/agent-claude-sdk-runner's
-    // git-workspace.ts), which runs after `materializeWorkspace`. Open-
-    // session must leave `<workspace>` untouched so the clone has a clean
-    // target.
+    // `workspaceRoot` is only the runner process's cwd. In the CLI that is
+    // the person's own directory, so open-session has no business writing
+    // there: everything it prepares (HOME, CLAUDE_CONFIG_DIR, the scratch
+    // root) lives in its own 0700 per-session tempdir.
     //
     // Asserting on `fs.readdir` (not a specific path list) is the right
-    // shape: any top-level write — `.claude`, `.ax`, a stray dotfile,
-    // a new feature that thinks it can pre-populate the workspace — would
-    // collide with `git clone`. A narrow `fs.stat('.claude')` check would
-    // pass while the regression still bricked chat. This test stubs out
-    // the runner (echo-stub doesn't materialize), so we observe the
-    // pre-spawn state directly.
+    // shape: any top-level write — `.claude`, a stray dotfile, a new
+    // feature that thinks it can pre-populate the directory — fails it. A
+    // narrow `fs.stat('.claude')` check would not. echo-stub writes
+    // nothing, so we observe the pre-spawn state directly.
     const ws = await mkWorkspace();
     const h = await makeHarness();
     const ctx = h.ctx();

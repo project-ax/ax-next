@@ -1,10 +1,14 @@
-import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import {
   PluginError,
   type AgentContext,
   type HookBus,
 } from '@ax/core';
-import type { ContentBlock } from '@ax/ipc-protocol';
+import {
+  ATTACHMENT_FILENAME_MAX,
+  ATTACHMENT_MEDIA_TYPE_MAX,
+  AttachmentIdSchema,
+} from '@ax/ipc-protocol';
 import type { AttachmentsStore } from './store.js';
 import type {
   AttachmentsConfig,
@@ -108,6 +112,25 @@ export function createStoreTempHandler(deps: StoreTempDeps) {
         message: `mediaType '${input.mediaType}' not in allowlist`,
       });
     }
+    // The name and type ride into the conversation's `attachment` block, which
+    // caps both. Refuse here, at upload, rather than mint a block the turn that
+    // sends it could not carry.
+    if (input.displayName.length === 0 || input.displayName.length > ATTACHMENT_FILENAME_MAX) {
+      throw new PluginError({
+        code: 'invalid-payload',
+        plugin: PLUGIN_NAME,
+        hookName: 'attachments:store-temp',
+        message: `attachment name must be 1-${ATTACHMENT_FILENAME_MAX} characters`,
+      });
+    }
+    if (input.mediaType.length > ATTACHMENT_MEDIA_TYPE_MAX) {
+      throw new PluginError({
+        code: 'invalid-payload',
+        plugin: PLUGIN_NAME,
+        hookName: 'attachments:store-temp',
+        message: `attachment media type longer than ${ATTACHMENT_MEDIA_TYPE_MAX} characters`,
+      });
+    }
     const attachmentId = randomUUID();
     const expiresAt = new Date(Date.now() + config.tempTtlSeconds * 1000);
     // Atomic quota + insert: concurrent uploads for the same user can't
@@ -149,24 +172,15 @@ export interface CommitDeps {
 }
 
 /**
- * Collapse a user-supplied filename to a path-safe component. Preserves the
- * extension; everything outside [A-Za-z0-9._-] collapses to `_`. Prefixed
- * with 8 random hex chars to prevent collisions inside the same
- * (conversationId, turnId) tuple — two uploads named "foo.pdf" don't clash.
+ * `attachments:commit` — turn a staged upload into a committed one, owned by
+ * the conversation it was sent in. The upload keeps the id it was staged
+ * under; that id is what the transcript's `attachment` block, the download and
+ * the runner's copy all use. No path is minted: where the bytes live is the
+ * blob store's business, and where a copy lands in a sandbox is the runner's.
  *
- * Leading dots are stripped so the file never becomes "hidden".
+ * The caller (the chat-messages route) has already checked the person owns
+ * `conversationId`; this hook checks the staged upload is theirs.
  */
-function sanitizeFilenameComponent(displayName: string): string {
-  const sanitized = displayName.replace(/[^A-Za-z0-9._-]/g, '_');
-  const collapsedUnderscores = sanitized.replace(/_+/g, '_');
-  // Collapse any run of two-or-more dots to a single dot. This kills the
-  // `..` path-traversal vocabulary while preserving the file extension.
-  const collapsedDots = collapsedUnderscores.replace(/\.{2,}/g, '.');
-  const noDotLead = collapsedDots.replace(/^\.+/, '');
-  const prefix = randomBytes(4).toString('hex'); // 8 hex chars
-  return `${prefix}__${noDotLead}`;
-}
-
 export function createCommitHandler(deps: CommitDeps) {
   return async function commit(
     ctx: AgentContext,
@@ -192,38 +206,48 @@ export function createCommitHandler(deps: CommitDeps) {
       });
     }
 
-    const filenameComponent = sanitizeFilenameComponent(row.displayName);
-    // The `path` stays the workspace-relative `.ax/uploads/<conv>/<turn>/<file>`
-    // KEY — unchanged from the git era — so the transcript `attachment` block,
-    // the download ACL's path-scope check, and the runner's re-rooting all keep
-    // working. Only the STORAGE moves: the bytes now go to the content-addressed
-    // blob store + a metadata row, not a git commit.
-    const path = `.ax/uploads/${input.conversationId}/${input.turnId}/${filenameComponent}`;
-
     // TASK-68: store the bytes in the content-addressed blob store (host-side;
     // no sandbox involved). The store computes + returns the sha256 — we don't
-    // forge it. Idempotent: identical bytes are stored once. This REPLACES the
-    // old `workspace:apply` → git commit path, and with it the shared-mirror
-    // `parent-mismatch` rebase race (the chat-transcript-loss root cause) is
-    // gone entirely — an upload no longer advances the chat mirror out-of-band.
+    // forge it. Idempotent: identical bytes are stored once.
     const put = await deps.bus.call<BlobPutInput, BlobPutOutput>(
       'blob:put',
       ctx,
       { bytes: new Uint8Array(row.bytes.buffer, row.bytes.byteOffset, row.bytes.byteLength) },
     );
 
-    // Durable metadata row mapping (conversationId, path) → sha256. The download
-    // ACL + the runner's materialize loop resolve a path back to its blob here.
-    await deps.store.upsertFile({
+    // Durable metadata row: id → owner, conversation, sha256. The download ACL
+    // and the runner's upload list resolve the id back to its blob here.
+    const fresh = {
       id: input.attachmentId,
       conversationId: input.conversationId,
       userId: ctx.userId,
       sha256: put.sha256,
-      path,
       displayName: row.displayName,
       mediaType: row.mediaType,
       sizeBytes: row.sizeBytes,
-    });
+    };
+    let stored = fresh;
+    if (!(await deps.store.insertFile(fresh))) {
+      // The id was committed before and its temp row outlived that commit (the
+      // delete below is best-effort). Re-sending into the SAME conversation is
+      // the same upload: answer with the row as stored. Anywhere else would
+      // hand that conversation a block whose row lives in another one — refuse,
+      // and leave the first row alone.
+      const existing = await deps.store.getFileById(input.attachmentId);
+      if (
+        existing === null ||
+        existing.conversationId !== input.conversationId ||
+        existing.userId !== ctx.userId
+      ) {
+        throw new PluginError({
+          code: 'not-found',
+          plugin: PLUGIN_NAME,
+          hookName: 'attachments:commit',
+          message: `attachmentId '${input.attachmentId}' was already sent in another conversation`,
+        });
+      }
+      stored = existing;
+    }
 
     // Best-effort delete of the temp row; janitor reaps any leftovers.
     try {
@@ -236,11 +260,11 @@ export function createCommitHandler(deps: CommitDeps) {
     }
 
     return {
-      path,
-      sha256: put.sha256,
-      mediaType: row.mediaType,
-      sizeBytes: row.sizeBytes,
-      displayName: row.displayName,
+      attachmentId: stored.id,
+      filename: stored.displayName,
+      sha256: stored.sha256,
+      mediaType: stored.mediaType,
+      sizeBytes: stored.sizeBytes,
     };
   };
 }
@@ -256,9 +280,11 @@ export interface ListForConversationDeps {
 /**
  * `attachments:list-for-conversation` — returns the conversation's committed
  * uploads (scoped to ctx.userId, so a foreign conversation returns the empty
- * set — no existence leak). The runner enumerates these at session start (and on
- * a warm-runner rebind) to materialize the read-only working copy at the path
- * advertised to the model (`<workspaceRoot>/.ax/uploads/...`) from the blob store.
+ * set — no existence leak), oldest first. The runner enumerates these when it
+ * starts (and when a later message brings an upload it has not seen) to pull
+ * each blob into its own working copy, and matches each turn's `attachment`
+ * block to its copy by `attachmentId`. The order is stable, so a fresh runner
+ * names its copies the same way every time.
  */
 export function createListForConversationHandler(deps: ListForConversationDeps) {
   return async function listForConversation(
@@ -271,14 +297,47 @@ export function createListForConversationHandler(deps: ListForConversationDeps) 
     );
     return {
       files: rows.map((r) => ({
-        path: r.path,
+        attachmentId: r.id,
+        filename: r.displayName,
         sha256: r.sha256,
         mediaType: r.mediaType,
-        displayName: r.displayName,
         sizeBytes: r.sizeBytes,
       })),
     };
   };
+}
+
+// Local shape of conversations:get — only its success matters here (it is the
+// owner gate). Importing the full type from @ax/conversations would create a
+// cross-plugin import (I2 violation), so we narrow at the call site instead.
+interface ConversationsGetInput {
+  conversationId: string;
+  userId: string;
+}
+
+/**
+ * Does ctx.userId own `conversationId`? `conversations:get` is the owner gate:
+ * it answers not-found / forbidden for a conversation that is missing, deleted,
+ * someone else's, or behind an agent the user can no longer reach. Any other
+ * failure is an outage, not an answer, and propagates as itself.
+ */
+async function callerOwnsConversation(
+  bus: HookBus,
+  ctx: AgentContext,
+  conversationId: string,
+): Promise<boolean> {
+  try {
+    await bus.call<ConversationsGetInput, unknown>('conversations:get', ctx, {
+      conversationId,
+      userId: ctx.userId,
+    });
+    return true;
+  } catch (err) {
+    if (err instanceof PluginError && (err.code === 'not-found' || err.code === 'forbidden')) {
+      return false;
+    }
+    throw err;
+  }
 }
 
 export interface PublishArtifactBlobDeps {
@@ -301,12 +360,27 @@ export interface PublishArtifactBlobDeps {
  * bytes, and referencing identical bytes is the same as dedup. A `blob:stat`
  * failure propagates — "could not check" must never turn into "assume it is
  * there".
+ *
+ * Where the row lands decides who can download it (`attachments:download`
+ * resolves the id, then requires the row's conversation and owner to match),
+ * so the caller must own the conversation, and a re-publish never takes over
+ * a row another user wrote.
  */
 export function createPublishArtifactBlobHandler(deps: PublishArtifactBlobDeps) {
   return async function publishArtifactBlob(
     ctx: AgentContext,
     input: ArtifactsPublishBlobInput,
   ): Promise<ArtifactsPublishBlobOutput> {
+    // Ownership first: a caller refused here must not learn, from a not-found
+    // vs forbidden split, whether a sha is in the store.
+    if (!(await callerOwnsConversation(deps.bus, ctx, input.conversationId))) {
+      throw new PluginError({
+        code: 'forbidden',
+        plugin: PLUGIN_NAME,
+        hookName: 'artifacts:publish-blob',
+        message: 'artifacts can be published only into a conversation the caller owns',
+      });
+    }
     const stat = await deps.bus.call<BlobStatInput, BlobStatOutput>('blob:stat', ctx, {
       sha256: input.sha256,
     });
@@ -321,7 +395,7 @@ export function createPublishArtifactBlobHandler(deps: PublishArtifactBlobDeps) 
     const artifactId = createHash('sha256')
       .update(JSON.stringify([input.conversationId, input.path]))
       .digest('hex').slice(0, 32);
-    await deps.store.upsertArtifact({
+    const written = await deps.store.upsertArtifact({
       id: artifactId,
       conversationId: input.conversationId,
       userId: ctx.userId,
@@ -331,6 +405,16 @@ export function createPublishArtifactBlobHandler(deps: PublishArtifactBlobDeps) 
       mediaType: input.mediaType,
       sizeBytes: input.size,
     });
+    if (!written) {
+      // Another user's row already holds this key. With the owner gate above
+      // that can only be a row written before the gate existed; leave it be.
+      throw new PluginError({
+        code: 'conflict',
+        plugin: PLUGIN_NAME,
+        hookName: 'artifacts:publish-blob',
+        message: 'an artifact at this path belongs to another user',
+      });
+    }
     return { artifactId };
   };
 }
@@ -340,264 +424,89 @@ export interface DownloadDeps {
   store: AttachmentsStore;
 }
 
-/**
- * Normalize a candidate path. Returns null if the path is invalid (the caller
- * surfaces this as `not-found` for uniform existence-leak shape — a malformed
- * path and a missing file look identical to the requester).
- *
- * Valid path constraints:
- *   - 1 <= length <= 1024
- *   - no leading `/` (absolute paths are sandbox-vocab; workspace paths are relative)
- *   - no `..` segments (path traversal)
- *   - no empty segments (catches both `//` and trailing `/`)
- */
-function normalizePath(path: string): string | null {
-  if (path.length === 0 || path.length > 1024) return null;
-  if (path.startsWith('/')) return null;
-  const segments = path.split('/');
-  for (const seg of segments) {
-    if (seg === '..') return null;
-    if (seg === '') return null;
-  }
-  return path;
+function downloadNotFound(message: string): PluginError {
+  return new PluginError({
+    code: 'not-found',
+    plugin: PLUGIN_NAME,
+    hookName: 'attachments:download',
+    message,
+  });
 }
 
 /**
- * Path-scope check. Path must be either:
- *   1. under `.ax/uploads/<conversationId>/`, OR
- *   2. referenced from some `attachment` block in this conversation's
- *      transcript, OR
- *   3. referenced from some `artifact_publish` tool_result in this
- *      conversation's transcript (the tool_result's JSON-encoded content
- *      contains a matching `path` field).
+ * `attachments:download` serves an upload or a published artifact BY ID, and
+ * is the download ACL. All callers — channel-web today, a future Slack plugin
+ * tomorrow — get the same enforcement because the ACL lives inside the hook,
+ * not the route layer.
  *
- * Returns the matching block's display metadata so the route layer can
- * populate Content-Disposition headers. Returns null if not in scope.
+ * The ladder, each step failing closed:
+ *   1. the id is well-formed;
+ *   2. the caller is who they say (input.userId === ctx.userId);
+ *   3. the caller owns the conversation they name (conversations:get);
+ *   4. the id resolves to a row (an upload, else an artifact) that belongs to
+ *      THAT conversation and was written by that same person;
+ *   5. the blob store still holds the bytes.
  *
- * Iteration order: we scan turns first for an exact-match block (which
- * carries authoritative user-supplied displayName + mediaType), THEN
- * fall back to the uploads-prefix branch. This means an uploaded path
- * always resolves to the transcript's metadata when present.
+ * Step 4 is what makes a chip safe to trust: a forged `attachment` block (a
+ * crafted client request, or an untrusted runner's turn) can name any id, but
+ * an id from another conversation — the same person's or anyone else's — only
+ * ever reaches a 404. A conversation has one owner, and every row in it was
+ * written by that owner (their upload, or their own runner's publish), so the
+ * row-owner check costs nothing legitimate.
  *
- * tool_result.content has two on-the-wire shapes (ToolResultBlockSchema:
- * `string | (TextBlock | ImageBlock)[]`). The SDK echoes an MCP tool's
- * result back as the ARRAY form `[{type:'text', text:<json>}]`, and the
- * runner persists exactly that — so the published-artifact JSON arrives as
- * the `text` of an array entry, NOT as a bare string. We extract the text
- * candidates from BOTH shapes (string entries are dropped — only `text`
- * blocks carry the artifact JSON) and apply the same strict parse +
- * exact-path-match. Non-text entries (e.g. images) are ignored.
- */
-function toolResultTextCandidates(content: ContentBlock & { type: 'tool_result' }): string[] {
-  const raw = content.content;
-  if (typeof raw === 'string') return [raw];
-  if (Array.isArray(raw)) {
-    return raw
-      .filter(
-        (c): c is { type: 'text'; text: string } =>
-          c.type === 'text' && typeof c.text === 'string',
-      )
-      .map((c) => c.text);
-  }
-  return [];
-}
-
-function checkPathScope(
-  candidatePath: string,
-  conversationId: string,
-  turns: Array<{ contentBlocks: ContentBlock[] }>,
-): { displayName: string; mediaType: string; sizeBytes: number } | null {
-  const uploadsPrefix = `.ax/uploads/${conversationId}/`;
-
-  for (const turn of turns) {
-    for (const block of turn.contentBlocks) {
-      if (block.type === 'attachment' && block.path === candidatePath) {
-        return {
-          displayName: block.displayName,
-          mediaType: block.mediaType,
-          sizeBytes: block.sizeBytes,
-        };
-      }
-      if (block.type === 'tool_result') {
-        for (const candidate of toolResultTextCandidates(block)) {
-          try {
-            const parsed = JSON.parse(candidate) as Record<string, unknown>;
-            if (parsed && parsed.path === candidatePath) {
-              return {
-                displayName: String(parsed.displayName ?? 'file'),
-                mediaType: String(parsed.mediaType ?? 'application/octet-stream'),
-                sizeBytes: Number(parsed.sizeBytes ?? 0),
-              };
-            }
-          } catch {
-            /* not JSON — ignore, this entry isn't an artifact_publish result */
-          }
-        }
-      }
-    }
-  }
-
-  // Fall back: path is under the uploads prefix but no matching block.
-  // This handles uploaded-but-not-yet-sent (theoretical — attachments:commit
-  // always runs from the message-send path which appends a block, so in
-  // practice the transcript scan above wins).
-  if (candidatePath.startsWith(uploadsPrefix)) {
-    return {
-      displayName: candidatePath.split('/').pop() ?? 'file',
-      mediaType: 'application/octet-stream',
-      sizeBytes: 0,
-    };
-  }
-
-  return null;
-}
-
-// Local shape of conversations:get — kept narrow to only what this handler
-// uses (turns.contentBlocks). The full Conversation row carries more fields,
-// but I3 says one source of truth per concept — we don't redeclare the row
-// shape here. Importing the full type from @ax/conversations would create a
-// cross-plugin import (I2 violation), so we narrow at the call site instead.
-interface ConversationsGetInput {
-  conversationId: string;
-  userId: string;
-}
-interface ConversationsGetOutput {
-  conversation: { conversationId: string; userId: string; agentId: string };
-  turns: Array<{ contentBlocks: ContentBlock[] }>;
-}
-
-/**
- * `attachments:download` is the path-scope ACL. All callers — channel-web
- * today, future Slack plugin tomorrow — get the same enforcement because the
- * ACL lives inside the hook, not the route layer.
- *
- * Failure-mode contract (I1, existence-leak prevention):
- *   - foreign conversation -> not-found
- *   - forbidden from conversations:get -> not-found
- *   - malformed path -> not-found
- *   - path outside conversation scope -> forbidden
- *   - file missing from workspace -> not-found
- *
- * Layered ordering is load-bearing: normalize -> owner-gate -> path-scope ->
- * workspace:read. Each layer fails closed.
+ * Every refusal is the same `not-found` (existence-leak prevention: a foreign
+ * id and a missing one look identical), and no refusal fetches bytes. A
+ * conversations:get failure that is NOT an ACL answer propagates as itself —
+ * an outage is not a 404.
  */
 export function createDownloadHandler(deps: DownloadDeps) {
   return async function download(
     ctx: AgentContext,
     input: DownloadInput,
   ): Promise<DownloadOutput> {
-    // 1) Path normalization. Invalid input collapses to not-found so the
-    //    response shape is uniform regardless of whether the path was
-    //    malformed or just missing (existence-leak prevention).
-    const normalized = normalizePath(input.path);
-    if (normalized === null) {
-      throw new PluginError({
-        code: 'not-found',
-        plugin: PLUGIN_NAME,
-        hookName: 'attachments:download',
-        message: 'invalid path',
-      });
+    if (!AttachmentIdSchema.safeParse(input.attachmentId).success) {
+      throw downloadNotFound('file not found');
     }
-
-    // 2) Owner gate via conversations:get. The hook input declares the
-    //    user identity but ctx.userId is the auth boundary — if a caller
-    //    passes a mismatched input.userId they're either confused or
-    //    probing, so collapse to the same not-found we'd return for any
-    //    other foreign access (uniform existence-leak prevention).
     if (input.userId !== ctx.userId) {
-      throw new PluginError({
-        code: 'not-found',
-        plugin: PLUGIN_NAME,
-        hookName: 'attachments:download',
-        message: 'conversation not found',
-      });
+      throw downloadNotFound('conversation not found');
     }
-    let turns: Array<{ contentBlocks: ContentBlock[] }>;
-    try {
-      const got = await deps.bus.call<
-        ConversationsGetInput,
-        ConversationsGetOutput
-      >('conversations:get', ctx, {
-        conversationId: input.conversationId,
-        userId: ctx.userId,
-      });
-      turns = got.turns;
-    } catch (err) {
-      if (
-        err instanceof PluginError &&
-        (err.code === 'not-found' || err.code === 'forbidden')
-      ) {
-        throw new PluginError({
-          code: 'not-found',
-          plugin: PLUGIN_NAME,
-          hookName: 'attachments:download',
-          message: 'conversation not found',
-        });
-      }
-      throw err;
+    if (!(await callerOwnsConversation(deps.bus, ctx, input.conversationId))) {
+      throw downloadNotFound('conversation not found');
     }
 
-    // 3) Path-scope check. Either under .ax/uploads/<conv>/ or referenced
-    //    from a transcript block. Otherwise forbidden.
-    const scopeMeta = checkPathScope(normalized, input.conversationId, turns);
-    if (scopeMeta === null) {
-      throw new PluginError({
-        code: 'forbidden',
-        plugin: PLUGIN_NAME,
-        hookName: 'attachments:download',
-        message: 'path not in conversation scope',
-      });
+    // Uploads and artifacts have distinct id shapes (store-temp UUIDs vs hex),
+    // so the two lookups never compete for one id.
+    const row =
+      (await deps.store.getFileById(input.attachmentId)) ??
+      (await deps.store.getArtifactById(input.attachmentId));
+    if (
+      row === null ||
+      row.conversationId !== input.conversationId ||
+      row.userId !== ctx.userId
+    ) {
+      throw downloadNotFound('file not found');
     }
 
-    // 4) Resolve path → metadata row → blob:get → bytes (TASK-68). The bytes
-    //    no longer live in git/workspace; they're content-addressed in the blob
-    //    store. We look up the (conversationId, path) row to learn the sha256,
-    //    then fetch the bytes — which `blob:get` re-verifies against that digest
-    //    on read (TASK-65), so a corrupt/tampered object is refused, never
-    //    served. A path can be either a committed UPLOAD or a published
-    //    ARTIFACT; check both tables (the transcript path-scope check above
-    //    already proved the path belongs to this conversation).
-    //
-    //    Symlink refusal is enforced at WRITE time (artifact_publish lstat; an
-    //    upload is opaque bytes that can't be a symlink), so there's no symlink
-    //    to refuse here.
-    const fileRow =
-      (await deps.store.getFileByPath(input.conversationId, normalized)) ??
-      (await deps.store.getArtifactByPath(input.conversationId, normalized));
-    if (fileRow === null) {
-      // The transcript referenced this path but no metadata row exists (e.g. a
-      // pre-TASK-68 git-era attachment, or a GC'd blob). Uniform not-found.
-      throw new PluginError({
-        code: 'not-found',
-        plugin: PLUGIN_NAME,
-        hookName: 'attachments:download',
-        message: 'file not found',
-      });
-    }
-
+    // `blob:get` re-verifies the bytes against the digest on read (TASK-65),
+    // so a corrupt or tampered object is refused, never served. Symlink refusal
+    // is enforced at WRITE time (artifact_publish lstat; an upload is opaque
+    // bytes that can't be a symlink), so there's no symlink to refuse here.
     const got = await deps.bus.call<BlobGetInput, BlobGetOutput>('blob:get', ctx, {
-      sha256: fileRow.sha256,
+      sha256: row.sha256,
     });
     if ('found' in got && got.found === false) {
-      throw new PluginError({
-        code: 'not-found',
-        plugin: PLUGIN_NAME,
-        hookName: 'attachments:download',
-        message: 'blob not found',
-      });
+      throw downloadNotFound('blob not found');
     }
 
     // `blob:get` returns a Uint8Array; DownloadOutput.bytes is `Buffer` for
-    // caller ergonomics. `Buffer.from(uint8)` is a zero-copy view. Prefer the
-    // metadata row's display fields (the authoritative committed metadata) over
-    // the transcript scrape, falling back to the scope metadata.
+    // caller ergonomics. `Buffer.from(uint8)` is a zero-copy view.
     const bytes = (got as { bytes: Uint8Array }).bytes;
     const buf = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
     return {
       bytes: buf,
-      mediaType: fileRow.mediaType || scopeMeta.mediaType,
+      mediaType: row.mediaType,
       sizeBytes: buf.length,
-      displayName: fileRow.displayName || scopeMeta.displayName,
+      displayName: row.displayName,
     };
   };
 }

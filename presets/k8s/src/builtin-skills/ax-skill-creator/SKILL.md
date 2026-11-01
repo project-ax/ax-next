@@ -31,7 +31,7 @@ keys, no packages live in a skill anymore — those live on the connector.
    trigger, what's the output.
 2. **Make sure the connector exists** — if the skill needs to reach a service,
    there must be a connector for it (see "Ensure the connector" below).
-3. **Write the bundle** into `/ephemeral/skill-draft/<id>/SKILL.md` (plus any
+3. **Write the bundle** into `/files/.skill-draft/<id>/SKILL.md` (plus any
    helper files), referencing the connector(s) by id.
 4. **Propose it** by calling `skill_propose({ path })`. A skill that needs no
    access becomes available on the user's next message; anything else is held for
@@ -84,11 +84,11 @@ connector at all. Skip straight to writing it.
 
 ### Anatomy
 
-A skill is a directory under `/ephemeral/skill-draft/<id>/`. The only required
+A skill is a directory under `/files/.skill-draft/<id>/`. The only required
 file is `SKILL.md`:
 
 ```
-/ephemeral/skill-draft/my-skill/
+/files/.skill-draft/my-skill/
 ├── SKILL.md          (required: YAML frontmatter + markdown body)
 └── (optional helper files: scripts, reference docs, templates)
 ```
@@ -151,10 +151,10 @@ Relative to the skill dir: lowercase `[a-z0-9._-]`, may nest with `/` (e.g.
 
 ## Step 4 — Propose it
 
-Once the bundle is written under `/ephemeral/skill-draft/<id>/`, call:
+Once the bundle is written under `/files/.skill-draft/<id>/`, call:
 
 ```
-skill_propose({ path: '/ephemeral/skill-draft/my-skill' })
+skill_propose({ path: '/files/.skill-draft/my-skill' })
 ```
 
 What happens next:
@@ -186,7 +186,7 @@ a skill." Linear is reached over its GraphQL API with a key — that's a
    with `ax-connector-creator` (hosts: `api.linear.app`, slot: `LINEAR_API_KEY`,
    keyMode: `personal`). Once it's connected, you have `connectorId: linear`.
 
-2. **Write the skill** at `/ephemeral/skill-draft/linear-triage/SKILL.md`:
+2. **Write the skill** at `/files/.skill-draft/linear-triage/SKILL.md`:
 
 ```markdown
 ---
@@ -211,7 +211,7 @@ Note: the frontmatter has `connectors: [linear]` and **no `capabilities:`
 block** — the host, key, and registry all live on the `linear` connector. The key
 is referenced as `$LINEAR_API_KEY`, never written out.
 
-3. **Propose it:** `skill_propose({ path: '/ephemeral/skill-draft/linear-triage' })`.
+3. **Propose it:** `skill_propose({ path: '/files/.skill-draft/linear-triage' })`.
 
 ## Principle of lack of surprise
 

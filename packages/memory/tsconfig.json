@@ -9,7 +9,6 @@
   "references": [
     { "path": "../core" },
     { "path": "../sandbox-mount-protocol" },
-    { "path": "../sandbox-protocol" },
-    { "path": "../workspace-git" }
+    { "path": "../sandbox-protocol" }
   ]
 }

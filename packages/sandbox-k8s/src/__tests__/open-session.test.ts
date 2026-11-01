@@ -138,12 +138,12 @@ describe('sandbox:open-session (k8s)', () => {
     expect(env.AX_SESSION_ID).toBe('sess-1');
     expect(typeof env.AX_AUTH_TOKEN).toBe('string');
     expect(env.AX_AUTH_TOKEN!.length).toBeGreaterThan(0);
-    // pod-spec hardcodes /agent — the runner pod's writable mount
-    // for the workspace working tree. The caller's `workspaceRoot` is
-    // host-side (process.cwd / `/opt/ax-next/host`) and would point at
-    // a read-only path inside the runner pod's filesystem namespace;
-    // hardcoding here keeps the runner from ever seeing the host path.
-    expect(env.AX_WORKSPACE_ROOT).toBe('/agent');
+    // The scratch root is the pod's own disk /tmp. The caller's
+    // `workspaceRoot` is host-side (process.cwd, e.g. `/opt/ax-next/host`)
+    // and names nothing inside the runner pod's filesystem namespace, so
+    // it reaches the session store only, never the pod.
+    expect(env.AX_EPHEMERAL_ROOT).toBe('/tmp');
+    expect(JSON.stringify(created.body)).not.toContain('/tmp/ws');
     expect(env.AX_RUNNER_BINARY).toBe('/opt/ax/runner.js');
     // AX_RUNNER_ENDPOINT is the host's @ax/ipc-http URL (config.hostIpcUrl),
     // stamped at spec-build time — no pod-IP-derived placeholder.
@@ -182,7 +182,7 @@ describe('sandbox:open-session (k8s)', () => {
   });
 
   it('forwards AX_COMMIT_TRACE into the runner pod env only when set on the host', async () => {
-    // The opt-in per-turn commit/resync trace (commit-trace.ts) is gated on
+    // The opt-in per-turn transcript-persistence trace (commit-trace.ts) is gated on
     // AX_COMMIT_TRACE in the RUNNER process; the runner pod env only carries it
     // if the host sets it. This makes the trace reachable in k8s (the TASK-11
     // diagnosis blocker) without forwarding any other host env to the sandbox.

@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { createTestHarness } from '@ax/test-harness';
 import { createSessionInmemoryPlugin } from '@ax/session-inmemory';
 import { createLogger, type Plugin } from '@ax/core';
+import { BootstrapAssignmentSchema, type BootstrapAssignment } from '@ax/sandbox-protocol';
 import { buildSharedTemplate, createSharedPoolSessionApi, retireSharedClaims } from '../shared-pool.js';
 import { resolveConfig } from '../config.js';
 import { buildPodSpec } from '../pod-spec.js';
@@ -49,7 +50,7 @@ function fixture() {
     changeSandbox: () => { sandboxUid = randomUUID(); }, deleteClaim: () => { deleting = true; } };
 }
 function sessionPod(agent = 'agent-a', memory = false) {
-  const pod = buildPodSpec('session', { sessionId: 'session-a', workspaceRoot: '/agent', runnerBinary: '/runner.js',
+  const pod = buildPodSpec('session', { sessionId: 'session-a', runnerBinary: '/runner.js',
     authToken: 'secret-session-token', runnerEndpoint: config.hostIpcUrl,
     proxyConfig: { endpoint: 'http://proxy:8888', caCertPem: 'public-ca', envMap: { API_KEY: 'ax-cred:test' }, proxyAuthToken: 'e'.repeat(32) },
     mounts: [{ kind: 'nfs', role: 'user-files', server: '10.0.0.9', exportPath: '/files', subPath: agent,
@@ -111,6 +112,25 @@ describe('shared Agent Sandbox pool', () => {
     const tmp = spec.containers[0]!.volumeMounts.find(m => m.mountPath === '/tmp');
     const volume = spec.volumes.find(v => v.name === tmp?.name);
     expect(volume?.emptyDir).toBeDefined(); expect(volume!.emptyDir!.medium).toBeUndefined();
+  });
+  // TASK-995 — a pooled runner takes its whole env from the assignment, so the
+  // env the pod builder stamps must pass the allowlist the storage helper and
+  // the standby both enforce. Both sides now name the scratch root through
+  // POD_SCRATCH_ROOT: the standby's size-capped disk /tmp.
+  it('builds a session env the bootstrap allowlist accepts, with the scratch root on the standby disk /tmp', async () => {
+    const f = fixture(); const api = await createSharedPoolSessionApi(f.pods, f.custom, f.direct, f.storage, config);
+    await api.createNamespacedPod({ namespace: config.namespace, body: sessionPod('agent-a', true) });
+    const { bootstrap } = vi.mocked(f.storage.assign).mock.calls[0]![1] as { bootstrap: BootstrapAssignment };
+    expect(BootstrapAssignmentSchema.safeParse(bootstrap).success).toBe(true);
+    expect(bootstrap.env.AX_EPHEMERAL_ROOT).toBe('/tmp');
+    expect(bootstrap.env.AX_TRANSCRIPTS_ROOT).toBe('/tmp/transcripts');
+    const spec = buildSharedTemplate(config, '/runner.js').resource.spec.podTemplate.spec as unknown as {
+      containers: { volumeMounts: { name: string; mountPath: string }[] }[];
+      volumes: { name: string; emptyDir?: { medium?: string; sizeLimit?: string } }[] };
+    expect(spec.containers[0]!.volumeMounts.map(m => m.mountPath)).toEqual(['/tmp', '/home/runner', '/ax/late']);
+    expect(spec.volumes.find(v => v.name === 'tmp')).toEqual({ name: 'tmp', emptyDir: { sizeLimit: '10Gi' } });
+    expect(spec.volumes.map(v => v.name)).not.toContain('agent');
+    expect(spec.volumes.map(v => v.name)).not.toContain('ephemeral');
   });
   it.each(['pod', 'sandbox', 'claim'])('fails closed when the assigned %s changes', async kind => {
     const f = fixture(); const api = await createSharedPoolSessionApi(f.pods, f.custom, f.direct, f.storage, config);
@@ -294,7 +314,7 @@ describe('shared Agent Sandbox pool', () => {
       createSandboxK8sPlugin({ ...config, api: f.pods, sandboxApi: f.custom, storageClient: f.storage })] });
     try {
       const result = await h.bus.call<unknown, OpenSessionResult>('sandbox:open-session', h.ctx(), {
-        sessionId: 's', workspaceRoot: '/agent', runnerBinary: '/runner.js',
+        sessionId: 's', workspaceRoot: '/tmp/ws', runnerBinary: '/runner.js',
         proxyConfig: { endpoint: config.proxyEndpoint, caCertPem: 'public-ca', envMap: {}, proxyAuthToken: 'e'.repeat(32) }, owner: {
           userId: 'user-a', agentId: 'agent-a', agentConfig: { displayName: 'A', systemPromptAugment: '',
             allowedTools: [], mcpConfigIds: [], model: 'model', runner: 'claude-sdk' },

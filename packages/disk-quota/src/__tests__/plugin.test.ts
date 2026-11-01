@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import {
   answerBlobCollectRefs,
@@ -9,14 +9,10 @@ import {
   type ServiceHandler,
 } from '@ax/core';
 import { stopPostgresContainer, startTestContainer } from '@ax/test-harness';
-import { Kysely, PostgresDialect } from 'kysely';
+import { Kysely, PostgresDialect, sql } from 'kysely';
 import pg from 'pg';
 import { createDiskQuotaPlugin } from '../plugin.js';
-import {
-  blobFullMessage,
-  STORAGE_UNAVAILABLE_MESSAGE,
-  workspaceFullMessage,
-} from '../messages.js';
+import { blobFullMessage, STORAGE_UNAVAILABLE_MESSAGE } from '../messages.js';
 import { bootDiskQuota, MB, truncateDiskQuotaTables, type Booted } from './helpers.js';
 
 let container: StartedPostgreSqlContainer;
@@ -52,14 +48,6 @@ const blobStored = (b: Booted, ctx: AgentContext, size: number, c = 'a') =>
   b.harness.bus.fire('blob:stored', ctx, { sha256: sha(c), size });
 const blobPrePut = (b: Booted, ctx: AgentContext, size: number) =>
   b.harness.bus.fire('blob:pre-put', ctx, { size });
-const preApply = (b: Booted, ctx: AgentContext, sizeBytes?: unknown) =>
-  b.harness.bus.fire('workspace:pre-apply', ctx, {
-    changes: [],
-    parent: null,
-    ...(sizeBytes === undefined ? {} : { sizeBytes }),
-  });
-const applied = (b: Booted, ctx: AgentContext) =>
-  b.harness.bus.fire('workspace:applied', ctx, { delta: 'ignored' });
 
 async function setLimitMb(b: Booted, limitMb: number): Promise<void> {
   expect((await b.request('PUT', '/admin/storage/limits', { body: { limitMb } })).status).toBe(200);
@@ -88,20 +76,12 @@ async function dbOf(b: Booted): Promise<Kysely<unknown>> {
 }
 
 describe('manifest', () => {
-  it('subscribes to the two write gates + the meters + the two deletes (never chat:start), registers nothing, declares its calls', () => {
+  it('subscribes to the upload gate, the two meters and the agent delete (never chat:start), registers nothing, declares its calls', () => {
     const m = createDiskQuotaPlugin().manifest;
     expect(m.name).toBe('@ax/disk-quota');
     expect(m.version).toBe('0.0.0');
     expect(m.registers).toEqual([]);
-    expect(m.subscribes).toEqual([
-      'workspace:pre-apply',
-      'workspace:applied',
-      'blob:pre-put',
-      'blob:stored',
-      'workspace:deleted',
-      'chat:turn-end',
-      'agents:deleted',
-    ]);
+    expect(m.subscribes).toEqual(['blob:pre-put', 'blob:stored', 'chat:turn-end', 'agents:deleted']);
     expect(m.calls).toEqual([
       'database:get-instance',
       'storage:get',
@@ -110,7 +90,6 @@ describe('manifest', () => {
       'auth:require-user',
     ]);
     expect(m.optionalCalls?.map((c) => c.hook)).toEqual([
-      'workspace:usage',
       'agents:resolve',
       'agents:list-personal-owners',
       'auth:get-user',
@@ -118,6 +97,40 @@ describe('manifest', () => {
       'sandbox:user-files-usage',
     ]);
     for (const c of m.optionalCalls ?? []) expect(c.degradation.length).toBeGreaterThan(20);
+  });
+
+  // TASK-995: the git workspace tier is gone, so nothing here may listen on or
+  // call into it. The bus does not hold a plugin to its manifest, so this
+  // records what init REALLY subscribes to.
+  it('init subscribes to exactly what the manifest declares, and to no workspace hook', async () => {
+    const bus = new HookBus();
+    const pool = new pg.Pool({ connectionString, max: 2 });
+    const db = new Kysely({ dialect: new PostgresDialect({ pool }) });
+    bus.registerService('database:get-instance', 'test', async () => ({ db }));
+    bus.registerService('storage:get', 'test', async () => ({ value: undefined }));
+    bus.registerService('storage:set', 'test', async () => ({}));
+    bus.registerService('auth:require-user', 'test', async () => ({ user: { id: 'u', isAdmin: true } }));
+    bus.registerService('http:register-route', 'test', async () => ({ unregister: () => {} }));
+    const subscribe = vi.spyOn(bus, 'subscribe');
+    const plugin = createDiskQuotaPlugin({ sweepIntervalMs: 0 });
+    try {
+      await plugin.init({ bus, config: {} });
+      const subscribed = subscribe.mock.calls
+        .filter(([, owner]) => owner === '@ax/disk-quota')
+        .map(([hook]) => hook);
+      expect([...subscribed].sort()).toEqual([...plugin.manifest.subscribes].sort());
+      const m = plugin.manifest;
+      const touched = [
+        ...subscribed,
+        ...m.registers,
+        ...m.calls,
+        ...(m.optionalCalls ?? []).map((c) => c.hook),
+      ];
+      expect(touched.filter((hook) => hook.startsWith('workspace:'))).toEqual([]);
+    } finally {
+      await plugin.shutdown?.();
+      await db.destroy();
+    }
   });
 });
 
@@ -190,14 +203,12 @@ describe('the blob:pre-put gate, end to end through the bus', () => {
 
 const chatStart = (b: Booted, ctx: AgentContext) =>
   b.harness.bus.fire('chat:start', ctx, { message: { role: 'user', content: 'hi' } });
-const workspaceDeleted = (b: Booted, ctx: AgentContext, payload: unknown) =>
-  b.harness.bus.fire('workspace:deleted', ctx, payload);
 const turnEnd = (b: Booted, ctx: AgentContext, role: 'tool' | 'assistant') =>
   b.harness.bus.fire('chat:turn-end', ctx, { reqId: 'r1', reason: 'user-message-wait', role });
 
-// The two write gates say WHY in a machine-readable code as well as in prose,
-// so a caller that must react to "full" specifically (an HTTP status, say) does
-// not have to match a sentence or the name of the plugin that said no.
+// The upload gate says WHY in a machine-readable code as well as in prose, so a
+// caller that must react to "full" specifically (an HTTP status, say) does not
+// have to match a sentence or the name of the plugin that said no.
 describe('a refusal because storage is full carries the storage-full code', () => {
   it('on the blob:pre-put gate', async () => {
     const b = await boot();
@@ -211,100 +222,40 @@ describe('a refusal because storage is full carries the storage-full code', () =
     });
   });
 
-  it('on the workspace:pre-apply gate', async () => {
-    const b = await boot({ 'workspace:usage': (async () => ({ bytes: 60 * MB })) as ServiceHandler });
-    await setLimitMb(b, 64);
-    const alice = b.harness.ctx({ userId: 'alice', agentId: 'agt_1' });
-    await applied(b, alice);
-    await b.plugin.drain();
-    expect(await preApply(b, alice, 5 * MB)).toMatchObject({
-      rejected: true,
-      source: '@ax/disk-quota',
-      code: 'storage-full',
-    });
-  });
-
   it('but NOT on the fail-closed "could not check" refusal, which is not the same thing', async () => {
     const b = await boot();
     await (await dbOf(b)).destroy();
     const alice = b.harness.ctx({ userId: 'alice', agentId: 'agt_1' });
-    const blob = await blobPrePut(b, alice, 1);
-    const ws = await preApply(b, alice, 1);
-    for (const r of [blob, ws]) {
-      expect(r).toMatchObject({ rejected: true, reason: STORAGE_UNAVAILABLE_MESSAGE });
-      expect('code' in r).toBe(false);
-    }
+    const r = await blobPrePut(b, alice, 1);
+    expect(r).toMatchObject({ rejected: true, reason: STORAGE_UNAVAILABLE_MESSAGE });
+    expect('code' in r).toBe(false);
   });
 });
 
-describe('the workspace:deleted subscriber, end to end through the bus', () => {
-  const usageByAgent = (bytes: Record<string, number>): Record<string, ServiceHandler> => ({
-    'workspace:usage': (async (ctx: AgentContext) => ({ bytes: bytes[ctx.agentId] ?? 0 })) as ServiceHandler,
-  });
+// TASK-995: an older release left git-workspace charges behind, and nothing
+// re-measures or releases them now. Booting this plugin drops them, so the
+// person is no longer refused for a repo that is gone.
+describe('a git-workspace charge an older release left behind', () => {
+  it('stops counting once the plugin boots: the upload it refused goes through', async () => {
+    const first = await boot();
+    await setLimitMb(first, 64);
+    const storage = new Map(first.storage);
+    await sql`
+      INSERT INTO disk_quota_v1_usage (owner_id, source, kind, bytes)
+      VALUES ('alice', 'workspace:agt_1', 'workspace', ${64 * MB})
+    `.execute(await dbOf(first));
+    await first.harness.close({ onError: () => {} });
 
-  it("drops that agent's workspace row and frees the owner's room; another agent's row stays", async () => {
-    const b = await boot(usageByAgent({ agt_1: 40 * MB, agt_2: 10 * MB }));
-    await setLimitMb(b, 64);
-    const one = b.harness.ctx({ userId: 'alice', agentId: 'agt_1' });
-    const two = b.harness.ctx({ userId: 'alice', agentId: 'agt_2' });
-    await applied(b, one);
-    await applied(b, two);
-    await b.plugin.drain();
-    expect((await mine(b, 'alice')).workspaceBytes).toBe(50 * MB);
-    expect((await blobPrePut(b, one, 20 * MB)).rejected).toBe(true);
-
-    // Whoever fires it (a system context, in real life) is not the owner.
-    const result = await workspaceDeleted(b, b.harness.ctx({ userId: 'system' }), { agentId: 'agt_1' });
-    expect(result.rejected).toBe(false);
-
-    expect((await mine(b, 'alice')).workspaceBytes).toBe(10 * MB);
-    expect((await blobPrePut(b, one, 20 * MB)).rejected).toBe(false);
-  });
-
-  it("drops a TEAM agent's row from the team, not from whoever fired the hook", async () => {
-    const b = await boot({
-      ...usageByAgent({ agt_team: 30 * MB }),
-      'agents:resolve': (async () => ({ agent: { ownerId: 't1', ownerType: 'team' } })) as ServiceHandler,
-    });
-    await applied(b, b.harness.ctx({ userId: 'alice', agentId: 'agt_team' }));
-    await b.plugin.drain();
-    b.setAuth({ id: 'admin-1', isAdmin: true });
-    expect(((await b.request('GET', '/admin/storage')).json as { owners: unknown[] }).owners).toEqual([
-      expect.objectContaining({ ownerId: 'team:t1', workspaceBytes: 30 * MB }),
-    ]);
-
-    await workspaceDeleted(b, b.harness.ctx({ userId: 'system' }), { agentId: 'agt_team' });
-    expect(((await b.request('GET', '/admin/storage')).json as { owners: unknown[] }).owners).toEqual([]);
-  });
-
-  it('a malformed payload deletes nothing and does not throw', async () => {
-    const b = await boot(usageByAgent({ agt_1: 40 * MB }));
-    await applied(b, b.harness.ctx({ userId: 'alice', agentId: 'agt_1' }));
-    await b.plugin.drain();
-    const ctx = b.harness.ctx({ userId: 'system' });
-    const bad: unknown[] = [
-      undefined,
-      null,
-      'agt_1',
-      42,
-      [],
-      {},
-      { agentId: '' },
-      { agentId: 5 },
-      { agentId: null },
-      { agentId: ['agt_1'] },
-      { agent: 'agt_1' },
-    ];
-    for (const payload of bad) {
-      await expect(workspaceDeleted(b, ctx, payload), JSON.stringify(payload)).resolves.toMatchObject({
-        rejected: false,
-      });
-    }
-    expect((await mine(b, 'alice')).workspaceBytes).toBe(40 * MB);
-    // The subscriber is alive (so the above is not just "nobody was listening"):
-    // the same hook with a good payload does drop the row.
-    await workspaceDeleted(b, ctx, { agentId: 'agt_1' });
-    expect((await mine(b, 'alice')).workspaceBytes).toBe(0);
+    const next = await boot();
+    for (const [k, v] of storage) next.storage.set(k, v);
+    // The boot itself removed it (not merely stopped counting it).
+    const left = await sql<{ n: string }>`
+      SELECT count(*)::text AS n FROM disk_quota_v1_usage WHERE kind = 'workspace'
+    `.execute(await dbOf(next));
+    expect(left.rows[0]?.n).toBe('0');
+    const alice = next.harness.ctx({ userId: 'alice', agentId: 'agt_1' });
+    expect(await blobPrePut(next, alice, 5 * MB)).toMatchObject({ rejected: false });
+    expect(await mine(next, 'alice')).toMatchObject({ usedBytes: 0, workspaceBytes: 0, fileBytes: 0 });
   });
 });
 
@@ -354,6 +305,31 @@ describe('agent files, end to end through the bus', () => {
     await b.plugin.drain();
     expect(calls).toEqual(['agt_1']);
     expect((await mine(b, 'alice')).workspaceBytes).toBe(3 * MB);
+  });
+
+  it('does not hold up the turn end: the fire returns before the walk finishes', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    let started = 0;
+    const b = await boot({
+      'sandbox:user-files-usage': (async () => {
+        started++;
+        await gate;
+        return { bytes: 7 * MB };
+      }) as ServiceHandler,
+      'agents:resolve': (async () => ({ agent: { ownerId: 'alice', ownerType: 'user' } })) as ServiceHandler,
+    });
+    const alice = b.harness.ctx({ userId: 'alice', agentId: 'agt_1' });
+    expect(await turnEnd(b, alice, 'assistant')).toMatchObject({ rejected: false });
+    // The walk was started, is still waiting, and the fire is over.
+    await new Promise((r) => setTimeout(r, 20));
+    expect(started).toBe(1);
+    expect((await mine(b, 'alice')).workspaceBytes).toBe(0);
+    release();
+    await b.plugin.drain();
+    expect((await mine(b, 'alice')).workspaceBytes).toBe(7 * MB);
   });
 
   it("agents:deleted drops the agent's agent-files row through the bus", async () => {
@@ -409,164 +385,6 @@ describe('agent files, end to end through the bus', () => {
   });
 });
 
-describe('the workspace:pre-apply gate, end to end through the bus', () => {
-  const usage = (bytes: number): Record<string, ServiceHandler> => ({
-    'workspace:usage': (async () => ({ bytes })) as ServiceHandler,
-  });
-
-  it('passes when there is no sizeBytes and nothing is stored', async () => {
-    const b = await boot();
-    const ctx = b.harness.ctx({ userId: 'alice' });
-    expect((await preApply(b, ctx)).rejected).toBe(false);
-  });
-
-  it('refuses a commit that would cross the limit, using sizeBytes; exactly the limit passes', async () => {
-    const b = await boot(usage(60 * MB));
-    await setLimitMb(b, 64);
-    const alice = b.harness.ctx({ userId: 'alice', agentId: 'agt_1' });
-    await applied(b, alice);
-    await b.plugin.drain();
-    expect((await mine(b, 'alice')).workspaceBytes).toBe(60 * MB);
-
-    expect(await preApply(b, alice, 5 * MB)).toMatchObject({
-      rejected: true,
-      reason: workspaceFullMessage(60 * MB, 64 * MB),
-      source: '@ax/disk-quota',
-    });
-    expect((await preApply(b, alice, 4 * MB)).rejected).toBe(false);
-    expect((await preApply(b, alice, 4 * MB + 1)).rejected).toBe(true);
-    // Another user, another agent: unaffected.
-    expect((await preApply(b, b.harness.ctx({ userId: 'bob', agentId: 'agt_2' }), 5 * MB)).rejected).toBe(
-      false,
-    );
-  });
-
-  it('workspace bytes and file bytes share ONE budget', async () => {
-    const b = await boot(usage(30 * MB));
-    await setLimitMb(b, 64);
-    const alice = b.harness.ctx({ userId: 'alice', agentId: 'agt_1' });
-    await applied(b, alice);
-    await b.plugin.drain();
-    await blobStored(b, alice, 30 * MB);
-    expect((await preApply(b, alice, 4 * MB)).rejected).toBe(false);
-    expect((await preApply(b, alice, 4 * MB + 1)).rejected).toBe(true);
-    expect((await blobPrePut(b, alice, 4 * MB + 1)).rejected).toBe(true);
-  });
-
-  it('reads a hostile sizeBytes as 0: an over-limit owner is still refused, an ordinary one still passes', async () => {
-    const b = await boot(usage(100 * MB));
-    const over = b.harness.ctx({ userId: 'alice', agentId: 'agt_1' });
-    await applied(b, over);
-    await b.plugin.drain();
-    await setLimitMb(b, 64); // alice is now over her limit
-    for (const bad of [-1e12, Number.NaN, 'lots', null, {}, Number.POSITIVE_INFINITY]) {
-      expect((await preApply(b, over, bad)).rejected, String(bad)).toBe(true);
-    }
-    const fine = b.harness.ctx({ userId: 'bob', agentId: 'agt_2' });
-    for (const bad of [-1e12, Number.NaN, 'lots', null, {}]) {
-      expect((await preApply(b, fine, bad)).rejected, String(bad)).toBe(false);
-    }
-  });
-
-  it('FAILS CLOSED when the database is broken', async () => {
-    const b = await boot();
-    await (await dbOf(b)).destroy();
-    expect(await preApply(b, b.harness.ctx({ userId: 'alice' }), 1)).toMatchObject({
-      rejected: true,
-      reason: STORAGE_UNAVAILABLE_MESSAGE,
-    });
-  });
-
-  it('charges a team agent\'s workspace to team:<id>, not to whoever happened to commit', async () => {
-    const b = await boot({
-      ...usage(30 * MB),
-      'agents:resolve': (async (_c: unknown, input: { agentId: string; userId: string }) => ({
-        agent:
-          input.agentId === 'agt_team'
-            ? { ownerId: 't1', ownerType: 'team' }
-            : { ownerId: input.userId, ownerType: 'user' },
-      })) as ServiceHandler,
-    });
-    await setLimitMb(b, 64);
-    const alice = b.harness.ctx({ userId: 'alice', agentId: 'agt_team' });
-    const bob = b.harness.ctx({ userId: 'bob', agentId: 'agt_team' });
-    await applied(b, alice);
-    await b.plugin.drain();
-
-    expect((await mine(b, 'alice')).workspaceBytes).toBe(0);
-    // Bob commits to the same team agent: the team's 30 MB is what counts.
-    expect((await preApply(b, bob, 34 * MB)).rejected).toBe(false);
-    expect((await preApply(b, bob, 34 * MB + 1)).rejected).toBe(true);
-
-    b.setAuth({ id: 'admin-1', isAdmin: true });
-    const r = await b.request('GET', '/admin/storage');
-    expect((r.json as { owners: Array<Record<string, unknown>> }).owners).toEqual([
-      expect.objectContaining({ ownerId: 'team:t1', kind: 'team', workspaceBytes: 30 * MB }),
-    ]);
-  });
-});
-
-describe('the workspace:applied meter', () => {
-  it('does not hold up the write: the fire returns before the measurement finishes', async () => {
-    let release!: () => void;
-    const gate = new Promise<void>((r) => {
-      release = r;
-    });
-    let started = 0;
-    const b = await boot({
-      'workspace:usage': (async () => {
-        started++;
-        await gate;
-        return { bytes: 7 * MB };
-      }) as ServiceHandler,
-    });
-    const alice = b.harness.ctx({ userId: 'alice', agentId: 'agt_1' });
-    const result = await applied(b, alice);
-    expect(result.rejected).toBe(false);
-    // The measurement was started, is still waiting, and the fire is over.
-    await new Promise((r) => setTimeout(r, 20));
-    expect(started).toBe(1);
-    expect((await mine(b, 'alice')).workspaceBytes).toBe(0);
-    release();
-    await b.plugin.drain();
-    expect((await mine(b, 'alice')).workspaceBytes).toBe(7 * MB);
-  });
-
-  it('measures the agent of THAT write (workspace:usage routes by ctx.agentId)', async () => {
-    const seen: string[] = [];
-    const b = await boot({
-      'workspace:usage': (async (ctx: AgentContext) => {
-        seen.push(`${ctx.agentId}/${ctx.userId}`);
-        return { bytes: 1 * MB };
-      }) as ServiceHandler,
-    });
-    await applied(b, b.harness.ctx({ userId: 'alice', agentId: 'agt_7' }));
-    await b.plugin.drain();
-    expect(seen).toEqual(['agt_7/alice']);
-  });
-
-  it('a failing measurement is a warn, never a failed write', async () => {
-    const b = await boot({
-      'workspace:usage': (async () => {
-        throw new Error('disk gone');
-      }) as ServiceHandler,
-    });
-    const alice = b.harness.ctx({ userId: 'alice', agentId: 'agt_1' });
-    expect((await applied(b, alice)).rejected).toBe(false);
-    await expect(b.plugin.drain()).resolves.toBeUndefined();
-    expect((await mine(b, 'alice')).workspaceBytes).toBe(0);
-  });
-
-  it('without workspace:usage, workspace bytes are simply not counted (files still are)', async () => {
-    const b = await boot();
-    const alice = b.harness.ctx({ userId: 'alice', agentId: 'agt_1' });
-    await applied(b, alice);
-    await b.plugin.drain();
-    await blobStored(b, alice, 2 * MB);
-    expect(await mine(b, 'alice')).toMatchObject({ workspaceBytes: 0, fileBytes: 2 * MB });
-  });
-});
-
 describe('the sweep', () => {
   const fleet = (calls: { list: number }): Record<string, ServiceHandler> => ({
     'agents:list-personal-owners': (async () => {
@@ -578,8 +396,8 @@ describe('the sweep', () => {
         ],
       };
     }) as ServiceHandler,
-    'workspace:usage': (async (ctx: AgentContext) => ({
-      bytes: ctx.agentId === 'a1' ? 11 * MB : 5 * MB,
+    'sandbox:user-files-usage': (async (_ctx: AgentContext, input: { agentId: string }) => ({
+      bytes: input.agentId === 'a1' ? 11 * MB : 5 * MB,
     })) as ServiceHandler,
   });
 
@@ -617,7 +435,7 @@ describe('the sweep', () => {
     expect((await mine(b, 'bob')).fileBytes).toBe(3 * MB);
   });
 
-  it('reconcile() backfills workspaces that existed before the plugin did', async () => {
+  it('reconcile() backfills the files of agents no turn has measured yet', async () => {
     const calls = { list: 0 };
     const b = await boot(fleet(calls));
     expect(await b.plugin.reconcile()).toEqual({
@@ -699,7 +517,6 @@ describe('lifecycle', () => {
     );
     // No gate left: the (now closed) plugin is gone rather than refusing.
     expect(await blobPrePut(b, alice, 1)).toEqual({ rejected: false, payload: { size: 1 } });
-    expect((await preApply(b, alice, 1)).rejected).toBe(false);
     // ...and no meter: a turn end after shutdown walks nothing.
     await turnEnd(b, alice, 'assistant');
     await b.plugin.drain();

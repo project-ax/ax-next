@@ -66,14 +66,12 @@ export function createIpcServerPlugin(): Plugin {
       // `DISPATCHER_DEPENDENCIES` — the single source of truth for the service
       // hooks the shared dispatcher transitively invokes. We don't
       // hand-maintain a per-transport list (that's how it drifted: it declared
-      // only session/tool and omitted the workspace, conversation, and
-      // session-config services the handlers reach).
+      // only session/tool and omitted other services the handlers reach).
       //
       // Subscriber hooks fired by the dispatcher (`tool:pre-call`,
-      // `tool:post-call`, `chat:turn-end`, `chat:end`, `chat:stream-chunk`,
-      // `workspace:applied`) are NOT declared — subscriber hooks don't require
-      // a registered service and `bus.fire` with no subscribers is a safe
-      // no-op.
+      // `tool:post-call`, `chat:turn-end`, `chat:end`, `chat:stream-chunk`)
+      // are NOT declared — subscriber hooks don't require a registered service
+      // and `bus.fire` with no subscribers is a safe no-op.
       //
       // `tool:execute:<name>` service hooks are looked up *dynamically* via
       // `bus.hasService(...)` at dispatch time (DISPATCHER_DEPENDENCIES.

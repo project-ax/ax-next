@@ -168,14 +168,10 @@ RUN apt-get update \
       util-linux=2.38.1-5+deb12u3 \
       mount=2.38.1-5+deb12u3 \
  && rm -rf /var/lib/apt/lists/*
-# `git` is needed by the host pod's @ax/ipc-core workspace.materialize
-# handler (it runs `git bundle` to seed the runner's /agent dir at
-# session start) AND by runner pods themselves (they spawn `git` to
-# materialize and to ship per-turn diffs). The original Dockerfile
-# header noted git would live only in the storage-tier image; that's
-# now wrong — workspace.materialize runs on the host. Comment-only
-# header at the top of this file should be updated when that lands as
-# its own change.
+# `git` stays for the agents themselves: they `git clone` and commit their
+# own work in `/files` or `/tmp`. Neither the host nor the runner uses git
+# any more — the git workspace tier (`/agent`, workspace.materialize,
+# per-turn bundles) was removed in TASK-995.
 #
 # `git-lfs` was REMOVED (TASK-70 / out-of-git Part E): the LFS layer was
 # never load-bearing — no `.gitattributes`/`git lfs track` ever ran, the
@@ -238,8 +234,8 @@ RUN mkdir -p /ax/late/files /ax/late/memory \
 # installs there are found in later sessions.
 #
 # IMPORTANT — the load-bearing path is NOT this file. At runtime the agent's
-# `$HOME` is the git-bundled workspace tier (`/agent`, set on the SDK
-# subprocess by the runner — see agent-claude-sdk-runner/src/main.ts), and the
+# `$HOME` is the agent's files home (`/files`, set on the SDK subprocess by
+# the runner — see agent-claude-sdk-runner/src/main.ts), and the
 # SDK's Bash tool runs a NON-INTERACTIVE shell that does NOT source `.bashrc`.
 # So `$HOME/bin` actually reaches the agent's PATH via the explicit subprocess
 # env the runner builds (home-bin-env.ts). This `.bashrc` exists for any

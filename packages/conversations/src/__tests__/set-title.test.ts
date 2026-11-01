@@ -72,7 +72,7 @@ async function makeHarness(policy: MockResolvePolicy): Promise<{
       'agents:resolve': async (
         _ctx,
         input: unknown,
-      ): Promise<{ agent: { id: string; workspaceRef: string | null } }> => {
+      ): Promise<{ agent: { id: string } }> => {
         const call = input as MockResolveCall;
         resolveCalls.push(call);
         const decision = policy.decide(call);
@@ -80,7 +80,7 @@ async function makeHarness(policy: MockResolvePolicy): Promise<{
           if (policy.onAllow !== undefined) {
             await policy.onAllow(call);
           }
-          return { agent: { id: call.agentId, workspaceRef: null } };
+          return { agent: { id: call.agentId } };
         }
         if (decision === 'notfound') {
           throw new PluginError({
@@ -97,11 +97,6 @@ async function makeHarness(policy: MockResolvePolicy): Promise<{
           message: `agent '${call.agentId}' not accessible to '${call.userId}'`,
         });
       },
-      // Phase D — workspace reads aren't exercised here. Phase B adds
-      // workspace:apply for drop-turn; stub for bootstrap.
-      'workspace:list': async () => ({ paths: [] as string[] }),
-      'workspace:read': async () => ({ found: false }) as const,
-      'workspace:apply': async () => ({ version: 'v-stub', delta: { before: null, after: 'v-stub', changes: [] } }),
     },
     plugins: [
       createDatabasePostgresPlugin({ connectionString }),

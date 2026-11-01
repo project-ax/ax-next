@@ -51,26 +51,23 @@ function parsePurgedIds(payload: unknown): string[] | undefined {
 }
 
 // ---------------------------------------------------------------------------
-// @ax/attachments plugin (Phase 1 — host-side temp store + commit + download).
+// @ax/attachments plugin — the host-side home of uploads and published
+// artifacts: their metadata rows (bytes live in the content-addressed blob
+// store, TASK-68) and the download ACL. Everything is addressed by id; no hook
+// takes or returns a path.
 //
-// Three service hooks:
-//   - attachments:store-temp   (caller: POST /api/attachments route, Phase 3)
-//   - attachments:commit       (caller: POST /api/chat/messages handler, Phase 3)
-//   - attachments:download     (callers: GET /api/files, Phase 3; future Slack plugin)
-//
-// Half-wired window CLOSED by Phase 3 (PR #97). `channel-web` drives all
-// three: `routes-attachments.ts` calls store-temp and download,
-// `routes-chat.ts` calls attachments:commit.
+// Service hooks:
+//   - attachments:store-temp   (caller: POST /api/attachments route)
+//   - attachments:commit       (caller: POST /api/chat/messages handler)
+//   - attachments:download     (callers: GET /api/files; future Slack plugin)
+//   - attachments:list-for-conversation (caller: ipc-core `attachments.list`)
+//   - artifacts:publish-blob   (caller: ipc-core `artifact.publish`)
 //
 // Manifest decisions (the authoritative list is the `calls:` array below —
-// this prose is a summary and has already drifted once):
+// this prose is a summary):
 //   - calls: database:get-instance (own table + migration), blob:put (for
 //     attachments:commit), blob:get (for attachments:download),
 //     conversations:get (owner gate in attachments:download).
-//   - This used to name `workspace:apply` and `workspace:read` instead of the
-//     blob hooks. TASK-68 moved attachment bytes out of git and into the
-//     content-addressed blob store; the `calls:` array was updated, this
-//     paragraph was not.
 //   - subscribes: `conversations:purged` (TASK-718). A hard-deleted
 //     conversation (agent delete) takes its files/artifacts metadata rows with
 //     it. The blob bytes are left in place (content-addressed + shared).
@@ -104,9 +101,9 @@ export function createAttachmentsPlugin(
       ],
       calls: [
         'database:get-instance',
-        // TASK-68: bytes move from git (workspace:apply/read) to the
-        // content-addressed blob store. attachments:commit stores via blob:put;
-        // attachments:download fetches via blob:get. The git path is dropped.
+        // TASK-68: bytes live in the content-addressed blob store.
+        // attachments:commit stores via blob:put; attachments:download fetches
+        // via blob:get.
         'blob:put',
         'blob:get',
         // TASK-776 (D10): artifacts:publish-blob refuses a sha the store lacks.

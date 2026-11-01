@@ -7,10 +7,6 @@
   "types": "./dist/index.d.ts",
   "exports": {
     ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" },
-    "./internal/git-workspace.js": {
-      "types": "./dist/git-workspace.d.ts",
-      "default": "./dist/git-workspace.js"
-    },
     "./internal/python-venv.js": {
       "types": "./dist/python-venv.d.ts",
       "default": "./dist/python-venv.js"

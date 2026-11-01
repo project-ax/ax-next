@@ -41,7 +41,6 @@ const TEST_AGENT = {
   mcpConfigIds: [],
   model: 'anthropic/claude-sonnet-4-7',
   runner: 'claude-sdk',
-  workspaceRef: null,
 };
 
 type LogLine = Record<string, unknown> & { msg: string; level: string };

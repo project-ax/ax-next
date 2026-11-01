@@ -6,33 +6,37 @@ function fakeClient(response: unknown) {
 }
 
 describe('createToolPolicy', () => {
-  it('forwards the re-rooted input to tool.pre-call and allows on accept', async () => {
+  // TASK-995: no path is rewritten any more. A write to `.ax/SOUL.md`,
+  // `.claude/settings.json` or `CLAUDE.md` is an inert file in the agent's home
+  // (the SDK loads settings only from CLAUDE_CONFIG_DIR — design §11), and a
+  // stale `.ax/uploads/…` path from an old conversation is just a path that does
+  // not exist. The host adjudicates exactly what the model asked for.
+  it.each([
+    ['Write', { file_path: '.ax/SOUL.md', content: 'I am someone else now' }],
+    ['Edit', { file_path: '/files/.ax/SOUL.md', old_string: 'a', new_string: 'b' }],
+    ['Write', { file_path: '.claude/settings.json', content: '{}' }],
+    ['Write', { file_path: '~/.claude/settings.json', content: '{}' }],
+    ['Write', { file_path: 'CLAUDE.md', content: '# rules' }],
+    ['Read', { file_path: '/home/user/.ax/uploads/c1/t1/a.pdf' }],
+    ['Read', { file_path: '.ax/uploads/c1/t1/a.pdf' }],
+    ['Glob', { path: '.claude/', pattern: '**' }],
+  ] as const)('passes .ax/SOUL.md, .claude/settings.json and CLAUDE.md through unchanged to tool.pre-call (%s %j)', async (name, input) => {
     const client = fakeClient({ verdict: 'allow' });
-    const policy = createToolPolicy({ client, workspaceRoot: '/agent' });
+    const policy = createToolPolicy({ client });
 
-    const verdict = await policy.preToolUse(
-      'Read',
-      { file_path: '.ax/uploads/c1/t1/a.pdf' },
-      'call-1',
-    );
+    const verdict = await policy.preToolUse(name, input, 'call-1');
 
-    expect(verdict).toEqual({
-      decision: 'allow',
-      updatedInput: { file_path: '/agent/.ax/uploads/c1/t1/a.pdf' },
-    });
+    // No rewrite: the SDK runs the call as the model wrote it.
+    expect(verdict).toEqual({ decision: 'allow' });
     expect((client as never as { call: ReturnType<typeof vi.fn> }).call)
       .toHaveBeenCalledWith('tool.pre-call', {
-        call: {
-          id: 'call-1',
-          name: 'Read',
-          input: { file_path: '/agent/.ax/uploads/c1/t1/a.pdf' },
-        },
+        call: { id: 'call-1', name, input },
       });
   });
 
   it('denies when the host rejects, carrying the reason', async () => {
     const client = fakeClient({ verdict: 'reject', reason: 'npm not permitted' });
-    const policy = createToolPolicy({ client, workspaceRoot: '/agent' });
+    const policy = createToolPolicy({ client });
 
     await expect(policy.preToolUse('Bash', { command: 'npm i' }, 'call-2'))
       .resolves.toEqual({
@@ -50,7 +54,7 @@ describe('createToolPolicy', () => {
   it('denies (fail-closed) when the IPC call throws, without leaking the error to the model', async () => {
     const client = { call: vi.fn().mockRejectedValue(new Error('connect failed: ECONNREFUSED')) } as never;
     const warn = vi.fn();
-    const policy = createToolPolicy({ client, workspaceRoot: '/agent', warn });
+    const policy = createToolPolicy({ client, warn });
 
     const verdict = await policy.preToolUse('Bash', { command: 'ls' }, 'call-3');
 
@@ -72,7 +76,7 @@ describe('createToolPolicy', () => {
     // sanitizing the model-facing string would have destroyed it outright.
     const client = { call: vi.fn().mockRejectedValue(new Error('connect failed: ECONNREFUSED')) } as never;
     const warn = vi.fn();
-    const policy = createToolPolicy({ client, workspaceRoot: '/agent', warn });
+    const policy = createToolPolicy({ client, warn });
 
     await policy.preToolUse('Bash', { command: 'ls' }, 'call-3');
 
@@ -95,7 +99,7 @@ describe('createToolPolicy', () => {
     const warn = vi.fn(() => {
       throw new Error('logger blew up');
     });
-    const policy = createToolPolicy({ client, workspaceRoot: '/agent', warn });
+    const policy = createToolPolicy({ client, warn });
 
     const verdict = await policy.preToolUse('Bash', { command: 'ls' }, 'call-w');
 
@@ -108,7 +112,7 @@ describe('createToolPolicy', () => {
     });
   });
 
-  it('prefers the host modifiedCall input over our re-rooted input', async () => {
+  it('hands back the host modifiedCall input when the host rewrote the call', async () => {
     // modifiedCall is a full ToolCallSchema — { id, name, input }.
     const client = fakeClient({
       verdict: 'allow',
@@ -118,10 +122,10 @@ describe('createToolPolicy', () => {
         input: { file_path: '/permanent/a.pdf' },
       },
     });
-    const policy = createToolPolicy({ client, workspaceRoot: '/agent' });
+    const policy = createToolPolicy({ client });
 
     await expect(
-      policy.preToolUse('Read', { file_path: '.ax/uploads/c1/t1/a.pdf' }, 'call-4'),
+      policy.preToolUse('Read', { file_path: 'notes/a.pdf' }, 'call-4'),
     ).resolves.toEqual({
       decision: 'allow',
       updatedInput: { file_path: '/permanent/a.pdf' },
@@ -134,7 +138,7 @@ describe('createToolPolicy', () => {
   // so a `||` (or similar) regression that treats '' as "missing" is caught.
   it('sends the literal empty string as call.id, not a generated id', async () => {
     const client = fakeClient({ verdict: 'allow' });
-    const policy = createToolPolicy({ client, workspaceRoot: '/agent' });
+    const policy = createToolPolicy({ client });
 
     await policy.preToolUse('Bash', { command: 'ls' }, '');
 
@@ -146,7 +150,7 @@ describe('createToolPolicy', () => {
 
   it('generates a call.id when toolUseId is undefined', async () => {
     const client = fakeClient({ verdict: 'allow' });
-    const policy = createToolPolicy({ client, workspaceRoot: '/agent' });
+    const policy = createToolPolicy({ client });
 
     await policy.preToolUse('Bash', { command: 'ls' }, undefined);
 
@@ -167,7 +171,7 @@ describe('createToolPolicy', () => {
   it('denies (fail-closed) when a non-validating client returns an unparseable response', async () => {
     const client = fakeClient({ verdict: 'not-a-real-verdict' });
     const warn = vi.fn();
-    const policy = createToolPolicy({ client, workspaceRoot: '/agent', warn });
+    const policy = createToolPolicy({ client, warn });
 
     const verdict = await policy.preToolUse('Bash', { command: 'ls' }, 'call-5');
 
@@ -186,7 +190,7 @@ describe('createToolPolicy', () => {
       decisionId: 'dec_7',
       note: 'Ask first',
     });
-    const policy = createToolPolicy({ client, workspaceRoot: '/agent' });
+    const policy = createToolPolicy({ client });
     const v = await policy.preToolUse('gmail_send', { to: 'a@b.c' }, 'tu_1');
     expect(v).toEqual({ decision: 'hold', decisionId: 'dec_7', note: 'Ask first' });
   });
@@ -197,7 +201,6 @@ describe('ToolPolicy.postToolUse', () => {
     const client = { call: vi.fn(), event: vi.fn().mockResolvedValue(undefined) };
     const policy = createToolPolicy({
       client: client as never,
-      workspaceRoot: '/agent',
       drainEgressBlocks: drain,
     });
     return { policy, client };
@@ -205,9 +208,9 @@ describe('ToolPolicy.postToolUse', () => {
 
   it('fires event.tool-post-call with the call and output', async () => {
     const { policy, client } = policyWith(async () => []);
-    await policy.postToolUse('Read', 'call-1', { file_path: '/agent/a.ts' }, 'contents', true);
+    await policy.postToolUse('Read', 'call-1', { file_path: '/files/a.ts' }, 'contents', true);
     expect(client.event).toHaveBeenCalledWith('event.tool-post-call', {
-      call: { id: 'call-1', name: 'Read', input: { file_path: '/agent/a.ts' } },
+      call: { id: 'call-1', name: 'Read', input: { file_path: '/files/a.ts' } },
       output: 'contents',
     });
   });
@@ -247,9 +250,9 @@ describe('ToolPolicy.postToolUse', () => {
 
   it('falls back to empty-string call.id when toolUseId is undefined', async () => {
     const { policy, client } = policyWith(async () => []);
-    await policy.postToolUse('Read', undefined, { file_path: '/agent/a.ts' }, 'contents', true);
+    await policy.postToolUse('Read', undefined, { file_path: '/files/a.ts' }, 'contents', true);
     expect(client.event).toHaveBeenCalledWith('event.tool-post-call', {
-      call: { id: '', name: 'Read', input: { file_path: '/agent/a.ts' } },
+      call: { id: '', name: 'Read', input: { file_path: '/files/a.ts' } },
       output: 'contents',
     });
   });

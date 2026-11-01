@@ -49,23 +49,6 @@ export interface ToolDescriptor {
    */
   executesIn: 'sandbox' | 'host';
   /**
-   * When `true`, the agent runtime MUST flush its live workspace (commit +
-   * push to the host's workspace mirror) BEFORE forwarding this host tool's
-   * `tool.execute-host` call.
-   *
-   * Only meaningful for `executesIn: 'host'` tools that read workspace files
-   * the agent may have written earlier in the SAME turn. Under runner-owned
-   * sessions the host only sees the committed+pushed workspace mirror, which
-   * lags the runner's live tree until a turn-boundary commit — so without the
-   * flush a host tool reading e.g. `.ax/draft-skills/<id>/SKILL.md` would not yet
-   * see a file the agent just authored. Declarative on purpose: the tool
-   * states its need; the runtime owns the flush mechanism.
-   *
-   * Must match the corresponding field on `@ax/ipc-protocol`'s
-   * `ToolDescriptorSchema`.
-   */
-  flushWorkspaceBeforeCall?: boolean;
-  /**
    * A present-participle clause describing the ACTIVITY this tool performs
    * while it runs — e.g. `'Reading email'`, never an outcome like `'Read
    * email'` or `'Sent 3 replies'`. Authored in the tool's manifest, in-repo,

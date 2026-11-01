@@ -1,12 +1,12 @@
 import { z } from 'zod';
-import { asWorkspaceVersion, HOLD_NOTE_MAX, type WorkspaceVersion } from '@ax/core';
-import { CONTENT_BLOCKS_MAX, ContentBlockSchema, isWorkspaceRelativePath } from './content-blocks.js';
-import { SaveRefusedCodeSchema } from './save-refused.js';
-
-// Re-export so existing consumers importing from `@ax/ipc-protocol` keep
-// working transparently — canonical declaration lives in `@ax/core` so
-// nothing is tempted to reach into a workspace backend for the shared type.
-export { asWorkspaceVersion, type WorkspaceVersion };
+import { HOLD_NOTE_MAX } from '@ax/core';
+import {
+  ATTACHMENT_FILENAME_MAX,
+  ATTACHMENT_MEDIA_TYPE_MAX,
+  AttachmentIdSchema,
+  CONTENT_BLOCKS_MAX,
+  ContentBlockSchema,
+} from './content-blocks.js';
 
 // ---------------------------------------------------------------------------
 // Shared shapes
@@ -21,20 +21,16 @@ export { asWorkspaceVersion, type WorkspaceVersion };
 export const AgentMessageSchema = z.object({
   role: z.enum(['user', 'assistant']),
   content: z.string(),
-  // Phase 2 (attachments). Optional richer payload — when present, the
-  // runner prefers this over `content`. The chat-messages handler does
-  // not emit this yet (Phase 3); shipping the schema first lets the
-  // runner translation pass be testable. Backward-compat: omitting the
-  // field reproduces the prior string-only shape exactly.
+  // Phase 2 (attachments). Optional richer payload — the chat-messages
+  // handler sends the person's `attachment` blocks here (addressed by id).
+  // When present, the runner prefers this over `content`. Omitting the
+  // field reproduces the string-only shape exactly.
   contentBlocks: z.array(ContentBlockSchema).max(CONTENT_BLOCKS_MAX).optional(),
   /**
-   * Phase 3 (attachments, 2026-05-18). Server-minted user-turn id, used
-   * by the runner to bind the user message to the same turn the host
-   * committed attachments under. The chat-messages handler mints this
-   * BEFORE calling `attachments:commit` so the committed file path
-   * (`.ax/uploads/<conversationId>/<turnId>/<file>`) and the SDK turn
-   * that references it agree. Optional for backward-compat with code
-   * paths that don't carry attachments (existing canary tests).
+   * Phase 3 (attachments, 2026-05-18). Server-minted user-turn id the
+   * chat-messages handler stamps on each user message. Attachments do not
+   * depend on it: they are committed and addressed by their own id.
+   * Optional; paths that mint no turn id omit it.
    */
   turnId: z.string().optional(),
 });
@@ -67,14 +63,6 @@ export const ToolDescriptorSchema = z.object({
    * - `'host'`: the agent sends `tool.execute-host` and waits for the host.
    */
   executesIn: z.enum(['sandbox', 'host']),
-  /**
-   * When `true`, the runner flushes its live workspace (commit + push to the
-   * host mirror) before forwarding this host tool's `tool.execute-host` call,
-   * so a host tool that reads workspace files the agent wrote earlier in the
-   * SAME turn sees them. See `@ax/core`'s `ToolDescriptor` for the rationale.
-   * Storage-agnostic: "workspace" is the abstraction, not git/sqlite/k8s.
-   */
-  flushWorkspaceBeforeCall: z.boolean().optional(),
   /**
    * Present-participle activity clause (e.g. `'Reading email'`), never an
    * outcome. Authored in-repo per tool, not model-facing. MCP-sourced
@@ -170,378 +158,6 @@ export const ToolListResponseSchema = z.object({
 export type ToolListResponse = z.infer<typeof ToolListResponseSchema>;
 
 // ---------------------------------------------------------------------------
-// Bundle-bytes wire validator (shared between commit-notify + materialize).
-//
-// Both wire shapes carry git bundle bytes as base64 strings. We validate
-// the base64 shape at the protocol boundary so malformed payloads
-// surface as a 400 VALIDATION error here rather than as an INTERNAL 500
-// later in `git fetch` / `Buffer.from(..., 'base64')`. The empty string
-// is allowed (means "no bundle this turn" on commit-notify; materialize
-// always returns non-empty in practice).
-//
-// Pattern: standard base64 alphabet (A-Z, a-z, 0-9, +, /), length is a
-// multiple of 4, and `=` padding only at the tail. The regex matches
-// the canonical shape; Buffer.from(s, 'base64') is permissive (it
-// silently ignores garbage), so we don't lean on it for validation.
-//
-// Only safe on strings the 4 MiB JSON frame already bounded: on a string of
-// about 5 MiB or more this regex overflows the stack (`RangeError: Maximum call
-// stack size exceeded`, measured during TASK-720). The binary
-// `workspace.commit-bundle` path therefore never runs it: its base64 comes from
-// `Buffer.toString('base64')`, canonical by construction.
-// ---------------------------------------------------------------------------
-
-const BASE64_RE = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
-const BundleBytesSchema = z
-  .string()
-  .refine((s) => s === '' || BASE64_RE.test(s), {
-    message: 'bundleBytes must be empty or canonical base64',
-  });
-
-// ---------------------------------------------------------------------------
-// workspace.commit-notify
-//
-// Phase 3 (this PR): the runner ships per-turn diffs as a `git bundle` of
-// commits authored by `ax-runner`, base64-encoded as `bundleBytes`. The
-// host unpacks the bundle, verifies provenance, and translates to a
-// canonical `WorkspaceChange[]` BEFORE firing any bus hook. The wire field
-// `bundleBytes` is git-vocabulary, but per Invariant I1 that's allowed
-// here — same justification as `workspace.materialize`:
-//   1. This is the sandbox-host transport axis; no `workspace:*` bus hook
-//      ever sees the bundle bytes.
-//   2. Host bundler (Slice 6) decodes the bundle into backend-agnostic
-//      `WorkspaceChange[]` before the first subscriber visibility.
-//
-// `parentVersion` is opaque (`workspace:apply` returns it; the runner round-
-// trips it). `reason` is a free-text label for the commit ("turn", or a
-// future user-supplied tag); it surfaces as the `reason` field on the
-// `workspace:pre-apply` payload so subscribers can shape their decision.
-// Capped at WORKSPACE_COMMIT_REASON_MAX and NOT clamped by the host: an
-// over-long label is a 400. A future producer of free-text tags must clamp
-// on its own side (`clampCodeUnits` in @ax/core).
-//
-// Empty bundle: a turn that wrote nothing. `bundleBytes === ''` short-
-// circuits the handler (no apply, returns `accepted: true` against the
-// existing parentVersion). Preserved as a no-op rather than a hard error
-// because some turn boundaries genuinely write nothing (e.g., the model
-// answered without touching files).
-//
-// TASK-720: this JSON shape is now the LEGACY carrier. Base64 inside the 4 MiB
-// JSON frame capped one save at about 3 MiB of compressed objects; over it the
-// save failed, the runner's baseline never moved, and every later save
-// re-carried the same blob, so persistence wedged for good. Current runners
-// send `workspace.commit-bundle` (below) instead. This action stays registered
-// for sandboxes started by the previous release. Both answer with
-// `WorkspaceCommitNotifyResponseSchema`.
-// ---------------------------------------------------------------------------
-
-/**
- * Ceiling on the commit label (`reason`) a runner sends with a save, on both
- * carriers (this JSON request and `workspace.commit-bundle`'s query). The
- * runner only ever sends short fixed labels (`turn`, `user-message-wait`); the
- * cap is there because the label is echoed into logs and into the
- * `workspace:pre-apply` payload.
- */
-export const WORKSPACE_COMMIT_REASON_MAX = 200;
-
-/**
- * Ceiling on the host's `accepted: false` rejection `reason`, in UTF-16 code
- * units. Same budget as a hold note: it is prose the agent reads. The host
- * handler clamps to this before it parses its own response (a
- * `workspace:pre-apply` subscriber is plugin code and can put any string in
- * its reason), so an over-long veto still arrives as that veto, not as a 500.
- */
-export const WORKSPACE_COMMIT_REJECT_REASON_MAX = HOLD_NOTE_MAX;
-
-export const WorkspaceCommitNotifyRequestSchema = z.object({
-  parentVersion: z.string().nullable(),
-  reason: z.string().max(WORKSPACE_COMMIT_REASON_MAX),
-  // base64-encoded git bundle bytes from the runner's
-  // `git bundle create - baseline..HEAD`. Empty string => no commits this
-  // turn (handler short-circuits; no apply called).
-  bundleBytes: BundleBytesSchema,
-});
-export type WorkspaceCommitNotifyRequest = z.infer<
-  typeof WorkspaceCommitNotifyRequestSchema
->;
-
-export const WorkspaceCommitNotifyResponseSchema = z.discriminatedUnion(
-  'accepted',
-  [
-    z.object({
-      accepted: z.literal(true),
-      // Brand the parsed wire value so consumers pick up the opaque-token
-      // contract automatically — no cast needed, and the type system
-      // catches accidental `.startsWith('sha')`-style backend sniffing.
-      version: z.string().transform((v) => v as WorkspaceVersion),
-      delta: z.null(),
-    }),
-    z.object({
-      accepted: z.literal(false),
-      reason: z.string().max(WORKSPACE_COMMIT_REJECT_REASON_MAX),
-      // Re-sync signal (optional; present only on a parent-mismatch rejection):
-      // the storage tier's current head. When set, the runner fetches the
-      // baseline bundle AT this head out-of-band via the binary
-      // `workspace.export-baseline-bundle` action (octet-stream, uncapped),
-      // rebases its turn onto it, and retries. Opaque to the runner.
-      //
-      // The baseline bundle is NO LONGER inlined here (BUG: same class as the
-      // materialize BUG-W3). An aged workspace's baseline bundle (~MiB) base64-
-      // encoded into this JSON body exceeded the runner ipc-client's 4 MiB
-      // MAX_RESPONSE_BYTES cap → `response body too large` → the turn never
-      // synced → 120 s agent:invoke timeout → terminate → unknown-token loop.
-      // The bytes now stream over `workspace.export-baseline-bundle` (the
-      // uncapped binary path) instead of riding in this JSON response.
-      actualParent: z.string().optional(),
-      // Phase 2: whether the agent's working tree should be PRESERVED on rollback.
-      // Absent ⟹ recoverable (runner uses `git reset --mixed`, keeping the
-      // agent's files). `false` ⟹ a hard security veto (a refused config write,
-      // a tampered bundle) whose content must NOT survive into the next turn:
-      // the runner re-stages the whole tree each turn, so a preserved refused
-      // file would be re-submitted and re-refused forever, wedging the agent.
-      // A semantic, not backend vocabulary.
-      recoverable: z.boolean().optional(),
-      // TASK-287: which paths, specifically, the refusal is about. Meaningful
-      // only alongside `recoverable: false`, and OPTIONAL — a host that omits
-      // it (or an older host that has never heard of it) leaves the runner on
-      // its previous whole-tree behaviour, so the two sides deploy
-      // independently in either order.
-      //
-      // Present ⟹ the refusal is scoped: the runner keeps the rest of the
-      // turn's work and removes exactly these paths, which is what stops the
-      // re-submit loop above without taking unrelated files down with it.
-      // Workspace-relative, in the same vocabulary the pre-apply payload
-      // already speaks: the `.ax/**` and `.claude/**` prefixes PLUS the root
-      // exact paths that policy also covers (`CLAUDE.md`, `CLAUDE.local.md`) —
-      // which is where the common case lands. No storage-backend terms.
-      //
-      // The runner treats every entry as untrusted: it refuses absolutes,
-      // parent-escapes and anything resolving outside the workspace. Bounded
-      // here too, since this is a wire-driven instruction to take files back
-      // off the agent.
-      discardPaths: z.array(z.string().min(1).max(1024)).max(256).optional(),
-      // TASK-720: a short machine name for WHY the save was refused, forwarded
-      // from the `workspace:pre-apply` veto's `code` (TASK-719; e.g.
-      // `storage-full` from @ax/disk-quota). `reason` stays the model-facing
-      // sentence; `code` is what the runner keys on to tell the person, so it
-      // never has to match prose. Absent when the veto named none, and on
-      // every other rejected branch (parent-mismatch, baseline drift, author
-      // verification). A label only: it grants nothing, and
-      // a runner that does not know a code treats the refusal as it always
-      // did. Bounded to a lowercase slug since it crosses the trust boundary.
-      code: z
-        .string()
-        .min(1)
-        .max(64)
-        .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/, 'code must be a lowercase slug')
-        .optional(),
-    }),
-  ],
-);
-export type WorkspaceCommitNotifyResponse = z.infer<
-  typeof WorkspaceCommitNotifyResponseSchema
->;
-
-// ---------------------------------------------------------------------------
-// workspace.commit-bundle — TASK-720
-//
-// The same end-of-turn save as `workspace.commit-notify`, over the
-// REQUEST-direction binary channel (the one `blob.put` and the transcript
-// actions use): the RAW git bundle is the `application/octet-stream` body, and
-// the two small fields ride as QUERY PARAMS, validated by
-// `WorkspaceCommitBundleQuerySchema`. The answer is the same JSON
-// `WorkspaceCommitNotifyResponseSchema`. An EMPTY body is the empty turn (same
-// short-circuit as `bundleBytes === ''`).
-//
-// Why a separate action: the JSON carrier capped one save at about 3 MiB (see
-// above), and the content-type gate keys on the path, so a raw body needs its
-// own path.
-//
-// Size: `WORKSPACE_COMMIT_BUNDLE_MAX_BYTES` is the most one save may carry. It
-// is the host's existing per-request budget for runner uploads (the
-// dispatcher's `MAX_BLOB_BODY_BYTES`; an @ax/ipc-core test pins that this
-// never exceeds it). The runner checks a bundle against it BEFORE sending and
-// fails the save loudly instead of shipping bytes the host would refuse with a
-// 413.
-//
-// Field names are the commit-notify ones; `bundle` is sandbox↔host transport
-// vocabulary that no `workspace:*` bus hook ever sees (same I1 justification
-// as `bundleBytes` above).
-// ---------------------------------------------------------------------------
-
-export const WORKSPACE_COMMIT_BUNDLE_MAX_BYTES = 100 * 1024 * 1024;
-
-// Query-carried fields for `workspace.commit-bundle`. The handler builds the
-// object from exactly two `searchParams.get` calls, so `.strict()` only
-// documents that nothing else is meaningful.
-//   - `reason`: REQUIRED (the runner always labels a save: `turn`,
-//     `user-message-wait`, ...). Bounded: it is echoed into logs and into the
-//     `workspace:pre-apply` payload.
-//   - `parentVersion`: ABSENT means null (the first save of a new workspace);
-//     the handler maps a missing param to null before parsing. A PRESENT value
-//     must be non-empty: an empty string is not a version, and accepting it
-//     would make `?parentVersion=` mean something different from absent.
-export const WorkspaceCommitBundleQuerySchema = z
-  .object({
-    reason: z.string().min(1).max(WORKSPACE_COMMIT_REASON_MAX),
-    parentVersion: z.string().min(1).max(512).nullable(),
-  })
-  .strict();
-export type WorkspaceCommitBundleQuery = z.infer<
-  typeof WorkspaceCommitBundleQuerySchema
->;
-
-// ---------------------------------------------------------------------------
-// workspace.materialize
-//
-// Sandbox -> Host RPC fired EXACTLY ONCE at session start, before the SDK's
-// query loop opens. The host produces a `git bundle` over the workspace's
-// current state (or a deterministic empty-tree baseline when the workspace
-// is brand-new) and streams the RAW bundle bytes back as the HTTP response
-// body — `Content-Type: application/octet-stream`, NOT a JSON envelope. The
-// sandbox-side runner drains the body straight to a temp file and clones
-// `/agent` from it, so the agent runs against a real git working tree
-// from turn 1.
-//
-// Why a raw binary body (BUG-W3): the bundle is the one IPC payload whose
-// size grows unbounded with workspace age (every turn adds a commit). The
-// old shape base64-encoded it into a JSON field, which (a) inflated it ~33%
-// and (b) had to be buffered whole in memory on both ends under the 4 MiB
-// `MAX_RESPONSE_BYTES` cap. A workspace with ~143 files + many turn commits
-// blew that cap and the runner crashed on boot (`response body too large`).
-// Streaming the raw bytes drops the base64 tax and the in-memory cap wall —
-// the runner drains to disk under a much higher, disk-bounded ceiling. The
-// per-turn save went the same way later (TASK-720): it USED to stay JSON+base64
-// on the theory that one turn is small, until a single 5 MiB file wedged an
-// agent's persistence; it now streams raw over `workspace.commit-bundle`.
-//
-// `git bundle` is git-vocabulary on the wire — by Invariant I1 that's
-// allowed here because this is the sandbox-host transport axis, not a
-// subscriber-visible hook payload. No `workspace:*` bus hook ever sees the
-// bundle bytes; on this INBOUND direction they never leave the sandbox-host
-// wire — they go straight into `git clone` on the runner side. (The OUTBOUND
-// `commit-notify` direction is decoded into backend-agnostic
-// `WorkspaceChange[]` before any subscriber visibility.)
-//
-// Empty workspace handling: even a brand-new workspace gets a bundle with
-// one commit (the deterministic empty-tree baseline). The runner always
-// clones; there's no `git init` shortcut. Symmetric on both sides — see
-// `buildBaselineBundle` in the materialize handler.
-//
-// No response SCHEMA: the body is opaque binary, so there's no Zod-parsed
-// JSON response here (cf. the dispatch table in `ipc-client.ts`). The
-// request stays JSON ({}), validated below.
-// ---------------------------------------------------------------------------
-
-// `.strict()` — the request takes no parameters today. The bearer token
-// already identifies the session, and the action is implicitly scoped to
-// the session's workspace. Stuffing unknown fields here is a bug.
-export const WorkspaceMaterializeRequestSchema = z.object({}).strict();
-export type WorkspaceMaterializeRequest = z.infer<
-  typeof WorkspaceMaterializeRequestSchema
->;
-
-// ---------------------------------------------------------------------------
-// workspace.export-baseline-bundle
-//
-// Sandbox -> Host RPC fired ON THE COMMIT-NOTIFY RE-SYNC PATH only. When a
-// concurrent writer advanced the workspace head past the runner's parent
-// version, `workspace.commit-notify` returns `{accepted:false, actualParent}`
-// (a small JSON signal — NO bundle bytes). The runner then calls THIS action
-// with `{ version: actualParent }` to fetch the baseline git bundle AT that
-// head, rebases its turn onto it, and retries the commit-notify.
-//
-// Why a raw binary body (same bug class as materialize's BUG-W3): the baseline
-// bundle grows unbounded with workspace age (one commit per turn). Inlining it
-// base64-in-JSON in the commit-notify re-sync response (the OLD shape) inflated
-// it ~33% AND had to be buffered whole in memory on both ends under the 4 MiB
-// `MAX_RESPONSE_BYTES` cap. An aged workspace blew the cap, the re-sync never
-// completed, the turn timed out, and the session entered an unknown-token loop.
-// Streaming the raw bytes here (`Content-Type: application/octet-stream`, drained
-// straight to a temp file) drops the base64 tax and the in-memory cap wall — the
-// runner clones/fetches from the file under the same disk-bounded ceiling
-// materialize uses.
-//
-// `git bundle` is git-vocabulary on the wire — by Invariant I1 that's allowed
-// here for the same reason as materialize: this is the sandbox-host transport
-// axis, not a subscriber-visible hook payload. No `workspace:*` bus hook ever
-// sees these bundle bytes; on this INBOUND direction they go straight into the
-// runner's `git fetch` for the rebase. The host produces them by calling the
-// existing `workspace:export-baseline-bundle` SERVICE hook (registered by the
-// bundle-aware backends) and decoding its base64 output at this wire edge.
-//
-// No response SCHEMA: the body is opaque binary, so there's no Zod-parsed JSON
-// response (cf. the dispatch table in `ipc-client.ts`, which omits this action
-// alongside materialize). The REQUEST stays JSON, validated below.
-//
-// `version` is the opaque workspace head the runner must rebase onto — it's the
-// `actualParent` it received from the commit-notify re-sync signal. It's a
-// REQUIRED string here: the re-sync path always has a concrete head to fetch
-// (a `null` version would be the materialize path, which has its own action).
-// ---------------------------------------------------------------------------
-
-export const WorkspaceExportBaselineBundleRequestSchema = z
-  .object({
-    // The storage-tier head to bundle. Opaque to the runner — it round-trips
-    // the `actualParent` from the commit-notify re-sync signal. Min length 1:
-    // an empty version is a protocol misuse (the re-sync path always carries a
-    // concrete head; the empty-baseline case is materialize's job).
-    version: z.string().min(1),
-  })
-  .strict();
-export type WorkspaceExportBaselineBundleRequest = z.infer<
-  typeof WorkspaceExportBaselineBundleRequestSchema
->;
-
-// ---------------------------------------------------------------------------
-// workspace.read — Phase 2 (attachments translation, D3).
-//
-// Exposes the host's `workspace:read` service hook to runners over IPC.
-// The runner's attachment-translation pass uses this to fetch attachment
-// bytes that the host committed via `attachments:commit` after session
-// start (the runner's /agent doesn't auto-sync mid-session).
-//
-// Auth: caller's bearer token resolves to a session row; the host-side
-// handler uses the session's workspaceId to scope `workspace:read`.
-// Cross-session reads are impossible — there's no session id on the wire.
-//
-// Payload: path is workspace-relative (matches what attachment blocks
-// carry, e.g. ".ax/uploads/<conv>/<turn>/file.pdf"). Bytes ride
-// base64-encoded for JSON safety.
-export const WorkspaceReadRequestSchema = z.object({
-  // Defense in depth at the wire boundary: the same workspace-relative
-  // path rule the AttachmentBlock schema enforces. A malformed runner
-  // call (absolute path, `..` traversal, drive root, NUL byte) surfaces
-  // as a clean 400 VALIDATION here rather than as a confusing
-  // git-cat-file error one hop later.
-  path: z
-    .string()
-    .min(1)
-    .refine(
-      isWorkspaceRelativePath,
-      'path must be workspace-relative (no leading slash, no "..", no drive root, no NUL)',
-    ),
-});
-export type WorkspaceReadRequest = z.infer<typeof WorkspaceReadRequestSchema>;
-
-export const WorkspaceReadResponseSchema = z.discriminatedUnion('found', [
-  z.object({
-    found: z.literal(true),
-    // Same canonical-base64 refinement BundleBytesSchema uses: malformed
-    // payloads surface here, not as confusing decode failures downstream.
-    // Empty string allowed for parity with bundleBytes (a known-found
-    // zero-byte file is valid).
-    bytesBase64: z
-      .string()
-      .refine((s) => s === '' || BASE64_RE.test(s), {
-        message: 'bytesBase64 must be empty or canonical base64',
-      }),
-  }),
-  z.object({ found: z.literal(false) }),
-]);
-export type WorkspaceReadResponse = z.infer<typeof WorkspaceReadResponseSchema>;
-
-// ---------------------------------------------------------------------------
 // proxy.drain-egress-blocks — agent-visible egress-block note.
 //
 // Exposes the host's `proxy:drain-session-egress-blocks` service hook to
@@ -575,53 +191,6 @@ export type ProxyDrainEgressBlocksResponse = z.infer<
 >;
 
 // ---------------------------------------------------------------------------
-// conversation.drain-save-refusals — TASK-749.
-//
-// The refused workspace saves (TASK-731 `save-refused` display rows) that the
-// MODEL has not been told about yet, taken once. The runner calls it as it
-// builds each turn's opening message, so a refusal whose runner process is
-// gone — the final/idle save after the last turn, or a runner that exited
-// before its next message — still reaches the model, on the next turn of
-// whichever runner serves the conversation (TASK-732 covers only refusals the
-// same process saw).
-//
-// Auth: EMPTY body by design (same posture as proxy.drain-egress-blocks). The
-// host takes the conversation from `ctx.conversationId` and the owner from
-// `ctx.userId` (both bound to the bearer token), never from the body, so a
-// runner can only drain its own conversation — and draining is only ever
-// self-harm (its own model is not told). `.strict({})` keeps that visible.
-//
-// The response carries closed codes only — never the refusal's prose, which
-// can quote model-chosen text — plus the refused turn's request id, so the
-// runner can drop a refusal it already told the model about itself. `null`
-// marks the final/idle save, which no turn owns. Field names are
-// storage-neutral (I1).
-// ---------------------------------------------------------------------------
-
-export const ConversationDrainSaveRefusalsRequestSchema = z.object({}).strict();
-export type ConversationDrainSaveRefusalsRequest = z.infer<
-  typeof ConversationDrainSaveRefusalsRequestSchema
->;
-
-export const ConversationDrainSaveRefusalsResponseSchema = z
-  .object({
-    refusals: z
-      .array(
-        z
-          .object({
-            code: SaveRefusedCodeSchema,
-            turnReqId: z.string().max(256).nullable(),
-          })
-          .strict(),
-      )
-      .max(64),
-  })
-  .strict();
-export type ConversationDrainSaveRefusalsResponse = z.infer<
-  typeof ConversationDrainSaveRefusalsResponseSchema
->;
-
-// ---------------------------------------------------------------------------
 // session.get-config
 //
 // Runner → host RPC fetched at boot. Authentication is the bearer token
@@ -642,7 +211,7 @@ export type ConversationDrainSaveRefusalsResponse = z.infer<
 // once at spawn. All of them flow into the LLM's prompt; the runner must NOT
 // interpolate them into shell commands, file paths, or HTML. TASK-142 dropped
 // the legacy `systemPrompt` field when the `agents_v1_agents.system_prompt`
-// column was removed; TASK-989 moved identity out of the agent's `.ax/` files
+// column was removed; TASK-989 moved identity out of the agent's files and
 // into @ax/agents (Invariant #4).
 //
 // Phase E (2026-05-09): the response also carries `runnerSessionId`.
@@ -811,15 +380,15 @@ export type ConversationStoreRunnerSessionResponse = z.infer<
 // `blob.put` is the REQUEST-direction binary channel: the runner streams the
 // artifact's raw bytes as the HTTP request body (`Content-Type:
 // application/octet-stream`, NOT a JSON envelope — so the bytes bypass the
-// 4 MiB `MAX_FRAME` JSON cap exactly like the response-direction
-// materialize/export-baseline-bundle channels do, just inbound). There is
-// therefore NO request *schema* — the body is opaque bytes. The RESPONSE is a
-// small JSON envelope `{sha256, size}`, validated below.
+// 4 MiB `MAX_FRAME` JSON cap exactly like the response-direction `blob.get` /
+// `session.get-transcript` channel does, just inbound). There is therefore NO
+// request *schema* — the body is opaque bytes. The RESPONSE is a small JSON
+// envelope `{sha256, size}`, validated below.
 //
-// `blob.get` is the response-direction binary channel (same shape as
-// materialize): a small JSON request `{sha256}` and a raw octet-stream
-// response body (the blob bytes, drained to a temp file). No response schema
-// (binary body) — cf. the dispatch table in `ipc-client.ts`.
+// `blob.get` is the response-direction binary channel: a small JSON request
+// `{sha256}` and a raw octet-stream response body (the blob bytes, drained to
+// a temp file). No response schema (binary body) — cf. the dispatch table in
+// `ipc-client.ts`.
 //
 // `sha256` is a CONTENT hash on the wire, not a backend pointer (I1) — the
 // same storage-agnostic identity the `blob:*` bus hook + the
@@ -851,9 +420,13 @@ export type BlobGetRequest = z.infer<typeof BlobGetRequestSchema>;
 //
 // Field names are storage-agnostic (I1): `conversationId` scopes ownership,
 // `sha256` is the content hash linking the row to the stored blob, `path` is
-// the workspace-relative display/scope key the transcript + download ACL use,
-// `displayName`/`mediaType` are untrusted display text (the renderer treats
-// them as untrusted; never shell-interpolated). No backend vocabulary.
+// the file's location relative to its publish root, used only as the row's
+// re-publish key (publishing the same file again updates its row) and never
+// handed back out — the chat chip and the download address the artifact by
+// `artifactId`. `displayName`/`mediaType` are untrusted display text (the
+// renderer treats them as untrusted; never shell-interpolated); they are capped
+// at the `attachment` block's limits so every recorded artifact can become a
+// chip. No backend vocabulary.
 // ---------------------------------------------------------------------------
 
 export const ArtifactPublishRequestSchema = z
@@ -861,8 +434,8 @@ export const ArtifactPublishRequestSchema = z
     conversationId: z.string().min(1).max(256),
     sha256: z.string().regex(SHA256_RE),
     path: z.string().min(1).max(1024),
-    displayName: z.string().min(1).max(1024),
-    mediaType: z.string().min(1).max(256),
+    displayName: z.string().min(1).max(ATTACHMENT_FILENAME_MAX),
+    mediaType: z.string().min(1).max(ATTACHMENT_MEDIA_TYPE_MAX),
     size: z.number().int().nonnegative(),
   })
   .strict();
@@ -876,15 +449,18 @@ export type ArtifactPublishResponse = z.infer<typeof ArtifactPublishResponseSche
 
 // ---------------------------------------------------------------------------
 // attachments.list — TASK-68 (out-of-git Part C, inbound). At session start —
-// and on a warm-runner rebind bringing a new upload (TASK-78) — the runner
-// enumerates the bound conversation's uploads so it can pull each blob
-// (`blob.get`) and materialize the read-only working copy at the path advertised
-// to the model. The host scopes the query to ctx.userId (the bearer token's
-// user) AND the requested conversationId.
+// and when a later message brings an upload the runner has not seen — the
+// runner enumerates its bound conversation's uploads so it can pull each blob
+// (`blob.get`) and keep a working copy inside the sandbox. The host serves
+// only the conversation the session is bound to (`ctx.conversationId`, from
+// the bearer token — any other is refused) and only rows owned by ctx.userId.
 //
-// `path` is the workspace-relative key (`.ax/uploads/<conv>/<turnId>/<file>`)
-// the runner materializes at `<workspaceRoot>/.ax/uploads/...`; `sha256`
-// addresses the blob; the rest is display metadata. No backend vocabulary (I1).
+// Each entry: `attachmentId` (the id the transcript's `attachment` block
+// carries, so a turn's block finds its copy), `filename` (display name; the
+// runner sanitizes it before using it on disk), `sha256` (addresses the blob,
+// and lets the runner check its copy is intact), `mediaType`, `sizeBytes`.
+// Oldest first, so a fresh runner given the same list derives the same names.
+// No path and no backend vocabulary (I1).
 // ---------------------------------------------------------------------------
 
 export const AttachmentsListRequestSchema = z
@@ -897,10 +473,10 @@ export type AttachmentsListRequest = z.infer<typeof AttachmentsListRequestSchema
 export const AttachmentsListResponseSchema = z.object({
   files: z.array(
     z.object({
-      path: z.string(),
+      attachmentId: AttachmentIdSchema,
+      filename: z.string().min(1).max(ATTACHMENT_FILENAME_MAX),
       sha256: z.string().regex(SHA256_RE),
-      mediaType: z.string(),
-      displayName: z.string(),
+      mediaType: z.string().min(1).max(ATTACHMENT_MEDIA_TYPE_MAX),
       sizeBytes: z.number().int().nonnegative(),
     }),
   ),
@@ -938,7 +514,7 @@ export type AttachmentsListResponse = z.infer<typeof AttachmentsListResponseSche
 // append's `fromSeq`/`prefixHash` integrity metadata ride as QUERY PARAMS,
 // validated by `SessionAppendTranscriptMetaSchema` (query strings → coerced).
 // `get-transcript` is the response-direction binary channel (same shape as
-// materialize): a small JSON request and a raw octet-stream response body (the
+// `blob.get`): a small JSON request and a raw octet-stream response body (the
 // joined bytes, drained to a temp file) — so NO response schema (cf. the
 // dispatch table in `ipc-client.ts`).
 // ---------------------------------------------------------------------------
@@ -1041,10 +617,10 @@ export type SessionGetDisplayHistoryResponse = z.infer<
 // skill.propose — TASK-74 (out-of-git Part D / §D1–D2). The runner-side skill
 // authoring chokepoint.
 //
-// The agent writes a bundle into `<root>/.skill-draft/<id>/` (the durable
-// per-agent mount when wired, else the ephemeral scratch tier — TASK-165) then
-// calls the `skill_propose` sandbox tool. Its
-// executor reads + structurally validates the draft dir, then posts THIS
+// The agent writes a bundle into `<home>/.skill-draft/<id>/` (its home, the
+// durable per-agent files mount — TASK-165) then calls the `skill_propose`
+// sandbox tool. Its executor reads + structurally validates the draft dir, then
+// posts THIS
 // envelope so the host's `skills:propose` hook gates + stores it (DB row +
 // blob). This is an ordinary JSON `call()` action — the bundle EXTRA files ride
 // `files[]` inline (validateBundleFiles caps them at ≤16 files / ≤512 KiB total,

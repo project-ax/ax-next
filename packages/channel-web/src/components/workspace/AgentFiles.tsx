@@ -1,20 +1,8 @@
 /**
- * Files the agent has, in both of the places it keeps them.
+ * The files the agent has: its cwd and HOME.
  *
- * TWO TIERS, and the tab used to show only one of them — the wrong one.
- *
- *   - "Files" is the agent's DURABLE tier. Since TASK-164 it is the agent's cwd
- *     and HOME, which means a deliverable lands here when nobody said where.
- *     It is a real filesystem, so it is a TREE and you walk it. Until this
- *     change it was invisible in the UI: the hook that reads it had no
- *     consumer, so the one place a person would look for "what did my agent
- *     make me" was the one place it wasn't.
- *   - "Agent workspace" is the git-backed tier AX manages. It arrives as one
- *     flat listing, minus AX's own machinery (`.ax/`, `.claude/`, memory).
- *
- * They are separate sections rather than one merged list because they are
- * genuinely different things with different durability, and a merged list would
- * have to lie about one of them to look tidy.
+ * "Files" is where a deliverable lands when nobody said where. It is a real
+ * filesystem, so it is a TREE and you walk it.
  *
  * Read-only on purpose: these are the agent's outputs, and the useful question
  * here is "what did it produce", not "let me edit it". Editing belongs to
@@ -24,7 +12,7 @@
  * empty middle can mean, and each one gets its own sentence:
  *
  *   - the listing failed        → an error, with a way to retry.
- *   - no backend for that tier  → "we cannot reach it", and retrying is
+ *   - no file area              → "we cannot reach it", and retrying is
  *                                 pointless, so we do not offer a button that
  *                                 pretends otherwise.
  *   - the listing is loading    → "Loading", not "nothing yet".
@@ -33,18 +21,12 @@
  *
  * Collapsing any of the others into the last would tell someone their agent has
  * produced nothing when we simply did not look. That is design rule H7, and it
- * is why each section takes an error object rather than an `entries.length === 0`
- * shortcut. It is also why the two sections fail INDEPENDENTLY: one tier being
- * unreadable is not a reason to blank the other, which is a different backend
- * that may be perfectly fine.
+ * is why the section takes an error object rather than an
+ * `entries.length === 0` shortcut.
  *
- * The durable tier used to have a fifth case, and it was a hedge: at the tier
- * root it could not tell "the agent wrote nothing" from "this deployment
- * stores nothing", so it said both out loud and said it could not tell which.
- * That was the honest thing to draw over a hook that answered one word for
- * both. The hook now answers them separately (TASK-403 — see the header of
- * `lib/user-files.ts`), so the hedge is gone and each half gets the plain
- * sentence it always deserved.
+ * At the root the hook answers "the agent wrote nothing" and "this deployment
+ * stores nothing" separately (TASK-403 — see the header of `lib/user-files.ts`),
+ * so each half gets the plain sentence it deserves.
  *
  * Everything on screen here is AGENT-AUTHORED. Filenames arrive already fenced
  * by the server (`name`), the raw `path` is a key we never render, and bodies
@@ -76,9 +58,7 @@ import {
 import { Markdown } from '@/components/Markdown';
 import { useFileDownload } from '@/lib/file-download';
 import { useIsCompact } from '@/lib/use-compact';
-import { useAgentFiles } from '@/lib/workspace-files';
 import { parentDirOf, useAgentUserFiles, type UserFileBody } from '@/lib/user-files';
-import type { FileTier, WorkspaceFileBody } from '@/lib/workspace-api';
 import { cn } from '@/lib/utils';
 import { SectionLabel } from './bits';
 
@@ -102,14 +82,11 @@ function basename(name: string): string {
 }
 
 /**
- * One file's body, whichever tier it came from.
- *
- * The two tiers' body shapes agree on the three fields that decide what is
- * drawn — `path`, `body`, `clipped` — so one renderer serves both. That is not
- * a coincidence: the server decodes both through the same `decodeFileBody`, so
- * "this is not text" and "this was cut short" mean the same thing on each.
+ * One file's body. The server decodes it through `decodeFileBody`, so "this is
+ * not text" (`clipped: 'binary'`) and "this was cut short" (`'too-large'`) are
+ * its words, not ours.
  */
-function FileBodyView({ file }: { file: WorkspaceFileBody | UserFileBody }) {
+function FileBodyView({ file }: { file: UserFileBody }) {
   if (file.clipped === 'binary') {
     return (
       <p className="text-[13px] text-muted-foreground">
@@ -217,9 +194,8 @@ export function AgentFiles({
   onCount?: (count: number | null) => void;
 }) {
   const durable = useAgentUserFiles(agentId);
-  const governed = useAgentFiles(agentId);
-  const count = durable.loading || governed.loading || durable.error || governed.error
-    ? null : durable.entries.filter(entry => entry.kind === 'file').length + governed.files.length;
+  const count = durable.loading || durable.error
+    ? null : durable.entries.filter(entry => entry.kind === 'file').length;
   useEffect(() => { onCount?.(count); }, [count, onCount]);
 
   /**
@@ -249,34 +225,20 @@ export function AgentFiles({
   /**
    * Whether the phone is on the viewer side. It is a PREFERENCE, not the
    * truth: `showViewer` below also requires something to actually be selected,
-   * so any path that drops the selection — an agent switch, a tier swap —
-   * returns to the list on its own rather than stranding the reader on a pane
-   * with nothing in it and a back button.
+   * so any path that drops the selection — an agent switch — returns to the
+   * list on its own rather than stranding the reader on a pane with nothing in
+   * it and a back button.
    */
   const [drilledIn, setDrilledIn] = useState(false);
 
-  /*
-    One viewer, two possible sources. Selecting in one tier closes the other, so
-    the heading over the body always names the tier the body came from — a
-    viewer showing a governed-tier file under a durable-tier breadcrumb would
-    be a receipt for the wrong thing.
-  */
   const selectDurable = (path: string) => {
-    governed.open(null);
     durable.openFile(path);
-    setDrilledIn(true);
-  };
-  const selectGoverned = (path: string) => {
-    durable.openFile(null);
-    governed.open(path);
     setDrilledIn(true);
   };
 
   const durableSelected = durable.filePath;
-  const governedSelected =
-    governed.files.find((f) => f.path === governed.openPath) ?? null;
 
-  const hasSelection = durableSelected !== null || governedSelected !== null;
+  const hasSelection = durableSelected !== null;
   /*
     Above `md` BOTH are true and this whole branch is inert — the two-column
     layout is exactly what it always was. Below it they are complements, which
@@ -313,14 +275,8 @@ export function AgentFiles({
   */
   const backRef = useRef<HTMLButtonElement>(null);
   /*
-    ONE REF, HANDED TO WHICHEVER ROW IS SELECTED, in either tier's loop.
-    Selecting in one tier closes the other, so normally at most one row claims
-    it. One narrow exception: a row listed as `kind: 'dir'` that resolves to a
-    FILE on the server leaves `durable.filePath` set without clearing
-    `governed.openPath`, and then both loops spread this ref and the later
-    render wins. Harmless today — the effect below is `compact`-gated and that
-    race does not flip `showViewer`, so focus never chases the wrong row — but
-    it is why this is worth knowing about rather than assuming exclusivity.
+    ONE REF, HANDED TO THE ROW THAT IS SELECTED. Only that row is ever given
+    it, so at most one row claims it.
 
     `.current` can also be legitimately null: the selected row is only rendered
     when the listing is showing rows, so the optional call below is the only
@@ -336,8 +292,8 @@ export function AgentFiles({
   }, [compact, showViewer]);
 
   /*
-    A `missing` on the TIER ROOT is not an error any more, it is the empty
-    state. The hook only reports `missing` once the tier itself resolved
+    A `missing` on the ROOT is not an error any more, it is the empty
+    state. The hook only reports `missing` once the file area itself resolved
     (`unavailable` is the answer when it did not), so at the root it means one
     thing: this agent has not written anything yet. Drawing that in a red alert
     next to a separate, identically-meant "hasn't put any files here yet" would
@@ -355,7 +311,7 @@ export function AgentFiles({
     durable.error.path === '';
   const durableError = durableRootEmpty ? null : durable.error;
 
-  /* The breadcrumb trail for wherever we are in the durable tier. */
+  /* The breadcrumb trail for wherever we are in the files. */
   const crumbs: Array<{ label: string; path: string }> = [
     { label: 'Files', path: '' },
   ];
@@ -380,7 +336,7 @@ export function AgentFiles({
             compact ? 'w-full' : 'w-[260px] shrink-0 border-r border-border',
           )}
         >
-          {/* ---- the DURABLE tier: the agent's own working files ---- */}
+          {/* ---- the agent's own working files ---- */}
           <div className="flex flex-col">
             <SectionLabel>Files</SectionLabel>
 
@@ -428,7 +384,7 @@ export function AgentFiles({
                     <span>
                       {durableError.kind === 'unavailable'
                         ? /*
-                            Now a fact, not a guess: the tier did not resolve at
+                            Now a fact, not a guess: the file area did not resolve at
                             all in this deployment. There is nothing to come back
                             for, so no button — an offer to retry would send
                             somebody hunting for something that was never there.
@@ -437,7 +393,7 @@ export function AgentFiles({
                         : durableError.kind === 'missing'
                           ? /*
                               A `missing` that got this far is about a folder we
-                              walked into, not about the tier. The root's version
+                              walked into, not about the file area. The root's version
                               is the empty state and never reaches here.
                             */
                             `That folder isn’t here any more. It may have been renamed or deleted since we drew this list.`
@@ -479,7 +435,7 @@ export function AgentFiles({
               </div>
             ) : durableRootEmpty ? (
               /*
-                A 404 on the tier root. Same sentence as a root listing that came
+                A 404 on the root. Same sentence as a root listing that came
                 back empty, because it is the same fact — and `entries` is NOT
                 consulted here, since a failed listing leaves the previous
                 folder's rows in it.
@@ -520,75 +476,6 @@ export function AgentFiles({
               </div>
             )}
           </div>
-
-          {/* ---- the GOVERNED tier: the git-backed workspace AX manages ---- */}
-          <div className="flex flex-col">
-            <SectionLabel>Agent workspace</SectionLabel>
-
-            {governed.error !== null ? (
-              <div className="px-1.5">
-                <Alert variant="destructive">
-                  <AlertDescription className="flex flex-col items-start gap-2 text-[12.5px]">
-                    <span>
-                      {governed.error.kind === 'unavailable'
-                        ? `We can’t reach ${agentName}’s workspace right now. Its files are safe — this server just isn’t able to open them.`
-                        : `We could not read ${agentName}’s workspace. Nothing was lost; we just could not look right now.`}
-                    </span>
-                    {governed.error.kind === 'failed' && (
-                      // Disabled while the retry is in flight, so the click has a
-                      // visible consequence. A button that looks idle after you
-                      // press it reads as a button that did nothing.
-                      <Button
-                        variant="secondary"
-                        size="sm"
-                        onClick={governed.reload}
-                        disabled={governed.loading}
-                      >
-                        {governed.loading ? 'Trying…' : 'Try again'}
-                      </Button>
-                    )}
-                    {/*
-                      The raw detail used to be printed here: `workspace /board → 401`,
-                      `send message → 401`. It said nothing a reader could act on, and
-                      a status code in a mono span is how someone learns their session
-                      expired by reading a number. `lib/http.ts` logs it to the console
-                      for operators instead (TASK-288).
-                    */}
-                  </AlertDescription>
-                </Alert>
-              </div>
-            ) : governed.loading && governed.files.length === 0 ? (
-              <FileListLoading />
-            ) : governed.files.length === 0 ? (
-              <FileListEmpty>{agentName} has not written anything yet.</FileListEmpty>
-            ) : (
-              <div className="flex flex-col gap-0.5">
-                {governed.files.map((f) => (
-                  <RailRow
-                    key={f.path}
-                    label={f.name}
-                    kind="file"
-                    selected={f.path === governed.openPath}
-                    {...(f.path === governed.openPath
-                      ? { ref: selectedRowRef }
-                      : {})}
-                    onClick={() => selectGoverned(f.path)}
-                  />
-                ))}
-                {governed.truncated && (
-                  /*
-                    Said out loud rather than swallowed. A list that stops at 500
-                    and says nothing is a list that claims the agent wrote 500
-                    files.
-                  */
-                  <SectionNote>
-                    Showing the first {governed.files.length}. {agentName} has more
-                    files than we list here.
-                  </SectionNote>
-                )}
-              </div>
-            )}
-          </div>
         </div>
       )}
 
@@ -617,8 +504,8 @@ export function AgentFiles({
             returns to the folder you left it on — so a label naming the root
             would be wrong exactly when the reader is deepest and least sure
             where they are. "Back" is true at every depth, and it does not
-            collide with the three other things on this surface already called
-            Files (the tab, the durable section, the breadcrumb root).
+            collide with the other things on this surface already called Files
+            (the tab, the section, the breadcrumb root).
           */}
           {compact && (
             <Button
@@ -636,20 +523,16 @@ export function AgentFiles({
             THE KEY IS ON THE COMPONENT, and it has to be. `FileViewer` owns the
             download's state — the in-flight ref and the failure sentence — and
             both belong to ONE file. Without a key React reuses the same instance
-            across a file switch (both branches render a `FileViewer` at the same
-            position), and that state comes with it: the sentence "we could not
+            across a file switch (it renders at the same position), and that
+            state comes with it: the sentence "we could not
             download that" ends up over a file whose download was never
             attempted, which is the same lie this tab spends its whole existence
             avoiding, just pointed at a smaller thing. Worse, the in-flight ref
             survives too, so the next file's first Download click is swallowed
             while its button says "Getting it…".
 
-            `tier` is part of the key because the two tiers are different stores
-            and a path can exist in both — `notes.md` in the workspace is not
-            `notes.md` in the agent's HOME.
-
             `agentId` is part of it for completeness rather than for a bug you
-            can reproduce today: both file hooks drop their selection when the
+            can reproduce today: the file hook drops its selection when the
             agent changes, so this pane unmounts before an identical path under a
             different agent could ever reach it. That reset lives in another
             file, this key does not depend on it, and no test can tell the
@@ -658,27 +541,14 @@ export function AgentFiles({
           */}
           {durableSelected !== null ? (
             <FileViewer
-              key={`${agentId}:user-files:${durableSelected}`}
+              key={`${agentId}:${durableSelected}`}
               rawPath={durableSelected}
               label={durable.file?.name ?? basename(durableSelected)}
               agentId={agentId}
               agentName={agentName}
-              tier="user-files"
               loading={durable.fileLoading}
               failed={durable.fileError !== null}
               file={durable.file}
-            />
-          ) : governedSelected !== null ? (
-            <FileViewer
-              key={`${agentId}:workspace:${governedSelected.path}`}
-              rawPath={governedSelected.path}
-              label={governedSelected.name}
-              agentId={agentId}
-              agentName={agentName}
-              tier="workspace"
-              loading={governed.openLoading}
-              failed={governed.openError !== null}
-              file={governed.openFile}
             />
           ) : (
             /*
@@ -715,7 +585,6 @@ function FileViewer({
   label,
   agentId,
   agentName,
-  tier,
   loading,
   failed,
   file,
@@ -724,19 +593,18 @@ function FileViewer({
   label: string;
   agentId: string;
   agentName: string;
-  tier: FileTier;
   loading: boolean;
   failed: boolean;
-  file: WorkspaceFileBody | UserFileBody | null;
+  file: UserFileBody | null;
 }) {
-  const download = useFileDownload({ agentId, agentName, tier, path: rawPath });
+  const download = useFileDownload({ agentId, agentName, path: rawPath });
   return (
     /*
       No key here any more. There used to be one on this div, and it was not
       enough once this component held state: a key on the OUTPUT remounts the
       DOM, while the hook above it keeps running with the previous file's
-      download in it. The key that matters is on `<FileViewer>` at both call
-      sites — one mechanism, at the level that actually resets.
+      download in it. The key that matters is on `<FileViewer>` at its call
+      site — one mechanism, at the level that actually resets.
     */
     <div>
       <div className="mb-1 flex items-center gap-2.5">
@@ -772,7 +640,7 @@ function FileViewer({
 
       {/*
         A FIFTH THING, kept apart from the other four. This tab already tells
-        "the listing failed", "no backend for this tier", "loading" and "the
+        "the listing failed", "no file area", "loading" and "the
         agent wrote nothing" apart, because collapsing any of them into another
         would make a claim about the agent that we cannot support. A download
         that did not happen is none of those — the file is listed, the body is

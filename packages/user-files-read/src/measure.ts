@@ -12,7 +12,7 @@ import { assertWalkPlatform, errnoOf, fdPath } from './walk-read.js';
 // other tenant's tree. So nothing outside the agent's own folder may be
 // counted, listed, or even looked up, whatever the agent plants or swaps.
 //
-// WHY NOT `measureDirBytes` (workspace-git-core/src/disk-usage.ts). It lstats
+// WHY NOT a plain `measureDirBytes` walk (the git workspace's helper, deleted in TASK-995). It lstats
 // a path and then reads the directory by that path again. An agent that swaps
 // a folder for a symlink between those two calls makes it walk wherever the
 // link points: a sibling tenant's folder, or `/` on the host. That is the W3b

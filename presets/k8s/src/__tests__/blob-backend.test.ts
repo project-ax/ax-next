@@ -21,7 +21,6 @@ const baseConfig: Omit<K8sPresetConfig, 'blob'> = {
   database: { connectionString: 'postgres://stub:5432/stub' },
   eventbus: { connectionString: 'postgres://stub:5432/stub' },
   session: { connectionString: 'postgres://stub:5432/stub' },
-  workspace: { backend: 'local', repoRoot: '/tmp/preset-k8s-stub' },
   ipc: { hostIpcUrl: 'http://ax-next-host.ax-next.svc.cluster.local:80' },
   chat: { runnerBinaries: { 'claude-sdk': '/tmp/stub-runner.js' } },
   http: {
@@ -91,8 +90,6 @@ describe('blob backend selection in createK8sPlugins', () => {
 const loaderBaseEnv: NodeJS.ProcessEnv = {
   DATABASE_URL: 'postgres://x',
   AX_K8S_HOST_IPC_URL: 'http://host:80',
-  AX_WORKSPACE_BACKEND: 'local',
-  AX_WORKSPACE_ROOT: '/var/lib/ax-next/workspaces',
   AX_HTTP_HOST: '0.0.0.0',
   AX_HTTP_PORT: '9090',
   AX_HTTP_COOKIE_KEY: '0'.repeat(64),
@@ -118,7 +115,7 @@ describe('blobConfigFromEnv', () => {
     ).toThrow('AX_BLOB_BACKEND=fs requires AX_BLOB_FS_ROOT to be set');
   });
 
-  it('the blob root does not depend on the workspace config', () => {
+  it('the blob root does not depend on the retired workspace env the chart still stamps', () => {
     const variants: NodeJS.ProcessEnv[] = [
       { AX_WORKSPACE_BACKEND: 'local', AX_WORKSPACE_ROOT: '/var/lib/ax-next/workspaces' },
       { AX_WORKSPACE_BACKEND: 'local', AX_WORKSPACE_ROOT: '/elsewhere' },
@@ -226,9 +223,11 @@ describe('loadK8sConfigFromEnv blob wiring', () => {
   });
 
   it('loadK8sConfigFromEnv refuses fs without AX_BLOB_FS_ROOT', () => {
-    // AX_WORKSPACE_ROOT is still set: it used to silently derive
+    // The chart still stamps AX_WORKSPACE_ROOT: it used to silently derive
     // /var/lib/ax-next/workspaces/blobs. It must not any more.
-    expect(() => loadK8sConfigFromEnv(loaderBaseEnv)).toThrow(
+    expect(() =>
+      loadK8sConfigFromEnv({ ...loaderBaseEnv, AX_WORKSPACE_ROOT: '/var/lib/ax-next/workspaces' }),
+    ).toThrow(
       'AX_BLOB_BACKEND=fs requires AX_BLOB_FS_ROOT to be set',
     );
   });

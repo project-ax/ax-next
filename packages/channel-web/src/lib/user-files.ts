@@ -1,34 +1,25 @@
 /**
- * Browsing the agent's DURABLE user-files tier — its cwd and HOME.
+ * Browsing the agent's files — its cwd and HOME.
  *
- * The sibling of `useAgentFiles`, and deliberately not the same hook. That one
- * reads the git-backed tier AX manages and gets a FLAT list back in one call.
- * This one reads the tier the agent actually works in, whose backing hook
- * answers ONE directory at a time — so this hook owns a cursor (which
- * directory are we in) and a history (how do we go back up), and it fetches
- * again on every step.
+ * The agent's files are a real filesystem, and the backing hook answers ONE
+ * directory at a time — so this hook owns a cursor (which directory are we in)
+ * and a history (how do we go back up), and it fetches again on every step.
  *
- * Same discipline as its sibling on the thing that matters: an error is a state
- * of its own and never collapses into "empty". `entries` is only meaningful
- * while `error` is `null`.
+ * An error is a state of its own and never collapses into "empty". `entries`
+ * is only meaningful while `error` is `null`.
  *
- * WHAT `missing` MEANS, and why it is its own kind. The backing hook still
- * answers ONE thing for every path-shaped absence — never written, since
- * deleted, resolved outside the agent's own subtree — and that collapse is
- * deliberate: on a mount that holds every tenant's subtree, a response that
- * distinguished a well-formed path from a missing one would be a way to map
- * somebody else's files. So `missing` means "the tier is there and that path
- * is not in it", and nothing finer.
+ * WHAT `missing` MEANS, and why it is its own kind. The backing hook answers
+ * ONE thing for every path-shaped absence — never written, since deleted,
+ * resolved outside the agent's own subtree — and that collapse is deliberate:
+ * on a mount that holds every tenant's subtree, a response that distinguished
+ * a well-formed path from a missing one would be a way to map somebody else's
+ * files. So `missing` means "the file area is there and that path is not in
+ * it", and nothing finer.
  *
- * IT USED TO MEAN LESS THAN THAT. `absent` also covered "this deployment has
- * no durable tier at all", so at the tier root we could not tell "the agent
- * has written nothing" from "there is nothing to write to", and the tab said
- * both and said it could not tell which — on every deployment, working ones
- * included (TASK-403). The hook now answers `unavailable` for the no-tier
- * case, which costs no secrecy because it is decided before any path is looked
- * at and is therefore the same answer for every path. So a `missing` at the
- * root now means exactly one thing: the tier is wired, and this agent has not
- * written anything into it yet.
+ * `unavailable` is the no-file-area case. It costs no secrecy because it is
+ * decided before any path is looked at and is therefore the same answer for
+ * every path. So a `missing` at the root means exactly one thing: the file
+ * area is wired, and this agent has not written anything into it yet (TASK-403).
  *
  * AND A BROKEN READ IS `failed`, not either of the above. A realization whose
  * storage will not answer throws, the route turns that into a 5xx, and it
@@ -45,11 +36,11 @@ import type { UserFileEntry, UserFilesAnswer } from './workspace-types';
  *
  * Three kinds, because three different sentences are true:
  *
- *   - `unavailable` — this deployment keeps no durable files for this agent at
- *     all: no sandbox provider that can read the tier, or no tier resolved for
- *     the agent. Retrying will never help, so the UI offers no button.
- *   - `missing`     — the tier is there and this path is not in it. At the
- *     ROOT that is the agent having written nothing yet, which is not an error
+ *   - `unavailable` — this deployment keeps no files for this agent at all: no
+ *     sandbox provider that can read them, or no file area resolved for the
+ *     agent. Retrying will never help, so the UI offers no button.
+ *   - `missing`     — the file area is there and this path is not in it. At
+ *     the ROOT that is the agent having written nothing yet, which is not an error
  *     at all and the tab draws it as the empty state.
  *   - `failed`      — something broke. Retrying might help, so it gets a
  *     button.
@@ -63,7 +54,7 @@ import type { UserFileEntry, UserFilesAnswer } from './workspace-types';
  */
 export interface UserFilesError {
   kind: 'unavailable' | 'missing' | 'failed';
-  /** The tier path the failed read asked for. `''` is the tier root. */
+  /** The path the failed read asked for. `''` is the root. */
   path: string;
   detail: string;
 }
@@ -77,11 +68,11 @@ function toUserFilesError(e: unknown, path: string): UserFilesError {
   return { kind: 'failed', path, detail };
 }
 
-/** A file's text as this tier serves it. */
+/** A file's text as the server serves it. */
 export type UserFileBody = Extract<UserFilesAnswer, { kind: 'file' }>;
 
 export interface AgentUserFilesState {
-  /** The directory currently listed. `''` is the tier root. */
+  /** The directory currently listed. `''` is the root. */
   dirPath: string;
   entries: UserFileEntry[];
   /** `true` when the directory holds more children than one response carries. */
@@ -119,7 +110,7 @@ export function useAgentUserFiles(agentId: string): AgentUserFilesState {
    * Bumped on every fetch; a response is applied only when it is still the most
    * recent request. A ref rather than a boolean because a third request can
    * land while a stale second is outstanding, and a boolean cannot tell those
-   * apart. Same guard, same reason, as `useAgentFiles`.
+   * apart. Stale answers are dropped, never applied.
    */
   const listRequest = useRef(0);
   const bodyRequest = useRef(0);
@@ -162,7 +153,7 @@ export function useAgentUserFiles(agentId: string): AgentUserFilesState {
   );
 
   useEffect(() => {
-    // A new agent is a new tier. Drop everything first, so the previous
+    // A new agent is a new file area. Drop everything first, so the previous
     // agent's files are never on screen under this agent's name.
     setDirPath('');
     setEntries([]);

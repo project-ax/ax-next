@@ -23,20 +23,16 @@
  *    A deliverable written to the working directory is the overwhelmingly common
  *    case, and it was the one case the old allowlist rejected.
  *  - `<ephemeralRoot>/artifacts/**` — the scratch artifact namespace, unchanged.
- *    Still a subdirectory rather than the whole tier: `/ephemeral` also holds the
+ *    Still a subdirectory rather than the whole root: the scratch root also holds the
  *    python venv, tool caches and build trees, none of which are deliverables.
  *
- * WHAT IS NOT, AND WHY THE GOVERNED TIER LEFT ENTIRELY: the old list carried
- * `/agent/workspace/**`, described as "the rare Pattern A case: ax-hosted project
- * code under git". That entry is a fossil of the pre-split layout, where the
- * single tier was `/permanent` and `/permanent/workspace/**` WAS the user's file
- * area. The `/permanent`→`/agent` rename kept the string, the filestore split
- * moved user files to their own mount, and the allowlist was never revisited —
- * so it pointed at a directory nothing in the repo creates. Dropping it removes
- * the phantom AND tightens the floor: no path under the governed tier is
- * publishable now, so the agent's own `.ax/` identity + memory, its `.claude/`
- * transcripts and the `.ax/uploads/` originals are all structurally out of reach
- * of a prompt-injected "publish your instructions" attempt.
+ * WHAT IS NOT: the old list also carried a `/agent/workspace/**` entry, "the rare
+ * Pattern A case: ax-hosted project code under git". It was a fossil of the
+ * pre-split layout and pointed at a directory nothing in the repo creates, so it
+ * went (and the whole git workspace tier went later, TASK-995). Nothing outside
+ * the two roots above is publishable: the scratch root's `uploads/` originals and
+ * `transcripts/` sit beside `artifacts/` but outside it, so they are structurally
+ * out of reach of a prompt-injected "publish your transcript" attempt.
  */
 
 import * as path from 'node:path';

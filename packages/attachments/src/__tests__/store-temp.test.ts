@@ -165,6 +165,43 @@ describe('attachments:store-temp handler', () => {
     ).rejects.toMatchObject({ code: 'too-many-pending' });
   }, 30_000);
 
+  // The name and type end up in the conversation's `attachment` block, which
+  // caps both. An upload the block could not carry would break the turn that
+  // sends it, so it is refused here, at upload, where the person can fix it.
+  it('rejects a filename longer than an attachment block can carry, storing nothing', async () => {
+    const { handler, store } = await freshSetup();
+    await expect(
+      handler(makeCtx('u-long'), {
+        bytes: Buffer.from('x'),
+        displayName: 'f'.repeat(1025),
+        mediaType: 'text/plain',
+      }),
+    ).rejects.toMatchObject({ code: 'invalid-payload' });
+    expect(await store.sumPendingBytesForUser('u-long')).toBe(0);
+
+    const ok = await handler(makeCtx('u-long'), {
+      bytes: Buffer.from('x'),
+      displayName: 'f'.repeat(1024),
+      mediaType: 'text/plain',
+    });
+    expect(ok.attachmentId).toBeTruthy();
+  });
+
+  it('rejects a media type longer than an attachment block can carry', async () => {
+    const { store } = await freshSetup();
+    const wildcardHandler = createStoreTempHandler({
+      store,
+      config: { ...cfg, allowedMediaTypes: ['image/*'] },
+    });
+    await expect(
+      wildcardHandler(makeCtx('u-img'), {
+        bytes: Buffer.from('x'),
+        displayName: 'pic.png',
+        mediaType: `image/${'x'.repeat(250)}`, // 256 characters
+      }),
+    ).rejects.toMatchObject({ code: 'invalid-payload' });
+  });
+
   it('honors image/* wildcard in the allowlist', async () => {
     const { store } = await freshSetup();
     const wildcardHandler = createStoreTempHandler({

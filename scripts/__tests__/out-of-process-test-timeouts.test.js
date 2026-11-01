@@ -165,7 +165,7 @@ const TEST_LEAVES_PROCESS =
  *      the 35 in-scope packages: 0 parse errors, 0 unreadable budgets, 29 maxima
  *      unchanged and 6 LOWER — `agent-claude-sdk-runner` and `agent-runner-core`
  *      30_000 -> 0, `database-postgres` / `ipc-core` / `session-postgres`
- *      15_000 -> 0, `workspace-git-server` 20_000 -> 0 — every one of them an
+ *      15_000 -> 0, `workspace-git-server` (deleted in TASK-995) 20_000 -> 0 — every one of them an
  *      `it` budget that the regex had run past a hook to reach. None raised; no
  *      config needed changing. An `it` budget is not a hook budget, so those
  *      packages' bare hooks were never governed by it.

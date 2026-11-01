@@ -51,7 +51,7 @@ import { createK8sPlugins, type K8sPresetConfig } from '../index.js';
 // ---------------------------------------------------------------------------
 
 // AgentRecord shape — minimum the orchestrator USES is { id, ownerId,
-// systemPrompt, allowedTools, mcpConfigIds, model, workspaceRef }. We
+// systemPrompt, allowedTools, mcpConfigIds, model }. We
 // include the broader optional fields because dev-agents-stub does and
 // the type-level `agent.allowedHosts ?? []` reads through them.
 interface TestAgentRecord {
@@ -65,7 +65,6 @@ interface TestAgentRecord {
   mcpConfigIds: string[];
   model: string;
   runner: string;
-  workspaceRef: string | null;
   allowedHosts: string[];
   requiredCredentials: Record<string, { ref: string; kind: string }>;
   createdAt: Date;
@@ -83,7 +82,6 @@ const AGENT_A: TestAgentRecord = {
   mcpConfigIds: [],
   model: 'stub-model',
   runner: 'claude-sdk',
-  workspaceRef: null,
   allowedHosts: [],
   requiredCredentials: {},
   createdAt: new Date(0),
@@ -101,7 +99,6 @@ const AGENT_B: TestAgentRecord = {
   mcpConfigIds: [],
   model: 'stub-model',
   runner: 'claude-sdk',
-  workspaceRef: null,
   allowedHosts: [],
   requiredCredentials: {},
   createdAt: new Date(0),
@@ -109,7 +106,7 @@ const AGENT_B: TestAgentRecord = {
 };
 
 // Plugin filter shared with Task 9's acceptance.test.ts. Same compromise:
-// drop the postgres/k8s/http/oauth/workspace-git plugins that need real
+// drop the postgres/k8s/http/oauth plugins that need real
 // infrastructure; keep the chat-path plugins so the orchestrator wiring
 // is exercised end-to-end.
 const PLUGINS_TO_DROP = new Set<string>([
@@ -142,7 +139,6 @@ const PLUGINS_TO_DROP = new Set<string>([
   // wiring is pinned in preset.test.ts.
   '@ax/mcp-oauth',
   '@ax/agents',
-  '@ax/workspace-git',
   '@ax/ipc-http',
   '@ax/mcp-client',
   // First-run wizard: postgres-backed (database:get-instance) and http-server
@@ -226,27 +222,6 @@ const PLUGINS_TO_DROP = new Set<string>([
   // preset.test.ts, the real sweep in blob-gc-report-acceptance.test.ts.
   '@ax/blob-gc',
 ]);
-
-// Stub producer for the dispatcher's REQUIRED dep this canary drops.
-// @ax/ipc-server declares manifest.calls spread from @ax/ipc-core's
-// DISPATCHER_DEPENDENCIES, which includes workspace:read. This local-backend
-// canary drops @ax/workspace-git to stay postgres-free, so bootstrap's
-// verifyCalls needs a no-op producer for it. Not on the chat path here.
-// (conversations:store-runner-session is an OPTIONAL dispatcher dep — it never
-// fails the boot, so the dropped @ax/conversations needs no stub.)
-function createDispatcherDepsStubPlugin(hooks: string[]): Plugin {
-  const name = '@ax/preset-k8s/test/dispatcher-deps-stub';
-  return {
-    manifest: { name, version: '0.0.0', registers: hooks, calls: [], subscribes: [] },
-    init({ bus }) {
-      for (const hook of hooks) {
-        bus.registerService(hook, name, async () =>
-          hook === 'workspace:read' ? { found: false } : undefined,
-        );
-      }
-    },
-  };
-}
 
 const AGENTS_RESOLVE_PLUGIN_NAME = '@ax/preset-k8s/test/discriminating-agents-resolve';
 
@@ -401,10 +376,6 @@ describe('@ax/preset-k8s multi-tenant ACL gate (stub runner)', () => {
         database: { connectionString: 'postgres://stub:5432/stub' },
         eventbus: { connectionString: 'postgres://stub:5432/stub' },
         session: { connectionString: 'postgres://stub:5432/stub' },
-        workspace: {
-          backend: 'local',
-          repoRoot: path.join(tmp, 'repo-stub'),
-        },
         blob: { backend: 'fs', root: path.join(tmp, 'blobs') },
         sandbox: { namespace: 'ax-next', image: 'ax-next/agent:stub' },
         ipc: { hostIpcUrl: 'http://ax-next-host.ax-next.svc.cluster.local:80' },
@@ -461,7 +432,6 @@ describe('@ax/preset-k8s multi-tenant ACL gate (stub runner)', () => {
         // `filestore` stays unset and the local-directory resolver stands in.
         createWorkspaceLocaldirPlugin({ root: path.join(tmp, 'user-files') }),
         createIpcServerPlugin(),
-        createDispatcherDepsStubPlugin(['workspace:read']),
         createMultiTenantProxyPlugin({
           scriptByAgentId: new Map([
             ['agent-A', scriptA],

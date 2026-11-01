@@ -57,9 +57,9 @@ import { createConnectorAuthReporter } from './connector-auth-report.js';
 // ---------------------------------------------------------------------------
 // Runner entry binary (claude-sdk variant).
 //
-// Everything that is NOT the agent loop — env read, IPC client, workspace
-// materialize, uploads, skills projection, inbox wiring, turn-end commit and
-// flush, `event.chat-end`, and the 0/1/2 exit-code contract — lives in
+// Everything that is NOT the agent loop — env read, IPC client, uploads,
+// skills projection, inbox wiring, the turn-end transcript ship,
+// `event.chat-end`, and the 0/1/2 exit-code contract — lives in
 // `runRunner` (@ax/agent-runner-core). This file is the Claude Agent SDK
 // loop it drives: the `query()` options literal, the `for await` message
 // pump, the two MCP servers, the PreToolUse/PostToolUse hook adapters, and
@@ -111,7 +111,6 @@ export function createClaudeSdkLoop(deps: RunnerDeps): Loop {
     agentConfig,
     tools,
     localDispatcher,
-    flushWorkspaceForHostTool,
     proxyStartup,
     pythonVenvReady,
     // The shell calls it `homeDir`; inside this loop it IS the SDK subprocess's
@@ -125,16 +124,17 @@ export function createClaudeSdkLoop(deps: RunnerDeps): Loop {
     async run(ctx: LoopContext): Promise<number> {
       // Per-turn transcript-flush wait (2026-05-22 conversations:get-latency fix).
       // The Anthropic Agent SDK writes the assistant turn's jsonl line AFTER it
-      // yields `result`, so the per-turn commit the shell runs at the turn
-      // boundary would otherwise stage `/agent` BEFORE the reply lands and ship a
-      // bundle missing it. Under idle-keepalive the warm runner doesn't drain the
-      // SDK loop (no final commit) until idle-reap, so the reply stayed unreadable
-      // via conversations:get for the whole idle window (minutes). We wait for the
-      // new assistant line before each per-turn commit so EVERY turn's bundle
-      // contains its own reply. Timeout/interval are env-tunable (tests set 0 to
-      // skip the wait); production defaults are 5 s / 50 ms. On timeout we fall
-      // through to the prior behavior — the next turn's commit or the final commit
-      // still captures the line — so the wait is a strict improvement.
+      // yields `result`, so the per-turn transcript ship the shell runs at the
+      // turn boundary would otherwise read the jsonl BEFORE the reply lands and
+      // ship a delta missing it. Under idle-keepalive the warm runner doesn't
+      // drain the SDK loop (no final ship) until idle-reap, so the reply stayed
+      // unreadable via conversations:get for the whole idle window (minutes). We
+      // wait for the new assistant line before each per-turn ship so EVERY
+      // turn's delta carries its own reply. Timeout/interval are env-tunable
+      // (tests set 0 to skip the wait); production defaults are 5 s / 50 ms. On
+      // timeout we fall through to the prior behavior — the next turn's ship or
+      // the final ship still captures the line — so the wait is a strict
+      // improvement.
       const parsedFlushTimeout = Number.parseInt(
         process.env.AX_TURN_FLUSH_TIMEOUT_MS ?? '',
         10,
@@ -151,11 +151,7 @@ export function createClaudeSdkLoop(deps: RunnerDeps): Loop {
           ? parsedFlushInterval
           : 50;
 
-      const hostMcpServer = createHostMcpServer({
-        client,
-        tools,
-        flushWorkspace: flushWorkspaceForHostTool,
-      });
+      const hostMcpServer = createHostMcpServer({ client, tools });
 
       const sandboxMcpServer = createSandboxMcpServer({
         dispatcher: localDispatcher,
@@ -209,8 +205,8 @@ export function createClaudeSdkLoop(deps: RunnerDeps): Loop {
       const heldCalls = createHeldCallRegistry();
       // The uuid of the turn's MOST-RECENT assistant message (SDKAssistantMessage
       // .uuid). The SDK assigns this id to the jsonl line it writes for the
-      // message. The per-turn commit waits for THIS uuid to land in the jsonl
-      // before staging, so the turn's closing-text line is durable even on a
+      // message. The per-turn transcript ship waits for THIS uuid to land in the
+      // jsonl first, so the turn's closing-text line is durable even on a
       // tool-using turn (whose intermediate tool_use line lands first). Reset at
       // each `result` boundary; the gate skips the wait when the turn produced no
       // assistant message. See waitForTranscriptUuid (TASK-11).
@@ -231,9 +227,9 @@ export function createClaudeSdkLoop(deps: RunnerDeps): Loop {
       // Inbox → SDK user-message generator. Closing via `return` on cancel
       // tells the SDK no more user messages are coming, which lets the outer
       // `for await (msg of queryIter)` drain naturally and exit. The shell owns
-      // the pull (inbox long-poll, reqId capture, upload re-materialization,
-      // attachment translation); we only wrap what it hands back in the SDK's
-      // message shape.
+      // the pull (inbox long-poll, reqId capture, copying new uploads into the
+      // scratch root, attachment translation); we only wrap what it hands back
+      // in the SDK's message shape.
       //
       // Phase E (2026-05-09): no more replay-from-DB. The SDK's
       // `resume(sessionId)` rehydrates the transcript from its own on-disk
@@ -358,56 +354,50 @@ export function createClaudeSdkLoop(deps: RunnerDeps): Loop {
           // The env literal here partitions into two distinct concerns that
           // happen to share the same SDK subprocess env namespace:
           //
-          // (a) Phase C — HOME redirect for the SDK subprocess. See
+          // (a) HOME for the SDK subprocess: the agent's home. See the
           //     per-bullet rationale below.
           //
           // (b) Phase 0 skill discovery (I-P0-1 / I-P0-3) — CLAUDE_CONFIG_DIR
           //     forwarded from the sandbox-provided runner env so the SDK's
           //     `'user'` setting source resolves to a host-owned root
-          //     (`<sandbox-HOME>/.ax/session`) that's SEPARATE from the
-          //     workspace's `'project'` source (`<cwd>/.claude/skills`).
-          //     Without the forward, the SDK falls back to `<HOME>/.claude`,
-          //     which — because the (a) override below sets HOME to the
-          //     agent's home — collapses onto the project-source path, making
-          //     the two setting sources indistinguishable and rendering the host-
-          //     installed-skills surface unreachable. The forward itself
-          //     lives in proxy-startup.ts (ENV_ALLOWLIST) so the value
-          //     arrives via `...proxyStartup.providerEnv` below.
+          //     (`<runner-HOME>/.ax/session`; k8s `/home/runner/.ax/session`)
+          //     OUTSIDE the agent's home. Without the forward, the SDK falls
+          //     back to `<HOME>/.claude`, which — because (a) sets HOME to the
+          //     agent's home — would make the agent's own files the SDK's
+          //     trusted configuration (settings hooks, CLAUDE.md, skills, MCP
+          //     servers). The runner refuses to start without it, or with one
+          //     that overlaps the home (`assertConfigDirOutsideAgentHome`). The
+          //     forward itself lives in proxy-startup.ts (ENV_ALLOWLIST) so the
+          //     value arrives via `...proxyStartup.providerEnv` below.
           //
           // (a)/(b) interact via the SDK's per-session jsonl path. The
           // SDK derives `$CLAUDE_CONFIG_DIR/projects/<encoded-cwd>/
           // <sid>.jsonl` from the same var that drives skill discovery.
-          // `prepareTranscriptDir` (transcript-dir.ts, called from the
-          // shell's afterMaterialize) makes that path a link to the
-          // sandbox's transcripts root (`AX_TRANSCRIPTS_ROOT`) when one is
-          // stamped, and every transcript reader uses the link TARGET. The
-          // (b) split and the jsonl location are independent; no env change
-          // here.
+          // `prepareTranscriptDir` (transcript-dir.ts, run from the shell's
+          // `prepareSession` seam) makes that path a link to the sandbox's
+          // transcripts root (`AX_TRANSCRIPTS_ROOT`) when one is stamped, and
+          // every transcript reader uses the link TARGET. The (b) split and the
+          // jsonl location are independent; no env change here.
           //
-          // Phase C: HOME redirect for the SDK subprocess.
-          //   - The k8s sandbox pod sets HOME=/nonexistent at the pod level
-          //     so `git` (and any other tool the runner spawns) can't
-          //     accidentally read a global ~/.gitconfig — git-paranoia.
-          //   - HOME is the agent's home (`sdkHome`) for tools that read it
-          //     (`~/bin`, dotfiles). The SDK's own state is NOT in HOME: with
-          //     CLAUDE_CONFIG_DIR set, its `.claude.json`, backups, sessions
-          //     and transcripts all land in CLAUDE_CONFIG_DIR (measured against
-          //     SDK 0.2.119). The runner refuses to start without it
-          //     (`assertConfigDirOutsideAgentHome`). The one remaining HOME
-          //     write is the CLI's env-paths cache (MCP logs): on Linux it
-          //     follows XDG_CACHE_HOME (`buildToolCacheEnv`, scratch tier); on
+          // (a) HOME for the SDK subprocess:
+          //   - HOME is the agent's home (`sdkHome`, from `runnerHomeDir`: the
+          //     durable AX_USERFILES_ROOT mount, `/files` in k8s, required) for
+          //     tools that read it (`~/bin`, dotfiles). The SDK's own state is
+          //     NOT in HOME: with CLAUDE_CONFIG_DIR set, its `.claude.json`,
+          //     backups, sessions and transcripts all land in CLAUDE_CONFIG_DIR
+          //     (measured against SDK 0.2.119). The one remaining HOME write is
+          //     the CLI's env-paths cache (MCP logs): on Linux it follows
+          //     XDG_CACHE_HOME (`buildToolCacheEnv`, the scratch root); on
           //     macOS it is `HOME/Library/Caches`.
-          //   - The runner-process git operations inherit HOME=/nonexistent
-          //     from process.env (we don't override their env), so the
-          //     redirect is targeted to this SDK subprocess only.
+          //   - The runner process keeps its own HOME (k8s: /home/runner, the
+          //     pod-level value; we don't touch process.env), so this value
+          //     reaches the SDK subprocess only — a child the runner itself
+          //     spawns never reads agent-written dotfiles.
           //   - HOME is spread AFTER ...proxyStartup.providerEnv so this
           //     value wins on conflict. providerEnv currently doesn't set
-          //     HOME, but defensive ordering matches the intent: we
-          //     explicitly redirect HOME for the SDK subprocess.
-          //   - filestore-user-files Phase 2 (TASK-164): HOME is `sdkHome` — the
-          //     durable `/files` NFS mount when AX_USERFILES_ROOT is wired,
-          //     else the scratch/workspace tier. Skill discovery is unaffected
-          //     (CLAUDE_CONFIG_DIR, forwarded separately, drives it — not HOME).
+          //     HOME, but defensive ordering matches the intent.
+          //   - Skill discovery is unaffected (CLAUDE_CONFIG_DIR, forwarded
+          //     separately, drives it — not HOME).
           //   - We DO NOT override CLAUDE_CONFIG_DIR here — the sandbox
           //     plugin's value (carried through proxyStartup.providerEnv)
           //     is the source of truth for the (b) split above. If a future
@@ -434,10 +424,10 @@ export function createClaudeSdkLoop(deps: RunnerDeps): Loop {
             // telemetry-env.ts for the verified gate chain and ordering contract.
             ...buildTelemetryEnv(),
             HOME: sdkHome,
-            // Redirect npx/uvx fetch caches onto the ephemeral tier so they
-            // don't land in HOME and get bundled/persisted. No-op ({}) when no
-            // ephemeral root was wired. See tool-cache-env.ts. Spread AFTER HOME
-            // so an ephemeral root always wins for the cache vars (HOME stays the
+            // Redirect npx/uvx fetch caches onto the session scratch root so they
+            // don't fill the agent's home, which is durable and counts toward the
+            // person's storage. See tool-cache-env.ts. Spread AFTER HOME so the
+            // scratch root always wins for the cache vars (HOME stays the
             // working frame).
             ...buildToolCacheEnv(env.ephemeralRoot),
             // Activate the session Python venv (PATH + VIRTUAL_ENV + pip CA
@@ -449,14 +439,12 @@ export function createClaudeSdkLoop(deps: RunnerDeps): Loop {
             // Computed up front (above the query() literal) so the $HOME/bin
             // layer below can append after the venv bin.
             ...pythonVenvEnv,
-            // Put `$HOME/bin` (= <sdkHome>/bin) on PATH so binaries the agent
-            // installs there PERSIST and are found in later sessions. filestore-
-            // user-files Phase 2 (TASK-164): derives from `sdkHome` (= HOME), so
-            // when AX_USERFILES_ROOT is wired `~/bin` is `/files/bin` on
-            // durable NFS — persisted LIVE, NOT via the per-turn git bundle (the
-            // bundle only stages /agent). Spread LAST and fed the post-venv PATH so
-            // it lands at the END of PATH. APPEND, not prepend (I5 / codex review):
-            // $HOME/bin is model-writable + restored across sessions, so prepending
+            // Put `$HOME/bin` (= <sdkHome>/bin, `/files/bin` in k8s, on the
+            // durable home) on PATH so binaries the agent installs there PERSIST
+            // and are found in later sessions. Spread LAST and fed the post-venv
+            // PATH so it lands at the END of PATH. APPEND, not prepend (I5 /
+            // codex review): $HOME/bin is model-writable and outlives the
+            // session, so prepending
             // would let an injected `$HOME/bin/git` persistently shadow the trusted
             // image/venv binary; appending keeps installed tools discoverable while
             // trusted base+venv bins win on name collisions. This is the load-
@@ -470,44 +458,45 @@ export function createClaudeSdkLoop(deps: RunnerDeps): Loop {
               pythonVenvEnv.PATH ?? proxyStartup.providerEnv.PATH,
             ),
           },
-          // filestore-user-files Phase 2 (TASK-164): cwd is the agent's working
-          // frame — `sdkHome` (= /files when a durable mount is wired, else
-          // /agent). Relative-path file work, builds, and `git clone .` default to
-          // durable NFS. The governed tier stays /agent; the PreToolUse re-rooter
-          // pulls `.ax/**`+`.claude/**` back there (see the hook below, §14).
+          // cwd is the agent's working frame — `sdkHome`, the same directory as
+          // HOME (`/files` in k8s). Relative-path file work, builds and `git
+          // clone .` land on the durable home. Nothing is steered anywhere else
+          // (TASK-995): a write to `.ax/**`, `.claude/**` or `CLAUDE.md` is an
+          // ordinary file here, and nothing loads it (`settingSources` below,
+          // and CLAUDE_CONFIG_DIR outside the home).
           cwd: sdkHome,
           // Directories the SDK's file tools may reach BEYOND `cwd` (cwd is always
           // granted implicitly). The SDK bounds file tools to cwd + this list, so
-          // any tier the agent legitimately needs and that isn't the cwd must be
-          // listed here — else writes there fail.
+          // any directory the agent legitimately needs and that isn't the cwd must
+          // be listed here — else reads and writes there fail.
           //
           // The set, deduped (cwd is excluded; the SDK already grants it):
-          //   - The governed tier `env.workspaceRoot` (=/agent). In Phase 2 cwd is
-          //     /files, so /agent is NO LONGER the cwd and MUST be listed — it
-          //     holds `.ax/uploads` (materialized attachments) and every `.ax/**`+`.claude/**`
-          //     path the PreToolUse re-rooter rewrites BACK to /agent (§14). Without
-          //     it those re-rooted writes would be denied. (When userFilesRoot is
-          //     unset, /agent IS the cwd, so it drops out via the dedup.)
-          //   - The session-scoped scratch tier `env.ephemeralRoot` (k8s: the
-          //     `/ephemeral` emptyDir; subprocess: a per-session tempdir) — for
-          //     throwaway work (scratch clones, build caches) that must NOT
-          //     round-trip to the host. Omitted when no scratch tier was wired.
-          //   - The durable per-agent user-files mount `env.userFilesRoot`
-          //     (`/files`) — in Phase 2 this is the cwd, so it dedups out; we
-          //     still list it defensively for the (transitional) case where it's
-          //     wired but not the cwd. Omitted when no durable mount was wired.
+          //   - The session scratch root `env.ephemeralRoot` (k8s: `/tmp`;
+          //     subprocess: a per-session directory) — the files shared in this
+          //     conversation (`<scratch>/uploads/`), tool caches, the Python
+          //     venv and throwaway clones. Gone with the session.
+          //   - The read-only memory root `env.memoryRoot` (`/memory`), when
+          //     the facts export is mounted. Omitted otherwise.
           //
-          // Each entry is host-controlled env (never model/user input); omitted
-          // entries grant no phantom directory. The matching system-prompt notes
-          // (the shell's composed prompt) are gated on the same env values.
+          // Each entry is host-controlled env (never model/user input); an
+          // omitted entry grants no phantom directory. The matching system-prompt
+          // notes (the shell's composed prompt) name the same roots.
+          //
+          // The scratch root is agent-writable, so what the CLI reads from an
+          // added directory matters. Measured on the real binary (SDK 0.2.119):
+          // it loads `.claude/skills/` from one only under the 'project'
+          // setting source, and CLAUDE.md, `.claude/CLAUDE.md` and
+          // `.claude/rules/` only when CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD
+          // is set (CLAUDE.local.md also needs 'local'). It never reads an added
+          // directory's settings files, `.mcp.json`, agents or commands. We pass
+          // `settingSources: ['user']`, and the variable never reaches the SDK
+          // (the proxy-startup env allowlist drops it; main.test.ts pins that).
+          // The real-binary canary (agent-files-guards-real-sdk.e2e.test.ts)
+          // plants every one of these in the scratch root and pins that none
+          // takes effect, with controls that make each gate's loads visible.
           ...((): { additionalDirectories?: string[] } => {
             const extra: string[] = [];
-            for (const dir of [
-              env.workspaceRoot,
-              env.ephemeralRoot,
-              env.userFilesRoot,
-              env.memoryRoot,
-            ]) {
+            for (const dir of [env.ephemeralRoot, env.memoryRoot]) {
               if (dir !== undefined && dir !== sdkHome && !extra.includes(dir)) {
                 extra.push(dir);
               }
@@ -564,30 +553,12 @@ export function createClaudeSdkLoop(deps: RunnerDeps): Loop {
             PreToolUse: [
               {
                 hooks: [
+                  // The call reaches tool.pre-call exactly as the model wrote
+                  // it (TASK-995: no path is rewritten), so the host
+                  // adjudicates the call the SDK will really run. Only the
+                  // host's own `modifiedCall` changes it.
                   createPreToolUseHook({
                     client,
-                    // The re-root TARGET is always the governed tier
-                    // (env.workspaceRoot, /agent) — NOT cwd. TASK-78: uploads
-                    // materialize at `<workspaceRoot>/.ax/uploads/`, so a
-                    // mis-rooted `.ax/uploads/...` reference re-roots THERE.
-                    workspaceRoot: env.workspaceRoot,
-                    // filestore-user-files Phase 2 (TASK-164) §14 LINCHPIN:
-                    // broaden the re-rooter from the `.ax/uploads/` safety-net to
-                    // the FULL `.ax/**`+`.claude/**` validator policy iff cwd/HOME
-                    // moved to either the user-files mount or session scratch.
-                    // Every governed self-edit goes back onto /agent so it stays
-                    // validated and git-backed regardless of the working directory.
-                    broaden: sdkHome !== env.workspaceRoot,
-                    // The roots a TOP-LEVEL governed path may be rooted against —
-                    // the cwd (=sdkHome) and the scratch tier. Bounds
-                    // the broadened re-root to top-level governed dirs so a NESTED
-                    // `.claude/` under a user subtree (e.g. a cloned repo) is left on
-                    // the user tier, matching the validator's git-root-relative scope.
-                    // (workspaceRoot is always added by the re-rooter; /home/+~/ are
-                    // always recognized.) Filtered to the defined runtime roots.
-                    recognizedRoots: [sdkHome, env.ephemeralRoot].filter(
-                      (r): r is string => r !== undefined,
-                    ),
                     holdLatch,
                     isInterrupted: () => stopRequested,
                     onHold: (id) => heldCalls.record(id),
@@ -600,12 +571,6 @@ export function createClaudeSdkLoop(deps: RunnerDeps): Loop {
                 hooks: [
                   createPostToolUseHook({
                     client,
-                    // Only preToolUse (re-rooting) reads workspaceRoot today, but
-                    // CreatePostToolUseHookOptions is now the shared
-                    // CreateToolPolicyOptions type, so it's a required field here
-                    // too — pass the same governed root as the PreToolUse hook
-                    // above for consistency even though postToolUse ignores it.
-                    workspaceRoot: env.workspaceRoot,
                     // Agent-visible egress-block note: after a Bash tool, drain the
                     // hosts this session was allowlist-blocked on and inject a
                     // remediation note. The host returns `{ hosts: [] }` when no
@@ -633,14 +598,14 @@ export function createClaudeSdkLoop(deps: RunnerDeps): Loop {
           },
           // Phase 3: the read-only `user` projection ($CLAUDE_CONFIG_DIR/skills/,
           // chmod 0555, written by @ax/installed-skills) is the SOLE skill-
-          // discovery path. 'project' was dropped because .claude/skills/ inside
-          // the workspace is agent-writable and is NOT on @ax/validator-skill's
-          // veto list (it's pass-through). Keeping 'project' would let the agent
-          // write .claude/skills/evil/SKILL.md and have it discovered directly,
+          // discovery path. 'project' is NOT a source: it would load
+          // `<cwd>/.claude/**` (settings hooks, skills), `<cwd>/CLAUDE.md` and
+          // `<cwd>/.mcp.json` from the agent's home, which the agent writes
+          // freely — `.claude/skills/evil/SKILL.md` would be discovered directly,
           // bypassing the host projection and the quarantine scan entirely.
           //
-          // $HOME is a per-session tempdir/emptyDir, isolated from the host
-          // user's ~/.claude (allocated by sandbox plugins in Tasks 4/5).
+          // The `'user'` root (CLAUDE_CONFIG_DIR) is runner-private and outside
+          // the agent's home; the runner refuses to start otherwise (TASK-994).
           //
           // I-P0-1 in docs/plans/2026-05-17-skill-install-phase-0-impl.md.
           settingSources: ['user'],
@@ -656,10 +621,10 @@ export function createClaudeSdkLoop(deps: RunnerDeps): Loop {
           // without the flag a fold emits nothing at all.
           extraArgs: { 'replay-user-messages': null },
           // The prompt-engine composed this at spawn for this session
-          // (the shell's `buildSystemPrompt` call). It also folds in the
-          // ephemeral-scratch / python-venv operational notes (paired with
-          // additionalDirectories above) and handles the SDK quirk that `append`
-          // is a no-op on a custom string prompt vs. the preset form.
+          // (the shell's `buildSystemPrompt` call). It also folds in the files,
+          // scratch and python-venv operational notes (naming the same roots as
+          // cwd and additionalDirectories above) and handles the SDK quirk that
+          // `append` is a no-op on a custom string prompt vs. the preset form.
           systemPrompt,
         },
       });
@@ -695,8 +660,8 @@ export function createClaudeSdkLoop(deps: RunnerDeps): Loop {
           // the null-gate is a no-op there.
           //
           // The host bind (`conversation.store-runner-session`) is NOT done here
-          // anymore — the shell defers it to the first host-accepted turn-end
-          // commit. Binding at init persisted the binding before the transcript
+          // anymore — the shell defers it to the first turn-end transcript ship
+          // the host accepts. Binding at init persisted the binding before the transcript
           // was durable on the host, so a turn killed in that window left a
           // stale `runner_session_id` that crashed the retry's resume (F2a).
           if (ctx.getTranscriptSessionId() === null) {
@@ -711,7 +676,7 @@ export function createClaudeSdkLoop(deps: RunnerDeps): Loop {
           // past it: a response the runner paid for must be counted.
           turnUsage.observeAssistant(assistant);
           // Record this assistant message's uuid as the turn's latest — the
-          // per-turn commit waits for the LAST one's jsonl line before staging
+          // per-turn transcript ship waits for the LAST one's jsonl line first
           // (the SDK flushes the final assistant line after `result`). On a
           // tool-using turn this advances tool_use → … → closing-text so the
           // wait targets the closing text, not the intermediate tool_use line.
@@ -943,7 +908,8 @@ export function createClaudeSdkLoop(deps: RunnerDeps): Loop {
           // SSE and removes the host's waiter, so an error must leave through
           // runRunner's terminated chat-end BEFORE that heartbeat is sent.
           // Stop and a pre-call hold intentionally end a turn and still need
-          // its normal commit; the SDK labels those as errors too.
+          // its normal close (transcript ship and turn-end); the SDK labels
+          // those as errors too.
           const interrupted =
             msg.terminal_reason === 'aborted_streaming' ||
             msg.terminal_reason === 'aborted_tools' ||
@@ -963,9 +929,9 @@ export function createClaudeSdkLoop(deps: RunnerDeps): Loop {
             process.stderr.write(`${JSON.stringify({ event: 'sdk_turn_failed', message: error.message })}\n`);
             throw error;
           }
-          // Turn boundary. The shell owns the transcript ship, the commit +
-          // bundle, and the turn-end events; we hand it this turn's
-          // accumulators and the two SDK-specific transcript reads.
+          // Turn boundary. The shell owns the transcript ship and the turn-end
+          // events; we hand it this turn's accumulators and the two
+          // SDK-specific transcript reads.
           const contentBlocks = turnContentBlocks;
           const toolResultBlocks = turnToolResultBlocks;
           turnContentBlocks = [];
@@ -1002,16 +968,17 @@ export function createClaudeSdkLoop(deps: RunnerDeps): Loop {
             // assumed cost. Drained HERE, at the boundary, so it also resets.
             usage: turnUsage.drain(),
             ...(lastAssistantUuid !== undefined ? { lastAssistantUuid } : {}),
-            beforeCommit: async () => {
+            beforeTranscriptShip: async () => {
               // Wait for the SDK's delayed FINAL-assistant-jsonl write to land so
-              // this turn's closing reply is captured by the shell's commit/bundle
-              // (see the flush comment at the top of run()). We wait for the
+              // this turn's closing reply is in the shell's transcript ship (see
+              // the flush comment at the top of run()). We wait for the
               // SPECIFIC uuid of the turn's last assistant message — NOT "any new
               // line", which a tool-using turn's intermediate tool_use line would
               // satisfy prematurely, dropping the closing text (TASK-11). Skip when
               // the turn produced no assistant message (nothing to wait for) or
               // when we have no session id to locate the jsonl. Bounded; falls
-              // through on timeout (the final/idle commit is the safety net).
+              // through on timeout (the final ship after the loop drains is the
+              // safety net).
               const sessionId = ctx.getTranscriptSessionId();
               if (lastAssistantUuid !== undefined && sessionId !== null) {
                 const landed = await waitForTranscriptUuid(
@@ -1076,10 +1043,10 @@ export async function main(): Promise<number> {
       hasResumableTranscript(sdkTranscriptDir(env), sessionId),
     // Lay down the transcript directory (and the `$CLAUDE_CONFIG_DIR/projects`
     // link to AX_TRANSCRIPTS_ROOT when one is stamped). Bootstrap-fatal, and
-    // it runs before the resume restore writes the rebuilt jsonl. See
+    // it runs before the resume restore writes the rebuilt jsonl (#1085). See
     // transcript-dir.ts and the (a)/(b) comment block around the query() env
     // literal above.
-    afterMaterialize: async (env) => {
+    prepareSession: async (env) => {
       await prepareTranscriptDir(env);
     },
     // Phase 2: feature-detect whether the pinned claude-agent-sdk supports

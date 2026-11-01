@@ -4,20 +4,19 @@ import type { IpcClient } from '@ax/ipc-protocol';
 
 // ---------------------------------------------------------------------------
 // TASK-67 (out-of-git Part B / B2) — resume-transcript delta-ship + resume
-// rebuild. Replaces the per-turn `commitTurnAndBundle` of the SDK jsonl: the
-// transcript leaves git and lives as opaque rows in the host store. At the
-// result boundary the runner ships the DELTA of new transcript bytes; on resume
-// it fetches the reconstructed bytes and hands them back to the runner's
-// transcript source.
+// rebuild. The transcript lives as opaque rows in the host store, its source of
+// truth. At the result boundary the runner ships the DELTA of new transcript
+// bytes; on resume it fetches the reconstructed bytes and hands them back to the
+// runner's transcript source.
 //
 // The transcript is "append-mostly" — the SDK can compact or update singleton
 // entries (`last-prompt`) in place. So the delta carries an integrity check
 // (`prefixHash` = sha256 of the bytes already shipped); a host mismatch →
 // `resync-required` → re-ship the whole file. Single writer per session (this
-// runner) means `(conversationId, seq)` is contention-free, NOT a git CAS.
+// runner) means `(conversationId, seq)` is contention-free.
 // ---------------------------------------------------------------------------
 
-/** The runner-local threaded state, advanced across turns like `parentVersion`. */
+/** The runner-local threaded state, advanced across turns. */
 export interface TranscriptShipState {
   /** Byte offset into the jsonl already shipped to the host. */
   sentOffset: number;
@@ -135,8 +134,8 @@ export function hashBytes(buf: Buffer): string {
  * `session.replace-transcript`. Returns the advanced state + an outcome.
  *
  * Best-effort caller-side: an IPC error PROPAGATES (the caller decides whether
- * a 4xx is terminal — mirrors the old commit path); a source with nothing for
- * this session is a `no-transcript` noop (nothing to ship this turn).
+ * a 4xx is terminal); a source with nothing for this session is a
+ * `no-transcript` noop (nothing to ship this turn).
  */
 export async function shipTranscriptDelta(input: {
   client: IpcClient;

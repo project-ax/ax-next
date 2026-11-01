@@ -116,12 +116,12 @@ export type ToolResultBlock = z.infer<typeof ToolResultBlockSchema>;
  * pending upload staged in `@ax/attachments`'s temp store.
  *
  * Lives only on the POST /api/chat/messages request body. The chat-messages
- * handler resolves `attachmentId` → workspace path via `attachments:commit`
- * and rewrites this block as an `attachment` block BEFORE the message reaches
+ * handler commits the upload via `attachments:commit` and rewrites this block
+ * as an `attachment` block carrying the same id, BEFORE the message reaches
  * conversation storage or any subscriber. Never appears in stored transcripts.
  *
- * Boundary review (I1): `attachmentId` is workspace-vocab — opaque server-
- * minted identifier, no backend leak (no `lfs_oid`, no `bucket`).
+ * Boundary review (I1): `attachmentId` is an opaque server-minted identifier,
+ * no backend leak (no `lfs_oid`, no `bucket`).
  */
 export const AttachmentRefBlockSchema = z.object({
   type: z.literal('attachment_ref'),
@@ -130,148 +130,71 @@ export const AttachmentRefBlockSchema = z.object({
 export type AttachmentRefBlock = z.infer<typeof AttachmentRefBlockSchema>;
 
 /**
- * Phase 1 (attachments & artifacts, 2026-05-15). User-attached file OR
- * agent-published artifact as it appears in a stored conversation turn.
- *
- * The runner translates this variant to Anthropic-compatible types before
- * the LLM call (image/* → `image` block; PDF → `document` if SDK supports;
- * else text mention — see `formatAttachmentMention`). This block is the
- * *intended* canonical shape for a user-attached file (I4 — single source of
- * truth); the Anthropic shape is derived per LLM call.
- *
- * NOTE (runner-owned-sessions): the runner's translation is what the SDK
- * actually persists to its native jsonl transcript, so a reopened chat's
- * `attachment` block is reconstructed from the stored text-mention on the
- * read path (`@ax/conversations` getConversation) — see
- * `parseAttachmentMention`. The block below is still the canonical *render*
- * shape the rest of the system consumes.
- *
- * `path` is workspace-relative (e.g. ".ax/uploads/<conv>/<turn>/file.pdf"),
- * not sandbox-absolute. Resolution: workspace:read(path) at current HEAD.
+ * An attachment id: a store-temp UUID for an upload, a hex id for a published
+ * artifact. Opaque — nothing parses it; callers only hand it back to
+ * `@ax/attachments` (download, list). The character set keeps it inert
+ * anywhere it travels (URLs, logs, file names): no `/`, `\`, `.`, NUL or
+ * whitespace.
  */
-/**
- * `path` is workspace-relative — defense-in-depth refusal of absolute
- * paths, `..` traversal segments, Windows drive roots, and NUL bytes at
- * the wire boundary so a malformed value can't reach storage or
- * `attachments:download` and bypass the path-scope ACL.
- */
-export function isWorkspaceRelativePath(value: string): boolean {
-  if (value.startsWith('/') || value.startsWith('\\')) return false;
-  if (value.includes('\0')) return false;
-  if (/^[A-Za-z]:[\\/]/.test(value)) return false;
-  for (const seg of value.split(/[\\/]/)) {
-    if (seg === '..') return false;
-  }
-  return true;
-}
+export const AttachmentIdSchema = z.string().regex(/^[A-Za-z0-9_-]{1,128}$/);
 
-export const AttachmentBlockSchema = z.object({
-  type: z.literal('attachment'),
-  path: z
-    .string()
-    .min(1)
-    .refine(
-      isWorkspaceRelativePath,
-      'path must be workspace-relative (no leading slash, no "..", no drive root, no NUL)',
-    ),
-  displayName: z.string().min(1),
-  mediaType: z.string().min(1),
-  sizeBytes: z.number().int().nonnegative(),
-});
+/** Longest `filename` an `attachment` block may carry (UTF-16 code units). */
+export const ATTACHMENT_FILENAME_MAX = 1024;
+/**
+ * Longest `mediaType` an `attachment` block may carry. RFC 6838 caps a type
+ * and a subtype at 127 characters each, so a bare media type fits in 255.
+ */
+export const ATTACHMENT_MEDIA_TYPE_MAX = 255;
+
+/**
+ * A user-attached file OR an agent-published artifact, as it appears in a
+ * stored conversation turn and on the wire (`chat:start`, `agent:invoke`,
+ * `conversations:get`, `event.turn-end`).
+ *
+ * Addressed by id, never by path (Invariant I1): where the bytes sit — the
+ * blob store on the host, a scratch copy inside the sandbox — is each side's
+ * own business, so no sandbox or workspace layout reaches stored data.
+ * Downloads go through `attachments:download`, which looks the id up and
+ * checks it belongs to the conversation being read. `.strict()`: a block that
+ * still carries a `path` is refused, not silently stripped.
+ *
+ * The runner translates this block per LLM call (image → `image` block, PDF →
+ * `document` when supported, small text inlined, else a text mention); this
+ * block stays the single canonical shape (I4).
+ *
+ * Stored blocks from before ids (`{ path, displayName, … }`) no longer parse.
+ * `@ax/conversations` turns them into a "no longer available" text line on
+ * read, so the turn around them survives.
+ */
+export const AttachmentBlockSchema = z
+  .object({
+    type: z.literal('attachment'),
+    attachmentId: AttachmentIdSchema,
+    filename: z.string().min(1).max(ATTACHMENT_FILENAME_MAX),
+    mediaType: z.string().min(1).max(ATTACHMENT_MEDIA_TYPE_MAX),
+    sizeBytes: z.number().int().nonnegative(),
+  })
+  .strict();
 export type AttachmentBlock = z.infer<typeof AttachmentBlockSchema>;
 
-// ---------------------------------------------------------------------------
-// Attachment text-mention — the lossy, model-facing form of an attachment.
-//
-// When the runner can't (or shouldn't) inline an attachment's bytes for the
-// model — a PDF without document-block support, an oversized text file, an
-// unrecognized binary — it emits this one-line mention instead of the
-// `attachment` block. Under runner-owned-sessions the SDK persists *this*
-// (not the `attachment` block) to its jsonl transcript, so the read path has
-// to turn it back into an `attachment` block to render the chip.
-//
-// `formatAttachmentMention` is the SINGLE producer of the string (the runner's
-// `attachment-translation.ts` calls it); `parseAttachmentMention` is the
-// SINGLE consumer (the conversations read path calls it). Co-locating the
-// pair here means the two ends can never drift.
-// ---------------------------------------------------------------------------
-
-export interface AttachmentMentionFields {
-  displayName: string;
-  /** Workspace-relative path, e.g. ".ax/uploads/<conv>/<turn>/<file>". */
-  path: string;
-  mediaType: string;
-}
-
-/** Render the canonical one-line attachment mention. */
-export function formatAttachmentMention(att: AttachmentMentionFields): string {
-  return `User attached '${att.displayName}' at ${att.path} (${att.mediaType})`;
-}
-
-const ATTACHMENT_MENTION_RE = /^User attached '(.*?)' at (.+) \(([^)]+)\)$/;
-
 /**
- * Parse a one-line attachment mention produced by `formatAttachmentMention`,
- * or `null` if `text` isn't exactly one such mention.
- *
- * Anchoring relies on one fact the producer guarantees: the mention is a
- * single line. `^…$` (no `s` flag) refuses any text with embedded newlines,
- * so a merged "user-text\nmention" block is split by the caller before
- * reaching here.
- *
- * `displayName` is matched non-greedily up to the first ` at `; the path is
- * greedy and may contain spaces (workspace-relative paths are allowed to —
- * see `isWorkspaceRelativePath`), backtracking to the final ` (<mediaType>)`
- * which the `[^)]+` end-anchor pins. The reconstructed block is re-validated
- * against `AttachmentBlockSchema` by the caller, so a path that slips through
- * here but isn't workspace-relative is still rejected downstream.
+ * The download chip for an `artifact_publish` tool result. Maps the result
+ * object `{ artifactId, displayName, mediaType, sizeBytes, … }` to an
+ * `attachment` block, or returns `null` when any field is missing or fails the
+ * block schema. The result rides a tool_result (model-adjacent data), so every
+ * field is re-validated here; its `path` is deliberately dropped.
  */
-export function parseAttachmentMention(
-  text: string,
-): AttachmentMentionFields | null {
-  const m = text.match(ATTACHMENT_MENTION_RE);
-  if (m === null) return null;
-  const [, displayName, path, mediaType] = m;
-  if (
-    displayName === undefined ||
-    path === undefined ||
-    mediaType === undefined
-  ) {
-    return null;
-  }
-  if (displayName.length === 0 || mediaType.length === 0) return null;
-  return { displayName, path, mediaType };
-}
-
-// ---------------------------------------------------------------------------
-// Inlined-attachment text block — the model-facing form when the runner CAN
-// inline an attachment's bytes (a small text/json/yaml/csv file). The model
-// gets the content directly in the prompt (weak-model accommodation), but the
-// FIRST line is the canonical `formatAttachmentMention` line so the read path
-// can (a) reconstruct the download chip from the embedded path and (b) strip
-// the entire model-view block (preamble + content) instead of leaking it into
-// the user-visible transcript.
-//
-// `formatAttachmentInline` is the SINGLE producer (the runner's
-// `attachment-translation.ts` inline branch). The read path
-// (`@ax/conversations` reconstructAttachmentBlocks) is the SINGLE consumer: it
-// keys off `parseAttachmentMention` matching the FIRST line of a user-turn
-// text block. Co-locating the pair here keeps the two ends from drifting —
-// the same posture as the mention pair above. The blank line between the
-// mention and the content makes the boundary visually obvious to the model
-// and keeps the mention strictly single-line (so `parseAttachmentMention`'s
-// `^…$` anchor matches it).
-// ---------------------------------------------------------------------------
-
-/**
- * Render an inlined-attachment text block: the canonical path-bearing mention
- * on the first line, a blank separator, then the file content.
- */
-export function formatAttachmentInline(
-  fields: AttachmentMentionFields,
-  content: string,
-): string {
-  return `${formatAttachmentMention(fields)}\n\n${content}`;
+export function attachmentBlockFromArtifact(value: unknown): AttachmentBlock | null {
+  if (value === null || typeof value !== 'object') return null;
+  const v = value as Record<string, unknown>;
+  const parsed = AttachmentBlockSchema.safeParse({
+    type: 'attachment',
+    attachmentId: v['artifactId'],
+    filename: v['displayName'],
+    mediaType: v['mediaType'],
+    sizeBytes: v['sizeBytes'],
+  });
+  return parsed.success ? parsed.data : null;
 }
 
 /**

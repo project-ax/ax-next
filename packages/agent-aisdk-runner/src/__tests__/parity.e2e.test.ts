@@ -3,7 +3,12 @@ import { createHash } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import type { IpcClient, IpcClientOptions } from '@ax/ipc-protocol';
+import {
+  AttachmentsListResponseSchema,
+  type AttachmentsListResponse,
+  type IpcClient,
+  type IpcClientOptions,
+} from '@ax/ipc-protocol';
 import type { InboxLoopEntry } from '@ax/agent-runner-core';
 import { startMcpTestServer, type McpTestServer } from './helpers/mcp-test-server.js';
 import { MAX_TOOLS_PER_SESSION } from '../tools/connector-tools.js';
@@ -21,9 +26,9 @@ import { MCP_NOT_LOADED_NOTE } from '../tools/skill-tool.js';
 // Deliberately NOT mocked, so the test exercises them for real: the shell's
 // whole boot sequence, `setupProxy`, the prompt engine, the skills projection
 // walk, the tool policy, the transcript delta-ship, and the turn-end events.
-// Mocked only where the test would otherwise need a real git repo, a real
-// venv, a real socket, or a real provider: git-workspace, python-venv,
-// inbox-loop, `createIpcClient`, and `resolveModel`.
+// Mocked only where the test would otherwise need a real venv, a real socket,
+// or a real provider: python-venv, inbox-loop, `createIpcClient`, and
+// `resolveModel`.
 // ---------------------------------------------------------------------------
 
 type FakeClient = {
@@ -54,13 +59,7 @@ let preCallVerdicts: Record<string, { verdict: 'allow' | 'reject'; reason?: stri
 /** Hosts `proxy.drain-egress-blocks` reports. */
 let egressBlockedHosts: string[];
 /** What `attachments.list` reports, and the bytes `blob.get` serves for each. */
-let uploadedFiles: Array<{
-  path: string;
-  sha256: string;
-  mediaType: string;
-  displayName: string;
-  sizeBytes: number;
-}>;
+let uploadedFiles: AttachmentsListResponse['files'];
 let blobBytes: Map<string, Buffer>;
 
 vi.mock('@ax/ipc-protocol', async (importOriginal) => {
@@ -68,17 +67,6 @@ vi.mock('@ax/ipc-protocol', async (importOriginal) => {
   return {
     ...actual,
     createIpcClient: (_opts: IpcClientOptions): IpcClient => fakeClient,
-  };
-});
-
-vi.mock('@ax/agent-runner-core/internal/git-workspace.js', async (importOriginal) => {
-  const actual =
-    await importOriginal<typeof import('@ax/agent-runner-core/internal/git-workspace.js')>();
-  return {
-    ...actual,
-    materializeWorkspace: vi.fn().mockResolvedValue({ baselineCommit: 'oid-0' }),
-    scaffoldWorkspaceGitignore: vi.fn().mockResolvedValue(undefined),
-    commitTurnAndBundle: vi.fn().mockResolvedValue(null),
   };
 });
 
@@ -249,7 +237,10 @@ function modelFailingAfter(steps: Chunk[][], message: string): unknown {
 // ---------------------------------------------------------------------------
 
 let tmp: string;
-let workspaceRoot: string;
+/** The agent's home (AX_USERFILES_ROOT): where relative paths and Bash land. */
+let homeDir: string;
+/** The session scratch root (AX_EPHEMERAL_ROOT): uploads, caches, the venv. */
+let scratchDir: string;
 let configDir: string;
 const ORIGINAL_ENV = process.env;
 
@@ -263,9 +254,11 @@ function userMessage(content: string): InboxLoopEntry {
 
 beforeEach(async () => {
   tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'ax-aisdk-parity-'));
-  workspaceRoot = path.join(tmp, 'agent');
+  homeDir = path.join(tmp, 'files');
+  scratchDir = path.join(tmp, 'tmp');
   configDir = path.join(tmp, 'config');
-  await fs.mkdir(workspaceRoot, { recursive: true });
+  await fs.mkdir(homeDir, { recursive: true });
+  await fs.mkdir(scratchDir, { recursive: true });
   await fs.mkdir(configDir, { recursive: true });
 
   events = [];
@@ -301,7 +294,8 @@ beforeEach(async () => {
     AX_RUNNER_ENDPOINT: 'unix:///tmp/ax.sock',
     AX_SESSION_ID: 'sess-1',
     AX_AUTH_TOKEN: 'tok-123',
-    AX_WORKSPACE_ROOT: workspaceRoot,
+    AX_USERFILES_ROOT: homeDir,
+    AX_EPHEMERAL_ROOT: scratchDir,
     AX_PROXY_ENDPOINT: 'http://127.0.0.1:8443',
     AX_PROXY_TOKEN: 'feedfacefeedfacefeedfacefeedface',
     ANTHROPIC_API_KEY: 'ax-cred:0123456789abcdef0123456789abcdef',
@@ -309,8 +303,6 @@ beforeEach(async () => {
     AX_VENV_READY_WAIT_MS: '0',
   };
   delete process.env.AX_INSTALLED_SKILLS_JSON;
-  delete process.env.AX_USERFILES_ROOT;
-  delete process.env.AX_EPHEMERAL_ROOT;
 
   fakeClient = {
     call: vi.fn(async (action: string, payload: unknown) => {
@@ -321,12 +313,11 @@ beforeEach(async () => {
         case 'tool.list':
           return { tools: toolCatalog };
         case 'attachments.list':
-          // Shape matters: `AttachmentsListResponseSchema` is `{ files: [...] }`.
-          // An `{ attachments: [] }` fake parses as a FAILURE, and
-          // materializeUploads swallows it — so the whole upload path silently
-          // never ran and every row logged "attachments.list failed". Caught in
-          // review; the row below now depends on this being right.
-          return { files: uploadedFiles };
+          // Shape matters: an `{ attachments: [] }` fake once parsed as a
+          // FAILURE, and materializeUploads swallows it — so the whole upload
+          // path silently never ran and every row logged "attachments.list
+          // failed". Built through the real schema so that cannot recur.
+          return AttachmentsListResponseSchema.parse({ files: uploadedFiles });
         case 'tool.pre-call': {
           const name = (payload as { call: { name: string } }).call.name;
           const v = preCallVerdicts[name];
@@ -361,10 +352,7 @@ beforeEach(async () => {
         await fs.writeFile(p, storedTranscript);
         return { path: p, bytes: storedTranscript.length };
       }
-      // workspace.materialize
-      const p = path.join(tmp, 'bundle.bin');
-      await fs.writeFile(p, '');
-      return { path: p, bytes: 0 };
+      throw new Error(`unexpected binary call: ${action}`);
     }),
     callBinaryUpload: vi.fn(async (action: string, body: Buffer) => {
       calls.push({ action, payload: undefined });
@@ -465,6 +453,12 @@ describe('aisdk runner — parity', () => {
     expect(chatEnd()).toEqual({
       outcome: { kind: 'complete', messages: expect.any(Array) },
     });
+
+    // Design §3: a brand-new agent's home is still empty after its first chat.
+    // The turn asked for nothing to be created, so any entry here — dotfiles
+    // included — is something the runner scaffolded there (`.gitignore`,
+    // `.ax/`, `.claude/`, identity files, a probe).
+    expect(await fs.readdir(homeDir, { recursive: true })).toEqual([]);
   });
 
   // TASK-692 (per-user spend limits). The assistant turn-end carries what the
@@ -495,7 +489,7 @@ describe('aisdk runner — parity', () => {
     scriptedModel.mockReturnValue(
       modelReplaying([
         withUsage(
-          toolStep('Write', { file_path: path.join(workspaceRoot, 'u.txt'), content: 'x' }),
+          toolStep('Write', { file_path: path.join(homeDir, 'u.txt'), content: 'x' }),
           v4Usage({ total: 1000, noCache: 100, cacheRead: 850, cacheWrite: 50, out: 30, reasoning: 20 }),
         ),
         withUsage(
@@ -534,9 +528,12 @@ describe('aisdk runner — parity', () => {
     expect(assistantEnd).not.toHaveProperty('usage');
   });
 
-  it('writes user outputs to scratch, keeps identity in agent state, and automatically attaches scratch artifacts', async () => {
-    const scratch = path.join(tmp, 'scratch');
-    process.env.AX_EPHEMERAL_ROOT = scratch;
+  // TASK-995: the home is where a turn's output goes. A relative write lands in
+  // it; a configuration-looking name (`.ax/SOUL.md`) is an ordinary file there
+  // and reaches the host's gate exactly as the model wrote it (identity is
+  // written with `update_identity`, never a file); and a new visible file is
+  // attached to the turn by id.
+  it('writes outputs into the home, keeps a configuration-looking name as an ordinary file there, and attaches the new deliverable', async () => {
     toolCatalog = [{ name: 'artifact_publish', executesIn: 'sandbox', inputSchema: {} }];
     const originalCall = fakeClient.call.getMockImplementation()!;
     fakeClient.call.mockImplementation(async (action: string, payload: unknown) => {
@@ -552,24 +549,38 @@ describe('aisdk runner — parity', () => {
       return originalUpload(action, payload, body);
     });
     scriptedModel.mockReturnValue(modelReplaying([
-      toolStep('Write', { file_path: 'artifacts/calculator.html', content: '<p>2</p>' }),
+      toolStep('Write', { file_path: 'calculator.html', content: '<p>2</p>' }),
       toolStep('Write', { file_path: '.ax/SOUL.md', content: 'Identity' }),
       toolStep('Bash', { command: 'pwd' }),
       textStep('Saved your calculator.'),
     ]));
     inboxEntries = [userMessage('create a calculator')];
     await expect(main()).resolves.toBe(0);
-    await expect(fs.readFile(path.join(scratch, 'artifacts/calculator.html'), 'utf8')).resolves.toBe('<p>2</p>');
-    await expect(fs.readFile(path.join(workspaceRoot, '.ax/SOUL.md'), 'utf8')).resolves.toBe('Identity');
-    await expect(fs.stat(path.join(scratch, '.ax'))).rejects.toMatchObject({ code: 'ENOENT' });
-    expect(JSON.stringify(turnEnds()[0])).toContain(scratch);
-    expect(turnEnds()[0]?.contentBlocks).toContainEqual(expect.objectContaining({ type: 'attachment', path: 'calculator.html' }));
+    await expect(fs.readFile(path.join(homeDir, 'calculator.html'), 'utf8')).resolves.toBe('<p>2</p>');
+    // An ordinary file in the home, steered nowhere else...
+    await expect(fs.readFile(path.join(homeDir, '.ax/SOUL.md'), 'utf8')).resolves.toBe('Identity');
+    await expect(fs.stat(path.join(scratchDir, '.ax'))).rejects.toMatchObject({ code: 'ENOENT' });
+    // ...and the host's gate saw the path as the model wrote it.
+    const soulGate = calls.find(
+      (c) => c.action === 'tool.pre-call' && JSON.stringify(c.payload).includes('SOUL.md'),
+    );
+    expect((soulGate?.payload as { call: { input: unknown } } | undefined)?.call.input).toEqual({
+      file_path: '.ax/SOUL.md',
+      content: 'Identity',
+    });
+    // Bash ran in the home (`pwd`).
+    expect(JSON.stringify(turnEnds()[0])).toContain(homeDir);
+    // The chip names the artifact by id; its sandbox path stays in the sandbox.
+    expect(turnEnds()[0]?.contentBlocks).toContainEqual({
+      type: 'attachment', attachmentId: 'artifact-1', filename: 'calculator.html',
+      mediaType: 'application/octet-stream', sizeBytes: 8,
+    });
   });
 
   it('routes a model tool call through tool.pre-call and back as a tool result', async () => {
     scriptedModel.mockReturnValue(
       modelReplaying([
-        toolStep('Write', { file_path: path.join(workspaceRoot, 'a.txt'), content: 'x' }),
+        toolStep('Write', { file_path: path.join(homeDir, 'a.txt'), content: 'x' }),
         textStep('wrote it'),
       ]),
     );
@@ -584,7 +595,7 @@ describe('aisdk runner — parity', () => {
 
     // The tool actually ran.
     await expect(
-      fs.readFile(path.join(workspaceRoot, 'a.txt'), 'utf8'),
+      fs.readFile(path.join(homeDir, 'a.txt'), 'utf8'),
     ).resolves.toBe('x');
 
     // Both the tool turn-end and the assistant turn-end were emitted, tool first.
@@ -739,23 +750,22 @@ describe('aisdk runner — parity', () => {
   });
 
   // The upload + attachment-translation row. This one exercises the whole
-  // chain for real: attachments.list -> blob.get -> materialize under
-  // .ax/uploads/ -> the shell's translate pass (Anthropic-shaped blocks) ->
-  // this runner's toUserModelMessage adapter -> an AI SDK image part in the
-  // prompt the provider actually receives.
+  // chain for real: attachments.list -> blob.get -> a flat copy in
+  // <scratch>/uploads/ -> the shell's translate pass, by attachment id
+  // (Anthropic-shaped blocks) -> this runner's toUserModelMessage adapter ->
+  // an AI SDK image part in the prompt the provider actually receives.
   //
   // It is also the row that a wrong-shaped `attachments.list` fake silently
   // disabled for the whole suite until review caught it.
   it('materializes an upload and hands the model a real image part', async () => {
     const png = Buffer.from('\u0089PNG\r\n\u001a\nfake-image-bytes', 'binary');
     const sha256 = createHash('sha256').update(png).digest('hex');
-    const relPath = '.ax/uploads/conv-1/turn-1/shot.png';
     uploadedFiles = [
       {
-        path: relPath,
+        attachmentId: 'att-shot',
+        filename: 'shot.png',
         sha256,
         mediaType: 'image/png',
-        displayName: 'shot.png',
         sizeBytes: png.length,
       },
     ];
@@ -771,8 +781,8 @@ describe('aisdk runner — parity', () => {
           contentBlocks: [
             {
               type: 'attachment',
-              path: relPath,
-              displayName: 'shot.png',
+              attachmentId: 'att-shot',
+              filename: 'shot.png',
               mediaType: 'image/png',
               sizeBytes: png.length,
             },
@@ -783,9 +793,12 @@ describe('aisdk runner — parity', () => {
 
     await expect(main()).resolves.toBe(0);
 
-    // The bytes really landed on disk where the prompt says they are.
-    const onDisk = await fs.readFile(path.join(workspaceRoot, relPath));
+    // The bytes really landed in the sandbox, flat, under the person's name.
+    const onDisk = await fs.readFile(path.join(scratchDir, 'uploads', 'shot.png'));
     expect(onDisk.equals(png)).toBe(true);
+    // ...and nowhere in the agent's home (design §3: a brand-new agent's
+    // files stay empty).
+    expect(await fs.readdir(homeDir, { recursive: true })).toEqual([]);
 
     // And the model was handed an AI SDK image part, not a text mention.
     const first = JSON.parse(JSON.stringify(sentPrompts[0]));
@@ -963,10 +976,10 @@ describe('aisdk runner — parity', () => {
     });
   });
 
-  // The agent-writable `.claude/skills/` in the workspace is NOT a discovery
+  // The agent-writable `.claude/skills/` in the agent's home is NOT a discovery
   // path — that is why `settingSources` dropped 'project' in Phase 3.
-  it('never discovers a skill planted in the agent-writable workspace', async () => {
-    const decoy = path.join(workspaceRoot, '.claude', 'skills', 'evil');
+  it('never discovers a skill planted in the agent-writable home', async () => {
+    const decoy = path.join(homeDir, '.claude', 'skills', 'evil');
     await fs.mkdir(decoy, { recursive: true });
     await fs.writeFile(
       path.join(decoy, 'SKILL.md'),
@@ -981,6 +994,44 @@ describe('aisdk runner — parity', () => {
     // model that tried to call it would get a no-such-tool error. The decoy
     // never reaches the prompt either.
     expect(JSON.stringify(events)).not.toContain('pwn');
+  });
+
+  // TASK-995: the agent's home is agent-writable and nothing on it is
+  // configuration. Instruction-looking files planted there (and in the scratch
+  // root) must never reach the model. The host-side augment is the positive
+  // control: it proves the assertion reads the prompt the model was really sent.
+  it('never sends instruction-looking files planted in the home or scratch root to the model', async () => {
+    const plants: Array<[string, string, string]> = [
+      [homeDir, 'AGENTS.md', 'CANARY-AISDK-AGENTS-4b1e'],
+      [homeDir, 'CLAUDE.md', 'CANARY-AISDK-CLAUDEMD-93f0'],
+      [homeDir, '.claude/CLAUDE.md', 'CANARY-AISDK-DOTCLAUDE-2a7c'],
+      [homeDir, '.ax/SOUL.md', 'CANARY-AISDK-SOUL-c58d'],
+      [homeDir, '.ax/AGENTS.md', 'CANARY-AISDK-AXAGENTS-71e2'],
+      [scratchDir, 'AGENTS.md', 'CANARY-AISDK-SCRATCH-AGENTS-0d94'],
+      [scratchDir, 'CLAUDE.md', 'CANARY-AISDK-SCRATCH-CLAUDEMD-e6b3'],
+    ];
+    for (const [dir, rel, text] of plants) {
+      await fs.mkdir(path.dirname(path.join(dir, rel)), { recursive: true });
+      await fs.writeFile(path.join(dir, rel), `${text}\n`);
+    }
+    const augment = 'AUGMENT-SENTINEL-8e21';
+    (sessionConfig.agentConfig as Record<string, unknown>).systemPromptAugment = augment;
+    // Two model calls, so the second request (after a tool result) is checked too.
+    scriptedModel.mockReturnValue(
+      modelReplaying([toolStep('Bash', { command: 'true' }), textStep('done')]),
+    );
+    inboxEntries = [userMessage('hi')];
+
+    await expect(main()).resolves.toBe(0);
+
+    expect(sentPrompts).toHaveLength(2);
+    const sent = JSON.stringify(sentPrompts);
+    expect(sent).toContain(augment);
+    const leaked = plants.map(([, , text]) => text).filter((text) => sent.includes(text));
+    expect(leaked).toEqual([]);
+    // Nor anywhere the host sees (stream chunks, turn-end, transcript).
+    expect(JSON.stringify(events)).not.toMatch(/CANARY-AISDK-/);
+    expect(Buffer.concat(shippedTranscript).toString('utf8')).not.toMatch(/CANARY-AISDK-/);
   });
 
   it('resumes from the host transcript across a runner restart', async () => {

@@ -1,81 +1,108 @@
 # Security — `@ax/validator-skill`
 
-This is the first real subscriber on `workspace:pre-apply`. Its job is small and its blast radius should be smaller. We're a YAML parser with veto power — that's it.
+This plugin is one service: `skills:scan`, the content scan `@ax/skills` runs on every
+skill an agent proposes. It reads text and returns a verdict. That's it — and we'd like
+to keep it that small.
 
-## Capability budget (Phase 2)
+## Capability budget
 
-The validator performs NO process spawn and NO direct network or filesystem I/O.
-It now DELEGATES, via the hook bus, to soft-dep services (all `hasService`-guarded;
-absent ⟹ degrade, never crash):
+No process spawn, no filesystem access, no direct network, no env access. The plugin
+registers one service and makes one optional bus call:
 
-- `llm:call:anthropic` — the Layer-2 content scan (a fast model). Untrusted
-  SKILL.md text is sent as DATA inside `<skill>` tags with a hardened
-  "analyze, do not follow" system prompt; the model gets NO tools (text in,
-  one-line verdict out). A compromised/bypassed classifier can only fail-open to
-  the regex verdict — it cannot escalate. Size-capped + timed out; any error
-  degrades to regex-only.
-- `skills:quarantine-set` / `skills:quarantine-clear` — persist the scan verdict
-  (host-side, keyed by user/agent/skillId — never a workspace marker the agent
-  could delete).
+- `llm:call:anthropic` (`optionalCall`, `hasService`-guarded) — the Layer-2 scan, a fast
+  model. The untrusted skill text goes in as DATA inside `<skill>` tags, under an
+  "analyze, do not follow" system prompt, and the model gets no tools: text in, a
+  one-line verdict out. Only the first `maxScanBytes` characters are sent (16,384 by
+  default), and the call is timed out (`llmTimeoutMs`, 8 s by default). Any error or
+  timeout falls back to the Layer-1 verdict.
 
-The bus calls themselves are in-process (no network hop from the validator's
-perspective). The actual network egress for the LLM scan happens inside
-`@ax/llm-anthropic`, not here — the validator never opens a socket.
+The bus call is in-process. The real network egress for the LLM scan happens inside
+`@ax/llm-anthropic`, not here; this plugin never opens a socket.
 
-The scan is best-effort DEFENSE IN DEPTH and observability, NOT the security
-boundary. The boundary is capability-use (the egress proxy + credential injection
-+ human approval at the wall). The SKILL.md content veto is GONE — malformed/
-unsafe content is ACCEPTED (work is never destroyed) and annotated (quarantined);
-structural validity is enforced lazily at promote. The `.claude/**` SDK-config
-veto is UNCHANGED (still a hard reject).
+If a future change needs more than this, it goes in this file before it goes in the code.
 
-These were the Phase 1 invariants for reference:
+## What the scan is (and isn't)
 
-- **No filesystem access.** We read bytes that arrive in the FileChange payload and never touch disk.
-- **No network (direct).** We don't open sockets, don't resolve DNS. Indirect network via delegated bus calls is guarded and bounded (see above).
-- **No process spawn.** `js-yaml` is pure JS; we never `child_process.spawn` anything.
-- **No env access.** We don't read `process.env`. Configuration arrives via the plugin factory's options.
+The scan is **defense in depth and a signal for reviewers. It is not the security
+boundary.** A skill gets real reach only through capabilities a person approves: the
+egress proxy, credential injection, and the approval wall at capability use. So:
 
-If a future change needs capabilities beyond these bounds, they go in the SECURITY.md before the code does.
+- **Accept and annotate.** A hit never refuses the skill. `@ax/skills` stores it as
+  quarantined and keeps it out of the agent's sessions; the reason goes back to the agent
+  so it can tell the person what to fix.
+- **A missing or broken scanner degrades to `clean`** at `@ax/skills`. That's deliberate:
+  the scan never blocks authoring. The residual risk is bounded because anything with
+  reach is `pending` until a person approves it, whatever the scan said.
+- **Regex first.** Layer 1 (pure `RegExp.test()`: instruction overrides, credential
+  exfiltration signatures, hidden format characters, obfuscated blobs) runs before the
+  model. A Layer-1 hit short-circuits, so text that talks the model into "clean" can
+  never clear a regex hit.
 
-## Threat model: untrusted SKILL.md content
+## Threat model: untrusted skill text
 
-Every byte we parse came from the agent. The agent might:
+Every byte we scan came from an agent, and the agent might have been prompt-injected by
+a tool result, or be testing us on purpose. So:
 
-- Have been prompt-injected by a tool result.
-- Have written garbage on purpose because we're testing it.
-- Have written a YAML payload designed to trigger a parser CVE.
+- **No interpolation.** The text is only ever matched with `RegExp.test()` or sent to the
+  model as tagged data. It never reaches a shell, a file path, SQL, a URL or HTML from
+  here.
+- **No raw input in reasons or logs.** A reason is a fixed category plus a sanitized
+  detail capped at 160 characters. Logs carry the skill id and the category, never the
+  text.
+- **Bounded work.** `@ax/skills` checks the bundle's extra files before it calls us (at
+  most 16 files and 512 KiB in total), and the model sees at most `maxScanBytes`
+  characters of the text.
 
-So:
+## Threat model: bypassing the scan
 
-- **Strict UTF-8 decode.** We pass `fatal: true` to `TextDecoder` so non-UTF-8 bytes throw instead of producing replacement characters. Replacement characters are how things "look fine" in a logs grep but actually contain whatever an attacker stuffed into the byte stream.
-- **Safe-schema YAML.** `js-yaml`'s default `load` uses the safe schema by default — no `!!js/function`, no class instantiation, no tags that could trigger code execution. We don't opt into any unsafe schema.
-- **No interpolation.** We extract `name` and `description` and check they're non-empty strings. We don't interpolate them into shell commands, file paths, HTML, SQL, or anything else that would care about the bytes. They're returned to the bus as part of the decision; a downstream subscriber that DOES interpolate is responsible for its own escape semantics.
-- **Accept-and-annotate on doubt (Phase 2).** Anything we can't parse cleanly is ACCEPTED but quarantined via `skills:quarantine-set`. Work is never destroyed; the agent can iterate. Structural validity is enforced lazily at promote time by `@ax/agents`. The `.claude/**` SDK-config path retains its hard-reject behavior (see below).
+We depend on:
 
-## Threat model: bypassing the validator
+- **`@ax/skills` calling `skills:scan` at the one authoring chokepoint** (`skills:propose`,
+  behind the `skill_propose` tool) before it stores a skill.
+- **One scanner.** The bus refuses a second registration of `skills:scan`
+  (`duplicate-service`), so no other plugin can stand in a laxer one.
 
-The validator is the FIRST `workspace:pre-apply` subscriber, but it's not the only line of defense. If an attacker bypasses us — e.g., the host's commit-notify handler routes around `pre-apply` somehow, or the workspace plugin doesn't honor a veto — the result is "malformed SKILL.md lands in the workspace." That's bad but not catastrophic; the next layer (skill loader, identity validator in Phase 4) sees the bytes too and would reject.
+A skill that slips past the scan is still a skill with no reach of its own: the
+capability approval is what stands between it and anything that matters.
 
-What we depend on:
+## Retired: the settings-file veto (TASK-995)
 
-- The host's commit-notify handler firing `workspace:pre-apply` BEFORE `workspace:apply`. (See `packages/ipc-core/src/handlers/workspace-commit-notify.ts`.)
-- The host's bundler filtering changes to `.ax/**` before firing pre-apply. (We assume our input is already filtered; if user-code changes leaked in, we'd correctly skip them via the `SKILL_PATH` regex, but we'd also be doing wasted work on every turn.)
-- The bus respecting subscriber vetoes. (`HookBus.fire` returns `rejected: true` on any subscriber `reject()`, and the handler short-circuits.)
+Until TASK-995 this plugin also vetoed agent writes to the Claude Agent SDK's settings
+files (`.claude/settings.json`, `.claude/settings.local.json`, `.claude/CLAUDE.md`,
+`CLAUDE.md`, `CLAUDE.local.md`, and `.claude/{agents,commands,rules}/`), on the git
+workspace's pre-apply event. The git workspace is gone, and the event with it. Those
+paths are now ordinary files in the agent's home (`/files`), visible in the Files tab.
 
-If any of those break, Phase 3's invariants break in a much louder way than this plugin can compensate for.
+What keeps them inert is the runner, not this plugin:
+
+- the Claude SDK runner passes `settingSources: ['user']`, so it never reads project
+  settings from the home;
+- the runner refuses to start unless `CLAUDE_CONFIG_DIR` is set, exists, and sits
+  outside the agent's home, so a file the agent writes can never become its user
+  settings;
+- a canary that runs the real SDK plants `CLAUDE.md`, `.claude/CLAUDE.md`, a
+  `.claude/settings.json` full of hooks, `.mcp.json` and a skill under `.claude/skills/`
+  in a fresh home, and checks that none of them reaches the model's requests, runs a
+  hook, starts an MCP server or shows up as a skill. Its control run turns the
+  `project` setting source back on and watches the same files come alive, so the
+  plants are real.
+
+Those tests live in `@ax/agent-runner-core` and `@ax/agent-claude-sdk-runner`. The
+other paths the veto covered (`.claude/settings.local.json`, `CLAUDE.local.md`,
+`.claude/{agents,commands,rules}/`) belong to the SDK's `project` and `local` setting
+sources, which `settingSources: ['user']` leaves unread. To be straight about it: the
+canary doesn't plant those, so for them we rely on that one setting rather than on a
+test that watched it hold.
 
 ## Known limits
 
-- **Only flat frontmatter validated at the structural layer.** Nested YAML structures (e.g., `name: { nested: ... }`) produce a type-check failure, which now quarantines the skill rather than vetoing the turn outright. That's still a feature — flat frontmatter is the convention.
-- **`name` and `description` are validated for type + non-empty-ness at the structural layer; semantic content goes through the LLM scan.** The LLM scan is best-effort and degrades to regex-only when `llm:call:anthropic` is absent. Neither is the primary security boundary — that's the egress proxy at capability-use time.
-- **Path matching is exact-prefix.** `.ax/draft-skills/<name>/SKILL.md` is the only shape we recognize. A future relaxation (nested skill packages, alternate file extensions) would update the regex; for now keep it strict so the surface is unambiguous.
-
-## What we don't know yet
-
-- How big SKILL.md files get in the wild. js-yaml's parse cost is roughly linear in input size, so a multi-megabyte SKILL.md would be slow. We rely on the host bundler's MAX_FRAME (4 MiB) to bound the total payload; per-file caps land if/when we see real-world abuse.
-- Whether the YAML safe schema is enough for every variant of SKILL.md the broader Anthropic ecosystem produces. If a legitimate use case requires a non-safe schema, we'd need a documented opt-in (and a fresh threat-model walk for whatever the new schema permits).
+- **Regex recall.** A novel phrasing that isn't in the Layer-1 set, and that the model
+  calls clean, passes. That's why the scan isn't the boundary.
+- **The model can be wrong in both directions.** A false "hit" quarantines a fine skill
+  (a person can review it); a false "clean" is caught, if at all, by capability approval.
+- **No model in the CLI preset.** Without `llm:call:anthropic`, only Layer 1 runs.
 
 ## Security contact
 
-If we find a hole, we'd rather hear about it from you than read about it on Hacker News. Please email `vinay@canopyworks.com`.
+If we find a hole, we'd rather hear about it from you than read about it on Hacker News.
+Please email `vinay@canopyworks.com`.

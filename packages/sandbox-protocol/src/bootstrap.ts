@@ -8,10 +8,19 @@ export const BOOTSTRAP_ACK = 'accepted.json';
 /** Per-session proxy token: 32 lowercase hex (mirrors ProxyConfigSchema). */
 const PROXY_TOKEN_FORMAT = /^[0-9a-f]{32}$/;
 
+/**
+ * The k8s runner pod's scratch root: the size-capped disk emptyDir mounted at
+ * `/tmp` and stamped as AX_EPHEMERAL_ROOT. It holds the session's uploads, SDK
+ * transcripts, tool caches, venvs and clones, and goes away with the pod. The
+ * pod spec (mount + env), this allowlist's pin and the warm standby's venv
+ * template must all name the same path, so they all read this one constant.
+ */
+export const POD_SCRATCH_ROOT = '/tmp';
+
 const controlNames = new Set([
   'AX_SESSION_ID', 'AX_AUTH_TOKEN', 'AX_RUNNER_ENDPOINT', 'AX_REQUEST_ID',
   'AX_PROXY_ENDPOINT', 'AX_PROXY_TOKEN', 'AX_PROXY_CA_PEM', 'AX_INSTALLED_SKILLS_JSON',
-  'AX_WORKSPACE_ROOT', 'AX_EPHEMERAL_ROOT', 'AX_USERFILES_ROOT', 'AX_MEMORY_ROOT', 'AX_TRANSCRIPTS_ROOT',
+  'AX_EPHEMERAL_ROOT', 'AX_USERFILES_ROOT', 'AX_MEMORY_ROOT', 'AX_TRANSCRIPTS_ROOT',
   'AX_COMMIT_TRACE', 'HOME', 'CLAUDE_CONFIG_DIR', 'HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY',
   'NODE_EXTRA_CA_CERTS', 'SSL_CERT_FILE', 'GIT_SSL_CAINFO', 'DENO_CERT',
   'GIT_CONFIG_NOSYSTEM', 'GIT_CONFIG_GLOBAL', 'GIT_TERMINAL_PROMPT',
@@ -19,8 +28,8 @@ const controlNames = new Set([
   'GIT_CONFIG_COUNT',
 ]);
 const fixedPaths: Record<string, string> = {
-  AX_WORKSPACE_ROOT: '/agent', AX_EPHEMERAL_ROOT: '/ephemeral',
-  AX_USERFILES_ROOT: '/files', AX_MEMORY_ROOT: '/memory', AX_TRANSCRIPTS_ROOT: '/tmp/transcripts',
+  AX_EPHEMERAL_ROOT: POD_SCRATCH_ROOT,
+  AX_USERFILES_ROOT: '/files', AX_MEMORY_ROOT: '/memory', AX_TRANSCRIPTS_ROOT: `${POD_SCRATCH_ROOT}/transcripts`,
   HOME: '/home/runner', CLAUDE_CONFIG_DIR: '/home/runner/.ax/session',
   GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1', GIT_TERMINAL_PROMPT: '0',
   NODE_EXTRA_CA_CERTS: '/home/runner/.ax/proxy-ca/ca.crt',

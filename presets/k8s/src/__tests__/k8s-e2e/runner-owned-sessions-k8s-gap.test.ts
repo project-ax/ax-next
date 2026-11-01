@@ -158,7 +158,7 @@ describe('k8s-e2e — runner-owned-sessions regression suite', () => {
       // ----- Turn 2: ask for the number. ---------------------------------
       // If the runner_session_id is bound (assertion 2 passes), the runner's
       // turn-2 SDK query runs with `resume: <runnerSessionId>` (main.ts:342)
-      // and the SDK rehydrates from its workspace-stored jsonl transcript.
+      // and the SDK rehydrates from its restored jsonl transcript.
       const turn2 = await sendAndWaitForBackend(cookie, {
         agentId: agent.id,
         conversationId: turn1.conversationId,
@@ -166,7 +166,7 @@ describe('k8s-e2e — runner-owned-sessions regression suite', () => {
       });
 
       // ----- Behavioral assertion: memory survived. ----------------------
-      // We read the transcript via the workspace-jsonl-backed
+      // We read the transcript via the transcript-backed
       // `GET /api/chat/conversations/:id` endpoint (which fronts
       // `conversations:get`) rather than the SSE stream because the SSE
       // path is the subject of Bug 2 — entangling the two would replace a
@@ -482,23 +482,22 @@ describe('k8s-e2e — runner-owned-sessions regression suite', () => {
   );
 
   it.skipIf(!E2E_ENABLED)(
-    'workspace jsonl contains real assistant response after turn 1 (final-commit timing regression)',
+    'transcript contains the real assistant response after turn 1 (late-flush timing regression)',
     { timeout: 120_000 },
     async () => {
       // Regression for a timing bug in agent-claude-sdk-runner/src/main.ts:
       // the SDK subprocess writes the assistant response to the jsonl AFTER
-      // yielding `result` to Node.js. The per-turn commitTurnAndBundle() in
-      // the `result` handler ran before those writes landed, so the assistant
-      // line was always absent from the committed workspace state.
+      // yielding `result` to Node.js. A turn-end transcript ship that did not
+      // wait for those writes shipped a transcript with no assistant line.
       //
       // Pre-fix: GET /api/chat/conversations/:id returned turns:[] — the
       // jsonl had only 4 lines (system, user, result, queue-operation) with
-      // no assistant line committed. The fix adds a final commitTurnAndBundle()
-      // AFTER the for-await loop drains, capturing the SDK's delayed write.
+      // no assistant line shipped. The turn-end ship now waits for the final
+      // assistant line (waitForTranscriptUuid) before it sends the delta.
       const { cookie } = await signIn();
       sharedCookie = cookie;
       const agent = await createAgent(cookie, {
-        displayName: `final-commit-${RUN_ID}`,
+        displayName: `late-flush-${RUN_ID}`,
         systemPrompt: 'Reply with exactly the word "ok" and nothing else.',
         allowedTools: ['bash'],
         model: TEST_MODEL,
@@ -533,12 +532,11 @@ describe('k8s-e2e — runner-owned-sessions regression suite', () => {
         assistantTurns.length,
         [
           'conversations:get returned no assistant turns after a single completed turn.',
-          'Regression: the final commitTurnAndBundle() call in main.ts (after the',
-          'for-await loop) must run to capture the SDK subprocess\'s delayed assistant',
-          'write. Pre-fix: the jsonl had only 4 lines (system, user, result,',
-          'queue-operation) — no assistant line — because the per-turn commit in the',
-          'result handler fired before the SDK subprocess had finished flushing.',
-          'See packages/agent-claude-sdk-runner/src/main.ts, the "Final commit" block.',
+          'Regression: the turn-end transcript ship in main.ts must wait for the',
+          'SDK subprocess\'s delayed assistant write. Pre-fix: the jsonl had only 4',
+          'lines (system, user, result, queue-operation) — no assistant line —',
+          'because the ship fired before the SDK subprocess had finished flushing.',
+          'See packages/agent-claude-sdk-runner/src/main.ts, waitForTranscriptUuid.',
         ].join('\n'),
       ).toBeGreaterThan(0);
 
@@ -550,7 +548,7 @@ describe('k8s-e2e — runner-owned-sessions regression suite', () => {
 
       expect(
         allText.length,
-        'assistant turn has no text content — the committed jsonl may be truncated',
+        'assistant turn has no text content — the shipped transcript may be truncated',
       ).toBeGreaterThan(0);
 
       // The SDK's synthetic no-op mode emits "No response requested." — a real

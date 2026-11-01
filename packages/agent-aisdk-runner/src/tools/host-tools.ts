@@ -28,12 +28,7 @@ import {
   type IpcClient,
   type ToolDescriptor,
 } from '@ax/ipc-protocol';
-import {
-  flushPreconditionMessage,
-  type HoldLatch,
-  type HostToolFlush,
-  type ToolPolicy,
-} from '@ax/agent-runner-core';
+import type { HoldLatch, ToolPolicy } from '@ax/agent-runner-core';
 import { wrapWithPolicy } from './policy-wrap.js';
 
 export interface BuildHostToolsOptions {
@@ -41,15 +36,6 @@ export interface BuildHostToolsOptions {
   client: IpcClient;
   /** Full tool catalog from `tool.list`. We filter to executesIn:'host'. */
   tools: ToolDescriptor[];
-  /**
-   * Flush the live workspace (commit + push to the host mirror) before
-   * forwarding a host tool whose descriptor declares
-   * `flushWorkspaceBeforeCall`, returning the flush outcome plus, on a
-   * refusal, the host's stated reason. Omitted in deployments without a
-   * workspace (the flag then simply has no effect). See the precondition gate
-   * below.
-   */
-  flushWorkspace?: () => Promise<HostToolFlush>;
   /** Test seam: override the per-call id generator. */
   idGen?: () => string;
   /** The one latch shared by every tool this turn — see WrapWithPolicyOptions. */
@@ -78,7 +64,7 @@ function renderOutput(output: unknown): string {
  * builtins).
  */
 export function buildHostTools(opts: BuildHostToolsOptions): Record<string, Tool> {
-  const { policy, client, tools, flushWorkspace, idGen = () => randomUUID(), holdLatch } = opts;
+  const { policy, client, tools, idGen = () => randomUUID(), holdLatch } = opts;
   const hostTools = tools.filter((t) => t.executesIn === 'host');
 
   const entries: Record<string, Tool> = {};
@@ -89,62 +75,6 @@ export function buildHostTools(opts: BuildHostToolsOptions): Record<string, Tool
       execute: wrapWithPolicy(
         { policy, name: descriptor.name, isBuiltin: false, holdLatch, onHold: opts.onHold, onToolFailure: opts.onToolFailure },
         async (input) => {
-          // Flush the live workspace BEFORE forwarding when this host tool
-          // declares it reads workspace files the agent may have written
-          // this turn. Under runner-owned sessions the host reads the
-          // committed + pushed mirror, which lags the live tree until a
-          // turn-boundary commit — without the flush the host read misses a
-          // just-written file (BUG-W2).
-          //
-          // The flush is a PRECONDITION, not best-effort: we forward ONLY
-          // when it actually synced the mirror. `accepted` = pushed; `noop`
-          // = nothing staged because it was already committed+pushed on a
-          // prior turn (mirror already current). Anything else means the
-          // host would read a stale-or-worse state, so we DON'T forward:
-          //   - `kept` (host unreachable / 5xx): committed locally but
-          //     never pushed → host read would 404.
-          //   - `rolled-back` (workspace veto / resync exhausted): the live
-          //     tree was reset to baseline, so the just-authored file is
-          //     GONE and the mirror still lacks it — forwarding could even
-          //     install an OLDER committed draft with the freshly-requested
-          //     grants.
-          //   - thrown: git/IPC error mid-flush.
-          // In those cases we surface a clear message instead of forwarding
-          // into a stale read (BUG-W2 follow-up; Codex review) — carrying the
-          // host's own reason for the refusal when it gave one, so a veto is
-          // something the model can act on rather than a bare `rolled-back`.
-          //
-          // This THROWS rather than returning a plain string, and the
-          // difference is about parity, not style. The SDK runner's shim
-          // returns this refusal as `{ isError: true }` content, so the host
-          // persists `is_error` and the UI renders a failed tool. Returning a
-          // plain result here would render the same refusal as a SUCCESSFUL
-          // tool call whose text happens to complain — a visible divergence
-          // between two runners that are supposed to be
-          // host-indistinguishable. Throwing does NOT abort the turn: ai@7
-          // converts a thrown executor into a `tool-error` part plus an
-          // `error-text` tool result and continues the loop (verified against
-          // ai@7.0.70), so the model still reads the message and retries.
-          //
-          // A policy VETO is the one case that stays a plain result — that is
-          // a design mandate (§3), and it is a different event: permission
-          // refused before the tool ran, not a precondition failing on a
-          // permitted call.
-          if (descriptor.flushWorkspaceBeforeCall === true && flushWorkspace !== undefined) {
-            let flush: { outcome: HostToolFlush['outcome'] | 'error'; rejectionReason?: string };
-            try {
-              flush = await flushWorkspace();
-            } catch (flushErr) {
-              process.stderr.write(
-                `runner: workspace flush before '${descriptor.name}' failed: ${flushErr instanceof Error ? flushErr.message : String(flushErr)}\n`,
-              );
-              flush = { outcome: 'error' };
-            }
-            if (flush.outcome !== 'accepted' && flush.outcome !== 'noop') {
-              throw new Error(flushPreconditionMessage(descriptor.name, flush));
-            }
-          }
-
           const raw = await client.call('tool.execute-host', {
             call: { id: idGen(), name: descriptor.name, input },
           });

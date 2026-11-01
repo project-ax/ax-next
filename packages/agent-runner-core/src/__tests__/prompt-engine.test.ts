@@ -18,16 +18,18 @@ import {
   capabilityHandoffNote,
   ephemeralScratchNote,
   fileOutputNote,
+  filesNote,
   memoryExportNote,
   pythonVenvNote,
   skillAuthoringNote,
-  workspaceNote,
 } from '../system-prompt.js';
 
 // TASK-989: the engine composes from the frozen session config and reads nothing
-// from disk, so a plain path stands in for the governed root everywhere except
-// the planted-files test, which needs a real directory to plant into.
-const WS = '/agent';
+// from disk, so plain paths stand in for the agent's home and the scratch root
+// everywhere except the planted-files test, which needs a real directory to
+// plant into.
+const HOME = '/files';
+const SCRATCH = '/tmp';
 
 /** A session config's `identity`, with overrides. */
 function idn(over: Partial<PromptIdentity> = {}): PromptIdentity {
@@ -37,26 +39,21 @@ function idn(over: Partial<PromptIdentity> = {}): PromptIdentity {
 interface BuildOpts {
   augment?: string;
   bootstrapAugment?: string;
-  ephemeralRoot?: string;
-  userFilesRoot?: string;
-  cwd?: string;
-  workspaceRoot?: string;
+  home?: string;
+  scratch?: string;
   routineToolsAvailable?: boolean;
   identityToolAvailable?: boolean;
 }
 
 /** `buildSystemPrompt` for an agent named Pip, spelling out every positional
- * argument so the identity ones (index 10 and 11) land where run-runner puts them. */
+ * argument so the identity ones (index 8 and 9) land where run-runner puts them. */
 function build(identity: PromptIdentity, opts: BuildOpts = {}): Promise<string> {
-  const ws = opts.workspaceRoot ?? WS;
   return buildSystemPrompt(
     'Pip',
     opts.augment ?? '',
-    ws,
-    opts.ephemeralRoot,
+    opts.home ?? HOME,
+    opts.scratch ?? SCRATCH,
     false,
-    opts.userFilesRoot,
-    opts.cwd ?? ws,
     undefined,
     opts.bootstrapAugment ?? '',
     opts.routineToolsAvailable ?? false,
@@ -71,6 +68,18 @@ function expectInOrder(haystack: string, needles: string[]): void {
   needles.forEach((n, i) => expect(at[i], `missing: ${n.slice(0, 60)}`).toBeGreaterThanOrEqual(0));
   for (let i = 1; i < at.length; i++) {
     expect(at[i], `${needles[i]!.slice(0, 60)} should follow ${needles[i - 1]!.slice(0, 60)}`).toBeGreaterThan(at[i - 1]!);
+  }
+}
+
+/**
+ * TASK-995: nothing the model reads may still describe the retired git tier,
+ * `.ax/` or `/agent` — a model told about a governed tier goes looking for it.
+ */
+function expectNoRetiredTier(text: string): void {
+  expect(text).not.toContain('.ax');
+  expect(text).not.toContain('/agent');
+  for (const word of ['governed', 'committed', 'versioned', 'bundle']) {
+    expect(text.toLowerCase()).not.toContain(word);
   }
 }
 
@@ -215,7 +224,7 @@ describe('buildSystemPrompt — normal mode (identity from the session config)',
       '## Soul',
       'SOUL_BODY',
       identityEvolutionNote(),
-      workspaceNote(WS),
+      filesNote(HOME, SCRATCH),
     ]);
     // A stored identity replaces the display-name line.
     expect(out).not.toContain(fallbackIdentityLine('Pip'));
@@ -264,7 +273,7 @@ describe('buildSystemPrompt — normal mode (identity from the session config)',
   it('a session config without identity composes normal mode with the display-name line', async () => {
     // Session rows from before TASK-989, or a host with no identity store: the
     // run-runner passes `undefined` and the default parameter applies.
-    const out = await buildSystemPrompt('Helper', 'AUG', WS, undefined);
+    const out = await buildSystemPrompt('Helper', 'AUG', HOME, SCRATCH);
     expect(out.startsWith('AUG\n\n')).toBe(true);
     expect(out).toContain(safetyFloorNote());
     expect(out).toContain(`## Identity\n\n${fallbackIdentityLine('Helper')}`);
@@ -272,31 +281,29 @@ describe('buildSystemPrompt — normal mode (identity from the session config)',
     expect(out).not.toContain(INSTRUCTIONS_HEADING);
     expect(out).not.toContain(identityEvolutionNote());
     expect(out).not.toContain(BOOTSTRAP_TEMPLATE);
-    expect(out).toContain(workspaceNote(WS));
+    expect(out).toContain(filesNote(HOME, SCRATCH));
   });
 
   it('carries the operational notes below the identity', async () => {
     const out = await buildSystemPrompt(
       'Pip',
       'AUGMENT_BLOCK',
-      WS,
-      '/ephemeral',
+      HOME,
+      SCRATCH,
       true,
-      undefined,
-      WS,
       undefined,
       '',
       false,
       idn({ identity: 'I am Pip.' }),
       true,
     );
-    expect(out).toContain(workspaceNote(WS));
-    expect(out).toContain(ephemeralScratchNote('/ephemeral'));
+    expect(out).toContain(filesNote(HOME, SCRATCH));
+    expect(out).toContain(ephemeralScratchNote(SCRATCH));
     expect(out).toContain(pythonVenvNote());
     expect(out).toContain(capabilityHandoffNote());
-    // Draft root resolves to `userFilesRoot ?? ephemeralRoot` = '/ephemeral' here.
-    expect(out).toContain(skillAuthoringNote('/ephemeral'));
-    expect(out.indexOf('I am Pip.')).toBeLessThan(out.indexOf(workspaceNote(WS)));
+    // Skills are drafted under the home.
+    expect(out).toContain(skillAuthoringNote(HOME));
+    expect(out.indexOf('I am Pip.')).toBeLessThan(out.indexOf(filesNote(HOME, SCRATCH)));
   });
 
   it('omits the augment prepend when augment is empty', async () => {
@@ -314,22 +321,28 @@ describe('buildSystemPrompt — normal mode (identity from the session config)',
     expect(out).not.toContain('BOOT-ONLY-SENTINEL');
   });
 
-  it('omits the ephemeral + python notes when the sandbox provides no scratch tier', async () => {
+  it('omits the python note until the session venv is ready', async () => {
     const out = await build(idn());
-    expect(out).not.toContain(ephemeralScratchNote('/ephemeral'));
     expect(out).not.toContain(pythonVenvNote());
-    expect(out).toContain(workspaceNote(WS));
+    expect(out).toContain(ephemeralScratchNote(SCRATCH));
+    expect(out).toContain(filesNote(HOME, SCRATCH));
   });
 
-  it('states both roots when cwd moved off the governed root (TASK-164)', async () => {
-    const out = await build(idn(), {
-      ephemeralRoot: '/ephemeral',
-      userFilesRoot: '/workspace',
-      cwd: '/workspace',
+  // TASK-995: the home is the agent's home and cwd, shared files are in the
+  // scratch root's `uploads/`, and nothing in the prompt still describes the
+  // retired git tier.
+  it('names the home and the scratch uploads dir, from the runtime roots, and nothing of the retired tier', async () => {
+    const out = await build(idn({ identity: 'I am Pip.' }), {
+      home: '/srv/home-7',
+      scratch: '/var/scratch-9',
+      identityToolAvailable: true,
+      routineToolsAvailable: true,
     });
-    expect(out).toContain(workspaceNote(WS, '/workspace'));
-    expect(out).toContain('`/workspace`');
-    expect(out).toContain(`\`${WS}\``);
+    const flat = out.replace(/\s+/g, ' ');
+    expect(flat).toContain('`/srv/home-7` is your home and working directory');
+    expect(flat).toContain('`/var/scratch-9/uploads/`');
+    expect(flat).toContain('go away after this conversation');
+    expectNoRetiredTier(out);
   });
 });
 
@@ -342,10 +355,10 @@ describe('buildSystemPrompt — bootstrap mode (a host decision, exclusive)', ()
         instructions: 'INSTRUCTIONS_BODY',
         bootstrapMode: true,
       }),
-      { augment: 'FULL-AUGMENT', ephemeralRoot: '/ephemeral', identityToolAvailable: true },
+      { augment: 'FULL-AUGMENT', identityToolAvailable: true },
     );
     expect(out).toBe(
-      `${bootstrapPreamble('Pip')}\n\n${fileOutputNote(WS, '/ephemeral')}\n\n${BOOTSTRAP_TEMPLATE}\n\n` +
+      `${bootstrapPreamble('Pip')}\n\n${fileOutputNote(HOME)}\n\n${BOOTSTRAP_TEMPLATE}\n\n` +
         `${bootstrapProgressNote({ identity: 'IDENTITY_BODY', soul: 'SOUL_BODY' })}\n\n` +
         `${instructionsSection('INSTRUCTIONS_BODY', 'bootstrap')}`,
     );
@@ -359,7 +372,7 @@ describe('buildSystemPrompt — bootstrap mode (a host decision, exclusive)', ()
     expect(out).not.toContain('SOUL_BODY');
     expect(out).not.toContain('FULL-AUGMENT');
     expect(out).not.toContain(identityEvolutionNote());
-    expect(out).not.toContain(workspaceNote(WS));
+    expect(out).not.toContain(filesNote(HOME, SCRATCH));
   });
 
   it('bootstrap mode prepends the bootstrap augment', async () => {
@@ -369,15 +382,17 @@ describe('buildSystemPrompt — bootstrap mode (a host decision, exclusive)', ()
     });
     expect(out.startsWith('BRIEF\n\n')).toBe(true);
     expect(out).toBe(
-      `BRIEF\n\n${bootstrapPreamble('Pip')}\n\n${BOOTSTRAP_TEMPLATE}\n\n${bootstrapProgressNote(NO_PROMPT_IDENTITY)}`,
+      `BRIEF\n\n${bootstrapPreamble('Pip')}\n\n${fileOutputNote(HOME)}\n\n${BOOTSTRAP_TEMPLATE}\n\n` +
+        bootstrapProgressNote(NO_PROMPT_IDENTITY),
     );
     // Recalled facts are the half the exclusivity exists to keep out.
     expect(out).not.toContain('RECALLED-FACTS');
   });
 
-  it('without Instructions or an output tier the prompt is the preamble, the script, then the progress line', async () => {
+  it('without Instructions the prompt is the preamble, the output note, the script, then the progress line', async () => {
     expect(await build(idn({ bootstrapMode: true }))).toBe(
-      `${bootstrapPreamble('Pip')}\n\n${BOOTSTRAP_TEMPLATE}\n\n${bootstrapProgressNote(NO_PROMPT_IDENTITY)}`,
+      `${bootstrapPreamble('Pip')}\n\n${fileOutputNote(HOME)}\n\n${BOOTSTRAP_TEMPLATE}\n\n` +
+        bootstrapProgressNote(NO_PROMPT_IDENTITY),
     );
   });
 
@@ -414,22 +429,18 @@ describe('buildSystemPrompt — bootstrap mode (a host decision, exclusive)', ()
     expect(out).not.toContain('Saved so far:');
   });
 
-  it('directs user deliverables to scratch artifacts without a durable mount', async () => {
-    const out = await build(idn({ bootstrapMode: true }), { ephemeralRoot: '/ephemeral', cwd: '/ephemeral' });
-    expect(out).toContain('/ephemeral/artifacts/');
-    expect(out).toContain('temporary');
-    expect(out).toMatch(/publish/i);
+  it('still includes the output note, which sends deliverables to the home', async () => {
+    const out = await build(idn({ bootstrapMode: true }), { home: '/srv/home-7' });
+    expect(out).toContain(fileOutputNote('/srv/home-7'));
+    expect(out).toContain('/srv/home-7/…');
+    expect(out).not.toContain('artifacts');
   });
 
-  it('names no .ax path, even when cwd is not the governed root', async () => {
-    // The old script finished with a shell `rm .ax/BOOTSTRAP.md`, which needed a
-    // path note when cwd moved to /files. It finishes with a tool call now.
-    const out = await build(idn({ bootstrapMode: true }), { userFilesRoot: '/files', cwd: '/files' });
-    expect(out).toBe(
-      `${bootstrapPreamble('Pip')}\n\n${fileOutputNote(WS, undefined, '/files')}\n\n${BOOTSTRAP_TEMPLATE}\n\n` +
-        bootstrapProgressNote(NO_PROMPT_IDENTITY),
-    );
-    expect(out).not.toContain('.ax/');
+  it('names nothing of the retired tier', async () => {
+    // The old script finished with a shell `rm .ax/BOOTSTRAP.md`; it finishes
+    // with a tool call now, and the output note names only the home.
+    const out = await build(idn({ bootstrapMode: true, instructions: 'Be brief.' }), { bootstrapAugment: 'BRIEF' });
+    expectNoRetiredTier(out);
   });
 });
 
@@ -446,7 +457,7 @@ describe('buildSystemPrompt — the runner reads no identity files', () => {
       ];
       for (const [name, body] of planted) await writeFile(join(dir, '.ax', name), body, 'utf8');
 
-      const normal = await buildSystemPrompt('Pip', '', dir, undefined);
+      const normal = await buildSystemPrompt('Pip', '', dir, SCRATCH);
       for (const [, body] of planted) expect(normal).not.toContain(body);
       // Normal mode, not bootstrap: a planted BOOTSTRAP.md no longer opens it.
       expect(normal).toContain(safetyFloorNote());
@@ -454,7 +465,7 @@ describe('buildSystemPrompt — the runner reads no identity files', () => {
       expect(normal).not.toContain(BOOTSTRAP_TEMPLATE);
 
       // And in bootstrap mode the script is the compile-time constant, never a file.
-      const boot = await build(idn({ bootstrapMode: true }), { workspaceRoot: dir });
+      const boot = await build(idn({ bootstrapMode: true }), { home: dir });
       for (const [, body] of planted) expect(boot).not.toContain(body);
       expect(boot).toContain(BOOTSTRAP_TEMPLATE);
     } finally {
@@ -465,12 +476,12 @@ describe('buildSystemPrompt — the runner reads no identity files', () => {
 
 describe('buildSystemPrompt — memoryRoot forwarding', () => {
   it('appends the exact memoryExportNote when the memoryRoot argument is provided', async () => {
-    const out = await buildSystemPrompt('Helper', '', WS, undefined, false, undefined, WS, '/memory');
+    const out = await buildSystemPrompt('Helper', '', HOME, SCRATCH, false, '/memory');
     expect(out).toContain(memoryExportNote('/memory'));
   });
 
   it('carries no memory note when memoryRoot is absent', async () => {
-    const out = await buildSystemPrompt('Helper', '', WS, undefined, false, undefined, WS);
+    const out = await buildSystemPrompt('Helper', '', HOME, SCRATCH, false);
     expect(out).not.toContain('Memory files:');
     expect(out).not.toContain(memoryExportNote('/memory'));
   });

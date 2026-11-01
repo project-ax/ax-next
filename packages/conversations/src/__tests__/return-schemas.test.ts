@@ -19,7 +19,6 @@ describe('conversations return schemas', () => {
       agentId: 'a1',
       runnerType: 'claude-sdk',
       runnerSessionId: 'rs1',
-      workspaceRef: 'v1',
       title: 'My chat',
       lastActivityAt: '2026-05-24T00:00:00.000Z',
       createdAt: '2026-05-23T00:00:00.000Z',
@@ -41,12 +40,20 @@ describe('conversations return schemas', () => {
           ...full,
           runnerType: null,
           runnerSessionId: null,
-          workspaceRef: null,
           title: null,
           lastActivityAt: null,
           activeSessionId: null,
         }).success,
       ).toBe(true);
+    });
+
+    // TASK-995: workspaceRef left the projection. A stray one (a stale
+    // build's row, a mock) is stripped at the bus boundary, so no caller of
+    // conversations:get-metadata can come to rely on it again.
+    it('strips a workspaceRef from the projection', () => {
+      const parsed = GetMetadataOutputSchema.parse({ ...full, workspaceRef: 'v1' });
+      expect(parsed).not.toHaveProperty('workspaceRef');
+      expect(parsed.conversationId).toBe('c1');
     });
 
     it('rejects a missing required field', () => {

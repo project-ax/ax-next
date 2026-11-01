@@ -88,7 +88,6 @@ const baseAgent: Agent = {
   mcpConfigIds: [],
   model: KIMI,
   runner: 'aisdk',
-  workspaceRef: null,
   skillAttachments: [],
   connectorAttachments: [],
   connectorExclusions: [],

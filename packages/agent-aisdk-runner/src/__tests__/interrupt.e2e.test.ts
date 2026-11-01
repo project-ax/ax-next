@@ -9,14 +9,13 @@ import type { InboxLoopEntry } from '@ax/agent-runner-core';
 // TASK-688 — Stop, on the aisdk runner.
 //
 // The original bug, measured by the §8 walk: click Stop, the UI goes idle, and
-// the turn's `touch /agent/cancel-probe.txt` (behind a `sleep 45`) STILL
-// happens. This suite drives the REAL `runRunner` shell and the REAL loop,
+// the turn's `touch cancel-probe.txt` (behind a `sleep 45`) STILL happens. This suite drives the REAL `runRunner` shell and the REAL loop,
 // including the real Bash tool, against a scripted model, and holds the inbox
 // open so an `interrupt` can land mid-turn — the thing the old runner never
 // read until the turn was over.
 //
-// Same seams as parity.e2e.test.ts (git/venv/IPC/provider mocked, everything
-// else real). The one difference is the inbox: parity's answers instantly and
+// Same seams as parity.e2e.test.ts (venv/IPC/provider mocked, everything else
+// real). The one difference is the inbox: parity's answers instantly and
 // then says `cancel`, which can never model "the person presses Stop while a
 // reply is streaming". This one blocks until the test pushes an entry.
 // ---------------------------------------------------------------------------
@@ -65,17 +64,6 @@ vi.mock('@ax/ipc-protocol', async (importOriginal) => {
   return {
     ...actual,
     createIpcClient: (_opts: IpcClientOptions): IpcClient => fakeClient,
-  };
-});
-
-vi.mock('@ax/agent-runner-core/internal/git-workspace.js', async (importOriginal) => {
-  const actual =
-    await importOriginal<typeof import('@ax/agent-runner-core/internal/git-workspace.js')>();
-  return {
-    ...actual,
-    materializeWorkspace: vi.fn().mockResolvedValue({ baselineCommit: 'oid-0' }),
-    scaffoldWorkspaceGitignore: vi.fn().mockResolvedValue(undefined),
-    commitTurnAndBundle: vi.fn().mockResolvedValue(null),
   };
 });
 
@@ -191,7 +179,10 @@ function modelReplaying(steps: Chunk[][]): unknown {
 }
 
 let tmp: string;
-let workspaceRoot: string;
+/** The agent's home (AX_USERFILES_ROOT): Bash's cwd and HOME. */
+let homeDir: string;
+/** The session scratch root (AX_EPHEMERAL_ROOT). */
+let scratchDir: string;
 let configDir: string;
 const ORIGINAL_ENV = process.env;
 
@@ -200,9 +191,11 @@ const userMessage = (content: string, reqId = 'req-1'): InboxLoopEntry =>
 
 beforeEach(async () => {
   tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'ax-aisdk-interrupt-'));
-  workspaceRoot = path.join(tmp, 'agent');
+  homeDir = path.join(tmp, 'files');
+  scratchDir = path.join(tmp, 'tmp');
   configDir = path.join(tmp, 'config');
-  await fs.mkdir(workspaceRoot, { recursive: true });
+  await fs.mkdir(homeDir, { recursive: true });
+  await fs.mkdir(scratchDir, { recursive: true });
   await fs.mkdir(configDir, { recursive: true });
 
   events = [];
@@ -219,7 +212,8 @@ beforeEach(async () => {
     AX_RUNNER_ENDPOINT: 'unix:///tmp/ax.sock',
     AX_SESSION_ID: 'sess-1',
     AX_AUTH_TOKEN: 'tok-123',
-    AX_WORKSPACE_ROOT: workspaceRoot,
+    AX_USERFILES_ROOT: homeDir,
+    AX_EPHEMERAL_ROOT: scratchDir,
     AX_PROXY_ENDPOINT: 'http://127.0.0.1:8443',
     AX_PROXY_TOKEN: 'feedfacefeedfacefeedfacefeedface',
     ANTHROPIC_API_KEY: 'ax-cred:0123456789abcdef0123456789abcdef',
@@ -227,8 +221,6 @@ beforeEach(async () => {
     AX_VENV_READY_WAIT_MS: '0',
   };
   delete process.env.AX_INSTALLED_SKILLS_JSON;
-  delete process.env.AX_USERFILES_ROOT;
-  delete process.env.AX_EPHEMERAL_ROOT;
 
   fakeClient = {
     call: vi.fn(async (action: string, payload: unknown) => {
@@ -267,10 +259,9 @@ beforeEach(async () => {
       }
     }),
     callGet: vi.fn(),
-    callBinary: vi.fn(async () => {
-      const p = path.join(tmp, 'bundle.bin');
-      await fs.writeFile(p, '');
-      return { path: p, bytes: 0 };
+    // No binary fetch in these turns: no upload is listed and nothing resumes.
+    callBinary: vi.fn(async (action: string) => {
+      throw new Error(`unexpected binary call: ${action}`);
     }),
     callBinaryUpload: vi.fn(async (action: string, body: Buffer) => {
       calls.push({ action, payload: undefined });

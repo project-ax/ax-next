@@ -31,7 +31,6 @@ interface StubEnv {
   runnerEndpoint: string;
   sessionId: string;
   authToken: string;
-  workspaceRoot: string;
   encodedScript: string;
 }
 
@@ -47,7 +46,6 @@ function readEnv(env: NodeJS.ProcessEnv): StubEnv {
     runnerEndpoint: need('AX_RUNNER_ENDPOINT'),
     sessionId: need('AX_SESSION_ID'),
     authToken: need('AX_AUTH_TOKEN'),
-    workspaceRoot: need('AX_WORKSPACE_ROOT'),
     encodedScript: need('AX_TEST_STUB_SCRIPT'),
   };
 }
@@ -75,11 +73,10 @@ async function run(): Promise<number> {
     return 2;
   }
 
-  // Parity with the real runner: sessionId + workspaceRoot are passed by the
-  // sandbox provider and read here so a missing one fails fast at boot. The
-  // stub itself doesn't need them at runtime.
+  // Parity with the real runner: the sandbox provider passes sessionId, and
+  // it is read here so a missing one fails fast at boot. The stub itself
+  // doesn't need it at runtime.
   void stubEnv.sessionId;
-  void stubEnv.workspaceRoot;
 
   const client = createIpcClient({
     runnerEndpoint: stubEnv.runnerEndpoint,

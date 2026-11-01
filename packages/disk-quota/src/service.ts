@@ -10,22 +10,17 @@ import {
   type Logger,
 } from '@ax/core';
 import { limitBytesOf, type LimitsStore } from './config.js';
-import { blobFullMessage, STORAGE_UNAVAILABLE_MESSAGE, workspaceFullMessage } from './messages.js';
+import { blobFullMessage, STORAGE_UNAVAILABLE_MESSAGE } from './messages.js';
 import { createLimiter, mapBounded, PLUGIN_NAME } from './shared.js';
 import { agentFilesSource, type BlobRow, type DiskQuotaStore } from './store.js';
 
 // ---------------------------------------------------------------------------
-// The gates and the meters, kept apart from the plugin wiring so they can be
+// The gate and the meters, kept apart from the plugin wiring so they can be
 // tested with a fake store, a fixed clock and a capturing logger.
 //
-//   admitWorkspaceWrite — `workspace:pre-apply`: refuse a commit that would
-//                         push its owner past the limit.
-//   admitBlobWrite      — `blob:pre-put`: the same for an upload or a file.
+//   admitBlobWrite      — `blob:pre-put`: refuse an upload or a published
+//                         file that would push its owner past the limit.
 //   recordBlobStored    — `blob:stored`: charge the bytes to the writer.
-//   scheduleWorkspaceMeasure — `workspace:applied`: re-measure that agent's
-//                         repo off the write's critical path.
-//   releaseWorkspace    — `workspace:deleted`: the agent's repo is gone, so
-//                         drop its row and give the owner the room back.
 //   scheduleAgentFilesMeasure — `chat:turn-end` (the assistant one): measure
 //                         that agent's `/files` through
 //                         `sandbox:user-files-usage`, off the turn's path, and
@@ -33,8 +28,7 @@ import { agentFilesSource, type BlobRow, type DiskQuotaStore } from './store.js'
 //   releaseAgentFiles   — `agents:deleted`: tombstone the agent, wait out a
 //                         measurement in flight, drop its agent-files row.
 //   reconcile           — the periodic sweep: every personal agent's
-//                         workspace, then every personal agent's `/files`,
-//                         then the BLOB PASS (releaseBlobs).
+//                         `/files`, then the BLOB PASS (releaseBlobs).
 //   releaseBlobs        — drop an (owner, blob:<sha>) charge once it is past
 //                         the grace window and no holder says that owner
 //                         still holds the sha (design D6), but never so that
@@ -44,11 +38,14 @@ import { agentFilesSource, type BlobRow, type DiskQuotaStore } from './store.js'
 //                         `blob:stat` says its bytes are gone. Fails CLOSED.
 //
 // Error posture is deliberately lopsided (the same as @ax/usage-limits):
-//   - The GATES fail CLOSED. HookBus.fire isolates a throwing subscriber and
+//   - The GATE fails CLOSED. HookBus.fire isolates a throwing subscriber and
 //     carries on, which on a disk guard would mean "database down = no
-//     limit". So a gate never throws; any failure becomes a refusal.
+//     limit". So the gate never throws; any failure becomes a refusal.
 //   - The METERS never throw. A metering hiccup is one log line, never a
-//     failed commit or a failed upload.
+//     failed turn or a failed upload.
+//
+// The git workspace tier and its gate, meter and release are gone (TASK-995):
+// nothing re-measures a `workspace` row, so boot deletes them (migrations.ts).
 // ---------------------------------------------------------------------------
 
 /**
@@ -70,14 +67,11 @@ export type AdmitDecision = { ok: true } | { ok: false; reason: string; code?: s
 export const STORAGE_FULL_REASON = 'storage-full';
 
 export interface ReconcileResult {
-  /**
-   * Measurements recorded: workspaces AND agent files (one per agent per
-   * pass that ran, TASK-993).
-   */
+  /** Agent-files measurements recorded: one per listed agent (TASK-993). */
   measured: number;
   /**
-   * Measurements the sweep tried but could not record, of either kind (a
-   * deleted agent still listed counts here too).
+   * Agent-files measurements the sweep tried but could not record (a deleted
+   * agent still listed counts here too).
    */
   failed: number;
   /** Blob ledger rows (one owner's charge for one sha) the blob pass released. */
@@ -96,18 +90,8 @@ export interface BlobReleaseResult {
 }
 
 export interface DiskQuotaService {
-  admitWorkspaceWrite(ctx: AgentContext, sizeBytes: number): Promise<AdmitDecision>;
   admitBlobWrite(ctx: AgentContext, sizeBytes: number): Promise<AdmitDecision>;
   recordBlobStored(ctx: AgentContext, payload: unknown): Promise<void>;
-  /** Fire-and-track: never awaited by the caller, never throws. */
-  scheduleWorkspaceMeasure(ctx: AgentContext): void;
-  /**
-   * `workspace:deleted`: the agent's repo is gone, so drop its ledger row (for
-   * every owner) and free that room. Takes the raw payload field, because the
-   * subscriber must not trust it: anything that is not a non-empty string
-   * deletes nothing. Never throws.
-   */
-  releaseWorkspace(agentId: unknown): Promise<void>;
   /**
    * `chat:turn-end`: measure this context's agent's `/files` in the
    * background (coalesced per agent, at most FILES_MEASURE_CONCURRENCY walks
@@ -118,22 +102,21 @@ export interface DiskQuotaService {
   /**
    * `agents:deleted`: the agent is gone for good. Tombstone it (nothing
    * measures it again in this process), wait out a measurement in flight, and
-   * drop its agent-files row for every owner. Takes the raw payload field:
-   * anything that is not a non-empty string does nothing. Never throws.
+   * drop its agent-files row for every owner. Takes the raw payload field,
+   * because the subscriber must not trust it: anything that is not a
+   * non-empty string does nothing. Never throws.
    */
   releaseAgentFiles(agentId: unknown): Promise<void>;
   /**
-   * Sweep every personal agent's workspace, then every personal agent's
-   * `/files` (each pass skipped, adding 0, when a hook it needs is absent),
-   * then run the blob pass, which needs none of those hooks. Never throws.
+   * Sweep every personal agent's `/files` (skipped, adding 0, when a hook it
+   * needs is absent), then run the blob pass, which needs none of those hooks.
+   * Never throws.
    */
   reconcile(): Promise<ReconcileResult>;
   /** The blob pass on its own (reconcile runs it). Never throws. */
   releaseBlobs(): Promise<BlobReleaseResult>;
   /** Resolves once every background measurement has settled. */
   drain(): Promise<void>;
-  /** Who a write in this context is charged to; undefined when nobody. */
-  ownerOf(ctx: AgentContext): Promise<string | undefined>;
 }
 
 /** Answers cached per agent; cleared wholesale past this many entries. */
@@ -192,8 +175,8 @@ export function cleanSize(v: unknown): number {
  * BLOB, so however small the blob, it occupies at least a filesystem block and
  * an inode. Charging logical bytes let a looping agent make millions of tiny
  * artifacts "inside" its quota and exhaust the shared volume; whole units make
- * a blob cost roughly what it costs the volume (the same currency the workspace
- * meter uses: allocated bytes). The S3 backend has no such overhead, so there
+ * a blob cost roughly what it costs the volume (the same currency the
+ * agent-files meter uses: allocated bytes). The S3 backend has no such overhead, so there
  * this over-counts by up to one unit per blob, which errs on the safe side.
  */
 export const BLOB_ALLOCATION_UNIT = 4096;
@@ -247,7 +230,7 @@ export function createDiskQuotaService(deps: {
   /**
    * The agent's own owner per `agents:resolve` (`team:<id>` for a team agent),
    * cached; undefined when there is no usable agent, no resolver, or no usable
-   * answer. No fallback to the acting user: see ownerOf for that.
+   * answer. No fallback to the acting user (see measureAgentFilesOnce).
    */
   async function resolveAgentOwner(ctx: AgentContext): Promise<string | undefined> {
     const agentId = ctx.agentId;
@@ -276,19 +259,7 @@ export function createDiskQuotaService(deps: {
     return undefined;
   }
 
-  /**
-   * Who a WRITE in this context is charged to: the agent's owner, else (not
-   * resolvable: no such agent, no access, resolver down) the acting user. A
-   * wrong-but-real owner beats an unmetered write. The agent-files meter does
-   * NOT use this: it charges resolveAgentOwner or nobody.
-   */
-  async function ownerOf(ctx: AgentContext): Promise<string | undefined> {
-    const owner = await resolveAgentOwner(ctx);
-    if (owner !== undefined) return owner;
-    return isAttributableUser(ctx.userId) ? ctx.userId : undefined;
-  }
-
-  // ---- the gates -----------------------------------------------------------
+  // ---- the gate -------------------------------------------------------------
 
   async function admit(
     owner: string,
@@ -306,21 +277,6 @@ export function createDiskQuotaService(deps: {
   }
 
   const OK: AdmitDecision = { ok: true };
-
-  async function admitWorkspaceWrite(ctx: AgentContext, sizeBytes: number): Promise<AdmitDecision> {
-    try {
-      const owner = await ownerOf(ctx);
-      if (owner === undefined) {
-        // Nobody to charge: a system write. Say so rather than pass silently.
-        log(ctx, 'warn', 'disk_quota_workspace_write_unattributed', { agentId: ctx.agentId });
-        return OK;
-      }
-      return await admit(owner, sizeBytes, workspaceFullMessage);
-    } catch (err) {
-      log(ctx, 'error', 'disk_quota_admit_failed', { kind: 'workspace', err });
-      return { ok: false, reason: STORAGE_UNAVAILABLE_MESSAGE };
-    }
-  }
 
   async function admitBlobWrite(ctx: AgentContext, sizeBytes: number): Promise<AdmitDecision> {
     try {
@@ -359,43 +315,7 @@ export function createDiskQuotaService(deps: {
     }
   }
 
-  /**
-   * Measure one agent's workspace and record it. Resolves true when a figure
-   * was recorded. NEVER throws.
-   */
-  async function measureOnce(ctx: AgentContext, ownerOverride?: string): Promise<boolean> {
-    try {
-      if (!bus.hasService('workspace:usage')) return false;
-      if (!usableAgentId(ctx.agentId)) return false;
-      const owner = ownerOverride ?? (await ownerOf(ctx));
-      if (owner === undefined) {
-        log(ctx, 'debug', 'disk_quota_measure_unattributed', { agentId: ctx.agentId });
-        return false;
-      }
-      const out = await bus.call<Record<string, never>, { bytes?: unknown } | null>(
-        'workspace:usage',
-        ctx,
-        {},
-      );
-      const bytes = out?.bytes;
-      if (typeof bytes !== 'number' || !Number.isFinite(bytes) || bytes < 0) {
-        log(ctx, 'warn', 'disk_quota_usage_invalid', { agentId: ctx.agentId });
-        return false;
-      }
-      await store.upsertUsage(owner, `workspace:${ctx.agentId}`, 'workspace', bytes);
-      return true;
-    } catch (err) {
-      log(ctx, 'warn', 'disk_quota_measure_failed', { agentId: ctx.agentId, err });
-      return false;
-    }
-  }
-
-  // One measurement per agent at a time. A write that lands while one is
-  // running asks for a fresh measurement afterwards, so a slow, stale reading
-  // can never be the LAST one written.
-  // `done` settles when that agent's whole measuring loop has, so a release can
-  // wait for it (see releaseWorkspace).
-  const measuring = new Map<string, { again: boolean; ctx: AgentContext; done?: Promise<void> }>();
+  /** Every background measurement, so drain() can wait for them. */
   const inflight = new Set<Promise<void>>();
 
   function track(p: Promise<unknown>, ctx: AgentContext): void {
@@ -408,72 +328,6 @@ export function createDiskQuotaService(deps: {
         inflight.delete(wrapped);
       });
     inflight.add(wrapped);
-  }
-
-  function scheduleWorkspaceMeasure(ctx: AgentContext): void {
-    const agentId = ctx.agentId;
-    if (!usableAgentId(agentId)) return;
-    const running = measuring.get(agentId);
-    if (running !== undefined) {
-      running.again = true;
-      running.ctx = ctx;
-      return;
-    }
-    const state: { again: boolean; ctx: AgentContext; done?: Promise<void> } = { again: false, ctx };
-    measuring.set(agentId, state);
-    const run = (async () => {
-      try {
-        do {
-          state.again = false;
-          await measureOnce(state.ctx);
-        } while (state.again);
-      } finally {
-        measuring.delete(agentId);
-      }
-    })();
-    state.done = run;
-    track(run, ctx);
-  }
-
-  async function releaseWorkspace(agentId: unknown): Promise<void> {
-    // No request to borrow a logger from: the notice carries an id and nothing else.
-    const ctx = makeAgentContext({
-      sessionId: 'disk-quota-release',
-      agentId: PLUGIN_NAME,
-      userId: 'system',
-      ...sweepLogger,
-    });
-    try {
-      if (typeof agentId !== 'string' || agentId.length === 0) {
-        log(ctx, 'warn', 'disk_quota_workspace_deleted_invalid');
-        return;
-      }
-      // A measurement already walking this repo would upsert its (now stale)
-      // figure AFTER the delete below and re-create the row, and nothing ever
-      // repairs that: the sweep only upserts, and the agent is no longer listed.
-      // Let it land first, then delete. It never rejects today (see
-      // scheduleWorkspaceMeasure), but the `.catch` makes that a guarantee: a
-      // future rejection must not be able to skip the delete.
-      //
-      // KNOWN RESIDUAL: this only covers the write-triggered measurements. The
-      // periodic sweep (`reconcile`) calls `measureOnce` directly and bypasses
-      // the `measuring` map, so a sweep measurement already mid-walk when the
-      // agent is deleted can still upsert a stale figure afterwards. The window
-      // is narrow (one sweep per 6 h, two agents at a time). A measurement (or a
-      // write) that STARTS after the delete is not the problem: workspace-git
-      // refuses it with `agent-deleted` (TASK-719), so `measureOnce` records a
-      // failure and writes nothing. Deliberately not fixed here: the sweep is
-      // unchanged.
-      await measuring.get(agentId)?.done?.catch(() => undefined);
-      const removed = await store.deleteWorkspaceUsage(agentId);
-      log(ctx, 'debug', 'disk_quota_workspace_released', { agentId, removed });
-    } catch (err) {
-      // An error, not a warn: a row left behind keeps charging the owner for
-      // bytes that are gone, and nothing else takes it out. So it names the agent
-      // (this context's own agentId is the plugin's): it is the line an operator
-      // acts on. `agentId` is a validated string on every path that reaches here.
-      log(ctx, 'error', 'disk_quota_release_failed', { agentId, err });
-    }
   }
 
   // ---- agent files (TASK-993) ---------------------------------------------
@@ -625,28 +479,6 @@ export function createDiskQuotaService(deps: {
       userId: 'system',
       ...sweepLogger,
     });
-  }
-
-  async function sweepWorkspaces(): Promise<{ measured: number; failed: number }> {
-    const sweepCtx = sweepContext();
-    try {
-      if (!bus.hasService('agents:list-personal-owners') || !bus.hasService('workspace:usage')) {
-        log(sweepCtx, 'debug', 'disk_quota_sweep_skipped');
-        return { measured: 0, failed: 0 };
-      }
-      const listed = await listPersonalAgents(sweepCtx);
-      let measured = 0;
-      let failed = 0;
-      await mapBounded(listed, SWEEP_CONCURRENCY, async (a) => {
-        if (await measureOnce(agentSweepContext(a), a.ownerUserId)) measured++;
-        else failed++;
-      });
-      log(sweepCtx, 'info', 'disk_quota_sweep_done', { measured, failed });
-      return { measured, failed };
-    } catch (err) {
-      log(sweepCtx, 'warn', 'disk_quota_sweep_failed', { err });
-      return { measured: 0, failed: 0 };
-    }
   }
 
   /**
@@ -897,28 +729,23 @@ export function createDiskQuotaService(deps: {
   }
 
   async function reconcile(): Promise<ReconcileResult> {
-    const workspaces = await sweepWorkspaces();
     const files = await sweepAgentFiles();
     const blobs = await releaseBlobs();
     return {
-      measured: workspaces.measured + files.measured,
-      failed: workspaces.failed + files.failed,
+      measured: files.measured,
+      failed: files.failed,
       blobsReleased: blobs.released,
       blobReleaseAborted: blobs.aborted,
     };
   }
 
   return {
-    admitWorkspaceWrite,
     admitBlobWrite,
     recordBlobStored,
-    scheduleWorkspaceMeasure,
-    releaseWorkspace,
     scheduleAgentFilesMeasure,
     releaseAgentFiles,
     reconcile,
     releaseBlobs,
-    ownerOf,
     async drain() {
       while (inflight.size > 0) await Promise.allSettled([...inflight]);
     },

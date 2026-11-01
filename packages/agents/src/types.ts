@@ -4,8 +4,7 @@
  * These shapes are the inter-plugin API. A future @ax/agents-git that
  * stores agent definitions as files in a repo would register the same
  * `agents:*` service hooks with these exact payload types — no field
- * here mentions postgres, ULIDs, or rows. `workspaceRef` is opaque to
- * subscribers; only the registering plugin's ACL gate parses it.
+ * here mentions postgres, ULIDs, or rows.
  */
 import { z, type ZodType } from 'zod';
 import type { Transaction } from 'kysely';
@@ -53,7 +52,6 @@ export interface Agent {
   model: string;
   /** Which runner binary the host spawns for this agent. An id, not a path. */
   runner: RunnerId;
-  workspaceRef: string | null;
   skillAttachments: SkillAttachment[];
   /**
    * TASK-107 — the connector ids this agent is attached to. A first-class
@@ -115,7 +113,6 @@ export interface AgentInput {
    * `SUPPORTED_RUNNERS`.
    */
   runner?: string;
-  workspaceRef?: string | null;
   visibility: 'personal' | 'team';
   /**
    * Required for `visibility === 'team'`; must be the team_id the caller
@@ -159,8 +156,9 @@ export interface ResolveOutput {
 // Storage-agnostic by construction — the field names mirror the public `Agent`
 // interface (no `pg_`, `row_id`, etc.). `createdAt`/`updatedAt` are real `Date`
 // instances (`z.date()`, NOT `z.string()` — `z.string()` would reject a Date
-// and the handler returns Dates from the store). `workspaceRef` is the opaque
-// version token (I1) — validated as a nullable string, never resolved.
+// and the handler returns Dates from the store). A key this schema does not
+// declare is stripped on the way out; that is how a stray `workspaceRef`
+// (removed in TASK-995) stays off the bus.
 //
 // Cast to `ZodType<ResolveOutput>`: zod's `.nullable()`/`.optional()` infer
 // `| undefined`/`| null` shapes that `exactOptionalPropertyTypes` won't prove
@@ -186,7 +184,6 @@ const AgentSchema = z.object({
   // Mirrors the `RunnerId` union (same posture as ownerType / visibility:
   // a value outside the union is a corrupt row, not a new runner).
   runner: z.union([z.literal('claude-sdk'), z.literal('aisdk')]),
-  workspaceRef: z.string().nullable(),
   skillAttachments: z.array(SkillAttachmentSchema),
   connectorAttachments: z.array(z.string()),
   // TASK-739 — declared for the same strip reason as `runner` below.

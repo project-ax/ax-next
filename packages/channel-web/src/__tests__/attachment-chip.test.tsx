@@ -15,30 +15,31 @@ describe('AttachmentChip', () => {
     vi.restoreAllMocks();
   });
 
-  it('renders display name and triggers GET /api/files on click', () => {
+  it('renders display name and downloads by conversation and attachment id on click', () => {
     const openSpy = vi.spyOn(window, 'open').mockImplementation(() => null);
 
     render(
       <AttachmentChip
-        path=".ax/uploads/c1/t1/foo.pdf"
+        attachmentId="3f1c2b9e-0d4a-4e7b-9c51-2a8f6e1d7b40"
         displayName="Q4 Report.pdf"
         mediaType="application/pdf"
-        conversationId="c1"
+        conversationId="c & 1"
       />,
     );
     expect(screen.getByText('Q4 Report.pdf')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: /download/i }));
+    // By id, never by a path, and every value encoded.
     expect(openSpy).toHaveBeenCalledWith(
-      expect.stringMatching(/\/api\/files\?path=[^&]+&conversationId=c1$/),
+      '/api/files?conversationId=c%20%26%201&id=3f1c2b9e-0d4a-4e7b-9c51-2a8f6e1d7b40',
       '_blank',
       'noopener,noreferrer',
     );
   });
 
-  it('renders an image preview for image/*', () => {
+  it('renders an image preview for image/*, fetched by conversation and attachment id', () => {
     const { container } = render(
       <AttachmentChip
-        path=".ax/uploads/c1/t1/cat.png"
+        attachmentId="att-1"
         displayName="cat.png"
         mediaType="image/png"
         conversationId="c1"
@@ -46,7 +47,7 @@ describe('AttachmentChip', () => {
     );
     const img = container.querySelector('img');
     expect(img).toBeTruthy();
-    expect(img?.getAttribute('src')).toMatch(/\/api\/files\?path=[^&]+&conversationId=c1$/);
+    expect(img?.getAttribute('src')).toBe('/api/files?conversationId=c1&id=att-1');
   });
 
   /*
@@ -62,7 +63,7 @@ describe('AttachmentChip', () => {
     it('bounds alt and the image variant aria-label', () => {
       const { container } = render(
         <AttachmentChip
-          path=".ax/uploads/c1/t1/z.png"
+          attachmentId="att-1"
           displayName={LONG}
           mediaType="image/png"
           conversationId="c1"
@@ -80,7 +81,7 @@ describe('AttachmentChip', () => {
     it('bounds the download-button aria-label on the non-image variant', () => {
       render(
         <AttachmentChip
-          path=".ax/uploads/c1/t1/z.pdf"
+          attachmentId="att-1"
           displayName={`${'q'.repeat(400)}.pdf`}
           mediaType="application/pdf"
           conversationId="c1"
@@ -94,7 +95,7 @@ describe('AttachmentChip', () => {
       expect(label.startsWith('Download qqq')).toBe(true);
     });
 
-    it('bounds the pending variant, which has no path and no label', () => {
+    it('bounds the pending variant, which has no id and no label', () => {
       const { container } = render(
         <AttachmentChip variant="pending" displayName={LONG} mediaType="image/png" />,
       );
@@ -106,7 +107,7 @@ describe('AttachmentChip', () => {
     it('leaves an ordinary name exactly as it came in', () => {
       render(
         <AttachmentChip
-          path=".ax/uploads/c1/t1/foo.pdf"
+          attachmentId="att-1"
           displayName="Q4 Report.pdf"
           mediaType="application/pdf"
           conversationId="c1"

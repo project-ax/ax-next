@@ -40,7 +40,7 @@
  *     not ids and are only comparable within ONE answer, which is why the gate
  *     says "in the same answer". This replaces Strata's `source_conversations`
  *     frontmatter (deleted with Strata in TASK-608). It still does NOT read
- *     transcripts: TASK-67 keeps them out of `/agent`, and naming them at all
+ *     transcripts: TASK-67 keeps them out of the agent's files, and naming them at all
  *     cued the model to go looking (TASK-188).
  *   - Hard limits: ≤3 author/patch ops per pass; an explicit anti-pattern list
  *     of what NOT to crystallize.

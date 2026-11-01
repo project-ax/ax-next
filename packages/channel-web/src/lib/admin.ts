@@ -44,7 +44,6 @@ export interface AdminAgent {
   mcpConfigIds: string[];
   model: string;
   requestedModel?: string;
-  workspaceRef: string | null;
   skillAttachments: Array<{ skillId: string; credentialBindings: Record<string, string> }>;
   /** TASK-107 — the connector ids attached to this agent (the first-class
    *  per-agent connector-attachment store, replacing TASK-98's mcpConfigIds
@@ -61,7 +60,6 @@ export interface AdminAgentInput {
   model: string;
   visibility: 'personal' | 'team';
   teamId?: string;
-  workspaceRef?: string | null;
 }
 
 /**

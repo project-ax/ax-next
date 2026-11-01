@@ -1,15 +1,14 @@
 #!/usr/bin/env node
 // ---------------------------------------------------------------------------
-// Three-tier canary runner stub.
+// Two-tier canary runner stub.
 //
-// The sandbox hands the runner THREE distinct filesystem roots, each with a
-// different durability contract (filestore-user-files design §3):
+// The sandbox hands the runner TWO filesystem roots, each with a different
+// durability contract (design §4):
 //
-//   AX_WORKSPACE_ROOT  (/agent)      — governed, git-backed; re-materialized
-//                                      from a host bundle each session.
-//   AX_USERFILES_ROOT  (/workspace)  — durable NFS/localDir; LIVE across
-//                                      sessions, never versioned.
-//   AX_EPHEMERAL_ROOT  (/ephemeral)  — session scratch; discarded with the pod.
+//   AX_USERFILES_ROOT  (k8s /files)  — the agent's home: durable NFS/localDir,
+//                                      LIVE across sessions.
+//   AX_EPHEMERAL_ROOT  (k8s /tmp)    — session scratch (uploads, transcripts,
+//                                      caches); discarded with the session.
 //
 // On boot this stub, for each root, reads back any `marker.txt` a PRIOR session
 // left and then appends its own session id. It emits one JSON line so the test
@@ -36,9 +35,8 @@ async function probe(root) {
 async function run() {
   process.stdout.write(
     JSON.stringify({
-      governed: await probe(process.env.AX_WORKSPACE_ROOT ?? null),
       userFiles: await probe(process.env.AX_USERFILES_ROOT ?? null),
-      ephemeral: await probe(process.env.AX_EPHEMERAL_ROOT ?? null),
+      scratch: await probe(process.env.AX_EPHEMERAL_ROOT ?? null),
     }) + '\n',
   );
 }

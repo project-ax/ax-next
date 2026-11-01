@@ -43,7 +43,6 @@
   (`server/routes-workspace.ts`), and Node's ESM resolver does not guess.
 */
 import type { WorkspaceStep } from './workspace-steps.js';
-import type { SaveRefusedCode } from './save-refused.js';
 import type {
   CheckInMiss,
   RoutineFireView,
@@ -621,24 +620,29 @@ export interface AgentRailData {
 }
 
 /**
- * One file the person attached to a message, as the transcript remembers it
- * (TASK-424).
+ * One file in the thread — one the person attached to a message, or one the
+ * agent published — as the transcript remembers it (TASK-424).
  *
  * This is the user's own record of what they sent, so it is carried on the
  * message rather than derived at render time: the walk found a turn whose image
  * reached the model and left NOTHING on screen, which made the agent look like
  * it was describing a picture nobody had sent.
  *
- * `path` is `null` in exactly one case — the live frame, between the composer
- * handing the message over and `attachments:commit` minting a durable
- * workspace path. The name and type are known from the person's own pick in
+ * `attachmentId` is what `GET /api/files` takes, together with the
+ * conversation the file belongs to. It is opaque: the client only hands it
+ * back, never parses it. `displayName` is the stored `filename` — the person's
+ * own name for the file, or a name the agent chose — and is untrusted text.
+ *
+ * `attachmentId` is `null` in exactly one case — the live frame, between the
+ * composer handing the message over and the next read bringing back the
+ * committed copy. The name and type are known from the person's own pick in
  * that window, and a chip that names the file is the honest thing to draw;
- * the thumbnail arrives with the path on the next read. Null is therefore
+ * the thumbnail arrives with the id on the next read. Null is therefore
  * "no download URL yet", never "no attachment" — the renderer must still show
  * the name.
  */
 export interface ThreadAttachment {
-  path: string | null;
+  attachmentId: string | null;
   displayName: string;
   mediaType: string;
   sizeBytes?: number;
@@ -743,11 +747,7 @@ export type ThreadMessage =
    * the persisted `turn-error` display events off `conversations:get` and
    * interleaves them with the turns. `status` (AW-8) is the one still
    * waiting, and `fold` above. `stopped` (below) HAS A PRODUCER (TASK-688):
-   * `AgentView` appends it client-side after a Stop. `save-refused` HAS TWO
-   * (TASK-731): `buildThread` reads the persisted `save-refused` display
-   * events off `conversations:get` and interleaves them as it does
-   * turn-errors, and `AgentView` appends a live copy after a `done` carrying
-   * `saveRefused` (TASK-720) until the re-read holds the persisted row. This
+   * `AgentView` appends it client-side after a Stop. This
    * list is meant to be exhaustive — if you add a producer, say so here,
    * because the next card scoped off this comment will believe it.
    */
@@ -767,31 +767,7 @@ export type ThreadMessage =
    * Thread find does not index it: like `status` it is chrome, not something
    * anyone said.
    */
-  | { kind: 'stopped'; id: string; text: string }
-  /**
-   * "The files from this reply weren't saved" (TASK-720, persisted since
-   * TASK-731). NOT client-only any more; it has two producers:
-   *
-   *   - `buildThread` (`server/routes-workspace.ts`) projects each persisted
-   *     `save-refused` display event, with id `saveRefusedRowId(key)` — the
-   *     key is the turn's reqId, or `final:<uuid>` for a refusal at the
-   *     runner's last flush, which has no turn. This is the record; it
-   *     survives a reload.
-   *   - `AgentView` appends a live copy after a turn whose stream `done`
-   *     carried a `saveRefused` code. That copy only bridges the gap between
-   *     `done` and the re-read: it is not drawn once the thread holds the row
-   *     for that turn's reqId, and it goes on the next message, an agent
-   *     switch, or a change of conversation.
-   *
-   * Unlike `stopped` this IS bad news the person did not ask for: the reply
-   * says it made files, and they are gone. So it is drawn as a warning, not a
-   * footnote. It carries a closed `code`, never a sentence: the renderer
-   * words it from `save-refused-copy.ts`, as turn-error reasons are worded by
-   * `turn-error-labels.ts`, so nothing the model or the host veto wrote ever
-   * reaches the person. Thread find skips it, as it does `stopped`: chrome,
-   * not something anyone said.
-   */
-  | { kind: 'save-refused'; id: string; code: SaveRefusedCode };
+  | { kind: 'stopped'; id: string; text: string };
 
 /**
  * The human's memory tier: `rules`, verbatim, always injected, safe to
@@ -903,37 +879,16 @@ export interface FactMemoryPage {
 }
 
 /**
- * One row in the Files tab's list.
- *
- * What the prototype's `WorkspaceFile` had and this does not: `meta`
- * ("2 KB · yesterday"), `title` (a heading distinct from the filename), and
- * `blocks` — a hand-shaped `['p' | 'h' | 'mono', string]` document. All four
- * were fixture conveniences with nothing behind them. The workspace listing
- * reports paths and only paths: no size, no timestamp, no separate title. A
- * `meta` line assembled from nothing would be the same class of lie as the
- * `folded: 0` that used to sit on `PastConversation`.
+ * One child of a directory in the agent's files — its cwd and HOME, where a
+ * deliverable lands when nobody said where.
  *
  * The two fields are NOT the same field twice:
- *   - `path` is the key the client sends back to open the file. Raw, opaque,
- *     never rendered.
- *   - `name` is the label, fenced server-side. A filename is agent-authored
- *     text and a file list is the classic Trojan-source surface.
- */
-export interface WorkspaceFileSummary {
-  path: string;
-  name: string;
-}
-
-/**
- * One child of a directory in the agent's DURABLE user-files tier.
- *
- * A different tier from `WorkspaceFileSummary` above, and the difference
- * matters: that one is the git-backed tier AX manages, this one is the agent's
- * cwd and HOME — where a deliverable lands when nobody said where.
- *
- * Same `path` / `name` split, same reason. `path` is the raw key, already
- * joined onto its parent by the server, and it is what goes back on the wire.
- * `name` is the fenced label and is the only one of the two ever drawn.
+ *   - `path` is the raw key, already joined onto its parent by the server, and
+ *     it is what goes back on the wire to open the entry. Opaque, never
+ *     rendered.
+ *   - `name` is the fenced label, and the only one of the two ever drawn. A
+ *     filename is agent-authored text and a file list is the classic
+ *     Trojan-source surface.
  */
 export interface UserFileEntry {
   path: string;
@@ -942,7 +897,7 @@ export interface UserFileEntry {
 }
 
 /**
- * One answer from the durable tier: a directory's children, or a file's text.
+ * One answer from the agent's files: a directory's children, or a file's text.
  *
  * Discriminated because a tree navigator does not know which it clicked until
  * the server says so — the backing hook answers per PATH, not per kind.
@@ -950,7 +905,7 @@ export interface UserFileEntry {
 export type UserFilesAnswer =
   | {
       kind: 'dir';
-      /** The raw key this answers for. `''` is the tier root. */
+      /** The raw key this answers for. `''` is the root. */
       path: string;
       name: string;
       entries: UserFileEntry[];
@@ -964,19 +919,6 @@ export type UserFilesAnswer =
       body: string | null;
       clipped: 'binary' | 'too-large' | null;
     };
-
-/** One file's text, as the server is willing to show it. */
-export interface WorkspaceFileBody {
-  path: string;
-  name: string;
-  /** `null` when there is no text to show — see `clipped`. */
-  body: string | null;
-  /**
-   * Why `body` is missing or short. `null` means the body is the whole file,
-   * and that is a promise the tab repeats to the reader.
-   */
-  clipped: 'binary' | 'too-large' | null;
-}
 
 /**
  * One row in the rail's "Previous conversations" list — a pointer, not a copy.

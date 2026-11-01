@@ -8,19 +8,16 @@ import type { RunnerEnv } from '../env.js';
 // ---------------------------------------------------------------------------
 // TASK-994 (design §11): the SDK loads `$CLAUDE_CONFIG_DIR` as its own trusted
 // configuration — settings.json hooks, CLAUDE.md, skills, MCP servers in
-// .claude.json. If that directory overlaps the agent's home (the durable
-// `/files`, or scratch when no durable mount is wired), anything the agent
-// writes there would load as trusted config, in this session or the next one.
+// .claude.json. If that directory overlaps the agent's home (`/files`, which
+// TASK-995 made required), anything the agent writes there would load as
+// trusted config, in this session or the next one.
 //
 // Every case uses real directories. `t` is deliberately NOT realpath'd: on
 // macOS os.tmpdir() sits under /var, a symlink to /private/var, so every case
 // there also checks that the guard compares real paths on both sides.
 // ---------------------------------------------------------------------------
 
-type GuardEnv = Pick<
-  RunnerEnv,
-  'claudeConfigDir' | 'transcriptsRoot' | 'userFilesRoot' | 'ephemeralRoot' | 'workspaceRoot'
->;
+type GuardEnv = Pick<RunnerEnv, 'claudeConfigDir' | 'transcriptsRoot' | 'userFilesRoot'>;
 
 const OVERLAP = /^refusing to start: CLAUDE_CONFIG_DIR resolves to .+, which overlaps the agent's home /;
 const TRANSCRIPTS_OVERLAP = /^refusing to start: AX_TRANSCRIPTS_ROOT resolves to .+, which overlaps the agent's home /;
@@ -38,9 +35,9 @@ afterEach(async () => {
   await fs.rm(t, { recursive: true, force: true });
 });
 
-/** The production shape: a durable home at `<t>/files`, agent state at `<t>/agent`. */
-function envWith(claudeConfigDir: string, roots: Partial<GuardEnv> = { userFilesRoot: home }): GuardEnv {
-  return { workspaceRoot: path.join(t, 'agent'), claudeConfigDir, ...roots };
+/** The production shape: the agent's home at `<t>/files`. */
+function envWith(claudeConfigDir: string, roots: Pick<GuardEnv, 'userFilesRoot'> = { userFilesRoot: home }): GuardEnv {
+  return { claudeConfigDir, ...roots };
 }
 
 async function mkdirp(...segments: string[]): Promise<string> {
@@ -50,6 +47,32 @@ async function mkdirp(...segments: string[]): Promise<string> {
 }
 
 describe('assertConfigDirOutsideAgentHome', () => {
+  // The k8s sandbox after TASK-995: home `/files`, runner HOME `/home/runner`
+  // (tmpfs) holding CLAUDE_CONFIG_DIR, and the scratch root `/tmp` holding the
+  // transcripts root. The scratch root is not the agent's home, so a
+  // transcripts root inside it is not an overlap.
+  describe('the sandbox layout', () => {
+    it('home /files, CLAUDE_CONFIG_DIR under /home/runner, transcripts under /tmp: starts', async () => {
+      const pod = {
+        userFilesRoot: home,
+        ephemeralRoot: await mkdirp(t, 'tmp'),
+        transcriptsRoot: path.join(t, 'tmp', 'transcripts'),
+        claudeConfigDir: await mkdirp(t, 'home-runner', '.ax', 'session'),
+      };
+      await expect(assertConfigDirOutsideAgentHome(pod)).resolves.toBeUndefined();
+    });
+
+    it('CLAUDE_CONFIG_DIR at /files/.claude: refused', async () => {
+      const pod = {
+        userFilesRoot: home,
+        ephemeralRoot: await mkdirp(t, 'tmp'),
+        transcriptsRoot: path.join(t, 'tmp', 'transcripts'),
+        claudeConfigDir: await mkdirp(home, '.claude'),
+      };
+      await expect(assertConfigDirOutsideAgentHome(pod)).rejects.toThrow(OVERLAP);
+    });
+  });
+
   describe('accepts a runner-private config dir', () => {
     it('a sibling of the home (the production shape)', async () => {
       const cfg = await mkdirp(t, 'runner', '.ax', 'session');
@@ -126,15 +149,6 @@ describe('assertConfigDirOutsideAgentHome', () => {
         assertConfigDirOutsideAgentHome(envWith(cfg, { userFilesRoot: path.join(t, 'alias', 'skills') })),
       ).rejects.toThrow(OVERLAP);
     });
-
-    it('when there is no durable home and session scratch is the home', async () => {
-      // runnerHomeDir falls back to the scratch tier, which becomes cwd/HOME.
-      const scratch = await mkdirp(t, 'scratch');
-      const cfg = await mkdirp(scratch, '.ax');
-      await expect(
-        assertConfigDirOutsideAgentHome(envWith(cfg, { ephemeralRoot: scratch })),
-      ).rejects.toThrow(OVERLAP);
-    });
   });
 
   // The CLI reads `$CLAUDE_CONFIG_DIR/projects` back on resume, and with
@@ -205,14 +219,6 @@ describe('assertConfigDirOutsideAgentHome', () => {
       await fs.symlink(cfg, path.join(t, 'tmp', 'link3'));
       await expect(
         assertConfigDirOutsideAgentHome(envWith(cfg, { userFilesRoot: `${t}/tmp/link3/..` })),
-      ).rejects.toThrow(/^refusing to start: the agent's home \(.+\) contains a '\.\.' segment/);
-    });
-
-    it('a scratch home (no durable home wired) whose `..` steps out of a symlink', async () => {
-      await mkdirp(t, 'tmp');
-      await fs.symlink(cfg, path.join(t, 'tmp', 'link3'));
-      await expect(
-        assertConfigDirOutsideAgentHome(envWith(cfg, { ephemeralRoot: `${t}/tmp/link3/..` })),
       ).rejects.toThrow(/^refusing to start: the agent's home \(.+\) contains a '\.\.' segment/);
     });
 

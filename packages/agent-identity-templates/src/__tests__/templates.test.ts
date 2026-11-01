@@ -1,10 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import {
-  BOOTSTRAP_TEMPLATE,
-  IDENTITY_SCAFFOLD,
-  SOUL_SCAFFOLD,
-  fallbackIdentityLine,
-} from '../index.js';
+import * as templates from '../index.js';
+import { BOOTSTRAP_TEMPLATE, fallbackIdentityLine } from '../index.js';
 
 describe('agent-identity-templates', () => {
   it('the bootstrap script saves with update_identity and finishes with complete_bootstrap', () => {
@@ -23,9 +19,16 @@ describe('agent-identity-templates', () => {
     expect(BOOTSTRAP_TEMPLATE).not.toContain('`Write`');
   });
 
-  it('scaffolds are non-empty markdown', () => {
-    expect(IDENTITY_SCAFFOLD).toContain('# Identity');
-    expect(SOUL_SCAFFOLD).toContain('# Soul');
+  // Identity and soul are rows the agent writes with `update_identity`
+  // (TASK-989), so there is no file for a stub to start (TASK-995).
+  it('exports no identity or soul file scaffolds', () => {
+    expect(Object.keys(templates)).not.toContain('IDENTITY_SCAFFOLD');
+    expect(Object.keys(templates)).not.toContain('SOUL_SCAFFOLD');
+    expect(Object.keys(templates).sort()).toEqual([
+      'BOOTSTRAP_TEMPLATE',
+      'bootstrapPreamble',
+      'fallbackIdentityLine',
+    ]);
   });
 
   it('fallbackIdentityLine names the agent', () => {

@@ -44,23 +44,19 @@ vi.mock('@/lib/workspace-api', async () => {
   return {
     ...actual,
     workspaceApi: {
-      files: vi.fn(),
-      file: vi.fn(),
       userFiles: vi.fn(),
       downloadFile: vi.fn(),
     },
   };
 });
 
-const filesMock = vi.mocked(workspaceApi.files);
-const fileMock = vi.mocked(workspaceApi.file);
 const userFilesMock = vi.mocked(workspaceApi.userFiles);
 
 function renderTab(agentId = 'a-quill') {
   return render(<AgentFiles agentId={agentId} agentName="Quill" />);
 }
 
-/** One durable-tier directory listing, keyed by raw path. */
+/** The agent's files as a tree: listings and file bodies, keyed by raw path. */
 function durableTree(dirs: Record<string, UserFilesAnswer>) {
   userFilesMock.mockImplementation(async (_agentId: string, relPath: string) => {
     const hit = dirs[relPath];
@@ -71,32 +67,31 @@ function durableTree(dirs: Record<string, UserFilesAnswer>) {
   });
 }
 
-beforeEach(() => {
-  filesMock.mockReset();
-  fileMock.mockReset();
-  userFilesMock.mockReset();
-  /*
-    Unless a test says otherwise the durable tier answers 503 — the quiet
-    answer, and the same default `AgentFiles.test.tsx` takes: a deployment with
-    no durable backend makes no claim about the agent and adds no buttons the
-    assertions would have to step around.
-  */
-  userFilesMock.mockRejectedValue(
-    new WorkspaceApiError('/agents/a-quill/user-files', 503),
-  );
-  filesMock.mockResolvedValue({
-    files: [
-      { path: 'notes.md', name: 'notes.md' },
-      { path: 'q3.csv', name: 'q3.csv' },
+/** The default tree: two files at the root, and `notes.md` opens. */
+const DEFAULT_TREE: Record<string, UserFilesAnswer> = {
+  '': {
+    kind: 'dir',
+    path: '',
+    name: '',
+    entries: [
+      { path: 'notes.md', name: 'notes.md', kind: 'file' },
+      { path: 'q3.csv', name: 'q3.csv', kind: 'file' },
     ],
     truncated: false,
-  });
-  fileMock.mockResolvedValue({
+  },
+  'notes.md': {
+    kind: 'file',
     path: 'notes.md',
     name: 'notes.md',
     body: 'the body of the file',
     clipped: null,
-  });
+  },
+};
+
+beforeEach(() => {
+  userFilesMock.mockReset();
+  // Unless a test installs its own tree, the agent has the default one.
+  durableTree(DEFAULT_TREE);
 });
 
 afterEach(() => {
@@ -117,7 +112,7 @@ describe('the Files tab below md', () => {
     renderTab();
 
     expect(await screen.findByRole('button', { name: 'notes.md' })).toBeTruthy();
-    expect(screen.getByRole('heading', { name: 'Agent workspace' })).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'Files' })).toBeTruthy();
     expect(screen.queryByText(/pick a file to read it/i)).toBeNull();
   });
 
@@ -132,7 +127,7 @@ describe('the Files tab below md', () => {
     // …and the 260px column is not beside it. This is the assertion the card
     // is about: at 390px the two cannot both be on screen.
     expect(screen.queryByRole('button', { name: 'q3.csv' })).toBeNull();
-    expect(screen.queryByRole('heading', { name: 'Agent workspace' })).toBeNull();
+    expect(screen.queryByRole('heading', { name: 'Files' })).toBeNull();
   });
 
   it('comes back to the list, at the same folder, with the file still marked', async () => {
@@ -202,13 +197,14 @@ describe('the Files tab below md', () => {
       state a reader is really in when they press Back and then go looking
       somewhere else.
 
-      WITH A DURABLE SELECTION, as here, a second mechanism ALSO holds the pane
-      down: `useAgentUserFiles.openDir` clears the durable file on the way into
-      a folder, so `hasSelection` goes false regardless of the latch. That makes
-      a latch-on-the-folder-branch mutation *equivalent* in this scenario — it
-      is killed only together with removing that clear. The governed-selection
-      case below is the one where the latch stands alone, and it is the test
-      that actually pins this branch.
+      A second mechanism ALSO holds the pane down: `useAgentUserFiles.openDir`
+      clears the open file on the way into a folder, so `hasSelection` goes
+      false regardless of the latch. That makes a latch-on-the-folder-branch
+      mutation *equivalent* in this scenario — it is killed only together with
+      removing that clear. (There used to be a second, git-backed selection
+      that `openDir` never cleared, and a test for the latch standing alone;
+      that section was removed in TASK-995, so the clear is now the only
+      thing holding it, and `user-files.ts` is where it is pinned.)
     */
     setViewport(true);
     durableTree({
@@ -249,64 +245,10 @@ describe('the Files tab below md', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'reports' }));
 
     expect(await screen.findByRole('button', { name: 'q3.md' })).toBeTruthy();
-    // Still on the list: the other section is beside it and there is nothing
-    // to go back FROM.
-    expect(screen.getByRole('heading', { name: 'Agent workspace' })).toBeTruthy();
+    // Still on the list: there is nothing to go back FROM.
+    expect(screen.getByRole('heading', { name: 'Files' })).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Back' })).toBeNull();
     expect(screen.queryByText('the inbox body')).toBeNull();
-  });
-
-  it('stays on the list for a folder tap while a GOVERNED file is still selected', async () => {
-    /*
-      THE CASE WHERE THE LATCH STANDS ALONE, and the reason the test above is
-      not enough. `durable.openDir` clears the DURABLE file only
-      (`user-files.ts` `setFilePath(null)`); it never touches
-      `governed.openPath` — the two tiers are separate hooks and neither reaches
-      into the other. So when the surviving selection is governed, the single
-      thing keeping a folder tap off the viewer is that the folder branch does
-      not set `drilledIn`.
-
-      Measured: add `setDrilledIn(true)` to the `e.kind === 'dir'` branch and
-      this is the only test in the file that goes red. Every other folder case
-      here carries a DURABLE selection, where the `openDir` clear masks the
-      mutation — which is exactly how that mutant read as "equivalent" until a
-      reviewer traced the governed path.
-
-      The journey is ordinary: read something the agent wrote, come back, go
-      looking through your own files.
-    */
-    setViewport(true);
-    durableTree({
-      '': {
-        kind: 'dir',
-        path: '',
-        name: '',
-        entries: [{ path: 'reports', name: 'reports', kind: 'dir' }],
-        truncated: false,
-      },
-      reports: {
-        kind: 'dir',
-        path: 'reports',
-        name: 'reports',
-        entries: [{ path: 'reports/q3.md', name: 'q3.md', kind: 'file' }],
-        truncated: false,
-      },
-    });
-    renderTab();
-
-    // Open a file from the GOVERNED tier, then come back. The governed
-    // selection survives, and nothing in the durable tier will clear it.
-    fireEvent.click(await screen.findByRole('button', { name: 'notes.md' }));
-    expect(await screen.findByText('the body of the file')).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: 'Back' }));
-
-    // Now tap a DURABLE folder. `hasSelection` is still true via the governed
-    // tier, so only the drill-in latch is holding the viewer down.
-    fireEvent.click(await screen.findByRole('button', { name: 'reports' }));
-
-    expect(await screen.findByRole('button', { name: 'q3.md' })).toBeTruthy();
-    expect(screen.queryByRole('button', { name: 'Back' })).toBeNull();
-    expect(screen.queryByText('the body of the file')).toBeNull();
   });
 
   it('reports a vanished folder on the LIST, not as a file that would not open', async () => {
@@ -351,7 +293,7 @@ describe('the Files tab below md', () => {
     // Not the viewer's sentence, and not the viewer at all.
     expect(screen.queryByText(/could not open that file/i)).toBeNull();
     expect(screen.queryByRole('button', { name: 'Back' })).toBeNull();
-    expect(screen.getByRole('heading', { name: 'Agent workspace' })).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'Files' })).toBeTruthy();
   });
 
   it('keeps the way out on a viewer that could not open the file', async () => {
@@ -362,7 +304,10 @@ describe('the Files tab below md', () => {
       `FileViewer` rather than inside its branches.
     */
     setViewport(true);
-    fileMock.mockRejectedValue(new WorkspaceApiError('/agents/a-quill/file', 500));
+    userFilesMock.mockImplementation(async (_agentId: string, relPath: string) => {
+      if (relPath === '') return DEFAULT_TREE['']!;
+      throw new WorkspaceApiError(`/agents/a-quill/user-files/${relPath}`, 500);
+    });
     renderTab();
 
     fireEvent.click(await screen.findByRole('button', { name: 'notes.md' }));
@@ -425,9 +370,14 @@ describe('the Files tab below md', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'notes.md' }));
     expect(await screen.findByText('the body of the file')).toBeTruthy();
 
-    filesMock.mockResolvedValue({
-      files: [{ path: 'other.md', name: 'other.md' }],
-      truncated: false,
+    durableTree({
+      '': {
+        kind: 'dir',
+        path: '',
+        name: '',
+        entries: [{ path: 'other.md', name: 'other.md', kind: 'file' }],
+        truncated: false,
+      },
     });
     rerender(<AgentFiles agentId="a-other" agentName="Quill" />);
 

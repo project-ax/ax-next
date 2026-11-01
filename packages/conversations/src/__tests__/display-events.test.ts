@@ -10,14 +10,13 @@ import {
   startTestContainer,
 } from '@ax/test-harness';
 import { createDatabasePostgresPlugin } from '@ax/database-postgres';
+import { PluginError, type Logger } from '@ax/core';
 import { createConversationsPlugin } from '../plugin.js';
 import type {
   AppendEventInput,
   AppendEventOutput,
   CreateInput,
   CreateOutput,
-  DrainSaveRefusalsInput,
-  DrainSaveRefusalsOutput,
   GetInput,
   GetOutput,
 } from '../types.js';
@@ -45,13 +44,6 @@ async function makeHarness(): Promise<TestHarness> {
         const call = input as { agentId: string };
         return { agent: { id: call.agentId, visibility: 'personal' } };
       },
-      // conversations manifest declares these calls; stub for bootstrap.
-      'workspace:list': async () => ({ paths: [] as string[] }),
-      'workspace:read': async () => ({ found: false as const }),
-      'workspace:apply': async () => ({
-        version: 'v-stub',
-        delta: { before: null, after: 'v-stub', changes: [] },
-      }),
     },
     plugins: [
       createDatabasePostgresPlugin({ connectionString }),
@@ -352,92 +344,119 @@ describe('TASK-66 display event log — persist + read', () => {
 });
 
 // ---------------------------------------------------------------------------
-// TASK-731 — a refused end-of-turn save is a durable display event, so the
-// notice survives a reload. The writers live in @ax/ipc-core (turn-end and
-// chat-end persist steps) and reach this plugin only through
-// `conversations:append-event`, which is exactly what these tests drive.
+// TASK-995 — the `save-refused` display event is retired. TASK-731 wrote one
+// when the host refused to keep a reply's files; the workspace tier that could
+// refuse is gone, so nothing writes the kind and nothing reads it. Rows an
+// earlier release wrote stay in the table (the CHECK keeps admitting the
+// kind), and the read leaves them out quietly: they are a retired kind, not
+// an unknown one, so they cost no warning either.
 // ---------------------------------------------------------------------------
-describe('TASK-731 save-refused display events', () => {
-  it('persists a save-refused row and conversations:get returns it on displayEvents', async () => {
+
+/** A Logger that records `warn` calls, so a test can see what the read said. */
+function recordingLogger(warnings: string[]): Logger {
+  const logger: Logger = {
+    debug: () => {},
+    info: () => {},
+    warn: (msg) => {
+      warnings.push(msg);
+    },
+    error: () => {},
+    child: () => logger,
+  };
+  return logger;
+}
+
+describe('TASK-995 retired save-refused display events', () => {
+  it('an old save-refused event row stays valid and getConversation ignores it', async () => {
     const h = await makeHarness();
     const userId = 'userA';
     const conversationId = await createConv(h, userId);
-
-    await h.bus.call<AppendEventInput, AppendEventOutput>(
-      'conversations:append-event',
-      h.ctx({ conversationId }),
-      {
-        conversationId,
-        kind: 'turn',
-        role: 'assistant',
-        payload: { blocks: [{ type: 'text', text: 'made you a file' }] },
-      },
-    );
-    await h.bus.call<AppendEventInput, AppendEventOutput>(
-      'conversations:append-event',
-      h.ctx({ conversationId }),
-      {
-        conversationId,
-        kind: 'save-refused',
-        key: 'req-1',
-        payload: { code: 'storage-full' },
-      },
-    );
-
-    const got = await h.bus.call<GetInput, GetOutput>(
-      'conversations:get',
-      h.ctx({ userId }),
-      { conversationId, userId },
-    );
-    expect(got.turns).toHaveLength(1);
-    expect(got.displayEvents).toHaveLength(1);
-    expect(got.displayEvents[0]).toMatchObject({
-      kind: 'save-refused',
-      key: 'req-1',
-      payload: { code: 'storage-full' },
-    });
-    expect(typeof got.displayEvents[0]!.createdAt).toBe('string');
-  });
-
-  it('folds two save-refused rows with the same key to the later one (both turn-ends of one turn carry the code)', async () => {
-    const h = await makeHarness();
-    const userId = 'userA';
-    const conversationId = await createConv(h, userId);
-    const append = (input: AppendEventInput) =>
+    const appendTurn = (text: string) =>
       h.bus.call<AppendEventInput, AppendEventOutput>(
         'conversations:append-event',
         h.ctx({ conversationId }),
-        input,
+        {
+          conversationId,
+          kind: 'turn',
+          role: 'assistant',
+          payload: { blocks: [{ type: 'text', text }] },
+        },
       );
 
-    // The tool turn-end, its notice, then the assistant turn-end and ITS notice.
-    await append({ conversationId, kind: 'turn', role: 'tool', payload: { blocks: [] } });
-    await append({ conversationId, kind: 'save-refused', key: 'req-9', payload: { code: 'too-large' } });
-    await append({
-      conversationId,
-      kind: 'turn',
-      role: 'assistant',
-      payload: { blocks: [{ type: 'text', text: 'done' }] },
-    });
-    await append({ conversationId, kind: 'save-refused', key: 'req-9', payload: { code: 'refused' } });
-    // A final/idle refusal has its own unique key and does not fold.
-    await append({
-      conversationId,
-      kind: 'save-refused',
-      key: 'final:00000000-0000-4000-8000-000000000000',
-      payload: { code: 'storage-full' },
-    });
+    await appendTurn('made you a file');
+    // The row an earlier release wrote after that reply. The CHECK still
+    // admits the kind, so the INSERT itself proves the row stays valid.
+    const raw = new (await import('pg')).default.Client({ connectionString });
+    await raw.connect();
+    try {
+      await raw.query(
+        `INSERT INTO conversations_v1_events (conversation_id, seq, event_kind, fold_key, payload)
+         VALUES ($1, 2, 'save-refused', 'req-1', '{"code":"storage-full"}'::jsonb)`,
+        [conversationId],
+      );
+    } finally {
+      await raw.end().catch(() => {});
+    }
+    await appendTurn('still here');
 
+    const warnings: string[] = [];
     const got = await h.bus.call<GetInput, GetOutput>(
       'conversations:get',
-      h.ctx({ userId }),
+      h.ctx({ userId, logger: recordingLogger(warnings) }),
       { conversationId, userId },
     );
-    const refused = got.displayEvents.filter((e) => e.kind === 'save-refused');
-    expect(refused.map((e) => [e.key, e.payload])).toEqual([
-      ['req-9', { code: 'refused' }],
-      ['final:00000000-0000-4000-8000-000000000000', { code: 'storage-full' }],
+    expect(got.turns.map((t) => t.contentBlocks)).toEqual([
+      [{ type: 'text', text: 'made you a file' }],
+      [{ type: 'text', text: 'still here' }],
     ]);
+    expect(got.displayEvents).toEqual([]);
+    // Left out quietly: a retired kind is not reported as an unknown one.
+    expect(warnings).toEqual([]);
+  });
+
+  it('conversations:append-event refuses a save-refused event and writes nothing', async () => {
+    const h = await makeHarness();
+    const userId = 'userA';
+    const conversationId = await createConv(h, userId);
+
+    const err = await h.bus
+      .call<AppendEventInput, AppendEventOutput>(
+        'conversations:append-event',
+        h.ctx({ conversationId }),
+        {
+          conversationId,
+          kind: 'save-refused' as never,
+          key: 'req-1',
+          payload: { code: 'storage-full' },
+        },
+      )
+      .then(
+        () => null,
+        (e: unknown) => e,
+      );
+    expect(err).toBeInstanceOf(PluginError);
+    expect((err as PluginError).code).toBe('invalid-payload');
+
+    const raw = new (await import('pg')).default.Client({ connectionString });
+    await raw.connect();
+    try {
+      const rows = await raw.query(
+        'SELECT count(*)::int AS n FROM conversations_v1_events WHERE conversation_id = $1',
+        [conversationId],
+      );
+      expect(rows.rows[0].n).toBe(0);
+    } finally {
+      await raw.end().catch(() => {});
+    }
+  });
+
+  it('conversations registers no drain-save-refusals hook', async () => {
+    // TASK-749's drain told the model about refused saves; with nothing left
+    // to refuse, the hook is gone — from the manifest (plugin.test.ts) AND
+    // from the bus, which does not hold a plugin to its manifest.
+    const h = await makeHarness();
+    expect(h.bus.hasService('conversations:append-event')).toBe(true);
+    expect(h.bus.hasService('conversations:drain-save-refusals')).toBe(false);
   });
 
   it('skips a row whose event_kind this release does not know instead of failing the whole read', async () => {
@@ -473,51 +492,15 @@ describe('TASK-731 save-refused display events', () => {
       await raw.end().catch(() => {});
     }
 
+    const warnings: string[] = [];
     const got = await h.bus.call<GetInput, GetOutput>(
       'conversations:get',
-      h.ctx({ userId }),
+      h.ctx({ userId, logger: recordingLogger(warnings) }),
       { conversationId, userId },
     );
     expect(got.turns).toHaveLength(1);
     expect(got.displayEvents).toEqual([]);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// TASK-749 — conversations:drain-save-refusals hands the runner the refused
-// saves the model has not been told about. A final/idle row (the host-minted
-// `final:<uuid>` key) comes back with `turnReqId: null`, so the runner can
-// never mistake it for one of its own turns.
-// ---------------------------------------------------------------------------
-describe('TASK-749 conversations:drain-save-refusals', () => {
-  it('returns per-turn refusals with their reqId and the final one with null, once, for the owner only', async () => {
-    const h = await makeHarness();
-    const conversationId = await createConv(h, 'userA');
-    const refuse = (key: string, code: string) =>
-      h.bus.call<AppendEventInput, AppendEventOutput>(
-        'conversations:append-event',
-        h.ctx({ conversationId }),
-        { conversationId, kind: 'save-refused', key, payload: { code } },
-      );
-    await refuse('req-1', 'refused');
-    await refuse('', 'too-large');
-    await refuse('final:0b6e', 'storage-full');
-
-    const drain = (userId: string) =>
-      h.bus.call<DrainSaveRefusalsInput, DrainSaveRefusalsOutput>(
-        'conversations:drain-save-refusals',
-        h.ctx({ userId, conversationId }),
-        { conversationId },
-      );
-    // Someone else's runner gets nothing, and consumes nothing.
-    expect(await drain('userB')).toEqual({ refusals: [] });
-    expect(await drain('userA')).toEqual({
-      refusals: [
-        { code: 'refused', turnReqId: 'req-1' },
-        { code: 'too-large', turnReqId: '' },
-        { code: 'storage-full', turnReqId: null },
-      ],
-    });
-    expect(await drain('userA')).toEqual({ refusals: [] });
+    // Unlike a retired kind, an unknown one is worth a line in the log.
+    expect(warnings).toEqual(['conversations_event_unknown_kind_skipped']);
   });
 });

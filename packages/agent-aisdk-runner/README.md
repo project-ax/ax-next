@@ -7,9 +7,9 @@ per-agent configuration choice rather than an architectural commitment.
 
 Both runners ship. An agent row picks one (`agents.runner`), the orchestrator
 maps that id to a binary, and the sandbox spawns it. Everything either side of
-the loop — workspace materialize/commit/bundle, uploads, the skills projection,
-the proxy bootstrap, the transcript protocol, the turn-end events, the single
-`chat:end` — lives in `@ax/agent-runner-core` and is shared.
+the loop — uploads, the skills projection, the proxy bootstrap, the transcript
+protocol, the turn-end events, the single `chat:end` — lives in
+`@ax/agent-runner-core` and is shared.
 
 Design: `docs/plans/2026-08-18-provider-agnostic-runner-design.md`.
 
@@ -18,9 +18,10 @@ Design: `docs/plans/2026-08-18-provider-agnostic-runner-design.md`.
 **Every tool call goes through one gate.** `wrapWithPolicy` (`src/tools/policy-wrap.ts`)
 wraps the `execute` of every registered tool — the six built-ins, every host and
 sandbox tool from the catalog, and `Skill` — around the shared `ToolPolicy` from
-`@ax/agent-runner-core`. That policy re-roots governed paths and adjudicates the
-call against the host's `tool.pre-call` hook, exactly as the SDK runner's
-`PreToolUse` hook does. One security policy, two runners.
+`@ax/agent-runner-core`. That policy adjudicates each call, exactly as the model
+wrote it, against the host's `tool.pre-call` hook, the same way the SDK runner's
+`PreToolUse` hook does. No path is rewritten on the way; only a host
+`modifiedCall` changes a call. One security policy, two runners.
 
 We assert that rather than trusting it: the assembled tool set is checked at boot
 (`assertAllToolsWrapped`), so a tool added later on a bypass path fails to start
@@ -40,10 +41,10 @@ Two deliberate choices inside the wrapper:
 **The transcript never touches disk.** The runner holds its messages in memory
 and serializes them at the turn boundary (`src/memory-transcript-source.ts`).
 This is not a micro-optimisation: the SDK runner's `waitForTranscriptUuid` exists
-because the SDK flushes its jsonl asynchronously and the turn-end commit had to
-poll for bytes to land — the lineage behind TASK-11, PR #163, and the F-1/F-2
-re-sync work. Here durability is a function return. **Do not add a `beforeCommit`
-wait to this runner**; its absence is the point.
+because the SDK flushes its jsonl asynchronously and the turn-end transcript ship
+had to poll for bytes to land — the lineage behind TASK-11, PR #163, and the
+F-1/F-2 re-sync work. Here durability is a function return. **Do not add a
+`beforeTranscriptShip` wait to this runner**; its absence is the point.
 
 **Compaction has two rungs that are free and one that is not.** When a turn
 approaches the model's context window, `prepareStep` masks stale tool outputs and
@@ -73,8 +74,8 @@ ceiling error.
 
 **Skills come from one place.** The read-only `0555` projection under
 `$CLAUDE_CONFIG_DIR/skills/` is the sole discovery path. We never read
-`.claude/skills/` from the workspace — that directory is agent-writable, which is
-why the SDK runner dropped `'project'` from `settingSources` in Phase 3. Names
+`.claude/skills/` from the agent's home — that directory is agent-writable, which
+is why the SDK runner dropped `'project'` from `settingSources` in Phase 3. Names
 and descriptions go into the system prompt; bodies load on demand through the
 `Skill` tool.
 

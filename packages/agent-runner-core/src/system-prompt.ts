@@ -1,16 +1,18 @@
 // ---------------------------------------------------------------------------
 // Runner-authored operational notes for the claude-agent-sdk query.
 //
-// These notes describe the runtime environment to the LLM: where the
-// workspace root is, the session-scoped scratch directory (`ephemeralRoot`),
-// the python venv, the JIT capability-handoff behavior, and the skill-
-// authoring discovery constraint.
+// These notes describe the runtime environment to the LLM: the agent's home,
+// the session-scoped scratch directory and the shared uploads in it, the python
+// venv, the JIT capability-handoff behavior, and the skill-authoring discovery
+// constraint.
 //
 // Each note is a FIXED runner-authored string with host-controlled values
-// interpolated (`workspaceRoot` = AX_WORKSPACE_ROOT, `ephemeralRoot` =
-// AX_EPHEMERAL_ROOT) — never from the model, the user, or tool output — so
-// there is no untrusted-input path into the prompt here. It is plain prose
-// for the LLM; not interpolated into a shell, path, SQL, or URL.
+// interpolated (`home` = AX_USERFILES_ROOT, `scratch` = AX_EPHEMERAL_ROOT) —
+// never from the model, the user, or tool output — so there is no
+// untrusted-input path into the prompt here. It is plain prose for the LLM;
+// not interpolated into a shell, path, SQL, or URL. The roots are always
+// interpolated, never hardcoded, because the subprocess sandbox's are
+// per-session paths.
 //
 // The composed system prompt is always a plain string (the prompt-engine
 // assembles it from the session config's identity, soul and Instructions +
@@ -25,6 +27,9 @@
 // the SAME helper from `@ax/tool-skill-propose` (an already-declared runner dep,
 // the pure path-validation helper, not a cross-plugin runtime coupling).
 import { draftPrefix } from '@ax/tool-skill-propose';
+// The same rule for the uploads directory: the runner copies into it, and the
+// files note names it to the model.
+import { scratchUploadsDir } from './materialize-uploads.js';
 
 /**
  * The shape the SDK's `options.systemPrompt` accepts that we produce. We only
@@ -142,52 +147,31 @@ export function communicationNote(): string {
 
 /**
  * Operational note telling the agent which directory it is standing in and where
- * shared + self-owned files live — fixed runner-authored prose for the LLM.
+ * the files people share with it are — fixed runner-authored prose for the LLM.
  *
- * Without this the model treats an attachment path like `.ax/uploads/…` as a
- * home dotfile and reads it under `~`/`/home/<user>/…` instead of the governed
- * root, so the read fails (the runner's PreToolUse hook re-roots it as a
- * safety net — see `resolveGovernedPaths` — but stating the root up front
- * makes the model emit the right path directly).
+ * `home` is the agent's home and working directory (`AX_USERFILES_ROOT`, k8s
+ * `/files`): durable, shown to the person, and where everything worth keeping
+ * goes. Files the person shares in this chat are copied flat into
+ * `<scratch>/uploads/` (`scratch` = `AX_EPHEMERAL_ROOT`) and go away with the
+ * session, so the note says to copy anything needed later into the home (design
+ * §7). Each turn's attachment mention also names its file's absolute path.
  *
  * VOCABULARY (deliberate): this prose never says "workspace". That word names
- * five unrelated things in this system — the governed `/agent` tier, the durable
- * `/files` mount, the `/api/workspace` UI surface, the host PVC, and a scope on
+ * several unrelated things in this system — the `@ax/workspace-*` mount plugins,
+ * the `/api/workspace` UI surface, the host PVC, and a scope on
  * `connector_propose` — and the agent-facing surface is the one place the
  * ambiguity actually costs something: the model has to do path arithmetic with
- * it, and the wrong referent fails silently. So the notes use exactly three
- * terms, each bound to one root: "your files" (`cwd`), "your agent state"
- * (`workspaceRoot`), and "scratch space" (`ephemeralRoot`). Keep it that way.
- *
- * filestore-user-files Phase 2 (TASK-164): `cwd` is the agent's working
- * directory (`AX_USERFILES_ROOT`=/files when a durable mount is wired, else
- * `workspaceRoot`). When the two DIFFER the note states both — the working dir
- * the agent operates in, and the governed `workspaceRoot` that shared files
- * (`.ax/uploads/…`) actually live under — so the model resolves attachments
- * against the governed root, not the new cwd (where they don't exist). When they
- * match (no durable mount) the prose collapses to the single-root form.
- * Both `workspaceRoot` and `cwd` are host-controlled (AX_WORKSPACE_ROOT /
- * AX_USERFILES_ROOT), never model/user/tool input.
+ * it, and the wrong referent fails silently. So the notes use exactly two terms,
+ * each bound to one root: "your files" (`home`) and "scratch space"
+ * (`scratch`). Keep it that way.
  */
-export function workspaceNote(workspaceRoot: string, cwd: string = workspaceRoot): string {
-  if (cwd === workspaceRoot) {
-    return [
-      `Your files: \`${workspaceRoot}\` is your current working directory —`,
-      `everything you create, and every file shared with you, lives under it.`,
-      `A file the user shared, shown to you as \`.ax/uploads/…\`, is at`,
-      `\`${workspaceRoot}/.ax/uploads/…\`: open it by that full path (or by a path`,
-      `relative to your working directory) — NEVER under a home directory like`,
-      `\`~\` or \`/home/…\`.`,
-    ].join(' ');
-  }
+export function filesNote(home: string, scratch: string): string {
   return [
-    `Your files: \`${cwd}\` is your current working directory — relative paths and`,
-    `new files you create land there.`,
-    `Your agent state lives under \`${workspaceRoot}\` instead: that is where files`,
-    `the user shared with you (shown to you as \`.ax/uploads/…\`) sit, alongside your`,
-    `own \`.ax/…\` and \`.claude/…\` files. Open a shared file as`,
-    `\`${workspaceRoot}/.ax/uploads/…\` — NEVER relative to \`${cwd}\`, and NEVER under`,
-    `a home directory like \`~\` or \`/home/…\`.`,
+    `Your files: \`${home}\` is your home and working directory. Everything you`,
+    `want to keep goes there — documents you produce, code, datasets, downloaded`,
+    `or cloned repositories — and it persists across sessions. Files people share`,
+    `with you in this chat are at \`${scratchUploadsDir(scratch)}/\`; they go away`,
+    `after this conversation, so copy anything you need later into \`${home}\`.`,
   ].join(' ');
 }
 
@@ -201,49 +185,36 @@ export function ephemeralScratchNote(ephemeralRoot: string): string {
     `Use it for throwaway files — temporary git clones, build caches, intermediate build`,
     `output — that you do not need to keep.`,
     `Anything you write under \`${ephemeralRoot}\` is discarded when the session ends.`,
-    `Use a durable user-files directory, when available, for files you need in`,
-    `later sessions. Prefer`,
-    `\`${ephemeralRoot}\` for any file that only matters until you are done with it.`,
-  ].join(' ');
-}
-
-/** Output paths are also needed during bootstrap, before normal operational notes. */
-export function fileOutputNote(workspaceRoot: string, ephemeralRoot?: string, userFilesRoot?: string): string {
-  const outputRoot = userFilesRoot ?? (ephemeralRoot !== undefined ? `${ephemeralRoot}/artifacts` : undefined);
-  if (outputRoot === undefined) return '';
-  return [
-    `Files for your user: save documents, code and other finished files under`,
-    `\`${outputRoot}/…\`. Keep user deliverables out of \`${workspaceRoot}\`;`,
-    `that directory is for your internal agent state and shared uploads.`,
-    ...(userFilesRoot === undefined ? [
-      `This is temporary storage. Publish finished files with \`artifact_publish\``,
-      `so their downloads remain available after the session ends.`,
-    ] : []),
+    `Prefer \`${ephemeralRoot}\` for any file that only matters until you are done with it.`,
   ].join(' ');
 }
 
 /**
- * Operational note telling the agent what belongs in `userFilesRoot` — the
- * durable mount that persists across sessions without being versioned. Fixed
- * runner-authored prose for the LLM (filestore-user-files Phase 1, design §6).
- *
- * Since Phase 2 (TASK-164) this root is normally also the agent's cwd, and
- * `workspaceNote` has already introduced it as "your files". This note adds only
- * the durability contract and what to put there — it does not re-introduce the
- * directory, so the two notes read as one paragraph rather than two overlapping
- * ones. (When Phase 1 semantics apply — mount wired but cwd still on the
- * governed tier — it still stands alone correctly, because it names the root by
- * its full path.) `userFilesRoot` is host-controlled (AX_USERFILES_ROOT), never
- * model/user/tool input.
+ * Where finished files go. Bootstrap mode needs this too: its prompt carries
+ * none of the operational notes, so this is its only path guidance.
  */
-export function userFilesNote(userFilesRoot: string): string {
+export function fileOutputNote(home: string): string {
+  return `Files for your user: save documents, code and other finished files under \`${home}/…\`.`;
+}
+
+/**
+ * Operational note telling the agent what belongs in the home — the durability
+ * contract and what to put there. Fixed runner-authored prose for the LLM
+ * (filestore-user-files Phase 1, design §6).
+ *
+ * `filesNote` has already introduced the directory as "your files", so this
+ * note does not re-introduce it; the two read as one paragraph. It still names
+ * the root by its full path, so it stands alone too. `home` is host-controlled
+ * (AX_USERFILES_ROOT), never model/user/tool input.
+ */
+export function userFilesNote(home: string): string {
   return [
-    `Keeping files: \`${userFilesRoot}\` persists across sessions and is not`,
-    `versioned — nothing there is committed, and nothing there is deleted for you.`,
-    `Write a file there, by its full \`${userFilesRoot}/…\` path, whenever you want`,
+    `Keeping files: \`${home}\` persists across sessions, and nothing there is`,
+    `deleted for you.`,
+    `Write a file there, by its full \`${home}/…\` path, whenever you want`,
     `it to survive: documents you produce for the user, datasets, large or binary`,
     `data, downloaded or cloned repositories, build trees. Files you write under`,
-    `\`${userFilesRoot}\` stay exactly as you left them next time.`,
+    `\`${home}\` stay exactly as you left them next time.`,
   ].join(' ');
 }
 
@@ -306,20 +277,18 @@ export function capabilityHandoffNote(): string {
  * the current turn. Without this guidance the model may propose a skill and then
  * try to invoke it in the same turn, fail to find it, and get confused.
  *
- * The draft prefix is DYNAMIC (TASK-165): drafts stage under `<draftRoot>/.skill-draft/`
- * where `draftRoot` is the durable per-agent mount when one is wired (drafts persist
- * across sessions) else the ephemeral scratch tier. We interpolate the SAME prefix
- * the executor enforces (`draftPrefix`) so the model is told the exact accepted path.
- * `draftRoot` is host-controlled (AX_USERFILES_ROOT / AX_EPHEMERAL_ROOT), never
- * model/user/tool input. When neither tier is wired, fall back to a generic
- * `.skill-draft/<id>/` phrasing so the prose stays coherent (the tool will reject
- * a propose anyway, since there's nowhere to read the draft from).
+ * Drafts stage under `<draftRoot>/.skill-draft/`, where `draftRoot` is the
+ * agent's home (TASK-165; since TASK-995 always the home, never scratch), so a
+ * draft survives across sessions. We interpolate the SAME prefix the executor
+ * enforces (`draftPrefix`) so the model is told the exact accepted path.
+ * `draftRoot` is host-controlled (AX_USERFILES_ROOT), never model/user/tool
+ * input.
  *
  * Fixed runner-authored prose for the LLM (no untrusted input). Always present
  * — harmless when no skill_propose tool is wired (the model just never proposes).
  */
-export function skillAuthoringNote(draftRoot?: string): string {
-  const dir = draftRoot !== undefined ? `${draftPrefix(draftRoot)}<id>/` : `.skill-draft/<id>/`;
+export function skillAuthoringNote(draftRoot: string): string {
+  const dir = `${draftPrefix(draftRoot)}<id>/`;
   return [
     `Authoring skills: if you write a skill into \`${dir}\` and`,
     `propose it with \`skill_propose\`, it becomes available on the user's NEXT message —`,
@@ -359,45 +328,34 @@ export function memoryExportNote(root: string): string {
 
 /**
  * Assemble the runner-authored operational notes block, in order:
- *   roots → (keeping-files?) → (ephemeral-scratch?) → (python-venv?) →
+ *   files → keeping-files → output → scratch → (python-venv?) → (memory?) →
  *   capability-handoff → skill-authoring → clarifying-questions.
  *
- * The roots note comes first and is always present (the root is always known).
- * The keeping-files note follows it IMMEDIATELY rather than after the scratch
- * note: both describe the same directory, and separating them made the block
- * introduce `${userFilesRoot}` twice with an unrelated paragraph in between.
- * The keeping-files, ephemeral-scratch and python-venv notes are conditional on
- * the sandbox having wired a durable mount / scratch tier / venv. The
- * capability-handoff and
- * skill-authoring notes are always present (harmless when the corresponding
- * tools aren't wired). Returns a single string joined by blank lines —
- * always non-empty.
+ * `home` (AX_USERFILES_ROOT) and `scratch` (AX_EPHEMERAL_ROOT) are both
+ * required, so the notes about them are always present. The keeping-files and
+ * output notes follow the files note IMMEDIATELY: all three describe the home,
+ * and splitting them made the block introduce it twice with an unrelated
+ * paragraph in between. The python-venv and memory notes are conditional on
+ * the venv being ready / a memory export being mounted. The capability-handoff
+ * and skill-authoring notes are always present (harmless when the
+ * corresponding tools aren't wired). Returns a single string joined by blank
+ * lines — always non-empty.
  *
  * Consumed by the prompt-engine's normal mode (`prompt-engine.ts`), so the
  * operational notes are assembled in exactly one place.
  */
 export function operationalNotes(
-  workspaceRoot: string,
-  ephemeralRoot: string | undefined,
+  home: string,
+  scratch: string,
   pythonVenvActive = false,
-  userFilesRoot: string | undefined = undefined,
-  // filestore-user-files Phase 2 (TASK-164): the agent's effective working
-  // directory. Defaults to workspaceRoot (today's behavior); when a durable
-  // user-files mount moved cwd to /files, the workspace note states both the
-  // working dir and the governed root so attachments still resolve correctly.
-  cwd: string = workspaceRoot,
   memoryRoot: string | undefined = undefined,
 ): string {
-  const notes: string[] = [workspaceNote(workspaceRoot, cwd)];
-  // filestore-user-files Phase 1: advertise the durable per-agent mount when
-  // the sandbox wired one (AX_USERFILES_ROOT). Conditional like the scratch
-  // note — absent means no durable mount, so we say nothing about it. Kept
-  // adjacent to the roots note above: under Plan 2 they describe the same
-  // directory, so they have to read as one thought.
-  if (userFilesRoot !== undefined) notes.push(userFilesNote(userFilesRoot));
-  const outputNote = fileOutputNote(workspaceRoot, ephemeralRoot, userFilesRoot);
-  if (outputNote.length > 0) notes.push(outputNote);
-  if (ephemeralRoot !== undefined) notes.push(ephemeralScratchNote(ephemeralRoot));
+  const notes: string[] = [
+    filesNote(home, scratch),
+    userFilesNote(home),
+    fileOutputNote(home),
+    ephemeralScratchNote(scratch),
+  ];
   if (pythonVenvActive) notes.push(pythonVenvNote());
   if (memoryRoot !== undefined) notes.push(memoryExportNote(memoryRoot));
   // Always-present tail: the JIT capability-handoff note (design §7) so the
@@ -407,11 +365,9 @@ export function operationalNotes(
   // tool — see clarifyingQuestionsNote / DISABLED_BUILTINS). All harmless when
   // the corresponding tools aren't wired.
   notes.push(capabilityHandoffNote());
-  // TASK-165: the skill-draft prefix is dynamic — drafts stage under the durable
-  // per-agent mount when wired (userFilesRoot), else the ephemeral scratch tier
-  // (ephemeralRoot), matching `userFilesRoot ?? ephemeralRoot` in the executor.
-  // Pass the resolved root so the model is told the exact path the tool accepts.
-  notes.push(skillAuthoringNote(userFilesRoot ?? ephemeralRoot));
+  // TASK-165: drafts stage under the home, the same root the skill_propose
+  // executor reads, so the model is told the exact path the tool accepts.
+  notes.push(skillAuthoringNote(home));
   notes.push(clarifyingQuestionsNote());
   return notes.join('\n\n');
 }

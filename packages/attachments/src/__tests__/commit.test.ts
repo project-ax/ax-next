@@ -15,16 +15,14 @@ import {
   runAttachmentsMigration,
   type AttachmentsDatabase,
 } from '../migrations.js';
-import { createAttachmentsStore } from '../store.js';
+import { createAttachmentsStore, type AttachmentsStore } from '../store.js';
 import { createCommitHandler } from '../handlers.js';
 
 // ---------------------------------------------------------------------------
-// TASK-68: attachments:commit now stores bytes in the content-addressed blob
-// store (blob:put) + a metadata row, NOT a git commit (workspace:apply). The
-// shared-mirror parent-mismatch rebase path — and its whole test surface — is
-// GONE, which is one of this card's acceptance criteria. These tests prove the
-// new path: blob:put receives the exact bytes, a files row maps
-// (conversationId, path) → sha256, no workspace:apply is ever called.
+// attachments:commit — stores the upload's bytes in the content-addressed blob
+// store (blob:put) and records a files row keyed by the attachment id. It mints
+// no path: the transcript block, the download and the runner's copy all
+// address the upload by that id.
 // ---------------------------------------------------------------------------
 
 let container: StartedPostgreSqlContainer;
@@ -53,9 +51,8 @@ interface PutCall {
   bytes: Uint8Array;
 }
 
-/** A bus with a mock blob:put that records the bytes it received and returns
- *  the real content hash (so the handler's returned sha256 is exercised). It
- *  also FAILS if anything calls workspace:apply — proving the git path is gone. */
+/** A bus with a blob:put that records the bytes it received and returns their
+ *  real content hash (so the handler's returned sha256 is exercised). */
 function makeBusWithBlob(): { bus: HookBus; puts: PutCall[] } {
   const bus = new HookBus();
   const puts: PutCall[] = [];
@@ -68,22 +65,36 @@ function makeBusWithBlob(): { bus: HookBus; puts: PutCall[] } {
       return { sha256, size: input.bytes.length };
     },
   );
-  bus.registerService(
-    'workspace:apply',
-    'test-guard',
-    async () => {
-      throw new Error('workspace:apply must NOT be called — the git path is removed');
-    },
-  );
   return { bus, puts };
 }
 
-async function freshSetup() {
+async function freshSetup(): Promise<{ store: AttachmentsStore; db: Kysely<AttachmentsDatabase> }> {
   const db = makeKysely();
   await runAttachmentsMigration(db);
   const store = createAttachmentsStore(db);
   return { store, db };
 }
+
+/** Stage a pending upload the way `attachments:store-temp` does. */
+async function stage(
+  store: AttachmentsStore,
+  attachmentId: string,
+  opts: { userId?: string; bytes?: string; displayName?: string; mediaType?: string } = {},
+): Promise<void> {
+  const bytes = Buffer.from(opts.bytes ?? 'hello world');
+  await store.insertTemp({
+    attachmentId,
+    userId: opts.userId ?? 'u-1',
+    bytes,
+    displayName: opts.displayName ?? 'greeting.txt',
+    mediaType: opts.mediaType ?? 'text/plain',
+    sizeBytes: bytes.length,
+    expiresAt: new Date(Date.now() + 60_000),
+  });
+}
+
+// sha256("hello world")
+const HELLO_SHA = 'b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9';
 
 beforeAll(async () => {
   container = await startTestContainer(new PostgreSqlContainer('postgres:16-alpine'));
@@ -108,77 +119,108 @@ afterAll(async () => {
   if (container) await stopPostgresContainer(container);
 });
 
-describe('attachments:commit handler (blob-backed)', () => {
-  it('stores bytes via blob:put + a files row and returns metadata', async () => {
+describe('attachments:commit handler (blob-backed, id-addressed)', () => {
+  it('commit returns the attachment id and mints no path', async () => {
     const { store } = await freshSetup();
     const { bus, puts } = makeBusWithBlob();
     const handler = createCommitHandler({ store, bus });
+    await stage(store, 'a-100');
 
-    await store.insertTemp({
-      attachmentId: 'a-100', userId: 'u-1',
-      bytes: Buffer.from('hello world'),
-      displayName: 'greeting.txt', mediaType: 'text/plain',
-      sizeBytes: 11,
-      expiresAt: new Date(Date.now() + 60_000),
-    });
-
-    const ctx = makeCtx('u-1');
-    const result = await handler(ctx, {
+    const result = await handler(makeCtx('u-1'), {
       attachmentId: 'a-100',
       conversationId: 'c-1',
-      turnId: 't-1',
     });
 
-    expect(result.path).toMatch(/^\.ax\/uploads\/c-1\/t-1\/[a-f0-9]{8}__greeting\.txt$/);
-    // sha256("hello world")
-    expect(result.sha256).toBe(
-      'b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9',
-    );
-    expect(result.mediaType).toBe('text/plain');
-    expect(result.sizeBytes).toBe(11);
-    expect(result.displayName).toBe('greeting.txt');
-
+    expect(result).toStrictEqual({
+      attachmentId: 'a-100',
+      filename: 'greeting.txt',
+      sha256: HELLO_SHA,
+      mediaType: 'text/plain',
+      sizeBytes: 11,
+    });
     // The exact bytes reached blob:put.
     expect(puts).toHaveLength(1);
     expect(Buffer.from(puts[0]!.bytes).toString()).toBe('hello world');
-
-    // A files row maps (conversationId, path) → sha256 for the download ACL.
-    const row = await store.getFileByPath('c-1', result.path);
-    expect(row).not.toBeNull();
-    expect(row!.sha256).toBe(result.sha256);
-    expect(row!.userId).toBe('u-1');
-    expect(row!.displayName).toBe('greeting.txt');
-
+    // The files row is keyed by the attachment id and scoped to the
+    // conversation + the committing user.
+    expect(await store.getFileById('a-100')).toStrictEqual({
+      id: 'a-100',
+      conversationId: 'c-1',
+      userId: 'u-1',
+      sha256: HELLO_SHA,
+      displayName: 'greeting.txt',
+      mediaType: 'text/plain',
+      sizeBytes: 11,
+    });
     // Temp row consumed.
     expect(await store.getTemp('a-100')).toBeNull();
   });
 
-  it('de-dups identical bytes to one content hash at the blob level', async () => {
+  it('returns the uploaded name verbatim as filename (display text, not a path)', async () => {
+    const { store } = await freshSetup();
+    const { bus } = makeBusWithBlob();
+    const handler = createCommitHandler({ store, bus });
+    const hostileName = '../../etc/passwd ; rm -rf /.txt';
+    await stage(store, 'a-weird', { displayName: hostileName });
+
+    const result = await handler(makeCtx('u-1'), { attachmentId: 'a-weird', conversationId: 'c-1' });
+
+    expect(result.filename).toBe(hostileName);
+    expect(result).not.toHaveProperty('path');
+  });
+
+  it('identical bytes share one content hash but keep separate ids and rows', async () => {
     const { store } = await freshSetup();
     const { bus, puts } = makeBusWithBlob();
     const handler = createCommitHandler({ store, bus });
 
-    const insert = (id: string) =>
-      store.insertTemp({
-        attachmentId: id, userId: 'u-1',
-        bytes: Buffer.from('same bytes'),
-        displayName: 'dup.txt', mediaType: 'text/plain', sizeBytes: 10,
-        expiresAt: new Date(Date.now() + 60_000),
-      });
+    await stage(store, 'a-1', { bytes: 'same bytes', displayName: 'dup.txt' });
+    const r1 = await handler(makeCtx('u-1'), { attachmentId: 'a-1', conversationId: 'c-1' });
+    await stage(store, 'a-2', { bytes: 'same bytes', displayName: 'dup.txt' });
+    const r2 = await handler(makeCtx('u-1'), { attachmentId: 'a-2', conversationId: 'c-1' });
 
-    await insert('a-1');
-    const r1 = await handler(makeCtx('u-1'), { attachmentId: 'a-1', conversationId: 'c-1', turnId: 't-1' });
-    await insert('a-2');
-    const r2 = await handler(makeCtx('u-1'), { attachmentId: 'a-2', conversationId: 'c-1', turnId: 't-1' });
-
-    // Identical bytes ⇒ the SAME content hash both times (the blob store stores
-    // them once — content-addressed de-dup). The filename component carries a
-    // random anti-collision prefix, so each upload gets a distinct PATH/row that
-    // both point at the one shared blob — de-dup lives at the blob, not the row.
     expect(r1.sha256).toBe(r2.sha256);
-    expect(r1.path).not.toBe(r2.path);
+    expect([r1.attachmentId, r2.attachmentId]).toEqual(['a-1', 'a-2']);
+    expect((await store.getFileById('a-1'))?.sha256).toBe(r1.sha256);
+    expect((await store.getFileById('a-2'))?.sha256).toBe(r1.sha256);
     expect(puts).toHaveLength(2);
-    expect(puts[0]!.bytes).toEqual(puts[1]!.bytes);
+  });
+
+  // The temp row's delete is best-effort, so a retried send can redeem the
+  // same id twice. Into the same conversation that is the same upload; the
+  // first row stands, and the retry answers with it as stored.
+  it('a repeated commit of the same id into the same conversation is idempotent', async () => {
+    const { store, db } = await freshSetup();
+    const { bus } = makeBusWithBlob();
+    const handler = createCommitHandler({ store, bus });
+    await stage(store, 'a-retry');
+    const first = await handler(makeCtx('u-1'), { attachmentId: 'a-retry', conversationId: 'c-1' });
+
+    // The temp row survived the first commit (re-staged here with different
+    // details, so an answer built from it rather than the row would show).
+    await stage(store, 'a-retry', { bytes: 'other bytes', displayName: 'renamed.txt' });
+    const second = await handler(makeCtx('u-1'), { attachmentId: 'a-retry', conversationId: 'c-1' });
+
+    expect(second).toStrictEqual(first);
+    const rows = await db.selectFrom('attachments_v1_files').select('attachment_id').execute();
+    expect(rows).toEqual([{ attachment_id: 'a-retry' }]);
+  });
+
+  // ...but redeeming it into a DIFFERENT conversation would hand that
+  // conversation a chip whose row lives elsewhere (a guaranteed 404). Refuse
+  // instead, and leave the first conversation's row alone.
+  it('refuses to commit an id already committed to another conversation', async () => {
+    const { store } = await freshSetup();
+    const { bus } = makeBusWithBlob();
+    const handler = createCommitHandler({ store, bus });
+    await stage(store, 'a-twice');
+    await handler(makeCtx('u-1'), { attachmentId: 'a-twice', conversationId: 'c-1' });
+
+    await stage(store, 'a-twice');
+    await expect(
+      handler(makeCtx('u-1'), { attachmentId: 'a-twice', conversationId: 'c-2' }),
+    ).rejects.toMatchObject({ code: 'not-found' });
+    expect((await store.getFileById('a-twice'))?.conversationId).toBe('c-1');
   });
 
   it('rejects unknown attachmentId with not-found', async () => {
@@ -186,7 +228,7 @@ describe('attachments:commit handler (blob-backed)', () => {
     const { bus } = makeBusWithBlob();
     const handler = createCommitHandler({ store, bus });
     await expect(
-      handler(makeCtx('u-1'), { attachmentId: 'does-not-exist', conversationId: 'c-1', turnId: 't-1' }),
+      handler(makeCtx('u-1'), { attachmentId: 'does-not-exist', conversationId: 'c-1' }),
     ).rejects.toMatchObject({ code: 'not-found' });
   });
 
@@ -200,7 +242,7 @@ describe('attachments:commit handler (blob-backed)', () => {
       sizeBytes: 1, expiresAt: new Date(Date.now() - 60_000),
     });
     await expect(
-      handler(makeCtx('u-1'), { attachmentId: 'a-expired', conversationId: 'c-1', turnId: 't-1' }),
+      handler(makeCtx('u-1'), { attachmentId: 'a-expired', conversationId: 'c-1' }),
     ).rejects.toMatchObject({ code: 'not-found' });
   });
 
@@ -208,47 +250,21 @@ describe('attachments:commit handler (blob-backed)', () => {
     const { store } = await freshSetup();
     const { bus, puts } = makeBusWithBlob();
     const handler = createCommitHandler({ store, bus });
-    await store.insertTemp({
-      attachmentId: 'a-foreign', userId: 'u-victim',
-      bytes: Buffer.from('secret'), displayName: 'secret.txt',
-      mediaType: 'text/plain', sizeBytes: 6,
-      expiresAt: new Date(Date.now() + 60_000),
-    });
+    await stage(store, 'a-foreign', { userId: 'u-victim', bytes: 'secret', displayName: 'secret.txt' });
     await expect(
-      handler(makeCtx('u-attacker'), { attachmentId: 'a-foreign', conversationId: 'c-1', turnId: 't-1' }),
+      handler(makeCtx('u-attacker'), { attachmentId: 'a-foreign', conversationId: 'c-1' }),
     ).rejects.toMatchObject({ code: 'forbidden' });
     expect(puts).toHaveLength(0);
     expect(await store.getTemp('a-foreign')).not.toBeNull();
-  });
-
-  it('sanitizes the on-disk filename component but preserves the displayName', async () => {
-    const { store } = await freshSetup();
-    const { bus } = makeBusWithBlob();
-    const handler = createCommitHandler({ store, bus });
-    const hostileName = '../../etc/passwd ; rm -rf /.txt';
-    await store.insertTemp({
-      attachmentId: 'a-weird', userId: 'u-1',
-      bytes: Buffer.from('x'), displayName: hostileName,
-      mediaType: 'text/plain', sizeBytes: 1,
-      expiresAt: new Date(Date.now() + 60_000),
-    });
-    const result = await handler(makeCtx('u-1'), { attachmentId: 'a-weird', conversationId: 'c-1', turnId: 't-1' });
-    expect(result.path).not.toContain('..');
-    expect(result.path).not.toContain(' ');
-    expect(result.path).not.toContain(';');
-    expect(result.path.startsWith('.ax/uploads/c-1/t-1/')).toBe(true);
-    expect(result.displayName).toBe(hostileName);
+    expect(await store.getFileById('a-foreign')).toBeNull();
   });
 
   it('throws PluginError instances (not plain Errors)', async () => {
     const { store } = await freshSetup();
     const { bus } = makeBusWithBlob();
     const handler = createCommitHandler({ store, bus });
-    try {
-      await handler(makeCtx('u-1'), { attachmentId: 'does-not-exist', conversationId: 'c-1', turnId: 't-1' });
-      expect.fail('should have thrown');
-    } catch (err) {
-      expect(err).toBeInstanceOf(PluginError);
-    }
+    const err = await handler(makeCtx('u-1'), { attachmentId: 'does-not-exist', conversationId: 'c-1' })
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(PluginError);
   });
 });

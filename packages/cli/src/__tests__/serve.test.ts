@@ -138,6 +138,17 @@ describe('serve command — argument parsing', () => {
     expect(code).toBe(0);
   });
 
+  it('--help names no AX_WORKSPACE_* variable: nothing reads them since TASK-995', async () => {
+    const out: string[] = [];
+    await runServeCommand({
+      argv: ['--help'],
+      env: {},
+      stdout: (line: string) => out.push(line),
+      stderr: () => undefined,
+    });
+    expect(out.join('\n')).not.toMatch(/AX_WORKSPACE_/);
+  });
+
   it('--help: only the facts DB path is required; the export vars are optional all-or-none; no wipe claim (TASK-576)', async () => {
     const out: string[] = [];
     await runServeCommand({

@@ -224,7 +224,6 @@ describe('@ax/preset-k8s blob GC enforce-mode canary (TASK-778)', () => {
       database: { connectionString },
       eventbus: { connectionString: 'postgres://stub:5432/stub' },
       session: { connectionString: 'postgres://stub:5432/stub' },
-      workspace: { backend: 'local', repoRoot: path.join(tmp, 'repos') },
       blob: { backend: 'fs', root: blobRoot },
       sandbox: { namespace: 'ax-next', image: 'ax-next/agent:stub' },
       ipc: { hostIpcUrl: 'http://ax-next-host.ax-next.svc.cluster.local:80' },
@@ -270,12 +269,11 @@ describe('@ax/preset-k8s blob GC enforce-mode canary (TASK-778)', () => {
       { attachmentId: string }
     >('attachments:store-temp', ctx, { bytes, displayName: 'pic.png', mediaType: 'image/png' });
     const out = await b.call<
-      { attachmentId: string; conversationId: string; turnId: string },
+      { attachmentId: string; conversationId: string },
       { sha256: string }
     >('attachments:commit', ctx, {
       attachmentId: temp.attachmentId,
       conversationId,
-      turnId: `turn-${seq}`,
     });
     return out.sha256;
   }
@@ -545,9 +543,9 @@ describe('@ax/preset-k8s blob GC enforce-mode canary (TASK-778)', () => {
     // A holder row written long after the put, with no put of its own.
     await sql`
       INSERT INTO attachments_v1_files
-        (attachment_id, conversation_id, user_id, sha256, path, display_name, media_type, size_bytes)
+        (attachment_id, conversation_id, user_id, sha256, display_name, media_type, size_bytes)
       VALUES
-        ('att-late', 'conv-late', ${USER_A}, ${sha}, 'late.bin', 'late.bin', 'application/octet-stream', ${bytes.length})
+        ('att-late', 'conv-late', ${USER_A}, ${sha}, 'late.bin', 'application/octet-stream', ${bytes.length})
     `.execute(await db());
 
     clockSkewMs = T_PURGE;

@@ -13,7 +13,6 @@ import * as builtinSkillsModule from '../builtin-skills/index.js';
 import {
   createK8sPlugins,
   loadK8sConfigFromEnv,
-  workspaceConfigFromEnv,
   type K8sPresetConfig,
 } from '../index.js';
 
@@ -52,7 +51,6 @@ const stubConfig: K8sPresetConfig = {
   database: { connectionString: 'postgres://stub:5432/stub' },
   eventbus: { connectionString: 'postgres://stub:5432/stub' },
   session: { connectionString: 'postgres://stub:5432/stub' },
-  workspace: { backend: 'local', repoRoot: '/tmp/preset-k8s-stub' },
   blob: { backend: 'fs', root: '/tmp/preset-k8s-stub/blobs' },
   sandbox: { namespace: 'ax-next', image: 'ax-next/agent:stub' },
   ipc: { hostIpcUrl: 'http://ax-next-host.ax-next.svc.cluster.local:80' },
@@ -278,7 +276,6 @@ describe('@ax/preset-k8s wiring', () => {
         '@ax/validator-identity',
         '@ax/validator-service',
         '@ax/validator-skill',
-        '@ax/workspace-git',
       ].sort(),
     );
   });
@@ -445,9 +442,6 @@ describe('@ax/preset-k8s wiring', () => {
       AX_BLOB_FS_ROOT: '/var/lib/ax-next/workspaces/blobs',
       AX_FILESTORE_SERVER: '10.9.8.7',
       AX_FILESTORE_EXPORT_PATH: '/vol1',
-      AX_WORKSPACE_BACKEND: 'git-protocol',
-      AX_WORKSPACE_GIT_SERVER_URL: 'http://git-server:7780',
-      AX_WORKSPACE_GIT_SERVER_TOKEN: 't',
       AX_HTTP_HOST: '0.0.0.0',
       AX_HTTP_PORT: '9090',
       AX_HTTP_COOKIE_KEY: '0'.repeat(64),
@@ -985,7 +979,7 @@ describe('@ax/preset-k8s wiring', () => {
     }
   });
 
-  it('loads @ax/disk-quota next to BOTH gates it depends on: workspace:pre-apply and blob:put (TASK-690)', () => {
+  it('loads @ax/disk-quota next to the gate it depends on: blob:put (TASK-690)', () => {
     const plugins = createK8sPlugins(stubConfig);
     const quota = plugins.find((p) => p.manifest.name === '@ax/disk-quota');
     expect(quota).toBeDefined();
@@ -993,11 +987,8 @@ describe('@ax/preset-k8s wiring', () => {
     // can be sized and nothing can call around the gate.
     expect(quota!.manifest.registers).toEqual([]);
     expect(quota!.manifest.subscribes).toEqual([
-      'workspace:pre-apply',
-      'workspace:applied',
       'blob:pre-put',
       'blob:stored',
-      'workspace:deleted',
       // TASK-993: the agent-files meter (assistant turn end) and its release.
       'chat:turn-end',
       'agents:deleted',
@@ -1012,7 +1003,6 @@ describe('@ax/preset-k8s wiring', () => {
       'auth:require-user',
     ]);
     expect((quota!.manifest.optionalCalls ?? []).map((c) => c.hook)).toEqual([
-      'workspace:usage',
       'agents:resolve',
       'agents:list-personal-owners',
       'auth:get-user',
@@ -1028,23 +1018,14 @@ describe('@ax/preset-k8s wiring', () => {
     }
 
     // The gate is only real if the hooks it subscribes to are FIRED by
-    // something in this preset:
-    //   - blob:pre-put / blob:stored come from the blob:put FACADE, which
-    //     every blob backend registers behind (blob:put-internal). A backend
-    //     that registered a bare blob:put would silently switch the limit off
-    //     for every upload.
-    //   - workspace:pre-apply / workspace:applied come from the @ax/core
-    //     workspace:apply facade (in-process writers) and @ax/ipc-http's
-    //     commit-notify (the runner). Local backend registers the facade.
+    // something in this preset: blob:pre-put / blob:stored come from the
+    // blob:put FACADE, which every blob backend registers behind
+    // (blob:put-internal). A backend that registered a bare blob:put would
+    // silently switch the limit off for every upload.
     const blobBackends = plugins.filter((p) => p.manifest.registers.includes('blob:put'));
     expect(blobBackends).toHaveLength(1);
     expect(blobBackends[0]!.manifest.registers).toContain('blob:put-internal');
-    const ws = plugins.filter((p) => p.manifest.registers.includes('workspace:apply'));
-    expect(ws).toHaveLength(1);
-    expect(ws[0]!.manifest.registers).toContain('workspace:apply-internal');
-    expect(plugins.map((p) => p.manifest.name)).toContain('@ax/ipc-http');
-    // The workspace measurement + owner attribution the plugin uses.
-    expect(ws[0]!.manifest.registers).toContain('workspace:usage');
+    // The owner attribution and the fleet listing the plugin uses.
     expect(plugins.some((p) => p.manifest.registers.includes('agents:resolve'))).toBe(true);
     expect(plugins.some((p) => p.manifest.registers.includes('agents:list-personal-owners'))).toBe(true);
   });
@@ -1277,9 +1258,6 @@ describe('@ax/preset-k8s — onboarding wiring (I3: half-wired window closed)', 
       AX_BLOB_FS_ROOT: '/var/lib/ax-next/workspaces/blobs',
       AX_FILESTORE_SERVER: '10.9.8.7',
       AX_FILESTORE_EXPORT_PATH: '/vol1',
-      AX_WORKSPACE_BACKEND: 'git-protocol',
-      AX_WORKSPACE_GIT_SERVER_URL: 'http://git-server:7780',
-      AX_WORKSPACE_GIT_SERVER_TOKEN: 't',
       AX_HTTP_HOST: '0.0.0.0',
       AX_HTTP_PORT: '9090',
       AX_HTTP_COOKIE_KEY: HEX_KEY,
@@ -1298,9 +1276,6 @@ describe('@ax/preset-k8s — onboarding wiring (I3: half-wired window closed)', 
       AX_BLOB_FS_ROOT: '/var/lib/ax-next/workspaces/blobs',
       AX_FILESTORE_SERVER: '10.9.8.7',
       AX_FILESTORE_EXPORT_PATH: '/vol1',
-      AX_WORKSPACE_BACKEND: 'git-protocol',
-      AX_WORKSPACE_GIT_SERVER_URL: 'http://git-server:7780',
-      AX_WORKSPACE_GIT_SERVER_TOKEN: 't',
       AX_HTTP_HOST: '0.0.0.0',
       AX_HTTP_PORT: '9090',
       AX_HTTP_COOKIE_KEY: HEX_KEY,
@@ -1322,8 +1297,6 @@ describe('@ax/preset-k8s — onboarding wiring (I3: half-wired window closed)', 
       AX_BLOB_FS_ROOT: '/var/lib/ax-next/workspaces/blobs',
       AX_FILESTORE_SERVER: '10.9.8.7',
       AX_FILESTORE_EXPORT_PATH: '/vol1',
-      AX_WORKSPACE_BACKEND: 'local',
-      AX_WORKSPACE_ROOT: '/var/lib/ax-next/workspaces',
       AX_SKILLS_BUNDLE_ROOT: '/var/lib/ax-next/workspaces/skill-bundles',
       AX_HTTP_HOST: '0.0.0.0',
       AX_HTTP_PORT: '9090',
@@ -1354,9 +1327,6 @@ describe('@ax/preset-k8s — onboarding wiring (I3: half-wired window closed)', 
       AX_BLOB_FS_ROOT: '/var/lib/ax-next/workspaces/blobs',
       AX_FILESTORE_SERVER: '10.9.8.7',
       AX_FILESTORE_EXPORT_PATH: '/vol1',
-      AX_WORKSPACE_BACKEND: 'git-protocol',
-      AX_WORKSPACE_GIT_SERVER_URL: 'http://git-server:7780',
-      AX_WORKSPACE_GIT_SERVER_TOKEN: 't',
       AX_HTTP_HOST: '0.0.0.0',
       AX_HTTP_PORT: '9090',
       AX_HTTP_COOKIE_KEY: HEX_KEY,
@@ -1378,9 +1348,6 @@ describe('@ax/preset-k8s — onboarding wiring (I3: half-wired window closed)', 
       AX_BLOB_FS_ROOT: '/var/lib/ax-next/workspaces/blobs',
       AX_FILESTORE_SERVER: '10.9.8.7',
       AX_FILESTORE_EXPORT_PATH: '/vol1',
-      AX_WORKSPACE_BACKEND: 'git-protocol',
-      AX_WORKSPACE_GIT_SERVER_URL: 'http://git-server:7780',
-      AX_WORKSPACE_GIT_SERVER_TOKEN: 't',
       AX_HTTP_HOST: '0.0.0.0',
       AX_HTTP_PORT: '9090',
       AX_HTTP_COOKIE_KEY: HEX_KEY,
@@ -1405,9 +1372,6 @@ describe('@ax/preset-k8s — onboarding wiring (I3: half-wired window closed)', 
       AX_BLOB_FS_ROOT: '/var/lib/ax-next/workspaces/blobs',
       AX_FILESTORE_SERVER: '10.9.8.7',
       AX_FILESTORE_EXPORT_PATH: '/vol1',
-      AX_WORKSPACE_BACKEND: 'git-protocol',
-      AX_WORKSPACE_GIT_SERVER_URL: 'http://git-server:7780',
-      AX_WORKSPACE_GIT_SERVER_TOKEN: 't',
       AX_HTTP_HOST: '0.0.0.0',
       AX_HTTP_PORT: '9090',
       AX_HTTP_COOKIE_KEY: HEX_KEY,
@@ -1436,9 +1400,6 @@ describe('@ax/preset-k8s — onboarding wiring (I3: half-wired window closed)', 
       AX_BLOB_FS_ROOT: '/var/lib/ax-next/workspaces/blobs',
       AX_FILESTORE_SERVER: '10.9.8.7',
       AX_FILESTORE_EXPORT_PATH: '/vol1',
-      AX_WORKSPACE_BACKEND: 'git-protocol',
-      AX_WORKSPACE_GIT_SERVER_URL: 'http://git-server:7780',
-      AX_WORKSPACE_GIT_SERVER_TOKEN: 't',
       AX_HTTP_HOST: '0.0.0.0',
       AX_HTTP_PORT: '9090',
       AX_HTTP_COOKIE_KEY: HEX_KEY,
@@ -1458,9 +1419,6 @@ describe('@ax/preset-k8s — onboarding wiring (I3: half-wired window closed)', 
       AX_BLOB_FS_ROOT: '/var/lib/ax-next/workspaces/blobs',
       AX_FILESTORE_SERVER: '10.9.8.7',
       AX_FILESTORE_EXPORT_PATH: '/vol1',
-      AX_WORKSPACE_BACKEND: 'git-protocol',
-      AX_WORKSPACE_GIT_SERVER_URL: 'http://git-server:7780',
-      AX_WORKSPACE_GIT_SERVER_TOKEN: 't',
       AX_HTTP_HOST: '0.0.0.0',
       AX_HTTP_PORT: '9090',
       AX_HTTP_COOKIE_KEY: HEX_KEY,
@@ -1478,9 +1436,6 @@ describe('@ax/preset-k8s — onboarding wiring (I3: half-wired window closed)', 
       AX_BLOB_FS_ROOT: '/var/lib/ax-next/workspaces/blobs',
       AX_FILESTORE_SERVER: '10.9.8.7',
       AX_FILESTORE_EXPORT_PATH: '/vol1',
-      AX_WORKSPACE_BACKEND: 'git-protocol',
-      AX_WORKSPACE_GIT_SERVER_URL: 'http://git-server:7780',
-      AX_WORKSPACE_GIT_SERVER_TOKEN: 't',
       AX_HTTP_HOST: '0.0.0.0',
       AX_HTTP_PORT: '9090',
       AX_HTTP_COOKIE_KEY: HEX_KEY,
@@ -1547,7 +1502,7 @@ describe('@ax/preset-k8s — routines Phase B core (half-wired window closes her
       expect(routines.manifest.registers).toContain(`tool:execute:routine_${tool}`);
     }
     expect(routines.manifest.calls).toContain('http:register-route');
-    expect(routines.manifest.subscribes).not.toContain('workspace:applied');
+    expect(routines.manifest.subscribes.filter((h) => h.startsWith('workspace:'))).toEqual([]);
   });
 
   // TASK-908: a task check-in's brief provider, the landed veto and the memory refusal.
@@ -1562,40 +1517,28 @@ describe('@ax/preset-k8s — routines Phase B core (half-wired window closes her
   });
 });
 
-// Phase 3 conversational-agent-identity (2026-06-03). @ax/validator-identity is
-// a workspace:pre-apply subscriber alongside validator-skill. It gates the agent's writes to its own /agent/.ax/
-// identity files under the bootstrap-window policy. No half-wired window: it
-// loads in the preset here AND is exercised end-to-end through the Phase-3
-// commit-notify canary (acceptance.test.ts boots the full k8s preset, so every
-// workspace:apply runs through this subscriber).
-describe('@ax/preset-k8s — validator-identity (Phase 3)', () => {
+// @ax/validator-identity registers `identity:scan` (TASK-989), the write-time
+// injection check @ax/agents runs on every identity, soul and Instructions save
+// and fails closed without. Its gate on the identity files in the git workspace
+// went with that tier (TASK-995), so it subscribes to nothing and calls nothing.
+describe('@ax/preset-k8s — validator-identity', () => {
   it('@ax/validator-identity is present in the default plugin set', () => {
     const plugins = createK8sPlugins(stubConfig);
     const names = plugins.map((p) => p.manifest.name);
     expect(names).toContain('@ax/validator-identity');
   });
 
-  it('@ax/validator-identity subscribes to workspace:pre-apply', () => {
+  it('registers identity:scan for @ax/agents and nothing else: no calls, no subscriptions', () => {
     const plugins = createK8sPlugins(stubConfig);
     const v = plugins.find((p) => p.manifest.name === '@ax/validator-identity');
     expect(v, '@ax/validator-identity plugin').toBeDefined();
-    expect(v!.manifest.subscribes).toContain('workspace:pre-apply');
-  });
-
-  it('@ax/validator-identity declares workspace:read as an OPTIONAL call (degrades, never crashes bootstrap)', () => {
-    const plugins = createK8sPlugins(stubConfig);
-    const v = plugins.find((p) => p.manifest.name === '@ax/validator-identity');
-    expect(v, '@ax/validator-identity plugin').toBeDefined();
+    expect(v!.manifest.registers).toEqual(['identity:scan']);
     expect(v!.manifest.calls).toEqual([]);
-    expect((v!.manifest.optionalCalls ?? []).map((o) => o.hook)).toContain(
-      'workspace:read',
-    );
-    // The optionalCall must be satisfiable in this preset (a backend registers
-    // workspace:read) so the bootstrap window is actually resolvable in prod.
-    const allRegistered = new Set<string>(
-      plugins.flatMap((p) => p.manifest.registers),
-    );
-    expect(allRegistered.has('workspace:read')).toBe(true);
+    expect(v!.manifest.optionalCalls ?? []).toEqual([]);
+    expect(v!.manifest.subscribes).toEqual([]);
+    // Its one caller is in this preset, so the scan is reachable.
+    const agents = plugins.find((p) => p.manifest.name === '@ax/agents');
+    expect((agents!.manifest.optionalCalls ?? []).map((o) => o.hook)).toContain('identity:scan');
   });
 });
 
@@ -1630,214 +1573,49 @@ describe('@ax/preset-k8s — default routines (routines-half closes here)', () =
   });
 });
 
-describe('@ax/preset-k8s workspace backend selection', () => {
-  // Catches the wiring gap that motivated Task 19. Before this slice, the
-  // preset always pushed @ax/workspace-git regardless of config; the http
-  // backend was unreachable from production. These tests pin the
-  // discriminated-union → plugin-name mapping.
-  it("backend: 'local' registers @ax/workspace-git", () => {
-    const plugins = createK8sPlugins({
-      ...stubConfig,
-      workspace: { backend: 'local', repoRoot: '/tmp/preset-k8s-stub' },
-      blob: { backend: 'fs', root: '/tmp/preset-k8s-stub/blobs' },
-    });
-    const names = new Set(plugins.map((p) => p.manifest.name));
-    expect(names.has('@ax/workspace-git')).toBe(true);
-    expect(names.has('@ax/workspace-git-server')).toBe(false);
+describe('@ax/preset-k8s loads no workspace backend (TASK-995)', () => {
+  // The git workspace tier is gone: no plugin of the preset registers, calls,
+  // optionally calls or subscribes to a `workspace:*` hook, and the
+  // conversations save-refused drain went with it. The kernel skips absent
+  // optional producers, so a stale entry in a manifest would not fail
+  // `every "calls" entry is satisfied` above; this pins the absence by name.
+  const retired = (h: string) =>
+    h.startsWith('workspace:') || h === 'conversations:drain-save-refusals';
+
+  it('no plugin name is a workspace-git backend', () => {
+    const names = createK8sPlugins(stubConfig).map((p) => p.manifest.name);
+    expect(names.filter((n) => n.startsWith('@ax/workspace-git'))).toEqual([]);
   });
 
-  it("backend: 'git-protocol' registers @ax/workspace-git-server", () => {
-    const plugins = createK8sPlugins({
-      ...stubConfig,
-      workspace: {
-        backend: 'git-protocol',
-        baseUrl: 'http://git-server.ax-next.svc.cluster.local:7780',
-        token: 'stub-token',
-      },
-    });
-    const names = new Set(plugins.map((p) => p.manifest.name));
-    expect(names.has('@ax/workspace-git-server')).toBe(true);
-    expect(names.has('@ax/workspace-git')).toBe(false);
-  });
-
-  it("each backend registers the full bundle-aware workspace:* surface", () => {
-    // Reflex check: every backend must register all seven workspace:*
-    // hooks (apply + apply-internal + read/list/diff + apply-bundle +
-    // export-baseline-bundle). The earlier four-hook backend
-    // (@ax/workspace-git-http) was retired 2026-05-04 because multi-turn
-    // writes silently failed without the bundle hooks. Finding 3
-    // (2026-05-21) added `workspace:apply-internal`: `workspace:apply` is
-    // now the @ax/core policy facade and the backend's raw impl moved to
-    // the internal hook. If a refactor accidentally drops a hook, this
-    // fails before bootstrap does.
-    //
-    // `workspace:usage` (TASK-690) is OPTIONAL and only the local backend can
-    // measure its storage today, so it is pinned separately below: callers
-    // probe with `bus.hasService`, and the multi-replica backend must NOT
-    // claim it until it can answer.
-    const expected = [
-      'workspace:apply',
-      'workspace:apply-bundle',
-      'workspace:apply-internal',
-      'workspace:diff',
-      'workspace:export-baseline-bundle',
-      'workspace:list',
-      'workspace:read',
-    ];
-    const localPlugins = createK8sPlugins({
-      ...stubConfig,
-      workspace: { backend: 'local', repoRoot: '/tmp/preset-k8s-stub' },
-      blob: { backend: 'fs', root: '/tmp/preset-k8s-stub/blobs' },
-    });
-    const gitProtocolPlugins = createK8sPlugins({
-      ...stubConfig,
-      workspace: {
-        backend: 'git-protocol',
-        baseUrl: 'http://git-server:7780',
-        token: 't',
-      },
-    });
-    const wsHooksFor = (plugins: ReturnType<typeof createK8sPlugins>) =>
-      plugins
-        .flatMap((p) => p.manifest.registers)
-        .filter((h) => h.startsWith('workspace:'))
-        .sort();
-    expect(wsHooksFor(localPlugins)).toEqual([...expected, 'workspace:usage']);
-    expect(wsHooksFor(gitProtocolPlugins)).toEqual(expected);
-  });
-});
-
-describe('workspaceConfigFromEnv', () => {
-  // The chart writes AX_WORKSPACE_* onto the host pod; the entrypoint reads
-  // them via this helper. These tests pin the env → config translation so a
-  // typo in either place is a unit-test failure, not a runtime "no workspace
-  // plugin" surprise in production.
-  it('defaults to local when AX_WORKSPACE_BACKEND is unset', () => {
-    expect(
-      workspaceConfigFromEnv({ AX_WORKSPACE_ROOT: '/var/lib/ax-next/ws' }),
-    ).toEqual({ backend: 'local', repoRoot: '/var/lib/ax-next/ws' });
-  });
-
-  it('reads local config from AX_WORKSPACE_ROOT', () => {
-    expect(
-      workspaceConfigFromEnv({
-        AX_WORKSPACE_BACKEND: 'local',
-        AX_WORKSPACE_ROOT: '/var/lib/ax-next/ws',
-      }),
-    ).toEqual({ backend: 'local', repoRoot: '/var/lib/ax-next/ws' });
-  });
-
-  it('throws when local backend is missing AX_WORKSPACE_ROOT', () => {
-    expect(() =>
-      workspaceConfigFromEnv({ AX_WORKSPACE_BACKEND: 'local' }),
-    ).toThrowError(/AX_WORKSPACE_ROOT/);
-  });
-
-  // -------------------------------------------------------------------------
-  // git-protocol backend. Talks to the sharded git-server storage tier via
-  // @ax/workspace-git-server. URL + bearer token, distinct env-var names.
-  // -------------------------------------------------------------------------
-
-  it('reads git-protocol config from AX_WORKSPACE_GIT_SERVER_{URL,TOKEN}', () => {
-    expect(
-      workspaceConfigFromEnv({
-        AX_WORKSPACE_BACKEND: 'git-protocol',
-        AX_WORKSPACE_GIT_SERVER_URL: 'http://example',
-        AX_WORKSPACE_GIT_SERVER_TOKEN: 'secret-token',
-      }),
-    ).toEqual({
-      backend: 'git-protocol',
-      baseUrl: 'http://example',
-      token: 'secret-token',
-    });
-  });
-
-  it('throws when git-protocol backend is missing AX_WORKSPACE_GIT_SERVER_URL', () => {
-    const token = 'secret-token-do-not-leak';
-    let caught: unknown;
-    try {
-      workspaceConfigFromEnv({
-        AX_WORKSPACE_BACKEND: 'git-protocol',
-        AX_WORKSPACE_GIT_SERVER_TOKEN: token,
-      });
-    } catch (err) {
-      caught = err;
+  it('no manifest names a retired workspace:* or drain-save-refusals hook', () => {
+    const offenders: string[] = [];
+    for (const p of createK8sPlugins(stubConfig)) {
+      const m = p.manifest;
+      const hooks = [
+        ...m.registers,
+        ...m.calls,
+        ...(m.optionalCalls ?? []).map((c) => c.hook),
+        ...m.subscribes,
+      ];
+      for (const h of hooks) if (retired(h)) offenders.push(`${m.name} -> ${h}`);
     }
-    expect(caught).toBeInstanceOf(Error);
-    expect((caught as Error).message).toMatch(/AX_WORKSPACE_GIT_SERVER_URL/);
-    // Token leak check: the thrown error must NOT contain the token literal.
-    expect((caught as Error).message).not.toContain(token);
+    expect(offenders).toEqual([]);
   });
 
-  it('throws when git-protocol backend is missing AX_WORKSPACE_GIT_SERVER_TOKEN', () => {
-    const token = 'secret-token-do-not-leak';
-    let caught: unknown;
-    try {
-      workspaceConfigFromEnv({
-        AX_WORKSPACE_BACKEND: 'git-protocol',
-        AX_WORKSPACE_GIT_SERVER_URL: 'http://example',
-        // intentionally NOT setting the TOKEN; the failure happens before any
-        // token would be in scope, but we keep the literal handy for the
-        // sanity assertion below.
-      });
-    } catch (err) {
-      caught = err;
-    }
-    expect(caught).toBeInstanceOf(Error);
-    expect((caught as Error).message).toMatch(/AX_WORKSPACE_GIT_SERVER_TOKEN/);
-    expect((caught as Error).message).not.toContain(token);
-  });
-
-  it('treats empty AX_WORKSPACE_GIT_SERVER_URL as missing (not as valid)', () => {
-    expect(() =>
-      workspaceConfigFromEnv({
-        AX_WORKSPACE_BACKEND: 'git-protocol',
-        AX_WORKSPACE_GIT_SERVER_URL: '',
-        AX_WORKSPACE_GIT_SERVER_TOKEN: 'shh',
-      }),
-    ).toThrowError(/AX_WORKSPACE_GIT_SERVER_URL/);
-  });
-
-  it('treats empty AX_WORKSPACE_GIT_SERVER_TOKEN as missing (not as valid)', () => {
-    const token = '';
-    expect(() =>
-      workspaceConfigFromEnv({
-        AX_WORKSPACE_BACKEND: 'git-protocol',
-        AX_WORKSPACE_GIT_SERVER_URL: 'http://example',
-        AX_WORKSPACE_GIT_SERVER_TOKEN: token,
-      }),
-    ).toThrowError(/AX_WORKSPACE_GIT_SERVER_TOKEN/);
-  });
-
-  it('does not leak the token in any thrown error message', () => {
-    // Belt-and-suspenders: even when both vars are set but the URL is
-    // empty, the token literal must never appear in the error message.
-    const token = 'super-secret-token-12345';
-    let caught: unknown;
-    try {
-      workspaceConfigFromEnv({
-        AX_WORKSPACE_BACKEND: 'git-protocol',
-        AX_WORKSPACE_GIT_SERVER_URL: '',
-        AX_WORKSPACE_GIT_SERVER_TOKEN: token,
-      });
-    } catch (err) {
-      caught = err;
-    }
-    expect(caught).toBeInstanceOf(Error);
-    expect((caught as Error).message).not.toContain(token);
-  });
-
-  it('throws on unknown backend value', () => {
-    expect(() =>
-      workspaceConfigFromEnv({ AX_WORKSPACE_BACKEND: 'sftp' }),
-    ).toThrowError(/sftp/);
+  it('the Filestore resolver is the only workspace-* plugin that loads', () => {
+    const names = createK8sPlugins({
+      ...stubConfig,
+      filestore: { server: 'filestore.example.invalid', exportPath: '/exports/files' },
+    })
+      .map((p) => p.manifest.name)
+      .filter((n) => n.startsWith('@ax/workspace-'));
+    expect(names).toEqual(['@ax/workspace-filestore']);
   });
 });
 
 describe('loadK8sConfigFromEnv', () => {
-  // Required minimum env: DATABASE_URL, AX_K8S_HOST_IPC_URL, the workspace
-  // vars (delegated to workspaceConfigFromEnv), and the public-facing http
-  // listener vars. Auth providers are NOT env-driven — auth-better reads
+  // Required minimum env: DATABASE_URL, AX_K8S_HOST_IPC_URL, the blob and
+  // Filestore vars, and the public-facing http listener vars. Auth providers are NOT env-driven — auth-better reads
   // from the auth_providers DB table at runtime, so no auth env is needed
   // at boot.
   const HEX_KEY = '0'.repeat(64);
@@ -1847,9 +1625,6 @@ describe('loadK8sConfigFromEnv', () => {
     AX_BLOB_FS_ROOT: '/var/lib/ax-next/workspaces/blobs',
     AX_FILESTORE_SERVER: '10.9.8.7',
     AX_FILESTORE_EXPORT_PATH: '/vol1',
-    AX_WORKSPACE_BACKEND: 'git-protocol',
-    AX_WORKSPACE_GIT_SERVER_URL: 'http://git-server:7780',
-    AX_WORKSPACE_GIT_SERVER_TOKEN: 't',
     AX_HTTP_HOST: '0.0.0.0',
     AX_HTTP_PORT: '8080',
     AX_HTTP_COOKIE_KEY: HEX_KEY,
@@ -1862,11 +1637,6 @@ describe('loadK8sConfigFromEnv', () => {
     expect(cfg.database.connectionString).toBe('postgres://u:p@db:5432/ax_next');
     expect(cfg.eventbus.connectionString).toBe('postgres://u:p@db:5432/ax_next');
     expect(cfg.session.connectionString).toBe('postgres://u:p@db:5432/ax_next');
-    expect(cfg.workspace).toEqual({
-      backend: 'git-protocol',
-      baseUrl: 'http://git-server:7780',
-      token: 't',
-    });
     expect(cfg.ipc.hostIpcUrl).toBe('http://ax-next-host.ax-next.svc:80');
     expect(cfg.ipc.host).toBeUndefined();
     expect(cfg.ipc.port).toBeUndefined();
@@ -2065,10 +1835,23 @@ describe('loadK8sConfigFromEnv', () => {
     ).toThrowError(/AX_CHAT_TIMEOUT_MS/);
   });
 
-  it('propagates workspace errors from workspaceConfigFromEnv', () => {
-    const env = minRequired();
-    delete env.AX_WORKSPACE_GIT_SERVER_TOKEN;
-    expect(() => loadK8sConfigFromEnv(env)).toThrowError(/AX_WORKSPACE_GIT_SERVER_TOKEN/);
+  it.each([
+    {},
+    { AX_WORKSPACE_BACKEND: 'local', AX_WORKSPACE_ROOT: '/var/lib/ax-next/workspaces' },
+    {
+      AX_WORKSPACE_BACKEND: 'git-protocol',
+      AX_WORKSPACE_GIT_SERVER_URL: 'http://git-server:7780',
+      AX_WORKSPACE_GIT_SERVER_TOKEN: 't',
+    },
+    // A value the old loader refused: still never a boot error now.
+    { AX_WORKSPACE_BACKEND: 'sftp' },
+  ])('ignores the retired AX_WORKSPACE_* env, whatever it holds (TASK-995): %j', (retiredEnv) => {
+    // The chart still stamps these onto the host pod until the chart-cleanup
+    // card removes them (env-shape.test.ts allowlists them). Nothing reads them.
+    const cfg = loadK8sConfigFromEnv(minRequired(retiredEnv));
+    const baseline = loadK8sConfigFromEnv(minRequired());
+    expect(cfg).toEqual(baseline);
+    expect('workspace' in cfg).toBe(false);
   });
 
   it('throws when AX_HTTP_HOST is missing', () => {
@@ -2250,9 +2033,6 @@ describe('@ax/preset-k8s — allow_user_installed_skills flag (TASK-38)', () => 
     AX_BLOB_FS_ROOT: '/var/lib/ax-next/workspaces/blobs',
     AX_FILESTORE_SERVER: '10.9.8.7',
     AX_FILESTORE_EXPORT_PATH: '/vol1',
-    AX_WORKSPACE_BACKEND: 'git-protocol',
-    AX_WORKSPACE_GIT_SERVER_URL: 'http://git-server:7780',
-    AX_WORKSPACE_GIT_SERVER_TOKEN: 't',
     AX_HTTP_HOST: '0.0.0.0',
     AX_HTTP_PORT: '9090',
     AX_HTTP_COOKIE_KEY: HEX_KEY,
@@ -2328,9 +2108,6 @@ describe('@ax/preset-k8s — filestore mount wiring', () => {
   const baseEnv: NodeJS.ProcessEnv = {
     DATABASE_URL: 'postgres://u:p@db:5432/ax_next',
     AX_K8S_HOST_IPC_URL: 'http://ax-next-host.ax-next.svc:80',
-    AX_WORKSPACE_BACKEND: 'git-protocol',
-    AX_WORKSPACE_GIT_SERVER_URL: 'http://git-server:7780',
-    AX_WORKSPACE_GIT_SERVER_TOKEN: 't',
     AX_HTTP_HOST: '0.0.0.0',
     AX_HTTP_PORT: '9090',
     AX_HTTP_COOKIE_KEY: HEX_KEY,

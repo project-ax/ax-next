@@ -3,17 +3,16 @@ import { buildHomeBinEnv } from '../home-bin-env.js';
 
 // ---------------------------------------------------------------------------
 // buildHomeBinEnv APPENDS `<homeDir>/bin` to the SDK subprocess PATH so that
-// binaries the agent installs into $HOME/bin (HOME=/agent, the git-bundled
-// workspace that persists between sessions — see main.ts) are found in later
-// sessions. The SDK Bash tool runs a NON-INTERACTIVE shell whose PATH comes
-// entirely from the explicit query({options:{env}}) env (proxy-startup.ts
-// forwards process.env.PATH), NOT from any .bashrc — so this PATH layer is the
-// load-bearing mechanism.
+// binaries the agent installs into $HOME/bin (HOME=/files, the durable home that
+// persists between sessions) are found in later sessions. The SDK Bash tool runs
+// a NON-INTERACTIVE shell whose PATH comes entirely from the explicit
+// query({options:{env}}) env (proxy-startup.ts forwards process.env.PATH), NOT
+// from any .bashrc — so this PATH layer is the load-bearing mechanism.
 //
-// APPEND (not prepend) is deliberate (I5 / codex review): $HOME=/agent is
-// model-writable + restored across sessions, so prepending would let an
-// injected `/agent/bin/git` (etc.) PERSISTENTLY shadow trusted binaries.
-// Appending keeps installed tools discoverable while trusted base/venv bins win.
+// APPEND (not prepend) is deliberate (I5 / codex review): $HOME=/files is
+// model-writable + durable, so prepending would let an injected
+// `/files/bin/git` (etc.) PERSISTENTLY shadow trusted binaries. Appending keeps
+// installed tools discoverable while trusted base/venv bins win.
 // ---------------------------------------------------------------------------
 
 describe('buildHomeBinEnv', () => {
@@ -27,48 +26,45 @@ describe('buildHomeBinEnv', () => {
 
   it('appends `:<homeDir>/bin` to a non-empty PATH', () => {
     expect(
-      buildHomeBinEnv('/agent', '/usr/local/bin:/usr/bin:/bin'),
-    ).toEqual({ PATH: '/usr/local/bin:/usr/bin:/bin:/agent/bin' });
+      buildHomeBinEnv('/files', '/usr/local/bin:/usr/bin:/bin'),
+    ).toEqual({ PATH: '/usr/local/bin:/usr/bin:/bin:/files/bin' });
   });
 
   it("puts $HOME/bin at the BACK so trusted base/venv bins win on name collisions", () => {
     // currentPath here is what the venv layer already produced (venv bin first).
-    const out = buildHomeBinEnv('/agent', '/ephemeral/py/bin:/usr/bin');
-    expect(out.PATH).toBe('/ephemeral/py/bin:/usr/bin:/agent/bin');
-    expect(out.PATH?.endsWith(':/agent/bin')).toBe(true);
+    const out = buildHomeBinEnv('/files', '/tmp/py/bin:/usr/bin');
+    expect(out.PATH).toBe('/tmp/py/bin:/usr/bin:/files/bin');
+    expect(out.PATH?.endsWith(':/files/bin')).toBe(true);
   });
 
   it('yields a bare binDir when currentPath is undefined or empty', () => {
-    expect(buildHomeBinEnv('/agent', undefined)).toEqual({ PATH: '/agent/bin' });
-    expect(buildHomeBinEnv('/agent', '')).toEqual({ PATH: '/agent/bin' });
+    expect(buildHomeBinEnv('/files', undefined)).toEqual({ PATH: '/files/bin' });
+    expect(buildHomeBinEnv('/files', '')).toEqual({ PATH: '/files/bin' });
   });
 
   it('is idempotent: returns {} when PATH already ends with binDir', () => {
     // Never double-append (defensive; the subprocess env is fresh each session,
     // but a future caller might feed an already-appended PATH).
     expect(
-      buildHomeBinEnv('/agent', '/usr/bin:/agent/bin'),
+      buildHomeBinEnv('/files', '/usr/bin:/files/bin'),
     ).toEqual({});
     // Exact-match (PATH is only the binDir) is also a no-op.
-    expect(buildHomeBinEnv('/agent', '/agent/bin')).toEqual({});
+    expect(buildHomeBinEnv('/files', '/files/bin')).toEqual({});
   });
 
   it('does not treat a different dir that merely shares a suffix as already-present', () => {
-    // `/opt/agent/bin` ends with the same basename but is NOT `/agent/bin`
+    // `/opt/files/bin` ends with the same basename but is NOT `/files/bin`
     // as a full PATH segment (the `:` boundary check guards this).
     expect(
-      buildHomeBinEnv('/agent', '/usr/bin:/opt/agent/bin'),
-    ).toEqual({ PATH: '/usr/bin:/opt/agent/bin:/agent/bin' });
+      buildHomeBinEnv('/files', '/usr/bin:/opt/files/bin'),
+    ).toEqual({ PATH: '/usr/bin:/opt/files/bin:/files/bin' });
   });
 
-  it('derives $HOME/bin from HOME=/workspace under Plan 2 (durable NFS, not git-bundled)', () => {
-    // TASK-164 acceptance: when AX_USERFILES_ROOT is wired, main.ts feeds
-    // `sdkHome` (=/workspace, the durable NFS mount) here — so `~/bin` is
-    // `/workspace/bin`, persisted LIVE on NFS rather than via the per-turn git
-    // bundle (which only stages /agent). The helper is path-agnostic; this pins
-    // the wiring contract that home-bin follows HOME, not the workspace root.
+  it('follows the home it is given: a per-agent directory under the subprocess sandbox', () => {
+    // The helper is path-agnostic; this pins the wiring contract that home-bin
+    // follows HOME, whatever root the sandbox stamped.
     expect(
-      buildHomeBinEnv('/workspace', '/usr/local/bin:/usr/bin:/bin'),
-    ).toEqual({ PATH: '/usr/local/bin:/usr/bin:/bin:/workspace/bin' });
+      buildHomeBinEnv('/srv/userfiles/agent-1', '/usr/local/bin:/usr/bin:/bin'),
+    ).toEqual({ PATH: '/usr/local/bin:/usr/bin:/bin:/srv/userfiles/agent-1/bin' });
   });
 });

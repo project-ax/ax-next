@@ -45,7 +45,6 @@ const TEST_AGENT = {
   mcpConfigIds: [],
   model: 'anthropic/claude-sonnet-4-7',
   runner: 'claude-sdk',
-  workspaceRef: null,
 };
 
 interface CallTrace {
@@ -760,8 +759,8 @@ describe('chat-orchestrator route-by-conversationId (Task 16, J6)', () => {
           contentBlocks: [
             {
               type: 'attachment',
-              path: '.ax/uploads/conv-u/t1/report.pdf',
-              displayName: 'report.pdf',
+              attachmentId: '3f1c2b9e-7d4a-4c1e-9b8f-2a6d5e4c3b1a',
+              filename: 'report.pdf',
               mediaType: 'application/pdf',
               sizeBytes: 10,
             },
@@ -780,8 +779,8 @@ describe('chat-orchestrator route-by-conversationId (Task 16, J6)', () => {
           { type: 'text', text: 'summarize this' },
           {
             type: 'attachment',
-            path: '.ax/uploads/conv-u/t1/report.pdf',
-            displayName: 'report.pdf',
+            attachmentId: '3f1c2b9e-7d4a-4c1e-9b8f-2a6d5e4c3b1a',
+            filename: 'report.pdf',
           },
         ],
       },

@@ -13,11 +13,10 @@
  * what went wrong in words. It buys a failure the reader can act on.
  *
  * WHAT IT COSTS, honestly: the whole file lands in the tab's memory before it
- * reaches the disk. The durable tier caps a read at a megabyte, so that half is
- * bounded — but the governed tier has NO cap, so a large committed file is a
- * large buffer here. The streaming alternative is `window.open`, and it was
- * rejected above for a reason that has not changed. If a file ever arrives big
- * enough for this to matter, the fix is a route that streams and a client that
+ * reaches the disk. The host caps a read at a megabyte, so that is bounded. The
+ * streaming alternative is `window.open`, and it was rejected above for a
+ * reason that has not changed. If a file ever arrives big enough for this to
+ * matter, the fix is a route that streams and a client that
  * reads it as a stream, not a quiet return to showing people JSON.
  *
  * THE FILENAME COMES FROM THE SERVER, not from the row that was clicked. The
@@ -30,7 +29,7 @@
  */
 import { useCallback, useRef, useState } from 'react';
 import { HttpError } from './http';
-import { workspaceApi, type FileTier } from './workspace-api';
+import { workspaceApi } from './workspace-api';
 
 /**
  * Hand a blob to the browser's download machinery.
@@ -60,7 +59,7 @@ export function saveBlob(blob: Blob, filename: string): void {
  * Four outcomes, four sentences, and none of them is "something went wrong".
  * The one worth reading twice is the size case: it is not an error, it is a
  * limit we are being honest about. We can only reach the first megabyte of a
- * file on the durable tier, and a megabyte of a PDF is not a small PDF — it is
+ * file, and a megabyte of a PDF is not a small PDF — it is
  * a broken one that opens to an error message. Handing that over as the file
  * they asked for would be worse than refusing, so we refuse and say why.
  *
@@ -99,7 +98,7 @@ export interface FileDownloadState {
    * The authored sentence for the last failure, or `null`.
    *
    * ITS OWN STATE, deliberately. The Files tab already tells four things
-   * apart — the listing failed, there is no backend for this tier, we are
+   * apart — the listing failed, there is no file area, we are
    * still loading, the agent has written nothing — and a download that did not
    * happen is a fifth. Folding it into any of the others would report a
    * failed download as a fact about the agent's files, which it is not.
@@ -110,10 +109,9 @@ export interface FileDownloadState {
 export function useFileDownload(args: {
   agentId: string;
   agentName: string;
-  tier: FileTier;
   path: string;
 }): FileDownloadState {
-  const { agentId, agentName, tier, path } = args;
+  const { agentId, agentName, path } = args;
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   /**
@@ -134,7 +132,7 @@ export function useFileDownload(args: {
     setError(null);
     void (async () => {
       try {
-        const got = await workspaceApi.downloadFile(agentId, tier, path);
+        const got = await workspaceApi.downloadFile(agentId, path);
         saveBlob(got.blob, got.filename);
       } catch (e) {
         setError(downloadFailureMessage(e, agentName));
@@ -143,7 +141,7 @@ export function useFileDownload(args: {
         setBusy(false);
       }
     })();
-  }, [agentId, agentName, tier, path]);
+  }, [agentId, agentName, path]);
 
   return { start, busy, error };
 }

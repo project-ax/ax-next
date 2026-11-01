@@ -182,8 +182,8 @@ import { HttpError } from './http';
  *
  * TWO CLASSIFIERS STILL HAND-ROLL THEIR OWN, and they are not the same case.
  *
- * `toFilesError` in `workspace-files.ts` splits on 503 to say "no workspace
- * backend in this deployment" — a status this file has no reading of at all,
+ * `toUserFilesError` in `user-files.ts` splits on 503 to say "no file area
+ * in this deployment" — a status this file has no reading of at all,
  * mapped to a kind (`unavailable`) that is not a `ReadOutcome`. It is a
  * genuinely different axis, not drift, and folding it in here would mean
  * inventing a kind for one surface's deployment story. Its real gap is that it

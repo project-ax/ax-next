@@ -4,6 +4,7 @@ import {
 } from '@ax/ipc-protocol';
 import { zodSummary, internalError, logInternalError, mapPluginError, validationError } from '../errors.js';
 import { PluginError } from '@ax/core';
+import { refuseUnboundConversation } from './bound-conversation.js';
 import type { ActionHandler } from './types.js';
 
 // ---------------------------------------------------------------------------
@@ -15,11 +16,16 @@ import type { ActionHandler } from './types.js';
 // store at this point — this call only records WHO owns them and HOW to display
 // them. Durability is observable at the runner's `blob.put` return, not here.
 //
-// Authz: the host-side `artifacts:publish-blob` hook reads `ctx.userId` (the
-// session bearer's user, resolved by the IPC server before dispatch) and scopes
-// the insert to it, so a runner can't publish into another user's conversation.
-// `conversationId` is supplied by the runner (its bound conversation) and the
-// hook re-checks ownership.
+// Authz, two layers. A download resolves an artifact by its id AND the row's
+// conversation, so where a row lands decides who can read it:
+//   1. Here: `conversationId` must be the conversation the session is bound to
+//      (`refuseUnboundConversation`; `ctx.conversationId` comes from the bearer
+//      token's session, never the body). A runner cannot record a row in any
+//      other conversation.
+//   2. The host-side `artifacts:publish-blob` hook writes the row as
+//      `ctx.userId` (the session bearer's user), refuses a conversation that
+//      user does not own, and never lets one user's publish take over another
+//      user's row.
 //
 // `displayName`/`mediaType` are UNTRUSTED model-supplied text — stored verbatim,
 // never shell-interpolated; the renderer treats them as untrusted (the download
@@ -43,6 +49,13 @@ export const artifactPublishHandler: ActionHandler = async (rawPayload, ctx, bus
   if (!parsed.success) {
     return validationError(`artifact.publish: ${zodSummary(parsed.error)}`);
   }
+  const refused = refuseUnboundConversation(
+    ctx,
+    parsed.data.conversationId,
+    'artifact.publish',
+    'artifact_publish_foreign_conversation_refused',
+  );
+  if (refused !== null) return refused;
   let out: ArtifactPublishBlobOutput;
   try {
     out = await bus.call<ArtifactPublishBlobInput, ArtifactPublishBlobOutput>(

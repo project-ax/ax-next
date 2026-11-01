@@ -11,7 +11,6 @@ import { buildPodSpec } from '../pod-spec.js';
 
 const baseInput = {
   sessionId: 'sess',
-  workspaceRoot: '/tmp/ws',
   runnerBinary: '/opt/runner.js',
   authToken: 'tok',
   runnerEndpoint: 'http://ax-next-host.ax-next.svc.cluster.local:80',

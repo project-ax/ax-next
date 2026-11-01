@@ -17,8 +17,9 @@ import {
 // ---------------------------------------------------------------------------
 // Phase B (2026-04-29) migration. Pure-additive ALTER on
 // conversations_v1_conversations adding runner_type, runner_session_id,
-// workspace_ref, last_activity_at — all nullable. No v1 → v2 split (I1):
-// greenfield, ALTER in place forever.
+// last_activity_at — all nullable. No v1 → v2 split (I1): greenfield, ALTER
+// in place forever. (Phase B also added workspace_ref; TASK-995 drops it,
+// and TASK-749's save_refused_drained_seq with it — see the TASK-995 tests.)
 //
 // Phase E (2026-05-09) migration. Forward-only DROP of the now-dead
 // conversations_v1_turns table. Phase D switched the reader to the
@@ -51,6 +52,7 @@ afterEach(async () => {
     const k = opened.pop()!;
     try {
       await k.schema.dropTable('conversations_v1_turns').ifExists().execute();
+      await k.schema.dropTable('conversations_v1_events').ifExists().execute();
       await k.schema
         .dropTable('conversations_v1_conversations')
         .ifExists()
@@ -67,7 +69,7 @@ afterAll(async () => {
 });
 
 describe('Phase B migration', () => {
-  it('adds runner_type, runner_session_id, workspace_ref, last_activity_at as nullable columns', async () => {
+  it('adds runner_type, runner_session_id, last_activity_at as nullable columns', async () => {
     const db = makeKysely();
     await runConversationsMigration(db);
 
@@ -91,10 +93,6 @@ describe('Phase B migration', () => {
       is_nullable: 'YES',
       data_type: 'text',
     });
-    expect(byName.get('workspace_ref')).toMatchObject({
-      is_nullable: 'YES',
-      data_type: 'text',
-    });
     expect(byName.get('last_activity_at')).toMatchObject({
       is_nullable: 'YES',
       data_type: 'timestamp with time zone',
@@ -109,9 +107,77 @@ describe('Phase B migration', () => {
     const cols = await sql<{ column_name: string }>`
       SELECT column_name FROM information_schema.columns
       WHERE table_name = 'conversations_v1_conversations'
-        AND column_name IN ('runner_type', 'runner_session_id', 'workspace_ref', 'last_activity_at')
+        AND column_name IN ('runner_type', 'runner_session_id', 'last_activity_at')
     `.execute(db);
-    expect(cols.rows).toHaveLength(4);
+    expect(cols.rows).toHaveLength(3);
+  });
+
+  // TASK-995: two columns go. `workspace_ref` was a frozen copy of the
+  // agent's workspaceRef, which nothing ever read; `save_refused_drained_seq`
+  // was TASK-749's mark of how far the model had been told about refused
+  // saves, and nothing refuses a save any more. Each is out of the ADD COLUMN
+  // statements AND dropped with an idempotent DROP COLUMN IF EXISTS (the
+  // TASK-142 precedent in @ax/agents).
+  async function conversationColumnNames(
+    db: Kysely<ConversationDatabase>,
+  ): Promise<string[]> {
+    const cols = await sql<{ column_name: string }>`
+      SELECT column_name FROM information_schema.columns
+       WHERE table_name = 'conversations_v1_conversations'
+    `.execute(db);
+    return cols.rows.map((r) => r.column_name);
+  }
+
+  it('TASK-995: a fresh database has neither workspace_ref nor save_refused_drained_seq', async () => {
+    const db = makeKysely();
+    await runConversationsMigration(db);
+    const cols = await conversationColumnNames(db);
+    expect(cols).not.toContain('workspace_ref');
+    expect(cols).not.toContain('save_refused_drained_seq');
+  });
+
+  it('a conversations table with workspace_ref and save_refused_drained_seq upgrades: both dropped; a second run is a no-op', async () => {
+    const db = makeKysely();
+    await runConversationsMigration(db);
+    // The tables as an earlier release left them: both columns are there and
+    // hold values, and that release wrote a `save-refused` display event.
+    await sql`
+      ALTER TABLE conversations_v1_conversations
+        ADD COLUMN IF NOT EXISTS workspace_ref TEXT,
+        ADD COLUMN IF NOT EXISTS save_refused_drained_seq BIGINT
+    `.execute(db);
+    await sql`
+      INSERT INTO conversations_v1_conversations
+        (conversation_id, user_id, agent_id, workspace_ref, save_refused_drained_seq)
+      VALUES ('cnv_old', 'u_old', 'a_old', 'wsp_old', 1)
+    `.execute(db);
+    await sql`
+      INSERT INTO conversations_v1_events (conversation_id, seq, event_kind, fold_key, payload)
+      VALUES ('cnv_old', 1, 'save-refused', 'req-1', '{"code":"storage-full"}'::jsonb)
+    `.execute(db);
+
+    await runConversationsMigration(db);
+    let cols = await conversationColumnNames(db);
+    expect(cols).not.toContain('workspace_ref');
+    expect(cols).not.toContain('save_refused_drained_seq');
+
+    // A second run finds nothing to drop and does not throw.
+    await runConversationsMigration(db);
+    cols = await conversationColumnNames(db);
+    expect(cols).not.toContain('workspace_ref');
+    expect(cols).not.toContain('save_refused_drained_seq');
+
+    // The conversation survives, and so does the old event row: the kind
+    // stays in the CHECK, so rows written before this release stay valid
+    // (the read path ignores them — see display-events.test.ts).
+    const conv = await sql<{ conversation_id: string }>`
+      SELECT conversation_id FROM conversations_v1_conversations
+    `.execute(db);
+    expect(conv.rows).toEqual([{ conversation_id: 'cnv_old' }]);
+    const events = await sql<{ event_kind: string }>`
+      SELECT event_kind FROM conversations_v1_events WHERE conversation_id = 'cnv_old'
+    `.execute(db);
+    expect(events.rows).toEqual([{ event_kind: 'save-refused' }]);
   });
 
   it('does NOT create the conversations_v1_turns table on a fresh database (Phase E)', async () => {
@@ -214,17 +280,15 @@ describe('Phase B migration', () => {
     const row = await sql<{
       runner_type: string | null;
       runner_session_id: string | null;
-      workspace_ref: string | null;
       last_activity_at: Date | null;
     }>`
-      SELECT runner_type, runner_session_id, workspace_ref, last_activity_at
+      SELECT runner_type, runner_session_id, last_activity_at
       FROM conversations_v1_conversations
       WHERE conversation_id = 'cnv_old'
     `.execute(db);
     expect(row.rows[0]).toMatchObject({
       runner_type: null,
       runner_session_id: null,
-      workspace_ref: null,
       last_activity_at: null,
     });
   });

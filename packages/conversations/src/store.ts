@@ -1,11 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { PluginError } from '@ax/core';
-import {
-  ContentBlockSchema,
-  SaveRefusedCodeSchema,
-  type ContentBlock,
-  type SaveRefusedCode,
-} from '@ax/ipc-protocol';
+import { ContentBlockSchema, type ContentBlock } from '@ax/ipc-protocol';
 import { z } from 'zod';
 import { sql, type Kysely } from 'kysely';
 import type {
@@ -46,13 +41,6 @@ const VALID_ROLES: ReadonlySet<TurnRole> = new Set([
 // audit trails stay readable.
 const RUNNER_TYPE_MAX = 64;
 const RUNNER_TYPE_RE = /^[a-z0-9-]+$/;
-
-// Phase B. Mirrored from packages/agents/src/store.ts. Cross-plugin
-// imports are forbidden (CLAUDE.md invariant #2 / I14); duplicating the
-// two values is cheaper than a shared package. Keep them in lockstep
-// when @ax/agents tightens or relaxes its regex.
-const FROZEN_WORKSPACE_REF_MAX = 256;
-const FROZEN_WORKSPACE_REF_RE = /^[A-Za-z0-9_./-]+$/;
 
 function invalid(message: string): PluginError {
   return new PluginError({
@@ -150,20 +138,6 @@ export function validateRunnerType(value: unknown): string | null {
   return value;
 }
 
-export function validateWorkspaceRefForFreeze(value: unknown): string | null {
-  if (value === null || value === undefined) return null;
-  if (typeof value !== 'string') {
-    throw invalid('workspaceRef must be a string or null');
-  }
-  if (value.length === 0 || value.length > FROZEN_WORKSPACE_REF_MAX) {
-    throw invalid(`workspaceRef must be 1-${FROZEN_WORKSPACE_REF_MAX} chars`);
-  }
-  if (!FROZEN_WORKSPACE_REF_RE.test(value)) {
-    throw invalid(`workspaceRef must match ${FROZEN_WORKSPACE_REF_RE.source}`);
-  }
-  return value;
-}
-
 // ---------------------------------------------------------------------------
 // ID minting — `crypto.randomBytes`-derived prefixed ids, mirroring the
 // `agt_` / `usr_` posture in @ax/agents and @ax/auth-better.
@@ -188,7 +162,6 @@ export function rowToConversation(row: ConversationsRow): Conversation {
     activeReqId: row.active_req_id,
     runnerType: row.runner_type,
     runnerSessionId: row.runner_session_id,
-    workspaceRef: row.workspace_ref,
     lastActivityAt:
       row.last_activity_at === null ? null : row.last_activity_at.toISOString(),
     hidden: row.hidden,
@@ -227,11 +200,6 @@ export interface ConversationStoreCreateArgs {
    */
   runnerType?: string | null;
   /**
-   * Phase B. Frozen copy of `agent.workspaceRef` at create-time. Optional
-   * for the same reason as runnerType — pre-Phase-B test rows.
-   */
-  workspaceRef?: string | null;
-  /**
    * Phase A (routines foundation, 2026-05-14). Stable per-(user, agent,
    * key) lookup handle. NULL for non-routine conversations.
    */
@@ -262,7 +230,6 @@ export interface ConversationMetadata {
   agentId: string;
   runnerType: string | null;
   runnerSessionId: string | null;
-  workspaceRef: string | null;
   title: string | null;
   /** ISO-8601 string, or null if no turns yet / pre-Phase-B row. */
   lastActivityAt: string | null;
@@ -456,22 +423,6 @@ export interface ConversationStore {
     conversationId: string,
     opts?: ListEventsOptions,
   ): Promise<StoredEvent[]>;
-  /**
-   * TASK-749. Take the conversation's `save-refused` rows the MODEL has not
-   * been told about yet, and mark them told. "Told" is a per-conversation
-   * watermark (`save_refused_drained_seq`): this returns the rows above it,
-   * folded to the last row per fold key, and advances it to the highest seq
-   * it read with a compare-and-set, so two concurrent drains never both
-   * return the same row. At most once: the rows are marked before the caller
-   * uses them. userId-scoped like storeRunnerSession — a foreign, missing or
-   * tombstoned conversation drains nothing. A row whose payload carries no
-   * known code is consumed and dropped.
-   */
-  drainSaveRefusals(args: {
-    conversationId: string;
-    userId: string;
-  }): Promise<DrainedSaveRefusal[]>;
-
   // -------------------------------------------------------------------------
   // TASK-67 (out-of-git Part B / B2) — resume transcript store.
   // One opaque row per SDK jsonl LINE, raw verbatim, keyed (conversationId,
@@ -634,16 +585,6 @@ export interface StoreAppendEventArgs {
   payload: Record<string, unknown>;
 }
 
-/**
- * TASK-749 — one drained `save-refused` row: its fold key (the refused turn's
- * reqId, `''` for a turn with none, or `final:<uuid>` for the final/idle
- * flush) and its closed code.
- */
-export interface DrainedSaveRefusal {
-  key: string;
-  code: SaveRefusedCode;
-}
-
 /** TASK-731 — options for ConversationStore.listEvents. */
 export interface ListEventsOptions {
   /**
@@ -782,7 +723,6 @@ export function createConversationStore(
       agentId,
       title,
       runnerType,
-      workspaceRef,
       externalKey,
       hidden,
       origin,
@@ -798,12 +738,11 @@ export function createConversationStore(
           title,
           active_session_id: null,
           active_req_id: null,
-          // Phase B: freeze runner_type + workspace_ref onto the row.
-          // Pre-Phase-B callers (test fixtures) omit these and the row
-          // persists as NULL — opaque to the correctness path (I8/I10).
+          // Phase B: seed runner_type onto the row (bind-session refreshes
+          // it). Callers that omit it (test fixtures) persist NULL — opaque
+          // to the correctness path (I8).
           runner_type: runnerType ?? null,
           runner_session_id: null,
-          workspace_ref: workspaceRef ?? null,
           last_activity_at: null,
           // Phase A: external_key for routines find-or-create lookup.
           external_key: externalKey ?? null,
@@ -928,7 +867,6 @@ export function createConversationStore(
         agentId: row.agent_id,
         runnerType: row.runner_type,
         runnerSessionId: row.runner_session_id,
-        workspaceRef: row.workspace_ref,
         title: row.title,
         lastActivityAt:
           row.last_activity_at === null
@@ -1054,7 +992,6 @@ export function createConversationStore(
           active_req_id: null,
           runner_type: fallback.runnerType ?? null,
           runner_session_id: null,
-          workspace_ref: fallback.workspaceRef ?? null,
           last_activity_at: null,
           external_key: externalKey,
           // Phase D (2026-05-17): routines pass `hidden: true` for
@@ -1087,9 +1024,11 @@ export function createConversationStore(
     },
 
     async appendEvent({ conversationId, kind, role, foldKey, payload }) {
-      // Reject an unknown kind before touching the DB (the CHECK constraint
-      // is the backstop). The read is lenient about kinds (TASK-731); the
-      // write is not.
+      // Reject an unknown OR retired kind before touching the DB. The read is
+      // lenient about kinds (TASK-731); the write is not. The CHECK
+      // constraint is the backstop for unknown kinds only: it still admits
+      // the retired `save-refused` (old rows stay valid), so this check is
+      // what refuses a new one (TASK-995).
       validateEventKind(kind);
       // CONTRACT: appends to ONE conversation are fully serialized, so an
       // append NEVER fails and NEVER drops an event, at ANY concurrency.
@@ -1206,7 +1145,11 @@ export function createConversationStore(
       // that added it) should cost that one row. Writes stay strict: the
       // CHECK constraint and validateEventKind in appendEvent still refuse
       // an unknown kind.
+      //
+      // TASK-995: a RETIRED kind (rows an earlier release wrote) is left out
+      // too, but quietly — it is not unknown, so there is nothing to report.
       const known = rows.filter((r) => {
+        if (RETIRED_EVENT_KINDS.has(r.event_kind)) return false;
         if (isEventKind(r.event_kind)) return true;
         opts?.onSkippedRow?.({ seq: coerceSeq(r.seq), eventKind: r.event_kind });
         return false;
@@ -1223,55 +1166,6 @@ export function createConversationStore(
         payload: asRecord(r.payload),
         createdAt: r.created_at.toISOString(),
       }));
-    },
-
-    async drainSaveRefusals({ conversationId, userId }) {
-      // Bounded retry: each lost CAS means another drain advanced the mark
-      // between our two reads, so the next attempt sees fewer rows.
-      for (let attempt = 0; attempt < DRAIN_CAS_ATTEMPTS; attempt += 1) {
-        const conv = await db
-          .selectFrom('conversations_v1_conversations')
-          .select(['save_refused_drained_seq'])
-          .where('conversation_id', '=', conversationId)
-          .where('user_id', '=', userId)
-          .where('deleted_at', 'is', null)
-          .executeTakeFirst();
-        if (conv === undefined) return [];
-        const from =
-          conv.save_refused_drained_seq === null ||
-          conv.save_refused_drained_seq === undefined
-            ? 0
-            : coerceSeq(conv.save_refused_drained_seq);
-        const rows = await db
-          .selectFrom('conversations_v1_events')
-          .select(['seq', 'fold_key', 'payload'])
-          .where('conversation_id', '=', conversationId)
-          .where('event_kind', '=', 'save-refused')
-          .where('seq', '>', from)
-          .orderBy('seq', 'asc')
-          .execute();
-        if (rows.length === 0) return [];
-        const to = coerceSeq(rows[rows.length - 1]!.seq);
-        const advanced = await db
-          .updateTable('conversations_v1_conversations')
-          .set({ save_refused_drained_seq: to })
-          .where('conversation_id', '=', conversationId)
-          .where('user_id', '=', userId)
-          .where('deleted_at', 'is', null)
-          .where(sql<number>`COALESCE(save_refused_drained_seq, 0)`, '=', from)
-          .executeTakeFirst();
-        if (Number(advanced.numUpdatedRows ?? 0n) === 0) continue;
-        // Fold to the last row per key (both turn-ends of one turn write a
-        // row under its reqId), keeping first-seen order.
-        const byKey = new Map<string, SaveRefusedCode>();
-        for (const r of rows) {
-          const code = asRecord(r.payload).code;
-          if (typeof code !== 'string' || !SAVE_REFUSED_CODES.has(code)) continue;
-          byKey.set(r.fold_key, code as SaveRefusedCode);
-        }
-        return [...byKey].map(([key, code]) => ({ key, code }));
-      }
-      return [];
     },
 
     // -----------------------------------------------------------------------
@@ -1519,18 +1413,20 @@ export function roleOfJsonlLine(line: string): TurnRole | null {
 // TASK-66 display-event helpers.
 // ---------------------------------------------------------------------------
 
-/** TASK-749 — the closed `save-refused` codes a drained row may carry. */
-const SAVE_REFUSED_CODES: ReadonlySet<string> = new Set(SaveRefusedCodeSchema.options);
-
-/** TASK-749 — bound on drainSaveRefusals' compare-and-set retries. */
-const DRAIN_CAS_ATTEMPTS = 3;
-
 const VALID_EVENT_KINDS: ReadonlySet<ConversationEventKind> = new Set([
   'turn',
   'permission-card',
   'turn-error',
-  'save-refused',
 ]);
+
+/**
+ * TASK-995 — kinds an earlier release wrote that this one neither writes nor
+ * reads. `save-refused` (TASK-731) told the person the host had refused to
+ * keep a reply's files; nothing refuses a save any more. The table's CHECK
+ * still admits it, so old rows stay valid; `listEvents` leaves them out
+ * without reporting them, and `appendEvent` refuses the kind.
+ */
+const RETIRED_EVENT_KINDS: ReadonlySet<string> = new Set(['save-refused']);
 
 function isEventKind(value: string): value is ConversationEventKind {
   return VALID_EVENT_KINDS.has(value as ConversationEventKind);
@@ -1544,9 +1440,7 @@ function coerceSeq(value: string | number): number {
 
 function validateEventKind(value: string): ConversationEventKind {
   if (!isEventKind(value)) {
-    throw invalid(
-      "event_kind must be 'turn', 'permission-card', 'turn-error', or 'save-refused'",
-    );
+    throw invalid("event_kind must be 'turn', 'permission-card', or 'turn-error'");
   }
   return value as ConversationEventKind;
 }
@@ -1571,9 +1465,9 @@ function asRecord(value: unknown): Record<string, unknown> {
 //   - turnId is empty and no turn-bearing line exists, OR
 //   - turnId is non-empty and no line matches it.
 //
-// Null is a signal to the caller to skip the `workspace:apply` call
-// (best-effort semantics — the file may have already been rewritten by
-// a concurrent caller or the runner).
+// Null is a signal to the caller to skip the write-back (best-effort
+// semantics — the transcript may already have been rewritten by a
+// concurrent caller or the runner).
 // ---------------------------------------------------------------------------
 
 export function dropTurnFromJsonl(

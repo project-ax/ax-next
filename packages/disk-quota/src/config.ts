@@ -4,9 +4,9 @@ import type { AgentContext, HookBus } from '@ax/core';
 // ---------------------------------------------------------------------------
 // The admin-changeable storage limits, persisted as one JSON setting through
 // `storage:get` / `storage:set` (the @ax/usage-limits and @ax/branding
-// pattern). Reads are cached briefly because the write gates consult them on
-// every commit and upload; a write refreshes this host's cache at once, and
-// other hosts pick it up within the TTL.
+// pattern). Reads are cached briefly because the upload gate consults them on
+// every upload; a write refreshes this host's cache at once, and other hosts
+// pick it up within the TTL.
 //
 // Reading NEVER throws on a bad VALUE: a missing, corrupt or out-of-bounds
 // stored value falls back to the default for that field (with a warn). A

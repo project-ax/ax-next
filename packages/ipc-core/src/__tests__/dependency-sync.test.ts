@@ -83,8 +83,10 @@ describe('dispatcher dependency metadata stays in sync with the handler source',
     // Guard against a scanner that silently matches nothing (e.g. a regex
     // typo) — which would make the coverage assertions vacuously pass.
     expect(staticHooks.has('session:resolve-token')).toBe(true);
-    expect(staticHooks.has('workspace:read')).toBe(true);
-    expect(staticHooks.has('workspace:export-baseline-bundle')).toBe(true);
+    // One unguarded call (session.get-config) and one behind a hasService
+    // guard (event.turn-end's display-log persist), so both shapes are seen.
+    expect(staticHooks.has('session:get-config')).toBe(true);
+    expect(staticHooks.has('conversations:append-event')).toBe(true);
     expect(staticHooks.size).toBeGreaterThanOrEqual(
       DISPATCHER_DEPENDENCIES.requiredCalls.length,
     );
@@ -127,6 +129,28 @@ describe('dispatcher dependency metadata stays in sync with the handler source',
     ];
     const dead = declared.filter((h) => !staticHooks.has(h));
     expect(dead).toEqual([]);
+  });
+
+  it('TASK-995: no workspace:* hook and no save-refused drain is declared or called', () => {
+    // The git workspace tier's producers are being removed. A transport that
+    // still declared `workspace:read` as REQUIRED would fail every boot without
+    // one; a handler that still called a `workspace:*` hook would be dead code
+    // behind a route that no longer exists.
+    const retired = (h: string): boolean =>
+      h.startsWith('workspace:') || h === 'conversations:drain-save-refusals';
+    const declared = [
+      ...DISPATCHER_DEPENDENCIES.requiredCalls,
+      ...DISPATCHER_DEPENDENCIES.optionalCalls.map((oc) => oc.hook),
+    ];
+    expect(declared.filter(retired)).toEqual([]);
+    expect([...staticHooks].filter(retired)).toEqual([]);
+    // Every remaining REQUIRED producer ships wherever a transport loads.
+    expect([...DISPATCHER_DEPENDENCIES.requiredCalls].sort()).toEqual([
+      'session:claim-work',
+      'session:get-config',
+      'session:resolve-token',
+      'tool:list',
+    ]);
   });
 
   it('routes a non-empty action/event table the metadata was derived from', () => {

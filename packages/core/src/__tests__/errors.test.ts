@@ -121,28 +121,26 @@ describe('reject() code (TASK-719)', () => {
   });
 
   it('omits the key entirely when absent or empty', () => {
-    // Same reason as `offendingPaths`: an explicit `code: undefined` is not the
-    // same object as an absent key once it crosses a zod parse or a `toEqual`.
-    // An empty string names nothing, so it reads as absent rather than as a
-    // code a consumer would have to special-case.
+    // An explicit `code: undefined` is not the same object as an absent key
+    // once it crosses a zod parse or a `toEqual`. An empty string names
+    // nothing, so it reads as absent rather than as a code a consumer would
+    // have to special-case.
     expect('code' in reject({ reason: 'nope' })).toBe(false);
-    expect('code' in reject({ reason: 'nope', source: 's', offendingPaths: ['a'] })).toBe(false);
+    expect('code' in reject({ reason: 'nope', source: 's' })).toBe(false);
     expect('code' in reject({ reason: 'nope', code: '' })).toBe(false);
     expect(reject({ reason: 'nope' })).toEqual({ rejected: true, reason: 'nope' });
   });
 
-  it('does not disturb source or offendingPaths', () => {
+  it('does not disturb source', () => {
     const r = reject({
       reason: 'nope',
       source: 'quota',
-      offendingPaths: ['CLAUDE.md'],
       code: 'storage-full',
     });
     expect(r).toEqual({
       rejected: true,
       reason: 'nope',
       source: 'quota',
-      offendingPaths: ['CLAUDE.md'],
       code: 'storage-full',
     });
   });
@@ -168,18 +166,17 @@ describe('PluginError reasonCode (TASK-719)', () => {
   });
 });
 
-describe('reject() offendingPaths (TASK-287)', () => {
-  it('carries the paths a rejection is about', () => {
-    const r = reject({ reason: 'nope', offendingPaths: ['CLAUDE.md'] });
-    expect(r.offendingPaths).toEqual(['CLAUDE.md']);
-  });
-
-  it('omits the key entirely when absent or empty', () => {
-    // Absent and "present but empty" must not be two different things
-    // downstream: a consumer checks `length > 0` to decide whether a rejection
-    // can be scoped, and an empty array would read as "some paths, none of
-    // them" — which is the whole-batch case wearing the scoped case's clothes.
-    expect('offendingPaths' in reject({ reason: 'nope' })).toBe(false);
-    expect('offendingPaths' in reject({ reason: 'nope', offendingPaths: [] })).toBe(false);
+describe('reject() builds only rejected, reason, source and code (TASK-995)', () => {
+  it('does not carry offendingPaths: its one reader was the removed workspace save', () => {
+    // TASK-287's scoped veto named the paths a `workspace:pre-apply` refusal was
+    // about, so the runner could roll back just those. That pipeline is gone,
+    // so a caller that still passes the field gets a plain rejection.
+    const stale = { reason: 'nope', source: 's', code: 'c', offendingPaths: ['x'] };
+    expect(reject(stale as Parameters<typeof reject>[0])).toEqual({
+      rejected: true,
+      reason: 'nope',
+      source: 's',
+      code: 'c',
+    });
   });
 });

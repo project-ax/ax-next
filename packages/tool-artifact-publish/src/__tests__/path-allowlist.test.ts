@@ -82,11 +82,11 @@ describe('checkPublishablePath', () => {
     });
   });
 
-  describe('the governed tier is not publishable at all', () => {
-    // `/agent/workspace/**` used to be allowed as the "Pattern A" carve-out — a
-    // fossil of the pre-split layout, pointing at a directory nothing creates.
-    // Dropping it also puts the agent's own identity, memory and transcripts
-    // structurally out of reach of a "publish your instructions" injection.
+  describe('the retired /agent tier is not publishable at all', () => {
+    // `/agent` was the versioned workspace tier (removed in TASK-995), and
+    // `/agent/workspace/**` was once allowed as its "Pattern A" carve-out — a
+    // fossil of the pre-split layout. Neither is a root, so nothing under them
+    // is publishable; these pin that the old paths stay refused.
     it('rejects the retired /agent/workspace/ fossil', () => {
       expect(checkPublishablePath('/agent/workspace/reports/Q4.pdf', BOTH).ok).toBe(false);
     });
@@ -101,6 +101,28 @@ describe('checkPublishablePath', () => {
       ]) {
         expect(checkPublishablePath(p, BOTH).ok).toBe(false);
       }
+    });
+  });
+
+  describe('the scratch root also holds uploads and transcripts (TASK-995)', () => {
+    // k8s now mounts one scratch root at /tmp: the person's uploads, the SDK's
+    // conversation log and the agent's caches sit next to artifacts/, the only
+    // part of it that is publishable.
+    const ROOTS = { userFilesRoot: '/files', ephemeralRoot: '/tmp' };
+
+    it('refuses uploads, transcripts and anything else outside artifacts/', () => {
+      for (const p of ['/tmp/uploads/a.pdf', '/tmp/transcripts/s.jsonl', '/tmp/a.txt']) {
+        expect(checkPublishablePath(p, ROOTS).ok).toBe(false);
+      }
+    });
+
+    it('still publishes from artifacts/', () => {
+      expect(checkPublishablePath('/tmp/artifacts/a.png', ROOTS)).toEqual({
+        ok: true,
+        root: 'ephemeral',
+        base: '/tmp/artifacts',
+        relativePath: 'a.png',
+      });
     });
   });
 

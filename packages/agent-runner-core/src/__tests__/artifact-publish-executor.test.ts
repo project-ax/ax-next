@@ -6,10 +6,10 @@ import { createArtifactPublishExecutor } from '../artifact-publish-executor.js';
 
 // The executor validates against the session's REAL roots, so these tests use
 // real temp directories as the roots and pass real absolute paths — the same
-// thing the model does, since the operating notes hand it the real paths. The
-// previous version of this file passed sandbox-absolute literals (`/agent/...`,
-// `/ephemeral/...`) that the executor mapped back onto temp dirs, which is
-// exactly the indirection that let the advertised paths and the real ones drift.
+// thing the model does, since the operating notes hand it the real paths. An
+// earlier version of this file passed sandbox-absolute literals that the
+// executor mapped back onto temp dirs, which is exactly the indirection that let
+// the advertised paths and the real ones drift.
 
 let files: string;
 let ephemeral: string;
@@ -162,21 +162,60 @@ describe('artifact_publish executor', () => {
     await expect(executor()(call({}))).rejects.toThrow(/path/);
   });
 
-  describe('the governed tier is unreachable', () => {
-    // `/agent/workspace/**` was the old carve-out and pointed at a directory
-    // nothing creates. With the governed root no longer passed to the executor
-    // at all, agent state is out of reach of a "publish your instructions"
-    // injection by construction rather than by an allowlist entry.
-    it('rejects agent state even when it exists on disk', async () => {
-      const governed = await fs.mkdtemp(path.join(os.tmpdir(), 'ax-agent-'));
-      await fs.mkdir(path.join(governed, '.ax'), { recursive: true });
-      await fs.writeFile(path.join(governed, '.ax/SOUL.md'), 'my soul');
-      await fs.mkdir(path.join(governed, 'workspace'), { recursive: true });
-      await fs.writeFile(path.join(governed, 'workspace/Q4.pdf'), 'x');
+  describe('a path outside both roots is unreachable', () => {
+    // Only the roots the executor is handed are publishable, so anything else
+    // on disk is out of reach of a "publish your instructions" injection by
+    // construction rather than by an allowlist entry.
+    it('rejects it even when it exists on disk', async () => {
+      const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'ax-outside-'));
+      await fs.mkdir(path.join(outside, 'private'), { recursive: true });
+      await fs.writeFile(path.join(outside, 'private/notes.md'), 'my notes');
+      await fs.writeFile(path.join(outside, 'Q4.pdf'), 'x');
 
-      for (const p of ['.ax/SOUL.md', 'workspace/Q4.pdf']) {
-        await expect(executor()(call({ path: path.join(governed, p) }))).rejects.toThrow(
+      for (const p of ['private/notes.md', 'Q4.pdf']) {
+        await expect(executor()(call({ path: path.join(outside, p) }))).rejects.toThrow(
           /artifact-path-not-publishable/,
+        );
+      }
+    });
+  });
+
+  // TASK-995: the scratch root also holds the person's uploads (`uploads/`)
+  // and the SDK's conversation log (`transcripts/`), right next to the one
+  // publishable part of it, `artifacts/`. Neither may leave the sandbox as an
+  // artifact, directly or through a link the agent plants in `artifacts/`.
+  describe('uploads and transcripts in the scratch root are unpublishable', () => {
+    let scratch: string;
+    beforeEach(async () => {
+      scratch = path.join(await fs.mkdtemp(path.join(os.tmpdir(), 'ax-scratch-')), 'tmp');
+      await write(scratch, 'uploads/a.pdf', 'the person file');
+      await write(scratch, 'transcripts/s.jsonl', '{"type":"user"}\n');
+      await fs.mkdir(path.join(scratch, 'artifacts'), { recursive: true });
+    });
+    const exec = () => createArtifactPublishExecutor({ userFilesRoot: files, ephemeralRoot: scratch });
+
+    it('refuses them directly', async () => {
+      for (const rel of ['uploads/a.pdf', 'transcripts/s.jsonl']) {
+        await expect(exec()(call({ path: path.join(scratch, rel) }))).rejects.toThrow(
+          /artifact-path-not-publishable/,
+        );
+      }
+    });
+
+    it('refuses a symlink in artifacts/ that points at one of them', async () => {
+      await fs.symlink(path.join(scratch, 'transcripts/s.jsonl'), path.join(scratch, 'artifacts/x'));
+      await fs.symlink(path.join(scratch, 'uploads/a.pdf'), path.join(scratch, 'artifacts/y.pdf'));
+      for (const rel of ['artifacts/x', 'artifacts/y.pdf']) {
+        await expect(exec()(call({ path: path.join(scratch, rel) }))).rejects.toThrow(/symlink/i);
+      }
+    });
+
+    it('refuses a symlinked directory in artifacts/ that leads into one of them', async () => {
+      await fs.symlink(path.join(scratch, 'transcripts'), path.join(scratch, 'artifacts/t'));
+      await fs.symlink(path.join(scratch, 'uploads'), path.join(scratch, 'artifacts/u'));
+      for (const rel of ['artifacts/t/s.jsonl', 'artifacts/u/a.pdf']) {
+        await expect(exec()(call({ path: path.join(scratch, rel) }))).rejects.toThrow(
+          /resolved outside the publishable tier/i,
         );
       }
     });
@@ -211,13 +250,6 @@ describe('artifact_publish executor', () => {
     it('name the real roots of this session, not literals from another shape', async () => {
       await expect(executor()(call({ path: '/etc/passwd' }))).rejects.toThrow(
         new RegExp(files.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
-      );
-    });
-
-    it('say plainly when the deployment wires no publishable location', async () => {
-      const bare = createArtifactPublishExecutor({});
-      await expect(bare(call({ path: '/anything/at/all.pdf' }))).rejects.toThrow(
-        /no publishable location wired/,
       );
     });
   });
@@ -293,10 +325,11 @@ describe('artifact_publish executor — durable blob store path (TASK-68)', () =
     expect(calls.publish[0]).toMatchObject({ path: 'report.pdf' });
   });
 
-  it('rejects the scratch namespace when no scratch tier is wired', async () => {
+  it("rejects another scratch root's artifacts/ (only this session's is publishable)", async () => {
     const { client } = mockClient();
     const exec = createArtifactPublishExecutor({
       userFilesRoot: files,
+      ephemeralRoot: await fs.mkdtemp(path.join(os.tmpdir(), 'ax-eph-other-')),
       client,
       conversationId: 'conv-1',
     });
@@ -305,9 +338,11 @@ describe('artifact_publish executor — durable blob store path (TASK-68)', () =
     ).rejects.toThrow(/artifact-path-not-publishable/);
   });
 
-  it('rejects the durable tier when no durable mount is wired', async () => {
-    const { client } = mockClient();
+  it("rejects another agent's home (only this session's is publishable)", async () => {
+    await write(files, 'x.pdf', 'not this session');
+    const { client, calls } = mockClient();
     const exec = createArtifactPublishExecutor({
+      userFilesRoot: await fs.mkdtemp(path.join(os.tmpdir(), 'ax-files-other-')),
       ephemeralRoot: ephemeral,
       client,
       conversationId: 'conv-1',
@@ -315,6 +350,7 @@ describe('artifact_publish executor — durable blob store path (TASK-68)', () =
     await expect(exec(call({ path: path.join(files, 'x.pdf') }))).rejects.toThrow(
       /artifact-path-not-publishable/,
     );
+    expect(calls.put).toHaveLength(0);
   });
 
   it('validates before any blob.put — a symlink never reaches the host', async () => {

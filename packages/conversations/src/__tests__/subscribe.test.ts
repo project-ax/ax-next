@@ -83,14 +83,6 @@ async function makeHarness(
           message: `agent '${call.agentId}' forbidden for '${call.userId}'`,
         });
       },
-      // conversations:get / drop-turn are unused by these tests, but the
-      // manifest declares workspace:* as required calls, so bootstrap fails
-      // fast without a registrant for them. Stub all three with empty
-      // defaults — the actual paths are exercised in get.test.ts /
-      // drop-turn.test.ts.
-      'workspace:list': async () => ({ paths: [] as string[] }),
-      'workspace:read': async () => ({ found: false }) as const,
-      'workspace:apply': async () => ({ version: 'v-stub', delta: { before: null, after: 'v-stub', changes: [] } }),
     },
     plugins: [
       createDatabasePostgresPlugin({ connectionString }),

@@ -88,30 +88,81 @@ describe('wrapWithPolicy — the one choke point', () => {
     expect(policy.postToolUse).not.toHaveBeenCalled();
   });
 
-  it('feeds the executor the RE-ROOTED input, not the raw input', async () => {
+  // A host subscriber may rewrite a call (`modifiedCall`). That is the only
+  // way an input changes on its way to the executor.
+  it('feeds the executor the HOST-MODIFIED input, not the raw input', async () => {
     const policy = fakePolicy({
       preToolUse: vi.fn(async () => ({
         decision: 'allow' as const,
-        updatedInput: { file_path: '/agent/.ax/uploads/c1/t1/report.pdf' },
+        updatedInput: { file_path: '/files/reports/q3-final.pdf' },
       })),
     } as never);
     const run = vi.fn(async () => 'read ok');
     const execute = wrapWithPolicy({ policy, name: 'Read', isBuiltin: true, holdLatch: createHoldLatch(), onHold: () => {}, onToolFailure: () => {} }, run);
 
-    await execute({ file_path: '~/.ax/uploads/c1/t1/report.pdf' }, OPTS);
+    await execute({ file_path: 'reports/q3.pdf' }, OPTS);
 
     expect(run).toHaveBeenCalledWith(
-      { file_path: '/agent/.ax/uploads/c1/t1/report.pdf' },
+      { file_path: '/files/reports/q3-final.pdf' },
       expect.objectContaining({ toolCallId: 'call-1' }),
     );
-    // postToolUse observes the same re-rooted input the executor saw.
+    // postToolUse observes the same input the executor saw.
     expect(policy.postToolUse).toHaveBeenCalledWith(
       'Read',
       'call-1',
-      { file_path: '/agent/.ax/uploads/c1/t1/report.pdf' },
+      { file_path: '/files/reports/q3-final.pdf' },
       'read ok',
       true,
     );
+  });
+
+  // TASK-995: there is no second tree to steer writes into. A path that looks
+  // like configuration — `.ax/**`, `.claude/**`, a root `CLAUDE.md` — is an
+  // ordinary file in the agent's home, and nothing loads it. Driven through the
+  // REAL createToolPolicy and the REAL wrapper, so a rewrite anywhere between
+  // the model and the executor shows up here.
+  it('never rewrites .ax/, .claude/ or CLAUDE.md paths', async () => {
+    const preCallInputs: unknown[] = [];
+    const client = {
+      call: vi.fn(async (action: string, payload: unknown) => {
+        if (action !== 'tool.pre-call') throw new Error(`unexpected call: ${action}`);
+        preCallInputs.push((payload as { call: { input: unknown } }).call.input);
+        return { verdict: 'allow' };
+      }),
+      event: vi.fn(async () => undefined),
+    } as never as IpcClient;
+    const policy = createToolPolicy({ client });
+    const cases: Array<[string, Record<string, unknown>]> = [
+      ['Write', { file_path: '/files/.ax/SOUL.md', content: 'x' }],
+      ['Write', { file_path: '.ax/IDENTITY.md', content: 'x' }],
+      ['Read', { file_path: '~/.ax/uploads/cnv_x/req-y/report.pdf' }],
+      ['Read', { file_path: '/home/user/.ax/uploads/cnv_x/report.pdf' }],
+      ['Edit', { file_path: '.claude/settings.json', old_string: '{}', new_string: '{"hooks":{}}' }],
+      ['Write', { file_path: '/files/.claude/skills/x/SKILL.md', content: 'x' }],
+      ['Write', { file_path: 'CLAUDE.md', content: 'x' }],
+      ['Write', { file_path: '/files/CLAUDE.local.md', content: 'x' }],
+      ['Glob', { pattern: '**/*.md', path: '.claude' }],
+      ['Grep', { pattern: 'x', path: '/files/.ax' }],
+    ];
+    for (const [name, input] of cases) {
+      const label = `${name} ${JSON.stringify(input)}`;
+      // A private copy goes in, so an in-place rewrite cannot hide by
+      // changing the expected value too.
+      const asWritten = structuredClone(input);
+      preCallInputs.length = 0;
+      const run = vi.fn(async () => 'ok');
+      const execute = wrapWithPolicy(
+        { policy, name, isBuiltin: true, holdLatch: createHoldLatch(), onHold: () => {}, onToolFailure: () => {} },
+        run,
+      );
+      await expect(execute(structuredClone(input), OPTS), label).resolves.toBe('ok');
+      // The host adjudicated the model's own input, and the executor ran it.
+      expect(preCallInputs, label).toEqual([asWritten]);
+      expect(run, label).toHaveBeenCalledWith(
+        asWritten,
+        expect.objectContaining({ toolCallId: 'call-1' }),
+      );
+    }
   });
 
   it('appends the egress-block remediation note to the output', async () => {
@@ -184,11 +235,7 @@ describe('wrapWithPolicy — the one choke point', () => {
     const client = {
       call: vi.fn().mockRejectedValue(new Error('connect failed: ECONNREFUSED')),
     } as never as IpcClient;
-    const policy = createToolPolicy({
-      client,
-      workspaceRoot: '/agent',
-      warn: vi.fn(),
-    });
+    const policy = createToolPolicy({ client, warn: vi.fn() });
     const run = vi.fn(async () => 'ran anyway');
     const execute = wrapWithPolicy(
       { policy, name: 'Bash', isBuiltin: true, holdLatch: createHoldLatch(), onHold: () => {}, onToolFailure: () => {} },
@@ -224,7 +271,7 @@ describe('wrapWithPolicy — the one choke point', () => {
         reason: 'npm is not on the egress allowlist; use pnpm',
       }),
     } as never as IpcClient;
-    const policy = createToolPolicy({ client, workspaceRoot: '/agent' });
+    const policy = createToolPolicy({ client });
     const run = vi.fn(async () => 'ran anyway');
     const execute = wrapWithPolicy(
       { policy, name: 'Bash', isBuiltin: true, holdLatch: createHoldLatch(), onHold: () => {}, onToolFailure: () => {} },

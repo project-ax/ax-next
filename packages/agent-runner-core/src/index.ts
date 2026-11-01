@@ -1,9 +1,9 @@
 // @ax/agent-runner-core — loop-agnostic runner machinery.
 //
-// Everything a runner does that is NOT the agent loop: workspace
-// materialize/commit/bundle, the transcript delta protocol, uploads, the
-// skills projection, proxy bootstrap, prompt composition, and the tool
-// policy. Shared by @ax/agent-claude-sdk-runner and @ax/agent-aisdk-runner.
+// Everything a runner does that is NOT the agent loop: the transcript delta
+// protocol, uploads, the skills projection, proxy bootstrap, prompt
+// composition, and the tool policy. Shared by @ax/agent-claude-sdk-runner and
+// @ax/agent-aisdk-runner.
 //
 // This package must never import @anthropic-ai/claude-agent-sdk.
 export { buildActivityPhraseMap } from './activity-phrase-map.js';
@@ -17,30 +17,15 @@ export { createLocalDispatcher } from './local-dispatcher.js';
 export type { LocalDispatcher } from './local-dispatcher.js';
 export { writeProxyCaFromEnv } from './proxy-ca-from-env.js';
 export { translateContentBlocks } from './attachment-translation.js';
-export type { WorkspaceReader } from './attachment-translation.js';
+export type { TranslationOptions } from './attachment-translation.js';
 export {
+  collisionName,
   materializeUploads,
-  resolveMaterializedPath,
-  uploadsBaseDir,
+  sanitizeUploadName,
 } from './materialize-uploads.js';
+export type { MaterializedUpload, MaterializeUploadsOptions } from './materialize-uploads.js';
 export { buildPythonVenvEnv, scaffoldPythonVenv } from './python-venv.js';
 export * from './identity-templates.js';
-export {
-  commitTurnAndBundle,
-  materializeWorkspace,
-  scaffoldWorkspaceGitignore,
-} from './git-workspace.js';
-export {
-  commitNotifyWithResync,
-  flushPreconditionMessage,
-  flushWorkspaceToHost,
-} from './commit-notify-resync.js';
-export type {
-  CommitNotifyResult,
-  FlushOutcome,
-  FlushResult,
-  HostToolFlush,
-} from './commit-notify-resync.js';
 export { setupProxy } from './proxy-startup.js';
 export { waitForAssignment } from './standby.js';
 export { createInboxLoop } from './inbox-loop.js';
@@ -70,7 +55,6 @@ export { createHoldLatch, drainHoldLatch } from './hold-latch.js';
 export type { HoldLatch } from './hold-latch.js';
 export { createHeldCallRegistry } from './held-calls.js';
 export type { HeldCallRegistry } from './held-calls.js';
-export { resolveGovernedPaths, resolveAttachmentPaths } from './governed-paths.js';
 export { buildEgressBlockNote } from './egress-note.js';
 export {
   shipTranscriptDelta,

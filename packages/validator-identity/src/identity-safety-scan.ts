@@ -2,15 +2,14 @@
 // Identity content safety scan — the prompt-injection mitigation for the text
 // an agent's system prompt carries about itself.
 //
-// Two callers:
-//   - `scanIdentityText` (TASK-989) backs the `identity:scan` service.
-//     @ax/agents calls it on every identity, soul and Instructions write, and
-//     refuses the write on anything but `clean`. That text is frozen into the
-//     session config at spawn and composed VERBATIM into the system prompt.
-//     Instructions (kind 'instructions') skip only the weak egress-near-secret
-//     heuristic, which refuses ordinary instructions; see IdentityTextKind.
-//   - `regexScan` alone backs the legacy `workspace:pre-apply` gate on the
-//     `.ax/` identity files (see plugin.ts), which the runner no longer reads.
+// `scanIdentityText` (TASK-989) backs the `identity:scan` service. @ax/agents
+// calls it on every identity, soul and Instructions write, and refuses the
+// write on anything but `clean`. That text is frozen into the session config at
+// spawn and composed VERBATIM into the system prompt. Instructions (kind
+// 'instructions') skip only the weak egress-near-secret heuristic, which
+// refuses ordinary instructions; see IdentityTextKind. `regexScan` is its
+// Layer-1 signature step. (Until TASK-995 `regexScan` also backed a gate on the
+// identity files in the agent's git workspace; that tier is gone.)
 //
 // A small, high-signal, PURE regex set (Layer 1 only — no LLM layer). Because
 // the text goes into the system prompt verbatim, an injection signature hidden
@@ -148,8 +147,8 @@ export function regexScan(text: string, opts: RegexScanOptions = {}): ScanHit | 
 
 /**
  * The most UTF-8 bytes one scanned text may be: 256 KiB. The same ceiling the
- * runner used to put on each `.ax/` identity file it read; identity now
- * arrives as text, so the limit moved to the write.
+ * runner once put on each identity file it read; identity now arrives as text,
+ * so the limit moved to the write.
  */
 export const IDENTITY_TEXT_MAX_BYTES = 262_144;
 

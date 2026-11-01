@@ -101,7 +101,6 @@ async function boot(
           agentId: 'a1',
           runnerType: null,
           runnerSessionId: null,
-          workspaceRef: null,
           title: null,
           lastActivityAt: null,
           createdAt: '2026-08-21T09:00:00.000Z',

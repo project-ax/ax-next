@@ -183,10 +183,9 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
       calls: ['database:get-instance', 'http:register-route', 'auth:require-user'],
       // Soft deps used via hasService by the authored-skill discovery hooks
       // (agents:list-authored-skills + agents:resolve-authored-skills). TASK-74:
-      // these read the @ax/skills DB store (skills:list-authored) — the
-      // .ax/draft-skills workspace scan is RETIRED, so workspace:list/read are
-      // no longer deps. A preset that strips @ax/skills degrades to no authored
-      // skills (the safe default).
+      // these read the @ax/skills DB store (skills:list-authored), the one
+      // place authored skills live. A preset that strips @ax/skills degrades
+      // to no authored skills (the safe default).
       optionalCalls: [
         {
           // GET /admin/agents surfaces team agents the user belongs to by
@@ -604,16 +603,16 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
       // Read-side hook for the "promote authored skill" Phase E flow. Reads the
       // agent's self-authored skill drafts from the @ax/skills DB store
       // (skills:list-authored, a hasService-guarded soft dep). Personal agents
-      // only: team agents have no single-owner workspace (per-user shards;
-      // deferred). A preset without @ax/skills degrades to no authored skills.
+      // only: a team agent has no single owner to look its drafts up under
+      // (deferred). A preset without @ax/skills degrades to no authored skills.
       bus.registerService<AgentsListAuthoredSkillsInput, AgentsListAuthoredSkillsOutput>(
         'agents:list-authored-skills',
         PLUGIN_NAME,
         async (_ctx, input) => {
           const agent = await localStore.getById(input.agentId);
-          // Personal agents only: team-owned agents have per-user workspace
-          // shards and no single canonical owner userId to route the
-          // workspace:list/read ctx through. Return [] until that policy lands.
+          // Personal agents only: skills:list-authored is keyed by the owning
+          // user, and a team-owned agent has no single canonical owner userId
+          // to pass it. Return [] until that policy lands.
           if (agent === null || agent.ownerType !== 'user') {
             return { skills: [] };
           }

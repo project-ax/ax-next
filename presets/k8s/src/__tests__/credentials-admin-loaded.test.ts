@@ -15,7 +15,6 @@ const baseCfg: K8sPresetConfig = {
   database: { connectionString: 'postgres://stub:5432/stub' },
   eventbus: { connectionString: 'postgres://stub:5432/stub' },
   session: { connectionString: 'postgres://stub:5432/stub' },
-  workspace: { backend: 'local', repoRoot: '/tmp/preset-k8s-stub' },
   blob: { backend: 'fs', root: '/tmp/preset-k8s-stub/blobs' },
   sandbox: { namespace: 'ax-next', image: 'ax-next/agent:stub' },
   ipc: { hostIpcUrl: 'http://ax-next-host.ax-next.svc.cluster.local:80' },
@@ -82,8 +81,6 @@ describe('AX_CREDENTIALS_ADMIN_ENABLED env var', () => {
       AX_BLOB_FS_ROOT: '/var/lib/ax-next/workspaces/blobs',
       AX_FILESTORE_SERVER: '10.9.8.7',
       AX_FILESTORE_EXPORT_PATH: '/vol1',
-      AX_WORKSPACE_BACKEND: 'local',
-      AX_WORKSPACE_ROOT: '/tmp/ws',
       AX_CREDENTIALS_ADMIN_ENABLED: 'true',
     });
     expect(cfg.credentialsAdmin).toBe(true);
@@ -100,8 +97,6 @@ describe('AX_CREDENTIALS_ADMIN_ENABLED env var', () => {
       AX_BLOB_FS_ROOT: '/var/lib/ax-next/workspaces/blobs',
       AX_FILESTORE_SERVER: '10.9.8.7',
       AX_FILESTORE_EXPORT_PATH: '/vol1',
-      AX_WORKSPACE_BACKEND: 'local',
-      AX_WORKSPACE_ROOT: '/tmp/ws',
     });
     expect(cfg.credentialsAdmin).toBeUndefined();
   });

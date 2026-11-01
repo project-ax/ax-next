@@ -2,7 +2,8 @@
 // Runner env read + validate — claude-sdk variant.
 //
 // Reads the host-injected per-session proxy fields plus the runner
-// endpoint, session id, auth token, workspace root and SDK config dir
+// endpoint, session id, auth token, the agent's home and the scratch root
+// (AX_USERFILES_ROOT, AX_EPHEMERAL_ROOT) and the SDK config dir
 // (CLAUDE_CONFIG_DIR). The proxy fields
 // are populated when @ax/credential-proxy is loaded.
 // Exactly one of AX_PROXY_ENDPOINT (subprocess sandbox, TCP) or
@@ -23,30 +24,26 @@ export interface RunnerEnv {
   runnerEndpoint: string;
   sessionId: string;
   authToken: string;
-  workspaceRoot: string;
   /**
-   * Session-scoped scratch root the sandbox provides for throwaway files
-   * (temporary clones, build caches, intermediate artifacts) that must NOT
-   * round-trip to the host. k8s mounts `/ephemeral` (an emptyDir);
-   * subprocess creates a per-session tempdir. Optional on purpose: there is
-   * NO default (unlike `workspaceRoot`). A wrong default like `/ephemeral`
-   * would be actively harmful in the subprocess sandbox — the host root is
-   * read-only there, so writes would fail — whereas "absent" cleanly means
-   * "this sandbox didn't wire a scratch tier" and the runner simply doesn't
-   * grant the SDK an extra directory or mention one in the system prompt.
-   * Both real sandbox providers set it; ad-hoc/test callers may omit it.
+   * Session-scoped scratch root (`AX_EPHEMERAL_ROOT`) for everything that must
+   * not outlive the session: the conversation's uploads (`<root>/uploads/`),
+   * the SDK transcript working copy, tool caches, the Python venv, temporary
+   * clones. k8s stamps a disk-backed emptyDir; subprocess stamps a per-session
+   * tempdir. Required and absolute (TASK-995). There is no default: a guessed
+   * path would point uploads and caches at a directory the sandbox never
+   * created.
    */
-  ephemeralRoot?: string;
+  ephemeralRoot: string;
   /**
-   * Durable, per-agent user-files root (filestore-user-files Phase 1). The
-   * sandbox provider sets `AX_USERFILES_ROOT` from the `role:'user-files'`
-   * mount it resolved (k8s: the `/files` NFS subPath mount; subprocess: the
-   * per-agent localDir). Optional with NO default (like `ephemeralRoot`): absent
-   * means "no durable mount wired", and the runner then neither widens the
-   * agent's filesystem reach nor advertises a durable location. When present it
-   * is cwd/HOME; when absent the runner uses the supplied session scratch tier.
+   * The agent's home (`AX_USERFILES_ROOT`): its durable, per-agent files. The
+   * sandbox provider sets it from the `role:'user-files'` mount it resolved
+   * (k8s: the `/files` NFS subPath mount; subprocess: the per-agent localDir).
+   * It is the SDK subprocess's HOME and cwd, and where the agent keeps work
+   * that should last. Required and absolute (TASK-995): there is no fallback
+   * home, because a home in scratch would lose the agent's work at the end of
+   * every session.
    */
-  userFilesRoot?: string;
+  userFilesRoot: string;
   /**
    * The runner-private directory the SDK loads as its own trusted configuration
    * (`CLAUDE_CONFIG_DIR`): installed skills, connector `.mcp.json`, settings,
@@ -100,9 +97,13 @@ export interface RunnerEnv {
   memoryRoot?: string;
 }
 
-/** User work prefers durable files, then session scratch; agent state stays separate. */
-export function runnerHomeDir(env: Pick<RunnerEnv, 'userFilesRoot' | 'ephemeralRoot' | 'workspaceRoot'>): string {
-  return env.userFilesRoot ?? env.ephemeralRoot ?? env.workspaceRoot;
+/**
+ * The agent's home: the SDK subprocess's HOME and cwd. Always the durable
+ * user-files root. The runner process keeps its own HOME (k8s `/home/runner`),
+ * so its trusted children never read agent-written dotfiles.
+ */
+export function runnerHomeDir(env: Pick<RunnerEnv, 'userFilesRoot'>): string {
+  return env.userFilesRoot;
 }
 
 export class MissingEnvError extends Error {
@@ -163,36 +164,37 @@ export function readRunnerEnv(env: NodeJS.ProcessEnv = process.env): RunnerEnv {
     );
   }
 
+  // The value, when absolute; else InvalidEnvError naming the variable (never
+  // the value). `~/x` counts as relative: nothing expands the `~`.
+  const absolute = (k: string, value: string, expected: string): string => {
+    if (!path.isAbsolute(value)) throw new InvalidEnvError(k, expected);
+    return value;
+  };
+
   const result: RunnerEnv = {
     runnerEndpoint: need('AX_RUNNER_ENDPOINT'),
     sessionId: need('AX_SESSION_ID'),
     authToken: need('AX_AUTH_TOKEN'),
-    // Phase 3: the sandbox mounts /agent as the workspace working tree
-    // and /ephemeral as scratch. The runner's git-status diff and bundle
-    // creation key off /agent. Operators / orchestrators that want a
-    // different path can still override via AX_WORKSPACE_ROOT, but the
-    // default lines up with what `pod-spec.ts` actually mounts.
-    workspaceRoot: opt('AX_WORKSPACE_ROOT') ?? '/agent',
-    // No default — see RunnerEnv.claudeConfigDir. Both sandboxes always set it.
-    claudeConfigDir: need('CLAUDE_CONFIG_DIR'),
-  };
-  // `~/.claude` counts as relative: nothing expands the `~`.
-  if (!path.isAbsolute(result.claudeConfigDir)) {
-    throw new InvalidEnvError(
+    // No defaults for the two roots or the config dir — see their RunnerEnv
+    // docs; both sandboxes always set all three. A relative root would resolve
+    // against whichever cwd a process happens to have, and the runner's and
+    // the SDK subprocess's differ.
+    userFilesRoot: absolute(
+      'AX_USERFILES_ROOT',
+      need('AX_USERFILES_ROOT'),
+      "expected an absolute path to the agent's home",
+    ),
+    ephemeralRoot: absolute(
+      'AX_EPHEMERAL_ROOT',
+      need('AX_EPHEMERAL_ROOT'),
+      'expected an absolute path to the session scratch root',
+    ),
+    claudeConfigDir: absolute(
       'CLAUDE_CONFIG_DIR',
+      need('CLAUDE_CONFIG_DIR'),
       "expected an absolute path — a relative one resolves against the SDK's working directory, which is the agent's home",
-    );
-  }
-  // No default — see the RunnerEnv.ephemeralRoot doc. Absent means "no
-  // scratch tier wired", which the runner treats as "don't widen the
-  // agent's filesystem reach".
-  const ephemeralRoot = opt('AX_EPHEMERAL_ROOT');
-  if (ephemeralRoot !== undefined) result.ephemeralRoot = ephemeralRoot;
-  // No default — see RunnerEnv.userFilesRoot. Absent means "no durable
-  // user-files mount wired", which the runner treats as "don't widen the
-  // agent's filesystem reach or advertise a user-files location".
-  const userFilesRoot = opt('AX_USERFILES_ROOT');
-  if (userFilesRoot !== undefined) result.userFilesRoot = userFilesRoot;
+    ),
+  };
   if (proxyEndpoint !== undefined) result.proxyEndpoint = proxyEndpoint;
   if (proxyUnixSocket !== undefined) result.proxyUnixSocket = proxyUnixSocket;
   // TASK-52/158/704: per-session proxy token — the credential the proxy
@@ -217,10 +219,7 @@ export function readRunnerEnv(env: NodeJS.ProcessEnv = process.env): RunnerEnv {
   // against whichever cwd the runner happens to have, so refuse it at the edge.
   const transcriptsRoot = opt('AX_TRANSCRIPTS_ROOT');
   if (transcriptsRoot !== undefined) {
-    if (!path.isAbsolute(transcriptsRoot)) {
-      throw new InvalidEnvError('AX_TRANSCRIPTS_ROOT', 'expected an absolute path');
-    }
-    result.transcriptsRoot = transcriptsRoot;
+    result.transcriptsRoot = absolute('AX_TRANSCRIPTS_ROOT', transcriptsRoot, 'expected an absolute path');
   }
   const memoryRoot = opt('AX_MEMORY_ROOT');
   if (memoryRoot !== undefined) result.memoryRoot = memoryRoot;

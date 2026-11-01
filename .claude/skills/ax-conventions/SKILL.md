@@ -15,6 +15,8 @@ The architecture spec is `docs/plans/2026-04-22-plugin-architecture-design.md` â
 
 No git/sqlite/k8s/postgres/gcs vocabulary in hook payloads. If a payload field name only makes sense for one backend, it leaks.
 
+> The `workspace:*` examples below come from the git workspace tier, which TASK-995 deleted. Those hooks no longer exist; the patterns (opaque tokens, compare-and-swap, veto-then-observe) still apply, so the examples stay as teaching material.
+
 **Bad:**
 
 ```ts
@@ -98,7 +100,7 @@ The whole point of v2 over openclaw is that we're the secure one. If a hook surf
 
 ## Plugin manifest format
 
-Each plugin instance exposes an in-code `manifest` object, validated by `PluginManifestSchema` in `@ax/core` (`packages/core/src/plugin.ts`):
+Each plugin instance exposes an in-code `manifest` object, validated by `PluginManifestSchema` in `@ax/core` (`packages/core/src/plugin.ts`). The example is illustrative: `@ax/workspace-git` no longer exists, the shape is what matters.
 
 ```ts
 export function createWorkspaceGitPlugin(config: WorkspaceGitConfig): Plugin {

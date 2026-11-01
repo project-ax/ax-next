@@ -14,8 +14,6 @@
     { "path": "../../packages/storage-postgres" },
     { "path": "../../packages/eventbus-postgres" },
     { "path": "../../packages/session-postgres" },
-    { "path": "../../packages/workspace-git" },
-    { "path": "../../packages/workspace-git-server" },
     { "path": "../../packages/workspace-filestore" },
     { "path": "../../packages/workspace-localdir" },
     { "path": "../../packages/sandbox-k8s" },

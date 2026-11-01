@@ -28,13 +28,27 @@ describe('attachments return schemas', () => {
 
   it('attachments:commit round-trips a fully-populated CommitOutput', () => {
     const full: CommitOutput = {
-      path: '.ax/attachments/abc.png',
-      sha256: 'deadbeef',
+      attachmentId: '3f1c2b9e-7d4a-4c1e-9b8f-2a6d5e4c3b1a',
+      filename: 'screenshot.png',
+      sha256: 'a'.repeat(64),
       mediaType: 'image/png',
       sizeBytes: 4096,
-      displayName: 'screenshot.png',
     };
     expect(CommitOutputSchema.parse(full)).toEqual(full);
+  });
+
+  it('attachments:commit rejects an attachmentId that is not an attachment id', () => {
+    // The id lands in the transcript block verbatim; a path-shaped one would
+    // make a block no reader accepts.
+    expect(
+      CommitOutputSchema.safeParse({
+        attachmentId: '.ax/uploads/c/t/x.png',
+        filename: 'x.png',
+        sha256: 'a'.repeat(64),
+        mediaType: 'image/png',
+        sizeBytes: 1,
+      }).success,
+    ).toBe(false);
   });
 
   it('attachments:download preserves the Buffer bytes by reference', () => {
@@ -70,10 +84,10 @@ describe('attachments return schemas', () => {
   it('attachments:commit rejects a missing sha256', () => {
     expect(
       CommitOutputSchema.safeParse({
-        path: 'p',
+        attachmentId: 'a-1',
+        filename: 'x',
         mediaType: 'image/png',
         sizeBytes: 1,
-        displayName: 'x',
       }).success,
     ).toBe(false);
   });
@@ -88,15 +102,31 @@ describe('attachments return schemas', () => {
     const full: AttachmentsListForConversationOutput = {
       files: [
         {
-          path: '.ax/uploads/c1/t1/a.png',
+          attachmentId: '3f1c2b9e-7d4a-4c1e-9b8f-2a6d5e4c3b1a',
+          filename: 'a.png',
           sha256: 'a'.repeat(64),
           mediaType: 'image/png',
-          displayName: 'a.png',
           sizeBytes: 99,
         },
       ],
     };
     expect(AttachmentsListForConversationOutputSchema.parse(full)).toEqual(full);
+  });
+
+  it('attachments:list-for-conversation rejects an entry keyed by path, not id', () => {
+    expect(
+      AttachmentsListForConversationOutputSchema.safeParse({
+        files: [
+          {
+            path: '.ax/uploads/c1/t1/a.png',
+            sha256: 'a'.repeat(64),
+            mediaType: 'image/png',
+            displayName: 'a.png',
+            sizeBytes: 99,
+          },
+        ],
+      }).success,
+    ).toBe(false);
   });
 
   it('attachments:list-for-conversation accepts an empty file list', () => {

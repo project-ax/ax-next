@@ -38,4 +38,13 @@ describe('createIpcServerPlugin manifest', () => {
       plugin.manifest.calls.some((c) => c.startsWith('tool:execute:')),
     ).toBe(false);
   });
+
+  it('declares no workspace:* hook, required or optional (TASK-995)', () => {
+    const plugin = createIpcServerPlugin();
+    const hooks = [
+      ...plugin.manifest.calls,
+      ...(plugin.manifest.optionalCalls ?? []).map((oc) => oc.hook),
+    ];
+    expect(hooks.filter((h) => h.startsWith('workspace:'))).toEqual([]);
+  });
 });

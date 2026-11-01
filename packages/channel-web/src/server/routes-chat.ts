@@ -47,7 +47,9 @@ import {
 //
 //   1. requires auth (auth:require-user) → 401 on rejection.
 //   2. parses + validates the body (PostMessageRequest, 1 MiB cap from
-//      http-server) → 400 on invalid-payload, 413 on oversize.
+//      http-server) → 400 on invalid-payload, 413 on oversize; a
+//      client-sent `attachment` block → 400 invalid-content-block (only a
+//      committed `attachment_ref` may become one, step 4.5).
 //   3. ACL-gates the agent via agents:resolve → 403 forbidden, 404 not-found.
 //   4. get-or-creates the conversation:
 //        - conversationId === null → conversations:create
@@ -62,9 +64,10 @@ import {
 //      can race over to the SSE subscription before the first chunk lands.
 //
 // Phase E (runner-owned sessions): the route NO LONGER calls
-// conversations:append-turn for the user message. The runner's first
-// SDK turn writes the user message to the workspace jsonl (the source
-// of truth for transcripts), and conversations:get reads from there.
+// conversations:append-turn for the user message. The orchestrator
+// persists the user turn (with its `attachment` blocks) to the
+// conversation's display log when it dispatches the message, and
+// conversations:get reads it from there.
 //
 // CSRF (J8): the http-server's CSRF subscriber gates this route
 // automatically (it fires `http:request` BEFORE handler dispatch and
@@ -79,12 +82,12 @@ import {
 //     itself imports @ax/ipc-protocol). All other plugins are reached via
 //     bus.call.
 //   - I3: full handler + tests in this PR (Task 9 of Week 10–12).
-//   - I4: the workspace jsonl is the source of truth for the user turn
-//     (Phase E — runner-owned sessions). The route does not append; it
-//     dispatches agent:invoke and the runner's first SDK turn writes
-//     the message to the workspace.
+//   - I4: the conversation's display log is the source of truth for the
+//     user turn. The route does not append; it dispatches agent:invoke and
+//     the orchestrator persists the message.
 //   - I5: zod-validates body, http-server enforces 1 MiB body cap, CSRF by
-//     subscriber, auth by gate.
+//     subscriber, auth by gate. A stored `attachment` block only ever comes
+//     from attachments:commit, never from the request body.
 // ---------------------------------------------------------------------------
 
 const PLUGIN_NAME = '@ax/channel-web';
@@ -123,7 +126,6 @@ interface AgentsResolveInput {
 }
 interface AgentsResolveAgent {
   id: string;
-  workspaceRef?: string | null;
 }
 interface AgentsResolveOutput {
   agent: AgentsResolveAgent;
@@ -241,18 +243,19 @@ type ApplyAuthoredGrantOutput =
 // --- attachments:commit (Phase 3) ----------------------------------------
 // Duck-typed payloads — I2 forbids importing `@ax/attachments` from here.
 // Drift surfaces as a test failure (the Phase-3 attachment-ref tests
-// exercise the commit-call shape).
+// exercise the commit-call shape). The upload keeps the id it was staged
+// under; no path is minted anywhere.
 interface AttachmentsCommitInput {
   attachmentId: string;
   conversationId: string;
-  turnId: string;
 }
 interface AttachmentsCommitOutput {
-  path: string;
+  attachmentId: string;
+  /** The name the person uploaded it under. Display text, never a path. */
+  filename: string;
   sha256: string;
   mediaType: string;
   sizeBytes: number;
-  displayName: string;
 }
 
 /**
@@ -439,6 +442,20 @@ export function createChatRouteHandlers(deps: ChatRouteDeps) {
         return;
       }
 
+      // 2.5) Only step 4.5 may put an `attachment` block into a turn: it
+      // commits an `attachment_ref` through attachments:commit, which is
+      // what makes the id this person's file in this conversation. A
+      // client-sent `attachment` block skips that, so it is refused here —
+      // before the agent is resolved, a conversation is created or anything
+      // is committed. The browser never sends one; a request that does is
+      // crafted. (Readers re-check anyway — the download ACL answers a
+      // foreign id with a 404 — but a turn must not carry a file nobody
+      // committed.)
+      if (body.contentBlocks.some((block) => block.type === 'attachment')) {
+        res.status(400).json({ error: 'invalid-content-block' });
+        return;
+      }
+
       // 3) agents:resolve gate. forbidden → 403, not-found → 404.
       try {
         await bus.call<AgentsResolveInput, AgentsResolveOutput>(
@@ -520,21 +537,20 @@ export function createChatRouteHandlers(deps: ChatRouteDeps) {
       }
 
       // 4.5) Commit any attachment_ref blocks. The wire allows them as
-      // part of contentBlocks; we resolve each one to a workspace path
-      // BEFORE dispatching agent:invoke so the runner sees stable
-      // `attachment` blocks (I4 — single source of truth: the runner
-      // gets canonical paths, not opaque ids).
+      // part of contentBlocks; we commit each one into this conversation
+      // BEFORE dispatching agent:invoke and rewrite it as an `attachment`
+      // block carrying the same id (I4 — the block is the single canonical
+      // shape; the runner and the download route both address the file by
+      // that id, never by a path).
       //
-      // turnId is server-minted here (separate from `reqId` below — the
-      // runner uses turnId to bind the user message to the same turn the
-      // host committed attachments under, so the file path
-      // `.ax/uploads/<conv>/<turnId>/<file>` and the SDK turn agree).
+      // turnId is server-minted here (separate from `reqId` below) and
+      // stamped on the user message; attachments do not depend on it.
       //
       // Atomicity: `attachments:commit` is atomic per row, but if ref #2
-      // fails after ref #1 succeeded we have one committed file with no
-      // transcript reference. Acceptable per the Phase-3 design — the
-      // janitor reaps stale temps, and the orphan committed file just
-      // sits in the workspace until the next git GC.
+      // fails after ref #1 succeeded we have one committed upload with no
+      // transcript block pointing at it. Acceptable per the Phase-3 design
+      // — the janitor reaps stale temps, and the stray row is reachable
+      // only by its own id.
       const userTurnId = makeReqId();
       const rewrittenBlocks: ContentBlock[] = [];
       let totalAttachmentBytes = 0;
@@ -556,7 +572,6 @@ export function createChatRouteHandlers(deps: ChatRouteDeps) {
           >('attachments:commit', attachmentCtx, {
             attachmentId: block.attachmentId,
             conversationId,
-            turnId: userTurnId,
           });
           totalAttachmentBytes += committed.sizeBytes;
           if (totalAttachmentBytes > MAX_PER_MESSAGE_ATTACHMENT_BYTES) {
@@ -565,8 +580,8 @@ export function createChatRouteHandlers(deps: ChatRouteDeps) {
           }
           rewrittenBlocks.push({
             type: 'attachment',
-            path: committed.path,
-            displayName: committed.displayName,
+            attachmentId: committed.attachmentId,
+            filename: committed.filename,
             mediaType: committed.mediaType,
             sizeBytes: committed.sizeBytes,
           });
@@ -610,11 +625,9 @@ export function createChatRouteHandlers(deps: ChatRouteDeps) {
       // await agent:invoke — that would block until the entire chat
       // completes.
       //
-      // Workspace: the orchestrator currently consumes ctx.workspace.rootPath
-      // and ignores agent.workspaceRef. We pass through whatever default
-      // makeAgentContext provides (process.cwd) — the orchestrator's
-      // resolution is not our concern, and overriding here would extend
-      // the contract this PR is explicitly leaving alone for Task 16.
+      // ctx.workspace.rootPath is whatever default makeAgentContext provides
+      // (process.cwd): the orchestrator and the sandbox provider decide where
+      // a session's files live, and nothing here overrides them.
       const placeholderSessionId = makeReqId();
       const agentInvokeCtx = makeAgentContext({
         sessionId: placeholderSessionId,
@@ -673,12 +686,10 @@ export function createChatRouteHandlers(deps: ChatRouteDeps) {
         role: 'user',
         content: extractText(rewrittenBlocks),
         ...(nonTextBlocks.length > 0 ? { contentBlocks: nonTextBlocks } : {}),
-        // turnId is the per-user-turn id the runner uses to bind the
-        // user message to the same turn the host committed attachments
-        // under (so the file path `.ax/uploads/<conv>/<turnId>/<file>`
-        // and the SDK turn agree). Set unconditionally so the runner's
-        // jsonl write picks up a stable id even when no attachments were
-        // committed this turn — useful for future per-turn correlation.
+        // turnId is the server-minted per-user-turn id. Attachments do not
+        // depend on it (each is addressed by its own id); it is set
+        // unconditionally so every user message carries a stable id for
+        // per-turn correlation.
         turnId: userTurnId,
       };
 
@@ -1347,7 +1358,7 @@ export function createChatRouteHandlers(deps: ChatRouteDeps) {
 
       // Filter to display-relevant fields (I5 — capabilities minimized).
       // We deliberately drop systemPrompt / allowedTools / mcpConfigIds /
-      // model / workspaceRef etc. — the chat-flow consumer doesn't need
+      // model etc. — the chat-flow consumer doesn't need
       // them; the admin API surfaces the full record when actually needed.
       const summarized = out.agents.map((a) => ({
         agentId: a.id,

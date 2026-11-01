@@ -1,5 +1,5 @@
-import type { ContentBlock, SaveRefusedCode } from '@ax/ipc-protocol';
-import { ContentBlockSchema, SaveRefusedCodeSchema } from '@ax/ipc-protocol';
+import type { ContentBlock } from '@ax/ipc-protocol';
+import { ContentBlockSchema } from '@ax/ipc-protocol';
 import { z, type ZodType } from 'zod';
 
 /**
@@ -93,12 +93,6 @@ export interface Conversation {
    * `conversations:store-runner-session`. Null until then.
    */
   runnerSessionId: string | null;
-  /**
-   * Phase B. Frozen copy of `agent.workspaceRef` at conversation create.
-   * Mirrors I10. Nullable when the agent had no workspaceRef OR the row
-   * predates Phase B.
-   */
-  workspaceRef: string | null;
   /**
    * Phase B. ISO-8601 string. Bumped by the `chat:turn-end` subscriber
    * on every non-heartbeat turn. Opaque to correctness; sidebar ordering
@@ -218,21 +212,19 @@ export interface GetOutput {
 /**
  * Display-semantic event kinds persisted in the redisplay log.
  *
- * `save-refused` (TASK-731): the host refused to keep a reply's files (a
- * per-turn save, or the final/idle flush after the last turn). Payload is
- * `{ code }` with a closed code (`'storage-full' | 'too-large' | 'refused'`)
- * — never a sentence; the client words it. Key is the turn's reqId, or a
- * host-minted `final:<uuid>` for the final flush.
+ * There used to be a fourth, `save-refused` (TASK-731: the host refused to
+ * keep a reply's files). TASK-995 retired it with the workspace tier that
+ * could refuse: appending it is refused, and rows an earlier release wrote
+ * are left out of every read (the table's CHECK still admits the value, so
+ * those rows stay valid).
  */
 export type ConversationEventKind =
   | 'turn'
   | 'permission-card'
-  | 'turn-error'
-  | 'save-refused';
+  | 'turn-error';
 
 /**
- * One host-only display event (a `permission-card`, a `turn-error`, or a
- * `save-refused` notice),
+ * One host-only display event (a `permission-card` or a `turn-error`),
  * projected from the redisplay log for `conversations:get`. `turn` events are
  * projected to `Turn[]` instead (the existing renderer path); this type carries
  * only the events that have no `ContentBlock` representation.
@@ -248,9 +240,7 @@ export interface ConversationDisplayEvent {
    * Stable per-card / per-turn key used to fold a later resolution frame onto
    * an earlier card (the read keeps the LAST event per key). For a
    * `permission-card` this is the card's identity (e.g. its `skillId` or
-   * `host`); for a `turn-error` it's the originating `reqId`; for a
-   * `save-refused` it's the turn's `reqId` (or `''`), or `final:<uuid>` for
-   * the final/idle flush (TASK-731). Opaque string.
+   * `host`); for a `turn-error` it's the originating `reqId`. Opaque string.
    */
   key: string;
   /** The opaque display frame body. Re-emitted to the renderer verbatim. */
@@ -284,50 +274,6 @@ export interface AppendEventInput {
   payload: Record<string, unknown>;
 }
 export type AppendEventOutput = void;
-
-/**
- * TASK-749 — input to `conversations:drain-save-refusals`. Takes the refused
- * saves (TASK-731 `save-refused` rows) the MODEL has not been told about yet
- * and marks them told, so a refusal whose runner process is gone (the
- * final/idle save, or a runner that exited before its next turn) reaches the
- * model on the next turn of whichever runner serves it. ctx-scoped and
- * userId-scoped (the row must belong to `ctx.userId`); reached from the
- * runner only through `conversation.drain-save-refusals`, which takes the
- * conversationId from ctx, never from the runner.
- */
-export interface DrainSaveRefusalsInput {
-  conversationId: string;
-}
-
-/**
- * One refused save the model has not been told about. `code` is the closed
- * code (never prose). `turnReqId` is the request id of the turn whose save was
- * refused (`''` for a turn that ran without one), or `null` for the final/idle
- * save after the last turn — so a runner can drop a refusal it already told
- * the model about itself (TASK-732's in-process notice).
- */
-export interface DrainedSaveRefusalOutput {
-  code: SaveRefusedCode;
-  turnReqId: string | null;
-}
-
-export interface DrainSaveRefusalsOutput {
-  refusals: DrainedSaveRefusalOutput[];
-}
-
-/** Runtime `returns` contract for `conversations:drain-save-refusals`. */
-export const DrainSaveRefusalsOutputSchema: ZodType<DrainSaveRefusalsOutput> = z
-  .object({
-    refusals: z.array(
-      z
-        .object({
-          code: SaveRefusedCodeSchema,
-          turnReqId: z.string().nullable(),
-        })
-        .strict(),
-    ),
-  })
-  .strict();
 
 // ---------------------------------------------------------------------------
 // TASK-67 (out-of-git Part B / B2) — resume transcript hooks.
@@ -513,7 +459,6 @@ export interface GetMetadataOutput {
   agentId: string;
   runnerType: string | null;
   runnerSessionId: string | null;
-  workspaceRef: string | null;
   title: string | null;
   /** ISO-8601, or null if no turns yet / pre-Phase-B row. */
   lastActivityAt: string | null;
@@ -560,7 +505,6 @@ export const GetMetadataOutputSchema = z.object({
   agentId: z.string(),
   runnerType: z.string().nullable(),
   runnerSessionId: z.string().nullable(),
-  workspaceRef: z.string().nullable(),
   title: z.string().nullable(),
   lastActivityAt: z.string().nullable(),
   createdAt: z.string(),

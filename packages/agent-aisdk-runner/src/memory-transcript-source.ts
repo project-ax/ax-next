@@ -7,11 +7,12 @@
 // its messages, so there is nothing to chase.
 //
 // THAT DELETES A RACE, NOT JUST CODE. `waitForTranscriptUuid` exists because
-// the SDK flushes its jsonl asynchronously, so the turn-end commit had to poll
-// for bytes to land before it could stage — the lineage behind TASK-11 / PR
-// #163 and the F-1/F-2 re-sync work. Here durability is a function return:
-// when `endTurn` runs, the messages are already in this array. Anyone tempted
-// to add a `beforeCommit` wait to this runner should read that sentence twice.
+// the SDK flushes its jsonl asynchronously, so the turn-end transcript ship had
+// to poll for bytes to land before it could read them — the lineage behind
+// TASK-11 / PR #163 and the F-1/F-2 re-sync work. Here durability is a function
+// return: when `endTurn` runs, the messages are already in this array. Anyone
+// tempted to add a `beforeTranscriptShip` wait to this runner should read that
+// sentence twice.
 //
 // This object is BOTH the loop's message store and the shell's
 // `TranscriptSource`. One array, one owner — no second copy to drift.

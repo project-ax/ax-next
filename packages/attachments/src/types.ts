@@ -8,6 +8,7 @@
  */
 
 import { z, type ZodType } from 'zod';
+import { AttachmentIdSchema } from '@ax/ipc-protocol';
 
 // Service hook payloads.
 
@@ -27,24 +28,31 @@ export interface StoreTempOutput {
 export interface CommitInput {
   attachmentId: string;
   conversationId: string;
-  turnId: string;
 }
 
+/**
+ * What a committed upload is, as the transcript's `attachment` block carries
+ * it: the same `attachmentId` the upload was staged under, plus display
+ * metadata. No path — downloads and the runner's copy both address it by id.
+ */
 export interface CommitOutput {
-  path: string;
+  attachmentId: string;
+  /** The name the person uploaded it under. Display text, never a path. */
+  filename: string;
   sha256: string;
   mediaType: string;
   sizeBytes: number;
-  displayName: string;
 }
 
 export interface DownloadInput {
-  path: string;
+  /** An upload's or a published artifact's id. */
+  attachmentId: string;
+  /** The conversation being read; the row must belong to it. */
   conversationId: string;
   /**
-   * Caller-supplied userId. The hook re-validates against
-   * `conversations:get({ conversationId, userId })` — the conversation gate
-   * is the load-bearing ACL.
+   * Caller-supplied userId. Must equal ctx.userId, and the hook re-validates it
+   * against `conversations:get({ conversationId, userId })` — the conversation
+   * gate is the load-bearing ACL.
    */
   userId: string;
 }
@@ -61,7 +69,9 @@ export interface DownloadOutput {
 /**
  * `artifacts:publish-blob` — the IPC `artifact.publish` action calls this after
  * the runner streamed the artifact bytes to `blob:put`. Inserts the artifact
- * metadata row scoped to ctx.userId; returns the stable artifactId.
+ * metadata row scoped to ctx.userId, into a conversation ctx.userId owns;
+ * returns the stable artifactId the chat chip and the download use. `path` is
+ * the row's re-publish key and never leaves this plugin.
  */
 export interface ArtifactsPublishBlobInput {
   conversationId: string;
@@ -77,20 +87,20 @@ export interface ArtifactsPublishBlobOutput {
 
 /**
  * `attachments:list-for-conversation` — the IPC `attachments.list` action calls
- * this at runner session start (and on a warm-runner rebind). Returns the
- * conversation's committed uploads (scoped to ctx.userId) so the runner can pull
- * each blob and materialize the read-only working copy at the path advertised to
- * the model (`<workspaceRoot>/.ax/uploads/...`).
+ * this when a runner starts (and when a later message brings an upload it has
+ * not seen). Returns the conversation's committed uploads, owned by ctx.userId,
+ * oldest first, so the runner can pull each blob and keep a working copy. The
+ * runner matches a turn's `attachment` block to its copy by `attachmentId`.
  */
 export interface AttachmentsListForConversationInput {
   conversationId: string;
 }
 export interface AttachmentsListForConversationOutput {
   files: Array<{
-    path: string;
+    attachmentId: string;
+    filename: string;
     sha256: string;
     mediaType: string;
-    displayName: string;
     sizeBytes: number;
   }>;
 }
@@ -98,16 +108,17 @@ export interface AttachmentsListForConversationOutput {
 // ---------------------------------------------------------------------------
 // Runtime `returns` contracts for the `attachments:*` service hooks (ARCH-13).
 //
-// Storage-agnostic by construction (I1): `attachmentId`/`path` are opaque ids,
+// Storage-agnostic by construction (I1): `attachmentId` is an opaque id,
 // `expiresAt` is an ISO-8601 string, `sizeBytes` a byte count. `sha256` is the
 // attachment's OWN content digest (the storage-agnostic identity the alternate
 // `@ax/attachments-pg-bytea-only` impl would compute identically), NOT a git
-// sha / backend pointer — so it stays. `DownloadOutput.bytes` is a Node
-// `Buffer`, which is a `Uint8Array` subclass, so `z.instanceof(Uint8Array)`
-// accepts it and lets the bytes ride through by reference. Cast to `ZodType<…>`
-// because the interface declares `Buffer` (a structural superset of the schema's
-// inferred `Uint8Array`); the drift-guard test enforces field-for-field
-// agreement.
+// sha / backend pointer — so it stays. An id that comes back from commit or
+// list must be a well-formed attachment id: it lands verbatim in transcript
+// blocks. `DownloadOutput.bytes` is a Node `Buffer`, which is a `Uint8Array`
+// subclass, so `z.instanceof(Uint8Array)` accepts it and lets the bytes ride
+// through by reference. Cast to `ZodType<…>` because the interface declares
+// `Buffer` (a structural superset of the schema's inferred `Uint8Array`); the
+// drift-guard test enforces field-for-field agreement.
 // ---------------------------------------------------------------------------
 export const StoreTempOutputSchema = z.object({
   attachmentId: z.string(),
@@ -116,11 +127,11 @@ export const StoreTempOutputSchema = z.object({
 }) as unknown as ZodType<StoreTempOutput>;
 
 export const CommitOutputSchema = z.object({
-  path: z.string(),
+  attachmentId: AttachmentIdSchema,
+  filename: z.string(),
   sha256: z.string(),
   mediaType: z.string(),
   sizeBytes: z.number(),
-  displayName: z.string(),
 }) as unknown as ZodType<CommitOutput>;
 
 export const DownloadOutputSchema = z.object({
@@ -130,8 +141,8 @@ export const DownloadOutputSchema = z.object({
   displayName: z.string(),
 }) as unknown as ZodType<DownloadOutput>;
 
-// TASK-68 returns contracts. Storage-agnostic: `artifactId`/`path` opaque ids,
-// `sha256` the file's own content digest (not a backend pointer).
+// TASK-68 returns contracts. Storage-agnostic: `artifactId`/`attachmentId`
+// opaque ids, `sha256` the file's own content digest (not a backend pointer).
 export const ArtifactsPublishBlobOutputSchema = z.object({
   artifactId: z.string(),
 }) as unknown as ZodType<ArtifactsPublishBlobOutput>;
@@ -139,10 +150,10 @@ export const ArtifactsPublishBlobOutputSchema = z.object({
 export const AttachmentsListForConversationOutputSchema = z.object({
   files: z.array(
     z.object({
-      path: z.string(),
+      attachmentId: AttachmentIdSchema,
+      filename: z.string(),
       sha256: z.string(),
       mediaType: z.string(),
-      displayName: z.string(),
       sizeBytes: z.number(),
     }),
   ),

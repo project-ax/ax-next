@@ -103,14 +103,6 @@ async function makeHarness(policy: MockResolvePolicy): Promise<{
           message: `agent '${call.agentId}' not accessible to '${call.userId}'`,
         });
       },
-      // Phase D — conversations:get reads from workspace jsonl. ACL
-      // tests don't exercise that path; default to "no jsonl" so
-      // happy-path gets return empty turns without a workspace
-      // round-trip past the gate. Phase B adds workspace:apply for
-      // conversations:drop-turn; stub it here for bootstrap.
-      'workspace:list': async () => ({ paths: [] as string[] }),
-      'workspace:read': async () => ({ found: false }) as const,
-      'workspace:apply': async () => ({ version: 'v-stub', delta: { before: null, after: 'v-stub', changes: [] } }),
     },
     plugins: [
       createDatabasePostgresPlugin({ connectionString }),

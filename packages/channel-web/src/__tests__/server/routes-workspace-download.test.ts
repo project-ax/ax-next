@@ -1,9 +1,10 @@
 // @vitest-environment node
 /**
- * The two DOWNLOAD routes (TASK-355).
+ * The DOWNLOAD route (TASK-355; the git-backed `/download/files/*` sibling was
+ * removed in TASK-995).
  *
  * The Files tab could always show you a file and never hand it to you: the
- * read routes answer with TEXT, so a PDF an agent made rendered as the word
+ * read route answers with TEXT, so a PDF an agent made rendered as the word
  * "binary" and a long file rendered as its first 128 KiB. These routes are the
  * bytes.
  *
@@ -11,7 +12,7 @@
  * untrusted agent, which puts most of this file on the security half rather
  * than the happy path. The three things it is really pinning:
  *
- *   1. THE ORDER. authenticate → ACL → validate path → exclude → read. Every
+ *   1. THE ORDER. authenticate → ACL → validate path → read. Every
  *      step is asserted separately, and the 2-before-3 pair has its own test,
  *      because swapping them turns the error code into an oracle over another
  *      tenant's paths.
@@ -23,8 +24,8 @@
  *      never caller-supplied; the filename is sanitized before it reaches a
  *      header a newline can end.
  *
- * Tier A calls the handlers directly. Tier B goes over a real socket, because
- * the splat (`req.params['*']`) only exists for a route declared with a bare
+ * The direct-handler part calls the handlers directly. The socket part goes
+ * over a real socket, because the splat (`req.params['*']`) only exists for a route declared with a bare
  * trailing `*` and a direct-handler test writes `params` itself — it would
  * keep passing over a route pattern that matches nothing.
  */
@@ -109,15 +110,12 @@ function mkRes(): { res: DownloadRouteResponse; captured: CapturedDownload } {
 }
 
 // ---------------------------------------------------------------------------
-// Tier A — the handlers.
+// The direct-handler part.
 // ---------------------------------------------------------------------------
-describe('the download routes', () => {
+describe('the download route', () => {
   let bus: HookBus;
-  /** The GOVERNED tier: path → bytes. */
-  let blobs: Map<string, Uint8Array>;
-  /** The DURABLE tier: path → whatever `sandbox:read-user-files` answers. */
+  /** path → whatever `sandbox:read-user-files` answers. */
   let tier: Map<string, unknown>;
-  let readCalls: Array<{ agentId: string; userId: string; path: string }>;
   let tierReads: Array<{
     agentId: string;
     userId: string;
@@ -152,15 +150,6 @@ describe('the download routes', () => {
     });
   }
 
-  function registerWorkspace(): void {
-    bus.registerService('workspace:read', 'workspace', async (ctx, i: unknown) => {
-      const { path } = i as { path: string };
-      readCalls.push({ agentId: ctx.agentId, userId: ctx.userId ?? '', path });
-      const bytes = blobs.get(path);
-      return bytes === undefined ? { found: false } : { found: true, bytes };
-    });
-  }
-
   function registerReader(): void {
     bus.registerService('sandbox:read-user-files', 'sandbox', async (ctx, i: unknown) => {
       const { owner, relPath } = i as {
@@ -183,20 +172,19 @@ describe('the download routes', () => {
 
   beforeEach(() => {
     bus = new HookBus();
-    blobs = new Map();
     tier = new Map();
-    readCalls = [];
     tierReads = [];
   });
 
+  /** A whole (not truncated) file answer, as the reader gives it. */
+  function whole(bytes: Uint8Array): unknown {
+    return { kind: 'file', contents: bytes, truncated: false };
+  }
+
   // --- auth + ACL ---------------------------------------------------------
 
-  it('401s both downloads without a session', async () => {
+  it('401s the download without a session', async () => {
     registerAuth(null);
-    const g = mkRes();
-    await handlers().agentFileDownload(mkReq({ agentId: 'a1', '*': 'x.md' }), g.res);
-    expect(g.captured.statusCode).toBe(401);
-
     const d = mkRes();
     await handlers().agentUserFileDownload(
       mkReq({ agentId: 'a1', '*': 'x.md' }),
@@ -205,21 +193,11 @@ describe('the download routes', () => {
     expect(d.captured.statusCode).toBe(401);
   });
 
-  it('404s a foreign agent without touching either backend', async () => {
+  it('404s a foreign agent without touching the files', async () => {
     registerAuth({ id: 'u1', isAdmin: false });
     registerAgents();
-    registerWorkspace();
     registerReader();
-    blobs.set('x.md', enc.encode('secret'));
-    tier.set('x.md', { kind: 'file', contents: enc.encode('secret'), truncated: false });
-
-    const g = mkRes();
-    await handlers().agentFileDownload(
-      mkReq({ agentId: 'someone-elses', '*': 'x.md' }),
-      g.res,
-    );
-    expect(g.captured.statusCode).toBe(404);
-    expect(g.captured.bytes).toBeNull();
+    tier.set('x.md', whole(enc.encode('secret')));
 
     const d = mkRes();
     await handlers().agentUserFileDownload(
@@ -230,7 +208,6 @@ describe('the download routes', () => {
     expect(d.captured.bytes).toBeNull();
 
     // Not "it read and found nothing" — it never read at all.
-    expect(readCalls).toEqual([]);
     expect(tierReads).toEqual([]);
   });
 
@@ -242,15 +219,7 @@ describe('the download routes', () => {
     */
     registerAuth({ id: 'u1', isAdmin: false });
     registerAgents();
-    registerWorkspace();
     registerReader();
-
-    const g = mkRes();
-    await handlers().agentFileDownload(
-      mkReq({ agentId: 'someone-elses', '*': '..%2F..%2Fetc%2Fpasswd' }),
-      g.res,
-    );
-    expect(g.captured.statusCode).toBe(404);
 
     const d = mkRes();
     await handlers().agentUserFileDownload(
@@ -258,6 +227,7 @@ describe('the download routes', () => {
       d.res,
     );
     expect(d.captured.statusCode).toBe(404);
+    expect(tierReads).toEqual([]);
   });
 
   // --- the path ------------------------------------------------------------
@@ -271,18 +241,7 @@ describe('the download routes', () => {
   ];
 
   for (const [label, splat] of TRAVERSALS) {
-    it(`400s ${label} on the governed download, without reading`, async () => {
-      registerAuth({ id: 'u1', isAdmin: false });
-      registerAgents();
-      registerWorkspace();
-      const { res, captured } = mkRes();
-      await handlers().agentFileDownload(mkReq({ agentId: 'a1', '*': splat }), res);
-      expect(captured.statusCode).toBe(400);
-      expect(captured.bytes).toBeNull();
-      expect(readCalls).toEqual([]);
-    });
-
-    it(`400s ${label} on the durable download, without reading`, async () => {
+    it(`400s ${label}, without reading`, async () => {
       registerAuth({ id: 'u1', isAdmin: false });
       registerAgents();
       registerReader();
@@ -297,36 +256,25 @@ describe('the download routes', () => {
     });
   }
 
-  it('400s a request with no path at all, rather than reading the tier root', async () => {
-    // `/download/files/` with nothing after it. `workspaceFilePath('')` is
-    // `null`, so both routes answer the same 400 a malformed path gets —
-    // there is no "download the whole workspace" here, and a root read that
-    // silently became a directory listing would be a different route's answer
-    // arriving under this one's headers.
+  it('400s a request with no path at all, rather than reading the root', async () => {
+    // `/download/user-files/` with nothing after it. `workspaceFilePath('')` is
+    // `null`, so the route answers the same 400 a malformed path gets — there
+    // is no "download everything" here, and a root read that silently became a
+    // directory listing would be a different route's answer arriving under this
+    // one's headers.
     registerAuth({ id: 'u1', isAdmin: false });
     registerAgents();
-    registerWorkspace();
     registerReader();
-
-    const g = mkRes();
-    await handlers().agentFileDownload(mkReq({ agentId: 'a1' }), g.res);
-    expect(g.captured.statusCode).toBe(400);
 
     const d = mkRes();
     await handlers().agentUserFileDownload(mkReq({ agentId: 'a1' }), d.res);
     expect(d.captured.statusCode).toBe(400);
-    expect(readCalls).toEqual([]);
     expect(tierReads).toEqual([]);
   });
 
   it('400s a request with no agent id', async () => {
     registerAuth({ id: 'u1', isAdmin: false });
     registerAgents();
-    const g = mkRes();
-    await handlers().agentFileDownload(mkReq({ '*': 'x.md' }), g.res);
-    expect(g.captured.statusCode).toBe(400);
-    expect(g.captured.json).toEqual({ error: 'missing-agent-id' });
-
     const d = mkRes();
     await handlers().agentUserFileDownload(mkReq({ '*': 'x.md' }), d.res);
     expect(d.captured.statusCode).toBe(400);
@@ -340,20 +288,11 @@ describe('the download routes', () => {
       is to look for a file by that literal name and not find it, NOT to reject
       it as a traversal and NOT to decode again. A validator that decodes twice
       can be walked past by encoding three times, so what is pinned here is the
-      exact string the backend was asked for.
+      exact string the reader was asked for.
     */
     registerAuth({ id: 'u1', isAdmin: false });
     registerAgents();
-    registerWorkspace();
     registerReader();
-    const { res, captured } = mkRes();
-    await handlers().agentFileDownload(
-      mkReq({ agentId: 'a1', '*': '%252e%252e%252fsecret' }),
-      res,
-    );
-    expect(captured.statusCode).toBe(404);
-    expect(readCalls.map((c) => c.path)).toEqual(['%2e%2e%2fsecret']);
-
     const d = mkRes();
     await handlers().agentUserFileDownload(
       mkReq({ agentId: 'a1', '*': '%252e%252e%252fsecret' }),
@@ -363,55 +302,37 @@ describe('the download routes', () => {
     expect(tierReads.map((c) => c.relPath)).toEqual(['%2e%2e%2fsecret']);
   });
 
-  it('refuses the governed tier’s hidden prefixes — the exclusion is not cosmetic', async () => {
-    // The listing never offers these, and a download route that served them
-    // anyway would be a direct-URL bypass of an exclusion the sibling read
-    // route enforces.
-    registerAuth({ id: 'u1', isAdmin: false });
-    registerAgents();
-    registerWorkspace();
-    blobs.set('.ax/IDENTITY.md', enc.encode('ours'));
-    blobs.set('memory/system/rules.md', enc.encode('theirs'));
-
-    for (const hidden of ['.ax%2FIDENTITY.md', 'memory%2Fsystem%2Frules.md']) {
-      const { res, captured } = mkRes();
-      await handlers().agentFileDownload(mkReq({ agentId: 'a1', '*': hidden }), res);
-      expect(captured.statusCode).toBe(404);
-      expect(captured.bytes).toBeNull();
-    }
-    expect(readCalls).toEqual([]);
-  });
-
-  it('does NOT apply those exclusions to the durable tier', async () => {
+  it('hides nothing by name', async () => {
     // On the agent's own file area `memory/` is just a folder somebody named
-    // `memory`. Hiding it there would be a lie about their own files.
+    // `memory`, and `.ax/` and `.claude/` are plain names too (the git-backed
+    // tier that hid them was removed in TASK-995). Hiding any of them would be
+    // a lie about their own files.
     registerAuth({ id: 'u1', isAdmin: false });
     registerAgents();
     registerReader();
-    tier.set('memory/notes.md', {
-      kind: 'file',
-      contents: enc.encode('mine'),
-      truncated: false,
-    });
-    const { res, captured } = mkRes();
+    tier.set('memory/notes.md', whole(enc.encode('mine')));
+    tier.set('.ax/SOUL.md', whole(enc.encode('also mine')));
+    const a = mkRes();
     await handlers().agentUserFileDownload(
       mkReq({ agentId: 'a1', '*': 'memory%2Fnotes.md' }),
-      res,
+      a.res,
     );
-    expect(captured.statusCode).toBe(200);
-    expect(captured.bytes?.toString('utf-8')).toBe('mine');
+    expect(a.captured.statusCode).toBe(200);
+    expect(a.captured.bytes?.toString('utf-8')).toBe('mine');
+    const b = mkRes();
+    await handlers().agentUserFileDownload(
+      mkReq({ agentId: 'a1', '*': '.ax%2FSOUL.md' }),
+      b.res,
+    );
+    expect(b.captured.statusCode).toBe(200);
+    expect(b.captured.bytes?.toString('utf-8')).toBe('also mine');
   });
 
   // --- no backend ----------------------------------------------------------
 
-  it('503s each tier when its backend is not loaded', async () => {
+  it('503s when no sandbox provider can read the files', async () => {
     registerAuth({ id: 'u1', isAdmin: false });
     registerAgents();
-    const g = mkRes();
-    await handlers().agentFileDownload(mkReq({ agentId: 'a1', '*': 'x.md' }), g.res);
-    expect(g.captured.statusCode).toBe(503);
-    expect(g.captured.json).toEqual({ error: 'workspace-unavailable' });
-
     const d = mkRes();
     await handlers().agentUserFileDownload(
       mkReq({ agentId: 'a1', '*': 'x.md' }),
@@ -426,10 +347,10 @@ describe('the download routes', () => {
   it('serves a text file WHOLE, with the headers that make it a download', async () => {
     registerAuth({ id: 'u1', isAdmin: false });
     registerAgents();
-    registerWorkspace();
-    blobs.set('notes/plan.md', enc.encode('# Plan\n\nShip it.'));
+    registerReader();
+    tier.set('notes/plan.md', whole(enc.encode('# Plan\n\nShip it.')));
     const { res, captured } = mkRes();
-    await handlers().agentFileDownload(
+    await handlers().agentUserFileDownload(
       mkReq({ agentId: 'a1', '*': 'notes%2Fplan.md' }),
       res,
     );
@@ -447,14 +368,17 @@ describe('the download routes', () => {
   it('serves a BINARY file byte for byte — the case the preview calls "binary"', async () => {
     registerAuth({ id: 'u1', isAdmin: false });
     registerAgents();
-    registerWorkspace();
+    registerReader();
     // A PNG header, NUL included. The read route answers `body: null,
     // clipped: 'binary'` for this — which is the whole reason this route
     // exists — so the assertion is that the bytes arrive untouched.
     const png = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x00, 0x1a]);
-    blobs.set('chart.png', png);
+    tier.set('chart.png', whole(png));
     const { res, captured } = mkRes();
-    await handlers().agentFileDownload(mkReq({ agentId: 'a1', '*': 'chart.png' }), res);
+    await handlers().agentUserFileDownload(
+      mkReq({ agentId: 'a1', '*': 'chart.png' }),
+      res,
+    );
     expect(captured.statusCode).toBe(200);
     expect(Array.from(captured.bytes ?? [])).toEqual(Array.from(png));
   });
@@ -468,34 +392,15 @@ describe('the download routes', () => {
     */
     registerAuth({ id: 'u1', isAdmin: false });
     registerAgents();
-    registerWorkspace();
-    const big = enc.encode('x'.repeat(FILE_BODY_MAX_BYTES + 4096));
-    blobs.set('log.txt', big);
-    const { res, captured } = mkRes();
-    await handlers().agentFileDownload(mkReq({ agentId: 'a1', '*': 'log.txt' }), res);
-    expect(captured.statusCode).toBe(200);
-    expect(captured.bytes?.byteLength).toBe(FILE_BODY_MAX_BYTES + 4096);
-  });
-
-  it('serves a durable-tier file whole', async () => {
-    registerAuth({ id: 'u1', isAdmin: false });
-    registerAgents();
     registerReader();
-    tier.set('reports/summary.pdf', {
-      kind: 'file',
-      contents: Uint8Array.from([0x25, 0x50, 0x44, 0x46, 0x00]),
-      truncated: false,
-    });
+    tier.set('log.txt', whole(enc.encode('x'.repeat(FILE_BODY_MAX_BYTES + 4096))));
     const { res, captured } = mkRes();
     await handlers().agentUserFileDownload(
-      mkReq({ agentId: 'a1', '*': 'reports%2Fsummary.pdf' }),
+      mkReq({ agentId: 'a1', '*': 'log.txt' }),
       res,
     );
     expect(captured.statusCode).toBe(200);
-    expect(Array.from(captured.bytes ?? [])).toEqual([0x25, 0x50, 0x44, 0x46, 0x00]);
-    expect(captured.headers['content-disposition']).toBe(
-      'attachment; filename="summary.pdf"',
-    );
+    expect(captured.bytes?.byteLength).toBe(FILE_BODY_MAX_BYTES + 4096);
   });
 
   // --- the content type ----------------------------------------------------
@@ -510,10 +415,13 @@ describe('the download routes', () => {
     */
     registerAuth({ id: 'u1', isAdmin: false });
     registerAgents();
-    registerWorkspace();
-    blobs.set('page.html', enc.encode('<script>alert(1)</script>'));
+    registerReader();
+    tier.set('page.html', whole(enc.encode('<script>alert(1)</script>')));
     const { res, captured } = mkRes();
-    await handlers().agentFileDownload(mkReq({ agentId: 'a1', '*': 'page.html' }), res);
+    await handlers().agentUserFileDownload(
+      mkReq({ agentId: 'a1', '*': 'page.html' }),
+      res,
+    );
     expect(captured.headers['content-type']).toBe('application/octet-stream');
     expect(captured.headers['x-content-type-options']).toBe('nosniff');
     expect(captured.headers['content-disposition']).toMatch(/^attachment; /);
@@ -539,11 +447,11 @@ describe('the download routes', () => {
     */
     registerAuth({ id: 'u1', isAdmin: false });
     registerAgents();
-    registerWorkspace();
+    registerReader();
     const nasty = 'in"voice;\r\nX-Injected- yes.md';
-    blobs.set(nasty, enc.encode('ok'));
+    tier.set(nasty, whole(enc.encode('ok')));
     const { res, captured } = mkRes();
-    await handlers().agentFileDownload(
+    await handlers().agentUserFileDownload(
       mkReq({ agentId: 'a1', '*': encodeURIComponent(nasty) }),
       res,
     );
@@ -559,7 +467,7 @@ describe('the download routes', () => {
 
   // --- truncation ----------------------------------------------------------
 
-  it('REFUSES a truncated durable-tier file rather than serving a fragment', async () => {
+  it('REFUSES a truncated file rather than serving a fragment', async () => {
     /*
       `sandbox:read-user-files` bounds one read at 1 MiB and answers with a
       PREFIX — correct for a preview that says "showing the beginning", and a
@@ -604,7 +512,7 @@ describe('the download routes', () => {
     expect(captured.bytes).toBeNull();
   });
 
-  // --- the other durable-tier answers -------------------------------------
+  // --- the other answers ---------------------------------------------------
 
   it('400s a directory — a folder is not a download', async () => {
     registerAuth({ id: 'u1', isAdmin: false });
@@ -617,16 +525,10 @@ describe('the download routes', () => {
     expect(captured.json).toEqual({ error: 'not-a-file' });
   });
 
-  it('404s an absent path on either tier', async () => {
+  it('404s an absent path', async () => {
     registerAuth({ id: 'u1', isAdmin: false });
     registerAgents();
-    registerWorkspace();
     registerReader();
-
-    const g = mkRes();
-    await handlers().agentFileDownload(mkReq({ agentId: 'a1', '*': 'gone.md' }), g.res);
-    expect(g.captured.statusCode).toBe(404);
-
     const d = mkRes();
     await handlers().agentUserFileDownload(
       mkReq({ agentId: 'a1', '*': 'gone.md' }),
@@ -635,9 +537,9 @@ describe('the download routes', () => {
     expect(d.captured.statusCode).toBe(404);
   });
 
-  it('503s the durable download when this deployment keeps no files', async () => {
+  it('503s the download when this deployment keeps no files', async () => {
     /*
-      TASK-403. `unavailable` is "there is no durable tier for this agent here",
+      TASK-403. `unavailable` is "there is no file area for this agent here",
       and it used to arrive as `absent` — a 404 the reader would read as "that
       file is gone". It is decided before the path is looked at, so answering
       it differently cannot be used to probe which paths exist.
@@ -656,7 +558,7 @@ describe('the download routes', () => {
     expect(d.captured.bytes).toBeNull();
   });
 
-  it('REGRESSION: a durable download whose read THREW hands over no bytes', async () => {
+  it('REGRESSION: a download whose read THREW hands over no bytes', async () => {
     /*
       A failed read must not become an empty or a missing file on the way to
       somebody's disk. The handler does not catch, so the rejection becomes a
@@ -687,23 +589,15 @@ describe('the download routes', () => {
 
   it('reads on the AGENT’s own context and owner, never the plugin’s', async () => {
     /*
-      The same property the read routes have, and it is what keeps a download
-      from crossing into another agent's tree: the git-backed backend shards by
-      agentId (TASK-257 — previously (userId, agentId)), and the durable reader
-      joins `owner.agentId` onto the export root. The plugin's own initCtx
-      (`@ax/channel-web` / `system`) would land in the wrong subtree, or in
-      every subtree.
+      It is what keeps a download from crossing into another agent's tree: the
+      reader joins `owner.agentId` onto the export root. The plugin's own
+      initCtx (`@ax/channel-web` / `system`) would land in the wrong subtree,
+      or in every subtree.
     */
     registerAuth({ id: 'u1', isAdmin: false });
     registerAgents();
-    registerWorkspace();
     registerReader();
-    blobs.set('x.md', enc.encode('g'));
-    tier.set('x.md', { kind: 'file', contents: enc.encode('d'), truncated: false });
-
-    const g = mkRes();
-    await handlers().agentFileDownload(mkReq({ agentId: 'a1', '*': 'x.md' }), g.res);
-    expect(readCalls[0]).toEqual({ agentId: 'a1', userId: 'u1', path: 'x.md' });
+    tier.set('x.md', whole(enc.encode('d')));
 
     const d = mkRes();
     await handlers().agentUserFileDownload(mkReq({ agentId: 'a1', '*': 'x.md' }), d.res);
@@ -714,9 +608,9 @@ describe('the download routes', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Tier B — one round trip through a real router.
+// The socket part — one round trip through a real router.
 // ---------------------------------------------------------------------------
-describe('the download routes over a real socket', () => {
+describe('the download route over a real socket', () => {
   const COOKIE_KEY = randomBytes(32);
   let harness: TestHarness | null = null;
 
@@ -742,14 +636,15 @@ describe('the download routes over a real socket', () => {
           }
           return { agent: { id: 'a1', displayName: 'Inbox' } };
         },
-        'workspace:read': async (_ctx: unknown, input: unknown) => {
-          const { path } = input as { path: string };
-          return path === 'notes/plan.md'
-            ? { found: true, bytes: Uint8Array.from([0x00, 0x01, 0xff, 0x0a]) }
-            : { found: false };
-        },
         'sandbox:read-user-files': async (_ctx: unknown, input: unknown) => {
           const { relPath } = input as { relPath?: string };
+          if (relPath === 'notes/plan.bin') {
+            return {
+              kind: 'file',
+              contents: Uint8Array.from([0x00, 0x01, 0xff, 0x0a]),
+              truncated: false,
+            };
+          }
           if (relPath === 'reports/summary.md') {
             return {
               kind: 'file',
@@ -776,17 +671,17 @@ describe('the download routes over a real socket', () => {
     }
   });
 
-  it('serves governed bytes through the splat, path encoded whole', async () => {
+  it('serves bytes through the splat, path encoded whole', async () => {
     const b = await boot();
     harness = b.harness;
-    // `encodeURIComponent('notes/plan.md')` — exactly what the client sends.
+    // `encodeURIComponent('notes/plan.bin')` — exactly what the client sends.
     const r = await fetch(
-      `http://127.0.0.1:${b.port}/api/workspace/agents/a1/download/files/notes%2Fplan.md`,
+      `http://127.0.0.1:${b.port}/api/workspace/agents/a1/download/user-files/notes%2Fplan.bin`,
     );
     expect(r.status).toBe(200);
     expect(r.headers.get('content-type')).toBe('application/octet-stream');
     expect(r.headers.get('content-disposition')).toBe(
-      'attachment; filename="plan.md"',
+      'attachment; filename="plan.bin"',
     );
     expect(r.headers.get('x-content-type-options')).toBe('nosniff');
     // The framework pins Content-Length from the buffer it writes; this is the
@@ -798,7 +693,7 @@ describe('the download routes over a real socket', () => {
     ]);
   });
 
-  it('serves durable bytes when the path arrives as real slashes too', async () => {
+  it('serves bytes when the path arrives as real slashes too', async () => {
     const b = await boot();
     harness = b.harness;
     const r = await fetch(
@@ -808,7 +703,7 @@ describe('the download routes over a real socket', () => {
     expect(await r.text()).toBe('# Summary');
   });
 
-  it('413s a truncated durable file over the wire', async () => {
+  it('413s a truncated file over the wire', async () => {
     const b = await boot();
     harness = b.harness;
     const r = await fetch(
@@ -818,36 +713,43 @@ describe('the download routes over a real socket', () => {
     expect(await r.json()).toEqual({ error: 'file-too-large' });
   });
 
-  it('400s an encoded traversal on both download splats over the wire', async () => {
-    const b = await boot();
-    harness = b.harness;
-    for (const tier of ['files', 'user-files']) {
-      const r = await fetch(
-        `http://127.0.0.1:${b.port}/api/workspace/agents/a1/download/${tier}/%2e%2e%2fsecret`,
-      );
-      expect(r.status).toBe(400);
-    }
-  });
-
-  it('404s another agent’s downloads over the wire', async () => {
-    const b = await boot();
-    harness = b.harness;
-    for (const tier of ['files', 'user-files']) {
-      const r = await fetch(
-        `http://127.0.0.1:${b.port}/api/workspace/agents/a2/download/${tier}/notes%2Fplan.md`,
-      );
-      expect(r.status).toBe(404);
-    }
-  });
-
-  it('does not swallow the sibling READ routes — /files/* still answers JSON', async () => {
-    // `download` sits where `files` sits, so the two patterns cannot overlap.
-    // Pinned because a route table is exactly the kind of thing that looks
-    // obviously fine and is occasionally not.
+  it('400s an encoded traversal over the wire', async () => {
     const b = await boot();
     harness = b.harness;
     const r = await fetch(
-      `http://127.0.0.1:${b.port}/api/workspace/agents/a1/files/notes%2Fplan.md`,
+      `http://127.0.0.1:${b.port}/api/workspace/agents/a1/download/user-files/%2e%2e%2fsecret`,
+    );
+    expect(r.status).toBe(400);
+  });
+
+  it('404s another agent’s download over the wire', async () => {
+    const b = await boot();
+    harness = b.harness;
+    const r = await fetch(
+      `http://127.0.0.1:${b.port}/api/workspace/agents/a2/download/user-files/notes%2Fplan.bin`,
+    );
+    expect(r.status).toBe(404);
+  });
+
+  it('serves no git workspace download route', async () => {
+    // `/download/files/*` read `workspace:read` and was removed with the git
+    // tier (TASK-995). It answers 404, as for any unknown route.
+    const b = await boot();
+    harness = b.harness;
+    const r = await fetch(
+      `http://127.0.0.1:${b.port}/api/workspace/agents/a1/download/files/notes%2Fplan.bin`,
+    );
+    expect(r.status).toBe(404);
+  });
+
+  it('does not swallow the sibling READ route — /user-files/* still answers JSON', async () => {
+    // `download` sits where `user-files` sits, so the two patterns cannot
+    // overlap. Pinned because a route table is exactly the kind of thing that
+    // looks obviously fine and is occasionally not.
+    const b = await boot();
+    harness = b.harness;
+    const r = await fetch(
+      `http://127.0.0.1:${b.port}/api/workspace/agents/a1/user-files/reports%2Fsummary.md`,
     );
     expect(r.status).toBe(200);
     expect(r.headers.get('content-type')).toContain('application/json');

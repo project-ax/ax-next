@@ -55,7 +55,6 @@ const TEST_AGENT = {
   mcpConfigIds: [],
   model: 'anthropic/claude-sonnet-4-7',
   runner: 'claude-sdk',
-  workspaceRef: null,
 };
 
 // Forbidden backend vocabulary the neutral descriptor must NEVER carry (the
@@ -280,7 +279,6 @@ describe('dev-services-in-sandbox CI canary (TASK-155)', () => {
       'ax-runner-canary',
       {
         sessionId: 'svc-canary-happy',
-        workspaceRoot: '/agent',
         runnerBinary: '/app/runner.js',
         authToken: 'tok',
         runnerEndpoint: 'http://host.ax-next.svc:9090',

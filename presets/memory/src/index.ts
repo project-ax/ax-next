@@ -81,16 +81,15 @@ function validateMemoryPresetConfig(config: MemoryPresetConfig): void {
     );
   }
 
-  const repoRoot =
-    config.workspace.backend === 'local' ? config.workspace.repoRoot : undefined;
+  const blobRoot = config.blob.backend === 'fs' ? config.blob.root : undefined;
   const userFilesRoot = config.sandbox?.userFilesHostReadRoot;
   const volume = config.memoryExportVolume;
   if (volume !== undefined) {
     validateVolumeConfig(volume);
     const hostRoot = volume.hostRoot;
-    if (repoRoot !== undefined && hostPathsOverlap(hostRoot, repoRoot)) {
+    if (blobRoot !== undefined && hostPathsOverlap(hostRoot, blobRoot)) {
       throw new Error(
-        'memory export hostRoot must not equal or overlap the workspace repoRoot',
+        'memory export hostRoot must not equal or overlap the fs blob root',
       );
     }
     if (userFilesRoot !== undefined && hostPathsOverlap(hostRoot, userFilesRoot)) {
@@ -104,9 +103,9 @@ function validateMemoryPresetConfig(config: MemoryPresetConfig): void {
       );
     }
   }
-  if (repoRoot !== undefined && hostPathsOverlap(dbPath, repoRoot)) {
+  if (blobRoot !== undefined && hostPathsOverlap(dbPath, blobRoot)) {
     throw new Error(
-      'factsDatabasePath must not equal or overlap the workspace repoRoot',
+      'factsDatabasePath must not equal or overlap the fs blob root',
     );
   }
   if (userFilesRoot !== undefined && hostPathsOverlap(dbPath, userFilesRoot)) {

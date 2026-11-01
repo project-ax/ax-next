@@ -26,19 +26,15 @@ interface ConversationsCreateMin {
 }
 
 // ---------------------------------------------------------------------------
-// End-to-end contract test (Task 11).
+// End-to-end contract test.
 //
 // Exercises the @ax/attachments hook surface against real
-// @ax/database-postgres and @ax/conversations plugins. TASK-68: the bytes now
-// ride the content-addressed blob store (blob:put/blob:get), stubbed here via an
-// in-memory sha256-keyed map per harness — that's the abstraction boundary at
-// this layer (@ax/blob-store-fs owns the real backing store). The attachments
-// metadata rows (files/artifacts) ARE real (the postgres harness), so the
-// path → row → blob resolution is exercised end-to-end.
-//
-// The transcript-block branch of path-scope (attachment block referenced from a
-// stored turn) is unit-tested in download.test.ts. Here we cover the
-// .ax/uploads/<conversationId>/ prefix branch, the canonical commit destination.
+// @ax/database-postgres and @ax/conversations plugins, so the download's owner
+// gate is the real `conversations:get`. The bytes ride the content-addressed
+// blob store (blob:put/blob:get), stubbed here via an in-memory sha256-keyed map
+// per harness — that's the abstraction boundary at this layer
+// (@ax/blob-store-fs owns the real backing store). The metadata rows are real,
+// so commit → id → row → blob is exercised end-to-end.
 // ---------------------------------------------------------------------------
 
 let container: StartedPostgreSqlContainer;
@@ -59,15 +55,6 @@ async function makeHarness(): Promise<{ harness: TestHarness; ws: BlobFakeState 
         const call = input as { agentId: string };
         return { agent: { id: call.agentId, visibility: 'personal' } };
       },
-      // @ax/conversations declares the workspace:* trio as required calls (its
-      // transcript path). Stub them so its bootstrap passes — unrelated to the
-      // attachments blob path under test.
-      'workspace:list': async () => ({ paths: [] as string[] }),
-      'workspace:read': async () => ({ found: false }) as const,
-      'workspace:apply': async () => ({
-        version: 'v-fake',
-        delta: { before: null, after: 'v-fake', changes: [] },
-      }),
       'blob:put': async (_ctx, input: unknown) => {
         const { bytes } = input as { bytes: Uint8Array };
         const sha256 = createHash('sha256').update(Buffer.from(bytes)).digest('hex');
@@ -95,6 +82,34 @@ async function makeHarness(): Promise<{ harness: TestHarness; ws: BlobFakeState 
   });
   harnesses.push(h);
   return { harness: h, ws };
+}
+
+/** store-temp → commit, the way the chat send path does it. */
+async function upload(
+  harness: TestHarness,
+  userId: string,
+  conversationId: string,
+  text: string,
+): Promise<CommitOutput> {
+  const ctx = harness.ctx({ userId, agentId: 'a-1' });
+  const temp = await harness.bus.call<unknown, StoreTempOutput>('attachments:store-temp', ctx, {
+    bytes: Buffer.from(text),
+    displayName: 'greeting.txt',
+    mediaType: 'text/plain',
+  });
+  return harness.bus.call<unknown, CommitOutput>('attachments:commit', ctx, {
+    attachmentId: temp.attachmentId,
+    conversationId,
+  });
+}
+
+async function createConversation(harness: TestHarness, userId: string): Promise<string> {
+  const conv = await harness.bus.call<unknown, ConversationsCreateMin>(
+    'conversations:create',
+    harness.ctx({ userId, agentId: 'a-1' }),
+    { userId, agentId: 'a-1' },
+  );
+  return conv.conversationId;
 }
 
 beforeAll(async () => {
@@ -129,121 +144,80 @@ afterAll(async () => {
 });
 
 describe('@ax/attachments bus contract', () => {
-  it('full round trip: store-temp → commit → download', async () => {
+  it('full round trip: store-temp → commit → download by id', async () => {
     const { harness } = await makeHarness();
-    const ctx = harness.ctx({ userId: 'u-1', agentId: 'a-1' });
+    const conversationId = await createConversation(harness, 'u-1');
 
-    // 1) Stage a temp upload.
-    const tempResult = await harness.bus.call<unknown, StoreTempOutput>(
-      'attachments:store-temp',
-      ctx,
-      {
-        bytes: Buffer.from('hello attachments'),
-        displayName: 'greeting.txt',
-        mediaType: 'text/plain',
-      },
-    );
-    expect(tempResult.attachmentId).toBeTruthy();
-    expect(tempResult.sizeBytes).toBe('hello attachments'.length);
+    const committed = await upload(harness, 'u-1', conversationId, 'hello attachments');
+    expect(committed).toStrictEqual({
+      attachmentId: committed.attachmentId,
+      filename: 'greeting.txt',
+      sha256: createHash('sha256').update('hello attachments').digest('hex'),
+      mediaType: 'text/plain',
+      sizeBytes: 'hello attachments'.length,
+    });
 
-    // 2) Create a conversation to scope this attachment.
-    const convResult = await harness.bus.call<unknown, ConversationsCreateMin>(
-      'conversations:create',
-      ctx,
-      { userId: 'u-1', agentId: 'a-1' },
-    );
-    const conversationId = convResult.conversationId;
-    expect(conversationId).toBeTruthy();
-    const turnId = `t-${Date.now()}`;
-
-    // 3) Commit the temp into the workspace.
-    const commitResult = await harness.bus.call<unknown, CommitOutput>(
-      'attachments:commit',
-      ctx,
-      { attachmentId: tempResult.attachmentId, conversationId, turnId },
-    );
-    expect(commitResult.path).toMatch(
-      new RegExp(`^\\.ax/uploads/${conversationId}/${turnId}/`),
-    );
-    expect(commitResult.sha256).toBe(
-      createHash('sha256').update('hello attachments').digest('hex'),
-    );
-    expect(commitResult.mediaType).toBe('text/plain');
-    expect(commitResult.displayName).toBe('greeting.txt');
-
-    // 4) Download — should succeed via the .ax/uploads/<conv>/ prefix
-    //    branch of path-scope. No transcript entry needed.
     const downloaded = await harness.bus.call<unknown, DownloadOutput>(
       'attachments:download',
-      ctx,
-      { path: commitResult.path, conversationId, userId: 'u-1' },
+      harness.ctx({ userId: 'u-1', agentId: 'a-1' }),
+      { attachmentId: committed.attachmentId, conversationId, userId: 'u-1' },
     );
     expect(Buffer.from(downloaded.bytes).toString()).toBe('hello attachments');
-    // TASK-68: download now sources mediaType from the AUTHORITATIVE committed
-    // files row (text/plain), not the octet-stream fall-back the git path used
-    // when there was no transcript block. The row metadata is the better truth.
     expect(downloaded.mediaType).toBe('text/plain');
     expect(downloaded.displayName).toBe('greeting.txt');
   });
 
+  it('lists the conversation uploads by id for the runner', async () => {
+    const { harness } = await makeHarness();
+    const conversationId = await createConversation(harness, 'u-1');
+    const committed = await upload(harness, 'u-1', conversationId, 'listed');
+
+    const listed = await harness.bus.call<unknown, { files: unknown[] }>(
+      'attachments:list-for-conversation',
+      harness.ctx({ userId: 'u-1', agentId: 'a-1' }),
+      { conversationId },
+    );
+    expect(listed.files).toStrictEqual([
+      {
+        attachmentId: committed.attachmentId,
+        filename: 'greeting.txt',
+        sha256: committed.sha256,
+        mediaType: 'text/plain',
+        sizeBytes: committed.sizeBytes,
+      },
+    ]);
+  });
+
   it('rejects foreign user with not-found (cross-user existence-leak)', async () => {
     const { harness } = await makeHarness();
-    const ownerCtx = harness.ctx({ userId: 'u-owner', agentId: 'a-1' });
-
-    // Owner creates + commits.
-    const tempResult = await harness.bus.call<unknown, StoreTempOutput>(
-      'attachments:store-temp',
-      ownerCtx,
-      {
-        bytes: Buffer.from('secret'),
-        displayName: 'secret.txt',
-        mediaType: 'text/plain',
-      },
-    );
-    const conv = await harness.bus.call<unknown, ConversationsCreateMin>(
-      'conversations:create',
-      ownerCtx,
-      { userId: 'u-owner', agentId: 'a-1' },
-    );
-    const commitResult = await harness.bus.call<unknown, CommitOutput>(
-      'attachments:commit',
-      ownerCtx,
-      {
-        attachmentId: tempResult.attachmentId,
-        conversationId: conv.conversationId,
-        turnId: 't-1',
-      },
-    );
+    const conversationId = await createConversation(harness, 'u-owner');
+    const committed = await upload(harness, 'u-owner', conversationId, 'secret');
 
     // Foreign user tries to download — must surface not-found.
     const attackerCtx = harness.ctx({ userId: 'u-attacker', agentId: 'a-1' });
     await expect(
       harness.bus.call('attachments:download', attackerCtx, {
-        path: commitResult.path,
-        conversationId: conv.conversationId,
+        attachmentId: committed.attachmentId,
+        conversationId,
         userId: 'u-attacker',
       }),
     ).rejects.toMatchObject({ code: 'not-found' });
   });
 
-  it('rejects out-of-scope path with forbidden', async () => {
+  it('refuses an attachment from another conversation, even the same owner\'s', async () => {
     const { harness } = await makeHarness();
-    const ctx = harness.ctx({ userId: 'u-1', agentId: 'a-1' });
-    const conv = await harness.bus.call<unknown, ConversationsCreateMin>(
-      'conversations:create',
-      ctx,
-      { userId: 'u-1', agentId: 'a-1' },
-    );
-    // Try to download a path under a DIFFERENT conversation id — owner
-    // gate passes (same userId on the named conversation), but path-scope
-    // fails because path isn't under .ax/uploads/<conv.conversationId>/.
+    const convA = await createConversation(harness, 'u-1');
+    const convB = await createConversation(harness, 'u-1');
+    const inA = await upload(harness, 'u-1', convA, 'only in A');
+
+    // The owner gate passes (u-1 owns B) but the row belongs to A.
     await expect(
-      harness.bus.call('attachments:download', ctx, {
-        path: '.ax/uploads/c-not-mine/t-not-mine/secret.pdf',
-        conversationId: conv.conversationId,
+      harness.bus.call('attachments:download', harness.ctx({ userId: 'u-1', agentId: 'a-1' }), {
+        attachmentId: inA.attachmentId,
+        conversationId: convB,
         userId: 'u-1',
       }),
-    ).rejects.toMatchObject({ code: 'forbidden' });
+    ).rejects.toMatchObject({ code: 'not-found' });
   });
 
   it('rejects cross-user commit redemption with forbidden', async () => {
@@ -260,18 +234,12 @@ describe('@ax/attachments bus contract', () => {
         mediaType: 'text/plain',
       },
     );
-
-    const attackerConv = await harness.bus.call<unknown, ConversationsCreateMin>(
-      'conversations:create',
-      attacker,
-      { userId: 'u-attacker', agentId: 'a-1' },
-    );
+    const attackerConv = await createConversation(harness, 'u-attacker');
 
     await expect(
       harness.bus.call('attachments:commit', attacker, {
         attachmentId: tempResult.attachmentId,
-        conversationId: attackerConv.conversationId,
-        turnId: 't-1',
+        conversationId: attackerConv,
       }),
     ).rejects.toMatchObject({ code: 'forbidden' });
   });

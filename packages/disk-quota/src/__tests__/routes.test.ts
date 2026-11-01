@@ -42,6 +42,14 @@ async function mine(b: Booted, userId: string) {
   return b.request('GET', '/settings/storage');
 }
 
+/** The runner's assistant turn end, which makes the plugin measure that agent's `/files`. */
+async function turnEnd(b: Booted, userId: string, agentId: string): Promise<void> {
+  await b.harness.bus.fire('chat:turn-end', b.harness.ctx({ userId, agentId }), {
+    reason: 'user-message-wait',
+    role: 'assistant',
+  });
+}
+
 describe('auth', () => {
   it('401 unauthenticated on every route, and 403 (never on /settings) for a non-admin', async () => {
     const b = await boot();
@@ -88,10 +96,11 @@ describe('auth', () => {
 describe('GET /settings/storage', () => {
   it('reports the signed-in person\'s numbers, with the default 10 GB limit and an 80% warning', async () => {
     const b = await boot({
-      'workspace:usage': (async () => ({ bytes: 300 * MB })) as ServiceHandler,
+      'sandbox:user-files-usage': (async () => ({ bytes: 300 * MB })) as ServiceHandler,
+      'agents:resolve': (async () => ({ agent: { ownerId: 'alice', ownerType: 'user' } })) as ServiceHandler,
     });
     await storeFiles(b, 'alice', 100 * MB);
-    await b.harness.bus.fire('workspace:applied', b.harness.ctx({ userId: 'alice', agentId: 'agt_1' }), {});
+    await turnEnd(b, 'alice', 'agt_1');
     await b.plugin.drain();
 
     const r = await mine(b, 'alice');
@@ -190,7 +199,7 @@ describe('GET /admin/storage', () => {
           ? { id: 'alice', email: 'a@example.com', displayName: 'Alice', isAdmin: false }
           : null;
       }) as ServiceHandler,
-      'workspace:usage': (async () => ({ bytes: 20 * MB })) as ServiceHandler,
+      'sandbox:user-files-usage': (async () => ({ bytes: 20 * MB })) as ServiceHandler,
       'agents:resolve': (async (_c: unknown, input: { agentId: string; userId: string }) => ({
         agent:
           input.agentId === 'agt_team'
@@ -202,8 +211,8 @@ describe('GET /admin/storage', () => {
     await b.request('PUT', '/admin/storage/limits', { body: { limitMb: 64, warnPercent: 50 } });
     await storeFiles(b, 'alice', 10 * MB);
     await storeFiles(b, 'bob', 70 * MB);
-    await b.harness.bus.fire('workspace:applied', b.harness.ctx({ userId: 'alice', agentId: 'agt_alice' }), {});
-    await b.harness.bus.fire('workspace:applied', b.harness.ctx({ userId: 'alice', agentId: 'agt_team' }), {});
+    await turnEnd(b, 'alice', 'agt_alice');
+    await turnEnd(b, 'alice', 'agt_team');
     await b.plugin.drain();
 
     b.setAuth({ id: 'admin-1', isAdmin: true });

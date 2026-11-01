@@ -193,7 +193,7 @@ export function createFireRoutine(deps: FireDeps) {
     try {
       const resolved = await deps.bus.callJoined<
         { agentId: string; userId: string },
-        { agent: { id: string; ownerId?: string; workspaceRef?: string | null; displayName?: unknown } }
+        { agent: { id: string; ownerId?: string; displayName?: unknown } }
       >('agents:resolve', baseCtx, { agentId: row.agentId, userId: row.ownerUserId });
       // Slice 6 — only used to word a skipped-connector warning.
       const displayName = resolved?.agent?.displayName;

@@ -7,9 +7,6 @@
 // import path into channel-web's react bundle.
 // ---------------------------------------------------------------------------
 
-// Type-only, so it is erased from both bundles (no zod at runtime).
-import type { SaveRefusedCode } from '@ax/ipc-protocol';
-
 export type StreamChunkKind = 'text' | 'thinking' | 'tool-use' | 'tool-result';
 
 /**
@@ -214,20 +211,7 @@ export interface DecisionRaised {
 export type SseFrame =
   | StreamChunk
   | { reqId: string; phase: PhaseKind }
-  // `saveRefused` (TASK-720): the host refused this turn's end-of-turn
-  // workspace save and the runner undid the turn's file changes. One of three
-  // closed codes, re-checked in `sse.ts` before it is written (never the veto's
-  // prose, which is worded for the model) and again by the browser. Absent when
-  // the save went through or there was nothing to save.
-  //
-  // LIVE ONLY. The done frame is never buffered: turn-end evicts the reqId's
-  // buffer (`createTurnEndEvictor` and the per-connection subscriber), so a
-  // browser that connects after the turn ended gets no replayed `done` and no
-  // code from it. That is fine since TASK-731: the host persists the refusal as
-  // a `save-refused` display event before it acks the turn-end, so the thread
-  // read (`buildThread`) draws it after a reload or for a late browser. This
-  // frame only bridges the live view until its post-done re-read lands.
-  | { reqId: string; done: true; saveRefused?: SaveRefusedCode }
+  | { reqId: string; done: true }
   // `error` is the stable backend-agnostic reason code; `detail` (TASK-160) is
   // an OPTIONAL author-facing free-text line (e.g. a dev-service-sidecar
   // self-diagnosis), bounded + sanitized upstream and rendered as UNTRUSTED

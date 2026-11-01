@@ -348,7 +348,7 @@ describe('createIpcClient', () => {
   //
   // A host OOMKill + pod reschedule + boot takes longer than the old
   // ~3 s / 6-attempt retry budget, so the client used to give up and the
-  // runner either dropped the turn (commit-notify → `kept`) or crashed
+  // runner either dropped the turn's save or crashed
   // (session.next-message poll threw → exit 1). The default `maxElapsedMs`
   // (2 min) keeps the transient-error retry loop going long enough to ride
   // out the restart. We drive a FAKE clock via `now` + zero-wait backoff so
@@ -376,7 +376,7 @@ describe('createIpcClient', () => {
             return 0;
           },
         });
-        await expect(client.call('workspace.commit-notify', {})).rejects.toBeInstanceOf(
+        await expect(client.call('session.get-config', {})).rejects.toBeInstanceOf(
           HostUnavailableError,
         );
         // Old hard cap was 6 total tries; the deadline lets it go much further.
@@ -418,7 +418,7 @@ describe('createIpcClient', () => {
       expect(clock).toBeLessThan(10_000);
     });
 
-    it('workspace.commit-notify DOES get the long budget (idempotent → safe to ride out a restart)', async () => {
+    it('session.get-config DOES get the long budget (a read → safe to ride out a restart)', async () => {
       let attempts = 0;
       let clock = 0;
       const client = createIpcClient({
@@ -436,7 +436,7 @@ describe('createIpcClient', () => {
         },
       });
       await expect(
-        client.call('workspace.commit-notify', {}),
+        client.call('session.get-config', {}),
       ).rejects.toBeInstanceOf(HostUnavailableError);
       expect(attempts).toBeGreaterThan(8); // rides out the full ~2 min
       expect(clock).toBeGreaterThanOrEqual(120_000 - 30_000);
@@ -457,7 +457,7 @@ describe('createIpcClient', () => {
             return 0;
           },
         });
-        await expect(client.call('workspace.commit-notify', {})).rejects.toBeInstanceOf(
+        await expect(client.call('session.get-config', {})).rejects.toBeInstanceOf(
           HostUnavailableError,
         );
         // 100 + 200 = 300 < 500 <= 100+200+400 → stops at ~3 attempts.
@@ -600,31 +600,35 @@ describe('createIpcClient', () => {
   });
 
   // -------------------------------------------------------------------------
-  // callBinary — workspace.materialize's raw octet-stream body (BUG-W3).
+  // callBinary — the response-direction binary channel (blob.get,
+  // session.get-transcript).
   //
-  // The bug: the materialize bundle was base64-in-JSON, drained into a Buffer
-  // capped at 4 MiB. An aged workspace's bundle blew the cap and the runner
-  // crashed on boot (`response body too large`). callBinary streams the raw
-  // body straight to a temp file under a far larger, disk-bounded ceiling.
+  // A body that can grow without bound (an uploaded file's blob, a long resume
+  // transcript) is never drained into the 4 MiB JSON Buffer: callBinary streams
+  // it straight to a temp file under a far larger, disk-bounded ceiling. (The
+  // channel was first built for the git workspace bundles, BUG-W3; that tier
+  // went away in TASK-995 and the channel stayed for these two.)
   // -------------------------------------------------------------------------
-  describe('callBinary (workspace.materialize binary stream)', () => {
+  describe('callBinary (response-direction binary stream)', () => {
     const created: string[] = [];
     afterEach(async () => {
       for (const p of created) await fsp.rm(p, { force: true }).catch(() => {});
       created.length = 0;
     });
 
-    it('drains a >4 MiB octet-stream body to a temp file (the BUG-W3 regression)', async () => {
-      // 5 MiB — comfortably OVER the old 4 MiB MAX_RESPONSE_BYTES JSON cap that
-      // crashed the runner. A deterministic byte pattern so we can verify the
-      // bytes round-trip intact (not truncated, not re-encoded).
+    it('drains a >4 MiB session.get-transcript body to a temp file', async () => {
+      // 5 MiB — comfortably OVER the 4 MiB MAX_RESPONSE_BYTES JSON cap. A
+      // deterministic byte pattern so we can verify the bytes round-trip intact
+      // (not truncated, not re-encoded).
       const size = 5 * 1024 * 1024;
       const payload = Buffer.alloc(size);
       for (let i = 0; i < size; i++) payload[i] = i & 0xff;
 
       const server = await startFakeServer();
       servers.push(server);
-      server.setHandler((_req, res) => {
+      let seenPath = '';
+      server.setHandler((req, res) => {
+        seenPath = req.url ?? '';
         res.writeHead(200, {
           'Content-Type': 'application/octet-stream',
           'Content-Length': String(payload.length),
@@ -637,9 +641,11 @@ describe('createIpcClient', () => {
         maxRetries: 0,
       });
 
-      const result = await client.callBinary('workspace.materialize', {});
+      const result = await client.callBinary('session.get-transcript', {});
       created.push(result.path);
 
+      // POSTed to the right action endpoint.
+      expect(seenPath).toBe('/session.get-transcript');
       expect(result.bytes).toBe(size);
       const onDisk = await fsp.readFile(result.path);
       expect(onDisk.length).toBe(size);
@@ -664,7 +670,7 @@ describe('createIpcClient', () => {
         __maxBinaryResponseBytes: 1024,
       });
 
-      const err = await client.callBinary('workspace.materialize', {}).then(
+      const err = await client.callBinary('blob.get', { sha256: 'a'.repeat(64) }).then(
         () => {
           throw new Error('expected rejection');
         },
@@ -681,9 +687,9 @@ describe('createIpcClient', () => {
       const server = await startFakeServer();
       servers.push(server);
       server.setHandler((_req, res) => {
-        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(
-          JSON.stringify({ error: { code: 'NOT_FOUND', message: 'no workspace' } }),
+          JSON.stringify({ error: { code: 'VALIDATION', message: 'blob.get: bad sha256' } }),
         );
       });
       const client = createIpcClient({
@@ -692,64 +698,21 @@ describe('createIpcClient', () => {
         maxRetries: 0,
       });
 
-      const err = await client.callBinary('workspace.materialize', {}).then(
+      const err = await client.callBinary('blob.get', { sha256: 'a'.repeat(64) }).then(
         () => {
           throw new Error('expected rejection');
         },
         (e: unknown) => e,
       );
       expect(err).toBeInstanceOf(IpcRequestError);
-      expect((err as IpcRequestError).status).toBe(404);
-    });
-
-    it('drains a >4 MiB workspace.export-baseline-bundle body to a temp file (the commit-notify re-sync fix)', async () => {
-      // Bug Fix Policy regression: the commit-notify re-sync baseline bundle used
-      // to ride base64-in-JSON in the response, capped at 4 MiB MAX_RESPONSE_BYTES.
-      // An aged workspace's bundle blew the cap → `response body too large` → the
-      // turn never synced → 120s timeout → terminate → unknown-token loop. The fix
-      // routes the bundle over the SAME uncapped binary path materialize uses, via
-      // the dedicated workspace.export-baseline-bundle action. This proves a
-      // >4 MiB body drains cleanly (would throw on the old JSON path).
-      const size = 5 * 1024 * 1024;
-      const payload = Buffer.alloc(size);
-      for (let i = 0; i < size; i++) payload[i] = (i * 31 + 7) & 0xff;
-
-      const server = await startFakeServer();
-      servers.push(server);
-      let seenPath = '';
-      server.setHandler((req, res) => {
-        seenPath = req.url ?? '';
-        res.writeHead(200, {
-          'Content-Type': 'application/octet-stream',
-          'Content-Length': String(payload.length),
-        });
-        res.end(payload);
-      });
-      const client = createIpcClient({
-        runnerEndpoint: `unix://${server.socketPath}`,
-        token: 'tok-abc',
-        maxRetries: 0,
-      });
-
-      const result = await client.callBinary('workspace.export-baseline-bundle', {
-        version: 'newhead',
-      });
-      created.push(result.path);
-
-      // POSTed to the right action endpoint.
-      expect(seenPath).toBe('/workspace.export-baseline-bundle');
-      // The full >4 MiB body round-tripped to disk intact (not truncated, not
-      // capped, not re-encoded).
-      expect(result.bytes).toBe(size);
-      const onDisk = await fsp.readFile(result.path);
-      expect(onDisk.length).toBe(size);
-      expect(onDisk.equals(payload)).toBe(true);
+      expect((err as IpcRequestError).status).toBe(400);
+      expect((err as IpcRequestError).code).toBe('VALIDATION');
     });
 
     it('retries a transient 5xx then drains the binary body on success', async () => {
       // Proves the binary path reuses the shared retry loop: first attempt 503,
-      // second attempt 200 with the bundle.
-      const payload = Buffer.from('PACK-bundle-bytes-here', 'utf8');
+      // second attempt 200 with the bytes.
+      const payload = Buffer.from('blob-bytes-here', 'utf8');
       let attempts = 0;
       const server = await startFakeServer();
       servers.push(server);
@@ -769,32 +732,24 @@ describe('createIpcClient', () => {
         retryBackoff: () => 0, // no real wait
       });
 
-      const result = await client.callBinary('workspace.materialize', {});
+      const result = await client.callBinary('blob.get', { sha256: 'a'.repeat(64) });
       created.push(result.path);
       expect(attempts).toBe(2);
       const onDisk = await fsp.readFile(result.path);
       expect(onDisk.equals(payload)).toBe(true);
     });
 
-    it('does NOT retry a 409 export-baseline-bundle (P2b — stale parent-mismatch fails fast)', async () => {
-      // P2b regression: a stale-baseline export-baseline-bundle fetch (the head
-      // moved AGAIN after commit-notify returned actualParent) is mapped by the
-      // host handler to a NON-retryable 409. callBinary must treat 4xx as
-      // non-retryable and surface it on the FIRST attempt — NOT reissue the same
-      // stale fetch under the 5xx retry cap (which would rebuild the large bundle
-      // on the git-server backend several times before the runner re-asks
-      // commit-notify for the fresher head). Contrast the 5xx test above, which
-      // DOES retry. The runner's bounded re-sync loop catches this prompt failure
-      // and re-calls commit-notify.
+    it('does NOT retry a 4xx (a missing blob fails on the first attempt)', async () => {
+      // A 4xx is deterministic: the same request gets the same answer. callBinary
+      // must surface it on the FIRST attempt, not reissue it under the 5xx retry
+      // cap. Contrast the 5xx test above, which DOES retry.
       let attempts = 0;
       const server = await startFakeServer();
       servers.push(server);
       server.setHandler((_req, res) => {
         attempts += 1;
-        res.writeHead(409, { 'Content-Type': 'application/json' });
-        res.end(
-          JSON.stringify({ error: { code: 'HOOK_REJECTED', message: 'conflict' } }),
-        );
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: { code: 'NOT_FOUND', message: 'blob not found' } }));
       });
       const client = createIpcClient({
         runnerEndpoint: `unix://${server.socketPath}`,
@@ -802,16 +757,14 @@ describe('createIpcClient', () => {
         retryBackoff: () => 0, // no real wait — would expose any spurious retry
       });
 
-      const err = await client
-        .callBinary('workspace.export-baseline-bundle', { version: 'staleHead' })
-        .then(
-          () => {
-            throw new Error('expected rejection');
-          },
-          (e: unknown) => e,
-        );
+      const err = await client.callBinary('blob.get', { sha256: 'a'.repeat(64) }).then(
+        () => {
+          throw new Error('expected rejection');
+        },
+        (e: unknown) => e,
+      );
       expect(err).toBeInstanceOf(IpcRequestError);
-      expect((err as IpcRequestError).status).toBe(409);
+      expect((err as IpcRequestError).status).toBe(404);
       // The crux: exactly ONE attempt — no internal 5xx-style retry storm.
       expect(attempts).toBe(1);
     });

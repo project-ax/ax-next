@@ -1,9 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import {
-  BOOTSTRAP_TEMPLATE,
-  IDENTITY_SCAFFOLD,
-  SOUL_SCAFFOLD,
-} from '../identity-templates.js';
+import * as templates from '../identity-templates.js';
+import { BOOTSTRAP_TEMPLATE } from '../identity-templates.js';
 
 describe('BOOTSTRAP_TEMPLATE (v2-adapted from openclaw canonical)', () => {
   it('opens conversationally — the agent wakes up and talks, no form', () => {
@@ -50,14 +47,18 @@ describe('BOOTSTRAP_TEMPLATE (v2-adapted from openclaw canonical)', () => {
   });
 });
 
+// The identity and soul stub scaffolds belonged to the file tier TASK-989
+// retired: identity and soul are rows written through `update_identity`, and no
+// runner writes a stub file (TASK-995).
 describe('identity scaffolds', () => {
-  it('IDENTITY_SCAFFOLD is a short markdown stub', () => {
-    expect(IDENTITY_SCAFFOLD).toContain('#');
-    expect(IDENTITY_SCAFFOLD.length).toBeGreaterThan(0);
-  });
-
-  it('SOUL_SCAFFOLD is a short markdown stub', () => {
-    expect(SOUL_SCAFFOLD).toContain('#');
-    expect(SOUL_SCAFFOLD.length).toBeGreaterThan(0);
+  it('are not re-exported to the runner', () => {
+    expect(Object.keys(templates)).not.toContain('IDENTITY_SCAFFOLD');
+    expect(Object.keys(templates)).not.toContain('SOUL_SCAFFOLD');
+    // What the runner does use is still here.
+    expect(Object.keys(templates).sort()).toEqual([
+      'BOOTSTRAP_TEMPLATE',
+      'bootstrapPreamble',
+      'fallbackIdentityLine',
+    ]);
   });
 });

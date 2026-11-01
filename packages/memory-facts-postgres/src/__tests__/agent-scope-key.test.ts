@@ -6,12 +6,11 @@ import { agentScopeKey, agentScopeKeyForAgentId } from '../agent-scope-key.js';
 //
 // This derivation is byte-for-byte identical to the sibling copies in:
 //
-//   packages/workspace-git-server/src/client/workspace-id.ts      (file tier)
-//   packages/workspace-git-core/src/impl.ts                       (file tier, local)
 //   packages/memory-facts-sqlite/src/agent-scope-key.ts           (this engine's twin)
 //
-// because Invariant 2 (no cross-plugin imports) forbids sharing the code. If
-// they drift, this engine's partition stops lining up with the file tier
+// (The file tier's copies in the git workspace packages were deleted in
+// TASK-995.) Invariant 2 (no cross-plugin imports) forbids sharing the code. If
+// they drift, this engine's partition stops lining up with its twin
 // for the same agent — and, worse for THIS backend, with its own sqlite
 // twin, so a deployment that moved from the CLI to k8s would read an empty
 // memory rather than its own.

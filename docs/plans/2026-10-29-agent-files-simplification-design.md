@@ -106,6 +106,10 @@ Decisions and reasons:
   `workspace-localdir`.
 - **git stays installed in the runner image** (agents `git clone` for their own
   work; the prompt suggests it). Only the git-server image/templates go.
+- **As built (TASK-995):** `/tmp` is the scratch root, a disk `emptyDir` capped at
+  10Gi. The runner reads it from `AX_EPHEMERAL_ROOT` (the host sets it from
+  `POD_SCRATCH_ROOT`) and refuses to boot without it, or without
+  `AX_USERFILES_ROOT`. `/agent`, `/ephemeral` and `.ax/` no longer exist anywhere.
 
 ## 5. Identity, Instructions and onboarding → DB
 
@@ -255,6 +259,13 @@ conversation; keeping a file is deliberate.
   (`governed-paths.ts`, aisdk `policy-wrap.ts`), the old-key mapping.
 - Old conversations with `.ax/uploads/...` blocks degrade to a text mention;
   their downloads stop working. Accepted (§10).
+- **As built (TASK-995):** the design above was refined into IDs. Uploads and
+  artifact chips share one ID-based attachment block, so a chip renders from the
+  stored block and a download is by ID (ownership and content-hash checked). The
+  runner copies each upload into `<scratch>/uploads/` for the model; the copy is
+  not the record. Legacy text-mention turns still render as plain text. The
+  path-mention reconstruction in `conversations:get` is deleted, and a client can
+  no longer send an attachment block of its own (the host builds them).
 
 ## 8. SDK transcript working copy
 
@@ -347,6 +358,9 @@ Decided 2026-10-30: plain reset; nobody is using ax yet.
 - **As built (TASK-993):** the Filestore capacity alert is documented in
   `deploy/GKE.md` ("Alert before the user-files share fills up"); alerting is
   not managed in this repo.
+- **As built (TASK-995):** the `workspace:deleted` subscriber and the TASK-720
+  plumbing are gone. `@ax/disk-quota` deletes any leftover `workspace` ledger rows
+  at boot, so the old git-era bytes stop counting.
 
 ## 13. Ops
 
@@ -383,6 +397,12 @@ workspace" section of the Files tab; `agents.workspaceRef`; test-harness
 `workspace-contract.ts` / `mock-workspace.ts`; CLI `workspace-git` loading and
 `retire-routine-files`.
 
+- **As built (TASK-995):** all of the above is deleted, plus the `workspace:*`
+  hooks, the commit-notify and materialize IPC actions, governed paths and the
+  `conversations` `workspace_ref` column and drain-save-refusals hook.
+  `commit-trace` is **kept**: it also traces the turn-end transcript ship, which is
+  not a git thing.
+
 Already dead, ignore: `agent-native-runner`, `tool-file-io(-impl)`,
 `tool-bash(-impl)` (node_modules only).
 
@@ -414,5 +434,6 @@ Already dead, ignore: `agent-native-runner`, `tool-file-io(-impl)`,
   pointing at `update_identity`.
   - **As built (TASK-989):** no deny-with-hint for `Write .ax/SOUL.md`; the
     removal card deletes that tier.
+  - **As built (TASK-995):** the `/tmp` limit is 10Gi. Still no deny-with-hint.
 - How the local CLI sandbox maps the layout (no mount namespace; `/memory`
   absent there today).

@@ -100,7 +100,7 @@ describe('the agent bubble renders markdown', () => {
       'Your poem is ready. [Download inline](ax://artifact/abc123) Enjoy it.',
       '📄 [Download reference][poem]',
       '[poem]: ax://artifact/abc123',
-      '[Download via API](/api/files?path=poem.md&conversationId=c1)',
+      '[Download via API](/api/files?conversationId=c1&id=0123456789abcdef)',
       '[Read more](https://example.com/poetry)',
       '`[Download example](ax://artifact/example)`',
     ].join('\n\n'))] }));

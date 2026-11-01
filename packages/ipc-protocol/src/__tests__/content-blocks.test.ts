@@ -1,9 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
+  AttachmentBlockSchema,
   ContentBlockSchema,
-  formatAttachmentInline,
-  formatAttachmentMention,
-  parseAttachmentMention,
+  attachmentBlockFromArtifact,
 } from '../content-blocks.js';
 
 describe('ContentBlock schema', () => {
@@ -137,155 +136,109 @@ describe('ContentBlock schema', () => {
   });
 
   describe('attachment variant', () => {
-    it('parses a valid attachment block', () => {
-      const block = {
-        type: 'attachment',
-        path: '.ax/uploads/c1/t1/report.pdf',
-        displayName: 'Q4 Report.pdf',
-        mediaType: 'application/pdf',
-        sizeBytes: 482113,
-      };
-      const parsed = ContentBlockSchema.parse(block);
-      expect(parsed).toEqual(block);
+    // An upload (store-temp UUID) and a published artifact (hex id) — the two
+    // id shapes the system mints today.
+    const UPLOAD_ID = '3f1c2b9e-7d4a-4c1e-9b8f-2a6d5e4c3b1a';
+    const ARTIFACT_ID = '0123456789abcdef';
+    const valid = {
+      type: 'attachment',
+      attachmentId: UPLOAD_ID,
+      filename: 'a.pdf',
+      mediaType: 'application/pdf',
+      sizeBytes: 10,
+    };
+
+    it('parses an id-addressed upload block', () => {
+      expect(ContentBlockSchema.parse(valid)).toEqual(valid);
     });
 
-    it('rejects attachment with negative sizeBytes', () => {
-      const block = {
-        type: 'attachment',
-        path: '.ax/uploads/c1/t1/report.pdf',
-        displayName: 'Q4 Report.pdf',
-        mediaType: 'application/pdf',
-        sizeBytes: -1,
-      };
-      expect(() => ContentBlockSchema.parse(block)).toThrow();
+    it('parses an id-addressed artifact block', () => {
+      const block = { ...valid, attachmentId: ARTIFACT_ID, filename: 'r.png', mediaType: 'image/png' };
+      expect(ContentBlockSchema.parse(block)).toEqual(block);
     });
 
-    it('rejects attachment missing displayName', () => {
-      const block = {
+    it('rejects the same block plus a path (no sandbox or workspace path on the wire)', () => {
+      expect(ContentBlockSchema.safeParse({ ...valid, path: '.ax/uploads/c/t/a.pdf' }).success).toBe(false);
+      expect(AttachmentBlockSchema.safeParse({ ...valid, path: 'a.pdf' }).success).toBe(false);
+    });
+
+    it('rejects the legacy path-shaped block', () => {
+      const legacy = {
         type: 'attachment',
-        path: '.ax/uploads/c1/t1/report.pdf',
+        path: '.ax/uploads/c/t/x__a.pdf',
+        displayName: 'a.pdf',
         mediaType: 'application/pdf',
-        sizeBytes: 100,
+        sizeBytes: 10,
       };
-      expect(() => ContentBlockSchema.parse(block)).toThrow();
+      expect(ContentBlockSchema.safeParse(legacy).success).toBe(false);
     });
 
     it.each([
-      '/etc/passwd',
-      '\\windows\\system32',
-      'C:\\Users\\foo.txt',
-      '../escape',
-      'a/../b',
-      'a/b/..',
-      'foo\0bar',
-    ])('rejects non-workspace-relative path %j', (badPath) => {
-      const block = {
-        type: 'attachment',
-        path: badPath,
-        displayName: 'x',
-        mediaType: 'application/octet-stream',
-        sizeBytes: 1,
-      };
-      expect(() => ContentBlockSchema.parse(block)).toThrow();
-    });
-  });
-
-  describe('attachment mention format/parse', () => {
-    it('round-trips a plain mention', () => {
-      const fields = {
-        displayName: 'Disaster Recovery Plan - v3.pdf',
-        path: '.ax/uploads/cnv_abc/req-def/a60d__Disaster_Recovery_Plan_-_v3.pdf',
-        mediaType: 'application/pdf',
-      };
-      const text = formatAttachmentMention(fields);
-      expect(text).toBe(
-        "User attached 'Disaster Recovery Plan - v3.pdf' at " +
-          '.ax/uploads/cnv_abc/req-def/a60d__Disaster_Recovery_Plan_-_v3.pdf ' +
-          '(application/pdf)',
-      );
-      expect(parseAttachmentMention(text)).toEqual(fields);
+      ['a traversal', '../x'],
+      ['a slash', 'a/b'],
+      ['a backslash', 'a\\b'],
+      ['an empty id', ''],
+      ['a NUL byte', 'a\0b'],
+      ['a space', 'a b'],
+      ['129 characters', 'a'.repeat(129)],
+    ])('rejects an attachmentId with %s', (_label, attachmentId) => {
+      expect(ContentBlockSchema.safeParse({ ...valid, attachmentId }).success).toBe(false);
     });
 
-    it("round-trips a displayName containing ' at '", () => {
-      const fields = {
-        displayName: "dinner at 8 pm.txt",
-        path: '.ax/uploads/cnv_x/req-y/h__dinner_at_8_pm.txt',
-        mediaType: 'text/plain',
-      };
-      const parsed = parseAttachmentMention(formatAttachmentMention(fields));
-      expect(parsed).toEqual(fields);
+    it('accepts a 128-character attachmentId', () => {
+      expect(ContentBlockSchema.safeParse({ ...valid, attachmentId: 'a'.repeat(128) }).success).toBe(true);
     });
 
-    it('round-trips a path containing spaces (paths may contain whitespace)', () => {
-      // isWorkspaceRelativePath permits spaces, so the parser must too —
-      // the greedy path capture backtracks to the final " (mediaType)".
-      const fields = {
-        displayName: 'Q4 Report.pdf',
-        path: '.ax/uploads/cnv_x/req-y/ab12__Q4 Report (final).pdf',
-        mediaType: 'application/pdf',
-      };
-      const parsed = parseAttachmentMention(formatAttachmentMention(fields));
-      expect(parsed).toEqual(fields);
+    it.each([
+      ['an empty filename', { filename: '' }],
+      ['a 1025-character filename', { filename: 'f'.repeat(1025) }],
+      ['an empty mediaType', { mediaType: '' }],
+      ['a 256-character mediaType', { mediaType: 'm'.repeat(256) }],
+      ['a negative sizeBytes', { sizeBytes: -1 }],
+      ['a fractional sizeBytes', { sizeBytes: 1.5 }],
+      ['a missing filename', { filename: undefined }],
+    ])('rejects %s', (_label, patch) => {
+      expect(ContentBlockSchema.safeParse({ ...valid, ...patch }).success).toBe(false);
     });
 
-    it('returns null for unrelated text', () => {
-      expect(parseAttachmentMention('Summarize this file')).toBeNull();
-      expect(parseAttachmentMention('')).toBeNull();
+    it('accepts a 1024-character filename and a 255-character mediaType', () => {
       expect(
-        parseAttachmentMention("User attached 'x' at /abs/path"),
-      ).toBeNull();
-    });
-
-    it('returns null when the mention is not the whole string (multi-line)', () => {
-      // A merged "user-text\nmention" block must be split by the caller; the
-      // anchored, single-line regex refuses embedded newlines so the prefix
-      // text never gets folded into the displayName.
-      const mention = formatAttachmentMention({
-        displayName: 'f.pdf',
-        path: '.ax/uploads/c/t/h__f.pdf',
-        mediaType: 'application/pdf',
-      });
-      expect(parseAttachmentMention(`Summarize this file\n${mention}`)).toBeNull();
-      expect(parseAttachmentMention(mention)).not.toBeNull();
+        ContentBlockSchema.safeParse({ ...valid, filename: 'f'.repeat(1024), mediaType: 'm'.repeat(255) }).success,
+      ).toBe(true);
     });
   });
 
-  describe('inlined-attachment format', () => {
-    const fields = {
-      displayName: 'qa-marker.txt',
-      path: '.ax/uploads/cnv_abc/req-def/a1b2__qa-marker.txt',
-      mediaType: 'text/plain',
-    };
-
-    it("puts the canonical mention on the first line, then a blank line, then content", () => {
-      const content = 'line one\nline two';
-      const out = formatAttachmentInline(fields, content);
-      const lines = out.split('\n');
-      // First line is the canonical, path-bearing mention.
-      expect(lines[0]).toBe(formatAttachmentMention(fields));
-      expect(parseAttachmentMention(lines[0]!)).toEqual(fields);
-      // Blank separator.
-      expect(lines[1]).toBe('');
-      // Content follows verbatim.
-      expect(out.endsWith(content)).toBe(true);
-      expect(out).toContain('line one');
-      expect(out).toContain('line two');
+  describe('attachmentBlockFromArtifact', () => {
+    it('maps an artifact_publish result to an id-addressed block, dropping its path', () => {
+      expect(
+        attachmentBlockFromArtifact({
+          artifactId: '0123456789abcdef',
+          downloadUrl: 'ax://artifact/0123456789abcdef',
+          displayName: 'r.pdf',
+          mediaType: 'application/pdf',
+          sizeBytes: 3,
+          sha256: 'a'.repeat(64),
+          path: 'r.pdf',
+        }),
+      ).toStrictEqual({
+        type: 'attachment',
+        attachmentId: '0123456789abcdef',
+        filename: 'r.pdf',
+        mediaType: 'application/pdf',
+        sizeBytes: 3,
+      });
     });
 
-    it('the first line round-trips through parseAttachmentMention (path preserved for the read-path chip)', () => {
-      const out = formatAttachmentInline(fields, 'whatever');
-      const firstLine = out.split('\n', 1)[0]!;
-      expect(parseAttachmentMention(firstLine)).toEqual(fields);
-    });
-
-    it('preserves content that itself contains newlines and a stray "User attached" line', () => {
-      // Adversarial content: a file whose body mimics a mention. The first
-      // line is still the genuine preamble; the body is just content.
-      const content =
-        "User attached 'fake.txt' at .ax/uploads/other/x.txt (text/plain)\nreal body";
-      const out = formatAttachmentInline(fields, content);
-      expect(out.split('\n')[0]).toBe(formatAttachmentMention(fields));
-      expect(out).toContain('real body');
+    it.each([
+      ['an empty object', {}],
+      ['null', null],
+      ['a string', 'r.pdf'],
+      ['an array', [{ artifactId: '0123456789abcdef' }]],
+      ['a traversal id', { artifactId: '../x', displayName: 'r.pdf', mediaType: 'application/pdf', sizeBytes: 3 }],
+      ['a missing displayName', { artifactId: '0123456789abcdef', mediaType: 'application/pdf', sizeBytes: 3 }],
+      ['a string sizeBytes', { artifactId: '0123456789abcdef', displayName: 'r.pdf', mediaType: 'application/pdf', sizeBytes: '3' }],
+    ])('returns null for %s', (_label, value) => {
+      expect(attachmentBlockFromArtifact(value)).toBeNull();
     });
   });
 });

@@ -291,8 +291,6 @@ function agentsMockPlugin(args: {
         'agents:resolve',
         'agents:list-for-user',
         'agents:create',
-        'workspace:read',
-        'workspace:list',
         ...(args.teamConnectors === undefined
           ? []
           : ['agents:attach-connector', 'agents:can-manage-connectors']),
@@ -302,19 +300,9 @@ function agentsMockPlugin(args: {
       subscribes: [],
     },
     init({ bus }) {
-      // channel-web declares workspace:read (the Files tab reads a file) and
-      // workspace:list (TASK-233: it lists the tree) as hard calls. This suite
-      // doesn't drive those routes, so no-op registrations satisfy the
-      // verifyCalls walk.
       if (args.identity !== undefined) {
         args.identity.fake = registerIdentityStoreFake(bus, 'mock-agents');
       }
-      bus.registerService('workspace:read', 'mock-agents', async () => {
-        return { found: false };
-      });
-      bus.registerService('workspace:list', 'mock-agents', async () => {
-        return { paths: [] };
-      });
       bus.registerService('agents:resolve', 'mock-agents', async () => {
         if (!args.allow) {
           throw new PluginError({
@@ -684,6 +672,13 @@ describe('@ax/channel-web server plugin (integration)', () => {
 
   it('manifest declares the channel-web subscriber + caller surface', async () => {
     const plugin = createChannelWebServerPlugin();
+    // The Files tab reads the agent's home through the optional
+    // `sandbox:read-user-files`; no `workspace:*` hook is called any more
+    // (TASK-995), hard or optional.
+    expect(plugin.manifest.calls.filter((c) => c.startsWith('workspace:'))).toEqual([]);
+    expect(
+      (plugin.manifest.optionalCalls ?? []).filter((c) => c.hook.startsWith('workspace:')),
+    ).toEqual([]);
     expect(plugin.manifest).toEqual({
       name: '@ax/channel-web',
       version: '0.0.0',
@@ -694,8 +689,6 @@ describe('@ax/channel-web server plugin (integration)', () => {
         'agents:resolve',
         'agents:list-for-user',
         'agents:create',
-        'workspace:read',
-        'workspace:list',
         'conversations:get-by-req-id',
         'conversations:create',
         'conversations:get',
@@ -1629,16 +1622,33 @@ describe('@ax/channel-web server plugin (integration)', () => {
       /*
         401 (authOr401 ran), not 404 (route missing). The Files routes are
         worth naming: they are the only routes on this surface that read a
-        caller-supplied path out of a workspace, so reachability without auth
-        is what must NOT happen — and the 401 says it doesn't.
+        caller-supplied path out of an agent's files, so reachability without
+        auth is what must NOT happen — and the 401 says it doesn't.
       */
       for (const path of [
         '/api/workspace/agents/agt_test',
-        '/api/workspace/agents/agt_test/files',
-        '/api/workspace/agents/agt_test/files/x.md',
+        '/api/workspace/agents/agt_test/user-files',
+        '/api/workspace/agents/agt_test/user-files/x.md',
+        '/api/workspace/agents/agt_test/download/user-files/x.md',
       ]) {
         const r = await fetch(`http://127.0.0.1:${booted.port}${path}`);
         expect({ path, status: r.status }).toEqual({ path, status: 401 });
+      }
+    });
+
+    it('does not mount the git-backed Files routes (TASK-995)', async () => {
+      const booted = await boot({ user: null });
+      harness = booted.harness;
+
+      // Unauthenticated, and still 404: the routes are not registered at all,
+      // so there is no handler for `authOr401` to run in.
+      for (const path of [
+        '/api/workspace/agents/agt_test/files',
+        '/api/workspace/agents/agt_test/files/x.md',
+        '/api/workspace/agents/agt_test/download/files/x.md',
+      ]) {
+        const r = await fetch(`http://127.0.0.1:${booted.port}${path}`);
+        expect({ path, status: r.status }).toEqual({ path, status: 404 });
       }
     });
 
@@ -1709,7 +1719,7 @@ describe('@ax/channel-web server plugin (integration)', () => {
       // handler maps that to a 5xx via the unhandled-error path — but
       // it's NOT a 404, which is what proves the route exists.
       const get = await fetch(
-        `http://127.0.0.1:${booted.port}/api/files?path=foo&conversationId=cnv_test`,
+        `http://127.0.0.1:${booted.port}/api/files?conversationId=cnv_test&id=att-1`,
       );
       expect(get.status).not.toBe(404);
     });

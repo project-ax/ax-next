@@ -177,7 +177,7 @@ describe('the user bubble lets long text wrap', () => {
             id: 'u1',
             text,
             attachments: [
-              { path: null, displayName: 'notes.txt', mediaType: 'text/plain' },
+              { attachmentId: null, displayName: 'notes.txt', mediaType: 'text/plain' },
             ],
           },
         ],

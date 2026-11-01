@@ -4,7 +4,7 @@ import { resolve, join, sep } from 'node:path';
  * Safely construct a filesystem path from a base directory and untrusted segments.
  *
  * SECURITY: This is the canonical defense against path traversal. Every
- * file-based plugin (workspace-git, sandbox-k8s pod manifests, anything that
+ * file-based plugin (workspace-localdir, sandbox-k8s pod manifests, anything that
  * lands untrusted input on disk) MUST use this function when constructing
  * paths from any input that could be influenced by the agent, user messages,
  * or external content.

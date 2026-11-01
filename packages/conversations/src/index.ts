@@ -16,7 +16,6 @@ export {
   validateRole,
   validateRunnerType,
   validateTitle,
-  validateWorkspaceRefForFreeze,
   type ConversationStore,
   type ConversationStoreCreateArgs,
   type ConversationMetadata,

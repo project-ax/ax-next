@@ -90,25 +90,24 @@ async function seed(store: AttachmentsStore): Promise<void> {
   const row = (
     id: string,
     conversationId: string,
-    path: string,
+    displayName: string,
     sha256: string,
   ) => ({
     id,
     conversationId,
     userId: 'u-1',
     sha256,
-    path,
-    displayName: path,
+    displayName,
     mediaType: 'text/plain',
     sizeBytes: 1,
   });
-  await store.upsertFile(row('f-c1', 'C1', 'uploads/a.txt', SHARED_SHA));
-  await store.upsertFile(row('f-c1b', 'C1', 'uploads/b.txt', OTHER_SHA));
-  await store.upsertFile(row('f-c2', 'C2', 'uploads/a.txt', OTHER_SHA));
-  await store.upsertFile(row('f-c3', 'C3', 'uploads/a.txt', SHARED_SHA));
-  await store.upsertArtifact(row('a-c1', 'C1', 'artifacts/r.pdf', SHARED_SHA));
-  await store.upsertArtifact(row('a-c2', 'C2', 'artifacts/r.pdf', OTHER_SHA));
-  await store.upsertArtifact(row('a-c3', 'C3', 'artifacts/r.pdf', SHARED_SHA));
+  await store.insertFile(row('f-c1', 'C1', 'a.txt', SHARED_SHA));
+  await store.insertFile(row('f-c1b', 'C1', 'b.txt', OTHER_SHA));
+  await store.insertFile(row('f-c2', 'C2', 'a.txt', OTHER_SHA));
+  await store.insertFile(row('f-c3', 'C3', 'a.txt', SHARED_SHA));
+  await store.upsertArtifact({ ...row('a-c1', 'C1', 'r.pdf', SHARED_SHA), path: 'artifacts/r.pdf' });
+  await store.upsertArtifact({ ...row('a-c2', 'C2', 'r.pdf', OTHER_SHA), path: 'artifacts/r.pdf' });
+  await store.upsertArtifact({ ...row('a-c3', 'C3', 'r.pdf', SHARED_SHA), path: 'artifacts/r.pdf' });
   // Pre-commit uploads carry no conversation id at all; they belong to the TTL
   // janitor, never to a conversation purge.
   await store.insertTemp({
@@ -344,7 +343,7 @@ describe('@ax/attachments subscribes to conversations:purged', () => {
     expect(await artifactIds(rig.db)).toEqual(['a-c3']);
     expect(await tempIds(rig.db)).toEqual(['t-1']);
     // The surviving C3 file still resolves through the public store surface.
-    const kept = await rig.store.getFileByPath('C3', 'uploads/a.txt');
+    const kept = await rig.store.getFileById('f-c3');
     expect(kept?.sha256).toBe(SHARED_SHA);
     const info = rig.lines.find((l) => l.level === 'info');
     expect(info?.bindings).toMatchObject({ conversations: 2, files: 3, artifacts: 2 });

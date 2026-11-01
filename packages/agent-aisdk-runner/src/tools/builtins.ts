@@ -9,13 +9,12 @@
 //      an executor here (see policy-wrap.ts). `assertAllToolsWrapped` re-checks
 //      the assembled set at boot, and the test enumerates it.
 //
-//   2. THE INPUT FIELD NAMES ARE NOT OURS TO CHOOSE. `resolveGovernedPaths` in
-//      @ax/agent-runner-core re-roots governed paths by keying on exactly
-//      `file_path`, `path` and `notebook_path` (its `PATH_INPUT_KEYS`). Spell a
-//      file target `filePath` and the re-rooter silently stops firing: a write
-//      to `.ax/SOUL.md` lands on the ungoverned tier, outside the validator and
-//      outside the per-turn git bundle, and NOTHING fails loudly. So: Read /
-//      Write / Edit take `file_path`; Glob / Grep take `path` + `pattern`.
+//   2. THE INPUT FIELD NAMES ARE NOT OURS TO CHOOSE. They are the Claude
+//      built-ins' own (`file_path`, `path`, `pattern`), because the two runners
+//      must be host-indistinguishable: a `tool.pre-call` subscriber that reads a
+//      Write's `file_path` must find it under the same name from either
+//      runner, or its rule silently stops applying here. So: Read / Write /
+//      Edit take `file_path`; Glob / Grep take `path` + `pattern`.
 //
 //   3. EVERY INPUT VALUE IS MODEL OUTPUT — untrusted at every hop (invariant 5).
 //      Bash is the ONLY tool here that reaches a shell, and it reaches it as
@@ -86,8 +85,8 @@ const SEARCH_BUDGET_MS = 15_000;
  * Never walked into. `node_modules` is the expensive one; `.git` is expensive
  * AND useless (packed objects are binary). Other dot-directories need no rule:
  * the matcher's dot rule already stops `*` and `**` from crossing a dot segment,
- * while an EXPLICIT `.ax/**` still resolves — which is what we want, since
- * `.ax/` and `.claude/` are governed state the agent legitimately edits.
+ * while an EXPLICIT `.config/**` still resolves — which is what we want, since
+ * dot-directories in the home are the agent's own files to search.
  */
 const SEARCH_EXCLUDED_DIRS = new Set(['node_modules', '.git']);
 
@@ -814,8 +813,8 @@ interface WalkState {
  *
  * - `*` / `?` match within one segment; `**` matches zero or more segments.
  * - Dot rule (`dot: false`): a wildcard segment never matches a name starting
- *   with `.`, but an explicitly-written `.ax/**` still resolves — which is what
- *   we want, since `.ax/` and `.claude/` are governed state the agent edits.
+ *   with `.`, but an explicitly-written `.config/**` still resolves — which is
+ *   what we want, since dot-directories in the home are the agent's own files.
  * - Only real files are emitted and only real directories are descended, so a
  *   symlink is never followed out of the tree (`fs.glob`'s `follow: false`).
  *
@@ -898,7 +897,7 @@ async function walkGlob(
 type GlobSegment =
   | { kind: 'globstar' }
   /** `literalDot` records that the segment was WRITTEN with a leading dot, which
-   *  is what lets `.ax/**` through while `*` keeps skipping dot entries. */
+   *  is what lets `.config/**` through while `*` keeps skipping dot entries. */
   | { kind: 'match'; re: RegExp; literalDot: boolean };
 
 /** Bound on a model-supplied pattern. Segment regexes are `[^/]*`-shaped and

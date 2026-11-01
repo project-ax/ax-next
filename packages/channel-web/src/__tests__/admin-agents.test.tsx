@@ -69,7 +69,6 @@ const sampleAgent = (over: Partial<Record<string, unknown>> = {}) => ({
   mcpConfigIds: [],
   connectorAttachments: [],
   model: 'anthropic/claude-sonnet-4-6',
-  workspaceRef: null,
   createdAt: '2026-01-01T00:00:00.000Z',
   updatedAt: '2026-01-01T00:00:00.000Z',
   ...over,

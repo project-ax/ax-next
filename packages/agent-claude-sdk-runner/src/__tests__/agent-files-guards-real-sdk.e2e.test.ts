@@ -46,11 +46,19 @@ import {
 //      (`.claude.json`, backups, sessions, transcripts) follows
 //      CLAUDE_CONFIG_DIR, and the transcript lands in the transcripts root.
 //   2. A session resumes in a fresh pod from the transcript the runner restored.
-//   3. Files the agent plants in its home (CLAUDE.md, settings hooks, `.mcp.json`
-//      and `.claude.json` MCP servers, skills) have no effect.
-//   4. Two controls, which make the same plants live by removing one protection
-//      each: the 'project' setting source, and an unset CLAUDE_CONFIG_DIR (the
-//      startup guard refuses that one). They show the canary is not vacuous.
+//   3. Files the agent plants in its home (CLAUDE.md, CLAUDE.local.md, settings
+//      and settings.local hooks, `.mcp.json` and `.claude.json` MCP servers,
+//      skills, agents, commands, rules) have no effect.
+//   4. The same plants in the session scratch root, which is agent-writable
+//      AND an `additionalDirectories` entry, have no effect either.
+//   5. Controls, which make plants live by removing one protection each: the
+//      'project'/'local' setting sources, the
+//      CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD variable, and an unset
+//      CLAUDE_CONFIG_DIR (the startup guard refuses that one). They show the
+//      canary is not vacuous. The scratch root's settings, `.mcp.json`, agents
+//      and commands have no control: no option measured on SDK 0.2.119 makes
+//      the CLI read them from an added directory. Their detectors are the ones
+//      the home controls prove live.
 //
 // Skips itself when the platform's native binary is not installed. CI (Linux)
 // is the authoritative run for the strict empty-home assertion.
@@ -71,12 +79,34 @@ const HAVE_BINARY = nativeBinaryInstalled();
 const BASH_TOOL_USE_ID = 'toolu_t994';
 const BASH_ECHO = 't994-bash-ran';
 
+/** Text planted in the agent's home (`files/`). */
 const CANARY = {
   soul: 'CANARY-SOUL-7f3a',
   claudeMd: 'CANARY-CLAUDEMD-91bc',
+  claudeLocalMd: 'CANARY-CLAUDELOCAL-2e7d',
   dotClaudeMd: 'CANARY-DOTCLAUDE-55aa',
   skill: 'CANARY-SKILL-3c1d',
+  rule: 'CANARY-RULE-6b0f',
+  agent: 'CANARY-AGENT-a41c',
+  command: 'CANARY-COMMAND-d93e',
 } as const;
+
+/**
+ * Text planted in the session scratch root, which is agent-writable AND passed
+ * to the CLI as an `additionalDirectories` entry (`--add-dir`). Distinct from
+ * the home's so a leak names the directory it came from.
+ */
+const SCRATCH_CANARY = {
+  claudeMd: 'CANARY-SCRATCH-CLAUDEMD-0a1b',
+  claudeLocalMd: 'CANARY-SCRATCH-CLAUDELOCAL-8c2e',
+  dotClaudeMd: 'CANARY-SCRATCH-DOTCLAUDE-4f6a',
+  skill: 'CANARY-SCRATCH-SKILL-71d9',
+  rule: 'CANARY-SCRATCH-RULE-b3e5',
+  agent: 'CANARY-SCRATCH-AGENT-e07c',
+  command: 'CANARY-SCRATCH-COMMAND-5a28',
+} as const;
+
+type Canaries = { [K in keyof typeof SCRATCH_CANARY]: string } & { soul?: string };
 
 /**
  * macOS only. The one write the CLI makes into HOME there (measured 2026-10-30,
@@ -139,7 +169,7 @@ async function newPod(name: string): Promise<Pod> {
   await fs.mkdir(path.join(pod.cfg, 'skills'), { recursive: true });
   await fs.mkdir(pod.scratch, { recursive: true });
   await fs.mkdir(pod.tmp, { recursive: true });
-  // What the runner's afterMaterialize does before the SDK starts.
+  // What the runner's `prepareSession` seam does before the SDK starts.
   await prepareTranscriptDir({ claudeConfigDir: pod.cfg, transcriptsRoot: pod.transcripts });
   return pod;
 }
@@ -366,40 +396,93 @@ async function listTree(dir: string, rel = ''): Promise<string[]> {
 }
 
 /**
- * What an agent could leave in its own home, aimed at every config loader the
- * SDK has. Returns relative path → content.
+ * What an agent could leave in `dir`, aimed at every config loader the SDK has.
+ * `tag` is in every marker, skill, agent, command and MCP server name, so a
+ * load names the directory it came from. Returns relative path → content.
  */
-async function plantCanaries(): Promise<Map<string, string>> {
-  const hook = (event: string) => ({
-    hooks: [{ type: 'command', command: `touch '${path.join(markers, `settings-${event}`)}'` }],
+async function plantConfigFiles(
+  dir: string,
+  tag: 'home' | 'scratch',
+  canary: Canaries,
+): Promise<Map<string, string>> {
+  const hook = (source: string, event: string) => ({
+    hooks: [{ type: 'command', command: `touch '${path.join(markers, `${tag}-${source}-${event}`)}'` }],
+  });
+  const hooks = (source: string) => ({
+    hooks: {
+      SessionStart: [hook(source, 'SessionStart')],
+      UserPromptSubmit: [hook(source, 'UserPromptSubmit')],
+      Stop: [hook(source, 'Stop')],
+    },
   });
   // Not a real MCP server: it leaves a marker the moment it is spawned, then
   // exits so the CLI is not left waiting on a handshake.
   const stdioServer = (marker: string) => ({
     type: 'stdio',
     command: '/bin/sh',
-    args: ['-c', `touch '${path.join(markers, marker)}'; sleep 1`],
+    args: ['-c', `touch '${path.join(markers, `${tag}-${marker}`)}'; sleep 1`],
   });
   const plants = new Map<string, string>([
-    ['.ax/SOUL.md', `${CANARY.soul}\n`],
-    ['CLAUDE.md', `${CANARY.claudeMd}\n`],
-    ['.claude/CLAUDE.md', `${CANARY.dotClaudeMd}\n`],
-    ['.claude/settings.json', JSON.stringify({
-      hooks: {
-        SessionStart: [hook('SessionStart')],
-        UserPromptSubmit: [hook('UserPromptSubmit')],
-        Stop: [hook('Stop')],
-      },
-    })],
-    ['.mcp.json', JSON.stringify({ mcpServers: { canaryproj: stdioServer('mcp-json-spawned') } })],
-    ['.claude.json', JSON.stringify({ mcpServers: { canaryhome: stdioServer('claude-json-spawned') } })],
-    ['.claude/skills/canary-skill/SKILL.md', `---\nname: canary-skill\ndescription: ${CANARY.skill}\n---\nPlanted by the agent.\n`],
+    ['CLAUDE.md', `${canary.claudeMd}\n`],
+    ['CLAUDE.local.md', `${canary.claudeLocalMd}\n`],
+    ['.claude/CLAUDE.md', `${canary.dotClaudeMd}\n`],
+    ['.claude/settings.json', JSON.stringify(hooks('settings'))],
+    ['.claude/settings.local.json', JSON.stringify(hooks('settings-local'))],
+    ['.claude/rules/canary-rule.md', `${canary.rule}\n`],
+    ['.mcp.json', JSON.stringify({ mcpServers: { [`canaryproj-${tag}`]: stdioServer('mcp-json-spawned') } })],
+    [
+      `.claude/skills/canary-skill-${tag}/SKILL.md`,
+      `---\nname: canary-skill-${tag}\ndescription: ${canary.skill}\n---\nPlanted by the agent.\n`,
+    ],
+    [
+      `.claude/agents/canary-agent-${tag}.md`,
+      `---\nname: canary-agent-${tag}\ndescription: ${canary.agent}\n---\nPlanted by the agent.\n`,
+    ],
+    [`.claude/commands/canary-cmd-${tag}.md`, `---\ndescription: ${canary.command}\n---\nPlanted by the agent.\n`],
   ]);
+  if (canary.soul !== undefined) plants.set('.ax/SOUL.md', `${canary.soul}\n`);
+  if (tag === 'home') {
+    // `.claude.json` is the user config the CLI reads from HOME, not from a project dir.
+    plants.set('.claude.json', JSON.stringify({ mcpServers: { canaryhome: stdioServer('claude-json-spawned') } }));
+  }
   for (const [rel, content] of plants) {
-    await fs.mkdir(path.dirname(path.join(files, rel)), { recursive: true });
-    await fs.writeFile(path.join(files, rel), content);
+    await fs.mkdir(path.dirname(path.join(dir, rel)), { recursive: true });
+    await fs.writeFile(path.join(dir, rel), content);
   }
   return plants;
+}
+
+/** What an agent could leave in its own home. */
+function plantCanaries(): Promise<Map<string, string>> {
+  return plantConfigFiles(files, 'home', CANARY);
+}
+
+/** What an agent could leave in the session scratch root (`/tmp` in k8s). */
+function plantScratchCanaries(pod: Pod): Promise<Map<string, string>> {
+  return plantConfigFiles(pod.scratch, 'scratch', SCRATCH_CANARY);
+}
+
+/** Every name the CLI reports having loaded, by kind. */
+function loadedNames(run: Run): { skills: string[]; agents: string[]; commands: string[]; servers: string[] } {
+  const init = initOf(run);
+  return {
+    skills: init.skills,
+    agents: init.agents ?? [],
+    commands: init.slash_commands,
+    servers: init.mcp_servers.map((s) => s.name),
+  };
+}
+
+/** Every planted name `loadedNames` could report, for a `tag`. */
+function plantedNames(tag: 'home' | 'scratch'): string[] {
+  return [`canary-skill-${tag}`, `canary-agent-${tag}`, `canary-cmd-${tag}`, `canaryproj-${tag}`];
+}
+
+/** Planted names that show up in any of the run's loaded lists. */
+function loadedPlants(run: Run, tag: 'home' | 'scratch'): string[] {
+  const loaded = loadedNames(run);
+  const all = [...loaded.skills, ...loaded.agents, ...loaded.commands, ...loaded.servers];
+  return plantedNames(tag).filter((n) => all.some((l) => l === n || l.endsWith(`:${n}`)));
 }
 
 /** The listing `listTree` gives for exactly these files and their parent dirs. */
@@ -470,7 +553,7 @@ describe.skipIf(!HAVE_BINARY)('agent files §11 guards on the real claude-sdk bi
     expect(second.bodies.some((b) => b.includes('PINEAPPLE-42'))).toBe(true);
   }, 60_000);
 
-  it('files the agent planted in its home reach neither the prompt nor settings, hooks or MCP servers', async () => {
+  it('files the agent planted in its home reach neither the prompt nor settings, hooks, MCP servers, skills, agents or commands', async () => {
     const pod = await newPod('pod');
     const planted = await plantCanaries();
     const run = await runTurn(underBypass(productionOptions(pod)), 'hello');
@@ -479,11 +562,8 @@ describe.skipIf(!HAVE_BINARY)('agent files §11 guards on the real claude-sdk bi
     const leaked = Object.values(CANARY).filter((c) => run.bodies.some((b) => b.includes(c)));
     expect(leaked).toEqual([]);
     expect(await fs.readdir(markers)).toEqual([]);
-    const init = initOf(run);
-    const servers = init.mcp_servers.map((s) => s.name);
-    expect(servers).not.toContain('canaryproj');
-    expect(servers).not.toContain('canaryhome');
-    expect(init.skills).not.toContain('canary-skill');
+    expect(loadedPlants(run, 'home')).toEqual([]);
+    expect(loadedNames(run).servers).not.toContain('canaryhome');
 
     // The CLI wrote nothing into the home and changed nothing it found there.
     expect(withoutDarwinEnvPathsCache(await listTree(files))).toEqual(treeOf(planted.keys()));
@@ -492,14 +572,86 @@ describe.skipIf(!HAVE_BINARY)('agent files §11 guards on the real claude-sdk bi
     }
   }, 60_000);
 
-  it("control: the 'project' setting source makes the same plants live", async () => {
+  // The scratch root is agent-writable and is an `additionalDirectories`
+  // entry (`--add-dir`). Measured on SDK 0.2.119: from an added directory the
+  // CLI loads skills only under the 'project' setting source, and CLAUDE.md,
+  // `.claude/CLAUDE.md` and `.claude/rules/` only when
+  // CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD is set (CLAUDE.local.md also
+  // needs 'local'). Its settings files, `.mcp.json`, agents and commands are
+  // never read. Production has neither; the controls below show each gate.
+  it('files the agent planted in the scratch root have no effect either', async () => {
+    const pod = await newPod('pod');
+    const planted = await plantScratchCanaries(pod);
+    const run = await runTurn(underBypass(productionOptions(pod)), 'hello');
+
+    expect(resultOf(run).subtype).toBe('success');
+    const leaked = Object.values(SCRATCH_CANARY).filter((c) => run.bodies.some((b) => b.includes(c)));
+    expect(leaked).toEqual([]);
+    expect(await fs.readdir(markers)).toEqual([]);
+    expect(loadedPlants(run, 'scratch')).toEqual([]);
+    for (const [rel, content] of planted) {
+      expect(await fs.readFile(path.join(pod.scratch, rel), 'utf8')).toBe(content);
+    }
+  }, 60_000);
+
+  it("control: the 'project' and 'local' setting sources make the home plants and the scratch skill live", async () => {
     const pod = await newPod('pod');
     await plantCanaries();
-    const run = await runTurn({ ...underBypass(productionOptions(pod)), settingSources: ['user', 'project'] }, 'hello');
+    await plantScratchCanaries(pod);
+    const run = await runTurn(
+      { ...underBypass(productionOptions(pod)), settingSources: ['user', 'project', 'local'] },
+      'hello',
+    );
 
-    expect(run.bodies.some((b) => b.includes(CANARY.claudeMd))).toBe(true);
-    expect(await markerExists('settings-UserPromptSubmit')).toBe(true);
-    expect(await markerExists('mcp-json-spawned')).toBe(true);
+    for (const c of [CANARY.claudeMd, CANARY.claudeLocalMd, CANARY.dotClaudeMd, CANARY.rule]) {
+      expect(run.bodies.some((b) => b.includes(c))).toBe(true);
+    }
+    expect(await markerExists('home-settings-UserPromptSubmit')).toBe(true);
+    expect(await markerExists('home-settings-local-UserPromptSubmit')).toBe(true);
+    expect(await markerExists('home-mcp-json-spawned')).toBe(true);
+    // On Linux (CI, and production: HOME = cwd = /files, no symlink) the CLI
+    // does not list the home's project skills, agents or commands even under
+    // 'project'. Measured on CI 2026-11-01, where only the `.mcp.json` server
+    // showed up. On macOS all four load. Our guess, which we have not
+    // verified: the macOS tmpdir sits behind the /var -> /private/var symlink,
+    // so the CLI does not treat cwd as HOME. The skill lister itself is proven able to see
+    // a home skill by the no-CLAUDE_CONFIG_DIR control below.
+    expect(loadedPlants(run, 'home')).toEqual(
+      process.platform === 'darwin' ? plantedNames('home') : ['canaryproj-home'],
+    );
+    // The scratch root's skill loads through `--add-dir` the moment 'project'
+    // is a source: the scratch canary can see a load.
+    expect(loadedPlants(run, 'scratch')).toEqual(['canary-skill-scratch']);
+  }, 60_000);
+
+  it('control: CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD puts the scratch root CLAUDE.md files and rules in the prompt', async () => {
+    const pod = await newPod('pod');
+    await plantScratchCanaries(pod);
+    const options = underBypass(productionOptions(pod));
+    const run = await runTurn(
+      { ...options, env: { ...options.env, CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD: '1' } },
+      'hello',
+    );
+
+    for (const c of [SCRATCH_CANARY.claudeMd, SCRATCH_CANARY.dotClaudeMd, SCRATCH_CANARY.rule]) {
+      expect(run.bodies.some((b) => b.includes(c))).toBe(true);
+    }
+  }, 60_000);
+
+  it("control: with that variable and the 'local' source, the scratch root CLAUDE.local.md loads too", async () => {
+    const pod = await newPod('pod');
+    await plantScratchCanaries(pod);
+    const options = underBypass(productionOptions(pod));
+    const run = await runTurn(
+      {
+        ...options,
+        settingSources: ['user', 'project', 'local'],
+        env: { ...options.env, CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD: '1' },
+      },
+      'hello',
+    );
+
+    expect(run.bodies.some((b) => b.includes(SCRATCH_CANARY.claudeLocalMd))).toBe(true);
   }, 60_000);
 
   // This control is why the runner refuses to start without CLAUDE_CONFIG_DIR
@@ -511,10 +663,10 @@ describe.skipIf(!HAVE_BINARY)('agent files §11 guards on the real claude-sdk bi
     const { CLAUDE_CONFIG_DIR: _configDir, ...env } = options.env ?? {};
     const run = await runTurn({ ...options, env }, 'hello');
 
-    expect(await markerExists('claude-json-spawned')).toBe(true);
-    expect(await markerExists('settings-UserPromptSubmit')).toBe(true);
+    expect(await markerExists('home-claude-json-spawned')).toBe(true);
+    expect(await markerExists('home-settings-UserPromptSubmit')).toBe(true);
     expect(run.bodies.some((b) => b.includes(CANARY.dotClaudeMd))).toBe(true);
-    expect(initOf(run).skills).toContain('canary-skill');
+    expect(loadedNames(run).skills).toContain('canary-skill-home');
     expect(await listTree(files)).toContain('.claude/projects/');
   }, 60_000);
 });

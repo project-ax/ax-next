@@ -77,9 +77,7 @@
     "@ax/validator-service": "workspace:*",
     "@ax/validator-skill": "workspace:*",
     "@ax/web-tools": "workspace:*",
-    "@ax/workspace-filestore": "workspace:*",
-    "@ax/workspace-git": "workspace:*",
-    "@ax/workspace-git-server": "workspace:*"
+    "@ax/workspace-filestore": "workspace:*"
   },
   "devDependencies": {
     "@ax/ipc-core": "workspace:*",

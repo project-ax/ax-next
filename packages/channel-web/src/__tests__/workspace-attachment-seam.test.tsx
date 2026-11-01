@@ -20,13 +20,13 @@
  *              message over and before any re-read.
  *
  * WHAT THE EVIDENCE IS, decided rather than left to the renderer: the FILENAME
- * always, and a THUMBNAIL as well whenever the file is an image and the durable
- * path is known. This is the person's own record of what they did, so it errs
- * toward showing more of it. The live frame has no workspace path yet (the
- * commit is what mints one), so it shows the name alone and the reloaded frame
- * adds the picture — the same two-variant split chat's `AttachmentChip` already
- * makes, and the reason the name is asserted on BOTH paths while the `<img>` is
- * asserted only on the durable one.
+ * always, and a THUMBNAIL as well whenever the file is an image and the
+ * committed attachment id is known. This is the person's own record of what they
+ * did, so it errs toward showing more of it. The live frame has no committed id
+ * yet (the commit is what makes the file downloadable), so it shows the name
+ * alone and the reloaded frame adds the picture — the same two-variant split
+ * chat's `AttachmentChip` already makes, and the reason the name is asserted on
+ * BOTH paths while the `<img>` is asserted only on the durable one.
  *
  * WHY THE NEGATIVE ASSERTIONS ARE LOAD-BEARING. Against unfixed code both paths
  * render an ordinary text bubble, so anything phrased as "live agrees with
@@ -84,12 +84,17 @@ vi.mock('@/lib/attachment-upload', async (importOriginal) => {
   return { ...actual, uploadAttachment: vi.fn() };
 });
 
-/** THE fixture — one image, as the person picked it and as the host stored it. */
+/**
+ * THE fixture — one image, as the person picked it and as the host stored it.
+ * The upload keeps the id it was staged under through the commit, so the live
+ * upload and the stored block share `ATTACHMENT_ID`.
+ */
 const FILE_NAME = 'roof-damage.png';
 const FILE_TYPE = 'image/png';
-const FILE_PATH = '.ax/uploads/c1/t1/roof-damage.png';
 const CAPTION = 'what do you make of this?';
 const ATTACHMENT_ID = 'att-1';
+/** Where the reloaded chip must fetch the image: by conversation and id. */
+const FILE_URL = `/api/files?conversationId=c1&id=${ATTACHMENT_ID}`;
 
 const quill: WorkspaceAgent = {
   id: 'a1',
@@ -140,8 +145,8 @@ function mkRes(): {
 /** The user turn as the transcript holds it after `attachments:commit`. */
 const attachmentBlock = {
   type: 'attachment',
-  path: FILE_PATH,
-  displayName: FILE_NAME,
+  attachmentId: ATTACHMENT_ID,
+  filename: FILE_NAME,
   mediaType: FILE_TYPE,
   sizeBytes: 4096,
 };
@@ -244,7 +249,14 @@ function conversationProps(
 }
 
 describe('generated file download chips', () => {
-  const file = { type: 'attachment', path: 'reports/budget.csv', displayName: 'budget.csv', mediaType: 'text/csv', sizeBytes: 128 };
+  // The runner's chip for a published file, and the `artifact_publish` result
+  // object it can also be recovered from: both name the same artifact id.
+  const ARTIFACT_ID = '0123456789abcdef0123456789abcdef';
+  const file = { type: 'attachment', attachmentId: ARTIFACT_ID, filename: 'budget.csv', mediaType: 'text/csv', sizeBytes: 128 };
+  const published = {
+    artifactId: ARTIFACT_ID, downloadUrl: `ax://artifact/${ARTIFACT_ID}`, path: 'reports/budget.csv',
+    displayName: 'budget.csv', mediaType: 'text/csv', sizeBytes: 128, sha256: 'a'.repeat(64),
+  };
   it('keeps only the chip when the saved reply includes a download link, including after reload', async () => {
     for (let reload = 0; reload < 2; reload++) {
       const detail = await reloadDetail([], [{
@@ -271,22 +283,49 @@ describe('generated file download chips', () => {
   it('recovers legacy explicit publish results with MCP names, without duplicate chips', async () => {
     const detail = await reloadDetail([], [
       { type: 'tool_use', id: 'publish-1', name: 'mcp__ax-sandbox-tools__artifact_publish', input: {} },
-    ], [file, { type: 'tool_result', tool_use_id: 'publish-1', content: [{ type: 'text', text: JSON.stringify(file) }] }]);
+    ], [file, { type: 'tool_result', tool_use_id: 'publish-1', content: [{ type: 'text', text: JSON.stringify(published) }] }]);
     const view = render(<AgentConversation {...conversationProps(detail)} />);
     expect(screen.getAllByRole('button', { name: 'Download budget.csv' })).toHaveLength(1);
     view.unmount();
   });
 
-  it('ignores failed, held, unrelated and traversal-shaped tool results', async () => {
+  it('downloads a recovered chip by its artifact id, in this conversation', async () => {
+    const fetch = vi.fn(async () => new Response('csv'));
+    vi.stubGlobal('fetch', fetch);
+    try {
+      const detail = await reloadDetail([], [
+        { type: 'tool_use', id: 'publish-1', name: 'artifact_publish', input: {} },
+      ], [{ type: 'tool_result', tool_use_id: 'publish-1', content: JSON.stringify(published) }]);
+      const view = render(<AgentConversation {...conversationProps(detail)} />);
+      fireEvent.click(screen.getByRole('button', { name: 'Download budget.csv' }));
+      await waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
+      expect(fetch).toHaveBeenCalledWith(`/api/files?conversationId=c1&id=${ARTIFACT_ID}`, expect.anything());
+      view.unmount();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('ignores failed, held, unrelated, path-shaped and traversal-shaped results', async () => {
     const detail = await reloadDetail([], [
       { type: 'tool_use', id: 'publish-1', name: 'artifact_publish', input: {} },
     ], [
-      { ...file, path: '../secret.csv' },
-      { type: 'tool_result', tool_use_id: 'publish-1', is_error: true, content: JSON.stringify(file) },
-      { type: 'tool_result', tool_use_id: 'publish-1', held: true, content: JSON.stringify(file) },
-      { type: 'tool_result', tool_use_id: 'unrelated', content: JSON.stringify(file) },
+      // An id that is a path in disguise, and the pre-id block shape.
+      { ...file, attachmentId: '../secret.csv' },
+      { type: 'attachment', path: 'reports/budget.csv', displayName: 'budget.csv', mediaType: 'text/csv', sizeBytes: 128 },
+      { type: 'tool_result', tool_use_id: 'publish-1', is_error: true, content: JSON.stringify(published) },
+      { type: 'tool_result', tool_use_id: 'publish-1', held: true, content: JSON.stringify(published) },
+      { type: 'tool_result', tool_use_id: 'unrelated', content: JSON.stringify(published) },
+      // Positive control in the same turn: one valid id block still renders a
+      // chip, so the absence of budget.csv is the filter's doing and not a
+      // turn (or thread) that renders nothing at all.
+      { ...file, attachmentId: 'fedcba9876543210fedcba9876543210', filename: 'control.csv' },
     ]);
     expect(JSON.stringify(detail.thread)).not.toContain('budget.csv');
+    const view = render(<AgentConversation {...conversationProps(detail)} />);
+    expect(screen.getAllByRole('button', { name: /^Download / })).toHaveLength(1);
+    expect(screen.getByRole('button', { name: 'Download control.csv' })).toBeVisible();
+    view.unmount();
   });
 });
 
@@ -358,10 +397,8 @@ describe('a message the person attached a file to', () => {
     expect(container.textContent).toContain(FILE_NAME);
     const img = container.querySelector('img');
     expect(img).not.toBeNull();
-    expect(img?.getAttribute('src') ?? '').toContain(
-      encodeURIComponent(FILE_PATH),
-    );
-    expect(img?.getAttribute('src') ?? '').toContain('conversationId=c1');
+    // Fetched by the committed id within this conversation — never by a path.
+    expect(img?.getAttribute('src')).toBe(FILE_URL);
 
     // …and all of it belongs to the person's own message, not the agent's.
     const bubble = userBubble(container);
@@ -396,13 +433,14 @@ describe('a message the person attached a file to', () => {
       deliberately does not write user turns at all (its TASK-66 note says so).
       A model CAN emit whatever content blocks it likes on its OWN turn,
       though, and if this renderer read them the same way it would hand a
-      model-chosen `path` to `GET /api/files` and a model-chosen string to a
+      model-chosen id to `GET /api/files` and a model-chosen string to a
       chip — which is the shape of the sibling finding where an MCP argument
       put a credential prefix on screen.
 
-      It does not, because `turnAttachments` runs on `turn.role === 'user'`
-      only. This test is what keeps that true: widen the call to every turn and
-      it goes red.
+      It does not, because `turnAttachments` runs on the person's own turns
+      (and on the runner's tool turns), never on the assistant's. This test is
+      what keeps that true: widen the call to every turn and it goes red. The
+      block is well-formed on purpose, so the schema is not what stops it.
     */
     const bus = 'sk-live-0123456789abcdef-not-a-real-key';
     const detail = await reloadDetail([{ type: 'text', text: CAPTION }]);
@@ -410,9 +448,10 @@ describe('a message the person attached a file to', () => {
       { type: 'text', text: 'Those are missing shingles.' },
       {
         type: 'attachment',
-        path: '.ax/uploads/other-conversation/t9/stolen.png',
-        displayName: bus,
+        attachmentId: 'stolen-upload-from-another-conversation',
+        filename: bus,
         mediaType: 'image/png',
+        sizeBytes: 1,
       },
     ]);
     // The agent's prose still renders; only the block it invented is ignored.
@@ -441,9 +480,7 @@ describe('a message the person attached a file to', () => {
       the data, not in the styling. Same function the composer's chips use.
     */
     const long = `${'z'.repeat(400)}.png`;
-    const detail = await reloadDetail([
-      { ...attachmentBlock, displayName: long, path: '.ax/uploads/c1/t1/z.png' },
-    ]);
+    const detail = await reloadDetail([{ ...attachmentBlock, filename: long }]);
     const { container, unmount } = render(
       <AgentConversation {...conversationProps(detail)} />,
     );
@@ -462,13 +499,13 @@ describe('a message the person attached a file to', () => {
       is WHICH id the view reaches for, and a direct render pins only that the
       renderer uses whatever it was given.
 
-      A file path is scoped to a conversation (`attachments:download` checks
-      both), so the current conversation's id against a past conversation's path
-      answers 404 and the reader gets a broken image with nothing saying why.
-      `AgentView` passes `pastDetail?.conversationId`; swap it for
-      `detail.conversationId` and this goes red.
+      A file is scoped to the conversation it was sent in (`attachments:download`
+      checks both), so the current conversation's id against a past
+      conversation's attachment answers 404 and the reader gets a broken image
+      with nothing saying why. `AgentView` passes `pastDetail?.conversationId`;
+      swap it for `detail.conversationId` and this goes red.
     */
-    const PAST_PATH = '.ax/uploads/c-old/t1/roof-damage.png';
+    const PAST_ID = 'att-old';
     vi.mocked(workspaceApi.agent).mockImplementation(
       async (_id: string, conversationId?: string) =>
         conversationId === 'c-old'
@@ -482,7 +519,7 @@ describe('a message the person attached a file to', () => {
                   text: 'the March question',
                   attachments: [
                     {
-                      path: PAST_PATH,
+                      attachmentId: PAST_ID,
                       displayName: FILE_NAME,
                       mediaType: FILE_TYPE,
                     },
@@ -502,9 +539,7 @@ describe('a message the person attached a file to', () => {
     await screen.findByText('the March question');
 
     const src = view.container.querySelector('img')?.getAttribute('src') ?? '';
-    expect(src).toContain(encodeURIComponent(PAST_PATH));
-    expect(src).toContain('conversationId=c-old');
-    expect(src).not.toContain('conversationId=c1');
+    expect(src).toBe(`/api/files?conversationId=c-old&id=${PAST_ID}`);
     view.unmount();
   });
 

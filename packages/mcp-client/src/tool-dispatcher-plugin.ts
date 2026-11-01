@@ -22,19 +22,19 @@ const PLUGIN_NAME = '@ax/tool-dispatcher';
 // `@ax/core` and the wire `ToolDescriptorSchema` in `@ax/ipc-protocol`. A
 // `z.object` strips keys it doesn't declare, so any ToolDescriptor field
 // omitted here is silently dropped from `tool:list` output BEFORE it reaches
-// the IPC wire — which is exactly how `flushWorkspaceBeforeCall` got dropped
-// (BUG-W2: the runner never saw the flag, so the pre-call workspace flush
-// never fired). When you add a ToolDescriptor field, add it in all FOUR
+// the IPC wire — which is exactly how a descriptor field once got dropped
+// (BUG-W2: the runner never saw it, so the behaviour it asked for never
+// happened). When you add a ToolDescriptor field, add it in all FOUR
 // places: `@ax/core`'s `ToolDescriptor` interface, `@ax/ipc-protocol`'s
 // `ToolDescriptorSchema`, this local schema, and `@ax/mcp-client`'s
 // `catalog.ts` `validateDescriptor` (hand-rolled, not zod — it must also
-// copy the field onto the built descriptor).
+// copy the field onto the built descriptor). Removing one (TASK-995's
+// workspace-flush flag) touches the same four.
 const ToolDescriptorSchema = z.object({
   name: z.string(),
   description: z.string().optional(),
   inputSchema: z.record(z.unknown()),
   executesIn: z.union([z.literal('sandbox'), z.literal('host')]),
-  flushWorkspaceBeforeCall: z.boolean().optional(),
   activityPhrase: z.string().max(40).optional(),
   countable: z.string().max(40).optional(),
 });

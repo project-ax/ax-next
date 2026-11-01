@@ -8,7 +8,6 @@ import {
   ArtifactPublishResponseSchema,
   AttachmentsListResponseSchema,
   BlobPutResponseSchema,
-  ConversationDrainSaveRefusalsResponseSchema,
   ConversationStoreRunnerSessionResponseSchema,
   IPC_TIMEOUTS_MS,
   IpcErrorEnvelopeSchema,
@@ -22,8 +21,6 @@ import {
   ToolExecuteHostResponseSchema,
   ToolListResponseSchema,
   ToolPreCallResponseSchema,
-  WorkspaceCommitNotifyResponseSchema,
-  WorkspaceReadResponseSchema,
   parseRunnerEndpoint,
   RunnerEndpointError,
   type IpcActionName,
@@ -74,39 +71,33 @@ import {
 // not import the kernel (sandbox-side), so we redeclare the same ceiling here.
 // We may unify if that boundary shifts.
 //
-// Two actions are exceptions: `workspace.materialize` (BUG-W3) and
-// `workspace.export-baseline-bundle` (the commit-notify re-sync fetch). Both
-// bodies are a raw `git bundle` (octet-stream, not JSON) that grows unbounded
-// with workspace age. They do NOT go through the Buffer-capped JSON path —
-// `callBinary` streams each straight to a temp file under the far larger,
-// disk-bounded MAX_BINARY_RESPONSE_BYTES. Hence both are absent from
-// RESPONSE_SCHEMAS below (there's no JSON body to Zod-parse).
+// Two actions are exceptions: `blob.get` (a stored blob, e.g. an uploaded
+// file) and `session.get-transcript` (the resume transcript). Both bodies are
+// raw octet-stream, not JSON, and can be far larger than the JSON cap. They do
+// NOT go through the Buffer-capped JSON path — `callBinary` streams each
+// straight to a temp file under the far larger, disk-bounded
+// MAX_BINARY_RESPONSE_BYTES. Hence both are absent from RESPONSE_SCHEMAS below
+// (there's no JSON body to Zod-parse).
 // ---------------------------------------------------------------------------
 
 const MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
 
-// Hard ceiling for a streamed binary response (workspace.materialize). Drains
-// to disk, so the real bound is the runner's /tmp space; this guards against a
+// Hard ceiling for a streamed binary response (callBinary). Drains to disk, so
+// the real bound is the runner's scratch space; this guards against a
 // runaway/broken host shipping unbounded bytes (the host is the trust root, so
-// this is a sanity wall, not an adversary defense). Set far above any realistic
-// pack-compressed workspace bundle — orders of magnitude over the old 4 MiB
-// JSON cap that crashed the runner.
+// this is a sanity wall, not an adversary defense). Set far above any
+// realistic blob or transcript — orders of magnitude over the 4 MiB JSON cap.
 const MAX_BINARY_RESPONSE_BYTES = 512 * 1024 * 1024;
 
 // Dispatch table: action → Zod schema for the successful response body.
 // Event endpoints have no response body (just {accepted: true} on 202) and
-// are handled separately in `event()`. `workspace.materialize` and
-// `workspace.export-baseline-bundle` are absent — their responses are raw
-// binary (see callBinary), not a Zod-parsed JSON body.
+// are handled separately in `event()`. `blob.get` and `session.get-transcript`
+// are absent — their responses are raw binary (see callBinary), not a
+// Zod-parsed JSON body.
 const RESPONSE_SCHEMAS: Partial<Record<IpcActionName, z.ZodTypeAny>> = {
   'tool.pre-call': ToolPreCallResponseSchema,
   'tool.execute-host': ToolExecuteHostResponseSchema,
   'tool.list': ToolListResponseSchema,
-  'workspace.commit-notify': WorkspaceCommitNotifyResponseSchema,
-  // TASK-720: same JSON answer as commit-notify; its REQUEST is the raw bundle
-  // (callBinaryUpload), so only the response is Zod-parsed here.
-  'workspace.commit-bundle': WorkspaceCommitNotifyResponseSchema,
-  'workspace.read': WorkspaceReadResponseSchema,
   'session.next-message': SessionNextMessageResponseSchema,
   'session.get-config': SessionGetConfigResponseSchema,
   'conversation.store-runner-session': ConversationStoreRunnerSessionResponseSchema,
@@ -114,7 +105,7 @@ const RESPONSE_SCHEMAS: Partial<Record<IpcActionName, z.ZodTypeAny>> = {
   // REQUEST body is raw octet-stream — so there's no request schema, but the
   // response IS a Zod-parsed JSON envelope). artifact.publish / attachments.list
   // are ordinary JSON `call()` actions. blob.get is absent — its RESPONSE is raw
-  // binary served via callBinary (cf. workspace.materialize), not JSON.
+  // binary served via callBinary, not JSON.
   'blob.put': BlobPutResponseSchema,
   'artifact.publish': ArtifactPublishResponseSchema,
   'attachments.list': AttachmentsListResponseSchema,
@@ -130,8 +121,6 @@ const RESPONSE_SCHEMAS: Partial<Record<IpcActionName, z.ZodTypeAny>> = {
   'skill.propose': SkillProposeResponseSchema,
   // Agent-visible egress-block note: small JSON response `{ hosts: string[] }`.
   'proxy.drain-egress-blocks': ProxyDrainEgressBlocksResponseSchema,
-  // TASK-749: refused saves the model has not been told about (closed codes).
-  'conversation.drain-save-refusals': ConversationDrainSaveRefusalsResponseSchema,
   // Cross-runner history reconstruction: bounded, text-only prior turns, used
   // to seed a runner that was handed another runner's transcript.
   'session.get-display-history': SessionGetDisplayHistoryResponseSchema,
@@ -168,8 +157,8 @@ export interface IpcClientOptions {
    * at 30 s/attempt) until this much real time has elapsed since the first
    * attempt, then the final error is rethrown. This is the knob that lets the
    * runner survive a host OOMKill → reschedule → boot instead of giving up
-   * after the old ~3 s / 6-attempt budget and dropping the turn (commit-notify)
-   * or crashing (session.next-message poll). Default 120_000 (2 min). Distinct
+   * after the old ~3 s / 6-attempt budget and dropping the turn's transcript
+   * ship or crashing (session.next-message poll). Default 120_000 (2 min). Distinct
    * from the per-attempt wire timeout in IPC_TIMEOUTS_MS — that bounds ONE
    * request; this bounds the whole retry series.
    */
@@ -210,20 +199,17 @@ export interface IpcClient {
 
   /**
    * POST a JSON request and drain the RAW octet-stream response body to a temp
-   * file, returning its path. For the binary RESPONSE actions —
-   * `workspace.materialize` (session-start clone),
-   * `workspace.export-baseline-bundle` (commit-notify re-sync fetch), and
-   * `blob.get` (TASK-68 — fetch a stored blob's bytes to materialize
-   * `/ephemeral/uploads`): each a body that can grow unbounded (a git bundle, or
-   * an arbitrarily large blob). Bypasses the 4 MiB JSON Buffer cap by streaming
-   * to disk under MAX_BINARY_RESPONSE_BYTES. The CALLER owns the returned file
-   * and must delete it. On any error the temp file is cleaned up before the
-   * error propagates.
+   * file, returning its path. For the binary RESPONSE actions — `blob.get`
+   * (TASK-68 — fetch a stored blob's bytes, e.g. an upload the runner copies
+   * into the scratch uploads directory) and `session.get-transcript` (the
+   * resume transcript): each a body that can grow far past the JSON cap.
+   * Bypasses the 4 MiB JSON Buffer cap by streaming to disk under
+   * MAX_BINARY_RESPONSE_BYTES. The CALLER owns the returned file and must
+   * delete it. On any error the temp file is cleaned up before the error
+   * propagates.
    */
   callBinary<
     Action extends
-      | 'workspace.materialize'
-      | 'workspace.export-baseline-bundle'
       | 'blob.get'
       | 'session.get-transcript',
   >(
@@ -235,28 +221,25 @@ export interface IpcClient {
    * The REQUEST-direction binary channel (TASK-68): POST `bytes` as the RAW
    * `application/octet-stream` request body and parse a small JSON response.
    * The mirror of `callBinary` — outbound bytes instead of inbound. Used for
-   * `blob.put` (artifact bytes), the two transcript-ship actions
+   * `blob.put` (artifact bytes) and the two transcript-ship actions
    * (`session.append-transcript` per-turn delta, `session.replace-transcript`
-   * resync whole-file) and the end-of-turn save (`workspace.commit-bundle`,
-   * TASK-720): each streams its bytes up to the host's blob cap without
-   * base64-inflating them into a JSON field or hitting the 4 MiB `MAX_FRAME`
-   * JSON cap. The response is a small JSON envelope, Zod-validated against the
-   * matching schema.
+   * resync whole-file): each streams its bytes up to the host's blob cap
+   * without base64-inflating them into a JSON field or hitting the 4 MiB
+   * `MAX_FRAME` JSON cap. The response is a small JSON envelope, Zod-validated
+   * against the matching schema.
    *
    * `query` carries any out-of-band request metadata (append-transcript's
-   * `fromSeq`/`prefixHash` integrity hints, commit-bundle's `reason` /
-   * `parentVersion`) as URL query params — the binary body has no JSON
-   * envelope to hold them. `blob.put` is content-addressed (so a
-   * transient-error retry that re-streams the same bytes is safe); the
-   * transcript actions are idempotent on `(fromSeq, prefixHash)` and
-   * commit-bundle on `parentVersion` for the same reason.
+   * `fromSeq`/`prefixHash` integrity hints) as URL query params — the binary
+   * body has no JSON envelope to hold them. `blob.put` is content-addressed (so
+   * a transient-error retry that re-streams the same bytes is safe); the
+   * transcript actions are idempotent on `(fromSeq, prefixHash)` for the same
+   * reason.
    */
   callBinaryUpload<
     Action extends
       | 'blob.put'
       | 'session.append-transcript'
-      | 'session.replace-transcript'
-      | 'workspace.commit-bundle',
+      | 'session.replace-transcript',
   >(
     action: Action,
     bytes: Buffer,
@@ -404,7 +387,7 @@ function requestOnce(
           // An over-cap response is DETERMINISTIC — retrying re-fetches the
           // same too-large bytes and fails identically, so mark it
           // non-retryable. Otherwise the 2-min retry deadline would stall the
-          // runner re-transferring a large workspace.read for the full window
+          // runner re-transferring an over-cap JSON body for the full window
           // (Codex). A bare stream error stays retryable (could be transient).
           settle(() =>
             reject(new HostUnavailableError(message, err, { retryable: !overflowed })),
@@ -541,8 +524,8 @@ function requestOnceBinaryToFile(opts: {
       // 2xx: stream the raw bytes to the temp file with backpressure + cap.
       // Capture the declared length so a truncated transfer (host killed
       // mid-send) is caught here as a RETRYABLE fault rather than slipping
-      // through as a short-but-nonzero file that `git clone` later rejects with
-      // an opaque, non-retryable bootstrap error.
+      // through as a short-but-nonzero file the caller later fails on with an
+      // opaque, non-retryable error.
       const declaredLength = res.headers['content-length'];
       const expectedBytes =
         typeof declaredLength === 'string' && declaredLength.length > 0
@@ -581,8 +564,8 @@ function requestOnceBinaryToFile(opts: {
         // Truncation guard: if the host declared a Content-Length and we drained
         // fewer bytes, the transfer was cut short (host crash / connection
         // reset that still emitted 'end'). Treat as a RETRYABLE fault so the
-        // runner re-fetches the full body, rather than handing a partial bundle
-        // to `git clone`. ws is destroyed (not end()ed) so the partial file
+        // runner re-fetches the full body, rather than handing a partial file
+        // to its caller. ws is destroyed (not end()ed) so the partial file
         // isn't presented as complete.
         if (expectedBytes !== undefined && Number.isFinite(expectedBytes) && written !== expectedBytes) {
           ws?.destroy();
@@ -598,7 +581,7 @@ function requestOnceBinaryToFile(opts: {
           return;
         }
         // Flush the write stream before resolving so the file is complete on
-        // disk by the time the caller clones from it.
+        // disk by the time the caller reads it.
         ws!.end(() => {
           settle(() =>
             resolve({ status, bytesWritten: written, errorBody: null }),
@@ -618,7 +601,7 @@ function requestOnceBinaryToFile(opts: {
         // A write-to-disk failure (ENOSPC, EROFS, EACCES on the runner's tmp)
         // is DETERMINISTIC — re-streaming the same bytes hits the identical
         // error. Mark non-retryable so we fail fast instead of re-transferring
-        // the whole bundle for the full 2-min retry window.
+        // the whole body for the full 2-min retry window.
         settle(() =>
           reject(
             new HostUnavailableError(
@@ -839,11 +822,12 @@ export function createIpcClient(opts: IpcClientOptions): IpcClient {
   // Per-action wall-clock budget for the CONNECTION-error retry series.
   //
   // The long (2-min) restart-survival budget is ONLY for actions where a retry
-  // after a host restart is safe to replay:
-  //   - workspace.commit-notify  — parentVersion-idempotent host-side;
+  // after a host restart is safe to replay, e.g.:
   //   - session.next-message     — a cursor poll, no side effect;
-  //   - workspace.materialize / workspace.read / session.get-config /
-  //     conversation.store-runner-session — reads / idempotent upserts.
+  //   - session.get-config / attachments.list / blob.get /
+  //     conversation.store-runner-session — reads / idempotent upserts;
+  //   - blob.put (content-addressed) and the transcript ships (idempotent on
+  //     `fromSeq` / `prefixHash`).
   // `tool.execute-host` is NON-IDEMPOTENT: a host tool (MCP mutation,
   // memory_note write, …) may have completed its external side effect before
   // the response was lost, so replaying it across a 2-min window would DUPLICATE
@@ -863,8 +847,8 @@ export function createIpcClient(opts: IpcClientOptions): IpcClient {
   //                   drift, deterministic over-cap responses).
   //   - 'connection'→ a host-unavailable / connection-level failure. Bounded by
   //                   the WALL-CLOCK budget `elapsedBudgetMs`: for the
-  //                   runner-lifecycle actions (commit-notify, the inbox poll,
-  //                   reads) it's the full 2 min so the runner rides out a host
+  //                   runner-lifecycle actions (the transcript ships, the inbox
+  //                   poll, reads) it's the full 2 min so the runner rides out a host
   //                   OOMKill→reschedule→boot; for the NON-IDEMPOTENT
   //                   `tool.execute-host` it's SHORT (a tool that completed an
   //                   external side effect host-side but lost the response must
@@ -916,10 +900,10 @@ export function createIpcClient(opts: IpcClientOptions): IpcClient {
   const parseSuccessBody = (action: IpcActionName, body: Buffer): unknown => {
     const schema = RESPONSE_SCHEMAS[action];
     if (schema === undefined) {
-      // The actions without a JSON schema (workspace.materialize,
-      // workspace.export-baseline-bundle) are served via callBinary — reaching
-      // here means a JSON `call()` was made for one by mistake. Surface loudly
-      // rather than silently mis-parsing.
+      // The actions without a JSON schema (blob.get, session.get-transcript)
+      // are served via callBinary — reaching here means a JSON `call()` was
+      // made for one by mistake. Surface loudly rather than silently
+      // mis-parsing.
       throw new IpcRequestError(
         'INTERNAL',
         0,
@@ -1022,8 +1006,6 @@ export function createIpcClient(opts: IpcClientOptions): IpcClient {
 
   const callBinary = async <
     Action extends
-      | 'workspace.materialize'
-      | 'workspace.export-baseline-bundle'
       | 'blob.get'
       | 'session.get-transcript',
   >(
@@ -1074,8 +1056,7 @@ export function createIpcClient(opts: IpcClientOptions): IpcClient {
     Action extends
       | 'blob.put'
       | 'session.append-transcript'
-      | 'session.replace-transcript'
-      | 'workspace.commit-bundle',
+      | 'session.replace-transcript',
   >(
     action: Action,
     bytes: Buffer,

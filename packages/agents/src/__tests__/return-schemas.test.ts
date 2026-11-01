@@ -121,7 +121,6 @@ describe('agents return schemas', () => {
     mcpConfigIds: ['m1'],
     model: 'anthropic/claude-sonnet-4-6',
     runner: 'claude-sdk',
-    workspaceRef: 'v123',
     skillAttachments: [{ skillId: 's1', credentialBindings: { slotA: 'ref1' } }],
     connectorAttachments: ['salesforce', 'gh'],
     connectorExclusions: ['notion'],
@@ -168,12 +167,23 @@ describe('agents return schemas', () => {
     expect(parsed.agent.runner).toBe('claude-sdk');
   });
 
-  it('accepts a null workspaceRef and empty skillAttachments', () => {
+  it('accepts empty skillAttachments', () => {
     expect(
       ResolveOutputSchema.safeParse({
-        agent: { ...agent, workspaceRef: null, skillAttachments: [] },
+        agent: { ...agent, skillAttachments: [] },
       }).success,
     ).toBe(true);
+  });
+
+  // TASK-995: workspaceRef is no longer part of an agent. A stray one (a mock,
+  // or a stale build reading an old row) is stripped at the bus boundary, so
+  // no caller of agents:resolve can come to rely on it again.
+  it('strips a workspaceRef from the resolve output', () => {
+    const parsed = ResolveOutputSchema.parse({
+      agent: { ...agent, workspaceRef: 'v123' },
+    }) as { agent: Record<string, unknown> };
+    expect(parsed.agent).not.toHaveProperty('workspaceRef');
+    expect(parsed.agent['id']).toBe('ag1');
   });
 
   it('rejects a missing agent', () => {

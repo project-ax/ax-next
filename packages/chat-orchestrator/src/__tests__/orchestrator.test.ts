@@ -36,7 +36,6 @@ const TEST_AGENT = {
   mcpConfigIds: [],
   model: 'anthropic/claude-sonnet-4-7',
   runner: 'claude-sdk',
-  workspaceRef: null,
 };
 
 // ---------------------------------------------------------------------------

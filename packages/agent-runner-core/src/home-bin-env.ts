@@ -1,11 +1,10 @@
 // ---------------------------------------------------------------------------
 // $HOME/bin PATH append.
 //
-// The SDK subprocess runs with HOME=/agent (the git-tracked workspace root
-// that is bundled to the host at turn end and restored at the next session
-// start — see main.ts). Binaries an agent installs into `$HOME/bin`
-// (`/agent/bin`) therefore PERSIST between sessions — but they're only
-// USEFUL if that dir is on PATH.
+// The SDK subprocess runs with HOME = the agent's home (`/files`, the durable
+// per-agent NFS mount — see `runnerHomeDir` and the runners' `query()` env).
+// Binaries an agent installs into `$HOME/bin` (`/files/bin`) therefore PERSIST
+// between sessions — but they're only USEFUL if that dir is on PATH.
 //
 // The SDK's Bash tool runs a NON-INTERACTIVE shell: its PATH comes entirely
 // from the explicit `query({ options: { env } })` env we hand the SDK
@@ -18,11 +17,11 @@
 // discoverable convention.)
 //
 // APPEND, not prepend (capability minimization / I5 — codex review): `$HOME`
-// is `/agent`, a model-WRITABLE dir that is restored across sessions. A
-// prompt-injection or malicious tool output could drop `/agent/bin/git`
+// is `/files`, a model-WRITABLE dir that persists across sessions. A
+// prompt-injection or malicious tool output could drop `/files/bin/git`
 // (or `node`, `python`, ...) in one session; PREPENDING it would let that file
 // shadow the trusted image/venv binary for every Bash tool command — and
-// because `/agent` is bundled+restored, the hijack would PERSIST into
+// because `/files` is durable, the hijack would PERSIST into
 // future sessions the user trusts. Appending keeps newly installed agent tools
 // discoverable (the goal) while the trusted base + venv binaries always win on
 // name collisions. Spread this LAST in the main.ts env literal so it lands at
@@ -38,8 +37,8 @@ import * as path from 'node:path';
  *   - `currentPath` already ends with (or equals) `<homeDir>/bin` (idempotent —
  *     never double-append).
  *
- * @param homeDir     The SDK subprocess HOME (= `env.workspaceRoot`, default
- *                    `/agent`). NOT caller/model-supplied — host config.
+ * @param homeDir     The SDK subprocess HOME (= `runnerHomeDir(env)`, the
+ *                    agent's home). NOT caller/model-supplied — host config.
  * @param currentPath The PATH the SDK subprocess would otherwise get (after the
  *                    proxy-allowlist forward + any venv/cache layers).
  */

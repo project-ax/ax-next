@@ -1034,8 +1034,8 @@ describe('channel-web agent-workspace BFF', () => {
           { type: 'text', text: KICKOFF_TEXT },
           {
             type: 'attachment',
-            path: 'uploads/c1/notes.txt',
-            displayName: 'notes.txt',
+            attachmentId: '3f1c2b9e-0d4a-4e7b-9c51-2a8f6e1d7b40',
+            filename: 'notes.txt',
             mediaType: 'text/plain',
             sizeBytes: 12,
           },
@@ -1059,6 +1059,155 @@ describe('channel-web agent-workspace BFF', () => {
     expect(body.thread.map((m) => m.kind)).toEqual(['user', 'agent']);
     expect(body.thread[0]).toMatchObject({ kind: 'user', text: KICKOFF_TEXT });
     expect(body.thread[0]).toHaveProperty('attachments');
+  });
+
+  /*
+    TASK-995 — a file in the thread is addressed by its attachment id, which is
+    the one thing `GET /api/files` takes besides the conversation. The person's
+    chip carries that id, the name they picked and the size.
+
+    A block in the pre-id shape (a `path`, no id) draws no chip at all: the
+    conversations read turns those into text before they get here, and a peer
+    that did not would otherwise hand the client a chip with nothing to
+    download it by.
+  */
+  it('(TASK-995) carries the attachment id on a file the person sent, and no chip for a block without one', async () => {
+    registerAuth({ id: 'u1', isAdmin: false });
+    conversations = [conv({ conversationId: 'c1', agentId: 'a1' })];
+    turnsByConversation.set('c1', [
+      {
+        turnId: 't1',
+        turnIndex: 0,
+        role: 'user',
+        contentBlocks: [
+          { type: 'text', text: 'two files' },
+          {
+            type: 'attachment',
+            attachmentId: '3f1c2b9e-0d4a-4e7b-9c51-2a8f6e1d7b40',
+            filename: 'notes.txt',
+            mediaType: 'text/plain',
+            sizeBytes: 12,
+          },
+          {
+            type: 'attachment',
+            path: '.ax/uploads/c1/t1/old.txt',
+            displayName: 'old.txt',
+            mediaType: 'text/plain',
+            sizeBytes: 3,
+          },
+        ],
+        createdAt: '2026-08-01T10:00:00.000Z',
+      },
+    ]);
+
+    const h = makeWorkspaceHandlers({ bus, initCtx });
+    const { res, captured } = mkRes();
+    await h.agentDetail(mkReq({ agentId: 'a1' }), res);
+    const body = captured.body as { thread: Array<Record<string, unknown>> };
+
+    expect(body.thread).toHaveLength(1);
+    expect(body.thread[0]!.attachments).toStrictEqual([
+      {
+        attachmentId: '3f1c2b9e-0d4a-4e7b-9c51-2a8f6e1d7b40',
+        displayName: 'notes.txt',
+        mediaType: 'text/plain',
+        sizeBytes: 12,
+      },
+    ]);
+  });
+
+  /*
+    TASK-995 — a published file's chip comes from the runner's own block AND
+    can be recovered from the `artifact_publish` result. Both name the same
+    artifact id, so it is drawn once. Two different artifacts that share a NAME
+    are two files and keep two chips: the key is the id, not the label.
+  */
+  it('(TASK-995) draws one chip per published artifact, keyed by its id', async () => {
+    registerAuth({ id: 'u1', isAdmin: false });
+    conversations = [conv({ conversationId: 'c1', agentId: 'a1' })];
+    // The artifact_publish result object, as the runner's executor returns it.
+    const budget = {
+      artifactId: '0123456789abcdef0123456789abcdef',
+      downloadUrl: 'ax://artifact/0123456789abcdef0123456789abcdef',
+      path: 'reports/budget.csv',
+      displayName: 'budget.csv',
+      mediaType: 'text/csv',
+      sizeBytes: 128,
+      sha256: 'a'.repeat(64),
+    };
+    const archived = {
+      ...budget,
+      artifactId: 'fedcba9876543210fedcba9876543210',
+      downloadUrl: 'ax://artifact/fedcba9876543210fedcba9876543210',
+      path: 'archive/budget.csv',
+      sizeBytes: 64,
+    };
+    turnsByConversation.set('c1', [
+      {
+        turnId: 't1',
+        turnIndex: 0,
+        role: 'user',
+        contentBlocks: [{ type: 'text', text: 'Make a budget.' }],
+        createdAt: '2026-08-01T10:00:00.000Z',
+      },
+      {
+        turnId: 't2',
+        turnIndex: 1,
+        role: 'assistant',
+        contentBlocks: [
+          { type: 'tool_use', id: 'publish-1', name: 'artifact_publish', input: {} },
+          {
+            type: 'tool_use',
+            id: 'publish-2',
+            name: 'mcp__ax-sandbox-tools__artifact_publish',
+            input: {},
+          },
+        ],
+        createdAt: '2026-08-01T10:00:02.000Z',
+      },
+      {
+        turnId: 't3',
+        turnIndex: 2,
+        role: 'tool',
+        contentBlocks: [
+          { type: 'tool_result', tool_use_id: 'publish-1', content: JSON.stringify(budget) },
+          {
+            type: 'tool_result',
+            tool_use_id: 'publish-2',
+            content: [{ type: 'text', text: JSON.stringify(archived) }],
+          },
+          {
+            type: 'attachment',
+            attachmentId: '0123456789abcdef0123456789abcdef',
+            filename: 'budget.csv',
+            mediaType: 'text/csv',
+            sizeBytes: 128,
+          },
+        ],
+        createdAt: '2026-08-01T10:00:03.000Z',
+      },
+    ]);
+
+    const h = makeWorkspaceHandlers({ bus, initCtx });
+    const { res, captured } = mkRes();
+    await h.agentDetail(mkReq({ agentId: 'a1' }), res);
+    const body = captured.body as { thread: Array<Record<string, unknown>> };
+
+    const files = body.thread.flatMap((m) => (m.attachments as unknown[] | undefined) ?? []);
+    expect(files).toStrictEqual([
+      {
+        attachmentId: '0123456789abcdef0123456789abcdef',
+        displayName: 'budget.csv',
+        mediaType: 'text/csv',
+        sizeBytes: 128,
+      },
+      {
+        attachmentId: 'fedcba9876543210fedcba9876543210',
+        displayName: 'budget.csv',
+        mediaType: 'text/csv',
+        sizeBytes: 64,
+      },
+    ]);
   });
 
   /*
@@ -1208,16 +1357,16 @@ describe('channel-web agent-workspace BFF', () => {
   });
 
   /*
-    TASK-731 — A REFUSED SAVE HAS TO SURVIVE THE RELOAD TOO.
+    TASK-995 — SAVE-REFUSED ROWS ARE GONE, BUT OLD CONVERSATIONS STILL HOLD THEM.
 
-    TASK-720 told the person on the live `done` frame only, so a reload lost
-    the news that a reply's files were not kept. The host now persists a
-    `save-refused` display event (payload `{ code }`, keyed on the turn's reqId,
-    or `final:<uuid>` for the runner's last flush), and this read turns it into
-    a thread row the way TASK-498 does turn-errors: dated, interleaved, turns
-    winning ties, and only a closed code on the wire — the client words it.
+    A `save-refused` display event used to become a thread row (TASK-731). The
+    pipeline that wrote them was removed, but conversations that already carry
+    one keep it in `displayEvents` (the CHECK value stays so existing rows are
+    valid). This read must draw nothing for it: the turns come through, the old
+    event is ignored, and nothing about it (its code, its key, a stray text
+    field) reaches the wire.
   */
-  it('(TASK-731) replays a persisted save-refused row after the reply it is about', async () => {
+  it('(TASK-995) ignores a save-refused display event left in an old conversation', async () => {
     registerAuth({ id: 'u1', isAdmin: false });
     conversations = [conv({ conversationId: 'c1', agentId: 'a1' })];
     turnsByConversation.set('c1', [
@@ -1235,56 +1384,14 @@ describe('channel-web agent-workspace BFF', () => {
         contentBlocks: [{ type: 'text', text: 'Saved report.md.' }],
         createdAt: '2026-08-01T10:00:05.000Z',
       },
-      {
-        turnId: 't3',
-        turnIndex: 2,
-        role: 'user',
-        contentBlocks: [{ type: 'text', text: 'thanks' }],
-        createdAt: '2026-08-01T10:01:00.000Z',
-      },
     ]);
     eventsByConversation.set('c1', [
-      // Same instant as the assistant turn it follows: the turn wins the tie.
       {
         kind: 'save-refused',
         key: 'req-1',
-        payload: { code: 'storage-full' },
+        payload: { code: 'storage-full', text: '<b>hi</b>' },
         createdAt: '2026-08-01T10:00:05.000Z',
       },
-    ]);
-    const h = makeWorkspaceHandlers({ bus, initCtx });
-    const { res, captured } = mkRes();
-    await h.agentDetail(mkReq({ agentId: 'a1' }), res);
-    const body = captured.body as { thread: Array<Record<string, unknown>> };
-    expect(body.thread.map((m) => m.kind)).toEqual(['user', 'agent', 'save-refused', 'user']);
-    // A code, never a sentence; the fold key only inside the opaque id.
-    expect(body.thread[2]).toEqual({
-      kind: 'save-refused',
-      id: 'save-refused:req-1',
-      code: 'storage-full',
-    });
-  });
-
-  it('(TASK-731) draws a final-flush refusal (no turn) at the tail', async () => {
-    registerAuth({ id: 'u1', isAdmin: false });
-    conversations = [conv({ conversationId: 'c1', agentId: 'a1' })];
-    turnsByConversation.set('c1', [
-      {
-        turnId: 't1',
-        turnIndex: 0,
-        role: 'user',
-        contentBlocks: [{ type: 'text', text: 'make files' }],
-        createdAt: '2026-08-01T10:00:00.000Z',
-      },
-      {
-        turnId: 't2',
-        turnIndex: 1,
-        role: 'assistant',
-        contentBlocks: [{ type: 'text', text: 'Made them.' }],
-        createdAt: '2026-08-01T10:00:05.000Z',
-      },
-    ]);
-    eventsByConversation.set('c1', [
       {
         kind: 'save-refused',
         key: 'final:6f1c0e1a-0000-4000-8000-000000000000',
@@ -1296,40 +1403,9 @@ describe('channel-web agent-workspace BFF', () => {
     const { res, captured } = mkRes();
     await h.agentDetail(mkReq({ agentId: 'a1' }), res);
     const body = captured.body as { thread: Array<Record<string, unknown>> };
-    expect(body.thread.map((m) => m.kind)).toEqual(['user', 'agent', 'save-refused']);
-    expect(body.thread[2]).toEqual({
-      kind: 'save-refused',
-      id: 'save-refused:final:6f1c0e1a-0000-4000-8000-000000000000',
-      code: 'too-large',
-    });
-  });
-
-  it('(TASK-731) a save-refused row that is not exactly one of the codes is dropped', async () => {
-    registerAuth({ id: 'u1', isAdmin: false });
-    conversations = [conv({ conversationId: 'c1', agentId: 'a1' })];
-    eventsByConversation.set('c1', [
-      // A sentence where a code belongs: never forwarded.
-      { kind: 'save-refused', key: 'a', payload: { code: 'disk on fire' }, createdAt: '2026-08-01T10:00:00.000Z' },
-      { kind: 'save-refused', key: 'b', payload: {}, createdAt: '2026-08-01T10:00:01.000Z' },
-      // No instant to place it by.
-      { kind: 'save-refused', key: 'c', payload: { code: 'refused' }, createdAt: '' },
-      { kind: 'save-refused', key: 'd', payload: { code: 'refused' } },
-      // A non-string key cannot make a stable id.
-      { kind: 'save-refused', key: 7, payload: { code: 'refused' }, createdAt: '2026-08-01T10:00:02.000Z' },
-      // An extra field is not spread onto the row.
-      {
-        kind: 'save-refused',
-        key: '',
-        payload: { code: 'refused', text: '<b>hi</b>' },
-        createdAt: '2026-08-01T10:00:03.000Z',
-      },
-    ]);
-    const h = makeWorkspaceHandlers({ bus, initCtx });
-    const { res, captured } = mkRes();
-    await h.agentDetail(mkReq({ agentId: 'a1' }), res);
-    expect((captured.body as { thread: unknown[] }).thread).toEqual([
-      { kind: 'save-refused', id: 'save-refused:', code: 'refused' },
-    ]);
+    expect(body.thread.map((m) => m.kind)).toEqual(['user', 'agent']);
+    expect(JSON.stringify(body)).not.toContain('save-refused');
+    expect(JSON.stringify(body)).not.toContain('storage-full');
   });
 
   /*

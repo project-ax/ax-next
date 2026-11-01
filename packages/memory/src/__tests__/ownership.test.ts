@@ -156,8 +156,8 @@ describe('@ax/memory — speaker rewrite and the ownership stamp', () => {
     const ownerless = harness.ctx({ userId: ownerlessIdFor('session-1') });
     // `ownerless:session-1` is a perfectly good non-empty string that simply
     // isn't anybody's, so a null check does not catch it. Memory joins the
-    // REFUSE side (workspace-git-core, workspace-git-server, skill.propose,
-    // connector_propose) rather than the merely-partition side.
+    // REFUSE side (skill.propose, connector_propose, and formerly the git
+    // workspace backends) rather than the merely-partition side.
     await expect(
       harness.remember({ about: 'user', relation: 'lives_in', value: 'Berlin' }, ownerless),
     ).rejects.toThrow(/no owner/);

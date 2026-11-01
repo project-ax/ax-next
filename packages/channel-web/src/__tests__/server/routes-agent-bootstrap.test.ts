@@ -25,10 +25,9 @@ interface CreateCall {
   bootstrap?: unknown;
 }
 
-// TASK-989: no `workspace:apply` is registered on purpose. The route writes
-// nothing to the agent's workspace any more — first-run setup is a state
-// `agents:create` records with the agent — so a stray write would throw
-// `no-service` here instead of passing unnoticed.
+// First-run setup is a state `agents:create` records with the agent (TASK-989),
+// so `agents:create` is the only write hook registered here: any other write
+// would throw `no-service` instead of passing unnoticed.
 function busWith(opts: {
   user?: { id: string; isAdmin: boolean } | 'reject';
   onCreate?: (input: unknown) => unknown;
@@ -94,21 +93,6 @@ describe('POST /api/agents/bootstrap', () => {
         bootstrap: 'pending',
       },
     ]);
-  });
-
-  it('writes nothing to the workspace', async () => {
-    // The old route seeded `.ax/BOOTSTRAP.md` best-effort after the create, and
-    // swallowed a failure — so only a recording spy can see a write happen.
-    const { bus } = busWith({});
-    const applied: unknown[] = [];
-    bus.registerService('workspace:apply', 'workspace', async (_ctx, input) => {
-      applied.push(input);
-      return { version: 'v1', delta: { before: null, after: 'v1', changes: [] } };
-    });
-    const { res, captured } = fakeRes();
-    await makeAgentBootstrapHandler({ bus, initCtx }).bootstrap(fakeReq({ body: { displayName: 'Ada' } }), res);
-    expect(captured.statusCode).toBe(201);
-    expect(applied).toEqual([]);
   });
 
   it('ignores client-supplied tools/model/visibility/systemPrompt/bootstrap (cannot over-grant)', async () => {

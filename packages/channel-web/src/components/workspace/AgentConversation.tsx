@@ -52,8 +52,6 @@ import type {
 import { signInWithGoogle } from '@/lib/auth';
 import { readAlertVariant } from '@/lib/read-register';
 import { turnErrorText } from '@/lib/turn-error-labels';
-import { asSaveRefusedCode } from '@/lib/save-refused';
-import { SAVE_REFUSED_COPY } from './save-refused-copy';
 import { getDraft, setDraft as saveDraft } from '@/lib/workspace-draft-store';
 import { localTime } from '@/lib/workspace-time';
 import {
@@ -182,13 +180,6 @@ function threadGrowthKey(thread: readonly ThreadMessage[]): string {
         case 'stopped':
           return `${m.kind}:${m.id}:${m.text.length}`;
         /*
-          A save-refused row has no text (TASK-731): it carries a code, and the
-          sentence drawn for it is fixed per code — so the code is what can
-          change the row's height under one id.
-        */
-        case 'save-refused':
-          return `save-refused:${m.id}:${String(m.code)}`;
-        /*
           A replayed failure (TASK-498). The id is NOT enough on its own: the
           display log folds turn-errors per originating turn, so a re-fire
           comes back under the SAME id carrying a different reason — and a
@@ -223,8 +214,9 @@ interface Props {
    *
    * Needed to draw a person's own attachments (TASK-424): `GET /api/files`
    * scopes every download to a conversation, so without this id a committed
-   * file has a path and still no URL. A null id is not an error here — the
-   * chip falls back to naming the file, which is the whole point of the card.
+   * file has an attachment id and still no URL. A null id is not an error
+   * here — the chip falls back to naming the file, which is the whole point of
+   * the card.
    */
   conversationId: string | null;
   decisions: Decision[];
@@ -1052,7 +1044,7 @@ function Message({
 }: {
   m: ThreadMessage;
   agent: Pick<WorkspaceAgent, 'id' | 'name'>;
-  /** See `Props.conversationId` — what turns an attachment path into a URL. */
+  /** See `Props.conversationId` — what turns an attachment id into a URL. */
   conversationId: string | null;
   decisions: Decision[];
   onApprove: (id: string, scope?: 'once' | 'agent-routines') => void;
@@ -1116,16 +1108,19 @@ function Message({
                 place, and a fourth call site inherits it for free.
 
                 This is still the honest place to say what CANNOT reach here.
-                `turnAttachments` runs on `turn.role === 'user'` ONLY, and user
-                turns are persisted host-side by `@ax/chat-orchestrator` from
-                the person's own content blocks — the runner never writes one
-                (see its TASK-66 note). So a model that emits an `attachment`
-                block of its own gets no chip, no `<img>` and no
-                `/api/files` URL out of this renderer: the assistant branch
-                below never asks for attachments at all. Nothing on this path
-                is model- or tool-authored, which is the one reason a label
-                here is safe to draw when a step label built from tool input
-                would not be.
+                These chips come from user turns only, and user turns are
+                persisted host-side by `@ax/chat-orchestrator` from the
+                person's own content blocks — the runner never writes one (see
+                its TASK-66 note), and the chat route refuses an `attachment`
+                block in the request body, so every id here came out of
+                `attachments:commit`. A model that emits an `attachment` block
+                of its own gets no chip, no `<img>` and no `/api/files` URL out
+                of this renderer: `buildThread` never asks an assistant turn
+                for attachments at all (the files a runner publishes draw as
+                download chips on the agent's message, not here). Nothing on
+                this path is model- or tool-authored, which is the one reason a
+                label here is safe to draw when a step label built from tool
+                input would not be.
               */
               return (
               <AttachmentChip
@@ -1134,10 +1129,10 @@ function Message({
                   carry the same file twice, and a key that was just the name
                   would be a duplicate React key across siblings.
                 */
-                key={`${i}-${a.path ?? a.displayName}`}
-                {...(a.path !== null && conversationId !== null
+                key={`${i}-${a.attachmentId ?? a.displayName}`}
+                {...(a.attachmentId !== null && conversationId !== null
                   ? {
-                      path: a.path,
+                      attachmentId: a.attachmentId,
                       conversationId,
                       displayName: a.displayName,
                       mediaType: a.mediaType,
@@ -1147,10 +1142,11 @@ function Message({
                     }
                   : {
                       /*
-                        No path yet (the live frame, before the commit), or no
-                        conversation to scope a download to. We still know WHAT
-                        they sent, so we say so — the alternative is the bug
-                        this card is about, in a smaller window.
+                        No id yet (the live frame, before the re-read brings
+                        back the committed copy), or no conversation to scope a
+                        download to. We still know WHAT they sent, so we say
+                        so — the alternative is the bug this card is about, in
+                        a smaller window.
                       */
                       variant: 'pending' as const,
                       displayName: a.displayName,
@@ -1235,35 +1231,6 @@ function Message({
         <CircleStop size={14} aria-hidden="true" />
         <AlertDescription className="text-[13px] leading-relaxed">
           {m.text}
-        </AlertDescription>
-      </Alert>
-    );
-  }
-
-  if (m.kind === 'save-refused') {
-    /*
-      "The files from this reply weren't saved" (TASK-720), under the reply it
-      is about — at the foot of the thread live, and in place on a reload,
-      where the host interleaves the persisted row by time (TASK-731).
-
-      NOT `stopped`'s register. The person did not ask for this: the reply
-      above likely says it made or changed files, and they are gone. So it is
-      the destructive `Alert`, with its default `role="alert"` — announced
-      when it appears, which is once, after the turn ends. The sentence is one
-      of three fixed lines (`save-refused-copy.ts`), never the model's words.
-
-      The row carries a code, not a sentence (TASK-731), and the thread is JSON
-      off the wire — so the code is checked again here, and one this build
-      does not know reads as the catch-all rather than a blank alert.
-
-      No control on it: there is nothing to retry from here. The sentence says
-      what might help, and the composer beneath is live.
-    */
-    return (
-      <Alert variant="destructive" className="max-w-[600px]">
-        <AlertTriangle size={14} aria-hidden="true" />
-        <AlertDescription className="text-[13px] leading-relaxed">
-          {SAVE_REFUSED_COPY[asSaveRefusedCode(m.code) ?? 'refused']}
         </AlertDescription>
       </Alert>
     );
@@ -1437,7 +1404,7 @@ function Message({
         {conversationId !== null && (m.attachments?.length ?? 0) > 0 && (
           <div className="mt-3 flex flex-wrap gap-2">
             {m.attachments?.map((file, i) => (
-              <GeneratedFileChip key={`${i}-${file.path}`} file={file} conversationId={conversationId} />
+              <GeneratedFileChip key={`${i}-${file.attachmentId ?? file.displayName}`} file={file} conversationId={conversationId} />
             ))}
           </div>
         )}

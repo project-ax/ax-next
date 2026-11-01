@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-import { runRetireRoutineFilesCommand } from './retire-routine-files.js';
 import { createRequire } from 'node:module';
 import * as path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -21,7 +20,6 @@ import { createValidatorSkillPlugin } from '@ax/validator-skill';
 import { createValidatorIdentityPlugin } from '@ax/validator-identity';
 import { createValidatorServicePlugin } from '@ax/validator-service';
 import { createSandboxSubprocessPlugin } from '@ax/sandbox-subprocess';
-import { createWorkspaceGitPlugin } from '@ax/workspace-git';
 import { createWorkspaceLocaldirPlugin } from '@ax/workspace-localdir';
 import { createSessionInmemoryPlugin } from '@ax/session-inmemory';
 import { createIpcServerPlugin } from '@ax/ipc-server';
@@ -150,26 +148,11 @@ export function resolveRunnerBinaries(
 const DEFAULT_SQLITE_PATH = './ax-next-chat.sqlite';
 
 /**
- * Default location for the bare workspace repo `@ax/workspace-git`
- * initializes. Derived from the sqlite path so both pieces of host
- * state live in the same parent directory. The bare repo MUST live
- * outside the agent's working tree (the runner's `git clone` refuses
- * a non-empty target); placing it next to the sqlite file naturally
- * satisfies that as long as the user's `cwd` for chat is a different
- * directory.
- */
-function defaultWorkspaceRepoRoot(sqlitePath: string): string {
-  const dir = path.dirname(path.resolve(sqlitePath));
-  return path.join(dir, 'ax-next-workspace.git');
-}
-
-/**
  * filestore-user-files (design §4) — default root for the per-agent durable
  * user-files mounts in the local CLI profile. Each agent gets its own
  * `<root>/<agentId>` subtree under here (created on session open by
- * @ax/sandbox-subprocess). Placed beside the sqlite file like the workspace
- * repo, so all host-side state lives in one parent dir; override with
- * AX_USERFILES_ROOT_DIR.
+ * @ax/sandbox-subprocess). Placed beside the sqlite file, so all host-side
+ * state lives in one parent dir; override with AX_USERFILES_ROOT_DIR.
  */
 function defaultUserFilesRoot(sqlitePath: string): string {
   const dir = path.dirname(path.resolve(sqlitePath));
@@ -247,18 +230,16 @@ export async function main(opts: MainOptions): Promise<number> {
   // Audit log is part of the canary loop.
   plugins.push(auditLogPlugin());
 
-  // Phase 3: validator-skill subscribes to workspace:pre-apply and
-  // vetoes SKILL.md changes with malformed YAML frontmatter. CLI/k8s
-  // parity — same plugin set so dev runs catch the same SKILL.md
-  // shape failures production would.
+  // validator-skill registers `skills:scan`, the content scan @ax/skills runs
+  // on every proposed skill. CLI/k8s parity — same plugin set so dev runs
+  // quarantine the same skills production would.
   plugins.push(createValidatorSkillPlugin());
 
-  // validator-identity's main job (TASK-989) is `identity:scan`: the pure,
+  // validator-identity registers `identity:scan` (TASK-989): the pure,
   // write-time injection check @ax/agents runs on every identity, soul and
   // Instructions save, failing closed without it — so it must load here too,
-  // or no agent identity can be saved in CLI dev. Its legacy second job is a
-  // workspace:pre-apply gate on the retired .ax/ identity files (the runner
-  // no longer reads them; it goes with the git tier).
+  // or no agent identity can be saved in CLI dev. Both validators subscribe
+  // to nothing since TASK-995 removed the git tier and its pre-apply vetoes.
   plugins.push(createValidatorIdentityPlugin());
 
   // TASK-150: validator-service registers `services:validate` — the neutral
@@ -295,25 +276,14 @@ export async function main(opts: MainOptions): Promise<number> {
     plugins.push(createSandboxSubprocessPlugin());
   }
 
-  // Single-replica workspace plugin — registers workspace:list /
-  // workspace:read / workspace:apply / workspace:apply-bundle /
-  // workspace:export-baseline-bundle. The runner's `workspace.materialize`
-  // IPC delegates to `workspace:export-baseline-bundle` (bundle-aware
-  // path); without this plugin the runner can't materialize and chat
-  // can't start. Default `repoRoot` lives next to the sqlite file so
-  // both host-side state files end up in the same parent dir; override
-  // with AX_WORKSPACE_REPO_ROOT for ops that want it elsewhere.
   const sqlitePath = opts.sqlitePath ?? DEFAULT_SQLITE_PATH;
-  const workspaceRepoRoot =
-    process.env.AX_WORKSPACE_REPO_ROOT ?? defaultWorkspaceRepoRoot(sqlitePath);
-  plugins.push(createWorkspaceGitPlugin({ repoRoot: workspaceRepoRoot }));
 
   // filestore-user-files (design §4) — the CLI/subprocess mount resolver.
   // Registers `sandbox:resolve-mounts`, which @ax/sandbox-subprocess calls
   // (optionalCall) to learn each session's durable per-agent `/files` mount
   // and realizes it by `mkdir -p`ing `<root>/<agentId>`. The local-FS sibling
   // of @ax/workspace-filestore (NFS, k8s preset) — exactly one loads per
-  // deployment. Root lives beside the sqlite/workspace state; override with
+  // deployment. Root lives beside the sqlite state; override with
   // AX_USERFILES_ROOT_DIR.
   const userFilesRoot =
     process.env.AX_USERFILES_ROOT_DIR ?? defaultUserFilesRoot(sqlitePath);
@@ -452,11 +422,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   // the full LLM/sandbox/orchestrator plugin set for what's essentially a
   // "write a row to sqlite" operation — and so we don't race the chat path's
   // DB init.
-  if (argv[0] === 'retire-routine-files') {
-    runRetireRoutineFilesCommand({ argv: argv.slice(1) })
-      .then(code => process.exit(code))
-      .catch(() => { process.stderr.write('maintenance-failed\n'); process.exit(1); });
-  } else if (argv[0] === 'credentials') {
+  if (argv[0] === 'credentials') {
     runCredentialsCommand({
       argv: argv.slice(1),
       stdin: process.stdin,
@@ -485,7 +451,8 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     // Long-running k8s-mode entrypoint. The chart's host pod runs this.
     // Local-dev users running `node packages/cli/dist/main.js serve` will
     // boot the full k8s preset — they need DATABASE_URL + AX_K8S_HOST_IPC_URL
-    // + AX_WORKSPACE_BACKEND set, otherwise we exit 2 with a clear message.
+    // (and the rest of the env `ax serve --help` lists) set, otherwise we
+    // exit 2 with a clear message.
     runServeCommand({ argv: argv.slice(1) })
       .then((code) => process.exit(code))
       .catch((e) => {

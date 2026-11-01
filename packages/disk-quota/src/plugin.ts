@@ -15,57 +15,47 @@ import { createDiskQuotaStore } from './store.js';
 const DEFAULT_SWEEP_INITIAL_DELAY_MS = 60_000;
 const DEFAULT_SWEEP_INTERVAL_MS = 6 * 60 * 60 * 1000;
 
-const SUBSCRIBED = [
-  'workspace:pre-apply',
-  'workspace:applied',
-  'blob:pre-put',
-  'blob:stored',
-  'workspace:deleted',
-  'chat:turn-end',
-  'agents:deleted',
-] as const;
+const SUBSCRIBED = ['blob:pre-put', 'blob:stored', 'chat:turn-end', 'agents:deleted'] as const;
 
 // ---------------------------------------------------------------------------
 // @ax/disk-quota — a per-owner storage limit (TASK-690).
 //
-// Prod keeps every agent workspace (bare git repos) and every uploaded or
-// published file on ONE shared volume, and nothing limited how much of it one
-// person could use. This plugin:
+// Prod keeps every agent's `/files` folder and every uploaded or published file
+// on shared volumes, and nothing else limits how much of them one person can
+// use. This plugin:
 //
-//   - GATES every write where the bytes are written. `workspace:pre-apply`
-//     (veto-capable; fires on the runner's commit AND on every in-process
-//     `workspace:apply`) and `blob:pre-put` (veto-capable; fired by the
-//     `blob:put` facade before any backend is touched) are refused when
-//     `used + incoming > limit`. The gates fail CLOSED: if the check itself
-//     breaks, the write is refused.
+//   - GATES the one write the host can refuse: `blob:pre-put` (veto-capable;
+//     fired by the `blob:put` facade before any backend is touched) is refused
+//     when `used + incoming > limit`. The gate fails CLOSED: if the check
+//     itself breaks, the write is refused.
 //   - NEVER turns a turn away (TASK-993). It does not subscribe to
 //     `chat:start`: a full person can still talk to their agent, and ask it to
 //     tidy up its files, while their uploads and published files stay refused
-//     by the write gates above. A refused end-of-turn save is still reported
-//     under its reply (the veto's `code` rides the commit answer, the runner
-//     reports it on `event.turn-end` as `saveRefused`, TASK-720).
+//     by the gate above.
 //   - METERS what was stored. `blob:stored` charges the writer (one row per
-//     owner and sha, so a re-put is free); `workspace:applied` re-measures
-//     that agent's repo in the background; each assistant `chat:turn-end`
+//     owner and sha, so a re-put is free); each assistant `chat:turn-end`
 //     re-measures that agent's `/files` in the background through the
 //     provider's `sandbox:user-files-usage` (TASK-993; at most two walks at
 //     once, coalesced per agent) and charges it to the AGENT'S owner
 //     (`team:<id>` for a team agent; nobody when the owner cannot be
-//     resolved). Agent files are metered, not write-enforced: they count
-//     toward the limit that the write gates above enforce. (A team agent's
-//     files are charged to `team:<id>`, while the upload gate charges the
-//     person uploading, so a team agent's files never refuse anyone's upload.
-//     A deployment that cannot measure, k8s without the host read mount,
-//     answers `user-files-usage-unavailable` once and is not asked again.)
-//     A periodic sweep backfills every personal agent's workspace and
-//     `/files` and repairs drift.
-//   - RELEASES what a deleted agent held. `workspace:deleted` (the agent's repo
-//     is gone) drops its workspace row; `agents:deleted` tombstones the agent
+//     resolved). Agent files are metered, not write-enforced: the agent writes
+//     its `/files` directly, so they count toward the limit that the gate
+//     above enforces. (A team agent's files are charged to `team:<id>`, while
+//     the upload gate charges the person uploading, so a team agent's files
+//     never refuse anyone's upload. A deployment that cannot measure, k8s
+//     without the host read mount, answers `user-files-usage-unavailable` once
+//     and is not asked again.) A periodic sweep backfills every personal
+//     agent's `/files` and repairs drift.
+//   - RELEASES what a deleted agent held. `agents:deleted` tombstones the agent
 //     in this process (a late turn end or sweep measures nothing), waits out a
 //     measurement in flight, and drops its agent-files row. Known gap (as
-//     TASK-719 accepted for workspace rows): if that delete fails, or the
-//     host restarts mid-release, the row stays and nothing repairs it; the
-//     error log `disk_quota_release_failed` is the only trace.
+//     TASK-719 accepted before it): if that delete fails, or the host restarts
+//     mid-release, the row stays and nothing repairs it; the error log
+//     `disk_quota_release_failed` is the only trace.
+//   - Drops the git tier's leftovers. Until TASK-995 it also gated, metered
+//     and released each agent's git workspace. That tier is gone, so every
+//     boot deletes the `workspace` rows an older release left (migrations.ts):
+//     nothing would ever re-measure or release them.
 //   - RELEASES blob charges nobody holds any more (design D6,
 //     docs/plans/2026-10-03-blob-gc-design.md). The same periodic sweep runs a
 //     blob pass: `blob:<sha>` rows older than the grace window (`graceMs` in
@@ -78,7 +68,7 @@ const SUBSCRIBED = [
 //     pass never leaves bytes that still exist charged to nobody. It FAILS
 //     CLOSED against a persisted roster of holders (a holder that failed,
 //     threw or is no longer loaded aborts the pass with nothing released) and
-//     needs none of the workspace sweep's optional hooks.
+//     needs none of the agent-files sweep's optional hooks.
 //     `POST /admin/storage/ref-holders/forget` is the only way the roster
 //     shrinks. This plugin only FIRES `blob:collect-refs`, so it is not in
 //     `subscribes`; firing needs no manifest entry.
@@ -101,7 +91,7 @@ export interface DiskQuotaPluginConfig {
 export interface DiskQuotaPlugin extends Plugin {
   /** Resolves once background measurements and any running sweep have settled. */
   drain(): Promise<void>;
-  /** Run the sweep (workspaces, agent files, then the blob pass) now. Resolves all zeros before init. */
+  /** Run the sweep (agent files, then the blob pass) now. Resolves all zeros before init. */
   reconcile(): Promise<ReconcileResult>;
 }
 
@@ -111,9 +101,9 @@ function sizeField(payload: unknown, key: string): number {
 }
 
 /**
- * The `agentId` of a payload as sent (`workspace:deleted`, `agents:deleted`),
- * else undefined. The value is untrusted, so it comes back as `unknown` for
- * the service to validate.
+ * The `agentId` of a payload as sent (`agents:deleted`), else undefined. The
+ * value is untrusted, so it comes back as `unknown` for the service to
+ * validate.
  */
 function agentIdField(payload: unknown): unknown {
   if (payload === null || typeof payload !== 'object') return undefined;
@@ -193,19 +183,14 @@ export function createDiskQuotaPlugin(config: DiskQuotaPluginConfig = {}): DiskQ
       ],
       optionalCalls: [
         {
-          hook: 'workspace:usage',
-          degradation:
-            "Workspace bytes are not measured, so only a person's uploaded and published files count toward their storage limit.",
-        },
-        {
           hook: 'agents:resolve',
           degradation:
-            "A team agent's workspace is charged to the person who made the change instead of to the team.",
+            "Agent files are not measured after a turn, because nothing says who owns the agent; the periodic sweep still measures personal agents' files, and a team agent's files are not counted at all.",
         },
         {
           hook: 'agents:list-personal-owners',
           degradation:
-            'The periodic sweep is skipped, so workspaces that existed before this plugin shipped (or that drifted) are only counted after their next write.',
+            "The periodic sweep is skipped, so an agent's files are only counted after its next turn, and a figure that drifted is not repaired.",
         },
         {
           hook: 'auth:get-user',
@@ -219,7 +204,7 @@ export function createDiskQuotaPlugin(config: DiskQuotaPluginConfig = {}): DiskQ
         {
           hook: 'sandbox:user-files-usage',
           degradation:
-            "Files in each agent's home folder are not measured, so they don't count toward their owner's storage limit; uploads, published files and git workspaces still do.",
+            "Files in each agent's home folder are not measured, so they don't count toward their owner's storage limit; uploads and published files still do.",
         },
       ],
       subscribes: [...SUBSCRIBED],
@@ -260,17 +245,13 @@ export function createDiskQuotaPlugin(config: DiskQuotaPluginConfig = {}): DiskQ
         );
 
         // Subscribe LAST: everything above can fail, and a half-initialised
-        // plugin must not leave gates behind.
+        // plugin must not leave a gate behind.
         subscribedBus = bus;
-        // The reasons are PROSE and are shown verbatim (to the agent on the
-        // runner-commit path, to the person on the upload paths). A refusal
-        // because storage is full also carries `code: 'storage-full'`, for a
-        // caller that has to tell that apart without reading the sentence.
-        bus.subscribe<unknown>('workspace:pre-apply', PLUGIN_NAME, async (ctx, payload) => {
-          const decision = await svc.admitWorkspaceWrite(ctx, sizeField(payload, 'sizeBytes'));
-          if (!decision.ok) return vetoFor(decision);
-          return undefined;
-        });
+        // The reason is PROSE and is shown verbatim to the person uploading. A
+        // refusal because storage is full also carries `code: 'storage-full'`,
+        // for a caller that has to tell that apart without reading the
+        // sentence (an agent's own refused publish gets @ax/ipc-core's
+        // agent-addressed sentence that way).
         bus.subscribe<unknown>('blob:pre-put', PLUGIN_NAME, async (ctx, payload) => {
           const decision = await svc.admitBlobWrite(ctx, sizeField(payload, 'size'));
           if (!decision.ok) return vetoFor(decision);
@@ -279,20 +260,6 @@ export function createDiskQuotaPlugin(config: DiskQuotaPluginConfig = {}): DiskQ
         // Observers: never awaited past the cheap ledger write, never throw.
         bus.subscribe<unknown>('blob:stored', PLUGIN_NAME, async (ctx, payload) => {
           await svc.recordBlobStored(ctx, payload);
-          return undefined;
-        });
-        bus.subscribe<unknown>('workspace:applied', PLUGIN_NAME, async (ctx) => {
-          // Re-measuring walks a repo directory, so it happens off the
-          // write's path. The payload is a delta and is deliberately ignored.
-          svc.scheduleWorkspaceMeasure(ctx);
-          return undefined;
-        });
-        // The agent's repo is gone (the deleter fires this after removing it),
-        // so its bytes are free: drop the row rather than charge the owner for a
-        // workspace that no longer exists. The payload is untrusted; the service
-        // validates it, never throws, and logs its own failures.
-        bus.subscribe<unknown>('workspace:deleted', PLUGIN_NAME, async (_ctx, payload) => {
-          await svc.releaseWorkspace(agentIdField(payload));
           return undefined;
         });
         // A turn just ended: re-measure that agent's `/files` (the agent may

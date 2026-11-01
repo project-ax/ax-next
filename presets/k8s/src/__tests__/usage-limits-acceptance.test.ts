@@ -99,7 +99,6 @@ const PLUGINS_TO_DROP = new Set<string>([
   '@ax/connectors',
   '@ax/mcp-oauth',
   '@ax/agents',
-  '@ax/workspace-git',
   '@ax/ipc-http',
   '@ax/mcp-client',
   '@ax/onboarding',
@@ -189,7 +188,6 @@ function createPermissiveAgentsStubPlugin(): Plugin {
             mcpConfigIds: [] as string[],
             runner: 'claude-sdk',
             model: 'anthropic/claude-sonnet-4-6',
-            workspaceRef: null,
             allowedHosts: [] as string[],
             requiredCredentials: {} as Record<string, { ref: string; kind: string }>,
             createdAt: new Date(0),
@@ -229,16 +227,6 @@ function createControlPlaneStubPlugin(mountedPaths: string[]): Plugin {
           message: 'no http plane in this canary',
         });
       });
-    },
-  };
-}
-
-function createDispatcherDepsStubPlugin(): Plugin {
-  const name = '@ax/preset-k8s/test/usage-dispatcher-deps-stub';
-  return {
-    manifest: { name, version: '0.0.0', registers: ['workspace:read'], calls: [], subscribes: [] },
-    init({ bus }) {
-      bus.registerService('workspace:read', name, async () => ({ found: false }));
     },
   };
 }
@@ -347,7 +335,6 @@ describe('@ax/preset-k8s usage limits canary (stub runner + postgres)', () => {
       database: { connectionString },
       eventbus: { connectionString: 'postgres://stub:5432/stub' },
       session: { connectionString: 'postgres://stub:5432/stub' },
-      workspace: { backend: 'local', repoRoot: path.join(tmp, 'repo-stub') },
       blob: { backend: 'fs', root: path.join(tmp, 'blobs') },
       sandbox: { namespace: 'ax-next', image: 'ax-next/agent:stub' },
       ipc: { hostIpcUrl: 'http://ax-next-host.ax-next.svc.cluster.local:80' },
@@ -383,7 +370,6 @@ describe('@ax/preset-k8s usage limits canary (stub runner + postgres)', () => {
       // subprocess sandbox realizes this local-directory resolver, not nfs.
       createWorkspaceLocaldirPlugin({ root: path.join(tmp, 'user-files') }),
       createIpcServerPlugin(),
-      createDispatcherDepsStubPlugin(),
       createScriptedProxyPlugin(proxyState),
       createPermissiveAgentsStubPlugin(),
       createControlPlaneStubPlugin(mountedPaths),
