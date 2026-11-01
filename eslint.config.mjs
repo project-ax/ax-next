@@ -50,15 +50,16 @@
 //                           runtime behavior beyond parsing.
 //   @ax/user-files-read   — the ONE confined reader (a per-component, no-follow
 //                           walk) for an agent's durable user-files subtree.
-//                           Shared by BOTH realizations of
-//                           `sandbox:read-user-files`
-//                           (@ax/sandbox-subprocess's shared-FS read and
-//                           @ax/sandbox-k8s's host-mounted read). No manifest,
-//                           no hooks, no @ax/core dep — it takes a root the
-//                           caller has already ACL'd and a relative path, and
-//                           answers with the hook's output shape. It is a
-//                           library rather than a copy because path
-//                           confinement is the load-bearing cross-tenant
+//                           Shared by BOTH realizations of BOTH read hooks,
+//                           `sandbox:read-user-files` (previews and listings)
+//                           and `sandbox:read-user-file-range` (downloads, one
+//                           byte range per call): @ax/sandbox-subprocess's
+//                           shared-FS read and @ax/sandbox-k8s's host-mounted
+//                           read. No manifest, no hooks, no @ax/core dep — it
+//                           takes a root the caller has already ACL'd and a
+//                           relative path, and answers with the hooks' output
+//                           shapes. It is a library rather than a copy because
+//                           path confinement is the load-bearing cross-tenant
 //                           property here, and a third copy of it would mean a
 //                           third place a fix has to land.
 //

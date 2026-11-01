@@ -3,6 +3,8 @@ import type { Plugin } from '@ax/core';
 import { createTestHarness } from '@ax/test-harness';
 import { createSessionInmemoryPlugin } from '@ax/session-inmemory';
 import type {
+  ReadUserFileRangeInput,
+  ReadUserFileRangeOutput,
   ReadUserFilesInput,
   ReadUserFilesOutput,
   ResolveMountsInput,
@@ -190,6 +192,56 @@ describe('createSandboxK8sPlugin — §11 host-read + cleanup wiring', () => {
         { agentId: 'agt_Meter' },
       ),
     ).rejects.toMatchObject({ code: 'user-files-usage-unavailable' });
+    expect(api.creates).toHaveLength(0);
+    await h.close();
+  });
+
+  it('registers sandbox:read-user-file-range (TASK-1014)', async () => {
+    const api = makeMockK8sApi();
+    const plugin = createSandboxK8sPlugin({
+      api,
+      namespace: 'ax-test',
+      hostIpcUrl: TEST_HOST_IPC_URL,
+      orphanSweepIntervalMs: 0,
+    });
+    // The manifest is what bootstrap reads to satisfy channel-web's download
+    // route; the bus is what answers it. One without the other is half-wired.
+    expect(plugin.manifest.registers).toContain('sandbox:read-user-file-range');
+    const h = await makeWiredHarness(api);
+    expect(h.bus.hasService('sandbox:read-user-file-range')).toBe(true);
+    await h.close();
+  });
+
+  it('sandbox:read-user-file-range without a host read root is user-files-download-unavailable, and creates NO pod', async () => {
+    // A download reads a file one 1 MiB range per call. A pod per range would
+    // be absurd, and the pod reader has the TASK-915 check-then-read gap, so
+    // there is no pod fallback: with the default chart values (no hostReadPath)
+    // downloads are refused, loudly, and previews keep their pod path.
+    const api = makeMockK8sApi();
+    const h = await makeWiredHarness(api);
+    await expect(
+      h.bus.call<ReadUserFileRangeInput, ReadUserFileRangeOutput>(
+        'sandbox:read-user-file-range',
+        h.ctx(),
+        {
+          owner: {
+            userId: 'user-1',
+            agentId: 'agt_Downloader',
+            agentConfig: {
+              displayName: '',
+              systemPromptAugment: '',
+              allowedTools: [],
+              mcpConfigIds: [],
+              model: '',
+              runner: 'claude-sdk',
+            },
+          },
+          relPath: 'report.bin',
+          offset: 0,
+          length: 1024 * 1024,
+        },
+      ),
+    ).rejects.toMatchObject({ code: 'user-files-download-unavailable' });
     expect(api.creates).toHaveLength(0);
     await h.close();
   });
