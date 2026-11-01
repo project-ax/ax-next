@@ -74,7 +74,9 @@ async function startFakeServer(): Promise<FakeServer> {
       }
       calls.push({ method: req.method ?? '', url: req.url ?? '', body });
       const handler = handlers.get(action);
-      if (handler !== undefined) {
+      // The action comes from the request URL: call only a function this
+      // test registered for it (CodeQL js/unvalidated-dynamic-method-call).
+      if (typeof handler === 'function') {
         handler(body, res);
         return;
       }
