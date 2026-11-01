@@ -5,7 +5,8 @@
  * teammate are visible to another, and the partition is `agentId` ALONE
  * (TASK-257; the git-backed workspace tier it was written for was removed in
  * TASK-995, and the Files tab now reads the agent's home through
- * `sandbox:read-user-files`).
+ * `sandbox:read-user-files`, and downloads it through
+ * `sandbox:read-user-file-range` since TASK-1014).
  *
  * WHAT THIS FILE DOES AND DOES NOT PROVE. It tests the ROUTE PLUMBING and the
  * ACL, not the partition derivation: the fake reader below stands in for the
@@ -20,8 +21,9 @@
  *   4. The half that matters most. `agents:resolve` is the ONLY gate between
  *     "authorized teammate" and "any caller who knows the agentId". It must
  *     run, and reject, BEFORE any `sandbox:read-user-files` /
- *     `agents:identity:*` hook. A caller `agents:resolve` rejects (`mallory`)
- *     gets 404 on every route below AND the hooks' spies record zero calls.
+ *     `sandbox:read-user-file-range` / `agents:identity:*` hook. A caller
+ *     `agents:resolve` rejects (`mallory`) gets 404 on every route below AND
+ *     the hooks' spies record zero calls.
  */
 import { beforeEach, describe, expect, it } from 'vitest';
 import { HookBus, PluginError, makeAgentContext, type AgentContext } from '@ax/core';
@@ -29,6 +31,7 @@ import {
   makeWorkspaceHandlers,
   type AgentDetail,
   type AgentUserFilesResponse,
+  type DownloadRouteResponse,
 } from '../../server/routes-workspace.js';
 import type { RouteRequest, RouteResponse } from '../../server/routes-chat.js';
 import { registerIdentityStoreFake, type IdentityStoreFake } from './identity-store-fake.js';
@@ -72,6 +75,46 @@ function mkRes(): { res: RouteResponse; captured: CapturedRes } {
     },
     end() {
       /* unused */
+    },
+  };
+  return { res, captured };
+}
+
+/**
+ * The download route's adapter: the JSON one plus `header` and `bodyStream`.
+ * `bodyStream` drains the source the way `@ax/http-server` does, so a 200
+ * here is a body the route really produced, every range of it.
+ */
+function mkDownloadRes(): {
+  res: DownloadRouteResponse;
+  captured: CapturedRes & { bytes: Buffer | null };
+} {
+  const captured: CapturedRes & { bytes: Buffer | null } = {
+    statusCode: 0,
+    body: undefined,
+    bytes: null,
+  };
+  const res: DownloadRouteResponse = {
+    status(n: number) {
+      captured.statusCode = n;
+      return res;
+    },
+    header() {
+      return res;
+    },
+    json(v: unknown) {
+      captured.body = v;
+    },
+    text() {
+      /* unused */
+    },
+    end() {
+      /* unused */
+    },
+    async bodyStream(source) {
+      const chunks: Uint8Array[] = [];
+      for await (const chunk of source) chunks.push(chunk);
+      captured.bytes = Buffer.concat(chunks);
     },
   };
   return { res, captured };
@@ -162,6 +205,37 @@ describe('team-agent files and Instructions are shared per agent (TASK-257)', ()
   }
 
   /**
+   * The download's reader: one byte range at a time, partitioned on the
+   * OWNER's `agentId` alone exactly like `registerReader`, and recording into
+   * the same `readCalls`.
+   */
+  function registerRangeReader(): void {
+    bus.registerService('sandbox:read-user-file-range', 'sandbox', async (ctx, i: unknown) => {
+      const { owner, relPath, offset, length } = i as {
+        owner: { agentId: string };
+        relPath: string;
+        offset: number;
+        length: number;
+      };
+      readCalls.push({
+        agentId: ctx.agentId,
+        userId: ctx.userId ?? '',
+        ownerAgentId: owner.agentId,
+        relPath,
+      });
+      const bytes = filesByAgent.get(owner.agentId)?.get(relPath);
+      if (bytes === undefined) return { kind: 'absent' };
+      const n = Math.min(length, Math.max(0, bytes.byteLength - offset));
+      return {
+        kind: 'file',
+        size: bytes.byteLength,
+        version: 'v1',
+        bytes: bytes.subarray(offset, offset + n),
+      };
+    });
+  }
+
+  /**
    * The Instructions' store, with the real identity hooks' own access check
    * mirrored: a member of the owning team may read and write, nobody else.
    * (`resolveMemoryAccess` answered the same for the old rules file.)
@@ -246,6 +320,32 @@ describe('team-agent files and Instructions are shared per agent (TASK-257)', ()
       body: '# Q3 summary\n\nRevenue is up.',
       clipped: null,
     } satisfies AgentUserFilesResponse);
+  });
+
+  it('2b. GET .../download/user-files/*: bob downloads the bytes alice wrote', async () => {
+    registerAuth({ id: 'bob', isAdmin: false });
+    registerAgents();
+    registerRangeReader();
+
+    const { res, captured } = mkDownloadRes();
+    await makeWorkspaceHandlers({ bus, initCtx }).agentUserFileDownload(
+      mkReq({ agentId: TEAM_AGENT_ID, '*': 'q3-summary.md' }),
+      res,
+    );
+
+    expect(captured.statusCode).toBe(200);
+    expect(captured.bytes?.toString('utf-8')).toBe('# Q3 summary\n\nRevenue is up.');
+    // Every range, the final validating one included, lands on the team
+    // agent's own owner and ctx, as bob.
+    expect(readCalls.length).toBeGreaterThan(0);
+    for (const call of readCalls) {
+      expect(call).toMatchObject({
+        agentId: TEAM_AGENT_ID,
+        userId: 'bob',
+        ownerAgentId: TEAM_AGENT_ID,
+        relPath: 'q3-summary.md',
+      });
+    }
   });
 
   // ---------------------------------------------------------------------
@@ -336,18 +436,20 @@ describe('team-agent files and Instructions are shared per agent (TASK-257)', ()
       expect(readCalls).toHaveLength(0);
     });
 
-    it('404s a download without calling sandbox:read-user-files', async () => {
+    it('404s a download without calling sandbox:read-user-file-range (or the preview read)', async () => {
       registerAuth({ id: 'mallory', isAdmin: false });
       registerAgents();
       registerReader();
+      registerRangeReader();
 
-      const { res, captured } = mkRes();
+      const { res, captured } = mkDownloadRes();
       await makeWorkspaceHandlers({ bus, initCtx }).agentUserFileDownload(
         mkReq({ agentId: TEAM_AGENT_ID, '*': 'q3-summary.md' }),
-        res as never,
+        res,
       );
 
       expect(captured.statusCode).toBe(404);
+      expect(captured.bytes).toBeNull();
       expect(readCalls).toHaveLength(0);
     });
 

@@ -328,7 +328,12 @@ import {
 } from './grant-declines.js';
 import type { PermissionRequest } from './types.js';
 import { listTeamIdsForUser, type RouteRequest, type RouteResponse } from './routes-chat.js';
-import { sanitizeContentDispositionFilename } from './content-disposition.js';
+// TASK-1014 — a download streams the whole file, a range at a time, through
+// this plugin's own module (shared with TASK-1012's chat file chips).
+import {
+  sendUserFileDownload,
+  type StreamingDownloadResponse,
+} from './user-file-download.js';
 import { workspaceFilePath } from './safe-path.js';
 import { attachMemoryUsed, parseRecallReceiptsReply } from './memory-used.js';
 // Type-only: the `sandbox:read-user-files` hook-bus contract. The agent's
@@ -2877,63 +2882,15 @@ export function decodeFileBody(bytes: Uint8Array): {
  * `RouteResponse` (routes-chat.ts) is deliberately tiny — status, json, text,
  * end — because that is all a JSON surface needs, and every test in this
  * package builds one by hand. Widening it would make every one of those fakes
- * a compile error for the benefit of two routes. So the two routes declare the
- * extra shape they use, and it is still the same duck-typed mirror of
- * `@ax/http-server`'s `HttpResponse` (invariant I2 — no cross-plugin import).
+ * a compile error for the benefit of one route. So the download route declares
+ * the extra shape it uses (`header` and the streamed `bodyStream`, from
+ * `server/user-file-download.ts`), and it is still the same duck-typed mirror
+ * of `@ax/http-server`'s `HttpResponse` (invariant I2 — no cross-plugin
+ * import).
  */
-export interface DownloadRouteResponse extends RouteResponse {
+export interface DownloadRouteResponse extends RouteResponse, StreamingDownloadResponse {
   status(n: number): DownloadRouteResponse;
   header(name: string, value: string): DownloadRouteResponse;
-  /** Raw bytes. Single-shot, like every other terminator on this adapter. */
-  body(buf: Buffer, contentType?: string): void;
-}
-
-/**
- * THE content type of every download this surface serves.
- *
- * Not derived from the bytes, not read off the file's extension, and — most of
- * all — never taken from anything the caller sent. Every one of those is a way
- * for the file's own content to decide how a browser treats it, and the file
- * was written by an agent. `text/html` on an agent-authored file is stored XSS
- * on our origin; `image/svg+xml` is the same thing wearing a picture.
- *
- * `application/octet-stream` plus `nosniff` plus `Content-Disposition:
- * attachment` is the boring combination that means "save this, do not run it".
- * The cost is that a PNG will not preview in a tab. That is the intended
- * trade: this is a download affordance, and previewing is what the Files tab
- * already does, in a renderer we control.
- */
-const DOWNLOAD_CONTENT_TYPE = 'application/octet-stream';
-
-/**
- * One file's bytes, as a download, with the headers that keep it one.
- *
- * `path` is the RAW file key. Only its last segment reaches the header,
- * and only after `sanitizeContentDispositionFilename` — the name is
- * agent-authored, and `Content-Disposition` is a header a newline can end.
- */
-function sendFileDownload(
-  res: DownloadRouteResponse,
-  path: string,
-  bytes: Uint8Array,
-): void {
-  // A view over the same memory, not a copy: these files are already as big as
-  // this process is willing to hold, and doubling that to add a header would
-  // be a strange way to spend a megabyte.
-  const buf = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  const filename = sanitizeContentDispositionFilename(basenameOf(path));
-  res.status(200);
-  // Stated, not defaulted. `body()` would fall back to the same value, but a
-  // route that serves somebody else's bytes should say what it is serving them
-  // as rather than inherit it — and the day the framework's default changes,
-  // this one does not.
-  res.header('content-type', DOWNLOAD_CONTENT_TYPE);
-  res.header('content-disposition', `attachment; filename="${filename}"`);
-  res.header('x-content-type-options', 'nosniff');
-  // No `content-length` here: `@ax/http-server` pins it from the buffer it is
-  // about to write. A second copy computed here could only ever agree with it
-  // or be wrong, and the framework's would win either way (invariant 4).
-  res.body(buf);
 }
 
 /**
@@ -7844,25 +7801,26 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
      * one file in the agent's home.
      *
      * A sibling of the read, not a mode of it: bytes and a JSON envelope are
-     * different answers. It differs from the read in two ways:
+     * different answers. It differs from the read in three ways:
      *
      *   - It refuses a DIRECTORY. The read route answers a listing there,
      *     because a caller walking a tree does not know which it clicked. A
      *     download does know — it is only ever offered on a file — so a folder
      *     arriving here is a malformed request, not a listing request.
-     *   - It refuses a TRUNCATED file. `sandbox:read-user-files` bounds one
-     *     read (an unbounded read of an NFS file into the host process is a
-     *     denial of service against the host) and answers with a PREFIX. A
-     *     prefix is fine for a preview that SAYS it is showing the beginning.
-     *     It is not fine here: a truncated PDF is a corrupt PDF that looks
-     *     exactly like a whole one, and the person would find out when they
-     *     opened it, not when they clicked. So we say no, out loud, and say
-     *     why — which is the honest half of not being able to serve it.
+     *   - It reads the WHOLE file (TASK-1014), never the preview's capped
+     *     prefix. A truncated PDF is a corrupt PDF that looks exactly like a
+     *     whole one, and the person would find out when they opened it, not
+     *     when they clicked. So the bytes come through
+     *     `sandbox:read-user-file-range`, a megabyte at a time, streamed with
+     *     backpressure, and every range is checked to be the same, unchanged
+     *     file. A file that changes partway is torn down mid-body rather than
+     *     handed over as complete (`server/user-file-download.ts`).
+     *   - It has a ceiling. A file over `USER_FILE_DOWNLOAD_MAX_BYTES` is a
+     *     413 before any byte, said out loud, rather than a long download the
+     *     tab cannot hold.
      *
-     * `truncated !== false` rather than `=== true`: a realization that has not
-     * been taught the field yet answers `undefined`, and "we do not know
-     * whether this is the whole file" is not a promise we can pass on to
-     * somebody as a file.
+     * A read that fails is a 503, whatever it threw: a file the host could
+     * not read is not a file that is missing (404), and not a crash (500).
      */
     async agentUserFileDownload(
       req: RouteRequest,
@@ -7889,37 +7847,17 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
         return;
       }
 
-      if (!bus.hasService('sandbox:read-user-files')) {
-        res.status(503).json({ error: 'user-files-unavailable' });
-        return;
-      }
-
-      const out = await bus.call<ReadUserFilesInput, ReadUserFilesOutput>(
-        'sandbox:read-user-files',
-        agentWorkspaceCtx(agentId, userId),
-        { owner: userFilesOwner(agent, userId), relPath },
-      );
-
-      if (out.kind === 'unavailable') {
-        // Same split as the listing route: no file area in this deployment
-        // is a 503, not a 404. Path-independent, so it is not an oracle.
-        res.status(503).json({ error: 'user-files-unavailable' });
-        return;
-      }
-      if (out.kind === 'absent') {
-        res.status(404).json({ error: 'file-not-found' });
-        return;
-      }
-      if (out.kind === 'dir') {
-        res.status(400).json({ error: 'not-a-file' });
-        return;
-      }
-      if (out.truncated !== false) {
-        res.status(413).json({ error: 'file-too-large' });
-        return;
-      }
-
-      sendFileDownload(res, relPath, out.contents);
+      // Read on the AGENT's ctx and owner: the provider joins `owner.agentId`
+      // onto the export root, so the plugin's own initCtx would land in the
+      // wrong subtree. Only the path's last segment names the saved file.
+      await sendUserFileDownload({
+        bus,
+        ctx: agentWorkspaceCtx(agentId, userId),
+        owner: userFilesOwner(agent, userId),
+        relPath,
+        downloadName: basenameOf(relPath),
+        res,
+      });
     },
 
     /**

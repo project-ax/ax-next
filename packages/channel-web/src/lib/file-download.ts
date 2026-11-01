@@ -13,11 +13,15 @@
  * what went wrong in words. It buys a failure the reader can act on.
  *
  * WHAT IT COSTS, honestly: the whole file lands in the tab's memory before it
- * reaches the disk. The host caps a read at a megabyte, so that is bounded. The
- * streaming alternative is `window.open`, and it was rejected above for a
- * reason that has not changed. If a file ever arrives big enough for this to
- * matter, the fix is a route that streams and a client that
- * reads it as a stream, not a quiet return to showing people JSON.
+ * reaches the disk. The route streams it (a range at a time, with
+ * backpressure) and stops at `USER_FILE_DOWNLOAD_MAX_BYTES`
+ * (`server/user-file-download.ts`), so that is bounded, but the bound is
+ * large: the tab still holds the whole file as a Blob before saving it.
+ * Streaming it to disk on this side too is the follow-up if large files make
+ * that matter. The one alternative that streams today is `window.open`, and it
+ * was rejected above for a reason that has not changed; the fix is a client
+ * that reads the response as a stream, not a quiet return to showing people
+ * JSON.
  *
  * THE FILENAME COMES FROM THE SERVER, not from the row that was clicked. The
  * route already sanitizes it for `Content-Disposition` (a filename is
@@ -58,10 +62,14 @@ export function saveBlob(blob: Blob, filename: string): void {
  *
  * Four outcomes, four sentences, and none of them is "something went wrong".
  * The one worth reading twice is the size case: it is not an error, it is a
- * limit we are being honest about. We can only reach the first megabyte of a
- * file, and a megabyte of a PDF is not a small PDF — it is
- * a broken one that opens to an error message. Handing that over as the file
- * they asked for would be worse than refusing, so we refuse and say why.
+ * limit we are being honest about. The file is over our download limit, and
+ * we do not send part of it: part of a PDF is not a small PDF, it is a broken
+ * one that opens to an error message. So we refuse, say why, and say what
+ * would work instead.
+ *
+ * A download that breaks partway (the file changed under it, or the
+ * connection dropped) never arrives as a file at all: the browser sees the
+ * body come up short and the fetch fails, which lands on the last sentence.
  *
  * A 401 never reaches here: `httpFetch` latches it and the whole app moves to
  * the signed-out screen before any caller sees it.
@@ -70,21 +78,26 @@ export function downloadFailureMessage(e: unknown, agentName: string): string {
   const status = e instanceof HttpError ? e.status : 0;
   if (status === 413) {
     /*
-      NO NUMBER IN THIS SENTENCE, on purpose. It read "we can only reach the
-      first megabyte", which was true and is not ours to say: the cap lives in
-      the sandbox provider, two packages away and deliberately not importable
-      from here, so the figure could change without a single test noticing that
-      this sentence had started to lie. A message that quotes a limit it cannot
-      verify is a slow-motion inaccuracy, and the actionable half — it is too
-      big, ask for a smaller one — does not need the figure.
+      NO NUMBER IN THIS SENTENCE, on purpose. The limit lives on the server
+      (`USER_FILE_DOWNLOAD_MAX_BYTES`), so a figure here would be a second copy
+      of it that could change without a single test noticing this sentence had
+      started to lie. The actionable half — it is too big, ask for a smaller
+      one — does not need the figure.
     */
-    return `This file is too big for us to pass along in one piece — we can only reach the beginning of it, and part of a file is worse than none. Ask ${agentName} for a smaller copy, or to split it up.`;
+    return `This file is too big for us to pass along in one piece. Ask ${agentName} for a smaller copy, or to split it up.`;
   }
   if (status === 404) {
     return 'We could not find that file to send. It may have been rewritten or deleted since this list was drawn.';
   }
   if (status === 503) {
-    return `This server is not set up to hand ${agentName}’s files over, so there is nothing for us to send.`;
+    /*
+      A 503 here is a read the storage would not answer: it failed, it timed
+      out, or this deployment cannot hand files over right now. "This server
+      keeps no files" is a 503 too, but it cannot be reached from a listed
+      file — the tab offers a download only on a file it listed, and the
+      listing 503s first. So this is the transient sentence.
+    */
+    return `We couldn’t get to ${agentName}’s files just now. Nothing was lost — try again in a moment.`;
   }
   return 'We could not download that just now. Nothing was lost — the file is still there, it is the download that failed.';
 }

@@ -738,10 +738,17 @@ export function createChannelWebServerPlugin(
             'Today shows no changes agents made to themselves (GET /api/workspace/self-changes answers an empty list)',
         },
         {
-          // The Files tab's user-files tier and its downloads.
+          // The Files tab's user-files listing and previews.
           hook: 'sandbox:read-user-files',
           degradation:
-            'the user-files listing and its downloads answer 503 user-files-unavailable (never an empty listing)',
+            'the user-files listing answers 503 user-files-unavailable (never an empty listing)',
+        },
+        {
+          // TASK-1014 — the Files tab's downloads: the whole file, one range
+          // at a time (`server/user-file-download.ts`). Separate from the
+          // preview read above, so either can be missing without the other.
+          hook: 'sandbox:read-user-file-range',
+          degradation: 'Files tab downloads answer 503 user-files-unavailable (previews still work)',
         },
       ],
       subscribes: [
