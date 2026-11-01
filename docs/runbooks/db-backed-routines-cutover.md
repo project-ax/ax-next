@@ -1,5 +1,7 @@
 # DB-backed routines cutover
 
+> **Retired (TASK-995).** This was a one-time cutover for the old git-backed workspace stores. The git workspace tier, the git server and the `ax retire-routine-files` command are gone, so there is nothing left to run. Kept as a record of how the cutover went. Everything below is past tense in spirit.
+
 This release deletes authored routine definitions and their current workspace files. It does **not** import them. Defaults, overrides, default history (including orphan default history), and existing default conversation identities survive. Identity, goals, normal workspace files, and `.ax/skill-reflection/last-run.json` are outside the deletion scope.
 
 Schedule downtime. Keep an explicit pre-cutover backup of the database, credential store, and **all** workspace-store volumes together. Authored-data deletion is irreversible without that backup. An older image alone is not a rollback: restore the old schema, data, credentials, and workspaces together before starting an old host. Never start a sync-capable old host after the migration.

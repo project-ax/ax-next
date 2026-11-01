@@ -30,14 +30,6 @@ image:
   pullPolicy: IfNotPresent
 imagePullSecrets: []
 
-# ─── Storage-tier image (Phase 1 of workspace redesign) ───
-# Separate image from host/runner because the storage tier ships with the
-# git binary; host/runner stay slim. Built from container/git-server/Dockerfile.
-gitServerImage:
-  repository: ax-next/git-server
-  tag: ""             # empty → Chart.appVersion
-  pullPolicy: IfNotPresent
-
 # ─── Replicas ─────────────────────────────────────────────────────
 # Single replica ONLY, and the chart enforces it: `helm template` FAILS for
 # replicas > 1 (see ax-next.validateHostReplicas in _helpers.tpl). The web
@@ -126,78 +118,30 @@ host:
   args: ["node", "/opt/ax-next/host/dist/main.js", "serve"]
   env: []
 
-# ─── Workspace persistence ───────────────────────────────────────
-# `local` (default): the host's `@ax/workspace-git` writes directly to
-# the PVC mounted inside the host pod at workspace.mountPath. Single-
-# replica only — two hosts mounting the same RWO PVC would race for the
-# same bare repo.
-# `git-protocol`: the host's `@ax/workspace-git-server` plugin speaks
-# smart-HTTP + REST to the dedicated git-server StatefulSet via its
-# ClusterIP Service. Multi-replica capable; sharding is currently deferred
-# (replicas: 1) but the storage tier is a StatefulSet so future scale-out
-# doesn't change the chart shape. When `git-protocol`, the operator MUST
-# also set `gitServer.enabled=true` (the chart fails fast at template time
-# if missing).
+# ─── Host disk (the `<release>-workspace` PVC) ───────────────────
+# A PVC mounted inside the host pod at workspace.mountPath. It holds the fs
+# blob store (`blob.fs.root`, below), so it renders only when
+# blob.backend=fs. Single-replica only: two hosts cannot share an RWO PVC.
+#
+# The `workspace` name is historical (it used to hold the git workspace
+# repos too, retired by TASK-995/996). It stays because the PVC's name comes
+# from it, and a renamed PVC is a new, empty disk. `workspace.backend` and
+# the `gitServer.*` block are gone; a release upgraded with --reuse-values
+# may still carry them, and nothing reads them.
 workspace:
-  backend: local         # local | git-protocol
   storage: 10Gi
   storageClassName: ""   # empty → cluster default
   accessMode: ReadWriteOnce
   mountPath: /var/lib/ax-next/workspaces
 
-# ─── Git-server pod (workspace.backend: git-protocol only) ────────
-# Dedicated StatefulSet that owns the bare git repos on per-ordinal PVCs.
-# Every host replica talks to it for workspace ops. The earlier all-in-one
-# Deployment (served by `@ax/workspace-git-http`) was retired 2026-05-04;
-# this StatefulSet is the only tier now.
-gitServer:
-  enabled: false         # set true when workspace.backend == "git-protocol"
-  # Number of storage-tier shards. Each shard is its own StatefulSet ordinal
-  # with its own PVC. Pick at install time; changing it later requires
-  # manual workspace migration (drain → rsync bare repos → flip traffic).
-  shards: 1
-  port: 7780
-  service:
-    port: 7780
-  storage: 10Gi
-  storageClassName: ""   # empty → cluster default
-  accessMode: ReadWriteOnce
-  mountPath: /var/lib/ax-next/repo
-  # Auth token: if empty, the chart generates a 48-char random token at
-  # install time via the lookup-or-generate pattern. Operators can override
-  # for deterministic deploys (e.g., GitOps).
-  auth:
-    token: ""
-  resources:
-    requests:
-      cpu: 100m
-      memory: 128Mi
-    limits:
-      cpu: 500m
-      memory: 512Mi
-  terminationGracePeriodSeconds: 60   # gives in-flight pushes time to drain
-  readinessProbe:
-    httpGet:
-      path: /healthz
-      port: git
-    initialDelaySeconds: 5
-    periodSeconds: 10
-  livenessProbe:
-    httpGet:
-      path: /healthz
-      port: git
-    initialDelaySeconds: 10
-    periodSeconds: 30
-
 # ─── Blob store (out-of-git design Part A) ───────────────────────
 # The content-addressed blob:* substrate (attachments, artifacts, skill
 # bundles). Exactly ONE backend registers blob:* per deployment — mirrors
-# the workspace local/git-protocol and storage sqlite/postgres splits.
+# the storage sqlite/postgres split.
 #
 #   - `fs` (default): @ax/blob-store-fs writes content-addressed files on
 #     the host PVC. Single-replica only (RWO PVC), cheapest, zero new deps.
-#     `root` is pinned below, in a sibling dir of the workspace repos on the
-#     workspace PVC.
+#     `root` is pinned below, in `blobs/` on the host PVC.
 #   - `s3`: @ax/blob-store-s3 talks to one S3-compatible bucket. Multi-
 #     replica-safe. Dev/test: point at the in-cluster MinIO (set
 #     `minio.enabled=true` and `blob.backend=s3`; see kind-dev-values.yaml).
@@ -216,15 +160,14 @@ blob:
   backend: fs            # fs | s3
   fs:
     # Where the blobs live: a directory on the host's `<release>-workspace`
-    # PVC (mounted at workspace.mountPath), next to the workspace repos.
+    # PVC (mounted at workspace.mountPath).
     #
     # Pinned (TASK-992). It used to be left empty and derived from
     # workspace.mountPath; this is the same path, written down, so the blob
     # store no longer depends on the workspace settings. Do not change it on
     # an existing deployment: a different root starts an empty blob store, and
     # the blobs already stored (every attachment, artifact and skill file)
-    # stop being found. With the local workspace backend, the chart refuses a
-    # root that is not on the workspace volume.
+    # stop being found. The chart refuses a root that is not on that volume.
     #
     # `helm upgrade --reuse-values` renders with the running release's values,
     # not these defaults, so a release from before TASK-992 still carries
@@ -319,8 +262,8 @@ sandbox:
   # real filesystem for the user's working files (datasets, build trees,
   # media, cloned repos) — backed by a Google Cloud Filestore (managed NFS)
   # export, mounted into the sandbox at `mountPath` (default /files),
-  # OUTSIDE the git-tracked agent-state tier. These files are live: written
-  # straight to NFS, durable across sessions, with no git round-trip.
+  # and it is the agent's home. These files are live: written straight to
+  # NFS, durable across sessions.
   #
   # REQUIRED (TASK-992). `/files` is each agent's only durable copy of its
   # files, so there is no "off" setting: `helm template` / `helm install`
@@ -349,7 +292,7 @@ sandbox:
     # UPGRADING from a chart that defaulted this to `/workspace`: an agent's
     # files are keyed by `subPath=<agentId>`, not by mountPath, so they follow
     # the mount and nothing needs copying. What does NOT follow is an absolute
-    # `/workspace/...` path an agent wrote into its own `.ax/AGENTS.md`, a
+    # `/workspace/...` path an agent wrote into its own Instructions, a
     # proposed skill, or its memory. Pin this to "/workspace" if you would
     # rather not find out.
     mountPath: "/files"

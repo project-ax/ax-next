@@ -223,7 +223,8 @@ describe('loadK8sConfigFromEnv blob wiring', () => {
   });
 
   it('loadK8sConfigFromEnv refuses fs without AX_BLOB_FS_ROOT', () => {
-    // The chart still stamps AX_WORKSPACE_ROOT: it used to silently derive
+    // An old release's pod env may still carry AX_WORKSPACE_ROOT (the chart
+    // stopped stamping it in TASK-996): it used to silently derive
     // /var/lib/ax-next/workspaces/blobs. It must not any more.
     expect(() =>
       loadK8sConfigFromEnv({ ...loaderBaseEnv, AX_WORKSPACE_ROOT: '/var/lib/ax-next/workspaces' }),

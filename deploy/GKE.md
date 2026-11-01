@@ -548,6 +548,191 @@ upgrade, run the probe, confirm `/files` mounts, and use the surgical rollback
 (not `helm rollback`) if it doesn't. The same section restricts the Filestore
 export to the node range.
 
+### 4f. Reset after the agent-files cutover
+
+The agent-files cutover (TASK-989 to TASK-996) moved each agent's identity and
+Instructions into the database and deleted the git workspace tier: no more
+`/agent`, no `.ax/` files, no git server. We decided on a plain reset, not a
+migration, because nobody depends on the old data yet. This section is that
+reset. Run it once, on the first deploy that includes TASK-995.
+
+**What people will see afterwards.** Say this in the maintenance notice:
+
+- Existing agents keep their name, but their identity is empty and they don't
+  re-run first-time setup (`bootstrap = 'none'`). Each one introduces itself with
+  a short fallback line built from its name until someone edits its identity.
+- Every agent's Instructions are empty.
+- Files in the Files tab (`/files`) are untouched.
+- Old conversations stay readable. Their attachments and generated-file chips
+  show as "(this file is no longer available)", and those downloads stop working.
+- The old workspace repos stop counting toward storage. Files in `/files` start
+  counting in the same release (TASK-993), so a person's usage can go up, not
+  down. Over the limit blocks new uploads, not chat.
+
+**Where the old data is.** The old repos are `ws-*.git` directories (and
+`repo.git` on very old installs) at the top of the host PVC, `ax-next-workspace`,
+mounted in the host pod at `/var/lib/ax-next/workspaces`. **The same volume holds
+`blobs/`**, which is every attachment, artifact and skill file anyone has stored.
+Never delete `blobs/` and never delete the PVC. Every command below names the
+repos by exact pattern and leaves `blobs/` alone. Keep it that way if you adapt
+anything.
+
+**Every command names its context.** Your default kubectl context might be a
+different cluster (ours is prod). Set it once, check it, then copy-paste:
+
+```bash
+KCTX=<your GKE context>        # kubectl config get-contexts
+NS=ax-next
+kubectl --context "$KCTX" get deploy ax-next-host -n "$NS"   # must be the cluster you mean
+```
+
+#### Step 1: back up first
+
+Both of these are cheap, and they are the only undo there is.
+
+```bash
+# Snapshot the host PVC (workspace) and facts disks now, on top of the daily schedule.
+bash deploy/gke/backups.sh enable --context "$KCTX" --project "$PROJECT_ID" --snapshot-now
+bash deploy/gke/backups.sh status --context "$KCTX" --project "$PROJECT_ID"   # both disks: a snapshot from the last few minutes
+
+# An on-demand Cloud SQL backup. The TASK-995 migrations drop columns.
+gcloud sql backups create --instance=ax-next-db --project=$PROJECT_ID
+gcloud sql backups list --instance=ax-next-db --project=$PROJECT_ID --limit=1   # status SUCCESSFUL
+```
+
+Don't go on until both show a fresh backup.
+
+#### Step 2: deploy
+
+Host and runner share one image, so the runner pods go first (see
+[Restarting the host pod](README.md#restarting-the-host-pod-delete-the-runner-pods-first)
+for why), warm-pool standbys included:
+
+```bash
+# Agent Sandbox backend only: delete the parent resources first.
+# kubectl --context "$KCTX" delete sandboxes.agents.x-k8s.io -n ax-next-runners -l ax.io/sandbox-backend=agent-sandbox --wait=true
+kubectl --context "$KCTX" delete pods -n ax-next-runners -l app.kubernetes.io/component=ax-next-runner
+```
+
+Then `helm upgrade` as in [Write the overrides and install](#write-the-overrides-and-install),
+with `--kube-context "$KCTX"`. The first `--reuse-values` upgrade also needs
+`--set blob.fs.root=/var/lib/ax-next/workspaces/blobs` ([4d](#4d-upgrading-past-task-992-pin-the-blob-root-once)).
+The old `workspace.backend` and `gitServer.*` values can stay in the release;
+nothing reads them.
+
+If the shared runner pool is on (`sandbox.sharedPool.enabled`), delete the
+storage-helper pods after the upgrade. Their DaemonSet uses `OnDelete`, and an old
+helper refuses the new host's sessions:
+
+```bash
+kubectl --context "$KCTX" delete pods -A -l ax.io/storage-helper
+```
+
+Wait for the host to come up (`kubectl --context "$KCTX" rollout status deploy/ax-next-host -n "$NS"`)
+and send one chat message before you go on.
+
+#### Step 3: dry run, and write the counts down
+
+This changes nothing. It shows what step 4 would delete, and what it must not:
+
+```bash
+kubectl --context "$KCTX" exec -n "$NS" deploy/ax-next-host -- sh -c '
+  cd /var/lib/ax-next/workspaces || exit 1
+  echo "would delete: $(ls -d ws-*.git repo.git 2>/dev/null | wc -l) repos"
+  ls -d ws-*.git repo.git 2>/dev/null | head -20
+  du -shc ws-*.git repo.git 2>/dev/null | tail -1
+  echo "must keep:    blobs/ with $(find blobs -type f | wc -l) files (live and .retired/)"
+  du -sh blobs
+  df -h .'
+```
+
+Check the listing before you continue: every name under "would delete" is a
+`ws-<id>.git` (or `repo.git`) directory, and `blobs/` has the file count you
+expect. Write both numbers down.
+
+Then the database side. The `disk_quota` rows for the old repos
+(`kind = 'workspace'`) should already be gone: the host deletes them on every
+boot since TASK-995. Count them, and count agents, in a throwaway pod that reads
+the database URL from the existing `ax-next-db` Secret (so no password goes on
+a command line or into a pod spec):
+
+```bash
+kubectl --context "$KCTX" create -n "$NS" -f - <<'YAML'
+apiVersion: v1
+kind: Pod
+metadata:
+  name: reset-check
+spec:
+  restartPolicy: Never
+  automountServiceAccountToken: false
+  containers:
+    - name: psql
+      image: postgres:17
+      env:
+        - name: DATABASE_URL
+          valueFrom: { secretKeyRef: { name: ax-next-db, key: url } }
+      command: ["sh", "-c"]
+      args:
+        - |
+          # The DSN says sslmode=no-verify (a node-postgres spelling, Step 4a);
+          # libpq wants require.
+          psql "${DATABASE_URL%%\?*}?sslmode=require" \
+            -c "SELECT count(*) AS workspace_quota_rows FROM disk_quota_v1_usage WHERE kind = 'workspace';" \
+            -c "SELECT count(*) AS agents FROM agents_v1_agents;" \
+            -c "SELECT bootstrap, count(*) FROM agents_v1_identity GROUP BY bootstrap;"
+YAML
+kubectl --context "$KCTX" wait --for=jsonpath='{.status.phase}'=Succeeded pod/reset-check -n "$NS" --timeout=120s
+kubectl --context "$KCTX" logs reset-check -n "$NS"
+kubectl --context "$KCTX" delete pod reset-check -n "$NS"
+```
+
+If the wait times out, `kubectl --context "$KCTX" describe pod reset-check -n "$NS"`
+says why; delete the pod either way.
+
+Expect `workspace_quota_rows = 0`. If it's above 0, the host hasn't restarted
+on the new image yet: restart it (runner pods first, as in step 2) and count
+again, rather than deleting rows by hand. The boot migration does exactly
+`DELETE FROM disk_quota_v1_usage WHERE kind = 'workspace'`. Agents without an
+identity row read as empty with `bootstrap = 'none'`, so they don't appear in the
+last query; that's fine.
+
+#### Step 4: delete the old repos
+
+Only the repo directories, by exact pattern, from inside the host pod (which
+already mounts the volume, so nothing has to attach it a second time):
+
+```bash
+kubectl --context "$KCTX" exec -n "$NS" deploy/ax-next-host -- sh -c '
+  set -eu
+  cd /var/lib/ax-next/workspaces
+  for d in ws-*.git repo.git; do
+    [ -d "$d" ] || continue
+    rm -rf -- "./$d"
+  done
+  echo "repos left: $(ls -d ws-*.git repo.git 2>/dev/null | wc -l)"'
+```
+
+#### Step 5: verify
+
+Run the step 3 commands again. Expect:
+
+- `would delete: 0 repos`.
+- `blobs/` has the **same file count** as before, or more if someone uploaded
+  in between. (The count includes `.retired/`, so blob cleanup moving a file
+  there doesn't change it. A purge can: only in enforce mode, after the retention
+  period, 7 days by default. Every cleanup sweep logs a `blob_gc_report` line;
+  a purge shows as `purged` above 0.) If the count dropped and the host log
+  shows no purge, stop and look before doing anything else. Step 4 cannot reach
+  `blobs/`, and restoring the disk from step 1's snapshot throws away every upload
+  since then, so treat a restore as the last resort
+  ([Restoring for real](#restoring-for-real)).
+- `workspace_quota_rows = 0` and the same number of agents.
+- In the app: open an old agent and send a message. It answers. Its identity
+  and Instructions are empty. The Files tab still lists its files.
+
+Then run the [restore drill](#the-restore-drill) once (with `--context "$KCTX"`),
+so the next snapshot is proven against the new layout.
+
 ---
 
 ## Step 5 — Static IP, DNS, and the managed certificate
@@ -1151,12 +1336,10 @@ Nothing in the code clears old memory (apart from Strata's Postgres search
 index, which the host drops on boot). When an existing deployment moves from
 `host.preset: k8s` (Strata) to facts memory and nobody needs the old data, follow
 the one-time operator runbook **"Switching an existing deployment to facts memory"**
-in [`deploy/README.md`](README.md). Read its warning first: the workspace step
-deletes **every agent's workspace repos and files**, not just memory, and none of
-it can be undone. On GKE the workspace backend is `local`, so there is no
-git-server to reset. The runbook deletes the `ws-*.git` repos on the host PVC and
-leaves `blobs/` alone, and it erases the Filestore memory-exports share if
-`memory.exports` is set.
+in [`deploy/README.md`](README.md). Read its warning first: none of it can be
+undone. It erases the Filestore memory-exports share if `memory.exports` is set.
+The old workspace repos (`ws-*.git`) are not part of it any more; they go in
+[4f](#4f-reset-after-the-agent-files-cutover).
 
 Keeping the legacy Strata memory is no longer an option: it was deleted in
 TASK-608.
@@ -1277,7 +1460,7 @@ writes takes `--dry-run`, and every one is safe to run twice.
 | Store | What is in it | Protected by | Worst-case data loss |
 |---|---|---|---|
 | **Cloud SQL** (`ax-next-db`) | accounts, conversations, encrypted credentials, agent settings | a daily automated backup (14 kept) and point-in-time recovery (7 days of logs) | Recovering to a moment in the last 7 days: minutes. We have not measured how far behind the log shipping runs, so we won't quote a number. With point-in-time recovery off: up to 24 hours. |
-| **Workspace disk** (PVC `ax-next-workspace`) | every agent's git workspace, plus attachments, artifacts and skill bundles | a daily disk snapshot, kept 14 days | **Up to 24 hours** of changes. Up to 48 if one night's snapshot fails; `status` raises the alarm once a schedule has gone 36 hours without one. |
+| **Workspace disk** (PVC `ax-next-workspace`) | attachments, artifacts and skill files (`blobs/`) | a daily disk snapshot, kept 14 days | **Up to 24 hours** of changes. Up to 48 if one night's snapshot fails; `status` raises the alarm once a schedule has gone 36 hours without one. |
 | **Facts disk** (PVC `ax-next-memory-facts`) | the memory database, `facts.db` | a daily disk snapshot, kept 14 days | **Up to 24 hours** of newly learned facts. There is no supported command that rebuilds them from chat history, so treat lost facts as lost. |
 
 What is **not** covered, so nobody assumes it is:
@@ -1297,12 +1480,12 @@ Three things worth knowing about the disk snapshots themselves:
 
 - **They are crash-consistent, not application-consistent.** A snapshot is what the
   disk looked like at one instant, like pulling the plug. SQLite (which recovers
-  from its write-ahead log) and git (which writes objects before it moves a branch)
+  from its write-ahead log) and the blob store (which writes a temp file and renames it)
   cope with that, and the drill below checks that they do. A passing drill is
   evidence about *that* snapshot, not a promise about every future one.
 - **The disks and the database are backed up separately.** Restore both and they
   may disagree by up to a day: a conversation in the database can point at
-  workspace history the older disk never saw. Restore the disks from a snapshot,
+  an attachment the older disk never saw. Restore the disks from a snapshot,
   then restore Cloud SQL to the moment that snapshot was taken (point-in-time
   recovery lets you choose it), and they line up.
 - **Deleting a claim deletes its disk.** The default storage class reclaims (deletes)
@@ -1359,8 +1542,8 @@ somebody sees). A backup that quietly stopped working is worse than none.
 
 A backup nobody has restored is a hope. The drill restores the newest snapshot of
 each disk **to scratch disks**, mounts them in a throwaway pod, and checks that the
-workspace's git repos pass `git fsck` and that `facts.db` opens and passes SQLite's
-`integrity_check`. It never attaches, reads or writes the production disks.
+workspace disk's blobs still hash to their names and that `facts.db` opens and
+passes SQLite's `integrity_check`. It never attaches, reads or writes the production disks.
 
 You need: at least one snapshot of each disk (`enable --snapshot-now` makes one) and
 rights to create disks, namespaces and PersistentVolumes. The script waits up to 20
@@ -1386,19 +1569,23 @@ What it does, in order (so you can do it by hand if the script is unavailable):
    [`gke/restore-drill-verify.sh`](gke/restore-drill-verify.sh), and for each scratch
    disk a PersistentVolume (pinned to the disk's zone, `Retain`) and a claim.
 4. Starts one pod, running the same image as the host, as UID 1000 with a read-only
-   root filesystem. The restored repositories were written by agents, so they are
-   treated as untrusted: the pod gets a deny-all NetworkPolicy (it needs no network;
-   the node pulls the image; both cluster types in this runbook run Dataplane V2, so
-   it is enforced, but on a cluster that doesn't enforce policies it is a no-op),
-   and every `git` call it makes switches off hooks,
-   filesystem monitors and pagers. It runs the checks and exits.
+   root filesystem. The restored disks hold content written by agents and people,
+   so they are treated as untrusted: the pod gets a deny-all NetworkPolicy (it needs
+   no network; the node pulls the image; both cluster types in this runbook run
+   Dataplane V2, so it is enforced, but on a cluster that doesn't enforce policies
+   it is a no-op). The checks only read and hash bytes, follow no symlinks, and
+   never run `git`, even on old `ws-*.git` repos still on the disk. It runs the
+   checks and exits.
 5. Prints the pod's report and the verdict, deletes the pod, policy, claims, volumes
    and scratch disks, and prints how long each stage took.
 
-**PASS** means: at least one `ws-*.git` repo, every one checked (up to 25, newest
-first) passes `git fsck`; and `facts.db` opens, passes `integrity_check`, and has
-rows. A valid but empty `facts.db` passes with a warning: if the live memory has
-facts in it, an empty copy is wrong. **FAIL** exits 1 and the report says which
+**PASS** means: the workspace disk has `blobs/`, every blob checked (up to 25,
+newest first) is a regular file whose sha256 matches its
+name, and nothing is filed under the wrong shard; and `facts.db` opens, passes `integrity_check`, and has
+rows. A valid but empty `facts.db`, or an empty `blobs/`, passes with a warning:
+if the live deployment has data there, an empty copy is wrong. Old `ws-*.git`
+repos still on the disk are reported (run [4f](#4f-reset-after-the-agent-files-cutover))
+but not checked. **FAIL** exits 1 and the report says which
 check.
 
 If the drill dies half way (your laptop sleeps, you hit Ctrl-C twice), it may leave
@@ -1625,7 +1812,7 @@ it survives the move untouched. Only the cluster-scoped objects get rebuilt.
 | `gke-values.local.yaml` | — |
 
 Your **conversations, credentials, workspaces** are split between Cloud SQL (DB)
-and the host PVC (git repos + blobs). Cloud SQL is reused, so DB state is safe.
+and the host PVC (blobs). Cloud SQL is reused, so DB state is safe.
 The **host PVC does not migrate** — it's a new disk on the new cluster. If you
 have workspace/blob state worth keeping, snapshot it and restore the snapshot into
 a disk in the new cluster's zone, following

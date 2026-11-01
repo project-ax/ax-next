@@ -1,4 +1,3 @@
-{{- include "ax-next.validateWorkspaceBackend" . -}}
 {{- include "ax-next.validateHostReplicas" . -}}
 {{- include "ax-next.validatePreset" . -}}
 {{- include "ax-next.validateBlobBackend" . -}}
@@ -256,31 +255,6 @@ spec:
             - name: AX_K8S_HOST_IPC_URL
               value: {{ include "ax-next.hostIpcUrl" . | quote }}
 
-            {{- if eq .Values.workspace.backend "local" }}
-            # Workspace dir lives on the host pod's PVC.
-            - name: AX_WORKSPACE_ROOT
-              value: {{ .Values.workspace.mountPath | quote }}
-            {{- end }}
-
-            # Workspace backend selection. The host's plugin loader reads
-            # AX_WORKSPACE_BACKEND and registers the matching plugin
-            # (@ax/workspace-git for `local`, @ax/workspace-git-server for
-            # `git-protocol`).
-            - name: AX_WORKSPACE_BACKEND
-              value: {{ .Values.workspace.backend | quote }}
-            {{- if eq .Values.workspace.backend "git-protocol" }}
-            # Host's `@ax/workspace-git-server` plugin talks smart-HTTP +
-            # REST to the dedicated git-server StatefulSet via its
-            # ClusterIP Service.
-            - name: AX_WORKSPACE_GIT_SERVER_URL
-              value: {{ include "ax-next.gitServerExperimentalServiceUrl" . | quote }}
-            - name: AX_WORKSPACE_GIT_SERVER_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "ax-next.gitServerAuthSecretName" . }}
-                  key: token
-            {{- end }}
-
             # Blob backend selection (out-of-git design Part A). The preset's
             # loader (blobConfigFromEnv) reads AX_BLOB_BACKEND + the per-backend
             # vars and registers exactly one of @ax/blob-store-fs /
@@ -520,7 +494,8 @@ spec:
             # container's UID — securityContext.fsGroup above handles that.
             - name: proxy-socket
               mountPath: /var/run/ax
-            {{- if eq .Values.workspace.backend "local" }}
+            {{- if eq .Values.blob.backend "fs" }}
+            # The host disk: holds blobs/ (blob.fs.root). Mounted only for fs blobs.
             - name: workspace
               mountPath: {{ .Values.workspace.mountPath }}
             {{- end }}
@@ -575,7 +550,7 @@ spec:
           # above (1000), so the proxy can bind() the socket as UID 1000.
           emptyDir: {}
         {{- end }}
-        {{- if eq .Values.workspace.backend "local" }}
+        {{- if eq .Values.blob.backend "fs" }}
         - name: workspace
           persistentVolumeClaim:
             claimName: {{ include "ax-next.fullname" . }}-workspace

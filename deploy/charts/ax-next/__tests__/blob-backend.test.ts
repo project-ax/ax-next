@@ -135,6 +135,24 @@ const PINNED_ROOT = '/var/lib/ax-next/workspaces/blobs';
 const FS_RENDERS: ReadonlyArray<readonly [label: string, args: readonly string[]]> = [
   ['default render', []],
   ['gke-values.yaml', ['-f', GKE_VALUES, '--set', 'sandbox.filestore.server=10.9.8.7']],
+  // The retired key GKE prod's release still carries (TASK-996), layered on
+  // this chart's defaults: `workspace.backend=local` must not change where blobs
+  // live. (A real `--reuse-values` render uses the OLD release's values instead
+  // of these defaults; this fixture does not model that.)
+  [
+    'old GKE release values (workspace.backend=local)',
+    [
+      '-f', GKE_VALUES,
+      '--set', 'sandbox.filestore.server=10.9.8.7',
+      '--set', 'workspace.backend=local',
+      '--set', 'gitServer.enabled=false',
+    ],
+  ],
+  // A retired git-protocol release with fs blobs: the PVC follows blob.backend.
+  [
+    'old git-protocol values with fs blobs',
+    ['--set', 'workspace.backend=git-protocol', '--set', 'gitServer.enabled=true'],
+  ],
 ];
 
 type HostPodSpec = {
@@ -165,13 +183,20 @@ describeIfHelm('ax-next chart: blob backend wiring (out-of-git Part A)', () => {
   });
 
   it('the pinned root is byte-identical to the old derivation', () => {
-    // The preset used to derive `${AX_WORKSPACE_ROOT}/blobs` when nothing was
-    // stamped. Any other value here would quietly start a new, empty blob
-    // store and orphan every existing attachment, artifact and skill file.
+    // The preset used to derive `${AX_WORKSPACE_ROOT}/blobs` (the host PVC's
+    // mount path) when nothing was stamped. AX_WORKSPACE_ROOT is gone since
+    // TASK-996, so compare against the mount itself. Any other value here
+    // would quietly start a new, empty blob store and orphan every existing
+    // attachment, artifact and skill file.
     for (const [label, args] of FS_RENDERS) {
-      const env = hostEnv(helmTemplate(args));
-      const root = envVal(env, 'AX_BLOB_FS_ROOT')?.value;
-      expect(root, label).toBe(`${envVal(env, 'AX_WORKSPACE_ROOT')?.value}/blobs`);
+      const docs = helmTemplate(args);
+      const root = envVal(hostEnv(docs), 'AX_BLOB_FS_ROOT')?.value;
+      const podSpec = (hostDeployment(docs).spec as { template?: { spec?: HostPodSpec } })
+        ?.template?.spec;
+      const mountPath = (podSpec?.containers?.[0]?.volumeMounts ?? []).find(
+        (m) => m.name === 'workspace',
+      )?.mountPath;
+      expect(root, label).toBe(`${mountPath}/blobs`);
       expect(root, label).toBe(PINNED_ROOT);
     }
   });
@@ -206,6 +231,25 @@ describeIfHelm('ax-next chart: blob backend wiring (out-of-git Part A)', () => {
     }
   });
 
+  it('s3 blobs render no host PVC, even when old values still say workspace.backend=local', () => {
+    // The PVC renders iff blob.backend=fs (TASK-996). A retired
+    // workspace.backend=local must not bring it back on an s3 deployment.
+    for (const args of [
+      ['--set', 'blob.backend=s3', '--set', 'minio.enabled=true'],
+      ['--set', 'blob.backend=s3', '--set', 'minio.enabled=true', '--set', 'workspace.backend=local'],
+    ]) {
+      const docs = helmTemplate(args);
+      const pvc = docs.find(
+        (d) =>
+          d.kind === 'PersistentVolumeClaim' && (d.metadata?.name ?? '').endsWith('-workspace'),
+      );
+      expect(pvc, args.join(' ')).toBeUndefined();
+      const podSpec = (hostDeployment(docs).spec as { template?: { spec?: HostPodSpec } })
+        ?.template?.spec;
+      expect((podSpec?.volumes ?? []).map((v) => v.name), args.join(' ')).not.toContain('workspace');
+    }
+  });
+
   it('an empty blob.fs.root fails the render and names the path to pin', () => {
     // What a `helm upgrade --reuse-values` from a pre-TASK-992 release sees:
     // the live values carry the old default, an empty root. Failing, with the
@@ -228,22 +272,23 @@ describeIfHelm('ax-next chart: blob backend wiring (out-of-git Part A)', () => {
     expect(custom.stderr).toContain('--set blob.fs.root=/data/ws/blobs');
   });
 
-  it('an empty blob.fs.root on a non-local workspace backend does not claim a workspace-volume path', () => {
-    // A git-protocol deployment never mounted the workspace PVC on the host; the
-    // old preset derived /var/lib/ax-next/blobs on the container's scratch
-    // disk. Pointing it at <mountPath>/blobs would be false advice.
-    const r = helmTemplateExpectFailure([
-      '--set', 'workspace.backend=git-protocol',
-      '--set', 'gitServer.enabled=true',
-      '--set', 'gitServer.storage=10Gi',
-      '--set', 'blob.fs.root=',
-    ]);
-    expect(r.status).not.toBe(0);
-    expect(r.stderr).toContain('blob.fs.root is empty');
-    expect(r.stderr).toContain("container's scratch disk");
-    expect(r.stderr).toContain('blob.backend=s3');
-    expect(r.stderr).toContain('blob.fs.root=/var/lib/ax-next/blobs');
-    expect(r.stderr).not.toContain(PINNED_ROOT);
+  it('a retired workspace.backend in old values changes nothing about the fs guard', () => {
+    // TASK-996 retired workspace.backend: the host mounts the -workspace PVC
+    // whenever blob.backend=fs. A `--reuse-values` upgrade still carrying
+    // `workspace.backend=git-protocol` gets the same advice as everyone else
+    // (pin <mountPath>/blobs), and an off-volume root still fails.
+    const old = ['--set', 'workspace.backend=git-protocol', '--set', 'gitServer.enabled=true'];
+    const empty = helmTemplateExpectFailure([...old, '--set', 'blob.fs.root=']);
+    expect(empty.status).not.toBe(0);
+    expect(empty.stderr).toContain('blob.fs.root is empty');
+    expect(empty.stderr).toContain(`--set blob.fs.root=${PINNED_ROOT}`);
+
+    const off = helmTemplateExpectFailure([...old, '--set', 'blob.fs.root=/mnt/custom-blobs']);
+    expect(off.status).not.toBe(0);
+    expect(off.stderr).toContain("is not on the host's workspace volume");
+
+    const env = hostEnv(helmTemplate(old));
+    expect(envVal(env, 'AX_BLOB_FS_ROOT')?.value).toBe(PINNED_ROOT);
   });
 
   it('a blob.fs.root off the workspace volume fails the render', () => {

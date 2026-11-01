@@ -22,9 +22,9 @@ For the security walk: [`charts/ax-next/SECURITY.md`](charts/ax-next/SECURITY.md
 These were intentionally cut from the v1 chart port. Don't add them back without
 updating the security note.
 
-- **Git server pod.** Legacy used a separate `ax-git-server` pod for multi-replica
-  workspace storage. v2 is single-replica only this slice; `@ax/workspace-git`
-  writes to a host-pod PVC. Multi-replica + a real git server is Week 10+.
+- **A separate workspace storage pod.** Legacy used a `ax-git-server` pod. v2 has no
+  git workspace tier at all (removed in TASK-995). Agent files live on the `/files`
+  mount and the rest of the state lives in the database.
 - **Web proxy.** Legacy ran an HTTP forward proxy on the host pod for runner-pod
   egress. Week 10+.
 - **Admin / OAuth templates.** Multi-tenant + auth slice is Week 9.5.
@@ -126,11 +126,11 @@ An **existing** deployment that ran the old Strata memory (`host.preset: k8s`, t
 > ### ⚠ STOP — read this before running anything
 >
 > - **Every step below is irreversible.** There's no undo, and nothing is backed up for us. If in doubt, snapshot the volumes and the database first.
-> - **Step 5 deletes ALL agent workspace repos and files, for EVERY agent** — not just memory. That includes identity files (`.ax/IDENTITY.md`, `.ax/SOUL.md`), Rules, notes, anything an agent or a person saved into a workspace, and all of its history. Every agent starts with an empty workspace.
+> - **Step 5 is now a no-op.** Before TASK-995 it deleted every agent's workspace repo. The git workspace tier is gone, so there is nothing to delete. Agent files on `/files` are untouched by this runbook.
 > - Only use this runbook on a deployment where **none** of that data needs keeping.
 > - Chats are down from step 2 until step 6. Announce a maintenance window.
 
-The commands below assume release `ax-next` in namespace `ax-next`, which is what `deploy/README.md` and `deploy/GKE.md` install. If you named things differently, adjust the resource names (they follow the pattern `<release>-host`, `<release>-git-server-experimental`, …).
+The commands below assume release `ax-next` in namespace `ax-next`, which is what `deploy/README.md` and `deploy/GKE.md` install. If you named things differently, adjust the resource names (they follow the pattern `<release>-host`, `<release>-memory-nfs`, …).
 
 **The order matters.** First we switch, then we stop the host, then we erase everything, then we start it again. While the host is down, nothing can re-export or re-record stale memory in the middle of the reset.
 
@@ -140,14 +140,11 @@ The commands below assume release `ax-next` in namespace `ax-next`, which is wha
 
 Set `host.preset: memory` in your values file. It's the default, but pin it anyway, then run `helm upgrade` as usual. The chart now includes the facts store's PVC, `ax-next-memory-facts`.
 
-### Step 2 — Stop the host (and the git-server, if there is one)
+### Step 2 — Stop the host
 
 ```bash
 kubectl -n ax-next scale deploy/ax-next-host --replicas=0
 kubectl -n ax-next wait --for=delete pod -l app.kubernetes.io/name=ax-next-host --timeout=180s
-# Only when workspace.backend=git-protocol (kind dev):
-kubectl -n ax-next scale statefulset/ax-next-git-server-experimental --replicas=0
-kubectl -n ax-next wait --for=delete pod -l app.kubernetes.io/name=ax-next-git-server-experimental --timeout=180s
 ```
 
 ### Step 3 — Postgres: drop the Strata index, truncate the old facts table
@@ -279,51 +276,22 @@ kubectl --context kind-ax-next-dev -n ax-next delete pod -l app.kubernetes.io/na
 kubectl --context kind-ax-next-dev -n ax-next rollout status deploy/ax-next-memory-nfs
 ```
 
-### Step 5 — Reset workspace storage (⚠ deletes ALL agents' workspace repos and files)
+### Step 5 — Workspace storage (nothing to do)
 
-Old memory also lives in each agent's workspace repo and its history (`memory/**`, `permanent/memory/facts/**`). We reset workspace storage as a whole. Which commands to use depends on `workspace.backend`.
+Before TASK-995, old memory also lived in each agent's workspace repo, and this step deleted those repos. There are no workspace repos any more, so there is nothing to reset here. The host PVC (`ax-next-workspace`, present only when `blob.backend=fs`) holds `blobs/` and stays as is. On a deployment that ran before TASK-995 the old `ws-*.git` repos may still be on it; [`GKE.md` 4f, "Reset after the agent-files cutover"](GKE.md#4f-reset-after-the-agent-files-cutover) deletes them and leaves `blobs/` alone.
 
-**`workspace.backend: git-protocol` (kind dev).** The repos live on the git-server StatefulSet's volume. We delete its PVCs, one per shard, named after the `volumeClaimTemplate` called `repo`. When the StatefulSet scales back up, it recreates them empty.
+Quick check (kind dev). Kind uses MinIO for blobs, so there is no host PVC and no git-server pod:
 
 ```bash
-kubectl --context kind-ax-next-dev -n ax-next get pvc -o name | grep '^persistentvolumeclaim/repo-ax-next-git-server-experimental-'
-kubectl --context kind-ax-next-dev -n ax-next get pvc -o name | grep '^persistentvolumeclaim/repo-ax-next-git-server-experimental-' \
-  | xargs kubectl --context kind-ax-next-dev -n ax-next delete
-kubectl --context kind-ax-next-dev -n ax-next scale statefulset/ax-next-git-server-experimental --replicas=<gitServer.shards, default 1>
-kubectl --context kind-ax-next-dev -n ax-next rollout status statefulset/ax-next-git-server-experimental
+kubectl --context kind-ax-next-dev -n ax-next get pods,pvc
 ```
 
-**`workspace.backend: local` (GKE and production; there is no git-server).** The repos are `ws-*.git` directories on the host's workspace PVC, `ax-next-workspace`. **Don't delete that PVC.** It also holds the blob store (`blobs/`, which has attachments, published artifacts and skill-bundle files; the old `skill-bundles/` directory is retired). Each person's share of this volume (repos plus blobs) is capped by the storage limit in Settings (`@ax/disk-quota`), so one person cannot fill it for everyone. We delete only the repos:
+A kind cluster first installed before TASK-996 keeps two leftovers after the upgrade, because helm never deletes them: the git-server's repo PVC (StatefulSet claims outlive the StatefulSet) and its auth Secret (`resource-policy: keep`). Nothing uses either. Delete them once:
 
 ```bash
-kubectl -n ax-next apply -f - <<'YAML'
-apiVersion: v1
-kind: Pod
-metadata:
-  name: workspace-reset
-spec:
-  restartPolicy: Never
-  containers:
-    - name: reset
-      image: busybox:1.36
-      command: ["sh", "-c"]
-      args:
-        - |
-          set -eu
-          cd /ws
-          echo "repos before: $(ls -d ws-*.git repo.git 2>/dev/null | wc -l)"
-          rm -rf ws-*.git repo.git
-          echo "repos after: $(ls -d ws-*.git repo.git 2>/dev/null | wc -l)"
-          ls -la /ws
-      volumeMounts:
-        - { name: ws, mountPath: /ws }
-  volumes:
-    - name: ws
-      persistentVolumeClaim: { claimName: ax-next-workspace }
-YAML
-kubectl -n ax-next wait --for=jsonpath='{.status.phase}'=Succeeded pod/workspace-reset --timeout=180s
-kubectl -n ax-next logs workspace-reset
-kubectl -n ax-next delete pod workspace-reset
+kubectl --context kind-ax-next-dev -n ax-next get pvc -o name | grep '^persistentvolumeclaim/repo-ax-next-git-server-experimental-' \
+  | xargs -r kubectl --context kind-ax-next-dev -n ax-next delete
+kubectl --context kind-ax-next-dev -n ax-next delete secret ax-next-git-server-auth --ignore-not-found
 ```
 
 ### Step 6 — Start the host again

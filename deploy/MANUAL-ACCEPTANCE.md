@@ -123,23 +123,12 @@ path to a chat-capable state on a fresh cluster.
         -c "SELECT count(*) FROM storage_postgres_v1_kv;"
       ```
       Returns `count > 0`.
-- [ ] A workspace version was minted:
+- [ ] There is no git workspace tier (removed in TASK-995). No git-server pod,
+      and no `ws-*.git` repos on the host:
       ```bash
-      # Since TASK-396 the `local` backend keeps ONE BARE REPO PER AGENT, named
-      # ws-<16 hex> from the agentId — there is no deployment-wide `repo.git`
-      # any more. So glob, don't guess the name.
-      #
-      # The root is AX_WORKSPACE_ROOT, which the chart stamps from
-      # `workspace.mountPath` (values.yaml) = /var/lib/ax-next/workspaces.
-      # This line used to say /workspace-data/, which no chart has ever
-      # mounted; TASK-412 measured the real path on a live cluster.
-      kubectl --context kind-ax-next-dev exec -n ax-next deploy/ax-next-host -- \
-        sh -c 'ls -d /var/lib/ax-next/workspaces/ws-*.git/refs/heads/main'
+      kubectl --context kind-ax-next-dev -n ax-next get pods | grep -c git-server
+      # 0
       ```
-      At least one file exists. If you see a
-      `/var/lib/ax-next/workspaces/repo.git`, that's the pre-TASK-396 shared
-      tree — nothing reads it any more, and it was readable by every user of
-      the deployment. Salvage anything you want from it and delete it.
 
 ### Logs / hygiene
 - [ ] No `level >= warn` lines in `kubectl --context kind-ax-next-dev logs -n ax-next deploy/ax-next-host`
@@ -271,32 +260,26 @@ Default Agent. After completion, every `/setup/*` path returns 410 Gone (I11)
 
 #### Phase 0: SDK skill discovery (I-P0-1/3/4/5)
 
-After the first chat lands, verify the runner can see workspace-authored
-skills via the SDK's built-in `Skill` tool. Phase 0 only wires the discovery
-path — the install loop (Phase 1+) populates `$CLAUDE_CONFIG_DIR/skills/`
-later. For now we prove the workspace half of that surface is reachable.
+After the first chat lands, verify the runner can see installed skills via
+the SDK's built-in `Skill` tool. Installed skills are written to
+`$CLAUDE_CONFIG_DIR/skills/` (the tmpfs `/home/runner`). Agents no longer
+author skills into `.ax/draft-skills/`; that directory is gone (TASK-995).
 
-1. In the chat UI, ask the agent to write a skill file:
-   - Path: `.ax/draft-skills/canary-skill/SKILL.md` (NOT `.claude/skills/…` — that
-     surface is a host-owned symlink; agents write to `.ax/draft-skills/`).
-   - Frontmatter: `name: canary-skill`, `description: <anything>`.
-   - Body: `When asked, mention "canary-skill" by name.`
+1. Install a skill for the agent through the app (any skill will do).
 
 2. Send a new message: "List the skills you have available."
 
-3. Expected: the reply names `canary-skill`. Bonus: the agent invokes the
+3. Expected: the reply names the installed skill. Bonus: the agent invokes the
    `Skill` tool — visible in the tool-call timeline if the UI surfaces it.
 
-If the agent reports no skills available, the symlink scaffolding or the
+If the agent reports no skills available, the skill install or the
 SDK setting-sources wiring is broken. `kubectl exec` into the runner pod
 (catch it before it terminates — bump the agent's `idleShutdownMs` or
 ask a follow-up message to keep the pod alive) and probe:
 
-- `ls -la /agent/.claude/skills` — should be a symlink to `../.ax/draft-skills`.
-- `cat /agent/.ax/draft-skills/canary-skill/SKILL.md` — should be readable.
 - `echo $CLAUDE_CONFIG_DIR` — should be `/home/runner/.ax/session`.
-- `ls -la $CLAUDE_CONFIG_DIR/skills` — should exist. Phase 0 leaves it
-  empty; if it's missing entirely, the per-session HOME init isn't running.
+- `ls -la $CLAUDE_CONFIG_DIR/skills` — should list the installed skill. If
+  it's missing entirely, the per-session HOME init isn't running.
 
 ### Common failures
 
@@ -501,7 +484,7 @@ the right layer to enforce that.
   ```
 
   The end-to-end "chat returns a response" criterion requires the `serve`
-  subcommand (now shipped — see "multi-replica chat" scenario below) and
+  subcommand (now shipped) and
   the agent image built from `container/agent/Dockerfile`. With the image
   loaded, port-forward into the host's Service and POST to `/chat`; the
   runner pod gets created, connects back over HTTP, and returns.
@@ -517,213 +500,15 @@ the right layer to enforce that.
   must run on a CNI that enforces NPs (Calico, Cilium, etc.) — verify before
   enabling in prod.
 
-## Scenario: multi-replica chat (workspace.backend=git-protocol)
+## Scenario: multi-replica chat (retired)
 
-> **Retired — this scenario no longer runs as written.** Step 1's
-> `--set replicas=2` now fails `helm template` on purpose: the chart's
-> `ax-next.validateHostReplicas` guard (ARCH-1) refuses a host with more
-> than one replica. The chat stream buffer, the orchestrator's warm-session
-> map, and the Rules-change signal (TASK-617) all live in one host process,
-> so a second replica would quietly break chat rather than scale it. The
-> steps below are kept as a record of the April 2026 git-server slice; don't
-> try to follow them until that guard is lifted.
-
-This scenario proves that two host replicas can serve concurrent chat
-requests against a shared workspace, and that the resulting git history
-is linear with both sessions' writes visible. It exists to validate the
-`@ax/workspace-git-server` slice — the dedicated git-server pod that
-owns the bare repo, with each host replica forwarding workspace ops
-over the standard git wire protocol so we never have two writers
-racing on the same `.git`. (The legacy `http` backend was retired
-2026-05-04; `git-protocol` is the supported multi-replica backend.)
-
-The `serve` CLI subcommand boots the k8s preset (postgres trio + workspace
-+ sandbox-k8s + chat orchestrator + ipc-http + tools + LLM) and exposes a
-small HTTP front door:
-
-- `GET /health` — readiness/liveness probe (no auth).
-- `POST /chat` — runs one chat turn, returns the outcome JSON.
-  Auth: optional bearer token via `AX_SERVE_TOKEN`. If unset, `/chat` is
-  open to anything that can route to the port — the chart's NetworkPolicy
-  + ingress-off default still bound reach to in-cluster + port-forward,
-  but for prod we recommend setting the token.
-
-### Prerequisites
-
-- A kind cluster (or any k8s cluster you trust) with `kubectl` configured.
-- The agent image built and pushed to a registry the cluster can reach
-  (build from `container/agent/Dockerfile` — same image is used for the
-  host pod and the per-session runner pods).
-- An Anthropic API key.
-
-### Steps
-
-1. Install (or upgrade) the chart with the multi-replica + http backend
-   knobs flipped on:
-
-   ```bash
-   # http.cookieKey is required since issue #39 — without it the host
-   # pod crash-loops on AX_HTTP_COOKIE_KEY required. Auth providers are
-   # added at runtime via /admin/auth (Phase 3) — no helm flag needed.
-   # onboarding.bootstrapToken pre-shares the wizard's claim token; if
-   # omitted, @ax/onboarding generates one on first boot and prints it.
-   helm --kube-context kind-ax-next-dev upgrade --install ax-next deploy/charts/ax-next \
-     --namespace ax-next --create-namespace \
-     --set replicas=2 \
-     --set workspace.backend=git-protocol \
-     --set gitServer.enabled=true \
-     --set image.repository=<your-registry>/ax-next/agent \
-     --set image.tag=<your-tag> \
-     --set credentials.key="$(openssl rand -base64 32)" \
-     --set anthropic.apiKey="$ANTHROPIC_API_KEY" \
-     --set http.cookieKey="$(openssl rand -hex 32)" \
-     --set onboarding.bootstrapToken="$(openssl rand -hex 16)"
-   ```
-
-2. Wait for both host pods, the git-server pod, and postgres to be Ready:
-
-   ```bash
-   kubectl --context kind-ax-next-dev -n ax-next get pods -w
-   ```
-
-   Expected: 2 host pods (`ax-next-host-...`), `gitServer.shards` git-server
-   pods (`ax-next-git-server-experimental-<ordinal>` — a StatefulSet, so the
-   suffix is an ordinal, not a ReplicaSet hash), and the postgres pod, all
-   `1/1 Running`.
-
-3. Port-forward into the host's public-http port from the local shell.
-   `/chat` + `/health` live here (issue #39); the Service's :80 port is
-   the runner-IPC back-channel and not for human traffic.
-
-   ```bash
-   kubectl --context kind-ax-next-dev -n ax-next port-forward svc/ax-next-host 9090:9090 &
-   ```
-
-4. Fire two concurrent chat requests against the host Service. The
-   `serve` subcommand accepts `POST /chat` with a JSON body of
-   `{"message": "<text>", "sessionId": "<optional>"}` — when `sessionId`
-   is omitted, a fresh `serve-<uuid>` is minted server-side, so each
-   request is independent:
-
-   ```bash
-   # X-Requested-With: ax-admin satisfies the http-server's CSRF gate on
-   # state-changing methods (issue #39). Without it the request hits
-   # csrf-failed:origin-missing and returns 403.
-   curl -X POST http://localhost:9090/chat \
-     -H 'Content-Type: application/json' \
-     -H 'X-Requested-With: ax-admin' \
-     -d '{"message":"hello from session A"}' &
-   curl -X POST http://localhost:9090/chat \
-     -H 'Content-Type: application/json' \
-     -H 'X-Requested-With: ax-admin' \
-     -d '{"message":"hello from session B"}' &
-   wait
-   ```
-
-   Expected: both requests return HTTP 200 with a `{sessionId, outcome}`
-   JSON body. Because `replicas: 2`, the Service load-balances the
-   requests across both host pods — so we're genuinely exercising two
-   writers landing through the single git-server.
-
-   If `AX_SERVE_TOKEN` is set on the host pod, add
-   `-H "Authorization: Bearer $AX_SERVE_TOKEN"` to each curl.
-
-5. Verify both writes landed in the git-server's PVC. Two probes,
-   either is fine:
-
-   Both probes below were wrong until TASK-414 and are worth reading the
-   corrections for, because each was wrong in a different way:
-
-   - Probe A named `/var/lib/ax-next/repo/repo.git`. The root is right
-     (`gitServer.mountPath` → `AX_GIT_SERVER_REPO_ROOT`), but there is no
-     deployment-wide `repo.git`: `repoPathFor` puts one bare repo per
-     workspace at `<root>/<workspaceId>.git`, and workspace ids are
-     `ws-<16 hex>`. It also `require`d `isomorphic-git`, which this package
-     does not depend on — the git-server is the one backend that uses the
-     real `git` binary, so use that.
-   - Probe B POSTed `/workspace.list`, which has never existed. The
-     listener serves `GET /healthz`, `POST /repos`, `GET|DELETE /repos/<id>`,
-     and the three smart-HTTP routes; everything else returns 503
-     `not_implemented`, so the old probe "failed" identically whether the
-     writes had landed or not.
-
-   The git-server is a **StatefulSet**, not a Deployment, and the chart names
-   it `<release>-<chart>-git-server-experimental` (see
-   `ax-next.gitServerExperimentalComponentName` in `_helpers.tpl`). On a default
-   install (release name `ax-next`) that is `ax-next-git-server-experimental`, and the
-   pods are `<that>-<ordinal>`.
-
-   Note the label you'd reach for does NOT work on pods:
-   `ax-next.selectorLabels` emits only `app.kubernetes.io/name`, so
-   `app.kubernetes.io/component=git-server-experimental` is on the StatefulSet
-   and Service *metadata* but not on the pods. Select pods by name:
-
-   ```bash
-   GSPOD=$(kubectl --context kind-ax-next-dev -n ax-next get pods -o name | grep git-server-experimental | head -1)
-   ```
-
-   ```bash
-   # Probe A: count commits directly from the git-server pod, per workspace.
-   # The pod ships the real `git` binary — that is the whole point of this
-   # tier — so use it rather than a JS git library.
-   kubectl --context kind-ax-next-dev -n ax-next exec "$GSPOD" -- sh -c \
-     'for d in /var/lib/ax-next/repo/ws-*.git; do \
-        printf "%s %s\n" "$d" "$(git --git-dir="$d" rev-list --count refs/heads/main)"; \
-      done'
-   ```
-
-   Expected: at least one `ws-*.git` listed, with a commit count at least 2
-   past whatever seed commit the chart's first boot may have created. With
-   `gitServer.shards > 1` a given workspace lives on exactly one ordinal, so
-   check each pod if the first comes up empty.
-
-   ```bash
-   # Probe B: ask the git-server's REST API for that workspace's head.
-   # `GET /repos/<workspaceId>` → {workspaceId, exists, headOid}.
-   # The token Secret is `<release>-<chart>-git-server-auth`; on a default
-   # `helm install ax-next` that is `ax-next-git-server-auth`.
-   SECRET=$(kubectl --context kind-ax-next-dev -n ax-next get secret -o name | grep git-server-auth | head -1)
-   GSSVC=$(kubectl --context kind-ax-next-dev -n ax-next get svc -o name | grep git-server-experimental | grep -v headless | head -1)
-   kubectl --context kind-ax-next-dev -n ax-next port-forward "$GSSVC" 7780:7780 &
-   curl http://localhost:7780/repos/<workspaceId> \
-     -H "Authorization: Bearer $(kubectl --context kind-ax-next-dev -n ax-next get $SECRET \
-        -o jsonpath='{.data.token}' | base64 -d)" | jq .
-   ```
-
-   Expected: `exists: true` and a non-null 40-hex `headOid`. Take the
-   `<workspaceId>` from Probe A's output (strip the directory and the
-   `.git` suffix).
-
-### Acceptance criteria
-
-- [ ] Both concurrent `curl` calls return HTTP 200.
-- [ ] The git-server pod's `main` ref shows ≥ 2 new commits after the
-      requests complete.
-- [ ] No host pod restarts during the run (`kubectl --context kind-ax-next-dev get pods -n ax-next`
-      shows `RESTARTS = 0` for the host pods).
-- [ ] No `level >= warn` lines in either host pod's logs other than the
-      expected gVisor-disabled warning on kind.
-
-### Cleanup
-
-```bash
-helm --kube-context kind-ax-next-dev uninstall ax-next -n ax-next
-```
-
-The git-server PVC and its auth Secret persist on purpose — they carry
-`helm.sh/resource-policy: keep` so an accidental `helm uninstall`
-doesn't take the workspace history with it. Delete them by hand if a
-clean slate is wanted:
-
-```bash
-# One PVC per shard. The StatefulSet's volumeClaimTemplate is named `repo`,
-# so Kubernetes names the claims `repo-<sts-name>-<ordinal>` — NOT
-# `ax-next-git-server-repo`, which this line used to say and which never
-# existed. List before you delete.
-kubectl --context kind-ax-next-dev -n ax-next get pvc | grep git-server
-kubectl --context kind-ax-next-dev -n ax-next delete pvc repo-ax-next-git-server-experimental-0
-kubectl --context kind-ax-next-dev -n ax-next delete secret ax-next-git-server-auth
-```
+> **Retired.** This scenario walked two host replicas writing through the
+> dedicated git-server pod. TASK-995 removed the git workspace tier, and the
+> chart's `ax-next.validateHostReplicas` guard (ARCH-1) already refuses more
+> than one host replica: the chat stream buffer, the orchestrator's
+> warm-session map, and the Rules-change signal (TASK-617) all live in one
+> host process. There is nothing to walk until that guard is lifted, and the
+> old steps are in git history.
 
 ## Scenario: Credentials admin UI
 
@@ -904,13 +689,13 @@ direct DB query.
 1. Open a chat with the default agent. Tell it to create a routine
    file. Suggested prompt:
 
-   > Create `.ax/routines/notify.md` with frontmatter
+   > Create a routine named `notify` with
    > `trigger.kind: webhook`, `trigger.path: "/test"`, and a prompt
    > body that says `received: {{payload.foo}}`. Use conversation
    > per-fire. Don't add HMAC.
 
-   Confirm the agent committed the file via the chat output
-   (workspace apply landed).
+   Routines live in the database (not in files), so confirm the routine
+   shows up in Settings -> Routines.
 
 2. Read the agent's webhook token directly from postgres:
 
@@ -949,7 +734,7 @@ direct DB query.
    - ref: `gh-webhook-secret`
    - value: `shhh-test-secret`
 
-2. Edit `.ax/routines/notify.md` (chat with the agent or `git push`)
+2. Edit the `notify` routine (chat with the agent or use Settings -> Routines)
    to add an `hmac` block:
 
    ```yaml
@@ -1040,14 +825,14 @@ manual fire.
 2. Create a fresh agent via the chat sidebar's "New agent" flow (or
    the admin UI's agent panel). Use displayName `phase-d-agent`.
 3. Within ~2 seconds, confirm `routines_v1_definitions` got a row for
-   the new agent at `.ax/routines/heartbeat.md`:
+   the new agent's heartbeat:
 
    ```bash
    POD=$(kubectl --context kind-ax-next-dev get pod -n ax-next -l app.kubernetes.io/name=postgresql -o jsonpath='{.items[0].metadata.name}')
    PASS=$(kubectl --context kind-ax-next-dev get secret -n ax-next ax-next-postgresql -o jsonpath='{.data.postgres-password}' | base64 -d)
    kubectl --context kind-ax-next-dev exec -n ax-next $POD -- env PGPASSWORD=$PASS \
      psql -U postgres -d ax_next -c \
-     "SELECT agent_id, path, name FROM routines_v1_definitions WHERE path = '.ax/routines/heartbeat.md';"
+     "SELECT agent_id, name FROM routines_v1_definitions WHERE name = 'heartbeat';"
    ```
 
    Expected: one row per agent ever created (including the new one).
@@ -1078,7 +863,7 @@ manual fire.
 
 7. **Webhook payload variant (optional).** In a chat with
    `phase-d-agent`, ask the agent to create
-   `.ax/routines/payload-test.md` with a webhook trigger
+   a routine named `payload-test` with a webhook trigger
    (`trigger.kind: webhook`, `trigger.path: "/payload-test"`) and a
    prompt body of `received: {{payload.foo}}`. In the Routines modal,
    click **Fire now** on that row → JSON form opens → paste
@@ -1754,35 +1539,29 @@ kubectl --context kind-ax-next-dev exec -n ax-next deploy/ax-next-host -- \
   -c "DELETE FROM auth_better_v1_users WHERE id IN (SELECT user_id FROM auth_better_v1_accounts WHERE provider_id = 'google');"
 ```
 
-## Scenario: `/ephemeral` session scratch tier
+## Scenario: `/tmp` scratch and `/files` durability
 
 ### What this proves
 
-The runner gives the agent a writable, session-scoped scratch directory
-(`/ephemeral` in k8s; a per-session tempdir in the subprocess sandbox) that
-is reachable by the SDK's file tools AND mentioned in the system prompt, and
-whose contents do NOT round-trip to the workspace. The capability is
-provisioned at the sandbox layer via the `AX_EPHEMERAL_ROOT` env var, so it's
-runner-agnostic; the claude-sdk runner translates it into the SDK's
-`additionalDirectories` + a system-prompt note.
+The runner gives the agent two places to write, and they behave differently:
 
-The cluster-only surfaces this proves (the unit tests can't): the emptyDir is
+- `/tmp` is a 10Gi disk emptyDir: scratch for this pod only. Attachments land
+  in `/tmp/uploads/`. It is gone when the pod goes (the `/ephemeral` mount was
+  merged into `/tmp` in TASK-995).
+- `/files` is the agent's durable home (NFS, per-agent subPath). It survives
+  across pods and shows up in the Files tab.
+
+The cluster-only surfaces this proves (the unit tests can't): both mounts are
 actually writable by the runner's non-root uid under `readOnlyRootFilesystem`,
-the SDK honors `additionalDirectories` for a path outside cwd, the note
-reaches the live agent, and the turn-end `git add -A` (scoped to `/agent`)
-genuinely never sees `/ephemeral`.
+`/tmp` is empty in a fresh pod, and `/files` content carries over.
 
 ### Prerequisites
 
 - Goldenpath cluster up, wizard walked (a bootstrap admin + Default Agent
   exist), port-forward 9090 live.
-- Image rebuilt from the branch under test (`make image`). Verify the runner
-  code actually landed (the docker layer cache has hidden runner fixes before):
-  ```bash
-  docker run --rm --entrypoint sh ax-next/agent:dev -c \
-    "grep -rl AX_EPHEMERAL_ROOT /opt/ax-next/host/node_modules/.pnpm/*sandbox-k8s*/ && \
-     ls /opt/ax-next/host/node_modules/.pnpm/*agent-claude-sdk-runner*/node_modules/@ax/agent-claude-sdk-runner/dist/system-prompt.js"
-  ```
+- Image rebuilt from the branch under test (`make image`). The docker layer
+  cache has hidden runner fixes before, so check the runner code actually
+  landed in the image before you trust a result.
 
 ### Headless authenticated chat (no browser)
 
@@ -1834,45 +1613,33 @@ cookie is a live admin session.
 
 ### Walk
 
-1. **Turn 1 — exercise scratch.** Send a prompt instructing the agent to
-   (a) use the Write tool to create `/ephemeral/walk-via-write.txt`,
-   (b) bash `echo ... > /ephemeral/walk-via-bash.txt && ls -la /ephemeral`,
-   (c) use the Write tool to create `ROUND_TRIP_CONTROL.txt` in the cwd.
+1. **Turn 1 — exercise both mounts.** Send a prompt instructing the agent to
+   (a) use the Write tool to create `/tmp/walk-via-write.txt`,
+   (b) bash `echo ... > /tmp/walk-via-bash.txt && ls -la /tmp`,
+   (c) use the Write tool to create `/files/ROUND_TRIP_CONTROL.txt`.
 2. **(Optional) Catch the runner pod** while the turn runs and confirm the
-   real pod-spec env + mount:
+   real pod-spec mounts:
    ```bash
    POD=$(kubectl --context kind-ax-next-dev get pods -n ax-next-runners --no-headers | awk '{print $1}' | head -1)
    kubectl --context kind-ax-next-dev get pod -n ax-next-runners "$POD" \
-     -o jsonpath='{range .spec.containers[0].env[*]}{.name}={.value}{"\n"}{end}' | grep AX_EPHEMERAL_ROOT
+     -o jsonpath='{range .spec.containers[0].volumeMounts[*]}{.mountPath}{"\n"}{end}'
    ```
-3. **Turn 2 — round-trip + prompt check.** Same conversation: ask the agent,
-   without tools, whether it has a designated scratch dir (it should quote the
-   `/ephemeral` note from its system prompt), then bash `ls -la` in cwd and
-   `ls -la /ephemeral`.
+3. **Turn 2 — fresh pod.** Same conversation, after the first pod has gone:
+   bash `ls -la /tmp` and `ls -la /files`.
 
 ### Acceptance criteria
 
-- [ ] Turn-1 Write tool to `/ephemeral/...` **succeeds** (a file tool writing
-      outside cwd only works if `additionalDirectories` includes the scratch
-      root).
-- [ ] Turn-1 bash write to `/ephemeral` succeeds; `ls -la /ephemeral` shows the
-      files owned by the runner uid in a writable dir.
-- [ ] Real chat-spawned runner pod has `AX_EPHEMERAL_ROOT=/ephemeral` + the
-      `/ephemeral` mount, on the image under test.
-- [ ] Turn-2 agent quotes the scratch-directory note from its system prompt.
-- [ ] Turn-2 fresh pod: `/ephemeral` is **empty** (the turn-1 files are gone —
-      never bundled), while `ROUND_TRIP_CONTROL.txt` **persists** in cwd
-      (`/agent`, re-materialized from the workspace).
-
-Note: `printenv AX_EPHEMERAL_ROOT` is **unset** in the agent's shell — that's
-correct, not a bug. The SDK subprocess gets a curated env (`{...providerEnv,
-HOME}`); `AX_EPHEMERAL_ROOT` is host→runner plumbing and the agent learns the
-path from the prompt, not the env.
+- [ ] Turn-1 Write tool to `/tmp/...` **succeeds**.
+- [ ] Turn-1 bash write to `/tmp` succeeds; `ls -la /tmp` shows the files
+      owned by the runner uid in a writable dir.
+- [ ] The runner pod mounts `/tmp`, `/files` and `/home/runner`, and has no
+      `/agent` or `/ephemeral` mount.
+- [ ] Turn-2 fresh pod: the turn-1 files under `/tmp` are **gone**, while
+      `/files/ROUND_TRIP_CONTROL.txt` **persists** and shows in the Files tab.
 
 ### Cleanup
 
 ```bash
-kubectl --context kind-ax-next-dev delete pod ax-walk-ephemeral -n ax-next-runners --ignore-not-found  # if you applied a synthetic probe pod
 curl -s -X DELETE http://localhost:9090/api/chat/conversations/cnv_... \
   -H "Cookie: $COOKIE" -H 'X-Requested-With: ax-admin'   # delete the test conversation
 ```
@@ -2052,7 +1819,7 @@ happened 45 s later). Then the same conversation keeps working, warm.
 1. Open the workspace, pick the agent, and send:
 
    > Run this exact command in Bash and tell me when it finishes:
-   > `sleep 45 && touch /agent/cancel-probe.txt`
+   > `sleep 45 && touch /tmp/cancel-probe.txt`
 
 2. Wait until the reply shows the step running (about 5-6 s). The send button
    has been replaced by a **Stop** button (a filled square).
@@ -2062,7 +1829,7 @@ happened 45 s later). Then the same conversation keeps working, warm.
 
    ```bash
    kubectl --context kind-ax-next-dev -n ax-next-runners get pods
-   kubectl --context kind-ax-next-dev -n ax-next-runners exec <sandbox-pod> -- ls /agent/cancel-probe.txt
+   kubectl --context kind-ax-next-dev -n ax-next-runners exec <sandbox-pod> -- ls /tmp/cancel-probe.txt
    ```
 
 5. Send "say hi". The same sandbox answers (no cold start), and the transcript
@@ -2087,4 +1854,4 @@ happened 45 s later). Then the same conversation keeps working, warm.
 
 ### Cleanup
 
-Nothing to clean: `/agent/cancel-probe.txt` should not exist.
+Nothing to clean: `/tmp/cancel-probe.txt` should not exist.

@@ -4,14 +4,16 @@
 // restore drill that decides PASS or FAIL. A drill whose verifier says PASS over
 // a broken copy is worse than no drill: it is a backup nobody has restored, wearing
 // a certificate. So this runs the REAL script (under `sh`, which is dash on the
-// CI runner and on the agent image) against REAL git repositories and a REAL
+// CI runner and on the agent image) against a REAL content-addressed blob tree
+// (the host PVC's `blobs/`, the only live data on it since TASK-996) and a REAL
 // sqlite file, then breaks each in the ways a bad restore breaks them, and
 // asserts the verdict flips.
 //
 // Nothing here talks to GCP or Kubernetes. The cluster half of the drill is
 // covered by gke-backups.test.js with stub `gcloud`/`kubectl`.
 
-import { execFileSync, spawnSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import {
   chmodSync,
   mkdirSync,
@@ -22,6 +24,9 @@ import {
   openSync,
   writeSync,
   closeSync,
+  symlinkSync,
+  utimesSync,
+  existsSync,
 } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
@@ -32,21 +37,6 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const VERIFY = join(repoRoot, 'deploy/gke/restore-drill-verify.sh');
-
-// Hermetic git: no user config, fixed identity.
-const gitEnv = {
-  ...process.env,
-  GIT_CONFIG_GLOBAL: '/dev/null',
-  GIT_CONFIG_SYSTEM: '/dev/null',
-  GIT_AUTHOR_NAME: 'drill',
-  GIT_AUTHOR_EMAIL: 'drill@example.invalid',
-  GIT_COMMITTER_NAME: 'drill',
-  GIT_COMMITTER_EMAIL: 'drill@example.invalid',
-};
-
-function git(args, cwd) {
-  return execFileSync('git', args, { cwd, env: gitEnv, encoding: 'utf-8' });
-}
 
 let root;
 let ws;
@@ -64,16 +54,18 @@ afterEach(() => {
   rmSync(root, { recursive: true, force: true });
 });
 
-/** A bare repo with one commit, named the way the local workspace backend names them. */
-function makeRepo(name) {
-  const work = join(root, `work-${name}`);
-  mkdirSync(work);
-  git(['init', '-q', '-b', 'main'], work);
-  writeFileSync(join(work, 'hello.txt'), `hello from ${name}\n`);
-  git(['add', '.'], work);
-  git(['commit', '-q', '-m', `first commit for ${name}`], work);
-  git(['clone', '-q', '--bare', work, join(ws, name)], root);
-  return join(ws, name);
+/** Store `content` the way @ax/blob-store-fs does: blobs/<aa>/<bb>/<sha256>. */
+function makeBlob(content, { ageSeconds = 0 } = {}) {
+  const sha = createHash('sha256').update(content).digest('hex');
+  const dir = join(ws, 'blobs', sha.slice(0, 2), sha.slice(2, 4));
+  mkdirSync(dir, { recursive: true });
+  const file = join(dir, sha);
+  writeFileSync(file, content);
+  if (ageSeconds > 0) {
+    const t = Date.now() / 1000 - ageSeconds;
+    utimesSync(file, t, t);
+  }
+  return { sha, file };
 }
 
 function makeFactsDb({ rows = 3 } = {}) {
@@ -105,63 +97,208 @@ describe.each(['sh', ...(HAS_DASH ? ['dash'] : [])])('restore-drill-verify.sh un
   });
 
   it('passes a healthy restored copy and says what it looked at', () => {
-    makeRepo('ws-aaa.git');
-    makeRepo('ws-bbb.git');
+    makeBlob('first attachment');
+    makeBlob('second attachment');
     makeFactsDb();
     const r = verify();
-    expect(r.out).toContain('2 repositories found');
-    expect(r.out).toContain('ws-aaa.git fsck clean');
-    expect(r.out).toContain('ws-bbb.git fsck clean');
+    expect(r.out).toContain('2 blobs found (hashing the newest 2)');
+    expect(r.out.match(/hash matches/g)).toHaveLength(2);
     expect(r.out).toContain('facts.db integrity_check = ok');
     expect(r.out).toContain('memory_facts: 3 rows');
     expect(r.out.trim().split('\n').at(-1)).toBe('DRILL-RESULT: PASS');
     expect(r.status).toBe(0);
   });
 
-  it('accepts the single-repo layout older installs used', () => {
-    makeRepo('repo.git');
+  it('FAILS when the workspace disk has no blobs/ directory', () => {
+    // The store creates its root at boot, so a running fs deployment's disk
+    // always has one. A disk without it is the wrong disk or a bad copy.
     makeFactsDb();
     const r = verify();
-    expect(r.out).toContain('1 repositories found');
-    expect(r.status).toBe(0);
-  });
-
-  it('FAILS when the workspace disk has no repositories at all', () => {
-    makeFactsDb();
-    const r = verify();
-    expect(r.out).toContain('no ws-*.git repositories found');
+    expect(r.out).toContain('FAIL: no blobs/ directory');
     expect(r.out).toContain('DRILL-RESULT: FAIL');
     expect(r.status).toBe(1);
   });
 
-  it('FAILS when a repository is damaged, and names it', () => {
-    const repo = makeRepo('ws-good.git');
-    const bad = makeRepo('ws-bad.git');
+  it('warns, but passes, when blobs/ exists and is empty', () => {
+    mkdirSync(join(ws, 'blobs'));
     makeFactsDb();
-    // Lose every loose object in the bad repo: what a half-restored disk looks like.
-    for (const d of execFileSync('find', [join(bad, 'objects'), '-type', 'f', '-path', '*/objects/??/*'], {
-      encoding: 'utf-8',
-    })
-      .split('\n')
-      .filter(Boolean)) {
-      rmSync(d, { force: true });
-    }
     const r = verify();
-    expect(r.out).toContain('FAIL: ws-bad.git fsck failed');
-    expect(r.out).toContain('ws-good.git fsck clean');
-    expect(repo).toBeTruthy();
+    expect(r.out).toContain('blobs/ holds no stored files');
+    expect(r.status).toBe(0);
+  });
+
+  it('FAILS when a blob\'s bytes no longer match its name, and names it', () => {
+    const good = makeBlob('good bytes');
+    const bad = makeBlob('bytes that will be torn');
+    writeFileSync(bad.file, 'torn');
+    makeFactsDb();
+    const r = verify();
+    expect(r.out).toContain(`FAIL: ${bad.sha.slice(0, 12)} content does not match its name`);
+    expect(r.out).toContain(`${good.sha.slice(0, 12)} hash matches`);
+    expect(r.out).toContain('DRILL-RESULT: FAIL');
     expect(r.status).toBe(1);
   });
 
+  it('FAILS on a symlink where a blob should be, without following it', () => {
+    const real = makeBlob('real');
+    const sha = createHash('sha256').update('pointed-at').digest('hex');
+    const dir = join(ws, 'blobs', sha.slice(0, 2), sha.slice(2, 4));
+    mkdirSync(dir, { recursive: true });
+    symlinkSync(real.file, join(dir, sha));
+    makeFactsDb();
+    const r = verify();
+    expect(r.out).toContain(`FAIL: ${sha} is not a regular file`);
+    expect(r.status).toBe(1);
+  });
+
+  it('FAILS when blobs/ itself is a symlink, without hashing what it points at', () => {
+    // Pointed off the restored disk, a followed link would "verify" some other tree.
+    const elsewhere = join(root, 'elsewhere');
+    const sha = createHash('sha256').update('off-disk bytes').digest('hex');
+    mkdirSync(join(elsewhere, sha.slice(0, 2), sha.slice(2, 4)), { recursive: true });
+    writeFileSync(join(elsewhere, sha.slice(0, 2), sha.slice(2, 4), sha), 'off-disk bytes');
+    symlinkSync(elsewhere, join(ws, 'blobs'));
+    makeFactsDb();
+    const r = verify();
+    expect(r.out).toContain('FAIL: blobs is a symlink');
+    expect(r.out).not.toContain('blobs found');
+    expect(r.out).not.toContain('hash matches');
+    expect(r.status).toBe(1);
+  });
+
+  it.each(['first', 'second'])('FAILS on a symlinked %s-level shard directory instead of skipping it', (level) => {
+    const torn = createHash('sha256').update('real bytes').digest('hex');
+    const [aa, bb] = [torn.slice(0, 2), torn.slice(2, 4)];
+    mkdirSync(join(ws, 'blobs'));
+    if (level === 'first') {
+      const hidden = join(root, 'hidden', bb);
+      mkdirSync(hidden, { recursive: true });
+      writeFileSync(join(hidden, torn), 'torn');
+      symlinkSync(join(root, 'hidden'), join(ws, 'blobs', aa));
+    } else {
+      const hidden = join(root, 'hidden');
+      mkdirSync(hidden, { recursive: true });
+      writeFileSync(join(hidden, torn), 'torn');
+      mkdirSync(join(ws, 'blobs', aa));
+      symlinkSync(hidden, join(ws, 'blobs', aa, bb));
+    }
+    makeFactsDb();
+    const r = verify();
+    const rel = level === 'first' ? aa : `${aa}/${bb}`;
+    expect(r.out).toContain(`FAIL: ${rel} is a symlink, not a shard directory`);
+    expect(r.status).toBe(1);
+  });
+
+  it.skipIf(process.getuid?.() === 0)(
+    'names an unreadable blob in a FAIL line and keeps hashing the rest',
+    () => {
+      // Skipped as root, which reads mode-000 files anyway.
+      const locked = makeBlob('locked bytes');
+      const fine = makeBlob('fine bytes', { ageSeconds: 100 });
+      chmodSync(locked.file, 0o000);
+      makeFactsDb();
+      try {
+        const r = verify();
+        expect(r.out).toContain(`FAIL: ${locked.sha.slice(0, 12)} cannot be read: EACCES`);
+        expect(r.out).toContain(`${fine.sha.slice(0, 12)} hash matches`);
+        expect(r.out).not.toMatch(/\n\s+at /); // no stack trace
+        expect(r.status).toBe(1);
+      } finally {
+        chmodSync(locked.file, 0o644);
+      }
+    },
+  );
+
+  it.each(['0', '00', 'abc', '-5'])('refuses MAX_BLOBS=%j instead of hashing nothing', (v) => {
+    const b = makeBlob('bytes');
+    writeFileSync(b.file, 'torn');
+    makeFactsDb();
+    const r = verify({ MAX_BLOBS: v });
+    expect(r.out).toContain('MAX_BLOBS must be a positive integer');
+    expect(r.status).toBe(1);
+  });
+
+  it('an empty MAX_BLOBS means the default, which still catches a torn blob', () => {
+    const b = makeBlob('bytes');
+    writeFileSync(b.file, 'torn');
+    makeFactsDb();
+    const r = verify({ MAX_BLOBS: '' });
+    expect(r.out).toContain('hashing the newest 1');
+    expect(r.out).toContain('content does not match its name');
+    expect(r.status).toBe(1);
+  });
+
+  it('FAILS on a blob filed under the wrong shard', () => {
+    const { sha, file } = makeBlob('misfiled');
+    const wrong = join(ws, 'blobs', sha.slice(0, 2) === '00' ? '01' : '00', '00');
+    mkdirSync(wrong, { recursive: true });
+    writeFileSync(join(wrong, sha), readFileSync(file));
+    rmSync(file);
+    makeFactsDb();
+    const r = verify();
+    expect(r.out).toContain(`FAIL: ${sha} is filed under the wrong shard`);
+    expect(r.status).toBe(1);
+  });
+
+  it('ignores what the store itself ignores: .retired/, temp files, stray names', () => {
+    makeBlob('live');
+    const { sha } = makeBlob('retired one');
+    // Move one into the retired tree, the way `retire` does.
+    const retired = join(ws, 'blobs', '.retired', sha.slice(0, 2), sha.slice(2, 4));
+    mkdirSync(retired, { recursive: true });
+    writeFileSync(join(retired, sha), 'not even the right bytes');
+    rmSync(join(ws, 'blobs', sha.slice(0, 2), sha.slice(2, 4), sha));
+    const live = makeBlob('another');
+    writeFileSync(`${live.file}.tmp.123.abc`, 'half written');
+    mkdirSync(join(ws, 'blobs', 'lost+found'));
+    makeFactsDb();
+    const r = verify();
+    expect(r.out).toContain('2 blobs found');
+    expect(r.out).not.toContain('FAIL');
+    expect(r.status).toBe(0);
+  });
+
+  it('reports old ws-*.git repos without checking them, and never runs git', () => {
+    // Since TASK-995 nothing reads the old git workspace repos. They are
+    // agent-written and untrusted, so the verifier must not hand them to git
+    // at all: a PATH stub records any git call.
+    mkdirSync(join(ws, 'ws-aaa.git'));
+    mkdirSync(join(ws, 'ws-bbb.git'));
+    makeBlob('blob');
+    makeFactsDb();
+    const bin = join(root, 'gitbin');
+    mkdirSync(bin);
+    const calls = join(root, 'git-calls.log');
+    writeFileSync(join(bin, 'git'), `#!/bin/sh\nprintf '%s\\n' "$*" >> "${calls}"\nexit 1\n`);
+    chmodSync(join(bin, 'git'), 0o755);
+    const r = verify({ PATH: `${bin}:${process.env.PATH}` });
+    expect(r.out).toContain('warn: 2 old git workspace repos (ws-*.git, repo.git) still on the disk');
+    expect(r.out).toContain('Reset after the agent-files cutover');
+    expect(existsSync(calls), 'the verifier ran git').toBe(false);
+    expect(r.status).toBe(0);
+  });
+
+  it('hashes only MAX_BLOBS blobs, newest first, but still counts them all', () => {
+    makeBlob('old', { ageSeconds: 3000 });
+    makeBlob('older', { ageSeconds: 6000 });
+    const newest = makeBlob('newest');
+    makeFactsDb();
+    const r = verify({ MAX_BLOBS: '1' });
+    expect(r.out).toContain('3 blobs found (hashing the newest 1)');
+    expect(r.out.match(/hash matches/g)).toHaveLength(1);
+    expect(r.out).toContain(`${newest.sha.slice(0, 12)} hash matches`);
+    expect(r.status).toBe(0);
+  });
+
   it('FAILS when facts.db is missing', () => {
-    makeRepo('ws-aaa.git');
+    makeBlob('blob');
     const r = verify();
     expect(r.out).toContain('facts.db not found');
     expect(r.status).toBe(1);
   });
 
   it('FAILS when facts.db is corrupt', () => {
-    makeRepo('ws-aaa.git');
+    makeBlob('blob');
     makeFactsDb({ rows: 400 });
     // Scribble over the middle of the file (after the header, so it still looks
     // like sqlite): a torn write. Any of "cannot open", "integrity_check
@@ -179,7 +316,7 @@ describe.each(['sh', ...(HAS_DASH ? ['dash'] : [])])('restore-drill-verify.sh un
     // A torn write does not always make the file unreadable; sometimes it opens,
     // every SELECT works, and only integrity_check notices (here: a row that
     // breaks a CHECK constraint, like the real table's `provenance IN (...)`).
-    makeRepo('ws-aaa.git');
+    makeBlob('blob');
     const db = new DatabaseSync(join(facts, 'facts.db'));
     db.exec('CREATE TABLE memory_facts (id INTEGER PRIMARY KEY, n INTEGER CHECK (n > 0))');
     db.exec('INSERT INTO memory_facts (n) VALUES (1)');
@@ -194,7 +331,7 @@ describe.each(['sh', ...(HAS_DASH ? ['dash'] : [])])('restore-drill-verify.sh un
   });
 
   it('warns, but passes, when facts.db is valid and empty', () => {
-    makeRepo('ws-aaa.git');
+    makeBlob('blob');
     makeFactsDb({ rows: 0 });
     const r = verify();
     expect(r.out).toContain('every table is empty');
@@ -206,7 +343,7 @@ describe.each(['sh', ...(HAS_DASH ? ['dash'] : [])])('restore-drill-verify.sh un
     // FTS5 one. The drill pod opens the file with plain node:sqlite, which does
     // not have vec0 registered. Build the file the way the memory plugin does
     // (same driver, same extension) and prove the verifier still reads it.
-    makeRepo('ws-aaa.git');
+    makeBlob('blob');
     const req = createRequire(join(repoRoot, 'packages/memory-facts-sqlite/package.json'));
     const BetterSqlite3 = req('better-sqlite3');
     const sqliteVec = req('sqlite-vec');
@@ -226,42 +363,6 @@ describe.each(['sh', ...(HAS_DASH ? ['dash'] : [])])('restore-drill-verify.sh un
     expect(r.out).not.toContain('memory_facts_vec: ');
     expect(r.out).not.toContain('memory_facts_fts: ');
     expect(r.out).not.toContain('FAIL');
-    expect(r.status).toBe(0);
-  });
-
-  it('never lets a restored repository make git run a program: every git call carries the lockdown flags', () => {
-    // The repos are written by agents, so they are untrusted. fsck and log on a
-    // bare repo do not consult these settings today, which is exactly why a
-    // behavioural test would pass either way: check the invocations instead.
-    makeRepo('ws-aaa.git');
-    makeRepo('ws-bbb.git');
-    makeFactsDb();
-    const realGit = execFileSync('sh', ['-c', 'command -v git'], { encoding: 'utf-8' }).trim();
-    const bin = join(root, 'gitbin');
-    mkdirSync(bin);
-    const calls = join(root, 'git-calls.log');
-    writeFileSync(
-      join(bin, 'git'),
-      `#!/bin/sh\nprintf '%s\\n' "$*" >> "${calls}"\nexec "${realGit}" "$@"\n`,
-    );
-    chmodSync(join(bin, 'git'), 0o755);
-    const r = verify({ PATH: `${bin}:${process.env.PATH}` });
-    expect(r.status).toBe(0);
-    const lines = readFileSync(calls, 'utf-8').split('\n').filter(Boolean);
-    expect(lines.length).toBeGreaterThanOrEqual(4); // fsck + log, for two repos
-    for (const l of lines) {
-      expect(l).toContain('core.hooksPath=/dev/null');
-      expect(l).toContain('core.fsmonitor=false');
-      expect(l).toContain('core.pager=cat');
-    }
-  });
-
-  it('checks only MAX_REPOS repositories but still counts them all', () => {
-    for (const n of ['ws-1.git', 'ws-2.git', 'ws-3.git']) makeRepo(n);
-    makeFactsDb();
-    const r = verify({ MAX_REPOS: '1' });
-    expect(r.out).toContain('3 repositories found (checking the newest 1)');
-    expect(r.out.match(/fsck clean/g)).toHaveLength(1);
     expect(r.status).toBe(0);
   });
 

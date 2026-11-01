@@ -128,9 +128,7 @@ The three policies below are gated by `.Values.networkPolicies.enabled`
 (default `true`). Default-on means a typo in values misses the perimeter; we
 accept that over the alternative (default-off and an operator forgets to flip
 it). The chart can render others too: the shared-pool storage helper's
-`-storage` (gated by `sandbox.sharedPool.enabled` alone) and the experimental
-git-server policy (gated by `networkPolicies.enabled` and `gitServer.enabled`).
-See their templates.
+`-storage` (gated by `sandbox.sharedPool.enabled` alone). See its template.
 
 ### `sandbox-restrict.yaml` — runner pod fence
 
@@ -215,8 +213,8 @@ plugin sets:
 - `runAsNonRoot: true`, `runAsUser: 1000`
 - `allowPrivilegeEscalation: false`
 - `capabilities: { drop: ['ALL'] }`
-- `readOnlyRootFilesystem: true` with `emptyDir`-backed `/tmp`, `/agent` and
-  `/ephemeral` (plus a tmpfs `/home/runner`); the durable `/files` mount
+- `readOnlyRootFilesystem: true` with a disk `emptyDir` `/tmp` (plus a tmpfs
+  `/home/runner`); the durable `/files` mount
   (required) is NFS and per-agent `subPath`-confined
 - `automountServiceAccountToken: false`
 - `hostNetwork: false`
@@ -232,7 +230,7 @@ re-reads them. The chart isn't trying to be a second source of truth for
 runner pod security.
 
 The HOST pod itself does NOT have a hardened `securityContext` on the
-deployment template today. It needs to write to its workspace PVC and run
+deployment template today. It needs to write to its host PVC (which holds `blobs/`) and run
 as whatever UID the agent image expects. Production hardening of the host
 pod (non-root host, restricted SA, dedicated SCC) is a follow-up; flagged
 in "Known limits."
@@ -314,150 +312,6 @@ that an admin must approve before it grants any reach (the connector-approval ga
 TASK-93/94). That approval step is where each organization curates its own trusted
 image set. Combined with the descriptor's mandatory digest-pinning, an approved
 entry can't have its bytes swapped afterward.
-
-## git-server pod
-
-When `workspace.backend: http` and `gitServer.enabled: true`, the chart
-ships a separate `<release>-git-server` Deployment that owns the bare git
-repo on a dedicated PVC. Host pods read and write workspace state by
-talking to it over HTTP. This is how multi-replica host scaling works
-without two hosts racing each other for the same gitdir.
-
-The protocol-level walk (wire schema, auth handshake, path validation,
-token-rotation pain) lives in `packages/workspace-git-http/SECURITY.md` —
-read that first if you're chasing how the bytes flow. This section is
-the operator's view: what the chart actually deploys, how it's locked
-down, and what we're on the hook for at install time.
-
-### One replica, by design
-
-The Deployment is pinned to `replicas: 1`. The per-repo mutex inside
-`@ax/workspace-git-core` is in-process — running two server replicas
-against the same PVC would race on `refs/heads/main` and silently corrupt
-the workspace. The chart enforces single-writer by construction. If we
-ever need horizontal scale here, it's an external-lock conversation, not
-a `replicas: 2` toggle.
-
-### Pod hardening
-
-Unlike the host pod, the git-server pod IS hardened in the deployment
-template (Task 15). The chart sets, on both pod and container
-`securityContext`:
-
-- `runAsUser: 1000`, `runAsNonRoot: true` — non-root, fixed UID.
-- `allowPrivilegeEscalation: false` — no setuid surprises.
-- `readOnlyRootFilesystem: true` — the only writable mount is the PVC
-  (mounted at the bare-repo path) and a sized `/tmp` `emptyDir` (capped
-  at 64Mi via `sizeLimit`).
-- `capabilities: { drop: ['ALL'] }` — no Linux capabilities at all.
-
-If the process gets popped, the attacker is a non-root user with no
-shell, no writable rootfs outside one PVC mount and 64Mi of tmpfs, and
-no caps. Combined with the NetworkPolicy below, the local blast radius
-is small. The data blast radius is "every workspace's content," and we
-discuss that in the package SECURITY note.
-
-### NetworkPolicy: dual gate
-
-`templates/networkpolicies/git-server-network.yaml` (Task 17) gates the
-listener with two doors that both have to open:
-
-- **Ingress:** allowed only from pods labeled as host pods
-  (`app.kubernetes.io/component: host`) in the same namespace. Runner
-  pods are NOT allowed — they don't speak workspace protocol and there's
-  no legitimate reason for one to reach the git-server. If you ever see
-  a runner trying to connect, that's the bug, not the policy.
-- **Egress:** none. The git-server is a leaf service. It doesn't call
-  out to anything — not DNS, not the apiserver, not HTTPS. Empty egress
-  rules with `policyTypes: ["Egress"]` deny everything.
-
-The full gate is "in-cluster network reach (NetworkPolicy) → bearer
-token check (`crypto.timingSafeEqual` against the env-loaded service
-token)." Both must succeed. The NetworkPolicy is the perimeter; the
-bearer token is the wall behind it. Same posture as `@ax/ipc-http`,
-same trade-off about NetworkPolicy enforcement requiring a real CNI
-(see "What happens without a NetworkPolicy-enforcing CNI" above —
-applies here too).
-
-### Auth Secret
-
-`<release>-git-server-auth`, key `token`. Two ways it gets populated:
-
-- **Operator-provided** via `gitServer.auth.token` in values. Use this
-  for GitOps-style deterministic deploys where the secret material lives
-  in your secrets manager and the chart just renders it.
-- **Lookup-or-generate** at install time when no override is set. The
-  chart looks up the existing Secret and reuses its `token`; if there
-  isn't one, it generates a fresh `randAlphaNum 48`. So `helm upgrade`
-  doesn't rotate the token out from under a running host pod just
-  because someone re-ran the install command.
-
-The Secret carries `helm.sh/resource-policy: keep` so `helm uninstall`
-doesn't nuke it either. We'd rather leave a Secret behind than rotate a
-token under a running host's feet.
-
-### PVC retention
-
-The git-server PVC also carries `helm.sh/resource-policy: keep`. A
-`helm uninstall` will NOT delete it. The bare repo is the single source
-of workspace truth; we won't let `helm uninstall --purge` accidentally
-end every session's history. Operators who actually want to wipe the
-workspace store have to delete the PVC explicitly, on purpose, with
-both hands on the wheel.
-
-### Token rotation: real operational pain
-
-The token lives in the Secret above. Rotating it means writing a new
-value and rolling-restarting **both** Deployments:
-
-1. The git-server Deployment, so the server's expected-token env
-   updates.
-2. Every host Deployment, so each host plugin reads the new token at
-   process start.
-
-During the rollout window, some pods will have the old token and some
-the new one. Mismatched-token requests fail with 401, the host plugin's
-retry budget exhausts, and workspace operations fail loudly until the
-rollouts converge. We'd rather flag this than hide it: token rotation
-in this slice is an operator-visible event, not a silent background
-swap.
-
-A future improvement is **dual-token acceptance**: the server accepts
-`tokenOld OR tokenNew` for the rotation window, the operator rolls
-hosts to `tokenNew`, then drops `tokenOld` from the server config.
-That's not in this slice. Listed here so the next person who has to
-rotate doesn't think they're missing something.
-
-### Known limit: no disaster recovery
-
-The git-server PVC is the **single source of workspace truth**. If the
-PVC dies — node failure with non-replicated storage, accidental delete,
-filesystem corruption, ransomware on the underlying volume — every
-workspace is lost. The chart ships zero DR primitives. No backup, no
-replication, no `git bundle` cron, no snapshot lifecycle.
-
-This is operational, not theoretical. We're on the hook for storage-
-class-level backup at the cluster layer, not at the chart layer.
-Concrete options operators should pick at least one of:
-
-- Volume snapshots via the cluster's CSI driver (e.g., AWS EBS
-  snapshots, Longhorn snapshots, GCE PD snapshots).
-- A storage class that replicates across zones or nodes (e.g., Longhorn
-  with replica count > 1, cloud-provider regional volumes).
-- A `git bundle` cron that ships the bare repo to off-cluster object
-  storage on a schedule.
-
-We're being upfront about this because "the workspace store is on one
-PVC and there's no backup" is the kind of detail that's easy to miss
-until the day it matters and impossible to retrofit afterward. If
-nothing else, please pick one before this leaves canary status.
-
-The chart itself still ships no DR primitives, and that is on purpose:
-backup is a cluster-layer job. On GKE the operator-side answer lives
-outside the chart, in `deploy/gke/backups.sh` (a daily disk-snapshot
-schedule, a health check, and a restore drill for the workspace and
-facts disks). `deploy/GKE.md` ("Backups and disaster recovery") says
-what that covers and how much data a bad day can still cost.
 
 ## Boundary review
 
@@ -574,7 +428,7 @@ Flagged for re-review when Bitnami's transition completes.
   could add the label and let the chart fail loudly if the cluster's
   admission webhook isn't configured for it.
 - **Host pod has no `securityContext` hardening.** The host needs to write
-  to its workspace PVC and read its config; we didn't pin a specific UID,
+  to its host PVC (which holds `blobs/`) and read its config; we didn't pin a specific UID,
   drop capabilities, or set `readOnlyRootFilesystem` on it. If the host
   pod is compromised, an attacker has whatever the agent image's default
   user can do, plus the SA token. The SA token is the bigger concern, and

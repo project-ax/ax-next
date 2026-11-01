@@ -15,8 +15,8 @@
 #     runner spawns short-lived Claude SDK children — we want clean reaping).
 #
 # What this image is NOT:
-#   - Not the storage-tier image — that's container/git-server/Dockerfile,
-#     which ships the `git` binary. We don't.
+#   - Not a storage-tier image. There isn't one any more (the git server
+#     went away in TASK-995). The host and runner share this one image.
 #   - Not loaded with secrets at build time. ANTHROPIC_API_KEY,
 #     AX_CREDENTIALS_KEY, DATABASE_URL all come in via env at run time
 #     (Helm Secret).

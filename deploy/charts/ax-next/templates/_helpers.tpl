@@ -138,16 +138,6 @@ Container image string for the host/runner pod.
 {{- end }}
 
 {{/*
-Storage-tier image (Phase 1 of workspace redesign) — separate from
-host/runner image because the storage tier ships with the git binary.
-*/}}
-{{- define "ax-next.gitServerImage" -}}
-{{- $repo := .Values.gitServerImage.repository -}}
-{{- $tag := .Values.gitServerImage.tag | default .Chart.AppVersion -}}
-{{- printf "%s:%s" $repo $tag -}}
-{{- end }}
-
-{{/*
 Host-component name. ax-next.fullname truncates to 63 chars; appending
 "-host" can push the label past the DNS limit for long release names.
 This helper produces the truncated, DNS-safe host name and is the source
@@ -322,86 +312,6 @@ Invoked from host/deployment.yaml, which always renders.
 {{- end -}}
 {{- end -}}
 
-{{/*
-git-server component name. <release>-<chart>-git-server, truncated to 63
-chars (DNS label limit). Source of truth for the Deployment, Service,
-ServiceAccount, and the PVC name prefix.
-*/}}
-{{- define "ax-next.gitServerComponentName" -}}
-{{- printf "%s-git-server" (include "ax-next.fullname" .) | trunc 63 | trimSuffix "-" -}}
-{{- end -}}
-
-{{/*
-Cluster-internal URL the host plugin uses to reach the git-server.
-http://<svc>.<ns>.svc.cluster.local:<port>. Mirrors hostIpcUrl's
-fully-qualified shape so a future cluster-DNS suffix change moves both in
-lockstep. The host deployment stamps this onto AX_WORKSPACE_GIT_HTTP_URL
-when workspace.backend == "http".
-*/}}
-{{- define "ax-next.gitServerServiceUrl" -}}
-{{- printf "http://%s.%s.svc.cluster.local:%d" (include "ax-next.gitServerComponentName" .) (include "ax-next.hostNamespace" .) (int .Values.gitServer.service.port) -}}
-{{- end -}}
-
-{{/*
-Name of the Secret holding the git-server's bearer token.
-<release>-<chart>-git-server-auth.
-*/}}
-{{- define "ax-next.gitServerAuthSecretName" -}}
-{{- printf "%s-git-server-auth" (include "ax-next.fullname" .) | trunc 63 | trimSuffix "-" -}}
-{{- end -}}
-
-{{/*
-Experimental git-server (Phase 1 of workspace redesign) component name.
-<release>-<chart>-git-server-experimental, truncated to 63 chars (DNS
-label limit). DELIBERATELY distinct from ax-next.gitServerComponentName
-so the new StatefulSet/Service/NetworkPolicy can sit alongside the legacy
-Deployment/Service during the parallel-canary phase without colliding.
-
-CRUCIALLY, the suffix is reserved BEFORE the 63-char truncation. The
-naive "<fullname>-git-server-experimental | trunc 63" form would, on a
-sufficiently long release name, drop the "-experimental" part and
-collide with ax-next.gitServerComponentName — quietly aliasing the new
-StatefulSet onto the legacy Deployment's labels. Instead we truncate
-the base to 39 chars (63 - 24 for "-git-server-experimental") so the
-suffix is always preserved.
-*/}}
-{{- define "ax-next.gitServerExperimentalComponentName" -}}
-{{- $base := include "ax-next.fullname" . | trunc 39 | trimSuffix "-" -}}
-{{- printf "%s-git-server-experimental" $base | trunc 63 | trimSuffix "-" -}}
-{{- end -}}
-
-{{/*
-Cluster-internal URL the host plugin uses to reach the EXPERIMENTAL git-server
-tier. Mirrors `ax-next.gitServerServiceUrl` for the legacy tier; routes traffic
-to the regular ClusterIP Service in front of the new StatefulSet (NOT the
-headless one — at N=1 they land on the same pod, but the ClusterIP form is
-the simpler, future-proof shape for the host plugin's URL config).
-
-The host deployment stamps this onto AX_WORKSPACE_GIT_SERVER_URL when
-workspace.backend == "git-protocol".
-*/}}
-{{- define "ax-next.gitServerExperimentalServiceUrl" -}}
-{{- printf "http://%s.%s.svc.cluster.local:%d" (include "ax-next.gitServerExperimentalComponentName" .) (include "ax-next.hostNamespace" .) (int .Values.gitServer.service.port) -}}
-{{- end -}}
-
-{{/*
-Validate workspace.backend=git-protocol prerequisites. Fails fast at template
-time if the operator picked the new backend without enabling the experimental
-git-server tier — otherwise the host pod boots with AX_WORKSPACE_GIT_SERVER_URL
-pointing at a Service that doesn't render, and we'd discover the misconfiguration
-at first workspace op instead of at install. Belt-and-suspenders for the values
-schema, since helm has no native enum-with-prereqs validator.
-
-Invoked from `host/deployment.yaml`, which always renders.
-*/}}
-{{- define "ax-next.validateWorkspaceBackend" -}}
-{{- if eq .Values.workspace.backend "git-protocol" -}}
-{{- if not (include "ax-next.bool" .Values.gitServer.enabled) -}}
-{{- fail "workspace.backend=git-protocol requires gitServer.enabled=true" -}}
-{{- end -}}
-{{- end -}}
-{{- end -}}
-
 {{- define "ax-next.memoryFactsRoot" -}}
 /var/lib/ax-next/memory-facts
 {{- end -}}
@@ -465,7 +375,7 @@ an IN-PROCESS per-reqId chunk ring buffer (packages/channel-web/src/server/
 chunk-buffer.ts), and the chat:stream-chunk fan-in is replica-local. With
 replicas > 1, an SSE reconnect can land on a replica that never buffered the
 turn, and the live chunk subscriber on a different replica never fires — chat
-silently breaks. The host PVC (workspace.backend=local) is also RWO and the
+silently breaks. The host PVC (blob.backend=fs) is also RWO and the
 Deployment strategy is Recreate, so multi-replica isn't supported at the
 storage tier either.
 
@@ -482,7 +392,7 @@ it also needs, at minimum (each is in-process today and says so at its site):
     same conversation and one would be lost.
 
 So we refuse to render a multi-replica host until a distributed stream broker
-(and a multi-replica workspace backend) lands. Better to fail the `helm
+(and a multi-replica blob backend, s3) lands. Better to fail the `helm
 template` than to ship a valid-looking Deployment that drops chat streams.
 
 Invoked from host/deployment.yaml, which always renders.
@@ -518,8 +428,8 @@ minio.enabled=true (the kind-dev path).
 {{- end -}}
 
 {{/*
-MinIO image (out-of-git design Part A). Separate pin from the host/runner +
-git-server images — MinIO is its own upstream. Only used in the dev/test path.
+MinIO image (out-of-git design Part A). Separate pin from the host/runner
+image — MinIO is its own upstream. Only used in the dev/test path.
 */}}
 {{- define "ax-next.minioImage" -}}
 {{- printf "%s:%s" .Values.minio.image.repository .Values.minio.image.tag -}}
@@ -528,7 +438,7 @@ git-server images — MinIO is its own upstream. Only used in the dev/test path.
 {{/*
 Cluster-internal S3 endpoint URL the host's @ax/blob-store-s3 plugin uses to
 reach the in-cluster MinIO. http://<svc>.<ns>.svc.cluster.local:<port>.
-Mirrors gitServerServiceUrl's fully-qualified shape so a future cluster-DNS
+Mirrors hostIpcUrl's fully-qualified shape so a future cluster-DNS
 suffix change moves them in lockstep. Stamped onto AX_BLOB_S3_ENDPOINT when
 the blob backend is s3 AND minio.enabled (the kind-dev path); prod GCS sets
 blob.s3.endpoint explicitly instead.
@@ -561,24 +471,18 @@ time on misconfigurations the operator can't recover from at runtime:
     in values.yaml and the preset no longer derives one, so empty is never
     right. It almost always means `helm upgrade --reuse-values` carried a
     pre-TASK-992 release's `root: ""` forward (it renders with the OLD
-    release's values, not this chart's defaults). The message prints the path
-    the preset used to derive with the local workspace backend,
-    `<workspace.mountPath>/blobs`, so pinning it moves nothing. Any other
-    workspace.backend (git-protocol, or absent) gets a separate message: the
-    preset used /var/lib/ax-next/blobs there, on the container's scratch disk,
-    so there were no durable blobs to keep, and the advice is s3. When the
-    cleanup card removes the workspace values, revisit this split: every empty
-    root would then get the non-local message (the local-message test goes red).
-  - blob.backend=fs with a root that is not under workspace.mountPath, while
-    workspace.backend=local mounts the workspace PVC there. The host has no
-    other volume a blob root could live on, so such a root is the container's
-    scratch disk: existing blobs vanish from view and new ones are lost on
-    restart. This is the hazard the pin itself creates: an install with a
-    custom workspace.mountPath that upgrades with `-f` values picks up the
-    pinned default, which is off its PVC.
-Workspace values are read through `dig`, so the last guard switches itself off
-when the workspace settings go away; the chart test "AX_BLOB_FS_ROOT lies on
-the host PVC mount" is the backstop then.
+    release's values, not this chart's defaults). The message prints
+    `<workspace.mountPath>/blobs`, the path the preset used to derive, so
+    pinning it moves nothing.
+  - blob.backend=fs with a root that is not under workspace.mountPath. The
+    host mounts the `<release>-workspace` PVC there whenever blob.backend=fs
+    (TASK-996), and has no other volume a blob root could live on, so such a
+    root is the container's scratch disk: existing blobs vanish from view and
+    new ones are lost on restart. This is the hazard the pin itself creates:
+    an install with a custom workspace.mountPath that upgrades with `-f`
+    values picks up the pinned default, which is off its PVC.
+`workspace.backend` and `gitServer.*` are retired (TASK-996). A release
+upgraded with --reuse-values may still carry them; nothing reads them.
 Belt-and-suspenders for the values schema (helm has no native enum-with-prereqs
 validator). Invoked from host/deployment.yaml, which always renders.
 */}}
@@ -591,16 +495,12 @@ validator). Invoked from host/deployment.yaml, which always renders.
 {{- fail "blob.backend=s3 requires blob.s3.bucket to be set" -}}
 {{- end -}}
 {{- else if eq .Values.blob.backend "fs" -}}
-{{- $ws := .Values.workspace | default dict -}}
-{{- $mp := dig "mountPath" "/var/lib/ax-next/workspaces" $ws -}}
+{{- $mp := .Values.workspace.mountPath | default "/var/lib/ax-next/workspaces" -}}
 {{- $root := dig "fs" "root" "" .Values.blob -}}
-{{- if and (not $root) (ne (dig "backend" "" $ws) "local") -}}
-{{- fail "blob.fs.root is empty. Blobs (attachments, artifacts, skill files) live on the host disk at blob.fs.root. On this deployment the workspace backend is not local, so the host never mounted a workspace volume and blobs were on the container's scratch disk, which is wiped on restart. The chart gives this host no volume for blobs, so use blob.backend=s3 to keep them. To keep the old behaviour (blobs lost on every restart), set blob.fs.root=/var/lib/ax-next/blobs explicitly." -}}
-{{- end -}}
 {{- if not $root -}}
 {{- fail (printf "blob.fs.root is empty. Blobs (attachments, artifacts, skill files) live on the host disk at blob.fs.root, and the chart no longer works that out from workspace.mountPath. This deployment's existing blobs are at %s/blobs: pass --set blob.fs.root=%s/blobs once (--reuse-values keeps it after that). An empty value usually means helm upgrade --reuse-values carried it forward from an older chart." $mp $mp) -}}
 {{- end -}}
-{{- if and (eq (dig "backend" "" $ws) "local") (or (not (hasPrefix (printf "%s/" (trimSuffix "/" $mp)) $root)) (regexMatch "(^|/)\\.\\.(/|$)" $root)) -}}
+{{- if or (not (hasPrefix (printf "%s/" (trimSuffix "/" $mp)) $root)) (regexMatch "(^|/)\\.\\.(/|$)" $root) -}}
 {{- fail (printf "blob.fs.root (%s) is not on the host's workspace volume (mounted at %s), so blobs would land on the container's scratch disk and vanish on restart. Set blob.fs.root to a path under %s; this deployment's existing blobs are at %s/blobs." $root $mp $mp $mp) -}}
 {{- end -}}
 {{- end -}}

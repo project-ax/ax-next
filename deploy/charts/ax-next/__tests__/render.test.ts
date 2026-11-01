@@ -1,16 +1,17 @@
-// Chart render tests for the dedicated git-server StatefulSet tier.
+// Chart render tests for the ax-next chart: capability gates, env shape,
+// NetworkPolicies, and the retired git-server tier staying retired.
 //
 // Strategy: shell out to `helm template`, parse the multi-doc YAML, and
 // assert on the resulting resources. The tests gate on `helm` being on the
 // PATH; if it's not, every test inside the suite is skipped with a clear
 // console.warn so CI doesn't silently pass over a missing dep.
 //
-// History: prior to 2026-05-04 this file also covered a parallel "legacy
-// Deployment + experimental StatefulSet" canary topology, gated behind
-// `gitServer.experimental.gitProtocol`. Both the legacy
-// `@ax/workspace-git-http` server and the canary toggle were retired in
-// the workspace-git-http deletion sweep. The chart now renders one tier:
-// the StatefulSet, when `gitServer.enabled=true`.
+// History: this file began as the git-server StatefulSet suite. TASK-995
+// removed the git workspace tier from the host and runner, and TASK-996
+// removed the git-server templates, its NetworkPolicy rule, its auth Secret
+// and the host's AX_WORKSPACE_* env from the chart. The suite below pins
+// that they stay gone, including for a `--reuse-values` upgrade whose old
+// values still say `gitServer.enabled=true`.
 
 import { execFileSync, spawnSync } from 'node:child_process';
 import { cpSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -127,8 +128,6 @@ if (GATE.mode === 'require-missing') {
   });
 }
 
-const STS_NAME = 'ax-test-ax-next-git-server-experimental';
-
 describeIfHelm('ax-next chart: Agent Sandbox backend', () => {
   const enabled = ['--set', 'sandbox.backend=agent-sandbox', '--set', 'credentialProxy.tcp.enabled=true'];
   it('wires the backend and least-privilege namespaced Sandbox RBAC', () => {
@@ -167,155 +166,6 @@ describeIfHelm('ax-next chart: Agent Sandbox backend', () => {
 // This file used to do it from its own `beforeAll`, as did blob-backend and
 // env-shape; three parallel copies raced on the shared helm cache (TASK-316).
 
-describeIfHelm('ax-next chart: git-server StatefulSet', () => {
-  it('gitServer.enabled=true: StatefulSet + headless Service + ClusterIP Service + NetworkPolicy render', () => {
-    const docs = helmTemplate([
-      '--set', 'gitServer.enabled=true',
-      '--set', 'gitServer.storage=10Gi',
-    ]);
-    const sts = docs.find(
-      (d) => d.kind === 'StatefulSet' && d.metadata?.name === STS_NAME,
-    );
-    expect(sts, 'git-server StatefulSet').toBeDefined();
-
-    const headless = docs.find(
-      (d) => d.kind === 'Service' && d.metadata?.name === `${STS_NAME}-headless`,
-    );
-    expect(headless, 'headless Service').toBeDefined();
-
-    const clusterIp = docs.find(
-      (d) => d.kind === 'Service' && d.metadata?.name === STS_NAME,
-    );
-    expect(clusterIp, 'ClusterIP Service').toBeDefined();
-
-    const np = docs.find(
-      (d) =>
-        d.kind === 'NetworkPolicy' && d.metadata?.name === `${STS_NAME}-network`,
-    );
-    expect(np, 'NetworkPolicy').toBeDefined();
-
-    // StatefulSet shape.
-    expect(sts?.spec?.replicas, 'replicas defaults to gitServer.shards=1').toBe(1);
-    expect(sts?.spec?.podManagementPolicy).toBe('Parallel');
-    expect(sts?.spec?.updateStrategy?.type).toBe('RollingUpdate');
-
-    const vcts = sts?.spec?.volumeClaimTemplates;
-    expect(Array.isArray(vcts) && vcts.length).toBe(1);
-    const vct = vcts[0];
-    expect(vct.metadata?.annotations?.['helm.sh/resource-policy']).toBe('keep');
-    expect(vct.spec?.accessModes).toEqual(['ReadWriteOnce']);
-    expect(vct.spec?.resources?.requests?.storage).toBe('10Gi');
-
-    const container = sts?.spec?.template?.spec?.containers?.[0];
-    const env: Array<{
-      name: string;
-      value?: string;
-      valueFrom?: { fieldRef?: { fieldPath?: string } };
-    }> = container?.env ?? [];
-    const envByName = Object.fromEntries(env.map((e) => [e.name, e]));
-    expect(envByName.AX_GIT_SERVER_TOKEN).toBeDefined();
-    expect(envByName.AX_GIT_SERVER_REPO_ROOT?.value).toBe('/var/lib/ax-next/repo');
-    expect(envByName.AX_GIT_SERVER_PORT?.value).toBe('7780');
-    expect(envByName.AX_GIT_SERVER_SHARD_INDEX?.valueFrom?.fieldRef?.fieldPath).toBe(
-      "metadata.labels['apps.kubernetes.io/pod-index']",
-    );
-    expect(envByName.AX_GIT_SERVER_DRAIN_TIMEOUT_MS?.value).toBe('50000');
-
-    expect(container?.securityContext?.runAsNonRoot).toBe(true);
-    expect(container?.securityContext?.readOnlyRootFilesystem).toBe(true);
-    expect(container?.securityContext?.capabilities?.drop).toEqual(['ALL']);
-
-    const preStopCmd: string[] | undefined =
-      container?.lifecycle?.preStop?.exec?.command;
-    expect(preStopCmd?.length, 'preStop command set').toBeGreaterThan(0);
-    expect(preStopCmd?.join(' ')).toMatch(/kill\s+-TERM\s+1/);
-    expect(preStopCmd?.join(' ')).toMatch(/sleep\s+55\b/);
-
-    expect(sts?.spec?.template?.spec?.terminationGracePeriodSeconds).toBe(60);
-  });
-
-  it('gitServer.enabled=false (default): no git-server resources render', () => {
-    const docs = helmTemplate([]);
-    const gitServerDocs = docs.filter((d) =>
-      (d.metadata?.name ?? '').includes('git-server'),
-    );
-    expect(gitServerDocs).toEqual([]);
-  });
-
-  it('shards: 3 → replicas: 3 with a single volumeClaimTemplate', () => {
-    const docs = helmTemplate([
-      '--set', 'gitServer.enabled=true',
-      '--set', 'gitServer.storage=10Gi',
-      '--set', 'gitServer.shards=3',
-    ]);
-    const sts = docs.find(
-      (d) => d.kind === 'StatefulSet' && d.metadata?.name === STS_NAME,
-    );
-    expect(sts?.spec?.replicas).toBe(3);
-    expect(sts?.spec?.volumeClaimTemplates?.length).toBe(1);
-  });
-
-  it('headless Service: clusterIP None, port matches gitServer.service.port', () => {
-    const docs = helmTemplate([
-      '--set', 'gitServer.enabled=true',
-      '--set', 'gitServer.storage=10Gi',
-    ]);
-    const headless = docs.find(
-      (d) => d.kind === 'Service' && d.metadata?.name === `${STS_NAME}-headless`,
-    );
-    expect(headless?.spec?.clusterIP).toBe('None');
-    expect(headless?.spec?.selector?.['app.kubernetes.io/name']).toBe(STS_NAME);
-    const ports = headless?.spec?.ports ?? [];
-    expect(ports.length).toBe(1);
-    expect(ports[0]?.port).toBe(7780);
-    expect(ports[0]?.targetPort).toBe('git');
-  });
-
-  it('NetworkPolicy: ingress from host only, egress empty', () => {
-    const docs = helmTemplate([
-      '--set', 'gitServer.enabled=true',
-      '--set', 'gitServer.storage=10Gi',
-    ]);
-    const np = docs.find(
-      (d) =>
-        d.kind === 'NetworkPolicy' && d.metadata?.name === `${STS_NAME}-network`,
-    );
-    expect(np).toBeDefined();
-    expect(np?.spec?.podSelector?.matchLabels?.['app.kubernetes.io/name']).toBe(STS_NAME);
-    expect(np?.spec?.policyTypes).toEqual(['Ingress', 'Egress']);
-    expect(np?.spec?.egress).toEqual([]);
-
-    const ingress = np?.spec?.ingress ?? [];
-    expect(ingress.length).toBe(1);
-    const from = ingress[0]?.from ?? [];
-    expect(from.length).toBe(1);
-    expect(
-      from[0]?.podSelector?.matchLabels?.['app.kubernetes.io/name'],
-    ).toBe('ax-test-ax-next-host');
-  });
-
-  it('gitServer.enabled=true without gitServer.storage → required-value failure', () => {
-    const r = helmTemplateExpectFailure([
-      '--set', 'gitServer.enabled=true',
-      '--set', 'gitServer.storage=',
-    ]);
-    expect(r.status, 'helm template should fail').not.toBe(0);
-    expect(r.stderr).toMatch(/gitServer\.storage is required/);
-  });
-
-  it('terminationGracePeriodSeconds=20 → render fails with explicit message', () => {
-    const r = helmTemplateExpectFailure([
-      '--set', 'gitServer.enabled=true',
-      '--set', 'gitServer.storage=10Gi',
-      '--set', 'gitServer.terminationGracePeriodSeconds=20',
-    ]);
-    expect(r.status, 'helm template should fail').not.toBe(0);
-    expect(r.stderr).toMatch(
-      /gitServer\.terminationGracePeriodSeconds must be >= 35/,
-    );
-  });
-});
-
 /**
  * Pull the host Deployment's env array out of a parsed render. Loose typing —
  * tests narrow on `name` and `value`/`valueFrom`.
@@ -336,129 +186,100 @@ function findHostEnv(docs: K8sDoc[]): EnvVar[] {
   return containers?.[0]?.env ?? [];
 }
 
-describeIfHelm('ax-next chart: workspace.backend wiring', () => {
-  it('backend=local (default): host has AX_WORKSPACE_ROOT only', () => {
-    const docs = helmTemplate([]);
-    const env = findHostEnv(docs);
-    const names = env.map((e) => e.name);
+/** Every string anywhere in a rendered doc, for "this word never appears" checks. */
+function allStrings(value: unknown, out: string[] = []): string[] {
+  if (typeof value === 'string') out.push(value);
+  else if (Array.isArray(value)) for (const v of value) allStrings(v, out);
+  else if (value !== null && typeof value === 'object') {
+    for (const [k, v] of Object.entries(value)) {
+      out.push(k);
+      allStrings(v, out);
+    }
+  }
+  return out;
+}
 
-    expect(names).toContain('AX_WORKSPACE_BACKEND');
-    expect(env.find((e) => e.name === 'AX_WORKSPACE_BACKEND')?.value).toBe('local');
-    expect(names).toContain('AX_WORKSPACE_ROOT');
-    expect(names).not.toContain('AX_WORKSPACE_GIT_SERVER_URL');
-    expect(names).not.toContain('AX_WORKSPACE_GIT_SERVER_TOKEN');
-  });
+const KIND_VALUES = resolve(chartDir, 'kind-dev-values.yaml');
+const GKE_VALUES = resolve(chartDir, 'gke-values.yaml');
 
-  it('neither backend sets AX_SKILLS_BUNDLE_ROOT: the git-tree bundle store is retired and no code reads it', () => {
-    // The TASK-40 git-tree backing was retired (out-of-git Part D2) and
-    // `loadK8sConfigFromEnv` ignores this variable, so a value here would
-    // only mislead an operator into thinking the volume holds skill bundles.
-    // Pinned absent for BOTH backends so it cannot quietly come back.
-    const local = findHostEnv(helmTemplate([])).map((e) => e.name);
-    const gitProtocol = findHostEnv(
-      helmTemplate([
-        '--set', 'workspace.backend=git-protocol',
-        '--set', 'gitServer.enabled=true',
-        '--set', 'gitServer.storage=10Gi',
-      ]),
-    ).map((e) => e.name);
-
-    // Guard the guard: make sure we really rendered the host env of each
-    // backend, so "absent" is not just "we read an empty array".
-    expect(local).toContain('AX_WORKSPACE_ROOT');
-    expect(gitProtocol).toContain('AX_WORKSPACE_GIT_SERVER_URL');
-
-    expect(local).not.toContain('AX_SKILLS_BUNDLE_ROOT');
-    expect(gitProtocol).not.toContain('AX_SKILLS_BUNDLE_ROOT');
-  });
-
-  it('backend=git-protocol + gitServer.enabled: host has AX_WORKSPACE_GIT_SERVER_*, StatefulSet renders', () => {
-    const docs = helmTemplate([
+/**
+ * The renders that ship: the defaults, the kind overlay, the GKE overlay, and
+ * a `--reuse-values` upgrade from a pre-TASK-996 release. Helm hands the old
+ * release's values to the new templates, so that last one still says
+ * `workspace.backend=git-protocol` and `gitServer.enabled=true`.
+ */
+const SHIPPED_RENDERS: ReadonlyArray<readonly [label: string, args: readonly string[]]> = [
+  ['defaults', []],
+  ['kind-dev-values.yaml', ['-f', KIND_VALUES]],
+  ['gke-values.yaml', ['-f', GKE_VALUES, '--set', 'sandbox.filestore.server=10.9.8.7']],
+  [
+    'old values from a pre-TASK-996 release',
+    [
       '--set', 'workspace.backend=git-protocol',
       '--set', 'gitServer.enabled=true',
       '--set', 'gitServer.storage=10Gi',
-    ]);
-    const env = findHostEnv(docs);
-    const names = env.map((e) => e.name);
-    const byName = Object.fromEntries(env.map((e) => [e.name, e]));
+      '--set', 'gitServer.port=7780',
+      '--set', 'gitServerImage.repository=ax-next/git-server',
+    ],
+  ],
+];
 
-    expect(byName.AX_WORKSPACE_BACKEND?.value).toBe('git-protocol');
-    expect(byName.AX_WORKSPACE_GIT_SERVER_URL?.value).toBe(
-      `http://${STS_NAME}.default.svc.cluster.local:7780`,
+describeIfHelm('ax-next chart: the git-server tier is retired (TASK-996)', () => {
+  it.each(SHIPPED_RENDERS)('%s: no git-server object, rule, secret or env renders', (_label, args) => {
+    const docs = helmTemplate(args);
+    expect(docs.length, 'the render produced documents').toBeGreaterThan(0);
+
+    // No object is named for the tier. (The postgresql subchart's StatefulSet
+    // is the only one left in a default render.)
+    expect(docs.filter((d) => (d.metadata?.name ?? '').includes('git-server'))).toEqual([]);
+    expect(
+      docs.filter((d) => d.kind === 'StatefulSet').map((d) => d.metadata?.name),
+    ).not.toContain('ax-test-ax-next-git-server-experimental');
+
+    // No object, label, selector, env var, port name or image mentions it.
+    const text = docs.flatMap((d) => allStrings(d));
+    expect(text.filter((t) => /git-server|git_server|gitserver/i.test(t))).toEqual([]);
+
+    // The host's env carries none of the retired workspace settings.
+    const names = findHostEnv(docs).map((e) => e.name);
+    expect(names.filter((n) => n.startsWith('AX_WORKSPACE_'))).toEqual([]);
+    expect(names.filter((n) => n.startsWith('AX_GIT_SERVER_'))).toEqual([]);
+
+    // No NetworkPolicy opens a port the git-server used to listen on.
+    const nps = docs.filter((d) => d.kind === 'NetworkPolicy');
+    const ports = nps.flatMap((np) =>
+      [...((np.spec?.egress as unknown[]) ?? []), ...((np.spec?.ingress as unknown[]) ?? [])].flatMap(
+        (r) => ((r as { ports?: Array<{ port?: unknown }> }).ports ?? []).map((p) => p.port),
+      ),
     );
-    expect(byName.AX_WORKSPACE_GIT_SERVER_TOKEN?.valueFrom).toBeDefined();
-    expect(names).not.toContain('AX_WORKSPACE_ROOT');
+    expect(ports).not.toContain(7780);
+  });
+});
 
-    const clusterIp = docs.find(
-      (d) => d.kind === 'Service' && d.metadata?.name === STS_NAME,
+describeIfHelm('ax-next chart: the host disk follows blob.backend (TASK-996)', () => {
+  function workspacePvc(docs: K8sDoc[]): K8sDoc | undefined {
+    return docs.find(
+      (d) => d.kind === 'PersistentVolumeClaim' && d.metadata?.name === 'ax-test-ax-next-workspace',
     );
-    expect(clusterIp, 'ClusterIP Service renders').toBeDefined();
-    expect(clusterIp?.spec?.clusterIP).not.toBe('None');
+  }
 
-    const sts = docs.find(
-      (d) => d.kind === 'StatefulSet' && d.metadata?.name === STS_NAME,
-    );
-    expect(sts, 'StatefulSet renders').toBeDefined();
+  it.each([
+    ['defaults', [] as string[]],
+    ['gke-values.yaml', ['-f', GKE_VALUES, '--set', 'sandbox.filestore.server=10.9.8.7']],
+  ])('fs blobs (%s): the -workspace PVC renders, keeps its name, and stays on uninstall', (_l, args) => {
+    const pvc = workspacePvc(helmTemplate(args));
+    expect(pvc, 'the host PVC renders under its old name').toBeDefined();
+    expect(pvc?.metadata?.annotations?.['helm.sh/resource-policy']).toBe('keep');
+  });
 
-    // Host pod does NOT mount the workspace PVC (no local storage needed).
+  it('s3 blobs (kind-dev-values.yaml): no host PVC and no host volume for it', () => {
+    const docs = helmTemplate(['-f', KIND_VALUES]);
+    expect(workspacePvc(docs)).toBeUndefined();
     const host = docs.find(
       (d) => d.kind === 'Deployment' && d.metadata?.name === 'ax-test-ax-next-host',
     );
-    const volumes =
-      (host?.spec as { template?: { spec?: { volumes?: Array<{ name?: string }> } } })?.template
-        ?.spec?.volumes ?? [];
-    expect(volumes.find((v) => v.name === 'workspace')).toBeUndefined();
-  });
-
-  it('backend=git-protocol without gitServer.enabled → render fails with sanitized error', () => {
-    // Guardrail: the host pod would otherwise boot pointing at a Service
-    // that doesn't render. Better to fail the install than discover this
-    // at first workspace op.
-    const r = helmTemplateExpectFailure([
-      '--set', 'workspace.backend=git-protocol',
-    ]);
-    expect(r.status, 'helm template should fail').not.toBe(0);
-    expect(r.stderr).toMatch(
-      /workspace\.backend=git-protocol requires gitServer\.enabled=true/,
-    );
-  });
-
-  it('backend=git-protocol: host egress NetworkPolicy opens a rule to the git-server tier', () => {
-    // Without this rule, the host pod's @ax/workspace-git-server traffic is
-    // denied at the CNI layer when networkPolicies.enabled=true (the default).
-    // Render succeeds, the operator ships, every workspace op fails with an
-    // opaque connection error.
-    const docs = helmTemplate([
-      '--set', 'workspace.backend=git-protocol',
-      '--set', 'gitServer.enabled=true',
-      '--set', 'gitServer.storage=10Gi',
-    ]);
-
-    const hostNp = docs.find(
-      (d) =>
-        d.kind === 'NetworkPolicy' &&
-        d.metadata?.name === 'ax-test-ax-next-host-network',
-    );
-    expect(hostNp, 'host NetworkPolicy renders').toBeDefined();
-
-    const egress = (hostNp?.spec?.egress as Array<{
-      to?: Array<{
-        podSelector?: { matchLabels?: Record<string, string> };
-      }>;
-      ports?: Array<{ port?: number; protocol?: string }>;
-    }>) ?? [];
-
-    const tierRule = egress.find((r) =>
-      (r.to ?? []).some(
-        (t) => t.podSelector?.matchLabels?.['app.kubernetes.io/name'] === STS_NAME,
-      ),
-    );
-    expect(
-      tierRule,
-      'host egress includes a rule selecting the git-server tier',
-    ).toBeDefined();
-    expect(tierRule?.ports?.[0]?.port).toBe(7780);
-    expect(tierRule?.ports?.[0]?.protocol).toBe('TCP');
+    const volumes = (host?.spec?.template?.spec?.volumes ?? []) as Array<{ name?: string }>;
+    expect(volumes.map((v) => v.name)).not.toContain('workspace');
   });
 });
 

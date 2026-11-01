@@ -2,26 +2,26 @@
 PersistentVolumeClaim for the host's on-disk storage, mounted at
 workspace.mountPath.
 
-It holds two things:
-  - the workspace-git bare repos (`@ax/workspace-git` writes session
-    workspace versions here);
-  - `blobs/`, the fs blob store (blob.fs.root, pinned by TASK-992 to
-    /var/lib/ax-next/workspaces/blobs): every attachment, artifact and skill
-    file.
+It holds `blobs/`, the fs blob store (blob.fs.root, pinned by TASK-992 to
+/var/lib/ax-next/workspaces/blobs): every attachment, artifact and skill
+file. On a deployment that ran before TASK-995 it also still holds the old
+`ws-*.git` bare repos, which nothing reads any more. deploy/GKE.md ("Reset
+after the agent-files cutover") says how to delete them, and how to leave
+`blobs/` alone.
 
-Single-replica only — multi-replica needs a shared storage backend. The PVC
+The name keeps the old `-workspace` suffix on purpose: renaming it would make
+helm create a new, empty volume and orphan every stored blob.
+
+Single-replica only — multi-replica needs a shared blob backend (s3). The PVC
 is intentionally left orphaned by helm uninstall (resource-policy: keep) so a
 reinstall picks the same data up.
 
-Only rendered when workspace.backend == "local". In "git-protocol" mode the
-host talks to the git-server StatefulSet, whose own PVCs hold the repos.
-
-When the workspace backend goes away (TASK-995 or the chart cleanup that
-follows it), this PVC and its host mount must STAY: the blobs live here. The
-chart test "AX_BLOB_FS_ROOT lies on the host PVC mount"
-(__tests__/blob-backend.test.ts) goes red if they are dropped.
+Rendered only when blob.backend == "fs" (TASK-996). With s3 blobs the host
+keeps nothing on local disk. The chart test "AX_BLOB_FS_ROOT lies on the host
+PVC mount" (__tests__/blob-backend.test.ts) goes red if the PVC or its host
+mount is dropped from an fs render.
 */}}
-{{- if eq .Values.workspace.backend "local" }}
+{{- if eq .Values.blob.backend "fs" }}
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:

@@ -13,9 +13,9 @@
 #   - Autopilot schedules gVisor pods for you — no Sandbox node pool to manage.
 #   - gVisor + Autopilot ban hostPath, so the credential-proxy runs in TCP mode.
 #   - Autopilot runs Dataplane V2, so NetworkPolicies actually enforce (on).
-#   - Chat is single-replica-locked, so we use the `local` workspace backend and
-#     park blobs on the same PVC (`fs`) — no git-server StatefulSet, no object
-#     store. Durable object storage (GCS) needs a small chart change; deferred.
+#   - Chat is single-replica-locked, so blobs live on one host PVC (`fs`) — no
+#     object store. Durable object storage (GCS) needs a small chart change;
+#     deferred.
 #   - Postgres is Cloud SQL (external), reached over private IP from a DSN Secret.
 
 replicas: 1
@@ -82,10 +82,10 @@ memory:
     server: ""        # optional: your memory Filestore instance IP
     exportPath: ""     # optional: the share name, e.g. /memory_vol
 
-# ─── Workspace + blobs: both on one host PVC ─────────────────────
-# Single-replica posture. `local` keeps the bare git repos on the host PVC;
-# `fs` blobs (attachments/artifacts/skill bundles) land in a sibling dir on the
-# SAME PVC. No git-server StatefulSet, no MinIO, no GCS.
+# ─── Blobs on one host PVC ───────────────────────────────────────
+# Single-replica posture. `fs` blobs (attachments/artifacts/skill bundles) land
+# in `blobs/` on the host's `<release>-workspace` PVC. No MinIO, no GCS. (The
+# PVC keeps its old name; renaming it would start an empty disk.)
 #
 # storageClassName empty → Autopilot's default (`standard-rwo`, a Balanced PD).
 # For better IOPS set `premium-rwo`.
@@ -101,17 +101,13 @@ memory:
 # says what that covers, what it does not, and how much data a bad day can still
 # cost.
 workspace:
-  backend: local
   storage: 100Gi              # >>> EDIT to taste; blobs share this volume
   storageClassName: ""        # "" → standard-rwo; or "premium-rwo"
   accessMode: ReadWriteOnce
   mountPath: /var/lib/ax-next/workspaces
 
-gitServer:
-  enabled: false              # local backend → no git-server tier
-
 blob:
-  backend: fs                 # blobs on the host PVC (sibling of the workspace)
+  backend: fs                 # blobs on the host PVC
   fs:
     # Pinned (TASK-992): the path the chart used to derive from
     # workspace.mountPath. Do not change it on a live deployment; a new root

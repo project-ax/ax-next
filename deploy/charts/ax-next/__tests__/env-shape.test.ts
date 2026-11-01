@@ -182,13 +182,9 @@ const EXTERNAL_READERS: ReadonlySet<string> = new Set([
   'AX_MEMORY_EXPORT_HOST_ROOT',
   'AX_MEMORY_EXPORT_NFS_SERVER',
   'AX_MEMORY_EXPORT_NFS_PATH',
-  // Stamped by the chart until the chart-cleanup card removes them; nothing
-  // reads them since TASK-995 (the git workspace tier, and the loader that
-  // consumed these four, are gone).
-  'AX_WORKSPACE_ROOT',
-  'AX_WORKSPACE_BACKEND',
-  'AX_WORKSPACE_GIT_SERVER_URL',
-  'AX_WORKSPACE_GIT_SERVER_TOKEN',
+  // AX_WORKSPACE_ROOT / _BACKEND / _GIT_SERVER_URL / _GIT_SERVER_TOKEN were
+  // here until TASK-996 removed them from the chart. Nothing reads them since
+  // TASK-995; do not add them back.
 ]);
 
 // The subchart fetch this file used to run in its own `beforeAll` — a copy of
@@ -292,28 +288,16 @@ describeIfHelm('host deployment env vs preset loader', () => {
     expect(orphans, `orphan env vars: ${orphans.join(', ')}`).toEqual([]);
   });
 
-  it('local workspace backend stamps AX_WORKSPACE_ROOT', () => {
-    // Override kind-dev-values' git-protocol back to local for this
-    // assertion. The kind cluster ships the git-server StatefulSet
-    // tier by default; local-backend coverage is a separate code path.
-    const env = envKeysOf(
-      renderHostDeployment(['--set', 'workspace.backend=local']),
-    );
-    expect(env.has('AX_WORKSPACE_BACKEND')).toBe(true);
-    expect(env.has('AX_WORKSPACE_ROOT')).toBe(true);
-  });
-
-  it('git-protocol backend stamps AX_WORKSPACE_GIT_SERVER_URL + token', () => {
-    const env = envKeysOf(
-      renderHostDeployment([
-        '--set',
-        'workspace.backend=git-protocol',
-        '--set',
-        'gitServer.enabled=true',
-      ]),
-    );
-    expect(env.has('AX_WORKSPACE_GIT_SERVER_URL')).toBe(true);
-    expect(env.has('AX_WORKSPACE_GIT_SERVER_TOKEN')).toBe(true);
+  it.each([
+    ['kind-dev render', [] as string[]],
+    ['blob.backend=fs', ['--set', 'blob.backend=fs']],
+    [
+      'old values from a pre-TASK-996 release',
+      ['--set', 'workspace.backend=git-protocol', '--set', 'gitServer.enabled=true'],
+    ],
+  ])('stamps no AX_WORKSPACE_* env (%s): the git workspace tier is gone (TASK-996)', (_l, args) => {
+    const env = [...envKeysOf(renderHostDeployment(args))];
+    expect(env.filter((v) => v.startsWith('AX_WORKSPACE_'))).toEqual([]);
   });
 
   it('public-http port matches AX_HTTP_PORT env value', () => {
