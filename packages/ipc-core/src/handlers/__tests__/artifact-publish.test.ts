@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { beforeEach, describe, it, expect, vi } from 'vitest';
 import { PluginError } from '@ax/core';
 import { artifactPublishHandler } from '../artifact-publish.js';
@@ -212,14 +213,29 @@ describe('artifact.publish: only this session\'s own blob.put shas', () => {
     expect(sibling.status).toBe(404);
   });
 
-  it('does not remember a sha whose blob.put failed', async () => {
+  it('does not remember the sha of bytes whose blob.put was refused', async () => {
     resetSessionBlobPutsForTests();
+    const bytes = Buffer.from('abc');
+    const bytesSha = createHash('sha256').update(bytes).digest('hex');
     const bus = fakeBus(async () => {
       throw new PluginError({ code: 'rejected', plugin: '@ax/disk-quota', message: 'full' });
     });
-    await blobPutHandler(Buffer.from('abc'), fakeCtx(), bus as never, new URL('http://ipc/blob.put'));
+    const put = (await blobPutHandler(bytes, fakeCtx(), bus as never, new URL('http://ipc/blob.put'))) as HandlerErr;
+    expect(put.status).toBe(409);
+    expect(sessionPutBlob(fakeCtx(), bytesSha)).toBe(false);
+  });
+
+  it('does not remember a sha from a blob.put answer that fails the response schema', async () => {
+    resetSessionBlobPutsForTests();
+    const bus = fakeBus(async () => ({ sha256: OTHER_SHA, size: -1 }));
+    const put = (await blobPutHandler(
+      Buffer.from('abc'),
+      fakeCtx(),
+      bus as never,
+      new URL('http://ipc/blob.put'),
+    )) as HandlerErr;
+    expect(put.status).toBe(500);
     expect(sessionPutBlob(fakeCtx(), OTHER_SHA)).toBe(false);
-    expect(sessionPutBlob(fakeCtx(), VALID_SHA)).toBe(false);
   });
 
   it('logs a bus-wrapped hook failure before returning 500', async () => {
@@ -256,5 +272,40 @@ describe('artifact.publish: only this session\'s own blob.put shas', () => {
     // ...until this session is the least recently active of too many.
     for (let i = 0; i < MAX_SESSIONS; i += 1) recordSessionBlobPut(fakeCtx('conv-1', `x${i}`), VALID_SHA);
     expect(sessionPutBlob(own, sha(1))).toBe(false);
+  });
+
+  it('a new put refreshes recency: the session and the re-put sha survive eviction', () => {
+    resetSessionBlobPutsForTests();
+    const sha = (n: number) => n.toString(16).padStart(64, '0');
+    const own = fakeCtx();
+    const other = fakeCtx('conv-1', 's2');
+    recordSessionBlobPut(own, sha(0));
+    recordSessionBlobPut(own, sha(1));
+    recordSessionBlobPut(other, sha(0));
+    recordSessionBlobPut(own, sha(0)); // refreshes `own` and its sha(0)
+    // Fill up to MAX_SHAS_PER_SESSION more for `own`: sha(1) is now the oldest.
+    for (let i = 2; i < MAX_SHAS_PER_SESSION + 1; i += 1) recordSessionBlobPut(own, sha(i));
+    expect(sessionPutBlob(own, sha(1))).toBe(false);
+    expect(sessionPutBlob(own, sha(0))).toBe(true);
+    // One session too many: `other` (least recently active) goes, `own` stays.
+    for (let i = 0; i < MAX_SESSIONS - 1; i += 1) recordSessionBlobPut(fakeCtx('conv-1', `x${i}`), VALID_SHA);
+    expect(sessionPutBlob(other, sha(0))).toBe(false);
+    expect(sessionPutBlob(own, sha(0))).toBe(true);
+  });
+
+  it('logs an expected hook refusal at warn, not as an internal error', async () => {
+    const bus = fakeBus(async () => {
+      throw new PluginError({ code: 'not-found', plugin: '@ax/attachments', message: 'gone' });
+    });
+    const ctx = fakeCtx() as unknown as {
+      logger: { warn: ReturnType<typeof vi.fn>; error: ReturnType<typeof vi.fn> };
+    };
+    const result = (await artifactPublishHandler(validReq, ctx as never, bus as never)) as HandlerErr;
+    expect(result.status).toBe(404);
+    expect(ctx.logger.error).not.toHaveBeenCalled();
+    expect(ctx.logger.warn).toHaveBeenCalledWith('artifact_publish_hook_refused', {
+      action: 'artifact.publish',
+      pluginErrorCode: 'not-found',
+    });
   });
 });

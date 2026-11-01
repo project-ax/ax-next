@@ -22,8 +22,12 @@ import type { AgentContext } from '@ax/core';
 // per-session cap means one session's puts can only evict its own entries.
 // ---------------------------------------------------------------------------
 
-/** Most recent shas remembered per session. A publish follows its put at once. */
-export const MAX_SHAS_PER_SESSION = 1024;
+/**
+ * Most recent shas remembered per session. A publish follows its put at once,
+ * so only a handful are ever outstanding; 64 keeps the whole map near 25 MiB
+ * worst case (4096 x 64 entries) even if a runner floods puts.
+ */
+export const MAX_SHAS_PER_SESSION = 64;
 /** Most recently active sessions remembered. */
 export const MAX_SESSIONS = 4096;
 

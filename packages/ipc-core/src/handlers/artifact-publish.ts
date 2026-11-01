@@ -104,7 +104,16 @@ export const artifactPublishHandler: ActionHandler = async (rawPayload, ctx, bus
     // before returning it: the real bus wraps a plain throw (a DB outage) into
     // PluginError{code:'unknown'}, which maps to 500 too (TASK-1010).
     const mapped = err instanceof PluginError ? mapPluginError(err) : internalError();
-    if (mapped.status >= 500) logInternalError(ctx.logger, 'artifact.publish', err);
+    if (mapped.status >= 500) {
+      logInternalError(ctx.logger, 'artifact.publish', err);
+    } else if (err instanceof PluginError) {
+      // An expected answer (e.g. a blob this session put but has since been
+      // purged). Logged so it can be told apart from the guard's refusal above.
+      ctx.logger.warn('artifact_publish_hook_refused', {
+        action: 'artifact.publish',
+        pluginErrorCode: err.code,
+      });
+    }
     return mapped;
   }
   const body = {
