@@ -10,8 +10,11 @@ import { filenameFromContentDisposition } from '@/lib/workspace-api';
 import type { ThreadAttachment } from '@/lib/workspace-types';
 
 /**
- * Durable outputs use conversation-scoped downloads, never model-authored URLs:
- * the file is fetched by its attachment id within this conversation.
+ * Durable outputs use conversation-scoped downloads, never model-authored URLs.
+ * A published or attached file is fetched by its attachment id within this
+ * conversation. A file the agent left in its files is fetched live by its key
+ * through the conversation's own route, which derives the agent from the
+ * conversation and reads the file as it is now (TASK-1012).
  */
 export function GeneratedFileChip({ file, conversationId }: {
   file: ThreadAttachment;
@@ -30,24 +33,32 @@ export function GeneratedFileChip({ file, conversationId }: {
         : `${(file.sizeBytes / (1024 * 1024)).toFixed(1)} MB`
     : null;
 
+  const url = file.agentFilePath !== undefined
+    ? `/api/workspace/conversations/${encodeURIComponent(conversationId)}/download/user-files/${encodeURIComponent(file.agentFilePath)}`
+    : file.attachmentId !== null
+      ? `/api/files?conversationId=${encodeURIComponent(conversationId)}&id=${encodeURIComponent(file.attachmentId)}`
+      : null;
+
   async function download() {
-    if (inFlight.current || file.attachmentId === null) return;
+    if (inFlight.current || url === null) return;
     inFlight.current = true;
     setBusy(true);
     setError(null);
     try {
-      const response = await httpFetch(
-        `/api/files?conversationId=${encodeURIComponent(conversationId)}&id=${encodeURIComponent(file.attachmentId)}`,
-      );
+      const response = await httpFetch(url);
       if (!response.ok) throw new HttpError('file download', response.status);
       saveBlob(await response.blob(),
         filenameFromContentDisposition(response.headers.get('content-disposition')) ?? 'download');
     } catch (e) {
-      setError(e instanceof HttpError && e.status === 404
+      const status = e instanceof HttpError ? e.status : null;
+      // 400 on an agent file means its key is a folder now: gone, like a 404.
+      setError(status === 404 || (status === 400 && file.agentFilePath !== undefined)
         ? 'This file is no longer available to download.'
-        : e instanceof HttpError && e.status === 403
-          ? 'This account does not have access to that file.'
-          : 'We could not download this file just now. Try again.');
+        : status === 413
+          ? 'This file is too big to download from the chat. Ask the agent for a smaller copy, or to split it up.'
+          : status === 403
+            ? 'This account does not have access to that file.'
+            : 'We could not download this file just now. Try again.');
     } finally {
       inFlight.current = false;
       setBusy(false);
@@ -56,7 +67,7 @@ export function GeneratedFileChip({ file, conversationId }: {
 
   return (
     <div className="flex w-full max-w-xs flex-col gap-2">
-      <Button type="button" variant="outline" disabled={busy || file.attachmentId === null}
+      <Button type="button" variant="outline" disabled={busy || url === null}
         aria-label={`${busy ? 'Downloading' : 'Download'} ${name}`}
         aria-busy={busy} onClick={() => void download()}
         className="h-auto min-h-11 w-full justify-start gap-3 px-3 py-2 text-left">

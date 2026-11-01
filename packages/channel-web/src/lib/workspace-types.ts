@@ -640,9 +640,18 @@ export interface AgentRailData {
  * the thumbnail arrives with the id on the next read. Null is therefore
  * "no download URL yet", never "no attachment" — the renderer must still show
  * the name.
+ *
+ * The second place `attachmentId` is `null` is a file the agent left in its own
+ * files (TASK-1012). Then `agentFilePath` is set: the file's key relative to the
+ * agent's files root, the same key the Files tab uses. It is RAW and is never
+ * rendered (`displayName` is the fenced label); the client only encodes it into
+ * the conversation-scoped download URL, and the host derives the agent from the
+ * conversation. Exactly one of `attachmentId` / `agentFilePath` addresses the
+ * download.
  */
 export interface ThreadAttachment {
   attachmentId: string | null;
+  agentFilePath?: string;
   displayName: string;
   mediaType: string;
   sizeBytes?: number;

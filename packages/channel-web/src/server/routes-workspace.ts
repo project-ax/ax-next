@@ -206,6 +206,7 @@ import type {
   RoutineView,
 } from '@ax/routines-contract';
 import {
+  AgentFileBlockSchema,
   AttachmentBlockSchema,
   attachmentBlockFromArtifact,
   type AttachmentBlock,
@@ -3663,6 +3664,37 @@ function turnAttachments(blocks: readonly TurnBlock[]): ThreadAttachment[] {
   return out;
 }
 
+/**
+ * The chips for the files the agent left in its files during a tool turn
+ * (TASK-1012): one per `agent_file` block that parses against
+ * `AgentFileBlockSchema`, the same strict shape the runner emitted and the host
+ * validated on ingress. A block with a key the Files tab cannot address is
+ * dropped here rather than drawn as a chip that always fails.
+ *
+ * `agentFilePath` is the RAW key and is never rendered; the label is its
+ * basename, fenced like every other model-authored name. The agent is not
+ * named anywhere: the download route derives it from the conversation.
+ * Called for tool turns only, so a browser-forged block on a user turn draws
+ * nothing.
+ */
+function turnAgentFiles(blocks: readonly TurnBlock[]): ThreadAttachment[] {
+  const out: ThreadAttachment[] = [];
+  for (const block of blocks) {
+    if (block.type !== 'agent_file') continue;
+    const parsed = AgentFileBlockSchema.safeParse(block);
+    if (!parsed.success) continue;
+    const b = parsed.data;
+    out.push({
+      attachmentId: null,
+      agentFilePath: b.path,
+      displayName: fenceLine(basenameOf(b.path), FILE_LABEL_MAX_CHARS) ?? UNREADABLE_FILE_NAME,
+      mediaType: b.mediaType,
+      sizeBytes: b.sizeBytes,
+    });
+  }
+  return out;
+}
+
 /** The chip's copy of a validated `attachment` block: id, name, type, size. */
 function threadAttachment(block: AttachmentBlock): ThreadAttachment {
   return {
@@ -3799,7 +3831,7 @@ function buildThread(
       // Arbitrary assistant attachment blocks are still ignored. The download
       // endpoint independently checks conversation access and a durable row,
       // so a chip here only ever names an id; it grants nothing.
-      const files = turnAttachments(blocks);
+      const files = [...turnAttachments(blocks), ...turnAgentFiles(blocks)];
       for (const block of blocks) {
         if (block.type !== 'tool_result' || block.is_error || block.held ||
           !publishIds.has(block.tool_use_id ?? '')) continue;
@@ -3818,7 +3850,12 @@ function buildThread(
       }
       // The runner's block and the publish result name the same artifact id:
       // one chip per id. Two files that merely share a name keep two chips.
-      const attachments = [...new Map(files.map(file => [file.attachmentId, file])).values()];
+      // An agent file has no id (it is null), so it is keyed by its path: a null
+      // id must not collapse every agent file into one chip.
+      const attachments = [...new Map(files.map(file => [
+        file.agentFilePath !== undefined ? `file:${file.agentFilePath}` : `id:${file.attachmentId}`,
+        file,
+      ])).values()];
       const text = renderableText(blocks);
       if (attachments.length > 0 || text.length > 0) dated.push({
         at: turn.createdAt,

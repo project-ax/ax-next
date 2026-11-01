@@ -1404,7 +1404,7 @@ function Message({
         {conversationId !== null && (m.attachments?.length ?? 0) > 0 && (
           <div className="mt-3 flex flex-wrap gap-2">
             {m.attachments?.map((file, i) => (
-              <GeneratedFileChip key={`${i}-${file.attachmentId ?? file.displayName}`} file={file} conversationId={conversationId} />
+              <GeneratedFileChip key={`${i}-${file.attachmentId ?? file.agentFilePath ?? file.displayName}`} file={file} conversationId={conversationId} />
             ))}
           </div>
         )}
