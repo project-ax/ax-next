@@ -36,7 +36,7 @@ import type { ActionHandler, HandlerResult } from './types.js';
 // stay). `blob.get` below will not serve an orphan, or any blob the session's
 // own conversation does not reference (TASK-1009). Note `artifact.publish`
 // still accepts any sha the store holds, so that action, not this one, is
-// where a known sha still has reach (tracked as a follow-up to TASK-1009).
+// where a known sha still has reach (a follow-up filed from TASK-1009).
 //
 // STORAGE LIMIT (TASK-690). Unowned in the store does NOT mean free: `blob:put`
 // is a facade that fires the veto `blob:pre-put`, and the session's
@@ -150,8 +150,10 @@ export const blobPutHandler: BinaryActionHandler = async (
 // Everything else is the SAME 404 a missing blob gets: an unreferenced sha, a
 // session bound to no conversation, and a deployment with no uploads store. So
 // the response is no oracle for whether some other conversation's blob exists.
-// The refusal is decided before the store is touched. A failed or malformed
-// uploads lookup is a sanitized 500, never the bytes.
+// The refusal is decided before the store is touched. A failed uploads lookup
+// is logged and mapped the way `attachments.list` maps it (a malformed answer
+// is a sanitized 500), never the bytes. The lookup takes no sha, so its
+// failure is no oracle for one.
 //
 // Artifacts are deliberately out of scope: the runner writes them with
 // `blob.put` and never reads one back over this action. A future runner
@@ -203,10 +205,13 @@ export const blobGetHandler: ActionHandler = async (rawPayload, ctx, bus) => {
   try {
     refusal = await refuseUnreferencedBlob(ctx, bus, parsed.data.sha256);
   } catch (err) {
-    // Same mapping `attachments.list` gives this lookup. Its failure does not
-    // depend on the requested sha, so it is no oracle either way.
-    if (err instanceof PluginError) return mapPluginError(err);
+    // Log first: the real bus wraps every plain throw (a DB outage) into
+    // PluginError{code:'unknown'}, so logging only the non-PluginError branch
+    // would leave a 500 the host never records. Then map the way
+    // `attachments.list` maps this lookup. Its failure does not depend on the
+    // requested sha, so it is no oracle either way.
     logInternalError(ctx.logger, 'blob.get', err);
+    if (err instanceof PluginError) return mapPluginError(err);
     return internalError();
   }
   if (refusal !== null) {

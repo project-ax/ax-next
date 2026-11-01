@@ -199,8 +199,11 @@ describe('blob.get handler (JSON request → binary response)', () => {
       action: 'blob.get',
       reason: 'not-referenced',
     });
-    // The sha is the would-be capability: it never reaches the log.
-    expect(JSON.stringify(warn.mock.calls)).not.toContain(VALID_SHA);
+    // The sha is the would-be capability: it reaches no log level.
+    const logger = (ctx as { logger: Record<string, ReturnType<typeof vi.fn>> }).logger;
+    for (const level of ['info', 'warn', 'error', 'debug']) {
+      expect(JSON.stringify(logger[level]!.mock.calls)).not.toContain(VALID_SHA);
+    }
   });
 
   it('TASK-1009: "not yours" and "missing" give the runner the same response', async () => {
@@ -216,9 +219,14 @@ describe('blob.get handler (JSON request → binary response)', () => {
 
   it('TASK-1009: a session bound to no conversation can fetch nothing', async () => {
     const { bus } = scopedBus({ listed: [VALID_SHA] });
-    const result = (await blobGetHandler({ sha256: VALID_SHA }, boundCtx(null), bus as never)) as HandlerErr;
+    const ctx = boundCtx(null);
+    const result = (await blobGetHandler({ sha256: VALID_SHA }, ctx, bus as never)) as HandlerErr;
     expect(result.status).toBe(404);
     expect(bus.call).not.toHaveBeenCalled();
+    expect((ctx as { logger: { warn: ReturnType<typeof vi.fn> } }).logger.warn).toHaveBeenCalledWith(
+      'blob_get_unreferenced_refused',
+      { action: 'blob.get', reason: 'unbound-session' },
+    );
   });
 
   it('TASK-1009: an empty conversation binding can fetch nothing', async () => {
@@ -230,9 +238,14 @@ describe('blob.get handler (JSON request → binary response)', () => {
 
   it('TASK-1009: with no uploads store loaded, fails closed (404, no store read)', async () => {
     const { bus } = scopedBus({ listed: [VALID_SHA], hasList: false });
-    const result = (await blobGetHandler({ sha256: VALID_SHA }, boundCtx(), bus as never)) as HandlerErr;
+    const ctx = boundCtx();
+    const result = (await blobGetHandler({ sha256: VALID_SHA }, ctx, bus as never)) as HandlerErr;
     expect(result.status).toBe(404);
     expect(bus.call).not.toHaveBeenCalled();
+    expect((ctx as { logger: { warn: ReturnType<typeof vi.fn> } }).logger.warn).toHaveBeenCalledWith(
+      'blob_get_unreferenced_refused',
+      { action: 'blob.get', reason: 'no-uploads-store' },
+    );
   });
 
   it('TASK-1009: a failing uploads lookup is a sanitized 500, never the bytes', async () => {
@@ -261,6 +274,28 @@ describe('blob.get handler (JSON request → binary response)', () => {
     const result = (await blobGetHandler({ sha256: VALID_SHA }, boundCtx(), bus as never)) as HandlerErr;
     expect(result.status).toBe(403);
     expect(blobGetCalls(bus)).toHaveLength(0);
+  });
+
+  it('TASK-1009: a wrapped lookup outage (PluginError unknown, as the real bus throws) is a LOGGED 500', async () => {
+    const bus = fakeBus(async (hook) => {
+      if (hook === 'attachments:list-for-conversation') {
+        throw new PluginError({
+          code: 'unknown',
+          plugin: '@ax/attachments',
+          hookName: 'attachments:list-for-conversation',
+          message: 'db down',
+        });
+      }
+      return { bytes: new Uint8Array([9]) };
+    });
+    const ctx = boundCtx();
+    const result = (await blobGetHandler({ sha256: VALID_SHA }, ctx, bus as never)) as HandlerErr;
+    expect(result.status).toBe(500);
+    expect(blobGetCalls(bus)).toHaveLength(0);
+    expect((ctx as { logger: { error: ReturnType<typeof vi.fn> } }).logger.error).toHaveBeenCalledWith(
+      'ipc_dispatch_internal_error',
+      expect.objectContaining({ action: 'blob.get', pluginErrorCode: 'unknown' }),
+    );
   });
 
   it('TASK-1009: a malformed uploads answer fails closed (500, no store read)', async () => {
