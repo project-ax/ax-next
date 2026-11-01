@@ -751,9 +751,14 @@ describe('the download route', () => {
     {
       label: 'user-files-download-unavailable (k8s without its host mount)',
       code: 'user-files-download-unavailable',
+      error: 'user-files-unavailable',
     },
-    { label: 'userfiles-read-failed (the pod reader)', code: 'userfiles-read-failed' },
-  ])('503s a $label PluginError', async ({ code }) => {
+    {
+      label: 'userfiles-read-failed (the pod reader)',
+      code: 'userfiles-read-failed',
+      error: 'file-read-failed',
+    },
+  ])('503s a $label PluginError', async ({ code, error }) => {
     registerAuth({ id: 'u1', isAdmin: false });
     registerAgents();
     registerThrowingRange(
@@ -761,9 +766,30 @@ describe('the download route', () => {
     );
     const { captured } = await download('report.md');
     expect(captured.statusCode).toBe(503);
-    expect(captured.json).toEqual({ error: 'file-read-failed' });
+    // No host mount is a fact about the deployment (retrying won't help), so it
+    // gets the "no file area" answer, not the "a read failed" one.
+    expect(captured.json).toEqual({ error });
     expect(logs).toEqual([
       { level: 'warn', msg: 'workspace_user_file_download_read_failed', bindings: { agentId: 'a1', code } },
+    ]);
+  });
+
+  it('503s a provider answer that is not an object, instead of crashing', async () => {
+    registerAuth({ id: 'u1', isAdmin: false });
+    registerAgents();
+    bus.registerService(RANGE_HOOK, 'sandbox', async (ctx) => {
+      watchLogger(ctx);
+      return null as never;
+    });
+    const { captured } = await download('report.md');
+    expect(captured.statusCode).toBe(503);
+    expect(captured.json).toEqual({ error: 'file-read-failed' });
+    expect(logs).toEqual([
+      {
+        level: 'warn',
+        msg: 'workspace_user_file_download_read_failed',
+        bindings: { agentId: 'a1', code: 'invalid-answer' },
+      },
     ]);
   });
 
@@ -931,7 +957,8 @@ describe('the download route', () => {
     expect(rangeCalls).toHaveLength(2);
     expect(logs).toEqual([
       {
-        level: 'info',
+        // A storage failure mid-download is worth a warning, same as before the head.
+        level: 'warn',
         msg: 'workspace_user_file_download_incomplete',
         bindings: { agentId: 'a1', reason: 'read-failed', code: 'unknown', causeCode: 'EIO' },
       },

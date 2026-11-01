@@ -354,8 +354,8 @@ export interface ReadUserFileRangeInput {
   offset: number;
   /**
    * Most bytes to read: an integer from 0 to 16 MiB. `0` answers `size` and
-   * `version` without reading. A realization throws on anything else, before
-   * it looks at the path.
+   * `version` without reading. A realization throws on anything else, and
+   * never reads the file first (it may check the path or its own wiring first).
    */
   length: number;
 }

@@ -168,6 +168,16 @@ export async function sendUserFileDownload(args: SendUserFileDownloadArgs): Prom
     // a read that did not happen, which is neither a missing file (404) nor a
     // crash (500).
     ctx.logger.warn(READ_FAILED, { agentId, ...errorCodes(err) });
+    // A deployment with no host read mount can never serve a download: say
+    // that (the same answer as "no file area"), not "a read failed, retry".
+    const deploymentFact = codeOf(err) === 'user-files-download-unavailable';
+    res.status(503).json({ error: deploymentFact ? 'user-files-unavailable' : 'file-read-failed' });
+    return;
+  }
+
+  if (typeof first !== 'object' || first === null) {
+    // A provider bug, not a 500: the same answer as any other unusable reply.
+    ctx.logger.warn(READ_FAILED, { agentId, code: 'invalid-answer' });
     res.status(503).json({ error: 'file-read-failed' });
     return;
   }
@@ -225,8 +235,11 @@ export async function sendUserFileDownload(args: SendUserFileDownloadArgs): Prom
     const outcome = incompleteOutcome(err);
     // 'other' is a failure nobody planned for; the rest are what a download
     // in the real world runs into.
-    if (outcome.reason === 'other') ctx.logger.warn(INCOMPLETE, { agentId, ...outcome });
-    else ctx.logger.info(INCOMPLETE, { agentId, ...outcome });
+    // A storage failure or a length bug is worth a warning; a client leaving
+    // or a file changing under the download is ordinary life.
+    if (outcome.reason === 'client-gone' || outcome.reason === 'changed') {
+      ctx.logger.info(INCOMPLETE, { agentId, ...outcome });
+    } else ctx.logger.warn(INCOMPLETE, { agentId, ...outcome });
   }
 }
 
