@@ -1,5 +1,12 @@
 import { describe, it, expect } from 'vitest';
-import { HookBus, makeAgentContext, ownerlessIdFor, PluginError, type AgentContext } from '@ax/core';
+import {
+  createLogger,
+  HookBus,
+  makeAgentContext,
+  ownerlessIdFor,
+  PluginError,
+  type AgentContext,
+} from '@ax/core';
 import { SKILL_PROPOSE_REASON_MAX, SkillProposeResponseSchema } from '@ax/ipc-protocol';
 import { skillProposeHandler } from '../handlers/skill-propose.js';
 
@@ -15,6 +22,21 @@ const validPayload = {
 
 function boundCtx(): AgentContext {
   return makeAgentContext({ sessionId: 's1', agentId: 'a1', userId: 'u1' });
+}
+
+// A bound ctx whose logger records every structured entry, so a test can
+// assert what the host actually logged (and that the reqId rode along).
+function loggedCtx(): { ctx: AgentContext; entries: Array<Record<string, unknown>> } {
+  const entries: Array<Record<string, unknown>> = [];
+  const reqId = 'req-skillpropose';
+  const logger = createLogger({
+    reqId,
+    writer: (line) => entries.push(JSON.parse(line) as Record<string, unknown>),
+  });
+  return {
+    ctx: makeAgentContext({ reqId, sessionId: 's1', agentId: 'a1', userId: 'u1', logger }),
+    entries,
+  };
 }
 
 function busWithPropose(
@@ -159,6 +181,61 @@ describe('skill.propose handler (TASK-74)', () => {
     const text = JSON.stringify((r as { body: unknown }).body);
     expect(text).toContain('storage is full');
     expect(text).not.toContain('secret-internal-detail');
+  });
+
+  // TASK-1015: the real HookBus wraps every plain throw from a service impl
+  // (a store or DB outage) into PluginError{code:'unknown'}. That shape fell
+  // through to mapPluginError → 500 without ever being logged, so the host
+  // had no record of the failure. Both rows reach the handler as the WRAPPED
+  // shape: the first through the real bus's own wrapping, the second thrown
+  // pre-wrapped. A fake bus that rethrows a raw Error would hide the bug,
+  // because the raw-Error branch was already logged.
+  it.each([
+    [
+      'a plain throw the real bus wraps',
+      async (): Promise<never> => {
+        throw new Error('connection refused');
+      },
+    ],
+    [
+      'a pre-wrapped PluginError{code:unknown}',
+      async (): Promise<never> => {
+        throw new PluginError({
+          code: 'unknown',
+          plugin: '@ax/skills',
+          hookName: 'skills:propose',
+          message: 'connection refused',
+        });
+      },
+    ],
+  ])('TASK-1015: logs %s once, then returns a sanitized 500', async (_label, impl) => {
+    const { ctx, entries } = loggedCtx();
+    const r = await skillProposeHandler(validPayload, ctx, busWithPropose(impl));
+    expect(r.status).toBe(500);
+    expect(JSON.stringify((r as { body: unknown }).body)).not.toContain('connection refused');
+    const errors = entries.filter((e) => e.level === 'error');
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toMatchObject({
+      msg: 'ipc_dispatch_internal_error',
+      reqId: 'req-skillpropose',
+      action: 'skill.propose',
+      pluginErrorCode: 'unknown',
+    });
+  });
+
+  it('TASK-1015: an expected 4xx answer is not logged as an internal error', async () => {
+    // Anti-vacuity for the row above: the log is gated on the 500, not on
+    // "any PluginError", so recoverable author errors and policy refusals do
+    // not flood the host's error log.
+    for (const code of ['invalid-manifest', 'rejected', 'forbidden']) {
+      const { ctx, entries } = loggedCtx();
+      const bus = busWithPropose(async () => {
+        throw new PluginError({ code, plugin: '@ax/skills', message: 'x' });
+      });
+      const r = await skillProposeHandler(validPayload, ctx, bus);
+      expect(r.status).toBeLessThan(500);
+      expect(entries.filter((e) => e.level === 'error')).toHaveLength(0);
+    }
   });
 
   it('maps a PluginError from the hook (invalid manifest) to its HTTP status', async () => {

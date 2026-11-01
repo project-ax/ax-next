@@ -22,7 +22,7 @@ import type { ActionHandler } from './types.js';
 // echo the plugin-supplied message (I9 redaction: plugin codes/messages are
 // forgeable); a fixed string is enough for the model to know to re-draft. Any
 // OTHER PluginError falls through to mapPluginError (auth/forbidden → status;
-// unknown → 500).
+// unknown → logged 500).
 function isStructuralRejectCode(code: string): boolean {
   return code.startsWith('invalid-');
 }
@@ -117,7 +117,13 @@ export const skillProposeHandler: ActionHandler = async (rawPayload, ctx, bus) =
           'skill.propose: the skill was not saved because storage is full. Let the person know an admin can make more room.',
         );
       }
-      return mapPluginError(err);
+      // Log every 500 before returning it: the real bus wraps a plain throw (a
+      // store or DB outage) into PluginError{code:'unknown'}, which maps to 500.
+      // Logging only the non-PluginError branch below left that 500 unrecorded
+      // (TASK-1015). Expected 4xx answers are not internal errors, so no log.
+      const mapped = mapPluginError(err);
+      if (mapped.status >= 500) logInternalError(ctx.logger, 'skill.propose', err);
+      return mapped;
     }
     logInternalError(ctx.logger, 'skill.propose', err);
     return internalError();
