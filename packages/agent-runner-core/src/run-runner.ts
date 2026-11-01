@@ -1314,7 +1314,7 @@ async function runRunnerInner(
   const generatedFiles = canPublishGenerated
     ? await trackGeneratedFiles({
         root: homeDir,
-        warn: () => process.stderr.write('runner: could not attach a generated file\n'),
+        warn: reason => process.stderr.write(`runner: could not attach a generated file (${reason})\n`),
         admit: async call => {
           const verdict = await generatedFilePolicy.preToolUse(call.name, call.input, call.id);
           if (verdict.decision !== 'allow') throw new Error('attachment not allowed');

@@ -63,6 +63,8 @@ export class AgentFileReferenceError extends Error {
   }
 }
 
+class GateRefusedError extends Error {}
+
 /**
  * The `agent_file` chip for `relative`, a file under `root` (the agent's home).
  *
@@ -143,18 +145,19 @@ export async function trackGeneratedFiles(opts: {
   admit: (call: ToolCall) => Promise<void>;
   /** Reports the attached chip as that call's outcome (tool.post-call). */
   attached: (call: ToolCall, chip: AgentFileBlock) => Promise<void>;
-  warn: () => void;
+  /** Called once per failure with a reason code only: never a path or a filename. */
+  warn: (reason: GeneratedFileFailure) => void;
 }): Promise<GeneratedFiles> {
   let baseline: Set<string> | null;
   try { baseline = await snapshot(opts.root); }
-  catch { baseline = null; opts.warn(); }
+  catch { baseline = null; opts.warn('error'); }
   return {
     async collect(alreadyPublished = []) {
       const blocks: ContentBlock[] = [];
       let current: Set<string>;
       try { current = await snapshot(opts.root); }
       catch {
-        opts.warn();
+        opts.warn('error');
         return [{ type: 'text', text: 'We could not check for new files to attach. Ask the agent to attach the files again.' }];
       }
       // A failed baseline must never turn every existing file into an output.
@@ -172,14 +175,17 @@ export async function trackGeneratedFiles(opts: {
           // gate, where it could park a held approval. Only a chip that will
           // pass the host's block check is attached.
           const chip = await agentFileReference(opts.root, relative);
-          await opts.admit(call);
+          try { await opts.admit(call); }
+          catch { throw new GateRefusedError(); }
           await opts.attached(call, chip);
           blocks.push(chip);
         } catch (err) {
           // A name the Files tab cannot address is not fixed by trying again.
-          if (err instanceof AgentFileReferenceError && err.reason === 'unaddressable-name') unnameable = true;
+          const reason: GeneratedFileFailure = err instanceof AgentFileReferenceError ? err.reason
+            : err instanceof GateRefusedError ? 'gate-refused' : 'error';
+          if (reason === 'unaddressable-name') unnameable = true;
           else failed = true;
-          opts.warn();
+          opts.warn(reason);
         }
       }
       baseline = current;

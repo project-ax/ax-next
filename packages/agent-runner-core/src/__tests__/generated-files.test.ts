@@ -20,7 +20,7 @@ async function track(dir: string, gate: (call: ToolCall) => Promise<void> = asyn
   const attached = vi.fn(async (_call: ToolCall, _chip: unknown) => {});
   const warn = vi.fn();
   const tracker = await trackGeneratedFiles({ root: dir, admit, attached, warn });
-  return { tracker, admit, attached, warn };
+  return { tracker, admit, attached, warn, dir };
 }
 
 const NOT_NAMEABLE = {
@@ -146,13 +146,26 @@ describe('generated files', () => {
     expect(attached).not.toHaveBeenCalled();
   });
 
+  it.skipIf(process.platform === 'win32')('warn gets a reason code for each failure, never a name', async () => {
+    const refused = await track(await root(), async () => { throw new Error('publication not allowed'); });
+    await fs.writeFile(path.join(refused.dir, 'secret-plan.md'), 'r');
+    await refused.tracker.collect();
+    expect(refused.warn.mock.calls).toEqual([['gate-refused']]);
+
+    const unnameable = await track(await root());
+    await fs.writeFile(path.join(unnameable.dir, 'notes: q3.md'), 'q3');
+    await unnameable.tracker.collect();
+    expect(unnameable.warn.mock.calls).toEqual([['unaddressable-name']]);
+  });
+
   it('fails closed when the initial baseline is unavailable', async () => {
     const dir = path.join(await root(), 'missing');
-    const { tracker, admit } = await track(dir);
+    const { tracker, admit, warn } = await track(dir);
     await fs.mkdir(dir);
     await fs.writeFile(path.join(dir, 'old.txt'), 'old');
     expect(await tracker.collect()).toEqual([]);
     expect(admit).not.toHaveBeenCalled();
+    expect(warn.mock.calls).toEqual([['error']]);
   });
 
   it('recognizes only successful publish results, including SDK text blocks', () => {
