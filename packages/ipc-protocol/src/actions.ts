@@ -390,7 +390,8 @@ export type ConversationStoreRunnerSessionResponse = z.infer<
 // a temp file). No response schema (binary body) — cf. the dispatch table in
 // `ipc-client.ts`. The host serves only a blob the session's own conversation's
 // uploads reference, and answers everything else with the same 404 a missing
-// blob gets (TASK-1009): knowing a hash is not permission to read it.
+// blob gets (TASK-1009): knowing a hash is not permission to read it back
+// over this action.
 //
 // `sha256` is a CONTENT hash on the wire, not a backend pointer (I1) — the
 // same storage-agnostic identity the `blob:*` bus hook + the

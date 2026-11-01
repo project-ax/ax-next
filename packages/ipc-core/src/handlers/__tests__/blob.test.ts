@@ -194,10 +194,13 @@ describe('blob.get handler (JSON request → binary response)', () => {
     // The hash alone is not a capability: the bytes are never fetched.
     expect(blobGetCalls(bus)).toHaveLength(0);
     // Logged host-side so a misbehaving runner is visible to operators.
-    expect((ctx as { logger: { warn: ReturnType<typeof vi.fn> } }).logger.warn).toHaveBeenCalledWith(
-      'blob_get_unreferenced_refused',
-      expect.objectContaining({ action: 'blob.get' }),
-    );
+    const warn = (ctx as { logger: { warn: ReturnType<typeof vi.fn> } }).logger.warn;
+    expect(warn).toHaveBeenCalledWith('blob_get_unreferenced_refused', {
+      action: 'blob.get',
+      reason: 'not-referenced',
+    });
+    // The sha is the would-be capability: it never reaches the log.
+    expect(JSON.stringify(warn.mock.calls)).not.toContain(VALID_SHA);
   });
 
   it('TASK-1009: "not yours" and "missing" give the runner the same response', async () => {
@@ -240,6 +243,23 @@ describe('blob.get handler (JSON request → binary response)', () => {
     const result = (await blobGetHandler({ sha256: VALID_SHA }, boundCtx(), bus as never)) as HandlerErr;
     expect(result.status).toBe(500);
     expect(JSON.stringify(result.body)).not.toContain('10.0.0.5');
+    expect(blobGetCalls(bus)).toHaveLength(0);
+  });
+
+  it('TASK-1009: a PluginError from the uploads lookup maps like attachments.list does', async () => {
+    const bus = fakeBus(async (hook) => {
+      if (hook === 'attachments:list-for-conversation') {
+        throw new PluginError({
+          code: 'forbidden',
+          plugin: '@ax/attachments',
+          hookName: 'attachments:list-for-conversation',
+          message: 'nope',
+        });
+      }
+      return { bytes: new Uint8Array([9]) };
+    });
+    const result = (await blobGetHandler({ sha256: VALID_SHA }, boundCtx(), bus as never)) as HandlerErr;
+    expect(result.status).toBe(403);
     expect(blobGetCalls(bus)).toHaveLength(0);
   });
 

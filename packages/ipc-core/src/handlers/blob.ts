@@ -8,6 +8,7 @@ import { zodSummary,
   hookRejected,
   internalError,
   logInternalError,
+  mapPluginError,
   notFound,
   validationError,
 } from '../errors.js';
@@ -32,9 +33,10 @@ import type { ActionHandler, HandlerResult } from './types.js';
 // blob) is inserted separately by `artifact.publish` / the host-side
 // attachments path, so a blob with no referencing row is just an orphan a GC
 // sweep reclaims (design open-question #3; no such sweep exists yet, so orphans
-// stay). An orphan is unreadable over IPC: `blob.get` below serves only a blob
-// the session's own conversation references (TASK-1009), so knowing a sha is
-// not enough to read it back.
+// stay). `blob.get` below will not serve an orphan, or any blob the session's
+// own conversation does not reference (TASK-1009). Note `artifact.publish`
+// still accepts any sha the store holds, so that action, not this one, is
+// where a known sha still has reach (tracked as a follow-up to TASK-1009).
 //
 // STORAGE LIMIT (TASK-690). Unowned in the store does NOT mean free: `blob:put`
 // is a facade that fires the veto `blob:pre-put`, and the session's
@@ -161,26 +163,27 @@ interface BlobGetInput {
 }
 type BlobGetOutput = { bytes: Uint8Array } | { found: false };
 
-const LIST_FOR_CONVERSATION_HOOK = 'attachments:list-for-conversation';
-
 // The one response for "you may not have it" and "it does not exist".
 const BLOB_NOT_FOUND = 'blob not found';
 
+type BlobGetRefusal = 'unbound-session' | 'no-uploads-store' | 'not-referenced';
+
 /**
- * Does the session's own conversation reference `sha256`? `false` covers every
- * "no" (unbound session, no uploads store, sha not listed); a lookup that
- * fails or answers out of shape throws, and the caller sanitizes it.
+ * Why the session may NOT have `sha256`, or `null` when its own conversation
+ * references it. Every refusal reaches the runner as the same not-found; the
+ * reason is for the host log only. A lookup that fails or answers out of shape
+ * throws, and the caller sanitizes it.
  */
-async function sessionReferencesBlob(
+async function refuseUnreferencedBlob(
   ctx: AgentContext,
   bus: HookBus,
   sha256: string,
-): Promise<boolean> {
+): Promise<BlobGetRefusal | null> {
   const conversationId = ctx.conversationId;
-  if (conversationId === undefined || conversationId.length === 0) return false;
-  if (!bus.hasService(LIST_FOR_CONVERSATION_HOOK)) return false;
+  if (conversationId === undefined || conversationId.length === 0) return 'unbound-session';
+  if (!bus.hasService('attachments:list-for-conversation')) return 'no-uploads-store';
   const listed = await bus.call<{ conversationId: string }, unknown>(
-    LIST_FOR_CONVERSATION_HOOK,
+    'attachments:list-for-conversation',
     ctx,
     { conversationId },
   );
@@ -188,7 +191,7 @@ async function sessionReferencesBlob(
   if (!checked.success) {
     throw new Error(`uploads lookup shape drift: ${zodSummary(checked.error)}`);
   }
-  return checked.data.files.some((f) => f.sha256 === sha256);
+  return checked.data.files.some((f) => f.sha256 === sha256) ? null : 'not-referenced';
 }
 
 export const blobGetHandler: ActionHandler = async (rawPayload, ctx, bus) => {
@@ -196,21 +199,20 @@ export const blobGetHandler: ActionHandler = async (rawPayload, ctx, bus) => {
   if (!parsed.success) {
     return validationError(`blob.get: ${zodSummary(parsed.error)}`);
   }
-  let referenced: boolean;
+  let refusal: BlobGetRefusal | null;
   try {
-    referenced = await sessionReferencesBlob(ctx, bus, parsed.data.sha256);
+    refusal = await refuseUnreferencedBlob(ctx, bus, parsed.data.sha256);
   } catch (err) {
+    // Same mapping `attachments.list` gives this lookup. Its failure does not
+    // depend on the requested sha, so it is no oracle either way.
+    if (err instanceof PluginError) return mapPluginError(err);
     logInternalError(ctx.logger, 'blob.get', err);
     return internalError();
   }
-  if (!referenced) {
+  if (refusal !== null) {
     // Host-side only: the runner sees the plain not-found below. The sha is
     // left out of the log (it is the would-be capability).
-    ctx.logger.warn('blob_get_unreferenced_refused', {
-      action: 'blob.get',
-      sessionBoundToConversation:
-        ctx.conversationId !== undefined && ctx.conversationId.length > 0,
-    });
+    ctx.logger.warn('blob_get_unreferenced_refused', { action: 'blob.get', reason: refusal });
     return notFound(BLOB_NOT_FOUND);
   }
   let out: BlobGetOutput;

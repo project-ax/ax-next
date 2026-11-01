@@ -1617,7 +1617,9 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
         // dispatcher. A session bound to the conversation that holds the upload
         // gets the bytes — that is upload materialization's path. A session of
         // the SAME user bound to the second conversation knows the sha (a
-        // hash is not a capability) and gets the same 404 an unknown sha gets.
+        // hash is not a capability) and gets the same 404 an unlisted, unknown
+        // sha gets. (That "not yours" also equals a listed-but-missing blob's
+        // 404 is pinned by the ipc-core unit test.)
         const blobGet = async (
           boundConversationId: string,
           sha256: string,
