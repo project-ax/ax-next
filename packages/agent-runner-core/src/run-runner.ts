@@ -1317,7 +1317,10 @@ async function runRunnerInner(
         warn: reason => process.stderr.write(`runner: could not attach a generated file (${reason})\n`),
         admit: async call => {
           const verdict = await generatedFilePolicy.preToolUse(call.name, call.input, call.id);
-          if (verdict.decision !== 'allow') throw new Error('attachment not allowed');
+          if (verdict.decision === 'allow') return { kind: 'allow' };
+          if (verdict.decision === 'hold') return { kind: 'held', decisionId: verdict.decisionId };
+          // A gate that failed closed decided nothing; a rule that said no did.
+          return { kind: verdict.cause === 'unavailable' ? 'unavailable' : 'denied' };
         },
         attached: async (call, chip) => {
           await generatedFilePolicy.postToolUse(call.name, call.id, call.input, chip, false);

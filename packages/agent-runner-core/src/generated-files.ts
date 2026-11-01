@@ -24,7 +24,10 @@ import { mediaTypeFromExtension } from './artifact-publish-executor.js';
 const OMIT = new Set(['node_modules', 'venv', '__pycache__']);
 const MAX_ENTRIES = 10_000;
 
-async function snapshot(root: string): Promise<Set<string>> {
+/** The home holds more entries than one scan visits: not the same as a scan that broke. */
+class ScanLimitError extends Error {}
+
+async function snapshot(root: string, maxEntries: number): Promise<Set<string>> {
   const realRoot = await fs.realpath(root);
   const files = new Set<string>();
   const pending = [''];
@@ -37,7 +40,7 @@ async function snapshot(root: string): Promise<Set<string>> {
     const real = await fs.realpath(absolute);
     if (real !== realRoot && !real.startsWith(realRoot + path.sep)) continue;
     for (const entry of await fs.readdir(absolute, { withFileTypes: true })) {
-      if (++count > MAX_ENTRIES) throw new Error('generated-file scan limit');
+      if (++count > maxEntries) throw new ScanLimitError('generated-file scan limit');
       if (entry.name.startsWith('.') || OMIT.has(entry.name)) continue;
       const relative = path.join(dir, entry.name);
       if (entry.isDirectory()) pending.push(relative);
@@ -47,9 +50,24 @@ async function snapshot(root: string): Promise<Set<string>> {
   return files;
 }
 
+/**
+ * What the policy gate said about one automatic attach. `held` names the
+ * decision a person is now asked to answer. `unavailable` is the gate failing
+ * closed (nothing decided the call), which is not the same as a rule that said
+ * no (`denied`).
+ */
+export type GateVerdict =
+  | { kind: 'allow' }
+  | { kind: 'held'; decisionId: string }
+  | { kind: 'denied' }
+  | { kind: 'unavailable' };
+
 /** Why a generated file could not become a chip. Never carries a path or a name. */
 export type GeneratedFileFailure =
-  | 'gate-refused'
+  | 'denied'
+  | 'held'
+  | 'unavailable'
+  | 'scan-limit'
   | 'unaddressable-name'
   | 'not-a-regular-file'
   | 'outside-root'
@@ -57,13 +75,33 @@ export type GeneratedFileFailure =
 
 /** Thrown by `agentFileReference`; `reason` is typed so callers never match on messages. */
 export class AgentFileReferenceError extends Error {
-  constructor(readonly reason: Exclude<GeneratedFileFailure, 'gate-refused' | 'error'>, message: string) {
+  constructor(readonly reason: 'unaddressable-name' | 'not-a-regular-file' | 'outside-root', message: string) {
     super(message);
     this.name = 'AgentFileReferenceError';
   }
 }
 
-class GateRefusedError extends Error {}
+/** The gate did not allow the call. */
+class GateRefusedError extends Error {
+  constructor(readonly reason: Exclude<GateVerdict['kind'], 'allow'>) {
+    super(`not allowed (${reason})`);
+  }
+}
+
+/** A fresh note block each time: nothing downstream shares one. */
+function note(text: string): ContentBlock {
+  return { type: 'text', text };
+}
+const NOT_ATTACHED = 'Some new files could not be attached. Ask the agent to attach them again.';
+// A held file must never be told "attach them again": the only way to do that
+// is the model's own publish, which copies the file into the blob store.
+const HELD = 'Some new files are waiting for your approval before we attach them.';
+const NOT_NAMEABLE = "Some new files have names we can't link to here (for example, ones with a colon). Ask the agent to rename them.";
+const SCAN_FAILED = 'We could not check for new files to attach. Ask the agent to attach the files again.';
+
+function scanFailure(err: unknown): GeneratedFileFailure {
+  return err instanceof ScanLimitError ? 'scan-limit' : 'error';
+}
 
 /**
  * The `agent_file` chip for `relative`, a file under `root` (the agent's home).
@@ -141,28 +179,32 @@ export interface GeneratedFiles {
  */
 export async function trackGeneratedFiles(opts: {
   root: string;
-  /** The policy gate a model's own artifact_publish call gets: resolves = may attach, rejects = may not. */
-  admit: (call: ToolCall) => Promise<void>;
+  /** The policy gate a model's own artifact_publish call gets. Only `allow` attaches. */
+  admit: (call: ToolCall) => Promise<GateVerdict>;
   /** Reports the attached chip as that call's outcome (tool.post-call). */
   attached: (call: ToolCall, chip: AgentFileBlock) => Promise<void>;
   /** Called once per failure with a reason code only: never a path or a filename. */
   warn: (reason: GeneratedFileFailure) => void;
+  /** Test seam: the most directory entries one scan visits. */
+  maxEntries?: number;
 }): Promise<GeneratedFiles> {
+  const maxEntries = opts.maxEntries ?? MAX_ENTRIES;
   let baseline: Set<string> | null;
-  try { baseline = await snapshot(opts.root); }
-  catch { baseline = null; opts.warn('error'); }
+  try { baseline = await snapshot(opts.root, maxEntries); }
+  catch (err) { baseline = null; opts.warn(scanFailure(err)); }
   return {
     async collect(alreadyPublished = []) {
       const blocks: ContentBlock[] = [];
       let current: Set<string>;
-      try { current = await snapshot(opts.root); }
-      catch {
-        opts.warn('error');
-        return [{ type: 'text', text: 'We could not check for new files to attach. Ask the agent to attach the files again.' }];
+      try { current = await snapshot(opts.root, maxEntries); }
+      catch (err) {
+        opts.warn(scanFailure(err));
+        return [note(SCAN_FAILED)];
       }
       // A failed baseline must never turn every existing file into an output.
       if (baseline === null) { baseline = current; return blocks; }
       let failed = false;
+      let held = false;
       let unnameable = false;
       for (const relative of [...current].sort()) {
         if (baseline.has(relative) || alreadyPublished.includes(relative)) continue;
@@ -175,28 +217,25 @@ export async function trackGeneratedFiles(opts: {
           // gate, where it could park a held approval. Only a chip that will
           // pass the host's block check is attached.
           const chip = await agentFileReference(opts.root, relative);
-          try { await opts.admit(call); }
-          catch { throw new GateRefusedError(); }
+          const verdict = await opts.admit(call);
+          if (verdict.kind !== 'allow') throw new GateRefusedError(verdict.kind);
           await opts.attached(call, chip);
           blocks.push(chip);
         } catch (err) {
-          // A name the Files tab cannot address is not fixed by trying again.
-          const reason: GeneratedFileFailure = err instanceof AgentFileReferenceError ? err.reason
-            : err instanceof GateRefusedError ? 'gate-refused' : 'error';
+          const reason: GeneratedFileFailure =
+            err instanceof AgentFileReferenceError || err instanceof GateRefusedError ? err.reason : 'error';
+          // A name the Files tab cannot address is not fixed by trying again,
+          // and a held file is waiting on a person, not on another try.
           if (reason === 'unaddressable-name') unnameable = true;
+          else if (reason === 'held') held = true;
           else failed = true;
           opts.warn(reason);
         }
       }
       baseline = current;
-      if (failed) blocks.push({
-        type: 'text',
-        text: 'Some new files could not be attached. Ask the agent to attach them again.',
-      });
-      if (unnameable) blocks.push({
-        type: 'text',
-        text: "A new file has a name we can't link to here (for example, one with a colon). Ask the agent to rename it.",
-      });
+      if (failed) blocks.push(note(NOT_ATTACHED));
+      if (held) blocks.push(note(HELD));
+      if (unnameable) blocks.push(note(NOT_NAMEABLE));
       return blocks;
     },
   };

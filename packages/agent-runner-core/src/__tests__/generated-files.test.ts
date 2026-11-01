@@ -4,7 +4,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import type { ToolCall } from '@ax/ipc-protocol';
 import { MAX_ARTIFACT_BYTES } from '@ax/tool-artifact-publish';
-import { agentFileReference, trackGeneratedFiles, publishedAttachments } from '../generated-files.js';
+import { agentFileReference, trackGeneratedFiles, publishedAttachments, type GateVerdict } from '../generated-files.js';
 
 const roots: string[] = [];
 async function root() {
@@ -15,22 +15,36 @@ async function root() {
 afterEach(async () => { await Promise.all(roots.splice(0).map(dir => fs.rm(dir, { recursive: true, force: true }))); });
 
 /** A tracker over `dir`, with spies on the gate, the post-call report and the warning. */
-async function track(dir: string, gate: (call: ToolCall) => Promise<void> = async () => {}) {
+async function track(
+  dir: string,
+  gate: (call: ToolCall) => Promise<GateVerdict> = async () => ({ kind: 'allow' }),
+  opts: { maxEntries?: number } = {},
+) {
   const admit = vi.fn(gate);
   const attached = vi.fn(async (_call: ToolCall, _chip: unknown) => {});
   const warn = vi.fn();
-  const tracker = await trackGeneratedFiles({ root: dir, admit, attached, warn });
+  const tracker = await trackGeneratedFiles({ root: dir, admit, attached, warn, ...opts });
   return { tracker, admit, attached, warn, dir };
 }
 
 const NOT_NAMEABLE = {
   type: 'text',
-  text: "A new file has a name we can't link to here (for example, one with a colon). Ask the agent to rename it.",
+  text: "Some new files have names we can't link to here (for example, ones with a colon). Ask the agent to rename them.",
 };
 
 const NOT_ATTACHED = {
   type: 'text',
   text: 'Some new files could not be attached. Ask the agent to attach them again.',
+};
+
+const HELD = {
+  type: 'text',
+  text: 'Some new files are waiting for your approval before we attach them.',
+};
+
+const SCAN_FAILED = {
+  type: 'text',
+  text: 'We could not check for new files to attach. Ask the agent to attach the files again.',
 };
 
 describe('generated files', () => {
@@ -105,7 +119,7 @@ describe('generated files', () => {
 
   it('a gate refusal attaches nothing and says so', async () => {
     const dir = await root();
-    const { tracker, attached, warn } = await track(dir, async () => { throw new Error('publication not allowed'); });
+    const { tracker, attached, warn } = await track(dir, async () => ({ kind: 'denied' }));
     await fs.writeFile(path.join(dir, 'refused.txt'), 'b');
     expect(await tracker.collect()).toEqual([NOT_ATTACHED]);
     expect(attached).not.toHaveBeenCalled();
@@ -129,7 +143,7 @@ describe('generated files', () => {
 
   it.skipIf(process.platform === 'win32')('an unaddressable name and a refused file each get their own note', async () => {
     const dir = await root();
-    const { tracker } = await track(dir, async () => { throw new Error('publication not allowed'); });
+    const { tracker } = await track(dir, async () => ({ kind: 'denied' }));
     await fs.writeFile(path.join(dir, 'notes: q3.md'), 'q3');
     await fs.writeFile(path.join(dir, 'refused.md'), 'r');
     expect(await tracker.collect()).toEqual([NOT_ATTACHED, NOT_NAMEABLE]);
@@ -147,15 +161,74 @@ describe('generated files', () => {
   });
 
   it.skipIf(process.platform === 'win32')('warn gets a reason code for each failure, never a name', async () => {
-    const refused = await track(await root(), async () => { throw new Error('publication not allowed'); });
+    const refused = await track(await root(), async () => ({ kind: 'denied' }));
     await fs.writeFile(path.join(refused.dir, 'secret-plan.md'), 'r');
     await refused.tracker.collect();
-    expect(refused.warn.mock.calls).toEqual([['gate-refused']]);
+    expect(refused.warn.mock.calls).toEqual([['denied']]);
 
     const unnameable = await track(await root());
     await fs.writeFile(path.join(unnameable.dir, 'notes: q3.md'), 'q3');
     await unnameable.tracker.collect();
     expect(unnameable.warn.mock.calls).toEqual([['unaddressable-name']]);
+  });
+
+  it('warn gets denied, held and unavailable for the three gate refusals', async () => {
+    // `unavailable` is the gate failing closed (it never decided), `denied` a
+    // rule that said no, `held` a call waiting on a person: three different
+    // things for whoever reads the log.
+    const cases: Array<[GateVerdict, string]> = [
+      [{ kind: 'denied' }, 'denied'],
+      [{ kind: 'held', decisionId: 'd1' }, 'held'],
+      [{ kind: 'unavailable' }, 'unavailable'],
+    ];
+    for (const [verdict, reason] of cases) {
+      const { tracker, attached, warn, dir } = await track(await root(), async () => verdict);
+      await fs.writeFile(path.join(dir, 'secret-plan.md'), 'r');
+      const blocks = await tracker.collect();
+      expect(blocks.some(block => block.type === 'agent_file')).toBe(false);
+      expect(attached).not.toHaveBeenCalled();
+      expect(warn.mock.calls).toEqual([[reason]]);
+    }
+  });
+
+  it('a held file gets the approval note, never the attach-again note', async () => {
+    // "Ask the agent to attach them again" on a held file sends the person to
+    // the explicit publish, which copies the file into the blob store.
+    const { tracker, dir } = await track(await root(), async () => ({ kind: 'held', decisionId: 'd1' }));
+    await fs.writeFile(path.join(dir, 'report.txt'), 'report');
+    expect(await tracker.collect()).toEqual([HELD]);
+  });
+
+  it.skipIf(process.platform === 'win32')('notes follow the chips, once each, attach-again then approval then rename', async () => {
+    const dir = await root();
+    const { tracker } = await track(dir, async call => {
+      const file = path.basename((call.input as { path: string }).path);
+      return file.startsWith('denied') ? { kind: 'denied' }
+        : file.startsWith('held') ? { kind: 'held', decisionId: `d-${file}` }
+          : { kind: 'allow' };
+    });
+    for (const name of ['denied-1.md', 'denied-2.md', 'held-1.md', 'held-2.md', 'ok.md', 'notes: q3.md', 'notes: q4.md']) {
+      await fs.writeFile(path.join(dir, name), 'x');
+    }
+    expect(await tracker.collect()).toEqual([
+      { type: 'agent_file', path: 'ok.md', mediaType: 'text/markdown', sizeBytes: 1 },
+      NOT_ATTACHED,
+      HELD,
+      NOT_NAMEABLE,
+    ]);
+  });
+
+  it('a home over the entry limit warns scan-limit', async () => {
+    // Too many entries to scan is not a broken scan: the operator needs to
+    // tell the two apart. Both the baseline and a turn's scan say so.
+    const dir = await root();
+    for (const name of ['a.txt', 'b.txt', 'c.txt']) await fs.writeFile(path.join(dir, name), name);
+    const { tracker, admit, warn } = await track(dir, undefined, { maxEntries: 2 });
+    expect(warn.mock.calls).toEqual([['scan-limit']]);
+    expect(await tracker.collect()).toEqual([SCAN_FAILED]);
+    expect(admit).not.toHaveBeenCalled();
+    expect(warn.mock.calls).toEqual([['scan-limit'], ['scan-limit']]);
+    expect(warn.mock.calls).not.toContainEqual(['error']);
   });
 
   it('fails closed when the initial baseline is unavailable', async () => {
@@ -172,10 +245,7 @@ describe('generated files', () => {
     const dir = await root();
     const { tracker, admit, warn } = await track(dir);
     await fs.rm(dir, { recursive: true, force: true });
-    expect(await tracker.collect()).toEqual([{
-      type: 'text',
-      text: 'We could not check for new files to attach. Ask the agent to attach the files again.',
-    }]);
+    expect(await tracker.collect()).toEqual([SCAN_FAILED]);
     expect(admit).not.toHaveBeenCalled();
     expect(warn.mock.calls).toEqual([['error']]);
   });

@@ -182,6 +182,10 @@ beforeEach(() => {
   } as unknown as FakeClient;
 });
 
+/** The auto-attach notes a tool turn-end can carry (generated-files.ts). */
+const NOT_ATTACHED = { type: 'text', text: 'Some new files could not be attached. Ask the agent to attach them again.' };
+const HELD = { type: 'text', text: 'Some new files are waiting for your approval before we attach them.' };
+
 describe('runRunner — generated file attachment', () => {
   // New files in the agent's home are attached to the turn that made them, by
   // reference (TASK-1012): the chip names the file by its key in the agent's
@@ -189,15 +193,19 @@ describe('runRunner — generated file attachment', () => {
   // once. The home is the only tracked root since TASK-995 made it required: a
   // session can no longer come up without one and fall back to scratch
   // `artifacts/`.
-  it.each(['allow', 'reject', 'hold'] as const)('uses the policy gate (%s) and attaches a reference, never a blob copy', async (verdict) => {
+  it.each(['allow', 'reject', 'hold', 'unavailable'] as const)('uses the policy gate (%s) and attaches a reference, never a blob copy', async (verdict) => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'ax-files-shell-'));
     const original = fakeClient.call.getMockImplementation()!;
     fakeClient.call.mockImplementation(async (action: string, ...args: unknown[]) => {
       if (action === 'session.get-config') return { ...await original(action, ...args), conversationId: 'c1' };
       if (action === 'tool.list') return { tools: [{ name: 'artifact_publish', executesIn: 'sandbox', inputSchema: {} }] };
-      if (action === 'tool.pre-call') return verdict === 'allow' ? { verdict: 'allow' }
-        : verdict === 'reject' ? { verdict: 'reject', reason: 'blocked' }
-          : { verdict: 'hold', decisionId: 'd1', note: 'approval required' };
+      if (action === 'tool.pre-call') {
+        // `unavailable`: the gate never answers, so it fails closed.
+        if (verdict === 'unavailable') throw new Error('host gone');
+        return verdict === 'allow' ? { verdict: 'allow' }
+          : verdict === 'reject' ? { verdict: 'reject', reason: 'blocked' }
+            : { verdict: 'hold', decisionId: 'd1', note: 'approval required' };
+      }
       return original(action, ...args);
     });
     const upload = vi.fn(async () => ({ sha256: 'a'.repeat(64), size: 6 }));
@@ -235,8 +243,17 @@ describe('runRunner — generated file attachment', () => {
       }
       // The warning carries the reason code, and only on a refusal.
       const logs = stderr.mock.calls.map(c => String(c[0])).join('');
-      if (verdict === 'allow') expect(logs).not.toContain('could not attach a generated file');
-      else expect(logs).toContain('runner: could not attach a generated file (gate-refused)');
+      const reason = { allow: null, reject: 'denied', hold: 'held', unavailable: 'unavailable' }[verdict];
+      if (reason === null) expect(logs).not.toContain('could not attach a generated file');
+      else expect(logs).toContain(`runner: could not attach a generated file (${reason})\n`);
+      // A held file is waiting on the person, so it is never told to try again.
+      if (verdict === 'hold') {
+        expect(first[1].contentBlocks).toContainEqual(HELD);
+        expect(first[1].contentBlocks).not.toContainEqual(NOT_ATTACHED);
+      } else if (verdict !== 'allow') {
+        expect(first[1].contentBlocks).toContainEqual(NOT_ATTACHED);
+        expect(first[1].contentBlocks).not.toContainEqual(HELD);
+      }
     } finally { stderr.mockRestore(); await fs.rm(root, { recursive: true, force: true }); }
   });
 });
