@@ -390,6 +390,9 @@ it also needs, at minimum (each is in-process today and says so at its site):
   - @ax/memory's per-conversation recall-receipt write chain (TASK-628,
     recall-receipts.ts): two replicas could each append a receipt to the
     same conversation and one would be lost.
+  - @ax/ipc-core's per-session record of `blob.put` shas
+    (handlers/session-blob-puts.ts, TASK-1010): `artifact.publish` landing on
+    another replica than its `blob.put` would be refused as not-found.
 
 So we refuse to render a multi-replica host until a distributed stream broker
 (and a multi-replica blob backend, s3) lands. Better to fail the `helm

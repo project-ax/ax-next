@@ -72,6 +72,9 @@ export interface DownloadOutput {
  * metadata row scoped to ctx.userId, into a conversation ctx.userId owns;
  * returns the stable artifactId the chat chip and the download use. `path` is
  * the row's re-publish key and never leaves this plugin.
+ *
+ * The hook does not check who put `sha256`; a caller must pass a sha it put
+ * itself (ipc-core enforces that for runners, TASK-1010).
  */
 export interface ArtifactsPublishBlobInput {
   conversationId: string;

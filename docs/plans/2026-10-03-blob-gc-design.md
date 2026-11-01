@@ -317,11 +317,15 @@ Before writing the row, `@ax/attachments` calls `blob:stat` and refuses with
 publish a row pointing at a sha that was already purged, and the person would
 get a broken download link.
 
-It does **not** check that this runner put the sha. A sha256 cannot be guessed:
-a runner that can name one already has the bytes, and could put them itself.
-Referencing someone else's identical bytes is the same as dedup. One side effect
-is stated plainly: such a reference keeps those bytes alive, and they stay
-charged only to whoever put them. This is the same accepted cost as card item 6.
+The hook itself does **not** check that this runner put the sha. *(Corrected by
+TASK-1010: this paragraph used to argue that a sha256 cannot be guessed, so a
+runner that can name one already has the bytes. That premise was false: hashes
+leak into model-visible text, so a known sha let a runner publish someone
+else's blob into its own conversation and probe whether a hash is stored.)* The
+check lives at the untrusted boundary instead: ipc-core's `artifact.publish`
+accepts only a sha its own session's `blob.put` returned, and refuses anything
+else with the same 404 a purged blob gets. Publishing bytes someone else also
+put is still dedup, but only after this session put them itself.
 
 ## The sweep, end to end
 

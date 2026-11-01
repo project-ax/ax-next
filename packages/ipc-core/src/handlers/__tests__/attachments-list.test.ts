@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
+import { PluginError } from '@ax/core';
 import { attachmentsListHandler } from '../attachments-list.js';
 import type { HandlerErr, HandlerOk } from '../types.js';
 
@@ -36,6 +37,29 @@ const entry = {
 };
 
 describe('attachments.list handler', () => {
+  // TASK-1010: the real HookBus wraps a plain throw (a DB outage) into
+  // PluginError{code:'unknown'}. Before the fix that shape was mapped to a 500
+  // without ever being logged, so the test throws the WRAPPED shape.
+  it('logs a bus-wrapped hook failure before returning 500', async () => {
+    const bus = fakeBus(async () => {
+      throw new PluginError({
+        code: 'unknown',
+        plugin: '@ax/attachments',
+        hookName: 'attachments:list-for-conversation',
+        message: 'connection refused',
+      });
+    });
+    const { ctx, logger } = fakeCtx('c1');
+    const result = (await attachmentsListHandler({ conversationId: 'c1' }, ctx, bus as never)) as HandlerErr;
+    expect(result.status).toBe(500);
+    expect(logger.error).toHaveBeenCalledTimes(1);
+    expect(logger.error.mock.calls[0]![0]).toBe('ipc_dispatch_internal_error');
+    expect(logger.error.mock.calls[0]![1]).toMatchObject({
+      action: 'attachments.list',
+      pluginErrorCode: 'unknown',
+    });
+  });
+
   it('returns the bound conversation upload set from the host hook', async () => {
     const bus = fakeBus(async (hook, payload) => {
       expect(hook).toBe('attachments:list-for-conversation');

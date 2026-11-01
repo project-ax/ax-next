@@ -2,9 +2,17 @@ import {
   ArtifactPublishRequestSchema,
   ArtifactPublishResponseSchema,
 } from '@ax/ipc-protocol';
-import { zodSummary, internalError, logInternalError, mapPluginError, validationError } from '../errors.js';
+import {
+  zodSummary,
+  internalError,
+  logInternalError,
+  mapPluginError,
+  notFound,
+  validationError,
+} from '../errors.js';
 import { PluginError } from '@ax/core';
 import { refuseUnboundConversation } from './bound-conversation.js';
+import { sessionPutBlob } from './session-blob-puts.js';
 import type { ActionHandler } from './types.js';
 
 // ---------------------------------------------------------------------------
@@ -27,6 +35,17 @@ import type { ActionHandler } from './types.js';
 //      user does not own, and never lets one user's publish take over another
 //      user's row.
 //
+// What gets published (TASK-1010): only a sha THIS session's own `blob.put`
+// returned (`session-blob-puts.ts`, tracked host-side; the runner never
+// supplies the set). The store is shared and content-addressed, and a hash can
+// leak into model-visible text, so a sha is not proof the runner holds the
+// bytes. Without this check a raw-IPC runner could publish another user's blob
+// into its own conversation (whose owner then downloads it via `/api/files`),
+// and could tell from 404 vs 200 whether any hash is stored. Any other sha gets
+// the SAME 404 the hook's own not-found maps to (a blob put here and since
+// purged), decided before the hook runs, so the answer says nothing about
+// whether the sha exists.
+//
 // `displayName`/`mediaType` are UNTRUSTED model-supplied text — stored verbatim,
 // never shell-interpolated; the renderer treats them as untrusted (the download
 // route already sanitizes Content-Disposition + sends nosniff).
@@ -44,6 +63,10 @@ interface ArtifactPublishBlobOutput {
   artifactId: string;
 }
 
+// The one response for "not this session's blob" and "the blob is gone": the
+// body `mapPluginError` gives the hook's own not-found.
+const PUBLISH_NOT_FOUND = 'not found';
+
 export const artifactPublishHandler: ActionHandler = async (rawPayload, ctx, bus) => {
   const parsed = ArtifactPublishRequestSchema.safeParse(rawPayload);
   if (!parsed.success) {
@@ -56,6 +79,11 @@ export const artifactPublishHandler: ActionHandler = async (rawPayload, ctx, bus
     'artifact_publish_foreign_conversation_refused',
   );
   if (refused !== null) return refused;
+  if (!sessionPutBlob(ctx, parsed.data.sha256)) {
+    // Host-side only; the sha (the would-be capability) stays out of the log.
+    ctx.logger.warn('artifact_publish_unput_sha_refused', { action: 'artifact.publish' });
+    return notFound(PUBLISH_NOT_FOUND);
+  }
   let out: ArtifactPublishBlobOutput;
   try {
     out = await bus.call<ArtifactPublishBlobInput, ArtifactPublishBlobOutput>(
@@ -72,12 +100,21 @@ export const artifactPublishHandler: ActionHandler = async (rawPayload, ctx, bus
     );
   } catch (err) {
     // A PluginError from the hook (e.g. forbidden: foreign conversation) maps to
-    // the right HTTP status; anything else is sanitized to 500.
-    if (err instanceof PluginError) {
-      return mapPluginError(err);
+    // the right HTTP status; anything else is sanitized to 500. Log every 500
+    // before returning it: the real bus wraps a plain throw (a DB outage) into
+    // PluginError{code:'unknown'}, which maps to 500 too (TASK-1010).
+    const mapped = err instanceof PluginError ? mapPluginError(err) : internalError();
+    if (mapped.status >= 500) {
+      logInternalError(ctx.logger, 'artifact.publish', err);
+    } else if (err instanceof PluginError) {
+      // An expected answer (e.g. a blob this session put but has since been
+      // purged). Logged so it can be told apart from the guard's refusal above.
+      ctx.logger.warn('artifact_publish_hook_refused', {
+        action: 'artifact.publish',
+        pluginErrorCode: err.code,
+      });
     }
-    logInternalError(ctx.logger, 'artifact.publish', err);
-    return internalError();
+    return mapped;
   }
   const body = {
     artifactId: out.artifactId,

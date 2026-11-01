@@ -13,6 +13,7 @@ import { zodSummary,
   validationError,
 } from '../errors.js';
 import type { ActionHandler, HandlerResult } from './types.js';
+import { recordSessionBlobPut } from './session-blob-puts.js';
 
 // ---------------------------------------------------------------------------
 // POST /blob.put  (REQUEST-direction binary) — TASK-68, out-of-git Part C.
@@ -34,9 +35,10 @@ import type { ActionHandler, HandlerResult } from './types.js';
 // attachments path, so a blob with no referencing row is just an orphan a GC
 // sweep reclaims (design open-question #3; no such sweep exists yet, so orphans
 // stay). `blob.get` below will not serve an orphan, or any blob the session's
-// own conversation does not reference (TASK-1009). Note `artifact.publish`
-// still accepts any sha the store holds, so that action, not this one, is
-// where a known sha still has reach (a follow-up filed from TASK-1009).
+// own conversation does not reference (TASK-1009). The sha this action returns
+// is remembered for the session (`session-blob-puts.ts`), and `artifact.publish`
+// accepts only such a sha (TASK-1010), so a hash the runner learned elsewhere
+// cannot be published into its conversation.
 //
 // STORAGE LIMIT (TASK-690). Unowned in the store does NOT mean free: `blob:put`
 // is a facade that fires the veto `blob:pre-put`, and the session's
@@ -121,6 +123,7 @@ export const blobPutHandler: BinaryActionHandler = async (
     );
     return internalError();
   }
+  recordSessionBlobPut(ctx, checked.data.sha256);
   return { status: 200, body: checked.data };
 };
 
