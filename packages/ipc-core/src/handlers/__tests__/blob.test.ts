@@ -1,3 +1,4 @@
+import { inspect } from 'node:util';
 import { describe, it, expect, vi } from 'vitest';
 import { PluginError } from '@ax/core';
 import { BLOB_PUT_STORAGE_FULL_FOR_AGENT, blobGetHandler, blobPutHandler } from '../blob.js';
@@ -202,7 +203,8 @@ describe('blob.get handler (JSON request → binary response)', () => {
     // The sha is the would-be capability: it reaches no log level.
     const logger = (ctx as { logger: Record<string, ReturnType<typeof vi.fn>> }).logger;
     for (const level of ['info', 'warn', 'error', 'debug']) {
-      expect(JSON.stringify(logger[level]!.mock.calls)).not.toContain(VALID_SHA);
+      // inspect, not JSON.stringify: it expands an Error's message and stack.
+      expect(inspect(logger[level]!.mock.calls, { depth: null })).not.toContain(VALID_SHA);
     }
   });
 
@@ -231,9 +233,14 @@ describe('blob.get handler (JSON request → binary response)', () => {
 
   it('TASK-1009: an empty conversation binding can fetch nothing', async () => {
     const { bus } = scopedBus({ listed: [VALID_SHA] });
-    const result = (await blobGetHandler({ sha256: VALID_SHA }, boundCtx(''), bus as never)) as HandlerErr;
+    const ctx = boundCtx('');
+    const result = (await blobGetHandler({ sha256: VALID_SHA }, ctx, bus as never)) as HandlerErr;
     expect(result.status).toBe(404);
     expect(bus.call).not.toHaveBeenCalled();
+    expect((ctx as { logger: { warn: ReturnType<typeof vi.fn> } }).logger.warn).toHaveBeenCalledWith(
+      'blob_get_unreferenced_refused',
+      { action: 'blob.get', reason: 'unbound-session' },
+    );
   });
 
   it('TASK-1009: with no uploads store loaded, fails closed (404, no store read)', async () => {
@@ -303,9 +310,15 @@ describe('blob.get handler (JSON request → binary response)', () => {
       if (hook === 'attachments:list-for-conversation') return { files: 'nope' };
       return { bytes: new Uint8Array([9]) };
     });
-    const result = (await blobGetHandler({ sha256: VALID_SHA }, boundCtx(), bus as never)) as HandlerErr;
+    const ctx = boundCtx();
+    const result = (await blobGetHandler({ sha256: VALID_SHA }, ctx, bus as never)) as HandlerErr;
     expect(result.status).toBe(500);
     expect(blobGetCalls(bus)).toHaveLength(0);
+    // A plain (unwrapped) failure is logged too, not just a PluginError.
+    expect((ctx as { logger: { error: ReturnType<typeof vi.fn> } }).logger.error).toHaveBeenCalledWith(
+      'ipc_dispatch_internal_error',
+      expect.objectContaining({ action: 'blob.get' }),
+    );
   });
 
   it('rejects a malformed sha256 at the handler before calling any hook (traversal defense)', async () => {
