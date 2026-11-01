@@ -90,7 +90,21 @@ describe('GeneratedFileChip', () => {
       render(<GeneratedFileChip file={agentFile} conversationId="c1" />);
       fireEvent.click(screen.getByRole('button'));
       await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent(
-        'This file is too big to download from the chat. Ask the agent for a smaller copy, or to split it up.'));
+        'This file is too big for us to download. Ask the agent for a smaller copy, or to split it up.'));
+    });
+
+    it('shows the generic error, not a crash, when the key cannot be put in a URL', async () => {
+      // A lone surrogate makes encodeURIComponent throw. It must not take the
+      // render down, and it must not reach the network.
+      const fetch = vi.fn();
+      vi.stubGlobal('fetch', fetch);
+      render(<GeneratedFileChip file={{ ...agentFile, agentFilePath: 'bad\ud800.pdf' }} conversationId="c1" />);
+      const button = screen.getByRole('button');
+      expect(button).toBeEnabled();
+      fireEvent.click(button);
+      await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('We could not download this file just now. Try again.'));
+      expect(fetch).not.toHaveBeenCalled();
+      expect(button).toBeEnabled();
     });
 
     it('keeps the generic copy on a 503', async () => {

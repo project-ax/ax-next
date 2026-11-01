@@ -33,19 +33,24 @@ export function GeneratedFileChip({ file, conversationId }: {
         : `${(file.sizeBytes / (1024 * 1024)).toFixed(1)} MB`
     : null;
 
-  const url = file.agentFilePath !== undefined
-    ? `/api/workspace/conversations/${encodeURIComponent(conversationId)}/download/user-files/${encodeURIComponent(file.agentFilePath)}`
-    : file.attachmentId !== null
-      ? `/api/files?conversationId=${encodeURIComponent(conversationId)}&id=${encodeURIComponent(file.attachmentId)}`
-      : null;
+  // Whether there is anything to download. The URL itself is built on click:
+  // encodeURIComponent throws on a malformed key, and that must not crash render.
+  const downloadable = file.agentFilePath !== undefined || file.attachmentId !== null;
+
+  function downloadUrl(): string {
+    if (file.agentFilePath !== undefined) {
+      return `/api/workspace/conversations/${encodeURIComponent(conversationId)}/download/user-files/${encodeURIComponent(file.agentFilePath)}`;
+    }
+    return `/api/files?conversationId=${encodeURIComponent(conversationId)}&id=${encodeURIComponent(file.attachmentId ?? '')}`;
+  }
 
   async function download() {
-    if (inFlight.current || url === null) return;
+    if (inFlight.current || !downloadable) return;
     inFlight.current = true;
     setBusy(true);
     setError(null);
     try {
-      const response = await httpFetch(url);
+      const response = await httpFetch(downloadUrl());
       if (!response.ok) throw new HttpError('file download', response.status);
       saveBlob(await response.blob(),
         filenameFromContentDisposition(response.headers.get('content-disposition')) ?? 'download');
@@ -55,7 +60,7 @@ export function GeneratedFileChip({ file, conversationId }: {
       setError(status === 404 || (status === 400 && file.agentFilePath !== undefined)
         ? 'This file is no longer available to download.'
         : status === 413
-          ? 'This file is too big to download from the chat. Ask the agent for a smaller copy, or to split it up.'
+          ? 'This file is too big for us to download. Ask the agent for a smaller copy, or to split it up.'
           : status === 403
             ? 'This account does not have access to that file.'
             : 'We could not download this file just now. Try again.');
@@ -67,7 +72,7 @@ export function GeneratedFileChip({ file, conversationId }: {
 
   return (
     <div className="flex w-full max-w-xs flex-col gap-2">
-      <Button type="button" variant="outline" disabled={busy || url === null}
+      <Button type="button" variant="outline" disabled={busy || !downloadable}
         aria-label={`${busy ? 'Downloading' : 'Download'} ${name}`}
         aria-busy={busy} onClick={() => void download()}
         className="h-auto min-h-11 w-full justify-start gap-3 px-3 py-2 text-left">
