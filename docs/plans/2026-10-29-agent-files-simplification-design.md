@@ -274,6 +274,9 @@ conversation; keeping a file is deliberate.
   not the record. Legacy text-mention turns still render as plain text. The
   path-mention reconstruction in `conversations:get` is deleted, and a client can
   no longer send an attachment block of its own (the host builds them).
+- **As built (TASK-1012):** a file the agent creates in `/files` is attached as an
+  `agent_file` reference by its key there and downloaded live from `/files` (§12);
+  uploads and explicitly published artifacts keep the ID-based block.
 
 ## 8. SDK transcript working copy
 
@@ -369,6 +372,25 @@ Decided 2026-10-30: plain reset; nobody is using ax yet.
 - **As built (TASK-995):** the `workspace:deleted` subscriber and the TASK-720
   plumbing are gone. `@ax/disk-quota` deletes any leftover `workspace` ledger rows
   at boot, so the old git-era bytes stop counting.
+- **As built (TASK-1012):** auto-attach no longer copies new `/files` files into
+  chat blobs. The chip is an `agent_file { path, mediaType, sizeBytes }` block,
+  `path` being the key the Files tab lists the file by. A name the Files tab
+  cannot address gets a text note instead of a chip. The chip downloads through
+  `GET /api/workspace/conversations/:id/download/user-files/*`, live from the
+  file itself. Its ACL is two checks, both before the key is read: the
+  conversation is the caller's own (404 `file-not-found` otherwise), and the
+  caller can still reach the conversation's agent (404 `agent-not-found`
+  otherwise). The agent always comes from the conversation, never from the
+  block or the URL. The bytes are the Files tab's streamed download
+  (`sendUserFileDownload`, TASK-1014), so its answers carry over: 404
+  `file-not-found` when the file is gone (or is now a link), 400 `not-a-file`
+  when the key is now a folder (the chip says "no longer available" for both),
+  503 when storage will not answer, 413 over 1 GiB. A malformed key is a 400
+  `invalid-path`. Such a file is charged once (Agent files), and deleting it
+  lowers usage at the next assistant turn end. Explicit `artifact_publish` and
+  uploads are unchanged. Files auto-attached before this change keep their blob
+  and its charge (no migration: their artifact rows live until the agent is
+  deleted).
 
 ## 13. Ops
 
