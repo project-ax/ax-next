@@ -565,7 +565,9 @@ reset. Run it once, on the first deploy that includes TASK-995.
 - Files in the Files tab (`/files`) are untouched.
 - Old conversations stay readable. Their attachments and generated-file chips
   show as "(this file is no longer available)", and those downloads stop working.
-- Storage usage drops, because the old workspace repos stop counting.
+- The old workspace repos stop counting toward storage. Files in `/files` start
+  counting in the same release (TASK-993), so a person's usage can go up, not
+  down. Over the limit blocks new uploads, not chat.
 
 **Where the old data is.** The old repos are `ws-*.git` directories (and
 `repo.git` on very old installs) at the top of the host PVC, `ax-next-workspace`,
@@ -590,8 +592,8 @@ Both of these are cheap, and they are the only undo there is.
 
 ```bash
 # Snapshot the host PVC (workspace) and facts disks now, on top of the daily schedule.
-bash deploy/gke/backups.sh enable --project $PROJECT_ID --snapshot-now
-bash deploy/gke/backups.sh status --project $PROJECT_ID   # both disks: a snapshot from the last few minutes
+bash deploy/gke/backups.sh enable --context "$KCTX" --project "$PROJECT_ID" --snapshot-now
+bash deploy/gke/backups.sh status --context "$KCTX" --project "$PROJECT_ID"   # both disks: a snapshot from the last few minutes
 
 # An on-demand Cloud SQL backup. The TASK-995 migrations drop columns.
 gcloud sql backups create --instance=ax-next-db --project=$PROJECT_ID
@@ -638,34 +640,60 @@ kubectl --context "$KCTX" exec -n "$NS" deploy/ax-next-host -- sh -c '
   cd /var/lib/ax-next/workspaces || exit 1
   echo "would delete: $(ls -d ws-*.git repo.git 2>/dev/null | wc -l) repos"
   ls -d ws-*.git repo.git 2>/dev/null | head -20
-  du -sh ws-*.git repo.git 2>/dev/null | tail -5
-  echo "must keep:    blobs/ with $(find blobs -type f -not -path "blobs/.retired/*" | wc -l) files"
+  du -shc ws-*.git repo.git 2>/dev/null | tail -1
+  echo "must keep:    blobs/ with $(find blobs -type f | wc -l) files (live and .retired/)"
   du -sh blobs
   df -h .'
 ```
 
-Check the listing before you continue. It should be `ws-*.git` names only. If
-you see anything else under "would delete", stop.
+Check the listing before you continue: every name under "would delete" is a
+`ws-<id>.git` (or `repo.git`) directory, and `blobs/` has the file count you
+expect. Write both numbers down.
 
 Then the database side. The `disk_quota` rows for the old repos
 (`kind = 'workspace'`) should already be gone: the host deletes them on every
-boot since TASK-995. Count them, and count agents, in a throwaway pod (the same
-pattern as [1c](#1c-enable-pgvector)):
+boot since TASK-995. Count them, and count agents, in a throwaway pod that reads
+the database URL from the existing `ax-next-db` Secret (so no password goes on
+a command line or into a pod spec):
 
 ```bash
-kubectl --context "$KCTX" run reset-check -n default --restart=Never \
-  --image=postgres:17 --env="PGPASSWORD=$DB_PASSWORD" --command -- \
-  psql "host=$DB_PRIVATE_IP user=ax_next dbname=ax_next sslmode=require" \
-    -c "SELECT count(*) AS workspace_quota_rows FROM disk_quota_v1_usage WHERE kind = 'workspace';" \
-    -c "SELECT count(*) AS agents FROM agents_v1_agents;" \
-    -c "SELECT bootstrap, count(*) FROM agents_v1_identity GROUP BY bootstrap;"
-kubectl --context "$KCTX" wait --for=jsonpath='{.status.phase}'=Succeeded pod/reset-check -n default --timeout=120s
-kubectl --context "$KCTX" logs reset-check -n default
-kubectl --context "$KCTX" delete pod reset-check -n default
+kubectl --context "$KCTX" apply -n "$NS" -f - <<'YAML'
+apiVersion: v1
+kind: Pod
+metadata:
+  name: reset-check
+spec:
+  restartPolicy: Never
+  containers:
+    - name: psql
+      image: postgres:17
+      env:
+        - name: DATABASE_URL
+          valueFrom: { secretKeyRef: { name: ax-next-db, key: url } }
+      command: ["sh", "-c"]
+      args:
+        - |
+          # The DSN says sslmode=no-verify (a node-postgres spelling, Step 4a);
+          # libpq wants require.
+          psql "${DATABASE_URL%%\?*}?sslmode=require" \
+            -c "SELECT count(*) AS workspace_quota_rows FROM disk_quota_v1_usage WHERE kind = 'workspace';" \
+            -c "SELECT count(*) AS agents FROM agents_v1_agents;" \
+            -c "SELECT bootstrap, count(*) FROM agents_v1_identity GROUP BY bootstrap;"
+YAML
+kubectl --context "$KCTX" wait --for=jsonpath='{.status.phase}'=Succeeded pod/reset-check -n "$NS" --timeout=120s
+kubectl --context "$KCTX" logs reset-check -n "$NS"
+kubectl --context "$KCTX" delete pod reset-check -n "$NS"
 ```
 
-Expect `workspace_quota_rows = 0`. Agents without an identity row read as empty
-with `bootstrap = 'none'`, so they don't appear in the last query; that's fine.
+If the wait times out, `kubectl --context "$KCTX" describe pod reset-check -n "$NS"`
+says why; delete the pod either way.
+
+Expect `workspace_quota_rows = 0`. If it's above 0, the host hasn't restarted
+on the new image yet: restart it (runner pods first, as in step 2) and count
+again, rather than deleting rows by hand. The boot migration does exactly
+`DELETE FROM disk_quota_v1_usage WHERE kind = 'workspace'`. Agents without an
+identity row read as empty with `bootstrap = 'none'`, so they don't appear in the
+last query; that's fine.
 
 #### Step 4: delete the old repos
 
@@ -683,25 +711,26 @@ kubectl --context "$KCTX" exec -n "$NS" deploy/ax-next-host -- sh -c '
   echo "repos left: $(ls -d ws-*.git repo.git 2>/dev/null | wc -l)"'
 ```
 
-If step 3 found `workspace_quota_rows` above 0, the host hasn't restarted on the
-new image yet. Restart it (runner pods first, as in step 2) rather than deleting
-rows by hand; the boot migration does exactly `DELETE FROM disk_quota_v1_usage
-WHERE kind = 'workspace'`.
-
 #### Step 5: verify
 
 Run the step 3 commands again. Expect:
 
 - `would delete: 0 repos`.
 - `blobs/` has the **same file count** as before, or more if someone uploaded
-  in between. Fewer means something went wrong: restore the workspace disk from
-  the snapshot in step 1 ([Restoring for real](#restoring-for-real)).
+  in between. (The count includes `.retired/`, so blob cleanup moving a file
+  there doesn't change it. A purge can: only in enforce mode, after the retention
+  period, 7 days by default. The host logs a
+  `blob_gc_report` line when it purges.) If the count dropped and the host log
+  shows no purge, stop and look before doing anything else. Step 4 cannot reach
+  `blobs/`, and restoring the disk from step 1's snapshot throws away every upload
+  since then, so treat a restore as the last resort
+  ([Restoring for real](#restoring-for-real)).
 - `workspace_quota_rows = 0` and the same number of agents.
 - In the app: open an old agent and send a message. It answers. Its identity
   and Instructions are empty. The Files tab still lists its files.
 
-Then run the [restore drill](#the-restore-drill) once, so the next snapshot is
-proven against the new layout.
+Then run the [restore drill](#the-restore-drill) once (with `--context "$KCTX"`),
+so the next snapshot is proven against the new layout.
 
 ---
 
@@ -1550,7 +1579,7 @@ What it does, in order (so you can do it by hand if the script is unavailable):
    and scratch disks, and prints how long each stage took.
 
 **PASS** means: the workspace disk has `blobs/`, every blob checked (up to 25,
-newest first; `MAX_BLOBS` changes that) is a regular file whose sha256 matches its
+newest first) is a regular file whose sha256 matches its
 name, and nothing is filed under the wrong shard; and `facts.db` opens, passes `integrity_check`, and has
 rows. A valid but empty `facts.db`, or an empty `blobs/`, passes with a warning:
 if the live deployment has data there, an empty copy is wrong. Old `ws-*.git`

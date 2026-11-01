@@ -151,6 +151,62 @@ describe.each(['sh', ...(HAS_DASH ? ['dash'] : [])])('restore-drill-verify.sh un
     expect(r.status).toBe(1);
   });
 
+  it('FAILS when blobs/ itself is a symlink, without hashing what it points at', () => {
+    // Pointed off the restored disk, a followed link would "verify" some other tree.
+    const elsewhere = join(root, 'elsewhere');
+    mkdirSync(elsewhere);
+    symlinkSync(elsewhere, join(ws, 'blobs'));
+    makeFactsDb();
+    const r = verify();
+    expect(r.out).toContain('FAIL: blobs is a symlink');
+    expect(r.out).not.toContain('blobs found');
+    expect(r.status).toBe(1);
+  });
+
+  it('FAILS on a symlinked shard directory instead of skipping it', () => {
+    const torn = createHash('sha256').update('real bytes').digest('hex');
+    const hidden = join(root, 'hidden', torn.slice(2, 4));
+    mkdirSync(hidden, { recursive: true });
+    writeFileSync(join(hidden, torn), 'torn');
+    mkdirSync(join(ws, 'blobs'));
+    symlinkSync(join(root, 'hidden'), join(ws, 'blobs', torn.slice(0, 2)));
+    makeFactsDb();
+    const r = verify();
+    expect(r.out).toContain(`FAIL: ${torn.slice(0, 2)} is a symlink, not a shard directory`);
+    expect(r.status).toBe(1);
+  });
+
+  it('names an unreadable blob in a FAIL line and keeps hashing the rest', () => {
+    if (process.getuid?.() === 0) return; // root reads mode-000 files anyway
+    const locked = makeBlob('locked bytes');
+    const fine = makeBlob('fine bytes', { ageSeconds: 100 });
+    chmodSync(locked.file, 0o000);
+    makeFactsDb();
+    try {
+      const r = verify();
+      expect(r.out).toContain(`FAIL: ${locked.sha.slice(0, 12)} cannot be read: EACCES`);
+      expect(r.out).toContain(`${fine.sha.slice(0, 12)} hash matches`);
+      expect(r.out).not.toMatch(/\n\s+at /); // no stack trace
+      expect(r.status).toBe(1);
+    } finally {
+      chmodSync(locked.file, 0o644);
+    }
+  });
+
+  it.each(['0', '00', 'abc', '-5', ''])('refuses MAX_BLOBS=%j instead of hashing nothing', (v) => {
+    const b = makeBlob('bytes');
+    writeFileSync(b.file, 'torn');
+    makeFactsDb();
+    const r = verify({ MAX_BLOBS: v });
+    if (v === '') {
+      // Unset-equivalent: the default applies and the torn blob is caught.
+      expect(r.out).toContain('content does not match its name');
+    } else {
+      expect(r.out).toContain('MAX_BLOBS must be a positive integer');
+    }
+    expect(r.status).toBe(1);
+  });
+
   it('FAILS on a blob filed under the wrong shard', () => {
     const { sha, file } = makeBlob('misfiled');
     const wrong = join(ws, 'blobs', sha.slice(0, 2) === '00' ? '01' : '00', '00');
@@ -195,7 +251,7 @@ describe.each(['sh', ...(HAS_DASH ? ['dash'] : [])])('restore-drill-verify.sh un
     writeFileSync(join(bin, 'git'), `#!/bin/sh\nprintf '%s\\n' "$*" >> "${calls}"\nexit 1\n`);
     chmodSync(join(bin, 'git'), 0o755);
     const r = verify({ PATH: `${bin}:${process.env.PATH}` });
-    expect(r.out).toContain('warn: 2 old git workspace repos (ws-*.git) still on the disk');
+    expect(r.out).toContain('warn: 2 old git workspace repos (ws-*.git, repo.git) still on the disk');
     expect(r.out).toContain('Reset after the agent-files cutover');
     expect(existsSync(calls), 'the verifier ran git').toBe(false);
     expect(r.status).toBe(0);

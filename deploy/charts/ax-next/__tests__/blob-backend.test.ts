@@ -135,6 +135,22 @@ const PINNED_ROOT = '/var/lib/ax-next/workspaces/blobs';
 const FS_RENDERS: ReadonlyArray<readonly [label: string, args: readonly string[]]> = [
   ['default render', []],
   ['gke-values.yaml', ['-f', GKE_VALUES, '--set', 'sandbox.filestore.server=10.9.8.7']],
+  // What GKE prod's release carries into a `--reuse-values` upgrade (TASK-996):
+  // the retired `workspace.backend=local` must not change where blobs live.
+  [
+    'old GKE release values (workspace.backend=local)',
+    [
+      '-f', GKE_VALUES,
+      '--set', 'sandbox.filestore.server=10.9.8.7',
+      '--set', 'workspace.backend=local',
+      '--set', 'gitServer.enabled=false',
+    ],
+  ],
+  // A retired git-protocol release with fs blobs: the PVC follows blob.backend.
+  [
+    'old git-protocol values with fs blobs',
+    ['--set', 'workspace.backend=git-protocol', '--set', 'gitServer.enabled=true'],
+  ],
 ];
 
 type HostPodSpec = {
@@ -210,6 +226,25 @@ describeIfHelm('ax-next chart: blob backend wiring (out-of-git Part A)', () => {
       expect(root.startsWith(`${mountPath}/`), `${label}: ${root} is under ${mountPath}/`).toBe(
         true,
       );
+    }
+  });
+
+  it('s3 blobs render no host PVC, even when old values still say workspace.backend=local', () => {
+    // The PVC renders iff blob.backend=fs (TASK-996). A retired
+    // workspace.backend=local must not bring it back on an s3 deployment.
+    for (const args of [
+      ['--set', 'blob.backend=s3', '--set', 'minio.enabled=true'],
+      ['--set', 'blob.backend=s3', '--set', 'minio.enabled=true', '--set', 'workspace.backend=local'],
+    ]) {
+      const docs = helmTemplate(args);
+      const pvc = docs.find(
+        (d) =>
+          d.kind === 'PersistentVolumeClaim' && (d.metadata?.name ?? '').endsWith('-workspace'),
+      );
+      expect(pvc, args.join(' ')).toBeUndefined();
+      const podSpec = (hostDeployment(docs).spec as { template?: { spec?: HostPodSpec } })
+        ?.template?.spec;
+      expect((podSpec?.volumes ?? []).map((v) => v.name), args.join(' ')).not.toContain('workspace');
     }
   });
 

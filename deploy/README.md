@@ -286,6 +286,14 @@ Quick check (kind dev). Kind uses MinIO for blobs, so there is no host PVC and n
 kubectl --context kind-ax-next-dev -n ax-next get pods,pvc
 ```
 
+A kind cluster first installed before TASK-996 keeps two leftovers after the upgrade, because helm never deletes them: the git-server's repo PVC (StatefulSet claims outlive the StatefulSet) and its auth Secret (`resource-policy: keep`). Nothing uses either. Delete them once:
+
+```bash
+kubectl --context kind-ax-next-dev -n ax-next get pvc -o name | grep '^persistentvolumeclaim/repo-ax-next-git-server-experimental-' \
+  | xargs -r kubectl --context kind-ax-next-dev -n ax-next delete
+kubectl --context kind-ax-next-dev -n ax-next delete secret ax-next-git-server-auth --ignore-not-found
+```
+
 ### Step 6 — Start the host again
 
 ```bash

@@ -41,8 +41,16 @@ fi
 WS=$1
 FACTS=$2
 # Blobs are hashed newest-first, and the cap keeps a large store from turning a
-# drill into an hours-long read. Override with MAX_BLOBS=... for a fuller check.
+# drill into an hours-long read. MAX_BLOBS=<n> (a positive integer) changes it
+# when you run this script by hand; the drill uses the default.
 MAX_BLOBS=${MAX_BLOBS:-25}
+case $MAX_BLOBS in
+  "" | 0* | *[!0-9]*)
+    echo "FAIL: MAX_BLOBS must be a positive integer, got \"$MAX_BLOBS\""
+    echo "DRILL-RESULT: FAIL 1 check(s) failed"
+    exit 1
+    ;;
+esac
 
 failures=0
 fail() {
@@ -77,9 +85,12 @@ else
     [ -d "$d" ] && legacy=$((legacy + 1))
   done
   if [ "$legacy" -gt 0 ]; then
-    warn "$legacy old git workspace repos (ws-*.git) still on the disk. Nothing reads them since TASK-995; deploy/GKE.md \"Reset after the agent-files cutover\" deletes them."
+    warn "$legacy old git workspace repos (ws-*.git, repo.git) still on the disk. Nothing reads them since TASK-995; deploy/GKE.md \"Reset after the agent-files cutover\" deletes them."
   fi
-  if [ ! -d "$WS/blobs" ]; then
+  if [ -L "$WS/blobs" ]; then
+    # A link would take the check somewhere other than the restored disk.
+    fail "blobs is a symlink on the restored workspace disk, not a directory"
+  elif [ ! -d "$WS/blobs" ]; then
     # The blob store creates its root at boot, so a disk from a running fs
     # deployment always has one. Missing means the wrong disk, or a bad copy.
     fail "no blobs/ directory on the restored workspace disk"
@@ -88,7 +99,8 @@ else
 // Only the live tree counts: blobs/<aa>/<bb>/<sha>, every level validated by
 // name. `.retired/`, `lost+found`, temp files and anything else are skipped,
 // exactly as the store's own walk skips them. Nothing is followed: a symlink
-// or other non-regular file where a blob should be is a FAIL.
+// anywhere a shard directory or a blob should be is a FAIL, and so is any
+// other non-regular file where a blob should be.
 const fs = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
@@ -98,32 +110,49 @@ const SHARD = /^[0-9a-f]{2}$/;
 const SHA = /^[0-9a-f]{64}$/;
 let bad = 0;
 const found = [];
+function failLine(msg) {
+  bad++;
+  console.log("FAIL: " + msg);
+}
 function dirs(p) {
   try {
     return fs.readdirSync(p, { withFileTypes: true });
   } catch (e) {
-    bad++;
-    console.log("FAIL: cannot read " + p + ": " + e.message);
+    failLine("cannot read " + p + ": " + (e.code || e.message));
     return [];
   }
 }
-for (const a of dirs(root)) {
-  if (!a.isDirectory() || !SHARD.test(a.name)) continue;
-  for (const b of dirs(path.join(root, a.name))) {
-    if (!b.isDirectory() || !SHARD.test(b.name)) continue;
-    const dir = path.join(root, a.name, b.name);
+function shardDirs(p, rel) {
+  const out = [];
+  for (const e of dirs(p)) {
+    if (!SHARD.test(e.name)) continue;
+    if (e.isSymbolicLink()) {
+      failLine(rel + e.name + " is a symlink, not a shard directory");
+    } else if (e.isDirectory()) {
+      out.push(e.name);
+    }
+  }
+  return out;
+}
+for (const a of shardDirs(root, "")) {
+  for (const b of shardDirs(path.join(root, a), a + "/")) {
+    const dir = path.join(root, a, b);
     for (const f of dirs(dir)) {
       if (!SHA.test(f.name)) continue;
       const file = path.join(dir, f.name);
-      if (f.name.slice(0, 2) !== a.name || f.name.slice(2, 4) !== b.name) {
-        bad++;
-        console.log("FAIL: " + f.name + " is filed under the wrong shard (" + a.name + "/" + b.name + ")");
+      if (f.name.slice(0, 2) !== a || f.name.slice(2, 4) !== b) {
+        failLine(f.name + " is filed under the wrong shard (" + a + "/" + b + ")");
         continue;
       }
-      const st = fs.lstatSync(file);
+      let st;
+      try {
+        st = fs.lstatSync(file);
+      } catch (e) {
+        failLine(f.name.slice(0, 12) + " cannot be read: " + (e.code || e.message));
+        continue;
+      }
       if (!st.isFile()) {
-        bad++;
-        console.log("FAIL: " + f.name + " is not a regular file");
+        failLine(f.name + " is not a regular file");
         continue;
       }
       found.push({ sha: f.name, file, mtime: st.mtimeMs, size: st.size });
@@ -140,21 +169,26 @@ if (found.length === 0) {
   for (const f of found) total += f.size;
   console.log("      " + total + " bytes in the live tree");
   for (const f of found.slice(0, n)) {
-    const h = crypto.createHash("sha256");
-    const fd = fs.openSync(f.file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0));
+    let got;
     try {
-      const buf = Buffer.alloc(1 << 20);
-      let r;
-      while ((r = fs.readSync(fd, buf, 0, buf.length, null)) > 0) h.update(buf.subarray(0, r));
-    } finally {
-      fs.closeSync(fd);
+      const h = crypto.createHash("sha256");
+      const fd = fs.openSync(f.file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0));
+      try {
+        const buf = Buffer.alloc(1 << 20);
+        let r;
+        while ((r = fs.readSync(fd, buf, 0, buf.length, null)) > 0) h.update(buf.subarray(0, r));
+      } finally {
+        fs.closeSync(fd);
+      }
+      got = h.digest("hex");
+    } catch (e) {
+      failLine(f.sha.slice(0, 12) + " cannot be read: " + (e.code || e.message));
+      continue;
     }
-    const got = h.digest("hex");
     if (got === f.sha) {
       console.log("ok:   " + f.sha.slice(0, 12) + " hash matches (" + f.size + " bytes)");
     } else {
-      bad++;
-      console.log("FAIL: " + f.sha.slice(0, 12) + " content does not match its name (got " + got.slice(0, 12) + ")");
+      failLine(f.sha.slice(0, 12) + " content does not match its name (got " + got.slice(0, 12) + ")");
     }
   }
 }

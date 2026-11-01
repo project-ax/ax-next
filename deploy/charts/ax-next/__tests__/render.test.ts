@@ -254,16 +254,6 @@ describeIfHelm('ax-next chart: the git-server tier is retired (TASK-996)', () =>
     );
     expect(ports).not.toContain(7780);
   });
-
-  it('the old values file shape is still accepted: no schema error for gitServer.enabled', () => {
-    // values.schema.json dropped `gitServer`. A release that still carries
-    // `gitServer.enabled: true` must render, not fail the upgrade.
-    const r = helmTemplateExpectFailure([
-      '--set', 'gitServer.enabled=true',
-      '--set', 'workspace.backend=git-protocol',
-    ]);
-    expect(r.status, r.stderr).toBe(0);
-  });
 });
 
 describeIfHelm('ax-next chart: the host disk follows blob.backend (TASK-996)', () => {
