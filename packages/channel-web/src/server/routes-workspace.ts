@@ -340,6 +340,7 @@ import { listTeamIdsForUser, type RouteRequest, type RouteResponse } from './rou
 // TASK-1014 — a download streams the whole file, a range at a time, through
 // this plugin's own module (shared with TASK-1012's chat file chips).
 import {
+  errorCodes,
   sendUserFileDownload,
   type StreamingDownloadResponse,
 } from './user-file-download.js';
@@ -7967,7 +7968,7 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
           res.status(404).json({ error: 'file-not-found' });
           return;
         }
-        initCtx.logger.warn('workspace_conversation_file_acl_failed', { conversationId });
+        initCtx.logger.warn('workspace_conversation_file_acl_failed', { conversationId, ...errorCodes(err) });
         res.status(503).json({ error: 'agent-unavailable' });
         return;
       }

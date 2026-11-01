@@ -466,7 +466,7 @@ describe('the chat file chip download route', () => {
     expect(d.captured.statusCode).toBe(503);
     expect(d.captured.json).toEqual({ error: 'agent-unavailable' });
     expect(warn.mock.calls).toEqual([
-      ['workspace_conversation_file_acl_failed', { conversationId: 'c1' }],
+      ['workspace_conversation_file_acl_failed', { conversationId: 'c1', code: 'unknown' }],
     ]);
     expect(resolveCalls).toEqual([]);
     expect(rangeCalls).toEqual([]);

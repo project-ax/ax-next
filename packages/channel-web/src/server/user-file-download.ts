@@ -336,7 +336,7 @@ function incompleteOutcome(err: unknown): {
 }
 
 /** An error's `code` and its cause's, for a log line. Codes only. */
-function errorCodes(err: unknown): { code?: string; causeCode?: string } {
+export function errorCodes(err: unknown): { code?: string; causeCode?: string } {
   const code = codeOf(err);
   const causeCode = codeOf(causeOf(err));
   return {
