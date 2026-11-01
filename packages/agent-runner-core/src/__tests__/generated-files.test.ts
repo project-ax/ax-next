@@ -23,6 +23,11 @@ async function track(dir: string, gate: (call: ToolCall) => Promise<void> = asyn
   return { tracker, admit, attached, warn };
 }
 
+const NOT_NAMEABLE = {
+  type: 'text',
+  text: "A new file has a name we can't link to here (for example, one with a colon). Ask the agent to rename it.",
+};
+
 const NOT_ATTACHED = {
   type: 'text',
   text: 'Some new files could not be attached. Ask the agent to attach them again.',
@@ -116,10 +121,18 @@ describe('generated files', () => {
     await fs.writeFile(path.join(dir, 'fine.md'), 'ok');
     expect(await tracker.collect()).toEqual([
       { type: 'agent_file', path: 'fine.md', mediaType: 'text/markdown', sizeBytes: 2 },
-      NOT_ATTACHED,
+      NOT_NAMEABLE,
     ]);
     expect(attached).toHaveBeenCalledOnce();
     expect(warn).toHaveBeenCalled();
+  });
+
+  it.skipIf(process.platform === 'win32')('an unaddressable name and a refused file each get their own note', async () => {
+    const dir = await root();
+    const { tracker } = await track(dir, async () => { throw new Error('publication not allowed'); });
+    await fs.writeFile(path.join(dir, 'notes: q3.md'), 'q3');
+    await fs.writeFile(path.join(dir, 'refused.md'), 'r');
+    expect(await tracker.collect()).toEqual([NOT_ATTACHED, NOT_NAMEABLE]);
   });
 
   it.skipIf(process.platform === 'win32')('a name the Files tab cannot address never reaches the policy gate', async () => {

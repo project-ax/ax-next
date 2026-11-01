@@ -47,6 +47,22 @@ async function snapshot(root: string): Promise<Set<string>> {
   return files;
 }
 
+/** Why a generated file could not become a chip. Never carries a path or a name. */
+export type GeneratedFileFailure =
+  | 'gate-refused'
+  | 'unaddressable-name'
+  | 'not-a-regular-file'
+  | 'outside-root'
+  | 'error';
+
+/** Thrown by `agentFileReference`; `reason` is typed so callers never match on messages. */
+export class AgentFileReferenceError extends Error {
+  constructor(readonly reason: Exclude<GeneratedFileFailure, 'gate-refused' | 'error'>, message: string) {
+    super(message);
+    this.name = 'AgentFileReferenceError';
+  }
+}
+
 /**
  * The `agent_file` chip for `relative`, a file under `root` (the agent's home).
  *
@@ -64,15 +80,15 @@ async function snapshot(root: string): Promise<Set<string>> {
 export async function agentFileReference(root: string, relative: string): Promise<AgentFileBlock> {
   const absolute = path.join(root, relative);
   const stat = await fs.lstat(absolute);
-  if (stat.isSymbolicLink() || !stat.isFile()) throw new Error('not a regular file');
+  if (stat.isSymbolicLink() || !stat.isFile()) throw new AgentFileReferenceError('not-a-regular-file', 'not a regular file');
   const [realRoot, realFile] = await Promise.all([fs.realpath(root), fs.realpath(absolute)]);
-  if (!realFile.startsWith(realRoot + path.sep)) throw new Error('resolved outside the agent files');
+  if (!realFile.startsWith(realRoot + path.sep)) throw new AgentFileReferenceError('outside-root', 'resolved outside the agent files');
   const chip = agentFileBlock({
     path: relative.split(path.sep).join('/'),
     mediaType: mediaTypeFromExtension(path.basename(relative)),
     sizeBytes: stat.size,
   });
-  if (chip === null) throw new Error('not a key the Files tab can address');
+  if (chip === null) throw new AgentFileReferenceError('unaddressable-name', 'not a key the Files tab can address');
   return chip;
 }
 
@@ -144,6 +160,7 @@ export async function trackGeneratedFiles(opts: {
       // A failed baseline must never turn every existing file into an output.
       if (baseline === null) { baseline = current; return blocks; }
       let failed = false;
+      let unnameable = false;
       for (const relative of [...current].sort()) {
         if (baseline.has(relative) || alreadyPublished.includes(relative)) continue;
         try {
@@ -158,12 +175,21 @@ export async function trackGeneratedFiles(opts: {
           await opts.admit(call);
           await opts.attached(call, chip);
           blocks.push(chip);
-        } catch { failed = true; opts.warn(); }
+        } catch (err) {
+          // A name the Files tab cannot address is not fixed by trying again.
+          if (err instanceof AgentFileReferenceError && err.reason === 'unaddressable-name') unnameable = true;
+          else failed = true;
+          opts.warn();
+        }
       }
       baseline = current;
       if (failed) blocks.push({
         type: 'text',
         text: 'Some new files could not be attached. Ask the agent to attach them again.',
+      });
+      if (unnameable) blocks.push({
+        type: 'text',
+        text: "A new file has a name we can't link to here (for example, one with a colon). Ask the agent to rename it.",
       });
       return blocks;
     },
