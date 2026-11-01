@@ -274,6 +274,12 @@ describe('artifact.publish: only this session\'s own blob.put shas', () => {
     expect(sessionPutBlob(own, sha(1))).toBe(false);
   });
 
+  it('pins the memory budget: at most 4096 x 64 remembered shas (~26 MiB measured)', () => {
+    // Raising either cap means consciously changing this budget. At 1024 per
+    // session the full map measured ~401 MiB against a 1Gi host limit.
+    expect(MAX_SESSIONS * MAX_SHAS_PER_SESSION).toBeLessThanOrEqual(4096 * 64);
+  });
+
   it('a new put refreshes recency: the session and the re-put sha survive eviction', () => {
     resetSessionBlobPutsForTests();
     const sha = (n: number) => n.toString(16).padStart(64, '0');
