@@ -1,5 +1,12 @@
 import { describe, it, expect } from 'vitest';
-import { HookBus, makeAgentContext, ownerlessIdFor, PluginError, type AgentContext } from '@ax/core';
+import {
+  createLogger,
+  HookBus,
+  makeAgentContext,
+  ownerlessIdFor,
+  PluginError,
+  type AgentContext,
+} from '@ax/core';
 import { SKILL_PROPOSE_REASON_MAX, SkillProposeResponseSchema } from '@ax/ipc-protocol';
 import { skillProposeHandler } from '../handlers/skill-propose.js';
 
@@ -15,6 +22,21 @@ const validPayload = {
 
 function boundCtx(): AgentContext {
   return makeAgentContext({ sessionId: 's1', agentId: 'a1', userId: 'u1' });
+}
+
+// A bound ctx whose logger records every structured entry, so a test can
+// assert what the host actually logged (and that the reqId rode along).
+function loggedCtx(): { ctx: AgentContext; entries: Array<Record<string, unknown>> } {
+  const entries: Array<Record<string, unknown>> = [];
+  const reqId = 'req-skillpropose';
+  const logger = createLogger({
+    reqId,
+    writer: (line) => entries.push(JSON.parse(line) as Record<string, unknown>),
+  });
+  return {
+    ctx: makeAgentContext({ reqId, sessionId: 's1', agentId: 'a1', userId: 'u1', logger }),
+    entries,
+  };
 }
 
 function busWithPropose(
@@ -154,19 +176,136 @@ describe('skill.propose handler (TASK-74)', () => {
         message: 'secret-internal-detail',
       });
     });
-    const r = await skillProposeHandler(validPayload, boundCtx(), bus);
+    const { ctx, entries } = loggedCtx();
+    const r = await skillProposeHandler(validPayload, ctx, bus);
     expect(r.status).toBe(409);
     const text = JSON.stringify((r as { body: unknown }).body);
     expect(text).toContain('storage is full');
     expect(text).not.toContain('secret-internal-detail');
+    // A policy refusal is an answer, not a host fault (TASK-1015).
+    expect(entries.filter((e) => e.level === 'error')).toHaveLength(0);
   });
 
-  it('maps a PluginError from the hook (invalid manifest) to its HTTP status', async () => {
-    const bus = busWithPropose(async () => {
-      throw new PluginError({ code: 'invalid-manifest', plugin: '@ax/skills', message: 'bad' });
+  // TASK-1015: the real HookBus wraps every plain throw from a service impl
+  // (a store or DB outage) into PluginError{code:'unknown'}. That shape fell
+  // through to mapPluginError → 500 without ever being logged, so the host
+  // had no record of the failure. The first row reaches the handler through
+  // the real bus's own wrapping; the rest are thrown pre-wrapped. A fake bus
+  // that rethrows a raw Error would hide the bug, because the raw-Error branch
+  // was already logged. `invalid-return` is the bus's code for a service answer
+  // that fails its `returns` schema: a host fault, so it must not be read as
+  // an author error just because it starts with `invalid-`.
+  const wrapped = (code: string) => async (): Promise<never> => {
+    throw new PluginError({
+      code,
+      plugin: '@ax/skills',
+      hookName: 'skills:propose',
+      message: 'connection refused',
     });
-    const r = await skillProposeHandler(validPayload, boundCtx(), bus);
-    expect(r.status).toBeGreaterThanOrEqual(400);
-    expect(r.status).toBeLessThan(500);
+  };
+  it.each([
+    [
+      'a plain throw the real bus wraps',
+      'unknown',
+      async (): Promise<never> => {
+        throw new Error('connection refused');
+      },
+    ],
+    ['a pre-wrapped PluginError{code:unknown}', 'unknown', wrapped('unknown')],
+    ['a bus timeout', 'timeout', wrapped('timeout')],
+    ['a bus invalid-return (service answer failed its schema)', 'invalid-return', wrapped('invalid-return')],
+  ])('TASK-1015: logs %s once, then returns a sanitized 500', async (_label, code, impl) => {
+    const { ctx, entries } = loggedCtx();
+    const r = await skillProposeHandler(validPayload, ctx, busWithPropose(impl));
+    expect(r.status).toBe(500);
+    expect(JSON.stringify((r as { body: unknown }).body)).not.toContain('connection refused');
+    const errors = entries.filter((e) => e.level === 'error');
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toMatchObject({
+      msg: 'ipc_dispatch_internal_error',
+      reqId: 'req-skillpropose',
+      action: 'skill.propose',
+      pluginErrorCode: code,
+    });
+  });
+
+  it('TASK-1015: an unregistered skills:propose (optional hook) is a logged 500', async () => {
+    const { ctx, entries } = loggedCtx();
+    const r = await skillProposeHandler(validPayload, ctx, new HookBus());
+    expect(r.status).toBe(500);
+    const errors = entries.filter((e) => e.level === 'error');
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toMatchObject({ action: 'skill.propose', pluginErrorCode: 'no-service' });
+  });
+
+  // TASK-1015 review: every skills-parser ManifestCode plus the bundle-file
+  // validator's code is a RECOVERABLE author error. Two of them do not start
+  // with `invalid-` (`capability-block-forbidden`, `inline-secret-forbidden`),
+  // and an honest model reaches both by writing a `capabilities:` block or a
+  // `token:` key. They must come back as a model-actionable 400, never a
+  // retried 500 logged as a host fault. The message is not echoed (I9).
+  it.each([
+    'invalid-yaml',
+    'invalid-manifest',
+    'inline-secret-forbidden',
+    'invalid-name',
+    'invalid-description',
+    'invalid-version',
+    'capability-block-forbidden',
+    'invalid-connector',
+    'invalid-bundle-file',
+  ])('TASK-1015: author error %s is a 400 re-draft with no log', async (code) => {
+    const { ctx, entries } = loggedCtx();
+    const bus = busWithPropose(async () => {
+      throw new PluginError({ code, plugin: '@ax/skills', message: 'echo-me-not' });
+    });
+    const r = await skillProposeHandler(validPayload, ctx, bus);
+    expect(r.status).toBe(400);
+    const text = JSON.stringify((r as { body: unknown }).body);
+    expect(text).toContain('re-draft');
+    expect(text).not.toContain('echo-me-not');
+    expect(entries).toHaveLength(0);
+  });
+
+  // Anti-vacuity for the 500 rows: the error log is gated on the mapped 500,
+  // not on "any PluginError". These codes all reach mapPluginError and map to
+  // a 4xx: an expected answer, so a `warn` carrying the code only (no plugin
+  // message), never an `error`.
+  it.each(['forbidden', 'not-found', 'unknown-session', 'conflict'])(
+    'TASK-1015: fall-through %s is a 4xx with a code-only warn, not an error log',
+    async (code) => {
+      const { ctx, entries } = loggedCtx();
+      const bus = busWithPropose(async () => {
+        throw new PluginError({ code, plugin: '@ax/skills', message: 'echo-me-not' });
+      });
+      const r = await skillProposeHandler(validPayload, ctx, bus);
+      expect(r.status).toBeGreaterThanOrEqual(400);
+      expect(r.status).toBeLessThan(500);
+      expect(entries.filter((e) => e.level === 'error')).toHaveLength(0);
+      const warns = entries.filter((e) => e.level === 'warn');
+      expect(warns).toHaveLength(1);
+      expect(warns[0]).toMatchObject({
+        msg: 'skill_propose_hook_refused',
+        action: 'skill.propose',
+        pluginErrorCode: code,
+      });
+      expect(JSON.stringify(warns[0])).not.toContain('echo-me-not');
+    },
+  );
+
+  // The author-error list is explicit, not a prefix rule: a code that merely
+  // LOOKS like an author error (a parser code added later, say) falls through
+  // to a logged 500 rather than a silent "re-draft". That is the safe
+  // direction, and this row pins it.
+  it('TASK-1015: an unlisted invalid-* code is a logged 500, not a re-draft', async () => {
+    const { ctx, entries } = loggedCtx();
+    const bus = busWithPropose(async () => {
+      throw new PluginError({ code: 'invalid-new-parser-code', plugin: '@ax/skills', message: 'x' });
+    });
+    const r = await skillProposeHandler(validPayload, ctx, bus);
+    expect(r.status).toBe(500);
+    const errors = entries.filter((e) => e.level === 'error');
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toMatchObject({ pluginErrorCode: 'invalid-new-parser-code' });
   });
 });

@@ -14,17 +14,34 @@ import { clampCodeUnits, isOwnerlessId, PluginError } from '@ax/core';
 import type { ActionHandler } from './types.js';
 
 // Structural-validation PluginError codes the skills:propose hook throws when
-// the agent's bundle is malformed: every skills-parser ManifestCode is
-// `invalid-*` (invalid-yaml/-manifest/-name/-host/-slot/…) plus the bundle-file
-// validator's `invalid-bundle-file`. These are RECOVERABLE author errors (the
-// agent re-drafts and re-proposes), so we surface a 400 VALIDATION the runner
-// turns into a model-actionable tool error — NOT a sanitized 500. We do NOT
-// echo the plugin-supplied message (I9 redaction: plugin codes/messages are
-// forgeable); a fixed string is enough for the model to know to re-draft. Any
-// OTHER PluginError falls through to mapPluginError (auth/forbidden → status;
-// unknown → 500).
+// the agent's bundle is malformed: every skills-parser `ManifestCode`
+// (packages/skills-parser/src/manifest.ts) plus the bundle-file validator's
+// `invalid-bundle-file`. These are RECOVERABLE author errors (the agent
+// re-drafts and re-proposes), so we surface a 400 VALIDATION the runner turns
+// into a model-actionable tool error — NOT a sanitized 500. We do NOT echo the
+// plugin-supplied message (I9 redaction: plugin codes/messages are forgeable);
+// a fixed string is enough for the model to know to re-draft. Any OTHER
+// PluginError falls through to mapPluginError (auth/forbidden → status;
+// unknown/timeout/no-service → logged 500).
+//
+// An explicit list, not an `invalid-` prefix match (TASK-1015): two parser
+// codes don't carry the prefix (an honest `capabilities:` block or `token:` key
+// became a retried 500), and the bus's own `invalid-return` (a service answer
+// that failed its schema, a HOST fault) does. A code the parser adds later
+// falls through to a logged 500, which is the safe direction.
+const STRUCTURAL_REJECT_CODES: ReadonlySet<string> = new Set([
+  'invalid-yaml',
+  'invalid-manifest',
+  'inline-secret-forbidden',
+  'invalid-name',
+  'invalid-description',
+  'invalid-version',
+  'capability-block-forbidden',
+  'invalid-connector',
+  'invalid-bundle-file',
+]);
 function isStructuralRejectCode(code: string): boolean {
-  return code.startsWith('invalid-');
+  return STRUCTURAL_REJECT_CODES.has(code);
 }
 
 // ---------------------------------------------------------------------------
@@ -117,7 +134,22 @@ export const skillProposeHandler: ActionHandler = async (rawPayload, ctx, bus) =
           'skill.propose: the skill was not saved because storage is full. Let the person know an admin can make more room.',
         );
       }
-      return mapPluginError(err);
+      // Log every 500 before returning it: the real bus wraps a plain throw (a
+      // store or DB outage) into PluginError{code:'unknown'}, which maps to 500.
+      // Logging only the non-PluginError branch below left that 500 unrecorded
+      // (TASK-1015). An expected 4xx answer (forbidden, not-found, …) is not
+      // an internal error: a warn carrying the code only — never the
+      // plugin-supplied message — so it can still be traced.
+      const mapped = mapPluginError(err);
+      if (mapped.status >= 500) {
+        logInternalError(ctx.logger, 'skill.propose', err);
+      } else {
+        ctx.logger.warn('skill_propose_hook_refused', {
+          action: 'skill.propose',
+          pluginErrorCode: err.code,
+        });
+      }
+      return mapped;
     }
     logInternalError(ctx.logger, 'skill.propose', err);
     return internalError();
