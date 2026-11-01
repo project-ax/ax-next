@@ -23,6 +23,9 @@ import type { ActionHandler } from './types.js';
 //      conversation, not even another one of the same person's.
 //   2. The host-side `attachments:list-for-conversation` hook returns only rows
 //      owned by `ctx.userId`.
+//
+// The same lookup is `blob.get`'s scope (TASK-1009): the runner may fetch only
+// a blob whose sha this action would hand it.
 // ---------------------------------------------------------------------------
 
 interface AttachmentsListForConversationInput {

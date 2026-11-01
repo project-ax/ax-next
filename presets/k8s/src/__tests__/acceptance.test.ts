@@ -5,6 +5,8 @@ import * as path from 'node:path';
 import * as fs from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import * as os from 'node:os';
+import * as nodeHttp from 'node:http';
+import { dispatch as dispatchIpc } from '@ax/ipc-core';
 import { randomBytes } from 'node:crypto';
 
 import {
@@ -1610,6 +1612,47 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
         });
         const forgedResp = await download(uploadJson.attachmentId, secondConversationId);
         expect(forgedResp.status).toBe(404);
+
+        // 5c. The runner's IPC `blob.get` (TASK-1009), through the real
+        // dispatcher. A session bound to the conversation that holds the upload
+        // gets the bytes — that is upload materialization's path. A session of
+        // the SAME user bound to the second conversation knows the sha (a
+        // hash is not a capability) and gets the same 404 an unknown sha gets.
+        const blobGet = async (
+          boundConversationId: string,
+          sha256: string,
+        ): Promise<{ status: number; body: string }> => {
+          const ipcCtx = makeAgentContext({
+            sessionId: `blob-get-${boundConversationId}`,
+            agentId: AGENT,
+            userId: USER,
+            conversationId: boundConversationId,
+          });
+          const srv = nodeHttp.createServer((req, res) => {
+            void dispatchIpc(req, res, ipcCtx, bus);
+          });
+          await new Promise<void>((r) => srv.listen(0, '127.0.0.1', () => r()));
+          try {
+            const ipcPort = (srv.address() as { port: number }).port;
+            const resp = await fetch(`http://127.0.0.1:${ipcPort}/blob.get`, {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ sha256 }),
+            });
+            return { status: resp.status, body: await resp.text() };
+          } finally {
+            await new Promise<void>((r) => srv.close(() => r()));
+          }
+        };
+        const uploadSha = listed.files[0]!.sha256;
+        const ownBlob = await blobGet(conversationId, uploadSha);
+        expect(ownBlob.status).toBe(200);
+        expect(ownBlob.body).toBe(ATTACHMENT_BYTES);
+        const foreignBlob = await blobGet(secondConversationId, uploadSha);
+        expect(foreignBlob.status).toBe(404);
+        expect(foreignBlob.body).not.toContain(ATTACHMENT_BYTES);
+        const unknownBlob = await blobGet(conversationId, 'f'.repeat(64));
+        expect(unknownBlob).toEqual(foreignBlob);
 
         // 6. A foreign user, through the conversation that really holds the
         // file → 404. The conversation belongs to USER; OTHER_USER's
