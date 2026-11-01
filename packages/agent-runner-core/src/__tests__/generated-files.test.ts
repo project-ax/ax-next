@@ -122,6 +122,17 @@ describe('generated files', () => {
     expect(warn).toHaveBeenCalled();
   });
 
+  it.skipIf(process.platform === 'win32')('a name the Files tab cannot address never reaches the policy gate', async () => {
+    // Asking the gate first would park a held approval for a file that can
+    // never be a chip.
+    const dir = await root();
+    const { tracker, admit, attached } = await track(dir);
+    await fs.writeFile(path.join(dir, 'notes: q3.md'), 'q3');
+    await tracker.collect();
+    expect(admit).not.toHaveBeenCalled();
+    expect(attached).not.toHaveBeenCalled();
+  });
+
   it('fails closed when the initial baseline is unavailable', async () => {
     const dir = path.join(await root(), 'missing');
     const { tracker, admit } = await track(dir);

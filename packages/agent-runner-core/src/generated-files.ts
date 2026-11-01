@@ -151,9 +151,11 @@ export async function trackGeneratedFiles(opts: {
             id: randomUUID(), name: 'artifact_publish',
             input: { path: path.join(opts.root, relative) },
           };
-          await opts.admit(call);
-          // Only a chip that will pass the host's block check is attached.
+          // Reference first: a file that can never be a chip must not reach the
+          // gate, where it could park a held approval. Only a chip that will
+          // pass the host's block check is attached.
           const chip = await agentFileReference(opts.root, relative);
+          await opts.admit(call);
           await opts.attached(call, chip);
           blocks.push(chip);
         } catch { failed = true; opts.warn(); }
