@@ -2,28 +2,23 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-> **STATUS: BLOCKED on Q1 (human only).** Tasks 1–7 do not depend on the answer. Task 8 exists only if the answer is (B). Do not start until Q1 is answered.
+> **STATUS: UNBLOCKED (revised 2026-11-01 after TASK-1014 #1098).** Q1 was answered by shipping (C): `/files` downloads now stream whole files up to 1 GiB through `sendUserFileDownload` (`packages/channel-web/src/server/user-file-download.ts`). Task 3 reuses it; the old Task 8 (16 MiB bound) is dropped.
 
 **Goal:** A file the agent creates in `/files` during a turn gets a chat chip that points at the file itself (no blob copy). It is charged once (Agent files), and deleting it lowers usage at the next turn-end meter.
 
-**Architecture:** The runner emits a new `agent_file` content block `{ path, mediaType, sizeBytes }` instead of publishing a blob. `path` is the file's key relative to the agent's files root, the same key the Files tab uses. The host stores and validates it like any block. The workspace thread turns it into a chip. The chip downloads live through a new conversation-scoped route. That route runs the chip ACL (conversation owner, plus access to the conversation's own agent) and then the Files tab's existing read path (`workspaceFilePath` + `sandbox:read-user-files`). Explicit `artifact_publish` and uploads are untouched.
+**Architecture:** The runner emits a new `agent_file` content block `{ path, mediaType, sizeBytes }` instead of publishing a blob. `path` is the file's key relative to the agent's files root, the same key the Files tab uses. The host stores and validates it like any block. The workspace thread turns it into a chip. The chip downloads live through a new conversation-scoped route. That route runs the chip ACL (conversation owner, plus access to the conversation's own agent), validates the key with `workspaceFilePath`, then hands the bytes to the Files tab's streaming helper `sendUserFileDownload` (TASK-1014). There is no second reader. Explicit `artifact_publish` and uploads are untouched.
 
 **Tech Stack:** TypeScript, zod, vitest, React + shadcn (`packages/channel-web`).
 
 **Spec:** card TASK-1012 + Vinay's decision of 2026-11-01 (in the card). Design: `docs/plans/2026-10-29-agent-files-simplification-design.md` §7, §12. Decisions: `.claude/memory/decisions/2026-11-01-TASK-1012.md`.
 
-## Q1 — the open question (BLOCKED)
+## Q1 — resolved by TASK-1014
 
-The existing /files read path caps one read at **1 MiB**: `DEFAULT_CONFINED_READ_LIMITS.maxFileBytes` (`packages/user-files-read/src/confined-read.ts:183-186`, library ceiling 16 MiB) and the k8s pod's `READ_MAX_FILE_BYTES` (`packages/sandbox-k8s/src/user-files-ops.ts:97`). The Files tab download already answers **413** above that (`packages/channel-web/src/server/routes-workspace.ts:7917-7919`; copy in `lib/file-download.ts:69-82`). Today's auto-attach serves up to **100 MiB** from blobs (`MAX_ARTIFACT_BYTES`). So "download through the existing read path" and "chip downloads while it exists" conflict for any generated file over 1 MiB: PDFs or slides with images, PNGs, zips.
-
-- **(A)** Accept 1 MiB. Over-cap chips answer 413 and say the file is too big to download from the chat. Tasks 1–7.
-- **(B)** *(recommended)* A 16 MiB download bound: an optional, host-internal `maxFileBytes` on `sandbox:read-user-files`. Both download routes ask for it; previews stay at 1 MiB. Files over 16 MiB still get 413. Host memory per download stays ≤ 16 MiB (today's blob-chip download holds up to 100 MiB). Tasks 1–8.
-- **(C)** A streaming download path first: new hook plus a streaming response, as a separate card. This card waits, or ships (A) meanwhile.
-- **(D)** Blob-copy files over the cap. This contradicts "auto-attach stops copying" and keeps the double charge for the biggest files. Not recommended.
+The plan first stalled on the old 1 MiB read cap. TASK-1014 (#1098) replaced the Files tab download with a streamed range read: `sendUserFileDownload({ bus, ctx, owner, relPath, downloadName, res })` loops `sandbox:read-user-file-range` in 1 MiB ranges, caps at `USER_FILE_DOWNLOAD_MAX_BYTES` (1 GiB), and answers absent → 404 `file-not-found`, folder → 400 `not-a-file`, over the ceiling → 413 `file-too-large`, no range service / unavailable → 503 `user-files-unavailable`, a failed read → 503 `file-read-failed`. Path confinement (`O_NOFOLLOW` per component; symlinks and FIFOs read as absent) is inside the hook. The chip route does its own ACL check, then calls it. `agentWorkspaceCtx` and `userFilesOwner` are closures inside `makeWorkspaceHandlers`; the new handler lives in that same function (beside `agentUserFileDownload`), so it reaches them without lifting or duplicating either.
 
 ## Global Constraints
 
-- Do not touch `packages/attachments` or ipc-core's `artifact.publish` / `blob.*` handlers: TASK-1010 is changing them. Explicit `artifact_publish` and uploads stay blob-backed and charged.
+- Do not touch `packages/attachments` or ipc-core's `artifact.publish` / `blob.*` handlers: TASK-1010 (#1097, merged) owns that path. Explicit `artifact_publish` and uploads stay blob-backed and charged.
 - Old `attachment` chips keep working by id. No migration.
 - Invariant 1: the block carries the key relative to the agent's files root. Never a sandbox-absolute path, `/files`, or mount/export names. The agent is always derived on the host from the conversation, never taken from the block or the client.
 - The real HookBus delivers a provider's plain throw as `PluginError{code:'unknown'}` (`packages/core/src/hook-bus.ts:436-444`). Tests that model a provider failure use that shape.
@@ -31,14 +26,14 @@ The existing /files read path caps one read at **1 MiB**: `DEFAULT_CONFINED_READ
 - Commands: `pnpm --filter <pkg> test` (filter BEFORE the script) plus `pnpm --filter <pkg> build` (tsc; vitest tolerates type errors). `@ax/disk-quota` plugin tests and `@ax/preset-k8s` acceptance need Docker (`DOCKER_HOST`). The Task 6 canary is Linux-only (`ON_LINUX`, CI).
 - PR description, boundary review for the new block. Alternate impl: object-store-backed agent files (key = object key under the agent prefix). Leaking names: none (`path` is the Files key, the same name as `UserFileEntry.path`). Subscriber risk: none (`chat:turn-end` subscribers read text only). Wire: `@ax/ipc-protocol` `content-blocks.ts`, validated at `event.turn-end` ingress (`EventTurnEndSchema`) and on storage read (`validateContentBlocks`).
 - PR description, rollback note: a host older than this change drops, on read, any stored tool turn carrying an `agent_file` block. That turn's tool results and chips vanish; assistant text survives.
-- `security-checklist` runs for Tasks 1, 2, 3 (and 8). Put its note in the PR.
+- `security-checklist` runs for Tasks 1, 2 and 3. Put its note in the PR.
 
 ## Review Focus
 
 1. Keys with spaces, `#`, `?`, `%`, or non-ASCII. The client encodes the whole key once with `encodeURIComponent`; the route decodes once with `workspaceFilePath`. Pinned in Task 3 and Task 6 with `reports/Q3 plan #1 (50%).pdf`.
 2. Two new files with the same name in different folders must get two chips. Pinned in Task 4.
-3. A file replaced by a folder or a symlink after the turn must answer 404, never 500. Pinned in Task 3 (folder via the fake reader; symlink via the real reader in Task 6).
-4. Storage that won't answer (the provider throws, which arrives as `PluginError{code:'unknown'}`) must answer 503 with retry copy, never 500. Pinned in Task 3.
+3. A file replaced by a symlink after the turn must answer 404, a folder 400 `not-a-file`; the chip shows "no longer available" for both, never a 500. Pinned in Task 3 (fake range reader), Task 4 (chip copy) and Task 6 (real reader).
+4. Storage that won't answer (the provider throws, which arrives as `PluginError{code:'unknown'}`) must answer 503 `file-read-failed`, never 500. Pinned in Task 3.
 5. A name the Files tab cannot address (`notes: q3.md`, `a..b.txt`, `file.`) must get a text note, never a chip that always fails. Pinned in Task 1 (parity) and Task 2.
 
 ---
@@ -159,50 +154,44 @@ Any throw marks the batch failed (existing `warn`, existing text copy). Explicit
 
 **Files:**
 - Modify: `packages/channel-web/src/server/routes-workspace.ts`:
-  - a new handler in `makeWorkspaceHandlers` beside `agentUserFileDownload` (:7867-7923);
-  - its registration right after `/api/workspace/agents/:agentId/download/user-files/*` (:9784);
-  - the header route list (:17-21, :65-66).
-- Modify: `packages/channel-web/src/__tests__/server/routes-workspace-registration.test.ts` (the pinned route list)
-- Create: `packages/channel-web/src/__tests__/server/routes-workspace-conversation-file.test.ts`, with its harness copied from `routes-workspace-download.test.ts`
+  - a new handler `conversationAgentFileDownload` in `makeWorkspaceHandlers`, right after `agentUserFileDownload`;
+  - its registration right after `/api/workspace/agents/:agentId/download/user-files/*`, using the same `DownloadRouteResponse` adapter cast;
+  - the header route list at the top of the file.
+- Modify: `packages/channel-web/src/__tests__/server/routes-workspace-registration.test.ts` (the pinned route list), if it pins routes.
+- Create: `packages/channel-web/src/__tests__/server/routes-workspace-conversation-file.test.ts`. Copy the harness from `routes-workspace-download.test.ts` (TASK-1014 rewrote it around a fake `sandbox:read-user-file-range` and a response with `bodyStream`).
 
 **Interfaces — Produces:** `GET /api/workspace/conversations/:conversationId/download/user-files/*` → `handlers.conversationAgentFileDownload`. Answers:
 
 | Code | When |
 |---|---|
-| 200 | Success, via `sendFileDownload` (octet-stream, `attachment`, `nosniff`) |
+| 200 | `sendUserFileDownload` streamed it (octet-stream, `attachment`, `nosniff`, no-store) |
 | 401 | No session |
 | 400 `missing-conversation-id` / `invalid-path` | Malformed request |
-| 404 `file-not-found` | Conversation missing or not theirs, agent unreachable, file absent, file now a folder |
-| 413 `file-too-large` | Over the read bound |
-| 503 `user-files-unavailable` / `file-unreadable` / `agent-unavailable` | No file area, a read that threw, ACL lookup failed |
+| 400 `not-a-file` | The key is a folder now (from the helper) |
+| 404 `file-not-found` | Conversation missing or not theirs, agent unreachable, file absent (incl. now a symlink) |
+| 413 `file-too-large` | Over 1 GiB (from the helper) |
+| 503 `agent-unavailable` | The conversation ACL lookup failed for another reason |
+| 503 `user-files-unavailable` / `file-read-failed` | From the helper |
 
 Order is fixed. ACL runs before path validation, as in `agentUserFileDownload`.
 1. `authOr401` → `userId`.
-2. Empty `conversationId` → 400.
-3. `conversations:get-metadata({ conversationId, userId })` with ctx `makeAgentContext({ sessionId: 'workspace-surface', agentId: '@ax/channel-web', userId, conversationId, workspace: initCtx.workspace })` (shape at :5418-5424; the hook gates on `input.userId`):
-   - `PluginError` or rejection with code `not-found` or `forbidden` → 404;
+2. Empty `conversationId` → 400 `missing-conversation-id`.
+3. `conversations:get-metadata({ conversationId, userId })`, with the same ctx shape other conversation-scoped handlers in this file use for that hook (find an existing caller; the hook gates on `input.userId`):
+   - a `PluginError` / rejection with code `not-found` or `forbidden` → 404 `file-not-found`;
    - any other error → log `workspace_conversation_file_acl_failed` with `{ conversationId }`, then 503 `agent-unavailable`.
-4. `resolveAgentOr404(bus, initCtx, md.agentId, userId, res)`.
+4. `resolveAgentOr404(bus, initCtx, md.agentId, userId, res)`. The agent ALWAYS comes from the conversation, never from the request.
 5. `workspaceFilePath(req.params['*'] ?? '')` returns null → 400 `invalid-path`.
-6. No `sandbox:read-user-files` service → 503 `user-files-unavailable`.
-7. `bus.call('sandbox:read-user-files', agentWorkspaceCtx(agent.id, userId), { owner: userFilesOwner(agent, userId), relPath })` inside `try`. A thrown `PluginError` → log `workspace_conversation_file_read_failed` with `{ conversationId }` (no path: it is agent-authored), then 503 `file-unreadable`.
-8. Map the result:
-   - `unavailable` → 503;
-   - `absent` → 404;
-   - `dir` → 404;
-   - `truncated !== false` → 413;
-   - otherwise `sendFileDownload(res, relPath, out.contents)`.
+6. `await sendUserFileDownload({ bus, ctx: agentWorkspaceCtx(agent.id, userId), owner: userFilesOwner(agent, userId), relPath, downloadName: basenameOf(relPath), res })`. Nothing else: no second reader, no own status mapping.
 
 - [ ] **Step 1: Write the failing tests:**
-  - **Owner downloads.** Splat `reports%2FQ3%20plan%20%231%20(50%25).pdf` gives 200 with the exact bytes. `content-disposition` carries the key's basename; `content-type` is `application/octet-stream`. The reader received `relPath:'reports/Q3 plan #1 (50%).pdf'` and `owner.agentId` = the agent from `get-metadata`.
-  - **Conversation gate.** `get-metadata` throws `PluginError{code:'not-found'}` → 404, reader never called. The same 404 for a foreign conversation with a malformed path (ACL before path).
+  - **Owner downloads.** Splat `reports%2FQ3%20plan%20%231%20(50%25).pdf` gives 200 with the exact bytes. `content-disposition` carries the key's basename; `content-type` is `application/octet-stream`. The range reader received `relPath:'reports/Q3 plan #1 (50%).pdf'` and `owner.agentId` = the agent from `get-metadata` (not anything in the URL).
+  - **Conversation gate.** `get-metadata` throws `PluginError{code:'not-found'}` → 404, reader never called. The same 404 for a foreign conversation with a malformed path (ACL before path). `get-metadata` throws `PluginError{code:'unknown'}` → 503 `agent-unavailable`, no read, handler does not throw.
   - **Agent gate.** `agents:resolve` throws `forbidden` → 404, no read.
   - **Bad paths.** `..%2Fx`, `%2Fetc%2Fpasswd` and `%252e%252e%252fx` → 400, no read.
-  - **Reader answers.** `absent` → 404, `dir` → 404, `{ kind:'file', truncated:true }` → 413, `truncated` undefined → 413, `unavailable` → 503.
-  - **Reader throws.** `new PluginError({ code:'unknown', plugin:'@ax/sandbox-k8s', hookName:'sandbox:read-user-files', message:'EIO' })` → 503 `{ error:'file-unreadable' }`, and the handler does not throw.
+  - **Helper answers pass through.** `absent` → 404; `dir` → 400 `not-a-file`; reader throws `PluginError{code:'unknown'}` → 503 `file-read-failed`.
   - **Unauthenticated** → 401.
-- [ ] **Step 2: Run** `pnpm --filter @ax/channel-web test -- routes-workspace-conversation-file`. Expected: FAIL (404 from the router, no handler).
-- [ ] **Step 3: Implement the handler and its registration.** Update the registration test.
+- [ ] **Step 2: Run** `pnpm --filter @ax/channel-web test -- routes-workspace-conversation-file`. Expected: FAIL (no handler).
+- [ ] **Step 3: Implement the handler and its registration.** Update any pinned route list.
 - [ ] **Step 4: Run** the channel-web tests and build. Expected: PASS.
 - [ ] **Step 5: Commit** `[TASK-1012] channel-web: conversation-scoped live download of an agent file`.
 
@@ -239,9 +228,9 @@ Call it ONLY in the `role === 'tool'` branch. Append its chips right after `turn
 - else none, and the button is disabled.
 
 Copy:
-- 404 → the existing `'This file is no longer available to download.'`;
+- 404, and 400 on an agent-file chip (`not-a-file`: the key is a folder now) → the existing `'This file is no longer available to download.'`;
 - 413 → `'This file is too big to download from the chat. Ask the agent for a smaller copy, or to split it up.'`;
-- 403 and the rest → existing copy.
+- 403 and the rest (503 included) → existing copy.
 
 Rewrite the doc comment at :13-15 to cover both kinds of chip.
 
@@ -255,8 +244,9 @@ Rewrite the doc comment at :13-15 to cover both kinds of chip.
   Expect: one chip each for `a/report.pdf` and `b/report.pdf`, both `displayName:'report.pdf'`, `attachmentId:null`. No chip for `../x`. A fenced label for the U+202E name. The publish chip is kept. Also: a tool turn with ONLY `agent_file` blocks still yields an `agent` message, and a USER turn carrying an `agent_file` block draws no chip.
 - [ ] **Step 2: Write the failing chip tests** in `GeneratedFileChip.test.tsx`:
   - The agent-file chip fetches `'/api/workspace/conversations/c%20%26%201/download/user-files/reports%2FQ3%20plan%20%231.pdf'` with `{ credentials:'include' }`, saves under the server filename, and never calls `/api/files`.
-  - A 404 shows `'This file is no longer available to download.'`.
+  - A 404 shows `'This file is no longer available to download.'`, and so does a 400 on an agent-file chip.
   - A 413 shows the too-big sentence.
+  - The existing attachment-id chip tests still pass unchanged.
 - [ ] **Step 3: Run** `pnpm --filter @ax/channel-web test`. Expected: FAIL.
 - [ ] **Step 4: Implement.**
 - [ ] **Step 5: Run** the channel-web tests and build (channel-web's tsc includes tests). Expected: PASS.
@@ -275,13 +265,14 @@ Rewrite the doc comment at :13-15 to cover both kinds of chip.
 
 ### Task 6: canary — an agent-file chip round-trips through the real server [tier: integration]
 
-**Files:** Test: `presets/k8s/src/__tests__/acceptance.test.ts`. Add a new `it.skipIf(!ON_LINUX)` right after the F4 user-files canary (:2476) and copy its scaffolding: `@ax/sandbox-subprocess`, `@ax/workspace-localdir` over a temp tier, real Postgres, and real channel-web over a socket.
+**Files:** Test: `presets/k8s/src/__tests__/acceptance.test.ts`. Add a new `it.skipIf(!ON_LINUX)` right after the F4 user-files canary (it now also has TASK-1014's streamed-download step 8) and copy its scaffolding: `@ax/sandbox-subprocess`, `@ax/workspace-localdir` over a temp tier, real Postgres, and real channel-web over a socket.
 
 - [ ] **Step 1: Write** `'TASK-1012 canary: an agent_file chip downloads live from the agent files and 404s after delete'`.
   - Setup: user A owns conversation C with agent X. Write `<tier>/<agentId>/reports/Q3 plan #1.pdf`. Append a `tool` turn carrying `{ type:'agent_file', path:'reports/Q3 plan #1.pdf', mediaType:'application/pdf', sizeBytes:n }` through `conversations:append-event`, the hook `persistEventTurnEnd` uses.
   - The thread served by `GET /api/workspace/agents/:agentId` (the handler calling `buildThread` at :7752) carries a chip with `agentFilePath:'reports/Q3 plan #1.pdf'`.
   - `GET /api/workspace/conversations/C/download/user-files/${encodeURIComponent(key)}` returns 200 and the exact bytes for A, and 404 for user B.
   - After replacing the file with a symlink to a sibling file: 404. After `fs.rm`: 404.
+  - If extending the F4 canary in place is clearly cheaper than a new `it` (same scaffolding, already boots the real range reader), do that instead and say so in the commit.
 - [ ] **Step 2: Run** `pnpm --filter @ax/preset-k8s test -- acceptance` on Linux with `DOCKER_HOST`, or rely on CI. Expected: PASS.
 - [ ] **Step 3: Commit** `[TASK-1012] acceptance: agent-file chip canary`.
 
@@ -293,23 +284,12 @@ Rewrite the doc comment at :13-15 to cover both kinds of chip.
 - [ ] **Step 2:** In §12, after :361, add "**As built (TASK-1012):**":
   - auto-attach no longer copies new `/files` files into chat blobs;
   - the chip is `agent_file { path, mediaType, sizeBytes }`;
-  - `GET /api/workspace/conversations/:id/download/user-files/*` serves it live with the chip ACL (conversation owner, plus the conversation's agent) through `sandbox:read-user-files`;
-  - it answers 404 when the file is gone, 503 when storage won't answer, and 413 over the read bound;
+  - `GET /api/workspace/conversations/:id/download/user-files/*` serves it live with the chip ACL (conversation owner, plus the conversation's agent);
+  - it reuses the Files tab's streamed download (`sendUserFileDownload`, TASK-1014): 404 when the file is gone, 400 when the key is now a folder (the chip says "no longer available" for both), 503 when storage won't answer, and 413 over 1 GiB;
   - such a file is charged once (Agent files), and deleting it lowers usage at the next assistant turn end;
   - explicit `artifact_publish` and uploads are unchanged;
   - files auto-attached before this change keep their blob and its charge (no migration: their artifact rows live until the agent is deleted).
 - [ ] **Step 3: Commit** `[TASK-1012] design doc: as-built note`.
-
-### Task 8 (ONLY if Q1 = B): a 16 MiB bound for downloads [tier: sensitive] (security-checklist)
-
-**Files:**
-- Modify: `packages/sandbox-mount-protocol/src/mount-spec.ts:202-214`. Add `ReadUserFilesInput.maxFileBytes?: number` with this doc: the most bytes the caller wants; a realization may read less and says so with `truncated`; host-internal, never IPC.
-- Modify: `packages/sandbox-subprocess/src/user-files-host-ops.ts:159` and `packages/sandbox-k8s/src/user-files-ops.ts:739-742` (host-mount branch). Pass `{ ...DEFAULT_CONFINED_READ_LIMITS, maxFileBytes: n }`, where `n` is `input.maxFileBytes` when it is an integer in `[1, 16 MiB]`, else the default. The one-shot pod branch ignores it: it stays at 1 MiB, answers `truncated`, and so gets 413.
-- Modify: `packages/channel-web/src/server/routes-workspace.ts`. Add `DOWNLOAD_MAX_FILE_BYTES = 16 * 1024 * 1024`, passed by both download handlers (Files tab :7897-7901 and Task 3's). Previews are unchanged.
-- Modify: `packages/channel-web/src/lib/file-download.ts:15-20`, the header line "The host caps a read at a megabyte".
-- Tests: in each realization's tests, a 2 MiB file reads whole with `maxFileBytes: 16 MiB` and truncated without it. In both route tests, the reader is asked for `maxFileBytes: 16777216`.
-
-- [ ] **Step 1:** Write the failing tests. **Step 2:** Run them (FAIL). **Step 3:** Implement. **Step 4:** Run the tests and builds of `@ax/sandbox-mount-protocol`, `@ax/sandbox-subprocess`, `@ax/sandbox-k8s` and `@ax/channel-web` (PASS). **Step 5:** Commit `[TASK-1012] read-user-files: a 16 MiB bound for downloads`. Add the boundary review for the input field to the PR (alternate impl: an object store's ranged read; leaking names: none; subscriber risk: none).
 
 ## Final gate (builder)
 
