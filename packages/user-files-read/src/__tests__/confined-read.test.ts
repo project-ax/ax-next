@@ -1,17 +1,19 @@
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, promises as fs } from 'node:fs';
+import { randomBytes } from 'node:crypto';
+import { constants, existsSync, promises as fs, type BigIntStats } from 'node:fs';
 import { createServer } from 'node:net';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import type { ReadUserFilesOutput } from '@ax/sandbox-mount-protocol';
+import type { ReadUserFileRangeOutput, ReadUserFilesOutput } from '@ax/sandbox-mount-protocol';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   DEFAULT_CONFINED_READ_LIMITS,
   UserFilesReadError,
+  readConfinedUserFileRange,
   readConfinedUserFiles,
   safeJoinUnderRoot,
 } from '../confined-read.js';
-import { MAX_WALK_PARTS, WalkPathError } from '../walk-read.js';
+import { MAX_WALK_LIMIT_BYTES, MAX_WALK_PARTS, WalkPathError } from '../walk-read.js';
 
 // ---------------------------------------------------------------------------
 // The confinement spec, at the library level.
@@ -63,6 +65,22 @@ async function asDarwin(fn: () => Promise<void>): Promise<void> {
 
 const text = (r: ReadUserFilesOutput): string =>
   r.kind === 'file' ? Buffer.from(r.contents).toString('utf8') : '';
+
+const MiB = 1024 * 1024;
+
+/** A range that asks for more than any small fixture file holds. */
+const WHOLE = { offset: 0, length: 1024 };
+
+/** The range answer, narrowed to a file; fails the test otherwise. */
+function fileOf(r: ReadUserFileRangeOutput): Extract<ReadUserFileRangeOutput, { kind: 'file' }> {
+  if (r.kind !== 'file') throw new Error(`expected file, got ${r.kind}`);
+  return r;
+}
+
+/** The version a range read answers for `rel` under `root`. */
+async function versionOf(rel: string): Promise<string> {
+  return fileOf(await readConfinedUserFileRange(root, rel, { offset: 0, length: 0 })).version;
+}
 
 let tmp: string;
 /** The agent's own subtree — the root a request is entitled to read. */
@@ -174,6 +192,77 @@ describe('readConfinedUserFiles — answered before the disk (every platform)', 
     // teeth, on Linux CI too, where hello.txt is there to be (wrongly) served.
     await asDarwin(async () => {
       const out = readConfinedUserFiles(root, 'hello.txt');
+      await expect(out).rejects.toBeInstanceOf(UserFilesReadError);
+      await expect(out).rejects.toMatchObject({ code: 'unsupported-platform' });
+    });
+  });
+});
+
+// The range read behind `sandbox:read-user-file-range` (TASK-1014): one byte
+// range of a regular file, with the file's size and an opaque version, so a
+// caller can stream a whole file a range at a time. It runs the same steps as
+// `readConfinedUserFiles` before the disk and the same walk on it.
+describe('readConfinedUserFileRange — answered before the disk (every platform)', () => {
+  it('SECURITY: a `..` relPath throws, as for the preview read', async () => {
+    await fs.writeFile(path.join(tmp, 'secret'), 'TOPSECRET');
+    const err = await rejection(readConfinedUserFileRange(root, '../secret', WHOLE));
+    expect(err.message).toMatch(/\.\./);
+    expect(err).not.toBeInstanceOf(WalkPathError);
+  });
+
+  it('SECURITY: an absolute relPath throws', async () => {
+    const err = await rejection(readConfinedUserFileRange(root, '/etc/passwd', WHOLE));
+    expect(err.message).toMatch(/relative/);
+    expect(err).not.toBeInstanceOf(WalkPathError);
+  });
+
+  it.each([
+    ['an empty segment', 'a//b'],
+    ['a trailing slash', 'docs/'],
+    ['a NUL byte', 'notes\u0000.md'],
+  ])('a malformed path (%s) throws WalkPathError, not an answer', async (_name, rel) => {
+    const err = await rejection(readConfinedUserFileRange(root, rel, WHOLE));
+    expect(err).toBeInstanceOf(WalkPathError);
+    expect(err).not.toBeInstanceOf(UserFilesReadError);
+  });
+
+  it.each([
+    ['offset -1', { offset: -1, length: 10 }],
+    ['offset 1.5', { offset: 1.5, length: 10 }],
+    ['offset NaN', { offset: Number.NaN, length: 10 }],
+    ['offset 2^53', { offset: 2 ** 53, length: 10 }],
+    ['length -1', { offset: 0, length: -1 }],
+    ['length 1.5', { offset: 0, length: 1.5 }],
+    ['length NaN', { offset: 0, length: Number.NaN }],
+    ['length 16 MiB + 1', { offset: 0, length: MAX_WALK_LIMIT_BYTES + 1 }],
+  ])('%s is a RangeError, before anything else is looked at', async (_what, range) => {
+    // A bad range is our caller's bug, so it is loud whatever the path:
+    // before the platform check (this runs on macOS too), and before the
+    // depth rule, which would otherwise answer `absent` for this path.
+    const deep = Array.from({ length: MAX_WALK_PARTS + 1 }, () => 'd').join('/');
+    for (const rel of ['hello.txt', deep]) {
+      await expect(readConfinedUserFileRange(root, rel, range)).rejects.toBeInstanceOf(RangeError);
+    }
+  });
+
+  it('a range of exactly 16 MiB is allowed', async () => {
+    // The boundary, observable everywhere: the walk is reached, and off
+    // Linux the walk is where the platform refusal lives.
+    await asDarwin(async () => {
+      await expect(
+        readConfinedUserFileRange(root, 'hello.txt', { offset: 0, length: MAX_WALK_LIMIT_BYTES }),
+      ).rejects.toMatchObject({ code: 'unsupported-platform' });
+    });
+  });
+
+  it('a path deeper than MAX_WALK_PARTS is absent, not an error', async () => {
+    const deep = Array.from({ length: MAX_WALK_PARTS + 1 }, () => 'd').join('/');
+    expect(await readConfinedUserFileRange(root, deep, WHOLE)).toEqual({ kind: 'absent' });
+  });
+
+  it('off Linux the range read refuses instead of answering', async () => {
+    await asDarwin(async () => {
+      const out = readConfinedUserFileRange(root, 'hello.txt', WHOLE);
       await expect(out).rejects.toBeInstanceOf(UserFilesReadError);
       await expect(out).rejects.toMatchObject({ code: 'unsupported-platform' });
     });
@@ -607,6 +696,290 @@ describe.skipIf(!ON_LINUX)(`readConfinedUserFiles — on disk (${SKIP_REASON})`,
   );
 });
 
+describe.skipIf(!ON_LINUX)(`readConfinedUserFileRange — on disk (${SKIP_REASON})`, () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('returns exact bytes at an offset, with size and version', async () => {
+    const body = randomBytes(3 * MiB);
+    await fs.writeFile(path.join(root, 'big.bin'), body);
+    const out = fileOf(
+      await readConfinedUserFileRange(root, 'big.bin', { offset: MiB + 7, length: MiB }),
+    );
+    expect(out.size).toBe(3 * MiB);
+    expect(out.bytes.byteLength).toBe(MiB);
+    expect(Buffer.from(out.bytes).equals(body.subarray(MiB + 7, 2 * MiB + 7))).toBe(true);
+    expect(typeof out.version).toBe('string');
+    expect(out.version).not.toBe('');
+  });
+
+  it('read range by range, a file comes back whole: full ranges, one version, nothing at the end', async () => {
+    // The caller's loop (channel-web's download), at a size that does not
+    // divide into ranges evenly.
+    const body = randomBytes(2 * MiB + 3);
+    await fs.writeFile(path.join(root, 'big.bin'), body);
+    const first = fileOf(await readConfinedUserFileRange(root, 'big.bin', { offset: 0, length: MiB }));
+    const chunks = [Buffer.from(first.bytes)];
+    for (let offset = MiB; offset < first.size; offset += MiB) {
+      const next = fileOf(await readConfinedUserFileRange(root, 'big.bin', { offset, length: MiB }));
+      expect([next.size, next.version]).toEqual([first.size, first.version]);
+      expect(next.bytes.byteLength).toBe(Math.min(MiB, first.size - offset));
+      chunks.push(Buffer.from(next.bytes));
+    }
+    const end = fileOf(
+      await readConfinedUserFileRange(root, 'big.bin', { offset: first.size, length: 0 }),
+    );
+    expect([end.size, end.version, end.bytes.byteLength]).toEqual([first.size, first.version, 0]);
+    expect(Buffer.concat(chunks).equals(body)).toBe(true);
+  });
+
+  it('reads the tail short at EOF and nothing past it', async () => {
+    const body = randomBytes(4096);
+    await fs.writeFile(path.join(root, 'hello.txt'), body);
+    const leaves: fs.FileHandle[] = [];
+    rigLeaf((fh) => {
+      vi.spyOn(fh, 'read');
+      leaves.push(fh);
+    });
+    const tail = fileOf(
+      await readConfinedUserFileRange(root, 'hello.txt', { offset: 4096 - 10, length: 1024 }),
+    );
+    expect(tail.size).toBe(4096);
+    expect(Buffer.from(tail.bytes).equals(body.subarray(4096 - 10))).toBe(true);
+    for (const offset of [4096, 4096 + 5]) {
+      const past = fileOf(await readConfinedUserFileRange(root, 'hello.txt', { offset, length: 1024 }));
+      expect([past.size, past.bytes.byteLength, past.version]).toEqual([4096, 0, tail.version]);
+    }
+    // At or past the end, nothing is read at all.
+    expect(leaves).toHaveLength(3);
+    expect(leaves[1]!.read).not.toHaveBeenCalled();
+    expect(leaves[2]!.read).not.toHaveBeenCalled();
+  });
+
+  it('length 0 answers size and version without reading', async () => {
+    let leaf: fs.FileHandle | undefined;
+    rigLeaf((fh) => {
+      leaf = fh;
+      vi.spyOn(fh, 'read');
+    });
+    const out = fileOf(await readConfinedUserFileRange(root, 'hello.txt', { offset: 0, length: 0 }));
+    expect([out.size, out.bytes.byteLength]).toEqual([2, 0]);
+    expect(leaf?.read).not.toHaveBeenCalled();
+    vi.restoreAllMocks();
+    // ...and it is the same version a read that does read answers.
+    expect(out.version).toBe(fileOf(await readConfinedUserFileRange(root, 'hello.txt', WHOLE)).version);
+  });
+
+  it('an untouched file answers the same version on every call', async () => {
+    const versions = new Set<string>();
+    for (const range of [{ offset: 0, length: 0 }, { offset: 0, length: 1 }, { offset: 1, length: 1 }, WHOLE]) {
+      versions.add(fileOf(await readConfinedUserFileRange(root, 'hello.txt', range)).version);
+    }
+    expect(versions.size).toBe(1);
+  });
+
+  it('version changes on an in-place same-size rewrite', async () => {
+    const p = path.join(root, 'hello.txt');
+    const before = await versionOf('hello.txt');
+    const { ino } = await fs.stat(p);
+    await fs.writeFile(p, 'ho');
+    // A coarse clock can put the rewrite in the same tick as the first write.
+    // A distinct mtime makes this a test of the version, not of the clock.
+    const then = new Date('2001-02-03T04:05:06Z');
+    await fs.utimes(p, then, then);
+    const after = await fs.stat(p);
+    expect([after.ino, after.size]).toEqual([ino, 2]); // really in place, really the same size
+    expect(await versionOf('hello.txt')).not.toBe(before);
+  });
+
+  it('version changes on rename-replace', async () => {
+    const before = await versionOf('hello.txt');
+    await fs.writeFile(path.join(root, 'hello.txt.new'), 'hi'); // the same bytes, the same size
+    await fs.rename(path.join(root, 'hello.txt.new'), path.join(root, 'hello.txt'));
+    expect(await versionOf('hello.txt')).not.toBe(before);
+  });
+
+  it('version changes on truncate', async () => {
+    const before = await versionOf('hello.txt');
+    await fs.truncate(path.join(root, 'hello.txt'), 1);
+    expect(await versionOf('hello.txt')).not.toBe(before);
+  });
+
+  it('version changes on append', async () => {
+    const before = await versionOf('hello.txt');
+    await fs.appendFile(path.join(root, 'hello.txt'), '!');
+    expect(await versionOf('hello.txt')).not.toBe(before);
+  });
+
+  it.each(['dev', 'ino', 'size', 'mtimeNs', 'ctimeNs'] as const)(
+    'the version moves when only %s does',
+    async (field) => {
+      // The cases above change several of these at once, and a real clock
+      // decides which, so a version that dropped one could still pass them.
+      // Here the fstat is rigged so exactly one moves between two reads.
+      let moved = 0n;
+      rigLeaf((fh) => {
+        const realStat = fh.stat.bind(fh);
+        vi.spyOn(fh, 'stat').mockImplementation(async (opts) => {
+          const fixed: Record<string, bigint> = { dev: 1n, ino: 2n, size: 2n, mtimeNs: 3n, ctimeNs: 4n };
+          fixed[field] = 100n + moved;
+          return Object.assign(await realStat(opts), fixed) as BigIntStats;
+        });
+      });
+      const first = await versionOf('hello.txt');
+      expect(await versionOf('hello.txt')).toBe(first); // nothing moved: the same version
+      moved = 1n;
+      expect(await versionOf('hello.txt')).not.toBe(first);
+    },
+  );
+
+  it('a deleted file is absent', async () => {
+    expect((await readConfinedUserFileRange(root, 'hello.txt', WHOLE)).kind).toBe('file');
+    await fs.unlink(path.join(root, 'hello.txt'));
+    expect(await readConfinedUserFileRange(root, 'hello.txt', WHOLE)).toEqual({ kind: 'absent' });
+  });
+
+  it("a directory answers {kind:'dir'} without listing it", async () => {
+    const opendir = vi.spyOn(fs, 'opendir');
+    for (const rel of ['docs', '', '.']) {
+      expect(await readConfinedUserFileRange(root, rel, WHOLE)).toEqual({ kind: 'dir' });
+    }
+    expect(opendir).not.toHaveBeenCalled();
+  });
+
+  it("answers carry only the hook's fields", async () => {
+    const file = await readConfinedUserFileRange(root, 'hello.txt', WHOLE);
+    expect(Object.keys(file).sort()).toEqual(['bytes', 'kind', 'size', 'version']);
+    // The walk's `reason` stops here: a link and a missing file look the same.
+    await fs.symlink('hello.txt', path.join(root, 'alias.md'));
+    expect(Object.keys(await readConfinedUserFileRange(root, 'alias.md', WHOLE))).toEqual(['kind']);
+    expect(Object.keys(await readConfinedUserFileRange(root, 'nope.md', WHOLE))).toEqual(['kind']);
+  });
+
+  it('the bytes are an array of their own: nothing else rides along in its buffer', async () => {
+    // A consumer may hand `bytes.buffer` on. A view into a pooled or larger
+    // allocation would carry whatever else lives there along with it.
+    const out = fileOf(await readConfinedUserFileRange(root, 'hello.txt', WHOLE));
+    expect(Buffer.from(out.bytes).toString()).toBe('hi');
+    expect(out.bytes.byteOffset).toBe(0);
+    expect(out.bytes.buffer.byteLength).toBe(2);
+  });
+
+  it('a file that grew after its stat is read only up to the size its version names', async () => {
+    // A file the agent is still appending to. Bytes past the size the fstat
+    // saw are not covered by the version it answers, so they are not read.
+    rigLeaf((fh) => {
+      const realStat = fh.stat.bind(fh);
+      vi.spyOn(fh, 'stat').mockImplementation(async (opts) =>
+        Object.assign(await realStat(opts), { size: 1n }),
+      );
+    });
+    const out = fileOf(await readConfinedUserFileRange(root, 'hello.txt', WHOLE));
+    expect(out.size).toBe(1);
+    expect(Buffer.from(out.bytes).toString()).toBe('h');
+  });
+
+  it('a file that shrank after its stat answers short, never padded', async () => {
+    // Short is how a caller learns the file changed. Padding the answer out
+    // to the length it expected would hand it a full-looking range of zeros.
+    rigLeaf((fh) => {
+      const realStat = fh.stat.bind(fh);
+      vi.spyOn(fh, 'stat').mockImplementation(async (opts) =>
+        Object.assign(await realStat(opts), { size: 100n }),
+      );
+    });
+    const out = fileOf(await readConfinedUserFileRange(root, 'hello.txt', WHOLE));
+    expect(out.size).toBe(100);
+    expect(Buffer.from(out.bytes).toString()).toBe('hi');
+    expect(out.bytes.buffer.byteLength).toBe(2);
+  });
+
+  // --- confinement: the preview read's cases, through the range read ------
+
+  it('SECURITY: a FINAL-component symlink is absent', async () => {
+    await fs.writeFile(path.join(tmp, 'outside.txt'), 'OUTSIDE');
+    await fs.symlink(path.join(tmp, 'outside.txt'), path.join(root, 'link.txt'));
+    expect(await readConfinedUserFileRange(root, 'link.txt', WHOLE)).toEqual({ kind: 'absent' });
+  });
+
+  it('SECURITY: an INTERMEDIATE symlink into a sibling subtree discloses nothing', async () => {
+    const other = path.join(tmp, 'agent-b');
+    await fs.mkdir(other, { recursive: true });
+    await fs.writeFile(path.join(other, 'secret.txt'), 'AGENT-B-SECRET');
+    await fs.symlink(other, path.join(root, 'escape'));
+    for (const rel of ['escape/secret.txt', 'escape']) {
+      expect(await readConfinedUserFileRange(root, rel, WHOLE)).toEqual({ kind: 'absent' });
+    }
+  });
+
+  it('SECURITY: an in-root symlink is not followed either', async () => {
+    await fs.symlink('hello.txt', path.join(root, 'alias.md'));
+    await fs.symlink('docs', path.join(root, 'alias'));
+    for (const rel of ['alias.md', 'alias/note.md', 'alias']) {
+      expect(await readConfinedUserFileRange(root, rel, WHOLE)).toEqual({ kind: 'absent' });
+    }
+  });
+
+  it('SECURITY: a symlink to the root ITSELF is absent', async () => {
+    await fs.symlink(root, path.join(root, 'self'));
+    for (const rel of ['self', 'self/hello.txt']) {
+      expect(await readConfinedUserFileRange(root, rel, WHOLE)).toEqual({ kind: 'absent' });
+    }
+  });
+
+  it('SECURITY: a FIFO is absent, and the read does not wait for a writer', async () => {
+    const fifo = path.join(root, 'pipe');
+    expect(spawnSync('mkfifo', [fifo]).status, `mkfifo ${fifo}`).toBe(0);
+    // If the open ever waited for a writer, the timer reports it quickly
+    // instead of leaving the test to hang until its timeout.
+    let timer: NodeJS.Timeout | undefined;
+    const blocked = new Promise<'blocked'>((resolve) => {
+      timer = setTimeout(() => resolve('blocked'), 3_000);
+    });
+    try {
+      const out = await Promise.race([readConfinedUserFileRange(root, 'pipe', WHOLE), blocked]);
+      expect(out).toEqual({ kind: 'absent' });
+    } finally {
+      clearTimeout(timer);
+      // A parked open, if there is one, finishes once a writer appears.
+      await (await fs.open(fifo, constants.O_RDWR | constants.O_NONBLOCK)).close();
+    }
+  });
+
+  it('a Unix socket or a device is absent', async () => {
+    const server = createServer();
+    await new Promise<void>((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(path.join(root, 'sock'), resolve);
+    });
+    try {
+      expect(await readConfinedUserFileRange(root, 'sock', WHOLE)).toEqual({ kind: 'absent' });
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+    expect(await readConfinedUserFileRange('/dev', 'null', WHOLE)).toEqual({ kind: 'absent' });
+  });
+
+  it('SECURITY: no open the range read makes can write', async () => {
+    const seen: unknown[] = [];
+    const realOpen = fs.open;
+    vi.spyOn(fs, 'open').mockImplementation(async (p, flags, mode) => {
+      seen.push(flags);
+      return realOpen(p, flags, mode);
+    });
+    await readConfinedUserFileRange(root, 'docs/note.md', WHOLE);
+    await readConfinedUserFileRange(root, 'docs', WHOLE);
+    const WRITE =
+      constants.O_WRONLY | constants.O_RDWR | constants.O_CREAT | constants.O_TRUNC | constants.O_APPEND;
+    expect(seen).toHaveLength(5); // root, docs, note.md; then root, docs
+    for (const flags of seen) {
+      expect(typeof flags).toBe('number');
+      expect((flags as number) & WRITE).toBe(0);
+    }
+  });
+});
+
 // ---------------------------------------------------------------------------
 // A BROKEN READ IS NOT AN ABSENCE (TASK-403).
 //
@@ -853,5 +1226,109 @@ describe.skipIf(!ON_LINUX)(`a read that FAILED is never reported as an absence (
     expect(await readConfinedUserFiles(root, 'escape/secret.txt')).toEqual({
       kind: 'absent',
     });
+  });
+});
+
+describe.skipIf(!ON_LINUX)(`a range read that FAILED is never an absence (${SKIP_REASON})`, () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("EIO mid-read throws UserFilesReadError{code:'EIO'}, not absent, and closes the leaf", async () => {
+    // A partial range is not served either: the caller would take it for a
+    // file that changed, when the storage simply failed.
+    let leaf: fs.FileHandle | undefined;
+    rigLeaf((fh) => {
+      leaf = fh;
+      vi.spyOn(fh, 'read')
+        .mockResolvedValueOnce({ bytesRead: 1, buffer: Buffer.from('h') })
+        .mockRejectedValueOnce(errno('EIO'));
+      vi.spyOn(fh, 'close');
+    });
+    const out = readConfinedUserFileRange(root, 'hello.txt', WHOLE);
+    await expect(out).rejects.toBeInstanceOf(UserFilesReadError);
+    await expect(out).rejects.toMatchObject({ code: 'EIO' });
+    expect(leaf?.read).toHaveBeenCalledTimes(2);
+    expect(leaf?.close).toHaveBeenCalledOnce();
+  });
+
+  it('EACCES opening the leaf throws, not absent', async () => {
+    failOpen((p) => p.endsWith('/hello.txt'), 'EACCES');
+    const out = readConfinedUserFileRange(root, 'hello.txt', WHOLE);
+    await expect(out).rejects.toBeInstanceOf(UserFilesReadError);
+    await expect(out).rejects.toMatchObject({ code: 'EACCES', depth: 0 });
+  });
+
+  it('a leaf stat that raises EIO throws; one that raises ENOENT is absent', async () => {
+    let code = 'EIO';
+    rigLeaf((fh) => {
+      vi.spyOn(fh, 'stat').mockRejectedValueOnce(errno(code));
+    });
+    const out = readConfinedUserFileRange(root, 'hello.txt', WHOLE);
+    await expect(out).rejects.toBeInstanceOf(UserFilesReadError);
+    await expect(out).rejects.toMatchObject({ code: 'EIO' });
+    code = 'ENOENT';
+    expect(await readConfinedUserFileRange(root, 'hello.txt', WHOLE)).toEqual({ kind: 'absent' });
+  });
+
+  it('every handle a range read opens is closed, on success and on failure', async () => {
+    // Nothing outlives a call: that is what lets a caller stop asking at any
+    // moment (a client that went away) without leaking a descriptor.
+    await fs.symlink('hello.txt', path.join(root, 'alias.md'));
+    const handles: fs.FileHandle[] = [];
+    let fault: 'none' | 'open' | 'read' | 'stale' = 'none';
+    let staleLeft = 0;
+    const realOpen = fs.open;
+    vi.spyOn(fs, 'open').mockImplementation(async (p, flags, mode) => {
+      const name = String(p);
+      if (fault === 'open' && name.endsWith('/note.md')) throw errno('EACCES');
+      if (fault === 'stale' && staleLeft > 0 && name.endsWith('/docs')) {
+        staleLeft--;
+        throw stale();
+      }
+      const fh = await realOpen(p, flags, mode);
+      vi.spyOn(fh, 'close');
+      if (fault === 'read' && name.endsWith('/note.md')) {
+        vi.spyOn(fh, 'read').mockRejectedValue(errno('EIO'));
+      }
+      handles.push(fh);
+      return fh;
+    });
+    const cases = [
+      // [fault, relPath, answer or error code, handles opened]
+      ['none', 'docs/note.md', 'file', 3],
+      ['none', 'docs', 'dir', 2],
+      ['none', '', 'dir', 1],
+      ['none', 'alias.md', 'absent', 1],
+      ['open', 'docs/note.md', 'EACCES', 2],
+      ['read', 'docs/note.md', 'EIO', 3],
+      // The ESTALE retry is a second walk: the first walk's root, then all three again.
+      ['stale', 'docs/note.md', 'file', 4],
+    ] as const;
+    for (const [f, rel, expected, opened] of cases) {
+      fault = f;
+      staleLeft = f === 'stale' ? 1 : 0;
+      handles.length = 0;
+      const answer = await readConfinedUserFileRange(root, rel, WHOLE).then(
+        (r) => r.kind as string,
+        (err: unknown) => String((err as UserFilesReadError).code),
+      );
+      expect(answer, `${f} ${rel}`).toBe(expected);
+      expect(handles, `${f} ${rel}`).toHaveLength(opened);
+      for (const fh of handles) expect(fh.close, `${f} ${rel}`).toHaveBeenCalledOnce();
+    }
+  });
+
+  it('ESTALE on a component is retried once, then final', async () => {
+    // Once: the retry walks again, with opens NFS revalidates, and answers.
+    failOpen((p) => p.endsWith('/docs'), stale, { times: 1 });
+    const once = fileOf(await readConfinedUserFileRange(root, 'docs/note.md', WHOLE));
+    expect(Buffer.from(once.bytes).toString()).toBe('# note');
+    vi.restoreAllMocks();
+    // Twice: the retry's answer is final. A third walk would have read the file.
+    failOpen((p) => p.endsWith('/docs'), stale, { times: 2 });
+    const twice = readConfinedUserFileRange(root, 'docs/note.md', WHOLE);
+    await expect(twice).rejects.toBeInstanceOf(UserFilesReadError);
+    await expect(twice).rejects.toMatchObject({ code: 'ESTALE', depth: 0 });
   });
 });

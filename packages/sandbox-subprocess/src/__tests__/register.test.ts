@@ -22,6 +22,16 @@ describe('sandbox-subprocess registration', () => {
     expect(bus.hasService('sandbox:user-files-usage')).toBe(true);
   });
 
+  it('registers sandbox:read-user-file-range in the manifest and on the bus (TASK-1014)', async () => {
+    const bus = new HookBus();
+    const plugin = createSandboxSubprocessPlugin();
+    // The manifest is what bootstrap reads to satisfy channel-web's download
+    // route; the bus is what answers it. One without the other is half-wired.
+    expect(plugin.manifest.registers).toContain('sandbox:read-user-file-range');
+    await plugin.init({ bus, config: {} });
+    expect(bus.hasService('sandbox:read-user-file-range')).toBe(true);
+  });
+
   it('no longer registers the deleted sandbox:spawn hook', async () => {
     const bus = new HookBus();
     await createSandboxSubprocessPlugin().init({ bus, config: {} });

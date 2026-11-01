@@ -110,6 +110,14 @@ Decisions and reasons:
   10Gi. The runner reads it from `AX_EPHEMERAL_ROOT` (the host sets it from
   `POD_SCRATCH_ROOT`) and refuses to boot without it, or without
   `AX_USERFILES_ROOT`. `/agent`, `/ephemeral` and `.ax/` no longer exist anywhere.
+- **As built (TASK-1014):** Files-tab downloads stream through the host-internal
+  hook `sandbox:read-user-file-range`: one 1 MiB range per call, the path re-walked
+  with `O_NOFOLLOW` each time, an opaque `version` checked on every range, one
+  final validation call, and the last chunk held until it passes, so a file that
+  changes mid-download aborts instead of arriving as a torn 200. Ceiling 1 GiB
+  (413 above). Responses carry `Cache-Control: private, no-store`. k8s serves
+  downloads from the read-only host mount only (`sandbox.filestore.hostReadPath`;
+  unset means 503, never a pod per range). Previews stay capped at 1 MiB.
 
 ## 5. Identity, Instructions and onboarding → DB
 

@@ -474,6 +474,20 @@ and consumer. Treat their *shape* as a contract; changing it is a boundary revie
     `agents:deleted` drops that row. Filestore has no per-folder limit and the
     sandbox writes NFS directly, so an agent can overshoot between measurements;
     the Filestore capacity alert in `deploy/GKE.md` is the backstop.
+  - **Agent file downloads stream (TASK-1014).** The host-internal service hook
+    **`sandbox:read-user-file-range { owner, relPath, offset, length } → { size, version, bytes }`**
+    (not an IPC action; types in `@ax/sandbox-mount-protocol`) is registered by
+    `@ax/sandbox-k8s` and `@ax/sandbox-subprocess`, both answering with
+    `@ax/user-files-read`'s confined ranged read: each call re-walks the path
+    with `O_NOFOLLOW` per component and holds nothing between calls. `version`
+    is opaque, compare-only. k8s reads only through the read-only host mount
+    (`sandbox.filestore.hostReadPath`), never a pod per range. channel-web's
+    `sendUserFileDownload` loops over 1 MiB ranges, checks `version` on every
+    range plus one final validation call, and pipes them into `@ax/http-server`'s
+    `res.bodyStream()` (exact Content-Length, backpressure, abort-by-destroy so
+    a truncated body never looks complete, final chunk held until validated).
+    Ceiling 1 GiB (413 above), `Cache-Control: private, no-store`. Previews
+    (`sandbox:read-user-files`) keep their 1 MiB cap.
   - **`blob:put` is a facade** (`registerBlobPutFacade` in `@ax/core`): veto `blob:pre-put { size }` → the backend's
     `blob:put-internal` → notify `blob:stored { sha256, size }`. Both backends
     (`@ax/blob-store-fs`, `-s3`) register the `-internal` hook. A refusal is
@@ -596,8 +610,8 @@ never the storage-neutral kernel (I1 forbids backend vocabulary in `@ax/core`).
   and the orchestrator (type-only) share them; convergence picked the *stricter*
   proxy-config schema (exactly-one-of endpoint/socket).
 - **`@ax/sandbox-mount-protocol`** — the mount list and the
-  `sandbox:resolve-mounts` / `sandbox:user-files-usage` hook types the two sandbox
-  backends and the mount plugins share.
+  `sandbox:resolve-mounts` / `sandbox:user-files-usage` / `sandbox:read-user-file-range`
+  hook types the two sandbox backends and the mount plugins share.
 
 `@ax/workspace-protocol` and `@ax/workspace-bundle-protocol` (the ARCH-3 git-bundle
 payload types) were deleted in TASK-995 with the tier they served.

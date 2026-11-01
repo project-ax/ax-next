@@ -135,7 +135,7 @@ sandbox:
   filestore:
     server: ""              # >>> EDIT (required) in gke-values.local.yaml: the Filestore IP
     exportPath: "/vol1"     # the share name from `gcloud filestore instances describe`
-    hostReadPath: ""        # >>> EDIT (recommended) "/user-files" in gke-values.local.yaml
+    hostReadPath: ""        # >>> EDIT (required for Files tab downloads) "/user-files" in gke-values.local.yaml
 
 # ─── Credential-proxy: TCP listener + ClusterIP Service ──────────
 # The prod-gVisor transport (TASK-149). Runner pods reach the proxy over the

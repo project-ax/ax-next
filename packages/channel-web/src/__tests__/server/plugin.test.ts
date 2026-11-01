@@ -1060,7 +1060,11 @@ describe('@ax/channel-web server plugin (integration)', () => {
         {
           hook: 'sandbox:read-user-files',
           degradation:
-            'the user-files listing and its downloads answer 503 user-files-unavailable (never an empty listing)',
+            'the user-files listing answers 503 user-files-unavailable (never an empty listing)',
+        },
+        {
+          hook: 'sandbox:read-user-file-range',
+          degradation: 'Files tab downloads answer 503 user-files-unavailable (previews still work)',
         },
       ],
       subscribes: ['chat:stream-chunk', 'chat:phase', 'chat:turn-end', 'chat:turn-error', 'chat:permission-request', 'memory:conversation-activity'],

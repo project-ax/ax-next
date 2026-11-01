@@ -5,9 +5,15 @@ import {
   type HookBus,
   type Logger,
 } from '@ax/core';
-import { measureConfinedUserFiles, readConfinedUserFiles } from '@ax/user-files-read';
+import {
+  measureConfinedUserFiles,
+  readConfinedUserFileRange,
+  readConfinedUserFiles,
+} from '@ax/user-files-read';
 import type {
   MountSpec,
+  ReadUserFileRangeInput,
+  ReadUserFileRangeOutput,
   ReadUserFilesInput,
   ReadUserFilesOutput,
   ResolveMountsInput,
@@ -17,19 +23,22 @@ import type {
 } from '@ax/sandbox-mount-protocol';
 
 // ---------------------------------------------------------------------------
-// user-files-host-ops — the subprocess provider's three HOST-SIDE user-files
-// ops (the two filestore-user-files deferred mechanisms of design §11, plus
-// the meter):
+// user-files-host-ops — the subprocess provider's HOST-SIDE user-files ops
+// (the two filestore-user-files deferred mechanisms of design §11, the meter,
+// and the download read):
 //
 //   1. host-read   — `sandbox:read-user-files` reads an agent's durable
-//                    user-files subtree READ-ONLY, for the web UI.
+//                    user-files subtree READ-ONLY, for the web UI's previews
+//                    and listings. `sandbox:read-user-file-range` (TASK-1014)
+//                    reads one byte range of one file in it, READ-ONLY, so a
+//                    download can stream a file of any size.
 //   2. cleanup     — an `agents:deleted` subscriber `rm -rf`s the agent's
 //                    durable user-files subtree.
 //   3. usage       — `sandbox:user-files-usage` sums the allocated bytes of
 //                    that subtree for the storage limit (TASK-993), with
 //                    `@ax/user-files-read`'s confined, bounded, no-follow walk.
 //
-// All three reuse the EXISTING `sandbox:resolve-mounts` hook to learn WHERE an
+// All of them reuse the EXISTING `sandbox:resolve-mounts` hook to learn WHERE an
 // agent's files live (`subPath`/`hostPath` keyed off `owner.agentId`) — the
 // design's "owner-keyed and reusable" promise. The subprocess sandbox shares
 // the host filesystem, so realization is direct: read/delete the resolved
@@ -42,10 +51,11 @@ import type {
 //   - usage opens nothing but folders, each relative to its parent's held
 //     descriptor with `O_NOFOLLOW`, so a planted or swapped link can't make it
 //     count (or even list) a sibling's subtree. It never opens a file at all.
-//   - host-read NEVER opens a writable handle — it only `readFile`/`readdir`s,
-//     so write access is never granted (design §11: "without granting write").
-//     Structurally, not by discipline: `@ax/user-files-read` has no write
-//     entry point to reach for by mistake.
+//   - host-read NEVER opens a writable handle — both reads open read-only and
+//     only read or list, so write access is never granted (design §11:
+//     "without granting write"). Structurally, not by discipline:
+//     `@ax/user-files-read` has no write entry point to reach for by mistake,
+//     and both ask the resolver for a read-only realization.
 //   - The caller-supplied `relPath` is confined to the resolved mount subtree
 //     by `@ax/user-files-read` — the ONE confined reader, shared with the k8s
 //     provider's host-mounted realization. Read its header for the full walk:
@@ -157,6 +167,46 @@ export async function readUserFiles(
   );
   if (root === undefined) return { kind: 'unavailable' };
   return readConfinedUserFiles(root, input.relPath);
+}
+
+/**
+ * Realize `sandbox:read-user-file-range` (TASK-1014) for the subprocess
+ * provider: resolve the agent's `localDir` user-files mount READ-ONLY, exactly
+ * as `readUserFiles` does, and read one byte range of one file under it.
+ *
+ * Same root, same reader library, same confinement: the lexical guard, the
+ * per-component `O_NOFOLLOW` walk that refuses a symlink at any depth, and a
+ * FIFO, socket or device answered `absent` without a byte read from it. Every
+ * call resolves, walks and opens afresh and holds nothing once it returns, so
+ * a download whose client went away leaves nothing open here. The range itself
+ * (`offset` a safe integer of 0 or more, `length` 0 to 16 MiB) is validated by
+ * the reader before it touches the disk.
+ *
+ * `{ kind: 'unavailable' }` when no durable tier resolves for the owner (no
+ * resolver loaded, or no `role:'user-files'` mount for it) — the same
+ * deployment fact `readUserFiles` reports. A read that failed THROWS, and the
+ * bus hands the caller a `PluginError`. An unrealizable mount kind throws
+ * `unrealizable-mount-kind`.
+ */
+export async function readUserFileRange(
+  ctx: AgentContext,
+  bus: HookBus,
+  pluginName: string,
+  input: ReadUserFileRangeInput,
+): Promise<ReadUserFileRangeOutput> {
+  const root = await resolveUserFilesHostPath(
+    ctx,
+    bus,
+    input.owner,
+    pluginName,
+    /* readOnly */ true,
+  );
+  if (root === undefined) return { kind: 'unavailable' };
+  // Only the range crosses into the reader, not the rest of the input.
+  return readConfinedUserFileRange(root, input.relPath, {
+    offset: input.offset,
+    length: input.length,
+  });
 }
 
 /**

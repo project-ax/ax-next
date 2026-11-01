@@ -12,8 +12,11 @@ import {
   MAX_WALK_PARTS,
   MAX_WALK_SKIPPED,
   WalkPathError,
+  WalkReadError,
   readConfinedByWalk,
+  readRangeByWalk,
   splitRelPath,
+  type WalkRangeOutput,
   type WalkReadOutput,
 } from '../walk-read.js';
 
@@ -51,6 +54,12 @@ const SECRET = 'SECRET-do-not-return';
 
 const text = (r: WalkReadOutput): string =>
   r.kind === 'file' ? Buffer.from(r.contents).toString('utf8') : '';
+
+/** A range read that asks for more than any fixture file holds. */
+const WHOLE = { offset: 0, length: 1024 };
+
+const rangeText = (r: WalkRangeOutput): string =>
+  r.kind === 'file' ? Buffer.from(r.bytes).toString('utf8') : '';
 
 describe('splitRelPath', () => {
   it('turns the empty path into the root', () => {
@@ -121,6 +130,55 @@ describe('readConfinedByWalk — lexical guard', () => {
   });
 });
 
+describe('readRangeByWalk — refused before the disk', () => {
+  it.each([[['..']], [['']], [['.']], [['a/b']], [['a\0']]])(
+    'SECURITY: refuses part list %j before touching the disk',
+    async (parts) => {
+      await expect(readRangeByWalk('/nonexistent-root', parts, WHOLE)).rejects.toBeInstanceOf(
+        WalkPathError,
+      );
+    },
+  );
+
+  it('refuses more than MAX_WALK_PARTS parts', async () => {
+    const parts = Array.from({ length: MAX_WALK_PARTS + 1 }, () => 'd');
+    await expect(readRangeByWalk('/nonexistent-root', parts, WHOLE)).rejects.toBeInstanceOf(
+      WalkPathError,
+    );
+  });
+
+  // The range is the caller's, and a bad one is the caller's bug: an offset
+  // that is not a whole byte, or a read bigger than any one call may pull
+  // into memory.
+  it.each([
+    ['a negative offset', { offset: -1, length: 10 }],
+    ['a fractional offset', { offset: 1.5, length: 10 }],
+    ['a NaN offset', { offset: Number.NaN, length: 10 }],
+    ['an infinite offset', { offset: Number.POSITIVE_INFINITY, length: 10 }],
+    ['an offset past the safe integers', { offset: 2 ** 53, length: 10 }],
+    ['a negative length', { offset: 0, length: -1 }],
+    ['a fractional length', { offset: 0, length: 1.5 }],
+    ['a NaN length', { offset: 0, length: Number.NaN }],
+    ['a length over MAX_WALK_LIMIT_BYTES', { offset: 0, length: MAX_WALK_LIMIT_BYTES + 1 }],
+  ])('refuses %s with a RangeError before touching the disk', async (_what, range) => {
+    await expect(readRangeByWalk('/nonexistent-root', ['a'], range)).rejects.toBeInstanceOf(
+      RangeError,
+    );
+  });
+
+  it('lets the bounds themselves through to the walk', async () => {
+    // Off Linux the walk refuses (unsupported-platform); on Linux the root
+    // is missing (ENOENT). Either way it is the walk answering, not the guard.
+    for (const range of [
+      { offset: 0, length: 0 },
+      { offset: Number.MAX_SAFE_INTEGER, length: MAX_WALK_LIMIT_BYTES },
+    ]) {
+      const err = await readRangeByWalk('/nonexistent-root', ['a'], range).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(WalkReadError);
+    }
+  });
+});
+
 describe('readConfinedByWalk — off Linux', () => {
   // Without /proc every component open is ENOENT, so a walk that ran anyway
   // would answer `absent` for everything: a Files tab that says the agent
@@ -142,6 +200,23 @@ describe('readConfinedByWalk — off Linux', () => {
       await expect(readConfinedByWalk(tmp, ['x'], LIMITS)).rejects.toBeInstanceOf(
         UserFilesReadError,
       );
+    } finally {
+      Object.defineProperty(process, 'platform', d);
+      await fs.rm(tmp, { recursive: true, force: true }).catch(() => undefined);
+    }
+  });
+
+  it('the range read refuses off Linux the same way', async () => {
+    const tmp = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'ax-walk-os-range-')));
+    await fs.writeFile(path.join(tmp, 'x'), 'a real file the walk must not answer for');
+    const d = Object.getOwnPropertyDescriptor(process, 'platform')!;
+    Object.defineProperty(process, 'platform', { ...d, value: 'darwin' });
+    try {
+      await expect(readRangeByWalk(tmp, ['x'], WHOLE)).rejects.toMatchObject({
+        name: 'WalkReadError',
+        code: 'unsupported-platform',
+        depth: -1,
+      });
     } finally {
       Object.defineProperty(process, 'platform', d);
       await fs.rm(tmp, { recursive: true, force: true }).catch(() => undefined);
@@ -351,6 +426,52 @@ describe.skipIf(!ON_LINUX)(`readConfinedByWalk — on disk (${SKIP_REASON})`, ()
     });
   });
 
+  // The range read (TASK-1014) is the same walk with a different leaf: the
+  // component opens above are shared code, so these pin that the range read
+  // goes through them, plus what its own leaf decides.
+  describe('a range read: the same walk, its own leaf', () => {
+    it('reads a range of a nested file, with the size its version was taken at', async () => {
+      const r = await readRangeByWalk(root, ['docs', 'note.md'], { offset: 4, length: 2 });
+      expect(r).toMatchObject({ kind: 'file', size: 8 });
+      expect(rangeText(r)).toBe('go');
+      expect(r.kind === 'file' && typeof r.version).toBe('string');
+    });
+
+    it('a directory answers dir and is never listed', async () => {
+      const opendir = vi.spyOn(fs, 'opendir');
+      try {
+        expect(await readRangeByWalk(root, ['docs'], WHOLE)).toEqual({ kind: 'dir' });
+        expect(await readRangeByWalk(root, [], WHOLE)).toEqual({ kind: 'dir' });
+        expect(opendir).not.toHaveBeenCalled();
+      } finally {
+        opendir.mockRestore();
+      }
+    });
+
+    it('a missing path is absent', async () => {
+      expect(await readRangeByWalk(root, ['nope.md'], WHOLE)).toEqual({
+        kind: 'absent',
+        reason: 'missing',
+      });
+    });
+
+    it('SECURITY: a symlink at any depth is absent and never followed', async () => {
+      await fs.symlink(path.join(outside, 'secret.txt'), path.join(root, 'leak.txt'));
+      await fs.symlink(outside, path.join(root, 'a'));
+      await fs.symlink('docs', path.join(root, 'alias'));
+      for (const parts of [
+        ['leak.txt'],
+        ['a'],
+        ['a', 'secret.txt'],
+        ['a', 'b', 'file.txt'],
+        ['alias', 'note.md'],
+      ]) {
+        const r = await readRangeByWalk(root, parts, WHOLE);
+        expect(r, parts.join('/')).toEqual({ kind: 'absent', reason: 'link-or-not-dir' });
+      }
+    });
+  });
+
   describe('SECURITY: special files', () => {
     // mkfifo is coreutils, so on the Linux boxes these run on a failure is a
     // broken fixture, not a reason to pass quietly.
@@ -404,6 +525,18 @@ describe.skipIf(!ON_LINUX)(`readConfinedByWalk — on disk (${SKIP_REASON})`, ()
       // /dev/null is a character device; reach it as the root's child so the
       // test needs no mknod privilege.
       expect(await readConfinedByWalk('/dev', ['null'], LIMITS)).toMatchObject({
+        kind: 'absent',
+        reason: 'not-file-or-dir',
+      });
+    });
+
+    it('a range read of a FIFO does not block and is absent; of a device too', async () => {
+      mkfifo(path.join(root, 'pipe'));
+      expect(await readRangeByWalk(root, ['pipe'], WHOLE)).toEqual({
+        kind: 'absent',
+        reason: 'not-file-or-dir',
+      });
+      expect(await readRangeByWalk('/dev', ['null'], WHOLE)).toEqual({
         kind: 'absent',
         reason: 'not-file-or-dir',
       });
@@ -532,6 +665,35 @@ describe.skipIf(!ON_LINUX)(`readConfinedByWalk — on disk (${SKIP_REASON})`, ()
     ])('ESTALE %s is retried too, and the retry answers', async (_what, parts, expected, inject) => {
       inject();
       expect(answer(await readConfinedByWalk(root, parts, LIMITS))).toBe(expected);
+    });
+
+    it('a range read walks the same way: the same flags, and the same one retry', async () => {
+      const opens = staleOpens('docs', 1);
+      expect(rangeText(await readRangeByWalk(root, ['docs', 'note.md'], WHOLE))).toBe('all good');
+      expect(opens).toEqual([
+        ['<root>', O_DIRECTORY | O_PATH],
+        ['docs', O_NOFOLLOW | O_PATH | O_DIRECTORY],
+        ['<root>', O_DIRECTORY | O_RDONLY],
+        ['docs', O_NOFOLLOW | O_RDONLY | O_DIRECTORY],
+        ['note.md', O_NOFOLLOW | O_RDONLY | O_NONBLOCK],
+      ]);
+    });
+
+    it('ESTALE reading a range is retried from scratch, and the retry answers', async () => {
+      staleRead('note.md');
+      const r = await readRangeByWalk(root, ['docs', 'note.md'], WHOLE);
+      expect(r).toMatchObject({ kind: 'file', size: 8 });
+      expect(rangeText(r)).toBe('all good');
+    });
+
+    it('SECURITY: a range read retry follows no symlink either', async () => {
+      staleOpens('docs', 1, async () => {
+        await fs.rm(path.join(root, 'docs'), { recursive: true });
+        await fs.symlink(outside, path.join(root, 'docs'));
+      });
+      const r = await readRangeByWalk(root, ['docs', 'secret.txt'], WHOLE);
+      expect(r).toEqual({ kind: 'absent', reason: 'link-or-not-dir' });
+      expect(JSON.stringify(r)).not.toContain(SECRET);
     });
 
     it('ESTALE again on the retry throws: one retry, never two', async () => {

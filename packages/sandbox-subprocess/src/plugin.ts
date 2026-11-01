@@ -1,6 +1,8 @@
 import type { Plugin } from '@ax/core';
 import { OpenSessionResultSchema } from '@ax/sandbox-protocol';
 import type {
+  ReadUserFileRangeInput,
+  ReadUserFileRangeOutput,
   ReadUserFilesInput,
   ReadUserFilesOutput,
   UserFilesUsageInput,
@@ -12,6 +14,7 @@ import {
   cleanupUserFiles,
   measureUserFiles,
   ownerFromAgentId,
+  readUserFileRange,
   readUserFiles,
 } from './user-files-host-ops.js';
 
@@ -49,10 +52,15 @@ export function createSandboxSubprocessPlugin(): Plugin {
       // web UI can serve those files without entering a live sandbox. Realized
       // by reading the resolved `localDir` hostPath read-only.
       //
+      // `sandbox:read-user-file-range` (TASK-1014): one byte range of one file
+      // under that same hostPath, read-only, so a download can stream a file
+      // of any size a range at a time. Same resolver, same confined walk.
+      //
       // `sandbox:user-files-usage` (TASK-993): how much that same hostPath
       // holds, for the storage limit, via the same confined no-follow walk.
       registers: [
         'sandbox:open-session',
+        'sandbox:read-user-file-range',
         'sandbox:read-user-files',
         'sandbox:user-files-usage',
       ],
@@ -72,17 +80,18 @@ export function createSandboxSubprocessPlugin(): Plugin {
       // because boot does not need it, but open-session REFUSES an owned
       // session that gets no `role:'user-files'` directory (TASK-992: the
       // durable /files home is required). The host-side ops below,
-      // `sandbox:read-user-files`, `sandbox:user-files-usage` and the
-      // `agents:deleted` cleanup, call it to learn WHERE an agent's files live
-      // and keep degrading gracefully when no resolver is loaded (the meter by
-      // throwing, never by answering 0).
+      // `sandbox:read-user-files`, `sandbox:read-user-file-range`,
+      // `sandbox:user-files-usage` and the `agents:deleted` cleanup, call it to
+      // learn WHERE an agent's files live and keep degrading gracefully when no
+      // resolver is loaded (the meter by throwing, never by answering 0).
       optionalCalls: [
         {
           hook: 'sandbox:resolve-mounts',
           degradation:
             'open-session REFUSES owned sessions (no durable /files home); ' +
-            'host-read answers unavailable, the usage meter throws ' +
-            'home-unavailable, and agent-delete cleanup is a no-op',
+            'host-read (previews and download ranges) answers unavailable, ' +
+            'the usage meter throws home-unavailable, and agent-delete ' +
+            'cleanup is a no-op',
         },
       ],
       // filestore-user-files §11 cleanup: when an agent is deleted, reclaim its
@@ -113,6 +122,22 @@ export function createSandboxSubprocessPlugin(): Plugin {
         'sandbox:read-user-files',
         PLUGIN_NAME,
         async (ctx, input) => readUserFiles(ctx, bus, PLUGIN_NAME, input),
+      );
+
+      // TASK-1014 download read: one byte range per call, read-only and
+      // confined exactly like host-read above. Why 30 s: each call is ONE
+      // host-side read of one range (the download route asks for 1 MiB at a
+      // time; the hook allows at most 16 MiB), which takes milliseconds on a
+      // healthy disk. The bus's 120 s default would let one wedged read hold a
+      // download open for two minutes per range; 30 s turns it into a
+      // `timeout` that ends the download (a 503 before the first byte, an
+      // aborted body after it). The default 15 s stall warning stays: a range
+      // still in flight at 15 s is worth a line.
+      bus.registerService<ReadUserFileRangeInput, ReadUserFileRangeOutput>(
+        'sandbox:read-user-file-range',
+        PLUGIN_NAME,
+        async (ctx, input) => readUserFileRange(ctx, bus, PLUGIN_NAME, input),
+        { timeoutMs: 30_000 },
       );
 
       // TASK-993 usage meter. Read-only (the walk opens nothing but folders);

@@ -304,6 +304,101 @@ export type ReadUserFilesOutput =
 export type ReadUserFilesHandler = ServiceHandler<ReadUserFilesInput, ReadUserFilesOutput>;
 
 // ---------------------------------------------------------------------------
+// `sandbox:read-user-file-range` (host-internal service hook) — TASK-1014
+//
+//   sandbox:read-user-file-range (ctx, { owner, relPath, offset, length })
+//     → ReadUserFileRangeOutput
+//
+// One byte range of one file in an agent's durable user-files mount, so the
+// host can hand a person the WHOLE file (a download), whatever its size, one
+// range at a time and with bounded memory. `sandbox:read-user-files` stays the
+// preview read: a listing, or a file's first bytes with `truncated`.
+//
+// Every call stands alone. It resolves the mount, confines the path and opens
+// the file afresh, and holds nothing once it returns, so a caller that stops
+// asking (a client that went away) leaves nothing open. The flip side is that
+// the file can change between two calls, and `version` is how a caller finds
+// out.
+//
+// Registered by the same providers as `sandbox:read-user-files`, resolved the
+// same way (`sandbox:resolve-mounts` with `readOnly: true`), and HOST-INTERNAL
+// in the same way: never an IPC action, so there is no wire schema. The path
+// is caller-supplied and the tree is agent-written, so a realization MUST
+// confine every read exactly as that hook's realization does.
+// ---------------------------------------------------------------------------
+
+/**
+ * Opaque. Equal tokens = same file, unchanged. Compare only; never parse, log,
+ * or send to a client.
+ *
+ * Branded so that a plain string is not one: a caller gets a version from an
+ * answer and compares it with another, and that is all it can do. What a
+ * version is made of is the realization's business (a local filesystem can use
+ * the file's identity and change times, an object store its generation), so a
+ * caller that parsed one would break on the next realization. It may carry
+ * filesystem identifiers, which is one more reason it never leaves the host.
+ */
+export type UserFileVersion = string & { readonly __brand: 'UserFileVersion' };
+
+/** Input to `sandbox:read-user-file-range`. */
+export interface ReadUserFileRangeInput {
+  /** The session owner, keying the per-agent mount exactly as for `sandbox:read-user-files`. */
+  owner: NonNullable<OpenSessionInput['owner']>;
+  /**
+   * Path relative to the user-files mount root. `''` and `'.'` are the root,
+   * which answers `dir`. A realization MUST reject a path that escapes the
+   * mount (absolute, a `..` segment): the path is caller-supplied.
+   */
+  relPath: string;
+  /** First byte to read: a safe integer, 0 or more. At or past the end of the file, nothing is read. */
+  offset: number;
+  /**
+   * Most bytes to read: an integer from 0 to 16 MiB. `0` answers `size` and
+   * `version` without reading. A realization throws on anything else, and
+   * never reads the file first (it may check the path or its own wiring first).
+   */
+  length: number;
+}
+
+/**
+ * Output of `sandbox:read-user-file-range`.
+ *
+ * - `{ kind: 'file', size, version, bytes }`: `relPath` is a regular file.
+ *   `size` and `version` are read BEFORE `bytes`, together, at one moment.
+ *   `bytes.length === min(length, max(0, size - offset))`, or FEWER if the file
+ *   shrank between the two: a short answer means the file changed. Never more:
+ *   nothing past `size` is read, so a file that is still growing grows only
+ *   `size` and `version` on a later call.
+ * - `{ kind: 'dir' }`: `relPath` is a directory. It is not listed. Listing is
+ *   `sandbox:read-user-files`' job.
+ * - `{ kind: 'absent' }` and `{ kind: 'unavailable' }` mean exactly what they
+ *   mean for `sandbox:read-user-files`. `absent` covers a symlink at any depth
+ *   of the path, and a FIFO, socket or device.
+ *
+ * A READ THAT FAILED THROWS, as it does for `sandbox:read-user-files`, and is
+ * never `absent`. The read is READ-ONLY end to end.
+ *
+ * Serving a whole file is the caller's loop: range after range, each answer a
+ * `file` with the first answer's `size` and `version` and the full length,
+ * then one last call at `offset: size, length: 0` to confirm the file did not
+ * change during the last range. Any difference means the file changed under
+ * the download, and the caller must not present what it has as the file.
+ */
+export type ReadUserFileRangeOutput =
+  | { kind: 'file'; size: number; version: UserFileVersion; bytes: Uint8Array }
+  | { kind: 'dir' }
+  | { kind: 'absent' }
+  | { kind: 'unavailable' };
+
+/**
+ * The full `sandbox:read-user-file-range` handler signature: a provider
+ * satisfies it via `registerService<ReadUserFileRangeInput,
+ * ReadUserFileRangeOutput>` and the host invokes it via the matching
+ * `bus.call`.
+ */
+export type ReadUserFileRangeHandler = ServiceHandler<ReadUserFileRangeInput, ReadUserFileRangeOutput>;
+
+// ---------------------------------------------------------------------------
 // `sandbox:user-files-usage` — how much an agent's durable /files holds
 // (TASK-993), so the storage limit can count it.
 //

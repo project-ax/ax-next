@@ -724,6 +724,40 @@ describe('the user-files routes (direct handlers)', () => {
     expect(body.clipped).toBe('too-large');
   });
 
+  it('previews never call the range hook and stay capped', async () => {
+    /*
+      TASK-1014: a DOWNLOAD reads the whole file, a range at a time, through
+      `sandbox:read-user-file-range`. A preview is a different answer — a
+      bounded prefix in a JSON envelope — and must stay one: wiring it to the
+      range read would turn every click in the Files tab into a whole-file
+      read of whatever the agent wrote.
+    */
+    registerAuth({ id: 'u1', isAdmin: false });
+    registerAgents();
+    registerReader();
+    const rangeCalls: unknown[] = [];
+    bus.registerService('sandbox:read-user-file-range', 'sandbox', async (_c, i: unknown) => {
+      rangeCalls.push(i);
+      return { kind: 'absent' };
+    });
+    tier.set('big.log', {
+      kind: 'file',
+      contents: enc.encode('x'.repeat(2 * 1024 * 1024)),
+    });
+    const { res, captured } = mkRes();
+    await makeWorkspaceHandlers({ bus, initCtx }).agentUserFile(
+      mkReq({ agentId: 'a1', '*': 'big.log' }),
+      res,
+    );
+    expect(captured.statusCode).toBe(200);
+    const body = captured.body as AgentUserFilesResponse;
+    if (body.kind !== 'file') throw new Error('expected file');
+    expect(body.clipped).toBe('too-large');
+    expect(body.body).toHaveLength(FILE_BODY_MAX_BYTES);
+    expect(reads).toHaveLength(1);
+    expect(rangeCalls).toEqual([]);
+  });
+
   it('404s an absent path — the root and a nested path answer identically', async () => {
     registerAuth({ id: 'u1', isAdmin: false });
     registerAgents();

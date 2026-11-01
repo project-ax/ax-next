@@ -8,6 +8,8 @@ import {
 import type {
   MountSpec,
   NfsMountSpec,
+  ReadUserFileRangeInput,
+  ReadUserFileRangeOutput,
   ReadUserFilesInput,
   ReadUserFilesOutput,
   ResolveMountsInput,
@@ -16,7 +18,11 @@ import type {
   UserFilesUsageInput,
   UserFilesUsageOutput,
 } from '@ax/sandbox-mount-protocol';
-import { measureConfinedUserFiles, readConfinedUserFiles } from '@ax/user-files-read';
+import {
+  measureConfinedUserFiles,
+  readConfinedUserFileRange,
+  readConfinedUserFiles,
+} from '@ax/user-files-read';
 import * as path from 'node:path';
 import type { ResolvedSandboxK8sConfig } from './config.js';
 import type { K8sCoreApi } from './k8s-api.js';
@@ -24,9 +30,9 @@ import { killPod } from './kill.js';
 import { watchPodExit } from './lifecycle.js';
 
 // ---------------------------------------------------------------------------
-// user-files-ops — the k8s provider's three host-side user-files ops (the two
-// filestore-user-files deferred mechanisms of design §11, plus the meter),
-// against an `nfs` (Google Cloud Filestore) export:
+// user-files-ops — the k8s provider's host-side user-files ops (the two
+// filestore-user-files deferred mechanisms of design §11, the meter, and the
+// download read), against an `nfs` (Google Cloud Filestore) export:
 //
 //   1. cleanup  — an `agents:deleted` subscriber `rm -rf`s the agent's durable
 //                 `/workspace` subtree (`subPath=<agentId>`) via a SHORT-LIVED
@@ -50,8 +56,15 @@ import { watchPodExit } from './lifecycle.js';
 //                 `@ax/user-files-read`'s confined, bounded, no-follow walk.
 //                 With the root unset it throws `user-files-usage-unavailable`
 //                 — a pod per turn end would be far too expensive for a meter.
+//   4. range   — `sandbox:read-user-file-range` (TASK-1014) reads one byte
+//                 range of one file READ-ONLY, so a download can stream a file
+//                 of any size. Host mount ONLY, for the meter's reason and one
+//                 more: a pod per 1 MiB range would be absurd, and the pod
+//                 reader has the check-then-read gap below (TASK-915). With the
+//                 root unset it throws `user-files-download-unavailable`, and
+//                 previews keep working through the pod.
 //
-// All three reuse the EXISTING `sandbox:resolve-mounts` hook to learn the
+// All of them reuse the EXISTING `sandbox:resolve-mounts` hook to learn the
 // agent's `server`/`exportPath`/`subPath` (keyed off `owner.agentId`) — the
 // design's "owner-keyed and reusable" promise. Without the host mount, the k8s
 // host has no share of the export, so a pod-backed op runs a one-shot pod that
@@ -75,6 +88,9 @@ import { watchPodExit } from './lifecycle.js';
 //     read-only (`readOnly: true` on the volumeMount AND requested from the
 //     resolver) so the web-UI path never gains write (design §11). usage asks
 //     the resolver for read-only too, and its walk opens nothing but folders.
+//     The range read asks for read-only, reads only through the host's
+//     read-only mount, and is never handed the k8s API, so it cannot make a
+//     pod at all.
 //   - An unrealizable kind (anything but `nfs`) is an EXPLICIT error (design
 //     §10), never a silent skip.
 // ---------------------------------------------------------------------------
@@ -860,6 +876,62 @@ export async function measureUserFiles(
     log.warn('user_files_usage_partial', { agentId, entries: reading.entries });
   }
   return { bytes: reading.bytes };
+}
+
+/**
+ * Realize `sandbox:read-user-file-range` (TASK-1014): one byte range of one file
+ * in an agent's durable subtree, READ-ONLY, so a download can stream a file of
+ * any size a range at a time.
+ *
+ * HOST MOUNT ONLY, the meter's rule. A download is one call per 1 MiB range,
+ * so the pod-per-call realization would be a pod create + poll + log read +
+ * delete per MiB, and it would carry the pod reader's check-then-read gap
+ * (TASK-915) into a path that has none. With `userFilesHostReadRoot` unset this
+ * throws `user-files-download-unavailable` and creates nothing: it is not even
+ * handed the k8s API. Previews (`readUserFiles`) keep their pod path, so with
+ * the chart's default values the Files tab still browses and downloads fail,
+ * loudly, naming the setting that fixes them.
+ *
+ * The order is the same as `readUserFiles` and `measureUserFiles`, and it is
+ * deliberate:
+ *   1. Resolve READ-ONLY. No durable tier for the owner → `unavailable`, a
+ *      fact about the deployment, decided before anything else.
+ *   2. The resolved `subPath` must be ONE safe segment, and the caller's
+ *      `relPath` relative and free of `..`, before any read is attempted.
+ *   3. No host mount → throw, as above.
+ *   4. `@ax/user-files-read` reads `<hostReadRoot>/<subPath>` with the walk that
+ *      opens every component relative to the directory it already holds and
+ *      refuses a symlink at any depth, so a link planted in (or swapped into)
+ *      this agent's folder cannot reach a sibling's on the same export. It
+ *      validates the range before it touches the disk, and holds nothing once
+ *      it returns.
+ *
+ * A read that failed THROWS, and is never `absent` (TASK-403).
+ */
+export async function readUserFileRange(
+  ctx: AgentContext,
+  bus: HookBus,
+  config: ResolvedSandboxK8sConfig,
+  input: ReadUserFileRangeInput,
+): Promise<ReadUserFileRangeOutput> {
+  const mount = await resolveNfsUserFilesMount(ctx, bus, input.owner, /* readOnly */ true);
+  if (mount === undefined) return { kind: 'unavailable' };
+  assertSafeSubPath(mount.subPath);
+  const rel = safeRelPath(input.relPath);
+  if (config.userFilesHostReadRoot === '') {
+    throw new PluginError({
+      code: 'user-files-download-unavailable',
+      plugin: PLUGIN_NAME,
+      message:
+        'downloading agent files needs the read-only host mount: set sandbox.filestore.hostReadPath',
+    });
+  }
+  // `subPath` is ONE validated segment, so the join stays inside this agent's
+  // own folder on the export. Only the range crosses into the reader.
+  return readConfinedUserFileRange(path.join(config.userFilesHostReadRoot, mount.subPath), rel, {
+    offset: input.offset,
+    length: input.length,
+  });
 }
 
 /**

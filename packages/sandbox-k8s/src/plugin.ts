@@ -2,6 +2,8 @@ import type { Plugin } from '@ax/core';
 import { createSessionStatus, SessionStatusSchema } from './session-status.js';
 import { OpenSessionResultSchema } from '@ax/sandbox-protocol';
 import type {
+  ReadUserFileRangeInput,
+  ReadUserFileRangeOutput,
   ReadUserFilesInput,
   ReadUserFilesOutput,
   UserFilesUsageInput,
@@ -23,6 +25,7 @@ import {
   cleanupUserFiles,
   measureUserFiles,
   ownerFromAgentId,
+  readUserFileRange,
   readUserFiles,
 } from './user-files-ops.js';
 
@@ -79,12 +82,18 @@ export function createSandboxK8sPlugin(
       // short-lived pod that mounts the export read-only. Single-homed
       // registration either way — see user-files-ops.ts.
       //
+      // `sandbox:read-user-file-range` (TASK-1014): one byte range of one file
+      // in that subtree, read-only, so a download can stream a file of any
+      // size. Host mount ONLY — with `userFilesHostReadRoot` unset it throws
+      // `user-files-download-unavailable` rather than run a pod per range.
+      //
       // `sandbox:user-files-usage` (TASK-993): how much an agent's durable
       // subtree holds, for the storage limit. Host mount ONLY — with
       // `userFilesHostReadRoot` unset it throws `user-files-usage-unavailable`
       // rather than run a pod per turn end.
       registers: [
         'sandbox:open-session',
+        'sandbox:read-user-file-range',
         'sandbox:read-user-files',
         'sandbox:session-status',
         'sandbox:user-files-usage',
@@ -101,17 +110,19 @@ export function createSandboxK8sPlugin(
       // OPTIONAL call because boot does not need it, but open-session REFUSES
       // an owned session that gets no `role:'user-files'` mount (TASK-992: the
       // durable /files home is required). The host-side ops below,
-      // `sandbox:read-user-files`, `sandbox:user-files-usage` and the
-      // `agents:deleted` cleanup, call it to learn an agent's
-      // server/exportPath/subPath and keep degrading gracefully when no
-      // resolver is loaded (the meter by throwing, never by answering 0).
+      // `sandbox:read-user-files`, `sandbox:read-user-file-range`,
+      // `sandbox:user-files-usage` and the `agents:deleted` cleanup, call it
+      // to learn an agent's server/exportPath/subPath and keep degrading
+      // gracefully when no resolver is loaded (the meter by throwing, never by
+      // answering 0).
       optionalCalls: [
         {
           hook: 'sandbox:resolve-mounts',
           degradation:
             'open-session REFUSES owned sessions (no durable /files home); ' +
-            'host-read answers unavailable, the usage meter throws ' +
-            'home-unavailable, and agent-delete cleanup is a no-op',
+            'host-read (previews and download ranges) answers unavailable, ' +
+            'the usage meter throws home-unavailable, and agent-delete ' +
+            'cleanup is a no-op',
         },
         {
           hook: 'sandbox:memory-mounts',
@@ -217,6 +228,24 @@ export function createSandboxK8sPlugin(
         PLUGIN_NAME,
         async (ctx, input) => readUserFiles(ctx, bus, api, config, ctx.logger, input),
         { timeoutMs: 180_000 },
+      );
+
+      // TASK-1014 download read. Read-only, host mount only, never a pod (the
+      // handler is not given the k8s API, so with the root unset it throws
+      // `user-files-download-unavailable` and creates nothing). Why 30 s and
+      // not host-read's 180 s: that one is sized for a pod; this is ONE
+      // host-side read of one range per call (the download route asks for
+      // 1 MiB at a time; the hook allows at most 16 MiB) through the read-only
+      // NFS mount, which takes milliseconds on a healthy export. 30 s turns a
+      // wedged NFS read into a `timeout` that ends the download (a 503 before
+      // the first byte, an aborted body after it) instead of holding it open
+      // for minutes per range. The default 15 s stall warning stays: a range
+      // still in flight at 15 s is worth a line.
+      bus.registerService<ReadUserFileRangeInput, ReadUserFileRangeOutput>(
+        'sandbox:read-user-file-range',
+        PLUGIN_NAME,
+        async (ctx, input) => readUserFileRange(ctx, bus, config, input),
+        { timeoutMs: 30_000 },
       );
 
       // TASK-993 usage meter. Read-only, host mount only, never a pod (the

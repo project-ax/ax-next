@@ -1,10 +1,13 @@
-import { existsSync, promises as fs } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
+import { constants, existsSync, promises as fs } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DEFAULT_CONFINED_READ_LIMITS } from '@ax/user-files-read';
 import { HookBus, makeAgentContext, PluginError, type Logger } from '@ax/core';
 import type {
+  ReadUserFileRangeInput,
   ResolveMountsInput,
   ResolveMountsOutput,
 } from '@ax/sandbox-mount-protocol';
@@ -15,6 +18,7 @@ import {
   measureUserFiles,
   ownerFromAgentId,
   parseReadOutput,
+  readUserFileRange,
   readUserFiles,
 } from '../user-files-ops.js';
 import { makeMockK8sApi, type MockK8sApi } from './mock-k8s.js';
@@ -30,6 +34,7 @@ import { makeMockK8sApi, type MockK8sApi } from './mock-k8s.js';
 // ---------------------------------------------------------------------------
 
 const CONFIG = resolveConfig({ hostIpcUrl: 'http://h:80', namespace: 'ax-test' });
+const MiB = 1024 * 1024;
 
 // The host-mounted reader is the per-component no-follow walk, which needs
 // Linux /proc. Off Linux it throws `unsupported-platform` (TASK-899), so the
@@ -695,6 +700,26 @@ describe('readUserFiles (host-mounted realization)', () => {
     expect(api.creates).toHaveLength(1);
   });
 
+  it.skipIf(!ON_LINUX)('sandbox:read-user-files still returns a 2 MiB file as its first 1 MiB with truncated: true', async () => {
+    // TASK-1014 added a second read of the same export, for downloads. The
+    // preview read must not have quietly picked up its reach: a preview is
+    // still the first MiB, and still says it is only the beginning.
+    const dir = await seed('agent-abc');
+    const data = randomBytes(2 * MiB);
+    await fs.writeFile(path.join(dir, 'docs', 'big.bin'), data);
+    const api = makeMockK8sApi();
+    const { bus } = busWithNfs();
+    const out = await readUserFiles(ctx(), bus, api, hostReadConfig(), log, {
+      owner: ownerFromAgentId('agent-abc', 'u1'),
+      relPath: 'docs/big.bin',
+    });
+    expect(api.creates).toHaveLength(0);
+    if (out.kind !== 'file') throw new Error('expected file');
+    expect(out.truncated).toBe(true);
+    expect(out.contents.byteLength).toBe(MiB);
+    expect(Buffer.from(out.contents).equals(data.subarray(0, MiB)), 'the first MiB').toBe(true);
+  });
+
   // -------------------------------------------------------------------------
   // TASK-993 — `sandbox:user-files-usage`: how much an agent's /files holds,
   // for the storage limit. Host mount only: never a pod per turn end.
@@ -886,6 +911,270 @@ describe('readUserFiles (host-mounted realization)', () => {
       const { log: captured, warns } = captureLog();
       await measureUserFiles(ctx(), bus, hostReadConfig(), captured, { agentId: 'agent-abc' });
       expect(warns).toEqual([]);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // TASK-1014 — `sandbox:read-user-file-range`: one byte range of one file, so
+  // a download can stream a file of any size a range at a time. Host mount
+  // ONLY, like the meter: a pod per 1 MiB range would be absurd, and the pod
+  // reader carries the TASK-915 check-then-read gap. `readUserFileRange` is
+  // not even handed the k8s API; plugin.test.ts pins that the registered hook
+  // creates no pod.
+  // -------------------------------------------------------------------------
+  describe('readUserFileRange (TASK-1014)', () => {
+    function rangeInput(relPath: string, offset = 0, length = MiB): ReadUserFileRangeInput {
+      return { owner: ownerFromAgentId('agent-abc', 'u1'), relPath, offset, length };
+    }
+
+    /** A resolver that answers `subPath` for every owner. */
+    function busWithSubPath(subPath: string): HookBus {
+      const bus = new HookBus();
+      bus.registerService<ResolveMountsInput, ResolveMountsOutput>(
+        'sandbox:resolve-mounts',
+        'mock-filestore',
+        async () => ({
+          mounts: [
+            {
+              kind: 'nfs',
+              mountPath: '/workspace',
+              server: 'files.example.invalid',
+              exportPath: '/vol1/agents',
+              subPath,
+              readOnly: true,
+              role: 'user-files',
+            },
+          ],
+        }),
+      );
+      return bus;
+    }
+
+    it('range without a host read root throws user-files-download-unavailable and creates NO pod', async () => {
+      // No pod fallback, deliberately: previews keep their pod path, downloads
+      // need the read-only host mount. The function takes no k8s API, so the
+      // "no pod" half is structural here; plugin.test.ts drives the registered
+      // hook against the mock API and pins that nothing is created.
+      const { bus } = busWithNfs('files.example.invalid');
+      const open = vi.spyOn(fs, 'open');
+      try {
+        await expect(readUserFileRange(ctx(), bus, CONFIG, rangeInput('hello.txt'))).rejects.toMatchObject(
+          {
+            code: 'user-files-download-unavailable',
+            plugin: '@ax/sandbox-k8s',
+            message: expect.stringContaining('sandbox.filestore.hostReadPath'),
+          },
+        );
+        expect(open).not.toHaveBeenCalled();
+      } finally {
+        open.mockRestore();
+      }
+    });
+
+    it('range: UNAVAILABLE when the resolver has no mount', async () => {
+      // No resolver at all, and a resolver with no user-files mount: both are
+      // facts about the deployment, decided before the host mount is asked
+      // about — so with or without a host read root.
+      const empty = new HookBus();
+      empty.registerService<ResolveMountsInput, ResolveMountsOutput>(
+        'sandbox:resolve-mounts',
+        'mock-filestore',
+        async () => ({ mounts: [] }),
+      );
+      for (const bus of [new HookBus(), empty]) {
+        for (const config of [hostReadConfig(), CONFIG]) {
+          expect(await readUserFileRange(ctx(), bus, config, rangeInput('hello.txt'))).toEqual({
+            kind: 'unavailable',
+          });
+        }
+      }
+    });
+
+    it('range: asks the resolver for a READ-ONLY realization', async () => {
+      const { bus, seen } = busWithNfs('files.example.invalid');
+      // Off Linux the walk itself throws unsupported-platform; the resolve
+      // happens first either way.
+      await readUserFileRange(ctx(), bus, hostReadConfig(), rangeInput('hello.txt')).catch(
+        () => undefined,
+      );
+      expect(seen.readOnly).toBe(true);
+    });
+
+    it('range: an unsafe subPath is refused before any read', async () => {
+      const open = vi.spyOn(fs, 'open');
+      try {
+        for (const subPath of ['../agent-abc', 'agent-abc/..', '.', '']) {
+          await expect(
+            readUserFileRange(ctx(), busWithSubPath(subPath), hostReadConfig(), rangeInput('hello.txt')),
+            JSON.stringify(subPath),
+          ).rejects.toMatchObject({ code: 'unsafe-subpath' });
+        }
+        expect(open).not.toHaveBeenCalled();
+      } finally {
+        open.mockRestore();
+      }
+    });
+
+    it('range: CROSS-TENANT traversal refused before any read', async () => {
+      await seed('agent-abc');
+      const other = await seed('agent-xyz');
+      await fs.writeFile(path.join(other, 'secret.txt'), 'XYZ-SECRET');
+      const { bus } = busWithNfs();
+      const open = vi.spyOn(fs, 'open');
+      try {
+        for (const relPath of ['../agent-xyz/secret.txt', 'docs/../../agent-xyz/secret.txt', '/etc/passwd']) {
+          await expect(
+            readUserFileRange(ctx(), bus, hostReadConfig(), rangeInput(relPath)),
+            relPath,
+          ).rejects.toMatchObject({ code: 'unsafe-relpath' });
+        }
+        expect(open).not.toHaveBeenCalled();
+      } finally {
+        open.mockRestore();
+      }
+    });
+
+    it.skipIf(!ON_LINUX)('range: exact bytes from <hostReadRoot>/<subPath>', async () => {
+      const dir = await seed('agent-abc');
+      const data = randomBytes(3 * MiB);
+      await fs.writeFile(path.join(dir, 'docs', 'big.bin'), data);
+      // A sibling with a file at the same name: the answer must be ours.
+      const other = await seed('agent-xyz');
+      await fs.writeFile(path.join(other, 'docs', 'big.bin'), randomBytes(3 * MiB));
+      const { bus } = busWithNfs();
+      const out = await readUserFileRange(
+        ctx(),
+        bus,
+        hostReadConfig(),
+        rangeInput('docs/big.bin', MiB + 7, MiB),
+      );
+      if (out.kind !== 'file') throw new Error(`expected file, got ${out.kind}`);
+      expect(out.size).toBe(3 * MiB);
+      expect(out.bytes.byteLength).toBe(MiB);
+      expect(
+        Buffer.from(out.bytes).equals(data.subarray(MiB + 7, 2 * MiB + 7)),
+        'the bytes at [1 MiB + 7, 2 MiB + 7) of agent-abc/docs/big.bin',
+      ).toBe(true);
+      // The validation call a download ends with: nothing read, same answer.
+      const end = await readUserFileRange(ctx(), bus, hostReadConfig(), rangeInput('docs/big.bin', 3 * MiB, 0));
+      if (end.kind !== 'file') throw new Error(`expected file, got ${end.kind}`);
+      expect(end.bytes.byteLength).toBe(0);
+      expect(end.size).toBe(3 * MiB);
+      expect(end.version).toBe(out.version);
+    });
+
+    it.skipIf(!ON_LINUX)("CROSS-TENANT: range reads under <hostReadRoot>/<subPath>, so a sibling's file is absent by any name", async () => {
+      // The reader confines to the root it is handed, so the join is the
+      // cross-tenant property: `<hostReadRoot>/<subPath>`, never the export
+      // root that holds every agent's folder.
+      await seed('agent-abc');
+      const other = await seed('agent-xyz');
+      await fs.writeFile(path.join(other, 'secret.txt'), 'XYZ-SECRET');
+      const { bus } = busWithNfs();
+      for (const relPath of ['agent-xyz/secret.txt', 'agent-xyz']) {
+        expect(await readUserFileRange(ctx(), bus, hostReadConfig(), rangeInput(relPath)), relPath).toEqual({
+          kind: 'absent',
+        });
+      }
+      // The resolver keys the folder off the owner: agent-xyz reads its own.
+      const own = await readUserFileRange(ctx(), bus, hostReadConfig(), {
+        ...rangeInput('secret.txt'),
+        owner: ownerFromAgentId('agent-xyz', 'u1'),
+      });
+      if (own.kind !== 'file') throw new Error(`expected file, got ${own.kind}`);
+      expect(Buffer.from(own.bytes).toString('utf-8')).toBe('XYZ-SECRET');
+    });
+
+    it.skipIf(!ON_LINUX)("range: the agent's root answers dir, without a listing", async () => {
+      // `safeRelPath` turns '' into '.', which the reader takes as the root.
+      await seed('agent-abc');
+      const { bus } = busWithNfs();
+      for (const relPath of ['', '.', 'docs']) {
+        expect(await readUserFileRange(ctx(), bus, hostReadConfig(), rangeInput(relPath)), relPath).toEqual({
+          kind: 'dir',
+        });
+      }
+    });
+
+    it.skipIf(!ON_LINUX)('range: in-root symlink absent', async () => {
+      const dir = await seed('agent-abc');
+      await fs.symlink('hello.txt', path.join(dir, 'alias.md'));
+      await fs.symlink('docs', path.join(dir, 'alias'));
+      const { bus } = busWithNfs();
+      for (const relPath of ['alias.md', 'alias/note.md', 'alias']) {
+        expect(await readUserFileRange(ctx(), bus, hostReadConfig(), rangeInput(relPath)), relPath).toEqual({
+          kind: 'absent',
+        });
+      }
+    });
+
+    it.skipIf(!ON_LINUX)('range: intermediate symlink to a sibling agent discloses nothing', async () => {
+      await seed('agent-abc');
+      const other = await seed('agent-xyz');
+      await fs.writeFile(path.join(other, 'secret.txt'), 'XYZ-SECRET');
+      await fs.symlink(other, path.join(hostRoot, 'agent-abc', 'escape'));
+      // And one to the export root, which holds every tenant's folder.
+      await fs.symlink('..', path.join(hostRoot, 'agent-abc', 'up'));
+      const { bus } = busWithNfs();
+      for (const relPath of ['escape/secret.txt', 'escape', 'up/agent-xyz/secret.txt']) {
+        expect(await readUserFileRange(ctx(), bus, hostReadConfig(), rangeInput(relPath)), relPath).toEqual({
+          kind: 'absent',
+        });
+      }
+    });
+
+    it.skipIf(!ON_LINUX)('range: FIFO absent', async () => {
+      const dir = await seed('agent-abc');
+      const fifo = path.join(dir, 'pipe');
+      expect(spawnSync('mkfifo', [fifo]).status, `mkfifo ${fifo}`).toBe(0);
+      // If the open ever waited for a writer, the timer says so quickly
+      // instead of leaving the test to hang until its timeout.
+      let timer: NodeJS.Timeout | undefined;
+      const blocked = new Promise<'blocked'>((resolve) => {
+        timer = setTimeout(() => resolve('blocked'), 3_000);
+      });
+      try {
+        const { bus } = busWithNfs();
+        const out = await Promise.race([
+          readUserFileRange(ctx(), bus, hostReadConfig(), rangeInput('pipe')),
+          blocked,
+        ]);
+        expect(out).toEqual({ kind: 'absent' });
+      } finally {
+        clearTimeout(timer);
+        // A parked open, if there is one, finishes once a writer appears.
+        await (await fs.open(fifo, constants.O_RDWR | constants.O_NONBLOCK)).close();
+      }
+    });
+
+    it.skipIf(!ON_LINUX)('SECURITY: range: never opens a writable handle — a read-only root still reads', async () => {
+      // In production the host volumeMount is `readOnly: true`. A writable temp
+      // dir would hide a reader that opened for write, so take write away, and
+      // look at every open's flags as well.
+      const dir = await seed('agent-abc');
+      const flags: unknown[] = [];
+      const realOpen = fs.open;
+      const spy = vi.spyOn(fs, 'open').mockImplementation(async (p, f, mode) => {
+        flags.push(f);
+        return realOpen(p, f, mode);
+      });
+      await fs.chmod(dir, 0o555);
+      try {
+        const { bus } = busWithNfs();
+        const out = await readUserFileRange(ctx(), bus, hostReadConfig(), rangeInput('hello.txt'));
+        if (out.kind !== 'file') throw new Error(`expected file, got ${out.kind}`);
+        expect(Buffer.from(out.bytes).toString('utf-8')).toBe('hi from agent-abc');
+      } finally {
+        spy.mockRestore();
+        await fs.chmod(dir, 0o755);
+      }
+      const WRITE =
+        constants.O_WRONLY | constants.O_RDWR | constants.O_CREAT | constants.O_TRUNC | constants.O_APPEND;
+      expect(flags.length).toBeGreaterThan(0);
+      for (const f of flags) {
+        expect(typeof f).toBe('number');
+        expect((f as number) & WRITE).toBe(0);
+      }
     });
   });
 });

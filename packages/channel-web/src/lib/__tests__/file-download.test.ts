@@ -121,29 +121,53 @@ describe('workspaceApi.downloadFile', () => {
 describe('downloadFailureMessage', () => {
   const AGENT = 'Scout';
 
-  it('says what a size refusal actually means, naming the limit', () => {
+  it('says what a size refusal actually means, and what to do about it', () => {
     const msg = downloadFailureMessage(new HttpError('/x', 413), AGENT);
-    // Not "an error occurred". The person needs to know that we CAN'T send
-    // this one whole and that a fragment would be useless — that is the only
-    // thing that tells them to go ask for a smaller copy.
+    // Not "an error occurred". The person needs to know that this one is too
+    // big to send, and that asking for a smaller copy is the way out.
     expect(msg).toContain('too big');
-    expect(msg).toContain('part of a file is worse than none');
     expect(msg).toContain(AGENT);
+    expect(msg).toContain('smaller copy');
+  });
+
+  it('does not claim we could only reach the beginning of a big file', () => {
+    // True once, when a download was capped at the preview's megabyte. The
+    // route streams whole files now and refuses only past its download limit,
+    // and it sends none of a file it refuses.
+    const msg = downloadFailureMessage(new HttpError('/x', 413), AGENT);
+    expect(msg).not.toContain('beginning');
+    expect(msg).not.toContain('part of a file');
   });
 
   it('does not quote a size limit it cannot verify', () => {
     /*
-      The cap lives in the sandbox provider, two packages away and deliberately
-      not importable from here. A sentence naming a figure would keep reading
-      correctly long after the figure changed, and no test could tell — so the
-      sentence names the CONSEQUENCE instead. Asserted, because "helpfully"
-      putting the number back is a one-line change somebody will be tempted to
-      make.
+      The limit lives on the server (`USER_FILE_DOWNLOAD_MAX_BYTES` in
+      `server/user-file-download.ts`). A sentence naming a figure would be a
+      second copy of it that keeps reading correctly long after the figure
+      changed, and no test could tell — so the sentence names the
+      CONSEQUENCE instead. Asserted, because "helpfully" putting the number
+      back is a one-line change somebody will be tempted to make.
     */
     const msg = downloadFailureMessage(new HttpError('/x', 413), AGENT);
     expect(msg).not.toMatch(/\d/);
     expect(msg).not.toContain('megabyte');
     expect(msg).not.toContain('MB');
+    expect(msg).not.toContain('GB');
+  });
+
+  it('a 503 is about reaching the files, not about how the server is set up', () => {
+    /*
+      A download 503s when the storage would not answer the read (it failed,
+      timed out, or this deployment cannot hand files over). The "this server
+      keeps no files" case cannot be reached from here: the Files tab only
+      offers a download on a file it listed, and the listing 503s first. So
+      the sentence is the transient one, and says the file is safe.
+    */
+    const msg = downloadFailureMessage(new HttpError('/x', 503), AGENT);
+    expect(msg).not.toContain('not set up');
+    expect(msg).toContain(AGENT);
+    expect(msg).toContain('try again');
+    expect(msg).toContain('Nothing was lost');
   });
 
   it('gives each outcome its own sentence', () => {

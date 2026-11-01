@@ -11,7 +11,11 @@ import type {
   ReadUserFilesInput,
   ReadUserFilesOutput,
   ReadUserFilesHandler,
+  ReadUserFileRangeInput,
+  ReadUserFileRangeOutput,
+  ReadUserFileRangeHandler,
   UserFileDirEntry,
+  UserFileVersion,
   UserFilesUsageInput,
   UserFilesUsageOutput,
   UserFilesUsageHandler,
@@ -240,7 +244,7 @@ describe('sandbox:read-user-files signature (TASK-167 §11 host-read)', () => {
     expect(nested.relPath).toBe('docs/notes.md');
   });
 
-  it('output is a discriminated union: file | dir | absent', () => {
+  it('output is a discriminated union: file | dir | absent | unavailable', () => {
     const file: ReadUserFilesOutput = {
       kind: 'file',
       contents: new Uint8Array([1, 2, 3]),
@@ -251,6 +255,7 @@ describe('sandbox:read-user-files signature (TASK-167 §11 host-read)', () => {
     ];
     const dir: ReadUserFilesOutput = { kind: 'dir', entries };
     const absent: ReadUserFilesOutput = { kind: 'absent' };
+    const unavailable: ReadUserFilesOutput = { kind: 'unavailable' };
 
     // The union narrows on `kind` exactly like MountSpec.
     const describe1 = (o: ReadUserFilesOutput): string => {
@@ -261,6 +266,8 @@ describe('sandbox:read-user-files signature (TASK-167 §11 host-read)', () => {
           return `dir:${o.entries.length}`;
         case 'absent':
           return 'absent';
+        case 'unavailable':
+          return 'unavailable';
         default: {
           const _exhaustive: never = o;
           return _exhaustive;
@@ -270,6 +277,7 @@ describe('sandbox:read-user-files signature (TASK-167 §11 host-read)', () => {
     expect(describe1(file)).toBe('file:3');
     expect(describe1(dir)).toBe('dir:2');
     expect(describe1(absent)).toBe('absent');
+    expect(describe1(unavailable)).toBe('unavailable');
   });
 
   it('ReadUserFilesHandler is a @ax/core ServiceHandler over the in/out pair', () => {
@@ -278,6 +286,108 @@ describe('sandbox:read-user-files signature (TASK-167 §11 host-read)', () => {
     });
     const handler: ReadUserFilesHandler = raw;
     const back: ServiceHandler<ReadUserFilesInput, ReadUserFilesOutput> = handler;
+    expect(typeof back).toBe('function');
+  });
+});
+
+// These are type tests first. vitest strips types without checking them, and
+// the package's tsc build leaves test files out, so the `@ts-expect-error`
+// lines below are proved by a `tsc --noEmit` that includes this file (an
+// unused one is itself an error), not by the runtime asserts beside them.
+describe('sandbox:read-user-file-range signature (TASK-1014)', () => {
+  const owner: NonNullable<OpenSessionInput['owner']> = {
+    userId: 'user-1',
+    agentId: 'agent-abc',
+    agentConfig: {
+      displayName: 'A',
+      systemPromptAugment: '',
+      allowedTools: [],
+      mcpConfigIds: [],
+      model: 'claude',
+      runner: 'claude-sdk',
+    },
+  };
+
+  it('input carries the session owner, a relPath and a byte range', () => {
+    const input: ReadUserFileRangeInput = {
+      owner,
+      relPath: 'reports/big.bin',
+      offset: 1024 * 1024,
+      length: 1024 * 1024,
+    };
+    expect(input.owner.agentId).toBe('agent-abc');
+    expect(Object.keys(input).sort()).toEqual(['length', 'offset', 'owner', 'relPath']);
+    // The root is spelled '' (or '.'), never by leaving the path out: a range
+    // read always names what it reads.
+    // @ts-expect-error — relPath is required.
+    const noPath: ReadUserFileRangeInput = { owner, offset: 0, length: 0 };
+    expect(noPath).toBeDefined();
+  });
+
+  it('output narrows on kind: file | dir | absent | unavailable', () => {
+    const version = 'v-1' as UserFileVersion;
+    const file: ReadUserFileRangeOutput = {
+      kind: 'file',
+      size: 3,
+      version,
+      bytes: new Uint8Array([1, 2, 3]),
+    };
+    const answer = (o: ReadUserFileRangeOutput): string => {
+      switch (o.kind) {
+        case 'file':
+          return `file:${o.size}:${o.bytes.byteLength}`;
+        case 'dir':
+          return 'dir';
+        case 'absent':
+          return 'absent';
+        case 'unavailable':
+          return 'unavailable';
+        default: {
+          const _exhaustive: never = o;
+          return _exhaustive;
+        }
+      }
+    };
+    expect(answer(file)).toBe('file:3:3');
+    expect(answer({ kind: 'dir' })).toBe('dir');
+    expect(answer({ kind: 'absent' })).toBe('absent');
+    expect(answer({ kind: 'unavailable' })).toBe('unavailable');
+  });
+
+  it('a directory answer lists nothing: listing is sandbox:read-user-files', () => {
+    // @ts-expect-error — the range read never lists a directory.
+    const listed: ReadUserFileRangeOutput = { kind: 'dir', entries: [] };
+    expect(listed).toBeDefined();
+  });
+
+  it('a plain string is not a UserFileVersion: a version only comes from an answer', () => {
+    // Opaque and compare-only. A caller can hold one and test two for
+    // equality; it cannot make one up, so it cannot parse one either.
+    // @ts-expect-error — a string is not a version.
+    const forged: UserFileVersion = '1:2:3';
+    expect(forged).toBeDefined();
+    const fromFile = (o: ReadUserFileRangeOutput): UserFileVersion | undefined =>
+      o.kind === 'file' ? o.version : undefined;
+    const a = fromFile({ kind: 'file', size: 0, version: 'x' as UserFileVersion, bytes: new Uint8Array() });
+    const b = fromFile({ kind: 'file', size: 0, version: 'x' as UserFileVersion, bytes: new Uint8Array() });
+    expect(a === b).toBe(true);
+    const wrong: ReadUserFileRangeOutput = {
+      kind: 'file',
+      size: 0,
+      // @ts-expect-error — a realization must answer a version, not any string.
+      version: 'x',
+      bytes: new Uint8Array(),
+    };
+    expect(wrong).toBeDefined();
+  });
+
+  it('ReadUserFileRangeHandler is a @ax/core ServiceHandler over the in/out pair', () => {
+    const raw: ServiceHandler<ReadUserFileRangeInput, ReadUserFileRangeOutput> = async (
+      _ctx,
+      input,
+    ) => (input.length === 0 ? { kind: 'absent' } : { kind: 'unavailable' });
+    const handler: ReadUserFileRangeHandler = raw;
+    const back: ServiceHandler<ReadUserFileRangeInput, ReadUserFileRangeOutput> = handler;
     expect(typeof back).toBe('function');
   });
 });

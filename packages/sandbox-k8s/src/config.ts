@@ -155,6 +155,12 @@ export interface SandboxK8sConfig {
    * fallback (a pod per turn end is far too expensive for a meter): unset, it
    * throws `user-files-usage-unavailable` and agents' files go unmeasured.
    *
+   * `sandbox:read-user-file-range` (TASK-1014, Files-tab downloads) reads
+   * through this mount ONLY, the same way, one byte range per call. No pod
+   * fallback either (a pod per 1 MiB range would be absurd): unset, it throws
+   * `user-files-download-unavailable`, so previews still work and downloads
+   * do not.
+   *
    * WHAT THIS COSTS, stated plainly: without it the host has NO access to any
    * agent subtree and cross-tenant isolation is STRUCTURAL. With it the host
    * can read every agent's files and that isolation becomes CODE — the route's
