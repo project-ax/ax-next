@@ -1,3 +1,4 @@
+import { inspect } from 'node:util';
 import { describe, it, expect, vi } from 'vitest';
 import { PluginError } from '@ax/core';
 import { BLOB_PUT_STORAGE_FULL_FOR_AGENT, blobGetHandler, blobPutHandler } from '../blob.js';
@@ -124,30 +125,207 @@ describe('blob.put handler (raw-body REQUEST channel)', () => {
 });
 
 describe('blob.get handler (JSON request → binary response)', () => {
-  it('streams the blob bytes back as a binary response', async () => {
-    const bytes = new Uint8Array([1, 2, 3, 4, 5]);
+  const OTHER_SHA = 'b'.repeat(64);
+
+  // A bus whose `attachments:list-for-conversation` answers with `listed` (the
+  // bound conversation's uploads) and whose `blob:get` answers with `blob`.
+  // Records every list request so a test can assert WHICH conversation was
+  // asked about.
+  function scopedBus(opts: {
+    listed: string[];
+    blob?: (sha: string) => Promise<unknown>;
+    hasList?: boolean;
+  }) {
+    const listRequests: unknown[] = [];
     const bus = fakeBus(async (hook, payload) => {
-      expect(hook).toBe('blob:get');
-      expect((payload as { sha256: string }).sha256).toBe(VALID_SHA);
-      return { bytes };
+      if (hook === 'attachments:list-for-conversation') {
+        listRequests.push(payload);
+        return {
+          files: opts.listed.map((sha256, k) => ({
+            attachmentId: `att-${k}`,
+            filename: `f${k}.txt`,
+            sha256,
+            mediaType: 'text/plain',
+            sizeBytes: 1,
+          })),
+        };
+      }
+      if (hook === 'blob:get') {
+        const sha = (payload as { sha256: string }).sha256;
+        return opts.blob ? opts.blob(sha) : { bytes: new Uint8Array([1, 2, 3]) };
+      }
+      throw new Error(`unexpected hook ${hook}`);
     });
-    const result = (await blobGetHandler({ sha256: VALID_SHA }, fakeCtx(), bus as never)) as HandlerBinary;
+    bus.hasService.mockImplementation(((hook: string) =>
+      hook === 'attachments:list-for-conversation' ? opts.hasList !== false : true) as never);
+    return { bus, listRequests };
+  }
+
+  function boundCtx(conversationId: string | null = 'conv-1') {
+    return {
+      sessionId: 's1',
+      agentId: 'a1',
+      userId: 'u1',
+      ...(conversationId !== null ? { conversationId } : {}),
+      logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
+    } as never;
+  }
+
+  function blobGetCalls(bus: ReturnType<typeof fakeBus>) {
+    return bus.call.mock.calls.filter((c) => c[0] === 'blob:get');
+  }
+
+  it("streams a blob the bound conversation's uploads reference", async () => {
+    const bytes = new Uint8Array([1, 2, 3, 4, 5]);
+    const { bus, listRequests } = scopedBus({ listed: [OTHER_SHA, VALID_SHA], blob: async () => ({ bytes }) });
+    const result = (await blobGetHandler({ sha256: VALID_SHA }, boundCtx(), bus as never)) as HandlerBinary;
     expect(result.status).toBe(200);
     expect(result.contentType).toBe('application/octet-stream');
     expect(Buffer.from(result.binary).equals(Buffer.from(bytes))).toBe(true);
+    // The scope is the conversation the SESSION is bound to.
+    expect(listRequests).toEqual([{ conversationId: 'conv-1' }]);
+    expect(blobGetCalls(bus).map((c) => c[2])).toEqual([{ sha256: VALID_SHA }]);
   });
 
-  it('returns 404 when the blob is not found', async () => {
-    const bus = fakeBus(async () => ({ found: false }));
-    const result = (await blobGetHandler({ sha256: VALID_SHA }, fakeCtx(), bus as never)) as HandlerErr;
+  it('TASK-1009: refuses a blob the session does not own, without reading the store', async () => {
+    const { bus } = scopedBus({ listed: [OTHER_SHA] });
+    const ctx = boundCtx();
+    const result = (await blobGetHandler({ sha256: VALID_SHA }, ctx, bus as never)) as HandlerErr;
     expect(result.status).toBe(404);
+    // The hash alone is not a capability: the bytes are never fetched.
+    expect(blobGetCalls(bus)).toHaveLength(0);
+    // Logged host-side so a misbehaving runner is visible to operators.
+    const warn = (ctx as { logger: { warn: ReturnType<typeof vi.fn> } }).logger.warn;
+    expect(warn).toHaveBeenCalledWith('blob_get_unreferenced_refused', {
+      action: 'blob.get',
+      reason: 'not-referenced',
+    });
+    // The sha is the would-be capability: it reaches no log level.
+    const logger = (ctx as { logger: Record<string, ReturnType<typeof vi.fn>> }).logger;
+    for (const level of ['info', 'warn', 'error', 'debug']) {
+      // inspect, not JSON.stringify: it expands an Error's message and stack.
+      expect(inspect(logger[level]!.mock.calls, { depth: null })).not.toContain(VALID_SHA);
+    }
   });
 
-  it('rejects a malformed sha256 at the handler before calling blob:get (traversal defense)', async () => {
-    const bus = fakeBus(async () => {
-      throw new Error('should not reach blob:get');
+  it('TASK-1009: "not yours" and "missing" give the runner the same response', async () => {
+    // Not owned: the store holds the bytes, but nothing of this session references them.
+    const notOwned = scopedBus({ listed: [OTHER_SHA] });
+    const a = (await blobGetHandler({ sha256: VALID_SHA }, boundCtx(), notOwned.bus as never)) as HandlerErr;
+    // Missing: referenced by the conversation, but the bytes are gone.
+    const missing = scopedBus({ listed: [VALID_SHA], blob: async () => ({ found: false }) });
+    const b = (await blobGetHandler({ sha256: VALID_SHA }, boundCtx(), missing.bus as never)) as HandlerErr;
+    expect(a.status).toBe(404);
+    expect(a).toEqual(b);
+  });
+
+  it('TASK-1009: a session bound to no conversation can fetch nothing', async () => {
+    const { bus } = scopedBus({ listed: [VALID_SHA] });
+    const ctx = boundCtx(null);
+    const result = (await blobGetHandler({ sha256: VALID_SHA }, ctx, bus as never)) as HandlerErr;
+    expect(result.status).toBe(404);
+    expect(bus.call).not.toHaveBeenCalled();
+    expect((ctx as { logger: { warn: ReturnType<typeof vi.fn> } }).logger.warn).toHaveBeenCalledWith(
+      'blob_get_unreferenced_refused',
+      { action: 'blob.get', reason: 'unbound-session' },
+    );
+  });
+
+  it('TASK-1009: an empty conversation binding can fetch nothing', async () => {
+    const { bus } = scopedBus({ listed: [VALID_SHA] });
+    const ctx = boundCtx('');
+    const result = (await blobGetHandler({ sha256: VALID_SHA }, ctx, bus as never)) as HandlerErr;
+    expect(result.status).toBe(404);
+    expect(bus.call).not.toHaveBeenCalled();
+    expect((ctx as { logger: { warn: ReturnType<typeof vi.fn> } }).logger.warn).toHaveBeenCalledWith(
+      'blob_get_unreferenced_refused',
+      { action: 'blob.get', reason: 'unbound-session' },
+    );
+  });
+
+  it('TASK-1009: with no uploads store loaded, fails closed (404, no store read)', async () => {
+    const { bus } = scopedBus({ listed: [VALID_SHA], hasList: false });
+    const ctx = boundCtx();
+    const result = (await blobGetHandler({ sha256: VALID_SHA }, ctx, bus as never)) as HandlerErr;
+    expect(result.status).toBe(404);
+    expect(bus.call).not.toHaveBeenCalled();
+    expect((ctx as { logger: { warn: ReturnType<typeof vi.fn> } }).logger.warn).toHaveBeenCalledWith(
+      'blob_get_unreferenced_refused',
+      { action: 'blob.get', reason: 'no-uploads-store' },
+    );
+  });
+
+  it('TASK-1009: a failing uploads lookup is a sanitized 500, never the bytes', async () => {
+    const bus = fakeBus(async (hook) => {
+      if (hook === 'attachments:list-for-conversation') throw new Error('db down at 10.0.0.5');
+      return { bytes: new Uint8Array([9]) };
     });
-    const result = (await blobGetHandler({ sha256: '../../etc/passwd' }, fakeCtx(), bus as never)) as HandlerErr;
+    const result = (await blobGetHandler({ sha256: VALID_SHA }, boundCtx(), bus as never)) as HandlerErr;
+    expect(result.status).toBe(500);
+    expect(JSON.stringify(result.body)).not.toContain('10.0.0.5');
+    expect(blobGetCalls(bus)).toHaveLength(0);
+  });
+
+  it('TASK-1009: a PluginError from the uploads lookup maps like attachments.list does', async () => {
+    const bus = fakeBus(async (hook) => {
+      if (hook === 'attachments:list-for-conversation') {
+        throw new PluginError({
+          code: 'forbidden',
+          plugin: '@ax/attachments',
+          hookName: 'attachments:list-for-conversation',
+          message: 'nope',
+        });
+      }
+      return { bytes: new Uint8Array([9]) };
+    });
+    const result = (await blobGetHandler({ sha256: VALID_SHA }, boundCtx(), bus as never)) as HandlerErr;
+    expect(result.status).toBe(403);
+    expect(blobGetCalls(bus)).toHaveLength(0);
+  });
+
+  it('TASK-1009: a wrapped lookup outage (PluginError unknown, as the real bus throws) is a LOGGED 500', async () => {
+    const bus = fakeBus(async (hook) => {
+      if (hook === 'attachments:list-for-conversation') {
+        throw new PluginError({
+          code: 'unknown',
+          plugin: '@ax/attachments',
+          hookName: 'attachments:list-for-conversation',
+          message: 'db down',
+        });
+      }
+      return { bytes: new Uint8Array([9]) };
+    });
+    const ctx = boundCtx();
+    const result = (await blobGetHandler({ sha256: VALID_SHA }, ctx, bus as never)) as HandlerErr;
+    expect(result.status).toBe(500);
+    expect(blobGetCalls(bus)).toHaveLength(0);
+    expect((ctx as { logger: { error: ReturnType<typeof vi.fn> } }).logger.error).toHaveBeenCalledWith(
+      'ipc_dispatch_internal_error',
+      expect.objectContaining({ action: 'blob.get', pluginErrorCode: 'unknown' }),
+    );
+  });
+
+  it('TASK-1009: a malformed uploads answer fails closed (500, no store read)', async () => {
+    const bus = fakeBus(async (hook) => {
+      if (hook === 'attachments:list-for-conversation') return { files: 'nope' };
+      return { bytes: new Uint8Array([9]) };
+    });
+    const ctx = boundCtx();
+    const result = (await blobGetHandler({ sha256: VALID_SHA }, ctx, bus as never)) as HandlerErr;
+    expect(result.status).toBe(500);
+    expect(blobGetCalls(bus)).toHaveLength(0);
+    // A plain (unwrapped) failure is logged too, not just a PluginError.
+    expect((ctx as { logger: { error: ReturnType<typeof vi.fn> } }).logger.error).toHaveBeenCalledWith(
+      'ipc_dispatch_internal_error',
+      expect.objectContaining({ action: 'blob.get' }),
+    );
+  });
+
+  it('rejects a malformed sha256 at the handler before calling any hook (traversal defense)', async () => {
+    const bus = fakeBus(async () => {
+      throw new Error('should not reach any hook');
+    });
+    const result = (await blobGetHandler({ sha256: '../../etc/passwd' }, boundCtx(), bus as never)) as HandlerErr;
     expect(result.status).not.toBe(200);
     expect(bus.call).not.toHaveBeenCalled();
   });

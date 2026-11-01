@@ -129,7 +129,7 @@ export const DISPATCHER_DEPENDENCIES: DispatcherDependencies = {
     {
       hook: 'attachments:list-for-conversation',
       degradation:
-        'POST /attachments.list returns 500 — the runner cannot enumerate a conversation\'s uploads to copy into the scratch uploads directory; unreachable in single-session deployments.',
+        'POST /attachments.list returns 500 — the runner cannot enumerate a conversation\'s uploads to copy into the scratch uploads directory — and POST /blob.get answers 404 for every sha, since it serves only blobs the bound conversation\'s uploads reference (TASK-1009); unreachable in single-session deployments.',
     },
     {
       // TASK-74 (out-of-git Part D): the skill authoring chokepoint. Reached on

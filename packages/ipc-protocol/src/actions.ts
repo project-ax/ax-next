@@ -388,7 +388,10 @@ export type ConversationStoreRunnerSessionResponse = z.infer<
 // `blob.get` is the response-direction binary channel: a small JSON request
 // `{sha256}` and a raw octet-stream response body (the blob bytes, drained to
 // a temp file). No response schema (binary body) — cf. the dispatch table in
-// `ipc-client.ts`.
+// `ipc-client.ts`. The host serves only a blob the session's own conversation's
+// uploads reference, and answers every other sha with the same 404 a missing
+// blob gets (TASK-1009): knowing a hash is not permission to read it back
+// over this action.
 //
 // `sha256` is a CONTENT hash on the wire, not a backend pointer (I1) — the
 // same storage-agnostic identity the `blob:*` bus hook + the

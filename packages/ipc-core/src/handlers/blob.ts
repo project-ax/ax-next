@@ -1,5 +1,6 @@
 import { PluginError, type AgentContext, type HookBus } from '@ax/core';
 import {
+  AttachmentsListResponseSchema,
   BlobGetRequestSchema,
   BlobPutResponseSchema,
 } from '@ax/ipc-protocol';
@@ -7,6 +8,7 @@ import { zodSummary,
   hookRejected,
   internalError,
   logInternalError,
+  mapPluginError,
   notFound,
   validationError,
 } from '../errors.js';
@@ -31,8 +33,10 @@ import type { ActionHandler, HandlerResult } from './types.js';
 // blob) is inserted separately by `artifact.publish` / the host-side
 // attachments path, so a blob with no referencing row is just an orphan a GC
 // sweep reclaims (design open-question #3; no such sweep exists yet, so orphans
-// stay). The bytes alone leak nothing (you can't read a blob back without knowing
-// its sha, and you only learn the sha if you stored it).
+// stay). `blob.get` below will not serve an orphan, or any blob the session's
+// own conversation does not reference (TASK-1009). Note `artifact.publish`
+// still accepts any sha the store holds, so that action, not this one, is
+// where a known sha still has reach (a follow-up filed from TASK-1009).
 //
 // STORAGE LIMIT (TASK-690). Unowned in the store does NOT mean free: `blob:put`
 // is a facade that fires the veto `blob:pre-put`, and the session's
@@ -131,6 +135,29 @@ export const blobPutHandler: BinaryActionHandler = async (
 // store re-validates with the identical regex AND re-verifies the digest on read
 // (TASK-65). A missing blob → 404 (not a 500 — it's an expected outcome when a
 // referenced object was GC'd or never landed).
+//
+// SCOPE (TASK-1009). A content hash is not a capability. The store is shared
+// and content-addressed, so without a scope check any runner that learned a
+// hash (say, one that leaked into model-visible text) could read that blob,
+// whoever it belongs to. So the handler serves only a blob the session's own
+// conversation references: the sha must be one of the uploads
+// `attachments:list-for-conversation` returns for `ctx.conversationId` — the
+// conversation the listener stamped from the bearer token, never from the
+// request — and that hook already scopes to `ctx.userId`. This is exactly the
+// set `attachments.list` hands the runner, which is the only place its only
+// caller (upload materialization) gets shas from.
+//
+// Everything else is the SAME 404 a missing blob gets: an unreferenced sha, a
+// session bound to no conversation, and a deployment with no uploads store. So
+// the response is no oracle for whether some other conversation's blob exists.
+// The refusal is decided before the store is touched. A failed uploads lookup
+// is logged and mapped the way `attachments.list` maps it (a malformed answer
+// is a sanitized 500), never the bytes. The lookup takes no sha, so its
+// failure is no oracle for one.
+//
+// Artifacts are deliberately out of scope: the runner writes them with
+// `blob.put` and never reads one back over this action. A future runner
+// reader adds its own reference set here, not a bypass.
 // ---------------------------------------------------------------------------
 
 interface BlobGetInput {
@@ -138,10 +165,60 @@ interface BlobGetInput {
 }
 type BlobGetOutput = { bytes: Uint8Array } | { found: false };
 
+// The one response for "you may not have it" and "it does not exist".
+const BLOB_NOT_FOUND = 'blob not found';
+
+type BlobGetRefusal = 'unbound-session' | 'no-uploads-store' | 'not-referenced';
+
+/**
+ * Why the session may NOT have `sha256`, or `null` when its own conversation
+ * references it. Every refusal reaches the runner as the same not-found; the
+ * reason is for the host log only. A lookup that fails or answers out of shape
+ * throws, and the caller sanitizes it.
+ */
+async function refuseUnreferencedBlob(
+  ctx: AgentContext,
+  bus: HookBus,
+  sha256: string,
+): Promise<BlobGetRefusal | null> {
+  const conversationId = ctx.conversationId;
+  if (conversationId === undefined || conversationId.length === 0) return 'unbound-session';
+  if (!bus.hasService('attachments:list-for-conversation')) return 'no-uploads-store';
+  const listed = await bus.call<{ conversationId: string }, unknown>(
+    'attachments:list-for-conversation',
+    ctx,
+    { conversationId },
+  );
+  const checked = AttachmentsListResponseSchema.safeParse(listed);
+  if (!checked.success) {
+    throw new Error(`uploads lookup shape drift: ${zodSummary(checked.error)}`);
+  }
+  return checked.data.files.some((f) => f.sha256 === sha256) ? null : 'not-referenced';
+}
+
 export const blobGetHandler: ActionHandler = async (rawPayload, ctx, bus) => {
   const parsed = BlobGetRequestSchema.safeParse(rawPayload);
   if (!parsed.success) {
     return validationError(`blob.get: ${zodSummary(parsed.error)}`);
+  }
+  let refusal: BlobGetRefusal | null;
+  try {
+    refusal = await refuseUnreferencedBlob(ctx, bus, parsed.data.sha256);
+  } catch (err) {
+    // Log first: the real bus wraps every plain throw (a DB outage) into
+    // PluginError{code:'unknown'}, so logging only the non-PluginError branch
+    // would leave a 500 the host never records. Then map the way
+    // `attachments.list` maps this lookup. Its failure does not depend on the
+    // requested sha, so it is no oracle either way.
+    logInternalError(ctx.logger, 'blob.get', err);
+    if (err instanceof PluginError) return mapPluginError(err);
+    return internalError();
+  }
+  if (refusal !== null) {
+    // Host-side only: the runner sees the plain not-found below. The sha is
+    // left out of the log (it is the would-be capability).
+    ctx.logger.warn('blob_get_unreferenced_refused', { action: 'blob.get', reason: refusal });
+    return notFound(BLOB_NOT_FOUND);
   }
   let out: BlobGetOutput;
   try {
@@ -153,7 +230,7 @@ export const blobGetHandler: ActionHandler = async (rawPayload, ctx, bus) => {
     return internalError();
   }
   if ('found' in out && out.found === false) {
-    return notFound('blob not found');
+    return notFound(BLOB_NOT_FOUND);
   }
   const bytes = (out as { bytes: Uint8Array }).bytes;
   return {
