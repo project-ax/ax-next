@@ -2926,6 +2926,133 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
         );
         expect(midStream.complete).toBe(false);
         expect(midStream.received).toBeLessThan(BIG_BYTES);
+
+        // 11. A GENERATED-FILE CHIP (TASK-1012). The agent leaves a file in its
+        //     home; the turn stores an `agent_file` block naming it by its key
+        //     there; the thread draws a chip from that block; and the chip
+        //     downloads the file itself, live, through the conversation. Same
+        //     scaffolding as steps 1-10 (the real range reader, the real
+        //     channel-web routes, a real socket), so no second canary.
+        //
+        //     The key carries a space, `#`, `(`, `)` and `%`: every one of them
+        //     must survive being encoded once by the client and decoded once by
+        //     the route. A double decode turns `%` into a different file.
+        const CHIP_KEY = 'reports/Q3 plan #1 (50%).pdf';
+        const CHIP_BYTES = Buffer.from('%PDF-1.7 the real bytes, not a copy\n', 'utf-8');
+        await fs.writeFile(path.join(agentDir, ...CHIP_KEY.split('/')), CHIP_BYTES);
+
+        const chipCtx = makeAgentContext({
+          sessionId: 'task-1012-canary',
+          agentId: AGENT,
+          userId: USER,
+          workspace: { rootPath: workspaceRoot },
+        });
+        const chipConv = await bus.call<
+          ConversationsCreateInput,
+          ConversationsCreateOutput
+        >('conversations:create', chipCtx, { userId: USER, agentId: AGENT });
+        const chipConversationId = chipConv.conversationId;
+        await bus.call<ConversationsAppendEventInput, ConversationsAppendEventOutput>(
+          'conversations:append-event',
+          chipCtx,
+          {
+            conversationId: chipConversationId,
+            kind: 'turn',
+            role: 'user',
+            payload: { blocks: [{ type: 'text', text: 'make me the Q3 plan' }] },
+          },
+        );
+        // What `persistEventTurnEnd` stores for a runner's tool turn.
+        await bus.call<ConversationsAppendEventInput, ConversationsAppendEventOutput>(
+          'conversations:append-event',
+          chipCtx,
+          {
+            conversationId: chipConversationId,
+            kind: 'turn',
+            role: 'tool',
+            payload: {
+              blocks: [
+                {
+                  type: 'agent_file',
+                  path: CHIP_KEY,
+                  mediaType: 'application/pdf',
+                  sizeBytes: CHIP_BYTES.length,
+                },
+              ],
+            },
+          },
+        );
+
+        // 11a. The thread served for the agent carries one chip, keyed by the
+        //      file's path, labelled with its basename, and carrying no id.
+        const threadResp = await fetch(
+          `${base}/${AGENT}?conversationId=${encodeURIComponent(chipConversationId)}`,
+          asUser(USER),
+        );
+        expect(threadResp.status).toBe(200);
+        const threadBody = (await threadResp.json()) as {
+          thread: Array<{
+            kind: string;
+            attachments?: Array<Record<string, unknown>>;
+          }>;
+        };
+        const chips = threadBody.thread.flatMap((m) =>
+          m.kind === 'agent' ? (m.attachments ?? []) : [],
+        );
+        expect(chips).toEqual([
+          {
+            attachmentId: null,
+            agentFilePath: CHIP_KEY,
+            displayName: 'Q3 plan #1 (50%).pdf',
+            mediaType: 'application/pdf',
+            sizeBytes: CHIP_BYTES.length,
+          },
+        ]);
+
+        // 11b. The chip's download: the owner gets the file's exact bytes,
+        //      encoded whole the way the SPA sends it.
+        const chipBase = `http://127.0.0.1:${port}/api/workspace/conversations/${chipConversationId}/download/user-files`;
+        const chipUrl = `${chipBase}/${encodeURIComponent(CHIP_KEY)}`;
+        const chipResp = await fetch(chipUrl, asUser(USER));
+        expect(chipResp.status).toBe(200);
+        expect(chipResp.headers.get('cache-control')).toBe('private, no-store');
+        expect(chipResp.headers.get('content-length')).toBe(String(CHIP_BYTES.length));
+        expect(Buffer.from(await chipResp.arrayBuffer()).equals(CHIP_BYTES)).toBe(true);
+
+        // 11c. Someone else's conversation: 404 for the real key and the same
+        //      404 for a malformed one (the ACL runs before the path is read),
+        //      and nobody signed in: 401.
+        for (const key of [CHIP_KEY, '../../secret']) {
+          const foreignChip = await fetch(
+            `${chipBase}/${encodeURIComponent(key)}`,
+            asUser(OTHER_USER),
+          );
+          expect(foreignChip.status).toBe(404);
+          expect(await foreignChip.text()).not.toContain('%PDF');
+        }
+        expect((await fetch(chipUrl)).status).toBe(401);
+
+        // 11d. The chip is a reference, not a copy. A key that is now a folder
+        //      is a 400 `not-a-file`; the file swapped for a symlink to a
+        //      sibling file is a 404, and so is the file once it is deleted.
+        const folderChip = await fetch(
+          `${chipBase}/${encodeURIComponent('reports')}`,
+          asUser(USER),
+        );
+        expect(folderChip.status).toBe(400);
+        expect(await folderChip.json()).toEqual({ error: 'not-a-file' });
+
+        const chipFile = path.join(agentDir, ...CHIP_KEY.split('/'));
+        await fs.rm(chipFile);
+        await fs.symlink(path.join(agentDir, 'hello.txt'), chipFile);
+        const linkedChip = await fetch(chipUrl, asUser(USER));
+        expect(linkedChip.status).toBe(404);
+        expect(await linkedChip.json()).toEqual({ error: 'file-not-found' });
+
+        await fs.rm(chipFile);
+        const goneChip = await fetch(chipUrl, asUser(USER));
+        expect(goneChip.status).toBe(404);
+        expect(await goneChip.json()).toEqual({ error: 'file-not-found' });
       } finally {
         if (handle !== null) await handle.shutdown();
         if (originalAllowNoOrigins === undefined) {
