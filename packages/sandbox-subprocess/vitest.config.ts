@@ -9,5 +9,6 @@ export default defineConfig({
     // machine without masking an actually-hung child (SIGKILL timeout in
     // spawn.ts is capped at 300 s separately).
     testTimeout: 15_000,
+    hookTimeout: 15_000,
   },
 });
