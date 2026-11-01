@@ -176,11 +176,14 @@ describe('skill.propose handler (TASK-74)', () => {
         message: 'secret-internal-detail',
       });
     });
-    const r = await skillProposeHandler(validPayload, boundCtx(), bus);
+    const { ctx, entries } = loggedCtx();
+    const r = await skillProposeHandler(validPayload, ctx, bus);
     expect(r.status).toBe(409);
     const text = JSON.stringify((r as { body: unknown }).body);
     expect(text).toContain('storage is full');
     expect(text).not.toContain('secret-internal-detail');
+    // A policy refusal is an answer, not a host fault (TASK-1015).
+    expect(entries.filter((e) => e.level === 'error')).toHaveLength(0);
   });
 
   // TASK-1015: the real HookBus wraps every plain throw from a service impl
@@ -290,12 +293,19 @@ describe('skill.propose handler (TASK-74)', () => {
     },
   );
 
-  it('maps a PluginError from the hook (invalid manifest) to its HTTP status', async () => {
+  // The author-error list is explicit, not a prefix rule: a code that merely
+  // LOOKS like an author error (a parser code added later, say) falls through
+  // to a logged 500 rather than a silent "re-draft". That is the safe
+  // direction, and this row pins it.
+  it('TASK-1015: an unlisted invalid-* code is a logged 500, not a re-draft', async () => {
+    const { ctx, entries } = loggedCtx();
     const bus = busWithPropose(async () => {
-      throw new PluginError({ code: 'invalid-manifest', plugin: '@ax/skills', message: 'bad' });
+      throw new PluginError({ code: 'invalid-new-parser-code', plugin: '@ax/skills', message: 'x' });
     });
-    const r = await skillProposeHandler(validPayload, boundCtx(), bus);
-    expect(r.status).toBeGreaterThanOrEqual(400);
-    expect(r.status).toBeLessThan(500);
+    const r = await skillProposeHandler(validPayload, ctx, bus);
+    expect(r.status).toBe(500);
+    const errors = entries.filter((e) => e.level === 'error');
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toMatchObject({ pluginErrorCode: 'invalid-new-parser-code' });
   });
 });
