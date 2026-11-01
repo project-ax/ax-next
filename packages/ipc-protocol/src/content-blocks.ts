@@ -222,12 +222,12 @@ const TRAILING_SPACE_OR_DOT = /[\s.]$/;
  * units, and it must survive `encodeURIComponent` — the chip's URL builder
  * would throw on a lone surrogate.
  *
- * Loosen only, never tighten. Stored transcripts are re-validated when they
- * are read, and a block that fails `AgentFileBlockSchema` drops its whole
- * turn from the history. A key that passed yesterday must keep passing, so
- * this rule (and `safePath`, which the parity test pins it to) may only be
- * relaxed. Tightening it needs a degrade step first, the way conversations
- * runs `degradeLegacyAttachmentBlocks` over old attachment blocks.
+ * Prefer loosening. Stored transcripts are re-checked when they are read.
+ * Since TASK-1017 a block that fails `AgentFileBlockSchema` is shown as
+ * `<name> (this file is no longer available)` (conversations'
+ * `degradeInvalidAgentFileBlocks`). So tightening the rule costs every stored
+ * chip it stops accepting its download, but never its turn. The parity test
+ * pins the rule to `safePath`, so the two change together.
  */
 export function isAgentFilePath(key: string): boolean {
   if (key.length === 0 || key.length > AGENT_FILE_PATH_MAX) return false;

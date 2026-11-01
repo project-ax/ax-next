@@ -5,7 +5,7 @@ import {
   type HookBus,
   type Plugin,
 } from '@ax/core';
-import { type ContentBlock } from '@ax/ipc-protocol';
+import { AgentFileBlockSchema, type ContentBlock } from '@ax/ipc-protocol';
 import { type Kysely } from 'kysely';
 import {
   runConversationsMigration,
@@ -1585,6 +1585,8 @@ async function getConversation(
  * schema on read — we never trust the JSONB column blindly (I5 / J2). Old
  * path-shaped `attachment` blocks are turned into text first (see
  * `degradeLegacyAttachmentBlocks`), so they cost their chip, not their turn.
+ * So do `agent_file` blocks that fail today's strict schema (a key rule
+ * tightened since they were stored; see `degradeInvalidAgentFileBlocks`).
  */
 function projectEventTurns(events: StoredEvent[]): Turn[] {
   const turns: Turn[] = [];
@@ -1595,7 +1597,7 @@ function projectEventTurns(events: StoredEvent[]): Turn[] {
     let contentBlocks: ContentBlock[];
     try {
       contentBlocks = validateContentBlocks(
-        degradeLegacyAttachmentBlocks(rawBlocks ?? []),
+        degradeInvalidAgentFileBlocks(degradeLegacyAttachmentBlocks(rawBlocks ?? [])),
       );
     } catch {
       // A corrupt / hand-edited row must not crash redisplay; skip it.
@@ -1613,7 +1615,7 @@ function projectEventTurns(events: StoredEvent[]): Turn[] {
   return turns;
 }
 
-/** Longest legacy file name `legacyAttachmentText` will repeat back. */
+/** Longest file name `noLongerAvailableText` will repeat back. */
 const LEGACY_ATTACHMENT_NAME_MAX = 255;
 
 /**
@@ -1639,17 +1641,42 @@ function degradeLegacyAttachmentBlocks(rawBlocks: unknown): unknown {
 }
 
 /**
- * `<name> (this file is no longer available)`. The name is the block's old
- * `displayName` — the person's own file name, or a model-chosen artifact
- * label — kept to one line (control characters dropped) and to a file-name
+ * `<name> (this file is no longer available)`. The name is whatever the caller
+ * remembers of the file — the old block's `displayName` (the person's own file
+ * name, or a model-chosen artifact label) or an `agent_file` key's last
+ * segment — kept to one line (control characters dropped) and to a file-name
  * length; anything else reads `A file`.
  */
-function legacyAttachmentText(block: Record<string, unknown>): string {
-  const raw = block['displayName'];
-  const name = typeof raw === 'string' ? raw.replace(/[\u0000-\u001f\u007f]/g, '').trim() : '';
+function noLongerAvailableText(rawName: unknown): string {
+  const name =
+    typeof rawName === 'string' ? rawName.replace(/[\u0000-\u001f\u007f]/g, '').trim() : '';
   const shown =
     name.length > 0 && name.length <= LEGACY_ATTACHMENT_NAME_MAX ? name : 'A file';
   return `${shown} (this file is no longer available)`;
+}
+
+function legacyAttachmentText(block: Record<string, unknown>): string {
+  return noLongerAvailableText(block['displayName']);
+}
+
+/**
+ * TASK-1017: an `agent_file` block is stored as the runner wrote it, and the
+ * key rule can tighten after the fact (`isAgentFilePath` mirrors `safePath`).
+ * A block that fails today's `AgentFileBlockSchema` would drop its WHOLE turn,
+ * text included, so it becomes a "no longer available" line naming the key's
+ * last segment. The conversation around it survives; only the download goes.
+ * A block that still parses is returned untouched.
+ */
+function degradeInvalidAgentFileBlocks(rawBlocks: unknown): unknown {
+  if (!Array.isArray(rawBlocks)) return rawBlocks;
+  return rawBlocks.map((block: unknown) => {
+    if (block === null || typeof block !== 'object' || Array.isArray(block)) return block;
+    const b = block as Record<string, unknown>;
+    if (b['type'] !== 'agent_file' || AgentFileBlockSchema.safeParse(block).success) return block;
+    const path = b['path'];
+    const name = typeof path === 'string' ? path.slice(path.lastIndexOf('/') + 1) : undefined;
+    return { type: 'text', text: noLongerAvailableText(name) };
+  });
 }
 
 /**
