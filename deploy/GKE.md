@@ -657,13 +657,14 @@ the database URL from the existing `ax-next-db` Secret (so no password goes on
 a command line or into a pod spec):
 
 ```bash
-kubectl --context "$KCTX" apply -n "$NS" -f - <<'YAML'
+kubectl --context "$KCTX" create -n "$NS" -f - <<'YAML'
 apiVersion: v1
 kind: Pod
 metadata:
   name: reset-check
 spec:
   restartPolicy: Never
+  automountServiceAccountToken: false
   containers:
     - name: psql
       image: postgres:17
@@ -719,8 +720,8 @@ Run the step 3 commands again. Expect:
 - `blobs/` has the **same file count** as before, or more if someone uploaded
   in between. (The count includes `.retired/`, so blob cleanup moving a file
   there doesn't change it. A purge can: only in enforce mode, after the retention
-  period, 7 days by default. The host logs a
-  `blob_gc_report` line when it purges.) If the count dropped and the host log
+  period, 7 days by default. Every cleanup sweep logs a `blob_gc_report` line;
+  a purge shows as `purged` above 0.) If the count dropped and the host log
   shows no purge, stop and look before doing anything else. Step 4 cannot reach
   `blobs/`, and restoring the disk from step 1's snapshot throws away every upload
   since then, so treat a restore as the last resort

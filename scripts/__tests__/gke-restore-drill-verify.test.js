@@ -154,56 +154,77 @@ describe.each(['sh', ...(HAS_DASH ? ['dash'] : [])])('restore-drill-verify.sh un
   it('FAILS when blobs/ itself is a symlink, without hashing what it points at', () => {
     // Pointed off the restored disk, a followed link would "verify" some other tree.
     const elsewhere = join(root, 'elsewhere');
-    mkdirSync(elsewhere);
+    const sha = createHash('sha256').update('off-disk bytes').digest('hex');
+    mkdirSync(join(elsewhere, sha.slice(0, 2), sha.slice(2, 4)), { recursive: true });
+    writeFileSync(join(elsewhere, sha.slice(0, 2), sha.slice(2, 4), sha), 'off-disk bytes');
     symlinkSync(elsewhere, join(ws, 'blobs'));
     makeFactsDb();
     const r = verify();
     expect(r.out).toContain('FAIL: blobs is a symlink');
     expect(r.out).not.toContain('blobs found');
+    expect(r.out).not.toContain('hash matches');
     expect(r.status).toBe(1);
   });
 
-  it('FAILS on a symlinked shard directory instead of skipping it', () => {
+  it.each(['first', 'second'])('FAILS on a symlinked %s-level shard directory instead of skipping it', (level) => {
     const torn = createHash('sha256').update('real bytes').digest('hex');
-    const hidden = join(root, 'hidden', torn.slice(2, 4));
-    mkdirSync(hidden, { recursive: true });
-    writeFileSync(join(hidden, torn), 'torn');
+    const [aa, bb] = [torn.slice(0, 2), torn.slice(2, 4)];
     mkdirSync(join(ws, 'blobs'));
-    symlinkSync(join(root, 'hidden'), join(ws, 'blobs', torn.slice(0, 2)));
+    if (level === 'first') {
+      const hidden = join(root, 'hidden', bb);
+      mkdirSync(hidden, { recursive: true });
+      writeFileSync(join(hidden, torn), 'torn');
+      symlinkSync(join(root, 'hidden'), join(ws, 'blobs', aa));
+    } else {
+      const hidden = join(root, 'hidden');
+      mkdirSync(hidden, { recursive: true });
+      writeFileSync(join(hidden, torn), 'torn');
+      mkdirSync(join(ws, 'blobs', aa));
+      symlinkSync(hidden, join(ws, 'blobs', aa, bb));
+    }
     makeFactsDb();
     const r = verify();
-    expect(r.out).toContain(`FAIL: ${torn.slice(0, 2)} is a symlink, not a shard directory`);
+    const rel = level === 'first' ? aa : `${aa}/${bb}`;
+    expect(r.out).toContain(`FAIL: ${rel} is a symlink, not a shard directory`);
     expect(r.status).toBe(1);
   });
 
-  it('names an unreadable blob in a FAIL line and keeps hashing the rest', () => {
-    if (process.getuid?.() === 0) return; // root reads mode-000 files anyway
-    const locked = makeBlob('locked bytes');
-    const fine = makeBlob('fine bytes', { ageSeconds: 100 });
-    chmodSync(locked.file, 0o000);
-    makeFactsDb();
-    try {
-      const r = verify();
-      expect(r.out).toContain(`FAIL: ${locked.sha.slice(0, 12)} cannot be read: EACCES`);
-      expect(r.out).toContain(`${fine.sha.slice(0, 12)} hash matches`);
-      expect(r.out).not.toMatch(/\n\s+at /); // no stack trace
-      expect(r.status).toBe(1);
-    } finally {
-      chmodSync(locked.file, 0o644);
-    }
-  });
+  it.skipIf(process.getuid?.() === 0)(
+    'names an unreadable blob in a FAIL line and keeps hashing the rest',
+    () => {
+      // Skipped as root, which reads mode-000 files anyway.
+      const locked = makeBlob('locked bytes');
+      const fine = makeBlob('fine bytes', { ageSeconds: 100 });
+      chmodSync(locked.file, 0o000);
+      makeFactsDb();
+      try {
+        const r = verify();
+        expect(r.out).toContain(`FAIL: ${locked.sha.slice(0, 12)} cannot be read: EACCES`);
+        expect(r.out).toContain(`${fine.sha.slice(0, 12)} hash matches`);
+        expect(r.out).not.toMatch(/\n\s+at /); // no stack trace
+        expect(r.status).toBe(1);
+      } finally {
+        chmodSync(locked.file, 0o644);
+      }
+    },
+  );
 
-  it.each(['0', '00', 'abc', '-5', ''])('refuses MAX_BLOBS=%j instead of hashing nothing', (v) => {
+  it.each(['0', '00', 'abc', '-5'])('refuses MAX_BLOBS=%j instead of hashing nothing', (v) => {
     const b = makeBlob('bytes');
     writeFileSync(b.file, 'torn');
     makeFactsDb();
     const r = verify({ MAX_BLOBS: v });
-    if (v === '') {
-      // Unset-equivalent: the default applies and the torn blob is caught.
-      expect(r.out).toContain('content does not match its name');
-    } else {
-      expect(r.out).toContain('MAX_BLOBS must be a positive integer');
-    }
+    expect(r.out).toContain('MAX_BLOBS must be a positive integer');
+    expect(r.status).toBe(1);
+  });
+
+  it('an empty MAX_BLOBS means the default, which still catches a torn blob', () => {
+    const b = makeBlob('bytes');
+    writeFileSync(b.file, 'torn');
+    makeFactsDb();
+    const r = verify({ MAX_BLOBS: '' });
+    expect(r.out).toContain('hashing the newest 1');
+    expect(r.out).toContain('content does not match its name');
     expect(r.status).toBe(1);
   });
 

@@ -135,8 +135,10 @@ const PINNED_ROOT = '/var/lib/ax-next/workspaces/blobs';
 const FS_RENDERS: ReadonlyArray<readonly [label: string, args: readonly string[]]> = [
   ['default render', []],
   ['gke-values.yaml', ['-f', GKE_VALUES, '--set', 'sandbox.filestore.server=10.9.8.7']],
-  // What GKE prod's release carries into a `--reuse-values` upgrade (TASK-996):
-  // the retired `workspace.backend=local` must not change where blobs live.
+  // The retired key GKE prod's release still carries (TASK-996), layered on
+  // this chart's defaults: `workspace.backend=local` must not change where blobs
+  // live. (A real `--reuse-values` render uses the OLD release's values instead
+  // of these defaults; this fixture does not model that.)
   [
     'old GKE release values (workspace.backend=local)',
     [
