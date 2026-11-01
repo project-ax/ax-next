@@ -22,6 +22,7 @@ import { createCsrfSubscriber } from './csrf.js';
 import {
   HttpRegisterRouteOutputSchema,
   MAX_BODY_BYTES,
+  type BodyStreamFailureCode,
   type ClearCookieOptions,
   type HttpMethod,
   type HttpRegisterRouteInput,
@@ -30,6 +31,7 @@ import {
   type HttpRequestEvent,
   type HttpResponse,
   type HttpResponseSentEvent,
+  type SizedBodyOptions,
   type StreamingResponse,
   type StreamingResponseOptions,
 } from './types.js';
@@ -637,6 +639,24 @@ function readBodyCapped(req: http.IncomingMessage, maxBytes: number): Promise<Bu
   });
 }
 
+// Fixed text: no path, filename or byte of the body ever lands in one.
+const BODY_STREAM_MESSAGES: Readonly<Record<BodyStreamFailureCode, string>> = {
+  'client-gone': 'the client went away before the body was sent',
+  'source-failed': 'the body source failed',
+  'length-mismatch': 'the body source did not add up to contentLength',
+};
+
+/** A `bodyStream()` rejection. Callers read `code` (duck-typed across plugins). */
+class BodyStreamError extends Error {
+  readonly code: BodyStreamFailureCode;
+
+  constructor(code: BodyStreamFailureCode, cause?: unknown) {
+    super(BODY_STREAM_MESSAGES[code], cause === undefined ? undefined : { cause });
+    this.name = 'BodyStreamError';
+    this.code = code;
+  }
+}
+
 class ResponseWriter {
   finished = false;
   /**
@@ -645,6 +665,11 @@ class ResponseWriter {
    * respond" fallback uses this together with `finished` so a handler
    * that opens a stream and then returns (the SSE pattern: register
    * subscriptions, await close async) doesn't trip the 500 fallback.
+   *
+   * `bodyStream()` leaves it false. Its caller awaits the whole body, so the
+   * handler returning is the end of the response. It also keeps `handle()`'s
+   * error path from calling `res.end()` on a sized body, which would pass a
+   * truncated download off as a whole one.
    */
   streaming = false;
   statusCode = 200;
@@ -723,6 +748,25 @@ class ResponseWriter {
       stream: (opts?: StreamingResponseOptions) => {
         if (this.finished) throw new Error('response already finished');
         return this.openStream(opts);
+      },
+      // `async`, so every refusal below is a rejection, never a throw.
+      bodyStream: async (source: AsyncIterable<Uint8Array>, opts: SizedBodyOptions) => {
+        if (this.finished) throw new Error('response already finished');
+        // Checked BEFORE `finished` flips, so a refused call leaves the
+        // handler free to answer some other way.
+        const contentLength: unknown = opts?.contentLength;
+        if (
+          typeof contentLength !== 'number' ||
+          !Number.isSafeInteger(contentLength) ||
+          contentLength < 0
+        ) {
+          throw new TypeError('bodyStream() needs contentLength to be a safe integer >= 0');
+        }
+        if (typeof source?.[Symbol.asyncIterator] !== 'function') {
+          throw new TypeError('bodyStream() needs an async-iterable source');
+        }
+        this.finished = true;
+        await this.sendSizedBody(source, contentLength);
       },
       setSignedCookie: (name: string, value: string, opts?: SignedCookieOptions) => {
         if (this.finished) throw new Error('response already finished');
@@ -838,6 +882,140 @@ class ResponseWriter {
         this.streamCloseCallbacks.push(handler);
       },
     };
+  }
+
+  /**
+   * The pump behind `bodyStream()` (contract on `HttpResponse.bodyStream`).
+   * The arguments are valid and `finished` is already set. Resolves on the
+   * response's 'finish'. On any failure it destroys the connection,
+   * releases the source, and rejects.
+   */
+  private async sendSizedBody(
+    source: AsyncIterable<Uint8Array>,
+    contentLength: number,
+  ): Promise<void> {
+    const res = this.res;
+    // Always ours: the framing on the wire and the byte count below must be
+    // the same number.
+    this.headers.set('content-length', String(contentLength));
+    if (!this.headers.has('content-type')) {
+      this.headers.set('content-type', 'application/octet-stream');
+    }
+
+    // Before end(), a 'close' can only mean the connection died. `destroyed`
+    // covers a close that happened before this listener existed.
+    let closed = false;
+    const onClose = (): void => {
+      closed = true;
+    };
+    res.on('close', onClose);
+    const clientGone = (): boolean => closed || res.destroyed;
+
+    // Deferred to the first byte (or the end, for an empty body), so a
+    // source that fails before producing anything puts nothing on the wire.
+    let headWritten = false;
+    const writeHeadOnce = (): void => {
+      if (headWritten) return;
+      headWritten = true;
+      this.writeHead();
+    };
+
+    const it = source[Symbol.asyncIterator]();
+    try {
+      // Bytes accepted from the source: those written plus the held chunk.
+      let accepted = 0;
+      let held: Uint8Array | undefined;
+      for (;;) {
+        if (clientGone()) throw new BodyStreamError('client-gone');
+        let step: IteratorResult<Uint8Array>;
+        try {
+          step = await it.next();
+        } catch (err) {
+          throw new BodyStreamError('source-failed', err);
+        }
+        if (step.done === true) break;
+        if (clientGone()) throw new BodyStreamError('client-gone');
+        const chunk: unknown = step.value;
+        // A string's length is not its byte length, so anything but bytes
+        // would put the accounting and the wire out of step.
+        if (!(chunk instanceof Uint8Array)) {
+          throw new BodyStreamError(
+            'source-failed',
+            new TypeError('bodyStream() source yielded something that is not a Uint8Array'),
+          );
+        }
+        if (chunk.byteLength === 0) continue;
+        // Refused whole: none of a chunk that would overrun is written.
+        if (accepted + chunk.byteLength > contentLength) {
+          throw new BodyStreamError('length-mismatch');
+        }
+        accepted += chunk.byteLength;
+        if (accepted === contentLength) {
+          // The final chunk waits until the source says it is done.
+          held = chunk;
+          continue;
+        }
+        writeHeadOnce();
+        if (!res.write(chunk)) await this.drainOrClose();
+      }
+      if (accepted !== contentLength) throw new BodyStreamError('length-mismatch');
+      if (clientGone()) throw new BodyStreamError('client-gone');
+      writeHeadOnce();
+      await this.endAndAwaitFinish(held);
+    } catch (err) {
+      // Destroy, never end(). Ending would close the body as if it were
+      // whole: a short one reads as a complete (wrong) file to any client
+      // that does not count bytes, and over keep-alive the socket would sit
+      // parked for a next request. Destroyed, the client is left holding
+      // fewer bytes than Content-Length, which every client treats as a
+      // failed download.
+      res.destroy();
+      try {
+        await it.return?.();
+      } catch {
+        // The source's own cleanup failing does not change why we stopped.
+      }
+      throw err;
+    } finally {
+      res.off('close', onClose);
+    }
+  }
+
+  /** Resolves on 'drain' (room again) or 'close' (no point waiting). */
+  private drainOrClose(): Promise<void> {
+    const res = this.res;
+    return new Promise<void>((resolve) => {
+      if (res.destroyed) {
+        resolve();
+        return;
+      }
+      const done = (): void => {
+        res.off('drain', done);
+        res.off('close', done);
+        resolve();
+      };
+      res.on('drain', done);
+      res.on('close', done);
+    });
+  }
+
+  /** `res.end(last)`, resolving on 'finish'; a 'close' first is client-gone. */
+  private endAndAwaitFinish(last: Uint8Array | undefined): Promise<void> {
+    const res = this.res;
+    return new Promise<void>((resolve, reject) => {
+      const onFinish = (): void => {
+        res.off('close', onEarlyClose);
+        resolve();
+      };
+      const onEarlyClose = (): void => {
+        res.off('finish', onFinish);
+        reject(new BodyStreamError('client-gone'));
+      };
+      res.once('finish', onFinish);
+      res.once('close', onEarlyClose);
+      if (last === undefined) res.end();
+      else res.end(last);
+    });
   }
 
   private flush(contentType: string, body: string): void {

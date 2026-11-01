@@ -13,6 +13,8 @@ export {
   type ClearCookieOptions,
   type StreamingResponse,
   type StreamingResponseOptions,
+  type SizedBodyOptions,
+  type BodyStreamFailureCode,
 } from './types.js';
 export type { SignedCookieOptions } from './cookies.js';
 // signCookieValue / verifyCookieValue are exposed for cross-package tests

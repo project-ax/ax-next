@@ -50,9 +50,10 @@ export type ClearCookieOptions = Pick<
 >;
 
 /**
- * Response adapter. Single-shot: any of `text`/`json`/`end`/`redirect`/
- * `stream` finishes the response; a second call throws. `status` defaults
- * to 200, `header` names are lowercased, `redirect` defaults to 302.
+ * Response adapter. Single-shot: any of `text`/`json`/`body`/`end`/
+ * `redirect`/`stream`/`bodyStream` finishes the response; a second call
+ * throws (`bodyStream` rejects). `status` defaults to 200, `header` names
+ * are lowercased, `redirect` defaults to 302.
  *
  * `setSignedCookie` / `clearCookie` append a Set-Cookie header with the
  * locked defaults (HttpOnly, SameSite=Lax, Path=/). Secure is derived
@@ -87,7 +88,62 @@ export interface HttpResponse {
    * `text/event-stream; charset=utf-8`.
    */
   stream(opts?: StreamingResponseOptions): StreamingResponse;
+  /**
+   * Send a body of KNOWN length, pulled from `source` (a file read in
+   * ranges, say). Await it: it settles when the body is over, either way.
+   *
+   * It refuses with a TypeError, before doing anything else, unless
+   * `contentLength` is a safe integer >= 0 and `source` is async-iterable.
+   * A refusal leaves the response open, so the handler can still answer,
+   * and leaves the source untouched.
+   *
+   * Headers: `content-length` is always `contentLength`, over any earlier
+   * `header()`. `content-type` defaults to `application/octet-stream`, and an
+   * earlier `header()` wins. Nothing else is added (none of `stream()`'s SSE
+   * headers). The head goes out with the first byte, or at the end for an
+   * empty body, so a source that fails before its first byte sends nothing.
+   *
+   * The source is pulled only when the socket has room (backpressure), so a
+   * slow client costs about one chunk of memory here, not the whole body.
+   * Empty chunks are skipped. Do not change a chunk after yielding it.
+   *
+   * The chunk that completes `contentLength` is held until the source says
+   * it is done. So the source can still fail the body on its last pull, for
+   * example with a final "is the file unchanged?" check.
+   *
+   * A failure never ends the response cleanly. The connection is destroyed,
+   * so the client holds fewer bytes than Content-Length and knows the
+   * download broke. Then the source iterator's `return()` is awaited (its
+   * errors are swallowed), and the promise rejects with an Error whose
+   * `code` is a {@link BodyStreamFailureCode}:
+   * - `'source-failed'`: the source threw (that error is the `cause`), or it
+   *   yielded something that is not a Uint8Array.
+   * - `'length-mismatch'`: the source ran past `contentLength` (none of the
+   *   excess is written) or finished short of it.
+   * - `'client-gone'`: the connection closed first.
+   *
+   * Anything else, such as a header value Node refuses when the head is
+   * written, gets the same teardown and rejects with that error as-is.
+   *
+   * One race goes unreported: a client that leaves while the final chunk is
+   * being flushed can still count as sent, because Node reports the response
+   * finished anyway. That changes nothing for the client, which still holds
+   * fewer bytes than Content-Length.
+   */
+  bodyStream(source: AsyncIterable<Uint8Array>, opts: SizedBodyOptions): Promise<void>;
 }
+
+/**
+ * Options for `HttpResponse.bodyStream()`. There is no `contentType`: set it
+ * with `header()` beforehand.
+ */
+export interface SizedBodyOptions {
+  /** The body's exact length in bytes, sent as Content-Length. A safe integer >= 0. */
+  contentLength: number;
+}
+
+/** The `code` on a `bodyStream()` rejection. See `HttpResponse.bodyStream`. */
+export type BodyStreamFailureCode = 'client-gone' | 'source-failed' | 'length-mismatch';
 
 /**
  * Options for `HttpResponse.stream()`. `contentType` overrides the
@@ -203,7 +259,8 @@ export interface HttpRequestEvent {
 
 /**
  * Subscriber payload for `http:response-sent`, fired after the handler
- * completes (success OR error). Observation-only.
+ * completes (success OR error). Observation-only. For `stream()` and
+ * `bodyStream()` responses, `durationMs` spans the whole body.
  */
 export interface HttpResponseSentEvent {
   status: number;
