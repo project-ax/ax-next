@@ -107,7 +107,7 @@ export async function trackGeneratedFiles(opts: {
   admit: (call: ToolCall) => Promise<void>;
   /** Reports the attached chip as that call's outcome (tool.post-call). */
   attached: (call: ToolCall, chip: AgentFileBlock) => Promise<void>;
-  warn: () => void;
+  warn: (reason: string) => void; // as built: a reason code, never a path
 }): Promise<GeneratedFiles>; // GeneratedFiles.collect(alreadyPublished) unchanged
 ```
 
@@ -120,12 +120,12 @@ export async function trackGeneratedFiles(opts: {
 
 **`collect`:** for each new key:
 1. `call = { id: randomUUID(), name: 'artifact_publish', input: { path: join(root, rel) } }`
-2. `await admit(call)`
-3. `chip = await agentFileReference(root, rel)`
+2. `chip = await agentFileReference(root, rel)` (as built, after review: the reference comes BEFORE the gate, so a file that can never be a chip never parks an approval)
+3. `await admit(call)`
 4. `await attached(call, chip)`
 5. push the chip.
 
-Any throw marks the batch failed (existing `warn`, existing text copy). Explicit-publish dedup (`alreadyPublished`) and the baseline fail-closed path are unchanged.
+Any throw marks the batch failed. As built: `warn(reason)` gets a code (`gate-refused`, `unaddressable-name`, `not-a-regular-file`, `outside-root`, `error`), never a path; an unaddressable name gets its own "ask the agent to rename it" note, and other failures keep the existing text. Explicit-publish dedup (`alreadyPublished`) and the baseline fail-closed path are unchanged.
 
 **`run-runner.ts`:**
 - Delete `publishGeneratedFile`.
