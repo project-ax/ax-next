@@ -371,6 +371,35 @@ describe('agent files, end to end through the bus', () => {
     expect((await mine(b, 'alice')).workspaceBytes).toBe(5 * MB);
   });
 
+  // TASK-1012: an agent-file chip points at the file in /files and is charged
+  // once, as Agent files. Deleting the file shows up as a smaller measure at the
+  // next assistant turn end, and the "getting full" notice goes away with it.
+  it('(TASK-1012) deleting an agent file lowers the total by its full size and clears the warning at the next turn end', async () => {
+    const usage = { value: 60 * MB };
+    const b = await boot(agentFiles(usage));
+    // 64 MB is the smallest limit the setting allows; the default 80% warning
+    // line is 51.2 MB.
+    await setLimitMb(b, 64);
+    const alice = b.harness.ctx({ userId: 'alice', agentId: 'agt_1' });
+
+    expect(await turnEnd(b, alice, 'assistant')).toMatchObject({ rejected: false });
+    await b.plugin.drain();
+    const before = await mine(b, 'alice');
+    expect(before).toMatchObject({
+      status: 'near-limit',
+      workspaceBytes: 60 * MB,
+      fileBytes: 0,
+      usedBytes: 60 * MB,
+    });
+
+    usage.value = 4 * MB;
+    expect(await turnEnd(b, alice, 'assistant')).toMatchObject({ rejected: false });
+    await b.plugin.drain();
+    const after = await mine(b, 'alice');
+    expect(after).toMatchObject({ status: 'ok', workspaceBytes: 4 * MB, fileBytes: 0 });
+    expect(before.usedBytes - after.usedBytes).toBe(56 * MB);
+  });
+
   it('GET /settings/storage counts agent files under workspaceBytes', async () => {
     const b = await boot(agentFiles({ value: 5 * MB }));
     const alice = b.harness.ctx({ userId: 'alice', agentId: 'agt_1' });
