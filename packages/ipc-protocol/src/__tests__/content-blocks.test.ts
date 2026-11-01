@@ -1,9 +1,24 @@
 import { describe, expect, it } from 'vitest';
 import {
+  AGENT_FILE_PATH_MAX,
+  AgentFileBlockSchema,
+  AgentFilePathSchema,
   AttachmentBlockSchema,
   ContentBlockSchema,
+  agentFileBlock,
   attachmentBlockFromArtifact,
+  isAgentFilePath,
 } from '../content-blocks.js';
+
+/**
+ * A key exactly `n` UTF-16 units long whose every segment is a legal name
+ * (99 units, then the remainder), so the only rule it can break is the
+ * total length.
+ */
+function keyOfLength(n: number): string {
+  const head = `${'k'.repeat(99)}/`.repeat(40);
+  return head + 'k'.repeat(n - head.length);
+}
 
 describe('ContentBlock schema', () => {
   it('parses a text block', () => {
@@ -239,6 +254,114 @@ describe('ContentBlock schema', () => {
       ['a string sizeBytes', { artifactId: '0123456789abcdef', displayName: 'r.pdf', mediaType: 'application/pdf', sizeBytes: '3' }],
     ])('returns null for %s', (_label, value) => {
       expect(attachmentBlockFromArtifact(value)).toBeNull();
+    });
+  });
+
+  // TASK-1012: a file the agent created in its files, attached by its key
+  // there. The key rule must match what the download route will accept
+  // (channel-web's `workspaceFilePath`); the parity test lives in
+  // channel-web because that function needs `node:path`.
+  describe('agent_file variant', () => {
+    const valid = {
+      type: 'agent_file',
+      path: 'docs/report.pdf',
+      mediaType: 'application/pdf',
+      sizeBytes: 12,
+    };
+
+    it.each([
+      'docs/report.pdf',
+      '.gitignore',
+      'reports/Q3 plan #1 (50%).pdf',
+      '📊 chart.png',
+    ])('accepts the key %j', (path) => {
+      expect(AgentFileBlockSchema.parse({ ...valid, path })).toStrictEqual({ ...valid, path });
+      expect(isAgentFilePath(path)).toBe(true);
+    });
+
+    it.each([
+      ['an empty key', ''],
+      ['an absolute path', '/etc/passwd'],
+      ['a leading traversal', '../x'],
+      ['an inner traversal', 'a/../b'],
+      ['an empty segment', 'a//b'],
+      ['a trailing slash', 'a/'],
+      ['a leading dot segment', './a'],
+      ['an inner dot segment', 'a/./b'],
+      ['a backslash', 'a\\b'],
+      ['a colon', 'a:b'],
+      ['a double dot inside a name', 'a..b'],
+      ['a NUL byte', 'a\u0000b'],
+      ['a leading space', ' a'],
+      ['a trailing dot', 'a.'],
+      ['a trailing space', 'a '],
+      ['a lone high surrogate', 'a\uD800b'],
+      ['a lone low surrogate', 'a\uDC00b'],
+      ['a 256-unit segment', 's'.repeat(256)],
+      ['a 4097-unit key', keyOfLength(AGENT_FILE_PATH_MAX + 1)],
+    ])('refuses a key with %s', (_label, path) => {
+      expect(isAgentFilePath(path)).toBe(false);
+      expect(AgentFilePathSchema.safeParse(path).success).toBe(false);
+      expect(AgentFileBlockSchema.safeParse({ ...valid, path }).success).toBe(false);
+      expect(ContentBlockSchema.safeParse({ ...valid, path }).success).toBe(false);
+    });
+
+    it('accepts a key at the limits: a 255-unit segment and a 4096-unit key', () => {
+      expect(AGENT_FILE_PATH_MAX).toBe(4096);
+      for (const path of ['s'.repeat(255), `d/${'s'.repeat(255)}`, keyOfLength(AGENT_FILE_PATH_MAX)]) {
+        expect(isAgentFilePath(path)).toBe(true);
+        expect(AgentFileBlockSchema.safeParse({ ...valid, path }).success).toBe(true);
+      }
+    });
+
+    it('refuses extra fields rather than stripping them (.strict())', () => {
+      // No `filename`: the label is derived on the host from the key, so a
+      // chip cannot show one name and download another.
+      expect(AgentFileBlockSchema.safeParse({ ...valid, filename: 'report.pdf' }).success).toBe(false);
+      expect(AgentFileBlockSchema.safeParse({ ...valid, attachmentId: '0123456789abcdef' }).success).toBe(false);
+      expect(ContentBlockSchema.safeParse({ ...valid, filename: 'report.pdf' }).success).toBe(false);
+    });
+
+    it.each([
+      ['an empty mediaType', { mediaType: '' }],
+      ['a 256-character mediaType', { mediaType: 'm'.repeat(256) }],
+      ['a negative sizeBytes', { sizeBytes: -1 }],
+      ['a fractional sizeBytes', { sizeBytes: 1.5 }],
+      ['a string sizeBytes', { sizeBytes: '12' }],
+      ['a missing path', { path: undefined }],
+      ['a missing mediaType', { mediaType: undefined }],
+      ['a missing sizeBytes', { sizeBytes: undefined }],
+    ])('refuses %s', (_label, patch) => {
+      expect(AgentFileBlockSchema.safeParse({ ...valid, ...patch }).success).toBe(false);
+    });
+
+    it('accepts a 255-character mediaType and a zero sizeBytes', () => {
+      expect(
+        AgentFileBlockSchema.safeParse({ ...valid, mediaType: 'm'.repeat(255), sizeBytes: 0 }).success,
+      ).toBe(true);
+    });
+
+    it('parses through ContentBlockSchema', () => {
+      expect(ContentBlockSchema.safeParse(valid).success).toBe(true);
+      expect(ContentBlockSchema.parse(valid)).toStrictEqual(valid);
+    });
+  });
+
+  describe('agentFileBlock', () => {
+    it('builds the block from its fields', () => {
+      expect(
+        agentFileBlock({ path: 'reports/q3.pdf', mediaType: 'application/pdf', sizeBytes: 7 }),
+      ).toStrictEqual({ type: 'agent_file', path: 'reports/q3.pdf', mediaType: 'application/pdf', sizeBytes: 7 });
+    });
+
+    it.each([
+      ['a name the Files tab cannot address', { path: 'a:b', mediaType: 'text/plain', sizeBytes: 1 }],
+      ['a traversal', { path: '../x', mediaType: 'text/plain', sizeBytes: 1 }],
+      ['a non-string path', { path: 42, mediaType: 'text/plain', sizeBytes: 1 }],
+      ['an empty mediaType', { path: 'a.txt', mediaType: '', sizeBytes: 1 }],
+      ['a negative size', { path: 'a.txt', mediaType: 'text/plain', sizeBytes: -1 }],
+    ])('returns null for %s', (_label, value) => {
+      expect(agentFileBlock(value)).toBeNull();
     });
   });
 });

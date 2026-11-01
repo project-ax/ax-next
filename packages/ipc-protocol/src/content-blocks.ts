@@ -197,6 +197,113 @@ export function attachmentBlockFromArtifact(value: unknown): AttachmentBlock | n
   return parsed.success ? parsed.data : null;
 }
 
+/** Longest key an `agent_file` block may carry (UTF-16 code units). */
+export const AGENT_FILE_PATH_MAX = 4096;
+
+/** Longest single name in a key: what `safePath` keeps of one segment. */
+const AGENT_FILE_SEGMENT_MAX = 255;
+const LEADING_SPACE = /^\s/;
+const TRAILING_SPACE_OR_DOT = /[\s.]$/;
+
+/**
+ * Whether `key` is a key the Files tab can address, so a runner never
+ * attaches a chip that can only fail to download.
+ *
+ * Mirrors channel-web's `workspaceFilePath` (the path check on the agent
+ * files routes), which runs v1's `safePath` and refuses anything it would
+ * have to change: no NUL; split on `/`, every
+ * segment is 1–255 UTF-16 units, contains no `\`, `:` or `..`, does not
+ * start with whitespace, and does not end in whitespace or a dot (a leading
+ * dot is fine: `.gitignore`). That function needs `node:path` and this
+ * package must stay browser-safe, so the rules are restated here, and a
+ * parity test in channel-web keeps the two from drifting.
+ *
+ * Two rules are this protocol's own: a key is at most `AGENT_FILE_PATH_MAX`
+ * units, and it must survive `encodeURIComponent` — the chip's URL builder
+ * would throw on a lone surrogate.
+ *
+ * Loosen only, never tighten. Stored transcripts are re-validated when they
+ * are read, and a block that fails `AgentFileBlockSchema` drops its whole
+ * turn from the history. A key that passed yesterday must keep passing, so
+ * this rule (and `safePath`, which the parity test pins it to) may only be
+ * relaxed. Tightening it needs a degrade step first, the way conversations
+ * runs `degradeLegacyAttachmentBlocks` over old attachment blocks.
+ */
+export function isAgentFilePath(key: string): boolean {
+  if (key.length === 0 || key.length > AGENT_FILE_PATH_MAX) return false;
+  if (key.includes('\u0000')) return false;
+  try {
+    encodeURIComponent(key);
+  } catch {
+    return false;
+  }
+  for (const segment of key.split('/')) {
+    if (segment.length === 0 || segment.length > AGENT_FILE_SEGMENT_MAX) return false;
+    if (segment.includes('\\') || segment.includes(':') || segment.includes('..')) return false;
+    if (LEADING_SPACE.test(segment) || TRAILING_SPACE_OR_DOT.test(segment)) return false;
+  }
+  return true;
+}
+
+/** An `agent_file` key; the rules are `isAgentFilePath`'s. */
+export const AgentFilePathSchema = z
+  .string()
+  .min(1)
+  .max(AGENT_FILE_PATH_MAX)
+  .refine(isAgentFilePath, { message: 'not a key the Files tab can address' });
+
+/**
+ * A file the agent created in its files during a turn, attached by
+ * reference (TASK-1012). The chip downloads the file itself, live, by its
+ * key: nothing is copied into the blob store, so the file is charged once.
+ *
+ * `path` is the file's key relative to the agent's files root: the same key,
+ * under the same field name, that the Files tab lists it by
+ * (`UserFileEntry.path`). It is never a sandbox path, never starts at a
+ * mount point, and names no export or bucket (Invariant I1). The provider
+ * behind the agent files may be a mount, a bucket, or a table. Unlike
+ * `attachment`, whose bytes are a copy addressed by id, this block names
+ * the one place the bytes live (I4).
+ *
+ * The block names no agent: the host derives it from the conversation the
+ * turn belongs to, never from the block or the client. It has no `filename`
+ * either: the host derives the label from the key's last segment, so a chip
+ * cannot show one name and download another. `.strict()` refuses a block
+ * that carries either, rather than stripping it. `mediaType` and
+ * `sizeBytes` describe the file as the turn left it, for display.
+ *
+ * Only a runner's `event.turn-end` may carry one. `POST /api/chat/messages`
+ * refuses a browser-sent block.
+ */
+export const AgentFileBlockSchema = z
+  .object({
+    type: z.literal('agent_file'),
+    path: AgentFilePathSchema,
+    mediaType: z.string().min(1).max(ATTACHMENT_MEDIA_TYPE_MAX),
+    sizeBytes: z.number().int().nonnegative(),
+  })
+  .strict();
+export type AgentFileBlock = z.infer<typeof AgentFileBlockSchema>;
+
+/**
+ * The `agent_file` block for these fields, or `null` when any of them fails
+ * the block schema. A name the Files tab cannot address is one such case,
+ * so a caller can say so instead of attaching a chip that always fails.
+ */
+export function agentFileBlock(v: {
+  path: unknown;
+  mediaType: unknown;
+  sizeBytes: unknown;
+}): AgentFileBlock | null {
+  const parsed = AgentFileBlockSchema.safeParse({
+    type: 'agent_file',
+    path: v.path,
+    mediaType: v.mediaType,
+    sizeBytes: v.sizeBytes,
+  });
+  return parsed.success ? parsed.data : null;
+}
+
 /**
  * The most content blocks one `event.turn-end`, or one `AgentMessage`, may
  * carry on the IPC wire (TASK-945). Runner data is untrusted. An array over
@@ -230,5 +337,6 @@ export const ContentBlockSchema = z.discriminatedUnion('type', [
   ImageBlockSchema,
   AttachmentRefBlockSchema,
   AttachmentBlockSchema,
+  AgentFileBlockSchema,
 ]);
 export type ContentBlock = z.infer<typeof ContentBlockSchema>;

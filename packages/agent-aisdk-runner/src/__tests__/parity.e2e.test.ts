@@ -532,22 +532,10 @@ describe('aisdk runner — parity', () => {
   // it; a configuration-looking name (`.ax/SOUL.md`) is an ordinary file there
   // and reaches the host's gate exactly as the model wrote it (identity is
   // written with `update_identity`, never a file); and a new visible file is
-  // attached to the turn by id.
+  // attached to the turn by its key in the agent's files (TASK-1012), with no
+  // copy into the blob store.
   it('writes outputs into the home, keeps a configuration-looking name as an ordinary file there, and attaches the new deliverable', async () => {
     toolCatalog = [{ name: 'artifact_publish', executesIn: 'sandbox', inputSchema: {} }];
-    const originalCall = fakeClient.call.getMockImplementation()!;
-    fakeClient.call.mockImplementation(async (action: string, payload: unknown) => {
-      if (action === 'artifact.publish') return { artifactId: 'artifact-1', downloadUrl: 'ax://artifact/artifact-1' };
-      return originalCall(action, payload);
-    });
-    const originalUpload = fakeClient.callBinaryUpload.getMockImplementation()!;
-    fakeClient.callBinaryUpload.mockImplementation(async (action: string, payload: unknown, body: Buffer) => {
-      if (action === 'blob.put') {
-        const bytes = payload as Buffer;
-        return { sha256: createHash('sha256').update(bytes).digest('hex'), size: bytes.length };
-      }
-      return originalUpload(action, payload, body);
-    });
     scriptedModel.mockReturnValue(modelReplaying([
       toolStep('Write', { file_path: 'calculator.html', content: '<p>2</p>' }),
       toolStep('Write', { file_path: '.ax/SOUL.md', content: 'Identity' }),
@@ -570,11 +558,13 @@ describe('aisdk runner — parity', () => {
     });
     // Bash ran in the home (`pwd`).
     expect(JSON.stringify(turnEnds()[0])).toContain(homeDir);
-    // The chip names the artifact by id; its sandbox path stays in the sandbox.
+    // The chip names the file by its key in the agent's files; its sandbox
+    // path stays in the sandbox, and no byte is copied out.
     expect(turnEnds()[0]?.contentBlocks).toContainEqual({
-      type: 'attachment', attachmentId: 'artifact-1', filename: 'calculator.html',
+      type: 'agent_file', path: 'calculator.html',
       mediaType: 'application/octet-stream', sizeBytes: 8,
     });
+    expect(calls.some((c) => c.action === 'blob.put' || c.action === 'artifact.publish')).toBe(false);
   });
 
   it('routes a model tool call through tool.pre-call and back as a tool result', async () => {

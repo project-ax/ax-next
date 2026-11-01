@@ -921,7 +921,7 @@ describe('@ax/channel-web server plugin (integration)', () => {
         {
           hook: 'conversations:get-metadata',
           degradation:
-            'approvals never stream the continuation live (the turn still runs; it renders on the next read)',
+            'approvals never stream the continuation live (the turn still runs; it renders on the next read), and a chat file chip download (GET /api/workspace/conversations/:conversationId/download/user-files/*) answers 503 agent-unavailable',
         },
         {
           hook: 'conversations:bind-session',
@@ -1064,7 +1064,8 @@ describe('@ax/channel-web server plugin (integration)', () => {
         },
         {
           hook: 'sandbox:read-user-file-range',
-          degradation: 'Files tab downloads answer 503 user-files-unavailable (previews still work)',
+          degradation:
+            'Files tab downloads and chat file chip downloads answer 503 user-files-unavailable (previews still work)',
         },
       ],
       subscribes: ['chat:stream-chunk', 'chat:phase', 'chat:turn-end', 'chat:turn-error', 'chat:permission-request', 'memory:conversation-activity'],

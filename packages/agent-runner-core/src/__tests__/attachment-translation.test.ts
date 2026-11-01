@@ -351,4 +351,16 @@ describe('translateContentBlocks', () => {
       { type: 'text', text: '[runner: attachment_ref att_123abc not committed]' },
     ]);
   });
+
+  // TASK-1012: `agent_file` is runner OUTPUT (a tool turn's chip). The host
+  // refuses it from the browser, so it should never arrive in a message. If it
+  // does, the provider must never see the raw block: the Anthropic SDK refuses
+  // an unknown block type, which would fail the whole turn.
+  it('emits a defensive text mention, never the raw block, when an agent_file reaches the runner', async () => {
+    const out = await translate(
+      [{ type: 'agent_file', path: 'reports/q3.pdf', mediaType: 'application/pdf', sizeBytes: 10 }],
+      [],
+    );
+    expect(out).toEqual([{ type: 'text', text: '[runner: agent_file reference not expected in a message]' }]);
+  });
 });

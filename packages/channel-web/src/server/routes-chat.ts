@@ -49,7 +49,8 @@ import {
 //   2. parses + validates the body (PostMessageRequest, 1 MiB cap from
 //      http-server) → 400 on invalid-payload, 413 on oversize; a
 //      client-sent `attachment` block → 400 invalid-content-block (only a
-//      committed `attachment_ref` may become one, step 4.5).
+//      committed `attachment_ref` may become one, step 4.5), and so does a
+//      client-sent `agent_file` block (only a runner turn-end may carry one).
 //   3. ACL-gates the agent via agents:resolve → 403 forbidden, 404 not-found.
 //   4. get-or-creates the conversation:
 //        - conversationId === null → conversations:create
@@ -87,7 +88,8 @@ import {
 //     the orchestrator persists the message.
 //   - I5: zod-validates body, http-server enforces 1 MiB body cap, CSRF by
 //     subscriber, auth by gate. A stored `attachment` block only ever comes
-//     from attachments:commit, never from the request body.
+//     from attachments:commit, never from the request body; an `agent_file`
+//     block never comes from the request body at all.
 // ---------------------------------------------------------------------------
 
 const PLUGIN_NAME = '@ax/channel-web';
@@ -442,16 +444,26 @@ export function createChatRouteHandlers(deps: ChatRouteDeps) {
         return;
       }
 
-      // 2.5) Only step 4.5 may put an `attachment` block into a turn: it
-      // commits an `attachment_ref` through attachments:commit, which is
-      // what makes the id this person's file in this conversation. A
-      // client-sent `attachment` block skips that, so it is refused here —
-      // before the agent is resolved, a conversation is created or anything
-      // is committed. The browser never sends one; a request that does is
-      // crafted. (Readers re-check anyway — the download ACL answers a
-      // foreign id with a 404 — but a turn must not carry a file nobody
-      // committed.)
-      if (body.contentBlocks.some((block) => block.type === 'attachment')) {
+      // 2.5) Two block types are never the browser's to send, so they are
+      // refused here — before the agent is resolved, a conversation is
+      // created or anything is committed. The browser never sends either; a
+      // request that does is crafted.
+      //
+      // - `attachment`: only step 4.5 may put one into a turn. It commits an
+      //   `attachment_ref` through attachments:commit, which is what makes
+      //   the id this person's file in this conversation. (Readers re-check
+      //   anyway — the download ACL answers a foreign id with a 404 — but a
+      //   turn must not carry a file nobody committed.)
+      // - `agent_file` (TASK-1012): names a file the agent made during a
+      //   turn, and only the runner's `event.turn-end` may carry one. From
+      //   here it would store a file reference the agent never made in the
+      //   person's turn, and the orchestrator would hand the block to the
+      //   runner as if it were real.
+      if (
+        body.contentBlocks.some(
+          (block) => block.type === 'attachment' || block.type === 'agent_file',
+        )
+      ) {
         res.status(400).json({ error: 'invalid-content-block' });
         return;
       }

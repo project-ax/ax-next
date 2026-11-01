@@ -1210,6 +1210,87 @@ describe('channel-web agent-workspace BFF', () => {
     ]);
   });
 
+  it('(TASK-1012) draws an agent-file chip per key, beside published artifacts', async () => {
+    registerAuth({ id: 'u1', isAdmin: false });
+    conversations = [conv({ conversationId: 'c1', agentId: 'a1' })];
+    const agentFile = (path: string, sizeBytes = 10) =>
+      ({ type: 'agent_file', path, mediaType: 'application/pdf', sizeBytes });
+    const budget = {
+      artifactId: '0123456789abcdef0123456789abcdef',
+      downloadUrl: 'ax://artifact/0123456789abcdef0123456789abcdef',
+      path: 'reports/budget.csv',
+      displayName: 'budget.csv',
+      mediaType: 'text/csv',
+      sizeBytes: 128,
+      sha256: 'a'.repeat(64),
+    };
+    turnsByConversation.set('c1', [
+      {
+        turnId: 't1', turnIndex: 0, role: 'user',
+        contentBlocks: [
+          { type: 'text', text: 'Make files.' },
+          agentFile('forged/user.pdf'),
+        ],
+        createdAt: '2026-08-01T10:00:00.000Z',
+      },
+      {
+        turnId: 't2', turnIndex: 1, role: 'assistant',
+        contentBlocks: [{ type: 'tool_use', id: 'publish-1', name: 'artifact_publish', input: {} }],
+        createdAt: '2026-08-01T10:00:02.000Z',
+      },
+      {
+        turnId: 't3', turnIndex: 2, role: 'tool',
+        contentBlocks: [
+          agentFile('a/report.pdf'),
+          agentFile('b/report.pdf', 20),
+          agentFile('a/report.pdf'),
+          agentFile('../x'),
+          agentFile('evil‮fdp.exe'),
+          { type: 'tool_result', tool_use_id: 'publish-1', content: JSON.stringify(budget) },
+        ],
+        createdAt: '2026-08-01T10:00:03.000Z',
+      },
+      {
+        turnId: 't4', turnIndex: 3, role: 'tool',
+        contentBlocks: [agentFile('only/file.pdf')],
+        createdAt: '2026-08-01T10:00:04.000Z',
+      },
+    ]);
+
+    const h = makeWorkspaceHandlers({ bus, initCtx });
+    const { res, captured } = mkRes();
+    await h.agentDetail(mkReq({ agentId: 'a1' }), res);
+    const body = captured.body as { thread: Array<Record<string, unknown>> };
+
+    const user = body.thread.find((m) => m.kind === 'user')!;
+    expect(user.attachments).toBeUndefined();
+    const agents = body.thread.filter((m) => m.kind === 'agent');
+    expect(agents).toHaveLength(2);
+    const chips = agents[0]!.attachments as Array<Record<string, unknown>>;
+    expect(chips).toHaveLength(4);
+    expect(chips[0]).toStrictEqual({
+      attachmentId: null,
+      agentFilePath: 'a/report.pdf',
+      displayName: 'report.pdf',
+      mediaType: 'application/pdf',
+      sizeBytes: 10,
+    });
+    expect(chips[1]).toMatchObject({
+      attachmentId: null, agentFilePath: 'b/report.pdf', displayName: 'report.pdf', sizeBytes: 20,
+    });
+    expect(chips[2]).toMatchObject({ attachmentId: null, agentFilePath: 'evil‮fdp.exe' });
+    expect(String(chips[2]!.displayName)).not.toContain('‮');
+    expect(chips[3]).toStrictEqual({
+      attachmentId: '0123456789abcdef0123456789abcdef',
+      displayName: 'budget.csv',
+      mediaType: 'text/csv',
+      sizeBytes: 128,
+    });
+    expect(agents[1]!.attachments).toStrictEqual([
+      { attachmentId: null, agentFilePath: 'only/file.pdf', displayName: 'file.pdf', mediaType: 'application/pdf', sizeBytes: 10 },
+    ]);
+  });
+
   /*
     TASK-498 — THE FAILURE HAS TO SURVIVE THE RELOAD.
 
