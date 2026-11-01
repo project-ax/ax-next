@@ -53,9 +53,10 @@ export interface DiskQuotaStore {
   /**
    * The owner's agent files and uploads. Only those two kinds count: a
    * `workspace` row (the retired git tier) is not charged to anyone. Boot
-   * deletes those rows (migrations.ts), but an older replica still running
-   * during a rolling deploy can write one after that, so `topOwners` and
-   * `totals` filter to the same two kinds (`COUNTED_KINDS_SQL`).
+   * deletes those rows (migrations.ts). The host is single-replica
+   * (`Recreate`), so nothing should write one afterwards; `topOwners` and
+   * `totals` still filter to the same two kinds (`COUNTED_KINDS_SQL`), so a
+   * stray row (say, from a rollback and roll-forward) is never counted.
    */
   usageFor(ownerId: string): Promise<OwnerUsage>;
   /** The biggest owners first (by agent + file bytes, ties by id). */
