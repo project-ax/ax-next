@@ -2403,6 +2403,57 @@ describe('POST /api/chat/messages — attachment_ref handling', () => {
     expect(retry.status).toBe(202);
   });
 
+  it('(TASK-1012) refuses a client-sent agent_file block with 400 before resolving the agent', async () => {
+    const booted = await boot({
+      user: { id: 'userA', isAdmin: false },
+      allowedFor: new Set(['userA']),
+      includeAttachments: true,
+    });
+    harnesses.push(booted.harness);
+    const busCalls = vi.spyOn(booted.harness.bus, 'call');
+    const stored = await booted.harness.bus.call<unknown, { attachmentId: string }>(
+      'attachments:store-temp',
+      userCtx('userA'),
+      {
+        bytes: Buffer.from('hello pdf bytes'),
+        displayName: 'note.pdf',
+        mediaType: 'application/pdf',
+      },
+    );
+
+    // An `agent_file` block names a file the agent made during a turn; only
+    // the runner's `event.turn-end` may carry one. This one is well-formed
+    // (so the body parses), and it still is not the browser's to send: it
+    // would store a file reference the agent never made in the person's
+    // turn and hand the block to the runner as if it were real. It rides
+    // AFTER a legitimate ref, so a refusal that only fired mid-loop would
+    // already have committed the ref.
+    const r = await postMessage(booted.port, {
+      conversationId: null,
+      agentId: 'agt_test',
+      contentBlocks: [
+        { type: 'text', text: 'see this' },
+        { type: 'attachment_ref', attachmentId: stored.attachmentId },
+        {
+          type: 'agent_file',
+          path: 'reports/payroll.pdf',
+          mediaType: 'application/pdf',
+          sizeBytes: 10,
+        },
+      ],
+    });
+    expect(r.status).toBe(400);
+    expect(await r.json()).toEqual({ error: 'invalid-content-block' });
+
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    const hooks = busCalls.mock.calls.map(([hook]) => hook);
+    expect(hooks).not.toContain('agents:resolve');
+    expect(hooks).not.toContain('conversations:create');
+    expect(hooks).not.toContain('attachments:commit');
+    expect(booted.chatRunCaptures).toHaveLength(0);
+    expect(await countConversations()).toBe(0);
+  });
+
   it('returns 400 attachment-not-found for an unknown attachmentId', async () => {
     const booted = await boot({
       user: { id: 'userA', isAdmin: false },
