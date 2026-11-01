@@ -202,6 +202,7 @@ describe('runRunner — generated file attachment', () => {
     });
     const upload = vi.fn(async () => ({ sha256: 'a'.repeat(64), size: 6 }));
     fakeClient.callBinaryUpload = upload;
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
     const loop: Loop = { run: async ctx => {
       await fs.writeFile(path.join(root, 'report.txt'), 'report');
       await ctx.endTurn({
@@ -232,7 +233,11 @@ describe('runRunner — generated file attachment', () => {
         expect(first[1].contentBlocks.some((block: { type: string }) => block.type === 'agent_file')).toBe(false);
         expect(reported).toEqual([]);
       }
-    } finally { await fs.rm(root, { recursive: true, force: true }); }
+      // The warning carries the reason code, and only on a refusal.
+      const logs = stderr.mock.calls.map(c => String(c[0])).join('');
+      if (verdict === 'allow') expect(logs).not.toContain('could not attach a generated file');
+      else expect(logs).toContain('runner: could not attach a generated file (gate-refused)');
+    } finally { stderr.mockRestore(); await fs.rm(root, { recursive: true, force: true }); }
   });
 });
 

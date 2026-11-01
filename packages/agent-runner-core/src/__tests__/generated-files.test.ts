@@ -168,6 +168,18 @@ describe('generated files', () => {
     expect(warn.mock.calls).toEqual([['error']]);
   });
 
+  it('reports a failed collect-time scan with the existing note and an error reason', async () => {
+    const dir = await root();
+    const { tracker, admit, warn } = await track(dir);
+    await fs.rm(dir, { recursive: true, force: true });
+    expect(await tracker.collect()).toEqual([{
+      type: 'text',
+      text: 'We could not check for new files to attach. Ask the agent to attach the files again.',
+    }]);
+    expect(admit).not.toHaveBeenCalled();
+    expect(warn.mock.calls).toEqual([['error']]);
+  });
+
   it('recognizes only successful publish results, including SDK text blocks', () => {
     expect(publishedAttachments([
       { type: 'tool_use', id: 'p', name: 'mcp__ax-sandbox-tools__artifact_publish', input: {} },
@@ -216,13 +228,13 @@ describe('agentFileReference', () => {
     const dir = await root();
     await fs.writeFile(path.join(dir, 'real.txt'), 'real');
     await fs.symlink(path.join(dir, 'real.txt'), path.join(dir, 'link.txt'));
-    await expect(agentFileReference(dir, 'link.txt')).rejects.toThrow();
+    await expect(agentFileReference(dir, 'link.txt')).rejects.toMatchObject({ reason: 'not-a-regular-file' });
   });
 
   it('refuses a folder', async () => {
     const dir = await root();
     await fs.mkdir(path.join(dir, 'folder'));
-    await expect(agentFileReference(dir, 'folder')).rejects.toThrow();
+    await expect(agentFileReference(dir, 'folder')).rejects.toMatchObject({ reason: 'not-a-regular-file' });
   });
 
   it('refuses a file reached through a folder link that leaves the agent files', async () => {
@@ -230,7 +242,7 @@ describe('agentFileReference', () => {
     const outside = await root();
     await fs.writeFile(path.join(outside, 'secret.txt'), 'secret');
     await fs.symlink(outside, path.join(dir, 'escape'));
-    await expect(agentFileReference(dir, path.join('escape', 'secret.txt'))).rejects.toThrow();
+    await expect(agentFileReference(dir, path.join('escape', 'secret.txt'))).rejects.toMatchObject({ reason: 'outside-root' });
   });
 
   it('refuses a file that is gone', async () => {
@@ -242,7 +254,7 @@ describe('agentFileReference', () => {
     const dir = await root();
     for (const name of ['notes: q3.md', 'a..b.txt']) {
       await fs.writeFile(path.join(dir, name), 'x');
-      await expect(agentFileReference(dir, name)).rejects.toThrow();
+      await expect(agentFileReference(dir, name)).rejects.toMatchObject({ reason: 'unaddressable-name' });
     }
   });
 });
