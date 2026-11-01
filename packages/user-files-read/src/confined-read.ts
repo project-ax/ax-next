@@ -1,15 +1,18 @@
 import * as path from 'node:path';
-import type { ReadUserFilesOutput } from '@ax/sandbox-mount-protocol';
+import type { ReadUserFileRangeOutput, ReadUserFilesOutput } from '@ax/sandbox-mount-protocol';
 import {
   MAX_WALK_PARTS,
   WalkReadError,
+  assertWalkRange,
   readConfinedByWalk,
+  readRangeByWalk,
   splitRelPath,
 } from './walk-read.js';
 
 // ---------------------------------------------------------------------------
 // @ax/user-files-read — ONE confined reader for an agent's durable user-files
-// subtree, shared by every realization of `sandbox:read-user-files`.
+// subtree, shared by every realization of `sandbox:read-user-files` and
+// `sandbox:read-user-file-range`.
 //
 // This is a pure library: no manifest, no hooks, no @ax/core dependency. It
 // exists because the same path confinement was about to be written a THIRD
@@ -22,8 +25,19 @@ import {
 // WHAT IT IS NOT: it does not resolve mounts, call the bus, or know what an
 // agent is. It takes a root directory that the CALLER has already decided this
 // request is entitled to read, and a caller-supplied relative path, and it
-// answers with the `ReadUserFilesOutput` shape. Deciding WHICH root — the ACL —
-// stays with the caller, because that is where the identity is.
+// answers with the hooks' shapes (`ReadUserFilesOutput`,
+// `ReadUserFileRangeOutput`). Deciding WHICH root — the ACL — stays with the
+// caller, because that is where the identity is.
+//
+// TWO READS, ONE CONFINEMENT. `readConfinedUserFiles` is the PREVIEW read: a
+// listing, or a file's first bytes, capped by `DEFAULT_CONFINED_READ_LIMITS`.
+// `readConfinedUserFileRange` (TASK-1014) is the DOWNLOAD read: one byte range
+// of a regular file, with its size and an opaque version, so a caller can
+// stream a whole file of any size a range at a time and notice if it changes.
+// It has no total cap here, because the caller bounds the total. One call
+// reads at most 16 MiB, so the price of the mount (see `ConfinedReadLimits`)
+// is still paid per call. Both run the same steps before the disk and the same
+// walk on it, so everything below holds for both.
 //
 // THE THREAT MODEL, stated plainly. The root's whole contents are written by an
 // untrusted agent. It can plant a symlink anywhere in its own subtree
@@ -136,13 +150,18 @@ function isAbsence(err: WalkReadError): boolean {
 }
 
 /**
- * Bounds on somebody else's filesystem.
+ * Bounds on somebody else's filesystem, for the PREVIEW read
+ * (`readConfinedUserFiles`).
  *
  * Both matter for the HOST-mounted realization specifically. Before it, the
  * host had no access to an agent subtree at all; after it, an unbounded read of
  * an NFS file into the host process is a denial of service against the host —
  * which holds the database, the blob store and every credential — and not just
  * a slow request. So the cap is not a nicety, it is the price of the mount.
+ *
+ * The download read (`readConfinedUserFileRange`) pays the same price per
+ * call instead: its `length` is capped at 16 MiB, and the caller that loops
+ * over ranges bounds the total.
  */
 export interface ConfinedReadLimits {
   /**
@@ -173,7 +192,8 @@ export interface ConfinedReadLimits {
 }
 
 /**
- * 1 MiB / 5000 entries.
+ * 1 MiB / 5000 entries. These govern PREVIEWS (`sandbox:read-user-files`);
+ * downloads go through `readConfinedUserFileRange`, which does not use them.
  *
  * The byte cap matches the k8s one-shot reader pod's `READ_MAX_FILE_BYTES` so
  * the two realizations of `sandbox:read-user-files` return the same bytes for
@@ -254,18 +274,9 @@ export async function readConfinedUserFiles(
   relPath: string | undefined,
   limits: ConfinedReadLimits = DEFAULT_CONFINED_READ_LIMITS,
 ): Promise<ReadUserFilesOutput> {
-  // The order is the contract.
-  // 1. Lexical guard: absolute paths and `..` throw, with the messages callers
-  //    already match. The joined path itself is not used.
-  safeJoinUnderRoot(root, relPath);
-  // 2. Every spelling of the root. The k8s provider sends '.'.
-  const rel = relPath === undefined || relPath === '' || relPath === '.' ? '' : relPath;
-  // 3. Too deep to walk. Decided from the text alone, so it is the same answer
-  //    whatever is on disk, and no oracle.
-  if (rel !== '' && rel.split('/').length > MAX_WALK_PARTS) return { kind: 'absent' };
-  // 4. Anything else malformed (`a//b`, a trailing `/`, NUL) throws
-  //    `WalkPathError`: that is our caller's bug, not a missing file.
-  const parts = splitRelPath(rel);
+  // The order is the contract. Steps 1–4 are `walkPartsOf`'s.
+  const parts = walkPartsOf(root, relPath);
+  if (parts === undefined) return { kind: 'absent' };
   // 5. The walk.
   let out;
   try {
@@ -283,4 +294,78 @@ export async function readConfinedUserFiles(
   if (out.kind === 'absent') return { kind: 'absent' };
   if (out.kind === 'dir') return { kind: 'dir', entries: out.entries };
   return { kind: 'file', contents: out.contents, truncated: out.truncated };
+}
+
+/**
+ * Read ONE byte range of the regular file at `relPath` under `root`, confined
+ * to it, read-only: the answer behind `sandbox:read-user-file-range`
+ * (TASK-1014), for a caller that streams a whole file a range at a time.
+ *
+ * `root` is chosen exactly as for `readConfinedUserFiles`, and the path goes
+ * through the same steps and the same walk, so every confinement rule in this
+ * file's header holds. What differs is the leaf:
+ *
+ * - A regular file answers `{ kind: 'file', size, version, bytes }`. `size`
+ *   and `version` come from one fstat taken before any byte is read, and the
+ *   read stops at that size: `bytes` holds `min(length, max(0, size -
+ *   offset))` bytes, or fewer if the file shrank in between. `version` is
+ *   opaque; a caller compares it and nothing else, and never logs it or sends
+ *   it to a client.
+ * - A directory answers `{ kind: 'dir' }` and is not listed.
+ * - Anything else (missing, a symlink at any depth, a FIFO, socket or device)
+ *   is `{ kind: 'absent' }`.
+ *
+ * There is no total cap here: one call reads at most `length` bytes, and
+ * `length` may not exceed 16 MiB (MAX_WALK_LIMIT_BYTES), so one call's memory
+ * is bounded whatever the file's size. Bounding the whole download, and
+ * checking the version on every range, is the caller's job.
+ *
+ * Throws a `RangeError`, before anything else, for an offset that is not a
+ * safe integer of 0 or more, or a length that is not an integer from 0 to
+ * 16 MiB. Otherwise throws exactly what `readConfinedUserFiles` throws, for
+ * the same reasons: a malformed path, a read that failed, or not Linux.
+ */
+export async function readConfinedUserFileRange(
+  root: string,
+  relPath: string,
+  range: { offset: number; length: number },
+): Promise<Exclude<ReadUserFileRangeOutput, { kind: 'unavailable' }>> {
+  // The order is the contract.
+  // 0. The range. A bad one is our caller's bug, so it is refused whatever
+  //    the path says, even a path the depth rule would answer `absent`.
+  assertWalkRange(range);
+  // Steps 1–4 are `walkPartsOf`'s, the same as `readConfinedUserFiles`.
+  const parts = walkPartsOf(root, relPath);
+  if (parts === undefined) return { kind: 'absent' };
+  // 5. The walk.
+  let out;
+  try {
+    out = await readRangeByWalk(root, parts, range);
+  } catch (err) {
+    if (err instanceof WalkReadError && isAbsence(err)) return { kind: 'absent' };
+    throw err;
+  }
+  // 6. Only the hook's fields: the walk's `reason` stops here.
+  if (out.kind === 'absent') return { kind: 'absent' };
+  if (out.kind === 'dir') return { kind: 'dir' };
+  return { kind: 'file', size: out.size, version: out.version, bytes: out.bytes };
+}
+
+/**
+ * Steps 1–4 of both readers, decided before the disk. Answers the walk's
+ * parts, or `undefined` for a path too deep to walk, which both readers
+ * answer `absent`.
+ */
+function walkPartsOf(root: string, relPath: string | undefined): string[] | undefined {
+  // 1. Lexical guard: absolute paths and `..` throw, with the messages callers
+  //    already match. The joined path itself is not used.
+  safeJoinUnderRoot(root, relPath);
+  // 2. Every spelling of the root. The k8s provider sends '.'.
+  const rel = relPath === undefined || relPath === '' || relPath === '.' ? '' : relPath;
+  // 3. Too deep to walk. Decided from the text alone, so it is the same answer
+  //    whatever is on disk, and no oracle.
+  if (rel !== '' && rel.split('/').length > MAX_WALK_PARTS) return undefined;
+  // 4. Anything else malformed (`a//b`, a trailing `/`, NUL) throws
+  //    `WalkPathError`: that is our caller's bug, not a missing file.
+  return splitRelPath(rel);
 }

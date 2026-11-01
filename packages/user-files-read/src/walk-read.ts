@@ -1,6 +1,6 @@
-import { existsSync, promises as fs, constants } from 'node:fs';
+import { existsSync, promises as fs, constants, type BigIntStats } from 'node:fs';
 import { constants as osConstants } from 'node:os';
-import type { UserFileDirEntry } from '@ax/sandbox-mount-protocol';
+import type { UserFileDirEntry, UserFileVersion } from '@ax/sandbox-mount-protocol';
 import { UserFilesReadError } from './errors.js';
 
 // ---------------------------------------------------------------------------
@@ -71,6 +71,32 @@ import { UserFilesReadError } from './errors.js';
 //   (TASK-899). The cost: on the retry, a search-only directory (above)
 //   throws EACCES, because O_RDONLY needs read permission. A broken read,
 //   never an absence.
+//
+// TWO READS, ONE WALK (TASK-1014). `readConfinedByWalk` reads a file's first
+// bytes or lists a directory (the preview). `readRangeByWalk` reads one byte
+// range of a regular file, with its size and an opaque version (a download, a
+// range at a time). They differ only in what they do with the leaf: the open
+// of the root and of every component, the flags above, the closing of every
+// handle and the ESTALE retry are one piece of code, `walkOnce` and
+// `walkWithRetry`, so everything in this header holds for both. The range
+// read's leaf:
+//
+// - is fstat'd (with nanosecond times) BEFORE any byte is read. The version
+//   is that fstat's `dev:ino:size:mtimeNs:ctimeNs`, and the read stops at that
+//   fstat's size, so no byte past the size the version names is read. A file
+//   that shrank since answers short; one that grew is read only up to the old
+//   size, and its next answer carries a new size and version. A write into
+//   the range while it is being read moves the file's times, so the caller's
+//   next call (the next range, or its final check) sees a new version.
+// - answers `dir` for a directory without listing it.
+// - holds nothing once it returns. Every call walks again, so a caller can
+//   stop at any moment without leaking a descriptor.
+//
+// KNOWN GAP in the version: an in-place rewrite that keeps the size, done
+// inside one tick of the filesystem's timestamp clock, keeps the same mtime
+// and ctime too, so the version cannot see it. A rename-replace (new inode),
+// truncate or append (new size), or anything slower than one tick, can be
+// seen.
 // ---------------------------------------------------------------------------
 
 /** No more path components than this, root excluded. */
@@ -140,9 +166,46 @@ export interface WalkReadLimits {
   maxEntries: number;
 }
 
+/** One byte range of a file, for `readRangeByWalk`. */
+export interface WalkRange {
+  /** First byte to read: a safe integer, 0 or more. At or past the end, nothing is read. */
+  offset: number;
+  /** Most bytes to read: an integer from 0 to MAX_WALK_LIMIT_BYTES. 0 reads nothing. */
+  length: number;
+}
+
+/** The walk's absence: the answer, and why. Both reads give it the same way. */
+type WalkAbsent = { kind: 'absent'; reason: WalkAbsentReason };
+
+/** Same discriminants as `ReadUserFileRangeOutput` (minus `unavailable`, the caller's call). */
+export type WalkRangeOutput =
+  | { kind: 'file'; size: number; version: UserFileVersion; bytes: Uint8Array }
+  | { kind: 'dir' }
+  | WalkAbsent;
+
 function assertSafePart(part: string): void {
   if (part === '' || part === '.' || part === '..' || part.includes('/') || part.includes('\0')) {
     throw new WalkPathError(`unsafe path component: ${JSON.stringify(part)}`);
+  }
+}
+
+/** The part list's own rules, checked before the disk: depth, then each part. */
+function assertWalkParts(parts: string[]): void {
+  if (parts.length > MAX_WALK_PARTS) throw new WalkPathError('path is too deep');
+  parts.forEach(assertSafePart);
+}
+
+/**
+ * Refuse a range no call may ask for, with a `RangeError`, before the disk: an
+ * offset that is not a whole byte, or a read bigger than one call may pull into
+ * memory. Exported so the /files adapter can refuse it before anything else.
+ */
+export function assertWalkRange(range: WalkRange): void {
+  if (!Number.isSafeInteger(range.offset) || range.offset < 0) {
+    throw new RangeError('offset must be a safe integer, 0 or more');
+  }
+  if (!Number.isSafeInteger(range.length) || range.length < 0 || range.length > MAX_WALK_LIMIT_BYTES) {
+    throw new RangeError(`length must be an integer from 0 to ${MAX_WALK_LIMIT_BYTES}`);
   }
 }
 
@@ -235,8 +298,7 @@ export async function readConfinedByWalk(
   parts: string[],
   opts: WalkReadLimits,
 ): Promise<WalkReadOutput> {
-  if (parts.length > MAX_WALK_PARTS) throw new WalkPathError('path is too deep');
-  parts.forEach(assertSafePart);
+  assertWalkParts(parts);
   if (!Number.isSafeInteger(opts.limitBytes) || opts.limitBytes < 0 || opts.limitBytes > MAX_WALK_LIMIT_BYTES) {
     throw new RangeError(`limitBytes must be an integer from 0 to ${MAX_WALK_LIMIT_BYTES}`);
   }
@@ -245,26 +307,98 @@ export async function readConfinedByWalk(
   }
   assertWalkPlatform();
 
+  return await walkWithRetry<WalkReadOutput>(root, parts, async (leaf, depth) => {
+    let stat;
+    try {
+      stat = await leaf.stat();
+    } catch (err) {
+      throw fail('could not stat the leaf', err, depth);
+    }
+    if (stat.isDirectory()) return await listDir(leaf.fd, opts.maxEntries, depth);
+    if (stat.isFile()) return await readPrefix(leaf, opts.limitBytes, stat.size, depth);
+    return { kind: 'absent', reason: 'not-file-or-dir' };
+  });
+}
+
+/**
+ * Read one byte range of the regular file at `parts` under the trusted
+ * `root`, with the file's size and an opaque version (TASK-1014). The walk is
+ * `readConfinedByWalk`'s, the same code: every component opened relative to
+ * the previous one's descriptor with O_NOFOLLOW, and the same one ESTALE
+ * retry. A directory answers `dir` and is not listed. A FIFO, socket or
+ * device, or a link anywhere on the path, is absent. See the file header.
+ *
+ * Size and version come from one fstat taken before any byte is read, and the
+ * read never goes past that size. So `bytes` holds
+ * `min(length, max(0, size - offset))` bytes, or fewer if the file shrank in
+ * between: a short answer means the file changed.
+ */
+export async function readRangeByWalk(
+  root: string,
+  parts: string[],
+  range: WalkRange,
+): Promise<WalkRangeOutput> {
+  assertWalkParts(parts);
+  // Copied, then checked: what is read is exactly what was checked.
+  const { offset, length } = range;
+  assertWalkRange({ offset, length });
+  assertWalkPlatform();
+
+  return await walkWithRetry<WalkRangeOutput>(root, parts, async (leaf, depth) => {
+    let stat: BigIntStats;
+    try {
+      stat = await leaf.stat({ bigint: true });
+    } catch (err) {
+      throw fail('could not stat the leaf', err, depth);
+    }
+    if (stat.isDirectory()) return { kind: 'dir' };
+    if (!stat.isFile()) return { kind: 'absent', reason: 'not-file-or-dir' };
+    return await readRange(leaf, stat, offset, length, depth);
+  });
+}
+
+/**
+ * What a walk does with the leaf it opened. `depth` is the leaf's index in
+ * `parts` (`-1` when the leaf is the root itself), for errors. It runs inside
+ * the walk's try/finally: every handle the walk holds, the leaf included, is
+ * closed once it settles, so it must not keep the handle. What it throws gets
+ * the same ESTALE retry as a failed open.
+ */
+type LeafVisitor<T> = (leaf: fs.FileHandle, depth: number) => Promise<T>;
+
+/**
+ * Walk to the leaf and hand it to `visit`. A walk that fails ESTALE, at any
+ * step, `visit`'s included, is walked once more, and that answer stands. See
+ * the file header. The caller checks the parts, its own arguments and the
+ * platform first.
+ */
+async function walkWithRetry<T>(
+  root: string,
+  parts: string[],
+  visit: LeafVisitor<T>,
+): Promise<T | WalkAbsent> {
   try {
-    return await walkOnce(root, parts, opts, O_PATH);
+    return await walkOnce(root, parts, O_PATH, visit);
   } catch (err) {
     if (!(err instanceof WalkReadError) || err.code !== 'ESTALE') throw err;
   }
   // The one retry: a whole new walk that passes through every directory with
   // an open NFS revalidates. Its answer is final. See the file header.
-  return await walkOnce(root, parts, opts, constants.O_RDONLY);
+  return await walkOnce(root, parts, constants.O_RDONLY, visit);
 }
 
 /**
  * One walk. `passThrough` is how the root and every directory on the way to
- * the leaf are opened: O_PATH, or O_RDONLY on the ESTALE retry.
+ * the leaf are opened: O_PATH, or O_RDONLY on the ESTALE retry. The leaf is
+ * opened O_RDONLY | O_NONBLOCK | O_NOFOLLOW (or, for an empty `parts`, the root
+ * itself O_RDONLY) and handed to `visit`.
  */
-async function walkOnce(
+async function walkOnce<T>(
   root: string,
   parts: string[],
-  opts: WalkReadLimits,
   passThrough: number,
-): Promise<WalkReadOutput> {
+  visit: LeafVisitor<T>,
+): Promise<T | WalkAbsent> {
   const held: fs.FileHandle[] = [];
   try {
     // The root: trusted, so no O_NOFOLLOW. `passThrough` when we only pass
@@ -294,17 +428,9 @@ async function walkOnce(
       }
     }
 
-    const leaf = held.at(-1)!;
-    const depth = parts.length - 1;
-    let stat;
-    try {
-      stat = await leaf.stat();
-    } catch (err) {
-      throw fail('could not stat the leaf', err, depth);
-    }
-    if (stat.isDirectory()) return await listDir(leaf.fd, opts.maxEntries, depth);
-    if (stat.isFile()) return await readPrefix(leaf, opts.limitBytes, stat.size, depth);
-    return { kind: 'absent', reason: 'not-file-or-dir' };
+    // `return await`, not `return`: the handles stay open until `visit` has
+    // settled, and only then does the `finally` close them.
+    return await visit(held.at(-1)!, parts.length - 1);
   } finally {
     for (const fh of held.reverse()) await fh.close().catch(() => undefined);
   }
@@ -398,5 +524,50 @@ async function readPrefix(
     kind: 'file',
     contents: new Uint8Array(buf.subarray(0, truncated ? limitBytes : filled)),
     truncated,
+  };
+}
+
+/**
+ * Read up to `length` bytes from `offset` of the open regular file `fh`, never
+ * past `stat.size`, the size its version names. NFS may return short reads
+ * mid-file, so read until full or EOF; EOF early means the file shrank.
+ */
+async function readRange(
+  fh: fs.FileHandle,
+  stat: BigIntStats,
+  offset: number,
+  length: number,
+  depth: number,
+): Promise<WalkRangeOutput> {
+  // Opaque to every caller, which only compares it. See the file header.
+  const version = [stat.dev, stat.ino, stat.size, stat.mtimeNs, stat.ctimeNs].join(
+    ':',
+  ) as UserFileVersion;
+  // In bigint: a sparse file can claim more than 2^53 bytes, and the read
+  // must still stop exactly at its size.
+  const start = BigInt(offset);
+  const left = stat.size > start ? stat.size - start : 0n;
+  const want = left < BigInt(length) ? Number(left) : length;
+  // Zeroed and an allocation of its own (never Buffer's shared pool), so
+  // `bytes.buffer` carries these bytes and nothing else.
+  const bytes = new Uint8Array(want);
+  let filled = 0;
+  try {
+    while (filled < want) {
+      const { bytesRead } = await fh.read(bytes, filled, want - filled, start + BigInt(filled));
+      if (bytesRead === 0) break;
+      filled += bytesRead;
+    }
+  } catch (err) {
+    throw fail('could not read a file', err, depth);
+  }
+  return {
+    kind: 'file',
+    // Rounded past 2^53 bytes, a size no caller serves anyway.
+    size: Number(stat.size),
+    version,
+    // Short when the file shrank, and never padded out: zeros would pass for
+    // the file's own bytes.
+    bytes: filled < want ? bytes.slice(0, filled) : bytes,
   };
 }
