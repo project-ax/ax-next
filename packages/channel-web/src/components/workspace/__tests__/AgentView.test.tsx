@@ -1768,7 +1768,7 @@ describe('file chip status checks', () => {
   /*
     The re-read can come back the SAME length: it drops answered approval cards
     the decision queue has let go of while it adds the new turn's messages. Two
-    held auto-attaches answered, then "Delete it." (two new messages) is k = m.
+    approval cards answered, then "Delete it." (two new messages) is k = m.
     The check must still run, because a turn landed.
   */
   it('rechecks after a landed turn even when the re-read keeps the thread length', async () => {

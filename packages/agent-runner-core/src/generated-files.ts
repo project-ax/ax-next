@@ -51,14 +51,16 @@ async function snapshot(root: string, maxEntries: number): Promise<Set<string>> 
 }
 
 /**
- * What the policy gate said about one automatic attach. `held` names the
- * decision a person is now asked to answer. `unavailable` is the gate failing
- * closed (nothing decided the call), which is not the same as a rule that said
- * no (`denied`).
+ * What the policy gate said about one automatic attach. `unavailable` is the
+ * gate failing closed (nothing decided the call), which is not the same as a
+ * rule that said no (`denied`). `held` is refused like the other two: the
+ * runner keeps no held path for its own calls (TASK-1021), so nothing ever
+ * attaches a held file. No shipped rule holds one: @ax/tool-policy's
+ * verdicts.test.ts pins that, and says what a hold would need built first.
  */
 export type GateVerdict =
   | { kind: 'allow' }
-  | { kind: 'held'; decisionId: string }
+  | { kind: 'held' }
   | { kind: 'denied' }
   | { kind: 'unavailable' };
 
@@ -71,7 +73,6 @@ export type GeneratedFileFailure =
   | 'unaddressable-name'
   | 'not-a-regular-file'
   | 'outside-root'
-  | 'undelivered'
   | 'error';
 
 /** Thrown by `agentFileReference`; `reason` is typed so callers never match on messages. */
@@ -93,14 +94,14 @@ class GateRefusedError extends Error {
 function note(text: string): ContentBlock {
   return { type: 'text', text };
 }
-const NOT_ATTACHED = 'Some new files could not be attached. Ask the agent to attach them again.';
-// A held file must never be told "attach them again": the only way to do that
-// is the model's own publish, which copies the file into the blob store. Nor
-// promised a chip: a cold session's approval attaches nothing, so it points at
-// the Files tab, where the file is either way.
-const HELD = 'Some new files need your approval before we attach them. You can also find them in the Files tab.';
+// The model reads these notes too, so none of them may ask for the files to
+// be attached or published again (TASK-1021): the only way the model can do
+// that is its own artifact_publish, which copies the file into the blob store
+// and charges it twice. The file is in the agent's files either way, so the
+// notes point at the Files tab.
+const NOT_ATTACHED = "Some new files could not be attached here. They are still saved in this agent's files: you can find them in the Files tab.";
 const NOT_NAMEABLE = "Some new files have names we can't link to here (for example, ones with a colon). Ask the agent to rename them.";
-const SCAN_FAILED = 'We could not check for new files to attach. Ask the agent to attach the files again.';
+const SCAN_FAILED = "We could not check for new files to attach. Any new files are still saved in this agent's files: you can find them in the Files tab.";
 
 function scanFailure(err: unknown): GeneratedFileFailure {
   return err instanceof ScanLimitError ? 'scan-limit' : 'error';
@@ -169,65 +170,23 @@ export function publishedAttachments(
   return { blocks, paths };
 }
 
-/** How many of its own held attaches one tracker remembers. The oldest is forgotten first. */
-export const MAX_HELD_AUTO_ATTACH = 256;
-
 export interface GeneratedFiles {
   collect(alreadyPublished?: readonly string[]): Promise<ContentBlock[]>;
-  /**
-   * A person answered decision `decisionId`. True iff it is a hold this
-   * tracker raised and still remembers, which it then forgets. An approved
-   * hold goes back to the gate, and whatever that attaches rides the next
-   * `collect`. Never rejects.
-   */
-  resolveHeld(decisionId: string, outcome: 'approved' | 'dismissed' | undefined): Promise<boolean>;
-  /**
-   * How many chips approved holds produced that no turn-end has collected
-   * yet. The approval was spent when the answer was pulled, so a run that
-   * ends before its next turn-end loses these: the caller says so. A chip a
-   * turn-end collected is not counted either, even if that turn-end is then
-   * refused: the refusal is logged as `ipc_event_refused` and the run goes
-   * on (only a refused transcript ship ends it `terminated`).
-   */
-  undelivered(): number;
-}
-
-const APPROVED_NOTE =
-  'A person approved attaching new files from earlier in this conversation. ' +
-  'That is handled for you: do not publish them yourself unless the user asks for them again. You do not need to reply.';
-const DECLINED_NOTE =
-  'A person chose not to attach new files from earlier in this conversation, so they were not attached. ' +
-  'Do not publish them unless the user asks for them again. You do not need to reply.';
-
-/**
- * What the model reads when a person answers one of the runner's own held
- * attaches, in place of the host's "make that call again": the model never
- * made that call, so it could only guess at it. Model-facing, and labelled by
- * `decisionResolvedTurn`. A missing outcome reads as declined.
- */
-export function autoAttachResolvedNote(outcome: 'approved' | 'dismissed' | undefined): string {
-  return outcome === 'approved' ? APPROVED_NOTE : DECLINED_NOTE;
 }
 
 /** The notes a turn-end owes; each goes out at most once. */
-interface Notes { failed: boolean; held: boolean; unnameable: boolean }
-function noNotes(): Notes {
-  return { failed: false, held: false, unnameable: false };
-}
+interface Notes { failed: boolean; unnameable: boolean }
 
 /**
  * Attaches, by reference, the files each turn creates under `root`.
  *
  * A session baseline avoids attaching existing files again after a resume.
  * Every new file passes the same policy gate a model's own `artifact_publish`
- * call does, then its chip is reported as that call's outcome.
- *
- * A held file is attached only once a person approves it and the gate then
- * allows the identical call (TASK-1017): `resolveHeld` sends that call back.
- * Dormant today (TASK-1019): @ax/tool-policy's artifacts.publish rule is allow
- * and is not a setting anyone can change, so in production the gate allows or
- * fails closed, and the held path runs only in tests, or if that rule changes
- * or publishing becomes an ability a person can switch.
+ * call does, then its chip is reported as that call's outcome. Only `allow`
+ * attaches. In production that gate allows or fails closed: @ax/tool-policy's
+ * artifacts.publish rule is allow, and publishing is not an ability a person
+ * can switch (TASK-1019). TASK-1017's held-approval path for these calls was
+ * never reachable and was deleted (TASK-1021), so a hold attaches nothing.
  */
 export async function trackGeneratedFiles(opts: {
   root: string;
@@ -245,36 +204,16 @@ export async function trackGeneratedFiles(opts: {
   try { baseline = await snapshot(opts.root, maxEntries); }
   catch (err) { baseline = null; opts.warn(scanFailure(err)); }
 
-  // The holds this tracker raised, by decision id: the call exactly as the
-  // gate saw it, and the file it names. Only the gate's own `held` verdicts
-  // add one, and the path comes from this tracker's own scan, so nothing the
-  // model writes can put a file here.
-  const holds = new Map<string, { call: ToolCall; relative: string }>();
-  // What answered holds produced since the last turn-end. Drained in place
-  // (never reassigned), so an answer that finishes during a turn-end is kept.
-  const answered: AgentFileBlock[] = [];
-  const answeredNotes = noNotes();
-
-  function remember(decisionId: string, hold: { call: ToolCall; relative: string }): void {
-    holds.set(decisionId, hold);
-    // A Map iterates in insertion order: the first key is the oldest hold.
-    if (holds.size > MAX_HELD_AUTO_ATTACH) {
-      const oldest = holds.keys().next().value;
-      if (oldest !== undefined) holds.delete(oldest);
-    }
-  }
-
   /**
    * The chip for `relative`, once the gate allows `call`. Throws otherwise.
    *
    * Reference first: a file that can never be a chip must not reach the gate,
-   * where it could park a held approval or spend one. Only a chip that will
-   * pass the host's block check is attached.
+   * where it could park a decision for a person to answer. Only a chip that
+   * will pass the host's block check is attached.
    */
   async function attach(call: ToolCall, relative: string): Promise<AgentFileBlock> {
     const chip = await agentFileReference(opts.root, relative);
     const verdict = await opts.admit(call);
-    if (verdict.kind === 'held') remember(verdict.decisionId, { call, relative });
     if (verdict.kind !== 'allow') throw new GateRefusedError(verdict.kind);
     await opts.attached(call, chip);
     return chip;
@@ -283,26 +222,10 @@ export async function trackGeneratedFiles(opts: {
   function report(err: unknown, notes: Notes): void {
     const reason: GeneratedFileFailure =
       err instanceof AgentFileReferenceError || err instanceof GateRefusedError ? err.reason : 'error';
-    // A name the Files tab cannot address is not fixed by trying again, and a
-    // held file is waiting on a person, not on another try.
+    // A name the Files tab cannot address is not fixed by trying again.
     if (reason === 'unaddressable-name') notes.unnameable = true;
-    else if (reason === 'held') notes.held = true;
     else notes.failed = true;
     opts.warn(reason);
-  }
-
-  /**
-   * One turn-end's blocks: the chips (answered holds first), then each note
-   * once, then `tail`. Synchronous, so what an answer queued goes out exactly
-   * once, with whichever turn ends next.
-   */
-  function release(chips: AgentFileBlock[], notes: Notes, tail: ContentBlock[] = []): ContentBlock[] {
-    const blocks: ContentBlock[] = [...answered.splice(0), ...chips];
-    if (notes.failed || answeredNotes.failed) blocks.push(note(NOT_ATTACHED));
-    if (notes.held || answeredNotes.held) blocks.push(note(HELD));
-    if (notes.unnameable || answeredNotes.unnameable) blocks.push(note(NOT_NAMEABLE));
-    Object.assign(answeredNotes, noNotes());
-    return [...blocks, ...tail];
   }
 
   return {
@@ -311,43 +234,26 @@ export async function trackGeneratedFiles(opts: {
       try { current = await snapshot(opts.root, maxEntries); }
       catch (err) {
         opts.warn(scanFailure(err));
-        return release([], noNotes(), [note(SCAN_FAILED)]);
+        return [note(SCAN_FAILED)];
       }
       // A failed baseline must never turn every existing file into an output.
-      if (baseline === null) { baseline = current; return release([], noNotes()); }
-      const chips: AgentFileBlock[] = [];
-      const notes = noNotes();
+      if (baseline === null) { baseline = current; return []; }
+      const blocks: ContentBlock[] = [];
+      const notes: Notes = { failed: false, unnameable: false };
       for (const relative of [...current].sort()) {
         if (baseline.has(relative) || alreadyPublished.includes(relative)) continue;
         const call: ToolCall = {
           id: randomUUID(), name: 'artifact_publish',
           input: { path: path.join(opts.root, relative) },
         };
-        try { chips.push(await attach(call, relative)); }
+        try { blocks.push(await attach(call, relative)); }
         catch (err) { report(err, notes); }
       }
       baseline = current;
-      return release(chips, notes);
+      // The chips, then each note once.
+      if (notes.failed) blocks.push(note(NOT_ATTACHED));
+      if (notes.unnameable) blocks.push(note(NOT_NAMEABLE));
+      return blocks;
     },
-
-    async resolveHeld(decisionId, outcome) {
-      const hold = holds.get(decisionId);
-      if (hold === undefined) return false;
-      // Forgotten before the first await: a repeated delivery finds nothing,
-      // so one answer can never attach twice.
-      holds.delete(decisionId);
-      if (outcome !== 'approved') return true;
-      // The very call the person approved, byte for byte: the gate's standing
-      // approval is keyed on it, and only the gate's `allow` attaches. A file
-      // that has gone, or become a link, since the hold is refused before the
-      // gate is asked, so the approval stays unspent.
-      try {
-        const chip = await attach(hold.call, hold.relative);
-        answered.push(chip);
-      } catch (err) { report(err, answeredNotes); }
-      return true;
-    },
-
-    undelivered: () => answered.length,
   };
 }
