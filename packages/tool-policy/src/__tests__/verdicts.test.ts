@@ -210,9 +210,23 @@ describe('which keys an override may name', () => {
       'Read',
       'Write',
       'memory_note',
+      // TASK-1019: publishing is not a setting. While this holds, the runner's
+      // held automatic-attach path (agent-runner-core generated-files.ts,
+      // TASK-1017) is dormant. Making publishing an ability makes it live, along
+      // with two gaps it still has: approving after the session went cold attaches
+      // nothing, and N new files raise N cards. Their design is in
+      // .claude/memory/decisions/2026-11-01-TASK-1019.md.
+      'artifact_publish',
     ]) {
       expect(isOverridableKey(k)).toBe(false);
     }
+    // TASK-1019: the other way the dormant held auto-attach path goes live is
+    // the rule itself changing. Publishing is allowed by exactly one rule, with
+    // no condition. Change this and read
+    // .claude/memory/decisions/2026-11-01-TASK-1019.md first.
+    expect(
+      BUILTIN_RULES.filter((r) => r.match.tool === 'artifact_publish').map((r) => [r.verdict, r.match.when]),
+    ).toEqual([['allow', undefined]]);
     // …and even if one were stored, the static deny wins.
     const base = evaluate(BUILTIN_RULES, { name: 'WebFetch', input: {} });
     expect(base.verdict).toBe('deny');

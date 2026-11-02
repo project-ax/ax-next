@@ -224,6 +224,10 @@ function noNotes(): Notes {
  *
  * A held file is attached only once a person approves it and the gate then
  * allows the identical call (TASK-1017): `resolveHeld` sends that call back.
+ * Dormant today (TASK-1019): @ax/tool-policy's artifacts.publish rule is allow
+ * and is not a setting anyone can change, so in production the gate allows or
+ * fails closed, and the held path runs only in tests, or if that rule changes
+ * or publishing becomes an ability a person can switch.
  */
 export async function trackGeneratedFiles(opts: {
   root: string;

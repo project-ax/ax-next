@@ -29,7 +29,7 @@ import type { ThreadAttachment } from '@/lib/workspace-types';
 export function GeneratedFileChip({ file, conversationId, recheckKey }: {
   file: ThreadAttachment;
   conversationId: string;
-  /** Changes when a new turn lands, so an agent-file chip checks its file again. */
+  /** Changes when the thread is re-read or a turn fails, so an agent-file chip checks its file again. */
   recheckKey?: number;
 }) {
   const extension = /\.[a-z0-9]{1,12}$/i.exec(file.displayName)?.[0] ?? '';

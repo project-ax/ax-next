@@ -1808,4 +1808,42 @@ describe('file chip status checks', () => {
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
     expect(statusChecks).toHaveBeenCalledTimes(2);
   });
+
+  it('rechecks when a turn fails, without re-reading the thread', async () => {
+    const agentFile = {
+      attachmentId: null, agentFilePath: 'plan.pdf', displayName: 'plan.pdf', mediaType: 'application/pdf', sizeBytes: 10,
+    };
+    // Still there when the chip mounts; gone by the time the failed turn ends.
+    const statusChecks = vi.fn(async (url: string): Promise<Response> => {
+      if (!url.includes('/status/user-files/')) throw new Error(`unexpected fetch ${url}`);
+      return statusChecks.mock.calls.length === 1
+        ? new Response(JSON.stringify({ available: true }), { headers: { 'content-type': 'application/json' } })
+        : new Response(JSON.stringify({ error: 'file-not-found' }), { status: 404, headers: { 'content-type': 'application/json' } });
+    });
+    vi.stubGlobal('fetch', statusChecks);
+    const reply = { kind: 'agent' as const, id: 't1', text: 'Here is the plan.', at: '', attachments: [agentFile] };
+    agentMock.mockResolvedValue(detail({ thread: [reply] }));
+    sendMock.mockResolvedValue({ conversationId: 'c-now', reqId: 'r1' } as never);
+    let handlers: Parameters<typeof workspaceApi.streamReply>[1] | null = null;
+    let finish: () => void = () => {};
+    streamMock.mockImplementation(async (_reqId, h) => {
+      handlers = h;
+      await new Promise<void>((resolve) => { finish = resolve; });
+    });
+
+    renderView();
+    await waitFor(() => expect(statusChecks).toHaveBeenCalledOnce());
+    const reads = agentMock.mock.calls.length;
+
+    const box = await screen.findByPlaceholderText('Message Quill');
+    fireEvent.change(box, { target: { value: 'Delete it.' } });
+    fireEvent.keyDown(box, { key: 'Enter' });
+    await waitFor(() => expect(handlers).not.toBeNull());
+    await act(async () => { handlers!.onError('The runner went away.'); finish(); });
+
+    await waitFor(() => expect(statusChecks).toHaveBeenCalledTimes(2));
+    expect(await screen.findByText('No longer available')).toBeTruthy();
+    // A failed turn re-reads nothing: the recheck came from the turn ending.
+    expect(agentMock.mock.calls.length).toBe(reads);
+  });
 });
