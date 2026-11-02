@@ -26,45 +26,25 @@ beforeEach(() => {
 });
 
 describe('app signature settings', () => {
-  it('marks an invalid custom header and keeps Save off', async () => {
+  it('has no signature controls', async () => {
     await edit();
     fireEvent.click(screen.getByRole('button', { name: 'Optional settings' }));
-    fireEvent.change(screen.getByLabelText('Signature header'), { target: { value: 'not a header' } });
-    expect(screen.getByLabelText('Signature header')).toHaveAttribute('aria-invalid', 'true');
-    expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled();
+    expect(screen.getByLabelText('Webhook path')).toBeVisible();
+    expect(screen.queryByRole('switch', { name: 'Verify signature' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('radiogroup', { name: 'App' })).not.toBeInTheDocument();
+    for (const label of ['Signature header', 'Signature algorithm', 'Signature prefix']) expect(screen.queryByLabelText(label)).not.toBeInTheDocument();
   });
-  it.each(['Stripe', 'Slack', 'Zendesk'])('reloads %s and preserves it when only the brief changes', async label => {
-    mocks.get.mockResolvedValue({ ...view(), webhook: { ...webhook, hmac: { app: label.toLowerCase() } } });
-    await edit();
+  it.each([{ app: 'stripe' as const }, webhook.hmac])('saves a legacy signature setting back unchanged: %j', async hmac => {
+    const stored = { ...webhook, hmac };
+    const value = { ...view(), webhook: stored };
+    mocks.get.mockResolvedValue(value);
+    render(<RoutineEditor mode="edit" agentId="a" agentName="Caveman" routine={value} onSaved={vi.fn()} onCancel={vi.fn()} />);
+    await screen.findByDisplayValue(routineFixture.name);
     fireEvent.click(screen.getByRole('button', { name: 'Optional settings' }));
-    expect(screen.getByRole('radio', { name: label })).toBeChecked();
-    expect(screen.queryByLabelText('Signature header')).not.toBeInTheDocument();
-    fireEvent.change(screen.getByLabelText('What should Caveman do?'), { target: { value: 'Only the brief changed.' } });
+    fireEvent.change(screen.getByLabelText('Webhook path'), { target: { value: '/renamed' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
-    await waitFor(() => expect(mocks.update).toHaveBeenCalledWith(expect.objectContaining({ patch: { promptBody: 'Only the brief changed.' } })));
-  });
-  it('preserves a custom header/algorithm/prefix draft when switching apps', async () => {
-    await edit();
-    fireEvent.click(screen.getByRole('button', { name: 'Optional settings' }));
-    fireEvent.change(screen.getByLabelText('Signature header'), { target: { value: 'Private-Signature' } });
-    fireEvent.click(screen.getByRole('radio', { name: 'SHA1' }));
-    fireEvent.click(screen.getByRole('radio', { name: 'Slack' }));
-    fireEvent.click(screen.getByRole('radio', { name: 'Other' }));
-    expect(screen.getByLabelText('Signature header')).toHaveValue('Private-Signature');
-    expect(screen.getByRole('radio', { name: 'SHA1' })).toBeChecked();
-    expect(screen.getByLabelText('Signature prefix')).toHaveValue('sha256=');
-  });
-  it.each(['Stripe', 'Slack', 'Zendesk'])('saves the complete %s protocol', async label => {
-    const app = label.toLowerCase();
-    await edit();
-    fireEvent.click(screen.getByRole('button', { name: 'Optional settings' }));
-    fireEvent.click(screen.getByRole('radio', { name: label }));
-    expect(screen.queryByLabelText('Signature header')).not.toBeInTheDocument();
-    expect(screen.getByText(/timestamp more than five minutes/)).toBeVisible();
-    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
-    await waitFor(() => expect(mocks.update).toHaveBeenCalledWith(expect.objectContaining({ patch: {
-      webhook: { ...webhook, hmac: { app } },
-    } })));
+    await waitFor(() => expect(mocks.update).toHaveBeenCalledOnce());
+    expect(mocks.update.mock.calls[0]![0].patch.webhook).toStrictEqual({ ...stored, path: '/renamed' });
   });
 });
 async function edit() {
@@ -99,8 +79,6 @@ describe('independent routine methods in the existing editor', () => {
     expect(screen.getByLabelText('Webhook path')).toHaveValue('/original');
     expect(screen.getByLabelText('Events (comma-separated)')).toHaveValue('push');
     fireEvent.click(screen.getByRole('button', { name: 'Optional settings' }));
-    expect(screen.getByLabelText('Signature header')).toHaveValue('X-Signature');
-    expect(screen.getByLabelText('Signature prefix')).toHaveValue('sha256=');
     fireEvent.change(screen.getByLabelText('What should Caveman do?'), { target: { value: 'Updated instructions.' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
     await waitFor(() => expect(mocks.update).toHaveBeenCalledWith(expect.objectContaining({ patch: { promptBody: 'Updated instructions.' } })));
@@ -297,13 +275,12 @@ describe('batched task app updates (TASK-983)', () => {
     await screen.findByDisplayValue('Nothing waits.');
     openUpdates();
     expect(screen.getByRole('combobox', { name: 'React within' })).toHaveTextContent('5 min');
-    expect(screen.getByText('Its address and signature settings are under More options.')).toBeVisible();
+    expect(screen.getByText('Its address is under More options. Save the app’s signing secret on the task page.')).toBeVisible();
     fireEvent.keyDown(document.activeElement ?? document.body, { key: 'Escape' });
     fireEvent.click(screen.getByRole('button', { name: 'More options' }));
     await screen.findByLabelText('Webhook URL');
     expect(screen.getByLabelText('Address name')).toHaveValue('/original');
     expect(screen.getByLabelText('Only these kinds of updates')).toHaveValue('push');
-    expect(screen.getByLabelText('Signature header')).toHaveValue('X-Signature');
     fireEvent.change(screen.getByLabelText('What should Caveman do?'), { target: { value: 'Check the queue.' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
     await waitFor(() => expect(mocks.update).toHaveBeenCalledWith(expect.objectContaining({ patch: { promptBody: 'Check the queue.' } })));

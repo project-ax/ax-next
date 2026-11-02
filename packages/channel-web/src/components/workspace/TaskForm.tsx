@@ -43,7 +43,6 @@ import { browserTimeZone } from '@/lib/task-finish-by';
 import { cn } from '@/lib/utils';
 import { ActiveHoursDaySelector } from '@/components/routines/ActiveHoursDaySelector';
 import { WebhookAddressFields } from '@/components/routines/WebhookAddressFields';
-import { WebhookSignatureFields } from '@/components/routines/WebhookSignatureFields';
 import { useRoutineDraft } from '@/components/routines/use-routine-draft';
 import { AgentTile } from './bits';
 import { IconAction, TASK_KIND_ICONS, TASK_KIND_SHORT } from './task-bits';
@@ -446,7 +445,7 @@ export function TaskForm({
               </Field>
             )}
             {form.webhook !== null && <FieldDescription>
-              {hasAddress ? 'Its address and signature settings are under More options.'
+              {hasAddress ? 'Its address is under More options. Save the app’s signing secret on the task page.'
                 : mode === 'create' ? 'You’ll connect the app after you start the task.' : 'You’ll connect the app after you save.'}
             </FieldDescription>}
             {popoverError('updates')}
@@ -499,16 +498,6 @@ export function TaskForm({
                 <WebhookAddressFields key={`${agentId}/${routineId}`} agentId={agentId} routineId={routineId}
                   path={form.webhook.path} saved={savedWebhook} disabled={disabled} onPendingChange={setAddressBusy} />
               )}
-              <div ref={register('signature')} className="contents">
-                <WebhookSignatureFields value={form.webhook.hmac} disabled={disabled} taskMode
-                  invalidField={invalidField ?? (attempted && !validation.success ? validation.error.issues.find(issue => issue.path[0] === 'webhook' && issue.path[1] === 'hmac')?.path.join('.') : undefined)}
-                  onChange={value => {
-                    if (form.webhook === null) return;
-                    const { hmac: _hmac, ...webhook } = form.webhook;
-                    update('webhook', value === undefined ? webhook : { ...webhook, hmac: value });
-                  }} />
-              </div>
-              {fieldError('signature')}
             </>}
             {(form.kind === 'repeat' || shown.has('conversation')) && (
               <Field data-invalid={invalid('conversation') || undefined}>

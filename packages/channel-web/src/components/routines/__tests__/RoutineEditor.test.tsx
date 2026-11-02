@@ -175,17 +175,6 @@ describe('structured routine form', () => {
       expect(vi.mocked(routineApi.update).mock.calls[0]![0].patch).toStrictEqual({ activeHours: null });
     });
   });
-  it('explains owner signing-secret setup to a member configuring HMAC', async () => {
-    const memberRow = { ...row, schedule: null, webhook: { kind: 'webhook' as const, path: '/member' }, permissions: { edit: true, stop: true, fire: true, manageSecret: true } };
-    vi.mocked(routineApi.get).mockResolvedValue(memberRow);
-    render(<RoutineEditor mode="edit" agentId="a" agentName="Caveman" routine={memberRow} onSaved={vi.fn()} onCancel={vi.fn()} />);
-    await screen.findByDisplayValue(row.name);
-    fireEvent.click(screen.getByRole('button', { name: 'Optional settings' }));
-    fireEvent.click(screen.getByRole('switch', { name: 'Verify signature' }));
-    expect(screen.getByText(/The owner of this routine can manage its signing secret/)).toBeVisible();
-    expect(screen.getByText(/Without a saved secret, signed deliveries are rejected/)).toBeVisible();
-    expect(screen.queryByLabelText('Webhook HMAC secret')).not.toBeInTheDocument();
-  });
   it('creates canonical definitions with Enabled and multiline prompts, without filename or markdown controls', async () => {
     const saved = vi.fn();
     render(
@@ -428,12 +417,6 @@ describe('structured routine form', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Optional settings' }));
     expect(screen.getByRole('switch', { name: 'Active hours' })).toBeDisabled();
     fill('Events (comma-separated)', 'push, update');
-    fireEvent.click(
-      screen.getByRole('switch', { name: 'Verify signature' }),
-    );
-    fireEvent.click(screen.getByRole('radio', { name: 'Other' }));
-    fill('Signature header', 'X-Signature');
-    fill('Signature prefix', 'sha256=');
     fill('Silence token', 'quiet');
     fill('Maximum quiet response characters', '100');
     fireEvent.click(screen.getByRole('radio', { name: 'One ongoing thread' }));
@@ -447,11 +430,6 @@ describe('structured routine form', () => {
               kind: 'webhook',
               path: '/changed',
               events: ['push', 'update'],
-              hmac: {
-                header: 'X-Signature',
-                algorithm: 'sha256',
-                prefix: 'sha256=',
-              },
             },
             activeHours: null,
             conversation: 'shared',

@@ -39,7 +39,6 @@ import { TASK_KIND_LABELS } from '@/lib/task-kinds';
 import { browserTimeZone } from '@/lib/task-finish-by';
 import { TaskForm, type TaskAgentChoice } from '@/components/workspace/TaskForm';
 import { ActiveHoursDaySelector } from './ActiveHoursDaySelector';
-import { WebhookSignatureFields } from './WebhookSignatureFields';
 import { WebhookAddressFields } from './WebhookAddressFields';
 import { changed, useRoutineDraft } from './use-routine-draft';
 
@@ -478,21 +477,6 @@ function RoutineForm({
                 'silenceMaxChars',
                 (v) => update('silenceMaxChars', Number(v)),
                 { type: 'number' },
-              )}
-              {form.webhook !== null && (
-                <>
-                  <WebhookSignatureFields
-                    value={form.webhook.hmac}
-                    disabled={disabled}
-                    taskMode={false}
-                    invalidField={invalidField ?? firstIssue?.path.join('.')}
-                    onChange={value => {
-                      if (form.webhook === null) return;
-                      const { hmac: _hmac, ...webhook } = form.webhook;
-                      update('webhook', value === undefined ? webhook : { ...webhook, hmac: value });
-                    }}
-                  />
-                </>
               )}
             </FieldGroup>
           </CollapsibleContent>

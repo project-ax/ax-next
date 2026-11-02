@@ -133,12 +133,12 @@ describe('routine list', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
     await waitFor(() => expect(routineApi.remove).toHaveBeenCalledWith({ agentId: 'a', routineId: row.routineId, expectedRevision: 'disabled-v', requestId: expect.any(String) }));
   });
-  it('shows HMAC credential controls to a member owner with secret-management permission', async () => {
-    vi.mocked(routineApi.list).mockResolvedValue([{ ...row, schedule: null, webhook: { kind: 'webhook', path: '/member', hmac: { header: 'sig', algorithm: 'sha256' } } }]);
+  it('shows the signing secret row to a member owner with secret-management permission', async () => {
+    vi.mocked(routineApi.list).mockResolvedValue([{ ...row, schedule: null, webhook: { kind: 'webhook', path: '/member' } }]);
     show(); // isAdmin=false, while the real owner shape has manageSecret=true
     await screen.findByText(row.name);
     fireEvent.click(screen.getByRole('button', { name: `Recent runs for ${row.name}` }));
-    expect(await screen.findByText('Webhook HMAC secret')).toBeInTheDocument();
+    expect(await screen.findByText('Signing secret')).toBeInTheDocument();
   });
   it('opens a fresh edit and sends enable/delete revision checks with retry-stable IDs', async () => {
     vi.mocked(routineApi.remove)

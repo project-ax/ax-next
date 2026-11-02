@@ -360,7 +360,6 @@ export function RoutinesList({
                   </Alert>
                 )}
                 {row.webhook !== null &&
-                  row.webhook.hmac &&
                   row.permissions.manageSecret && (
                     <CredentialSlotRow
                       destination={{
@@ -368,7 +367,7 @@ export function RoutinesList({
                         agentId: row.agentId,
                         routineId: row.routineId,
                       }}
-                      slot={{ label: 'Webhook HMAC secret', kind: 'api-key' }}
+                      slot={{ label: 'Signing secret', kind: 'api-key' }}
                       scope={{ scope: 'agent', ownerId: row.agentId }}
                     />
                   )}

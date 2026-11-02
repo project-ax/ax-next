@@ -16,7 +16,7 @@ function summarize(t: TriggerSpec): string {
       return `${summary.kind === 'described' ? summary.text : t.expr} · ${t.tz}`;
     }
     case 'webhook':
-      return `webhook ${t.path}${t.hmac !== undefined ? ' (hmac)' : ''}`;
+      return `webhook ${t.path}`;
   }
 }
 
