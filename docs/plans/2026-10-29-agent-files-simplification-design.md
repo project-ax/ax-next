@@ -391,15 +391,24 @@ Decided 2026-10-30: plain reset; nobody is using ax yet.
   uploads are unchanged. Files auto-attached before this change keep their blob
   and its charge (no migration: their artifact rows live until the agent is
   deleted).
-- **As built (TASK-1017):** approving a held auto-attach no longer risks a blob
-  copy. The runner remembers the holds it raised itself. When the approval
-  reaches the session that raised it, the runner re-sends the identical call to
-  the gate before the next model turn, and an `allow` attaches the same
-  `agent_file` reference: no blob, charged once. The model reads a fixed
-  "that is handled for you" note instead of the host's "make that call again".
-  Accepted residual: a cold session (the hold was raised by an earlier session)
-  still attaches nothing on approval. A stored `agent_file` block that fails
-  today's key rule reads as "<name> (this file is no longer available)" and its
+- **As built (TASK-1017):** approving a held auto-attach closes the common path
+  to a blob copy. The runner remembers the holds it raised itself. When the
+  approval reaches the session that raised it, the runner re-sends the
+  identical call to the gate as it pulls the answer, ahead of the turn that
+  answer opens, and an `allow` attaches the same `agent_file` reference: no
+  blob, charged once. The model reads a fixed "that is handled for you" note
+  instead of the host's "make that call again". This narrows the window; it
+  does not close it. The standing approval exists from the moment the person
+  says yes, so a model that happens to make the identical explicit
+  `artifact_publish` before the runner pulls the answer still spends it on a
+  blob copy: during the decisions undo window (the answer is held back that
+  long before delivery), or during a turn already running on the aisdk loop,
+  which pulls only between turns. An approved chip whose continuation turn
+  throws out of the loop is never delivered; the runner logs
+  `could not attach a generated file (undelivered)` once per chip, and the
+  file stays in the Files tab. Accepted residual: a cold session (the hold was
+  raised by an earlier session) still attaches nothing on approval. A stored
+  `agent_file` block that fails today's key rule reads as "<name> (this file is no longer available)" and its
   turn stays. Chips check whether their file still exists through
   `GET /api/workspace/conversations/:id/status/user-files/*` (a length-0 range
   read: no bytes, no pod) when they appear and after each turn, so a deleted

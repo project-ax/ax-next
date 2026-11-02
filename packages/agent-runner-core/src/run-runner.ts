@@ -1068,9 +1068,14 @@ async function runRunnerInner(
         // the host's "make that call again" would have it guess one, and a
         // correct guess runs the sandbox executor, which copies the file into
         // the blob store. So the runner answers its own holds here, at pull
-        // time, before any model turn can spend the approval: the tracker sends
-        // the identical call back to the gate, and a chip it allows rides the
-        // next turn-end. The turn still runs, opening with the runner's own
+        // time, ahead of the turn this answer opens: the tracker sends the
+        // identical call back to the gate, and a chip it allows rides the next
+        // turn-end. That closes the common path, not every one: the standing
+        // approval exists from the moment the person says yes, so a model that
+        // makes the identical explicit `artifact_publish` before this pull
+        // still spends it on a blob copy, during the decisions undo window
+        // (delivery waits it out) or during a turn already running on a loop
+        // that pulls only between turns (aisdk). The turn still runs, opening with the runner's own
         // fixed note instead of the host's. Any other decision (a cold
         // session's, or a hold the model raised itself) keeps the host note.
         const autoAttach = generatedFiles !== null && typeof entry.decisionId === 'string' &&
@@ -1321,7 +1326,8 @@ async function runRunnerInner(
   // same for automatic chips: a denied call attaches nothing, and a held one is
   // attached only after the person approves it AND the gate itself then allows
   // the identical call, which the runner re-sends when it pulls the approval,
-  // before the next model turn (TASK-1017, see `nextMessage`). Neither ever
+  // ahead of the turn that answer opens (TASK-1017, see `nextMessage` for the
+  // window this narrows but does not close). Neither ever
   // sidesteps an approval. The gate's `updatedInput` is ignored on purpose: a
   // reference names the file the turn created, never a substitute.
   const generatedFilePolicy = createToolPolicy({ client });

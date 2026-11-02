@@ -260,8 +260,9 @@ describe('runRunner — generated file attachment', () => {
   // TASK-1017. A held automatic attach is a call the RUNNER made, so the model
   // never saw it and cannot make it "again". When the person answers, the
   // runner sends that same call back to the gate itself, when the delivery is
-  // pulled: before any model turn could spend the approval through the
-  // sandbox executor, which would copy the file into the blob store.
+  // pulled, ahead of the turn it opens, so the model's own turn is not the
+  // one to spend the approval through the sandbox executor (which would copy
+  // the file into the blob store).
   const APPROVED = 'A person approved attaching new files from earlier in this conversation. ' +
     'That is handled for you: do not publish them yourself unless the user asks you to. You do not need to reply.';
   const DECLINED = 'A person chose not to attach new files from earlier in this conversation, so they were not attached. ' +
