@@ -55,6 +55,7 @@ import {
 import {
   USER_FILE_DOWNLOAD_CHUNK_BYTES,
   USER_FILE_DOWNLOAD_MAX_BYTES,
+  sendUserFileDownload,
 } from '../../server/user-file-download.js';
 import type { RouteRequest } from '../../server/routes-chat.js';
 
@@ -1408,6 +1409,29 @@ describe('the download route', () => {
       { offset: 0, length: MiB },
       { offset: 4, length: 0 },
     ]);
+  });
+
+  it('the helper makes its own probe answer no-store, whatever its caller set', async () => {
+    // TASK-1022 review: both routes set no-store before their ACL, but the
+    // helper must not depend on that. A third caller passing `probe: true`
+    // gets a 200 no cache may keep, too.
+    standardBus();
+    files.set('tiny.bin', { bytes: Uint8Array.from([0x00, 0x01, 0xff, 0x0a]), version: 'v1' });
+    const d = mkRes();
+    await sendUserFileDownload({
+      bus,
+      ctx: initCtx,
+      owner: { userId: 'u1', agentId: 'a1', agentConfig: { displayName: 'A1' } } as Parameters<
+        typeof sendUserFileDownload
+      >[0]['owner'],
+      relPath: 'tiny.bin',
+      downloadName: 'tiny.bin',
+      probe: true,
+      res: d.res,
+    });
+    expect(d.captured.statusCode).toBe(200);
+    expect(d.captured.json).toEqual({ downloadable: true });
+    expect(d.captured.headers).toEqual({ 'cache-control': 'private, no-store' });
   });
 
   it('a probe runs the ACL first: a foreign agent is a 404 with no read, and every probe answer is no-store', async () => {

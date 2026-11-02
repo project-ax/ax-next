@@ -239,6 +239,10 @@ export async function sendUserFileDownload(args: SendUserFileDownloadArgs): Prom
   if (probe === true) {
     // Every check a download makes before its head has passed, so a download
     // would start here. A probe says so and stops: no download header, no body.
+    // no-store here too, not only in the routes that set it before their ACL:
+    // an answer about this moment must never come back from a cache, whoever
+    // the caller is.
+    res.header('cache-control', 'private, no-store');
     res.status(200).json({ downloadable: true });
     return;
   }

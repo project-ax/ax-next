@@ -8,7 +8,7 @@
  * the tab: the only request made from here is the probe, and the browser's own
  * download fetches the file.
  */
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import {
   filenameFromContentDisposition,
   workspaceApi,
@@ -191,7 +191,8 @@ describe('downloadFailureMessage', () => {
     const byStatus = [413, 404, 409, 503, 500].map((s) =>
       downloadFailureMessage(new HttpError('/x', s), AGENT),
     );
-    expect(new Set(byStatus).size).toBe(5);
+    byStatus.push(downloadFailureMessage(new TypeError('Failed to fetch'), AGENT));
+    expect(new Set(byStatus).size).toBe(6);
   });
 
   it('a 409 says the file changed while we were getting it, and to try again', () => {
@@ -203,33 +204,34 @@ describe('downloadFailureMessage', () => {
     expect(msg).not.toContain('file-changed');
   });
 
-  it('the fallback is a download that never started, said exactly', () => {
+  it('a 400 is a file that is not there to send any more, not a connection to retry', () => {
+    // The probe answers 400 `not-a-file` when the key is a folder now: gone,
+    // as the chip already says for the same answer. Retrying never helps, so
+    // it must not get the connection sentence (TASK-1022 review).
+    const msg = downloadFailureMessage(new HttpError('/x', 400), AGENT);
+    expect(msg).toBe(downloadFailureMessage(new HttpError('/x', 404), AGENT));
+    expect(msg).not.toContain('connection');
+  });
+
+  it('only a probe that got NO answer blames the connection', () => {
     /*
       TASK-1022: the browser does the download now, so anything that goes
       wrong after its first byte shows in the browser's download bar, never
-      here. What still lands on this sentence is a probe that got no answer we
-      have a sentence for: no connection at all (status 0), or a status none
-      of the others covers.
+      here. What still lands on the fallbacks is a probe with no answer we
+      have a sentence for. No answer at all (a TypeError from fetch, or an
+      HttpError with no status) may be the connection. A status we have no
+      words for (a 5xx) is the server's doing, and sending someone to check
+      their wifi over it is the mix-up `HTTP_SERVER_ERROR` exists to avoid.
     */
-    for (const e of [new TypeError('Failed to fetch'), new HttpError('/x', 500)]) {
+    for (const e of [new TypeError('Failed to fetch'), new HttpError('/x', 0)]) {
       expect(downloadFailureMessage(e, AGENT)).toBe(
         'That download didn’t start, so nothing was saved. The connection may have dropped. Try again in a moment.',
       );
     }
-  });
-
-  it('the fallback says what it knows, and never that the file is still there', () => {
-    /*
-      A probe with no usable answer tells us nothing about the file. So the
-      sentence says only what it knows — the download did not start, and
-      nothing was saved — and makes no claim about the file. It once said
-      "the file is still there", which is false whenever it was deleted.
-    */
-    for (const e of [new TypeError('network error'), new HttpError('/x', 500)]) {
+    for (const e of [new HttpError('/x', 500), new HttpError('/x', 502), new URIError('URI malformed')]) {
       const msg = downloadFailureMessage(e, AGENT);
+      expect(msg).toBe('That download didn’t start, so nothing was saved. Try again in a moment.');
       expect(msg).not.toContain('still there');
-      expect(msg).toContain('didn’t start');
-      expect(msg).toContain('nothing was saved');
     }
   });
 
@@ -471,8 +473,15 @@ describe('saveFromUrl', () => {
       no object URL: no bytes are in the tab to make one from.
     */
     const RealURL = URL;
+    // A spy, not a stubbed global: `saveFromUrl` constructs a `URL` to check
+    // the route, so the constructor has to stay the real one.
     const createObjectURL = vi.fn((_b: Blob) => 'blob:x');
-    vi.stubGlobal('URL', { ...RealURL, createObjectURL, revokeObjectURL: vi.fn() });
+    const original = Object.getOwnPropertyDescriptor(URL, 'createObjectURL');
+    Object.defineProperty(URL, 'createObjectURL', { value: createObjectURL, configurable: true, writable: true });
+    onTestFinished(() => {
+      if (original) Object.defineProperty(URL, 'createObjectURL', original);
+      else delete (URL as { createObjectURL?: unknown }).createObjectURL;
+    });
     const clicked: Array<{
       href: string | null;
       download: string | null;
@@ -511,6 +520,32 @@ describe('saveFromUrl', () => {
     );
     expect(createObjectURL).not.toHaveBeenCalled();
     // And the anchor does not stay in the document.
+    expect(document.querySelectorAll('a')).toHaveLength(0);
+  });
+
+  it('refuses anything that is not one of our download routes, before any click', () => {
+    /*
+      TASK-1022 review: `download` is ignored on a `javascript:` href, so the
+      click would RUN it; an absolute or protocol-relative URL would leave our
+      origin. The guard is in the function, not only in its doc comment.
+    */
+    const clicks = vi.fn();
+    const realCreate = document.createElement.bind(document);
+    vi.spyOn(document, 'createElement').mockImplementation((tag: string) => {
+      const el = realCreate(tag) as HTMLElement;
+      if (tag === 'a') el.click = clicks;
+      return el;
+    });
+    for (const bad of [
+      'javascript:alert(1)',
+      '//evil.example/api/workspace/x',
+      'https://evil.example/api/workspace/x',
+      '/somewhere/else',
+      'data:text/html,hi',
+    ]) {
+      expect(() => saveFromUrl(bad)).toThrow();
+    }
+    expect(clicks).not.toHaveBeenCalled();
     expect(document.querySelectorAll('a')).toHaveLength(0);
   });
 });

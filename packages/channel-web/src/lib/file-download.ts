@@ -55,7 +55,8 @@ import { workspaceApi } from './workspace-api';
  *
  * `url` MUST be a root-relative route this app built from encoded segments
  * (`workspaceApi.probeFileDownload`, or the chip's own `downloadUrl`). Never
- * an address an agent wrote: the click follows it, wherever it points.
+ * an address an agent wrote. Anything that is not a same-origin
+ * `/api/workspace/` route throws before the click (TASK-1022 review).
  *
  * `download` is present and EMPTY, so the browser takes the name from the
  * route's `Content-Disposition`, which the server already sanitized. The link
@@ -63,6 +64,13 @@ import { workspaceApi } from './workspace-api';
  * straight after.
  */
 export function saveFromUrl(url: string): void {
+  // Enforced, not just documented: a `javascript:` href runs (browsers ignore
+  // `download` on it), and an absolute or protocol-relative one leaves our
+  // origin. Only our own download routes may be handed to the browser.
+  const resolved = new URL(url, window.location.origin);
+  if (resolved.origin !== window.location.origin || !resolved.pathname.startsWith('/api/workspace/')) {
+    throw new Error('saveFromUrl: refusing a URL that is not one of our download routes');
+  }
   const a = document.createElement('a');
   a.href = url;
   a.setAttribute('download', '');
@@ -115,12 +123,13 @@ export function saveBlob(blob: Blob, filename: string): void {
  * asked for before the browser is handed the download. A download that
  * breaks AFTER its first byte (the file changed or was deleted under it, or
  * the connection dropped) never reaches this function: by then the browser
- * has it, and says so in its own download bar. So the last sentence is for a
- * probe that got no answer we have a sentence for (the connection dropped, a
- * status none of the others covers, or a key that could not be put in an
- * address at all), and it says only what it knows: the download didn't
- * start, and nothing was saved. It makes no claim about the file, because a
- * probe with no usable answer told us nothing about it.
+ * has it, and says so in its own download bar. So the last two sentences are
+ * for a probe that got no answer we have a sentence for, and they say only
+ * what they know: the download didn't start, and nothing was saved. Only a
+ * probe that got no answer at all mentions the connection; a status none of
+ * the others covers (a 5xx), or a key that could not be put in an address,
+ * does not. Neither makes a claim about the file, because a probe with no
+ * usable answer told us nothing about it.
  *
  * A 401 never reaches here: `httpFetch` latches it and the whole app moves to
  * the signed-out screen before any caller sees it.
@@ -137,7 +146,10 @@ export function downloadFailureMessage(e: unknown, agentName: string): string {
     */
     return `This file is too big for us to pass along in one piece. Ask ${agentName} for a smaller copy, or to split it up.`;
   }
-  if (status === 404) {
+  // 400 is `not-a-file` (the key is a folder now) or a key the route will not
+  // read: either way the file is not there to send, and retrying will not
+  // change that. The chip says "no longer available" for the same answer.
+  if (status === 404 || status === 400) {
     return 'We could not find that file to send. It may have been rewritten or deleted since this list was drawn.';
   }
   if (status === 409) {
@@ -153,7 +165,14 @@ export function downloadFailureMessage(e: unknown, agentName: string): string {
     */
     return `We couldn’t get to ${agentName}’s files just now. Nothing was lost — try again in a moment.`;
   }
-  return 'That download didn’t start, so nothing was saved. The connection may have dropped. Try again in a moment.';
+  // No answer at all: fetch threw (a TypeError), or an HttpError with no
+  // status. That one may be the connection.
+  if (e instanceof TypeError || (e instanceof HttpError && e.status === 0)) {
+    return 'That download didn’t start, so nothing was saved. The connection may have dropped. Try again in a moment.';
+  }
+  // An answer we have no sentence for (a 5xx is the server's doing, not the
+  // reader's wifi), or a key that could not be put in an address at all.
+  return 'That download didn’t start, so nothing was saved. Try again in a moment.';
 }
 
 export interface FileDownloadState {

@@ -1135,8 +1135,9 @@ export const WORKSPACE_STREAM_LOST =
 /**
  * `attachment; filename="notes.md"` → `notes.md`.
  *
- * Deliberately not a general RFC 6266 parser. The only producer of this header
- * on these routes is the download route's own sanitizer, whose output is
+ * Deliberately not a general RFC 6266 parser. Its one caller now is the chat
+ * attachment chip (`/api/files`): a /files download is named by the browser
+ * itself (TASK-1022). That route uses the same sanitizer, whose output is
  * `[A-Za-z0-9._ -]` and therefore cannot contain the quote that ends this
  * match. A parser that handled continuations and `filename*=` would be a
  * bigger surface reading a string whose shape we already control.
