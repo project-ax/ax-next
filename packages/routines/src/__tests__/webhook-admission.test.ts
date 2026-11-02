@@ -109,6 +109,22 @@ describe('authenticated webhook durable admission',()=>{
       expect(warnings).toEqual([{message:'routines_webhook_secret_fetch_failed',fields:{agentId:'a',routineId:'r',code}}]);
       expect(f.admit).not.toHaveBeenCalled();expect(f.writes).not.toHaveBeenCalled();
     });
+    // Unreachable through a real HookBus (it wraps every throw as a plugin error), but a bus that hands
+    // back a bare Error must still fail closed as `secret`, never as a retry or an unsigned acceptance.
+    it('refuses as secret, logging no code, when the secret read fails with something that is not a plugin error',async()=>{
+      const f=fixture('accepted',plain,async()=>'secret'),r=response(),warnings:unknown[]=[];
+      const real=f.bus.callJoined.bind(f.bus);
+      vi.spyOn(f.bus,'callJoined').mockImplementation((async(name:string,ctx:{logger:{warn:(message:string,fields?:Record<string,unknown>)=>void}},input:unknown)=>{
+        if(name!=='credentials:get')return real(name,ctx as never,input);
+        ctx.logger.warn=(message,fields)=>{if(message==='routines_webhook_secret_fetch_failed')warnings.push({message,fields});};
+        throw new Error('PRIVATE vault detail');
+      }) as never);
+      await f.handler(request(),r.res);
+      expect(r.state.code).toBe(401);
+      expect(f.observeWebhook).toHaveBeenCalledWith(expect.objectContaining({observation:'secret'}),expect.any(Function));
+      expect(warnings).toEqual([{message:'routines_webhook_secret_fetch_failed',fields:{agentId:'a',routineId:'r'}}]);
+      expect(f.admit).not.toHaveBeenCalled();expect(f.writes).not.toHaveBeenCalled();
+    });
   });
   it('keeps an already committed admission acknowledged when the pump fails',async()=>{
     const f=fixture();f.pump.mockRejectedValueOnce(new Error('PRIVATE body'));const r=response();await f.handler(request(),r.res);expect(r.state.code).toBe(202);
