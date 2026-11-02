@@ -1,5 +1,5 @@
 import type { ComponentProps } from 'react';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi, onTestFinished } from 'vitest';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { GeneratedFileChip } from '../GeneratedFileChip';
 import { AgentConversation } from '../AgentConversation';
@@ -128,6 +128,9 @@ describe('GeneratedFileChip', () => {
       // never read, so none of the file comes into the tab.
       const probe = json({ downloadable: true });
       const read = [vi.spyOn(probe, 'blob'), vi.spyOn(probe, 'arrayBuffer')];
+      // The yes's body is cancelled: a host too old to know `?probe` would
+      // otherwise stream the whole file into a body nobody reads.
+      const cancel = vi.spyOn(probe.body!, 'cancel');
       const fetch = chipFetch({ download: async () => probe });
       vi.stubGlobal('fetch', fetch);
       render(<GeneratedFileChip file={agentFile} conversationId="c & 1" />);
@@ -138,6 +141,7 @@ describe('GeneratedFileChip', () => {
       expect(saveFromUrl).toHaveBeenCalledWith('/api/workspace/conversations/c%20%26%201/download/user-files/reports%2FQ3%20plan%20%231.pdf');
       expect(saveBlob).not.toHaveBeenCalled();
       for (const spy of read) expect(spy).not.toHaveBeenCalled();
+      expect(cancel).toHaveBeenCalledOnce();
       // One check that the file is there (on mount, TASK-1017), then the
       // probe the click asked for. Neither goes anywhere near /api/files.
       expect(fetch.mock.calls.map(([url]) => url)).toEqual([
@@ -168,11 +172,15 @@ describe('GeneratedFileChip', () => {
     });
 
     it('says the file is too big on a 413', async () => {
+      // The reader gets copy; the console gets the status (TASK-1022 review).
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      onTestFinished(() => warn.mockRestore());
       vi.stubGlobal('fetch', chipFetch({ download: async () => new Response('{}', { status: 413 }) }));
       render(<GeneratedFileChip file={agentFile} conversationId="c1" />);
       fireEvent.click(screen.getByRole('button'));
       await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent(
         'This file is too big for us to download. Ask the agent for a smaller copy, or to split it up.'));
+      expect(warn).toHaveBeenCalledWith(expect.stringMatching(/^\[file chip download\] .*413/));
     });
 
     it('shows the generic error, not a crash, when the key cannot be put in a URL', async () => {

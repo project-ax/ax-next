@@ -55,8 +55,9 @@
  * byte, then 200 { downloadable: true } instead of the bytes.
  *
  * None of those answers carries a download header. They are all made before
- * the first `header()`, so the agent-authored filename and the octet-stream
- * type never land on an error.
+ * the first download `header()`, so the agent-authored filename and the
+ * octet-stream type never land on an error. (A probe's `no-store`, set first,
+ * is the one header a refusal can carry.)
  *
  * After the head has gone out there is nothing left to answer, so a failure
  * is logged (`workspace_user_file_download_incomplete`) and never rethrown.
@@ -203,7 +204,8 @@ export async function sendUserFileDownload(args: SendUserFileDownloadArgs): Prom
     });
 
   // Everything up to `res.status(200)` can still be refused in words, so no
-  // header is set before it. A refusal carries none of the download's headers.
+  // download header is set before it (a probe's no-store is the exception). A
+  // refusal carries none of the download's headers.
   const beforeHead: BeforeHead = { ctx, agentId, res };
 
   const first = await fileBeforeHead(range(0, USER_FILE_DOWNLOAD_CHUNK_BYTES), beforeHead);

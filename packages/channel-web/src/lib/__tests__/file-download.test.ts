@@ -408,6 +408,7 @@ describe('useFileDownload', () => {
     // The refusal is said in the page, in words, and no download starts:
     // the browser's download bar could only have said "Failed".
     const fetchSpy = stubFetch(404, { error: 'file-not-found' });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     const clicked = clickedLinks();
     const { result } = renderHook(() =>
       useFileDownload({
@@ -429,6 +430,11 @@ describe('useFileDownload', () => {
       'We could not find that file to send. It may have been rewritten or deleted since this list was drawn.',
     );
     expect(clicked).toEqual([]);
+    // The reader gets copy; the console gets the route and the status, so a
+    // failure that keeps repeating is diagnosable (TASK-1022 review).
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringMatching(/^\[file download\] .*\/agents\/a1\/download\/user-files\/gone\.md.*404/),
+    );
   });
 });
 
@@ -565,5 +571,7 @@ describe('saveFromUrl', () => {
       expect(() => saveFromUrl(bad)).toThrow(/refusing/);
     }
     expect(clicks).not.toHaveBeenCalled();
+    // Refused before the link is made, so none is left behind either.
+    expect(document.querySelectorAll('a')).toHaveLength(0);
   });
 });
