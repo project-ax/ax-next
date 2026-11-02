@@ -8,6 +8,15 @@ import { credentialRef, hasLegacySignatureSetting } from './definition.js';
 import type { RoutinesStore } from './store.js';
 import type { WebhookAddressProof } from './webhook-address.js';
 
+/**
+ * The `credentials:get` failures a retry can fix, so a sender is asked to try again (503). The bus
+ * itself raises these: `timeout` (the vault was slow), `no-service` (no vault loaded) and `unknown`
+ * (a plain thrown error, such as a lost database connection). Every other code is about the saved
+ * secret itself (`decrypt-failed`, `invalid-envelope`, `unsupported-credential-kind`, ...) and refuses
+ * as `secret` (401) instead, so the owner is told to save it again.
+ */
+const TRANSIENT_SECRET_READ_CODES: ReadonlySet<string> = new Set(['timeout', 'unknown', 'no-service']);
+
 // HTTP is duck-typed here: no runtime dependency on another plugin.
 export interface HttpRequest {
   readonly path: string;
@@ -72,11 +81,16 @@ export function createWebhookRouter(deps: WebhookRouterDeps): HttpRouteHandler {
       );
     } catch (error) {
       // Only the vault's own "none saved" answer means none. Any other failure
-      // refuses: an outage must never read as "accept unsigned". It's the host's
+      // refuses: it must never read as "accept unsigned". An outage is the host's
       // fault, not the sender's, so a 503 the app retries, like a failed admission.
+      // A saved secret that can't be used (it won't decrypt, say) won't fix itself
+      // on a retry, so it refuses as `secret`, whose status asks the owner to save it again.
       if (!(error instanceof PluginError && error.code === 'credential-not-found')) {
-        unreadable(error instanceof PluginError ? error.code : undefined);
-        await refuse(503, 'unavailable'); return;
+        const code = error instanceof PluginError ? error.code : undefined;
+        unreadable(code);
+        if (code !== undefined && TRANSIENT_SECRET_READ_CODES.has(code)) await refuse(503, 'unavailable');
+        else await refuse(401, 'secret');
+        return;
       }
       secret = null;
     }

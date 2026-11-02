@@ -75,14 +75,38 @@ describe('authenticated webhook durable admission',()=>{
       expect(f.observeWebhook).toHaveBeenCalledWith(expect.objectContaining({observation:reason}),expect.any(Function));
       expect(f.admit).not.toHaveBeenCalled();expect(f.writes).not.toHaveBeenCalled();
     });
+    /** A vault that fails with `failure`, recording the handler's secret-read warnings from the context it was called with. */
+    const failing=(failure:()=>never)=>{
+      const warnings:Array<{message:string;fields:unknown}>=[];
+      const vault=(async(ctx:{logger:{warn:(message:string,fields?:Record<string,unknown>)=>void}})=>{
+        const warn=ctx.logger.warn.bind(ctx.logger);
+        ctx.logger.warn=(message,fields)=>{if(message==='routines_webhook_secret_fetch_failed')warnings.push({message,fields});else warn(message,fields);};
+        return failure();
+      }) as unknown as ()=>Promise<string>;
+      return {vault,warnings};
+    };
+    const vaultError=(code:string)=>()=>{throw new PluginError({plugin:'@ax/credentials',code,message:'PRIVATE vault detail'});};
     // A vault outage is the host's problem, not the sender's: a 503 the app retries, never a 401 it gives up on.
     it.each([
-      ['a vault error',async():Promise<string>=>{throw new PluginError({plugin:'@ax/credentials',code:'timeout',message:'slow'});}],
-      ['a failure that is not a plugin error',async():Promise<string>=>{throw new Error('PRIVATE vault detail');}],
-    ] as const)('asks the sender to retry when the secret can’t be read: %s',async(_name,vault)=>{
+      ['a slow vault','timeout',vaultError('timeout')],
+      ['no vault loaded','no-service',vaultError('no-service')],
+      // The bus wraps a plain thrown Error (a lost database connection, say) as code `unknown`.
+      ['a failure the bus reports as unknown','unknown',()=>{throw new Error('PRIVATE vault detail');}],
+    ] as const)('asks the sender to retry when the secret can’t be read: %s',async(_name,code,failure)=>{
+      const {vault,warnings}=failing(failure);
       const f=fixture('accepted',plain,vault),r=response();await f.handler(request(),r.res);
       expect(r.state.code).toBe(503);
       expect(f.observeWebhook).toHaveBeenCalledWith(expect.objectContaining({observation:'unavailable'}),expect.any(Function));
+      expect(warnings).toEqual([{message:'routines_webhook_secret_fetch_failed',fields:{agentId:'a',routineId:'r',code}}]);
+      expect(f.admit).not.toHaveBeenCalled();expect(f.writes).not.toHaveBeenCalled();
+    });
+    // A saved secret that can't be used won't fix itself on a retry: a 401 whose status tells the owner to save it again.
+    it.each(['decrypt-failed','invalid-ciphertext','invalid-envelope','unsupported-credential-kind'])('refuses, asking for the secret again, when the saved secret is unusable: %s',async code=>{
+      const {vault,warnings}=failing(vaultError(code));
+      const f=fixture('accepted',plain,vault),r=response();await f.handler(request(),r.res);
+      expect(r.state.code).toBe(401);
+      expect(f.observeWebhook).toHaveBeenCalledWith(expect.objectContaining({observation:'secret'}),expect.any(Function));
+      expect(warnings).toEqual([{message:'routines_webhook_secret_fetch_failed',fields:{agentId:'a',routineId:'r',code}}]);
       expect(f.admit).not.toHaveBeenCalled();expect(f.writes).not.toHaveBeenCalled();
     });
   });
