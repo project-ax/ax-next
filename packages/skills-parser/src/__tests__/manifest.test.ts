@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { parseSkillManifest } from '../manifest.js';
+import { MANIFEST_CODES, parseSkillManifest } from '../manifest.js';
+import * as entry from '../index.js';
 
 // A skill manifest carries NO capability block (TASK-100). The canonical shape
 // is name + description + version (+ optional sourceUrl + connectors[]).
@@ -252,5 +253,39 @@ describe('parseSkillManifest', () => {
       expect(r.value.sourceUrl).toBe('https://example.com/s.md');
       expect(r.value.extra).toEqual({ foo: 'bar' });
     });
+  });
+});
+
+// TASK-1018: MANIFEST_CODES is the list downstream classifiers key off
+// (@ax/skills' 400 set, @ax/ipc-core's skill.propose table). Every listed code
+// must be one the parser really emits — a code listed but never emitted is the
+// stale-list drift that left six dead codes in @ax/skills' badRequestCodes.
+// The other direction (emitted but unlisted) is a tsc error: `err()` takes a
+// ManifestCode.
+describe('MANIFEST_CODES', () => {
+  const triggers: Record<string, string> = {
+    'invalid-yaml': 'name: [unclosed',
+    'invalid-manifest': '- just\n- a list',
+    'inline-secret-forbidden': 'name: x\ndescription: x desc\ntoken: abc',
+    'invalid-name': 'name: Not_A_Slug\ndescription: x desc',
+    'invalid-description': 'name: x\ndescription: ""',
+    'invalid-version': 'name: x\ndescription: x desc\nversion: -1',
+    'capability-block-forbidden': 'name: x\ndescription: x desc\ncapabilities: {}',
+    'invalid-connector': 'name: x\ndescription: x desc\nconnectors: nope',
+  };
+
+  it('has a trigger for exactly the listed codes', () => {
+    expect(Object.keys(triggers).sort()).toEqual([...MANIFEST_CODES].sort());
+  });
+
+  it.each(Object.entries(triggers))('the parser emits %s', (code, yaml) => {
+    const r = parseSkillManifest(yaml);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.code).toBe(code);
+  });
+
+  it('is re-exported from the package entry with no duplicates', () => {
+    expect(entry.MANIFEST_CODES).toBe(MANIFEST_CODES);
+    expect(new Set(MANIFEST_CODES).size).toBe(MANIFEST_CODES.length);
   });
 });

@@ -285,9 +285,38 @@ function isErr(r: HandlerResult): r is HandlerErr {
   );
 }
 
+/**
+ * A body read that failed for a reason other than size or JSON — the stream
+ * itself errored, almost always the client hanging up mid-body. This used to
+ * rethrow out of `dispatch` to the listener's per-connection catch, which has
+ * no ctx and so wrote one unstructured stderr line with no reqId (TASK-1018).
+ * The dispatcher holds the per-request ctx, so it logs here: one structured
+ * line carrying the reqId, then the same 500 the listener used to write.
+ */
+function writeBodyReadFailure(
+  res: http.ServerResponse,
+  ctx: AgentContext,
+  action: string,
+  err: unknown,
+): void {
+  ctx.logger.error('ipc_body_read_failed', {
+    action,
+    err: err instanceof Error ? err : new Error(String(err)),
+  });
+  if (res.headersSent) return;
+  try {
+    const fallback = internalError();
+    writeJsonError(res, fallback.status, fallback.body.error.code, fallback.body.error.message);
+  } catch {
+    // Best-effort — the socket is usually already gone.
+  }
+}
+
 async function readBodyOrWriteError(
   req: http.IncomingMessage,
   res: http.ServerResponse,
+  ctx: AgentContext,
+  action: string,
 ): Promise<{ ok: true; value: unknown } | { ok: false }> {
   try {
     const { value } = await readJsonBody(req, MAX_FRAME);
@@ -308,7 +337,8 @@ async function readBodyOrWriteError(
       writeJsonError(res, 400, 'VALIDATION', `invalid json: ${err.message}`);
       return { ok: false };
     }
-    throw err;
+    writeBodyReadFailure(res, ctx, action, err);
+    return { ok: false };
   }
 }
 
@@ -316,6 +346,8 @@ async function readRawBodyOrWriteError(
   req: http.IncomingMessage,
   res: http.ServerResponse,
   maxBytes: number,
+  ctx: AgentContext,
+  action: string,
 ): Promise<{ ok: true; value: Buffer } | { ok: false }> {
   try {
     const value = await readRawBody(req, maxBytes);
@@ -332,7 +364,8 @@ async function readRawBodyOrWriteError(
       writeJsonError(res, 413, 'VALIDATION', 'body too large');
       return { ok: false };
     }
-    throw err;
+    writeBodyReadFailure(res, ctx, action, err);
+    return { ok: false };
   }
 }
 
@@ -390,7 +423,7 @@ export async function dispatch(
       writeJsonError(res, 405, 'VALIDATION', 'method not allowed');
       return;
     }
-    const bodyRead = await readRawBodyOrWriteError(req, res, MAX_BLOB_BODY_BYTES);
+    const bodyRead = await readRawBodyOrWriteError(req, res, MAX_BLOB_BODY_BYTES, ctx, pathname);
     if (!bodyRead.ok) return;
     try {
       const result = await binaryAction.handler(bodyRead.value, ctx, bus, url);
@@ -412,7 +445,7 @@ export async function dispatch(
       writeJsonError(res, 405, 'VALIDATION', 'method not allowed');
       return;
     }
-    const bodyRead = await readBodyOrWriteError(req, res);
+    const bodyRead = await readBodyOrWriteError(req, res, ctx, pathname);
     if (!bodyRead.ok) return;
     try {
       const result = await action.handler(bodyRead.value, ctx, bus);
@@ -434,7 +467,7 @@ export async function dispatch(
       writeJsonError(res, 405, 'VALIDATION', 'method not allowed');
       return;
     }
-    const bodyRead = await readBodyOrWriteError(req, res);
+    const bodyRead = await readBodyOrWriteError(req, res, ctx, pathname);
     if (!bodyRead.ok) return;
 
     const validated = evt.validate(bodyRead.value);

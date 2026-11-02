@@ -8,6 +8,7 @@ import {
   type AgentContext,
 } from '@ax/core';
 import { SKILL_PROPOSE_REASON_MAX, SkillProposeResponseSchema } from '@ax/ipc-protocol';
+import { MANIFEST_CODES } from '@ax/skills-parser';
 import { skillProposeHandler } from '../handlers/skill-propose.js';
 
 const emptyCaps = { allowedHosts: [], credentials: [], mcpServers: [], packages: { npm: [], pypi: [] } };
@@ -266,6 +267,24 @@ describe('skill.propose handler (TASK-74)', () => {
     expect(text).not.toContain('echo-me-not');
     expect(entries).toHaveLength(0);
   });
+
+  // TASK-1018 drift guard, runtime half: driven off the PARSER's own list, not
+  // a copy, so a code the parser adds fails here even before anyone runs tsc
+  // (the compile-time half is the table's `satisfies Record<ManifestCode,
+  // true>` in skill-propose.ts). A new code must be classified, not left to
+  // fall through to a logged 500.
+  it.each([...MANIFEST_CODES])(
+    "TASK-1018: parser code %s (from the parser's own list) is a 400 re-draft",
+    async (code) => {
+      const { ctx, entries } = loggedCtx();
+      const bus = busWithPropose(async () => {
+        throw new PluginError({ code, plugin: '@ax/skills', message: 'echo-me-not' });
+      });
+      const r = await skillProposeHandler(validPayload, ctx, bus);
+      expect(r.status).toBe(400);
+      expect(entries).toHaveLength(0);
+    },
+  );
 
   // Anti-vacuity for the 500 rows: the error log is gated on the mapped 500,
   // not on "any PluginError". These codes all reach mapPluginError and map to

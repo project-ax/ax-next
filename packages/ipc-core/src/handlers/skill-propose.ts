@@ -11,6 +11,7 @@ import { zodSummary,
   validationError,
 } from '../errors.js';
 import { clampCodeUnits, isOwnerlessId, PluginError } from '@ax/core';
+import type { ManifestCode } from '@ax/skills-parser';
 import type { ActionHandler } from './types.js';
 
 // Structural-validation PluginError codes the skills:propose hook throws when
@@ -27,17 +28,27 @@ import type { ActionHandler } from './types.js';
 // An explicit list, not an `invalid-` prefix match (TASK-1015): two parser
 // codes don't carry the prefix (an honest `capabilities:` block or `token:` key
 // became a retried 500), and the bus's own `invalid-return` (a service answer
-// that failed its schema, a HOST fault) does. A code the parser adds later
-// falls through to a logged 500, which is the safe direction.
+// that failed its schema, a HOST fault) does.
+//
+// The parser half is pinned to the parser's own type (TASK-1018): `satisfies
+// Record<ManifestCode, true>` makes a code the parser adds later a `tsc`
+// error here until someone classifies it. A type-only import, so no runtime
+// coupling to @ax/skills-parser. (Deliberately NOT built from the parser's
+// runtime list: a new code should force a decision, not silently become a
+// 400.)
+const MANIFEST_REJECT_CODES = {
+  'invalid-yaml': true,
+  'invalid-manifest': true,
+  'inline-secret-forbidden': true,
+  'invalid-name': true,
+  'invalid-description': true,
+  'invalid-version': true,
+  'capability-block-forbidden': true,
+  'invalid-connector': true,
+} as const satisfies Record<ManifestCode, true>;
 const STRUCTURAL_REJECT_CODES: ReadonlySet<string> = new Set([
-  'invalid-yaml',
-  'invalid-manifest',
-  'inline-secret-forbidden',
-  'invalid-name',
-  'invalid-description',
-  'invalid-version',
-  'capability-block-forbidden',
-  'invalid-connector',
+  ...Object.keys(MANIFEST_REJECT_CODES),
+  // The bundle-file validator's code (thrown by skills:propose, not the parser).
   'invalid-bundle-file',
 ]);
 function isStructuralRejectCode(code: string): boolean {
