@@ -57,7 +57,8 @@ describe('independent methods through real approval, restart and HTTP dispatch',
     const definition = {
       name: 'Approved dual repeat', promptBody: 'Approved dual input: {{payload}}',
       schedule: { kind: 'interval', every: '60s' },
-      webhook: { kind: 'webhook', path: '/approved-dual', events: ['push'], hmac: { header: 'X-Signature', algorithm: 'sha256', prefix: 'sha256=' } },
+      // No signature settings (TASK-1026): the secret saved below turns checks on, and the host detects the format.
+      webhook: { kind: 'webhook', path: '/approved-dual', events: ['push'] },
       activeHours: { start: '09:00', end: '17:00', tz: 'UTC', days: ['fri'] },
     };
     const call: ToolCall = { id: 'dual-approved', name: 'routine_create', input: { requestId: 'dual-approved', definition } };
@@ -308,7 +309,11 @@ describe('registered approval-to-tick-to-webhook cutover canary', () => {
         kind: 'webhook', path: '/canary', events: ['push'], hmac: { header: 'X-Signature', algorithm: 'sha256', prefix: 'sha256=' },
       } },
     });
-    expect(await h.bus.call('tool:execute:routine_get', ctx, { id: 'get', name: 'routine_get', input: { routineId: row.routineId } })).toEqual({ ...changed, delivery: { active: 0, waiting: 0 } });
+    // A person's Settings edit still saves a legacy signature setting; the agent's read leaves it out (TASK-1026).
+    expect(changed.webhook?.hmac).toEqual({ header: 'X-Signature', algorithm: 'sha256', prefix: 'sha256=' });
+    const { hmac: _hmac, ...agentWebhook } = changed.webhook!;
+    expect(await h.bus.call('tool:execute:routine_get', ctx, { id: 'get', name: 'routine_get', input: { routineId: row.routineId } }))
+      .toStrictEqual({ ...changed, webhook: agentWebhook, delivery: { active: 0, waiting: 0 } });
     await expect(h.bus.call('routines:get', h.teamAdmin, { agentId: h.agentId, routineId: row.routineId })).rejects.toThrow();
     await h.bus.call('routines:set-webhook-secret', ctx, { agentId: h.agentId, routineId: row.routineId, expectedRevision: changed.revision, operation: 'set', secret: Buffer.from('canary-only-key') });
     // Preserve the legacy shared-address canary; new jobs use their own token.

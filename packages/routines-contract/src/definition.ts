@@ -62,13 +62,24 @@ export const IntervalTriggerSchema = z.object({
 export const CronTriggerSchema = z.object({
   kind: z.literal('cron'), expr: z.string().min(1).max(256), tz: RoutineTimezoneSchema,
 }).strict();
-/** Existing raw-body HMAC settings remain valid without normalization or defaults changing. */
+/**
+ * Saved before TASK-1026. Still parsed so saved tasks keep working; the host
+ * detects the signing format, ignores these values, and their presence keeps
+ * signature checks on. Nothing authors them now: the editors pass a saved one
+ * back unchanged, and the agent tools refuse one (`refuseSignatureSettings`).
+ * Keep parsing it exactly as before, `algorithm` default included, so saved
+ * values read the same.
+ */
 export const CustomWebhookHmacSchema = z.object({
   header: z.string().min(1).max(128).regex(/^[!#$%&'*+.^_`|~A-Za-z0-9-]+$/, 'Invalid header.'),
   algorithm: z.enum(['sha256', 'sha1']).default('sha256'),
   prefix: z.string().max(128).optional(),
 }).strict();
-/** Named apps fix the entire signing protocol; raw overrides would be misleading. */
+/**
+ * Saved before TASK-1026, like `CustomWebhookHmacSchema`: still parsed, values
+ * ignored, presence keeps signature checks on, and nothing authors them now.
+ * A named app took no header, algorithm or prefix, and still doesn't.
+ */
 export const WebhookHmacSchema = z.union([
   CustomWebhookHmacSchema,
   z.object({ app: z.enum(['stripe', 'slack', 'zendesk']) }).strict(),
@@ -76,6 +87,7 @@ export const WebhookHmacSchema = z.union([
 export const WebhookTriggerSchema = z.object({
   kind: z.literal('webhook'), path: z.string().refine(validateWebhookPath, 'Invalid webhook path.'),
   events: z.array(z.string().min(1).max(64).regex(/^[A-Za-z0-9_-]+$/, 'Invalid event name.')).max(32).optional(),
+  /** Saved before TASK-1026 (`WebhookHmacSchema`): only its presence counts. */
   hmac: WebhookHmacSchema.optional(),
   respondWithin: z.string().refine(value => { const seconds = durationToSeconds(value); return seconds !== null && seconds <= 86400; }, 'Choose a response time from 1 minute to 24 hours.').optional(),
 }).strict();
