@@ -1,14 +1,17 @@
 import type { ComponentProps } from 'react';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi, onTestFinished } from 'vitest';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { GeneratedFileChip } from '../GeneratedFileChip';
 import { AgentConversation } from '../AgentConversation';
-import { saveBlob } from '@/lib/file-download';
+import { saveBlob, saveFromUrl } from '@/lib/file-download';
 import type { ThreadMessage } from '@/lib/workspace-api';
 
-vi.mock('@/lib/file-download', () => ({ saveBlob: vi.fn() }));
+vi.mock('@/lib/file-download', () => ({ saveBlob: vi.fn(), saveFromUrl: vi.fn() }));
 const file = { attachmentId: '0123456789abcdef0123456789abcdef', displayName: 'budget.csv', mediaType: 'text/csv', sizeBytes: 2048 };
-beforeEach(() => { vi.mocked(saveBlob).mockClear(); });
+beforeEach(() => {
+  vi.mocked(saveBlob).mockClear();
+  vi.mocked(saveFromUrl).mockClear();
+});
 afterEach(() => { vi.unstubAllGlobals(); });
 
 const agentFile = { attachmentId: null, agentFilePath: 'reports/Q3 plan #1.pdf', displayName: 'Q3 plan #1.pdf', mediaType: 'application/pdf', sizeBytes: 10 };
@@ -21,13 +24,14 @@ const json = (body: unknown, status = 200): Response =>
 
 /**
  * `fetch` for an agent-file chip. Its status check gets `status()` (the file
- * is there, by default) and its download gets `download()`. Any other address
- * is a bug in the chip, so it throws.
+ * is there, by default) and its download route gets `download()`. Since
+ * TASK-1022 the only request a click makes there is the probe, so the default
+ * is the probe's yes. Any other address is a bug in the chip, so it throws.
  */
 function chipFetch(answers: { status?: () => Promise<Response>; download?: () => Promise<Response> } = {}) {
   return vi.fn(async (url: string, _init?: RequestInit): Promise<Response> => {
     if (url.includes('/status/user-files/')) return (answers.status ?? (async () => json({ available: true })))();
-    if (url.includes('/download/user-files/')) return (answers.download ?? (async () => new Response('pdf')))();
+    if (url.includes('/download/user-files/')) return (answers.download ?? (async () => json({ downloadable: true })))();
     throw new Error(`the chip asked for ${url}`);
   });
 }
@@ -118,32 +122,50 @@ describe('GeneratedFileChip', () => {
   });
 
   describe('agent-file chips (TASK-1012)', () => {
-    it('downloads live through the conversation route and never touches /api/files', async () => {
-      const fetch = chipFetch({
-        download: async () => new Response('pdf', { headers: { 'content-disposition': 'attachment; filename="Q3 plan #1.pdf"' } }),
-      });
+    it('downloads live through the conversation route: it asks first, the browser saves it, and nothing touches /api/files', async () => {
+      // TASK-1022: the click probes the route, then hands the route itself to
+      // the browser, which streams the file to disk. The probe's answer is
+      // never read, so none of the file comes into the tab.
+      const probe = json({ downloadable: true });
+      const read = [
+        vi.spyOn(probe, 'blob'),
+        vi.spyOn(probe, 'arrayBuffer'),
+        vi.spyOn(probe, 'text'),
+        vi.spyOn(probe, 'json'),
+      ];
+      // The yes's body is cancelled: a host too old to know `?probe` would
+      // otherwise stream the whole file into a body nobody reads.
+      const cancel = vi.spyOn(probe.body!, 'cancel');
+      const fetch = chipFetch({ download: async () => probe });
       vi.stubGlobal('fetch', fetch);
       render(<GeneratedFileChip file={agentFile} conversationId="c & 1" />);
       const button = screen.getByRole('button', { name: 'Download Q3 plan #1.pdf' });
       expect(button).toBeEnabled();
       fireEvent.click(button);
-      await waitFor(() => expect(saveBlob).toHaveBeenCalledOnce());
-      expect(saveBlob).toHaveBeenLastCalledWith(expect.any(Blob), 'Q3 plan #1.pdf');
-      // One check that the file is there (on mount, TASK-1017), then the one
-      // download the click asked for. Neither goes anywhere near /api/files.
+      await waitFor(() => expect(saveFromUrl).toHaveBeenCalledOnce());
+      expect(saveFromUrl).toHaveBeenCalledWith('/api/workspace/conversations/c%20%26%201/download/user-files/reports%2FQ3%20plan%20%231.pdf');
+      expect(saveBlob).not.toHaveBeenCalled();
+      for (const spy of read) expect(spy).not.toHaveBeenCalled();
+      expect(cancel).toHaveBeenCalledOnce();
+      // One check that the file is there (on mount, TASK-1017), then the
+      // probe the click asked for. Neither goes anywhere near /api/files.
       expect(fetch.mock.calls.map(([url]) => url)).toEqual([
         '/api/workspace/conversations/c%20%26%201/status/user-files/reports%2FQ3%20plan%20%231.pdf',
-        '/api/workspace/conversations/c%20%26%201/download/user-files/reports%2FQ3%20plan%20%231.pdf',
+        '/api/workspace/conversations/c%20%26%201/download/user-files/reports%2FQ3%20plan%20%231.pdf?probe=1',
       ]);
-      expect(fetch).toHaveBeenLastCalledWith('/api/workspace/conversations/c%20%26%201/download/user-files/reports%2FQ3%20plan%20%231.pdf', { credentials: 'include' });
+      expect(fetch).toHaveBeenLastCalledWith('/api/workspace/conversations/c%20%26%201/download/user-files/reports%2FQ3%20plan%20%231.pdf?probe=1', { credentials: 'include' });
     });
 
     it.each([404, 400])('says the file is gone on a %i', async (status) => {
-      // The check on mount found the file; it was gone by the click.
-      vi.stubGlobal('fetch', chipFetch({ download: async () => new Response('{}', { status }) }));
+      // The check on mount found the file; it was gone by the click. What
+      // refused was the click's probe, so the browser is handed nothing.
+      const fetch = chipFetch({ download: async () => new Response('{}', { status }) });
+      vi.stubGlobal('fetch', fetch);
       render(<GeneratedFileChip file={agentFile} conversationId="c1" />);
       fireEvent.click(screen.getByRole('button'));
       await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('This file is no longer available to download.'));
+      expect(fetch).toHaveBeenLastCalledWith(`${DOWNLOAD_URL}?probe=1`, { credentials: 'include' });
+      expect(saveFromUrl).not.toHaveBeenCalled();
       expect(saveBlob).not.toHaveBeenCalled();
     });
 
@@ -155,11 +177,15 @@ describe('GeneratedFileChip', () => {
     });
 
     it('says the file is too big on a 413', async () => {
+      // The reader gets copy; the console gets the status (TASK-1022 review).
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      onTestFinished(() => warn.mockRestore());
       vi.stubGlobal('fetch', chipFetch({ download: async () => new Response('{}', { status: 413 }) }));
       render(<GeneratedFileChip file={agentFile} conversationId="c1" />);
       fireEvent.click(screen.getByRole('button'));
       await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent(
         'This file is too big for us to download. Ask the agent for a smaller copy, or to split it up.'));
+      expect(warn).toHaveBeenCalledWith(expect.stringMatching(/^\[file chip download\] .*413/));
     });
 
     it('shows the generic error, not a crash, when the key cannot be put in a URL', async () => {
@@ -228,8 +254,9 @@ describe('GeneratedFileChip', () => {
       expect(button).toBeEnabled();
       expect(screen.getByText('10 B · Download')).toBeVisible();
       fireEvent.click(button);
-      await waitFor(() => expect(saveBlob).toHaveBeenCalledOnce());
-      expect(fetch).toHaveBeenLastCalledWith(DOWNLOAD_URL, { credentials: 'include' });
+      await waitFor(() => expect(saveFromUrl).toHaveBeenCalledOnce());
+      expect(saveFromUrl).toHaveBeenCalledWith(DOWNLOAD_URL);
+      expect(fetch).toHaveBeenLastCalledWith(`${DOWNLOAD_URL}?probe=1`, { credentials: 'include' });
     });
 
     it('rechecks when a new turn lands, and not on a re-render that brings none', async () => {

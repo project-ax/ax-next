@@ -24,6 +24,8 @@
  *                                      — the same BYTES for a chat file chip,
  *                                        from the conversation's own agent
  *                                        (TASK-1012)
+ *        ?probe=1 on either download: the same answers up to the first byte,
+ *        then 200 {downloadable:true} instead of the bytes (TASK-1022)
  * GET  /api/workspace/conversations/:conversationId/status/user-files/*
  *                                      — whether that chip's file is still
  *                                        there, reading none of it (TASK-1017)
@@ -7946,16 +7948,29 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
      *     `file-changed`; one that changes after it is torn down mid-body
      *     rather than handed over as complete (`server/user-file-download.ts`).
      *   - It has a ceiling. A file over `USER_FILE_DOWNLOAD_MAX_BYTES` is a
-     *     413 before any byte, said out loud, rather than a long download the
-     *     tab cannot hold.
+     *     413 before any byte, said out loud, rather than a download that
+     *     keeps a range reader busy for as long as a file that size takes.
      *
      * A read that fails is a 503, whatever it threw: a file the host could
      * not read is not a file that is missing (404), and not a crash (500).
+     *
+     * `?probe=1` (any value) asks without downloading (TASK-1022). Every
+     * check above runs as it would for a download, and every refusal is the
+     * download's own, up to the first byte. Then it answers
+     * `200 {downloadable: true}` in place of the head and the bytes. Every
+     * probe answer is `private, no-store`. The client asks first because it
+     * hands the download itself to the browser, whose download bar cannot
+     * say a 404, a 409 or a 413 in words.
      */
     async agentUserFileDownload(
       req: RouteRequest,
       res: DownloadRouteResponse,
     ): Promise<void> {
+      const probe = req.query['probe'] !== undefined;
+      // Before the ACL, so EVERY probe answer (401 / 404 / 400 included) is
+      // no-store, as on the chip's status route: an answer about this moment
+      // must never come back from a cache later.
+      if (probe) res.header('cache-control', 'private, no-store');
       const userId = await authOr401(bus, initCtx, req, res);
       if (userId === null) return;
       const agentId = req.params.agentId ?? '';
@@ -7986,6 +8001,7 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
         owner: userFilesOwner(agent, userId),
         relPath,
         downloadName: basenameOf(relPath),
+        probe,
         res,
       });
     },
@@ -8006,23 +8022,34 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
      * own, its agent must still be in their reach, and the agent comes from
      * the conversation, never from the request. Both checks run before the
      * key is validated, and nothing is read until all three have passed.
+     *
+     * `?probe=1` asks here the way it does on the Files tab's route
+     * (TASK-1022): behind the same ACL, the same answers up to the first
+     * byte, then `200 {downloadable: true}` instead of the bytes, all of them
+     * no-store.
      */
     async conversationAgentFileDownload(
       req: RouteRequest,
       res: DownloadRouteResponse,
     ): Promise<void> {
+      const probe = req.query['probe'] !== undefined;
+      // Before the ACL, as on the Files tab's route: every probe answer is
+      // no-store, the ACL's own included.
+      if (probe) res.header('cache-control', 'private, no-store');
       const chip = await chipFileOr404(req, res);
       if (chip === null) return;
       const { userId, agent, relPath } = chip;
 
       // The Files tab's download, on the agent's own ctx and owner. It owns
-      // every answer from here on (404 / 400 not-a-file / 409 file-changed / 413 / 503).
+      // every answer from here on (404 / 400 not-a-file / 409 file-changed /
+      // 413 / 503, and a probe's 200).
       await sendUserFileDownload({
         bus,
         ctx: agentWorkspaceCtx(agent.id, userId),
         owner: userFilesOwner(agent, userId),
         relPath,
         downloadName: basenameOf(relPath),
+        probe,
         res,
       });
     },

@@ -34,13 +34,14 @@ vi.mock('@/lib/workspace-api', async () => {
     ...actual,
     workspaceApi: {
       userFiles: vi.fn(),
-      downloadFile: vi.fn(),
+      probeFileDownload: vi.fn(),
     },
   };
 });
 
 const userFilesMock = vi.mocked(workspaceApi.userFiles);
-const downloadMock = vi.mocked(workspaceApi.downloadFile);
+/** The probe: it resolves to the route the browser is then handed. */
+const downloadMock = vi.mocked(workspaceApi.probeFileDownload);
 
 function renderTab() {
   return render(<AgentFiles agentId="a-quill" agentName="Quill" />);
@@ -473,19 +474,25 @@ describe('AgentFiles: downloading', () => {
    *
    * jsdom has no download machinery, so a real `<a download>` click here is
    * both unobservable and noisy ("Not implemented: navigation"). Intercepting
-   * the click gives us the one thing worth asserting: the name the file lands
-   * under.
+   * the click gives us the two things worth asserting: where the browser was
+   * sent, and what the link said about the file's name.
    */
-  let saved: string[];
+  let saved: Array<{ href: string | null; download: string | null }>;
 
   beforeEach(() => {
     saved = [];
     vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(
       function (this: HTMLAnchorElement) {
-        saved.push(this.download);
+        saved.push({
+          href: this.getAttribute('href'),
+          download: this.getAttribute('download'),
+        });
       },
     );
   });
+
+  /** What the probe hands back for `reports/q3.pdf`: the route itself. */
+  const Q3_ROUTE = '/api/workspace/agents/a-quill/download/user-files/reports%2Fq3.pdf';
 
   /** A one-file tree whose file already answers with `body`. */
   function oneFile(body: {
@@ -514,7 +521,7 @@ describe('AgentFiles: downloading', () => {
     // agent made you looks like on this tab, and it used to be the end of the
     // road.
     oneFile({ body: null, clipped: 'binary' });
-    downloadMock.mockResolvedValue({ blob: new Blob(['x']), filename: 'q3.pdf' });
+    downloadMock.mockResolvedValue(Q3_ROUTE);
     renderTab();
     fireEvent.click(await screen.findByText('reports/q3.pdf'));
     const button = await screen.findByRole('button', { name: /download/i });
@@ -526,23 +533,21 @@ describe('AgentFiles: downloading', () => {
     );
   });
 
-  it('saves under the name the SERVER sanitized, not the label on the row', async () => {
+  it('leaves the name to the server: the anchor is the route with an empty download attribute', async () => {
     /*
       The row's label was fenced for a SCREEN; the download name was sanitized
       for a FILESYSTEM and a header, which is a different rule set. Re-deriving
       one from the other in the browser would be a second sanitizer, and two
       sanitizers is the shape where one gets fixed and the other quietly does
-      not. So the client uses what came back on `Content-Disposition`.
+      not. So the link names nothing (`download=""`), and the browser takes the
+      name the route put on `Content-Disposition` (TASK-1022).
     */
     oneFile({ body: null, clipped: 'binary' });
-    downloadMock.mockResolvedValue({
-      blob: new Blob(['x']),
-      filename: 'q3_final.pdf',
-    });
+    downloadMock.mockResolvedValue(Q3_ROUTE);
     renderTab();
     fireEvent.click(await screen.findByText('reports/q3.pdf'));
     fireEvent.click(await screen.findByRole('button', { name: /download/i }));
-    await waitFor(() => expect(saved).toEqual(['q3_final.pdf']));
+    await waitFor(() => expect(saved).toEqual([{ href: Q3_ROUTE, download: '' }]));
   });
 
   it('sends the RAW path, not the fenced label', async () => {
@@ -566,10 +571,9 @@ describe('AgentFiles: downloading', () => {
         clipped: 'binary',
       },
     });
-    downloadMock.mockResolvedValue({
-      blob: new Blob(['x']),
-      filename: 'invoice.pdf',
-    });
+    downloadMock.mockResolvedValue(
+      `/api/workspace/agents/a-quill/download/user-files/${encodeURIComponent(raw)}`,
+    );
     renderTab();
     fireEvent.click(await screen.findByText('invoice.pdf'));
     fireEvent.click(await screen.findByRole('button', { name: /download/i }));
@@ -593,7 +597,7 @@ describe('AgentFiles: downloading', () => {
     fireEvent.click(await screen.findByText('reports/q3.pdf'));
     fireEvent.click(await screen.findByRole('button', { name: /download/i }));
 
-    expect(await screen.findByText(/download didn’t finish/i)).toBeTruthy();
+    expect(await screen.findByText(/download didn’t start/i)).toBeTruthy();
     expect(screen.queryByText(/has not written anything yet/)).toBeNull();
     expect(screen.queryByText(/could not read Quill/i)).toBeNull();
     // The body it DID manage to show is still there — the failure was the
@@ -622,14 +626,14 @@ describe('AgentFiles: downloading', () => {
     oneFile({ body: 'plain', clipped: null });
     downloadMock
       .mockRejectedValueOnce(new WorkspaceApiError('/x', 500))
-      .mockResolvedValueOnce({ blob: new Blob(['x']), filename: 'q3.pdf' });
+      .mockResolvedValueOnce(Q3_ROUTE);
     renderTab();
     fireEvent.click(await screen.findByText('reports/q3.pdf'));
     const button = await screen.findByRole('button', { name: /download/i });
     fireEvent.click(button);
-    expect(await screen.findByText(/download didn’t finish/i)).toBeTruthy();
+    expect(await screen.findByText(/download didn’t start/i)).toBeTruthy();
     fireEvent.click(button);
-    await waitFor(() => expect(screen.queryByText(/download didn’t finish/i)).toBeNull());
+    await waitFor(() => expect(screen.queryByText(/download didn’t start/i)).toBeNull());
   });
 
   it('disables the button while a download is in flight', async () => {
@@ -670,13 +674,16 @@ describe('AgentFiles: downloading', () => {
 // the pane that holds it is reused across files unless something says not to.
 // ---------------------------------------------------------------------------
 describe('AgentFiles: the download state belongs to the file, not to the pane', () => {
-  let saved: string[];
+  let saved: Array<{ href: string | null; download: string | null }>;
 
   beforeEach(() => {
     saved = [];
     vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(
       function (this: HTMLAnchorElement) {
-        saved.push(this.download);
+        saved.push({
+          href: this.getAttribute('href'),
+          download: this.getAttribute('download'),
+        });
       },
     );
     durableTree({
@@ -706,10 +713,10 @@ describe('AgentFiles: the download state belongs to the file, not to the pane', 
     renderTab();
     fireEvent.click(await screen.findByText('a.pdf'));
     fireEvent.click(await screen.findByRole('button', { name: /download/i }));
-    expect(await screen.findByText(/download didn’t finish/i)).toBeTruthy();
+    expect(await screen.findByText(/download didn’t start/i)).toBeTruthy();
 
     fireEvent.click(screen.getByText('b.pdf'));
-    await waitFor(() => expect(screen.queryByText(/download didn’t finish/i)).toBeNull());
+    await waitFor(() => expect(screen.queryByText(/download didn’t start/i)).toBeNull());
   });
 
   it('does not let one file’s in-flight download swallow the next file’s click', async () => {
@@ -721,14 +728,16 @@ describe('AgentFiles: the download state belongs to the file, not to the pane', 
       "Getting it…". A control that does nothing and reports that it is working
       is the worst outcome available here.
     */
+    const route = (path: string) =>
+      `/api/workspace/agents/a-quill/download/user-files/${path}`;
     let finishA: (() => void) | undefined;
     downloadMock.mockImplementation(async (_a: string, path: string) => {
       if (path === 'a.pdf') {
-        return new Promise((resolve) => {
-          finishA = () => resolve({ blob: new Blob(['a']), filename: 'a.pdf' });
+        return new Promise<string>((resolve) => {
+          finishA = () => resolve(route('a.pdf'));
         });
       }
-      return { blob: new Blob(['b']), filename: 'b.pdf' };
+      return route('b.pdf');
     });
     renderTab();
     fireEvent.click(await screen.findByText('a.pdf'));
@@ -738,7 +747,9 @@ describe('AgentFiles: the download state belongs to the file, not to the pane', 
     // A is still in flight. Move to B and ask for it.
     fireEvent.click(screen.getByText('b.pdf'));
     fireEvent.click(await screen.findByRole('button', { name: /^download$/i }));
-    await waitFor(() => expect(saved).toEqual(['b.pdf']));
+    await waitFor(() =>
+      expect(saved).toEqual([{ href: route('b.pdf'), download: '' }]),
+    );
     finishA?.();
   });
 });

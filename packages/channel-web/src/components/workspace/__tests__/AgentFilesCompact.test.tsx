@@ -45,7 +45,7 @@ vi.mock('@/lib/workspace-api', async () => {
     ...actual,
     workspaceApi: {
       userFiles: vi.fn(),
-      downloadFile: vi.fn(),
+      probeFileDownload: vi.fn(),
     },
   };
 });

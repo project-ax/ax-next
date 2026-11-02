@@ -55,6 +55,7 @@ import {
 import {
   USER_FILE_DOWNLOAD_CHUNK_BYTES,
   USER_FILE_DOWNLOAD_MAX_BYTES,
+  sendUserFileDownload,
 } from '../../server/user-file-download.js';
 import type { RouteRequest } from '../../server/routes-chat.js';
 
@@ -74,12 +75,12 @@ const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout
 const sha256 = (bytes: Uint8Array): string => createHash('sha256').update(bytes).digest('hex');
 const v = (s: string): UserFileVersion => s as UserFileVersion;
 
-function mkReq(params: Record<string, string> = {}): RouteRequest {
+function mkReq(params: Record<string, string> = {}, query: Record<string, string> = {}): RouteRequest {
   return {
     headers: {},
     body: Buffer.alloc(0),
     cookies: {},
-    query: {},
+    query,
     params,
     signedCookie: () => null,
   };
@@ -340,6 +341,12 @@ describe('the download route', () => {
 
   async function download(splat: string, d = mkRes()): Promise<ReturnType<typeof mkRes>> {
     await handlers().agentUserFileDownload(mkReq({ agentId: 'a1', '*': splat }), d.res);
+    return d;
+  }
+
+  /** The same request asked with `?probe=1` (TASK-1022). */
+  async function probeDownload(splat: string, d = mkRes()): Promise<ReturnType<typeof mkRes>> {
+    await handlers().agentUserFileDownload(mkReq({ agentId: 'a1', '*': splat }, { probe: '1' }), d.res);
     return d;
   }
 
@@ -644,10 +651,10 @@ describe('the download route', () => {
 
   it('413s a file over USER_FILE_DOWNLOAD_MAX_BYTES with exactly one range call and no body', async () => {
     /*
-      The Files tab holds a download in memory before it saves it, so there is
-      a size past which we do not start. The first range says how big the file
-      is; past the ceiling we refuse right there, before a header or a byte of
-      the body, and read nothing more.
+      One download keeps a range reader busy for as long as its file takes,
+      so there is a size past which we do not start. The first range says how
+      big the file is; past the ceiling we refuse right there, before a header
+      or a byte of the body, and read nothing more.
     */
     standardBus();
     files.set('huge.bin', {
@@ -1233,6 +1240,265 @@ describe('the download route', () => {
       expect(call).toMatchObject({ agentId: 'a1', userId: 'u1', ownerAgentId: 'a1', relPath: 'x.bin' });
     }
   });
+
+  // --- the probe (TASK-1022) ------------------------------------------------
+  //
+  // `?probe=1` asks what a download would answer, without the download. The
+  // client asks first and then hands the route to the browser's own download,
+  // whose bar can only say "Failed", so a refusal has to be said in the page
+  // before that. A probe is the download's own code path, stopped where the
+  // head would go out, so its answers cannot drift from the download's.
+
+  it.each<{ label: string; arrange: () => void; splat: string; status: number; error: string }>([
+    {
+      label: 'an absent file’s 404',
+      arrange: () => standardBus(),
+      splat: 'gone.md',
+      status: 404,
+      error: 'file-not-found',
+    },
+    {
+      label: 'a folder’s 400',
+      arrange: () => {
+        standardBus();
+        dirs.add('reports');
+      },
+      splat: 'reports',
+      status: 400,
+      error: 'not-a-file',
+    },
+    {
+      label: 'the ceiling’s 413',
+      arrange: () => {
+        standardBus();
+        files.set('huge.bin', {
+          bytes: ONE_MIB,
+          size: USER_FILE_DOWNLOAD_MAX_BYTES + 1,
+          read: (_offset, n) => ONE_MIB.subarray(0, Math.min(n, MiB)),
+          version: 'v1',
+        });
+      },
+      splat: 'huge.bin',
+      status: 413,
+      error: 'file-too-large',
+    },
+    {
+      label: 'an unavailable file area’s 503',
+      arrange: () => {
+        standardBus();
+        tamper = () => ({ kind: 'unavailable' });
+      },
+      splat: 'report.md',
+      status: 503,
+      error: 'user-files-unavailable',
+    },
+    {
+      label: 'a thrown read’s 503',
+      arrange: () => {
+        standardBus();
+        files.set('report.md', { bytes: enc.encode('x'), version: 'v1' });
+        tamper = () => {
+          throw Object.assign(new Error('EIO: i/o error'), { code: 'EIO' });
+        };
+      },
+      splat: 'report.md',
+      status: 503,
+      error: 'file-read-failed',
+    },
+    {
+      label: 'a missing range service’s 503',
+      arrange: () => {
+        registerAuth({ id: 'u1', isAdmin: false });
+        registerAgents();
+      },
+      splat: 'report.md',
+      status: 503,
+      error: 'user-files-unavailable',
+    },
+    {
+      label: 'a short first range’s 409',
+      arrange: () => {
+        standardBus();
+        files.set('live.log', { bytes: randomBytes(3 * MiB), version: 'v1' });
+        tamper = (n, _i, honest) =>
+          n === 1
+            ? asFile(honest, (f) => ({ ...f, bytes: f.bytes.subarray(0, f.bytes.byteLength - 1) }))
+            : honest;
+      },
+      splat: 'live.log',
+      status: 409,
+      error: 'file-changed',
+    },
+    {
+      label: 'a one-range file’s 409 from its final check',
+      arrange: () => {
+        standardBus();
+        files.set('small.txt', { bytes: enc.encode('abc'), version: 'v1' });
+        tamper = (_n, input, honest) =>
+          input.offset === 3 && input.length === 0
+            ? asFile(honest, (f) => ({ ...f, version: v('v2') }))
+            : honest;
+      },
+      splat: 'small.txt',
+      status: 409,
+      error: 'file-changed',
+    },
+  ])(
+    'a probe answers $label exactly as the download does, with no body',
+    async ({ arrange, splat, status, error }) => {
+      arrange();
+      const asDownload = await download(splat);
+      const downloadReads = rangeCalls.map((c) => [c.offset, c.length]);
+      // A fresh count, so a `tamper` keyed on the nth read sees the probe's
+      // reads exactly as it saw the download's.
+      rangeCalls = [];
+      const asProbe = mkRes();
+      const bodyStream = vi.spyOn(asProbe.res, 'bodyStream');
+      await probeDownload(splat, asProbe);
+
+      expect(asDownload.captured.statusCode).toBe(status);
+      expect(asDownload.captured.json).toEqual({ error });
+      // The same answer, from the same reads.
+      expect(asProbe.captured.statusCode).toBe(asDownload.captured.statusCode);
+      expect(asProbe.captured.json).toEqual(asDownload.captured.json);
+      expect(rangeCalls.map((c) => [c.offset, c.length])).toEqual(downloadReads);
+      // No body...
+      expect(bodyStream).not.toHaveBeenCalled();
+      expect(asProbe.captured.chunks).toEqual([]);
+      // ...and none of the download's headers (no content-disposition, no
+      // octet-stream). Only no-store, so no cache hands this answer back
+      // after the file has moved on.
+      expect(asProbe.captured.headers).toEqual({ 'cache-control': 'private, no-store' });
+      // The download's own refusal is as it was: no header at all.
+      expect(asDownload.captured.headers).toEqual({});
+    },
+  );
+
+  it('a probe of a file that would download answers 200 { downloadable: true } and sends none of the download', async () => {
+    standardBus();
+    files.set('q3.pdf', { bytes: randomBytes(3 * MiB), version: 'v1' });
+    files.set('tiny.bin', { bytes: Uint8Array.from([0x00, 0x01, 0xff, 0x0a]), version: 'v1' });
+
+    // A file of several ranges: its first range is read, because the ceiling
+    // and the byte count are checked on it, and nothing after that.
+    const several = mkRes();
+    const severalBody = vi.spyOn(several.res, 'bodyStream');
+    await probeDownload('q3.pdf', several);
+    expect(several.captured.statusCode).toBe(200);
+    expect(several.captured.json).toEqual({ downloadable: true });
+    // JSON, not a download: no attachment, no octet-stream, and the
+    // agent-authored filename nowhere. The whole set is no-store alone.
+    expect(several.captured.headers).toEqual({ 'cache-control': 'private, no-store' });
+    expect(severalBody).not.toHaveBeenCalled();
+    expect(several.captured.contentLength).toBeNull();
+    expect(rangeCalls.map(({ offset, length }) => ({ offset, length }))).toEqual([
+      { offset: 0, length: MiB },
+    ]);
+
+    // A file of one range: a download makes its final check before the
+    // head, so the probe makes it too.
+    rangeCalls = [];
+    const one = mkRes();
+    const oneBody = vi.spyOn(one.res, 'bodyStream');
+    await probeDownload('tiny.bin', one);
+    expect(one.captured.statusCode).toBe(200);
+    expect(one.captured.json).toEqual({ downloadable: true });
+    expect(one.captured.headers).toEqual({ 'cache-control': 'private, no-store' });
+    expect(oneBody).not.toHaveBeenCalled();
+    expect(rangeCalls.map(({ offset, length }) => ({ offset, length }))).toEqual([
+      { offset: 0, length: MiB },
+      { offset: 4, length: 0 },
+    ]);
+  });
+
+  it('the helper makes its own probe answer no-store, whatever its caller set', async () => {
+    // TASK-1022 review: both routes set no-store before their ACL, but the
+    // helper must not depend on that. A third caller passing `probe: true`
+    // gets a 200 no cache may keep, too.
+    standardBus();
+    files.set('tiny.bin', { bytes: Uint8Array.from([0x00, 0x01, 0xff, 0x0a]), version: 'v1' });
+    const d = mkRes();
+    await sendUserFileDownload({
+      bus,
+      ctx: initCtx,
+      owner: { userId: 'u1', agentId: 'a1', agentConfig: { displayName: 'A1' } } as Parameters<
+        typeof sendUserFileDownload
+      >[0]['owner'],
+      relPath: 'tiny.bin',
+      downloadName: 'tiny.bin',
+      probe: true,
+      res: d.res,
+    });
+    expect(d.captured.statusCode).toBe(200);
+    expect(d.captured.json).toEqual({ downloadable: true });
+    expect(d.captured.headers).toEqual({ 'cache-control': 'private, no-store' });
+
+    // Its refusals too, not only its yes.
+    const gone = mkRes();
+    await sendUserFileDownload({
+      bus,
+      ctx: initCtx,
+      owner: { userId: 'u1', agentId: 'a1', agentConfig: { displayName: 'A1' } } as Parameters<
+        typeof sendUserFileDownload
+      >[0]['owner'],
+      relPath: 'not-there.bin',
+      downloadName: 'not-there.bin',
+      probe: true,
+      res: gone.res,
+    });
+    expect(gone.captured.statusCode).toBe(404);
+    expect(gone.captured.headers).toEqual({ 'cache-control': 'private, no-store' });
+  });
+
+  it('a probe runs the ACL first: a foreign agent is a 404 with no read, and every probe answer is no-store', async () => {
+    const TRAVERSAL = '..%2F..%2Fetc%2Fpasswd';
+
+    // Signed out: a 401, and no cache keeps even that.
+    registerAuth(null);
+    registerAgents();
+    registerRange();
+    const signedOut = mkRes();
+    await handlers().agentUserFileDownload(
+      mkReq({ agentId: 'a1', '*': 'x.md' }, { probe: '1' }),
+      signedOut.res,
+    );
+    expect(signedOut.captured.statusCode).toBe(401);
+    expect(signedOut.captured.headers).toEqual({ 'cache-control': 'private, no-store' });
+    expect(rangeCalls).toEqual([]);
+
+    // Signed in, asking about somebody else's agent with a malformed path:
+    // the download's own 404, not the path's 400, and not one read. A probe
+    // is no oracle over another tenant's paths.
+    bus = new HookBus();
+    standardBus();
+    const foreign = mkRes();
+    await handlers().agentUserFileDownload(
+      mkReq({ agentId: 'someone-elses', '*': TRAVERSAL }, { probe: '1' }),
+      foreign.res,
+    );
+    const foreignDownload = mkRes();
+    await handlers().agentUserFileDownload(
+      mkReq({ agentId: 'someone-elses', '*': TRAVERSAL }),
+      foreignDownload.res,
+    );
+    expect(foreign.captured.statusCode).toBe(404);
+    expect(foreign.captured.statusCode).toBe(foreignDownload.captured.statusCode);
+    expect(foreign.captured.json).toEqual(foreignDownload.captured.json);
+    expect(foreign.captured.headers).toEqual({ 'cache-control': 'private, no-store' });
+    expect(rangeCalls).toEqual([]);
+
+    // The control: on the caller's own agent the same path is the 400 it
+    // should be, so the 404 above was the ACL's, not the path's.
+    const own = mkRes();
+    await handlers().agentUserFileDownload(
+      mkReq({ agentId: 'a1', '*': TRAVERSAL }, { probe: '1' }),
+      own.res,
+    );
+    expect(own.captured.statusCode).toBe(400);
+    expect(own.captured.json).toEqual({ error: 'invalid-path' });
+    expect(own.captured.headers).toEqual({ 'cache-control': 'private, no-store' });
+    expect(rangeCalls).toEqual([]);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1580,6 +1846,36 @@ describe('the download route over a real socket', () => {
     );
     expect(r.status).toBe(404);
     expect(probe.calls).toEqual([]);
+  });
+
+  it('answers a probe over the wire: JSON, no download headers, the splat without the query', async () => {
+    const b = await boot();
+    const r = await fetch(`http://127.0.0.1:${b.port}${DOWNLOAD}/notes%2Fplan.bin?probe=1`);
+    expect(r.status).toBe(200);
+    expect(r.headers.get('content-type')).toMatch(/^application\/json/);
+    expect(r.headers.get('content-disposition')).toBeNull();
+    expect(r.headers.get('cache-control')).toBe('private, no-store');
+    expect(await r.json()).toEqual({ downloadable: true });
+    // The router matches the pathname alone, so the splat is the key with no
+    // `?probe` on it. The reads are the ones a download makes before its head:
+    // the first range, then a one-range file's final check.
+    expect(probe.calls).toEqual([
+      { relPath: 'notes/plan.bin', offset: 0, length: MiB },
+      { relPath: 'notes/plan.bin', offset: 4, length: 0 },
+    ]);
+
+    // A bare `?probe` with no value probes too. A mistyped probe gets the
+    // small JSON answer, never the file.
+    const bare = await fetch(`http://127.0.0.1:${b.port}${DOWNLOAD}/notes%2Fplan.bin?probe`);
+    expect(bare.status).toBe(200);
+    expect(bare.headers.get('content-disposition')).toBeNull();
+    expect(await bare.json()).toEqual({ downloadable: true });
+
+    // A refusal over the wire is the download's own.
+    const gone = await fetch(`http://127.0.0.1:${b.port}${DOWNLOAD}/gone.md?probe=1`);
+    expect(gone.status).toBe(404);
+    expect(gone.headers.get('cache-control')).toBe('private, no-store');
+    expect(await gone.json()).toEqual({ error: 'file-not-found' });
   });
 
   it('serves no git workspace download route', async () => {

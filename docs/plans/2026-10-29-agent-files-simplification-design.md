@@ -125,8 +125,16 @@ Decisions and reasons:
   carries `incomplete: true` for a cut-off body, including a client that leaves
   during the final flush (that chunk's write is checked on its own), so a torn
   download is not recorded as a complete 200. The one blind spot is TCP's: bytes
-  the OS accepted for a client that never reads them count as sent. Browser
-  stream-to-disk and HTTP `Range` stay deferred.
+  the OS accepted for a client that never reads them count as sent. HTTP
+  `Range` stays deferred.
+- **As built (TASK-1022):** the Files tab and agent-file chips save a /files
+  download through the browser's own download: a same-origin `<a download>` to
+  the route. The file streams to disk and the tab never holds it. Before that,
+  they ask the same route with `?probe=1`, which runs every pre-head check and
+  answers `200 {downloadable:true}` (`no-store`) in place of the bytes, so a
+  refusal is still said in-page, in words. A failure after the first byte, or a
+  change between the probe and the download, shows in the browser's download
+  bar. Attachment chips still fetch in-page.
 
 ## 5. Identity, Instructions and onboarding → DB
 
@@ -396,7 +404,8 @@ Decided 2026-10-30: plain reset; nobody is using ax yet.
   when the key is now a folder (the chip says "no longer available" for both),
   503 when storage will not answer, 409 `file-changed` when it changed before
   the first byte, 413 over 1 GiB. A malformed key is a 400
-  `invalid-path`. Such a file is charged once (Agent files), and deleting it
+  `invalid-path`. Those answers reach the chip through its `?probe=1`
+  pre-flight (TASK-1022); the download itself is the browser's. Such a file is charged once (Agent files), and deleting it
   lowers usage at the next assistant turn end. Explicit `artifact_publish` and
   uploads are unchanged. Files auto-attached before this change keep their blob
   and its charge (no migration: their artifact rows live until the agent is

@@ -1,42 +1,93 @@
 /**
  * Getting a file the agent made OUT — the browser half.
  *
- * WHY THIS IS NOT `window.open(url)`. That is how the chat attachment chip
- * does it, and it is fine there. Here it is not, for one reason: when a
- * download route answers anything other than 200, `window.open` shows the
- * person the failure — as a blank tab, or as `{"error":"file-not-found"}` in
- * the top-left corner of an otherwise empty page. Neither is a sentence, and
- * the second one is a JSON body being read by a human, which is the thing this
- * surface spends the most effort not doing.
+ * THE BROWSER DOES THE DOWNLOAD (TASK-1022). We hand it the route itself, as
+ * a same-origin `<a href download>` click, and it streams the file straight
+ * to disk. The tab never holds the file, so a big one costs this page
+ * nothing. It used to: we fetched the whole body into a Blob first, so a file
+ * near the route's limit (`USER_FILE_DOWNLOAD_MAX_BYTES`) sat in the tab's
+ * memory until it was saved.
  *
- * So we ask for the bytes ourselves, and then we either hand them over or say
- * what went wrong in words. It buys a failure the reader can act on.
+ * WHY WE ASK FIRST. Once the browser has the download, any trouble with it
+ * shows in the browser's own download bar, in the browser's words: "Failed",
+ * at best with a short reason. It cannot say "this is too big to send, so ask
+ * for a smaller copy", or "this was deleted since the list was drawn", and
+ * those are the sentences this surface exists to say. So before the click we
+ * ask the same route with `?probe=1`. It runs every check a download makes
+ * before its first byte, and answers 200 instead of sending the bytes. A
+ * refusal comes back here as a status, and `downloadFailureMessage` says it
+ * in words, next to the button.
  *
- * WHAT IT COSTS, honestly: the whole file lands in the tab's memory before it
- * reaches the disk. The route streams it (a range at a time, with
- * backpressure) and stops at `USER_FILE_DOWNLOAD_MAX_BYTES`
- * (`server/user-file-download.ts`), so that is bounded, but the bound is
- * large: the tab still holds the whole file as a Blob before saving it.
- * Streaming it to disk on this side too is the follow-up if large files make
- * that matter. The one alternative that streams today is `window.open`, and it
- * was rejected above for a reason that has not changed; the fix is a client
- * that reads the response as a stream, not a quiet return to showing people
- * JSON.
+ * NOT `window.open(url)`. There, a refusal is a blank tab, or
+ * `{"error":"file-not-found"}` alone on an empty page: a JSON body being read
+ * by a human, which is the thing this surface spends the most effort not
+ * doing.
+ *
+ * WHAT IS LEFT TO THE DOWNLOAD BAR, honestly. Two things the probe cannot
+ * see:
+ *   - a failure after the first byte: the connection drops, or the file is
+ *     changed or deleted mid-download;
+ *   - the moment between the probe's yes and the download: if the file is
+ *     deleted or changed in that gap, the download itself may be refused
+ *     (the route's 404, 409 or 413).
+ * Each shows up as a failed download in the browser's bar, not as a sentence
+ * here. Chromium treats a refused download as failed. Other browsers are not
+ * verified, and one may save the short error body under the file's name.
  *
  * THE FILENAME COMES FROM THE SERVER, not from the row that was clicked. The
- * route already sanitizes it for `Content-Disposition` (a filename is
- * agent-authored, and that header is one a newline can end), and re-deriving
- * it here would be a second sanitizer with a second set of rules — the exact
- * shape of "one of them gets fixed and the other quietly doesn't". We parse
- * the name the server settled on, and fall back to a plain one if the header
- * is missing.
+ * route sanitizes it for `Content-Disposition` (a filename is agent-authored,
+ * and that header is one a newline can end), and the link's `download`
+ * attribute is left EMPTY so the browser uses that name. Naming the file here
+ * would be a second sanitizer with a second set of rules — the exact shape of
+ * "one of them gets fixed and the other quietly doesn't".
  */
 import { useCallback, useRef, useState } from 'react';
-import { HttpError } from './http';
+import { HttpError, logRequestFailure } from './http';
 import { workspaceApi } from './workspace-api';
 
 /**
+ * Hand a download ROUTE to the browser's own download (TASK-1022).
+ *
+ * The browser fetches the route and streams the file straight to disk, so
+ * the bytes never pass through this tab. Ask the route first (`?probe=1`),
+ * and call this only on its yes: from here on, a failure is the download
+ * bar's to report, not ours.
+ *
+ * `url` MUST be a root-relative route this app built from encoded segments
+ * (`workspaceApi.probeFileDownload`, or the chip's own `downloadUrl`). Never
+ * an address an agent wrote. Anything that is not a same-origin
+ * `/api/workspace/` route throws before the click (TASK-1022 review).
+ *
+ * `download` is present and EMPTY, so the browser takes the name from the
+ * route's `Content-Disposition`, which the server already sanitized. The link
+ * is in the document when it is clicked, as `saveBlob`'s is, and removed
+ * straight after.
+ */
+export function saveFromUrl(url: string): void {
+  // Enforced, not just documented: a `javascript:` href runs (browsers ignore
+  // `download` on it), and an absolute or protocol-relative one leaves our
+  // origin. Only our own download routes may be handed to the browser.
+  // Root-relative only: a path-relative URL would resolve against the PAGE
+  // when clicked, not against the origin this check used.
+  const resolved = new URL(url, window.location.origin);
+  if (!url.startsWith('/') || resolved.origin !== window.location.origin || !resolved.pathname.startsWith('/api/workspace/')) {
+    throw new Error('saveFromUrl: refusing a URL that is not one of our download routes');
+  }
+  const a = document.createElement('a');
+  a.href = url;
+  a.setAttribute('download', '');
+  a.rel = 'noopener';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+
+/**
  * Hand a blob to the browser's download machinery.
+ *
+ * Only chat ATTACHMENT chips use this now (`/api/files`). A file from the
+ * agent's files goes through `saveFromUrl` instead, so the browser streams it
+ * to disk and the tab never holds it (TASK-1022).
  *
  * The object URL is revoked on the next tick rather than immediately: the
  * click is dispatched synchronously but the fetch of the blob URL is not, and
@@ -60,7 +111,7 @@ export function saveBlob(blob: Blob, filename: string): void {
 /**
  * What a failed download SAYS.
  *
- * Five outcomes, five sentences, and none of them is "something went wrong".
+ * Six outcomes, six sentences, and none of them is "something went wrong".
  * The one worth reading twice is the size case: it is not an error, it is a
  * limit we are being honest about. The file is over our download limit, and
  * we do not send part of it: part of a PDF is not a small PDF, it is a broken
@@ -68,12 +119,19 @@ export function saveBlob(blob: Blob, filename: string): void {
  * would work instead.
  *
  * A file found changing before the first byte is sent is a 409, and gets
- * its own sentence: try again. A download that breaks AFTER the first byte
- * (the file changed or was deleted under it, or the connection dropped) never
- * arrives as a file at all: the browser sees the body come up short and the
- * fetch fails, which lands on the last sentence. That sentence does not claim
- * the file survived, because after a mid-download deletion it did not, and
- * from here we cannot tell which it was (TASK-1016).
+ * its own sentence: try again.
+ *
+ * Every answer here is the PROBE's (TASK-1022): the route's own refusal,
+ * asked for before the browser is handed the download. A download that
+ * breaks AFTER its first byte (the file changed or was deleted under it, or
+ * the connection dropped) never reaches this function: by then the browser
+ * has it, and says so in its own download bar. So the last two sentences are
+ * for a probe that got no answer we have a sentence for, and they say only
+ * what they know: the download didn't start, and nothing was saved. Only a
+ * probe that got no answer at all mentions the connection; a status none of
+ * the others covers (a 5xx), or a key that could not be put in an address,
+ * does not. Neither makes a claim about the file, because a probe with no
+ * usable answer told us nothing about it.
  *
  * A 401 never reaches here: `httpFetch` latches it and the whole app moves to
  * the signed-out screen before any caller sees it.
@@ -90,7 +148,10 @@ export function downloadFailureMessage(e: unknown, agentName: string): string {
     */
     return `This file is too big for us to pass along in one piece. Ask ${agentName} for a smaller copy, or to split it up.`;
   }
-  if (status === 404) {
+  // 400 is `not-a-file` (the key is a folder now) or a key the route will not
+  // read: either way the file is not there to send, and retrying will not
+  // change that. The chip says "no longer available" for the same answer.
+  if (status === 404 || status === 400) {
     return 'We could not find that file to send. It may have been rewritten or deleted since this list was drawn.';
   }
   if (status === 409) {
@@ -106,13 +167,23 @@ export function downloadFailureMessage(e: unknown, agentName: string): string {
     */
     return `We couldn’t get to ${agentName}’s files just now. Nothing was lost — try again in a moment.`;
   }
-  return 'That download didn’t finish, so nothing was saved. The connection may have dropped, or the file changed or was deleted on the way. Try again in a moment.';
+  // No answer at all: fetch threw (a TypeError), or an HttpError with no
+  // status. That one may be the connection.
+  if (e instanceof TypeError || (e instanceof HttpError && e.status === 0)) {
+    return 'That download didn’t start, so nothing was saved. The connection may have dropped. Try again in a moment.';
+  }
+  // An answer we have no sentence for (a 5xx is the server's doing, not the
+  // reader's wifi), or a key that could not be put in an address at all.
+  return 'That download didn’t start, so nothing was saved. Try again in a moment.';
 }
 
 export interface FileDownloadState {
-  /** Fetch the bytes and hand them to the browser. Safe to call twice. */
+  /** Ask the route, then hand the download to the browser. Safe to call twice. */
   start: () => void;
-  /** A download is in flight. The affordance says so and refuses a second one. */
+  /**
+   * The probe is in flight. The affordance says so and refuses a second one.
+   * Once the browser has the download, it is the browser's (TASK-1022).
+   */
   busy: boolean;
   /**
    * The authored sentence for the last failure, or `null`.
@@ -152,9 +223,12 @@ export function useFileDownload(args: {
     setError(null);
     void (async () => {
       try {
-        const got = await workspaceApi.downloadFile(agentId, path);
-        saveBlob(got.blob, got.filename);
+        saveFromUrl(await workspaceApi.probeFileDownload(agentId, path));
       } catch (e) {
+        // The reader gets copy; the console gets the detail (status and
+        // route, or the guard's refusal), so a retry that keeps failing the
+        // same way is diagnosable.
+        logRequestFailure(e, 'file download');
         setError(downloadFailureMessage(e, agentName));
       } finally {
         inFlight.current = false;

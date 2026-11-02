@@ -38,7 +38,7 @@ vi.mock('@/lib/workspace-api', async () => {
 });
 
 // A download's last step clicks a link, which jsdom can't follow.
-vi.mock('@/lib/file-download', () => ({ saveBlob: vi.fn() }));
+vi.mock('@/lib/file-download', () => ({ saveBlob: vi.fn(), saveFromUrl: vi.fn() }));
 
 const checkinMock = vi.mocked(workspaceApi.taskCheckin);
 
