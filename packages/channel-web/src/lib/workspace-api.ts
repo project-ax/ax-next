@@ -1553,37 +1553,39 @@ export const workspaceApi = {
     ),
 
   /**
-   * The BYTES of one file in the agent's files.
-   * See `filenameFromContentDisposition` below this object.
+   * Whether one file in the agent's files would download, and the address to
+   * download it from (TASK-1022).
    *
-   * The sibling of `userFiles` above, and the only read on this surface that
-   * does not come back as JSON: that one answers with TEXT and says when it
-   * could not — `clipped: 'binary'` for a PDF, a clipped head for a long one.
-   * This is the way to the file itself.
+   * The sibling of `userFiles` above, which answers with a file's TEXT and
+   * says when it could not: `clipped: 'binary'` for a PDF, a clipped head for
+   * a long one. This is the way to the file itself, but it does not fetch the
+   * file. The caller hands the address it returns to the browser
+   * (`saveFromUrl`), whose own download streams the file to disk.
+   *
+   * It only ASKS, with `?probe=1`: the route runs every check a download
+   * makes before its first byte and answers 200 instead of the bytes. A
+   * refusal becomes a `WorkspaceApiError` carrying its status, so the caller
+   * can tell "too big to send" from "not there any more" and write a
+   * different sentence for each, in the page, where the browser's download
+   * bar could only have said that it failed.
+   *
+   * The answer's body is never read. The status is all we need, and nothing
+   * of the file comes into the tab.
    *
    * `path` is encoded WHOLE — slashes included — for exactly the reason
    * `userFiles` gives: the server receives one splat segment and decodes it
-   * exactly once.
-   *
-   * NOT `res.json()`. A non-ok answer becomes a `WorkspaceApiError` carrying
-   * its status, so the caller can tell "too big to send" from "not there any
-   * more" and write a different sentence for each.
+   * exactly once. It is also why the address handed back is always this
+   * route: an agent-authored key cannot give it a scheme, a host, a query or
+   * a fragment, because every `/`, `?` and `#` in the key is encoded inside
+   * its last segment.
    */
-  downloadFile: async (
-    agentId: string,
-    path: string,
-  ): Promise<{ blob: Blob; filename: string }> => {
+  probeFileDownload: async (agentId: string, path: string): Promise<string> => {
     const route =
       `/agents/${encodeURIComponent(agentId)}/download/user-files/` +
       encodeURIComponent(path);
-    const res = await httpFetch(`/api/workspace${route}`);
+    const res = await httpFetch(`/api/workspace${route}?probe=1`);
     if (!res.ok) throw new WorkspaceApiError(route, res.status);
-    return {
-      blob: await res.blob(),
-      filename:
-        filenameFromContentDisposition(res.headers.get('content-disposition')) ??
-        FALLBACK_SAVED_FILENAME,
-    };
+    return `/api/workspace${route}`;
   },
 
   /**

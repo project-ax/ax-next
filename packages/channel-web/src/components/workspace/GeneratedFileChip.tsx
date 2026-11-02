@@ -4,9 +4,9 @@ import { Spinner } from '@/components/ui/spinner';
 import { Button } from '@/components/ui/button';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { clampAttachmentName } from '@/lib/attachment-name';
-import { saveBlob } from '@/lib/file-download';
+import { saveBlob, saveFromUrl } from '@/lib/file-download';
 import { httpFetch, HttpError } from '@/lib/http';
-import { filenameFromContentDisposition } from '@/lib/workspace-api';
+import { FALLBACK_SAVED_FILENAME, filenameFromContentDisposition } from '@/lib/workspace-api';
 import type { ThreadAttachment } from '@/lib/workspace-types';
 
 /**
@@ -14,7 +14,10 @@ import type { ThreadAttachment } from '@/lib/workspace-types';
  * A published or attached file is fetched by its attachment id within this
  * conversation. A file the agent left in its files is fetched live by its key
  * through the conversation's own route, which derives the agent from the
- * conversation and reads the file as it is now (TASK-1012).
+ * conversation and reads the file as it is now (TASK-1012). On a click, an
+ * agent file is asked about first (`?probe=1`) and then saved by the
+ * browser's own download, straight to disk, while an attachment is still
+ * fetched in-page (TASK-1022).
  *
  * The agent can delete that file in a later turn, so an agent-file chip asks
  * whether it is still there (TASK-1017): when it mounts, and again whenever
@@ -94,10 +97,20 @@ export function GeneratedFileChip({ file, conversationId, recheckKey }: {
     setBusy(true);
     setError(null);
     try {
-      const response = await httpFetch(downloadUrl());
-      if (!response.ok) throw new HttpError('file download', response.status);
-      saveBlob(await response.blob(),
-        filenameFromContentDisposition(response.headers.get('content-disposition')) ?? 'download');
+      const url = downloadUrl();
+      if (file.agentFilePath !== undefined) {
+        // Ask the route first: a refusal is said here, in words, which the
+        // browser's download bar cannot do. On a yes the browser downloads
+        // the route itself, so none of the file comes into the tab.
+        const probe = await httpFetch(`${url}?probe=1`);
+        if (!probe.ok) throw new HttpError('file download', probe.status);
+        saveFromUrl(url);
+      } else {
+        const response = await httpFetch(url);
+        if (!response.ok) throw new HttpError('file download', response.status);
+        saveBlob(await response.blob(),
+          filenameFromContentDisposition(response.headers.get('content-disposition')) ?? FALLBACK_SAVED_FILENAME);
+      }
     } catch (e) {
       const status = e instanceof HttpError ? e.status : null;
       // 400 on an agent file means its key is a folder now: gone, like a 404.

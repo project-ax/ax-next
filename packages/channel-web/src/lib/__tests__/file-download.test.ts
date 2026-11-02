@@ -1,23 +1,28 @@
 /**
- * Getting a file OUT — the client half (TASK-355).
+ * Getting a file OUT — the client half (TASK-355, TASK-1022).
  *
  * The thing worth testing here is not "does it fetch". It is that a download
- * which does NOT happen becomes a sentence rather than a blank tab, and that
- * the name the file lands under is the one the SERVER sanitized rather than a
- * second guess made in the browser.
+ * which does NOT happen becomes a sentence rather than a blank tab, that the
+ * name the file lands under is the one the SERVER sanitized rather than a
+ * second guess made in the browser, and that the file's bytes never come into
+ * the tab: the only request made from here is the probe, and the browser's own
+ * download fetches the file.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
-  FALLBACK_SAVED_FILENAME,
   filenameFromContentDisposition,
   workspaceApi,
   WorkspaceApiError,
 } from '../workspace-api';
-import { act, renderHook } from '@testing-library/react';
-import { downloadFailureMessage, saveBlob, useFileDownload } from '../file-download';
+import { act, renderHook, waitFor } from '@testing-library/react';
+import {
+  downloadFailureMessage,
+  saveBlob,
+  saveFromUrl,
+  useFileDownload,
+} from '../file-download';
 import {
   HTTP_FAILED,
-  HTTP_NOT_FOUND,
   HTTP_SERVER_ERROR,
   HttpError,
 } from '../http';
@@ -49,71 +54,83 @@ describe('filenameFromContentDisposition', () => {
 });
 
 // ---------------------------------------------------------------------------
-describe('workspaceApi.downloadFile', () => {
-  function stubFetch(res: Response): ReturnType<typeof vi.fn> {
-    const spy = vi.fn(async () => res);
+/** The probe's answer for a file that would download (TASK-1022). */
+function downloadable(): Response {
+  return new Response('{"downloadable":true}', {
+    status: 200,
+    headers: { 'content-type': 'application/json' },
+  });
+}
+
+describe('workspaceApi.probeFileDownload', () => {
+  function stubFetch(res: Response) {
+    const spy = vi.fn(async (_url: string, _init?: RequestInit) => res);
     vi.stubGlobal('fetch', spy);
     return spy;
   }
 
-  it('addresses the agent\u2019s files, with the path encoded whole', async () => {
-    const spy = stubFetch(
-      new Response('hi', {
-        status: 200,
-        headers: { 'content-disposition': 'attachment; filename="plan.md"' },
-      }),
-    );
-    const got = await workspaceApi.downloadFile('a 1', 'notes/plan.md');
+  it('asks the route with ?probe=1, and hands back the route itself, the path encoded whole', async () => {
+    const spy = stubFetch(downloadable());
+    const url = await workspaceApi.probeFileDownload('a 1', 'notes/plan.md');
     // Slashes ENCODED — the server gets one splat segment and decodes exactly
     // once. Real slashes on the wire would let `a/../b` and `a%2F..%2Fb` reach
     // the same read down two different paths.
+    expect(spy).toHaveBeenCalledTimes(1);
     expect(spy.mock.calls[0]?.[0]).toBe(
+      '/api/workspace/agents/a%201/download/user-files/notes%2Fplan.md?probe=1',
+    );
+    // What the browser is handed: the same route, without the probe.
+    expect(url).toBe(
       '/api/workspace/agents/a%201/download/user-files/notes%2Fplan.md',
     );
-    expect(got.filename).toBe('plan.md');
-    // The BYTES, not a decoded string: this route serves PDFs and zips, and
-    // `res.text()` anywhere on this path would mangle them. (jsdom's Blob has
-    // no `.text()`, so the size is what we can check here; the server tests
-    // assert the bytes themselves byte for byte.)
-    expect(got.blob.size).toBe(2);
   });
 
-  it('has no tier argument and no git download route to address', async () => {
-    // The git-backed `/download/files/*` route was removed in TASK-995, so
-    // there is exactly one route and the path is the only thing that varies.
-    const spy = stubFetch(new Response('hi', { status: 200 }));
-    await workspaceApi.downloadFile('a1', 'reports/summary.md');
-    expect(spy.mock.calls[0]?.[0]).toBe(
-      '/api/workspace/agents/a1/download/user-files/reports%2Fsummary.md',
-    );
-    expect(spy.mock.calls[0]?.[0]).not.toContain('/download/files/');
-  });
-
-  it('falls back to a plain name when the server sent no filename', async () => {
-    stubFetch(new Response('hi', { status: 200 }));
-    const got = await workspaceApi.downloadFile('a1', 'x.md');
-    expect(got.filename).toBe(FALLBACK_SAVED_FILENAME);
-  });
-
-  it('turns a non-ok answer into an error that still carries its status', async () => {
+  it('turns a refusal into an error that carries its status, never its body', async () => {
     // The status is the whole point: 413 and 404 get DIFFERENT sentences, and
-    // a flattened `Error('download failed')` could not tell them apart.
-    stubFetch(new Response('{"error":"file-too-large"}', { status: 413 }));
-    await expect(
-      workspaceApi.downloadFile('a1', 'huge.csv'),
-    ).rejects.toMatchObject({ name: 'WorkspaceApiError', status: 413 });
-  });
-
-  it('does not put the response body on screen', async () => {
-    // `{"error":"file-not-found"}` is not a sentence, and it is what
+    // a flattened `Error('download failed')` could not tell them apart. The
+    // body is not a sentence: `{"error":"file-too-large"}` is what
     // `window.open` would have shown a person in an otherwise empty tab.
-    stubFetch(new Response('{"error":"file-not-found"}', { status: 404 }));
+    stubFetch(new Response('{"error":"file-too-large"}', { status: 413 }));
     const err = await workspaceApi
-      .downloadFile('a1', 'gone.md')
+      .probeFileDownload('a1', 'huge.csv')
       .catch((e: unknown) => e);
     expect(err).toBeInstanceOf(WorkspaceApiError);
-    expect((err as Error).message).toBe(HTTP_NOT_FOUND);
-    expect((err as Error).message).not.toContain('file-not-found');
+    expect(err).toMatchObject({ name: 'WorkspaceApiError', status: 413 });
+    expect((err as Error).message).not.toContain('file-too-large');
+  });
+
+  it('keeps a hostile key inside one segment of a same-origin route', async () => {
+    /*
+      The key is agent-authored, and the address handed back goes into an
+      href. Encoded WHOLE, it cannot become a protocol-relative URL to another
+      host, and it cannot add a query or a fragment: every `/`, `?` and `#`
+      in it is a `%2F`, `%3F` or `%23` inside the last segment.
+    */
+    const spy = stubFetch(downloadable());
+    const url = await workspaceApi.probeFileDownload('a1', '//evil.example/x?y#z');
+    expect(url).toBe(
+      '/api/workspace/agents/a1/download/user-files/%2F%2Fevil.example%2Fx%3Fy%23z',
+    );
+    const resolved = new URL(url, location.href);
+    expect(resolved.origin).toBe(location.origin);
+    expect(resolved.search).toBe('');
+    expect(resolved.hash).toBe('');
+    expect(spy.mock.calls[0]?.[0]).toBe(`${url}?probe=1`);
+  });
+
+  it('never reads the answer: nothing of the file comes into the tab', async () => {
+    // Only the status matters. The body of a 200 is `{downloadable: true}`,
+    // and the file itself is the browser's to fetch.
+    const res = downloadable();
+    const read = [
+      vi.spyOn(res, 'blob'),
+      vi.spyOn(res, 'arrayBuffer'),
+      vi.spyOn(res, 'text'),
+      vi.spyOn(res, 'json'),
+    ];
+    stubFetch(res);
+    await workspaceApi.probeFileDownload('a1', 'q3.pdf');
+    for (const spy of read) expect(spy).not.toHaveBeenCalled();
   });
 });
 
@@ -186,19 +203,32 @@ describe('downloadFailureMessage', () => {
     expect(msg).not.toContain('file-changed');
   });
 
-  it('the fallback never claims the file is still there: after a mid-download deletion it is not', () => {
+  it('the fallback is a download that never started, said exactly', () => {
     /*
-      A download torn after its head (the file deleted or rewritten partway,
-      or the connection dropped) reaches the browser as a failed fetch, and
-      the client cannot tell which. So the sentence says what it knows — the
-      download did not finish and nothing was saved — and names the causes,
-      deletion included. It used to say "the file is still there", which is
-      false exactly when the file was deleted mid-download.
+      TASK-1022: the browser does the download now, so anything that goes
+      wrong after its first byte shows in the browser's download bar, never
+      here. What still lands on this sentence is a probe that got no answer we
+      have a sentence for: no connection at all (status 0), or a status none
+      of the others covers.
+    */
+    for (const e of [new TypeError('Failed to fetch'), new HttpError('/x', 500)]) {
+      expect(downloadFailureMessage(e, AGENT)).toBe(
+        'That download didn’t start, so nothing was saved. The connection may have dropped. Try again in a moment.',
+      );
+    }
+  });
+
+  it('the fallback says what it knows, and never that the file is still there', () => {
+    /*
+      A probe with no usable answer tells us nothing about the file. So the
+      sentence says only what it knows — the download did not start, and
+      nothing was saved — and makes no claim about the file. It once said
+      "the file is still there", which is false whenever it was deleted.
     */
     for (const e of [new TypeError('network error'), new HttpError('/x', 500)]) {
       const msg = downloadFailureMessage(e, AGENT);
       expect(msg).not.toContain('still there');
-      expect(msg).toContain('deleted');
+      expect(msg).toContain('didn’t start');
       expect(msg).toContain('nothing was saved');
     }
   });
@@ -207,7 +237,7 @@ describe('downloadFailureMessage', () => {
     // A dropped connection throws a TypeError, not an HttpError. "Failed to
     // fetch" is a browser string and never reaches a screen.
     const msg = downloadFailureMessage(new TypeError('Failed to fetch'), AGENT);
-    expect(msg).toContain("didn’t finish");
+    expect(msg).toContain('didn’t start');
     expect(msg).not.toContain('fetch');
   });
 
@@ -246,9 +276,9 @@ describe('useFileDownload', () => {
       there.)
     */
     const calls: string[] = [];
-    vi.spyOn(workspaceApi, 'downloadFile').mockImplementation(async () => {
+    vi.spyOn(workspaceApi, 'probeFileDownload').mockImplementation(async () => {
       calls.push('one');
-      return new Promise(() => undefined);
+      return new Promise<string>(() => undefined);
     });
     const { result } = renderHook(() =>
       useFileDownload({
@@ -267,7 +297,7 @@ describe('useFileDownload', () => {
 
   it('lets the next attempt through once the first one has finished', async () => {
     // The other half: a guard that never releases is a button that works once.
-    vi.spyOn(workspaceApi, 'downloadFile').mockRejectedValue(
+    vi.spyOn(workspaceApi, 'probeFileDownload').mockRejectedValue(
       new HttpError('/x', 500),
     );
     const { result } = renderHook(() =>
@@ -285,7 +315,107 @@ describe('useFileDownload', () => {
     await act(async () => {
       result.current.start();
     });
-    expect(vi.mocked(workspaceApi.downloadFile)).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(workspaceApi.probeFileDownload)).toHaveBeenCalledTimes(2);
+  });
+
+  /*
+    The two below run through the REAL `workspaceApi`, with only `fetch`
+    stubbed, so what they see is every request the hook makes and every
+    link it clicks.
+  */
+
+  /** `fetch` answering every request with `status` and a JSON `body`. */
+  function stubFetch(status: number, body: unknown) {
+    const spy = vi.fn(async (_url: string, _init?: RequestInit) =>
+      new Response(JSON.stringify(body), {
+        status,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+    vi.stubGlobal('fetch', spy);
+    return spy;
+  }
+
+  /** Every link the browser was asked to follow, as its attributes. */
+  function clickedLinks() {
+    const clicked: Array<{ href: string | null; download: string | null }> = [];
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(
+      function (this: HTMLAnchorElement) {
+        clicked.push({
+          href: this.getAttribute('href'),
+          download: this.getAttribute('download'),
+        });
+      },
+    );
+    return clicked;
+  }
+
+  it('probes the route, then hands the route itself to the browser: the bytes never come into the tab', async () => {
+    /*
+      TASK-1022. The hook used to fetch the whole file into a Blob and then
+      save the Blob, so a big file sat in the tab's memory first. Now it asks
+      the route (`?probe=1`) and, on a yes, clicks a link to the route: the
+      browser fetches the file itself and streams it to disk. One request from
+      the page, and none of it reads a body.
+    */
+    const fetchSpy = stubFetch(200, { downloadable: true });
+    const blob = vi.spyOn(Response.prototype, 'blob');
+    const arrayBuffer = vi.spyOn(Response.prototype, 'arrayBuffer');
+    const clicked = clickedLinks();
+    const { result } = renderHook(() =>
+      useFileDownload({
+        agentId: 'a1',
+        agentName: 'Scout',
+        path: 'reports/q3.pdf',
+      }),
+    );
+    await act(async () => {
+      result.current.start();
+    });
+    await waitFor(() => expect(result.current.busy).toBe(false));
+
+    expect(fetchSpy.mock.calls.map(([url]) => url)).toEqual([
+      '/api/workspace/agents/a1/download/user-files/reports%2Fq3.pdf?probe=1',
+    ]);
+    // The route, without the probe, and an EMPTY `download`: the browser
+    // names the file from the route's own `Content-Disposition`, which the
+    // server sanitized. No second sanitizer here.
+    expect(clicked).toEqual([
+      {
+        href: '/api/workspace/agents/a1/download/user-files/reports%2Fq3.pdf',
+        download: '',
+      },
+    ]);
+    expect(blob).not.toHaveBeenCalled();
+    expect(arrayBuffer).not.toHaveBeenCalled();
+    expect(result.current.error).toBeNull();
+  });
+
+  it('a refused probe hands nothing to the browser', async () => {
+    // The refusal is said in the page, in words, and no download starts:
+    // the browser's download bar could only have said "Failed".
+    const fetchSpy = stubFetch(404, { error: 'file-not-found' });
+    const clicked = clickedLinks();
+    const { result } = renderHook(() =>
+      useFileDownload({
+        agentId: 'a1',
+        agentName: 'Scout',
+        path: 'gone.md',
+      }),
+    );
+    await act(async () => {
+      result.current.start();
+    });
+    await waitFor(() => expect(result.current.busy).toBe(false));
+
+    // What was refused was the PROBE. The download itself was never asked for.
+    expect(fetchSpy.mock.calls.map(([url]) => url)).toEqual([
+      '/api/workspace/agents/a1/download/user-files/gone.md?probe=1',
+    ]);
+    expect(result.current.error).toBe(
+      'We could not find that file to send. It may have been rewritten or deleted since this list was drawn.',
+    );
+    expect(clicked).toEqual([]);
   });
 });
 
@@ -329,5 +459,58 @@ describe('saveBlob', () => {
     // And the anchor does not stay in the document.
     expect(document.querySelectorAll('a')).toHaveLength(0);
     vi.useRealTimers();
+  });
+});
+
+// ---------------------------------------------------------------------------
+describe('saveFromUrl', () => {
+  it('clicks one same-origin link to the route, with an empty download attribute, and leaves nothing behind', () => {
+    /*
+      TASK-1022: the browser's own download, for a /files route. The browser
+      fetches the route and streams the file to disk, so there is no Blob and
+      no object URL: no bytes are in the tab to make one from.
+    */
+    const RealURL = URL;
+    const createObjectURL = vi.fn((_b: Blob) => 'blob:x');
+    vi.stubGlobal('URL', { ...RealURL, createObjectURL, revokeObjectURL: vi.fn() });
+    const clicked: Array<{
+      href: string | null;
+      download: string | null;
+      hasDownload: boolean;
+      inDocument: boolean;
+    }> = [];
+    const realCreate = document.createElement.bind(document);
+    vi.spyOn(document, 'createElement').mockImplementation((tag: string) => {
+      const el = realCreate(tag) as HTMLElement;
+      if (tag === 'a') {
+        el.click = () => {
+          const a = el as HTMLAnchorElement;
+          clicked.push({
+            href: a.getAttribute('href'),
+            download: a.getAttribute('download'),
+            hasDownload: a.hasAttribute('download'),
+            inDocument: a.isConnected,
+          });
+        };
+      }
+      return el;
+    });
+    const route = '/api/workspace/agents/a1/download/user-files/notes%2Fplan.md';
+
+    saveFromUrl(route);
+
+    // The route as given, and an EMPTY `download` that is present: the
+    // browser names the file from the route's `Content-Disposition`, which
+    // the server sanitized. Clicked while in the document, which some
+    // browsers need before they will start a download from a click.
+    expect(clicked).toEqual([
+      { href: route, download: '', hasDownload: true, inDocument: true },
+    ]);
+    expect(new RealURL(clicked[0]!.href!, location.href).origin).toBe(
+      location.origin,
+    );
+    expect(createObjectURL).not.toHaveBeenCalled();
+    // And the anchor does not stay in the document.
+    expect(document.querySelectorAll('a')).toHaveLength(0);
   });
 });
