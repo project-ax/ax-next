@@ -467,7 +467,8 @@ describe('structured routine form', () => {
   });
   it('says where the signing secret goes once app updates are on', async () => {
     render(<RoutineEditor mode="create" agentId="a" agentName="Caveman" onSaved={vi.fn()} onCancel={vi.fn()} />);
-    const hint = 'After saving, paste the app’s signing secret into the routine’s Signing secret row.';
+    // Optional ("if"), and points at the list, where the row shows once the routine is opened.
+    const hint = 'If the app signs its updates, open the routine in the list after saving and paste its signing secret there.';
     expect(screen.queryByText(hint)).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('checkbox', { name: 'When another app sends an update' }));
     expect(screen.getByText(hint)).toBeVisible();
