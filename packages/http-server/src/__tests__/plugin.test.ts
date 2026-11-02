@@ -313,18 +313,20 @@ describe('@ax/http-server', () => {
     expect(observed[0]!.status).toBe(204);
     expect(typeof observed[0]!.durationMs).toBe('number');
     expect(observed[0]!.durationMs).toBeGreaterThanOrEqual(0);
+    expect((observed[0] as { incomplete?: boolean }).incomplete).toBe(false);
   });
 
   it('http:response-sent fires for 404 too', async () => {
-    const observed: number[] = [];
+    const observed: Array<{ status: number; incomplete?: boolean }> = [];
     harness.bus.subscribe('http:response-sent', 'test-404', async (_ctx, payload) => {
-      observed.push((payload as { status: number }).status);
+      observed.push(payload as { status: number; incomplete?: boolean });
       return undefined;
     });
     await fetch(`http://127.0.0.1:${port}/missing`);
     // Poll until the async http:response-sent event has been observed,
     // rather than racing a fixed sleep under CPU contention.
-    await vi.waitFor(() => expect(observed).toEqual([404]));
+    await vi.waitFor(() => expect(observed.map((e) => e.status)).toEqual([404]));
+    expect(observed[0]!.incomplete).toBe(false);
   });
 
   it('handles concurrent requests without crashing', async () => {
@@ -683,5 +685,7 @@ describe('@ax/http-server', () => {
     // fixed sleep — under CPU contention the event can miss a 100ms window.
     await vi.waitFor(() => expect(observed.length).toBe(1));
     expect(observed[0]!.status).toBe(200);
+    // A stream promises no length, so a client leaving one cuts nothing off.
+    expect((observed[0] as { incomplete?: boolean }).incomplete).toBe(false);
   });
 });

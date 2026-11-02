@@ -404,6 +404,7 @@ async function handle(
     await fireResponseSent(bus, ctx, {
       status,
       durationMs: Date.now() - startedAt,
+      incomplete: false,
     });
   };
 
@@ -535,10 +536,14 @@ async function handle(
     // this synchronous-fire fallback, http:response-sent would be lost
     // on every fast-disconnect path. writableEnded covers normal close;
     // destroyed covers abrupt socket teardown.
+    //
+    // `incomplete` is false either way: a stream promises no length, so a
+    // client leaving one cuts nothing off.
     if (res.writableEnded || res.destroyed) {
       void fireResponseSent(bus, ctx, {
         status: finalStatus,
         durationMs: Date.now() - startedAt,
+        incomplete: false,
       });
       return;
     }
@@ -546,6 +551,7 @@ async function handle(
       void fireResponseSent(bus, ctx, {
         status: finalStatus,
         durationMs: Date.now() - startedAt,
+        incomplete: false,
       });
     });
     return;
@@ -565,6 +571,7 @@ async function handle(
   await fireResponseSent(bus, ctx, {
     status: finalStatus,
     durationMs: Date.now() - startedAt,
+    incomplete: writer.incomplete,
   });
 }
 
@@ -672,6 +679,11 @@ class ResponseWriter {
    * truncated download off as a whole one.
    */
   streaming = false;
+  /**
+   * True once `bodyStream()` cut the connection instead of finishing the
+   * body. `handle()` reports it as `incomplete` on `http:response-sent`.
+   */
+  incomplete = false;
   statusCode = 200;
   private headers = new Map<string, string>();
   // Set-Cookie is a multi-value header; flatten to array so multiple
@@ -969,6 +981,7 @@ class ResponseWriter {
       // parked for a next request. Destroyed, the client is left holding
       // fewer bytes than Content-Length, which every client treats as a
       // failed download.
+      this.incomplete = true;
       res.destroy();
       try {
         await it.return?.();

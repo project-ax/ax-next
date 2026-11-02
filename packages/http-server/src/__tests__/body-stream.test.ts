@@ -609,5 +609,32 @@ describe('res.bodyStream()', () => {
     expect(events[0]!.status).toBe(200);
     // durationMs spans the whole body, not just the handler's setup.
     expect(events[0]!.durationMs).toBeGreaterThanOrEqual(70);
+    expect(events[0]!.incomplete).toBe(false);
   });
+
+  it('a body torn after its head is reported incomplete, with the status it was given', async () => {
+    const events = responsesSent();
+    // The first MiB goes out with the head, so the client really saw the 200.
+    // Then the source fails and the body is cut short.
+    const { source } = probedSource([randomBytes(MiB)], { failAfter: new Error('gone mid-read') });
+    const { outcome } = await serveBody('/torn', source, 2 * MiB);
+
+    const got = await rawGet('/torn');
+    expect(got.timedOut).toBe(false);
+    expect(got.status).toBe(200);
+    expect(got.complete).toBe(false);
+    expect(await outcome).toMatchObject({ code: 'source-failed' });
+    await vi.waitFor(() => expect(events).toHaveLength(1));
+    expect(events).toEqual([{ status: 200, durationMs: expect.any(Number), incomplete: true }]);
+  });
+
+  /** Every http:response-sent payload from now on, in order. */
+  function responsesSent(): HttpResponseSentEvent[] {
+    const events: HttpResponseSentEvent[] = [];
+    harness.bus.subscribe('http:response-sent', 'response-sent-observer', async (_ctx, payload) => {
+      events.push(payload as HttpResponseSentEvent);
+      return undefined;
+    });
+    return events;
+  }
 });

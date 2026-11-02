@@ -126,9 +126,10 @@ export interface HttpResponse {
    * written, gets the same teardown and rejects with that error as-is.
    *
    * One race goes unreported: a client that leaves while the final chunk is
-   * being flushed can still count as sent, because Node reports the response
-   * finished anyway. That changes nothing for the client, which still holds
-   * fewer bytes than Content-Length.
+   * being flushed can still count as sent (this resolves, and
+   * `http:response-sent` says `incomplete: false`), because Node reports the
+   * response finished anyway. That changes nothing for the client, which
+   * still holds fewer bytes than Content-Length.
    */
   bodyStream(source: AsyncIterable<Uint8Array>, opts: SizedBodyOptions): Promise<void>;
 }
@@ -263,8 +264,22 @@ export interface HttpRequestEvent {
  * `bodyStream()` responses, `durationMs` spans the whole body.
  */
 export interface HttpResponseSentEvent {
+  /** The status the response was given. A body cut off later keeps it: see `incomplete`. */
   status: number;
   durationMs: number;
+  /**
+   * True when `bodyStream()` cut the connection instead of finishing the
+   * body: a failure after the head, a client that left (even before the
+   * head), or any other teardown. The client then holds less than
+   * Content-Length promised, maybe not even the head. So read success as
+   * `!incomplete`, not as `status === 200`.
+   *
+   * False for `stream()` (it promises no length) and for the single-shot
+   * terminators (Node is handed the whole body at once, and nothing tracks
+   * it after that). False does not prove the client got every byte: see the
+   * final-flush race on `HttpResponse.bodyStream`.
+   */
+  incomplete: boolean;
 }
 
 /** Hard cap on request body size. Matches @ax/cli's `serve` body cap. */
