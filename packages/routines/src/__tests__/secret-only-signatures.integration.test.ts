@@ -165,13 +165,17 @@ describe('verification decided by the saved secret, with the app detected', () =
       }
       return call(name, ctx, input);
     });
-    expect((await post(url)).status).toBe(401);
+    // An outage is retryable: a 503 the app sends again, never a 401 it gives up on.
+    expect((await post(url)).status).toBe(503);
     // An empty secret is unusable too: never an HMAC key anyone could reproduce.
     vault = async () => '';
     expect((await post(url, { 'Linear-Signature': hex(BODY, '') })).status).toBe(401);
-    // The log names the task only, never a header, the body or the secret.
-    expect(warnings).toEqual(Array.from({ length: 2 }, () => ({ message: 'routines_webhook_secret_fetch_failed', fields: { agentId: row.agentId, routineId: row.routineId } })));
-    expect((await status(row)).refusals).toEqual([{ reason: 'secret', count: 2 }]);
+    // The log names the task and the vault's error code only, never its message, a header, the body or the secret.
+    expect(warnings).toEqual([
+      { message: 'routines_webhook_secret_fetch_failed', fields: { agentId: row.agentId, routineId: row.routineId, code: 'timeout' } },
+      { message: 'routines_webhook_secret_fetch_failed', fields: { agentId: row.agentId, routineId: row.routineId } },
+    ]);
+    expect((await status(row)).refusals).toEqual([{ reason: 'secret', count: 1 }, { reason: 'unavailable', count: 1 }]);
     expect(await queued(row)).toBe(0);
     expect(h.invokeCalls).toEqual([]);
   });

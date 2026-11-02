@@ -5,7 +5,7 @@ import { request as httpRequest } from 'node:http';
 import { createTestHarness } from '@ax/test-harness';
 import { createHttpServerPlugin } from '@ax/http-server';
 import { createHmac } from 'node:crypto';
-import { RoutineDefinitionSchema, type RoutineView } from '@ax/routines-contract';
+import { RoutineDefinitionSchema, type RoutineView, type RoutineWebhookStatus } from '@ax/routines-contract';
 import type { HttpRequest, HttpResponse } from '@ax/http-server';
 import { captureExpectedStderr } from './support/expected-diagnostics.js';
 import { createRoutineHarness, type RoutineHarness } from './support/routine-harness.js';
@@ -138,23 +138,27 @@ describe('single registered request-time DB webhook route', () => {
     expect(h.invokeCalls).toHaveLength(1);
     expect(h.routes.filter(r => r.path === '/webhooks/:token/*')).toHaveLength(1);
   });
-  it('fails closed on a missing configured HMAC secret and rejects encoded token spelling', async () => {
-    const { token } = await setup({ header: 'sig', algorithm: 'sha256' });
+  it('fails closed, retryably, when the HMAC secret can’t be read, and rejects encoded token spelling', async () => {
+    const { row, token } = await setup({ header: 'sig', algorithm: 'sha256' });
     const call = h.bus.call.bind(h.bus);
-    const warnings: string[] = [];
+    const warnings: Array<{ message: string; fields: unknown }> = [];
     vi.spyOn(h.bus, 'call').mockImplementation(async (name, ctx, input) => {
       if (name === 'credentials:get') {
         const warn = ctx.logger.warn.bind(ctx.logger);
         ctx.logger.warn = (message, fields) => {
-          if (message === 'routines_webhook_secret_fetch_failed') warnings.push(message);
+          if (message === 'routines_webhook_secret_fetch_failed') warnings.push({ message, fields });
           else warn(message, fields);
         };
-        throw new Error('missing');
+        throw new Error('PRIVATE vault detail');
       }
       return call(name, ctx, input);
     });
-    expect(await request(token)).toBe(401);
-    expect(warnings).toEqual(['routines_webhook_secret_fetch_failed']);
+    // Not "none saved", so it refuses; a 503 because the sender should retry.
+    expect(await request(token)).toBe(503);
+    // A failure that isn't a plugin error has no code to log, and its message is never logged.
+    expect(warnings).toEqual([{ message: 'routines_webhook_secret_fetch_failed', fields: { agentId: row.agentId, routineId: row.routineId } }]);
+    expect((await h.bus.call<unknown, RoutineWebhookStatus>('routines:webhook-status', h.owner, { agentId: row.agentId, routineId: row.routineId })).refusals)
+      .toEqual([{ reason: 'unavailable', count: 1 }]);
     expect(h.invokeCalls).toHaveLength(0);
     expect(await request(token, { rawPath: `/webhooks/%${token.charCodeAt(0).toString(16)}${token.slice(1)}/hook` })).toBe(404);
   });

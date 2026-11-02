@@ -74,6 +74,13 @@ describe('app connection truth and recovery', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Check connection' }));
     expect(await screen.findByRole('status')).toHaveTextContent('Waiting for the first update');
   });
+  it('says an update turned away while the task couldn’t accept it can be retried by the app', async () => {
+    // A vault outage or a failed admission: the app retries the 503, so there is nothing to fix in settings.
+    vi.mocked(routineApi.getWebhookStatus).mockResolvedValue({ ...waiting, refusals: [{ reason: 'unavailable', count: 3 }] });
+    show(); const status = await screen.findByRole('status');
+    expect(status).toHaveTextContent('3 because the task couldn’t accept updates just then. The app can retry later.');
+    expect(status).not.toHaveTextContent('Check its settings');
+  });
   it('drops previous task status before effects run and ignores its late response', async () => {
     let resolve!: (status: RoutineWebhookStatus) => void;
     vi.mocked(routineApi.get).mockResolvedValue({ ...routineFixture, webhook: { kind: 'webhook', path: '/hook' } });

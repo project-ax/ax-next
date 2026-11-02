@@ -10,7 +10,7 @@ const reasons: Record<WebhookRefusalReason, string> = {
   'invalid-body': 'the update couldn’t be read', 'unsupported-content': 'the app sent an unsupported format',
   'event-filter': 'the event wasn’t selected in app setup', 'delivery-id': 'the delivery ID wasn’t valid',
   capacity: 'the update queue or storage limit was reached. The app can retry later',
-  unavailable: 'the task couldn’t accept updates. Check its settings and try again',
+  unavailable: 'the task couldn’t accept updates just then. The app can retry later',
   paused: 'the task was paused or done', 'too-large': 'the update was larger than 1 MB',
 };
 /** The app the host detected from a delivery's signature (TASK-1026). */

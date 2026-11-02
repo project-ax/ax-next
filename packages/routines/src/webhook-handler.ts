@@ -60,10 +60,10 @@ export function createWebhookRouter(deps: WebhookRouterDeps): HttpRouteHandler {
     // Settings saved before then keep checks on; their values are ignored.
     // The generation was read above, before the secret: saving or removing a
     // secret replaces it, so admission refuses a delivery that raced the change.
-    const unreadable = async () => {
-      ctx.logger.warn('routines_webhook_secret_fetch_failed', { agentId: row.agentId, routineId: row.routineId });
-      await refuse(401, 'secret');
-    };
+    // Logs the task and, for a plugin error, its code: never the error's message, a header, the body or the secret.
+    const unreadable = (code?: string) => ctx.logger.warn('routines_webhook_secret_fetch_failed', {
+      agentId: row.agentId, routineId: row.routineId, ...(code === undefined ? {} : { code }),
+    });
     let secret: string | null;
     try {
       secret = await deps.bus.callJoined<{ ref: string; userId: string }, string>(
@@ -72,12 +72,16 @@ export function createWebhookRouter(deps: WebhookRouterDeps): HttpRouteHandler {
       );
     } catch (error) {
       // Only the vault's own "none saved" answer means none. Any other failure
-      // refuses: an outage must never read as "accept unsigned".
-      if (!(error instanceof PluginError && error.code === 'credential-not-found')) { await unreadable(); return; }
+      // refuses: an outage must never read as "accept unsigned". It's the host's
+      // fault, not the sender's, so a 503 the app retries, like a failed admission.
+      if (!(error instanceof PluginError && error.code === 'credential-not-found')) {
+        unreadable(error instanceof PluginError ? error.code : undefined);
+        await refuse(503, 'unavailable'); return;
+      }
       secret = null;
     }
     // Never verify with an empty key: anyone could sign with it.
-    if (secret !== null && (typeof secret !== 'string' || secret.length === 0)) { await unreadable(); return; }
+    if (secret !== null && (typeof secret !== 'string' || secret.length === 0)) { unreadable(); await refuse(401, 'secret'); return; }
     let signature: VerifiedSignature | null = null;
     if (secret === null) {
       if (hasLegacySignatureSetting(row)) { await refuse(401, 'secret'); return; }

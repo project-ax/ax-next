@@ -66,7 +66,6 @@ describe('authenticated webhook durable admission',()=>{
       ['an unsigned update, once a secret is saved',plain,async()=>'secret',unsigned,'signature'],
       ['a wrongly signed update, once a secret is saved',plain,async()=>'secret',()=>request({headers:{...request().headers,sig:createHmac('sha256','wrong').update(request().body).digest('hex')}}),'signature'],
       ['a signed update when a setting saved earlier asks for a secret and none is saved',row,missing,()=>request(),'secret'],
-      ['any update when the secret can’t be read',plain,async()=>{throw new PluginError({plugin:'@ax/credentials',code:'timeout',message:'slow'});},()=>request(),'secret'],
       ['any update when the vault answers with an empty secret',plain,async()=>'',()=>request(),'secret'],
       ['a Slack URL check that did not verify as Slack, with no secret saved',plain,missing,()=>request({body:Buffer.from('{"type":"url_verification","challenge":"c"}')}),'secret'],
       ['a Slack URL check signed as another app',plain,async()=>'secret',()=>{const body=Buffer.from('{"type":"url_verification","challenge":"c"}');return request({body,headers:{...request().headers,sig:createHmac('sha256','secret').update(body).digest('hex')}});},'signature'],
@@ -74,6 +73,16 @@ describe('authenticated webhook durable admission',()=>{
       const f=fixture('accepted',source,vault),r=response();await f.handler(make(),r.res);
       expect(r.state.code).toBe(401);
       expect(f.observeWebhook).toHaveBeenCalledWith(expect.objectContaining({observation:reason}),expect.any(Function));
+      expect(f.admit).not.toHaveBeenCalled();expect(f.writes).not.toHaveBeenCalled();
+    });
+    // A vault outage is the host's problem, not the sender's: a 503 the app retries, never a 401 it gives up on.
+    it.each([
+      ['a vault error',async():Promise<string>=>{throw new PluginError({plugin:'@ax/credentials',code:'timeout',message:'slow'});}],
+      ['a failure that is not a plugin error',async():Promise<string>=>{throw new Error('PRIVATE vault detail');}],
+    ] as const)('asks the sender to retry when the secret can’t be read: %s',async(_name,vault)=>{
+      const f=fixture('accepted',plain,vault),r=response();await f.handler(request(),r.res);
+      expect(r.state.code).toBe(503);
+      expect(f.observeWebhook).toHaveBeenCalledWith(expect.objectContaining({observation:'unavailable'}),expect.any(Function));
       expect(f.admit).not.toHaveBeenCalled();expect(f.writes).not.toHaveBeenCalled();
     });
   });
