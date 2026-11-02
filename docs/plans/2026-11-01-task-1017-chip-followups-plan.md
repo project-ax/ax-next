@@ -61,7 +61,7 @@ export type GeneratedFileFailure =
 ```
 Copy (exact):
 - `NOT_ATTACHED` (unchanged): `Some new files could not be attached. Ask the agent to attach them again.`
-- `HELD` (new): `Some new files are waiting for your approval before we attach them.`
+- `HELD` (new): `Some new files need your approval before we attach them. You can also find them in the Files tab.`
 - `NOT_NAMEABLE` (now plural): `Some new files have names we can't link to here (for example, ones with a colon). Ask the agent to rename them.`
 - The scan-failure line stays: `We could not check for new files to attach. Ask the agent to attach the files again.`
 

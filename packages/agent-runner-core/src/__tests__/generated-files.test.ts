@@ -45,7 +45,7 @@ const NOT_ATTACHED = {
 
 const HELD = {
   type: 'text',
-  text: 'Some new files are waiting for your approval before we attach them.',
+  text: 'Some new files need your approval before we attach them. You can also find them in the Files tab.',
 };
 
 const SCAN_FAILED = {

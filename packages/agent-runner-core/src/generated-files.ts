@@ -95,8 +95,10 @@ function note(text: string): ContentBlock {
 }
 const NOT_ATTACHED = 'Some new files could not be attached. Ask the agent to attach them again.';
 // A held file must never be told "attach them again": the only way to do that
-// is the model's own publish, which copies the file into the blob store.
-const HELD = 'Some new files are waiting for your approval before we attach them.';
+// is the model's own publish, which copies the file into the blob store. Nor
+// promised a chip: a cold session's approval attaches nothing, so it points at
+// the Files tab, where the file is either way.
+const HELD = 'Some new files need your approval before we attach them. You can also find them in the Files tab.';
 const NOT_NAMEABLE = "Some new files have names we can't link to here (for example, ones with a colon). Ask the agent to rename them.";
 const SCAN_FAILED = 'We could not check for new files to attach. Ask the agent to attach the files again.';
 

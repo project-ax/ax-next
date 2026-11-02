@@ -184,7 +184,7 @@ beforeEach(() => {
 
 /** The auto-attach notes a tool turn-end can carry (generated-files.ts). */
 const NOT_ATTACHED = { type: 'text', text: 'Some new files could not be attached. Ask the agent to attach them again.' };
-const HELD = { type: 'text', text: 'Some new files are waiting for your approval before we attach them.' };
+const HELD = { type: 'text', text: 'Some new files need your approval before we attach them. You can also find them in the Files tab.' };
 
 describe('runRunner — generated file attachment', () => {
   // New files in the agent's home are attached to the turn that made them, by
