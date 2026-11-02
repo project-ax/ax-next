@@ -311,8 +311,9 @@ describe('GeneratedFileChip', () => {
 
     it('inside a conversation, a chip checks again when the thread grows', async () => {
       // The walk's case: the agent deleted the file in a LATER turn while the
-      // chip stayed on screen. `AgentConversation` hands the chip the thread's
-      // length, which moves when a turn starts, ends and is re-read.
+      // chip stayed on screen. With no `fileRecheckKey`, `AgentConversation`
+      // hands the chip the thread's own length (`AgentView` passes the durable
+      // read's, so live frames do not move it: see AgentView.test.tsx).
       const fetch = chipFetch({ status: statusAnswers(200, 404) });
       vi.stubGlobal('fetch', fetch);
       const reply: ThreadMessage = {

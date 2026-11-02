@@ -1803,6 +1803,12 @@ export function AgentView({
                 agent={agent}
                 thread={past ? pastThread : liveThread}
                 /*
+                  TASK-1017 — chips recheck their files on the DURABLE read's
+                  length: it moves when a turn lands, not as `liveThread`'s
+                  live frames come and go while one streams.
+                */
+                fileRecheckKey={past ? pastThread.length : detail.thread.length}
+                /*
                   Whose conversation the thread on screen belongs to, so a
                   person's own attachments can be downloaded from it
                   (TASK-424). Read from the SAME detail the thread came from —

@@ -16,7 +16,7 @@
  */
 import type { ComponentProps } from 'react';
 import { afterEach, describe, expect, it, vi, beforeEach } from 'vitest';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import {
   workspaceApi,
   WorkspaceApiError,
@@ -1712,5 +1712,56 @@ describe('the connectors-off notice in the chat (TASK-806)', () => {
         'Gmail and Linear aren’t signed in yet, so they’re off for this chat.',
       ),
     ).toBeTruthy();
+  });
+});
+
+/*
+  TASK-1017 — a file chip checks whether its file still exists when it appears
+  and again when a turn LANDS: the durable re-read, not every streaming step.
+  Keyed on the whole thread's length, the check fired as the person's bubble
+  went up, as the reply's first text arrived, and again at the re-read.
+*/
+describe('file chip status checks', () => {
+  afterEach(() => { vi.unstubAllGlobals(); });
+
+  it('checks once on mount and once when the turn lands, not while it streams', async () => {
+    const agentFile = {
+      attachmentId: null, agentFilePath: 'plan.pdf', displayName: 'plan.pdf', mediaType: 'application/pdf', sizeBytes: 10,
+    };
+    const statusChecks = vi.fn(async (url: string): Promise<Response> => {
+      if (!url.includes('/status/user-files/')) throw new Error(`unexpected fetch ${url}`);
+      return new Response(JSON.stringify({ available: true }), { headers: { 'content-type': 'application/json' } });
+    });
+    vi.stubGlobal('fetch', statusChecks);
+    const reply = { kind: 'agent' as const, id: 't1', text: 'Here is the plan.', at: '', attachments: [agentFile] };
+    agentMock
+      .mockResolvedValueOnce(detail({ thread: [reply] }))
+      .mockResolvedValue(detail({
+        thread: [reply, { kind: 'user', id: 'u2', text: 'Delete it.' }, { kind: 'agent', id: 't2', text: 'Deleted.', at: '' }],
+      }));
+    sendMock.mockResolvedValue({ conversationId: 'c-now', reqId: 'r1' } as never);
+    let handlers: Parameters<typeof workspaceApi.streamReply>[1] | null = null;
+    let finish: () => void = () => {};
+    streamMock.mockImplementation(async (_reqId, h) => {
+      handlers = h;
+      await new Promise<void>((resolve) => { finish = resolve; });
+    });
+
+    renderView();
+    await waitFor(() => expect(statusChecks).toHaveBeenCalledOnce());
+
+    const box = await screen.findByPlaceholderText('Message Quill');
+    fireEvent.change(box, { target: { value: 'Delete it.' } });
+    fireEvent.keyDown(box, { key: 'Enter' });
+    await waitFor(() => expect(handlers).not.toBeNull());
+    await act(async () => { handlers!.onText('Deleting'); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    // The bubble and the streaming reply are not a turn that landed.
+    expect(statusChecks).toHaveBeenCalledOnce();
+
+    await act(async () => { handlers!.onDone(); finish(); });
+    expect(await screen.findByText('Deleted.')).toBeTruthy();
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(statusChecks).toHaveBeenCalledTimes(2);
   });
 });

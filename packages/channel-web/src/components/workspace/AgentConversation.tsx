@@ -338,6 +338,17 @@ interface Props {
    * caller's own shape.)
    */
   conversationKey?: string;
+  /**
+   * TASK-1017 — what every agent-file chip rechecks its file on: it checks
+   * again whenever this moves. `AgentView` passes the DURABLE thread's length
+   * (the read, without the live frames it appends while a turn runs), which
+   * moves once a turn has landed and not while it streams, so a turn costs one
+   * check per chip rather than one per frame that comes and goes.
+   *
+   * OPTIONAL: absent means `thread` has no live frames in it, so its own length
+   * is that same signal.
+   */
+  fileRecheckKey?: number;
 }
 
 export function AgentConversation({
@@ -363,6 +374,7 @@ export function AgentConversation({
   onGrantResolved,
   onGranted,
   conversationKey = 'one-conversation',
+  fileRecheckKey = thread.length,
 }: Props) {
   /*
     TASK-393 — seeded from, and mirrored into, `workspace-draft-store.ts`, so
@@ -701,7 +713,7 @@ export function AgentConversation({
               m={m}
               agent={agent}
               conversationId={conversationId}
-              fileRecheckKey={thread.length}
+              fileRecheckKey={fileRecheckKey}
               decisions={decisions}
               onApprove={onApprove}
               onDismiss={onDismiss}
@@ -1049,11 +1061,9 @@ function Message({
   /** See `Props.conversationId` — what turns an attachment id into a URL. */
   conversationId: string | null;
   /**
-   * TASK-1017 — the thread's length, handed to every agent-file chip so it
-   * checks its file again when this moves. It moves when a turn starts (the
-   * live frames appear), when it ends (they go) and when the re-read lands,
-   * so a file the agent deleted in a later turn reads "No longer available"
-   * once that turn is over. A streamed token does not move it.
+   * TASK-1017 — see `Props.fileRecheckKey`: handed to every agent-file chip,
+   * which checks its file again when this moves, so a file the agent deleted
+   * in a later turn reads "No longer available" once that turn has landed.
    */
   fileRecheckKey: number;
   decisions: Decision[];
