@@ -7,6 +7,7 @@ vi.mock('@/lib/routines', async original => ({ ...(await original<typeof import(
 vi.mock('@/components/credentials/CredentialSlotRow', () => ({ CredentialSlotRow: ({ destination }: { destination: unknown }) => <p>Signing secret {JSON.stringify(destination)}</p> }));
 const helpText = /Paste the signing secret from the other app’s webhook settings/;
 const legacyNote = /This task was set up to always check signatures/;
+const unchecked = /Without a secret, updates aren’t checked/;
 const row: Routine = { ...routineFixture, kind: 'stay-on-top', goodWhen: 'All handled.', webhook: { kind: 'webhook', path: '/updates', hmac: { app: 'slack' } } };
 beforeEach(() => {
   vi.resetAllMocks();
@@ -38,11 +39,16 @@ describe('private task app setup', () => {
     expect(screen.queryByRole('radiogroup', { name: 'App' })).not.toBeInTheDocument();
     expect(screen.queryByText(/Choose the app/)).not.toBeInTheDocument();
     expect(screen.queryByText(legacyNote)).not.toBeInTheDocument();
+    expect(screen.getByText(unchecked)).toBeVisible();
   });
-  it('explains that a legacy task always checks signatures', async () => {
+  it('explains that a legacy task always checks signatures, and how to stop', async () => {
     show(); await screen.findByLabelText('Webhook URL');
     expect(screen.getByText(legacyNote)).toBeVisible();
+    expect(screen.getByText(legacyNote)).toHaveTextContent('To stop checking, turn off its app updates and save, then turn them back on.');
+    expect(screen.getByText(legacyNote)).toHaveTextContent('new address');
     expect(screen.getByText(helpText)).toBeVisible();
+    // A legacy task's updates are never unchecked, so the help can't say they are.
+    expect(screen.queryByText(unchecked)).not.toBeInTheDocument();
   });
   it('says when secret management is unavailable', async () => {
     vi.mocked(routineApi.get).mockResolvedValue({ ...row, permissions: { ...row.permissions, manageSecret: false } });

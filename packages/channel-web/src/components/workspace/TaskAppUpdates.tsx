@@ -7,6 +7,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { CredentialSlotRow } from '@/components/credentials/CredentialSlotRow';
 import { TaskAppConnection } from './TaskAppConnection';
 import { WebhookAddressFields } from '@/components/routines/WebhookAddressFields';
+import { SigningSecretHelp } from '@/components/routines/SigningSecretHelp';
 
 /**
  * Private setup stays behind a current owner/edit read; generic task details carry no address.
@@ -47,8 +48,7 @@ function AppSetup({ agentId, routineId, onEdit }: Parameters<typeof TaskAppUpdat
           <CredentialSlotRow
             destination={{ kind: 'routine-hmac', agentId, routineId }} slot={{ label: 'Signing secret', kind: 'api-key' }}
             scope={{ scope: 'agent', ownerId: agentId }} onSaved={() => setConnectionGeneration(value => value + 1)} />
-          <p className="text-sm text-muted-foreground">Paste the signing secret from the other app’s webhook settings. Once it’s saved, we recognize the app and turn away updates whose signature doesn’t match. Without a secret, updates aren’t checked.</p>
-          {row.webhook.hmac !== undefined && <p className="text-sm text-muted-foreground">This task was set up to always check signatures, so without a saved secret its updates are turned away.</p>}
+          <SigningSecretHelp legacy={row.webhook.hmac !== undefined} noun="task" />
         </> : <p className="text-sm text-muted-foreground">Signing secret management is currently unavailable.</p>}
         {!busy && <TaskAppConnection key={connectionGeneration} agentId={agentId} routineId={routineId} />}
         <p className="text-sm text-muted-foreground">The address and signing secret stay private. The agent receives only the app’s updates.</p>

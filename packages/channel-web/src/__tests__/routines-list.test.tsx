@@ -140,6 +140,23 @@ describe('routine list', () => {
     fireEvent.click(screen.getByRole('button', { name: `Recent runs for ${row.name}` }));
     expect(await screen.findByText('Signing secret')).toBeInTheDocument();
   });
+  it('says next to the signing secret that saving one turns checks on', async () => {
+    vi.mocked(routineApi.list).mockResolvedValue([{ ...row, schedule: null, webhook: { kind: 'webhook', path: '/member' } }]);
+    show(); await screen.findByText(row.name);
+    fireEvent.click(screen.getByRole('button', { name: `Recent runs for ${row.name}` }));
+    await screen.findByText('Signing secret');
+    expect(screen.getByText(/Paste the signing secret from the other app’s webhook settings/)).toHaveTextContent('Without a secret, updates aren’t checked.');
+    expect(screen.queryByText(/set up to always check signatures/)).not.toBeInTheDocument();
+  });
+  it('tells the owner of a legacy routine that it always checks signatures, and how to stop', async () => {
+    vi.mocked(routineApi.list).mockResolvedValue([{ ...row, schedule: null, webhook: { kind: 'webhook', path: '/member', hmac: { app: 'stripe' } } }]);
+    show(); await screen.findByText(row.name);
+    fireEvent.click(screen.getByRole('button', { name: `Recent runs for ${row.name}` }));
+    await screen.findByText('Signing secret');
+    expect(screen.getByText(/This routine was set up to always check signatures/)).toHaveTextContent('To stop checking, turn off its app updates and save, then turn them back on.');
+    expect(screen.getByText(/Paste the signing secret from the other app’s webhook settings/)).toBeInTheDocument();
+    expect(screen.queryByText(/Without a secret, updates aren’t checked/)).not.toBeInTheDocument();
+  });
   it('opens a fresh edit and sends enable/delete revision checks with retry-stable IDs', async () => {
     vi.mocked(routineApi.remove)
       .mockRejectedValueOnce(new RoutineApiError(0))
