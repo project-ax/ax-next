@@ -51,6 +51,13 @@ describe('private task app setup', () => {
     // A legacy task's updates are never unchecked, so the help can't say they are.
     expect(screen.queryByText(unchecked)).not.toBeInTheDocument();
   });
+  it('tells an app-only legacy task to delete and recreate it, since it can’t save without app updates', async () => {
+    vi.mocked(routineApi.get).mockResolvedValue({ ...row, kind: 'repeat', goodWhen: null, schedule: null });
+    show(); await screen.findByLabelText('Webhook URL');
+    expect(screen.getByText(legacyNote)).toHaveTextContent('To stop checking, delete this task and create it again.');
+    expect(screen.getByText(legacyNote)).toHaveTextContent('paste that into the other app');
+    expect(screen.getByText(legacyNote)).not.toHaveTextContent('turn off its app updates');
+  });
   it('says when secret management is unavailable', async () => {
     vi.mocked(routineApi.get).mockResolvedValue({ ...row, permissions: { ...row.permissions, manageSecret: false } });
     show(); await screen.findByLabelText('Webhook URL');
