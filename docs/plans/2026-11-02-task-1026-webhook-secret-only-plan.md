@@ -21,7 +21,7 @@ Tasks cite these as D1–D9.
 
 Card decision 6 ("treated as 'verify on'", "Saved tasks keep working") governs legacy tasks. Card decision 1 holds for every task without a legacy setting, which includes every task created from now on. There is one deviation: removing the secret from a legacy task leaves its updates refused. The task page says so (Task 5).
 
-**D2 — "Secret saved".** Read it with the existing call: `credentials:get` with `{ ref: credentialRef(row), userId: row.ownerUserId }`. A non-empty string means saved. Only `error instanceof PluginError && error.code === 'credential-not-found'` means none is saved; a removed secret's tombstone reads the same way. Any other error logs the existing warning `routines_webhook_secret_fetch_failed` and refuses with 401 `secret`. An empty string also refuses with 401 `secret`: never HMAC with an empty key. Keep `webhookGeneration(row)` before the secret read. A secret saved or removed mid-delivery then makes admission refuse the delivery through the existing fence.
+**D2 — "Secret saved".** Read it with the existing call: `credentials:get` with `{ ref: credentialRef(row), userId: row.ownerUserId }`. A non-empty string means saved. Only `error instanceof PluginError && error.code === 'credential-not-found'` means none is saved; a removed secret's tombstone reads the same way. Any other error logs the existing warning `routines_webhook_secret_fetch_failed` (with the error code) and refuses with 503 `unavailable`, so senders retry (review F3; this replaced the original 401 `secret`). An empty string also refuses with 401 `secret`: never HMAC with an empty key. Keep `webhookGeneration(row)` before the secret read. A secret saved or removed mid-delivery then makes admission refuse the delivery through the existing fence.
 
 **D3 — Detection (`verifyWebhookDelivery`)**, applied in this order:
 1. **Timestamped apps.** An app is present when any of its headers is an own property, whatever its length:
@@ -72,7 +72,7 @@ Card decision 6 ("treated as 'verify on'", "Saved tasks keep working") governs l
 **D9 — Known consequences.** List these in the PR description.
 - (a) SHA-1-only senders (e.g. Intercom's `X-Hub-Signature: sha1=`) are refused, even on tasks saved with `algorithm: 'sha1'`. GitHub keeps working via `X-Hub-Signature-256`.
 - (b) Prefixes other than `sha256=` stop matching.
-- (c) Every delivery reads the vault, so a vault outage also refuses tasks without secrets.
+- (c) Every delivery reads the vault, so a vault outage also refuses tasks without secrets, with a retryable 503 `unavailable`.
 - (d) An agent request carrying `webhook.hmac` from before the deploy, retried with the same requestId after it, is refused rather than replayed.
 - (e) Rollback hazard: an older receiver ignores secrets saved without legacy settings, so verification is silently off. Stop webhook ingress before rolling the receiver back.
 
