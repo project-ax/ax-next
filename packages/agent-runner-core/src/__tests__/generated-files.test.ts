@@ -173,9 +173,10 @@ describe('generated files', () => {
   });
 
   it('warn gets denied, held and unavailable for the three gate refusals', async () => {
-    // `unavailable` is the gate failing closed (it never decided), `denied` a
-    // rule that said no, `held` a call waiting on a person: three different
-    // things for whoever reads the log.
+    // `unavailable` is no usable verdict reaching the runner, `denied` the
+    // host answering no (in production only when its own gate fails closed),
+    // `held` a call parked for a person: three different things for whoever
+    // reads the log.
     const cases: Array<[GateVerdict, string]> = [
       [{ kind: 'denied' }, 'denied'],
       [{ kind: 'held' }, 'held'],
@@ -251,6 +252,9 @@ describe('generated files', () => {
     // misses, such as the old "need your approval before we attach them".
     expect([...texts].sort()).toEqual([NOT_ATTACHED.text, NOT_NAMEABLE.text, SCAN_FAILED.text].sort());
     for (const text of texts) expect(text).not.toMatch(/again|publish|re-?attach/i);
+    // Nor promise the file is there: a refusal can race a delete, and a failed
+    // scan may mean the home itself is gone.
+    for (const text of texts) expect(text).not.toMatch(/still saved|are saved/i);
     expect(NOT_ATTACHED.text).toContain('Files tab');
     expect(SCAN_FAILED.text).toContain('Files tab');
   });

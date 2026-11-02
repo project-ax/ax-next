@@ -216,8 +216,9 @@ describe('which keys an override may name', () => {
       // built). Making publishing an ability that can be "Ask first" needs a held
       // path built FIRST: today a hold attaches nothing, and approving it wakes
       // the model with "make that call again" for a call it never made: it
-      // attaches nothing, or, if the model reproduces the exact call, makes a
-      // blob copy charged twice. Its design (cold approvals, one card
+      // attaches nothing, a different call holds again (a second card for the
+      // person), or, if the model reproduces the exact call, it makes a blob
+      // copy charged twice. Its design (cold approvals, one card
       // for N files) is in .claude/memory/decisions/2026-11-01-TASK-1019.md.
       'artifact_publish',
     ]) {

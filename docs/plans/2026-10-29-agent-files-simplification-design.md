@@ -445,8 +445,9 @@ Decided 2026-10-30: plain reset; nobody is using ax yet.
   opens a turn with the host's note. So a hold on `artifact_publish` needs a
   held path built first; the `verdicts.test.ts` tripwire says so and points at
   TASK-1019's recorded design. The `denied` / `unavailable` paths are not part
-  of the held path (the gate failing closed, or a rule that says no) and
-  stay. No note asks for files to be attached or published again: the person
+  of the held path and stay: `unavailable` is no usable verdict reaching the
+  runner, `denied` the host answering no (in production only when its own gate
+  fails closed, since no rule denies `artifact_publish`). No note asks for files to be attached or published again: the person
   reads these notes, and asking the agent to attach a file again makes it call
   `artifact_publish`, a blob copy charged twice. A refused file reads "Some new
   files could not be attached here. Look for them in the Files tab." and a
