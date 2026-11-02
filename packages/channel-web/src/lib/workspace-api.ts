@@ -1586,6 +1586,9 @@ export const workspaceApi = {
       encodeURIComponent(path);
     const res = await httpFetch(`/api/workspace${route}?probe=1`);
     if (!res.ok) throw new WorkspaceApiError(route, res.status);
+    // The yes is all we need. Cancel the rest: a host too old to know
+    // `?probe` would be sending the whole file into a body nobody reads.
+    void res.body?.cancel().catch(() => undefined);
     return `/api/workspace${route}`;
   },
 

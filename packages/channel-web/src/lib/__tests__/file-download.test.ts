@@ -132,6 +132,17 @@ describe('workspaceApi.probeFileDownload', () => {
     await workspaceApi.probeFileDownload('a1', 'q3.pdf');
     for (const spy of read) expect(spy).not.toHaveBeenCalled();
   });
+
+  it('cancels the yes\u2019s body: a host too old to know ?probe never streams the file into the tab', async () => {
+    // TASK-1022 review: after a rollback the SPA can be newer than the host.
+    // Such a host ignores `?probe` and sends the whole file; an unread,
+    // uncancelled body would hang until the idle window cut it.
+    const res = downloadable();
+    const cancel = vi.spyOn(res.body!, 'cancel');
+    stubFetch(res);
+    await workspaceApi.probeFileDownload('a1', 'q3.pdf');
+    expect(cancel).toHaveBeenCalledTimes(1);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -504,20 +515,26 @@ describe('saveFromUrl', () => {
       }
       return el;
     });
-    const route = '/api/workspace/agents/a1/download/user-files/notes%2Fplan.md';
+    // Both real callers' route shapes: the Files tab's, and the chat chip's
+    // (its conversation id and key encoded, `%20 %26 %23` included). A guard
+    // narrowed to one of them must redden here, not in production.
+    const routes = [
+      '/api/workspace/agents/a1/download/user-files/notes%2Fplan.md',
+      '/api/workspace/conversations/c%20%26%201/download/user-files/reports%2FQ3%20plan%20%231.pdf',
+    ];
 
-    saveFromUrl(route);
+    for (const route of routes) saveFromUrl(route);
 
     // The route as given, and an EMPTY `download` that is present: the
     // browser names the file from the route's `Content-Disposition`, which
     // the server sanitized. Clicked while in the document, which some
     // browsers need before they will start a download from a click.
-    expect(clicked).toEqual([
-      { href: route, download: '', hasDownload: true, inDocument: true },
-    ]);
-    expect(new RealURL(clicked[0]!.href!, location.href).origin).toBe(
-      location.origin,
+    expect(clicked).toEqual(
+      routes.map((route) => ({ href: route, download: '', hasDownload: true, inDocument: true })),
     );
+    for (const c of clicked) {
+      expect(new RealURL(c.href!, location.href).origin).toBe(location.origin);
+    }
     expect(createObjectURL).not.toHaveBeenCalled();
     // And the anchor does not stay in the document.
     expect(document.querySelectorAll('a')).toHaveLength(0);
@@ -541,11 +558,12 @@ describe('saveFromUrl', () => {
       '//evil.example/api/workspace/x',
       'https://evil.example/api/workspace/x',
       '/somewhere/else',
+      'api/workspace/x',
+      '/api/workspace/../x',
       'data:text/html,hi',
     ]) {
-      expect(() => saveFromUrl(bad)).toThrow();
+      expect(() => saveFromUrl(bad)).toThrow(/refusing/);
     }
     expect(clicks).not.toHaveBeenCalled();
-    expect(document.querySelectorAll('a')).toHaveLength(0);
   });
 });

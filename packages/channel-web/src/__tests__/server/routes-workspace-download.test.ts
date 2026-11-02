@@ -1432,6 +1432,22 @@ describe('the download route', () => {
     expect(d.captured.statusCode).toBe(200);
     expect(d.captured.json).toEqual({ downloadable: true });
     expect(d.captured.headers).toEqual({ 'cache-control': 'private, no-store' });
+
+    // Its refusals too, not only its yes.
+    const gone = mkRes();
+    await sendUserFileDownload({
+      bus,
+      ctx: initCtx,
+      owner: { userId: 'u1', agentId: 'a1', agentConfig: { displayName: 'A1' } } as Parameters<
+        typeof sendUserFileDownload
+      >[0]['owner'],
+      relPath: 'not-there.bin',
+      downloadName: 'not-there.bin',
+      probe: true,
+      res: gone.res,
+    });
+    expect(gone.captured.statusCode).toBe(404);
+    expect(gone.captured.headers).toEqual({ 'cache-control': 'private, no-store' });
   });
 
   it('a probe runs the ACL first: a foreign agent is a 404 with no read, and every probe answer is no-store', async () => {

@@ -42,7 +42,7 @@
  * "one of them gets fixed and the other quietly doesn't".
  */
 import { useCallback, useRef, useState } from 'react';
-import { HttpError } from './http';
+import { HttpError, logRequestFailure } from './http';
 import { workspaceApi } from './workspace-api';
 
 /**
@@ -67,8 +67,10 @@ export function saveFromUrl(url: string): void {
   // Enforced, not just documented: a `javascript:` href runs (browsers ignore
   // `download` on it), and an absolute or protocol-relative one leaves our
   // origin. Only our own download routes may be handed to the browser.
+  // Root-relative only: a path-relative URL would resolve against the PAGE
+  // when clicked, not against the origin this check used.
   const resolved = new URL(url, window.location.origin);
-  if (resolved.origin !== window.location.origin || !resolved.pathname.startsWith('/api/workspace/')) {
+  if (!url.startsWith('/') || resolved.origin !== window.location.origin || !resolved.pathname.startsWith('/api/workspace/')) {
     throw new Error('saveFromUrl: refusing a URL that is not one of our download routes');
   }
   const a = document.createElement('a');
@@ -109,7 +111,7 @@ export function saveBlob(blob: Blob, filename: string): void {
 /**
  * What a failed download SAYS.
  *
- * Five outcomes, five sentences, and none of them is "something went wrong".
+ * Six outcomes, six sentences, and none of them is "something went wrong".
  * The one worth reading twice is the size case: it is not an error, it is a
  * limit we are being honest about. The file is over our download limit, and
  * we do not send part of it: part of a PDF is not a small PDF, it is a broken
@@ -178,7 +180,10 @@ export function downloadFailureMessage(e: unknown, agentName: string): string {
 export interface FileDownloadState {
   /** Ask the route, then hand the download to the browser. Safe to call twice. */
   start: () => void;
-  /** A download is in flight. The affordance says so and refuses a second one. */
+  /**
+   * The probe is in flight. The affordance says so and refuses a second one.
+   * Once the browser has the download, it is the browser's (TASK-1022).
+   */
   busy: boolean;
   /**
    * The authored sentence for the last failure, or `null`.
@@ -220,6 +225,10 @@ export function useFileDownload(args: {
       try {
         saveFromUrl(await workspaceApi.probeFileDownload(agentId, path));
       } catch (e) {
+        // The reader gets copy; the console gets the detail (status and
+        // route, or the guard's refusal), so a retry that keeps failing the
+        // same way is diagnosable.
+        logRequestFailure(e, 'file download');
         setError(downloadFailureMessage(e, agentName));
       } finally {
         inFlight.current = false;

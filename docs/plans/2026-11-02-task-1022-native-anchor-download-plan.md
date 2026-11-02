@@ -166,6 +166,7 @@ Needs `security-checklist`: an agent-authored key goes into an href, and agent-a
     - `error` is null and `busy` is false
   - **`useFileDownload`, new test 2:** `'a refused probe hands nothing to the browser'`. A 404 sets `error` to the 404 sentence, and no anchor is clicked.
   - **`useFileDownload`, existing tests.** Retarget the two existing guard tests from `downloadFile` to `probeFileDownload`, resolving a URL string.
+  - *(Superseded in review round 1: only a probe with no answer at all — a `TypeError`, or status 0 — gets the connection sentence below; a 400 gets the 404 sentence, and a 5xx or a malformed key gets "That download didn’t start, so nothing was saved. Try again in a moment." See the decisions shard.)*
   - **`downloadFailureMessage`.** For status 0 and for 500, the fallback is exactly `That download didn’t start, so nothing was saved. The connection may have dropped. Try again in a moment.`
     - Rewrite `'the fallback never claims the file is still there…'`, because its mid-download premise is gone. It now asserts the sentence contains `didn’t start` and `nothing was saved`, and does not contain `still there`.
     - In `'has a sentence for a failure that was not an HTTP answer at all'`, `didn’t finish` becomes `didn’t start`.

@@ -5,7 +5,7 @@ import { Button } from '@/components/ui/button';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { clampAttachmentName } from '@/lib/attachment-name';
 import { saveBlob, saveFromUrl } from '@/lib/file-download';
-import { httpFetch, HttpError } from '@/lib/http';
+import { httpFetch, HttpError, logRequestFailure } from '@/lib/http';
 import { FALLBACK_SAVED_FILENAME, filenameFromContentDisposition } from '@/lib/workspace-api';
 import type { ThreadAttachment } from '@/lib/workspace-types';
 
@@ -104,6 +104,9 @@ export function GeneratedFileChip({ file, conversationId, recheckKey }: {
         // the route itself, so none of the file comes into the tab.
         const probe = await httpFetch(`${url}?probe=1`);
         if (!probe.ok) throw new HttpError('file download', probe.status);
+        // The yes is all we need. Cancel the rest: a host too old to know
+        // `?probe` would be sending the whole file into a body nobody reads.
+        void probe.body?.cancel().catch(() => undefined);
         saveFromUrl(url);
       } else {
         const response = await httpFetch(url);
@@ -112,6 +115,7 @@ export function GeneratedFileChip({ file, conversationId, recheckKey }: {
           filenameFromContentDisposition(response.headers.get('content-disposition')) ?? FALLBACK_SAVED_FILENAME);
       }
     } catch (e) {
+      logRequestFailure(e, 'file chip download');
       const status = e instanceof HttpError ? e.status : null;
       // 400 on an agent file means its key is a folder now: gone, like a 404.
       setError(status === 404 || (status === 400 && file.agentFilePath !== undefined)
