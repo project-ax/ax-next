@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { sql } from 'kysely';
 import { createRoutinesStore } from '../store.js';
 import { request as httpRequest } from 'node:http';
+import { HookBus } from '@ax/core';
 import { createTestHarness } from '@ax/test-harness';
 import { createHttpServerPlugin } from '@ax/http-server';
 import { createHmac } from 'node:crypto';
@@ -142,6 +143,10 @@ describe('single registered request-time DB webhook route', () => {
     const { row, token } = await setup({ header: 'sig', algorithm: 'sha256' });
     const call = h.bus.call.bind(h.bus);
     const warnings: Array<{ message: string; fields: unknown }> = [];
+    // The vault throws a plain Error (a lost database connection, say). It goes through a real
+    // HookBus, as in production, which wraps it as a PluginError with code `unknown`.
+    const vault = new HookBus();
+    vault.registerService('credentials:get', '@ax/credentials', async () => { throw new Error('PRIVATE vault detail'); });
     vi.spyOn(h.bus, 'call').mockImplementation(async (name, ctx, input) => {
       if (name === 'credentials:get') {
         const warn = ctx.logger.warn.bind(ctx.logger);
@@ -149,14 +154,14 @@ describe('single registered request-time DB webhook route', () => {
           if (message === 'routines_webhook_secret_fetch_failed') warnings.push({ message, fields });
           else warn(message, fields);
         };
-        throw new Error('PRIVATE vault detail');
+        return vault.call(name, ctx, input);
       }
       return call(name, ctx, input);
     });
     // Not "none saved", so it refuses; a 503 because the sender should retry.
     expect(await request(token)).toBe(503);
-    // A failure that isn't a plugin error has no code to log, and its message is never logged.
-    expect(warnings).toEqual([{ message: 'routines_webhook_secret_fetch_failed', fields: { agentId: row.agentId, routineId: row.routineId } }]);
+    // The log carries the bus's `unknown` code, never the thrown error's message.
+    expect(warnings).toEqual([{ message: 'routines_webhook_secret_fetch_failed', fields: { agentId: row.agentId, routineId: row.routineId, code: 'unknown' } }]);
     expect((await h.bus.call<unknown, RoutineWebhookStatus>('routines:webhook-status', h.owner, { agentId: row.agentId, routineId: row.routineId })).refusals)
       .toEqual([{ reason: 'unavailable', count: 1 }]);
     expect(h.invokeCalls).toHaveLength(0);
