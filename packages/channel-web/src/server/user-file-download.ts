@@ -271,9 +271,10 @@ export interface SendUserFileStatusArgs {
  * call is the host mount's or nothing, so it starts no pod: without the mount
  * it throws `user-files-download-unavailable` and creates nothing.
  *
- * The answers are the download's, minus the body and the ceiling:
+ * The answers are the download's, minus the body and the ceiling, and none
+ * of them is cached (`private, no-store`):
  *
- *   - a file                       → 200 { available: true }, never cached
+ *   - a file                       → 200 { available: true }
  *   - absent                       → 404 file-not-found
  *   - a folder                     → 400 not-a-file
  *   - unavailable, no range service,
@@ -295,6 +296,9 @@ export interface SendUserFileStatusArgs {
  */
 export async function sendUserFileStatus(args: SendUserFileStatusArgs): Promise<void> {
   const { bus, ctx, owner, relPath, res } = args;
+  // Every answer is about this moment only: no cache may hand back a "there"
+  // once the file is gone, nor a "gone" or "could not tell" once it is back.
+  res.header('cache-control', 'private, no-store');
 
   if (!bus.hasService('sandbox:read-user-file-range')) {
     res.status(503).json({ error: 'user-files-unavailable' });
@@ -323,8 +327,7 @@ export async function sendUserFileStatus(args: SendUserFileStatusArgs): Promise<
   const kind: unknown = typeof answer === 'object' && answer !== null ? answer.kind : undefined;
   switch (kind) {
     case 'file':
-      // Only ever true now: no cache may hand it back once the file is gone.
-      res.status(200).header('cache-control', 'private, no-store').json({ available: true });
+      res.status(200).json({ available: true });
       return;
     case 'absent':
       // "Never written", "since deleted" and "a link" are one answer, as for

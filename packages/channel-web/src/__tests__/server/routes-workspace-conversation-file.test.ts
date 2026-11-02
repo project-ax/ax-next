@@ -668,6 +668,8 @@ describe('the chat file chip download route', () => {
       const d = await status({ conversationId: 'c1', '*': SPLAT });
       expect(d.captured.statusCode).toBe(404);
       expect(d.captured.json).toEqual({ error: 'file-not-found' });
+      // Nor may a "gone": a file written back at the key must read as there.
+      expect(d.captured.headers).toEqual({ 'cache-control': 'private, no-store' });
       expect(rangeCalls).toHaveLength(1);
     });
 
@@ -677,6 +679,7 @@ describe('the chat file chip download route', () => {
       const d = await status({ conversationId: 'c1', '*': 'reports' });
       expect(d.captured.statusCode).toBe(400);
       expect(d.captured.json).toEqual({ error: 'not-a-file' });
+      expect(d.captured.headers).toEqual({ 'cache-control': 'private, no-store' });
     });
 
     it('checks the conversation before the path: a teammate’s conversation is 404 for a real key and a malformed one, unread', async () => {
@@ -736,6 +739,7 @@ describe('the chat file chip download route', () => {
       const d = await status({ conversationId: 'c1', '*': SPLAT });
       expect(d.captured.statusCode).toBe(503);
       expect(d.captured.json).toEqual({ error: 'user-files-unavailable' });
+      expect(d.captured.headers).toEqual({ 'cache-control': 'private, no-store' });
       // A fact about the deployment, asked on every chip after every turn: a
       // warning per ask would be noise, and it is not a failed read.
       expect(logs).toEqual([]);
@@ -749,6 +753,7 @@ describe('the chat file chip download route', () => {
       const d = await status({ conversationId: 'c1', '*': SPLAT });
       expect(d.captured.statusCode).toBe(503);
       expect(d.captured.json).toEqual({ error: 'user-files-unavailable' });
+      expect(d.captured.headers).toEqual({ 'cache-control': 'private, no-store' });
     });
 
     it('503 file-read-failed on any other read error, logged by its codes only', async () => {
@@ -762,6 +767,7 @@ describe('the chat file chip download route', () => {
       const d = await status({ conversationId: 'c1', '*': SPLAT });
       expect(d.captured.statusCode).toBe(503);
       expect(d.captured.json).toEqual({ error: 'file-read-failed' });
+      expect(d.captured.headers).toEqual({ 'cache-control': 'private, no-store' });
       expect(logs).toEqual([
         {
           level: 'warn',
@@ -780,6 +786,7 @@ describe('the chat file chip download route', () => {
       const d = await status({ conversationId: 'c1', '*': SPLAT });
       expect(d.captured.statusCode).toBe(503);
       expect(d.captured.json).toEqual({ error: 'file-read-failed' });
+      expect(d.captured.headers).toEqual({ 'cache-control': 'private, no-store' });
       expect(logs).toEqual([
         {
           level: 'warn',
