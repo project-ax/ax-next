@@ -45,7 +45,8 @@ describe('private task app setup', () => {
     show(); await screen.findByLabelText('Webhook URL');
     expect(screen.getByText(legacyNote)).toBeVisible();
     expect(screen.getByText(legacyNote)).toHaveTextContent('To stop checking, turn off its app updates and save, then turn them back on.');
-    expect(screen.getByText(legacyNote)).toHaveTextContent('new address');
+    expect(screen.getByText(legacyNote)).toHaveTextContent('Paste the new one into the other app, because the old one stops working.');
+    expect(screen.getByText(legacyNote)).not.toHaveTextContent('delete this task');
     expect(screen.getByText(helpText)).toBeVisible();
     // A legacy task's updates are never unchecked, so the help can't say they are.
     expect(screen.queryByText(unchecked)).not.toBeInTheDocument();

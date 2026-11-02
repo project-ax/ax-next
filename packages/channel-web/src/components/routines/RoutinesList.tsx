@@ -374,6 +374,7 @@ export function RoutinesList({
                       />
                       <SigningSecretHelp
                         legacy={row.webhook.hmac !== undefined}
+                        scheduled={row.schedule !== null}
                         noun="routine"
                       />
                     </>

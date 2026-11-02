@@ -48,7 +48,7 @@ function AppSetup({ agentId, routineId, onEdit }: Parameters<typeof TaskAppUpdat
           <CredentialSlotRow
             destination={{ kind: 'routine-hmac', agentId, routineId }} slot={{ label: 'Signing secret', kind: 'api-key' }}
             scope={{ scope: 'agent', ownerId: agentId }} onSaved={() => setConnectionGeneration(value => value + 1)} />
-          <SigningSecretHelp legacy={row.webhook.hmac !== undefined} noun="task" />
+          <SigningSecretHelp legacy={row.webhook.hmac !== undefined} scheduled={row.schedule !== null} noun="task" />
         </> : <p className="text-sm text-muted-foreground">Signing secret management is currently unavailable.</p>}
         {!busy && <TaskAppConnection key={connectionGeneration} agentId={agentId} routineId={routineId} />}
         <p className="text-sm text-muted-foreground">The address and signing secret stay private. The agent receives only the app’s updates.</p>
