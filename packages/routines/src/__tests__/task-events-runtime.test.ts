@@ -96,6 +96,7 @@ describe('task update canary: signed HTTP to elected scheduler to check-in and r
         schedule: { kind: 'interval', every: '1h' }, webhook: { kind: 'webhook', path: '/updates', respondWithin: '60s', hmac: { header: 'sig', algorithm: 'sha256' } },
       }),
     });
+    h.seedSecret(task);
     const address = await h.bus.call<unknown, { token: string }>('routines:webhook-address', h.owner, { agentId: h.agentId, routineId: task.routineId });
     const listening = captureExpectedStderr(message => message.startsWith('[ax/http-server] listening on http://127.0.0.1:'));
     const server = createHttpServerPlugin({ host: '127.0.0.1', port: 0, cookieKey: Buffer.alloc(32, 1), allowedOrigins: ['http://localhost'] });

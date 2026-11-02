@@ -47,7 +47,7 @@ describe('independent methods through real approval, restart and HTTP dispatch',
       }),
     };
     const invocations: Array<{ reqId: string; userId: string; input: unknown }> = [];
-    h = await createRoutineHarness({ clock, strictCredentials: true, invoke: async (runCtx, bus, input) => {
+    h = await createRoutineHarness({ clock, invoke: async (runCtx, bus, input) => {
       invocations.push({ reqId: runCtx.reqId, userId: runCtx.userId, input });
       await bus.fire('chat:turn-end', runCtx, { reqId: runCtx.reqId, contentBlocks: [{ type: 'text', text: 'done' }] });
       return { kind: 'complete' };
@@ -278,7 +278,7 @@ describe('registered approval-to-tick-to-webhook cutover canary', () => {
         wake = finish; signal.addEventListener('abort', finish, { once: true });
       }),
     };
-    h = await createRoutineHarness({ clock, strictCredentials: true });
+    h = await createRoutineHarness({ clock });
     const ctx = makeAgentContext({ ...h.owner, agentId: h.agentId, conversationId: 'conversation' });
     const calls = vi.spyOn(h.bus, 'call');
     await expect.poll(() => Boolean(wake)).toBe(true);

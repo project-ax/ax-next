@@ -26,6 +26,7 @@ async function legacyRow(row: RoutineView) {
 async function setup(hmac?: Parameters<typeof definition>[0]) {
   h = await createRoutineHarness({ invoke: async (ctx, bus) => { await bus.fire('chat:turn-end', ctx, { reqId: ctx.reqId, contentBlocks: [{ type: 'text', text: 'done' }] }); return { kind: 'complete' }; } });
   const row = await h.bus.call<unknown, RoutineView>('routines:create', h.owner, { agentId: h.agentId, requestId: 'create', definition: definition(hmac) });
+  if (hmac) h.seedSecret(row);
   await legacyRow(row);
   const { token } = await h.bus.call<unknown, {
     token: string;
@@ -56,6 +57,7 @@ describe('single registered request-time DB webhook route', () => {
     let row = await h.bus.call<unknown, RoutineView>('routines:create', h.owner, {
       agentId: h.agentId, requestId: 'create-hook', definition: definition({ header: 'X-Signature', algorithm: 'sha256' }),
     });
+    h.seedSecret(row);
     await legacyRow(row);
     const { token } = await h.bus.call<unknown, { token: string }>('agents:ensure-webhook-token', h.owner, { agentId: h.agentId, actor: { userId: h.owner.userId, isAdmin: false } });
     row = await h.bus.call<unknown, RoutineView>('routines:update', h.owner, {
@@ -226,7 +228,7 @@ describe('durable signed repeat-delivery canary', () => {
   });
   it('deduplicates only authenticated accepted IDs, survives restart, and drains queued private payloads once', async () => {
     const messages: string[] = [], owners: string[] = [];
-    h=await createRoutineHarness({strictCredentials:true,invoke:async(ctx,bus,input)=>{
+    h=await createRoutineHarness({invoke:async(ctx,bus,input)=>{
       owners.push(ctx.userId);messages.push((input as {message:{content:string}}).message.content);
       await bus.fire('chat:turn-end',ctx,{reqId:ctx.reqId,contentBlocks:[{type:'text',text:'done'}]});return{kind:'complete'};
     }});

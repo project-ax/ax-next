@@ -14,8 +14,8 @@ describe('task address setup and replacement through real HTTP', () => {
     h = await createRoutineHarness({ authenticatedUserId: 'member', invoke: async (ctx, bus) => {
       await bus.fire('chat:turn-end', ctx, { reqId: ctx.reqId, contentBlocks: [{ type: 'text', text: 'done' }] }); return { kind: 'complete' };
     } });
-    const create = (path: string, ctx = h.teamMember) => h.bus.call<unknown, RoutineView>('routines:create', ctx, { agentId: h.teamAgentId, requestId: path,
-      definition: RoutineDefinitionSchema.parse({ name: path, promptBody: 'Review {{payload.title}}', schedule: null, webhook: { kind: 'webhook', path, hmac: { header: 'sig', algorithm: 'sha256' } } }) });
+    const create = async (path: string, ctx = h.teamMember) => { const row = await h.bus.call<unknown, RoutineView>('routines:create', ctx, { agentId: h.teamAgentId, requestId: path,
+      definition: RoutineDefinitionSchema.parse({ name: path, promptBody: 'Review {{payload.title}}', schedule: null, webhook: { kind: 'webhook', path, hmac: { header: 'sig', algorithm: 'sha256' } } }) }); h.seedSecret(row); return row; };
     const mine = await create('/mine'), theirs = await create('/theirs', h.teamAdmin);
     const shared = await h.bus.call<unknown, { token: string }>('agents:ensure-webhook-token', h.teamAdmin, { agentId: h.teamAgentId, actor: { userId: h.teamAdmin.userId, isAdmin: false } });
     await registerRoutinesAdminRoutes(h.bus, h.owner);

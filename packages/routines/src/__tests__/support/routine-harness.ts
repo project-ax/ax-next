@@ -13,6 +13,7 @@ import { createRoutinesStore } from '../../store.js';
 import type { RoutinesDatabase } from '../../migrations.js';
 import { drainRoutineCleanup } from '../../cleanup.js';
 import { systemClock, type Clock } from '../../clock.js';
+import { credentialRef } from '../../definition.js';
 export type RoutineHarness = {
   routes: HttpRegisterRouteInput[];
   shutdownRoutines(): Promise<void>;
@@ -20,7 +21,7 @@ export type RoutineHarness = {
   restart(): Promise<RoutineHarness>; setAttended(value: boolean): void; descriptors: ToolDescriptor[]; advance(ms: number): void; bus: HookBus; owner: AgentContext; teamAdmin: AgentContext; teamMember: AgentContext;
   agentId: string; teamAgentId: string; credentialCalls: Array<{ operation: string; ref: string }>;
   cleanupWarnings: Array<{ message: string; fields: Record<string, unknown> | undefined }>;
-  failNextCredentialDelete(): void; drainCleanup(): Promise<void>; close(): Promise<void>;
+  failNextCredentialDelete(): void; seedSecret(key: { agentId: string; routineId: string }, value?: string): void; drainCleanup(): Promise<void>; close(): Promise<void>;
   db: Kysely<RoutinesDatabase>; invokeCalls: string[]; setTeamFailure(mode: 'missing' | 'outage' | null): void; setTeamRole(userId: string, role: 'admin' | 'member' | null): void; holdCredentialSet(): { started: Promise<void>; release(): void };
 };
 
@@ -32,7 +33,7 @@ export async function materializePersonalDefaults(harness: RoutineHarness): Prom
   await createRoutinesStore(harness.db).materializeMissing({ agents, now: new Date('2026-10-09T12:00:00Z') });
 }
 
-export async function createRoutineHarness(options: { clock?: Clock; strictCredentials?: boolean; authenticatedUserId?: string; shutdownTimeoutMs?: number; onShutdownError?: (name: string, error: unknown) => void; credentialTimeoutMs?: number; invokeTimeoutMs?: number; dispatch?: boolean;
+export async function createRoutineHarness(options: { clock?: Clock; authenticatedUserId?: string; shutdownTimeoutMs?: number; onShutdownError?: (name: string, error: unknown) => void; credentialTimeoutMs?: number; invokeTimeoutMs?: number; dispatch?: boolean;
   /** Stands in for agent:invoke. `input` is what the caller sent: fire.ts sends the run's user message (TASK-908). */
   invoke?: (ctx: AgentContext, bus: HookBus, input: unknown) => Promise<unknown>;
   reuse?: { container: StartedPostgreSqlContainer; agentId: string; teamAgentId: string; clock: number; secrets?: Map<string, Uint8Array>; blobs?: Map<string, Uint8Array> } } = {}): Promise<RoutineHarness> {
@@ -92,8 +93,8 @@ export async function createRoutineHarness(options: { clock?: Clock; strictCrede
       'credentials:get': async (_ctx, raw) => {
         const value = secrets.get((raw as { ref: string }).ref);
         if (value) return Buffer.from(value).toString('utf8');
-        if (options.strictCredentials) throw new Error('Credential not found');
-        return 'test-secret';
+        // Production throws this for a missing or removed secret; callers key off the code.
+        throw new PluginError({ plugin: '@ax/credentials', code: 'credential-not-found', message: 'no credential' });
       },
       'credentials:delete': async (ctx, raw) => {
         credentialCalls.push({ operation: 'delete', ref: (raw as { ref: string }).ref });
@@ -147,6 +148,7 @@ export async function createRoutineHarness(options: { clock?: Clock; strictCrede
   const liveBus = harness.bus; const liveStore = createRoutinesStore(db);
   return { routes, shutdownRoutines: async () => { await routinesPlugin.shutdown?.(); }, shutdownKernel: () => kernel.shutdown(), async restart() { await kernel.shutdown(); await harness.close(); return createRoutineHarness({ ...options, reuse: { container, agentId, teamAgentId, clock, secrets, blobs } }); }, setAttended(value) { attended = value; }, descriptors, advance(ms) { clock += ms; }, cleanupWarnings, invokeCalls, setTeamFailure(mode) { teamFailure = mode; }, setTeamRole(userId, role) { if (role === null) teamRoles.delete(userId); else teamRoles.set(userId, role); }, bus: harness.bus, owner, teamAdmin, teamMember, agentId, teamAgentId, credentialCalls, db,
     failNextCredentialDelete() { failDelete = true; },
+    seedSecret(key, value = 'test-secret') { secrets.set(credentialRef(key), new TextEncoder().encode(value)); },
     holdCredentialSet() { let release!: () => void; gate = new Promise(resolve => { release = resolve; }); const entered = new Promise<void>(resolve => { started = resolve; }); return { started: entered, release }; },
     drainCleanup: () => drainRoutineCleanup({ bus: harness.bus, store: createRoutinesStore(db) }),
     async close() { await kernel.shutdown(); await harness.close(); await stopPostgresContainer(container); },

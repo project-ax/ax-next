@@ -18,7 +18,7 @@ const create = (user: AgentContext, kind: 'repeat' | 'stay-on-top' = 'repeat') =
 
 describe('member-owned tasks on a team agent', () => {
   it('lets a member manage only their own signing secret while the shared webhook address stays privileged', async () => {
-    h = await createRoutineHarness({ strictCredentials: true });
+    h = await createRoutineHarness();
     const owner = ctx(h.teamMember);
     const row = await h.bus.call<unknown, RoutineView>('routines:create', owner, {
       agentId: h.teamAgentId, requestId: 'create-member-webhook',

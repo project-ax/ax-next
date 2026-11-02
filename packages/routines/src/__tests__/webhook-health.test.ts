@@ -15,9 +15,11 @@ let now = new Date('2031-01-01T12:00:20Z');
 afterEach(async () => { await h?.close(); });
 const clock = { now: () => now, sleep: systemClock.sleep };
 async function create(app?: 'stripe' | 'slack' | 'zendesk', ctx = h.owner) {
-  return h.bus.call<unknown, RoutineView>('routines:create', ctx, { agentId: ctx === h.owner ? h.agentId : h.teamAgentId, requestId: `new-${app ?? 'other'}`,
+  const row = await h.bus.call<unknown, RoutineView>('routines:create', ctx, { agentId: ctx === h.owner ? h.agentId : h.teamAgentId, requestId: `new-${app ?? 'other'}`,
     definition: RoutineDefinitionSchema.parse({ name: 'App updates', promptBody: 'Check updates', kind: 'stay-on-top', goodWhen: 'Handled',
       schedule: { kind: 'interval', every: '1h' }, webhook: { kind: 'webhook', path: `/${app ?? 'other'}`, ...(app ? { hmac: { app } } : {}) } }) });
+  if (app) h.seedSecret(row);
+  return row;
 }
 const status = (row: RoutineView, ctx = h.owner) => h.bus.call<unknown, RoutineWebhookStatus>('routines:webhook-status', ctx, { agentId: row.agentId, routineId: row.routineId });
 async function address(row: RoutineView, ctx = h.owner) { return h.bus.call<unknown, { token: string; version: string }>('routines:webhook-address', ctx, { agentId: row.agentId, routineId: row.routineId }); }
