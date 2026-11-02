@@ -52,8 +52,9 @@ async function snapshot(root: string, maxEntries: number): Promise<Set<string>> 
 
 /**
  * What the policy gate said about one automatic attach. `unavailable` is the
- * gate failing closed (nothing decided the call), which is not the same as a
- * rule that said no (`denied`). `held` is refused like the other two: the
+ * runner never getting an answer from the gate; `denied` is the host saying no
+ * (in production, its own gate failing closed: no rule denies
+ * artifact_publish). Kept apart so the log tells them apart. `held` is refused like the other two: the
  * runner keeps no held path for its own calls (TASK-1021), so nothing ever
  * attaches a held file. No shipped rule holds one: @ax/tool-policy's
  * verdicts.test.ts pins that, and says what a hold would need built first.
@@ -94,14 +95,15 @@ class GateRefusedError extends Error {
 function note(text: string): ContentBlock {
   return { type: 'text', text };
 }
-// The model reads these notes too, so none of them may ask for the files to
-// be attached or published again (TASK-1021): the only way the model can do
-// that is its own artifact_publish, which copies the file into the blob store
-// and charges it twice. The file is in the agent's files either way, so the
-// notes point at the Files tab.
-const NOT_ATTACHED = "Some new files could not be attached here. They are still saved in this agent's files: you can find them in the Files tab.";
+// The person reads these notes, so none of them may ask for the files to be
+// attached or published again (TASK-1021): asking the agent to do that makes
+// it call artifact_publish, which copies the file into the blob store and
+// charges it twice. A file the turn saved is in the agent's files, so the
+// notes point at the Files tab, without promising a file is there: a refusal
+// can race a delete, and a failed scan may mean the home itself is gone.
+const NOT_ATTACHED = 'Some new files could not be attached here. Look for them in the Files tab.';
 const NOT_NAMEABLE = "Some new files have names we can't link to here (for example, ones with a colon). Ask the agent to rename them.";
-const SCAN_FAILED = "We could not check for new files to attach. Any new files are still saved in this agent's files: you can find them in the Files tab.";
+const SCAN_FAILED = 'We could not check for new files to attach. Look in the Files tab for anything the agent saved.';
 
 function scanFailure(err: unknown): GeneratedFileFailure {
   return err instanceof ScanLimitError ? 'scan-limit' : 'error';

@@ -401,7 +401,7 @@ Decided 2026-10-30: plain reset; nobody is using ax yet.
   uploads are unchanged. Files auto-attached before this change keep their blob
   and its charge (no migration: their artifact rows live until the agent is
   deleted).
-- **As built (TASK-1017):** (The held-approval half of this bullet never ran in any shipped configuration and was deleted in TASK-1021; see below. The chip status checks at the end of it are live.) Approving a held auto-attach closes the common path
+- **As built (TASK-1017):** (The held-approval half of this bullet never ran in any shipped configuration and was deleted in TASK-1021; see below. The rest, from the invalid stored `agent_file` block onward, is live.) Approving a held auto-attach closes the common path
   to a blob copy. The runner remembers the holds it raised itself. When the
   approval reaches the session that raised it, the runner re-sends the
   identical call to the gate as it pulls the answer, ahead of the turn that
@@ -429,9 +429,9 @@ Decided 2026-10-30: plain reset; nobody is using ax yet.
   `artifacts.publish` rule is `allow`. Publishing is not one of the abilities a
   person can switch (`ABILITY_TOOLS`: `web_search`, `web_extract`, `Bash`), and
   production always loads the built-in rule table. So the TASK-1017
-  held-approval path, and its cold-session residual, are dormant. They run only
-  in tests, or if that rule changes or publishing becomes an ability (both
-  pinned in `@ax/tool-policy`'s `verdicts.test.ts`). A denied automatic attach
+  held-approval path, and its cold-session residual, were dormant (deleted in
+  TASK-1021, below). The rule and the "not an ability" fact are both pinned in
+  `@ax/tool-policy`'s `verdicts.test.ts`. A denied automatic attach
   is a gate that failed closed. Its note said "Ask the agent to attach them
   again", which leads to an explicit `artifact_publish` and so a blob copy
   (changed in TASK-1021, below). Chips now also recheck their file after a turn that fails, which
@@ -446,10 +446,13 @@ Decided 2026-10-30: plain reset; nobody is using ax yet.
   held path built first; the `verdicts.test.ts` tripwire says so and points at
   TASK-1019's recorded design. The `denied` / `unavailable` paths are not part
   of the held path (the gate failing closed, or a rule that says no) and
-  stay. No note the model can read asks for files to be attached or published
-  again. A refused file reads "Some new files could not be attached here.
-  They are still saved in this agent's files: you can find them in the Files
-  tab.", and a failed scan says the same about any new files.
+  stay. No note asks for files to be attached or published again: the person
+  reads these notes, and asking the agent to attach a file again makes it call
+  `artifact_publish`, a blob copy charged twice. A refused file reads "Some new
+  files could not be attached here. Look for them in the Files tab." and a
+  failed scan reads "We could not check for new files to attach. Look in the
+  Files tab for anything the agent saved." Neither promises the file is there
+  (a refusal can race a delete; a failed scan may mean the home is gone).
 
 ## 13. Ops
 

@@ -185,7 +185,7 @@ beforeEach(() => {
 /** The auto-attach notes a tool turn-end can carry (generated-files.ts). */
 const NOT_ATTACHED = {
   type: 'text',
-  text: "Some new files could not be attached here. They are still saved in this agent's files: you can find them in the Files tab.",
+  text: 'Some new files could not be attached here. Look for them in the Files tab.',
 };
 
 describe('runRunner — generated file attachment', () => {
@@ -258,7 +258,10 @@ describe('runRunner — generated file attachment', () => {
   // TASK-1021 deleted TASK-1017's held path for the runner's own calls: no
   // shipped rule holds artifact_publish (TASK-1019), so it never ran. If a hold
   // ever were answered, the runner treats it like any other decision: the
-  // host's note opens the turn, and the gate is not asked again.
+  // host's note opens the turn, and the gate is not asked again. That is the
+  // KNOWN-BAD outcome, not a design: the host's note asks the model to make a
+  // call it never made. Pinned so nobody mistakes it for working; the
+  // tool-policy tripwire (verdicts.test.ts) is what keeps it unreachable.
   it('an answered automatic-attach hold opens a turn with the host note and attaches nothing', async () => {
     const home = await fs.mkdtemp(path.join(os.tmpdir(), 'ax-files-shell-'));
     const original = fakeClient.call.getMockImplementation()!;

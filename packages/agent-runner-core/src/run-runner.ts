@@ -1333,7 +1333,8 @@ async function runRunnerInner(
           const verdict = await generatedFilePolicy.preToolUse(call.name, call.input, call.id);
           if (verdict.decision === 'allow') return { kind: 'allow' };
           if (verdict.decision === 'hold') return { kind: 'held' };
-          // A gate that failed closed decided nothing; a rule that said no did.
+          // A gate the runner never heard from decided nothing; the host's
+          // no (in production, its own gate failing closed) did.
           return { kind: verdict.cause === 'unavailable' ? 'unavailable' : 'denied' };
         },
         attached: async (call, chip) => {

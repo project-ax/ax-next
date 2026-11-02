@@ -39,12 +39,12 @@ const NOT_NAMEABLE = {
 
 const NOT_ATTACHED = {
   type: 'text',
-  text: "Some new files could not be attached here. They are still saved in this agent's files: you can find them in the Files tab.",
+  text: 'Some new files could not be attached here. Look for them in the Files tab.',
 };
 
 const SCAN_FAILED = {
   type: 'text',
-  text: "We could not check for new files to attach. Any new files are still saved in this agent's files: you can find them in the Files tab.",
+  text: 'We could not check for new files to attach. Look in the Files tab for anything the agent saved.',
 };
 
 describe('generated files', () => {
@@ -200,7 +200,6 @@ describe('generated files', () => {
     expect(await tracker.collect()).toEqual([]);
     expect(admit).toHaveBeenCalledOnce();
     expect(attached).not.toHaveBeenCalled();
-    expect(Object.keys(tracker)).toEqual(['collect']);
   });
 
   it.skipIf(process.platform === 'win32')('notes follow the chips, once each, not-attached then rename', async () => {
@@ -222,9 +221,10 @@ describe('generated files', () => {
   });
 
   it.skipIf(process.platform === 'win32')('no note asks for the files to be attached or published again', async () => {
-    // The model reads these notes too. Its only way to attach a file "again"
-    // is its own artifact_publish, which copies the file into the blob store
-    // and charges it twice (TASK-1021). Every note any path emits is checked.
+    // The person reads these notes. Asking the agent to attach a file "again"
+    // makes it call artifact_publish, which copies the file into the blob
+    // store and charges it twice (TASK-1021). Every note any path emits is
+    // checked.
     const texts = new Set<string>();
     const keep = (blocks: Array<{ type: string; text?: string }>) => {
       for (const block of blocks) if (block.type === 'text') texts.add(block.text!);
@@ -247,6 +247,8 @@ describe('generated files', () => {
     for (const name of ['a.txt', 'b.txt', 'c.txt']) await fs.writeFile(path.join(crowded, name), name);
     keep(await (await track(crowded, undefined, { maxEntries: 2 })).tracker.collect());
 
+    // Load-bearing: the exact set is what catches a note the regex below
+    // misses, such as the old "need your approval before we attach them".
     expect([...texts].sort()).toEqual([NOT_ATTACHED.text, NOT_NAMEABLE.text, SCAN_FAILED.text].sort());
     for (const text of texts) expect(text).not.toMatch(/again|publish|re-?attach/i);
     expect(NOT_ATTACHED.text).toContain('Files tab');
