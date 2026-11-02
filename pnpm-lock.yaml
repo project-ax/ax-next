@@ -1425,6 +1425,9 @@ importers:
       '@ax/ipc-protocol':
         specifier: workspace:*
         version: link:../ipc-protocol
+      '@ax/skills-parser':
+        specifier: workspace:*
+        version: link:../skills-parser
     devDependencies:
       '@ax/agent-runner-core':
         specifier: workspace:*

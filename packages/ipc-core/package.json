@@ -19,7 +19,8 @@
   },
   "dependencies": {
     "@ax/core": "workspace:*",
-    "@ax/ipc-protocol": "workspace:*"
+    "@ax/ipc-protocol": "workspace:*",
+    "@ax/skills-parser": "workspace:*"
   },
   "devDependencies": {
     "@ax/agent-runner-core": "workspace:*",

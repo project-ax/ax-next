@@ -1,4 +1,5 @@
 import { PluginError, isRejection, type AgentContext, type HookBus } from '@ax/core';
+import { MANIFEST_CODES } from '@ax/skills-parser';
 import { z } from 'zod';
 
 // ---------------------------------------------------------------------------
@@ -97,6 +98,32 @@ export function parseRequestBody(body: Buffer): ParseBodyResult {
 // Skills-specific PluginError -> HTTP status mapping
 // ---------------------------------------------------------------------------
 
+/**
+ * Codes this plugin's own hooks throw for a bad request, beyond the manifest
+ * parser's. Each is thrown somewhere in this package (a test pins that).
+ */
+export const SKILLS_OWN_BAD_REQUEST_CODES = [
+  'invalid-payload',
+  // admin-routes: a default-attached skill must be credential-free (I-S2).
+  'default-attached-requires-no-credentials',
+  'cold-start-not-promotable',
+  'invalid-bundle-file',
+] as const;
+
+/**
+ * PluginError codes that map to 400. Every manifest-parser code is in here by
+ * construction — `skills:upsert` re-runs the parser, so a user-scoped write or
+ * an adopted authored draft that fails it (an inline secret, a leftover
+ * `capabilities:` block, a malformed connector reference) gets a clean client
+ * error instead of a 500. Derived from the parser's own list (TASK-1018): the
+ * hand-kept copy this replaced still carried six codes the parser stopped
+ * emitting when capabilities moved onto connectors (TASK-100).
+ */
+export const BAD_REQUEST_CODES: ReadonlySet<string> = new Set<string>([
+  ...MANIFEST_CODES,
+  ...SKILLS_OWN_BAD_REQUEST_CODES,
+]);
+
 export function writeServiceError(res: RouteResponse, err: unknown): boolean {
   if (err instanceof PluginError) {
     if (err.code === 'skill-not-found') {
@@ -134,31 +161,7 @@ export function writeServiceError(res: RouteResponse, err: unknown): boolean {
       res.status(409).json({ error: err.message, code: 'not-adoptable' });
       return true;
     }
-    const badRequestCodes = new Set([
-      'invalid-name',
-      'invalid-description',
-      'invalid-host',
-      'invalid-slot',
-      'duplicate-slot',
-      'invalid-kind',
-      'invalid-yaml',
-      'invalid-manifest',
-      'invalid-version',
-      'inline-secret-forbidden',
-      // TASK-134 — a user-scoped skill (incl. an adopted authored draft) may not
-      // declare a capability block or a malformed connector reference; the parse
-      // gate inside skills:upsert hard-rejects these. Map to 400 so the adopt /
-      // user-skill write surfaces a clean client error instead of a 500.
-      'capability-block-forbidden',
-      'invalid-connector',
-      'invalid-mcp-command',
-      'invalid-mcp-transport',
-      'invalid-payload',
-      'default-attached-requires-no-credentials',
-      'cold-start-not-promotable',
-      'invalid-bundle-file',
-    ]);
-    if (badRequestCodes.has(err.code)) {
+    if (BAD_REQUEST_CODES.has(err.code)) {
       res.status(400).json({ error: err.message, code: err.code });
       return true;
     }

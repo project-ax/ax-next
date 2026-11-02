@@ -1,14 +1,27 @@
 import { load as yamlLoad, YAMLException } from 'js-yaml';
 
-export type ManifestCode =
-  | 'invalid-yaml'
-  | 'invalid-manifest'
-  | 'inline-secret-forbidden'
-  | 'invalid-name'
-  | 'invalid-description'
-  | 'invalid-version'
-  | 'capability-block-forbidden'
-  | 'invalid-connector';
+/**
+ * Every code `parseSkillManifest` can fail with — the one list (TASK-1018).
+ * `ManifestCode` is derived from it, so the runtime list and the type cannot
+ * drift apart. Consumers that classify these codes key off this list instead
+ * of keeping their own copy: @ax/skills derives its 400 set from it, and
+ * @ax/ipc-core pins its classification table with
+ * `satisfies Record<ManifestCode, true>`, so adding a code here fails `tsc`
+ * there until someone decides how skill.propose should answer it.
+ * The parser test asserts each listed code is actually emitted.
+ */
+export const MANIFEST_CODES = [
+  'invalid-yaml',
+  'invalid-manifest',
+  'inline-secret-forbidden',
+  'invalid-name',
+  'invalid-description',
+  'invalid-version',
+  'capability-block-forbidden',
+  'invalid-connector',
+] as const;
+
+export type ManifestCode = (typeof MANIFEST_CODES)[number];
 
 export interface ParsedManifest {
   id: string;

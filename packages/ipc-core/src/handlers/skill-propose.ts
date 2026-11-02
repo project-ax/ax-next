@@ -11,6 +11,7 @@ import { zodSummary,
   validationError,
 } from '../errors.js';
 import { clampCodeUnits, isOwnerlessId, PluginError } from '@ax/core';
+import type { ManifestCode } from '@ax/skills-parser';
 import type { ActionHandler } from './types.js';
 
 // Structural-validation PluginError codes the skills:propose hook throws when
@@ -27,17 +28,29 @@ import type { ActionHandler } from './types.js';
 // An explicit list, not an `invalid-` prefix match (TASK-1015): two parser
 // codes don't carry the prefix (an honest `capabilities:` block or `token:` key
 // became a retried 500), and the bus's own `invalid-return` (a service answer
-// that failed its schema, a HOST fault) does. A code the parser adds later
-// falls through to a logged 500, which is the safe direction.
+// that failed its schema, a HOST fault) does.
+//
+// The parser half is pinned to the parser's own type (TASK-1018): `satisfies
+// Record<ManifestCode, true>` makes a code the parser adds later (missing key,
+// TS1360) or drops (extra key, TS2353) a `tsc` error here. The fix is to add
+// it to this table, i.e. to make it a 400. A code that should NOT be an
+// author error must instead be thrown under a non-ManifestCode name. The
+// point is that someone looks at skill.propose when the parser grows a code,
+// rather than the code being picked up silently. A type-only import, so no
+// runtime coupling to @ax/skills-parser.
+const MANIFEST_REJECT_CODES = {
+  'invalid-yaml': true,
+  'invalid-manifest': true,
+  'inline-secret-forbidden': true,
+  'invalid-name': true,
+  'invalid-description': true,
+  'invalid-version': true,
+  'capability-block-forbidden': true,
+  'invalid-connector': true,
+} as const satisfies Record<ManifestCode, true>;
 const STRUCTURAL_REJECT_CODES: ReadonlySet<string> = new Set([
-  'invalid-yaml',
-  'invalid-manifest',
-  'inline-secret-forbidden',
-  'invalid-name',
-  'invalid-description',
-  'invalid-version',
-  'capability-block-forbidden',
-  'invalid-connector',
+  ...Object.keys(MANIFEST_REJECT_CODES),
+  // The bundle-file validator's code (thrown by skills:propose, not the parser).
   'invalid-bundle-file',
 ]);
 function isStructuralRejectCode(code: string): boolean {

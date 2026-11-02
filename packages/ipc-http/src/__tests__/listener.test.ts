@@ -1,5 +1,6 @@
 import * as http from 'node:http';
-import { describe, it, expect, afterEach } from 'vitest';
+import * as net from 'node:net';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { createTestHarness } from '@ax/test-harness';
 import { createSessionInmemoryPlugin } from '@ax/session-inmemory';
 import type {
@@ -257,5 +258,77 @@ describe('createHttpListener', () => {
       body: Buffer.from('x'),
     });
     expect(noToken.status).toBe(401);
+  });
+});
+
+// TASK-1018: a body read that fails mid-stream (the client hangs up after the
+// headers) used to escape `dispatch` to the listener's per-connection catch,
+// which has no ctx: one unstructured `ipc-http: unhandled handler error` line
+// on stderr, no reqId. It is now logged by the dispatcher on the per-request
+// ctx's structured logger — exactly one line, carrying the reqId.
+describe('createHttpListener body-read failure (TASK-1018)', () => {
+  let harness: Harness | undefined;
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    if (harness) {
+      await harness.cleanup();
+      harness = undefined;
+    }
+  });
+
+  function captureWrites(stream: NodeJS.WriteStream): string[] {
+    const lines: string[] = [];
+    const original = stream.write.bind(stream);
+    vi.spyOn(stream, 'write').mockImplementation(((chunk: unknown, ...rest: unknown[]) => {
+      lines.push(String(chunk));
+      return (original as (...a: unknown[]) => boolean)(chunk, ...rest);
+    }) as typeof stream.write);
+    return lines;
+  }
+
+  it.each([
+    ['/tool.list', 'application/json', '{"partial'],
+    ['/blob.put', 'application/octet-stream', 'partial-bytes'],
+  ])('%s: a client hang-up mid-body logs one structured line with the reqId', async (path, ct, partial) => {
+    harness = await makeHarness();
+    const stdout = captureWrites(process.stdout);
+    const stderr = captureWrites(process.stderr);
+
+    const sock = net.connect(harness.port, '127.0.0.1');
+    await new Promise<void>((resolve, reject) => {
+      sock.once('connect', () => resolve());
+      sock.once('error', reject);
+    });
+    sock.on('error', () => {});
+    sock.write(
+      `POST ${path} HTTP/1.1\r\nHost: ipc.local\r\nContent-Type: ${ct}\r\n` +
+        `Authorization: Bearer ${harness.token}\r\nContent-Length: 1000\r\n\r\n${partial}`,
+    );
+    // Let auth finish and the dispatcher start reading the body, then hang up.
+    await new Promise((r) => setTimeout(r, 150));
+    sock.destroy();
+
+    const failures = (): Array<Record<string, unknown>> =>
+      stdout
+        .filter((l) => l.includes('ipc_body_read_failed'))
+        .map((l) => JSON.parse(l) as Record<string, unknown>);
+    const deadline = Date.now() + 3000;
+    while (failures().length === 0 && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    // Give a second (wrong) line a chance to show up before asserting "one".
+    await new Promise((r) => setTimeout(r, 100));
+
+    const lines = failures();
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toMatchObject({ level: 'error', msg: 'ipc_body_read_failed', action: path });
+    expect(typeof lines[0]!.reqId).toBe('string');
+    expect((lines[0]!.reqId as string).length).toBeGreaterThan(0);
+    expect(stderr.filter((l) => l.includes('ipc-http:'))).toEqual([]);
+    // "One line" means one error line in total, not one under this name: a
+    // regression that also logged the failure under another name (say
+    // ipc_dispatch_internal_error) must still fail here.
+    const errorLines = stdout.filter((l) => l.includes('"level":"error"'));
+    expect(errorLines).toHaveLength(1);
   });
 });
