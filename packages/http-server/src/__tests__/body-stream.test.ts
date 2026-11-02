@@ -1,6 +1,6 @@
 import * as http from 'node:http';
 import { randomBytes } from 'node:crypto';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createTestHarness, type TestHarness } from '@ax/test-harness';
 import { createHttpServerPlugin, type HttpServerPlugin } from '../plugin.js';
 import type {
@@ -83,6 +83,8 @@ describe('res.bodyStream()', () => {
   let plugin: HttpServerPlugin;
   let port: number;
   let agent: http.Agent;
+  // Set only by the 'idle window' tests, which need a window short enough to wait out.
+  let idleMs: number | undefined;
 
   beforeEach(async () => {
     // Empty allowedOrigins warns on stderr unless this escape hatch is set.
@@ -92,6 +94,7 @@ describe('res.bodyStream()', () => {
       port: 0,
       cookieKey: COOKIE_KEY,
       allowedOrigins: [],
+      ...(idleMs !== undefined ? { bodyStreamIdleTimeoutMs: idleMs } : {}),
     });
     harness = await createTestHarness({ plugins: [plugin] });
     port = plugin.boundPort();
@@ -637,4 +640,166 @@ describe('res.bodyStream()', () => {
     });
     return events;
   }
+
+  // A client that stops reading is cut off once a wait on it outlasts the
+  // window. The paused-client tests read the server's verdict first: a paused
+  // client cannot see its connection close until it reads again.
+  describe('idle window', () => {
+    // Short enough to wait out here. The default is 60 s.
+    const WINDOW_MS = 200;
+
+    beforeAll(() => {
+      idleMs = WINDOW_MS;
+    });
+    afterAll(() => {
+      idleMs = undefined;
+    });
+
+    /** GET `path`, and stop reading as soon as the head arrives. */
+    async function getThenStopReading(
+      path: string,
+    ): Promise<{ paused: http.IncomingMessage; done: Promise<RawResponse> }> {
+      let paused: http.IncomingMessage | undefined;
+      let headArrived!: () => void;
+      const head = new Promise<void>((resolve) => {
+        headArrived = resolve;
+      });
+      const done = rawGet(path, {
+        onResponse: (res) => {
+          res.pause();
+          paused = res;
+          headArrived();
+        },
+        deadlineMs: 10_000,
+      });
+      await head;
+      return { paused: paused!, done };
+    }
+
+    /** GET `path` through `via` and read all of it. */
+    function getWhole(
+      path: string,
+      via: http.Agent,
+    ): Promise<{ status: number | undefined; body: Buffer; complete: boolean; reusedSocket: boolean }> {
+      return new Promise((resolve, reject) => {
+        const req = http.get({ host: '127.0.0.1', port, path, agent: via }, (res) => {
+          const chunks: Buffer[] = [];
+          const finish = (): void =>
+            resolve({
+              status: res.statusCode,
+              body: Buffer.concat(chunks),
+              complete: res.complete,
+              reusedSocket: req.reusedSocket,
+            });
+          res.on('data', (chunk: Buffer) => chunks.push(chunk));
+          res.on('end', finish);
+          res.on('close', finish);
+          res.on('error', reject);
+        });
+        req.on('error', reject);
+      });
+    }
+
+    it('a client that stops reading is cut after the idle window: client-stalled, source released, reported incomplete', async () => {
+      const events = responsesSent();
+      // 1 GiB on offer, one reused MiB at a time, so nothing big is allocated.
+      const chunk = Buffer.alloc(MiB);
+      const { probe, source } = probedSource(Array.from({ length: 1024 }, () => chunk));
+      const { outcome } = await serveBody('/stalled', source, 1024 * MiB);
+
+      const { paused, done } = await getThenStopReading('/stalled');
+      expect(await outcome).toMatchObject({ code: 'client-stalled' });
+      // 1024 chunks were on offer; `released` with fewer pulled means return().
+      expect(probe.released).toBe(true);
+      expect(probe.pulls).toBeLessThan(1024);
+      await vi.waitFor(() => expect(events).toHaveLength(1));
+      expect(events).toEqual([{ status: 200, durationMs: expect.any(Number), incomplete: true }]);
+
+      // Reading again, the client gets what the kernel held, then the close.
+      paused.resume();
+      const got = await done;
+      expect(got.timedOut).toBe(false);
+      expect(got.complete).toBe(false);
+      expect(got.body.length).toBeLessThan(1024 * MiB);
+      expect(events).toHaveLength(1);
+    }, 30_000);
+
+    it('a stall while the final chunk flushes is cut too', async () => {
+      // One chunk, so it is the held final one and goes out with end(). 32 MiB
+      // cannot all fit in the socket buffers, so with the client paused the
+      // pump waits on 'finish', never on 'drain'.
+      const body = randomBytes(32 * MiB);
+      const { source } = probedSource([body]);
+      const { outcome } = await serveBody('/stalled-final', source, body.length);
+
+      const { paused, done } = await getThenStopReading('/stalled-final');
+      expect(await outcome).toMatchObject({ code: 'client-stalled' });
+
+      paused.resume();
+      const got = await done;
+      expect(got.timedOut).toBe(false);
+      expect(got.complete).toBe(false);
+    }, 30_000);
+
+    it('the idle window runs only while the client holds things up: a slow source is not a stalled client', async () => {
+      const events = responsesSent();
+      const chunks = [randomBytes(64 * 1024), randomBytes(64 * 1024), randomBytes(64 * 1024)];
+      // Each chunk takes twice the window to arrive. Waiting on the source is
+      // not waiting on the client, so none of that time counts.
+      async function* slowSource(): AsyncGenerator<Uint8Array> {
+        for (const c of chunks) {
+          await sleep(2 * WINDOW_MS);
+          yield c;
+        }
+      }
+      const { outcome } = await serveBody('/slow-source', slowSource(), 3 * 64 * 1024);
+
+      const got = await rawGet('/slow-source', { deadlineMs: 10_000 });
+      expect(await outcome).toBe('resolved');
+      expect(got.timedOut).toBe(false);
+      expect(got.complete).toBe(true);
+      expect(got.body.equals(Buffer.concat(chunks))).toBe(true);
+      await vi.waitFor(() => expect(events).toHaveLength(1));
+      expect(events[0]).toMatchObject({ status: 200, incomplete: false });
+    }, 30_000);
+
+    it('the idle timer dies with the body: the kept-alive connection serves the next request', async () => {
+      const body = randomBytes(2 * MiB);
+      await route('/kept', async (_req, res) => {
+        await res.bodyStream(probedSource([body.subarray(0, MiB), body.subarray(MiB)]).source, {
+          contentLength: body.length,
+        });
+      });
+      const oneSocket = new http.Agent({ keepAlive: true, maxSockets: 1 });
+      try {
+        const first = await getWhole('/kept', oneSocket);
+        expect(first).toMatchObject({ status: 200, complete: true });
+        expect(first.body.equals(body)).toBe(true);
+        // Idle for twice the window. A timer left over from the first body
+        // would have fired by now and killed the connection.
+        await sleep(2 * WINDOW_MS);
+        const second = await getWhole('/kept', oneSocket);
+        expect(second).toMatchObject({ status: 200, complete: true, reusedSocket: true });
+        expect(second.body.equals(body)).toBe(true);
+      } finally {
+        oneSocket.destroy();
+      }
+    }, 30_000);
+
+    // 2 ** 31 is a positive safe integer, but setTimeout() would run it after 1 ms.
+    it.each([0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, 2 ** 31])(
+      'refuses a bodyStreamIdleTimeoutMs that is not a positive safe integer a timer can hold: %s',
+      (v) => {
+        expect(() =>
+          createHttpServerPlugin({
+            host: '127.0.0.1',
+            port: 0,
+            cookieKey: COOKIE_KEY,
+            allowedOrigins: [],
+            bodyStreamIdleTimeoutMs: v,
+          }),
+        ).toThrow(TypeError);
+      },
+    );
+  });
 });

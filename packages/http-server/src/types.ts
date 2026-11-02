@@ -102,10 +102,21 @@ export interface HttpResponse {
    * earlier `header()` wins. Nothing else is added (none of `stream()`'s SSE
    * headers). The head goes out with the first byte, or at the end for an
    * empty body, so a source that fails before its first byte sends nothing.
+   * Not even an error status: a failure before the head still tears the
+   * connection down. So a caller that wants to answer in words checks before
+   * calling, as channel-web's `sendUserFileDownload` does.
    *
    * The source is pulled only when the socket has room (backpressure), so a
    * slow client costs about one chunk of memory here, not the whole body.
    * Empty chunks are skipped. Do not change a chunk after yielding it.
+   *
+   * A client that stops reading is cut off. An idle window (the plugin's
+   * `bodyStreamIdleTimeoutMs`, 60 s by default) runs only while this waits
+   * on the client: for room after a write, and for the final flush after
+   * `end()`. Each wait gets a fresh window, and time spent waiting on the
+   * source never counts. Progress is counted one write at a time, so at the
+   * default a client must take each chunk (1 MiB for a /files download)
+   * within 60 s, which works out to about 17 KiB/s.
    *
    * The chunk that completes `contentLength` is held until the source says
    * it is done. So the source can still fail the body on its last pull, for
@@ -121,6 +132,8 @@ export interface HttpResponse {
    * - `'length-mismatch'`: the source ran past `contentLength` (none of the
    *   excess is written) or finished short of it.
    * - `'client-gone'`: the connection closed first.
+   * - `'client-stalled'`: a wait on the client outlasted the idle window, so
+   *   we cut it off.
    *
    * Anything else, such as a header value Node refuses when the head is
    * written, gets the same teardown and rejects with that error as-is.
@@ -144,7 +157,11 @@ export interface SizedBodyOptions {
 }
 
 /** The `code` on a `bodyStream()` rejection. See `HttpResponse.bodyStream`. */
-export type BodyStreamFailureCode = 'client-gone' | 'source-failed' | 'length-mismatch';
+export type BodyStreamFailureCode =
+  | 'client-gone'
+  | 'client-stalled'
+  | 'source-failed'
+  | 'length-mismatch';
 
 /**
  * Options for `HttpResponse.stream()`. `contentType` overrides the
@@ -269,8 +286,8 @@ export interface HttpResponseSentEvent {
   durationMs: number;
   /**
    * True when `bodyStream()` cut the connection instead of finishing the
-   * body: a failure after the head, a client that left (even before the
-   * head), or any other teardown. The client then holds less than
+   * body: a failure after the head, a client that stalled or left (even
+   * before the head), or any other teardown. The client then holds less than
    * Content-Length promised, maybe not even the head. So read success as
    * `!incomplete`, not as `status === 200`.
    *
