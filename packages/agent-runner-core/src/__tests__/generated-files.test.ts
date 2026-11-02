@@ -322,6 +322,16 @@ describe('held automatic attaches (TASK-1017)', () => {
     expect(attached).toHaveBeenCalledWith(admit.mock.calls[0]![0], CHIP);
   });
 
+  it('counts the answered chips no turn-end has carried yet', async () => {
+    const { tracker } = await heldReport({ kind: 'allow' });
+    expect(tracker.undelivered()).toBe(0);
+    expect(await tracker.resolveHeld('d1', 'approved')).toBe(true);
+    // Spent at pull time: only a turn-end delivers it now.
+    expect(tracker.undelivered()).toBe(1);
+    expect(await tracker.collect()).toEqual([CHIP]);
+    expect(tracker.undelivered()).toBe(0);
+  });
+
   it('a dismissed or unanswered hold attaches nothing and is forgotten', async () => {
     for (const outcome of ['dismissed', undefined] as const) {
       const { tracker, admit, attached } = await heldReport({ kind: 'allow' });

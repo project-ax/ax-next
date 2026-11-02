@@ -71,6 +71,7 @@ export type GeneratedFileFailure =
   | 'unaddressable-name'
   | 'not-a-regular-file'
   | 'outside-root'
+  | 'undelivered'
   | 'error';
 
 /** Thrown by `agentFileReference`; `reason` is typed so callers never match on messages. */
@@ -178,6 +179,12 @@ export interface GeneratedFiles {
    * `collect`. Never rejects.
    */
   resolveHeld(decisionId: string, outcome: 'approved' | 'dismissed' | undefined): Promise<boolean>;
+  /**
+   * How many chips approved holds produced that no turn-end has carried yet.
+   * The approval was spent when the answer was pulled, so a run that ends
+   * before its next turn-end loses these: the caller says so.
+   */
+  undelivered(): number;
 }
 
 const APPROVED_NOTE =
@@ -331,5 +338,7 @@ export async function trackGeneratedFiles(opts: {
       } catch (err) { report(err, answeredNotes); }
       return true;
     },
+
+    undelivered: () => answered.length,
   };
 }

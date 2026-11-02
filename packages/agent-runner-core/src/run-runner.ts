@@ -12,7 +12,7 @@ import {
 import { ARTIFACT_PUBLISH_TOOL_NAME } from '@ax/tool-artifact-publish';
 import { SKILL_PROPOSE_TOOL_NAME } from '@ax/tool-skill-propose';
 import { createArtifactPublishExecutor } from './artifact-publish-executor.js';
-import { autoAttachResolvedNote, trackGeneratedFiles, publishedAttachments } from './generated-files.js';
+import { autoAttachResolvedNote, trackGeneratedFiles, publishedAttachments, type GeneratedFileFailure } from './generated-files.js';
 import { createToolPolicy } from './tool-policy.js';
 import { translateContentBlocks } from './attachment-translation.js';
 import { commitTrace } from './commit-trace.js';
@@ -1327,10 +1327,13 @@ async function runRunnerInner(
   const generatedFilePolicy = createToolPolicy({ client });
   const canPublishGenerated = conversationId !== null &&
     localDispatcher.has(ARTIFACT_PUBLISH_TOOL_NAME);
+  const warnGeneratedFile = (reason: GeneratedFileFailure): void => {
+    process.stderr.write(`runner: could not attach a generated file (${reason})\n`);
+  };
   const generatedFiles = canPublishGenerated
     ? await trackGeneratedFiles({
         root: homeDir,
-        warn: reason => process.stderr.write(`runner: could not attach a generated file (${reason})\n`),
+        warn: warnGeneratedFile,
         admit: async call => {
           const verdict = await generatedFilePolicy.preToolUse(call.name, call.input, call.id);
           if (verdict.decision === 'allow') return { kind: 'allow' };
@@ -1698,6 +1701,13 @@ async function runRunnerInner(
       terminatedError = { name: 'NonError', message: String(err) };
     }
   }
+
+  // An approved automatic attach spends its approval when the answer is
+  // pulled, and its chip rides the next turn-end. A turn that threw out of the
+  // loop never ended, so say so, once per chip: there is no turn-end left to
+  // carry it, and the file itself is still in the Files tab.
+  const undelivered = generatedFiles?.undelivered() ?? 0;
+  for (let i = 0; i < undelivered; i++) warnGeneratedFile('undelivered');
 
   // Single event.chat-end at the end of the runner's life, awaited so the
   // event reaches the wire before the process exits. If the host is

@@ -275,7 +275,9 @@ describe('runRunner — generated file attachment', () => {
   const preCallCount = () => fakeClient.call.mock.calls.filter(c => c[0] === 'tool.pre-call').length;
 
   /** A conversation-bound run with auto-attach on: `tool.pre-call` answers from `verdicts`, in order. */
-  async function autoAttachRun(verdicts: unknown[], inbox: unknown[], drive: (ctx: LoopContext, home: string) => Promise<void>) {
+  async function autoAttachRun(
+    verdicts: unknown[], inbox: unknown[], drive: (ctx: LoopContext, home: string) => Promise<void>, exit = 0,
+  ) {
     const home = await fs.mkdtemp(path.join(os.tmpdir(), 'ax-files-shell-'));
     const original = fakeClient.call.getMockImplementation()!;
     fakeClient.call.mockImplementation(async (action: string, ...args: unknown[]) => {
@@ -292,11 +294,14 @@ describe('runRunner — generated file attachment', () => {
     fakeClient.callBinaryUpload = upload;
     scriptInbox(inbox);
     const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    let logs = '';
     try {
       const loop: Loop = { run: async ctx => { await drive(ctx, home); return 0; } };
-      expect(await runRunner(() => loop, seams(() => ({ ...fakeEnv(), userFilesRoot: home })))).toBe(0);
+      expect(await runRunner(() => loop, seams(() => ({ ...fakeEnv(), userFilesRoot: home })))).toBe(exit);
+      logs = stderr.mock.calls.map(c => String(c[0])).join('');
     } finally { stderr.mockRestore(); await fs.rm(home, { recursive: true, force: true }); }
     return {
+      logs,
       upload,
       preCalls: fakeClient.call.mock.calls.filter(c => c[0] === 'tool.pre-call').map(c => c[1] as { call: unknown }),
       toolTurnEnds: fakeClient.event.mock.calls
@@ -381,6 +386,23 @@ describe('runRunner — generated file attachment', () => {
       await ctx.endTurn(turn); // the continuation
     });
     expect(run.toolTurnEnds.map(blocks => blocks.filter(block => block.type === 'agent_file'))).toEqual([[], [CHIP]]);
+  });
+
+  it('an approved chip the continuation turn never delivered is logged, not lost silently', async () => {
+    // The approval is spent when the delivery is pulled; the chip waits for the
+    // next turn-end. A continuation turn that throws out of the loop never ends.
+    const run = await autoAttachRun([HOLD, { verdict: 'allow' }], [
+      { type: 'decision-resolved', decisionId: 'd1', outcome: 'approved', note: 'HOST NOTE' },
+    ], async (ctx, home) => {
+      await fs.writeFile(path.join(home, 'report.txt'), 'report');
+      await ctx.endTurn(turn); // the held turn
+      expect(await ctx.nextMessage()).not.toBeNull(); // the approval
+      throw new Error('provider exploded');
+    }, 1);
+    expect(run.toolTurnEnds.flat().some(block => block.type === 'agent_file')).toBe(false);
+    // Once per chip the run could not deliver.
+    const undelivered = run.logs.split('runner: could not attach a generated file (undelivered)\n').length - 1;
+    expect(undelivered).toBe(1);
   });
 });
 
