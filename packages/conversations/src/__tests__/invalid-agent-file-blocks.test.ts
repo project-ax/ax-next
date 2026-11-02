@@ -118,6 +118,19 @@ describe('conversations:get — invalid stored agent_file blocks', () => {
     ]);
   });
 
+  it('on a tool turn, where the runner writes its chips, the turn survives too', async () => {
+    const got = await storeAndRead('tool', [
+      { type: 'tool_result', tool_use_id: 'toolu-1', content: 'done' },
+      { type: 'agent_file', path: 'notes: q3.md', mediaType: 'text/markdown', sizeBytes: 2 },
+    ]);
+    expect(got.turns).toHaveLength(1);
+    expect(got.turns[0]!.role).toBe('tool');
+    expect(got.turns[0]!.contentBlocks).toEqual([
+      { type: 'tool_result', tool_use_id: 'toolu-1', content: 'done' },
+      { type: 'text', text: 'notes: q3.md (this file is no longer available)' },
+    ]);
+  });
+
   it('a nested key shows its last segment', async () => {
     const got = await storeAndRead('assistant', [
       { type: 'agent_file', path: 'reports/a:b.pdf', mediaType: 'application/pdf', sizeBytes: 2 },
