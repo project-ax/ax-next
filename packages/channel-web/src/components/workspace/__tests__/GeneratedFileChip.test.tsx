@@ -127,7 +127,12 @@ describe('GeneratedFileChip', () => {
       // the browser, which streams the file to disk. The probe's answer is
       // never read, so none of the file comes into the tab.
       const probe = json({ downloadable: true });
-      const read = [vi.spyOn(probe, 'blob'), vi.spyOn(probe, 'arrayBuffer')];
+      const read = [
+        vi.spyOn(probe, 'blob'),
+        vi.spyOn(probe, 'arrayBuffer'),
+        vi.spyOn(probe, 'text'),
+        vi.spyOn(probe, 'json'),
+      ];
       // The yes's body is cancelled: a host too old to know `?probe` would
       // otherwise stream the whole file into a body nobody reads.
       const cancel = vi.spyOn(probe.body!, 'cancel');
