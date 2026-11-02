@@ -182,16 +182,18 @@ export interface GeneratedFiles {
    */
   resolveHeld(decisionId: string, outcome: 'approved' | 'dismissed' | undefined): Promise<boolean>;
   /**
-   * How many chips approved holds produced that no turn-end has carried yet.
-   * The approval was spent when the answer was pulled, so a run that ends
-   * before its next turn-end loses these: the caller says so.
+   * How many chips approved holds produced that no turn-end has collected
+   * yet. The approval was spent when the answer was pulled, so a run that
+   * ends before its next turn-end loses these: the caller says so. (A chip a
+   * turn-end collected but then failed to ship is not counted; that run ends
+   * `terminated` with the refusal.)
    */
   undelivered(): number;
 }
 
 const APPROVED_NOTE =
   'A person approved attaching new files from earlier in this conversation. ' +
-  'That is handled for you: do not publish them yourself unless the user asks you to. You do not need to reply.';
+  'That is handled for you: do not publish them yourself unless the user asks for them again. You do not need to reply.';
 const DECLINED_NOTE =
   'A person chose not to attach new files from earlier in this conversation, so they were not attached. ' +
   'Do not publish them unless the user asks you to. You do not need to reply.';

@@ -471,7 +471,7 @@ describe('held automatic attaches (TASK-1017)', () => {
   it('tells the model the answer is handled and the files are not its to publish', () => {
     expect(autoAttachResolvedNote('approved')).toBe(
       'A person approved attaching new files from earlier in this conversation. That is handled for you: ' +
-        'do not publish them yourself unless the user asks you to. You do not need to reply.',
+        'do not publish them yourself unless the user asks for them again. You do not need to reply.',
     );
     const declined =
       'A person chose not to attach new files from earlier in this conversation, so they were not attached. ' +
