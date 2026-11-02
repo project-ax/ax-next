@@ -1,11 +1,11 @@
 /**
  * Handing a person one of an agent's files, WHOLE (TASK-1014).
  *
- * The bytes half of a download. The Files tab's route uses it, and TASK-1012's
- * chat file chips will too. It does NOT decide who may read what: its caller
- * has already authenticated the person, resolved the agent through its ACL
- * and validated the path. It decides only how the bytes travel, and that
- * nobody is handed a torn file that looks whole.
+ * The bytes half of a download. Both download routes use it: the Files tab's
+ * and the chat file chips' (TASK-1012). It does NOT decide who may read what:
+ * its caller has already authenticated the person, resolved the agent through
+ * its ACL and validated the path. It decides only how the bytes travel, and
+ * that nobody is handed a torn file that looks whole.
  *
  * HOW THE BYTES TRAVEL. One range at a time, through the host-internal
  * `sandbox:read-user-file-range`, into the http-server's `bodyStream()`:
@@ -51,6 +51,9 @@
  *   - changed before the head       → 409 file-changed
  *   - a file                        → 200, streamed
  *
+ * A probe (`probe: true`, TASK-1022) gets the same answers up to the first
+ * byte, then 200 { downloadable: true } instead of the bytes.
+ *
  * None of those answers carries a download header. They are all made before
  * the first `header()`, so the agent-authored filename and the octet-stream
  * type never land on an error.
@@ -86,8 +89,8 @@ export const USER_FILE_DOWNLOAD_CHUNK_BYTES = 1024 * 1024;
 /**
  * The biggest file we start a download of: a gigabyte.
  *
- * The Files tab holds a download in memory before it saves it, so this bounds
- * that, and it bounds how long one download can keep a range reader busy.
+ * It bounds how long one download can keep a range reader busy. The browser
+ * saves a download to disk itself (TASK-1022), so no tab has to hold it.
  * Checked against the first range's `size`; a bigger file gets a 413 before
  * any body, with nothing partial sent.
  */
@@ -149,20 +152,35 @@ export interface SendUserFileDownloadArgs {
   relPath: string;
   /** The name to save it under, raw. Sanitized here for Content-Disposition. */
   downloadName: string;
+  /**
+   * Ask, don't send (TASK-1022). Every read and check a download makes before
+   * its head runs exactly as it would, and every refusal is the download's
+   * own. Where the download would send its head, this answers
+   * `200 { downloadable: true }` instead: none of the download's headers, and
+   * `bodyStream()` is never called.
+   *
+   * It exists because the client hands the download itself to the browser,
+   * which saves it straight to disk, and the browser's download bar can say
+   * none of these answers: a 404, a 409 or a 413 there is just a failed
+   * download. So the client asks first, and says a refusal in the page, in
+   * words.
+   */
+  probe?: boolean;
   res: StreamingDownloadResponse;
 }
 
 type FileAnswer = Extract<ReadUserFileRangeOutput, { kind: 'file' }>;
 
 /**
- * Send one file, whole, as a download.
+ * Send one file, whole, as a download. With `probe`, say whether it would,
+ * and send none of it (TASK-1022).
  *
  * The caller has ALREADY authenticated the person, ACL-resolved the agent, and
  * validated `relPath`. Never rejects: every outcome is either a response or,
  * once the body has started, a log line.
  */
 export async function sendUserFileDownload(args: SendUserFileDownloadArgs): Promise<void> {
-  const { bus, ctx, owner, relPath, downloadName, res } = args;
+  const { bus, ctx, owner, relPath, downloadName, probe, res } = args;
   const agentId = owner.agentId;
 
   if (!bus.hasService('sandbox:read-user-file-range')) {
@@ -216,6 +234,13 @@ export async function sendUserFileDownload(args: SendUserFileDownloadArgs): Prom
       res.status(409).json({ error: 'file-changed' });
       return;
     }
+  }
+
+  if (probe === true) {
+    // Every check a download makes before its head has passed, so a download
+    // would start here. A probe says so and stops: no download header, no body.
+    res.status(200).json({ downloadable: true });
+    return;
   }
 
   res.status(200);

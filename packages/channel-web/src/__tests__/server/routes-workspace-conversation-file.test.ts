@@ -50,7 +50,10 @@ import {
   registerWorkspaceRoutes,
   type DownloadRouteResponse,
 } from '../../server/routes-workspace.js';
-import { USER_FILE_DOWNLOAD_MAX_BYTES } from '../../server/user-file-download.js';
+import {
+  USER_FILE_DOWNLOAD_CHUNK_BYTES,
+  USER_FILE_DOWNLOAD_MAX_BYTES,
+} from '../../server/user-file-download.js';
 import type { RouteRequest } from '../../server/routes-chat.js';
 
 const initCtx: AgentContext = makeAgentContext({
@@ -589,6 +592,42 @@ describe('the chat file chip download route', () => {
     expect(d.captured.statusCode).toBe(503);
     expect(d.captured.json).toEqual({ error: 'file-read-failed' });
     expect(d.captured.contentLength).toBeNull();
+  });
+
+  // --- the probe (TASK-1022) -----------------------------------------------
+
+  it('the chip route forwards a probe: 200 { downloadable: true }, no body, and a foreign conversation is still a 404 with no read', async () => {
+    // The chip asks `?probe=1` before it hands this route to the browser's
+    // own download. The answer is the Files tab's probe, behind the chip ACL.
+    standardBus();
+    const d = await download({ conversationId: 'c1', '*': SPLAT }, { probe: '1' });
+    expect(d.captured.statusCode).toBe(200);
+    expect(d.captured.json).toEqual({ downloadable: true });
+    // JSON with no-store, and none of the download's headers.
+    expect(d.captured.headers).toEqual({ 'cache-control': 'private, no-store' });
+    // `bodyStream` was never called: it is what sets `contentLength`.
+    expect(d.captured.contentLength).toBeNull();
+    expect(d.captured.chunks).toEqual([]);
+    // The reads a download makes before its head (the first range, then this
+    // one-range file's final check), on the agent THE CONVERSATION names.
+    const onA1 = { agentId: 'a1', userId: 'u1', ownerAgentId: 'a1', relPath: KEY };
+    expect(rangeCalls).toEqual([
+      { ...onA1, offset: 0, length: USER_FILE_DOWNLOAD_CHUNK_BYTES },
+      { ...onA1, offset: PDF.byteLength, length: 0 },
+    ]);
+
+    // A teammate's conversation: the download's own 404, for a real key and
+    // a malformed one alike, with no agent resolved and nothing read.
+    rangeCalls = [];
+    resolveCalls = [];
+    for (const splat of [SPLAT, '..%2Fx']) {
+      const theirs = await download({ conversationId: 'c-theirs', '*': splat }, { probe: '1' });
+      expect(theirs.captured.statusCode).toBe(404);
+      expect(theirs.captured.json).toEqual({ error: 'file-not-found' });
+      expect(theirs.captured.headers).toEqual({ 'cache-control': 'private, no-store' });
+    }
+    expect(resolveCalls).toEqual([]);
+    expect(rangeCalls).toEqual([]);
   });
 
   // -------------------------------------------------------------------------
