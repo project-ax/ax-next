@@ -16,14 +16,13 @@ import {
  * up verification. Checked on the parsed value, where a legacy `trigger`
  * webhook is already `webhook`. Agent tools only, like the TASK-906 rule below:
  * Settings and the task page go through `RoutineCreateInputSchema` and
- * `RoutineUpdateInputSchema`, which don't carry it.
+ * `RoutineUpdateInputSchema`, which don't carry it. Only the path reaches the
+ * agent: `validationError` turns the issue into `validation` on `webhook.hmac`
+ * and drops any message, so the issue carries none.
  */
 function refuseSignatureSettings(value: { webhook?: WebhookTrigger | null }, ctx: z.RefinementCtx): void {
   if (value.webhook?.hmac === undefined) return;
-  ctx.addIssue({
-    code: z.ZodIssueCode.custom, path: ['webhook', 'hmac'],
-    message: 'Signature settings can’t be set here. The person pastes the app’s signing secret on the task page.',
-  });
+  ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['webhook', 'hmac'] });
 }
 
 export const RoutineReadUpdateToolInputSchema = z.object({ eventId: RoutineOpaqueStringSchema }).strict();
