@@ -688,6 +688,8 @@ describe('the chat file chip download route', () => {
         const theirs = await status({ conversationId: 'c-theirs', '*': splat });
         expect(theirs.captured.statusCode).toBe(404);
         expect(theirs.captured.json).toEqual({ error: 'file-not-found' });
+        // Every status answer is no-store, the ACL's too: the chip re-asks.
+        expect(theirs.captured.headers).toEqual({ 'cache-control': 'private, no-store' });
       }
       expect(resolveCalls).toEqual([]);
       expect(rangeCalls).toEqual([]);
@@ -696,6 +698,7 @@ describe('the chat file chip download route', () => {
       const own = await status({ conversationId: 'c1', '*': encodeURIComponent('../../secret') });
       expect(own.captured.statusCode).toBe(400);
       expect(own.captured.json).toEqual({ error: 'invalid-path' });
+      expect(own.captured.headers).toEqual({ 'cache-control': 'private, no-store' });
       expect(rangeCalls).toEqual([]);
     });
 
@@ -705,6 +708,7 @@ describe('the chat file chip download route', () => {
       const d = await status({ conversationId: 'c1', '*': SPLAT });
       expect(d.captured.statusCode).toBe(404);
       expect(d.captured.json).toEqual({ error: 'agent-not-found' });
+      expect(d.captured.headers).toEqual({ 'cache-control': 'private, no-store' });
       expect(rangeCalls).toEqual([]);
     });
 
@@ -715,6 +719,7 @@ describe('the chat file chip download route', () => {
       registerRange();
       const d = await status({ conversationId: 'c1', '*': SPLAT });
       expect(d.captured.statusCode).toBe(401);
+      expect(d.captured.headers).toEqual({ 'cache-control': 'private, no-store' });
       expect(metadataCalls).toEqual([]);
       expect(rangeCalls).toEqual([]);
     });

@@ -8047,6 +8047,10 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
       req: RouteRequest,
       res: DownloadRouteResponse,
     ): Promise<void> {
+      // Before the ACL, so EVERY status answer (401 / 404 / 400 included) is
+      // no-store: the chip re-asks after each turn and must never get a
+      // cached one.
+      res.header('cache-control', 'private, no-store');
       const chip = await chipFileOr404(req, res);
       if (chip === null) return;
       const { userId, agent, relPath } = chip;
