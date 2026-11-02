@@ -263,7 +263,7 @@ describe('runRunner — generated file attachment', () => {
   // pulled: before any model turn could spend the approval through the
   // sandbox executor, which would copy the file into the blob store.
   const APPROVED = 'A person approved attaching new files from earlier in this conversation. ' +
-    'That is handled for you: do not publish them yourself. You do not need to reply.';
+    'That is handled for you: do not publish them yourself unless the user asks you to. You do not need to reply.';
   const DECLINED = 'A person chose not to attach new files from earlier in this conversation, so they were not attached. ' +
     'Do not publish them unless the user asks you to. You do not need to reply.';
   const CHIP = { type: 'agent_file', path: 'report.txt', mediaType: 'text/plain', sizeBytes: 6 };

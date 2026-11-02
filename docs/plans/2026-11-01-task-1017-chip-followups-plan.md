@@ -100,7 +100,7 @@ export interface GeneratedFiles {
 export function autoAttachResolvedNote(outcome: 'approved' | 'dismissed' | undefined): string;
 ```
 Model notes (exact):
-- approved: `A person approved attaching new files from earlier in this conversation. That is handled for you: do not publish them yourself. You do not need to reply.`
+- approved: `A person approved attaching new files from earlier in this conversation. That is handled for you: do not publish them yourself unless the user asks you to. You do not need to reply.`
 - otherwise: `A person chose not to attach new files from earlier in this conversation, so they were not attached. Do not publish them unless the user asks you to. You do not need to reply.`
 
 **Behaviour (the order is the security property):**

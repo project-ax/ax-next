@@ -189,7 +189,7 @@ export interface GeneratedFiles {
 
 const APPROVED_NOTE =
   'A person approved attaching new files from earlier in this conversation. ' +
-  'That is handled for you: do not publish them yourself. You do not need to reply.';
+  'That is handled for you: do not publish them yourself unless the user asks you to. You do not need to reply.';
 const DECLINED_NOTE =
   'A person chose not to attach new files from earlier in this conversation, so they were not attached. ' +
   'Do not publish them unless the user asks you to. You do not need to reply.';
