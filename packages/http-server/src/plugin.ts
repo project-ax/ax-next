@@ -1059,27 +1059,65 @@ class ResponseWriter {
   }
 
   /**
-   * `res.end(last)`, resolving on 'finish'. A 'close' first is client-gone,
-   * and no 'finish' within the idle window is client-stalled.
+   * Send the held final chunk, then `res.end()`, resolving on 'finish'. A
+   * 'close' first, or a failed write of the final chunk, is client-gone; no
+   * progress within the idle window (per wait) is client-stalled.
+   *
+   * The final chunk is written on its own, with a callback, rather than
+   * handed to `end()`. Node fires 'finish' even when the socket write behind
+   * `end(chunk)` failed, so a client that left mid-chunk would count as sent.
+   * The write callback is where that failure shows up.
    */
-  private endAndAwaitFinish(last: Uint8Array | undefined): Promise<void> {
+  private async endAndAwaitFinish(last: Uint8Array | undefined): Promise<void> {
+    if (last !== undefined) {
+      await this.awaitClient((done) => {
+        this.res.write(last, (err) => done(err ? new BodyStreamError('client-gone') : undefined));
+      });
+    }
+    await this.awaitClient((done) => {
+      this.res.once('finish', () => done());
+      this.res.end();
+    });
+  }
+
+  /**
+   * Run `start`, which calls `done` once the client has taken what it was
+   * given. A 'close' first is client-gone; no `done` within the idle window
+   * is client-stalled. Every exit clears the timer and the 'close' listener.
+   * It only settles: sendSizedBody's catch does the teardown.
+   */
+  private awaitClient(start: (done: (err?: BodyStreamError) => void) => void): Promise<void> {
     const res = this.res;
     return new Promise<void>((resolve, reject) => {
+      let settled = false;
+      let timer: NodeJS.Timeout | undefined;
       const settle = (err?: BodyStreamError): void => {
+        if (settled) return;
+        settled = true;
         clearTimeout(timer);
-        res.off('finish', onFinish);
         res.off('close', onEarlyClose);
         if (err === undefined) resolve();
         else reject(err);
       };
-      const onFinish = (): void => settle();
       const onEarlyClose = (): void => settle(new BodyStreamError('client-gone'));
-      // It only settles. sendSizedBody's catch does the teardown.
-      const timer = setTimeout(() => settle(new BodyStreamError('client-stalled')), this.idleTimeoutMs);
-      res.once('finish', onFinish);
+      if (res.destroyed) {
+        settle(new BodyStreamError('client-gone'));
+        return;
+      }
       res.once('close', onEarlyClose);
-      if (last === undefined) res.end();
-      else res.end(last);
+      try {
+        start(settle);
+      } catch (err) {
+        // A synchronous throw from write()/end(): settle so nothing lingers,
+        // and let the caller's teardown see Node's own error.
+        settled = true;
+        res.off('close', onEarlyClose);
+        reject(err);
+        return;
+      }
+      if (!settled) {
+        timer = setTimeout(() => settle(new BodyStreamError('client-stalled')), this.idleTimeoutMs);
+      }
     });
   }
 

@@ -631,6 +631,45 @@ describe('res.bodyStream()', () => {
     expect(events).toEqual([{ status: 200, durationMs: expect.any(Number), incomplete: true }]);
   });
 
+  it('a client that leaves while the final chunk flushes is client-gone, reported incomplete', async () => {
+    // REGRESSION (TASK-1016 review): one chunk, so it is the held final one.
+    // A client that read about a MiB of it and left used to count as sent,
+    // because Node fires 'finish' even when the socket write failed. For any
+    // file of one range (1 MiB or less on /files) that was every disconnect.
+    const events = responsesSent();
+    const body = randomBytes(32 * MiB);
+    const { source } = probedSource([body]);
+    const { outcome } = await serveBody('/left-final', source, body.length);
+
+    let read = 0;
+    const got = await rawGet('/left-final', {
+      onResponse: (res) => {
+        res.on('data', (c: Buffer) => {
+          read += c.length;
+          if (read >= MiB) res.destroy();
+        });
+      },
+    });
+    expect(got.complete).toBe(false);
+    expect(await outcome).toMatchObject({ code: 'client-gone' });
+    await vi.waitFor(() => expect(events).toHaveLength(1));
+    expect(events).toEqual([{ status: 200, durationMs: expect.any(Number), incomplete: true }]);
+  }, 30_000);
+
+  it('a teardown before the head is reported incomplete too', async () => {
+    // Nothing reached the client, so nothing it holds is whole: the
+    // connection was cut, and `incomplete` says so even with no head sent.
+    const events = responsesSent();
+    const { source } = probedSource([], { failAfter: new Error('failed before any byte') });
+    const { outcome } = await serveBody('/torn-before-head', source, MiB);
+
+    const got = await rawGet('/torn-before-head');
+    expect(got.status).toBeUndefined();
+    expect(await outcome).toMatchObject({ code: 'source-failed' });
+    await vi.waitFor(() => expect(events).toHaveLength(1));
+    expect(events).toEqual([{ status: 200, durationMs: expect.any(Number), incomplete: true }]);
+  });
+
   /** Every http:response-sent payload from now on, in order. */
   function responsesSent(): HttpResponseSentEvent[] {
     const events: HttpResponseSentEvent[] = [];
@@ -770,18 +809,47 @@ describe('res.bodyStream()', () => {
           contentLength: body.length,
         });
       });
+      // Every idle timer the pump arms (the only timers with this delay) must
+      // be cleared by the time the body is over. A leftover one keeps `res`
+      // alive for the window, once per wait: about 1024 of them for 1 GiB.
+      const realSetTimeout = globalThis.setTimeout;
+      const realClearTimeout = globalThis.clearTimeout;
+      const armed: unknown[] = [];
+      const cleared = new Set<unknown>();
+      const setSpy = vi.spyOn(globalThis, 'setTimeout').mockImplementation(((
+        fn: () => void,
+        ms?: number,
+        ...rest: unknown[]
+      ) => {
+        const handle = realSetTimeout(fn, ms, ...rest);
+        if (ms === WINDOW_MS) armed.push(handle);
+        return handle;
+      }) as typeof setTimeout);
+      const clearSpy = vi.spyOn(globalThis, 'clearTimeout').mockImplementation(((
+        handle?: Parameters<typeof clearTimeout>[0],
+      ) => {
+        cleared.add(handle);
+        realClearTimeout(handle);
+      }) as typeof clearTimeout);
       const oneSocket = new http.Agent({ keepAlive: true, maxSockets: 1 });
       try {
         const first = await getWhole('/kept', oneSocket);
         expect(first).toMatchObject({ status: 200, complete: true });
         expect(first.body.equals(body)).toBe(true);
-        // Idle for twice the window. A timer left over from the first body
-        // would have fired by now and killed the connection.
+        await vi.waitFor(() => {
+          expect(armed.length).toBeGreaterThan(0);
+          expect(armed.filter((h) => !cleared.has(h))).toEqual([]);
+        });
+        setSpy.mockRestore();
+        clearSpy.mockRestore();
+        // Idle for twice the window, then the same socket serves again.
         await sleep(2 * WINDOW_MS);
         const second = await getWhole('/kept', oneSocket);
         expect(second).toMatchObject({ status: 200, complete: true, reusedSocket: true });
         expect(second.body.equals(body)).toBe(true);
       } finally {
+        setSpy.mockRestore();
+        clearSpy.mockRestore();
         oneSocket.destroy();
       }
     }, 30_000);
