@@ -675,6 +675,15 @@ export function AgentView({
     (answered approval cards drop out as the new turn's messages arrive).
   */
   const [threadReads, setThreadReads] = useState(0);
+  /*
+    TASK-1019 — turns that FAILED. A failed turn ends with no durable
+    re-read: `onError` keeps the thread as it was, so Resend works. The agent
+    may have deleted a file before the turn broke, so a failure moves the chip
+    key too. A landed or stopped turn is not counted here, because its
+    re-read already moves `threadReads`, and counting both would check twice
+    per turn.
+  */
+  const [failedTurns, setFailedTurns] = useState(0);
 
   const load = useCallback(async () => {
     try {
@@ -928,6 +937,7 @@ export function AgentView({
           cancelStop();
           setStreaming(false);
           setTurnsEnded((n) => n + 1);
+          setFailedTurns((n) => n + 1);
           /*
             ALWAYS `failed`, and the stream's own sentence is KEPT.
 
@@ -1815,10 +1825,11 @@ export function AgentView({
                 thread={past ? pastThread : liveThread}
                 /*
                   TASK-1017 — chips recheck their files once per successful
-                  DURABLE read (`threadReads`), not as `liveThread`'s live
+                  DURABLE read (`threadReads`), and once per turn that failed
+                  (`failedTurns`, TASK-1019), not as `liveThread`'s live
                   frames come and go while a turn streams.
                 */
-                fileRecheckKey={past ? pastThread.length : threadReads}
+                fileRecheckKey={past ? pastThread.length : threadReads + failedTurns}
                 /*
                   Whose conversation the thread on screen belongs to, so a
                   person's own attachments can be downloaded from it
