@@ -207,7 +207,7 @@ describe('downloadFailureMessage', () => {
     // A dropped connection throws a TypeError, not an HttpError. "Failed to
     // fetch" is a browser string and never reaches a screen.
     const msg = downloadFailureMessage(new TypeError('Failed to fetch'), AGENT);
-    expect(msg).toContain("didn't finish");
+    expect(msg).toContain("didn’t finish");
     expect(msg).not.toContain('fetch');
   });
 

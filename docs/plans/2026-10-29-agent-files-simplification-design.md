@@ -122,9 +122,11 @@ Decisions and reasons:
   60 s without progress (`bodyStream()`'s idle window, `client-stalled`). What
   fails before the head is answered: a short first range, or a one-range file
   failing its final check, is 409 `file-changed` (404 if gone). `http:response-sent`
-  carries `incomplete: true` for a cut-off body, so a torn download is never
-  recorded as a complete 200. Browser stream-to-disk and HTTP `Range` stay
-  deferred.
+  carries `incomplete: true` for a cut-off body, including a client that leaves
+  during the final flush (that chunk's write is checked on its own), so a torn
+  download is not recorded as a complete 200. The one blind spot is TCP's: bytes
+  the OS accepted for a client that never reads them count as sent. Browser
+  stream-to-disk and HTTP `Range` stay deferred.
 
 ## 5. Identity, Instructions and onboarding → DB
 

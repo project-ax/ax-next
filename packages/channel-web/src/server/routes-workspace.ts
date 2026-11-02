@@ -7942,8 +7942,9 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
      *     when they clicked. So the bytes come through
      *     `sandbox:read-user-file-range`, a megabyte at a time, streamed with
      *     backpressure, and every range is checked to be the same, unchanged
-     *     file. A file that changes partway is torn down mid-body rather than
-     *     handed over as complete (`server/user-file-download.ts`).
+     *     file. A file found changing before the first byte is a 409
+     *     `file-changed`; one that changes after it is torn down mid-body
+     *     rather than handed over as complete (`server/user-file-download.ts`).
      *   - It has a ceiling. A file over `USER_FILE_DOWNLOAD_MAX_BYTES` is a
      *     413 before any byte, said out loud, rather than a long download the
      *     tab cannot hold.
@@ -8015,7 +8016,7 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
       const { userId, agent, relPath } = chip;
 
       // The Files tab's download, on the agent's own ctx and owner. It owns
-      // every answer from here on (404 / 400 not-a-file / 413 / 503).
+      // every answer from here on (404 / 400 not-a-file / 409 file-changed / 413 / 503).
       await sendUserFileDownload({
         bus,
         ctx: agentWorkspaceCtx(agent.id, userId),

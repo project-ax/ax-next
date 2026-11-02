@@ -106,7 +106,7 @@ export function downloadFailureMessage(e: unknown, agentName: string): string {
     */
     return `We couldn’t get to ${agentName}’s files just now. Nothing was lost — try again in a moment.`;
   }
-  return "That download didn't finish, so nothing was saved. The connection may have dropped, or the file changed or was deleted on the way. Try again in a moment.";
+  return 'That download didn’t finish, so nothing was saved. The connection may have dropped, or the file changed or was deleted on the way. Try again in a moment.';
 }
 
 export interface FileDownloadState {

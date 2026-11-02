@@ -138,11 +138,11 @@ export interface HttpResponse {
    * Anything else, such as a header value Node refuses when the head is
    * written, gets the same teardown and rejects with that error as-is.
    *
-   * One race goes unreported: a client that leaves while the final chunk is
-   * being flushed can still count as sent (this resolves, and
-   * `http:response-sent` says `incomplete: false`), because Node reports the
-   * response finished anyway. That changes nothing for the client, which
-   * still holds fewer bytes than Content-Length.
+   * The final chunk is written on its own and its write is checked, so a
+   * client that leaves while it is being flushed is `'client-gone'`, not
+   * sent. What stays unseen is TCP's limit: bytes the OS has accepted for a
+   * client that then never reads them count as sent. That changes nothing
+   * for the client, which still holds fewer bytes than Content-Length.
    */
   bodyStream(source: AsyncIterable<Uint8Array>, opts: SizedBodyOptions): Promise<void>;
 }
@@ -293,8 +293,8 @@ export interface HttpResponseSentEvent {
    *
    * False for `stream()` (it promises no length) and for the single-shot
    * terminators (Node is handed the whole body at once, and nothing tracks
-   * it after that). False does not prove the client got every byte: see the
-   * final-flush race on `HttpResponse.bodyStream`.
+   * it after that). False means every byte reached the OS, not that the
+   * client read them all: see the end of `HttpResponse.bodyStream`.
    */
   incomplete: boolean;
 }
