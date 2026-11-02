@@ -46,6 +46,15 @@ describe('app connection truth and recovery', () => {
     expect(screen.getByRole('status')).toHaveTextContent('signature not checked');
     expect(screen.queryByText(honesty)).not.toBeInTheDocument();
   });
+  it('makes no timestamp claim for evidence saved before app detection', async () => {
+    // Evidence written before TASK-1026 has a checked signature but no detected app.
+    vi.mocked(routineApi.getWebhookStatus).mockResolvedValue({ ...waiting, app: null, lastAcceptedAt: '2031-01-01T12:00:00.000Z', signatureChecked: true, timestampChecked: false });
+    show(); const status = await screen.findByRole('status');
+    expect(status).toHaveTextContent('App connected');
+    expect(status).toHaveTextContent('signature checked');
+    expect(status).not.toHaveTextContent('no timestamp');
+    expect(screen.queryByText(/doesn’t sign the time/)).not.toBeInTheDocument();
+  });
   it('does not call a verified Slack address a connected stream of updates', async () => {
     vi.mocked(routineApi.getWebhookStatus).mockResolvedValue({ ...waiting, app: 'slack', verifiedAt: '2031-01-01T12:00:00.000Z' });
     show(); expect(await screen.findByRole('status')).toHaveTextContent('Slack address verified');

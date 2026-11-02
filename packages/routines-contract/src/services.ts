@@ -28,7 +28,9 @@ export const RoutineWebhookStatusOutputSchema = z.object({
   setupReady: z.boolean(),
   /**
    * TASK-1026. The app detected on the last accepted update or verified Slack
-   * address check. Null when that update was unsigned, or before any.
+   * address check. Null when that update was unsigned, before any, or when the
+   * evidence predates app detection (then `signatureChecked` may be true and
+   * `timestampChecked` is unknown, reported as false).
    */
   app: WebhookDetectedAppSchema.nullable(),
   lastAcceptedAt: RoutineInstantSchema.nullable(),

@@ -32,14 +32,17 @@ export function TaskAppConnection({ agentId, routineId }: { agentId: string; rou
     return () => { active = false; };
   }, [agentId, routineId, generation]);
   const name = status?.app ? apps[status.app] : 'App';
+  // Evidence saved before app detection has a checked signature but no app, so whether it had a timestamp is unknown.
+  const timestampUnknown = status?.app === null;
+  const noTimestamp = !!status?.signatureChecked && !status.timestampChecked && !timestampUnknown;
   return <div className="flex min-w-0 flex-col gap-3">
     <p className="text-sm">Send a test from the other app’s webhook settings, then check the connection here. An accepted test follows the task’s usual update rules and may start paid work.</p>
     {failed ? <Alert variant="destructive"><AlertDescription>We couldn’t check the connection. Try again to reload its current status.</AlertDescription></Alert>
       : status ? <div className="flex flex-col gap-2" role="status">
-        <p className="text-sm">{status.lastAcceptedAt ? <>{name} connected · last accepted update {time(status.lastAcceptedAt)} · {status.signatureChecked ? (status.timestampChecked ? 'signature checked' : 'signature checked, no timestamp') : 'signature not checked'}</>
+        <p className="text-sm">{status.lastAcceptedAt ? <>{name} connected · last accepted update {time(status.lastAcceptedAt)} · {status.signatureChecked ? (noTimestamp ? 'signature checked, no timestamp' : 'signature checked') : 'signature not checked'}</>
           : status.verifiedAt ? <>{name} address verified {time(status.verifiedAt)} · Waiting for the first update</>
             : status.setupReady ? 'Waiting for the first update' : 'Waiting for setup'}</p>
-        {status.lastAcceptedAt && status.signatureChecked && !status.timestampChecked && <p className="text-sm text-muted-foreground">This app doesn’t sign the time it sent each update, so we can’t spot an old update that’s sent again.</p>}
+        {status.lastAcceptedAt && noTimestamp && <p className="text-sm text-muted-foreground">This app doesn’t sign the time it sent each update, so we can’t spot an old update that’s sent again.</p>}
         {status.lastAcceptedAt && <p className="text-sm text-muted-foreground">Accepted means safely received. Check Updates for the check-in’s result.</p>}
         {status.refusals.length > 0 && <div className="flex flex-col gap-1 text-sm text-muted-foreground">
           <p>Updates turned away since {time(status.windowStart)}:</p>
