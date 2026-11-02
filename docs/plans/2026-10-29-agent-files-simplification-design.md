@@ -118,6 +118,13 @@ Decisions and reasons:
   (413 above). Responses carry `Cache-Control: private, no-store`. k8s serves
   downloads from the read-only host mount only (`sandbox.filestore.hostReadPath`;
   unset means 503, never a pod per range). Previews stay capped at 1 MiB.
+- **As built (TASK-1016):** a download whose client stops reading is cut after
+  60 s without progress (`bodyStream()`'s idle window, `client-stalled`). What
+  fails before the head is answered: a short first range, or a one-range file
+  failing its final check, is 409 `file-changed` (404 if gone). `http:response-sent`
+  carries `incomplete: true` for a cut-off body, so a torn download is never
+  recorded as a complete 200. Browser stream-to-disk and HTTP `Range` stay
+  deferred.
 
 ## 5. Identity, Instructions and onboarding → DB
 
@@ -385,7 +392,8 @@ Decided 2026-10-30: plain reset; nobody is using ax yet.
   (`sendUserFileDownload`, TASK-1014), so its answers carry over: 404
   `file-not-found` when the file is gone (or is now a link), 400 `not-a-file`
   when the key is now a folder (the chip says "no longer available" for both),
-  503 when storage will not answer, 413 over 1 GiB. A malformed key is a 400
+  503 when storage will not answer, 409 `file-changed` when it changed before
+  the first byte, 413 over 1 GiB. A malformed key is a 400
   `invalid-path`. Such a file is charged once (Agent files), and deleting it
   lowers usage at the next assistant turn end. Explicit `artifact_publish` and
   uploads are unchanged. Files auto-attached before this change keep their blob

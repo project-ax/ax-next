@@ -485,8 +485,10 @@ and consumer. Treat their *shape* as a contract; changing it is a boundary revie
     `sendUserFileDownload` loops over 1 MiB ranges, checks `version` on every
     range plus one final validation call, and pipes them into `@ax/http-server`'s
     `res.bodyStream()` (exact Content-Length, backpressure, abort-by-destroy so
-    a truncated body never looks complete, final chunk held until validated).
-    Ceiling 1 GiB (413 above), `Cache-Control: private, no-store`. Previews
+    a truncated body never looks complete, final chunk held until validated,
+    a 60 s idle window for a client that stops reading, and `http:response-sent`
+    reports a cut-off body `incomplete`). Ceiling 1 GiB (413 above); a change
+    found before the head is a 409 `file-changed`. `Cache-Control: private, no-store`. Previews
     (`sandbox:read-user-files`) keep their 1 MiB cap.
   - **`blob:put` is a facade** (`registerBlobPutFacade` in `@ax/core`): veto `blob:pre-put { size }` → the backend's
     `blob:put-internal` → notify `blob:stored { sha256, size }`. Both backends

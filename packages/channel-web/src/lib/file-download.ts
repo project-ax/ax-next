@@ -60,16 +60,20 @@ export function saveBlob(blob: Blob, filename: string): void {
 /**
  * What a failed download SAYS.
  *
- * Four outcomes, four sentences, and none of them is "something went wrong".
+ * Five outcomes, five sentences, and none of them is "something went wrong".
  * The one worth reading twice is the size case: it is not an error, it is a
  * limit we are being honest about. The file is over our download limit, and
  * we do not send part of it: part of a PDF is not a small PDF, it is a broken
  * one that opens to an error message. So we refuse, say why, and say what
  * would work instead.
  *
- * A download that breaks partway (the file changed under it, or the
- * connection dropped) never arrives as a file at all: the browser sees the
- * body come up short and the fetch fails, which lands on the last sentence.
+ * A file found changing before the first byte is sent is a 409, and gets
+ * its own sentence: try again. A download that breaks AFTER the first byte
+ * (the file changed or was deleted under it, or the connection dropped) never
+ * arrives as a file at all: the browser sees the body come up short and the
+ * fetch fails, which lands on the last sentence. That sentence does not claim
+ * the file survived, because after a mid-download deletion it did not, and
+ * from here we cannot tell which it was (TASK-1016).
  *
  * A 401 never reaches here: `httpFetch` latches it and the whole app moves to
  * the signed-out screen before any caller sees it.
@@ -89,6 +93,9 @@ export function downloadFailureMessage(e: unknown, agentName: string): string {
   if (status === 404) {
     return 'We could not find that file to send. It may have been rewritten or deleted since this list was drawn.';
   }
+  if (status === 409) {
+    return 'That file changed while we were getting it, so we stopped rather than hand you a mix of old and new. Try again in a moment.';
+  }
   if (status === 503) {
     /*
       A 503 here is a read the storage would not answer: it failed, it timed
@@ -99,7 +106,7 @@ export function downloadFailureMessage(e: unknown, agentName: string): string {
     */
     return `We couldn’t get to ${agentName}’s files just now. Nothing was lost — try again in a moment.`;
   }
-  return 'We could not download that just now. Nothing was lost — the file is still there, it is the download that failed.';
+  return "That download didn't finish, so nothing was saved. The connection may have dropped, or the file changed or was deleted on the way. Try again in a moment.";
 }
 
 export interface FileDownloadState {
