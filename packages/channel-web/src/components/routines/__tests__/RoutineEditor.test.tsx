@@ -465,6 +465,13 @@ describe('structured routine form', () => {
       }) }),
     ));
   });
+  it('says where the signing secret goes once app updates are on', async () => {
+    render(<RoutineEditor mode="create" agentId="a" agentName="Caveman" onSaved={vi.fn()} onCancel={vi.fn()} />);
+    const hint = 'After saving, paste the app’s signing secret into the routine’s Signing secret row.';
+    expect(screen.queryByText(hint)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('checkbox', { name: 'When another app sends an update' }));
+    expect(screen.getByText(hint)).toBeVisible();
+  });
   it('keeps a new task address inactive until it is saved', async () => {
     vi.mocked(routineApi.getReceiver).mockRejectedValue(
       new RoutineApiError(404),

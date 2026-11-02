@@ -445,6 +445,8 @@ function RoutineForm({
                 editEvents,
               )}
             </FieldGroup>
+            {/* The secret row lives on the saved routine in the list (RoutinesList), not in this form. */}
+            <FieldDescription>After saving, paste the app’s signing secret into the routine’s Signing secret row.</FieldDescription>
             {agentId && canEdit && <WebhookAddressFields key={`${agentId}/${routineId ?? 'create'}`} agentId={agentId} routineId={initial.webhook === null ? undefined : routineId}
               path={form.webhook.path} saved={savedWebhook} disabled={disabled} onPendingChange={setAddressBusy} />}
           </>
