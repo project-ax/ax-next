@@ -210,6 +210,13 @@ describe('which keys an override may name', () => {
       'Read',
       'Write',
       'memory_note',
+      // TASK-1019: publishing is not a setting. While this holds, the runner's
+      // held automatic-attach path (agent-runner-core generated-files.ts,
+      // TASK-1017) is dormant. Making publishing an ability makes it live, along
+      // with two gaps it still has: approving after the session went cold attaches
+      // nothing, and N new files raise N cards. Their design is in
+      // .claude/memory/decisions/2026-11-01-TASK-1019.md.
+      'artifact_publish',
     ]) {
       expect(isOverridableKey(k)).toBe(false);
     }

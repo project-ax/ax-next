@@ -1064,7 +1064,9 @@ async function runRunnerInner(
         // holds again. This message is a prompt, never an authorisation.
         //
         // TASK-1017. Except when the held call is one the RUNNER made: an
-        // automatic attach of a new file. The model never made that call, so
+        // automatic attach of a new file. Dormant today: no shipped rule holds
+        // artifact_publish (TASK-1019), so this branch runs only if that rule
+        // changes. The model never made that call, so
         // the host's "make that call again" would have it guess one, and a
         // correct guess runs the sandbox executor, which copies the file into
         // the blob store. So the runner answers its own holds here, at pull
@@ -1322,13 +1324,15 @@ async function runRunnerInner(
   // nothing is charged twice.
   //
   // Each chip still goes through the policy gate a model's own artifact_publish
-  // call gets, so a person's "publish a file for you to open" setting means the
-  // same for automatic chips: a denied call attaches nothing, and a held one is
-  // attached only after the person approves it AND the gate itself then allows
-  // the identical call, which the runner re-sends when it pulls the approval,
-  // ahead of the turn that answer opens (TASK-1017, see `nextMessage` for the
-  // window this narrows but does not close). Neither ever
-  // sidesteps an approval. The gate's `updatedInput` is ignored on purpose: a
+  // call gets, so an automatic chip is allowed exactly when an explicit publish
+  // would be. Today that gate can only allow or fail closed: `@ax/tool-policy`'s
+  // `artifacts.publish` rule is `allow`, and publishing is not one of the
+  // abilities a person can switch (TASK-1019). The held branch is kept so the
+  // gate means the same if that rule ever changes: a held call is attached only
+  // after the person approves it AND the gate itself then allows the identical
+  // call, which the runner re-sends when it pulls the approval, ahead of the
+  // turn that answer opens (TASK-1017, see `nextMessage`). A refused call
+  // attaches nothing. The gate's `updatedInput` is ignored on purpose: a
   // reference names the file the turn created, never a substitute.
   const generatedFilePolicy = createToolPolicy({ client });
   const canPublishGenerated = conversationId !== null &&
