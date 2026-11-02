@@ -676,10 +676,12 @@ export function AgentView({
   */
   const [threadReads, setThreadReads] = useState(0);
   /*
-    TASK-1019 — turns that FAILED. A failed turn ends with no durable
-    re-read: `onError` keeps the thread as it was, so Resend works. The agent
-    may have deleted a file before the turn broke, so a failure moves the chip
-    key too. A landed or stopped turn is not counted here, because its
+    TASK-1019 — turns whose stream FAILED. `onError` does no durable
+    re-read: it keeps the thread as it was, so Resend works. The agent may
+    have deleted a file before the turn broke, so a failure moves the chip
+    key too. (A lost stream also lands here while the host turn may still be
+    running; a file it deletes after this check stays a stale chip until the
+    next re-read.) A landed or stopped turn is not counted here, because its
     re-read already moves `threadReads`, and counting both would check twice
     per turn.
   */

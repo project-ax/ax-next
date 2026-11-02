@@ -1064,9 +1064,7 @@ async function runRunnerInner(
         // holds again. This message is a prompt, never an authorisation.
         //
         // TASK-1017. Except when the held call is one the RUNNER made: an
-        // automatic attach of a new file. Dormant today: no shipped rule holds
-        // artifact_publish (TASK-1019), so this branch runs only if that rule
-        // changes. The model never made that call, so
+        // automatic attach of a new file. The model never made that call, so
         // the host's "make that call again" would have it guess one, and a
         // correct guess runs the sandbox executor, which copies the file into
         // the blob store. So the runner answers its own holds here, at pull
@@ -1080,6 +1078,9 @@ async function runRunnerInner(
         // that pulls only between turns (aisdk). The turn still runs, opening with the runner's own
         // fixed note instead of the host's. Any other decision (a cold
         // session's, or a hold the model raised itself) keeps the host note.
+        // Dormant today: no shipped rule holds artifact_publish (TASK-1019),
+        // so this branch runs only if that rule changes or publishing becomes
+        // an ability a person can switch.
         const autoAttach = generatedFiles !== null && typeof entry.decisionId === 'string' &&
           await generatedFiles.resolveHeld(entry.decisionId, entry.outcome);
         const content = decisionResolvedTurn(autoAttach ? autoAttachResolvedNote(entry.outcome) : (entry.note ?? ''));

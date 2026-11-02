@@ -342,7 +342,8 @@ interface Props {
    * TASK-1017 — what every agent-file chip rechecks its file on: it checks
    * again whenever this moves. `AgentView` passes a count of successful
    * DURABLE thread reads (never the live frames it appends while a turn runs),
-   * plus one for each turn that failed (a failure re-reads nothing): a landed turn is usually two reads, a decision raised mid-turn adds one,
+   * plus one for each turn whose stream failed (a failure re-reads nothing):
+   * a landed turn is usually two reads, a decision raised mid-turn adds one,
    * so a turn costs a couple of checks per chip rather than one per frame that
    * comes and goes. Not the read's length: that can stay put across a turn, as
    * answered approval cards drop out while the new turn's messages arrive.

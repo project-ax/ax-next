@@ -391,7 +391,7 @@ Decided 2026-10-30: plain reset; nobody is using ax yet.
   uploads are unchanged. Files auto-attached before this change keep their blob
   and its charge (no migration: their artifact rows live until the agent is
   deleted).
-- **As built (TASK-1017):** (Dormant in every shipped configuration; see TASK-1019 below.) approving a held auto-attach closes the common path
+- **As built (TASK-1017):** (Dormant in every shipped configuration; see TASK-1019 below.) Approving a held auto-attach closes the common path
   to a blob copy. The runner remembers the holds it raised itself. When the
   approval reaches the session that raised it, the runner re-sends the
   identical call to the gate as it pulls the answer, ahead of the turn that
@@ -420,9 +420,11 @@ Decided 2026-10-30: plain reset; nobody is using ax yet.
   person can switch (`ABILITY_TOOLS`: `web_search`, `web_extract`, `Bash`), and
   production always loads the built-in rule table. So the TASK-1017
   held-approval path, and its cold-session residual, are dormant. They run only
-  in tests or if that rule changes. A denied automatic attach is a gate that
-  failed closed, and "Ask the agent to attach them again" is the right advice
-  there. Chips now also recheck their file after a turn that fails, which
+  in tests, or if that rule changes or publishing becomes an ability (both
+  pinned in `@ax/tool-policy`'s `verdicts.test.ts`). A denied automatic attach
+  is a gate that failed closed. Its note says "Ask the agent to attach them
+  again", which leads to an explicit `artifact_publish` and so a blob copy;
+  pointing it at the Files tab instead is an open product call. Chips now also recheck their file after a turn that fails, which
   re-reads nothing.
 
 ## 13. Ops
