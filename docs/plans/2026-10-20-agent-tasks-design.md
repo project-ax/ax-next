@@ -578,12 +578,14 @@ Setup is the one technical step, so it gets its own card on the task page,
 shown to people who can manage the agent:
 
 1. Paste this address into the other app's webhook settings.
-2. Check it's really that app (recommended): pick the app and paste its
-   signing secret.
+2. Check it's really that app (recommended): paste the app's signing secret.
+   The host works out which app sent each update from its headers (TASK-1026).
 3. Send a test from the app.
 
 Until a test arrives the card says "Waiting for the first update". After that
 the task shows "Zendesk connected · last update 10:14 · signature checked".
+Apps that sign only the body, like GitHub and Linear, show "signature checked,
+no timestamp".
 The agent never sees the address or the secret, as today, so a task the agent
 drafts in chat starts as "Waiting for setup" and the person finishes it on the
 task page.
@@ -614,7 +616,7 @@ address setup, and never appears in generic task views or agent tools.
 |---|---|
 | Webhook trigger | A "When another app sends an update" checkbox, with the setup card. The word "webhook" appears only in the setup steps, because that's what the other app calls it. |
 | Event filter | "Only these events" in the setup card, for GitHub. |
-| HMAC header, algorithm, prefix | Pick the app and paste its secret. "Other" shows today's raw fields. |
+| HMAC header, algorithm, prefix | Paste the app's signing secret; the host detects the format (TASK-1026). Settings saved earlier still load but only keep checks on. |
 | `{{payload}}` placeholders | Not needed: the brief carries updates as fenced, size-capped outside content. Existing placeholders keep working. |
 | Interval and cron | The "On a schedule" checkbox, with presets ("Every hour", "Weekdays at 8:00"). "Custom schedule" under More options takes a cron line. Unlike a routine, a task can have a schedule and updates together. |
 | Active hours | "Only during work hours". For batched tasks, updates that arrive at night wait for the morning check-in. "Repeat a job" still runs on arrival, as today. |
@@ -652,7 +654,7 @@ original problems and the required behavior are:
 - **Only GitHub-style signatures verify.** The handler checks a hex HMAC of the
   raw body. Stripe, Slack and Zendesk also sign a timestamp, and Zendesk uses
   base64. A small per-app table makes "pick the app, paste the secret" work for
-  each of them.
+  each of them. (TASK-1026 replaced the per-app table with detection: no picker, SHA-256 only.)
 - **Turned-away deliveries are silent.** A wrong secret gets a 401 and nobody in
   the app hears about it. Count them per task, storing no bodies or headers,
   and say so: "4 updates turned away in the last hour because the signature
@@ -1170,3 +1172,4 @@ view-only sharing of a task and an "Also ask" list.
 | 2026-10-27 | Implementation contract (TASK-982) | Preserve existing webhook URLs as legacy aliases until explicit per-task replacement. A task-specific URL may coexist during setup; Replace revokes that task's previous token and legacy alias only. New tasks have no shared alias. Owner changes and deletion revoke prior reach. |
 | 2026-10-27 | Implemented (TASK-981) | Named Stripe, Slack and Zendesk signing protocols use raw request bytes and authenticated timestamps with a five-minute window in both directions. Stripe accepts multiple v1 signatures for secret rotation. A signed Slack URL-verification challenge answers setup without enqueueing a job. Existing custom/GitHub HMAC settings, addresses and owner-scoped secret controls remain compatible. |
 | 2026-10-27 | Implemented (TASK-982) | Task addresses are private owner-only setup state, outside definitions, approval receipts and payload blobs. Provisioning keeps a migrated legacy alias; Replace checks a separate address version and revokes that task’s previous token and alias under its admission lock. Already accepted updates remain queued. Removing app updates, owner reconciliation and deletion revoke old reach. New tasks have no legacy alias. |
+| 2026-11-02 | Implemented (TASK-1026) | Webhook signatures are paste-the-secret only. A saved secret (or a setting saved earlier) turns checks on; the host verifies Stripe, Slack and Zendesk by their timestamped protocols and everything else by an HMAC-SHA256 of the body in any header. The app picker and header/algorithm/prefix fields are gone from the task form, routine editor and agent tools. |

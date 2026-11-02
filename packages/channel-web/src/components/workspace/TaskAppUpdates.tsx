@@ -7,6 +7,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { CredentialSlotRow } from '@/components/credentials/CredentialSlotRow';
 import { TaskAppConnection } from './TaskAppConnection';
 import { WebhookAddressFields } from '@/components/routines/WebhookAddressFields';
+import { SigningSecretHelp } from '@/components/routines/SigningSecretHelp';
 
 /**
  * Private setup stays behind a current owner/edit read; generic task details carry no address.
@@ -43,9 +44,12 @@ function AppSetup({ agentId, routineId, onEdit }: Parameters<typeof TaskAppUpdat
       </AlertDescription></Alert> : row?.webhook ? <FieldGroup>
         <p className="text-sm">Paste this address into the other app’s webhook settings.</p>
         <WebhookAddressFields agentId={agentId} routineId={routineId} path={row.webhook.path} saved disabled={busy} onPendingChange={setBusy} />
-        {row.webhook.hmac && row.permissions.manageSecret ? <CredentialSlotRow
-          destination={{ kind: 'routine-hmac', agentId, routineId }} slot={{ label: 'Webhook signing secret', kind: 'api-key' }}
-          scope={{ scope: 'agent', ownerId: agentId }} onSaved={() => setConnectionGeneration(value => value + 1)} /> : <p className="text-sm text-muted-foreground">{row.webhook.hmac ? 'Signing secret management is currently unavailable.' : 'Signature verification is recommended. Choose the app in Edit app setup, then save its signing secret here.'}</p>}
+        {row.permissions.manageSecret ? <>
+          <CredentialSlotRow
+            destination={{ kind: 'routine-hmac', agentId, routineId }} slot={{ label: 'Signing secret', kind: 'api-key' }}
+            scope={{ scope: 'agent', ownerId: agentId }} onSaved={() => setConnectionGeneration(value => value + 1)} />
+          <SigningSecretHelp legacy={row.webhook.hmac !== undefined} scheduled={row.schedule !== null} noun="task" />
+        </> : <p className="text-sm text-muted-foreground">Signing secret management is currently unavailable.</p>}
         {!busy && <TaskAppConnection key={connectionGeneration} agentId={agentId} routineId={routineId} />}
         <p className="text-sm text-muted-foreground">The address and signing secret stay private. The agent receives only the app’s updates.</p>
       </FieldGroup> : <Skeleton aria-label="Loading app setup" className="h-24 w-full" />}

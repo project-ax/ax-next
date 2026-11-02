@@ -2,10 +2,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { sql } from 'kysely';
 import { createRoutinesStore } from '../store.js';
 import { request as httpRequest } from 'node:http';
+import { HookBus } from '@ax/core';
 import { createTestHarness } from '@ax/test-harness';
 import { createHttpServerPlugin } from '@ax/http-server';
 import { createHmac } from 'node:crypto';
-import { RoutineDefinitionSchema, type RoutineView } from '@ax/routines-contract';
+import { RoutineDefinitionSchema, type RoutineView, type RoutineWebhookStatus } from '@ax/routines-contract';
 import type { HttpRequest, HttpResponse } from '@ax/http-server';
 import { captureExpectedStderr } from './support/expected-diagnostics.js';
 import { createRoutineHarness, type RoutineHarness } from './support/routine-harness.js';
@@ -26,6 +27,7 @@ async function legacyRow(row: RoutineView) {
 async function setup(hmac?: Parameters<typeof definition>[0]) {
   h = await createRoutineHarness({ invoke: async (ctx, bus) => { await bus.fire('chat:turn-end', ctx, { reqId: ctx.reqId, contentBlocks: [{ type: 'text', text: 'done' }] }); return { kind: 'complete' }; } });
   const row = await h.bus.call<unknown, RoutineView>('routines:create', h.owner, { agentId: h.agentId, requestId: 'create', definition: definition(hmac) });
+  if (hmac) h.seedSecret(row);
   await legacyRow(row);
   const { token } = await h.bus.call<unknown, {
     token: string;
@@ -56,6 +58,7 @@ describe('single registered request-time DB webhook route', () => {
     let row = await h.bus.call<unknown, RoutineView>('routines:create', h.owner, {
       agentId: h.agentId, requestId: 'create-hook', definition: definition({ header: 'X-Signature', algorithm: 'sha256' }),
     });
+    h.seedSecret(row);
     await legacyRow(row);
     const { token } = await h.bus.call<unknown, { token: string }>('agents:ensure-webhook-token', h.owner, { agentId: h.agentId, actor: { userId: h.owner.userId, isAdmin: false } });
     row = await h.bus.call<unknown, RoutineView>('routines:update', h.owner, {
@@ -83,11 +86,17 @@ describe('single registered request-time DB webhook route', () => {
     expect(h.invokeCalls).toHaveLength(2);
     expect(h.routes.filter(r => r.path.startsWith('/webhooks/'))).toHaveLength(1);
   });
-  it.each([{ algorithm: 'sha256', prefix: 'sha256=' }, { algorithm: 'sha1', prefix: 'sha1=' }, { algorithm: 'sha256', prefix: undefined }] as const)('checks raw $algorithm HMAC with prefix $prefix before accepting', async ({ algorithm, prefix }) => {
+  it.each([{ algorithm: 'sha256', prefix: 'sha256=' }, { algorithm: 'sha1', prefix: 'sha1=' }, { algorithm: 'sha256', prefix: undefined }] as const)('checks a raw SHA-256 HMAC before accepting, on a task saved with $algorithm and prefix $prefix', async ({ algorithm, prefix }) => {
     const { token } = await setup({ header: 'X-Signature', algorithm, ...(prefix === undefined ? {} : { prefix }) });
     const body = '{"title": "signed"}';
-    const signature = createHmac(algorithm, 'test-secret').update(body).digest('hex');
-    expect(await request(token, { body, headers: { 'x-signature': `${prefix ?? ''}${signature}` } })).toBe(202);
+    const signature = createHmac('sha256', 'test-secret').update(body).digest('hex');
+    if (algorithm === 'sha1') {
+      // TASK-1026 checks SHA-256 only, even on a task saved with SHA-1 (D9a).
+      const sha1 = createHmac('sha1', 'test-secret').update(body).digest('hex');
+      expect(await request(token, { body, headers: { 'x-signature': `${prefix}${sha1}` } })).toBe(401);
+      expect(await request(token, { body, headers: { 'x-signature': sha1 } })).toBe(401);
+    }
+    expect(await request(token, { body, headers: { 'x-signature': `${algorithm === 'sha256' ? prefix ?? '' : ''}${signature}` } })).toBe(202);
     expect(await request(token, { body: body + ' ', headers: { 'x-signature': signature } })).toBe(401);
     expect(await request(token)).toBe(401);
     expect(h.invokeCalls).toHaveLength(1);
@@ -130,23 +139,31 @@ describe('single registered request-time DB webhook route', () => {
     expect(h.invokeCalls).toHaveLength(1);
     expect(h.routes.filter(r => r.path === '/webhooks/:token/*')).toHaveLength(1);
   });
-  it('fails closed on a missing configured HMAC secret and rejects encoded token spelling', async () => {
-    const { token } = await setup({ header: 'sig', algorithm: 'sha256' });
+  it('fails closed, retryably, when the HMAC secret can’t be read, and rejects encoded token spelling', async () => {
+    const { row, token } = await setup({ header: 'sig', algorithm: 'sha256' });
     const call = h.bus.call.bind(h.bus);
-    const warnings: string[] = [];
+    const warnings: Array<{ message: string; fields: unknown }> = [];
+    // The vault throws a plain Error (a lost database connection, say). It goes through a real
+    // HookBus, as in production, which wraps it as a PluginError with code `unknown`.
+    const vault = new HookBus();
+    vault.registerService('credentials:get', '@ax/credentials', async () => { throw new Error('PRIVATE vault detail'); });
     vi.spyOn(h.bus, 'call').mockImplementation(async (name, ctx, input) => {
       if (name === 'credentials:get') {
         const warn = ctx.logger.warn.bind(ctx.logger);
         ctx.logger.warn = (message, fields) => {
-          if (message === 'routines_webhook_secret_fetch_failed') warnings.push(message);
+          if (message === 'routines_webhook_secret_fetch_failed') warnings.push({ message, fields });
           else warn(message, fields);
         };
-        throw new Error('missing');
+        return vault.call(name, ctx, input);
       }
       return call(name, ctx, input);
     });
-    expect(await request(token)).toBe(401);
-    expect(warnings).toEqual(['routines_webhook_secret_fetch_failed']);
+    // Not "none saved", so it refuses; a 503 because the sender should retry.
+    expect(await request(token)).toBe(503);
+    // The log carries the bus's `unknown` code, never the thrown error's message.
+    expect(warnings).toEqual([{ message: 'routines_webhook_secret_fetch_failed', fields: { agentId: row.agentId, routineId: row.routineId, code: 'unknown' } }]);
+    expect((await h.bus.call<unknown, RoutineWebhookStatus>('routines:webhook-status', h.owner, { agentId: row.agentId, routineId: row.routineId })).refusals)
+      .toEqual([{ reason: 'unavailable', count: 1 }]);
     expect(h.invokeCalls).toHaveLength(0);
     expect(await request(token, { rawPath: `/webhooks/%${token.charCodeAt(0).toString(16)}${token.slice(1)}/hook` })).toBe(404);
   });
@@ -226,7 +243,7 @@ describe('durable signed repeat-delivery canary', () => {
   });
   it('deduplicates only authenticated accepted IDs, survives restart, and drains queued private payloads once', async () => {
     const messages: string[] = [], owners: string[] = [];
-    h=await createRoutineHarness({strictCredentials:true,invoke:async(ctx,bus,input)=>{
+    h=await createRoutineHarness({invoke:async(ctx,bus,input)=>{
       owners.push(ctx.userId);messages.push((input as {message:{content:string}}).message.content);
       await bus.fire('chat:turn-end',ctx,{reqId:ctx.reqId,contentBlocks:[{type:'text',text:'done'}]});return{kind:'complete'};
     }});

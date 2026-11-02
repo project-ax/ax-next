@@ -120,12 +120,12 @@ export function hoursChip(hours: ActiveHours | null): string {
  */
 export const TASK_FIELDS = [
   'name', 'promptBody', 'goodWhen', 'schedule', 'hours', 'updates',
-  'customSchedule', 'hoursZone', 'address', 'events', 'signature',
+  'customSchedule', 'hoursZone', 'address', 'events',
   'conversation', 'quietWord', 'quietLength', 'description', 'form',
 ] as const;
 export type TaskField = (typeof TASK_FIELDS)[number];
 export const MORE_OPTIONS_FIELDS: ReadonlySet<TaskField> = new Set([
-  'customSchedule', 'hoursZone', 'address', 'events', 'signature', 'conversation', 'quietWord', 'quietLength', 'description',
+  'customSchedule', 'hoursZone', 'address', 'events', 'conversation', 'quietWord', 'quietLength', 'description',
 ]);
 
 /** The field a contract (or host) path belongs to. `custom` says the schedule is edited under More options. */
@@ -139,13 +139,13 @@ export function taskField(path: string, custom: boolean): TaskField {
     case 'trigger':
       // The host's legacy name for either method.
       if (['path', 'events'].includes(second)) return second === 'path' ? 'address' : 'events';
-      if (second === 'hmac') return 'signature';
+      if (second === 'hmac') return 'updates';
       return second === '' || !custom ? 'schedule' : 'customSchedule';
     case 'activeHours':
       return second === 'tz' ? 'hoursZone' : 'hours';
     case 'webhook':
       return second === 'respondWithin' ? 'updates' : second === 'path' ? 'address' : second === 'events' ? 'events'
-        : second === 'hmac' ? 'signature' : 'updates';
+        : 'updates';
     case 'silenceToken': return 'quietWord';
     case 'silenceMaxChars': return 'quietLength';
     default: return 'form';
@@ -162,7 +162,7 @@ export function fieldHasControl(field: TaskField, definition: RoutineDefinition)
     case 'goodWhen': return isTaskKind(definition.kind);
     case 'customSchedule': return definition.schedule !== null;
     case 'hoursZone': return definition.activeHours !== null;
-    case 'address': case 'events': case 'signature': return definition.webhook !== null;
+    case 'address': case 'events': return definition.webhook !== null;
     default: return true;
   }
 }
@@ -179,7 +179,6 @@ const FALLBACK: Record<TaskField, string> = {
   hoursZone: ZONE,
   address: 'Use letters, numbers, dots, dashes and slashes, starting with /, like /project-updates.',
   events: 'Use event names made of letters, numbers, dashes and underscores, separated by commas.',
-  signature: 'Use a header name without spaces, like X-Signature.',
   conversation: 'A task starts fresh each time it checks in.',
   quietWord: 'Keep the quiet word to 128 characters or fewer.',
   quietLength: 'Use a whole number from 0 to 65,536.',

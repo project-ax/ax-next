@@ -23,7 +23,7 @@ function headers(app: App, body: string, at = now): Record<string, string> {
 
 describe('provider signatures through real HTTP, services and durable Repeat admission', () => {
   it('keeps app settings/receipts across restart and authenticates before any job starts', async () => {
-    h = await createRoutineHarness({ strictCredentials: true, clock: { now: () => now, sleep: systemClock.sleep }, invoke: async (ctx, bus) => {
+    h = await createRoutineHarness({ clock: { now: () => now, sleep: systemClock.sleep }, invoke: async (ctx, bus) => {
       await bus.fire('chat:turn-end', ctx, { reqId: ctx.reqId, contentBlocks: [{ type: 'text', text: 'done' }] });
       return { kind: 'complete' };
     } });

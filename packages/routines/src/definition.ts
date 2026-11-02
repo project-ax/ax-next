@@ -52,7 +52,8 @@ export function schedulingChanged(a: RoutineDefinition, b: RoutineDefinition): b
   return inputHash({ enabled: a.enabled, schedule: a.schedule, activeHours: a.activeHours }) !== inputHash({ enabled: b.enabled, schedule: b.schedule, activeHours: b.activeHours });
 }
 export function credentialRef(key: { agentId: string; routineId: string }): string { return `routine:${key.agentId}:${key.routineId}:hmac`; }
-export function hasHmac(row: RoutineDefinition): boolean { return row.webhook !== null && row.webhook.hmac !== undefined; }
+/** Saved before TASK-1026. Its presence keeps signature checks on; its values are ignored. */
+export function hasLegacySignatureSetting(row: RoutineDefinition): boolean { return row.webhook !== null && row.webhook.hmac !== undefined; }
 /** New effects only: a completed receipt is returned before this authoring rule runs. */
 export function validateScheduleWrite(next: RoutineDefinition, previous?: RoutineDefinition, patch?: RoutinePatch): void {
   if (activeHoursWriteIssue(next.activeHours) !== null && !(patch !== undefined && isStopOnlyPatch(patch)))

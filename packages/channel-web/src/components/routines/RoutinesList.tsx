@@ -28,6 +28,7 @@ import {
 } from '@/lib/routines';
 import { useAgentStore } from '@/lib/agent-store';
 import { RoutineEditor } from './RoutineEditor';
+import { SigningSecretHelp } from './SigningSecretHelp';
 import { FireNowControl } from './FireNowControl';
 import { FireRowsTable } from './FireRowsTable';
 import { TriggerChip } from './TriggerChip';
@@ -360,17 +361,23 @@ export function RoutinesList({
                   </Alert>
                 )}
                 {row.webhook !== null &&
-                  row.webhook.hmac &&
                   row.permissions.manageSecret && (
-                    <CredentialSlotRow
-                      destination={{
-                        kind: 'routine-hmac',
-                        agentId: row.agentId,
-                        routineId: row.routineId,
-                      }}
-                      slot={{ label: 'Webhook HMAC secret', kind: 'api-key' }}
-                      scope={{ scope: 'agent', ownerId: row.agentId }}
-                    />
+                    <>
+                      <CredentialSlotRow
+                        destination={{
+                          kind: 'routine-hmac',
+                          agentId: row.agentId,
+                          routineId: row.routineId,
+                        }}
+                        slot={{ label: 'Signing secret', kind: 'api-key' }}
+                        scope={{ scope: 'agent', ownerId: row.agentId }}
+                      />
+                      <SigningSecretHelp
+                        legacy={row.webhook.hmac !== undefined}
+                        scheduled={row.schedule !== null}
+                        noun="routine"
+                      />
+                    </>
                   )}
                 {firesError ? (
                   <Alert variant="destructive">

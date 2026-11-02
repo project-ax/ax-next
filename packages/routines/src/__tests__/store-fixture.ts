@@ -29,6 +29,10 @@ export function createInput(requestId = 'create-1') {
 export function webhookInput(requestId = 'hook-1') {
   return { ...createInput(requestId), definition: RoutineDefinitionSchema.parse({ name: 'hook', promptBody: 'body', trigger: { kind: 'webhook', path: '/hook', hmac: { header: 'x-signature', algorithm: 'sha256' } } }) };
 }
+/** `webhookInput` without a signature setting: how every task with app updates is saved since TASK-1026. */
+export function plainWebhookInput(requestId = 'hook-plain') {
+  return { ...createInput(requestId), definition: RoutineDefinitionSchema.parse({ name: 'hook', promptBody: 'body', trigger: { kind: 'webhook', path: '/hook' } }) };
+}
 /** The separate housekeeping catalog keeps its interval-only legacy DTO. */
 export function defaultDefinition() {
   const { schedule, webhook: _webhook, ...fields } = createInput().definition;

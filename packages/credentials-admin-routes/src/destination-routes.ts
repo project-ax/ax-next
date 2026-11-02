@@ -546,7 +546,8 @@ export function createDestinationHandlers(deps: DestinationRouteDeps): {
       const routineCtx = makeAgentContext({ sessionId: 'routine-secret-settings', userId: actor.id, agentId: input.data.agentId });
       try {
         const routine = RoutineGetOutputSchema.parse(await deps.bus.call('routines:get', routineCtx, input.data));
-        if (!routine.permissions.manageSecret || routine.webhook === null || !routine.webhook.hmac) {
+        // TASK-1026: a secret belongs to any task with app updates, signature settings or not.
+        if (!routine.permissions.manageSecret || routine.webhook === null) {
           res.status(404).json({ code: 'not-found', error: 'The routine is unavailable.' });
           return;
         }

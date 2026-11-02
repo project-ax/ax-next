@@ -39,7 +39,6 @@ import { TASK_KIND_LABELS } from '@/lib/task-kinds';
 import { browserTimeZone } from '@/lib/task-finish-by';
 import { TaskForm, type TaskAgentChoice } from '@/components/workspace/TaskForm';
 import { ActiveHoursDaySelector } from './ActiveHoursDaySelector';
-import { WebhookSignatureFields } from './WebhookSignatureFields';
 import { WebhookAddressFields } from './WebhookAddressFields';
 import { changed, useRoutineDraft } from './use-routine-draft';
 
@@ -446,6 +445,8 @@ function RoutineForm({
                 editEvents,
               )}
             </FieldGroup>
+            {/* The secret row lives on the saved routine in the list (RoutinesList), shown once it's opened there, not in this form. */}
+            <FieldDescription>If the app signs its updates, open the routine in the list after saving and paste its signing secret there.</FieldDescription>
             {agentId && canEdit && <WebhookAddressFields key={`${agentId}/${routineId ?? 'create'}`} agentId={agentId} routineId={initial.webhook === null ? undefined : routineId}
               path={form.webhook.path} saved={savedWebhook} disabled={disabled} onPendingChange={setAddressBusy} />}
           </>
@@ -478,21 +479,6 @@ function RoutineForm({
                 'silenceMaxChars',
                 (v) => update('silenceMaxChars', Number(v)),
                 { type: 'number' },
-              )}
-              {form.webhook !== null && (
-                <>
-                  <WebhookSignatureFields
-                    value={form.webhook.hmac}
-                    disabled={disabled}
-                    taskMode={false}
-                    invalidField={invalidField ?? firstIssue?.path.join('.')}
-                    onChange={value => {
-                      if (form.webhook === null) return;
-                      const { hmac: _hmac, ...webhook } = form.webhook;
-                      update('webhook', value === undefined ? webhook : { ...webhook, hmac: value });
-                    }}
-                  />
-                </>
               )}
             </FieldGroup>
           </CollapsibleContent>

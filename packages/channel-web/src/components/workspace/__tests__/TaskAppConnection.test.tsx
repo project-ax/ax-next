@@ -6,22 +6,58 @@ import { TaskAppConnection } from '../TaskAppConnection';
 import { routineApi } from '@/lib/routines';
 import { routineFixture } from '@/components/routines/__tests__/routine-fixture';
 vi.mock('@/lib/routines', async original => ({ ...(await original<typeof import('@/lib/routines')>()), routineApi: { get: vi.fn(), getWebhookStatus: vi.fn(), getTaskReceiver: vi.fn() } }));
-const waiting: RoutineWebhookStatus = { agentId: 'a', routineId: 'opaque-r1', app: 'zendesk', setupReady: true, lastAcceptedAt: null, signatureChecked: false, verifiedAt: null, windowStart: '2031-01-01T11:01:00.000Z', refusals: [] };
+const waiting: RoutineWebhookStatus = { agentId: 'a', routineId: 'opaque-r1', app: 'zendesk', setupReady: true, lastAcceptedAt: null, signatureChecked: false, timestampChecked: false, verifiedAt: null, windowStart: '2031-01-01T11:01:00.000Z', refusals: [] };
 beforeEach(() => { vi.resetAllMocks(); vi.mocked(routineApi.getWebhookStatus).mockResolvedValue(waiting); });
 const show = () => render(<TaskAppConnection agentId="a" routineId="opaque-r1" />);
 describe('app connection truth and recovery', () => {
   it('waits for a real app test, then explains acceptance separately from execution', async () => {
     show(); expect(await screen.findByRole('status')).toHaveTextContent('Waiting for the first update');
     expect(screen.getByText(/Send a test/)).toHaveTextContent('may start paid work');
-    vi.mocked(routineApi.getWebhookStatus).mockResolvedValue({ ...waiting, lastAcceptedAt: '2031-01-01T12:00:00.000Z', signatureChecked: true });
+    vi.mocked(routineApi.getWebhookStatus).mockResolvedValue({ ...waiting, lastAcceptedAt: '2031-01-01T12:00:00.000Z', signatureChecked: true, timestampChecked: true });
     fireEvent.click(screen.getByRole('button', { name: 'Check connection' }));
     expect(await screen.findByRole('status')).toHaveTextContent('Zendesk connected');
     expect(screen.getByRole('status')).toHaveTextContent('signature checked');
     expect(screen.getByRole('status')).toHaveTextContent('Check Updates for the check-in’s result');
   });
+  it('names the detected app', async () => {
+    vi.mocked(routineApi.getWebhookStatus).mockResolvedValue({ ...waiting, app: 'linear', lastAcceptedAt: '2031-01-01T12:00:00.000Z', signatureChecked: true });
+    show(); expect(await screen.findByRole('status')).toHaveTextContent('Linear connected');
+    vi.mocked(routineApi.getWebhookStatus).mockResolvedValue({ ...waiting, app: null, lastAcceptedAt: '2031-01-01T12:00:00.000Z' });
+    fireEvent.click(screen.getByRole('button', { name: 'Check connection' }));
+    expect(await screen.findByRole('status')).toHaveTextContent('App connected');
+    expect(screen.getByRole('status')).toHaveTextContent('signature not checked');
+  });
+  it('says when a signature had no timestamp', async () => {
+    const at = '2031-01-01T12:00:00.000Z';
+    const honesty = /doesn’t sign the time it sent each update/;
+    vi.mocked(routineApi.getWebhookStatus).mockResolvedValue({ ...waiting, app: 'github', lastAcceptedAt: at, signatureChecked: true, timestampChecked: false });
+    show(); const status = await screen.findByRole('status');
+    expect(status).toHaveTextContent('GitHub connected');
+    expect(status).toHaveTextContent('signature checked, no timestamp');
+    expect(screen.getByText(honesty)).toBeVisible();
+    vi.mocked(routineApi.getWebhookStatus).mockResolvedValue({ ...waiting, app: 'stripe', lastAcceptedAt: at, signatureChecked: true, timestampChecked: true });
+    fireEvent.click(screen.getByRole('button', { name: 'Check connection' }));
+    await screen.findByText(/Stripe connected/);
+    expect(screen.getByRole('status')).not.toHaveTextContent('no timestamp');
+    expect(screen.queryByText(honesty)).not.toBeInTheDocument();
+    vi.mocked(routineApi.getWebhookStatus).mockResolvedValue({ ...waiting, app: 'github', lastAcceptedAt: at, signatureChecked: false, timestampChecked: false });
+    fireEvent.click(screen.getByRole('button', { name: 'Check connection' }));
+    await screen.findByText(/GitHub connected/);
+    expect(screen.getByRole('status')).toHaveTextContent('signature not checked');
+    expect(screen.queryByText(honesty)).not.toBeInTheDocument();
+  });
+  it('makes no timestamp claim for evidence saved before app detection', async () => {
+    // Evidence written before TASK-1026 has a checked signature but no detected app.
+    vi.mocked(routineApi.getWebhookStatus).mockResolvedValue({ ...waiting, app: null, lastAcceptedAt: '2031-01-01T12:00:00.000Z', signatureChecked: true, timestampChecked: false });
+    show(); const status = await screen.findByRole('status');
+    expect(status).toHaveTextContent('App connected');
+    expect(status).toHaveTextContent('signature checked');
+    expect(status).not.toHaveTextContent('no timestamp');
+    expect(screen.queryByText(/doesn’t sign the time/)).not.toBeInTheDocument();
+  });
   it('does not call a verified Slack address a connected stream of updates', async () => {
     vi.mocked(routineApi.getWebhookStatus).mockResolvedValue({ ...waiting, app: 'slack', verifiedAt: '2031-01-01T12:00:00.000Z' });
-    show(); expect(await screen.findByRole('status')).toHaveTextContent('App address verified');
+    show(); expect(await screen.findByRole('status')).toHaveTextContent('Slack address verified');
     expect(screen.getByRole('status')).toHaveTextContent('Waiting for the first update');
     expect(screen.queryByText(/connected/)).not.toBeInTheDocument();
   });
@@ -37,6 +73,13 @@ describe('app connection truth and recovery', () => {
     expect(document.body).not.toHaveTextContent('PRIVATE-provider-detail');
     fireEvent.click(screen.getByRole('button', { name: 'Check connection' }));
     expect(await screen.findByRole('status')).toHaveTextContent('Waiting for the first update');
+  });
+  it('says an update turned away while the task couldn’t accept it can be retried by the app', async () => {
+    // A vault outage or a failed admission: the app retries the 503, so there is nothing to fix in settings.
+    vi.mocked(routineApi.getWebhookStatus).mockResolvedValue({ ...waiting, refusals: [{ reason: 'unavailable', count: 3 }] });
+    show(); const status = await screen.findByRole('status');
+    expect(status).toHaveTextContent('3 because the task couldn’t accept updates just then. The app can retry later.');
+    expect(status).not.toHaveTextContent('Check its settings');
   });
   it('drops previous task status before effects run and ignores its late response', async () => {
     let resolve!: (status: RoutineWebhookStatus) => void;

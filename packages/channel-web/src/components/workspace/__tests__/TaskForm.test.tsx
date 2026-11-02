@@ -336,7 +336,6 @@ describe('task form More options', () => {
     fill('Treat replies this short as quiet', '40');
     fill('Address name', '/digest');
     fill('Only these kinds of updates', 'push, release');
-    fireEvent.click(screen.getByRole('switch', { name: 'Verify signature' }));
     fill('Note for you (optional)', 'Mine.');
     fireEvent.click(screen.getByRole('switch', { name: 'Start right away' }));
     start();
@@ -344,11 +343,29 @@ describe('task form More options', () => {
     expect(vi.mocked(routineApi.create).mock.calls[0]![0].definition).toStrictEqual({
       name: 'Digest', description: 'Mine.', promptBody: 'Send the digest.', enabled: false,
       schedule: { kind: 'interval', every: '1h' },
-      webhook: { kind: 'webhook', path: '/digest', events: ['push', 'release'], hmac: { header: 'X-Hub-Signature-256', algorithm: 'sha256', prefix: 'sha256=' } },
+      webhook: { kind: 'webhook', path: '/digest', events: ['push', 'release'] },
       activeHours: null, silenceToken: 'NOTHING_NEW', silenceMaxChars: 40, conversation: 'shared', kind: 'repeat', goodWhen: null,
     });
   });
 
+  it('has no signature controls', async () => {
+    await edit({ ...task, webhook: { kind: 'webhook', path: '/updates' } });
+    fireEvent.click(screen.getByRole('button', { name: 'More options' }));
+    await screen.findByLabelText('Address name');
+    expect(screen.queryByRole('switch', { name: 'Verify signature' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('radiogroup', { name: 'App' })).not.toBeInTheDocument();
+    for (const label of ['Signature header', 'Signature algorithm', 'Signature prefix']) expect(screen.queryByLabelText(label)).not.toBeInTheDocument();
+  });
+  it('saves a legacy signature setting back unchanged', async () => {
+    const webhook = { kind: 'webhook' as const, path: '/original', events: ['push'], hmac: { header: 'X-Signature', algorithm: 'sha256' as const, prefix: 'sha256=' } };
+    await edit({ ...task, webhook });
+    fireEvent.click(screen.getByRole('button', { name: 'More options' }));
+    await screen.findByLabelText('Address name');
+    fill('Address name', '/renamed');
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(routineApi.update).toHaveBeenCalledOnce());
+    expect(vi.mocked(routineApi.update).mock.calls[0]![0].patch.webhook).toStrictEqual({ ...webhook, path: '/renamed' });
+  });
   it('previews a saved address under More options and says when a new name is only a preview', async () => {
     await edit({ ...task, webhook: { kind: 'webhook', path: '/updates' } });
     fireEvent.click(screen.getByRole('button', { name: 'More options' }));

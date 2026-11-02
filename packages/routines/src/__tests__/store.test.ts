@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { sql } from 'kysely';
-import { RoutineDefinitionSchema } from '@ax/routines-contract';
-import { fixture, createInput, webhookInput, now } from './store-fixture.js';
+import { ROUTINE_DEFINITION_MAX_BYTES, RoutineDefinitionSchema } from '@ax/routines-contract';
+import { fixture, createInput, webhookInput, plainWebhookInput, now } from './store-fixture.js';
 import { createRequestHash, credentialRef, inputHash } from '../definition.js';
 const f = fixture();
 const update = (r: { agentId: string; routineId: string; revision: string }, patch: Record<string, unknown>, requestId = 'edit') => ({ agentId: r.agentId, routineId: r.routineId, expectedRevision: r.revision, actorUserId: 'other-editor', requestId, patch, now: new Date(now.getTime() + 5000), stopOnly: false });
@@ -84,7 +84,7 @@ describe('transactional authored store', () => {
   });
   it('cleanup fences stale discovery, concurrent drains, failure, and new secret reconfiguration', async () => {
     const row = await f.store.createAuthored(webhookInput());
-    const removed = await f.store.updateAuthored(update(row, { trigger: { kind: 'webhook', path: '/hook' } }, 'remove-hmac'));
+    const removed = await f.store.updateAuthored(update(row, { trigger: { kind: 'interval', every: '60s' } }, 'remove-hook'));
     const oldJob = (await f.store.pendingCleanup({ limit: 10 }))[0]!;
     await expect(f.store.updateAuthored(update(removed, { trigger: row.webhook }, 'reconfigure'))).rejects.toMatchObject({ toolCode: 'cleanup-pending' });
     const fail = vi.fn(async () => { throw new Error('vault down'); });
@@ -111,9 +111,97 @@ describe('transactional authored store', () => {
   });
   it('allows an emergency stop while credential cleanup is pending', async () => {
     const row = await f.store.createAuthored(webhookInput());
-    const removed = await f.store.updateAuthored(update(row, { trigger: { kind: 'webhook', path: '/hook' } }, 'remove'));
+    const removed = await f.store.updateAuthored(update(row, { trigger: { kind: 'interval', every: '60s' } }, 'remove'));
     const stopped = await f.store.updateAuthored({ ...update(removed, { enabled: false }, 'stop-pending'), stopOnly: true });
     expect(stopped.enabled).toBe(false); expect(await f.store.pendingCleanup({ limit: 10 })).toHaveLength(1);
+  });
+  // TASK-1026 D5. The leftover from before the deploy: a row whose `hmac` was dropped then, so it kept its
+  // webhook while the cleanup that dropping queued keeps failing. A stop must still go through, with or
+  // without a signature setting on the row.
+  it('allows an emergency stop on a task with app updates while an old secret’s cleanup is pending', async () => {
+    for (const input of [webhookInput(), { ...plainWebhookInput(), agentId: 'b' }]) {
+      const row = await f.store.createAuthored(input);
+      const job = { agentId: row.agentId, routineId: row.routineId, credentialRef: credentialRef(row), ownerUserId: 'owner' };
+      await f.db.insertInto('routines_v1_credential_cleanup').values({ agent_id: row.agentId, routine_id: row.routineId, credential_ref: credentialRef(row), owner_user_id: row.ownerUserId }).execute();
+      const stopped = await f.store.updateAuthored({ ...update(row, { enabled: false }, 'stop-leftover'), stopOnly: true });
+      expect(stopped.enabled).toBe(false);
+      expect(await f.store.pendingCleanup({ limit: 10 })).toContainEqual(job);
+      // Saving a secret still waits for it, so the cleanup can't delete the new one.
+      const effect = vi.fn(async () => {});
+      await expect(f.store.withLockedWebhookSecret({ agentId: row.agentId, routineId: row.routineId, expectedRevision: stopped.revision, operation: 'set', secret: new Uint8Array([1]) }, effect)).rejects.toMatchObject({ toolCode: 'cleanup-pending' });
+      expect(effect).not.toHaveBeenCalled();
+    }
+  });
+  it('saves a secret for any task with app updates, and only those', async () => {
+    const hook = await f.store.createAuthored(plainWebhookInput());
+    await expect(f.store.withLockedWebhookSecret({ agentId: hook.agentId, routineId: hook.routineId, expectedRevision: hook.revision, operation: 'set', secret: new Uint8Array([1]) }, async () => {})).resolves.toEqual({ saved: true });
+    const scheduled = await f.store.createAuthored(createInput());
+    const effect = vi.fn(async () => {});
+    for (const change of [{ operation: 'set' as const, secret: new Uint8Array([1]) }, { operation: 'delete' as const }]) {
+      await expect(f.store.withLockedWebhookSecret({ agentId: scheduled.agentId, routineId: scheduled.routineId, expectedRevision: scheduled.revision, ...change }, effect)).rejects.toMatchObject({ toolCode: 'validation', field: 'webhook' });
+    }
+    expect(effect).not.toHaveBeenCalled();
+  });
+  // TASK-1026 D4. A stored `hmac` keeps signature checks on and has no control left to author it, so a
+  // replacement webhook that leaves it out (an agent, an old client) mustn't turn checks off, delete the
+  // secret or reset the evidence. Key order matters: the evidence resets when JSON.stringify differs.
+  it('keeps a legacy signature setting and its secret when an edit replaces the webhook without it', async () => {
+    const row = await f.store.createAuthored({ ...createInput('legacy-task'), definition: RoutineDefinitionSchema.parse({
+      name: 'Inbox', promptBody: 'Keep the inbox under control.', kind: 'stay-on-top', goodWhen: 'Nothing waits more than a day.',
+      schedule: { kind: 'interval', every: '15m' },
+      webhook: { kind: 'webhook', path: '/hook', hmac: { header: 'x-signature', algorithm: 'sha256' }, respondWithin: '10m' },
+    }) });
+    const evidence = { lastAcceptedAt: now.toISOString(), signatureChecked: true, verifiedAt: null, buckets: [] };
+    await sql`UPDATE routines_v1_definitions SET webhook_health = ${JSON.stringify(evidence)}::jsonb WHERE routine_id = ${row.routineId}`.execute(f.db);
+    const raw = async (routineId: string) => (await sql<{ webhook_health: unknown; webhook_health_generation: string }>`
+      SELECT webhook_health, webhook_health_generation FROM routines_v1_definitions WHERE routine_id = ${routineId}`.execute(f.db)).rows[0];
+    const before = await raw(row.routineId);
+    expect(before?.webhook_health).toEqual(evidence);
+    const result = await f.store.updateAuthored(update(row, { webhook: { kind: 'webhook', path: '/hook', respondWithin: '10m' } }, 'omit-hmac'));
+    expect(result.webhook).toStrictEqual(row.webhook);
+    expect(JSON.stringify(result.webhook)).toBe(JSON.stringify(row.webhook));
+    expect(await f.store.pendingCleanup({ limit: 10 })).toEqual([]);
+    expect(await raw(row.routineId)).toEqual(before);
+    // A client that still sends the single legacy `trigger` gets the same.
+    const repeat = await f.store.createAuthored({ ...webhookInput(), agentId: 'b' });
+    const kept = await f.store.updateAuthored(update(repeat, { trigger: { kind: 'webhook', path: '/hook' } }, 'omit-hmac-trigger'));
+    expect(kept.webhook).toStrictEqual(repeat.webhook);
+    expect(await f.store.pendingCleanup({ limit: 10 })).toEqual([]);
+  });
+  it('refuses an edit that keeping the legacy setting would make too large to store', async () => {
+    const row = await f.store.createAuthored(webhookInput());
+    const webhook = { kind: 'webhook' as const, path: '/hook' };
+    const size = (promptBody: string) => new TextEncoder().encode(JSON.stringify(RoutineDefinitionSchema.parse({ ...webhookInput().definition, promptBody, webhook }))).length;
+    // Exactly at the limit without the setting, so only carrying it over pushes it past.
+    const promptBody = 'x'.repeat(ROUTINE_DEFINITION_MAX_BYTES - size(''));
+    expect(size(promptBody)).toBe(ROUTINE_DEFINITION_MAX_BYTES);
+    await expect(f.store.updateAuthored(update(row, { promptBody, webhook }, 'grow'))).rejects.toMatchObject({ toolCode: 'validation', field: 'promptBody' });
+    expect(await f.store.findOne(row)).toEqual(row);
+  });
+  it('removing app updates queues the secret for cleanup, with or without a legacy setting', async () => {
+    for (const input of [plainWebhookInput(), { ...webhookInput(), agentId: 'b' }]) {
+      const row = await f.store.createAuthored(input);
+      const removed = await f.store.updateAuthored(update(row, { trigger: { kind: 'interval', every: '60s' } }, 'remove'));
+      expect(removed.webhook).toBeNull();
+      expect(await f.store.pendingCleanup({ limit: 10 })).toContainEqual({ agentId: row.agentId, routineId: row.routineId, credentialRef: credentialRef(row), ownerUserId: 'owner' });
+      // Adding app updates back waits for it, so the cleanup can't delete a secret saved for them.
+      await expect(f.store.updateAuthored(update(removed, { trigger: { kind: 'webhook', path: '/hook' } }, 'readd'))).rejects.toMatchObject({ toolCode: 'cleanup-pending' });
+    }
+    expect(await f.store.pendingCleanup({ limit: 10 })).toHaveLength(2);
+  });
+  it('deleting a task with app updates queues its secret for cleanup', async () => {
+    const row = await f.store.createAuthored(plainWebhookInput());
+    expect(await f.store.deleteAuthored(update(row, {}))).toEqual({ deleted: true, cleanupPending: true });
+    expect(await f.store.pendingCleanup({ limit: 10 })).toEqual([{ agentId: 'a', routineId: row.routineId, credentialRef: credentialRef(row), ownerUserId: 'owner' }]);
+    const scheduled = await f.store.createAuthored(createInput());
+    expect(await f.store.deleteAuthored(update(scheduled, {}, 'delete-scheduled'))).toEqual({ deleted: true, cleanupPending: false });
+    expect(await f.store.pendingCleanup({ limit: 10 })).toHaveLength(1);
+  });
+  it('purging an agent queues the secret of each of its tasks with app updates', async () => {
+    const hook = await f.store.createAuthored(plainWebhookInput());
+    await f.store.createAuthored(createInput());
+    await f.store.purgeAgent('a');
+    expect(await f.store.pendingCleanup({ limit: 10 })).toEqual([{ agentId: 'a', routineId: hook.routineId, credentialRef: credentialRef(hook), ownerUserId: 'owner' }]);
   });
   it('secret writes use revision and definition lock before invoking the vault', async () => {
     const row = await f.store.createAuthored(webhookInput()); const effect = vi.fn(async () => { });

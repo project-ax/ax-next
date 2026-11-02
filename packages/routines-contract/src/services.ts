@@ -20,10 +20,24 @@ export const RoutineWebhookAddressOutputSchema = z.object({ token: z.string().re
 /** Private connection evidence; acceptance is distinct from execution. No request content. */
 export const WebhookRefusalReasonSchema = z.enum(['signature', 'secret', 'invalid-body', 'unsupported-content', 'event-filter', 'delivery-id', 'capacity', 'unavailable', 'paused', 'too-large']);
 export type WebhookRefusalReason = z.infer<typeof WebhookRefusalReasonSchema>;
+/** The signing format the host detected on a delivery (TASK-1026). An app name only, never header content. */
+export const WebhookDetectedAppSchema = z.enum(['stripe', 'slack', 'zendesk', 'github', 'linear', 'other']);
+export type WebhookDetectedApp = z.infer<typeof WebhookDetectedAppSchema>;
 export const RoutineWebhookStatusOutputSchema = z.object({
   agentId: RoutineOpaqueStringSchema, routineId: RoutineOpaqueStringSchema,
-  setupReady: z.boolean(), app: z.enum(['stripe', 'slack', 'zendesk', 'other']),
-  lastAcceptedAt: RoutineInstantSchema.nullable(), signatureChecked: z.boolean(),
+  setupReady: z.boolean(),
+  /**
+   * TASK-1026. The app detected on the last accepted update or verified Slack
+   * address check. Null when that update was unsigned, before any, or when the
+   * evidence predates app detection (then `signatureChecked` may be true and
+   * `timestampChecked` is unknown, reported as false).
+   */
+  app: WebhookDetectedAppSchema.nullable(),
+  lastAcceptedAt: RoutineInstantSchema.nullable(),
+  /** The last accepted update's signature was checked. */
+  signatureChecked: z.boolean(),
+  /** TASK-1026. The signature behind `app` included the app's signed timestamp, which bounds replays. */
+  timestampChecked: z.boolean(),
   verifiedAt: RoutineInstantSchema.nullable(), windowStart: RoutineInstantSchema,
   refusals: z.array(z.object({ reason: WebhookRefusalReasonSchema, count: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER) }).strict()).max(10),
 }).strict();

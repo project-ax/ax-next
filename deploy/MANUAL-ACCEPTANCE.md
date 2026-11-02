@@ -728,24 +728,14 @@ direct DB query.
 
 ### Steps — HMAC variant
 
-1. Store a webhook secret via the credentials admin UI:
-   - scope: global
-   - kind: api-key
-   - ref: `gh-webhook-secret`
-   - value: `shhh-test-secret`
+1. Open the task's page, App updates, paste `shhh-test-secret` into
+   **Signing secret**, and Save. There are no signature settings to choose;
+   the host detects the format.
 
-2. Edit the `notify` routine (chat with the agent or use Settings -> Routines)
-   to add an `hmac` block:
+2. Copy the address from the same row and set it:
 
-   ```yaml
-   trigger:
-     kind: webhook
-     path: "/test"
-     hmac:
-       secretRef: gh-webhook-secret
-       header: "X-Hub-Signature-256"
-       algorithm: sha256
-       prefix: "sha256="
+   ```bash
+   URL=...   # the address copied from the App updates row
    ```
 
 3. Re-curl WITHOUT a signature:
@@ -754,7 +744,7 @@ direct DB query.
    curl -i -X POST \
      -H 'Content-Type: application/json' \
      -d '{"foo":"bar"}' \
-     http://localhost:9090/webhooks/$TOKEN/test
+     "$URL"
    ```
 
    Expected: `HTTP/1.1 401`. No new conversation appears.
@@ -766,7 +756,7 @@ direct DB query.
      -H 'Content-Type: application/json' \
      -H 'X-Hub-Signature-256: sha256=deadbeef' \
      -d '{"foo":"bar"}' \
-     http://localhost:9090/webhooks/$TOKEN/test
+     "$URL"
    ```
 
    Expected: `HTTP/1.1 401`. No new conversation.
@@ -781,19 +771,33 @@ direct DB query.
      -H 'Content-Type: application/json' \
      -H "X-Hub-Signature-256: $SIG" \
      -d "$BODY" \
-     http://localhost:9090/webhooks/$TOKEN/test
+     "$URL"
    ```
 
    Expected: `HTTP/1.1 202`, new conversation appears with the
    templated prompt.
 
+6. Re-curl with a Linear-style signature (a bare hex digest in a different
+   header, no prefix):
+
+   ```bash
+   curl -i -X POST \
+     -H 'Content-Type: application/json' \
+     -H "Linear-Signature: $(printf '%s' "$BODY" | openssl dgst -sha256 -hmac "$SECRET" | awk '{print $2}')" \
+     -d "$BODY" \
+     "$URL"
+   ```
+
+   Expected: `HTTP/1.1 202`, and the task page shows
+   "Linear connected · … · signature checked, no timestamp".
+
 ### Acceptance criteria
 
-- Without HMAC: 202 + new conversation with substituted prompt.
-- HMAC missing header → 401, no conversation.
-- HMAC wrong signature → 401, no conversation.
-- HMAC correct signature → 202, new conversation.
-- All four cases observable via `kubectl --context kind-ax-next-dev logs -n ax-next deploy/ax-next-host | grep routines` (routines plugin logs each fire with status).
+- No signing secret saved: 202 + new conversation with substituted prompt.
+- With a secret saved: missing signature → 401, no conversation.
+- With a secret saved: wrong signature → 401, no conversation.
+- With a secret saved: correct signature in `X-Hub-Signature-256` (GitHub) or `Linear-Signature` (Linear) → 202, new conversation.
+- All cases observable via `kubectl --context kind-ax-next-dev logs -n ax-next deploy/ax-next-host | grep routines` (routines plugin logs each fire with status).
 
 ### Cleanup
 

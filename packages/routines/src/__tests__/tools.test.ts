@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { makeAgentContext, SafeToolError, type ToolCall } from '@ax/core';
+import { makeAgentContext, SafeToolError, safeToolMessage, type ToolCall } from '@ax/core';
 import { RoutineDefinitionSchema, RoutineViewSchema, type RoutineView } from '@ax/routines-contract';
 import { sql } from 'kysely';
 import { createRoutinesStore } from '../store.js';
@@ -314,4 +314,68 @@ it('settles confirmed absent receipts failed after an ordinary joined pre-commit
   expect(effectAttempts).toBe(1);
   expect((await createRoutinesStore(h.db).list({ agentId: h.agentId })).filter(row => row.definitionId === null)).toHaveLength(0);
   spy.mockRestore();
+});
+
+// TASK-1026: a signature setting saved before then belongs to the person. The host only reads whether one is there,
+// so the agent reads no routine with one and can't send one.
+describe('signature settings saved before TASK-1026', () => {
+  const hmac = { header: 'X-Signature', algorithm: 'sha256', prefix: 'sha256=' } as const;
+  const legacyTask = RoutineDefinitionSchema.parse({
+    name: 'Support updates', promptBody: 'Answer new tickets.', kind: 'stay-on-top', goodWhen: 'No ticket waits an hour.',
+    schedule: { kind: 'interval', every: '1h' }, webhook: { kind: 'webhook', path: '/support', hmac },
+  });
+  const createLegacyTask = () => h.bus.call<unknown, RoutineView>('routines:create', actor(), { agentId: h.agentId, requestId: 'legacy', definition: legacyTask });
+  const stored = (routineId: string) => h.bus.call<unknown, RoutineView>('routines:get', actor(), { agentId: h.agentId, routineId });
+
+  it('hides legacy signature settings from the agent', async () => {
+    h = await createRoutineHarness();
+    const row = await createLegacyTask();
+    expect(row.webhook).toEqual({ kind: 'webhook', path: '/support', hmac });
+    const read = await execute({ id: 'get', name: 'routine_get', input: { routineId: row.routineId } });
+    expect(read.webhook).toStrictEqual({ kind: 'webhook', path: '/support' });
+    const { routines } = await h.bus.call<ToolCall, { routines: RoutineView[] }>('tool:execute:routine_list', actor(), { id: 'list', name: 'routine_list', input: {} });
+    expect(routines.find(routine => routine.routineId === row.routineId)?.webhook).toStrictEqual({ kind: 'webhook', path: '/support' });
+    expect(JSON.stringify(routines)).not.toContain('hmac');
+    // The agent sends back the webhook it read under a new address name: the edit goes through, its answer has no
+    // setting, and the task keeps the one it had.
+    const edit = { id: 'edit', name: 'routine_update', input: { requestId: 'rename', routineId: row.routineId, expectedRevision: read.revision, patch: { webhook: { ...read.webhook, path: '/support-v2' } } } };
+    await approve(edit);
+    const changed = await execute(edit);
+    expect(changed.webhook).toStrictEqual({ kind: 'webhook', path: '/support-v2' });
+    expect((await stored(row.routineId)).webhook).toEqual({ kind: 'webhook', path: '/support-v2', hmac });
+  });
+
+  it('refuses a signature setting from the agent, naming the field, before anything is held', async () => {
+    h = await createRoutineHarness();
+    const row = await createLegacyTask();
+    const calls: ToolCall[] = [
+      { id: 'create', name: 'routine_create', input: { requestId: 'signed', definition: {
+        name: 'Signed updates', promptBody: 'Review each update.', webhook: { kind: 'webhook', path: '/signed', hmac: { app: 'stripe' } },
+      } } },
+      { id: 'edit', name: 'routine_update', input: { requestId: 'resign', routineId: row.routineId, expectedRevision: row.revision, patch: {
+        webhook: { kind: 'webhook', path: '/support', hmac: { app: 'stripe' } },
+      } } },
+    ];
+    for (const call of calls) {
+      expect(await h.bus.fire('tool:pre-call', actor(), call)).toMatchObject({ rejected: true, reason: safeToolMessage('validation', 'webhook.hmac') });
+      await expect(execute(call)).rejects.toMatchObject({ toolCode: 'validation', field: 'webhook.hmac' });
+    }
+    expect(await h.bus.call('decisions:list', actor(), { userId: h.owner.userId })).toMatchObject({ decisions: [] });
+    expect((await h.bus.call<unknown, { routines: RoutineView[] }>('routines:list', actor(), { agentId: h.agentId })).routines.filter(r => r.origin === 'authored')).toHaveLength(1);
+    expect(await stored(row.routineId)).toMatchObject({ revision: row.revision, webhook: { kind: 'webhook', path: '/support', hmac } });
+  });
+
+  it('answers a create without signature settings whatever the service answered', async () => {
+    h = await createRoutineHarness();
+    const original = h.bus.callJoined.bind(h.bus);
+    vi.spyOn(h.bus, 'callJoined').mockImplementation(async (name, ctx, input) => {
+      const output = await original(name, ctx, input);
+      return name === 'routines:create' ? { ...(output as RoutineView), webhook: { kind: 'webhook', path: '/support', hmac } } : output;
+    });
+    const call: ToolCall = { id: 'create', name: 'routine_create', input: { requestId: 'repeat', definition: {
+      name: 'Support updates', promptBody: 'Answer new tickets.', webhook: { kind: 'webhook', path: '/support' },
+    } } };
+    await approve(call);
+    expect((await execute(call)).webhook).toStrictEqual({ kind: 'webhook', path: '/support' });
+  });
 });

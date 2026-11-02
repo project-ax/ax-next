@@ -89,6 +89,8 @@ describe('private task webhook addresses', () => {
     const current = await f.store.ensureWebhookAddress({ ...a, ...nextOwner });
     expect(current.legacyActive).toBe(false);
     a = await f.store.updateAuthored({ ...a, ...nextOwner, expectedRevision: a.revision, requestId: 'remove-hook', patch: { schedule: { kind: 'interval', every: '1h' }, webhook: null }, now, stopOnly: false });
+    // TASK-1026: removing app updates queues their signing secret's cleanup, and adding them back waits for it.
+    for (const job of await f.store.pendingCleanup({ limit: 10 })) await f.store.runCredentialCleanup(job, async () => {});
     a = await f.store.updateAuthored({ ...a, ...nextOwner, expectedRevision: a.revision, requestId: 'restore-hook', patch: { webhook: { kind: 'webhook', path: '/owner-change' } }, now, stopOnly: false });
     expect(await f.store.findWebhookByToken({ token: current.token, path: '/owner-change' })).toBeNull();
     const beforeDelete = await f.store.ensureWebhookAddress({ ...a, ...nextOwner });

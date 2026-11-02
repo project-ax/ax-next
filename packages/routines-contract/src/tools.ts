@@ -4,13 +4,33 @@ import {
   ROUTINE_STEP_ID_MAX_CHARS, ROUTINE_STEP_TEXT_MAX_CHARS, ROUTINE_STEPS_MAX,
   RoutineDefinitionSchema, RoutineOpaqueStringSchema, RoutinePatchSchema, RoutineReportFieldShape, RoutineReportStepsSchema,
   TASK_AUTO_PAUSE_AFTER_MISSES, refuseDoneWithoutNeedsYou,
-  type RoutineDefinition, type RoutinePatch,
+  type RoutineDefinition, type RoutinePatch, type WebhookTrigger,
 } from './definition.js';
+
+/**
+ * TASK-1026: a webhook's signature settings (`hmac`, `WebhookHmacSchema`) are
+ * a person's, saved before the host detected each app's signing format. They
+ * still parse everywhere, so saved tasks, receipts and a person's own edits keep
+ * working, but an agent can't write one. The tool JSON doesn't advertise them,
+ * and this refuses one rather than drop it, so the agent never believes it set
+ * up verification. Checked on the parsed value, where a legacy `trigger`
+ * webhook is already `webhook`. Agent tools only, like the TASK-906 rule below:
+ * Settings and the task page go through `RoutineCreateInputSchema` and
+ * `RoutineUpdateInputSchema`, which don't carry it. Only the path reaches the
+ * agent: `validationError` turns the issue into `validation` on `webhook.hmac`
+ * and drops any message, so the issue carries none.
+ */
+function refuseSignatureSettings(value: { webhook?: WebhookTrigger | null }, ctx: z.RefinementCtx): void {
+  if (value.webhook?.hmac === undefined) return;
+  ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['webhook', 'hmac'] });
+}
 
 export const RoutineReadUpdateToolInputSchema = z.object({ eventId: RoutineOpaqueStringSchema }).strict();
 export const RoutineListToolInputSchema = z.object({}).strict();
 export const RoutineGetToolInputSchema = z.object({ routineId: RoutineOpaqueStringSchema }).strict();
-export const RoutineCreateToolInputSchema = z.object({ requestId: RoutineOpaqueStringSchema, definition: RoutineDefinitionSchema }).strict();
+export const RoutineCreateToolInputSchema = z.object({
+  requestId: RoutineOpaqueStringSchema, definition: RoutineDefinitionSchema.superRefine(refuseSignatureSettings),
+}).strict();
 export const RoutineDeleteToolInputSchema = RoutineGetToolInputSchema.extend({ requestId: RoutineOpaqueStringSchema, expectedRevision: RoutineOpaqueStringSchema }).strict();
 
 /**
@@ -34,7 +54,7 @@ const RoutineUpdateToolPatchSchema = RoutinePatchSchema.superRefine((patch, ctx)
       message: 'To turn a routine into a task, send its name, promptBody and goodWhen in the same patch so the person sees the whole task.',
     });
   }
-});
+}).superRefine(refuseSignatureSettings);
 export const RoutineUpdateToolInputSchema = RoutineDeleteToolInputSchema.extend({ patch: RoutineUpdateToolPatchSchema }).strict();
 export const RoutineFireNowToolInputSchema = RoutineDeleteToolInputSchema;
 /**
@@ -239,12 +259,7 @@ const trigger = {
       respondWithin: { type: 'string', description: 'Task update batching delay, 1m to 24h; omitted means 5m. Omit for repeat jobs.' },
       kind: { const: 'webhook' }, path: { type: 'string', maxLength: 128, pattern: '^/[A-Za-z0-9._/-]+$', description: 'Canonical absolute path. No empty, dot, dot-dot, trailing-slash or reserved /webhooks/ segments.' },
       events: { type: 'array', maxItems: 32, items: { type: 'string', minLength: 1, maxLength: 64, pattern: '^[A-Za-z0-9_-]+$' } },
-      hmac: { oneOf: [{ type: 'object', additionalProperties: false, required: ['header'], properties: {
-        header: { type: 'string', minLength: 1, maxLength: 128, pattern: "^[!#$%&'*+.^_`|~A-Za-z0-9-]+$" },
-        algorithm: { type: 'string', enum: ['sha256', 'sha1'], default: 'sha256' }, prefix: { type: 'string', maxLength: 128 },
-      } }, { type: 'object', additionalProperties: false, required: ['app'], properties: {
-        app: { type: 'string', enum: ['stripe', 'slack', 'zendesk'], description: 'Verify this app’s complete signing protocol, including its timestamp. The owner saves the signing secret separately; never put it in the definition.' },
-      } }] },
+      // No `hmac` (TASK-1026): the host detects the signing format, and `refuseSignatureSettings` refuses one.
     } },
   ],
 };

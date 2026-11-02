@@ -238,12 +238,36 @@ async function recover(bus: HookBus, store: RoutinesStore, ctx: AgentContext, ke
  * stays in both answers. It's one short date a person set, not agent text, and
  * it tells the agent how much time is left when it says how a task is going.
  * TASK-955: so does the zone the date was set from, a zone id the contract's
- * rule accepted.
+ * rule accepted. TASK-1026: and, like every routine a tool answers with, it has
+ * no signature settings (`withoutSignatureSettings`).
  */
-function listToolView({ task, steps: _steps, ...routine }: C.RoutineView) {
+function listToolView(view: C.RoutineView) {
+  const { task, steps: _steps, ...routine } = withoutSignatureSettings(view);
   if (task === null) return { ...routine, task };
   const { agentNotes: _agentNotes, ...report } = task;
   return { ...routine, task: report };
+}
+/**
+ * TASK-1026. A webhook's signature settings (`hmac`) were saved by a person
+ * before the host detected each app's signing format. The host ignores their
+ * values and only reads that one is there, which keeps signature checks on.
+ * They are the person's, so no tool answer carries them, and the agent has
+ * none to copy back into an edit: the tools refuse one
+ * (`RoutineToolInputSchemas`), and an edit that leaves them out keeps them
+ * (`updateAuthored`). The `routines:*` services keep them for the task page.
+ */
+function withoutSignatureSettings(view: C.RoutineView): C.RoutineView {
+  const { webhook } = view;
+  if (webhook === null || webhook.hmac === undefined) return view;
+  const { hmac: _hmac, ...rest } = webhook;
+  return { ...view, webhook: rest };
+}
+/**
+ * What routine_get and routine_create answer: the service's view without its
+ * signature settings. Unlike `listToolView`, it keeps the agent notes and steps.
+ */
+function viewToolOutput(output: unknown): C.RoutineView {
+  return withoutSignatureSettings(C.RoutineViewSchema.parse(output));
 }
 function listToolOutput(output: unknown): C.RoutineListToolOutput {
   const { routines } = C.RoutineListOutputSchema.parse(output);
@@ -257,7 +281,8 @@ function listToolOutput(output: unknown): C.RoutineListToolOutput {
  * parse here, and a recovered one is routineView over a receipt that passed
  * StoredRoutineSchema (the same definition rules, and ids the host made). The
  * strict check differs from that schema only by the agent notes and the steps
- * the projection takes out (`listToolView`).
+ * the projection takes out (`listToolView`). The projection also takes out a
+ * webhook's signature settings (TASK-1026), which both schemas allow.
  */
 function updateToolOutput(output: unknown): C.RoutineUpdateToolOutput {
   return C.RoutineUpdateToolOutputSchema.parse(listToolView(C.RoutineUpdateOutputSchema.parse(output)));
@@ -299,7 +324,8 @@ export async function registerRoutineTools({ bus, store }: Dependencies & { now:
       if (!prepared.receiptKey) {
         try {
           const output = await bus.call(prepared.hook, ctx, prepared.input);
-          return call.name === 'routine_list' ? listToolOutput(output) : output;
+          if (call.name === 'routine_list') return listToolOutput(output);
+          return call.name === 'routine_get' ? viewToolOutput(output) : output;
         }
         catch (error) {
           if (prepared.run !== undefined && !(error instanceof SafeToolError)) reportFailed(ctx, prepared.run, error);
@@ -363,11 +389,12 @@ export async function registerRoutineTools({ bus, store }: Dependencies & { now:
         } else return pending();
       }
       await settle('succeeded');
-      if (call.name !== 'routine_update') return output;
-      // The edit has happened, and nothing from here can say otherwise: the answer is a projection
-      // that reads nothing and can't refuse a real view (updateToolOutput). The catch only keeps a
-      // raw error from escaping if that ever stopped being true.
-      try { return updateToolOutput(output); }
+      if (call.name !== 'routine_update' && call.name !== 'routine_create') return output;
+      // The create or edit has happened, and nothing from here can say otherwise: the answer is a
+      // projection that reads nothing and can't refuse a real view (updateToolOutput, and
+      // viewToolOutput for a create by the same argument). The catch only keeps a raw error from
+      // escaping if that ever stopped being true.
+      try { return call.name === 'routine_update' ? updateToolOutput(output) : viewToolOutput(output); }
       catch (error) { throw safeFailure(error); }
     });
     await bus.call('tool:register', makeAgentContext({ sessionId: 'init', agentId: PLUGIN, userId: 'system' }), descriptor);

@@ -9,6 +9,7 @@ import type { RepeatDeliveryRow, RoutinesDatabase } from './migrations.js';
 import type { AcceptedDispatch, StoredRoutine } from './types.js';
 import { githubDeliveryId, repeatQueueFits, REPEAT_DELIVERY_LIMITS as LIMIT } from './repeat-limits.js';
 import { webhookAddressMatches, type WebhookAddressProof } from './webhook-address.js';
+import type { VerifiedSignature } from './webhook-signature.js';
 type DB = Kysely<RoutinesDatabase>;
 const configurationHash = repeatConfigurationHash;
 export type RepeatDeliveryStatus = { active: number; waiting: number };
@@ -17,7 +18,8 @@ export type DeliveryClaim = { deliveryId: string; blobRef: string; accepted: Acc
 /** SQL owns admission/claims; the blob facade owns bytes and their existing quota accounting. */
 export function createRepeatDeliveryStore(db: DB, executorId: string) {
   return {
-    async admit(input: { row: StoredRoutine; payload: unknown; deliveryId: string | null; now: Date; address?: WebhookAddressProof }, persist: (bytes: Uint8Array, owner: string) => Promise<{ sha256: string; size: number }>, authorizeLegacy?: () => Promise<boolean>): Promise<'accepted' | 'duplicate' | 'full' | 'missing'> {
+    /** `signature` is how the receiver verified this delivery, or null when it wasn't checked; kept as connection evidence (TASK-1026). */
+    async admit(input: { row: StoredRoutine; payload: unknown; deliveryId: string | null; now: Date; address?: WebhookAddressProof; signature: VerifiedSignature | null }, persist: (bytes: Uint8Array, owner: string) => Promise<{ sha256: string; size: number }>, authorizeLegacy?: () => Promise<boolean>): Promise<'accepted' | 'duplicate' | 'full' | 'missing'> {
       const id = githubDeliveryId(input.deliveryId ?? undefined);
       const hash = id === null ? null : createHash('sha256').update(id).digest('hex');
       return serializeAdmission(db, () => db.transaction().execute(async trx => {
@@ -39,7 +41,7 @@ export function createRepeatDeliveryStore(db: DB, executorId: string) {
         if (!/^[a-f0-9]{64}$/.test(stored.sha256) || stored.size !== bytes.length) throw new Error('App update storage did not confirm its bytes.');
         await trx.insertInto('routines_v1_deliveries').values({ delivery_id: opaqueId('delivery'), agent_id: row.agentId, routine_id: row.routineId, owner_user_id: row.ownerUserId,
           accepted_at: input.now, expires_at: new Date(input.now.getTime()+LIMIT.retentionMs), github_id_hash: hash, configuration_hash: configurationHash(row), blob_ref: stored.sha256, byte_length: bytes.length, dispatch_id: null, invalidated_reason: null, completed_at: null }).execute();
-        if (input.address) await writeWebhookObservation(trx, raw, 'accepted', input.now);
+        if (input.address) await writeWebhookObservation(trx, raw, 'accepted', input.now, input.signature);
         return 'accepted';
       }));
     },

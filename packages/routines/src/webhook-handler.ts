@@ -1,12 +1,21 @@
 import { githubDeliveryId } from './repeat-limits.js';
 import type { RepeatDeliveryStore } from './repeat-deliveries.js';
 export { githubDeliveryId, repeatQueueFits } from './repeat-limits.js';
-import { verifyWebhookSignature } from './webhook-signature.js';
-import { makeAgentContext, type HookBus } from '@ax/core';
+import { verifyWebhookDelivery, type VerifiedSignature } from './webhook-signature.js';
+import { makeAgentContext, PluginError, type HookBus } from '@ax/core';
 import { type WebhookRefusalReason, validateWebhookPath } from '@ax/routines-contract';
-import { credentialRef } from './definition.js';
+import { credentialRef, hasLegacySignatureSetting } from './definition.js';
 import type { RoutinesStore } from './store.js';
 import type { WebhookAddressProof } from './webhook-address.js';
+
+/**
+ * The `credentials:get` failures a retry can fix, so a sender is asked to try again (503). The bus
+ * itself raises these: `timeout` (the vault was slow), `no-service` (no vault loaded) and `unknown`
+ * (a plain thrown error, such as a lost database connection). Every other code is about the saved
+ * secret itself (`decrypt-failed`, `invalid-envelope`, `unsupported-credential-kind`, ...) and refuses
+ * as `secret` (401) instead, so the owner is told to save it again.
+ */
+const TRANSIENT_SECRET_READ_CODES: ReadonlySet<string> = new Set(['timeout', 'unknown', 'no-service']);
 
 // HTTP is duck-typed here: no runtime dependency on another plugin.
 export interface HttpRequest {
@@ -48,7 +57,7 @@ export function createWebhookRouter(deps: WebhookRouterDeps): HttpRouteHandler {
     const generation = await deps.store.webhookGeneration(row);
     if (generation === null) { res.status(404).end(); return; }
     const address: WebhookAddressProof = { kind: taskRow ? 'task' : 'legacy', token, generation };
-    const observe = (observation: WebhookRefusalReason | 'verified') => deps.store.observeWebhook({ row, address, observation, now: deps.now() }, async () => (await resolveLegacy())?.agent.id === row.agentId);
+    const observe = (observation: WebhookRefusalReason | 'verified', signature: VerifiedSignature | null = null) => deps.store.observeWebhook({ row, address, observation, now: deps.now(), signature }, async () => (await resolveLegacy())?.agent.id === row.agentId);
     const refuse = async (status: number, reason: WebhookRefusalReason) => {
       try { if (!await observe(reason)) { res.status(404).end(); return; } } catch { res.status(503).end(); return; }
       res.status(status).end();
@@ -56,24 +65,43 @@ export function createWebhookRouter(deps: WebhookRouterDeps): HttpRouteHandler {
     if (req.body.byteLength > 1024 * 1024) { await refuse(413, 'too-large'); return; }
     const trigger = row.webhook;
     const ctx = makeAgentContext({ sessionId: 'routine-webhook', agentId: row.agentId, userId: row.ownerUserId });
-    // Step 2: HMAC verify (if configured)
-    if (trigger.hmac !== undefined) {
-      let secret: string;
-      try {
-        secret = await deps.bus.callJoined<{ ref: string; userId: string }, string>(
-          'credentials:get', ctx,
-          { ref: credentialRef(row), userId: row.ownerUserId },
-        );
-      } catch {
-        ctx.logger.warn('routines_webhook_secret_fetch_failed', { agentId: row.agentId, routineId: row.routineId });
-        await refuse(401, 'secret');
+    // Step 2: signature. Whether a signing secret is saved decides (TASK-1026).
+    // Settings saved before then keep checks on; their values are ignored.
+    // The generation was read above, before the secret: saving or removing a
+    // secret replaces it, so admission refuses a delivery that raced the change.
+    // Logs the task and, for a plugin error, its code: never the error's message, a header, the body or the secret.
+    const unreadable = (code?: string) => ctx.logger.warn('routines_webhook_secret_fetch_failed', {
+      agentId: row.agentId, routineId: row.routineId, ...(code === undefined ? {} : { code }),
+    });
+    let secret: string | null;
+    try {
+      secret = await deps.bus.callJoined<{ ref: string; userId: string }, string>(
+        'credentials:get', ctx,
+        { ref: credentialRef(row), userId: row.ownerUserId },
+      );
+    } catch (error) {
+      // Only the vault's own "none saved" answer means none. Any other failure
+      // refuses: it must never read as "accept unsigned". An outage is the host's
+      // fault, not the sender's, so a 503 the app retries, like a failed admission.
+      // A saved secret that can't be used (it won't decrypt, say) won't fix itself
+      // on a retry, so it refuses as `secret`, whose status asks the owner to save it again.
+      if (!(error instanceof PluginError && error.code === 'credential-not-found')) {
+        const code = error instanceof PluginError ? error.code : undefined;
+        unreadable(code);
+        if (code !== undefined && TRANSIENT_SECRET_READ_CODES.has(code)) await refuse(503, 'unavailable');
+        else await refuse(401, 'secret');
         return;
       }
-
-      if (!verifyWebhookSignature(trigger.hmac, req.headers, req.body, secret, deps.now())) {
-        await refuse(401, 'signature');
-        return;
-      }
+      secret = null;
+    }
+    // Never verify with an empty key: anyone could sign with it.
+    if (secret !== null && (typeof secret !== 'string' || secret.length === 0)) { unreadable(); await refuse(401, 'secret'); return; }
+    let signature: VerifiedSignature | null = null;
+    if (secret === null) {
+      if (hasLegacySignatureSetting(row)) { await refuse(401, 'secret'); return; }
+    } else {
+      signature = verifyWebhookDelivery(req.headers, req.body, secret, deps.now());
+      if (signature === null) { await refuse(401, 'signature'); return; }
     }
 
     // Step 3: body parse by Content-Type
@@ -93,14 +121,16 @@ export function createWebhookRouter(deps: WebhookRouterDeps): HttpRouteHandler {
       return;
     }
 
-    // Slack verifies the connection before sending events. This is authenticated
-    // setup traffic, not a job; never enqueue its challenge or expose it to a model.
-    if (trigger.hmac && 'app' in trigger.hmac && trigger.hmac.app === 'slack'
-      && payload !== null && typeof payload === 'object' && 'type' in payload && payload.type === 'url_verification') {
+    // Slack verifies the connection before sending events. This is setup
+    // traffic, not a job; never enqueue its challenge or expose it to a model.
+    // Slack sends it as soon as the address is pasted, often before the secret
+    // is saved, so answer it only when this delivery verified as Slack.
+    if (payload !== null && typeof payload === 'object' && 'type' in payload && payload.type === 'url_verification') {
+      if (signature?.app !== 'slack') { await refuse(401, secret === null ? 'secret' : 'signature'); return; }
       if (!('challenge' in payload) || typeof payload.challenge !== 'string' || payload.challenge.length === 0 || payload.challenge.length > 4096) {
         await refuse(400, 'invalid-body'); return;
       }
-      try { if (!await observe('verified')) { res.status(404).end(); return; } } catch { res.status(503).end(); return; }
+      try { if (!await observe('verified', signature)) { res.status(404).end(); return; } } catch { res.status(503).end(); return; }
       res.status(200).json({ challenge: payload.challenge }); return;
     }
 
@@ -121,7 +151,7 @@ export function createWebhookRouter(deps: WebhookRouterDeps): HttpRouteHandler {
     let admitted: 'accepted' | 'duplicate' | 'full' | 'missing';
     try {
       const admit = row.kind === 'repeat' ? deps.deliveries.admit.bind(deps.deliveries) : deps.store.admitTaskEvent.bind(deps.store);
-      admitted = await admit({row,payload,deliveryId,now:deps.now(),address},async(bytes,owner)=>
+      admitted = await admit({row,payload,deliveryId,now:deps.now(),address,signature},async(bytes,owner)=>
         deps.bus.callJoined('blob:put',makeAgentContext({sessionId:'repeat-delivery-admission',agentId:row.agentId,userId:owner}),{bytes}),
       async () => (await resolveLegacy())?.agent.id === row.agentId);
     } catch (error) {
