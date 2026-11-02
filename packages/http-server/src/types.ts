@@ -112,8 +112,8 @@ export interface HttpResponse {
    *
    * A client that stops reading is cut off. An idle window (the plugin's
    * `bodyStreamIdleTimeoutMs`, 60 s by default) runs only while this waits
-   * on the client: for room after a write, and for the final flush after
-   * `end()`. Each wait gets a fresh window, and time spent waiting on the
+   * on the client: for room after a write, for the final chunk's own write
+   * to complete, and for `end()` to finish. Each wait gets a fresh window, and time spent waiting on the
    * source never counts. Progress is counted one write at a time, so at the
    * default a client must take each chunk (1 MiB for a /files download)
    * within 60 s, which works out to about 17 KiB/s.
@@ -293,8 +293,10 @@ export interface HttpResponseSentEvent {
    *
    * False for `stream()` (it promises no length) and for the single-shot
    * terminators (Node is handed the whole body at once, and nothing tracks
-   * it after that). False means every byte reached the OS, not that the
-   * client read them all: see the end of `HttpResponse.bodyStream`.
+   * it after that). For `bodyStream()`, false means every byte reached the
+   * OS, not that the client read them all (see the end of
+   * `HttpResponse.bodyStream`). For the others it means only that nothing
+   * was cut off here.
    */
   incomplete: boolean;
 }

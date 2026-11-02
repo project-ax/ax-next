@@ -349,9 +349,9 @@ describe('res.bodyStream()', () => {
   }, 30_000);
 
   it('resolves only after the final chunk is flushed, not when it is queued', async () => {
-    // One chunk, so it is the held final one and goes out with end(). With
-    // the client paused, 32 MiB cannot all fit in the socket buffers, so
-    // 'finish' (and with it, success) has to wait for the client.
+    // One chunk, so it is the held final one, written on its own with a
+    // callback. With the client paused, 32 MiB cannot all fit in the socket
+    // buffers, so that write (and with it, success) has to wait for the client.
     const body = randomBytes(32 * MiB);
     const { source } = probedSource([body]);
     const { outcome } = await serveBody('/final-flush', source, body.length);
@@ -764,9 +764,9 @@ describe('res.bodyStream()', () => {
     }, 30_000);
 
     it('a stall while the final chunk flushes is cut too', async () => {
-      // One chunk, so it is the held final one and goes out with end(). 32 MiB
+      // One chunk, so it is the held final one, written on its own. 32 MiB
       // cannot all fit in the socket buffers, so with the client paused the
-      // pump waits on 'finish', never on 'drain'.
+      // pump waits on that write's callback, never on 'drain'.
       const body = randomBytes(32 * MiB);
       const { source } = probedSource([body]);
       const { outcome } = await serveBody('/stalled-final', source, body.length);
@@ -853,6 +853,51 @@ describe('res.bodyStream()', () => {
         oneSocket.destroy();
       }
     }, 30_000);
+
+    it('a socket gone before the final write is client-gone at once, not a stall', async () => {
+      // Node 24: with the socket destroyed but `res.destroyed` still false,
+      // `res.write(chunk, cb)` never calls `cb` and `end()` never fires
+      // 'finish'. Only the 'close' listener settles that wait, so without it
+      // this would sit out the whole window and say client-stalled.
+      const realWrite = http.ServerResponse.prototype.write;
+      const spy = vi
+        .spyOn(http.ServerResponse.prototype, 'write')
+        .mockImplementation(function (this: http.ServerResponse, ...args: unknown[]) {
+          if (typeof args[args.length - 1] === 'function') this.socket?.destroy();
+          return (realWrite as (...a: unknown[]) => boolean).apply(this, args);
+        });
+      try {
+        const { source } = probedSource([randomBytes(1024)]);
+        const { outcome } = await serveBody('/gone-before-final', source, 1024);
+        void rawGet('/gone-before-final');
+        expect(await outcome).toMatchObject({ code: 'client-gone' });
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    it("a synchronous throw from the final write rejects with Node's error, reported incomplete", async () => {
+      // Defensive: no input reaches this on Node 24, so a spy forces it. The
+      // wait must settle (no idle timer left armed) and the teardown run.
+      const events = responsesSent();
+      const boom = Object.assign(new Error('write refused'), { code: 'ERR_TEST_WRITE' });
+      const spy = vi
+        .spyOn(http.ServerResponse.prototype, 'write')
+        .mockImplementation(function (this: http.ServerResponse, ...args: unknown[]) {
+          if (typeof args[args.length - 1] === 'function') throw boom;
+          return true;
+        });
+      try {
+        const { source } = probedSource([randomBytes(1024)]);
+        const { outcome } = await serveBody('/final-write-throws', source, 1024);
+        void rawGet('/final-write-throws');
+        expect(await outcome).toBe(boom);
+        await vi.waitFor(() => expect(events).toHaveLength(1));
+        expect(events[0]).toMatchObject({ status: 200, incomplete: true });
+      } finally {
+        spy.mockRestore();
+      }
+    });
 
     // 2 ** 31 is a positive safe integer, but setTimeout() would run it after 1 ms.
     it.each([0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, 2 ** 31])(
