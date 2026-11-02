@@ -20,6 +20,9 @@ export const RoutineWebhookAddressOutputSchema = z.object({ token: z.string().re
 /** Private connection evidence; acceptance is distinct from execution. No request content. */
 export const WebhookRefusalReasonSchema = z.enum(['signature', 'secret', 'invalid-body', 'unsupported-content', 'event-filter', 'delivery-id', 'capacity', 'unavailable', 'paused', 'too-large']);
 export type WebhookRefusalReason = z.infer<typeof WebhookRefusalReasonSchema>;
+/** The signing format the host detected on a delivery (TASK-1026). An app name only, never header content. */
+export const WebhookDetectedAppSchema = z.enum(['stripe', 'slack', 'zendesk', 'github', 'linear', 'other']);
+export type WebhookDetectedApp = z.infer<typeof WebhookDetectedAppSchema>;
 export const RoutineWebhookStatusOutputSchema = z.object({
   agentId: RoutineOpaqueStringSchema, routineId: RoutineOpaqueStringSchema,
   setupReady: z.boolean(), app: z.enum(['stripe', 'slack', 'zendesk', 'other']),
