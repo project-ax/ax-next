@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { RoutineWebhookStatusOutputSchema, type RoutineWebhookStatus, type WebhookRefusalReason } from '@ax/routines-contract';
+import { RoutineWebhookStatusOutputSchema, type RoutineWebhookStatus, type WebhookDetectedApp, type WebhookRefusalReason } from '@ax/routines-contract';
 import { routineApi } from '@/lib/routines';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
@@ -13,7 +13,8 @@ const reasons: Record<WebhookRefusalReason, string> = {
   unavailable: 'the task couldn’t accept updates. Check its settings and try again',
   paused: 'the task was paused or done', 'too-large': 'the update was larger than 1 MB',
 };
-const apps = { stripe: 'Stripe', slack: 'Slack', zendesk: 'Zendesk', other: 'App' };
+/** The app the host detected from a delivery's signature (TASK-1026). */
+const apps: Record<WebhookDetectedApp, string> = { stripe: 'Stripe', slack: 'Slack', zendesk: 'Zendesk', github: 'GitHub', linear: 'Linear', other: 'Signed app' };
 const time = (value: string) => new Date(value).toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' });
 /** Remount this read when private setup changes. Failed refreshes clear earlier connection claims. */
 export function TaskAppConnection({ agentId, routineId }: { agentId: string; routineId: string }) {
@@ -34,7 +35,7 @@ export function TaskAppConnection({ agentId, routineId }: { agentId: string; rou
     <p className="text-sm">Send a test from the other app’s webhook settings, then check the connection here. An accepted test follows the task’s usual update rules and may start paid work.</p>
     {failed ? <Alert variant="destructive"><AlertDescription>We couldn’t check the connection. Try again to reload its current status.</AlertDescription></Alert>
       : status ? <div className="flex flex-col gap-2" role="status">
-        <p className="text-sm">{status.lastAcceptedAt ? <>{apps[status.app]} connected · last accepted update {time(status.lastAcceptedAt)} · {status.signatureChecked ? 'signature checked' : 'signature not checked'}</>
+        <p className="text-sm">{status.lastAcceptedAt ? <>{status.app === null ? 'App' : apps[status.app]} connected · last accepted update {time(status.lastAcceptedAt)} · {status.signatureChecked ? 'signature checked' : 'signature not checked'}</>
           : status.verifiedAt ? <>App address verified {time(status.verifiedAt)} · Waiting for the first update</>
             : status.setupReady ? 'Waiting for the first update' : 'Waiting for setup'}</p>
         {status.lastAcceptedAt && <p className="text-sm text-muted-foreground">Accepted means safely received. Check Updates for the check-in’s result.</p>}

@@ -85,11 +85,17 @@ describe('single registered request-time DB webhook route', () => {
     expect(h.invokeCalls).toHaveLength(2);
     expect(h.routes.filter(r => r.path.startsWith('/webhooks/'))).toHaveLength(1);
   });
-  it.each([{ algorithm: 'sha256', prefix: 'sha256=' }, { algorithm: 'sha1', prefix: 'sha1=' }, { algorithm: 'sha256', prefix: undefined }] as const)('checks raw $algorithm HMAC with prefix $prefix before accepting', async ({ algorithm, prefix }) => {
+  it.each([{ algorithm: 'sha256', prefix: 'sha256=' }, { algorithm: 'sha1', prefix: 'sha1=' }, { algorithm: 'sha256', prefix: undefined }] as const)('checks a raw SHA-256 HMAC before accepting, on a task saved with $algorithm and prefix $prefix', async ({ algorithm, prefix }) => {
     const { token } = await setup({ header: 'X-Signature', algorithm, ...(prefix === undefined ? {} : { prefix }) });
     const body = '{"title": "signed"}';
-    const signature = createHmac(algorithm, 'test-secret').update(body).digest('hex');
-    expect(await request(token, { body, headers: { 'x-signature': `${prefix ?? ''}${signature}` } })).toBe(202);
+    const signature = createHmac('sha256', 'test-secret').update(body).digest('hex');
+    if (algorithm === 'sha1') {
+      // TASK-1026 checks SHA-256 only, even on a task saved with SHA-1 (D9a).
+      const sha1 = createHmac('sha1', 'test-secret').update(body).digest('hex');
+      expect(await request(token, { body, headers: { 'x-signature': `${prefix}${sha1}` } })).toBe(401);
+      expect(await request(token, { body, headers: { 'x-signature': sha1 } })).toBe(401);
+    }
+    expect(await request(token, { body, headers: { 'x-signature': `${algorithm === 'sha256' ? prefix ?? '' : ''}${signature}` } })).toBe(202);
     expect(await request(token, { body: body + ' ', headers: { 'x-signature': signature } })).toBe(401);
     expect(await request(token)).toBe(401);
     expect(h.invokeCalls).toHaveLength(1);

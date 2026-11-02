@@ -1,7 +1,7 @@
 import { sql } from 'kysely';
 import { runRoutinesMigration } from '../migrations.js';
 import { afterEach, describe, expect, it } from 'vitest';
-import { createHmac } from 'node:crypto';
+import { createHash, createHmac } from 'node:crypto';
 import { RoutineDefinitionSchema, RoutineWebhookStatusOutputSchema, type RoutineView, type RoutineWebhookStatus } from '@ax/routines-contract';
 import { createTestHarness } from '@ax/test-harness';
 import { createHttpServerPlugin } from '@ax/http-server';
@@ -10,6 +10,7 @@ import { registerRoutinesAdminRoutes } from '../../../routines-admin-routes/src/
 import { createRoutineHarness, type RoutineHarness } from './support/routine-harness.js';
 import { captureExpectedStderr } from './support/expected-diagnostics.js';
 import { systemClock } from '../clock.js';
+import type { VerifiedSignature } from '../webhook-signature.js';
 let h: RoutineHarness;
 let now = new Date('2031-01-01T12:00:20Z');
 afterEach(async () => { await h?.close(); });
@@ -54,15 +55,17 @@ describe('private durable webhook connection evidence', () => {
         const endpoint = `${base}/settings/routines/${row.agentId}/${row.routineId}/receiver/status`;
         const response = await fetch(endpoint);
         expect(response.status).toBe(200); expect(response.headers.get('cache-control')).toBe('no-store');
-        expect(RoutineWebhookStatusOutputSchema.parse(await response.json())).toMatchObject({ lastAcceptedAt: now.toISOString(), signatureChecked: true, app, refusals: [{ reason: 'signature', count: 1 }] });
+        expect(RoutineWebhookStatusOutputSchema.parse(await response.json())).toMatchObject({ lastAcceptedAt: now.toISOString(), signatureChecked: true, timestampChecked: true, app, refusals: [{ reason: 'signature', count: 1 }] });
       });
       const health = await h.db.selectFrom('routines_v1_definitions').select('webhook_health').where('routine_id', '=', row.routineId).executeTakeFirstOrThrow();
       expect(JSON.stringify(health)).not.toMatch(/DO-NOT|test-secret|signature.*v0=|rt_/);
+      // The detected app and a boolean, never a header name or value.
+      expect((health.webhook_health as { signature: unknown }).signature).toStrictEqual({ app, timestamp: true });
     }
     h = await h.restart();
     const rows = await createRoutinesStore(h.db).list({ agentId: h.agentId });
     for (const row of rows.filter(row => row.webhook !== null)) {
-      expect(await h.bus.call('routines:webhook-status', h.owner, { agentId: row.agentId, routineId: row.routineId })).toMatchObject({ lastAcceptedAt: now.toISOString(), signatureChecked: true, refusals: [{ reason: 'signature', count: 1 }] });
+      expect(await h.bus.call('routines:webhook-status', h.owner, { agentId: row.agentId, routineId: row.routineId })).toMatchObject({ lastAcceptedAt: now.toISOString(), signatureChecked: true, timestampChecked: true, app: row.webhook!.path.slice(1), refusals: [{ reason: 'signature', count: 1 }] });
     }
   }, 120000);
   it('upgrades existing schema19 tasks without changing addresses, schedules or retained inbox entries', async () => {
@@ -88,9 +91,24 @@ describe('private durable webhook connection evidence', () => {
       expect((await send({})).status).toBe(401);
       expect((await status(row)).verifiedAt).toBeNull();
       const ok = await send(signed('slack', body)); expect(ok.status).toBe(200); expect(await ok.json()).toEqual({ challenge: 'fixture-challenge' });
-      expect(await status(row)).toMatchObject({ verifiedAt: now.toISOString(), lastAcceptedAt: null, signatureChecked: false });
+      expect(await status(row)).toMatchObject({ app: 'slack', verifiedAt: now.toISOString(), lastAcceptedAt: null, signatureChecked: false });
       expect(await h.db.selectFrom('routines_v1_task_events').selectAll().execute()).toEqual([]);
     });
+  }, 120000);
+  it('records the detected app and whether its timestamp was checked, and reads evidence saved before TASK-1026', async () => {
+    now = new Date('2031-01-01T12:00:20Z'); h = await createRoutineHarness({ clock, authenticatedUserId: 'owner' });
+    const row = await create(), receiver = await address(row), store = createRoutinesStore(h.db), stored = (await store.findOne(row))!;
+    const proof = { kind: 'task' as const, token: receiver.token, generation: (await store.webhookGeneration(stored))! };
+    const persist = async (bytes: Uint8Array) => ({ sha256: createHash('sha256').update(bytes).digest('hex'), size: bytes.length });
+    const admit = (n: number, signature: VerifiedSignature | null) => store.admitTaskEvent({ row: stored, address: proof, payload: { n }, deliveryId: null, now, signature }, persist);
+    expect(await admit(1, { app: 'linear', timestamp: false })).toBe('accepted');
+    expect(await status(row)).toMatchObject({ lastAcceptedAt: now.toISOString(), app: 'linear', signatureChecked: true, timestampChecked: false });
+    expect(await admit(2, null)).toBe('accepted');
+    expect(await status(row)).toMatchObject({ lastAcceptedAt: now.toISOString(), app: null, signatureChecked: false, timestampChecked: false });
+    // Evidence written before TASK-1026 has no signature field and still reads truthfully.
+    const before = { lastAcceptedAt: now.toISOString(), signatureChecked: true, verifiedAt: null, buckets: [] };
+    await sql`UPDATE routines_v1_definitions SET webhook_health = ${JSON.stringify(before)}::jsonb WHERE routine_id = ${row.routineId}`.execute(h.db);
+    expect(await status(row)).toMatchObject({ lastAcceptedAt: now.toISOString(), signatureChecked: true, app: null, timestampChecked: false });
   }, 120000);
   it('serializes refusal increments, bounds 60-minute retention, and never marks failures connected', async () => {
     now = new Date('2031-01-01T12:00:20Z'); h = await createRoutineHarness({ clock, authenticatedUserId: 'owner' });
@@ -124,7 +142,7 @@ describe('private durable webhook connection evidence', () => {
     await h.bus.call('routines:set-webhook-secret', h.teamMember, { agentId: row.agentId, routineId: row.routineId, expectedRevision: row.revision, operation: 'set', secret: Buffer.from('new-secret') });
     await store.observeWebhook({ row: stored, address: proof, observation: 'accepted', now }, async () => true);
     expect((await status(row, h.teamMember)).lastAcceptedAt).toBeNull();
-    expect(await store.admitTaskEvent({ row: stored, address: proof, payload: {}, deliveryId: null, now }, async () => { throw new Error('Must not persist'); })).toBe('missing');
+    expect(await store.admitTaskEvent({ row: stored, address: proof, payload: {}, deliveryId: null, now, signature: null }, async () => { throw new Error('Must not persist'); })).toBe('missing');
     await h.bus.call('routines:replace-webhook-address', h.teamMember, { agentId: row.agentId, routineId: row.routineId, expectedVersion: receiver.version });
     await store.observeWebhook({ row: stored, address: proof, observation: 'signature', now }, async () => true);
     expect((await status(row, h.teamMember)).refusals).toEqual([]);

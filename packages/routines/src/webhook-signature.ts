@@ -1,5 +1,5 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
-import type { WebhookDetectedApp, WebhookTrigger } from '@ax/routines-contract';
+import type { WebhookDetectedApp } from '@ax/routines-contract';
 
 // Slack and Stripe recommend five minutes. Apply the same bounded replay window
 // to Zendesk's authenticated timestamp, in both clock directions.
@@ -7,7 +7,6 @@ const TOLERANCE_MS = 5 * 60 * 1000;
 const MAX_SIGNATURE_HEADER = 8192;
 /** The body-only check visits at most this many own header entries, skipped ones included. */
 export const MAX_SCANNED_HEADERS = 100;
-type Signature = NonNullable<WebhookTrigger['hmac']>;
 type TimestampedApp = 'stripe' | 'slack' | 'zendesk';
 
 /** How a delivery verified: the app detected, and whether its signed timestamp was checked too. */
@@ -55,18 +54,6 @@ function fresh(at: number, now: Date): boolean {
 }
 function unixTimestamp(value: string | undefined, now: Date): value is string {
   return value !== undefined && /^\d{1,12}$/.test(value) && fresh(Number(value) * 1000, now);
-}
-
-/** Verify before parsing the body. Headers are lowercased by the HTTP adapter. */
-export function verifyWebhookSignature(config: Signature, headers: Record<string, string>, body: Buffer, secret: string, now: Date): boolean {
-  if (!('app' in config)) {
-    const header = headerValue(headers, config.header.toLowerCase());
-    if (!header || header.length > MAX_SIGNATURE_HEADER) return false;
-    const bare = config.prefix !== undefined && header.startsWith(config.prefix) ? header.slice(config.prefix.length) : header;
-    // Preserve the existing custom/GitHub protocol, including case and prefix handling.
-    return same(bare.toLowerCase(), createHmac(config.algorithm, secret).update(body).digest('hex'));
-  }
-  return verifyTimestamped(config.app, headers, body, secret, now);
 }
 
 /** The app's full TASK-981 protocol, including its five-minute window. */

@@ -11,7 +11,7 @@ import { activeHoursWriteIssue,
 } from '@ax/routines-contract';
 import type { RoutinesDatabase, RoutinesDefinitionsRow, DefaultRoutinesRow, RoutinesFiresRow } from './migrations.js';
 import type { StoredRoutine, StoredDone, StoredNoRecentUpdate, StoredReading, StoredStep, StoredTaskState, AcceptedDispatch, AddReplyResult, DispatchMiss, DispatchOutcome, DispatchReport, DuplicateResult, FireReport, FireRow, FireSource, FireStatus, CompleteTaskResult, OpenCheckInLookup, RecordedSteps, RecordReportInput, ReopenTaskResult, ReportRefusal, SetStepsResult, StoredReply } from './types.js';
-import { createRequestHashes, updateRequestHashes, deleteRequestHash, completeRequestHash, dispatchRequestHash, credentialRef, editableDefinition, hasHmac, inputHash, nextRun, opaqueId, parseStoredRoutine, schedulingChanged, validateDefinition, validateScheduleWrite, validationError } from './definition.js';
+import { createRequestHashes, updateRequestHashes, deleteRequestHash, completeRequestHash, dispatchRequestHash, credentialRef, editableDefinition, inputHash, nextRun, opaqueId, parseStoredRoutine, schedulingChanged, validateDefinition, validateScheduleWrite, validationError } from './definition.js';
 import { AcceptedDispatchSchema, DispatchOutcomeSchema, DispatchReportSchema } from './dispatch.js';
 import { changeStoredSteps, storedSteps, StepsReceiptSchema } from './steps.js';
 import { copiedSteps, duplicateName } from './duplicate.js';
@@ -962,8 +962,9 @@ async function assertNoCleanup(db: DB, key: RoutineKey): Promise<void> {
   const job = await db.selectFrom('routines_v1_credential_cleanup').select('credential_ref').where('agent_id', '=', key.agentId).where('credential_ref', '=', credentialRef(key)).forUpdate().executeTakeFirst();
   if (job) throw new SafeToolError('cleanup-pending', 'webhook.hmac');
 }
+/** TASK-1026: a signing secret belongs to a task's app updates, so any row that has them may hold one. */
 async function queueCleanup(db: DB, row: StoredRoutine): Promise<void> {
-  if (!hasHmac(row)) return;
+  if (row.webhook === null) return;
   await db.insertInto('routines_v1_credential_cleanup').values({
     agent_id: row.agentId, routine_id: row.routineId,
     credential_ref: credentialRef(row), owner_user_id: row.ownerUserId
@@ -1006,9 +1007,19 @@ export function createRoutinesStore(db: DB, executorId?: string): RoutinesStore 
         if (current.definitionId !== null) throw new SafeToolError('forbidden', 'routineId');
         let next: RoutineDefinition;
         try { next = applyRoutinePatch(editableDefinition(current), input.patch); } catch (error) { throw validationError(error); }
+        // TASK-1026 D4. A signature setting saved earlier keeps checks on, and nothing authors one now, so a
+        // replacement webhook that leaves it out (an agent, an old client) keeps it. Only removing app updates
+        // or deleting the task clears it. Parsed again for the schema's key order, since the evidence below
+        // resets when JSON.stringify differs, and for the definition's own limits on what's stored.
+        const legacy = current.webhook?.hmac;
+        if (legacy !== undefined && next.webhook !== null && next.webhook.hmac === undefined)
+          next = validateDefinition({ ...next, webhook: { ...next.webhook, hmac: legacy } });
         validateScheduleWrite(next, current, input.patch);
-        if (hasHmac(next)) await assertNoCleanup(trx, current);
-        if (hasHmac(current) && !hasHmac(next)) await queueCleanup(trx, current);
+        // TASK-1026 D5. The signing secret follows the app updates. Adding them waits out an old secret's
+        // cleanup, so it can't delete one saved for them; removing them queues it. No other edit checks, so
+        // a pending cleanup never blocks an emergency stop.
+        if (current.webhook === null && next.webhook !== null) await assertNoCleanup(trx, current);
+        if (current.webhook !== null && next.webhook === null) await queueCleanup(trx, current);
         if (repeatConfigurationHash(current) !== repeatConfigurationHash(next)) {
           await trx.updateTable('routines_v1_deliveries').set({ invalidated_reason: 'job-changed' }).where('agent_id', '=', input.agentId).where('routine_id', '=', input.routineId).where('dispatch_id', 'is', null).where('completed_at', 'is', null).execute();
         }
@@ -1564,7 +1575,8 @@ export function createRoutinesStore(db: DB, executorId?: string): RoutinesStore 
       const result = await db.transaction().execute(async trx => {
         const row = await lockRoutine(trx, input);
         await assertNoCleanup(trx, row);
-        if (!hasHmac(row)) throw new SafeToolError('validation', 'webhook.hmac');
+        // TASK-1026: any task with app updates may hold a signing secret, and only those.
+        if (row.webhook === null) throw new SafeToolError('validation', 'webhook');
         let outcome: { saved: true } | { failed: unknown };
         try { await effect(); outcome = { saved: true }; }
         catch (error) { outcome = { failed: error }; }

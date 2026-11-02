@@ -11,6 +11,7 @@ import { serializeAdmission } from './admission-order.js';
 import { githubDeliveryId } from './repeat-limits.js';
 import { advanceToNextActiveWindow } from './active-hours.js';
 import { webhookAddressMatches, type WebhookAddressProof } from './webhook-address.js';
+import type { VerifiedSignature } from './webhook-signature.js';
 type DB = Kysely<RoutinesDatabase>;
 export const TASK_EVENT_LIMITS = Object.freeze({ batch:20, previewBytes:4096, payloadBytes:1024*1024, pendingPerRoutine:256, pendingPerOwner:512, bytesPerOwner:16*1024*1024, idsPerRoutine:4096, idsPerOwner:16384, retentionMs:7*86400_000 });
 export type TaskEvent = {eventId:string;receivedAt:Date;blobRef:string;byteLength:number;mayBeOwnChange:boolean};
@@ -78,7 +79,8 @@ export function createTaskEventStore(db:DB) {
         return 'queued';
       });
     },
-    async admitTaskEvent(input:{row:StoredRoutine;payload:unknown;deliveryId:string|null;now:Date;address?:WebhookAddressProof},persist:(bytes:Uint8Array,owner:string)=>Promise<{sha256:string;size:number}>,authorizeLegacy?:()=>Promise<boolean>):Promise<'accepted'|'duplicate'|'full'|'missing'> {
+    /** `signature` is how the receiver verified this update, or null when it wasn't checked; kept as connection evidence (TASK-1026). */
+    async admitTaskEvent(input:{row:StoredRoutine;payload:unknown;deliveryId:string|null;now:Date;address?:WebhookAddressProof;signature:VerifiedSignature|null},persist:(bytes:Uint8Array,owner:string)=>Promise<{sha256:string;size:number}>,authorizeLegacy?:()=>Promise<boolean>):Promise<'accepted'|'duplicate'|'full'|'missing'> {
       const id=githubDeliveryId(input.deliveryId ?? undefined);
       const hash=id===null ? null : createHash('sha256').update(id).digest('hex');
       const bytes=Buffer.from(JSON.stringify(input.payload));
@@ -100,7 +102,7 @@ export function createTaskEventStore(db:DB) {
         const active=await trx.selectFrom('routines_v1_dispatches').select('dispatch_id').where('agent_id','=',raw.agent_id).where('routine_id','=',raw.routine_id).where('completed_at','is',null).limit(1).executeTakeFirst();
         await trx.insertInto('routines_v1_task_events').values({event_id:opaqueId('update'),agent_id:raw.agent_id,routine_id:raw.routine_id,owner_user_id:raw.owner_user_id,received_at:input.now,expires_at:new Date(input.now.getTime()+TASK_EVENT_LIMITS.retentionMs),delivery_id_hash:hash,blob_ref:stored.sha256,byte_length:bytes.length,dispatch_id:null,consumed_at:null,may_be_own_change:active!==undefined}).execute();
         await nudgeTaskEvents(trx,rowToRoutine(raw),input.now);
-        if (input.address) await writeWebhookObservation(trx, raw, 'accepted', input.now);
+        if (input.address) await writeWebhookObservation(trx, raw, 'accepted', input.now, input.signature);
         return 'accepted';
       }));
     },

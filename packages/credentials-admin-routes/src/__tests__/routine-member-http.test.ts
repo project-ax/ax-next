@@ -22,6 +22,8 @@ const keyContext = makeAgentContext({ userId: 'member', agentId: 'agent', sessio
 let h: { bus: HookBus; close(): Promise<void> };
 let origin: string;
 let previousKey: string | undefined;
+// The stub store reads it at call time, so a test can replace it before its first request.
+let row: StoredRoutine;
 
 beforeEach(async () => {
   previousKey = process.env.AX_CREDENTIALS_KEY;
@@ -40,7 +42,7 @@ beforeEach(async () => {
         return { agent: { id: 'agent', ownerType: 'team', ownerId: 'team' } };
       });
   bus.registerService('agents:can-manage-routines', 'test', async ctx => ({ allowed: true, stopOthers: ctx.userId === 'admin' }));
-  const row: StoredRoutine = {
+  row = {
     ...RoutineDefinitionSchema.parse({ name: 'Member webhook', promptBody: 'Review the update.', trigger: { kind: 'webhook', path: '/member', hmac: { header: 'sig', algorithm: 'sha256' } } }),
     agentId: 'agent', routineId: 'task', revision: 'revision', ownerUserId: 'member', definitionId: null, definitionUpdatedAt: null,
     nextRunAt: null, lastRunAt: null, lastStatus: null, lastError: null, lastWarning: null, task: null, noRecentUpdate: null, steps: [], finishBy: null, finishByTimeZone: null, done: null,
@@ -96,6 +98,21 @@ describe('authenticated own routine signing secrets through actual HTTP admissio
     const response = await request(ownStatus);
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ configured: false });
+  });
+  // TASK-1026: the secret follows the task's app updates, not a signature setting.
+  it('reports a member’s own secret status for a task without signature settings', async () => {
+    row = { ...row, webhook: { kind: 'webhook', path: '/member' } };
+    const unset = await request(ownStatus);
+    expect(unset.status).toBe(200);
+    expect(await unset.json()).toEqual({ configured: false });
+    await seed();
+    const saved = await request(ownStatus);
+    expect(saved.status).toBe(200);
+    expect(await saved.json()).toEqual({ configured: true });
+    row = { ...row, webhook: null, schedule: { kind: 'interval', every: '1h' } };
+    const scheduled = await request(ownStatus);
+    expect(scheduled.status).toBe(404);
+    expect(await scheduled.json()).not.toHaveProperty('configured');
   });
   it('returns only the owner’s configured flag and keeps the global list restricted', async () => {
     await seed();

@@ -9,7 +9,7 @@ const row: Routine = { ...routineFixture, kind: 'stay-on-top', goodWhen: 'All ha
 beforeEach(() => {
   vi.resetAllMocks();
   vi.mocked(routineApi.get).mockResolvedValue(row);
-  vi.mocked(routineApi.getWebhookStatus).mockResolvedValue({ agentId: 'a', routineId: 'opaque-r1', app: 'slack', setupReady: true, lastAcceptedAt: null, signatureChecked: false, verifiedAt: null, windowStart: '2031-01-01T11:01:00.000Z', refusals: [] });
+  vi.mocked(routineApi.getWebhookStatus).mockResolvedValue({ agentId: 'a', routineId: 'opaque-r1', app: 'slack', setupReady: true, lastAcceptedAt: null, signatureChecked: false, timestampChecked: false, verifiedAt: null, windowStart: '2031-01-01T11:01:00.000Z', refusals: [] });
   vi.mocked(routineApi.getTaskReceiver).mockResolvedValue({ url: '/webhooks/private-task-token', version: 'a'.repeat(64), legacyActive: false });
 });
 function show() { const onEdit = vi.fn(); return { ...render(<TaskAppUpdates agentId="a" routineId="opaque-r1" onEdit={onEdit} />), onEdit }; }

@@ -6,7 +6,7 @@ import { TaskAppConnection } from '../TaskAppConnection';
 import { routineApi } from '@/lib/routines';
 import { routineFixture } from '@/components/routines/__tests__/routine-fixture';
 vi.mock('@/lib/routines', async original => ({ ...(await original<typeof import('@/lib/routines')>()), routineApi: { get: vi.fn(), getWebhookStatus: vi.fn(), getTaskReceiver: vi.fn() } }));
-const waiting: RoutineWebhookStatus = { agentId: 'a', routineId: 'opaque-r1', app: 'zendesk', setupReady: true, lastAcceptedAt: null, signatureChecked: false, verifiedAt: null, windowStart: '2031-01-01T11:01:00.000Z', refusals: [] };
+const waiting: RoutineWebhookStatus = { agentId: 'a', routineId: 'opaque-r1', app: 'zendesk', setupReady: true, lastAcceptedAt: null, signatureChecked: false, timestampChecked: false, verifiedAt: null, windowStart: '2031-01-01T11:01:00.000Z', refusals: [] };
 beforeEach(() => { vi.resetAllMocks(); vi.mocked(routineApi.getWebhookStatus).mockResolvedValue(waiting); });
 const show = () => render(<TaskAppConnection agentId="a" routineId="opaque-r1" />);
 describe('app connection truth and recovery', () => {
@@ -18,6 +18,14 @@ describe('app connection truth and recovery', () => {
     expect(await screen.findByRole('status')).toHaveTextContent('Zendesk connected');
     expect(screen.getByRole('status')).toHaveTextContent('signature checked');
     expect(screen.getByRole('status')).toHaveTextContent('Check Updates for the check-in’s result');
+  });
+  it('names the detected app', async () => {
+    vi.mocked(routineApi.getWebhookStatus).mockResolvedValue({ ...waiting, app: 'linear', lastAcceptedAt: '2031-01-01T12:00:00.000Z', signatureChecked: true });
+    show(); expect(await screen.findByRole('status')).toHaveTextContent('Linear connected');
+    vi.mocked(routineApi.getWebhookStatus).mockResolvedValue({ ...waiting, app: null, lastAcceptedAt: '2031-01-01T12:00:00.000Z' });
+    fireEvent.click(screen.getByRole('button', { name: 'Check connection' }));
+    expect(await screen.findByRole('status')).toHaveTextContent('App connected');
+    expect(screen.getByRole('status')).toHaveTextContent('signature not checked');
   });
   it('does not call a verified Slack address a connected stream of updates', async () => {
     vi.mocked(routineApi.getWebhookStatus).mockResolvedValue({ ...waiting, app: 'slack', verifiedAt: '2031-01-01T12:00:00.000Z' });
