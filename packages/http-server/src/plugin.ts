@@ -46,12 +46,20 @@ const HTTP_METHODS: ReadonlySet<HttpMethod> = new Set([
 ]);
 
 // Slowloris / connection-exhaustion mitigations. This listener faces public
-// traffic (admin UI, OIDC callback, future channel webhooks); pinning these
-// at module scope keeps a misbehaving client from holding a socket open
-// indefinitely.
+// traffic (admin UI, OIDC callback, future channel webhooks). These three
+// bound receiving a request: its headers, the whole request, and the idle gap
+// before the next one on a kept-alive socket. None of them bounds sending the
+// response. A sized body's stalled reader is bounded by bodyStream()'s idle
+// window (below). stream() responses are not bounded here.
 const HEADERS_TIMEOUT_MS = 30_000;
 const REQUEST_TIMEOUT_MS = 60_000;
 const KEEP_ALIVE_TIMEOUT_MS = 5_000;
+// How long one bodyStream() wait on the client (room after a write, or the
+// final flush) may last before we cut the client off. The default for
+// `bodyStreamIdleTimeoutMs`.
+const BODY_STREAM_IDLE_TIMEOUT_MS = 60_000;
+// The longest delay setTimeout() honors. It runs anything longer after 1 ms.
+const MAX_TIMER_DELAY_MS = 2_147_483_647;
 
 export interface CreateHttpServerPluginOptions {
   host: string;
@@ -69,6 +77,14 @@ export interface CreateHttpServerPluginOptions {
    * If neither is set, init fails with `invalid-cookie-key`.
    */
   cookieKey?: Buffer;
+  /**
+   * How long, in ms, a `bodyStream()` body waits on a client that is not
+   * taking its bytes before cutting it off (`client-stalled`). Each wait
+   * gets a fresh window. A whole number from 1 to 2147483647 (the most a
+   * timer can hold), or `createHttpServerPlugin` throws a TypeError.
+   * Defaults to 60 000.
+   */
+  bodyStreamIdleTimeoutMs?: number;
 }
 
 export interface HttpServerPlugin extends Plugin {
@@ -82,6 +98,7 @@ export interface HttpServerPlugin extends Plugin {
 export function createHttpServerPlugin(
   opts: CreateHttpServerPluginOptions,
 ): HttpServerPlugin {
+  const bodyStreamIdleTimeoutMs = resolveBodyStreamIdleTimeout(opts.bodyStreamIdleTimeoutMs);
   const router = new Router();
   let server: http.Server | null = null;
   let boundPort: number | null = null;
@@ -255,6 +272,7 @@ export function createHttpServerPlugin(
           trustProxy,
           fireRequest,
           fireResponseSent,
+          bodyStreamIdleTimeoutMs,
         ).catch((err: unknown) => {
           try {
             if (!res.headersSent) {
@@ -357,6 +375,16 @@ function resolveCookieKey(opt: Buffer | undefined): Buffer {
   });
 }
 
+function resolveBodyStreamIdleTimeout(opt: number | undefined): number {
+  if (opt === undefined) return BODY_STREAM_IDLE_TIMEOUT_MS;
+  if (!Number.isSafeInteger(opt) || opt < 1 || opt > MAX_TIMER_DELAY_MS) {
+    throw new TypeError(
+      `bodyStreamIdleTimeoutMs must be a whole number of ms from 1 to ${MAX_TIMER_DELAY_MS}: got ${String(opt)}`,
+    );
+  }
+  return opt;
+}
+
 async function handle(
   req: http.IncomingMessage,
   res: http.ServerResponse,
@@ -376,6 +404,7 @@ async function handle(
     ctx: AgentContext,
     payload: HttpResponseSentEvent,
   ) => Promise<void>,
+  bodyStreamIdleTimeoutMs: number,
 ): Promise<void> {
   const startedAt = Date.now();
   const rawMethod = (req.method ?? 'GET').toUpperCase();
@@ -404,6 +433,7 @@ async function handle(
     await fireResponseSent(bus, ctx, {
       status,
       durationMs: Date.now() - startedAt,
+      incomplete: false,
     });
   };
 
@@ -464,7 +494,7 @@ async function handle(
       return verifyCookieValue(cookieKey, raw);
     },
   };
-  const writer = new ResponseWriter(res, cookieKey, cookieEnv);
+  const writer = new ResponseWriter(res, cookieKey, cookieEnv, bodyStreamIdleTimeoutMs);
   const adapterRes: HttpResponse = writer.adapter;
 
   let finalStatus = writer.statusCode;
@@ -535,10 +565,14 @@ async function handle(
     // this synchronous-fire fallback, http:response-sent would be lost
     // on every fast-disconnect path. writableEnded covers normal close;
     // destroyed covers abrupt socket teardown.
+    //
+    // `incomplete` is false either way: a stream promises no length, so a
+    // client leaving one cuts nothing off.
     if (res.writableEnded || res.destroyed) {
       void fireResponseSent(bus, ctx, {
         status: finalStatus,
         durationMs: Date.now() - startedAt,
+        incomplete: false,
       });
       return;
     }
@@ -546,6 +580,7 @@ async function handle(
       void fireResponseSent(bus, ctx, {
         status: finalStatus,
         durationMs: Date.now() - startedAt,
+        incomplete: false,
       });
     });
     return;
@@ -565,6 +600,7 @@ async function handle(
   await fireResponseSent(bus, ctx, {
     status: finalStatus,
     durationMs: Date.now() - startedAt,
+    incomplete: writer.incomplete,
   });
 }
 
@@ -642,6 +678,7 @@ function readBodyCapped(req: http.IncomingMessage, maxBytes: number): Promise<Bu
 // Fixed text: no path, filename or byte of the body ever lands in one.
 const BODY_STREAM_MESSAGES: Readonly<Record<BodyStreamFailureCode, string>> = {
   'client-gone': 'the client went away before the body was sent',
+  'client-stalled': 'the client stopped reading, so the body was cut off',
   'source-failed': 'the body source failed',
   'length-mismatch': 'the body source did not add up to contentLength',
 };
@@ -672,6 +709,11 @@ class ResponseWriter {
    * truncated download off as a whole one.
    */
   streaming = false;
+  /**
+   * True once `bodyStream()` cut the connection instead of finishing the
+   * body. `handle()` reports it as `incomplete` on `http:response-sent`.
+   */
+  incomplete = false;
   statusCode = 200;
   private headers = new Map<string, string>();
   // Set-Cookie is a multi-value header; flatten to array so multiple
@@ -681,13 +723,21 @@ class ResponseWriter {
   private cookieKey: Buffer;
   private cookieEnv: CookieEnv;
   private streamCloseCallbacks: Array<() => void> = [];
+  /** How long one `bodyStream()` wait on the client may last. */
+  private idleTimeoutMs: number;
 
   readonly adapter: HttpResponse;
 
-  constructor(res: http.ServerResponse, cookieKey: Buffer, cookieEnv: CookieEnv) {
+  constructor(
+    res: http.ServerResponse,
+    cookieKey: Buffer,
+    cookieEnv: CookieEnv,
+    idleTimeoutMs: number,
+  ) {
     this.res = res;
     this.cookieKey = cookieKey;
     this.cookieEnv = cookieEnv;
+    this.idleTimeoutMs = idleTimeoutMs;
     this.adapter = {
       status: (n: number) => {
         if (this.finished) {
@@ -956,7 +1006,7 @@ class ResponseWriter {
           continue;
         }
         writeHeadOnce();
-        if (!res.write(chunk)) await this.drainOrClose();
+        if (!res.write(chunk)) await this.drainOrStall();
       }
       if (accepted !== contentLength) throw new BodyStreamError('length-mismatch');
       if (clientGone()) throw new BodyStreamError('client-gone');
@@ -969,6 +1019,7 @@ class ResponseWriter {
       // parked for a next request. Destroyed, the client is left holding
       // fewer bytes than Content-Length, which every client treats as a
       // failed download.
+      this.incomplete = true;
       res.destroy();
       try {
         await it.return?.();
@@ -981,40 +1032,92 @@ class ResponseWriter {
     }
   }
 
-  /** Resolves on 'drain' (room again) or 'close' (no point waiting). */
-  private drainOrClose(): Promise<void> {
+  /**
+   * Resolves on 'drain' (room again) or 'close' (no point waiting). Rejects
+   * `client-stalled` if neither comes within the idle window.
+   */
+  private drainOrStall(): Promise<void> {
     const res = this.res;
-    return new Promise<void>((resolve) => {
+    return new Promise<void>((resolve, reject) => {
       if (res.destroyed) {
         resolve();
         return;
       }
-      const done = (): void => {
-        res.off('drain', done);
-        res.off('close', done);
-        resolve();
+      const settle = (err?: BodyStreamError): void => {
+        clearTimeout(timer);
+        res.off('drain', ready);
+        res.off('close', ready);
+        if (err === undefined) resolve();
+        else reject(err);
       };
-      res.on('drain', done);
-      res.on('close', done);
+      const ready = (): void => settle();
+      // It only settles. sendSizedBody's catch does the teardown.
+      const timer = setTimeout(() => settle(new BodyStreamError('client-stalled')), this.idleTimeoutMs);
+      res.on('drain', ready);
+      res.on('close', ready);
     });
   }
 
-  /** `res.end(last)`, resolving on 'finish'; a 'close' first is client-gone. */
-  private endAndAwaitFinish(last: Uint8Array | undefined): Promise<void> {
+  /**
+   * Send the held final chunk, then `res.end()`, resolving on 'finish'. A
+   * 'close' first, or a failed write of the final chunk, is client-gone; no
+   * progress within the idle window (per wait) is client-stalled.
+   *
+   * The final chunk is written on its own, with a callback, rather than
+   * handed to `end()`. Node fires 'finish' even when the socket write behind
+   * `end(chunk)` failed, so a client that left mid-chunk would count as sent.
+   * The write callback is where that failure shows up.
+   */
+  private async endAndAwaitFinish(last: Uint8Array | undefined): Promise<void> {
+    if (last !== undefined) {
+      await this.awaitClient((done) => {
+        this.res.write(last, (err) => done(err ? new BodyStreamError('client-gone') : undefined));
+      });
+    }
+    await this.awaitClient((done) => {
+      this.res.once('finish', () => done());
+      this.res.end();
+    });
+  }
+
+  /**
+   * Run `start`, which calls `done` once the client has taken what it was
+   * given. A 'close' first is client-gone; no `done` within the idle window
+   * is client-stalled. Every exit clears the timer and the 'close' listener.
+   * It only settles: sendSizedBody's catch does the teardown.
+   */
+  private awaitClient(start: (done: (err?: BodyStreamError) => void) => void): Promise<void> {
     const res = this.res;
     return new Promise<void>((resolve, reject) => {
-      const onFinish = (): void => {
+      let settled = false;
+      let timer: NodeJS.Timeout | undefined;
+      const settle = (err?: BodyStreamError): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
         res.off('close', onEarlyClose);
-        resolve();
+        if (err === undefined) resolve();
+        else reject(err);
       };
-      const onEarlyClose = (): void => {
-        res.off('finish', onFinish);
-        reject(new BodyStreamError('client-gone'));
-      };
-      res.once('finish', onFinish);
+      const onEarlyClose = (): void => settle(new BodyStreamError('client-gone'));
+      if (res.destroyed) {
+        settle(new BodyStreamError('client-gone'));
+        return;
+      }
       res.once('close', onEarlyClose);
-      if (last === undefined) res.end();
-      else res.end(last);
+      try {
+        start(settle);
+      } catch (err) {
+        // A synchronous throw from write()/end(): settle so nothing lingers,
+        // and let the caller's teardown see Node's own error.
+        settled = true;
+        res.off('close', onEarlyClose);
+        reject(err);
+        return;
+      }
+      if (!settled) {
+        timer = setTimeout(() => settle(new BodyStreamError('client-stalled')), this.idleTimeoutMs);
+      }
     });
   }
 

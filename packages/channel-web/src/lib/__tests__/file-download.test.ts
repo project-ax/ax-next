@@ -171,17 +171,43 @@ describe('downloadFailureMessage', () => {
   });
 
   it('gives each outcome its own sentence', () => {
-    const byStatus = [413, 404, 503, 500].map((s) =>
+    const byStatus = [413, 404, 409, 503, 500].map((s) =>
       downloadFailureMessage(new HttpError('/x', s), AGENT),
     );
-    expect(new Set(byStatus).size).toBe(4);
+    expect(new Set(byStatus).size).toBe(5);
+  });
+
+  it('a 409 says the file changed while we were getting it, and to try again', () => {
+    // TASK-1016: the route answers 409 `file-changed` when it finds the file
+    // changing before it has sent a byte. Busy, not broken.
+    const msg = downloadFailureMessage(new HttpError('/x', 409), AGENT);
+    expect(msg).toContain('changed');
+    expect(msg).toContain('Try again');
+    expect(msg).not.toContain('file-changed');
+  });
+
+  it('the fallback never claims the file is still there: after a mid-download deletion it is not', () => {
+    /*
+      A download torn after its head (the file deleted or rewritten partway,
+      or the connection dropped) reaches the browser as a failed fetch, and
+      the client cannot tell which. So the sentence says what it knows — the
+      download did not finish and nothing was saved — and names the causes,
+      deletion included. It used to say "the file is still there", which is
+      false exactly when the file was deleted mid-download.
+    */
+    for (const e of [new TypeError('network error'), new HttpError('/x', 500)]) {
+      const msg = downloadFailureMessage(e, AGENT);
+      expect(msg).not.toContain('still there');
+      expect(msg).toContain('deleted');
+      expect(msg).toContain('nothing was saved');
+    }
   });
 
   it('has a sentence for a failure that was not an HTTP answer at all', () => {
     // A dropped connection throws a TypeError, not an HttpError. "Failed to
     // fetch" is a browser string and never reaches a screen.
     const msg = downloadFailureMessage(new TypeError('Failed to fetch'), AGENT);
-    expect(msg).toContain('could not download');
+    expect(msg).toContain("didn’t finish");
     expect(msg).not.toContain('fetch');
   });
 

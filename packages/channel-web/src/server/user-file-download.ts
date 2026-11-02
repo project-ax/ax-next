@@ -22,23 +22,38 @@
  * has to be the same file as the first one: the same opaque `version`, the
  * same `size`, and exactly as many bytes as were asked for. After the last
  * range, one more call (`offset: size, length: 0`) asks again, which catches
- * a change made during the last read. `bodyStream()` holds the chunk that
- * completes the body until that call has answered. Any difference throws, and
- * a throw tears the connection down instead of ending it. The person's
- * browser then holds fewer bytes than Content-Length promised, and calls it
- * a failed download, which is the truth.
+ * a change made during the last read.
  *
- * WHAT THE STATUS CODES MEAN. Everything is decided before the first byte,
- * while we can still say no in words:
+ * What a difference does depends on whether the head has gone out. Before
+ * it, the difference is answered in words: a short first range, or a
+ * one-range file whose final check differs, is a 409 `file-changed` (a 404 if
+ * the file is gone). A file that fits in one range has nothing left to read
+ * after its first, so its final check runs before the head for exactly this.
+ * Once the head is out, a difference throws, and a throw tears the
+ * connection down instead of ending it. `bodyStream()` holds the chunk that
+ * completes the body until the final check has answered, so the last change
+ * is caught too. The person's browser then holds fewer bytes than
+ * Content-Length promised, and calls it a failed download, which is the
+ * truth.
+ *
+ * WHAT THE STATUS CODES MEAN. Each is decided before the first byte, while we
+ * can still say no in words. The reads that can still say so are the first
+ * range and, for a file that fits in one range, its final check:
  *
  *   - no range service              → 503 user-files-unavailable
- *   - the read threw (any error)    → 503 file-read-failed, logged by its codes
+ *   - no host mount (a thrown read) → 503 user-files-unavailable, logged
+ *   - any other thrown read         → 503 file-read-failed, logged by its codes
  *   - an answer it cannot check     → 503 file-read-failed, logged
  *   - unavailable                   → 503 user-files-unavailable
  *   - absent                        → 404 file-not-found
  *   - a folder                      → 400 not-a-file
  *   - over the ceiling              → 413 file-too-large, nothing more read
+ *   - changed before the head       → 409 file-changed
  *   - a file                        → 200, streamed
+ *
+ * None of those answers carries a download header. They are all made before
+ * the first `header()`, so the agent-authored filename and the octet-stream
+ * type never land on an error.
  *
  * After the head has gone out there is nothing left to answer, so a failure
  * is logged (`workspace_user_file_download_incomplete`) and never rethrown.
@@ -107,9 +122,12 @@ const DOWNLOAD_CONTENT_TYPE = 'application/octet-stream';
  *
  * `bodyStream` sends a body of exactly `contentLength` bytes pulled from
  * `source`, with backpressure. It resolves when the body is out. It rejects
- * with an Error whose `code` says why ('client-gone', 'source-failed' with the
- * source's error as `cause`, 'length-mismatch', or one of Node's own) after
- * tearing the connection down, so a short body never reads as a whole one.
+ * with an Error whose `code` says why ('client-gone', 'client-stalled' when it
+ * cut off a client that stopped reading, 'source-failed' with the source's
+ * error as `cause`, 'length-mismatch', or one of Node's own) after tearing
+ * the connection down, so a short body never reads as a whole one. It tears
+ * down even a body that failed before its head, so whatever should be
+ * answered in words is checked before it is called.
  */
 export interface StreamingDownloadResponse {
   status(n: number): StreamingDownloadResponse;
@@ -162,48 +180,12 @@ export async function sendUserFileDownload(args: SendUserFileDownloadArgs): Prom
       length,
     });
 
-  let first: ReadUserFileRangeOutput;
-  try {
-    first = await range(0, USER_FILE_DOWNLOAD_CHUNK_BYTES);
-  } catch (err) {
-    // EVERY thrown read, whatever its code. The bus wraps a plain throw (EACCES,
-    // EIO) as `unknown`; a provider's own codes (no host mount, the pod
-    // reader's failure) and the bus's `timeout` arrive as themselves. Each is
-    // a read that did not happen, which is neither a missing file (404) nor a
-    // crash (500).
-    ctx.logger.warn(READ_FAILED, { agentId, ...errorCodes(err) });
-    // A deployment with no host read mount can never serve a download: say
-    // that (the same answer as "no file area"), not "a read failed, retry".
-    const deploymentFact = codeOf(err) === 'user-files-download-unavailable';
-    res.status(503).json({ error: deploymentFact ? 'user-files-unavailable' : 'file-read-failed' });
-    return;
-  }
+  // Everything up to `res.status(200)` can still be refused in words, so no
+  // header is set before it. A refusal carries none of the download's headers.
+  const beforeHead: BeforeHead = { ctx, agentId, res };
 
-  if (typeof first !== 'object' || first === null) {
-    // A provider bug, not a 500: the same answer as any other unusable reply.
-    ctx.logger.warn(READ_FAILED, { agentId, code: 'invalid-answer' });
-    res.status(503).json({ error: 'file-read-failed' });
-    return;
-  }
-
-  if (first.kind === 'unavailable') {
-    // No file area for this agent anywhere in this deployment. Decided before
-    // any path was looked at, so it says nothing about which paths exist.
-    res.status(503).json({ error: 'user-files-unavailable' });
-    return;
-  }
-  if (first.kind === 'absent') {
-    // One answer for "never written", "since deleted" and "a link that would
-    // have led somewhere else": the area is one export for every tenant.
-    res.status(404).json({ error: 'file-not-found' });
-    return;
-  }
-  if (first.kind === 'dir') {
-    // A download is only ever offered on a file, so a folder arriving here
-    // is a malformed request, not a listing request.
-    res.status(400).json({ error: 'not-a-file' });
-    return;
-  }
+  const first = await fileBeforeHead(range(0, USER_FILE_DOWNLOAD_CHUNK_BYTES), beforeHead);
+  if (first === undefined) return;
   if (!isCheckable(first)) {
     // Every later range is held to this answer's version and size. Without
     // them those checks would compare nothing with nothing and pass, and a
@@ -215,6 +197,25 @@ export async function sendUserFileDownload(args: SendUserFileDownloadArgs): Prom
   if (first.size > USER_FILE_DOWNLOAD_MAX_BYTES) {
     res.status(413).json({ error: 'file-too-large' });
     return;
+  }
+  if (first.bytes.byteLength !== Math.min(USER_FILE_DOWNLOAD_CHUNK_BYTES, first.size)) {
+    // Not the bytes its own size promised: the file changed between the
+    // provider's look at it and its read. Busy, not broken, so the person is
+    // told to try again rather than that the read failed.
+    res.status(409).json({ error: 'file-changed' });
+    return;
+  }
+
+  // A file that fits in one range has nothing left to read but its final
+  // check, so that runs now, while a change it finds can still be answered.
+  const oneRange = first.size <= USER_FILE_DOWNLOAD_CHUNK_BYTES;
+  if (oneRange) {
+    const last = await fileBeforeHead(range(first.size, 0), beforeHead);
+    if (last === undefined) return;
+    if (!isSameFile(last, first, first.size, 0)) {
+      res.status(409).json({ error: 'file-changed' });
+      return;
+    }
   }
 
   res.status(200);
@@ -233,18 +234,85 @@ export async function sendUserFileDownload(args: SendUserFileDownloadArgs): Prom
   // No `content-length` here: `bodyStream()` sends `contentLength` as it,
   // because the framing on the wire and its byte count must be one number.
 
+  // A one-range file's bytes are in hand and already checked. A longer file
+  // is read range by range, and a change found from here on tears it down.
+  const body = oneRange ? bytesInHand(first.bytes) : wholeFile(range, first);
   try {
-    await res.bodyStream(wholeFile(range, first), { contentLength: first.size });
+    await res.bodyStream(body, { contentLength: first.size });
   } catch (err) {
     const outcome = incompleteOutcome(err);
-    // 'other' is a failure nobody planned for; the rest are what a download
-    // in the real world runs into.
-    // A storage failure or a length bug is worth a warning; a client leaving
-    // or a file changing under the download is ordinary life.
-    if (outcome.reason === 'client-gone' || outcome.reason === 'changed') {
+    // A storage failure, a length bug, or a failure nobody planned for
+    // ('other') is worth a warning. A client that left, a client we cut off
+    // for not reading, and a file changing under the download are what a
+    // download in the real world runs into: ordinary life.
+    if (
+      outcome.reason === 'client-gone' ||
+      outcome.reason === 'client-stalled' ||
+      outcome.reason === 'changed'
+    ) {
       ctx.logger.info(INCOMPLETE, { agentId, ...outcome });
     } else ctx.logger.warn(INCOMPLETE, { agentId, ...outcome });
   }
+}
+
+/** What a read made before the head needs, to answer for itself. */
+interface BeforeHead {
+  ctx: AgentContext;
+  agentId: string;
+  res: Pick<StreamingDownloadResponse, 'status' | 'json'>;
+}
+
+/**
+ * One read made before the head: the first range, or a one-range file's
+ * final check. Anything but a file is answered here, the same way for both,
+ * and this returns undefined. A file comes back for the caller to check.
+ */
+async function fileBeforeHead(
+  read: Promise<ReadUserFileRangeOutput>,
+  { ctx, agentId, res }: BeforeHead,
+): Promise<FileAnswer | undefined> {
+  let answer: ReadUserFileRangeOutput;
+  try {
+    answer = await read;
+  } catch (err) {
+    // EVERY thrown read, whatever its code. The bus wraps a plain throw (EACCES,
+    // EIO) as `unknown`; a provider's own codes (no host mount, the pod
+    // reader's failure) and the bus's `timeout` arrive as themselves. Each is
+    // a read that did not happen, which is neither a missing file (404) nor a
+    // crash (500).
+    ctx.logger.warn(READ_FAILED, { agentId, ...errorCodes(err) });
+    // A deployment with no host read mount can never serve a download: say
+    // that (the same answer as "no file area"), not "a read failed, retry".
+    const deploymentFact = codeOf(err) === 'user-files-download-unavailable';
+    res.status(503).json({ error: deploymentFact ? 'user-files-unavailable' : 'file-read-failed' });
+    return undefined;
+  }
+
+  if (typeof answer !== 'object' || answer === null) {
+    // A provider bug, not a 500: the same answer as any other unusable reply.
+    ctx.logger.warn(READ_FAILED, { agentId, code: 'invalid-answer' });
+    res.status(503).json({ error: 'file-read-failed' });
+    return undefined;
+  }
+  if (answer.kind === 'file') return answer;
+  if (answer.kind === 'unavailable') {
+    // No file area for this agent anywhere in this deployment. Decided before
+    // any path was looked at, so it says nothing about which paths exist.
+    res.status(503).json({ error: 'user-files-unavailable' });
+  } else if (answer.kind === 'absent') {
+    // One answer for "never written", "since deleted" and "a link that would
+    // have led somewhere else": the area is one export for every tenant.
+    res.status(404).json({ error: 'file-not-found' });
+  } else if (answer.kind === 'dir') {
+    // A download is only ever offered on a file, so a folder arriving here
+    // is a malformed request, not a listing request.
+    res.status(400).json({ error: 'not-a-file' });
+  } else {
+    // A kind this module does not know: a provider bug, answered as one.
+    ctx.logger.warn(READ_FAILED, { agentId, code: 'invalid-answer' });
+    res.status(503).json({ error: 'file-read-failed' });
+  }
+  return undefined;
 }
 
 export interface SendUserFileStatusArgs {
@@ -348,10 +416,19 @@ export async function sendUserFileStatus(args: SendUserFileStatusArgs): Promise<
 }
 
 /**
- * The body, as `bodyStream()` pulls it: the first answer's bytes, then one
- * range per pull, then the validating call. Lazy on purpose: a range is read
- * only when the socket has room for it, and a client that leaves stops the
- * reads (`bodyStream()` `return()`s this generator).
+ * The body of a file of one range: the bytes in hand. They passed the final
+ * check before the head went out, so there is nothing left to read.
+ */
+async function* bytesInHand(bytes: Uint8Array): AsyncGenerator<Uint8Array, void, undefined> {
+  if (bytes.byteLength > 0) yield bytes;
+}
+
+/**
+ * The body of a file of more than one range, as `bodyStream()` pulls it: the
+ * first answer's bytes, then one range per pull, then the validating call.
+ * Lazy on purpose: a range is read only when the socket has room for it, and
+ * a client that leaves stops the reads (`bodyStream()` `return()`s this
+ * generator).
  */
 async function* wholeFile(
   range: (offset: number, length: number) => Promise<ReadUserFileRangeOutput>,
@@ -374,26 +451,33 @@ async function* wholeFile(
 }
 
 /**
- * `answer`'s bytes, if it is still the file `first` described and as many
- * bytes as `{offset, length}` should give. Otherwise the file changed under
- * the download (it was rewritten, replaced, grown, shrunk or deleted), and
- * this throws.
+ * Is `answer` still the file `first` described, with as many bytes as
+ * `{offset, length}` should give? When it is not, the file changed under the
+ * download: it was rewritten, replaced, grown, shrunk or deleted.
  */
+function isSameFile(
+  answer: ReadUserFileRangeOutput,
+  first: FileAnswer,
+  offset: number,
+  length: number,
+): answer is FileAnswer {
+  return (
+    answer.kind === 'file' &&
+    answer.version === first.version &&
+    answer.size === first.size &&
+    answer.bytes instanceof Uint8Array &&
+    answer.bytes.byteLength === Math.min(length, Math.max(0, first.size - offset))
+  );
+}
+
+/** `answer`'s bytes when {@link isSameFile}. Otherwise this throws, which tears the body down. */
 function sameFile(
   answer: ReadUserFileRangeOutput,
   first: FileAnswer,
   offset: number,
   length: number,
 ): Uint8Array {
-  if (
-    answer.kind !== 'file' ||
-    answer.version !== first.version ||
-    answer.size !== first.size ||
-    !(answer.bytes instanceof Uint8Array) ||
-    answer.bytes.byteLength !== Math.min(length, Math.max(0, first.size - offset))
-  ) {
-    throw new FileChangedError();
-  }
+  if (!isSameFile(answer, first, offset, length)) throw new FileChangedError();
   return answer.bytes;
 }
 
@@ -417,7 +501,13 @@ class FileChangedError extends Error {
   }
 }
 
-type IncompleteReason = 'client-gone' | 'changed' | 'read-failed' | 'length-mismatch' | 'other';
+type IncompleteReason =
+  | 'client-gone'
+  | 'client-stalled'
+  | 'changed'
+  | 'read-failed'
+  | 'length-mismatch'
+  | 'other';
 
 /** Why a started body did not finish, as log fields: a reason, plus codes. */
 function incompleteOutcome(err: unknown): {
@@ -426,7 +516,12 @@ function incompleteOutcome(err: unknown): {
   causeCode?: string;
 } {
   const code = codeOf(err);
-  if (code === 'client-gone' || code === 'length-mismatch') return { reason: code };
+  // `client-stalled` is `bodyStream()` cutting off a client that stopped
+  // reading. It reads the code as a string: invariant 2, no import of the
+  // http-server's own type.
+  if (code === 'client-gone' || code === 'client-stalled' || code === 'length-mismatch') {
+    return { reason: code };
+  }
   if (code === 'source-failed') {
     const cause = causeOf(err);
     if (cause instanceof FileChangedError) return { reason: 'changed' };

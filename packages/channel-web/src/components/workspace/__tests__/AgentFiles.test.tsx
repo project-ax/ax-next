@@ -593,7 +593,7 @@ describe('AgentFiles: downloading', () => {
     fireEvent.click(await screen.findByText('reports/q3.pdf'));
     fireEvent.click(await screen.findByRole('button', { name: /download/i }));
 
-    expect(await screen.findByText(/could not download that just now/i)).toBeTruthy();
+    expect(await screen.findByText(/download didn’t finish/i)).toBeTruthy();
     expect(screen.queryByText(/has not written anything yet/)).toBeNull();
     expect(screen.queryByText(/could not read Quill/i)).toBeNull();
     // The body it DID manage to show is still there — the failure was the
@@ -627,9 +627,9 @@ describe('AgentFiles: downloading', () => {
     fireEvent.click(await screen.findByText('reports/q3.pdf'));
     const button = await screen.findByRole('button', { name: /download/i });
     fireEvent.click(button);
-    expect(await screen.findByText(/could not download/i)).toBeTruthy();
+    expect(await screen.findByText(/download didn’t finish/i)).toBeTruthy();
     fireEvent.click(button);
-    await waitFor(() => expect(screen.queryByText(/could not download/i)).toBeNull());
+    await waitFor(() => expect(screen.queryByText(/download didn’t finish/i)).toBeNull());
   });
 
   it('disables the button while a download is in flight', async () => {
@@ -706,10 +706,10 @@ describe('AgentFiles: the download state belongs to the file, not to the pane', 
     renderTab();
     fireEvent.click(await screen.findByText('a.pdf'));
     fireEvent.click(await screen.findByRole('button', { name: /download/i }));
-    expect(await screen.findByText(/could not download/i)).toBeTruthy();
+    expect(await screen.findByText(/download didn’t finish/i)).toBeTruthy();
 
     fireEvent.click(screen.getByText('b.pdf'));
-    await waitFor(() => expect(screen.queryByText(/could not download/i)).toBeNull());
+    await waitFor(() => expect(screen.queryByText(/download didn’t finish/i)).toBeNull());
   });
 
   it('does not let one file’s in-flight download swallow the next file’s click', async () => {

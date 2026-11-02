@@ -905,12 +905,6 @@ describe('the download route', () => {
       calls: 2,
     },
     {
-      label: 'a short FIRST chunk (it shrank between the size and the read)',
-      tamper: (n, _i, honest) =>
-        n === 1 ? asFile(honest, (f) => ({ ...f, bytes: f.bytes.subarray(0, 10) })) : honest,
-      calls: 1,
-    },
-    {
       label: 'a change caught only by the final validation',
       tamper: (_n, input, honest) =>
         input.offset === 3 * MiB && input.length === 0
@@ -939,6 +933,224 @@ describe('the download route', () => {
         level: 'info',
         msg: 'workspace_user_file_download_incomplete',
         bindings: { agentId: 'a1', reason: 'changed' },
+      },
+    ]);
+  });
+
+  // --- a change found before the head is answered, not torn down -----------
+  //
+  // Until the first `header()`, a refusal can still be said in words. Two
+  // checks can be made by then: the first range's byte count, and, for a file
+  // that fits in one range, the final check too. An answer made here carries
+  // NONE of the download's headers. The filename in Content-Disposition is
+  // agent-authored, and octet-stream is a download's type, not an error's.
+
+  /** How many range reads had been made each time `d`'s head was touched. */
+  function readsAtHead(d: ReturnType<typeof mkRes>): number[] {
+    const seen: number[] = [];
+    const { status, header } = d.res;
+    d.res.status = (n) => {
+      seen.push(rangeCalls.length);
+      return status(n);
+    };
+    d.res.header = (name, value) => {
+      seen.push(rangeCalls.length);
+      return header(name, value);
+    };
+    return seen;
+  }
+
+  it.each([
+    { label: 'a file of several ranges', size: 3 * MiB },
+    { label: 'a file of one range', size: 3 },
+  ])(
+    'a short FIRST range is answered 409 file-changed, with none of the download headers ($label)',
+    async ({ size }) => {
+      // It shrank between the size and the read: the provider stats the file,
+      // then finds fewer bytes than that.
+      standardBus();
+      files.set('live.log', { bytes: randomBytes(size), version: 'v1' });
+      tamper = (n, _i, honest) =>
+        n === 1
+          ? asFile(honest, (f) => ({ ...f, bytes: f.bytes.subarray(0, f.bytes.byteLength - 1) }))
+          : honest;
+      const { captured } = await download('live.log');
+
+      expect(captured.statusCode).toBe(409);
+      expect(captured.json).toEqual({ error: 'file-changed' });
+      expect(captured.contentLength).toBeNull();
+      // No content-disposition (the agent-authored filename), no octet-stream
+      // content-type. No header at all.
+      expect(captured.headers['content-disposition']).toBeUndefined();
+      expect(captured.headers['content-type']).toBeUndefined();
+      expect(captured.headers).toEqual({});
+      // Nothing read after the range that said so, not even a one-range
+      // file's final check. A file being written is ordinary life, and the
+      // person is told, so nothing is logged.
+      expect(rangeCalls).toHaveLength(1);
+      expect(logs).toEqual([]);
+    },
+  );
+
+  it.each<{
+    label: string;
+    last: (honest: ReadUserFileRangeOutput) => ReadUserFileRangeOutput;
+    status: number;
+    error: string;
+    logged: LogLine[];
+  }>([
+    {
+      label: 'a version change',
+      last: (honest) => asFile(honest, (f) => ({ ...f, version: v('v2') })),
+      status: 409,
+      error: 'file-changed',
+      logged: [],
+    },
+    {
+      label: 'a size change',
+      last: (honest) => asFile(honest, (f) => ({ ...f, size: f.size + 10 })),
+      status: 409,
+      error: 'file-changed',
+      logged: [],
+    },
+    { label: 'a folder', last: () => ({ kind: 'dir' }), status: 400, error: 'not-a-file', logged: [] },
+    { label: 'no file', last: () => ({ kind: 'absent' }), status: 404, error: 'file-not-found', logged: [] },
+    {
+      label: 'no file area',
+      last: () => ({ kind: 'unavailable' }),
+      status: 503,
+      error: 'user-files-unavailable',
+      logged: [],
+    },
+    {
+      label: 'an answer it cannot read',
+      last: () => null as never,
+      status: 503,
+      error: 'file-read-failed',
+      logged: [
+        {
+          level: 'warn',
+          msg: 'workspace_user_file_download_read_failed',
+          bindings: { agentId: 'a1', code: 'invalid-answer' },
+        },
+      ],
+    },
+    {
+      // A PLAIN throw, as `fs` does: the real bus wraps it as
+      // `PluginError{code:'unknown'}` with the EIO as its cause.
+      label: 'a read that throws',
+      last: () => {
+        throw Object.assign(new Error("EIO: i/o error, read '/srv/files/a1/small.txt'"), {
+          code: 'EIO',
+        });
+      },
+      status: 503,
+      error: 'file-read-failed',
+      logged: [
+        {
+          level: 'warn',
+          msg: 'workspace_user_file_download_read_failed',
+          bindings: { agentId: 'a1', code: 'unknown', causeCode: 'EIO' },
+        },
+      ],
+    },
+    {
+      label: 'no host mount',
+      last: () => {
+        throw new PluginError({
+          code: 'user-files-download-unavailable',
+          plugin: 'sandbox',
+          message: 'set sandbox.filestore.hostReadPath',
+        });
+      },
+      status: 503,
+      error: 'user-files-unavailable',
+      logged: [
+        {
+          level: 'warn',
+          msg: 'workspace_user_file_download_read_failed',
+          bindings: { agentId: 'a1', code: 'user-files-download-unavailable' },
+        },
+      ],
+    },
+  ])(
+    'a one-range file whose final check finds $label is answered $status before the head',
+    async ({ last, status, error, logged }) => {
+      standardBus();
+      files.set('small.txt', { bytes: enc.encode('abc'), version: 'v1' });
+      tamper = (_n, input, honest) =>
+        input.offset === 3 && input.length === 0 ? last(honest) : honest;
+      const { captured } = await download('small.txt');
+
+      expect(captured.statusCode).toBe(status);
+      expect(captured.json).toEqual({ error });
+      expect(captured.contentLength).toBeNull();
+      expect(captured.headers['content-disposition']).toBeUndefined();
+      expect(captured.headers).toEqual({});
+      // The first range, then the final check, and nothing after it.
+      expect(rangeCalls.map((c) => [c.offset, c.length])).toEqual([
+        [0, MiB],
+        [3, 0],
+      ]);
+      expect(logs).toEqual(logged);
+      // Codes only: never the path, the filename or the error's own message.
+      expect(JSON.stringify(logs)).not.toMatch(/i\/o error|small\.txt|srv/);
+    },
+  );
+
+  it('serves a one-range file whole after its final check, which runs before the head', async () => {
+    standardBus();
+    const file = randomBytes(64 * 1024);
+    files.set('small.bin', { bytes: file, version: 'v1' });
+    const d = mkRes();
+    const seen = readsAtHead(d);
+    await download('small.bin', d);
+
+    expect(d.captured.statusCode).toBe(200);
+    // status(200) and every header came after BOTH reads: the first range and
+    // the final check.
+    expect([...new Set(seen)]).toEqual([2]);
+    expect(rangeCalls.map((c) => [c.offset, c.length])).toEqual([
+      [0, MiB],
+      [file.byteLength, 0],
+    ]);
+    expect(d.captured.complete).toBe(true);
+    expect(d.captured.contentLength).toBe(file.byteLength);
+    expect(d.body().equals(file)).toBe(true);
+    expect(logs).toEqual([]);
+  });
+
+  it('serves an empty file: its final check, then a zero-length body', async () => {
+    standardBus();
+    files.set('empty.txt', { bytes: new Uint8Array(0), version: 'v1' });
+    const d = mkRes();
+    const seen = readsAtHead(d);
+    await download('empty.txt', d);
+
+    expect(d.captured.statusCode).toBe(200);
+    expect([...new Set(seen)]).toEqual([2]);
+    expect(rangeCalls.map((c) => [c.offset, c.length])).toEqual([
+      [0, MiB],
+      [0, 0],
+    ]);
+    expect(d.captured.contentLength).toBe(0);
+    expect(d.captured.complete).toBe(true);
+    expect(d.body().byteLength).toBe(0);
+    expect(d.captured.headers['content-disposition']).toBe('attachment; filename="empty.txt"');
+  });
+
+  it('a client cut off for stalling is logged as client-stalled, at info', async () => {
+    // `bodyStream()` cuts a client that stops taking bytes. We ended it, but
+    // a reader that wandered off is ordinary life, as one that left is.
+    standardBus();
+    files.set('live.log', { bytes: randomBytes(3 * MiB), version: 'v1' });
+    const d = mkRes({ failWith: Object.assign(new Error('stalled'), { code: 'client-stalled' }) });
+    await download('live.log', d);
+    expect(logs).toEqual([
+      {
+        level: 'info',
+        msg: 'workspace_user_file_download_incomplete',
+        bindings: { agentId: 'a1', reason: 'client-stalled' },
       },
     ]);
   });
@@ -1312,6 +1524,28 @@ describe('the download route over a real socket', () => {
     expect(got.complete).toBe(false);
     expect(got.body.length).toBeLessThanOrEqual(2 * MiB);
     expect(probe.calls).toHaveLength(4);
+  });
+
+  it('a one-range file that changes before its final check is a 409 over the wire, never a reset', async () => {
+    // The final check of a file that fits in one range runs before the head,
+    // so a change it finds can still be said in words. Run inside the body,
+    // it was a connection torn down before any head: a reset the browser can
+    // only call a network error.
+    tamper = (_n, input, honest) =>
+      input.length === 0 && honest.kind === 'file' ? { ...honest, version: v('v2') } : honest;
+    const b = await boot();
+    const got = await rawGet(b.port, `${DOWNLOAD}/notes%2Fplan.bin`);
+    expect(got.timedOut).toBe(false);
+    expect(got.status).toBe(409);
+    expect(got.complete).toBe(true);
+    // An error body, typed as one: none of the download's headers reached it.
+    expect(got.headers['content-disposition']).toBeUndefined();
+    expect(got.headers['content-type']).toMatch(/^application\/json/);
+    expect(JSON.parse(got.body.toString('utf-8'))).toEqual({ error: 'file-changed' });
+    expect(probe.calls).toEqual([
+      { relPath: 'notes/plan.bin', offset: 0, length: MiB },
+      { relPath: 'notes/plan.bin', offset: 4, length: 0 },
+    ]);
   });
 
   it('503s a read that throws over the wire, never a 500', async () => {

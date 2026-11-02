@@ -102,10 +102,21 @@ export interface HttpResponse {
    * earlier `header()` wins. Nothing else is added (none of `stream()`'s SSE
    * headers). The head goes out with the first byte, or at the end for an
    * empty body, so a source that fails before its first byte sends nothing.
+   * Not even an error status: a failure before the head still tears the
+   * connection down. So a caller that wants to answer in words checks before
+   * calling, as channel-web's `sendUserFileDownload` does.
    *
    * The source is pulled only when the socket has room (backpressure), so a
    * slow client costs about one chunk of memory here, not the whole body.
    * Empty chunks are skipped. Do not change a chunk after yielding it.
+   *
+   * A client that stops reading is cut off. An idle window (the plugin's
+   * `bodyStreamIdleTimeoutMs`, 60 s by default) runs only while this waits
+   * on the client: for room after a write, for the final chunk's own write
+   * to complete, and for `end()` to finish. Each wait gets a fresh window, and time spent waiting on the
+   * source never counts. Progress is counted one write at a time, so at the
+   * default a client must take each chunk (1 MiB for a /files download)
+   * within 60 s, which works out to about 17 KiB/s.
    *
    * The chunk that completes `contentLength` is held until the source says
    * it is done. So the source can still fail the body on its last pull, for
@@ -121,14 +132,17 @@ export interface HttpResponse {
    * - `'length-mismatch'`: the source ran past `contentLength` (none of the
    *   excess is written) or finished short of it.
    * - `'client-gone'`: the connection closed first.
+   * - `'client-stalled'`: a wait on the client outlasted the idle window, so
+   *   we cut it off.
    *
    * Anything else, such as a header value Node refuses when the head is
    * written, gets the same teardown and rejects with that error as-is.
    *
-   * One race goes unreported: a client that leaves while the final chunk is
-   * being flushed can still count as sent, because Node reports the response
-   * finished anyway. That changes nothing for the client, which still holds
-   * fewer bytes than Content-Length.
+   * The final chunk is written on its own and its write is checked, so a
+   * client that leaves while it is being flushed is `'client-gone'`, not
+   * sent. What stays unseen is TCP's limit: bytes the OS has accepted for a
+   * client that then never reads them count as sent. That changes nothing
+   * for the client, which still holds fewer bytes than Content-Length.
    */
   bodyStream(source: AsyncIterable<Uint8Array>, opts: SizedBodyOptions): Promise<void>;
 }
@@ -143,7 +157,11 @@ export interface SizedBodyOptions {
 }
 
 /** The `code` on a `bodyStream()` rejection. See `HttpResponse.bodyStream`. */
-export type BodyStreamFailureCode = 'client-gone' | 'source-failed' | 'length-mismatch';
+export type BodyStreamFailureCode =
+  | 'client-gone'
+  | 'client-stalled'
+  | 'source-failed'
+  | 'length-mismatch';
 
 /**
  * Options for `HttpResponse.stream()`. `contentType` overrides the
@@ -263,8 +281,24 @@ export interface HttpRequestEvent {
  * `bodyStream()` responses, `durationMs` spans the whole body.
  */
 export interface HttpResponseSentEvent {
+  /** The status the response was given. A body cut off later keeps it: see `incomplete`. */
   status: number;
   durationMs: number;
+  /**
+   * True when `bodyStream()` cut the connection instead of finishing the
+   * body: a failure after the head, a client that stalled or left (even
+   * before the head), or any other teardown. The client then holds less than
+   * Content-Length promised, maybe not even the head. So read success as
+   * `!incomplete`, not as `status === 200`.
+   *
+   * False for `stream()` (it promises no length) and for the single-shot
+   * terminators (Node is handed the whole body at once, and nothing tracks
+   * it after that). For `bodyStream()`, false means every byte reached the
+   * OS, not that the client read them all (see the end of
+   * `HttpResponse.bodyStream`). For the others it means only that nothing
+   * was cut off here.
+   */
+  incomplete: boolean;
 }
 
 /** Hard cap on request body size. Matches @ax/cli's `serve` body cap. */

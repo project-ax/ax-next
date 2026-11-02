@@ -1,6 +1,6 @@
 import * as http from 'node:http';
 import { randomBytes } from 'node:crypto';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createTestHarness, type TestHarness } from '@ax/test-harness';
 import { createHttpServerPlugin, type HttpServerPlugin } from '../plugin.js';
 import type {
@@ -83,6 +83,8 @@ describe('res.bodyStream()', () => {
   let plugin: HttpServerPlugin;
   let port: number;
   let agent: http.Agent;
+  // Set only by the 'idle window' tests, which need a window short enough to wait out.
+  let idleMs: number | undefined;
 
   beforeEach(async () => {
     // Empty allowedOrigins warns on stderr unless this escape hatch is set.
@@ -92,6 +94,7 @@ describe('res.bodyStream()', () => {
       port: 0,
       cookieKey: COOKIE_KEY,
       allowedOrigins: [],
+      ...(idleMs !== undefined ? { bodyStreamIdleTimeoutMs: idleMs } : {}),
     });
     harness = await createTestHarness({ plugins: [plugin] });
     port = plugin.boundPort();
@@ -346,9 +349,9 @@ describe('res.bodyStream()', () => {
   }, 30_000);
 
   it('resolves only after the final chunk is flushed, not when it is queued', async () => {
-    // One chunk, so it is the held final one and goes out with end(). With
-    // the client paused, 32 MiB cannot all fit in the socket buffers, so
-    // 'finish' (and with it, success) has to wait for the client.
+    // One chunk, so it is the held final one, written on its own with a
+    // callback. With the client paused, 32 MiB cannot all fit in the socket
+    // buffers, so that write (and with it, success) has to wait for the client.
     const body = randomBytes(32 * MiB);
     const { source } = probedSource([body]);
     const { outcome } = await serveBody('/final-flush', source, body.length);
@@ -609,5 +612,307 @@ describe('res.bodyStream()', () => {
     expect(events[0]!.status).toBe(200);
     // durationMs spans the whole body, not just the handler's setup.
     expect(events[0]!.durationMs).toBeGreaterThanOrEqual(70);
+    expect(events[0]!.incomplete).toBe(false);
+  });
+
+  it('a body torn after its head is reported incomplete, with the status it was given', async () => {
+    const events = responsesSent();
+    // The first MiB goes out with the head, so the client really saw the 200.
+    // Then the source fails and the body is cut short.
+    const { source } = probedSource([randomBytes(MiB)], { failAfter: new Error('gone mid-read') });
+    const { outcome } = await serveBody('/torn', source, 2 * MiB);
+
+    const got = await rawGet('/torn');
+    expect(got.timedOut).toBe(false);
+    expect(got.status).toBe(200);
+    expect(got.complete).toBe(false);
+    expect(await outcome).toMatchObject({ code: 'source-failed' });
+    await vi.waitFor(() => expect(events).toHaveLength(1));
+    expect(events).toEqual([{ status: 200, durationMs: expect.any(Number), incomplete: true }]);
+  });
+
+  it('a client that leaves while the final chunk flushes is client-gone, reported incomplete', async () => {
+    // REGRESSION (TASK-1016 review): one chunk, so it is the held final one.
+    // A client that read about a MiB of it and left used to count as sent,
+    // because Node fires 'finish' even when the socket write failed. For any
+    // file of one range (1 MiB or less on /files) that was every disconnect.
+    const events = responsesSent();
+    const body = randomBytes(32 * MiB);
+    const { source } = probedSource([body]);
+    const { outcome } = await serveBody('/left-final', source, body.length);
+
+    let read = 0;
+    const got = await rawGet('/left-final', {
+      onResponse: (res) => {
+        res.on('data', (c: Buffer) => {
+          read += c.length;
+          if (read >= MiB) res.destroy();
+        });
+      },
+    });
+    expect(got.complete).toBe(false);
+    expect(await outcome).toMatchObject({ code: 'client-gone' });
+    await vi.waitFor(() => expect(events).toHaveLength(1));
+    expect(events).toEqual([{ status: 200, durationMs: expect.any(Number), incomplete: true }]);
+  }, 30_000);
+
+  it('a teardown before the head is reported incomplete too', async () => {
+    // Nothing reached the client, so nothing it holds is whole: the
+    // connection was cut, and `incomplete` says so even with no head sent.
+    const events = responsesSent();
+    const { source } = probedSource([], { failAfter: new Error('failed before any byte') });
+    const { outcome } = await serveBody('/torn-before-head', source, MiB);
+
+    const got = await rawGet('/torn-before-head');
+    expect(got.status).toBeUndefined();
+    expect(await outcome).toMatchObject({ code: 'source-failed' });
+    await vi.waitFor(() => expect(events).toHaveLength(1));
+    expect(events).toEqual([{ status: 200, durationMs: expect.any(Number), incomplete: true }]);
+  });
+
+  /** Every http:response-sent payload from now on, in order. */
+  function responsesSent(): HttpResponseSentEvent[] {
+    const events: HttpResponseSentEvent[] = [];
+    harness.bus.subscribe('http:response-sent', 'response-sent-observer', async (_ctx, payload) => {
+      events.push(payload as HttpResponseSentEvent);
+      return undefined;
+    });
+    return events;
+  }
+
+  // A client that stops reading is cut off once a wait on it outlasts the
+  // window. The paused-client tests read the server's verdict first: a paused
+  // client cannot see its connection close until it reads again.
+  describe('idle window', () => {
+    // Short enough to wait out here. The default is 60 s.
+    const WINDOW_MS = 200;
+
+    beforeAll(() => {
+      idleMs = WINDOW_MS;
+    });
+    afterAll(() => {
+      idleMs = undefined;
+    });
+
+    /** GET `path`, and stop reading as soon as the head arrives. */
+    async function getThenStopReading(
+      path: string,
+    ): Promise<{ paused: http.IncomingMessage; done: Promise<RawResponse> }> {
+      let paused: http.IncomingMessage | undefined;
+      let headArrived!: () => void;
+      const head = new Promise<void>((resolve) => {
+        headArrived = resolve;
+      });
+      const done = rawGet(path, {
+        onResponse: (res) => {
+          res.pause();
+          paused = res;
+          headArrived();
+        },
+        deadlineMs: 10_000,
+      });
+      await head;
+      return { paused: paused!, done };
+    }
+
+    /** GET `path` through `via` and read all of it. */
+    function getWhole(
+      path: string,
+      via: http.Agent,
+    ): Promise<{ status: number | undefined; body: Buffer; complete: boolean; reusedSocket: boolean }> {
+      return new Promise((resolve, reject) => {
+        const req = http.get({ host: '127.0.0.1', port, path, agent: via }, (res) => {
+          const chunks: Buffer[] = [];
+          const finish = (): void =>
+            resolve({
+              status: res.statusCode,
+              body: Buffer.concat(chunks),
+              complete: res.complete,
+              reusedSocket: req.reusedSocket,
+            });
+          res.on('data', (chunk: Buffer) => chunks.push(chunk));
+          res.on('end', finish);
+          res.on('close', finish);
+          res.on('error', reject);
+        });
+        req.on('error', reject);
+      });
+    }
+
+    it('a client that stops reading is cut after the idle window: client-stalled, source released, reported incomplete', async () => {
+      const events = responsesSent();
+      // 1 GiB on offer, one reused MiB at a time, so nothing big is allocated.
+      const chunk = Buffer.alloc(MiB);
+      const { probe, source } = probedSource(Array.from({ length: 1024 }, () => chunk));
+      const { outcome } = await serveBody('/stalled', source, 1024 * MiB);
+
+      const { paused, done } = await getThenStopReading('/stalled');
+      expect(await outcome).toMatchObject({ code: 'client-stalled' });
+      // 1024 chunks were on offer; `released` with fewer pulled means return().
+      expect(probe.released).toBe(true);
+      expect(probe.pulls).toBeLessThan(1024);
+      await vi.waitFor(() => expect(events).toHaveLength(1));
+      expect(events).toEqual([{ status: 200, durationMs: expect.any(Number), incomplete: true }]);
+
+      // Reading again, the client gets what the kernel held, then the close.
+      paused.resume();
+      const got = await done;
+      expect(got.timedOut).toBe(false);
+      expect(got.complete).toBe(false);
+      expect(got.body.length).toBeLessThan(1024 * MiB);
+      expect(events).toHaveLength(1);
+    }, 30_000);
+
+    it('a stall while the final chunk flushes is cut too', async () => {
+      // One chunk, so it is the held final one, written on its own. 32 MiB
+      // cannot all fit in the socket buffers, so with the client paused the
+      // pump waits on that write's callback, never on 'drain'.
+      const body = randomBytes(32 * MiB);
+      const { source } = probedSource([body]);
+      const { outcome } = await serveBody('/stalled-final', source, body.length);
+
+      const { paused, done } = await getThenStopReading('/stalled-final');
+      expect(await outcome).toMatchObject({ code: 'client-stalled' });
+
+      paused.resume();
+      const got = await done;
+      expect(got.timedOut).toBe(false);
+      expect(got.complete).toBe(false);
+    }, 30_000);
+
+    it('the idle window runs only while the client holds things up: a slow source is not a stalled client', async () => {
+      const events = responsesSent();
+      const chunks = [randomBytes(64 * 1024), randomBytes(64 * 1024), randomBytes(64 * 1024)];
+      // Each chunk takes twice the window to arrive. Waiting on the source is
+      // not waiting on the client, so none of that time counts.
+      async function* slowSource(): AsyncGenerator<Uint8Array> {
+        for (const c of chunks) {
+          await sleep(2 * WINDOW_MS);
+          yield c;
+        }
+      }
+      const { outcome } = await serveBody('/slow-source', slowSource(), 3 * 64 * 1024);
+
+      const got = await rawGet('/slow-source', { deadlineMs: 10_000 });
+      expect(await outcome).toBe('resolved');
+      expect(got.timedOut).toBe(false);
+      expect(got.complete).toBe(true);
+      expect(got.body.equals(Buffer.concat(chunks))).toBe(true);
+      await vi.waitFor(() => expect(events).toHaveLength(1));
+      expect(events[0]).toMatchObject({ status: 200, incomplete: false });
+    }, 30_000);
+
+    it('the idle timer dies with the body: the kept-alive connection serves the next request', async () => {
+      const body = randomBytes(2 * MiB);
+      await route('/kept', async (_req, res) => {
+        await res.bodyStream(probedSource([body.subarray(0, MiB), body.subarray(MiB)]).source, {
+          contentLength: body.length,
+        });
+      });
+      // Every idle timer the pump arms (the only timers with this delay) must
+      // be cleared by the time the body is over. A leftover one keeps `res`
+      // alive for the window, once per wait: about 1024 of them for 1 GiB.
+      const realSetTimeout = globalThis.setTimeout;
+      const realClearTimeout = globalThis.clearTimeout;
+      const armed: unknown[] = [];
+      const cleared = new Set<unknown>();
+      const setSpy = vi.spyOn(globalThis, 'setTimeout').mockImplementation(((
+        fn: () => void,
+        ms?: number,
+        ...rest: unknown[]
+      ) => {
+        const handle = realSetTimeout(fn, ms, ...rest);
+        if (ms === WINDOW_MS) armed.push(handle);
+        return handle;
+      }) as typeof setTimeout);
+      const clearSpy = vi.spyOn(globalThis, 'clearTimeout').mockImplementation(((
+        handle?: Parameters<typeof clearTimeout>[0],
+      ) => {
+        cleared.add(handle);
+        realClearTimeout(handle);
+      }) as typeof clearTimeout);
+      const oneSocket = new http.Agent({ keepAlive: true, maxSockets: 1 });
+      try {
+        const first = await getWhole('/kept', oneSocket);
+        expect(first).toMatchObject({ status: 200, complete: true });
+        expect(first.body.equals(body)).toBe(true);
+        await vi.waitFor(() => {
+          expect(armed.length).toBeGreaterThan(0);
+          expect(armed.filter((h) => !cleared.has(h))).toEqual([]);
+        });
+        setSpy.mockRestore();
+        clearSpy.mockRestore();
+        // Idle for twice the window, then the same socket serves again.
+        await sleep(2 * WINDOW_MS);
+        const second = await getWhole('/kept', oneSocket);
+        expect(second).toMatchObject({ status: 200, complete: true, reusedSocket: true });
+        expect(second.body.equals(body)).toBe(true);
+      } finally {
+        setSpy.mockRestore();
+        clearSpy.mockRestore();
+        oneSocket.destroy();
+      }
+    }, 30_000);
+
+    it('a socket gone before the final write is client-gone at once, not a stall', async () => {
+      // Node 24: with the socket destroyed but `res.destroyed` still false,
+      // `res.write(chunk, cb)` never calls `cb` and `end()` never fires
+      // 'finish'. Only the 'close' listener settles that wait, so without it
+      // this would sit out the whole window and say client-stalled.
+      const realWrite = http.ServerResponse.prototype.write;
+      const spy = vi
+        .spyOn(http.ServerResponse.prototype, 'write')
+        .mockImplementation(function (this: http.ServerResponse, ...args: unknown[]) {
+          if (typeof args[args.length - 1] === 'function') this.socket?.destroy();
+          return (realWrite as (...a: unknown[]) => boolean).apply(this, args);
+        });
+      try {
+        const { source } = probedSource([randomBytes(1024)]);
+        const { outcome } = await serveBody('/gone-before-final', source, 1024);
+        void rawGet('/gone-before-final');
+        expect(await outcome).toMatchObject({ code: 'client-gone' });
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    it("a synchronous throw from the final write rejects with Node's error, reported incomplete", async () => {
+      // Defensive: no input reaches this on Node 24, so a spy forces it. The
+      // wait must settle (no idle timer left armed) and the teardown run.
+      const events = responsesSent();
+      const boom = Object.assign(new Error('write refused'), { code: 'ERR_TEST_WRITE' });
+      const spy = vi
+        .spyOn(http.ServerResponse.prototype, 'write')
+        .mockImplementation(function (this: http.ServerResponse, ...args: unknown[]) {
+          if (typeof args[args.length - 1] === 'function') throw boom;
+          return true;
+        });
+      try {
+        const { source } = probedSource([randomBytes(1024)]);
+        const { outcome } = await serveBody('/final-write-throws', source, 1024);
+        void rawGet('/final-write-throws');
+        expect(await outcome).toBe(boom);
+        await vi.waitFor(() => expect(events).toHaveLength(1));
+        expect(events[0]).toMatchObject({ status: 200, incomplete: true });
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    // 2 ** 31 is a positive safe integer, but setTimeout() would run it after 1 ms.
+    it.each([0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, 2 ** 31])(
+      'refuses a bodyStreamIdleTimeoutMs that is not a positive safe integer a timer can hold: %s',
+      (v) => {
+        expect(() =>
+          createHttpServerPlugin({
+            host: '127.0.0.1',
+            port: 0,
+            cookieKey: COOKIE_KEY,
+            allowedOrigins: [],
+            bodyStreamIdleTimeoutMs: v,
+          }),
+        ).toThrow(TypeError);
+      },
+    );
   });
 });
