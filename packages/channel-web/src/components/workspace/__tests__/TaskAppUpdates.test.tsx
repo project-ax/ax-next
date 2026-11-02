@@ -5,6 +5,8 @@ import { routineApi, type Routine } from '@/lib/routines';
 import { routineFixture } from '@/components/routines/__tests__/routine-fixture';
 vi.mock('@/lib/routines', async original => ({ ...(await original<typeof import('@/lib/routines')>()), routineApi: { get: vi.fn(), getWebhookStatus: vi.fn(), getTaskReceiver: vi.fn(), replaceTaskReceiver: vi.fn() } }));
 vi.mock('@/components/credentials/CredentialSlotRow', () => ({ CredentialSlotRow: ({ destination }: { destination: unknown }) => <p>Signing secret {JSON.stringify(destination)}</p> }));
+const helpText = /Paste the signing secret from the other app’s webhook settings/;
+const legacyNote = /This task was set up to always check signatures/;
 const row: Routine = { ...routineFixture, kind: 'stay-on-top', goodWhen: 'All handled.', webhook: { kind: 'webhook', path: '/updates', hmac: { app: 'slack' } } };
 beforeEach(() => {
   vi.resetAllMocks();
@@ -23,6 +25,30 @@ describe('private task app setup', () => {
     expect(screen.queryByText(/connected|signature checked/i)).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Edit app setup' }));
     expect(h.onEdit).toHaveBeenCalledOnce();
+  });
+  it('shows the signing secret right under the address for a task with no signature settings', async () => {
+    vi.mocked(routineApi.get).mockResolvedValue({ ...row, webhook: { kind: 'webhook', path: '/updates' } });
+    show();
+    const url = await screen.findByLabelText('Webhook URL');
+    const secret = screen.getByText(/^Signing secret \{/);
+    expect(url.compareDocumentPosition(secret) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(secret).toHaveTextContent('routine-hmac');
+    expect(screen.getByText(helpText)).toBeVisible();
+    expect(screen.queryByRole('switch', { name: 'Verify signature' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('radiogroup', { name: 'App' })).not.toBeInTheDocument();
+    expect(screen.queryByText(/Choose the app/)).not.toBeInTheDocument();
+    expect(screen.queryByText(legacyNote)).not.toBeInTheDocument();
+  });
+  it('explains that a legacy task always checks signatures', async () => {
+    show(); await screen.findByLabelText('Webhook URL');
+    expect(screen.getByText(legacyNote)).toBeVisible();
+    expect(screen.getByText(helpText)).toBeVisible();
+  });
+  it('says when secret management is unavailable', async () => {
+    vi.mocked(routineApi.get).mockResolvedValue({ ...row, permissions: { ...row.permissions, manageSecret: false } });
+    show(); await screen.findByLabelText('Webhook URL');
+    expect(screen.getByText('Signing secret management is currently unavailable.')).toBeVisible();
+    expect(screen.queryByText(/^Signing secret \{/)).not.toBeInTheDocument();
   });
   it.each([
     { ownedByCaller: false }, { permissions: { ...row.permissions, edit: false } }, { origin: 'default' as const }, { webhook: null },

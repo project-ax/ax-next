@@ -13,7 +13,7 @@ describe('app connection truth and recovery', () => {
   it('waits for a real app test, then explains acceptance separately from execution', async () => {
     show(); expect(await screen.findByRole('status')).toHaveTextContent('Waiting for the first update');
     expect(screen.getByText(/Send a test/)).toHaveTextContent('may start paid work');
-    vi.mocked(routineApi.getWebhookStatus).mockResolvedValue({ ...waiting, lastAcceptedAt: '2031-01-01T12:00:00.000Z', signatureChecked: true });
+    vi.mocked(routineApi.getWebhookStatus).mockResolvedValue({ ...waiting, lastAcceptedAt: '2031-01-01T12:00:00.000Z', signatureChecked: true, timestampChecked: true });
     fireEvent.click(screen.getByRole('button', { name: 'Check connection' }));
     expect(await screen.findByRole('status')).toHaveTextContent('Zendesk connected');
     expect(screen.getByRole('status')).toHaveTextContent('signature checked');
@@ -27,9 +27,28 @@ describe('app connection truth and recovery', () => {
     expect(await screen.findByRole('status')).toHaveTextContent('App connected');
     expect(screen.getByRole('status')).toHaveTextContent('signature not checked');
   });
+  it('says when a signature had no timestamp', async () => {
+    const at = '2031-01-01T12:00:00.000Z';
+    const honesty = /doesn’t sign the time it sent each update/;
+    vi.mocked(routineApi.getWebhookStatus).mockResolvedValue({ ...waiting, app: 'github', lastAcceptedAt: at, signatureChecked: true, timestampChecked: false });
+    show(); const status = await screen.findByRole('status');
+    expect(status).toHaveTextContent('GitHub connected');
+    expect(status).toHaveTextContent('signature checked, no timestamp');
+    expect(screen.getByText(honesty)).toBeVisible();
+    vi.mocked(routineApi.getWebhookStatus).mockResolvedValue({ ...waiting, app: 'stripe', lastAcceptedAt: at, signatureChecked: true, timestampChecked: true });
+    fireEvent.click(screen.getByRole('button', { name: 'Check connection' }));
+    await screen.findByText(/Stripe connected/);
+    expect(screen.getByRole('status')).not.toHaveTextContent('no timestamp');
+    expect(screen.queryByText(honesty)).not.toBeInTheDocument();
+    vi.mocked(routineApi.getWebhookStatus).mockResolvedValue({ ...waiting, app: 'github', lastAcceptedAt: at, signatureChecked: false, timestampChecked: false });
+    fireEvent.click(screen.getByRole('button', { name: 'Check connection' }));
+    await screen.findByText(/GitHub connected/);
+    expect(screen.getByRole('status')).toHaveTextContent('signature not checked');
+    expect(screen.queryByText(honesty)).not.toBeInTheDocument();
+  });
   it('does not call a verified Slack address a connected stream of updates', async () => {
     vi.mocked(routineApi.getWebhookStatus).mockResolvedValue({ ...waiting, app: 'slack', verifiedAt: '2031-01-01T12:00:00.000Z' });
-    show(); expect(await screen.findByRole('status')).toHaveTextContent('App address verified');
+    show(); expect(await screen.findByRole('status')).toHaveTextContent('Slack address verified');
     expect(screen.getByRole('status')).toHaveTextContent('Waiting for the first update');
     expect(screen.queryByText(/connected/)).not.toBeInTheDocument();
   });
