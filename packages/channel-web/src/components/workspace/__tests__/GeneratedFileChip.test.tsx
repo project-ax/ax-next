@@ -1,12 +1,75 @@
+import type { ComponentProps } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { GeneratedFileChip } from '../GeneratedFileChip';
+import { AgentConversation } from '../AgentConversation';
 import { saveBlob } from '@/lib/file-download';
+import type { ThreadMessage } from '@/lib/workspace-api';
 
 vi.mock('@/lib/file-download', () => ({ saveBlob: vi.fn() }));
 const file = { attachmentId: '0123456789abcdef0123456789abcdef', displayName: 'budget.csv', mediaType: 'text/csv', sizeBytes: 2048 };
 beforeEach(() => { vi.mocked(saveBlob).mockClear(); });
 afterEach(() => { vi.unstubAllGlobals(); });
+
+const agentFile = { attachmentId: null, agentFilePath: 'reports/Q3 plan #1.pdf', displayName: 'Q3 plan #1.pdf', mediaType: 'application/pdf', sizeBytes: 10 };
+/** `agentFile`'s two addresses in conversation `c1`: the key encoded whole, once. */
+const STATUS_URL = '/api/workspace/conversations/c1/status/user-files/reports%2FQ3%20plan%20%231.pdf';
+const DOWNLOAD_URL = '/api/workspace/conversations/c1/download/user-files/reports%2FQ3%20plan%20%231.pdf';
+
+const json = (body: unknown, status = 200): Response =>
+  new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
+
+/**
+ * `fetch` for an agent-file chip. Its status check gets `status()` (the file
+ * is there, by default) and its download gets `download()`. Any other address
+ * is a bug in the chip, so it throws.
+ */
+function chipFetch(answers: { status?: () => Promise<Response>; download?: () => Promise<Response> } = {}) {
+  return vi.fn(async (url: string, _init?: RequestInit): Promise<Response> => {
+    if (url.includes('/status/user-files/')) return (answers.status ?? (async () => json({ available: true })))();
+    if (url.includes('/download/user-files/')) return (answers.download ?? (async () => new Response('pdf')))();
+    throw new Error(`the chip asked for ${url}`);
+  });
+}
+
+/** Status answers, one per check, in order. */
+function statusAnswers(...statuses: number[]): () => Promise<Response> {
+  return async () => {
+    const status = statuses.shift();
+    if (status === undefined) throw new Error('the chip checked more often than the test expected');
+    return status === 200 ? json({ available: true }) : json({ error: 'file-not-found' }, status);
+  };
+}
+
+/**
+ * Wait one macrotask, inside act: every promise the chip chained off an
+ * answer has run by then, so a state it was going to set has been set.
+ */
+async function settle(): Promise<void> {
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+}
+
+/** What `AgentConversation` needs to draw `thread` in conversation `c1`, and nothing more. */
+function conversationProps(thread: ThreadMessage[]): ComponentProps<typeof AgentConversation> {
+  return {
+    agent: { id: 'a-quill', name: 'Quill' },
+    thread,
+    conversationId: 'c1',
+    decisions: [],
+    readOnly: false,
+    onSend: vi.fn(),
+    onApprove: vi.fn(),
+    onDismiss: vi.fn(),
+    onUndo: vi.fn(),
+    approvalRead: 'ok',
+    onRetryApprovals: vi.fn(),
+    grants: [],
+    onGrantResolved: vi.fn(),
+    onGranted: vi.fn(async () => true),
+  };
+}
 
 describe('GeneratedFileChip', () => {
   it('downloads through the conversation scope, uses the server filename, and works after remount', async () => {
@@ -55,10 +118,10 @@ describe('GeneratedFileChip', () => {
   });
 
   describe('agent-file chips (TASK-1012)', () => {
-    const agentFile = { attachmentId: null, agentFilePath: 'reports/Q3 plan #1.pdf', displayName: 'Q3 plan #1.pdf', mediaType: 'application/pdf', sizeBytes: 10 };
-
     it('downloads live through the conversation route and never touches /api/files', async () => {
-      const fetch = vi.fn(async () => new Response('pdf', { headers: { 'content-disposition': 'attachment; filename="Q3 plan #1.pdf"' } }));
+      const fetch = chipFetch({
+        download: async () => new Response('pdf', { headers: { 'content-disposition': 'attachment; filename="Q3 plan #1.pdf"' } }),
+      });
       vi.stubGlobal('fetch', fetch);
       render(<GeneratedFileChip file={agentFile} conversationId="c & 1" />);
       const button = screen.getByRole('button', { name: 'Download Q3 plan #1.pdf' });
@@ -66,12 +129,18 @@ describe('GeneratedFileChip', () => {
       fireEvent.click(button);
       await waitFor(() => expect(saveBlob).toHaveBeenCalledOnce());
       expect(saveBlob).toHaveBeenLastCalledWith(expect.any(Blob), 'Q3 plan #1.pdf');
-      expect(fetch).toHaveBeenCalledOnce();
-      expect(fetch).toHaveBeenCalledWith('/api/workspace/conversations/c%20%26%201/download/user-files/reports%2FQ3%20plan%20%231.pdf', { credentials: 'include' });
+      // One check that the file is there (on mount, TASK-1017), then the one
+      // download the click asked for. Neither goes anywhere near /api/files.
+      expect(fetch.mock.calls.map(([url]) => url)).toEqual([
+        '/api/workspace/conversations/c%20%26%201/status/user-files/reports%2FQ3%20plan%20%231.pdf',
+        '/api/workspace/conversations/c%20%26%201/download/user-files/reports%2FQ3%20plan%20%231.pdf',
+      ]);
+      expect(fetch).toHaveBeenLastCalledWith('/api/workspace/conversations/c%20%26%201/download/user-files/reports%2FQ3%20plan%20%231.pdf', { credentials: 'include' });
     });
 
     it.each([404, 400])('says the file is gone on a %i', async (status) => {
-      vi.stubGlobal('fetch', vi.fn(async () => new Response('{}', { status })));
+      // The check on mount found the file; it was gone by the click.
+      vi.stubGlobal('fetch', chipFetch({ download: async () => new Response('{}', { status }) }));
       render(<GeneratedFileChip file={agentFile} conversationId="c1" />);
       fireEvent.click(screen.getByRole('button'));
       await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('This file is no longer available to download.'));
@@ -86,7 +155,7 @@ describe('GeneratedFileChip', () => {
     });
 
     it('says the file is too big on a 413', async () => {
-      vi.stubGlobal('fetch', vi.fn(async () => new Response('{}', { status: 413 })));
+      vi.stubGlobal('fetch', chipFetch({ download: async () => new Response('{}', { status: 413 }) }));
       render(<GeneratedFileChip file={agentFile} conversationId="c1" />);
       fireEvent.click(screen.getByRole('button'));
       await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent(
@@ -95,7 +164,8 @@ describe('GeneratedFileChip', () => {
 
     it('shows the generic error, not a crash, when the key cannot be put in a URL', async () => {
       // A lone surrogate makes encodeURIComponent throw. It must not take the
-      // render down, and it must not reach the network.
+      // render down, and it must not reach the network: not for the click, and
+      // not for the check on mount either, which counts it as "we can't tell".
       const fetch = vi.fn();
       vi.stubGlobal('fetch', fetch);
       render(<GeneratedFileChip file={{ ...agentFile, agentFilePath: 'bad\ud800.pdf' }} conversationId="c1" />);
@@ -108,10 +178,158 @@ describe('GeneratedFileChip', () => {
     });
 
     it('keeps the generic copy on a 503', async () => {
-      vi.stubGlobal('fetch', vi.fn(async () => new Response('{}', { status: 503 })));
+      vi.stubGlobal('fetch', chipFetch({ download: async () => new Response('{}', { status: 503 }) }));
       render(<GeneratedFileChip file={agentFile} conversationId="c1" />);
       fireEvent.click(screen.getByRole('button'));
       await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('We could not download this file just now. Try again.'));
+    });
+  });
+
+  describe('knowing a file is gone before anyone clicks (TASK-1017)', () => {
+    it.each([404, 400])('an agent file that is gone says so before any click (a %i)', async (status) => {
+      const fetch = chipFetch({ status: statusAnswers(status) });
+      vi.stubGlobal('fetch', fetch);
+      render(<GeneratedFileChip file={agentFile} conversationId="c & 1" />);
+
+      const button = await screen.findByRole('button', { name: 'Q3 plan #1.pdf is no longer available' });
+      expect(button).toBeDisabled();
+      expect(screen.getByText('No longer available')).toBeVisible();
+      expect(screen.queryByText('10 B · Download')).toBeNull();
+      // Asked once, with no click, through the conversation's own status
+      // route, both parts encoded whole, once.
+      expect(fetch).toHaveBeenCalledOnce();
+      expect(fetch).toHaveBeenCalledWith(
+        '/api/workspace/conversations/c%20%26%201/status/user-files/reports%2FQ3%20plan%20%231.pdf',
+        expect.objectContaining({ credentials: 'include' }),
+      );
+      // There is nothing to download, and the button says so by doing nothing.
+      fireEvent.click(button);
+      await settle();
+      expect(fetch).toHaveBeenCalledOnce();
+      expect(saveBlob).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      { label: 'a 503', answer: async () => json({ error: 'file-read-failed' }, 503) },
+      { label: 'a 500', answer: async () => json({}, 500) },
+      { label: 'a 403', answer: async () => json({}, 403) },
+      { label: 'a 401', answer: async () => json({ error: 'unauthenticated' }, 401) },
+      { label: 'a rejected fetch', answer: async (): Promise<Response> => { throw new TypeError('Failed to fetch'); } },
+    ])('a status that is not 404 or 400 leaves the chip downloadable ($label)', async ({ answer }) => {
+      const fetch = chipFetch({ status: answer });
+      vi.stubGlobal('fetch', fetch);
+      render(<GeneratedFileChip file={agentFile} conversationId="c1" />);
+      await waitFor(() => expect(fetch).toHaveBeenCalledOnce());
+      expect(fetch).toHaveBeenCalledWith(STATUS_URL, expect.anything());
+      await settle();
+
+      // "We could not tell" is never "it is gone".
+      const button = screen.getByRole('button', { name: 'Download Q3 plan #1.pdf' });
+      expect(button).toBeEnabled();
+      expect(screen.getByText('10 B · Download')).toBeVisible();
+      fireEvent.click(button);
+      await waitFor(() => expect(saveBlob).toHaveBeenCalledOnce());
+      expect(fetch).toHaveBeenLastCalledWith(DOWNLOAD_URL, { credentials: 'include' });
+    });
+
+    it('rechecks when a new turn lands, and not on a re-render that brings none', async () => {
+      const fetch = chipFetch({ status: statusAnswers(200, 404) });
+      vi.stubGlobal('fetch', fetch);
+      const view = render(<GeneratedFileChip file={agentFile} conversationId="c1" recheckKey={1} />);
+      await waitFor(() => expect(fetch).toHaveBeenCalledOnce());
+      await settle();
+      expect(screen.getByRole('button', { name: 'Download Q3 plan #1.pdf' })).toBeEnabled();
+
+      view.rerender(<GeneratedFileChip file={agentFile} conversationId="c1" recheckKey={1} />);
+      await settle();
+      expect(fetch).toHaveBeenCalledOnce();
+
+      // The next turn, in which the agent deleted the file.
+      view.rerender(<GeneratedFileChip file={agentFile} conversationId="c1" recheckKey={2} />);
+      expect(await screen.findByRole('button', { name: 'Q3 plan #1.pdf is no longer available' })).toBeDisabled();
+      expect(fetch).toHaveBeenCalledTimes(2);
+      expect(fetch).toHaveBeenLastCalledWith(STATUS_URL, expect.anything());
+    });
+
+    it('a file that is back at its key is downloadable again', async () => {
+      // The chip names a key, live: once a file is there again, a download
+      // would serve it, so the chip must not go on saying it is gone.
+      vi.stubGlobal('fetch', chipFetch({ status: statusAnswers(404, 200) }));
+      const view = render(<GeneratedFileChip file={agentFile} conversationId="c1" recheckKey={1} />);
+      expect(await screen.findByRole('button', { name: 'Q3 plan #1.pdf is no longer available' })).toBeDisabled();
+      view.rerender(<GeneratedFileChip file={agentFile} conversationId="c1" recheckKey={2} />);
+      expect(await screen.findByRole('button', { name: 'Download Q3 plan #1.pdf' })).toBeEnabled();
+      expect(screen.getByText('10 B · Download')).toBeVisible();
+    });
+
+    it('drops a click’s "try again" once the file turns out to be gone', async () => {
+      vi.stubGlobal('fetch', chipFetch({
+        status: statusAnswers(200, 404),
+        download: async () => new Response('{}', { status: 503 }),
+      }));
+      const view = render(<GeneratedFileChip file={agentFile} conversationId="c1" recheckKey={1} />);
+      fireEvent.click(screen.getByRole('button', { name: 'Download Q3 plan #1.pdf' }));
+      await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('We could not download this file just now. Try again.'));
+      view.rerender(<GeneratedFileChip file={agentFile} conversationId="c1" recheckKey={2} />);
+      expect(await screen.findByRole('button', { name: 'Q3 plan #1.pdf is no longer available' })).toBeDisabled();
+      // "Try again" next to a button that can't be pressed is a dead end.
+      expect(screen.queryByRole('alert')).toBeNull();
+    });
+
+    it('cancels a check it no longer needs, and ignores what that check answers late', async () => {
+      const asked: Array<{ answer: (r: Response) => void; signal: AbortSignal | undefined }> = [];
+      // A fetch that answers even after it was cancelled: an answer can race
+      // the cancel, and only the newest check may decide.
+      vi.stubGlobal('fetch', vi.fn((_url: string, init?: RequestInit) =>
+        new Promise<Response>((answer) => { asked.push({ answer, signal: init?.signal ?? undefined }); })));
+      const view = render(<GeneratedFileChip file={agentFile} conversationId="c1" recheckKey={1} />);
+      await waitFor(() => expect(asked).toHaveLength(1));
+      view.rerender(<GeneratedFileChip file={agentFile} conversationId="c1" recheckKey={2} />);
+      await waitFor(() => expect(asked).toHaveLength(2));
+      expect(asked[0]!.signal?.aborted).toBe(true);
+      expect(asked[1]!.signal?.aborted).toBe(false);
+
+      asked[1]!.answer(json({ available: true }));
+      asked[0]!.answer(json({ error: 'file-not-found' }, 404));
+      await settle();
+      expect(screen.getByRole('button', { name: 'Download Q3 plan #1.pdf' })).toBeEnabled();
+
+      // Leaving the page cancels whatever is still being asked.
+      view.unmount();
+      expect(asked[1]!.signal?.aborted).toBe(true);
+    });
+
+    it('an attachment chip never checks', async () => {
+      const fetch = vi.fn();
+      vi.stubGlobal('fetch', fetch);
+      const view = render(<GeneratedFileChip file={file} conversationId="c1" recheckKey={1} />);
+      view.rerender(<GeneratedFileChip file={file} conversationId="c1" recheckKey={2} />);
+      await settle();
+      expect(fetch).not.toHaveBeenCalled();
+      expect(screen.getByRole('button', { name: 'Download budget.csv' })).toBeEnabled();
+    });
+
+    it('inside a conversation, a chip checks again when the thread grows', async () => {
+      // The walk's case: the agent deleted the file in a LATER turn while the
+      // chip stayed on screen. With no `fileRecheckKey`, `AgentConversation`
+      // hands the chip the thread's own length (`AgentView` passes the durable
+      // read's, so live frames do not move it: see AgentView.test.tsx).
+      const fetch = chipFetch({ status: statusAnswers(200, 404) });
+      vi.stubGlobal('fetch', fetch);
+      const reply: ThreadMessage = {
+        kind: 'agent', id: 't1', text: 'Here is the plan.', at: '2026-11-01T09:00:00.000Z', attachments: [agentFile],
+      };
+      const view = render(<AgentConversation {...conversationProps([reply])} />);
+      await waitFor(() => expect(fetch).toHaveBeenCalledOnce());
+      await settle();
+      view.rerender(<AgentConversation {...conversationProps([reply])} />);
+      await settle();
+      expect(fetch).toHaveBeenCalledOnce();
+
+      view.rerender(<AgentConversation {...conversationProps([reply, { kind: 'user', id: 'u2', text: 'Delete it.' }])} />);
+      expect(await screen.findByRole('button', { name: 'Q3 plan #1.pdf is no longer available' })).toBeDisabled();
+      expect(fetch).toHaveBeenCalledTimes(2);
+      expect(fetch).toHaveBeenLastCalledWith(STATUS_URL, expect.anything());
     });
   });
 

@@ -12,7 +12,7 @@ import {
 import { ARTIFACT_PUBLISH_TOOL_NAME } from '@ax/tool-artifact-publish';
 import { SKILL_PROPOSE_TOOL_NAME } from '@ax/tool-skill-propose';
 import { createArtifactPublishExecutor } from './artifact-publish-executor.js';
-import { trackGeneratedFiles, publishedAttachments } from './generated-files.js';
+import { autoAttachResolvedNote, trackGeneratedFiles, publishedAttachments, type GeneratedFileFailure } from './generated-files.js';
 import { createToolPolicy } from './tool-policy.js';
 import { translateContentBlocks } from './attachment-translation.js';
 import { commitTrace } from './commit-trace.js';
@@ -1062,7 +1062,25 @@ async function runRunnerInner(
         // standing approval keyed on the call fingerprint (AW-4), so an
         // unchanged call passes the gate exactly once and any change to it
         // holds again. This message is a prompt, never an authorisation.
-        const content = decisionResolvedTurn(entry.note ?? '');
+        //
+        // TASK-1017. Except when the held call is one the RUNNER made: an
+        // automatic attach of a new file. The model never made that call, so
+        // the host's "make that call again" would have it guess one, and a
+        // correct guess runs the sandbox executor, which copies the file into
+        // the blob store. So the runner answers its own holds here, at pull
+        // time, ahead of the turn this answer opens: the tracker sends the
+        // identical call back to the gate, and a chip it allows rides the next
+        // turn-end. That closes the common path, not every one: the standing
+        // approval exists from the moment the person says yes, so a model that
+        // makes the identical explicit `artifact_publish` before this pull
+        // still spends it on a blob copy, during the decisions undo window
+        // (delivery waits it out) or during a turn already running on a loop
+        // that pulls only between turns (aisdk). The turn still runs, opening with the runner's own
+        // fixed note instead of the host's. Any other decision (a cold
+        // session's, or a hold the model raised itself) keeps the host note.
+        const autoAttach = generatedFiles !== null && typeof entry.decisionId === 'string' &&
+          await generatedFiles.resolveHeld(entry.decisionId, entry.outcome);
+        const content = decisionResolvedTurn(autoAttach ? autoAttachResolvedNote(entry.outcome) : (entry.note ?? ''));
         if (content === null) {
           // Nothing to say. Waking the model with a blank prompt would burn a
           // turn and produce a reply about nothing; re-poll instead. (The wire
@@ -1305,19 +1323,29 @@ async function runRunnerInner(
   //
   // Each chip still goes through the policy gate a model's own artifact_publish
   // call gets, so a person's "publish a file for you to open" setting means the
-  // same for automatic chips: a denied or held call attaches nothing and never
+  // same for automatic chips: a denied call attaches nothing, and a held one is
+  // attached only after the person approves it AND the gate itself then allows
+  // the identical call, which the runner re-sends when it pulls the approval,
+  // ahead of the turn that answer opens (TASK-1017, see `nextMessage` for the
+  // window this narrows but does not close). Neither ever
   // sidesteps an approval. The gate's `updatedInput` is ignored on purpose: a
   // reference names the file the turn created, never a substitute.
   const generatedFilePolicy = createToolPolicy({ client });
   const canPublishGenerated = conversationId !== null &&
     localDispatcher.has(ARTIFACT_PUBLISH_TOOL_NAME);
+  const warnGeneratedFile = (reason: GeneratedFileFailure): void => {
+    process.stderr.write(`runner: could not attach a generated file (${reason})\n`);
+  };
   const generatedFiles = canPublishGenerated
     ? await trackGeneratedFiles({
         root: homeDir,
-        warn: reason => process.stderr.write(`runner: could not attach a generated file (${reason})\n`),
+        warn: warnGeneratedFile,
         admit: async call => {
           const verdict = await generatedFilePolicy.preToolUse(call.name, call.input, call.id);
-          if (verdict.decision !== 'allow') throw new Error('attachment not allowed');
+          if (verdict.decision === 'allow') return { kind: 'allow' };
+          if (verdict.decision === 'hold') return { kind: 'held', decisionId: verdict.decisionId };
+          // A gate that failed closed decided nothing; a rule that said no did.
+          return { kind: verdict.cause === 'unavailable' ? 'unavailable' : 'denied' };
         },
         attached: async (call, chip) => {
           await generatedFilePolicy.postToolUse(call.name, call.id, call.input, chip, false);
@@ -1679,6 +1707,13 @@ async function runRunnerInner(
       terminatedError = { name: 'NonError', message: String(err) };
     }
   }
+
+  // An approved automatic attach spends its approval when the answer is
+  // pulled, and its chip rides the next turn-end. A turn that threw out of the
+  // loop never ended, so say so, once per chip: there is no turn-end left to
+  // carry it, and the file itself is still in the Files tab.
+  const undelivered = generatedFiles?.undelivered() ?? 0;
+  for (let i = 0; i < undelivered; i++) warnGeneratedFile('undelivered');
 
   // Single event.chat-end at the end of the runner's life, awaited so the
   // event reaches the wire before the process exits. If the host is

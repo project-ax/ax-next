@@ -99,6 +99,11 @@ const VIRTUAL_ROOT = '/__ax_workspace_root__';
  * anything the v1 sanitizer would have had to change to make safe — which is
  * every traversal, every absolute path, every empty or dot-only segment, and
  * every over-long name.
+ *
+ * `isAgentFilePath` (`@ax/ipc-protocol`) restates this rule for chat chips,
+ * and `agent-file-path-parity.test.ts` pins the two together. Tightening this
+ * rule turns every stored chip it stops accepting into a "no longer
+ * available" line. The `:` refusal stays on purpose (TASK-1017).
  */
 export function workspaceFilePath(raw: string): string | null {
   let decoded: string;

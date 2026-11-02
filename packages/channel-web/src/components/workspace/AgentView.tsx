@@ -666,6 +666,16 @@ export function AgentView({
   const decisionsRef = useRef(decisions);
   decisionsRef.current = decisions;
 
+  /*
+    TASK-1017 — how many durable thread reads have landed. File chips recheck
+    their files on this: it moves once per successful read, never per live
+    frame. A landed turn is usually two reads (`onDone` re-reads and
+    `onChanged` bumps the shell's version), and a decision raised mid-turn
+    adds one. Not the read's length, which can stay put across a turn
+    (answered approval cards drop out as the new turn's messages arrive).
+  */
+  const [threadReads, setThreadReads] = useState(0);
+
   const load = useCallback(async () => {
     try {
       const next = await workspaceApi.agent(agentId);
@@ -690,6 +700,7 @@ export function AgentView({
           : next,
       );
       conversationRef.current = next.conversationId;
+      setThreadReads((n) => n + 1);
       setLoadError(null);
     } catch (e) {
       setDetail(null);
@@ -1802,6 +1813,12 @@ export function AgentView({
               <AgentConversation
                 agent={agent}
                 thread={past ? pastThread : liveThread}
+                /*
+                  TASK-1017 — chips recheck their files once per successful
+                  DURABLE read (`threadReads`), not as `liveThread`'s live
+                  frames come and go while a turn streams.
+                */
+                fileRecheckKey={past ? pastThread.length : threadReads}
                 /*
                   Whose conversation the thread on screen belongs to, so a
                   person's own attachments can be downloaded from it

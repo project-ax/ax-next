@@ -338,6 +338,19 @@ interface Props {
    * caller's own shape.)
    */
   conversationKey?: string;
+  /**
+   * TASK-1017 — what every agent-file chip rechecks its file on: it checks
+   * again whenever this moves. `AgentView` passes a count of successful
+   * DURABLE thread reads (never the live frames it appends while a turn runs):
+   * a landed turn is usually two reads, a decision raised mid-turn adds one,
+   * so a turn costs a couple of checks per chip rather than one per frame that
+   * comes and goes. Not the read's length: that can stay put across a turn, as
+   * answered approval cards drop out while the new turn's messages arrive.
+   *
+   * OPTIONAL: absent means `thread` has no live frames in it, so its own length
+   * is that same signal.
+   */
+  fileRecheckKey?: number;
 }
 
 export function AgentConversation({
@@ -363,6 +376,7 @@ export function AgentConversation({
   onGrantResolved,
   onGranted,
   conversationKey = 'one-conversation',
+  fileRecheckKey = thread.length,
 }: Props) {
   /*
     TASK-393 — seeded from, and mirrored into, `workspace-draft-store.ts`, so
@@ -701,6 +715,7 @@ export function AgentConversation({
               m={m}
               agent={agent}
               conversationId={conversationId}
+              fileRecheckKey={fileRecheckKey}
               decisions={decisions}
               onApprove={onApprove}
               onDismiss={onDismiss}
@@ -1032,6 +1047,7 @@ function Message({
   m,
   agent,
   conversationId,
+  fileRecheckKey,
   decisions,
   onApprove,
   onDismiss,
@@ -1046,6 +1062,12 @@ function Message({
   agent: Pick<WorkspaceAgent, 'id' | 'name'>;
   /** See `Props.conversationId` — what turns an attachment id into a URL. */
   conversationId: string | null;
+  /**
+   * TASK-1017 — see `Props.fileRecheckKey`: handed to every agent-file chip,
+   * which checks its file again when this moves, so a file the agent deleted
+   * in a later turn reads "No longer available" once that turn has landed.
+   */
+  fileRecheckKey: number;
   decisions: Decision[];
   onApprove: (id: string, scope?: 'once' | 'agent-routines') => void;
   onDismiss: (id: string) => void;
@@ -1404,7 +1426,7 @@ function Message({
         {conversationId !== null && (m.attachments?.length ?? 0) > 0 && (
           <div className="mt-3 flex flex-wrap gap-2">
             {m.attachments?.map((file, i) => (
-              <GeneratedFileChip key={`${i}-${file.attachmentId ?? file.agentFilePath ?? file.displayName}`} file={file} conversationId={conversationId} />
+              <GeneratedFileChip key={`${i}-${file.attachmentId ?? file.agentFilePath ?? file.displayName}`} file={file} conversationId={conversationId} recheckKey={fileRecheckKey} />
             ))}
           </div>
         )}

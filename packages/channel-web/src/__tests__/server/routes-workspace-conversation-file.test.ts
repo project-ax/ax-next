@@ -24,6 +24,12 @@
  *      as `PluginError{code:'unknown'}`, so the failure tests throw plain
  *      errors through a real bus.
  *
+ * The chip's STATUS route (TASK-1017),
+ * `GET /api/workspace/conversations/:conversationId/status/user-files/*`, is
+ * pinned here too, against the same fakes: the same ACL in the same order, and
+ * then ONE range read of length 0, so it learns whether the file is still
+ * there without reading a byte of it.
+ *
  * The direct-handler part calls the handler with a response fake whose
  * `bodyStream` mirrors `@ax/http-server`'s contract. The socket part goes
  * through the real router, because the splat (`req.params['*']`) and the
@@ -584,6 +590,217 @@ describe('the chat file chip download route', () => {
     expect(d.captured.json).toEqual({ error: 'file-read-failed' });
     expect(d.captured.contentLength).toBeNull();
   });
+
+  // -------------------------------------------------------------------------
+  // TASK-1017 — the chip asks whether its file is still there, so it can say
+  // "No longer available" before anyone clicks. Same fakes as the download.
+  // -------------------------------------------------------------------------
+  describe('the chat file chip status route', () => {
+    interface LogLine {
+      level: 'warn' | 'info';
+      msg: string;
+      bindings: unknown;
+    }
+    let logs: LogLine[];
+
+    beforeEach(() => {
+      logs = [];
+    });
+
+    async function status(params: Record<string, string>): Promise<ReturnType<typeof mkRes>> {
+      const d = mkRes();
+      await makeWorkspaceHandlers({ bus, initCtx }).conversationAgentFileStatus(mkReq(params), d.res);
+      return d;
+    }
+
+    /**
+     * Signed in as u1 with the conversation and agent hooks up, and `answer`
+     * as the reader. The route builds the agent's ctx itself, so the reader is
+     * the one place a test can reach that ctx's logger: it is handed it.
+     */
+    function busWithReader(answer: () => Promise<unknown>): void {
+      registerAuth({ id: 'u1', isAdmin: false });
+      registerMetadata();
+      registerAgents();
+      bus.registerService(RANGE_HOOK, 'sandbox', async (ctx, raw: unknown) => {
+        const input = raw as ReadUserFileRangeInput;
+        rangeCalls.push({
+          agentId: ctx.agentId,
+          userId: ctx.userId ?? '',
+          ownerAgentId: input.owner.agentId,
+          relPath: input.relPath,
+          offset: input.offset,
+          length: input.length,
+        });
+        for (const level of ['warn', 'info'] as const) {
+          vi.spyOn(ctx.logger, level).mockImplementation((msg, bindings) => {
+            logs.push({ level, msg, bindings });
+          });
+        }
+        return answer();
+      });
+    }
+
+    it('answers 200 for a file and reads no bytes', async () => {
+      standardBus();
+      // Everything in the request that could name an agent says a2. Only the
+      // conversation decides, as for the download.
+      const d = await status({ conversationId: 'c1', agentId: 'a2', '*': SPLAT });
+
+      expect(d.captured.statusCode).toBe(200);
+      expect(d.captured.json).toEqual({ available: true });
+      // A status is only ever true now: nothing may keep a copy of it.
+      expect(d.captured.headers).toEqual({ 'cache-control': 'private, no-store' });
+      // No body streamed, and ONE range asked for, of length 0: the reader
+      // stats the file and reads none of it. Asked on the agent THE
+      // CONVERSATION names, under the key decoded once.
+      expect(d.captured.contentLength).toBeNull();
+      expect(rangeCalls).toEqual([
+        { agentId: 'a1', userId: 'u1', ownerAgentId: 'a1', relPath: KEY, offset: 0, length: 0 },
+      ]);
+      expect(metadataCalls).toEqual([{ conversationId: 'c1', userId: 'u1' }]);
+      expect(resolveCalls).toEqual([{ agentId: 'a1', userId: 'u1' }]);
+    });
+
+    it('404 when the file is gone', async () => {
+      standardBus();
+      files.delete(KEY);
+      const d = await status({ conversationId: 'c1', '*': SPLAT });
+      expect(d.captured.statusCode).toBe(404);
+      expect(d.captured.json).toEqual({ error: 'file-not-found' });
+      // Nor may a "gone": a file written back at the key must read as there.
+      expect(d.captured.headers).toEqual({ 'cache-control': 'private, no-store' });
+      expect(rangeCalls).toHaveLength(1);
+    });
+
+    it('400 not-a-file for a folder', async () => {
+      standardBus();
+      dirs.add('reports');
+      const d = await status({ conversationId: 'c1', '*': 'reports' });
+      expect(d.captured.statusCode).toBe(400);
+      expect(d.captured.json).toEqual({ error: 'not-a-file' });
+      expect(d.captured.headers).toEqual({ 'cache-control': 'private, no-store' });
+    });
+
+    it('checks the conversation before the path: a teammate’s conversation is 404 for a real key and a malformed one, unread', async () => {
+      standardBus();
+      for (const splat of [SPLAT, encodeURIComponent('../../secret')]) {
+        const theirs = await status({ conversationId: 'c-theirs', '*': splat });
+        expect(theirs.captured.statusCode).toBe(404);
+        expect(theirs.captured.json).toEqual({ error: 'file-not-found' });
+        // Every status answer is no-store, the ACL's too: the chip re-asks.
+        expect(theirs.captured.headers).toEqual({ 'cache-control': 'private, no-store' });
+      }
+      expect(resolveCalls).toEqual([]);
+      expect(rangeCalls).toEqual([]);
+      // The control: on the caller's own conversation the malformed key is the
+      // 400 it should be, so the 404 above was the ACL's, not the path's.
+      const own = await status({ conversationId: 'c1', '*': encodeURIComponent('../../secret') });
+      expect(own.captured.statusCode).toBe(400);
+      expect(own.captured.json).toEqual({ error: 'invalid-path' });
+      expect(own.captured.headers).toEqual({ 'cache-control': 'private, no-store' });
+      expect(rangeCalls).toEqual([]);
+    });
+
+    it('404s when the caller can no longer reach the conversation’s agent, and never reads', async () => {
+      reachable.delete('a1');
+      standardBus();
+      const d = await status({ conversationId: 'c1', '*': SPLAT });
+      expect(d.captured.statusCode).toBe(404);
+      expect(d.captured.json).toEqual({ error: 'agent-not-found' });
+      expect(d.captured.headers).toEqual({ 'cache-control': 'private, no-store' });
+      expect(rangeCalls).toEqual([]);
+    });
+
+    it('401 without a session, and looks nothing up', async () => {
+      registerAuth(null);
+      registerMetadata();
+      registerAgents();
+      registerRange();
+      const d = await status({ conversationId: 'c1', '*': SPLAT });
+      expect(d.captured.statusCode).toBe(401);
+      expect(d.captured.headers).toEqual({ 'cache-control': 'private, no-store' });
+      expect(metadataCalls).toEqual([]);
+      expect(rangeCalls).toEqual([]);
+    });
+
+    it.each([
+      {
+        label: 'there is no host mount (k8s without hostReadPath)',
+        answer: async (): Promise<unknown> => {
+          throw new PluginError({
+            code: 'user-files-download-unavailable',
+            plugin: 'sandbox',
+            message: 'set sandbox.filestore.hostReadPath',
+          });
+        },
+      },
+      {
+        label: 'this deployment keeps no files for the agent',
+        answer: async (): Promise<unknown> => ({ kind: 'unavailable' }),
+      },
+    ])('503 user-files-unavailable when $label, and logs nothing', async ({ answer }) => {
+      busWithReader(answer);
+      const d = await status({ conversationId: 'c1', '*': SPLAT });
+      expect(d.captured.statusCode).toBe(503);
+      expect(d.captured.json).toEqual({ error: 'user-files-unavailable' });
+      expect(d.captured.headers).toEqual({ 'cache-control': 'private, no-store' });
+      // A fact about the deployment, asked on every chip after every turn: a
+      // warning per ask would be noise, and it is not a failed read.
+      expect(logs).toEqual([]);
+      expect(rangeCalls).toHaveLength(1);
+    });
+
+    it('503 user-files-unavailable when no reader is loaded at all', async () => {
+      registerAuth({ id: 'u1', isAdmin: false });
+      registerMetadata();
+      registerAgents();
+      const d = await status({ conversationId: 'c1', '*': SPLAT });
+      expect(d.captured.statusCode).toBe(503);
+      expect(d.captured.json).toEqual({ error: 'user-files-unavailable' });
+      expect(d.captured.headers).toEqual({ 'cache-control': 'private, no-store' });
+    });
+
+    it('503 file-read-failed on any other read error, logged by its codes only', async () => {
+      // A plain fs error, as a provider throws it; the real bus hands it over as
+      // `PluginError{code:'unknown'}` with the error as its cause.
+      busWithReader(async () => {
+        throw Object.assign(new Error("EIO: i/o error, open '/srv/files/a1/reports/q3.pdf'"), {
+          code: 'EIO',
+        });
+      });
+      const d = await status({ conversationId: 'c1', '*': SPLAT });
+      expect(d.captured.statusCode).toBe(503);
+      expect(d.captured.json).toEqual({ error: 'file-read-failed' });
+      expect(d.captured.headers).toEqual({ 'cache-control': 'private, no-store' });
+      expect(logs).toEqual([
+        {
+          level: 'warn',
+          msg: 'workspace_user_file_download_read_failed',
+          bindings: { agentId: 'a1', code: 'unknown', causeCode: 'EIO' },
+        },
+      ]);
+      expect(JSON.stringify(logs)).not.toMatch(/i\/o error|q3\.pdf|reports|srv/);
+    });
+
+    it.each([
+      { label: 'not an object', answer: null },
+      { label: 'an object of no kind it knows', answer: { kind: 'symlink' } },
+    ])('503 file-read-failed for an answer that is $label, never a 404', async ({ answer }) => {
+      busWithReader(async () => answer);
+      const d = await status({ conversationId: 'c1', '*': SPLAT });
+      expect(d.captured.statusCode).toBe(503);
+      expect(d.captured.json).toEqual({ error: 'file-read-failed' });
+      expect(d.captured.headers).toEqual({ 'cache-control': 'private, no-store' });
+      expect(logs).toEqual([
+        {
+          level: 'warn',
+          msg: 'workspace_user_file_download_read_failed',
+          bindings: { agentId: 'a1', code: 'invalid-answer' },
+        },
+      ]);
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -595,7 +812,10 @@ describe('the chat file chip download route over a real socket', () => {
   const CONVERSATION = 'c & 1';
   let harness: TestHarness | null = null;
   let savedAllowNoOrigins: string | undefined;
-  let probe: { metadata: unknown[]; ranges: Array<{ ownerAgentId: string; relPath: string }> };
+  let probe: {
+    metadata: unknown[];
+    ranges: Array<{ ownerAgentId: string; relPath: string; offset: number; length: number }>;
+  };
 
   beforeEach(() => {
     probe = { metadata: [], ranges: [] };
@@ -645,7 +865,12 @@ describe('the chat file chip download route over a real socket', () => {
         },
         [RANGE_HOOK]: async (_ctx: unknown, raw: unknown) => {
           const input = raw as ReadUserFileRangeInput;
-          probe.ranges.push({ ownerAgentId: input.owner.agentId, relPath: input.relPath });
+          probe.ranges.push({
+            ownerAgentId: input.owner.agentId,
+            relPath: input.relPath,
+            offset: input.offset,
+            length: input.length,
+          });
           return honestAnswer(files, new Set(), input);
         },
       },
@@ -688,5 +913,23 @@ describe('the chat file chip download route over a real socket', () => {
     expect(r.status).toBe(400);
     expect(await r.json()).toEqual({ error: 'invalid-path' });
     expect(probe.ranges).toEqual([]);
+  });
+
+  it('answers the chip’s status over the wire: 200 for the owner with no bytes read, 404 for a teammate (TASK-1017)', async () => {
+    const port = await boot();
+    const statusUrl = (conversationId: string, splat: string): string =>
+      `http://127.0.0.1:${port}/api/workspace/conversations/${encodeURIComponent(conversationId)}/status/user-files/${splat}`;
+
+    const r = await fetch(statusUrl(CONVERSATION, encodeURIComponent(KEY)));
+    expect(r.status).toBe(200);
+    expect(r.headers.get('cache-control')).toBe('private, no-store');
+    expect(await r.json()).toEqual({ available: true });
+    expect(probe.metadata).toEqual([{ conversationId: CONVERSATION, userId: 'u1' }]);
+    expect(probe.ranges).toEqual([{ ownerAgentId: 'a1', relPath: KEY, offset: 0, length: 0 }]);
+
+    const theirs = await fetch(statusUrl('c-theirs', encodeURIComponent(KEY)));
+    expect(theirs.status).toBe(404);
+    expect(await theirs.json()).toEqual({ error: 'file-not-found' });
+    expect(probe.ranges).toHaveLength(1);
   });
 });

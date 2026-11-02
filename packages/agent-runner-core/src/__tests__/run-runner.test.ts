@@ -182,6 +182,10 @@ beforeEach(() => {
   } as unknown as FakeClient;
 });
 
+/** The auto-attach notes a tool turn-end can carry (generated-files.ts). */
+const NOT_ATTACHED = { type: 'text', text: 'Some new files could not be attached. Ask the agent to attach them again.' };
+const HELD = { type: 'text', text: 'Some new files need your approval before we attach them. You can also find them in the Files tab.' };
+
 describe('runRunner — generated file attachment', () => {
   // New files in the agent's home are attached to the turn that made them, by
   // reference (TASK-1012): the chip names the file by its key in the agent's
@@ -189,15 +193,19 @@ describe('runRunner — generated file attachment', () => {
   // once. The home is the only tracked root since TASK-995 made it required: a
   // session can no longer come up without one and fall back to scratch
   // `artifacts/`.
-  it.each(['allow', 'reject', 'hold'] as const)('uses the policy gate (%s) and attaches a reference, never a blob copy', async (verdict) => {
+  it.each(['allow', 'reject', 'hold', 'unavailable'] as const)('uses the policy gate (%s) and attaches a reference, never a blob copy', async (verdict) => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'ax-files-shell-'));
     const original = fakeClient.call.getMockImplementation()!;
     fakeClient.call.mockImplementation(async (action: string, ...args: unknown[]) => {
       if (action === 'session.get-config') return { ...await original(action, ...args), conversationId: 'c1' };
       if (action === 'tool.list') return { tools: [{ name: 'artifact_publish', executesIn: 'sandbox', inputSchema: {} }] };
-      if (action === 'tool.pre-call') return verdict === 'allow' ? { verdict: 'allow' }
-        : verdict === 'reject' ? { verdict: 'reject', reason: 'blocked' }
-          : { verdict: 'hold', decisionId: 'd1', note: 'approval required' };
+      if (action === 'tool.pre-call') {
+        // `unavailable`: the gate never answers, so it fails closed.
+        if (verdict === 'unavailable') throw new Error('host gone');
+        return verdict === 'allow' ? { verdict: 'allow' }
+          : verdict === 'reject' ? { verdict: 'reject', reason: 'blocked' }
+            : { verdict: 'hold', decisionId: 'd1', note: 'approval required' };
+      }
       return original(action, ...args);
     });
     const upload = vi.fn(async () => ({ sha256: 'a'.repeat(64), size: 6 }));
@@ -235,9 +243,169 @@ describe('runRunner — generated file attachment', () => {
       }
       // The warning carries the reason code, and only on a refusal.
       const logs = stderr.mock.calls.map(c => String(c[0])).join('');
-      if (verdict === 'allow') expect(logs).not.toContain('could not attach a generated file');
-      else expect(logs).toContain('runner: could not attach a generated file (gate-refused)');
+      const reason = { allow: null, reject: 'denied', hold: 'held', unavailable: 'unavailable' }[verdict];
+      if (reason === null) expect(logs).not.toContain('could not attach a generated file');
+      else expect(logs).toContain(`runner: could not attach a generated file (${reason})\n`);
+      // A held file is waiting on the person, so it is never told to try again.
+      if (verdict === 'hold') {
+        expect(first[1].contentBlocks).toContainEqual(HELD);
+        expect(first[1].contentBlocks).not.toContainEqual(NOT_ATTACHED);
+      } else if (verdict !== 'allow') {
+        expect(first[1].contentBlocks).toContainEqual(NOT_ATTACHED);
+        expect(first[1].contentBlocks).not.toContainEqual(HELD);
+      }
     } finally { stderr.mockRestore(); await fs.rm(root, { recursive: true, force: true }); }
+  });
+
+  // TASK-1017. A held automatic attach is a call the RUNNER made, so the model
+  // never saw it and cannot make it "again". When the person answers, the
+  // runner sends that same call back to the gate itself, when the delivery is
+  // pulled, ahead of the turn it opens, so the model's own turn is not the
+  // one to spend the approval through the sandbox executor (which would copy
+  // the file into the blob store).
+  const APPROVED = 'A person approved attaching new files from earlier in this conversation. ' +
+    'That is handled for you: do not publish them yourself unless the user asks for them again. You do not need to reply.';
+  const DECLINED = 'A person chose not to attach new files from earlier in this conversation, so they were not attached. ' +
+    'Do not publish them unless the user asks for them again. You do not need to reply.';
+  const CHIP = { type: 'agent_file', path: 'report.txt', mediaType: 'text/plain', sizeBytes: 6 };
+  const HOLD = { verdict: 'hold', decisionId: 'd1', note: 'approval required' };
+  const turn: EndTurnInput = {
+    contentBlocks: [{ type: 'text', text: 'Here is your report.' }],
+    toolResultBlocks: [], usage: null, readTurnId: async () => undefined,
+  };
+  const preCallCount = () => fakeClient.call.mock.calls.filter(c => c[0] === 'tool.pre-call').length;
+
+  /** A conversation-bound run with auto-attach on: `tool.pre-call` answers from `verdicts`, in order. */
+  async function autoAttachRun(
+    verdicts: unknown[], inbox: unknown[], drive: (ctx: LoopContext, home: string) => Promise<void>, exit = 0,
+  ) {
+    const home = await fs.mkdtemp(path.join(os.tmpdir(), 'ax-files-shell-'));
+    const original = fakeClient.call.getMockImplementation()!;
+    fakeClient.call.mockImplementation(async (action: string, ...args: unknown[]) => {
+      if (action === 'session.get-config') return { ...await original(action, ...args), conversationId: 'c1' };
+      if (action === 'tool.list') return { tools: [{ name: 'artifact_publish', executesIn: 'sandbox', inputSchema: {} }] };
+      if (action === 'tool.pre-call') {
+        const next = verdicts.shift();
+        if (next === undefined) throw new Error('tool.pre-call was asked more often than scripted');
+        return next;
+      }
+      return original(action, ...args);
+    });
+    const upload = vi.fn(async () => ({ sha256: 'a'.repeat(64), size: 6 }));
+    fakeClient.callBinaryUpload = upload;
+    scriptInbox(inbox);
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    let logs = '';
+    try {
+      const loop: Loop = { run: async ctx => { await drive(ctx, home); return 0; } };
+      expect(await runRunner(() => loop, seams(() => ({ ...fakeEnv(), userFilesRoot: home })))).toBe(exit);
+      logs = stderr.mock.calls.map(c => String(c[0])).join('');
+    } finally { stderr.mockRestore(); await fs.rm(home, { recursive: true, force: true }); }
+    return {
+      logs,
+      upload,
+      preCalls: fakeClient.call.mock.calls.filter(c => c[0] === 'tool.pre-call').map(c => c[1] as { call: unknown }),
+      toolTurnEnds: fakeClient.event.mock.calls
+        .filter(c => c[0] === 'event.turn-end' && c[1].role === 'tool')
+        .map(c => c[1].contentBlocks as Array<{ type: string }>),
+      reported: fakeClient.event.mock.calls.filter(c => c[0] === 'event.tool-post-call').map(c => c[1]),
+    };
+  }
+
+  /** The held turn writes report.txt; the next pull is `delivery`; then that turn ends. */
+  async function heldThenAnswered(verdicts: unknown[], delivery: Record<string, unknown>) {
+    let seen: unknown;
+    let preCallsAtPull = -1;
+    const run = await autoAttachRun(verdicts, [delivery], async (ctx, home) => {
+      await fs.writeFile(path.join(home, 'report.txt'), 'report');
+      await ctx.endTurn(turn);
+      seen = await ctx.nextMessage();
+      preCallsAtPull = preCallCount();
+      await ctx.endTurn(turn);
+      expect(await ctx.nextMessage()).toBeNull();
+    });
+    return { ...run, seen, preCallsAtPull };
+  }
+
+  it('approving a held auto-attach attaches the reference once and creates no blob', async () => {
+    const run = await heldThenAnswered([HOLD, { verdict: 'allow' }],
+      { type: 'decision-resolved', decisionId: 'd1', outcome: 'approved', note: 'HOST NOTE' });
+    // The runner's own note: the host's would ask the model to repeat a call
+    // it never made.
+    expect(run.seen).toEqual({ content: `System message (not from the user): ${APPROVED}`, id: expect.any(String) });
+    expect(JSON.stringify(run.seen)).not.toContain('HOST NOTE');
+    // The identical call went back to the gate when the delivery was pulled,
+    // before the model's turn began.
+    expect(run.preCallsAtPull).toBe(2);
+    expect(run.preCalls).toHaveLength(2);
+    expect(run.preCalls[1]).toEqual(run.preCalls[0]);
+    // Charged once: no blob, no artifact row.
+    expect(run.upload).not.toHaveBeenCalled();
+    expect(fakeClient.call.mock.calls.some(c => c[0] === 'artifact.publish' || c[0] === 'blob.put')).toBe(false);
+    expect(fakeClient.callBinary.mock.calls.some(c => c[0] === 'blob.put')).toBe(false);
+    // The held turn says it is waiting; the chip lands once, on a later turn.
+    expect(run.toolTurnEnds[0]).toContainEqual(HELD);
+    expect(run.toolTurnEnds[0]!.some(block => block.type === 'agent_file')).toBe(false);
+    expect(run.toolTurnEnds.slice(1).flat().filter(block => block.type === 'agent_file')).toEqual([CHIP]);
+    // The approved call's outcome is the chip.
+    expect(run.reported).toEqual([{ call: run.preCalls[1]!.call, output: CHIP }]);
+    // Delivered, so never reported as lost.
+    expect(run.logs).not.toContain('(undelivered)');
+  });
+
+  it('a decision-resolved the runner did not raise keeps the host note even with auto-attach on', async () => {
+    // A cold session's hold, or one the model raised itself: not ours to answer.
+    const run = await heldThenAnswered([HOLD],
+      { type: 'decision-resolved', decisionId: 'd2', outcome: 'approved', note: 'HOST NOTE' });
+    expect(run.seen).toEqual({ content: 'System message (not from the user): HOST NOTE', id: expect.any(String) });
+    expect(run.preCallsAtPull).toBe(1);
+    expect(run.preCalls).toHaveLength(1);
+    expect(run.toolTurnEnds.flat().some(block => block.type === 'agent_file')).toBe(false);
+    expect(run.reported).toEqual([]);
+  });
+
+  it('declining a held auto-attach gets the runner note and never asks the gate again', async () => {
+    const run = await heldThenAnswered([HOLD],
+      { type: 'decision-resolved', decisionId: 'd1', outcome: 'dismissed', note: 'HOST NOTE' });
+    expect(run.seen).toEqual({ content: `System message (not from the user): ${DECLINED}`, id: expect.any(String) });
+    expect(run.preCalls).toHaveLength(1);
+    expect(run.toolTurnEnds.flat().some(block => block.type === 'agent_file')).toBe(false);
+    expect(run.reported).toEqual([]);
+  });
+
+  it('an approval pulled while another turn streams lands once, on the turn that ends next', async () => {
+    // The claude-sdk loop pulls ahead (TASK-573): the delivery is pulled while
+    // the person's next turn is still streaming.
+    const run = await autoAttachRun([HOLD, { verdict: 'allow' }], [
+      { type: 'user-message', payload: { role: 'user', content: 'thanks' }, reqId: 'req-next', cursor: 1 },
+      { type: 'decision-resolved', decisionId: 'd1', outcome: 'approved', note: 'HOST NOTE' },
+    ], async (ctx, home) => {
+      await fs.writeFile(path.join(home, 'report.txt'), 'report');
+      await ctx.endTurn(turn); // the held turn
+      await ctx.nextMessage(); // "thanks"
+      await ctx.emitChunk({ kind: 'text', text: 'you are welcome' });
+      expect(await ctx.nextMessage()).not.toBeNull(); // the approval, mid-turn
+      await ctx.endTurn(turn); // the "thanks" turn
+      await ctx.endTurn(turn); // the continuation
+    });
+    expect(run.toolTurnEnds.map(blocks => blocks.filter(block => block.type === 'agent_file'))).toEqual([[], [CHIP]]);
+  });
+
+  it('an approved chip the continuation turn never delivered is logged, not lost silently', async () => {
+    // The approval is spent when the delivery is pulled; the chip waits for the
+    // next turn-end. A continuation turn that throws out of the loop never ends.
+    const run = await autoAttachRun([HOLD, { verdict: 'allow' }], [
+      { type: 'decision-resolved', decisionId: 'd1', outcome: 'approved', note: 'HOST NOTE' },
+    ], async (ctx, home) => {
+      await fs.writeFile(path.join(home, 'report.txt'), 'report');
+      await ctx.endTurn(turn); // the held turn
+      expect(await ctx.nextMessage()).not.toBeNull(); // the approval
+      throw new Error('provider exploded');
+    }, 1);
+    expect(run.toolTurnEnds.flat().some(block => block.type === 'agent_file')).toBe(false);
+    // Once per chip the run could not deliver.
+    const undelivered = run.logs.split('runner: could not attach a generated file (undelivered)\n').length - 1;
+    expect(undelivered).toBe(1);
   });
 });
 

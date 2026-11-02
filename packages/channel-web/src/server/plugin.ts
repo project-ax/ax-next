@@ -750,10 +750,11 @@ export function createChannelWebServerPlugin(
           // TASK-1014 — the Files tab's downloads: the whole file, one range
           // at a time (`server/user-file-download.ts`). Separate from the
           // preview read above, so either can be missing without the other.
-          // TASK-1012's chat file chips download through the same helper.
+          // TASK-1012's chat file chips download through the same helper, and
+          // TASK-1017's chip status check is a length-0 read of it.
           hook: 'sandbox:read-user-file-range',
           degradation:
-            'Files tab downloads and chat file chip downloads answer 503 user-files-unavailable (previews still work)',
+            'Files tab downloads and chat file chip downloads answer 503 user-files-unavailable, and chips cannot say a file is gone before a click (previews still work)',
         },
       ],
       subscribes: [
