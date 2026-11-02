@@ -354,7 +354,9 @@ Card decision 6 ("treated as 'verify on'", "Saved tasks keep working") governs l
      - For the `sha1` shape, a SHA-1-only delivery gets 401 (D9a).
   5. `refuses when the secret can't be read, even with no signature settings`.
      - Spy on `h.bus.call` the way the existing pattern at `webhook-router.test.ts:133` does. Make `credentials:get` throw `new PluginError({ plugin: '@ax/credentials', code: 'timeout', message: 'slow' })`.
-     - Expect: unsigned delivery 401, warning `routines_webhook_secret_fetch_failed`, nothing invoked.
+     - Expect: unsigned delivery 503 `unavailable` (a transient failure the sender retries), warning `routines_webhook_secret_fetch_failed` with `code: 'timeout'`, nothing invoked.
+     - Then make it throw `code: 'decrypt-failed'`. Expect 401 `secret` (a per-secret problem a retry can't fix; the owner saves the secret again), the warning with that code, nothing invoked.
+     - The transient set is the bus's own codes: `timeout`, `no-service` and `unknown` (any plain thrown error). Every other code, such as `decrypt-failed`, `invalid-envelope` or `unsupported-credential-kind`, is per-secret.
   6. `fences a delivery that saw no secret when one is saved before admission`.
      - The spy's `credentials:get` first awaits the real `routines:set-webhook-secret` (`operation: 'set'`), then throws the `credential-not-found` PluginError.
      - Expect: unsigned delivery 404, nothing queued or invoked, `lastAcceptedAt` still `null`.
@@ -363,7 +365,7 @@ Card decision 6 ("treated as 'verify on'", "Saved tasks keep working") governs l
      - With the secret saved, a signed Slack challenge gets 200 `{ challenge: 'c' }` and status `{ app: 'slack', verifiedAt: <now>, signatureChecked: false }`.
 - [ ] **Step 4: Bring existing tests to the new rule.**
   - `webhook-router.test.ts:86`: the `sha1`/`sha1=` row now expects 401 for a SHA-1-signed delivery and 202 for a SHA-256 hex one.
-  - `webhook-router.test.ts:133` keeps its 401 and warning. A plain thrown Error is an unreadable secret.
+  - `webhook-router.test.ts:133` expects 503 `unavailable` and the warning with `code: 'unknown'`: its vault throws a plain Error from a service on a real HookBus, which wraps it as `unknown`, a transient failure.
   - `webhook-health.test.ts`: the signed-provider case expects `timestampChecked: true` and the detected `app`. The Slack-verification case expects `app: 'slack'`.
   - `webhook-admission.test.ts` fixtures pass `signature`.
   - `routes.test.ts:113` fixture becomes `app: null, timestampChecked: false`.
