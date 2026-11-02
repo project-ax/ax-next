@@ -1764,4 +1764,48 @@ describe('file chip status checks', () => {
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
     expect(statusChecks).toHaveBeenCalledTimes(2);
   });
+
+  /*
+    The re-read can come back the SAME length: it drops answered approval cards
+    the decision queue has let go of while it adds the new turn's messages. Two
+    held auto-attaches answered, then "Delete it." (two new messages) is k = m.
+    The check must still run, because a turn landed.
+  */
+  it('rechecks after a landed turn even when the re-read keeps the thread length', async () => {
+    const agentFile = {
+      attachmentId: null, agentFilePath: 'plan.pdf', displayName: 'plan.pdf', mediaType: 'application/pdf', sizeBytes: 10,
+    };
+    const statusChecks = vi.fn(async (url: string): Promise<Response> => {
+      if (!url.includes('/status/user-files/')) throw new Error(`unexpected fetch ${url}`);
+      return new Response(JSON.stringify({ available: true }), { headers: { 'content-type': 'application/json' } });
+    });
+    vi.stubGlobal('fetch', statusChecks);
+    const reply = { kind: 'agent' as const, id: 't1', text: 'Here is the plan.', at: '', attachments: [agentFile] };
+    agentMock
+      .mockResolvedValueOnce(detail({
+        thread: [reply, { kind: 'agent', id: 'a1', text: 'Earlier note one.', at: '' }, { kind: 'agent', id: 'a2', text: 'Earlier note two.', at: '' }],
+      }))
+      .mockResolvedValue(detail({
+        thread: [reply, { kind: 'user', id: 'u2', text: 'Delete it.' }, { kind: 'agent', id: 't2', text: 'Deleted.', at: '' }],
+      }));
+    sendMock.mockResolvedValue({ conversationId: 'c-now', reqId: 'r1' } as never);
+    let handlers: Parameters<typeof workspaceApi.streamReply>[1] | null = null;
+    let finish: () => void = () => {};
+    streamMock.mockImplementation(async (_reqId, h) => {
+      handlers = h;
+      await new Promise<void>((resolve) => { finish = resolve; });
+    });
+
+    renderView();
+    await waitFor(() => expect(statusChecks).toHaveBeenCalledOnce());
+
+    const box = await screen.findByPlaceholderText('Message Quill');
+    fireEvent.change(box, { target: { value: 'Delete it.' } });
+    fireEvent.keyDown(box, { key: 'Enter' });
+    await waitFor(() => expect(handlers).not.toBeNull());
+    await act(async () => { handlers!.onDone(); finish(); });
+    expect(await screen.findByText('Deleted.')).toBeTruthy();
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(statusChecks).toHaveBeenCalledTimes(2);
+  });
 });
