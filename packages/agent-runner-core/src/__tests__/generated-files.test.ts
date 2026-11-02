@@ -475,7 +475,7 @@ describe('held automatic attaches (TASK-1017)', () => {
     );
     const declined =
       'A person chose not to attach new files from earlier in this conversation, so they were not attached. ' +
-      'Do not publish them unless the user asks you to. You do not need to reply.';
+      'Do not publish them unless the user asks for them again. You do not need to reply.';
     expect(autoAttachResolvedNote('dismissed')).toBe(declined);
     expect(autoAttachResolvedNote(undefined)).toBe(declined);
   });

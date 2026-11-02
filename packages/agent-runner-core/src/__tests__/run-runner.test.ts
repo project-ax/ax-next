@@ -266,7 +266,7 @@ describe('runRunner — generated file attachment', () => {
   const APPROVED = 'A person approved attaching new files from earlier in this conversation. ' +
     'That is handled for you: do not publish them yourself unless the user asks for them again. You do not need to reply.';
   const DECLINED = 'A person chose not to attach new files from earlier in this conversation, so they were not attached. ' +
-    'Do not publish them unless the user asks you to. You do not need to reply.';
+    'Do not publish them unless the user asks for them again. You do not need to reply.';
   const CHIP = { type: 'agent_file', path: 'report.txt', mediaType: 'text/plain', sizeBytes: 6 };
   const HOLD = { verdict: 'hold', decisionId: 'd1', note: 'approval required' };
   const turn: EndTurnInput = {

@@ -184,9 +184,10 @@ export interface GeneratedFiles {
   /**
    * How many chips approved holds produced that no turn-end has collected
    * yet. The approval was spent when the answer was pulled, so a run that
-   * ends before its next turn-end loses these: the caller says so. (A chip a
-   * turn-end collected but then failed to ship is not counted; that run ends
-   * `terminated` with the refusal.)
+   * ends before its next turn-end loses these: the caller says so. A chip a
+   * turn-end collected is not counted either, even if that turn-end is then
+   * refused: the refusal is logged as `ipc_event_refused` and the run goes
+   * on (only a refused transcript ship ends it `terminated`).
    */
   undelivered(): number;
 }
@@ -196,7 +197,7 @@ const APPROVED_NOTE =
   'That is handled for you: do not publish them yourself unless the user asks for them again. You do not need to reply.';
 const DECLINED_NOTE =
   'A person chose not to attach new files from earlier in this conversation, so they were not attached. ' +
-  'Do not publish them unless the user asks you to. You do not need to reply.';
+  'Do not publish them unless the user asks for them again. You do not need to reply.';
 
 /**
  * What the model reads when a person answers one of the runner's own held

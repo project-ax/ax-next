@@ -101,7 +101,7 @@ export function autoAttachResolvedNote(outcome: 'approved' | 'dismissed' | undef
 ```
 Model notes (exact):
 - approved: `A person approved attaching new files from earlier in this conversation. That is handled for you: do not publish them yourself unless the user asks for them again. You do not need to reply.`
-- otherwise: `A person chose not to attach new files from earlier in this conversation, so they were not attached. Do not publish them unless the user asks you to. You do not need to reply.`
+- otherwise: `A person chose not to attach new files from earlier in this conversation, so they were not attached. Do not publish them unless the user asks for them again. You do not need to reply.`
 
 **Behaviour (the order is the security property):**
 1. In `collect`, a `held` verdict stores `decisionId → { call, relative }`, with the **same `ToolCall` object** that was sent to the gate. The map holds at most `MAX_HELD_AUTO_ATTACH` entries and evicts the oldest first (it is a `Map`, so insertion order works).
@@ -176,7 +176,7 @@ Model notes (exact):
   - `unavailable`, no range service, or a throw with code `user-files-download-unavailable` → 503 `user-files-unavailable`
   - any other throw, or a non-object answer → 503 `file-read-failed`, logged with `READ_FAILED` and the error codes only
   - There is no 413.
-- Chip: `GeneratedFileChip({ file, conversationId, recheckKey }: { …; recheckKey?: number })`. Only agent-file chips (`file.agentFilePath !== undefined`) check. They check when they mount and again whenever `recheckKey` changes, with an `AbortController` aborted on cleanup. The URL is `/api/workspace/conversations/${encodeURIComponent(conversationId)}/status/user-files/${encodeURIComponent(path)}`, built inside the effect inside a try (an encode throw counts as "unknown"). **Only 404 or 400 means gone.** Everything else (200, 401, 403, 5xx, a network error, an abort) leaves the chip as it was. When gone: the button is disabled, the secondary line reads exactly `No longer available`, and the aria-label reads `${name} is no longer available`. `AgentConversation` passes `recheckKey={thread.length}`, so a turn in which the agent deleted the file updates the chip.
+- Chip: `GeneratedFileChip({ file, conversationId, recheckKey }: { …; recheckKey?: number })`. Only agent-file chips (`file.agentFilePath !== undefined`) check. They check when they mount and again whenever `recheckKey` changes, with an `AbortController` aborted on cleanup. The URL is `/api/workspace/conversations/${encodeURIComponent(conversationId)}/status/user-files/${encodeURIComponent(path)}`, built inside the effect inside a try (an encode throw counts as "unknown"). **Only 404 or 400 means gone.** Everything else (200, 401, 403, 5xx, a network error, an abort) leaves the chip as it was. When gone: the button is disabled, the secondary line reads exactly `No longer available`, and the aria-label reads `${name} is no longer available`. `AgentConversation` passes `recheckKey={fileRecheckKey}`, which `AgentView` sets to a count of successful durable thread reads (as built after review: not `thread.length`, which moves per live frame, nor the read's length, which can stay put across a turn), so a turn in which the agent deleted the file updates the chip.
 
 - [ ] **Step 1: Write the failing route tests** (a new `describe('the chat file chip status route')`):
   - `answers 200 for a file and reads no bytes`: the range spy saw exactly one call, `{offset:0, length:0}`.

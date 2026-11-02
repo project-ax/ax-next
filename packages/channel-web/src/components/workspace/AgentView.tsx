@@ -668,9 +668,11 @@ export function AgentView({
 
   /*
     TASK-1017 — how many durable thread reads have landed. File chips recheck
-    their files on this: it moves once per landed turn, and never while one
-    streams. Not the read's length, which can stay put across a turn (answered
-    approval cards drop out as the new turn's messages arrive).
+    their files on this: it moves once per successful read, never per live
+    frame. A landed turn is usually two reads (`onDone` re-reads and
+    `onChanged` bumps the shell's version), and a decision raised mid-turn
+    adds one. Not the read's length, which can stay put across a turn
+    (answered approval cards drop out as the new turn's messages arrive).
   */
   const [threadReads, setThreadReads] = useState(0);
 
@@ -1812,9 +1814,9 @@ export function AgentView({
                 agent={agent}
                 thread={past ? pastThread : liveThread}
                 /*
-                  TASK-1017 — chips recheck their files once per DURABLE read
-                  (`threadReads`): it moves when a turn lands, not as
-                  `liveThread`'s live frames come and go while one streams.
+                  TASK-1017 — chips recheck their files once per successful
+                  DURABLE read (`threadReads`), not as `liveThread`'s live
+                  frames come and go while a turn streams.
                 */
                 fileRecheckKey={past ? pastThread.length : threadReads}
                 /*
