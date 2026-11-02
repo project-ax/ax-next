@@ -325,5 +325,10 @@ describe('createHttpListener body-read failure (TASK-1018)', () => {
     expect(typeof lines[0]!.reqId).toBe('string');
     expect((lines[0]!.reqId as string).length).toBeGreaterThan(0);
     expect(stderr.filter((l) => l.includes('ipc-http:'))).toEqual([]);
+    // "One line" means one error line in total, not one under this name: a
+    // regression that also logged the failure under another name (say
+    // ipc_dispatch_internal_error) must still fail here.
+    const errorLines = stdout.filter((l) => l.includes('"level":"error"'));
+    expect(errorLines).toHaveLength(1);
   });
 });

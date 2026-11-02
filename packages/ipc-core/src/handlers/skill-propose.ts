@@ -31,11 +31,13 @@ import type { ActionHandler } from './types.js';
 // that failed its schema, a HOST fault) does.
 //
 // The parser half is pinned to the parser's own type (TASK-1018): `satisfies
-// Record<ManifestCode, true>` makes a code the parser adds later a `tsc`
-// error here until someone classifies it. A type-only import, so no runtime
-// coupling to @ax/skills-parser. (Deliberately NOT built from the parser's
-// runtime list: a new code should force a decision, not silently become a
-// 400.)
+// Record<ManifestCode, true>` makes a code the parser adds later (missing key,
+// TS1360) or drops (extra key, TS2353) a `tsc` error here. The fix is to add
+// it to this table, i.e. to make it a 400. A code that should NOT be an
+// author error must instead be thrown under a non-ManifestCode name. The
+// point is that someone looks at skill.propose when the parser grows a code,
+// rather than the code being picked up silently. A type-only import, so no
+// runtime coupling to @ax/skills-parser.
 const MANIFEST_REJECT_CODES = {
   'invalid-yaml': true,
   'invalid-manifest': true,

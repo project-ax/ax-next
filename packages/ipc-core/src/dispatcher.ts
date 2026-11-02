@@ -81,11 +81,12 @@ import {
 // Unknown path → 404 NOT_FOUND, without reading the body. That includes the
 // git workspace tier's actions and the save-refused drain, removed in
 // TASK-995: a runner from the previous release that still calls one gets
-// this clean 404. Body-parsing errors bubble up to this function's try/catch
-// and become 4xx/5xx per the readJsonBody contract (the listener's gate
-// already covered the fail-fast Content-Length case; mid-stream overflow
-// still possible here if the client streams a body with a lying
-// Content-Length).
+// this clean 404. Body-read errors are answered by the body readers below,
+// never thrown out of `dispatch`: over the cap → 413, bad JSON → 400, and a
+// stream error (the client hung up mid-body) → a structured
+// `ipc_body_read_failed` log line on ctx.logger plus a 500 (TASK-1018). The
+// fail-fast Content-Length check runs first; mid-stream overflow is still
+// possible if the client streams a body with a lying Content-Length.
 // ---------------------------------------------------------------------------
 
 const ACTIONS = new Map<string, {
