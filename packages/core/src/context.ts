@@ -165,13 +165,18 @@ function stackFrames(stack: unknown, message: unknown, name: unknown): string | 
     if (at === -1) return undefined;
     body = stack.slice(at + message.length);
   } else {
-    // An empty message makes the whole header the bare name (V8 writes `Name`;
-    // source-map-support style formatters write `Name: `). Anything else in the
-    // first line means the stack wasn't built from this message.
+    // An empty message makes V8 write the bare name as the whole header (Node
+    // does, with or without --enable-source-maps). Anything else in the first
+    // line means the stack wasn't built from this message. That includes a
+    // `Name: ` header: some formatters (vite's module runner) write one for an
+    // empty message, but it is also exactly what a message that began with
+    // `\n` leaves once blanked, and its next lines could pass for frames.
+    // The two can't be told apart from the string, so neither gets frames
+    // (TASK-1031).
     const nl = stack.indexOf('\n');
     if (nl === -1 || typeof name !== 'string') return undefined;
     const header = stack.slice(0, nl);
-    if (header !== name && header !== `${name}: `) return undefined;
+    if (header !== name) return undefined;
     body = stack.slice(nl + 1);
   }
   const frames = body.split('\n').filter((line) => /^\s+at /.test(line));

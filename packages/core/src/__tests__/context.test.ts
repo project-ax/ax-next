@@ -202,7 +202,7 @@ describe('createLogger', () => {
       expect('frames' in (s.cause as Record<string, unknown>)).toBe(false);
     });
 
-    it('writes no frames for an empty message unless the header is the bare name', () => {
+    it('writes frames for an empty message only when the header is the bare name', () => {
       const blanked = new Error('secret\n  at rt_BLANKED');
       void blanked.stack; // V8 builds the header now, from the secret message
       blanked.message = '';
@@ -210,10 +210,21 @@ describe('createLogger', () => {
         'rt_BLANKED',
       );
 
-      // Under vitest the header reads `Error: ` (vite's module runner formats it).
+      // A `Name: ` header (vite's module runner writes one under vitest) is
+      // ALSO what a message that began with `\n` leaves behind once blanked,
+      // and the two can't be told apart from the string (TASK-1031). Node —
+      // with or without --enable-source-maps — writes the bare name for an
+      // empty message, so only the bare name gives frames.
+      const leadingNl = new Error('');
+      leadingNl.stack = 'Error: \n  at rt_LEADING_NL (secret)\n    at real (file.js:1:1)';
+      const l = logErr(new Error('outer', { cause: leadingNl }));
+      expect(JSON.stringify(l)).not.toContain('rt_LEADING_NL');
+      expect('frames' in (l.cause as Record<string, unknown>)).toBe(false);
+
       const empty = new Error('');
+      empty.stack = 'Error: \n    at fn (file.js:1:1)';
       const c = logErr(new Error('outer', { cause: empty })).cause as Record<string, unknown>;
-      expect(c.frames).toMatch(/^\s+at .*context\.test\.ts/);
+      expect('frames' in c).toBe(false);
 
       // Plain Node/V8 (production) writes the bare name: `Error`.
       const v8 = new Error('');
