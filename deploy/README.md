@@ -421,6 +421,9 @@ The order is counter-intuitive, so here it is up front. (Both commands act on yo
 # For sandbox.backend=agent-sandbox, delete the PARENT resources first:
 # kubectl delete sandboxes.agents.x-k8s.io -n ax-next-runners -l ax.io/sandbox-backend=agent-sandbox --wait=true
 # Deleting only their Pods makes the controller recreate them.
+# That selector finds cold sessions only. Shared-pool sessions don't carry it
+# and need no manual delete: a starting host retires every shared SandboxClaim
+# itself. Standbys hold no session yet, so they can stay (GKE.md 4f, Step 2).
 kubectl delete pods -n ax-next-runners -l app.kubernetes.io/component=ax-next-runner
 
 # 2. THEN restart the host.
