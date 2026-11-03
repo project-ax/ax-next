@@ -539,10 +539,15 @@ helm get values ax-next -n ax-next --kube-context <your GKE context> -o yaml | g
 ### 4e. Upgrading past TASK-1003: runners lose NFS egress
 
 From this chart on, runner pods get no NFS egress. Their `/files` is a kubelet
-mount, so they should not need any. The best evidence so far: the shared-pool
-storage helper has mounted this same share through a kubelet `nfs:` volume
-since 2026-10-02, under a policy that allows it no NFS egress at all. But no
-cold runner has been watched doing it on GKE yet. Follow
+mount, so they do not need any. We have now watched that hold on GKE: on
+2026-11-01 (GKE Standard, `ax-next-std`, helm revision 60), fresh
+runner-labelled probe pods on the gVisor pool and on the host's node both
+mounted `/files` with no runner NFS egress, before and after the export was
+restricted to the node range. (Before that, the only evidence was the
+shared-pool storage helper, which has mounted this share through a kubelet
+`nfs:` volume since 2026-10-02 under a policy that allows it no NFS egress.)
+A probe is a stand-in for a cold runner, not a recording of one, and other
+clusters differ, so keep the check. Follow
 [Applying it to an existing deployment](#applying-it-to-an-existing-deployment):
 upgrade, run the probe, confirm `/files` mounts, and use the surgical rollback
 (not `helm rollback`) if it doesn't. The same section restricts the Filestore
@@ -609,10 +614,34 @@ Host and runner share one image, so the runner pods go first (see
 for why), warm-pool standbys included:
 
 ```bash
-# Agent Sandbox backend only: delete the parent resources first.
+# Agent Sandbox backend (sandbox.backend=agent-sandbox) only: delete the cold
+# sessions' parent Sandboxes first, or the controller recreates their pods.
+# "No resources found" is a normal answer: it means no cold session is open.
 # kubectl --context "$KCTX" delete sandboxes.agents.x-k8s.io -n ax-next-runners -l ax.io/sandbox-backend=agent-sandbox --wait=true
 kubectl --context "$KCTX" delete pods -n ax-next-runners -l app.kubernetes.io/component=ax-next-runner
 ```
+
+That Sandbox selector only reaches **cold** sessions, and that's on purpose.
+There are two kinds of Sandbox, and they carry different labels:
+
+- **Cold sessions** (every session on the plain agent-sandbox backend, plus
+  shared-pool sessions with a service-sidecar connector). `@ax/sandbox-k8s`
+  stamps `ax.io/sandbox-backend=agent-sandbox` on these Sandboxes and their
+  pods, so the selector above finds them. On the 2026-11-01 prod deploy it
+  found nothing, because no cold session was open. That's the expected answer,
+  not a broken selector.
+- **Shared-pool sessions and standbys.** The Agent Sandbox controller creates
+  these Sandboxes from the warm pool, and they carry only its own
+  `agents.x-k8s.io/*` labels (for example `agents.x-k8s.io/warm-pool-sandbox`).
+  The `ax.io/shared-standby` label is on their *pods*, not on the Sandboxes.
+  Don't delete these by hand. When the new host starts, it retires every
+  shared session's SandboxClaim (which takes the Sandbox and pod with it), and
+  once it has created the new image's warm pools it retires the old ones and
+  their standbys.
+
+The pod delete above also removes the standby pods. The warm pool recreates
+them on the old template until the upgrade lands. That's fine: nothing claims
+them, and the new host retires that pool.
 
 Then `helm upgrade` as in [Write the overrides and install](#write-the-overrides-and-install),
 with `--kube-context "$KCTX"`. The first `--reuse-values` upgrade also needs
@@ -791,7 +820,13 @@ node-only export loses nothing and refuses a pod that tries to speak NFS
 itself. The details, and why `no_root_squash` stays, are in
 [Restrict the user-files export to the nodes](#restrict-the-user-files-export-to-the-nodes).
 
+Pick the instance's name and zone once. Everything after this reads them from
+`$FS_INSTANCE` and `$FS_ZONE` instead of typing a name, because a typed name is
+how these docs ended up describing an instance prod doesn't have:
+
 ```bash
+export FS_INSTANCE=ax-next-userfiles   # any name you like
+export FS_ZONE=us-central1-a           # a zone in your cluster's region
 export CLUSTER=<cluster-name>
 export CLUSTER_LOCATION=<zone-or-region>   # the cluster's zone, or its region if regional
 
@@ -818,9 +853,9 @@ cat > files-export.json <<EOF
 }
 EOF
 
-gcloud filestore instances create ax-next-files \
+gcloud filestore instances create "$FS_INSTANCE" \
   --project=$PROJECT_ID \
-  --zone=us-central1-a \
+  --zone="$FS_ZONE" \
   --tier=BASIC_HDD \
   --network=name=default \
   --flags-file=files-export.json
@@ -832,13 +867,28 @@ fi
 Read back its IP. It goes into `gke-values.local.yaml` in the next step:
 
 ```bash
-gcloud filestore instances describe ax-next-files \
-  --project=$PROJECT_ID --zone=us-central1-a \
+gcloud filestore instances describe "$FS_INSTANCE" \
+  --project=$PROJECT_ID --zone="$FS_ZONE" \
   --format='value(networks[0].ipAddresses[0])'
 ```
 
 The share name `vol1` is the export path `/vol1`, which `gke-values.yaml`
 already sets.
+
+**Already have the share?** Then don't guess its name: look it up from the IP
+the live release mounts. This is read-only, and it is the line every later
+Filestore command on this page expects you to have run in the same shell:
+
+```bash
+FS_IP=$(helm get values ax-next -n ax-next --kube-context <your GKE context> -a -o json \
+  | jq -r '.sandbox.filestore.server // empty')
+# `=` on purpose: `:` is a loose match, so one IP can also find a longer one.
+[ -n "$FS_IP" ] && read -r FS_INSTANCE FS_ZONE <<<"$(gcloud filestore instances list \
+  --project=$PROJECT_ID --filter="networks.ipAddresses=$FS_IP" \
+  --format='value(name.basename(),name.segment(3))')"
+export FS_INSTANCE FS_ZONE
+echo "user-files Filestore: ${FS_INSTANCE:-?} in ${FS_ZONE:-?} at ${FS_IP:-?}"   # no ? allowed
+```
 
 ### Restrict the user-files export to the nodes
 
@@ -887,14 +937,17 @@ the variables.
 export GKE_CONTEXT=<your GKE context>
 export CLUSTER=<cluster-name>
 export CLUSTER_LOCATION=<zone-or-region>   # the cluster's zone, or its region if regional
-export FS_ZONE=us-central1-a       # the Filestore instance's zone
 
 FS_VALUES=$(helm get values ax-next -n ax-next --kube-context "$GKE_CONTEXT" -a -o json)
 FS_IP=$(echo "$FS_VALUES" | jq -r '.sandbox.filestore.server // empty')
 FS_PATH=$(echo "$FS_VALUES" | jq -r '.sandbox.filestore.exportPath // empty')
+# The instance that serves that IP (same lookup as in "Provision the user-files Filestore").
+[ -n "$FS_IP" ] && read -r FS_INSTANCE FS_ZONE <<<"$(gcloud filestore instances list \
+  --project=$PROJECT_ID --filter="networks.ipAddresses=$FS_IP" \
+  --format='value(name.basename(),name.segment(3))')"
 PROBE_IMAGE=$(kubectl --context "$GKE_CONTEXT" -n ax-next get deploy ax-next-host \
   -o jsonpath='{.spec.template.spec.containers[0].image}')
-echo "filestore: $FS_IP:$FS_PATH  probe image: $PROBE_IMAGE"   # none may be empty
+echo "filestore: $FS_INSTANCE ($FS_ZONE) at $FS_IP:$FS_PATH  probe image: $PROBE_IMAGE"   # none may be empty
 ```
 
 **Pre-checks (read-only):**
@@ -932,8 +985,8 @@ kubectl --context "$GKE_CONTEXT" -n kube-system get configmap ip-masq-agent -o y
 
 # 5. The share as it is today. Note the capacity: the update below must repeat
 #    it exactly. Keep this file; it is your record of the old settings.
-gcloud filestore instances describe ax-next-files --project=$PROJECT_ID \
-  --zone=$FS_ZONE --format=json | tee files-export-before.json
+gcloud filestore instances describe "$FS_INSTANCE" --project=$PROJECT_ID \
+  --zone="$FS_ZONE" --format=json | tee files-export-before.json
 ```
 
 **The probe.** A runner-labelled pod that mounts the share read-only and lists
@@ -1015,7 +1068,8 @@ network. The phase alone won't tell you: a mount failure also shows as
 Then `probe gvisor`, and do one real turn: ask an agent to write a file into
 `/files` and check it appears in its Files tab. With shared pools on, most
 sessions never use a cold runner; a session with a service-sidecar connector
-does (see [SHARED-POOL-ACCEPTANCE.md](SHARED-POOL-ACCEPTANCE.md)).
+does (see [SHARED-POOL-ACCEPTANCE.md](SHARED-POOL-ACCEPTANCE.md)). What this
+looked like on our prod cluster is recorded at the end of Half 2.
 
 If the probe shows a mount failure, or the turn cannot write `/files`, **do not
 `helm rollback`**. That would also roll back the image, and the old image would
@@ -1074,10 +1128,10 @@ with the **capacity from pre-check 5** and the `$NODE_RANGE` from pre-check 2,
 then:
 
 ```bash
-gcloud filestore instances update ax-next-files --project=$PROJECT_ID \
-  --zone=$FS_ZONE --flags-file=files-export.json
-gcloud filestore instances describe ax-next-files --project=$PROJECT_ID \
-  --zone=$FS_ZONE --format='yaml(fileShares)'   # shows your node range + NO_ROOT_SQUASH
+gcloud filestore instances update "$FS_INSTANCE" --project=$PROJECT_ID \
+  --zone="$FS_ZONE" --flags-file=files-export.json
+gcloud filestore instances describe "$FS_INSTANCE" --project=$PROJECT_ID \
+  --zone="$FS_ZONE" --format='yaml(fileShares)'   # shows your node range + NO_ROOT_SQUASH
 ```
 
 Then `probe gvisor` **and** `probe host`, and do the real turn again.
@@ -1095,8 +1149,8 @@ only the ranges change:
 ```bash
 jq '.["--file-share"]["nfs-export-options"][0]["ip-ranges"] = ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"]' \
   files-export.json > files-export-rollback.json \
-  && gcloud filestore instances update ax-next-files --project=$PROJECT_ID \
-       --zone=$FS_ZONE --flags-file=files-export-rollback.json
+  && gcloud filestore instances update "$FS_INSTANCE" --project=$PROJECT_ID \
+       --zone="$FS_ZONE" --flags-file=files-export-rollback.json
 ```
 
 If your VPC also uses non-private ranges, add them to that list, or edit the
@@ -1109,6 +1163,14 @@ narrow: re-run pre-check 3, check the probe's `Node:` address against
 Put the node-only `files-export.json` back with the same `update` and read the
 describe output.
 
+**What we saw on prod (2026-11-01, GKE Standard `ax-next-std`, helm revision
+60).** Both halves went through with no rollback. `probe gvisor` and
+`probe host` both printed `MOUNT-OK` with runner NFS egress gone and the export
+restricted to the node range. No `tmp-runner-nfs-rollback` policy was needed,
+and none is in place. That's one cluster: VPC-native, Standard, with no
+`ip-masq-agent` ConfigMap. Run the pre-checks and probes on yours anyway: they're cheap, and
+they're the only way to know your nodes look like ours.
+
 ### Alert before the user-files share fills up
 
 Each person's storage limit counts their agents' `/files` too, but only as a
@@ -1118,18 +1180,22 @@ share directly, so one busy agent can run past its owner's limit between
 measurements, and enough of them can fill the share for everyone. We'd rather
 hear about that from a graph than from a full disk.
 
-Nothing in this repo creates alerts, so create this one by hand, once. Save it
-as `files-capacity-alert.json`:
+Nothing in this repo creates alerts, so create this one by hand, once. With
+`$FS_INSTANCE` set (see [Provision the user-files Filestore](#provision-the-user-files-filestore-required)),
+write `files-capacity-alert.json`:
 
-```json
+```bash
+# Only write it when both names are real; an empty one makes an alert that never fires.
+if [ -n "$FS_INSTANCE" ] && [ -n "$PROJECT_ID" ]; then
+cat > files-capacity-alert.json <<EOF
 {
   "displayName": "ax-next user-files share above 80%",
   "combiner": "OR",
   "conditions": [
     {
-      "displayName": "Filestore ax-next-files used_bytes_percent > 80",
+      "displayName": "Filestore $FS_INSTANCE used_bytes_percent > 80",
       "conditionThreshold": {
-        "filter": "resource.type = \"filestore_instance\" AND resource.label.instance_name = \"ax-next-files\" AND metric.type = \"file.googleapis.com/nfs/server/used_bytes_percent\"",
+        "filter": "resource.type = \"filestore_instance\" AND resource.label.instance_name = \"$FS_INSTANCE\" AND metric.type = \"file.googleapis.com/nfs/server/used_bytes_percent\"",
         "comparison": "COMPARISON_GT",
         "thresholdValue": 80,
         "duration": "300s",
@@ -1140,9 +1206,13 @@ as `files-capacity-alert.json`:
     }
   ],
   "notificationChannels": [
-    "projects/<PROJECT_ID>/notificationChannels/<CHANNEL_ID>"
+    "projects/$PROJECT_ID/notificationChannels/<CHANNEL_ID>"
   ]
 }
+EOF
+else
+  echo "FS_INSTANCE or PROJECT_ID is empty: set them first, then re-run." >&2
+fi
 ```
 
 ```bash
@@ -1152,14 +1222,14 @@ gcloud alpha monitoring policies create \
 ```
 
 Prefer clicking? In the Console, go to Monitoring > Alerting > Create policy,
-pick the Filestore instance's percent-used metric for `ax-next-files`, and
+pick the Filestore instance's percent-used metric for your `$FS_INSTANCE`, and
 alert when it stays above 80 for 5 minutes.
 
 When it fires, grow the share first, then find out why:
 
 ```bash
-gcloud filestore instances update ax-next-files \
-  --project=$PROJECT_ID --zone=us-central1-a \
+gcloud filestore instances update "$FS_INSTANCE" \
+  --project=$PROJECT_ID --zone="$FS_ZONE" \
   --file-share=name=vol1,capacity=<larger, e.g. 2TB>
 ```
 
@@ -1222,6 +1292,18 @@ will render, so build dependencies once:
 helm repo add bitnami https://charts.bitnami.com/bitnami
 helm dependency build deploy/charts/ax-next
 ```
+
+"Once" means once per checkout. The subchart lands as
+`deploy/charts/ax-next/charts/postgresql-16.7.27.tgz`, and `*.tgz` is
+gitignored, so a fresh clone or a new worktree has an empty `charts/` and
+`helm upgrade` refuses to render. Either run `helm dependency build` there
+again, or copy that `.tgz` across from a checkout that already has it.
+
+**Image-only upgrades need no manual runner cleanup on the shared pool.** On
+the 2026-11-02 prod upgrade (helm revision 61, image only), the new host
+replaced the warm-pool standbys with ones on the new image by itself. Nobody
+deleted anything. Cold sessions still follow
+[Restarting the host pod](README.md#restarting-the-host-pod-delete-the-runner-pods-first).
 
 Install — template first, your overrides second (later `-f` wins):
 
