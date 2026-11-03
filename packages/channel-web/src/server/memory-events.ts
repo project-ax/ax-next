@@ -139,17 +139,23 @@ export function createMemoryEventsHandler(deps: MemoryEventsHandlerDeps) {
     }
 
     // 3) The conversation's agent must still be reachable by this user.
+    // not-found / forbidden → 404; anything else is a host fault → logged 500.
     try {
       await bus.call<{ agentId: string; userId: string }, unknown>('agents:resolve', initCtx, {
         agentId,
         userId,
       });
     } catch (err) {
-      if (err instanceof PluginError) {
+      if (err instanceof PluginError && (err.code === 'not-found' || err.code === 'forbidden')) {
         res.status(404).json({ error: 'conversation-not-found' });
         return;
       }
-      throw err;
+      initCtx.logger.error('memory_events_agent_resolve_failed', {
+        hook: 'agents:resolve',
+        err,
+      });
+      res.status(500).json({ error: 'internal' });
+      return;
     }
 
     // 4) Memory isn't running in this deployment — say so, don't stream silence.
