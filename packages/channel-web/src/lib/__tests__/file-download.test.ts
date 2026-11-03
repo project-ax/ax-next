@@ -16,6 +16,7 @@ import {
 } from '../workspace-api';
 import { act, renderHook, waitFor } from '@testing-library/react';
 import {
+  DOWNLOAD_STARTED_MS,
   downloadFailureMessage,
   saveBlob,
   saveFromUrl,
@@ -30,6 +31,7 @@ import {
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
+  vi.useRealTimers();
 });
 
 // ---------------------------------------------------------------------------
@@ -324,6 +326,7 @@ describe('useFileDownload', () => {
       result.current.start();
     });
     expect(result.current.busy).toBe(false);
+    expect(result.current.started).toBe(false);
     expect(result.current.error).not.toBeNull();
     await act(async () => {
       result.current.start();
@@ -402,6 +405,106 @@ describe('useFileDownload', () => {
     expect(blob).not.toHaveBeenCalled();
     expect(arrayBuffer).not.toHaveBeenCalled();
     expect(result.current.error).toBeNull();
+    // The browser has it now: the window is open.
+    expect(result.current.started).toBe(true);
+  });
+
+  it('after the browser has the download, holds it for DOWNLOAD_STARTED_MS: says so, and starts nothing on another click', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const fetchSpy = stubFetch(200, { downloadable: true });
+    const clicked = clickedLinks();
+    const { result } = renderHook(() =>
+      useFileDownload({ agentId: 'a1', agentName: 'Scout', path: 'reports/q3.pdf' }),
+    );
+    await act(async () => {
+      result.current.start();
+    });
+    await waitFor(() => expect(result.current.busy).toBe(false));
+    expect(result.current.started).toBe(true);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(clicked).toHaveLength(1);
+
+    // A click inside the window, even in the same frame as another, asks nothing.
+    act(() => {
+      result.current.start();
+      result.current.start();
+    });
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(clicked).toHaveLength(1);
+    expect(result.current.busy).toBe(false);
+
+    act(() => {
+      vi.advanceTimersByTime(DOWNLOAD_STARTED_MS);
+    });
+    expect(result.current.started).toBe(false);
+
+    // A deliberate retry after the window goes through.
+    await act(async () => {
+      result.current.start();
+    });
+    await waitFor(() => expect(result.current.busy).toBe(false));
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    expect(clicked).toHaveLength(2);
+  });
+
+  it('leaving during the window leaves no timer behind', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    stubFetch(200, { downloadable: true });
+    clickedLinks();
+    const { result, unmount } = renderHook(() =>
+      useFileDownload({ agentId: 'a1', agentName: 'Scout', path: 'reports/q3.pdf' }),
+    );
+    await act(async () => {
+      result.current.start();
+    });
+    await waitFor(() => expect(result.current.started).toBe(true));
+    expect(vi.getTimerCount()).toBe(1);
+    unmount();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('leaving while the probe is still out starts no window afterwards', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    let answer!: (route: string) => void;
+    vi.spyOn(workspaceApi, 'probeFileDownload').mockImplementation(
+      () => new Promise<string>((resolve) => { answer = resolve; }),
+    );
+    const clicked = clickedLinks();
+    const { result, unmount } = renderHook(() =>
+      useFileDownload({ agentId: 'a1', agentName: 'Scout', path: 'reports/q3.pdf' }),
+    );
+    act(() => {
+      result.current.start();
+    });
+    unmount();
+    await act(async () => {
+      answer('/api/workspace/agents/a1/download/user-files/reports%2Fq3.pdf');
+    });
+    // The reader asked and the route said yes, so the browser still gets it...
+    await waitFor(() => expect(clicked).toHaveLength(1));
+    // ...but nothing is left running for a component that is gone.
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('a refused probe does not hold the button: the next attempt goes straight through', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const fetchSpy = stubFetch(404, { error: 'file-not-found' });
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    clickedLinks();
+    const { result } = renderHook(() =>
+      useFileDownload({ agentId: 'a1', agentName: 'Scout', path: 'gone.md' }),
+    );
+    await act(async () => {
+      result.current.start();
+    });
+    await waitFor(() => expect(result.current.busy).toBe(false));
+    expect(result.current.started).toBe(false);
+    expect(vi.getTimerCount()).toBe(0);
+    await act(async () => {
+      result.current.start();
+    });
+    await waitFor(() => expect(result.current.busy).toBe(false));
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
   });
 
   it('a refused probe hands nothing to the browser', async () => {

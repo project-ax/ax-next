@@ -3,16 +3,23 @@ import { afterEach, beforeEach, describe, expect, it, vi, onTestFinished } from 
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { GeneratedFileChip } from '../GeneratedFileChip';
 import { AgentConversation } from '../AgentConversation';
-import { saveBlob, saveFromUrl } from '@/lib/file-download';
+import { DOWNLOAD_STARTED_MS, DOWNLOAD_STARTED_NOTE, saveBlob, saveFromUrl } from '@/lib/file-download';
 import type { ThreadMessage } from '@/lib/workspace-api';
 
-vi.mock('@/lib/file-download', () => ({ saveBlob: vi.fn(), saveFromUrl: vi.fn() }));
+// Only the two hand-overs are stubbed: the chip also reads the started
+// window's constants from this module, and a bare factory would hand it
+// `undefined` (a 0 ms window, and no note).
+vi.mock('@/lib/file-download', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/file-download')>()),
+  saveBlob: vi.fn(),
+  saveFromUrl: vi.fn(),
+}));
 const file = { attachmentId: '0123456789abcdef0123456789abcdef', displayName: 'budget.csv', mediaType: 'text/csv', sizeBytes: 2048 };
 beforeEach(() => {
   vi.mocked(saveBlob).mockClear();
   vi.mocked(saveFromUrl).mockClear();
 });
-afterEach(() => { vi.unstubAllGlobals(); });
+afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); });
 
 const agentFile = { attachmentId: null, agentFilePath: 'reports/Q3 plan #1.pdf', displayName: 'Q3 plan #1.pdf', mediaType: 'application/pdf', sizeBytes: 10 };
 /** `agentFile`'s two addresses in conversation `c1`: the key encoded whole, once. */
@@ -119,6 +126,9 @@ describe('GeneratedFileChip', () => {
     expect(fetch).toHaveBeenCalledTimes(2);
     resolve(new Response('data'));
     await waitFor(() => expect(saveBlob).toHaveBeenCalledOnce());
+    // The attachment's hand-over starts the same window as an agent file's.
+    expect(await screen.findByText(DOWNLOAD_STARTED_NOTE)).toBeVisible();
+    expect(button).toBeDisabled();
   });
 
   describe('agent-file chips (TASK-1012)', () => {
@@ -154,6 +164,54 @@ describe('GeneratedFileChip', () => {
         '/api/workspace/conversations/c%20%26%201/download/user-files/reports%2FQ3%20plan%20%231.pdf?probe=1',
       ]);
       expect(fetch).toHaveBeenLastCalledWith('/api/workspace/conversations/c%20%26%201/download/user-files/reports%2FQ3%20plan%20%231.pdf?probe=1', { credentials: 'include' });
+    });
+
+    it('after the browser has it, the chip says so and ignores clicks for a moment', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      const fetch = chipFetch();
+      vi.stubGlobal('fetch', fetch);
+      render(<GeneratedFileChip file={agentFile} conversationId="c1" />);
+      const button = screen.getByRole('button', { name: 'Download Q3 plan #1.pdf' });
+      fireEvent.click(button);
+      await waitFor(() => expect(saveFromUrl).toHaveBeenCalledOnce());
+      expect(await screen.findByText(DOWNLOAD_STARTED_NOTE)).toBeVisible();
+      expect(button).toBeDisabled();
+
+      // Right after the note appears, a click does nothing: no second probe.
+      fireEvent.click(button);
+      expect(fetch.mock.calls.map(([url]) => url)).toEqual([STATUS_URL, `${DOWNLOAD_URL}?probe=1`]);
+      expect(saveFromUrl).toHaveBeenCalledOnce();
+
+      act(() => { vi.advanceTimersByTime(DOWNLOAD_STARTED_MS); });
+      expect(button).toBeEnabled();
+      expect(screen.getByText('10 B · Download')).toBeVisible();
+      expect(screen.queryByText(DOWNLOAD_STARTED_NOTE)).toBeNull();
+      fireEvent.click(button);
+      await waitFor(() => expect(saveFromUrl).toHaveBeenCalledTimes(2));
+    });
+
+    it('leaving during the window leaves no timer behind', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      vi.stubGlobal('fetch', chipFetch());
+      const view = render(<GeneratedFileChip file={agentFile} conversationId="c1" />);
+      fireEvent.click(screen.getByRole('button', { name: 'Download Q3 plan #1.pdf' }));
+      expect(await screen.findByText(DOWNLOAD_STARTED_NOTE)).toBeVisible();
+      expect(vi.getTimerCount()).toBe(1);
+      view.unmount();
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it('leaving while the probe is still out starts no window afterwards', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      let answer!: (r: Response) => void;
+      vi.stubGlobal('fetch', chipFetch({ download: () => new Promise<Response>((r) => { answer = r; }) }));
+      const view = render(<GeneratedFileChip file={agentFile} conversationId="c1" />);
+      fireEvent.click(screen.getByRole('button', { name: 'Download Q3 plan #1.pdf' }));
+      await waitFor(() => expect(answer).toBeDefined());
+      view.unmount();
+      answer(json({ downloadable: true }));
+      await waitFor(() => expect(saveFromUrl).toHaveBeenCalledOnce());
+      expect(vi.getTimerCount()).toBe(0);
     });
 
     it.each([404, 400])('says the file is gone on a %i', async (status) => {
@@ -208,6 +266,9 @@ describe('GeneratedFileChip', () => {
       render(<GeneratedFileChip file={agentFile} conversationId="c1" />);
       fireEvent.click(screen.getByRole('button'));
       await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('We could not download this file just now. Try again.'));
+      // A refusal hands the browser nothing, so it starts no window.
+      expect(screen.getByRole('button')).toBeEnabled();
+      expect(screen.queryByText(DOWNLOAD_STARTED_NOTE)).toBeNull();
     });
   });
 

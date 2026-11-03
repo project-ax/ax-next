@@ -56,7 +56,7 @@ import {
   BreadcrumbSeparator,
 } from '@/components/ui/breadcrumb';
 import { Markdown } from '@/components/Markdown';
-import { useFileDownload } from '@/lib/file-download';
+import { DOWNLOAD_STARTED_NOTE, useFileDownload } from '@/lib/file-download';
 import { useIsCompact } from '@/lib/use-compact';
 import { parentDirOf, useAgentUserFiles, type UserFileBody } from '@/lib/user-files';
 import { cn } from '@/lib/utils';
@@ -619,7 +619,7 @@ function FileViewer({
           size="sm"
           className="ml-auto shrink-0"
           onClick={download.start}
-          disabled={download.busy}
+          disabled={download.busy || download.started}
         >
           {/*
             `data-icon` is INERT against the Button this repo has installed —
@@ -647,6 +647,18 @@ function FileViewer({
         on screen, and what failed is the handing-over. So it says so here, next
         to the button that did not work, and leaves the rest of the pane alone.
       */}
+      {/*
+        The good news, kept apart from the Alert above: `role="alert"` is for
+        problems. Always in the tree, so a screen reader announces the text
+        arriving rather than a node appearing; empty and `sr-only` the rest of
+        the time, so it takes no room.
+      */}
+      <p
+        role="status"
+        className={download.started ? 'mb-5 text-[13px] text-muted-foreground' : 'sr-only'}
+      >
+        {download.started ? DOWNLOAD_STARTED_NOTE : ''}
+      </p>
       {download.error !== null && (
         <Alert variant="destructive" className="mb-5">
           <AlertTriangle />
