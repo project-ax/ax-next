@@ -10,6 +10,7 @@ import {
   type StartedPostgreSqlContainer,
 } from '@testcontainers/postgresql';
 import pg from 'pg';
+import { PluginError } from '@ax/core';
 import {
   runConnectorsMigration,
   type ConnectorDatabase,
@@ -364,6 +365,38 @@ describe('createConnectorStore', () => {
       err: 'Local (stdio) MCP servers are no longer supported. Use a remote MCP server URL.',
     });
     expect(JSON.stringify(warn.mock.calls)).not.toContain('admin');
+  });
+
+  it('a stored row the read schema refuses throws corrupt-row, not invalid-payload (TASK-1031)', async () => {
+    // A corrupt row is the host's fault. invalid-payload is the caller's, and the
+    // admin routes answer it with a 400 that echoes the message (zod text here).
+    const db = makeKysely();
+    await runConnectorsMigration(db);
+    const store = createConnectorStore(db);
+    await db
+      .insertInto('connectors_v1_connectors')
+      .values({
+        owner_user_id: 'admin',
+        connector_id: 'broken',
+        name: 'Broken',
+        description: '',
+        usage_note: '',
+        key_mode: 'personal',
+        capabilities: JSON.stringify({ ...caps(), allowedHosts: 5 }) as unknown as object,
+        deleted_at: null,
+        created_at: new Date(),
+        updated_at: new Date(),
+      })
+      .execute();
+    const err = await store.getAvailableById('admin', 'broken').then(
+      () => null,
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(PluginError);
+    expect((err as PluginError).code).toBe('corrupt-row');
+    // The validation detail stays on the error (for the log), with the original as its cause.
+    expect((err as PluginError).message).toMatch(/valid Capabilities object/);
+    expect(((err as PluginError).cause as PluginError).code).toBe('invalid-payload');
   });
 
   it('connector and summary shapes carry no defaultAttached key (TASK-808 negative space)', async () => {
