@@ -23,6 +23,7 @@
  * `lib/auth.ts`.
  */
 import type { AdminTeamWire } from '@ax/teams';
+import { HttpError } from './http';
 
 const writeHeaders = {
   'content-type': 'application/json',
@@ -230,6 +231,27 @@ export async function patchAgentSkillAttachments(
 // E3: list the skills an agent has written in its workspace and promote
 // one to an installed skill with admin-chosen capability grants.
 
+/**
+ * The Error an authored-skills call throws on a non-2xx. A 5xx is the host's
+ * fault, so it is an `HttpError`: its message is the shared sentence for that
+ * status (TASK-1028: promote used to show a bare "internal"), the status
+ * stays on it for logs, and the body is never rendered. Anything
+ * else carries the server's `{ error }`, which for a 400 is the caller's to
+ * fix (a manifest refusal, a bad grant).
+ */
+async function authoredSkillsError(res: Response, label: string): Promise<Error> {
+  if (res.status >= 500) return new HttpError(label, res.status);
+  const excerpt = await res.text().catch(() => '');
+  const msg = (() => {
+    try {
+      return (JSON.parse(excerpt) as { error?: string }).error ?? excerpt;
+    } catch {
+      return excerpt;
+    }
+  })();
+  return new Error(msg || `${label}: ${res.status}`);
+}
+
 export interface AuthoredSkill {
   id: string;
   description: string;
@@ -243,17 +265,7 @@ export async function listAuthoredSkills(agentId: string): Promise<AuthoredSkill
     `/admin/agents/${encodeURIComponent(agentId)}/authored-skills`,
     { credentials: 'include' },
   );
-  if (!res.ok) {
-    const excerpt = await res.text().catch(() => '');
-    const msg = (() => {
-      try {
-        return (JSON.parse(excerpt) as { error?: string }).error ?? excerpt;
-      } catch {
-        return excerpt;
-      }
-    })();
-    throw new Error(msg || `list authored-skills: ${res.status}`);
-  }
+  if (!res.ok) throw await authoredSkillsError(res, 'list authored-skills');
   const body = (await res.json()) as { skills: AuthoredSkill[] };
   return body.skills;
 }
@@ -277,17 +289,7 @@ export async function promoteAuthoredSkill(
       body: JSON.stringify(body),
     },
   );
-  if (!res.ok) {
-    const excerpt = await res.text().catch(() => '');
-    const msg = (() => {
-      try {
-        return (JSON.parse(excerpt) as { error?: string }).error ?? excerpt;
-      } catch {
-        return excerpt;
-      }
-    })();
-    throw new Error(msg || `promote authored-skill: ${res.status}`);
-  }
+  if (!res.ok) throw await authoredSkillsError(res, 'promote authored-skill');
   return res.json() as Promise<{ promoted: true; skillId: string; targetScope: string }>;
 }
 
@@ -308,17 +310,7 @@ export async function deleteAuthoredSkill(
       credentials: 'include',
     },
   );
-  if (!res.ok) {
-    const excerpt = await res.text().catch(() => '');
-    const msg = (() => {
-      try {
-        return (JSON.parse(excerpt) as { error?: string }).error ?? excerpt;
-      } catch {
-        return excerpt;
-      }
-    })();
-    throw new Error(msg || `delete authored-skill: ${res.status}`);
-  }
+  if (!res.ok) throw await authoredSkillsError(res, 'delete authored-skill');
 }
 
 // Teams ------------------------------------------------------------------
