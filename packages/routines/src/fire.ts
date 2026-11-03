@@ -1,4 +1,4 @@
-import { makeAgentContext, PluginError, type HookBus } from '@ax/core';
+import { faultLogFields, makeAgentContext, PluginError, type HookBus } from '@ax/core';
 import type { StoredRoutine, AcceptedDispatch, FireSource, DispatchMiss } from './types.js';
 import type { FireResult } from './tick.js';
 import { renderLastCompletedRun, renderTemplate, usesLastCompletedRun } from './template.js';
@@ -171,13 +171,28 @@ function refusedBeforeAssembly(reason: string): boolean {
   return reason.startsWith('chat:start:') || reason.startsWith('agent-resolve:') || reason.startsWith('system-prompt:');
 }
 
+/**
+ * TASK-1031 — what a run's error says when it failed for a host reason: fixed
+ * words and, when there is one, the failure's code. Never the error's message:
+ * the run's error is the routine's `lastError` and its run history, both shown
+ * to the owner, and a hook's message can quote a database or a provider. The
+ * detail goes to the log (`routines_fire_failed` / `routines_fire_invoke_failed`).
+ * The cause's code is preferred: the bus wraps a raw throw as `unknown`.
+ */
+export function runFailedText(err: unknown): string {
+  const { code, causeCode } = faultLogFields(err);
+  const shown = causeCode ?? (code === 'unknown' ? undefined : code);
+  return `This run failed because of a problem on our side${shown === undefined ? '' : ` (code: ${shown})`}.`;
+}
+
 export function createFireRoutine(deps: FireDeps) {
   const lifetime = deps.lifetime ?? createRoutineLifetime();
   const fire = async (accepted: AcceptedDispatch, payload?: unknown): Promise<FireResult> => {
     const { row, source, reqId, dispatchId, acceptedAt } = accepted;
     const sessionId = `routine-${row.agentId}-${row.routineId}-${reqId}`;
     const fail = async (err: unknown, agentGone = false): Promise<FireResult> => {
-      const error = source === 'webhook' ? 'This app update could not run.' : err instanceof PluginError ? `${err.code}: ${err.message}` : err instanceof Error ? err.message : String(err);
+      const error = source === 'webhook' ? 'This app update could not run.' : runFailedText(err);
+      if (!agentGone) logFault('routines_fire_failed', err);
       if (agentGone) await deps.purgeAgent(row.agentId);
       else await deps.store.finishDispatch({ dispatchId, outcome: { status: 'error', error, conversationId: null, renderedPrompt: null, warning: row.lastWarning } });
       return { status: 'error', error, conversationId: null, renderedPrompt: null, ...(agentGone ? { agentGone: true as const } : {}) };
@@ -188,6 +203,14 @@ export function createFireRoutine(deps: FireDeps) {
       agentId: row.agentId,
       userId: row.ownerUserId,
     });
+    // The detail of a host failure: codes always, the error itself except for
+    // a webhook fire (whose failures are kept to codes, like its stored text).
+    function logFault(event: 'routines_fire_failed' | 'routines_fire_invoke_failed', err: unknown): void {
+      baseCtx.logger.error(event, {
+        agentId: row.agentId, routineId: row.routineId, source,
+        ...faultLogFields(err), ...(source === 'webhook' ? {} : { err }),
+      });
+    }
 
     let agentName: string | null = null;
     try {
@@ -395,7 +418,10 @@ export function createFireRoutine(deps: FireDeps) {
             () => settleWithoutTurn('the run finished without reporting a result', true));
         }
       },
-      (err: unknown) => settleWithoutTurn(err instanceof Error ? err.message : String(err), false),
+      (err: unknown) => {
+        logFault('routines_fire_invoke_failed', err);
+        return settleWithoutTurn(runFailedText(err), false);
+      },
     ));
 
     // TASK-679: the row for this fire is written when the turn settles, not

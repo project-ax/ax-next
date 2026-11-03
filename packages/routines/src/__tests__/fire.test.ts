@@ -14,6 +14,22 @@ import type { FireReport, StoredReply, StoredRoutine } from '../types.js';
 const f = fixture();
 const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0)) await cleanup(); vi.restoreAllMocks(); });
+/** TASK-1031: what the owner sees for a host failure: fixed words, never the error's text. */
+const RUN_FAILED = 'This run failed because of a problem on our side.';
+/** fire builds its own ctx, so its log lines are read off stdout. */
+async function stdoutOf(run: () => Promise<void>): Promise<string[]> {
+  const lines: string[] = [];
+  const spy = vi.spyOn(process.stdout, 'write').mockImplementation((chunk: unknown) => {
+    lines.push(String(chunk));
+    return true;
+  });
+  try {
+    await run();
+  } finally {
+    spy.mockRestore();
+  }
+  return lines.flatMap((l) => l.split('\n')).filter((l) => l.startsWith('{'));
+}
 function sampleRow(): StoredRoutine { return { ...createInput().definition, agentId: 'a', routineId: 'r', revision: 'v', ownerUserId: 'owner', definitionId: null, definitionUpdatedAt: null, nextRunAt: null, lastRunAt: null, lastStatus: null, lastError: null, lastWarning: null, task: null, noRecentUpdate: null, steps: [], finishBy: null, finishByTimeZone: null, done: null }; }
 async function setup(options: {
   resolveError?: PluginError;
@@ -97,10 +113,43 @@ describe('accepted DB fire dispatch', () => {
   it('a bind failure fails the fire before the agent runs', async () => {
     const h = await setup({ bind: async () => { throw new Error('database unavailable'); } });
     const result = await h.fire(h.accepted);
-    expect(result).toMatchObject({ status: 'error', error: 'database unavailable', conversationId: null, renderedPrompt: null });
+    expect(result).toMatchObject({ status: 'error', error: RUN_FAILED, conversationId: null, renderedPrompt: null });
     expect(h.invoked).not.toHaveBeenCalled();
     expect(h.pending.size).toBe(0);
-    expect(await f.store.recentFires(h.row)).toMatchObject([{ status: 'error', error: 'database unavailable' }]);
+    expect(await f.store.recentFires(h.row)).toMatchObject([{ status: 'error', error: RUN_FAILED }]);
+  });
+  // TASK-1031: a hook failure's code reaches the owner; its message only the log.
+  it('records a hook failure as fixed words and its code, and logs the detail', async () => {
+    const h = await setup({ resolveError: new PluginError({ code: 'forbidden', plugin: 'teams', hookName: 'teams:is-member', message: 'PRIVATE pg text at 10.0.0.7' }) });
+    const lines = await stdoutOf(() => h.fire(h.accepted).then(() => undefined));
+    const [fire] = await f.store.recentFires(h.row);
+    expect(fire).toMatchObject({ status: 'error', error: 'This run failed because of a problem on our side (code: forbidden).' });
+    expect((await f.store.findOne(h.row))?.lastError).toBe('This run failed because of a problem on our side (code: forbidden).');
+    const logged = lines.filter((l) => l.includes('routines_fire_failed')).map((l) => JSON.parse(l) as Record<string, unknown>);
+    expect(logged).toHaveLength(1);
+    expect(logged[0]).toMatchObject({ level: 'error', code: 'forbidden', routineId: h.row.routineId, err: { message: 'PRIVATE pg text at 10.0.0.7' } });
+  });
+  it('a webhook fire logs codes only', async () => {
+    const h = await setup({ resolveError: new PluginError({ code: 'forbidden', plugin: 'teams', message: 'PRIVATE' }) });
+    const lines = await stdoutOf(() => h.fire({ ...h.accepted, source: 'webhook' }).then(() => undefined));
+    expect((await f.store.recentFires(h.row))[0]?.error).toBe('This app update could not run.');
+    const logged = lines.filter((l) => l.includes('routines_fire_failed'));
+    expect(logged).toHaveLength(1);
+    expect(logged[0]).not.toContain('PRIVATE');
+    expect(JSON.parse(logged[0]!)).toMatchObject({ code: 'forbidden' });
+  });
+  it('an invoke that throws records fixed words, not its message', async () => {
+    const h = await setup({ invoke: async () => { throw Object.assign(new Error('PRIVATE runner text'), { code: 'ECONNRESET' }); } });
+    const diagnostic = captureExpectedStderr(message => message.startsWith(`[ax/routines] agent:invoke failed for a/${h.row.routineId}:`));
+    const lines = await stdoutOf(async () => {
+      await h.fire(h.accepted);
+      await expect.poll(async () => (await f.store.recentFires(h.row)).length).toBe(1);
+    });
+    expect((await f.store.recentFires(h.row))[0]?.error).toBe('This run failed because of a problem on our side (code: ECONNRESET).');
+    expect(diagnostic.messages.join('')).not.toContain('PRIVATE');
+    const logged = lines.filter((l) => l.includes('routines_fire_invoke_failed')).map((l) => JSON.parse(l) as Record<string, unknown>);
+    expect(logged).toHaveLength(1);
+    expect(logged[0]).toMatchObject({ level: 'error', code: 'unknown', causeCode: 'ECONNRESET' });
   });
   it.each(['forbidden', 'not-found'])('records %s from another provider without purging a live agent', async (code) => {
     const h = await setup({ resolveError: new PluginError({ code, plugin: 'teams', hookName: 'teams:is-member', message: 'denied' }) });
@@ -193,19 +242,19 @@ describe('the check-in message and the stored prompt (TASK-908)', () => {
   it('a failed replies read fails the task run before the agent starts, as a missed check-in', async () => {
     const h = await setup({ definition: TASK, replies: async () => { throw new Error('database unavailable'); } });
     const result = await h.fire(h.accepted);
-    expect(result).toMatchObject({ status: 'error', error: 'database unavailable', conversationId: null, renderedPrompt: null });
+    expect(result).toMatchObject({ status: 'error', error: RUN_FAILED, conversationId: null, renderedPrompt: null });
     expect(h.invoked).not.toHaveBeenCalled();
     expect(h.pending.size).toBe(0);
-    expect(await f.store.recentFires(h.row)).toMatchObject([{ status: 'error', error: 'database unavailable', renderedPrompt: null }]);
+    expect(await f.store.recentFires(h.row)).toMatchObject([{ status: 'error', error: RUN_FAILED, renderedPrompt: null }]);
     expect((await f.store.findOne(h.row))?.noRecentUpdate).toMatchObject({ inARow: 1, reason: 'failed' });
   });
   it('a failed report read fails the task run before the agent starts', async () => {
     const h = await setup({ definition: TASK, reports: async () => { throw new Error('database unavailable'); } });
     const result = await h.fire(h.accepted);
-    expect(result).toMatchObject({ status: 'error', error: 'database unavailable', conversationId: null, renderedPrompt: null });
+    expect(result).toMatchObject({ status: 'error', error: RUN_FAILED, conversationId: null, renderedPrompt: null });
     expect(h.invoked).not.toHaveBeenCalled();
     expect(h.pending.size).toBe(0);
-    expect(await f.store.recentFires(h.row)).toMatchObject([{ status: 'error', error: 'database unavailable', renderedPrompt: null }]);
+    expect(await f.store.recentFires(h.row)).toMatchObject([{ status: 'error', error: RUN_FAILED, renderedPrompt: null }]);
   });
   it('a failed report read counts as a missed check-in, as failed', async () => {
     const h = await setup({ definition: TASK, reports: async () => { throw new Error('database unavailable'); } });
@@ -362,10 +411,10 @@ describe('the host-supplied last completed run (TASK-991)', () => {
   it('a failed read fails the fire before the agent runs', async () => {
     const h = await setup({ definition: ASKS, lastCompletedRun: async () => { throw new Error('database unavailable'); } });
     const result = await h.fire(h.accepted);
-    expect(result).toMatchObject({ status: 'error', error: 'database unavailable', conversationId: null, renderedPrompt: null });
+    expect(result).toMatchObject({ status: 'error', error: RUN_FAILED, conversationId: null, renderedPrompt: null });
     expect(h.invoked).not.toHaveBeenCalled();
     expect(h.pending.size).toBe(0);
-    expect(await f.store.recentFires(h.row)).toMatchObject([{ status: 'error', error: 'database unavailable' }]);
+    expect(await f.store.recentFires(h.row)).toMatchObject([{ status: 'error', error: RUN_FAILED }]);
   });
 });
 describe('connector skips per fire (slice 6)', () => {
