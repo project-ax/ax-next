@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { HookBus, PluginError, makeAgentContext, type AgentContext } from '@ax/core';
 import { makeAgentIdentityHandlers } from '../../server/routes-agent-identity.js';
 import type { RouteRequest, RouteResponse } from '../../server/routes-chat.js';
+import { expectLoggedRequireUserFault, faultInitCtx, storeFault } from './require-user-fault.js';
 import { registerIdentityStoreFake, type IdentityStoreFake } from './identity-store-fake.js';
 
 function fakeReq(opts: { body?: unknown; params?: Record<string, string> } = {}): RouteRequest {
@@ -44,7 +45,7 @@ const initCtx: AgentContext = makeAgentContext({
  */
 function busWith(
   opts: {
-    user?: { id: string; isAdmin: boolean } | 'reject';
+    user?: { id: string; isAdmin: boolean } | 'reject' | 'fault';
     /** agents:resolve outcome: an agent, 'forbidden' or 'not-found'. */
     resolve?: { ownerId: string; ownerType: 'user' | 'team' } | 'forbidden' | 'not-found';
     identity?: false;
@@ -54,6 +55,7 @@ function busWith(
   bus.registerService('auth:require-user', 'auth', async () => {
     if (opts.user === 'reject')
       throw new PluginError({ code: 'unauthenticated', plugin: 'auth', message: 'no session' });
+    if (opts.user === 'fault') throw storeFault();
     return { user: opts.user ?? { id: 'u1', isAdmin: false } };
   });
   bus.registerService('agents:resolve', 'agents', async (_ctx, input) => {
@@ -139,6 +141,19 @@ describe('GET /admin/agents/:id/identity', () => {
     const { res, captured } = fakeRes();
     await makeAgentIdentityHandlers({ bus, initCtx }).show(fakeReq({ params: { id: 'agt-1' } }), res);
     expect(captured.statusCode).toBe(401);
+    expect(captured.body).toEqual({ error: 'unauthenticated' });
+    expect(identity.calls).toEqual([]);
+  });
+
+  it('a session-store fault is a logged 500, not a 401 (TASK-1030)', async () => {
+    const { bus, identity } = busWith({ user: 'fault' });
+    const { ctx, logger } = faultInitCtx();
+    const { res, captured } = fakeRes();
+    await makeAgentIdentityHandlers({ bus, initCtx: ctx }).show(fakeReq({ params: { id: 'agt-1' } }), res);
+    expectLoggedRequireUserFault(logger, 'agent_identity_require_user_failed', {
+      status: captured.statusCode,
+      body: captured.body,
+    });
     expect(identity.calls).toEqual([]);
   });
 

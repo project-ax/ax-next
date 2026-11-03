@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { HookBus, PluginError, makeAgentContext, type AgentContext } from '@ax/core';
 import { createMemoryEventsHandler } from '../../server/memory-events';
 import type { RouteRequest, RouteResponse, RouteStream } from '../../server/sse';
+import { capturingLogger, expectLoggedRequireUserFault, storeFault } from './require-user-fault';
 
 // ---------------------------------------------------------------------------
 // GET /api/chat/conversations/:id/memory-events (TASK-626). Same unit
@@ -78,6 +79,8 @@ function fakeReq(conversationId = 'cnv_1'): RouteRequest {
 
 interface BootOpts {
   authUser?: { id: string; isAdmin: boolean } | null;
+  /** auth:require-user crashes (a raw store fault the bus wraps). */
+  authFault?: boolean;
   /** conversations:get outcome: a conversation, or a PluginError code to throw. */
   conversation?: { conversationId: string; agentId: string; userId: string } | 'not-found' | 'forbidden';
   agentResolveAllow?: boolean;
@@ -89,16 +92,19 @@ interface BootOpts {
 
 function boot(opts: BootOpts = {}) {
   const bus = new HookBus();
+  const logger = capturingLogger();
   const initCtx = makeAgentContext({
     sessionId: 'init',
     agentId: '@ax/channel-web',
     userId: 'system',
+    logger,
   });
   const authUser = opts.authUser === undefined ? { id: 'userA', isAdmin: false } : opts.authUser;
   const conversation =
     opts.conversation ?? { conversationId: 'cnv_1', agentId: 'agt_1', userId: 'userA' };
 
   bus.registerService('auth:require-user', 'mock-auth', async () => {
+    if (opts.authFault === true) throw storeFault();
     if (authUser === null) {
       throw new PluginError({ code: 'unauthenticated', plugin: 'mock-auth', message: 'no' });
     }
@@ -130,7 +136,7 @@ function boot(opts: BootOpts = {}) {
   }
   const handler = createMemoryEventsHandler({ bus, initCtx });
   const activity = (payload: unknown) => bus.fire('memory:conversation-activity', initCtx, payload);
-  return { bus, handler, convCalls, resolveCalls, statusCalls, activity };
+  return { bus, handler, convCalls, resolveCalls, statusCalls, activity, logger };
 }
 
 function frames(captured: Captured): unknown[] {
@@ -150,6 +156,17 @@ describe('memory-events handler', () => {
     await handler(fakeReq(), res);
     expect(captured.statusCode).toBe(401);
     expect(captured.jsonBody).toEqual({ error: 'unauthenticated' });
+    expect(convCalls).toEqual([]);
+  });
+
+  it('a session-store fault is a logged 500, not a 401 (TASK-1030)', async () => {
+    const { handler, convCalls, logger } = boot({ authFault: true });
+    const { res, captured } = fakeRes();
+    await handler(fakeReq(), res);
+    expectLoggedRequireUserFault(logger, 'memory_events_require_user_failed', {
+      status: captured.statusCode ?? 0,
+      body: captured.jsonBody,
+    });
     expect(convCalls).toEqual([]);
   });
 

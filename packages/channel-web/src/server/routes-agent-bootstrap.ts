@@ -1,7 +1,7 @@
 import {
+  answerRequireUserFailure,
   PluginError,
   isModelRef,
-  isRejection,
   makeAgentContext,
   type AgentContext,
   type HookBus,
@@ -117,11 +117,9 @@ export function makeAgentBootstrapHandler(deps: AgentBootstrapDeps) {
         );
         actor = { id: result.user.id, isAdmin: result.user.isAdmin };
       } catch (err) {
-        if (err instanceof PluginError || isRejection(err)) {
-          res.status(401).json({ error: 'unauthenticated' });
-          return;
-        }
-        throw err;
+        // Only 'unauthenticated' is a 401; any other failure is a logged 500.
+        answerRequireUserFailure(initCtx, res, err, 'agent_bootstrap_require_user_failed');
+        return;
       }
 
       // 2) Parse + validate. Only displayName is honored (a bare agent carries

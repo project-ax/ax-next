@@ -221,6 +221,7 @@ import {
   type AttachmentBlock,
 } from '@ax/ipc-protocol';
 import {
+  answerRequireUserFailure,
   PluginError,
   SafeToolError,
   isRejection,
@@ -1405,11 +1406,9 @@ async function authOr401(
     );
     return r.user.id;
   } catch (err) {
-    if (err instanceof PluginError || isRejection(err)) {
-      res.status(401).json({ error: 'unauthenticated' });
-      return null;
-    }
-    throw err;
+    // Only 'unauthenticated' is a 401; any other failure is a logged 500.
+    answerRequireUserFailure(ctx, res, err, 'workspace_require_user_failed');
+    return null;
   }
 }
 
@@ -2236,11 +2235,9 @@ async function authActorOr401(
     );
     return { id: r.user.id, isAdmin: r.user.isAdmin === true };
   } catch (err) {
-    if (err instanceof PluginError || isRejection(err)) {
-      res.status(401).json({ error: 'unauthenticated' });
-      return null;
-    }
-    throw err;
+    // Only 'unauthenticated' is a 401; any other failure is a logged 500.
+    answerRequireUserFailure(ctx, res, err, 'workspace_actor_require_user_failed');
+    return null;
   }
 }
 

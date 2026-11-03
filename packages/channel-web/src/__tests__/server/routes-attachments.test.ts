@@ -27,6 +27,7 @@ import {
   startTestContainer,
 } from '@ax/test-harness';
 import { registerAttachmentsRoutes } from '../../server/routes-attachments.js';
+import { capturingLogger, expectLoggedRequireUserFault, storeFault, type CapturingLogger } from './require-user-fault.js';
 
 // TASK-68: @ax/attachments calls blob:put/blob:get. A tiny in-memory
 // content-addressed store stands in for @ax/blob-store-fs. It keys by the real
@@ -123,7 +124,8 @@ function makeMultipart(
 }
 
 function authMockPlugin(args: {
-  user: { id: string; isAdmin: boolean } | null;
+  /** null → unauthenticated; 'fault' → the session store crashes (raw error). */
+  user: { id: string; isAdmin: boolean } | null | 'fault';
 }): Plugin {
   return {
     manifest: {
@@ -135,6 +137,7 @@ function authMockPlugin(args: {
     },
     init({ bus }) {
       bus.registerService('auth:require-user', 'mock-auth', async () => {
+        if (args.user === 'fault') throw storeFault();
         if (args.user === null) {
           throw new PluginError({
             code: 'unauthenticated',
@@ -199,7 +202,7 @@ afterAll(async () => {
 });
 
 interface BootArgs {
-  user: { id: string; isAdmin: boolean } | null;
+  user: { id: string; isAdmin: boolean } | null | 'fault';
   allowedOrigins?: readonly string[];
   attachmentsConfig?: Parameters<typeof createAttachmentsPlugin>[0];
   /** conversationId → owning userId, for the `conversations:get` double. */
@@ -210,6 +213,7 @@ interface BootResult {
   harness: TestHarness;
   port: number;
   http: HttpServerPlugin;
+  logger: CapturingLogger;
 }
 
 async function boot(args: BootArgs): Promise<BootResult> {
@@ -237,14 +241,16 @@ async function boot(args: BootArgs): Promise<BootResult> {
   // Register the routes directly against the bus. Task 5 wires this into
   // the channel-web plugin's init(); for Task 3 we exercise the routes
   // through the same hook (http:register-route) the plugin will use.
+  const logger = capturingLogger();
   const initCtx = makeAgentContext({
     sessionId: 'test-init',
     agentId: PLUGIN_NAME,
     userId: 'system',
+    logger,
   });
   await registerAttachmentsRoutes(harness.bus, initCtx);
 
-  return { harness, port: http.boundPort(), http };
+  return { harness, port: http.boundPort(), http, logger };
 }
 
 const harnesses: TestHarness[] = [];
@@ -294,6 +300,20 @@ describe('@ax/channel-web POST /api/attachments', () => {
     ]);
     const r = await post(booted.port, body, headers);
     expect(r.status).toBe(401);
+    expect(await r.json()).toEqual({ error: 'unauthenticated' });
+  });
+
+  it('1b. a session-store fault is a logged 500, not a 401 (TASK-1030)', async () => {
+    const booted = await boot({ user: 'fault' });
+    harnesses.push(booted.harness);
+    const { body, headers } = makeMultipart([
+      { name: 'file', filename: 'a.txt', contentType: 'text/plain', body: 'hi' },
+    ]);
+    const r = await post(booted.port, body, headers);
+    expectLoggedRequireUserFault(booted.logger, 'attachments_require_user_failed', {
+      status: r.status,
+      body: await r.json(),
+    });
   });
 
   it('2. returns 200 + attachmentId on the happy path', async () => {

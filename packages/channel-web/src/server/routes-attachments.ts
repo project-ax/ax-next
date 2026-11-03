@@ -1,5 +1,5 @@
 import {
-  isRejection,
+  answerRequireUserFailure,
   makeAgentContext,
   PluginError,
   type AgentContext,
@@ -128,11 +128,9 @@ async function authOr401(
     );
     return result.user.id;
   } catch (err) {
-    if (err instanceof PluginError || isRejection(err)) {
-      res.status(401).json({ error: 'unauthenticated' });
-      return null;
-    }
-    throw err;
+    // Only 'unauthenticated' is a 401; any other failure is a logged 500.
+    answerRequireUserFailure(initCtx, res, err, 'attachments_require_user_failed');
+    return null;
   }
 }
 
