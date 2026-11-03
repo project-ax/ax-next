@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { HookBus, PluginError, makeAgentContext, type AgentContext } from '@ax/core';
 import { makeAgentBootstrapHandler } from '../../server/routes-agent-bootstrap.js';
 import type { RouteRequest, RouteResponse } from '../../server/routes-chat.js';
+import { expectLoggedRequireUserFault, faultInitCtx, storeFault } from './require-user-fault.js';
 
 function fakeReq(opts: { body?: unknown } = {}): RouteRequest {
   const buf =
@@ -29,7 +30,7 @@ interface CreateCall {
 // so `agents:create` is the only write hook registered here: any other write
 // would throw `no-service` instead of passing unnoticed.
 function busWith(opts: {
-  user?: { id: string; isAdmin: boolean } | 'reject';
+  user?: { id: string; isAdmin: boolean } | 'reject' | 'fault';
   onCreate?: (input: unknown) => unknown;
 }): { bus: HookBus; created: CreateCall[] } {
   const created: CreateCall[] = [];
@@ -37,6 +38,7 @@ function busWith(opts: {
   bus.registerService('auth:require-user', 'auth', async () => {
     if (opts.user === 'reject')
       throw new PluginError({ code: 'unauthenticated', plugin: 'auth', message: 'no session' });
+    if (opts.user === 'fault') throw storeFault();
     return { user: opts.user ?? { id: 'u1', isAdmin: false } };
   });
   bus.registerService('agents:create', 'agents', async (_ctx, input) => {
@@ -140,6 +142,19 @@ describe('POST /api/agents/bootstrap', () => {
     const { res, captured } = fakeRes();
     await makeAgentBootstrapHandler({ bus, initCtx }).bootstrap(fakeReq({ body: { displayName: 'Ada' } }), res);
     expect(captured.statusCode).toBe(401);
+    expect(captured.body).toEqual({ error: 'unauthenticated' });
+    expect(created).toEqual([]);
+  });
+
+  it('a session-store fault is a logged 500, not a 401 (TASK-1030)', async () => {
+    const { bus, created } = busWith({ user: 'fault' });
+    const { ctx, logger } = faultInitCtx();
+    const { res, captured } = fakeRes();
+    await makeAgentBootstrapHandler({ bus, initCtx: ctx }).bootstrap(fakeReq({ body: { displayName: 'Ada' } }), res);
+    expectLoggedRequireUserFault(logger, 'agent_bootstrap_require_user_failed', {
+      status: captured.statusCode,
+      body: captured.body,
+    });
     expect(created).toEqual([]);
   });
 

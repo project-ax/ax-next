@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { HookBus, makeAgentContext, type AgentContext } from '@ax/core';
 import { makeConnectionsHandlers } from '../../server/routes-connections.js';
 import type { RouteRequest, RouteResponse } from '../../server/routes-chat.js';
+import { expectLoggedRequireUserFault, faultInitCtx, storeFault } from './require-user-fault.js';
 
 function mkReq(params: Record<string, string>, body?: unknown): RouteRequest {
   return {
@@ -166,6 +167,22 @@ describe('channel-web Connections BFF', () => {
       const { res, captured } = mkRes();
       await h.get(mkReq({ agentId: 'a1' }), res);
       expect(captured.statusCode).toBe(401);
+      expect(captured.body).toEqual({ error: 'unauthenticated' });
+    });
+
+    it('a session-store fault is a logged 500, not a 401 (TASK-1030)', async () => {
+      const b = new HookBus();
+      b.registerService('auth:require-user', 'auth', async () => {
+        throw storeFault();
+      });
+      const { ctx, logger } = faultInitCtx();
+      const h = makeConnectionsHandlers({ bus: b, initCtx: ctx });
+      const { res, captured } = mkRes();
+      await h.get(mkReq({ agentId: 'a1' }), res);
+      expectLoggedRequireUserFault(logger, 'connections_require_user_failed', {
+        status: captured.statusCode,
+        body: captured.body,
+      });
     });
   });
 

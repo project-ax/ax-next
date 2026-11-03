@@ -1,5 +1,5 @@
 import {
-  isRejection,
+  answerRequireUserFailure,
   makeAgentContext,
   makeReqId,
   PluginError,
@@ -30,7 +30,8 @@ import {
 //   - POST   /api/chat/conversations/:id/interrupt — Stop the in-flight turn (TASK-688)
 //   - GET    /api/chat/agents                — list user's agents (Task 13)
 //
-// All endpoints require auth (auth:require-user → 401 on rejection). All
+// All endpoints require auth (auth:require-user → 401 when unauthenticated,
+// logged 500 on any other failure). All
 // state-changing endpoints (POST + DELETE) are CSRF-gated by the
 // http-server's `http:request` subscriber automatically; handlers don't
 // re-implement CSRF.
@@ -45,7 +46,7 @@ import {
 // The browser POSTs a `{ conversationId | null, agentId, contentBlocks }`
 // payload; the handler:
 //
-//   1. requires auth (auth:require-user) → 401 on rejection.
+//   1. requires auth (auth:require-user) → 401 when unauthenticated, logged 500 otherwise.
 //   2. parses + validates the body (PostMessageRequest, 1 MiB cap from
 //      http-server) → 400 on invalid-payload, 413 on oversize; a
 //      client-sent `attachment` block → 400 invalid-content-block (only a
@@ -417,11 +418,9 @@ export function createChatRouteHandlers(deps: ChatRouteDeps) {
         >('auth:require-user', initCtx, { req });
         userId = result.user.id;
       } catch (err) {
-        if (err instanceof PluginError || isRejection(err)) {
-          res.status(401).json({ error: 'unauthenticated' });
-          return;
-        }
-        throw err;
+        // Only 'unauthenticated' is a 401; any other failure is a logged 500.
+        answerRequireUserFailure(initCtx, res, err, 'chat_post_message_require_user_failed');
+        return;
       }
 
       // 2) Parse + validate the body. The http-server already capped the
@@ -833,11 +832,9 @@ export function createChatRouteHandlers(deps: ChatRouteDeps) {
         >('auth:require-user', initCtx, { req });
         userId = result.user.id;
       } catch (err) {
-        if (err instanceof PluginError || isRejection(err)) {
-          res.status(401).json({ error: 'unauthenticated' });
-          return;
-        }
-        throw err;
+        // Only 'unauthenticated' is a 401; any other failure is a logged 500.
+        answerRequireUserFailure(initCtx, res, err, 'chat_permission_decision_require_user_failed');
+        return;
       }
 
       // 2) Parse + validate the body. (http-server caps the body at 1 MiB
@@ -1012,11 +1009,9 @@ export function createChatRouteHandlers(deps: ChatRouteDeps) {
         >('auth:require-user', initCtx, { req });
         userId = result.user.id;
       } catch (err) {
-        if (err instanceof PluginError || isRejection(err)) {
-          res.status(401).json({ error: 'unauthenticated' });
-          return;
-        }
-        throw err;
+        // Only 'unauthenticated' is a 401; any other failure is a logged 500.
+        answerRequireUserFailure(initCtx, res, err, 'chat_approve_authored_skill_require_user_failed');
+        return;
       }
 
       // 2) Parse + validate the body ({ agentId, skillId, shown? }).
@@ -1418,11 +1413,9 @@ async function authOr401(
     >('auth:require-user', initCtx, { req });
     return result.user.id;
   } catch (err) {
-    if (err instanceof PluginError || isRejection(err)) {
-      res.status(401).json({ error: 'unauthenticated' });
-      return null;
-    }
-    throw err;
+    // Only 'unauthenticated' is a 401; any other failure is a logged 500.
+    answerRequireUserFailure(initCtx, res, err, 'chat_require_user_failed');
+    return null;
   }
 }
 

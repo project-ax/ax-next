@@ -1,4 +1,5 @@
 import {
+  answerRequireUserFailure,
   PluginError,
   isRejection,
   makeAgentContext,
@@ -112,11 +113,9 @@ export function makeAgentIdentityHandlers(deps: AgentIdentityRoutesDeps) {
       );
       userId = out.user.id;
     } catch (err) {
-      if (err instanceof PluginError || isRejection(err)) {
-        res.status(401).json({ error: 'unauthenticated' });
-        return null;
-      }
-      throw err;
+      // Only 'unauthenticated' is a 401; any other failure is a logged 500.
+      answerRequireUserFailure(initCtx, res, err, 'agent_identity_require_user_failed');
+      return null;
     }
     // 2) ACL — agents:resolve(agentId, userId) succeeds only for the owner /
     //    team-member. A 'forbidden' (or any resolve failure) → 403/404 with no

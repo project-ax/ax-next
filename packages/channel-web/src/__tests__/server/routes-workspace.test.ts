@@ -36,6 +36,7 @@ import {
 } from '@ax/routines-contract';
 import { KICKOFF_TEXT } from '../../lib/bootstrap-kickoff.js';
 import { registerIdentityStoreFake, type IdentityStoreFake } from './identity-store-fake.js';
+import { expectLoggedRequireUserFault, faultInitCtx, storeFault } from './require-user-fault.js';
 
 function mkReq(
   params: Record<string, string> = {},
@@ -218,6 +219,31 @@ describe('channel-web agent-workspace BFF', () => {
     await h.route(mkReq({}, { text: 'anything' }), r.res);
     expect(r.captured.statusCode).toBe(401);
   });
+
+  // TASK-1030: only 'unauthenticated' is a 401. A crashed session store (the
+  // bus wraps the raw throw as PluginError 'unknown') is a logged 500 — it must
+  // not bounce the user to sign-in with nothing in the log. Two gates: the
+  // plain one (`authOr401`, /state) and the actor one (`authActorOr401`,
+  // /connectors).
+  it.each([
+    ['state', 'workspace_require_user_failed', {}],
+    ['connectors', 'workspace_actor_require_user_failed', { agentId: 'a1' }],
+  ] as const)(
+    'a session-store fault on /%s is a logged 500, not a 401',
+    async (route, event, params) => {
+      bus.registerService('auth:require-user', 'auth', async () => {
+        throw storeFault();
+      });
+      const { ctx, logger } = faultInitCtx();
+      const h = makeWorkspaceHandlers({ bus, initCtx: ctx });
+      const r = mkRes();
+      await h[route](mkReq(params), r.res);
+      expectLoggedRequireUserFault(logger, event, {
+        status: r.captured.statusCode,
+        body: r.captured.body,
+      });
+    },
+  );
 
   // -------------------------------------------------------------------------
   // GET /api/workspace/state

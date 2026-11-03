@@ -1,6 +1,5 @@
 import {
-  isRejection,
-  PluginError,
+  answerRequireUserFailure,
   makeAgentContext,
   type AgentContext,
   type HookBus,
@@ -86,11 +85,8 @@ async function requireAdmin(
     >('auth:require-user', ctx, { req });
     actor = { id: result.user.id, isAdmin: result.user.isAdmin };
   } catch (err) {
-    if (err instanceof PluginError || isRejection(err)) {
-      res.status(401).json({ error: 'unauthenticated' });
-      return null;
-    }
-    throw err;
+    answerRequireUserFailure(ctx, res, err, 'admin_settings_require_user_failed');
+    return null;
   }
   if (!actor.isAdmin) {
     res.status(403).json({ error: 'forbidden' });

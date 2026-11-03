@@ -1,4 +1,4 @@
-import { isRejection, PluginError, type AgentContext, type HookBus } from '@ax/core';
+import { answerRequireUserFailure, type AgentContext, type HookBus } from '@ax/core';
 
 // ---------------------------------------------------------------------------
 // Route plumbing for the admin usage surface.
@@ -35,9 +35,9 @@ export interface AuthedUser {
 }
 
 /**
- * /admin/* gate. 401 when the caller cannot be authenticated (any auth
- * failure closes the door, not just the documented rejection), 403 when they
- * can but are not an admin. Returns null after writing the response.
+ * /admin/* gate. 401 when nobody is signed in, a logged 500 when the auth
+ * check itself fails, 403 when they are signed in but not an admin. Returns
+ * null after writing the response.
  */
 export async function requireAdmin(
   bus: HookBus,
@@ -53,11 +53,8 @@ export async function requireAdmin(
     >('auth:require-user', ctx, { req });
     actor = { id: result.user.id, isAdmin: result.user.isAdmin };
   } catch (err) {
-    if (err instanceof PluginError || isRejection(err)) {
-      res.status(401).json({ error: 'unauthenticated' });
-      return null;
-    }
-    throw err;
+    answerRequireUserFailure(ctx, res, err, 'usage_require_user_failed');
+    return null;
   }
   if (actor.isAdmin !== true) {
     res.status(403).json({ error: 'forbidden' });

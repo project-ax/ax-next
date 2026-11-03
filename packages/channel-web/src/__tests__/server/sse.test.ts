@@ -7,6 +7,7 @@ import {
   type AgentContext,
 } from '@ax/core';
 import { createChunkBuffer } from '../../server/chunk-buffer';
+import { capturingLogger, expectLoggedRequireUserFault, storeFault } from './require-user-fault';
 import {
   createBufferFillSubscriber,
   createPermissionCardFillSubscriber,
@@ -125,6 +126,8 @@ function fakeReq(opts: FakeReqOpts = {}): RouteRequest {
 interface BootOpts {
   /** userId returned by auth:require-user; null → unauthenticated. */
   authUser?: { id: string; isAdmin: boolean } | null;
+  /** auth:require-user crashes (a raw store fault the bus wraps). */
+  authFault?: boolean;
   /** conversationId/agentId looked up by reqId; null → not-found. */
   conversation?: {
     conversationId: string;
@@ -168,10 +171,12 @@ function deferred(): { promise: Promise<void>; resolve: () => void } {
 
 function bootHandler(opts: BootOpts = {}) {
   const bus = new HookBus();
+  const logger = capturingLogger();
   const initCtx = makeAgentContext({
     sessionId: 'init',
     agentId: '@ax/channel-web',
     userId: 'system',
+    logger,
   });
 
   const authUser = opts.authUser === undefined ? { id: 'userA', isAdmin: false } : opts.authUser;
@@ -187,6 +192,7 @@ function bootHandler(opts: BootOpts = {}) {
   const agentResolveAllow = opts.agentResolveAllow ?? true;
 
   bus.registerService('auth:require-user', 'mock-auth', async () => {
+    if (opts.authFault === true) throw storeFault();
     if (authUser === null) {
       throw new PluginError({
         code: 'unauthenticated',
@@ -312,6 +318,7 @@ function bootHandler(opts: BootOpts = {}) {
   return {
     bus,
     initCtx,
+    logger,
     buffer,
     handler,
     kv,
@@ -356,6 +363,21 @@ describe('@ax/channel-web SSE handler', () => {
       await handler(req, res);
       expect(captured.statusCode).toBe(401);
       expect(captured.jsonBody).toEqual({ error: 'unauthenticated' });
+      expect(captured.streamWrites).toEqual([]);
+    } finally {
+      buffer.dispose();
+    }
+  });
+
+  it('a session-store fault is a logged 500, not a 401 (TASK-1030)', async () => {
+    const { handler, buffer, logger } = bootHandler({ authFault: true });
+    try {
+      const { res, captured } = fakeRes();
+      await handler(fakeReq(), res);
+      expectLoggedRequireUserFault(logger, 'chat_sse_require_user_failed', {
+        status: captured.statusCode ?? 0,
+        body: captured.jsonBody,
+      });
       expect(captured.streamWrites).toEqual([]);
     } finally {
       buffer.dispose();

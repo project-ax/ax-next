@@ -2,7 +2,7 @@ import type { OnboardingStore } from './store.js';
 import type { BootstrapSessionStore } from './sessions.js';
 import type { RateLimiter } from './rate-limit.js';
 import { verifyToken } from './token.js';
-import { isModelRef, type AgentContext, type HookBus } from '@ax/core';
+import { answerRequireUserFailure, isModelRef, type AgentContext, type HookBus } from '@ax/core';
 import { runCompletionTransaction } from './completion-tx.js';
 
 // ---------------------------------------------------------------------------
@@ -220,8 +220,8 @@ export function createOnboardingRouteHandlers(deps: OnboardingRouteHandlerDeps) 
           { req: req as unknown as { headers: Record<string, string>; signedCookie(n: string): string | null } },
         ) as { user: { id: string; isAdmin: boolean } };
         user = out.user;
-      } catch {
-        res.status(401).json({ error: 'unauthenticated' });
+      } catch (err) {
+        answerRequireUserFailure(deps.initCtx, res, err, 'onboarding_require_user_failed');
         return;
       }
 

@@ -1,6 +1,6 @@
 import { replaceSurfaceRewriters } from '@ax/core/surface-text';
 import {
-  isRejection,
+  answerRequireUserFailure,
   PluginError,
   type AgentContext,
   type HookBus,
@@ -21,7 +21,7 @@ import type { PermissionRequest, PhaseEvent, SseFrame, StreamChunk } from './typ
 //
 // Wires GET /api/chat/stream/:reqId. Per request:
 //
-//   1. auth:require-user → 401 on rejection.
+//   1. auth:require-user → 401 when unauthenticated, logged 500 otherwise.
 //   2. conversations:get-by-req-id → 404 (NOT 403) on not-found.
 //      404-not-403 is intentional (J9): we don't tell foreign callers
 //      whether a reqId exists at all.
@@ -151,13 +151,9 @@ export function createSseHandler(deps: SseHandlerDeps) {
       >('auth:require-user', deps.initCtx, { req });
       userId = result.user.id;
     } catch (err) {
-      // Both PluginError('unauthenticated') and bus.fire-style rejections
-      // collapse to 401 — the route is closed by default.
-      if (err instanceof PluginError || isRejection(err)) {
-        res.status(401).json({ error: 'unauthenticated' });
-        return;
-      }
-      throw err;
+      // Only 'unauthenticated' is a 401; any other failure is a logged 500.
+      answerRequireUserFailure(deps.initCtx, res, err, 'chat_sse_require_user_failed');
+      return;
     }
 
     // 2) Resolve the reqId → conversation (J9 — server-derived ACL).

@@ -1,5 +1,5 @@
 import {
-  isRejection,
+  answerRequireUserFailure,
   makeAgentContext,
   PluginError,
   type AgentContext,
@@ -17,7 +17,7 @@ import type { RouteRequest, RouteResponse } from './sse.js';
 //
 // Per request:
 //
-//   1. auth:require-user → 401.
+//   1. auth:require-user → 401 when unauthenticated, logged 500 otherwise.
 //   2. conversations:get(conversationId, userId) → forbidden / not-found both
 //      answer 404 `conversation-not-found` (never 403 — no existence leak).
 //   3. agents:resolve(agentId, userId) → 404, same posture.
@@ -110,11 +110,9 @@ export function createMemoryEventsHandler(deps: MemoryEventsHandlerDeps) {
       >('auth:require-user', initCtx, { req });
       userId = result.user.id;
     } catch (err) {
-      if (err instanceof PluginError || isRejection(err)) {
-        res.status(401).json({ error: 'unauthenticated' });
-        return;
-      }
-      throw err;
+      // Only 'unauthenticated' is a 401; any other failure is a logged 500.
+      answerRequireUserFailure(initCtx, res, err, 'memory_events_require_user_failed');
+      return;
     }
 
     // 2) The conversation, owned by this user.

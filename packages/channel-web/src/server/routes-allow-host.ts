@@ -9,7 +9,8 @@
  * authenticated, CSRF-gated user action.
  *
  * Security posture:
- *  - Auth: `auth:require-user` → 401 on rejection. The per-request ctx is built
+ *  - Auth: `auth:require-user` → 401 when unauthenticated (any other failure
+ *    is a logged 500). The per-request ctx is built
  *    from the AUTHENTICATED user id, never the browser-supplied sessionId.
  *  - CSRF: the http-server's subscriber requires `X-Requested-With: ax-admin`
  *    on state-changing methods (the same gate as POST /api/chat/messages); the
@@ -24,7 +25,14 @@
  * RouteResponse shapes are reused from routes-chat.ts (the same duck-typed
  * subset), and the proxy hook is a duck-typed bus call.
  */
-import { makeAgentContext, makeReqId, PluginError, type AgentContext, type HookBus } from '@ax/core';
+import {
+  answerRequireUserFailure,
+  makeAgentContext,
+  makeReqId,
+  PluginError,
+  type AgentContext,
+  type HookBus,
+} from '@ax/core';
 import { z } from 'zod';
 import type { RouteRequest, RouteResponse } from './routes-chat.js';
 
@@ -74,11 +82,9 @@ export function makeAllowHostHandler(deps: { bus: HookBus; initCtx: AgentContext
       );
       userId = r.user.id;
     } catch (err) {
-      if (err instanceof PluginError) {
-        res.status(401).json({ error: 'unauthenticated' });
-        return;
-      }
-      throw err;
+      // Only 'unauthenticated' is a 401; any other failure is a logged 500.
+      answerRequireUserFailure(deps.initCtx, res, err, 'host_grant_require_user_failed');
+      return;
     }
 
     // 2) Parse + validate the body. The http-server already capped the body

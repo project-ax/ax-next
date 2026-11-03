@@ -1,5 +1,5 @@
 import {
-  isRejection,
+  answerRequireUserFailure,
   makeAgentContext,
   PluginError,
   type AgentContext,
@@ -96,14 +96,10 @@ async function requireUser(
     >('auth:require-user', ctx, { req });
     return { id: result.user.id, isAdmin: result.user.isAdmin };
   } catch (err) {
-    // Any auth failure (PluginError 'unauthenticated', or the auth plugin
-    // not being loaded at all) is treated as a closed door. An admin
-    // endpoint that can't authenticate fails closed.
-    if (err instanceof PluginError || isRejection(err)) {
-      res.status(401).json({ error: 'unauthenticated' });
-      return null;
-    }
-    throw err;
+    // Only 'unauthenticated' is a 401. Any other failure (auth plugin not
+    // loaded, session-store fault) is a logged 500. Both refuse the request.
+    answerRequireUserFailure(ctx, res, err, 'teams_require_user_failed');
+    return null;
   }
 }
 

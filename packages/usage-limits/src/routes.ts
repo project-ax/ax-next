@@ -1,6 +1,6 @@
 import { PricesSchema, type PriceStore } from './pricing.js';
 import { z } from 'zod';
-import { makeAgentContext, type AgentContext, type HookBus } from '@ax/core';
+import { answerRequireUserFailure, makeAgentContext, type AgentContext, type HookBus } from '@ax/core';
 import {
   InvalidLimitsError,
   UsageLimitsSchema,
@@ -238,8 +238,8 @@ export function createUsageRouteHandlers(deps: {
           { req },
         );
         userId = user.id;
-      } catch {
-        res.status(401).json({ error: 'unauthenticated' });
+      } catch (err) {
+        answerRequireUserFailure(ctx, res, err, 'usage_own_require_user_failed');
         return;
       }
       // Identity comes only from the authenticated session, never params/query.

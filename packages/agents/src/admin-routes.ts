@@ -1,7 +1,7 @@
 import type { AgentStore } from './store.js';
 import { loadPolicy, type ModelPolicy } from './model-policy.js';
 import {
-  isRejection,
+  answerRequireUserFailure,
   makeAgentContext,
   parseModelRef,
   PluginError,
@@ -274,14 +274,9 @@ async function requireUser(
     >('auth:require-user', ctx, { req });
     return { id: result.user.id, isAdmin: result.user.isAdmin };
   } catch (err) {
-    // PluginError 'unauthenticated' is the documented rejection; any
-    // other failure (e.g. auth plugin not loaded) returns 401 too —
-    // an admin endpoint that can't authenticate is closed by default.
-    if (err instanceof PluginError || isRejection(err)) {
-      res.status(401).json({ error: 'unauthenticated' });
-      return null;
-    }
-    throw err;
+    // Only 'unauthenticated' is a 401; any other failure is a logged 500.
+    answerRequireUserFailure(ctx, res, err, 'agents_admin_require_user_failed');
+    return null;
   }
 }
 

@@ -1,4 +1,4 @@
-import { PluginError, isRejection, type AgentContext, type HookBus } from '@ax/core';
+import { answerRequireUserFailure, type AgentContext, type HookBus } from '@ax/core';
 export const PLUGIN_NAME = '@ax/model-policy';
 export const POLICY_STORAGE_KEY = 'settings:model-policy';
 export const SERVICE_GET_POLICY = 'models:get-policy';
@@ -44,11 +44,8 @@ export async function requireAdmin(
     );
     actor = { id: result.user.id, isAdmin: result.user.isAdmin };
   } catch (err) {
-    if (err instanceof PluginError || isRejection(err)) {
-      res.status(401).json({ error: 'unauthenticated' });
-      return null;
-    }
-    throw err;
+    answerRequireUserFailure(ctx, res, err, 'model_policy_require_user_failed');
+    return null;
   }
   if (actor.isAdmin !== true) {
     res.status(403).json({ error: 'forbidden' });
