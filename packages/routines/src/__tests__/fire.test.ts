@@ -4,11 +4,11 @@ import { HookBus, makeAgentContext, PluginError, type AgentContext } from '@ax/c
 import { RoutineDefinitionSchema, RoutinePatchSchema } from '@ax/routines-contract';
 import { connectorsSkippedPayload } from '@ax/chat-orchestrator';
 import { checkInBrief } from '../brief.js';
-import { createFireRoutine, stashConnectorsSkipped, warningFor, type PendingFire, type PendingFires } from '../fire.js';
+import { createFireRoutine, runFailedText, stashConnectorsSkipped, warningFor, type PendingFire, type PendingFires } from '../fire.js';
 import { captureExpectedStderr } from './support/expected-diagnostics.js';
 import { fixture, createInput, now } from './store-fixture.js';
 import { purgeRoutineAgent } from '../cleanup.js';
-import { RUN_INTERRUPTED } from '../store.js';
+import { RUN_CLOSED, RUN_INTERRUPTED } from '../store.js';
 import { renderCheckInMessage } from '../checkin-message.js';
 import type { FireReport, StoredReply, StoredRoutine } from '../types.js';
 const f = fixture();
@@ -128,6 +128,18 @@ describe('accepted DB fire dispatch', () => {
     const logged = lines.filter((l) => l.includes('routines_fire_failed')).map((l) => JSON.parse(l) as Record<string, unknown>);
     expect(logged).toHaveLength(1);
     expect(logged[0]).toMatchObject({ level: 'error', code: 'forbidden', routineId: h.row.routineId, err: { message: 'PRIVATE pg text at 10.0.0.7' } });
+  });
+  it('a bind refused because the run closed keeps the store\'s own sentence', async () => {
+    const h = await setup({ bind: async () => { throw new Error(RUN_CLOSED); } });
+    expect(await h.fire(h.accepted)).toMatchObject({ status: 'error', error: RUN_CLOSED });
+    expect((await f.store.recentFires(h.row))[0]?.error).toBe(RUN_CLOSED);
+  });
+  it('a log line that throws does not cost the run its row', async () => {
+    const hostile = new PluginError({ code: 'forbidden', plugin: 'teams', message: 'denied' });
+    Object.defineProperty(hostile, 'stack', { get() { throw new Error('getter'); } });
+    const h = await setup({ resolveError: hostile });
+    await stdoutOf(() => h.fire(h.accepted).then(() => undefined));
+    expect((await f.store.recentFires(h.row))[0]).toMatchObject({ status: 'error', error: 'This run failed because of a problem on our side (code: forbidden).' });
   });
   it('a webhook fire logs codes only', async () => {
     const h = await setup({ resolveError: new PluginError({ code: 'forbidden', plugin: 'teams', message: 'PRIVATE' }) });
@@ -544,5 +556,19 @@ describe('connector skips per fire (slice 6)', () => {
   });
   it('warningFor: null when nothing was skipped', () => {
     expect(warningFor(pendingEntry())).toBeNull();
+  });
+});
+describe('runFailedText (TASK-1031)', () => {
+  const wrap = (code: string, cause: Error) => new PluginError({ code, plugin: 'p', message: 'PRIVATE', cause });
+  it("shows the error's own code, and its cause's only behind the bus's unknown wrap", () => {
+    const pg = Object.assign(new Error('PRIVATE'), { code: '57014' });
+    expect(runFailedText(wrap('timeout', pg))).toBe('This run failed because of a problem on our side (code: timeout).');
+    expect(runFailedText(wrap('unknown', pg))).toBe('This run failed because of a problem on our side (code: 57014).');
+    expect(runFailedText(wrap('unknown', new Error('PRIVATE')))).toBe('This run failed because of a problem on our side.');
+  });
+  it('never shows a code shaped like a host or address', () => {
+    for (const code of ['10.0.0.7', 'db.internal:5432']) {
+      expect(runFailedText(Object.assign(new Error('PRIVATE'), { code }))).toBe('This run failed because of a problem on our side.');
+    }
   });
 });
