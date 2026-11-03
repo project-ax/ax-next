@@ -49,6 +49,7 @@ interface ServeHandle {
 
 function stubPlugin(opts: {
   chatOutcome?: AgentOutcome | (() => AgentOutcome);
+  sessionCreate?: () => void;
 } = {}): Plugin {
   return {
     manifest: {
@@ -62,7 +63,10 @@ function stubPlugin(opts: {
       bus.registerService<{ sessionId: string; workspaceRoot: string }, { sessionId: string; token: string }>(
         'session:create',
         '@ax/serve-test-stub',
-        async (_ctx, input) => ({ sessionId: input.sessionId, token: 'stub-token' }),
+        async (_ctx, input) => {
+          opts.sessionCreate?.();
+          return { sessionId: input.sessionId, token: 'stub-token' };
+        },
       );
       bus.registerService<{ message: AgentMessage }, AgentOutcome>(
         'agent:invoke',
@@ -389,5 +393,86 @@ describe('serve command — HTTP surface', () => {
     expect(r.status).toBe(500);
     const body = await r.json();
     expect(body.error.code).toBe('chat-busted');
+  });
+
+  async function postChat(): Promise<Response> {
+    return fetch(`http://127.0.0.1:${handle.port}/chat`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...CSRF_HEADER },
+      body: JSON.stringify({ message: 'hi' }),
+    });
+  }
+
+  // Unfixed: PluginError{unknown} -> 400 echoing the raw message (10.0.0.7).
+  it('session:create raw error -> 500 INTERNAL, no echo of the original text', async () => {
+    handle = await bootServe({
+      plugin: stubPlugin({
+        sessionCreate: () => {
+          throw new Error('pg: constraint at 10.0.0.7');
+        },
+      }),
+    });
+    const r = await postChat();
+    const text = await r.text();
+    expect(r.status).toBe(500);
+    expect(text).not.toContain('10.0.0.7');
+    expect(JSON.parse(text).error.code).toBe('INTERNAL');
+  });
+
+  // Unfixed: also 400 + code (passes both ways; pins the carve-out).
+  it('session:create duplicate-session stays a 400 with its code', async () => {
+    const { PluginError } = await import('@ax/core');
+    handle = await bootServe({
+      plugin: stubPlugin({
+        sessionCreate: () => {
+          throw new PluginError({
+            code: 'duplicate-session',
+            plugin: 'test',
+            hookName: 'session:create',
+            message: 'session already exists',
+          });
+        },
+      }),
+    });
+    const r = await postChat();
+    expect(r.status).toBe(400);
+    expect((await r.json()).error.code).toBe('duplicate-session');
+  });
+
+  // Unfixed: message 'secret 10.0.0.7' is echoed.
+  it('agent:invoke PluginError keeps its code but not its message', async () => {
+    const { PluginError } = await import('@ax/core');
+    handle = await bootServe({
+      plugin: stubPlugin({
+        chatOutcome: () => {
+          throw new PluginError({
+            code: 'chat-busted',
+            plugin: 'test',
+            hookName: 'agent:invoke',
+            message: 'secret 10.0.0.7',
+          });
+        },
+      }),
+    });
+    const r = await postChat();
+    const text = await r.text();
+    expect(r.status).toBe(500);
+    expect(text).not.toContain('10.0.0.7');
+    expect(JSON.parse(text).error.code).toBe('chat-busted');
+  });
+
+  // Unfixed: HookBus wraps as 'unknown' and the raw message is echoed.
+  it('agent:invoke raw Error -> 500, no echo', async () => {
+    handle = await bootServe({
+      plugin: stubPlugin({
+        chatOutcome: () => {
+          throw new Error('boom at 10.0.0.7');
+        },
+      }),
+    });
+    const r = await postChat();
+    const text = await r.text();
+    expect(r.status).toBe(500);
+    expect(text).not.toContain('10.0.0.7');
   });
 });
