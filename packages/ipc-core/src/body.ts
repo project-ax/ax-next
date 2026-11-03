@@ -47,20 +47,23 @@ export interface ReadBodyResult {
  * TASK-1024: a request that is already gone can never deliver its body. Its
  * last event fired before our listeners attached, so waiting on data/error/end
  * would hang forever. Answer now instead:
- *   - destroyed WITH an error → that error, unchanged (same contract as a
- *     stream error mid-read);
- *   - destroyed without one, or already ended (someone consumed the bytes) →
- *     a fixed-text Error. The dispatcher maps both to its logged 500.
- * Returns null when the request is still readable.
+ *   - errored (the client hung up: `aborted` / ECONNRESET) → that error,
+ *     unchanged (same contract as a stream error mid-read);
+ *   - already ended (someone consumed the bytes) → a fixed-text Error. Checked
+ *     before `destroyed` because a request auto-destroys right after 'end', so
+ *     an ended request is almost always destroyed too;
+ *   - destroyed with neither → a fixed-text Error.
+ * The dispatcher maps all three to its logged 500. Returns null when the
+ * request is still readable.
  */
 function bodyGoneError(req: http.IncomingMessage): Error | null {
-  if (req.destroyed) {
-    const errored: unknown = req.errored;
-    if (errored instanceof Error) return errored;
-    return new Error('request was already destroyed before its body was read');
-  }
+  const errored: unknown = req.errored;
+  if (errored instanceof Error) return errored;
   if (req.readableEnded) {
     return new Error('request was already ended before its body was read');
+  }
+  if (req.destroyed) {
+    return new Error('request was already destroyed before its body was read');
   }
   return null;
 }

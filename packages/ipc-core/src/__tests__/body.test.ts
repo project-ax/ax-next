@@ -254,7 +254,10 @@ describe('body readers on a request that is already gone (TASK-1024)', () => {
   }
 
   const tick = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
-  const GONE = /request was already (destroyed|ended)|request closed before its body was read/;
+  // Exact messages, so each test pins the branch that answered it.
+  const DESTROYED = 'request was already destroyed before its body was read';
+  const ENDED = 'request was already ended before its body was read';
+  const CLOSED = 'request closed before its body was read';
 
   const readers: Array<[string, (req: http.IncomingMessage) => Promise<unknown>]> = [
     ['readJsonBody', (req) => readJsonBody(req)],
@@ -268,7 +271,7 @@ describe('body readers on a request that is already gone (TASK-1024)', () => {
       await tick(); // let 'close' fire before the reader attaches
       const out = await settleWithin(read(req));
       expect(out.kind).toBe('rejected');
-      expect((out as { err: Error }).err.message).toMatch(GONE);
+      expect((out as { err: Error }).err.message).toBe(DESTROYED);
     });
 
     it('rejects with the original error when the request errored before the read', async () => {
@@ -278,7 +281,9 @@ describe('body readers on a request that is already gone (TASK-1024)', () => {
       req.destroy(boom);
       await tick();
       const out = await settleWithin(read(req));
-      expect(out).toEqual({ kind: 'rejected', err: boom });
+      expect(out.kind).toBe('rejected');
+      // The very same object, not a structural look-alike.
+      expect((out as { err: unknown }).err).toBe(boom);
     });
 
     it('rejects when the request already ended before the read', async () => {
@@ -286,9 +291,12 @@ describe('body readers on a request that is already gone (TASK-1024)', () => {
       req.push(null);
       req.resume();
       await new Promise((resolve) => req.on('end', resolve));
+      await tick(); // auto-destroy lands too, as on a real IncomingMessage
+      expect(req.destroyed).toBe(true);
       const out = await settleWithin(read(req));
       expect(out.kind).toBe('rejected');
-      expect((out as { err: Error }).err.message).toMatch(GONE);
+      // Ended wins over destroyed: the bytes were consumed, not lost.
+      expect((out as { err: Error }).err.message).toBe(ENDED);
     });
 
     it('rejects when the request is destroyed mid-read with no error', async () => {
@@ -299,7 +307,45 @@ describe('body readers on a request that is already gone (TASK-1024)', () => {
       req.destroy();
       const out = await settleWithin(p);
       expect(out.kind).toBe('rejected');
-      expect((out as { err: Error }).err.message).toMatch(GONE);
+      expect((out as { err: Error }).err.message).toBe(CLOSED);
+    });
+
+    it('rejects a real request whose client hung up before the read (ECONNRESET)', async () => {
+      // The production shape: the listener awaits authentication, the client
+      // hangs up meanwhile, and Node marks the request destroyed + errored
+      // with nobody listening. The reader attaches only afterwards.
+      let resolveOutcome!: (o: Outcome) => void;
+      const outcome = new Promise<Outcome>((resolve) => {
+        resolveOutcome = resolve;
+      });
+      const server = http.createServer((req) => {
+        req.socket.once('close', () => {
+          void tick().then(async () => resolveOutcome(await settleWithin(read(req))));
+        });
+      });
+      await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
+      try {
+        const address = server.address();
+        if (address === null || typeof address === 'string') throw new Error('bad address');
+        const client = http.request({
+          hostname: '127.0.0.1',
+          port: address.port,
+          method: 'POST',
+          path: '/',
+          headers: { 'Content-Type': 'application/json', 'Content-Length': '100' },
+        });
+        client.on('error', () => {}); // we are the ones hanging up
+        client.write('{"partial":'); // fewer bytes than declared: the body can't complete
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        client.destroy();
+
+        const out = await outcome;
+        expect(out.kind).toBe('rejected');
+        expect((out as { err: NodeJS.ErrnoException }).err.code).toBe('ECONNRESET');
+      } finally {
+        server.closeAllConnections();
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+      }
     });
 
     it('still resolves a body that ends normally (end, then close)', async () => {
