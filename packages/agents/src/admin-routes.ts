@@ -8,7 +8,7 @@ import {
   type AgentContext,
   type HookBus,
 } from '@ax/core';
-import { buildSkillManifestYaml } from '@ax/skills-parser';
+import { buildSkillManifestYaml, MANIFEST_CODES } from '@ax/skills-parser';
 import { z } from 'zod';
 import {
   validateNewAttachments,
@@ -214,6 +214,14 @@ const patchAttachmentsBodySchema = z
     skillAttachments: z.array(skillAttachmentSchema).max(20),
   })
   .strict();
+
+/**
+ * The manifest parser's codes: the `skills:upsert` failures promote answers
+ * with a 400 of its own. (`invalid-payload` is a 400 too, via
+ * writeServiceError.) Everything else from that call is a host fault — see
+ * the promote handler's catch.
+ */
+const MANIFEST_CODE_SET: ReadonlySet<string> = new Set<string>(MANIFEST_CODES);
 
 /**
  * Body schema for `POST /admin/agents/:id/authored-skills/promote`.
@@ -892,14 +900,36 @@ export function createAdminAgentRouteHandlers(deps: AdminRouteDeps) {
         }
       } catch (err) {
         if (writeServiceError(res, err)) return;
-        // skills:upsert manifest-validation errors (invalid-host, invalid-slot,
-        // invalid-mcp-command, etc.) are PluginErrors not mapped by writeServiceError.
-        // Return them as 400 so callers get actionable feedback.
-        if (err instanceof PluginError) {
+        // skills:upsert re-runs the manifest parser. Its failures (an inline
+        // secret, a malformed connector reference, …) are the caller's to fix,
+        // so they're a 400 with the parser's own message. Keyed off the
+        // parser's exported list (TASK-1024) rather than a hand-kept copy.
+        if (err instanceof PluginError && MANIFEST_CODE_SET.has(err.code)) {
           res.status(400).json({ error: err.message, code: err.code });
           return;
         }
-        throw err;
+        // Anything else is a host fault: a store error, a missing owner, a
+        // plugin bug. Log the detail where an operator can find it, and answer
+        // with the same generic body the http-server catch-all uses. The
+        // message can carry internals, so we never echo it.
+        // The logger keeps only name/message/stack of `err`, so the code,
+        // plugin and hook ride alongside: they're what tell a missing owner
+        // from a timeout from a store crash.
+        ctx.logger.error('agents_admin_promote_failed', {
+          agentId,
+          skillId: body.skillId,
+          targetScope: body.targetScope,
+          ...(err instanceof PluginError
+            ? {
+                pluginErrorCode: err.code,
+                plugin: err.plugin,
+                ...(err.hookName !== undefined ? { hookName: err.hookName } : {}),
+              }
+            : {}),
+          err: err instanceof Error ? err : new Error(String(err)),
+        });
+        res.status(500).json({ error: 'internal' });
+        return;
       }
 
       res.status(200).json({
