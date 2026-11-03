@@ -25,10 +25,12 @@
  * a change made during the last read.
  *
  * What a difference does depends on whether the head has gone out. Before
- * it, the difference is answered in words: a short first range, or a
- * one-range file whose final check differs, is a 409 `file-changed` (a 404 if
- * the file is gone). A file that fits in one range has nothing left to read
- * after its first, so its final check runs before the head for exactly this.
+ * it, the difference is a refusal with its own status: a short first range,
+ * or a one-range file whose final check differs, is a 409 `file-changed` (a
+ * 404 if the file is gone), said in words to a probe and with its words torn
+ * to a real download (see below). A file that fits in one range has nothing
+ * left to read after its first, so its final check runs before the head for
+ * exactly this.
  * Once the head is out, a difference throws, and a throw tears the
  * connection down instead of ending it. `bodyStream()` holds the chunk that
  * completes the body until the final check has answered, so the last change
@@ -37,8 +39,13 @@
  * truth.
  *
  * WHAT THE STATUS CODES MEAN. Each is decided before the first byte, while we
- * can still say no in words. The reads that can still say so are the first
- * range and, for a file that fits in one range, its final check:
+ * can still say no. A probe hears the no in words. A real download gets the
+ * same status with its words torn (TASK-1025): the browser's own download
+ * receives it, not our page, and Safari saves a whole refusal as the file.
+ * This module answers `status().json()` either way; the routes hand a real
+ * download a response whose `json()` tears (`sendTornRefusal`). The reads that
+ * can still say no are the first range and, for a file that fits in one
+ * range, its final check:
  *
  *   - no range service              → 503 user-files-unavailable
  *   - no host mount (a thrown read) → 503 user-files-unavailable, logged
@@ -203,9 +210,10 @@ export async function sendUserFileDownload(args: SendUserFileDownloadArgs): Prom
       length,
     });
 
-  // Everything up to `res.status(200)` can still be refused in words, so no
-  // download header is set before it (a probe's no-store is the exception). A
-  // refusal carries none of the download's headers.
+  // Everything up to `res.status(200)` can still be refused: in words to a
+  // probe, and with the same status, its words torn, to a real download
+  // (TASK-1025). So no download header is set before it (a probe's no-store is
+  // the exception). A refusal carries none of the download's headers.
   const beforeHead: BeforeHead = { ctx, agentId, res };
 
   const first = await fileBeforeHead(range(0, USER_FILE_DOWNLOAD_CHUNK_BYTES), beforeHead);
@@ -444,6 +452,56 @@ export async function sendUserFileStatus(args: SendUserFileStatusArgs): Promise<
       ctx.logger.warn(READ_FAILED, { agentId: owner.agentId, code: 'invalid-answer' });
       res.status(503).json({ error: 'file-read-failed' });
   }
+}
+
+/**
+ * Refuse a REAL download TORN (TASK-1025): `status` and a JSON content type,
+ * a Content-Length for the whole of `body`'s JSON, all of that JSON except
+ * its last byte, and then a cut connection.
+ *
+ * WHY. A real download is the browser's own (an `<a download>`, TASK-1022),
+ * so its refusal reaches that download, never our page. Chromium and Firefox
+ * fail a download that is not a 2xx, but Safari saves a WHOLE refusal as the
+ * file (`<name>.pdf.json`). A body cut short of its Content-Length is a
+ * failed download to every browser, and a proxy in front of us passes it on
+ * as one. A connection cut before the head is no substitute: a proxy answers
+ * that with an error page of its own, and Safari would save that page. The
+ * page has already said the refusal in words, from the probe.
+ *
+ * HOW. Through `bodyStream()`'s documented failure path: a source that fails
+ * after its first chunk leaves the head and that chunk on the wire, and the
+ * connection is torn down. `body` is a refusal's `{ error }`, so its JSON is
+ * never under 12 bytes and that first chunk is never empty.
+ *
+ * `bodyStream()` always rejects here, by design, and the rejection is
+ * swallowed: it carries nothing left to do. Resolves once the connection is
+ * cut.
+ */
+export async function sendTornRefusal(
+  res: Pick<StreamingDownloadResponse, 'status' | 'header' | 'bodyStream'>,
+  status: number,
+  body: unknown,
+): Promise<void> {
+  const bytes = new TextEncoder().encode(JSON.stringify(body));
+  res.status(status);
+  res.header('content-type', 'application/json; charset=utf-8');
+  try {
+    await res.bodyStream(allButTheLastByte(bytes), { contentLength: bytes.byteLength });
+  } catch {
+    // Every time: the source fails on purpose, and a body cut short of its
+    // Content-Length is exactly what this sends.
+  }
+}
+
+/** A torn refusal's body: all of `bytes` but the last one, then a failure. */
+async function* allButTheLastByte(bytes: Uint8Array): AsyncGenerator<Uint8Array> {
+  yield bytes.subarray(0, bytes.byteLength - 1);
+  // Node sends a response's first write on the NEXT tick. A connection cut in
+  // the same microtask drain sends nothing at all: no status, which a proxy in
+  // front of us answers with an error page of its own (and Safari saves THAT).
+  // One turn of the event loop lets the head and these bytes go first.
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  throw new Error('download refused');
 }
 
 /**

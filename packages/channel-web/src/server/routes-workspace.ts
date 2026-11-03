@@ -26,6 +26,8 @@
  *                                        (TASK-1012)
  *        ?probe=1 on either download: the same answers up to the first byte,
  *        then 200 {downloadable:true} instead of the bytes (TASK-1022)
+ *        Without it, a refusal goes out torn: its status, then a body cut
+ *        short, so no browser can save it as the file (TASK-1025)
  * GET  /api/workspace/conversations/:conversationId/status/user-files/*
  *                                      — whether that chip's file is still
  *                                        there, reading none of it (TASK-1017)
@@ -349,6 +351,7 @@ import { listTeamIdsForUser, type RouteRequest, type RouteResponse } from './rou
 // "is it still there?" check, TASK-1017, is its length-0 sibling).
 import {
   errorCodes,
+  sendTornRefusal,
   sendUserFileDownload,
   sendUserFileStatus,
   type StreamingDownloadResponse,
@@ -2910,6 +2913,72 @@ export function decodeFileBody(bytes: Uint8Array): {
 export interface DownloadRouteResponse extends RouteResponse, StreamingDownloadResponse {
   status(n: number): DownloadRouteResponse;
   header(name: string, value: string): DownloadRouteResponse;
+}
+
+/**
+ * The response a REAL download's handler answers on (TASK-1025): the file, or
+ * a torn refusal.
+ *
+ * A real GET (no `?probe`) is the browser's own download, so whatever it is
+ * refused with lands in that download, never in our page, and Safari saves a
+ * whole refusal as the file. Every refusal is therefore sent torn
+ * (`sendTornRefusal`: its status, then a body cut short), whoever makes it:
+ * the ACL's 401, 404, 400 and 503 as much as the download's own. A probe gets
+ * the raw response and keeps its words.
+ *
+ *   - `status` and `header` pass through; `status` also notes the code.
+ *   - `json` is a refusal. `onRefused` hears its status and its `error` code
+ *     (`'unknown'` when that is not a string), and it goes out torn, on the
+ *     RAW response.
+ *   - `bodyStream` passes through: that is the file.
+ *   - `text` and `end` throw: a real download answers with the file or a
+ *     refusal, and nothing else.
+ *   - A second `json` or `bodyStream` is refused, as the raw response would.
+ *
+ * `settled()` resolves once a torn refusal's connection is cut (at once when
+ * there was none), so the handler can await it, and `http:response-sent`
+ * reports the refusal as `incomplete`.
+ */
+function realDownloadResponse(
+  res: DownloadRouteResponse,
+  onRefused: (status: number, reason: string) => void,
+): { res: DownloadRouteResponse; settled(): Promise<void> } {
+  let status = 200;
+  let finished = false;
+  let torn: Promise<void> = Promise.resolve();
+  const finish = (): void => {
+    if (finished) throw new Error('response already finished');
+    finished = true;
+  };
+  const real: DownloadRouteResponse = {
+    status(n) {
+      res.status(n);
+      status = n;
+      return real;
+    },
+    header(name, value) {
+      res.header(name, value);
+      return real;
+    },
+    json(body) {
+      finish();
+      const error: unknown =
+        typeof body === 'object' && body !== null ? (body as { error?: unknown }).error : undefined;
+      onRefused(status, typeof error === 'string' ? error : 'unknown');
+      torn = sendTornRefusal(res, status, body);
+    },
+    async bodyStream(source, opts) {
+      finish();
+      await res.bodyStream(source, opts);
+    },
+    text() {
+      throw new Error('a real download answers with the file or a refusal, never text');
+    },
+    end() {
+      throw new Error('a real download answers with the file or a refusal, never an empty body');
+    },
+  };
+  return { res: real, settled: () => torn };
 }
 
 /**
@@ -7961,49 +8030,65 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
      * probe answer is `private, no-store`. The client asks first because it
      * hands the download itself to the browser, whose download bar cannot
      * say a 404, a 409 or a 413 in words.
+     *
+     * Without `?probe`, every refusal (the ACL's too) goes out torn: its
+     * status, then a body cut short, so no browser can save it as the file
+     * (`realDownloadResponse`, TASK-1025).
      */
     async agentUserFileDownload(
       req: RouteRequest,
-      res: DownloadRouteResponse,
+      raw: DownloadRouteResponse,
     ): Promise<void> {
       const probe = req.query['probe'] !== undefined;
       // Before the ACL, so EVERY probe answer (401 / 404 / 400 included) is
       // no-store, as on the chip's status route: an answer about this moment
       // must never come back from a cache later.
-      if (probe) res.header('cache-control', 'private, no-store');
-      const userId = await authOr401(bus, initCtx, req, res);
-      if (userId === null) return;
-      const agentId = req.params.agentId ?? '';
-      if (agentId.length === 0) {
-        res.status(400).json({ error: 'missing-agent-id' });
-        return;
-      }
-      // ACL FIRST — see `agentUserFile`. The home is ONE export holding every
-      // tenant's subtree, so a 400-vs-404 split below this line would be an
-      // oracle over somebody else's files.
-      const agent = await resolveAgentOr404(bus, initCtx, agentId, userId, res);
-      if (agent === null) return;
+      if (probe) raw.header('cache-control', 'private, no-store');
+      const real = probe
+        ? undefined
+        : realDownloadResponse(raw, (status, reason) =>
+            initCtx.logger.info('workspace_user_file_download_refused', { status, reason }),
+          );
+      const res = real?.res ?? raw;
+      try {
+        const userId = await authOr401(bus, initCtx, req, res);
+        if (userId === null) return;
+        const agentId = req.params.agentId ?? '';
+        if (agentId.length === 0) {
+          res.status(400).json({ error: 'missing-agent-id' });
+          return;
+        }
+        // ACL FIRST — see `agentUserFile`. The home is ONE export holding every
+        // tenant's subtree, so a 400-vs-404 split below this line would be an
+        // oracle over somebody else's files.
+        const agent = await resolveAgentOr404(bus, initCtx, agentId, userId, res);
+        if (agent === null) return;
 
-      // No root download: the root is a directory, and `workspaceFilePath`
-      // rejects the empty string, so this is the same 400 a malformed path gets.
-      const relPath = workspaceFilePath(req.params['*'] ?? '');
-      if (relPath === null) {
-        res.status(400).json({ error: 'invalid-path' });
-        return;
-      }
+        // No root download: the root is a directory, and `workspaceFilePath`
+        // rejects the empty string, so this is the same 400 a malformed path gets.
+        const relPath = workspaceFilePath(req.params['*'] ?? '');
+        if (relPath === null) {
+          res.status(400).json({ error: 'invalid-path' });
+          return;
+        }
 
-      // Read on the AGENT's ctx and owner: the provider joins `owner.agentId`
-      // onto the export root, so the plugin's own initCtx would land in the
-      // wrong subtree. Only the path's last segment names the saved file.
-      await sendUserFileDownload({
-        bus,
-        ctx: agentWorkspaceCtx(agentId, userId),
-        owner: userFilesOwner(agent, userId),
-        relPath,
-        downloadName: basenameOf(relPath),
-        probe,
-        res,
-      });
+        // Read on the AGENT's ctx and owner: the provider joins `owner.agentId`
+        // onto the export root, so the plugin's own initCtx would land in the
+        // wrong subtree. Only the path's last segment names the saved file.
+        await sendUserFileDownload({
+          bus,
+          ctx: agentWorkspaceCtx(agentId, userId),
+          owner: userFilesOwner(agent, userId),
+          relPath,
+          downloadName: basenameOf(relPath),
+          probe,
+          res,
+        });
+      } finally {
+        // A torn refusal's connection is cut before the handler returns, so
+        // `http:response-sent` reports it as incomplete.
+        await real?.settled();
+      }
     },
 
     /**
@@ -8027,31 +8112,45 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
      * (TASK-1022): behind the same ACL, the same answers up to the first
      * byte, then `200 {downloadable: true}` instead of the bytes, all of them
      * no-store.
+     *
+     * Without `?probe`, every refusal (the chip ACL's too) goes out torn, as
+     * on the Files tab's route (`realDownloadResponse`, TASK-1025).
      */
     async conversationAgentFileDownload(
       req: RouteRequest,
-      res: DownloadRouteResponse,
+      raw: DownloadRouteResponse,
     ): Promise<void> {
       const probe = req.query['probe'] !== undefined;
       // Before the ACL, as on the Files tab's route: every probe answer is
       // no-store, the ACL's own included.
-      if (probe) res.header('cache-control', 'private, no-store');
-      const chip = await chipFileOr404(req, res);
-      if (chip === null) return;
-      const { userId, agent, relPath } = chip;
+      if (probe) raw.header('cache-control', 'private, no-store');
+      const real = probe
+        ? undefined
+        : realDownloadResponse(raw, (status, reason) =>
+            initCtx.logger.info('workspace_user_file_download_refused', { status, reason }),
+          );
+      const res = real?.res ?? raw;
+      try {
+        const chip = await chipFileOr404(req, res);
+        if (chip === null) return;
+        const { userId, agent, relPath } = chip;
 
-      // The Files tab's download, on the agent's own ctx and owner. It owns
-      // every answer from here on (404 / 400 not-a-file / 409 file-changed /
-      // 413 / 503, and a probe's 200).
-      await sendUserFileDownload({
-        bus,
-        ctx: agentWorkspaceCtx(agent.id, userId),
-        owner: userFilesOwner(agent, userId),
-        relPath,
-        downloadName: basenameOf(relPath),
-        probe,
-        res,
-      });
+        // The Files tab's download, on the agent's own ctx and owner. It owns
+        // every answer from here on (404 / 400 not-a-file / 409 file-changed /
+        // 413 / 503, and a probe's 200).
+        await sendUserFileDownload({
+          bus,
+          ctx: agentWorkspaceCtx(agent.id, userId),
+          owner: userFilesOwner(agent, userId),
+          relPath,
+          downloadName: basenameOf(relPath),
+          probe,
+          res,
+        });
+      } finally {
+        // As on the Files tab's route: the cut comes before the handler returns.
+        await real?.settled();
+      }
     },
 
     /**
