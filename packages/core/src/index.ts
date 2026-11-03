@@ -56,3 +56,9 @@ export type {
 export { MEMORY_PRE_CAPTURE_HOOK, MEMORY_PRE_CAPTURE_SUBSCRIBER_TIMEOUT_MS, MemoryPreCapturePayloadSchema } from './memory-capture.js';
 export type { MemoryPreCapturePayload } from './memory-capture.js';
 export { safePath, assertWithinBase } from './util/safe-path.js';
+export {
+  AUTH_REQUIRE_USER_HOOK,
+  answerRequireUserFailure,
+  isUnauthenticated,
+  type StatusJsonResponse,
+} from './require-user.js';
