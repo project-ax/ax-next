@@ -354,6 +354,28 @@ function rejectThrow(reason: string): never {
   throw reject({ reason });
 }
 
+/**
+ * What the REAL `HookBus.call` does to a service that throws a foreign error:
+ * it wraps it as `PluginError{ code:'unknown', cause }` (hook-bus.ts). The fake
+ * bus above passes a raw throw through unchanged, so a test of "a store crash
+ * inside a hook" must throw THIS to see what production sees. The message
+ * carries the inner text on purpose: a route that echoed it would leak it.
+ */
+function wrappedFault(hook: string, inner: Error): never {
+  throw new PluginError({
+    code: 'unknown',
+    plugin: 'test',
+    hookName: hook,
+    message: `service hook '${hook}' threw: ${inner.message}`,
+    cause: inner,
+  });
+}
+
+/** A hook's own structured PluginError (e.g. @ax/agents' `forbidden`, @ax/connectors' `not-found`). */
+function codedError(hook: string, code: string): never {
+  throw new PluginError({ code, plugin: 'test', hookName: hook, message: `${hook}: ${code}` });
+}
+
 const OK_USER = { user: { id: 'user-1', isAdmin: false } };
 
 beforeEach(() => {
@@ -569,6 +591,142 @@ describe('mcp-oauth begin route', () => {
     expect(store.putPending).not.toHaveBeenCalled();
     expect(store.purgeExpiredPending).not.toHaveBeenCalled();
     expect(flow.discover).not.toHaveBeenCalled();
+  });
+
+  describe('a host fault is not a refusal (TASK-1028)', () => {
+    const BEGIN_BODY = JSON.stringify({ connectorId: 'conn-1', agentId: 'agent-1', mode: 'add' });
+    const FAULT = 'pg down at 10.0.0.7';
+
+    // Against the unfixed code: `isReject` was `instanceof PluginError`, and the
+    // bus wraps ANY foreign throw as a PluginError, so this answered 403 forbidden.
+    it('agents:resolve crashes (bus-wrapped) → 500 internal, not 403; logged by stage; nothing leaks; nothing written', async () => {
+      const { deps, store, flow, logger } = makeDeps({
+        'auth:require-user': () => OK_USER,
+        'agents:resolve': () => wrappedFault('agents:resolve', new Error(FAULT)),
+        'connectors:get': () => connectorFixture(),
+      });
+      const { res, state } = fakeRes();
+      await createMcpOAuthRouteHandlers(deps).begin(fakeReq({ body: Buffer.from(BEGIN_BODY) }), res);
+      expect(state.status).toBe(500);
+      expect(state.json).toEqual({ error: 'internal' });
+      expect(JSON.stringify(state.json)).not.toContain('10.0.0.7');
+      expect(logger.error).toHaveBeenCalledWith(
+        'mcp_oauth_route_failed',
+        expect.objectContaining({ stage: 'begin-agent', connectorId: 'conn-1', name: 'PluginError', code: 'unknown', causeName: 'Error' }),
+      );
+      expect(JSON.stringify(logger.error.mock.calls)).not.toContain('10.0.0.7');
+      expect(store.putPending).not.toHaveBeenCalled();
+      expect(flow.discover).not.toHaveBeenCalled();
+    });
+
+    // Against the unfixed code: same wrapper → 404 not-found.
+    it('connectors:get crashes (bus-wrapped) → 500 internal, not 404; logged by stage; nothing leaks', async () => {
+      const { deps, store, flow, logger } = makeDeps({
+        'auth:require-user': () => OK_USER,
+        'agents:resolve': () => ({ agent: { id: 'agent-1', visibility: 'personal', ownerId: 'user-1' } }),
+        'connectors:get': () => wrappedFault('connectors:get', new Error(FAULT)),
+      });
+      const { res, state } = fakeRes();
+      await createMcpOAuthRouteHandlers(deps).begin(fakeReq({ body: Buffer.from(BEGIN_BODY) }), res);
+      expect(state.status).toBe(500);
+      expect(state.json).toEqual({ error: 'internal' });
+      expect(JSON.stringify(state.json)).not.toContain('10.0.0.7');
+      expect(logger.error).toHaveBeenCalledWith(
+        'mcp_oauth_route_failed',
+        expect.objectContaining({ stage: 'begin-connector', connectorId: 'conn-1', code: 'unknown' }),
+      );
+      expect(JSON.stringify(logger.error.mock.calls)).not.toContain('10.0.0.7');
+      expect(store.putPending).not.toHaveBeenCalled();
+      expect(flow.discover).not.toHaveBeenCalled();
+    });
+
+    // Against the unfixed code: maySetSharedCredential's catch swallowed the
+    // wrapped crash as "not allowed" -> 403. Fixed: it rethrows, begin does not
+    // catch it, so the handler REJECTS and @ax/http-server's catch-all answers 500.
+    it('the team-admin question crashes (bus-wrapped) → the handler rethrows (http-server answers 500), never a 403', async () => {
+      const { deps, store, flow } = makeDeps({
+        'auth:require-user': () => OK_USER,
+        'agents:resolve': () => ({ agent: { id: 'agent-1', visibility: 'team', ownerId: 'team-1' } }),
+        'agents:can-set-shared-credential': () => wrappedFault('agents:can-set-shared-credential', new Error(FAULT)),
+        'connectors:get': () => connectorFixture(),
+      });
+      const { res, state } = fakeRes();
+      await expect(
+        createMcpOAuthRouteHandlers(deps).begin(fakeReq({ body: Buffer.from(BEGIN_BODY) }), res),
+      ).rejects.toMatchObject({ code: 'unknown' });
+      expect(state.status).toBeUndefined();
+      expect(store.putPending).not.toHaveBeenCalled();
+      expect(flow.discover).not.toHaveBeenCalled();
+    });
+
+    // Unchanged by the fix (guards the narrowing from over-reaching). @ax/agents'
+    // agents:resolve throws exactly these two codes for a refusal.
+    it.each(['forbidden', 'not-found'])('agents:resolve refuses with PluginError %s → still 403', async (code) => {
+      const { deps, logger } = makeDeps({
+        'auth:require-user': () => OK_USER,
+        'agents:resolve': () => codedError('agents:resolve', code),
+      });
+      const { res, state } = fakeRes();
+      await createMcpOAuthRouteHandlers(deps).begin(fakeReq({ body: Buffer.from(BEGIN_BODY) }), res);
+      expect(state.status).toBe(403);
+      expect(state.json).toEqual({ error: 'forbidden' });
+      expect(logger.error).not.toHaveBeenCalled();
+    });
+
+    it('connectors:get refuses with PluginError not-found → still 404', async () => {
+      const { deps, logger } = makeDeps({
+        'auth:require-user': () => OK_USER,
+        'agents:resolve': () => ({ agent: { id: 'agent-1', visibility: 'personal', ownerId: 'user-1' } }),
+        'connectors:get': () => codedError('connectors:get', 'not-found'),
+      });
+      const { res, state } = fakeRes();
+      await createMcpOAuthRouteHandlers(deps).begin(fakeReq({ body: Buffer.from(BEGIN_BODY) }), res);
+      expect(state.status).toBe(404);
+      expect(state.json).toEqual({ error: 'not-found' });
+      expect(logger.error).not.toHaveBeenCalled();
+    });
+
+    // A connectorId the client typed that is not even a slug makes
+    // @ax/connectors throw `invalid-payload`; that is the caller's mistake, not
+    // a host fault, so it stays a 404 (it was one before the narrowing).
+    it('connectors:get says invalid-payload for a malformed connectorId → still 404, not a logged 500', async () => {
+      const { deps, logger } = makeDeps({
+        'auth:require-user': () => OK_USER,
+        'agents:resolve': () => ({ agent: { id: 'agent-1', visibility: 'personal', ownerId: 'user-1' } }),
+        'connectors:get': () => codedError('connectors:get', 'invalid-payload'),
+      });
+      const { res, state } = fakeRes();
+      await createMcpOAuthRouteHandlers(deps).begin(
+        fakeReq({ body: Buffer.from(JSON.stringify({ connectorId: 'Not A Slug', agentId: 'agent-1', mode: 'add' })) }), res,
+      );
+      expect(state.status).toBe(404);
+      expect(logger.error).not.toHaveBeenCalled();
+    });
+
+    // Codes that are not a refusal stay faults: a timeout or a missing provider
+    // is the host's problem, whatever the PluginError wrapper says.
+    it.each(['timeout', 'no-service', 'corrupt-row', 'internal'])(
+      'agents:resolve failing with code %s → 500 internal (logged), not 403',
+      async (code) => {
+        const { deps, logger } = makeDeps({
+          'auth:require-user': () => OK_USER,
+          'agents:resolve': () => codedError('agents:resolve', code),
+        });
+        const { res, state } = fakeRes();
+        await createMcpOAuthRouteHandlers(deps).begin(fakeReq({ body: Buffer.from(BEGIN_BODY) }), res);
+        expect(state.status).toBe(500);
+        expect(state.json).toEqual({ error: 'internal' });
+        expect(logger.error).toHaveBeenCalledWith('mcp_oauth_route_failed', expect.objectContaining({ stage: 'begin-agent', code }));
+      },
+    );
+
+    it('auth:require-user refusing with PluginError unauthenticated → still 401', async () => {
+      const { deps } = makeDeps({ 'auth:require-user': () => codedError('auth:require-user', 'unauthenticated') });
+      const { res, state } = fakeRes();
+      await createMcpOAuthRouteHandlers(deps).begin(fakeReq({ body: Buffer.from(BEGIN_BODY) }), res);
+      expect(state.status).toBe(401);
+      expect(state.json).toEqual({ error: 'unauthenticated' });
+    });
   });
 
   // A personal agent: a successful `agents:resolve` (the owner, or an admin) is
@@ -2768,6 +2926,64 @@ describe('mcp-oauth callback route', () => {
         expect(out.store.clearNeedsReconnect).not.toHaveBeenCalled();
       });
 
+      // Against the unfixed code: the bus wraps the crash as PluginError, which the
+      // old `isReject` read as a refusal -> reason=not-allowed (and only a warn).
+      it('TASK-1028. agents:resolve crashes (bus-wrapped) → reason=sign-in-failed, logged as an error; not "not-allowed"; nothing written', async () => {
+        const out = await run({
+          stubs: { 'agents:resolve': () => wrappedFault('agents:resolve', new Error('pg down at 10.0.0.7')) },
+        });
+        expect(out.state.redirectUrl).toContain('oauth=error&reason=sign-in-failed');
+        expect(out.state.redirectUrl).not.toContain('not-allowed');
+        expect(out.logger.error).toHaveBeenCalledWith(
+          'mcp_oauth_callback_failed',
+          expect.objectContaining({ stage: 'agent', connectorId: 'conn-1', code: 'unknown' }),
+        );
+        expect(JSON.stringify([...out.logger.error.mock.calls, ...out.logger.warn.mock.calls])).not.toContain('10.0.0.7');
+        expect(out.flow.redeemCode).not.toHaveBeenCalled();
+        expect(out.setSpy).not.toHaveBeenCalled();
+      });
+
+      // Against the unfixed code: the team-admin hook's crash was swallowed by
+      // maySetSharedCredential as "not allowed" -> reason=not-allowed.
+      it('TASK-1028. the team-admin question crashes (bus-wrapped) → reason=sign-in-failed, not "not-allowed"', async () => {
+        const out = await run({
+          stubs: {
+            'agents:resolve': () => TEAM_AGENT,
+            'agents:can-set-shared-credential': () =>
+              wrappedFault('agents:can-set-shared-credential', new Error('pg down at 10.0.0.7')),
+          },
+        });
+        expect(out.state.redirectUrl).toContain('oauth=error&reason=sign-in-failed');
+        expect(out.logger.error).toHaveBeenCalledWith(
+          'mcp_oauth_callback_failed',
+          expect.objectContaining({ stage: 'agent', connectorId: 'conn-1' }),
+        );
+        expect(out.flow.redeemCode).not.toHaveBeenCalled();
+        expect(out.setSpy).not.toHaveBeenCalled();
+      });
+
+      it('TASK-1028. agents:resolve refuses with PluginError forbidden → still reason=not-allowed (a warn, not an error)', async () => {
+        const out = await run({ stubs: { 'agents:resolve': () => codedError('agents:resolve', 'forbidden') } });
+        expect(out.state.redirectUrl).toContain('oauth=error&reason=not-allowed');
+        expect(out.logger.error).not.toHaveBeenCalled();
+      });
+
+      // Against the unfixed code: warn('connector-gone') and no error line.
+      it('TASK-1028. connectors:get crashes (bus-wrapped) → reason=sign-in-failed with an ERROR line (stage connector), not the "connector-gone" warn', async () => {
+        const out = await run({
+          stubs: { 'connectors:get': () => wrappedFault('connectors:get', new Error('pg down at 10.0.0.7')) },
+        });
+        expect(out.state.redirectUrl).toContain('oauth=error&reason=sign-in-failed');
+        expect(out.logger.error).toHaveBeenCalledWith(
+          'mcp_oauth_callback_failed',
+          expect.objectContaining({ stage: 'connector', connectorId: 'conn-1', code: 'unknown' }),
+        );
+        expect(out.logger.warn).not.toHaveBeenCalledWith(
+          'mcp_oauth_callback_failed',
+          expect.objectContaining({ stage: 'connector-gone' }),
+        );
+      });
+
       it('agents:resolve fails with a server fault → reason=sign-in-failed; nothing written', async () => {
         const out = await run({ stubs: { 'agents:resolve': () => { throw new Error('db down'); } } });
         expect(out.state.redirectUrl).toContain('oauth=error&reason=sign-in-failed');
@@ -2951,6 +3167,39 @@ describe('mcp-oauth status route (GET /api/connectors/oauth/status)', () => {
     await handlers.status(fakeReq({ query: { connectorId: 'conn-1', agentId: 'agent-1' } }), res);
     expect(state.status).toBe(403);
     expect(state.json).toEqual({ error: 'forbidden' });
+  });
+
+  // Against the unfixed code: the bus wraps the crash as PluginError, which the
+  // old `isReject` read as a refusal -> 403 forbidden.
+  it('TASK-1028. agents:resolve crashes (bus-wrapped) → 500 internal, not 403; logged by stage; nothing leaks; no credential probe', async () => {
+    const { deps, calls, logger } = makeDeps({
+      'auth:require-user': () => OK_USER,
+      'agents:resolve': () => wrappedFault('agents:resolve', new Error('pg down at 10.0.0.7')),
+      'credentials:get': () => 'access-token-value',
+    });
+    const { res, state } = fakeRes();
+    await createMcpOAuthRouteHandlers(deps).status(fakeReq({ query: { connectorId: 'conn-1', agentId: 'agent-1' } }), res);
+    expect(state.status).toBe(500);
+    expect(state.json).toEqual({ error: 'internal' });
+    expect(JSON.stringify(state.json)).not.toContain('10.0.0.7');
+    expect(logger.error).toHaveBeenCalledWith(
+      'mcp_oauth_route_failed',
+      expect.objectContaining({ stage: 'status-agent', connectorId: 'conn-1', code: 'unknown' }),
+    );
+    expect(JSON.stringify(logger.error.mock.calls)).not.toContain('10.0.0.7');
+    expect(calls.map((c) => c.hook)).not.toContain('credentials:get');
+  });
+
+  it('TASK-1028. agents:resolve refuses with PluginError forbidden → still 403', async () => {
+    const { deps, logger } = makeDeps({
+      'auth:require-user': () => OK_USER,
+      'agents:resolve': () => codedError('agents:resolve', 'forbidden'),
+    });
+    const { res, state } = fakeRes();
+    await createMcpOAuthRouteHandlers(deps).status(fakeReq({ query: { connectorId: 'conn-1', agentId: 'agent-1' } }), res);
+    expect(state.status).toBe(403);
+    expect(state.json).toEqual({ error: 'forbidden' });
+    expect(logger.error).not.toHaveBeenCalled();
   });
 
   it('Task4.5. credentials:get throws unexpected error → 500', async () => {

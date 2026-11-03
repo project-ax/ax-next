@@ -226,9 +226,28 @@ interface ConnectorView {
   };
 }
 
-/** Is this thrown value an authz/not-found rejection (vs a real bug)? */
+/**
+ * The `PluginError` codes the hooks this file asks actually throw to REFUSE a
+ * caller, as opposed to failing: `auth:require-user` throws `unauthenticated`,
+ * `agents:resolve` / `agents:can-set-shared-credential` throw `forbidden` and
+ * `not-found`, `connectors:get` throws `not-found`. Nothing else is a refusal:
+ * `HookBus.call` wraps any error a service throws that is not already a
+ * `PluginError` (a dropped pg connection, a bug) as `PluginError{ code:'unknown',
+ * cause }`, and a bus-level `timeout` / `no-service` / `invalid-return` is the
+ * host failing, not the caller being told no.
+ */
+const REFUSAL_CODES: ReadonlySet<string> = new Set(['unauthenticated', 'forbidden', 'not-found']);
+
+/**
+ * Is this thrown value a refusal (a returned `reject(...)` or a hook's own
+ * `unauthenticated` / `forbidden` / `not-found`), as opposed to a host fault?
+ * A bare `instanceof PluginError` is NOT enough: it is also what a store crash
+ * looks like once it has crossed the bus, and reading that as "no" turns a
+ * 500 into a 403/404 (or a `not-allowed` popup) that hides the outage.
+ */
 function isReject(err: unknown): boolean {
-  return err instanceof PluginError || isRejection(err);
+  if (isRejection(err)) return true;
+  return err instanceof PluginError && REFUSAL_CODES.has(err.code);
 }
 
 /**
@@ -493,7 +512,10 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
         res.status(403).json({ error: 'forbidden' });
         return;
       }
-      throw err;
+      // A host fault, not a refusal: say so (500) and log the neutral fields.
+      logger.error('mcp_oauth_route_failed', { stage: 'begin-agent', connectorId, ...errFields(err) });
+      res.status(500).json({ error: 'internal' });
+      return;
     }
     // TASK-798 — on a TEAM agent, `agents:resolve` admits every member, but
     // a sign-in started with the agent decides whose account EVERY member's
@@ -501,7 +523,8 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
     // admin who is not a team admin is refused too; whose account the team
     // acts as is the team's call. Anyone else is refused here, before any
     // connector read, vault read, state write or provider redirect. Fails
-    // closed: no @ax/agents answer, `allowed: false` or a rejection is a 403.
+    // closed: no @ax/agents answer, `allowed: false` or a rejection is a 403. A
+    // crash in the hook is not an answer: it rethrows (500), never reads as "no".
     if (agent.visibility === 'team' && !(await maySetSharedCredential(user, agentId))) {
       res.status(403).json({ error: 'forbidden' });
       return;
@@ -516,11 +539,15 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
       >('connectors:get', ctxFor(user.id), { userId: user.id, connectorId });
       connector = out.connector;
     } catch (err) {
-      if (isReject(err)) {
+      // `invalid-payload` is @ax/connectors saying the id the CLIENT typed is
+      // not a slug: the caller's mistake, so it stays the 404 it always was.
+      if (isReject(err) || (err instanceof PluginError && err.code === 'invalid-payload')) {
         res.status(404).json({ error: 'not-found' });
         return;
       }
-      throw err;
+      logger.error('mcp_oauth_route_failed', { stage: 'begin-connector', connectorId, ...errFields(err) });
+      res.status(500).json({ error: 'internal' });
+      return;
     }
 
     // TASK-711 — a sign-in is stored ON the agent only for the one live
@@ -1215,7 +1242,9 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
         res.status(403).json({ error: 'forbidden' });
         return;
       }
-      throw err;
+      logger.error('mcp_oauth_route_failed', { stage: 'status-agent', connectorId, ...errFields(err) });
+      res.status(500).json({ error: 'internal' });
+      return;
     }
 
     // Probe the credential via the same runtime path a chat turn uses.
