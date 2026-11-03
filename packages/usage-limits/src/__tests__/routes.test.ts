@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
 import {
   PostgreSqlContainer,
   type StartedPostgreSqlContainer,
@@ -69,6 +69,42 @@ describe('auth', () => {
       expect(r.json).toMatchObject({ error: 'forbidden' });
     }
   });
+
+  // TASK-1030: only 'unauthenticated' is a 401. A session-store fault is a
+  // logged 500, never "signed out". The raw Error goes through the REAL bus,
+  // which wraps it as PluginError{code:'unknown'}.
+  it.each(['/admin/usage', '/api/usage'])(
+    'GET %s answers a session-store fault with a logged 500, not a 401',
+    async (path) => {
+      const b = await boot({
+        'auth:require-user': (async () => {
+          throw new Error('pg down at 10.0.0.7');
+        }) as ServiceHandler,
+      });
+      const chunks: string[] = [];
+      const spy = vi.spyOn(process.stdout, 'write').mockImplementation(((c: unknown) => {
+        chunks.push(String(c));
+        return true;
+      }) as typeof process.stdout.write);
+      let r: { status: number; json: unknown };
+      try {
+        r = await b.request('GET', path);
+      } finally {
+        spy.mockRestore();
+      }
+      expect(r.status).toBe(500);
+      expect(r.json).toEqual({ error: 'internal' });
+      expect(JSON.stringify(r.json)).not.toContain('10.0.0.7');
+      const logged = chunks
+        .flatMap((c) => c.split('\n'))
+        .filter((l) => l.startsWith('{'))
+        .map((l) => JSON.parse(l) as Record<string, unknown>)
+        .filter((l) => l.msg === 'usage_require_user_failed');
+      expect(logged).toHaveLength(1);
+      expect(logged[0]?.hook).toBe('auth:require-user');
+      expect((logged[0]?.err as { code?: string }).code).toBe('unknown');
+    },
+  );
 
   it('bounds control bodies at 4 KiB and the full model price table at 64 KiB', async () => {
     const b = await boot();

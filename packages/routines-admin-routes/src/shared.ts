@@ -1,5 +1,5 @@
 import {
-  isRejection,
+  answerRequireUserFailure,
   PluginError,
   SafeToolError,
   safeToolMessage,
@@ -70,15 +70,10 @@ export async function requireAuthenticated(
     >('auth:require-user', ctx, { req });
     return { id: result.user.id, isAdmin: result.user.isAdmin };
   } catch (err) {
-    // PluginError 'unauthenticated' is the documented rejection from auth.
-    // Any other failure (auth plugin not loaded, transient store error)
-    // also closes the door — an admin endpoint that can't authenticate is
-    // closed by default.
-    if (err instanceof PluginError || isRejection(err)) {
-      res.status(401).json({ error: 'unauthenticated' });
-      return null;
-    }
-    throw err;
+    // Only 'unauthenticated' is a 401. Any other failure (auth plugin not
+    // loaded, session-store fault) is a logged 500. Both refuse the request.
+    answerRequireUserFailure(ctx, res, err, 'routines_admin_require_user_failed');
+    return null;
   }
 }
 

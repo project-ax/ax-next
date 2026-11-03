@@ -14,6 +14,7 @@ import {
   afterAll,
   beforeEach,
   afterEach,
+  vi,
 } from 'vitest';
 import { randomBytes } from 'node:crypto';
 import { Kysely, PostgresDialect } from 'kysely';
@@ -126,6 +127,43 @@ async function bootStack(): Promise<BootedStack> {
   return { harness, http, baseUrl, cookieHeader };
 }
 
+/**
+ * Break the session store: with the sessions table gone, the session lookup
+ * throws a raw driver error (not a PluginError), which is what a real
+ * session-store outage looks like to the auth gates.
+ */
+async function breakSessionStore(): Promise<void> {
+  const pool = new pg.Pool({ connectionString, max: 1 });
+  try {
+    await pool.query('DROP TABLE auth_better_v1_sessions CASCADE');
+  } finally {
+    await pool.end();
+  }
+}
+
+/** Collect the JSON log lines the plugin's default logger writes to stdout. */
+function captureLogLines(): { lines: () => Array<Record<string, unknown>>; restore: () => void } {
+  const raw: string[] = [];
+  const spy = vi.spyOn(process.stdout, 'write').mockImplementation(((chunk: unknown) => {
+    raw.push(String(chunk));
+    return true;
+  }) as typeof process.stdout.write);
+  return {
+    lines: () =>
+      raw
+        .flatMap((c) => c.split('\n'))
+        .filter((l) => l.startsWith('{'))
+        .flatMap((l) => {
+          try {
+            return [JSON.parse(l) as Record<string, unknown>];
+          } catch {
+            return [];
+          }
+        }),
+    restore: () => spy.mockRestore(),
+  };
+}
+
 describe('@ax/auth-better — /admin/me', () => {
   let stack: BootedStack;
 
@@ -162,6 +200,72 @@ describe('@ax/auth-better — /admin/me', () => {
       headers: { cookie: 'ax_auth_session=not-a-real-signed-cookie' },
     });
     expect(res.status).toBe(401);
+  });
+
+  it('GET /admin/me during a session-store fault is a logged 500, not a 401', async () => {
+    await breakSessionStore();
+    const cap = captureLogLines();
+    let res: Response;
+    let text: string;
+    try {
+      res = await fetch(`${stack.baseUrl}/admin/me`, {
+        headers: { cookie: stack.cookieHeader },
+      });
+      text = await res.text();
+    } finally {
+      cap.restore();
+    }
+    // A signed-in user must not be told they are signed out because the DB blipped.
+    expect(res.status).toBe(500);
+    expect(JSON.parse(text)).toEqual({ error: 'internal' });
+    expect(text).not.toContain('auth_better_v1_sessions');
+    const logged = cap.lines().filter((l) => l.msg === 'auth_me_failed');
+    expect(logged).toHaveLength(1);
+    expect(logged[0]?.hook).toBe('auth:require-user');
+  });
+});
+
+describe('@ax/auth-better — /admin/auth/providers auth gate', () => {
+  let stack: BootedStack;
+
+  beforeEach(async () => {
+    stack = await bootStack();
+  });
+
+  afterEach(async () => {
+    if (stack !== undefined) {
+      await stack.harness.close({ onError: () => {} });
+    }
+  });
+
+  it('GET /admin/auth/providers without a session is 401 unauthenticated', async () => {
+    const res = await fetch(`${stack.baseUrl}/admin/auth/providers`);
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: 'unauthenticated' });
+  });
+
+  it('GET /admin/auth/providers during a session-store fault is a logged 500', async () => {
+    await breakSessionStore();
+    const cap = captureLogLines();
+    let res: Response;
+    let text: string;
+    try {
+      res = await fetch(`${stack.baseUrl}/admin/auth/providers`, {
+        headers: { cookie: stack.cookieHeader },
+      });
+      text = await res.text();
+    } finally {
+      cap.restore();
+    }
+    expect(res.status).toBe(500);
+    expect(JSON.parse(text)).toEqual({ error: 'internal' });
+    expect(text).not.toContain('auth_better_v1_sessions');
+    // The bus wraps the raw driver error as code 'unknown'; the log keeps it.
+    const logged = cap.lines().filter((l) => l.msg === 'auth_admin_require_user_failed');
+    expect(logged).toHaveLength(1);
+    expect(logged[0]?.hook).toBe('auth:require-user');
+    const err = logged[0]?.err as { code?: string } | undefined;
+    expect(err?.code).toBe('unknown');
   });
 });
 

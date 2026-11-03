@@ -1,6 +1,5 @@
 import {
-  isRejection,
-  PluginError,
+  answerRequireUserFailure,
   type AgentContext,
   type HookBus,
 } from '@ax/core';
@@ -52,9 +51,8 @@ export interface AuthedUser {
 
 /**
  * Resolve the session cookie via @ax/auth-better. Returns the user, or null
- * after writing 401 (caller must early-return). Any auth failure — not just
- * the documented `unauthenticated` rejection — closes the door: an admin
- * endpoint that can't authenticate is closed by default.
+ * after answering (caller must early-return). 401 when nobody is signed in;
+ * any other auth failure is a logged 500.
  */
 export async function requireAuthenticated(
   bus: HookBus,
@@ -69,11 +67,8 @@ export async function requireAuthenticated(
     >('auth:require-user', ctx, { req });
     return { id: result.user.id, isAdmin: result.user.isAdmin };
   } catch (err) {
-    if (err instanceof PluginError || isRejection(err)) {
-      res.status(401).json({ error: 'unauthenticated' });
-      return null;
-    }
-    throw err;
+    answerRequireUserFailure(ctx, res, err, 'branding_require_user_failed');
+    return null;
   }
 }
 

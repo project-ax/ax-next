@@ -1,5 +1,5 @@
 import {
-  isRejection,
+  answerRequireUserFailure,
   makeAgentContext,
   PluginError,
   type AgentContext,
@@ -139,11 +139,8 @@ async function requireUser(
     >('auth:require-user', ctx, { req });
     return { id: result.user.id, isAdmin: result.user.isAdmin };
   } catch (err) {
-    if (err instanceof PluginError || isRejection(err)) {
-      res.status(401).json({ error: 'unauthenticated' });
-      return null;
-    }
-    throw err;
+    answerRequireUserFailure(ctx, res, err, 'connectors_admin_require_user_failed');
+    return null;
   }
 }
 

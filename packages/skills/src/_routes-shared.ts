@@ -1,4 +1,4 @@
-import { PluginError, isRejection, type AgentContext, type HookBus } from '@ax/core';
+import { PluginError, answerRequireUserFailure, type AgentContext, type HookBus } from '@ax/core';
 import { MANIFEST_CODES } from '@ax/skills-parser';
 import { z } from 'zod';
 
@@ -55,11 +55,9 @@ export async function requireAuthenticated(
     >('auth:require-user', ctx, { req });
     return { id: result.user.id, isAdmin: result.user.isAdmin };
   } catch (err) {
-    if (err instanceof PluginError || isRejection(err)) {
-      res.status(401).json({ error: 'unauthenticated' });
-      return null;
-    }
-    throw err;
+    // Only 'unauthenticated' is a 401; any other failure is a logged 500.
+    answerRequireUserFailure(ctx, res, err, 'skills_require_user_failed');
+    return null;
   }
 }
 

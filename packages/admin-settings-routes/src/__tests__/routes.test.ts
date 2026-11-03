@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { HookBus, PluginError, makeAgentContext } from '@ax/core';
 import {
   ALLOWED_SETTINGS,
@@ -156,6 +156,48 @@ describe('admin-settings handlers', () => {
     const { res, statusOf } = mkRes();
     await handlers.get(mkReq({ params: { key: 'fast-model' } }), res);
     expect(statusOf()).toBe(401);
+  });
+
+  it('GET: a session-store fault is a logged 500, not a 401 (TASK-1030)', async () => {
+    // Real HookBus: a raw throw from the service is wrapped as
+    // PluginError{ code: 'unknown', cause }, which is what a crashed session
+    // store looks like at the gate.
+    const bus = new HookBus();
+    bus.registerService('auth:require-user', 'test', async () => {
+      throw new Error('pg down at 10.0.0.7');
+    });
+    // The handlers build their own ctx, so read the logger's stdout lines.
+    const lines: string[] = [];
+    const spy = vi.spyOn(process.stdout, 'write').mockImplementation((chunk: unknown) => {
+      lines.push(String(chunk));
+      return true;
+    });
+    const handlers = createSettingsHandlers({ bus });
+    const { res, statusOf, bodyOf } = mkRes();
+    try {
+      await handlers.get(mkReq({ params: { key: 'fast-model' } }), res);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(statusOf()).toBe(500);
+    expect(bodyOf()).toEqual({ error: 'internal' });
+    expect(JSON.stringify(bodyOf())).not.toContain('pg down');
+    const logged = lines
+      .flatMap((l) => l.split('\n'))
+      .filter((l) => l.includes('admin_settings_require_user_failed'))
+      .map(
+        (l) =>
+          JSON.parse(l) as {
+            level: string;
+            hook: string;
+            err: { code: string; cause: { name: string } };
+          },
+      );
+    expect(logged).toHaveLength(1);
+    expect(logged[0]!.level).toBe('error');
+    expect(logged[0]!.hook).toBe('auth:require-user');
+    expect(logged[0]!.err.code).toBe('unknown');
+    expect(logged[0]!.err.cause.name).toBe('Error');
   });
 
   it('GET: returns null when stored bytes are not valid UTF-8', async () => {

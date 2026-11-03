@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import {
   PluginError,
+  answerRequireUserFailure,
   makeAgentContext,
   type AgentContext,
   type HookBus,
@@ -349,8 +350,10 @@ export function createAuthBetterPlugin(config: AuthBetterConfig = {}): Plugin {
           try {
             const { user } = await requireUser(localDb, sessionCookieName, req);
             res.status(200).json({ user });
-          } catch {
-            res.status(401).json({ error: 'unauthenticated' });
+          } catch (err) {
+            // Only 'unauthenticated' is a 401. A DB fault is a logged 500,
+            // so the SPA doesn't read an outage as "signed out".
+            answerRequireUserFailure(initCtx, res, err, 'auth_me_failed');
           }
         };
         const { unregister } = await bus.call<HttpRegisterRouteInput, HttpRegisterRouteOutput>(
@@ -968,12 +971,9 @@ async function requireAdmin(
     );
     user = out.user;
   } catch (err) {
-    if (err instanceof PluginError && err.code === 'unauthenticated') {
-      res.status(401).json({ error: 'unauthenticated' });
-      return false;
-    }
-    // Unknown failure — surface a 500 without leaking the cause.
-    res.status(500).json({ error: 'auth-check-failed' });
+    // Only 'unauthenticated' is a 401. Anything else is a logged 500 that
+    // doesn't leak the cause.
+    answerRequireUserFailure(ctx, res, err, 'auth_admin_require_user_failed');
     return false;
   }
   if (!user.isAdmin) {
