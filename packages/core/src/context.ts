@@ -68,12 +68,37 @@ function stripReserved(bindings: Record<string, unknown> | undefined): Record<st
   return out;
 }
 
-function serializeError(err: Error): Record<string, unknown> {
+/**
+ * An Error as a log field: name, message, `code` (when it is a string or
+ * number: a PluginError code, a Node errno, a driver's SQLSTATE) and stack.
+ *
+ * Plus ONE level of `cause` (TASK-1028). `HookBus.call` wraps whatever a
+ * service throws as `PluginError{code:'unknown', cause}`, so without the cause
+ * a logged 5xx names only the hook bus. One level, not the chain: that is the
+ * wrap the bus adds, and a fixed depth can't loop on a cyclic cause. An Error
+ * cause is serialized the same way minus its own cause; a primitive one is
+ * kept as is; an object one is dropped (it could be anything, secrets
+ * included, and the logger only promises to write Errors in a fixed shape).
+ */
+function serializeError(err: Error, withCause = true): Record<string, unknown> {
   const out: Record<string, unknown> = {
     name: err.name,
     message: err.message,
   };
+  const code: unknown = (err as { code?: unknown }).code;
+  if (typeof code === 'string' || typeof code === 'number') out.code = code;
   if (err.stack !== undefined) out.stack = err.stack;
+  if (withCause && 'cause' in err) {
+    const cause: unknown = err.cause;
+    if (cause instanceof Error) out.cause = serializeError(cause, false);
+    else if (
+      typeof cause === 'string' ||
+      typeof cause === 'number' ||
+      typeof cause === 'boolean'
+    ) {
+      out.cause = cause;
+    }
+  }
   return out;
 }
 

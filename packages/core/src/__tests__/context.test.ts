@@ -47,6 +47,62 @@ describe('createLogger', () => {
     expect(parsed.err).toMatchObject({ name: 'Error', message: 'bang' });
   });
 
+  // TASK-1028: HookBus.call wraps a service's raw throw as
+  // PluginError{code:'unknown', cause}. Without `code` and `cause` a logged 5xx
+  // said only "unknown" and pointed at the hook-bus stack, not what failed.
+  describe('serialized Error carries code and one level of cause (TASK-1028)', () => {
+    const logErr = (err: unknown): Record<string, unknown> => {
+      const out: string[] = [];
+      createLogger({ reqId: 'r', writer: (line) => out.push(line) }).error('boom', { err });
+      return JSON.parse(out[0]!).err as Record<string, unknown>;
+    };
+
+    it('includes a string code', () => {
+      const err = Object.assign(new Error('refused'), { code: 'ECONNREFUSED' });
+      expect(logErr(err).code).toBe('ECONNREFUSED');
+    });
+
+    it('omits code when there is none', () => {
+      expect('code' in logErr(new Error('plain'))).toBe(false);
+    });
+
+    it('includes an Error cause with its name, message, code and stack', () => {
+      const root = Object.assign(new Error('relation "skills" does not exist'), { code: '42P01' });
+      const wrapped = Object.assign(new Error('skills:upsert failed', { cause: root }), {
+        code: 'unknown',
+      });
+      const s = logErr(wrapped);
+      expect(s.code).toBe('unknown');
+      expect(s.cause).toMatchObject({
+        name: 'Error',
+        message: 'relation "skills" does not exist',
+        code: '42P01',
+      });
+      expect(typeof (s.cause as { stack?: unknown }).stack).toBe('string');
+    });
+
+    it('stops at one level of cause', () => {
+      const deepest = new Error('deepest');
+      const middle = new Error('middle', { cause: deepest });
+      const top = new Error('top', { cause: middle });
+      const s = logErr(top);
+      expect((s.cause as Record<string, unknown>).message).toBe('middle');
+      expect('cause' in (s.cause as Record<string, unknown>)).toBe(false);
+    });
+
+    it('keeps a primitive cause and drops an object one', () => {
+      expect(logErr(new Error('a', { cause: 'socket hang up' })).cause).toBe('socket hang up');
+      expect('cause' in logErr(new Error('b', { cause: { secret: 'x' } }))).toBe(false);
+    });
+
+    it('survives a self-referencing cause', () => {
+      const e = new Error('loop');
+      (e as { cause?: unknown }).cause = e;
+      const s = logErr(e);
+      expect((s.cause as Record<string, unknown>).message).toBe('loop');
+    });
+  });
+
   it('child() adds bindings without losing parent bindings', () => {
     const out: string[] = [];
     const logger = createLogger({
