@@ -351,8 +351,10 @@ export function createAuthBetterPlugin(config: AuthBetterConfig = {}): Plugin {
             const { user } = await requireUser(localDb, sessionCookieName, req);
             res.status(200).json({ user });
           } catch (err) {
-            // Only 'unauthenticated' is a 401. A DB fault is a logged 500,
-            // so the SPA doesn't read an outage as "signed out".
+            // Only 'unauthenticated' is a 401. A DB fault is a logged 500, so
+            // the outage shows up in the logs. (The SPA's boot check still
+            // shows sign-in for ANY non-OK answer here; that is deliberate,
+            // see channel-web lib/http.ts.)
             answerRequireUserFailure(initCtx, res, err, 'auth_me_failed');
           }
         };

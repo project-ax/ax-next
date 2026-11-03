@@ -3,8 +3,7 @@ import { PluginError } from './errors.js';
 
 /**
  * The service hook every HTTP route gate calls to turn a request into a
- * signed-in user. Named here so the gate helper below and its callers agree
- * on the one spelling.
+ * signed-in user. The gate helper below names it in its log line.
  */
 export const AUTH_REQUIRE_USER_HOOK = 'auth:require-user';
 

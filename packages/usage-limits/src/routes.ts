@@ -239,7 +239,7 @@ export function createUsageRouteHandlers(deps: {
         );
         userId = user.id;
       } catch (err) {
-        answerRequireUserFailure(ctx, res, err, 'usage_require_user_failed');
+        answerRequireUserFailure(ctx, res, err, 'usage_own_require_user_failed');
         return;
       }
       // Identity comes only from the authenticated session, never params/query.

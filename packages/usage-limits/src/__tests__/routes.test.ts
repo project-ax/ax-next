@@ -73,9 +73,12 @@ describe('auth', () => {
   // TASK-1030: only 'unauthenticated' is a 401. A session-store fault is a
   // logged 500, never "signed out". The raw Error goes through the REAL bus,
   // which wraps it as PluginError{code:'unknown'}.
-  it.each(['/admin/usage', '/api/usage'])(
+  it.each([
+    ['/admin/usage', 'usage_require_user_failed'],
+    ['/api/usage', 'usage_own_require_user_failed'],
+  ])(
     'GET %s answers a session-store fault with a logged 500, not a 401',
-    async (path) => {
+    async (path, event) => {
       const b = await boot({
         'auth:require-user': (async () => {
           throw new Error('pg down at 10.0.0.7');
@@ -99,7 +102,7 @@ describe('auth', () => {
         .flatMap((c) => c.split('\n'))
         .filter((l) => l.startsWith('{'))
         .map((l) => JSON.parse(l) as Record<string, unknown>)
-        .filter((l) => l.msg === 'usage_require_user_failed');
+        .filter((l) => l.msg === event);
       expect(logged).toHaveLength(1);
       expect(logged[0]?.hook).toBe('auth:require-user');
       expect((logged[0]?.err as { code?: string }).code).toBe('unknown');

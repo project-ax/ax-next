@@ -52,6 +52,12 @@ export interface User {
   isAdmin: boolean;
 }
 
+/**
+ * `auth:require-user` input. When nobody is signed in, an implementation
+ * MUST throw `PluginError{ code: 'unauthenticated' }`. That code is the only
+ * failure the route gates answer with 401 (`isUnauthenticated` in @ax/core);
+ * any other throw is treated as a fault and answered with a logged 500.
+ */
 export interface RequireUserInput {
   req: HttpRequestLike;
 }

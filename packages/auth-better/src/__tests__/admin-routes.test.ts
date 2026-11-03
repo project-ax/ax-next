@@ -215,7 +215,7 @@ describe('@ax/auth-better — /admin/me', () => {
     } finally {
       cap.restore();
     }
-    // A signed-in user must not be told they are signed out because the DB blipped.
+    // A DB blip is a logged 500, not a 401, so the outage is visible to the operator.
     expect(res.status).toBe(500);
     expect(JSON.parse(text)).toEqual({ error: 'internal' });
     expect(text).not.toContain('auth_better_v1_sessions');
