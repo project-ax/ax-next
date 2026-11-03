@@ -63,12 +63,12 @@ export const CronTriggerSchema = z.object({
   kind: z.literal('cron'), expr: z.string().min(1).max(256), tz: RoutineTimezoneSchema,
 }).strict();
 /**
- * Saved before TASK-1026. Still parsed so saved tasks keep working; the host
- * detects the signing format, ignores these values, and their presence keeps
- * signature checks on. Nothing authors them now: the editors pass a saved one
+ * Saved before TASK-1026; parsed and ignored since TASK-1027: only a saved
+ * secret turns checks on. Nothing authors one now: the editors pass a saved one
  * back unchanged, and the agent tools refuse one (`refuseSignatureSettings`).
- * Keep parsing it exactly as before, `algorithm` default included, so saved
- * values read the same.
+ * Keep parsing exactly as before, `algorithm` default and key order included.
+ * Stored rows, receipts and queued-update snapshots are parsed with this and
+ * hashed, so any change to what it parses to would cancel queued updates.
  */
 export const CustomWebhookHmacSchema = z.object({
   header: z.string().min(1).max(128).regex(/^[!#$%&'*+.^_`|~A-Za-z0-9-]+$/, 'Invalid header.'),
@@ -76,8 +76,8 @@ export const CustomWebhookHmacSchema = z.object({
   prefix: z.string().max(128).optional(),
 }).strict();
 /**
- * Saved before TASK-1026, like `CustomWebhookHmacSchema`: still parsed, values
- * ignored, presence keeps signature checks on, and nothing authors them now.
+ * Saved before TASK-1026, like `CustomWebhookHmacSchema`: parsed exactly as
+ * before and ignored since TASK-1027, and nothing authors one now.
  * A named app took no header, algorithm or prefix, and still doesn't.
  */
 export const WebhookHmacSchema = z.union([
@@ -87,7 +87,7 @@ export const WebhookHmacSchema = z.union([
 export const WebhookTriggerSchema = z.object({
   kind: z.literal('webhook'), path: z.string().refine(validateWebhookPath, 'Invalid webhook path.'),
   events: z.array(z.string().min(1).max(64).regex(/^[A-Za-z0-9_-]+$/, 'Invalid event name.')).max(32).optional(),
-  /** Saved before TASK-1026 (`WebhookHmacSchema`): only its presence counts. */
+  /** Saved before TASK-1026 (`WebhookHmacSchema`): stored and parsed, ignored since TASK-1027. */
   hmac: WebhookHmacSchema.optional(),
   respondWithin: z.string().refine(value => { const seconds = durationToSeconds(value); return seconds !== null && seconds <= 86400; }, 'Choose a response time from 1 minute to 24 hours.').optional(),
 }).strict();

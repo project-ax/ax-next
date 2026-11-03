@@ -372,11 +372,7 @@ export function RoutinesList({
                         slot={{ label: 'Signing secret', kind: 'api-key' }}
                         scope={{ scope: 'agent', ownerId: row.agentId }}
                       />
-                      <SigningSecretHelp
-                        legacy={row.webhook.hmac !== undefined}
-                        scheduled={row.schedule !== null}
-                        noun="routine"
-                      />
+                      <SigningSecretHelp />
                     </>
                   )}
                 {firesError ? (

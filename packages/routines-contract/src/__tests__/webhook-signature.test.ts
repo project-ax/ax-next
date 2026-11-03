@@ -8,7 +8,7 @@ import {
 const advertisedCreate = new Ajv({ strict: false }).compile(RoutineToolJsonSchemas.routine_create);
 const advertisedUpdate = new Ajv({ strict: false }).compile(RoutineToolJsonSchemas.routine_update);
 
-describe('webhook app signing settings', () => {
+describe('legacy signature settings: parsed exactly, ignored since TASK-1027', () => {
   it.each(['stripe', 'slack', 'zendesk'] as const)('round-trips %s without custom overrides', app => {
     const webhook = { kind: 'webhook', path: '/updates', hmac: { app } };
     expect(RoutineDefinitionSchema.parse({ name: 'Updates', promptBody: 'Review', schedule: null, webhook }).webhook).toEqual(webhook);
@@ -23,6 +23,17 @@ describe('webhook app signing settings', () => {
     for (const value of [{ app: 'unknown' }, { app: 'stripe', secret: 'private' }, { app: 'slack', secretRef: 'private' }, {}]) {
       expect(WebhookHmacSchema.safeParse(value).success).toBe(false);
     }
+  });
+  // Stored rows, receipts and queued-update snapshots are parsed with this and then hashed
+  // (`repeatConfigurationHash`) or compared as JSON text (the evidence reset). Any change to what a
+  // stored setting parses to, its key order or the `algorithm` default included, would cancel queued
+  // updates and reset connection evidence at deploy.
+  it('parses a stored setting to the same value, key order and default included', () => {
+    // A task: `respondWithin` is refused on a repeat routine ("Response timing is for batched tasks only.").
+    expect(JSON.stringify(RoutineDefinitionSchema.parse({ name: 'U', promptBody: 'R', kind: 'stay-on-top', goodWhen: 'Nothing waits.',
+      schedule: { kind: 'interval', every: '1h' },
+      webhook: { respondWithin: '10m', events: ['push'], hmac: { header: 'X-Signature' }, path: '/u', kind: 'webhook' } }).webhook))
+      .toBe('{"kind":"webhook","path":"/u","events":["push"],"hmac":{"header":"X-Signature","algorithm":"sha256"},"respondWithin":"10m"}');
   });
 });
 

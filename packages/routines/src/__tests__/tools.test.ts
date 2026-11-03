@@ -316,8 +316,8 @@ it('settles confirmed absent receipts failed after an ordinary joined pre-commit
   spy.mockRestore();
 });
 
-// TASK-1026: a signature setting saved before then belongs to the person. The host only reads whether one is there,
-// so the agent reads no routine with one and can't send one.
+// TASK-1026: a signature setting saved before then belongs to the person. The host ignores it since TASK-1027,
+// and the agent reads no routine with one and can't send one.
 describe('signature settings saved before TASK-1026', () => {
   const hmac = { header: 'X-Signature', algorithm: 'sha256', prefix: 'sha256=' } as const;
   const legacyTask = RoutineDefinitionSchema.parse({

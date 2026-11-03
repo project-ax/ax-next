@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { HookBus, PluginError, registerBlobPutFacade, reject } from '@ax/core';
 import { RoutineDefinitionSchema } from '@ax/routines-contract';
 import { createHmac } from 'node:crypto';
@@ -23,6 +23,8 @@ function request(over:Partial<HttpRequest>={}):HttpRequest {
   return {path:'/webhooks/token/hook',rawPath:'/webhooks/token/hook',params:{token:'token','*':'hook'},body,headers:{'content-type':'application/json','x-github-event':'push','x-github-delivery':'delivery-1',sig:createHmac('sha256','secret').update(body).digest('hex')},...over};
 }
 function response(){const state={code:0,ended:false};const res={status(code:number){state.code=code;return res;},end(){state.ended=true;},json(){state.ended=true;}};return{state,res};}
+const plain:StoredRoutine={...row,webhook:{kind:'webhook',path:'/hook',events:['push']}};
+const unsigned=()=>request({headers:{'content-type':'application/json','x-github-event':'push','x-github-delivery':'delivery-1'}});
 describe('authenticated webhook durable admission',()=>{
   it('validates signatures, bodies and filtering before any dedupe admission',async()=>{
     const f=fixture();
@@ -54,18 +56,28 @@ describe('authenticated webhook durable admission',()=>{
     expect(f.observeWebhook).toHaveBeenCalledWith(expect.objectContaining({observation:'verified',signature:{app:'slack',timestamp:true}}),expect.any(Function));
   });
   describe('the saved secret decides (TASK-1026)',()=>{
-    const plain:StoredRoutine={...row,webhook:{kind:'webhook',path:'/hook',events:['push']}};
-    const unsigned=()=>request({headers:{'content-type':'application/json','x-github-event':'push','x-github-delivery':'delivery-1'}});
     const missing=async():Promise<string>=>{throw new PluginError({plugin:'@ax/credentials',code:'credential-not-found',message:'no credential'});};
-    it('accepts an unsigned update when no secret is saved and no setting asks for one, recording no signature',async()=>{
+    it('accepts an unsigned update when no secret is saved, recording no signature',async()=>{
       const f=fixture('accepted',plain,missing),r=response();await f.handler(unsigned(),r.res);
       expect(r.state.code).toBe(202);
       expect(f.admit).toHaveBeenCalledWith(expect.objectContaining({signature:null}),expect.any(Function),expect.any(Function));
     });
+    // TASK-1027: a setting saved before TASK-1026 is parsed and ignored. Only a saved secret turns checks on.
+    it('ignores a signature setting saved earlier: with no secret saved, an update is accepted unchecked',async()=>{
+      expect(row.webhook?.hmac).toEqual({header:'sig',algorithm:'sha256'});
+      const f=fixture('accepted',row,missing);
+      for(const make of [()=>request(),unsigned]){
+        const r=response();await f.handler(make(),r.res);
+        expect(r.state.code).toBe(202);
+      }
+      expect(f.admit).toHaveBeenCalledTimes(2);
+      expect(f.admit).toHaveBeenNthCalledWith(1,expect.objectContaining({signature:null}),expect.any(Function),expect.any(Function));
+      expect(f.admit).toHaveBeenNthCalledWith(2,expect.objectContaining({signature:null}),expect.any(Function),expect.any(Function));
+      expect(f.observeWebhook).not.toHaveBeenCalled();
+    });
     it.each([
       ['an unsigned update, once a secret is saved',plain,async()=>'secret',unsigned,'signature'],
       ['a wrongly signed update, once a secret is saved',plain,async()=>'secret',()=>request({headers:{...request().headers,sig:createHmac('sha256','wrong').update(request().body).digest('hex')}}),'signature'],
-      ['a signed update when a setting saved earlier asks for a secret and none is saved',row,missing,()=>request(),'secret'],
       ['any update when the vault answers with an empty secret',plain,async()=>'',()=>request(),'secret'],
       ['a Slack URL check that did not verify as Slack, with no secret saved',plain,missing,()=>request({body:Buffer.from('{"type":"url_verification","challenge":"c"}')}),'secret'],
       ['a Slack URL check signed as another app',plain,async()=>'secret',()=>{const body=Buffer.from('{"type":"url_verification","challenge":"c"}');return request({body,headers:{...request().headers,sig:createHmac('sha256','secret').update(body).digest('hex')}});},'signature'],
@@ -128,5 +140,70 @@ describe('authenticated webhook durable admission',()=>{
   });
   it('keeps an already committed admission acknowledged when the pump fails',async()=>{
     const f=fixture();f.pump.mockRejectedValueOnce(new Error('PRIVATE body'));const r=response();await f.handler(request(),r.res);expect(r.state.code).toBe(202);
+  });
+});
+// Each 503 the sender retries logs a code an operator can search for. Never the failure's message, which
+// can quote the request: `createLogger` prints an Error field with its message and stack.
+describe('a 503 logs its code, never its message (TASK-1027)',()=>{
+  afterEach(()=>{vi.restoreAllMocks();});
+  /** TASK-1024's capture: the default logger writes each entry to stdout as one JSON line. */
+  function captureStdout():()=>string{
+    const lines:string[]=[];
+    vi.spyOn(process.stdout,'write').mockImplementation((chunk:unknown)=>{lines.push(String(chunk));return true;});
+    return ()=>lines.join('');
+  }
+  /** The captured entries named `msg`, without the `ts` and `reqId` every entry carries. */
+  const entries=(logged:string,msg:string)=>logged.split('\n').filter(l=>l.startsWith('{"')).map(l=>JSON.parse(l) as Record<string,unknown>)
+    .filter(entry=>entry.msg===msg).map(entry=>Object.fromEntries(Object.entries(entry).filter(([key])=>key!=='ts'&&key!=='reqId')));
+  const failure=(code:string,message:string)=>new PluginError({plugin:'@ax/routines',code,message});
+  it.each([
+    ['a plugin error',failure('timeout','PRIVATE observe detail'),'timeout'],
+    ['a database error',Object.assign(new Error('PRIVATE row detail'),{code:'40P01'}),'40P01'],
+    ['an error with no code',new Error('PRIVATE detail'),undefined],
+  ] as const)('logs %s when a refusal can’t be recorded',async(_name,error,code)=>{
+    const logged=captureStdout(),f=fixture('accepted',plain);f.observeWebhook.mockRejectedValueOnce(error);
+    const r=response();await f.handler(unsigned(),r.res);
+    expect(r.state.code).toBe(503);
+    expect(logged()).not.toContain('PRIVATE');
+    expect(f.observeWebhook).toHaveBeenCalledWith(expect.objectContaining({observation:'signature'}),expect.any(Function));
+    // Exactly these fields: with no code to log, the entry has no `code` at all.
+    expect(entries(logged(),'routines_webhook_observe_failed')).toStrictEqual([{msg:'routines_webhook_observe_failed',level:'warn',agentId:'a',routineId:'r',observation:'signature',...(code===undefined?{}:{code})}]);
+  });
+  it('logs when a too-large update’s refusal can’t be recorded, before any secret read',async()=>{
+    const logged=captureStdout(),vault=vi.fn(async()=>'secret'),f=fixture('accepted',plain,vault);
+    f.observeWebhook.mockRejectedValueOnce(failure('timeout','PRIVATE observe detail'));
+    // This refusal comes before the secret read, so its log must not reach for a context declared after it (a TDZ ReferenceError).
+    const r=response();await expect(f.handler(request({body:Buffer.alloc(1024*1024+1)}),r.res)).resolves.toBeUndefined();
+    expect(r.state.code).toBe(503);
+    expect(logged()).not.toContain('PRIVATE');
+    expect(vault).not.toHaveBeenCalled();
+    expect(entries(logged(),'routines_webhook_observe_failed')).toStrictEqual([{msg:'routines_webhook_observe_failed',level:'warn',agentId:'a',routineId:'r',observation:'too-large',code:'timeout'}]);
+  });
+  it('logs when a verified Slack address check can’t be recorded',async()=>{
+    const logged=captureStdout(),f=fixture('accepted',{...row,webhook:{kind:'webhook',path:'/hook'}});
+    f.observeWebhook.mockRejectedValueOnce(failure('unknown','PRIVATE observe detail'));
+    const body=Buffer.from('{"type":"url_verification","challenge":"private-challenge"}'),timestamp=String(new Date('2026-10-26').getTime()/1000);
+    const signature=createHmac('sha256','secret').update(`v0:${timestamp}:`).update(body).digest('hex');
+    const r=response();await f.handler(request({body,headers:{'content-type':'application/json','x-slack-request-timestamp':timestamp,'x-slack-signature':`v0=${signature}`}}),r.res);
+    expect(r.state.code).toBe(503);
+    expect(logged()).not.toContain('PRIVATE');
+    expect(entries(logged(),'routines_webhook_observe_failed')).toStrictEqual([{msg:'routines_webhook_observe_failed',level:'warn',agentId:'a',routineId:'r',observation:'verified',code:'unknown'}]);
+  });
+  it('logs a failed admission’s code and still records it as unavailable',async()=>{
+    const logged=captureStdout(),f=fixture('accepted',plain);
+    f.admit.mockRejectedValueOnce(failure('unknown','PRIVATE admission detail'));
+    const r=response();await f.handler(request(),r.res);
+    expect(r.state.code).toBe(503);
+    expect(logged()).not.toContain('PRIVATE');
+    expect(entries(logged(),'routines_webhook_admission_failed')).toStrictEqual([{msg:'routines_webhook_admission_failed',level:'warn',agentId:'a',routineId:'r',code:'unknown'}]);
+    expect(f.observeWebhook).toHaveBeenCalledWith(expect.objectContaining({observation:'unavailable'}),expect.any(Function));
+  });
+  it('logs nothing for a quota refusal',async()=>{
+    const logged=captureStdout(),f=fixture('accepted',plain);
+    f.admit.mockRejectedValueOnce(Object.assign(new Error('PRIVATE quota detail'),{code:'rejected'}));
+    const r=response();await f.handler(request(),r.res);
+    expect(r.state.code).toBe(429);
+    expect(logged()).not.toContain('PRIVATE');
+    expect(entries(logged(),'routines_webhook_admission_failed')).toEqual([]);
   });
 });

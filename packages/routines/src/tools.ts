@@ -249,12 +249,15 @@ function listToolView(view: C.RoutineView) {
 }
 /**
  * TASK-1026. A webhook's signature settings (`hmac`) were saved by a person
- * before the host detected each app's signing format. The host ignores their
- * values and only reads that one is there, which keeps signature checks on.
+ * before the host detected each app's signing format. Since TASK-1027 the host
+ * ignores them (only a saved secret turns checks on), but they stay stored,
+ * because queued updates and receipts hash them.
  * They are the person's, so no tool answer carries them, and the agent has
  * none to copy back into an edit: the tools refuse one
- * (`RoutineToolInputSchemas`), and an edit that leaves them out keeps them
- * (`updateAuthored`). The `routines:*` services keep them for the task page.
+ * (`RoutineToolInputSchemas`), so a model never believes it set up
+ * verification, and an edit that leaves them out keeps them
+ * (`updateAuthored`), so it changes nothing hashed or compared. The
+ * `routines:*` services still return them, and the editors pass them back unchanged.
  */
 function withoutSignatureSettings(view: C.RoutineView): C.RoutineView {
   const { webhook } = view;

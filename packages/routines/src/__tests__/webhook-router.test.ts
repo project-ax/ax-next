@@ -241,6 +241,30 @@ describe('durable signed repeat-delivery canary', () => {
     const fire=(await sql`SELECT run_as_user_id,status,error,rendered_prompt FROM routines_v1_fires WHERE routine_id=${row.routineId} AND trigger_source='webhook'`.execute(h.db)).rows;
     expect(fire).toEqual([{run_as_user_id:'member',status:'error',error:'This app update could not run.',rendered_prompt:null}]);
   });
+  // TASK-1027 P3. A signature setting saved before TASK-1026 is ignored, but it is part of the stored
+  // webhook that a waiting update's configuration hash covers. Agents never see it, so a webhook they
+  // send back leaves it out; the store keeps it, or that no-op edit would cancel every waiting update.
+  it('keeps a legacy routine’s waiting update through a re-sent webhook that leaves the setting out', async () => {
+    h = await createRoutineHarness({ invoke: async (ctx, bus) => { await bus.fire('chat:turn-end', ctx, { reqId: ctx.reqId, contentBlocks: [{ type: 'text', text: 'done' }] }); return { kind: 'complete' }; } });
+    // No `algorithm`, so the stored setting carries the schema's default. No secret is saved.
+    const row = await h.bus.call<unknown, RoutineView>('routines:create', h.owner, { agentId: h.agentId, requestId: 'create-legacy',
+      definition: RoutineDefinitionSchema.parse({ name: 'Hook', promptBody: 'Review {{payload.title}}', trigger: { kind: 'webhook', path: '/hook', events: ['push'], hmac: { header: 'X-Signature' } } }) });
+    await legacyRow(row);
+    const { token } = await h.bus.call<unknown, { token: string }>('agents:ensure-webhook-token', h.owner, { agentId: h.agentId, actor: { userId: h.owner.userId, isAdmin: false } });
+    const store = createRoutinesStore(h.db), held = [];
+    for (let i = 0; i < 3; i++) held.push((await store.acceptDispatch({ ...row, actorUserId: h.owner.userId, expectedRevision: row.revision, requestId: `hold-${i}`, source: 'manual', now: new Date() }))!);
+    // Unsigned, with no secret saved: accepted, and it waits behind the three held runs.
+    expect(await request(token, { headers: { 'x-github-event': 'push', 'x-github-delivery': 'waiting-1' } })).toBe(202);
+    const key = { agentId: row.agentId, routineId: row.routineId };
+    expect((await h.bus.call<unknown, RoutineView>('routines:get', h.owner, key)).delivery).toEqual({ active: 3, waiting: 1 });
+    const resent = await h.bus.call<unknown, RoutineView>('routines:update', h.owner, { ...key, expectedRevision: row.revision, requestId: 'resend',
+      patch: { webhook: { kind: 'webhook', path: '/hook', events: ['push'] } } });
+    expect(resent.webhook?.hmac).toEqual({ header: 'X-Signature', algorithm: 'sha256' });
+    expect((await sql`SELECT invalidated_reason FROM routines_v1_deliveries WHERE routine_id=${row.routineId}`.execute(h.db)).rows).toEqual([{ invalidated_reason: null }]);
+    for (const accepted of held) await store.finishDispatch({ dispatchId: accepted.accepted.dispatchId, outcome: { status: 'ok', error: null, conversationId: null, renderedPrompt: null, warning: null } });
+    await expect.poll(() => h.invokeCalls.length, { timeout: 10_000 }).toBe(1);
+    expect((await sql`SELECT dispatch_id FROM routines_v1_fires WHERE routine_id=${row.routineId} AND error='This app update was cancelled because the job changed.'`.execute(h.db)).rows).toEqual([]);
+  });
   it('deduplicates only authenticated accepted IDs, survives restart, and drains queued private payloads once', async () => {
     const messages: string[] = [], owners: string[] = [];
     h=await createRoutineHarness({invoke:async(ctx,bus,input)=>{
