@@ -732,7 +732,7 @@ describe('the download route', () => {
     expectTorn(d, 404, 'file-not-found');
   });
 
-  it('says so when a refusal’s cut was not its own: warn for a write failure, info for a client that left first (TASK-1025)', async () => {
+  it('says so when a refusal’s cut was not its own: warn for a write failure, info for a client that left first or was cut off for not reading (TASK-1025)', async () => {
     standardBus();
     const warn = vi.spyOn(initCtx.logger, 'warn').mockImplementation(() => undefined);
     const info = vi.spyOn(initCtx.logger, 'info').mockImplementation(() => undefined);
@@ -2087,6 +2087,16 @@ describe('sendTornRefusal (TASK-1025)', () => {
       bodyStream: async () => undefined,
     };
     await expect(sendTornRefusal(res, 404, { error: 'file-not-found' })).resolves.toEqual({ code: 'uncoded' });
+  });
+
+  it('says a plain failure from the adapter as uncoded, never as an empty reason', async () => {
+    const { res } = fakeRes(() => new Error('plain'));
+    await expect(sendTornRefusal(res, 404, { error: 'file-not-found' })).resolves.toEqual({ code: 'uncoded' });
+  });
+
+  it('keeps a coded cause of an uncoded failure', async () => {
+    const { res } = fakeRes(() => new Error('x', { cause: Object.assign(new Error('y'), { code: 'EPIPE' }) }));
+    await expect(sendTornRefusal(res, 404, { error: 'file-not-found' })).resolves.toEqual({ causeCode: 'EPIPE' });
   });
 
   it('reports a body that was somehow not cut at all', async () => {

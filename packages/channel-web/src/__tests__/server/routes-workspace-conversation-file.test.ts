@@ -966,8 +966,8 @@ describe('the chat file chip download route over a real socket', () => {
       return undefined;
     });
     const at = url(port, 'c-theirs', encodeURIComponent(KEY));
-    // The real download: the 404 head, then a body cut short (TASK-1025), so
-    // no browser can save the refusal as the file.
+    // The real download: the 404 head, then a body cut short (TASK-1025),
+    // which every engine walked fails rather than saves as the file.
     const r = await fetch(at);
     expect(r.status).toBe(404);
     expect(r.headers.get('content-type')).toBe('application/json; charset=utf-8');

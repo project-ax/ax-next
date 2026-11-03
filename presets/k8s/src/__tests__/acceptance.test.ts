@@ -2745,8 +2745,8 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
         const base = `http://127.0.0.1:${port}/api/workspace/agents`;
         const asUser = (u: string) => ({ headers: { 'x-test-user': u } });
         // A REAL download's refusal is torn on purpose (TASK-1025): its status,
-        // then a body cut short, so no browser can save the refusal as the
-        // file. Its words are the probe's (`?probe=1`), whole.
+        // then a body cut short, which every engine walked fails rather than
+        // saves as the file. Its words are the probe's (`?probe=1`), whole.
         const expectRefused = async (
           url: string,
           init: RequestInit,

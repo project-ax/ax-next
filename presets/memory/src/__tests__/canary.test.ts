@@ -1812,7 +1812,7 @@ describe('@ax/preset-memory canary', () => {
      * A refusal's status and words, on any splat route. The read route says
      * them whole, in JSON. A REAL download's refusal is torn on purpose
      * (TASK-1025): the route's own status and JSON type, then a body cut short,
-     * so no browser can save the refusal as the file. So for a download path
+     * which every engine walked fails rather than saves. So for a download path
      * this checks that the real GET is torn, and reads the words from its
      * probe (`?probe=1`), which answers whole, with the same status.
      */
