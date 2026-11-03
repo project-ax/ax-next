@@ -9,11 +9,12 @@ import {
 
 /**
  * TASK-1026: a webhook's signature settings (`hmac`, `WebhookHmacSchema`) are
- * a person's, saved before the host detected each app's signing format. They
- * still parse everywhere, so saved tasks, receipts and a person's own edits keep
- * working, but an agent can't write one. The tool JSON doesn't advertise them,
- * and this refuses one rather than drop it, so the agent never believes it set
- * up verification. Checked on the parsed value, where a legacy `trigger`
+ * a person's, saved before the host detected each app's signing format. Since
+ * TASK-1027 the receiver ignores them: only a saved secret turns checks on.
+ * They still parse everywhere, so saved tasks, receipts and a person's own edits
+ * keep working, but an agent can't write one. The tool JSON doesn't advertise
+ * them, and this still refuses one rather than drop it, so a model never
+ * believes it set up verification. Checked on the parsed value, where a legacy `trigger`
  * webhook is already `webhook`. Agent tools only, like the TASK-906 rule below:
  * Settings and the task page go through `RoutineCreateInputSchema` and
  * `RoutineUpdateInputSchema`, which don't carry it. Only the path reaches the

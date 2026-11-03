@@ -44,8 +44,6 @@ describe('provider signatures through real HTTP, services and durable Repeat adm
         const row = await h.bus.call<unknown, RoutineView>('routines:create', h.owner, input);
         rows.push(row);
         tokens.set(app, (await h.bus.call<unknown, { token: string }>('routines:webhook-address', h.owner, { agentId: row.agentId, routineId: row.routineId })).token);
-        // A valid signature without an owner-provisioned secret is still refused.
-        expect((await send(app)).status).toBe(401);
         await h.bus.call('routines:set-webhook-secret', h.owner, { agentId: h.agentId, routineId: row.routineId, expectedRevision: row.revision, operation: 'set', secret: Buffer.from(secret) });
         expect((await send(app, body, {})).status).toBe(401);
         expect((await send(app, body + ' ', headers(app, body))).status).toBe(401);

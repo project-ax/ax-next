@@ -11,6 +11,8 @@ import { systemClock } from '../clock.js';
 
 // TASK-1026: whether a signing secret is saved decides whether app updates are
 // checked; the host works out the signing format from each delivery's headers.
+// TASK-1027: a signature setting saved before TASK-1026 is still stored and
+// parsed, but ignored. Only a saved secret turns checks on.
 let h: RoutineHarness;
 const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => {
@@ -118,7 +120,7 @@ describe('verification decided by the saved secret, with the app detected', () =
     expect((await status(row)).refusals).toEqual([{ reason: 'signature', count: 1 }]);
   });
 
-  it('keeps every legacy signature setting working', async () => {
+  it('ignores every legacy signature setting', async () => {
     const post = await start();
     const settings: Array<[LegacySetting, RoutineWebhookStatus['app']]> = [
       [{ app: 'stripe' }, 'stripe'], [{ app: 'slack' }, 'slack'], [{ app: 'zendesk' }, 'zendesk'],
@@ -131,12 +133,18 @@ describe('verification decided by the saved secret, with the app detected', () =
     h = await h.restart();
     for (const { hmac, app, row, url } of tasks) {
       const label = JSON.stringify(hmac);
+      // Still stored as saved: queued updates and receipts hash and compare it.
       const saved = await h.bus.call<unknown, RoutineView>('routines:get', h.owner, { agentId: row.agentId, routineId: row.routineId });
       expect(saved.webhook?.hmac, label).toStrictEqual(hmac);
+      // With no secret saved, the setting doesn't turn checks on: an unsigned update is accepted unchecked.
+      expect((await post(url)).status, label).toBe(202);
+      expect(await status(row), label).toMatchObject({ app: null, signatureChecked: false });
+      if ('app' in hmac && hmac.app === 'slack') {
+        // A Slack URL check is answered only once it verifies as Slack, which takes a saved secret (TASK-1026 D7).
+        expect((await post(url, {}, '{"type":"url_verification","challenge":"c"}')).status, label).toBe(401);
+        expect((await status(row)).refusals, label).toEqual([{ reason: 'secret', count: 1 }]);
+      }
       const signed = 'app' in hmac ? timestamped(hmac.app, BODY) : { [hmac.header]: `${hmac.prefix ?? ''}${hex(BODY)}` };
-      // A setting saved earlier keeps checks on, so a signed update with no saved secret is still refused.
-      expect((await post(url, signed)).status, label).toBe(401);
-      expect((await status(row)).refusals, label).toEqual([{ reason: 'secret', count: 1 }]);
       await saveSecret(row);
       if (!('app' in hmac) && hmac.algorithm === 'sha1') {
         // SHA-256 only, even where SHA-1 was saved (D9a).
@@ -144,8 +152,12 @@ describe('verification decided by the saved secret, with the app detected', () =
       }
       expect((await post(url, signed)).status, label).toBe(202);
       expect(await status(row), label).toMatchObject({ app, signatureChecked: true, timestampChecked: 'app' in hmac });
+      expect((await post(url)).status, label).toBe(401);
+      // Removing the secret turns checks off, setting or not.
+      await saveSecret(row, 'delete');
+      expect((await post(url)).status, label).toBe(202);
     }
-    await expect.poll(() => h.invokeCalls.length).toBe(settings.length);
+    await expect.poll(() => h.invokeCalls.length).toBe(settings.length * 3);
   });
 
   it('refuses when the secret can’t be read, even with no signature settings', async () => {

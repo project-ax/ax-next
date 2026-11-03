@@ -4,7 +4,7 @@ export { githubDeliveryId, repeatQueueFits } from './repeat-limits.js';
 import { verifyWebhookDelivery, type VerifiedSignature } from './webhook-signature.js';
 import { makeAgentContext, PluginError, type HookBus } from '@ax/core';
 import { type WebhookRefusalReason, validateWebhookPath } from '@ax/routines-contract';
-import { credentialRef, hasLegacySignatureSetting } from './definition.js';
+import { credentialRef } from './definition.js';
 import type { RoutinesStore } from './store.js';
 import type { WebhookAddressProof } from './webhook-address.js';
 
@@ -65,8 +65,8 @@ export function createWebhookRouter(deps: WebhookRouterDeps): HttpRouteHandler {
     if (req.body.byteLength > 1024 * 1024) { await refuse(413, 'too-large'); return; }
     const trigger = row.webhook;
     const ctx = makeAgentContext({ sessionId: 'routine-webhook', agentId: row.agentId, userId: row.ownerUserId });
-    // Step 2: signature. Whether a signing secret is saved decides (TASK-1026).
-    // Settings saved before then keep checks on; their values are ignored.
+    // Step 2: signature. A saved signing secret turns checks on; nothing else does.
+    // Settings saved before TASK-1026 (`webhook.hmac`) are parsed and ignored (TASK-1027).
     // The generation was read above, before the secret: saving or removing a
     // secret replaces it, so admission refuses a delivery that raced the change.
     // Logs the task and, for a plugin error, its code: never the error's message, a header, the body or the secret.
@@ -97,9 +97,7 @@ export function createWebhookRouter(deps: WebhookRouterDeps): HttpRouteHandler {
     // Never verify with an empty key: anyone could sign with it.
     if (secret !== null && (typeof secret !== 'string' || secret.length === 0)) { unreadable(); await refuse(401, 'secret'); return; }
     let signature: VerifiedSignature | null = null;
-    if (secret === null) {
-      if (hasLegacySignatureSetting(row)) { await refuse(401, 'secret'); return; }
-    } else {
+    if (secret !== null) {
       signature = verifyWebhookDelivery(req.headers, req.body, secret, deps.now());
       if (signature === null) { await refuse(401, 'signature'); return; }
     }

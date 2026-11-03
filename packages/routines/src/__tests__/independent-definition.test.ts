@@ -20,11 +20,6 @@ describe('independent runtime definition helpers', () => {
     expect(D.schedulingChanged(value, { ...value, webhook: null })).toBe(false);
     expect(D.schedulingChanged(value, { ...value, schedule: null })).toBe(true);
   });
-  it('finds a legacy signature setting without requiring a webhook-only trigger', () => {
-    expect(D.hasLegacySignatureSetting(definition())).toBe(true);
-    expect(D.hasLegacySignatureSetting({ ...definition(), webhook: null })).toBe(false);
-    expect(D.hasLegacySignatureSetting({ ...definition(), webhook: { kind: 'webhook', path: '/github' } })).toBe(false);
-  });
 });
 
 describe('compatible legacy request fingerprints', () => {

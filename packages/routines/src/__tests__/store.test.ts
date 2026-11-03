@@ -142,10 +142,11 @@ describe('transactional authored store', () => {
     }
     expect(effect).not.toHaveBeenCalled();
   });
-  // TASK-1026 D4. A stored `hmac` keeps signature checks on and has no control left to author it, so a
-  // replacement webhook that leaves it out (an agent, an old client) mustn't turn checks off, delete the
-  // secret or reset the evidence. Key order matters: the evidence resets when JSON.stringify differs.
-  it('keeps a legacy signature setting and its secret when an edit replaces the webhook without it', async () => {
+  // TASK-1027 P3. A stored `hmac` is ignored since TASK-1027, but it is part of the stored webhook, which
+  // the queued-update hash and the evidence reset compare. Agents never see it, so a replacement webhook
+  // that leaves it out (an agent, an old client) keeps it: the edit stays a no-op, deleting no secret and
+  // resetting no evidence. Key order matters: the evidence resets when JSON.stringify differs.
+  it('keeps a stored signature setting when an edit replaces the webhook without it, so nothing hashed or compared changes', async () => {
     const row = await f.store.createAuthored({ ...createInput('legacy-task'), definition: RoutineDefinitionSchema.parse({
       name: 'Inbox', promptBody: 'Keep the inbox under control.', kind: 'stay-on-top', goodWhen: 'Nothing waits more than a day.',
       schedule: { kind: 'interval', every: '15m' },

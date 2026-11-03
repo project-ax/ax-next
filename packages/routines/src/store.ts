@@ -1007,10 +1007,11 @@ export function createRoutinesStore(db: DB, executorId?: string): RoutinesStore 
         if (current.definitionId !== null) throw new SafeToolError('forbidden', 'routineId');
         let next: RoutineDefinition;
         try { next = applyRoutinePatch(editableDefinition(current), input.patch); } catch (error) { throw validationError(error); }
-        // TASK-1026 D4. A signature setting saved earlier keeps checks on, and nothing authors one now, so a
-        // replacement webhook that leaves it out (an agent, an old client) keeps it. Only removing app updates
-        // or deleting the task clears it. Parsed again for the schema's key order, since the evidence below
-        // resets when JSON.stringify differs, and for the definition's own limits on what's stored.
+        // TASK-1027 P3. A stored `webhook.hmac` is ignored, but it is part of the stored webhook, which the
+        // queued-update hash (`repeatConfigurationHash`) and the evidence reset below compare. Agents never
+        // see it, so a replacement that leaves it out keeps it, and an edit that changes nothing stays a no-op.
+        // Only removing app updates or deleting the task clears it. Re-parsed for the schema's key order,
+        // since the evidence resets when JSON.stringify differs, and for the definition's own limits on what's stored.
         const legacy = current.webhook?.hmac;
         if (legacy !== undefined && next.webhook !== null && next.webhook.hmac === undefined)
           next = validateDefinition({ ...next, webhook: { ...next.webhook, hmac: legacy } });

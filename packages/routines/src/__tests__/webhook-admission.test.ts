@@ -62,10 +62,22 @@ describe('authenticated webhook durable admission',()=>{
       expect(r.state.code).toBe(202);
       expect(f.admit).toHaveBeenCalledWith(expect.objectContaining({signature:null}),expect.any(Function),expect.any(Function));
     });
+    // TASK-1027: a setting saved before TASK-1026 is parsed and ignored. Only a saved secret turns checks on.
+    it('ignores a signature setting saved earlier: with no secret saved, an update is accepted unchecked',async()=>{
+      expect(row.webhook?.hmac).toEqual({header:'sig',algorithm:'sha256'});
+      const f=fixture('accepted',row,missing);
+      for(const make of [()=>request(),unsigned]){
+        const r=response();await f.handler(make(),r.res);
+        expect(r.state.code).toBe(202);
+      }
+      expect(f.admit).toHaveBeenCalledTimes(2);
+      expect(f.admit).toHaveBeenNthCalledWith(1,expect.objectContaining({signature:null}),expect.any(Function),expect.any(Function));
+      expect(f.admit).toHaveBeenNthCalledWith(2,expect.objectContaining({signature:null}),expect.any(Function),expect.any(Function));
+      expect(f.observeWebhook).not.toHaveBeenCalled();
+    });
     it.each([
       ['an unsigned update, once a secret is saved',plain,async()=>'secret',unsigned,'signature'],
       ['a wrongly signed update, once a secret is saved',plain,async()=>'secret',()=>request({headers:{...request().headers,sig:createHmac('sha256','wrong').update(request().body).digest('hex')}}),'signature'],
-      ['a signed update when a setting saved earlier asks for a secret and none is saved',row,missing,()=>request(),'secret'],
       ['any update when the vault answers with an empty secret',plain,async()=>'',()=>request(),'secret'],
       ['a Slack URL check that did not verify as Slack, with no secret saved',plain,missing,()=>request({body:Buffer.from('{"type":"url_verification","challenge":"c"}')}),'secret'],
       ['a Slack URL check signed as another app',plain,async()=>'secret',()=>{const body=Buffer.from('{"type":"url_verification","challenge":"c"}');return request({body,headers:{...request().headers,sig:createHmac('sha256','secret').update(body).digest('hex')}});},'signature'],
