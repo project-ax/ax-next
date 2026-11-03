@@ -9,7 +9,10 @@
 // array TIED to `PATH`. Assigning a string to it replaces the whole command search
 // path, so the very next command dies with "command not found: dirname", and so does
 // everything after it in that call. The recipe had been copied into the claude-memory
-// and yolo-ship skills, two plans and memory-append-check.sh's own fix-it message.
+// and yolo-ship skills and two plans. scripts/memory-append-check.sh's R2 fix-it
+// message still prints it. That script is pinned by a blob-sha mutation row in
+// .claude/memory/decisions/2026-09-19-TASK-415.md, which only a human
+// `Memory-Rewrite` pass may update, so it is fixed separately.
 // Agents wrote the trap down in memory four times (TASK-696, TASK-816, TASK-951,
 // TASK-1028) before anyone fixed the source. bash does not tie `path`, so the snippet
 // looked fine to anyone reading it with bash in mind.
