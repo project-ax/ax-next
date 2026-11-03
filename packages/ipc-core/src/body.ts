@@ -44,6 +44,37 @@ export interface ReadBodyResult {
 }
 
 /**
+ * TASK-1024: a request that is already gone can never deliver its body. Its
+ * last event fired before our listeners attached, so waiting on data/error/end
+ * would hang forever. Answer now instead:
+ *   - destroyed WITH an error → that error, unchanged (same contract as a
+ *     stream error mid-read);
+ *   - destroyed without one, or already ended (someone consumed the bytes) →
+ *     a fixed-text Error. The dispatcher maps both to its logged 500.
+ * Returns null when the request is still readable.
+ */
+function bodyGoneError(req: http.IncomingMessage): Error | null {
+  if (req.destroyed) {
+    const errored: unknown = req.errored;
+    if (errored instanceof Error) return errored;
+    return new Error('request was already destroyed before its body was read');
+  }
+  if (req.readableEnded) {
+    return new Error('request was already ended before its body was read');
+  }
+  return null;
+}
+
+/**
+ * Error for a request destroyed mid-read with no error of its own: a bare
+ * `destroy()` emits only 'close', never 'end' or 'error'. A normal read emits
+ * 'end' first, so the settled latch makes the later 'close' a no-op.
+ */
+function closedMidReadError(): Error {
+  return new Error('request closed before its body was read');
+}
+
+/**
  * Read the RAW request body into a Buffer, size-capped, with NO JSON parse.
  *
  * For the REQUEST-direction binary channel (TASK-68 `blob.put`): the runner
@@ -60,6 +91,9 @@ export async function readRawBody(
   req: http.IncomingMessage,
   maxBytes: number,
 ): Promise<Buffer> {
+  const gone = bodyGoneError(req);
+  if (gone !== null) throw gone;
+
   const contentLengthHeader = req.headers['content-length'];
   if (typeof contentLengthHeader === 'string' && contentLengthHeader.length > 0) {
     const declared = Number(contentLengthHeader);
@@ -99,6 +133,9 @@ export async function readRawBody(
       if (settled) return;
       settle(() => resolve(Buffer.concat(chunks, total)));
     });
+    req.on('close', () => {
+      settle(() => reject(closedMidReadError()));
+    });
   });
 }
 
@@ -106,6 +143,9 @@ export async function readJsonBody(
   req: http.IncomingMessage,
   maxBytes: number = MAX_FRAME,
 ): Promise<ReadBodyResult> {
+  const gone = bodyGoneError(req);
+  if (gone !== null) throw gone;
+
   // ----- fail fast on declared Content-Length -----
   // Note: we only trust Content-Length to REJECT. An undersized or missing
   // header still requires mid-stream enforcement below.
@@ -164,6 +204,10 @@ export async function readJsonBody(
         return;
       }
       settle(() => resolve({ value, bytesRead: total }));
+    });
+
+    req.on('close', () => {
+      settle(() => reject(closedMidReadError()));
     });
   });
 }

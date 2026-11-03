@@ -4,6 +4,7 @@ import { MAX_FRAME } from '@ax/core';
 import {
   BadJsonError,
   readJsonBody,
+  readRawBody,
   TooLargeError,
 } from '../body.js';
 
@@ -210,5 +211,104 @@ describe('readJsonBody', () => {
     // Not a TooLargeError / BadJsonError — propagated unchanged.
     expect(caught).not.toBeInstanceOf(TooLargeError);
     expect(caught).not.toBeInstanceOf(BadJsonError);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// TASK-1024: a request that is already gone must SETTLE, not hang.
+//
+// Both readers used to attach data/error/end listeners and wait. A request the
+// client hung up on BEFORE those listeners attached has already emitted its
+// last event, so nothing ever fired and the promise never settled. A bare
+// destroy() AFTER attach emits only 'close', which they didn't listen for
+// either. Each case races the read against a short timer so a regression
+// reads as "hung", not as a vitest timeout.
+// ---------------------------------------------------------------------------
+
+describe('body readers on a request that is already gone (TASK-1024)', () => {
+  type Outcome = { kind: 'resolved' } | { kind: 'rejected'; err: unknown } | { kind: 'hung' };
+
+  async function settleWithin(p: Promise<unknown>, ms = 500): Promise<Outcome> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const hung = new Promise<Outcome>((resolve) => {
+      timer = setTimeout(() => resolve({ kind: 'hung' }), ms);
+    });
+    try {
+      return await Promise.race([
+        p.then(
+          (): Outcome => ({ kind: 'resolved' }),
+          (err: unknown): Outcome => ({ kind: 'rejected', err }),
+        ),
+        hung,
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  async function fakeReq(): Promise<http.IncomingMessage> {
+    const { Readable } = await import('node:stream');
+    const r = new Readable({ read() {} });
+    (r as unknown as { headers: Record<string, string> }).headers = {};
+    return r as unknown as http.IncomingMessage;
+  }
+
+  const tick = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
+  const GONE = /request was already (destroyed|ended)|request closed before its body was read/;
+
+  const readers: Array<[string, (req: http.IncomingMessage) => Promise<unknown>]> = [
+    ['readJsonBody', (req) => readJsonBody(req)],
+    ['readRawBody', (req) => readRawBody(req, 1024)],
+  ];
+
+  describe.each(readers)('%s', (_name, read) => {
+    it('rejects when the request was destroyed before the read', async () => {
+      const req = await fakeReq();
+      req.destroy();
+      await tick(); // let 'close' fire before the reader attaches
+      const out = await settleWithin(read(req));
+      expect(out.kind).toBe('rejected');
+      expect((out as { err: Error }).err.message).toMatch(GONE);
+    });
+
+    it('rejects with the original error when the request errored before the read', async () => {
+      const req = await fakeReq();
+      const boom = new Error('client-reset-early');
+      req.on('error', () => {}); // the pre-read error is someone else's to observe
+      req.destroy(boom);
+      await tick();
+      const out = await settleWithin(read(req));
+      expect(out).toEqual({ kind: 'rejected', err: boom });
+    });
+
+    it('rejects when the request already ended before the read', async () => {
+      const req = await fakeReq();
+      req.push(null);
+      req.resume();
+      await new Promise((resolve) => req.on('end', resolve));
+      const out = await settleWithin(read(req));
+      expect(out.kind).toBe('rejected');
+      expect((out as { err: Error }).err.message).toMatch(GONE);
+    });
+
+    it('rejects when the request is destroyed mid-read with no error', async () => {
+      const req = await fakeReq();
+      const p = read(req);
+      req.push(Buffer.from('{"partial":'));
+      await tick();
+      req.destroy();
+      const out = await settleWithin(p);
+      expect(out.kind).toBe('rejected');
+      expect((out as { err: Error }).err.message).toMatch(GONE);
+    });
+
+    it('still resolves a body that ends normally (end, then close)', async () => {
+      const req = await fakeReq();
+      const p = read(req);
+      req.push(Buffer.from('{"ok":true}'));
+      req.push(null);
+      const out = await settleWithin(p);
+      expect(out.kind).toBe('resolved');
+    });
   });
 });
