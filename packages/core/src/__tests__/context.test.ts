@@ -7,6 +7,7 @@ import {
   ownerlessIdFor,
   OWNERLESS_ID_PREFIX,
 } from '../context.js';
+import { PluginError } from '../errors.js';
 
 describe('makeReqId', () => {
   it('generates a unique, readable id', () => {
@@ -45,6 +46,204 @@ describe('createLogger', () => {
     const parsed = JSON.parse(out[0]!);
     expect(parsed.level).toBe('error');
     expect(parsed.err).toMatchObject({ name: 'Error', message: 'bang' });
+  });
+
+  // TASK-1028: HookBus.call wraps a service's raw throw as
+  // PluginError{code:'unknown', cause}. Without `code` and `cause` a logged 5xx
+  // said only "unknown" and pointed at the hook-bus stack, not what failed.
+  describe('serialized Error carries code and one level of cause (TASK-1028)', () => {
+    const logErr = (err: unknown): Record<string, unknown> => {
+      const out: string[] = [];
+      createLogger({ reqId: 'r', writer: (line) => out.push(line) }).error('boom', { err });
+      return JSON.parse(out[0]!).err as Record<string, unknown>;
+    };
+
+    it('includes a string code', () => {
+      const err = Object.assign(new Error('refused'), { code: 'ECONNREFUSED' });
+      expect(logErr(err).code).toBe('ECONNREFUSED');
+    });
+
+    it('omits code when there is none', () => {
+      expect('code' in logErr(new Error('plain'))).toBe(false);
+    });
+
+    it("includes an Error cause's name, code and stack frames", () => {
+      const root = Object.assign(new TypeError('relation "skills" does not exist'), {
+        code: '42P01',
+      });
+      const wrapped = Object.assign(new Error('skills:upsert failed', { cause: root }), {
+        code: 'unknown',
+      });
+      const s = logErr(wrapped);
+      expect(s.code).toBe('unknown');
+      const cause = s.cause as Record<string, unknown>;
+      expect(cause).toMatchObject({ name: 'TypeError', code: '42P01' });
+      // The frames say WHERE it was thrown: this test file.
+      expect(cause.frames).toMatch(/^\s+at .*context\.test\.ts/);
+    });
+
+    it("never writes the cause's message, not even via its stack header", () => {
+      // credential-proxy wraps a resolver error whose message can carry an
+      // OAuth server's error_description under FIXED outer text, because the
+      // inner text is not loggable. The logger must not undo that.
+      const secret = 'invalid_grant: refresh token rt_SECRET_123 revoked';
+      const wrapped = new Error('a session credential could not be resolved', {
+        cause: new Error(secret),
+      });
+      const out: string[] = [];
+      createLogger({ reqId: 'r', writer: (line) => out.push(line) }).error('boom', { err: wrapped });
+      expect(out[0]).not.toContain('rt_SECRET_123');
+      const cause = (JSON.parse(out[0]!).err as { cause: Record<string, unknown> }).cause;
+      expect('message' in cause).toBe(false);
+      expect('stack' in cause).toBe(false);
+    });
+
+    it('never writes a multi-line cause message, even lines that look like frames', () => {
+      // An OAuth error_description is free text; nothing stops it carrying a
+      // newline followed by "  at …", which a per-line frame filter keeps.
+      const secret = 'invalid_grant: revoked\n  at token rt_SECRET_ABC for alice@example.com';
+      const wrapped = new Error('a session credential could not be resolved', {
+        cause: new Error(secret),
+      });
+      const out: string[] = [];
+      createLogger({ reqId: 'r', writer: (line) => out.push(line) }).error('boom', { err: wrapped });
+      expect(out[0]).not.toContain('rt_SECRET_ABC');
+      const cause = (JSON.parse(out[0]!).err as { cause: Record<string, unknown> }).cause;
+      expect(cause.frames).toMatch(/^\s+at .*context\.test\.ts/);
+    });
+
+    it('writes no frames when the cause stack was rewritten without its message', () => {
+      const inner = new Error('secret text rt_X');
+      inner.stack = 'Error: something else entirely\n  at rt_X_looking_frame (x.js:1:1)';
+      const s = logErr(new Error('outer', { cause: inner }));
+      expect(JSON.stringify(s)).not.toContain('rt_X');
+      expect('frames' in (s.cause as Record<string, unknown>)).toBe(false);
+    });
+
+    it('never throws over a cause with a non-string stack or name', () => {
+      for (const bad of [null, 42, { secret: 'x' }]) {
+        const inner = new Error('inner');
+        (inner as { stack?: unknown }).stack = bad;
+        (inner as { name?: unknown }).name = bad;
+        const out: string[] = [];
+        const logger = createLogger({ reqId: 'r', writer: (line) => out.push(line) });
+        expect(() => logger.error('boom', { err: new Error('outer', { cause: inner }) })).not.toThrow();
+        const cause = (JSON.parse(out[0]!).err as { cause: Record<string, unknown> }).cause;
+        expect('name' in cause).toBe(false);
+        expect('frames' in cause).toBe(false);
+        expect(out[0]).not.toContain('secret');
+      }
+    });
+
+    it('drops the cause rather than throw when reading it throws', () => {
+      const inner = new Error('inner');
+      Object.defineProperty(inner, 'stack', {
+        get() {
+          throw new Error('getter boom');
+        },
+      });
+      const out: string[] = [];
+      const logger = createLogger({ reqId: 'r', writer: (line) => out.push(line) });
+      expect(() => logger.error('boom', { err: new Error('outer', { cause: inner }) })).not.toThrow();
+      expect('cause' in (JSON.parse(out[0]!).err as Record<string, unknown>)).toBe(false);
+    });
+
+    it("names a PluginError cause's plugin and hook, so a fixed-text wrap still says which hook failed", () => {
+      const busWrap = new PluginError({
+        code: 'unknown',
+        plugin: '@ax/credentials',
+        hookName: 'credentials:get',
+        message: "service hook 'credentials:get' threw: invalid_grant rt_SECRET",
+      });
+      const s = logErr(
+        new PluginError({
+          code: 'credential-resolve-failed',
+          plugin: '@ax/credential-proxy',
+          message: 'a session credential could not be resolved',
+          cause: busWrap,
+        }),
+      );
+      expect(s.cause).toMatchObject({
+        name: 'PluginError',
+        code: 'unknown',
+        plugin: '@ax/credentials',
+        hookName: 'credentials:get',
+      });
+      expect(JSON.stringify(s)).not.toContain('rt_SECRET');
+    });
+
+    it('caps the identifier fields a cause contributes', () => {
+      const inner = Object.assign(new Error('inner'), { code: 'C'.repeat(500) });
+      inner.name = 'N'.repeat(500);
+      const c = logErr(new Error('outer', { cause: inner })).cause as Record<string, string>;
+      expect(c.name!.length).toBe(100);
+      expect(c.code!.length).toBe(100);
+
+      const pe = new PluginError({
+        code: 'unknown',
+        plugin: 'P'.repeat(500),
+        hookName: 'H'.repeat(500),
+        message: 'wrapped',
+      });
+      const p = logErr(new Error('outer', { cause: pe })).cause as Record<string, string>;
+      expect(p.plugin!.length).toBe(100);
+      expect(p.hookName!.length).toBe(100);
+    });
+
+    it('writes no frames for a non-string cause message (an array merged onto an Error)', () => {
+      // V8 stringifies the array into the header, where a frame-shaped line
+      // can't be told from a real one.
+      const inner = Object.assign(new Error('Request failed'), {
+        message: ['email invalid', 'x\n  at rt_SECRET_ARR'],
+      });
+      inner.stack = `Error: email invalid,x\n  at rt_SECRET_ARR\n    at real (file.js:1:1)`;
+      const s = logErr(new Error('outer', { cause: inner }));
+      expect(JSON.stringify(s)).not.toContain('rt_SECRET_ARR');
+      expect('frames' in (s.cause as Record<string, unknown>)).toBe(false);
+    });
+
+    it('writes no frames for an empty message unless the header is the bare name', () => {
+      const blanked = new Error('secret\n  at rt_BLANKED');
+      void blanked.stack; // V8 builds the header now, from the secret message
+      blanked.message = '';
+      expect(JSON.stringify(logErr(new Error('outer', { cause: blanked })))).not.toContain(
+        'rt_BLANKED',
+      );
+
+      // Under vitest the header reads `Error: ` (vite's module runner formats it).
+      const empty = new Error('');
+      const c = logErr(new Error('outer', { cause: empty })).cause as Record<string, unknown>;
+      expect(c.frames).toMatch(/^\s+at .*context\.test\.ts/);
+
+      // Plain Node/V8 (production) writes the bare name: `Error`.
+      const v8 = new Error('');
+      v8.stack = 'Error\n    at fn (file.js:1:1)';
+      const v = logErr(new Error('outer', { cause: v8 })).cause as Record<string, unknown>;
+      expect(v.frames).toBe('    at fn (file.js:1:1)');
+    });
+
+    it('stops at one level of cause', () => {
+      const deepest = Object.assign(new Error('deepest'), { code: 'DEEP' });
+      const middle = new RangeError('middle', { cause: deepest });
+      const top = new Error('top', { cause: middle });
+      const s = logErr(top);
+      const cause = s.cause as Record<string, unknown>;
+      expect(cause.name).toBe('RangeError');
+      expect('cause' in cause).toBe(false);
+      expect(JSON.stringify(s)).not.toContain('DEEP');
+    });
+
+    it('drops a non-Error cause', () => {
+      expect('cause' in logErr(new Error('a', { cause: 'socket hang up' }))).toBe(false);
+      expect('cause' in logErr(new Error('b', { cause: { secret: 'x' } }))).toBe(false);
+    });
+
+    it('survives a self-referencing cause', () => {
+      const e = new Error('loop');
+      (e as { cause?: unknown }).cause = e;
+      const s = logErr(e);
+      expect((s.cause as Record<string, unknown>).name).toBe('Error');
+    });
   });
 
   it('child() adds bindings without losing parent bindings', () => {

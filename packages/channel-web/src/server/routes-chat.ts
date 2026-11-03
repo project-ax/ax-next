@@ -864,8 +864,11 @@ export function createChatRouteHandlers(deps: ChatRouteDeps) {
       }
 
       // 3) Resolve the conversation → its frozen agentId (ownership check).
-      // Cross-tenant / unknown collapses to 404 (no existence leak), same
-      // posture as getConversation.
+      // Cross-tenant / unknown (`not-found` / `forbidden`) collapses to 404
+      // (no existence leak), same posture as getConversation. Anything else
+      // (a store crash arrives here as PluginError 'unknown', or a plain
+      // throw) is a host fault: logged, answered with a generic 500, never
+      // dressed up as "not found".
       let agentId: string;
       try {
         const got = await bus.call<ConversationsGetInput, ConversationsGetOutput>(
@@ -875,15 +878,20 @@ export function createChatRouteHandlers(deps: ChatRouteDeps) {
         );
         agentId = got.conversation.agentId;
       } catch (err) {
-        if (err instanceof PluginError) {
+        if (err instanceof PluginError && (err.code === 'not-found' || err.code === 'forbidden')) {
           res.status(404).json({ error: 'conversation-not-found' });
           return;
         }
-        throw err;
+        initCtx.logger.error('chat_permission_decision_lookup_failed', {
+          hook: 'conversations:get',
+          err,
+        });
+        res.status(500).json({ error: 'internal' });
+        return;
       }
 
       // 4) Agent ACL gate (same posture as postMessage): forbidden → 403,
-      // not-found → 404.
+      // not-found → 404, anything else → logged 500.
       try {
         await bus.call<AgentsResolveInput, AgentsResolveOutput>(
           'agents:resolve',
@@ -891,15 +899,20 @@ export function createChatRouteHandlers(deps: ChatRouteDeps) {
           { agentId, userId },
         );
       } catch (err) {
-        if (err instanceof PluginError) {
-          if (err.code === 'forbidden') {
-            res.status(403).json({ error: 'forbidden' });
-            return;
-          }
+        if (err instanceof PluginError && err.code === 'forbidden') {
+          res.status(403).json({ error: 'forbidden' });
+          return;
+        }
+        if (err instanceof PluginError && err.code === 'not-found') {
           res.status(404).json({ error: 'agent-not-found' });
           return;
         }
-        throw err;
+        initCtx.logger.error('chat_permission_decision_agent_resolve_failed', {
+          hook: 'agents:resolve',
+          err,
+        });
+        res.status(500).json({ error: 'internal' });
+        return;
       }
 
       // 5) Apply the grant (attach the skill + retire the warm session). On
@@ -1025,8 +1038,9 @@ export function createChatRouteHandlers(deps: ChatRouteDeps) {
       }
 
       // 3) Agent ACL gate (same posture as postMessage / postPermissionDecision):
-      // forbidden → 403, not-found → 404. This is the ownership check — a user
-      // can only ever approve caps onto an agent they can reach.
+      // forbidden → 403, not-found → 404, anything else → logged 500. This is
+      // the ownership check — a user can only ever approve caps onto an agent
+      // they can reach.
       try {
         await bus.call<AgentsResolveInput, AgentsResolveOutput>(
           'agents:resolve',
@@ -1034,15 +1048,20 @@ export function createChatRouteHandlers(deps: ChatRouteDeps) {
           { agentId: body.agentId, userId },
         );
       } catch (err) {
-        if (err instanceof PluginError) {
-          if (err.code === 'forbidden') {
-            res.status(403).json({ error: 'forbidden' });
-            return;
-          }
+        if (err instanceof PluginError && err.code === 'forbidden') {
+          res.status(403).json({ error: 'forbidden' });
+          return;
+        }
+        if (err instanceof PluginError && err.code === 'not-found') {
           res.status(404).json({ error: 'agent-not-found' });
           return;
         }
-        throw err;
+        initCtx.logger.error('chat_approve_authored_skill_agent_resolve_failed', {
+          hook: 'agents:resolve',
+          err,
+        });
+        res.status(500).json({ error: 'internal' });
+        return;
       }
 
       // 4) The authored grant must be wired (it's the only path here — there is

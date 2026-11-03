@@ -194,7 +194,12 @@ export async function authOr401(
   }
 }
 
-/** Resolve the agent for ACL. Any PluginError → 404 (do not leak existence). */
+/**
+ * Resolve the agent for ACL. `not-found` / `forbidden` → 404 (do not leak
+ * existence). Anything else is a host fault (a store crash arrives as
+ * PluginError 'unknown'): logged, generic 500. Either way the response is
+ * written and `null` returned.
+ */
 async function resolveAgentOr404(
   bus: HookBus,
   ctx: AgentContext,
@@ -210,11 +215,13 @@ async function resolveAgentOr404(
     );
     return r.agent;
   } catch (err) {
-    if (err instanceof PluginError) {
+    if (err instanceof PluginError && (err.code === 'not-found' || err.code === 'forbidden')) {
       res.status(404).json({ error: 'agent-not-found' });
       return null;
     }
-    throw err;
+    ctx.logger.error('connections_agent_resolve_failed', { hook: 'agents:resolve', err });
+    res.status(500).json({ error: 'internal' });
+    return null;
   }
 }
 

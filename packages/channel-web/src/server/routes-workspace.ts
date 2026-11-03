@@ -2268,7 +2268,12 @@ function connectorWriteRefused(res: RouteResponse, err: unknown): boolean {
   return false;
 }
 
-/** Resolve the agent for ACL. Any PluginError → 404 (do not leak existence). */
+/**
+ * Resolve the agent for ACL. `not-found` / `forbidden` → 404 (do not leak
+ * existence). Any other failure is a host fault: logged (with the error) and
+ * answered 503 `agent-unavailable`. Either way the response is written and
+ * `null` returned.
+ */
 async function resolveAgentOr404(
   bus: HookBus,
   ctx: AgentContext,
@@ -2290,7 +2295,7 @@ async function resolveAgentOr404(
       res.status(404).json({ error: 'agent-not-found' });
       return null;
     }
-    ctx.logger.warn('workspace_agent_resolution_failed', { agentId });
+    ctx.logger.warn('workspace_agent_resolution_failed', { agentId, err });
     res.status(503).json({ error: 'agent-unavailable' });
     return null;
   }

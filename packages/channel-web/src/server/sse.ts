@@ -183,30 +183,43 @@ export function createSseHandler(deps: SseHandlerDeps) {
       conversationId = conv.conversationId;
       agentId = conv.agentId;
     } catch (err) {
-      // not-found OR forbidden OR anything else from the lookup → 404.
-      // We deliberately collapse to the same code so callers can't tell
-      // "your reqId doesn't exist" from "you don't own it" (J9).
-      if (err instanceof PluginError) {
+      // not-found OR forbidden from the lookup → 404. We deliberately
+      // collapse those two to the same code so callers can't tell "your
+      // reqId doesn't exist" from "you don't own it" (J9). Anything else
+      // (a store crash arrives as PluginError 'unknown') is a host fault,
+      // not a missing row: logged, generic 500.
+      if (err instanceof PluginError && (err.code === 'not-found' || err.code === 'forbidden')) {
         res.status(404).json({ error: 'not-found' });
         return;
       }
-      throw err;
+      deps.initCtx.logger.error('chat_sse_conversation_lookup_failed', {
+        hook: 'conversations:get-by-req-id',
+        err,
+      });
+      res.status(500).json({ error: 'internal' });
+      return;
     }
 
     // 3) ACL the conversation's agent against the calling user. Same
     // 404-not-403 posture: an agent the user can no longer reach
-    // shouldn't even confirm the conversation is theirs.
+    // shouldn't even confirm the conversation is theirs. A host fault
+    // (anything but not-found / forbidden) is a logged 500, not a 404.
     try {
       await deps.bus.call<
         { agentId: string; userId: string },
         unknown
       >('agents:resolve', deps.initCtx, { agentId, userId });
     } catch (err) {
-      if (err instanceof PluginError) {
+      if (err instanceof PluginError && (err.code === 'not-found' || err.code === 'forbidden')) {
         res.status(404).json({ error: 'not-found' });
         return;
       }
-      throw err;
+      deps.initCtx.logger.error('chat_sse_agent_resolve_failed', {
+        hook: 'agents:resolve',
+        err,
+      });
+      res.status(500).json({ error: 'internal' });
+      return;
     }
 
     // 3a) Read this person's durable "Not now" markers (TASK-444). The

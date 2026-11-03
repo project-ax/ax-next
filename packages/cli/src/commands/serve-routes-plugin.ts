@@ -230,17 +230,26 @@ async function handleChat(
     sessionIdRaw !== undefined ? (sessionIdRaw as string) : `serve-${randomUUID()}`;
   const workspaceRoot = '/'; // synthetic — not used for workspace ops in http backend
 
+  const createCtx = makeServeCtx(finalSessionId, workspaceRoot);
   try {
-    await bus.call('session:create', makeServeCtx(finalSessionId, workspaceRoot), {
+    await bus.call('session:create', createCtx, {
       sessionId: finalSessionId,
       workspaceRoot,
     });
   } catch (e) {
-    if (e instanceof PluginError) {
+    // Only the session stores' caller-fault codes carry host-authored
+    // validation text. Anything else (HookBus wraps a raw DB error as
+    // PluginError 'unknown' with the original text) is logged, not echoed.
+    if (
+      e instanceof PluginError &&
+      (e.code === 'invalid-payload' || e.code === 'duplicate-session')
+    ) {
       res.status(400).json({ error: { code: e.code, message: e.message } });
       return;
     }
-    throw e;
+    createCtx.logger.error('serve_session_create_failed', { err: e });
+    res.status(500).json({ error: { code: 'INTERNAL', message: 'internal error' } });
+    return;
   }
 
   const ctx = makeServeCtx(finalSessionId, workspaceRoot);
@@ -249,14 +258,11 @@ async function handleChat(
   try {
     outcome = await bus.call('agent:invoke', ctx, { message: chatMessage });
   } catch (e) {
-    if (e instanceof PluginError) {
-      res.status(500).json({ error: { code: e.code, message: e.message } });
-      return;
-    }
+    ctx.logger.error('serve_agent_invoke_failed', { err: e });
     res.status(500).json({
       error: {
-        code: 'INTERNAL',
-        message: e instanceof Error ? e.message : String(e),
+        code: e instanceof PluginError ? e.code : 'INTERNAL',
+        message: 'internal error',
       },
     });
     return;
