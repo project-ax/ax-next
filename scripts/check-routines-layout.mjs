@@ -259,7 +259,6 @@ try {
         .getByRole('switch', { name: 'Active hours', exact: true })
         .isDisabled(),
     );
-    await dialog.getByRole('switch', { name: 'Verify HMAC signature' }).click();
     const submit = dialog.getByRole('button', {
       name: 'Create routine',
       exact: true,
