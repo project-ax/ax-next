@@ -7,6 +7,7 @@ import {
   ownerlessIdFor,
   OWNERLESS_ID_PREFIX,
 } from '../context.js';
+import { PluginError } from '../errors.js';
 
 describe('makeReqId', () => {
   it('generates a unique, readable id', () => {
@@ -95,6 +96,88 @@ describe('createLogger', () => {
       const cause = (JSON.parse(out[0]!).err as { cause: Record<string, unknown> }).cause;
       expect('message' in cause).toBe(false);
       expect('stack' in cause).toBe(false);
+    });
+
+    it('never writes a multi-line cause message, even lines that look like frames', () => {
+      // An OAuth error_description is free text; nothing stops it carrying a
+      // newline followed by "  at …", which a per-line frame filter keeps.
+      const secret = 'invalid_grant: revoked\n  at token rt_SECRET_ABC for alice@example.com';
+      const wrapped = new Error('a session credential could not be resolved', {
+        cause: new Error(secret),
+      });
+      const out: string[] = [];
+      createLogger({ reqId: 'r', writer: (line) => out.push(line) }).error('boom', { err: wrapped });
+      expect(out[0]).not.toContain('rt_SECRET_ABC');
+      const cause = (JSON.parse(out[0]!).err as { cause: Record<string, unknown> }).cause;
+      expect(cause.frames).toMatch(/^\s+at .*context\.test\.ts/);
+    });
+
+    it('writes no frames when the cause stack was rewritten without its message', () => {
+      const inner = new Error('secret text rt_X');
+      inner.stack = 'Error: something else entirely\n  at rt_X_looking_frame (x.js:1:1)';
+      const s = logErr(new Error('outer', { cause: inner }));
+      expect(JSON.stringify(s)).not.toContain('rt_X');
+      expect('frames' in (s.cause as Record<string, unknown>)).toBe(false);
+    });
+
+    it('never throws over a cause with a non-string stack or name', () => {
+      for (const bad of [null, 42, { secret: 'x' }]) {
+        const inner = new Error('inner');
+        (inner as { stack?: unknown }).stack = bad;
+        (inner as { name?: unknown }).name = bad;
+        const out: string[] = [];
+        const logger = createLogger({ reqId: 'r', writer: (line) => out.push(line) });
+        expect(() => logger.error('boom', { err: new Error('outer', { cause: inner }) })).not.toThrow();
+        const cause = (JSON.parse(out[0]!).err as { cause: Record<string, unknown> }).cause;
+        expect('name' in cause).toBe(false);
+        expect('frames' in cause).toBe(false);
+        expect(out[0]).not.toContain('secret');
+      }
+    });
+
+    it('drops the cause rather than throw when reading it throws', () => {
+      const inner = new Error('inner');
+      Object.defineProperty(inner, 'stack', {
+        get() {
+          throw new Error('getter boom');
+        },
+      });
+      const out: string[] = [];
+      const logger = createLogger({ reqId: 'r', writer: (line) => out.push(line) });
+      expect(() => logger.error('boom', { err: new Error('outer', { cause: inner }) })).not.toThrow();
+      expect('cause' in (JSON.parse(out[0]!).err as Record<string, unknown>)).toBe(false);
+    });
+
+    it("names a PluginError cause's plugin and hook, so a fixed-text wrap still says which hook failed", () => {
+      const busWrap = new PluginError({
+        code: 'unknown',
+        plugin: '@ax/credentials',
+        hookName: 'credentials:get',
+        message: "service hook 'credentials:get' threw: invalid_grant rt_SECRET",
+      });
+      const s = logErr(
+        new PluginError({
+          code: 'credential-resolve-failed',
+          plugin: '@ax/credential-proxy',
+          message: 'a session credential could not be resolved',
+          cause: busWrap,
+        }),
+      );
+      expect(s.cause).toMatchObject({
+        name: 'PluginError',
+        code: 'unknown',
+        plugin: '@ax/credentials',
+        hookName: 'credentials:get',
+      });
+      expect(JSON.stringify(s)).not.toContain('rt_SECRET');
+    });
+
+    it('caps the identifier fields a cause contributes', () => {
+      const inner = Object.assign(new Error('inner'), { code: 'C'.repeat(500) });
+      inner.name = 'N'.repeat(500);
+      const c = logErr(new Error('outer', { cause: inner })).cause as Record<string, string>;
+      expect(c.name!.length).toBe(100);
+      expect(c.code!.length).toBe(100);
     });
 
     it('stops at one level of cause', () => {

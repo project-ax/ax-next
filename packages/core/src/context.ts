@@ -1,4 +1,6 @@
 import { randomBytes } from 'node:crypto';
+import { clampCodeUnits } from './clamp.js';
+import { PluginError } from './errors.js';
 
 export function makeReqId(): string {
   return `req-${randomBytes(6).toString('hex')}`;
@@ -77,14 +79,21 @@ function stripReserved(bindings: Record<string, unknown> | undefined): Record<st
  * a logged 5xx names only the hook bus. One level, not the chain: that is the
  * wrap the bus adds, and a fixed depth can't loop on a cyclic cause.
  *
- * The cause is written WITHOUT its message: `{ name, code?, frames? }`, where
- * `frames` is its stack's `at …` lines only (the header, which repeats the
- * message, is dropped). Some wrappers put fixed text on the outside precisely
- * because the inner message is not loggable: credential-proxy's
+ * The cause is written WITHOUT its message: `{ name, code?, plugin?,
+ * hookName?, frames? }`. `frames` is its stack's `at …` lines, taken from
+ * AFTER the message (a multi-line message can hold lines that look like
+ * frames); when the message can't be found in the stack, no frames are
+ * written. `plugin` / `hookName` are a PluginError cause's own identifiers, so
+ * a fixed-text wrapper around a `bus.call` still says which hook failed. Each
+ * string field is capped. Some wrappers put fixed text on the outside
+ * precisely because the inner message is not loggable: credential-proxy's
  * `credential-resolve-failed` carries a resolver error whose message can hold
  * an OAuth server's `error_description`. The bus's own wrap already copies the
  * inner message into its own ("service hook 'x' threw: …"), so dropping it
  * here loses nothing there. A non-Error cause is dropped: it could be anything.
+ *
+ * The logger must never throw over a malformed error (a non-string `stack`, a
+ * throwing getter): any failure while reading the cause drops the cause.
  */
 function serializeError(err: Error): Record<string, unknown> {
   const out: Record<string, unknown> = {
@@ -94,16 +103,41 @@ function serializeError(err: Error): Record<string, unknown> {
   const code = loggableCode(err);
   if (code !== undefined) out.code = code;
   if (err.stack !== undefined) out.stack = err.stack;
-  if ('cause' in err && err.cause instanceof Error) {
-    const cause = err.cause;
-    const c: Record<string, unknown> = { name: cause.name };
-    const causeCode = loggableCode(cause);
-    if (causeCode !== undefined) c.code = causeCode;
-    const frames = stackFrames(cause.stack);
-    if (frames !== undefined) c.frames = frames;
-    out.cause = c;
-  }
+  const cause = serializeCause(err);
+  if (cause !== undefined) out.cause = cause;
   return out;
+}
+
+/** Cap on each identifier-like string a cause contributes to a log line. */
+const CAUSE_FIELD_MAX = 100;
+
+function serializeCause(err: Error): Record<string, unknown> | undefined {
+  try {
+    if (!('cause' in err) || !(err.cause instanceof Error)) return undefined;
+    const cause = err.cause;
+    const c: Record<string, unknown> = {};
+    const name = cappedString(cause.name);
+    if (name !== undefined) c.name = name;
+    const code = loggableCode(cause);
+    if (code !== undefined) {
+      c.code = typeof code === 'string' ? clampCodeUnits(code, CAUSE_FIELD_MAX) : code;
+    }
+    if (cause instanceof PluginError) {
+      const plugin = cappedString(cause.plugin);
+      if (plugin !== undefined) c.plugin = plugin;
+      const hookName = cappedString(cause.hookName);
+      if (hookName !== undefined) c.hookName = hookName;
+    }
+    const frames = stackFrames(cause.stack, cause.message);
+    if (frames !== undefined) c.frames = frames;
+    return c;
+  } catch {
+    return undefined;
+  }
+}
+
+function cappedString(v: unknown): string | undefined {
+  return typeof v === 'string' ? clampCodeUnits(v, CAUSE_FIELD_MAX) : undefined;
 }
 
 function loggableCode(err: Error): string | number | undefined {
@@ -111,10 +145,24 @@ function loggableCode(err: Error): string | number | undefined {
   return typeof code === 'string' || typeof code === 'number' ? code : undefined;
 }
 
-/** A stack's `at …` lines only — never its header, which carries the message. */
-function stackFrames(stack: string | undefined): string | undefined {
-  if (stack === undefined) return undefined;
-  const frames = stack.split('\n').filter((line) => /^\s+at /.test(line));
+/**
+ * A stack's `at …` lines, never its header (`Name: message`, where the
+ * message may span lines). Reads only what follows the message's text; if the
+ * message isn't in the stack (a rewritten stack), returns nothing rather than
+ * guess where the header ends.
+ */
+function stackFrames(stack: unknown, message: unknown): string | undefined {
+  if (typeof stack !== 'string') return undefined;
+  let body: string;
+  if (typeof message === 'string' && message.length > 0) {
+    const at = stack.indexOf(message);
+    if (at === -1) return undefined;
+    body = stack.slice(at + message.length);
+  } else {
+    const nl = stack.indexOf('\n');
+    body = nl === -1 ? '' : stack.slice(nl + 1);
+  }
+  const frames = body.split('\n').filter((line) => /^\s+at /.test(line));
   return frames.length > 0 ? frames.join('\n') : undefined;
 }
 
