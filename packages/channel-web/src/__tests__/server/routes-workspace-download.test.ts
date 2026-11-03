@@ -60,7 +60,9 @@ import {
 import {
   USER_FILE_DOWNLOAD_CHUNK_BYTES,
   USER_FILE_DOWNLOAD_MAX_BYTES,
+  sendTornRefusal,
   sendUserFileDownload,
+  type StreamingDownloadResponse,
 } from '../../server/user-file-download.js';
 import type { RouteRequest } from '../../server/routes-chat.js';
 
@@ -1732,8 +1734,9 @@ describe('the download route over a real socket', () => {
    *
    * `status` is what matters most. A connection cut before the head is a
    * reset, and a proxy in front of us answers a reset with an error page of
-   * its own, which Safari would save as the file. A body cut short of its
-   * Content-Length is a failed download to every browser, through a proxy too.
+   * its own (reasoned, not measured), which Safari would save as the file. A
+   * body cut short of its Content-Length was a failed download in every
+   * engine walked (macOS Safari, Chromium, Firefox).
    */
   function expectTornOverTheWire(got: RawResponse, status: number, error: string): void {
     const whole = JSON.stringify({ error });
@@ -1868,6 +1871,7 @@ describe('the download route over a real socket', () => {
     tamper = (_n, input, honest) =>
       input.length === 0 && honest.kind === 'file' ? { ...honest, version: v('v2') } : honest;
     const b = await boot();
+    const warn = vi.spyOn(initCtx.logger, 'warn');
     const sent: Array<{ status: number; incomplete: boolean }> = [];
     b.harness.bus.subscribe('http:response-sent', 'response-sent-observer', async (_ctx, payload) => {
       const { status, incomplete } = payload as { status: number; incomplete: boolean };
@@ -1893,6 +1897,9 @@ describe('the download route over a real socket', () => {
       { status: 409, incomplete: true },
       { status: 409, incomplete: false },
     ]);
+    // The cut was our own, so nothing says the refusal went out wrong.
+    expect(warn.mock.calls.map((c) => c[0])).not.toContain('workspace_user_file_download_refusal_not_torn');
+    warn.mockRestore();
   });
 
   it('503s a read that throws over the wire, never a 500: torn to the real GET, whole to a probe', async () => {
@@ -1991,5 +1998,65 @@ describe('the download route over a real socket', () => {
     expect(r.headers.get('content-type')).toContain('application/json');
     // The preview never reads a range.
     expect(probe.calls).toEqual([]);
+  });
+});
+
+describe('sendTornRefusal (TASK-1025)', () => {
+  /** A response whose `bodyStream` drains the source, failing as `@ax/http-server`'s does. */
+  function fakeRes(fail?: (cause: unknown) => unknown) {
+    const seen: {
+      status: number | undefined;
+      headers: Record<string, string>;
+      bytes: number[];
+      contentLength: number | undefined;
+    } = { status: undefined, headers: {}, bytes: [], contentLength: undefined };
+    const res: Pick<StreamingDownloadResponse, 'status' | 'header' | 'bodyStream'> = {
+      status(n) {
+        seen.status = n;
+        return res as StreamingDownloadResponse;
+      },
+      header(k, v) {
+        seen.headers[k] = v;
+        return res as StreamingDownloadResponse;
+      },
+      async bodyStream(source, opts) {
+        seen.contentLength = opts?.contentLength;
+        try {
+          for await (const chunk of source) seen.bytes.push(...chunk);
+        } catch (cause) {
+          throw fail !== undefined
+            ? fail(cause)
+            : Object.assign(new Error('the body source failed', { cause }), { code: 'source-failed' });
+        }
+      },
+    };
+    return { seen, res };
+  }
+
+  it('answers null for its own planned cut: the status, the JSON type, and all but the last byte', async () => {
+    const { res, seen } = fakeRes();
+    await expect(sendTornRefusal(res, 409, { error: 'file-changed' })).resolves.toBeNull();
+    const whole = JSON.stringify({ error: 'file-changed' });
+    expect(seen.status).toBe(409);
+    expect(seen.headers).toEqual({ 'content-type': 'application/json; charset=utf-8' });
+    expect(seen.contentLength).toBe(Buffer.byteLength(whole));
+    expect(Buffer.from(seen.bytes).toString('utf-8')).toBe(whole.slice(0, -1));
+  });
+
+  it('answers the codes when the cut was not its own (the client left first), and never rejects', async () => {
+    const { res } = fakeRes(() => Object.assign(new Error('gone'), { code: 'client-gone' }));
+    await expect(sendTornRefusal(res, 404, { error: 'file-not-found' })).resolves.toEqual({ code: 'client-gone' });
+  });
+
+  it('does not take any source failure for its own: a foreign cause is reported, by code', async () => {
+    const { res } = fakeRes(() =>
+      Object.assign(new Error('the body source failed', { cause: Object.assign(new Error('x'), { code: 'EPIPE' }) }), {
+        code: 'source-failed',
+      }),
+    );
+    await expect(sendTornRefusal(res, 404, { error: 'file-not-found' })).resolves.toEqual({
+      code: 'source-failed',
+      causeCode: 'EPIPE',
+    });
   });
 });

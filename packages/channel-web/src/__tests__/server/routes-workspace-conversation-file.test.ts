@@ -953,6 +953,12 @@ describe('the chat file chip download route over a real socket', () => {
 
   it('404s a teammate’s conversation over the wire, without reading', async () => {
     const port = await boot();
+    const sent: Array<{ status: number; incomplete: boolean }> = [];
+    harness!.bus.subscribe('http:response-sent', 'response-sent-observer', async (_ctx, payload) => {
+      const { status, incomplete } = payload as { status: number; incomplete: boolean };
+      sent.push({ status, incomplete });
+      return undefined;
+    });
     const at = url(port, 'c-theirs', encodeURIComponent(KEY));
     // The real download: the 404 head, then a body cut short (TASK-1025), so
     // no browser can save the refusal as the file.
@@ -965,6 +971,13 @@ describe('the chat file chip download route over a real socket', () => {
     expect(asked.status).toBe(404);
     expect(await asked.json()).toEqual({ error: 'file-not-found' });
     expect(probe.ranges).toEqual([]);
+    // The handler waits for the cut before it returns, so the server's own
+    // record says the real GET's 404 was cut short, and the probe's was not.
+    await vi.waitFor(() => expect(sent).toHaveLength(2));
+    expect(sent).toEqual([
+      { status: 404, incomplete: true },
+      { status: 404, incomplete: false },
+    ]);
   });
 
   it('400s an encoded traversal over the wire, without reading', async () => {

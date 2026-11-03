@@ -45,8 +45,9 @@ export function GeneratedFileChip({ file, conversationId, recheckKey }: {
   const [error, setError] = useState<string | null>(null);
   const [gone, setGone] = useState(false);
   const [started, setStarted] = useState(false);
-  // Held from the click until the started window closes, so a same-frame
-  // second click is refused too; a refusal releases it at once.
+  // Held from the click until the started window closes; a refusal releases
+  // it at once. Belt and braces: the disabled button already swallows clicks
+  // in the window, since `started` and `!busy` land in the same render.
   const inFlight = useRef(false);
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const mounted = useRef(false);

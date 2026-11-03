@@ -463,35 +463,46 @@ export async function sendUserFileStatus(args: SendUserFileStatusArgs): Promise<
  * so its refusal reaches that download, never our page. Chromium and Firefox
  * fail a download that is not a 2xx, but Safari saves a WHOLE refusal as the
  * file (`<name>.pdf.json`). A body cut short of its Content-Length is a
- * failed download to every browser, and a proxy in front of us passes it on
- * as one. A connection cut before the head is no substitute: a proxy answers
- * that with an error page of its own, and Safari would save that page. The
- * page has already said the refusal in words, from the probe.
+ * failed download in every engine walked (macOS Safari 26.5, Chromium 147,
+ * Firefox 148; iOS Safari was not), and a streaming proxy should pass it on
+ * as one (reasoned from GCLB's documentation, not measured). A connection cut
+ * before the head is no substitute: a proxy answers that with an error page
+ * of its own (also reasoned), and Safari would save that page. The page has
+ * already said the refusal in words, from the probe.
  *
  * HOW. Through `bodyStream()`'s documented failure path: a source that fails
  * after its first chunk leaves the head and that chunk on the wire, and the
  * connection is torn down. `body` is a refusal's `{ error }`, so its JSON is
  * never under 12 bytes and that first chunk is never empty.
  *
- * `bodyStream()` always rejects here, by design, and the rejection is
- * swallowed: it carries nothing left to do. Resolves once the connection is
- * cut.
+ * `bodyStream()` always rejects here, by design. Resolves once the connection
+ * is cut: with `null` when it was cut the way it is meant to be (our own
+ * source's failure), and otherwise with the failure's codes (a client that
+ * left first, a write error), so the caller can say the refusal did not go
+ * out as planned. Never rejects.
  */
 export async function sendTornRefusal(
   res: Pick<StreamingDownloadResponse, 'status' | 'header' | 'bodyStream'>,
   status: number,
   body: unknown,
-): Promise<void> {
+): Promise<{ code?: string; causeCode?: string } | null> {
   const bytes = new TextEncoder().encode(JSON.stringify(body));
   res.status(status);
   res.header('content-type', 'application/json; charset=utf-8');
   try {
     await res.bodyStream(allButTheLastByte(bytes), { contentLength: bytes.byteLength });
-  } catch {
-    // Every time: the source fails on purpose, and a body cut short of its
-    // Content-Length is exactly what this sends.
+  } catch (err) {
+    // The planned cut: our source failed on purpose, after the head and all
+    // but the last byte.
+    if (codeOf(err) === 'source-failed' && causeOf(err) instanceof TornRefusal) return null;
+    return errorCodes(err);
   }
+  // Unreachable while the source always fails; said rather than assumed.
+  return { code: 'not-torn' };
 }
+
+/** The failure a torn refusal's source ends with: the planned cut. */
+class TornRefusal extends Error {}
 
 /** A torn refusal's body: all of `bytes` but the last one, then a failure. */
 async function* allButTheLastByte(bytes: Uint8Array): AsyncGenerator<Uint8Array> {
@@ -501,7 +512,7 @@ async function* allButTheLastByte(bytes: Uint8Array): AsyncGenerator<Uint8Array>
   // front of us answers with an error page of its own (and Safari saves THAT).
   // One turn of the event loop lets the head and these bytes go first.
   await new Promise<void>((resolve) => setImmediate(resolve));
-  throw new Error('download refused');
+  throw new TornRefusal('download refused');
 }
 
 /**

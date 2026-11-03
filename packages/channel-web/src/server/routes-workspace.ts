@@ -2929,7 +2929,8 @@ export interface DownloadRouteResponse extends RouteResponse, StreamingDownloadR
  *   - `status` and `header` pass through; `status` also notes the code.
  *   - `json` is a refusal. `onRefused` hears its status and its `error` code
  *     (`'unknown'` when that is not a string), and it goes out torn, on the
- *     RAW response.
+ *     RAW response. If the cut was not our own (the client left first, a
+ *     write failed), `onTornFailed` hears it too, by codes only.
  *   - `bodyStream` passes through: that is the file.
  *   - `text` and `end` throw: a real download answers with the file or a
  *     refusal, and nothing else.
@@ -2942,6 +2943,7 @@ export interface DownloadRouteResponse extends RouteResponse, StreamingDownloadR
 function realDownloadResponse(
   res: DownloadRouteResponse,
   onRefused: (status: number, reason: string) => void,
+  onTornFailed: (status: number, reason: string, codes: { code?: string; causeCode?: string }) => void,
 ): { res: DownloadRouteResponse; settled(): Promise<void> } {
   let status = 200;
   let finished = false;
@@ -2964,8 +2966,11 @@ function realDownloadResponse(
       finish();
       const error: unknown =
         typeof body === 'object' && body !== null ? (body as { error?: unknown }).error : undefined;
-      onRefused(status, typeof error === 'string' ? error : 'unknown');
-      torn = sendTornRefusal(res, status, body);
+      const reason = typeof error === 'string' ? error : 'unknown';
+      onRefused(status, reason);
+      torn = sendTornRefusal(res, status, body).then((odd) => {
+        if (odd !== null) onTornFailed(status, reason, odd);
+      });
     },
     async bodyStream(source, opts) {
       finish();
@@ -8046,8 +8051,16 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
       if (probe) raw.header('cache-control', 'private, no-store');
       const real = probe
         ? undefined
-        : realDownloadResponse(raw, (status, reason) =>
-            initCtx.logger.info('workspace_user_file_download_refused', { status, reason }),
+        : realDownloadResponse(
+            raw,
+            (status, reason) =>
+              initCtx.logger.info('workspace_user_file_download_refused', { status, reason }),
+            (status, reason, codes) =>
+              initCtx.logger.warn('workspace_user_file_download_refusal_not_torn', {
+                status,
+                reason,
+                ...codes,
+              }),
           );
       const res = real?.res ?? raw;
       try {
@@ -8126,8 +8139,16 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
       if (probe) raw.header('cache-control', 'private, no-store');
       const real = probe
         ? undefined
-        : realDownloadResponse(raw, (status, reason) =>
-            initCtx.logger.info('workspace_user_file_download_refused', { status, reason }),
+        : realDownloadResponse(
+            raw,
+            (status, reason) =>
+              initCtx.logger.info('workspace_user_file_download_refused', { status, reason }),
+            (status, reason, codes) =>
+              initCtx.logger.warn('workspace_user_file_download_refusal_not_torn', {
+                status,
+                reason,
+                ...codes,
+              }),
           );
       const res = real?.res ?? raw;
       try {

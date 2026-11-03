@@ -34,7 +34,8 @@
  * here. Safari saves a whole refusal as a file (`<name>.json`, measured on
  * Safari 26.5), so the route sends a real download's refusal TORN: its status,
  * then a body cut short (TASK-1025). Chromium fails that download, Firefox
- * starts none, and Safari leaves only an interrupted `.download` partial.
+ * starts none, and macOS Safari leaves only an interrupted `.download`
+ * partial (iOS Safari was not walked).
  *
  * THE FILENAME COMES FROM THE SERVER, not from the row that was clicked. The
  * route sanitizes it for `Content-Disposition` (a filename is agent-authored,
