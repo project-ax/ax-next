@@ -21,7 +21,7 @@ const TRANSIENT_SECRET_READ_CODES: ReadonlySet<string> = new Set(['timeout', 'un
  * All a log line may say about a failure: a plugin error's code, or a database error's SQLSTATE.
  * Never the error itself. Its message can quote the request, and the logger prints an Error field whole.
  */
-function faultCode(error: unknown): string | undefined {
+export function faultCode(error: unknown): string | undefined {
   return error instanceof PluginError ? error.code : (sqlState(error) ?? undefined);
 }
 
@@ -184,7 +184,10 @@ export function createWebhookRouter(deps: WebhookRouterDeps): HttpRouteHandler {
     // receiver must never start task check-ins; batching and work hours belong
     // to the existing scheduler. Repeat retains its per-delivery drain.
     if (admitted==='accepted' && row.kind === 'repeat') {
-      try { await deps.pump(); } catch { ctx.logger.warn('repeat_queue_drain_failed',{agentId:row.agentId,routineId:row.routineId}); }
+      try { await deps.pump(); } catch (error) {
+        const code = faultCode(error);
+        ctx.logger.warn('repeat_queue_drain_failed',{agentId:row.agentId,routineId:row.routineId,...(code === undefined ? {} : { code })});
+      }
     }
     res.status(202).end();
   };

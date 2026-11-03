@@ -175,10 +175,12 @@ export function TaskForm({
   // Shown after the first press, then kept current as the person fixes them.
   const shown = useMemo(() => {
     const visible = new Map(attempted ? issues : []);
-    // The host named a field it refused; say so there, in our words.
+    // The host named a field it refused; say so there, in our words. Only a validation refusal
+    // gets the field's own hint; any other code (an address another task holds, an old signing
+    // secret still being removed) says why the host refused, which the hint would not.
     if (refusedField !== null && refusedField !== 'form' && !visible.has(refusedField)) {
-      visible.set(refusedField, errorCode === 'webhook-path-conflict' && refusedField === 'address'
-        ? taskSaveError(errorCode, true) : plainIssue(refusedField, {}, agentName));
+      visible.set(refusedField, errorCode === null || errorCode === 'validation'
+        ? plainIssue(refusedField, {}, agentName) : taskSaveError(errorCode, true));
     }
     return visible;
   }, [attempted, issues, refusedField, errorCode, agentName]);
@@ -429,6 +431,8 @@ export function TaskForm({
               <FieldLabel htmlFor={`${id}-updates`}>When another app sends an update</FieldLabel>
               <Switch id={`${id}-updates`} checked={updatesOn} disabled={disabled} onCheckedChange={toggleWebhook} />
             </Field>
+            {/* A saved repeat task queues each update; saving it without them cancels the ones still waiting. */}
+            {!task && hasAddress && <FieldDescription>Turning this off cancels any updates still waiting to run.</FieldDescription>}
             {form.webhook !== null && task && (
               <Field>
                 <FieldLabel htmlFor={`${id}-respond`}>React within</FieldLabel>
