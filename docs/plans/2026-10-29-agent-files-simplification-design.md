@@ -142,13 +142,14 @@ Decisions and reasons:
   one) as the file (measured). A reset before any head would, behind GCLB,
   become the load balancer's own 502 page, which Safari would save instead
   (reasoned from GCLB's documentation, not measured). A torn body is a failed
-  download in macOS Safari 26.5 (it leaves only a `.download` partial),
-  Chromium 147 and Firefox 148, walked direct and through `kubectl
-  port-forward`; iOS Safari and the GCLB hop were not walked. The probe's
+  download in macOS Safari 26.5 (it leaves only a `.download` partial; walked
+  direct and through `kubectl port-forward`) and in Playwright Chromium 147
+  and Firefox 148 (direct); iOS Safari and the GCLB hop were not walked. The probe's
   answers are unchanged, so the page still says every refusal in words. Each
   torn refusal logs one info line, `workspace_user_file_download_refused
-  {status, reason}`, and a cut that was not our own also logs a warn,
-  `workspace_user_file_download_refusal_not_torn`, by codes. After the
+  {status, reason}`, and a cut that was not our own also logs
+  `workspace_user_file_download_refusal_not_torn` by codes (info for a client
+  that left first, warn otherwise). After the
   hand-over, the Files tab and chat chips say "Download started. Check your
   browser’s downloads." and ignore clicks for 4 s.
 

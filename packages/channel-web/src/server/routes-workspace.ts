@@ -2927,10 +2927,13 @@ export interface DownloadRouteResponse extends RouteResponse, StreamingDownloadR
  * the raw response and keeps its words.
  *
  *   - `status` and `header` pass through; `status` also notes the code.
- *   - `json` is a refusal. `onRefused` hears its status and its `error` code
- *     (`'unknown'` when that is not a string), and it goes out torn, on the
- *     RAW response. If the cut was not our own (the client left first, a
- *     write failed), `onTornFailed` hears it too, by codes only.
+ *   - `json` is a refusal. It logs one info line,
+ *     `workspace_user_file_download_refused {status, reason}` (`reason` is its
+ *     `error` code, `'unknown'` when that is not a string), and goes out torn,
+ *     on the RAW response. If the cut was not our own, a second line says so,
+ *     by codes only: info for a client that left first (`client-gone` /
+ *     `client-stalled`, ordinary life, as on a download), warn for anything
+ *     else (a write failure, or a refusal that was somehow not torn).
  *   - `bodyStream` passes through: that is the file.
  *   - `text` and `end` throw: a real download answers with the file or a
  *     refusal, and nothing else.
@@ -2940,10 +2943,12 @@ export interface DownloadRouteResponse extends RouteResponse, StreamingDownloadR
  * there was none), so the handler can await it, and `http:response-sent`
  * reports the refusal as `incomplete`.
  */
+/** A real download's refusal whose cut was not our own (TASK-1025). */
+const REFUSAL_NOT_TORN = 'workspace_user_file_download_refusal_not_torn';
+
 function realDownloadResponse(
   res: DownloadRouteResponse,
-  onRefused: (status: number, reason: string) => void,
-  onTornFailed: (status: number, reason: string, codes: { code?: string; causeCode?: string }) => void,
+  logger: Pick<AgentContext['logger'], 'info' | 'warn'>,
 ): { res: DownloadRouteResponse; settled(): Promise<void> } {
   let status = 200;
   let finished = false;
@@ -2967,9 +2972,16 @@ function realDownloadResponse(
       const error: unknown =
         typeof body === 'object' && body !== null ? (body as { error?: unknown }).error : undefined;
       const reason = typeof error === 'string' ? error : 'unknown';
-      onRefused(status, reason);
-      torn = sendTornRefusal(res, status, body).then((odd) => {
-        if (odd !== null) onTornFailed(status, reason, odd);
+      const refused = status;
+      logger.info('workspace_user_file_download_refused', { status: refused, reason });
+      torn = sendTornRefusal(res, refused, body).then((odd) => {
+        if (odd === null) return;
+        const fields = { status: refused, reason, ...odd };
+        if (odd.code === 'client-gone' || odd.code === 'client-stalled') {
+          logger.info(REFUSAL_NOT_TORN, fields);
+        } else {
+          logger.warn(REFUSAL_NOT_TORN, fields);
+        }
       });
     },
     async bodyStream(source, opts) {
@@ -8051,17 +8063,7 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
       if (probe) raw.header('cache-control', 'private, no-store');
       const real = probe
         ? undefined
-        : realDownloadResponse(
-            raw,
-            (status, reason) =>
-              initCtx.logger.info('workspace_user_file_download_refused', { status, reason }),
-            (status, reason, codes) =>
-              initCtx.logger.warn('workspace_user_file_download_refusal_not_torn', {
-                status,
-                reason,
-                ...codes,
-              }),
-          );
+        : realDownloadResponse(raw, initCtx.logger);
       const res = real?.res ?? raw;
       try {
         const userId = await authOr401(bus, initCtx, req, res);
@@ -8139,17 +8141,7 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
       if (probe) raw.header('cache-control', 'private, no-store');
       const real = probe
         ? undefined
-        : realDownloadResponse(
-            raw,
-            (status, reason) =>
-              initCtx.logger.info('workspace_user_file_download_refused', { status, reason }),
-            (status, reason, codes) =>
-              initCtx.logger.warn('workspace_user_file_download_refusal_not_torn', {
-                status,
-                reason,
-                ...codes,
-              }),
-          );
+        : realDownloadResponse(raw, initCtx.logger);
       const res = real?.res ?? raw;
       try {
         const chip = await chipFileOr404(req, res);

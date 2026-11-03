@@ -463,8 +463,9 @@ export async function sendUserFileStatus(args: SendUserFileStatusArgs): Promise<
  * so its refusal reaches that download, never our page. Chromium and Firefox
  * fail a download that is not a 2xx, but Safari saves a WHOLE refusal as the
  * file (`<name>.pdf.json`). A body cut short of its Content-Length is a
- * failed download in every engine walked (macOS Safari 26.5, Chromium 147,
- * Firefox 148; iOS Safari was not), and a streaming proxy should pass it on
+ * failed download in every engine walked (macOS Safari 26.5, direct and
+ * through `kubectl port-forward`; Playwright Chromium 147 and Firefox 148,
+ * direct; iOS Safari was not walked), and a streaming proxy should pass it on
  * as one (reasoned from GCLB's documentation, not measured). A connection cut
  * before the head is no substitute: a proxy answers that with an error page
  * of its own (also reasoned), and Safari would save that page. The page has
@@ -486,10 +487,10 @@ export async function sendTornRefusal(
   status: number,
   body: unknown,
 ): Promise<{ code?: string; causeCode?: string } | null> {
-  const bytes = new TextEncoder().encode(JSON.stringify(body));
-  res.status(status);
-  res.header('content-type', 'application/json; charset=utf-8');
   try {
+    const bytes = new TextEncoder().encode(JSON.stringify(body));
+    res.status(status);
+    res.header('content-type', 'application/json; charset=utf-8');
     await res.bodyStream(allButTheLastByte(bytes), { contentLength: bytes.byteLength });
   } catch (err) {
     // The planned cut: our source failed on purpose, after the head and all

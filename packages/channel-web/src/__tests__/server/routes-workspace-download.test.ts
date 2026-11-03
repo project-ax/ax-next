@@ -732,6 +732,29 @@ describe('the download route', () => {
     expectTorn(d, 404, 'file-not-found');
   });
 
+  it('says so when a refusal’s cut was not its own: warn for a write failure, info for a client that left first (TASK-1025)', async () => {
+    standardBus();
+    const warn = vi.spyOn(initCtx.logger, 'warn').mockImplementation(() => undefined);
+    const info = vi.spyOn(initCtx.logger, 'info').mockImplementation(() => undefined);
+    await download(
+      'gone.md',
+      mkRes({ failWith: Object.assign(new Error('write EPIPE'), { code: 'EPIPE' }) }),
+    );
+    await download('gone.md', mkRes({ clientLeavesAfter: 0 }));
+    // A torn refusal that went as planned says nothing more.
+    await download('gone.md');
+    const notTorn = 'workspace_user_file_download_refusal_not_torn';
+    expect(warn.mock.calls).toEqual([
+      [notTorn, { status: 404, reason: 'file-not-found', code: 'EPIPE' }],
+    ]);
+    expect(info.mock.calls.filter((c) => c[0] === notTorn)).toEqual([
+      [notTorn, { status: 404, reason: 'file-not-found', code: 'client-gone' }],
+    ]);
+    expect(info.mock.calls.filter((c) => c[0] === 'workspace_user_file_download_refused')).toHaveLength(3);
+    warn.mockRestore();
+    info.mockRestore();
+  });
+
   it('503s the download when this deployment keeps no files', async () => {
     /*
       TASK-403. `unavailable` is "there is no file area for this agent here".
@@ -2046,6 +2069,16 @@ describe('sendTornRefusal (TASK-1025)', () => {
   it('answers the codes when the cut was not its own (the client left first), and never rejects', async () => {
     const { res } = fakeRes(() => Object.assign(new Error('gone'), { code: 'client-gone' }));
     await expect(sendTornRefusal(res, 404, { error: 'file-not-found' })).resolves.toEqual({ code: 'client-gone' });
+  });
+
+  it('reports a body that was somehow not cut at all', async () => {
+    const res: Pick<StreamingDownloadResponse, 'status' | 'header' | 'bodyStream'> = {
+      status: () => res as StreamingDownloadResponse,
+      header: () => res as StreamingDownloadResponse,
+      // An adapter that "finished" without draining the failing source.
+      bodyStream: async () => undefined,
+    };
+    await expect(sendTornRefusal(res, 409, { error: 'file-changed' })).resolves.toEqual({ code: 'not-torn' });
   });
 
   it('does not take any source failure for its own: a foreign cause is reported, by code', async () => {
