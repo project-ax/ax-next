@@ -5,7 +5,7 @@ import { verifyWebhookDelivery, type VerifiedSignature } from './webhook-signatu
 import { makeAgentContext, PluginError, type HookBus } from '@ax/core';
 import { type WebhookRefusalReason, validateWebhookPath } from '@ax/routines-contract';
 import { credentialRef } from './definition.js';
-import type { RoutinesStore } from './store.js';
+import { sqlState, type RoutinesStore } from './store.js';
 import type { WebhookAddressProof } from './webhook-address.js';
 
 /**
@@ -16,6 +16,14 @@ import type { WebhookAddressProof } from './webhook-address.js';
  * as `secret` (401) instead, so the owner is told to save it again.
  */
 const TRANSIENT_SECRET_READ_CODES: ReadonlySet<string> = new Set(['timeout', 'unknown', 'no-service']);
+
+/**
+ * All a log line may say about a failure: a plugin error's code, or a database error's SQLSTATE.
+ * Never the error itself. Its message can quote the request, and the logger prints an Error field whole.
+ */
+function faultCode(error: unknown): string | undefined {
+  return error instanceof PluginError ? error.code : (sqlState(error) ?? undefined);
+}
 
 // HTTP is duck-typed here: no runtime dependency on another plugin.
 export interface HttpRequest {
@@ -54,17 +62,27 @@ export function createWebhookRouter(deps: WebhookRouterDeps): HttpRouteHandler {
     const legacy = taskRow ? null : await resolveLegacy();
     const row = taskRow ?? (legacy?.agent ? await deps.store.findWebhook({ agentId: legacy.agent.id, path, legacyOnly: true }) : null);
     if (!row || row.webhook === null) { res.status(404).end(); return; }
+    // Declared before `refuse`, which logs: a too-large body is refused ahead of the secret read.
+    const ctx = makeAgentContext({ sessionId: 'routine-webhook', agentId: row.agentId, userId: row.ownerUserId });
     const generation = await deps.store.webhookGeneration(row);
     if (generation === null) { res.status(404).end(); return; }
     const address: WebhookAddressProof = { kind: taskRow ? 'task' : 'legacy', token, generation };
     const observe = (observation: WebhookRefusalReason | 'verified', signature: VerifiedSignature | null = null) => deps.store.observeWebhook({ row, address, observation, now: deps.now(), signature }, async () => (await resolveLegacy())?.agent.id === row.agentId);
+    // A failure behind a 503 logs the task, what was being recorded and its `faultCode`: never the error, a header, the body or the secret.
+    const logFault = (event: 'routines_webhook_observe_failed' | 'routines_webhook_admission_failed', error: unknown, observation?: WebhookRefusalReason | 'verified') => {
+      const code = faultCode(error);
+      ctx.logger.warn(event, {
+        agentId: row.agentId, routineId: row.routineId,
+        ...(observation === undefined ? {} : { observation }), ...(code === undefined ? {} : { code }),
+      });
+    };
     const refuse = async (status: number, reason: WebhookRefusalReason) => {
-      try { if (!await observe(reason)) { res.status(404).end(); return; } } catch { res.status(503).end(); return; }
+      try { if (!await observe(reason)) { res.status(404).end(); return; } }
+      catch (error) { logFault('routines_webhook_observe_failed', error, reason); res.status(503).end(); return; }
       res.status(status).end();
     };
     if (req.body.byteLength > 1024 * 1024) { await refuse(413, 'too-large'); return; }
     const trigger = row.webhook;
-    const ctx = makeAgentContext({ sessionId: 'routine-webhook', agentId: row.agentId, userId: row.ownerUserId });
     // Step 2: signature. A saved signing secret turns checks on; nothing else does.
     // Settings saved before TASK-1026 (`webhook.hmac`) are parsed and ignored (TASK-1027).
     // The generation was read above, before the secret: saving or removing a
@@ -128,7 +146,8 @@ export function createWebhookRouter(deps: WebhookRouterDeps): HttpRouteHandler {
       if (!('challenge' in payload) || typeof payload.challenge !== 'string' || payload.challenge.length === 0 || payload.challenge.length > 4096) {
         await refuse(400, 'invalid-body'); return;
       }
-      try { if (!await observe('verified', signature)) { res.status(404).end(); return; } } catch { res.status(503).end(); return; }
+      try { if (!await observe('verified', signature)) { res.status(404).end(); return; } }
+      catch (error) { logFault('routines_webhook_observe_failed', error, 'verified'); res.status(503).end(); return; }
       res.status(200).json({ challenge: payload.challenge }); return;
     }
 
@@ -154,6 +173,8 @@ export function createWebhookRouter(deps: WebhookRouterDeps): HttpRouteHandler {
       async () => (await resolveLegacy())?.agent.id === row.agentId);
     } catch (error) {
       const quota = error !== null && typeof error==='object' && 'code' in error && error.code==='rejected';
+      // A quota refusal is the owner's limit doing its job, not a fault: only the 503 logs.
+      if (!quota) logFault('routines_webhook_admission_failed', error);
       await refuse(quota ? 429 : 503, quota ? 'capacity' : 'unavailable'); return;
     }
     if (admitted==='missing') { await refuse(404, row.enabled ? 'unavailable' : 'paused'); return; }

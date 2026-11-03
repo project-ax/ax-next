@@ -914,7 +914,7 @@ function storedReport(value: unknown): { report: DispatchReport | null; unreadab
   return parsed.success ? { report: parsed.data, unreadable: false } : { report: null, unreadable: true };
 }
 /** A refused write's SQLSTATE, or null when its error carries none: the one field of it a scrubbed error keeps. */
-function sqlState(error: unknown): string | null {
+export function sqlState(error: unknown): string | null {
   return typeof error === 'object' && error !== null && 'code' in error && typeof error.code === 'string' && /^[0-9A-Z]{5}$/.test(error.code) ? error.code : null;
 }
 /**
