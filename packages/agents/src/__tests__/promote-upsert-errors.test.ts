@@ -107,11 +107,14 @@ describe('promote: skills:upsert failures (TASK-1024)', () => {
     expect(status).toBe(400);
   });
 
+  // A plain Error never reaches the route as-is: HookBus.call wraps it as
+  // PluginError code 'unknown' with the original message inside. The old
+  // code therefore answered a store crash with a 400 echoing its message.
   it.each([
-    ['a non-manifest PluginError (missing-owner)', new PluginError({ code: 'missing-owner', plugin: '@ax/skills', message: SECRET_DETAIL })],
-    ['a PluginError with a code the parser no longer emits (invalid-host)', new PluginError({ code: 'invalid-host', plugin: '@ax/skills', message: SECRET_DETAIL })],
-    ['a plain Error from the store', new Error(SECRET_DETAIL)],
-  ])('%s → logged 500 that does not echo the message', async (_label, err) => {
+    ['a non-manifest PluginError (missing-owner)', new PluginError({ code: 'missing-owner', plugin: '@ax/skills', message: SECRET_DETAIL }), 'missing-owner'],
+    ['a PluginError with a code the parser no longer emits (invalid-host)', new PluginError({ code: 'invalid-host', plugin: '@ax/skills', message: SECRET_DETAIL }), 'invalid-host'],
+    ['a plain Error from the store', new Error(SECRET_DETAIL), 'unknown'],
+  ])('%s → logged 500 that does not echo the message', async (_label, err, expectedCode) => {
     const stdout = captureStdout();
     const { status, body } = await promoteWith(err);
     const logged = stdout();
@@ -128,7 +131,12 @@ describe('promote: skills:upsert failures (TASK-1024)', () => {
       .find((e) => e.msg === 'agents_admin_promote_failed');
     expect(line).toBeDefined();
     expect(line!.level).toBe('error');
-    expect(line).toMatchObject({ agentId: 'agent-1', skillId: 'foo', targetScope: 'global' });
+    expect(line).toMatchObject({
+      agentId: 'agent-1',
+      skillId: 'foo',
+      targetScope: 'global',
+      pluginErrorCode: expectedCode,
+    });
     expect(JSON.stringify(line!.err)).toContain('10.0.0.7');
   });
 });
