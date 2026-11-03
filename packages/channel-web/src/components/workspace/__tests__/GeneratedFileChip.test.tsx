@@ -228,10 +228,14 @@ describe('GeneratedFileChip', () => {
     });
 
     it('keeps the generic retry copy on a 400 for an attachment-id chip', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      onTestFinished(() => warn.mockRestore());
       vi.stubGlobal('fetch', vi.fn(async () => new Response('{}', { status: 400 })));
       render(<GeneratedFileChip file={file} conversationId="c1" />);
       fireEvent.click(screen.getByRole('button'));
       await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('We could not download this file just now. Try again.'));
+      expect(warn).toHaveBeenCalledWith(
+        '[file chip download] /api/files?conversationId=c1&id=0123456789abcdef0123456789abcdef → 400');
     });
 
     it('says the file is too big on a 413', async () => {
@@ -243,7 +247,9 @@ describe('GeneratedFileChip', () => {
       fireEvent.click(screen.getByRole('button'));
       await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent(
         'This file is too big for us to download. Ask the agent for a smaller copy, or to split it up.'));
-      expect(warn).toHaveBeenCalledWith(expect.stringMatching(/^\[file chip download\] .*413/));
+      // The route the chip asked about (not the probe's `?probe=1`), as the
+      // Files tab logs its own.
+      expect(warn).toHaveBeenCalledWith(`[file chip download] ${DOWNLOAD_URL} → 413`);
     });
 
     it('shows the generic error, not a crash, when the key cannot be put in a URL', async () => {

@@ -119,7 +119,7 @@ export function GeneratedFileChip({ file, conversationId, recheckKey }: {
         // browser's download bar cannot do. On a yes the browser downloads
         // the route itself, so none of the file comes into the tab.
         const probe = await httpFetch(`${url}?probe=1`);
-        if (!probe.ok) throw new HttpError('file download', probe.status);
+        if (!probe.ok) throw new HttpError(url, probe.status);
         // The yes is all we need. Cancel the rest: a host too old to know
         // `?probe` would be sending the whole file into a body nobody reads.
         void probe.body?.cancel().catch(() => undefined);
@@ -127,7 +127,7 @@ export function GeneratedFileChip({ file, conversationId, recheckKey }: {
         handedOver = true;
       } else {
         const response = await httpFetch(url);
-        if (!response.ok) throw new HttpError('file download', response.status);
+        if (!response.ok) throw new HttpError(url, response.status);
         saveBlob(await response.blob(),
           filenameFromContentDisposition(response.headers.get('content-disposition')) ?? FALLBACK_SAVED_FILENAME);
         handedOver = true;
