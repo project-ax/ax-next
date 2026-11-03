@@ -1289,8 +1289,8 @@
 - [ ] **Step 5: Memory shard.**
 
   ```bash
-  path=$(scripts/memory-write-target.sh --shard decisions <TASK-ID>)
-  mkdir -p "$(dirname "$path")"
+  target=$(scripts/memory-write-target.sh --shard decisions <TASK-ID>)
+  mkdir -p "$(dirname "$target")"
   ```
 
   Write rows covering:
