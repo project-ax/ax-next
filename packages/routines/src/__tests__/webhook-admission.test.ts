@@ -57,7 +57,7 @@ describe('authenticated webhook durable admission',()=>{
   });
   describe('the saved secret decides (TASK-1026)',()=>{
     const missing=async():Promise<string>=>{throw new PluginError({plugin:'@ax/credentials',code:'credential-not-found',message:'no credential'});};
-    it('accepts an unsigned update when no secret is saved and no setting asks for one, recording no signature',async()=>{
+    it('accepts an unsigned update when no secret is saved, recording no signature',async()=>{
       const f=fixture('accepted',plain,missing),r=response();await f.handler(unsigned(),r.res);
       expect(r.state.code).toBe(202);
       expect(f.admit).toHaveBeenCalledWith(expect.objectContaining({signature:null}),expect.any(Function),expect.any(Function));

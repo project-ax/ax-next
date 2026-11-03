@@ -75,7 +75,7 @@ Tasks: 5 (2 mechanical, 1 integration, 2 sensitive). Tasks 1, 2 and 3 are indepe
 - "Legacy" in `webhook_legacy_enabled`, `legacyOnly`, `resolveLegacy`, `address.kind === 'legacy'` and `legacyRow()` means the old *shared address*. It is unrelated to the signature setting; don't touch it.
 - Never log or persist header names or values, bodies, secrets or error messages, and never pass an Error to a logger (P6).
 - `@ax/routines-contract` resolves through `dist/` (no source alias in routines or channel-web). After editing anything under `packages/routines-contract/src`, run `pnpm --filter @ax/routines-contract build` before running another package's tests.
-- Filter before script: `pnpm --filter @ax/<pkg> test -- <path>`.
+- Filter before script. To run single files use `pnpm --filter @ax/<pkg> exec vitest run <path>`: under vitest 5, `pnpm --filter X test -- <path>` ignores the path and runs the whole package.
 - Routines, admin-route and credentials-admin-route suites use Testcontainers. Export an explicit `DOCKER_HOST` (CLAUDE.md).
 - UI: invoke the `shadcn` skill before editing. Add no new components; this is copy removal only.
 - Memory rows are appended to `.claude/memory/decisions/2026-11-03-TASK-1027.md` and never edit an existing line (R1).
@@ -190,8 +190,8 @@ Tasks: 5 (2 mechanical, 1 integration, 2 sensitive). Tasks 1, 2 and 3 are indepe
   - `independent-definition.test.ts:23-27`: delete the `hasLegacySignatureSetting` test. The `webhook` fixture at `:6` stays as inert data.
   - `store.test.ts:145-148`: rename the test to `'keeps a stored signature setting when an edit replaces the webhook without it, so nothing hashed or compared changes'`. The comment says P3. The assertions stay.
 - [ ] **Step 2: Run the new and changed tests; expect the right failures.**
-  - `pnpm --filter @ax/routines-contract test -- src/__tests__/webhook-signature.test.ts` gives PASS (a pin).
-  - `pnpm --filter @ax/routines test -- src/__tests__/webhook-admission.test.ts src/__tests__/secret-only-signatures.integration.test.ts src/__tests__/webhook-router.test.ts` gives FAIL on 1b and 1c (still 401). 1d already passes; it guards against a regression.
+  - `pnpm --filter @ax/routines-contract exec vitest run src/__tests__/webhook-signature.test.ts` gives PASS (a pin).
+  - `pnpm --filter @ax/routines exec vitest run src/__tests__/webhook-admission.test.ts src/__tests__/secret-only-signatures.integration.test.ts src/__tests__/webhook-router.test.ts` gives FAIL on 1b and 1c (still 401). 1d already passes; it guards against a regression.
 - [ ] **Step 3: Implement P2.**
   - Signature block: `if (secret !== null) { signature = verifyWebhookDelivery(req.headers, req.body, secret, deps.now()); if (signature === null) { await refuse(401, 'signature'); return; } }`.
   - Rewrite the comment at `:68-69`: "Step 2: signature. A saved signing secret turns checks on; nothing else does. Settings saved before TASK-1026 (`webhook.hmac`) are parsed and ignored (TASK-1027)." Keep the generation sentence.
@@ -229,7 +229,7 @@ Tasks: 5 (2 mechanical, 1 integration, 2 sensitive). Tasks 1, 2 and 3 are indepe
   - `routines-list.test.tsx`: replace `:151-176` with the same `it.each` over `legacyScheduled` and `{ ...legacyScheduled, schedule: null }`:
     - `/Without a secret, updates aren’t checked/` is present
     - `/always check signatures/` and `/To stop checking/` are absent.
-- [ ] **Step 2: Run** `pnpm --filter @ax/channel-web test -- TaskAppUpdates routines-list`. Expected: FAIL (the legacy note still shows).
+- [ ] **Step 2: Run** `pnpm --filter @ax/channel-web exec vitest run TaskAppUpdates routines-list`. Expected: FAIL (the legacy note still shows).
 - [ ] **Step 3: Implement.**
   - Invoke the `shadcn` skill first.
   - Delete the `legacy`, `scheduled` and `noun` props, `howToStop` and the legacy `<p>`.
@@ -279,7 +279,7 @@ Tasks: 5 (2 mechanical, 1 integration, 2 sensitive). Tasks 1, 2 and 3 are indepe
   5. `it('logs nothing for a quota refusal')`.
      - Use `f.admit.mockRejectedValueOnce(Object.assign(new Error('PRIVATE quota detail'), { code: 'rejected' }))`.
      - Expect 429, and no `routines_webhook_admission_failed` line.
-- [ ] **Step 2: Run** `pnpm --filter @ax/routines test -- src/__tests__/webhook-admission.test.ts`. Expected: FAIL (no lines are logged).
+- [ ] **Step 2: Run** `pnpm --filter @ax/routines exec vitest run src/__tests__/webhook-admission.test.ts`. Expected: FAIL (no lines are logged).
 - [ ] **Step 3: Implement P6.**
   - Move `const ctx = makeAgentContext({ sessionId: 'routine-webhook', agentId: row.agentId, userId: row.ownerUserId })` to directly after the `!row || row.webhook === null` 404 (`:56`), and delete it at `:67`.
   - Add a private `faultCode(error: unknown): string | undefined`. It returns `error instanceof PluginError ? error.code : (sqlState(error) ?? undefined)`.
