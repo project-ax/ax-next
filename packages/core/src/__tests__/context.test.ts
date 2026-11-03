@@ -199,6 +199,7 @@ describe('createLogger', () => {
       inner.stack = `Error: email invalid,x\n  at rt_SECRET_ARR\n    at real (file.js:1:1)`;
       const s = logErr(new Error('outer', { cause: inner }));
       expect(JSON.stringify(s)).not.toContain('rt_SECRET_ARR');
+      expect('frames' in (s.cause as Record<string, unknown>)).toBe(false);
     });
 
     it('writes no frames for an empty message unless the header is the bare name', () => {
@@ -209,9 +210,16 @@ describe('createLogger', () => {
         'rt_BLANKED',
       );
 
+      // Under vitest the header reads `Error: ` (vite's module runner formats it).
       const empty = new Error('');
       const c = logErr(new Error('outer', { cause: empty })).cause as Record<string, unknown>;
       expect(c.frames).toMatch(/^\s+at .*context\.test\.ts/);
+
+      // Plain Node/V8 (production) writes the bare name: `Error`.
+      const v8 = new Error('');
+      v8.stack = 'Error\n    at fn (file.js:1:1)';
+      const v = logErr(new Error('outer', { cause: v8 })).cause as Record<string, unknown>;
+      expect(v.frames).toBe('    at fn (file.js:1:1)');
     });
 
     it('stops at one level of cause', () => {
