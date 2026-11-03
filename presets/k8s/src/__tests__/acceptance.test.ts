@@ -2744,6 +2744,22 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
         const port = http.boundPort();
         const base = `http://127.0.0.1:${port}/api/workspace/agents`;
         const asUser = (u: string) => ({ headers: { 'x-test-user': u } });
+        // A REAL download's refusal is torn on purpose (TASK-1025): its status,
+        // then a body cut short, which every engine walked fails rather than
+        // saves as the file. Its words are the probe's (`?probe=1`), whole.
+        const expectRefused = async (
+          url: string,
+          init: RequestInit,
+          status: number,
+          error: string,
+        ): Promise<void> => {
+          const real = await fetch(url, init);
+          expect(real.status).toBe(status);
+          await expect(real.text()).rejects.toThrow();
+          const asked = await fetch(`${url}?probe=1`, init);
+          expect(asked.status).toBe(status);
+          expect(await asked.json()).toEqual({ error });
+        };
 
         // 0. Seed the agent's durable subtree the way the runner would: a file
         // at the root, a nested one under a directory, and a sibling AGENT's
@@ -2869,12 +2885,12 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
 
         // 9. The planted `escape` symlink (step 5) is as dead to the download
         //    route as it is to the browse route: the same 404, nothing leaked.
-        const dlThroughLink = await fetch(
+        await expectRefused(
           `${downloadBase}/${encodeURIComponent('escape/secret.txt')}`,
           asUser(USER),
+          404,
+          'file-not-found',
         );
-        expect(dlThroughLink.status).toBe(404);
-        expect(await dlThroughLink.json()).toEqual({ error: 'file-not-found' });
 
         // 10. A file that vanishes MID-STREAM is never a complete 200. Hold the
         //     client back after the first chunk so backpressure keeps the host
@@ -3021,14 +3037,16 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
 
         // 11c. Someone else's conversation: 404 for the real key and the same
         //      404 for a malformed one (the ACL runs before the path is read),
-        //      and nobody signed in: 401.
+        //      and nobody signed in: 401. The real GET's refusal is torn, so
+        //      it never completes; what its cut body carries is pinned in
+        //      channel-web's `expectTorn` (the `{error}` JSON, never the file).
         for (const key of [CHIP_KEY, '../../secret']) {
-          const foreignChip = await fetch(
+          await expectRefused(
             `${chipBase}/${encodeURIComponent(key)}`,
             asUser(OTHER_USER),
+            404,
+            'file-not-found',
           );
-          expect(foreignChip.status).toBe(404);
-          expect(await foreignChip.text()).not.toContain('%PDF');
         }
         expect((await fetch(chipUrl)).status).toBe(401);
 
@@ -3052,12 +3070,12 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
         //      sibling file is a 404, and so is the file once it is deleted.
         //      The status route says the same, so the chip can say "No longer
         //      available" before a click.
-        const folderChip = await fetch(
+        await expectRefused(
           `${chipBase}/${encodeURIComponent('reports')}`,
           asUser(USER),
+          400,
+          'not-a-file',
         );
-        expect(folderChip.status).toBe(400);
-        expect(await folderChip.json()).toEqual({ error: 'not-a-file' });
         const folderStatus = await fetch(
           `${statusBase}/${encodeURIComponent('reports')}`,
           asUser(USER),
@@ -3068,17 +3086,13 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
         const chipFile = path.join(agentDir, ...CHIP_KEY.split('/'));
         await fs.rm(chipFile);
         await fs.symlink(path.join(agentDir, 'hello.txt'), chipFile);
-        const linkedChip = await fetch(chipUrl, asUser(USER));
-        expect(linkedChip.status).toBe(404);
-        expect(await linkedChip.json()).toEqual({ error: 'file-not-found' });
+        await expectRefused(chipUrl, asUser(USER), 404, 'file-not-found');
         const linkedStatus = await fetch(statusUrl, asUser(USER));
         expect(linkedStatus.status).toBe(404);
         expect(await linkedStatus.json()).toEqual({ error: 'file-not-found' });
 
         await fs.rm(chipFile);
-        const goneChip = await fetch(chipUrl, asUser(USER));
-        expect(goneChip.status).toBe(404);
-        expect(await goneChip.json()).toEqual({ error: 'file-not-found' });
+        await expectRefused(chipUrl, asUser(USER), 404, 'file-not-found');
         const goneStatus = await fetch(statusUrl, asUser(USER));
         expect(goneStatus.status).toBe(404);
         expect(await goneStatus.json()).toEqual({ error: 'file-not-found' });

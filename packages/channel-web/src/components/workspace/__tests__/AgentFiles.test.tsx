@@ -21,7 +21,8 @@
  * this one; it was removed in TASK-995 and a test below pins that it is gone.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { DOWNLOAD_STARTED_MS, DOWNLOAD_STARTED_NOTE } from '@/lib/file-download';
 import { workspaceApi, WorkspaceApiError } from '@/lib/workspace-api';
 import type { UserFilesAnswer } from '@/lib/workspace-types';
 import { AgentFiles } from '../AgentFiles';
@@ -57,6 +58,10 @@ function durableTree(dirs: Record<string, UserFilesAnswer>) {
     return hit;
   });
 }
+
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 beforeEach(() => {
   userFilesMock.mockReset();
@@ -548,6 +553,35 @@ describe('AgentFiles: downloading', () => {
     fireEvent.click(await screen.findByText('reports/q3.pdf'));
     fireEvent.click(await screen.findByRole('button', { name: /download/i }));
     await waitFor(() => expect(saved).toEqual([{ href: Q3_ROUTE, download: '' }]));
+  });
+
+  it('says the download started and holds the button for a moment, then offers it again', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    oneFile({ body: null, clipped: 'binary' });
+    downloadMock.mockResolvedValue(Q3_ROUTE);
+    renderTab();
+    fireEvent.click(await screen.findByText('reports/q3.pdf'));
+    const button = await screen.findByRole('button', { name: /download/i });
+    fireEvent.click(button);
+
+    const note = await screen.findByRole('status');
+    await waitFor(() => expect(note).toHaveTextContent(DOWNLOAD_STARTED_NOTE));
+    expect(button).toBeDisabled();
+    expect(button).toHaveTextContent('Download');
+    expect(button).not.toHaveTextContent('Getting it');
+
+    // Right after the note appears, a click does nothing.
+    fireEvent.click(button);
+    expect(downloadMock).toHaveBeenCalledOnce();
+
+    act(() => {
+      vi.advanceTimersByTime(DOWNLOAD_STARTED_MS);
+    });
+    expect(button).toBeEnabled();
+    expect(note).toBeEmptyDOMElement();
+    fireEvent.click(button);
+    await waitFor(() => expect(downloadMock).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(saved).toHaveLength(2));
   });
 
   it('sends the RAW path, not the fenced label', async () => {

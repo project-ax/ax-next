@@ -4,7 +4,7 @@ import { Spinner } from '@/components/ui/spinner';
 import { Button } from '@/components/ui/button';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { clampAttachmentName } from '@/lib/attachment-name';
-import { saveBlob, saveFromUrl } from '@/lib/file-download';
+import { DOWNLOAD_STARTED_MS, DOWNLOAD_STARTED_NOTE, saveBlob, saveFromUrl } from '@/lib/file-download';
 import { httpFetch, HttpError, logRequestFailure } from '@/lib/http';
 import { FALLBACK_SAVED_FILENAME, filenameFromContentDisposition } from '@/lib/workspace-api';
 import type { ThreadAttachment } from '@/lib/workspace-types';
@@ -17,7 +17,9 @@ import type { ThreadAttachment } from '@/lib/workspace-types';
  * conversation and reads the file as it is now (TASK-1012). On a click, an
  * agent file is asked about first (`?probe=1`) and then saved by the
  * browser's own download, straight to disk, while an attachment is still
- * fetched in-page (TASK-1022).
+ * fetched in-page (TASK-1022). After either hand-over the chip says the
+ * download started and ignores clicks for a few seconds (TASK-1025), because
+ * the browser's own bar is the only other sign that anything happened.
  *
  * The agent can delete that file in a later turn, so an agent-file chip asks
  * whether it is still there (TASK-1017): when it mounts, and again whenever
@@ -42,7 +44,21 @@ export function GeneratedFileChip({ file, conversationId, recheckKey }: {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [gone, setGone] = useState(false);
+  const [started, setStarted] = useState(false);
+  // Held from the click until the started window closes; a refusal releases
+  // it at once. Belt and braces: the disabled button already swallows clicks
+  // in the window, since `started` and `!busy` land in the same render.
   const inFlight = useRef(false);
+  const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const mounted = useRef(false);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      clearTimeout(timer.current);
+      timer.current = undefined;
+    };
+  }, []);
   const size = typeof file.sizeBytes === 'number' && file.sizeBytes >= 0
     ? file.sizeBytes < 1024 ? `${file.sizeBytes} B`
       : file.sizeBytes < 1024 * 1024 ? `${(file.sizeBytes / 1024).toFixed(1)} KB`
@@ -96,6 +112,7 @@ export function GeneratedFileChip({ file, conversationId, recheckKey }: {
     inFlight.current = true;
     setBusy(true);
     setError(null);
+    let handedOver = false;
     try {
       const url = downloadUrl();
       if (file.agentFilePath !== undefined) {
@@ -103,16 +120,27 @@ export function GeneratedFileChip({ file, conversationId, recheckKey }: {
         // browser's download bar cannot do. On a yes the browser downloads
         // the route itself, so none of the file comes into the tab.
         const probe = await httpFetch(`${url}?probe=1`);
-        if (!probe.ok) throw new HttpError('file download', probe.status);
+        if (!probe.ok) throw new HttpError(url, probe.status);
         // The yes is all we need. Cancel the rest: a host too old to know
         // `?probe` would be sending the whole file into a body nobody reads.
         void probe.body?.cancel().catch(() => undefined);
         saveFromUrl(url);
+        handedOver = true;
       } else {
         const response = await httpFetch(url);
-        if (!response.ok) throw new HttpError('file download', response.status);
+        if (!response.ok) throw new HttpError(url, response.status);
         saveBlob(await response.blob(),
           filenameFromContentDisposition(response.headers.get('content-disposition')) ?? FALLBACK_SAVED_FILENAME);
+        handedOver = true;
+      }
+      // Nothing is left to say it to if the chip is gone, and no timer may outlive it.
+      if (mounted.current) {
+        setStarted(true);
+        timer.current = setTimeout(() => {
+          timer.current = undefined;
+          inFlight.current = false;
+          setStarted(false);
+        }, DOWNLOAD_STARTED_MS);
       }
     } catch (e) {
       logRequestFailure(e, 'file chip download');
@@ -126,14 +154,14 @@ export function GeneratedFileChip({ file, conversationId, recheckKey }: {
             ? 'This account does not have access to that file.'
             : 'We could not download this file just now. Try again.');
     } finally {
-      inFlight.current = false;
+      if (!handedOver) inFlight.current = false;
       setBusy(false);
     }
   }
 
   return (
     <div className="flex w-full max-w-xs flex-col gap-2">
-      <Button type="button" variant="outline" disabled={busy || !downloadable}
+      <Button type="button" variant="outline" disabled={busy || started || !downloadable}
         aria-label={busy ? `Downloading ${name}` : gone ? `${name} is no longer available` : `Download ${name}`}
         aria-busy={busy} onClick={() => void download()}
         className="h-auto min-h-11 w-full justify-start gap-3 px-3 py-2 text-left">
@@ -146,7 +174,8 @@ export function GeneratedFileChip({ file, conversationId, recheckKey }: {
           <span className="text-xs font-normal text-muted-foreground" aria-live="polite">
             {busy ? 'Downloading…'
               : gone ? 'No longer available'
-                : [size, 'Download'].filter(Boolean).join(' · ')}
+                : started ? DOWNLOAD_STARTED_NOTE
+                  : [size, 'Download'].filter(Boolean).join(' · ')}
           </span>
         </span>
         {busy ? <Spinner data-icon="inline-end" aria-hidden="true" />

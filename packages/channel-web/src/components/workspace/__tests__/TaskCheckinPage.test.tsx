@@ -38,7 +38,13 @@ vi.mock('@/lib/workspace-api', async () => {
 });
 
 // A download's last step clicks a link, which jsdom can't follow.
-vi.mock('@/lib/file-download', () => ({ saveBlob: vi.fn(), saveFromUrl: vi.fn() }));
+// Only the hand-overs are stubbed: the chip also reads the started window's
+// constants from this module, which a bare factory would hand it as `undefined`.
+vi.mock('@/lib/file-download', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/file-download')>()),
+  saveBlob: vi.fn(),
+  saveFromUrl: vi.fn(),
+}));
 
 const checkinMock = vi.mocked(workspaceApi.taskCheckin);
 

@@ -215,6 +215,24 @@ function mkRes(): { res: DownloadRouteResponse; captured: CapturedDownload; body
   return { res, captured, body: () => Buffer.concat(captured.chunks) };
 }
 
+/**
+ * A REAL download's refusal, as the fake saw it (TASK-1025), as in
+ * `routes-workspace-download.test.ts`: the refusal's status and a JSON type,
+ * a Content-Length for the whole `{error}` JSON, all of that JSON but its
+ * last byte, and then a body that fails. Never `json()`, and the JSON type is
+ * the only header, so no download header lands on a refusal. Safari would
+ * save a whole refusal as the file; a torn one is a failed download.
+ */
+function expectTorn(d: ReturnType<typeof mkRes>, status: number, error: string): void {
+  const whole = JSON.stringify({ error });
+  expect(d.captured.statusCode).toBe(status);
+  expect(d.captured.json).toBeUndefined();
+  expect(d.captured.headers).toEqual({ 'content-type': 'application/json; charset=utf-8' });
+  expect(d.captured.contentLength).toBe(Buffer.byteLength(whole));
+  expect(d.body().toString('utf-8')).toBe(whole.slice(0, -1));
+  expect(d.captured.complete).toBe(false);
+}
+
 // ---------------------------------------------------------------------------
 // The direct-handler part.
 // ---------------------------------------------------------------------------
@@ -409,7 +427,7 @@ describe('the chat file chip download route', () => {
     standardBus();
     const d = await download({ '*': SPLAT });
     expect(d.captured.statusCode).toBe(400);
-    expect(d.captured.json).toEqual({ error: 'missing-conversation-id' });
+    expectTorn(d, 400, 'missing-conversation-id');
     expect(metadataCalls).toEqual([]);
     expect(rangeCalls).toEqual([]);
   });
@@ -426,8 +444,7 @@ describe('the chat file chip download route', () => {
     standardBus();
     const d = await download({ conversationId, '*': SPLAT });
     expect(d.captured.statusCode).toBe(404);
-    expect(d.captured.json).toEqual({ error: 'file-not-found' });
-    expect(d.captured.contentLength).toBeNull();
+    expectTorn(d, 404, 'file-not-found');
     expect(resolveCalls).toEqual([]);
     expect(rangeCalls).toEqual([]);
   });
@@ -443,7 +460,7 @@ describe('the chat file chip download route', () => {
     standardBus();
     const d = await download({ conversationId: 'c1', '*': SPLAT });
     expect(d.captured.statusCode).toBe(404);
-    expect(d.captured.json).toEqual({ error: 'file-not-found' });
+    expectTorn(d, 404, 'file-not-found');
     expect(rangeCalls).toEqual([]);
   });
 
@@ -473,7 +490,7 @@ describe('the chat file chip download route', () => {
     const d = await download({ conversationId: 'c1', '*': SPLAT });
 
     expect(d.captured.statusCode).toBe(503);
-    expect(d.captured.json).toEqual({ error: 'agent-unavailable' });
+    expectTorn(d, 503, 'agent-unavailable');
     expect(warn.mock.calls).toEqual([
       ['workspace_conversation_file_acl_failed', { conversationId: 'c1', code: 'unknown' }],
     ]);
@@ -497,7 +514,7 @@ describe('the chat file chip download route', () => {
     const warn = vi.spyOn(initCtx.logger, 'warn').mockImplementation(() => undefined);
     const d = await download({ conversationId: 'c1', '*': SPLAT });
     expect(d.captured.statusCode).toBe(503);
-    expect(d.captured.json).toEqual({ error: 'agent-unavailable' });
+    expectTorn(d, 503, 'agent-unavailable');
     expect(warn).not.toHaveBeenCalled();
     expect(resolveCalls).toEqual([]);
     expect(rangeCalls).toEqual([]);
@@ -513,7 +530,7 @@ describe('the chat file chip download route', () => {
     standardBus();
     const d = await download({ conversationId: 'c1', '*': SPLAT });
     expect(d.captured.statusCode).toBe(404);
-    expect(d.captured.json).toEqual({ error: 'agent-not-found' });
+    expectTorn(d, 404, 'agent-not-found');
     expect(resolveCalls).toEqual([{ agentId: 'a1', userId: 'u1' }]);
     expect(rangeCalls).toEqual([]);
   });
@@ -523,7 +540,7 @@ describe('the chat file chip download route', () => {
     standardBus();
     const d = await download({ conversationId: 'c1', '*': SPLAT });
     expect(d.captured.statusCode).toBe(503);
-    expect(d.captured.json).toEqual({ error: 'agent-unavailable' });
+    expectTorn(d, 503, 'agent-unavailable');
     expect(rangeCalls).toEqual([]);
   });
 
@@ -537,7 +554,7 @@ describe('the chat file chip download route', () => {
     standardBus();
     const d = await download({ conversationId: 'c1', '*': splat });
     expect(d.captured.statusCode).toBe(400);
-    expect(d.captured.json).toEqual({ error: 'invalid-path' });
+    expectTorn(d, 400, 'invalid-path');
     expect(rangeCalls).toEqual([]);
   });
 
@@ -547,7 +564,7 @@ describe('the chat file chip download route', () => {
     standardBus();
     const d = await download({ conversationId: 'c1', '*': '%252e%252e%252fx' });
     expect(d.captured.statusCode).toBe(404);
-    expect(d.captured.json).toEqual({ error: 'file-not-found' });
+    expectTorn(d, 404, 'file-not-found');
     expect(rangeCalls.map((c) => c.relPath)).toEqual(['%2e%2e%2fx']);
   });
 
@@ -556,10 +573,15 @@ describe('the chat file chip download route', () => {
   it('404s a file that is gone (the reader says `absent`, as it does for a link)', async () => {
     standardBus();
     files.delete(KEY);
+    const info = vi.spyOn(initCtx.logger, 'info').mockImplementation(() => undefined);
     const d = await download({ conversationId: 'c1', '*': SPLAT });
     expect(d.captured.statusCode).toBe(404);
-    expect(d.captured.json).toEqual({ error: 'file-not-found' });
-    expect(d.captured.contentLength).toBeNull();
+    expectTorn(d, 404, 'file-not-found');
+    // The chip's route says the refusal on its own logger too (TASK-1025).
+    expect(info.mock.calls).toEqual([
+      ['workspace_user_file_download_refused', { status: 404, reason: 'file-not-found' }],
+    ]);
+    info.mockRestore();
   });
 
   it('400s a key that is a folder now: not-a-file', async () => {
@@ -567,8 +589,7 @@ describe('the chat file chip download route', () => {
     dirs.add('reports');
     const d = await download({ conversationId: 'c1', '*': 'reports' });
     expect(d.captured.statusCode).toBe(400);
-    expect(d.captured.json).toEqual({ error: 'not-a-file' });
-    expect(d.captured.contentLength).toBeNull();
+    expectTorn(d, 400, 'not-a-file');
   });
 
   it('413s a file over the download ceiling after one read, with no body', async () => {
@@ -580,8 +601,7 @@ describe('the chat file chip download route', () => {
     });
     const d = await download({ conversationId: 'c1', '*': 'huge.bin' });
     expect(d.captured.statusCode).toBe(413);
-    expect(d.captured.json).toEqual({ error: 'file-too-large' });
-    expect(d.captured.contentLength).toBeNull();
+    expectTorn(d, 413, 'file-too-large');
     expect(rangeCalls).toHaveLength(1);
   });
 
@@ -590,8 +610,7 @@ describe('the chat file chip download route', () => {
     standardBus();
     const d = await download({ conversationId: 'c1', '*': SPLAT });
     expect(d.captured.statusCode).toBe(503);
-    expect(d.captured.json).toEqual({ error: 'file-read-failed' });
-    expect(d.captured.contentLength).toBeNull();
+    expectTorn(d, 503, 'file-read-failed');
   });
 
   // --- the probe (TASK-1022) -----------------------------------------------
@@ -940,17 +959,43 @@ describe('the chat file chip download route over a real socket', () => {
 
   it('404s a teammate’s conversation over the wire, without reading', async () => {
     const port = await boot();
-    const r = await fetch(url(port, 'c-theirs', encodeURIComponent(KEY)));
+    const sent: Array<{ status: number; incomplete: boolean }> = [];
+    harness!.bus.subscribe('http:response-sent', 'response-sent-observer', async (_ctx, payload) => {
+      const { status, incomplete } = payload as { status: number; incomplete: boolean };
+      sent.push({ status, incomplete });
+      return undefined;
+    });
+    const at = url(port, 'c-theirs', encodeURIComponent(KEY));
+    // The real download: the 404 head, then a body cut short (TASK-1025),
+    // which every engine walked fails rather than saves as the file.
+    const r = await fetch(at);
     expect(r.status).toBe(404);
-    expect(await r.json()).toEqual({ error: 'file-not-found' });
+    expect(r.headers.get('content-type')).toBe('application/json; charset=utf-8');
+    await expect(r.text()).rejects.toThrow('terminated');
+    // Its words are the probe's, whole.
+    const asked = await fetch(`${at}?probe=1`);
+    expect(asked.status).toBe(404);
+    expect(await asked.json()).toEqual({ error: 'file-not-found' });
     expect(probe.ranges).toEqual([]);
+    // The handler waits for the cut before it returns, so the server's own
+    // record says the real GET's 404 was cut short, and the probe's was not.
+    await vi.waitFor(() => expect(sent).toHaveLength(2));
+    expect(sent).toEqual([
+      { status: 404, incomplete: true },
+      { status: 404, incomplete: false },
+    ]);
   });
 
   it('400s an encoded traversal over the wire, without reading', async () => {
     const port = await boot();
-    const r = await fetch(url(port, CONVERSATION, '..%2F..%2Fetc%2Fpasswd'));
+    const at = url(port, CONVERSATION, '..%2F..%2Fetc%2Fpasswd');
+    const r = await fetch(at);
     expect(r.status).toBe(400);
-    expect(await r.json()).toEqual({ error: 'invalid-path' });
+    expect(r.headers.get('content-type')).toBe('application/json; charset=utf-8');
+    await expect(r.text()).rejects.toThrow('terminated');
+    const asked = await fetch(`${at}?probe=1`);
+    expect(asked.status).toBe(400);
+    expect(await asked.json()).toEqual({ error: 'invalid-path' });
     expect(probe.ranges).toEqual([]);
   });
 

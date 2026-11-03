@@ -135,6 +135,23 @@ Decisions and reasons:
   refusal is still said in-page, in words. A failure after the first byte, or a
   change between the probe and the download, shows in the browser's download
   bar. Attachment chips still fetch in-page.
+- **As built (TASK-1025):** a real GET (no `?probe`) on either /files download
+  route answers with the file or a *torn* refusal: the refusal's status and a
+  JSON head whose Content-Length is one byte longer than the body sent, then a
+  cut connection. macOS Safari 26.5 saves a whole refusal (even a bodyless
+  one) as the file (measured). A reset before any head would, behind GCLB,
+  become the load balancer's own 502 page, which Safari would save instead
+  (reasoned from GCLB's documentation, not measured). A torn body is a failed
+  download in macOS Safari 26.5 (it leaves only a `.download` partial; walked
+  direct and through `kubectl port-forward`) and in Playwright Chromium 147
+  and Firefox 148 (direct); iOS Safari and the GCLB hop were not walked. The probe's
+  answers are unchanged, so the page still says every refusal in words. Each
+  torn refusal logs one info line, `workspace_user_file_download_refused
+  {status, reason}`, and a cut that was not our own also logs
+  `workspace_user_file_download_refusal_not_torn` by codes (info for a client
+  that left first, warn otherwise). After the
+  hand-over, the Files tab and chat chips say "Download started. Check your
+  browser’s downloads." and ignore clicks for 4 s.
 
 ## 5. Identity, Instructions and onboarding → DB
 

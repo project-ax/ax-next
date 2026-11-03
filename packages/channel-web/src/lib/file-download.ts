@@ -31,8 +31,11 @@
  *     deleted or changed in that gap, the download itself may be refused
  *     (the route's 404, 409 or 413).
  * Each shows up as a failed download in the browser's bar, not as a sentence
- * here. Chromium treats a refused download as failed. Other browsers are not
- * verified, and one may save the short error body under the file's name.
+ * here. Safari saves a whole refusal as a file (`<name>.json`, measured on
+ * Safari 26.5), so the route sends a real download's refusal TORN: its status,
+ * then a body cut short (TASK-1025). Chromium fails that download, Firefox
+ * starts none, and macOS Safari leaves only an interrupted `.download`
+ * partial (iOS Safari was not walked).
  *
  * THE FILENAME COMES FROM THE SERVER, not from the row that was clicked. The
  * route sanitizes it for `Content-Disposition` (a filename is agent-authored,
@@ -41,7 +44,7 @@
  * would be a second sanitizer with a second set of rules — the exact shape of
  * "one of them gets fixed and the other quietly doesn't".
  */
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { HttpError, logRequestFailure } from './http';
 import { workspaceApi } from './workspace-api';
 
@@ -177,14 +180,32 @@ export function downloadFailureMessage(e: unknown, agentName: string): string {
   return 'That download didn’t start, so nothing was saved. Try again in a moment.';
 }
 
+/**
+ * How long, once the browser has been handed a download, the affordance says
+ * so and ignores further clicks (TASK-1025).
+ */
+export const DOWNLOAD_STARTED_MS = 4_000;
+export const DOWNLOAD_STARTED_NOTE = 'Download started. Check your browser’s downloads.';
+
 export interface FileDownloadState {
-  /** Ask the route, then hand the download to the browser. Safe to call twice. */
+  /**
+   * Ask the route, then hand the download to the browser. Safe to call twice:
+   * a call while the probe is out, or while `started`, does nothing.
+   */
   start: () => void;
   /**
    * The probe is in flight. The affordance says so and refuses a second one.
-   * Once the browser has the download, it is the browser's (TASK-1022).
+   * It ends when the probe answers: once the browser has the download, it is
+   * the browser's (TASK-1022), and `started` takes over.
    */
   busy: boolean;
+  /**
+   * The browser has been handed the download, and the last
+   * `DOWNLOAD_STARTED_MS` have not passed. The affordance says so
+   * (`DOWNLOAD_STARTED_NOTE`) and `start()` does nothing, so a double click
+   * or a quick re-click saves the file once. A refusal never sets it (TASK-1025).
+   */
+  started: boolean;
   /**
    * The authored sentence for the last failure, or `null`.
    *
@@ -205,6 +226,7 @@ export function useFileDownload(args: {
   const { agentId, agentName, path } = args;
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [started, setStarted] = useState(false);
   /**
    * The in-flight guard, in a REF rather than read off `busy`.
    *
@@ -213,8 +235,22 @@ export function useFileDownload(args: {
    * download. The visible result is the file saved twice, which is a small
    * thing that looks exactly like a bug to whoever it happens to. A ref is
    * written synchronously, so the second click sees the first one.
+   *
+   * It also covers the started window: after the browser has the download it
+   * stays held until `DOWNLOAD_STARTED_MS` later, so the guard and `started`
+   * open and close together. A refusal, or a throw, releases it at once.
    */
   const inFlight = useRef(false);
+  const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const mounted = useRef(false);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      clearTimeout(timer.current);
+      timer.current = undefined;
+    };
+  }, []);
 
   const start = useCallback(() => {
     if (inFlight.current) return;
@@ -222,8 +258,21 @@ export function useFileDownload(args: {
     setBusy(true);
     setError(null);
     void (async () => {
+      let handedOver = false;
       try {
         saveFromUrl(await workspaceApi.probeFileDownload(agentId, path));
+        handedOver = true;
+        // A reader who left while the probe was out still gets the file they
+        // asked for, but there is nothing left to say it to, and no timer
+        // may outlive the component.
+        if (mounted.current) {
+          setStarted(true);
+          timer.current = setTimeout(() => {
+            timer.current = undefined;
+            inFlight.current = false;
+            setStarted(false);
+          }, DOWNLOAD_STARTED_MS);
+        }
       } catch (e) {
         // The reader gets copy; the console gets the detail (status and
         // route, or the guard's refusal), so a retry that keeps failing the
@@ -231,11 +280,11 @@ export function useFileDownload(args: {
         logRequestFailure(e, 'file download');
         setError(downloadFailureMessage(e, agentName));
       } finally {
-        inFlight.current = false;
+        if (!handedOver) inFlight.current = false;
         setBusy(false);
       }
     })();
   }, [agentId, agentName, path]);
 
-  return { start, busy, error };
+  return { start, busy, started, error };
 }

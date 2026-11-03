@@ -1808,6 +1808,28 @@ describe('@ax/preset-memory canary', () => {
       return { status: r.status, body: JSON.parse(r.text) as Record<string, unknown> };
     }
 
+    /**
+     * A refusal's status and words, on any splat route. The read route says
+     * them whole, in JSON. A REAL download's refusal is torn on purpose
+     * (TASK-1025): the route's own status and JSON type, then a body cut short,
+     * which every engine walked fails rather than saves. So for a download path
+     * this checks that the real GET is torn, and reads the words from its
+     * probe (`?probe=1`), which answers whole, with the same status.
+     */
+    async function refused(p: string, user: string | null = ALICE) {
+      if (!p.includes('/download/user-files/')) return json(p, user);
+      const real = await fetch(url(p), {
+        headers: user === null ? {} : { 'x-test-user': user },
+      });
+      expect(real.headers.get('content-type') ?? '', `${p} content-type`).toContain(
+        'application/json',
+      );
+      await expect(real.text(), `${p} is cut short`).rejects.toThrow();
+      const words = await json(`${p}?probe=1`, user);
+      expect(words.status, `${p} probe`).toBe(real.status);
+      return words;
+    }
+
     beforeAll(async () => {
       aliceFiles = await mkAgent(ALICE, 'Alice files');
       bobFiles = await mkAgent(BOB, 'Bob files');
@@ -1874,11 +1896,13 @@ describe('@ax/preset-memory canary', () => {
     });
 
     it('an unauthenticated caller gets the routes own JSON 401 on every splat route, not the shell', async () => {
+      // The download's JSON is its probe's now; its real GET is the same 401,
+      // torn (`refused`).
       for (const p of [
         `/api/workspace/agents/${aliceFiles}/user-files/docs`,
         `/api/workspace/agents/${aliceFiles}/download/user-files/docs/inner.txt`,
       ]) {
-        const r = await json(p, null);
+        const r = await refused(p, null);
         expect(r.status, p).toBe(401);
       }
     });
@@ -1900,6 +1924,8 @@ describe('@ax/preset-memory canary', () => {
       // can actually put on the wire. `..` and `%2e%2e` as WHOLE segments are
       // collapsed by the URL parser before the router sees them; what survives
       // is the encoded-slash family, which the handler must decode exactly once.
+      // A refusal is read with `refused`: a real download's comes torn, and its
+      // words from the probe.
       const ROUTES = [
         (a: string, tail: string) => `/api/workspace/agents/${a}/user-files/${tail}`,
         (a: string, tail: string) => `/api/workspace/agents/${a}/download/user-files/${tail}`,
@@ -1909,7 +1935,7 @@ describe('@ax/preset-memory canary', () => {
         for (const route of ROUTES) {
           for (const tail of ['..%2Fsecret.txt', '%2e%2e%2fsecret.txt', 'docs%2F..%2F..%2Fsecret.txt']) {
             const p = route(aliceFiles, tail);
-            const r = await json(p);
+            const r = await refused(p);
             expect(r.status, p).toBe(400);
             expect(r.body, p).toEqual({ error: 'invalid-path' });
           }
@@ -1919,19 +1945,19 @@ describe('@ax/preset-memory canary', () => {
       it('an encoded traversal to a neighbour by id is refused, and leaks nothing', async () => {
         for (const route of ROUTES) {
           const p = route(aliceFiles, `..%2F${bobFiles}%2Fsecret.txt`);
-          const r = await raw(p);
+          const r = await refused(p);
           expect(r.status, p).toBe(400);
-          expect(r.text, p).not.toContain('BOB-');
+          expect(JSON.stringify(r.body), p).not.toContain('BOB-');
         }
       });
 
       it.skipIf(!ON_LINUX)('double-encoded traversal is decoded once, so it is a literal filename that does not exist', async () => {
         for (const route of ROUTES) {
           const p = route(aliceFiles, '%252e%252e%252fsecret.txt');
-          const r = await raw(p);
+          // JSON, so never the shell: `refused` reads it through `json`.
+          const r = await refused(p);
           expect([400, 404], p).toContain(r.status);
-          expect(r.text, p).not.toContain('BOB-');
-          expect(r.text, p).not.toContain('AX-SPA-SHELL');
+          expect(JSON.stringify(r.body), p).not.toContain('BOB-');
         }
       });
 
@@ -1944,7 +1970,7 @@ describe('@ax/preset-memory canary', () => {
       });
 
       it('the download of the root is a 400, not the shell', async () => {
-        const r = await json(`/api/workspace/agents/${aliceFiles}/download/user-files/`);
+        const r = await refused(`/api/workspace/agents/${aliceFiles}/download/user-files/`);
         expect(r.status).toBe(400);
       });
 
@@ -1954,9 +1980,9 @@ describe('@ax/preset-memory canary', () => {
           `/api/workspace/agents/${aliceFiles}/download/user-files/link-to-bob/secret.txt`,
           `/api/workspace/agents/${aliceFiles}/user-files/link-to-bob`,
         ]) {
-          const r = await raw(p);
+          const r = await refused(p);
           expect(r.status, p).toBe(404);
-          expect(r.text, p).not.toContain('BOB-');
+          expect(JSON.stringify(r.body), p).not.toContain('BOB-');
         }
       });
     });
@@ -1973,8 +1999,8 @@ describe('@ax/preset-memory canary', () => {
           ['download/user-files', '..%2Fsecret.txt'],
         ] as const;
         for (const [seg, tail] of tails) {
-          const theirs = await json(`/api/workspace/agents/${bobFiles}/${seg}/${tail}`);
-          const nowhere = await json(`/api/workspace/agents/${missing}/${seg}/${tail}`);
+          const theirs = await refused(`/api/workspace/agents/${bobFiles}/${seg}/${tail}`);
+          const nowhere = await refused(`/api/workspace/agents/${missing}/${seg}/${tail}`);
           expect(theirs.status, `${seg}/${tail}`).toBe(404);
           expect(theirs.status).toBe(nowhere.status);
           expect(theirs.body).toEqual(nowhere.body);

@@ -28,6 +28,11 @@
  *   4. A FAILED READ IS A 503. The real HookBus wraps a plain throw (EACCES,
  *      EIO) as `PluginError{code:'unknown'}`, so the thrown-read tests throw
  *      through a real bus rather than a fake.
+ *   5. A REAL DOWNLOAD'S REFUSAL IS TORN (TASK-1025). The browser's own
+ *      download receives it, and Safari saves a whole refusal as the file. So
+ *      every refusal of a real GET, the ACL's included, goes out as its status
+ *      head and a JSON body cut a byte short (`expectTorn`), and a probe gets
+ *      the same refusal whole, in words.
  *
  * The direct-handler part calls the handlers directly, with a response fake
  * whose `bodyStream` mirrors `@ax/http-server`'s contract. The socket part
@@ -55,7 +60,9 @@ import {
 import {
   USER_FILE_DOWNLOAD_CHUNK_BYTES,
   USER_FILE_DOWNLOAD_MAX_BYTES,
+  sendTornRefusal,
   sendUserFileDownload,
+  type StreamingDownloadResponse,
 } from '../../server/user-file-download.js';
 import type { RouteRequest } from '../../server/routes-chat.js';
 
@@ -185,6 +192,25 @@ function mkRes(opts: { clientLeavesAfter?: number; failWith?: Error } = {}): {
     },
   };
   return { res, captured, body: () => Buffer.concat(captured.chunks) };
+}
+
+/**
+ * A REAL download's refusal, as the fake saw it (TASK-1025). The browser's
+ * own download receives it, not our page, and Safari saves a whole refusal as
+ * the file. So it goes out torn: the refusal's status and a JSON type, a
+ * Content-Length for the whole `{error}` JSON, all of that JSON but its last
+ * byte, and then a body that fails. Never `json()`, and the JSON type is the
+ * only header: no download header (the agent-authored filename,
+ * octet-stream) ever lands on a refusal.
+ */
+function expectTorn(d: ReturnType<typeof mkRes>, status: number, error: string): void {
+  const whole = JSON.stringify({ error });
+  expect(d.captured.statusCode).toBe(status);
+  expect(d.captured.json).toBeUndefined();
+  expect(d.captured.headers).toEqual({ 'content-type': 'application/json; charset=utf-8' });
+  expect(d.captured.contentLength).toBe(Buffer.byteLength(whole));
+  expect(d.body().toString('utf-8')).toBe(whole.slice(0, -1));
+  expect(d.captured.complete).toBe(false);
 }
 
 /** One log line, as the route wrote it on the ctx it read with. */
@@ -391,7 +417,7 @@ describe('the download route', () => {
       d.res,
     );
     expect(d.captured.statusCode).toBe(404);
-    expect(d.captured.contentLength).toBeNull();
+    expectTorn(d, 404, 'agent-not-found');
 
     // Not "it read and found nothing" — it never read at all.
     expect(rangeCalls).toEqual([]);
@@ -427,9 +453,10 @@ describe('the download route', () => {
   for (const [label, splat] of TRAVERSALS) {
     it(`400s ${label}, without reading`, async () => {
       standardBus();
-      const { captured } = await download(splat);
+      const d = await download(splat);
+      const { captured } = d;
       expect(captured.statusCode).toBe(400);
-      expect(captured.contentLength).toBeNull();
+      expectTorn(d, 400, 'invalid-path');
       expect(rangeCalls).toEqual([]);
     });
   }
@@ -452,7 +479,7 @@ describe('the download route', () => {
     const d = mkRes();
     await handlers().agentUserFileDownload(mkReq({ '*': 'x.md' }), d.res);
     expect(d.captured.statusCode).toBe(400);
-    expect(d.captured.json).toEqual({ error: 'missing-agent-id' });
+    expectTorn(d, 400, 'missing-agent-id');
   });
 
   it('does NOT double-decode: a doubly-encoded `..` stays a filename', async () => {
@@ -500,10 +527,10 @@ describe('the download route', () => {
       previewReads.push(i);
       return { kind: 'file', contents: enc.encode('the beginning'), truncated: false };
     });
-    const { captured } = await download('x.md');
+    const d = await download('x.md');
+    const { captured } = d;
     expect(captured.statusCode).toBe(503);
-    expect(captured.json).toEqual({ error: 'user-files-unavailable' });
-    expect(captured.contentLength).toBeNull();
+    expectTorn(d, 503, 'user-files-unavailable');
     expect(previewReads).toEqual([]);
   });
 
@@ -663,10 +690,10 @@ describe('the download route', () => {
       read: (_offset, n) => ONE_MIB.subarray(0, Math.min(n, MiB)),
       version: 'v1',
     });
-    const { captured } = await download('huge.bin');
+    const d = await download('huge.bin');
+    const { captured } = d;
     expect(captured.statusCode).toBe(413);
-    expect(captured.json).toEqual({ error: 'file-too-large' });
-    expect(captured.contentLength).toBeNull();
+    expectTorn(d, 413, 'file-too-large');
     expect(captured.headers['content-disposition']).toBeUndefined();
     expect(rangeCalls).toHaveLength(1);
   });
@@ -691,18 +718,43 @@ describe('the download route', () => {
   it('400s a directory — a folder is not a download', async () => {
     standardBus();
     dirs.add('reports');
-    const { captured } = await download('reports');
+    const d = await download('reports');
+    const { captured } = d;
     expect(captured.statusCode).toBe(400);
-    expect(captured.json).toEqual({ error: 'not-a-file' });
-    expect(captured.contentLength).toBeNull();
+    expectTorn(d, 400, 'not-a-file');
   });
 
   it('404s an absent path', async () => {
     standardBus();
-    const { captured } = await download('gone.md');
+    const d = await download('gone.md');
+    const { captured } = d;
     expect(captured.statusCode).toBe(404);
-    expect(captured.json).toEqual({ error: 'file-not-found' });
-    expect(captured.contentLength).toBeNull();
+    expectTorn(d, 404, 'file-not-found');
+  });
+
+  it('says so when a refusal’s cut was not its own: warn for a write failure, info for a client that left first or was cut off for not reading (TASK-1025)', async () => {
+    standardBus();
+    const warn = vi.spyOn(initCtx.logger, 'warn').mockImplementation(() => undefined);
+    const info = vi.spyOn(initCtx.logger, 'info').mockImplementation(() => undefined);
+    await download(
+      'gone.md',
+      mkRes({ failWith: Object.assign(new Error('write EPIPE'), { code: 'EPIPE' }) }),
+    );
+    await download('gone.md', mkRes({ clientLeavesAfter: 0 }));
+    await download('gone.md', mkRes({ failWith: bodyStreamError('client-stalled') }));
+    // A torn refusal that went as planned says nothing more.
+    await download('gone.md');
+    const notTorn = 'workspace_user_file_download_refusal_not_torn';
+    expect(warn.mock.calls).toEqual([
+      [notTorn, { status: 404, reason: 'file-not-found', code: 'EPIPE' }],
+    ]);
+    expect(info.mock.calls.filter((c) => c[0] === notTorn)).toEqual([
+      [notTorn, { status: 404, reason: 'file-not-found', code: 'client-gone' }],
+      [notTorn, { status: 404, reason: 'file-not-found', code: 'client-stalled' }],
+    ]);
+    expect(info.mock.calls.filter((c) => c[0] === 'workspace_user_file_download_refused')).toHaveLength(4);
+    warn.mockRestore();
+    info.mockRestore();
   });
 
   it('503s the download when this deployment keeps no files', async () => {
@@ -714,10 +766,10 @@ describe('the download route', () => {
     registerAuth({ id: 'u1', isAdmin: false });
     registerAgents();
     bus.registerService(RANGE_HOOK, 'sandbox', async () => ({ kind: 'unavailable' }));
-    const { captured } = await download('report.md');
+    const d = await download('report.md');
+    const { captured } = d;
     expect(captured.statusCode).toBe(503);
-    expect(captured.json).toEqual({ error: 'user-files-unavailable' });
-    expect(captured.contentLength).toBeNull();
+    expectTorn(d, 503, 'user-files-unavailable');
   });
 
   // --- a read that fails before the body -----------------------------------
@@ -739,10 +791,10 @@ describe('the download route', () => {
         code: 'EACCES',
       }),
     );
-    const { captured } = await download('reports%2Fq3.pdf');
+    const d = await download('reports%2Fq3.pdf');
+    const { captured } = d;
     expect(captured.statusCode).toBe(503);
-    expect(captured.json).toEqual({ error: 'file-read-failed' });
-    expect(captured.contentLength).toBeNull();
+    expectTorn(d, 503, 'file-read-failed');
     expect(logs).toEqual([
       {
         level: 'warn',
@@ -771,11 +823,12 @@ describe('the download route', () => {
     registerThrowingRange(
       new PluginError({ code, plugin: 'sandbox', message: 'set sandbox.filestore.hostReadPath' }),
     );
-    const { captured } = await download('report.md');
+    const d = await download('report.md');
+    const { captured } = d;
     expect(captured.statusCode).toBe(503);
     // No host mount is a fact about the deployment (retrying won't help), so it
     // gets the "no file area" answer, not the "a read failed" one.
-    expect(captured.json).toEqual({ error });
+    expectTorn(d, 503, error);
     expect(logs).toEqual([
       { level: 'warn', msg: 'workspace_user_file_download_read_failed', bindings: { agentId: 'a1', code } },
     ]);
@@ -788,9 +841,10 @@ describe('the download route', () => {
       watchLogger(ctx);
       return null as never;
     });
-    const { captured } = await download('report.md');
+    const d = await download('report.md');
+    const { captured } = d;
     expect(captured.statusCode).toBe(503);
-    expect(captured.json).toEqual({ error: 'file-read-failed' });
+    expectTorn(d, 503, 'file-read-failed');
     expect(logs).toEqual([
       {
         level: 'warn',
@@ -812,9 +866,10 @@ describe('the download route', () => {
       },
       { timeoutMs: 20 },
     );
-    const { captured } = await download('report.md');
+    const d = await download('report.md');
+    const { captured } = d;
     expect(captured.statusCode).toBe(503);
-    expect(captured.json).toEqual({ error: 'file-read-failed' });
+    expectTorn(d, 503, 'file-read-failed');
     expect(logs).toEqual([
       {
         level: 'warn',
@@ -852,10 +907,10 @@ describe('the download route', () => {
       watchLogger(ctx);
       return answer;
     });
-    const { captured } = await download('report.md');
+    const d = await download('report.md');
+    const { captured } = d;
     expect(captured.statusCode).toBe(503);
-    expect(captured.json).toEqual({ error: 'file-read-failed' });
-    expect(captured.contentLength).toBeNull();
+    expectTorn(d, 503, 'file-read-failed');
     expect(logs).toEqual([
       {
         level: 'warn',
@@ -946,11 +1001,13 @@ describe('the download route', () => {
 
   // --- a change found before the head is answered, not torn down -----------
   //
-  // Until the first `header()`, a refusal can still be said in words. Two
-  // checks can be made by then: the first range's byte count, and, for a file
-  // that fits in one range, the final check too. An answer made here carries
-  // NONE of the download's headers. The filename in Content-Disposition is
-  // agent-authored, and octet-stream is a download's type, not an error's.
+  // Until the first `header()`, a refusal can still be answered: in words to a
+  // probe, and with the same status, its words torn, to a real download
+  // (TASK-1025). Two checks can be made by then: the first range's byte count,
+  // and, for a file that fits in one range, the final check too. An answer
+  // made here carries NONE of the download's headers. The filename in
+  // Content-Disposition is agent-authored, and octet-stream is a download's
+  // type, not an error's.
 
   /** How many range reads had been made each time `d`'s head was touched. */
   function readsAtHead(d: ReturnType<typeof mkRes>): number[] {
@@ -981,16 +1038,14 @@ describe('the download route', () => {
         n === 1
           ? asFile(honest, (f) => ({ ...f, bytes: f.bytes.subarray(0, f.bytes.byteLength - 1) }))
           : honest;
-      const { captured } = await download('live.log');
+      const d = await download('live.log');
+      const { captured } = d;
 
       expect(captured.statusCode).toBe(409);
-      expect(captured.json).toEqual({ error: 'file-changed' });
-      expect(captured.contentLength).toBeNull();
       // No content-disposition (the agent-authored filename), no octet-stream
-      // content-type. No header at all.
+      // content-type. No header but the refusal's own JSON type.
+      expectTorn(d, 409, 'file-changed');
       expect(captured.headers['content-disposition']).toBeUndefined();
-      expect(captured.headers['content-type']).toBeUndefined();
-      expect(captured.headers).toEqual({});
       // Nothing read after the range that said so, not even a one-range
       // file's final check. A file being written is ordinary life, and the
       // person is told, so nothing is logged.
@@ -1087,13 +1142,12 @@ describe('the download route', () => {
       files.set('small.txt', { bytes: enc.encode('abc'), version: 'v1' });
       tamper = (_n, input, honest) =>
         input.offset === 3 && input.length === 0 ? last(honest) : honest;
-      const { captured } = await download('small.txt');
+      const d = await download('small.txt');
+      const { captured } = d;
 
       expect(captured.statusCode).toBe(status);
-      expect(captured.json).toEqual({ error });
-      expect(captured.contentLength).toBeNull();
+      expectTorn(d, status, error);
       expect(captured.headers['content-disposition']).toBeUndefined();
-      expect(captured.headers).toEqual({});
       // The first range, then the final check, and nothing after it.
       expect(rangeCalls.map((c) => [c.offset, c.length])).toEqual([
         [0, MiB],
@@ -1344,11 +1398,18 @@ describe('the download route', () => {
       error: 'file-changed',
     },
   ])(
-    'a probe answers $label exactly as the download does, with no body',
+    'a probe answers $label in words, and the real download sends the same refusal torn',
     async ({ arrange, splat, status, error }) => {
       arrange();
+      const info = vi.spyOn(initCtx.logger, 'info').mockImplementation(() => undefined);
       const asDownload = await download(splat);
       const downloadReads = rangeCalls.map((c) => [c.offset, c.length]);
+      // Nobody reads a torn refusal's bytes, so this line is its one trace:
+      // the status and the code, and nothing the caller sent.
+      expect(info.mock.calls).toEqual([
+        ['workspace_user_file_download_refused', { status, reason: error }],
+      ]);
+      info.mockClear();
       // A fresh count, so a `tamper` keyed on the nth read sees the probe's
       // reads exactly as it saw the download's.
       rangeCalls = [];
@@ -1356,11 +1417,10 @@ describe('the download route', () => {
       const bodyStream = vi.spyOn(asProbe.res, 'bodyStream');
       await probeDownload(splat, asProbe);
 
-      expect(asDownload.captured.statusCode).toBe(status);
-      expect(asDownload.captured.json).toEqual({ error });
-      // The same answer, from the same reads.
-      expect(asProbe.captured.statusCode).toBe(asDownload.captured.statusCode);
-      expect(asProbe.captured.json).toEqual(asDownload.captured.json);
+      // The browser's download gets the refusal's status, its words torn...
+      expectTorn(asDownload, status, error);
+      // ...and the page gets the same refusal in words, from the same reads.
+      expect(asProbe.captured).toMatchObject({ statusCode: status, json: { error } });
       expect(rangeCalls.map((c) => [c.offset, c.length])).toEqual(downloadReads);
       // No body...
       expect(bodyStream).not.toHaveBeenCalled();
@@ -1369,8 +1429,8 @@ describe('the download route', () => {
       // octet-stream). Only no-store, so no cache hands this answer back
       // after the file has moved on.
       expect(asProbe.captured.headers).toEqual({ 'cache-control': 'private, no-store' });
-      // The download's own refusal is as it was: no header at all.
-      expect(asDownload.captured.headers).toEqual({});
+      // The page says a probe's refusal itself, so nothing is logged for it.
+      expect(info).not.toHaveBeenCalled();
     },
   );
 
@@ -1457,6 +1517,7 @@ describe('the download route', () => {
     registerAuth(null);
     registerAgents();
     registerRange();
+    const info = vi.spyOn(initCtx.logger, 'info').mockImplementation(() => undefined);
     const signedOut = mkRes();
     await handlers().agentUserFileDownload(
       mkReq({ agentId: 'a1', '*': 'x.md' }, { probe: '1' }),
@@ -1464,6 +1525,20 @@ describe('the download route', () => {
     );
     expect(signedOut.captured.statusCode).toBe(401);
     expect(signedOut.captured.headers).toEqual({ 'cache-control': 'private, no-store' });
+    expect(rangeCalls).toEqual([]);
+
+    // The real download, signed out (Safari retrying an old failed download
+    // after a sign-out, say): the ACL's own 401, torn too, so not even that
+    // can be saved as the file. One log line: the probe above wrote none.
+    const signedOutDownload = mkRes();
+    await handlers().agentUserFileDownload(
+      mkReq({ agentId: 'a1', '*': 'x.md' }),
+      signedOutDownload.res,
+    );
+    expectTorn(signedOutDownload, 401, 'unauthenticated');
+    expect(info.mock.calls).toEqual([
+      ['workspace_user_file_download_refused', { status: 401, reason: 'unauthenticated' }],
+    ]);
     expect(rangeCalls).toEqual([]);
 
     // Signed in, asking about somebody else's agent with a malformed path:
@@ -1482,8 +1557,9 @@ describe('the download route', () => {
       foreignDownload.res,
     );
     expect(foreign.captured.statusCode).toBe(404);
-    expect(foreign.captured.statusCode).toBe(foreignDownload.captured.statusCode);
-    expect(foreign.captured.json).toEqual(foreignDownload.captured.json);
+    expect(foreign.captured.json).toEqual({ error: 'agent-not-found' });
+    // The real download's answer is the same 404, torn: still no oracle.
+    expectTorn(foreignDownload, 404, 'agent-not-found');
     expect(foreign.captured.headers).toEqual({ 'cache-control': 'private, no-store' });
     expect(rangeCalls).toEqual([]);
 
@@ -1676,6 +1752,26 @@ describe('the download route over a real socket', () => {
     });
   }
 
+  /**
+   * A REAL download's refusal on the wire (TASK-1025): the refusal's status
+   * head, with its JSON type and a Content-Length for the whole `{error}`
+   * JSON, then all of that JSON but its last byte, and a cut connection.
+   *
+   * `status` is what matters most. A connection cut before the head is a
+   * reset, and a proxy in front of us answers a reset with an error page of
+   * its own (reasoned, not measured), which Safari would save as the file. A
+   * body cut short of its Content-Length was a failed download in every
+   * engine walked (macOS Safari, Chromium, Firefox).
+   */
+  function expectTornOverTheWire(got: RawResponse, status: number, error: string): void {
+    const whole = JSON.stringify({ error });
+    expect(got).toMatchObject({ status, complete: false, timedOut: false });
+    expect(got.headers['content-type']).toBe('application/json; charset=utf-8');
+    expect(got.headers['content-disposition']).toBeUndefined();
+    expect(got.headers['content-length']).toBe(String(Buffer.byteLength(whole)));
+    expect(got.body.toString('utf-8')).toBe(whole.slice(0, -1));
+  }
+
   it('serves bytes through the splat, path encoded whole', async () => {
     const b = await boot();
     // `encodeURIComponent('notes/plan.bin')` — exactly what the client sends.
@@ -1792,44 +1888,76 @@ describe('the download route over a real socket', () => {
     expect(probe.calls).toHaveLength(4);
   });
 
-  it('a one-range file that changes before its final check is a 409 over the wire, never a reset', async () => {
+  it('a one-range file that changes before its final check sends its 409 head over the wire, never a bare reset: torn to the real GET, whole to a probe', async () => {
     // The final check of a file that fits in one range runs before the head,
-    // so a change it finds can still be said in words. Run inside the body,
-    // it was a connection torn down before any head: a reset the browser can
-    // only call a network error.
+    // so a change it finds can still be answered with its own status. Run
+    // inside the body, it was a connection torn down before any head: a
+    // reset, which a proxy in front of us answers with a page of its own.
     tamper = (_n, input, honest) =>
       input.length === 0 && honest.kind === 'file' ? { ...honest, version: v('v2') } : honest;
     const b = await boot();
-    const got = await rawGet(b.port, `${DOWNLOAD}/notes%2Fplan.bin`);
-    expect(got.timedOut).toBe(false);
-    expect(got.status).toBe(409);
-    expect(got.complete).toBe(true);
-    // An error body, typed as one: none of the download's headers reached it.
-    expect(got.headers['content-disposition']).toBeUndefined();
-    expect(got.headers['content-type']).toMatch(/^application\/json/);
-    expect(JSON.parse(got.body.toString('utf-8'))).toEqual({ error: 'file-changed' });
+    const warn = vi.spyOn(initCtx.logger, 'warn');
+    const info = vi.spyOn(initCtx.logger, 'info');
+    const sent: Array<{ status: number; incomplete: boolean }> = [];
+    b.harness.bus.subscribe('http:response-sent', 'response-sent-observer', async (_ctx, payload) => {
+      const { status, incomplete } = payload as { status: number; incomplete: boolean };
+      sent.push({ status, incomplete });
+      return undefined;
+    });
+    expectTornOverTheWire(await rawGet(b.port, `${DOWNLOAD}/notes%2Fplan.bin`), 409, 'file-changed');
     expect(probe.calls).toEqual([
       { relPath: 'notes/plan.bin', offset: 0, length: MiB },
       { relPath: 'notes/plan.bin', offset: 4, length: 0 },
     ]);
+
+    // The page asks first, and gets the same refusal whole, in words.
+    const asked = await rawGet(b.port, `${DOWNLOAD}/notes%2Fplan.bin?probe=1`);
+    expect(asked).toMatchObject({ status: 409, complete: true, timedOut: false });
+    expect(asked.headers['content-type']).toMatch(/^application\/json/);
+    expect(JSON.parse(asked.body.toString('utf-8'))).toEqual({ error: 'file-changed' });
+
+    // The handler waits for the cut before it returns, so the server's own
+    // record says the real GET's 409 was cut short, and the probe's was not.
+    await vi.waitFor(() => expect(sent).toHaveLength(2));
+    expect(sent).toEqual([
+      { status: 409, incomplete: true },
+      { status: 409, incomplete: false },
+    ]);
+    // The cut was our own, so nothing says the refusal went out wrong, at
+    // either level.
+    expect(warn.mock.calls.map((c) => c[0])).not.toContain('workspace_user_file_download_refusal_not_torn');
+    expect(info.mock.calls.map((c) => c[0])).not.toContain('workspace_user_file_download_refusal_not_torn');
+    expect(info.mock.calls.map((c) => c[0])).toContain('workspace_user_file_download_refused');
+    warn.mockRestore();
+    info.mockRestore();
   });
 
-  it('503s a read that throws over the wire, never a 500', async () => {
+  it('503s a read that throws over the wire, never a 500: torn to the real GET, whole to a probe', async () => {
     tamper = () => {
       throw Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' });
     };
     const b = await boot();
-    const r = await fetch(`http://127.0.0.1:${b.port}${DOWNLOAD}/notes%2Fplan.bin`);
-    expect(r.status).toBe(503);
-    expect(await r.json()).toEqual({ error: 'file-read-failed' });
+    expectTornOverTheWire(
+      await rawGet(b.port, `${DOWNLOAD}/notes%2Fplan.bin`),
+      503,
+      'file-read-failed',
+    );
+
+    const asked = await rawGet(b.port, `${DOWNLOAD}/notes%2Fplan.bin?probe=1`);
+    expect(asked).toMatchObject({ status: 503, complete: true, timedOut: false });
+    expect(JSON.parse(asked.body.toString('utf-8'))).toEqual({ error: 'file-read-failed' });
   });
 
-  it('413s a file over the ceiling over the wire, after one read', async () => {
+  it('413s a file over the ceiling over the wire, after one read: torn to the real GET, whole to a probe', async () => {
     const b = await boot();
-    const r = await fetch(`http://127.0.0.1:${b.port}${DOWNLOAD}/huge.csv`);
-    expect(r.status).toBe(413);
-    expect(await r.json()).toEqual({ error: 'file-too-large' });
+    expectTornOverTheWire(await rawGet(b.port, `${DOWNLOAD}/huge.csv`), 413, 'file-too-large');
     expect(probe.calls).toHaveLength(1);
+
+    const asked = await rawGet(b.port, `${DOWNLOAD}/huge.csv?probe=1`);
+    expect(asked).toMatchObject({ status: 413, complete: true, timedOut: false });
+    expect(JSON.parse(asked.body.toString('utf-8'))).toEqual({ error: 'file-too-large' });
+    // The probe's own one read.
+    expect(probe.calls).toHaveLength(2);
   });
 
   it('400s an encoded traversal over the wire', async () => {
@@ -1900,5 +2028,96 @@ describe('the download route over a real socket', () => {
     expect(r.headers.get('content-type')).toContain('application/json');
     // The preview never reads a range.
     expect(probe.calls).toEqual([]);
+  });
+});
+
+describe('sendTornRefusal (TASK-1025)', () => {
+  /** A response whose `bodyStream` drains the source, failing as `@ax/http-server`'s does. */
+  function fakeRes(fail?: (cause: unknown) => unknown) {
+    const seen: {
+      status: number | undefined;
+      headers: Record<string, string>;
+      bytes: number[];
+      contentLength: number | undefined;
+    } = { status: undefined, headers: {}, bytes: [], contentLength: undefined };
+    const res: Pick<StreamingDownloadResponse, 'status' | 'header' | 'bodyStream'> = {
+      status(n) {
+        seen.status = n;
+        return res as StreamingDownloadResponse;
+      },
+      header(k, v) {
+        seen.headers[k] = v;
+        return res as StreamingDownloadResponse;
+      },
+      async bodyStream(source, opts) {
+        seen.contentLength = opts?.contentLength;
+        try {
+          for await (const chunk of source) seen.bytes.push(...chunk);
+        } catch (cause) {
+          throw fail !== undefined
+            ? fail(cause)
+            : Object.assign(new Error('the body source failed', { cause }), { code: 'source-failed' });
+        }
+      },
+    };
+    return { seen, res };
+  }
+
+  it('answers null for its own planned cut: the status, the JSON type, and all but the last byte', async () => {
+    const { res, seen } = fakeRes();
+    await expect(sendTornRefusal(res, 409, { error: 'file-changed' })).resolves.toBeNull();
+    const whole = JSON.stringify({ error: 'file-changed' });
+    expect(seen.status).toBe(409);
+    expect(seen.headers).toEqual({ 'content-type': 'application/json; charset=utf-8' });
+    expect(seen.contentLength).toBe(Buffer.byteLength(whole));
+    expect(Buffer.from(seen.bytes).toString('utf-8')).toBe(whole.slice(0, -1));
+  });
+
+  it('answers the codes when the cut was not its own (the client left first), and never rejects', async () => {
+    const { res } = fakeRes(() => Object.assign(new Error('gone'), { code: 'client-gone' }));
+    await expect(sendTornRefusal(res, 404, { error: 'file-not-found' })).resolves.toEqual({ code: 'client-gone' });
+  });
+
+  it('never rejects, even when the response throws before a byte is written, and says so by a code', async () => {
+    const res: Pick<StreamingDownloadResponse, 'status' | 'header' | 'bodyStream'> = {
+      status: () => {
+        throw new Error('response already finished');
+      },
+      header: () => res as StreamingDownloadResponse,
+      bodyStream: async () => undefined,
+    };
+    await expect(sendTornRefusal(res, 404, { error: 'file-not-found' })).resolves.toEqual({ code: 'uncoded' });
+  });
+
+  it('says a plain failure from the adapter as uncoded, never as an empty reason', async () => {
+    const { res } = fakeRes(() => new Error('plain'));
+    await expect(sendTornRefusal(res, 404, { error: 'file-not-found' })).resolves.toEqual({ code: 'uncoded' });
+  });
+
+  it('keeps a coded cause of an uncoded failure', async () => {
+    const { res } = fakeRes(() => new Error('x', { cause: Object.assign(new Error('y'), { code: 'EPIPE' }) }));
+    await expect(sendTornRefusal(res, 404, { error: 'file-not-found' })).resolves.toEqual({ causeCode: 'EPIPE' });
+  });
+
+  it('reports a body that was somehow not cut at all', async () => {
+    const res: Pick<StreamingDownloadResponse, 'status' | 'header' | 'bodyStream'> = {
+      status: () => res as StreamingDownloadResponse,
+      header: () => res as StreamingDownloadResponse,
+      // An adapter that "finished" without draining the failing source.
+      bodyStream: async () => undefined,
+    };
+    await expect(sendTornRefusal(res, 409, { error: 'file-changed' })).resolves.toEqual({ code: 'not-torn' });
+  });
+
+  it('does not take any source failure for its own: a foreign cause is reported, by code', async () => {
+    const { res } = fakeRes(() =>
+      Object.assign(new Error('the body source failed', { cause: Object.assign(new Error('x'), { code: 'EPIPE' }) }), {
+        code: 'source-failed',
+      }),
+    );
+    await expect(sendTornRefusal(res, 404, { error: 'file-not-found' })).resolves.toEqual({
+      code: 'source-failed',
+      causeCode: 'EPIPE',
+    });
   });
 });
