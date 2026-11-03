@@ -136,6 +136,14 @@ describe('memory-append-check.sh', () => {
     expect(r.stderr).toMatch(/decisions\.md: root archive edited/);
     expect(r.stderr).toMatch(/R2/);
     expect(r.stderr).toMatch(/--shard/); // tells you what to do instead
+    // ...and the line it tells you to run must survive zsh, which the Bash tool runs.
+    // `path` is tied to PATH there, so the old `path=$(…)` advice wiped the command
+    // search path for the agent that followed it (TASK-1032).
+    expect(r.stderr).toMatch(
+      /target=\$\(scripts\/memory-write-target\.sh --shard decisions TASK-123\) && mkdir -p "\$\(dirname "\$target"\)"/,
+    );
+    expect(r.stderr).not.toMatch(/(^|[\s;&(])path=/m);
+    expect(r.stderr).not.toMatch(/\$path(?![A-Za-z0-9_])/);
   });
 
   it('R1: fails a branch that deletes a line from a root archive', () => {

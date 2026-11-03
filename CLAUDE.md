@@ -100,8 +100,9 @@ Default approach:
   mkdir -p "$(dirname "$target")"   # --shard only prints the path; it creates nothing
   ```
 
-  Don't call that variable `path`: the Bash tool runs zsh, where `path` is tied to
-  `PATH`, so assigning it wipes the command search path and `mkdir` stops existing.
+  Don't call that variable `path`. Under zsh (the Bash tool's shell here), `path` is
+  tied to `PATH`, so assigning it wipes the command search path and the next line
+  fails with `command not found: dirname`.
 
 **Parallel-agent rule (read this if auto-ship dispatched you).** Write + commit
 `.claude/memory/` **only in your own worktree/branch copy — never the shared main

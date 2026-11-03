@@ -29,7 +29,7 @@ target=$(scripts/memory-write-target.sh --shard decisions TASK-415)
 mkdir -p "$(dirname "$target")"   # --shard only prints the path; it creates nothing
 ```
 
-Don't call that variable `path`: the Bash tool runs zsh, where `path` is tied to `PATH`, so assigning it wipes the command search path and `mkdir` stops existing.
+Don't call that variable `path`. Under zsh (the Bash tool's shell here), `path` is tied to `PATH`, so assigning it wipes the command search path and the next line fails with `command not found: dirname`.
 
 An invalid kind or TASK-ID exits 1. A shard keeps its kind's shape — a `decisions` shard holds `| Date | Decision | Rationale | Alternatives |` rows, a `patterns` shard the `## Patterns` / `## Anti-Patterns` headings — so archive and shards concatenate into one coherent read.
 

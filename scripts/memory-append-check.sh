@@ -218,7 +218,7 @@ fi
 
 echo "" >&2
 echo "What to do instead — put this run's rows in their own file:" >&2
-echo "  path=\$(scripts/memory-write-target.sh --shard decisions TASK-123) && mkdir -p \"\$(dirname \"\$path\")\"" >&2
+echo "  target=\$(scripts/memory-write-target.sh --shard decisions TASK-123) && mkdir -p \"\$(dirname \"\$target\")\"" >&2
 echo "  (kinds: context decisions patterns mistakes meta)" >&2
 echo "" >&2
 echo "Nothing else writes that path, so it cannot collide with another agent, and" >&2
