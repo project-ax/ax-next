@@ -366,7 +366,8 @@ describe('task form More options', () => {
     ['a repeat task saved without app updates', routineFixture, null],
     // Its waiting updates are task events, which a switch to Repeat doesn't cancel.
     ['a task switched to Repeat', { ...task, webhook: { kind: 'webhook' as const, path: '/updates' } }, 'Repeat'],
-    // Saved as a repeat, but saved as a task its queue isn't dropped by turning updates off.
+    // Saving a repeat as a task cancels its queue whether or not updates stay on, so the switch's
+    // "saving with this off" would wrongly suggest leaving it on keeps them.
     ['a repeat task switched to a task kind', { ...routineFixture, webhook: { kind: 'webhook' as const, path: '/updates' } }, 'Stay on top'],
   ])('gives no waiting-updates warning for %s', async (_label, view, kind) => {
     await edit(view);

@@ -1,6 +1,7 @@
 import { expect, it, vi } from 'vitest';
 import { HookBus, PluginError } from '@ax/core';
 import { createRoutinesPlugin } from '../plugin.js';
+import { REPEAT_DELIVERY_LIMITS } from '../repeat-limits.js';
 
 const drain=vi.hoisted(()=>({pump:vi.fn(async()=>{})}));
 vi.mock('../migrations.js',async original=>({...await original<typeof import('../migrations.js')>(),runRoutinesMigration:async()=>{}}));
@@ -39,7 +40,9 @@ it('logs a failed timer drain with its code and without its message',async()=>{
   const plugin=createRoutinesPlugin();
   try {
     await plugin.init({bus} as Parameters<typeof plugin.init>[0]);
-    const tick=interval.mock.calls.at(-1)![0] as ()=>void;
+    const delivery=interval.mock.calls.filter(call=>call[1]===REPEAT_DELIVERY_LIMITS.drainMs);
+    expect(delivery).toHaveLength(1);
+    const tick=delivery[0]![0] as ()=>void;
     tick();
     const drained=()=>lines.join('').split('\n').filter(l=>l.startsWith('{"')).map(l=>JSON.parse(l) as Record<string,unknown>)
       .filter(entry=>entry.msg==='repeat_queue_drain_failed').map(({ts:_ts,reqId:_reqId,...entry})=>entry);

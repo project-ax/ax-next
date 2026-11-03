@@ -270,7 +270,8 @@ export function TaskForm({
   const hasAddress = mode === 'edit' && initial.webhook !== null;
   const savedWebhook = hasAddress && initial.webhook?.path === form.webhook?.path;
   // A saved repeat task queues each update; saving it as a repeat without them cancels the ones still
-  // waiting. A saved task's waiting updates are task events instead, so neither kind switch qualifies.
+  // waiting. A saved task has no such queue (its updates are task events). A repeat saved as a task
+  // cancels its queue whatever this switch says, so "saving with this off" would mislead there.
   const dropsWaiting = hasAddress && initial.kind === 'repeat' && !task;
   const respondLabel = RESPOND_PRESETS.find(item => item.value === respondPreset(form.webhook?.respondWithin))?.label
     ?? durationWords(form.webhook?.respondWithin ?? '5m');
