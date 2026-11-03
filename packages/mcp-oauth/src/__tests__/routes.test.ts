@@ -641,21 +641,42 @@ describe('mcp-oauth begin route', () => {
     });
 
     // Against the unfixed code: maySetSharedCredential's catch swallowed the
-    // wrapped crash as "not allowed" -> 403. Fixed: it rethrows, begin does not
-    // catch it, so the handler REJECTS and @ax/http-server's catch-all answers 500.
-    it('the team-admin question crashes (bus-wrapped) → the handler rethrows (http-server answers 500), never a 403', async () => {
-      const { deps, store, flow } = makeDeps({
+    // wrapped crash as "not allowed" -> 403. Fixed: a logged 500.
+    it('the team-admin question crashes (bus-wrapped) → logged 500 internal, never a 403', async () => {
+      const { deps, store, flow, logger } = makeDeps({
         'auth:require-user': () => OK_USER,
         'agents:resolve': () => ({ agent: { id: 'agent-1', visibility: 'team', ownerId: 'team-1' } }),
         'agents:can-set-shared-credential': () => wrappedFault('agents:can-set-shared-credential', new Error(FAULT)),
         'connectors:get': () => connectorFixture(),
       });
       const { res, state } = fakeRes();
-      await expect(
-        createMcpOAuthRouteHandlers(deps).begin(fakeReq({ body: Buffer.from(BEGIN_BODY) }), res),
-      ).rejects.toMatchObject({ code: 'unknown' });
-      expect(state.status).toBeUndefined();
+      await createMcpOAuthRouteHandlers(deps).begin(fakeReq({ body: Buffer.from(BEGIN_BODY) }), res);
+      expect(state.status).toBe(500);
+      expect(state.json).toEqual({ error: 'internal' });
+      expect(logger.error).toHaveBeenCalledWith(
+        'mcp_oauth_route_failed',
+        expect.objectContaining({ stage: 'begin-team-admin', connectorId: 'conn-1', code: 'unknown' }),
+      );
+      expect(JSON.stringify(logger.error.mock.calls)).not.toContain('10.0.0.7');
       expect(store.putPending).not.toHaveBeenCalled();
+      expect(flow.discover).not.toHaveBeenCalled();
+    });
+
+    // Against the unfixed code: `isReject` read the wrapped session-store crash
+    // as a refusal → 401 "unauthenticated" (a fault posing as "signed out").
+    it('auth:require-user crashes (bus-wrapped) → logged 500 internal, not 401', async () => {
+      const { deps, flow, logger } = makeDeps({
+        'auth:require-user': () => wrappedFault('auth:require-user', new Error(FAULT)),
+      });
+      const { res, state } = fakeRes();
+      await createMcpOAuthRouteHandlers(deps).begin(fakeReq({ body: Buffer.from(BEGIN_BODY) }), res);
+      expect(state.status).toBe(500);
+      expect(state.json).toEqual({ error: 'internal' });
+      expect(logger.error).toHaveBeenCalledWith(
+        'mcp_oauth_route_failed',
+        expect.objectContaining({ stage: 'auth', code: 'unknown' }),
+      );
+      expect(JSON.stringify(logger.error.mock.calls)).not.toContain('10.0.0.7');
       expect(flow.discover).not.toHaveBeenCalled();
     });
 

@@ -398,7 +398,10 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
         res.status(401).json({ error: 'unauthenticated' });
         return null;
       }
-      throw err;
+      // A session-store fault is not "signed out" (TASK-1028).
+      logger.error('mcp_oauth_route_failed', { stage: 'auth', ...errFields(err) });
+      res.status(500).json({ error: 'internal' });
+      return null;
     }
   }
 
@@ -524,10 +527,20 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
     // acts as is the team's call. Anyone else is refused here, before any
     // connector read, vault read, state write or provider redirect. Fails
     // closed: no @ax/agents answer, `allowed: false` or a rejection is a 403. A
-    // crash in the hook is not an answer: it rethrows (500), never reads as "no".
-    if (agent.visibility === 'team' && !(await maySetSharedCredential(user, agentId))) {
-      res.status(403).json({ error: 'forbidden' });
-      return;
+    // crash in the hook is not an answer: a logged 500, never a "no".
+    if (agent.visibility === 'team') {
+      let allowed: boolean;
+      try {
+        allowed = await maySetSharedCredential(user, agentId);
+      } catch (err) {
+        logger.error('mcp_oauth_route_failed', { stage: 'begin-team-admin', connectorId, ...errFields(err) });
+        res.status(500).json({ error: 'internal' });
+        return;
+      }
+      if (!allowed) {
+        res.status(403).json({ error: 'forbidden' });
+        return;
+      }
     }
 
     // Resolve the connector (owner-scoped by userId).
