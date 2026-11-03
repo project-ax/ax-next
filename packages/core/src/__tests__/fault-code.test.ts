@@ -11,7 +11,12 @@ describe('faultLogFields', () => {
   });
 
   it("names a SafeToolError's tool code, not the invalid-payload it extends", () => {
-    expect(faultLogFields(new SafeToolError('unavailable', 'input'))).toEqual({ code: 'unavailable' });
+    expect(faultLogFields(new SafeToolError('busy', 'input'))).toEqual({ code: 'busy' });
+  });
+
+  it('re-checks a mutated tool code against the closed set', () => {
+    const mutated = Object.assign(new SafeToolError('validation', 'input'), { toolCode: 'SECRET' });
+    expect(faultLogFields(mutated)).toEqual({ code: 'unavailable' });
   });
 
   it("adds the cause's code one level down (the bus's 'unknown' wrap)", () => {

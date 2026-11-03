@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { HookBus, SafeToolError } from '@ax/core';
 import { createDestinationHandlers } from '../destination-routes.js';
 import type { RouteRequest, RouteResponse } from '../shared.js';
@@ -22,6 +22,20 @@ function req(body: unknown): RouteRequest {
     signedCookie: () => null,
     body: Buffer.from(JSON.stringify(body)),
   };
+}
+/** The handlers build their own ctx, so their log lines are read off stdout. */
+async function stdoutOf(run: () => Promise<void>): Promise<string[]> {
+  const lines: string[] = [];
+  const spy = vi.spyOn(process.stdout, 'write').mockImplementation((chunk: unknown) => {
+    lines.push(String(chunk));
+    return true;
+  });
+  try {
+    await run();
+  } finally {
+    spy.mockRestore();
+  }
+  return lines.flatMap((l) => l.split('\n')).filter((l) => l.length > 0);
 }
 function response() {
   let status = 200;
@@ -130,6 +144,40 @@ describe('human routine secret destinations', () => {
       }
     },
   );
+
+  // TASK-1031: every 503 is logged with its codes, never the error's text.
+  it.each([
+    ['infrastructure text', new Error('PRIVATE pg text'), { code: 'unknown' }],
+    ['a SQLSTATE behind the bus wrap', Object.assign(new Error('PRIVATE relation'), { code: '42P01' }), { code: 'unknown', causeCode: '42P01' }],
+    ['a closed unavailable', new SafeToolError('unavailable', 'input'), { code: 'unavailable' }],
+  ])('logs a 503 for %s with its codes only', async (_label, failure, fields) => {
+    for (const operation of ['set', 'delete'] as const) {
+      const { h } = setup(true, failure);
+      const r = response();
+      const lines = await stdoutOf(() =>
+        operation === 'set'
+          ? h.create(req({ ...base, kind: 'api-key', payloadB64: 'YQ==' }), r.res)
+          : h.destroy(req(base), r.res),
+      );
+      expect(r.status).toBe(503);
+      const logged = lines.filter((l) => l.includes('credentials_routine_destination_unavailable'));
+      expect(logged).toHaveLength(1);
+      const entry = JSON.parse(logged[0]!) as Record<string, unknown>;
+      expect(entry).toMatchObject({ level: 'error', ...fields });
+      expect('err' in entry).toBe(false);
+      expect(logged[0]).not.toContain('PRIVATE');
+    }
+  });
+
+  it('logs a malformed acknowledgment 503 without the provider output', async () => {
+    const { h } = setup(true, undefined, { value: { saved: 'SECRET', extra: 'SECRET' } });
+    const r = response();
+    const lines = await stdoutOf(() => h.create(req({ ...base, kind: 'api-key', payloadB64: 'YQ==' }), r.res));
+    expect(r.status).toBe(503);
+    const logged = lines.filter((l) => l.includes('credentials_routine_destination_unavailable'));
+    expect(logged).toHaveLength(1);
+    expect(logged[0]).not.toContain('SECRET');
+  });
 
   it('retains the admin gate while forwarding authenticated settings writes to routine authority', async () => {
     const { h, calls } = setup(false);

@@ -5,10 +5,12 @@ import { SafeToolError } from './safe-tool-error.js';
 const CODE_RE = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$/;
 
 /** What a log line may say about a failure without writing its message. */
-export interface FaultLogFields {
+// A type alias, not an interface, so it spreads into a logger's bindings
+// (`Record<string, unknown>`) without a cast.
+export type FaultLogFields = {
   code?: string;
   causeCode?: string;
-}
+};
 
 /**
  * The codes of a failure, for a log line that must not carry its message.
@@ -18,7 +20,8 @@ export interface FaultLogFields {
  * a 5xx it can't explain to the caller logs THIS instead of `err`.
  *
  * - `code` is the error's own: a SafeToolError's `toolCode` (its PluginError
- *   code is always `invalid-payload`, which says nothing), a PluginError's
+ *   code is always `invalid-payload`, which says nothing; a mutated one reads
+ *   `unavailable`, as the routes render it), a PluginError's
  *   `code`, or an identifier-shaped `code` on any other error (SQLSTATE,
  *   errno).
  * - `causeCode` is the same, one level down. `HookBus.call` wraps whatever a
@@ -46,7 +49,8 @@ function causeOf(err: unknown): unknown {
 
 function codeOf(err: unknown): string | undefined {
   try {
-    if (err instanceof SafeToolError) return checked(err.toolCode);
+    // Re-checked against the closed set: plugin code can mutate Error objects.
+    if (err instanceof SafeToolError) return new SafeToolError(err.toolCode, 'input').toolCode;
     if (err instanceof PluginError) return checked(err.code);
     if (err instanceof Error) return checked((err as { code?: unknown }).code);
     return undefined;

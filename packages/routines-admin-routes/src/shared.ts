@@ -1,5 +1,6 @@
 import {
   answerRequireUserFailure,
+  faultLogFields,
   PluginError,
   SafeToolError,
   safeToolMessage,
@@ -103,8 +104,14 @@ export async function requireAdmin(
   return actor;
 }
 
-/** Closed routine failures are rendered again here; provider exception text is never public. */
-export function writeServiceError(res: RouteResponse, err: unknown): boolean {
+/**
+ * Closed routine failures are rendered again here; provider exception text is never public.
+ *
+ * Every 503 is logged (TASK-1031) as `routines_admin_route_unavailable` with
+ * the failure's codes only (`faultLogFields`): never the error, whose message
+ * can carry provider or database text.
+ */
+export function writeServiceError(res: RouteResponse, err: unknown, logger: AgentContext['logger']): boolean {
   if (err instanceof SafeToolError) {
     // Validate both closed fields again: plugin code can mutate Error objects.
     const checked = new SafeToolError(err.toolCode, err.field);
@@ -122,6 +129,7 @@ export function writeServiceError(res: RouteResponse, err: unknown): boolean {
           : checked.toolCode === 'unavailable'
             ? 503
             : 400;
+    if (status === 503) logger.error('routines_admin_route_unavailable', faultLogFields(err));
     res
       .status(status)
       .json({
@@ -140,6 +148,7 @@ export function writeServiceError(res: RouteResponse, err: unknown): boolean {
       .json({ code: 'not-found', error: 'The routine is unavailable.' });
     return true;
   }
+  logger.error('routines_admin_route_unavailable', faultLogFields(err));
   res
     .status(503)
     .json({

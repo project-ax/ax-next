@@ -1,4 +1,5 @@
 import {
+  faultLogFields,
   makeAgentContext,
   PluginError,
   PROVIDER_ENDPOINTS,
@@ -182,15 +183,24 @@ function checkRoutineDestination(data: { destination: z.infer<typeof Destination
     if (data.ownerId !== null && data.ownerId.length > 128) ctx.addIssue({ code: 'too_big', maximum: 128, type: 'string', inclusive: true, path: ['ownerId'] });
   }
 }
-function writeRoutineError(res: RouteResponse, error: unknown): void {
+/**
+ * Every 503 is logged (TASK-1031) as `credentials_routine_destination_unavailable`
+ * with the failure's codes only (`faultLogFields`): never the error, whose
+ * message can carry provider or database text.
+ */
+function writeRoutineError(res: RouteResponse, error: unknown, logger: AgentContext['logger']): void {
   if (error instanceof SafeToolError) {
     const checked = new SafeToolError(error.toolCode,error.field);
     const status = ['revision-conflict','webhook-path-conflict','request-conflict','cleanup-pending'].includes(checked.toolCode) ? 409
       : ['not-found','forbidden'].includes(checked.toolCode) ? 404 : checked.toolCode === 'unavailable' ? 503 : 400;
+    if (status === 503) logger.error('credentials_routine_destination_unavailable', faultLogFields(error));
     res.status(status).json({ code: checked.toolCode, field: checked.field, error: safeToolMessage(checked.toolCode,checked.field) });
   } else if (error instanceof PluginError && ['forbidden','not-found'].includes(error.code)) {
     res.status(404).json({ code: 'not-found', error: 'The routine is unavailable.' });
-  } else res.status(503).json({ code: 'unavailable', error: 'Routine management is temporarily unavailable.' });
+  } else {
+    logger.error('credentials_routine_destination_unavailable', faultLogFields(error));
+    res.status(503).json({ code: 'unavailable', error: 'Routine management is temporarily unavailable.' });
+  }
 }
 
 const CreateBodySchema = z
@@ -372,7 +382,7 @@ export function createDestinationHandlers(deps: DestinationRouteDeps): {
         });
         RoutineSecretOutputSchema.parse(acknowledgment);
         res.status(204).end();
-      } catch (error) { writeRoutineError(res,error); }
+      } catch (error) { writeRoutineError(res, error, routineCtx.logger); }
       return;
     }
 
@@ -484,7 +494,7 @@ export function createDestinationHandlers(deps: DestinationRouteDeps): {
         });
         RoutineSecretOutputSchema.parse(acknowledgment);
         res.status(204).end();
-      } catch (error) { writeRoutineError(res,error); }
+      } catch (error) { writeRoutineError(res, error, routineCtx.logger); }
       return;
     }
 
@@ -556,7 +566,7 @@ export function createDestinationHandlers(deps: DestinationRouteDeps): {
           scope: z.enum(['global', 'user', 'agent']), ownerId: z.string().nullable(), ref: z.string(),
         }).passthrough()) }).passthrough().parse(await deps.bus.call('credentials:list', routineCtx, { scope: 'agent', ownerId: input.data.agentId }));
         res.status(200).json(RoutineSecretStatusOutputSchema.parse({ configured: list.credentials.some(entry => entry.scope === 'agent' && entry.ownerId === input.data.agentId && entry.ref === ref) }));
-      } catch (error) { writeRoutineError(res, error); }
+      } catch (error) { writeRoutineError(res, error, routineCtx.logger); }
     },
   };
 }

@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   HookBus,
   PluginError,
@@ -56,6 +56,20 @@ function req(
     body:
       body === undefined ? Buffer.alloc(0) : Buffer.from(JSON.stringify(body)),
   };
+}
+/** The handlers build their own ctx, so their log lines are read off stdout. */
+async function stdoutOf(run: () => Promise<void>): Promise<string[]> {
+  const lines: string[] = [];
+  const spy = vi.spyOn(process.stdout, 'write').mockImplementation((chunk: unknown) => {
+    lines.push(String(chunk));
+    return true;
+  });
+  try {
+    await run();
+  } finally {
+    spy.mockRestore();
+  }
+  return lines.flatMap((l) => l.split('\n')).filter((l) => l.length > 0);
 }
 function response() {
   let status = 200;
@@ -259,6 +273,24 @@ describe('structured human routine REST adapters', () => {
     await h.get(req(), r.res);
     expect(r.status).toBe(503);
     expect(JSON.stringify(r.body)).not.toContain('PRIVATE');
+  });
+  // TASK-1031: every 503 is logged with its codes, never the error's text.
+  it.each([
+    ['infrastructure text', new Error('PRIVATE SECRET'), { code: 'unknown' }],
+    ['a SQLSTATE behind the bus wrap', Object.assign(new Error('PRIVATE relation'), { code: '42P01' }), { code: 'unknown', causeCode: '42P01' }],
+    ['a closed unavailable', new SafeToolError('unavailable', 'input'), { code: 'unavailable' }],
+    ['a mutated closed code', Object.assign(new SafeToolError('validation', 'input'), { toolCode: 'SECRET' }), { code: 'unavailable' }],
+  ])('logs a 503 for %s with its codes only', async (_label, failure, fields) => {
+    const { h } = setup({ failure });
+    const r = response();
+    const lines = await stdoutOf(() => h.get(req(), r.res));
+    expect(r.status).toBe(503);
+    const logged = lines.filter((l) => l.includes('routines_admin_route_unavailable'));
+    expect(logged).toHaveLength(1);
+    const entry = JSON.parse(logged[0]!) as Record<string, unknown>;
+    expect(entry).toMatchObject({ level: 'error', ...fields });
+    expect('err' in entry).toBe(false);
+    expect(logged[0]).not.toMatch(/PRIVATE|SECRET/);
   });
   it('registers static consent/receiver ahead of item routes', async () => {
     const { bus } = setup();
