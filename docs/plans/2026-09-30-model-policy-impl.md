@@ -5838,14 +5838,14 @@ Set `TASK_ID` to the id of the board card this ships under (format `TASK-<number
 
 ```bash
 : "${TASK_ID:?set TASK_ID to the board card id first, for example TASK_ID=TASK-123}"
-path=$(scripts/memory-write-target.sh --shard decisions "$TASK_ID")
-mkdir -p "$(dirname "$path")"
-cat >> "$path" <<'EOF'
+target=$(scripts/memory-write-target.sh --shard decisions "$TASK_ID")
+mkdir -p "$(dirname "$target")"
+cat >> "$target" <<'EOF'
 - 2026-09-30 (admin-selectable models): new plugin `@ax/model-policy` owns the allowed-model policy (`settings:model-policy`) and the live provider catalog; `@ax/agents` consumes it through the soft hook `models:get-policy`. Why a plugin and not a settings key: one owner for the concept (invariant 4), and the catalog is not an agents concern. Agents on a removed model are swapped to the admin's Default LAZILY inside `agents:resolve` (never written back), so re-adding a model restores them and a save is one small write. The runner is derived from the model (`anthropic/*` → `claude-sdk`, else `aisdk`) because `claude-sdk` throws on any non-Anthropic ref.
 EOF
-path=$(scripts/memory-write-target.sh --shard patterns "$TASK_ID")
-mkdir -p "$(dirname "$path")"
-cat >> "$path" <<'EOF'
+target=$(scripts/memory-write-target.sh --shard patterns "$TASK_ID")
+mkdir -p "$(dirname "$target")"
+cat >> "$target" <<'EOF'
 - 2026-09-30: (1) `agents:resolve` has a `returns` zod schema that STRIPS undeclared keys — any new field on the resolved agent (here `requestedModel`) must be added to `AgentSchema` or it silently vanishes before the orchestrator sees it. (2) `storage:set` has no compare-and-swap; a versioned write is only atomic inside one process (promise chain) — fine because the host is single-replica. (3) A record the server swaps for display (the moved agent) must never be PATCHed back: the client sends `model` only when the user changed it. (4) `@ax/core` exports `PROVIDER_ENDPOINTS`; iterate it for "all providers" and gate each on `bus.hasService('…:<id>')` instead of configuring a list.
 EOF
 ```

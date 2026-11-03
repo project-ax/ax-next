@@ -96,9 +96,12 @@ Default approach:
   produced it — these files are tracked in the repo, not gitignored.
 
   ```bash
-  path=$(scripts/memory-write-target.sh --shard decisions TASK-415)
-  mkdir -p "$(dirname "$path")"   # --shard only prints the path; it creates nothing
+  target=$(scripts/memory-write-target.sh --shard decisions TASK-415)
+  mkdir -p "$(dirname "$target")"   # --shard only prints the path; it creates nothing
   ```
+
+  Don't call that variable `path`: the Bash tool runs zsh, where `path` is tied to
+  `PATH`, so assigning it wipes the command search path and `mkdir` stops existing.
 
 **Parallel-agent rule (read this if auto-ship dispatched you).** Write + commit
 `.claude/memory/` **only in your own worktree/branch copy — never the shared main

@@ -25,9 +25,11 @@ Each of the five kinds has two halves:
 Ask for the path instead of assembling it by hand:
 
 ```bash
-path=$(scripts/memory-write-target.sh --shard decisions TASK-415)
-mkdir -p "$(dirname "$path")"   # --shard only prints the path; it creates nothing
+target=$(scripts/memory-write-target.sh --shard decisions TASK-415)
+mkdir -p "$(dirname "$target")"   # --shard only prints the path; it creates nothing
 ```
+
+Don't call that variable `path`: the Bash tool runs zsh, where `path` is tied to `PATH`, so assigning it wipes the command search path and `mkdir` stops existing.
 
 An invalid kind or TASK-ID exits 1. A shard keeps its kind's shape — a `decisions` shard holds `| Date | Decision | Rationale | Alternatives |` rows, a `patterns` shard the `## Patterns` / `## Anti-Patterns` headings — so archive and shards concatenate into one coherent read.
 
@@ -105,7 +107,7 @@ When `.claude/memory/` does not exist:
    └── <kind>/          # shards — context/, decisions/, patterns/, mistakes/, meta/
    ```
 
-   Don't hand-create the shard directories: git doesn't track empty ones anyway, and each appears the first time `scripts/memory-write-target.sh --shard <kind> <TASK-ID>` names a file in it (that mode prints a path and creates nothing, so `mkdir -p "$(dirname "$path")"` is on you).
+   Don't hand-create the shard directories: git doesn't track empty ones anyway, and each appears the first time `scripts/memory-write-target.sh --shard <kind> <TASK-ID>` names a file in it (that mode prints a path and creates nothing, so `mkdir -p "$(dirname "$target")"` is on you).
 
    **On a greenfield project this seed commit trips R2**, because creating the five archives *is* touching them — measured on a throwaway repo: exit 1, **five** R2 violations, one per archive, and R1 stays silent because a pure creation deletes nothing. That is the guard being right rather than the bootstrap being wrong: the archives predate it everywhere else. Land the guard in a later PR than the seed, or put a `Memory-Rewrite: seeding .claude/memory/` trailer on the seed commit.
 
