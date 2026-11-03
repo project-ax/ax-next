@@ -492,7 +492,8 @@ and consumer. Treat their *shape* as a contract; changing it is a boundary revie
     (`sandbox:read-user-files`) keep their 1 MiB cap. The browser saves it
     natively (TASK-1022): the client asks `?probe=1` first (the same pre-head
     checks, a JSON 200 instead of the body), then clicks a same-origin
-    `<a download>`.
+    `<a download>`. A real download's refusal goes out torn (its status, then
+    a cut body), so no browser saves it as the file (TASK-1025).
   - **`blob:put` is a facade** (`registerBlobPutFacade` in `@ax/core`): veto `blob:pre-put { size }` → the backend's
     `blob:put-internal` → notify `blob:stored { sha256, size }`. Both backends
     (`@ax/blob-store-fs`, `-s3`) register the `-internal` hook. A refusal is

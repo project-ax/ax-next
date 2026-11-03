@@ -135,6 +135,17 @@ Decisions and reasons:
   refusal is still said in-page, in words. A failure after the first byte, or a
   change between the probe and the download, shows in the browser's download
   bar. Attachment chips still fetch in-page.
+- **As built (TASK-1025):** a real GET (no `?probe`) on either /files download
+  route answers with the file or a *torn* refusal: the refusal's status and a
+  JSON head whose Content-Length is one byte longer than the body sent, then a
+  cut connection. Safari saves a whole refusal (even a bodyless one) as the
+  file, and a reset before any head would become the load balancer's own 502
+  page, which Safari would save instead. A torn body is a failed download in
+  every engine walked (Safari leaves only a `.download` partial). The probe's
+  answers are unchanged, so the page still says every refusal in words. Each
+  torn refusal logs one info line, `workspace_user_file_download_refused
+  {status, reason}`. After the hand-over, the Files tab and chat chips say
+  "Download started. Check your browser’s downloads." and ignore clicks for 4 s.
 
 ## 5. Identity, Instructions and onboarding → DB
 

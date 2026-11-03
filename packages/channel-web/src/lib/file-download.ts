@@ -31,8 +31,10 @@
  *     deleted or changed in that gap, the download itself may be refused
  *     (the route's 404, 409 or 413).
  * Each shows up as a failed download in the browser's bar, not as a sentence
- * here. Chromium treats a refused download as failed. Other browsers are not
- * verified, and one may save the short error body under the file's name.
+ * here. Safari saves a whole refusal as a file (`<name>.json`, measured on
+ * Safari 26.5), so the route sends a real download's refusal TORN: its status,
+ * then a body cut short (TASK-1025). Chromium fails that download, Firefox
+ * starts none, and Safari leaves only an interrupted `.download` partial.
  *
  * THE FILENAME COMES FROM THE SERVER, not from the row that was clicked. The
  * route sanitizes it for `Content-Disposition` (a filename is agent-authored,
