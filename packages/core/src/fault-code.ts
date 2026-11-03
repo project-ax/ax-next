@@ -1,8 +1,8 @@
 import { PluginError } from './errors.js';
 import { SafeToolError } from './safe-tool-error.js';
 
-/** An identifier, not prose: a PluginError code, a SQLSTATE, a Node errno. */
-const CODE_RE = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$/;
+/** An identifier, not prose: a PluginError code, a SQLSTATE, a Node errno, a hook or plugin name. */
+const CODE_RE = /^[A-Za-z0-9@][A-Za-z0-9_.:/@-]{0,99}$/;
 
 /** What a log line may say about a failure without writing its message. */
 // A type alias, not an interface, so it spreads into a logger's bindings
@@ -10,6 +10,13 @@ const CODE_RE = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$/;
 export type FaultLogFields = {
   code?: string;
   causeCode?: string;
+  /** The error's class name (`TypeError`, `PluginError`, `ZodError`). */
+  name?: string;
+  /** The cause's class name. */
+  causeName?: string;
+  /** A PluginError's own hook and plugin: which bus call failed. */
+  hookName?: string;
+  plugin?: string;
 };
 
 /**
@@ -28,14 +35,33 @@ export type FaultLogFields = {
  *   service throws as `PluginError{ code: 'unknown', cause }`, so the outer
  *   code alone usually reads `unknown`.
  *
- * A code that isn't identifier-shaped is dropped, not truncated. Never throws.
+ * - `name` / `causeName` are the class names, and `hookName` / `plugin` a
+ *   PluginError's own identifiers: a raw `TypeError` behind the bus has no
+ *   code at all, and these still say what failed and where.
+ *
+ * Every field must be identifier-shaped, or it is dropped, not truncated.
+ * Never throws.
  */
 export function faultLogFields(err: unknown): FaultLogFields {
   const out: FaultLogFields = {};
-  const code = codeOf(err);
-  if (code !== undefined) out.code = code;
-  const causeCode = codeOf(causeOf(err));
-  if (causeCode !== undefined) out.causeCode = causeCode;
+  const cause = causeOf(err);
+  const fields: Array<[keyof FaultLogFields, () => unknown]> = [
+    ['code', () => codeOf(err)],
+    ['causeCode', () => codeOf(cause)],
+    ['name', () => (err instanceof Error ? err.name : undefined)],
+    ['causeName', () => (cause instanceof Error ? cause.name : undefined)],
+    ['hookName', () => (err instanceof PluginError ? err.hookName : undefined)],
+    ['plugin', () => (err instanceof PluginError ? err.plugin : undefined)],
+  ];
+  for (const [key, read] of fields) {
+    let value: string | undefined;
+    try {
+      value = checked(read());
+    } catch {
+      value = undefined;
+    }
+    if (value !== undefined) out[key] = value;
+  }
   return out;
 }
 

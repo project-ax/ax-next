@@ -226,6 +226,14 @@ describe('createLogger', () => {
       const c = logErr(new Error('outer', { cause: empty })).cause as Record<string, unknown>;
       expect('frames' in c).toBe(false);
 
+      // An empty name: V8 writes the message as the header, so a blanked
+      // message that began with `\n` leaves an empty first line.
+      const nameless = new Error('');
+      nameless.name = '';
+      nameless.stack = '\n  at rt_NAMELESS (secret)\n    at real (file.js:1:1)';
+      const n = logErr(new Error('outer', { cause: nameless }));
+      expect(JSON.stringify(n)).not.toContain('rt_NAMELESS');
+
       // Plain Node/V8 (production) writes the bare name: `Error`.
       const v8 = new Error('');
       v8.stack = 'Error\n    at fn (file.js:1:1)';

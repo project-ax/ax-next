@@ -276,7 +276,7 @@ describe('structured human routine REST adapters', () => {
   });
   // TASK-1031: every 503 is logged with its codes, never the error's text.
   it.each([
-    ['infrastructure text', new Error('PRIVATE SECRET'), { code: 'unknown' }],
+    ['infrastructure text', new TypeError('PRIVATE SECRET'), { code: 'unknown', hookName: 'routines:get', causeName: 'TypeError' }],
     ['a SQLSTATE behind the bus wrap', Object.assign(new Error('PRIVATE relation'), { code: '42P01' }), { code: 'unknown', causeCode: '42P01' }],
     ['a closed unavailable', new SafeToolError('unavailable', 'input'), { code: 'unavailable' }],
     ['a mutated closed code', Object.assign(new SafeToolError('validation', 'input'), { toolCode: 'SECRET' }), { code: 'unavailable' }],

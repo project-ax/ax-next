@@ -173,8 +173,10 @@ function stackFrames(stack: unknown, message: unknown, name: unknown): string | 
     // `\n` leaves once blanked, and its next lines could pass for frames.
     // The two can't be told apart from the string, so neither gets frames
     // (TASK-1031).
+    // An empty name is refused too: V8 then writes the message itself as the
+    // header, so a blanked `\n…` message leaves an empty first line.
     const nl = stack.indexOf('\n');
-    if (nl === -1 || typeof name !== 'string') return undefined;
+    if (nl === -1 || typeof name !== 'string' || name.length === 0) return undefined;
     const header = stack.slice(0, nl);
     if (header !== name) return undefined;
     body = stack.slice(nl + 1);
