@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { randomBytes } from 'node:crypto';
 import {
   type Plugin,
@@ -395,6 +395,41 @@ describe('serve command — HTTP surface', () => {
     expect(body.error.code).toBe('chat-busted');
   });
 
+  /** Structured log lines written to stdout while `fn` runs. */
+  async function logsDuring(fn: () => Promise<void>): Promise<Array<Record<string, unknown>>> {
+    const lines: string[] = [];
+    const spy = vi.spyOn(process.stdout, 'write').mockImplementation((chunk: unknown) => {
+      lines.push(String(chunk));
+      return true;
+    });
+    try {
+      await fn();
+    } finally {
+      spy.mockRestore();
+    }
+    const out: Array<Record<string, unknown>> = [];
+    for (const l of lines.join('').split('\n')) {
+      try {
+        const v: unknown = JSON.parse(l);
+        if (typeof v === 'object' && v !== null) out.push(v as Record<string, unknown>);
+      } catch {
+        // not a log line
+      }
+    }
+    return out;
+  }
+
+  function expectFaultLogged(
+    logs: Array<Record<string, unknown>>,
+    msg: string,
+    code: string,
+  ): void {
+    const line = logs.find((l) => l.msg === msg);
+    expect(line).toBeDefined();
+    expect(line!.level).toBe('error');
+    expect((line!.err as { code?: unknown }).code).toBe(code);
+  }
+
   async function postChat(): Promise<Response> {
     return fetch(`http://127.0.0.1:${handle.port}/chat`, {
       method: 'POST',
@@ -412,11 +447,16 @@ describe('serve command — HTTP surface', () => {
         },
       }),
     });
-    const r = await postChat();
-    const text = await r.text();
+    let r!: Response;
+    let text = '';
+    const logs = await logsDuring(async () => {
+      r = await postChat();
+      text = await r.text();
+    });
     expect(r.status).toBe(500);
     expect(text).not.toContain('10.0.0.7');
     expect(JSON.parse(text).error.code).toBe('INTERNAL');
+    expectFaultLogged(logs, 'serve_session_create_failed', 'unknown');
   });
 
   // Unfixed: also 400 + code (passes both ways; pins the carve-out).
@@ -454,11 +494,16 @@ describe('serve command — HTTP surface', () => {
         },
       }),
     });
-    const r = await postChat();
-    const text = await r.text();
+    let r!: Response;
+    let text = '';
+    const logs = await logsDuring(async () => {
+      r = await postChat();
+      text = await r.text();
+    });
     expect(r.status).toBe(500);
     expect(text).not.toContain('10.0.0.7');
     expect(JSON.parse(text).error.code).toBe('chat-busted');
+    expectFaultLogged(logs, 'serve_agent_invoke_failed', 'chat-busted');
   });
 
   // Unfixed: HookBus wraps as 'unknown' and the raw message is echoed.
@@ -470,9 +515,14 @@ describe('serve command — HTTP surface', () => {
         },
       }),
     });
-    const r = await postChat();
-    const text = await r.text();
+    let r!: Response;
+    let text = '';
+    const logs = await logsDuring(async () => {
+      r = await postChat();
+      text = await r.text();
+    });
     expect(r.status).toBe(500);
     expect(text).not.toContain('10.0.0.7');
+    expectFaultLogged(logs, 'serve_agent_invoke_failed', 'unknown');
   });
 });
