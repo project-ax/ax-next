@@ -7,6 +7,7 @@ import {
   type HookBus,
   type AgentContext,
 } from '@ax/core';
+import { BodyTooLargeError, readBodyCapped } from './body.js';
 import { Router } from './router.js';
 import {
   assertKeyLength,
@@ -621,58 +622,6 @@ function deriveSecure(
   // Comma-separated list when multiple proxies; first hop is closest to the client.
   const first = xfp.split(',')[0]?.trim().toLowerCase();
   return first === 'https';
-}
-
-class BodyTooLargeError extends Error {
-  constructor() {
-    super('body too large');
-    this.name = 'BodyTooLargeError';
-  }
-}
-
-function readBodyCapped(req: http.IncomingMessage, maxBytes: number): Promise<Buffer> {
-  return new Promise<Buffer>((resolve, reject) => {
-    const cl = req.headers['content-length'];
-    if (typeof cl === 'string' && cl.length > 0) {
-      const n = Number(cl);
-      if (Number.isFinite(n) && n > maxBytes) {
-        // Drain via resume() (not destroy) so the 413 response can flush
-        // before the connection closes — destroying mid-flight resets the
-        // connection and the client never sees our error.
-        req.resume();
-        reject(new BodyTooLargeError());
-        return;
-      }
-    }
-
-    const chunks: Buffer[] = [];
-    let total = 0;
-    let settled = false;
-    const settle = (fn: () => void): void => {
-      if (settled) return;
-      settled = true;
-      fn();
-    };
-    req.on('data', (chunk: Buffer) => {
-      if (settled) return;
-      total += chunk.length;
-      if (total > maxBytes) {
-        // Don't destroy the request mid-stream — that aborts the connection
-        // before the 413 response can flush. Drop chunks and resume() to
-        // drain the rest while the response writes cleanly.
-        chunks.length = 0;
-        req.removeAllListeners('data');
-        req.resume();
-        settle(() => reject(new BodyTooLargeError()));
-        return;
-      }
-      chunks.push(chunk);
-    });
-    req.on('error', (e) => settle(() => reject(e)));
-    req.on('end', () => {
-      settle(() => resolve(Buffer.concat(chunks, total)));
-    });
-  });
 }
 
 // Fixed text: no path, filename or byte of the body ever lands in one.
