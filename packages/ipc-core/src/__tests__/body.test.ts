@@ -318,7 +318,12 @@ describe('body readers on a request that is already gone (TASK-1024)', () => {
       const outcome = new Promise<Outcome>((resolve) => {
         resolveOutcome = resolve;
       });
+      let resolveSeen!: () => void;
+      const requestSeen = new Promise<void>((resolve) => {
+        resolveSeen = resolve;
+      });
       const server = http.createServer((req) => {
+        resolveSeen();
         req.socket.once('close', () => {
           void tick().then(async () => resolveOutcome(await settleWithin(read(req))));
         });
@@ -336,10 +341,15 @@ describe('body readers on a request that is already gone (TASK-1024)', () => {
         });
         client.on('error', () => {}); // we are the ones hanging up
         client.write('{"partial":'); // fewer bytes than declared: the body can't complete
-        await new Promise((resolve) => setTimeout(resolve, 50));
+        // Hang up only once the server has the request, with no timing guess.
+        await requestSeen;
         client.destroy();
 
-        const out = await outcome;
+        // Bounded, so a regression reads as "hung" rather than a vitest timeout.
+        const out = await Promise.race([
+          outcome,
+          new Promise<Outcome>((resolve) => setTimeout(() => resolve({ kind: 'hung' }), 2000)),
+        ]);
         expect(out.kind).toBe('rejected');
         expect((out as { err: NodeJS.ErrnoException }).err.code).toBe('ECONNRESET');
       } finally {

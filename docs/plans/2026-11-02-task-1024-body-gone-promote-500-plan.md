@@ -16,10 +16,13 @@ first for `readRawBody` too:
 
 ## Task 1 — `@ax/ipc-core` body.ts  `[tier: integration]`
 
-- One shared guard, `bodyGoneError(req)`, called first in both readers. If `req.destroyed`
-  is set, reject with `req.errored` when present (stream errors still propagate unchanged,
-  as the existing test pins), else with a fixed-text Error. If `req.readableEnded` is set,
-  the bytes were already consumed, so reject with a fixed-text Error too. The dispatcher
+- One shared guard, `bodyGoneError(req)`, called first in both readers. It checks in this
+  order. (a) `req.errored`: reject with it, so stream errors still propagate unchanged, as the
+  existing test pins. (b) `req.readableEnded`: the bytes were already consumed, so reject
+  with a fixed-text "ended" Error. (c) `req.destroyed`: reject with a fixed-text
+  "destroyed" Error. Ended goes before destroyed because a request auto-destroys right
+  after `end`. Round-1 review caught the original destroyed-first order, which made
+  the ended branch unreachable. The dispatcher
   already maps a non-size, non-JSON failure to the structured `ipc_body_read_failed` log
   plus a 500 (TASK-1018), so nothing changes there.
 - Both readers also listen for `close`. If the reader has not settled when `close` fires,

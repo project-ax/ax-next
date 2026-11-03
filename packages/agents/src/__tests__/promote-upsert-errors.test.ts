@@ -110,11 +110,13 @@ describe('promote: skills:upsert failures (TASK-1024)', () => {
   // A plain Error never reaches the route as-is: HookBus.call wraps it as
   // PluginError code 'unknown' with the original message inside. The old
   // code therefore answered a store crash with a 400 echoing its message.
+  // Expected log fields: [code, plugin, hookName]. The harness registers stub
+  // services as plugin 'mock', and only the bus wrapper sets a hookName.
   it.each([
-    ['a non-manifest PluginError (missing-owner)', new PluginError({ code: 'missing-owner', plugin: '@ax/skills', message: SECRET_DETAIL }), 'missing-owner'],
-    ['a PluginError with a code the parser no longer emits (invalid-host)', new PluginError({ code: 'invalid-host', plugin: '@ax/skills', message: SECRET_DETAIL }), 'invalid-host'],
-    ['a plain Error from the store', new Error(SECRET_DETAIL), 'unknown'],
-  ])('%s → logged 500 that does not echo the message', async (_label, err, expectedCode) => {
+    ['a non-manifest PluginError (missing-owner)', new PluginError({ code: 'missing-owner', plugin: '@ax/skills', message: SECRET_DETAIL }), 'missing-owner', '@ax/skills', undefined],
+    ['a PluginError with a code the parser no longer emits (invalid-host)', new PluginError({ code: 'invalid-host', plugin: '@ax/skills', message: SECRET_DETAIL }), 'invalid-host', '@ax/skills', undefined],
+    ['a plain Error from the store', new Error(SECRET_DETAIL), 'unknown', 'mock', 'skills:upsert'],
+  ])('%s → logged 500 that does not echo the message', async (_label, err, expectedCode, expectedPlugin, expectedHook) => {
     const stdout = captureStdout();
     const { status, body } = await promoteWith(err);
     const logged = stdout();
@@ -136,7 +138,13 @@ describe('promote: skills:upsert failures (TASK-1024)', () => {
       skillId: 'foo',
       targetScope: 'global',
       pluginErrorCode: expectedCode,
+      plugin: expectedPlugin,
     });
+    if (expectedHook === undefined) {
+      expect(line).not.toHaveProperty('hookName');
+    } else {
+      expect(line!.hookName).toBe(expectedHook);
+    }
     expect(JSON.stringify(line!.err)).toContain('10.0.0.7');
   });
 });
