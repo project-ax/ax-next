@@ -353,8 +353,8 @@ export function createAuthBetterPlugin(config: AuthBetterConfig = {}): Plugin {
           } catch (err) {
             // Only 'unauthenticated' is a 401. A DB fault is a logged 500, so
             // the outage shows up in the logs. (The SPA's boot check still
-            // shows sign-in for ANY non-OK answer here; that is deliberate,
-            // see channel-web lib/http.ts.)
+            // shows sign-in for ANY non-OK answer here: channel-web
+            // lib/auth.ts getSession(); lib/http.ts explains why.)
             answerRequireUserFailure(initCtx, res, err, 'auth_me_failed');
           }
         };
