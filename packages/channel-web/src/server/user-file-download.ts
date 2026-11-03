@@ -496,7 +496,10 @@ export async function sendTornRefusal(
     // The planned cut: our source failed on purpose, after the head and all
     // but the last byte.
     if (codeOf(err) === 'source-failed' && causeOf(err) instanceof TornRefusal) return null;
-    return errorCodes(err);
+    const codes = errorCodes(err);
+    // A failure with no code of its own (a plain Error) is still said, never
+    // reported as an empty reason.
+    return codes.code === undefined && codes.causeCode === undefined ? { code: 'uncoded' } : codes;
   }
   // Unreachable while the source always fails; said rather than assumed.
   return { code: 'not-torn' };

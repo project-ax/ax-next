@@ -573,9 +573,15 @@ describe('the chat file chip download route', () => {
   it('404s a file that is gone (the reader says `absent`, as it does for a link)', async () => {
     standardBus();
     files.delete(KEY);
+    const info = vi.spyOn(initCtx.logger, 'info').mockImplementation(() => undefined);
     const d = await download({ conversationId: 'c1', '*': SPLAT });
     expect(d.captured.statusCode).toBe(404);
     expectTorn(d, 404, 'file-not-found');
+    // The chip's route says the refusal on its own logger too (TASK-1025).
+    expect(info.mock.calls).toEqual([
+      ['workspace_user_file_download_refused', { status: 404, reason: 'file-not-found' }],
+    ]);
+    info.mockRestore();
   });
 
   it('400s a key that is a folder now: not-a-file', async () => {

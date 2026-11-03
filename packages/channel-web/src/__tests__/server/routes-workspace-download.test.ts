@@ -741,6 +741,7 @@ describe('the download route', () => {
       mkRes({ failWith: Object.assign(new Error('write EPIPE'), { code: 'EPIPE' }) }),
     );
     await download('gone.md', mkRes({ clientLeavesAfter: 0 }));
+    await download('gone.md', mkRes({ failWith: bodyStreamError('client-stalled') }));
     // A torn refusal that went as planned says nothing more.
     await download('gone.md');
     const notTorn = 'workspace_user_file_download_refusal_not_torn';
@@ -749,8 +750,9 @@ describe('the download route', () => {
     ]);
     expect(info.mock.calls.filter((c) => c[0] === notTorn)).toEqual([
       [notTorn, { status: 404, reason: 'file-not-found', code: 'client-gone' }],
+      [notTorn, { status: 404, reason: 'file-not-found', code: 'client-stalled' }],
     ]);
-    expect(info.mock.calls.filter((c) => c[0] === 'workspace_user_file_download_refused')).toHaveLength(3);
+    expect(info.mock.calls.filter((c) => c[0] === 'workspace_user_file_download_refused')).toHaveLength(4);
     warn.mockRestore();
     info.mockRestore();
   });
@@ -1895,6 +1897,7 @@ describe('the download route over a real socket', () => {
       input.length === 0 && honest.kind === 'file' ? { ...honest, version: v('v2') } : honest;
     const b = await boot();
     const warn = vi.spyOn(initCtx.logger, 'warn');
+    const info = vi.spyOn(initCtx.logger, 'info');
     const sent: Array<{ status: number; incomplete: boolean }> = [];
     b.harness.bus.subscribe('http:response-sent', 'response-sent-observer', async (_ctx, payload) => {
       const { status, incomplete } = payload as { status: number; incomplete: boolean };
@@ -1920,9 +1923,13 @@ describe('the download route over a real socket', () => {
       { status: 409, incomplete: true },
       { status: 409, incomplete: false },
     ]);
-    // The cut was our own, so nothing says the refusal went out wrong.
+    // The cut was our own, so nothing says the refusal went out wrong, at
+    // either level.
     expect(warn.mock.calls.map((c) => c[0])).not.toContain('workspace_user_file_download_refusal_not_torn');
+    expect(info.mock.calls.map((c) => c[0])).not.toContain('workspace_user_file_download_refusal_not_torn');
+    expect(info.mock.calls.map((c) => c[0])).toContain('workspace_user_file_download_refused');
     warn.mockRestore();
+    info.mockRestore();
   });
 
   it('503s a read that throws over the wire, never a 500: torn to the real GET, whole to a probe', async () => {
@@ -2069,6 +2076,17 @@ describe('sendTornRefusal (TASK-1025)', () => {
   it('answers the codes when the cut was not its own (the client left first), and never rejects', async () => {
     const { res } = fakeRes(() => Object.assign(new Error('gone'), { code: 'client-gone' }));
     await expect(sendTornRefusal(res, 404, { error: 'file-not-found' })).resolves.toEqual({ code: 'client-gone' });
+  });
+
+  it('never rejects, even when the response throws before a byte is written, and says so by a code', async () => {
+    const res: Pick<StreamingDownloadResponse, 'status' | 'header' | 'bodyStream'> = {
+      status: () => {
+        throw new Error('response already finished');
+      },
+      header: () => res as StreamingDownloadResponse,
+      bodyStream: async () => undefined,
+    };
+    await expect(sendTornRefusal(res, 404, { error: 'file-not-found' })).resolves.toEqual({ code: 'uncoded' });
   });
 
   it('reports a body that was somehow not cut at all', async () => {

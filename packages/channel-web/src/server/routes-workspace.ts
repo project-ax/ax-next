@@ -27,7 +27,7 @@
  *        ?probe=1 on either download: the same answers up to the first byte,
  *        then 200 {downloadable:true} instead of the bytes (TASK-1022)
  *        Without it, a refusal goes out torn: its status, then a body cut
- *        short, so no browser can save it as the file (TASK-1025)
+ *        short, which every engine walked fails rather than saves (TASK-1025)
  * GET  /api/workspace/conversations/:conversationId/status/user-files/*
  *                                      — whether that chip's file is still
  *                                        there, reading none of it (TASK-1017)
@@ -2915,6 +2915,9 @@ export interface DownloadRouteResponse extends RouteResponse, StreamingDownloadR
   header(name: string, value: string): DownloadRouteResponse;
 }
 
+/** A real download's refusal whose cut was not our own (TASK-1025). */
+const REFUSAL_NOT_TORN = 'workspace_user_file_download_refusal_not_torn';
+
 /**
  * The response a REAL download's handler answers on (TASK-1025): the file, or
  * a torn refusal.
@@ -2931,9 +2934,10 @@ export interface DownloadRouteResponse extends RouteResponse, StreamingDownloadR
  *     `workspace_user_file_download_refused {status, reason}` (`reason` is its
  *     `error` code, `'unknown'` when that is not a string), and goes out torn,
  *     on the RAW response. If the cut was not our own, a second line says so,
- *     by codes only: info for a client that left first (`client-gone` /
- *     `client-stalled`, ordinary life, as on a download), warn for anything
- *     else (a write failure, or a refusal that was somehow not torn).
+ *     by codes only: info for a client that left (`client-gone`) or stopped
+ *     reading and was cut off (`client-stalled`), ordinary life as on a
+ *     download; warn for anything else (a write failure, or a refusal that
+ *     was somehow not torn).
  *   - `bodyStream` passes through: that is the file.
  *   - `text` and `end` throw: a real download answers with the file or a
  *     refusal, and nothing else.
@@ -2943,9 +2947,6 @@ export interface DownloadRouteResponse extends RouteResponse, StreamingDownloadR
  * there was none), so the handler can await it, and `http:response-sent`
  * reports the refusal as `incomplete`.
  */
-/** A real download's refusal whose cut was not our own (TASK-1025). */
-const REFUSAL_NOT_TORN = 'workspace_user_file_download_refusal_not_torn';
-
 function realDownloadResponse(
   res: DownloadRouteResponse,
   logger: Pick<AgentContext['logger'], 'info' | 'warn'>,
@@ -8049,8 +8050,8 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
      * say a 404, a 409 or a 413 in words.
      *
      * Without `?probe`, every refusal (the ACL's too) goes out torn: its
-     * status, then a body cut short, so no browser can save it as the file
-     * (`realDownloadResponse`, TASK-1025).
+     * status, then a body cut short, which every engine walked fails rather
+     * than saves (`realDownloadResponse`, TASK-1025).
      */
     async agentUserFileDownload(
       req: RouteRequest,
