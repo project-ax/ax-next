@@ -66,32 +66,50 @@ describe('createLogger', () => {
       expect('code' in logErr(new Error('plain'))).toBe(false);
     });
 
-    it('includes an Error cause with its name, message, code and stack', () => {
-      const root = Object.assign(new Error('relation "skills" does not exist'), { code: '42P01' });
+    it("includes an Error cause's name, code and stack frames", () => {
+      const root = Object.assign(new TypeError('relation "skills" does not exist'), {
+        code: '42P01',
+      });
       const wrapped = Object.assign(new Error('skills:upsert failed', { cause: root }), {
         code: 'unknown',
       });
       const s = logErr(wrapped);
       expect(s.code).toBe('unknown');
-      expect(s.cause).toMatchObject({
-        name: 'Error',
-        message: 'relation "skills" does not exist',
-        code: '42P01',
+      const cause = s.cause as Record<string, unknown>;
+      expect(cause).toMatchObject({ name: 'TypeError', code: '42P01' });
+      // The frames say WHERE it was thrown: this test file.
+      expect(cause.frames).toMatch(/^\s+at .*context\.test\.ts/);
+    });
+
+    it("never writes the cause's message, not even via its stack header", () => {
+      // credential-proxy wraps a resolver error whose message can carry an
+      // OAuth server's error_description under FIXED outer text, because the
+      // inner text is not loggable. The logger must not undo that.
+      const secret = 'invalid_grant: refresh token rt_SECRET_123 revoked';
+      const wrapped = new Error('a session credential could not be resolved', {
+        cause: new Error(secret),
       });
-      expect(typeof (s.cause as { stack?: unknown }).stack).toBe('string');
+      const out: string[] = [];
+      createLogger({ reqId: 'r', writer: (line) => out.push(line) }).error('boom', { err: wrapped });
+      expect(out[0]).not.toContain('rt_SECRET_123');
+      const cause = (JSON.parse(out[0]!).err as { cause: Record<string, unknown> }).cause;
+      expect('message' in cause).toBe(false);
+      expect('stack' in cause).toBe(false);
     });
 
     it('stops at one level of cause', () => {
-      const deepest = new Error('deepest');
-      const middle = new Error('middle', { cause: deepest });
+      const deepest = Object.assign(new Error('deepest'), { code: 'DEEP' });
+      const middle = new RangeError('middle', { cause: deepest });
       const top = new Error('top', { cause: middle });
       const s = logErr(top);
-      expect((s.cause as Record<string, unknown>).message).toBe('middle');
-      expect('cause' in (s.cause as Record<string, unknown>)).toBe(false);
+      const cause = s.cause as Record<string, unknown>;
+      expect(cause.name).toBe('RangeError');
+      expect('cause' in cause).toBe(false);
+      expect(JSON.stringify(s)).not.toContain('DEEP');
     });
 
-    it('keeps a primitive cause and drops an object one', () => {
-      expect(logErr(new Error('a', { cause: 'socket hang up' })).cause).toBe('socket hang up');
+    it('drops a non-Error cause', () => {
+      expect('cause' in logErr(new Error('a', { cause: 'socket hang up' }))).toBe(false);
       expect('cause' in logErr(new Error('b', { cause: { secret: 'x' } }))).toBe(false);
     });
 
@@ -99,7 +117,7 @@ describe('createLogger', () => {
       const e = new Error('loop');
       (e as { cause?: unknown }).cause = e;
       const s = logErr(e);
-      expect((s.cause as Record<string, unknown>).message).toBe('loop');
+      expect((s.cause as Record<string, unknown>).name).toBe('Error');
     });
   });
 

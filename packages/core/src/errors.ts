@@ -75,8 +75,11 @@ export class PluginError extends Error {
     if (opts.reasonCode !== undefined) this.reasonCode = opts.reasonCode;
   }
 
-  // `cause` is intentionally omitted from toJSON() to keep stack traces out of
-  // structured logs; callers that need the cause can still read err.cause.
+  // `cause` is intentionally omitted from toJSON() (the shape a nested
+  // PluginError serializes to). Callers that need the cause can still read
+  // err.cause. A PluginError logged as a top-level field goes through the core
+  // logger's serializeError instead, which writes one level of cause as
+  // name/code/stack frames and never its message (TASK-1028).
   toJSON(): Record<string, unknown> {
     const out: Record<string, unknown> = {
       name: this.name,

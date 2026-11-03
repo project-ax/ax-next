@@ -271,9 +271,12 @@ describe('ACL / ownership lookup failures (TASK-1028)', () => {
       expect(line).toBeDefined();
       expect(line!.level).toBe('error');
       expect(line!.hook).toBe(site.hook);
-      const err = line!.err as { code?: string; cause?: { message?: string } };
+      const err = line!.err as { code?: string; message?: string; cause?: { name?: string } };
       expect(err.code).toBe('unknown');
-      expect(err.cause?.message).toContain('10.0.0.7');
+      // The operator log says what failed: the bus's wrapper message carries
+      // the store's text, and the cause is the original Error.
+      expect(err.message).toContain('10.0.0.7');
+      expect(err.cause?.name).toBe('Error');
     });
 
     it('a PluginError with a non-caller code (internal) is also a logged 500', async () => {
