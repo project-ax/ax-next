@@ -135,7 +135,12 @@ export function createMemoryEventsHandler(deps: MemoryEventsHandlerDeps) {
         res.status(404).json({ error: 'conversation-not-found' });
         return;
       }
-      throw err;
+      initCtx.logger.error('memory_events_conversation_lookup_failed', {
+        hook: 'conversations:get',
+        err,
+      });
+      res.status(500).json({ error: 'internal' });
+      return;
     }
 
     // 3) The conversation's agent must still be reachable by this user.

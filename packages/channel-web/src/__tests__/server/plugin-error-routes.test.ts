@@ -222,6 +222,18 @@ const SITES: Site[] = [
     },
   },
   {
+    name: 'memory-events / conversations:get',
+    hook: 'conversations:get',
+    event: 'memory_events_conversation_lookup_failed',
+    run: async (bus) => {
+      const handle = createMemoryEventsHandler({ bus, initCtx });
+      const { res, captured } = fakeRes();
+      await handle(fakeReq(undefined, { id: 'cnv1' }), res);
+      return captured;
+    },
+    codes: { 'not-found': NOT_FOUND_CONV, forbidden: NOT_FOUND_CONV },
+  },
+  {
     name: 'memory-events / agents:resolve',
     hook: 'agents:resolve',
     event: 'memory_events_agent_resolve_failed',

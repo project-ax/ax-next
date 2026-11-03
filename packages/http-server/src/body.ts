@@ -40,6 +40,10 @@ function bodyGoneError(req: http.IncomingMessage): Error | null {
  */
 export function readBodyCapped(req: http.IncomingMessage, maxBytes: number): Promise<Buffer> {
   return new Promise<Buffer>((resolve, reject) => {
+    // Before the Content-Length 413 check, as in ipc-core: a request that is
+    // already gone can't receive a 413 either, so an oversized one whose
+    // client hung up rejects with the gone error (handle() rethrows it to the
+    // catch-all), not BodyTooLargeError.
     const gone = bodyGoneError(req);
     if (gone !== null) {
       reject(gone);
