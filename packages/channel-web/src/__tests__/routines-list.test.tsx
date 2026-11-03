@@ -148,31 +148,19 @@ describe('routine list', () => {
     expect(screen.getByText(/Paste the signing secret from the other app’s webhook settings/)).toHaveTextContent('Without a secret, updates aren’t checked.');
     expect(screen.queryByText(/set up to always check signatures/)).not.toBeInTheDocument();
   });
-  // A scheduled legacy routine can save with its app updates off, so turning them off and back on works.
+  // A setting saved before TASK-1026 is ignored (TASK-1027): only a saved secret turns checks on.
   const legacyScheduled = { ...row, schedule: { kind: 'interval' as const, every: '1h' }, webhook: { kind: 'webhook' as const, path: '/member', hmac: { app: 'stripe' as const } } };
-  it('tells the owner of a scheduled legacy routine that it always checks signatures, and how to stop', async () => {
-    vi.mocked(routineApi.list).mockResolvedValue([legacyScheduled]);
+  it.each([
+    ['scheduled', legacyScheduled],
+    ['app-only', { ...legacyScheduled, schedule: null }],
+  ])('shows a %s routine saved with a signature setting the same help as any routine (TASK-1027)', async (_name, legacy) => {
+    vi.mocked(routineApi.list).mockResolvedValue([legacy]);
     show(); await screen.findByText(row.name);
     fireEvent.click(screen.getByRole('button', { name: `Recent runs for ${row.name}` }));
     await screen.findByText('Signing secret');
-    const note = screen.getByText(/This routine was set up to always check signatures/);
-    expect(note).toHaveTextContent('To stop checking, turn off its app updates and save, then turn them back on.');
-    expect(note).toHaveTextContent('Paste the new one into the other app, because the old one stops working.');
-    expect(note).not.toHaveTextContent('delete this routine');
-    expect(screen.getByText(/Paste the signing secret from the other app’s webhook settings/)).toBeInTheDocument();
-    expect(screen.queryByText(/Without a secret, updates aren’t checked/)).not.toBeInTheDocument();
-  });
-  // An app-only routine can't save with its app updates off ("Choose a schedule or updates from another app"),
-  // so the only way to stop checking is a fresh routine, which gets a fresh address and secret slot.
-  it('tells the owner of an app-only legacy routine to delete and recreate it to stop checking', async () => {
-    vi.mocked(routineApi.list).mockResolvedValue([{ ...legacyScheduled, schedule: null }]);
-    show(); await screen.findByText(row.name);
-    fireEvent.click(screen.getByRole('button', { name: `Recent runs for ${row.name}` }));
-    await screen.findByText('Signing secret');
-    const note = screen.getByText(/This routine was set up to always check signatures/);
-    expect(note).toHaveTextContent('To stop checking, delete this routine and create it again. The new one gets a new address, so paste that into the other app.');
-    expect(note).not.toHaveTextContent('turn off its app updates');
-    expect(screen.queryByText(/Without a secret, updates aren’t checked/)).not.toBeInTheDocument();
+    expect(screen.getByText(/Without a secret, updates aren’t checked/)).toBeVisible();
+    expect(screen.queryByText(/always check signatures/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/To stop checking/)).not.toBeInTheDocument();
   });
   it('opens a fresh edit and sends enable/delete revision checks with retry-stable IDs', async () => {
     vi.mocked(routineApi.remove)

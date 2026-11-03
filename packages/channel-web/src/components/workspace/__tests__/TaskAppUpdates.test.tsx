@@ -41,22 +41,17 @@ describe('private task app setup', () => {
     expect(screen.queryByText(legacyNote)).not.toBeInTheDocument();
     expect(screen.getByText(unchecked)).toBeVisible();
   });
-  it('explains that a legacy task always checks signatures, and how to stop', async () => {
+  it.each([
+    ['scheduled', {}],
+    ['app-only', { kind: 'repeat' as const, goodWhen: null, schedule: null }],
+  ])('shows a %s task saved with a signature setting the same help as any task (TASK-1027)', async (_name, patch) => {
+    vi.mocked(routineApi.get).mockResolvedValue({ ...row, ...patch, webhook: { kind: 'webhook', path: '/updates', hmac: { app: 'slack' } } });
     show(); await screen.findByLabelText('Webhook URL');
-    expect(screen.getByText(legacyNote)).toBeVisible();
-    expect(screen.getByText(legacyNote)).toHaveTextContent('To stop checking, turn off its app updates and save, then turn them back on.');
-    expect(screen.getByText(legacyNote)).toHaveTextContent('Paste the new one into the other app, because the old one stops working.');
-    expect(screen.getByText(legacyNote)).not.toHaveTextContent('delete this task');
     expect(screen.getByText(helpText)).toBeVisible();
-    // A legacy task's updates are never unchecked, so the help can't say they are.
-    expect(screen.queryByText(unchecked)).not.toBeInTheDocument();
-  });
-  it('tells an app-only legacy task to delete and recreate it, since it can’t save without app updates', async () => {
-    vi.mocked(routineApi.get).mockResolvedValue({ ...row, kind: 'repeat', goodWhen: null, schedule: null });
-    show(); await screen.findByLabelText('Webhook URL');
-    expect(screen.getByText(legacyNote)).toHaveTextContent('To stop checking, delete this task and create it again.');
-    expect(screen.getByText(legacyNote)).toHaveTextContent('paste that into the other app');
-    expect(screen.getByText(legacyNote)).not.toHaveTextContent('turn off its app updates');
+    expect(screen.getByText(unchecked)).toBeVisible();
+    expect(screen.queryByText(legacyNote)).not.toBeInTheDocument();
+    expect(screen.queryByText(/To stop checking/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/delete this task/)).not.toBeInTheDocument();
   });
   it('says when secret management is unavailable', async () => {
     vi.mocked(routineApi.get).mockResolvedValue({ ...row, permissions: { ...row.permissions, manageSecret: false } });
