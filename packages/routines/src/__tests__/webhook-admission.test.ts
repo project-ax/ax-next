@@ -206,16 +206,19 @@ describe('a 503 logs its code, never its message (TASK-1027)',()=>{
     expect(logged()).not.toContain('PRIVATE');
     expect(entries(logged(),'routines_webhook_admission_failed')).toEqual([]);
   });
-  // TASK-1033: the drain that follows an accepted repeat update says its code too, still answering 202.
-  it.each([
-    ['a plugin error',failure('timeout','PRIVATE drain detail'),{code:'timeout'}],
-    ['an error with no code',new Error('PRIVATE drain detail'),{}],
-  ] as const)('logs %s from a failed drain without its message',async(_name,error,code)=>{
-    const logged=captureStdout(),f=fixture('accepted',plain);
-    f.pump.mockRejectedValueOnce(error);
-    const r=response();await f.handler(request(),r.res);
-    expect(r.state.code).toBe(202);
-    expect(logged()).not.toContain('PRIVATE');
-    expect(entries(logged(),'repeat_queue_drain_failed')).toStrictEqual([{msg:'repeat_queue_drain_failed',level:'warn',agentId:'a',routineId:'r',...code}]);
+  // Not a 503: the update is already admitted, so the sender gets its 202 and only the log says the drain failed.
+  describe('the drain after an accepted repeat update logs its code too (TASK-1033)',()=>{
+    it.each([
+      ['a plugin error',failure('timeout','PRIVATE drain detail'),{code:'timeout'}],
+      ['a database error',Object.assign(new Error('PRIVATE drain detail'),{code:'40P01'}),{code:'40P01'}],
+      ['an error with no code',new Error('PRIVATE drain detail'),{}],
+    ] as const)('logs %s from a failed drain without its message, still answering 202',async(_name,error,code)=>{
+      const logged=captureStdout(),f=fixture('accepted',plain);
+      f.pump.mockRejectedValueOnce(error);
+      const r=response();await f.handler(request(),r.res);
+      expect(r.state.code).toBe(202);
+      expect(logged()).not.toContain('PRIVATE');
+      expect(entries(logged(),'repeat_queue_drain_failed')).toStrictEqual([{msg:'repeat_queue_drain_failed',level:'warn',agentId:'a',routineId:'r',...code}]);
+    });
   });
 });

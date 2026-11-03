@@ -351,21 +351,28 @@ describe('task form More options', () => {
   // TASK-1033. Saving a repeat task without its app updates cancels any still waiting to run
   // (the host invalidates them as `job-changed`), so the switch says so before anyone flips it.
   it('warns that turning off a repeat task’s app updates cancels the ones still waiting', async () => {
-    const warning = 'Turning this off cancels any updates still waiting to run.';
+    const warning = 'Saving with this off cancels any updates still waiting to run.';
     await edit({ ...routineFixture, webhook: { kind: 'webhook', path: '/updates' } });
     fireEvent.click(screen.getByRole('button', { name: 'App updates: On' }));
     expect(await screen.findByText(warning)).toBeVisible();
-    fireEvent.click(screen.getByRole('switch', { name: 'When another app sends an update' }));
+    const toggle = screen.getByRole('switch', { name: 'When another app sends an update' });
+    expect(toggle).toHaveAccessibleDescription(warning);
+    fireEvent.click(toggle);
     // Still said once it's off: nothing is cancelled until the save.
     expect(screen.getByText(warning)).toBeVisible();
   });
   it.each([
-    ['a task', { ...task, webhook: { kind: 'webhook' as const, path: '/updates' } }],
-    ['a repeat task saved without app updates', routineFixture],
-  ])('gives no waiting-updates warning for %s', async (_label, view) => {
+    ['a task', { ...task, webhook: { kind: 'webhook' as const, path: '/updates' } }, null],
+    ['a repeat task saved without app updates', routineFixture, null],
+    // Its waiting updates are task events, which a switch to Repeat doesn't cancel.
+    ['a task switched to Repeat', { ...task, webhook: { kind: 'webhook' as const, path: '/updates' } }, 'Repeat'],
+    // Saved as a repeat, but saved as a task its queue isn't dropped by turning updates off.
+    ['a repeat task switched to a task kind', { ...routineFixture, webhook: { kind: 'webhook' as const, path: '/updates' } }, 'Stay on top'],
+  ])('gives no waiting-updates warning for %s', async (_label, view, kind) => {
     await edit(view);
+    if (kind !== null) fireEvent.click(screen.getByRole('radio', { name: kind }));
     fireEvent.click(screen.getByRole('button', { name: /^App updates: / }));
-    await screen.findByRole('switch', { name: 'When another app sends an update' });
+    expect(await screen.findByRole('switch', { name: 'When another app sends an update' })).not.toHaveAccessibleDescription(/still waiting/);
     expect(screen.queryByText(/still waiting to run/)).not.toBeInTheDocument();
   });
 
@@ -481,6 +488,24 @@ describe('task form save refusals', () => {
     await waitFor(() => expect(chip).toHaveAccessibleDescription(words));
     expect(chip).toHaveClass('border-destructive');
     expect(screen.queryByText(/response time/)).not.toBeInTheDocument();
+  });
+  // The refusal says "Try again in a moment", so the retry is the expected next press. While it
+  // is in flight no refusal is current: the chip says nothing rather than a validation hint.
+  it('drops the refusal from the chip while the retry is saving', async () => {
+    vi.mocked(routineApi.update)
+      .mockRejectedValueOnce(new RoutineApiError(409, 'cleanup-pending', 'webhook.hmac'))
+      .mockReturnValueOnce(new Promise(() => {}));
+    await edit(task);
+    fireEvent.click(screen.getByRole('button', { name: 'App updates: Off' }));
+    fireEvent.click(screen.getByRole('switch', { name: 'When another app sends an update' }));
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: 'Escape' });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    const chip = await screen.findByRole('button', { name: /^App updates: On/ });
+    await waitFor(() => expect(chip).toHaveClass('border-destructive'));
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(routineApi.update).toHaveBeenCalledTimes(2));
+    expect(screen.queryByText(/response time/)).not.toBeInTheDocument();
+    expect(chip).not.toHaveClass('border-destructive');
   });
 
   it('says a failure that wasn’t the host’s answer plainly, without its text', async () => {
