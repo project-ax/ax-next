@@ -178,6 +178,40 @@ describe('createLogger', () => {
       const c = logErr(new Error('outer', { cause: inner })).cause as Record<string, string>;
       expect(c.name!.length).toBe(100);
       expect(c.code!.length).toBe(100);
+
+      const pe = new PluginError({
+        code: 'unknown',
+        plugin: 'P'.repeat(500),
+        hookName: 'H'.repeat(500),
+        message: 'wrapped',
+      });
+      const p = logErr(new Error('outer', { cause: pe })).cause as Record<string, string>;
+      expect(p.plugin!.length).toBe(100);
+      expect(p.hookName!.length).toBe(100);
+    });
+
+    it('writes no frames for a non-string cause message (an array merged onto an Error)', () => {
+      // V8 stringifies the array into the header, where a frame-shaped line
+      // can't be told from a real one.
+      const inner = Object.assign(new Error('Request failed'), {
+        message: ['email invalid', 'x\n  at rt_SECRET_ARR'],
+      });
+      inner.stack = `Error: email invalid,x\n  at rt_SECRET_ARR\n    at real (file.js:1:1)`;
+      const s = logErr(new Error('outer', { cause: inner }));
+      expect(JSON.stringify(s)).not.toContain('rt_SECRET_ARR');
+    });
+
+    it('writes no frames for an empty message unless the header is the bare name', () => {
+      const blanked = new Error('secret\n  at rt_BLANKED');
+      void blanked.stack; // V8 builds the header now, from the secret message
+      blanked.message = '';
+      expect(JSON.stringify(logErr(new Error('outer', { cause: blanked })))).not.toContain(
+        'rt_BLANKED',
+      );
+
+      const empty = new Error('');
+      const c = logErr(new Error('outer', { cause: empty })).cause as Record<string, unknown>;
+      expect(c.frames).toMatch(/^\s+at .*context\.test\.ts/);
     });
 
     it('stops at one level of cause', () => {
