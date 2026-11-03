@@ -12,13 +12,15 @@
 // and yolo-ship skills and two plans. scripts/memory-append-check.sh's R2 fix-it
 // message still prints it. That script is pinned by a blob-sha mutation row in
 // .claude/memory/decisions/2026-09-19-TASK-415.md, which only a human
-// `Memory-Rewrite` pass may update, so it is fixed separately.
+// `Memory-Rewrite` pass may update, so it is left for a human follow-up.
 // Agents wrote the trap down in memory four times (TASK-696, TASK-816, TASK-951,
 // TASK-1028) before anyone fixed the source. bash does not tie `path`, so the snippet
 // looked fine to anyone reading it with bash in mind.
 //
 // What the scan flags, on each line:
-//   - an assignment to a zsh-special name: at line start or after `;` `&` `|` `(`,
+//   - an assignment to a zsh-special name: at line start or after `;` `&&` `|` `(`
+//     or a backgrounding `& ` (a bare `&` is not a separator, so `?a=1&path=x` in a
+//     URL is not flagged),
 //     optionally behind export/local/typeset/declare/readonly and their flags, and
 //     including `name[i]=` and `name+=`;
 //   - `for <name> in`, in the same command positions;
@@ -28,12 +30,16 @@
 // `status` is included for assignments and loops: zsh makes it read-only, so
 // `status=$(…)` fails too. Reading `$status` is fine, so references to it aren't flagged.
 //
-// What it does NOT flag: `read … path` (prose like "read the path" would trip it) and
-// prose that quotes the broken form mid-sentence inside backticks.
+// What it does NOT flag: `read … path` (prose like "read the path" would trip it), and
+// an ASSIGNMENT quoted mid-sentence inside backticks. A backticked `$path` REFERENCE
+// is flagged on purpose. So is a JS template `${path}`. If a doc ever needs one,
+// rename the JS variable; that is cheaper than teaching this regex JavaScript.
 //
 // Scope: CLAUDE.md (and AGENTS.md, asserted to be a symlink to it), every markdown
 // file under .claude/skills/ and .claude/agents/, and the deploy/ and docs/runbooks/
-// markdown that people run shell from. Out of scope: historical plans and memory rows.
+// markdown that people run shell from. Out of scope: historical plans, memory rows,
+// and the walk records under deploy/kind/walks/ (agent-written transcripts that must
+// stay verbatim, the same category as plans).
 // Plans contain JSX `path=` props, and memory rows quote the broken form to describe
 // the bug (and may not be edited anyway).
 //
@@ -56,7 +62,7 @@ const ZSH_TIED = ['path', 'fpath', 'cdpath', 'manpath', 'module_path', 'mailpath
 const ZSH_READONLY = ['status'];
 
 const SET_NAMES = [...ZSH_TIED, ...ZSH_READONLY].join('|');
-const CMD_START = String.raw`(?:^|[;&|(])\s*`;
+const CMD_START = String.raw`(?:^|[;|(]|&&|&(?=\s))\s*`;
 const DECL = String.raw`(?:(?:export|local|typeset|declare|readonly)(?:\s+-[A-Za-z]+)*\s+)?`;
 
 const PATTERNS = [
@@ -67,9 +73,8 @@ const PATTERNS = [
   { kind: 'loop', re: new RegExp(CMD_START + String.raw`for\s+(${SET_NAMES})\s+in\b`) },
   {
     kind: 'ref',
-    re: new RegExp(
-      String.raw`\$(?:(${ZSH_TIED.join('|')})(?![A-Za-z0-9_])|\{(${ZSH_TIED.join('|')})\})`,
-    ),
+    // `$path`, `${path}`, `${path%/*}`, `${path:-x}`, `${#path}`.
+    re: new RegExp(String.raw`\$\{?#?(${ZSH_TIED.join('|')})(?![A-Za-z0-9_])`),
   },
 ];
 
@@ -92,7 +97,12 @@ function scannedDocs() {
     ['ls-files', '-z', '.claude/skills', '.claude/agents', 'deploy', 'docs/runbooks'],
     { cwd: REPO_ROOT, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 },
   );
-  return ['CLAUDE.md', ...out.split('\0').filter((f) => f.endsWith('.md'))];
+  return [
+    'CLAUDE.md',
+    ...out
+      .split('\0')
+      .filter((f) => f.endsWith('.md') && !f.startsWith('deploy/kind/walks/')),
+  ];
 }
 
 function zshExists() {
@@ -132,6 +142,10 @@ describe('instruction docs: no zsh-special variable names', () => {
     expect(offenders).toEqual([]);
   });
 
+  // Deferred, not forgotten: that script's blob is pinned by a TASK-415 memory row,
+  // so changing it needs a human Memory-Rewrite pass (see the header).
+  it.todo('scripts/memory-append-check.sh R2 fix-it message uses target=, not path=');
+
   it('the memory recipe in CLAUDE.md and the claude-memory skill uses `target`', () => {
     for (const rel of ['CLAUDE.md', '.claude/skills/claude-memory/SKILL.md']) {
       const text = readFileSync(join(REPO_ROOT, rel), 'utf8');
@@ -155,11 +169,13 @@ describe('findZshNameHazards', () => {
       'ref:path',
     ]);
     expect(kinds('echo "${path}"')).toEqual(['ref:path']);
+    expect(kinds('d="${path%/*}"; e="${path:-x}"')).toEqual(['ref:path']);
   });
 
   it('flags mid-line, declared, indexed and appending assignments', () => {
     expect(kinds('cmd && path=$(x)')).toEqual(['assign:path']);
     expect(kinds('a; fpath=/x')).toEqual(['assign:fpath']);
+    expect(kinds('sleep 1 & path=/x')).toEqual(['assign:path']);
     expect(kinds('export fpath=/x')).toEqual(['assign:fpath']);
     expect(kinds('typeset -g path=/a')).toEqual(['assign:path']);
     expect(kinds('local -a cdpath=/x')).toEqual(['assign:cdpath']);
@@ -180,6 +196,8 @@ describe('findZshNameHazards', () => {
     expect(kinds('echo "$status"')).toEqual([]);
     expect(kinds('Never run `path=$(…)` under zsh.')).toEqual([]);
     expect(kinds('look for path in the config')).toEqual([]);
+    expect(kinds('curl "$BASE/api/files?agent=a&path=/notes.md"')).toEqual([]);
+    expect(kinds('gh api "runs?branch=main&status=completed"')).toEqual([]);
   });
 
   it('reports the line number', () => {
