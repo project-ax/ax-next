@@ -175,10 +175,13 @@ export function TaskForm({
   // Shown after the first press, then kept current as the person fixes them.
   const shown = useMemo(() => {
     const visible = new Map(attempted ? issues : []);
-    // The host named a field it refused; say so there, in our words.
-    if (refusedField !== null && refusedField !== 'form' && !visible.has(refusedField)) {
-      visible.set(refusedField, errorCode === 'webhook-path-conflict' && refusedField === 'address'
-        ? taskSaveError(errorCode, true) : plainIssue(refusedField, {}, agentName));
+    // The host named a field it refused; say so there, in our words. Only a validation refusal
+    // gets the field's own hint; any other code (an address another task holds, an old signing
+    // secret still being removed) says why the host refused, which the hint would not.
+    // A retry clears the code but not the field, so no code means no refusal is current.
+    if (errorCode !== null && refusedField !== null && refusedField !== 'form' && !visible.has(refusedField)) {
+      visible.set(refusedField, errorCode === 'validation'
+        ? plainIssue(refusedField, {}, agentName) : taskSaveError(errorCode, true));
     }
     return visible;
   }, [attempted, issues, refusedField, errorCode, agentName]);
@@ -266,6 +269,10 @@ export function TaskForm({
   // The task already has an address; a changed name is only a preview until saved.
   const hasAddress = mode === 'edit' && initial.webhook !== null;
   const savedWebhook = hasAddress && initial.webhook?.path === form.webhook?.path;
+  // A saved repeat task queues each update; saving it as a repeat without them cancels the ones still
+  // waiting. A saved task has no such queue (its updates are task events). A repeat saved as a task
+  // cancels its queue whatever this switch says, so "saving with this off" would mislead there.
+  const dropsWaiting = hasAddress && initial.kind === 'repeat' && !task;
   const respondLabel = RESPOND_PRESETS.find(item => item.value === respondPreset(form.webhook?.respondWithin))?.label
     ?? durationWords(form.webhook?.respondWithin ?? '5m');
   const showQuiet = form.kind === 'repeat' || form.silenceToken !== null || shown.has('quietWord');
@@ -427,8 +434,10 @@ export function TaskForm({
             invalid={invalid('updates')} describedBy={describedBy('updates')} buttonRef={register('updates')}>
             <Field orientation="horizontal">
               <FieldLabel htmlFor={`${id}-updates`}>When another app sends an update</FieldLabel>
-              <Switch id={`${id}-updates`} checked={updatesOn} disabled={disabled} onCheckedChange={toggleWebhook} />
+              <Switch id={`${id}-updates`} checked={updatesOn} disabled={disabled} onCheckedChange={toggleWebhook}
+                aria-describedby={dropsWaiting ? `${id}-updates-waiting` : undefined} />
             </Field>
+            {dropsWaiting && <FieldDescription id={`${id}-updates-waiting`}>Saving with this off cancels any updates still waiting to run.</FieldDescription>}
             {form.webhook !== null && task && (
               <Field>
                 <FieldLabel htmlFor={`${id}-respond`}>React within</FieldLabel>
