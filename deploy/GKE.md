@@ -772,9 +772,10 @@ error too. This step rewrites those old rows to the sentence the host writes now
 
 **When.** Once, on the first deploy that includes TASK-1036, after the host is
 running that release (`rollout status deploy/ax-next-host` has returned). Before
-then, the old code is still writing this kind of text. It's a one-off: before
-running it on any later release, have a developer re-check its list of messages
-to keep.
+then, the old code is still writing this kind of text. It's a one-off: the
+script keeps a list of the messages the app writes today, and a release that
+changes one needs that list updated first. Step 2 checks the release you
+deployed for that.
 
 **What people will see afterwards.** Old failed runs that showed internal text
 now show the fixed sentence, in run history and as the routine's last error
@@ -782,6 +783,8 @@ now show the fixed sentence, in run history and as the routine's last error
 interrupted and closed runs, app-update messages, and the messages about a
 task's instructions. So are `terminated: …` reasons. Those can still hold a
 runner's own error text, and a follow-up card decides what they should say.
+Old text that an agent already read may still be in that agent's conversation
+transcripts. This step doesn't touch those.
 
 **It prints counts, never text.** The old texts are what we're removing, and this
 output can end up in a ticket or a chat. Keep it that way: don't add a query
@@ -796,28 +799,64 @@ update is cancelled.
 written since, not just this ([Restoring for real](#restoring-for-real) has the
 database part).
 
-**Every command names its context**, as in
-[4f](#4f-reset-after-the-agent-files-cutover). Set it once, check it, then
-copy-paste:
+**Every `kubectl` command names its context, and every `gcloud` command names
+its project**, as in [4f](#4f-reset-after-the-agent-files-cutover). Set them
+once, check, then copy-paste:
 
 ```bash
 KCTX=<your GKE context>        # kubectl config get-contexts
 NS=ax-next
+PROJECT_ID=<your GCP project>  # the project that holds the ax-next-db Cloud SQL instance
 kubectl --context "$KCTX" get deploy ax-next-host -n "$NS"   # must be the cluster you mean
 ```
 
 #### Step 1: back up first
 
+First, make sure the instance you're about to back up is the database the app
+uses. The first line prints the instance's private IP. The second prints only
+the host from the app's database URL, never the URL itself, because the URL
+holds the password:
+
 ```bash
-gcloud sql backups create --instance=ax-next-db --project=$PROJECT_ID
-gcloud sql backups list --instance=ax-next-db --project=$PROJECT_ID --limit=1   # status SUCCESSFUL
+gcloud sql instances describe ax-next-db --project="$PROJECT_ID" --format='value(ipAddresses[0].ipAddress)'
+kubectl --context "$KCTX" get secret ax-next-db -n "$NS" -o jsonpath='{.data.url}' | base64 -d | sed -nE 's#^.*@([^:/?]+).*$#\1#p'; echo
+```
+
+The two must be the same address. If they differ, or either one is empty,
+stop: you can't be sure the backup below covers the database Step 4 changes.
+
+Then back up:
+
+```bash
+gcloud sql backups create --instance=ax-next-db --project="$PROJECT_ID"
+gcloud sql backups list --instance=ax-next-db --project="$PROJECT_ID" --limit=1   # status SUCCESSFUL
 ```
 
 Don't go on until the newest backup says `SUCCESSFUL`.
 
 #### Step 2: load the script
 
-From the repo root of a checkout of the release you just deployed:
+Work from the repo root of a checkout of the release you just deployed. First,
+check that nothing since the script last changed has changed what a failed run
+says:
+
+```bash
+git log -1 --oneline -- packages/routines/sql/scrub-leaked-run-errors.sql   # must print a commit
+git log --oneline "$(git log -1 --format=%H -- packages/routines/sql/scrub-leaked-run-errors.sql)"..HEAD -- packages/routines/src
+```
+
+The first command prints the commit that last changed the script. If it prints
+nothing, this checkout doesn't have the script: stop. (The second command would
+then list nothing, which looks like "all clear" but isn't.)
+
+The second command lists every later commit to the routines code. No output
+means you can go on. If it lists commits, ask a developer to look at them first. If
+any of them changes the text a failed run stores (in `fire.ts`, `tick.ts`,
+`brief.ts`, `store.ts`'s `finishDispatch`, `repeat-runtime.ts` or
+`repeat-deliveries.ts`), stop: the script's keep-list has to be updated first,
+or this step would rewrite a sentence the app writes today.
+
+Then load it:
 
 ```bash
 kubectl --context "$KCTX" create configmap run-error-scrub -n "$NS" \
@@ -831,7 +870,9 @@ command in Step 5) and create it again, so the pod runs this checkout's script.
 
 This changes nothing: the script counts inside a transaction, then rolls it
 back. The pod reads the database URL from the existing `ax-next-db` Secret, as
-in 4f, so no password goes on a command line or into a pod spec.
+in 4f. Inside the cluster, the password is in that pod's environment and on its
+psql command line. It never goes on your laptop's command line, into your shell
+history, or into the pod spec.
 
 ```bash
 kubectl --context "$KCTX" create -n "$NS" -f - <<'YAML'
@@ -860,7 +901,8 @@ spec:
           # libpq wants require.
           psql "${DATABASE_URL%%\?*}?sslmode=require" -X -v ON_ERROR_STOP=1 -f /sql/scrub.sql
 YAML
-kubectl --context "$KCTX" wait --for=jsonpath='{.status.phase}'=Succeeded pod/run-error-scrub-check -n "$NS" --timeout=120s
+kubectl --context "$KCTX" wait --for=jsonpath='{.status.phase}'=Succeeded pod/run-error-scrub-check -n "$NS" --timeout=120s \
+  || kubectl --context "$KCTX" describe pod run-error-scrub-check -n "$NS"
 kubectl --context "$KCTX" logs run-error-scrub-check -n "$NS"
 kubectl --context "$KCTX" delete pod run-error-scrub-check -n "$NS"
 ```
@@ -871,19 +913,30 @@ The log looks like this, with your numbers for `N` and `M`:
 SET
 SET
 BEGIN
+SET
 CREATE FUNCTION
 run-history rows with old error text: N
 routines with old error text: M
+old rows that look like a host sentence: 0
 Dry run: nothing was changed. Run again with -v apply=1 to rewrite them.
 ROLLBACK
 ```
 
 The bare `SET`, `BEGIN`, `CREATE FUNCTION` and `ROLLBACK` lines are psql
-reporting each statement it ran. They're expected. Write both counts down. If
-both are 0, there's nothing to rewrite: skip to the last command in Step 5.
+reporting each statement it ran. They're expected. Write the first two counts
+down. If both are 0, there's nothing to rewrite: skip to the last command in
+Step 5.
 
-If the wait times out, `kubectl --context "$KCTX" describe pod run-error-scrub-check -n "$NS"`
-says why; delete the pod either way.
+`old rows that look like a host sentence:` must be `0`. It counts the old rows
+that read like a sentence we wrote: they start with This, The, We or Your, and
+end with a full stop or an exclamation mark. A row like that most likely comes
+from a release that added a message the script's keep-list doesn't know, and
+the rewrite would replace that message. If the count isn't 0, stop and ask a
+developer to update the keep-list. Step 4 checks it again on its own, and
+refuses to write anything while it isn't 0.
+
+If the wait times out, the block prints the pod's `describe` output before it
+deletes the pod. That output and the log say why.
 
 #### Step 4: rewrite
 
@@ -918,7 +971,8 @@ spec:
           # libpq wants require.
           psql "${DATABASE_URL%%\?*}?sslmode=require" -X -v ON_ERROR_STOP=1 -v apply=1 -f /sql/scrub.sql
 YAML
-kubectl --context "$KCTX" wait --for=jsonpath='{.status.phase}'=Succeeded pod/run-error-scrub-apply -n "$NS" --timeout=120s
+kubectl --context "$KCTX" wait --for=jsonpath='{.status.phase}'=Succeeded pod/run-error-scrub-apply -n "$NS" --timeout=120s \
+  || kubectl --context "$KCTX" describe pod run-error-scrub-apply -n "$NS"
 kubectl --context "$KCTX" logs run-error-scrub-apply -n "$NS"
 kubectl --context "$KCTX" delete pod run-error-scrub-apply -n "$NS"
 ```
@@ -927,29 +981,32 @@ It worked only if both of these are true:
 
 - the wait printed `pod/run-error-scrub-apply condition met` (the pod
   `Succeeded`), and
-- the log has `routines rewritten:` and then `COMMIT` as its last line.
+- the log ends with `COMMIT`, right after `routines rewritten:`.
 
-A good log looks like this (each `UPDATE` line is psql again, with the number
-of rows that statement changed):
+A good log looks like this. Each `UPDATE` line is psql again, with the number
+of rows that statement changed: routines first, then run history.
 
 ```text
 SET
 SET
 BEGIN
+SET
 CREATE FUNCTION
 run-history rows with old error text: N
 routines with old error text: M
+old rows that look like a host sentence: 0
+UPDATE M
 UPDATE N
 run-history rows rewritten: N
-UPDATE M
 routines rewritten: M
 COMMIT
 ```
 
-`run-history rows rewritten:` on its own proves nothing. The script prints it
-before its second UPDATE and before `COMMIT`. If anything after it fails, psql
-stops, the pod ends `Failed`, and the database rolls back the whole
-transaction, so nothing was written.
+The `rewritten:` lines on their own prove nothing. The script prints them
+before `COMMIT`. If anything fails before the commit goes through, psql stops,
+the pod ends `Failed`, and the database rolls back the whole transaction, so
+nothing was written. Only a log that ends with `COMMIT` means the rewrite went
+through.
 
 Expect `run-history rows rewritten:` to match Step 3's first count (it's lower
 only if someone deleted an agent in between). `routines rewritten:` can be
@@ -957,21 +1014,31 @@ lower than the second count: a routine that ran again since Step 3 already has
 new text.
 
 **If the wait times out, stop.** Don't run this step again until you know why.
-The log says why, and so does `describe` while the pod is still there:
+The block printed the pod's `describe` output before it deleted the pod, and
+that output and the log say why:
 
-```bash
-kubectl --context "$KCTX" describe pod run-error-scrub-apply -n "$NS"
-```
+- **The script stopped itself.** The log has this line:
+  `Stopped: some rows look like a sentence this script does not know. Ask a developer to update its keep-list.`
+  The third count wasn't 0, so it refused to write. Nothing was written. Don't
+  run it again: ask a developer to update the keep-list (Step 3 explains this
+  count).
+- **A deadlock or a lock timeout.** The log has `deadlock detected` or
+  `canceling statement due to lock timeout`. The app was changing one of the
+  same rows at that moment, for example deleting an agent. The script waits at
+  most 5 seconds for a row rather than hold things up. Nothing was written, and
+  it's safe to run Step 4 again.
+- **Any other error in a `Failed` pod.** Nothing was written. Find out why
+  before you try again.
+- **The pod was still `Pending` or `Running`** when the wait gave up. It may
+  have finished before the block deleted it.
 
-A `Failed` pod wrote nothing. A pod that was only slow (still `Pending` or
-`Running` when the wait gave up) may have finished afterwards. Either way, once
-the apply pod is deleted, the Step 3 dry run shows where you are. The scrub is
-all or nothing: two zeros mean the rewrite went through, and any other counts
-mean nothing was written.
+Either way, once the apply pod is deleted, the Step 3 dry run shows where you
+are. The scrub is all or nothing: if the first two counts are 0, the rewrite
+went through, and any other counts mean nothing was written.
 
 #### Step 5: verify and clean up
 
-- Run Step 3 again. Both counts must be `0`. If either isn't, stop and look
+- Run Step 3 again. All three counts must be `0`. If any isn't, stop and look
   before running anything else: either Step 4 didn't commit, or something is
   still writing the old kind of text.
 - In the app, open a task whose run failed before the deploy. In its run
