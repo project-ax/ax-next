@@ -189,6 +189,15 @@ export function runFailedText(err: unknown): string {
 }
 const OWNER_CODE_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,39}$/;
 
+/** The store's `RUN_CLOSED` refusal, read without trusting the error's getters. */
+function isRunClosed(err: unknown): boolean {
+  try {
+    return err instanceof Error && err.message === RUN_CLOSED;
+  } catch {
+    return false;
+  }
+}
+
 export function createFireRoutine(deps: FireDeps) {
   const lifetime = deps.lifetime ?? createRoutineLifetime();
   const fire = async (accepted: AcceptedDispatch, payload?: unknown): Promise<FireResult> => {
@@ -197,12 +206,18 @@ export function createFireRoutine(deps: FireDeps) {
     const fail = async (err: unknown, agentGone = false): Promise<FireResult> => {
       // The store's own fixed sentence for a run that closed before its bind
       // (TASK-907) is kept: channel-web words a check-in by it.
-      const error = source === 'webhook' ? 'This app update could not run.'
-        : err instanceof Error && err.message === RUN_CLOSED ? RUN_CLOSED : runFailedText(err);
+      // A closed run is an expected race (stopped, or its agent retired,
+      // between accept and bind), so it is a warning, not an error.
+      const closed = isRunClosed(err);
+      const error = source === 'webhook' ? 'This app update could not run.' : closed ? RUN_CLOSED : runFailedText(err);
       if (agentGone) await deps.purgeAgent(row.agentId);
       else {
-        await deps.store.finishDispatch({ dispatchId, outcome: { status: 'error', error, conversationId: null, renderedPrompt: null, warning: row.lastWarning } });
-        logFault('routines_fire_failed', err);
+        // `finally`: if recording fails too, the original failure is still logged.
+        try {
+          await deps.store.finishDispatch({ dispatchId, outcome: { status: 'error', error, conversationId: null, renderedPrompt: null, warning: row.lastWarning } });
+        } finally {
+          logFault('routines_fire_failed', err, closed ? 'warn' : 'error');
+        }
       }
       return { status: 'error', error, conversationId: null, renderedPrompt: null, ...(agentGone ? { agentGone: true as const } : {}) };
     };
@@ -214,11 +229,11 @@ export function createFireRoutine(deps: FireDeps) {
     });
     // The detail of a host failure: codes always, the error itself except for
     // a webhook fire (whose failures are kept to codes, like its stored text).
-    // Called after the run is recorded, and never throws: an error's getters
-    // are arbitrary, and a failed log line must not cost the run its row.
-    function logFault(event: 'routines_fire_failed' | 'routines_fire_invoke_failed', err: unknown): void {
+    // Never throws: an error's getters are arbitrary, and a failed log line
+    // must not cost the run its row.
+    function logFault(event: 'routines_fire_failed' | 'routines_fire_invoke_failed', err: unknown, level: 'warn' | 'error' = 'error'): void {
       try {
-        baseCtx.logger.error(event, {
+        baseCtx.logger[level](event, {
           agentId: row.agentId, routineId: row.routineId, source,
           ...faultLogFields(err), ...(source === 'webhook' ? {} : { err }),
         });

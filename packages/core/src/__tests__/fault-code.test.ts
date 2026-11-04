@@ -44,6 +44,14 @@ describe('faultLogFields', () => {
     expect(JSON.stringify(out)).not.toContain('secret');
   });
 
+  it('drops a single-token secret in any field', () => {
+    for (const secret of ['postgres://admin:hunter2@db.internal:5432/prod', 'alice.smith@example.com', 'home/alice/.ssh/id_rsa']) {
+      const inner = Object.assign(new Error('x'), { code: secret, name: secret });
+      const outer = Object.assign(new PluginError({ code: secret, plugin: secret, hookName: secret, message: 'x', cause: inner }), { name: secret });
+      expect(JSON.stringify(faultLogFields(outer))).not.toContain(secret);
+    }
+  });
+
   it('answers nothing for a non-Error', () => {
     expect(faultLogFields('boom')).toEqual({});
     expect(faultLogFields(undefined)).toEqual({});

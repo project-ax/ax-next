@@ -37,6 +37,8 @@ async function setup(options: {
   grace?: number;
   definition?: object;
   bind?: () => Promise<void>;
+  /** TASK-1031. Stands in for the store's write of the fire's row. */
+  finish?: () => Promise<boolean>;
   reports?: () => Promise<Array<{ firedAt: Date; report: FireReport }>>;
   replies?: (input: { agentId: string; routineId: string; actorUserId: string; limit: number }) => Promise<StoredReply[]>;
   /** TASK-991. Stands in for the store's read of the routine's last completed run. */
@@ -66,7 +68,7 @@ async function setup(options: {
   bus.registerService('conversations:create', 'test', conversation);
   bus.registerService('conversations:find-or-create', 'test', shared);
   bus.registerService('credentials:delete', 'test', async () => undefined);
-  const store = { ...f.store, ...(options.bind ? { bindDispatchConversation: options.bind } : {}), ...(options.reports ? { recentReports: options.reports } : {}),
+  const store = { ...f.store, ...(options.bind ? { bindDispatchConversation: options.bind } : {}), ...(options.finish ? { finishDispatch: options.finish } : {}), ...(options.reports ? { recentReports: options.reports } : {}),
     ...(options.replies ? { recentReplies: options.replies } : {}), ...(options.lastCompletedRun ? { lastCompletedRun: options.lastCompletedRun } : {}) };
   const fire = createFireRoutine({ bus, pending, store, purgeAgent: agentId => purgeRoutineAgent({ bus, store: f.store, pending, agentId }), turnEndGraceMs: options.grace ?? 60000 });
   cleanups.push(async () => { pending.clear(); await fire.shutdown(); });
@@ -133,6 +135,30 @@ describe('accepted DB fire dispatch', () => {
     const h = await setup({ bind: async () => { throw new Error(RUN_CLOSED); } });
     expect(await h.fire(h.accepted)).toMatchObject({ status: 'error', error: RUN_CLOSED });
     expect((await f.store.recentFires(h.row))[0]?.error).toBe(RUN_CLOSED);
+  });
+  it('still logs the original failure when recording it fails too', async () => {
+    const h = await setup({
+      resolveError: new PluginError({ code: 'forbidden', plugin: 'teams', message: 'denied' }),
+      finish: async () => { throw new Error('database unavailable'); },
+    });
+    const lines = await stdoutOf(() => h.fire(h.accepted).then(() => undefined, () => undefined));
+    const logged = lines.filter((l) => l.includes('routines_fire_failed')).map((l) => JSON.parse(l) as Record<string, unknown>);
+    expect(logged).toHaveLength(1);
+    expect(logged[0]).toMatchObject({ level: 'error', code: 'forbidden' });
+  });
+  it('a closed run is logged as a warning, not an error', async () => {
+    const h = await setup({ bind: async () => { throw new Error(RUN_CLOSED); } });
+    const lines = await stdoutOf(() => h.fire(h.accepted).then(() => undefined));
+    const logged = lines.filter((l) => l.includes('routines_fire_failed')).map((l) => JSON.parse(l) as Record<string, unknown>);
+    expect(logged).toHaveLength(1);
+    expect(logged[0]?.level).toBe('warn');
+  });
+  it('a hostile message getter still records the run', async () => {
+    const hostile = new PluginError({ code: 'forbidden', plugin: 'teams', message: 'denied' });
+    Object.defineProperty(hostile, 'message', { get() { throw new Error('getter'); } });
+    const h = await setup({ resolveError: hostile });
+    await stdoutOf(() => h.fire(h.accepted).then(() => undefined));
+    expect((await f.store.recentFires(h.row))[0]?.error).toBe('This run failed because of a problem on our side (code: forbidden).');
   });
   it('a log line that throws does not cost the run its row', async () => {
     const hostile = new PluginError({ code: 'forbidden', plugin: 'teams', message: 'denied' });

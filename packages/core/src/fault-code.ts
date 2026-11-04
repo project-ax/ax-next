@@ -1,8 +1,12 @@
 import { PluginError } from './errors.js';
 import { SafeToolError } from './safe-tool-error.js';
 
-/** An identifier, not prose: a PluginError code, a SQLSTATE, a Node errno, a hook or plugin name. */
-const CODE_RE = /^[A-Za-z0-9@][A-Za-z0-9_.:/@-]{0,99}$/;
+/** An identifier, not prose: a PluginError code, a SQLSTATE, a Node errno, a hook name. */
+const CODE_RE = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$/;
+/** A JS identifier: an Error class name. */
+const NAME_RE = /^[A-Za-z_$][\w$]{0,63}$/;
+/** An npm package name, the only field that needs `@` and `/`. */
+const PLUGIN_RE = /^(@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]{0,99}$/;
 
 /** What a log line may say about a failure without writing its message. */
 // A type alias, not an interface, so it spreads into a logger's bindings
@@ -45,18 +49,19 @@ export type FaultLogFields = {
 export function faultLogFields(err: unknown): FaultLogFields {
   const out: FaultLogFields = {};
   const cause = causeOf(err);
-  const fields: Array<[keyof FaultLogFields, () => unknown]> = [
-    ['code', () => codeOf(err)],
-    ['causeCode', () => codeOf(cause)],
-    ['name', () => (err instanceof Error ? err.name : undefined)],
-    ['causeName', () => (cause instanceof Error ? cause.name : undefined)],
-    ['hookName', () => (err instanceof PluginError ? err.hookName : undefined)],
-    ['plugin', () => (err instanceof PluginError ? err.plugin : undefined)],
+  const fields: Array<[keyof FaultLogFields, () => unknown, RegExp]> = [
+    ['code', () => codeOf(err), CODE_RE],
+    ['causeCode', () => codeOf(cause), CODE_RE],
+    ['name', () => (err instanceof Error ? err.name : undefined), NAME_RE],
+    ['causeName', () => (cause instanceof Error ? cause.name : undefined), NAME_RE],
+    ['hookName', () => (err instanceof PluginError ? err.hookName : undefined), CODE_RE],
+    ['plugin', () => (err instanceof PluginError ? err.plugin : undefined), PLUGIN_RE],
   ];
-  for (const [key, read] of fields) {
+  for (const [key, read, shape] of fields) {
     let value: string | undefined;
     try {
-      value = checked(read());
+      const v = read();
+      value = typeof v === 'string' && shape.test(v) ? v : undefined;
     } catch {
       value = undefined;
     }
