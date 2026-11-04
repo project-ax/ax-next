@@ -220,13 +220,13 @@ describe('a 503 logs its code, never its message (TASK-1027)',()=>{
       ['a database error',Object.assign(new Error('PRIVATE drain detail'),{code:'40P01'}),{code:'40P01',name:'Error'}],
       ['an error with no code',new Error('PRIVATE drain detail'),{name:'Error'}],
       ['a SafeToolError',safeTool(),safeToolFields],
-    ] as const)('logs %s from a failed drain without its message, still answering 202',async(_name,error,code)=>{
+    ] as const)('logs %s from a failed drain without its message, still answering 202',async(_name,error,fields)=>{
       const logged=captureStdout(),f=fixture('accepted',plain);
       f.pump.mockRejectedValueOnce(error);
       const r=response();await f.handler(request(),r.res);
       expect(r.state.code).toBe(202);
       expect(logged()).not.toContain('PRIVATE');
-      expect(entries(logged(),'repeat_queue_drain_failed')).toStrictEqual([{msg:'repeat_queue_drain_failed',level:'warn',agentId:'a',routineId:'r',...code}]);
+      expect(entries(logged(),'repeat_queue_drain_failed')).toStrictEqual([{msg:'repeat_queue_drain_failed',level:'warn',agentId:'a',routineId:'r',...fields}]);
     });
   });
 });

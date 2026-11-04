@@ -176,8 +176,10 @@ function parseAndValidateBody(body: Buffer): ParsedBody<unknown> | ParseError {
  * internal stack/field detail beyond the hook's own message string.
  *
  * `corrupt-row` (TASK-1031) is a stored row the read schema refuses: the
- * host's fault, not the caller's, and its message is validation (zod) text.
- * It is logged with the error and answered 500 `{ error: 'internal' }`.
+ * host's fault, not the caller's. Its message is the store's fixed text, since
+ * TASK-1036 a field-level line such as `capabilities.mcpServers is not valid`
+ * (never zod's issue text), and it describes our row, not the request. It is
+ * logged with the error and answered 500 `{ error: 'internal' }`.
  */
 function handleHookError(err: unknown, res: RouteResponse, logger: AgentContext['logger']): void {
   if (err instanceof PluginError) {
@@ -755,8 +757,12 @@ export function createConnectorRouteHandlers(
           )
         : patchRaw;
       // A cross-owner edit re-submits the stored capabilities, so a row stored
-      // over a write limit (TASK-945, CAPABILITY_WRITE_LIMITS) gets a 400
-      // naming that list and its limit here until its owner trims it.
+      // over a write limit (TASK-945, CAPABILITY_WRITE_LIMITS) gets a 400 here
+      // until its owner trims it. For a top-level list the 400 names the list
+      // and its limit (`capabilities.allowedHosts can have at most 64 entries`).
+      // A nested list (an MCP server's hosts or slots, `packages.npm`/`pypi`, a
+      // slot's OAuth scopes) is named only by its top-level field
+      // (`capabilities.mcpServers is not valid`).
       const input: UpsertInput = {
         name: existing.name,
         description: existing.description,
