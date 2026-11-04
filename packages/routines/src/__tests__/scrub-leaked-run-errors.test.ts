@@ -47,9 +47,22 @@ const CURLY = [BRIEF_DIDNT_LOAD, BRIEF_TOO_LONG, BRIEF_UNCONFIRMED, ...OLDER_TOO
  * the scrub's guard counts them, and apply refuses to write while it counts any (TASK-1036 review).
  */
 const NEW_SENTENCES = ['This is a brand new host sentence.', 'We could not start this task for a brand new reason!'] as const;
-/** What psql prints before the counts: two SETs, BEGIN, the lock_timeout SET, the keep-list function. */
-const PREAMBLE = ['SET', 'SET', 'BEGIN', 'SET', 'CREATE FUNCTION'];
-const STOPPED = 'Stopped: some rows look like a sentence this script does not know. Ask a developer to update its keep-list.';
+/**
+ * More of our sentence shapes the guard must count (TASK-1036 review 2): a lowercase phrase with no
+ * full stop, like fire.ts's `the run finished without reporting a result`; a question; a contraction
+ * as the first word; first words in any case; It, A and An.
+ */
+const MORE_SENTENCES = [
+  'the run stopped without a reply',
+  'You can’t run this task right now?',
+  'We’re still setting this task up.',
+  'IT STOPPED BEFORE IT STARTED!',
+  'an app update is already running',
+  'A routine with this name already exists.',
+] as const;
+/** What psql prints before the counts: two SETs, BEGIN, the lock_timeout SET, the keep-list and guard functions. */
+const PREAMBLE = ['SET', 'SET', 'BEGIN', 'SET', 'CREATE FUNCTION', 'CREATE FUNCTION'];
+const STOPPED = 'Stopped: some rows look like a sentence this script does not know. A developer should look at them: they may be our own sentences missing from its keep-list, or old messages that only look like sentences.';
 
 let container: StartedPostgreSqlContainer;
 let db: Kysely<RoutinesDatabase>;
@@ -220,6 +233,52 @@ describe('scrub-leaked-run-errors.sql (TASK-1036)', () => {
     }
   });
 
+  it('counts every shape of our sentences as one it does not know, and none of the old texts', async () => {
+    await seed();
+    for (const text of MORE_SENTENCES) await addFire('error', text);
+    const dry = await scrub();
+    expect(dry).toContain(`run-history rows with old error text: ${LEAKED.length + MORE_SENTENCES.length}`);
+    expect(dry).toContain(`old rows that look like a host sentence: ${MORE_SENTENCES.length}`);
+    const before = await snapshot();
+    const r = await runScrub(['-v', 'apply=1']);
+    expect(r.exitCode, r.output).toBe(3);
+    expect(lines(r.stdout).at(-1)).toBe(STOPPED);
+    expect(await snapshot()).toEqual(before);
+  });
+
+  it('never rewrites a sentence it does not know that lands between the guard and the rewrite', async () => {
+    // READ COMMITTED: the counts and each UPDATE read separate snapshots, so a row can change after
+    // the guard counted 0. Here a run finishing (finishDispatch's shape: it locks the routine, sets
+    // its last error and adds a run) holds the old routine while the scrub's first UPDATE waits on it,
+    // and commits a sentence the keep-list doesn't know into both tables.
+    const seeded = await seed();
+    const finish = new pg.Client({ connectionString: container.getConnectionUri() });
+    await finish.connect();
+    let run: ReturnType<typeof runScrub> | undefined;
+    try {
+      await finish.query('BEGIN');
+      await finish.query(`UPDATE routines_v1_definitions SET last_error = $1 WHERE routine_id = $2`, [NEW_SENTENCES[1], seeded.leakedRoutine]);
+      run = runScrub(['-v', 'apply=1']);
+      await expect.poll(scrubsWaitingForALock).toBe(1);
+      await finish.query(`INSERT INTO routines_v1_fires (agent_id, routine_id, trigger_source, status, error)
+        VALUES ('a', 'r', 'tick', 'error', $1)`, [NEW_SENTENCES[0]]);
+      await finish.query('COMMIT');
+
+      const r = await run;
+      expect(r.exitCode, r.output).toBe(0);
+      // The guard counted 0 before either sentence existed; both UPDATEs still pass them by.
+      expect(lines(r.stdout).slice(-6)).toEqual(['old rows that look like a host sentence: 0',
+        'UPDATE 0', `UPDATE ${LEAKED.length}`, `run-history rows rewritten: ${LEAKED.length}`, 'routines rewritten: 0', 'COMMIT']);
+      const after = await snapshot();
+      expect(after.routines.find(row => row.routine_id === seeded.leakedRoutine)?.last_error).toBe(NEW_SENTENCES[1]);
+      expect(after.fires.filter(row => row.error === NEW_SENTENCES[0])).toHaveLength(1);
+      expect(after.fires.filter(row => seeded.leakedFires.has(row.id)).every(row => row.error === FIXED)).toBe(true);
+    } finally {
+      await finish.end();
+      await run?.catch(() => undefined);
+    }
+  });
+
   it('leaves runs and routines that did not fail alone, whatever their error text says', async () => {
     // The fixed sentence says the run failed, so only failed runs are rewritten (TASK-1036 decisions).
     // These rows are not counted, not rewritten, and not held against the guard either.
@@ -292,6 +351,8 @@ describe('scrub-leaked-run-errors.sql (TASK-1036)', () => {
       clearTimeout(letGo);
       expect(r.exitCode, r.output).toBe(3);
       expect(r.stderr).toContain('canceling statement due to lock timeout');
+      // The routines UPDATE ran first (its tag printed), then run history's waited on the held row.
+      expect(lines(r.stdout).slice(-2)).toEqual(['old rows that look like a host sentence: 0', 'UPDATE 1']);
       expect(r.output).not.toContain('rewritten:');
       expect(r.output).not.toContain('PRIVATE');
       await release();
