@@ -2,10 +2,10 @@ import { githubDeliveryId } from './repeat-limits.js';
 import type { RepeatDeliveryStore } from './repeat-deliveries.js';
 export { githubDeliveryId, repeatQueueFits } from './repeat-limits.js';
 import { verifyWebhookDelivery, type VerifiedSignature } from './webhook-signature.js';
-import { makeAgentContext, PluginError, type HookBus } from '@ax/core';
+import { faultLogFields, makeAgentContext, PluginError, type HookBus } from '@ax/core';
 import { type WebhookRefusalReason, validateWebhookPath } from '@ax/routines-contract';
 import { credentialRef } from './definition.js';
-import { sqlState, type RoutinesStore } from './store.js';
+import type { RoutinesStore } from './store.js';
 import type { WebhookAddressProof } from './webhook-address.js';
 
 /**
@@ -16,14 +16,6 @@ import type { WebhookAddressProof } from './webhook-address.js';
  * as `secret` (401) instead, so the owner is told to save it again.
  */
 const TRANSIENT_SECRET_READ_CODES: ReadonlySet<string> = new Set(['timeout', 'unknown', 'no-service']);
-
-/**
- * All a log line may say about a failure: a plugin error's code, or a database error's SQLSTATE.
- * Never the error itself. Its message can quote the request, and the logger prints an Error field whole.
- */
-export function faultCode(error: unknown): string | undefined {
-  return error instanceof PluginError ? error.code : (sqlState(error) ?? undefined);
-}
 
 // HTTP is duck-typed here: no runtime dependency on another plugin.
 export interface HttpRequest {
@@ -68,12 +60,11 @@ export function createWebhookRouter(deps: WebhookRouterDeps): HttpRouteHandler {
     if (generation === null) { res.status(404).end(); return; }
     const address: WebhookAddressProof = { kind: taskRow ? 'task' : 'legacy', token, generation };
     const observe = (observation: WebhookRefusalReason | 'verified', signature: VerifiedSignature | null = null) => deps.store.observeWebhook({ row, address, observation, now: deps.now(), signature }, async () => (await resolveLegacy())?.agent.id === row.agentId);
-    // A failure behind a 503 logs the task, what was being recorded and its `faultCode`: never the error, a header, the body or the secret.
+    // A failure behind a 503 logs the task, what was being recorded and the failure's `faultLogFields` (codes, class names and the failing hook): never the error's message, a header, the body or the secret.
     const logFault = (event: 'routines_webhook_observe_failed' | 'routines_webhook_admission_failed', error: unknown, observation?: WebhookRefusalReason | 'verified') => {
-      const code = faultCode(error);
       ctx.logger.warn(event, {
         agentId: row.agentId, routineId: row.routineId,
-        ...(observation === undefined ? {} : { observation }), ...(code === undefined ? {} : { code }),
+        ...(observation === undefined ? {} : { observation }), ...faultLogFields(error),
       });
     };
     const refuse = async (status: number, reason: WebhookRefusalReason) => {
@@ -185,8 +176,7 @@ export function createWebhookRouter(deps: WebhookRouterDeps): HttpRouteHandler {
     // to the existing scheduler. Repeat retains its per-delivery drain.
     if (admitted==='accepted' && row.kind === 'repeat') {
       try { await deps.pump(); } catch (error) {
-        const code = faultCode(error);
-        ctx.logger.warn('repeat_queue_drain_failed',{agentId:row.agentId,routineId:row.routineId,...(code === undefined ? {} : { code })});
+        ctx.logger.warn('repeat_queue_drain_failed',{agentId:row.agentId,routineId:row.routineId,...faultLogFields(error)});
       }
     }
     res.status(202).end();

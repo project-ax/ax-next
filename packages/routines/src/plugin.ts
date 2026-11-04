@@ -21,7 +21,7 @@ import { registerRoutineServices, ROUTINE_SERVICES } from './services.js';
 import { drainRoutineCleanup, purgeRoutineAgent } from './cleanup.js';
 
 import { createRoutineLifetime, type RoutineLifetime } from './lifetime.js';
-import { createWebhookRouter, faultCode } from './webhook-handler.js';
+import { createWebhookRouter } from './webhook-handler.js';
 import { registerRoutineTools, ROUTINE_TOOL_HOOKS } from './tools.js';
 import {
   BRIEF_UNCONFIRMED, briefLandedVeto, checkInBrief, isTaskRun, refuseCheckIn, ROUTINES_AUGMENT_PROVIDER,
@@ -390,7 +390,7 @@ export function createRoutinesPlugin(
           renewing=true;
           void effects.admit(()=>localDeliveries.renew()).catch((error:unknown)=>initCtx.logger.warn('repeat_heartbeat_failed',faultLogFields(error))).finally(()=>{renewing=false;nextHeartbeat=Date.now()+REPEAT_DELIVERY_LIMITS.heartbeatMs;});
         }
-        if (!draining) { draining=true; void effects.admit(pump).catch((error:unknown)=>{const code=faultCode(error);initCtx.logger.warn('repeat_queue_drain_failed',code===undefined?{}:{code});}).finally(()=>{draining=false;}); }
+        if (!draining) { draining=true; void effects.admit(pump).catch((error:unknown)=>initCtx.logger.warn('repeat_queue_drain_failed',faultLogFields(error))).finally(()=>{draining=false;}); }
       },REPEAT_DELIVERY_LIMITS.drainMs);
       deliveryTimer.unref?.();
     },

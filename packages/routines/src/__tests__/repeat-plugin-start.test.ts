@@ -46,7 +46,7 @@ it('logs a failed timer drain with its code and without its message',async()=>{
     tick();
     const drained=()=>lines.join('').split('\n').filter(l=>l.startsWith('{"')).map(l=>JSON.parse(l) as Record<string,unknown>)
       .filter(entry=>entry.msg==='repeat_queue_drain_failed').map(({ts:_ts,reqId:_reqId,...entry})=>entry);
-    await vi.waitFor(()=>expect(drained()).toStrictEqual([{msg:'repeat_queue_drain_failed',level:'warn',code:'timeout'}]));
+    await vi.waitFor(()=>expect(drained()).toStrictEqual([{msg:'repeat_queue_drain_failed',level:'warn',code:'timeout',name:'PluginError',plugin:'@ax/routines'}]));
     expect(lines.join('')).not.toContain('PRIVATE');
   } finally {
     await plugin.shutdown?.();
