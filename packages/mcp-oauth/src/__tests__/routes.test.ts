@@ -50,7 +50,9 @@ interface BusStubs {
 }
 
 /** A bus whose `call` dispatches by hook name to a per-test stub. A stub that
- *  throws (PluginError-shaped or a Rejection) models the reject path. */
+ *  throws (PluginError-shaped or a Rejection) models the reject path. Not for
+ *  `auth:require-user`: "signed out" is `codedError('auth:require-user',
+ *  'unauthenticated')`; a thrown Rejection there is a fault (TASK-1035). */
 function fakeBus(stubs: BusStubs) {
   const calls: Array<{ hook: string; ctx: unknown; input: unknown }> = [];
   const bus = {
@@ -350,6 +352,7 @@ describe('OAuth host discovery route', () => {
 
 // PluginError-ish reject (the duck-typed catch keys on instanceof PluginError
 // OR isRejection; a thrown Rejection object exercises the isRejection branch).
+// Not for auth:require-user, which reads only `unauthenticated` (TASK-1035).
 function rejectThrow(reason: string): never {
   throw reject({ reason });
 }
