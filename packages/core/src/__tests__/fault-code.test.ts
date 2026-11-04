@@ -44,8 +44,14 @@ describe('faultLogFields', () => {
     expect(JSON.stringify(out)).not.toContain('secret');
   });
 
-  it('drops a single-token secret in any field', () => {
-    for (const secret of ['postgres://admin:hunter2@db.internal:5432/prod', 'alice.smith@example.com', 'home/alice/.ssh/id_rsa']) {
+  it('keeps a sub-plugin name', () => {
+    for (const plugin of ['@ax/cli/dev-agents-stub', '@ax/credentials-admin-routes/destinations', 'teams']) {
+      expect(faultLogFields(new PluginError({ code: 'x', plugin, message: 'm' })).plugin).toBe(plugin);
+    }
+  });
+
+  it('drops a credential URL, email or path in any field', () => {
+    for (const secret of ['postgres://admin:hunter2@db.internal:5432/prod', 'alice.smith@example.com', 'home/alice/.ssh/id_rsa', 'home/alice/secrets']) {
       const inner = Object.assign(new Error('x'), { code: secret, name: secret });
       const outer = Object.assign(new PluginError({ code: secret, plugin: secret, hookName: secret, message: 'x', cause: inner }), { name: secret });
       expect(JSON.stringify(faultLogFields(outer))).not.toContain(secret);

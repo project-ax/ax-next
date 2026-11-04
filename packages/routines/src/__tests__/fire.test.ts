@@ -141,7 +141,8 @@ describe('accepted DB fire dispatch', () => {
       resolveError: new PluginError({ code: 'forbidden', plugin: 'teams', message: 'denied' }),
       finish: async () => { throw new Error('database unavailable'); },
     });
-    const lines = await stdoutOf(() => h.fire(h.accepted).then(() => undefined, () => undefined));
+    // The recording failure still reaches the caller (tick retries, fire-now answers 503).
+    const lines = await stdoutOf(() => expect(h.fire(h.accepted)).rejects.toThrow('database unavailable'));
     const logged = lines.filter((l) => l.includes('routines_fire_failed')).map((l) => JSON.parse(l) as Record<string, unknown>);
     expect(logged).toHaveLength(1);
     expect(logged[0]).toMatchObject({ level: 'error', code: 'forbidden' });
@@ -157,8 +158,12 @@ describe('accepted DB fire dispatch', () => {
     const hostile = new PluginError({ code: 'forbidden', plugin: 'teams', message: 'denied' });
     Object.defineProperty(hostile, 'message', { get() { throw new Error('getter'); } });
     const h = await setup({ resolveError: hostile });
-    await stdoutOf(() => h.fire(h.accepted).then(() => undefined));
+    const lines = await stdoutOf(() => h.fire(h.accepted).then(() => undefined));
     expect((await f.store.recentFires(h.row))[0]?.error).toBe('This run failed because of a problem on our side (code: forbidden).');
+    // The log line survives too, with its codes and without the unreadable error.
+    const logged = lines.filter((l) => l.includes('routines_fire_failed')).map((l) => JSON.parse(l) as Record<string, unknown>);
+    expect(logged).toHaveLength(1);
+    expect(logged[0]).toMatchObject({ code: 'forbidden', errUnreadable: true });
   });
   it('a log line that throws does not cost the run its row', async () => {
     const hostile = new PluginError({ code: 'forbidden', plugin: 'teams', message: 'denied' });

@@ -232,13 +232,16 @@ export function createFireRoutine(deps: FireDeps) {
     // Never throws: an error's getters are arbitrary, and a failed log line
     // must not cost the run its row.
     function logFault(event: 'routines_fire_failed' | 'routines_fire_invoke_failed', err: unknown, level: 'warn' | 'error' = 'error'): void {
+      const fields = { agentId: row.agentId, routineId: row.routineId, source, ...faultLogFields(err) };
       try {
-        baseCtx.logger[level](event, {
-          agentId: row.agentId, routineId: row.routineId, source,
-          ...faultLogFields(err), ...(source === 'webhook' ? {} : { err }),
-        });
+        baseCtx.logger[level](event, { ...fields, ...(source === 'webhook' ? {} : { err }) });
       } catch {
-        // The run is already recorded; the log line is best-effort.
+        // The logger read a throwing getter on `err`: keep the line, codes only.
+        try {
+          baseCtx.logger[level](event, { ...fields, errUnreadable: true });
+        } catch {
+          // Best-effort: the run's row doesn't depend on its log line.
+        }
       }
     }
 

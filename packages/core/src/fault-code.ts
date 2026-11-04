@@ -5,8 +5,13 @@ import { SafeToolError } from './safe-tool-error.js';
 const CODE_RE = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$/;
 /** A JS identifier: an Error class name. */
 const NAME_RE = /^[A-Za-z_$][\w$]{0,63}$/;
-/** An npm package name, the only field that needs `@` and `/`. */
-const PLUGIN_RE = /^(@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]{0,99}$/;
+/**
+ * A plugin name, the only field that needs `@` and `/`: a scoped package name
+ * plus up to two sub-plugin segments (`@ax/cli/serve-routes`,
+ * `@ax/credentials-admin-routes/destinations`), or a bare segment.
+ */
+const SEG = '[a-z0-9][a-z0-9._-]{0,63}';
+const PLUGIN_RE = new RegExp(`^(?:@${SEG}/${SEG}(?:/${SEG}){0,2}|${SEG})$`);
 
 /** What a log line may say about a failure without writing its message. */
 // A type alias, not an interface, so it spreads into a logger's bindings
