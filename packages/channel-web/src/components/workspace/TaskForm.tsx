@@ -178,7 +178,7 @@ export function TaskForm({
     // The host named a field it refused; say so there, in our words. Only a validation refusal
     // gets the field's own hint; any other code (an address another task holds, an old signing
     // secret still being removed) says why the host refused, which the hint would not.
-    // A retry clears the code but not the field, so no code means no refusal is current.
+    // A refusal is current only while its code is set; the draft clears the code and the field together.
     if (errorCode !== null && refusedField !== null && refusedField !== 'form' && !visible.has(refusedField)) {
       visible.set(refusedField, errorCode === 'validation'
         ? plainIssue(refusedField, {}, agentName) : taskSaveError(errorCode, true));
