@@ -281,7 +281,7 @@ describe('OAuth host discovery route', () => {
 
   it('rejects unauthenticated callers before any network request', async () => {
     const preview = vi.fn();
-    const { deps } = makeDeps({ 'auth:require-user': () => { throw reject({ reason: 'login required' }); } }, { flow: fakeFlow({ discoverHosts: preview }) });
+    const { deps } = makeDeps({ 'auth:require-user': () => codedError('auth:require-user', 'unauthenticated') }, { flow: fakeFlow({ discoverHosts: preview }) });
     const { res, state } = fakeRes();
     await createMcpOAuthRouteHandlers(deps).discoverHosts(request(), res as never);
     expect(state.status).toBe(401);
@@ -380,6 +380,31 @@ const OK_USER = { user: { id: 'user-1', isAdmin: false } };
 
 beforeEach(() => {
   vi.clearAllMocks();
+});
+
+// TASK-1035. Only `unauthenticated` is "signed out", the rule every gate shares (core's
+// isUnauthenticated). Against the unfixed code `isReject` read these as a refusal → 401.
+describe.each(['discoverHosts', 'begin', 'callback', 'status'] as const)('the auth:require-user gate on %s (TASK-1035)', (route) => {
+  it.each(['forbidden', 'not-found'])('auth:require-user failing with PluginError %s → logged 500 internal, not 401; nothing else asked', async (code) => {
+    const { deps, calls, logger, store } = makeDeps({ 'auth:require-user': () => codedError('auth:require-user', code) });
+    const { res, state } = fakeRes();
+    await createMcpOAuthRouteHandlers(deps)[route](fakeReq() as never, res as never);
+    expect(state.status).toBe(500);
+    expect(state.json).toEqual({ error: 'internal' });
+    expect(logger.error).toHaveBeenCalledWith('mcp_oauth_route_failed', expect.objectContaining({ stage: 'auth', code }));
+    expect(calls.map((c) => c.hook)).toEqual(['auth:require-user']);
+    expect(store.putPending).not.toHaveBeenCalled();
+    expect(store.consumePending).not.toHaveBeenCalled();
+  });
+  it('auth:require-user refusing with unauthenticated → 401, not logged as a fault; nothing else asked', async () => {
+    const { deps, calls, logger } = makeDeps({ 'auth:require-user': () => codedError('auth:require-user', 'unauthenticated') });
+    const { res, state } = fakeRes();
+    await createMcpOAuthRouteHandlers(deps)[route](fakeReq() as never, res as never);
+    expect(state.status).toBe(401);
+    expect(state.json).toEqual({ error: 'unauthenticated' });
+    expect(logger.error).not.toHaveBeenCalled();
+    expect(calls.map((c) => c.hook)).toEqual(['auth:require-user']);
+  });
 });
 
 describe('mcp-oauth begin route', () => {
@@ -725,8 +750,10 @@ describe('mcp-oauth begin route', () => {
     });
 
     // Codes that are not a refusal stay faults: a timeout or a missing provider
-    // is the host's problem, whatever the PluginError wrapper says.
-    it.each(['timeout', 'no-service', 'corrupt-row', 'internal'])(
+    // is the host's problem, whatever the PluginError wrapper says. So is
+    // `unauthenticated` (TASK-1035): it is `auth:require-user`'s refusal only, and
+    // a caller who reached `agents:resolve` has already passed that gate.
+    it.each(['timeout', 'no-service', 'corrupt-row', 'internal', 'unauthenticated'])(
       'agents:resolve failing with code %s → 500 internal (logged), not 403',
       async (code) => {
         const { deps, logger } = makeDeps({
@@ -946,7 +973,7 @@ describe('mcp-oauth begin route', () => {
 
   it('unauthenticated → 401 (auth:require-user rejects)', async () => {
     const { deps } = makeDeps({
-      'auth:require-user': () => rejectThrow('no session'),
+      'auth:require-user': () => codedError('auth:require-user', 'unauthenticated'),
     });
     const handlers = createMcpOAuthRouteHandlers(deps);
     const { res, state } = fakeRes();
@@ -2578,7 +2605,7 @@ describe('mcp-oauth callback route', () => {
 
   it('unauthenticated callback → 401', async () => {
     const { deps } = makeCbDeps({
-      'auth:require-user': () => rejectThrow('no session'),
+      'auth:require-user': () => codedError('auth:require-user', 'unauthenticated'),
     });
     const handlers = createMcpOAuthRouteHandlers(deps);
     const { res, state } = fakeRes();

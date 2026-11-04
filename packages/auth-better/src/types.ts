@@ -54,12 +54,10 @@ export interface User {
 
 /**
  * `auth:require-user` input. When nobody is signed in, an implementation
- * MUST throw `PluginError{ code: 'unauthenticated' }`. For gates built on
- * `answerRequireUserFailure` in @ax/core (all but one), that code is the only
- * failure answered with 401; any other throw is a fault, answered with a
- * logged 500. The exception is mcp-oauth's gate, which also reads `forbidden`
- * and `not-found` as 401 (TASK-1028). So throw `unauthenticated` for "nobody
- * signed in", and never use a refusal code for a fault.
+ * MUST throw `PluginError{ code: 'unauthenticated' }`. That code is the only
+ * failure any gate answers with 401 (`isUnauthenticated` in @ax/core); any
+ * other throw is a fault, answered with a logged 500. So throw
+ * `unauthenticated` for "nobody signed in", and never for a fault.
  */
 export interface RequireUserInput {
   req: HttpRequestLike;

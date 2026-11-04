@@ -2,6 +2,7 @@ import {
   type AgentContext,
   type HookBus,
   isRejection,
+  isUnauthenticated,
   makeAgentContext,
   PluginError,
 } from '@ax/core';
@@ -228,19 +229,21 @@ interface ConnectorView {
 
 /**
  * The `PluginError` codes the hooks this file asks actually throw to REFUSE a
- * caller, as opposed to failing: `auth:require-user` throws `unauthenticated`,
- * `agents:resolve` / `agents:can-set-shared-credential` throw `forbidden` and
- * `not-found`, `connectors:get` throws `not-found`. Nothing else is a refusal:
+ * caller, as opposed to failing: `agents:resolve` /
+ * `agents:can-set-shared-credential` throw `forbidden` and `not-found`,
+ * `connectors:get` throws `not-found`. `auth:require-user`'s refusal is read by
+ * `requireUser` through core's `isUnauthenticated`, so it is not listed here
+ * (TASK-1035). Nothing else is a refusal:
  * `HookBus.call` wraps any error a service throws that is not already a
  * `PluginError` (a dropped pg connection, a bug) as `PluginError{ code:'unknown',
  * cause }`, and a bus-level `timeout` / `no-service` / `invalid-return` is the
  * host failing, not the caller being told no.
  */
-const REFUSAL_CODES: ReadonlySet<string> = new Set(['unauthenticated', 'forbidden', 'not-found']);
+const REFUSAL_CODES: ReadonlySet<string> = new Set(['forbidden', 'not-found']);
 
 /**
  * Is this thrown value a refusal (a returned `reject(...)` or a hook's own
- * `unauthenticated` / `forbidden` / `not-found`), as opposed to a host fault?
+ * `forbidden` / `not-found`), as opposed to a host fault?
  * A bare `instanceof PluginError` is NOT enough: it is also what a store crash
  * looks like once it has crossed the bus, and reading that as "no" turns a
  * 500 into a 403/404 (or a `not-allowed` popup) that hides the outage.
@@ -394,11 +397,16 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
       >('auth:require-user', initCtx, { req });
       return user;
     } catch (err) {
-      if (isReject(err)) {
+      // Only the hook's own "nobody is signed in" is a 401: the rule every gate
+      // shares (core's `isUnauthenticated`, TASK-1035).
+      if (isUnauthenticated(err)) {
         res.status(401).json({ error: 'unauthenticated' });
         return null;
       }
-      // A session-store fault is not "signed out" (TASK-1028).
+      // Anything else is a fault, answered with a logged 500: a session-store
+      // crash is not "signed out" (TASK-1028). This gate logs the neutral
+      // `errFields` (TASK-713) rather than calling core's
+      // `answerRequireUserFailure`, whose `{ hook, err }` line carries the message.
       logger.error('mcp_oauth_route_failed', { stage: 'auth', ...errFields(err) });
       res.status(500).json({ error: 'internal' });
       return null;
