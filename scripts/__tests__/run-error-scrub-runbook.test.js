@@ -9,10 +9,12 @@
 // prints, on the one day they are changing prod data by hand.
 //
 // What it checks: the script the runbook loads exists; every output line the
-// runbook quotes is one the script really `\echo`es; every kubectl line names
+// runbook quotes is one the script really `\echo`es, and every line of its
+// sample logs is one of those or a line psql prints; every kubectl line names
 // its context (the default context on our machines is prod), and the project
 // is set once in 4g and always quoted; before the dry run, the release is
-// checked for commits that change what a failed run says; the backup is checked
+// checked for a shallow clone and for commits that change what a failed run
+// says; the backup is checked
 // against the database the app uses, and comes before the command that writes;
 // and after that command, the runbook calls the write done only when its log
 // ends with `COMMIT`.
@@ -58,6 +60,45 @@ const OUTPUT_LABELS = [
 
 /** Step 2: the commits to the routines code since the script's keep-list last changed. */
 const KEEP_LIST_CHECK = `git log --oneline "$(git log -1 --format=%H -- ${SCRIPT_PATH})"..HEAD -- packages/routines/src`;
+/** Step 2: the commit that last changed the script. Without the script, KEEP_LIST_CHECK lists nothing and looks like an all-clear. */
+const SCRIPT_COMMIT_CHECK = `git log -1 --oneline -- ${SCRIPT_PATH}   # must print a commit`;
+/** Step 2: a shallow clone is missing history, so both git-log checks could print nothing. */
+const SHALLOW_CHECK = 'git rev-parse --is-shallow-repository   # must print false';
+
+/** A number, or the runbook's stand-ins for one (`N`, `M`), as one placeholder. */
+const normalise = (l) => l.trim().replace(/\b(?:\d+|N|M)\b/g, '#');
+
+/**
+ * What each of the script's `\echo` lines prints, normalised: the quoted text, then `#` for
+ * each `:variable` after it. Read from the script, so a renamed label can't hide here.
+ */
+function scriptEchoes() {
+  return script.split('\n').filter((l) => l.startsWith('\\echo ')).map((l) => {
+    const m = l.match(/^\\echo '((?:[^']|'')*)'((?:\s+:\w+)*)\s*$/);
+    expect(m, `an \\echo line this test can't read: ${l}`).not.toBeNull();
+    const vars = m[2].trim() ? m[2].trim().split(/\s+/).map(() => '#') : [];
+    return normalise([m[1].replaceAll("''", "'"), ...vars].join(' '));
+  });
+}
+
+/** psql's own lines, normalised: its command tags, and an error under ON_ERROR_STOP. */
+const PSQL_LINES = [
+  /^SET$/, /^BEGIN$/, /^CREATE FUNCTION$/, /^SELECT #$/, /^UPDATE #$/, /^COMMIT$/, /^ROLLBACK$/, /^DO$/,
+  /^psql:\S+:#: ERROR: {2}\S.*$/,
+];
+
+/** The lines of each ```text block in `text`: the runbook's sample logs. */
+function sampleLogs(text) {
+  const blocks = [];
+  let block = null;
+  for (const line of text.split('\n')) {
+    const t = line.trim();
+    if (block === null && t === '```text') block = [];
+    else if (block !== null && t === '```') { blocks.push(block); block = null; }
+    else if (block !== null) block.push(line);
+  }
+  return blocks;
+}
 
 /** 4g: from its heading to the next horizontal rule. */
 function section() {
@@ -104,6 +145,19 @@ describe('the run-error scrub runbook (GKE.md 4g) quotes its script', () => {
     }
   });
 
+  it('quotes, in its sample logs, only lines the script or psql prints', () => {
+    const echoes = scriptEchoes();
+    expect(echoes.length, 'fewer \\echo lines read from the script than labels').toBeGreaterThanOrEqual(OUTPUT_LABELS.length);
+    const logs = sampleLogs(section());
+    // Step 3's dry run and Step 4's rewrite, at least.
+    expect(logs.length, 'fewer than two ```text sample logs in 4g').toBeGreaterThanOrEqual(2);
+    const strays = logs.flat().filter((l) => {
+      const n = normalise(l);
+      return !echoes.includes(n) && !PSQL_LINES.some((re) => re.test(n));
+    });
+    expect(strays, 'sample-log lines that neither the script nor psql prints').toEqual([]);
+  });
+
   it('names its context on every kubectl line, and sets and quotes its project', () => {
     const text = section();
     const trimmed = text.split('\n').map((l) => l.trim());
@@ -121,11 +175,20 @@ describe('the run-error scrub runbook (GKE.md 4g) quotes its script', () => {
   });
 
   it('checks the release for changes to what a run says before the dry run', () => {
+    // A shallow clone, and a checkout without the script, both make the keep-list check
+    // print nothing, which reads as an all-clear. Each guard is a command line of its own,
+    // before it. (`lines()` skips a line that starts with `#`, not one that ends in a comment.)
     const ls = lines(section());
+    const shallow = firstCommand(ls, (l) => l === SHALLOW_CHECK);
+    const scriptCommit = firstCommand(ls, (l) => l === SCRIPT_COMMIT_CHECK);
     const check = firstCommand(ls, (l) => l === KEEP_LIST_CHECK);
     const dryRun = firstCommand(ls, (l) => l.includes('psql') && !l.includes('-v apply=1'));
+    expect(shallow, `no command "${SHALLOW_CHECK}"`).toBeGreaterThan(-1);
+    expect(scriptCommit, `no command "${SCRIPT_COMMIT_CHECK}"`).toBeGreaterThan(-1);
     expect(check, `no command "${KEEP_LIST_CHECK}"`).toBeGreaterThan(-1);
     expect(dryRun, 'no dry-run psql command').toBeGreaterThan(-1);
+    expect(shallow, 'the shallow-clone check must come before the keep-list check').toBeLessThan(check);
+    expect(scriptCommit, "the script's commit must be checked before the keep-list check").toBeLessThan(check);
     expect(check, 'the keep-list check must come before the dry run').toBeLessThan(dryRun);
   });
 
@@ -148,7 +211,10 @@ describe('the run-error scrub runbook (GKE.md 4g) quotes its script', () => {
     expect(Math.max(instance, secret), 'compare them before the backup').toBeLessThan(backup);
     // The URL holds the password. `-n` with `p` prints only a host the pattern
     // found (never the line when it finds none), and the greedy `.*@` takes the
-    // last @, so a password with an @ in it can't print a piece of itself.
+    // last @, so a password with an @ in it can't print a piece of itself. That
+    // holds for the `user:password@host` DSN that 4a's Secret uses. A DSN that
+    // carries the password elsewhere (`?password=…`, or an `@` after the host)
+    // isn't that shape, and the sed could print part of it.
     expect(ls[secret].line).toContain("| base64 -d | sed -nE 's#^.*@([^:/?]+).*$#\\1#p'");
   });
 

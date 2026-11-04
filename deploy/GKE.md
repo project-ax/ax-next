@@ -793,7 +793,9 @@ that prints them.
 **It's safe to run while the app is up.** The rewrite is one short transaction
 that touches only the error text of failed runs. It changes no routine's
 revision or `updated_at`, so no open editor gets a conflict and no queued app
-update is cancelled.
+update is cancelled. If the app deletes an agent at the same moment, the two
+can, rarely, deadlock. Postgres then fails one of them. If it fails the
+rewrite, nothing was written and you can run Step 4 again.
 
 **The backup in Step 1 is the only undo.** Restoring it reverts everything
 written since, not just this ([Restoring for real](#restoring-for-real) has the
@@ -837,8 +839,24 @@ Don't go on until the newest backup says `SUCCESSFUL`.
 #### Step 2: load the script
 
 Work from the repo root of a checkout of the release you just deployed. First,
-check that nothing since the script last changed has changed what a failed run
-says:
+make sure it's a full checkout of that release:
+
+```bash
+git rev-parse --is-shallow-repository   # must print false
+kubectl --context "$KCTX" get deploy ax-next-host -n "$NS" -o jsonpath='{.spec.template.spec.containers[*].image}'; echo
+git rev-parse HEAD
+```
+
+A shallow clone (`git clone --depth …`) is missing history, so the checks
+below can print nothing and look like an all-clear. The second command prints
+the image the host runs. Our deploys tag it with the commit's short sha
+(`…/agent:<sha>@sha256:…`), so that sha must be the start of what
+`git rev-parse HEAD` prints. If your tag isn't a sha, confirm some other way
+that HEAD is the commit the running image was built from. If either check
+fails, stop.
+
+Then check that nothing since the script last changed has changed what a
+failed run says:
 
 ```bash
 git log -1 --oneline -- packages/routines/sql/scrub-leaked-run-errors.sql   # must print a commit
@@ -852,7 +870,8 @@ then list nothing, which looks like "all clear" but isn't.)
 The second command lists every later commit to the routines code. No output
 means you can go on. If it lists commits, ask a developer to look at them first. If
 any of them changes the text a failed run stores (in `fire.ts`, `tick.ts`,
-`brief.ts`, `store.ts`'s `finishDispatch`, `repeat-runtime.ts` or
+`plugin.ts` (`BRIEF_UNCONFIRMED`), `brief.ts`, `store.ts` (`RUN_CLOSED`,
+`RUN_INTERRUPTED` and `finishDispatch`), `repeat-runtime.ts` or
 `repeat-deliveries.ts`), stop: the script's keep-list has to be updated first,
 or this step would rewrite a sentence the app writes today.
 
@@ -915,6 +934,7 @@ SET
 BEGIN
 SET
 CREATE FUNCTION
+CREATE FUNCTION
 run-history rows with old error text: N
 routines with old error text: M
 old rows that look like a host sentence: 0
@@ -928,11 +948,13 @@ down. If both are 0, there's nothing to rewrite: skip to the last command in
 Step 5.
 
 `old rows that look like a host sentence:` must be `0`. It counts the old rows
-that read like a sentence we wrote: they start with This, The, We or Your, and
-end with a full stop or an exclamation mark. A row like that most likely comes
-from a release that added a message the script's keep-list doesn't know, and
-the rewrite would replace that message. If the count isn't 0, stop and ask a
-developer to update the keep-list. Step 4 checks it again on its own, and
+that read like a sentence we wrote: their first word is This, The, We, Your,
+You, It, A or An (in any case, or as a contraction like We’re), and they end
+with `.`, `!` or `?`, or are only words with no punctuation at all. A row like
+that may come from a release that added a message the script's keep-list
+doesn't know, and the rewrite would replace that message. Or it may be an old
+message that only looks like a sentence. If the count isn't 0, stop and ask a
+developer to look at those rows. Step 4 checks it again on its own, and
 refuses to write anything while it isn't 0.
 
 If the wait times out, the block prints the pod's `describe` output before it
@@ -992,6 +1014,7 @@ SET
 BEGIN
 SET
 CREATE FUNCTION
+CREATE FUNCTION
 run-history rows with old error text: N
 routines with old error text: M
 old rows that look like a host sentence: 0
@@ -1018,9 +1041,9 @@ The block printed the pod's `describe` output before it deleted the pod, and
 that output and the log say why:
 
 - **The script stopped itself.** The log has this line:
-  `Stopped: some rows look like a sentence this script does not know. Ask a developer to update its keep-list.`
+  `Stopped: some rows look like a sentence this script does not know. A developer should look at them: they may be our own sentences missing from its keep-list, or old messages that only look like sentences.`
   The third count wasn't 0, so it refused to write. Nothing was written. Don't
-  run it again: ask a developer to update the keep-list (Step 3 explains this
+  run it again: ask a developer to look at those rows (Step 3 explains this
   count).
 - **A deadlock or a lock timeout.** The log has `deadlock detected` or
   `canceling statement due to lock timeout`. The app was changing one of the
