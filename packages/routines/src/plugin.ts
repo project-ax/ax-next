@@ -1,4 +1,4 @@
-import { answerBlobCollectRefs } from '@ax/core';
+import { answerBlobCollectRefs, faultLogFields } from '@ax/core';
 import { opaqueId } from './definition.js';
 import { createRepeatDeliveryStore, type RepeatDeliveryStore } from './repeat-deliveries.js';
 import { createRepeatDeliveryPump } from './repeat-runtime.js';
@@ -388,7 +388,7 @@ export function createRoutinesPlugin(
       deliveryTimer = setInterval(() => {
         if (!renewing && Date.now()>=nextHeartbeat) {
           renewing=true;
-          void effects.admit(()=>localDeliveries.renew()).catch(()=>initCtx.logger.warn('repeat_heartbeat_failed')).finally(()=>{renewing=false;nextHeartbeat=Date.now()+REPEAT_DELIVERY_LIMITS.heartbeatMs;});
+          void effects.admit(()=>localDeliveries.renew()).catch((error:unknown)=>initCtx.logger.warn('repeat_heartbeat_failed',faultLogFields(error))).finally(()=>{renewing=false;nextHeartbeat=Date.now()+REPEAT_DELIVERY_LIMITS.heartbeatMs;});
         }
         if (!draining) { draining=true; void effects.admit(pump).catch((error:unknown)=>{const code=faultCode(error);initCtx.logger.warn('repeat_queue_drain_failed',code===undefined?{}:{code});}).finally(()=>{draining=false;}); }
       },REPEAT_DELIVERY_LIMITS.drainMs);
