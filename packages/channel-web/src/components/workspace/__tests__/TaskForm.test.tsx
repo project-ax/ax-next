@@ -369,12 +369,30 @@ describe('task form More options', () => {
     // Saving a repeat as a task cancels its queue whether or not updates stay on, so the switch's
     // "saving with this off" would wrongly suggest leaving it on keeps them.
     ['a repeat task switched to a task kind', { ...routineFixture, webhook: { kind: 'webhook' as const, path: '/updates' } }, 'Stay on top'],
-  ])('gives no waiting-updates warning for %s', async (_label, view, kind) => {
+  ])('the App updates switch gives no waiting-updates warning for %s', async (_label, view, kind) => {
     await edit(view);
     if (kind !== null) fireEvent.click(screen.getByRole('radio', { name: kind }));
     fireEvent.click(screen.getByRole('button', { name: /^App updates: / }));
     expect(await screen.findByRole('switch', { name: 'When another app sends an update' })).not.toHaveAccessibleDescription(/still waiting/);
-    expect(screen.queryByText(/still waiting to run/)).not.toBeInTheDocument();
+    expect(screen.queryByText('Saving with this off cancels any updates still waiting to run.')).not.toBeInTheDocument();
+  });
+
+  // TASK-1035. `kind` is part of a repeat's queue hash (`repeatConfigurationHash`), so saving a saved
+  // Repeat that has app updates as a task cancels every update still waiting, whatever the switch says.
+  it('says on the kind-switch notice that saving a repeat as a task cancels its waiting app updates', async () => {
+    await edit({ ...routineFixture, webhook: { kind: 'webhook', path: '/updates' } });
+    fireEvent.click(screen.getByRole('radio', { name: 'Stay on top' }));
+    expect(screen.getByText(/Switching kinds starts this task over/))
+      .toHaveTextContent('Any app updates still waiting to run will be cancelled.');
+  });
+  it.each([
+    ['a repeat saved without app updates', routineFixture, 'Stay on top'],
+    ['a task with app updates switched to Repeat', { ...task, webhook: { kind: 'webhook' as const, path: '/updates' } }, 'Repeat'],
+    ['a task with app updates switched to another task kind', { ...task, webhook: { kind: 'webhook' as const, path: '/updates' } }, 'Get done'],
+  ])('says nothing about waiting app updates on the kind-switch notice for %s', async (_label, view, kind) => {
+    await edit(view);
+    fireEvent.click(screen.getByRole('radio', { name: kind }));
+    expect(screen.getByText(/Switching kinds starts this task over/)).not.toHaveTextContent(/waiting/);
   });
 
   it('has no signature controls', async () => {

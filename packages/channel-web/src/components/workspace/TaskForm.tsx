@@ -273,6 +273,8 @@ export function TaskForm({
   // waiting. A saved task has no such queue (its updates are task events). A repeat saved as a task
   // cancels its queue whatever this switch says, so "saving with this off" would mislead there.
   const dropsWaiting = hasAddress && initial.kind === 'repeat' && !task;
+  // Saving a saved repeat as a task cancels its queue (`kind` is in its hash), so the kind-switch notice says so.
+  const kindDropsWaiting = hasAddress && initial.kind === 'repeat' && task;
   const respondLabel = RESPOND_PRESETS.find(item => item.value === respondPreset(form.webhook?.respondWithin))?.label
     ?? durationWords(form.webhook?.respondWithin ?? '5m');
   const showQuiet = form.kind === 'repeat' || form.silenceToken !== null || shown.has('quietWord');
@@ -301,6 +303,7 @@ export function TaskForm({
       {mode === 'edit' && form.kind !== initial.kind && (
         <Alert><AlertDescription>
           Switching kinds starts this task over. Its steps, latest update, notes and finish date will be cleared.
+          {kindDropsWaiting && ' Any app updates still waiting to run will be cancelled.'}
         </AlertDescription></Alert>
       )}
 
