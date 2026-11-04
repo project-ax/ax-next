@@ -756,7 +756,7 @@ export function createConnectorRouteHandlers(
         : patchRaw;
       // A cross-owner edit re-submits the stored capabilities, so a row stored
       // over a write limit (TASK-945, CAPABILITY_WRITE_LIMITS) gets a 400
-      // `too_big` here until its owner trims it.
+      // naming that list and its limit here until its owner trims it.
       const input: UpsertInput = {
         name: existing.name,
         description: existing.description,

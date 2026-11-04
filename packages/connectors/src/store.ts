@@ -1,6 +1,6 @@
 import { PluginError } from '@ax/core';
 import { sql, type Kysely, type Selectable } from 'kysely';
-import type { ZodType } from 'zod';
+import type { ZodError, ZodType } from 'zod';
 import {
   CapabilitiesSchema,
   CapabilitiesWriteSchema,
@@ -154,6 +154,30 @@ export function validateCapabilitiesForWrite(value: unknown): Capabilities {
   return checkCapabilities(CapabilitiesWriteSchema, value);
 }
 
+/** The Capabilities fields a message may name. */
+const CAPABILITY_FIELDS = new Set(['allowedHosts', 'credentials', 'mcpServers', 'packages', 'services']);
+
+/**
+ * A fixed, field-level message for a refused capabilities value, in place of
+ * zod's issue JSON. Zod's text is never used: paths carry caller-chosen
+ * segments (`services[].env` keys), and this message is echoed as the admin
+ * routes' 400 `error`. The read path (`fromStoredRow` -> `corrupt-row`, the
+ * skip logs) carries the same message. The limit sentence is what TASK-945's
+ * trim-to-save refusal relies on. Only the first issue is read, and only its
+ * top-level field is ever named.
+ */
+function capabilitiesIssueMessage(error: ZodError): string {
+  const issue = error.issues[0];
+  const first = issue?.path[0];
+  if (issue === undefined || typeof first !== 'string' || !CAPABILITY_FIELDS.has(first)) {
+    return 'capabilities must be a valid Capabilities object';
+  }
+  if (issue.code === 'too_big' && issue.type === 'array' && issue.path.length === 1) {
+    return `capabilities.${first} can have at most ${String(issue.maximum)} entries`;
+  }
+  return `capabilities.${first} is not valid`;
+}
+
 /** The shared body of the read and write checks; only the schema differs. */
 function checkCapabilities(schema: ZodType<Capabilities>, value: unknown): Capabilities {
   const servers = (value as { mcpServers?: unknown } | null)?.mcpServers;
@@ -162,9 +186,7 @@ function checkCapabilities(schema: ZodType<Capabilities>, value: unknown): Capab
   }
   const parsed = schema.safeParse(value);
   if (!parsed.success) {
-    throw invalid(
-      `capabilities must be a valid Capabilities object: ${parsed.error.message}`,
-    );
+    throw invalid(capabilitiesIssueMessage(parsed.error));
   }
   const caps = parsed.data;
   const names = new Set<string>();

@@ -369,7 +369,7 @@ describe('createConnectorStore', () => {
 
   it('a stored row the read schema refuses throws corrupt-row, not invalid-payload (TASK-1031)', async () => {
     // A corrupt row is the host's fault. invalid-payload is the caller's, and the
-    // admin routes answer it with a 400 that echoes the message (zod text here).
+    // admin routes answer it with a 400 that echoes the message (a fixed field-level message, TASK-1036).
     const db = makeKysely();
     await runConnectorsMigration(db);
     const store = createConnectorStore(db);
@@ -394,8 +394,8 @@ describe('createConnectorStore', () => {
     );
     expect(err).toBeInstanceOf(PluginError);
     expect((err as PluginError).code).toBe('corrupt-row');
-    // The validation detail stays on the error (for the log), with the original as its cause.
-    expect((err as PluginError).message).toMatch(/valid Capabilities object/);
+    // The field-level message stays on the error (for the log), with the original as its cause.
+    expect((err as PluginError).message).toBe('capabilities.allowedHosts is not valid');
     expect(((err as PluginError).cause as PluginError).code).toBe('invalid-payload');
   });
 
