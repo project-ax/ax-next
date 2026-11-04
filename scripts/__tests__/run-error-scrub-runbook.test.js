@@ -9,12 +9,13 @@
 // prints, on the one day they are changing prod data by hand.
 //
 // What it checks: the script the runbook loads exists; every output line the
-// runbook quotes is one the script really `\echo`es, and every line of its
-// sample logs is one of those or a line psql prints; every kubectl line names
+// runbook quotes is one the script really `\echo`es; the dry-run and rewrite
+// sample logs match, line for line and in order, what the script prints in each
+// mode (replayed from the SQL, see `expectedLog`); every kubectl line names
 // its context (the default context on our machines is prod), and the project
 // is set once in 4g and always quoted; before the dry run, the release is
-// checked for a shallow clone and for commits that change what a failed run
-// says; the backup is checked
+// checked for a shallow clone, for the image the host runs, and for commits that
+// change what a failed run says; the backup is checked
 // against the database the app uses, and comes before the command that writes;
 // and after that command, the runbook calls the write done only when its log
 // ends with `COMMIT`.
@@ -64,6 +65,11 @@ const KEEP_LIST_CHECK = `git log --oneline "$(git log -1 --format=%H -- ${SCRIPT
 const SCRIPT_COMMIT_CHECK = `git log -1 --oneline -- ${SCRIPT_PATH}   # must print a commit`;
 /** Step 2: a shallow clone is missing history, so both git-log checks could print nothing. */
 const SHALLOW_CHECK = 'git rev-parse --is-shallow-repository   # must print false';
+/** Step 2: the image the host runs, to compare with HEAD. */
+const isImageCheck = (l) => l.startsWith('kubectl ') && l.includes('get deploy ax-next-host')
+  && l.includes("-o jsonpath='{.spec.template.spec.containers[*].image}'");
+/** Step 2: the commit the checkout is at, which the image's tag must start. */
+const HEAD_CHECK = 'git rev-parse HEAD';
 
 /** A number, or the runbook's stand-ins for one (`N`, `M`), as one placeholder. */
 const normalise = (l) => l.trim().replace(/\b(?:\d+|N|M)\b/g, '#');
@@ -81,11 +87,47 @@ function scriptEchoes() {
   });
 }
 
-/** psql's own lines, normalised: its command tags, and an error under ON_ERROR_STOP. */
-const PSQL_LINES = [
-  /^SET$/, /^BEGIN$/, /^CREATE FUNCTION$/, /^SELECT #$/, /^UPDATE #$/, /^COMMIT$/, /^ROLLBACK$/, /^DO$/,
-  /^psql:\S+:#: ERROR: {2}\S.*$/,
-];
+/**
+ * What psql prints for the script in one mode, in order, normalised like the sample logs.
+ * Replayed from the SQL itself: a statement at column 0 prints its command tag, an `\echo`
+ * prints its text, `\if` / `\else` / `\endif` pick a branch, and the `\gset` queries and `\set`
+ * lines print nothing. `unknown_sentences` is false (the runbook's good logs). A column-0 line
+ * this doesn't know fails the test instead of being skipped, so a new statement can't slip by.
+ */
+function expectedLog(mode) {
+  const echoes = scriptEchoes();
+  let nextEcho = 0;
+  const out = [];
+  const stack = []; // one { parent, cond, flipped } per open \if
+  const live = () => stack.every((f) => f.parent && (f.cond !== f.flipped));
+  for (const line of script.split('\n')) {
+    // Blank, comment, and continuation lines (indented) never start a statement.
+    if (line.trim() === '' || line.startsWith('--') || /^\s/.test(line)) continue;
+    const cond = line.match(/^\\if :(\{\?apply\}|apply|unknown_sentences)\s*$/);
+    if (cond) {
+      stack.push({ parent: live(), cond: cond[1] !== 'unknown_sentences' && mode === 'apply', flipped: false });
+    } else if (/^\\else\s*$/.test(line)) stack[stack.length - 1].flipped = true;
+    else if (/^\\endif\s*$/.test(line)) stack.pop();
+    else if (line.startsWith('\\echo ')) {
+      // scriptEchoes() has one entry per `\echo` line, in file order, dead branches included.
+      const text = echoes[nextEcho++];
+      if (live()) out.push(text);
+    } else if (!live()) continue;
+    else if (/^\\set /.test(line)) continue;
+    else if (/^SET /.test(line)) out.push('SET');
+    else if (/^BEGIN;/.test(line)) out.push('BEGIN');
+    else if (/^CREATE FUNCTION /.test(line)) out.push('CREATE FUNCTION');
+    // Which table matters: the runbook says routines first, then run history (`UPDATE M`, `UPDATE N`).
+    else if (/^UPDATE /.test(line)) out.push(line.includes('routines_v1_definitions') ? 'UPDATE routines' : 'UPDATE run history');
+    else if (/^COMMIT;/.test(line)) out.push('COMMIT');
+    else if (/^ROLLBACK;/.test(line)) out.push('ROLLBACK');
+    else if (/^DO /.test(line)) out.push('DO');
+    // The end of a function body, and the SELECTs, whose output \gset swallows.
+    else if (!/^(?:LANGUAGE |\$|\)|SELECT )/.test(line)) expect.fail(`a line expectedLog can't replay: ${line}`);
+  }
+  expect(stack, 'unbalanced \\if in the script').toEqual([]);
+  return out;
+}
 
 /** The lines of each ```text block in `text`: the runbook's sample logs. */
 function sampleLogs(text) {
@@ -145,17 +187,37 @@ describe('the run-error scrub runbook (GKE.md 4g) quotes its script', () => {
     }
   });
 
-  it('quotes, in its sample logs, only lines the script or psql prints', () => {
-    const echoes = scriptEchoes();
-    expect(echoes.length, 'fewer \\echo lines read from the script than labels').toBeGreaterThanOrEqual(OUTPUT_LABELS.length);
+  it('has sample logs that are not empty, one per mode', () => {
     const logs = sampleLogs(section());
     // Step 3's dry run and Step 4's rewrite, at least.
     expect(logs.length, 'fewer than two ```text sample logs in 4g').toBeGreaterThanOrEqual(2);
-    const strays = logs.flat().filter((l) => {
-      const n = normalise(l);
-      return !echoes.includes(n) && !PSQL_LINES.some((re) => re.test(n));
-    });
-    expect(strays, 'sample-log lines that neither the script nor psql prints').toEqual([]);
+    for (const [i, log] of logs.entries()) {
+      expect(log.filter((l) => l.trim() !== '').length, `sample log ${i + 1} in 4g is empty`).toBeGreaterThan(0);
+    }
+    const ends = logs.map((l) => l.filter((x) => x.trim() !== '').at(-1)?.trim());
+    expect(ends, 'one sample log must end with ROLLBACK (dry run) and one with COMMIT (rewrite)').toEqual(
+      expect.arrayContaining(['ROLLBACK', 'COMMIT']),
+    );
+  });
+
+  it('quotes a CREATE FUNCTION line for each function the script creates', () => {
+    const created = script.split('\n').filter((l) => /^CREATE FUNCTION /.test(l)).length;
+    expect(created, 'the script creates no functions; this check would pass on nothing').toBeGreaterThan(0);
+    for (const log of sampleLogs(section())) {
+      expect(log.filter((l) => l.trim() === 'CREATE FUNCTION').length, 'a sample log quotes the wrong number of CREATE FUNCTION lines').toBe(created);
+    }
+  });
+
+  it('quotes, in its dry-run and rewrite logs, the lines the script prints, in the order it prints them', () => {
+    // `UPDATE M` is the routines' rows and `UPDATE N` run history's: keep them apart, so the order is checked.
+    const named = (l) => l.trim().replace(/^UPDATE M$/, 'UPDATE routines').replace(/^UPDATE N$/, 'UPDATE run history');
+    const logs = sampleLogs(section()).map((l) => l.map((x) => normalise(named(x))).filter((x) => x !== ''));
+    const dry = logs.find((l) => l.at(-1) === 'ROLLBACK');
+    const apply = logs.find((l) => l.at(-1) === 'COMMIT');
+    expect(dry, 'no dry-run sample log (ending with ROLLBACK)').toBeDefined();
+    expect(apply, 'no rewrite sample log (ending with COMMIT)').toBeDefined();
+    expect(dry).toEqual(expectedLog('dry'));
+    expect(apply).toEqual(expectedLog('apply'));
   });
 
   it('names its context on every kubectl line, and sets and quotes its project', () => {
@@ -181,14 +243,20 @@ describe('the run-error scrub runbook (GKE.md 4g) quotes its script', () => {
     const ls = lines(section());
     const shallow = firstCommand(ls, (l) => l === SHALLOW_CHECK);
     const scriptCommit = firstCommand(ls, (l) => l === SCRIPT_COMMIT_CHECK);
+    const image = firstCommand(ls, isImageCheck);
+    const head = firstCommand(ls, (l) => l === HEAD_CHECK);
     const check = firstCommand(ls, (l) => l === KEEP_LIST_CHECK);
     const dryRun = firstCommand(ls, (l) => l.includes('psql') && !l.includes('-v apply=1'));
     expect(shallow, `no command "${SHALLOW_CHECK}"`).toBeGreaterThan(-1);
     expect(scriptCommit, `no command "${SCRIPT_COMMIT_CHECK}"`).toBeGreaterThan(-1);
+    expect(image, 'no command printing the image the host runs').toBeGreaterThan(-1);
+    expect(head, `no command "${HEAD_CHECK}"`).toBeGreaterThan(-1);
     expect(check, `no command "${KEEP_LIST_CHECK}"`).toBeGreaterThan(-1);
     expect(dryRun, 'no dry-run psql command').toBeGreaterThan(-1);
     expect(shallow, 'the shallow-clone check must come before the keep-list check').toBeLessThan(check);
     expect(scriptCommit, "the script's commit must be checked before the keep-list check").toBeLessThan(check);
+    expect(image, 'the deployed image must be checked before the keep-list check').toBeLessThan(check);
+    expect(head, 'HEAD must be printed before the keep-list check').toBeLessThan(check);
     expect(check, 'the keep-list check must come before the dry run').toBeLessThan(dryRun);
   });
 

@@ -795,7 +795,10 @@ that touches only the error text of failed runs. It changes no routine's
 revision or `updated_at`, so no open editor gets a conflict and no queued app
 update is cancelled. If the app deletes an agent at the same moment, the two
 can, rarely, deadlock. Postgres then fails one of them. If it fails the
-rewrite, nothing was written and you can run Step 4 again.
+rewrite, nothing was written and you can run Step 4 again. If it fails the
+agent's delete instead, the agent is gone but its routines and run history stay
+until one of those routines next comes due (a paused routine may never).
+That's harmless, just leftover.
 
 **The backup in Step 1 is the only undo.** Restoring it reverts everything
 written since, not just this ([Restoring for real](#restoring-for-real) has the
@@ -957,6 +960,16 @@ message that only looks like a sentence. If the count isn't 0, stop and ask a
 developer to look at those rows. Step 4 checks it again on its own, and
 refuses to write anything while it isn't 0.
 
+Some old messages that only look like a sentence will trip this. The ones we
+know of are Postgres's "not ready" family (error code 57P03): `the database
+system is starting up`, `the database system is shutting down`, `the database
+system is in recovery mode` and `the database system is not yet accepting
+connections`. Node's abort texts do it too: `This operation was aborted`,
+`The operation was aborted due to timeout` and `This socket has been ended by
+the other party`. If you see a non-zero count, those are the likely reason.
+It's still a developer's call, not yours: the script can't tell them from a
+sentence we added.
+
 If the wait times out, the block prints the pod's `describe` output before it
 deletes the pod. That output and the log say why.
 
@@ -1042,9 +1055,14 @@ that output and the log say why:
 
 - **The script stopped itself.** The log has this line:
   `Stopped: some rows look like a sentence this script does not know. A developer should look at them: they may be our own sentences missing from its keep-list, or old messages that only look like sentences.`
-  The third count wasn't 0, so it refused to write. Nothing was written. Don't
-  run it again: ask a developer to look at those rows (Step 3 explains this
-  count).
+  The third count wasn't 0, so it refused to write. Nothing was written, and
+  running it again will refuse again. Step 3 lists the old messages that can
+  trip it (Postgres's 57P03 "database system is …" family, Node's abort texts).
+  Skip the rewrite for this deploy: go to the last command in Step 5 and delete
+  the ConfigMap. The old text stays in those rows for now, which is no worse
+  than before this step. Then file a card so a developer can review the
+  matching rows and ship an updated keep-list or guard in a later release. When
+  that release is deployed, run 4g again from Step 1.
 - **A deadlock or a lock timeout.** The log has `deadlock detected` or
   `canceling statement due to lock timeout`. The app was changing one of the
   same rows at that moment, for example deleting an agent. The script waits at

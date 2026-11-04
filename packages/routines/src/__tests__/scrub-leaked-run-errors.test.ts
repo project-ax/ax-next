@@ -233,7 +233,7 @@ describe('scrub-leaked-run-errors.sql (TASK-1036)', () => {
     }
   });
 
-  it('counts every shape of our sentences as one it does not know, and none of the old texts', async () => {
+  it('counts every shape of our sentences as one it does not know, and none of the leaked samples', async () => {
     await seed();
     for (const text of MORE_SENTENCES) await addFire('error', text);
     const dry = await scrub();
