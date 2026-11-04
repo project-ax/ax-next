@@ -21,7 +21,7 @@ import { PluginError } from '@ax/core';
 import { sql, type Kysely } from 'kysely';
 import type { Capabilities, KeyMode } from './types.js';
 import { CapabilitiesSchema } from './types.js';
-import { validateKeyMode } from './store.js';
+import { fromStoredRow, validateKeyMode } from './store.js';
 import {
   clearAuthoredConnectorsByIdForAdmins,
   pendingAuthoredConnectorsForAdmins,
@@ -108,9 +108,9 @@ function rowToDraft(row: ConnectorsAuthoredRow): AuthoredConnectorDraft {
   const parsed = CapabilitiesSchema.safeParse(row.capability_proposal);
   if (!parsed.success) {
     // A corrupt / hand-edited proposal must not silently project — fail loud,
-    // same posture as the live store's rowToConnector.
+    // same posture (and code) as the live store's rowToConnector.
     throw new PluginError({
-      code: 'invalid-payload',
+      code: 'corrupt-row',
       plugin: PLUGIN_NAME,
       message: `authored connector '${row.connector_id}' has a malformed capability_proposal`,
     });
@@ -119,7 +119,7 @@ function rowToDraft(row: ConnectorsAuthoredRow): AuthoredConnectorDraft {
     connectorId: row.connector_id,
     name: row.name,
     usageNote: row.usage_note,
-    keyMode: validateKeyMode(row.key_mode),
+    keyMode: fromStoredRow(() => validateKeyMode(row.key_mode)),
     status: row.status as AuthoredConnectorStatus,
     proposal: parsed.data,
     updatedAt: row.updated_at.toISOString(),

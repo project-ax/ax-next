@@ -98,9 +98,12 @@ describe('DB scheduler', () => {
   });
   it('uses the cron engine and records an unexpected dispatcher error once', async () => {
     const row = await f.store.createAuthored({ ...createInput(), definition: { ...createInput().definition, schedule: { kind: 'cron', expr: '* * * * *', tz: 'UTC' } } });
-    await tick({ fire: async () => { throw new Error('dispatch failed'); } });
+    const diagnostic = captureExpectedStderr(message => message === `[ax/routines] fire failed for ${row.agentId}/${row.routineId}: PRIVATE dispatch failed\n`);
+    await tick({ fire: async () => { throw new Error('PRIVATE dispatch failed'); } });
     expect((await f.store.findOne(row))!.nextRunAt).toEqual(new Date(due.getTime() + 60000));
-    expect((await f.store.recentFires(row))[0]).toMatchObject({ status: 'error', error: 'dispatch failed' });
+    // TASK-1031: the owner reads fixed words; the message goes only to the log.
+    expect((await f.store.recentFires(row))[0]).toMatchObject({ status: 'error', error: 'This run failed because of a problem on our side.' });
+    expect(diagnostic.messages).toHaveLength(1);
   });
   it('still claims authored routines if owner enumeration fails', async () => {
     await f.store.createAuthored(createInput());

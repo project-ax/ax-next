@@ -1,9 +1,9 @@
-import { makeAgentContext, PluginError, type HookBus } from '@ax/core';
+import { faultLogFields, makeAgentContext, PluginError, type HookBus } from '@ax/core';
 import type { StoredRoutine, AcceptedDispatch, FireSource, DispatchMiss } from './types.js';
 import type { FireResult } from './tick.js';
 import { renderLastCompletedRun, renderTemplate, usesLastCompletedRun } from './template.js';
 import { createRoutineLifetime, type RoutineLifetime } from './lifetime.js';
-import type { RoutinesStore } from './store.js';
+import { RUN_CLOSED, type RoutinesStore } from './store.js';
 import { briefRunError, briefRunMiss, isTaskRun } from './brief.js';
 import { CHECK_IN_REPLIES, CHECK_IN_REPORTS, renderCheckInMessage } from './checkin-message.js';
 import { readTaskEventContent, renderTaskEvents, taskEventPreview } from './task-event-content.js';
@@ -171,15 +171,54 @@ function refusedBeforeAssembly(reason: string): boolean {
   return reason.startsWith('chat:start:') || reason.startsWith('agent-resolve:') || reason.startsWith('system-prompt:');
 }
 
+/**
+ * TASK-1031 — what a run's error says when it failed for a host reason: fixed
+ * words and, when there is one, the failure's code. Never the error's message:
+ * the run's error is the routine's `lastError` and its run history, both shown
+ * to the owner, and a hook's message can quote a database or a provider. The
+ * detail goes to the log (`routines_fire_failed` / `routines_fire_invoke_failed`).
+ * The error's own code is shown; its cause's only when the own code is the
+ * bus's `unknown` wrap. Only a plain word-shaped code is shown: the log helper
+ * also accepts `.` and `:` (errno, SQLSTATE), which could spell a host here.
+ */
+export function runFailedText(err: unknown): string {
+  const { code, causeCode } = faultLogFields(err);
+  const pick = code !== undefined && code !== 'unknown' ? code : causeCode;
+  const shown = pick !== undefined && OWNER_CODE_RE.test(pick) ? pick : undefined;
+  return `This run failed because of a problem on our side${shown === undefined ? '' : ` (code: ${shown})`}.`;
+}
+const OWNER_CODE_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,39}$/;
+
+/** The store's `RUN_CLOSED` refusal, read without trusting the error's getters. */
+function isRunClosed(err: unknown): boolean {
+  try {
+    return err instanceof Error && err.message === RUN_CLOSED;
+  } catch {
+    return false;
+  }
+}
+
 export function createFireRoutine(deps: FireDeps) {
   const lifetime = deps.lifetime ?? createRoutineLifetime();
   const fire = async (accepted: AcceptedDispatch, payload?: unknown): Promise<FireResult> => {
     const { row, source, reqId, dispatchId, acceptedAt } = accepted;
     const sessionId = `routine-${row.agentId}-${row.routineId}-${reqId}`;
     const fail = async (err: unknown, agentGone = false): Promise<FireResult> => {
-      const error = source === 'webhook' ? 'This app update could not run.' : err instanceof PluginError ? `${err.code}: ${err.message}` : err instanceof Error ? err.message : String(err);
+      // The store's own fixed sentence for a run that closed before its bind
+      // (TASK-907) is kept: channel-web words a check-in by it.
+      // A closed run is an expected race (stopped, or its agent retired,
+      // between accept and bind), so it is a warning, not an error.
+      const closed = isRunClosed(err);
+      const error = source === 'webhook' ? 'This app update could not run.' : closed ? RUN_CLOSED : runFailedText(err);
       if (agentGone) await deps.purgeAgent(row.agentId);
-      else await deps.store.finishDispatch({ dispatchId, outcome: { status: 'error', error, conversationId: null, renderedPrompt: null, warning: row.lastWarning } });
+      else {
+        // `finally`: if recording fails too, the original failure is still logged.
+        try {
+          await deps.store.finishDispatch({ dispatchId, outcome: { status: 'error', error, conversationId: null, renderedPrompt: null, warning: row.lastWarning } });
+        } finally {
+          logFault('routines_fire_failed', err, closed ? 'warn' : 'error');
+        }
+      }
       return { status: 'error', error, conversationId: null, renderedPrompt: null, ...(agentGone ? { agentGone: true as const } : {}) };
     };
     const baseCtx = makeAgentContext({
@@ -188,6 +227,23 @@ export function createFireRoutine(deps: FireDeps) {
       agentId: row.agentId,
       userId: row.ownerUserId,
     });
+    // The detail of a host failure: codes always, the error itself except for
+    // a webhook fire (whose failures are kept to codes, like its stored text).
+    // Never throws: an error's getters are arbitrary, and a failed log line
+    // must not cost the run its row.
+    function logFault(event: 'routines_fire_failed' | 'routines_fire_invoke_failed', err: unknown, level: 'warn' | 'error' = 'error'): void {
+      const fields = { agentId: row.agentId, routineId: row.routineId, source, ...faultLogFields(err) };
+      try {
+        baseCtx.logger[level](event, { ...fields, ...(source === 'webhook' ? {} : { err }) });
+      } catch {
+        // The logger read a throwing getter on `err`: keep the line, codes only.
+        try {
+          baseCtx.logger[level](event, { ...fields, errUnreadable: true });
+        } catch {
+          // Best-effort: the run's row doesn't depend on its log line.
+        }
+      }
+    }
 
     let agentName: string | null = null;
     try {
@@ -395,7 +451,10 @@ export function createFireRoutine(deps: FireDeps) {
             () => settleWithoutTurn('the run finished without reporting a result', true));
         }
       },
-      (err: unknown) => settleWithoutTurn(err instanceof Error ? err.message : String(err), false),
+      async (err: unknown) => {
+        await settleWithoutTurn(runFailedText(err), false);
+        logFault('routines_fire_invoke_failed', err);
+      },
     ));
 
     // TASK-679: the row for this fire is written when the turn settles, not

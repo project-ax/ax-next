@@ -81,10 +81,11 @@ function scoped(
     if (!actor) return;
     const input = key(req, res, false);
     if (!input) return;
+    const ctx = actorContext(actor.id, input.agentId);
     try {
-      await effect(req, res, actorContext(actor.id, input.agentId));
+      await effect(req, res, ctx);
     } catch (error) {
-      writeServiceError(res, error);
+      writeServiceError(res, error, ctx.logger);
     }
   };
 }
@@ -299,7 +300,7 @@ export function createRoutinesAdminHandlers(deps: AdminDeps) {
         }, z.object({ allowed: z.boolean() }).strict());
         res.status(200).json(out);
       } catch (error) {
-        writeServiceError(res, error);
+        writeServiceError(res, error, ctx.logger);
       }
     },
     receiver: async (req: RouteRequest, res: RouteResponse) => {
@@ -326,7 +327,7 @@ export function createRoutinesAdminHandlers(deps: AdminDeps) {
           .status(200)
           .json({ url: `/webhooks/${encodeURIComponent(out.token)}` });
       } catch (error) {
-        writeServiceError(res, error);
+        writeServiceError(res, error, ctx.logger);
       }
     },
   };
@@ -461,10 +462,11 @@ function admin(
   return async (req, res) => {
     const actor = await requireAdmin(deps.bus, authContext(), req, res);
     if (!actor) return;
+    const ctx = actorContext(actor.id);
     try {
-      await effect(req, res, actorContext(actor.id));
+      await effect(req, res, ctx);
     } catch (error) {
-      writeServiceError(res, error);
+      writeServiceError(res, error, ctx.logger);
     }
   };
 }

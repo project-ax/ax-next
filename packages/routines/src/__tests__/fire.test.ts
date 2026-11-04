@@ -4,16 +4,32 @@ import { HookBus, makeAgentContext, PluginError, type AgentContext } from '@ax/c
 import { RoutineDefinitionSchema, RoutinePatchSchema } from '@ax/routines-contract';
 import { connectorsSkippedPayload } from '@ax/chat-orchestrator';
 import { checkInBrief } from '../brief.js';
-import { createFireRoutine, stashConnectorsSkipped, warningFor, type PendingFire, type PendingFires } from '../fire.js';
+import { createFireRoutine, runFailedText, stashConnectorsSkipped, warningFor, type PendingFire, type PendingFires } from '../fire.js';
 import { captureExpectedStderr } from './support/expected-diagnostics.js';
 import { fixture, createInput, now } from './store-fixture.js';
 import { purgeRoutineAgent } from '../cleanup.js';
-import { RUN_INTERRUPTED } from '../store.js';
+import { RUN_CLOSED, RUN_INTERRUPTED } from '../store.js';
 import { renderCheckInMessage } from '../checkin-message.js';
 import type { FireReport, StoredReply, StoredRoutine } from '../types.js';
 const f = fixture();
 const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0)) await cleanup(); vi.restoreAllMocks(); });
+/** TASK-1031: what the owner sees for a host failure: fixed words, never the error's text. */
+const RUN_FAILED = 'This run failed because of a problem on our side.';
+/** fire builds its own ctx, so its log lines are read off stdout. */
+async function stdoutOf(run: () => Promise<void>): Promise<string[]> {
+  const lines: string[] = [];
+  const spy = vi.spyOn(process.stdout, 'write').mockImplementation((chunk: unknown) => {
+    lines.push(String(chunk));
+    return true;
+  });
+  try {
+    await run();
+  } finally {
+    spy.mockRestore();
+  }
+  return lines.flatMap((l) => l.split('\n')).filter((l) => l.startsWith('{'));
+}
 function sampleRow(): StoredRoutine { return { ...createInput().definition, agentId: 'a', routineId: 'r', revision: 'v', ownerUserId: 'owner', definitionId: null, definitionUpdatedAt: null, nextRunAt: null, lastRunAt: null, lastStatus: null, lastError: null, lastWarning: null, task: null, noRecentUpdate: null, steps: [], finishBy: null, finishByTimeZone: null, done: null }; }
 async function setup(options: {
   resolveError?: PluginError;
@@ -21,6 +37,8 @@ async function setup(options: {
   grace?: number;
   definition?: object;
   bind?: () => Promise<void>;
+  /** TASK-1031. Stands in for the store's write of the fire's row. */
+  finish?: () => Promise<boolean>;
   reports?: () => Promise<Array<{ firedAt: Date; report: FireReport }>>;
   replies?: (input: { agentId: string; routineId: string; actorUserId: string; limit: number }) => Promise<StoredReply[]>;
   /** TASK-991. Stands in for the store's read of the routine's last completed run. */
@@ -50,7 +68,7 @@ async function setup(options: {
   bus.registerService('conversations:create', 'test', conversation);
   bus.registerService('conversations:find-or-create', 'test', shared);
   bus.registerService('credentials:delete', 'test', async () => undefined);
-  const store = { ...f.store, ...(options.bind ? { bindDispatchConversation: options.bind } : {}), ...(options.reports ? { recentReports: options.reports } : {}),
+  const store = { ...f.store, ...(options.bind ? { bindDispatchConversation: options.bind } : {}), ...(options.finish ? { finishDispatch: options.finish } : {}), ...(options.reports ? { recentReports: options.reports } : {}),
     ...(options.replies ? { recentReplies: options.replies } : {}), ...(options.lastCompletedRun ? { lastCompletedRun: options.lastCompletedRun } : {}) };
   const fire = createFireRoutine({ bus, pending, store, purgeAgent: agentId => purgeRoutineAgent({ bus, store: f.store, pending, agentId }), turnEndGraceMs: options.grace ?? 60000 });
   cleanups.push(async () => { pending.clear(); await fire.shutdown(); });
@@ -97,10 +115,84 @@ describe('accepted DB fire dispatch', () => {
   it('a bind failure fails the fire before the agent runs', async () => {
     const h = await setup({ bind: async () => { throw new Error('database unavailable'); } });
     const result = await h.fire(h.accepted);
-    expect(result).toMatchObject({ status: 'error', error: 'database unavailable', conversationId: null, renderedPrompt: null });
+    expect(result).toMatchObject({ status: 'error', error: RUN_FAILED, conversationId: null, renderedPrompt: null });
     expect(h.invoked).not.toHaveBeenCalled();
     expect(h.pending.size).toBe(0);
-    expect(await f.store.recentFires(h.row)).toMatchObject([{ status: 'error', error: 'database unavailable' }]);
+    expect(await f.store.recentFires(h.row)).toMatchObject([{ status: 'error', error: RUN_FAILED }]);
+  });
+  // TASK-1031: a hook failure's code reaches the owner; its message only the log.
+  it('records a hook failure as fixed words and its code, and logs the detail', async () => {
+    const h = await setup({ resolveError: new PluginError({ code: 'forbidden', plugin: 'teams', hookName: 'teams:is-member', message: 'PRIVATE pg text at 10.0.0.7' }) });
+    const lines = await stdoutOf(() => h.fire(h.accepted).then(() => undefined));
+    const [fire] = await f.store.recentFires(h.row);
+    expect(fire).toMatchObject({ status: 'error', error: 'This run failed because of a problem on our side (code: forbidden).' });
+    expect((await f.store.findOne(h.row))?.lastError).toBe('This run failed because of a problem on our side (code: forbidden).');
+    const logged = lines.filter((l) => l.includes('routines_fire_failed')).map((l) => JSON.parse(l) as Record<string, unknown>);
+    expect(logged).toHaveLength(1);
+    expect(logged[0]).toMatchObject({ level: 'error', code: 'forbidden', routineId: h.row.routineId, err: { message: 'PRIVATE pg text at 10.0.0.7' } });
+  });
+  it('a bind refused because the run closed keeps the store\'s own sentence', async () => {
+    const h = await setup({ bind: async () => { throw new Error(RUN_CLOSED); } });
+    expect(await h.fire(h.accepted)).toMatchObject({ status: 'error', error: RUN_CLOSED });
+    expect((await f.store.recentFires(h.row))[0]?.error).toBe(RUN_CLOSED);
+  });
+  it('still logs the original failure when recording it fails too', async () => {
+    const h = await setup({
+      resolveError: new PluginError({ code: 'forbidden', plugin: 'teams', message: 'denied' }),
+      finish: async () => { throw new Error('database unavailable'); },
+    });
+    // The recording failure still reaches the caller (tick retries, fire-now answers 503).
+    const lines = await stdoutOf(() => expect(h.fire(h.accepted)).rejects.toThrow('database unavailable'));
+    const logged = lines.filter((l) => l.includes('routines_fire_failed')).map((l) => JSON.parse(l) as Record<string, unknown>);
+    expect(logged).toHaveLength(1);
+    expect(logged[0]).toMatchObject({ level: 'error', code: 'forbidden' });
+  });
+  it('a closed run is logged as a warning, not an error', async () => {
+    const h = await setup({ bind: async () => { throw new Error(RUN_CLOSED); } });
+    const lines = await stdoutOf(() => h.fire(h.accepted).then(() => undefined));
+    const logged = lines.filter((l) => l.includes('routines_fire_failed')).map((l) => JSON.parse(l) as Record<string, unknown>);
+    expect(logged).toHaveLength(1);
+    expect(logged[0]?.level).toBe('warn');
+  });
+  it('a hostile message getter still records the run', async () => {
+    const hostile = new PluginError({ code: 'forbidden', plugin: 'teams', message: 'denied' });
+    Object.defineProperty(hostile, 'message', { get() { throw new Error('getter'); } });
+    const h = await setup({ resolveError: hostile });
+    const lines = await stdoutOf(() => h.fire(h.accepted).then(() => undefined));
+    expect((await f.store.recentFires(h.row))[0]?.error).toBe('This run failed because of a problem on our side (code: forbidden).');
+    // The log line survives too, with its codes and without the unreadable error.
+    const logged = lines.filter((l) => l.includes('routines_fire_failed')).map((l) => JSON.parse(l) as Record<string, unknown>);
+    expect(logged).toHaveLength(1);
+    expect(logged[0]).toMatchObject({ code: 'forbidden', errUnreadable: true });
+  });
+  it('a log line that throws does not cost the run its row', async () => {
+    const hostile = new PluginError({ code: 'forbidden', plugin: 'teams', message: 'denied' });
+    Object.defineProperty(hostile, 'stack', { get() { throw new Error('getter'); } });
+    const h = await setup({ resolveError: hostile });
+    await stdoutOf(() => h.fire(h.accepted).then(() => undefined));
+    expect((await f.store.recentFires(h.row))[0]).toMatchObject({ status: 'error', error: 'This run failed because of a problem on our side (code: forbidden).' });
+  });
+  it('a webhook fire logs codes only', async () => {
+    const h = await setup({ resolveError: new PluginError({ code: 'forbidden', plugin: 'teams', message: 'PRIVATE' }) });
+    const lines = await stdoutOf(() => h.fire({ ...h.accepted, source: 'webhook' }).then(() => undefined));
+    expect((await f.store.recentFires(h.row))[0]?.error).toBe('This app update could not run.');
+    const logged = lines.filter((l) => l.includes('routines_fire_failed'));
+    expect(logged).toHaveLength(1);
+    expect(logged[0]).not.toContain('PRIVATE');
+    expect(JSON.parse(logged[0]!)).toMatchObject({ code: 'forbidden' });
+  });
+  it('an invoke that throws records fixed words, not its message', async () => {
+    const h = await setup({ invoke: async () => { throw Object.assign(new Error('PRIVATE runner text'), { code: 'ECONNRESET' }); } });
+    const diagnostic = captureExpectedStderr(message => message.startsWith(`[ax/routines] agent:invoke failed for a/${h.row.routineId}:`));
+    const lines = await stdoutOf(async () => {
+      await h.fire(h.accepted);
+      await expect.poll(async () => (await f.store.recentFires(h.row)).length).toBe(1);
+    });
+    expect((await f.store.recentFires(h.row))[0]?.error).toBe('This run failed because of a problem on our side (code: ECONNRESET).');
+    expect(diagnostic.messages.join('')).not.toContain('PRIVATE');
+    const logged = lines.filter((l) => l.includes('routines_fire_invoke_failed')).map((l) => JSON.parse(l) as Record<string, unknown>);
+    expect(logged).toHaveLength(1);
+    expect(logged[0]).toMatchObject({ level: 'error', code: 'unknown', causeCode: 'ECONNRESET' });
   });
   it.each(['forbidden', 'not-found'])('records %s from another provider without purging a live agent', async (code) => {
     const h = await setup({ resolveError: new PluginError({ code, plugin: 'teams', hookName: 'teams:is-member', message: 'denied' }) });
@@ -193,19 +285,19 @@ describe('the check-in message and the stored prompt (TASK-908)', () => {
   it('a failed replies read fails the task run before the agent starts, as a missed check-in', async () => {
     const h = await setup({ definition: TASK, replies: async () => { throw new Error('database unavailable'); } });
     const result = await h.fire(h.accepted);
-    expect(result).toMatchObject({ status: 'error', error: 'database unavailable', conversationId: null, renderedPrompt: null });
+    expect(result).toMatchObject({ status: 'error', error: RUN_FAILED, conversationId: null, renderedPrompt: null });
     expect(h.invoked).not.toHaveBeenCalled();
     expect(h.pending.size).toBe(0);
-    expect(await f.store.recentFires(h.row)).toMatchObject([{ status: 'error', error: 'database unavailable', renderedPrompt: null }]);
+    expect(await f.store.recentFires(h.row)).toMatchObject([{ status: 'error', error: RUN_FAILED, renderedPrompt: null }]);
     expect((await f.store.findOne(h.row))?.noRecentUpdate).toMatchObject({ inARow: 1, reason: 'failed' });
   });
   it('a failed report read fails the task run before the agent starts', async () => {
     const h = await setup({ definition: TASK, reports: async () => { throw new Error('database unavailable'); } });
     const result = await h.fire(h.accepted);
-    expect(result).toMatchObject({ status: 'error', error: 'database unavailable', conversationId: null, renderedPrompt: null });
+    expect(result).toMatchObject({ status: 'error', error: RUN_FAILED, conversationId: null, renderedPrompt: null });
     expect(h.invoked).not.toHaveBeenCalled();
     expect(h.pending.size).toBe(0);
-    expect(await f.store.recentFires(h.row)).toMatchObject([{ status: 'error', error: 'database unavailable', renderedPrompt: null }]);
+    expect(await f.store.recentFires(h.row)).toMatchObject([{ status: 'error', error: RUN_FAILED, renderedPrompt: null }]);
   });
   it('a failed report read counts as a missed check-in, as failed', async () => {
     const h = await setup({ definition: TASK, reports: async () => { throw new Error('database unavailable'); } });
@@ -362,10 +454,10 @@ describe('the host-supplied last completed run (TASK-991)', () => {
   it('a failed read fails the fire before the agent runs', async () => {
     const h = await setup({ definition: ASKS, lastCompletedRun: async () => { throw new Error('database unavailable'); } });
     const result = await h.fire(h.accepted);
-    expect(result).toMatchObject({ status: 'error', error: 'database unavailable', conversationId: null, renderedPrompt: null });
+    expect(result).toMatchObject({ status: 'error', error: RUN_FAILED, conversationId: null, renderedPrompt: null });
     expect(h.invoked).not.toHaveBeenCalled();
     expect(h.pending.size).toBe(0);
-    expect(await f.store.recentFires(h.row)).toMatchObject([{ status: 'error', error: 'database unavailable' }]);
+    expect(await f.store.recentFires(h.row)).toMatchObject([{ status: 'error', error: RUN_FAILED }]);
   });
 });
 describe('connector skips per fire (slice 6)', () => {
@@ -495,5 +587,19 @@ describe('connector skips per fire (slice 6)', () => {
   });
   it('warningFor: null when nothing was skipped', () => {
     expect(warningFor(pendingEntry())).toBeNull();
+  });
+});
+describe('runFailedText (TASK-1031)', () => {
+  const wrap = (code: string, cause: Error) => new PluginError({ code, plugin: 'p', message: 'PRIVATE', cause });
+  it("shows the error's own code, and its cause's only behind the bus's unknown wrap", () => {
+    const pg = Object.assign(new Error('PRIVATE'), { code: '57014' });
+    expect(runFailedText(wrap('timeout', pg))).toBe('This run failed because of a problem on our side (code: timeout).');
+    expect(runFailedText(wrap('unknown', pg))).toBe('This run failed because of a problem on our side (code: 57014).');
+    expect(runFailedText(wrap('unknown', new Error('PRIVATE')))).toBe('This run failed because of a problem on our side.');
+  });
+  it('never shows a code shaped like a host or address', () => {
+    for (const code of ['10.0.0.7', 'db.internal:5432']) {
+      expect(runFailedText(Object.assign(new Error('PRIVATE'), { code }))).toBe('This run failed because of a problem on our side.');
+    }
   });
 });

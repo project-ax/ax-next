@@ -171,12 +171,21 @@ function parseAndValidateBody(body: Buffer): ParsedBody<unknown> | ParseError {
 /**
  * Map a thrown PluginError from a `connectors:*` hook to an HTTP status. The
  * hooks throw structured codes (`invalid-payload`, `not-found`,
- * `tool-permissions-reset-failed`); everything
+ * `tool-permissions-reset-failed`, `corrupt-row`); everything
  * else bubbles as a 500 (re-thrown). We collapse the message — never echo
  * internal stack/field detail beyond the hook's own message string.
+ *
+ * `corrupt-row` (TASK-1031) is a stored row the read schema refuses: the
+ * host's fault, not the caller's, and its message is validation (zod) text.
+ * It is logged with the error and answered 500 `{ error: 'internal' }`.
  */
-function handleHookError(err: unknown, res: RouteResponse): void {
+function handleHookError(err: unknown, res: RouteResponse, logger: AgentContext['logger']): void {
   if (err instanceof PluginError) {
+    if (err.code === 'corrupt-row') {
+      logger.error('connectors_admin_corrupt_row', { err });
+      res.status(500).json({ error: 'internal' });
+      return;
+    }
     if (err.code === 'not-found') {
       res.status(404).json({ error: 'not-found' });
       return;
@@ -540,7 +549,7 @@ export function createConnectorRouteHandlers(
         connectorId: id,
       });
     } catch (err) {
-      handleHookError(err, res);
+      handleHookError(err, res, ctx.logger);
       return null;
     }
     const owner = writeOwner(got, actor.id, mode);
@@ -611,7 +620,7 @@ export function createConnectorRouteHandlers(
         // `connector` only — the owner id stays host-side.
         res.status(200).json({ connector: presentCanEdit(out.connector, mode) satisfies Connector });
       } catch (err) {
-        handleHookError(err, res);
+        handleHookError(err, res, ctx.logger);
       }
     },
 
@@ -655,7 +664,7 @@ export function createConnectorRouteHandlers(
           return;
         } catch (err) {
           if (!(err instanceof PluginError && err.code === 'not-found')) {
-            handleHookError(err, res);
+            handleHookError(err, res, ctx.logger);
             return;
           }
         }
@@ -679,7 +688,7 @@ export function createConnectorRouteHandlers(
           .status(out.created ? 201 : 200)
           .json({ connector: out.connector, created: out.created });
       } catch (err) {
-        handleHookError(err, res);
+        handleHookError(err, res, ctx.logger);
       }
     },
 
@@ -714,7 +723,7 @@ export function createConnectorRouteHandlers(
           { userId: actor.id, connectorId: id },
         );
       } catch (err) {
-        handleHookError(err, res);
+        handleHookError(err, res, ctx.logger);
         return;
       }
       const existing = got.connector;
@@ -779,7 +788,7 @@ export function createConnectorRouteHandlers(
           created: out.created,
         });
       } catch (err) {
-        handleHookError(err, res);
+        handleHookError(err, res, ctx.logger);
       }
     },
 
@@ -799,7 +808,7 @@ export function createConnectorRouteHandlers(
         });
         owner = writeOwner(got, actor.id, mode);
       } catch (err) {
-        handleHookError(err, res);
+        handleHookError(err, res, ctx.logger);
         return;
       }
       if (owner === null) {
@@ -825,7 +834,7 @@ export function createConnectorRouteHandlers(
         logCuration('delete', actor.id, owner, id);
         res.status(204).end();
       } catch (err) {
-        handleHookError(err, res);
+        handleHookError(err, res, ctx.logger);
       }
     },
 
@@ -854,7 +863,7 @@ export function createConnectorRouteHandlers(
         });
         connector = got.connector;
       } catch (err) {
-        handleHookError(err, res);
+        handleHookError(err, res, ctx.logger);
         return;
       }
       const result = await probeConnector(connector, { bus: deps.bus, ctx });
@@ -994,7 +1003,7 @@ export function createConnectorRouteHandlers(
           {},
         );
       } catch (err) {
-        handleHookError(err, res);
+        handleHookError(err, res, ctx.logger);
         return;
       }
       const newest = new Map<string, ListAuthoredPendingAllOutput['drafts'][number]>();
@@ -1054,7 +1063,7 @@ export function createConnectorRouteHandlers(
         });
         res.status(204).end();
       } catch (err) {
-        handleHookError(err, res);
+        handleHookError(err, res, ctx.logger);
       }
     },
   };

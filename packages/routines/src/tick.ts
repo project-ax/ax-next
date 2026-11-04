@@ -6,6 +6,7 @@ import { createRoutinesStore, type RoutinesStore } from './store.js';
 import type { StoredRoutine, AcceptedDispatch, FireStatus } from './types.js';
 import { engineFor } from './engines/index.js';
 import { advanceToNextActiveWindow } from './active-hours.js';
+import { runFailedText } from './fire.js';
 import { durationToSeconds } from '@ax/routines-contract';
 import type { Clock } from './clock.js';
 
@@ -136,8 +137,10 @@ export async function runTickOnce(input: TickOnceInput): Promise<void> {
     });
     try { await input.fire(dispatch.accepted); }
     catch (err) {
+      // TASK-1031: the owner reads this; the detail goes to the log.
+      process.stderr.write(`[ax/routines] fire failed for ${row.agentId}/${row.routineId}: ${err instanceof Error ? err.message : String(err)}\n`);
       await input.store.finishDispatch({ dispatchId: dispatch.accepted.dispatchId, outcome: {
-        status: 'error', error: err instanceof Error ? err.message : String(err),
+        status: 'error', error: runFailedText(err),
         conversationId: null, renderedPrompt: null, warning: row.lastWarning,
       } });
     }

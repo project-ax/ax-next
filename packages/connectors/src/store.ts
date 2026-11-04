@@ -190,12 +190,30 @@ function checkCapabilities(schema: ZodType<Capabilities>, value: unknown): Capab
 
 // ---------------------------------------------------------------------------
 // Row → domain mapping. `capabilities` re-validates on read (don't trust the
-// DB). A corrupt / hand-edited row throws invalid-payload rather than returning
+// DB). A corrupt / hand-edited row throws `corrupt-row` rather than returning
 // an unvalidated shape.
 // ---------------------------------------------------------------------------
 
+/**
+ * Run a read-side validator over a STORED value. The validators throw
+ * `invalid-payload`, which is the caller's fault: the admin routes answer it
+ * with a 400 that echoes the message. A stored row that fails them is the
+ * host's fault, so it becomes `corrupt-row` (TASK-1031) — same message (the
+ * skipped-row logs key on it), the original kept as the cause.
+ */
+export function fromStoredRow<T>(read: () => T): T {
+  try {
+    return read();
+  } catch (err) {
+    if (err instanceof PluginError && err.code === 'invalid-payload') {
+      throw new PluginError({ code: 'corrupt-row', plugin: PLUGIN_NAME, message: err.message, cause: err });
+    }
+    throw err;
+  }
+}
+
 function rowToConnector(row: StoredConnectorRow): Connector {
-  return {
+  return fromStoredRow(() => ({
     id: row.connector_id,
     name: row.name,
     description: row.description,
@@ -205,13 +223,13 @@ function rowToConnector(row: StoredConnectorRow): Connector {
     requiresAttachment: row.requires_attachment === true,
     createdAt: row.created_at.toISOString(),
     updatedAt: row.updated_at.toISOString(),
-  };
+  }));
 }
 
 function rowToSummary(
   row: Omit<StoredConnectorRow, 'capabilities'>,
 ): ConnectorSummary {
-  return {
+  return fromStoredRow(() => ({
     id: row.connector_id,
     name: row.name,
     description: row.description,
@@ -220,7 +238,7 @@ function rowToSummary(
     requiresAttachment: row.requires_attachment === true,
     createdAt: row.created_at.toISOString(),
     updatedAt: row.updated_at.toISOString(),
-  };
+  }));
 }
 
 /**
