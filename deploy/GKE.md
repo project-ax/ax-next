@@ -762,6 +762,334 @@ Run the step 3 commands again. Expect:
 Then run the [restore drill](#the-restore-drill) once (with `--context "$KCTX"`),
 so the next snapshot is proven against the new layout.
 
+### 4g. Scrub old run errors (TASK-1036)
+
+Before TASK-1031 (#1116), a routine run that failed for a host reason stored the
+failing hook's or database's own error message. Owners and team members see that
+text in run history and as the routine's last error, and agents read the last
+error too. This step rewrites those old rows to the sentence the host writes now:
+"This run failed because of a problem on our side."
+
+**When.** Once, on the first deploy that includes TASK-1036, after the host is
+running that release (`rollout status deploy/ax-next-host` has returned). Before
+then, the old code is still writing this kind of text. It's a one-off: the
+script keeps a list of the messages the app writes today, and a release that
+changes one needs that list updated first. Step 2 checks the release you
+deployed for that.
+
+**What people will see afterwards.** Old failed runs that showed internal text
+now show the fixed sentence, in run history and as the routine's last error
+(which agents read too). Every sentence the current code writes is left alone:
+interrupted and closed runs, app-update messages, and the messages about a
+task's instructions. So are `terminated: …` reasons. Those can still hold a
+runner's own error text, and a follow-up card decides what they should say.
+Old text that an agent already read may still be in that agent's conversation
+transcripts. This step doesn't touch those.
+
+**It prints counts, never text.** The old texts are what we're removing, and this
+output can end up in a ticket or a chat. Keep it that way: don't add a query
+that prints them.
+
+**It's safe to run while the app is up.** The rewrite is one short transaction
+that touches only the error text of failed runs. It changes no routine's
+revision or `updated_at`, so no open editor gets a conflict and no queued app
+update is cancelled. If the app deletes an agent at the same moment, the two
+can, rarely, deadlock. Postgres then fails one of them. If it fails the
+rewrite, nothing was written and you can run Step 4 again. If it fails the
+agent's delete instead, the agent is gone but its routines and run history stay
+until one of those routines next comes due (a paused routine may never).
+That's harmless, just leftover.
+
+**The backup in Step 1 is the only undo.** Restoring it reverts everything
+written since, not just this ([Restoring for real](#restoring-for-real) has the
+database part).
+
+**Every `kubectl` command names its context, and every `gcloud` command names
+its project**, as in [4f](#4f-reset-after-the-agent-files-cutover). Set them
+once, check, then copy-paste:
+
+```bash
+KCTX=<your GKE context>        # kubectl config get-contexts
+NS=ax-next
+PROJECT_ID=<your GCP project>  # the project that holds the ax-next-db Cloud SQL instance
+kubectl --context "$KCTX" get deploy ax-next-host -n "$NS"   # must be the cluster you mean
+```
+
+#### Step 1: back up first
+
+First, make sure the instance you're about to back up is the database the app
+uses. The first line prints the instance's private IP. The second prints only
+the host from the app's database URL, never the URL itself, because the URL
+holds the password:
+
+```bash
+gcloud sql instances describe ax-next-db --project="$PROJECT_ID" --format='value(ipAddresses[0].ipAddress)'
+kubectl --context "$KCTX" get secret ax-next-db -n "$NS" -o jsonpath='{.data.url}' | base64 -d | sed -nE 's#^.*@([^:/?]+).*$#\1#p'; echo
+```
+
+The two must be the same address. If they differ, or either one is empty,
+stop: you can't be sure the backup below covers the database Step 4 changes.
+
+Then back up:
+
+```bash
+gcloud sql backups create --instance=ax-next-db --project="$PROJECT_ID"
+gcloud sql backups list --instance=ax-next-db --project="$PROJECT_ID" --limit=1   # status SUCCESSFUL
+```
+
+Don't go on until the newest backup says `SUCCESSFUL`.
+
+#### Step 2: load the script
+
+Work from the repo root of a checkout of the release you just deployed. First,
+make sure it's a full checkout of that release:
+
+```bash
+git rev-parse --is-shallow-repository   # must print false
+kubectl --context "$KCTX" get deploy ax-next-host -n "$NS" -o jsonpath='{.spec.template.spec.containers[*].image}'; echo
+git rev-parse HEAD
+```
+
+A shallow clone (`git clone --depth …`) is missing history, so the checks
+below can print nothing and look like an all-clear. The second command prints
+the image the host runs. Our deploys tag it with the commit's short sha
+(`…/agent:<sha>@sha256:…`), so that sha must be the start of what
+`git rev-parse HEAD` prints. If your tag isn't a sha, confirm some other way
+that HEAD is the commit the running image was built from. If either check
+fails, stop.
+
+Then check that nothing since the script last changed has changed what a
+failed run says:
+
+```bash
+git log -1 --oneline -- packages/routines/sql/scrub-leaked-run-errors.sql   # must print a commit
+git log --oneline "$(git log -1 --format=%H -- packages/routines/sql/scrub-leaked-run-errors.sql)"..HEAD -- packages/routines/src
+```
+
+The first command prints the commit that last changed the script. If it prints
+nothing, this checkout doesn't have the script: stop. (The second command would
+then list nothing, which looks like "all clear" but isn't.)
+
+The second command lists every later commit to the routines code. No output
+means you can go on. If it lists commits, ask a developer to look at them first. If
+any of them changes the text a failed run stores (in `fire.ts`, `tick.ts`,
+`plugin.ts` (`BRIEF_UNCONFIRMED`), `brief.ts`, `store.ts` (`RUN_CLOSED`,
+`RUN_INTERRUPTED` and `finishDispatch`), `repeat-runtime.ts` or
+`repeat-deliveries.ts`), stop: the script's keep-list has to be updated first,
+or this step would rewrite a sentence the app writes today.
+
+Then load it:
+
+```bash
+kubectl --context "$KCTX" create configmap run-error-scrub -n "$NS" \
+  --from-file=scrub.sql=packages/routines/sql/scrub-leaked-run-errors.sql
+```
+
+`AlreadyExists` means an earlier try left one behind. Delete it (the last
+command in Step 5) and create it again, so the pod runs this checkout's script.
+
+#### Step 3: dry run, and write the counts down
+
+This changes nothing: the script counts inside a transaction, then rolls it
+back. The pod reads the database URL from the existing `ax-next-db` Secret, as
+in 4f. Inside the cluster, the password is in that pod's environment and on its
+psql command line. It never goes on your laptop's command line, into your shell
+history, or into the pod spec.
+
+```bash
+kubectl --context "$KCTX" create -n "$NS" -f - <<'YAML'
+apiVersion: v1
+kind: Pod
+metadata:
+  name: run-error-scrub-check
+spec:
+  restartPolicy: Never
+  automountServiceAccountToken: false
+  volumes:
+    - name: scrub
+      configMap: { name: run-error-scrub }
+  containers:
+    - name: psql
+      image: postgres:17
+      volumeMounts:
+        - { name: scrub, mountPath: /sql, readOnly: true }
+      env:
+        - name: DATABASE_URL
+          valueFrom: { secretKeyRef: { name: ax-next-db, key: url } }
+      command: ["sh", "-c"]
+      args:
+        - |
+          # The DSN says sslmode=no-verify (a node-postgres spelling, Step 4a);
+          # libpq wants require.
+          psql "${DATABASE_URL%%\?*}?sslmode=require" -X -v ON_ERROR_STOP=1 -f /sql/scrub.sql
+YAML
+kubectl --context "$KCTX" wait --for=jsonpath='{.status.phase}'=Succeeded pod/run-error-scrub-check -n "$NS" --timeout=120s \
+  || kubectl --context "$KCTX" describe pod run-error-scrub-check -n "$NS"
+kubectl --context "$KCTX" logs run-error-scrub-check -n "$NS"
+kubectl --context "$KCTX" delete pod run-error-scrub-check -n "$NS"
+```
+
+The log looks like this, with your numbers for `N` and `M`:
+
+```text
+SET
+SET
+BEGIN
+SET
+CREATE FUNCTION
+CREATE FUNCTION
+run-history rows with old error text: N
+routines with old error text: M
+old rows that look like a host sentence: 0
+Dry run: nothing was changed. Run again with -v apply=1 to rewrite them.
+ROLLBACK
+```
+
+The bare `SET`, `BEGIN`, `CREATE FUNCTION` and `ROLLBACK` lines are psql
+reporting each statement it ran. They're expected. Write the first two counts
+down. If both are 0, there's nothing to rewrite: skip to the last command in
+Step 5.
+
+`old rows that look like a host sentence:` must be `0`. It counts the old rows
+that read like a sentence we wrote: their first word is This, The, We, Your,
+You, It, A or An (in any case, or as a contraction like We’re), and they end
+with `.`, `!` or `?`, or are only words with no punctuation at all. A row like
+that may come from a release that added a message the script's keep-list
+doesn't know, and the rewrite would replace that message. Or it may be an old
+message that only looks like a sentence. If the count isn't 0, stop and ask a
+developer to look at those rows. Step 4 checks it again on its own, and
+refuses to write anything while it isn't 0.
+
+Some old messages that only look like a sentence will trip this. The ones we
+know of are Postgres's "not ready" family (error code 57P03): `the database
+system is starting up`, `the database system is shutting down`, `the database
+system is in recovery mode` and `the database system is not yet accepting
+connections`. Node's abort texts do it too: `This operation was aborted`,
+`The operation was aborted due to timeout` and `This socket has been ended by
+the other party`. If you see a non-zero count, those are the likely reason.
+It's still a developer's call, not yours: the script can't tell them from a
+sentence we added.
+
+If the wait times out, the block prints the pod's `describe` output before it
+deletes the pod. That output and the log say why.
+
+#### Step 4: rewrite
+
+This is the Step 3 pod with two changes: it's named `run-error-scrub-apply`, and
+its psql line adds `-v apply=1`. It's written out in full so nobody edits YAML
+by hand against prod.
+
+```bash
+kubectl --context "$KCTX" create -n "$NS" -f - <<'YAML'
+apiVersion: v1
+kind: Pod
+metadata:
+  name: run-error-scrub-apply
+spec:
+  restartPolicy: Never
+  automountServiceAccountToken: false
+  volumes:
+    - name: scrub
+      configMap: { name: run-error-scrub }
+  containers:
+    - name: psql
+      image: postgres:17
+      volumeMounts:
+        - { name: scrub, mountPath: /sql, readOnly: true }
+      env:
+        - name: DATABASE_URL
+          valueFrom: { secretKeyRef: { name: ax-next-db, key: url } }
+      command: ["sh", "-c"]
+      args:
+        - |
+          # The DSN says sslmode=no-verify (a node-postgres spelling, Step 4a);
+          # libpq wants require.
+          psql "${DATABASE_URL%%\?*}?sslmode=require" -X -v ON_ERROR_STOP=1 -v apply=1 -f /sql/scrub.sql
+YAML
+kubectl --context "$KCTX" wait --for=jsonpath='{.status.phase}'=Succeeded pod/run-error-scrub-apply -n "$NS" --timeout=120s \
+  || kubectl --context "$KCTX" describe pod run-error-scrub-apply -n "$NS"
+kubectl --context "$KCTX" logs run-error-scrub-apply -n "$NS"
+kubectl --context "$KCTX" delete pod run-error-scrub-apply -n "$NS"
+```
+
+It worked only if both of these are true:
+
+- the wait printed `pod/run-error-scrub-apply condition met` (the pod
+  `Succeeded`), and
+- the log ends with `COMMIT`, right after `routines rewritten:`.
+
+A good log looks like this. Each `UPDATE` line is psql again, with the number
+of rows that statement changed: routines first, then run history.
+
+```text
+SET
+SET
+BEGIN
+SET
+CREATE FUNCTION
+CREATE FUNCTION
+run-history rows with old error text: N
+routines with old error text: M
+old rows that look like a host sentence: 0
+UPDATE M
+UPDATE N
+run-history rows rewritten: N
+routines rewritten: M
+COMMIT
+```
+
+The `rewritten:` lines on their own prove nothing. The script prints them
+before `COMMIT`. If anything fails before the commit goes through, psql stops,
+the pod ends `Failed`, and the database rolls back the whole transaction, so
+nothing was written. Only a log that ends with `COMMIT` means the rewrite went
+through.
+
+Expect `run-history rows rewritten:` to match Step 3's first count (it's lower
+only if someone deleted an agent in between). `routines rewritten:` can be
+lower than the second count: a routine that ran again since Step 3 already has
+new text.
+
+**If the wait times out, stop.** Don't run this step again until you know why.
+The block printed the pod's `describe` output before it deleted the pod, and
+that output and the log say why:
+
+- **The script stopped itself.** The log has this line:
+  `Stopped: some rows look like a sentence this script does not know. A developer should look at them: they may be our own sentences missing from its keep-list, or old messages that only look like sentences.`
+  The third count wasn't 0, so it refused to write. Nothing was written, and
+  running it again will refuse again. Step 3 lists the old messages that can
+  trip it (Postgres's 57P03 "database system is …" family, Node's abort texts).
+  Skip the rewrite for this deploy: go to the last command in Step 5 and delete
+  the ConfigMap. The old text stays in those rows for now, which is no worse
+  than before this step. Then file a card so a developer can review the
+  matching rows and ship an updated keep-list or guard in a later release. When
+  that release is deployed, run 4g again from Step 1.
+- **A deadlock or a lock timeout.** The log has `deadlock detected` or
+  `canceling statement due to lock timeout`. The app was changing one of the
+  same rows at that moment, for example deleting an agent. The script waits at
+  most 5 seconds for a row rather than hold things up. Nothing was written, and
+  it's safe to run Step 4 again.
+- **Any other error in a `Failed` pod.** Nothing was written. Find out why
+  before you try again.
+- **The pod was still `Pending` or `Running`** when the wait gave up. It may
+  have finished before the block deleted it.
+
+Either way, once the apply pod is deleted, the Step 3 dry run shows where you
+are. The scrub is all or nothing: if the first two counts are 0, the rewrite
+went through, and any other counts mean nothing was written.
+
+#### Step 5: verify and clean up
+
+- Run Step 3 again. All three counts must be `0`. If any isn't, stop and look
+  before running anything else: either Step 4 didn't commit, or something is
+  still writing the old kind of text.
+- In the app, open a task whose run failed before the deploy. In its run
+  history, that run now says "This run failed because of a problem on our side."
+- Delete the ConfigMap:
+
+```bash
+kubectl --context "$KCTX" delete configmap run-error-scrub -n "$NS"
+```
+
 ---
 
 ## Step 5 — Static IP, DNS, and the managed certificate

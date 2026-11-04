@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { HookBus, PluginError, registerBlobPutFacade, reject } from '@ax/core';
+import { HookBus, PluginError, SafeToolError, registerBlobPutFacade, reject } from '@ax/core';
 import { RoutineDefinitionSchema } from '@ax/routines-contract';
 import { createHmac } from 'node:crypto';
 import { createWebhookRouter, type HttpRequest } from '../webhook-handler.js';
@@ -156,18 +156,25 @@ describe('a 503 logs its code, never its message (TASK-1027)',()=>{
   const entries=(logged:string,msg:string)=>logged.split('\n').filter(l=>l.startsWith('{"')).map(l=>JSON.parse(l) as Record<string,unknown>)
     .filter(entry=>entry.msg===msg).map(entry=>Object.fromEntries(Object.entries(entry).filter(([key])=>key!=='ts'&&key!=='reqId')));
   const failure=(code:string,message:string)=>new PluginError({plugin:'@ax/routines',code,message});
+  const pluginFault={name:'PluginError',plugin:'@ax/routines'};
+  const safeTool=()=>new SafeToolError('unavailable','input');
+  const safeToolFields={code:'unavailable',name:'PluginError',plugin:'@ax/core'};
+  /** What the bus throws when a service fails: `unknown`, with the real failure as its cause. */
+  const busWrap=()=>new PluginError({plugin:'@ax/blob-fs',hookName:'blob:put',code:'unknown',message:'PRIVATE wrap',cause:Object.assign(new Error('PRIVATE cause'),{code:'ENOSPC'})});
+  const busWrapFields={code:'unknown',causeCode:'ENOSPC',name:'PluginError',causeName:'Error',hookName:'blob:put',plugin:'@ax/blob-fs'};
   it.each([
-    ['a plugin error',failure('timeout','PRIVATE observe detail'),'timeout'],
-    ['a database error',Object.assign(new Error('PRIVATE row detail'),{code:'40P01'}),'40P01'],
-    ['an error with no code',new Error('PRIVATE detail'),undefined],
-  ] as const)('logs %s when a refusal can’t be recorded',async(_name,error,code)=>{
+    ['a plugin error',failure('timeout','PRIVATE observe detail'),{code:'timeout',...pluginFault}],
+    ['a database error',Object.assign(new Error('PRIVATE row detail'),{code:'40P01'}),{code:'40P01',name:'Error'}],
+    ['an error with no code',new Error('PRIVATE detail'),{name:'Error'}],
+    ['a SafeToolError',safeTool(),safeToolFields],
+  ] as const)('logs %s when a refusal can’t be recorded',async(_name,error,fields)=>{
     const logged=captureStdout(),f=fixture('accepted',plain);f.observeWebhook.mockRejectedValueOnce(error);
     const r=response();await f.handler(unsigned(),r.res);
     expect(r.state.code).toBe(503);
     expect(logged()).not.toContain('PRIVATE');
     expect(f.observeWebhook).toHaveBeenCalledWith(expect.objectContaining({observation:'signature'}),expect.any(Function));
     // Exactly these fields: with no code to log, the entry has no `code` at all.
-    expect(entries(logged(),'routines_webhook_observe_failed')).toStrictEqual([{msg:'routines_webhook_observe_failed',level:'warn',agentId:'a',routineId:'r',observation:'signature',...(code===undefined?{}:{code})}]);
+    expect(entries(logged(),'routines_webhook_observe_failed')).toStrictEqual([{msg:'routines_webhook_observe_failed',level:'warn',agentId:'a',routineId:'r',observation:'signature',...fields}]);
   });
   it('logs when a too-large update’s refusal can’t be recorded, before any secret read',async()=>{
     const logged=captureStdout(),vault=vi.fn(async()=>'secret'),f=fixture('accepted',plain,vault);
@@ -177,7 +184,7 @@ describe('a 503 logs its code, never its message (TASK-1027)',()=>{
     expect(r.state.code).toBe(503);
     expect(logged()).not.toContain('PRIVATE');
     expect(vault).not.toHaveBeenCalled();
-    expect(entries(logged(),'routines_webhook_observe_failed')).toStrictEqual([{msg:'routines_webhook_observe_failed',level:'warn',agentId:'a',routineId:'r',observation:'too-large',code:'timeout'}]);
+    expect(entries(logged(),'routines_webhook_observe_failed')).toStrictEqual([{msg:'routines_webhook_observe_failed',level:'warn',agentId:'a',routineId:'r',observation:'too-large',code:'timeout',...pluginFault}]);
   });
   it('logs when a verified Slack address check can’t be recorded',async()=>{
     const logged=captureStdout(),f=fixture('accepted',{...row,webhook:{kind:'webhook',path:'/hook'}});
@@ -187,15 +194,15 @@ describe('a 503 logs its code, never its message (TASK-1027)',()=>{
     const r=response();await f.handler(request({body,headers:{'content-type':'application/json','x-slack-request-timestamp':timestamp,'x-slack-signature':`v0=${signature}`}}),r.res);
     expect(r.state.code).toBe(503);
     expect(logged()).not.toContain('PRIVATE');
-    expect(entries(logged(),'routines_webhook_observe_failed')).toStrictEqual([{msg:'routines_webhook_observe_failed',level:'warn',agentId:'a',routineId:'r',observation:'verified',code:'unknown'}]);
+    expect(entries(logged(),'routines_webhook_observe_failed')).toStrictEqual([{msg:'routines_webhook_observe_failed',level:'warn',agentId:'a',routineId:'r',observation:'verified',code:'unknown',...pluginFault}]);
   });
   it('logs a failed admission’s code and still records it as unavailable',async()=>{
     const logged=captureStdout(),f=fixture('accepted',plain);
-    f.admit.mockRejectedValueOnce(failure('unknown','PRIVATE admission detail'));
+    f.admit.mockRejectedValueOnce(busWrap());
     const r=response();await f.handler(request(),r.res);
     expect(r.state.code).toBe(503);
     expect(logged()).not.toContain('PRIVATE');
-    expect(entries(logged(),'routines_webhook_admission_failed')).toStrictEqual([{msg:'routines_webhook_admission_failed',level:'warn',agentId:'a',routineId:'r',code:'unknown'}]);
+    expect(entries(logged(),'routines_webhook_admission_failed')).toStrictEqual([{msg:'routines_webhook_admission_failed',level:'warn',agentId:'a',routineId:'r',...busWrapFields}]);
     expect(f.observeWebhook).toHaveBeenCalledWith(expect.objectContaining({observation:'unavailable'}),expect.any(Function));
   });
   it('logs nothing for a quota refusal',async()=>{
@@ -209,16 +216,17 @@ describe('a 503 logs its code, never its message (TASK-1027)',()=>{
   // Not a 503: the update is already admitted, so the sender gets its 202 and only the log says the drain failed.
   describe('the drain after an accepted repeat update logs its code too (TASK-1033)',()=>{
     it.each([
-      ['a plugin error',failure('timeout','PRIVATE drain detail'),{code:'timeout'}],
-      ['a database error',Object.assign(new Error('PRIVATE drain detail'),{code:'40P01'}),{code:'40P01'}],
-      ['an error with no code',new Error('PRIVATE drain detail'),{}],
-    ] as const)('logs %s from a failed drain without its message, still answering 202',async(_name,error,code)=>{
+      ['a plugin error',failure('timeout','PRIVATE drain detail'),{code:'timeout',...pluginFault}],
+      ['a database error',Object.assign(new Error('PRIVATE drain detail'),{code:'40P01'}),{code:'40P01',name:'Error'}],
+      ['an error with no code',new Error('PRIVATE drain detail'),{name:'Error'}],
+      ['a SafeToolError',safeTool(),safeToolFields],
+    ] as const)('logs %s from a failed drain without its message, still answering 202',async(_name,error,fields)=>{
       const logged=captureStdout(),f=fixture('accepted',plain);
       f.pump.mockRejectedValueOnce(error);
       const r=response();await f.handler(request(),r.res);
       expect(r.state.code).toBe(202);
       expect(logged()).not.toContain('PRIVATE');
-      expect(entries(logged(),'repeat_queue_drain_failed')).toStrictEqual([{msg:'repeat_queue_drain_failed',level:'warn',agentId:'a',routineId:'r',...code}]);
+      expect(entries(logged(),'repeat_queue_drain_failed')).toStrictEqual([{msg:'repeat_queue_drain_failed',level:'warn',agentId:'a',routineId:'r',...fields}]);
     });
   });
 });

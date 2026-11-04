@@ -2217,7 +2217,7 @@ describe('capability list limits apply on write only (TASK-945)', () => {
     const { res: sRes, captured: sCap } = makeRes();
     await handlers.update(makeReq({ params: { id: 'wide' }, body: { name: 'renamed' } }), sRes);
     expect(sCap.status).toBe(400);
-    expect(JSON.stringify(sCap.body)).toContain('too_big');
+    expect(sCap.body).toEqual({ error: `capabilities.allowedHosts can have at most ${limit} entries` });
     // ...and trimming the list to the limit saves.
     const { res: tRes, captured: tCap } = makeRes();
     await handlers.update(
@@ -2229,5 +2229,35 @@ describe('capability list limits apply on write only (TASK-945)', () => {
       (tCap.body as { connector: { capabilities: Capabilities } }).connector.capabilities
         .allowedHosts,
     ).toHaveLength(limit);
+  });
+});
+
+// TASK-1036: an invalid capabilities value gets a fixed message naming its field, never zod's issue JSON.
+describe('an invalid capabilities value is a fixed field-level 400 (TASK-1036)', () => {
+  it.each([
+    ['a malformed server', () => ({ ...mcpCaps(), mcpServers: [{ ...mcpCaps().mcpServers[0]!, url: 5 }] }), 'capabilities.mcpServers is not valid'],
+    ['a value that is not an object', () => 5, 'capabilities must be a valid Capabilities object'],
+  ] as const)('POST answers %s with a fixed message', async (_name, capabilities, error) => {
+    const h = await makeHarness();
+    currentActor = { id: 'userA', isAdmin: true };
+    const handlers = createAdminConnectorRouteHandlers({ bus: h.bus });
+    const { res, captured } = makeRes();
+    await handlers.create(makeReq({ body: { connectorId: 'bad-caps', name: 'Bad', keyMode: 'personal', capabilities: capabilities() } }), res);
+    expect(captured.status).toBe(400);
+    expect(captured.body).toEqual({ error });
+  });
+  it('PATCH never echoes a caller-chosen services env key', async () => {
+    const h = await makeHarness();
+    currentActor = { id: 'userA', isAdmin: true };
+    const handlers = createAdminConnectorRouteHandlers({ bus: h.bus });
+    const { res: cRes, captured: cCap } = makeRes();
+    await handlers.create(makeReq({ body: { connectorId: 'svc', name: 'Svc', keyMode: 'personal', capabilities: mcpCaps() } }), cRes);
+    expect(cCap.status).toBe(201);
+    const service = { name: 'db', image: `postgres@sha256:${'a'.repeat(64)}`, ports: [5432], env: { CALLER_CHOSEN_KEY: 'x'.repeat(2049) } };
+    const { res, captured } = makeRes();
+    await handlers.update(makeReq({ params: { id: 'svc' }, body: { capabilities: { ...mcpCaps(), services: [service] } } }), res);
+    expect(captured.status).toBe(400);
+    expect(captured.body).toEqual({ error: 'capabilities.services is not valid' });
+    expect(JSON.stringify(captured.body)).not.toContain('CALLER_CHOSEN_KEY');
   });
 });
