@@ -157,8 +157,7 @@ export function useRoutineDraft({
       return;
     flight.current = true;
     setBusy(true);
-    setError(null);
-    setErrorCode(null);
+    clearErrors();
     setConflict(false);
     operation.current ??= {
       requestId: crypto.randomUUID(),

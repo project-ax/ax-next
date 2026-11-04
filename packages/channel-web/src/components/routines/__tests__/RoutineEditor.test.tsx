@@ -396,6 +396,22 @@ describe('structured routine form', () => {
       vi.mocked(routineApi.update).mock.calls[1],
     );
   });
+  // TASK-1035. Settings marks the field a refusal names. A retry is a new save, so while it is in
+  // flight no refusal is current and the mark goes with the message (TaskForm's #1115 twin).
+  it('drops a refused field’s mark while the retry is saving', async () => {
+    vi.mocked(routineApi.update)
+      .mockRejectedValueOnce(new RoutineApiError(400, 'validation', 'name'))
+      .mockReturnValueOnce(new Promise(() => {}));
+    edit();
+    await screen.findByDisplayValue(row.name);
+    fill('Name', 'Renamed');
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    const name = screen.getByLabelText('Name');
+    await waitFor(() => expect(name).toHaveAttribute('aria-invalid', 'true'));
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(routineApi.update).toHaveBeenCalledTimes(2));
+    expect(name).not.toHaveAttribute('aria-invalid');
+  });
   it('edits webhook events, HMAC, quiet fields and conversation; disables active hours and derives an inactive absolute URL', async () => {
     render(
       <RoutineEditor

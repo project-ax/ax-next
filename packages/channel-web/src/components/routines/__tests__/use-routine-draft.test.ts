@@ -18,4 +18,22 @@ describe('useRoutineDraft', () => {
     expect(result.current.error).toBeNull();
     expect(result.current.errorCode).toBeNull();
   });
+
+  // TASK-1035. A retry is a new save: until it answers no refusal is current, so the field the
+  // last one named goes with its message and code (both forms draw `invalidField`).
+  it('forgets the refused field when the next save starts', async () => {
+    const save = vi.fn()
+      .mockRejectedValueOnce(new RoutineApiError(400, 'validation', 'name'))
+      .mockReturnValueOnce(new Promise(() => {}));
+    const { result } = renderHook(() => useRoutineDraft({
+      initial: editableDefinition(routineFixture), mode: 'edit', canEdit: true, save, onSaved: vi.fn(),
+    }));
+    act(() => result.current.update('name', 'Renamed'));
+    await act(() => result.current.submit());
+    expect(result.current.invalidField).toBe('name');
+    act(() => { void result.current.submit(); });
+    expect(save).toHaveBeenCalledTimes(2);
+    expect(result.current.errorCode).toBeNull();
+    expect(result.current.invalidField).toBeUndefined();
+  });
 });
