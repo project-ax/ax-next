@@ -198,6 +198,19 @@ function isRunClosed(err: unknown): boolean {
   }
 }
 
+/**
+ * `agents:resolve`'s own `not-found`: the agent is gone. Read without trusting
+ * the error's getters. It decides a purge, so an error that can't be read is
+ * never a reason to purge (TASK-1036).
+ */
+function isAgentGone(err: unknown): boolean {
+  try {
+    return err instanceof PluginError && err.code === 'not-found' && err.hookName === 'agents:resolve';
+  } catch {
+    return false;
+  }
+}
+
 export function createFireRoutine(deps: FireDeps) {
   const lifetime = deps.lifetime ?? createRoutineLifetime();
   const fire = async (accepted: AcceptedDispatch, payload?: unknown): Promise<FireResult> => {
@@ -254,9 +267,7 @@ export function createFireRoutine(deps: FireDeps) {
       // Slice 6 — only used to word a skipped-connector warning.
       const displayName = resolved?.agent?.displayName;
       if (typeof displayName === 'string') agentName = displayName;
-    } catch (err) {
-      return fail(err, err instanceof PluginError && err.code === 'not-found' && err.hookName === 'agents:resolve');
-    }
+    } catch (err) { return fail(err, isAgentGone(err)); }
 
     let conversationId: string;
     try {
@@ -444,6 +455,10 @@ export function createFireRoutine(deps: FireDeps) {
     ).then(
       async outcome => {
         if (outcome?.kind === 'terminated') {
+          // Not always an orchestrator code: a runner that fails reports its own
+          // error as `${name}: ${message}` (agent-runner-core run-runner.ts), so a
+          // run can store runner text here. What owners should see instead is a
+          // separate card (TASK-1036 decisions).
           const reason = String(outcome.reason ?? 'unknown');
           await settleWithoutTurn(entry => briefRunError(entry, reason) ?? `terminated: ${reason}`, !refusedBeforeAssembly(reason), entry => briefRunMiss(entry, reason));
         } else if (deps.pending.has(reqId)) {

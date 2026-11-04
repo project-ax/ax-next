@@ -210,6 +210,24 @@ describe('accepted DB fire dispatch', () => {
     expect(await f.store.recentFires({ agentId: h.row.agentId, routineId: h.row.routineId, actorUserId: 'owner' })).toEqual([]);
     expect(await f.store.pendingCleanup({ limit: 10 })).toEqual([]);
   });
+  // TASK-1036: an error's getters are arbitrary. Reading them must not cost the run its row,
+  // and an error that can't be read is never "the agent is gone".
+  it.each([
+    ['code', RUN_FAILED],
+    ['hookName', 'This run failed because of a problem on our side (code: not-found).'],
+  ] as const)('records the run, and purges nothing, when the agents:resolve error throws reading %s', async (key, stored) => {
+    const resolveError = new PluginError({ code: 'not-found', plugin: 'agents', hookName: 'agents:resolve', message: 'gone' });
+    Object.defineProperty(resolveError, key, { get() { throw new Error('getter'); } });
+    const h = await setup({ resolveError });
+    await stdoutOf(async () => {
+      const result = await h.fire(h.accepted);
+      expect(result).toMatchObject({ status: 'error' });
+      expect(result).not.toHaveProperty('agentGone');
+    });
+    expect(h.invoked).not.toHaveBeenCalled();
+    expect(await f.store.findOne(h.row)).not.toBeNull();
+    expect((await f.store.recentFires(h.row))[0]).toMatchObject({ status: 'error', error: stored });
+  });
   it.each(['throw', 'terminated', 'missing-turn'])('records exactly one terminal error for %s', async (kind) => {
     const h = await setup({ grace: 0, invoke: async () => { if (kind === 'throw')
         throw new Error('failed'); return { kind: kind === 'terminated' ? 'terminated' : 'complete', reason: 'stopped' }; } });
