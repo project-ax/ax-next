@@ -21,6 +21,8 @@ interface FakeServerOpts {
   initialized?: Reply;
   /** Answer `tools/call` with this instead of a plain success result. */
   toolsCall?: Reply;
+  /** Answer the optional GET stream with this instead of a 405. */
+  get?: (init: Record<string, unknown>) => Response | Promise<Response>;
 }
 
 const json = (id: unknown, payload: Record<string, unknown>) =>
@@ -45,12 +47,23 @@ function afterDelay(ms: number, init: Record<string, unknown>, make: () => Respo
 }
 
 function fakeMcpServer(opts: FakeServerOpts = {}) {
-  const requests: Array<{ url: string; method: string; headers: Headers; body: unknown }> = [];
+  const requests: Array<{
+    url: string;
+    method: string;
+    headers: Headers;
+    body: unknown;
+    /** The signal the request was handed over with. */
+    signal: AbortSignal | undefined;
+    /** Aborted on arrival: a real fetch refuses to send such a request. */
+    alreadyAborted: boolean;
+  }> = [];
   const baseFetch = async (url: string, init: Record<string, unknown>): Promise<Response> => {
     const method = String(init.method ?? 'GET');
     const headers = new Headers(init.headers as Headers);
     const body = typeof init.body === 'string' ? JSON.parse(init.body) : undefined;
-    requests.push({ url, method, headers, body });
+    const signal = init.signal as AbortSignal | undefined;
+    requests.push({ url, method, headers, body, signal, alreadyAborted: signal?.aborted === true });
+    if (method === 'GET' && opts.get !== undefined) return opts.get(init);
     if (method !== 'POST') return new Response(null, { status: 405 });
     const msg = body as RpcMessage;
     switch (msg.method) {
@@ -223,6 +236,33 @@ describe('callServerTool', () => {
     });
   });
 
+  // On an event stream the SDK's reader only reports the size error to
+  // onerror, so it is the oversize abort that ends the call. Without it the
+  // call would wait out its deadline and read as a timeout.
+  it('an oversize event-stream reply is unknown at once', async () => {
+    const big = (id: unknown) =>
+      JSON.stringify({ jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: 'y'.repeat(5_000) }] } });
+    const server = fakeMcpServer({
+      toolsCall: (msg) => new Response(`data: ${big(msg.id)}\n\n`, { headers: { 'content-type': 'text/event-stream' } }),
+    });
+    const started = Date.now();
+    const out = await call(server, { limits: { maxResponseBytes: 1024, requestTimeoutMs: 5_000, budgetMs: 5_000 } });
+    expect(Date.now() - started).toBeLessThan(1_500);
+    expect(out).toStrictEqual({ outcome: 'unknown', reason: 'interrupted' });
+  }, 10_000);
+
+  // Every request keeps the transport's own signal beside the budget, so
+  // closing the client stops whatever is still running: here the optional
+  // GET stream the SDK opens after the handshake, which this server holds open.
+  it('nothing the call started outlives it', async () => {
+    const server = fakeMcpServer({
+      get: (init) => afterDelay(60_000, init, () => new Response(null, { status: 405 })),
+    });
+    expect(await call(server)).toStrictEqual({ outcome: 'succeeded' });
+    expect(server.requests.some((r) => r.method === 'GET')).toBe(true);
+    expect(server.requests.filter((r) => r.signal?.aborted !== true)).toStrictEqual([]);
+  });
+
   it('a non-https server url is refused before any request', async () => {
     let fetched = 0;
     const out = await callServerTool({
@@ -305,13 +345,16 @@ describe('callServerTool classification', () => {
     expect(broken.toolCalls()).toHaveLength(0);
   });
 
-  // The SDK sends `notifications/initialized` inside connect with no budget
-  // signal, so a slow answer to it can use up the budget before `tools/call`
-  // exists. The request would then throw a timeout without sending anything,
-  // and that must read as definite, not as "can't tell".
+  // An answer can land just after the budget runs out: an abort cannot recall
+  // a response already on its way. Connect then returns late, before
+  // `tools/call` exists, and the request would throw a timeout without
+  // sending anything. That must read as definite, not as "can't tell". This
+  // server answers the handshake's last step even though it was aborted,
+  // which makes that race deterministic.
   it('a budget spent before the send is a definite failure and sends nothing', async () => {
     const server = fakeMcpServer({
-      initialized: (_msg, init) => afterDelay(500, init, () => new Response(null, { status: 202 })),
+      initialized: () =>
+        new Promise((resolve) => setTimeout(() => resolve(new Response(null, { status: 202 })), 500)),
     });
     const started = Date.now();
     const out = await call(server, { limits: { budgetMs: 300, requestTimeoutMs: 2_000 } });
@@ -347,18 +390,23 @@ describe('callServerTool classification', () => {
 // Which deadline ends which wait. Each bound only shows when the others are
 // too long to mask it, so each case makes exactly one of them short and the
 // others 5 s, and must return well inside that 5 s.
-//   - The budget bounds `initialize` (connect's signal) and `tools/call`
-//     (the request's signal).
-//   - The request's own deadline bounds a `tools/call` whose HTTP exchange
-//     finished without an answer (a dropped stream).
-//   - The guarded fetch's per-request deadline is all that bounds
-//     `notifications/initialized`: the SDK awaits it inside connect and gives
-//     it neither our signal nor a timeout.
+//   - The budget rides on every HTTP request the transport makes. That is
+//     all that bounds `notifications/initialized` (connect awaits it with no
+//     signal of its own). Once an exchange has finished without an answer
+//     (a dropped stream) there is nothing left there to abort, so the budget
+//     also goes on `initialize` (connect's signal) and `tools/call` (the
+//     request's signal). The dropped-stream cases pin those two.
+//   - The request's own deadline bounds a `tools/call` whose exchange
+//     finished without an answer.
+//   - The guarded fetch's per-request deadline bounds each HTTP request.
 // ---------------------------------------------------------------------------
 
 describe('callServerTool deadlines', () => {
   const never = (msg: RpcMessage, init: Record<string, unknown>) =>
     afterDelay(60_000, init, () => json(msg.id, { result: {} }));
+  /** The HTTP exchange finishes, but the stream ends with no answer in it. */
+  const dropped: Reply = () =>
+    new Response('id: prime-1\ndata: \n\n', { headers: { 'content-type': 'text/event-stream' } });
 
   it('a tools/call the server never answers is cut off by the budget', async () => {
     const server = fakeMcpServer({ toolsCall: never });
@@ -367,13 +415,34 @@ describe('callServerTool deadlines', () => {
     expect(Date.now() - started).toBeLessThan(1_500);
     expect(out).toStrictEqual({ outcome: 'unknown', reason: 'timeout' });
     expect(server.toolCalls()).toHaveLength(1);
+    // After the abort the SDK tries to cancel. That is only ever a
+    // `notifications/cancelled`, never a second `tools/call`, and the budget
+    // has already aborted it when the transport hands it over, so a real
+    // fetch refuses to send it.
+    const posts = server.requests.filter((r) => r.method === 'POST');
+    const afterCall = posts.slice(posts.findIndex((r) => (r.body as RpcMessage).method === 'tools/call') + 1);
+    expect(afterCall.length).toBeGreaterThan(0);
+    for (const r of afterCall) {
+      expect({ method: (r.body as RpcMessage).method, alreadyAborted: r.alreadyAborted }).toStrictEqual({
+        method: 'notifications/cancelled',
+        alreadyAborted: true,
+      });
+    }
+  }, 10_000);
+
+  it('a notifications/initialized that never answers is cut off by the budget', async () => {
+    const server = fakeMcpServer({
+      initialized: (_msg, init) => afterDelay(60_000, init, () => new Response(null, { status: 202 })),
+    });
+    const started = Date.now();
+    const out = await call(server, { limits: { budgetMs: 200, requestTimeoutMs: 5_000 } });
+    expect(Date.now() - started).toBeLessThan(1_500);
+    expect(out).toStrictEqual({ outcome: 'failed', reason: 'unreachable' });
+    expect(server.toolCalls()).toHaveLength(0);
   }, 10_000);
 
   it('a dropped stream is cut off by the request deadline when the budget is longer', async () => {
-    const server = fakeMcpServer({
-      toolsCall: () =>
-        new Response('id: prime-1\ndata: \n\n', { headers: { 'content-type': 'text/event-stream' } }),
-    });
+    const server = fakeMcpServer({ toolsCall: dropped });
     const started = Date.now();
     const out = await call(server, { limits: { budgetMs: 5_000, requestTimeoutMs: 200 } });
     expect(Date.now() - started).toBeLessThan(1_500);
@@ -392,8 +461,10 @@ describe('callServerTool deadlines', () => {
     expect(server.toolCalls()).toHaveLength(0);
   }, 10_000);
 
-  it('an initialize that never answers is cut off by the budget', async () => {
-    const server = fakeMcpServer({ initialize: never });
+  // The exchange finishes, so the budget on the transport has nothing left to
+  // abort, and only connect's own signal can end the wait.
+  it('an initialize whose stream ends without an answer is cut off by the budget', async () => {
+    const server = fakeMcpServer({ initialize: dropped });
     const started = Date.now();
     const out = await call(server, { limits: { budgetMs: 200, connectTimeoutMs: 5_000, requestTimeoutMs: 5_000 } });
     expect(Date.now() - started).toBeLessThan(1_500);

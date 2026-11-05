@@ -24,7 +24,7 @@
 //
 // Reach is the inventory's guarded fetch (safe-fetch.ts): https only, one
 // origin, no redirects, connect-time IP vetting, a per-request deadline and
-// a body cap.
+// a body cap. Each request through it also carries the call's budget.
 // ---------------------------------------------------------------------------
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
@@ -140,8 +140,18 @@ export async function callServerTool(opts: CallServerToolOptions): Promise<Serve
     // or the limits were unusable. Nothing was sent.
     return { outcome: 'failed', reason: 'unreachable' };
   }
+  // The budget rides on every request the transport makes, beside that
+  // request's own signal. The SDK passes our signal only to `initialize` and
+  // `tools/call`. Without this, `notifications/initialized` (which connect
+  // awaits), the optional GET stream and cancellations would answer only to
+  // the per-request deadline, and the call could outlive its budget.
+  const budgeted: FetchLike = (url, init) =>
+    guarded.fetch(url, {
+      ...(init ?? {}),
+      signal: init?.signal !== undefined && init.signal !== null ? AbortSignal.any([init.signal, budget]) : budget,
+    });
   const transport = new StreamableHTTPClientTransport(new URL(opts.url), {
-    fetch: guarded.fetch as FetchLike,
+    fetch: budgeted,
     requestInit: { headers: opts.headers },
     // One shot: never resume a dropped stream in the background.
     reconnectionOptions: {
@@ -167,9 +177,10 @@ export async function callServerTool(opts: CallServerToolOptions): Promise<Serve
     } catch (err) {
       return classifyConnectError(err);
     }
-    // Connect can outlive the budget (the SDK sends `notifications/initialized`
-    // without our signal). `tools/call` has not reached the transport yet, so
-    // this is definite. From `client.request` on, the call may be out.
+    // An answer can land just after the budget runs out (an abort cannot
+    // recall a response already on its way), so connect can return late.
+    // `tools/call` has not reached the transport yet, so this is definite.
+    // From `client.request` on, the call may be out.
     if (budget.aborted) return { outcome: 'failed', reason: 'unreachable' };
     try {
       const reply = await client.request(
