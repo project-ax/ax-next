@@ -8,7 +8,7 @@ import { startTestContainer, stopPostgresContainer } from '@ax/test-harness';
 import { runRoutinesMigration, type RoutinesDatabase } from '../migrations.js';
 import { createRoutinesStore, RUN_CLOSED, RUN_INTERRUPTED } from '../store.js';
 import { BRIEF_DIDNT_LOAD, BRIEF_TOO_LONG, BRIEF_UNCONFIRMED } from '../brief.js';
-import { runFailedText } from '../fire.js';
+import { runFailedText, terminatedRunText } from '../fire.js';
 import { createInput } from './store-fixture.js';
 
 // TASK-1036. The one-off scrub of old run errors (deploy/GKE.md, "4g. Scrub old run errors"),
@@ -21,7 +21,7 @@ const OLDER_TOO_LONG = [
   'This task’s instructions are too long to load, so the check-in didn’t run. Shorten “What to do” and the next check-in will run.',
   'This task’s instructions are too long to load, so the check-in didn’t run. Shorten “What should … do?” in the agent’s settings and the next check-in will run.',
 ];
-/** Every shape a current writer records, and an older host sentence: the scrub must leave each alone. */
+/** Every shape a current writer records, an older host sentence, and old `terminated:` rows whose reason was a host code: the scrub must leave each alone. */
 const KEPT = [
   RUN_CLOSED, RUN_INTERRUPTED, 'This app update could not run.', 'This app update could not run. Try a new delivery.',
   'This app update was cancelled because the job changed.', 'the run finished without reporting a result',
@@ -30,8 +30,14 @@ const KEPT = [
   'This routine is disabled.', FIXED,
   runFailedText(new PluginError({ plugin: 'test', code: 'timeout', message: 'PRIVATE' })),
   runFailedText(Object.assign(new Error('PRIVATE'), { code: 'ECONNRESET' })),
+  terminatedRunText('chat-run-timeout'),
+  terminatedRunText('chat:start:usage-limit-daily'),
+  terminatedRunText('ClaudeSdkTurnError: PRIVATE runner text'),
+  terminatedRunText('a'.repeat(64)),
   'terminated: chat-run-timeout',
-  'terminated: ClaudeSdkTurnError: runner text', // kept on purpose (TASK-1036 decisions)
+  'terminated: chat:start:usage-limit-daily',
+  'terminated: agent-resolve:forbidden',
+  `terminated: ${'a'.repeat(64)}`,
 ];
 /** What writers before TASK-1031 (#1116) stored: a hook's or database's own text. */
 const LEAKED = [
@@ -41,7 +47,17 @@ const LEAKED = [
   'Error: PRIVATE thrown value',
   '',
 ];
-const CURLY = [BRIEF_DIDNT_LOAD, BRIEF_TOO_LONG, BRIEF_UNCONFIRMED, ...OLDER_TOO_LONG];
+/** TASK-1038: what fire.ts stored before it for a run a runner ended: `terminated: ` and the runner's own text. */
+const RUNNER_TEXT = [
+  'terminated: ClaudeSdkTurnError: Claude SDK turn failed (error_during_execution): PRIVATE provider reply',
+  'terminated: PRIVATE bare runner message',
+  'terminated: Error: PRIVATE thrown value',
+  'terminated: chat:start:PRIVATE words after a gate prefix',
+  'terminated: chat-run-timeout\nPRIVATE second line',
+  `terminated: ${'a'.repeat(65)}`,
+  'terminated: ',
+];
+const CURLY =[BRIEF_DIDNT_LOAD, BRIEF_TOO_LONG, BRIEF_UNCONFIRMED, ...OLDER_TOO_LONG];
 /**
  * Sentences a later release might write that the keep-list doesn't know. They read like ours, so
  * the scrub's guard counts them, and apply refuses to write while it counts any (TASK-1036 review).
@@ -366,5 +382,40 @@ describe('scrub-leaked-run-errors.sql (TASK-1036)', () => {
       await release();
       await holder.end();
     }
+  });
+
+  // TASK-1038: fire.ts no longer stores a runner's text. A database the TASK-1036 version already ran on holds the
+  // fixed sentence, which stays as it is; the old runner text in `terminated:` rows is now rewritten too.
+  it('rewrites runner text in old terminated rows, keeps host codes, and changes nothing else in a database it already scrubbed', async () => {
+    // What the TASK-1036 apply left behind: the fixed sentence where old text was, and every row it kept.
+    const scrubbed = [await addFire('error', FIXED), await addFire('error', FIXED, 'a', 'webhook')];
+    for (const error of KEPT) await addFire('error', error);
+    const runnerFires = new Set<string>();
+    for (const error of RUNNER_TEXT) runnerFires.add(await addFire('error', error));
+    const runnerRoutine = await addRoutine('Scrub runner text', 'error', RUNNER_TEXT[0]!);
+    const scrubbedRoutine = await addRoutine('Scrub scrubbed', 'error', FIXED);
+    const before = await snapshot();
+
+    expect(lines(await scrub())).toEqual([...PREAMBLE,
+      `run-history rows with old error text: ${RUNNER_TEXT.length}`,
+      'routines with old error text: 1',
+      'old rows that look like a host sentence: 0',
+      'Dry run: nothing was changed. Run again with -v apply=1 to rewrite them.',
+      'ROLLBACK',
+    ]);
+    expect(await snapshot()).toEqual(before);
+
+    const out = await scrub(['-v', 'apply=1']);
+    expect(lines(out).slice(-5)).toEqual(['UPDATE 1', `UPDATE ${RUNNER_TEXT.length}`,
+      `run-history rows rewritten: ${RUNNER_TEXT.length}`, 'routines rewritten: 1', 'COMMIT']);
+    expect(out).not.toContain('PRIVATE');
+    const after = await snapshot();
+    expect(after.fires).toEqual(before.fires.map(row => (runnerFires.has(row.id) ? { ...row, error: FIXED } : row)));
+    expect(after.routines).toEqual(before.routines.map(row => (row.routine_id === runnerRoutine ? { ...row, last_error: FIXED } : row)));
+    expect(after.fires.filter(row => scrubbed.includes(row.id)).map(row => row.error)).toEqual([FIXED, FIXED]);
+    expect(after.routines.find(row => row.routine_id === scrubbedRoutine)?.last_error).toBe(FIXED);
+
+    expect(lines(await scrub(['-v', 'apply=1'])).slice(-5)).toEqual(['UPDATE 0', 'UPDATE 0',
+      'run-history rows rewritten: 0', 'routines rewritten: 0', 'COMMIT']);
   });
 });

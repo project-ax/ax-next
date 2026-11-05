@@ -765,26 +765,31 @@ so the next snapshot is proven against the new layout.
 ### 4g. Scrub old run errors (TASK-1036)
 
 Before TASK-1031 (#1116), a routine run that failed for a host reason stored the
-failing hook's or database's own error message. Owners and team members see that
-text in run history and as the routine's last error, and agents read the last
-error too. This step rewrites those old rows to the sentence the host writes now:
-"This run failed because of a problem on our side."
+failing hook's or database's own error message. Before TASK-1038, a run that the
+agent's runner ended stored the runner's own error text, as `terminated: …`.
+Owners and team members see that text in run history and as the routine's last
+error, and agents read the last error too. This step rewrites those old rows to
+the sentence the host writes now: "This run failed because of a problem on our
+side."
 
-**When.** Once, on the first deploy that includes TASK-1036, after the host is
-running that release (`rollout status deploy/ax-next-host` has returned). Before
-then, the old code is still writing this kind of text. It's a one-off: the
-script keeps a list of the messages the app writes today, and a release that
-changes one needs that list updated first. Step 2 checks the release you
-deployed for that.
+**When.** On the first deploy that includes TASK-1036, and again on the first
+deploy that includes TASK-1038, each time after the host is running that release
+(`rollout status deploy/ax-next-host` has returned). If one deploy brings both,
+run it once. Before then, the old code is still writing this kind of text.
+Running it a second time is safe: what the first run wrote is on the script's
+keep-list, so the second run changes only the `terminated: …` rows the first one
+left alone. Each run is a one-off for its release: the script keeps a list of
+the messages the app writes today, and a release that changes one needs that
+list updated first. Step 2 checks the release you deployed for that.
 
 **What people will see afterwards.** Old failed runs that showed internal text
 now show the fixed sentence, in run history and as the routine's last error
 (which agents read too). Every sentence the current code writes is left alone:
-interrupted and closed runs, app-update messages, and the messages about a
-task's instructions. So are `terminated: …` reasons. Those can still hold a
-runner's own error text, and a follow-up card decides what they should say.
-Old text that an agent already read may still be in that agent's conversation
-transcripts. This step doesn't touch those.
+interrupted and closed runs, app-update messages, the messages about a task's
+instructions, and "This run failed because of a problem on our side", with or
+without a code. So are old `terminated: …` reasons that are just a code, like
+`terminated: chat-run-timeout`. Old text that an agent already read may still be
+in that agent's conversation transcripts. This step doesn't touch those.
 
 **It prints counts, never text.** The old texts are what we're removing, and this
 output can end up in a ticket or a chat. Keep it that way: don't add a query
