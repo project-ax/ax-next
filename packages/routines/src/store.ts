@@ -10,7 +10,7 @@ import { activeHoursWriteIssue,
   RoutineCheckInViewSchema, type RoutineCheckInView
 } from '@ax/routines-contract';
 import type { RoutinesDatabase, RoutinesDefinitionsRow, DefaultRoutinesRow, RoutinesFiresRow } from './migrations.js';
-import type { StoredRoutine, StoredDone, StoredNoRecentUpdate, StoredReading, StoredStep, StoredTaskState, AcceptedDispatch, AddReplyResult, DispatchMiss, DispatchOutcome, DispatchReport, DuplicateResult, FireReport, FireRow, FireSource, FireStatus, CompleteTaskResult, OpenCheckInLookup, RecordedSteps, RecordReportInput, ReopenTaskResult, ReportRefusal, SetStepsResult, StoredReply } from './types.js';
+import type { StoredRoutine, StoredDone, StoredNoRecentUpdate, StoredReading, StoredStep, StoredTaskState, AcceptedDispatch, AddReplyResult, DispatchMiss, DispatchOutcome, DispatchReport, DuplicateResult, FireReport, FireRow, FireSource, FireStatus, CompleteTaskResult, OpenCheckInLookup, RecordedSteps, RecordReportInput, ReopenTaskResult, ReportRefusal, SetStepsResult, StoredReply, UnreadableRoutine } from './types.js';
 import { createRequestHashes, updateRequestHashes, deleteRequestHash, completeRequestHash, dispatchRequestHash, credentialRef, editableDefinition, inputHash, nextRun, opaqueId, parseStoredRoutine, schedulingChanged, StoredRoutineSchema, validateDefinition, validateScheduleWrite, validationError } from './definition.js';
 import { AcceptedDispatchSchema, DispatchOutcomeSchema, DispatchReportSchema } from './dispatch.js';
 import { changeStoredSteps, storedSteps, StepsReceiptSchema } from './steps.js';
@@ -27,9 +27,25 @@ export type DefaultRoutineDetailRow = Omit<import('@ax/routines-contract').Routi
 export interface RoutinesStore extends ReturnType<typeof createWebhookHealthStore>, ReturnType<typeof createWebhookAddressStore>, ReturnType<typeof createTaskEventStore> {
   createAuthored(input: RoutineCreateInput & Actor & { ownerUserId: string; now: Date }): Promise<StoredRoutine>;
   updateAuthored(input: RoutineUpdateInput & Actor & { now: Date; stopOnly: boolean }): Promise<StoredRoutine>;
+  /**
+   * TASK-913: deletes a routine today's rules can't read too. Its lock, revision
+   * check, default check and signing-secret cleanup read columns, never the
+   * parsed row, so the same rule decides for every row.
+   */
   deleteAuthored(input: RoutineDeleteInput & Actor & { now: Date }): Promise<RoutineDeleteOutput>;
+  /**
+   * TASK-913. An agent's routines in one read: the rows today's rules read, and
+   * the rest named by their columns, so one row a later rule refuses can't fail
+   * the whole list. Writes no line: it would repeat on every page that lists
+   * routines, and the tick's line (claimDue) already says it.
+   */
+  listAll(input: { agentId: string }): Promise<{ routines: StoredRoutine[]; unreadable: UnreadableRoutine[] }>;
+  /** The rows that read: listAll's routines. Never throws for one that doesn't. */
   list(input: { agentId: string }): Promise<StoredRoutine[]>;
+  /** Strict, unlike `list`: a row today's rules can't read throws (TASK-913). Its remedy is Delete. */
   findOne(input: RoutineKey): Promise<StoredRoutine | null>;
+  /** TASK-913. The routine's owner and default source, read as columns, so a row today's rules refuse answers too. */
+  findOwnership(input: RoutineKey): Promise<{ ownerUserId: string; definitionId: string | null } | null>;
   findWebhook(input: { agentId: string; path: string; legacyOnly?: boolean }): Promise<StoredRoutine | null>;
   acceptDispatch(input: AcceptDispatchInput): Promise<{ accepted: AcceptedDispatch; replayed: boolean } | null>;
   interruptAbandonedDispatches(): Promise<number>;
@@ -755,12 +771,13 @@ export type RoutineRowRead = { ok: true; routine: StoredRoutine } | { ok: false;
 const LOGGABLE_PATH_SEGMENT = /^[A-Za-z0-9]{1,64}$/;
 /**
  * TASK-913. rowToRoutine's parse, answered instead of thrown. Never throws. For
- * the readers that take many rows at once (claimDue, a run's finish), where one
- * row today's rules refuse must not sink the rest; a read of one routine keeps
- * rowToRoutine's throw. The issue is the first zod issue's code, and its path
- * when every segment is a key or an index (`input` otherwise, or when it has
- * none). Never the message: zod's own messages can quote stored values, and a
- * stored definition is model-authored. Anything thrown is `input: thrown`.
+ * the readers that take many rows at once (claimDue, a run's finish, listAll),
+ * where one row today's rules refuse must not sink the rest; a read of one
+ * routine keeps rowToRoutine's throw. The issue is the first zod issue's code,
+ * and its path when every segment is a key or an index (`input` otherwise, or
+ * when it has none). Never the message: zod's own messages can quote stored
+ * values, and a stored definition is model-authored. Anything thrown is
+ * `input: thrown`.
  */
 export function readRoutineRow(row: Selectable<RoutinesDefinitionsRow>): RoutineRowRead {
   try {
@@ -998,23 +1015,39 @@ function operationKey(input: RoutineKey & Actor & { requestId: string }, operati
   const hashes = typeof hash === 'string' ? [hash] : hash;
   return { agentId: input.agentId, actorUserId: input.actorUserId, operation, requestId: input.requestId, inputHash: hashes[0]!, compatibleInputHashes: hashes.slice(1) };
 }
-async function lockRoutine(db: DB, input: RoutineKey & { expectedRevision: string }): Promise<StoredRoutine> {
+/**
+ * The routine's row under its row lock, at the caller's revision, as columns. TASK-913: unparsed, so
+ * deleteAuthored can take a row today's rules can't read.
+ */
+async function lockRoutineRow(db: DB, input: RoutineKey & { expectedRevision: string }): Promise<Selectable<RoutinesDefinitionsRow>> {
   const row = await db.selectFrom('routines_v1_definitions').selectAll().where('agent_id', '=', input.agentId).where('routine_id', '=', input.routineId).forUpdate().executeTakeFirst();
   if (!row) throw new SafeToolError('not-found', 'routineId');
   if (row.revision !== input.expectedRevision) throw new SafeToolError('revision-conflict', 'expectedRevision');
-  return rowToRoutine(row);
+  return row;
+}
+async function lockRoutine(db: DB, input: RoutineKey & { expectedRevision: string }): Promise<StoredRoutine> {
+  return rowToRoutine(await lockRoutineRow(db, input));
 }
 async function assertNoCleanup(db: DB, key: RoutineKey): Promise<void> {
   const job = await db.selectFrom('routines_v1_credential_cleanup').select('credential_ref').where('agent_id', '=', key.agentId).where('credential_ref', '=', credentialRef(key)).forUpdate().executeTakeFirst();
   if (job) throw new SafeToolError('cleanup-pending', 'webhook.hmac');
 }
 /** TASK-1026: a signing secret belongs to a task's app updates, so any row that has them may hold one. */
-async function queueCleanup(db: DB, row: StoredRoutine): Promise<void> {
+async function queueCleanup(db: DB, row: { agentId: string; routineId: string; ownerUserId: string; webhook: unknown }): Promise<void> {
   if (row.webhook === null) return;
   await db.insertInto('routines_v1_credential_cleanup').values({
     agent_id: row.agentId, routine_id: row.routineId,
     credential_ref: credentialRef(row), owner_user_id: row.ownerUserId
   }).onConflict(oc => oc.doNothing()).execute();
+}
+/**
+ * TASK-913. queueCleanup's input from a row's columns, for the deletes that take a row today's rules
+ * can't read (deleteAuthored, purgeAgent). Any stored app-update setting counts, read or not: a
+ * cleanup with no secret behind it only writes credentials:delete's empty tombstone, while a secret
+ * left behind would outlive its routine.
+ */
+function cleanupSource(row: Pick<Selectable<RoutinesDefinitionsRow>, 'agent_id' | 'routine_id' | 'owner_user_id' | 'webhook_spec'>) {
+  return { agentId: row.agent_id, routineId: row.routine_id, ownerUserId: row.owner_user_id, webhook: row.webhook_spec };
 }
 function jobFromRow(r: { agent_id: string; routine_id: string; credential_ref: string; owner_user_id: string }): CleanupJob {
   return { agentId: r.agent_id, routineId: r.routine_id, credentialRef: r.credential_ref, ownerUserId: r.owner_user_id };
@@ -1026,6 +1059,18 @@ function jobFromRow(r: { agent_id: string; routine_id: string; credential_ref: s
  * No transaction handle crosses the callback boundary.
  */
 export function createRoutinesStore(db: DB, executorId?: string): RoutinesStore {
+  // TASK-913. A closure, not a method, so `list` reaches it however the store is called.
+  async function listAll(input: { agentId: string }): Promise<{ routines: StoredRoutine[]; unreadable: UnreadableRoutine[] }> {
+    const rows = await db.selectFrom('routines_v1_definitions').selectAll().where('agent_id', '=', input.agentId).orderBy('agent_id').orderBy('routine_id').execute();
+    const routines: StoredRoutine[] = [];
+    const unreadable: UnreadableRoutine[] = [];
+    for (const row of rows) {
+      const read = readRoutineRow(row);
+      if (read.ok) routines.push(read.routine);
+      else unreadable.push({ agentId: row.agent_id, routineId: row.routine_id, revision: row.revision, ownerUserId: row.owner_user_id, definitionId: row.definition_id, name: row.name });
+    }
+    return { routines, unreadable };
+  }
   return {
     ...createWebhookHealthStore(db),
     ...createWebhookAddressStore(db, { lockLiveAgent, rowToRoutine }),
@@ -1101,9 +1146,11 @@ export function createRoutinesStore(db: DB, executorId?: string): RoutinesStore 
     },
     async deleteAuthored(input) {
       return receiptTransaction(db, operationKey(input, 'delete', deleteRequestHash(input)), async trx => {
-        const current = await lockRoutine(trx, input);
-        if (current.definitionId !== null) throw new SafeToolError('forbidden', 'routineId');
-        await queueCleanup(trx, current);
+        // TASK-913: columns, not the parsed row, so a routine today's rules can't read can still be
+        // deleted, under the same revision and default checks as one that reads.
+        const current = await lockRoutineRow(trx, input);
+        if (current.definition_id !== null) throw new SafeToolError('forbidden', 'routineId');
+        await queueCleanup(trx, cleanupSource(current));
         const pending = await trx.selectFrom('routines_v1_credential_cleanup').select('credential_ref').where('agent_id', '=', input.agentId).where('routine_id', '=', input.routineId).executeTakeFirst();
         // TASK-931: after the row lock, so a reply that took it first is in by now, and one still
         // waiting on it finds no routine (addReply).
@@ -1670,7 +1717,8 @@ export function createRoutinesStore(db: DB, executorId?: string): RoutinesStore 
         await trx.deleteFrom('routines_v1_task_events').where('agent_id','=',agentId).execute();
         await trx.deleteFrom('routines_v1_dispatches').where('agent_id', '=', agentId).execute();
         const rows = await trx.selectFrom('routines_v1_definitions').selectAll().where('agent_id', '=', agentId).forUpdate().execute();
-        for (const row of rows) await queueCleanup(trx, rowToRoutine(row));
+        // TASK-913: from columns, so one row today's rules can't read can't fail the whole agent's purge.
+        for (const row of rows) await queueCleanup(trx, cleanupSource(row));
         // TASK-931. The exclusive fence above keeps addReply out until this commits.
         await trx.deleteFrom('routines_v1_replies').where('agent_id', '=', agentId).execute();
         await trx.deleteFrom('routines_v1_definitions').where('agent_id', '=', agentId).execute();
@@ -1836,10 +1884,9 @@ export function createRoutinesStore(db: DB, executorId?: string): RoutinesStore 
       return rows.map(r => ({ replyId: r.reply_id, authorUserId: r.author_user_id, text: r.body, sentAt: r.created_at }));
     },
 
+    listAll,
     async list(input) {
-      const q = db.selectFrom('routines_v1_definitions').selectAll().where('agent_id', '=', input.agentId);
-      const rows = await q.orderBy('agent_id').orderBy('routine_id').execute();
-      return rows.map(rowToRoutine);
+      return (await listAll(input)).routines;
     },
 
     async findOne(input) {
@@ -1850,6 +1897,12 @@ export function createRoutinesStore(db: DB, executorId?: string): RoutinesStore 
         .where('routine_id', '=', input.routineId)
         .executeTakeFirst();
       return row === undefined ? null : rowToRoutine(row as Parameters<typeof rowToRoutine>[0]);
+    },
+
+    async findOwnership(input) {
+      const row = await db.selectFrom('routines_v1_definitions').select(['owner_user_id', 'definition_id'])
+        .where('agent_id', '=', input.agentId).where('routine_id', '=', input.routineId).executeTakeFirst();
+      return row === undefined ? null : { ownerUserId: row.owner_user_id, definitionId: row.definition_id };
     },
 
     async upsertDefault(input) {

@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { sql } from 'kysely';
 import { RoutineDefinitionSchema } from '@ax/routines-contract';
-import { fixture, createInput, defaultDefinition, now } from './store-fixture.js';
+import { fixture, createInput, defaultDefinition, now, plainWebhookInput } from './store-fixture.js';
 import { captureExpectedStderr } from './support/expected-diagnostics.js';
+import { credentialRef } from '../definition.js';
 
 // TASK-913: a stored routine row today's contract refuses (saved under older
 // rules, or by a later version before a rollback) is skipped by every reader
@@ -76,5 +77,70 @@ describe('the tick and a run’s finish beside a row that no longer reads (TASK-
     expect(await columns(copy.routineId)).toEqual({ next_run_at: null, last_run_at: at });
     expect((await claim(new Date(at.getTime() + 5_000))).map(row => row.routineId)).not.toContain(copy.routineId);
     expect(lines).toHaveLength(1);
+  });
+});
+
+describe('listing, deleting and purging a row that no longer reads (TASK-913)', () => {
+  /** A name a later rule refuses (129 characters): what a stricter contract does to a routine saved before it. */
+  const nameTooLong = (routineId: string) => sql`UPDATE routines_v1_definitions SET name = ${'x'.repeat(129)} WHERE routine_id = ${routineId}`.execute(f.db);
+  const remove = (routineId: string, expectedRevision: string, requestId = 'delete') =>
+    f.store.deleteAuthored({ agentId: 'a', routineId, expectedRevision, actorUserId: 'owner', requestId, now });
+  /** Agent `a`'s copy of the 60-second workspace default. */
+  const defaultCopy = async () => {
+    await f.store.upsertDefault(defaultDefinition());
+    await f.store.materializeMissing({ agents: [{ agentId: 'a', ownerUserId: 'owner' }], now });
+    return (await f.store.list({ agentId: 'a' })).find(row => row.definitionId !== null && row.name === 'Check in')!;
+  };
+
+  it('listAll answers the rows that read and names the rest by id, revision, owner, default source and name only', async () => {
+    const repeat = await f.store.createAuthored(createInput('repeat'));
+    const broken = await f.store.createAuthored(task('task'));
+    await underTheFloor(broken.routineId);
+    const lines = skippedLines();
+    expect((await f.store.list({ agentId: 'a' })).map(row => row.routineId)).toEqual([repeat.routineId]);
+    const all = await f.store.listAll({ agentId: 'a' });
+    expect(all.routines.map(row => row.routineId)).toEqual([repeat.routineId]);
+    expect(all.unreadable).toEqual([{ agentId: 'a', routineId: broken.routineId, revision: broken.revision, ownerUserId: 'owner', definitionId: null, name: 'Inbox' }]);
+    // No line from a list read: it would repeat on every page that lists routines. The tick's line is the signal.
+    expect(lines).toEqual([]);
+    // Left as is on purpose: a read of one routine still refuses a row that doesn't read. Its remedy is Delete.
+    await expect(f.store.findOne(broken)).rejects.toMatchObject({ name: 'ZodError' });
+  });
+
+  it('findOwnership answers a routine that no longer reads with its owner and default source, read as columns', async () => {
+    const copy = await defaultCopy();
+    await nameTooLong(copy.routineId);
+    const broken = await f.store.createAuthored(task('task'));
+    await underTheFloor(broken.routineId);
+    expect(await f.store.findOwnership(broken)).toEqual({ ownerUserId: 'owner', definitionId: null });
+    expect(await f.store.findOwnership(copy)).toEqual({ ownerUserId: 'owner', definitionId: copy.definitionId });
+    // Keyed on the agent as well as the routine, as every read of one routine is.
+    expect(await f.store.findOwnership({ agentId: 'b', routineId: broken.routineId })).toBeNull();
+    expect(await f.store.findOwnership({ agentId: 'a', routineId: 'rtn_missing' })).toBeNull();
+  });
+
+  it('deleteAuthored deletes a row that no longer reads, under its revision, and queues its signing-secret cleanup', async () => {
+    const hook = await f.store.createAuthored(plainWebhookInput());
+    await nameTooLong(hook.routineId);
+    await expect(remove(hook.routineId, 'stale', 'delete-stale')).rejects.toMatchObject({ toolCode: 'revision-conflict' });
+    await expect(remove(hook.routineId, hook.revision)).resolves.toEqual({ deleted: true, cleanupPending: true });
+    expect(await f.store.pendingCleanup({ limit: 10 })).toEqual([{ agentId: 'a', routineId: hook.routineId, ownerUserId: 'owner', credentialRef: credentialRef(hook) }]);
+    expect(await f.store.listAll({ agentId: 'a' })).toEqual({ routines: [], unreadable: [] });
+  });
+
+  it('deleteAuthored still refuses a default routine that no longer reads', async () => {
+    const copy = await defaultCopy();
+    await nameTooLong(copy.routineId);
+    await expect(remove(copy.routineId, copy.revision)).rejects.toMatchObject({ toolCode: 'forbidden' });
+    expect((await f.store.listAll({ agentId: 'a' })).unreadable.map(row => row.routineId)).toEqual([copy.routineId]);
+  });
+
+  it("purgeAgent removes an agent whose routines include one that no longer reads, and queues that routine's secret", async () => {
+    const hook = await f.store.createAuthored(plainWebhookInput());
+    await nameTooLong(hook.routineId);
+    await f.store.createAuthored(createInput('other'));
+    await expect(f.store.purgeAgent('a')).resolves.toBeUndefined();
+    expect(await f.store.pendingCleanup({ limit: 10 })).toEqual([{ agentId: 'a', routineId: hook.routineId, ownerUserId: 'owner', credentialRef: credentialRef(hook) }]);
+    expect(await f.store.listAll({ agentId: 'a' })).toEqual({ routines: [], unreadable: [] });
   });
 });
