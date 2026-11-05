@@ -142,7 +142,7 @@ export function TaskForm({
   const {
     form, eventsDraft, draftDefinition, validation, dirty, disabled, error, errorCode, invalidField,
     conflict, busy, uncertain, addressBusy, setAddressBusy, update, editEvents,
-    toggleSchedule, toggleWebhook, changeKind, submit,
+    toggleSchedule, toggleWebhook, changeKind, submit, cancelsWaitingUpdates,
   } = useRoutineDraft({ initial, mode, canEdit, save, onSaved, onPendingChange });
   const [attempted, setAttempted] = useState(false);
   const [more, setMore] = useState(false);
@@ -275,6 +275,11 @@ export function TaskForm({
   const dropsWaiting = hasAddress && initial.kind === 'repeat' && !task;
   // Saving a saved repeat as a task cancels its queue (`kind` is in its hash), so the kind-switch notice says so.
   const kindDropsWaiting = hasAddress && initial.kind === 'repeat' && task;
+  // TASK-1037. Every other save that changes what a saved repeat's waiting app updates were accepted
+  // under cancels them too: its instructions, app-update settings, memory or quiet reply. The kind-switch
+  // notice says so for a switch to a task kind; this one, by Save, speaks for every other change. That
+  // includes turning app updates off, since the switch's own help is only read while its popover is open.
+  const editDropsWaiting = cancelsWaitingUpdates && !task;
   const respondLabel = RESPOND_PRESETS.find(item => item.value === respondPreset(form.webhook?.respondWithin))?.label
     ?? durationWords(form.webhook?.respondWithin ?? '5m');
   const showQuiet = form.kind === 'repeat' || form.silenceToken !== null || shown.has('quietWord');
@@ -548,6 +553,9 @@ export function TaskForm({
         </CollapsibleContent>
       </Collapsible>
 
+      {editDropsWaiting && (
+        <Alert id={`${id}-save-waiting`}><AlertDescription>Saving these changes cancels any app updates still waiting to run.</AlertDescription></Alert>
+      )}
       {shown.has('form') && <FieldError id={errorId('form')} ref={register('form')} tabIndex={-1}>{shown.get('form')}</FieldError>}
       {error && (
         <Alert variant="destructive">
@@ -569,7 +577,8 @@ export function TaskForm({
           onClick={() => setMore(open => !open)} />
         <div className="ml-auto flex gap-2">
           <Button type="button" variant="ghost" disabled={busy || uncertain || addressBusy} onClick={onCancel}>Cancel</Button>
-          <Button type="submit" disabled={busy || addressBusy || !canEdit}>
+          <Button type="submit" disabled={busy || addressBusy || !canEdit}
+            aria-describedby={editDropsWaiting ? `${id}-save-waiting` : undefined}>
             {busy ? 'Saving…' : uncertain ? 'Retry save' : mode === 'create' ? 'Start task' : 'Save'}
           </Button>
         </div>

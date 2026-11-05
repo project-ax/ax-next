@@ -415,6 +415,54 @@ describe('task form More options', () => {
     expect(routineApi.update).not.toHaveBeenCalled();
   });
 
+  const repeatWithUpdates: RoutineView = { ...routineFixture, silenceToken: 'QUIET', webhook: { kind: 'webhook', path: '/updates' } };
+  // The saved address loads its receiver once More options opens; wait for it before editing there.
+  async function openMoreOptions() {
+    fireEvent.click(screen.getByRole('button', { name: 'More options' }));
+    expect(await screen.findByText('This address belongs only to this task.')).toBeVisible();
+  }
+  // TASK-1037. Every field a saved Repeat's waiting app updates were accepted under cancels them when a
+  // save changes it, so the form says so by Save, and Save's description says it too.
+  it.each<[string, () => unknown]>([
+    ['what it should do', () => fill('What should Caveman do?', 'Review updates differently.')],
+    ['its quiet word', async () => { await openMoreOptions(); fill('Quiet word (optional)', 'HUSH'); }],
+    ['its quiet length', async () => { await openMoreOptions(); fill('Treat replies this short as quiet', '40'); }],
+    ['its memory between runs', async () => { await openMoreOptions(); fireEvent.click(screen.getByRole('radio', { name: 'Keep one running conversation' })); }],
+    ['its address name', async () => { await openMoreOptions(); fill('Address name', '/renamed'); }],
+    ['which updates it takes', async () => { await openMoreOptions(); fill('Only these kinds of updates', 'push'); }],
+    ['its app updates, turned off', async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'App updates: On' }));
+      fireEvent.click(await screen.findByRole('switch', { name: 'When another app sends an update' }));
+    }],
+  ])('says by Save that changing %s cancels a saved Repeat’s waiting app updates', async (_label, change) => {
+    await edit(repeatWithUpdates);
+    expect(screen.queryByText(SAVE_NOTICE)).not.toBeInTheDocument();
+    await change();
+    expect(screen.getByText(SAVE_NOTICE)).toBeVisible();
+    expect(screen.getByRole('button', { name: 'Save' })).toHaveAccessibleDescription(SAVE_NOTICE);
+  });
+  it.each<[string, RoutineView, () => unknown]>([
+    ['a name change', repeatWithUpdates, () => fill('Name', 'Renamed')],
+    ['a note change', repeatWithUpdates, async () => { await openMoreOptions(); fill('Note for you (optional)', 'Mine.'); }],
+    ['a schedule change', repeatWithUpdates, async () => { await openMoreOptions(); fill('Interval', '2h'); }],
+    ['a prompt change on a Repeat saved without app updates', routineFixture, () => fill('What should Caveman do?', 'Review updates differently.')],
+    ['a prompt change on a task with app updates', { ...task, webhook: { kind: 'webhook', path: '/updates' } }, () => fill('What should Caveman do?', 'Review updates differently.')],
+  ])('gives no save notice for %s', async (_label, view, change) => {
+    await edit(view);
+    await change();
+    expect(screen.queryByText(SAVE_NOTICE)).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Save' })).not.toHaveAccessibleDescription(/still waiting/);
+  });
+  // The kind-switch notice already says a switch to a task kind cancels them; the save notice doesn't repeat it.
+  it('leaves a switch to a task kind to the kind-switch notice', async () => {
+    await edit(repeatWithUpdates);
+    fill('What should Caveman do?', 'Review updates differently.');
+    fireEvent.click(screen.getByRole('radio', { name: 'Stay on top' }));
+    expect(screen.getByText(/Switching kinds starts this task over/)).toHaveTextContent('Any app updates still waiting to run will be cancelled.');
+    expect(screen.queryByText(SAVE_NOTICE)).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Save' })).not.toHaveAccessibleDescription(/still waiting/);
+  });
+
   it('has no signature controls', async () => {
     await edit({ ...task, webhook: { kind: 'webhook', path: '/updates' } });
     fireEvent.click(screen.getByRole('button', { name: 'More options' }));
