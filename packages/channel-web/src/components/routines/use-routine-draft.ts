@@ -84,12 +84,16 @@ export function useRoutineDraft({
   // Keep separators in the input; normalize only the definition being validated/saved.
   const draftDefinition = useMemo(() => {
     if (form.webhook === null) return form;
-    const { events: _events, ...webhook } = form.webhook;
+    const { events: loaded, ...webhook } = form.webhook;
     const events = eventsDraft
       .split(',')
       .map((event) => event.trim())
       .filter(Boolean);
-    return { ...form, webhook: events.length ? { ...webhook, events } : webhook };
+    // TASK-1037. A filter that still says what was loaded leaves the webhook as loaded: its key order and
+    // a stored empty list included. A rewritten one would read as a change, so an untouched form would be
+    // dirty and a name edit would send the webhook too, which cancels a Repeat's waiting app updates.
+    if (JSON.stringify(loaded ?? []) === JSON.stringify(events)) return form;
+    return { ...form, webhook: events.length ? { ...form.webhook, events } : webhook };
   }, [form, eventsDraft]);
   const validation = useMemo(() => {
     const parsed = RoutineDefinitionSchema.safeParse(draftDefinition);
@@ -106,9 +110,8 @@ export function useRoutineDraft({
   const dirty = Object.keys(changed(draftDefinition, initial)).length > 0;
   // TASK-1037. A saved Repeat with app updates queues each update, and the host cancels the ones still
   // waiting when a save changes a field they were accepted under (REPEAT_CONFIGURATION_FIELDS). Read from
-  // the definition the save sends (as `submit` builds it and RoutineEditor diffs it), never the raw draft,
-  // which moves `webhook.events` last. A Repeat saved without app updates, a task (its updates are task
-  // events) and a new task have nothing waiting to cancel.
+  // the definition the save sends (as `submit` builds it and RoutineEditor diffs it). A Repeat saved
+  // without app updates, a task (its updates are task events) and a new task have nothing waiting to cancel.
   const sending = changed(validation.success ? validation.data : draftDefinition, initial);
   const cancelsWaitingUpdates = mode === 'edit' && initial.kind === 'repeat' && initial.webhook !== null
     && REPEAT_CONFIGURATION_FIELDS.some(field => field in sending);
@@ -151,8 +154,8 @@ export function useRoutineDraft({
    * A task keeps a schedule and a fresh conversation; Repeat has no response timing or going-well line.
    * Leaving Repeat for a task kind forces a fresh conversation and, when the Repeat had no schedule,
    * fills in an hourly one. Coming back undoes both (the schedule only while it is still the one filled
-   * in), so a switch away and back changes nothing: a changed conversation would cancel a saved
-   * Repeat's waiting app updates (TASK-1037).
+   * in and no active hours need it), so a switch away and back changes nothing: a changed conversation
+   * would cancel a saved Repeat's waiting app updates (TASK-1037).
    */
   function changeKind(value: RoutineDefinition['kind']) {
     const toRepeat = value === 'repeat';
@@ -166,7 +169,7 @@ export function useRoutineDraft({
     else if (form.kind === 'repeat') leftRepeat.current = { conversation: form.conversation, filledSchedule: form.schedule === null ? hourly : null };
     setForm(f => ({ ...f, kind: value, goodWhen: toRepeat ? null : (f.goodWhen ?? ''),
       schedule: toRepeat
-        ? (left !== null && left.filledSchedule !== null && f.schedule === left.filledSchedule ? null : f.schedule)
+        ? (left !== null && left.filledSchedule !== null && f.schedule === left.filledSchedule && f.activeHours === null ? null : f.schedule)
         : (f.schedule ?? hourly),
       webhook: toRepeat && f.webhook !== null ? webhookDraft.current : f.webhook,
       conversation: toRepeat ? (left?.conversation ?? f.conversation) : 'per-fire' }));

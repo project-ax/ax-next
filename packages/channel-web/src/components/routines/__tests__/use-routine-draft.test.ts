@@ -65,6 +65,43 @@ describe('a kind switch away from Repeat and back', () => {
     act(() => result.current.changeKind('repeat'));
     expect(result.current.form.schedule).toStrictEqual({ kind: 'interval', every: '4h' });
   });
+  // Active hours need a schedule, so hours set while it was a task keep the filled-in one rather than
+  // leaving a form that can't save (and whose hours switch is disabled without a schedule).
+  it('keeps the filled-in schedule once active hours were set while it was a task', () => {
+    const result = draft({ ...savedRepeat, schedule: null });
+    act(() => result.current.changeKind('stay-on-top'));
+    act(() => result.current.update('activeHours', { start: '09:00', end: '17:00', tz: 'UTC' }));
+    act(() => result.current.changeKind('repeat'));
+    expect(result.current.form.schedule).toStrictEqual({ kind: 'interval', every: '1h' });
+    expect(result.current.validation.success).toBe(true);
+  });
+});
+
+// TASK-1037 review. An event filter nobody touched leaves the webhook exactly as it was loaded, so an
+// untouched form isn't dirty and a name edit doesn't send (and cancel the queue with) a rewritten webhook.
+describe('an untouched event filter', () => {
+  const legacy = { kind: 'webhook' as const, path: '/updates', events: ['push'], hmac: { header: 'X-Signature', algorithm: 'sha256' as const, prefix: 'sha256=' } };
+  it.each<[string, RoutineDefinition['webhook']]>([
+    ['a legacy signature webhook with a filter', legacy],
+    ['a stored empty filter', { kind: 'webhook', path: '/updates', events: [] }],
+  ])('keeps %s as loaded', (_label, webhook) => {
+    const result = draft({ ...savedRepeat, webhook });
+    expect(result.current.dirty).toBe(false);
+    expect(result.current.cancelsWaitingUpdates).toBe(false);
+    act(() => result.current.update('name', 'Renamed'));
+    expect(result.current.cancelsWaitingUpdates).toBe(false);
+    act(() => result.current.update('name', ''));
+    expect(result.current.validation.success).toBe(false);
+    expect(result.current.cancelsWaitingUpdates).toBe(false);
+  });
+  it('still counts a real filter edit', () => {
+    const result = draft({ ...savedRepeat, webhook: legacy });
+    act(() => result.current.editEvents('push, pull_request'));
+    expect(result.current.draftDefinition.webhook).toStrictEqual({ ...legacy, events: ['push', 'pull_request'] });
+    expect(result.current.cancelsWaitingUpdates).toBe(true);
+    act(() => result.current.editEvents(''));
+    expect(result.current.draftDefinition.webhook).toStrictEqual({ kind: 'webhook', path: '/updates', hmac: legacy.hmac });
+  });
 });
 
 // TASK-1037. A save cancels a saved Repeat's waiting app updates exactly when it changes a field they
@@ -110,8 +147,8 @@ describe('cancelsWaitingUpdates', () => {
     act(() => result.current.update('promptBody', 'Review differently.'));
     expect(result.current.cancelsWaitingUpdates).toBe(false);
   });
-  // The draft moves `events` after `hmac`, so diffing it against a saved (schema-ordered) webhook would
-  // see a change that isn't there. The flag reads the parsed definition the save sends.
+  // A webhook with both an event filter and a legacy signature: rebuilding it would move `events` after
+  // `hmac` and read as a change that isn't there.
   it('stays clear for an untouched legacy signature webhook with an event filter', () => {
     const webhook = { kind: 'webhook' as const, path: '/updates', events: ['push'], hmac: { header: 'X-Signature', algorithm: 'sha256' as const, prefix: 'sha256=' } };
     const result = draft({ ...savedRepeat, webhook });
