@@ -194,7 +194,7 @@ function RoutineForm({
   const {
     form, eventsDraft, draftDefinition, validation, dirty, disabled, error, invalidField,
     conflict, busy, uncertain, addressBusy, setAddressBusy, update, editEvents,
-    toggleSchedule, toggleWebhook, submit,
+    toggleSchedule, toggleWebhook, submit, cancelsWaitingUpdates,
   } = useRoutineDraft({ initial, mode, canEdit, save, onSaved, onPendingChange });
   // Neither the host (core's TOOL_FIELDS) nor RoutineApiError can name
   // goodWhen, so its invalid state is the contract's own check here, which
@@ -484,6 +484,13 @@ function RoutineForm({
           </CollapsibleContent>
         </Collapsible>
       </FieldGroup>
+      {/* TASK-1037. This form makes the same save as the Tasks form, so the same changes cancel a saved
+          Repeat's waiting app updates, and it says so by Save too. It has no kind control. */}
+      {cancelsWaitingUpdates && (
+        <Alert id={`${id}-save-waiting`} role="status">
+          <AlertDescription>Saving these changes cancels any app updates still waiting to run.</AlertDescription>
+        </Alert>
+      )}
       {error && (
         <Alert variant="destructive">
           <AlertDescription>
@@ -535,6 +542,7 @@ function RoutineForm({
           </Button>
           <Button
             type="submit"
+            aria-describedby={cancelsWaitingUpdates ? `${id}-save-waiting` : undefined}
             disabled={
               busy || addressBusy ||
               !canEdit ||

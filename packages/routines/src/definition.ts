@@ -144,7 +144,14 @@ export function dispatchRequestHash(input: import('@ax/routines-contract').Routi
   return inputHash({ agentId: input.agentId, routineId: input.routineId, expectedRevision: input.expectedRevision, source: input.source });
 }
 
-/** Only configuration that affects an accepted app update; schedule and cosmetic edits remain independent. */
+/**
+ * Only configuration that affects an accepted app update; schedule and cosmetic edits remain independent.
+ * A waiting update runs with the routine as it is at claim time, so a change to any of these must cancel
+ * it rather than run an app's payload under instructions, memory or quiet rules it wasn't accepted for
+ * (TASK-971). The editors warn before such a save using the contract's REPEAT_CONFIGURATION_FIELDS, which
+ * independent-definition.test.ts pins to this list. Changing what this covers, or how, changes every stored
+ * `configuration_hash`: the claim compares them, so every waiting update would be cancelled at deploy.
+ */
 export function repeatConfigurationHash(row: RoutineDefinition): string {
   const { kind, promptBody, webhook, conversation, silenceToken, silenceMaxChars } = row;
   return inputHash({ kind, promptBody, webhook, conversation, silenceToken, silenceMaxChars });

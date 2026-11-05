@@ -543,3 +543,37 @@ describe('structured routine form', () => {
     expect(screen.queryByLabelText('Name')).not.toBeInTheDocument();
   });
 });
+
+// TASK-1037. Settings saves the same draft through the same write as the Tasks form, so the same changes
+// cancel a saved routine's waiting app updates, and it says so by Save too. It has no kind control.
+describe('waiting app updates (TASK-1037)', () => {
+  const NOTICE = 'Saving these changes cancels any app updates still waiting to run.';
+  const withUpdates: RoutineView = { ...row, webhook: { kind: 'webhook', path: '/updates' } };
+  async function editRoutine(view: RoutineView) {
+    vi.mocked(routineApi.get).mockResolvedValue(view);
+    edit();
+    await screen.findByDisplayValue(row.name);
+  }
+  it.each<[string, () => unknown]>([
+    ['what it should do', () => fill('What should Caveman do?', 'Review updates differently.')],
+    ['its conversation', () => fireEvent.click(screen.getByRole('radio', { name: 'One ongoing thread' }))],
+    ['its app updates, turned off', () => fireEvent.click(screen.getByRole('checkbox', { name: 'When another app sends an update' }))],
+  ])('says by Save that changing %s cancels a saved routine’s waiting app updates', async (_label, change) => {
+    await editRoutine(withUpdates);
+    expect(screen.queryByText(NOTICE)).not.toBeInTheDocument();
+    change();
+    expect(screen.getByText(NOTICE)).toBeVisible();
+    expect(screen.getByText(NOTICE).closest('[role]')).toHaveAttribute('role', 'status');
+    expect(screen.getByRole('button', { name: 'Save' })).toHaveAccessibleDescription(NOTICE);
+  });
+  it.each<[string, RoutineView, () => unknown]>([
+    ['a name change', withUpdates, () => fill('Name', 'Renamed')],
+    ['a pause', withUpdates, () => fireEvent.click(screen.getByRole('switch', { name: 'Enabled' }))],
+    ['a prompt change on a routine without app updates', row, () => fill('What should Caveman do?', 'Review updates differently.')],
+  ])('gives no save notice for %s', async (_label, view, change) => {
+    await editRoutine(view);
+    change();
+    expect(screen.queryByText(NOTICE)).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Save' })).not.toHaveAccessibleDescription(/still waiting/);
+  });
+});
