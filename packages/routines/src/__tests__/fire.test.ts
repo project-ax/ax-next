@@ -323,6 +323,7 @@ describe('a run its invoke ended terminated stores fixed words and a code (TASK-
   ])('stores unknown when the reason is %s, not a string', async (_name, reason) => {
     expect((await terminatedWith(reason)).error).toBe(stored('unknown'));
   });
+  // A pin, not a red test: this passed before TASK-1038 too (the webhook text never carried the runner's words). It guards that staying true.
   it('a webhook run that a runner ended still says only that the app update could not run', async () => {
     const run = await terminatedWith('ClaudeSdkTurnError: PRIVATE runner text', 'webhook');
     expect(run).toEqual({ error: 'This app update could not run.', lastError: 'This app update could not run.', stderr: ['This app update could not run.\n'] });
