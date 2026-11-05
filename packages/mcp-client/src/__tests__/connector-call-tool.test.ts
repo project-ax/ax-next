@@ -118,6 +118,10 @@ interface Setup {
   callServer?: (opts: CallServerToolOptions) => Promise<ServerCallOutcome>;
   /** How far the clock moves while each hook is being answered. */
   clockJumps?: Partial<Record<string, number>>;
+  /** Runs while each hook is being answered. */
+  onHook?: (hook: string) => void;
+  /** Leave the handler's own default clock in place (no `now` seam). */
+  defaultClock?: boolean;
 }
 
 function setup(s: Setup = {}) {
@@ -127,6 +131,7 @@ function setup(s: Setup = {}) {
     async call<I, O>(hook: string, ctx: AgentContext, input: I): Promise<O> {
       calls.push({ hook, ctx, input });
       clock += s.clockJumps?.[hook] ?? 0;
+      s.onHook?.(hook);
       switch (hook) {
         case 'agents:resolve':
           return (s.agentsResolve ?? AGENT_ROW)() as O;
@@ -151,7 +156,7 @@ function setup(s: Setup = {}) {
   });
   const logs: Array<Record<string, unknown>> = [];
   const logger = createLogger({ reqId: 'r', writer: (line) => logs.push(JSON.parse(line) as Record<string, unknown>) });
-  const callTool = createCallTool({ bus, callServer, now: () => clock });
+  const callTool = createCallTool({ bus, callServer, ...(s.defaultClock === true ? {} : { now: () => clock }) });
   const ctx = (over: Partial<{ userId: string; agentId: string }> = {}) =>
     makeAgentContext({ sessionId: 'decision-replay', userId: USER, agentId: AGENT, logger, ...over });
   const run = (input: unknown, callerCtx: AgentContext = ctx()) => callTool(callerCtx, input);
@@ -200,6 +205,12 @@ describe('connectors:call-tool', () => {
     });
     expect(t.calls[2]!.input).toStrictEqual({ userId: USER, connectorId: 'linear' });
     expect(t.calls[3]!.input).toStrictEqual({ ref: 'account:linear:token', userId: USER });
+  });
+
+  it('a tool name with dots is everything after the namespace', async () => {
+    const t = setup();
+    expect(await t.run(payload({ toolKey: `mcp.${NS}.save.comment` }))).toStrictEqual({ outcome: 'succeeded' });
+    expect(t.sent[0]!.tool).toBe('save.comment');
   });
 
   it.each([[[]], [null], ['text']])(
@@ -363,6 +374,9 @@ describe('connectors:call-tool', () => {
   });
   it.each<[string, Json]>([
     ["a server host outside the connector's allowedHosts", { allowedHosts: ['docs.linear.app'] }],
+    // The match is exact, as the session proxy's is: no parent domain, no wildcard.
+    ['a parent domain in allowedHosts', { allowedHosts: ['linear.app'] }],
+    ['a wildcard in allowedHosts', { allowedHosts: ['*.linear.app'] }],
     ['an http url', mainServer('http://mcp.linear.app/mcp')],
     ['a url with credentials in it', mainServer('https://user:pw@mcp.linear.app/mcp')],
     ['a url with a fragment', mainServer('https://mcp.linear.app/mcp#frag')],
@@ -372,6 +386,19 @@ describe('connectors:call-tool', () => {
     const t = setup({ resolve: () => linear({ capabilities }) });
     expect(await t.run(payload())).toStrictEqual(FAILED('unreachable'));
     // Refused before any credential is read.
+    expect(t.hooks()).toEqual(['agents:resolve', 'connectors:list-effective', 'connectors:resolve']);
+    expect(t.callServer).not.toHaveBeenCalled();
+  });
+
+  it('a connector with no allowedHosts list reaches nothing', async () => {
+    const t = setup({
+      resolve: () => {
+        const c = linear();
+        const { allowedHosts: _absent, ...capabilities } = c.capabilities;
+        return { ...c, capabilities };
+      },
+    });
+    expect(await t.run(payload())).toStrictEqual(FAILED('unreachable'));
     expect(t.hooks()).toEqual(['agents:resolve', 'connectors:list-effective', 'connectors:resolve']);
     expect(t.callServer).not.toHaveBeenCalled();
   });
@@ -482,10 +509,41 @@ describe('connectors:call-tool', () => {
       expect(t.callServer).not.toHaveBeenCalled();
     });
 
-    it('a wall clock that steps back never buys the transport more than 45 s', async () => {
+    it('a clock that steps back never buys the transport more than 45 s', async () => {
       const t = setup({ clockJumps: { 'agents:resolve': -60_000 } });
       expect(await t.run(payload())).toStrictEqual({ outcome: 'succeeded' });
       expect(t.sent.map((o) => o.limits)).toEqual([{ budgetMs: 45_000 }]);
+    });
+
+    it.each([
+      ['answers NaN', NaN],
+      ['runs back without end', -Infinity],
+    ])('a clock that %s sends nothing', async (_label, jump) => {
+      const t = setup({ clockJumps: { 'credentials:get': jump } });
+      expect(await t.run(payload())).toStrictEqual(FAILED('unavailable'));
+      expect(t.callServer).not.toHaveBeenCalled();
+    });
+
+    it('the default clock is monotonic, in whole ms: a wall-clock jump during the reads costs nothing', async () => {
+      // Only Date is faked, so a wall clock that jumps 40 s mid-call shows up
+      // only if the handler measures the budget with it.
+      vi.useFakeTimers({ toFake: ['Date'] });
+      try {
+        const t = setup({
+          defaultClock: true,
+          onHook: (hook) => {
+            if (hook === 'agents:resolve') vi.setSystemTime(Date.now() + 40_000);
+          },
+        });
+        expect(await t.run(payload())).toStrictEqual({ outcome: 'succeeded' });
+        const budgetMs = t.sent[0]?.limits?.budgetMs;
+        // AbortSignal.timeout refuses a fractional delay.
+        expect(Number.isInteger(budgetMs)).toBe(true);
+        expect(budgetMs).toBeGreaterThan(40_000);
+        expect(budgetMs).toBeLessThanOrEqual(45_000);
+      } finally {
+        vi.useRealTimers();
+      }
     });
   });
 

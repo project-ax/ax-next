@@ -17,7 +17,7 @@ Host MCP servers (the `mcp-server:<id>` rows behind `/admin/mcp-servers` and `ax
 
 - **Sandbox:** No processes spawned, no process environment read, no IPC actions added. The sweep touches only `storage:list-prefix` / `storage:delete` on the `mcp-server:` prefix plus the index key, and `credentials:list` / `credentials:delete` (optional; skipped when absent) on refs in the `mcp:<id>:` namespace. Network reach is limited to the connector inventory and approved connector calls, both described below.
 - **Injection:** Tool descriptors in the catalog come from other plugins and are stored as-is; the scope filter drops malformed `mcp.*` names rather than treating them as native tools. Connector server output is handled in the two connector sections below.
-- **Supply chain:** Runtime dependencies are `@modelcontextprotocol/sdk` (exact-pinned to `1.32.1`; no install scripts), `undici` and `ipaddr.js` (the inventory's guarded fetch), `kysely` and `zod`. The SDK ships its client and server halves together, so `pnpm install` pulls `express` and `hono` even though we only construct `Client`. We accept that rather than fork the SDK. The lockfile is committed; re-audit on every SDK bump.
+- **Supply chain:** Runtime dependencies are `@modelcontextprotocol/sdk` (exact-pinned to `1.32.1`; no install scripts), `undici` and `ipaddr.js` (the inventory's guarded fetch), `kysely` and `zod`. The SDK ships its client and server halves together, so `pnpm install` pulls `express` and `hono` even though we only construct `Client`. We accept that rather than fork the SDK. The lockfile is committed; re-audit on every SDK bump. Other host plugins can call `connectors:call-tool` too; that residual is named at the end of its section.
 
 ## Security contact
 
@@ -48,9 +48,9 @@ The k8s preset turns on `connectorToolInventory`, which makes the host itself li
 
 Sometimes an agent asks to use a connector tool, we hold the call for a person, and by the time they say yes the run is over. Someone still has to make the call they approved. Since TASK-1046, that's the host. It makes that one call itself, as the person and agent the call belonged to. The same `connectorToolInventory` flag turns it on, so only the k8s preset has it.
 
-- **Who can trigger it:** only `@ax/decisions`, after a decision's owner approves a held call and no live agent is there to make it.
-  - `connectors:call-tool` is a named service hook. It is not an IPC action, not a `tool:execute:*` hook (the sandbox reaches every one of those through `tool.execute-host`), and not in the tool catalog. The sandbox has no way to call it.
-  - The caller's context must name the same user and agent as the request. An owner-less user or agent gets nothing.
+- **Intended caller:** `@ax/decisions`, after a decision's owner approves a held call and no live agent is there to make it. That is a convention, not a check. See the residual at the end of this section.
+  - What is enforced: `connectors:call-tool` is a named service hook. It is not an IPC action, not a `tool:execute:*` hook (the sandbox reaches every one of those through `tool.execute-host`), and not in the tool catalog. The sandbox has no way to call it.
+  - The caller's context must name the same user and agent as the request, and an owner-less user or agent gets nothing. That catches a confused caller, not a hostile one: host code can build any context it likes.
 - **Authorization:** re-derived from the decision's user and agent on every call, never from whoever approved it. Nothing is sent until every check passes:
   - the agent must still resolve for that user (`agents:resolve`);
   - the tool's namespace must belong to a connector in the agent's effective set (`connectors:list-effective`, with the agent's own attachments and exclusions). A detached connector fails here. So does one a skill brought in, because that set does not carry it;
@@ -63,5 +63,11 @@ Sometimes an agent asks to use a connector tool, we hold the call for a person, 
 - **Injection:** the arguments are the approved call's recorded input, sent unchanged. That's the promise: the person approved exactly those bytes.
   - The reply is read only for `isError`, through a minimal local schema. We never call `client.callTool()`, so the host never compiles a schema the server supplied. The reply's content is dropped unread.
   - Failures are short codes (`not-connected`, `needs-auth`, `rejected`, …), never the server's text. The bus holds the hook's answer to those shapes.
-  - One log line per call: the connector id and the code. Never the input, a header, the URL, or the reply.
+  - One `connector_call_tool` line per call: the connector id and the code. A credential read failure also logs the shared header builder's `connector_inventory_credential_unavailable` line, with the connector id and an error code. Neither ever carries the input, a header, the URL, or the reply.
 - **Exactly-once:** `@ax/decisions` claims the decision row before it calls, and nothing here retries. A call that went out and got no reliable answer (a timeout, a reset, a 5xx, a redirect, an oversize reply) comes back `unknown`, and the person is told we can't say whether it finished. We'd rather admit that than have them approve it twice.
+- **Residual (supply chain: third-party host plugin code):** nothing stops another host plugin from calling this hook.
+  - Every plugin gets the same bus. A manifest's `calls` list orders boot; it does not gate calls.
+  - A context is one `makeAgentContext` away, and the request carries no proof that anyone approved anything.
+  - The hook runs no tool-policy check. That's its caller's job: `@ax/decisions` re-checks the policy just before it calls.
+
+  So a buggy or hostile host plugin could make a connector call nobody approved. Everything above still bounds it: the call can only go where a session of that agent could go, with that agent's own credentials, once, and nothing the server says comes back. We accept the residual because host plugins already run in the host with this much reach (any of them can call `credentials:get` as well). The guard here is which plugins we load, not this hook.

@@ -2,15 +2,18 @@
 // `connectors:call-tool` — the host makes ONE connector call that a person
 // approved (TASK-1046).
 //
-// Who asks: only @ax/decisions, after a decision's owner approved a held
-// connector call and no live agent is there to make it. This is a NAMED
-// service, not a `tool:execute:<name>` (the sandbox reaches every one of those
-// through `tool.execute-host`) and not an IPC action, so a runner cannot call
-// it.
+// Intended caller: @ax/decisions, after a decision's owner approved a held
+// connector call and no live agent is there to make it. Nothing here
+// enforces that. Any host plugin holds the same bus, the request carries no
+// proof that anyone approved it, and the tool-policy re-check is the
+// caller's job. What IS enforced: this is a NAMED service, not a
+// `tool:execute:<name>` (the sandbox reaches every one of those through
+// `tool.execute-host`) and not an IPC action, so a runner cannot call it.
 //
 // Access is re-derived on every call from the payload's (userId, agentId),
 // which are the decision's owner and agent. The caller's ctx must name the
-// same pair. Then, in order, before anything is sent:
+// same pair (a check against a confused caller: host code can build any
+// ctx). Then, in order, before anything is sent:
 //   1. `agents:resolve`: the agent is still that user's;
 //   2. the key's namespace belongs to a connector in the agent's effective
 //      set (`connectors:list-effective` with the agent row's attachments and
@@ -27,13 +30,15 @@
 //
 // The handler is TOTAL: it never throws, and every failure is a closed code.
 // It sends at most one `tools/call` (callServerTool never retries). The budget
-// is CALL_LIMITS.budgetMs from handler entry, so slow hook reads count against
-// it, and with less than MIN_SEND_BUDGET_MS left nothing is sent. A late send
-// could still be running when the bus gives up on the caller, which would then
-// record a throw for a call that may land.
+// is CALL_LIMITS.budgetMs from handler entry, on a monotonic clock, so slow
+// hook reads count against it, and with less than MIN_SEND_BUDGET_MS left
+// nothing is sent. A late send could still be running when the bus gives up
+// on the caller, which would then record a throw for a call that may land.
 //
 // Never logged or returned: the input, a header, the url, anything the server
-// said. One log line per call, codes only.
+// said. One `connector_call_tool` line per call, codes only. (A credential
+// read failure also logs connectorHeaders' own line: connector id and an
+// error code.)
 // ---------------------------------------------------------------------------
 
 import { PluginError, isOwnerlessId, makeAgentContext, type AgentContext } from '@ax/core';
@@ -62,7 +67,11 @@ export interface CallToolDeps {
   };
   /** Test seam: the one-shot transport. Default `callServerTool`. */
   callServer?: (opts: CallServerToolOptions) => Promise<ServerCallOutcome>;
-  /** Test seam: the clock. Default `Date.now`. */
+  /**
+   * Test seam: the clock, in whole ms. Default `Math.floor(performance.now())`:
+   * monotonic, so a wall clock that steps cannot stretch or shrink the budget,
+   * and floored, because `AbortSignal.timeout` refuses a fractional delay.
+   */
   now?: () => number;
 }
 
@@ -92,7 +101,7 @@ function lookupFailure(err: unknown): ConnectorCallToolOutput {
 
 export function createCallTool(deps: CallToolDeps) {
   const callServer = deps.callServer ?? callServerTool;
-  const now = deps.now ?? Date.now;
+  const now = deps.now ?? (() => Math.floor(performance.now()));
 
   /** Steps 1-9. `state` is read by the catch-all and the log line. */
   async function attempt(
@@ -191,10 +200,11 @@ export function createCallTool(deps: CallToolDeps) {
     if (auth === 'absent' || auth === 'needs-auth') return failed('needs-auth');
     if (auth === 'unavailable') return failed('unavailable');
 
-    // 9. The send has to fit the budget. A wall clock that stepped back
-    //    never buys more than the whole budget.
-    const left = Math.min(deadline - now(), CALL_LIMITS.budgetMs);
-    if (left < MIN_SEND_BUDGET_MS) return failed('unavailable');
+    // 9. The send has to fit the budget. A clock that answers a non-number
+    //    sends nothing, and no clock buys more than the whole budget.
+    const remaining = deadline - now();
+    if (!Number.isFinite(remaining) || remaining < MIN_SEND_BUDGET_MS) return failed('unavailable');
+    const left = Math.min(remaining, CALL_LIMITS.budgetMs);
     state.sent = true;
     return callServer({ url, headers: auth.headers, tool, input, limits: { budgetMs: left } });
   }

@@ -184,10 +184,12 @@ export function createMcpClientPlugin(opts: CreateMcpClientPluginOptions = {}): 
           createInventoryToolTitles(store),
         );
         // TASK-1046 — the host makes one call a person approved, when no live
-        // agent is there to make it. Only @ax/decisions calls this. The bus's
-        // default timeout on purpose: the handler bounds itself well inside
-        // it (45 s from entry; see call-tool.ts). `returns` holds the answer
-        // to the closed codes, so no field can carry a server's text.
+        // agent is there to make it. The intended caller is @ax/decisions,
+        // which holds the approval and re-checks tool policy; this hook does
+        // neither (SECURITY.md). The bus's default timeout on purpose: the
+        // handler bounds itself well inside it (45 s from entry; see
+        // call-tool.ts). `returns` holds the answer to the closed codes, so no
+        // field can carry a server's text.
         bus.registerService(
           'connectors:call-tool',
           PLUGIN_NAME,

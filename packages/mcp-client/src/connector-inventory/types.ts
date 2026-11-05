@@ -136,10 +136,11 @@ export const InventoryToolTitlesInputSchema = z
 
 // ---------------------------------------------------------------------------
 // `connectors:call-tool` (service, TASK-1046). The host makes ONE connector
-// call that a person approved, when no live agent is there to make it. Only
-// @ax/decisions calls it. It re-derives access from `userId` and `agentId`
-// (the decision's owner and agent) on every call, sends one guarded
-// `tools/call`, and answers with a closed code. See call-tool.ts.
+// call that a person approved, when no live agent is there to make it. Its
+// intended caller is @ax/decisions; nothing in the hook enforces that (see
+// call-tool.ts). It re-derives access from `userId` and `agentId` (the
+// decision's owner and agent) on every call, sends one guarded `tools/call`,
+// and answers with a closed code.
 //
 // Boundary review:
 //   - Alternate impl: a one-shot sandbox replay, i.e. a short-lived runner
