@@ -33,6 +33,8 @@ const fill = (label: string, value: string) => fireEvent.change(screen.getByLabe
 const start = () => fireEvent.click(screen.getByRole('button', { name: 'Start task' }));
 // zod's built-ins and the contract's terse checks; none may reach the page.
 const RAW = /String must contain|Expected|Required|Invalid|too_small|at least 1 character/;
+// TASK-1037. The save notice: the save would change what a saved Repeat's waiting app updates were accepted under.
+const SAVE_NOTICE = 'Saving these changes cancels any app updates still waiting to run.';
 
 describe('task form validation', () => {
   it('shows a plain error under each missing field on submit, links it, and focuses the first', async () => {
@@ -393,6 +395,24 @@ describe('task form More options', () => {
     await edit(view);
     fireEvent.click(screen.getByRole('radio', { name: kind }));
     expect(screen.getByText(/Switching kinds starts this task over/)).not.toHaveTextContent(/waiting/);
+  });
+
+  // TASK-1037. A switch from Repeat to a task kind forces a fresh conversation and, with no schedule,
+  // fills in an hourly one. Switching back puts both back, so the round trip cancels no waiting app
+  // update (a changed conversation would) and Save has nothing to send.
+  it.each([
+    ['a scheduled Repeat', { ...routineFixture, conversation: 'shared' as const, webhook: { kind: 'webhook' as const, path: '/updates' } }],
+    ['a Repeat that runs only on app updates', { ...routineFixture, conversation: 'shared' as const, schedule: null, webhook: { kind: 'webhook' as const, path: '/updates' } }],
+  ])('leaves %s with nothing to save after a switch to a task kind and back', async (_label, view) => {
+    const { onCancel } = await edit(view);
+    fireEvent.click(screen.getByRole('radio', { name: 'Stay on top' }));
+    expect(screen.getByText(/Switching kinds starts this task over/)).toBeVisible();
+    fireEvent.click(screen.getByRole('radio', { name: 'Repeat' }));
+    expect(screen.queryByText(/Switching kinds starts this task over/)).not.toBeInTheDocument();
+    expect(screen.queryByText(SAVE_NOTICE)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    expect(onCancel).toHaveBeenCalledOnce();
+    expect(routineApi.update).not.toHaveBeenCalled();
   });
 
   it('has no signature controls', async () => {
