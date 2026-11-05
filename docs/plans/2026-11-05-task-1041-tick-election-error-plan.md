@@ -118,7 +118,7 @@ it('keeps scheduling when the election query fails once, and logs it in codes on
   const sleeps: number[] = [];
   const fire = vi.fn(async (_d: AcceptedDispatch) => result);
   const log = recordingLogger();
-  const restore = failQueries(/pg_try_advisory_lock/, Object.assign(new Error('PRIVATE election detail at 10.0.0.7'), { code: '57P01' }));
+  const restore = failQueries(/pg_try_advisory_lock/, Object.assign(new Error('PRIVATE election detail at <private-ip>'), { code: '57P01' }));
   try {
     await runTickLoop({
       db: f.db, fire, logger: log.logger,
@@ -134,7 +134,7 @@ it('keeps scheduling when the election query fails once, and logs it in codes on
 });
 it('backs off from one tick to the election wait while elections fail, and starts over once one answers (TASK-1041)', async () => {
   const controller = new AbortController();
-  const refused = () => Promise.reject(Object.assign(new Error('PRIVATE connect detail at 10.0.0.7:5432'), { code: 'ECONNREFUSED' }));
+  const refused = () => Promise.reject(Object.assign(new Error('PRIVATE connect detail at <private-ip>:5432'), { code: 'ECONNREFUSED' }));
   const outcomes: Array<() => Promise<boolean>> = [refused, refused, refused, refused, async () => false, refused];
   const db = { connection: () => ({ execute: () => outcomes.shift()!() }) } as unknown as Parameters<typeof runTickLoop>[0]['db'];
   const sleeps: number[] = [];
@@ -175,8 +175,8 @@ it('stops at once when shut down while waiting after a failed election (TASK-104
 
 Run: `pnpm --filter @ax/routines exec vitest run src/__tests__/tick.test.ts --maxWorkers=1` (with `DOCKER_HOST` set)
 Expected:
-- the acceptance test FAILS: rejects with `PRIVATE election detail at 10.0.0.7`
-- the backoff test FAILS: rejects with `PRIVATE connect detail at 10.0.0.7:5432`
+- the acceptance test FAILS: rejects with `PRIVATE election detail at <private-ip>`
+- the backoff test FAILS: rejects with `PRIVATE connect detail at <private-ip>:5432`
 - the shutdown test FAILS: the `waitFor` times out on `[]` (plus an unhandled `57P03` rejection)
 - every other test PASSES (the extra `logger` field is ignored at runtime)
 
@@ -248,7 +248,7 @@ it('logs a scheduler loop that ends with its codes and without its message',asyn
   bus.registerService('database:get-instance','test',async()=>({db:{}}));
   bus.registerService('tool:register','test',async()=>({}));
   bus.registerService('http:register-route','test',async()=>({unregister:()=>{}}));
-  loop.run.mockImplementationOnce(async()=>{throw Object.assign(new Error('PRIVATE loop detail at 10.0.0.7'),{code:'57P01'});});
+  loop.run.mockImplementationOnce(async()=>{throw Object.assign(new Error('PRIVATE loop detail at <private-ip>'),{code:'57P01'});});
   const lines:string[]=[];
   const capture=(chunk:unknown)=>{lines.push(String(chunk));return true;};
   const stdout=vi.spyOn(process.stdout,'write').mockImplementation(capture);
@@ -274,7 +274,7 @@ it('logs a scheduler loop that ends with its codes and without its message',asyn
 - [ ] **Step 2: Run it red and save the output.**
 
 Run: `pnpm --filter @ax/routines exec vitest run src/__tests__/repeat-plugin-start.test.ts`
-Expected: the new test FAILS. `died()` stays `[]` because today's line is raw stderr text: `[ax/routines] tick loop died: Error: PRIVATE loop detail at 10.0.0.7`. The three existing tests PASS.
+Expected: the new test FAILS. `died()` stays `[]` because today's line is raw stderr text: `[ax/routines] tick loop died: Error: PRIVATE loop detail at <private-ip>`. The three existing tests PASS.
 
 - [ ] **Step 3: Implement it.** At `plugin.ts:384-386` the catch becomes `(err: unknown) => { initCtx.logger.error('routines_tick_loop_died', faultLogFields(err)); }`. `faultLogFields` is already imported at `:1`. Its comment says two things: runTickLoop retries its own failures, so getting here is a bug. If it happens, this replica schedules nothing until the host restarts.
 
@@ -309,7 +309,7 @@ Set `DOCKER_HOST` explicitly for the Docker-backed suites. Grep check (TASK-1038
 
 **Security note** (checklist not required; decisions row 11):
 - Sandbox escape: N/A. No sandbox, IPC, process, file or network-reach change.
-- Prompt injection: N/A. No model, tool or user content is read or logged. The new lines carry `faultLogFields` codes and two numbers. Tests inject message text (`PRIVATE … 10.0.0.7`) and assert it never reaches the log.
+- Prompt injection: N/A. No model, tool or user content is read or logged. The new lines carry `faultLogFields` codes and two numbers. Tests inject message text (`PRIVATE … <private-ip>`) and assert it never reaches the log.
 - Supply chain: no new dependency. `pg` is already a dev dependency for the test helper.
 
 **Impact, stated plainly:** with one host replica (enforced by the chart), the election normally runs once per boot. It also re-runs every 50 s while another session still holds the lock, for example a killed pod's backend that Postgres hasn't reaped. Before this fix, a database blip at either moment stopped all routines on the host until the next restart. The only trace was one raw stderr line, and `/health` kept answering 200.
