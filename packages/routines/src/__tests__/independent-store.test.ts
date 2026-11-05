@@ -62,6 +62,19 @@ describe('independent authored methods in the durable store', () => {
     await expect(f.store.updateAuthored(edit(renamed, { schedule: { ...fast, expr: '*/20 * * * * *' } }))).rejects.toMatchObject({ toolCode: 'validation', field: 'schedule.expr' });
     await expect(f.store.createAuthored({ ...createInput('fresh-fast'), definition: { ...createInput().definition, schedule: fast } })).rejects.toMatchObject({ toolCode: 'validation', field: 'schedule.expr' });
   });
+  it('refuses “?” in a new or changed repeat cron and keeps a saved one through unrelated edits (TASK-913)', async () => {
+    const saved = { kind: 'cron' as const, expr: '? 9 * * *', tz: 'UTC' };
+    await expect(f.store.createAuthored({ ...createInput('fresh-question'), definition: { ...createInput().definition, schedule: saved } }))
+      .rejects.toMatchObject({ toolCode: 'validation', field: 'schedule.expr' });
+    const row = await f.store.createAuthored(createInput());
+    await sql`UPDATE routines_v1_definitions SET schedule_spec=${JSON.stringify(saved)}::jsonb WHERE routine_id=${row.routineId}`.execute(f.db);
+    const legacy = (await f.store.findOne(row))!;
+    expect(legacy.schedule).toEqual(saved);
+    const renamed = await f.store.updateAuthored(edit(legacy, { name: 'Renamed', schedule: { ...saved } }));
+    expect(renamed.schedule).toEqual(saved);
+    await expect(f.store.updateAuthored(edit(renamed, { schedule: { ...saved, expr: '? 10 * * *' } })))
+      .rejects.toMatchObject({ toolCode: 'validation', field: 'schedule.expr' });
+  });
 });
 
 describe('v14 receipt retries through current storage', () => {

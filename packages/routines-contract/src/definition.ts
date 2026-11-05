@@ -29,6 +29,7 @@ export const ROUTINE_GOOD_WHEN_MAX_CHARS = 1024;
 export const TASK_CHECK_IN_FLOOR_SECONDS = 900;
 export const REPEAT_SCHEDULE_FLOOR_SECONDS = 60;
 const REPEAT_SCHEDULE_FLOOR_MESSAGE = 'Repeat jobs need to be at least 60 seconds apart.';
+const REPEAT_SCHEDULE_QUESTION_MESSAGE = 'A schedule can’t use “?”. Use “*” for any value, or write the exact time.';
 /** How many occurrences of a cron the check-in floor inspects. `cronWrapsTooSoon` covers the gap they can miss. */
 export const TASK_CRON_FLOOR_RUNS = 48;
 const TASK_CHECK_IN_FLOOR_MESSAGE = 'Check-ins need to be at least 15 minutes apart.';
@@ -205,9 +206,10 @@ export type WebhookTrigger = z.output<typeof WebhookTriggerSchema>;
  * A cron with one seconds value can run at most once a minute. Two distinct values
  * necessarily put two runs less than 60 seconds apart in a matching minute, so
  * inspect the seconds field directly rather than assuming 48 runs cover every gap.
- * Question marks keep their existing repeat semantics: one clock-relative value is
- * fine, while a list/range with another value is checked at both endpoints. This is
- * independent of the current clock and does not add task-only recurrence rules.
+ * A new or changed schedule can't use “?” (TASK-913): croner fills it in from the
+ * clock on every parse, so its times, and whether it reads at all, change with when
+ * it's read. One saved before keeps reading, and an edit that leaves it unchanged
+ * keeps it. This does not add task-only recurrence rules.
  */
 export function repeatScheduleWriteIssue(schedule: RoutineSchedule | null, previous?: RoutineSchedule | null): string | null {
   if (schedule === null) return null;
@@ -215,12 +217,11 @@ export function repeatScheduleWriteIssue(schedule: RoutineSchedule | null, previ
       (schedule.kind === 'interval' && previous.kind === 'interval' && schedule.every === previous.every ||
        schedule.kind === 'cron' && previous.kind === 'cron' && schedule.expr === previous.expr && schedule.tz === previous.tz)) return null;
   if (schedule.kind === 'interval') return durationToSeconds(schedule.every) === null ? REPEAT_SCHEDULE_FLOOR_MESSAGE : null;
+  if (schedule.expr.includes('?')) return REPEAT_SCHEDULE_QUESTION_MESSAGE;
   if (schedule.expr.includes(':') || schedule.expr.includes('@')) return null;
   const parts = schedule.expr.replace(/\s+/g, ' ').split(' ');
   if (parts.length !== 6) return null;
-  const seconds = parts[0]!;
-  const samples = seconds.includes('?') ? [seconds.replaceAll('?', '0'), seconds.replaceAll('?', '59')] : [seconds];
-  return samples.some(sample => (cronFieldValues(`${sample} * * * * *`, 'second')?.length ?? 0) > 1) ? REPEAT_SCHEDULE_FLOOR_MESSAGE : null;
+  return (cronFieldValues(`${parts[0]!} * * * * *`, 'second')?.length ?? 0) > 1 ? REPEAT_SCHEDULE_FLOOR_MESSAGE : null;
 }
 /** Monday-first canonical ordering. Omitted days remain omitted in saved definitions and receipts. */
 export const ACTIVE_HOURS_DAYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'] as const;
