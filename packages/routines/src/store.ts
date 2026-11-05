@@ -11,7 +11,7 @@ import { activeHoursWriteIssue,
 } from '@ax/routines-contract';
 import type { RoutinesDatabase, RoutinesDefinitionsRow, DefaultRoutinesRow, RoutinesFiresRow } from './migrations.js';
 import type { StoredRoutine, StoredDone, StoredNoRecentUpdate, StoredReading, StoredStep, StoredTaskState, AcceptedDispatch, AddReplyResult, DispatchMiss, DispatchOutcome, DispatchReport, DuplicateResult, FireReport, FireRow, FireSource, FireStatus, CompleteTaskResult, OpenCheckInLookup, RecordedSteps, RecordReportInput, ReopenTaskResult, ReportRefusal, SetStepsResult, StoredReply } from './types.js';
-import { createRequestHashes, updateRequestHashes, deleteRequestHash, completeRequestHash, dispatchRequestHash, credentialRef, editableDefinition, inputHash, nextRun, opaqueId, parseStoredRoutine, schedulingChanged, validateDefinition, validateScheduleWrite, validationError } from './definition.js';
+import { createRequestHashes, updateRequestHashes, deleteRequestHash, completeRequestHash, dispatchRequestHash, credentialRef, editableDefinition, inputHash, nextRun, opaqueId, parseStoredRoutine, schedulingChanged, StoredRoutineSchema, validateDefinition, validateScheduleWrite, validationError } from './definition.js';
 import { AcceptedDispatchSchema, DispatchOutcomeSchema, DispatchReportSchema } from './dispatch.js';
 import { changeStoredSteps, storedSteps, StepsReceiptSchema } from './steps.js';
 import { copiedSteps, duplicateName } from './duplicate.js';
@@ -228,6 +228,13 @@ export interface RoutinesStore extends ReturnType<typeof createWebhookHealthStor
    */
   duplicateAuthored(input: RoutineKey & Actor & { ownerUserId: string; requestId: string; now: Date }): Promise<DuplicateResult>;
   advance(input: RoutineKey & { expectedRevision: string; nextRunAt: Date | null; lastRunAt?: Date | null }): Promise<void>;
+  /**
+   * TASK-913: a claimed row today's rules can't read is skipped, never returned.
+   * It writes one stderr line in ids and codes, and it's tried again a claim
+   * window from now (an authored row's next run) or after its interval (a
+   * default's last run, its due time's base). Every other row in the batch is
+   * returned.
+   */
   claimDue(input: { now: Date; limit: number; claimWindowMinutes: number }): Promise<StoredRoutine[]>;
   /**
    * A routine's runs, newest first; `limit` is clamped to 1-200. TASK-936: a
@@ -725,9 +732,10 @@ function rowSteps(row: Pick<Selectable<RoutinesDefinitionsRow>, 'agent_id' | 'ro
   }
   return storedSteps(row.task_steps);
 }
-export function rowToRoutine(row: Selectable<RoutinesDefinitionsRow>): StoredRoutine {
+/** The object every read of a row parses, strict (`rowToRoutine`) or not (`readRoutineRow`). */
+function storedRoutineInput(row: Selectable<RoutinesDefinitionsRow>) {
   const finishBy = storedFinishBy(row.finish_by);
-  return parseStoredRoutine({
+  return {
     agentId: row.agent_id, routineId: row.routine_id, revision: row.revision, ownerUserId: row.owner_user_id,
     name: row.name, description: row.description, promptBody: row.prompt_body, enabled: row.enabled, schedule: row.schedule_spec, webhook: row.webhook_spec,
     activeHours: row.active_hours, silenceToken: row.silence_token, silenceMaxChars: row.silence_max, conversation: row.conversation,
@@ -735,7 +743,45 @@ export function rowToRoutine(row: Selectable<RoutinesDefinitionsRow>): StoredRou
     lastStatus: row.last_status, lastError: row.last_error, lastWarning: row.last_warning, task: taskState(row),
     noRecentUpdate: noRecentUpdate(row), steps: rowSteps(row), finishBy,
     finishByTimeZone: storedFinishByTimeZone(finishBy, row.finish_by_time_zone), done: doneOf(row),
-  });
+  };
+}
+export function rowToRoutine(row: Selectable<RoutinesDefinitionsRow>): StoredRoutine {
+  return parseStoredRoutine(storedRoutineInput(row));
+}
+/** TASK-913. Where a stored row stopped reading, as a log line may say it: the first zod issue's path and code, never its message. */
+export type UnreadableIssue = { path: string; code: string };
+export type RoutineRowRead = { ok: true; routine: StoredRoutine } | { ok: false; issue: UnreadableIssue };
+/** A path segment a log line may carry: a schema's key or an array index. Anything else could be stored text. */
+const LOGGABLE_PATH_SEGMENT = /^[A-Za-z0-9]{1,64}$/;
+/**
+ * TASK-913. rowToRoutine's parse, answered instead of thrown. Never throws. For
+ * the readers that take many rows at once (claimDue, a run's finish), where one
+ * row today's rules refuse must not sink the rest; a read of one routine keeps
+ * rowToRoutine's throw. The issue is the first zod issue's code, and its path
+ * when every segment is a key or an index (`input` otherwise, or when it has
+ * none). Never the message: zod's own messages can quote stored values, and a
+ * stored definition is model-authored. Anything thrown is `input: thrown`.
+ */
+export function readRoutineRow(row: Selectable<RoutinesDefinitionsRow>): RoutineRowRead {
+  try {
+    const parsed = StoredRoutineSchema.safeParse(storedRoutineInput(row));
+    if (parsed.success) return { ok: true, routine: parsed.data };
+    const first = parsed.error.issues[0];
+    if (first === undefined) return { ok: false, issue: { path: 'input', code: 'thrown' } };
+    const segments = first.path.map(String);
+    const path = segments.length > 0 && segments.every(segment => LOGGABLE_PATH_SEGMENT.test(segment)) ? segments.join('.') : 'input';
+    return { ok: false, issue: { path, code: first.code } };
+  } catch {
+    return { ok: false, issue: { path: 'input', code: 'thrown' } };
+  }
+}
+/**
+ * TASK-913. The one stderr line for a row `readRoutineRow` refused: its ids, the
+ * issue as that answered it, and what became of the row (`consequence`, the
+ * caller's own words). Nothing stored: the definition is model-authored.
+ */
+export function reportUnreadable(row: Pick<Selectable<RoutinesDefinitionsRow>, 'agent_id' | 'routine_id'>, issue: UnreadableIssue, consequence: string): void {
+  process.stderr.write(`[ax/routines] routine ${row.agent_id}/${row.routine_id} no longer reads (${issue.path}: ${issue.code}), so ${consequence}\n`);
 }
 /**
  * TASK-936. The one query both history reads (`recentFires`,
@@ -1153,7 +1199,10 @@ export function createRoutinesStore(db: DB, executorId?: string): RoutinesStore 
       const outcome = DispatchOutcomeSchema.parse(input.outcome);
       let unreadable = false;
       let paused = null as (RoutineKey & { keptHash: boolean }) | null;
+      // TASK-913: the task whose definition its nudge couldn't read, for the line after commit.
+      let unreadableDefinition = null as { row: Selectable<RoutinesDefinitionsRow>; issue: UnreadableIssue } | null;
       const finished = await db.transaction().execute(async trx => {
+        unreadableDefinition = null;
         const candidate = await trx.selectFrom('routines_v1_dispatches').select('agent_id').where('dispatch_id', '=', input.dispatchId).executeTakeFirst();
         if (!candidate || !await lockLiveAgent(trx, candidate.agent_id)) return false;
         const dispatch = await trx.selectFrom('routines_v1_dispatches').selectAll().where('dispatch_id', '=', input.dispatchId).forUpdate().executeTakeFirst();
@@ -1212,7 +1261,12 @@ export function createRoutinesStore(db: DB, executorId?: string): RoutinesStore 
         }
         await releaseTaskEvents(trx,dispatch.dispatch_id);
         if (definition && !ranAsAnother && isTaskKind(definition.kind) && !misses?.paused) {
-          await nudgeTaskEvents(trx,rowToRoutine(definition),finishedAt,{acceptedAt:dispatch.accepted_at,reported:stored.report!==null,boundary:dispatch.task_event_boundary===null?null:Number(dispatch.task_event_boundary),requested:definition.task_check_in_requested});
+          // TASK-913: the nudge needs the parsed task. One today's rules refuse keeps its next check-in as
+          // it is, which the tick then skips, rather than fail the finish: plugin init runs this with no
+          // catch (interruptAbandonedDispatches), and so does the app-update pump's recovery.
+          const read = readRoutineRow(definition);
+          if (read.ok) await nudgeTaskEvents(trx,read.routine,finishedAt,{acceptedAt:dispatch.accepted_at,reported:stored.report!==null,boundary:dispatch.task_event_boundary===null?null:Number(dispatch.task_event_boundary),requested:definition.task_check_in_requested});
+          else unreadableDefinition = { row: definition, issue: read.issue };
         }
         return true;
       });
@@ -1224,6 +1278,8 @@ export function createRoutinesStore(db: DB, executorId?: string): RoutinesStore 
         process.stderr.write(`[ax/routines] auto-paused task ${paused.agentId}/${paused.routineId} after ${TASK_AUTO_PAUSE_AFTER_MISSES} check-ins without a report\n`);
         if (paused.keptHash) process.stderr.write(`[ax/routines] auto-paused task ${paused.agentId}/${paused.routineId} kept its stored definition hash: its definition no longer reads\n`);
       }
+      // After commit too, so a rolled-back finish skipped no nudge. Ids and codes only (reportUnreadable).
+      if (finished && unreadableDefinition !== null) reportUnreadable(unreadableDefinition.row, unreadableDefinition.issue, "its finished run didn't reschedule it");
       return finished;
     },
     async bindDispatchConversation(input) {
@@ -1675,7 +1731,21 @@ export function createRoutinesStore(db: DB, executorId?: string): RoutinesStore 
          WHERE r.agent_id = due.agent_id AND r.routine_id = due.routine_id
         RETURNING r.*
       `.execute(db);
-      return rows.rows.map(rowToRoutine);
+      // TASK-913: one row today's rules refuse is skipped, so it can't fail the batch for every routine
+      // claimed beside it. The push above is from its stored time, which leaves an overdue row due on every
+      // tick, so it's put off from now: an authored row's next run to a claim window on, a default's last
+      // run (its due time's base) to now, so it waits out its interval. A default's next run stays NULL
+      // (routines_v1_default_next_run_at_chk). Under the claimed revision, so a change since keeps its times.
+      const claimed: StoredRoutine[] = [];
+      for (const raw of rows.rows) {
+        const read = readRoutineRow(raw);
+        if (read.ok) { claimed.push(read.routine); continue; }
+        reportUnreadable(raw, read.issue, 'the tick skipped it');
+        await db.updateTable('routines_v1_definitions')
+          .set(raw.definition_id === null ? { next_run_at: new Date(input.now.getTime() + input.claimWindowMinutes * 60_000) } : { last_run_at: input.now })
+          .where('agent_id', '=', raw.agent_id).where('routine_id', '=', raw.routine_id).where('revision', '=', raw.revision).execute();
+      }
+      return claimed;
     },
 
     async recentFires(input) {
