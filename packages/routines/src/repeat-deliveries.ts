@@ -4,8 +4,8 @@ import { createHash } from 'node:crypto';
 import { sql, type Kysely, type Selectable } from 'kysely';
 import type { BlobRef } from '@ax/core';
 import { repeatConfigurationHash, opaqueId } from './definition.js';
-import { lockLiveAgent, rowToRoutine } from './store.js';
-import type { RepeatDeliveryRow, RoutinesDatabase } from './migrations.js';
+import { lockLiveAgent, readRoutineRow, reportUnreadable, rowToRoutine, type UnreadableIssue } from './store.js';
+import type { RepeatDeliveryRow, RoutinesDatabase, RoutinesDefinitionsRow } from './migrations.js';
 import type { AcceptedDispatch, StoredRoutine } from './types.js';
 import { githubDeliveryId, repeatQueueFits, REPEAT_DELIVERY_LIMITS as LIMIT } from './repeat-limits.js';
 import { webhookAddressMatches, type WebhookAddressProof } from './webhook-address.js';
@@ -14,6 +14,19 @@ type DB = Kysely<RoutinesDatabase>;
 const configurationHash = repeatConfigurationHash;
 export type RepeatDeliveryStatus = { active: number; waiting: number };
 export type DeliveryClaim = { deliveryId: string; blobRef: string; accepted: AcceptedDispatch };
+/**
+ * What a cancelled app update's run says, by why it was cancelled: fixed copy only, never stored or
+ * delivered text. Each is on the run-error scrub's keep-list (sql/scrub-leaked-run-errors.sql).
+ */
+const CANCELLED = {
+  'job-changed': 'This app update was cancelled because the job changed.',
+  unreadable: 'This app update was cancelled because its routine could not be read.', // TASK-913
+} as const;
+/** Cancels a waiting update for good: a run that says why, and the update completed with its payload's bytes released. */
+async function cancelDelivery(trx: DB, q: Selectable<RepeatDeliveryRow>, now: Date, reason: keyof typeof CANCELLED) {
+  await trx.insertInto('routines_v1_fires').values({ agent_id:q.agent_id,routine_id:q.routine_id,dispatch_id:opaqueId('cancelled_delivery'),fired_at:q.accepted_at,trigger_source:'webhook',status:'error',error:CANCELLED[reason],conversation_id:null,rendered_prompt:null,warning:null,run_as_user_id:q.owner_user_id }).execute();
+  await trx.updateTable('routines_v1_deliveries').set({completed_at:now,blob_ref:null,byte_length:0,invalidated_reason:reason}).where('delivery_id','=',q.delivery_id).execute();
+}
 
 /** SQL owns admission/claims; the blob facade owns bytes and their existing quota accounting. */
 export function createRepeatDeliveryStore(db: DB, executorId: string) {
@@ -55,15 +68,27 @@ export function createRepeatDeliveryStore(db: DB, executorId: string) {
         ORDER BY q.sequence_id LIMIT 1`.execute(db);
       const candidate = candidates.rows[0]; if (!candidate) return null;
       let cancelled=false;
+      // TASK-913: the routine whose update was cancelled because it no longer reads, for the line after commit.
+      let unreadable = null as { row: Selectable<RoutinesDefinitionsRow>; issue: UnreadableIssue } | null;
       const claimed=await db.transaction().execute(async trx => {
         if (!await lockLiveAgent(trx,candidate.agent_id)) return null;
         const raw = await trx.selectFrom('routines_v1_definitions').selectAll().where('agent_id','=',candidate.agent_id).where('routine_id','=',candidate.routine_id).forUpdate().executeTakeFirst();
         const q = await trx.selectFrom('routines_v1_deliveries').selectAll().where('delivery_id','=',candidate.delivery_id).forUpdate().executeTakeFirst();
         if (!q || q.completed_at || q.dispatch_id) return null;
-        const current = raw ? rowToRoutine(raw) : null;
+        const read = raw ? readRoutineRow(raw) : null;
+        if (raw && read?.ok === false) {
+          // TASK-913: a run is handed the parsed routine (accepted.row), and one today's rules refuse has
+          // none, so this update can never run. Left waiting, it would stay the head this claim takes
+          // (ORDER BY q.sequence_id LIMIT 1) on every pass, and no routine's updates would run for anyone.
+          // Cancelled, as a changed job's are.
+          await cancelDelivery(trx,q,now,'unreadable');
+          unreadable = { row: raw, issue: read.issue };
+          cancelled=true;
+          return null;
+        }
+        const current = read?.ok ? read.routine : null;
         if (q.invalidated_reason || !current || current.ownerUserId !== q.owner_user_id || current.kind !== 'repeat' || current.webhook === null || configurationHash(current) !== q.configuration_hash) {
-          await trx.insertInto('routines_v1_fires').values({ agent_id:q.agent_id,routine_id:q.routine_id,dispatch_id:opaqueId('cancelled_delivery'),fired_at:q.accepted_at,trigger_source:'webhook',status:'error',error:'This app update was cancelled because the job changed.',conversation_id:null,rendered_prompt:null,warning:null,run_as_user_id:q.owner_user_id }).execute();
-          await trx.updateTable('routines_v1_deliveries').set({completed_at:now,blob_ref:null,byte_length:0,invalidated_reason:'job-changed'}).where('delivery_id','=',q.delivery_id).execute();
+          await cancelDelivery(trx,q,now,'job-changed');
           cancelled=true;
           return null;
         }
@@ -75,6 +100,8 @@ export function createRepeatDeliveryStore(db: DB, executorId: string) {
         await trx.updateTable('routines_v1_deliveries').set({dispatch_id:accepted.dispatchId}).where('delivery_id','=',q.delivery_id).execute();
         return {deliveryId:q.delivery_id,blobRef:q.blob_ref!,accepted};
       });
+      // After commit, so a rolled-back claim cancelled nothing. Ids and codes only (reportUnreadable).
+      if (unreadable !== null) reportUnreadable(unreadable.row, unreadable.issue, 'its waiting app update was cancelled');
       return cancelled && skipped<LIMIT.waitingPerRoutine ? this.claim(now,skipped+1):claimed;
     },
     async settle(now: Date) {

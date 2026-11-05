@@ -1,11 +1,14 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { sql } from 'kysely';
 import { RoutineDefinitionSchema } from '@ax/routines-contract';
 import { fixture, createInput, now } from './store-fixture.js';
+import { captureExpectedStderr } from './support/expected-diagnostics.js';
 import { createRoutinesStore } from '../store.js';
 import { createRepeatDeliveryStore } from '../repeat-deliveries.js';
 import { createHash } from 'node:crypto';
 const f = fixture();
+// vitest's spyOn hands back the existing spy: without this, a second capture saves the spy as the original stderr.
+afterEach(() => { vi.restoreAllMocks(); });
 const blobs = new Map<string, Uint8Array>();
 const persist = async (bytes: Uint8Array) => { const sha256 = createHash('sha256').update(bytes).digest('hex'); blobs.set(sha256, bytes); return { sha256, size: bytes.length }; };
 const queue = () => createRepeatDeliveryStore(f.db, 'test-executor');
@@ -120,6 +123,22 @@ describe('repeat admission lifecycle and metadata ceilings',()=>{
     expect(stored.blob_ref).toBeNull();expect(stored.completed_at).not.toBeNull();
     expect((await sql<{n:number}>`SELECT count(*)::int AS n FROM routines_v1_dispatches`.execute(f.db)).rows[0]!.n).toBe(0);
     expect(JSON.stringify((await sql`SELECT error,rendered_prompt FROM routines_v1_fires`.execute(f.db)).rows)).not.toContain('PRIVATE');
+  });
+  it('cancels a waiting app update whose routine no longer reads, and claims the next routine’s (TASK-913)', async () => {
+    const broken = await row('Broken'); const next = await row('Next');
+    expect(await queue().admit({ row: broken, payload: { title: 'first' }, deliveryId: 'first', now }, persist)).toBe('accepted');
+    expect(await queue().admit({ row: next, payload: { title: 'second' }, deliveryId: 'second', now }, persist)).toBe('accepted');
+    // A name a later rule refuses: what a stricter contract does to a routine saved before it.
+    await sql`UPDATE routines_v1_definitions SET name = ${'x'.repeat(129)} WHERE routine_id = ${broken.routineId}`.execute(f.db);
+    const lines = captureExpectedStderr(m => m.startsWith('[ax/routines] routine ')).messages;
+    expect((await queue().claim(now))?.accepted.row.routineId).toBe(next.routineId);
+    expect(lines).toEqual([`[ax/routines] routine a/${broken.routineId} no longer reads (name: too_big), so its waiting app update was cancelled\n`]);
+    expect((await sql<{ status: string; error: string }>`SELECT status, error FROM routines_v1_fires WHERE routine_id = ${broken.routineId}`.execute(f.db)).rows)
+      .toEqual([{ status: 'error', error: 'This app update was cancelled because its routine could not be read.' }]);
+    // Cancelled, not just passed over: the payload's bytes are released like any cancelled update's.
+    expect((await sql<{ invalidated_reason: string | null; blob_ref: string | null }>`SELECT invalidated_reason, blob_ref FROM routines_v1_deliveries WHERE routine_id = ${broken.routineId}`.execute(f.db)).rows)
+      .toEqual([{ invalidated_reason: 'unreadable', blob_ref: null }]);
+    expect((await queue().status(broken, 'owner')).waiting).toBe(0);
   });
   it('deletion and agent retirement release only their queued references',async()=>{
     const a=await row('a'),b=await row('b');for(const r of [a,b])await queue().admit({row:r,payload:{secret:'PRIVATE'},deliveryId:'one',now},persist);

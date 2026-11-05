@@ -25,6 +25,7 @@ const OLDER_TOO_LONG = [
 const KEPT = [
   RUN_CLOSED, RUN_INTERRUPTED, 'This app update could not run.', 'This app update could not run. Try a new delivery.',
   'This app update was cancelled because the job changed.', 'the run finished without reporting a result',
+  'This app update was cancelled because its routine could not be read.', // repeat-deliveries.ts (TASK-913)
   BRIEF_DIDNT_LOAD, BRIEF_TOO_LONG, BRIEF_UNCONFIRMED,
   ...OLDER_TOO_LONG,
   'This routine is disabled.', FIXED,
