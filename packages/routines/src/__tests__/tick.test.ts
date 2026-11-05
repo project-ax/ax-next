@@ -15,6 +15,13 @@ const edit = (row: {
   routineId: string;
   revision: string;
 }) => ({ ...row, expectedRevision: row.revision, actorUserId: 'editor', requestId: 'edit', now, stopOnly: false });
+/** TASK-1038: errors whose reading throws. A plugin's error reaches a caller as it was thrown (hook-bus.ts). */
+const HOSTILE = [
+  ['a message getter that throws', () => Object.defineProperty(new Error('PRIVATE'), 'message', { get() { throw new Error('getter'); } })],
+  ['a Proxy whose instanceof check throws', () => new Proxy({}, { getPrototypeOf() { throw new Error('trap'); } })],
+  ['a value whose toString throws', () => ({ toString() { throw new Error('toString'); } })],
+  ['a value with no prototype', () => Object.create(null) as unknown],
+] as const;
 describe('DB scheduler', () => {
   it('keeps a capped Repeat schedule due and starts it when capacity returns', async () => {
     const row=await f.store.createAuthored(createInput());
@@ -111,6 +118,24 @@ describe('DB scheduler', () => {
     const diagnostic = captureExpectedStderr(message => message === '[ax/routines] materialize/refresh error: directory unavailable\n');
     await tick({ fire, getAgents: async () => { throw new Error('directory unavailable'); } });
     expect(fire).toHaveBeenCalledOnce();
+    expect(diagnostic.messages).toHaveLength(1);
+  });
+  it.each(HOSTILE)('still claims authored routines when owner enumeration fails with %s', async (_name, make) => {
+    await f.store.createAuthored(createInput());
+    const fire = vi.fn(async () => result);
+    const diagnostic = captureExpectedStderr(message => message === '[ax/routines] materialize/refresh error: (unreadable error)\n');
+    await tick({ fire, getAgents: async () => { throw make(); } });
+    expect(fire).toHaveBeenCalledOnce();
+    expect(diagnostic.messages).toHaveLength(1);
+  });
+  it.each(HOSTILE)('records the run and fires the rest of the batch when a fire fails with %s', async (_name, make) => {
+    const failing = await f.store.createAuthored(createInput());
+    await f.store.createAuthored({ ...createInput('second'), definition: { ...createInput().definition, name: 'Second' } });
+    const fire = vi.fn(async (accepted: AcceptedDispatch) => { if (accepted.row.routineId === failing.routineId) throw make(); return result; });
+    const diagnostic = captureExpectedStderr(message => message === `[ax/routines] fire failed for ${failing.agentId}/${failing.routineId}: (unreadable error)\n`);
+    await tick({ fire });
+    expect(fire).toHaveBeenCalledTimes(2);
+    expect((await f.store.recentFires(failing))[0]).toMatchObject({ status: 'error', error: 'This run failed because of a problem on our side.' });
     expect(diagnostic.messages).toHaveLength(1);
   });
 });

@@ -53,6 +53,22 @@ export interface TickOnceInput {
   cleanup?: () => Promise<void>;
 }
 
+/**
+ * TASK-1038: the text a log line shows for an error, read without trusting it.
+ * A plugin's error reaches a caller as it was thrown (hook-bus.ts), so
+ * `instanceof` can run a Proxy's trap, and a `message` getter or a `toString`
+ * can throw. A throw here would skip the work after the log line: recording
+ * the run, the rest of the batch, and I-R10's claims. The owner never sees
+ * this text (runFailedText).
+ */
+function logDetail(err: unknown): string {
+  try {
+    return err instanceof Error ? String(err.message) : String(err);
+  } catch {
+    return '(unreadable error)';
+  }
+}
+
 export async function runTickOnce(input: TickOnceInput): Promise<void> {
   // Materialize + refresh BEFORE claim so newly-created agents and
   // edited defaults are visible in the same tick.
@@ -78,7 +94,7 @@ export async function runTickOnce(input: TickOnceInput): Promise<void> {
       await input.store.refreshStale({ now: input.now });
     } catch (err) {
       process.stderr.write(
-        `[ax/routines] materialize/refresh error: ${err instanceof Error ? err.message : String(err)}\n`,
+        `[ax/routines] materialize/refresh error: ${logDetail(err)}\n`,
       );
     }
   }
@@ -138,7 +154,7 @@ export async function runTickOnce(input: TickOnceInput): Promise<void> {
     try { await input.fire(dispatch.accepted); }
     catch (err) {
       // TASK-1031: the owner reads this; the detail goes to the log.
-      process.stderr.write(`[ax/routines] fire failed for ${row.agentId}/${row.routineId}: ${err instanceof Error ? err.message : String(err)}\n`);
+      process.stderr.write(`[ax/routines] fire failed for ${row.agentId}/${row.routineId}: ${logDetail(err)}\n`);
       await input.store.finishDispatch({ dispatchId: dispatch.accepted.dispatchId, outcome: {
         status: 'error', error: runFailedText(err),
         conversationId: null, renderedPrompt: null, warning: row.lastWarning,
