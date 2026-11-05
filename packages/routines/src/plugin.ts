@@ -375,14 +375,17 @@ export function createRoutinesPlugin(
       abortCtl = new AbortController();
       tickLoop = runTickLoop({
         db: localDb, fire: fireRoutine, getAgents, clock, executorId,
+        logger: initCtx.logger,
         cleanup: async () => {
           await drainRoutineCleanup({ bus, store: localStore });
           await localStore.pruneWebhookRefusals(clock.now());
         },
         signal: abortCtl.signal,
         ...tickConfig,
-      }).catch((err) => {
-        process.stderr.write(`[ax/routines] tick loop died: ${err}\n`);
+      }).catch((err: unknown) => {
+        // runTickLoop retries its own failures, so getting here is a bug. If it
+        // happens, this replica schedules nothing until the host restarts.
+        initCtx.logger.error('routines_tick_loop_died', faultLogFields(err));
       });
       // No native worker survives a failed service/route setup.
       deliveryTimer = setInterval(() => {

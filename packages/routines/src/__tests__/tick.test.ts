@@ -1,6 +1,9 @@
 import { afterEach, describe, it, expect, vi } from 'vitest';
+import { createLogger } from '@ax/core';
 import { captureExpectedStderr } from './support/expected-diagnostics.js';
+import { failQueries } from './support/fail-query.js';
 import { fixture, createInput, now } from './store-fixture.js';
+import { systemClock } from '../clock.js';
 import { runTickLoop, runTickOnce } from '../tick.js';
 import type { AcceptedDispatch } from '../types.js';
 const f = fixture();
@@ -22,6 +25,13 @@ const HOSTILE = [
   ['a value whose toString throws', () => ({ toString() { throw new Error('toString'); } })],
   ['a value with no prototype', () => Object.create(null) as unknown],
 ] as const;
+/** TASK-1041: a core logger that keeps its JSON lines; entries() drops ts and reqId. */
+function recordingLogger() {
+  const lines: string[] = [];
+  const logger = createLogger({ reqId: 'tick-test', writer: line => { lines.push(line); } });
+  const entries = () => lines.map(line => { const { ts: _ts, reqId: _reqId, ...entry } = JSON.parse(line) as Record<string, unknown>; return entry; });
+  return { logger, entries, text: () => lines.join('\n') };
+}
 describe('DB scheduler', () => {
   it('keeps a capped Repeat schedule due and starts it when capacity returns', async () => {
     const row=await f.store.createAuthored(createInput());
@@ -144,25 +154,86 @@ describe('DB scheduler', () => {
     let sleeps = 0;
     const cleanup = vi.fn(async () => { throw make(); });
     const diagnostic = captureExpectedStderr(message => message === '[ax/routines] tick error: (unreadable error)\n');
+    const log = recordingLogger();
     await runTickLoop({
-      db: f.db, fire: vi.fn(async () => result), cleanup,
+      db: f.db, fire: vi.fn(async () => result), cleanup, logger: log.logger,
       clock: { now: () => due, sleep: async () => { if (++sleeps >= 2) controller.abort(); } },
       signal: controller.signal, tickIntervalMs: 1, electionRetryMs: 1, claimBatchSize: 50, claimWindowMinutes: 5,
     });
     expect(cleanup).toHaveBeenCalledTimes(2);
     expect(diagnostic.messages).toHaveLength(2);
+    expect(log.entries()).toEqual([]);
   });
   it('logs a readable tick failure with its message and keeps the loop running', async () => {
     const controller = new AbortController();
     let sleeps = 0;
     const cleanup = vi.fn(async () => { throw new Error('database unavailable'); });
     const diagnostic = captureExpectedStderr(message => message === '[ax/routines] tick error: database unavailable\n');
+    const log = recordingLogger();
     await runTickLoop({
-      db: f.db, fire: vi.fn(async () => result), cleanup,
+      db: f.db, fire: vi.fn(async () => result), cleanup, logger: log.logger,
       clock: { now: () => due, sleep: async () => { if (++sleeps >= 2) controller.abort(); } },
       signal: controller.signal, tickIntervalMs: 1, electionRetryMs: 1, claimBatchSize: 50, claimWindowMinutes: 5,
     });
     expect(cleanup).toHaveBeenCalledTimes(2);
     expect(diagnostic.messages).toHaveLength(2);
+    expect(log.entries()).toEqual([]);
+  });
+  it('keeps scheduling when the election query fails once, and logs it in codes only (TASK-1041)', async () => {
+    const row = await f.store.createAuthored(createInput());
+    const controller = new AbortController();
+    const sleeps: number[] = [];
+    const fire = vi.fn(async (_d: AcceptedDispatch) => result);
+    const log = recordingLogger();
+    const restore = failQueries(/pg_try_advisory_lock/, Object.assign(new Error('PRIVATE election detail at 10.0.0.7'), { code: '57P01' }));
+    try {
+      await runTickLoop({
+        db: f.db, fire, logger: log.logger,
+        clock: { now: () => due, sleep: async (ms) => { sleeps.push(ms); if (sleeps.length >= 2) controller.abort(); } },
+        signal: controller.signal, tickIntervalMs: 1000, electionRetryMs: 50_000, claimBatchSize: 50, claimWindowMinutes: 5,
+      });
+    } finally { restore(); }
+    expect(sleeps).toEqual([1000, 1000]); // the wait after the failure, then the elected ticker's own tick
+    expect(fire).toHaveBeenCalledOnce();
+    expect(fire.mock.calls[0]![0].row.routineId).toBe(row.routineId);
+    expect(log.entries()).toStrictEqual([{ code: '57P01', name: 'Error', consecutiveFailures: 1, retryInMs: 1000, level: 'warn', msg: 'routines_tick_election_failed' }]);
+    expect(log.text()).not.toContain('PRIVATE');
+  });
+  it('backs off from one tick to the election wait while elections fail, and starts over once one answers (TASK-1041)', async () => {
+    const controller = new AbortController();
+    const refused = () => Promise.reject(Object.assign(new Error('PRIVATE connect detail at 10.0.0.7:5432'), { code: 'ECONNREFUSED' }));
+    const outcomes: Array<() => Promise<boolean>> = [refused, refused, refused, refused, async () => false, refused];
+    const db = { connection: () => ({ execute: () => outcomes.shift()!() }) } as unknown as Parameters<typeof runTickLoop>[0]['db'];
+    const sleeps: number[] = [];
+    const log = recordingLogger();
+    await runTickLoop({
+      db, fire: vi.fn(async () => result), logger: log.logger,
+      clock: { now: () => due, sleep: async (ms) => { sleeps.push(ms); if (outcomes.length === 0) controller.abort(); } },
+      signal: controller.signal, tickIntervalMs: 1000, electionRetryMs: 3000, claimBatchSize: 50, claimWindowMinutes: 5,
+    });
+    // Doubling from one tick, capped at the election wait; a lost election waits the election wait and ends the run.
+    expect(sleeps).toEqual([1000, 2000, 3000, 3000, 3000, 1000]);
+    expect(log.entries().map(e => [e.msg, e.code, e.consecutiveFailures, e.retryInMs])).toEqual([
+      ['routines_tick_election_failed', 'ECONNREFUSED', 1, 1000],
+      ['routines_tick_election_failed', 'ECONNREFUSED', 2, 2000],
+      ['routines_tick_election_failed', 'ECONNREFUSED', 3, 3000],
+      ['routines_tick_election_failed', 'ECONNREFUSED', 4, 3000],
+      ['routines_tick_election_failed', 'ECONNREFUSED', 1, 1000],
+    ]);
+    expect(log.text()).not.toContain('PRIVATE');
+  });
+  it('stops at once when shut down while waiting after a failed election (TASK-1041)', async () => {
+    const controller = new AbortController();
+    const db = { connection: () => ({ execute: () => Promise.reject(Object.assign(new Error('PRIVATE'), { code: '57P03' })) }) } as unknown as Parameters<typeof runTickLoop>[0]['db'];
+    const log = recordingLogger();
+    const loop = runTickLoop({
+      db, fire: vi.fn(async () => result), logger: log.logger, clock: systemClock,
+      signal: controller.signal, tickIntervalMs: 600_000, electionRetryMs: 600_000, claimBatchSize: 50, claimWindowMinutes: 5,
+    });
+    await vi.waitFor(() => expect(log.entries()).toHaveLength(1));
+    const abortedAt = Date.now();
+    controller.abort();
+    await loop;
+    expect(Date.now() - abortedAt).toBeLessThan(1000);
   });
 });
