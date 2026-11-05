@@ -47,8 +47,13 @@ interface Props {
 
 // The right padding opens only while the row's ⋮ is showing (hover, focus,
 // always on touch), so a title is never drawn underneath it.
+/*
+  32px rows, flush — a history list is scanned as one column of titles, so the
+  rows sit on a steady pitch with no gaps between them (the Gemini/Claude
+  rhythm). Touch keeps 44px: a thumb needs the target a cursor does not.
+*/
 const ROW =
-  'h-9 w-full justify-start gap-2 rounded-sm px-2 text-[13px] font-normal group-hover:pr-9 group-focus-within:pr-9 max-md:h-11 max-md:pr-11';
+  'h-8 w-full justify-start gap-2 rounded-sm px-2 text-[13px] font-normal group-hover:pr-8 group-focus-within:pr-8 max-md:h-11 max-md:pr-11';
 
 /** New chat, Search, and the selected agent's chats — the expanded sidebar. */
 export function SidebarChats({
@@ -120,7 +125,7 @@ export function SidebarChats({
             variant="ghost"
             size="icon"
             aria-label={`Options for ${name}`}
-            className="absolute right-0 top-0 size-9 rounded-sm text-muted-foreground opacity-0 focus-visible:opacity-100 group-hover:opacity-100 data-[state=open]:opacity-100 max-md:size-11 max-md:opacity-100"
+            className="absolute right-0 top-0 size-8 rounded-sm text-muted-foreground opacity-0 focus-visible:opacity-100 group-hover:opacity-100 data-[state=open]:opacity-100 max-md:size-11 max-md:opacity-100"
             disabled={busy}
           >
             <EllipsisVertical aria-hidden="true" />
@@ -239,9 +244,9 @@ export function SidebarChats({
             </p>
           )}
           {chats !== null && (
-            <ul className="flex flex-col gap-0.5">
+            <ul className="flex flex-col">
               {!filtering && (
-                <li className="group relative flex h-9 items-center rounded-sm max-md:h-11">
+                <li className="group relative flex h-8 items-center rounded-sm max-md:h-11">
                   <Button
                     variant="ghost"
                     disabled={chats.busy}
@@ -259,7 +264,7 @@ export function SidebarChats({
                 </li>
               )}
               {past.map((c) => (
-                <li key={c.id} className="group relative flex min-h-9 items-center rounded-sm">
+                <li key={c.id} className="group relative flex h-8 items-center rounded-sm max-md:h-11">
                   <Button
                     variant="ghost"
                     disabled={chats.busy}
