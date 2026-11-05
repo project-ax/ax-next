@@ -8,8 +8,8 @@ vi.mock('../migrations.js',async original=>({...await original<typeof import('..
 vi.mock('../store.js',async original=>({...await original<typeof import('../store.js')>(),createRoutinesStore:()=>({interruptAbandonedDispatches:async()=>0,pendingCleanup:async()=>[]})}));
 vi.mock('../repeat-runtime.js',async original=>({...await original<typeof import('../repeat-runtime.js')>(),createRepeatDeliveryPump:()=>drain.pump}));
 vi.mock('../repeat-deliveries.js',async original=>({...await original<typeof import('../repeat-deliveries.js')>(),createRepeatDeliveryStore:()=>({renew:drain.renew,release:async()=>{}})}));
-vi.mock('../tick.js',async original=>({...await original<typeof import('../tick.js')>(),
-  runTickLoop:({signal}:{signal:AbortSignal})=>new Promise<void>(resolve=>signal.addEventListener('abort',()=>resolve()))}));
+const loop=vi.hoisted(()=>({run:vi.fn(({signal}:{signal:AbortSignal})=>new Promise<void>(resolve=>signal.addEventListener('abort',()=>resolve())))}));
+vi.mock('../tick.js',async original=>({...await original<typeof import('../tick.js')>(),runTickLoop:loop.run}));
 
 it('starts no delivery timer when route registration prevents initialization',async()=>{
   const bus=new HookBus();
@@ -82,5 +82,33 @@ it('logs a failed heartbeat with its codes and without its message',async()=>{
     for(const result of interval.mock.results)if(result.type==='return')clearInterval(result.value);
     interval.mockRestore();
     stdout.mockRestore();
+  }
+});
+
+// TASK-1041: runTickLoop rides out its own failures; if it ever ends on one, the line says so with codes, never its message.
+it('logs a scheduler loop that ends with its codes and without its message',async()=>{
+  const bus=new HookBus();
+  bus.registerService('database:get-instance','test',async()=>({db:{}}));
+  bus.registerService('tool:register','test',async()=>({}));
+  bus.registerService('http:register-route','test',async()=>({unregister:()=>{}}));
+  loop.run.mockImplementationOnce(async()=>{throw Object.assign(new Error('PRIVATE loop detail at 10.0.0.7'),{code:'57P01'});});
+  const lines:string[]=[];
+  const capture=(chunk:unknown)=>{lines.push(String(chunk));return true;};
+  const stdout=vi.spyOn(process.stdout,'write').mockImplementation(capture);
+  const stderr=vi.spyOn(process.stderr,'write').mockImplementation(capture);
+  const interval=vi.spyOn(globalThis,'setInterval');
+  const plugin=createRoutinesPlugin();
+  try {
+    await plugin.init({bus} as Parameters<typeof plugin.init>[0]);
+    const died=()=>lines.join('').split('\n').filter(l=>l.startsWith('{"')).map(l=>JSON.parse(l) as Record<string,unknown>)
+      .filter(entry=>entry.msg==='routines_tick_loop_died').map(({ts:_ts,reqId:_reqId,...entry})=>entry);
+    await vi.waitFor(()=>expect(died()).toStrictEqual([{msg:'routines_tick_loop_died',level:'error',code:'57P01',name:'Error'}]));
+    expect(lines.join('')).not.toContain('PRIVATE');
+  } finally {
+    await plugin.shutdown?.();
+    for(const result of interval.mock.results)if(result.type==='return')clearInterval(result.value);
+    interval.mockRestore();
+    stdout.mockRestore();
+    stderr.mockRestore();
   }
 });
