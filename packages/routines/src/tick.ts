@@ -1,4 +1,4 @@
-import { SafeToolError } from '@ax/core';
+import { faultLogFields, SafeToolError, type Logger } from '@ax/core';
 import type { Kysely } from 'kysely';
 import { sql } from 'kysely';
 import type { RoutinesDatabase } from './migrations.js';
@@ -201,8 +201,11 @@ export interface TickLoopInput {
   getAgents?: () => Promise<Array<{ agentId: string; ownerUserId: string }>>;
   cleanup?: () => Promise<void>;
   clock: Clock;
+  /** TASK-1041: where a failed election is reported, in codes only. plugin.ts passes its init logger. */
+  logger: Pick<Logger, 'warn'>;
   signal: AbortSignal;
   tickIntervalMs: number;
+  /** How long a replica that lost the election waits before trying again. TASK-1041: also the longest wait after a failed one. */
   electionRetryMs: number;
   claimBatchSize: number;
   claimWindowMinutes: number;
@@ -211,6 +214,7 @@ export interface TickLoopInput {
 const ADVISORY_LOCK_KEY = 'ax/routines.tick';
 
 export async function runTickLoop(input: TickLoopInput): Promise<void> {
+  let failures = 0; // failed elections in a row
   while (!input.signal.aborted) {
     // Connection-pin the elected ticker's whole lifetime. Both the advisory
     // lock and the store ops it gates must run on the same backend session
@@ -221,41 +225,63 @@ export async function runTickLoop(input: TickLoopInput): Promise<void> {
     // Losing replicas DO NOT sleep inside execute() — they return early so
     // the connection rejoins the pool during electionRetryMs backoff,
     // keeping idle backend count = (active tickers), not (replica count).
-    const acquired = await input.db.connection().execute(async (pinned) => {
-      const locked = await tryAcquireAdvisoryLock(pinned);
-      if (!locked) return false;
-      const pinnedStore = createRoutinesStore(pinned,input.executorId);
-      try {
-        while (!input.signal.aborted) {
-          try {
-            const tickInput: Parameters<typeof runTickOnce>[0] = {
-              store: pinnedStore, fire: input.fire,
-              ...(input.cleanup ? { cleanup: input.cleanup } : {}),
-              now: input.clock.now(),
-              claimBatchSize: input.claimBatchSize,
-              claimWindowMinutes: input.claimWindowMinutes,
-            };
-            if (input.getAgents !== undefined) {
-              tickInput.getAgents = input.getAgents;
+    let acquired: boolean;
+    try {
+      acquired = await input.db.connection().execute(async (pinned) => {
+        const locked = await tryAcquireAdvisoryLock(pinned);
+        if (!locked) return false;
+        const pinnedStore = createRoutinesStore(pinned,input.executorId);
+        try {
+          while (!input.signal.aborted) {
+            try {
+              const tickInput: Parameters<typeof runTickOnce>[0] = {
+                store: pinnedStore, fire: input.fire,
+                ...(input.cleanup ? { cleanup: input.cleanup } : {}),
+                now: input.clock.now(),
+                claimBatchSize: input.claimBatchSize,
+                claimWindowMinutes: input.claimWindowMinutes,
+              };
+              if (input.getAgents !== undefined) {
+                tickInput.getAgents = input.getAgents;
+              }
+              await runTickOnce(tickInput);
+            } catch (err) {
+              process.stderr.write(
+                `[ax/routines] tick error: ${logDetail(err)}\n`,
+              );
             }
-            await runTickOnce(tickInput);
-          } catch (err) {
-            process.stderr.write(
-              `[ax/routines] tick error: ${logDetail(err)}\n`,
-            );
+            await input.clock.sleep(input.tickIntervalMs, input.signal);
           }
-          await input.clock.sleep(input.tickIntervalMs, input.signal);
+        } finally {
+          await releaseAdvisoryLock(pinned);
         }
-      } finally {
-        await releaseAdvisoryLock(pinned);
-      }
-      return true;
-    });
+        return true;
+      });
+    } catch (err) {
+      // TASK-1041: a failed election must not end this loop. Nothing restarts
+      // it, so this replica would schedule nothing until the host restarts.
+      // Every tick's own failure is caught inside, so in practice only the
+      // connection checkout and the lock query get here. The wait happens out
+      // here, after execute() has released any connection it checked out, so
+      // it holds none, and it ends on shutdown. The line is codes only: a
+      // driver's message can carry a host, a user or a query value.
+      failures += 1;
+      const retryInMs = electionBackoffMs(failures, input);
+      input.logger.warn('routines_tick_election_failed', { ...faultLogFields(err), consecutiveFailures: failures, retryInMs });
+      await input.clock.sleep(retryInMs, input.signal);
+      continue;
+    }
+    failures = 0; // an election that answered, won or lost, ends a run of failures
 
     if (!acquired) {
       await input.clock.sleep(input.electionRetryMs, input.signal);
     }
   }
+}
+
+/** TASK-1041: the wait after the `failures`th failed election in a row: one tick, doubling, never longer than a lost election's wait. */
+function electionBackoffMs(failures: number, input: Pick<TickLoopInput, 'tickIntervalMs' | 'electionRetryMs'>): number {
+  return Math.min(input.tickIntervalMs * 2 ** Math.min(failures - 1, 16), input.electionRetryMs);
 }
 
 async function tryAcquireAdvisoryLock(db: Kysely<RoutinesDatabase>): Promise<boolean> {
