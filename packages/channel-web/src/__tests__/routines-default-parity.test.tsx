@@ -13,7 +13,7 @@ vi.mock('@/lib/routines', async original => ({
 const heartbeat = { ...routineFixture, routineId: 'default:default-heartbeat-2026-05-19', defaultRoutineId: 'default-heartbeat-2026-05-19', name: 'Heartbeat', origin: 'default' as const, permissions: { edit: false, stop: false, fire: true, manageSecret: false } };
 beforeEach(() => {
   vi.resetAllMocks();
-  vi.mocked(routineApi.list).mockResolvedValue([heartbeat]);
+  vi.mocked(routineApi.list).mockResolvedValue({ routines: [heartbeat], unreadable: [] });
   vi.mocked(routineApi.listAgentDefaults).mockResolvedValue([
     { defaultRoutineId: heartbeat.defaultRoutineId, name: 'Heartbeat', enabled: true },
     { defaultRoutineId: 'skill-reflection', name: 'Skill reflection', enabled: true },

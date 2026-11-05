@@ -4,6 +4,7 @@ import type {
   RoutineKey,
   RoutinePatch,
   RoutineView,
+  RoutineUnreadableView,
   RoutineFireView,
   RoutineCreateInput,
   RoutineUpdateInput,
@@ -20,6 +21,12 @@ import type {
  * task's page reads them, fenced, through `workspaceApi`.
  */
 export type Routine = RoutineView;
+/** A saved routine the host can't read anymore: enough to name it and delete it, nothing else (TASK-913). */
+export type UnreadableRoutine = RoutineUnreadableView;
+export interface RoutineListPage {
+  routines: RoutineView[];
+  unreadable: UnreadableRoutine[];
+}
 export type Fire = RoutineFireView;
 export type TriggerSpec = RoutineSchedule | WebhookTrigger;
 export type ActiveHours = NonNullable<RoutineDefinition['activeHours']>;
@@ -170,9 +177,12 @@ const item = (input: { agentId: string; routineId: string }) =>
   `${collection(input.agentId)}/${encodeURIComponent(input.routineId)}`;
 /** Request IDs belong to logical mutations. Callers retain them across uncertain retries. */
 export const routineApi = {
-  async list(agentId: string): Promise<RoutineView[]> {
-    return (await request<{ routines: RoutineView[] }>(collection(agentId)))
-      .routines;
+  async list(agentId: string): Promise<RoutineListPage> {
+    const page = await request<{
+      routines: RoutineView[];
+      unreadable?: UnreadableRoutine[];
+    }>(collection(agentId));
+    return { routines: page.routines, unreadable: page.unreadable ?? [] };
   },
   async get(input: {
     agentId: string;

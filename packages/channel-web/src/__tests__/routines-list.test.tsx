@@ -16,7 +16,7 @@ vi.mock('@/lib/routines', async (original) => ({
 }));
 beforeEach(() => {
   vi.resetAllMocks();
-  vi.mocked(routineApi.list).mockResolvedValue([row]);
+  vi.mocked(routineApi.list).mockResolvedValue({ routines: [row], unreadable: [] });
   vi.mocked(routineApi.recentFires).mockResolvedValue([]);
   vi.mocked(routineApi.get).mockResolvedValue(row);
 });
@@ -25,7 +25,7 @@ function show() {
 }
 describe('routine list', () => {
   it('shows the admitted waiting count without payload content', async () => {
-    vi.mocked(routineApi.list).mockResolvedValue([{ ...row, delivery: { active: 3, waiting: 2 } }]);
+    vi.mocked(routineApi.list).mockResolvedValue({ routines: [{ ...row, delivery: { active: 3, waiting: 2 } }], unreadable: [] });
     show();
     expect(await screen.findByText('2 app updates waiting.')).toBeVisible();
   });
@@ -41,7 +41,7 @@ describe('routine list', () => {
   it('reloads the original agent when a different agent read is still pending', async () => {
     const props={agentName:'Caveman',onFired:vi.fn()};
     const view=render(<RoutinesList {...props} agentId="a"/>);await screen.findByText(row.name);
-    vi.mocked(routineApi.list).mockImplementation(async id=>id==='b'?new Promise(()=>{}):[row]);
+    vi.mocked(routineApi.list).mockImplementation(async id=>id==='b'?new Promise(()=>{}):{ routines: [row], unreadable: [] });
     view.rerender(<RoutinesList {...props} agentId="b"/>);
     view.rerender(<RoutinesList {...props} agentId="a"/>);
     expect(routineApi.list).toHaveBeenCalledTimes(3);
@@ -49,13 +49,13 @@ describe('routine list', () => {
   });
   it('shows the scheduled-run repair warning before opening history (TASK-924)', async () => {
     const warning = 'Scheduled runs need repair. Choose different start and end times for active hours.';
-    vi.mocked(routineApi.list).mockResolvedValue([{ ...row, activeHours: { start: '09:00', end: '09:00', tz: 'UTC' }, lastWarning: warning, nextRunAt: null }]);
+    vi.mocked(routineApi.list).mockResolvedValue({ routines: [{ ...row, activeHours: { start: '09:00', end: '09:00', tz: 'UTC' }, lastWarning: warning, nextRunAt: null }], unreadable: [] });
     show();
     expect(await screen.findByText(warning)).toBeVisible();
     expect(screen.getByRole('switch', { name: `Enabled for ${row.name}` })).toBeEnabled();
   });
   it('shows only authored routines, and loads fires by opaque ID on disclosure', async () => {
-    vi.mocked(routineApi.list).mockResolvedValue([
+    vi.mocked(routineApi.list).mockResolvedValue({ routines: [
       row,
       {
         ...row,
@@ -63,7 +63,7 @@ describe('routine list', () => {
         origin: 'default',
         name: 'Heartbeat',
       },
-    ]);
+    ], unreadable: [] });
     show();
     await screen.findByText(row.name);
     expect(screen.queryByText('Heartbeat')).not.toBeInTheDocument();
@@ -79,9 +79,9 @@ describe('routine list', () => {
     });
   });
   it('renders a stay-on-top task like any authored routine', async () => {
-    vi.mocked(routineApi.list).mockResolvedValue([
+    vi.mocked(routineApi.list).mockResolvedValue({ routines: [
       { ...row, kind: 'stay-on-top', goodWhen: 'Inbox at zero.' },
-    ]);
+    ], unreadable: [] });
     show();
     await screen.findByText(row.name);
     expect(
@@ -89,7 +89,7 @@ describe('routine list', () => {
     ).toBeVisible();
   });
   it('uses read permissions for edit, stop, fire and secret controls', async () => {
-    vi.mocked(routineApi.list).mockResolvedValue([
+    vi.mocked(routineApi.list).mockResolvedValue({ routines: [
       {
         ...row,
         permissions: {
@@ -99,7 +99,7 @@ describe('routine list', () => {
           manageSecret: false,
         },
       },
-    ]);
+    ], unreadable: [] });
     show();
     await screen.findByText(row.name);
     expect(
@@ -115,8 +115,8 @@ describe('routine list', () => {
   });
   it('lets a stop-only team manager disable and delete, but never enable, edit or fire', async () => {
     const managed = { ...row, permissions: { edit: false, stop: true, fire: false, manageSecret: false } };
-    vi.mocked(routineApi.list).mockResolvedValue([managed]);
-    vi.mocked(routineApi.update).mockImplementation(async () => { const disabled = { ...managed, enabled: false, revision: 'disabled-v' }; vi.mocked(routineApi.list).mockResolvedValue([disabled]); return disabled; });
+    vi.mocked(routineApi.list).mockResolvedValue({ routines: [managed], unreadable: [] });
+    vi.mocked(routineApi.update).mockImplementation(async () => { const disabled = { ...managed, enabled: false, revision: 'disabled-v' }; vi.mocked(routineApi.list).mockResolvedValue({ routines: [disabled], unreadable: [] }); return disabled; });
     show();
     await screen.findByText(row.name);
     expect(screen.queryByRole('button', { name: `Edit ${row.name}` })).not.toBeInTheDocument();
@@ -134,14 +134,14 @@ describe('routine list', () => {
     await waitFor(() => expect(routineApi.remove).toHaveBeenCalledWith({ agentId: 'a', routineId: row.routineId, expectedRevision: 'disabled-v', requestId: expect.any(String) }));
   });
   it('shows the signing secret row to a member owner with secret-management permission', async () => {
-    vi.mocked(routineApi.list).mockResolvedValue([{ ...row, schedule: null, webhook: { kind: 'webhook', path: '/member' } }]);
+    vi.mocked(routineApi.list).mockResolvedValue({ routines: [{ ...row, schedule: null, webhook: { kind: 'webhook', path: '/member' } }], unreadable: [] });
     show(); // isAdmin=false, while the real owner shape has manageSecret=true
     await screen.findByText(row.name);
     fireEvent.click(screen.getByRole('button', { name: `Recent runs for ${row.name}` }));
     expect(await screen.findByText('Signing secret')).toBeInTheDocument();
   });
   it('says next to the signing secret that saving one turns checks on', async () => {
-    vi.mocked(routineApi.list).mockResolvedValue([{ ...row, schedule: null, webhook: { kind: 'webhook', path: '/member' } }]);
+    vi.mocked(routineApi.list).mockResolvedValue({ routines: [{ ...row, schedule: null, webhook: { kind: 'webhook', path: '/member' } }], unreadable: [] });
     show(); await screen.findByText(row.name);
     fireEvent.click(screen.getByRole('button', { name: `Recent runs for ${row.name}` }));
     await screen.findByText('Signing secret');
@@ -154,7 +154,7 @@ describe('routine list', () => {
     ['scheduled', legacyScheduled],
     ['app-only', { ...legacyScheduled, schedule: null }],
   ])('shows a %s routine saved with a signature setting the same help as any routine (TASK-1027)', async (_name, legacy) => {
-    vi.mocked(routineApi.list).mockResolvedValue([legacy]);
+    vi.mocked(routineApi.list).mockResolvedValue({ routines: [legacy], unreadable: [] });
     show(); await screen.findByText(row.name);
     fireEvent.click(screen.getByRole('button', { name: `Recent runs for ${row.name}` }));
     await screen.findByText('Signing secret');
@@ -201,9 +201,9 @@ describe('routine list', () => {
     await screen.findByText(row.name);
     fireEvent.click(screen.getByRole('switch'));
     await screen.findByText('Routine management is temporarily unavailable.');
-    vi.mocked(routineApi.list).mockResolvedValue([
+    vi.mocked(routineApi.list).mockResolvedValue({ routines: [
       { ...row, revision: 'new-revision', enabled: !row.enabled },
-    ]);
+    ], unreadable: [] });
     fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
     await waitFor(() => expect(routineApi.list).toHaveBeenCalledTimes(2));
     fireEvent.click(screen.getByRole('button', { name: 'Retry change' }));
@@ -237,7 +237,7 @@ describe('routine list', () => {
     expect(disclosure()).toHaveAttribute('aria-expanded', 'true');
     expect(screen.getByRole('button', { name: 'Starting…' })).toBeDisabled();
     expect(routineApi.fireNow).toHaveBeenCalledTimes(1);
-    vi.mocked(routineApi.list).mockResolvedValue([{ ...row, revision: 'new-revision' }]);
+    vi.mocked(routineApi.list).mockResolvedValue({ routines: [{ ...row, revision: 'new-revision' }], unreadable: [] });
     view.rerender(<RoutinesList agentId="a" agentName="Caveman" refreshKey={1} onFired={fired} />);
     expect(routineApi.list).toHaveBeenCalledTimes(1);
     await act(async () => lose(new RoutineApiError(0)));
@@ -276,12 +276,41 @@ describe('routine list', () => {
     expect(screen.queryByText('No routines yet')).not.toBeInTheDocument();
   });
   it('renders model-authored names as text', async () => {
-    vi.mocked(routineApi.list).mockResolvedValue([
+    vi.mocked(routineApi.list).mockResolvedValue({ routines: [
       { ...row, name: '<img src=x onerror=evil()>' },
-    ]);
+    ], unreadable: [] });
     show();
     expect(await screen.findByText('<img src=x onerror=evil()>')).toBeVisible();
     expect(document.querySelector('img')).toBeNull();
+  });
+});
+
+describe('a routine that can’t be read (TASK-913)', () => {
+  const broken = { agentId: 'a', routineId: 'rtn_broken', revision: 'rev_broken', name: 'Broken one', origin: 'authored' as const, canDelete: true };
+  const oneSentence = 'We can’t read this routine anymore, so it isn’t running.';
+  it('shows a routine that can’t be read, and deletes it with its own revision (TASK-913)', async () => {
+    vi.mocked(routineApi.list).mockResolvedValue({ routines: [row], unreadable: [broken] });
+    vi.mocked(routineApi.remove).mockResolvedValue({ deleted: true, cleanupPending: false });
+    show();
+    expect(await screen.findByText('Broken one')).toBeVisible();
+    expect(screen.getByText(`${oneSentence} Delete it and set it up again.`)).toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: 'Delete routine Broken one' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete' }));
+    await waitFor(() => expect(routineApi.remove).toHaveBeenCalledWith({ agentId: 'a', routineId: 'rtn_broken', expectedRevision: 'rev_broken', requestId: expect.any(String) }));
+  });
+  it('shows a routine that can’t be read without Delete when the person can’t stop it, and names an untitled one', async () => {
+    vi.mocked(routineApi.list).mockResolvedValue({ routines: [], unreadable: [{ ...broken, name: '', canDelete: false }] });
+    show();
+    expect(await screen.findByText('Untitled routine')).toBeVisible();
+    expect(screen.getByText(oneSentence)).toBeVisible();
+    expect(screen.queryByRole('button', { name: /^Delete routine/ })).not.toBeInTheDocument();
+    expect(screen.queryByText('No routines yet')).not.toBeInTheDocument();
+  });
+  it('keeps a routine that can’t be read to its own list', async () => {
+    vi.mocked(routineApi.list).mockResolvedValue({ routines: [row], unreadable: [{ ...broken, routineId: 'default:x', name: 'Default one', origin: 'default' }] });
+    show();
+    await screen.findByText(row.name);
+    expect(screen.queryByText('Default one')).not.toBeInTheDocument();
   });
 });
 

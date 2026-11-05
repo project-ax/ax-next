@@ -24,6 +24,7 @@ import {
   routineApi,
   RoutineApiError,
   type Routine,
+  type UnreadableRoutine,
   type Fire,
 } from '@/lib/routines';
 import { useAgentStore } from '@/lib/agent-store';
@@ -37,6 +38,10 @@ import { CredentialSlotRow } from '../credentials/CredentialSlotRow';
 function rowKey(row: Pick<Routine, 'agentId' | 'routineId'>): string {
   return JSON.stringify([row.agentId, row.routineId]);
 }
+/** What a delete needs of a row: a readable routine, or one the host can't read (TASK-913). */
+type DeleteTarget = Pick<Routine, 'agentId' | 'routineId' | 'revision' | 'name'>;
+const UNREADABLE_LINE = 'We can’t read this routine anymore, so it isn’t running.';
+const unreadableName = (r: Pick<UnreadableRoutine, 'name'>) => r.name || 'Untitled routine';
 
 export interface RoutinesListProps {
   agentId?: string | undefined;
@@ -63,6 +68,7 @@ export function RoutinesList({
   const ids = agentId ? [agentId] : agents.map((a) => a.id);
   const idKey = ids.join('\0');
   const [list, setList] = useState<Routine[] | null>(null);
+  const [unreadable, setUnreadable] = useState<UnreadableRoutine[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [version, setVersion] = useState(0);
   const [editing, setEditing] = useState<Routine | null>(null);
@@ -73,7 +79,7 @@ export function RoutinesList({
   const [firesError, setFiresError] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [uncertain, setUncertain] = useState(false);
-  const [deleting, setDeleting] = useState<Routine | null>(null);
+  const [deleting, setDeleting] = useState<DeleteTarget | null>(null);
   const [fireProtected, setFireProtected] = useState(false);
   const fireProtectedRef = useRef(false);
   function protectFire(pending: boolean) {
@@ -87,12 +93,11 @@ export function RoutinesList({
     if (createRequest !== previousCreateRequest.current && agentId) setCreating(agentId);
     previousCreateRequest.current = createRequest;
   }, [createRequest, agentId]);
-  const operation = useRef<{
-    key: string;
-    requestId: string;
-    row: Routine;
-    kind: 'enabled' | 'delete';
-  } | null>(null);
+  const operation = useRef<
+    | { key: string; requestId: string; kind: 'enabled'; row: Routine }
+    | { key: string; requestId: string; kind: 'delete'; row: DeleteTarget }
+    | null
+  >(null);
   useEffect(() => {
     // Preserve the child and its exact retry identity. A changed refresh key is
     // picked up when the operation is confirmed or explicitly refused.
@@ -103,6 +108,7 @@ export function RoutinesList({
     loadedRead.current = null;
     let active = true;
     setList(null);
+    setUnreadable([]);
     setError(null);
     if (!agentId && agentsStatus === 'loading') return;
     if (!agentId && agentsStatus === 'error') {
@@ -110,10 +116,11 @@ export function RoutinesList({
       return;
     }
     void Promise.all(ids.map((id) => routineApi.list(id)))
-      .then((rows) => {
+      .then((pages) => {
         if (active) {
           loadedRead.current = readKey;
-          setList(rows.flat().filter((r) => r.origin === origin));
+          setList(pages.flatMap((p) => p.routines).filter((r) => r.origin === origin));
+          setUnreadable(pages.flatMap((p) => p.unreadable).filter((r) => r.origin === origin));
         }
       })
       .catch(() => {
@@ -155,14 +162,19 @@ export function RoutinesList({
     setCreating(null);
     setVersion((n) => n + 1);
   }
-  async function mutate(row: Routine, kind: 'enabled' | 'delete') {
+  function mutate(row: Routine, kind: 'enabled'): Promise<void>;
+  function mutate(row: DeleteTarget, kind: 'delete'): Promise<void>;
+  async function mutate(
+    row: DeleteTarget & { enabled?: boolean },
+    kind: 'enabled' | 'delete',
+  ): Promise<void> {
     if (flight.current || fireProtectedRef.current) return;
     const key = JSON.stringify([row.agentId, row.routineId, row.revision, kind]);
     if (operation.current && operation.current.key !== key) {
       setError('Retry the unconfirmed change before making another change.');
       return;
     }
-    operation.current ??= { key, requestId: crypto.randomUUID(), row, kind };
+    operation.current ??= { key, requestId: crypto.randomUUID(), row, kind } as NonNullable<typeof operation.current>;
     flight.current = true;
     setBusy(row.routineId);
     setError(null);
@@ -254,7 +266,8 @@ export function RoutinesList({
               disabled={busy !== null}
               onClick={() => {
                 const pending = operation.current;
-                if (pending) void mutate(pending.row, pending.kind);
+                if (pending?.kind === 'delete') void mutate(pending.row, 'delete');
+                else if (pending) void mutate(pending.row, 'enabled');
               }}
             >
               Retry change
@@ -264,7 +277,7 @@ export function RoutinesList({
       )}
       {list === null && !error ? (
         <Skeleton aria-label="Loading routines" className="h-28 w-full" />
-      ) : list?.length === 0 ? (
+      ) : list?.length === 0 && unreadable.length === 0 ? (
         <Empty>
           <EmptyHeader>
             <EmptyTitle>{origin === 'default' ? 'No active default routines' : 'No routines yet'}</EmptyTitle>
@@ -274,7 +287,8 @@ export function RoutinesList({
           </EmptyHeader>
         </Empty>
       ) : (
-        list?.map((row) => (
+        <>
+        {list?.map((row) => (
           <div key={rowKey(row)} className="min-w-0">
             <div className="flex flex-wrap items-center gap-3 py-3">
               <Button
@@ -395,7 +409,36 @@ export function RoutinesList({
             )}
             <Separator />
           </div>
-        ))
+        ))}
+        {unreadable.map((row) => (
+          <div key={rowKey(row)} className="min-w-0">
+            <div className="flex flex-wrap items-center gap-3 py-3">
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-sm font-medium">{unreadableName(row)}</p>
+                <p className="text-sm text-muted-foreground">
+                  {UNREADABLE_LINE}
+                  {row.canDelete && ' Delete it and set it up again.'}
+                </p>
+                {!agentId && (
+                  <p className="text-xs text-muted-foreground">{nameFor(row.agentId)}</p>
+                )}
+              </div>
+              {row.canDelete && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  aria-label={`Delete routine ${unreadableName(row)}`}
+                  disabled={busy !== null || uncertain || fireProtected}
+                  onClick={() => setDeleting({ ...row, name: unreadableName(row) })}
+                >
+                  Delete routine
+                </Button>
+              )}
+            </div>
+            <Separator />
+          </div>
+        ))}
+        </>
       )}
       {(editing || creating) && (
         <Dialog

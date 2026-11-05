@@ -223,6 +223,7 @@ function setup(over: Partial<World> & { now?: () => Date } = {}) {
               const missed = world.viewMiss === null ? view : { ...view, noRecentUpdate: world.viewMiss.value as typeof view.noRecentUpdate };
               return world.viewPatch === null ? missed : { ...missed, ...world.viewPatch };
             }),
+          unreadable: [],
         };
       },
       world.unvalidated ? undefined : { returns: RoutineListOutputSchema },
