@@ -137,6 +137,33 @@ describe('authenticated webhook durable admission',()=>{
       expect(warnings).toEqual([{message:'routines_webhook_secret_fetch_failed',fields:{agentId:'a',routineId:'r'}}]);
       expect(f.admit).not.toHaveBeenCalled();expect(f.writes).not.toHaveBeenCalled();
     });
+    // TASK-1038: the bus hands a PluginError back as it was thrown, getters and all (hook-bus.ts). A code that can't be
+    // read is no code: it fails closed as `secret`, never as a retry, and never as "none saved" (an unsigned acceptance).
+    it('refuses as secret, logging no code, when the secret read fails with a plugin error whose code getter throws', async () => {
+      const hostile = Object.defineProperty(new PluginError({ plugin: '@ax/credentials', code: 'credential-not-found', message: 'PRIVATE vault detail' }),
+        'code', { get() { throw new Error('PRIVATE getter'); } });
+      const { vault, warnings } = failing(() => { throw hostile; });
+      const f = fixture('accepted', plain, vault), r = response(); await f.handler(request(), r.res);
+      expect(r.state.code).toBe(401);
+      expect(f.observeWebhook).toHaveBeenCalledWith(expect.objectContaining({ observation: 'secret' }), expect.any(Function));
+      expect(warnings).toEqual([{ message: 'routines_webhook_secret_fetch_failed', fields: { agentId: 'a', routineId: 'r' } }]);
+      expect(f.admit).not.toHaveBeenCalled(); expect(f.writes).not.toHaveBeenCalled();
+    });
+    // A Proxy can pass the bus's own `instanceof` and throw on a later one: the spy stands in for that bus.
+    it('refuses as secret, logging no code, when the secret read fails with a value whose instanceof check throws',async()=>{
+      const f=fixture('accepted',plain,async()=>'secret'),r=response(),warnings:unknown[]=[];
+      const real=f.bus.callJoined.bind(f.bus);
+      vi.spyOn(f.bus,'callJoined').mockImplementation((async(name:string,ctx:{logger:{warn:(message:string,fields?:Record<string,unknown>)=>void}},input:unknown)=>{
+        if(name!=='credentials:get')return real(name,ctx as never,input);
+        ctx.logger.warn=(message,fields)=>{if(message==='routines_webhook_secret_fetch_failed')warnings.push({message,fields});};
+        throw new Proxy({}, { getPrototypeOf() { throw new Error('PRIVATE trap'); } });
+      }) as never);
+      await f.handler(request(),r.res);
+      expect(r.state.code).toBe(401);
+      expect(f.observeWebhook).toHaveBeenCalledWith(expect.objectContaining({observation:'secret'}),expect.any(Function));
+      expect(warnings).toEqual([{message:'routines_webhook_secret_fetch_failed',fields:{agentId:'a',routineId:'r'}}]);
+      expect(f.admit).not.toHaveBeenCalled();expect(f.writes).not.toHaveBeenCalled();
+    });
   });
   it('keeps an already committed admission acknowledged when the pump fails',async()=>{
     const f=fixture();f.pump.mockRejectedValueOnce(new Error('PRIVATE body'));const r=response();await f.handler(request(),r.res);expect(r.state.code).toBe(202);
@@ -212,6 +239,19 @@ describe('a 503 logs its code, never its message (TASK-1027)',()=>{
     expect(r.state.code).toBe(429);
     expect(logged()).not.toContain('PRIVATE');
     expect(entries(logged(),'routines_webhook_admission_failed')).toEqual([]);
+  });
+  // TASK-1038: the quota check reads the failure's code without trusting it. One it can't read is a 503 like any other.
+  it.each([
+    ['a code getter that throws', () => Object.defineProperty(new Error('PRIVATE admission detail'), 'code', { get() { throw new Error('PRIVATE getter'); } }), { name: 'Error' }],
+    ['a Proxy whose `in` check throws', () => new Proxy({}, { has() { throw new Error('PRIVATE trap'); } }), {}],
+  ] as const)('answers 503 and logs a failed admission whose code can’t be read: %s', async (_name, make, fields) => {
+    const logged = captureStdout(), f = fixture('accepted', plain);
+    f.admit.mockRejectedValueOnce(make());
+    const r = response(); await f.handler(request(), r.res);
+    expect(r.state.code).toBe(503);
+    expect(logged()).not.toContain('PRIVATE');
+    expect(entries(logged(), 'routines_webhook_admission_failed')).toStrictEqual([{ msg: 'routines_webhook_admission_failed', level: 'warn', agentId: 'a', routineId: 'r', ...fields }]);
+    expect(f.observeWebhook).toHaveBeenCalledWith(expect.objectContaining({ observation: 'unavailable' }), expect.any(Function));
   });
   // Not a 503: the update is already admitted, so the sender gets its 202 and only the log says the drain failed.
   describe('the drain after an accepted repeat update logs its code too (TASK-1033)',()=>{
