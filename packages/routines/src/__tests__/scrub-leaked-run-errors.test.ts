@@ -56,8 +56,13 @@ const RUNNER_TEXT = [
   'terminated: chat-run-timeout\nPRIVATE second line',
   `terminated: ${'a'.repeat(65)}`,
   'terminated: ',
+  'terminated: PRIVATE-CODE',
+  'terminated: private.example.com',
+  'terminated: private/path',
+  'terminated: private words',
+  'terminated: private_code',
 ];
-const CURLY =[BRIEF_DIDNT_LOAD, BRIEF_TOO_LONG, BRIEF_UNCONFIRMED, ...OLDER_TOO_LONG];
+const CURLY = [BRIEF_DIDNT_LOAD, BRIEF_TOO_LONG, BRIEF_UNCONFIRMED, ...OLDER_TOO_LONG];
 /**
  * Sentences a later release might write that the keep-list doesn't know. They read like ours, so
  * the scrub's guard counts them, and apply refuses to write while it counts any (TASK-1036 review).

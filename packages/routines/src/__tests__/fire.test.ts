@@ -307,6 +307,8 @@ describe('a run its invoke ended terminated stores fixed words and a code (TASK-
     ['capital letters', 'PRIVATE-CODE'],
     ['a dot, which could spell a host', 'private.example.com'],
     ['a slash', 'private/path'],
+    ['a space', 'private words'],
+    ['an underscore', 'private_code'],
     ['a host code with a second line', 'chat-run-timeout\nPRIVATE second line'],
     ['a code one character too long', 'a'.repeat(65)],
     ['nothing', ''],
