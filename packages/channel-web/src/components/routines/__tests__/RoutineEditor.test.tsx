@@ -563,6 +563,7 @@ describe('waiting app updates (TASK-1037)', () => {
     expect(screen.queryByText(NOTICE)).not.toBeInTheDocument();
     change();
     expect(screen.getByText(NOTICE)).toBeVisible();
+    expect(screen.getByText(NOTICE).closest('[role]')).toHaveAttribute('role', 'status');
     expect(screen.getByRole('button', { name: 'Save' })).toHaveAccessibleDescription(NOTICE);
   });
   it.each<[string, RoutineView, () => unknown]>([

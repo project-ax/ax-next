@@ -453,14 +453,21 @@ describe('task form More options', () => {
     expect(screen.queryByText(SAVE_NOTICE)).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Save' })).not.toHaveAccessibleDescription(/still waiting/);
   });
-  // The kind-switch notice already says a switch to a task kind cancels them; the save notice doesn't repeat it.
+  // The kind-switch notice already says a switch to a task kind cancels them; the save notice doesn't
+  // repeat it, and Save is described by the kind-switch notice instead.
   it('leaves a switch to a task kind to the kind-switch notice', async () => {
     await edit(repeatWithUpdates);
     fill('What should Caveman do?', 'Review updates differently.');
     fireEvent.click(screen.getByRole('radio', { name: 'Stay on top' }));
     expect(screen.getByText(/Switching kinds starts this task over/)).toHaveTextContent('Any app updates still waiting to run will be cancelled.');
     expect(screen.queryByText(SAVE_NOTICE)).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Save' })).not.toHaveAccessibleDescription(/still waiting/);
+    expect(screen.getByRole('button', { name: 'Save' })).toHaveAccessibleDescription(/Any app updates still waiting to run will be cancelled\./);
+  });
+  // A notice that appears mid-typing is polite, not an interruption: Save's description carries it too.
+  it('makes the save notice a polite status', async () => {
+    await edit(repeatWithUpdates);
+    fill('What should Caveman do?', 'Review updates differently.');
+    expect(screen.getByText(SAVE_NOTICE).closest('[role]')).toHaveAttribute('role', 'status');
   });
 
   it('has no signature controls', async () => {

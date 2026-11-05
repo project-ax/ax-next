@@ -487,7 +487,7 @@ function RoutineForm({
       {/* TASK-1037. This form makes the same save as the Tasks form, so the same changes cancel a saved
           Repeat's waiting app updates, and it says so by Save too. It has no kind control. */}
       {cancelsWaitingUpdates && (
-        <Alert id={`${id}-save-waiting`}>
+        <Alert id={`${id}-save-waiting`} role="status">
           <AlertDescription>Saving these changes cancels any app updates still waiting to run.</AlertDescription>
         </Alert>
       )}

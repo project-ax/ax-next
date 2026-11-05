@@ -306,7 +306,7 @@ export function TaskForm({
         <FieldDescription id={`${id}-kind-help`} className="text-[13px]">{KIND_HELP[form.kind]}</FieldDescription>
       </Field>
       {mode === 'edit' && form.kind !== initial.kind && (
-        <Alert><AlertDescription>
+        <Alert id={`${id}-kind-switch`}><AlertDescription>
           Switching kinds starts this task over. Its steps, latest update, notes and finish date will be cleared.
           {kindDropsWaiting && ' Any app updates still waiting to run will be cancelled.'}
         </AlertDescription></Alert>
@@ -554,7 +554,8 @@ export function TaskForm({
       </Collapsible>
 
       {editDropsWaiting && (
-        <Alert id={`${id}-save-waiting`}><AlertDescription>Saving these changes cancels any app updates still waiting to run.</AlertDescription></Alert>
+        // A polite status, not an alert: it appears mid-typing, and Save's description carries it too.
+        <Alert id={`${id}-save-waiting`} role="status"><AlertDescription>Saving these changes cancels any app updates still waiting to run.</AlertDescription></Alert>
       )}
       {shown.has('form') && <FieldError id={errorId('form')} ref={register('form')} tabIndex={-1}>{shown.get('form')}</FieldError>}
       {error && (
@@ -578,7 +579,7 @@ export function TaskForm({
         <div className="ml-auto flex gap-2">
           <Button type="button" variant="ghost" disabled={busy || uncertain || addressBusy} onClick={onCancel}>Cancel</Button>
           <Button type="submit" disabled={busy || addressBusy || !canEdit}
-            aria-describedby={editDropsWaiting ? `${id}-save-waiting` : undefined}>
+            aria-describedby={editDropsWaiting ? `${id}-save-waiting` : kindDropsWaiting ? `${id}-kind-switch` : undefined}>
             {busy ? 'Saving…' : uncertain ? 'Retry save' : mode === 'create' ? 'Start task' : 'Save'}
           </Button>
         </div>
