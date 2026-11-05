@@ -309,3 +309,50 @@ describe('durable signed repeat-delivery canary', () => {
     } finally {await transport.close();}
   });
 });
+describe('a routine that no longer reads (TASK-1044)', () => {
+  /** Everything written to stdout and stderr while `run` runs, and nothing passed through. */
+  async function written<T>(run: () => Promise<T>): Promise<{ result: T; lines: string[] }> {
+    const lines: string[] = [];
+    const capture = (chunk: unknown) => { lines.push(String(chunk)); return true; };
+    const out = vi.spyOn(process.stdout, 'write').mockImplementation(capture as typeof process.stdout.write);
+    const err = vi.spyOn(process.stderr, 'write').mockImplementation(capture as typeof process.stderr.write);
+    try { return { result: await run(), lines }; } finally { out.mockRestore(); err.mockRestore(); }
+  }
+  // A name a later rule refuses: what a stricter contract does to a routine saved before it (TASK-913's fixture).
+  const breakRow = (row: RoutineView) => sql`UPDATE routines_v1_definitions SET name = ${'x'.repeat(129)} WHERE routine_id = ${row.routineId}`.execute(h.db);
+  const expected = (row: RoutineView) => JSON.stringify({ agentId: row.agentId, routineId: row.routineId, issuePath: 'name', issueCode: 'too_big' });
+
+  it('refuses a task-address delivery with a 404 and one code-only line, never the token or the parse error', async () => {
+    const { row } = await setup();
+    const { token } = await createRoutinesStore(h.db).ensureWebhookAddress({ agentId: row.agentId, routineId: row.routineId, actorUserId: h.owner.userId });
+    await breakRow(row);
+    const { result, lines } = await written(() => request(token));
+    expect(result).toBe(404);
+    const refusals = lines.filter(line => line.includes('routines_webhook_routine_unreadable'));
+    expect(refusals).toHaveLength(1);
+    expect(refusals[0]).toContain(expected(row).slice(1, -1));
+    expect(lines.join('')).not.toContain(token);
+    expect(lines.join('')).not.toMatch(/ZodError|String must contain|too_big".*message/);
+    expect(h.invokeCalls).toHaveLength(0);
+  });
+
+  it('refuses a legacy-address delivery the same way', async () => {
+    const { row, token } = await setup();
+    await breakRow(row);
+    const { result, lines } = await written(() => request(token));
+    expect(result).toBe(404);
+    const refusals = lines.filter(line => line.includes('routines_webhook_routine_unreadable'));
+    expect(refusals).toHaveLength(1);
+    expect(refusals[0]).toContain(expected(row).slice(1, -1));
+    expect(lines.join('')).not.toContain(token);
+  });
+
+  it('answers a wrong path under a broken routine\'s task address as any wrong path: 404, nothing logged', async () => {
+    const { row } = await setup();
+    const { token } = await createRoutinesStore(h.db).ensureWebhookAddress({ agentId: row.agentId, routineId: row.routineId, actorUserId: h.owner.userId });
+    await breakRow(row);
+    const { result, lines } = await written(() => request(token, { splat: 'elsewhere' }));
+    expect(result).toBe(404);
+    expect(lines.filter(line => line.includes('routines_webhook_routine_unreadable'))).toHaveLength(0);
+  });
+});
