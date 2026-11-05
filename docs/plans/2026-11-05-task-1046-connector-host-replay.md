@@ -91,17 +91,27 @@ These are the inputs most likely to bite a person after Allow, each pinned by a 
 - **Wire surface:** none. It is deliberately not an IPC action. `tool.execute-host` dispatches only `tool:execute:<name>`, and no IPC handler forwards `connectors:*`.
 - **`@ax/decisions` manifest:** new `optionalCalls` entry. No `calls` change. Cycle-free: none of mcp-client's producers call `decisions:*`, and `boot-graph.test.ts` proves it.
 
-### Security note (draft; the builder runs `security-checklist` and finalizes it)
+### Security note
+
+Finalized by Task 2's builder with `security-checklist` (2026-11-05), for the `@ax/mcp-client` half as built. Task 3 adds the decisions half (the policy re-check and the routing), so the final verification re-runs the checklist before the PR. The block to paste under the PR body's `## Security review`:
+
+```
+- Sandbox: New host capability `connectors:call-tool` (@ax/mcp-client, k8s preset only): one guarded HTTPS `tools/call` (with its MCP handshake) to one connector server's own origin, through the inventory's guarded fetch (https only, no userinfo, same origin, no redirects, connect-time IP vetting), only after access is re-derived from the decision's (user, agent): agents:resolve, the agent's effective connector set, connectors:resolve, no URL fragment, host in the connector's allowedHosts (exact match, the session proxy's rule). 30 s per request, 45 s from handler entry, nothing sent with under 15 s left, 2 MiB per response, never retried. Credentials are the connector's plan refs via credentials:get as (user, agent), held only in one transport's header map. Reachable only over the host hook bus: no IPC action, no tool:execute:*, no catalog entry, so the sandbox cannot call it. No processes, no filesystem, no env reads.
+- Injection: Untrusted in: the model-authored `input` (sent verbatim as the tool's arguments, the bytes the person approved; never logged, never part of a URL, header or path), the model-chosen tool name (printable ASCII, 1-128 chars by the input schema; sent only as the MCP tool name), and the server's reply (read only for the boolean isError through a local passthrough schema; content dropped unread; no server-supplied schema compiled). Errors are closed codes, and the bus's strict `returns` schema refuses any answer with a field that could carry text. The one log line is connectorId + code, pinned by tests that inject hostile text and secrets.
+- Supply chain: N/A: no package.json or lockfile change. Reuses the exact-pinned @modelcontextprotocol/sdk 1.32.1 Client / StreamableHTTPClientTransport (already used by list-tools.ts), undici and zod.
+```
 
 - **Sandbox escape:**
-  - New host reach is one HTTPS origin per call, the connector server's. It goes through the existing guarded fetch: https only, no userinfo, same origin, no redirects, connect-time IP vetting, 30 s per request, 45 s budget, 2 MiB cap.
+  - New host reach is one HTTPS origin per call, the connector server's. It goes through the existing guarded fetch: https only, no userinfo, same origin, no redirects, connect-time IP vetting, 30 s per request, 2 MiB cap. The 45 s budget runs from handler entry, its own hook reads included, and nothing is sent with less than 15 s left.
+  - The destination must also clear the authorization checks of Decision 2, including the connector's `allowedHosts` (exact match, IPv6 brackets stripped, as the proxy does) and no URL fragment. Nothing is read from the vault until the URL checks pass, and nothing is sent until every check passes.
+  - `connectors:call-tool` is a named service. It is not an IPC action, not a `tool:execute:*` hook and not a catalog entry, so the sandbox cannot reach it. The caller's ctx must name the payload's user and agent, and an owner-less id gets nothing.
   - No processes are spawned. There are no filesystem or env reads.
   - The trigger is only `decisions:approve` by the decision's owner (`plugin.ts:599`), or the sweep's due replay or delivery fallback of an approval that owner already made.
 - **Prompt injection:**
-  - `input` is model-authored and sent verbatim. That is the WYSIWYG promise the card makes. The person approved exactly those bytes.
+  - `input` is model-authored and sent verbatim. That is the WYSIWYG promise the card makes. The person approved exactly those bytes. The handler sends the caller's own object, never a parsed copy.
   - The namespace-to-connector mapping is the host's answer, never the model's.
   - The reply is read only for the boolean `isError`. Its content is discarded unread and never logged, stored or rendered.
-  - Errors reduce to closed codes.
+  - Errors reduce to closed codes. The registration's strict `returns` schema refuses any other answer (`invalid-return`), which decisions records as "can't tell".
 - **Supply chain:** no new dependency. The SDK's `Client` / `StreamableHTTPClientTransport` are already used by `list-tools.ts`. We call `client.request` with a minimal local schema, so the host never compiles a server-supplied JSON Schema.
 - **Accepted residuals (documented):**
   - tool-policy's 30 s verdict cache can lag a Deny saved on another replica;
