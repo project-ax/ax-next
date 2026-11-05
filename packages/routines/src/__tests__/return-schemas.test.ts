@@ -3,9 +3,9 @@ import * as C from '@ax/routines-contract';
 import { routinePermissions, routineView, ROUTINE_SERVICES, unreadableViews } from '../services.js';
 import { loggableIssue } from '../store.js';
 import { captureExpectedStderr } from './support/expected-diagnostics.js';
+import type { StoredReading, StoredRoutine, StoredStep, UnreadableRoutine } from '../types.js';
 // A second captureExpectedStderr would otherwise save the first's spy as the original (TASK-913 plan).
 afterEach(() => { vi.restoreAllMocks(); });
-import type { StoredReading, StoredRoutine, StoredStep, UnreadableRoutine } from '../types.js';
 /** TASK-952. A task report's reading, as the store hands it over. */
 const OPEN_3: StoredReading = { value: 3, label: 'Open tickets' };
 const row: StoredRoutine = {
