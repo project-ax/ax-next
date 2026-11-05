@@ -28,6 +28,7 @@
 
 import { createHash } from 'node:crypto';
 import { PluginError, makeAgentContext, type AgentContext } from '@ax/core';
+import { connectorHeaders, noUsableCredential, type ResolvedConnector, type ResolvedServer } from './connector-headers.js';
 import { listServerTools, type ListOutcome, type ListServerToolsOptions } from './list-tools.js';
 import type { InventoryKey, InventoryRow, InventoryStore } from './store.js';
 import {
@@ -83,26 +84,6 @@ const CHECK_COOLDOWN_MAX_KEYS = 1_000;
  * connector) would be checked on every call. Oldest goes first when full.
  */
 const UNSTORED_MAX_KEYS = 1_000;
-
-// Local structural view of `connectors:resolve` output (I2: no runtime import
-// of @ax/connectors; only the fields this hook reads).
-interface ResolvedSlot {
-  slot: string;
-  kind: 'api-key' | 'oauth';
-  headerName?: string;
-  server?: string;
-}
-interface ResolvedServer {
-  name: string;
-  transport: 'http';
-  url?: string;
-}
-interface ResolvedConnector {
-  id: string;
-  capabilities: { credentials: ResolvedSlot[]; mcpServers: ResolvedServer[] };
-  credentialPlan: Array<{ slot: string; ref: string }>;
-  toolNamespaces?: Array<{ server: string; toolNamespace: string }>;
-}
 
 export interface BusLike {
   call<I, O>(hookName: string, ctx: AgentContext, input: I): Promise<O>;
@@ -175,22 +156,6 @@ function fingerprint(tools: InventoryTool[]): string {
 
 const SEVERITY: Record<InventoryStatus, number> = { ok: 0, unknown: 0, unreachable: 1, 'needs-auth': 2 };
 
-/**
- * TASK-756 — a credential failure that means "there is no usable sign-in":
- * nothing stored for the ref, or an OAuth sign-in the authorization server
- * rejected. The reconnect error crosses the bus twice (resolver →
- * credentials:get → here) and is wrapped on the way, so it is recognised by
- * name on the error or its cause, never by importing @ax/mcp-oauth (I2) —
- * the same rule channel-web's `credentialMissing` applies. Anything else (a
- * vault/storage blip, a refresh the provider could not answer right now) says
- * nothing about the sign-in, so it must not be reported as one.
- */
-function noUsableCredential(err: unknown): boolean {
-  if (err instanceof PluginError && err.code === 'credential-not-found') return true;
-  const named = (e: unknown): boolean => e instanceof Error && e.name === 'NeedsReconnectError';
-  return named(err) || named((err as { cause?: unknown } | null)?.cause);
-}
-
 export function createDescribeTools(deps: DescribeToolsDeps) {
   const now = deps.now ?? (() => new Date());
   const list = deps.listTools ?? listServerTools;
@@ -227,48 +192,6 @@ export function createDescribeTools(deps: DescribeToolsDeps) {
    * as a write for that key succeeds.
    */
   const unstored = deps.unstored ?? createUnstoredInventory();
-
-  async function headersFor(
-    connector: ResolvedConnector,
-    server: ResolvedServer,
-    ctx: AgentContext,
-    userId: string,
-  ): Promise<{ headers: Record<string, string>; bearerRef?: string } | 'absent' | 'needs-auth' | 'unavailable'> {
-    const headers: Record<string, string> = {};
-    // The ref whose token is in `Authorization` (the last OAuth slot wins).
-    let bearerRef: string | undefined;
-    for (const slot of connector.capabilities.credentials) {
-      if (slot.server !== server.name) continue;
-      const header = slot.kind === 'oauth' ? 'Authorization' : slot.headerName;
-      if (header === undefined || header.length === 0) continue;
-      const ref = connector.credentialPlan.find((p) => p.slot === slot.slot)?.ref;
-      if (ref === undefined) return 'needs-auth';
-      let value: string;
-      try {
-        value = await deps.bus.call<{ ref: string; userId: string }, string>('credentials:get', ctx, {
-          ref,
-          userId,
-        });
-      } catch (err) {
-        const missing = noUsableCredential(err);
-        ctx.logger.info('connector_inventory_credential_unavailable', {
-          connectorId: connector.id,
-          code: err instanceof PluginError ? err.code : 'error',
-          transient: !missing,
-        });
-        if (!missing) return 'unavailable';
-        // TASK-841 — nothing stored at all (never signed in, or signed out),
-        // as opposed to a sign-in the authorization server rejected.
-        return err instanceof PluginError && err.code === 'credential-not-found' ? 'absent' : 'needs-auth';
-      }
-      if (typeof value !== 'string' || value.length === 0) return 'needs-auth';
-      headers[header] = slot.kind === 'oauth' ? `Bearer ${value}` : value;
-      if (slot.kind === 'oauth') bearerRef = ref;
-      // A key slot that writes its own `Authorization` replaced the bearer.
-      else if (header.toLowerCase() === 'authorization') bearerRef = undefined;
-    }
-    return { headers, ...(bearerRef !== undefined ? { bearerRef } : {}) };
-  }
 
   /**
    * TASK-817 — the server answered 401 to the OAuth token we sent. The token
@@ -353,7 +276,7 @@ export function createDescribeTools(deps: DescribeToolsDeps) {
         planned.push({ server, ns, outcome: { kind: 'unreachable', reason: 'no-url' } });
         continue;
       }
-      const headers = await headersFor(connector, server, ctx, input.userId);
+      const headers = await connectorHeaders(deps.bus, connector, server, ctx, input.userId);
       if (headers === 'unavailable') {
         // TASK-756 — the credential could not be READ right now. That is not
         // "needs sign-in": answering needs-auth would misreport a blip, and
@@ -456,7 +379,7 @@ export function createDescribeTools(deps: DescribeToolsDeps) {
     const found = new Set<string>();
     for (const server of connector.capabilities.mcpServers) {
       if (!absent.has(server.name)) continue;
-      const headers = await headersFor(connector, server, ctx, userId).catch(() => 'unavailable' as const);
+      const headers = await connectorHeaders(deps.bus, connector, server, ctx, userId).catch(() => 'unavailable' as const);
       if (typeof headers === 'object') found.add(server.name);
     }
     return found;
