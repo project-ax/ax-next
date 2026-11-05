@@ -15,15 +15,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 
 import { uploadAttachment, type AttachmentUploadResult } from '@/lib/attachment-upload';
-import { workspaceApi, type FactMemoryStatement } from '@/lib/workspace-api';
+import { workspaceApi } from '@/lib/workspace-api';
 import { HttpError } from '@/lib/http';
 import type { TaskCheckin, TaskDetail } from '@/lib/workspace-types';
 import { UserProvider } from '@/lib/user-context';
 import { WorkspaceShell } from '../WorkspaceShell';
 import { rail as railFixture } from './rail-fixture';
 import { clearViewport, setViewport } from './viewport';
-
-import { LEARNED_SEE_ALL, LEARNED_TITLE, MEMORY_FIX_FIELD_LABEL, MEMORY_FIX_SAVE, MEMORY_FORGET, memoryFixLabel, memoryForgetLabel, memoryStatementText, memoryUndoLabel } from '../memory-copy';
+import { openAgentOptions, pickAgent, switcherTrigger } from './sidebar-helpers';
 
 vi.mock('@/lib/workspace-api', async () => {
   const actual = await vi.importActual<Record<string, unknown>>(
@@ -169,15 +168,13 @@ beforeEach(() => {
 afterEach(clearViewport);
 
 describe('landing on a URL', () => {
-  it('opens the agent a deep link names, on the tab it names', async () => {
+  it('opens the agent a deep link names', async () => {
     // The whole point of the card: a reload used to land on Today no matter
     // where you were.
     renderAt('/workspace/agents/a-quill/files');
 
-    expect(await screen.findByRole('tab', { name: /files/i })).toHaveAttribute(
-      'aria-selected',
-      'true',
-    );
+    expect(await screen.findByRole('heading', { level: 1, name: 'Quill' })).toBeTruthy();
+    expect(await screen.findByRole('radio', { name: 'Files' })).toBeTruthy();
   });
 
   it('opens Activity from its own URL', async () => {
@@ -377,23 +374,22 @@ describe('landing on a URL', () => {
 
 describe('navigating', () => {
   /**
-   * The roster row for the one agent, by role rather than by bare text.
+   * The agent switcher, by role rather than by bare text.
    *
-   * "Quill" is no longer unique on Today: a one-agent roster now shows the
-   * agent's name in the composer's picker slot too, because with one agent
-   * there is nothing to pick and the slot became a label (TASK-250). A
-   * `findByText('Quill')` matched both and threw on the ambiguity.
+   * "Quill" is not unique on Today: a one-agent roster shows the agent's name
+   * in the composer's picker slot too (TASK-250), and the switcher shows it
+   * again. The trigger's accessible name ends "Switch agent".
    */
-  function rosterRow() {
-    return screen.findByRole('button', { name: /^Quill\s*,/ });
+  async function rosterRow() {
+    await screen.findByRole('button', { name: /^Quill, .*Switch agent/ });
+    return switcherTrigger();
   }
 
-  it('keeps a clamped roster name reachable in `title` (TASK-436)', async () => {
+  it('keeps a clamped agent name reachable in `title` (TASK-436)', async () => {
     /*
-      The roster row clamps the agent's name to the sidebar's width. jsdom has
+      The switcher clamps the agent's name to the sidebar's width. jsdom has
       no CSS, so this does not assert the clamp — it asserts that the element
-      doing the clamping carries the whole name, which is the half that was
-      missing: the row used to be the only copy of a name it truncated.
+      doing the clamping carries the whole name.
     */
     renderAt('/workspace');
     const row = await rosterRow();
@@ -405,28 +401,31 @@ describe('navigating', () => {
   it('gives an opened agent an address', async () => {
     renderAt('/workspace');
 
-    fireEvent.click(await rosterRow());
+    await pickAgent('Quill');
 
     await waitFor(() =>
       expect(window.location.pathname).toBe('/workspace/agents/a-quill'),
     );
   });
 
-  it('puts the tab in the URL, so a tab is linkable', async () => {
-    renderAt('/workspace/agents/a-quill');
+  it('still opens the agent from a legacy /files link, with Files one press away', async () => {
+    /*
+      The rail used to have a Chats tab and a Files tab, and each was a URL.
+      Chats moved to the sidebar and the panel is now opened from the chat
+      header's icons, but links already shared with /files on the end must
+      keep landing on the agent.
+    */
+    renderAt('/workspace/agents/a-quill/files');
 
-    // Radix Tabs activates a trigger on mousedown, not click — a bare
-    // fireEvent.click leaves the tab exactly where it was.
-    fireEvent.mouseDown(await screen.findByRole('tab', { name: /files/i }));
-
-    await waitFor(() =>
-      expect(window.location.pathname).toBe('/workspace/agents/a-quill/files'),
-    );
+    const files = await screen.findByRole('radio', { name: 'Files' });
+    expect(window.location.pathname).toBe('/workspace/agents/a-quill/files');
+    fireEvent.click(files);
+    expect(await screen.findByRole('complementary', { name: 'Files' })).toBeTruthy();
   });
 
   it('unwinds in-workspace navigation with Back', async () => {
     renderAt('/workspace');
-    fireEvent.click(await rosterRow());
+    await pickAgent('Quill');
     await waitFor(() =>
       expect(window.location.pathname).toBe('/workspace/agents/a-quill'),
     );
@@ -518,13 +517,19 @@ describe('agent settings page (TASK-888)', () => {
     expect(open).not.toHaveBeenCalled();
   });
 
-  it('opens from the rail Settings button and comes back to the same conversation', async () => {
+  /** The sidebar's ⋮ beside the agent switcher → Agent settings. */
+  async function openAgentSettings() {
+    const menu = await openAgentOptions('Quill');
+    fireEvent.click(within(menu).getByRole('menuitem', { name: 'Agent settings' }));
+  }
+
+  it('opens from the agent menu and comes back to the same conversation', async () => {
     withRules();
     renderAt('/workspace/agents/a-quill');
     expect(await screen.findByText('what is on today')).toBeTruthy();
     const reads = agentMock.mock.calls.length;
 
-    fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
+    await openAgentSettings();
 
     await waitFor(() =>
       expect(window.location.pathname).toBe('/workspace/agents/a-quill/settings/instructions'),
@@ -541,16 +546,14 @@ describe('agent settings page (TASK-888)', () => {
     expect(agentMock.mock.calls.length).toBe(reads);
   });
 
-  it('opens Agent settings from the current conversation options menu', async () => {
+  it('keeps a chat row\'s menu about the chat — agent settings live on the agent menu', async () => {
     withRules();
     renderAt('/workspace/agents/a-quill');
     const options = await screen.findByRole('button', { name: 'Options for Current conversation' });
     fireEvent.pointerDown(options, { button: 0, ctrlKey: false, pointerType: 'mouse' });
-    fireEvent.click(await screen.findByRole('menuitem', { name: 'Agent settings' }));
-    await waitFor(() =>
-      expect(window.location.pathname).toBe('/workspace/agents/a-quill/settings/instructions'),
-    );
-    expect(screen.getByRole('heading', { level: 1, name: 'Quill settings' })).toBeTruthy();
+    const menu = await screen.findByRole('menu');
+    expect(within(menu).getByRole('menuitem', { name: 'Rename' })).toBeTruthy();
+    expect(within(menu).queryByRole('menuitem', { name: 'Agent settings' })).toBeNull();
   });
 
   it.each(['uploaded', 'pending'] as const)('preserves a %s attachment draft through Settings', async (state) => {
@@ -569,7 +572,7 @@ describe('agent settings page (TASK-888)', () => {
     expect(picker).not.toBeNull();
     fireEvent.change(picker!, { target: { files: [new File(['notes'], 'notes.txt', { type: 'text/plain' })] } });
     if (state === 'uploaded') await screen.findByText('Ready to send');
-    fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
+    await openAgentSettings();
     await screen.findByRole('button', { name: 'Back to chat' });
     if (state === 'pending') await act(async () => { finishUpload(result); });
     fireEvent.click(screen.getByRole('button', { name: 'Back to chat' }));
@@ -590,7 +593,7 @@ describe('agent settings page (TASK-888)', () => {
     renderAt('/workspace/agents/a-quill');
     const sentence = 'Gmail isn’t signed in yet, so it’s off for this chat.';
     await screen.findByText(sentence);
-    fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
+    await openAgentSettings();
     fireEvent.click(await screen.findByRole('button', { name: 'Connectors' }));
     // A sign-in or removal in Settings changes the next authoritative read.
     vi.mocked(workspaceApi.connectors).mockResolvedValue(read);
@@ -649,8 +652,10 @@ describe('Connectors settings migration (TASK-889)', () => {
     renderAt('/workspace/agents/a-quill');
     await screen.findByRole('button', { name: 'Open Connectors' });
     if (compact) {
-      fireEvent.click(screen.getByRole('button', { name: 'Agent details' }));
-      fireEvent.click(await screen.findByRole('button', { name: 'Settings' }));
+      // Below md the agent menu lives in the nav sheet, behind the hamburger.
+      fireEvent.click(screen.getByRole('button', { name: 'Open navigation' }));
+      const menu = await openAgentOptions('Quill');
+      fireEvent.click(within(menu).getByRole('menuitem', { name: 'Agent settings' }));
       expect(await screen.findByRole('heading', { level: 1, name: 'Quill settings' })).toBeVisible();
       expect(screen.queryByRole('dialog')).toBeNull();
       fireEvent.click(screen.getByRole('button', { name: 'Chat' }));
@@ -659,108 +664,17 @@ describe('Connectors settings migration (TASK-889)', () => {
 
     await waitFor(() => expect(window.location.pathname).toBe('/workspace/agents/a-quill/settings/connectors'));
     expect(await screen.findByRole('button', { name: 'Add connector' })).toBeVisible();
-    expect(screen.queryByRole('dialog', { name: 'Agent details' })).toBeNull();
+    expect(screen.queryByRole('dialog', { name: 'Files' })).toBeNull();
     // The mobile generic-settings index is not the destination of a named link.
     expect(screen.getByRole('heading', { level: 1, name: compact ? 'Connectors' : 'Quill settings' })).toBeVisible();
   });
 });
 
 
-describe('Memory settings and the pinned learned card (TASK-890)', () => {
-  const original: FactMemoryStatement = { id: 'm1', about: 'user', relation: 'lives_in', value: 'Boston', when: '2026-10-08T00:30:00Z', sourceTurnId: 't1' };
-  let rows: FactMemoryStatement[];
-  beforeEach(() => {
-    setViewport(false);
-    rows = [original];
-    agentMock.mockResolvedValue({ agent: AGENTS[0]!, conversationId: 'c1',
-      thread: [{ kind: 'user', id: 't1', text: 'I live in Boston' }],
-      decisions: { status: 'ok' }, past: [],
-      memory: { rules: { status: 'unavailable', doc: null }, factsAvailable: true } });
-    vi.mocked(workspaceApi.recallMemory).mockImplementation(async () => ({ statements: rows, degraded: [] }));
-    vi.mocked(workspaceApi.correctMemory).mockImplementation(async (_agent, change) => {
-      rows = [{ ...original, id: 'm2', value: change.value }];
-      return { id: 'm2' };
-    });
-    vi.mocked(workspaceApi.forgetMemory).mockImplementation(async () => { rows = []; return { forgotten: true }; });
-    vi.mocked(workspaceApi.unforgetMemory).mockImplementation(async () => { rows = [original]; return { restored: ['m1'] }; });
-  });
-  async function expandLearned() {
-    const toggle = await screen.findByRole('button', { name: /^Learned in this chat/ });
-    if (toggle.getAttribute('aria-expanded') === 'false') fireEvent.click(toggle);
-  }
-  async function openSettings() {
-    await expandLearned();
-    fireEvent.click(await screen.findByRole('button', { name: LEARNED_SEE_ALL }));
-    await screen.findByRole('table');
-    expect(window.location.pathname).toBe('/workspace/agents/a-quill/settings/memory');
-  }
-  async function selectMenu(action: string) {
-    const trigger = await screen.findByRole('button', { name: 'Memory actions: Boston' });
-    fireEvent.pointerDown(trigger, { button: 0, ctrlKey: false });
-    fireEvent.click(await screen.findByRole('menuitem', { name: action }));
-  }
-  async function saveFix() {
-    const dialog = await screen.findByRole('dialog');
-    fireEvent.change(within(dialog).getByLabelText(MEMORY_FIX_FIELD_LABEL), { target: { value: 'Denver' } });
-    fireEvent.click(within(dialog).getByRole('button', { name: MEMORY_FIX_SAVE }));
-    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
-  }
-  it('fixes in settings update the mounted learned card when returning to chat', async () => {
-    renderAt('/workspace/agents/a-quill');
-    await screen.findByText(LEARNED_TITLE);
-    await openSettings();
-    await selectMenu(memoryFixLabel('Boston'));
-    await saveFix();
-    expect(await screen.findByRole('button', { name: 'Memory actions: Denver' })).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: 'Back to chat' }));
-    await expandLearned();
-    const card = (await screen.findByText(LEARNED_TITLE)).closest('section')!;
-    expect(within(card).getByText(memoryStatementText({ ...original, value: 'Denver' }))).toBeTruthy();
-    expect(within(card).queryByText(memoryStatementText(original))).toBeNull();
-  });
-  it('fixes in the pinned card appear in the settings manager', async () => {
-    renderAt('/workspace/agents/a-quill');
-    await expandLearned();
-    fireEvent.click(await screen.findByRole('button', { name: memoryFixLabel(memoryStatementText(original)) }));
-    await saveFix();
-    await openSettings();
-    expect(await screen.findByRole('button', { name: 'Memory actions: Denver' })).toBeTruthy();
-    expect(screen.queryByRole('button', { name: 'Memory actions: Boston' })).toBeNull();
-  });
-  it('settings Forget hides the pinned card and its Undo restores it', async () => {
-    renderAt('/workspace/agents/a-quill');
-    await screen.findByText(LEARNED_TITLE);
-    await openSettings();
-    await selectMenu(memoryForgetLabel('Boston'));
-    const dialog = await screen.findByRole('dialog');
-    fireEvent.click(within(dialog).getByRole('button', { name: MEMORY_FORGET }));
-    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
-    // It remains mounted while Settings is shown, so inspect the hidden tree.
-    expect(screen.queryByText(LEARNED_TITLE)).toBeNull();
-    fireEvent.click(await screen.findByRole('button', { name: memoryUndoLabel('Boston') }));
-    await screen.findByRole('button', { name: 'Memory actions: Boston' });
-    fireEvent.click(screen.getByRole('button', { name: 'Back to chat' }));
-    await expandLearned();
-    expect(await screen.findByText(LEARNED_TITLE)).toBeTruthy();
-    expect(screen.getByRole('button', { name: memoryFixLabel(memoryStatementText(original)) })).toBeTruthy();
-  });
-  it('rail Forget updates the settings manager while the Undo receipt is still available', async () => {
-    renderAt('/workspace/agents/a-quill');
-    await expandLearned();
-    fireEvent.click(await screen.findByRole('button', { name: memoryForgetLabel(memoryStatementText(original)) }));
-    const dialog = await screen.findByRole('dialog');
-    fireEvent.click(within(dialog).getByRole('button', { name: MEMORY_FORGET }));
-    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
-    fireEvent.click(screen.getByRole('button', { name: LEARNED_SEE_ALL }));
-    expect(await screen.findByText(/No memories yet/)).toBeTruthy();
-    expect(screen.queryByRole('button', { name: 'Memory actions: Boston' })).toBeNull();
-  });
-});
-
 describe('one tasks read (TASK-933)', () => {
   it('reads tasks once at mount, whichever page it lands on', async () => {
     renderAt('/workspace/agents/a-quill');
-    await screen.findByRole('tab', { name: /files/i });
+    await screen.findByRole('radio', { name: 'Files' });
     await waitFor(() => expect(tasksMock).toHaveBeenCalledTimes(1));
   });
 
@@ -773,11 +687,11 @@ describe('one tasks read (TASK-933)', () => {
     await screen.findByRole('heading', { name: 'Tasks' });
     await waitFor(() => expect(tasksMock).toHaveBeenCalledTimes(2));
 
-    fireEvent.click(await screen.findByRole('button', { name: /^Quill\s*,/ }));
+    await pickAgent('Quill');
     await waitFor(() =>
       expect(window.location.pathname).toBe('/workspace/agents/a-quill'),
     );
-    await screen.findByRole('tab', { name: /files/i });
+    await screen.findByRole('radio', { name: 'Files' });
     expect(tasksMock).toHaveBeenCalledTimes(2);
 
     fireEvent.click(screen.getByRole('button', { name: /^Today/ }));
@@ -969,7 +883,7 @@ describe('one tasks read (TASK-933)', () => {
     // Every read is held, so a join stays put and only a reload adds a call.
     tasksMock.mockReturnValue(new Promise(() => {}));
     renderAt('/workspace/agents/a-quill');
-    await screen.findByRole('tab', { name: /files/i });
+    await screen.findByRole('radio', { name: 'Files' });
     await waitFor(() => expect(tasksMock).toHaveBeenCalledTimes(1));
 
     // Opening on an agent's page armed the reload: the trip to Tasks reads afresh.
@@ -1017,7 +931,7 @@ describe('one tasks read (TASK-933)', () => {
       unavailableAgents: [],
     });
     renderAt('/workspace/agents/a-quill');
-    await screen.findByRole('tab', { name: /files/i });
+    await screen.findByRole('radio', { name: 'Files' });
 
     // Today isn't mounted here, so only the shell's own count can say 1.
     await waitFor(() =>

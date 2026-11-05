@@ -98,6 +98,7 @@ function Harness({
   onSeeAll = vi.fn(),
   onOpenModelKeys,
   sources = new Map(),
+  panel = false,
 }: {
   enabled?: boolean;
   conversationId?: string | null;
@@ -105,6 +106,7 @@ function Harness({
   onSeeAll?: () => void;
   onOpenModelKeys?: () => void;
   sources?: ReadonlyMap<string, TurnSource>;
+  panel?: boolean;
 }) {
   const memory = useConversationMemory({
     agentId: 'a1',
@@ -122,6 +124,7 @@ function Harness({
         onJumpToSource={onJump}
         sourceOf={(turnId) => sources.get(turnId)}
         onSeeAll={onSeeAll}
+        panel={panel}
       />
       <LearnedAnnouncer announcement={memory.announcement} />
     </>
@@ -241,6 +244,37 @@ describe('LearnedInChat — compact disclosure', () => {
     fireEvent.click(screen.getByRole('button', { name: memoryUndoLabel(st('a').value) }));
     expect(await screen.findByText(memoryStatementText(st('a')))).toBeTruthy();
     expect(unforget).toHaveBeenCalledWith('a1', ['a']);
+  });
+});
+
+/*
+  The side panel's Memory view. Someone pressed the brain icon to see this, so
+  it starts open and never renders as nothing.
+*/
+describe('LearnedInChat — as the Memory panel', () => {
+  it('starts open, with the rows and See all memory showing', async () => {
+    recall.mockResolvedValueOnce({ statements: [st('a'), st('b')], degraded: [] });
+    render(<Harness panel />);
+    const toggle = await screen.findByRole('button', { name: /Learned in this chat · 2/ });
+    expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByText(memoryStatementText(st('a')))).toBeTruthy();
+    expect(screen.getByRole('button', { name: LEARNED_SEE_ALL })).toBeTruthy();
+  });
+
+  it('says nothing new — rather than vanishing — after a successful empty read', async () => {
+    const onSeeAll = vi.fn();
+    render(<Harness panel onSeeAll={onSeeAll} />);
+    await waitFor(() => expect(events).toHaveBeenCalled());
+    expect(await screen.findByText(LEARNED_NOTHING_NEW)).toBeTruthy();
+    expect(screen.getByRole('heading', { name: LEARNED_TITLE })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: LEARNED_SEE_ALL }));
+    expect(onSeeAll).toHaveBeenCalledTimes(1);
+  });
+
+  it('still draws nothing where facts memory is off — the toggle is withheld there', () => {
+    render(<Harness panel enabled={false} />);
+    expect(screen.queryByText(LEARNED_TITLE)).toBeNull();
+    expect(screen.queryByText(LEARNED_NOTHING_NEW)).toBeNull();
   });
 });
 

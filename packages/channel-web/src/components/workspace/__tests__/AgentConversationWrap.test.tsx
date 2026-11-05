@@ -92,8 +92,8 @@ function conversation(
  * capped too and its chips carry the filename as text. Matching the whole
  * message text tells those apart: the strip's text is the filename, and any
  * ancestor of the bubble also holds the strip's text, so neither is an exact
- * match. `FindHighlight` renders a bare string when `find` is null, so the
- * innermost such box is the bubble itself.
+ * match. The bubble renders its text as a bare string, so the innermost such
+ * box is the bubble itself.
  */
 function bubble(text: string): HTMLElement {
   const turn = screen.getByTestId('workspace-user-message');

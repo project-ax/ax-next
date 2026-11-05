@@ -88,6 +88,13 @@ interface Props {
   sourceOf: (turnId: string) => TurnSource | undefined;
   /** Open the settings Memory section. */
   onSeeAll: () => void;
+  /**
+   * Drawn as the side panel's whole Memory view (opened from the chat's
+   * brain icon) rather than as one block among others: it starts open, and
+   * with nothing to list it says so instead of vanishing — a panel someone
+   * just asked for must never be blank.
+   */
+  panel?: boolean;
 }
 
 /** One muted line — the same shape the rail's other blocks use. */
@@ -104,9 +111,10 @@ export function LearnedInChat({
   onJumpToSource,
   sourceOf,
   onSeeAll,
+  panel = false,
 }: Props) {
   const rootRef = useRef<HTMLElement>(null);
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(panel);
   const [expanded, setExpanded] = useState(false);
   const [fixTarget, setFixTarget] = useState<FactMemoryStatement | null>(null);
   const [forgetTarget, setForgetTarget] = useState<FactMemoryStatement | null>(null);
@@ -197,7 +205,18 @@ export function LearnedInChat({
             : null;
   // Keep an open empty disclosure as a focus landing after the final Forget.
   if (memory.status === 'not-enabled' || (memory.rows.length === 0 && summary === null && !(open && receiptRowId !== null))) {
-    return null;
+    if (!panel || memory.status === 'not-enabled') return null;
+    return (
+      <section aria-labelledby="learned-in-chat-title" className="flex flex-col gap-2 px-2 py-2">
+        <h3 id="learned-in-chat-title" className="text-xs font-medium">{LEARNED_TITLE}</h3>
+        <Note>{LEARNED_NOTHING_NEW}</Note>
+        <div className="flex justify-end">
+          <Button type="button" variant="link" size="sm" className="h-auto p-0 text-[11.5px]" onClick={onSeeAll}>
+            {LEARNED_SEE_ALL}<ChevronRight data-icon="inline-end" aria-hidden="true" />
+          </Button>
+        </div>
+      </section>
+    );
   }
 
   return (

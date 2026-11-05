@@ -12,9 +12,7 @@
  */
 import { MEMORY_SOURCE_CLASS, TURN_ID_ATTR } from '@/lib/thread-jump';
 import {
-  useEffect,
   useLayoutEffect,
-  useMemo,
   useRef,
   useState,
   type ReactNode,
@@ -54,13 +52,6 @@ import { readAlertVariant } from '@/lib/read-register';
 import { turnErrorText } from '@/lib/turn-error-labels';
 import { getDraft, setDraft as saveDraft } from '@/lib/workspace-draft-store';
 import { localTime } from '@/lib/workspace-time';
-import {
-  activeMatch,
-  buildFindIndex,
-  findFieldKey,
-  grantFieldKeyBase,
-  threadFindFields,
-} from '@/lib/thread-find';
 import { useStickToBottom } from '@/lib/use-stick-to-bottom';
 import {
   composerSendBlock,
@@ -90,12 +81,7 @@ import {
   DECISION_SESSION_EXPIRED,
   DECISION_THREAD_READ_FAILED,
 } from './decision-copy';
-import {
-  FindHighlight,
-  ThreadFindBar,
-  ThreadFindToggle,
-  type FindView,
-} from './ThreadFind';
+import { Markdown } from '@/components/Markdown';
 import { WorkspaceAttachmentChip } from './WorkspaceAttachmentChip';
 import { ChatComposer, CHAT_CONTENT_CLASS } from './ChatComposer';
 import pearlOrb from '@/assets/design/pearl-orb.svg';
@@ -490,104 +476,10 @@ export function AgentConversation({
     }
   }, [busy]);
 
-  /*
-    TASK-354 — finding something in a long thread.
-
-    The bar reads the thread THIS COMPONENT WAS HANDED, which is the current
-    conversation on the live view and the read-only excerpt when the rail has
-    one open. That is deliberate: "what did it say three weeks ago" is mostly a
-    question about a past conversation, and the rail already re-reads those by
-    `conversationId`, so each becomes the thread on screen in its turn. There is
-    no second search wire, and no control hinting at one.
-
-    `findStep` is a free-running counter rather than a clamped index — see
-    `activeMatch`, which owns the wrap. Typing resets it to 0 so a new query
-    starts at its first match instead of wherever the last one ended up.
-  */
-  const [findOpen, setFindOpen] = useState(false);
-  const [findQuery, setFindQuery] = useState('');
-  const [findStep, setFindStep] = useState(0);
-  const findToggleRef = useRef<HTMLButtonElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   // The column inside the scroller — the box whose height IS the transcript's.
   // See `useStickToBottom`, which observes it for growth React cannot predict.
   const contentRef = useRef<HTMLDivElement>(null);
-
-  // No control over a thread with nothing in it to find. An empty thread's
-  // find bar can only ever answer "No matches", which is a true sentence about
-  // a question the reader was invited to ask for no reason.
-  const searchable = useMemo(
-    () => threadFindFields(thread, decisions, grants).length > 0,
-    [thread, decisions, grants],
-  );
-  const findIndex = useMemo(
-    () => buildFindIndex(thread, decisions, grants, findOpen ? findQuery : ''),
-    [thread, decisions, grants, findOpen, findQuery],
-  );
-  const findActive = activeMatch(findStep, findIndex.total);
-  const finding = findOpen && findQuery.trim().length > 0;
-  const find: FindView | null = finding
-    ? { query: findQuery, active: findActive, index: findIndex }
-    : null;
-
-  const closeFind = () => {
-    /*
-      Closing CLEARS the query. Leaving the thread painted with the bar gone
-      would strand highlights on screen with nothing left to explain them or
-      take them off again.
-
-      WHERE FOCUS GOES, and why it is not simply "the toggle". Normally it is:
-      the toggle stays mounted while the bar is open precisely so the element
-      we restore to still exists when we get here.
-
-      But this component is mounted ONCE and un-keyed — `AgentView` swaps its
-      `thread` prop between the live conversation and a read-only excerpt — so
-      find state outlives a thread change. Open find, click a past conversation
-      in the rail, and while its excerpt is loading (a lone `status`
-      placeholder) or after that read fails (`[]`), the pane holds nothing
-      searchable. The toolbar is then up only because the open bar holds it
-      there, so the close takes the TOGGLE with it.
-
-      THE MECHANISM, MEASURED — because the obvious guess about it is wrong and
-      leads straight to a fix that does nothing. The toggle is NOT detached when
-      we call `focus()`. A probe of the unfixed code recorded, in this order:
-      `document.contains(toggle) === true`, `toggle !== null`, and
-      `document.activeElement` immediately after the call === the Find button.
-      The focus lands. React batches `setFindOpen(false)` and flushes AFTER the
-      handler returns; that commit unmounts the focused button, and the browser
-      resets `document.activeElement` to `<body>`.
-
-      So a null check does not help, and neither does `document.contains` —
-      both are true at call time. The only thing that helps is choosing a target
-      that is still mounted after the state update. `searchable` is exactly that
-      question: the row's post-close condition is `searchable || findOpen` with
-      `findOpen` about to be false, so `searchable` IS "the toggle survives".
-      When it does not, focus goes to the transcript — always rendered, and the
-      place the reader was already looking.
-
-      Same family as the silent restore-to-nothing `use-opener-restore.ts` fixes
-      for dialogs, but not the same cause, and the difference is the part worth
-      keeping.
-    */
-    setFindOpen(false);
-    setFindQuery('');
-    setFindStep(0);
-    if (searchable) findToggleRef.current?.focus();
-    else scrollRef.current?.focus();
-  };
-
-  // Walk the reader to the match they asked for. Queried out of the DOM rather
-  // than tracked with a ref per mark: which mark is current is already stated
-  // in the markup, and a second copy of that fact is a second thing to get
-  // wrong. `scrollIntoView` is guarded because jsdom only has it when the
-  // suite's setup installs one.
-  useEffect(() => {
-    if (!finding) return;
-    const el = scrollRef.current?.querySelector('[data-find-active="true"]');
-    if (el instanceof HTMLElement && typeof el.scrollIntoView === 'function') {
-      el.scrollIntoView({ block: 'nearest' });
-    }
-  }, [finding, findActive, findQuery]);
 
   /*
     TASK-418 — the transcript follows the newest line.
@@ -613,8 +505,7 @@ export function AgentConversation({
 
     NOT WRAPPED IN `useMemo`, deliberately. The dep would have to be `thread`,
     which is a fresh array every render, so the memo would never hit — it would
-    only look like it did. The join is over string lengths and runs in the same
-    pass as `threadFindFields` above it.
+    only look like it did. The join is over string lengths, so it is cheap.
 
     Everything that grows the scroller WITHOUT changing this string — an image
     decoding, a font swapping, an approval card resolving — is the hook's
@@ -631,40 +522,11 @@ export function AgentConversation({
   const welcome = thread.length === 0 && !readOnly && !settling && !failureStripShown && grants.length === 0;
 
   return (
-    <div className={cn("group/thread relative flex min-h-0 flex-1 flex-col", welcome && "overflow-y-auto [justify-content:safe_center]")}>
-      {/*
-        `|| findOpen` so an open bar survives the thread going empty underneath
-        it — a failed excerpt read renders `[]`, and a control that vanishes
-        mid-keystroke takes the keyboard user's focus with it.
-      */}
-      {(searchable || findOpen) && (
-        <div className={`absolute left-4 top-0 flex items-center justify-end gap-2 rounded-sm bg-background px-2 py-1 opacity-0 focus-within:opacity-100 group-hover/thread:opacity-100 ${findOpen ? 'right-4' : 'md:left-auto md:right-4'}`}>
-          <ThreadFindToggle
-            open={findOpen}
-            onOpen={() => setFindOpen(true)}
-            onClose={closeFind}
-            buttonRef={findToggleRef}
-          />
-          {findOpen && (
-            <ThreadFindBar
-              query={findQuery}
-              onQuery={(next) => {
-                setFindQuery(next);
-                setFindStep(0);
-              }}
-              active={findActive}
-              total={findIndex.total}
-              onNext={() => setFindStep((n) => n + 1)}
-              onPrev={() => setFindStep((n) => n - 1)}
-              onClose={closeFind}
-            />
-          )}
-        </div>
-      )}
+    <div className={cn("relative flex min-h-0 flex-1 flex-col", welcome && "overflow-y-auto [justify-content:safe_center]")}>
       {/*
         `tabIndex={-1}` makes the transcript focusable BY CODE without putting
         it in the tab order — the standard landing spot when a control that had
-        focus is about to unmount (see `closeFind`). The reader's next Tab then
+        focus is about to unmount (see the consent region below). The reader's next Tab then
         continues from the conversation instead of from the top of the page.
 
         It is NAMED and it is VISIBLE when focused, because being dropped
@@ -695,12 +557,9 @@ export function AgentConversation({
         <div ref={contentRef} className={cn(CHAT_CONTENT_CLASS, "flex flex-col gap-[26px]")}>
           {thread.map((m, i) => {
             /*
-              ONE KEY, not two. React's key and the find index's field key are
-              the same string deliberately — see `findFieldKey`. Keying React by
-              `m.id` alone while the index keyed by position left the drift this
-              change is supposed to remove: on a duplicate id React drops or
-              duplicates a `Message` and the painted marks stop matching the
-              total. Cost of the position-bearing key: a remount whenever a
+              Position AND id, not `m.id` alone: on a duplicate id React would
+              drop or duplicate a `Message`. Cost of the position-bearing key:
+              a remount whenever a
               message moves. Turns only grow at the end, but the server appends
               approval pointers AFTER every turn, so a new turn lands ABOVE an
               open card — a remount that drops a focused card's focus. That is
@@ -708,11 +567,9 @@ export function AgentConversation({
               (`keepAnsweredApprovals`, TASK-543). A compaction rewrite of the
               head still remounts the tail.
             */
-            const key = findFieldKey(i, m.id);
             return (
             <Message
-              key={key}
-              fieldKey={key}
+              key={`${i}:${m.id}`}
               m={m}
               agent={agent}
               conversationId={conversationId}
@@ -727,7 +584,6 @@ export function AgentConversation({
                 onSend(`Please prepare a revised draft using this text. Ask me before sending it:\n\n${body}`);
               }}
               onUndo={onUndo}
-              find={find}
               {...(busyIds !== undefined ? { busyIds } : {})}
               {...(notices !== undefined ? { notices } : {})}
             />
@@ -913,8 +769,6 @@ export function AgentConversation({
                   grant={g}
                   onResolved={onGrantResolved}
                   onGranted={onGranted}
-                  find={find}
-                  fieldKeyBase={grantFieldKeyBase(g.key)}
                 />
               ))}
             </div>
@@ -955,10 +809,9 @@ export function AgentConversation({
             bury the sentence that mattered).
           */}
           {/*
-            `data-testid` because this surface now renders TWO `role="status"`
-            nodes — this one and the find bar's match counter — so an unscoped
-            `getByRole('status')` matches both and fails for a reason that has
-            nothing to do with whichever of the two a test meant.
+            `data-testid` because this surface renders more than one
+            `role="status"` node, so an unscoped `getByRole('status')` can
+            match the wrong one.
           */}
           {/*
             TASK-688 — the same node says "Stopping." while a Stop is on its way
@@ -1056,8 +909,6 @@ function Message({
   onUndo,
   busyIds,
   notices,
-  find,
-  fieldKey,
 }: {
   m: ThreadMessage;
   agent: Pick<WorkspaceAgent, 'id' | 'name'>;
@@ -1077,14 +928,6 @@ function Message({
   onUndo: (id: string) => void;
   busyIds?: ReadonlySet<string>;
   notices?: ReadonlyMap<string, string>;
-  /** Null whenever find is shut or its field is blank — see `ThreadFind`. */
-  find: FindView | null;
-  /**
-   * What the find index calls this message's text. Handed DOWN rather than
-   * derived here, because it carries the message's position in the thread and
-   * only the caller doing the mapping knows that — see `findFieldKey`.
-   */
-  fieldKey: string;
 }) {
   if (m.kind === 'user') {
     const attachments = m.attachments ?? [];
@@ -1094,9 +937,8 @@ function Message({
         /*
           TASK-627 — the rail's source link points here by turn id and
           sets `data-memory-source` while it does (hover, or a brief flash
-          after a jump; see `lib/thread-jump.ts`). The highlight is
-          thread-find's own warning-soft pair, so "this is the bit you asked
-          about" looks the same whichever control asked.
+          after a jump; see `lib/thread-jump.ts`). The highlight is the
+          warning-soft pair from `MEMORY_SOURCE_CLASS`.
         */
         {...{ [TURN_ID_ATTR]: m.id }}
         className={`-mx-2 -my-1 flex flex-col items-end gap-1.5 rounded-lg px-2 py-1 ${MEMORY_SOURCE_CLASS}`}
@@ -1215,7 +1057,7 @@ function Message({
         */}
         {m.text.length > 0 && (
           <div className="max-w-[80%] break-words rounded-lg bg-bubble px-3.5 py-2.5 text-[14px] leading-relaxed text-foreground">
-            <FindHighlight fieldKey={fieldKey} text={m.text} find={find} />
+            {m.text}
           </div>
         )}
       </div>
@@ -1228,7 +1070,7 @@ function Message({
         <Separator className="flex-1" />
         <span className="flex shrink-0 items-center gap-1.5 text-[11.5px] text-muted-foreground">
           <Layers size={11} />
-          <FindHighlight fieldKey={fieldKey} text={m.text} find={find} />
+          {m.text}
         </span>
         <Separator className="flex-1" />
       </div>
@@ -1370,8 +1212,6 @@ function Message({
           onEdit={onEdit ? body => onEdit(d.id, body) : undefined}
           busy={busyIds?.has(d.id) === true}
           notice={notices?.get(d.id) ?? null}
-          find={find}
-          fieldKey={fieldKey}
         />
       </ThreadApproval>
     );
@@ -1421,7 +1261,7 @@ function Message({
         */}
         {m.text.length > 0 && (
           <div className="max-w-[604px] text-[15px] leading-[1.58] text-pretty">
-            <FindHighlight fieldKey={fieldKey} text={m.text} find={find} markdown />
+            <Markdown text={m.text} hideFileDownloadLinks />
           </div>
         )}
         {m.kind === 'steps' && <Steps label={m.stepsLabel} steps={m.steps} />}

@@ -30,8 +30,7 @@
  *      message is not reliably announced — the assistive tech has nothing to
  *      have observed changing. So this mounts with the card, empty, and each
  *      renderer hangs it ABOVE its branch split so that resolving a card (an
- *      entirely different subtree) does not take the region with it. Same
- *      reasoning as `ThreadFind`'s permanently-mounted count.
+ *      entirely different subtree) does not take the region with it.
  *   2. IT MUST NOT SPEAK ON MOUNT. This card can draw a receipt resolved in
  *      the last ten seconds on a plain page load. Announcing those would
  *      report a past event as news — the audible version of the focus theft
@@ -48,7 +47,7 @@
  *      of the accessibility tree, which would undo the fix while looking like
  *      it. `sr-only` is absolutely positioned, so it is also not a flex item
  *      and adds no gap to the `flex ... gap-2` containers these cards sit in —
- *      the 6px-twice-over regression `ThreadFind` documents.
+ *      a 6px gap added twice over.
  *
  * ASSERTIVE FOR A RECEIPT, NOT POLITE. `role="alert"` interrupts, which is
  * usually the wrong manners for a confirmation. Here the answer is time-boxed:

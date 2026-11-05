@@ -19,23 +19,16 @@
  * them are read while they are holding a secret. CLAUDE.md's voice guidance
  * says to drop the humour when the subject is security; this is that.
  *
- * THREE DERIVATION FUNCTIONS LIVE HERE TOO (TASK-390), not just constants.
- * `grantTitle` / `grantDescription` / `grantPackagesVisible` used to be
- * computed inline inside `GrantRow.tsx`. `lib/thread-find.ts` needs the exact
- * same answers to decide what a grant's find-index entry says — and "the exact
- * same answers" has to mean one function, not two copies that happen to agree
- * today. A title-format tweak in one and not the other is a search result that
- * quotes text nobody can see, or a card whose visible words find cannot find —
- * the invariant-4 bug this repo's memory keeps re-discovering. So the render
- * site and the index both call these, and neither hand-builds the string.
+ * THREE DERIVATION FUNCTIONS LIVE HERE TOO (TASK-390), not just constants:
+ * `grantTitle` / `grantDescription` / `grantPackagesVisible`. One function per
+ * answer, so a second surface that needs the same wording calls it rather than
+ * hand-building a copy that drifts.
  */
 import { humanizeId } from './humanize';
 import type { PermissionRequest } from '@/server/types';
 
 /**
  * THE TITLE IS THE SUBJECT OF THE CONSENT (see `GrantRow.tsx`'s own note).
- * Pulled out here so `thread-find.ts` cannot compute a different title for the
- * same grant.
  */
 export function grantTitle(request: PermissionRequest): string {
   if (request.kind === 'host') return `Allow access to ${request.host}?`;

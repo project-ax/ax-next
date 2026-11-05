@@ -1,7 +1,8 @@
 /**
  * TASK-485 — the roster says each agent's state, not just paints it.
  *
- * A sidebar roster row is a state dot plus the agent's name, and nothing else.
+ * The roster is now the agent switcher's menu: each item is a state dot plus
+ * the agent's name, and the trigger names the selected agent and its state.
  * The dot was `aria-hidden` and told the state by colour alone, so two readers
  * got no state at all: someone who cannot tell the hues apart (WCAG 1.4.1), and
  * someone on a screen reader, for whom the state was not in the tree (1.1.1).
@@ -42,53 +43,66 @@ function renderRoster(
       <WorkspaceSidebarNav
         agents={agents}
         route="today"
-        activeAgentId={null}
+        selectedAgentId="a1"
         pendingCount={0}
-        rosterOpen
-        onRoster={vi.fn()}
         onToday={vi.fn()}
         onTasks={vi.fn()}
         onAgent={vi.fn()}
+        chats={null}
+        chatsError={false}
+        onOpenChat={vi.fn()}
+        onNewChat={vi.fn(async () => {})}
+        onChatsChanged={vi.fn()}
         {...overrides}
       />
     </UserProvider>,
   );
 }
 
-describe('WorkspaceSidebar roster — agent state is not colour-only (TASK-485)', () => {
+/** Open the switcher (Radix opens on pointerdown, not click). */
+function openSwitcher() {
+  fireEvent.pointerDown(screen.getByRole('button', { name: /Switch agent$/ }), {
+    button: 0,
+    ctrlKey: false,
+  });
+}
+
+/** "Ada , working" → "Ada, working": jsdom spaces flex children in names. */
+const folded = (want: string) => (n: string) => n.replace(/\s+,/g, ',') === want;
+
+describe('WorkspaceSidebar switcher — agent state is not colour-only (TASK-485)', () => {
   it.each([
     ['Ada', 'Ada, working'],
     ['Bo', 'Bo, waiting on you'],
     ['Cy', 'Cy, resting'],
     ['Di', 'Di, stopped'],
-  ])('names the %s row with its state', (_who, name) => {
+  ])('names the %s menu item with its state', (_who, name) => {
     renderRoster();
-    /*
-      The row's children are flex items, and the accessible-name computation
-      puts a space between block-level children — jsdom (no CSS) does it for
-      every element — so the tree reads "Ada , working". The space before the
-      comma is layout, not content; fold it out and compare the words.
-    */
-    const byName = (accessible: string) =>
-      accessible.replace(/\s+,/g, ',') === name;
-    expect(screen.getByRole('button', { name: byName })).toBeTruthy();
+    openSwitcher();
+    expect(screen.getByRole('menuitem', { name: folded(name) })).toBeTruthy();
+  });
+
+  it('names the selected agent and its state on the trigger', () => {
+    renderRoster(AGENTS, { selectedAgentId: 'a2' });
+    expect(
+      screen.getByRole('button', { name: 'Bo, waiting on you. Switch agent' }),
+    ).toBeTruthy();
   });
 
   it('reads an out-of-contract state as resting, not a crash', () => {
-    // Malformed server data: the roster used to render any state (the dot just
-    // lost its fill); the state word must not turn that into a thrown render.
-    renderRoster([agent('a9', 'Ez', 'paused' as WorkspaceAgent['state'])]);
-    expect(
-      screen.getByRole('button', {
-        name: (n: string) => n.replace(/\s+,/g, ',') === 'Ez, resting',
-      }),
-    ).toBeTruthy();
+    // Malformed server data: the state word must not turn into a thrown render.
+    renderRoster([agent('a9', 'Ez', 'paused' as WorkspaceAgent['state'])], {
+      selectedAgentId: 'a9',
+    });
+    openSwitcher();
+    expect(screen.getByRole('menuitem', { name: folded('Ez, resting') })).toBeTruthy();
   });
 
   it('gives each state its own shape, not just its own colour', () => {
     renderRoster();
+    openSwitcher();
     const geometry = (who: string) => {
-      const row = screen.getByText(who).closest('button')!;
+      const row = screen.getByRole('menuitem', { name: new RegExp(`^${who}\\b`) });
       const dot = row.querySelector('span[aria-hidden="true"]');
       expect(dot, `${who} row has no state mark`).not.toBeNull();
       return dot!.className
@@ -108,25 +122,35 @@ describe('WorkspaceSidebar roster — agent state is not colour-only (TASK-485)'
     const slotClass = (shared.container.firstElementChild as HTMLElement).className;
     shared.unmount();
     renderRoster();
+    openSwitcher();
     for (const who of ['Ada', 'Bo', 'Cy', 'Di']) {
-      const row = screen.getByText(who).closest('button')!;
+      const row = screen.getByRole('menuitem', { name: new RegExp(`^${who}\\b`) });
       const dot = row.querySelector('span[aria-hidden="true"]')!;
       expect(dot.parentElement!.className, who).toBe(slotClass);
     }
+  });
+
+  it('switches agents from the menu', () => {
+    const onAgent = vi.fn();
+    renderRoster(AGENTS, { onAgent });
+    openSwitcher();
+    fireEvent.click(screen.getByRole('menuitem', { name: folded('Cy, resting') }));
+    expect(onAgent).toHaveBeenCalledWith('a3');
   });
 });
 
 describe('the Tasks row (TASK-909)', () => {
   const workspaceNav = () => screen.getByRole('navigation', { name: 'Workspace' });
 
-  it('lists Tasks right under Today, above Activity, and opens it', () => {
+  it('lists Today, Tasks, then the agent switcher, and opens Tasks', () => {
     const onTasks = vi.fn();
     renderRoster(AGENTS, { onTasks });
     const names = within(workspaceNav())
       .getAllByRole('button')
-      .slice(0, 2)
-      .map((b) => b.textContent?.trim());
-    expect(names).toEqual(['Today', 'Tasks']);
+      .slice(0, 3)
+      .map((b) => b.getAttribute('aria-label') ?? b.textContent?.trim());
+    expect(names).toEqual(['Today', 'Tasks', 'Ada, working. Switch agent']);
+    expect(within(workspaceNav()).queryByRole('button', { name: /^Agents/ })).toBeNull();
 
     fireEvent.click(within(workspaceNav()).getByRole('button', { name: 'Tasks' }));
     expect(onTasks).toHaveBeenCalledTimes(1);
@@ -140,11 +164,70 @@ describe('the Tasks row (TASK-909)', () => {
     expect(nav.queryByRole('button', { name: 'Activity' })).toBeNull();
   });
 
-  it('puts Tasks between Today and Activity in the icon rail', () => {
+  it('puts Tasks between Today and the switcher in the icon rail', () => {
     renderRoster(AGENTS, { collapsed: true });
     const labels = within(workspaceNav())
       .getAllByRole('button')
       .map((b) => b.getAttribute('aria-label'));
-    expect(labels.slice(0, 3)).toEqual(['Today', 'Tasks', 'Agents']);
+    expect(labels).toEqual([
+      'Today',
+      'Tasks',
+      'Ada, working. Switch agent',
+      'New chat',
+      'Search chats',
+    ]);
+  });
+});
+
+describe('the sidebar chat list', () => {
+  const chats = {
+    agentId: 'a1',
+    conversationId: 'c-live',
+    past: [{ id: 'c-old', title: 'Old plans', lastActivityAt: new Date().toISOString() }],
+    openPastId: 'c-old',
+    busy: false,
+  };
+
+  it('lists the selected agent\'s chats under New chat and Search', () => {
+    renderRoster(AGENTS, { chats, route: 'agent' });
+    const nav = within(screen.getByRole('navigation', { name: 'Workspace' }));
+    expect(nav.getByRole('button', { name: 'New chat' })).toBeTruthy();
+    expect(nav.getByRole('button', { name: 'Search' })).toBeTruthy();
+    expect(nav.getByRole('button', { name: 'Old plans' })).toHaveAttribute('aria-current', 'page');
+  });
+
+  it('marks no chat as open off the agent route', () => {
+    renderRoster(AGENTS, { chats, route: 'today' });
+    expect(screen.getByRole('button', { name: 'Old plans' })).not.toHaveAttribute('aria-current');
+  });
+
+  it('opens the collapsed rail\'s Search straight into the search box', () => {
+    const onCollapse = vi.fn();
+    const { rerender } = renderRoster(AGENTS, { chats, collapsed: true, onCollapse });
+    fireEvent.click(screen.getByRole('button', { name: 'Search chats' }));
+    expect(onCollapse).toHaveBeenCalledTimes(1);
+    rerender(
+      <UserProvider
+        value={{ id: 'u1', email: 'u@example.com', name: 'Uma', role: 'user' } as never}
+      >
+        <WorkspaceSidebarNav
+          agents={AGENTS}
+          route="today"
+          selectedAgentId="a1"
+          pendingCount={0}
+          onToday={vi.fn()}
+          onTasks={vi.fn()}
+          onAgent={vi.fn()}
+          chats={chats}
+          chatsError={false}
+          onOpenChat={vi.fn()}
+          onNewChat={vi.fn(async () => {})}
+          onChatsChanged={vi.fn()}
+          collapsed={false}
+          onCollapse={onCollapse}
+        />
+      </UserProvider>,
+    );
+    expect(screen.getByRole('searchbox', { name: 'Search chats by title' })).toBeTruthy();
   });
 });

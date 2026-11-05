@@ -32,7 +32,6 @@
  */
 import type { ComponentPropsWithoutRef, FC } from 'react';
 import ReactMarkdown from 'react-markdown';
-import type { PluggableList } from 'unified';
 import remarkGfm from 'remark-gfm';
 import { remarkFileDownloads } from '@/lib/remark-file-downloads';
 import { cn } from '@/lib/utils';
@@ -113,30 +112,19 @@ const AltTextOnly: FC<ImageProps> = ({ alt }) => (
  * `text` is untrusted by assumption. Nothing here builds markup from it — the
  * only thing between it and the DOM is react-markdown, whose defaults this
  * file narrows rather than widens.
- *
- * `rehypePlugins` exists for ONE caller (TASK-405): find-in-thread has to paint
- * `<mark>`s inside the rendered text of an agent turn, and the only place that
- * can happen is between remark-rehype and React. It stays a hole a caller has
- * to reach through deliberately rather than a second `<Markdown>`, because two
- * markdown components is how the two surfaces this card is converging drifted
- * apart in the first place. A plugin passed here operates on hast — it can
- * reshape what react-markdown already decided to render, and it is still not a
- * way to turn `text` into markup unless the plugin itself does that.
  */
 export const Markdown: FC<{
   text: string;
   className?: string;
-  rehypePlugins?: PluggableList;
   /** Chat owns download chips separately; workspace file previews keep their text. */
   hideFileDownloadLinks?: boolean;
-}> = ({ text, className, rehypePlugins, hideFileDownloadLinks = false }) => (
+}> = ({ text, className, hideFileDownloadLinks = false }) => (
   // `ax-md` is the typography (index.css). It is not optional decoration: this
   // renders outside `.msg-body`, where Preflight has zeroed every heading and
   // stripped every list marker.
   <div className={cn(MARKDOWN_PROSE_CLASS, 'ax-md', className)}>
     <ReactMarkdown
       remarkPlugins={hideFileDownloadLinks ? [remarkGfm, remarkFileDownloads] : [remarkGfm]}
-      {...(rehypePlugins === undefined ? {} : { rehypePlugins })}
       urlTransform={safeUrlTransform}
       components={{ a: ExternalAnchor, img: AltTextOnly }}
     >

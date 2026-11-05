@@ -1,39 +1,38 @@
-import {
-  Bot,
-  ChevronDown,
-  Inbox,
-  ListChecks,
-  PanelLeft,
-  Plus,
-} from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { Inbox, ListChecks, PanelLeft, Plus, Search } from 'lucide-react';
 import { BrandMark } from '@/components/BrandMark';
 import { UserMenu } from '@/components/UserMenu';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from '@/components/ui/collapsible';
 import { cn } from '@/lib/utils';
 import { useRailPreference } from '@/lib/use-rail-preference';
 import type { WorkspaceAgent } from '@/lib/workspace-api';
-import { NEW_AGENT_OPENER_ATTR } from '@/lib/new-agent-return-focus';
-import { StateDot, StateDotSlot, stateWord } from './bits';
+import type { SidebarChatList } from '@/lib/sidebar-chats';
+import { AgentSwitcher } from './AgentSwitcher';
 import { IconTooltip } from './IconTooltip';
+import { SidebarChats } from './SidebarChats';
 
 interface Props {
   agents: WorkspaceAgent[];
   route: 'today' | 'tasks' | 'agent';
-  activeAgentId: string | null;
+  /**
+   * The agent the switcher shows and whose chats are listed: the open one on
+   * an agent route, otherwise the last one opened. `null` only with no agents.
+   */
+  selectedAgentId: string | null;
   pendingCount: number;
-  rosterOpen: boolean;
-  onRoster: (open: boolean) => void;
   onToday: () => void;
   onTasks: () => void;
   onAgent: (id: string) => void;
   onOpenAdminSettings?: (() => void) | undefined;
   onCreateAgent?: (() => void) | undefined;
+  onOpenAgentSettings?: ((id: string) => void) | undefined;
+  onAgentDeleted?: ((id: string) => void) | undefined;
+  chats: SidebarChatList | null;
+  chatsError: boolean;
+  onOpenChat: (pastId: string | null) => void;
+  onNewChat: () => Promise<void>;
+  onChatsChanged: () => void;
 }
 
 interface NavProps extends Props {
@@ -45,19 +44,35 @@ interface NavProps extends Props {
 export function WorkspaceSidebarNav({
   agents,
   route,
-  activeAgentId,
+  selectedAgentId,
   pendingCount,
-  rosterOpen,
-  onRoster,
   onToday,
   onTasks,
   onAgent,
   onOpenAdminSettings,
   onCreateAgent,
+  onOpenAgentSettings,
+  onAgentDeleted,
+  chats,
+  chatsError,
+  onOpenChat,
+  onNewChat,
+  onChatsChanged,
   onNavigate,
   collapsed = false,
   onCollapse,
 }: NavProps) {
+  const selected =
+    agents.find((a) => a.id === selectedAgentId) ?? agents[0] ?? null;
+  /*
+    The collapsed rail's Search widens the sidebar and opens the box in one
+    press. `SidebarChats` only mounts once expanded, so it reads this as its
+    starting state; cleared after, so a later expand does not reopen it.
+  */
+  const [searchOnExpand, setSearchOnExpand] = useState(false);
+  useEffect(() => {
+    if (!collapsed && searchOnExpand) setSearchOnExpand(false);
+  }, [collapsed, searchOnExpand]);
   const go = (act: () => void) => () => {
     act();
     onNavigate?.();
@@ -137,118 +152,88 @@ export function WorkspaceSidebarNav({
             pendingCount > 0,
           )}
           {iconRow('Tasks', ListChecks, onTasks, route === 'tasks')}
-          {iconRow(
-            'Agents',
-            Bot,
-            () => {
-              onCollapse?.();
-              onRoster(true);
-            },
-            route === 'agent',
-          )}
-          {onCreateAgent && (
-            <IconTooltip label="New agent" side="right">
-              <Button
-                variant="ghost"
-                size="icon"
-                aria-label="New agent"
-                onClick={go(onCreateAgent)}
-                {...{ [NEW_AGENT_OPENER_ATTR]: '' }}
-              >
-                <Plus aria-hidden="true" />
-              </Button>
-            </IconTooltip>
-          )}
+          <div className="mt-3.5 flex flex-col items-center gap-1">
+            <AgentSwitcher
+              agents={agents}
+              selected={selected}
+              onSelect={onAgent}
+              onCreateAgent={onCreateAgent}
+              collapsed
+              onNavigate={onNavigate}
+            />
+            {selected !== null && (
+              <>
+                {iconRow('New chat', Plus, () => void onNewChat())}
+                {iconRow('Search chats', Search, () => {
+                  setSearchOnExpand(true);
+                  onCollapse?.();
+                })}
+              </>
+            )}
+          </div>
         </nav>
       ) : (
         <nav
           aria-label="Workspace"
-          className="flex flex-1 flex-col gap-0.5 overflow-y-auto px-5 py-2"
+          className="flex min-h-0 flex-1 flex-col px-5 py-2"
         >
-          <Button
-            variant="navigation"
-            onClick={go(onToday)}
-            className={row()}
-            data-active={route === 'today'}
-          >
-            <Inbox data-icon="inline-start" aria-hidden="true" />
-            Today
-            {pendingCount > 0 && (
-              <Badge
-                variant="warning"
-                className="ml-auto h-5 min-w-5 justify-center px-1.5 text-[11px]"
-              >
-                {pendingCount}
-              </Badge>
-            )}
-          </Button>
-          <Button
-            variant="navigation"
-            onClick={go(onTasks)}
-            className={row()}
-            data-active={route === 'tasks'}
-          >
-            <ListChecks data-icon="inline-start" aria-hidden="true" />
-            Tasks
-          </Button>
-          <Collapsible
-            className="mt-3.5"
-            open={rosterOpen}
-            onOpenChange={onRoster}
-          >
-            <CollapsibleTrigger asChild>
-              <Button variant="navigation" className={row()}>
-                <Bot data-icon="inline-start" aria-hidden="true" />
-                Agents
-                <span className="ml-auto text-[12px] text-muted-foreground">
-                  {agents.length}
-                </span>
-                <ChevronDown
-                  aria-hidden="true"
-                  className={cn(
-                    'transition-transform',
-                    !rosterOpen && '-rotate-90',
-                  )}
-                />
-              </Button>
-            </CollapsibleTrigger>
-            <CollapsibleContent className="flex flex-col gap-0.5">
-              {agents.map((a) => (
-                <Button
-                  key={a.id}
-                  variant="navigation"
-                  data-active={route === 'agent' && activeAgentId === a.id}
-                  onClick={go(() => onAgent(a.id))}
-                  className="h-10 w-full gap-2.5 pl-8 pr-2 max-md:min-h-11"
-                >
-                  <StateDotSlot>
-                    <StateDot state={a.state} />
-                  </StateDotSlot>
-                  <span className="truncate" title={a.name}>
-                    {a.name}
-                  </span>
-                  <span className="sr-only">
-                    , {stateWord(a.state).toLowerCase()}
-                  </span>
-                </Button>
-              ))}
-              {agents.length === 0 && (
-                <p className="px-2.5 py-2 text-[12.5px] text-muted-foreground">
-                  No agents yet.
-                </p>
-              )}
-            </CollapsibleContent>
-          </Collapsible>
-          {onCreateAgent && (
+          <div className="flex shrink-0 flex-col gap-0.5">
             <Button
               variant="navigation"
-              onClick={go(onCreateAgent)}
+              onClick={go(onToday)}
               className={row()}
-              {...{ [NEW_AGENT_OPENER_ATTR]: '' }}
+              data-active={route === 'today'}
             >
-              <Plus data-icon="inline-start" aria-hidden="true" />
-              New agent
+              <Inbox data-icon="inline-start" aria-hidden="true" />
+              Today
+              {pendingCount > 0 && (
+                <Badge
+                  variant="warning"
+                  className="ml-auto h-5 min-w-5 justify-center px-1.5 text-[11px]"
+                >
+                  {pendingCount}
+                </Badge>
+              )}
             </Button>
+            <Button
+              variant="navigation"
+              onClick={go(onTasks)}
+              className={row()}
+              data-active={route === 'tasks'}
+            >
+              <ListChecks data-icon="inline-start" aria-hidden="true" />
+              Tasks
+            </Button>
+          </div>
+          {/*
+            Today and Tasks sit ABOVE the switcher on purpose: they span every
+            agent, and anything below it reads as belonging to the one picked.
+          */}
+          <div className="mt-3.5 shrink-0 border-t border-border pt-3.5">
+            <AgentSwitcher
+              agents={agents}
+              selected={selected}
+              onSelect={onAgent}
+              onCreateAgent={onCreateAgent}
+              onOpenSettings={onOpenAgentSettings}
+              onDeleted={onAgentDeleted}
+              onNavigate={onNavigate}
+            />
+          </div>
+          {selected !== null && (
+            <div className="mt-1 flex min-h-0 flex-1 flex-col">
+              <SidebarChats
+                agentId={selected.id}
+                chats={chats}
+                error={chatsError}
+                showSelection={route === 'agent'}
+                startSearching={searchOnExpand}
+                onOpen={onOpenChat}
+                onNew={onNewChat}
+                onChanged={onChatsChanged}
+                onNavigate={onNavigate}
+              />
+            </div>
           )}
         </nav>
       )}

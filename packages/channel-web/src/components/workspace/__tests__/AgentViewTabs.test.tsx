@@ -1,39 +1,23 @@
 /**
- * The agent pane's tab set, as ASSISTIVE TECH sees it (TASK-437).
+ * The chat header's side-panel toggles, as ASSISTIVE TECH sees them.
  *
- * The defect this pins, measured against the commit before the fix: the four
- * triggers carried **four `aria-controls` attributes pointing at ids that do not
- * exist**, and the document contained **zero** elements with `role="tabpanel"`.
- * `AgentView` imported `Tabs`, `TabsList` and `TabsTrigger` and never
- * `TabsContent`, so the panels the triggers advertise were simply not there.
+ * Successor to the TASK-437 tab-set tests. The panel used to be a Radix tab
+ * set, and the defect those tests pinned was `aria-controls` pointing at
+ * ids that did not exist. The panel is now opened by a single-select toggle
+ * group in the chat header (Claude's mini-icon pattern): there are no tabs, so
+ * the guard becomes "nothing advertises a panel that is not there", plus the
+ * same keyboard contract (one Tab stop, arrows within) and the same economy
+ * (only the open view mounts, and only it reads).
  *
- * A dangling `aria-controls` is worse than none: it promises a relationship the
- * DOM does not keep, so a reader who follows it lands nowhere, and without the
- * panel role there is no "tab 2 of 4" and no way into the panel's content.
- *
- * WHY THREE OF THE FOUR PANELS ARE EMPTY, and why that is the fix rather than a
- * shortcut — read out of `@radix-ui/react-tabs@1.1.21`:
- *
- *   - `TabsTrigger` sets `aria-controls={contentId}` UNCONDITIONALLY. There is no
- *     branch on whether the matching content is mounted.
- *   - `TabsContent` renders inside `<Presence present={forceMount || isSelected}>`,
- *     which renders NOTHING when its tab is inactive.
- *
- * So the obvious composition — one `TabsContent` for the open tab — would still
- * leave three ids dangling while looking fixed. `forceMount` keeps all four panel
- * elements present; supplying `children` only for the open tab keeps the other
- * three EMPTY, so nothing extra mounts and nothing extra reads.
- *
- * jsdom has no CSS, so nothing here claims anything about how any of this LOOKS.
- * The accessibility tree, `role`, id resolution, `hidden` and
- * `document.activeElement` are real in jsdom, and they are the whole subject.
+ * jsdom has no CSS; the accessibility tree, roles, ids, tabindex and
+ * `document.activeElement` are real, and they are the whole subject.
  */
 import type { ComponentProps } from 'react';
-import { describe, expect, it, vi, beforeEach } from 'vitest';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { workspaceApi, type AgentDetail, type WorkspaceAgent } from '@/lib/workspace-api';
-import { WORKSPACE_AGENT_TABS } from '@/lib/workspace-route';
 import { AgentView } from '../AgentView';
+import { RAIL_PANELS } from '../AgentRail';
 import { rail as railFixture } from './rail-fixture';
 
 vi.mock('@/lib/workspace-api', async () => {
@@ -42,9 +26,14 @@ vi.mock('@/lib/workspace-api', async () => {
     ...actual,
     workspaceApi: {
       agent: vi.fn(),
-      // The rail reads its own route — without it the chat tab throws before
-      // this file's subject renders at all.
+      // Activity reads the rail route; Files reads user files. Each should be
+      // called only once its own view is open.
       rail: vi.fn(async () => railFixture()),
+      // A root 404 is an empty list.
+      userFiles: vi.fn(async () => {
+        const E = actual.WorkspaceApiError as new (path: string, status: number) => Error;
+        throw new E('/agents/a-quill/user-files/', 404);
+      }),
       revokeGrant: vi.fn(),
       sendMessage: vi.fn(),
       streamReply: vi.fn(),
@@ -99,205 +88,119 @@ function renderView(over: Partial<ComponentProps<typeof AgentView>> = {}) {
   );
 }
 
-/**
- * The tabs, in DOM order.
- *
- * `hidden: true` because three of the four PANELS are hidden and Testing
- * Library's default role query drops hidden elements — the tabs themselves are
- * visible either way, but every query in this file uses the same setting so a
- * count on one side can be compared with a count on the other.
- */
-function tabs(): HTMLElement[] {
-  return screen.getAllByRole('tab', { hidden: true });
-}
-
-function panels(): HTMLElement[] {
-  return screen.getAllByRole('tabpanel', { hidden: true });
+function toggles(): HTMLElement[] {
+  const group = screen.getByRole('group', { name: 'Side panel' });
+  return within(group).getAllByRole('radio');
 }
 
 beforeEach(() => {
+  localStorage.clear();
   agentMock.mockReset();
   agentMock.mockResolvedValue(detail());
   vi.mocked(workspaceApi.rail).mockClear();
+  vi.mocked(workspaceApi.userFiles).mockClear();
 });
 
-describe('AgentView tab set — the accessibility tree', () => {
-  /*
-    THE CARD'S HEADLINE DEFECT, asserted on every tab because the bug was on
-    every tab. Before the fix `resolved` was `[]` and `dangling` held all four.
-  */
-  for (const tab of WORKSPACE_AGENT_TABS) {
-    it(`resolves every aria-controls to a real tabpanel with the ${tab} tab open`, async () => {
-      renderView({ tab });
+afterEach(() => localStorage.clear());
 
-      await waitFor(() => expect(tabs()).toHaveLength(WORKSPACE_AGENT_TABS.length));
+describe('AgentView side-panel toggles — the accessibility tree', () => {
+  it('draws one toggle per offered view, none pressed, and no tab set at all', async () => {
+    renderView();
+    await screen.findByRole('group', { name: 'Side panel' });
 
-      const dangling: string[] = [];
-      const notPanels: string[] = [];
-      for (const t of tabs()) {
-        const id = t.getAttribute('aria-controls');
-        // No `aria-controls` at all would be a lesser bug than a dangling one,
-        // but it is still not this fix — the tab/panel pairing is the point.
-        expect(id, `${t.textContent} has no aria-controls`).toBeTruthy();
-        const target = document.getElementById(id as string);
-        if (target === null) {
-          dangling.push(`${t.textContent} -> #${id}`);
-        } else if (target.getAttribute('role') !== 'tabpanel') {
-          notPanels.push(`${t.textContent} -> role=${target.getAttribute('role')}`);
-        }
-      }
-      expect(dangling).toEqual([]);
-      expect(notPanels).toEqual([]);
-
-      // Stated as a number as well, so "zero tabpanels" — the shipped state —
-      // cannot pass by way of a loop that had nothing to iterate.
-      expect(panels()).toHaveLength(WORKSPACE_AGENT_TABS.length);
-    });
-  }
-
-  /*
-    The pairing points BOTH ways. `aria-labelledby` is what lets a reader who
-    has landed in the panel hear which tab they are in; Radix sets it from the
-    same `baseId`, so this also catches a panel wired to the wrong tab.
-  */
-  it('labels each panel by its own tab', async () => {
-    renderView({ tab: 'chat' });
-
-    await waitFor(() => expect(panels()).toHaveLength(WORKSPACE_AGENT_TABS.length));
-
-    for (const t of tabs()) {
-      const panel = document.getElementById(t.getAttribute('aria-controls') as string);
-      expect(panel?.getAttribute('aria-labelledby')).toBe(t.getAttribute('id'));
-    }
+    // No facts memory in this detail, so no Memory toggle.
+    expect(toggles().map((t) => t.getAttribute('aria-label'))).toEqual([
+      RAIL_PANELS.files.label,
+      RAIL_PANELS.activity.label,
+    ]);
+    for (const t of toggles()) expect(t.getAttribute('aria-checked')).toBe('false');
+    expect(screen.queryAllByRole('tab', { hidden: true })).toHaveLength(0);
+    expect(screen.queryAllByRole('tabpanel', { hidden: true })).toHaveLength(0);
   });
 
   /*
-    ONLY THE OPEN PANEL HOLDS ANYTHING. The three closed ones exist so their ids
-    resolve, and that is all they are for: if they carried children, opening the
-    agent pane would mount `AgentFiles`, `AgentMemory` and `ActivityFeed`
-    together and fire three reads for panels nobody is looking at.
+    The TASK-437 rule, restated for what is here now: nothing in the pane
+    points at an element that is not there.
   */
-  it('mounts content in the open panel only, and hides the other three', async () => {
-    renderView({ tab: 'chat' });
+  it('leaves no aria-controls dangling in the header or the panel, open or closed', async () => {
+    renderView();
+    const group = await screen.findByRole('group', { name: 'Side panel' });
+    const header = group.closest('header') as HTMLElement;
+    const scopes = () => [header, ...screen.queryAllByRole('complementary')];
+    const dangling = () =>
+      scopes()
+        .flatMap((scope) => [...scope.querySelectorAll('[aria-controls]')])
+        .map((el) => el.getAttribute('aria-controls') as string)
+        .filter((id) => document.getElementById(id) === null);
 
-    await waitFor(() => expect(panels()).toHaveLength(WORKSPACE_AGENT_TABS.length));
+    expect(dangling()).toEqual([]);
+    fireEvent.click(screen.getByRole('radio', { name: 'Files' }));
+    await screen.findByRole('complementary', { name: 'Files' });
+    expect(dangling()).toEqual([]);
+  });
 
-    const open = screen.getByRole('tab', { name: 'Chats' });
-    const openId = open.getAttribute('aria-controls');
+  it('presses exactly the toggle whose view is open, and names the panel after it', async () => {
+    renderView();
+    fireEvent.click(await screen.findByRole('radio', { name: 'Activity' }));
 
-    for (const panel of panels()) {
-      if (panel.id === openId) {
-        expect(panel.hasAttribute('hidden')).toBe(false);
-        expect(panel.textContent).not.toBe('');
-      } else {
-        expect(panel.hasAttribute('hidden')).toBe(true);
-        // Empty, not merely hidden — an empty panel costs nothing to keep.
-        expect(panel.childElementCount).toBe(0);
-        expect(panel.textContent).toBe('');
-      }
-    }
+    expect(await screen.findByRole('complementary', { name: 'Activity' })).toBeTruthy();
+    expect(toggles().filter((t) => t.getAttribute('aria-checked') === 'true')).toEqual([
+      screen.getByRole('radio', { name: 'Activity' }),
+    ]);
+
+    fireEvent.click(screen.getByRole('radio', { name: 'Activity' }));
+    await waitFor(() => expect(screen.queryByRole('complementary')).toBeNull());
+    for (const t of toggles()) expect(t.getAttribute('aria-checked')).toBe('false');
   });
 
   /*
-    THE TRAP THIS PINS, and it is invisible in jsdom as a rendered fact so it is
-    pinned structurally instead.
-
-    Tailwind preflight (3.4.19) carries
-    `[hidden]:where(:not([hidden="until-found"])) { display: none }`. `:where()`
-    adds NOTHING to specificity, so that rule is (0,1,0) — exactly a `flex`
-    utility. Ties go to source order and the utilities are emitted last, so
-    `<div class="flex" hidden>` renders VISIBLE in a real browser. The open panel
-    genuinely needs `flex min-h-0 flex-1 flex-col` to give the conversation its
-    height, so the closed ones must carry no display utility at all. jsdom loads
-    no CSS and would agree either way, which is exactly why this reads the class
-    list rather than the computed style.
-
-    WHAT THIS ONE DOES NOT COVER: it skips any panel without `hidden`, so on its
-    own it would go quiet if a regression dropped the attribute entirely. That
-    case is covered by `mounts content in the open panel only`, which asserts the
-    closed panels DO carry `hidden`. The pair is complete; neither half is.
+    ONLY THE OPEN VIEW MOUNTS, AND ONLY IT READS. Opening the agent pane must
+    not fire the Files and Activity reads for panels nobody is looking at.
   */
-  it('gives the closed panels no display utility to override [hidden]', async () => {
-    renderView({ tab: 'chat' });
+  it('reads nothing for a closed view, and only the open one’s data', async () => {
+    renderView();
+    await screen.findByRole('group', { name: 'Side panel' });
+    expect(workspaceApi.userFiles).not.toHaveBeenCalled();
+    expect(workspaceApi.rail).not.toHaveBeenCalled();
 
-    await waitFor(() => expect(panels()).toHaveLength(WORKSPACE_AGENT_TABS.length));
-
-    const display = /(^|\s|:)(flex|grid|block|inline|inline-flex|inline-block|table|contents|flow-root)(\s|$)/;
-    for (const panel of panels()) {
-      if (!panel.hasAttribute('hidden')) continue;
-      expect(
-        display.test(panel.className),
-        `closed panel "${panel.id}" carries a display class (${panel.className}) that beats [hidden]`,
-      ).toBe(false);
-    }
+    fireEvent.click(screen.getByRole('radio', { name: 'Files' }));
+    await waitFor(() => expect(workspaceApi.userFiles).toHaveBeenCalled());
+    expect(workspaceApi.rail).not.toHaveBeenCalled();
   });
 
   /*
-    KEYBOARD, per the WAI-ARIA tabs pattern: the strip is ONE tab stop and the
-    arrow keys move within it.
-
-    STATED PLAINLY — THIS ONE PASSES AGAINST THE UNFIXED CODE TOO, and it is the
-    only test in this file that does (measured: 8 of 9 fail against the commit
-    before the fix, this is the ninth). Radix's roving tabindex lives on
-    `TabsList`/`TabsTrigger`, both of which were already here; the missing
-    `TabsContent` never affected it. So this is a CHARACTERIZATION test, not a
-    guard for this card's defect: it pins the keyboard half of the card's
-    acceptance criteria and would catch a later rewrite that replaced the
-    primitive with four hand-rolled buttons — four tab stops, no arrow keys.
-    It is deliberately not the evidence that this card's fix works; the eight
-    above are.
+    KEYBOARD: the strip is ONE Tab stop and the arrow keys move within it
+    (Radix's roving tabindex on the toggle group). Pins against a rewrite into
+    hand-rolled buttons — three Tab stops, no arrow keys.
   */
-  it('moves between tabs with the arrow keys, not the Tab key', async () => {
-    const onTab = vi.fn();
-    renderView({ tab: 'chat', onTab });
-
-    await waitFor(() => expect(tabs()).toHaveLength(WORKSPACE_AGENT_TABS.length));
-    const [first, second] = tabs();
+  it('is one Tab stop, with the arrow keys moving between toggles', async () => {
+    renderView();
+    await screen.findByRole('group', { name: 'Side panel' });
 
     /*
-      ONE TAB STOP FOR THE WHOLE STRIP — and Radix puts it on the TABLIST, not
-      on the selected trigger. Until something inside has been focused its
-      roving `currentTabStopId` is null, so every trigger reads `-1` and the
-      list itself carries the `0`, handing focus on to the right trigger when it
-      receives it. Asserting `0` on the open trigger instead would be asserting
-      a different library's design; what matters, and what is checked here, is
-      that Tab reaches the strip exactly once rather than four times.
+      Radix puts the single Tab stop on the GROUP until something inside has
+      been focused (its roving `currentTabStopId` starts null), so every
+      toggle reads -1 and the group carries the 0 — the tabs pattern exactly.
     */
-    expect(screen.getByRole('tablist').getAttribute('tabindex')).toBe('0');
-    for (const t of tabs()) {
-      expect(t.getAttribute('tabindex')).toBe('-1');
-    }
+    const group = screen.getByRole('group', { name: 'Side panel' });
+    expect(group.getAttribute('tabindex')).toBe('0');
+    for (const t of toggles()) expect(t.getAttribute('tabindex')).toBe('-1');
 
+    const [first, second] = toggles();
     first?.focus();
     expect(document.activeElement).toBe(first);
-
     fireEvent.keyDown(first as HTMLElement, { key: 'ArrowRight' });
-    /*
-      `waitFor`, not a bare assertion: Radix's roving focus defers the actual
-      `.focus()` to a `setTimeout`, so the move has not happened yet when
-      `fireEvent` returns. Asserting synchronously reads the PREVIOUS focus and
-      fails against working code.
-    */
     await waitFor(() => expect(document.activeElement).toBe(second));
-    // Automatic activation — arrowing onto a tab opens it.
-    expect(onTab).toHaveBeenCalledWith(WORKSPACE_AGENT_TABS[1]);
   });
 
-  /*
-    AND THE PANEL IS REACHABLE. `tabIndex=0` on the panel is what puts it in the
-    tab sequence right after the strip, so Tab out of the tabs lands IN the
-    content rather than jumping past it to the next control.
-  */
-  it('puts the open panel in the tab sequence', async () => {
-    renderView({ tab: 'files' });
+  it('remembers the open view across a remount on desktop', async () => {
+    const first = renderView();
+    fireEvent.click(await screen.findByRole('radio', { name: 'Files' }));
+    await screen.findByRole('complementary', { name: 'Files' });
+    first.unmount();
 
-    await waitFor(() => expect(panels()).toHaveLength(WORKSPACE_AGENT_TABS.length));
-
-    const open = panels().find((p) => !p.hasAttribute('hidden'));
-    expect(open?.getAttribute('tabindex')).toBe('0');
-
-    open?.focus();
-    expect(document.activeElement).toBe(open);
+    renderView();
+    expect(await screen.findByRole('complementary', { name: 'Files' })).toBeTruthy();
+    expect(screen.getByRole('radio', { name: 'Files' })).toHaveAttribute('aria-checked', 'true');
   });
-
 });

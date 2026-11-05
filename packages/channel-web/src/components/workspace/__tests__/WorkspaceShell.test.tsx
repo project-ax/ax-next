@@ -16,6 +16,7 @@ import {
   GRANT_READ_FAILED,
 } from '../decision-copy';
 import { decisionFixture, resolvedFixture } from './decision-fixture';
+import { openSwitcher, pickAgent } from './sidebar-helpers';
 import type { TaskDetail, TaskRow } from '@/lib/workspace-types';
 import type { PermissionRequest } from '../../../server/types';
 
@@ -138,8 +139,11 @@ describe('WorkspaceShell', () => {
 
     renderShell();
 
+    // The switcher shows the selected agent; the rest of the roster is its menu.
     expect(await screen.findByText('Quill')).toBeTruthy();
-    expect(screen.getByText('Tern')).toBeTruthy();
+    const menu = await openSwitcher();
+    expect(within(menu).getByText('Quill')).toBeTruthy();
+    expect(within(menu).getByText('Tern')).toBeTruthy();
     // The prototype's cast is gone with the mock that invented it.
     expect(screen.queryByText('Scheduler')).toBeNull();
     expect(screen.queryByText('Inbox')).toBeNull();
@@ -364,7 +368,7 @@ describe('WorkspaceShell', () => {
 
     renderShell();
 
-    fireEvent.click(await screen.findByRole('button', { name: /Quill/ }));
+    await pickAgent('Quill');
 
     /*
       This assertion is about the SHELL, not the panel. Every other piece of
@@ -414,14 +418,18 @@ describe('WorkspaceShell', () => {
     });
 
     renderShell();
-    fireEvent.click(await screen.findByRole('button', { name: /Quill/ }));
+    await pickAgent('Quill');
     expect(await screen.findByText(DECISION_THREAD_READ_FAILED)).toBeTruthy();
 
     decisionsMock.mockResolvedValue({
       decisions: [decisionFixture({ id: 'd1', agentId: 'a-quill', conversationId: 'c-now' })],
     });
 
-    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+    // The Files panel is the rail's default view now, with its own read and
+    // its own Try again; this one is the approvals notice's.
+    fireEvent.click(
+      within(screen.getByText(DECISION_THREAD_READ_FAILED).closest<HTMLElement>('[role="alert"]')!).getByRole('button', { name: 'Try again' }),
+    );
 
     /*
       The notice going away is only half of it, and on its own it would be the
