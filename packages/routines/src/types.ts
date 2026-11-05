@@ -76,6 +76,13 @@ export type StoredRoutine = RoutineDefinition & {
    */
   done: StoredDone | null;
 };
+/**
+ * TASK-913. A stored routine today's rules can't read: its key, revision,
+ * owner, default source and name, read as columns (`listAll`). Nothing of its
+ * definition, since any field could be the one that doesn't read. The name is
+ * stored text, not checked again.
+ */
+export type UnreadableRoutine = { agentId: string; routineId: string; revision: string; ownerUserId: string; definitionId: string | null; name: string };
 export interface FireRow {
   id: number; agentId: string; routineId: string; firedAt: Date;
   triggerSource: FireSource; conversationId: string | null;

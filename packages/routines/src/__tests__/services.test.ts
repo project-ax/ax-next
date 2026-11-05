@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { makeAgentContext } from '@ax/core';
-import { RoutineDefinitionSchema, RoutineViewSchema, type RoutineView } from '@ax/routines-contract';
+import { makeAgentContext, type AgentContext } from '@ax/core';
+import { RoutineDefinitionSchema, RoutineViewSchema, type RoutineListOutput, type RoutineView } from '@ax/routines-contract';
 import { createRoutineHarness, materializePersonalDefaults, type RoutineHarness } from './support/routine-harness.js';
 const definition = RoutineDefinitionSchema.parse({ name: 'Daily', promptBody: 'Summarize', trigger: { kind: 'interval', every: '1h' } });
 let h: RoutineHarness;
@@ -105,6 +105,43 @@ describe('registered routine services with real agents', () => {
     await expect(h.bus.call('routines:set-agent-default-enabled', h.owner, { agentId: h.agentId, defaultRoutineId: saved.defaultRoutineId, enabled: false })).resolves.toEqual({});
     await expect(h.bus.call('routines:list-agent-defaults', h.owner, { agentId: h.agentId })).resolves.toMatchObject({ defaults: expect.arrayContaining([{ defaultRoutineId: saved.defaultRoutineId, name: definition.name, enabled: false }]) });
     await expect(h.bus.call('routines:delete-default', h.teamAdmin, { defaultRoutineId: saved.defaultRoutineId })).resolves.toEqual({});
+  });
+});
+describe('a stored routine today’s rules refuse (TASK-913)', () => {
+  const inbox = RoutineDefinitionSchema.parse({ name: 'Inbox', promptBody: 'Keep the inbox under control.', trigger: { kind: 'interval', every: '15m' }, kind: 'stay-on-top', goodWhen: 'Nothing waits more than a day.' });
+  const createTask = (agentId: string) => h.bus.call<unknown, RoutineView>('routines:create', h.owner, { agentId, requestId: 'task', definition: inbox });
+  /** The card's way in: code from before TASK-906 set a task to check in every 5 minutes. */
+  async function underTheFloor(routineId: string) {
+    const { sql } = await import('kysely');
+    await sql`UPDATE routines_v1_definitions SET schedule_spec = ${JSON.stringify({ kind: 'interval', every: '5m' })}::jsonb WHERE routine_id = ${routineId}`.execute(h.db);
+  }
+  const list = (ctx: AgentContext, agentId: string) => h.bus.call<unknown, RoutineListOutput>('routines:list', ctx, { agentId });
+  it('routines:list still answers, naming a routine that no longer reads beside the ones that do, and routine_list leaves it out', async () => {
+    h = await createRoutineHarness(); const daily = await create();
+    const task = await createTask(h.agentId);
+    await underTheFloor(task.routineId);
+    const listed = await list(h.owner, h.agentId);
+    expect(listed.routines.map(r => r.routineId)).toEqual([daily.routineId]);
+    expect(listed.unreadable).toEqual([{ agentId: h.agentId, routineId: task.routineId, revision: task.revision, name: 'Inbox', origin: 'authored', canDelete: true }]);
+    // The model's list is `routines` alone (listToolOutput): neither the routine nor the key reaches it.
+    const tool = await h.bus.call<unknown, { routines: RoutineView[] }>('tool:execute:routine_list', makeAgentContext({ ...h.owner, agentId: h.agentId }), { id: 'list', name: 'routine_list', input: {} });
+    expect(tool).not.toHaveProperty('unreadable');
+    expect(tool.routines.map(r => r.routineId)).toEqual([daily.routineId]);
+  });
+  it('routines:delete deletes a routine that no longer reads for someone who may stop it, and refuses anyone else', async () => {
+    h = await createRoutineHarness();
+    const task = await createTask(h.teamAgentId);
+    await underTheFloor(task.routineId);
+    const entry = { agentId: h.teamAgentId, routineId: task.routineId, revision: task.revision, name: 'Inbox', origin: 'authored', canDelete: false };
+    // A member sees it but may not stop another person's routine: no Delete, and the service refuses them anyway.
+    expect((await list(h.teamMember, h.teamAgentId)).unreadable).toEqual([entry]);
+    expect((await list(h.teamAdmin, h.teamAgentId)).unreadable).toEqual([{ ...entry, canDelete: true }]);
+    const key = { agentId: h.teamAgentId, routineId: task.routineId, expectedRevision: task.revision };
+    await expect(h.bus.call('routines:delete', h.teamMember, { ...key, requestId: 'member-delete' })).rejects.toMatchObject({ toolCode: 'forbidden' });
+    await expect(h.bus.call('routines:delete', h.teamAdmin, { ...key, requestId: 'delete' })).resolves.toEqual({ deleted: true, cleanupPending: false });
+    expect(await list(h.owner, h.teamAgentId)).toEqual({ routines: [], unreadable: [] });
+    // Gone now: another delete is told so, not refused for some other reason.
+    await expect(h.bus.call('routines:delete', h.teamAdmin, { ...key, requestId: 'delete-again' })).rejects.toMatchObject({ toolCode: 'not-found', field: 'routineId' });
   });
 });
 function keyWithoutRevision({ agentId, routineId }: { agentId: string; routineId: string }) { return { agentId, routineId }; }

@@ -151,7 +151,7 @@ describe('structured routine client', () => {
           status: 200,
         }),
       );
-    expect((await routineApi.list('a'))[0]?.lastRunAt).toBe(routine.lastRunAt);
+    expect((await routineApi.list('a')).routines[0]?.lastRunAt).toBe(routine.lastRunAt);
     await routineApi.recentFires({ agentId: 'a', routineId: 'r', limit: 20 });
     await routineApi.getConsent('a');
     expect(await routineApi.getReceiver('a')).toEqual({
@@ -163,6 +163,18 @@ describe('structured routine client', () => {
       '/settings/routines/a/consent',
       '/settings/routines/a/receiver',
     ]);
+  });
+});
+describe('routine list page (TASK-913)', () => {
+  it('list answers the routines that read and the ones that don’t, and reads a missing unreadable list as none (TASK-913)', async () => {
+    const broken = { agentId: 'a', routineId: 'rtn_broken', revision: 'rev_broken', name: 'Broken one', origin: 'authored', canDelete: true };
+    vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(JSON.stringify({ routines: [routine], unreadable: [broken] }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ routines: [routine] }), { status: 200 }));
+    const withBroken = await routineApi.list('a');
+    expect(withBroken.routines).toHaveLength(1);
+    expect(withBroken.unreadable).toEqual([broken]);
+    expect((await routineApi.list('a')).unreadable).toEqual([]);
   });
 });
 describe('a routine request that never answers (TASK-937)', () => {

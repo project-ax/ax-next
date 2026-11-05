@@ -68,6 +68,7 @@ LANGUAGE sql IMMUTABLE AS $kept$
       'This app update could not run.',                            -- fire.ts, store.ts finishDispatch
       'This app update could not run. Try a new delivery.',        -- repeat-runtime.ts
       'This app update was cancelled because the job changed.',   -- repeat-deliveries.ts
+      'This app update was cancelled because its routine could not be read.', -- repeat-deliveries.ts (TASK-913)
       'the run finished without reporting a result',              -- fire.ts
       'We couldn’t confirm this task’s instructions loaded, so this check-in is marked as failed.', -- BRIEF_UNCONFIRMED, brief.ts
       'This routine is disabled.'                                  -- an older host sentence (e4f327190)

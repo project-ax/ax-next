@@ -1,7 +1,11 @@
-import { describe, it, expect } from 'vitest';
+import { afterEach, describe, it, expect, vi } from 'vitest';
 import * as C from '@ax/routines-contract';
-import { routinePermissions, routineView, ROUTINE_SERVICES } from '../services.js';
-import type { StoredReading, StoredRoutine, StoredStep } from '../types.js';
+import { routinePermissions, routineView, ROUTINE_SERVICES, unreadableViews } from '../services.js';
+import { loggableIssue } from '../store.js';
+import { captureExpectedStderr } from './support/expected-diagnostics.js';
+import type { StoredReading, StoredRoutine, StoredStep, UnreadableRoutine } from '../types.js';
+// A second captureExpectedStderr would otherwise save the first's spy as the original (TASK-913 plan).
+afterEach(() => { vi.restoreAllMocks(); });
 /** TASK-952. A task report's reading, as the store hands it over. */
 const OPEN_3: StoredReading = { value: 3, label: 'Open tickets' };
 const row: StoredRoutine = {
@@ -333,5 +337,31 @@ describe('canonical routine return schemas', () => {
     // Never the routine's owner, and nothing beside the list.
     expect(() => C.RoutineTasksForConversationsOutputSchema.parse({ checkIns: [{ ...checkIn, ownerUserId: 'owner' }] })).toThrow();
     expect(() => C.RoutineTasksForConversationsOutputSchema.parse({ checkIns: [checkIn], kind: 'stay-on-top' })).toThrow();
+  });
+  it('projects a routine that no longer reads as its ids, revision, cut name, origin and Delete right, and drops one the contract refuses (TASK-913)', () => {
+    const stored: UnreadableRoutine = { agentId: 'agent', routineId: 'routine', revision: 'revision', ownerUserId: 'owner', definitionId: null, name: '😀'.repeat(300) };
+    // Cut in code points, not UTF-16 units, and nothing else of the row: not its owner, not its default source.
+    const dropLines = captureExpectedStderr(m => m.startsWith('[ax/routines] ') && m.includes("can't be listed")).messages;
+    expect(unreadableViews('agent', [stored], 'owner', true)).toEqual([{ agentId: 'agent', routineId: 'routine', revision: 'revision', name: '😀'.repeat(128), origin: 'authored', canDelete: true }]);
+    // Delete is the stop bit a readable routine's Delete has (routinePermissions).
+    expect(unreadableViews('agent', [stored], 'member', true)[0]?.canDelete).toBe(false);
+    expect(unreadableViews('agent', [stored], 'admin', true, true)[0]?.canDelete).toBe(true);
+    expect(unreadableViews('agent', [stored], 'owner', false)[0]?.canDelete).toBe(false);
+    // A workspace default's copy is never deleted, by anyone.
+    expect(unreadableViews('agent', [{ ...stored, definitionId: 'heartbeat' }], 'owner', true, true)[0]).toMatchObject({ origin: 'default', canDelete: false });
+    expect(dropLines).toEqual([]);
+    // One entry the contract refuses (a hand edit's empty id) is left out, not the whole list (TASK-932's rule),
+    // and said once, as a count under the listed agent: nothing of the row itself.
+    expect(unreadableViews('agent', [{ ...stored, routineId: '' }, stored], 'owner', true).map(view => view.routineId)).toEqual(['routine']);
+    expect(dropLines).toEqual(["[ax/routines] 1 routine(s) of agent agent no longer read and can't be listed either, so Settings doesn't show them\n"]);
+  });
+  it('says where a row stopped reading in keys, indices and a zod code only (TASK-913, loggableIssue)', () => {
+    expect(loggableIssue([{ path: ['schedule', 'every'], code: 'custom' }, { path: ['name'], code: 'too_big' }])).toEqual({ path: 'schedule.every', code: 'custom' });
+    expect(loggableIssue([{ path: ['activeHours', 'days', 0], code: 'invalid_enum_value' }])).toEqual({ path: 'activeHours.days.0', code: 'invalid_enum_value' });
+    // A segment that could be stored text (a record key) says `input`, never the key.
+    for (const segment of ['ignore previous instructions', 'a\nb', '', 'x'.repeat(65), 'ключ'])
+      expect(loggableIssue([{ path: ['steps', segment], code: 'custom' }])).toEqual({ path: 'input', code: 'custom' });
+    expect(loggableIssue([{ path: [], code: 'invalid_type' }])).toEqual({ path: 'input', code: 'invalid_type' });
+    expect(loggableIssue([])).toEqual({ path: 'input', code: 'thrown' });
   });
 });

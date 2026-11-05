@@ -114,6 +114,17 @@ describe('independent routine methods in the existing editor', () => {
     expect(screen.getByLabelText('Cron expression')).toHaveAttribute('aria-invalid', 'true');
     expect(screen.getByText(/60 seconds/)).toBeVisible();
   });
+
+  it('marks a “?” cron invalid while allowing an unchanged saved one (TASK-913)', async () => {
+    mocks.get.mockResolvedValue({ ...view(), schedule: { kind: 'cron', expr: '? 9 * * *', tz: 'UTC' } });
+    await edit();
+    fireEvent.change(screen.getByLabelText('What should Caveman do?'), { target: { value: 'Only the brief changed.' } });
+    expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled();
+    fireEvent.change(screen.getByLabelText('Cron expression'), { target: { value: '? 10 * * *' } });
+    expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled();
+    expect(screen.getByLabelText('Cron expression')).toHaveAttribute('aria-invalid', 'true');
+    expect(screen.getByText(/Use “\*” for any value/)).toBeVisible();
+  });
 });
 
 describe('private task address controls', () => {

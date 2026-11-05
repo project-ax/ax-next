@@ -401,6 +401,21 @@ describe("a task's missed check-ins, counted (TASK-930)", () => {
     expect(after.revision).not.toBe(before.revision);
   });
 
+  it("a stored definition today's checks refuse still finishes an interrupted check-in at boot when it isn't the fifth miss, leaving its next check-in as it was", async () => {
+    const row = await f.store.createAuthored(taskInput('task'));
+    await checkIn(row, 'first', { at: minute(1) });
+    // A check-in every 5 minutes, saved before TASK-906's floor (TASK-913): the finish's nudge can't read it.
+    await sql`UPDATE routines_v1_definitions SET schedule_spec = ${JSON.stringify({ kind: 'interval', every: '5m' })}::jsonb WHERE routine_id = ${row.routineId}`.execute(f.db);
+    const before = (await definitionRow(row.routineId))!;
+    const lines = captureExpectedStderr(message => message.startsWith('[ax/routines] routine ')).messages;
+    // Plugin init runs this with no catch around it.
+    await expect(f.store.interruptAbandonedDispatches()).resolves.toBe(1);
+    expect(lines).toEqual([`[ax/routines] routine a/${row.routineId} no longer reads (schedule.every: custom), so its finished run didn't reschedule it\n`]);
+    expect(await definitionRow(row.routineId)).toMatchObject({
+      next_run_at: before.next_run_at, last_status: 'error', task_misses_in_a_row: 1, task_miss_reason: 'interrupted',
+    });
+  });
+
   it('check-ins finishing at once all count, and pause the task once', async () => {
     const lines = pauseLines();
     for (let round = 0; round < 3; round++) {

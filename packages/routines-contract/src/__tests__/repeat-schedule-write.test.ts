@@ -7,6 +7,7 @@ const issue = (schedule: Schedule, previous?: Schedule): string | null => {
   expect(helper).toBeTypeOf('function');
   return (helper as (schedule: Schedule, previous?: Schedule) => string | null)(schedule, previous);
 };
+const QUESTION = 'A schedule can’t use “?”. Use “*” for any value, or write the exact time.';
 const cron = (expr: string, tz = 'UTC'): Schedule => ({ kind: 'cron', expr, tz });
 
 describe('repeat schedule authoring floor', () => {
@@ -38,8 +39,6 @@ describe('repeat schedule authoring floor', () => {
   it('does not introduce task-only recurrence rules for repeat jobs', () => {
     expect(issue(cron('2031-11-01T09:00:00'))).toBeNull();
     expect(issue(cron('0 0 31 2 *'))).toBeNull();
-    expect(issue(cron('? 9 * * *'))).toBeNull();
-    expect(issue(cron('? * * * * *'))).toBeNull();
   });
 
   it('checks clock-relative seconds lists deterministically instead of trusting one parse-time coincidence', () => {
@@ -51,7 +50,24 @@ describe('repeat schedule authoring floor', () => {
         verdicts.push(issue(cron('?,0 * * * * *')));
       } finally { vi.useRealTimers(); }
     }
-    expect(verdicts[0]).toMatch(/60 seconds/);
+    expect(verdicts[0]).toBe(QUESTION);
     expect(verdicts[1]).toBe(verdicts[0]);
+  });
+
+  it('refuses “?” in a new or changed repeat schedule at any time of day (TASK-913)', () => {
+    for (const time of ['2031-01-01T10:10:00Z', '2031-01-01T10:40:00Z', '2031-01-01T10:00:00Z']) {
+      vi.useFakeTimers();
+      try {
+        vi.setSystemTime(new Date(time));
+        for (const expr of ['? 9 * * *', '?-30 * * * *', '*/? * * * *', '0 12 ? * MON', '? * * * * *', '?,0 * * * * *'])
+          expect(issue(cron(expr)), `${expr} at ${time}`).toBe(QUESTION);
+      } finally { vi.useRealTimers(); }
+    }
+    expect(issue(cron('? 10 * * *'), cron('? 9 * * *'))).toBe(QUESTION);
+    expect(issue(cron('? 9 * * *', 'America/New_York'), cron('? 9 * * *'))).toBe(QUESTION);
+  });
+
+  it('keeps a saved “?” schedule through edits that leave it unchanged', () => {
+    expect(issue(cron('? 9 * * *'), cron('? 9 * * *'))).toBeNull();
   });
 });

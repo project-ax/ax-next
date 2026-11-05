@@ -229,7 +229,7 @@ describe('public services and tools', () => {
     const defaultSummary = { defaultRoutineId: 'default', name: base.name, description: base.description, trigger: base.trigger, enabled: true, updatedAt: '2026-10-09T00:00:00.000Z' };
     const cases = [
       [contract.RoutineListInputSchema, { agentId: 'a' }], [contract.RoutineGetInputSchema, key],
-      [contract.RoutineListOutputSchema, { routines: [view] }], [contract.RoutineGetOutputSchema, view],
+      [contract.RoutineListOutputSchema, { routines: [view], unreadable: [] }], [contract.RoutineGetOutputSchema, view],
       [contract.RoutineCreateInputSchema, { agentId: 'a', requestId: 'request', definition: canonical(base) }], [contract.RoutineCreateOutputSchema, view],
       [contract.RoutineUpdateInputSchema, { ...mutation, patch: { enabled: false } }], [contract.RoutineUpdateOutputSchema, view],
       [contract.RoutineDeleteInputSchema, mutation], [contract.RoutineDeleteOutputSchema, { deleted: true, cleanupPending: false }],
@@ -427,7 +427,7 @@ describe('task kinds (TASK-906)', () => {
       for (const expr of ['0,? * * * *', '? 9 * * *', '0 9 ? * *', '? * * * * *']) {
         expect(exprIssues(expr), expr).toEqual(['A task’s schedule can’t use “?”. Write the exact time instead.']);
       }
-      // A repeat routine keeps it.
+      // A repeat routine saved with one still reads: only a new or changed schedule refuses it (repeatScheduleWriteIssue, TASK-913).
       expect(RoutineDefinitionSchema.safeParse({ ...base, trigger: { kind: 'cron', expr: '? 9 * * *', tz: 'UTC' } }).success).toBe(true);
     });
 
@@ -836,9 +836,11 @@ describe('tells the model the task rules (TASK-906)', () => {
     expect(RoutineToolDescriptions.routine_update).toContain('Changing name, promptBody, goodWhen or kind always asks the person, even with Always Allow.');
     expect(RoutineToolDescriptions.routine_update).toContain('To turn a routine into a task (a kind other than "repeat"), send its name, promptBody and goodWhen in the same patch so the person sees the whole task.');
   });
-  it('says a task’s cron can’t use “?”, and has to keep checking in', () => {
+  it('says no schedule can use “?”, and a task’s has to keep checking in', () => {
     for (const name of ['routine_create', 'routine_update'] as const) {
-      expect(JSON.stringify(RoutineToolJsonSchemas[name])).toContain('For a task (\\"stay-on-top\\" or \\"get-done\\"), runs must be at least 15 minutes apart, the schedule must repeat (not a single date, nor a date that never comes, such as 31 February), and \\"?\\" is not allowed.');
+      const text = JSON.stringify(RoutineToolJsonSchemas[name]);
+      expect(text).toContain('Croner cron expression, without \\"?\\" (use \\"*\\" for any value).');
+      expect(text).toContain('For a task (\\"stay-on-top\\" or \\"get-done\\"), runs must be at least 15 minutes apart and the schedule must repeat (not a single date, nor a date that never comes, such as 31 February).');
     }
   });
   it('says a task’s brief can’t hide text', () => {
