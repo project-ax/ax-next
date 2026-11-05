@@ -1,7 +1,7 @@
 import { afterEach, describe, it, expect, vi } from 'vitest';
 import { captureExpectedStderr } from './support/expected-diagnostics.js';
 import { fixture, createInput, now } from './store-fixture.js';
-import { runTickOnce } from '../tick.js';
+import { runTickLoop, runTickOnce } from '../tick.js';
 import type { AcceptedDispatch } from '../types.js';
 const f = fixture();
 afterEach(() => vi.restoreAllMocks());
@@ -15,6 +15,13 @@ const edit = (row: {
   routineId: string;
   revision: string;
 }) => ({ ...row, expectedRevision: row.revision, actorUserId: 'editor', requestId: 'edit', now, stopOnly: false });
+/** TASK-1038: errors whose reading throws. A plugin's error reaches a caller as it was thrown (hook-bus.ts). */
+const HOSTILE = [
+  ['a message getter that throws', () => Object.defineProperty(new Error('PRIVATE'), 'message', { get() { throw new Error('getter'); } })],
+  ['a Proxy whose instanceof check throws', () => new Proxy({}, { getPrototypeOf() { throw new Error('trap'); } })],
+  ['a value whose toString throws', () => ({ toString() { throw new Error('toString'); } })],
+  ['a value with no prototype', () => Object.create(null) as unknown],
+] as const;
 describe('DB scheduler', () => {
   it('keeps a capped Repeat schedule due and starts it when capacity returns', async () => {
     const row=await f.store.createAuthored(createInput());
@@ -112,5 +119,50 @@ describe('DB scheduler', () => {
     await tick({ fire, getAgents: async () => { throw new Error('directory unavailable'); } });
     expect(fire).toHaveBeenCalledOnce();
     expect(diagnostic.messages).toHaveLength(1);
+  });
+  it.each(HOSTILE)('still claims authored routines when owner enumeration fails with %s', async (_name, make) => {
+    await f.store.createAuthored(createInput());
+    const fire = vi.fn(async () => result);
+    const diagnostic = captureExpectedStderr(message => message === '[ax/routines] materialize/refresh error: (unreadable error)\n');
+    await tick({ fire, getAgents: async () => { throw make(); } });
+    expect(fire).toHaveBeenCalledOnce();
+    expect(diagnostic.messages).toHaveLength(1);
+  });
+  it.each(HOSTILE)('records the run and fires the rest of the batch when a fire fails with %s', async (_name, make) => {
+    const failing = await f.store.createAuthored(createInput());
+    await f.store.createAuthored({ ...createInput('second'), definition: { ...createInput().definition, name: 'Second' } });
+    const fire = vi.fn(async (accepted: AcceptedDispatch) => { if (accepted.row.routineId === failing.routineId) throw make(); return result; });
+    const diagnostic = captureExpectedStderr(message => message === `[ax/routines] fire failed for ${failing.agentId}/${failing.routineId}: (unreadable error)\n`);
+    await tick({ fire });
+    expect(fire).toHaveBeenCalledTimes(2);
+    expect((await f.store.recentFires(failing))[0]).toMatchObject({ status: 'error', error: 'This run failed because of a problem on our side.' });
+    expect(diagnostic.messages).toHaveLength(1);
+  });
+  // The scheduler loop itself: a tick that fails with an unreadable error must be logged and survived, or the replica stops scheduling.
+  it.each(HOSTILE)('keeps the scheduler loop running when a tick fails with %s', async (_name, make) => {
+    const controller = new AbortController();
+    let sleeps = 0;
+    const cleanup = vi.fn(async () => { throw make(); });
+    const diagnostic = captureExpectedStderr(message => message === '[ax/routines] tick error: (unreadable error)\n');
+    await runTickLoop({
+      db: f.db, fire: vi.fn(async () => result), cleanup,
+      clock: { now: () => due, sleep: async () => { if (++sleeps >= 2) controller.abort(); } },
+      signal: controller.signal, tickIntervalMs: 1, electionRetryMs: 1, claimBatchSize: 50, claimWindowMinutes: 5,
+    });
+    expect(cleanup).toHaveBeenCalledTimes(2);
+    expect(diagnostic.messages).toHaveLength(2);
+  });
+  it('logs a readable tick failure with its message and keeps the loop running', async () => {
+    const controller = new AbortController();
+    let sleeps = 0;
+    const cleanup = vi.fn(async () => { throw new Error('database unavailable'); });
+    const diagnostic = captureExpectedStderr(message => message === '[ax/routines] tick error: database unavailable\n');
+    await runTickLoop({
+      db: f.db, fire: vi.fn(async () => result), cleanup,
+      clock: { now: () => due, sleep: async () => { if (++sleeps >= 2) controller.abort(); } },
+      signal: controller.signal, tickIntervalMs: 1, electionRetryMs: 1, claimBatchSize: 50, claimWindowMinutes: 5,
+    });
+    expect(cleanup).toHaveBeenCalledTimes(2);
+    expect(diagnostic.messages).toHaveLength(2);
   });
 });

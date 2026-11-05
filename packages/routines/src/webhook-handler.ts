@@ -17,6 +17,37 @@ import type { WebhookAddressProof } from './webhook-address.js';
  */
 const TRANSIENT_SECRET_READ_CODES: ReadonlySet<string> = new Set(['timeout', 'unknown', 'no-service']);
 
+/**
+ * TASK-1038: a plugin error's code, read without trusting the error. The bus hands a PluginError
+ * back as it was thrown, getters and all (hook-bus.ts), and `instanceof` can run a Proxy's trap.
+ * The code is read once, so the "none saved" check and the retry check can't get two answers.
+ * A failure whose code can't be read has none (undefined): it is never "none saved"
+ * (`credential-not-found`, which accepts unsigned updates) and never a retry. It refuses as `secret`.
+ */
+function pluginErrorCode(error: unknown): string | undefined {
+  try {
+    if (!(error instanceof PluginError)) return undefined;
+    const code: unknown = error.code;
+    return typeof code === 'string' ? code : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * TASK-1038: whether a failed admission is the quota facade's veto (`code: 'rejected'`,
+ * blob-put-facade), read without trusting the error: a `code` getter or a Proxy's `in` trap can
+ * throw. A failure that can't be read is no quota refusal: it answers 503 like any other failed
+ * admission, and logs its faultLogFields.
+ */
+function isQuotaRefusal(error: unknown): boolean {
+  try {
+    return error !== null && typeof error === 'object' && 'code' in error && error.code === 'rejected';
+  } catch {
+    return false;
+  }
+}
+
 // HTTP is duck-typed here: no runtime dependency on another plugin.
 export interface HttpRequest {
   readonly path: string;
@@ -94,8 +125,8 @@ export function createWebhookRouter(deps: WebhookRouterDeps): HttpRouteHandler {
       // fault, not the sender's, so a 503 the app retries, like a failed admission.
       // A saved secret that can't be used (it won't decrypt, say) won't fix itself
       // on a retry, so it refuses as `secret`, whose status asks the owner to save it again.
-      if (!(error instanceof PluginError && error.code === 'credential-not-found')) {
-        const code = error instanceof PluginError ? error.code : undefined;
+      const code = pluginErrorCode(error);
+      if (code !== 'credential-not-found') {
         unreadable(code);
         if (code !== undefined && TRANSIENT_SECRET_READ_CODES.has(code)) await refuse(503, 'unavailable');
         else await refuse(401, 'secret');
@@ -163,7 +194,7 @@ export function createWebhookRouter(deps: WebhookRouterDeps): HttpRouteHandler {
         deps.bus.callJoined('blob:put',makeAgentContext({sessionId:'repeat-delivery-admission',agentId:row.agentId,userId:owner}),{bytes}),
       async () => (await resolveLegacy())?.agent.id === row.agentId);
     } catch (error) {
-      const quota = error !== null && typeof error==='object' && 'code' in error && error.code==='rejected';
+      const quota = isQuotaRefusal(error);
       // A quota refusal is the owner's limit doing its job, not a fault: only the 503 logs.
       if (!quota) logFault('routines_webhook_admission_failed', error);
       await refuse(quota ? 429 : 503, quota ? 'capacity' : 'unavailable'); return;

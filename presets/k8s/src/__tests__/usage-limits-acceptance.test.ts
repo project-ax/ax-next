@@ -588,7 +588,7 @@ describe('@ax/preset-k8s usage limits canary (stub runner + postgres)', () => {
         source: 'manual', requestId: 'run-capped', now: new Date() });
       await fire(accepted!.accepted);
       await vi.waitFor(async () => expect((await store.recentFires({ ...row, actorUserId: USER_A }))[0])
-        .toMatchObject({ status: 'error', error: 'terminated: chat:start:usage-limit-daily' }));
+        .toMatchObject({ status: 'error', error: 'This run failed because of a problem on our side (code: chat:start:usage-limit-daily).' }));
       expect(live().sandbox.spawns).toBe(spawnsBefore);
       expect(await usageFor(USER_A)).toMatchObject({ turns: 3, costMicros: 3 * SONNET_COST_MICROS });
       await expectAdmitted(USER_B, meteredScript());

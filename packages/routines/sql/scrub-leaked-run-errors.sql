@@ -1,4 +1,4 @@
--- TASK-1036. One-off scrub of old run errors. Runbook: deploy/GKE.md, "4g. Scrub old run errors".
+-- TASK-1036, narrowed in TASK-1038. Scrub of old run errors. Runbook: deploy/GKE.md, "4g. Scrub old run errors".
 --
 -- Before TASK-1031 (#1116), a run that failed for a host reason stored the failure's own
 -- text (a hook's or a database's message) in routines_v1_fires.error and, as the routine's
@@ -12,8 +12,11 @@
 --   dry run (the default; counts, then rolls back):  psql -X -v ON_ERROR_STOP=1 -f scrub-leaked-run-errors.sql
 --   apply (after a backup):                         psql -X -v ON_ERROR_STOP=1 -v apply=1 -f scrub-leaked-run-errors.sql
 --
--- Safe to re-run: a second apply rewrites nothing. A one-off for the TASK-1036 release:
--- before reusing it, re-check the keep-list against every writer of these two columns.
+-- Safe to re-run: a second apply rewrites nothing. On a database an earlier version of this script
+-- already ran on (TASK-1036), it changes only the rows this version no longer keeps: the sentence
+-- that version wrote is on the keep-list. Run it once per release that changes the keep-list
+-- (deploy/GKE.md 4g says when), and before reusing it, re-check the keep-list against every writer
+-- of these two columns.
 --
 -- A guard for a release that adds a sentence the keep-list doesn't know (ax_host_sentence below).
 -- A text reads like one of ours when, ignoring case, its first word is This, The, We, Your, You,
@@ -37,8 +40,13 @@
 -- written, and it is safe to run again. Both rewrite counts print after both UPDATEs, run history
 -- first.
 --
--- `terminated: …` rows are kept on purpose: a runner's failure reason can be its own error
--- text, and what owners should see for it is a separate card (TASK-1036 decisions).
+-- Runs an invoke ended `terminated` (fire.ts). Since TASK-1038 they store terminatedRunText: the
+-- fixed sentence and a code, which is the reason only when it is shaped like a host code (lowercase
+-- letters, digits, - and :, at most 64, like `chat-run-timeout` or `chat:start:usage-limit-daily`).
+-- Before, they stored `terminated: <reason>`, and a runner that fails gives its own error text as the
+-- reason. Those old rows are kept when the reason has that host-code shape; the rest are old runner
+-- text and are rewritten like any other old text. The guard never counts them: they start with
+-- `terminated:`.
 
 \set ON_ERROR_STOP on
 \if :{?apply}
@@ -66,7 +74,8 @@ LANGUAGE sql IMMUTABLE AS $kept$
     )
     OR e LIKE 'This task’s instructions %'                         -- BRIEF_DIDNT_LOAD, BRIEF_TOO_LONG and its older wordings, brief.ts
     OR e ~ '^This run failed because of a problem on our side( \(code: [A-Za-z0-9][A-Za-z0-9_-]{0,39}\))?\.$'  -- runFailedText, fire.ts
-    OR e LIKE 'terminated: %'                                      -- fire.ts; see the header
+    OR e ~ '^This run failed because of a problem on our side \(code: [a-z0-9][a-z0-9:-]{0,63}\)\.$'  -- terminatedRunText, fire.ts (TASK-1038)
+    OR e ~ '^terminated: [a-z0-9][a-z0-9:-]{0,63}$'               -- fire.ts before TASK-1038, when the reason was a host code; see the header
 $kept$;
 
 -- The guard (see the header). `~*` ignores case, in the letters and in [a-z].
