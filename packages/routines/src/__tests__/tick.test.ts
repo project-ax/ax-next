@@ -152,4 +152,17 @@ describe('DB scheduler', () => {
     expect(cleanup).toHaveBeenCalledTimes(2);
     expect(diagnostic.messages).toHaveLength(2);
   });
+  it('logs a readable tick failure with its message and keeps the loop running', async () => {
+    const controller = new AbortController();
+    let sleeps = 0;
+    const cleanup = vi.fn(async () => { throw new Error('database unavailable'); });
+    const diagnostic = captureExpectedStderr(message => message === '[ax/routines] tick error: database unavailable\n');
+    await runTickLoop({
+      db: f.db, fire: vi.fn(async () => result), cleanup,
+      clock: { now: () => due, sleep: async () => { if (++sleeps >= 2) controller.abort(); } },
+      signal: controller.signal, tickIntervalMs: 1, electionRetryMs: 1, claimBatchSize: 50, claimWindowMinutes: 5,
+    });
+    expect(cleanup).toHaveBeenCalledTimes(2);
+    expect(diagnostic.messages).toHaveLength(2);
+  });
 });
