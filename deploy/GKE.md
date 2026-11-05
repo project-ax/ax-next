@@ -780,7 +780,10 @@ Running it a second time is safe: what the first run wrote is on the script's
 keep-list, so the second run changes only the `terminated: …` rows the first one
 left alone. Each run is a one-off for its release: the script keeps a list of
 the messages the app writes today, and a release that changes one needs that
-list updated first. Step 2 checks the release you deployed for that.
+list updated first. Step 2 checks the release you deployed for that. If you roll back to a release
+from before TASK-1038 and later deploy forward again, run this step once more
+after that deploy, because the older code writes `terminated: …` rows in the
+meantime.
 
 **What people will see afterwards.** Old failed runs that showed internal text
 now show the fixed sentence, in run history and as the routine's last error
