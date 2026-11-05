@@ -241,7 +241,7 @@ export async function runTickLoop(input: TickLoopInput): Promise<void> {
             await runTickOnce(tickInput);
           } catch (err) {
             process.stderr.write(
-              `[ax/routines] tick error: ${err instanceof Error ? err.message : String(err)}\n`,
+              `[ax/routines] tick error: ${logDetail(err)}\n`,
             );
           }
           await input.clock.sleep(input.tickIntervalMs, input.signal);

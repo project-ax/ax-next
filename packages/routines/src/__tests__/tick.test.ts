@@ -1,7 +1,7 @@
 import { afterEach, describe, it, expect, vi } from 'vitest';
 import { captureExpectedStderr } from './support/expected-diagnostics.js';
 import { fixture, createInput, now } from './store-fixture.js';
-import { runTickOnce } from '../tick.js';
+import { runTickLoop, runTickOnce } from '../tick.js';
 import type { AcceptedDispatch } from '../types.js';
 const f = fixture();
 afterEach(() => vi.restoreAllMocks());
@@ -137,5 +137,19 @@ describe('DB scheduler', () => {
     expect(fire).toHaveBeenCalledTimes(2);
     expect((await f.store.recentFires(failing))[0]).toMatchObject({ status: 'error', error: 'This run failed because of a problem on our side.' });
     expect(diagnostic.messages).toHaveLength(1);
+  });
+  // The scheduler loop itself: a tick that fails with an unreadable error must be logged and survived, or the replica stops scheduling.
+  it.each(HOSTILE)('keeps the scheduler loop running when a tick fails with %s', async (_name, make) => {
+    const controller = new AbortController();
+    let sleeps = 0;
+    const cleanup = vi.fn(async () => { throw make(); });
+    const diagnostic = captureExpectedStderr(message => message === '[ax/routines] tick error: (unreadable error)\n');
+    await runTickLoop({
+      db: f.db, fire: vi.fn(async () => result), cleanup,
+      clock: { now: () => due, sleep: async () => { if (++sleeps >= 2) controller.abort(); } },
+      signal: controller.signal, tickIntervalMs: 1, electionRetryMs: 1, claimBatchSize: 50, claimWindowMinutes: 5,
+    });
+    expect(cleanup).toHaveBeenCalledTimes(2);
+    expect(diagnostic.messages).toHaveLength(2);
   });
 });
