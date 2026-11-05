@@ -229,7 +229,7 @@ describe('public services and tools', () => {
     const defaultSummary = { defaultRoutineId: 'default', name: base.name, description: base.description, trigger: base.trigger, enabled: true, updatedAt: '2026-10-09T00:00:00.000Z' };
     const cases = [
       [contract.RoutineListInputSchema, { agentId: 'a' }], [contract.RoutineGetInputSchema, key],
-      [contract.RoutineListOutputSchema, { routines: [view] }], [contract.RoutineGetOutputSchema, view],
+      [contract.RoutineListOutputSchema, { routines: [view], unreadable: [] }], [contract.RoutineGetOutputSchema, view],
       [contract.RoutineCreateInputSchema, { agentId: 'a', requestId: 'request', definition: canonical(base) }], [contract.RoutineCreateOutputSchema, view],
       [contract.RoutineUpdateInputSchema, { ...mutation, patch: { enabled: false } }], [contract.RoutineUpdateOutputSchema, view],
       [contract.RoutineDeleteInputSchema, mutation], [contract.RoutineDeleteOutputSchema, { deleted: true, cleanupPending: false }],

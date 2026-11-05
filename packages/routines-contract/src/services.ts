@@ -42,7 +42,28 @@ export const RoutineWebhookStatusOutputSchema = z.object({
   refusals: z.array(z.object({ reason: WebhookRefusalReasonSchema, count: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER) }).strict()).max(10),
 }).strict();
 export type RoutineWebhookStatus = z.infer<typeof RoutineWebhookStatusOutputSchema>;
-export const RoutineListOutputSchema = z.object({ routines: z.array(RoutineViewSchema) }).strict();
+/**
+ * TASK-913. A stored routine today's rules can't read, as `routines:list` names it beside the routines
+ * that do. It carries enough to recognize the routine and, when the caller may stop it, to delete it.
+ * Its ids and revision are the row's own. `name` is the stored name as a type only (stored text isn't
+ * re-checked), cut to `ROUTINE_NAME_MAX_CHARS` code points by the producer. `origin` says whether it
+ * is a workspace default's copy. `canDelete` is the services' `permissions.stop` for the caller.
+ * Nothing of its definition crosses, because any field could be the one that doesn't read.
+ * Only Settings draws these. The Tasks page and `routine_list` read `routines` alone.
+ */
+export const RoutineUnreadableViewSchema = z.object({
+  agentId: RoutineOpaqueStringSchema, routineId: RoutineOpaqueStringSchema, revision: RoutineOpaqueStringSchema,
+  name: z.string(), origin: z.enum(['authored', 'default']), canDelete: z.boolean(),
+}).strict();
+export type RoutineUnreadableView = z.output<typeof RoutineUnreadableViewSchema>;
+/**
+ * `unreadable` left out reads as none. The routines plugin always sends it, and fakes that answer
+ * `{ routines }` keep parsing.
+ */
+export const RoutineListOutputSchema = z.object({
+  routines: z.array(RoutineViewSchema),
+  unreadable: z.array(RoutineUnreadableViewSchema).default([]),
+}).strict();
 /** What the `routine_list` tool returns: the service's list, without any task's agent notes (TASK-907). */
 export const RoutineListToolOutputSchema = z.object({ routines: z.array(RoutineListToolViewSchema) }).strict();
 export const RoutineGetOutputSchema = RoutineViewSchema;
