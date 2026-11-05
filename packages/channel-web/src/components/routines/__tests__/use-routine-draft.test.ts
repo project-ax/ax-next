@@ -77,6 +77,71 @@ describe('a kind switch away from Repeat and back', () => {
   });
 });
 
+// TASK-1040. The task side of the same round trip. A switch from a task kind to Repeat clears the
+// going-well line and the response time, which a Repeat can't have; a switch back to a task kind puts
+// both back, so the trip changes nothing and Save has nothing to send. A lost response time would have
+// saved as the 5-minute default.
+describe('a kind switch away from a task kind and back', () => {
+  const savedTask: RoutineDefinition = { ...savedRepeat, kind: 'stay-on-top', goodWhen: 'Calm.', silenceToken: null,
+    webhook: { kind: 'webhook', path: '/updates', events: ['push'], respondWithin: '10m' } };
+  it.each<[string, Array<RoutineDefinition['kind']>]>([
+    ['straight back', ['stay-on-top']],
+    ['back through the other task kind', ['get-done', 'stay-on-top']],
+  ])('puts back the going-well line and the response time (%s)', (_label, route) => {
+    const result = draft(savedTask);
+    act(() => result.current.changeKind('repeat'));
+    expect(result.current.form.goodWhen).toBeNull();
+    expect(result.current.form.webhook).not.toHaveProperty('respondWithin');
+    for (const kind of route) act(() => result.current.changeKind(kind));
+    expect(result.current.form).toStrictEqual(savedTask);
+    // The loaded webhook itself, not a rebuilt copy whose key order could read as a change.
+    expect(result.current.form.webhook).toBe(savedTask.webhook);
+    expect(result.current.dirty).toBe(false);
+  });
+  it('keeps an edit made before the switch', () => {
+    const result = draft(savedTask);
+    act(() => result.current.update('goodWhen', 'Calmer.'));
+    act(() => result.current.update('webhook', { ...result.current.form.webhook!, respondWithin: '1h' }));
+    act(() => result.current.changeKind('repeat'));
+    act(() => result.current.changeKind('stay-on-top'));
+    expect(result.current.form.goodWhen).toBe('Calmer.');
+    expect(result.current.form.webhook?.respondWithin).toBe('1h');
+  });
+  it('keeps an address renamed while it was a Repeat, with its response time', () => {
+    const result = draft(savedTask);
+    act(() => result.current.changeKind('repeat'));
+    act(() => result.current.update('webhook', { ...result.current.form.webhook!, path: '/renamed' }));
+    act(() => result.current.changeKind('stay-on-top'));
+    expect(result.current.form.webhook).toStrictEqual({ kind: 'webhook', path: '/renamed', events: ['push'], respondWithin: '10m' });
+  });
+  it('keeps app updates turned off while it was a Repeat off, and brings the response time back with them', () => {
+    const result = draft(savedTask);
+    act(() => result.current.changeKind('repeat'));
+    act(() => result.current.toggleWebhook(false));
+    act(() => result.current.changeKind('stay-on-top'));
+    expect(result.current.form.webhook).toBeNull();
+    act(() => result.current.toggleWebhook(true));
+    expect(result.current.form).toStrictEqual(savedTask);
+    expect(result.current.dirty).toBe(false);
+  });
+  // `changed()` diffs by JSON.stringify, so a rebuilt webhook would read as a change whenever the loaded
+  // one isn't in schema order. This is the behaviour the reference check above exists for.
+  it('stays clean for a loaded webhook whose keys are not in schema order', () => {
+    const reordered: RoutineDefinition = { ...savedTask, webhook: { kind: 'webhook', respondWithin: '10m', path: '/updates', events: ['push'] } };
+    const result = draft(reordered);
+    act(() => result.current.changeKind('repeat'));
+    act(() => result.current.changeKind('stay-on-top'));
+    expect(result.current.dirty).toBe(false);
+  });
+  it('adds no response time to an address renamed while it was a Repeat when the task had none', () => {
+    const result = draft({ ...savedTask, webhook: { kind: 'webhook', path: '/updates' } });
+    act(() => result.current.changeKind('repeat'));
+    act(() => result.current.update('webhook', { ...result.current.form.webhook!, path: '/renamed' }));
+    act(() => result.current.changeKind('stay-on-top'));
+    expect(result.current.form.webhook).toStrictEqual({ kind: 'webhook', path: '/renamed' });
+  });
+});
+
 // TASK-1037 review. An event filter nobody touched leaves the webhook exactly as it was loaded, so an
 // untouched form isn't dirty and a name edit doesn't send (and cancel the queue with) a rewritten webhook.
 describe('an untouched event filter', () => {

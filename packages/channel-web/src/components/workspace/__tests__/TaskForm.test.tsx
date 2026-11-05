@@ -415,6 +415,22 @@ describe('task form More options', () => {
     expect(routineApi.update).not.toHaveBeenCalled();
   });
 
+  // TASK-1040. The task side: a switch from a task kind to Repeat clears "Going well when" and the
+  // response time, which a Repeat can't have. Switching back puts both back, so Save has nothing to send.
+  it('leaves a task with nothing to save after a switch to Repeat and back', async () => {
+    const { onCancel } = await edit({ ...task, webhook: { kind: 'webhook', path: '/updates', respondWithin: '1h' } });
+    fireEvent.click(screen.getByRole('radio', { name: 'Repeat' }));
+    expect(screen.queryByLabelText('Going well when')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'App updates: On' })).toBeVisible();
+    fireEvent.click(screen.getByRole('radio', { name: 'Stay on top' }));
+    expect(screen.queryByText(/Switching kinds starts this task over/)).not.toBeInTheDocument();
+    expect(screen.getByLabelText('Going well when')).toHaveValue('Nothing waits.');
+    expect(screen.getByRole('button', { name: 'App updates: On, react within 60 min' })).toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    expect(onCancel).toHaveBeenCalledOnce();
+    expect(routineApi.update).not.toHaveBeenCalled();
+  });
+
   const repeatWithUpdates: RoutineView = { ...routineFixture, silenceToken: 'QUIET', webhook: { kind: 'webhook', path: '/updates' } };
   // The saved address loads its receiver once More options opens; wait for it before editing there.
   async function openMoreOptions() {

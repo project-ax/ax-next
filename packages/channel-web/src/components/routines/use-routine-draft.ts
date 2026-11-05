@@ -75,6 +75,10 @@ export function useRoutineDraft({
   const hoursDraft = useRef(initial.activeHours);
   // TASK-1037. What the last switch from Repeat to a task kind changed, so a switch back can undo it.
   const leftRepeat = useRef<{ conversation: RoutineDefinition['conversation']; filledSchedule: RoutineSchedule | null } | null>(null);
+  // TASK-1040. What the last switch from a task kind to Repeat cleared, so a switch back can put it back:
+  // the going-well line, and the webhook draft before its response time was taken off (`cleared` is the
+  // copy without it, so a switch back can tell whether the webhook was edited while it was a Repeat).
+  const leftTask = useRef<{ goodWhen: RoutineDefinition['goodWhen']; webhook: WebhookTrigger; cleared: WebhookTrigger } | null>(null);
   const flight = useRef(false);
   // Exact payload and request ID survive a response-loss retry. Draft controls freeze meanwhile.
   const operation = useRef<{
@@ -155,25 +159,37 @@ export function useRoutineDraft({
   /**
    * A task keeps a schedule and a fresh conversation; Repeat has no response timing or going-well line.
    * Leaving Repeat for a task kind forces a fresh conversation and, when the Repeat had no schedule,
-   * fills in an hourly one. Coming back undoes both (the schedule only while it is still the one filled
-   * in and no active hours need it), so a switch away and back changes nothing: a changed conversation
-   * would cancel a saved Repeat's waiting app updates (TASK-1037).
+   * fills in an hourly one. Leaving a task kind for Repeat clears the going-well line and the response
+   * time. Coming back undoes what leaving did: the schedule only while it is still the one filled in and
+   * no active hours need it, and the webhook as it was unless it was edited meanwhile (then the edit gets
+   * its response time back). So a switch away and back changes nothing: a changed conversation would
+   * cancel a saved Repeat's waiting app updates (TASK-1037), and a lost response time would save as the
+   * 5-minute default (TASK-1040).
    */
   function changeKind(value: RoutineDefinition['kind']) {
     const toRepeat = value === 'repeat';
+    const back = !toRepeat && form.kind === 'repeat' ? leftTask.current : null;
     if (toRepeat) {
-      const { respondWithin: _respondWithin, ...webhook } = webhookDraft.current;
-      webhookDraft.current = webhook;
+      const { respondWithin: _respondWithin, ...cleared } = webhookDraft.current;
+      if (form.kind !== 'repeat') leftTask.current = { goodWhen: form.goodWhen, webhook: webhookDraft.current, cleared };
+      webhookDraft.current = cleared;
+    } else if (back !== null) {
+      const { respondWithin } = back.webhook;
+      const now = webhookDraft.current;
+      webhookDraft.current = now === back.cleared ? back.webhook
+        : respondWithin === undefined ? now : { ...now, respondWithin };
+      leftTask.current = null;
     }
+    const webhook = webhookDraft.current;
     const left = toRepeat ? leftRepeat.current : null;
     const hourly: RoutineSchedule = { kind: 'interval', every: '1h' };
     if (toRepeat) leftRepeat.current = null;
     else if (form.kind === 'repeat') leftRepeat.current = { conversation: form.conversation, filledSchedule: form.schedule === null ? hourly : null };
-    setForm(f => ({ ...f, kind: value, goodWhen: toRepeat ? null : (f.goodWhen ?? ''),
+    setForm(f => ({ ...f, kind: value, goodWhen: toRepeat ? null : (back?.goodWhen ?? f.goodWhen ?? ''),
       schedule: toRepeat
         ? (left !== null && left.filledSchedule !== null && f.schedule === left.filledSchedule && f.activeHours === null ? null : f.schedule)
         : (f.schedule ?? hourly),
-      webhook: toRepeat && f.webhook !== null ? webhookDraft.current : f.webhook,
+      webhook: f.webhook !== null && (toRepeat || back !== null) ? webhook : f.webhook,
       conversation: toRepeat ? (left?.conversation ?? f.conversation) : 'per-fire' }));
     clearErrors();
   }
