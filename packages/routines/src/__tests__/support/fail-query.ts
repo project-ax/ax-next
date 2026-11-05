@@ -10,7 +10,9 @@ import pg from 'pg';
  * (`pg_try_advisory_lock`) to fail once, with the real pool and Kysely's
  * release-on-throw (`provideConnection`'s `finally`) running for real. A fake
  * `db` can only pretend the checkout failed; this fails the query itself, on a
- * pooled connection that then has to go back to the pool.
+ * pooled connection. It does not by itself prove that connection went back:
+ * on a pool with spare slots a leaked one goes unnoticed. To prove release,
+ * run the test on a `max: 1` pool (see `repeat-admission-pool.test.ts`).
  *
  * Only the promise form, `client.query(sql, params)`, is matched: that is the
  * only form Kysely calls.
