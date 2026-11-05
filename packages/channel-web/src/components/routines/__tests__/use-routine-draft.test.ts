@@ -124,6 +124,22 @@ describe('a kind switch away from a task kind and back', () => {
     expect(result.current.form).toStrictEqual(savedTask);
     expect(result.current.dirty).toBe(false);
   });
+  // `changed()` diffs by JSON.stringify, so a rebuilt webhook would read as a change whenever the loaded
+  // one isn't in schema order. This is the behaviour the reference check above exists for.
+  it('stays clean for a loaded webhook whose keys are not in schema order', () => {
+    const reordered: RoutineDefinition = { ...savedTask, webhook: { kind: 'webhook', respondWithin: '10m', path: '/updates', events: ['push'] } };
+    const result = draft(reordered);
+    act(() => result.current.changeKind('repeat'));
+    act(() => result.current.changeKind('stay-on-top'));
+    expect(result.current.dirty).toBe(false);
+  });
+  it('adds no response time to an address renamed while it was a Repeat when the task had none', () => {
+    const result = draft({ ...savedTask, webhook: { kind: 'webhook', path: '/updates' } });
+    act(() => result.current.changeKind('repeat'));
+    act(() => result.current.update('webhook', { ...result.current.form.webhook!, path: '/renamed' }));
+    act(() => result.current.changeKind('stay-on-top'));
+    expect(result.current.form.webhook).toStrictEqual({ kind: 'webhook', path: '/renamed' });
+  });
 });
 
 // TASK-1037 review. An event filter nobody touched leaves the webhook exactly as it was loaded, so an
