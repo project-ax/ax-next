@@ -2,7 +2,7 @@ import { SafeToolError, type AgentContext, type HookBus } from '@ax/core';
 import { z } from 'zod';
 import * as C from '@ax/routines-contract';
 import type { RoutinesStore } from './store.js';
-import type { AcceptedDispatch, FireRow, OpenCheckInLookup, ReportRefusal, StoredReading, StoredRoutine } from './types.js';
+import type { AcceptedDispatch, FireRow, OpenCheckInLookup, ReportRefusal, StoredReading, StoredRoutine, UnreadableRoutine } from './types.js';
 import { credentialRef, editableDefinition, deleteRequestHash, updateRequestHashes, inputHash, isStopOnlyPatch, parseStoredRoutine, validationError } from './definition.js';
 import { drainRoutineCleanup } from './cleanup.js';
 import { advanceToNextActiveWindow } from './active-hours.js';
@@ -37,9 +37,33 @@ export async function resolveRoutineAccess(bus: HookBus, store: RoutinesStore, c
   if (agent.ownerType === 'user') await store.reconcileOwners({ agents: [{ agentId, ownerUserId: agent.ownerId }] });
   return { agent, allowed, stopOthers: stopOthers === true };
 }
-export function routinePermissions(row: StoredRoutine, userId: string, allowed: boolean, stopOthers = false): C.RoutinePermissions {
+/**
+ * Who may do what to a routine. Only its owner and default source decide it, both read 1:1 from
+ * their columns, so a routine today's rules can't read is decided by the same rule (TASK-913:
+ * `unreadableViews`, `routines:delete`).
+ */
+export function routinePermissions(row: Pick<StoredRoutine, 'ownerUserId' | 'definitionId'>, userId: string, allowed: boolean, stopOthers = false): C.RoutinePermissions {
   const own = allowed && row.ownerUserId === userId && row.definitionId === null;
   return { edit: own, stop: allowed && row.definitionId === null && (own || stopOthers), fire: allowed && row.ownerUserId === userId, manageSecret: own };
+}
+/**
+ * TASK-913. The routines `routines:list` names beside the ones that read, as Settings draws
+ * them: field by field, never a spread, so the row's owner and default source stay here. The
+ * name is the stored one cut to `ROUTINE_NAME_MAX_CHARS` code points (stored text isn't checked
+ * again). `canDelete` is the `stop` bit a readable routine's Delete is drawn from. An entry the
+ * contract refuses (an empty or over-long id from a hand edit) is left out, so one row can't
+ * fail the whole list (TASK-932's rule).
+ */
+export function unreadableViews(rows: readonly UnreadableRoutine[], userId: string, allowed: boolean, stopOthers = false): C.RoutineUnreadableView[] {
+  return rows.flatMap(row => {
+    const view = C.RoutineUnreadableViewSchema.safeParse({
+      agentId: row.agentId, routineId: row.routineId, revision: row.revision,
+      name: Array.from(row.name).slice(0, C.ROUTINE_NAME_MAX_CHARS).join(''),
+      origin: row.definitionId === null ? 'authored' : 'default',
+      canDelete: routinePermissions(row, userId, allowed, stopOthers).stop,
+    });
+    return view.success ? [view.data] : [];
+  });
 }
 export function routineView(row: StoredRoutine, userId: string, allowed: boolean, stopOthers = false): C.RoutineView {
   // The tick skips a run outside the active hours and re-arms it at the next window's start (tick.ts), so that's when it will run (TASK-910).
@@ -284,9 +308,15 @@ export function registerRoutineServices({ bus, store, now, dispatch, admitDispat
       throw err;
     }
   }
+  // TASK-913: a routine today's rules can't read is named beside the rest (`unreadable`), so it
+  // can't fail the whole list. Only Settings draws them; routine_list keeps `routines` alone.
   register('list', C.RoutineListInputSchema, C.RoutineListOutputSchema, async (ctx, input) => {
     const a = await access(ctx, input.agentId);
-    return { routines: await Promise.all((await store.list(input)).map(async row => ({...routineView(row,ctx.userId,a.allowed,a.stopOthers),...(deliveryStatus ? {delivery:row.kind==='repeat' && row.ownerUserId===ctx.userId ? await deliveryStatus(row,ctx.userId):null}: {})}))) };
+    const { routines, unreadable } = await store.listAll(input);
+    return {
+      routines: await Promise.all(routines.map(async row => ({...routineView(row,ctx.userId,a.allowed,a.stopOthers),...(deliveryStatus ? {delivery:row.kind==='repeat' && row.ownerUserId===ctx.userId ? await deliveryStatus(row,ctx.userId):null}: {})}))),
+      unreadable: unreadableViews(unreadable, ctx.userId, a.allowed, a.stopOthers),
+    };
   });
   register('get', C.RoutineGetInputSchema, C.RoutineGetOutputSchema, async (ctx, input) => {
     const a = await access(ctx,input.agentId); const row=await rowFor(input);
@@ -315,7 +345,11 @@ export function registerRoutineServices({ bus, store, now, dispatch, admitDispat
     const a = await access(ctx, input.agentId); requireAllowed(a.allowed);
     const receipt = await store.findOperationReceipt({ ...input, actorUserId: ctx.userId, operation: 'delete', inputHash: deleteRequestHash(input) });
     if (receipt) return C.RoutineDeleteOutputSchema.parse(receipt);
-    requireAllowed(routinePermissions(await rowFor(input), ctx.userId, a.allowed, a.stopOthers).stop);
+    // TASK-913: columns, never the parsed row, so a routine today's rules refuse can still be
+    // deleted, under the same rule (`stop`) as one that reads. deleteAuthored reads columns too.
+    const owner = await store.findOwnership(input);
+    if (owner === null) throw new SafeToolError('not-found', 'routineId');
+    requireAllowed(routinePermissions(owner, ctx.userId, a.allowed, a.stopOthers).stop);
     const result = await store.deleteAuthored({ ...input, actorUserId: ctx.userId, now: now() });
     await drainRoutineCleanup({ bus, store }); return result;
   });

@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import * as C from '@ax/routines-contract';
-import { routinePermissions, routineView, ROUTINE_SERVICES } from '../services.js';
-import type { StoredReading, StoredRoutine, StoredStep } from '../types.js';
+import { routinePermissions, routineView, ROUTINE_SERVICES, unreadableViews } from '../services.js';
+import type { StoredReading, StoredRoutine, StoredStep, UnreadableRoutine } from '../types.js';
 /** TASK-952. A task report's reading, as the store hands it over. */
 const OPEN_3: StoredReading = { value: 3, label: 'Open tickets' };
 const row: StoredRoutine = {
@@ -333,5 +333,18 @@ describe('canonical routine return schemas', () => {
     // Never the routine's owner, and nothing beside the list.
     expect(() => C.RoutineTasksForConversationsOutputSchema.parse({ checkIns: [{ ...checkIn, ownerUserId: 'owner' }] })).toThrow();
     expect(() => C.RoutineTasksForConversationsOutputSchema.parse({ checkIns: [checkIn], kind: 'stay-on-top' })).toThrow();
+  });
+  it('projects a routine that no longer reads as its ids, revision, cut name, origin and Delete right, and drops one the contract refuses (TASK-913)', () => {
+    const stored: UnreadableRoutine = { agentId: 'agent', routineId: 'routine', revision: 'revision', ownerUserId: 'owner', definitionId: null, name: '😀'.repeat(300) };
+    // Cut in code points, not UTF-16 units, and nothing else of the row: not its owner, not its default source.
+    expect(unreadableViews([stored], 'owner', true)).toEqual([{ agentId: 'agent', routineId: 'routine', revision: 'revision', name: '😀'.repeat(128), origin: 'authored', canDelete: true }]);
+    // Delete is the stop bit a readable routine's Delete has (routinePermissions).
+    expect(unreadableViews([stored], 'member', true)[0]?.canDelete).toBe(false);
+    expect(unreadableViews([stored], 'admin', true, true)[0]?.canDelete).toBe(true);
+    expect(unreadableViews([stored], 'owner', false)[0]?.canDelete).toBe(false);
+    // A workspace default's copy is never deleted, by anyone.
+    expect(unreadableViews([{ ...stored, definitionId: 'heartbeat' }], 'owner', true, true)[0]).toMatchObject({ origin: 'default', canDelete: false });
+    // One entry the contract refuses (a hand edit's empty id) is left out, not the whole list (TASK-932's rule).
+    expect(unreadableViews([{ ...stored, routineId: '' }, stored], 'owner', true).map(view => view.routineId)).toEqual(['routine']);
   });
 });
