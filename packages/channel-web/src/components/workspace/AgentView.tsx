@@ -19,12 +19,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Archive, ArrowRight, Menu } from 'lucide-react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
-import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Sheet, SheetContent, SheetTitle } from '@/components/ui/sheet';
 import { Spinner } from '@/components/ui/spinner';
-import { useRailPreference } from '@/lib/use-rail-preference';
-import { conversationControls } from '@/lib/conversation-controls';
+import { usePanelPreference } from '@/lib/use-panel-preference';
 import { useIsCompact } from '@/lib/use-compact';
 import {
   MemoryFixesContext,
@@ -84,9 +82,12 @@ import { MemorySurface } from './FactsMemory';
 import { AgentInstructions } from './AgentInstructions';
 import { AgentSettings } from './AgentSettings';
 import { cn } from '@/lib/utils';
-import { AgentRail, AgentRailContent } from './AgentRail';
+import { AgentRail, AgentRailContent, isRailPanel, RAIL_PANEL_IDS, RAIL_PANELS, type RailPanel } from './AgentRail';
+import { AgentActivity } from './AgentActivity';
+import { ChatPanelToggles } from './ChatPanelToggles';
 import { LearnedAnnouncer, LearnedInChat } from './LearnedInChat';
 import { learnedAnnouncement, learnedToggleLabel } from './memory-copy';
+import type { SidebarChatCommand, SidebarChatList } from '@/lib/sidebar-chats';
 import { AgentTile } from './bits';
 import type {
   ThreadMessage,
@@ -156,8 +157,8 @@ interface Props {
   onGranted: (grant: WorkspaceGrant) => Promise<boolean>;
   onBack: () => void;
   /**
-   * Opens Settings on AI model keys — the rail's paused-memory "Fix this"
-   * (TASK-627). Offered only to an admin; the server gates the tab anyway.
+   * Opens Settings on AI model keys — the Memory panel's paused-memory "Fix
+   * this" (TASK-627). Offered only to an admin; the server gates the tab anyway.
    */
   onOpenModelKeys?: (() => void) | undefined;
   /**
@@ -224,6 +225,21 @@ interface Props {
     hidden?: boolean;
   } | null;
   onPendingReplyConsumed?: () => void;
+  /**
+   * The sidebar lists this agent's chats (they used to live in this panel's
+   * rail). While mounted, this view is their source: it publishes what it
+   * holds, and `null` on unmount so the shell falls back to its own read.
+   */
+  onChats?: (chats: SidebarChatList | null) => void;
+  /** A chat switch the sidebar asked for; consumed once the detail is in. */
+  chatCommand?: SidebarChatCommand | null;
+  onChatCommandConsumed?: (nonce: number) => void;
+  /**
+   * The settings page was opened generically (the sidebar's ⋮ → Agent
+   * settings), so on a phone it starts on the section list rather than inside
+   * the default section — what this view's own `openSettings()` does.
+   */
+  settingsStartOnList?: boolean;
 }
 
 /*
@@ -361,6 +377,10 @@ export function AgentView({
   onChanged,
   pendingReply = null,
   onPendingReplyConsumed,
+  onChats,
+  chatCommand = null,
+  onChatCommandConsumed,
+  settingsStartOnList = false,
 }: Props) {
   const [detail, setDetail] = useState<AgentDetail | null>(null);
   /*
@@ -387,9 +407,18 @@ export function AgentView({
   // The floating frame cannot fit both expanded rails plus a usable chat on tablets.
   const tablet = useIsCompact('lg');
   const compactRail = compact || tablet;
-  const [railOpen, setRailOpen] = useState(false);
+  /*
+    THE SIDE PANEL — which view the chat header's icons have open, `null` for
+    none. Two states because two shapes: beside the thread (desktop) it is
+    remembered, the way a person leaves a panel open; over the thread (a
+    sheet, below `lg`) it starts shut every time, because a sheet that
+    reopens itself on each visit covers the thing they came to read.
+  */
+  const [desktopPanel, setDesktopPanel] = usePanelPreference(isRailPanel);
+  const [sheetPanel, setSheetPanel] = useState<RailPanel | null>(null);
+  const openPanel = compactRail ? sheetPanel : desktopPanel;
+  const setOpenPanel = compactRail ? setSheetPanel : setDesktopPanel;
   const [settingsListRequested, setSettingsListRequested] = useState(false);
-  const [railCollapsed, setRailCollapsed] = useRailPreference('details');
   const [fileCount, setFileCount] = useState<number | null>(null);
   const [pastId, setPastId] = useState<string | null>(null);
   /**
@@ -437,18 +466,18 @@ export function AgentView({
     enabled: detail?.memory.factsAvailable === true,
     announce: learnedAnnouncement,
   });
-  const { markSeen: markLearnedSeen, unseen: learnedUnseen } = learned;
   // The chip's view of the same ledger (TASK-643): only the fixes, as a value
   // that changes when they do rather than with every stream frame.
+  const { markSeen: markLearnedSeen, unseen: learnedUnseen } = learned;
   const { fixes: learnedFixMap, recordFix, undoFix, forgotten, recordForget, undoForget } = learned;
   const learnedFixes = useMemo<MemoryFixes>(
     () => ({ fixes: learnedFixMap, recordFix, undoFix, forgotten, recordForget, undoForget }),
     [learnedFixMap, recordFix, undoFix, forgotten, recordForget, undoForget],
   );
-  // Below `lg`, opening the rail is what counts as having seen the block.
+  // Below `lg`, opening the Memory sheet is what counts as having seen it.
   useEffect(() => {
-    if (compactRail && railOpen && learnedUnseen > 0) markLearnedSeen();
-  }, [compactRail, railOpen, learnedUnseen, markLearnedSeen]);
+    if (compactRail && openPanel === 'memory' && learnedUnseen > 0) markLearnedSeen();
+  }, [compactRail, openPanel, learnedUnseen, markLearnedSeen]);
   const isAdmin = useUser()?.role === 'admin';
 
   /**
@@ -797,6 +826,74 @@ export function AgentView({
     setPastReload((n) => n + 1);
     onChanged();
   }, [onChanged]);
+
+  /*
+    THE SIDEBAR'S CHAT LIST, published from what this view already holds. The
+    list moved out of this panel's rail and into the sidebar; publishing (not
+    a second read in the shell) is what keeps a chat that was just started,
+    renamed or opened in step with the thread on screen.
+  */
+  const chatsPast = detail?.past;
+  const chatsConversationId = detail?.conversationId;
+  const chatsBusy = streaming || rereading;
+  /*
+    Held in a ref so a caller passing an inline arrow cannot turn every render
+    into a publish, and every publish into a render.
+  */
+  const onChatsRef = useRef(onChats);
+  onChatsRef.current = onChats;
+  useEffect(() => {
+    const publish = onChatsRef.current;
+    if (!publish || chatsPast === undefined || chatsConversationId === undefined) return;
+    publish({
+      agentId,
+      conversationId: chatsConversationId,
+      past: chatsPast,
+      openPastId: pastId,
+      busy: chatsBusy,
+    });
+  }, [agentId, chatsPast, chatsConversationId, pastId, chatsBusy]);
+  useEffect(() => () => onChatsRef.current?.(null), []);
+
+  /*
+    A chat switch the sidebar asked for. Waits for the first detail: picking a
+    chat from Today navigates here first, and the request is what this fresh
+    view does once it can.
+  */
+  useEffect(() => {
+    if (chatCommand === null || chatCommand.agentId !== agentId || !hasDetail) return;
+    onChatCommandConsumed?.(chatCommand.nonce);
+    if (chatCommand.kind === 'open') {
+      setPastId(chatCommand.pastId);
+      return;
+    }
+    /*
+      A fresh chat the shell already created (it owns the create, so a failure
+      is reported where the button was pressed). Same reset the rail's old
+      "New" did: the excerpt, the last send and its error belong to the
+      conversation being left.
+    */
+    /*
+      Not cancelled when the request clears: consuming it re-runs this effect,
+      and a cleanup flag would drop the very read it started. An agent switch
+      remounts this view (it is keyed), so a late answer lands in a discarded
+      instance, never in another agent's thread.
+    */
+    const { conversationId } = chatCommand;
+    void (async () => {
+      try {
+        const next = await workspaceApi.agent(agentId, conversationId);
+        conversationRef.current = conversationId;
+        setPastId(null);
+        setSent(null);
+        setTurnError(null);
+        setDetail(next);
+      } catch (e) {
+        logRequestFailure(e, 'workspace-agent-new-chat');
+      }
+      onChanged();
+    })();
+  }, [chatCommand, agentId, hasDetail]);
 
   /*
     Forget a Stop: cancel its fallback timer, drop the bookkeeping, and let the
@@ -1332,21 +1429,22 @@ export function AgentView({
   const { agent } = detail;
   const past = detail.past.find((p) => p.id === pastId) ?? null;
 
+
   /*
-    Who said each turn of the thread on screen (TASK-642): the rail labels a
-    memory's source "your message" or "my reply" by the TURN, not by the
-    fact's subject, and draws no link to a turn that is not here to jump to.
-    The durable thread only — the in-flight turns' placeholder ids are never
-    a stored source.
+    Who said each turn of the thread on screen (TASK-642): the Memory panel
+    labels a memory's source "your message" or "my reply" by the TURN, and
+    draws no link to a turn that is not here to jump to. The durable thread
+    only — the in-flight turns' placeholder ids are never a stored source.
   */
   const sources = turnSources(past !== null ? (pastDetail?.thread ?? []) : detail.thread);
 
   /*
-    One block element for both rail shapes. Below `lg`, the source link closes
-    the sheet first — it covers the very thread it is pointing into.
+    The Memory panel. Below `lg` the source link closes the sheet first —
+    it covers the very thread it is pointing into.
   */
   const learnedBlock = (
     <LearnedInChat
+      panel
       memory={learned}
       agentId={agentId}
       agentName={agent.name}
@@ -1357,22 +1455,16 @@ export function AgentView({
       }
       onOpenModelKeys={isAdmin ? onOpenModelKeys : undefined}
       sourceOf={(turnId) => sources.get(turnId)}
-      /*
-        `jumpToSource` answers false when the message is not in the rendered
-        thread. Ignored on purpose: `sourceOf` already withholds the link from
-        a turn that is not in the thread on screen, and every turn that is
-        gets rendered (the thread is not virtualised).
-      */
       onJumpToSource={(turnId) => {
         if (compactRail) {
-          setRailOpen(false);
+          setSheetPanel(null);
           setTimeout(() => jumpToSource(turnId), 0);
           return;
         }
         jumpToSource(turnId);
       }}
       onSeeAll={() => {
-        if (compactRail) setRailOpen(false);
+        setSheetPanel(null);
         openSettings('memory');
       }}
     />
@@ -1549,34 +1641,37 @@ export function AgentView({
   function openSettings(section?: AgentSettingsSection) {
     // Generic Settings opens the phone index; named links drill in directly.
     setSettingsListRequested(section === undefined);
-    setRailOpen(false);
+    setSheetPanel(null);
     onSettingsSection?.(section ?? DEFAULT_SETTINGS_SECTION);
   }
 
-  const railProps = {
-    detail, learned: learnedBlock, openPastId: pastId, tab, onTab,
-    counts: { files: fileCount },
-    onChanged,
-    busy: streaming || rereading,
-    onNew: async () => {
-      const created = await conversationControls.create(agent.id);
-      const next = await workspaceApi.agent(agent.id, created.conversationId);
-      conversationRef.current = created.conversationId;
-      setPastId(null);
-      setSent(null);
-      setTurnError(null);
-      setDetail(next);
-      onChanged();
-    },
-    panels: {
-      files: <AgentFiles agentId={agent.id} agentName={agent.name} onCount={setFileCount} />,
-    },
-    ...(onSettingsSection
-      ? {
-          onOpenSettings: openSettings,
-        }
-      : {}),
-  };
+  /*
+    Memory is offered only where facts memory exists: a brain icon that opens
+    "this workspace doesn't remember things" is a control with nothing behind it.
+  */
+  const panelIds = RAIL_PANEL_IDS.filter(
+    (id) => id !== 'memory' || detail.memory.factsAvailable === true,
+  );
+  const shownPanel = openPanel !== null && panelIds.includes(openPanel) ? openPanel : null;
+  const panelBody =
+    shownPanel === 'memory' ? learnedBlock
+    : shownPanel === 'files' ? <AgentFiles agentId={agent.id} agentName={agent.name} onCount={setFileCount} />
+    : shownPanel === 'activity' ? <AgentActivity agent={agent} busy={streaming || rereading} />
+    : null;
+  const panelMeta =
+    shownPanel === 'files' && fileCount !== null
+      ? `${fileCount} ${fileCount === 1 ? 'file' : 'files'}`
+      : null;
+  const memoryUnseen = learnedUnseen > 0 && shownPanel !== 'memory';
+  const panelToggles = (
+    <ChatPanelToggles
+      panels={panelIds}
+      value={shownPanel}
+      onValueChange={setOpenPanel}
+      labels={memoryUnseen ? { memory: learnedToggleLabel(learnedUnseen) } : {}}
+      dots={{ memory: memoryUnseen }}
+    />
+  );
 
   const settingsPage = settingsSection !== null && onSettingsSection ? (
         <AgentSettings
@@ -1585,7 +1680,7 @@ export function AgentView({
           onSection={onSettingsSection}
           onBack={() => onTab('chat')}
           compact={compact}
-          startOnList={settingsListRequested}
+          startOnList={settingsListRequested || settingsStartOnList}
           busy={streaming || rereading}
           instructions={
             <AgentInstructions
@@ -1616,15 +1711,12 @@ export function AgentView({
       {/* Keep the composer mounted: it owns draft files and pending uploads. */}
       <div hidden={settingsPage !== null} className={cn('flex min-h-0 flex-1', settingsPage !== null && 'hidden')}>
         <div className="flex min-w-0 flex-1 flex-col">
-          {(compactRail || railCollapsed) && <header className="flex h-14 shrink-0 items-center gap-2.5 border-b border-border px-4">
+          <header className="flex h-14 shrink-0 items-center gap-2.5 border-b border-border px-4">
             {compact && onOpenNav && <Button variant="ghost" size="icon" className="size-11 md:hidden" onClick={onOpenNav} aria-label="Open navigation" {...{ [NAV_TRIGGER_ATTR]: '' }}><Menu aria-hidden="true" /></Button>}
             <AgentTile agent={agent} size={28} />
             <h1 className="min-w-0 truncate font-brand text-[15px] font-semibold" title={agent.name}>{agent.name}</h1>
-            {compactRail && <Button variant="outline" size="sm" onClick={() => setRailOpen(true)} aria-label={learnedUnseen > 0 ? learnedToggleLabel(learnedUnseen) : 'Agent details'} className="ml-auto min-h-11 px-2">
-              Details{learnedUnseen > 0 && <Badge>{learnedUnseen}</Badge>}
-            </Button>}
-          </header>}
-          {!compactRail && !railCollapsed && <h1 className="sr-only">{agent.name}</h1>}
+            <div className="ml-auto">{panelToggles}</div>
+          </header>
           <h2 className="sr-only">Conversation</h2>
 
               {past && (
@@ -1883,12 +1975,13 @@ export function AgentView({
 
         </div>
         <LearnedAnnouncer announcement={learned.announcement} />
-        {compactRail ? <Sheet open={railOpen} onOpenChange={setRailOpen}>
+        {compactRail ? <Sheet open={shownPanel !== null} onOpenChange={(open) => { if (!open) setSheetPanel(null); }}>
           <SheetContent side="right" aria-describedby={undefined} className="flex w-[320px] max-w-[calc(100vw-24px)] flex-col gap-0 p-0">
-            <SheetTitle className="sr-only">Agent details</SheetTitle>
-            <AgentRailContent {...railProps} mobile onOpenPast={id => { setPastId(id); setRailOpen(false); }} />
+            {/* Named for the view, so the sheet and its heading agree. */}
+            <SheetTitle className="sr-only">{shownPanel !== null ? `${RAIL_PANELS[shownPanel].label} panel` : 'Side panel'}</SheetTitle>
+            {shownPanel !== null && <AgentRailContent panel={shownPanel} meta={panelMeta}>{panelBody}</AgentRailContent>}
           </SheetContent>
-        </Sheet> : <AgentRail {...railProps} collapsed={railCollapsed} onCollapse={() => setRailCollapsed(!railCollapsed)} onOpenPast={setPastId} />}
+        </Sheet> : shownPanel !== null && <AgentRail panel={shownPanel} meta={panelMeta}>{panelBody}</AgentRail>}
       </div>
     </MemoryFixesContext.Provider>
   );

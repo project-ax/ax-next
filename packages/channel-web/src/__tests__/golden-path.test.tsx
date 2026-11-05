@@ -16,8 +16,9 @@
  * DOM is the shipped code.
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { App } from '../App';
+import { openSwitcher } from '../components/workspace/__tests__/sidebar-helpers';
 
 const fetchMock = vi.fn();
 
@@ -77,10 +78,13 @@ describe('golden-path acceptance', () => {
 
     // The board was read and reached the rail: the agent's name is the one
     // `/api/workspace/state` sent, not the chat agent list's display name.
-    expect(screen.getByRole('button', { name: /Scribe/ })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /^Scribe, .*Switch agent/ })).toBeTruthy();
 
-    // App wired its create-agent door through to the shell.
-    expect(screen.getByRole('button', { name: /New agent/ })).toBeTruthy();
+    // App wired its create-agent door through to the shell: the switcher's
+    // menu ends with it.
+    const menu = await openSwitcher();
+    expect(within(menu).getByRole('menuitem', { name: 'New agent' })).toBeTruthy();
+    fireEvent.keyDown(menu, { key: 'Escape' });
 
     // `/` resolved to the Today view — the main pane, not just the rail.
     await waitFor(() => {

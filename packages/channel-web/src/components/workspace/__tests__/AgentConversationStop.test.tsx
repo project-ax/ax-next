@@ -296,15 +296,4 @@ describe('AgentConversation — the "you stopped this" note', () => {
     expect(announcer().textContent).toBe('Stopped.');
     expect(screen.getAllByRole('status')).toHaveLength(1);
   });
-
-  // Passes with or without the renderer (a kind that does not exist yet cannot
-  // be indexed) — it is a guard on `thread-find`'s explicit `stopped` arm: index
-  // the note's text there and this goes red, because the Find toggle appears
-  // over a thread with nothing in it anyone said.
-  it('is not counted by thread find (it is chrome, not something anyone said)', () => {
-    renderConversation({ thread: [stoppedRow] });
-    // A thread holding only the note has nothing to search, so the Find toggle
-    // must not appear over it.
-    expect(screen.queryByRole('button', { name: /find/i })).toBeNull();
-  });
 });

@@ -210,7 +210,7 @@ function mergeReadWithReceipts(
  * WHERE IT GOES. Right after the nearest message before it that the fresh read
  * still has — where it was, with the continuation of the turn below it. That is
  * where the reader saw it while the turn streamed, and it is also what keeps it
- * MOUNTED: the transcript keys each message by position (`findFieldKey`), so a
+ * MOUNTED: the transcript keys each message by position (`${index}:${id}`), so a
  * receipt that moved would remount, and a remount drops focus exactly as an
  * unmount does.
  *

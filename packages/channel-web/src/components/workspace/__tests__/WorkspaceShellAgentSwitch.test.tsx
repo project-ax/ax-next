@@ -21,6 +21,7 @@ import { UserProvider } from '@/lib/user-context';
 import { resetDraftsForTest } from '@/lib/workspace-draft-store';
 import { WorkspaceShell } from '../WorkspaceShell';
 import { rail as railFixture } from './rail-fixture';
+import { pickAgent } from './sidebar-helpers';
 
 vi.mock('@/lib/workspace-api', async () => {
   const actual = await vi.importActual<Record<string, unknown>>(
@@ -145,7 +146,7 @@ describe('switching agents mid-send', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Send' }));
 
     // The POST is in flight (unresolved). Switch to agent B before it lands.
-    fireEvent.click(screen.getByRole('button', { name: /^Tern\s*,/ }));
+    await pickAgent('Tern');
     await screen.findByLabelText('Conversation with Tern');
 
     // Now let A's send resolve, and have the mocked SSE reader push a text
@@ -188,12 +189,12 @@ describe('switching agents mid-send', () => {
     });
 
     // Switch away — this REMOUNTS the pane (TASK-393's `key={route.id}`).
-    fireEvent.click(screen.getByRole('button', { name: /^Tern\s*,/ }));
+    await pickAgent('Tern');
     await screen.findByLabelText('Conversation with Tern');
     expect(screen.getByPlaceholderText('Message Tern')).toHaveValue('');
 
     // Switch back — the draft must still be there.
-    fireEvent.click(screen.getByRole('button', { name: /^Quill\s*,/ }));
+    await pickAgent('Quill');
     await screen.findByLabelText('Conversation with Quill');
     expect(screen.getByPlaceholderText('Message Quill')).toHaveValue(
       'a note I have not sent yet',

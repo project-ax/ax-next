@@ -9,10 +9,10 @@
  */
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { workspaceApi, type AgentDetail, type WorkspaceAgent } from '@/lib/workspace-api';
+import { workspaceApi, type WorkspaceAgent } from '@/lib/workspace-api';
 import { AgentRail } from '../AgentRail';
 import { AgentSettings } from '../AgentSettings';
-import { describedRow, mcpRow, rail, railActivity, siteGrant } from './rail-fixture';
+import { describedRow, mcpRow, rail, siteGrant } from './rail-fixture';
 
 vi.mock('@/lib/workspace-api', async () => {
   const actual = await vi.importActual<Record<string, unknown>>('@/lib/workspace-api');
@@ -46,28 +46,6 @@ function agent(over: Partial<WorkspaceAgent> = {}): WorkspaceAgent {
   };
 }
 
-function detail(over: Partial<AgentDetail> = {}): AgentDetail {
-  return {
-    agent: agent(),
-    conversationId: null,
-    thread: [],
-    decisions: { status: 'ok' },
-    past: [],
-    memory: { rules: { status: 'unavailable', doc: null } },
-    ...over,
-  };
-}
-
-let initialTab = 'chat' as const;
-/**
- * `container` is the whole document: the permissions list now lives in a
- * Dialog (TASK-738), which portals out of the render root.
- */
-function renderRail(d: AgentDetail = detail()) {
-  const r = render(<AgentRail detail={d} openPastId={null} onOpenPast={vi.fn()} tab={initialTab} />);
-  return { ...r, container: document.body };
-}
-
 /** Permissions and grants moved intact into the settings section (TASK-889). */
 function renderConnectorsSettings() {
   const r = render(
@@ -90,188 +68,8 @@ async function openGrants(): Promise<void> {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  initialTab = 'chat';
   railMock.mockResolvedValue(rail());
   abilitiesMock.mockResolvedValue({ abilities: ALL_ON });
-});
-
-describe('AgentRail — simplified tabs', () => {
-  it('renders three visible icon and text labels and pins learned facts outside the active panel', async () => {
-    render(<AgentRail detail={detail()} openPastId={null} onOpenPast={vi.fn()}
-      learned={<p>Learned in this chat fixture</p>} />);
-    const tabs = screen.getAllByRole('tab');
-    expect(tabs.map((tab) => tab.textContent)).toEqual(['Chats', 'Files']);
-    tabs.forEach((tab) => expect(tab.querySelector('svg')).toBeTruthy());
-    expect(screen.queryByRole('tab', { name: 'Memory' })).toBeNull();
-    const learned = screen.getByText('Learned in this chat fixture');
-    expect(learned.closest('[role="tabpanel"]')).toBeNull();
-    for (const label of ['Files', 'Chats']) {
-      fireEvent.mouseDown(screen.getByRole('tab', { name: label }), { button: 0, ctrlKey: false });
-      expect(learned).toBeVisible();
-    }
-    await waitFor(() => expect(railMock).toHaveBeenCalled());
-  });
-
-  it.each(['memory', 'connectors'])('falls back to Chats for a removed %s tab value', async (tab) => {
-    render(<AgentRail detail={detail()} openPastId={null} onOpenPast={vi.fn()}
-      tab={tab as unknown as 'chat'} />);
-    expect(screen.getByRole('tab', { name: 'Chats' })).toHaveAttribute('aria-selected', 'true');
-    expect(screen.getByRole('button', { name: /Current conversation/ })).toBeTruthy();
-    await waitFor(() => expect(railMock).toHaveBeenCalled());
-  });
-
-  it('keeps Current conversation without an empty-history message', async () => {
-    render(<AgentRail detail={detail()} openPastId={null} onOpenPast={vi.fn()} />);
-    expect(screen.getByRole('button', { name: /Current conversation/ })).toBeTruthy();
-    expect(screen.queryByText('No earlier conversations yet.')).toBeNull();
-    await waitFor(() => expect(railMock).toHaveBeenCalled());
-  });
-
-  it('combines current work and history in one Activity tab', async () => {
-    railMock.mockResolvedValue(rail({
-      activity: { status: 'ok', activity: railActivity({ phrase: 'Reading the Q3 notes' }) },
-    }));
-    render(<AgentRail detail={detail()} openPastId={null} onOpenPast={vi.fn()}
-      panels={{ chat: <p>Finished the inbox sweep</p> }} />);
-    expect(screen.getAllByRole('tab')).toHaveLength(2);
-    expect(screen.queryByRole('tab', { name: 'Connectors' })).toBeNull();
-    expect(screen.queryByRole('tab', { name: 'Right now' })).toBeNull();
-    expect(screen.queryByRole('tab', { name: 'What it did' })).toBeNull();
-    fireEvent.mouseDown(screen.getByRole('tab', { name: 'Chats' }), { button: 0, ctrlKey: false });
-    expect(await screen.findByText('Reading the Q3 notes')).toBeTruthy();
-    expect(screen.queryByRole('tab', {name:'Activity'})).toBeNull();
-  });
-});
-
-describe('AgentRail — "Right now"', () => {
-  beforeEach(() => { initialTab = 'chat'; });
-  it('says only the state word when nothing is reporting an activity line', async () => {
-    renderRail(detail({ agent: agent({ state: 'resting' }) }));
-
-    expect(await screen.findByText('Resting')).toBeTruthy();
-    // No em-dash placeholder and no "nothing queued" stand-in: an empty counter
-    // row reads as a report we are not in a position to make.
-    expect(screen.queryByText('—')).toBeNull();
-    expect(screen.queryByText('nothing queued')).toBeNull();
-  });
-
-  // TASK-707 — the detail's word is what the rail follows on a brand-new
-  // agent, where the roster's never changes. Rendered without a
-  // WorkspaceProvider on purpose: there is no roster here at all.
-  it("re-reads Right now when the agent detail's state goes working -> resting", async () => {
-    railMock.mockResolvedValue(
-      rail({
-        activity: {
-          status: 'ok',
-          activity: railActivity({ phrase: 'Working on your request', source: 'trigger' }),
-        },
-      }),
-    );
-    const { rerender } = renderRail(detail({ agent: agent({ state: 'working' }) }));
-    expect(await screen.findByText('Working on your request')).toBeTruthy();
-
-    railMock.mockResolvedValue(rail());
-    rerender(
-      <AgentRail detail={detail({ agent: agent({ state: 'resting' }) })} openPastId={null}
-        onOpenPast={vi.fn()} tab={initialTab} />,
-    );
-    await waitFor(() => expect(screen.queryByText('Working on your request')).toBeNull());
-    expect(await screen.findByText('Resting')).toBeTruthy();
-  });
-
-  /*
-    TASK-818 — the 390px walk: Details opened on Activity mid-turn. The
-    detail's word is "resting" before AND after the turn (it never saw the
-    server's working), so the only transition left is the turn finishing.
-  */
-  it('drops a Working line read mid-turn once the turn finishes, with no word change', async () => {
-    railMock.mockResolvedValue(
-      rail({
-        activity: {
-          status: 'ok',
-          activity: railActivity({ phrase: 'Working on your request', source: 'trigger' }),
-        },
-      }),
-    );
-    const d = detail({ agent: agent({ state: 'resting' }) });
-    const { rerender } = render(
-      <AgentRail detail={d} openPastId={null} onOpenPast={vi.fn()} tab={initialTab} busy mobile />,
-    );
-    expect(await screen.findByText('Working on your request')).toBeTruthy();
-    // The card's word agrees with its own line rather than saying "Resting"
-    // beside "Working on your request".
-    expect(screen.getByText('Working')).toBeTruthy();
-    expect(screen.queryByText('Resting')).toBeNull();
-
-    railMock.mockResolvedValue(rail());
-    rerender(
-      <AgentRail detail={d} openPastId={null} onOpenPast={vi.fn()} tab={initialTab} busy={false} mobile />,
-    );
-    await waitFor(() => expect(screen.queryByText('Working on your request')).toBeNull());
-    expect(await screen.findByText('Resting')).toBeTruthy();
-  });
-
-  it('renders the phrase, a real counter and elapsed-since-start', async () => {
-    railMock.mockResolvedValue(
-      rail({
-        activity: {
-          status: 'ok',
-          activity: railActivity({
-            phrase: 'Reading the Q3 notes',
-            counter: { done: 2, total: 9, unit: 'files' },
-          }),
-        },
-      }),
-    );
-    renderRail();
-
-    expect(await screen.findByText('Reading the Q3 notes')).toBeTruthy();
-    expect(screen.getByText('2 of 9 files')).toBeTruthy();
-  });
-
-  it('never renders progress-bar vocabulary anywhere on the rail (design H2)', async () => {
-    railMock.mockResolvedValue(
-      rail({
-        activity: {
-          status: 'ok',
-          activity: railActivity({
-            phrase: 'No activity for 4 minutes',
-            counter: null,
-            stale: true,
-          }),
-        },
-      }),
-    );
-    const { container } = renderRail();
-
-    await screen.findByText('No activity for 4 minutes');
-    const text = container.textContent ?? '';
-    expect(text).not.toMatch(/%/);
-    expect(text).not.toMatch(/\bremaining\b/i);
-    expect(text).not.toMatch(/\bleft\b/i);
-    expect(text).not.toMatch(/\beta\b/i);
-  });
-
-  it('drops the counter on a stale line — the phrase is replaced, not decorated', async () => {
-    railMock.mockResolvedValue(
-      rail({
-        activity: {
-          status: 'ok',
-          activity: railActivity({
-            phrase: 'No activity for 4 minutes',
-            // The wire already refuses to carry one on a stale line; this pins
-            // that the renderer does not put one back if it ever does.
-            counter: null,
-            stale: true,
-          }),
-        },
-      }),
-    );
-    renderRail();
-
-    await screen.findByText('No activity for 4 minutes');
-    expect(screen.queryByText(/ of /)).toBeNull();
-  });
 });
 
 describe('AgentSettings — "See everything it can do"', () => {
@@ -880,18 +678,41 @@ describe('AgentSettings — rules are disclosed behind "See everything it can do
   });
 });
 
-describe('AgentRail icon tabs', () => {
-  it('preserves Radix active styling while each tab has a tooltip', () => {
-    renderRail();
-    const selected = screen.getByRole('tab', { name: 'Chats' });
-    expect(selected).toHaveAttribute('data-state', 'active');
-    expect(screen.getByRole('tab', { name: 'Files' })).toHaveAttribute('data-state', 'inactive');
+describe('AgentRail — the side panel shell', () => {
+  const body = <p>Panel body fixture</p>;
+
+  it('is named for the view it shows, with that view as its heading', () => {
+    render(<AgentRail panel="files" meta="3 files">{body}</AgentRail>);
+    const panel = screen.getByRole('complementary', { name: 'Files' });
+    expect(panel).toContainElement(screen.getByText('Panel body fixture'));
+    expect(screen.getByRole('heading', { level: 2, name: 'Files' })).toBeTruthy();
+    expect(screen.getByText('3 files')).toBeTruthy();
   });
-  it('expands even when the clicked icon is the already selected tab', () => {
-    const expand = vi.fn();
-    render(<AgentRail detail={detail()} openPastId={null} onOpenPast={vi.fn()} collapsed onCollapse={expand} />);
-    fireEvent.click(screen.getByRole('tab', { name: 'Chats' }));
-    expect(expand).toHaveBeenCalledTimes(1);
+
+  it.each([
+    ['memory', 'Memory'],
+    ['activity', 'Activity'],
+  ] as const)('heads the %s view "%s"', (panel, label) => {
+    render(<AgentRail panel={panel}>{body}</AgentRail>);
+    expect(screen.getByRole('complementary', { name: label })).toBeTruthy();
+    expect(screen.getByRole('heading', { level: 2, name: label })).toBeTruthy();
+  });
+
+  /*
+    The header's icon toggles are the only way in and out. A collapse button
+    or a tab strip here would be a second, disagreeing answer to "how do I
+    get this back".
+  */
+  it('has no tabs, no collapse control and no chats', () => {
+    render(<AgentRail panel="files">{body}</AgentRail>);
+    expect(screen.queryAllByRole('tab')).toHaveLength(0);
+    expect(screen.queryByRole('button')).toBeNull();
+    expect(screen.queryByRole('button', { name: /Current conversation/ })).toBeNull();
+  });
+
+  it('draws no meta line when there is none to show', () => {
+    render(<AgentRail panel="files" meta={null}>{body}</AgentRail>);
+    expect(screen.getByRole('heading', { level: 2 }).parentElement?.textContent).toBe('Files');
   });
 });
 
@@ -979,49 +800,6 @@ describe('AgentSettings — "Granted by you"', () => {
   });
 });
 
-/*
-  WHICH counters exist is the route's contract, not this component's — the panel
-  renders whatever rows it is handed. So the pin that "Handled on its own" and
-  "You overruled it" never ship (TASK-265) lives with their producer, in
-  `__tests__/server/routes-workspace-rail.test.ts`. Asserting their absence here
-  instead would only prove that a mock we wrote never mentioned them, which is
-  the kind of green that reads as a guarantee and is not one.
-*/
-describe('AgentRail — "This week"', () => {
-  beforeEach(() => { initialTab = 'chat'; });
-  it('renders no panel at all when there is no number to put in it', async () => {
-    renderRail();
-    await screen.findByRole('heading', { name: 'Chats' });
-    expect(screen.queryByText('This week')).toBeNull();
-  });
-
-  it('prints each counter’s written definition beside its number', async () => {
-    railMock.mockResolvedValue(
-      rail({
-        counters: {
-          status: 'ok',
-          windowDays: 7,
-          rows: [
-            {
-              id: 'brought-to-you',
-              label: 'Brought to you',
-              value: 3,
-              definition: 'Decisions this agent raised for you in the last 7 days.',
-            },
-          ],
-        },
-      }),
-    );
-    renderRail();
-
-    expect(await screen.findByText('Brought to you')).toBeTruthy();
-    expect(screen.getByText('3')).toBeTruthy();
-    expect(
-      screen.getByText('Decisions this agent raised for you in the last 7 days.'),
-    ).toBeTruthy();
-  });
-});
-
 describe('AgentSettings — permissions that would not load', () => {
   it('drops the rail rather than showing stale claims beside an error', async () => {
     railMock.mockRejectedValue(new Error('workspace /rail → 500'));
@@ -1037,89 +815,3 @@ describe('AgentSettings — permissions that would not load', () => {
   });
 });
 
-/**
- * TASK-790 — a past conversation's date reaches the screen reader through
- * aria-describedby (the TASK-768 / #875 pattern), not aria-description, which
- * VoiceOver reads unevenly. jest-dom's toHaveAccessibleDescription honours
- * BOTH attributes, so it alone cannot tell the wirings apart: assert the
- * attribute shape too.
- */
-describe('AgentRail — past conversations', () => {
-  it('describes each past conversation by its date through aria-describedby', async () => {
-    const tenDaysAgo = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000).toISOString();
-    render(
-      <AgentRail
-        detail={detail({
-          past: [
-            { id: 'c-march', title: 'March plans', lastActivityAt: tenDaysAgo },
-            { id: 'c-april', title: 'April plans', lastActivityAt: tenDaysAgo },
-          ],
-        })}
-        openPastId={null}
-        onOpenPast={vi.fn()}
-        tab="chat"
-      />,
-    );
-    const rows = [
-      await screen.findByRole('button', { name: 'March plans' }),
-      screen.getByRole('button', { name: 'April plans' }),
-    ];
-    const ids = new Set<string>();
-    for (const row of rows) {
-      expect(row).not.toHaveAttribute('aria-description');
-      const id = row.getAttribute('aria-describedby');
-      expect(id).toBeTruthy();
-      ids.add(id!);
-      const target = document.getElementById(id!);
-      expect(target).not.toBeNull();
-      // Hidden: the date is already drawn visibly in the row, so browse mode
-      // must not read it a second time after the button.
-      expect(target).toHaveAttribute('hidden');
-      expect(target!.textContent).not.toBe('');
-      expect(row).toHaveAccessibleDescription(target!.textContent!);
-    }
-    // One description per row — two rows never share (and so never swap) one.
-    expect(ids.size).toBe(2);
-    await waitFor(() => expect(railMock).toHaveBeenCalled());
-  });
-
-  // A modal menu here leaves the page unclickable after its dialog removes the
-  // trigger (production, 2026-10-19; #998).
-  it('the chat row menu never locks the page', async () => {
-    render(
-      <AgentRail
-        detail={detail({ past: [{ id: 'c-launch', title: 'Launch checklist', lastActivityAt: new Date().toISOString() }] })}
-        openPastId={null}
-        onOpenPast={vi.fn()}
-        tab="chat"
-      />,
-    );
-    fireEvent.pointerDown(await screen.findByRole('button', { name: 'Options for Launch checklist' }), {
-      button: 0,
-      ctrlKey: false,
-    });
-    expect(await screen.findAllByRole('menuitem')).not.toHaveLength(0);
-    expect(document.body.style.pointerEvents).not.toBe('none');
-    await waitFor(() => expect(railMock).toHaveBeenCalled());
-  });
-});
-
-describe('AgentRail — the way into agent settings (TASK-888)', () => {
-  it('opens the settings page from an outline Settings button in the header', async () => {
-    const onOpenSettings = vi.fn();
-    render(
-      <AgentRail detail={detail()} openPastId={null} onOpenPast={vi.fn()} onOpenSettings={onOpenSettings} />,
-    );
-    fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
-    expect(onOpenSettings).toHaveBeenCalledTimes(1);
-    await waitFor(() => expect(railMock).toHaveBeenCalled());
-  });
-
-  it('draws no Settings button when there is nowhere for it to go', async () => {
-    render(<AgentRail detail={detail()} openPastId={null} onOpenPast={vi.fn()} />);
-    expect(screen.queryByRole('button', { name: 'Settings' })).toBeNull();
-    await waitFor(() => expect(railMock).toHaveBeenCalled());
-  });
-
-
-});

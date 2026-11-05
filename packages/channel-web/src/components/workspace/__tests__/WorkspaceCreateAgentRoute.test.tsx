@@ -25,6 +25,7 @@ import { KICKOFF_TEXT } from '@/lib/bootstrap-kickoff';
 import { HttpError } from '@/lib/http';
 import { WorkspaceShell, type WorkspaceShellProps } from '../WorkspaceShell';
 import { rail as railFixture } from './rail-fixture';
+import { chooseNewAgent } from './sidebar-helpers';
 
 vi.mock('@/lib/workspace-api', async () => {
   const actual = await vi.importActual<Record<string, unknown>>(
@@ -130,7 +131,8 @@ describe('workspace create-agent door', () => {
     const onCreateAgent = vi.fn();
     renderShell({ onCreateAgent });
 
-    const row = await screen.findByRole('button', { name: /New agent/ });
+    // No agents yet, so the switcher's place holds its one available action.
+    const row = await screen.findByRole('button', { name: 'Create your first agent' });
     fireEvent.click(row);
 
     await waitFor(() => expect(onCreateAgent).toHaveBeenCalledTimes(1));
@@ -145,11 +147,21 @@ describe('workspace create-agent door', () => {
    * correct behavior, so this test's job is to prove test 1 was actually
    * exercising the wiring rather than a row that shows up regardless.
    */
+  it('with agents, "New agent" is the switcher menu\'s last item and reaches the app', async () => {
+    boardMock.mockResolvedValue({ agents: [agentDetailFixture('a-quill').agent] });
+    const onCreateAgent = vi.fn();
+    renderShell({ onCreateAgent });
+
+    await chooseNewAgent();
+
+    await waitFor(() => expect(onCreateAgent).toHaveBeenCalledTimes(1));
+  });
+
   it('with no onCreateAgent, the row is absent', async () => {
     renderShell();
     await screen.findByRole('heading', { name: 'Today' });
     expect(
-      screen.queryByRole('button', { name: /New agent/ }),
+      screen.queryByRole('button', { name: /New agent|first agent/ }),
     ).not.toBeInTheDocument();
   });
 

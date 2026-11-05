@@ -272,9 +272,9 @@ export function learnedNewBadge(count: number): string {
   return `${count} new`;
 }
 
-/** The rail toggle's accessible name while there are unseen rows (mobile). */
+/** The chat header's Memory toggle, named while there are unseen rows. */
 export function learnedToggleLabel(count: number): string {
-  return `Agent details, ${count} new ${count === 1 ? 'memory' : 'memories'}`;
+  return `Memory, ${count} new ${count === 1 ? 'memory' : 'memories'}`;
 }
 
 /** Said once per batch to a screen reader, politely. */

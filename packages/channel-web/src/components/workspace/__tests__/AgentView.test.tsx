@@ -14,7 +14,7 @@
  *   3. The dropped-stream error said "send it again" twice and meant RETYPE —
  *      the composer had already cleared the draft.
  */
-import type { ComponentProps } from 'react';
+import { useCallback, useRef, useState, type ComponentProps } from 'react';
 import { afterEach, describe, expect, it, vi, beforeEach } from 'vitest';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import {
@@ -25,6 +25,7 @@ import {
 } from '@/lib/workspace-api';
 import type { AgentConnectorRow, AgentConnectorsRead } from '@/lib/workspace-types';
 import { AgentView } from '../AgentView';
+import type { SidebarChatCommand, SidebarChatList } from '@/lib/sidebar-chats';
 import {
   DECISION_SESSION_EXPIRED,
   DECISION_THREAD_READ_FAILED,
@@ -63,6 +64,12 @@ vi.mock('@/lib/workspace-api', async () => {
       // agent's Connectors list. Each test that cares sets its own answer;
       // `beforeEach` resets it to "nothing is unsigned".
       connectors: vi.fn(),
+      // The side panel always mounts Files now (chats moved to the sidebar).
+      // A root 404 is "nothing saved yet": an empty list, never an alert.
+      userFiles: vi.fn(async () => {
+        const E = actual.WorkspaceApiError as new (path: string, status: number) => Error;
+        throw new E('/agents/a-quill/user-files/', 404);
+      }),
       abilities: vi.fn(async () => ({ abilities: { webSearch: true, readPages: true, runCode: true } })),
       revokeGrant: vi.fn(),
       sendMessage: vi.fn(),
@@ -138,26 +145,82 @@ function withPast() {
   );
 }
 
-function renderView(over: Partial<ComponentProps<typeof AgentView>> = {}) {
-  return render(
-    <AgentView
-      agentId="a-quill"
-      tab="chat"
-      onTab={vi.fn()}
-      decisions={[]}
-      threadGrants={[]}
-      onGrantResolved={vi.fn()}
-        onGranted={vi.fn(async () => true)}
-      onApprove={vi.fn()}
-      onDismiss={vi.fn()}
-      onUndo={vi.fn()}
-      onBack={vi.fn()}
-      decisionsError={null}
-      version={0}
-      onChanged={vi.fn()}
-      {...over}
-    />,
+/*
+  A stand-in for the sidebar's chat list. The list moved out of this view's
+  rail; the view now PUBLISHES what it holds (`onChats`) and takes switches as
+  a request (`chatCommand`). Rendering one button per published row keeps the
+  tests driving the same round trip the real sidebar does.
+*/
+function SidebarStandIn(props: ComponentProps<typeof AgentView>) {
+  const [chats, setChats] = useState<SidebarChatList | null>(null);
+  const [command, setCommand] = useState<SidebarChatCommand | null>(null);
+  const nonce = useRef(0);
+  const open = (pastId: string | null) => {
+    nonce.current += 1;
+    setCommand({ nonce: nonce.current, agentId: props.agentId, kind: 'open', pastId });
+  };
+  // Stable, like the shell's state setter: the view re-publishes on a new
+  // callback identity, so an inline arrow here would loop.
+  const outer = useRef(props);
+  outer.current = props;
+  const onChats = useCallback((c: SidebarChatList | null) => {
+    setChats(c);
+    outer.current.onChats?.(c);
+  }, []);
+  const onConsumed = useCallback((n: number) => {
+    setCommand((c) => (c !== null && c.nonce === n ? null : c));
+    outer.current.onChatCommandConsumed?.(n);
+  }, []);
+  return (
+    <>
+      <nav aria-label="Sidebar stand-in">
+        {chats !== null && (
+          <>
+            <button type="button" onClick={() => open(null)}>
+              Current conversation
+            </button>
+            {chats.past.map((c) => (
+              <button key={c.id} type="button" onClick={() => open(c.id)}>
+                {c.title}
+              </button>
+            ))}
+          </>
+        )}
+      </nav>
+      <AgentView
+        {...props}
+        onChats={onChats}
+        chatCommand={props.chatCommand ?? command}
+        onChatCommandConsumed={onConsumed}
+      />
+    </>
   );
+}
+
+function viewProps(
+  over: Partial<ComponentProps<typeof AgentView>> = {},
+): ComponentProps<typeof AgentView> {
+  return {
+    agentId: 'a-quill',
+    tab: 'chat',
+    onTab: vi.fn(),
+    decisions: [],
+    threadGrants: [],
+    onGrantResolved: vi.fn(),
+    onGranted: vi.fn(async () => true),
+    onApprove: vi.fn(),
+    onDismiss: vi.fn(),
+    onUndo: vi.fn(),
+    onBack: vi.fn(),
+    decisionsError: null,
+    version: 0,
+    onChanged: vi.fn(),
+    ...over,
+  };
+}
+
+function renderView(over: Partial<ComponentProps<typeof AgentView>> = {}) {
+  return render(<SidebarStandIn {...viewProps(over)} />);
 }
 
 beforeEach(() => {
@@ -1845,5 +1908,97 @@ describe('file chip status checks', () => {
     expect(await screen.findByText('No longer available')).toBeTruthy();
     // A failed turn re-reads nothing: the recheck came from the turn ending.
     expect(agentMock.mock.calls.length).toBe(reads);
+  });
+});
+
+describe('AgentView — the sidebar chat list (chats moved out of the rail)', () => {
+  const PAST = { id: 'c-old', title: 'March', lastActivityAt: TEN_DAYS_AGO };
+
+  function renderBare(over: Partial<ComponentProps<typeof AgentView>> = {}) {
+    // The bare view, no stand-in: these tests are about the props themselves.
+    const props = viewProps(over);
+    const r = render(<AgentView {...props} />);
+    return { ...r, rerenderWith: (more: Partial<ComponentProps<typeof AgentView>>) =>
+      r.rerender(<AgentView {...props} {...more} />) };
+  }
+
+  it('publishes the chats it holds once the detail loads', async () => {
+    withPast();
+    const onChats = vi.fn();
+    renderBare({ onChats });
+    await waitFor(() =>
+      expect(onChats).toHaveBeenLastCalledWith({
+        agentId: 'a-quill',
+        conversationId: 'c-now',
+        past: [PAST],
+        openPastId: null,
+        busy: false,
+      }),
+    );
+  });
+
+  it('re-publishes the open row when a command opens a past chat, and clears on unmount', async () => {
+    withPast();
+    const onChats = vi.fn();
+    const onChatCommandConsumed = vi.fn();
+    const view = renderBare({ onChats, onChatCommandConsumed });
+    await screen.findByText('what is on today');
+    view.rerenderWith({
+      onChats,
+      onChatCommandConsumed,
+      chatCommand: { nonce: 1, agentId: 'a-quill', kind: 'open', pastId: 'c-old' },
+    });
+    await waitFor(() =>
+      expect(onChats).toHaveBeenLastCalledWith(expect.objectContaining({ openPastId: 'c-old' })),
+    );
+    expect(await screen.findByText('the March question')).toBeTruthy();
+    expect(onChatCommandConsumed).toHaveBeenCalledWith(1);
+    view.unmount();
+    expect(onChats).toHaveBeenLastCalledWith(null);
+  });
+
+  it('a "new" command reads that conversation, leaves the excerpt, and is consumed once', async () => {
+    agentMock.mockImplementation(async (_id: string, conversationId?: string) => {
+      if (conversationId === 'c-old')
+        return detail({ conversationId: 'c-old', thread: [{ kind: 'user', id: 'o1', text: 'the March question' }] });
+      if (conversationId === 'c-fresh') return detail({ conversationId: 'c-fresh', thread: [] });
+      return detail({ past: [PAST] });
+    });
+    const onChatCommandConsumed = vi.fn();
+    const onChanged = vi.fn();
+    const view = renderBare({ onChatCommandConsumed, onChanged });
+    await screen.findByText('what is on today');
+    view.rerenderWith({
+      onChatCommandConsumed,
+      onChanged,
+      chatCommand: { nonce: 1, agentId: 'a-quill', kind: 'open', pastId: 'c-old' },
+    });
+    await screen.findByText('the March question');
+
+    const fresh = { nonce: 2, agentId: 'a-quill', kind: 'new', conversationId: 'c-fresh' } as const;
+    view.rerenderWith({ onChatCommandConsumed, onChanged, chatCommand: fresh });
+    await waitFor(() => expect(agentMock).toHaveBeenCalledWith('a-quill', 'c-fresh'));
+    await waitFor(() => expect(screen.queryByText('the March question')).toBeNull());
+    expect(screen.queryByText('what is on today')).toBeNull();
+    // Re-rendered with the same request still in hand: no second read.
+    view.rerenderWith({ onChatCommandConsumed, onChanged, chatCommand: fresh });
+    await waitFor(() => expect(onChanged).toHaveBeenCalled());
+    expect(onChatCommandConsumed.mock.calls.filter(([n]) => n === 2)).toHaveLength(1);
+    expect(agentMock.mock.calls.filter(([, c]) => c === 'c-fresh')).toHaveLength(1);
+  });
+
+  it('ignores a command addressed to another agent', async () => {
+    withPast();
+    const onChatCommandConsumed = vi.fn();
+    const view = renderBare({ onChatCommandConsumed });
+    await screen.findByText('what is on today');
+    view.rerenderWith({
+      onChatCommandConsumed,
+      chatCommand: { nonce: 1, agentId: 'a-other', kind: 'open', pastId: 'c-old' },
+    });
+    await new Promise((r) => setTimeout(r, 30));
+    expect(onChatCommandConsumed).not.toHaveBeenCalled();
+    expect(screen.queryByText('the March question')).toBeNull();
+    expect(agentMock.mock.calls.some(([, c]) => c === 'c-old')).toBe(false);
   });
 });

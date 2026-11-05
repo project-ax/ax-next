@@ -68,7 +68,6 @@ import {
   grantPackagesVisible,
   grantTitle,
 } from '@/lib/grant-copy';
-import { FindHighlight, type FindView } from './ThreadFind';
 import { accountOrSkillDestination, connectorServiceOf } from '@/lib/grant-destinations';
 import { slotAccount } from '@/lib/grant-shape';
 import { humanizeId, humanizeSlotLabel } from '@/lib/humanize';
@@ -111,19 +110,6 @@ interface Props {
    * and the agent never stopped, so there is nothing to pick up.
    */
   onGranted: (grant: WorkspaceGrant) => Promise<boolean>;
-  /**
-   * The find bar's current search, or `null`/omitted when there is none to
-   * paint (TASK-390) — `TodayView` renders this same row with no find bar at
-   * all, so both are optional and default to "no highlight" rather than a
-   * required prop every non-thread caller would have to fake.
-   */
-  find?: FindView | null;
-  /**
-   * This grant's field-key prefix in `lib/thread-find.ts`'s index — see
-   * `grantFieldKeyBase`. Only meaningful together with `find`; a caller that
-   * passes one and not the other gets no highlight, not a crash.
-   */
-  fieldKeyBase?: string;
 }
 
 type GrantSlot = Extract<WorkspaceGrant['request'], { kind: 'skill' }>['slots'][number];
@@ -150,16 +136,10 @@ export function GrantRow({
   grant,
   onResolved,
   onGranted,
-  find = null,
-  fieldKeyBase,
 }: Props): ReactElement {
   // The conversation is recorded on the grant when the frame arrives: Today can
   // hold grants from several agents, so the row cannot work it out from context.
   const { request, conversationId } = grant;
-  // See `find`'s doc above — a `fieldKeyBase` with no `find` (or vice versa)
-  // still renders plain text, because `FindHighlight` itself no-ops on a null
-  // `find` and this key is never looked up in that case.
-  const keyOf = (suffix: string) => `${fieldKeyBase ?? ''}:${suffix}`;
   /**
    * Seeded from the durable draft (TASK-389), not blank — a half-typed key must
    * survive this component unmounting and a fresh instance taking its place,
@@ -385,14 +365,10 @@ export function GrantRow({
         data-testid={`grant-${grant.key}`}
       >
         <p className="text-[14px] font-medium">
-          <FindHighlight fieldKey={keyOf('title')} text={grantTitle(request)} find={find} />
+          {grantTitle(request)}
         </p>
         <p className="mt-1 text-[13px] leading-relaxed text-muted-foreground">
-          <FindHighlight
-            fieldKey={keyOf('explanation')}
-            text={HOST_WALL_EXPLANATION}
-            find={find}
-          />
+          {HOST_WALL_EXPLANATION}
         </p>
         <div className="mt-3 flex flex-wrap gap-1.5">
           <Badge variant="secondary">{request.host}</Badge>
@@ -448,10 +424,8 @@ export function GrantRow({
     card that must never be missing — `grantTitle` falls back to the humanized
     skill id.
 
-    BUILT BY `grantTitle` (`lib/grant-copy.ts`), not inline, since TASK-390:
-    `lib/thread-find.ts` needs this exact string to index, and a second copy of
-    this logic there is how the index and the card end up naming the grant
-    differently.
+    BUILT BY `grantTitle` (`lib/grant-copy.ts`), not inline, so every surface
+    that names a grant names it the same way.
   */
   const title = grantTitle(request);
   /*
@@ -503,7 +477,7 @@ export function GrantRow({
         data-testid={`grant-${grant.key}`}
       >
         <p className="text-[14px] font-medium">
-          <FindHighlight fieldKey={keyOf('title')} text={title} find={find} />
+          {title}
         </p>
         <p
           ref={answerRef}
@@ -529,16 +503,8 @@ export function GrantRow({
       data-testid={`grant-${grant.key}`}
     >
       <p className="text-[14px] font-medium">
-        <FindHighlight fieldKey={keyOf('title')} text={title} find={find} />
+        {title}
       </p>
-      {/*
-        NOT `FindHighlight` (TASK-390 review finding). `description` is not in
-        the find index — see `grantFindFields`'s comment on why only `title`
-        is indexed for a non-host grant: this paragraph is absent from the
-        `stalled` render arm below, and a field that is sometimes on screen
-        and sometimes not cannot safely be indexed without also making
-        `stalled` visible to the indexer.
-      */}
       {description.length > 0 && (
         <p className="mt-1 text-[13px] leading-relaxed text-muted-foreground">
           {description}

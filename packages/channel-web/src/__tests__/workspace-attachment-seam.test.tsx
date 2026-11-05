@@ -53,6 +53,7 @@ import { uploadAttachment } from '@/lib/attachment-upload';
 import type { AgentDetail, WorkspaceAgent } from '@/lib/workspace-api';
 import { ATTACHMENT_NAME_MAX_CHARS } from '@/lib/attachment-name';
 import { rail as railFixture } from '@/components/workspace/__tests__/rail-fixture';
+import type { SidebarChatCommand } from '../lib/sidebar-chats';
 
 /**
  * See `AgentView.test.tsx` for why this is computed off `Date.now()` rather
@@ -349,9 +350,10 @@ function liveDetail(): AgentDetail {
   } as unknown as AgentDetail;
 }
 
-function renderLiveView(): ReturnType<typeof render> {
-  return render(
+function liveView(chatCommand: SidebarChatCommand | null = null) {
+  return (
     <AgentView
+      chatCommand={chatCommand}
       agentId="a1"
       tab="chat"
       onTab={vi.fn()}
@@ -366,8 +368,12 @@ function renderLiveView(): ReturnType<typeof render> {
       decisionsError={null}
       version={0}
       onChanged={vi.fn()}
-    />,
+    />
   );
+}
+
+function renderLiveView(): ReturnType<typeof render> {
+  return render(liveView());
 }
 
 describe('a message the person attached a file to', () => {
@@ -535,7 +541,10 @@ describe('a message the person attached a file to', () => {
     );
 
     const view = renderLiveView();
-    fireEvent.click(await screen.findByRole('button', { name: 'March' }));
+    await screen.findByRole('region', { name: /Conversation with/ });
+    // The chat list lives in the sidebar now; picking a row there reaches this
+    // view as an open request.
+    view.rerender(liveView({ nonce: 1, agentId: 'a1', kind: 'open', pastId: 'c-old' }));
     await screen.findByText('the March question');
 
     const src = view.container.querySelector('img')?.getAttribute('src') ?? '';

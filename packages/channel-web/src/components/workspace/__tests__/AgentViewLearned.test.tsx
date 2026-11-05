@@ -27,6 +27,7 @@ import {
   LEARNED_FROM_MY_REPLY,
   LEARNED_FROM_YOUR_MESSAGE,
   learnedSourceLabel,
+  LEARNED_NOTHING_NEW,
   LEARNED_PAUSED,
   LEARNED_PAUSED_ACTION,
   LEARNED_SEE_ALL,
@@ -151,20 +152,44 @@ beforeEach(() => {
   });
 });
 
-afterEach(() => clearViewport());
+afterEach(() => {
+  clearViewport();
+  localStorage.clear();
+});
 
+/**
+ * The chat header's Memory toggle (its name grows "N new" while unseen).
+ * `hidden: true` because below `lg` the open Memory sheet is modal, and Radix
+ * hides everything behind it — the header included — from the a11y tree.
+ */
+async function memoryToggle(name: string | RegExp = /^Memory/): Promise<HTMLElement> {
+  const group = await screen.findByRole('group', { name: 'Side panel', hidden: true });
+  return within(group).findByRole('radio', { name, hidden: true });
+}
+
+/** Open the Memory panel from the chat header, unless it is already open. */
+async function openMemory() {
+  const toggle = await memoryToggle();
+  if (toggle.getAttribute('aria-checked') !== 'true') fireEvent.click(toggle);
+}
+
+/** The panel starts open; this only re-opens it if a test collapsed it. */
 async function expandLearned() {
+  await openMemory();
   const toggle = await screen.findByRole('button', { name: /^Learned in this chat/ });
   if (toggle.getAttribute('aria-expanded') === 'false') fireEvent.click(toggle);
 }
 
 describe('AgentView — "What I learned in this chat"', () => {
-  it('pins learned facts below Chats and follows this conversation', async () => {
+  it('lives behind the Memory toggle and follows this conversation', async () => {
     recall.mockResolvedValue({ statements: [st('a')], degraded: [] });
     renderView();
-    await screen.findByText(LEARNED_TITLE);
-    expect(screen.getByRole('tab', { name: 'Chats' })).toHaveAttribute('aria-selected', 'true');
-    expect(screen.getByText(LEARNED_TITLE).closest('[role=tabpanel]')).toBeNull();
+    // Closed by default: nothing on screen until the person asks for it.
+    await memoryToggle();
+    expect(screen.queryByText(LEARNED_TITLE)).toBeNull();
+    await openMemory();
+    const panel = await screen.findByRole('complementary', { name: 'Memory' });
+    expect(await within(panel).findByText(LEARNED_TITLE)).toBeTruthy();
     await streamOpen();
     expect(recall).toHaveBeenCalledWith('a-quill', { conversationId: 'c-now' });
     expect(events.mock.calls[0]?.[0]).toBe('c-now');
@@ -175,18 +200,23 @@ describe('AgentView — "What I learned in this chat"', () => {
       detail({ memory: { rules: { status: 'unavailable', doc: null } } }),
     );
     renderView();
-    await screen.findByRole('tab', { name: 'Chats' });
+    // A brain icon with nothing behind it is not offered at all.
+    const group = await screen.findByRole('group', { name: 'Side panel' });
+    expect(within(group).getByRole('radio', { name: 'Files' })).toBeTruthy();
+    expect(within(group).queryByRole('radio', { name: /^Memory/ })).toBeNull();
     expect(screen.queryByText(LEARNED_TITLE)).toBeNull();
     expect(recall).not.toHaveBeenCalled();
     expect(events).not.toHaveBeenCalled();
   });
 
-  it('hides the pinned card until the open conversation has learned facts', async () => {
+  it('says nothing new until the open conversation has learned facts, then lists them', async () => {
     renderView();
     await streamOpen();
-    expect(screen.queryByText(LEARNED_TITLE)).toBeNull();
+    await openMemory();
+    expect(await screen.findByText(LEARNED_NOTHING_NEW)).toBeTruthy();
     await batch([st('new')]);
-    expect(await screen.findByText(LEARNED_TITLE)).toBeTruthy();
+    expect(await screen.findByRole('button', { name: /^Learned in this chat · 1/ })).toBeTruthy();
+    expect(screen.queryByText(LEARNED_NOTHING_NEW)).toBeNull();
     await expandLearned();
     expect(screen.getByText("What Quill picked up in this chat. Fix or forget anything that's off.")).toBeTruthy();
   });
@@ -194,9 +224,15 @@ describe('AgentView — "What I learned in this chat"', () => {
   it('shows paused and failed summaries even when this conversation has no facts', async () => {
     renderView();
     await streamOpen();
+    await openMemory();
     act(() => push({ kind: 'status', extraction: 'paused', conversation: 'idle' }));
     expect(await screen.findByText('Memory is paused')).toBeTruthy();
+    // The panel opens the disclosure; the full sentence lives inside it, and
+    // folding it away leaves the one-line summary standing on its own.
+    expect(screen.getByText(LEARNED_PAUSED)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: /^Learned in this chat/ }));
     expect(screen.queryByText(LEARNED_PAUSED)).toBeNull();
+    expect(screen.getByText('Memory is paused')).toBeTruthy();
     act(() => push({ kind: 'status', extraction: 'ok', conversation: 'idle' }));
     act(() => push({ kind: 'activity', state: 'failed', statementIds: [] }));
     expect(await screen.findByText("Couldn't save memory")).toBeTruthy();
@@ -232,14 +268,15 @@ describe('AgentView — "What I learned in this chat"', () => {
 });
 
 describe('AgentView — the block below md', () => {
-  it('counts new memories on the rail toggle and announces them while the sheet is shut', async () => {
+  it('names new memories on the Memory toggle and announces them while the sheet is shut', async () => {
     setViewport(true);
     renderView();
     await streamOpen();
     await batch([st('a'), st('b')]);
 
-    const toggle = await screen.findByRole('button', { name: learnedToggleLabel(2) });
-    expect(within(toggle).getByText('2')).toBeTruthy();
+    const toggle = await memoryToggle(learnedToggleLabel(2));
+    // The count is in the name; the eye gets a dot.
+    expect(toggle.querySelector('span.rounded-full')).not.toBeNull();
     const region = document.querySelector('[data-learned-announcer]');
     await waitFor(() => expect(region?.textContent).toBe(learnedAnnouncement(2)));
 
@@ -247,16 +284,18 @@ describe('AgentView — the block below md', () => {
     fireEvent.click(toggle);
     await screen.findByRole('dialog');
     await waitFor(() =>
-      expect(screen.queryByRole('button', { name: learnedToggleLabel(2) })).toBeNull(),
+      // `hidden: true`, or the modal sheet would hide it and this would pass vacuously.
+      expect(screen.queryByRole('radio', { name: learnedToggleLabel(2), hidden: true })).toBeNull(),
     );
+    expect(await memoryToggle('Memory')).toHaveAttribute('aria-checked', 'true');
   });
 
   it('"from your message" closes the sheet, then highlights the message', async () => {
     setViewport(true);
     recall.mockResolvedValue({ statements: [st('a', { sourceTurnId: 't1' })], degraded: [] });
     renderView();
-    fireEvent.click(await screen.findByRole('button', { name: 'Agent details' }));
-    const sheet = await screen.findByRole('dialog');
+    await openMemory();
+    const sheet = await screen.findByRole('dialog', { name: 'Memory panel' });
     await expandLearned();
     fireEvent.click(await within(sheet).findByRole('button', { name: learnedSourceLabel('person', 'I just moved to Denver') }));
 

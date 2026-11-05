@@ -24,7 +24,7 @@
  * the PR body.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { NAV_TRIGGER_ATTR } from '@/lib/focus-when-ready';
 import {
   workspaceApi,
@@ -43,6 +43,7 @@ import { rail as railFixture } from './rail-fixture';
   tree untouched. See `viewport.ts` for what the stub has to get right.
 */
 import { clearViewport, setViewport } from './viewport';
+import { pickAgent } from './sidebar-helpers';
 
 /**
  * See `AgentView.test.tsx` for why this is computed off `Date.now()` rather
@@ -228,11 +229,18 @@ describe('the agent pane below md', () => {
     renderShell();
     expect(await screen.findByText('Nothing is waiting on you.')).toBeTruthy();
     expect(screen.getByRole('navigation', { name: 'Workspace' })).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: /Quill/ }));
+    await pickAgent('Quill');
     expect(await screen.findByPlaceholderText('Message Quill')).toBeTruthy();
-    expect(screen.queryByRole('tab', { name: 'Chats' })).toBeNull();
-    fireEvent.click(screen.getByRole('button', { name: 'Agent details' }));
-    expect(await screen.findByRole('tab', { name: 'Chats' })).toBeTruthy();
+    // Not an inline column at tablet width: nothing beside the thread…
+    expect(screen.queryByRole('complementary', { name: 'Files' })).toBeNull();
+    fireEvent.click(screen.getByRole('radio', { name: 'Files' }));
+    // …it opens over it, as a sheet.
+    const sheet = await screen.findByRole('dialog', { name: 'Files panel' });
+    expect(within(sheet).getByRole('heading', { level: 2, name: 'Files' })).toBeTruthy();
+    // The sidebar stayed a column (the modal sheet hides it from the a11y tree
+    // while open, hence `hidden: true`) — not moved into a sheet of its own.
+    expect(screen.getByRole('navigation', { name: 'Workspace', hidden: true })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Open navigation', hidden: true })).toBeNull();
   });
 
   it('moves the 296px rail off-canvas and keeps it reachable', async () => {
@@ -247,32 +255,51 @@ describe('the agent pane below md', () => {
     */
     expect(screen.queryByText('What it may do alone')).toBeNull();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Agent details' }));
+    fireEvent.click(screen.getByRole('radio', { name: 'Files' }));
 
-    expect(await screen.findByRole('heading', { name: 'Chats' })).toBeTruthy();
+    const sheet = await screen.findByRole('dialog', { name: 'Files panel' });
+    expect(within(sheet).getByRole('heading', { level: 2, name: 'Files' })).toBeTruthy();
   });
 
-  it('closes the rail when you open a past conversation from it', async () => {
+  it('starts the sheet shut even when a desktop panel is remembered', async () => {
     /*
-      The rail sheet covers the thread it just changed. Tapping a row under
-      "Previous conversations" swaps the conversation BEHIND the overlay, so a
-      sheet left open reads as a tap that did nothing. Same rule the nav sheet
-      follows; it was missed here on the first pass (review finding 1).
+      Beside the thread a panel left open is a preference; over the thread it
+      is a cover. A stored desktop choice must not reopen a sheet on a phone.
+    */
+    localStorage.setItem('ax-workspace-side-panel', 'files');
+    setViewport(true);
+    renderAgentView();
+
+    expect(await screen.findByPlaceholderText('Message Quill')).toBeTruthy();
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(screen.getByRole('radio', { name: 'Files' })).toHaveAttribute('aria-checked', 'false');
+    localStorage.clear();
+  });
+
+  it('closes the nav sheet when you open a past conversation from it', async () => {
+    /*
+      The chat list lives in the nav sheet now, and the sheet covers the
+      thread it just changed. Tapping a past chat swaps the conversation
+      BEHIND the overlay, so a sheet left open reads as a tap that did nothing
+      (the rule the rail sheet followed when the list lived there, review
+      finding 1).
     */
     setViewport(true);
+    boardMock.mockResolvedValue({ agents: [quill] });
     agentMock.mockResolvedValue(
       detail({ past: [{ id: 'c-old', title: 'March', lastActivityAt: TEN_DAYS_AGO }] }),
     );
-    renderAgentView();
+    renderShell();
+    expect(await screen.findByText('Nothing is waiting on you.')).toBeTruthy();
 
-    fireEvent.click(
-      await screen.findByRole('button', { name: 'Agent details' }),
-    );
-    const panel = await screen.findByRole('heading', { name: 'Chats' });
+    fireEvent.click(screen.getByRole('button', { name: 'Open navigation' }));
+    const nav = await screen.findByRole('navigation', { name: 'Workspace' });
 
-    fireEvent.click(screen.getByRole('button', { name: 'March' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'March' }));
 
-    await waitFor(() => expect(panel.isConnected).toBe(false));
+    await waitFor(() => expect(nav.isConnected).toBe(false));
+    // …and the tap landed: the agent's view opened that past conversation.
+    await waitFor(() => expect(agentMock).toHaveBeenCalledWith('a-quill', 'c-old'));
   });
 
   it('offers the roster from inside a thread, without going Back first', async () => {
@@ -297,11 +324,12 @@ describe('the agent pane below md', () => {
     setViewport(false);
     renderAgentView({ onOpenNav: () => {} });
 
-    expect(
-      await screen.findByRole('tab', { name: 'Chats' }),
-    ).toBeTruthy();
-    expect(await screen.findByRole('heading', { name: 'Chats' })).toBeTruthy();
-    expect(screen.queryByRole('button', { name: 'Agent details' })).toBeNull();
+    fireEvent.click(await screen.findByRole('radio', { name: 'Files' }));
+    // A column on screen, not a sheet over the thread.
+    const column = await screen.findByRole('complementary', { name: 'Files' });
+    expect(within(column).getByRole('heading', { level: 2, name: 'Files' })).toBeTruthy();
+    expect(screen.queryByRole('dialog')).toBeNull();
+    localStorage.clear();
     /*
       Even handed `onOpenNav`, the nav trigger stays off above `md` — the
       sidebar is a column on screen, and a second door to it would be two

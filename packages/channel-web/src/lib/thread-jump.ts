@@ -2,13 +2,11 @@
  * Point at a message in the transcript from outside it — the rail's source
  * link, "from your message" or "from my reply" (TASK-627, TASK-642).
  *
- * The rail and the thread are siblings under `AgentView`, and the thread
- * already finds its own find-highlight by querying its DOM
- * (`data-find-active`). This does the same from the other side: every message
- * carries `data-turn-id`, and a pointed-at message gets `data-memory-source`,
- * which `AgentConversation` styles with thread-find's own warning-soft
- * highlight. No prop threads through the thread, so hovering a row in the
- * rail does not re-render every message.
+ * The rail and the thread are siblings under `AgentView`, so this works from
+ * the DOM: every message carries `data-turn-id`, and a pointed-at message
+ * gets `data-memory-source`, which `AgentConversation` styles with a
+ * warning-soft highlight. No prop threads through the thread, so hovering a
+ * row in the rail does not re-render every message.
  *
  * Ids are compared with `getAttribute`, never spliced into a selector: a turn
  * id is opaque, and an opaque string inside a CSS selector needs escaping
@@ -21,10 +19,9 @@ export const TURN_ID_ATTR = 'data-turn-id';
 export const MEMORY_SOURCE_ATTR = 'data-memory-source';
 
 /**
- * How a pointed-at message looks: thread-find's warning-soft fill and
- * warning edge (`ThreadFind.tsx`), so "this is the bit you asked about" looks
- * the same whichever control asked. Only a tint BEHIND the message — nothing
- * is painted as warning text on it, so there is no new contrast pair.
+ * How a pointed-at message looks: a warning-soft fill and a warning edge.
+ * Only a tint BEHIND the message — nothing is painted as warning text on it,
+ * so there is no new contrast pair.
  */
 export const MEMORY_SOURCE_CLASS =
   'transition-colors data-[memory-source]:bg-warning-soft data-[memory-source]:ring-1 data-[memory-source]:ring-warning';

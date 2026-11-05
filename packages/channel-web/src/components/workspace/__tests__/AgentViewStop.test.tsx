@@ -30,6 +30,11 @@ vi.mock('@/lib/workspace-api', async () => {
     workspaceApi: {
       agent: vi.fn(),
       rail: vi.fn(async () => railFixture()),
+      // The side panel always mounts Files; a root 404 is an empty list.
+      userFiles: vi.fn(async () => {
+        const E = actual.WorkspaceApiError as new (path: string, status: number) => Error;
+        throw new E('/agents/a-quill/user-files/', 404);
+      }),
       revokeGrant: vi.fn(),
       sendMessage: vi.fn(),
       streamReply: vi.fn(),

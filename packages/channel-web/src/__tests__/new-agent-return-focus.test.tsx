@@ -29,6 +29,10 @@ import { autoCreateBareAgent } from '../lib/auto-create-agent';
 import { RESTORE_WINDOW_MS } from '../lib/focus-when-ready';
 import { rail as railFixture } from '../components/workspace/__tests__/rail-fixture';
 import { clearViewport, setViewport } from '../components/workspace/__tests__/viewport';
+import {
+  chooseNewAgent,
+  switcherTrigger,
+} from '../components/workspace/__tests__/sidebar-helpers';
 
 vi.mock('../lib/bootstrap-status', () => ({
   fetchBootstrapStatus: vi.fn(async () => 'completed'),
@@ -124,9 +128,12 @@ afterEach(() => {
   });
 });
 
-/** The "New agent…" row, re-queried from the CURRENT tree every time. */
+/**
+ * The control that opens the flow with no agents yet — the switcher's place
+ * holds "Create your first agent" — re-queried from the CURRENT tree.
+ */
 function newAgentRow(): HTMLElement {
-  return screen.getByRole('button', { name: /New agent/ });
+  return screen.getByRole('button', { name: 'Create your first agent' });
 }
 
 /** The compact hamburger, re-queried from the CURRENT tree every time. */
@@ -422,6 +429,22 @@ describe('leaving the new-agent flow from the workspace (TASK-510)', () => {
 
     await waitFor(() => expectFocusedAndConnected(navTrigger));
     // The premise, asserted rather than assumed: the real opener is gone.
-    expect(screen.queryByRole('button', { name: /New agent/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Create your first agent' })).toBeNull();
+  });
+
+  it('with agents, returns focus to the switcher — its "New agent" item is gone with the menu', async () => {
+    vi.mocked(workspaceApi.board).mockResolvedValue({
+      agents: [newAgentDetail('a-existing').agent],
+    });
+    render(<App />);
+    await chooseNewAgent();
+    await screen.findByLabelText(/Agent name/i);
+
+    fireEvent.keyDown(document.activeElement ?? document.body, {
+      key: 'Escape',
+    });
+
+    await waitFor(() => expectFocusedAndConnected(switcherTrigger));
+    expect(screen.queryByRole('menuitem', { name: 'New agent' })).toBeNull();
   });
 });

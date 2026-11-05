@@ -58,7 +58,10 @@ import { KICKOFF_TEXT } from '@/lib/bootstrap-kickoff';
 import { logRequestFailure } from '@/lib/http';
 import { toastActions } from '@/lib/toast-store';
 import { grantResumedTitle } from '@/lib/grant-copy';
+import { conversationControls } from '@/lib/conversation-controls';
+import type { SidebarChatCommand, SidebarChatList } from '@/lib/sidebar-chats';
 import {
+  DEFAULT_SETTINGS_SECTION,
   parseWorkspaceRoute,
   routeAgentId,
   workspaceRoutePath,
@@ -461,7 +464,6 @@ function Inner({
 
   const [filter, setFilter] = useState<'needs' | 'working'>('needs');
   const [expandedId, setExpandedId] = useState<string | null>(null);
-  const [rosterOpen, setRosterOpen] = useState(true);
   /*
     BELOW `md` THE SHELL IS ONE COLUMN (TASK-404). The rail is 236px that does
     not shrink, which on a 390px phone is most of the viewport — and `main` is
@@ -516,6 +518,114 @@ function Inner({
   }, []);
 
   const bump = () => setVersion((v) => v + 1);
+
+  /*
+    THE SIDEBAR'S AGENT. The open one on an agent route; off it (Today, Tasks)
+    the last one opened, so stepping out to Today does not reset what the
+    switcher and its chat list are about. Falls back to the first agent, and
+    forgets an agent that has since been deleted.
+  */
+  const routeAgent = routeAgentId(route);
+  const [lastAgentId, setLastAgentId] = useState<string | null>(routeAgent);
+  useEffect(() => {
+    if (routeAgent !== null) setLastAgentId(routeAgent);
+  }, [routeAgent]);
+  const selectedAgentId =
+    [routeAgent, lastAgentId].find(
+      (id) => id !== null && (board?.agents ?? []).some((a) => a.id === id),
+    ) ??
+    board?.agents[0]?.id ??
+    null;
+
+  /*
+    THE SIDEBAR'S CHATS — two producers, one shape (see `lib/sidebar-chats.ts`).
+    `liveChats` is what a mounted `AgentView` publishes; with none mounted
+    (or one for another agent, mid-switch) the shell reads the selected
+    agent's list itself.
+  */
+  const [liveChats, setLiveChats] = useState<SidebarChatList | null>(null);
+  const [readChats, setReadChats] = useState<SidebarChatList | null>(null);
+  const [chatsError, setChatsError] = useState(false);
+  const liveForSelected =
+    liveChats !== null && liveChats.agentId === selectedAgentId ? liveChats : null;
+  /*
+    On the agent's own route the mounted view is about to publish from the
+    read it is already making; a second read here would only race it.
+  */
+  const needsOwnRead =
+    selectedAgentId !== null && routeAgent !== selectedAgentId && liveForSelected === null;
+  useEffect(() => {
+    if (!needsOwnRead || selectedAgentId === null) return;
+    let cancelled = false;
+    setChatsError(false);
+    void (async () => {
+      try {
+        const d = await workspaceApi.agent(selectedAgentId);
+        if (cancelled) return;
+        setReadChats({
+          agentId: selectedAgentId,
+          conversationId: d.conversationId,
+          past: d.past,
+          openPastId: null,
+          busy: false,
+        });
+      } catch (e) {
+        if (cancelled) return;
+        logRequestFailure(e, 'workspace-sidebar-chats');
+        setChatsError(true);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [needsOwnRead, selectedAgentId, version]);
+  const sidebarChats =
+    liveForSelected ??
+    (readChats !== null && readChats.agentId === selectedAgentId ? readChats : null);
+
+  /*
+    Chat switches go to `AgentView` as a request, mounted or not: from Today
+    the view does not exist yet, so the request waits for it the same way
+    `pendingReply` does.
+  */
+  const [chatCommand, setChatCommand] = useState<SidebarChatCommand | null>(null);
+  const commandNonce = useRef(0);
+  const sendChatCommand = (
+    command:
+      | { kind: 'open'; agentId: string; pastId: string | null }
+      | { kind: 'new'; agentId: string; conversationId: string },
+  ) => {
+    commandNonce.current += 1;
+    setChatCommand({ ...command, nonce: commandNonce.current });
+    // Off the agent's chat (Today, Tasks, its settings page) — go there.
+    const now = routeNow.current;
+    if (now.kind !== 'agent' || now.id !== command.agentId)
+      navigate({ kind: 'agent', id: command.agentId, tab: 'chat' });
+  };
+  const onOpenChat = (pastId: string | null) => {
+    if (selectedAgentId === null) return;
+    sendChatCommand({ kind: 'open', agentId: selectedAgentId, pastId });
+  };
+  // Rejects on a failed create — the sidebar's button reports it in place.
+  const onNewChat = async () => {
+    if (selectedAgentId === null) return;
+    const agentId = selectedAgentId;
+    const created = await conversationControls.create(agentId);
+    sendChatCommand({ kind: 'new', agentId, conversationId: created.conversationId });
+  };
+  /*
+    Generic "Agent settings" from the sidebar opens the phone section list,
+    like the old rail button did. Cleared once the settings page is left, so a
+    later deep link (Connectors from a failure card) still drills straight in.
+  */
+  const [settingsFromMenu, setSettingsFromMenu] = useState(false);
+  const onSettingsRoute = route.kind === 'agent-settings';
+  useEffect(() => {
+    if (!onSettingsRoute) setSettingsFromMenu(false);
+  }, [onSettingsRoute]);
+  const onChatCommandConsumed = useCallback((nonce: number) => {
+    setChatCommand((c) => (c !== null && c.nonce === nonce ? null : c));
+  }, []);
 
   /**
    * One turn-start on this surface, two callers: the home composer (a person
@@ -792,15 +902,29 @@ function Inner({
         : route.kind === 'task' || route.kind === 'task-checkin'
           ? 'tasks'
           : route.kind,
-    activeAgentId: routeAgentId(route),
+    selectedAgentId,
     pendingCount: pending,
-    rosterOpen,
-    onRoster: setRosterOpen,
     onToday: () => navigate({ kind: 'today' }),
     onTasks: () => navigate({ kind: 'tasks' }),
     onAgent: openAgent,
     onOpenAdminSettings,
     onCreateAgent,
+    onOpenAgentSettings: (id: string) => {
+      setSettingsFromMenu(true);
+      navigate({ kind: 'agent-settings', id, section: DEFAULT_SETTINGS_SECTION });
+    },
+    onAgentDeleted: (id: string) => {
+      if (routeAgentId(routeNow.current) === id) navigate({ kind: 'today' });
+      void Promise.all([refresh(), queue.refresh()]);
+    },
+    chats: sidebarChats,
+    chatsError: chatsError && sidebarChats === null,
+    onOpenChat,
+    onNewChat,
+    onChatsChanged: () => {
+      void Promise.all([refresh(), queue.refresh()]);
+      bump();
+    },
   };
 
   /*
@@ -1068,6 +1192,10 @@ function Inner({
                   : null
               }
               onPendingReplyConsumed={() => setPendingReply(null)}
+              onChats={setLiveChats}
+              chatCommand={chatCommand !== null && chatCommand.agentId === route.id ? chatCommand : null}
+              onChatCommandConsumed={onChatCommandConsumed}
+              settingsStartOnList={settingsFromMenu}
               onChanged={async () => {
                 await Promise.all([refresh(), queue.refresh()]);
                 bump();

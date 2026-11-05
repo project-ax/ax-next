@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 
-/** Rail preferences are independent of the selected agent and of each other. */
-export function useRailPreference(rail: 'sidebar' | 'details') {
+/** The sidebar's collapsed state. (The side panel's open view is `use-panel-preference`.) */
+export function useRailPreference(rail: 'sidebar') {
   const key = `ax-workspace-${rail}-collapsed`;
   const [collapsed, setCollapsed] = useState(() => {
     try {

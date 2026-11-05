@@ -47,6 +47,11 @@ vi.mock('@/lib/workspace-api', async () => {
       // The rail reads its own route — without it the chat tab throws before
       // this file's subject renders at all.
       rail: vi.fn(async () => railFixture()),
+      // The side panel always mounts Files; a root 404 is an empty list.
+      userFiles: vi.fn(async () => {
+        const E = actual.WorkspaceApiError as new (path: string, status: number) => Error;
+        throw new E('/agents/a-quill/user-files/', 404);
+      }),
       revokeGrant: vi.fn(),
       abilities: vi.fn(async () => ({
         abilities: { webSearch: true, readPages: true, runCode: true },
@@ -150,17 +155,25 @@ describe('AgentView heading outline', () => {
     `main` to this component on the agent route and draws no header of its own,
     so nothing else is competing for the `h1`.
   */
-  it('makes the agent name the h1, and the open tab the h2 under it', async () => {
+  it('makes the agent name the h1, and the open panel the h2 under it', async () => {
+    localStorage.clear();
     renderView({ tab: 'chat' });
 
+    // The side panel starts closed: the page is the agent and its thread.
+    await waitFor(() =>
+      expect(headingOutline()).toEqual(['h1: Quill', 'h2: Conversation']),
+    );
+
+    fireEvent.click(await screen.findByRole('radio', { name: 'Files' }));
     await waitFor(() =>
       expect(headingOutline()).toEqual([
         'h1: Quill',
         'h2: Conversation',
-        'h2: Chats',
-        'h3: Right now',
+        'h2: Files',
+        'h3: Files',
       ]),
     );
+    localStorage.clear();
   });
 
   it('keeps the settings Connectors section and abilities in the heading outline', async () => {
@@ -182,13 +195,21 @@ describe('AgentView heading outline', () => {
     The panel heading follows the tab, rather than being four headings of which
     three describe regions that are not mounted.
   */
-  it('heads the panel with the open tab, not with all four', async () => {
+  it('heads the panel with the open view only, and follows a switch', async () => {
+    localStorage.clear();
     renderView({ tab: 'chat' });
 
+    fireEvent.click(await screen.findByRole('radio', { name: 'Files' }));
     await waitFor(() => {
       const h2s = screen.getAllByRole('heading', { level: 2 });
-      expect(h2s.map((h) => h.textContent)).toEqual(['Conversation', 'Chats']);
+      expect(h2s.map((h) => h.textContent)).toEqual(['Conversation', 'Files']);
     });
+    fireEvent.click(screen.getByRole('radio', { name: 'Activity' }));
+    await waitFor(() => {
+      const h2s = screen.getAllByRole('heading', { level: 2 });
+      expect(h2s.map((h) => h.textContent)).toEqual(['Conversation', 'Activity']);
+    });
+    localStorage.clear();
   });
 
   /*
@@ -213,27 +234,25 @@ describe('AgentView heading outline', () => {
   });
 
   /*
-    REVIEW FOLLOW-UP, and it pins the claim the `sr-only` rail heading rests on:
-    below `md` the rail is a `Sheet` whose `SheetTitle` ALREADY renders an `h2`
-    saying "Agent details". The new heading went on the desktop `<aside>` alone
-    precisely so the compact branch does not announce it twice — an assertion
-    that is only worth anything with a compact viewport actually installed,
-    which jsdom does not give you for free.
+    REVIEW FOLLOW-UP. Below `lg` the panel is a `Sheet` whose
+    `SheetTitle` renders an h2 of its own. It is named "<View> panel", not
+    the view's bare name, so the sheet and the panel's own heading are not one
+    name announced twice in a row — an assertion only worth anything with a
+    compact viewport actually installed, which jsdom does not give for free.
   */
-  it('says "Agent details" once below md, not twice', async () => {
+  it('names the sheet for its view once below md, distinct from the panel heading', async () => {
     setViewport(true);
     renderView({ tab: 'chat' });
 
-    // The compact rail lives behind a trigger; open it so its tree exists.
-    fireEvent.click(await screen.findByRole('button', { name: 'Agent details' }));
-    await screen.findByRole('heading', { name: 'Chats' });
+    fireEvent.click(await screen.findByRole('radio', { name: 'Files' }));
+    await screen.findByRole('dialog', { name: 'Files panel' });
 
     const named = screen
       .getAllByRole('heading')
-      .filter((h) => h.textContent === 'Agent details');
+      .filter((h) => h.textContent === 'Files panel');
     expect(named).toHaveLength(1);
     expect(named[0]?.tagName).toBe('H2');
-    // And the sheet's sections still hang off it rather than off the page title.
+    expect(screen.getAllByRole('heading', { level: 2, name: 'Files' })).toHaveLength(1);
     expect(headingOutlineProblems()).toEqual([]);
   });
 });

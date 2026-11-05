@@ -36,6 +36,7 @@ import type { PermissionRequest } from '@/server/types';
 import { AgentConversation } from '../AgentConversation';
 import { WorkspaceShell } from '../WorkspaceShell';
 import { rail as railFixture } from './rail-fixture';
+import { pickAgent } from './sidebar-helpers';
 
 vi.mock('@/lib/workspace-api', async () => {
   const actual = await vi.importActual<Record<string, unknown>>(
@@ -307,13 +308,10 @@ describe('everything else is the queue alone', () => {
     expect(getWorkspaceGrantSnapshot().grants).toHaveLength(1);
   });
 
-  it('keeps it beside the detail tabs of the right agent', async () => {
+  it('keeps it in the thread of the right agent, whatever its URL tab', async () => {
     renderAt('/workspace/agents/a-quill/files');
 
-    expect(await screen.findByRole('tab', { name: /files/i })).toHaveAttribute(
-      'aria-selected',
-      'true',
-    );
+    expect(await screen.findByRole('radio', { name: 'Files' })).toBeTruthy();
     expect(threadRegion()).not.toBeNull();
   });
 
@@ -365,7 +363,7 @@ describe('presence is continuous, not sampled when the grant arrived', () => {
     fireEvent.click(screen.getByRole('button', { name: /today/i }));
     await waitFor(() => expect(threadRegion()).toBeNull());
 
-    fireEvent.click(screen.getByRole('button', { name: /quill/i }));
+    await pickAgent('Quill');
     expect(await screen.findByTestId('thread-grants')).toBeInTheDocument();
   });
 });
@@ -481,7 +479,7 @@ describe('one grant, two render sites, never two live copies', () => {
       expect(getWorkspaceGrantSnapshot().grants).toHaveLength(0),
     );
 
-    fireEvent.click(screen.getByRole('button', { name: /quill/i }));
+    await pickAgent('Quill');
     expect(
       await screen.findByPlaceholderText('Message Quill'),
     ).toBeInTheDocument();
