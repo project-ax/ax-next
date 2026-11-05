@@ -977,6 +977,15 @@ export const RoutineListToolViewSchema = z.object({
 export type RoutinePermissions = z.output<typeof RoutinePermissionsSchema>;
 export type RoutineView = z.output<typeof RoutineViewSchema>;
 
+/**
+ * The definition fields a Repeat's app updates are accepted under (TASK-971): what kind of job it is,
+ * what it should do, its app-update settings, its conversation and its quiet-reply settings. The host's
+ * `repeatConfigurationHash` covers exactly these (pinned in routines' independent-definition.test.ts),
+ * and a save that changes any of them cancels the updates still waiting to run, so the editors say so
+ * before the save (TASK-1037). Name, note, schedule, active hours and pausing leave them waiting.
+ */
+export const REPEAT_CONFIGURATION_FIELDS = ['kind', 'promptBody', 'webhook', 'conversation', 'silenceToken', 'silenceMaxChars'] as const satisfies ReadonlyArray<keyof RoutineDefinition>;
+
 /** Project only editable fields; no runtime, authority or owner metadata. */
 export function editableDefinition(row: RoutineDefinition): RoutineDefinition {
   return {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { RoutineDefinitionSchema } from '@ax/routines-contract';
+import { REPEAT_CONFIGURATION_FIELDS, RoutineDefinitionSchema, editableDefinition, type RoutineDefinition } from '@ax/routines-contract';
 import * as D from '../definition.js';
 
 const schedule = { kind: 'interval' as const, every: '1h' };
@@ -54,5 +54,23 @@ describe('accepted webhook execution configuration', () => {
     expect(D.repeatConfigurationHash({...row,name:'Renamed',description:'Cosmetic',enabled:false,schedule:{kind:'interval',every:'1h'},activeHours:{start:'09:00',end:'17:00',tz:'UTC'}})).toBe(base);
     expect(D.repeatConfigurationHash({...row,activeHours:{start:'09:00',end:'17:00',tz:'UTC',days:['mon','wed']}})).toBe(base);
     for(const change of [{promptBody:'Different'},{conversation:'shared' as const},{webhook:{kind:'webhook' as const,path:'/other'}}]) expect(D.repeatConfigurationHash({...row,...change})).not.toBe(base);
+  });
+
+  // TASK-1037. The editors read REPEAT_CONFIGURATION_FIELDS to warn that a save cancels a saved Repeat's
+  // waiting app updates, so it must be exactly what this hash covers: each editable field changes the hash
+  // only when the list names it. A new editable field needs an ALTERNATE entry, so someone decides.
+  it('changes for exactly the fields REPEAT_CONFIGURATION_FIELDS names', () => {
+    const row = RoutineDefinitionSchema.parse({ name: 'Job', promptBody: 'Review', schedule: { kind: 'interval', every: '60s' }, webhook: { kind: 'webhook', path: '/hook' }, silenceToken: 'QUIET' });
+    const ALTERNATE: RoutineDefinition = {
+      name: 'Renamed', description: 'Cosmetic', promptBody: 'Different', enabled: false,
+      schedule: { kind: 'interval', every: '1h' }, webhook: { kind: 'webhook', path: '/other' },
+      activeHours: { start: '09:00', end: '17:00', tz: 'UTC' }, silenceToken: 'HUSH', silenceMaxChars: 41,
+      conversation: 'shared', kind: 'stay-on-top', goodWhen: 'Calm.',
+    };
+    expect(Object.keys(ALTERNATE).sort()).toEqual(Object.keys(editableDefinition(row)).sort());
+    const base = D.repeatConfigurationHash(row);
+    const covered = (Object.keys(ALTERNATE) as Array<keyof RoutineDefinition>)
+      .filter(key => D.repeatConfigurationHash({ ...row, [key]: ALTERNATE[key] }) !== base);
+    expect(covered.sort()).toEqual([...REPEAT_CONFIGURATION_FIELDS].sort());
   });
 });
