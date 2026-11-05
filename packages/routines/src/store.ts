@@ -770,6 +770,19 @@ export type RoutineRowRead = { ok: true; routine: StoredRoutine } | { ok: false;
 /** A path segment a log line may carry: a schema's key or an array index. Anything else could be stored text. */
 const LOGGABLE_PATH_SEGMENT = /^[A-Za-z0-9]{1,64}$/;
 /**
+ * TASK-913. A failed parse's issues as a log line may say them: the first issue's code, and its
+ * path when every segment is a key or an index, else `input` (as for no path at all). No issues
+ * at all is `input: thrown`. Never a message or a received value. Today's routine schemas have no
+ * `z.record`, so a path is always keys and indices; the screen is for a schema that one day does.
+ */
+export function loggableIssue(issues: readonly { path: readonly (string | number)[]; code: string }[]): UnreadableIssue {
+  const first = issues[0];
+  if (first === undefined) return { path: 'input', code: 'thrown' };
+  const segments = first.path.map(String);
+  const path = segments.length > 0 && segments.every(segment => LOGGABLE_PATH_SEGMENT.test(segment)) ? segments.join('.') : 'input';
+  return { path, code: first.code };
+}
+/**
  * TASK-913. rowToRoutine's parse, answered instead of thrown. Never throws. For
  * the readers that take many rows at once (claimDue, a run's finish, listAll),
  * where one row today's rules refuse must not sink the rest; a read of one
@@ -783,11 +796,7 @@ export function readRoutineRow(row: Selectable<RoutinesDefinitionsRow>): Routine
   try {
     const parsed = StoredRoutineSchema.safeParse(storedRoutineInput(row));
     if (parsed.success) return { ok: true, routine: parsed.data };
-    const first = parsed.error.issues[0];
-    if (first === undefined) return { ok: false, issue: { path: 'input', code: 'thrown' } };
-    const segments = first.path.map(String);
-    const path = segments.length > 0 && segments.every(segment => LOGGABLE_PATH_SEGMENT.test(segment)) ? segments.join('.') : 'input';
-    return { ok: false, issue: { path, code: first.code } };
+    return { ok: false, issue: loggableIssue(parsed.error.issues) };
   } catch {
     return { ok: false, issue: { path: 'input', code: 'thrown' } };
   }
@@ -1885,6 +1894,8 @@ export function createRoutinesStore(db: DB, executorId?: string): RoutinesStore 
     },
 
     listAll,
+    // TASK-913: no product code calls this since routines:list moved to listAll; tests do. It hides
+    // the rows that don't read, so a new caller that must show or count them wants listAll.
     async list(input) {
       return (await listAll(input)).routines;
     },

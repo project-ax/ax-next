@@ -52,10 +52,12 @@ export function routinePermissions(row: Pick<StoredRoutine, 'ownerUserId' | 'def
  * name is the stored one cut to `ROUTINE_NAME_MAX_CHARS` code points (stored text isn't checked
  * again). `canDelete` is the `stop` bit a readable routine's Delete is drawn from. An entry the
  * contract refuses (an empty or over-long id from a hand edit) is left out, so one row can't
- * fail the whole list (TASK-932's rule).
+ * fail the whole list (TASK-932's rule), and one stderr line says how many, under the listed
+ * agent's id (`agentId`, the caller's checked input), since nothing else would: a disabled one
+ * the tick never claims shows nowhere. A count, never the row's own fields.
  */
-export function unreadableViews(rows: readonly UnreadableRoutine[], userId: string, allowed: boolean, stopOthers = false): C.RoutineUnreadableView[] {
-  return rows.flatMap(row => {
+export function unreadableViews(agentId: string, rows: readonly UnreadableRoutine[], userId: string, allowed: boolean, stopOthers = false): C.RoutineUnreadableView[] {
+  const views = rows.flatMap(row => {
     const view = C.RoutineUnreadableViewSchema.safeParse({
       agentId: row.agentId, routineId: row.routineId, revision: row.revision,
       name: Array.from(row.name).slice(0, C.ROUTINE_NAME_MAX_CHARS).join(''),
@@ -64,6 +66,9 @@ export function unreadableViews(rows: readonly UnreadableRoutine[], userId: stri
     });
     return view.success ? [view.data] : [];
   });
+  const dropped = rows.length - views.length;
+  if (dropped > 0) process.stderr.write(`[ax/routines] ${dropped} routine(s) of agent ${agentId} no longer read and can't be listed either, so Settings doesn't show them\n`);
+  return views;
 }
 export function routineView(row: StoredRoutine, userId: string, allowed: boolean, stopOthers = false): C.RoutineView {
   // The tick skips a run outside the active hours and re-arms it at the next window's start (tick.ts), so that's when it will run (TASK-910).
@@ -315,7 +320,7 @@ export function registerRoutineServices({ bus, store, now, dispatch, admitDispat
     const { routines, unreadable } = await store.listAll(input);
     return {
       routines: await Promise.all(routines.map(async row => ({...routineView(row,ctx.userId,a.allowed,a.stopOthers),...(deliveryStatus ? {delivery:row.kind==='repeat' && row.ownerUserId===ctx.userId ? await deliveryStatus(row,ctx.userId):null}: {})}))),
-      unreadable: unreadableViews(unreadable, ctx.userId, a.allowed, a.stopOthers),
+      unreadable: unreadableViews(input.agentId, unreadable, ctx.userId, a.allowed, a.stopOthers),
     };
   });
   register('get', C.RoutineGetInputSchema, C.RoutineGetOutputSchema, async (ctx, input) => {
