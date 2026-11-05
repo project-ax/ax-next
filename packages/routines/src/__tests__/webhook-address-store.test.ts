@@ -78,6 +78,22 @@ describe('private task webhook addresses', () => {
     expect(await createRoutinesStore(f.db).ensureWebhookAddress({ ...a, ...owner })).toEqual(next);
   });
 
+  it('answers a row that no longer reads as unreadable from both lookups, and a broken webhook path as unreadable too (TASK-1044)', async () => {
+    const a = await f.store.createAuthored(task('broken'));
+    await f.db.updateTable('routines_v1_definitions').set({ webhook_legacy_enabled: true }).where('routine_id', '=', a.routineId).execute();
+    const { token } = await f.store.ensureWebhookAddress({ ...a, ...owner });
+    await sql`UPDATE routines_v1_definitions SET name = ${'x'.repeat(129)} WHERE routine_id = ${a.routineId}`.execute(f.db);
+    const unreadable = { unreadable: { path: 'name', code: 'too_big' }, agentId: a.agentId, routineId: a.routineId };
+    expect(await f.store.findWebhookByToken({ token, path: '/broken' })).toEqual(unreadable);
+    expect(await f.store.findWebhookByToken({ token, path: '/elsewhere' })).toBeNull();
+    expect(await f.store.findWebhook({ agentId: a.agentId, path: '/broken', legacyOnly: true })).toEqual(unreadable);
+    // Still holds its path: a write that wants it sees the routine's id, so the conflict check refuses it.
+    expect((await f.store.findWebhook({ agentId: a.agentId, path: '/broken' }))?.routineId).toBe(a.routineId);
+    // A stored path that isn't a string can't be compared, so any path under the token reads as the broken row.
+    await sql`UPDATE routines_v1_definitions SET name = ${'broken'}, webhook_spec = ${JSON.stringify({ kind: 'webhook', path: 7 })}::jsonb WHERE routine_id = ${a.routineId}`.execute(f.db);
+    expect(await f.store.findWebhookByToken({ token, path: '/elsewhere' })).toMatchObject({ agentId: a.agentId, routineId: a.routineId, unreadable: { path: 'webhook.path' } });
+  });
+
   it('revokes on owner change, webhook removal and deletion, including reuse of the old path', async () => {
     let a = await f.store.createAuthored(task('owner-change'));
     const old = await f.store.ensureWebhookAddress({ ...a, ...owner });

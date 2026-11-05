@@ -83,7 +83,18 @@ export function createWebhookRouter(deps: WebhookRouterDeps): HttpRouteHandler {
       'agents:resolve-by-webhook-token', requestCtx, { token });
     const taskRow = await deps.store.findWebhookByToken({ token, path });
     const legacy = taskRow ? null : await resolveLegacy();
-    const row = taskRow ?? (legacy?.agent ? await deps.store.findWebhook({ agentId: legacy.agent.id, path, legacyOnly: true }) : null);
+    const found = taskRow ?? (legacy?.agent ? await deps.store.findWebhook({ agentId: legacy.agent.id, path, legacyOnly: true }) : null);
+    // TASK-1044: a routine today's rules can't read is refused like an unknown address (404, not
+    // 410: senders unsubscribe on 410, and the owner can still fix it). One line of ids and the
+    // screened issue: never the token, the request path or the parse error, which can quote the
+    // stored, model-authored definition. Settings lists the row with Delete (TASK-913).
+    if (found !== null && 'unreadable' in found) {
+      requestCtx.logger.warn('routines_webhook_routine_unreadable', {
+        agentId: found.agentId, routineId: found.routineId, issuePath: found.unreadable.path, issueCode: found.unreadable.code,
+      });
+      res.status(404).end(); return;
+    }
+    const row = found;
     if (!row || row.webhook === null) { res.status(404).end(); return; }
     // Declared before `refuse`, which logs: a too-large body is refused ahead of the secret read.
     const ctx = makeAgentContext({ sessionId: 'routine-webhook', agentId: row.agentId, userId: row.ownerUserId });

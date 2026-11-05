@@ -16,7 +16,7 @@ import { AcceptedDispatchSchema, DispatchOutcomeSchema, DispatchReportSchema } f
 import { changeStoredSteps, storedSteps, StepsReceiptSchema } from './steps.js';
 import { copiedSteps, duplicateName } from './duplicate.js';
 import { createWebhookHealthStore } from './webhook-health.js';
-import { createWebhookAddressStore } from './webhook-address.js';
+import { createWebhookAddressStore, unreadableWebhookRoutine, type UnreadableWebhookRoutine } from './webhook-address.js';
 
 type DB = Kysely<RoutinesDatabase>;
 type Actor = { actorUserId: string };
@@ -46,7 +46,8 @@ export interface RoutinesStore extends ReturnType<typeof createWebhookHealthStor
   findOne(input: RoutineKey): Promise<StoredRoutine | null>;
   /** TASK-913. The routine's owner and default source, read as columns, so a row today's rules refuse answers too. */
   findOwnership(input: RoutineKey): Promise<{ ownerUserId: string; definitionId: string | null } | null>;
-  findWebhook(input: { agentId: string; path: string; legacyOnly?: boolean }): Promise<StoredRoutine | null>;
+  /** Never throws for a row that doesn't read: it answers that row as unreadable (TASK-1044). */
+  findWebhook(input: { agentId: string; path: string; legacyOnly?: boolean }): Promise<StoredRoutine | UnreadableWebhookRoutine | null>;
   acceptDispatch(input: AcceptDispatchInput): Promise<{ accepted: AcceptedDispatch; replayed: boolean } | null>;
   interruptAbandonedDispatches(): Promise<number>;
   /**
@@ -1082,7 +1083,7 @@ export function createRoutinesStore(db: DB, executorId?: string): RoutinesStore 
   }
   return {
     ...createWebhookHealthStore(db),
-    ...createWebhookAddressStore(db, { lockLiveAgent, rowToRoutine }),
+    ...createWebhookAddressStore(db, { lockLiveAgent, readRoutineRow }),
     ...createTaskEventStore(db),
     async createAuthored(input) {
       const definition = validateDefinition(input.definition);
@@ -1180,7 +1181,9 @@ export function createRoutinesStore(db: DB, executorId?: string): RoutinesStore 
       const row = await db.selectFrom('routines_v1_definitions').selectAll().where('agent_id', '=', input.agentId).where('webhook_spec', 'is not', null)
         .$if(input.legacyOnly === true, q => q.where('webhook_legacy_enabled', '=', true))
         .where(sql<string>`webhook_spec->>'path'`, '=', input.path).executeTakeFirst();
-      return row ? rowToRoutine(row) : null;
+      if (!row) return null;
+      const read = readRoutineRow(row);
+      return read.ok ? read.routine : unreadableWebhookRoutine(row, read.issue);
     },
     async acceptDispatch(input) {
       let replayed = false;
