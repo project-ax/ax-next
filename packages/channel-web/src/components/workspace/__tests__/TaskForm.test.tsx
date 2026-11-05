@@ -463,7 +463,7 @@ describe('task form More options', () => {
     expect(screen.queryByText(SAVE_NOTICE)).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Save' })).toHaveAccessibleDescription(/Any app updates still waiting to run will be cancelled\./);
   });
-  // A notice that appears mid-typing is polite, not an interruption: Save's description carries it too.
+  // A notice that appears mid-typing doesn't interrupt (no role="alert"); Save's description carries it.
   it('makes the save notice a polite status', async () => {
     await edit(repeatWithUpdates);
     fill('What should Caveman do?', 'Review updates differently.');

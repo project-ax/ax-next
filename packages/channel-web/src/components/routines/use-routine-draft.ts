@@ -90,8 +90,10 @@ export function useRoutineDraft({
       .map((event) => event.trim())
       .filter(Boolean);
     // TASK-1037. A filter that still says what was loaded leaves the webhook as loaded: its key order and
-    // a stored empty list included. A rewritten one would read as a change, so an untouched form would be
-    // dirty and a name edit would send the webhook too, which cancels a Repeat's waiting app updates.
+    // a stored empty list included. A rewritten one would read as a change: an untouched form would be
+    // dirty (Save would send an empty patch, which the host refuses) and show a false cancel notice while
+    // invalid, and for a stored empty list a name edit would send the webhook too, cancelling a Repeat's
+    // waiting app updates.
     if (JSON.stringify(loaded ?? []) === JSON.stringify(events)) return form;
     return { ...form, webhook: events.length ? { ...form.webhook, events } : webhook };
   }, [form, eventsDraft]);

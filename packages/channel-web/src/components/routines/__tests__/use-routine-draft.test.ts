@@ -94,6 +94,14 @@ describe('an untouched event filter', () => {
     expect(result.current.validation.success).toBe(false);
     expect(result.current.cancelsWaitingUpdates).toBe(false);
   });
+  // The shape people can still create: a task with an event filter and a response time. Rebuilt, its
+  // webhook moved `events` after `respondWithin`, so it was dirty on load and Save sent an empty patch.
+  it('keeps a task with a filter and a response time as loaded', () => {
+    const result = draft({ ...savedRepeat, kind: 'stay-on-top', goodWhen: 'Calm.', silenceToken: null,
+      webhook: { kind: 'webhook', path: '/updates', events: ['push'], respondWithin: '10m' } });
+    expect(result.current.dirty).toBe(false);
+  });
+  // Guards the short-circuit: an edited or cleared filter is still a change, not "as loaded".
   it('still counts a real filter edit', () => {
     const result = draft({ ...savedRepeat, webhook: legacy });
     act(() => result.current.editEvents('push, pull_request'));

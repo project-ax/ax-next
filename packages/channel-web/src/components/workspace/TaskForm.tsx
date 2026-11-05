@@ -554,7 +554,8 @@ export function TaskForm({
       </Collapsible>
 
       {editDropsWaiting && (
-        // A polite status, not an alert: it appears mid-typing, and Save's description carries it too.
+        // Not role="alert": it appears mid-typing. It is read through Save's description; a status mounted
+        // with its text may not be announced on its own.
         <Alert id={`${id}-save-waiting`} role="status"><AlertDescription>Saving these changes cancels any app updates still waiting to run.</AlertDescription></Alert>
       )}
       {shown.has('form') && <FieldError id={errorId('form')} ref={register('form')} tabIndex={-1}>{shown.get('form')}</FieldError>}
