@@ -31,6 +31,11 @@ interface PatternRouteEntry {
 
 export interface MatchResult {
   handler: HttpRouteHandler;
+  /**
+   * The route as registered: its exact path or its pattern (`/webhooks/:token/*`). What a log
+   * line may name in place of the request path, whose params can carry a capability (TASK-1044).
+   */
+  route: string;
   /** Empty for exact-match routes; populated for pattern routes. */
   params: Record<string, string>;
   /** Mirrors HttpRegisterRouteInput.bypassCsrf at registration time. */
@@ -170,6 +175,7 @@ export class Router {
     if (exact !== undefined) {
       return {
         handler: exact.handler,
+        route: exact.path,
         params: {},
         bypassCsrf: exact.bypassCsrf,
         maxBodyBytes: exact.maxBodyBytes,
@@ -187,6 +193,7 @@ export class Router {
       if (params !== null) {
         return {
           handler: entry.handler,
+          route: entry.pattern,
           params,
           bypassCsrf: entry.bypassCsrf,
           maxBodyBytes: entry.maxBodyBytes,
@@ -215,6 +222,7 @@ export class Router {
     if (best === undefined || bestParams === undefined) return undefined;
     return {
       handler: best.handler,
+      route: best.pattern,
       params: bestParams,
       bypassCsrf: best.bypassCsrf,
       maxBodyBytes: best.maxBodyBytes,

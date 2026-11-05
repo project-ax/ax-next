@@ -393,6 +393,37 @@ describe('@ax/http-server', () => {
     expect(await r.json()).toEqual({ error: 'handler-did-not-respond' });
   });
 
+  it('a throwing route logs its pattern and codes, never the request path or the message (TASK-1044)', async () => {
+    // A capability in the path (a webhook address token, say): whoever holds it can use it.
+    const token = 'rt_FAKE-TEST-TOKEN-not-a-real-address';
+    await registerRoute('POST', '/hooks/:token/*', async () => {
+      // A message can quote stored or model-authored text, as a ZodError's does.
+      throw new TypeError('PRIVATE-STORED-TEXT');
+    });
+    const lines: string[] = [];
+    const spy = vi.spyOn(process.stderr, 'write').mockImplementation(((chunk: unknown) => {
+      lines.push(String(chunk));
+      return true;
+    }) as typeof process.stderr.write);
+    try {
+      const r = await fetch(`http://127.0.0.1:${port}/hooks/${token}/deep/path`, {
+        method: 'POST',
+        headers: { 'x-requested-with': 'ax-admin' },
+        body: '{}',
+      });
+      expect(r.status).toBe(500);
+      expect(await r.json()).toEqual({ error: 'internal' });
+    } finally {
+      spy.mockRestore();
+    }
+    const handlerLines = lines.filter((line) => line.startsWith('[ax/http-server] handler error'));
+    expect(handlerLines).toEqual([
+      '[ax/http-server] handler error on POST /hooks/:token/* {"name":"TypeError"}\n',
+    ]);
+    expect(lines.join('')).not.toContain(token);
+    expect(lines.join('')).not.toContain('PRIVATE-STORED-TEXT');
+  });
+
   it('shutdown() stops accepting new connections', async () => {
     await registerRoute('GET', '/up', async (_req, res) => {
       res.status(200).text('ok');

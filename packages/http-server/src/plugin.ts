@@ -1,6 +1,7 @@
 import * as http from 'node:http';
 import {
   PluginError,
+  faultLogFields,
   isRejection,
   makeAgentContext,
   type Plugin,
@@ -285,10 +286,9 @@ export function createHttpServerPlugin(
           } catch {
             // socket already dead
           }
+          // Codes only, never the message (TASK-1044): it can carry the request's path or stored text.
           process.stderr.write(
-            `[ax/http-server] unhandled handler error: ${
-              err instanceof Error ? err.message : String(err)
-            }\n`,
+            `[ax/http-server] unhandled handler error ${JSON.stringify(faultLogFields(err))}\n`,
           );
         });
       });
@@ -523,10 +523,11 @@ async function handle(
         finalStatus = 400;
       }
     } else {
+      // TASK-1044: the route as registered, never the request path (a param can be a capability,
+      // such as a webhook address token), and the failure's codes, never its message (it can
+      // quote stored or model-authored text, as a ZodError's does).
       process.stderr.write(
-        `[ax/http-server] handler error on ${method} ${path}: ${
-          err instanceof Error ? err.message : String(err)
-        }\n`,
+        `[ax/http-server] handler error on ${method} ${matched.route} ${JSON.stringify(faultLogFields(err))}\n`,
       );
       if (writer.streaming) {
         // Stream is mid-flight — best-effort end the underlying socket.
