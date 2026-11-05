@@ -77,7 +77,10 @@ function fakeMcpServer(opts: FakeServerOpts = {}) {
   };
   const toolCalls = () =>
     requests.filter((r) => r.method === 'POST' && (r.body as RpcMessage | undefined)?.method === 'tools/call');
-  return { baseFetch, requests, toolCalls };
+  /** The JSON-RPC method of every POST, in order (a body with none shows as '(none)'). */
+  const rpcMethods = () =>
+    requests.filter((r) => r.method === 'POST').map((r) => (r.body as RpcMessage | undefined)?.method ?? '(none)');
+  return { baseFetch, requests, toolCalls, rpcMethods };
 }
 
 const URL_OK = 'https://mcp.example.com/mcp';
@@ -107,6 +110,24 @@ describe('callServerTool', () => {
     // Byte-faithful: same keys in the same order, nothing added or dropped.
     expect(JSON.stringify(params.arguments)).toBe(JSON.stringify(input));
     expect(calls[0]!.headers.get('authorization')).toBe('Bearer secret-token');
+    // The handshake and one call, nothing else. In particular no `tools/list`:
+    // that is how `client.listTools()` caches the output schemas that
+    // `client.callTool()` then compiles and runs against the reply.
+    expect(server.rpcMethods()).toStrictEqual(['initialize', 'notifications/initialized', 'tools/call']);
+  });
+
+  // `client.request` with a local schema, never `client.callTool()`. Its
+  // default `CallToolResultSchema` validates every content block, so it would
+  // turn this successful but malformed reply into a failure. (Passing
+  // callTool our own schema is indistinguishable in SDK 1.32.1, and harmless
+  // without a `tools/list`, which the test above rules out, so that variant
+  // is not pinned.)
+  it('the reply is read only for isError and its content is never validated', async () => {
+    const server = fakeMcpServer({
+      toolsCall: (msg) => json(msg.id, { result: { content: [{ type: 'mystery' }], structuredContent: 'oops' } }),
+    });
+    expect(await call(server)).toStrictEqual({ outcome: 'succeeded' });
+    expect(server.toolCalls()).toHaveLength(1);
   });
 
   it('isError result is a definite failure', async () => {
@@ -147,21 +168,25 @@ describe('callServerTool', () => {
 
   // Review Focus 1. The stream opens with a priming event (an id, no data),
   // which is what makes the SDK want to resume it, then ends with no result.
-  // SDK 1.32.1 never rejects the pending request for that; it waits out the
-  // request timeout, so only the class is asserted.
+  // SDK 1.32.1 never rejects the pending request for that; it waits out a
+  // deadline (here the budget), so only the class is asserted.
+  //
+  // The call stays open for 2 s, past the SDK's default 1 s reconnect delay,
+  // so a resume would be seen here if the transport were allowed one.
   it('an SSE response that ends without a result is unknown', async () => {
     const server = fakeMcpServer({
       toolsCall: () =>
         new Response('id: prime-1\ndata: \n\n', { headers: { 'content-type': 'text/event-stream' } }),
     });
     const started = Date.now();
-    const out = await call(server, { limits: { budgetMs: 400, requestTimeoutMs: 200 } });
-    expect(Date.now() - started).toBeLessThan(1_500);
+    const out = await call(server, { limits: { budgetMs: 2_000, requestTimeoutMs: 5_000 } });
+    // Ended by the budget, well before the 5 s request deadline.
+    expect(Date.now() - started).toBeLessThan(4_000);
     expect(out.outcome).toBe('unknown');
     expect(server.toolCalls()).toHaveLength(1);
     // One shot: the dropped stream is never resumed (`maxRetries: 0`).
     expect(server.requests.some((r) => r.headers.has('last-event-id'))).toBe(false);
-  });
+  }, 10_000);
 
   // Review Focus 2. A same-origin 307 is one the SDK's own redirect policy
   // would follow, so this proves the guarded fetch is what stops it.
@@ -316,4 +341,63 @@ describe('callServerTool classification', () => {
     });
     expect(out).toStrictEqual({ outcome: 'failed', reason: 'unreachable' });
   });
+});
+
+// ---------------------------------------------------------------------------
+// Which deadline ends which wait. Each bound only shows when the others are
+// too long to mask it, so each case makes exactly one of them short and the
+// others 5 s, and must return well inside that 5 s.
+//   - The budget bounds `initialize` (connect's signal) and `tools/call`
+//     (the request's signal).
+//   - The request's own deadline bounds a `tools/call` whose HTTP exchange
+//     finished without an answer (a dropped stream).
+//   - The guarded fetch's per-request deadline is all that bounds
+//     `notifications/initialized`: the SDK awaits it inside connect and gives
+//     it neither our signal nor a timeout.
+// ---------------------------------------------------------------------------
+
+describe('callServerTool deadlines', () => {
+  const never = (msg: RpcMessage, init: Record<string, unknown>) =>
+    afterDelay(60_000, init, () => json(msg.id, { result: {} }));
+
+  it('a tools/call the server never answers is cut off by the budget', async () => {
+    const server = fakeMcpServer({ toolsCall: never });
+    const started = Date.now();
+    const out = await call(server, { limits: { budgetMs: 200, requestTimeoutMs: 5_000 } });
+    expect(Date.now() - started).toBeLessThan(1_500);
+    expect(out).toStrictEqual({ outcome: 'unknown', reason: 'timeout' });
+    expect(server.toolCalls()).toHaveLength(1);
+  }, 10_000);
+
+  it('a dropped stream is cut off by the request deadline when the budget is longer', async () => {
+    const server = fakeMcpServer({
+      toolsCall: () =>
+        new Response('id: prime-1\ndata: \n\n', { headers: { 'content-type': 'text/event-stream' } }),
+    });
+    const started = Date.now();
+    const out = await call(server, { limits: { budgetMs: 5_000, requestTimeoutMs: 200 } });
+    expect(Date.now() - started).toBeLessThan(1_500);
+    expect(out).toStrictEqual({ outcome: 'unknown', reason: 'timeout' });
+    expect(server.toolCalls()).toHaveLength(1);
+  }, 10_000);
+
+  it('a notifications/initialized that never answers is cut off by the per-request deadline', async () => {
+    const server = fakeMcpServer({
+      initialized: (_msg, init) => afterDelay(60_000, init, () => new Response(null, { status: 202 })),
+    });
+    const started = Date.now();
+    const out = await call(server, { limits: { budgetMs: 5_000, requestTimeoutMs: 200 } });
+    expect(Date.now() - started).toBeLessThan(1_500);
+    expect(out).toStrictEqual({ outcome: 'failed', reason: 'unreachable' });
+    expect(server.toolCalls()).toHaveLength(0);
+  }, 10_000);
+
+  it('an initialize that never answers is cut off by the budget', async () => {
+    const server = fakeMcpServer({ initialize: never });
+    const started = Date.now();
+    const out = await call(server, { limits: { budgetMs: 200, connectTimeoutMs: 5_000, requestTimeoutMs: 5_000 } });
+    expect(Date.now() - started).toBeLessThan(1_500);
+    expect(out).toStrictEqual({ outcome: 'failed', reason: 'unreachable' });
+    expect(server.toolCalls()).toHaveLength(0);
+  }, 10_000);
 });
