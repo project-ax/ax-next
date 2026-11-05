@@ -189,6 +189,33 @@ export function runFailedText(err: unknown): string {
 }
 const OWNER_CODE_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,39}$/;
 
+/**
+ * TASK-1038 — what a run's error says when its invoke ended `terminated`:
+ * runFailedText's fixed words and a code. A runner that fails gives its own
+ * error as the reason (`${name}: ${message}`, agent-runner-core
+ * `run-runner.ts`). Runner output is untrusted, and this text becomes the
+ * routine's `lastError`, which owners, team members and the agent read.
+ *
+ * The reason is the code only when it has the host-code shape. Every
+ * orchestrator reason and gate code (`chat:start:`, `agent-resolve:`,
+ * `system-prompt:`) has it. Anything else, which today is always a runner's
+ * own text, becomes `runner-error`.
+ *
+ * A runner can still choose a reason with that shape. It shows as one token
+ * of at most 64 lowercase letters, digits, `-` and `:`. With no space, `.` or
+ * `/`, it can't spell a sentence, a URL, a path or a dotted host name. It can
+ * still spell a bare `name:port`, which is why runFailedText's own codes (from
+ * host errors, which can carry infrastructure) keep excluding `:`.
+ *
+ * The scrub's keep-list (`packages/routines/sql/scrub-leaked-run-errors.sql`)
+ * repeats this pattern. Change both together.
+ */
+export function terminatedRunText(reason: string): string {
+  const code = HOST_REASON_RE.test(reason) ? reason : 'runner-error';
+  return `This run failed because of a problem on our side (code: ${code}).`;
+}
+const HOST_REASON_RE = /^[a-z0-9][a-z0-9:-]{0,63}$/;
+
 /** The store's `RUN_CLOSED` refusal, read without trusting the error's getters. */
 function isRunClosed(err: unknown): boolean {
   try {
@@ -455,12 +482,13 @@ export function createFireRoutine(deps: FireDeps) {
     ).then(
       async outcome => {
         if (outcome?.kind === 'terminated') {
-          // Not always an orchestrator code: a runner that fails reports its own
-          // error as `${name}: ${message}` (agent-runner-core run-runner.ts), so a
-          // run can store runner text here. What owners should see instead is a
-          // separate card (TASK-1036 decisions).
-          const reason = String(outcome.reason ?? 'unknown');
-          await settleWithoutTurn(entry => briefRunError(entry, reason) ?? `terminated: ${reason}`, !refusedBeforeAssembly(reason), entry => briefRunMiss(entry, reason));
+          // The reason decides a task run's wording (briefRunError), why it left
+          // no report (briefRunMiss) and whether the last warning moves
+          // (refusedBeforeAssembly). It is stored only through terminatedRunText:
+          // a runner that fails gives its own error text as the reason, and
+          // runner output is untrusted (TASK-1038).
+          const reason = typeof outcome.reason === 'string' ? outcome.reason : 'unknown';
+          await settleWithoutTurn(entry => briefRunError(entry, reason) ?? terminatedRunText(reason), !refusedBeforeAssembly(reason), entry => briefRunMiss(entry, reason));
         } else if (deps.pending.has(reqId)) {
           await lifetime.defer(deps.turnEndGraceMs ?? DEFAULT_TURN_END_GRACE_MS,
             () => settleWithoutTurn('the run finished without reporting a result', true));

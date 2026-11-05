@@ -255,16 +255,16 @@ describe('accepted DB fire dispatch', () => {
     expect(await f.store.findOne(h.row)).toBeNull();
     expect(await f.store.recentFires({ agentId: h.row.agentId, routineId: h.row.routineId, actorUserId: 'owner' })).toHaveLength(1);
   });
-  // TASK-908: `system-prompt:` is the landed veto's, fired before connector assembly too. A repeat
-  // routine's run keeps the raw reason as its error; only a task's is worded (checkin.test.ts).
+  // TASK-908: `system-prompt:` is the landed veto's, fired before connector assembly too. A repeat routine's run
+  // stores the reason as its code (TASK-1038); only a task's is worded (checkin.test.ts).
   it.each(['chat:start:denied', 'agent-resolve:forbidden', 'system-prompt:brief-missing'])('preserves the previous warning for a pre-assembly gate %s', async (reason) => {
     const h = await setup({ invoke: async () => ({ kind: 'terminated', reason }) });
     await f.store.finishDispatch({ dispatchId: h.accepted.dispatchId, outcome: { status: 'ok', conversationId: 'c', error: null, renderedPrompt: 'p', warning: 'Previous warning' } });
     const next = (await f.store.acceptDispatch({ ...h.row, expectedRevision: h.row.revision, actorUserId: 'owner', requestId: 'second', source: 'manual', now: new Date(now.getTime() + 1) }))!.accepted;
-    const diagnostic = captureExpectedStderr(message => message.startsWith(`[ax/routines] agent:invoke failed for a/${h.row.routineId}: terminated: ${reason}`));
+    const diagnostic = captureExpectedStderr(message => message.startsWith(`[ax/routines] agent:invoke failed for a/${h.row.routineId}: This run failed because of a problem on our side (code: ${reason}).`));
     await h.fire(next);
     await expect.poll(async () => (await f.store.recentFires(h.row)).length).toBe(2);
-    expect((await f.store.recentFires(h.row))[0]).toMatchObject({ status: 'error', error: `terminated: ${reason}`, warning: 'Previous warning' });
+    expect((await f.store.recentFires(h.row))[0]).toMatchObject({ status: 'error', error: `This run failed because of a problem on our side (code: ${reason}).`, warning: 'Previous warning' });
     expect(diagnostic.messages).toHaveLength(1);
   });
   it('marks abandoned accepted work interrupted on startup without reinvocation', async () => {
@@ -273,6 +273,57 @@ describe('accepted DB fire dispatch', () => {
     expect(await f.store.interruptAbandonedDispatches()).toBe(0);
     expect(h.invoked).not.toHaveBeenCalled();
     expect((await f.store.recentFires(h.row))[0]).toMatchObject({ status: 'error', error: expect.stringContaining('interrupted') });
+  });
+});
+// TASK-1038: a `terminated` reason can be the runner's own error text, and runner output is untrusted. A run's
+// error is its history row and the routine's lastError (owners, team members and the agent read both): fixed
+// words and a code, which is the reason only when it is shaped like a host code.
+describe('a run its invoke ended terminated stores fixed words and a code (TASK-1038)', () => {
+  const stored = (code: string) => `This run failed because of a problem on our side (code: ${code}).`;
+  /** Fires once with an invoke that ends `terminated` with `reason`: the run's error, the routine's lastError, and the stderr line. */
+  async function terminatedWith(reason: unknown, source?: 'webhook') {
+    const h = await setup({ invoke: async () => ({ kind: 'terminated', reason }) });
+    const prefix = `[ax/routines] agent:invoke failed for a/${h.row.routineId}: `;
+    const diagnostic = captureExpectedStderr(message => message.startsWith(prefix));
+    await h.fire(source === undefined ? h.accepted : { ...h.accepted, source });
+    await expect.poll(async () => (await f.store.recentFires(h.row)).length).toBe(1);
+    return {
+      error: (await f.store.recentFires(h.row))[0]?.error,
+      lastError: (await f.store.findOne(h.row))?.lastError,
+      stderr: diagnostic.messages.map(m => m.slice(prefix.length)),
+    };
+  }
+  it.each([
+    'chat-run-timeout', 'sandbox-exit-before-chat-end', 'connector-needs-reconnect',
+    'chat:start:usage-limit-daily', 'agent-resolve:forbidden', 'system-prompt:identity-unavailable',
+    'a'.repeat(64),
+  ])('keeps the host code %s', async (reason) => {
+    expect(await terminatedWith(reason)).toEqual({ error: stored(reason), lastError: stored(reason), stderr: [`${stored(reason)}\n`] });
+  });
+  it.each([
+    ['a runner error', 'ClaudeSdkTurnError: Claude SDK turn failed (error_during_execution): PRIVATE provider reply'],
+    ['a bare runner message', 'PRIVATE connection reset by peer'],
+    ['a gate prefix with words after it', 'chat:start:PRIVATE words the runner chose'],
+    ['capital letters', 'PRIVATE-CODE'],
+    ['a dot, which could spell a host', 'private.example.com'],
+    ['a slash', 'private/path'],
+    ['a host code with a second line', 'chat-run-timeout\nPRIVATE second line'],
+    ['a code one character too long', 'a'.repeat(65)],
+    ['nothing', ''],
+  ])('stores runner-error, never %s', async (_name, reason) => {
+    const fixed = stored('runner-error');
+    expect(await terminatedWith(reason)).toEqual({ error: fixed, lastError: fixed, stderr: [`${fixed}\n`] });
+  });
+  it.each([
+    ['a number', 42],
+    ['an object whose toString throws', { toString() { throw new Error('PRIVATE'); } }],
+    ['missing', undefined],
+  ])('stores unknown when the reason is %s, not a string', async (_name, reason) => {
+    expect((await terminatedWith(reason)).error).toBe(stored('unknown'));
+  });
+  it('a webhook run that a runner ended still says only that the app update could not run', async () => {
+    const run = await terminatedWith('ClaudeSdkTurnError: PRIVATE runner text', 'webhook');
+    expect(run).toEqual({ error: 'This app update could not run.', lastError: 'This app update could not run.', stderr: ['This app update could not run.\n'] });
   });
 });
 // TASK-908: a task run starts with its check-in message instead of its
