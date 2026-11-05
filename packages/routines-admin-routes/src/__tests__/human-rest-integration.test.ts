@@ -426,4 +426,25 @@ describe('human REST through registered DB services and real agent ACL', () => {
     expect(r.status).toBe(404);
     expect(r.body).not.toHaveProperty('url');
   });
+  it('lists a routine that no longer reads through Settings and deletes it from there (TASK-913)', async () => {
+    h = await createRoutineHarness({ authenticatedUserId: 'admin' });
+    const routes = createRoutinesAdminHandlers({ bus: h.bus });
+    const created = response();
+    await routes.create(req({ requestId: 'c', definition }, { agentId: h.teamAgentId }), created.res);
+    const row = (created.body as { routine: RoutineView }).routine;
+    // A 129-character name is one today's rules refuse and the column still holds.
+    await h.db.updateTable('routines_v1_definitions').set({ name: 'x'.repeat(129) }).where('routine_id', '=', row.routineId).execute();
+    const params = { agentId: h.teamAgentId };
+    const listed = response();
+    await routes.list(req(undefined, params), listed.res);
+    expect(listed.status).toBe(200);
+    expect(listed.body).toEqual({ routines: [], unreadable: [{ agentId: h.teamAgentId, routineId: row.routineId, revision: row.revision, name: 'x'.repeat(128), origin: 'authored', canDelete: true }] });
+    const removed = response();
+    await routes.destroy(req({ requestId: 'd', expectedRevision: row.revision }, { ...params, routineId: row.routineId }), removed.res);
+    expect(removed.status).toBe(200);
+    expect(removed.body).toEqual({ deleted: true, cleanupPending: true });
+    const after = response();
+    await routes.list(req(undefined, params), after.res);
+    expect(after.body).toEqual({ routines: [], unreadable: [] });
+  });
 });

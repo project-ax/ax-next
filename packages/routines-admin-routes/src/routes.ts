@@ -100,6 +100,8 @@ function scoped(
  * parses as the contract's view, which is what the SPA types it as. What the
  * host writes (missed check-ins, when the task was marked done) and the
  * person's finish date and the zone it was set from (TASK-955) stay.
+ *
+ * TASK-913: routines that no longer read go out as `unreadable`, which holds no task state.
  */
 function settingsView(view: C.RoutineView): C.RoutineView {
   return { ...view, task: null, steps: [] };
@@ -141,12 +143,12 @@ export function createRoutinesAdminHandlers(deps: AdminDeps) {
     }),
     list: scoped(deps, async (req, res, ctx) => {
       const input = key(req, res, false);
-      if (input)
-        res.status(200).json({
-          routines: (
-            await call('routines:list', ctx, input, C.RoutineListOutputSchema)
-          ).routines.map(settingsView),
-        });
+      if (!input) return;
+      const out = await call('routines:list', ctx, input, C.RoutineListOutputSchema);
+      res.status(200).json({
+        routines: out.routines.map(settingsView),
+        unreadable: out.unreadable,
+      });
     }),
     get: scoped(deps, async (req, res, ctx) => {
       const input = item(req, res);

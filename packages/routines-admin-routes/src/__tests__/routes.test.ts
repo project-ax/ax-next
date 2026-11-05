@@ -103,7 +103,7 @@ function setup(
     admin?: boolean;
     resolveFailure?: boolean;
     /** What the routines services answer instead: one routine view (list, get, create, update) and the runs. */
-    answers?: { view?: unknown; fires?: unknown[] };
+    answers?: { view?: unknown; fires?: unknown[]; unreadable?: unknown[] };
   } = {},
 ) {
   const view = opts.answers?.view ?? routine;
@@ -127,7 +127,7 @@ function setup(
     'routines:webhook-status': { agentId: 'a', routineId: 'rtn_a', setupReady: true, app: null, lastAcceptedAt: null, signatureChecked: false, timestampChecked: false, verifiedAt: null, windowStart: '2031-01-01T11:01:00.000Z', refusals: [] },
     'routines:webhook-address': { token: 'rt_' + 'a'.repeat(43), version: 'a'.repeat(64), legacyActive: true },
     'routines:replace-webhook-address': { token: 'rt_' + 'b'.repeat(43), version: 'b'.repeat(64), legacyActive: false },
-    'routines:list': { routines: [view] },
+    'routines:list': opts.answers?.unreadable === undefined ? { routines: [view] } : { routines: [view], unreadable: opts.answers.unreadable },
     'routines:get': view,
     'routines:create': view,
     'routines:update': view,
@@ -516,5 +516,22 @@ describe('batched task update REST forwarding (TASK-983)', () => {
     await h.create(req({ requestId: 'bad-response', definition: { ...definition, kind: 'stay-on-top', goodWhen: 'All handled.', webhook: { kind: 'webhook', path: '/updates', respondWithin: '25h' } } }), r.res);
     expect(r.status).toBe(400);
     expect(calls.some(call => call.hook === 'routines:create')).toBe(false);
+  });
+});
+
+describe('routines that no longer read (TASK-913)', () => {
+  it('passes the routines that no longer read through the Settings list, and answers none when the service names none (TASK-913)', async () => {
+    const entry = { agentId: 'a', routineId: 'rtn_gone', revision: 'rev9', name: 'Inbox', origin: 'authored', canDelete: true };
+    const named = setup({ answers: { unreadable: [entry] } });
+    const withEntry = response();
+    await named.h.list(req(undefined, { agentId: 'a' } as never), withEntry.res);
+    expect(withEntry.status).toBe(200);
+    const body = withEntry.body as { routines: unknown[]; unreadable: unknown[] };
+    expect(body.unreadable).toEqual([entry]);
+    expect(body.routines).toHaveLength(1);
+    const plain = setup();
+    const without = response();
+    await plain.h.list(req(undefined, { agentId: 'a' } as never), without.res);
+    expect((without.body as { unreadable: unknown[] }).unreadable).toEqual([]);
   });
 });
