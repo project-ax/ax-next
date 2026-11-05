@@ -15,6 +15,13 @@
 //      batch` and `connectors:inventory-tool-titles`, owns their cache table
 //      and purges it on `agents:deleted`. The k8s preset turns it on; the CLI
 //      preset (no database, no `@ax/connectors`) leaves it off.
+//   3. Approved connector calls (same flag, TASK-1046). Registers
+//      `connectors:call-tool`: a person approved a held connector call and no
+//      live agent is there to make it, so @ax/decisions asks the host to make
+//      that one call. It re-derives access from the decision's user and agent
+//      and sends one guarded `tools/call` (connector-inventory/call-tool.ts).
+//      Not an IPC action and not a `tool:execute:*`: the sandbox cannot
+//      reach it.
 //
 // `credentials:list` / `credentials:delete` are optional calls: the sweep
 // purges through them when present (and init orders after the credentials
@@ -30,12 +37,15 @@ import {
   createInventoryToolTitles,
 } from './connector-inventory/describe-tools.js';
 import { createAuthFailureRecheck } from './connector-inventory/auth-failure-recheck.js';
+import { createCallTool } from './connector-inventory/call-tool.js';
+import type { CallServerToolOptions, ServerCallOutcome } from './connector-inventory/call-server-tool.js';
 import type { ListOutcome, ListServerToolsOptions } from './connector-inventory/list-tools.js';
 import {
   createInventoryStore,
   runMcpClientMigration,
   type McpClientDatabase,
 } from './connector-inventory/store.js';
+import { ConnectorCallToolOutputSchema } from './connector-inventory/types.js';
 import { sweepHostMcpServers } from './host-server-sweep.js';
 
 const PLUGIN_NAME = '@ax/mcp-client';
@@ -46,8 +56,9 @@ const SWEEP_PURGE_DEGRADATION =
 export interface CreateMcpClientPluginOptions {
   /**
    * If true, register `connectors:describe-tools` (connector tool inventory)
-   * and own its cache table. Default: false — this plugin also boots in the
-   * CLI preset, which has no database, no `@ax/connectors` and no agents;
+   * and own its cache table, and register `connectors:call-tool` (approved
+   * connector calls, TASK-1046). Default: false — this plugin also boots in
+   * the CLI preset, which has no database, no `@ax/connectors` and no agents;
    * the multi-tenant (k8s) preset sets it.
    */
   connectorToolInventory?: boolean;
@@ -56,6 +67,11 @@ export interface CreateMcpClientPluginOptions {
    * `connectors:describe-tools`. Production leaves this undefined.
    */
   connectorInventoryListTools?: (opts: ListServerToolsOptions) => Promise<ListOutcome>;
+  /**
+   * Test seam: replace the one-shot guarded `tools/call` used by
+   * `connectors:call-tool`. Production leaves this undefined.
+   */
+  connectorCallServerTool?: (opts: CallServerToolOptions) => Promise<ServerCallOutcome>;
 }
 
 /**
@@ -78,12 +94,13 @@ export function createMcpClientPlugin(opts: CreateMcpClientPluginOptions = {}): 
     optionalCalls.push({
       hook: 'connectors:list-effective',
       degradation:
-        "A runner's report that a connector server refused it is dropped (logged): the connector's rail status updates only on its next rail or details check.",
+        "A runner's report that a connector server refused it is dropped (logged): the connector's rail status updates only on its next rail or details check. And connectors:call-tool cannot match a call to the agent's connector, so it sends nothing and answers unavailable.",
     });
     registers.push(
       'connectors:describe-tools',
       'connectors:inventory-status-batch',
       'connectors:inventory-tool-titles',
+      'connectors:call-tool',
     );
     calls.push('database:get-instance', 'connectors:resolve', 'agents:resolve', 'credentials:get');
   }
@@ -165,6 +182,20 @@ export function createMcpClientPlugin(opts: CreateMcpClientPluginOptions = {}): 
           'connectors:inventory-tool-titles',
           PLUGIN_NAME,
           createInventoryToolTitles(store),
+        );
+        // TASK-1046 — the host makes one call a person approved, when no live
+        // agent is there to make it. Only @ax/decisions calls this. The bus's
+        // default timeout on purpose: the handler bounds itself well inside
+        // it (45 s from entry; see call-tool.ts). `returns` holds the answer
+        // to the closed codes, so no field can carry a server's text.
+        bus.registerService(
+          'connectors:call-tool',
+          PLUGIN_NAME,
+          createCallTool({
+            bus,
+            ...(opts.connectorCallServerTool !== undefined ? { callServer: opts.connectorCallServerTool } : {}),
+          }),
+          { returns: ConnectorCallToolOutputSchema },
         );
       }
 

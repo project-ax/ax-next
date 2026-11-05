@@ -575,6 +575,8 @@ describe('@ax/preset-k8s wiring', () => {
       'connectors:describe-tools',
       'connectors:inventory-status-batch',
       'connectors:inventory-tool-titles',
+      // TASK-1046: the host makes an approved connector call. Not an IPC action.
+      'connectors:call-tool',
     ]);
     // TASK-792: host MCP servers are retired, so the manifest is pinned
     // EXACTLY — no `tool:register`, no `http:register-route` /
