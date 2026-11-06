@@ -493,10 +493,12 @@ export function AgentView({
    *
    * `resendable` FLIPS THE INSTANT THE POST LANDS, and that is the other half
    * of the rule. `attachments:commit` consumes each temp upload into that turn
-   * (`server/routes-chat.ts` calls it once per `attachment_ref` block), so a
-   * second message naming the same ids gets `attachment-not-found` — a resend
-   * that could never work. Once the POST has returned, the file is already in
-   * the conversation and the only thing left worth retrying is the reply.
+   * (`server/routes-chat.ts` calls it once per `attachment_ref` block). Once
+   * the POST has returned, the file is already in a saved message, so naming
+   * it again would attach it twice, and the only thing left worth retrying is
+   * the reply. The one exception is a refusal that came before the save
+   * (`messageNotSaved`, see `onError`): nothing of the message was saved, so
+   * Resend carries the files again (TASK-1063).
    *
    * The LIST itself no longer empties there, which is the TASK-424 half: the
    * turn is on screen for as long as it runs, and a bubble that forgets the
@@ -507,11 +509,16 @@ export function AgentView({
    * this than it says: a rejected POST does not mean nothing was committed.
    * The handler's commit loop is a PREFIX operation (`server/routes-chat.ts`
    * says so itself) — refs #1..#k land and then #k+1 refuses, so a 400 or a
-   * 413 can leave earlier uploads already spent. Resending then re-names a
-   * consumed id and 400s again. The ids are still kept on this path because
-   * the common rejection is a transport failure where nothing was consumed
-   * and the file WOULD otherwise be dropped silently, and because a repeated
-   * visible refusal beats a message that quietly arrives without its
+   * 413 can leave earlier uploads already spent. In an EXISTING conversation,
+   * re-naming ids already committed into it is accepted now (TASK-1063), so
+   * only the ref that failed fails again. A brand-new chat still 400s on
+   * Resend: the failed POST created the conversation (`routes-chat.ts`) and
+   * committed the earlier refs into it, but a 400 carries no `conversationId`,
+   * so `conversationRef` stays null. Resend then opens a second conversation,
+   * where those refs are not found. The ids are still kept on this path
+   * because the common rejection is a transport failure where nothing was
+   * consumed and the file WOULD otherwise be dropped silently, and because a
+   * repeated visible refusal beats a message that quietly arrives without its
    * attachment. Telling those two rejections apart needs the server's error
    * CODE, which `sendMessage` does not surface today (it throws a bare
    * `HttpError`); the honest answer for the partial-commit case is not a
@@ -532,10 +539,10 @@ export function AgentView({
      */
     attachments: readonly SendableAttachment[];
     /**
-     * Whether those ids are still spendable. `attachments:commit` consumes
-     * each temp upload into the turn, so once the POST returns a second
-     * message naming the same ids gets `attachment-not-found` — a resend that
-     * could never work. False from that moment on; the words alone go back.
+     * Whether Resend should name those ids again. False once the POST lands:
+     * the files are then in a saved message, and naming them again would
+     * attach them twice, so the words alone go back. It goes true again only
+     * when the turn is refused before the message was saved (TASK-1063).
      */
     resendable: boolean;
     /**
@@ -1037,6 +1044,13 @@ export function AgentView({
           setStreaming(false);
           setTurnsEnded((n) => n + 1);
           setFailedTurns((n) => n + 1);
+          // TASK-1063 — the turn was refused before the host saved the
+          // message, so its files reach the conversation only through
+          // Resend, and the commit accepts them again in the same
+          // conversation.
+          if (fix?.messageNotSaved === true) {
+            setSent((prev) => (prev === null ? prev : { ...prev, resendable: true }));
+          }
           /*
             ALWAYS `failed`, and the stream's own sentence is KEPT.
 
@@ -1279,11 +1293,12 @@ export function AgentView({
         });
         /*
           The POST landed, so every id it carried has been committed into that
-          turn and its temp record is gone. The ids must not be offered for a
-          second send — but the FILES must stay on screen, because the composer
-          has already cleared its chips and this bubble is now the only place
-          the person can see what they sent (TASK-424). The record stays; only
-          the right to spend it again goes.
+          turn. The ids are not offered for a second send unless the turn is
+          then refused before the message is saved (see `onError`) — but the
+          FILES must stay on screen, because the composer has already cleared
+          its chips and this bubble is now the only place the person can see
+          what they sent (TASK-424). The record stays; only the right to send
+          it again goes.
         */
         setSent({ text, attachments: files, resendable: false });
         conversationRef.current = conversationId;
@@ -1829,13 +1844,12 @@ export function AgentView({
                           <Button
                             size="sm"
                             /*
-                              THE FILE GOES BACK WITH THE WORDS. `sent` holds
-                              the ids only while they are still unspent (see
-                              its declaration), so this re-sends the whole
-                              message after a failed POST and just the text
-                              after a failed stream — where the file already
-                              reached the conversation and re-naming it would
-                              only earn an `attachment-not-found`.
+                              THE FILE GOES BACK WITH THE WORDS when
+                              `sent.resendable` (see its declaration): after a
+                              failed POST, or a refusal before the message was
+                              saved. After a failed stream the file already
+                              reached a saved message, so only the text goes
+                              back and the file is not attached twice.
                             */
                             onClick={() =>
                               void send(

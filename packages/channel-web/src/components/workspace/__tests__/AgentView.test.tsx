@@ -33,6 +33,7 @@ import {
 import { uploadAttachment } from '@/lib/attachment-upload';
 import { StorageFullError } from '@/lib/storage-full';
 import { KICKOFF_TEXT } from '@/lib/bootstrap-kickoff';
+import { ERROR_LABELS } from '@/lib/turn-error-labels';
 import { rail as railFixture } from './rail-fixture';
 import {
   getWorkspaceGrantSnapshot,
@@ -1077,9 +1078,10 @@ describe('handing this agent a file', () => {
     THE OTHER HALF OF THE SAME RULE, and the reason "always resend the ids" is
     the wrong fix. Here the POST SUCCEEDED and only the reply stream fell over,
     so `attachments:commit` has already consumed `att-1` into that turn — the
-    file is in the conversation and its temp record is gone. Naming it again
-    would earn a 400 `attachment-not-found`, turning Resend into a button that
-    can never work (the dead-button offer TASK-276 spent a card removing).
+    file is in the conversation and its temp record is gone. It is already in
+    a saved message, so sending it again would put it in the conversation twice
+    (TASK-1063: the server would accept the id, which is why the words-only
+    rule is now about not duplicating the file, not about a dead button).
 
     Asserted as absence, on purpose: `toHaveBeenCalledWith(objectContaining(…))`
     cannot prove a key is missing, so this reads the recorded argument and says
@@ -1125,6 +1127,64 @@ describe('handing this agent a file', () => {
     const resent = sendMock.mock.calls[0]?.[0];
     expect(resent?.text).toBe('have a look at this');
     expect(Object.keys(resent ?? {})).not.toContain('attachmentIds');
+  });
+
+  /*
+    TASK-1063 — THE OTHER EXCEPTION. A refusal that comes before the host saved
+    the person's message (`conversation:message-not-saved`, a chat:start veto)
+    arrives after the POST returned 202, so `resendable` is already false. But
+    nothing of the message was saved, so its file reaches the conversation only
+    if Resend carries it. The server accepts the committed id again in the same
+    conversation, so Resend sends the words AND the file.
+  */
+  it('resends the file with the words when the turn was refused before the message was saved (TASK-1063)', async () => {
+    agentMock.mockResolvedValue(detail());
+    sendMock.mockResolvedValue({ conversationId: 'c-now', reqId: 'r1' });
+    streamMock.mockImplementation(
+      async (
+        _reqId: string,
+        h: { onError: (m: string, hints?: { messageNotSaved?: true }) => void },
+      ) => {
+        h.onError(ERROR_LABELS['conversation:message-not-saved']!, {
+          messageNotSaved: true,
+        });
+      },
+    );
+    uploadMock.mockResolvedValue({
+      attachmentId: 'att-1',
+      sizeBytes: 1,
+      mediaType: 'application/pdf',
+      displayName: 'notes.pdf',
+      expiresAt: '2026-01-01T00:00:00.000Z',
+    });
+
+    renderView();
+    const box = await screen.findByPlaceholderText('Message Quill');
+    fireEvent.change(document.querySelector('input[type="file"]')!, {
+      target: {
+        files: [new File(['x'], 'notes.pdf', { type: 'application/pdf' })],
+      },
+    });
+    await screen.findByText('Ready to send');
+    fireEvent.change(box, { target: { value: 'have a look at this' } });
+    fireEvent.keyDown(box, { key: 'Enter' });
+
+    await screen.findByText(/didn’t reach the agent/);
+
+    sendMock.mockClear();
+    sendMock.mockResolvedValue({ conversationId: 'c-now', reqId: 'r2' });
+    streamMock.mockResolvedValue(undefined as never);
+    fireEvent.click(screen.getByRole('button', { name: 'Resend' }));
+
+    await waitFor(() =>
+      expect(sendMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          conversationId: 'c-now',
+          text: 'have a look at this',
+          attachmentIds: ['att-1'],
+        }),
+      ),
+    );
   });
 });
 
