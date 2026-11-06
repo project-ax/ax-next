@@ -14,6 +14,7 @@ import { registerChatRoutes } from './routes-chat.js';
 import { makeConnectionsHandlers } from './routes-connections.js';
 import { makeRememberedSitesHandlers } from './routes-remembered-sites.js';
 import { registerWorkspaceRoutes } from './routes-workspace.js';
+import { registerArtifactsRoutes } from './routes-artifacts.js';
 import {
   createBufferFillSubscriber,
   createPermissionCardFillSubscriber,
@@ -176,6 +177,16 @@ export function createChannelWebServerPlugin(
         'attachments:store-temp',
         'attachments:commit',
         'attachments:download',
+        // Agent artifacts — the owner routes (routes-artifacts.ts). Hard deps:
+        // channel-web co-deploys with @ax/attachments, which registers them.
+        'artifacts:list',
+        'artifacts:get',
+        'artifacts:read',
+        'artifacts:rename',
+        'artifacts:restore',
+        'artifacts:delete',
+        'artifacts:set-link',
+        'artifacts:mint-view-token',
         // TASK-37 — the reactive egress wall's grant route calls the
         // host-internal proxy:add-host service hook. channel-web only loads in
         // the k8s preset, which always loads @ax/credential-proxy, so this is a
@@ -1090,6 +1101,11 @@ export function createChannelWebServerPlugin(
         buffer: localBuffer,
       });
       for (const u of workspaceRouteUnregisters) unregisterRoutes.push(u);
+
+      // Agent artifacts — the members' list, detail, preview, share-link and
+      // Download all routes. Access is the `artifacts:*` hooks' own check.
+      const artifactRouteUnregisters = await registerArtifactsRoutes(bus, initCtx);
+      for (const u of artifactRouteUnregisters) unregisterRoutes.push(u);
     },
 
     async shutdown() {

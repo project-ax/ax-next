@@ -80,6 +80,8 @@ function hostModules(): string[] {
  */
 const HOOK_PARAM_HELPERS: Record<string, number> = {
   'server/routes-workspace.ts#idsFactsRoute': 2,
+  // Calls an `artifacts:*` hook and answers its refusal (routes-artifacts.ts).
+  'server/routes-artifacts.ts#callOr': 1,
 };
 
 interface Scan {

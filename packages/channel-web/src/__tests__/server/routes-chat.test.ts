@@ -447,6 +447,18 @@ function blobStorePlugin(): Plugin {
   };
 }
 
+/** The `artifacts:*` hooks channel-web's owner routes declare as hard calls. */
+const ARTIFACT_HOOKS = [
+  'artifacts:list',
+  'artifacts:get',
+  'artifacts:read',
+  'artifacts:rename',
+  'artifacts:restore',
+  'artifacts:delete',
+  'artifacts:set-link',
+  'artifacts:mint-view-token',
+] as const;
+
 /**
  * No-op stub for `attachments:*`. Channel-web declares `attachments:store-temp`
  * / `:commit` / `:download` as hard calls (Phase 3); tests that don't load
@@ -465,6 +477,14 @@ function attachmentsStubPlugin(): Plugin {
         'attachments:store-temp',
         'attachments:commit',
         'attachments:download',
+        'artifacts:list',
+        'artifacts:get',
+        'artifacts:read',
+        'artifacts:rename',
+        'artifacts:restore',
+        'artifacts:delete',
+        'artifacts:set-link',
+        'artifacts:mint-view-token',
       ],
       calls: [],
       subscribes: [],
@@ -480,6 +500,8 @@ function attachmentsStubPlugin(): Plugin {
       bus.registerService('attachments:store-temp', 'mock-attachments-stub', notImpl);
       bus.registerService('attachments:commit', 'mock-attachments-stub', notImpl);
       bus.registerService('attachments:download', 'mock-attachments-stub', notImpl);
+      // Agent artifacts (owner routes) — declared hard calls, not exercised here.
+      for (const hook of ARTIFACT_HOOKS) bus.registerService(hook, 'mock-attachments-stub', notImpl);
     },
   };
 }
