@@ -182,8 +182,11 @@ function isUniqueViolation(err: unknown): boolean {
  * still matches on the real columns. The agent id is folded in for the same
  * reason it is a column — this is the key the standing authorisation is keyed
  * on.
+ *
+ * Exported for `store.test.ts` only, which holds this lock from a second
+ * connection to stop a claim at it; nothing outside this file takes it.
  */
-function openHoldLockKey(agentId: string, callFingerprint: string): string {
+export function openHoldLockKey(agentId: string, callFingerprint: string): string {
   return createHash('sha256')
     .update(`${agentId}\u0000${callFingerprint}`)
     .digest()
@@ -942,6 +945,25 @@ export function createDecisionsStore(db: Kysely<DecisionsDatabase>): DecisionSto
             self.agent_id,
             self.call_fingerprint,
           )}::bigint)`.execute(trx);
+
+          // AND THIS ROW AGAIN, now under the lock and held. The read above
+          // was only for the key: a dismiss in another tab or the expiry sweep
+          // can close the row while this approval waits for the lock, and the
+          // answer for that is the same null, not the twin refusal below about
+          // a card that was already answered another way. `FOR UPDATE` keeps
+          // it open until the claim lands, so the two cannot disagree.
+          const stillOpen = await trx
+            .selectFrom(table)
+            .select('status')
+            .where('decision_id', '=', decisionId)
+            .forUpdate()
+            .executeTakeFirst();
+          if (
+            stillOpen === undefined ||
+            !(OPEN_STATUSES as readonly string[]).includes(stillOpen.status)
+          ) {
+            return null;
+          }
 
           // THE TWINS, held until this claim commits. A twin's replay
           // returning (`markReplayed`), the agent taking it (`takeApproval`)

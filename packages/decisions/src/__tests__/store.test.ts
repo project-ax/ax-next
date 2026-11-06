@@ -11,6 +11,7 @@ import {
   createDecisionsStore,
   DuplicateAuthorisationError,
   IdenticalCallAlreadyTriedError,
+  openHoldLockKey,
   type DecisionStore,
 } from '../store.js';
 import { receiptFor } from '../receipts.js';
@@ -2200,6 +2201,46 @@ describe('decisions store — an approval whose identical twin already went out 
     const dec2 = (await s.get('dec_2'))!;
     expect(dec2.status).toBe('pending');
     expect(dec2.replayedAt).toBeNull();
+  });
+
+  it('answers a row closed while its approval waited for the lock as resolved by someone else, not as a twin refusal', async () => {
+    // The row is read once BEFORE the lock (its agent and call shape are the
+    // key) and once AFTER it. Between the two a dismiss in another tab, or the
+    // expiry sweep, can close it — and then the honest answer is the usual
+    // "someone else resolved it" null, never "an identical request already
+    // ran" about a card the person has already answered another way.
+    const { db, s } = await raceStore();
+    await openTwins(s);
+    await hostRan(s, 'dec_1');
+
+    // A second connection holds the lock, so the claim stops AT it.
+    let release!: () => void;
+    const released = new Promise<void>((r) => (release = r));
+    let held!: () => void;
+    const holding = new Promise<void>((r) => (held = r));
+    const holder = makeKysely();
+    const holderDone = holder.transaction().execute(async (trx) => {
+      await sql`SELECT pg_advisory_xact_lock(${openHoldLockKey('a1', 'fp-1')}::bigint)`.execute(trx);
+      held();
+      await released;
+    });
+    await holding;
+
+    const approval = settled(claim(s, 'dec_2'));
+    await vi.waitFor(
+      async () => {
+        const { rows } = await sql<{ n: number }>`
+          SELECT count(*)::int AS n FROM pg_locks WHERE locktype = 'advisory' AND NOT granted`.execute(db);
+        if ((rows[0]?.n ?? 0) === 0) throw new Error('the claim is not waiting on the lock yet');
+      },
+      { timeout: 10_000, interval: 10 },
+    );
+    expect((await s.markDismissed('dec_2', T_AFTER))!.status).toBe('dismissed');
+    release();
+    await holderDone;
+
+    expect(await approval).toBeNull();
+    expect((await s.get('dec_2'))!.status).toBe('dismissed');
   });
 });
 
