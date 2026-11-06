@@ -2015,10 +2015,16 @@ runs in **report** mode on kind, so the purge is the test's job, not this walk's
    It is not in the Artifacts list.
 9. **Deleted chat.** Delete the chat that made an artifact. The artifact and
    its link still work (artifacts outlive their chat).
+10. **Download.** In the viewer, **Download** one artifact: it saves under its
+    title plus extension. Then click **Download all** in the Artifacts panel:
+    the browser saves `<agent name> artifacts.zip`, and it unzips into one file
+    per artifact. Click **Download all** again while the first is still
+    running: it says "One download at a time, please — try again in a moment."
+    (On a small set the zip may finish too fast to catch; that's fine.)
 
 ### Acceptance criteria
 
-- Steps 1-9 behave as written. Record each with its evidence in
+- Steps 1-10 behave as written. Record each with its evidence in
   `deploy/kind/walks/<date>-<TASK-ID>/RESULTS.md`.
 - In step 2, all four attacks fail, and every content-origin response carries
   `X-Content-Type-Options: nosniff`, `Cache-Control: private, no-store` and

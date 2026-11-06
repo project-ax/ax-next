@@ -397,6 +397,22 @@ and consumer. Treat their *shape* as a contract; changing it is a boundary revie
     the same not-found, so a wrong code and someone else's artifact look alike.
   - `system-prompt:augment:optional:artifacts` — the agent's own artifact list,
     framed as data.
+  - **Download all** (`GET /api/workspace/agents/:id/artifacts/download-all`)
+    zips each artifact's current version. It is rationed because the host
+    builds the zip in memory: at most 500 entries and 100 MiB (413 above), one
+    bundle in flight per person and two per host (429 otherwise), built into one
+    preallocated buffer. The client asks `?probe=1` first (the same checks, no
+    zip built, no slot held: 204 or the 429/413 JSON), then hands the URL to a
+    plain `<a download>` so the browser streams it.
+  - **Chat cards are read back from the store, never trusted from tool text.**
+    channel-web derives a thread's artifact cards from its `artifact_publish`
+    results, but that text is runner-produced (untrusted). So every claimed id is
+    checked with `artifacts:get` as the viewer, one call per distinct id, and
+    must belong to the thread's agent. Title, kind, extension and version come
+    from the stored artifact (the card shows the current version). Unknown,
+    foreign or refused ids are dropped (no card, no chip). A hook outage shows
+    no cards at all, with a code-only log line, rather than falling back to the
+    tool text.
   - Two **host-only** lookups, called only by `@ax/attachments` and never an IPC
     action or an HTTP route (pinned in `presets/k8s` preset.test.ts):
     `conversations:agent-ids` (maps legacy conversation-scoped artifacts to their
@@ -591,6 +607,10 @@ intentionally unschema'd — there's nothing to validate.
   host restart retires every token in flight (the viewer just mints another),
   and a second replica could not verify the first one's tokens. The chart's
   `replicas: 1` pin already covers this; lifting it needs a shared key.
+  Tokens are checked against the store on every request, not against the
+  person: a link-minted token dies when its link is turned off, rotated or the
+  artifact is restored, but an owner-minted token survives the minter losing
+  access to the agent for the rest of its 300 s life (accepted: minutes-scoped).
 - **Agent files** no longer pin the host to one replica: `/files` is a
   filestore (NFS) export that every host and runner pod can mount. (The old
   RWO-PVC git workspace backend, which did, is gone.)
