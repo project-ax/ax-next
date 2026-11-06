@@ -80,6 +80,10 @@ export const DISPATCHER_DEPENDENCIES: DispatcherDependencies = {
   ],
   optionalCalls: [
     {
+      hook: 'agents:resolve',
+      degradation: 'runner blob.put charges the session person',
+    },
+    {
       // NOT required: the dispatcher calls this unconditionally on the
       // /conversation.store-runner-session route, but the route is only
       // exercised by conversation-scoped deployments. The local CLI is

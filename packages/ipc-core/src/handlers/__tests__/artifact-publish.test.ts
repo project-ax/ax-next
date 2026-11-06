@@ -23,7 +23,12 @@ const HOOK_OUT = { artifactId: 'abc123', version: 1, title: 'Weekly report', kin
 
 function fakeBus(impl: (hook: string, payload: unknown) => Promise<unknown>) {
   return {
-    call: vi.fn(async (hook: string, _ctx: unknown, payload: unknown) => impl(hook, payload)),
+    // blob.put asks `agents:resolve` who to charge; these tests are not about that.
+    call: vi.fn(async (hook: string, _ctx: unknown, payload: unknown) =>
+      hook === 'agents:resolve'
+        ? { agent: { id: 'a1', ownerType: 'user', ownerId: 'u1' } }
+        : impl(hook, payload),
+    ),
     hasService: vi.fn(() => true),
     registerService: vi.fn(),
     subscribe: vi.fn(),

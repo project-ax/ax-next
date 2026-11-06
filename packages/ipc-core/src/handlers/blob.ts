@@ -1,4 +1,10 @@
-import { PluginError, type AgentContext, type HookBus } from '@ax/core';
+import {
+  PluginError,
+  isOwnerlessId,
+  quotaOwnerKey,
+  type AgentContext,
+  type HookBus,
+} from '@ax/core';
 import {
   AttachmentsListResponseSchema,
   BlobGetRequestSchema,
@@ -48,6 +54,9 @@ import { recordSessionBlobPut } from './session-blob-puts.js';
 // HOOK_REJECTED with a reason the agent can pass on, instead of a bare 500:
 // the subscriber's own sentence, except for a full disk, which gets
 // BLOB_PUT_STORAGE_FULL_FOR_AGENT (TASK-993).
+//
+// WHO IS CHARGED. Not always `ctx.userId`: a team agent's bytes are charged to
+// `team:<id>` (see `blobChargeUserId`).
 // ---------------------------------------------------------------------------
 
 // Binary actions receive the raw REQUEST body PLUS the parsed request URL, so
@@ -81,15 +90,61 @@ export const BLOB_PUT_STORAGE_FULL_FOR_AGENT =
   'Do not delete or move any files on your own to make room. Tell the person: ' +
   'they can ask you to clean up specific files they no longer need, or ask an admin for more room.';
 
+/**
+ * Who `blob:put` charges this session's bytes to (spec C4). A team agent's
+ * bytes belong to the team (`team:<id>`), not to whichever member is talking to
+ * it, so the quota gate and the ledger both see the owner `agents:resolve`
+ * names. Without the service, or for an ownerless session, the invoking person
+ * is charged as before. An agent that no longer resolves, or answers without a
+ * usable owner, fails closed: `null`, and nothing is put.
+ */
+async function blobChargeUserId(ctx: AgentContext, bus: HookBus): Promise<string | null> {
+  const agentId = ctx.agentId;
+  if (typeof agentId !== 'string' || agentId.length === 0 || isOwnerlessId(agentId)) {
+    return ctx.userId;
+  }
+  if (!bus.hasService('agents:resolve')) return ctx.userId;
+  const resolved = await bus.call<{ agentId: string; userId: string }, unknown>(
+    'agents:resolve',
+    ctx,
+    { agentId, userId: ctx.userId },
+  );
+  const agent = (resolved as { agent?: { ownerId?: unknown; ownerType?: unknown } } | null)?.agent;
+  if (typeof agent?.ownerId !== 'string' || agent.ownerId.length === 0) return null;
+  return quotaOwnerKey({
+    ownerType: agent.ownerType === 'team' ? 'team' : 'user',
+    ownerId: agent.ownerId,
+  });
+}
+
 export const blobPutHandler: BinaryActionHandler = async (
   body,
   ctx,
   bus,
   _url,
 ) => {
+  let chargeTo: string | null;
+  try {
+    chargeTo = await blobChargeUserId(ctx, bus);
+  } catch (err) {
+    if (err instanceof PluginError && (err.code === 'not-found' || err.code === 'forbidden')) {
+      ctx.logger.warn('blob_put_agent_unresolved', { action: 'blob.put', code: err.code });
+      return notFound('agent not found');
+    }
+    logInternalError(ctx.logger, 'blob.put', err);
+    return internalError();
+  }
+  if (chargeTo === null) {
+    ctx.logger.warn('blob_put_agent_unresolved', { action: 'blob.put', code: 'no-owner' });
+    return notFound('agent not found');
+  }
+  // Only `userId` changes (the ctx-override precedent in the skills bundle
+  // store); the session record below keeps the ORIGINAL ctx, whose userId is
+  // part of its key.
+  const putCtx: AgentContext = { ...ctx, userId: chargeTo };
   let out: BlobPutOutput;
   try {
-    out = await bus.call<BlobPutInput, BlobPutOutput>('blob:put', ctx, {
+    out = await bus.call<BlobPutInput, BlobPutOutput>('blob:put', putCtx, {
       bytes: new Uint8Array(body.buffer, body.byteOffset, body.byteLength),
     });
   } catch (err) {

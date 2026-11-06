@@ -2,13 +2,23 @@ import { inspect } from 'node:util';
 import { describe, it, expect, vi } from 'vitest';
 import { PluginError } from '@ax/core';
 import { BLOB_PUT_STORAGE_FULL_FOR_AGENT, blobGetHandler, blobPutHandler } from '../blob.js';
+import { sessionPutBlob } from '../session-blob-puts.js';
 import type { HandlerBinary, HandlerErr, HandlerOk } from '../types.js';
 
 const VALID_SHA = 'a'.repeat(64);
 
-function fakeBus(impl: (hook: string, payload: unknown) => Promise<unknown>) {
+// `agents:resolve` answers a personal agent owned by `u1` unless a test hands
+// `agent` in, so the tests that predate team charging stay about their own thing.
+function fakeBus(
+  impl: (hook: string, payload: unknown, ctx: unknown) => Promise<unknown>,
+  agent: () => Promise<unknown> = async () => ({
+    agent: { id: 'a1', ownerType: 'user', ownerId: 'u1' },
+  }),
+) {
   return {
-    call: vi.fn(async (hook: string, _ctx: unknown, payload: unknown) => impl(hook, payload)),
+    call: vi.fn(async (hook: string, ctx: unknown, payload: unknown) =>
+      hook === 'agents:resolve' ? agent() : impl(hook, payload, ctx),
+    ),
     hasService: vi.fn(() => true),
     registerService: vi.fn(),
     subscribe: vi.fn(),
@@ -121,6 +131,90 @@ describe('blob.put handler (raw-body REQUEST channel)', () => {
     const bus = fakeBus(async () => ({ sha256: 'not-a-sha', size: 1 }));
     const result = (await blobPutHandler(Buffer.from('x'), fakeCtx(), bus as never)) as HandlerErr;
     expect(result.status).toBe(500);
+  });
+});
+
+describe('blob.put handler: who is charged (spec C4)', () => {
+  const VALID = { sha256: VALID_SHA, size: 1 };
+  const team = async () => ({ agent: { id: 'a1', ownerType: 'team', ownerId: 't1' } });
+
+  function putCtxs(bus: ReturnType<typeof fakeBus>): Array<{ userId: string }> {
+    return bus.call.mock.calls.filter((c) => c[0] === 'blob:put').map((c) => c[1] as { userId: string });
+  }
+
+  it("a team agent's put is gated and charged as team:<id>", async () => {
+    const bus = fakeBus(async () => VALID, team);
+    const result = (await blobPutHandler(Buffer.from('x'), fakeCtx(), bus as never)) as HandlerOk;
+    expect(result.status).toBe(200);
+    expect(putCtxs(bus).map((c) => c.userId)).toEqual(['team:t1']);
+  });
+
+  it("a personal agent's put is charged to its owner", async () => {
+    const owned = async () => ({ agent: { id: 'a1', ownerType: 'user', ownerId: 'owner-9' } });
+    const bus = fakeBus(async () => VALID, owned);
+    await blobPutHandler(Buffer.from('x'), fakeCtx(), bus as never);
+    expect(putCtxs(bus).map((c) => c.userId)).toEqual(['owner-9']);
+  });
+
+  it('an ownerless session keeps ctx.userId and asks nobody', async () => {
+    const bus = fakeBus(async () => VALID, team);
+    const ctx = { ...(fakeCtx() as object), agentId: 'ownerless:s1' } as never;
+    await blobPutHandler(Buffer.from('x'), ctx, bus as never);
+    expect(putCtxs(bus).map((c) => c.userId)).toEqual(['u1']);
+    expect(bus.call.mock.calls.some((c) => c[0] === 'agents:resolve')).toBe(false);
+  });
+
+  it('without agents:resolve the session person is charged', async () => {
+    const bus = fakeBus(async () => VALID, team);
+    bus.hasService.mockImplementation((h: string) => h !== 'agents:resolve');
+    await blobPutHandler(Buffer.from('x'), fakeCtx(), bus as never);
+    expect(putCtxs(bus).map((c) => c.userId)).toEqual(['u1']);
+  });
+
+  it('the session record keeps the ORIGINAL ctx, so artifact.publish still accepts the sha', async () => {
+    const bus = fakeBus(async () => VALID, team);
+    const ctx = fakeCtx();
+    await blobPutHandler(Buffer.from('x'), ctx, bus as never);
+    expect(sessionPutBlob(ctx, VALID_SHA)).toBe(true);
+  });
+
+  it('an agent that no longer resolves gets 404 and nothing is put', async () => {
+    for (const code of ['not-found', 'forbidden'] as const) {
+      const gone = async () => {
+        throw new PluginError({ code, plugin: '@ax/agents', hookName: 'agents:resolve', message: 'x' });
+      };
+      const bus = fakeBus(async () => VALID, gone);
+      const result = (await blobPutHandler(Buffer.from('x'), fakeCtx(), bus as never)) as HandlerErr;
+      expect(result.status).toBe(404);
+      expect(putCtxs(bus)).toEqual([]);
+    }
+  });
+
+  it('an agents:resolve outage is a sanitized 500 and nothing is put', async () => {
+    const bus = fakeBus(async () => VALID, async () => {
+      throw new Error('db down');
+    });
+    const result = (await blobPutHandler(Buffer.from('x'), fakeCtx(), bus as never)) as HandlerErr;
+    expect(result.status).toBe(500);
+    expect(putCtxs(bus)).toEqual([]);
+  });
+
+  it("P12: a team agent over quota gets the agent-addressed storage-full error", async () => {
+    const bus = fakeBus(async (_h, _p, ctx) => {
+      expect((ctx as { userId: string }).userId).toBe('team:t1');
+      throw new PluginError({
+        code: 'rejected',
+        plugin: '@ax/disk-quota',
+        hookName: 'blob:pre-put',
+        message: 'The team is full',
+        reasonCode: 'storage-full',
+      });
+    }, team);
+    const result = (await blobPutHandler(Buffer.from('x'), fakeCtx(), bus as never)) as HandlerErr;
+    expect(result.status).toBe(409);
+    expect(result.body).toEqual({
+      error: { code: 'HOOK_REJECTED', message: BLOB_PUT_STORAGE_FULL_FOR_AGENT },
+    });
   });
 });
 
