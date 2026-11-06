@@ -7,6 +7,7 @@ import {
 import { createRoutineHarness, type RoutineHarness } from './support/routine-harness.js';
 import { createCheckInHarness, routineRunner, TASK_DEFINITION } from './support/check-in.js';
 import { createRoutinesStore } from '../store.js';
+import { repeatUpdateNotice } from '../task-event-content.js';
 import { isHold, makeAgentContext, type AgentContext, type HookBus, type ToolCall } from '@ax/core';
 import { createTestHarness } from '@ax/test-harness';
 import { createHttpServerPlugin } from '@ax/http-server';
@@ -328,11 +329,15 @@ describe('registered approval-to-tick-to-webhook cutover canary', () => {
       const signature = createHmac('sha256', 'canary-only-key').update(body).digest('hex');
       const post = () => fetch(`http://127.0.0.1:${server.boundPort()}/webhooks/${token}/canary`, { method: 'POST', body, headers: { 'content-type': 'application/json', 'x-github-event': 'push', 'x-signature': `sha256=${signature}` } });
       now += 1_000;
+      const postedAt = new Date(now);
       expect((await post()).status).toBe(202);
       await expect.poll(async () => (await store.recentFires(row)).length).toBe(2);
       expect((await store.recentFires(row))[0]).toMatchObject({ status: 'ok', renderedPrompt: null });
-      expect(calls.mock.calls.filter(([hook]) => hook === 'agent:invoke').map(([, runCtx, input]) => ({ userId: runCtx.userId, input })))
-        .toContainEqual({ userId: ctx.userId, input: { message: { role: 'user', content: changed.promptBody } } });
+      // TASK-1050: the Settings edit reaches the run byte for byte, then the host's note naming the update. Never its content.
+      const [delivered] = await h.db.selectFrom('routines_v1_dispatches').select('delivery_id').where('routine_id', '=', row.routineId).where('trigger_source', '=', 'webhook').execute();
+      const invoked = calls.mock.calls.filter(([hook]) => hook === 'agent:invoke').map(([, runCtx, input]) => ({ userId: runCtx.userId, input }));
+      expect(invoked).toContainEqual({ userId: ctx.userId, input: { message: { role: 'user', content: `${changed.promptBody}\n\n${repeatUpdateNotice({ eventId: delivered!.delivery_id!, receivedAt: postedAt })}` } } });
+      for (const { input } of invoked) expect((input as { message?: { content?: string } }).message?.content ?? '').not.toContain('"title":"canary"');
       expect(await h.bus.call('routines:delete', ctx, { agentId: h.agentId, routineId: row.routineId, expectedRevision: changed.revision, requestId: 'delete-canary' })).toEqual({ deleted: true, cleanupPending: true });
       const secretRef = h.credentialCalls.find(item => item.operation === 'set')!.ref;
       expect(h.credentialCalls).toContainEqual({ operation: 'delete', ref: secretRef });

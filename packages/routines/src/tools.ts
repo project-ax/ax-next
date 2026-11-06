@@ -111,8 +111,9 @@ async function prepare({ bus, store, ctx, call }: Invocation): Promise<Prepared>
   if (name === 'routine_read_update') {
     const input = parseRoutineInput(C.RoutineReadUpdateToolInputSchema, call.input);
     if (ctx.source !== 'routine' || !ctx.conversationId) throw new SafeToolError('forbidden', 'input');
-    const event = await store.readTaskEvent({ agentId: ctx.agentId, conversationId: ctx.conversationId, actorUserId: ctx.userId, eventId: input.eventId });
-    if (event === null) throw new SafeToolError('not-found', 'input');
+    const scope = { agentId: ctx.agentId, conversationId: ctx.conversationId, actorUserId: ctx.userId, eventId: input.eventId };
+    // A check-in's assigned update, or the app update that started this repeat run (TASK-1050).
+    if (await store.readTaskEvent(scope) === null && await store.readRepeatUpdate(scope) === null) throw new SafeToolError('not-found', 'input');
     return { hook: 'routines:read-update', input: { agentId: ctx.agentId, ...input } };
   }
   const { agent } = await bus.call<unknown, { agent: { ownerType: 'user' | 'team'; ownerId: string } }>(

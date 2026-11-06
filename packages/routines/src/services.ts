@@ -6,7 +6,7 @@ import type { AcceptedDispatch, FireRow, OpenCheckInLookup, ReportRefusal, Store
 import { credentialRef, editableDefinition, deleteRequestHash, updateRequestHashes, inputHash, isStopOnlyPatch, parseStoredRoutine, validationError } from './definition.js';
 import { drainRoutineCleanup } from './cleanup.js';
 import { advanceToNextActiveWindow } from './active-hours.js';
-import { fullTaskEventPayload, readTaskEventContent } from './task-event-content.js';
+import { fullTaskEventPayload, readRepeatUpdateContent, readTaskEventContent } from './task-event-content.js';
 
 const PLUGIN = '@ax/routines';
 export const ROUTINE_SERVICES = [
@@ -445,18 +445,26 @@ export function registerRoutineServices({ bus, store, now, dispatch, admitDispat
     const disabled = new Set(await store.disabledDefaultIdsForAgent(input.agentId));
     return { defaults: (await store.listDefaults()).map(row => ({ defaultRoutineId: row.defaultRoutineId, name: row.name, enabled: !disabled.has(row.defaultRoutineId) })) };
   });
-  // A full update is readable only by its assigned, still-open check-in.
+  // A full update is readable only in the open run it was given to: a task check-in's assigned
+  // update, or the app update that started a repeat run (TASK-1050).
   register('read-update', C.RoutineReadUpdateInputSchema, C.RoutineReadUpdateOutputSchema, async (ctx, input) => {
     if (ctx.source !== 'routine' || input.agentId !== ctx.agentId || !ctx.conversationId)
       throw new SafeToolError('forbidden', 'input');
     const scope = { agentId: ctx.agentId, conversationId: ctx.conversationId, actorUserId: ctx.userId, eventId: input.eventId };
     const event = await store.readTaskEvent(scope);
-    if (event === null) throw new SafeToolError('not-found', 'input');
-    const bytes = await readTaskEventContent(bus, ctx, event);
-    // Blob retrieval is an external awaited operation. Recheck authority after
-    // it, so a report, owner change or run closure while it waited revokes it.
-    if (await store.readTaskEvent(scope) === null) throw new SafeToolError('not-found', 'input');
-    return { eventId: event.eventId, receivedAt: event.receivedAt.toISOString(), payload: fullTaskEventPayload(bytes) };
+    if (event !== null) {
+      const bytes = await readTaskEventContent(bus, ctx, event);
+      // Blob retrieval is an external awaited operation. Recheck authority after
+      // it, so a report, owner change or run closure while it waited revokes it.
+      if (await store.readTaskEvent(scope) === null) throw new SafeToolError('not-found', 'input');
+      return { eventId: event.eventId, receivedAt: event.receivedAt.toISOString(), payload: fullTaskEventPayload(bytes) };
+    }
+    const update = await store.readRepeatUpdate(scope);
+    if (update === null) throw new SafeToolError('not-found', 'input');
+    // Only the payload, never the stored routine row; the same recheck after the blob read.
+    const bytes = await readRepeatUpdateContent(bus, ctx, update);
+    if (await store.readRepeatUpdate(scope) === null) throw new SafeToolError('not-found', 'input');
+    return { eventId: update.eventId, receivedAt: update.receivedAt.toISOString(), payload: fullTaskEventPayload(bytes) };
   });
   // TASK-907. A check-in's report is the run's own output, not routine management, so there's no
   // access check here. The hook checks the whole binding itself, whoever calls it: a routine run's

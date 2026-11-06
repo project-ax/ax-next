@@ -3,10 +3,12 @@ import { repeatConfigurationHash, parseStoredRoutine } from './definition.js';
 import type { RoutinesStore } from './store.js';
 import type { RepeatDeliveryStore } from './repeat-deliveries.js';
 import type { FireRoutineFn } from './tick.js';
+import type { RepeatDelivery } from './types.js';
 import { RUN_INTERRUPTED } from './store.js';
 import { REPEAT_DELIVERY_LIMITS as LIMIT } from './repeat-limits.js';
+import { parseDeliveryEnvelope } from './repeat-updates.js';
 
-export function createRepeatDeliveryPump(deps: { bus: HookBus; deliveries: RepeatDeliveryStore; store: RoutinesStore; fire: FireRoutineFn & ((accepted: Parameters<FireRoutineFn>[0], payload?: unknown) => ReturnType<FireRoutineFn>); now: () => Date }) {
+export function createRepeatDeliveryPump(deps: { bus: HookBus; deliveries: RepeatDeliveryStore; store: RoutinesStore; fire: FireRoutineFn & ((accepted: Parameters<FireRoutineFn>[0], delivery?: RepeatDelivery) => ReturnType<FireRoutineFn>); now: () => Date }) {
   let running: Promise<void> | undefined;
   return () => {
     if (running) return running;
@@ -43,12 +45,11 @@ export function createRepeatDeliveryPump(deps: { bus: HookBus; deliveries: Repea
         try {
           const blob = await deps.bus.callJoined<{sha256:string},{bytes:Uint8Array}|{found:false}>('blob:get',ctx,{sha256:claim.blobRef});
           if (!('bytes' in blob) || !(blob.bytes instanceof Uint8Array) || blob.bytes.length>LIMIT.bytesPerOwner) throw new Error('Unavailable app update.');
-          const envelope: unknown = JSON.parse(Buffer.from(blob.bytes).toString('utf8'));
-          if (envelope === null || typeof envelope !== 'object' || Array.isArray(envelope) || Object.keys(envelope).some(key=>key!=='row' && key!=='payload')) throw new Error('Invalid app update.');
-          const saved = parseStoredRoutine((envelope as {row?:unknown}).row);
+          const { row: savedRow, payload } = parseDeliveryEnvelope(blob.bytes);
+          const saved = parseStoredRoutine(savedRow);
           const current = claim.accepted.row;
           if (saved.agentId!==current.agentId || saved.routineId!==current.routineId || saved.ownerUserId!==current.ownerUserId || repeatConfigurationHash(saved)!==repeatConfigurationHash(current)) throw new Error('App update configuration changed.');
-          await deps.fire(claim.accepted,(envelope as {payload?:unknown}).payload);
+          await deps.fire(claim.accepted,{deliveryId:claim.deliveryId,payload});
         } catch {
           // Provider errors can contain payload bytes; never persist or log their messages here.
           await deps.store.finishDispatch({dispatchId:claim.accepted.dispatchId,outcome:{status:'error',error:'This app update could not run. Try a new delivery.',conversationId:null,renderedPrompt:null,warning:null}});

@@ -1,12 +1,12 @@
 import { faultLogFields, makeAgentContext, PluginError, type HookBus } from '@ax/core';
-import type { StoredRoutine, AcceptedDispatch, FireSource, DispatchMiss } from './types.js';
+import type { StoredRoutine, AcceptedDispatch, FireSource, DispatchMiss, RepeatDelivery } from './types.js';
 import type { FireResult } from './tick.js';
-import { renderLastCompletedRun, renderTemplate, usesLastCompletedRun } from './template.js';
+import { renderLastCompletedRun, renderTemplate, usesLastCompletedRun, usesPayload } from './template.js';
 import { createRoutineLifetime, type RoutineLifetime } from './lifetime.js';
 import { RUN_CLOSED, type RoutinesStore } from './store.js';
 import { briefRunError, briefRunMiss, isTaskRun } from './brief.js';
 import { CHECK_IN_REPLIES, CHECK_IN_REPORTS, renderCheckInMessage } from './checkin-message.js';
-import { readTaskEventContent, renderTaskEvents, taskEventPreview } from './task-event-content.js';
+import { readTaskEventContent, renderTaskEvents, repeatUpdateNotice, taskEventPreview } from './task-event-content.js';
 import {
   buildSkipWarning, normalizeSkipReason, sanitizeSkipName, type SkipReason,
 } from './skip-warning.js';
@@ -243,7 +243,7 @@ function isAgentGone(err: unknown): boolean {
 
 export function createFireRoutine(deps: FireDeps) {
   const lifetime = deps.lifetime ?? createRoutineLifetime();
-  const fire = async (accepted: AcceptedDispatch, payload?: unknown): Promise<FireResult> => {
+  const fire = async (accepted: AcceptedDispatch, delivery?: RepeatDelivery): Promise<FireResult> => {
     const { row, source, reqId, dispatchId, acceptedAt } = accepted;
     const sessionId = `routine-${row.agentId}-${row.routineId}-${reqId}`;
     const fail = async (err: unknown, agentGone = false): Promise<FireResult> => {
@@ -409,9 +409,16 @@ export function createFireRoutine(deps: FireDeps) {
           body = renderLastCompletedRun(body, await deps.store.lastCompletedRun({ agentId: row.agentId, routineId: row.routineId, actorUserId: row.ownerUserId }));
         } catch (err) { return fail(err); }
       }
-      // Phase D: render whenever payload is provided, regardless of source.
-      // Only the webhook path passes a payload; fire-now and the tick pass none.
-      prompt = payload !== undefined ? renderTemplate(body, { payload }) : body;
+      // TASK-1050: a run an app update started (only the delivery pump passes
+      // one) gets the update by its eventId, never its content. A prompt that
+      // names payload fields keeps exactly its rendered text (renderTemplate,
+      // single pass, K9). Any other prompt gets the host's note after it, and
+      // the run reads the update with routine_read_update. The content stays
+      // out of this user turn because @ax/memory learns from user turns and
+      // never from tool results (packages/memory/src/transcript.ts).
+      if (delivery === undefined) prompt = body;
+      else if (usesPayload(body)) prompt = renderTemplate(body, { payload: delivery.payload });
+      else prompt = `${body}\n\n${repeatUpdateNotice({ eventId: delivery.deliveryId, receivedAt: acceptedAt })}`;
     }
     // TASK-908 decisions row 13: no run of a task keeps its check-in message,
     // whatever its outcome. Every member of a team agent can read a routine's
@@ -506,7 +513,7 @@ export function createFireRoutine(deps: FireDeps) {
     };
   };
   // Setup and early failure writes belong to the same lifetime as the detached turn.
-  return Object.assign((accepted: AcceptedDispatch, payload?: unknown) => lifetime.track(() => fire(accepted, payload)), {
+  return Object.assign((accepted: AcceptedDispatch, delivery?: RepeatDelivery) => lifetime.track(() => fire(accepted, delivery)), {
     shutdown: () => lifetime.drain(),
   });
 }

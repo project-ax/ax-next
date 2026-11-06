@@ -91,7 +91,7 @@ describe('accepted DB fire dispatch', () => {
   });
   it('renders webhook payload once into the user prompt', async () => {
     const h = await setup({ definition: { promptBody: 'Review {{payload.title}}' } });
-    await h.fire(h.accepted, { title: 'literal {{payload.title}}' });
+    await h.fire(h.accepted, { deliveryId: 'delivery_1', payload: { title: 'literal {{payload.title}}' } });
     expect(h.pending.get(h.accepted.reqId)?.renderedPrompt).toBe('Review literal {{payload.title}}');
   });
   it('binds the run\'s conversation onto its dispatch before the agent is invoked', async () => {
@@ -445,7 +445,7 @@ describe('the check-in message and the stored prompt (TASK-908)', () => {
     const reports = vi.fn(async (): Promise<Array<{ firedAt: Date; report: FireReport }>> => { throw new Error('a repeat run must not read reports'); });
     const replies = vi.fn(async (): Promise<StoredReply[]> => { throw new Error('a repeat run must not read replies'); });
     const h = await setup({ definition, reports, replies });
-    const result = await h.fire(h.accepted, payload);
+    const result = await h.fire(h.accepted, payload === undefined ? undefined : { deliveryId: 'delivery_1', payload });
     expect(h.invoked.mock.calls[0]![1]).toEqual({ message: { role: 'user', content: prompt } });
     expect(h.pending.get(h.accepted.reqId)!.renderedPrompt).toBe(prompt);
     expect(result).toMatchObject({ status: 'ok', renderedPrompt: prompt, recordedAtTurnEnd: true });
@@ -559,7 +559,7 @@ describe('the host-supplied last completed run (TASK-991)', () => {
   });
   it('a payload can neither supply it nor have its own text rendered as it', async () => {
     const h = await setup({ definition: { promptBody: 'Last: {{lastCompletedRun}}; title: {{payload.title}}' } });
-    await h.fire(h.accepted, { title: '{{lastCompletedRun}}', lastCompletedRun: '2099-01-01' });
+    await h.fire(h.accepted, { deliveryId: 'delivery_1', payload: { title: '{{lastCompletedRun}}', lastCompletedRun: '2099-01-01' } });
     expect(h.pending.get(h.accepted.reqId)?.renderedPrompt).toBe('Last: never; title: {{lastCompletedRun}}');
     expect(h.invoked.mock.calls[0]![1]).toEqual({ message: { role: 'user', content: 'Last: never; title: {{lastCompletedRun}}' } });
   });

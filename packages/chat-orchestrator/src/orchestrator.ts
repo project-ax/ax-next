@@ -1463,8 +1463,10 @@ const ALWAYS_ON_BROKER_TOOLS = [
 //
 // - A task check-in's brief tells the agent to finish with one routine_report
 //   call, so the tool has to be in the catalog the check-in sees.
-// - Its app-update previews can be truncated; routine_read_update must also
-//   be visible so the check-in can read its assigned updates in full.
+// - Its app-update previews can be truncated, and a repeat job's run that an
+//   app update started is given only that update's eventId (TASK-1050), so
+//   routine_read_update must also be visible: either run reads its update in
+//   full with it.
 // - An agent made through the admin API can't be a wildcard
 //   (`rejectsWildcardScope` in packages/agents/src/admin-routes.ts refuses an
 //   empty-empty scope), so a team agent always carries an explicit list.
@@ -1473,9 +1475,10 @@ const ALWAYS_ON_BROKER_TOOLS = [
 //   run-runner). Without this, a team agent's check-ins could never report.
 // - Visibility isn't a grant. routine_report's host gate (TASK-907: @ax/routines
 //   `prepareReport`, checked again under locks by `routines:report`) refuses
-//   anywhere but a task's own check-in. routine_read_update additionally
-//   requires that open check-in's assigned update and current owner. A repeat
-//   routine's run sees these tools too, and is refused if it calls them.
+//   anywhere but a task's own check-in, so a repeat routine's run that calls
+//   it is refused. routine_read_update reads only the open run's own update
+//   (a check-in's assigned update, or the app update that started a repeat
+//   run), for the routine's current owner, and is refused anything else.
 //
 // A wildcard agent already sees the whole catalog, these tools included, so
 // it's left alone, as for the broker tools. An ordinary chat gets nothing new.
