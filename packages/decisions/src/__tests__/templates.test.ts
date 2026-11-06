@@ -8,6 +8,9 @@ import {
   sanitizeCapability,
   sanitizeFailureDetail,
   sanitizeToolName,
+  CONNECTOR_CALL_DETAIL,
+  CONNECTOR_POLICY_DENIED_DETAIL,
+  CONNECTOR_POLICY_UNREADABLE_DETAIL,
   FAILED_RECEIPT,
   GATE_FAILURE_SENTENCE,
   PENDING_AGENT_RECEIPT,
@@ -300,6 +303,30 @@ describe('the AW-5 authored receipts', () => {
     expect(FAILED_RECEIPT).not.toMatch(/\bdid\b(?!\s+not\b)/i);
   });
 
+});
+
+describe('the connector replay details (TASK-1046)', () => {
+  // The second line under FAILED_RECEIPT when the host's connector call did
+  // not work: one authored sentence per closed reason code, never the
+  // service's own words.
+  const DETAILS = [
+    ...Object.entries(CONNECTOR_CALL_DETAIL),
+    ['CONNECTOR_POLICY_DENIED_DETAIL', CONNECTOR_POLICY_DENIED_DETAIL],
+    ['CONNECTOR_POLICY_UNREADABLE_DETAIL', CONNECTOR_POLICY_UNREADABLE_DETAIL],
+  ] as const;
+
+  it('connector details are authored constants that never say the call went out', () => {
+    // Six reason codes and the two policy refusals. Fewer means a code that
+    // would reach the row with no sentence at all.
+    expect(DETAILS).toHaveLength(8);
+    for (const [, text] of DETAILS) {
+      expect(typeof text).toBe('string');
+      expect(text.length).toBeGreaterThan(0);
+      expect(text).not.toContain('\n');
+      // Every one of these sits under "Nothing was completed".
+      expect(text).not.toMatch(/sent|completed/i);
+    }
+  });
 });
 
 describe('no producer in this module ever prints a decision id', () => {

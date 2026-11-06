@@ -24,6 +24,7 @@ import {
 import { deliverResolution, SESSION_QUEUE_HOOK, validContinuationReqId } from './delivery.js';
 import { reclaimStrandedReplays, runDueDeliveries, runDueReplays, sweepExpired } from './expiry.js';
 import { auditFreshnessPairs, checkFreshness } from './freshness.js';
+import { CONNECTOR_CALL_TOOL_HOOK, hostExecutorFor } from './host-executor.js';
 import {
   approveDecision,
   dismissDecision,
@@ -280,6 +281,16 @@ export function createDecisionsPlugin(opts?: DecisionsPluginOptions): Plugin {
           degradation:
             'A held connector tool with no capability clause is named by its tool name ' +
             'alone ("Create issue"), without the connector it belongs to.',
+        },
+        {
+          // TASK-1046 — @ax/mcp-client makes an approved connector call
+          // (`mcp.<toolNamespace>.<tool>`) when no live agent is there to make
+          // it. A NAMED hook, unlike the dynamic `tool:execute:<name>`, so it
+          // can be declared here; `hostExecutorFor` is the only reader.
+          hook: CONNECTOR_CALL_TOOL_HOOK,
+          degradation:
+            'An approved connector call from a run with no live agent cannot be made by the host; ' +
+            'it waits (approved-pending-agent) for the agent to make the same call again.',
         },
         {
           hook: CONVERSATION_METADATA_HOOK,
@@ -734,7 +745,7 @@ export function createDecisionsPlugin(opts?: DecisionsPluginOptions): Plugin {
                   ?.activeSessionId ?? null)
               : null;
           const attended = liveSessionId !== null;
-          const hasExecutor = bus.hasService(`tool:execute:${current.call.name}`);
+          const hasExecutor = hostExecutorFor(bus, current.call.name) !== null;
           const parked = !attended && !hasExecutor;
           const deferred =
             !attended &&

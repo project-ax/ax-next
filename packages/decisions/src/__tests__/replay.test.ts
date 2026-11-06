@@ -13,7 +13,12 @@ import { HookBus, SafeToolError, makeAgentContext, type AgentContext, type ToolC
 import { callFingerprint } from '../fingerprint.js';
 import { receiptFor } from '../receipts.js';
 import { replayContext, replayOnApprove, settleReplay } from '../replay.js';
-import { FAILED_RECEIPT, PENDING_AGENT_RECEIPT } from '../templates.js';
+import {
+  ABANDONED_RECEIPT,
+  CONNECTOR_CALL_DETAIL,
+  FAILED_RECEIPT,
+  PENDING_AGENT_RECEIPT,
+} from '../templates.js';
 import type { Decision } from '../types.js';
 import { createFakeStore } from './fake-store.js';
 
@@ -439,3 +444,139 @@ it('checks mutated safe codes before returning a routine replay failure code', a
     },
   );
  });
+
+/**
+ * TASK-1046 — an approved connector call (`mcp.<ns>.<tool>`) with no live agent
+ * is made by the host, through @ax/mcp-client's `connectors:call-tool`. The
+ * hook answers a closed code; what is pinned here is the row each code leaves
+ * behind, because the receipt is READ off that row.
+ */
+describe('settleReplay — an approved connector call the host makes (TASK-1046)', () => {
+  const T_DONE = '2026-08-20T09:00:30.000Z';
+  const CONNECTOR_CALL: ToolCall = {
+    id: 'call-c',
+    name: 'mcp.c5e0235982f.save_comment',
+    input: { issueId: 'ENG-1', body: 'Shipped' },
+  };
+
+  /** Claimed on the immediate path: `executed`, with the host's flight stamped. */
+  function claimedConnector(): Decision {
+    return base({
+      id: 'dec_conn',
+      call: CONNECTOR_CALL,
+      callFingerprint: 'fp-conn',
+      ruleId: null,
+      replayClaimedAt: T0,
+      approvedText: 'You said yes, so it may use Linear · Save comment.',
+    });
+  }
+
+  function connectorBus(answer: unknown): { bus: HookBus; sent: unknown[] } {
+    const bus = new HookBus();
+    const sent: unknown[] = [];
+    bus.registerService('tool-policy:evaluate', 'test', async () => ({
+      verdict: 'hold',
+      ruleId: null,
+      capability: null,
+      irreversible: false,
+      effect: [],
+    }));
+    bus.registerService('connectors:call-tool', 'test', async (_ctx, input) => {
+      sent.push(input);
+      return answer;
+    });
+    return { bus, sent };
+  }
+
+  async function settle(answer: unknown): Promise<{ row: Decision; store: ReturnType<typeof createFakeStore>; sent: unknown[] }> {
+    const { bus, sent } = connectorBus(answer);
+    const store = createFakeStore();
+    const decision = claimedConnector();
+    store.rows.set(decision.id, decision);
+    await settleReplay({
+      store,
+      bus,
+      ctx: replayContext(decision),
+      decision,
+      now: () => new Date(T_DONE),
+    });
+    return { row: store.rows.get(decision.id)!, store, sent };
+  }
+
+  it('a connector success stamps replayedAt and the receipt is approvedText', async () => {
+    const { row, store, sent } = await settle({ outcome: 'succeeded' });
+
+    expect(sent).toHaveLength(1);
+    expect(row).toMatchObject({
+      status: 'executed',
+      replayedAt: T_DONE,
+      replayAbandonedAt: null,
+      replayError: null,
+    });
+    expect(receiptFor(row)).toMatchObject({
+      outcome: 'executed',
+      receipt: 'You said yes, so it may use Linear · Save comment.',
+      error: null,
+    });
+    // The yes is spent: an identical agent call later is held again.
+    expect(await store.takeApproval('agent-1', 'fp-conn', T_DONE)).toBeNull();
+  });
+
+  it('a definite connector failure stores the authored detail and the receipt is FAILED_RECEIPT', async () => {
+    const { row, store } = await settle({ outcome: 'failed', reason: 'rejected' });
+
+    expect(row).toMatchObject({
+      status: 'failed',
+      replayError: CONNECTOR_CALL_DETAIL.rejected,
+      replayAbandonedAt: null,
+      replayedAt: null,
+    });
+    expect(receiptFor(row)).toMatchObject({
+      outcome: 'failed',
+      receipt: FAILED_RECEIPT,
+      error: CONNECTOR_CALL_DETAIL.rejected,
+    });
+    expect(await store.takeApproval('agent-1', 'fp-conn', T_DONE)).toBeNull();
+  });
+
+  it('an unknown connector outcome is failed + replayAbandonedAt and the receipt is ABANDONED_RECEIPT', async () => {
+    const { row, store } = await settle({ outcome: 'unknown', reason: 'timeout' });
+
+    expect(row).toMatchObject({
+      status: 'failed',
+      replayAbandonedAt: T_DONE,
+      replayError: null,
+      replayedAt: null,
+      // The resolution instant is the click's, not the moment we gave up.
+      resolvedAt: T0,
+    });
+    const receipt = receiptFor(row)!;
+    expect(receipt).toMatchObject({ outcome: 'failed', receipt: ABANDONED_RECEIPT, error: null });
+    // Never "Nothing was completed": that is the line that sends a person off
+    // to approve it again and post it twice.
+    expect(receipt.receipt).not.toContain('Nothing was completed');
+    // The yes is spent all the same: a later identical call holds again.
+    expect(await store.takeApproval('agent-1', 'fp-conn', T_DONE)).toBeNull();
+  });
+
+  it('a connector key never reaches a tool:execute:<key>, even when one is registered', async () => {
+    // No `connectors:call-tool` here, so the host cannot make this call, and a
+    // `tool:execute:` hook under the same name must not stand in for it: every
+    // one of those is reachable from the sandbox through `tool.execute-host`.
+    const bus = new HookBus();
+    let executed = 0;
+    bus.registerService('tool:execute:mcp.c5e0235982f.save_comment', 'test', async () => {
+      executed += 1;
+      return { ok: true };
+    });
+    const store = createFakeStore();
+    const decision = claimedConnector();
+    store.rows.set(decision.id, decision);
+
+    const outcome = await settleReplay({ store, bus, ctx: replayContext(decision), decision });
+
+    expect(executed).toBe(0);
+    expect(outcome.status).toBe('approved-pending-agent');
+    expect(store.rows.get(decision.id)!.status).toBe('approved-pending-agent');
+  });
+});

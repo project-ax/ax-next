@@ -29,6 +29,7 @@
  */
 import type { AgentContext, HookBus } from '@ax/core';
 import { deliverResolution } from './delivery.js';
+import { hostExecutorFor } from './host-executor.js';
 import { replayContext, settleReplay } from './replay.js';
 import type { DecisionStore } from './store.js';
 import type { Decision } from './types.js';
@@ -238,7 +239,7 @@ export async function runDueDeliveries(args: {
         reason: delivery.reason,
       });
       let flight: Decision = decision;
-      if (bus.hasService(`tool:execute:${decision.call.name}`)) {
+      if (hostExecutorFor(bus, decision.call.name) !== null) {
         const taken = await store.claimReplayFlight(decision.id, now.toISOString());
         if (taken === null) {
           logCtx.logger.warn('decision_replay_flight_lost', {

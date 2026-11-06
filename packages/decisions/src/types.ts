@@ -272,29 +272,34 @@ export interface Decision {
    */
   replayedAt: string | null;
   /**
-   * When a sweep GAVE UP on a flight this host never came back from.
+   * When the host GAVE UP on knowing whether a call it took went out.
    *
-   * Set only by the stranded-flight reclaim (TASK-253), and only on a row that
-   * is `failed`: the host stamped `replayClaimedAt`, died inside the call, and
-   * nothing was left to record what happened. A host that was merely FROZEN
-   * can still thaw and finish; `markReplayed` clears this stamp when it does,
-   * so "set" never coexists with a call that went out. The reclaim frees the standing
-   * authorisation the dead flight was holding, so the same call can be held and
-   * approved again.
+   * Only ever on a row that is `failed`, and there are two writers. The
+   * stranded-flight reclaim (TASK-253): the host stamped `replayClaimedAt`,
+   * died inside the call, and nothing was left to record what happened. And
+   * `markOutcomeUnknown` (TASK-1046): a host connector call that went out and
+   * got no reliable answer — a timeout, a dropped connection, a reply it could
+   * not read. Same meaning to a reader: no report, so the only honest receipt
+   * is that we cannot say. A host that was merely FROZEN can still thaw and
+   * finish; `markReplayed` clears this stamp when it does, so "set" never
+   * coexists with `replayedAt`. Both writers free the standing authorisation
+   * the flight was holding, so the same call can be held and approved again.
    *
    * It exists because the row cannot otherwise tell the two kinds of `failed`
    * apart, and the receipt has to. An ordinary failure is a REPORT — the
    * executor threw, so "nothing was completed" is something we know. This is an
-   * ABSENCE: the crash could have landed either side of the tool's own side
-   * effect, so the only honest receipt is that we cannot say. See
-   * `ABANDONED_RECEIPT`.
+   * ABSENCE: the crash, or the lost answer, could have landed either side of
+   * the tool's own side effect, so the only honest receipt is that we cannot
+   * say. See `ABANDONED_RECEIPT`.
    */
   replayAbandonedAt: string | null;
   /**
    * The host executor's failure detail, sanitised. Kept for the audit trail
    * ONLY — the receipt a human reads is always the authored failure line, never
    * this string, because a host tool's message can quote model-authored input
-   * back at us.
+   * back at us. For a connector call the host made (TASK-1046) it is never the
+   * service's words at all: it is our sentence for the closed reason code
+   * (`CONNECTOR_CALL_DETAIL`, or a policy refusal).
    *
    * Null on an abandoned row, and that is not an oversight: no executor ever
    * reported anything, so there is no detail to carry. The reclaim does not

@@ -340,6 +340,25 @@ export interface DecisionStore {
   ): Promise<Decision | null>;
 
   /**
+   * The host SENT the call and got no reliable answer (TASK-1046): a connector
+   * call that timed out, lost its connection, or came back unreadable. It may
+   * or may not have happened.
+   *
+   * `failed` + `replay_abandoned_at`, the shape `reclaimStrandedFlights`
+   * writes, because to a reader it means the same thing: no report, so
+   * `receiptFor` says we cannot tell (`ABANDONED_RECEIPT`) and never "Nothing
+   * was completed". Like `markFailed` it drops the standing authorisation (the
+   * partial index does not cover `failed`), so the yes is spent and a later
+   * identical call holds again. `replay_error` is cleared — nobody reported
+   * anything, so there is no detail to carry — and `resolved_at` is untouched.
+   *
+   * Reachable only from `executed`. A null return means the row moved first (a
+   * reclaim, a returning `markReplayed`), and whoever moved it owns what it
+   * says.
+   */
+  markOutcomeUnknown(decisionId: string, nowIso: string): Promise<Decision | null>;
+
+  /**
    * The host replay succeeded. Stamps `replayed_at`, which is what takes the
    * row OUT of the standing-authorisation set: the call has been made, so a
    * later identical agent call must not cash in the same yes, and an undo must
@@ -875,6 +894,15 @@ export function createDecisionsStore(db: Kysely<DecisionsDatabase>): DecisionSto
               routine_outcome: 'failed',
             }
           : {}),
+        replay_due_at: null,
+      });
+    },
+
+    markOutcomeUnknown(decisionId, nowIso) {
+      return transition(decisionId, ['executed'], {
+        status: 'failed',
+        replay_abandoned_at: new Date(nowIso),
+        replay_error: null,
         replay_due_at: null,
       });
     },

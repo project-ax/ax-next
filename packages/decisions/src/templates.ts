@@ -31,6 +31,7 @@
  * earns bespoke prose, the prose belongs on the rule.
  */
 
+import type { ConnectorCallFailedReason } from './host-executor.js';
 import { connectorToolLabel, parseConnectorToolKey } from './tool-label.js';
 
 /** Matches `@ax/tool-policy`'s own `CAPABILITY_MAX_CHARS`, with headroom. */
@@ -383,6 +384,41 @@ export const EXPIRED_RECEIPT = 'This one ran out of time, so nothing happened.';
 export const ABANDONED_RECEIPT =
   'This was interrupted while it was running, so we cannot tell you whether ' +
   'it finished. Worth checking before you approve it again.';
+
+/**
+ * Why an approved connector call the HOST made did not work (TASK-1046): the
+ * second line under `FAILED_RECEIPT`, carried on the row as `replayError`.
+ *
+ * One authored sentence per closed reason code `connectors:call-tool` answers
+ * with, and never the service's own words: a third-party server's error text
+ * is untrusted, and can quote the call's input or a secret straight back. Each
+ * says what went wrong and none says anything went out — every one of them
+ * sits under "Nothing was completed", and every one is true of a call that did
+ * not happen. A call that went out with no reliable answer gets none of these:
+ * its row is abandoned and reads `ABANDONED_RECEIPT`.
+ */
+export const CONNECTOR_CALL_DETAIL: Readonly<Record<ConnectorCallFailedReason, string>> = {
+  'invalid-call': "The request wasn't in a form we could send.",
+  'not-connected': "We couldn't find this connector on this agent.",
+  'needs-auth': "The sign-in for this connector didn't work.",
+  unavailable: "We couldn't check this connector just now.",
+  unreachable: "We couldn't reach this connector's service.",
+  rejected: "This connector's service turned the request down.",
+};
+
+/**
+ * The host re-read this tool's policy right before the call and it says Deny
+ * now, so the call was not made (TASK-1046). A Deny saved after the hold beats
+ * the yes given to the hold.
+ */
+export const CONNECTOR_POLICY_DENIED_DETAIL = "This agent's settings for this tool now block it.";
+
+/**
+ * The policy re-read failed or answered something unreadable, so the call was
+ * not made (TASK-1046). Fails CLOSED: not being able to ask is not a yes.
+ */
+export const CONNECTOR_POLICY_UNREADABLE_DETAIL =
+  "We couldn't check this agent's settings for this tool.";
 
 /**
  * Why an approval did nothing, when it did nothing.

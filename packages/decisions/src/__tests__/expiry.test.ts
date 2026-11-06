@@ -10,12 +10,13 @@ import { describe, expect, it } from 'vitest';
 import { HookBus, makeAgentContext, type ToolCall } from '@ax/core';
 import {
   reclaimStrandedReplays,
+  runDueDeliveries,
   runDueReplays,
   STRANDED_REPLAY_TIMEOUT_MS,
   sweepExpired,
 } from '../expiry.js';
 import type { Decision } from '../types.js';
-import { createFakeStore } from './fake-store.js';
+import { createFakeStore, type FakeStore } from './fake-store.js';
 
 const NOW = new Date('2026-08-20T09:00:00.000Z');
 const ONE_SEC = 1000;
@@ -280,5 +281,92 @@ describe('reclaimStrandedReplays', () => {
     await reclaimStrandedReplays({ store, now: NOW, logCtx });
     expect(store.rows.get('dec_stranded')!.replayedAt).toBeNull();
     expect(store.rows.get('dec_stranded')!.consumedAt).toBeNull();
+  });
+});
+
+/**
+ * TASK-1046 — the sweep's half of an approved connector call.
+ *
+ * `runDueDeliveries` decides whether to TAKE THE FLIGHT before a hand-over that
+ * found nobody falls back to the host, and it must ask the same question the
+ * replay asks (`hostExecutorFor`). Ask it differently and the host makes a
+ * connector call on a row nothing has closed: an Undo could land mid-call, and
+ * a byte-identical agent call could cash the same yes — the double send the
+ * flight exists to prevent.
+ */
+describe('the sweep and approved connector calls (TASK-1046)', () => {
+  const CONNECTOR_CALL: ToolCall = {
+    id: 'call-c',
+    name: 'mcp.c5e0235982f.save_comment',
+    input: { issueId: 'ENG-1', body: 'Shipped' },
+  };
+
+  /** A connector host; each call records the row's flight marker at the moment it was made. */
+  function connectorHost(store: FakeStore): { bus: HookBus; flightAtCall: Array<string | null> } {
+    const bus = new HookBus();
+    const flightAtCall: Array<string | null> = [];
+    bus.registerService('tool-policy:evaluate', 'test', async () => ({
+      verdict: 'hold',
+      ruleId: null,
+      capability: null,
+      irreversible: false,
+      effect: [],
+    }));
+    bus.registerService('connectors:call-tool', 'test', async () => {
+      flightAtCall.push(store.rows.get('dec_conn')?.replayClaimedAt ?? null);
+      return { outcome: 'succeeded' };
+    });
+    return { bus, flightAtCall };
+  }
+
+  it('a hand-over that finds nobody takes the flight before the host makes the connector call', async () => {
+    const store = createFakeStore();
+    store.rows.set(
+      'dec_conn',
+      base({
+        id: 'dec_conn',
+        status: 'executed',
+        attendance: 'attended',
+        irreversible: false,
+        call: CONNECTOR_CALL,
+        resolvedAt: new Date(NOW.getTime() - 11 * ONE_SEC).toISOString(),
+        deliveryDueAt: new Date(NOW.getTime() - ONE_SEC).toISOString(),
+      }),
+    );
+    const { bus, flightAtCall } = connectorHost(store);
+
+    // No `session:queue-work` on this bus: the hand-over reaches nobody, so the
+    // host makes the approved call itself.
+    expect(await runDueDeliveries({ store, bus, now: NOW, logCtx })).toBe(1);
+
+    expect(flightAtCall).toEqual([NOW.toISOString()]);
+    expect(store.rows.get('dec_conn')).toMatchObject({
+      status: 'executed',
+      replayedAt: NOW.toISOString(),
+    });
+  });
+
+  it('never picks up a row already parked for the agent: it was approved for "the next time it runs"', async () => {
+    // Decision 7. A parked connector approval keeps its status once the host
+    // CAN make the call: firing a days-old call out of context would surprise
+    // the person who said yes to something else.
+    const store = createFakeStore();
+    const parked = base({
+      id: 'dec_conn',
+      status: 'approved-pending-agent',
+      attendance: 'unattended',
+      irreversible: false,
+      call: CONNECTOR_CALL,
+      resolvedAt: new Date(NOW.getTime() - 2 * 24 * 60 * 60 * ONE_SEC).toISOString(),
+    });
+    store.rows.set(parked.id, parked);
+    const { bus, flightAtCall } = connectorHost(store);
+
+    await runDueReplays({ store, bus, now: NOW, logCtx });
+    await runDueDeliveries({ store, bus, now: NOW, logCtx });
+    await reclaimStrandedReplays({ store, now: NOW, logCtx });
+
+    expect(flightAtCall).toEqual([]);
+    expect(store.rows.get('dec_conn')).toEqual(parked);
   });
 });

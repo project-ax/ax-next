@@ -518,9 +518,25 @@ describe('@ax/preset-k8s wiring', () => {
       'tool-policy:grant-routine-consent',
       // TASK-744 — names a held connector tool's connector.
       'connectors:tool-labels',
+      // TASK-1046 — the host makes an approved connector call when no live
+      // agent is there to make it. Named, unlike `tool:execute:<name>`.
+      'connectors:call-tool',
       'conversations:get-metadata',
       'session:queue-work',
     ]);
+  });
+
+  it('gives connectors:call-tool a caller and loads its producer — @ax/decisions + @ax/mcp-client (TASK-1046)', () => {
+    // An optional call never fails a boot, and that is exactly why this
+    // assertion has to exist: if @ax/mcp-client stopped registering the hook
+    // here, every unattended connector approval would quietly go back to
+    // parking (`approved-pending-agent`) and Allow would do nothing again —
+    // the bug TASK-1046 fixes — with nothing failing.
+    const plugins = createK8sPlugins(stubConfig);
+    const d = plugins.find((p) => p.manifest.name === '@ax/decisions');
+    expect(d!.manifest.optionalCalls?.map((oc) => oc.hook)).toContain('connectors:call-tool');
+    const registered = new Set(plugins.flatMap((p) => p.manifest.registers));
+    expect(registered.has('connectors:call-tool')).toBe(true);
   });
 
   it('loads the producers @ax/decisions reads attendance and delivers through (TASK-227)', () => {
