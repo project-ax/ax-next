@@ -40,7 +40,7 @@ The card's own pointers have drifted. This is card-only text, so nothing in the 
 - The branch applies only when `routineToolKind(decision.call.name) === null`. Routine tools keep their own path.
 - Leave `connector-replay.ts` untouched. It already treats every throw as unknown.
 - Reuse `ABANDONED_RECEIPT`. Write no new receipt text and no closed code: `replay_error` stays null.
-- The log line is exactly `ctx.logger.warn('decision_replay_unknown', { plugin: PLUGIN_NAME, decisionId: decision.id, tool: decision.call.name, reason: 'timeout' })`. Never log the error's message or stack (the TASK-1046 r2 R4 rule).
+- The log line is exactly `ctx.logger.warn('decision_replay_unknown', { plugin: PLUGIN_NAME, decisionId: decision.id, tool: decision.call.name, reason: 'timeout' })`. Never log the error's message or stack (the TASK-1046 r2 R4 rule). (Review round 1 added a `hook` field, only when `bus.hasService(err.hookName)`; see the shard.)
 - Never run a test that asserts a NON-timeout branch under a short bus-wide `defaultServiceTimeoutMs`. That is a hidden deadline that flakes into the timeout branch (`patterns/2026-09-26-TASK-549.md`). Put the short timeout on the one hook meant to time out, with `registerService(…, { timeoutMs: 20 })`, the pattern core's own tests use (`hook-bus.test.ts:282`).
 - Use real timers, not `vi.useFakeTimers()`.
 

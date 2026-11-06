@@ -416,7 +416,11 @@ describe('settleReplay — a host tool call that timed out (TASK-285)', () => {
   });
 
   // One of each routine kind — write, read, report: the exclusion is for all
-  // of them, not only the writes that have an authority to settle.
+  // of them, not only the writes that have an authority to settle. Read and
+  // report kinds are never HELD under the shipped rules (tool-policy allows
+  // routine_list/get/report outright and defaults to allow), so no approved
+  // replay of one exists to mislabel; these cases pin that the timeout branch
+  // does not reach past the kind it was written for.
   it.each(['routine_update', 'routine_get', 'routine_report'])(
     'a routine tool (%s) that times out keeps the routine path, never outcomeUnknown',
     async (name) => {
