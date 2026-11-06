@@ -706,23 +706,31 @@ function validateConnectionString(connectionString: unknown): void {
 }
 
 // pg lays the connection string's query parameters over the explicit config,
-// so `?statement_timeout=0` (or `?options=-c statement_timeout=0`) would
-// silently replace statementTimeoutMs, or switch the bound off. The bound has
-// one home: refuse the other. Matched on the decoded string, case-insensitive;
-// a false positive only refuses a config, it never weakens the bound.
+// so `?statement_timeout=0` (or a bare `?statement_timeout`, which pg reads as
+// unset) would silently replace statementTimeoutMs or switch the bound off.
+// The bound has one home: refuse the other. Each key is decoded on its own, so
+// a malformed escape elsewhere can't hide an encoded key; a key with no `=`
+// still counts. Lowercased, so we over-refuse rather than miss. `options`
+// isn't checked: pg always sends the explicit parameter, and Postgres applies
+// it after `-c` options (measured on 16). Linear: no backtracking regex.
 function refuseStatementTimeoutInConnectionString(connectionString: string): void {
-  let decoded = connectionString;
-  try {
-    decoded = decodeURIComponent(connectionString);
-  } catch {
-    // Malformed escapes: match the raw string instead.
-  }
-  if (/[?&]statement_timeout=|[?&]options=[^&]*statement_timeout/i.test(decoded)) {
-    throw new PluginError({
-      code: 'invalid-config',
-      plugin: PLUGIN_NAME,
-      message: `${PLUGIN_NAME}: connectionString must not set statement_timeout; use statementTimeoutMs`,
-    });
+  const queryStart = connectionString.indexOf('?');
+  if (queryStart === -1) return;
+  for (const part of connectionString.slice(queryStart + 1).split('&')) {
+    const rawKey = part.split('=', 1)[0] ?? '';
+    let key = rawKey;
+    try {
+      key = decodeURIComponent(rawKey);
+    } catch {
+      // A malformed escape in this key: compare it raw.
+    }
+    if (key.toLowerCase() === 'statement_timeout') {
+      throw new PluginError({
+        code: 'invalid-config',
+        plugin: PLUGIN_NAME,
+        message: `${PLUGIN_NAME}: connectionString must not set statement_timeout; use statementTimeoutMs`,
+      });
+    }
   }
 }
 

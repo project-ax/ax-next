@@ -71,12 +71,14 @@ async function holdAdvisoryLock(
 
 describe('statement timeout, config', () => {
   // pg lays the connection string's query parameters over the explicit config,
-  // so one of these would silently replace (or switch off) statementTimeoutMs.
+  // so each of these replaces statementTimeoutMs, and the last three switch
+  // the bound off (pg reads a bare key as unset, and decodes each key itself
+  // even when another part of the string has a malformed escape).
   it.each([
+    'postgres://ax@127.0.0.1:1/ax?sslmode=no-verify&statement_timeout=60000',
     'postgres://ax@127.0.0.1:1/ax?statement_timeout=0',
-    'postgres://ax@127.0.0.1:1/ax?sslmode=no-verify&STATEMENT_TIMEOUT=0',
-    'postgres://ax@127.0.0.1:1/ax?statement%5Ftimeout=0',
-    'postgres://ax@127.0.0.1:1/ax?options=-c%20statement_timeout%3D0',
+    'postgres://ax@127.0.0.1:1/ax?statement_timeout',
+    'postgres://ax@127.0.0.1:1/ax?%73tatement_timeout=0&x=%zz',
   ])('refuses a connection string that sets the statement timeout itself: %s', async (connectionString) => {
     await expect(
       createTestHarness({ plugins: [createDatabasePostgresPlugin({ connectionString })] }),
@@ -86,6 +88,12 @@ describe('statement timeout, config', () => {
       plugin: '@ax/database-postgres',
       message: expect.stringContaining('statementTimeoutMs'),
     });
+  });
+
+  // Passes on the unfixed plugin too; guards against over-refusing a real URL
+  // (a raw `%` in the password once made a whole-string decode give up).
+  it('accepts a connection string with other parameters and a raw % in the password', async () => {
+    await instance({ connectionString: 'postgres://ax:50%off@127.0.0.1:1/ax?sslmode=no-verify' });
   });
 
   it.each([0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, 2_147_483_648, '300'])(

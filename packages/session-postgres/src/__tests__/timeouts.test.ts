@@ -194,12 +194,14 @@ describe('connect timeout, against a database that never answers', () => {
 });
 
 // pg lays the connection string's query parameters over the explicit config,
-// so one of these would silently replace (or switch off) statementTimeoutMs.
+// so each of these replaces statementTimeoutMs, and the last three switch
+// the bound off (pg reads a bare key as unset, and decodes each key itself
+// even when another part of the string has a malformed escape).
 it.each([
+  'postgres://ax@127.0.0.1:1/ax?sslmode=no-verify&statement_timeout=60000',
   'postgres://ax@127.0.0.1:1/ax?statement_timeout=0',
-  'postgres://ax@127.0.0.1:1/ax?sslmode=no-verify&STATEMENT_TIMEOUT=0',
-  'postgres://ax@127.0.0.1:1/ax?statement%5Ftimeout=0',
-  'postgres://ax@127.0.0.1:1/ax?options=-c%20statement_timeout%3D0',
+  'postgres://ax@127.0.0.1:1/ax?statement_timeout',
+  'postgres://ax@127.0.0.1:1/ax?%73tatement_timeout=0&x=%zz',
 ])('refuses a connection string that sets the statement timeout itself: %s', (connectionString) => {
   expect(thrownBy(() => createSessionPostgresPlugin({ connectionString }))).toMatchObject({
     name: 'PluginError',
@@ -207,6 +209,17 @@ it.each([
     plugin: '@ax/session-postgres',
     message: expect.stringContaining('statementTimeoutMs'),
   });
+});
+
+// Passes on the unfixed plugin too; guards against over-refusing a real URL.
+it('accepts a connection string with other parameters and a raw % in the password', () => {
+  expect(
+    thrownBy(() =>
+      createSessionPostgresPlugin({
+        connectionString: 'postgres://ax:50%off@127.0.0.1:1/ax?sslmode=no-verify',
+      }),
+    ),
+  ).toBeUndefined();
 });
 
 describe.each(['checkoutTimeoutMs', 'statementTimeoutMs'] as const)(
