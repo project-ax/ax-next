@@ -1,4 +1,5 @@
 import { afterEach, describe, it, expect, vi } from 'vitest';
+import pg from 'pg';
 import { createLogger } from '@ax/core';
 import { captureExpectedStderr } from './support/expected-diagnostics.js';
 import { failQueries } from './support/fail-query.js';
@@ -177,6 +178,23 @@ describe('DB scheduler', () => {
     });
     expect(cleanup).toHaveBeenCalledTimes(2);
     expect(diagnostic.messages).toHaveLength(2);
+    expect(log.entries()).toEqual([]);
+  });
+  it('keeps leadership while its session answers: one election across three ticks (TASK-1048)', async () => {
+    const controller = new AbortController();
+    let sleeps = 0;
+    const queries = vi.spyOn(pg.Client.prototype, 'query');
+    const cleanup = vi.fn(async () => {});
+    const log = recordingLogger();
+    await runTickLoop({
+      db: f.db, fire: vi.fn(async () => result), cleanup, logger: log.logger,
+      clock: { now: () => due, sleep: async () => { if (++sleeps >= 3) controller.abort(); } },
+      signal: controller.signal, tickIntervalMs: 1, electionRetryMs: 1, claimBatchSize: 50, claimWindowMinutes: 5,
+    });
+    const sent = queries.mock.calls.map(([text]) => String(text));
+    expect(cleanup).toHaveBeenCalledTimes(3);
+    expect(sent.filter((text) => text.includes('pg_try_advisory_lock'))).toHaveLength(1);
+    expect(sent.filter((text) => text.trim() === 'SELECT 1')).toHaveLength(2); // before ticks 2 and 3; none at shutdown
     expect(log.entries()).toEqual([]);
   });
   it('keeps scheduling when the election query fails once, and logs it in codes only (TASK-1041)', async () => {
