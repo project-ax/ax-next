@@ -851,6 +851,53 @@ describe('RemoteMcpConnectorForm — pointing a connector somewhere new signs ev
       expect(calls.length).toBe(before);
       expect(options.onSaved).not.toHaveBeenCalled();
     });
+
+    // Not a move at all: a first-time secret. The PATCH names where it will be
+    // stored, so once that lands and the write fails, the connector names a
+    // secret the vault doesn't have, and it's asked for like a cleared one.
+    it('a first client secret the PATCH named but failed to write: emptying the box is refused, not shown as "Saved securely"', async () => {
+      vi.spyOn(console, 'warn').mockImplementation(() => {});
+      failingCredentialWrites = 1;
+      // Its own OAuth client, with no client secret saved.
+      const connector = ownClientConnector();
+      connector.capabilities.credentials = [
+        { kind: 'oauth', slot: 'MCP_OAUTH', server: 'linear', clientId: 'cid' },
+      ];
+      const options = await openEditor(connector);
+      fireEvent.change(screen.getByLabelText(/Client secret/), {
+        target: { value: 'first-client-secret' },
+      });
+      fireEvent.click(saveButton());
+      expect(
+        await screen.findByText(
+          'We saved the connector, but couldn’t save the client secret. Try saving again.',
+        ),
+      ).toBeVisible();
+      // The connector now names a secret the vault doesn't hold.
+      expect(writes[0]!.body.capabilities).toMatchObject({
+        credentials: [{ kind: 'oauth', clientSecretRef: OWN_SECRET_REF }],
+      });
+      expect(vault.has(OWN_SECRET_REF)).toBe(false);
+      await saveIsLive();
+      fireEvent.change(screen.getByLabelText(/Client secret/), { target: { value: '' } });
+      expect(screen.queryByText('Saved securely')).toBeNull();
+      const before = calls.length;
+      fireEvent.click(saveButton());
+      expect(
+        await screen.findByText(
+          'Enter the client secret again, or remove it. Changing where this connector points clears it.',
+        ),
+      ).toBeVisible();
+      expect(calls.length).toBe(before);
+      expect(options.onSaved).not.toHaveBeenCalled();
+      // Typed again, it is written, and the requirement lifts.
+      fireEvent.change(screen.getByLabelText(/Client secret/), {
+        target: { value: 'first-client-secret' },
+      });
+      fireEvent.click(saveButton());
+      await waitFor(() => expect(options.onSaved).toHaveBeenCalled());
+      expect(vault.get(OWN_SECRET_REF)).toBe(btoa('first-client-secret'));
+    });
   });
 
   // Typed during a move, then the move is undone: the value stays on screen,

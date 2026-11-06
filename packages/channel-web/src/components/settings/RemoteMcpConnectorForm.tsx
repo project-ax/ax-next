@@ -599,6 +599,11 @@ export function RemoteMcpConnectorForm({
         try {
           await writeClientSecret();
         } catch (err) {
+          // The connector now names where this secret goes, and it isn't
+          // there, whatever the reason it wasn't stored before (a move cleared
+          // it, or it's the first one). So it's asked for, not "Saved securely".
+          if (writesClientSecret)
+            setClearedBySave((current) => ({ ...current, secret: true }));
           setSaveError(
             `We saved the connector, but couldn’t save the client secret. Try saving again.${secretWriteReason(err)}`,
           );
