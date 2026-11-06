@@ -617,11 +617,9 @@ describe('chat-orchestrator route-by-conversationId (Task 16, J6)', () => {
     mocks.services['conversations:append-event'] = async () => {
       throw new Error('PRIVATE row text from 10.0.0.7');
     };
-    let terminates = 0;
-    mocks.services['session:terminate'] = async () => {
-      terminates += 1;
-      return {};
-    };
+    // TASK-1063: also records the other binding-clear paths (see
+    // recordBindingClears below) — a not-saved refusal keeps its reqId bound.
+    const { unbinds, terminates } = recordBindingClears(mocks);
     const h = await createTestHarness({
       services: mocks.services,
       plugins: [
@@ -630,6 +628,11 @@ describe('chat-orchestrator route-by-conversationId (Task 16, J6)', () => {
           chatTimeoutMs: 1_000,
         }),
       ],
+    });
+    const turnEnds: unknown[] = [];
+    h.bus.subscribe('chat:turn-end', 'binding-clear-spy', async (_ctx, payload) => {
+      turnEnds.push(payload);
+      return undefined;
     });
     const turnErrors: unknown[] = [];
     const ends: unknown[] = [];
@@ -664,7 +667,9 @@ describe('chat-orchestrator route-by-conversationId (Task 16, J6)', () => {
     expect(mocks.trace.queueWork).toEqual([]);
     expect(mocks.trace.bindSession).toEqual([]);
     expect(mocks.trace.sandboxOpen).toBe(0);
-    expect(terminates).toBe(0);
+    expect(terminates).toEqual([]);
+    expect(unbinds).toEqual([]);
+    expect(turnEnds).toEqual([]);
 
     const failed = lines
       .map((line) => JSON.parse(line) as Record<string, unknown>)
@@ -917,18 +922,26 @@ describe('chat-orchestrator route-by-conversationId (Task 16, J6)', () => {
 
   // TASK-1063 — a refused turn keeps the reqId channel-web bound at POST time,
   // on purpose: a stream GET that opens after the refusal resolves the
-  // conversation by it and replays the error. What clears a bound reqId is a
-  // `chat:turn-end` (conversations compare-and-clears on it) or an explicit
-  // unbind. A refusal that fired either would drop the binding and the late
-  // stream would find nothing, so the guards below assert neither happens.
+  // conversation by it and replays the error. Conversations clears a bound
+  // reqId on three paths: a `chat:turn-end` (compare-and-clear), an explicit
+  // `conversations:unbind-session`, and `session:terminate` (clearBySessionId —
+  // which DOES hit a first turn, whose bound session is the POST-time
+  // placeholder, i.e. ctx.sessionId). A refusal that took any of them would drop
+  // the binding and the late stream would find nothing, so the guards below
+  // (and the TASK-1059 not-saved test above) assert none happens.
   // Register BEFORE createTestHarness: the harness takes its services then.
-  function recordUnbinds(mocks: BuiltMocks): unknown[] {
+  function recordBindingClears(mocks: BuiltMocks): { unbinds: unknown[]; terminates: unknown[] } {
     const unbinds: unknown[] = [];
+    const terminates: unknown[] = [];
     mocks.services['conversations:unbind-session'] = async (_ctx, input: unknown) => {
       unbinds.push(input);
       return undefined;
     };
-    return unbinds;
+    mocks.services['session:terminate'] = async (_ctx, input: unknown) => {
+      terminates.push(input);
+      return {};
+    };
+    return { unbinds, terminates };
   }
 
   // TASK-1063 — channel-web's Resend sends a refused turn's files again only
@@ -941,7 +954,7 @@ describe('chat-orchestrator route-by-conversationId (Task 16, J6)', () => {
       conversations: { 'conv-g': { activeSessionId: null } },
       liveSessions: new Set(),
     });
-    const unbinds = recordUnbinds(mocks);
+    const { unbinds, terminates } = recordBindingClears(mocks);
     const h = await createTestHarness({
       services: mocks.services,
       plugins: [
@@ -970,6 +983,7 @@ describe('chat-orchestrator route-by-conversationId (Task 16, J6)', () => {
     // The refusal leaves the POST-time bound reqId alone (see the note above).
     expect(turnEnds).toEqual([]);
     expect(unbinds).toEqual([]);
+    expect(terminates).toEqual([]);
   });
 
   it('TASK-1063) an agents:resolve refusal saves no user turn, so channel-web may resend its files', async () => {
@@ -980,7 +994,7 @@ describe('chat-orchestrator route-by-conversationId (Task 16, J6)', () => {
     mocks.services['agents:resolve'] = async () => {
       throw new PluginError({ code: 'forbidden', plugin: 'agents', message: 'nope' });
     };
-    const unbinds = recordUnbinds(mocks);
+    const { unbinds, terminates } = recordBindingClears(mocks);
     const h = await createTestHarness({
       services: mocks.services,
       plugins: [
@@ -1007,6 +1021,7 @@ describe('chat-orchestrator route-by-conversationId (Task 16, J6)', () => {
     expect(mocks.trace.appendEvent).toEqual([]);
     expect(turnEnds).toEqual([]);
     expect(unbinds).toEqual([]);
+    expect(terminates).toEqual([]);
   });
 
   it('TASK-66) does NOT persist a user turn when ctx.conversationId is unset', async () => {

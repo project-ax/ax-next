@@ -372,8 +372,9 @@ export function createSseHandler(deps: SseHandlerDeps) {
     // turn's reqId stays bound: step 2 resolves the stream through
     // `active_req_id`, so a refusal that cleared it would get a 404 here
     // instead (TASK-1063). `routes-chat.test.ts` pins this conversations side;
-    // the orchestrator guards in `route-by-conversation.test.ts` pin that a
-    // refusal does not clear the binding.
+    // the orchestrator guards in `route-by-conversation.test.ts` pin that its
+    // pre-save refusals take none of the three clear paths (`chat:turn-end`,
+    // `conversations:unbind-session`, `session:terminate`).
     const replayTurnError = deps.buffer.tailTurnError(reqId);
     if (replayTurnError !== null) {
       safeWrite({
