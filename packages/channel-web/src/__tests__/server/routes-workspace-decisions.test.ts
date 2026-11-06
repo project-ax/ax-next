@@ -264,6 +264,29 @@ describe('the decision routes over a real socket', () => {
     expect(rows).toHaveLength(1); expect(rows[0]).toMatchObject({id:'d1',status:'failed',undoable:false});
     expectNarrowerThanTheRow(raw,rows[0]);
   });
+  it('a failed row with replayAbandonedAt projects outcomeUnknown: true; without it, or on any other status, false (TASK-1046)', async () => {
+    const ABANDONED_AT = '2026-08-21T11:20:00.000Z';
+    const base = { ...STORED, resolvedAt: '2026-08-21T11:00:00.000Z', replayedAt: null, replayClaimedAt: '2026-08-21T11:01:00.000Z' };
+    const h = await boot({ history: [
+      { ...base, id: 'unknown', status: 'failed', replayAbandonedAt: ABANDONED_AT },
+      { ...base, id: 'definite', status: 'failed', replayAbandonedAt: null },
+      { ...base, id: 'older-producer', status: 'failed' },
+      { ...base, id: 'executed', status: 'executed', replayAbandonedAt: ABANDONED_AT },
+      { ...base, id: 'parked', status: 'approved-pending-agent', replayAbandonedAt: ABANDONED_AT },
+    ] });
+    harness = h.harness;
+    const response = await fetch(`http://127.0.0.1:${h.port}/api/workspace/agents/a1/conversations/c1/decisions`);
+    expect(response.status).toBe(200);
+    const raw = await response.text();
+    const byId = new Map((JSON.parse(raw) as DecisionsBody).decisions.map((d) => [d['id'], d]));
+    expect(byId.get('unknown')).toMatchObject({ status: 'failed', outcomeUnknown: true });
+    for (const id of ['definite', 'older-producer', 'executed', 'parked']) {
+      expect(byId.get(id)).toMatchObject({ outcomeUnknown: false });
+    }
+    // The flag is derived. The instant itself is host bookkeeping and stays home.
+    expect(raw).not.toContain('replayAbandonedAt');
+    expect(raw).not.toContain(ABANDONED_AT);
+  });
   it.each([{userId:'peer',agentId:'a1'},{userId:'u1',agentId:'a2'}])('refuses a foreign conversation before reading outcomes: %j', async (conversation) => {
     const h=await boot({historyFails:true,conversation}); harness=h.harness;
     expect((await fetch(`http://127.0.0.1:${h.port}/api/workspace/agents/a1/conversations/c1/decisions`)).status).toBe(404);

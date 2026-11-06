@@ -164,6 +164,17 @@ export const DECISION_FAILED = 'It tried to do this, and it did not work.';
 export const DECISION_FAILED_NOTE =
   'Nothing was completed. Your yes does not carry over, so it will ask again if it still needs to.';
 
+/**
+ * The host made the call and got no reliable answer (TASK-1046), so it may have
+ * gone through. Joined with one space, the two are word for word
+ * `ABANDONED_RECEIPT` in `@ax/decisions` (pinned by literal on both sides):
+ * saying "nothing was completed" here would be a lie that gets a person to
+ * approve, and post, twice.
+ */
+export const DECISION_OUTCOME_UNKNOWN =
+  'This was interrupted while it was running, so we cannot tell you whether it finished.';
+export const DECISION_OUTCOME_UNKNOWN_NOTE = 'Worth checking before you approve it again.';
+
 /** Nobody answered in time. */
 export const DECISION_EXPIRED = 'This one ran out of time, so nothing happened.';
 export const DECISION_EXPIRED_NOTE =
@@ -405,7 +416,9 @@ export function decisionOutcome(
     case 'dismissed':
       return { line: d.dismissedText, note: null, tone: 'quiet' };
     case 'failed':
-      return { line: DECISION_FAILED, note: DECISION_FAILED_NOTE, tone: 'bad' };
+      return d.outcomeUnknown === true
+        ? { line: DECISION_OUTCOME_UNKNOWN, note: DECISION_OUTCOME_UNKNOWN_NOTE, tone: 'bad' }
+        : { line: DECISION_FAILED, note: DECISION_FAILED_NOTE, tone: 'bad' };
     case 'expired':
       return { line: DECISION_EXPIRED, note: DECISION_EXPIRED_NOTE, tone: 'quiet' };
   }

@@ -320,6 +320,14 @@ export interface Decision {
    * disappears on a clock rather than on the next poll.
    */
   undoable: boolean;
+  /**
+   * SERVER-DERIVED (TASK-1046): true when the host made the call and got no
+   * reliable answer, so the row is `failed` but it MAY have gone through. The
+   * card says it cannot tell, rather than "nothing was completed". Optional,
+   * like `checkIn`: an older server leaves it out, so read it as
+   * `d.outcomeUnknown === true`.
+   */
+  outcomeUnknown?: boolean;
 }
 
 /**

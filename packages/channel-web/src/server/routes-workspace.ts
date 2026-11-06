@@ -963,6 +963,10 @@ interface StoredDecision {
   replayClaimedAt: string | null;
   replayedAt: string | null;
   replayError: string | null;
+  // TASK-1046 — set when the host sent a call and got no reliable answer (a
+  // failed row that is ABANDONED rather than refused). Optional: an older
+  // producer omits it. It never crosses the wire; `outcomeUnknown` is derived.
+  replayAbandonedAt?: string | null;
   // TASK-574 — the attended path's deferred delivery. `deliveryDueAt` is when
   // the resolution is due to reach the warm agent (the undo window closing;
   // the sweep clears it as it delivers), `deliveredAt` is when it did. Both
@@ -2763,6 +2767,12 @@ export function toWireDecision(stored: StoredDecision, eligible = false, checkIn
     // closes (`deliveryDueAt`). The two never overlap on one row; replay wins
     // if a producer ever sent both, since that is the call itself going out.
     pendingUntil: stored.replayDueAt ?? stored.deliveryDueAt ?? (stored.consentDeliveryState === 'pending' ? stored.routineReleaseAt ?? null : null),
+    // The host sent the call and got no reliable answer (TASK-1046): the row is
+    // `failed` AND abandoned. Derived here so the abandoned instant, which is
+    // host bookkeeping, never crosses the wire. A definite failure is the same
+    // status without it, and the card must not say "nothing was completed" about
+    // a call that may have landed.
+    outcomeUnknown: stored.status === 'failed' && (stored.replayAbandonedAt ?? null) !== null,
     /*
       Can this still be taken back?
 

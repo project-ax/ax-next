@@ -27,6 +27,9 @@ import {
   DECISION_FAILED,
   DECISION_GOING_OUT,
   DECISION_GOING_OUT_NOTE,
+  DECISION_FAILED_NOTE,
+  DECISION_OUTCOME_UNKNOWN,
+  DECISION_OUTCOME_UNKNOWN_NOTE,
   DECISION_PENDING_AGENT,
   DECISION_PENDING_AGENT_NOTE,
   DECISION_ROUTINE_UNDERWAY,
@@ -123,6 +126,11 @@ describe('one row, three renderers — the outcome line', () => {
       line: DECISION_FAILED,
     },
     {
+      name: 'failed, outcome unknown',
+      decision: resolvedFixture('failed', { undoable: false, outcomeUnknown: true }),
+      line: DECISION_OUTCOME_UNKNOWN,
+    },
+    {
       name: 'expired',
       decision: resolvedFixture('expired', { undoable: false }),
       line: DECISION_EXPIRED,
@@ -149,6 +157,28 @@ describe('one row, three renderers — the outcome line', () => {
     for (const text of [queueText(parked), cardText(parked)]) {
       expect(text).toContain(DECISION_PENDING_AGENT_NOTE);
     }
+  });
+
+  it('an outcome-unknown failure never says nothing was completed (TASK-1046)', () => {
+    const unknown = resolvedFixture('failed', { undoable: false, outcomeUnknown: true });
+    for (const text of [queueText(unknown), cardText(unknown)]) {
+      expect(text).toContain(DECISION_OUTCOME_UNKNOWN_NOTE);
+      expect(text).not.toContain(DECISION_FAILED_NOTE);
+      expect(text).not.toContain(DECISION_FAILED);
+    }
+    // And the definite failure keeps saying what it always said.
+    const definite = resolvedFixture('failed', { undoable: false, outcomeUnknown: false });
+    for (const text of [queueText(definite), cardText(definite)]) {
+      expect(text).toContain(DECISION_FAILED_NOTE);
+      expect(text).not.toContain(DECISION_OUTCOME_UNKNOWN);
+    }
+  });
+
+  it("the unknown pair matches the server's abandoned receipt word for word (TASK-1046)", () => {
+    // `@ax/decisions` ABANDONED_RECEIPT, pinned by literal on both sides.
+    expect(`${DECISION_OUTCOME_UNKNOWN} ${DECISION_OUTCOME_UNKNOWN_NOTE}`).toBe(
+      'This was interrupted while it was running, so we cannot tell you whether it finished. Worth checking before you approve it again.',
+    );
   });
 
   it('never claims an unattended-parked approval was sent', () => {
