@@ -297,6 +297,88 @@ describe('frame runtime', () => {
     expect(win.ax.chartColor('chart-2')()).toBe('hsl(173 80% 29%)');
   });
 
+  describe('walk fixes (VISUALS-1)', () => {
+    type Ctx = { index?: number; dataIndex?: number; datasetIndex?: number };
+    function withChart(instances: Record<string, unknown> = {}) {
+      const { win, host } = setup((w) => {
+        w.Chart = { defaults: { font: {}, plugins: { tooltip: {} } }, register: vi.fn(), instances };
+      });
+      const plugin = (win.Chart as { register: Mock }).register.mock.calls[0]![0] as {
+        beforeUpdate(chart: unknown): void;
+      };
+      return { win, host, plugin };
+    }
+
+    it('(1a) resolves an array of ax.chartColor functions and var() strings per data point', () => {
+      const { win, plugin } = withChart();
+      const colors = [win.ax.chartColor('chart-1'), 'hsl(var(--chart-2))', 'plain-red'];
+      const data: { datasets: Record<string, unknown>[] } = {
+        datasets: [{ backgroundColor: colors, hoverBackgroundColor: [win.ax.chartColor('chart-2')] }],
+      };
+      const chart = { config: { type: 'bar' }, data };
+      plugin.beforeUpdate(chart);
+      const bg = data.datasets[0]!.backgroundColor as (ctx: Ctx) => string;
+      expect(typeof bg).toBe('function');
+      const at = (i: number) => ({ datasetIndex: 0, dataIndex: i, index: i });
+      expect(bg(at(0))).toBe('hsl(242.71 63.03% 58.63%)');
+      expect(bg(at(1))).toBe('hsl(173 80% 29%)');
+      expect(bg(at(2))).toBe('plain-red');
+      expect(bg(at(3))).toBe('hsl(242.71 63.03% 58.63%)'); // index % length, like Chart.js
+      const hover = data.datasets[0]!.hoverBackgroundColor as (ctx: Ctx) => string;
+      expect(hover(at(5))).toBe('hsl(173 80% 29%)');
+
+      // Idempotent: a second update doesn't wrap the wrapper.
+      plugin.beforeUpdate(chart);
+      expect(data.datasets[0]!.backgroundColor).toBe(bg);
+    });
+
+    it('(1b) ax.color and ax.chartColor take an optional alpha, clamped to [0, 1]', () => {
+      const { win } = setup();
+      const color = win.ax.color as (name: string, alpha?: unknown) => string;
+      const chartColor = win.ax.chartColor as (name: string, alpha?: unknown) => () => string;
+      expect(color('chart-1', 0.5)).toBe('hsl(242.71 63.03% 58.63% / 0.5)');
+      expect(color('chart-1', 2)).toBe('hsl(242.71 63.03% 58.63% / 1)');
+      expect(color('chart-1', -1)).toBe('hsl(242.71 63.03% 58.63% / 0)');
+      expect(color('chart-1', Number.NaN)).toBe('hsl(242.71 63.03% 58.63%)');
+      expect(color('chart-1', '0.5')).toBe('hsl(242.71 63.03% 58.63%)');
+      expect(chartColor('chart-2', 0.75)()).toBe('hsl(173 80% 29% / 0.75)');
+    });
+
+    it('(2) re-themes color strings the agent captured from ax.color at startup', () => {
+      const update = vi.fn();
+      const instance: Record<string, unknown> = { update };
+      const { win, host } = withChart({ 0: instance });
+      const border = win.ax.color('chart-2');
+      const faint = (win.ax.color as (n: string, a: number) => string)('chart-1', 0.3);
+      const options = {
+        scales: { y: { grid: { color: border }, ticks: { color: faint, callback: () => 'x' } } },
+        plugins: { legend: { labels: { color: 'hsl(1 2% 3%)' } } },
+      };
+      const datasets = [{ borderColor: border, backgroundColor: [faint, 'plain'], data: [1, 2] }];
+      Object.assign(instance, { config: { options }, options, data: { datasets } });
+
+      sendFrom(win, host, {
+        type: 'ax-visual:theme',
+        mode: 'dark',
+        tokens: { '--chart-2': '10 20% 30%', '--chart-1': '40 50% 60%' },
+      });
+      expect(options.scales.y.grid.color).toBe('hsl(10 20% 30%)');
+      expect(options.scales.y.ticks.color).toBe('hsl(40 50% 60% / 0.3)');
+      expect(options.plugins.legend.labels.color).toBe('hsl(1 2% 3%)'); // not one of ours
+      expect(datasets[0]!.borderColor).toBe('hsl(10 20% 30%)');
+      expect(datasets[0]!.backgroundColor).toEqual(['hsl(40 50% 60% / 0.3)', 'plain']);
+      expect(update).toHaveBeenCalledWith('none');
+
+      // And back again: the dark strings are remembered too.
+      sendFrom(win, host, {
+        type: 'ax-visual:theme',
+        mode: 'light',
+        tokens: { '--chart-2': '173 80% 29%', '--chart-1': '242.71 63.03% 58.63%' },
+      });
+      expect(options.scales.y.grid.color).toBe(border);
+    });
+  });
+
   it('removes WebRTC for good before anything else runs', () => {
     const { win } = setup((w) => {
       (w as unknown as Record<string, unknown>).RTCPeerConnection = function RTCPeerConnection() {};

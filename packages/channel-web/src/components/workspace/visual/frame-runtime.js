@@ -340,14 +340,35 @@ window.axVisualRuntime = function axVisualRuntime(win, host) {
     return win.getComputedStyle(root).getPropertyValue(prop).trim();
   }
 
+  // A finite number clamped to [0, 1], or undefined for anything else.
+  function alphaOf(alpha) {
+    if (typeof alpha !== 'number' || !isFinite(alpha)) return undefined;
+    return Math.min(1, Math.max(0, alpha));
+  }
+
+  // Every color string ax.color has handed out, and what it was made from.
+  // Agents often read a color once and write the string into chart options;
+  // on a theme change those strings are swapped for the new theme's (see
+  // healChart). Capped so a data-driven alpha can't grow it without bound.
+  var issued = new Map();
+  var ISSUED_MAX = 512;
+  function remember(value, name, alpha) {
+    if (issued.size >= ISSUED_MAX && !issued.has(value)) return;
+    issued.set(value, { name: name, alpha: alpha });
+  }
+
   var ax = {
-    color: function (name) {
-      return 'hsl(' + tokenValue(name) + ')';
+    color: function (name, alpha) {
+      var a = alphaOf(alpha);
+      var token = tokenValue(name);
+      var value = a === undefined ? 'hsl(' + token + ')' : 'hsl(' + token + ' / ' + a + ')';
+      if (token) remember(value, name, a);
+      return value;
     },
     // A Chart.js scriptable option: re-read on every chart update.
-    chartColor: function (name) {
+    chartColor: function (name, alpha) {
       return function () {
-        return ax.color(name);
+        return ax.color(name, alpha);
       };
     },
     resolve: function (css) {
@@ -464,24 +485,93 @@ window.axVisualRuntime = function axVisualRuntime(win, host) {
     return typeof value === 'string' && value.indexOf('var(--') !== -1;
   }
 
+  // One entry of a per-point color array, as Chart.js would want it resolved.
+  function resolveEntry(item, ctx) {
+    if (typeof item === 'function') item = item(ctx);
+    if (hasVar(item)) return ax.resolve(item);
+    var known = typeof item === 'string' && issued.get(item);
+    return known ? ax.color(known.name, known.alpha) : item;
+  }
+
   // Canvas can't read CSS variables, so a color the model wrote as
   // `hsl(var(--chart-1))` is resolved on every update instead.
-  function themedValue(value, perPoint, datasetIndex) {
-    if (value === undefined || value === null) return paletteColor(perPoint, datasetIndex);
+  function themedValue(value, perPoint, datasetIndex, noPalette) {
+    if (value === undefined || value === null) return noPalette ? value : paletteColor(perPoint, datasetIndex);
     if (hasVar(value)) {
       return function () {
         return ax.resolve(value);
       };
     }
-    // An indexable array: Chart.js picks item[index % length].
-    if (Array.isArray(value) && value.some(hasVar)) {
+    // An indexable array: Chart.js picks item[index % length], but it only
+    // calls a scriptable function when it's the whole value, never an entry.
+    // So an array holding ax.chartColor(...) or var() entries becomes one
+    // function that resolves the entry itself. The result is a function, so a
+    // later update leaves it alone.
+    if (Array.isArray(value) && value.some(function (item) { return typeof item === 'function' || hasVar(item); })) {
       return function (ctx) {
-        var i = ctx && typeof ctx.dataIndex === 'number' ? ctx.dataIndex : ctx && ctx.datasetIndex;
-        var item = value[(typeof i === 'number' ? i : 0) % value.length];
-        return hasVar(item) ? ax.resolve(item) : item;
+        var i = ctx && typeof ctx.index === 'number' ? ctx.index : ctx && ctx.dataIndex;
+        if (typeof i !== 'number') i = ctx && ctx.datasetIndex;
+        return resolveEntry(value[(typeof i === 'number' ? i : 0) % value.length], ctx);
       };
     }
     return value;
+  }
+
+  // Colors that only get resolved, never filled from the palette.
+  var EXTRA_COLOR_KEYS = ['hoverBackgroundColor', 'hoverBorderColor', 'pointBackgroundColor', 'pointBorderColor'];
+
+  // A color string ax.color handed out under the old theme, swapped for the
+  // same token's current value. Walks plain objects and arrays only, to a
+  // fixed depth and node budget, so a huge or cyclic options tree stays cheap.
+  // `skip` names one key to leave out (a dataset's data points).
+  function healColors(node, depth, budget, skip) {
+    if (depth > 8 || budget.left <= 0 || !node || typeof node !== 'object') return;
+    var isArray = Array.isArray(node);
+    if (!isArray) {
+      // A plain object from any realm: its prototype is null or a root one.
+      // Class instances (a chart, a DOM node) are left alone.
+      var p = Object.getPrototypeOf(node);
+      if (p !== null && Object.getPrototypeOf(p) !== null) return;
+    }
+    var keys = isArray ? null : Object.keys(node);
+    var n = isArray ? node.length : keys.length;
+    for (var i = 0; i < n && budget.left > 0; i++) {
+      budget.left--;
+      var key = isArray ? i : keys[i];
+      if (key === skip) continue;
+      var value;
+      try {
+        value = node[key];
+      } catch {
+        continue;
+      }
+      if (typeof value === 'string') {
+        var known = issued.get(value);
+        if (!known) continue;
+        var fresh = ax.color(known.name, known.alpha);
+        if (fresh === value) continue;
+        try {
+          node[key] = fresh;
+        } catch {
+          // A frozen object keeps its color.
+        }
+      } else if (value && typeof value === 'object') {
+        healColors(value, depth + 1, budget);
+      }
+    }
+  }
+
+  function healChart(chart) {
+    if (!issued.size) return;
+    var budget = { left: 5000 };
+    // config.options is what the agent wrote; chart.options is a resolver over
+    // it and every default.
+    healColors(chart.config && chart.config.options ? chart.config.options : chart.options, 0, budget);
+    var datasets = chart.data && chart.data.datasets;
+    if (!Array.isArray(datasets)) return;
+    datasets.forEach(function (ds) {
+      healColors(ds, 1, budget, 'data');
+    });
   }
 
   if (win.Chart) {
@@ -498,6 +588,9 @@ window.axVisualRuntime = function axVisualRuntime(win, host) {
             var perPoint = !!PER_POINT_TYPES[ds.type || chartType];
             ds.backgroundColor = themedValue(ds.backgroundColor, perPoint, di);
             ds.borderColor = themedValue(ds.borderColor, perPoint, di);
+            EXTRA_COLOR_KEYS.forEach(function (key) {
+              if (ds[key] !== undefined) ds[key] = themedValue(ds[key], perPoint, di, true);
+            });
           });
         },
       });
@@ -530,6 +623,7 @@ window.axVisualRuntime = function axVisualRuntime(win, host) {
         var instances = Chart.instances || {};
         Object.keys(instances).forEach(function (key) {
           try {
+            healChart(instances[key]);
             instances[key].update('none');
           } catch {
             // One broken chart shouldn't stop the rest from re-theming.

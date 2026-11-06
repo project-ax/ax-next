@@ -26,7 +26,7 @@ describe('SHOW_VISUAL_DESCRIPTOR', () => {
   });
 
   it('carries every rule in the top-level description (claude-sdk drops property descriptions)', () => {
-    for (const needle of ['always make one', 'NO network', '100 KB', 'hsl(var(--', '--chart-1', 'Chart.js', 'ax.chartColor', 'reply text', "Don't use iframes, objects or embeds; they are removed."])
+    for (const needle of ['always make one', 'NO network', '100 KB', 'hsl(var(--', '--chart-1', 'Chart.js', 'ax.chartColor', 'array of', 'optional alpha', 'reply text', "Don't use iframes, objects or embeds; they are removed."])
       expect(SHOW_VISUAL_DESCRIPTOR.description).toContain(needle);
   });
 

@@ -39,6 +39,7 @@ const TOKENS: Record<string, string> = {
   '--popover-foreground': '240 10% 3.9%',
   '--chart-1': '242.71 63.03% 58.63%',
   '--chart-2': '173 58% 39%',
+  '--chart-3': '27 87% 55%',
 };
 
 // How Playwright reports a request Chromium's CSP refused before it left.
@@ -324,6 +325,109 @@ describe.skipIf(CHROMIUM_MISSING && !IN_CI)('chat visual box in Chromium (hostil
       expect(hits).toEqual([]);
       expect(canaryLeaks(requests)).toEqual([]);
       expect(consoleErrors.filter((e) => /SyntaxError/.test(e))).toEqual([]);
+    } finally {
+      await page.close();
+    }
+  });
+
+  // VISUALS-1 (kind walk): the real Chart.js, not a stub. A per-bar color
+  // array of ax.chartColor(...) functions painted every bar black, and a
+  // color the agent read once from ax.color() stayed light in dark mode.
+  const WALK_CHART = `<canvas id="c" width="600" height="300"></canvas>
+<script>
+window.__grid = ax.color('border');
+window.__chart = new Chart(document.getElementById('c'), {
+  type: 'bar',
+  data: { labels: ['a', 'b', 'c'], datasets: [{
+    data: [5, 5, 5],
+    barPercentage: 0.5,
+    backgroundColor: [ax.chartColor('chart-1'), ax.chartColor('chart-2', 0.5), 'hsl(var(--chart-3))'],
+  }] },
+  options: {
+    animation: false, responsive: false, devicePixelRatio: 1,
+    plugins: { legend: { display: false }, tooltip: { enabled: false } },
+    scales: {
+      x: { grid: { display: false } },
+      y: { min: 0, max: 10, ticks: { stepSize: 2 }, grid: { color: window.__grid, lineWidth: 3 } },
+    },
+  },
+});
+</script>`;
+  const DARK_BORDER = '226.67 12% 22%';
+
+  type FramePixels = { rgba: number[]; expect: number[] };
+  /** Runs in the visual frame: a bar's center pixel, and its token color drawn on a scratch canvas. */
+  function sampleBars(): FramePixels[] {
+    const w = window as unknown as {
+      __chart: { getDatasetMeta(i: number): { data: { x: number; y: number; base: number }[] }; ctx: CanvasRenderingContext2D };
+      ax: { color(n: string, a?: number): string };
+    };
+    const swatch = (css: string) => {
+      const c = document.createElement('canvas');
+      c.width = c.height = 1;
+      const g = c.getContext('2d')!;
+      g.fillStyle = css;
+      g.fillRect(0, 0, 1, 1);
+      return Array.from(g.getImageData(0, 0, 1, 1).data);
+    };
+    const want = [w.ax.color('chart-1'), w.ax.color('chart-2', 0.5), w.ax.color('chart-3')];
+    return w.__chart.getDatasetMeta(0).data.map((bar, i) => ({
+      rgba: Array.from(w.__chart.ctx.getImageData(Math.round(bar.x), Math.round((bar.y + bar.base) / 2), 1, 1).data),
+      expect: swatch(want[i]!),
+    }));
+  }
+  function sampleGrid(): FramePixels {
+    const w = window as unknown as {
+      __chart: { scales: { y: { getPixelForValue(v: number): number } }; chartArea: { left: number; right: number }; ctx: CanvasRenderingContext2D };
+      ax: { color(n: string): string };
+    };
+    const c = document.createElement('canvas');
+    c.width = c.height = 1;
+    const g = c.getContext('2d')!;
+    g.fillStyle = w.ax.color('border');
+    g.fillRect(0, 0, 1, 1);
+    const y = Math.round(w.__chart.scales.y.getPixelForValue(8));
+    const x = Math.round((w.__chart.chartArea.left + w.__chart.chartArea.right) / 2);
+    return { rgba: Array.from(w.__chart.ctx.getImageData(x, y, 1, 1).data), expect: Array.from(g.getImageData(0, 0, 1, 1).data) };
+  }
+  const near = (a: number[], b: number[], tol = 6) => a.every((v, i) => Math.abs(v - b[i]!) <= tol);
+
+  it('(VISUALS-1) a per-bar array of ax.chartColor / var() colors paints the palette, not black', async () => {
+    const { page, results } = await run('/walk-bars', { chart: WALK_CHART }, ['chart'], 0);
+    try {
+      expect(from(results, 'chart').some((m) => m.type === 'ax-visual:error')).toBe(false);
+      const frame = page.frames().find((f) => f.url() === 'about:srcdoc')!;
+      const bars = await frame.evaluate(sampleBars);
+      expect(bars).toHaveLength(3);
+      for (const bar of bars) {
+        expect(bar.rgba[3], `bar ${JSON.stringify(bar)}`).toBeGreaterThan(0);
+        expect(bar.rgba.slice(0, 3), `bar ${JSON.stringify(bar)}`).not.toEqual([0, 0, 0]);
+        expect(near(bar.rgba, bar.expect), `bar ${JSON.stringify(bar)}`).toBe(true);
+      }
+      expect(bars[1]!.rgba[3]).toBeGreaterThan(110); // the 0.5 alpha was honored
+      expect(bars[1]!.rgba[3]).toBeLessThan(145);
+    } finally {
+      await page.close();
+    }
+  });
+
+  it('(VISUALS-1) a gridline color captured from ax.color at startup follows the theme', async () => {
+    const { page } = await run('/walk-grid', { chart: WALK_CHART }, ['chart'], 0);
+    try {
+      const frame = page.frames().find((f) => f.url() === 'about:srcdoc')!;
+      const light = await frame.evaluate(sampleGrid);
+      expect(near(light.rgba, light.expect), JSON.stringify(light)).toBe(true);
+      await page.evaluate((border) => {
+        document.querySelector('iframe')!.contentWindow!.postMessage(
+          { type: 'ax-visual:theme', mode: 'dark', tokens: { '--border': border, '--card': '226.67 15.25% 11.57%' } },
+          '*',
+        );
+      }, DARK_BORDER);
+      await frame.waitForFunction(() => document.documentElement.dataset.theme === 'dark');
+      await page.waitForTimeout(200);
+      const dark = await frame.evaluate(sampleGrid);
+      expect(near(dark.expect, light.expect)).toBe(false); // the token really changed
+      expect(near(dark.rgba, dark.expect), JSON.stringify(dark)).toBe(true);
     } finally {
       await page.close();
     }

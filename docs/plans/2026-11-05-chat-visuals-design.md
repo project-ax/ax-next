@@ -194,6 +194,12 @@ field names backend-neutral: `visual`, `title`, `summary`, not storage terms.
   4.5.1 (MIT) for the chart library and html-to-image 1.11.13 for PNG export, both pinned,
   raw-imported (`?raw`) and used only inside the frame, never in the app bundle. New dependencies,
   so supply-chain checklist.
+  The frame exposes a small `ax` helper: `ax.color(name, alpha?)` returns the token as an
+  `hsl(...)` string, `ax.chartColor(name, alpha?)` returns a Chart.js scriptable color, and
+  `ax.resolve(css)` resolves `var(--x)`. As built after the kind walk: a per-point color array
+  holding `ax.chartColor(...)` or `var()` entries is resolved per point (Chart.js itself only calls
+  a function that is the whole option), and on a theme change any `ax.color` string the agent
+  wrote into chart options or datasets is swapped for the new theme's value before re-render.
 - **The agent's instructions** live in the `show_visual` tool description (not in
   `communicationNote()`), so both runners get them and they appear only where the tool does. They say three things. Style
   only with the provided CSS variables, never raw colors or other fonts. Use the provided chart
