@@ -292,6 +292,21 @@ describe('accepted DB fire dispatch', () => {
     expect((await f.store.recentFires(h.row))[0]).toMatchObject({ status: 'error', error: `This run failed because of a problem on our side (code: ${reason}).`, warning: 'Previous warning' });
     expect(diagnostic.messages).toHaveLength(1);
   });
+  // TASK-1059: only the one `conversation:` reason the orchestrator raises before routing counts; any other
+  // `conversation:` reason is an ordinary run failure and does not keep the old warning.
+  it('does not treat another conversation: reason as a pre-assembly gate', async () => {
+    const reason = 'conversation:something-else';
+    const h = await setup({ invoke: async () => ({ kind: 'terminated', reason }) });
+    await f.store.finishDispatch({ dispatchId: h.accepted.dispatchId, outcome: { status: 'ok', conversationId: 'c', error: null, renderedPrompt: 'p', warning: 'Previous warning' } });
+    const next = (await f.store.acceptDispatch({ ...h.row, expectedRevision: h.row.revision, actorUserId: 'owner', requestId: 'second', source: 'manual', now: new Date(now.getTime() + 1) }))!.accepted;
+    const diagnostic = captureExpectedStderr(message => message.startsWith(`[ax/routines] agent:invoke failed for a/${h.row.routineId}:`));
+    await h.fire(next);
+    await expect.poll(async () => (await f.store.recentFires(h.row)).length).toBe(2);
+    const latest = (await f.store.recentFires(h.row))[0];
+    expect(latest).toMatchObject({ status: 'error' });
+    expect(latest?.warning).not.toBe('Previous warning');
+    expect(diagnostic.messages).toHaveLength(1);
+  });
   it('marks abandoned accepted work interrupted on startup without reinvocation', async () => {
     const h = await setup();
     expect(await f.store.interruptAbandonedDispatches()).toBe(1);
