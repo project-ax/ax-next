@@ -3153,6 +3153,15 @@ describe('mcp-oauth callback route', () => {
             mcpServers: [server('srv', 'https://mcp.example.com/mcp'), server('srv2', 'https://elsewhere.example/mcp')],
           }),
         ],
+        [
+          // The runtime sends the oauth slot's token to EVERY server with the
+          // slot's server name, so a second same-name server added at a new
+          // address would receive it even though the first still matches.
+          'a second server with the oauth slot\'s server name was added at another address',
+          connectorFixture({
+            mcpServers: [server('srv', 'https://mcp.example.com/mcp'), server('srv', 'https://elsewhere.example/mcp')],
+          }),
+        ],
         ['the oauth slot was removed mid-flow', connectorFixture({ credentials: [] })],
         ['the server the oauth slot names was removed mid-flow', connectorFixture({ mcpServers: [] })],
       ])('TASK-887. %s → reason=sign-in-failed before any token exchange; nothing written', async (_label, changed) => {
@@ -3190,6 +3199,21 @@ describe('mcp-oauth callback route', () => {
               connectorFixture({
                 credentials: [{ slot: 'oauth-main', kind: 'oauth', server: 'srv-renamed', scopes: ['read'] }],
                 mcpServers: [server('other', 'https://other.example/mcp'), server('srv-renamed', 'https://mcp.example.com/mcp')],
+              }),
+          },
+        });
+        expect(out.order).toEqual(['set', 'attach', 'clear']);
+        expect(out.state.redirectUrl).toBe(
+          'https://app.example.com/settings/connectors?connector=conn-1&oauth=success&agentId=agent-1',
+        );
+      });
+
+      it('TASK-887. a second same-name server at the SAME address still signs in', async () => {
+        const out = await run({
+          stubs: {
+            'connectors:get': () =>
+              connectorFixture({
+                mcpServers: [server('srv', 'https://mcp.example.com/mcp'), server('srv', 'https://mcp.example.com/mcp')],
               }),
           },
         });

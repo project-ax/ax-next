@@ -644,8 +644,9 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
       return;
     }
     // The address this sign-in is FOR, stored raw as the pending row's
-    // `resource`. The callback derives it again the same way and refuses when
-    // the connector no longer points here (TASK-887): change one, change the other.
+    // `resource`. The callback finds the slot the same way and refuses unless
+    // every server with this name still points here (TASK-887): change one,
+    // change the other.
     const server = caps.mcpServers.find((s) => s.name === slot.server);
     if (!server || !server.url) {
       res.status(400).json({ error: 'oauth slot references no mcpServer with a url' });
@@ -1001,16 +1002,20 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
     // connector's token to wherever its oauth slot's server points NOW, so it
     // must not land. Refused here, before the client lookup, discovery, the
     // token exchange, the vault write and the attach.
-    // Derived exactly as `begin` derives `resource` (the first oauth slot, the
-    // first server named by its `server`, that server's raw `url`) and compared
-    // raw with the `resource` `begin` stored, so an unchanged connector always
-    // matches and a respelling refuses (the safe direction). Keep the two in step.
+    // The slot is found exactly as `begin` finds it (the first oauth slot), and
+    // EVERY server named by its `server` must still sit at the raw `url` `begin`
+    // stored as `resource` — not just the first one `begin` read: @ax/mcp-client
+    // has sent a slot's token to every server with that name, so a second
+    // same-name server added at a new address mid-flow must refuse too. Compared
+    // raw, so an unchanged connector always matches and a respelling refuses
+    // (the safe direction). No such server at all refuses. Keep in step with
+    // `begin`.
     const oauthSlotNow = connector.capabilities.credentials.find((c) => c.kind === 'oauth');
-    const resourceNow =
+    const serversNow =
       oauthSlotNow === undefined
-        ? undefined
-        : connector.capabilities.mcpServers.find((s) => s.name === oauthSlotNow.server)?.url;
-    if (resourceNow !== pending.resource) {
+        ? []
+        : connector.capabilities.mcpServers.filter((s) => s.name === oauthSlotNow.server);
+    if (serversNow.length === 0 || !serversNow.every((s) => s.url === pending.resource)) {
       logger.warn('mcp_oauth_callback_failed', { stage: 'connector-changed', connectorId });
       fail('sign-in-failed');
       return;
