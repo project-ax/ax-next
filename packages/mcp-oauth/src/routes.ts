@@ -892,6 +892,7 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
     const agentId = pending.agentId;
     /** Redirect the popup with a failure. Nothing has been written, or it was undone. */
     const fail = (reason: OAuthFailureReason): void => {
+      // nosemgrep: javascript.express.open-redirect-deepsemgrep.open-redirect-deepsemgrep, javascript.express.web.tainted-redirect-express.tainted-redirect-express -- returnUrl's origin+path are config (publicOrigin + connectorReturnPath); the ids come from the consumed server-side state and are URI-encoded query values; pinned by routes.test.ts 'never leaves publicOrigin'
       res.redirect(returnUrl(connectorId, 'error', agentId, reason));
     };
 
@@ -1223,6 +1224,7 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
       });
     }
 
+    // nosemgrep: javascript.express.open-redirect-deepsemgrep.open-redirect-deepsemgrep, javascript.express.web.tainted-redirect-express.tainted-redirect-express -- same as the error redirect above: fixed origin+path, encoded ids
     res.redirect(returnUrl(connectorId, 'success', agentId));
   }
 
