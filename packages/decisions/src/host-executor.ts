@@ -15,6 +15,11 @@
  *     `tool.execute-host`, so routing a credentialed connector call through
  *     one would hand a compromised runner a host-side path to third-party
  *     servers that skips the approval gate.
+ *   * And only in the producer's own STRICT key shape (review F5): a tool name
+ *     of 1-128 printable ASCII characters, `CONNECTOR_CALL_TOOL_KEY_RE` below.
+ *     The label parser takes any `mcp.<ns>.<anything>`, but the hook answers
+ *     `invalid-call` for a name outside its shape, so routing one to the host
+ *     would only spend the person's yes on that refusal. It parks instead.
  *   * And only when it was held during a TASK RUN (review F1): the row's
  *     stored attendance is not `attended`. A connector call held in a chat
  *     stays the agent's, even after its session ended, exactly as before
@@ -46,6 +51,15 @@ import type { Decision } from './types.js';
 
 /** @ax/mcp-client's service: the host makes one approved connector call. */
 export const CONNECTOR_CALL_TOOL_HOOK = 'connectors:call-tool';
+
+/**
+ * The toolKey shape `connectors:call-tool` accepts (review F5): our namespace,
+ * then a tool name of 1-128 printable ASCII characters. A local twin of
+ * @ax/mcp-client's `CONNECTOR_TOOL_KEY_RE`, re-declared rather than imported
+ * (invariant 2) and pinned to the same literal by a test on each side, so a
+ * key one side would take and the other would refuse cannot appear unnoticed.
+ */
+export const CONNECTOR_CALL_TOOL_KEY_RE = /^mcp\.(c[0-9a-f]{10})\.([\x21-\x7e]{1,128})$/;
 
 /**
  * A definite answer. Every reason but `tool-error` means nothing completed.
@@ -114,7 +128,8 @@ export type HostExecutor = { kind: 'tool'; hook: string } | { kind: 'connector' 
 /**
  * A connector toolKey (parseConnectorToolKey !== null) is host-executable ONLY
  * via the connector hook — never via a `tool:execute:<key>` even if one exists
- * — and only for a decision held during a task run (`attendance` is not
+ * — and only in the hook's strict shape (`CONNECTOR_CALL_TOOL_KEY_RE`, review
+ * F5) and for a decision held during a task run (`attendance` is not
  * `attended`, review F1). Anything else needs `tool:execute:<name>`, whatever
  * its attendance. Null means the host cannot run it.
  *
@@ -127,6 +142,7 @@ export function hostExecutorFor(
 ): HostExecutor | null {
   const toolName = decision.call.name;
   if (parseConnectorToolKey(toolName) !== null) {
+    if (!CONNECTOR_CALL_TOOL_KEY_RE.test(toolName)) return null;
     if (decision.attendance === 'attended') return null;
     return bus.hasService(CONNECTOR_CALL_TOOL_HOOK) ? { kind: 'connector' } : null;
   }

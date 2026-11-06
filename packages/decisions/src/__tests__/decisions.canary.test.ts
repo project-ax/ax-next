@@ -3155,6 +3155,27 @@ describe('decisions canary — approved connector calls run on the host (TASK-10
     expect(connector.calls).toEqual([]);
   });
 
+  // Review F5. The hook takes only a 1-128 printable-ASCII tool name and
+  // answers `invalid-call` for anything else. A key only the label parser
+  // accepts must park, not go to the host to spend the yes on that refusal.
+  it.each([
+    ['a non-ASCII tool name', 'mcp.c5e0235982f.créer_problème'],
+    ['a spaced tool name', 'mcp.c5e0235982f.save comment'],
+    ['a 129-character tool name', `mcp.c5e0235982f.${'a'.repeat(129)}`],
+  ])('a held connector call with %s parks rather than replaying (review F5)', async (_label, name) => {
+    const h = await boot();
+    const connector = recordConnectorCalls(h);
+    const call = { ...CONNECTOR_CALL, id: 'c-loose', name };
+    const id = await holdAndId(h, routineCtx(h), call);
+
+    const out = await approve(h, userCtx(h), id, SHOWN);
+
+    expect(connector.calls).toEqual([]);
+    expect(out.decision!.status).toBe('approved-pending-agent');
+    expect(out.executed).toBe(false);
+    expect(out.path).toBeNull();
+  });
+
   it('a host tool’s replay is unaffected by the flag (review F2)', async () => {
     const h = await boot();
     const executor = recordExecutor(h, HOLD_RULE.match.tool);

@@ -2,7 +2,11 @@ import { describe, it, expect, vi } from 'vitest';
 import { PluginError, createLogger, makeAgentContext, type AgentContext } from '@ax/core';
 import { createCallTool, type CallToolDeps } from '../connector-inventory/call-tool.js';
 import type { CallServerToolOptions, ServerCallOutcome } from '../connector-inventory/call-server-tool.js';
-import { ConnectorCallToolOutputSchema } from '../connector-inventory/types.js';
+import {
+  CONNECTOR_TOOL_KEY_RE,
+  ConnectorCallToolInputSchema,
+  ConnectorCallToolOutputSchema,
+} from '../connector-inventory/types.js';
 
 // ---------------------------------------------------------------------------
 // TASK-1046 — `connectors:call-tool`: the host makes ONE call a person
@@ -613,5 +617,26 @@ describe('ConnectorCallToolOutputSchema', () => {
     {},
   ])('rejects %j', (out) => {
     expect(ConnectorCallToolOutputSchema.safeParse(out).success).toBe(false);
+  });
+});
+
+// Review F5. @ax/decisions routes a connector key to this hook only when it
+// matches THIS shape, re-declared on its side (invariant 2: no import). Pinned
+// to the same literal there (decisions' host-executor.test.ts), so a one-sided
+// change is loud: a key only one side accepts would be routed to the host just
+// to spend the person's yes on `invalid-call`.
+describe('CONNECTOR_TOOL_KEY_RE — the shape @ax/decisions routes on', () => {
+  it('is pinned by literal on both sides', () => {
+    expect(CONNECTOR_TOOL_KEY_RE.source).toBe('^mcp\\.(c[0-9a-f]{10})\\.([\\x21-\\x7e]{1,128})$');
+    expect(CONNECTOR_TOOL_KEY_RE.flags).toBe('');
+  });
+
+  it.each([
+    ['a non-ASCII tool name', 'mcp.c5e0235982f.créer_problème'],
+    ['a spaced tool name', 'mcp.c5e0235982f.save comment'],
+    ['a 129-character tool name', `mcp.c5e0235982f.${'a'.repeat(129)}`],
+  ])('the input schema refuses %s', (_label, toolKey) => {
+    const parsed = ConnectorCallToolInputSchema.safeParse({ userId: 'u1', agentId: 'a1', toolKey, input: {} });
+    expect(parsed.success).toBe(false);
   });
 });

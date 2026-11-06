@@ -13,6 +13,7 @@ import { describe, expect, it } from 'vitest';
 import { HookBus } from '@ax/core';
 import {
   CONNECTOR_CALL_TOOL_HOOK,
+  CONNECTOR_CALL_TOOL_KEY_RE,
   hostExecutorFor,
   hostExecutorForApproval,
 } from '../host-executor.js';
@@ -146,5 +147,41 @@ describe('hostExecutorForApproval — only a request shown whole reaches the hos
     expect(hostExecutorForApproval(bus, held(CONNECTOR_KEY, 'attended'), { requestShownInFull: true })).toBeNull();
     expect(hostExecutorForApproval(busWith(), held(CONNECTOR_KEY), { requestShownInFull: true })).toBeNull();
     expect(hostExecutorForApproval(bus, held('skill_propose'), { requestShownInFull: true })).toBeNull();
+  });
+});
+
+/**
+ * Review F5. `connectors:call-tool` accepts only the STRICT key shape, a tool
+ * name of 1-128 printable ASCII characters, and answers `invalid-call` for
+ * anything else. A key only the label parser accepts (`.+`: spaces, non-ASCII,
+ * any length) would be routed to the host just to spend the person's yes on
+ * that refusal. So such a key has no host executor: it parks for the agent.
+ */
+describe('hostExecutorFor — only the producer’s strict key shape reaches the host (review F5)', () => {
+  it('is @ax/mcp-client’s own CONNECTOR_TOOL_KEY_RE, literal for literal', () => {
+    // Re-declared, never imported (invariant 2). mcp-client's
+    // connector-call-tool.test.ts pins its regex to this same literal.
+    expect(CONNECTOR_CALL_TOOL_KEY_RE.source).toBe('^mcp\\.(c[0-9a-f]{10})\\.([\\x21-\\x7e]{1,128})$');
+    expect(CONNECTOR_CALL_TOOL_KEY_RE.flags).toBe('');
+  });
+
+  const NS = 'mcp.c5e0235982f.';
+  it.each([
+    ['a non-ASCII tool name', `${NS}créer_problème`],
+    ['a spaced tool name', `${NS}save comment`],
+    ['a 129-character tool name', `${NS}${'a'.repeat(129)}`],
+    ['a tool name with a newline', `${NS}save\ncomment`],
+  ])('%s parks rather than replaying', (_label, name) => {
+    const bus = busWith('connectors:call-tool', `tool:execute:${name}`);
+    // It is still a connector key to the label parser…
+    expect(hostExecutorFor(bus, held(name))).toBeNull();
+    // …and never falls through to a `tool:execute:<key>` either.
+    expect(hostExecutorForApproval(bus, held(name), { requestShownInFull: true })).toBeNull();
+  });
+
+  it('a 128-character printable tool name, the longest the producer takes, still goes to the host', () => {
+    const bus = busWith('connectors:call-tool');
+    expect(hostExecutorFor(bus, held(`${NS}${'a'.repeat(128)}`))).toEqual({ kind: 'connector' });
+    expect(hostExecutorFor(bus, held(`${NS}linear.save_comment-v2`))).toEqual({ kind: 'connector' });
   });
 });
