@@ -223,6 +223,66 @@ describe('attachments:commit handler (blob-backed, id-addressed)', () => {
     expect((await store.getFileById('a-twice'))?.conversationId).toBe('c-1');
   });
 
+  // TASK-1063: the commit deletes the staged row, so a second commit of the
+  // same id usually finds no staged row at all. Resend after a turn refused
+  // before the person's message was saved does exactly that: it names the
+  // same ids again, in the same conversation.
+  it('TASK-1063: naming a committed id again in the same conversation, after its staged upload is gone, answers with the stored row', async () => {
+    const { store, db } = await freshSetup();
+    const { bus, puts } = makeBusWithBlob();
+    const handler = createCommitHandler({ store, bus });
+    await stage(store, 'a-again');
+    const first = await handler(makeCtx('u-1'), { attachmentId: 'a-again', conversationId: 'c-1' });
+    expect(await store.getTemp('a-again')).toBeNull();
+
+    const second = await handler(makeCtx('u-1'), { attachmentId: 'a-again', conversationId: 'c-1' });
+
+    const stored = {
+      attachmentId: 'a-again',
+      filename: 'greeting.txt',
+      sha256: HELLO_SHA,
+      mediaType: 'text/plain',
+      sizeBytes: 11,
+    };
+    expect(first).toStrictEqual(stored);
+    expect(second).toStrictEqual(stored);
+    // The bytes are stored once; the second commit writes nothing.
+    expect(puts).toHaveLength(1);
+    const rows = await db.selectFrom('attachments_v1_files').select('attachment_id').execute();
+    expect(rows).toEqual([{ attachment_id: 'a-again' }]);
+  });
+
+  it('TASK-1063: a committed id named again in another conversation is still not found, and the first row stands', async () => {
+    const { store } = await freshSetup();
+    const { bus } = makeBusWithBlob();
+    const handler = createCommitHandler({ store, bus });
+    await stage(store, 'a-elsewhere');
+    await handler(makeCtx('u-1'), { attachmentId: 'a-elsewhere', conversationId: 'c-1' });
+
+    await expect(
+      handler(makeCtx('u-1'), { attachmentId: 'a-elsewhere', conversationId: 'c-2' }),
+    ).rejects.toMatchObject({ code: 'not-found' });
+    expect((await store.getFileById('a-elsewhere'))?.conversationId).toBe('c-1');
+  });
+
+  it('TASK-1063: a committed id named again by another person is refused exactly like an unknown id', async () => {
+    const { store } = await freshSetup();
+    const { bus } = makeBusWithBlob();
+    const handler = createCommitHandler({ store, bus });
+    await stage(store, 'a-mine', { userId: 'u-1' });
+    await handler(makeCtx('u-1'), { attachmentId: 'a-mine', conversationId: 'c-1' });
+
+    const err = await handler(makeCtx('u-2'), { attachmentId: 'a-mine', conversationId: 'c-1' })
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(PluginError);
+    expect(err).toMatchObject({ code: 'not-found', message: "attachmentId 'a-mine' not found or expired" });
+
+    // The words an id that never existed gets: nothing says the file is real.
+    await expect(
+      handler(makeCtx('u-2'), { attachmentId: 'a-unknown', conversationId: 'c-1' }),
+    ).rejects.toMatchObject({ code: 'not-found', message: "attachmentId 'a-unknown' not found or expired" });
+  });
+
   it('rejects unknown attachmentId with not-found', async () => {
     const { store } = await freshSetup();
     const { bus } = makeBusWithBlob();

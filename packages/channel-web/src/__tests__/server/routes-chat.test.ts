@@ -2264,7 +2264,7 @@ describe('@ax/channel-web GET /api/chat/agents', () => {
 //
 //   - a client-sent `attachment` block → 400 invalid-content-block, before
 //     anything is committed (only a committed ref may become one)
-//   - attachmentId not found in temp store → 400 attachment-not-found
+//   - attachmentId neither staged nor already committed to this conversation by this person → 400 attachment-not-found
 //   - attachmentId belongs to a different user → 400 attachment-foreign-user
 //   - cumulative attachment bytes > 100 MiB → 413 attachment-total-too-large
 //
@@ -2598,4 +2598,97 @@ describe('POST /api/chat/messages — attachment_ref handling', () => {
     // deadline tracks the work, not the runner's mood. (Every other test here
     // fits the default — only the 120 MiB payload needs this.)
   }, 30_000);
+
+  // TASK-1063: a turn refused before the person's message was saved leaves its
+  // files committed into the conversation, with no saved message naming them.
+  // Resend then names the same ids again, in the same conversation.
+  async function stagedNotePdf(booted: BootResult): Promise<string> {
+    const stored = await booted.harness.bus.call<unknown, { attachmentId: string }>(
+      'attachments:store-temp',
+      userCtx('userA'),
+      {
+        bytes: Buffer.from('hello pdf bytes'),
+        displayName: 'note.pdf',
+        mediaType: 'application/pdf',
+      },
+    );
+    return stored.attachmentId;
+  }
+
+  it('TASK-1063: a resend that names a file already sent in this conversation is accepted and carries it again', async () => {
+    const booted = await boot({
+      user: { id: 'userA', isAdmin: false },
+      allowedFor: new Set(['userA']),
+      includeAttachments: true,
+    });
+    harnesses.push(booted.harness);
+    const attachmentId = await stagedNotePdf(booted);
+    const contentBlocks = [
+      { type: 'text', text: 'have a look' },
+      { type: 'attachment_ref', attachmentId },
+    ];
+
+    const r1 = await postMessage(booted.port, { conversationId: null, agentId: 'agt_test', contentBlocks });
+    expect(r1.status).toBe(202);
+    const { conversationId } = (await r1.json()) as { conversationId: string };
+    await vi.waitFor(() => expect(booted.chatRunCaptures).toHaveLength(1), {
+      timeout: 30_000,
+      interval: 5,
+    });
+
+    const r2 = await postMessage(booted.port, { conversationId, agentId: 'agt_test', contentBlocks });
+    expect(r2.status).toBe(202);
+    await vi.waitFor(() => expect(booted.chatRunCaptures).toHaveLength(2), {
+      timeout: 30_000,
+      interval: 5,
+    });
+
+    // Both turns carry the same file, as first committed. 15 is
+    // `'hello pdf bytes'.length`.
+    const block = {
+      type: 'attachment',
+      attachmentId,
+      filename: 'note.pdf',
+      mediaType: 'application/pdf',
+      sizeBytes: 15,
+    };
+    expect(booted.chatRunCaptures[0]!.input.message.contentBlocks).toStrictEqual([block]);
+    expect(booted.chatRunCaptures[1]!.input.message.contentBlocks).toStrictEqual([block]);
+    expect(booted.chatRunCaptures[1]!.ctx.conversationId).toBe(conversationId);
+  });
+
+  it('TASK-1063: a resend that names a file already sent in another conversation is refused, and the file stays put', async () => {
+    const booted = await boot({
+      user: { id: 'userA', isAdmin: false },
+      allowedFor: new Set(['userA']),
+      includeAttachments: true,
+    });
+    harnesses.push(booted.harness);
+    const attachmentId = await stagedNotePdf(booted);
+    const contentBlocks = [
+      { type: 'text', text: 'have a look' },
+      { type: 'attachment_ref', attachmentId },
+    ];
+
+    const r1 = await postMessage(booted.port, { conversationId: null, agentId: 'agt_test', contentBlocks });
+    expect(r1.status).toBe(202);
+    const { conversationId } = (await r1.json()) as { conversationId: string };
+    await vi.waitFor(() => expect(booted.chatRunCaptures).toHaveLength(1), {
+      timeout: 30_000,
+      interval: 5,
+    });
+
+    // A new chat: the route opens another conversation, where this id is not
+    // this person's file.
+    const r2 = await postMessage(booted.port, { conversationId: null, agentId: 'agt_test', contentBlocks });
+    expect(r2.status).toBe(400);
+    expect(await r2.json()).toEqual({ error: 'attachment-not-found' });
+    // The route refuses before it dispatches, so there is nothing to wait for.
+    expect(booted.chatRunCaptures).toHaveLength(1);
+    const listed = await booted.harness.bus.call<
+      { conversationId: string },
+      { files: Array<{ attachmentId: string }> }
+    >('attachments:list-for-conversation', userCtx('userA'), { conversationId });
+    expect(listed.files.map((f) => f.attachmentId)).toEqual([attachmentId]);
+  });
 });
