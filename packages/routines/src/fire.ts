@@ -170,7 +170,7 @@ const DEFAULT_TURN_END_GRACE_MS = 60_000;
  * never chose its connectors, so it leaves the routine's last warning alone.
  */
 function refusedBeforeAssembly(reason: string): boolean {
-  return reason.startsWith('chat:start:') || reason.startsWith('agent-resolve:') || reason.startsWith('system-prompt:') || reason.startsWith('conversation:');
+  return reason.startsWith('chat:start:') || reason.startsWith('agent-resolve:') || reason.startsWith('system-prompt:') || reason === 'conversation:message-not-saved';
 }
 
 /**

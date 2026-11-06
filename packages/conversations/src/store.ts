@@ -1104,8 +1104,10 @@ export function createConversationStore(
       //     pg_advisory_xact_lock call, whose snapshot registers BEFORE the
       //     lock is granted — so a predecessor that commits while we block on
       //     the lock would be invisible, we'd mint its seq, and hit the PK.
-      //     With the retry loop gone that now THROWS, and the persist callers
-      //     log-and-swallow, so the event drops again (noisily this time).
+      //     With the retry loop gone that now THROWS after the connection was
+      //     handed over, so append-event does not retry it (TASK-1059) and
+      //     the event is lost: the card subscribers log it, the person's own
+      //     message ends its turn, and event.turn-end answers 500.
       //     Postgres defaults to READ COMMITTED and nothing here overrides it.
       //     Do not raise the isolation default without revisiting this.
       //

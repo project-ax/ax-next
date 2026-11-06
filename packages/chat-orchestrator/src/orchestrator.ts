@@ -2683,7 +2683,10 @@ export function createOrchestrator(
     // a reply to a message missing from the transcript — the gap the person
     // finds on reload. It ends before routing, queueing, binding or spawning,
     // so a turn already running on this conversation is untouched (ctx.sessionId
-    // here is a placeholder, and nothing below this refusal runs). The reason is
+    // here is a placeholder, and nothing below this refusal runs). One known
+    // leftover, shared with every other pre-routing refusal: channel-web bound
+    // `active_req_id` to this reqId at POST time, and nothing clears it, since
+    // only a turn-end does and this turn never has one. The reason is
     // read by routines (`refusedBeforeAssembly`) and channel-web
     // (`turn-error-labels.ts`); it carries no detail and no `error`, since a
     // `chat:end` subscriber could log either raw.

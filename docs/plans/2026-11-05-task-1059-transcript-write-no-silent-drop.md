@@ -261,7 +261,7 @@ Read at 75ad36aa7. Three things were then **MEASURED** by read-only runs and thr
 - [ ] **Step 1: Write the failing test** `TASK-1059) a message that cannot be saved ends the turn before it is routed`. Model it on the queue-work failure test (`:564-600`).
   - **Setup:**
     - `buildMocks({ conversations: { 'conv-ns': { activeSessionId: 's-live' } }, liveSessions: new Set(['s-live']) })`.
-    - Override `conversations:append-event` to throw `new Error('PRIVATE row text from 10.0.0.7')`, and `session:terminate` with a counting stub.
+    - Override `conversations:append-event` to throw `new Error('PRIVATE row text from <a private address>')`, and `session:terminate` with a counting stub.
     - Add probe subscribers that collect `chat:turn-error` and `chat:end` payloads.
     - Collect lines with `createLogger({ reqId: 'req-NS', writer })`.
     - Boot the orchestrator with `chatTimeoutMs: 1_000`, as the template does. On unfixed code the turn routes into `s-live` and nothing ends it, so the red run waits for that timeout.
@@ -355,7 +355,7 @@ This is a copy-only map entry. The strip, its headline and Resend already exist,
 - The broadcast is skipped on this path. That is pre-existing and listed as a follow-up.
 
 - [ ] **Step 1: Write the failing test** `POST /event.turn-end — a persist failure logs one code-only line (TASK-1059)`.
-  - Set up like `:959-1015`, but the stub throws `new Error('PRIVATE row text from 10.0.0.7')`.
+  - Set up like `:959-1015`, but the stub throws `new Error('PRIVATE row text from <a private address>')`.
   - Capture `process.stdout` with `captureWrites` from `ipc-http/src/__tests__/listener.test.ts:276-287`. It spies on `write`, records `String(chunk)` and calls through. The listener's ctx uses the default stdout logger (`ipc-server/src/listener.ts:190`). Restore the spy afterwards.
   - The status is 500.
   - Exactly one parsed line has `msg === 'event_persist_failed'`. It matches `{ level: 'error', hook: '/event.turn-end', code: 'unknown', name: 'PluginError', causeName: 'Error', hookName: 'conversations:append-event', plugin: 'mock' }` and has no `err`.
