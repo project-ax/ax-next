@@ -345,3 +345,39 @@ describe('replayConnectorCall — what the hook answered (TASK-1046)', () => {
     expect(JSON.stringify(lines)).not.toContain('ENG-1');
   });
 });
+
+describe('replayConnectorCall — whose call it is (TASK-1046)', () => {
+  it('the payload names the decision’s owner and agent even when the ctx names someone else', async () => {
+    // Every production caller hands in the decision's own ctx
+    // (`replayContext`), and @ax/mcp-client refuses a ctx that does not match
+    // the payload (`invalid-call`, nothing sent). What is pinned here is the
+    // other half: the identity the hook re-derives access from is read off the
+    // DECISION ROW, never off whichever ctx the caller happened to hold.
+    const decision = claimed();
+    const other = makeAgentContext({
+      sessionId: 'approve-session',
+      agentId: 'approver-agent',
+      userId: 'approver-user',
+    });
+    const h = busFor({});
+
+    await replayConnectorCall({ bus: h.bus, ctx: other, decision });
+
+    expect(h.calls).toHaveLength(1);
+    expect(h.calls[0]!.input).toEqual({
+      userId: 'owner-1',
+      agentId: 'agent-1',
+      toolKey: 'mcp.c5e0235982f.save_comment',
+      input: { issueId: 'ENG-1', body: 'Shipped', nested: { b: 2, a: [1, 2] } },
+    });
+    // And the policy re-check asks about the decision's agent: for a connector
+    // key, `tool-policy:evaluate` reads its verdicts off this field.
+    expect(h.policy[0]!.input).toEqual({
+      call: {
+        name: 'mcp.c5e0235982f.save_comment',
+        input: { issueId: 'ENG-1', body: 'Shipped', nested: { b: 2, a: [1, 2] } },
+      },
+      agentId: 'agent-1',
+    });
+  });
+});

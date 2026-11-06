@@ -293,6 +293,11 @@ describe('reclaimStrandedReplays', () => {
  * connector call on a row nothing has closed: an Undo could land mid-call, and
  * a byte-identical agent call could cash the same yes — the double send the
  * flight exists to prevent.
+ *
+ * And both sweep paths must make the call as the DECISION's owner and agent,
+ * never as the sweep (`logCtx` is the sweep's own ctx, user and agent
+ * `sweep`): @ax/mcp-client re-derives access from that pair, and refuses a ctx
+ * that does not match the payload.
  */
 describe('the sweep and approved connector calls (TASK-1046)', () => {
   const CONNECTOR_CALL: ToolCall = {
@@ -301,22 +306,43 @@ describe('the sweep and approved connector calls (TASK-1046)', () => {
     input: { issueId: 'ENG-1', body: 'Shipped' },
   };
 
-  /** A connector host; each call records the row's flight marker at the moment it was made. */
-  function connectorHost(store: FakeStore): { bus: HookBus; flightAtCall: Array<string | null> } {
+  /** What the connector hook saw: who asked, what was sent, and the row's flight marker at that moment. */
+  interface ConnectorCallSeen {
+    ctx: { userId: string; agentId: string };
+    payload: unknown;
+    flight: string | null;
+  }
+
+  /** The decision's own identity, the only one these calls may run under. */
+  const DECISION_CTX = { userId: 'owner-1', agentId: 'agent-1' };
+  const SENT = {
+    userId: 'owner-1',
+    agentId: 'agent-1',
+    toolKey: 'mcp.c5e0235982f.save_comment',
+    input: { issueId: 'ENG-1', body: 'Shipped' },
+  };
+
+  function connectorHost(store: FakeStore): {
+    bus: HookBus;
+    calls: ConnectorCallSeen[];
+    policyCtx: Array<{ userId: string; agentId: string }>;
+  } {
     const bus = new HookBus();
-    const flightAtCall: Array<string | null> = [];
-    bus.registerService('tool-policy:evaluate', 'test', async () => ({
-      verdict: 'hold',
-      ruleId: null,
-      capability: null,
-      irreversible: false,
-      effect: [],
-    }));
-    bus.registerService('connectors:call-tool', 'test', async () => {
-      flightAtCall.push(store.rows.get('dec_conn')?.replayClaimedAt ?? null);
+    const calls: ConnectorCallSeen[] = [];
+    const policyCtx: Array<{ userId: string; agentId: string }> = [];
+    bus.registerService('tool-policy:evaluate', 'test', async (ctx) => {
+      policyCtx.push({ userId: ctx.userId, agentId: ctx.agentId });
+      return { verdict: 'hold', ruleId: null, capability: null, irreversible: false, effect: [] };
+    });
+    bus.registerService('connectors:call-tool', 'test', async (ctx, payload) => {
+      calls.push({
+        ctx: { userId: ctx.userId, agentId: ctx.agentId },
+        payload,
+        flight: store.rows.get('dec_conn')?.replayClaimedAt ?? null,
+      });
       return { outcome: 'succeeded' };
     });
-    return { bus, flightAtCall };
+    return { bus, calls, policyCtx };
   }
 
   it('a hand-over that finds nobody takes the flight before the host makes the connector call', async () => {
@@ -333,15 +359,47 @@ describe('the sweep and approved connector calls (TASK-1046)', () => {
         deliveryDueAt: new Date(NOW.getTime() - ONE_SEC).toISOString(),
       }),
     );
-    const { bus, flightAtCall } = connectorHost(store);
+    const { bus, calls, policyCtx } = connectorHost(store);
 
     // No `session:queue-work` on this bus: the hand-over reaches nobody, so the
     // host makes the approved call itself.
     expect(await runDueDeliveries({ store, bus, now: NOW, logCtx })).toBe(1);
 
-    expect(flightAtCall).toEqual([NOW.toISOString()]);
+    expect(calls).toEqual([{ ctx: DECISION_CTX, payload: SENT, flight: NOW.toISOString() }]);
+    expect(policyCtx).toEqual([DECISION_CTX]);
     expect(store.rows.get('dec_conn')).toMatchObject({
       status: 'executed',
+      replayedAt: NOW.toISOString(),
+    });
+  });
+
+  it('a deferred connector replay is made through connectors:call-tool, as the decision’s owner and agent', async () => {
+    // Structural, and unreachable today: tool-policy answers
+    // `irreversible: false` for every connector key, so no connector approval
+    // defers. The deferred path still asks the same helper, and the undo-window
+    // follow-up (should outward connector writes wait?) would open it.
+    const store = createFakeStore();
+    store.rows.set(
+      'dec_conn',
+      base({
+        id: 'dec_conn',
+        status: 'executed',
+        attendance: 'unattended',
+        irreversible: true,
+        call: CONNECTOR_CALL,
+        resolvedAt: new Date(NOW.getTime() - 11 * ONE_SEC).toISOString(),
+        replayDueAt: new Date(NOW.getTime() - ONE_SEC).toISOString(),
+      }),
+    );
+    const { bus, calls, policyCtx } = connectorHost(store);
+
+    expect(await runDueReplays({ store, bus, now: NOW, logCtx })).toBe(1);
+
+    expect(calls).toEqual([{ ctx: DECISION_CTX, payload: SENT, flight: NOW.toISOString() }]);
+    expect(policyCtx).toEqual([DECISION_CTX]);
+    expect(store.rows.get('dec_conn')).toMatchObject({
+      status: 'executed',
+      replayDueAt: null,
       replayedAt: NOW.toISOString(),
     });
   });
@@ -360,13 +418,13 @@ describe('the sweep and approved connector calls (TASK-1046)', () => {
       resolvedAt: new Date(NOW.getTime() - 2 * 24 * 60 * 60 * ONE_SEC).toISOString(),
     });
     store.rows.set(parked.id, parked);
-    const { bus, flightAtCall } = connectorHost(store);
+    const { bus, calls } = connectorHost(store);
 
     await runDueReplays({ store, bus, now: NOW, logCtx });
     await runDueDeliveries({ store, bus, now: NOW, logCtx });
     await reclaimStrandedReplays({ store, now: NOW, logCtx });
 
-    expect(flightAtCall).toEqual([]);
+    expect(calls).toEqual([]);
     expect(store.rows.get('dec_conn')).toEqual(parked);
   });
 });
