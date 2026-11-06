@@ -1,7 +1,7 @@
 # Chat visuals: agent-authored HTML rendered inline in chat
 
 Date: 2026-11-05
-Status: draft (brainstorm output, awaiting approval)
+Status: approved 2026-11-05; plan: docs/plans/2026-11-05-chat-visuals-plan.md
 
 ## Intent
 
@@ -67,19 +67,41 @@ Vinay chose "scripts allowed, in a box." The box:
 - **No network.** The frame's CSP denies all fetch, connect, image, font, frame and media loads
   from anywhere off-document (`default-src 'none'`, with only inline script/style and `data:`/`blob:`
   where needed for rendering and export). No CDNs, no tracking pixels, no beacons.
+- **WebRTC is outside CSP.** No CSP directive covers `RTCPeerConnection`, and no engine honors
+  `webrtc 'block'`. The frame runtime therefore locks `RTCPeerConnection` and its relatives before
+  any agent markup runs. A visual that could open a child browsing context could get a fresh,
+  unlocked realm (srcdoc children inherit sandbox and CSP, but not our runtime), so we stop those
+  too, in layers:
+  - The parent runs agent HTML through a `DOMParser` sanitizer that strips `iframe`, `frame`,
+    `frameset`, `object`, `embed`, `portal`, `fencedframe` and `noscript`, plus `shadowrootmode`
+    attributes (template content included).
+  - The runtime runs a `MutationObserver` that purges the same elements (including inside open
+    shadow hosts) and locks `attachShadow`, `setHTML`, `setHTMLUnsafe`, `parseHTML`,
+    `parseHTMLUnsafe`, `document.write`, `document.open` and `XSLTProcessor`.
+  - A `window.length` kill switch removes the document and reports an error if a child frame
+    still appears. The parent unmounts the frame on any `ax-visual:error`.
+  - `ready.locked` is advisory only; the parent does not rely on it.
+- **Parent `frame-src 'none'`.** The chat page's CSP sets `frame-src 'none'`, which blocks the
+  frame's own navigation and any remote frame. We verified in Chromium, Firefox and WebKit that it
+  does not block `srcdoc` frames, so the visual itself still renders.
+- **Residual risk.** This defense is enumeration-based. A future browser API that creates a
+  shadow root or child browsing context without going through the locked entry points would bypass
+  it. No engine honors CSP `webrtc 'block'`. The airtight alternative is rendering visuals from a
+  separate origin.
 - **The parent trusts nothing from the frame.** The only channel is `postMessage`. The parent
   checks that `event.source` is that exact frame's `contentWindow`, accepts only a small fixed set
   of message types (size report, export result), validates and clamps every field (height capped,
   export payload size capped, MIME type checked), and never evaluates or renders the frame's
   strings as markup.
-- **Size cap** on the HTML: 100 KB (my call). The model writes the HTML itself, so it stays in
+- **Size cap** on the HTML: 100 KB, built as 102,400 bytes. The model writes the HTML itself, so it stays in
   the model's history and gets re-sent on every later turn in both runners. 100 KB is about 25k
   tokens, which is a tolerable worst case. Typical charts and cards are far smaller, because the
   chart library and theme are injected and don't count toward the cap. Over the cap, the tool
   call fails with a clear error, so the agent can simplify and retry. v1 does not strip old
   visuals from history.
-- **There is no app-wide CSP today**, so the frame's own CSP meta tag is the only policy. It must
-  be first in the srcdoc `<head>`, ahead of anything model-authored.
+- **The frame's own CSP meta tag** must be first in the srcdoc `<head>`, ahead of anything
+  model-authored. The parent page's CSP (`frame-src 'none'`, above) is a second layer, and the srcdoc
+  inherits it, so both policies apply.
 - Invoke the `security-checklist` skill: this is untrusted content crossing into the UI.
 
 ## How it fits (my calls; the builder may revise with reason)
@@ -90,7 +112,9 @@ The agent produces a visual by calling a tool, roughly `show_visual({ title, sum
 
 **Route (Vinay chose this, option A).** Model-written tool *input* never reaches the browser.
 That rule is deliberate (invariant #5, `channel-web/src/lib/workspace-steps.ts`) and **stays
-untouched**. Instead, the visual follows the same route `artifact_publish` chips use today:
+untouched**. As built, the input is never rendered or forwarded past the stream reader;
+`stepDetail` keeps one fenced line and nothing more. As built, the input is never rendered or forwarded past the stream reader; `stepDetail`
+keeps one fenced line (the title) and nothing more. Instead, the visual follows the same route `artifact_publish` chips use today:
 
 1. The sandbox-side executor validates the input (required fields, the size cap), then streams the
    HTML bytes to the host blob store (`blob.put`) and records the metadata row
@@ -134,8 +158,8 @@ field names backend-neutral: `visual`, `title`, `summary`, not storage terms.
   `postMessage`. The parent clamps the height to a sane maximum. No inner scrollbars below that
   maximum, and space is reserved while loading so the thread doesn't jump.
 - **While it's being written:** the live stream has no partial tool input (the `tool-use` chunk
-  arrives complete). v1 adds no new streaming event. The existing activity phrase covers the
-  wait; add a "Making a visual…" entry to `activity-phrase-map.ts` (my call). When the call
+  arrives complete). v1 adds no new streaming event. The tool descriptor's `activityPhrase`
+  ("Making a visual") covers the wait; there is no `activity-phrase-map.ts` entry. When the call
   lands, reserve the card's space and fade the frame in.
 - **Failure:** if the HTML throws or renders nothing, the summary text still stands. Show a quiet
   "This visual couldn't be displayed" state instead of a broken box.
@@ -150,16 +174,17 @@ field names backend-neutral: `visual`, `title`, `summary`, not storage terms.
   tokens go and the
   light/dark mode into the frame at creation. It posts again whenever the theme changes, and the
   frame swaps variables without reloading.
-- Fonts: Inter (and the mono stack) are inlined into the srcdoc as `data:` or base64 `@font-face`,
-  because the frame can't fetch them. The builder can pick a subset to keep the size down.
+- Fonts: only Inter is inlined into the srcdoc, as a Latin subset in a base64 `@font-face`,
+  because the frame can't fetch it. Mono is the system stack, not inlined.
 - A small base stylesheet in the frame (body margin, typography, card surface) means a bare
   `<div>` already looks like AX.
 - **One pinned chart library**, vendored into channel-web's build (not loaded from a CDN) and
-  pre-themed to the AX palette, so the default chart output is on-brand. My suggestion is
-  Chart.js for its size, tooltip defaults and MIT license; the builder may pick another small,
-  well-maintained, MIT/Apache library and justify it. New dependency, so supply-chain checklist.
-- **The agent's instructions** (an addition to `communicationNote()` in
-  `agent-runner-core/src/system-prompt.ts`, or the tool's description) say three things. Style
+  pre-themed to the AX palette, so the default chart output is on-brand. As built: chart.js
+  4.5.1 (MIT) for the chart library and html-to-image 1.11.13 for PNG export, both pinned,
+  raw-imported (`?raw`) and used only inside the frame, never in the app bundle. New dependencies,
+  so supply-chain checklist.
+- **The agent's instructions** live in the `show_visual` tool description (not in
+  `communicationNote()`), so both runners get them and they appear only where the tool does. They say three things. Style
   only with the provided CSS variables, never raw colors or other fonts. Use the provided chart
   library. Always write a plain-text summary alongside the visual. They also state the
   "when to reach for a visual" rule from Goal 4.
@@ -168,9 +193,12 @@ field names backend-neutral: `visual`, `title`, `summary`, not storage terms.
 
 All generated client-side; no server-side renderer.
 
-- **HTML:** a standalone file containing the same assembled document (theme frozen at the current
-  mode, fonts and chart library inlined, the CSP meta tag kept so it stays offline when opened
-  from disk).
+- **HTML:** a script-free wrapper page. Its CSP equals the frame CSP (srcdoc frames inherit the
+  parent CSP, so the wrapper must not be looser), and it embeds the assembled visual (theme frozen at
+  the current mode, fonts and chart library inlined) in a `sandbox="allow-scripts"` srcdoc iframe.
+  Agent script therefore never runs top-level when the file is opened from disk, and it stays
+  offline. Separately, `/api/files` serves `html`, `xhtml`, `svg` and `xml` as
+  `application/octet-stream`, so a stored visual can't be navigated to as a document.
 - **PNG:** the parent asks the frame to snapshot itself (the opaque origin means the parent can't
   read its pixels). The frame runtime rasterizes its own DOM using a small vendored
   DOM-to-image helper, at 2x, and posts back a PNG blob. Canvas-based charts are drawn directly.
@@ -201,7 +229,8 @@ All generated client-side; no server-side renderer.
 
 ## Left to the builder
 
-- The tool's exact name and schema, the size cap and the max height.
+- The tool's exact name and schema, the size cap and the max height. Built as `show_visual`,
+  102,400 bytes, and a max frame height of 1200 px.
 - The choice of chart and DOM-to-image libraries (pinned, vendored, justified).
 - Font subsetting strategy.
 - Exact token list passed to the frame, and the chart palette values.
