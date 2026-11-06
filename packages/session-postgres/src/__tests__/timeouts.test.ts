@@ -300,6 +300,12 @@ describe('against a real database', () => {
     const waited = rejectedAt - p.acceptedAt[1]!;
     expect(waited).toBeGreaterThanOrEqual(800);
     expect(waited).toBeLessThan(3_000);
+    // TASK-1061: a failed init leaves no reconnect behind. A failed LISTEN
+    // connect schedules its next attempt 1 s later, and only shutdown()
+    // cancels it, so this guards init's cleanup. (It passed before TASK-1061
+    // too, when nothing reconnected.)
+    await new Promise((r) => setTimeout(r, 2_500));
+    expect(p.acceptedAt).toHaveLength(2);
   }, 15_000);
 
   it('the LISTEN client waits 5 seconds when checkoutTimeoutMs is not set', async () => {

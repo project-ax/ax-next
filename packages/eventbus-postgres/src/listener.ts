@@ -15,9 +15,17 @@ import type { Logger } from '@ax/core';
  * A connect the database accepts but never answers fails after
  * `connectTimeoutMs` and joins the same backoff chain. Without the bound it
  * hung forever, and every emit and subscribe waited on it.
+ *
+ * A connect still in flight when shutdown() runs ends its own client as soon
+ * as it lands, and everyone waiting on it is refused.
  */
 
 export type ListenerHandler = (rawJson: string) => void;
+
+// TASK-1061: pg's TCP keepalive is off by default. First probe after this long
+// idle; Node then probes every 1 s, 10 times (its documented setKeepAlive
+// socket options), so a dead peer shows up in about 20 s. Not configurable.
+const KEEPALIVE_INITIAL_DELAY_MS = 10_000;
 
 export interface ListenerOptions {
   connectionString: string;
@@ -68,6 +76,11 @@ export class Listener {
     const client = new pg.Client({
       connectionString: this.opts.connectionString,
       connectionTimeoutMillis: this.opts.connectTimeoutMs,
+      // TASK-1061: this connection is idle most of the time, exactly where a
+      // vanished peer goes unnoticed. Set here, not in the URL (pg ignores a
+      // URL `keepalives` param). Detection takes ~20 s.
+      keepAlive: true,
+      keepAliveInitialDelayMillis: KEEPALIVE_INITIAL_DELAY_MS,
     });
     client.on('error', (err) => this.onClientError(err));
     client.on('notification', (msg) => this.onNotification(msg));
@@ -84,6 +97,13 @@ export class Listener {
       });
       this.scheduleReconnect();
       throw err;
+    }
+    if (this.shutdownRequested) {
+      // shutdown() ran while this connect was in flight and doesn't wait for
+      // it. End the client here, and refuse the caller rather than let it
+      // NOTIFY after shutdown.
+      void client.end().catch(() => {}); // not awaited: end() can wait on a server that stopped answering
+      throw new Error('eventbus-postgres listener is shut down');
     }
     this.client = client;
     this.backoffStep = 0;

@@ -6,7 +6,9 @@ import {
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { Kysely, PostgresDialect } from 'kysely';
 import pg from 'pg';
+import type { Logger } from '@ax/core';
 import { createInbox } from '../inbox.js';
+import { ListenConnection } from '../listen-connection.js';
 import { runSessionMigration, type SessionDatabase } from '../migrations.js';
 
 // ---------------------------------------------------------------------------
@@ -14,8 +16,8 @@ import { runSessionMigration, type SessionDatabase } from '../migrations.js';
 //
 // We can't easily force the race through the public plugin surface — pg's
 // LISTEN query usually completes quickly enough that two queued claims
-// don't overlap deterministically. So we wrap the real listenClient with a
-// proxy whose `query()` delays the FIRST LISTEN long enough for a second
+// don't overlap deterministically. So we wrap the real LISTEN connection's
+// `query()` so it delays the FIRST LISTEN long enough for a second
 // concurrent ensureListen call to read the same `cur = 0`.
 //
 // With the bug present (the original increment-after-await), both calls
@@ -41,6 +43,14 @@ afterAll(async () => {
 
 const opened: { destroy: () => Promise<void> }[] = [];
 
+const logger: Logger = {
+  debug: () => {},
+  info: () => {},
+  warn: () => {},
+  error: () => {},
+  child: () => logger,
+};
+
 afterEach(async () => {
   while (opened.length > 0) {
     const o = opened.pop()!;
@@ -65,39 +75,39 @@ describe('inbox ensureListen TOCTOU', () => {
     opened.push({ destroy: () => db.destroy().catch(() => {}) as unknown as Promise<void> });
     await runSessionMigration(db);
 
-    // Real LISTEN client, but we wrap its `query` to inject a delay on the
+    // Real LISTEN connection, but we wrap its `query` to inject a delay on the
     // first LISTEN call. That delay is what gives the second concurrent
     // ensureListen call a chance to read cur = 0 before our increment lands.
-    const listenClient = new pg.Client({ connectionString });
-    await listenClient.connect();
-    opened.push({ destroy: () => listenClient.end().catch(() => {}) as unknown as Promise<void> });
+    const listen = new ListenConnection({
+      connectionString,
+      connectTimeoutMs: 5_000,
+      keepAliveInitialDelayMs: 10_000,
+      logger,
+    });
+    opened.push({ destroy: () => listen.shutdown() });
+    await listen.ensureConnected();
 
-    const realQuery = listenClient.query.bind(listenClient);
+    const realQuery = listen.query.bind(listen);
     let firstListenSeen = false;
-    // Cast through unknown — pg's overloaded query() signature is hard to
-    // satisfy structurally in TS, but functionally we forward all calls.
-    (listenClient as unknown as { query: (...args: unknown[]) => unknown }).query = ((
-      ...args: unknown[]
-    ) => {
-      const sqlText = args[0];
-      if (typeof sqlText === 'string' && sqlText.startsWith('LISTEN ') && !firstListenSeen) {
+    listen.query = (text, values) => {
+      if (text.startsWith('LISTEN ') && !firstListenSeen) {
         firstListenSeen = true;
         return new Promise((resolve, reject) => {
           // 200ms is enough for a second ensureListen to ride past the
           // pre-await read of `cur` and reproduce the clobber.
           setTimeout(() => {
-            (realQuery as (...a: unknown[]) => Promise<unknown>)(...args).then(resolve, reject);
+            realQuery(text, values).then(resolve, reject);
           }, 200);
         });
       }
-      return (realQuery as (...a: unknown[]) => unknown)(...args);
-    }) as typeof listenClient.query;
+      return realQuery(text, values);
+    };
 
     // Insert a session row directly so isTerminated returns false. Inbox
     // doesn't read sessions; we just need a sessionId.
     const inbox = createInbox({
       db,
-      listenClient,
+      listen,
       isTerminated: async () => false,
     });
 

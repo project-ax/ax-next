@@ -1,6 +1,7 @@
 import pg from 'pg';
 import { sql, type Kysely } from 'kysely';
 import { PluginError, type AgentMessage } from '@ax/core';
+import type { ListenConnection } from './listen-connection.js';
 import type { SessionDatabase } from './migrations.js';
 
 const PLUGIN_NAME = '@ax/session-postgres';
@@ -140,10 +141,13 @@ interface PerSessionWaiter {
 interface InboxOptions {
   db: Kysely<SessionDatabase>;
   /**
-   * Independent pg.Client used solely for LISTEN. Its lifecycle is owned
-   * by the plugin (init opens, shutdown ends).
+   * The dedicated LISTEN connection (also used for pg_notify). Its lifecycle
+   * is owned by the plugin (init connects, shutdown ends). When Postgres ends
+   * it, it reconnects and LISTENs on every channel this inbox still counts
+   * before anyone can use it again; `createInbox` binds the notification
+   * handler and that channel set.
    */
-  listenClient: pg.Client;
+  listen: ListenConnection;
   /**
    * Function returning whether a session has been terminated. Lives in
    * the store layer; we accept a callback so the inbox doesn't need its
@@ -153,7 +157,7 @@ interface InboxOptions {
 }
 
 export function createInbox(opts: InboxOptions): Inbox {
-  const { db, listenClient, isTerminated } = opts;
+  const { db, listen, isTerminated } = opts;
 
   // channel -> set of waiters. The channel name is derived from
   // sessionId via channelFor(); we key by channel (not sessionId) so the
@@ -162,7 +166,7 @@ export function createInbox(opts: InboxOptions): Inbox {
   const waitersByChannel = new Map<string, Set<PerSessionWaiter>>();
   // channel -> count of LISTEN refs (for UNLISTEN bookkeeping)
   const listenedChannels = new Map<string, number>();
-  // Once shutdown() runs, the kysely instance + listen client are about
+  // Once shutdown() runs, the kysely instance + listen connection are about
   // to be destroyed by the plugin. Any in-flight wakeWaiter that's
   // mid-await would otherwise see "driver has already been destroyed"
   // and surface as an unhandled rejection (we void-fire wakeWaiter so
@@ -171,16 +175,21 @@ export function createInbox(opts: InboxOptions): Inbox {
   // wake itself bail out instead of throwing into the void.
   let shuttingDown = false;
 
-  // Single notification handler — fans out to every waiter on the
-  // notified channel. Each waiter carries its own real sessionId.
-  listenClient.on('notification', (msg) => {
-    if (shuttingDown) return;
-    const waiters = waitersByChannel.get(msg.channel);
-    if (waiters === undefined || waiters.size === 0) return;
-    // Snapshot — wake() can mutate the set.
-    for (const w of [...waiters]) {
-      void wakeWaiter(w);
-    }
+  listen.bind({
+    // Single notification handler — fans out to every waiter on the
+    // notified channel. Each waiter carries its own real sessionId.
+    onNotification: (msg) => {
+      if (shuttingDown) return;
+      const waiters = waitersByChannel.get(msg.channel);
+      if (waiters === undefined || waiters.size === 0) return;
+      // Snapshot — wake() can mutate the set.
+      for (const w of [...waiters]) {
+        void wakeWaiter(w);
+      }
+    },
+    // What a reconnect LISTENs on again: every channel still counted. Read
+    // live, so a channel released mid-replay is skipped.
+    channels: () => listenedChannels.keys(),
   });
 
   async function wakeWaiter(w: PerSessionWaiter): Promise<void> {
@@ -285,7 +294,7 @@ export function createInbox(opts: InboxOptions): Inbox {
       // quotes; even though our channel passed the regex, escapeIdentifier
       // is the documented-correct way to embed an identifier into SQL.
       try {
-        await listenClient.query(`LISTEN ${pg.escapeIdentifier(channel)}`);
+        await listen.query(`LISTEN ${pg.escapeIdentifier(channel)}`);
       } catch (err) {
         // LISTEN failed — roll back the increment so the bookkeeping doesn't
         // leak. Use the live value (other concurrent ensureListen calls may
@@ -300,9 +309,11 @@ export function createInbox(opts: InboxOptions): Inbox {
       const next = (listenedChannels.get(channel) ?? 1) - 1;
       if (next <= 0) {
         listenedChannels.delete(channel);
-        // Best-effort: if the client is dead, the next reconnect simply
-        // won't re-LISTEN.
-        await listenClient.query(`UNLISTEN ${pg.escapeIdentifier(channel)}`).catch(() => {});
+        // Best-effort, and never opens a connection: with no live client,
+        // ListenConnection's reconnect simply won't LISTEN on this channel
+        // again (it replays only the channels still counted, and this one
+        // no longer is).
+        await listen.queryIfConnected(`UNLISTEN ${pg.escapeIdentifier(channel)}`);
       } else {
         listenedChannels.set(channel, next);
       }
@@ -369,8 +380,9 @@ export function createInbox(opts: InboxOptions): Inbox {
         );
       }
 
-      // Fan out to listeners. pg_notify takes both args as parameters.
-      await listenClient.query(`SELECT pg_notify($1, $2)`, [channel, '']);
+      // Fan out to listeners. pg_notify takes both args as parameters. A
+      // failure still rejects the caller (the row has landed by now).
+      await listen.query(`SELECT pg_notify($1, $2)`, [channel, '']);
       return { cursor: assigned };
     },
 
@@ -429,9 +441,10 @@ export function createInbox(opts: InboxOptions): Inbox {
       // that flag to resolve as timeout.
       const channel = channelFor(sessionId);
       // pg_notify is parameter-bound; the channel was sanitized above.
-      // Even if the listenClient is mid-reconnect, this notify is best-
-      // effort — the local waiters will hit their timeout if we miss them.
-      await listenClient
+      // While ListenConnection is reconnecting, this waits for (or starts)
+      // its connect; if that fails, the notify is best-effort — the local
+      // waiters will hit their timeout if we miss them.
+      await listen
         .query(`SELECT pg_notify($1, $2)`, [channel, ''])
         .catch(() => {
           // Mirror eventbus-postgres: terminate is best-effort.
