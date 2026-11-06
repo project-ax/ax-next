@@ -15,7 +15,7 @@ import {
   CONNECTOR_ID_TAKEN_REQUEST_MESSAGE,
   type Connector,
 } from '@/lib/connectors';
-import { HttpError, userFacingMessage } from '@/lib/http';
+import { isConfirmedRefusal, userFacingMessage } from '@/lib/http';
 import { connectorIdFromName, pointsSomewhereNew } from '@/lib/connector-form';
 import {
   putToolPermissions,
@@ -422,10 +422,13 @@ export function RemoteMcpConnectorForm({
     onOpenChange(false);
   }
 
-  /** Why a secret write was refused, when the server said (a leading space
-   *  and the sentence), else nothing. */
+  /** Why a secret write was refused, when the server answered about the key
+   *  itself (a leading space and the sentence), else nothing. A server error,
+   *  a missing route or a dropped connection says nothing about the key, and a
+   *  sentence about it ("The server ran into a problem.") would contradict
+   *  "Try saving again." */
   function secretWriteReason(err: unknown): string {
-    return err instanceof HttpError ? ` ${userFacingMessage(err, 'connector-editor')}` : '';
+    return isConfirmedRefusal(err) ? ` ${userFacingMessage(err, 'connector-editor')}` : '';
   }
 
   function toolPermissionsSaveError(err: unknown): string {

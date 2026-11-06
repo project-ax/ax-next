@@ -457,7 +457,7 @@ describe('RemoteMcpConnectorForm — pointing a connector somewhere new signs ev
     fireEvent.click(saveButton());
     expect(
       await screen.findByText(
-        /^We saved the connector, but couldn’t save the key\. Try saving again\./,
+        'We saved the connector, but couldn’t save the key. Try saving again.',
       ),
     ).toBeVisible();
     expect(calls).toEqual([
@@ -483,6 +483,24 @@ describe('RemoteMcpConnectorForm — pointing a connector somewhere new signs ev
     expect(writes[2]!.body).toEqual(writes[0]!.body);
     expect(signOuts).toBe(1);
     expect(vault.get(SHARED_KEY_REF)).toBe(btoa('new-shared-key'));
+  });
+
+  it('partial save: a 503 from the key store adds no reason that contradicts the sentence', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    discover = () => KEY_SERVER;
+    failingCredentialWrites = 1;
+    failingCredentialStatus = 503;
+    await openEditor(sharedKeyConnector(), { [SHARED_KEY_REF]: 'old-shared-key' });
+    await moveTo('https://mcp.other-crm.example/mcp');
+    fireEvent.change(screen.getByLabelText('Value'), {
+      target: { value: 'new-shared-key' },
+    });
+    fireEvent.click(saveButton());
+    expect(
+      await screen.findByText(
+        'We saved the connector, but couldn’t save the key. Try saving again.',
+      ),
+    ).toBeVisible();
   });
 
   it('partial save: a rejected key (422) shows the reason after the saved-the-connector sentence', async () => {
@@ -539,7 +557,7 @@ describe('RemoteMcpConnectorForm — pointing a connector somewhere new signs ev
     fireEvent.click(saveButton());
     expect(
       await screen.findByText(
-        /^We saved the connector, but couldn’t save the client secret\. Try saving again\./,
+        'We saved the connector, but couldn’t save the client secret. Try saving again.',
       ),
     ).toBeVisible();
     expect(options.onSaved).not.toHaveBeenCalled();

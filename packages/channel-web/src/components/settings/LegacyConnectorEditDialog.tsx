@@ -54,7 +54,7 @@ import {
   type ConnectorWriteBase,
   type ServiceDescriptor,
 } from '@/lib/connectors';
-import { HttpError, userFacingMessage } from '@/lib/http';
+import { isConfirmedRefusal, userFacingMessage } from '@/lib/http';
 import {
   emptyConnectorForm,
   emptySlotRow,
@@ -695,9 +695,10 @@ export function LegacyConnectorEditDialog({
         } catch (err) {
           // The connector is saved; only the secret is missing. Stay open —
           // the typed secret is still in the field, and Save writes it. When
-          // the server said why it refused the secret, say that too.
+          // the server answered about the secret itself, say why too; a server
+          // error says nothing about it and would contradict "Try saving again".
           setError(
-            err instanceof HttpError
+            isConfirmedRefusal(err)
               ? `${CLIENT_SECRET_AFTER_SAVE_FAILED_MESSAGE} ${userFacingMessage(err, 'connector-editor')}`
               : CLIENT_SECRET_AFTER_SAVE_FAILED_MESSAGE,
           );
