@@ -7,6 +7,11 @@
 // one of four known shapes. Anything else is dropped without a word: other
 // windows (an OAuth popup, an extension, another visual) post to this window
 // too, and none of them get to drive this one.
+//
+// The other direction (parent -> frame: `ax-visual:theme`, `ax-visual:export`,
+// `ax-visual:visible`) is validated by the frame runtime, which acts only on
+// messages from its parent window. A frame echoing one of those types back is
+// just an unknown type here, and dropped.
 
 import { VISUAL_MAX_HEIGHT, VISUAL_MIN_HEIGHT } from './visual-doc';
 

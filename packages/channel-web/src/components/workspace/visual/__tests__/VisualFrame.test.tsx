@@ -237,6 +237,32 @@ describe('VisualFrame', () => {
       expect(screen.getByText(FAILED)).toBeInTheDocument();
     });
 
+    it('(BUG-2) tells a ready frame each time its card comes on screen', async () => {
+      mount();
+      const { win } = await frameWindow();
+      const postSpy = vi.spyOn(win, 'postMessage');
+      const visibleCalls = () =>
+        postSpy.mock.calls.filter(([m]) => (m as { type?: string }).type === 'ax-visual:visible');
+      scroll(false);
+      fromFrame(win, READY);
+      expect(visibleCalls()).toEqual([]);
+      scroll(true);
+      expect(visibleCalls()).toEqual([[{ type: 'ax-visual:visible' }, '*']]);
+      scroll(false);
+      scroll(true);
+      expect(visibleCalls()).toHaveLength(2);
+    });
+
+    it('(BUG-2) a frame that says ready while on screen hears visible at once', async () => {
+      mount();
+      const { win } = await frameWindow();
+      const postSpy = vi.spyOn(win, 'postMessage');
+      scroll(true);
+      expect(postSpy).not.toHaveBeenCalledWith({ type: 'ax-visual:visible' }, '*'); // not ready yet
+      fromFrame(win, READY);
+      expect(postSpy).toHaveBeenCalledWith({ type: 'ax-visual:visible' }, '*');
+    });
+
     it('a card that comes on screen and says ready in time is shown', async () => {
       vi.useFakeTimers({ shouldAdvanceTime: true });
       mount();

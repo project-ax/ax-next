@@ -5,7 +5,13 @@
 //
 // It runs inside the untrusted box and grants nothing: the sandbox and CSP
 // are the boundary. It reports size/ready/error to the parent, applies live
-// theme changes, exports a PNG, and themes Chart.js.
+// theme changes, exports a PNG, themes Chart.js, and keeps charts fitted to
+// their containers.
+//
+// Messages it takes, only from the parent window (`event.source === host`):
+//   { type: 'ax-visual:theme', mode: 'light'|'dark', tokens }  live theme
+//   { type: 'ax-visual:export', requestId, format: 'png' }      PNG snapshot
+//   { type: 'ax-visual:visible' }                               card came into view: refit charts
 //
 // It also adds hardening the CSP can't. CSP doesn't govern WebRTC, so the
 // runtime pins the WebRTC constructors to undefined. That only holds in this
@@ -254,11 +260,17 @@ window.axVisualRuntime = function axVisualRuntime(win, host) {
     apply(raf, win, [everyFrame]);
   }
   var clearTimer = win.clearInterval;
-  var timer = typeof setTimer === 'function' ? apply(setTimer, win, [check, 250]) : undefined;
+  // The timer also refits charts once ready (see fitCharts). The child check
+  // always runs first, and fitCharts can't throw.
+  function tick() {
+    check();
+    if (ready && !killed) fitCharts();
+  }
+  var timer = typeof setTimer === 'function' ? apply(setTimer, win, [tick, 250]) : undefined;
   function slowTimer() {
     if (timer === undefined || typeof clearTimer !== 'function') return;
     apply(clearTimer, win, [timer]);
-    timer = apply(setTimer, win, [check, 1000]);
+    timer = apply(setTimer, win, [tick, 1000]);
   }
 
   var TOKEN_NAMES = [
@@ -447,6 +459,7 @@ window.axVisualRuntime = function axVisualRuntime(win, host) {
         var h = measure();
         lastHeight = h;
         post({ type: 'ax-visual:ready', height: h, rendered: hasContent(doc.body) && h >= 8, locked: locked });
+        fitCharts();
       });
     });
   });
@@ -653,6 +666,47 @@ window.axVisualRuntime = function axVisualRuntime(win, host) {
     }
   }
 
+  // Chrome can run this frame in its own process, and the document may parse
+  // before the frame's size arrives: a chart built then measures a 0x0 page.
+  // Chart.js would catch up through ResizeObserver plus requestAnimationFrame,
+  // and neither runs in a frame the browser isn't painting (offscreen, hidden
+  // tab), so the chart can stay blank. This refits from the timer, on ready,
+  // and when the parent says the card came into view: a responsive chart
+  // that is 0 wide, or more than a pixel off its container's content width,
+  // is refit. Cheap when nothing is wrong, and never throws.
+  function fitCharts() {
+    var instances;
+    try {
+      instances = win.Chart && win.Chart.instances;
+      if (!instances || typeof instances !== 'object') return;
+      instances = Object.keys(instances).map(function (key) {
+        return instances[key];
+      });
+    } catch {
+      return;
+    }
+    instances.forEach(function (chart) {
+      try {
+        if (!chart || (chart.options && chart.options.responsive === false)) return;
+        var box = chart.canvas && chart.canvas.parentNode;
+        var width = box && typeof box.clientWidth === 'number' ? box.clientWidth : 0;
+        if (width > 0) {
+          var style = win.getComputedStyle(box);
+          width -= (parseFloat(style.paddingLeft) || 0) + (parseFloat(style.paddingRight) || 0);
+        }
+        if (chart.width !== 0 && !(width > 0 && Math.abs(width - chart.width) > 1)) return;
+        // While an animation is running, resize() only queues the new size for
+        // the next draw, and in an unpainted frame the intro animation never
+        // finishes (it runs on requestAnimationFrame). Stopping it first makes
+        // the resize and redraw happen now.
+        if (typeof chart.stop === 'function') chart.stop();
+        chart.resize();
+      } catch {
+        // One broken chart shouldn't stop the rest.
+      }
+    });
+  }
+
   // ---- messages from the parent -------------------------------------------
 
   function applyTheme(data) {
@@ -728,5 +782,6 @@ window.axVisualRuntime = function axVisualRuntime(win, host) {
     if (!data || typeof data !== 'object') return;
     if (data.type === 'ax-visual:theme') applyTheme(data);
     else if (data.type === 'ax-visual:export') exportImage(data);
+    else if (data.type === 'ax-visual:visible') fitCharts();
   });
 };

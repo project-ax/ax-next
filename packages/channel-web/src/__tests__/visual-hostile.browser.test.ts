@@ -210,7 +210,18 @@ describe.skipIf(CHROMIUM_MISSING && !IN_CI)('chat visual box in Chromium (hostil
     browser = await chromium.launch();
   });
 
+  // Chrome isolates a sandboxed frame in its own renderer process
+  // (IsolateSandboxedIframes), but Playwright's --disable-field-trial-config
+  // leaves that off. With it on, a frame can start parsing before its size
+  // arrives: a second browser for the tests that need the real arrangement.
+  let isolatedBrowser: Browser | undefined;
+  async function isolated(): Promise<Browser> {
+    isolatedBrowser ??= await chromium.launch({ args: ['--site-per-process', '--enable-features=IsolateSandboxedIframes'] });
+    return isolatedBrowser;
+  }
+
   afterAll(async () => {
+    await isolatedBrowser?.close();
     await browser?.close();
     await close(canary);
     await close(app);
@@ -239,12 +250,16 @@ describe.skipIf(CHROMIUM_MISSING && !IN_CI)('chat visual box in Chromium (hostil
     visuals: Record<string, string>,
     settle: string[] = Object.keys(visuals),
     settleMs = 3000,
-    { spacerPx = 0, settleTimeoutMs = 20_000 }: { spacerPx?: number; settleTimeoutMs?: number } = {},
+    {
+      spacerPx = 0,
+      settleTimeoutMs = 20_000,
+      isolate = false,
+    }: { spacerPx?: number; settleTimeoutMs?: number; isolate?: boolean } = {},
   ): Promise<Run> {
     pages.set(path, appPage(visuals, spacerPx));
     const hitsBefore = canaryHits.length;
     const connectionsBefore = tcpConnections;
-    const page = await browser.newPage();
+    const page = await (isolate ? await isolated() : browser).newPage();
     // Chromium reports a request the CSP refused as started-then-failed
     // (Playwright says `csp`), so "started" alone isn't a leak; what it
     // ended as is the evidence, alongside the canary's own log.
@@ -467,6 +482,46 @@ window.__chart = new Chart(document.getElementById('c'), {
     } finally {
       await page.close();
     }
+  });
+
+  it('(BUG-2) an offscreen chart in an isolated frame ends up sized to its container', async () => {
+    // A responsive chart built at parse time, like the walk agent's. Before
+    // the fix about 6 in 10 measured a 0-wide frame and stayed 0 offscreen.
+    const chart = `<div style="position:relative;height:200px" id="box"><canvas id="c"></canvas></div>
+<script>
+window.__chart = new Chart(document.getElementById('c'), {
+  type: 'bar',
+  data: { labels: ['a', 'b', 'c'], datasets: [{ data: [1, 2, 3] }] },
+  options: { responsive: true, maintainAspectRatio: false },
+});
+</script>`;
+    // One frame per page: frames on one page share the isolated process, so
+    // only the first pays the race. Six pages, each a fresh process.
+    const ok = (s: { chart: number; height: number; box: number }) =>
+      s.box > 0 && s.chart > 0 && s.height > 0 && Math.abs(s.chart - s.box) <= 1;
+    const offscreen: unknown[] = [];
+    const onscreen: unknown[] = [];
+    for (let i = 0; i < 6; i++) {
+      const { page } = await run(`/bug2-${i}`, { chart }, ['chart'], 0, { spacerPx: 5000, isolate: true });
+      try {
+        const frame = page.frames()[1]!;
+        const size = () =>
+          frame.evaluate(() => {
+            const w = window as unknown as { __chart: { width: number; height: number } };
+            return { chart: w.__chart.width, height: w.__chart.height, box: document.getElementById('box')!.clientWidth };
+          });
+        // Never scrolled into view: ready, then a timer tick.
+        await page.waitForTimeout(1500);
+        offscreen.push(await size());
+        await page.evaluate(() => document.querySelector('iframe')!.scrollIntoView());
+        await page.waitForTimeout(500);
+        onscreen.push(await size());
+      } finally {
+        await page.close();
+      }
+    }
+    expect(offscreen.every((s) => ok(s as Parameters<typeof ok>[0])), JSON.stringify(offscreen)).toBe(true);
+    expect(onscreen.every((s) => ok(s as Parameters<typeof ok>[0])), JSON.stringify(onscreen)).toBe(true);
   });
 
   it('a visual below the fold says ready without being scrolled into view', async () => {

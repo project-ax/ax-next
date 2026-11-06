@@ -184,6 +184,14 @@ export function VisualFrame(props: { conversationId: string; visual: ThreadVisua
     );
   }, [mode, ready, failed]);
 
+  // Tell the frame whenever its card comes into view (and on ready, if it
+  // already is). A frame the browser wasn't painting may have built a chart
+  // at 0 width; the runtime refits its charts on this.
+  useEffect(() => {
+    if (!ready || failed || !watching) return;
+    iframeRef.current?.contentWindow?.postMessage({ type: 'ax-visual:visible' }, '*');
+  }, [ready, failed, watching]);
+
   const downloadPng = () => {
     const frame = iframeRef.current?.contentWindow;
     if (!frame || !ready || failed) return;

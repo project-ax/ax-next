@@ -174,6 +174,15 @@ field names backend-neutral: `visual`, `title`, `summary`, not storage terms.
   `load` on the next animation frame or a 100 ms timer, whichever comes first. The HTML fetch
   has its own 15 s timeout, so a hung request fails and leaves the cache instead of sticking
   until a reload.
+- **Charts are refit, not trusted to size themselves.** Chrome can put a sandboxed frame in its
+  own renderer process, and the frame's document can parse before its size arrives: a Chart.js
+  chart built then measures a 0×0 page. Chart.js recovers through `ResizeObserver` and
+  `requestAnimationFrame`, and neither runs in a frame the browser isn't painting; worse, its
+  intro animation never finishes there, so even `chart.resize()` only queues the new size. The
+  frame runtime therefore refits every responsive chart that is 0 wide or more than 1 px off its
+  container (stopping its animation first) after `ready`, on its check timer, and when the parent
+  posts `{ type: 'ax-visual:visible' }`, which it does each time the card comes into view. The
+  frame acts on that message only from its parent window, like the theme and export messages.
 
 ### Matching the app's look
 

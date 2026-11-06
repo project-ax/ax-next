@@ -682,7 +682,7 @@ it("the app shell carries exactly one CSP, frame-src 'none', inside head", () =>
 **Interfaces:**
 - Consumes: the document shape from Task 9 (`#ax-fonts`, `data-max-height`).
 - Produces the wire protocol (exact):
-  - Parent → frame: `{ type: 'ax-visual:theme', mode: 'light'|'dark', tokens: Record<string,string> }` and `{ type: 'ax-visual:export', requestId: string, format: 'png' }`.
+  - Parent → frame: `{ type: 'ax-visual:theme', mode: 'light'|'dark', tokens: Record<string,string> }` and `{ type: 'ax-visual:export', requestId: string, format: 'png' }`. Added after the kind walk (BUG-2): `{ type: 'ax-visual:visible' }`, posted by VisualFrame each time a ready card comes into view; the runtime refits its charts on it.
   - Frame → parent, always `host.postMessage(msg, '*')`: `{ type: 'ax-visual:size', height }`, `{ type: 'ax-visual:ready', height, rendered }`, `{ type: 'ax-visual:error' }` (never error text) and `{ type: 'ax-visual:export-result', requestId, ok, blob? }`.
 - Produces `win.ax = { color(name): string, chartColor(name): () => string, resolve(css: string): string }`:
   - `color('chart-1')` returns `'hsl(' + <current --chart-1> + ')'`.

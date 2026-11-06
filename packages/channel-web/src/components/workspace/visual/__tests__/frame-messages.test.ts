@@ -18,6 +18,10 @@ describe('parseFrameMessage', () => {
     expect(parseFrameMessage(ev({ source: window }), frameWin, new Set())).toBeNull();
     expect(parseFrameMessage(ev({ origin: window.location.origin }), frameWin, new Set())).toBeNull();
     expect(parseFrameMessage(ev({ data: { type: 'ax-oauth-done' } }), frameWin, new Set())).toBeNull();
+    // Parent -> frame types are never accepted coming back the other way.
+    for (const type of ['ax-visual:visible', 'ax-visual:theme', 'ax-visual:export']) {
+      expect(parseFrameMessage(ev({ data: { type } }), frameWin, new Set())).toBeNull();
+    }
     expect(parseFrameMessage(ev({ data: { type: 'ax-visual:size', height: 'NaN' } }), frameWin, new Set())).toBeNull();
   });
 

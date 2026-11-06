@@ -438,6 +438,93 @@ describe('frame runtime', () => {
     });
   });
 
+  describe('(BUG-2) charts that measured an empty frame get resized', () => {
+    // A frame isolated in its own process can parse before its size arrives,
+    // so Chart.js measures 0; its own resize path needs rAF, which doesn't run
+    // offscreen. jsdom has no layout: the container's width is set by hand.
+    interface StubChart {
+      width: number;
+      canvas: HTMLCanvasElement;
+      options: { responsive?: boolean };
+      resize: Mock;
+      stop: Mock;
+    }
+    function chartIn(win: FrameWindow, width: number, containerWidth: number, responsive = true): StubChart {
+      const box = win.document.createElement('div');
+      Object.defineProperty(box, 'clientWidth', { get: () => containerWidth, configurable: true });
+      const canvas = win.document.createElement('canvas');
+      box.appendChild(canvas);
+      win.document.body.appendChild(box);
+      return { width, canvas, options: { responsive }, resize: vi.fn(), stop: vi.fn() };
+    }
+    function withCharts(make: (win: FrameWindow) => StubChart[]) {
+      let charts: StubChart[] = [];
+      const { win, host } = setup((w) => {
+        charts = make(w);
+        w.Chart = {
+          defaults: { font: {}, plugins: { tooltip: {} } },
+          register: vi.fn(),
+          instances: Object.fromEntries(charts.map((c, i) => [i, c])),
+        };
+      });
+      return { win, host, charts };
+    }
+
+    it('resizes a 0-width or wrongly sized responsive chart once ready, and leaves the rest', async () => {
+      const { win, charts } = withCharts((w) => [
+        chartIn(w, 0, 0), // nothing to measure yet: still worth a resize
+        chartIn(w, 0, 572),
+        chartIn(w, 300, 572),
+        chartIn(w, 572, 572), // right already
+        chartIn(w, 571, 572), // within a pixel
+        chartIn(w, 600, 572, false), // responsive: false keeps its own size
+      ]);
+      win.dispatchEvent(new win.Event('load'));
+      await frames();
+      expect(charts.map((c) => c.resize.mock.calls.length > 0)).toEqual([true, true, true, false, false, false]);
+      // A running intro animation would only queue the resize: stopped first.
+      const refit = charts[1]!;
+      expect(refit.stop).toHaveBeenCalled();
+      expect(refit.stop.mock.invocationCallOrder[0]!).toBeLessThan(refit.resize.mock.invocationCallOrder[0]!);
+      expect(charts[3]!.stop).not.toHaveBeenCalled();
+    });
+
+    it('keeps checking on the timer after ready, so a chart that goes wrong later is fixed', async () => {
+      let container = 572;
+      const { win, charts } = withCharts((w) => {
+        const c = chartIn(w, 572, 0);
+        Object.defineProperty(c.canvas.parentNode!, 'clientWidth', { get: () => container, configurable: true });
+        return [c];
+      });
+      win.dispatchEvent(new win.Event('load'));
+      await frames();
+      expect(charts[0]!.resize).not.toHaveBeenCalled();
+      container = 400;
+      await new Promise((r) => setTimeout(r, 1300));
+      expect(charts[0]!.resize).toHaveBeenCalled();
+    });
+
+    it('resizes on ax-visual:visible from the host only', () => {
+      const { win, host, charts } = withCharts((w) => [chartIn(w, 0, 572)]);
+      const stranger = new JSDOM('<!doctype html>', {}).window;
+      doms.push({ window: stranger });
+      sendFrom(win, stranger, { type: 'ax-visual:visible' });
+      sendFrom(win, null, { type: 'ax-visual:visible' });
+      expect(charts[0]!.resize).not.toHaveBeenCalled();
+      sendFrom(win, host, { type: 'ax-visual:visible' });
+      expect(charts[0]!.resize).toHaveBeenCalledTimes(1);
+    });
+
+    it('a chart whose resize throws does not stop the others', () => {
+      const { win, host, charts } = withCharts((w) => [chartIn(w, 0, 572), chartIn(w, 0, 572)]);
+      charts[0]!.resize.mockImplementation(() => {
+        throw new Error('boom');
+      });
+      sendFrom(win, host, { type: 'ax-visual:visible' });
+      expect(charts[1]!.resize).toHaveBeenCalledTimes(1);
+    });
+  });
+
   it('removes WebRTC for good before anything else runs', () => {
     const { win } = setup((w) => {
       (w as unknown as Record<string, unknown>).RTCPeerConnection = function RTCPeerConnection() {};
