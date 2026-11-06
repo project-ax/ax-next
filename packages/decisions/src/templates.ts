@@ -444,11 +444,13 @@ export const CLAIM_REFUSED_DETAIL =
  * The receipt when the host cannot replay the call at all — a tool that only
  * runs inside the sandbox next to the agent, which the host has no way to
  * reach once the turn has ended. This is not a failure: nothing was
- * attempted and nothing went wrong. It is a promise about the future, so it
- * says exactly that and nothing more — never "Sent", because nothing has
- * gone anywhere yet.
+ * attempted and nothing went wrong. The approval stands, but the call goes
+ * ahead only if a later run makes exactly the same request, which may never
+ * happen. So it says what is possible ("can"), not what will happen — never
+ * "Sent", because nothing has gone anywhere yet. Word for word
+ * `DECISION_PENDING_AGENT` in channel-web, pinned by literal on both sides.
  */
-export const PENDING_AGENT_RECEIPT = 'Approved — it will do this the next time it runs.';
+export const PENDING_AGENT_RECEIPT = 'Approved — it can do this the next time it tries.';
 
 /**
  * The two sentences the MODEL reads when a person has ANSWERED a call it held

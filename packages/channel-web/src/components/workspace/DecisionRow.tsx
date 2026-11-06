@@ -17,7 +17,7 @@
  *     primary button changes its wording, because approving now means
  *     something different than it did a second ago.
  *   - `approved-pending-agent` — a real yes for an action that HAS NOT
- *     HAPPENED. It reads "it will do this the next time it runs", never "Sent".
+ *     HAPPENED. It reads "it can do this the next time it tries", never "Sent".
  *   - approved-but-deferred — an irreversible action, authorised, still inside
  *     its grace period. Nothing has gone out; Undo genuinely stops it.
  *   - resolved-with-undo — for ten seconds after an action, taking it back is

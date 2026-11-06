@@ -295,7 +295,8 @@ describe('the AW-5 authored receipts', () => {
 
   it('PENDING_AGENT_RECEIPT never says the call went out', () => {
     expect(PENDING_AGENT_RECEIPT).not.toMatch(/sent/i);
-    expect(PENDING_AGENT_RECEIPT).toMatch(/next time it runs/i);
+    expect(PENDING_AGENT_RECEIPT).toMatch(/next time it tries/i);
+    expect(PENDING_AGENT_RECEIPT).toBe('Approved — it can do this the next time it tries.');
   });
 
   it('FAILED_RECEIPT does not claim the call succeeded', () => {

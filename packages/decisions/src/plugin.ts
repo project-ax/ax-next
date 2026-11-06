@@ -892,8 +892,8 @@ export function createDecisionsPlugin(opts?: DecisionsPluginOptions): Plugin {
 
           if (parked) {
             // The row IS the receipt. `approved-pending-agent` with nothing yet
-            // consumed reads back as "Approved — it will do this the next time
-            // it runs" (see `receiptFor`), so there is nothing to announce here
+            // consumed reads back as "Approved — it can do this the next time
+            // it tries" (see `receiptFor`), so there is nothing to announce here
             // and nothing that can announce it wrongly.
             return inert(claimed);
           }

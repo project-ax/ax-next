@@ -94,7 +94,7 @@ export const RECEIPT_STATUSES: readonly DecisionStatus[] = DECISION_STATUSES.fil
  * settled, and the difference is the whole of TASK-447. For four of the five
  * outcomes below nothing was sent, nothing was moved and nothing was spent, and
  * all four still owe the person a line — "you turned this down", "it ran out of
- * time", "it tried and it failed", "it will do this next time it runs" are
+ * time", "it tried and it failed", "it can do this the next time it tries" are
  * things that happened to them. Only `executed` claims the action itself
  * occurred.
  *

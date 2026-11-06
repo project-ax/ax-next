@@ -134,9 +134,9 @@ export const DECISION_STALE_SUMMARY = 'Needs another look — things changed sin
  * either.
  */
 export const DECISION_PENDING_AGENT =
-  'Approved — it will do this the next time it runs.';
+  'Approved — it can do this the next time it tries.';
 export const DECISION_PENDING_AGENT_NOTE =
-  'It needs its own tools for this one, so it happens on its next run rather than now.';
+  'Nothing has happened yet. It can only do this during one of its own runs, and that run had already ended. If a later run makes exactly this request, it goes ahead without asking you again.';
 
 /**
  * Approved, irreversible, and the grace period has not run out yet.

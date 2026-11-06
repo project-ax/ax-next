@@ -14,7 +14,7 @@
  *
  * The row that matters most is `approved-pending-agent`. It is a REAL approval
  * for an action that HAS NOT HAPPENED — the host cannot make the call itself and
- * the agent will do it on its next run. Both renderers say exactly that, and
+ * it goes ahead only if a later run makes the identical call. Both renderers say exactly that, and
  * neither of them says "Sent".
  */
 import { act } from 'react';
@@ -28,6 +28,7 @@ import {
   DECISION_GOING_OUT,
   DECISION_GOING_OUT_NOTE,
   DECISION_PENDING_AGENT,
+  DECISION_PENDING_AGENT_NOTE,
   DECISION_ROUTINE_UNDERWAY,
   DECISION_ROUTINE_UNDERWAY_NOTE,
   DECISION_STALE_LEAD,
@@ -136,6 +137,19 @@ describe('one row, three renderers — the outcome line', () => {
       expect(inThread).toContain(c.line);
     });
   }
+
+  it('the parked line and note say plainly what will happen (TASK-1046)', () => {
+    // Pinned by literal: `@ax/decisions` pins the headline on its side
+    // (templates.test.ts), so neither copy can drift without a red test.
+    expect(DECISION_PENDING_AGENT).toBe('Approved — it can do this the next time it tries.');
+    expect(DECISION_PENDING_AGENT_NOTE).toBe(
+      'Nothing has happened yet. It can only do this during one of its own runs, and that run had already ended. If a later run makes exactly this request, it goes ahead without asking you again.',
+    );
+    const parked = resolvedFixture('approved-pending-agent');
+    for (const text of [queueText(parked), cardText(parked)]) {
+      expect(text).toContain(DECISION_PENDING_AGENT_NOTE);
+    }
+  });
 
   it('never claims an unattended-parked approval was sent', () => {
     // The one sentence this whole surface exists to get right. The host CANNOT

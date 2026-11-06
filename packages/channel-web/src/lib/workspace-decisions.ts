@@ -13,7 +13,7 @@
  * pick a status to flip TO, this file would have to know which of five outcomes
  * the approval will take, which is the machine, rebuilt on the client, from
  * memory, and wrong for three of them. A row that briefly says "Sent" and then
- * corrects itself to "it will do this the next time it runs" has already told
+ * corrects itself to "it can do this the next time it tries" has already told
  * someone something untrue (design H1).
  *
  * A FAILED POST CHANGES NOTHING AND SAYS SO. The row is left exactly as it was

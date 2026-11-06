@@ -404,7 +404,7 @@ describe('the sweep and approved connector calls (TASK-1046)', () => {
     });
   });
 
-  it('never picks up a row already parked for the agent: it was approved for "the next time it runs"', async () => {
+  it('never picks up a row already parked for the agent: it was approved for "the next time it tries"', async () => {
     // Decision 7. A parked connector approval keeps its status once the host
     // CAN make the call: firing a days-old call out of context would surprise
     // the person who said yes to something else.

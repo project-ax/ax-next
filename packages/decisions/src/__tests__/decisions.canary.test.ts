@@ -907,7 +907,7 @@ describe('decisions canary — execute on approve', () => {
     // `approvedText` says the call may run and would read as "done" next to a
     // decision where nothing has happened yet.
     expect(receipts[0]!.receipt).not.toBe(stored.approvedText);
-    expect(receipts[0]!.receipt).toContain('the next time it runs');
+    expect(receipts[0]!.receipt).toContain('the next time it tries');
   });
 
   it('two concurrent approvals execute exactly once', async () => {
@@ -1550,7 +1550,7 @@ describe('decisions canary — attendance and delivery', () => {
     // run in. Nothing can run here whichever branch is taken, which is exactly
     // why the STATUS is the thing to assert: `executed` would be a claim that
     // the call went out, and `approved-pending-agent` is the honest answer that
-    // the approval stands and the agent will perform it next time it runs.
+    // the approval stands and the agent goes ahead if a later run makes the identical call.
     const channels = liveChannels();
     const h = await boot({}, undefined, channels);
     const ctx = userCtx(h);
@@ -1568,7 +1568,7 @@ describe('decisions canary — attendance and delivery', () => {
     const receipts = await readReceipts(h);
     expect(receipts).toHaveLength(1);
     expect(receipts[0]!.outcome).toBe('pending-agent');
-    expect(receipts[0]!.receipt).toContain('the next time it runs');
+    expect(receipts[0]!.receipt).toContain('the next time it tries');
 
     // The approval is REAL and waits at the gate — `approved-pending-agent` is
     // one of the two AUTHORISING_STATUSES, and a status the host chose for a
@@ -1718,11 +1718,11 @@ describe('decisions canary — attendance and delivery', () => {
     expect((await sweepNow(h)).delivered).toBe(1);
     expect((await readDecision(h, ctx, id)).status).toBe('approved-pending-agent');
 
-    // "Approved — it will do this the next time it runs", never "Sent".
+    // "Approved — it can do this the next time it tries", never "Sent".
     const receipts = await readReceipts(h);
     expect(receipts).toHaveLength(1);
     expect(receipts[0]!.outcome).toBe('pending-agent');
-    expect(receipts[0]!.receipt).toContain('the next time it runs');
+    expect(receipts[0]!.receipt).toContain('the next time it tries');
 
     // And the yes is still there to be cashed in, once.
     expect((await h.bus.fire('tool:pre-call', ctx, SANDBOX_CALL)).rejected).toBe(false);

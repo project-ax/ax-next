@@ -107,7 +107,7 @@ describe('receiptFor — the outcomes that have one', () => {
 
   it('a parked row the agent HAS since performed stops promising and reports', () => {
     // The receipt tracks the row because it is read from the row. A persisted
-    // one would still be saying "it will do this the next time it runs" hours
+    // one would still be saying "it can do this the next time it tries" hours
     // after it did.
     const r = receiptFor(
       base({ status: 'approved-pending-agent', consumedAt: T_RAN }),
