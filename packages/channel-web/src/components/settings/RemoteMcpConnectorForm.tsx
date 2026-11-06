@@ -650,7 +650,11 @@ export function RemoteMcpConnectorForm({
     <Input
       id={fieldId('client-secret')}
       type="password"
-      placeholder="Enter only if the service requires it"
+      placeholder={
+        reenterSecret
+          ? 'Enter the client secret'
+          : 'Enter only if the service requires it'
+      }
       autoComplete="new-password"
       className={className}
       value={draft.clientSecret}
@@ -899,10 +903,17 @@ export function RemoteMcpConnectorForm({
                           {textField('clientId', 'Client ID')}
                           <Field data-invalid={Boolean(errors.clientSecret)}>
                             <FieldLabel htmlFor={fieldId('client-secret')}>
-                              Client secret{' '}
-                              <span className="font-normal text-muted-foreground">
-                                (optional)
-                              </span>
+                              Client secret
+                              {/* Required once this save clears the saved one
+                                  and asks for it again (TASK-887). */}
+                              {!reenterSecret && (
+                                <>
+                                  {' '}
+                                  <span className="font-normal text-muted-foreground">
+                                    (optional)
+                                  </span>
+                                </>
+                              )}
                             </FieldLabel>
                             {/* A typed secret is never hidden behind "Saved
                                 securely": Save would write it unseen. */}

@@ -357,6 +357,27 @@ describe('RemoteMcpConnectorForm — pointing a connector somewhere new signs ev
     expect(vault.get(OWN_SECRET_REF)).toBe(btoa('new-client-secret'));
   });
 
+  it('the client secret is not called optional once the save needs it again', async () => {
+    await openEditor(ownClientConnector(), { [OWN_SECRET_REF]: 'old-client-secret' });
+    // Before the move: optional, as for any client.
+    fireEvent.click(screen.getByRole('button', { name: 'Replace' }));
+    expect(screen.getByText('(optional)')).toBeVisible();
+    expect(screen.getByLabelText(/Client secret/)).toHaveAttribute(
+      'placeholder',
+      'Enter only if the service requires it',
+    );
+    await moveTo('https://elsewhere.example/mcp');
+    // After: the save clears it and asks for it again, so it is required.
+    expect(screen.queryByText('(optional)')).toBeNull();
+    expect(screen.getByLabelText(/Client secret/)).toHaveAttribute(
+      'placeholder',
+      'Enter the client secret',
+    );
+    // Remove lifts the requirement, so the box is optional again.
+    fireEvent.click(screen.getByRole('button', { name: 'Remove' }));
+    expect(screen.getByText('(optional)')).toBeVisible();
+  });
+
   it('Remove lifts the client-secret requirement on a retarget', async () => {
     const options = await openEditor(ownClientConnector(), {
       [OWN_SECRET_REF]: 'old-client-secret',
