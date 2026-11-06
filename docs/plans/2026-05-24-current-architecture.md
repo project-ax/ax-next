@@ -421,6 +421,8 @@ and consumer. Treat their *shape* as a contract; changing it is a boundary revie
     uniform not-found. The chart card loads it through `attachments:download`
     (`/api/files`), which reads the store directly. A publish without the
     marker clears it; a visual publish never hides a visible artifact.
+    Legacy rows stored by show_visual before the marker (path exactly
+    `visuals/<64 hex>.html`) migrate hidden; no other legacy row does.
   - Two **host-only** lookups, called only by `@ax/attachments` and never an IPC
     action or an HTTP route (pinned in `presets/k8s` preset.test.ts):
     `conversations:agent-ids` (maps legacy conversation-scoped artifacts to their

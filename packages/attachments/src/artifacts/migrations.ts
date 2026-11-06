@@ -61,6 +61,15 @@ const INSERT_CHUNK = 500;
 
 const OCTET_STREAM = 'application/octet-stream';
 
+/**
+ * R27: the name show_visual gave a chart before the `visual` marker existed
+ * (`visuals/<sha256 of the html>.html`, content-derived, #1135). A legacy row
+ * with exactly this path is a chat chart and migrates hidden; every other
+ * legacy row, `visuals/report.html` included, stays a visible artifact. A
+ * Postgres regex, passed as a bound parameter so nothing is escaped twice.
+ */
+const LEGACY_VISUAL_PATH = '^visuals/[0-9a-f]{64}\\.html$';
+
 interface LegacyRow {
   artifact_id: string;
   conversation_id: string;
@@ -182,7 +191,8 @@ export async function runArtifactsMigration<DB>(db: Kysely<DB>): Promise<void> {
       SET created_by_user_id = user_id,
           current_version = 1,
           updated_at = created_at,
-          source_path = NULL
+          source_path = NULL,
+          visual = (path ~ ${LEGACY_VISUAL_PATH})
     `.execute(trx);
     // Titles get the one spelling every new publish gets (title.ts): a legacy
     // name could be 1024 characters with line breaks or bidi overrides.

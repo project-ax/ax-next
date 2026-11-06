@@ -217,6 +217,35 @@ describe('artifact storage migration', () => {
     expect(defs.filter((d) => d.includes('conversation_id') || d.includes('sha256'))).toEqual([]);
   });
 
+  // R27: charts show_visual stored the old way (#1135) carry its
+  // content-derived name; they migrate as hidden chat visuals. Nothing else does.
+  it('migrates a legacy show_visual chart (visuals/<64-hex>.html) hidden, and nothing else', async () => {
+    const db = makeKysely();
+    await createLegacyTable(db);
+    const html = { mediaType: 'text/html', displayName: 'chart' };
+    await insertLegacy(db, [
+      { id: 'chart', conversationId: 'c-1', path: `visuals/${'0123456789abcdef'.repeat(4)}.html`, ...html },
+      { id: 'report', conversationId: 'c-1', path: 'visuals/report.html', ...html },
+      { id: 'short', conversationId: 'c-1', path: `visuals/${'a'.repeat(63)}.html`, ...html },
+      { id: 'upper', conversationId: 'c-1', path: `visuals/${'A'.repeat(64)}.html`, ...html },
+      { id: 'nested', conversationId: 'c-1', path: `out/visuals/${'a'.repeat(64)}.html`, ...html },
+      { id: 'pdf', conversationId: 'c-1' },
+    ]);
+    await migrate(db);
+    const store = createArtifactStore(db);
+    expect((await store.getHead('chart'))!.visual).toBe(true);
+    for (const id of ['report', 'short', 'upper', 'nested', 'pdf']) {
+      expect((await store.getHead(id))!.visual, id).toBe(false);
+    }
+    expect((await store.listForAgent('agt-1', 10)).map((h) => h.artifactId).sort()).toEqual([
+      'nested',
+      'pdf',
+      'report',
+      'short',
+      'upper',
+    ]);
+  });
+
   it("maps legacy rows to their conversation's agent, soft-deleted chats included", async () => {
     // Real @ax/conversations: make one live and one soft-deleted chat first.
     const first = await attachmentsHarness({}, true);
