@@ -703,7 +703,7 @@ describe('chat-orchestrator route-by-conversationId (Task 16, J6)', () => {
     arrangeImmediateEnd(h.bus, expected, 's-wf', 'req-WF');
 
     const raw = 'a\u0000b\ud800c';
-    const clean = 'a�b�c';
+    const clean = 'a\uFFFDb\uFFFDc';
     await h.bus.call<unknown, AgentOutcome>(
       'agent:invoke',
       ctxWith({ sessionId: 'unused', conversationId: 'conv-wf', reqId: 'req-WF' }),

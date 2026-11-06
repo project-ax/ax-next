@@ -9,8 +9,8 @@
  *
  * These helpers swap each one for U+FFFD (the replacement character) and keep
  * everything else, well-formed surrogate pairs (emoji) included. It is the same
- * result as `String.prototype.toWellFormed()` plus a NUL swap; that method
- * needs the ES2024 lib, which this repo does not target yet.
+ * result as `String.prototype.toWellFormed()` PLUS a NUL swap, so the built-in
+ * alone is not a drop-in replacement: it leaves U+0000, which Postgres refuses.
  *
  * Deliberately no store vocabulary in the names: this is about text, and any
  * backend that wants well-formed Unicode can use it.

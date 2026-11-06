@@ -1035,7 +1035,7 @@ export function createConversationStore(
       // output can carry, and a refused row fails on every retry. They become
       // U+FFFD here (TASK-1059): a replacement character in a redisplay beats
       // a missing row. Done before the transaction so a large payload's
-      // serialization never stretches the advisory lock or the connection.
+      // serialization never stretches the advisory lock or the transaction.
       const payloadJson = stringifyWellFormed(payload);
       // CONTRACT: appends to ONE conversation are fully serialized, so an
       // append NEVER fails and NEVER drops an event, at ANY concurrency.

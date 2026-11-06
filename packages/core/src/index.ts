@@ -61,7 +61,6 @@ export {
   toWellFormedText,
   toWellFormedValue,
   stringifyWellFormed,
-  wellFormedJsonReplacer,
 } from './well-formed-text.js';
 export {
   AUTH_REQUIRE_USER_HOOK,

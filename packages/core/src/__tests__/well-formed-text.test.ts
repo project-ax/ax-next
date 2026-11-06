@@ -49,7 +49,10 @@ describe('toWellFormedText', () => {
     expect(wellFormed(out)).toBe(true);
   });
 
-  it('agrees with a reference check on random strings', () => {
+  it('agrees with String.prototype.toWellFormed plus a NUL swap on random strings', () => {
+    // Node has the built-in at runtime even though the ES2023 lib does not type it.
+    const reference = (s: string) =>
+      (s as unknown as { toWellFormed(): string }).toWellFormed().replaceAll('\u0000', R);
     const alphabet = ['a', '\u0000', '\ud800', '\udbff', '\udc00', '\udfff', '😀', R];
     let seed = 1059;
     const rand = (n: number) => {
@@ -61,8 +64,8 @@ describe('toWellFormedText', () => {
       const len = rand(8);
       for (let j = 0; j < len; j++) s += alphabet[rand(alphabet.length)];
       const out = toWellFormedText(s);
+      expect(out).toBe(reference(s));
       expect(wellFormed(out)).toBe(true);
-      expect(out.length).toBe(s.length);
     }
   });
 });
@@ -83,6 +86,46 @@ describe('stringifyWellFormed', () => {
     expect(JSON.parse(stringifyWellFormed([{ 'k\u0000': { 'x\ud800': 'v' } }]))).toEqual([
       { [`k${R}`]: { [`x${R}`]: 'v' } },
     ]);
+  });
+
+  // No U+0000 in any of these: a lone surrogate alone must send the input down
+  // the fixing path (the cheap pre-check must not key on NUL only).
+  it.each([
+    [{ t: 'x\ud800' }, { t: `x${R}` }],
+    [{ t: 'x\udfff' }, { t: `x${R}` }],
+    [{ t: 'x\udc00y' }, { t: `x${R}y` }],
+    [{ ['k\udc00']: 'v' }, { [`k${R}`]: 'v' }],
+  ])('fixes a lone surrogate with no NUL anywhere: %j', (input, expected) => {
+    expect(JSON.parse(stringifyWellFormed(input))).toEqual(expected);
+    expect(toWellFormedValue(input)).toEqual(expected);
+  });
+
+  it('leaves no NUL or lone surrogate in any string or key, on random values', () => {
+    const alphabet = ['a', '\u0000', '\ud800', '\udbff', '\udc00', '\udfff', '\ud83d\ude00', R, '\\', 'u', 'd', '8'];
+    let seed = 7;
+    const rand = (n: number) => {
+      seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+      return seed % n;
+    };
+    const str = () => {
+      let s = '';
+      const len = rand(6);
+      for (let j = 0; j < len; j++) s += alphabet[rand(alphabet.length)];
+      return s;
+    };
+    const allWellFormed = (v: unknown): boolean => {
+      if (typeof v === 'string') return wellFormed(v);
+      if (Array.isArray(v)) return v.every(allWellFormed);
+      if (v !== null && typeof v === 'object') {
+        return Object.entries(v).every(([k, x]) => wellFormed(k) && allWellFormed(x));
+      }
+      return true;
+    };
+    for (let i = 0; i < 2000; i++) {
+      const v = { [str()]: str(), list: [str(), { [str()]: str() }] };
+      expect(allWellFormed(JSON.parse(stringifyWellFormed(v)))).toBe(true);
+      expect(allWellFormed(toWellFormedValue(v))).toBe(true);
+    }
   });
 
   it('leaves a string that only LOOKS like an escape alone', () => {
