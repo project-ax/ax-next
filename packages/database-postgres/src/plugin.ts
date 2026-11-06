@@ -32,6 +32,9 @@ const PLUGIN_NAME = '@ax/database-postgres';
 const DEFAULT_CHECKOUT_TIMEOUT_MS = 5_000;
 // Node turns any timer delay above this into 1 ms.
 const MAX_TIMER_DELAY_MS = 2_147_483_647;
+const DEFAULT_STATEMENT_TIMEOUT_MS = 30_000;
+// Postgres refuses a larger statement_timeout, which would fail every connect.
+const MAX_STATEMENT_TIMEOUT_MS = 2_147_483_647;
 
 export interface DatabasePostgresConfig {
   connectionString: string;
@@ -43,6 +46,16 @@ export interface DatabasePostgresConfig {
    * 1 to 2147483647; default 5000. Maps to pg's `connectionTimeoutMillis`.
    */
   checkoutTimeoutMs?: number;
+  /**
+   * How long one statement on a pooled connection may run, waiting for a lock
+   * included, before Postgres cancels it with SQLSTATE `57014`. The connection
+   * stays usable, and a surrounding transaction rolls back. A whole number of
+   * ms from 1 to 2147483647; default 30000. Maps to pg's `statement_timeout`,
+   * which is sent at connect time. A statement that legitimately needs longer,
+   * such as a migration on a big table, runs inside a transaction that starts
+   * with `SET LOCAL statement_timeout = 0`.
+   */
+  statementTimeoutMs?: number;
   /**
    * Optional logger for background connection failures (e.g., a postgres
    * restart in k8s): `database_postgres_pool_error` when an idle pooled
@@ -72,6 +85,7 @@ export function createDatabasePostgresPlugin(config: DatabasePostgresConfig): Pl
     init({ bus }) {
       validateConnectionString(config.connectionString);
       const checkoutTimeoutMs = resolveCheckoutTimeoutMs(config.checkoutTimeoutMs);
+      const statementTimeoutMs = resolveStatementTimeoutMs(config.statementTimeoutMs);
       const bgLogger =
         config.logger ?? createLogger({ reqId: 'database-postgres-bg' });
 
@@ -84,6 +98,11 @@ export function createDatabasePostgresPlugin(config: DatabasePostgresConfig): Pl
         // above a normal wait and below the kernel's 10 s per-plugin shutdown
         // deadline.
         connectionTimeoutMillis: checkoutTimeoutMs,
+        // TASK-1056: the database cancels a statement after this long, a lock
+        // wait included, and the connection stays usable. Without it, a stuck
+        // statement holds its pool slot forever. Nothing on this pool is
+        // exempt; see SECURITY.md.
+        statement_timeout: statementTimeoutMs,
       });
       // pg.Pool emits 'error' for idle-pool socket failures (e.g., postgres
       // restart). Without a listener Node treats it as unhandled and crashes
@@ -172,5 +191,22 @@ function resolveCheckoutTimeoutMs(value: unknown): number {
     code: 'invalid-config',
     plugin: PLUGIN_NAME,
     message: `${PLUGIN_NAME}: checkoutTimeoutMs must be a whole number of milliseconds from 1 to ${MAX_TIMER_DELAY_MS}`,
+  });
+}
+
+function resolveStatementTimeoutMs(value: unknown): number {
+  if (value === undefined) return DEFAULT_STATEMENT_TIMEOUT_MS;
+  if (
+    typeof value === 'number' &&
+    Number.isSafeInteger(value) &&
+    value >= 1 &&
+    value <= MAX_STATEMENT_TIMEOUT_MS
+  ) {
+    return value;
+  }
+  throw new PluginError({
+    code: 'invalid-config',
+    plugin: PLUGIN_NAME,
+    message: `${PLUGIN_NAME}: statementTimeoutMs must be a whole number of milliseconds from 1 to ${MAX_STATEMENT_TIMEOUT_MS}`,
   });
 }
