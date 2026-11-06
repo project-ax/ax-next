@@ -28,6 +28,8 @@ export {
   type ConversationScope,
 } from './scope.js';
 export type {
+  AgentIdsInput,
+  AgentIdsOutput,
   AppendEventInput,
   AppendEventOutput,
   BindSessionInput,

@@ -1,6 +1,6 @@
 # Agent artifacts — design
 
-**Date:** 2026-11-05 · **Status:** draft, pending approval · **Owner:** Vinay
+**Date:** 2026-11-05 · **Status:** approved 2026-11-05 · **Owner:** Vinay
 
 ## 1. Intent
 

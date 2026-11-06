@@ -483,6 +483,27 @@ export interface GetMetadataOutput {
   activeSessionId: string | null;
 }
 
+/**
+ * HOST-ONLY batch lookup: conversation id -> owning agent id. No ACL, and
+ * soft-deleted / hidden rows are INCLUDED (artifacts outlive their chat).
+ * Ids with no row are omitted. Never an IPC action or HTTP route.
+ */
+export interface AgentIdsInput {
+  conversationIds: string[];
+}
+export interface AgentIdsOutput {
+  conversations: Array<{ conversationId: string; agentId: string }>;
+}
+export const AGENT_IDS_MAX = 500;
+export const AgentIdsInputSchema = z
+  .object({ conversationIds: z.array(z.string().min(1)).min(1).max(AGENT_IDS_MAX) })
+  .strict();
+export const ConversationsAgentIdsOutputSchema = z.object({
+  conversations: z.array(
+    z.object({ conversationId: z.string(), agentId: z.string() }),
+  ),
+}) as unknown as ZodType<AgentIdsOutput>;
+
 // ---------------------------------------------------------------------------
 // Runtime `returns` contract for `conversations:get-metadata` (ARCH-6).
 //

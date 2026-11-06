@@ -144,6 +144,7 @@ describe('@ax/agents plugin manifest + lifecycle', () => {
         'agents:can-manage-connectors',
         'agents:can-set-shared-credential',
         'agents:list-ids',
+        'agents:get-display-name',
         'agents:list-personal-owners',
         'agents:list-authored-skills',
         'agents:resolve-authored-skills',

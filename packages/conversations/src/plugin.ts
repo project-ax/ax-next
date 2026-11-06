@@ -28,12 +28,15 @@ import {
 import {
   AppendTranscriptOutputSchema,
   CONVERSATIONS_PURGED_CHUNK_SIZE,
+  AgentIdsInputSchema,
+  ConversationsAgentIdsOutputSchema,
   GetMetadataOutputSchema,
   GetTranscriptOutputSchema,
   ReplaceTranscriptOutputSchema,
   StoreRunnerSessionOutputSchema,
 } from './types.js';
 import type {
+  AgentIdsOutput,
   AppendEventInput,
   AppendEventOutput,
   AppendTranscriptInput,
@@ -246,6 +249,7 @@ export function createConversationsPlugin(
         // Sidebar / runner-plugin call site lands in Phase C — half-
         // wired window OPEN (closed by Phase C, see PR notes).
         'conversations:get-metadata',
+        'conversations:agent-ids',
         // Phase B (2026-04-29): idempotent first-bind for the runner's
         // native session id. Caller (Phase C) is the runner-plugin's
         // host-side IPC handler.
@@ -405,6 +409,31 @@ export function createConversationsPlugin(
         async (ctx, input) =>
           getConversationMetadata(localStore, bus, ctx, input),
         { returns: GetMetadataOutputSchema },
+      );
+
+      // HOST-ONLY (never in ipc-core ACTIONS, never an HTTP route): batch
+      // conversation id -> agent id, no ACL, soft-deleted/hidden included.
+      bus.registerService<unknown, AgentIdsOutput>(
+        'conversations:agent-ids',
+        PLUGIN_NAME,
+        async (_ctx, raw) => {
+          const parsed = AgentIdsInputSchema.safeParse(raw);
+          if (!parsed.success) {
+            throw new PluginError({
+              code: 'invalid-payload',
+              plugin: PLUGIN_NAME,
+              hookName: 'conversations:agent-ids',
+              message:
+                'conversationIds must be 1..500 non-empty strings',
+            });
+          }
+          return {
+            conversations: await localStore.agentIdsFor(
+              parsed.data.conversationIds,
+            ),
+          };
+        },
+        { returns: ConversationsAgentIdsOutputSchema },
       );
 
       // Phase B (2026-04-29). Idempotent first-bind. Mirrors the
