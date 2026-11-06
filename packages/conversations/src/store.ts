@@ -405,11 +405,12 @@ export interface ConversationStore {
   findOrCreate(args: ConversationStoreFindOrCreateArgs): Promise<FindOrCreateResult>;
   /**
    * TASK-66 (out-of-git Part B / B1). Append one display frame to the
-   * conversation's redisplay log. Mints the next per-conversation monotonic
-   * `seq` and INSERTs in a single statement (single writer per conversation
-   * — the host — so SELECT MAX()+1 is contention-free, NOT a CAS). Returns
-   * the seq assigned. No userId scope — called only by `@ax/conversations`'
-   * own host-side subscribers, gated upstream by the orchestrator's J1 check.
+   * conversation's redisplay log: one transaction that takes the
+   * per-conversation advisory lock, then mints the next monotonic `seq` and
+   * INSERTs (see the CONTRACT comment in the implementation). Returns the
+   * seq assigned. No userId scope — its only caller is the
+   * `conversations:append-event` handler, which is host-internal and runs it
+   * on a connection it pinned for the call (TASK-1059).
    */
   appendEvent(args: StoreAppendEventArgs): Promise<number>;
   /**
@@ -1084,8 +1085,10 @@ export function createConversationStore(
       //     nest; this is not. If a caller ever wraps append-event in an outer
       //     db.transaction(), a burst can deadlock on pool exhaustion — outer
       //     transactions holding every connection, each awaiting an append
-      //     that cannot get one. All four current callers are single awaited
-      //     calls outside any transaction.
+      //     that cannot get one. The only caller, the append-event handler,
+      //     runs this on a connection it pinned for the call, never inside a
+      //     transaction (TASK-1059), and the hook's four callers are single
+      //     awaited calls outside any transaction.
       //
       // Advisory-lock keyspace note: pg_advisory_xact_lock(hashtext(...)) is a
       // SINGLE global bigint space, shared here with @ax/attachments' per-user
