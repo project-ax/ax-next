@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { LAST_COMPLETED_RUN_TOKEN, renderLastCompletedRun, renderTemplate, usesLastCompletedRun } from '../template.js';
+import { LAST_COMPLETED_RUN_TOKEN, renderLastCompletedRun, renderTemplate, usesLastCompletedRun, usesPayload } from '../template.js';
 
 describe('renderTemplate', () => {
   it('substitutes a top-level string', () => {
@@ -173,5 +173,20 @@ describe('renderLastCompletedRun (TASK-991)', () => {
 
   it('the payload pass never fills it', () => {
     expect(renderTemplate('{{lastCompletedRun}}', { payload: { lastCompletedRun: 'x' } })).toBe('{{lastCompletedRun}}');
+  });
+});
+
+describe('usesPayload (TASK-1050)', () => {
+  it.each([
+    ['{{payload}}', true], ['Review {{payload.title}}', true], ['{{ payload.a.b }}', true], ['{{payload.a-b_c}}', true],
+    ['x {{payload.lastCompletedRun}}', true], ['{{payload.arr[0]}}', false], ['{{payload.x()}}', false],
+    ['{{payloads}}', false], ['{{lastCompletedRun}}', false], ['{payload}', false], ['Summarize the new issue.', false],
+  ])('%s -> %s, in step with renderTemplate', (body, expected) => {
+    expect(usesPayload(body)).toBe(expected);
+    // A body names the payload exactly when rendering it without one changes it.
+    expect(renderTemplate(body, { payload: undefined }) !== body).toBe(expected);
+  });
+  it('answers the same on every call', () => {
+    for (let i = 0; i < 3; i++) expect(usesPayload('a {{payload.x}} b')).toBe(true);
   });
 });
