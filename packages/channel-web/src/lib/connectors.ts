@@ -247,7 +247,7 @@ export { CONNECTOR_SIGN_OUT_FAILED };
 
 /** What the editors say for {@link CONNECTOR_SIGN_OUT_FAILED}. */
 export const CONNECTOR_SIGN_OUT_FAILED_MESSAGE =
-  'We couldn’t sign everyone out of this connector, so we didn’t save your changes. Your saved settings are unchanged. Try saving again in a moment.';
+  'We couldn’t finish signing everyone out of this connector, so we didn’t save your changes. Some agents may need to sign in again. Try saving again in a moment.';
 
 /** True when a {@link createConnector} / {@link patchConnector} failure is the
  *  sign-out refusal. */
