@@ -159,7 +159,7 @@ describe('@ax/auth-better: the /auth/* handler-error line (TASK-1047)', () => {
     expect(output.join('')).not.toContain('PRIVATE-MESSAGE');
   });
 
-  it('a malformed X-Forwarded-Proto (our Request build throws, the URL in its message) logs the same line', async () => {
+  it('a malformed X-Forwarded-Proto (our Request build throws, the URL in its message) logs the same route label', async () => {
     const { result, output, authLines } = await captureOutput(() =>
       fetchResetLink({ headers: { 'x-forwarded-proto': 'a b' } }),
     );
