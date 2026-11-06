@@ -552,8 +552,9 @@ export interface DecisionsApproveOutput {
    *     `routineFailureText` of the row);
    *   * `CLAIM_ALREADY_RAN_DETAIL` or `CLAIM_OUTCOME_UNKNOWN_DETAIL` (TASK-286),
    *     when an identical request this person approved on another card — one
-   *     answered after this card was raised, which only an undo makes possible
-   *     — already ran, or went out with no answer. Running this one too would
+   *     answered after this card was raised, which an undo or a retry raced
+   *     against that approval makes possible — already ran, or went out with
+   *     no answer. Running this one too would
    *     make the call twice. The row stays open, as it does for
    *     `CLAIM_REFUSED_DETAIL`.
    *

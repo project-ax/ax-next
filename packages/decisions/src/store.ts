@@ -75,9 +75,14 @@ export type TwinOutcome = 'ran' | 'outcome-unknown';
  * write claimed it) or `'outcome-unknown'` (it was sent and nobody can say
  * whether it landed). Running this one too would make the call twice.
  *
- * Co-open twins exist only after an undo, which is never refused (the TASK-280
- * ruling). A twin that has gone out has left the partial unique index, so the
- * index cannot refuse this claim; the store has to.
+ * Co-open twins come from two routes: an undo (never refused, the TASK-280
+ * ruling), and an identical retry the gate stamped BEFORE an approval that it
+ * then lands after — `pre-call` stamps `createdAt`, then awaits the
+ * attendance and freshness reads before `createOrReuseOpen`, and the first row
+ * can be approved in between. Before TASK-286 the second route double-sent
+ * too. Do not narrow this rule to restored rows. A twin that has gone out has
+ * left the partial unique index, so the index cannot refuse this claim; the
+ * store has to.
  *
  * TYPED, for the same two reasons `DuplicateAuthorisationError` is. The plugin
  * speaks a different sentence for this refusal than for the index's, and a
@@ -163,6 +168,13 @@ export function firstTriedTwin(
  * expired. That next call is asked after the call ran, so it is a new
  * question, and it gets a card it can be answered on. The refused card stays
  * where it is: undo made it, and nothing here closes it (the ruling).
+ *
+ * ONE WINDOW IT LEAVES, on purpose: while the twin is still in flight it has
+ * not gone out yet, so a later hold IS folded into this row, and becomes
+ * unapprovable with it if that replay then returns. The next identical call
+ * after that gets its own card. Skipping on "in flight" too would raise a
+ * second card for a call whose answer is not in yet, which is TASK-254's
+ * duplicate.
  *
  * `open` is every open row for the key, oldest first. `answered` is every
  * other row for the key with an answer (`resolvedAt` set). Instants are
@@ -397,8 +409,9 @@ export interface DecisionStore {
    *
    * IT ALSO THROWS `IdenticalCallAlreadyTriedError` when a co-open twin ran or
    * went out with no answer (TASK-286): an identical row this person approved
-   * on another card, answered after this one was raised. Co-open twins exist
-   * only after an undo, and undo is never refused. Such a twin has left the
+   * on another card, answered after this one was raised. Co-open twins come
+   * from an undo (never refused) or from a retry the gate stamped before that
+   * approval landed (see `IdenticalCallAlreadyTriedError`). Such a twin has left the
    * index, so the index cannot refuse this claim, and the claim is therefore
    * one transaction with a check in front of it. The lock `createOrReuseOpen`
    * takes keeps a second approval from interleaving. `FOR UPDATE` keeps a
@@ -1043,8 +1056,9 @@ export function createDecisionsStore(db: Kysely<DecisionsDatabase>): DecisionSto
             .where('call_fingerprint', '=', self.call_fingerprint)
             .where('decision_id', '<>', decisionId)
             // Answered at or after this question was raised. Two rows are
-            // co-open only after an undo, and a later ask is raised after the
-            // answer it follows, so it is never refused.
+            // co-open only after an undo, or when a retry was stamped before
+            // an approval that landed first (see the error's doc). A later ask
+            // is raised after the answer it follows, so it is never refused.
             .where('resolved_at', '>=', self.created_at)
             .orderBy('decision_id')
             .forUpdate()

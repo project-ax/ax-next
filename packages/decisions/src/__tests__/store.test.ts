@@ -2080,6 +2080,27 @@ describe('decisions store — an approval whose identical twin already went out 
     }
   });
 
+  it('after the skip, the next identical hold folds into the NEW card — the collapse still holds', async () => {
+    // The skip must not become "always raise a new card" while the refused
+    // card stays open: every identical call would then add another, which is
+    // TASK-254's duplicate back. The new card's own twin check is what keeps
+    // it reusable — the ran twin was answered before it was raised.
+    for (const [leg, s] of await both()) {
+      await openTwins(s);
+      await hostRan(s, 'dec_1');
+      const third = await s.createOrReuseOpen(
+        base({ id: 'dec_3', attendance: 'unattended', createdAt: T_AFTER }),
+      );
+      expect(third.created, leg).toBe(true);
+
+      const fourth = await s.createOrReuseOpen(
+        base({ id: 'dec_4', attendance: 'unattended', createdAt: '2026-08-20T09:00:05.000Z' }),
+      );
+      expect(fourth.created, leg).toBe(false);
+      expect(fourth.decision.id, leg).toBe('dec_3');
+    }
+  });
+
   it('still folds a later identical hold into an open card whose twin has NOT gone out', async () => {
     // The skip is only for a twin that ran or went out with no answer. A twin
     // still in flight is the index's to refuse, and the open card stays the
