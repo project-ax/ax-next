@@ -40,8 +40,17 @@ import { runDecisionsMigration, type DecisionsDatabase } from './migrations.js';
 import { createPreCallSubscriber, PLUGIN_NAME, type PolicyAnswer } from './pre-call.js';
 import { receiptFor } from './receipts.js';
 import { replayContext, settleReplay } from './replay.js';
-import { createDecisionsStore, DuplicateAuthorisationError, type DecisionStore } from './store.js';
-import { CLAIM_REFUSED_DETAIL } from './templates.js';
+import {
+  createDecisionsStore,
+  DuplicateAuthorisationError,
+  IdenticalCallAlreadyTriedError,
+  type DecisionStore,
+} from './store.js';
+import {
+  CLAIM_ALREADY_RAN_DETAIL,
+  CLAIM_OUTCOME_UNKNOWN_DETAIL,
+  CLAIM_REFUSED_DETAIL,
+} from './templates.js';
 import { CONNECTOR_TOOL_LABELS_HOOK, namingFromToolLabels } from './tool-label.js';
 import {
   DecisionsApproveOutputSchema,
@@ -845,6 +854,17 @@ export function createDecisionsPlugin(opts?: DecisionsPluginOptions): Plugin {
           // not on the owner, so on a team agent it can belong to somebody
           // else — and this handler has already established only that the
           // caller owns THIS decision.
+          //
+          // AND (TASK-286) A SECOND KIND OF DUPLICATE IS REFUSED HERE TOO. An
+          // undo can reopen a row whose identical call the agent has since
+          // asked again, so two open rows exist for one call (undo is never
+          // refused for that). Once one of them has gone out — the host
+          // replayed it, the warm agent took it, or it went out with no answer
+          // — it has left the index, and the index can no longer refuse the
+          // other. `claimForApproval` does: it throws
+          // `IdenticalCallAlreadyTriedError`, and this branch answers with the
+          // sentence for what the twin did. Same absorb as the index's refusal
+          // below: the row stays open, and the answer says why.
           let claimed: Decision | null;
           try {
             claimed = await store!.claimForApproval(decisionId, {
@@ -867,6 +887,18 @@ export function createDecisionsPlugin(opts?: DecisionsPluginOptions): Plugin {
                   : null,
             });
           } catch (err) {
+            if (err instanceof IdenticalCallAlreadyTriedError) {
+              ctx.logger.warn('decision_claim_refused_twin_tried', {
+                plugin: PLUGIN_NAME,
+                decisionId,
+                twinId: err.twinId,
+                outcome: err.outcome,
+              });
+              return {
+                ...(await settle(null)),
+                error: err.outcome === 'ran' ? CLAIM_ALREADY_RAN_DETAIL : CLAIM_OUTCOME_UNKNOWN_DETAIL,
+              };
+            }
             if (!(err instanceof DuplicateAuthorisationError)) throw err;
             ctx.logger.warn('decision_claim_refused', {
               plugin: PLUGIN_NAME,
