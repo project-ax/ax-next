@@ -198,15 +198,21 @@ function resolveCheckoutTimeoutMs(value: unknown): number {
 // pg lays the connection string's query parameters over the explicit config,
 // so `?statement_timeout=0` (or a bare `?statement_timeout`, which pg reads as
 // unset) would silently replace statementTimeoutMs or switch the bound off.
-// The bound has one home: refuse the other. Each key is decoded on its own, so
-// a malformed escape elsewhere can't hide an encoded key; a key with no `=`
-// still counts. Lowercased, so we over-refuse rather than miss. `options`
-// isn't checked: pg always sends the explicit parameter, and Postgres applies
-// it after `-c` options (measured on 16). Linear: no backtracking regex.
+// The bound has one home: refuse the other. This reads the query the way pg
+// does (pg-connection-string parses with `new URL`): tab, LF and CR are
+// dropped everywhere before the query is split, so they can't break up a key
+// or an escape. Each key is then decoded on its own (a malformed escape
+// elsewhere can't hide it; a key with no `=` still counts), and any code unit
+// at or below 0x20 is dropped from it, because `new URL` trims control
+// characters and spaces off the end of the string. `statement_timeout` has
+// none of those, so stripping them can only refuse more. `options` isn't
+// checked: pg always sends the explicit parameter, and Postgres applies it
+// after `-c` options (measured on 16). Linear: no backtracking regex.
 function refuseStatementTimeoutInConnectionString(connectionString: string): void {
   const queryStart = connectionString.indexOf('?');
   if (queryStart === -1) return;
-  for (const part of connectionString.slice(queryStart + 1).split('&')) {
+  const query = connectionString.slice(queryStart + 1).replace(/[\t\n\r]/g, '');
+  for (const part of query.split('&')) {
     const rawKey = part.split('=', 1)[0] ?? '';
     let key = rawKey;
     try {
@@ -214,7 +220,7 @@ function refuseStatementTimeoutInConnectionString(connectionString: string): voi
     } catch {
       // A malformed escape in this key: compare it raw.
     }
-    if (key.toLowerCase() === 'statement_timeout') {
+    if (key.replace(/[\x00-\x20]/g, '') === 'statement_timeout') {
       throw new PluginError({
         code: 'invalid-config',
         plugin: PLUGIN_NAME,
