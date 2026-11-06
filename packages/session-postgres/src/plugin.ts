@@ -15,6 +15,7 @@ import {
   type Inbox,
   type InboxEntry,
 } from './inbox.js';
+import { ListenConnection } from './listen-connection.js';
 import { runSessionMigration, type SessionDatabase } from './migrations.js';
 import {
   createSessionStore,
@@ -37,9 +38,13 @@ import {
 //   LISTEN/NOTIFY needs a dedicated client held open for the lifetime of
 //   the subscription. A pooled connection can be returned to its idle set
 //   mid-listen, breaking the binding. So we open both a pg.Pool (for
-//   queries) and a pg.Client (for LISTEN) directly, side-by-side, against
-//   the same connectionString. The eventbus-postgres plugin set this
-//   precedent — we follow it intentionally for the same reason.
+//   queries) and a dedicated LISTEN connection (`ListenConnection`)
+//   directly, side-by-side, against the same connectionString. The
+//   eventbus-postgres plugin set this precedent — we follow it
+//   intentionally for the same reason. When Postgres ends the LISTEN
+//   connection (a restart, a failover), it reconnects with backoff and
+//   LISTENs on every waited-on channel again before anyone can use it
+//   (TASK-1061).
 //
 //   This is an INTENTIONAL bypass of the database hook. Any postgres
 //   plugin that needs LISTEN follows the same shape.
@@ -97,12 +102,13 @@ export interface SessionPostgresConfig {
   poolMax?: number;
   /**
    * How long a caller waits for a pooled connection, including a new one the
-   * database has to answer. The dedicated LISTEN client's connect at boot gets
-   * the same bound. A pooled timeout carries a code (TASK-1058):
-   * `db-checkout-timeout` when the pool was full and the caller queued,
-   * `db-connect-timeout` when the database didn't answer a new connection. The
-   * LISTEN client's timeout (pg's own) carries none. A whole number of ms from
-   * 1 to 2147483647; default 5000. Maps to pg's `connectionTimeoutMillis`.
+   * database has to answer. Each connect of the dedicated LISTEN connection
+   * (at boot, and every reconnect) gets the same bound. A pooled timeout
+   * carries a code (TASK-1058): `db-checkout-timeout` when the pool was full
+   * and the caller queued, `db-connect-timeout` when the database didn't
+   * answer a new connection. The LISTEN connection's timeout (pg's own)
+   * carries none. A whole number of ms from 1 to 2147483647; default 5000.
+   * Maps to pg's `connectionTimeoutMillis`.
    */
   checkoutTimeoutMs?: number;
   /**
@@ -110,7 +116,7 @@ export interface SessionPostgresConfig {
    * included, before Postgres cancels it with SQLSTATE `57014`. The connection
    * stays usable and a surrounding transaction rolls back. A whole number of
    * ms from 1 to 2147483647; default 30000. Maps to pg's `statement_timeout`.
-   * Pool only: the LISTEN client gets none, because waiting for a
+   * Pool only: the LISTEN connection gets none, because waiting for a
    * notification isn't a statement.
    */
   statementTimeoutMs?: number;
@@ -118,11 +124,12 @@ export interface SessionPostgresConfig {
    * Optional logger for background connection failures that don't ride a
    * request (e.g., a postgres restart in k8s): `session_postgres_pool_error`
    * when an idle pooled connection fails, `session_postgres_client_error` when
-   * a checked-out one does (TASK-1058), and
-   * `session_postgres_listen_client_error` when the LISTEN connection does.
-   * All three carry codes only (`faultLogFields`). Defaults to a stdout JSON
-   * logger tagged `reqId=session-postgres-bg`. Tests can pass a noop or
-   * recording logger.
+   * a checked-out one does (TASK-1058), `session_postgres_listen_client_error`
+   * (every 'error' event) when the LISTEN connection does, and
+   * `session_postgres_listen_connect_failed` (warn) for each of its connect
+   * attempts that fails, boot's included (TASK-1061). All four carry codes
+   * only (`faultLogFields`). Defaults to a stdout JSON logger tagged
+   * `reqId=session-postgres-bg`. Tests can pass a noop or recording logger.
    */
   logger?: Logger;
 }
@@ -814,7 +821,7 @@ export function createSessionPostgresPlugin(
   );
 
   let pool: pg.Pool | undefined;
-  let listenClient: pg.Client | undefined;
+  let listen: ListenConnection | undefined;
   let kysely: Kysely<SessionDatabase> | undefined;
   let store: SessionStore | undefined;
   let inbox: Inbox | undefined;
@@ -836,7 +843,7 @@ export function createSessionPostgresPlugin(
         'session:is-alive',
       ],
       // We deliberately do NOT call `database:get-instance` — see header
-      // comment. session-postgres opens its own pool + listen client
+      // comment. session-postgres opens its own pool + listen connection
       // because LISTEN can't share a pool.
       calls: [],
       // TASK-718: a deleted agent takes its session data with it. Payload is
@@ -918,48 +925,39 @@ export function createSessionPostgresPlugin(
         }),
       });
 
-      // TASK-1056: without a connect bound, a database that never answers
-      // hangs init forever. No statement_timeout here, on purpose: this client
-      // only runs LISTEN, UNLISTEN and pg_notify, and waiting for
-      // notifications isn't a statement.
-      listenClient = new pg.Client({
+      // TASK-1061: the LISTEN connection reconnects with backoff when Postgres
+      // ends it, and LISTENs on every channel the inbox still counts before
+      // anyone can use it again. It also logs every 'error' event of its
+      // clients (session_postgres_listen_client_error, codes only), so a
+      // postgres restart can't crash the host through an unhandled 'error'.
+      // Each connect is bounded by checkoutTimeoutMs (TASK-1056), and TCP
+      // keepalive is on: this connection is idle most of the time, exactly
+      // where a vanished peer goes unnoticed. Constructing it opens nothing.
+      listen = new ListenConnection({
         connectionString: config.connectionString,
-        connectionTimeoutMillis: checkoutTimeoutMs,
-        // TASK-1061: this connection is idle most of the time, exactly where a
-        // vanished peer goes unnoticed. Set here, not in the URL (pg ignores a
-        // URL `keepalives` param). Detection takes ~20 s.
-        keepAlive: true,
-        keepAliveInitialDelayMillis: KEEPALIVE_INITIAL_DELAY_MS,
-      });
-      // Same risk on the LISTEN client — long-lived, idle most of the time,
-      // exactly the connection a postgres restart will tear down. Crash-by-
-      // unhandled-'error' is the failure mode we're avoiding here. Every event
-      // is logged (a terminated backend writes two: the server's error, then
-      // the socket closing). Codes only, for the same reason as above.
-      listenClient.on('error', (err) => {
-        bgLogger.error('session_postgres_listen_client_error', faultLogFields(err));
+        connectTimeoutMs: checkoutTimeoutMs,
+        keepAliveInitialDelayMs: KEEPALIVE_INITIAL_DELAY_MS,
+        logger: bgLogger,
       });
 
       // Mid-init failure: the kernel rolls back plugins 0..N-1 (the ones
       // that already initialized), but does NOT call our shutdown — our
       // init didn't complete, partial state may not be safe to close.
       // So we still own the cleanup of partial allocations between the
-      // migrate / connect awaits.
+      // migrate / connect awaits. A failed LISTEN connect has already
+      // scheduled its next attempt; listen.shutdown() cancels it, so no
+      // reconnect outlives a failed init.
       try {
         await runSessionMigration(kysely);
-        await listenClient.connect();
+        await listen.ensureConnected();
       } catch (err) {
-        try {
-          await listenClient.end();
-        } catch {
-          // best-effort
-        }
+        await listen.shutdown();
         try {
           await kysely.destroy();
         } catch {
           // best-effort; destroy() also closes the pool, so we don't double-end.
         }
-        listenClient = undefined;
+        listen = undefined;
         kysely = undefined;
         pool = undefined;
         throw err;
@@ -968,7 +966,7 @@ export function createSessionPostgresPlugin(
       store = createSessionStore(kysely);
       inbox = createInbox({
         db: kysely,
-        listenClient,
+        listen,
         isTerminated: async (sessionId) => {
           const rec = await store!.get(sessionId);
           return rec === null || rec.terminated;
@@ -1242,9 +1240,11 @@ export function createSessionPostgresPlugin(
         await inbox.shutdown();
         inbox = undefined;
       }
-      if (listenClient !== undefined) {
-        await listenClient.end().catch(() => {});
-        listenClient = undefined;
+      if (listen !== undefined) {
+        // Stops reconnecting, and ends the live client (a connect still in
+        // flight ends its own when it lands).
+        await listen.shutdown();
+        listen = undefined;
       }
       if (kysely !== undefined) {
         await kysely.destroy().catch(() => {});

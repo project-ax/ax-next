@@ -6,8 +6,9 @@ import {
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { Kysely, PostgresDialect, sql } from 'kysely';
 import pg from 'pg';
-import { PluginError } from '@ax/core';
+import { PluginError, type Logger } from '@ax/core';
 import { createInbox } from '../inbox.js';
+import { ListenConnection } from '../listen-connection.js';
 import { runSessionMigration, type SessionDatabase } from '../migrations.js';
 
 // ---------------------------------------------------------------------------
@@ -59,9 +60,17 @@ afterEach(async () => {
   }
 });
 
+const logger: Logger = {
+  debug: () => {},
+  info: () => {},
+  warn: () => {},
+  error: () => {},
+  child: () => logger,
+};
+
 interface Setup {
   db: Kysely<SessionDatabase>;
-  listenClient: pg.Client;
+  listen: ListenConnection;
   inbox: ReturnType<typeof createInbox>;
 }
 
@@ -71,16 +80,21 @@ async function makeInbox(): Promise<Setup> {
   opened.push({ destroy: () => db.destroy().catch(() => {}) as unknown as Promise<void> });
   await runSessionMigration(db);
 
-  const listenClient = new pg.Client({ connectionString });
-  await listenClient.connect();
-  opened.push({ destroy: () => listenClient.end().catch(() => {}) as unknown as Promise<void> });
+  const listen = new ListenConnection({
+    connectionString,
+    connectTimeoutMs: 5_000,
+    keepAliveInitialDelayMs: 10_000,
+    logger,
+  });
+  opened.push({ destroy: () => listen.shutdown() });
+  await listen.ensureConnected();
 
   const inbox = createInbox({
     db,
-    listenClient,
+    listen,
     isTerminated: async () => false,
   });
-  return { db, listenClient, inbox };
+  return { db, listen, inbox };
 }
 
 /**

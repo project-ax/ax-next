@@ -6,7 +6,9 @@ import {
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { Kysely, PostgresDialect } from 'kysely';
 import pg from 'pg';
+import type { Logger } from '@ax/core';
 import { createInbox } from '../inbox.js';
+import { ListenConnection } from '../listen-connection.js';
 import { createSessionStore } from '../store.js';
 import { runSessionMigration, type SessionDatabase } from '../migrations.js';
 
@@ -43,6 +45,14 @@ afterAll(async () => {
 
 const opened: { destroy: () => Promise<void> }[] = [];
 
+const logger: Logger = {
+  debug: () => {},
+  info: () => {},
+  warn: () => {},
+  error: () => {},
+  child: () => logger,
+};
+
 afterEach(async () => {
   while (opened.length > 0) {
     const o = opened.pop()!;
@@ -68,11 +78,14 @@ describe('inbox shutdown race', () => {
     });
     await runSessionMigration(db);
 
-    const listenClient = new pg.Client({ connectionString });
-    await listenClient.connect();
-    opened.push({
-      destroy: () => listenClient.end().catch(() => {}) as unknown as Promise<void>,
+    const listen = new ListenConnection({
+      connectionString,
+      connectTimeoutMs: 5_000,
+      keepAliveInitialDelayMs: 10_000,
+      logger,
     });
+    opened.push({ destroy: () => listen.shutdown() });
+    await listen.ensureConnected();
 
     const store = createSessionStore(db);
 
@@ -91,7 +104,7 @@ describe('inbox shutdown race', () => {
     let callCount = 0;
     const inbox = createInbox({
       db,
-      listenClient,
+      listen,
       isTerminated: async (sessionId) => {
         callCount += 1;
         if (callCount === 1) {
@@ -118,9 +131,9 @@ describe('inbox shutdown race', () => {
       // Give ensureListen() time to land.
       await new Promise((r) => setTimeout(r, 100));
 
-      // Fire NOTIFY through a separate connection. listenClient's handler
-      // void-fires wakeWaiter; wakeWaiter calls fetchEntry (returns null —
-      // no entry queued), then awaits isTerminated → blocks on our gate.
+      // Fire NOTIFY through a separate connection. The inbox's notification
+      // handler void-fires wakeWaiter; wakeWaiter calls fetchEntry (returns
+      // null — no entry queued), then awaits isTerminated → blocks on our gate.
       const notifier = new pg.Client({ connectionString });
       await notifier.connect();
       try {
