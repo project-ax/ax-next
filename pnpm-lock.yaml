@@ -173,6 +173,9 @@ importers:
         specifier: '>=6.29.1 <7.0.0'
         version: 6.29.1
     devDependencies:
+      '@ax/tool-artifact-publish':
+        specifier: workspace:*
+        version: link:../tool-artifact-publish
       '@types/node':
         specifier: ^25.6.0
         version: 25.6.0

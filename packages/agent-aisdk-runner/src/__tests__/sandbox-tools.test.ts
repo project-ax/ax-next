@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { ToolDescriptor } from '@ax/ipc-protocol';
 import { createHoldLatch, createLocalDispatcher, type PreToolVerdict, type ToolPolicy } from '@ax/agent-runner-core';
+import { SHOW_VISUAL_DESCRIPTOR } from '@ax/tool-artifact-publish';
 import { POLICY_WRAPPED, type WrappedExecute } from '../tools/policy-wrap.js';
 import { buildSandboxTools } from '../tools/sandbox-tools.js';
 
@@ -226,5 +227,20 @@ describe('buildSandboxTools', () => {
     const out = await unwrap(tools['echo_local']?.execute)({ text: 'x' }, OPTS);
     expect(out).toContain('not on the allowlist');
     expect(dispatched).toBe(false);
+  });
+
+  it('(VISUALS-1) exposes show_visual with its description and resolves to the executor JSON', async () => {
+    const dispatcher = createLocalDispatcher();
+    dispatcher.register('show_visual', async () => ({ artifactId: 'a', title: 't', summary: 's' }));
+    const tools = buildSandboxTools({
+      policy: fakePolicy(),
+      dispatcher,
+      tools: [SHOW_VISUAL_DESCRIPTOR],
+      idGen: () => 'id-1',
+      holdLatch, onHold: () => {}, onToolFailure: () => {},
+    });
+    expect(tools['show_visual']?.description).toBe(SHOW_VISUAL_DESCRIPTOR.description);
+    expect(await unwrap(tools['show_visual']?.execute)({ title: 't', summary: 's', html: '<p>x</p>' }, OPTS))
+      .toBe(JSON.stringify({ artifactId: 'a', title: 't', summary: 's' }));
   });
 });

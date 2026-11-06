@@ -43,6 +43,11 @@ export type {
   ArtifactPublishOutput,
   CreateArtifactPublishExecutorOptions,
 } from './artifact-publish-executor.js';
+export { createShowVisualExecutor } from './show-visual-executor.js';
+export type {
+  CreateShowVisualExecutorOptions,
+  ShowVisualOutput,
+} from './show-visual-executor.js';
 export { createToolPolicy } from './tool-policy.js';
 export type {
   ToolPolicy,

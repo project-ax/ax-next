@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import type { ToolDescriptor } from '@ax/ipc-protocol';
 import { createLocalDispatcher } from '@ax/agent-runner-core';
+import { SHOW_VISUAL_DESCRIPTOR } from '@ax/tool-artifact-publish';
 import { buildSandboxToolEntries } from '../sandbox-mcp-server.js';
 
 const sampleSandboxDescriptor: ToolDescriptor = {
@@ -83,5 +84,20 @@ describe('buildSandboxToolEntries', () => {
     expect(out.isError ?? false).toBe(false);
     expect(typeof out.content[0].text).toBe('string');
     expect(out.content[0].text).toBe('undefined');
+  });
+
+  it('(VISUALS-1) exposes show_visual with its description and passes title/summary/html through', async () => {
+    const dispatcher = createLocalDispatcher();
+    const seen: unknown[] = [];
+    dispatcher.register('show_visual', async (c) => {
+      seen.push(c.input);
+      return { artifactId: 'a', title: 't', summary: 's' };
+    });
+    const [entry] = buildSandboxToolEntries(dispatcher, [SHOW_VISUAL_DESCRIPTOR], () => 'id-1');
+    expect([entry!.name, entry!.description]).toEqual(['show_visual', SHOW_VISUAL_DESCRIPTOR.description]);
+    expect(await entry!.handler({ title: 't', summary: 's', html: '<p>x</p>' }, {} as never)).toEqual({
+      content: [{ type: 'text', text: JSON.stringify({ artifactId: 'a', title: 't', summary: 's' }) }],
+    });
+    expect(seen).toEqual([{ title: 't', summary: 's', html: '<p>x</p>' }]);
   });
 });
