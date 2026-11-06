@@ -168,7 +168,7 @@ export function remoteErrors(
       errors[`value-${header.slot}`] = 'Enter a header value.';
     else if (!header.value && options.reenterSavedValues)
       errors[`value-${header.slot}`] =
-        'Enter this value again. Changing where this connector points cleared it.';
+        'Enter this value again. Changing where this connector points clears it.';
     if (/[\x00-\x1f\x7f]/.test(header.value) || header.value.length > 8192)
       errors[`value-${header.slot}`] =
         'Use a single line of text, up to 8,192 characters.';

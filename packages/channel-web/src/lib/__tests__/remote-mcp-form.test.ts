@@ -154,7 +154,7 @@ describe('remote MCP form data', () => {
     draft.headers = [{ slot: 'a', name: 'X-Key', value: '', saved: true }];
     expect(remoteErrors(draft, 'workspace')).toEqual({});
     expect(remoteErrors(draft, 'workspace', { reenterSavedValues: true })).toEqual({
-      'value-a': 'Enter this value again. Changing where this connector points cleared it.',
+      'value-a': 'Enter this value again. Changing where this connector points clears it.',
     });
     // A value typed again is enough, and a per-agent key is never asked for.
     expect(
