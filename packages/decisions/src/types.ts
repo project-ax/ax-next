@@ -84,7 +84,7 @@ export type ExecutionPath = 'agent-executes' | 'host-replays';
  * "Approved — it can do this the next time it tries", never "Sent".
  *
  * `failed` means the host tried the replay and the tool threw (anything but
- * a timeout); or the host has no report of how the call ended
+ * a timeout on a non-routine host tool); or the host has no report of how the call ended
  * (`replayAbandonedAt`; the receipt then says it cannot tell): the bus stopped
  * waiting on a host tool that may still be running (TASK-285), a connector
  * call got no reliable answer, or the host died mid-flight and the sweep gave

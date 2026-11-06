@@ -172,7 +172,7 @@ export function receiptFor(decision: Decision): DecisionReceipt | null {
         // waiting on, which may still finish: both are recorded as abandoned
         // and read as "cannot tell".
         //
-        // The outcome stays `failed` for both, deliberately. It is the same
+        // The outcome stays `failed` for both kinds of `failed`, deliberately. It is the same
         // thing to a reader deciding what to do next — this did not go
         // through, look at it — and splitting the union would make every
         // renderer choose a rendering for a case it has no different rendering

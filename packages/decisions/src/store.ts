@@ -330,8 +330,9 @@ export interface DecisionStore {
   claimReplayFlight(decisionId: string, nowIso: string): Promise<Decision | null>;
 
   /**
-   * The host replay threw (anything but a timeout: a call the bus stopped
-   * waiting on may still land, so it goes to `markOutcomeUnknown`, TASK-285).
+   * The host replay threw (anything but a timeout on a non-routine host tool:
+   * a call the bus stopped waiting on may still land, so it goes to
+   * `markOutcomeUnknown`, TASK-285).
    * Records the failure and DROPS the standing authorisation with it (the
    * partial index does not cover `failed`), because an action that did not
    * happen must not leave behind a yes the agent can quietly cash in later.

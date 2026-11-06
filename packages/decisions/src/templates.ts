@@ -375,8 +375,9 @@ export const EXPIRED_RECEIPT = 'This one ran out of time, so nothing happened.';
  * IT IS NOT `FAILED_RECEIPT`, AND THE DIFFERENCE IS THE WHOLE REASON THIS
  * CONSTANT EXISTS. That line ends "Nothing was completed", which is a report
  * from the executor: the tool threw, so we know what did not happen. Here we
- * know nothing of the kind. The process died somewhere inside the call, and
- * the crash could have landed on either side of the tool's own side effect —
+ * know nothing of the kind. The host died somewhere inside the call, or
+ * stopped waiting on it, and either could have happened on either side of the
+ * tool's own side effect —
  * the email may be sent, the invite may be out. Printing "nothing was
  * completed" over that would be the same class of lie as claiming an unsent
  * message was sent (design H1), pointed the other way, and it is the more

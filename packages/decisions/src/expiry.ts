@@ -52,9 +52,12 @@ export const DEFAULT_RECLAIM_BATCH = 25;
  * in a timeout — `DEFAULT_SERVICE_TIMEOUT_MS`, 120 s. A tool executor may
  * register its own `timeoutMs`; none in this repo registers a longer one
  * (several register shorter ones), and one that did would break this
- * derivation. A connector replay (TASK-1046) is two calls in
- * a row, `tool-policy:evaluate` and then `connectors:call-tool`, and the second
- * bounds itself at 45 s, well inside the same ceiling. So a live flight cannot
+ * derivation. (A ROUTINE replay is the exception: it runs through
+ * `callJoined`, which waits for every nested call to settle with no ceiling,
+ * so this bound does not hold for it. The reclaim stays safe all the same,
+ * for the reason in the next paragraph.) A connector replay (TASK-1046) is two
+ * calls in a row, `tool-policy:evaluate` and then `connectors:call-tool`, and
+ * the second bounds itself at 45 s, well inside the same ceiling. So a live flight cannot
  * outlast about 240 s (two calls at the ceiling) plus the store writes around
  * it, in this process or in any other replica: they all run the same bus with
  * the same ceiling. Fifteen minutes is that bound with several times its

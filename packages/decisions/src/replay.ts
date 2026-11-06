@@ -65,7 +65,7 @@ export interface ReplayOutcome {
    * The host SENT the call and got no reliable answer, so it may or may not
    * have happened (TASK-1046: a connector call that timed out, lost its
    * connection, or came back unreadable; TASK-285: a host tool whose bus call
-   * timed out, its own or one nested inside it, while the tool may still be
+   * timed out, its own or one nested inside it, while that call may still be
    * running). `settleReplay` records it as abandoned — "we cannot tell you
    * whether it finished" — and never as a failure, whose receipt says nothing
    * was completed.
@@ -206,12 +206,20 @@ export async function replayOnApprove(args: {
     // call carries text this package did not write. And not `invalid-return`: no
     // `tool:execute:*` registers `returns`, and an executor that returned did
     // not time out.
+    //
+    // The line does name WHICH hook ran out of time, so an operator can tell
+    // the tool hanging from one of its dependencies hanging. Only when that
+    // name is one the host registered at boot (`hasService` is an exact-match
+    // lookup), so a `PluginError` built with any other `hookName` adds nothing
+    // to the line.
     if (routineToolKind(decision.call.name) === null && err instanceof PluginError && err.code === 'timeout') {
+      const timedOut = err.hookName;
       ctx.logger.warn('decision_replay_unknown', {
         plugin: PLUGIN_NAME,
         decisionId: decision.id,
         tool: decision.call.name,
         reason: 'timeout',
+        ...(typeof timedOut === 'string' && bus.hasService(timedOut) ? { hook: timedOut } : {}),
       });
       return { executed: false, path: null, error: null, outcomeUnknown: true };
     }
