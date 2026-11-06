@@ -35,6 +35,9 @@ const MAX_TIMER_DELAY_MS = 2_147_483_647;
 const DEFAULT_STATEMENT_TIMEOUT_MS = 30_000;
 // Postgres refuses a larger statement_timeout, which would fail every connect.
 const MAX_STATEMENT_TIMEOUT_MS = 2_147_483_647;
+const DEFAULT_IDLE_IN_TRANSACTION_TIMEOUT_MS = 60_000;
+// The same ceiling: Postgres refuses a larger idle_in_transaction_session_timeout.
+const MAX_IDLE_IN_TRANSACTION_TIMEOUT_MS = 2_147_483_647;
 // TASK-1058: pg-pool 3.13.0's two timeout rejections carry no code, so a
 // code-only log line can't tell them from a database error or from each other.
 // Each gets its own backend-neutral code:
@@ -83,6 +86,29 @@ export interface DatabasePostgresConfig {
    */
   statementTimeoutMs?: number;
   /**
+   * How long a pooled connection may sit idle inside an open transaction,
+   * between one statement and the next, before Postgres ends its session with
+   * SQLSTATE `25P03`. Every lock the session held goes with it. Only that gap
+   * counts: a statement that runs long is the statement timeout's job, and a
+   * connection idle outside a transaction is never ended. The caller's next
+   * statement fails with pg's code-less "Client has encountered a connection
+   * error and is not queryable", the pool drops the connection when it's
+   * released, and `database_postgres_client_error` logs `25P03`. A whole
+   * number of ms from 1 to 2147483647; default 60000. Maps to pg's
+   * `idle_in_transaction_session_timeout`, which is sent at connect time.
+   *
+   * Why 60 s: twice the statement timeout, and longer than any wait a holder
+   * makes on another database call, which the database bounds itself (a
+   * nested 5 s checkout plus a 30 s statement). So it ends only a holder stuck
+   * on something with no bound of its own, such as routines' `blob:put`. A new
+   * holder must not legitimately idle anywhere near 60 s. If you raise
+   * `checkoutTimeoutMs` or `statementTimeoutMs`, keep this above their sum
+   * (35 s at the defaults): below it, routines' `withLockedWebhookSecret`,
+   * which holds its lock across the credential write on purpose, can be cut
+   * off mid-write. That is documented here, not enforced.
+   */
+  idleInTransactionTimeoutMs?: number;
+  /**
    * Optional logger for background connection failures (e.g., a postgres
    * restart in k8s): `database_postgres_pool_error` when an idle pooled
    * connection fails, and `database_postgres_client_error` when a checked-out
@@ -110,9 +136,12 @@ export function createDatabasePostgresPlugin(config: DatabasePostgresConfig): Pl
     },
     init({ bus }) {
       validateConnectionString(config.connectionString);
-      refuseStatementTimeoutInConnectionString(config.connectionString);
+      refuseServerTimeoutsInConnectionString(config.connectionString);
       const checkoutTimeoutMs = resolveCheckoutTimeoutMs(config.checkoutTimeoutMs);
       const statementTimeoutMs = resolveStatementTimeoutMs(config.statementTimeoutMs);
+      const idleInTransactionTimeoutMs = resolveIdleInTransactionTimeoutMs(
+        config.idleInTransactionTimeoutMs,
+      );
       const bgLogger =
         config.logger ?? createLogger({ reqId: 'database-postgres-bg' });
 
@@ -130,6 +159,13 @@ export function createDatabasePostgresPlugin(config: DatabasePostgresConfig): Pl
         // statement holds its pool slot forever. Nothing on this pool is
         // exempt; see SECURITY.md.
         statement_timeout: statementTimeoutMs,
+        // TASK-1061: Postgres ends a session left idle inside an open
+        // transaction for this long (25P03), and its locks go with it. Without
+        // it, a holder awaiting something nothing else bounds (routines'
+        // blob:put) kept its row and advisory locks forever. A session idle
+        // outside a transaction is never ended. Why 60 s: see
+        // idleInTransactionTimeoutMs.
+        idle_in_transaction_session_timeout: idleInTransactionTimeoutMs,
       });
       // pg.Pool emits 'error' for idle-pool socket failures (e.g., postgres
       // restart). Without a listener Node treats it as unhandled and crashes
@@ -241,20 +277,29 @@ function resolveCheckoutTimeoutMs(value: unknown): number {
   });
 }
 
+// Each server-side timeout the pool sets, keyed by the connection-string
+// parameter that would override it, with the config field that owns it.
+const URL_REFUSED_KEYS: ReadonlyMap<string, string> = new Map([
+  ['statement_timeout', 'statementTimeoutMs'],
+  ['idle_in_transaction_session_timeout', 'idleInTransactionTimeoutMs'],
+]);
+
 // pg lays the connection string's query parameters over the explicit config,
-// so `?statement_timeout=0` (or a bare `?statement_timeout`, which pg reads as
-// unset) would silently replace statementTimeoutMs or switch the bound off.
-// The bound has one home: refuse the other. This refuses at least every key
+// so `?statement_timeout=0` or `?idle_in_transaction_session_timeout=0` (or a
+// bare key, which pg reads as unset) would silently replace statementTimeoutMs
+// or idleInTransactionTimeoutMs, or switch that bound off. Each bound has one
+// home: refuse the other. This refuses at least every key
 // pg would read (pg-connection-string parses with `new URL`): the query ends
 // at the first `#`, and tab, LF and CR are dropped everywhere before it is
 // split, so they can't break up a key or an escape. Each key is then decoded on its own (a malformed escape
 // elsewhere can't hide it; a key with no `=` still counts), and any code unit
 // at or below 0x20 is dropped from it, because `new URL` trims control
-// characters and spaces off the end of the string. `statement_timeout` has
-// none of those, so stripping them can only refuse more. `options` isn't
+// characters and spaces off the end of the string. Neither refused key has
+// any of those, so stripping them can only refuse more. `options` isn't
 // checked: pg always sends the explicit parameter, and Postgres applies it
-// after `-c` options (measured on 16). Linear: no backtracking regex.
-function refuseStatementTimeoutInConnectionString(connectionString: string): void {
+// after `-c` options (measured on 16 for both keys). Linear: no backtracking
+// regex, and one Map lookup per key.
+function refuseServerTimeoutsInConnectionString(connectionString: string): void {
   const queryStart = connectionString.indexOf('?');
   if (queryStart === -1) return;
   const hashAt = connectionString.indexOf('#', queryStart);
@@ -269,11 +314,13 @@ function refuseStatementTimeoutInConnectionString(connectionString: string): voi
     } catch {
       // A malformed escape in this key: compare it raw.
     }
-    if (key.replace(/[\x00-\x20]/g, '') === 'statement_timeout') {
+    const normalized = key.replace(/[\x00-\x20]/g, '');
+    const field = URL_REFUSED_KEYS.get(normalized);
+    if (field !== undefined) {
       throw new PluginError({
         code: 'invalid-config',
         plugin: PLUGIN_NAME,
-        message: `${PLUGIN_NAME}: connectionString must not set statement_timeout; use statementTimeoutMs`,
+        message: `${PLUGIN_NAME}: connectionString must not set ${normalized}; use ${field}`,
       });
     }
   }
@@ -293,5 +340,22 @@ function resolveStatementTimeoutMs(value: unknown): number {
     code: 'invalid-config',
     plugin: PLUGIN_NAME,
     message: `${PLUGIN_NAME}: statementTimeoutMs must be a whole number of milliseconds from 1 to ${MAX_STATEMENT_TIMEOUT_MS}`,
+  });
+}
+
+function resolveIdleInTransactionTimeoutMs(value: unknown): number {
+  if (value === undefined) return DEFAULT_IDLE_IN_TRANSACTION_TIMEOUT_MS;
+  if (
+    typeof value === 'number' &&
+    Number.isSafeInteger(value) &&
+    value >= 1 &&
+    value <= MAX_IDLE_IN_TRANSACTION_TIMEOUT_MS
+  ) {
+    return value;
+  }
+  throw new PluginError({
+    code: 'invalid-config',
+    plugin: PLUGIN_NAME,
+    message: `${PLUGIN_NAME}: idleInTransactionTimeoutMs must be a whole number of milliseconds from 1 to ${MAX_IDLE_IN_TRANSACTION_TIMEOUT_MS}`,
   });
 }
