@@ -136,6 +136,10 @@ if (${spacerPx} > 0) {
 }
 for (const [name, html] of Object.entries(visuals)) {
   const f = document.createElement('iframe');
+  // Every load the iframe element sees: VisualFrame treats any after the first as a navigation.
+  window.__loads = window.__loads || {};
+  window.__loads[name] = 0;
+  f.addEventListener('load', () => { window.__loads[name] += 1; });
   f.setAttribute('sandbox', VISUAL_IFRAME_SANDBOX);
   f.style.width = '640px';
   f.style.height = '400px';
@@ -553,6 +557,54 @@ window.__chart = new Chart(document.getElementById('c'), {
       });
       expect(r.w, JSON.stringify(r)).toBe(400);
       expect(Math.abs(r.barY - r.target), JSON.stringify(r)).toBeLessThanOrEqual(1);
+    } finally {
+      await page.close();
+    }
+  });
+
+  it('(BUG-3) clicking an ordinary link in a visual goes nowhere: the visual stays up', async () => {
+    const C = canaryUrl;
+    const visual = `<p>links</p><a id="l" href="${C}/link-click" style="display:block;padding:20px">Open in Linear</a>
+<svg width="120" height="40"><a id="s" href="${C}/svg-link-click"><rect width="120" height="40"></rect></a></svg>`;
+    const { page, results, requests, hits } = await run('/bug3-link', { links: visual }, ['links'], 0);
+    try {
+      const frame = page.frames().find((f) => f.url() === 'about:srcdoc')!;
+      const settled = async () => {
+        await page.waitForTimeout(1000);
+        const loads = await page.evaluate(() => (window as unknown as { __loads: Record<string, number> }).__loads);
+        expect({ loads: loads.links, urls: page.frames().slice(1).map((f) => f.url()) }).toEqual({
+          loads: 1,
+          urls: ['about:srcdoc'],
+        });
+      };
+      await frame.click('#l', { timeout: 3000 });
+      await settled();
+      await frame.click('#s', { timeout: 3000 });
+      await settled();
+      expect(await frame.evaluate(() => document.getElementById('l')?.textContent)).toBe('Open in Linear');
+      const after = await page.evaluate(() => (window as unknown as { __results: Recorded[] }).__results);
+      expect(from(after, 'links').some((m) => m.type === 'ax-visual:error')).toBe(false);
+      expect(from(results, 'links')).toContainEqual(expect.objectContaining({ type: 'ax-visual:ready', rendered: true }));
+      expect(hits).toEqual([]);
+      expect(canaryHits.filter((h) => h.url?.includes('link-click'))).toEqual([]);
+      expect(canaryLeaks(requests)).toEqual([]);
+    } finally {
+      await page.close();
+    }
+  });
+
+  it('(BUG-3) a visual that navigates itself fires a second load on the iframe (the parent fails it), and sends nothing', async () => {
+    const C = canaryUrl;
+    const visual = `<p>nav</p><script>setTimeout(function () { location.href = '${C}/self-nav-bug3'; }, 300);</script>`;
+    const { page, requests } = await run('/bug3-nav', { nav: visual }, ['nav'], 0);
+    try {
+      await page.waitForFunction(
+        () => ((window as unknown as { __loads: Record<string, number> }).__loads.nav ?? 0) >= 2,
+        undefined,
+        { timeout: 5000 },
+      );
+      expect(canaryHits.filter((h) => h.url?.includes('self-nav-bug3'))).toEqual([]);
+      expect(canaryLeaks(requests)).toEqual([]);
     } finally {
       await page.close();
     }

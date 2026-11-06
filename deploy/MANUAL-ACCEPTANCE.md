@@ -1919,9 +1919,13 @@ cannot reach the network, the app's cookies, or the app's DOM.
 - The PNG opens at 2x. The HTML opens from disk, renders, and makes no network
   request; the agent's script does not run at the top level of the file.
 - Hostile visual: `browser_network_requests` shows nothing to your URL, the
-  console shows CSP refusals, the app's cookies and session are untouched, and
-  the frame stays on `about:srcdoc`. A visual that tries to open a nested frame
-  is unmounted with the quiet "couldn't be displayed" state.
+  console shows CSP refusals, and the app's cookies and session are untouched.
+  Self-navigation (`location.href`, meta refresh) is refused and the card shows
+  the quiet "couldn't be displayed" state; nothing reaches the canary. Clicking
+  an ordinary link inside a visual does nothing, and the visual stays up.
+- A visual that tries to open a nested frame: the child frame element is
+  removed (stripped when the document is built, or purged at runtime) and the
+  visual stays up. The child's script never runs.
 
 ### Cleanup
 

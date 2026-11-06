@@ -32,6 +32,7 @@ export const SHOW_VISUAL_DESCRIPTOR: ToolDescriptor = {
     'fetched or loaded (no CDNs, web fonts, remote images or APIs). Gather the data',
     'with your other tools first and write it into the HTML.',
     "Don't use iframes, objects or embeds; they are removed.",
+    "Don't add links or forms: the visual can't open pages. Put any URLs in your reply text.",
     '',
     'Look like the app:',
     '- Color only with the provided CSS variables, written as hsl(var(--name)):',

@@ -63,6 +63,10 @@ export function VisualFrame(props: { conversationId: string; visual: ThreadVisua
   const [exportFailed, setExportFailed] = useState(false);
 
   const iframeRef = useRef<HTMLIFrameElement>(null);
+  // The srcdoc is the frame's one load. Any later load means it navigated:
+  // the app's frame-src 'none' refused it and the browser put its own error
+  // page in the card. That's a failure like any other.
+  const loads = useRef(0);
   const pendingExports = useRef(new Map<string, ReturnType<typeof setTimeout>>());
   // The srcdoc is built once, in the theme of the moment it loads. Later
   // changes go over postMessage; rebuilding would reload the visual.
@@ -81,6 +85,7 @@ export function VisualFrame(props: { conversationId: string; visual: ThreadVisua
             { html, mode: modeRef.current, tokens: readThemeTokens() },
             DEFAULT_VISUAL_ASSETS,
           );
+          loads.current = 0;
           setLoaded({ html, srcdoc });
         } catch {
           setFailed(true);
@@ -249,6 +254,10 @@ export function VisualFrame(props: { conversationId: string; visual: ThreadVisua
                 ref={iframeRef}
                 sandbox={VISUAL_IFRAME_SANDBOX}
                 srcDoc={loaded.srcdoc}
+                onLoad={() => {
+                  loads.current += 1;
+                  if (loads.current > 1) setFailed(true);
+                }}
                 title={title}
                 aria-describedby={descriptionId}
                 style={{ height }}

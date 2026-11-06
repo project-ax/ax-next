@@ -296,6 +296,29 @@ describe('VisualFrame', () => {
     expect(await screen.findByText(FAILED)).toBeInTheDocument();
   });
 
+  it('(BUG-3) a second load means the frame navigated: quiet failure, frame removed', async () => {
+    mount();
+    const { iframe, win } = await frameWindow();
+    // jsdom has already given the iframe its one real load (the srcdoc).
+    expect(iframe.contentDocument?.readyState).toBe('complete');
+    fromFrame(win, READY);
+    expect(screen.queryByText(FAILED)).toBeNull();
+    fireEvent.load(iframe); // somewhere else (or the browser's own error page)
+    expect(await screen.findByText(FAILED)).toBeInTheDocument();
+    expect(screen.getByText('Down 12%.')).toBeInTheDocument();
+    expect(screen.queryByTitle('Issues per cycle')).toBeNull();
+  });
+
+  it('(BUG-3) the first load alone is not a failure', async () => {
+    mount();
+    const { iframe, win } = await frameWindow();
+    expect(iframe.contentDocument?.readyState).toBe('complete'); // its one load happened
+    fromFrame(win, READY);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(screen.queryByText(FAILED)).toBeNull();
+    expect(iframe.className).toContain('opacity-100');
+  });
+
   it('posts a theme change to the frame without rebuilding it', async () => {
     mount();
     const { iframe, win } = await frameWindow();

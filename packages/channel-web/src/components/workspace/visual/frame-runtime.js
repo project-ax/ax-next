@@ -169,6 +169,45 @@ window.axVisualRuntime = function axVisualRuntime(win, host) {
   var setTimeoutFn = win.setTimeout;
   var raf = win.requestAnimationFrame;
 
+  // No self-navigation. The app's frame-src 'none' refuses any navigation of
+  // this frame, and Chrome then shows its own error page in the card. Links
+  // are ordinary agent output, so a click on one (and a form submit) does
+  // nothing instead. The listeners go on the window in the capture phase,
+  // before any agent code: they run first, agent code never sees the handler
+  // to remove it, and every call goes through primitives captured here.
+  // Script navigation (location.href, meta refresh) can't be stopped from in
+  // here; the parent treats a second load of the iframe as a failure.
+  var LINKS = 'a[href],area[href],a[*|href]';
+  var eventProto = proto('Event');
+  var addListener = proto('EventTarget') && proto('EventTarget').addEventListener;
+  var preventDefault = eventProto && eventProto.preventDefault;
+  var getTarget = getter(eventProto, 'target');
+  var getParentNode = getter(nodeProto, 'parentNode');
+  var closest = elementProto && elementProto.closest;
+  function onLinkClick(event) {
+    try {
+      var node = apply(getTarget, event, []);
+      while (node && apply(getNodeType, node, []) !== 1) node = apply(getParentNode, node, []);
+      if (node && apply(closest, node, [LINKS])) apply(preventDefault, event, []);
+    } catch {
+      // Not a link we can see: the parent's second-load check still catches a navigation.
+    }
+  }
+  function onSubmit(event) {
+    try {
+      apply(preventDefault, event, []);
+    } catch {
+      // The frame CSP refuses form actions anyway.
+    }
+  }
+  try {
+    apply(addListener, win, ['click', onLinkClick, true]);
+    apply(addListener, win, ['auxclick', onLinkClick, true]);
+    apply(addListener, win, ['submit', onSubmit, true]);
+  } catch {
+    // As above: the parent's second-load check is the backstop.
+  }
+
   // Frame-making elements go, and so does any element hosting an open shadow
   // root (the observer can't see inside it).
   function forbidden(el) {

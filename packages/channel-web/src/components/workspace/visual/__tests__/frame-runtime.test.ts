@@ -564,6 +564,58 @@ describe('frame runtime', () => {
     });
   });
 
+  describe('(BUG-3) a visual never navigates itself', () => {
+    function click(win: FrameWindow, el: Element, type = 'click'): boolean {
+      const ev = new win.MouseEvent(type, { bubbles: true, cancelable: true, button: type === 'auxclick' ? 1 : 0 });
+      el.dispatchEvent(ev);
+      return ev.defaultPrevented;
+    }
+
+    it('cancels clicks on links (html a, area, svg a, nested content), and nothing else', () => {
+      const { win } = setup((w) => {
+        w.document.body.innerHTML =
+          '<a id="a" href="https://example.com/x"><span id="inner">open</span></a>' +
+          '<map name="m"><area id="area" href="https://example.com/y" shape="rect" coords="0,0,1,1"></map>' +
+          '<svg><a id="svga" href="https://example.com/z"><text id="svgtext">z</text></a></svg>' +
+          '<a id="noref">no href</a><button id="btn">ok</button>';
+      });
+      const $ = (id: string) => win.document.getElementById(id)!;
+      expect(click(win, $('a'))).toBe(true);
+      expect(click(win, $('inner'))).toBe(true);
+      expect(click(win, $('a'), 'auxclick')).toBe(true);
+      expect(click(win, $('area'))).toBe(true);
+      expect(click(win, $('svga'))).toBe(true);
+      expect(click(win, $('svgtext'))).toBe(true);
+      expect(click(win, $('noref'))).toBe(false);
+      expect(click(win, $('btn'))).toBe(false);
+    });
+
+    it("can't be switched off by agent code", () => {
+      const { win } = setup((w) => {
+        w.document.body.innerHTML = '<a id="a" href="https://example.com/x">open</a>';
+      });
+      win.eval(
+        // Guessed handlers can't remove a listener it never sees, and a later
+        // capture listener on window runs after ours.
+        'document.removeEventListener("click", function () {}, true);' +
+          'window.removeEventListener("click", function () {}, true);' +
+          'window.addEventListener("click", function (e) { e.stopImmediatePropagation(); }, true);' +
+          'EventTarget.prototype.addEventListener = function () {};' +
+          'Event.prototype.preventDefault = function () {};',
+      );
+      expect(click(win, win.document.getElementById('a')!)).toBe(true);
+    });
+
+    it('cancels form submits', () => {
+      const { win } = setup((w) => {
+        w.document.body.innerHTML = '<form id="f" action="https://example.com/f"><input name="a"></form>';
+      });
+      const ev = new win.Event('submit', { bubbles: true, cancelable: true });
+      win.document.getElementById('f')!.dispatchEvent(ev);
+      expect(ev.defaultPrevented).toBe(true);
+    });
+  });
+
   it('removes WebRTC for good before anything else runs', () => {
     const { win } = setup((w) => {
       (w as unknown as Record<string, unknown>).RTCPeerConnection = function RTCPeerConnection() {};

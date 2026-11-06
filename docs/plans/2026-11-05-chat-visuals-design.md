@@ -163,6 +163,13 @@ field names backend-neutral: `visual`, `title`, `summary`, not storage terms.
   lands, reserve the card's space and fade the frame in.
 - **Failure:** if the HTML throws or renders nothing, the summary text still stands. Show a quiet
   "This visual couldn't be displayed" state instead of a broken box.
+  A visual that navigates its own frame fails the same way. The app's `frame-src 'none'` refuses
+  the navigation (nothing is sent), and the browser would otherwise show its own error page in the
+  card. So the parent treats any `load` of the iframe after the first (the srcdoc) as a failure
+  and unmounts it. Links are ordinary agent output, so the frame runtime cancels clicks on links
+  (`a[href]`, `area[href]`, SVG `a`) and form submits with capture-phase listeners installed
+  before any agent code; a link click does nothing and the visual stays up. The tool description
+  tells agents to put URLs in the reply text instead.
   As built: "renders nothing" means the frame's `<body>` holds no element that draws and no
   non-blank text once it loads (`<script>`, `<style>`, `<template>`, `<noscript>`, `<link>` and
   `<meta>` don't count), or its height is under 8 px. A visual that hasn't said `ready` within
