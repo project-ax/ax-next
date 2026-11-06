@@ -18,8 +18,19 @@
  * The `PluginError` code `connectors:upsert` throws when a save could not first
  * update the connector's tool permissions — resetting a kept-name server that
  * moved to a new endpoint (TASK-758), or recording which of its servers carry
- * an admin ceiling (TASK-809). Nothing was saved. The connector routes (and the
- * chat grant route) answer it as a 503 with this exact string as `error`, and
- * the channel-web editors and approve surfaces key their message on it.
+ * an admin ceiling (TASK-809). Nothing was saved. The connector routes answer
+ * it as a 503 with this exact string as `error`, and the channel-web connector
+ * editors key their message on it.
  */
 export const TOOL_PERMISSIONS_RESET_FAILED = 'tool-permissions-reset-failed';
+
+/**
+ * The `PluginError` code `connectors:upsert` throws when an edit would point a
+ * connector somewhere new (bind a stored credential somewhere it was not bound
+ * before) but could not first sign every agent out of it and clear its shared
+ * key and client secret (TASK-887). Nothing was saved: the connector still
+ * points where it did. The connector routes answer it as a 503 with this exact
+ * string as `error`, and the channel-web connector editors key their message
+ * on it.
+ */
+export const CONNECTOR_SIGN_OUT_FAILED = 'connector-sign-out-failed';

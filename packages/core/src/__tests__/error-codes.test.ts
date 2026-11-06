@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { TOOL_PERMISSIONS_RESET_FAILED } from '../error-codes.js';
+import { CONNECTOR_SIGN_OUT_FAILED, TOOL_PERMISSIONS_RESET_FAILED } from '../error-codes.js';
 
 describe('@ax/core/error-codes', () => {
   it('pins the wire spelling of the tool-permissions reset refusal (TASK-782)', () => {
@@ -8,6 +8,12 @@ describe('@ax/core/error-codes', () => {
     // the channel-web editors key their message on it. Renaming it is a wire
     // change, not a refactor.
     expect(TOOL_PERMISSIONS_RESET_FAILED).toBe('tool-permissions-reset-failed');
+  });
+
+  it('pins the wire spelling of the sign-out refusal (TASK-887)', () => {
+    // Same contract: the connector routes answer 503 with this exact string,
+    // and the channel-web editors key their message on it.
+    expect(CONNECTOR_SIGN_OUT_FAILED).toBe('connector-sign-out-failed');
   });
 
   it('imports nothing, so the channel-web SPA can bundle it', () => {
