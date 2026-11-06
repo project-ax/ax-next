@@ -1782,9 +1782,10 @@ describe('decisions store — one OPEN question per (agent, call shape)', () => 
   it('scopes to the OWNER — a shared agent is not a shared queue', async () => {
     // Reads are owner-scoped, so handing u2 the id of u1's row would give u2 a
     // question they cannot see or answer, which is worse than two rows that
-    // collide at approval time. Not a free trade: that collision has the same
-    // two outcomes as the `restore` race below — refused out loud where
-    // nothing has gone out, a second send where the host already replayed.
+    // collide at approval time. Not a free trade: that collision is refused
+    // where nothing has gone out, and sends a SECOND time where the host
+    // already replayed — the approve-time twin check (TASK-286) is
+    // owner-scoped too, so it does not reach across two owners.
     for (const s of await both()) {
       await s.createOrReuseOpen(base());
       const out = await s.createOrReuseOpen(base({ id: 'dec_2', ownerUserId: 'u2' }));
@@ -1813,13 +1814,10 @@ describe('decisions store — one OPEN question per (agent, call shape)', () => 
     // rows for one (agent, call shape), which such an index would have turned
     // into a THROWN undo on an ordinary sequence, every time it happened.
     //
-    // What it leaves instead is NOT harmless, and the canary says so out loud
-    // rather than this file implying otherwise: approving BOTH of those rows
-    // refuses audibly on the attended/parked/deferred paths but SENDS TWICE on
-    // the reversible unattended one, where the first replay frees the index
-    // slot (see `decisions.canary.test.ts`, "RESIDUE:"). The index was never
-    // the fix for that — it is a different bug on a path a person hits without
-    // approving anything. Closing the residue properly is its own card.
+    // The pair is allowed to exist; it is not allowed to run the call twice.
+    // `claimForApproval` refuses whichever twin is approved second once the
+    // first has gone out (TASK-286) — see "an approval whose identical twin
+    // already went out" below, and the canary's executor counts.
     for (const s of await both()) {
       await s.createOrReuseOpen(base());
       await s.markDismissed('dec_1', T_SOON);

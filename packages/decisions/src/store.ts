@@ -282,11 +282,12 @@ export interface DecisionStore {
    * that index. Reads are owner-scoped; handing user B the id of user A's row
    * on a shared team agent would give B a question they cannot see, answer or
    * dismiss — a question nobody can answer is worse than two that collide. The
-   * collision that leaves is the same one the `restore` race leaves, with the
-   * same two outcomes and the same nasty half: refused out loud where nothing
-   * has gone out yet, and a SECOND SEND where the host has already replayed
-   * and freed the index slot. See the note on the implementation. Pinned by a
-   * test rather than left to be rediscovered.
+   * collision that leaves has two outcomes: refused where nothing has gone out
+   * yet (the index), and a SECOND SEND where the host has already replayed and
+   * freed the index slot. The `restore` race used to share both; TASK-286's
+   * approve-time check (`claimForApproval`) now refuses its second send, but
+   * that check is owner-scoped like this collapse, so the two-owner second send
+   * remains. Pinned by a test rather than left to be rediscovered.
    *
    * ATOMIC, because the caller's read-then-create is not. Two byte-identical
    * `tool:pre-call` events race in the ordinary course of a turn, and this
@@ -596,10 +597,14 @@ export interface DecisionStore {
    * same call again before a second one goes out.
    *
    * `claimedBeforeIso` is the caller's age cutoff and it is belt to that
-   * braces: `HookBus` bounds every service call at 120 s by default, so a flight
-   * older than a cutoff comfortably past that ceiling cannot still be inside its
-   * `bus.call` in any host, this one or another replica. See
-   * `STRANDED_REPLAY_TIMEOUT_MS`.
+   * braces. `HookBus` bounds every service call at its ceiling (120 s by
+   * default, and no tool executor here registers a longer one), so a host
+   * replay older than a cutoff comfortably past about 240 s (a connector
+   * replay is two calls in a row) is no longer inside its `bus.call` in any
+   * host. A ROUTINE replay is the exception: it runs through `callJoined`,
+   * which waits for every nested call with no ceiling, so the bound does not
+   * hold for it — and the reclaim stays safe all the same, because it runs
+   * nothing. See `STRANDED_REPLAY_TIMEOUT_MS`.
    *
    * The predicates are the same three columns `restore`, `takeApproval` and
    * `claimReplayFlight` guard, for the same reason — plus the age comparison,
@@ -771,41 +776,29 @@ export function createDecisionsStore(db: Kysely<DecisionsDatabase>): DecisionSto
         // constrains only the callers that take it, which is the trade being
         // made deliberately.
         //
-        // WHAT IT DOES NOT COVER, and the cost is worse than it first reads.
-        // `restore` (undo) walks a row back into `pending` without consulting
-        // the open row an agent's retry raised in the meantime, so dismiss →
-        // the agent tries the identical call → undo still leaves TWO open rows
-        // for one call shape. The gate never sees that pair: both rows already
-        // existed when the undo landed.
+        // WHAT IT DOES NOT COVER. `restore` (undo) walks a row back into
+        // `pending` without consulting the open row an agent's retry raised in
+        // the meantime, so dismiss → the agent tries the identical call → undo
+        // still leaves TWO open rows for one call shape. The gate never sees
+        // that pair: both rows already existed when the undo landed. That is
+        // allowed on purpose — Undo is a grace period and is never refused for
+        // a new reason (the TASK-280 ruling, upheld for TASK-286).
         //
-        // Approving both is then not one outcome but two, and only one of them
-        // is loud:
+        // What stops the pair from running the call twice sits at the point of
+        // consequence instead: `claimForApproval` takes THIS lock too, and
+        // refuses an approval whose identical twin — answered after this row
+        // was raised — already ran or went out with no answer
+        // (`IdenticalCallAlreadyTriedError`). Before that check the reversible
+        // unattended path sent the call a second time: `markReplayed` stamps
+        // `replayed_at`, which is in the index's own predicate, so the second
+        // claim found the slot free. So did an attended or parked pair once the
+        // agent had taken the first yes. `decisions.canary.test.ts` pins the
+        // refusal by the executor's invocation count.
         //
-        //   * ATTENDED, or PARKED, or a DEFERRED irreversible call — nothing
-        //     has gone out when the second approval arrives, so the first row
-        //     still occupies its slot in `decisions_v1_authorised_unconsumed`,
-        //     the claim raises `23505`, and the person is told
-        //     (`CLAIM_REFUSED_DETAIL`). This is the sub-case TASK-253 made
-        //     audible.
-        //   * REVERSIBLE and UNATTENDED — the host replays immediately and
-        //     `markReplayed` stamps `replayed_at`, which is in the index's own
-        //     predicate. The row LEAVES the index, the second claim finds the
-        //     slot free, and THE CALL GOES OUT A SECOND TIME with nothing
-        //     refused and nothing said. That is the true worst case, and it is
-        //     the same double send this collapse exists to remove — reached by
-        //     a different route.
-        //
-        // Both halves are pinned in `decisions.canary.test.ts` ("RESIDUE:"),
-        // asserting the executor's invocation count rather than a row status.
-        //
-        // TAKING THIS LOCK IN `restore` WOULD NOT CLOSE IT. The two writes
-        // touch DIFFERENT rows, so serialising them changes nothing: `restore`
-        // never asks whether a colliding open row exists, and after it returns
-        // both rows are `pending` however the two were ordered. Closing this
-        // needs either a collapse at approve time or a `restore` that declines
-        // to reopen over a colliding row — both are rulings on what undo
-        // MEANS, and both are somebody's decision to make rather than a
-        // side effect of this one. Filed as its own card.
+        // TAKING THIS LOCK IN `restore` WOULD NOT HAVE CLOSED IT, and still
+        // would not. The two writes touch DIFFERENT rows: `restore` never asks
+        // whether a colliding open row exists, and after it returns both rows
+        // are `pending` however the two were ordered.
         //
         // It is held for the two statements below and released by COMMIT or
         // ROLLBACK whatever happens — the transaction-scoped variant cannot be
