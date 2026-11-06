@@ -30,9 +30,20 @@ import { Listener } from './listener.js';
 const PLUGIN_NAME = '@ax/eventbus-postgres';
 const NOTIFY_MAX_BYTES = 8000;
 const CHANNEL_RE = /^[a-zA-Z0-9_]+$/;
+const DEFAULT_CONNECT_TIMEOUT_MS = 5_000;
+// pg hands the value to a Node timer, and Node turns any delay above this
+// into 1 ms.
+const MAX_CONNECT_TIMEOUT_MS = 2_147_483_647;
 
 export interface EventbusPostgresConfig {
   connectionString: string;
+  /**
+   * How long one connect attempt to postgres may take, in milliseconds: a
+   * whole number from 1 to 2147483647. Default 5000. A database that accepts
+   * the connection and never answers fails the attempt with pg's `timeout
+   * expired`; the listener logs it and retries on its usual backoff.
+   */
+  connectTimeoutMs?: number;
   /**
    * Optional logger for background events that don't ride a request — pg.Client
    * 'error' events on the dedicated LISTEN connection (postgres restart, idle
@@ -71,6 +82,7 @@ export function createEventbusPostgresPlugin(
   config: EventbusPostgresConfig,
 ): Plugin {
   validateConnectionString(config.connectionString);
+  const connectTimeoutMs = resolveConnectTimeoutMs(config.connectTimeoutMs);
 
   // Local per-instance subscriber map. Keeps every subscriber of the same
   // process able to fire even though all of them share one pg connection.
@@ -92,6 +104,7 @@ export function createEventbusPostgresPlugin(
         config.logger ?? createLogger({ reqId: 'eventbus-postgres-bg' });
       listener = new Listener({
         connectionString: config.connectionString,
+        connectTimeoutMs,
         logger: bgLogger,
       });
 
@@ -207,4 +220,21 @@ function validateConnectionString(connectionString: unknown): void {
       message: `${PLUGIN_NAME}: connectionString must start with postgres:// or postgresql://`,
     });
   }
+}
+
+function resolveConnectTimeoutMs(value: unknown): number {
+  if (value === undefined) return DEFAULT_CONNECT_TIMEOUT_MS;
+  if (
+    typeof value !== 'number' ||
+    !Number.isInteger(value) ||
+    value < 1 ||
+    value > MAX_CONNECT_TIMEOUT_MS
+  ) {
+    throw new PluginError({
+      code: 'invalid-config',
+      plugin: PLUGIN_NAME,
+      message: `${PLUGIN_NAME}: connectTimeoutMs must be a whole number of milliseconds from 1 to ${MAX_CONNECT_TIMEOUT_MS}`,
+    });
+  }
+  return value;
 }

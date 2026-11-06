@@ -11,12 +11,21 @@ import type { Logger } from '@ax/core';
  * least one subscriber for. Subscribers don't see the disconnect — they
  * keep their handlers, and emissions delivered while we were down are
  * lost (LISTEN/NOTIFY is best-effort, not durable).
+ *
+ * A connect the database accepts but never answers fails after
+ * `connectTimeoutMs` and joins the same backoff chain. Without the bound it
+ * hung forever, and every emit and subscribe waited on it.
  */
 
 export type ListenerHandler = (rawJson: string) => void;
 
 export interface ListenerOptions {
   connectionString: string;
+  /**
+   * Bound on one connect attempt, in ms (pg's `connectionTimeoutMillis`).
+   * Required so no construction is silently unbounded.
+   */
+  connectTimeoutMs: number;
   logger?: Logger;
 }
 
@@ -56,7 +65,10 @@ export class Listener {
   }
 
   private async connect(): Promise<void> {
-    const client = new pg.Client({ connectionString: this.opts.connectionString });
+    const client = new pg.Client({
+      connectionString: this.opts.connectionString,
+      connectionTimeoutMillis: this.opts.connectTimeoutMs,
+    });
     client.on('error', (err) => this.onClientError(err));
     client.on('notification', (msg) => this.onNotification(msg));
     try {

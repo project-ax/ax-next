@@ -29,9 +29,11 @@ Why we belt-and-braces this:
 
 ### Dedicated client + reconnect
 
-The `Listener` class (`listener.ts`) holds a single `pg.Client` for the lifetime of the plugin instance. It is NOT a pooled connection — pool connections can be returned mid-listen, dropping all subscriptions. On `client.on('error')` we drop the dead client and schedule a reconnect with exponential backoff (`1s, 2s, 4s, 8s, 16s, 30s` cap, `listener.ts:84`). On reconnect we re-issue `LISTEN` for every channel that still has a local subscriber. Subscribers never see the disconnect; emissions delivered while we were down are LOST (LISTEN/NOTIFY is best-effort, not durable — this is a postgres semantic, not something we can paper over).
+The `Listener` class (`listener.ts`) holds a single `pg.Client` for the lifetime of the plugin instance. It is NOT a pooled connection — pool connections can be returned mid-listen, dropping all subscriptions. On `client.on('error')` we drop the dead client and schedule a reconnect with exponential backoff (`1s, 2s, 4s, 8s, 16s, 30s` cap, in `scheduleReconnect()`). On reconnect we re-issue `LISTEN` for every channel that still has a local subscriber. Subscribers never see the disconnect; emissions delivered while we were down are LOST (LISTEN/NOTIFY is best-effort, not durable — this is a postgres semantic, not something we can paper over).
 
-The reconnect timer is `unref()`'d (`listener.ts:96-98`) so a dead postgres doesn't keep the Node process alive. `shutdown()` clears the timer, ends the client, and clears the channel map.
+The reconnect timer is `unref()`'d in `scheduleReconnect()` so a dead postgres doesn't keep the Node process alive. `shutdown()` clears the timer, ends the client, and clears the channel map.
+
+A connect the database accepts but never answers now fails after `connectTimeoutMs` (default 5 s) with pg's `timeout expired`, logs the same `eventbus_postgres_listener_connect_failed` line, and joins the same backoff. Before, one silent attempt hung forever and nothing retried: every emit and subscribe waited on it until the bus's own call timeout. The value is a whole number of ms from 1 to 2147483647; anything else is refused at construction with `PluginError(code: 'invalid-config')`.
 
 ### No pool sharing
 

@@ -48,6 +48,7 @@ describe('Listener reconnect chain', () => {
     // Port 1 — assumed closed on test hosts. Connect rejects with ECONNREFUSED.
     const listener = new Listener({
       connectionString: 'postgres://localhost:1/nope',
+      connectTimeoutMs: 1_000,
       logger,
     });
 

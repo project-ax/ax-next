@@ -32,6 +32,9 @@ const PLUGIN_NAME = '@ax/database-postgres';
 const DEFAULT_CHECKOUT_TIMEOUT_MS = 5_000;
 // Node turns any timer delay above this into 1 ms.
 const MAX_TIMER_DELAY_MS = 2_147_483_647;
+const DEFAULT_STATEMENT_TIMEOUT_MS = 30_000;
+// Postgres refuses a larger statement_timeout, which would fail every connect.
+const MAX_STATEMENT_TIMEOUT_MS = 2_147_483_647;
 
 export interface DatabasePostgresConfig {
   connectionString: string;
@@ -43,6 +46,16 @@ export interface DatabasePostgresConfig {
    * 1 to 2147483647; default 5000. Maps to pg's `connectionTimeoutMillis`.
    */
   checkoutTimeoutMs?: number;
+  /**
+   * How long one statement on a pooled connection may run, waiting for a lock
+   * included, before Postgres cancels it with SQLSTATE `57014`. The connection
+   * stays usable, and a surrounding transaction rolls back. A whole number of
+   * ms from 1 to 2147483647; default 30000. Maps to pg's `statement_timeout`,
+   * which is sent at connect time. A statement that legitimately needs longer,
+   * such as a migration on a big table, runs inside a transaction that starts
+   * with `SET LOCAL statement_timeout = 0`.
+   */
+  statementTimeoutMs?: number;
   /**
    * Optional logger for background connection failures (e.g., a postgres
    * restart in k8s): `database_postgres_pool_error` when an idle pooled
@@ -71,7 +84,9 @@ export function createDatabasePostgresPlugin(config: DatabasePostgresConfig): Pl
     },
     init({ bus }) {
       validateConnectionString(config.connectionString);
+      refuseStatementTimeoutInConnectionString(config.connectionString);
       const checkoutTimeoutMs = resolveCheckoutTimeoutMs(config.checkoutTimeoutMs);
+      const statementTimeoutMs = resolveStatementTimeoutMs(config.statementTimeoutMs);
       const bgLogger =
         config.logger ?? createLogger({ reqId: 'database-postgres-bg' });
 
@@ -84,6 +99,11 @@ export function createDatabasePostgresPlugin(config: DatabasePostgresConfig): Pl
         // above a normal wait and below the kernel's 10 s per-plugin shutdown
         // deadline.
         connectionTimeoutMillis: checkoutTimeoutMs,
+        // TASK-1056: the database cancels a statement after this long, a lock
+        // wait included, and the connection stays usable. Without it, a stuck
+        // statement holds its pool slot forever. Nothing on this pool is
+        // exempt; see SECURITY.md.
+        statement_timeout: statementTimeoutMs,
       });
       // pg.Pool emits 'error' for idle-pool socket failures (e.g., postgres
       // restart). Without a listener Node treats it as unhandled and crashes
@@ -172,5 +192,60 @@ function resolveCheckoutTimeoutMs(value: unknown): number {
     code: 'invalid-config',
     plugin: PLUGIN_NAME,
     message: `${PLUGIN_NAME}: checkoutTimeoutMs must be a whole number of milliseconds from 1 to ${MAX_TIMER_DELAY_MS}`,
+  });
+}
+
+// pg lays the connection string's query parameters over the explicit config,
+// so `?statement_timeout=0` (or a bare `?statement_timeout`, which pg reads as
+// unset) would silently replace statementTimeoutMs or switch the bound off.
+// The bound has one home: refuse the other. This refuses at least every key
+// pg would read (pg-connection-string parses with `new URL`): the query ends
+// at the first `#`, and tab, LF and CR are dropped everywhere before it is
+// split, so they can't break up a key or an escape. Each key is then decoded on its own (a malformed escape
+// elsewhere can't hide it; a key with no `=` still counts), and any code unit
+// at or below 0x20 is dropped from it, because `new URL` trims control
+// characters and spaces off the end of the string. `statement_timeout` has
+// none of those, so stripping them can only refuse more. `options` isn't
+// checked: pg always sends the explicit parameter, and Postgres applies it
+// after `-c` options (measured on 16). Linear: no backtracking regex.
+function refuseStatementTimeoutInConnectionString(connectionString: string): void {
+  const queryStart = connectionString.indexOf('?');
+  if (queryStart === -1) return;
+  const hashAt = connectionString.indexOf('#', queryStart);
+  const query = connectionString
+    .slice(queryStart + 1, hashAt === -1 ? undefined : hashAt)
+    .replace(/[\t\n\r]/g, '');
+  for (const part of query.split('&')) {
+    const rawKey = part.split('=', 1)[0] ?? '';
+    let key = rawKey;
+    try {
+      key = decodeURIComponent(rawKey);
+    } catch {
+      // A malformed escape in this key: compare it raw.
+    }
+    if (key.replace(/[\x00-\x20]/g, '') === 'statement_timeout') {
+      throw new PluginError({
+        code: 'invalid-config',
+        plugin: PLUGIN_NAME,
+        message: `${PLUGIN_NAME}: connectionString must not set statement_timeout; use statementTimeoutMs`,
+      });
+    }
+  }
+}
+
+function resolveStatementTimeoutMs(value: unknown): number {
+  if (value === undefined) return DEFAULT_STATEMENT_TIMEOUT_MS;
+  if (
+    typeof value === 'number' &&
+    Number.isSafeInteger(value) &&
+    value >= 1 &&
+    value <= MAX_STATEMENT_TIMEOUT_MS
+  ) {
+    return value;
+  }
+  throw new PluginError({
+    code: 'invalid-config',
+    plugin: PLUGIN_NAME,
+    message: `${PLUGIN_NAME}: statementTimeoutMs must be a whole number of milliseconds from 1 to ${MAX_STATEMENT_TIMEOUT_MS}`,
   });
 }
