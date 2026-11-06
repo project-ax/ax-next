@@ -261,7 +261,7 @@ window.axVisualRuntime = function axVisualRuntime(win, host) {
   }
   var clearTimer = win.clearInterval;
   // The timer also refits charts once ready (see fitCharts). The child check
-  // always runs first, and fitCharts can't throw.
+  // always runs first, and fitCharts catches its own errors.
   function tick() {
     check();
     if (ready && !killed) fitCharts();
@@ -672,40 +672,52 @@ window.axVisualRuntime = function axVisualRuntime(win, host) {
   // and neither runs in a frame the browser isn't painting (offscreen, hidden
   // tab), so the chart can stay blank. This refits from the timer, on ready,
   // and when the parent says the card came into view: a responsive chart
-  // that is 0 wide, or more than a pixel off its container's content width,
-  // is refit. Cheap when nothing is wrong, and never throws.
+  // more than a pixel off the width Chart.js itself would give it (or 0 wide,
+  // if that can't be measured) is refit. Cheap when nothing is wrong; every
+  // step, the walk over Chart.instances included, is inside a try.
   function fitCharts() {
-    var instances;
     try {
-      instances = win.Chart && win.Chart.instances;
+      var instances = win.Chart && win.Chart.instances;
       if (!instances || typeof instances !== 'object') return;
-      instances = Object.keys(instances).map(function (key) {
-        return instances[key];
-      });
+      var keys = Object.keys(instances);
+      for (var i = 0; i < keys.length; i++) {
+        try {
+          fitChart(instances[keys[i]]);
+        } catch {
+          // One broken chart shouldn't stop the rest.
+        }
+      }
     } catch {
+      // A hostile Chart global: nothing to fit.
+    }
+  }
+
+  function fitChart(chart) {
+    if (!chart || (chart.options && chart.options.responsive === false)) return;
+    // Measured the way Chart.js measures, so a canvas it legitimately keeps
+    // narrower than its box (max-width, margin, padding, border) isn't
+    // "wrong". If that can't be measured, only a 0-wide chart is refit.
+    var target;
+    try {
+      var size = chart.platform.getMaximumSize(chart.canvas);
+      target = size && size.width;
+    } catch {
+      target = undefined;
+    }
+    if (typeof target === 'number' && isFinite(target)) {
+      if (Math.abs(target - chart.width) <= 1) return;
+    } else if (chart.width !== 0) {
       return;
     }
-    instances.forEach(function (chart) {
-      try {
-        if (!chart || (chart.options && chart.options.responsive === false)) return;
-        var box = chart.canvas && chart.canvas.parentNode;
-        var width = box && typeof box.clientWidth === 'number' ? box.clientWidth : 0;
-        if (width > 0) {
-          var style = win.getComputedStyle(box);
-          width -= (parseFloat(style.paddingLeft) || 0) + (parseFloat(style.paddingRight) || 0);
-        }
-        if (chart.width !== 0 && !(width > 0 && Math.abs(width - chart.width) > 1)) return;
-        // While an animation is running, resize() only queues the new size for
-        // the next draw, and in an unpainted frame the intro animation never
-        // finishes (it runs on requestAnimationFrame). Stopping it first makes
-        // the resize and redraw happen now.
-        if (typeof chart.stop === 'function') chart.stop();
-        chart.resize();
-      } catch {
-        // One broken chart shouldn't stop the rest.
-      }
-    });
+    // While an animation is running, resize() only queues the new size for
+    // the next draw, and in an unpainted frame the intro animation never
+    // finishes (it runs on requestAnimationFrame). Stopping it first makes
+    // the resize and redraw happen now. Only here, where the size really
+    // changes: stop() freezes any animation in flight.
+    if (typeof chart.stop === 'function') chart.stop();
+    chart.resize();
   }
+
 
   // ---- messages from the parent -------------------------------------------
 

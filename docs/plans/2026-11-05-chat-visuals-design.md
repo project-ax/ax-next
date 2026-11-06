@@ -179,8 +179,10 @@ field names backend-neutral: `visual`, `title`, `summary`, not storage terms.
   chart built then measures a 0×0 page. Chart.js recovers through `ResizeObserver` and
   `requestAnimationFrame`, and neither runs in a frame the browser isn't painting; worse, its
   intro animation never finishes there, so even `chart.resize()` only queues the new size. The
-  frame runtime therefore refits every responsive chart that is 0 wide or more than 1 px off its
-  container (stopping its animation first) after `ready`, on its check timer, and when the parent
+  frame runtime therefore refits every responsive chart more than 1 px off the width Chart.js's own
+  measurement (`platform.getMaximumSize`, which honors canvas max-width, margin, padding and
+  border) gives it, or 0 wide if that can't be measured, stopping its animation first (only then,
+  since `stop()` freezes animations in flight) after `ready`, on its check timer, and when the parent
   posts `{ type: 'ax-visual:visible' }`, which it does each time the card comes into view. The
   frame acts on that message only from its parent window, like the theme and export messages.
 

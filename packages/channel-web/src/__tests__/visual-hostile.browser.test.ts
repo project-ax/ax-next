@@ -524,6 +524,40 @@ window.__chart = new Chart(document.getElementById('c'), {
     expect(onscreen.every((s) => ok(s as Parameters<typeof ok>[0])), JSON.stringify(onscreen)).toBe(true);
   });
 
+  it('(BUG-2 review) a chart Chart.js keeps narrower than its box (max-width) still animates to its target', async () => {
+    // Chart.js sizes a canvas to less than its container's content width when
+    // the canvas has max-width, margin, padding or border. The refit must
+    // measure the way Chart.js does, or it stops the chart's animation on
+    // every tick and freezes the bars partway.
+    const chart = `<div style="position:relative;height:200px;width:600px"><canvas id="c" style="max-width:400px"></canvas></div>
+<script>
+window.__chart = new Chart(document.getElementById('c'), {
+  type: 'bar',
+  data: { labels: ['a', 'b', 'c'], datasets: [{ data: [1, 2, 3] }] },
+  options: { responsive: true, maintainAspectRatio: false, animation: { duration: 1500 } },
+});
+</script>`;
+    const { page } = await run('/bug2-maxwidth', { chart }, ['chart'], 0);
+    try {
+      const frame = page.frames().find((f) => f.url() === 'about:srcdoc')!;
+      await page.waitForTimeout(3000);
+      const r = await frame.evaluate(() => {
+        const c = (window as unknown as {
+          __chart: {
+            width: number;
+            getDatasetMeta(i: number): { data: { y: number }[] };
+            scales: { y: { getPixelForValue(v: number): number } };
+          };
+        }).__chart;
+        return { w: c.width, barY: c.getDatasetMeta(0).data[2]!.y, target: c.scales.y.getPixelForValue(3) };
+      });
+      expect(r.w, JSON.stringify(r)).toBe(400);
+      expect(Math.abs(r.barY - r.target), JSON.stringify(r)).toBeLessThanOrEqual(1);
+    } finally {
+      await page.close();
+    }
+  });
+
   it('a visual below the fold says ready without being scrolled into view', async () => {
     // Chromium runs no animation frames for an offscreen cross-origin frame;
     // a ready that waits on rAF alone would never come. The parent's 8 s

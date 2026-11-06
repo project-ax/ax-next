@@ -442,20 +442,38 @@ describe('frame runtime', () => {
     // A frame isolated in its own process can parse before its size arrives,
     // so Chart.js measures 0; its own resize path needs rAF, which doesn't run
     // offscreen. jsdom has no layout: the container's width is set by hand.
+    // `target` is what Chart.js's own measurement (platform.getMaximumSize)
+    // says the chart should be: the container minus canvas margin, padding,
+    // border and max-width. A function, so a test can change it later.
     interface StubChart {
       width: number;
       canvas: HTMLCanvasElement;
       options: { responsive?: boolean };
+      platform: { getMaximumSize: Mock };
       resize: Mock;
       stop: Mock;
     }
-    function chartIn(win: FrameWindow, width: number, containerWidth: number, responsive = true): StubChart {
+    function chartIn(
+      win: FrameWindow,
+      width: number,
+      target: number | (() => number),
+      responsive = true,
+    ): StubChart {
       const box = win.document.createElement('div');
-      Object.defineProperty(box, 'clientWidth', { get: () => containerWidth, configurable: true });
+      // The container's own width never decides anything: only Chart.js's measure.
+      Object.defineProperty(box, 'clientWidth', { get: () => 999, configurable: true });
       const canvas = win.document.createElement('canvas');
       box.appendChild(canvas);
       win.document.body.appendChild(box);
-      return { width, canvas, options: { responsive }, resize: vi.fn(), stop: vi.fn() };
+      const measure = typeof target === 'function' ? target : () => target;
+      return {
+        width,
+        canvas,
+        options: { responsive },
+        platform: { getMaximumSize: vi.fn(() => ({ width: measure(), height: 200 })) },
+        resize: vi.fn(),
+        stop: vi.fn(),
+      };
     }
     function withCharts(make: (win: FrameWindow) => StubChart[]) {
       let charts: StubChart[] = [];
@@ -471,31 +489,39 @@ describe('frame runtime', () => {
     }
 
     it('resizes a 0-width or wrongly sized responsive chart once ready, and leaves the rest', async () => {
-      const { win, charts } = withCharts((w) => [
-        chartIn(w, 0, 0), // nothing to measure yet: still worth a resize
-        chartIn(w, 0, 572),
-        chartIn(w, 300, 572),
-        chartIn(w, 572, 572), // right already
-        chartIn(w, 571, 572), // within a pixel
-        chartIn(w, 600, 572, false), // responsive: false keeps its own size
-      ]);
+      const { win, charts } = withCharts((w) => {
+        const broken = chartIn(w, 0, 572);
+        broken.platform.getMaximumSize.mockImplementation(() => {
+          throw new Error('no measure');
+        });
+        return [
+          chartIn(w, 0, 0), // nothing to measure yet: a resize would change nothing
+          chartIn(w, 0, 572),
+          chartIn(w, 300, 572),
+          chartIn(w, 572, 572), // right already
+          chartIn(w, 571, 572), // within a pixel
+          chartIn(w, 600, 572, false), // responsive: false keeps its own size
+          chartIn(w, 400, 400), // narrower than its box by Chart.js's own measure (max-width)
+          broken, // measure throws: falls back to "0 wide means refit"
+        ];
+      });
       win.dispatchEvent(new win.Event('load'));
       await frames();
-      expect(charts.map((c) => c.resize.mock.calls.length > 0)).toEqual([true, true, true, false, false, false]);
+      expect(charts.map((c) => c.resize.mock.calls.length > 0)).toEqual([
+        false, true, true, false, false, false, false, true,
+      ]);
+      // stop() only where the size will really change: it freezes animations.
+      expect(charts.map((c) => c.stop.mock.calls.length > 0)).toEqual([
+        false, true, true, false, false, false, false, true,
+      ]);
       // A running intro animation would only queue the resize: stopped first.
       const refit = charts[1]!;
-      expect(refit.stop).toHaveBeenCalled();
       expect(refit.stop.mock.invocationCallOrder[0]!).toBeLessThan(refit.resize.mock.invocationCallOrder[0]!);
-      expect(charts[3]!.stop).not.toHaveBeenCalled();
     });
 
     it('keeps checking on the timer after ready, so a chart that goes wrong later is fixed', async () => {
       let container = 572;
-      const { win, charts } = withCharts((w) => {
-        const c = chartIn(w, 572, 0);
-        Object.defineProperty(c.canvas.parentNode!, 'clientWidth', { get: () => container, configurable: true });
-        return [c];
-      });
+      const { win, charts } = withCharts((w) => [chartIn(w, 572, () => container)]);
       win.dispatchEvent(new win.Event('load'));
       await frames();
       expect(charts[0]!.resize).not.toHaveBeenCalled();
@@ -513,6 +539,19 @@ describe('frame runtime', () => {
       expect(charts[0]!.resize).not.toHaveBeenCalled();
       sendFrom(win, host, { type: 'ax-visual:visible' });
       expect(charts[0]!.resize).toHaveBeenCalledTimes(1);
+    });
+
+    it('a Chart.instances that throws on enumeration is survived', () => {
+      const { win, host } = setup((w) => {
+        w.Chart = {
+          defaults: { font: {}, plugins: { tooltip: {} } },
+          register: vi.fn(),
+          get instances() {
+            throw new Error('hostile');
+          },
+        };
+      });
+      expect(() => sendFrom(win, host, { type: 'ax-visual:visible' })).not.toThrow();
     });
 
     it('a chart whose resize throws does not stop the others', () => {
