@@ -30,6 +30,14 @@
  *     the STORED attendance (the channel that opened the conversation), not a
  *     live session read, so the approve route and the delivery fallback give
  *     the same answer for the same row.
+ *     Residual (review r2 R3, noted, not fixed here): stored attendance can
+ *     read `unattended` for a call that WAS held in a chat, in two ways. The
+ *     conversation lookup failed at hold time, and `attendanceFor` answers
+ *     `unattended` for every "we do not know" (attendance.ts). Or the chat's
+ *     identical call reused an open hold a task run had raised, and the row
+ *     keeps the raiser's attendance (`createOrReuseOpen`, pre-call.ts). Such a
+ *     connector call is host-made: it still runs once, and the cost is the one
+ *     F1 removes elsewhere, a chat whose next turn may hold it again.
  *   * Anything else needs its own `tool:execute:<name>`. That name is built
  *     from `call.name`, which is model-authored: the documented
  *     dynamic-service-hook exception (`replay.ts` says why it is safe —
