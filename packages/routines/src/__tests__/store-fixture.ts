@@ -14,9 +14,14 @@ export function fixture(poolOptions: Pick<pg.PoolConfig, 'max' | 'connectionTime
     db = new Kysely({ dialect: new PostgresDialect({ pool: new pg.Pool({ connectionString: container.getConnectionUri(), ...poolOptions }) }) });
     await runRoutinesMigration(db);
   }, 120_000);
-  beforeEach(async () => { await sql`TRUNCATE routines_v1_task_events,routines_v1_deliveries,routines_v1_retired_agents,routines_v1_definitions,routines_v1_fires,routines_v1_requests,routines_v1_dispatches,routines_v1_credential_cleanup,routines_v1_replies,agent_default_routine_overrides_v1`.execute(db); await sql`DELETE FROM default_routines_v1 WHERE name NOT IN ('heartbeat','skill-reflection')`.execute(db); });
+  beforeEach(async () => { await resetRoutineTables(db); });
   afterAll(async () => { await db?.destroy(); if (container) await stopPostgresContainer(container); }, 60_000);
   return { get db() { return db; }, get store() { return createRoutinesStore(db); } };
+}
+/** Empties every routines table between tests, keeping the two built-in default routines. */
+export async function resetRoutineTables(db: Kysely<RoutinesDatabase>): Promise<void> {
+  await sql`TRUNCATE routines_v1_task_events,routines_v1_deliveries,routines_v1_retired_agents,routines_v1_definitions,routines_v1_fires,routines_v1_requests,routines_v1_dispatches,routines_v1_credential_cleanup,routines_v1_replies,agent_default_routine_overrides_v1`.execute(db);
+  await sql`DELETE FROM default_routines_v1 WHERE name NOT IN ('heartbeat','skill-reflection')`.execute(db);
 }
 export const now = new Date('2031-01-01T00:00:00Z');
 export function createInput(requestId = 'create-1') {

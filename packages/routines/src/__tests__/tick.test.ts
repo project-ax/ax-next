@@ -1,4 +1,5 @@
 import { afterEach, describe, it, expect, vi } from 'vitest';
+import pg from 'pg';
 import { createLogger } from '@ax/core';
 import { captureExpectedStderr } from './support/expected-diagnostics.js';
 import { failQueries } from './support/fail-query.js';
@@ -178,6 +179,47 @@ describe('DB scheduler', () => {
     expect(cleanup).toHaveBeenCalledTimes(2);
     expect(diagnostic.messages).toHaveLength(2);
     expect(log.entries()).toEqual([]);
+  });
+  it('keeps leadership while its session answers: one election across three ticks (TASK-1048)', async () => {
+    const controller = new AbortController();
+    let sleeps = 0;
+    const queries = vi.spyOn(pg.Client.prototype, 'query');
+    const cleanup = vi.fn(async () => {});
+    const log = recordingLogger();
+    await runTickLoop({
+      db: f.db, fire: vi.fn(async () => result), cleanup, logger: log.logger,
+      clock: { now: () => due, sleep: async () => { if (++sleeps >= 3) controller.abort(); } },
+      signal: controller.signal, tickIntervalMs: 1, electionRetryMs: 1, claimBatchSize: 50, claimWindowMinutes: 5,
+    });
+    const sent = queries.mock.calls.map(([text]) => String(text));
+    expect(cleanup).toHaveBeenCalledTimes(3);
+    expect(sent.filter((text) => text.includes('pg_try_advisory_lock'))).toHaveLength(1);
+    expect(sent.filter((text) => text.trim() === 'SELECT 1')).toHaveLength(2); // before ticks 2 and 3; none at shutdown
+    expect(log.entries()).toEqual([]);
+  });
+  it('steps down with a code-only line when a live session refuses the probe, then re-elects (TASK-1048)', async () => {
+    // A session can refuse a statement without dying (a cancel, a timeout).
+    // The client emits no 'error' then, so the database plugin writes nothing:
+    // this line is the only record of why the leader gave up its lock.
+    const controller = new AbortController();
+    let sleeps = 0;
+    const queries = vi.spyOn(pg.Client.prototype, 'query');
+    const cleanup = vi.fn(async () => {});
+    const log = recordingLogger();
+    const restore = failQueries(/^\s*SELECT 1\s*$/, Object.assign(new Error('PRIVATE canceling statement at 10.0.0.7'), { code: '57014' }));
+    try {
+      await runTickLoop({
+        db: f.db, fire: vi.fn(async () => result), cleanup, logger: log.logger,
+        clock: { now: () => due, sleep: async () => { if (++sleeps >= 2) controller.abort(); } },
+        signal: controller.signal, tickIntervalMs: 1, electionRetryMs: 1, claimBatchSize: 50, claimWindowMinutes: 5,
+      });
+    } finally { restore(); }
+    const sent = queries.mock.calls.map(([text]) => String(text));
+    // Tick 1, the refused probe, the step-down, an immediate second election, tick 2.
+    expect(sent.filter((text) => text.includes('pg_try_advisory_lock'))).toHaveLength(2);
+    expect(cleanup).toHaveBeenCalledTimes(2);
+    expect(log.entries()).toStrictEqual([{ code: '57014', name: 'Error', level: 'warn', msg: 'routines_tick_leader_stepped_down' }]);
+    expect(JSON.stringify(log.entries())).not.toContain('PRIVATE');
   });
   it('keeps scheduling when the election query fails once, and logs it in codes only (TASK-1041)', async () => {
     const row = await f.store.createAuthored(createInput());
