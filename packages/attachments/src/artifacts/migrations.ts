@@ -1,5 +1,7 @@
 import { sql, type Kysely } from 'kysely';
+import { posix } from 'node:path';
 import { mediaTypeForPath } from './media.js';
+import { normalizeArtifactTitle } from './title.js';
 
 // ---------------------------------------------------------------------------
 // Published artifacts: agent-scoped heads + their versions. Owned by
@@ -63,6 +65,7 @@ interface LegacyRow {
   user_id: string;
   sha256: string;
   path: string;
+  display_name: string;
   media_type: string;
   size_bytes: string | number;
   created_at: Date;
@@ -133,7 +136,7 @@ export async function runArtifactsMigration<DB>(db: Kysely<DB>): Promise<void> {
   if (!(await hasLegacyShape(k))) return;
   await k.transaction().execute(async (trx) => {
     const legacy = await sql<LegacyRow>`
-      SELECT artifact_id, conversation_id, user_id, sha256, path, media_type, size_bytes, created_at
+      SELECT artifact_id, conversation_id, user_id, sha256, path, display_name, media_type, size_bytes, created_at
       FROM attachments_v1_artifacts
       ORDER BY artifact_id
     `.execute(trx);
@@ -166,12 +169,28 @@ export async function runArtifactsMigration<DB>(db: Kysely<DB>): Promise<void> {
     // new artifact for the agent rather than guessing which one it was.
     await sql`
       UPDATE attachments_v1_artifacts
-      SET title = display_name,
-          created_by_user_id = user_id,
+      SET created_by_user_id = user_id,
           current_version = 1,
           updated_at = created_at,
           source_path = NULL
     `.execute(trx);
+    // Titles get the one spelling every new publish gets (title.ts): a legacy
+    // name could be 1024 characters with line breaks or bidi overrides.
+    const titled = legacy.rows.map((r) => ({
+      id: r.artifact_id,
+      title:
+        normalizeArtifactTitle(r.display_name) ??
+        normalizeArtifactTitle(posix.basename(r.path)) ??
+        'Untitled',
+    }));
+    for (let i = 0; i < titled.length; i += INSERT_CHUNK) {
+      const chunk = titled.slice(i, i + INSERT_CHUNK);
+      await sql`
+        UPDATE attachments_v1_artifacts AS h SET title = t.title
+        FROM unnest(${chunk.map((c) => c.id)}::text[], ${chunk.map((c) => c.title)}::text[]) AS t(id, title)
+        WHERE h.artifact_id = t.id
+      `.execute(trx);
+    }
     // The legacy UNIQUE (conversation_id, path) and the old indexes go with
     // their columns.
     await sql`

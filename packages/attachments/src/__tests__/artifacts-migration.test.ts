@@ -278,6 +278,21 @@ describe('artifact storage migration', () => {
     expect((await store.getHead('odd'))!.current.mediaType).toBe('image/tiff');
   });
 
+  it('gives legacy titles the one spelling: controls and bidi removed, too-long names fall back to the file name', async () => {
+    const db = makeKysely();
+    await createLegacyTable(db);
+    await insertLegacy(db, [
+      { id: 'bidi', conversationId: 'c-1', displayName: 'Deal\u000d\u000atracker\u202e.pdf' },
+      { id: 'long', conversationId: 'c-1', path: 'out/q3-summary.pdf', displayName: 'x'.repeat(300) },
+      { id: 'blank', conversationId: 'c-1', path: 'out/\u200b', displayName: '\u200b' },
+    ]);
+    await migrate(db);
+    const store = createArtifactStore(db);
+    expect((await store.getHead('bidi'))!.title).toBe('Deal tracker.pdf');
+    expect((await store.getHead('long'))!.title).toBe('q3-summary.pdf');
+    expect((await store.getHead('blank'))!.title).toBe('Untitled');
+  });
+
   it("records the original publisher as the version's quota owner", async () => {
     const db = makeKysely();
     await createLegacyTable(db);

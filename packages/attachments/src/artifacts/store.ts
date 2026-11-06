@@ -1,10 +1,22 @@
 import { randomBytes } from 'node:crypto';
 import { sql, type Kysely, type Transaction } from 'kysely';
-import type { BlobRef } from '@ax/core';
+import { PluginError, type BlobRef } from '@ax/core';
 import type { ArtifactsDatabase } from './migrations.js';
 
 /** Versions kept per artifact. The current version is never pruned (D5). */
 export const MAX_RETAINED_VERSIONS = 20;
+
+/** The re-publish key's unique index (artifacts/migrations.ts). */
+const SOURCE_PATH_INDEX = 'attachments_v1_artifacts_agent_source_path_uq';
+
+/** Thrown inside the publish transaction when the head it conflicted with is gone. */
+class HeadVanished extends Error {}
+
+/** A unique violation on the (agent_id, source_path) index. */
+function isPathTaken(err: unknown): boolean {
+  const e = err as { code?: unknown; constraint?: unknown } | null;
+  return e?.code === '23505' && e.constraint === SOURCE_PATH_INDEX;
+}
 
 /** Postgres caps one statement at 65535 bind parameters. */
 const ID_CHUNK = 1000;
@@ -282,7 +294,7 @@ async function publishIn(trx: Trx, i: PublishVersionInput): Promise<PublishVersi
       .forUpdate()
       .executeTakeFirst();
     // The conflicting head was deleted between our insert and this read.
-    if (head === undefined) throw new Error('artifact head vanished during publish; retry');
+    if (head === undefined) throw new HeadVanished();
   }
 
   // 3. Re-publish: MAX + 1, not current + 1 (a restore moves current back).
@@ -331,8 +343,28 @@ async function publishIn(trx: Trx, i: PublishVersionInput): Promise<PublishVersi
 export function createArtifactStore<DB>(database: Kysely<DB>): ArtifactStore {
   const db = database as unknown as Db;
   return {
-    publishVersion(i) {
-      return db.transaction().execute((trx) => publishIn(trx, i));
+    async publishVersion(i) {
+      // One retry: the head a first publish conflicted with was deleted before
+      // we could lock it, so the path is free now and a fresh attempt inserts.
+      for (let attempt = 0; ; attempt++) {
+        try {
+          return await db.transaction().execute((trx) => publishIn(trx, i));
+        } catch (err) {
+          // Moving an artifact to a path: the path-taken check above is an
+          // unlocked read, so a concurrent first publish of that path can win
+          // the unique index. Same answer as when the check sees it.
+          if (isPathTaken(err)) return { ok: false, reason: 'path-taken' };
+          if (err instanceof HeadVanished && attempt === 0) continue;
+          if (err instanceof HeadVanished) {
+            throw new PluginError({
+              code: 'conflict',
+              plugin: '@ax/attachments',
+              message: 'the artifact changed while it was being published; try again',
+            });
+          }
+          throw err;
+        }
+      }
     },
 
     async listForAgent(agentId, limit) {

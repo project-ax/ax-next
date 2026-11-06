@@ -152,6 +152,32 @@ describe('ArtifactStore.publishVersion', () => {
     expect((await store.getHead(theirs.artifactId))!.currentVersion).toBe(1);
   });
 
+  it('a move that loses the path to a concurrent first publish is path-taken, not a raw unique violation', async () => {
+    const { store } = await freshStore();
+    const a = await ok(store, { sourcePath: 'a.html' });
+    // Another transaction claims x.html first and has not committed: the
+    // path-taken check cannot see it, so the move reaches the unique index.
+    const other = new pg.Client({ connectionString });
+    await other.connect();
+    try {
+      await other.query('BEGIN');
+      await other.query(
+        `INSERT INTO attachments_v1_artifacts (artifact_id, agent_id, title, source_path, current_version, created_by_user_id)
+         VALUES ($1, 'agt-1', 'x', 'x.html', 1, 'u-1')`,
+        ['e'.repeat(32)],
+      );
+      const moving = store.publishVersion(input({ artifactId: a.artifactId, sourcePath: 'x.html', sha256: SHA(2) }));
+      await new Promise((r) => setTimeout(r, 300));
+      await other.query('COMMIT');
+      expect(await moving).toEqual({ ok: false, reason: 'path-taken' });
+    } finally {
+      await other.end().catch(() => {});
+    }
+    // The move rolled back whole: no version 2, path unchanged.
+    expect(await store.getHead(a.artifactId)).toMatchObject({ currentVersion: 1, sourcePath: 'a.html' });
+    expect(await store.listVersions(a.artifactId)).toHaveLength(1);
+  });
+
   it('publish with an artifactId moves the artifact to a new path and adds a version', async () => {
     const { store } = await freshStore();
     const a = await ok(store, { sourcePath: 'a.html' });
