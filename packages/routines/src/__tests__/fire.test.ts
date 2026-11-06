@@ -320,7 +320,7 @@ describe('a run its invoke ended terminated stores fixed words and a code (TASK-
   }
   it.each([
     'chat-run-timeout', 'sandbox-exit-before-chat-end', 'connector-needs-reconnect',
-    'chat:start:usage-limit-daily', 'agent-resolve:forbidden', 'system-prompt:identity-unavailable',
+    'chat:start:usage-limit-daily', 'agent-resolve:forbidden', 'system-prompt:identity-unavailable', 'conversation:message-not-saved',
     'a'.repeat(64),
   ])('keeps the host code %s', async (reason) => {
     expect(await terminatedWith(reason)).toEqual({ error: stored(reason), lastError: stored(reason), stderr: [`${stored(reason)}\n`] });
