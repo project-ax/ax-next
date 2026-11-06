@@ -64,8 +64,9 @@ export function VisualFrame(props: { conversationId: string; visual: ThreadVisua
 
   const iframeRef = useRef<HTMLIFrameElement>(null);
   // The srcdoc is the frame's one load. Any later load means it navigated:
-  // the app's frame-src 'none' refused it and the browser put its own error
-  // page in the card. That's a failure like any other.
+  // the app's frame-src refused it ('none', or only the artifact content
+  // origin's /v/ route where one is deployed) and the browser put its own
+  // error page — or that route's 404 — in the card. A failure like any other.
   const loads = useRef(0);
   const pendingExports = useRef(new Map<string, ReturnType<typeof setTimeout>>());
   // The srcdoc is built once, in the theme of the moment it loads. Later

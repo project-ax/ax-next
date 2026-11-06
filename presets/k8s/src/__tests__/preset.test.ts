@@ -85,6 +85,66 @@ describe('@ax/preset-k8s wiring', () => {
     expect(() => createK8sPlugins({ ...stubConfig, sandbox: { ...stubConfig.sandbox,
       backend: 'agent-sandbox', runtimeClassName: '' } })).toThrow(/agent-sandbox requires/);
   });
+  describe('the app shell may frame the artifact content origin (and nothing else)', () => {
+    const SHELL =
+      '<html><head><meta http-equiv="Content-Security-Policy" content="frame-src \'none\'" /></head></html>';
+    /** Boot the preset's @ax/static-files against a one-file dir; return the served shell. */
+    async function servedShell(contentOrigin: K8sPresetConfig['contentOrigin']): Promise<string> {
+      const { mkdtemp, writeFile, rm } = await import('node:fs/promises');
+      const { tmpdir } = await import('node:os');
+      const { join } = await import('node:path');
+      const dir = await mkdtemp(join(tmpdir(), 'ax-shell-'));
+      try {
+        await writeFile(join(dir, 'index.html'), SHELL);
+        const plugins = createK8sPlugins({
+          ...stubConfig,
+          staticFiles: { dir },
+          ...(contentOrigin !== undefined ? { contentOrigin } : {}),
+        });
+        const plugin = plugins.find((p) => p.manifest.name === '@ax/static-files');
+        expect(plugin).toBeDefined();
+        let handler: ((req: unknown, res: unknown) => Promise<void>) | undefined;
+        const bus = {
+          call: async (_hook: string, _ctx: unknown, input: { handler: typeof handler }) => {
+            handler = input.handler;
+            return { unregister() {} };
+          },
+        };
+        await plugin!.init({ bus } as never);
+        let body = '';
+        const res = {
+          status() { return res; },
+          header() { return res; },
+          body(buf: Buffer) { body = buf.toString('utf8'); },
+          end() {},
+          json() {},
+        };
+        await handler!({ path: '/agents/a', headers: {}, params: { '*': '/agents/a' } }, res);
+        return body;
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
+    }
+
+    it("widens frame-src to the public content origin's /v/ route only", async () => {
+      expect(
+        await servedShell({
+          host: '0.0.0.0',
+          port: 9091,
+          publicOrigin: 'https://ax-usercontent.example.net',
+          frameAncestors: ['https://admin.ax-next.example'],
+        }),
+      ).toBe(
+        '<html><head><meta http-equiv="Content-Security-Policy" content="frame-src https://ax-usercontent.example.net/v/" /></head></html>',
+      );
+    });
+
+    it("keeps frame-src 'none' with no content origin, or none with a public URL", async () => {
+      expect(await servedShell(undefined)).toBe(SHELL);
+      expect(await servedShell({ host: '127.0.0.1', port: 0, frameAncestors: [] })).toBe(SHELL);
+    });
+  });
+
   it('returns a non-empty plugin array', () => {
     const plugins = createK8sPlugins(stubConfig);
     expect(plugins.length).toBeGreaterThan(0);

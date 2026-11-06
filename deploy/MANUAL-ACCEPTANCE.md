@@ -2031,6 +2031,10 @@ runs in **report** mode on kind, so the purge is the test's job, not this walk's
   `Referrer-Policy: no-referrer`. The HTML CSP ends with
   `frame-ancestors http://localhost:9090 http://localhost:19090 http://localhost:5173; sandbox allow-scripts allow-downloads`
   (kind's `contentOrigin.frameAncestors`).
+- The app page's CSP meta (DevTools → Elements, `<head>`) reads
+  `frame-src http://127.0.0.1:9091/v/`: the shell ships `frame-src 'none'` for
+  chat visuals and the host widens it to the content origin's view route only. If it still says
+  `'none'`, every HTML preview is blank (the console names `frame-src`).
 - The share code never appears in a conversation event, a host log line, or the
   agent's tool output (`ax://artifact/<id>` only).
 - A wrong code, a turned-off link and someone else's artifact all look the same:

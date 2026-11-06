@@ -1490,6 +1490,15 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
           ? { mountPath: config.staticFiles.mountPath }
           : {}),
         spaFallback: config.staticFiles.spaFallback ?? true,
+        // The artifact viewer frames `<content origin>/v/<token>`. The shell's
+        // CSP ships `frame-src 'none'` (it also stops a chat visual navigating
+        // its own frame out); static-files widens it to that origin's /v/
+        // route only (`frame-src <origin>/v/`). With no
+        // public content origin the shell keeps 'none' — the viewer can't
+        // load, which is the safe way to be wrong.
+        ...(config.contentOrigin?.publicOrigin !== undefined
+          ? { frameSrc: [config.contentOrigin.publicOrigin] }
+          : {}),
       }),
     );
   }
