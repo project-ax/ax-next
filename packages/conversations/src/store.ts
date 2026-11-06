@@ -1038,8 +1038,13 @@ export function createConversationStore(
       // serialization never stretches the advisory lock or the transaction.
       const payloadJson = stringifyWellFormed(payload);
       // CONTRACT: appends to ONE conversation are fully serialized, so an
-      // append NEVER fails and NEVER drops an event, at ANY concurrency.
-      // Callers may fan out as wide as they like.
+      // append never fails on a seq race, at any concurrency. It CAN still
+      // fail in two bounded ways: the pool refuses a connection on every
+      // attempt (append-event retries a checkout only 3 times, TASK-1059), or
+      // the lock wait outlasts the pool's statement timeout (30 s by default,
+      // SQLSTATE 57014, TASK-1056; after hand-over, so not retried). Either
+      // surfaces like any other lost row: the card subscribers log it, the
+      // person's message ends its turn, and event.turn-end answers 500.
       //
       // Why a lock and not a retry budget. The seq is minted by
       // INSERT ... SELECT COALESCE(MAX(seq),0)+1 — atomic within ONE

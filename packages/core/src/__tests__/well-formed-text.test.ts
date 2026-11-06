@@ -159,6 +159,27 @@ describe('stringifyWellFormed', () => {
     expect([...drawn].sort()).toEqual([...alphabet].sort());
   });
 
+  // Every lone surrogate, not just the range edges: a cut emoji leaves an
+  // interior one ('😀'.slice(1) is \ude00), and the cheap pre-check has to
+  // send each of the 2048 down the fixing path.
+  it('fixes every lone surrogate U+D800..U+DFFF, in values and keys', () => {
+    for (let u = 0xd800; u <= 0xdfff; u++) {
+      const t = `x${String.fromCharCode(u)}`;
+      expect(toWellFormedText(t)).toBe(reference(t));
+      const v = { t, [t]: 'k' };
+      const expected = referenceValue(v);
+      expect(JSON.parse(stringifyWellFormed(v))).toEqual(expected);
+      expect(toWellFormedValue(v)).toEqual(expected);
+    }
+  });
+
+  it.each([
+    ['high half', SMILE.slice(0, 1)],
+    ['low half', SMILE.slice(1)],
+  ])('fixes a cut emoji (%s)', (_name, half) => {
+    expect(JSON.parse(stringifyWellFormed({ t: `cut ${half}` }))).toEqual({ t: `cut ${R}` });
+  });
+
   it('leaves a string that only LOOKS like an escape alone', () => {
     const v = { t: 'a literal \\u0000 and \\ud800' };
     expect(JSON.parse(stringifyWellFormed(v))).toEqual(v);
