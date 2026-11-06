@@ -576,6 +576,79 @@ describe('RemoteMcpConnectorForm — pointing a connector somewhere new signs ev
     expect(vault.get(OWN_SECRET_REF)).toBe(btoa('new-client-secret'));
   });
 
+  // After a save whose PATCH landed, the connector the server holds is the one
+  // to compare against, not the one that was loaded: otherwise putting the
+  // original address back says nothing while the server signs everyone out again.
+  describe('after a partial save, the saved connector is what the next save is compared with', () => {
+    it('a shared key: putting the original address back warns again; keeping the new one does not', async () => {
+      vi.spyOn(console, 'warn').mockImplementation(() => {});
+      discover = () => KEY_SERVER;
+      failingCredentialWrites = 1;
+      const options = await openEditor(sharedKeyConnector(), {
+        [SHARED_KEY_REF]: 'old-shared-key',
+      });
+      await moveTo('https://mcp.other-crm.example/mcp');
+      fireEvent.change(screen.getByLabelText('Value'), {
+        target: { value: 'new-shared-key' },
+      });
+      fireEvent.click(saveButton());
+      expect(
+        await screen.findByText(
+          'We saved the connector, but couldn’t save the key. Try saving again.',
+        ),
+      ).toBeVisible();
+      expect(signOuts).toBe(1);
+      // The server holds the new address now: keeping it points nowhere new.
+      await saveIsLive();
+      expect(note()).not.toHaveTextContent(SIGNS_OUT);
+      // Putting the original address back is another move, and warns.
+      await moveTo('https://mcp.crm.example/mcp');
+      expect(note()).toHaveTextContent(SIGNS_OUT);
+      expect(note()).toHaveTextContent('It also clears the shared key, so enter it again below.');
+      // The key typed earlier stays in view, so Save writes what is shown.
+      expect(screen.getByLabelText('Value')).toHaveValue('new-shared-key');
+      fireEvent.click(saveButton());
+      await waitFor(() => expect(options.onSaved).toHaveBeenCalled());
+      expect(signOuts).toBe(2);
+      expect(vault.get(SHARED_KEY_REF)).toBe(btoa('new-shared-key'));
+    });
+
+    it('a client secret: putting the original address back asks for it again; keeping the new one does not', async () => {
+      vi.spyOn(console, 'warn').mockImplementation(() => {});
+      failingCredentialWrites = 1;
+      await openEditor(ownClientConnector(), { [OWN_SECRET_REF]: 'old-client-secret' });
+      await moveTo('https://elsewhere.example/mcp');
+      fireEvent.change(screen.getByLabelText(/Client secret/), {
+        target: { value: 'new-client-secret' },
+      });
+      fireEvent.click(saveButton());
+      expect(
+        await screen.findByText(
+          'We saved the connector, but couldn’t save the client secret. Try saving again.',
+        ),
+      ).toBeVisible();
+      expect(signOuts).toBe(1);
+      await saveIsLive();
+      expect(note()).not.toHaveTextContent(SIGNS_OUT);
+      expect(screen.getByText('(optional)')).toBeVisible();
+      await moveTo('https://mcp.linear.app/mcp');
+      expect(note()).toHaveTextContent(SIGNS_OUT);
+      expect(note()).toHaveTextContent('It also clears the client secret, so enter it again below.');
+      expect(screen.queryByText('(optional)')).toBeNull();
+      // Emptied, it is asked for again rather than saved without.
+      fireEvent.change(screen.getByLabelText(/Client secret/), { target: { value: '' } });
+      const patches = () => calls.filter((c) => c.startsWith('PATCH')).length;
+      const before = patches();
+      fireEvent.click(saveButton());
+      expect(
+        await screen.findByText(
+          'Enter the client secret again, or remove it. Changing where this connector points clears it.',
+        ),
+      ).toBeVisible();
+      expect(patches()).toBe(before);
+    });
+  });
+
   // Typed during a move, then the move is undone: the value stays on screen,
   // so Save never replaces a live key with something the admin can't see.
   it('putting the address back keeps a re-typed key in view, and Save writes what is shown', async () => {

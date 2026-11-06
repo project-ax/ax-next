@@ -176,6 +176,11 @@ export function RemoteMcpConnectorForm({
     () =>
       `${connectorIdFromName(connector?.name ?? 'remote').slice(0, 48)}-${crypto.randomUUID().slice(0, 8)}`,
   );
+  // TASK-887 — the connector the server holds once a save's PATCH has landed.
+  // A later save in this same open editor (a retry after a secret write failed)
+  // is compared with it, not with the connector as loaded: the loaded one is
+  // stale by then, and the server judges the next PATCH against what it holds.
+  const [patched, setPatched] = useState<Connector | undefined>(undefined);
   const [retry, setRetry] = useState(0);
   const [discovery, setDiscovery] = useState<
     | { url: string; status: 'loading' | 'failed' }
@@ -288,8 +293,10 @@ export function RemoteMcpConnectorForm({
   // agent's sign-ins, the shared key and the client secret before the edit
   // lands. Judged on what Save sends, against what was loaded, so the warning
   // and the server agree (the contract test pins the rule to the server's).
+  const retargetBaseline = patched ?? connector;
   const retargeted =
-    connector !== undefined && pointsSomewhereNew(connector, { ...connector, capabilities });
+    retargetBaseline !== undefined &&
+    pointsSomewhereNew(retargetBaseline, { ...retargetBaseline, capabilities });
   // What that clears and only this form can put back, so it's asked for again:
   // a shared key's saved values (a per-agent key is each agent's own), and a
   // saved client secret, unless the admin removes it.
@@ -554,7 +561,7 @@ export function RemoteMcpConnectorForm({
         // would be wiped. And a refused PATCH must leave the live key alone.
         // Every edit goes this way, not only the ones `retargeted` flags, so
         // the editor's copy of the rule can never cost a typed key.
-        await patchConnector(connectorId, input, base);
+        setPatched(await patchConnector(connectorId, input, base));
         // The connector now names the stored copy. A retry (of a secret or of
         // tool permissions below) must not point it back at the one it replaced.
         update('clientSecretRef', clientSecretRef);
