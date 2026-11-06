@@ -69,6 +69,7 @@ import { readSseFrames } from './sse-frames';
 // The ONE producer of a step row's qualifier, shared with the reload path so
 // the same call cannot read two ways (TASK-419).
 import { stepDetail } from './workspace-steps';
+import { isShowVisualToolName, visualFromToolResult } from './visual-result';
 // The store owns "can this build draw it?", because `grantKey` is the function
 // that breaks without it. Read, not re-declared: a second copy of the same
 // three kinds is a drift waiting to happen.
@@ -101,6 +102,7 @@ CounterRow,
   RailActivity,
   ThreadAttachment,
   ThreadMessage,
+  ThreadVisual,
   UserFileEntry,
   TaskCheckin,
   TaskCompleteResponse,
@@ -136,6 +138,7 @@ export type {
   SelfChangesResponse,
   ThreadAttachment,
   ThreadMessage,
+  ThreadVisual,
   UserFileEntry,
   UserFilesAnswer,
   WorkspaceAgent,
@@ -1061,6 +1064,15 @@ export interface StreamHandlers {
     isError?: boolean | undefined;
     held?: boolean | undefined;
   }) => void;
+  /**
+   * The agent showed a visual (`show_visual`). NON-TERMINAL.
+   *
+   * Only the parsed RESULT leaves the reader: the artifact id and two fenced
+   * labels. The tool's `html` input (model-authored markup) and the raw output
+   * never do — the frame fetches the stored artifact by id, the same as after
+   * a reload. Errored and held calls draw nothing, matching the reload path.
+   */
+  onVisual?: (visual: ThreadVisual) => void;
   /**
    * Sandbox provisioning changed phase (`sandbox-starting` / `sandbox-ready`).
    *
@@ -2162,6 +2174,7 @@ async function streamReply(
     onError,
     onToolUse,
     onToolResult,
+    onVisual,
     onPhase,
     onDecisionRaised,
     onPermissionRequest,
@@ -2199,6 +2212,12 @@ async function streamReply(
    * fire a second one.
    */
   let terminated = false;
+  /*
+    The `show_visual` calls seen on THIS stream, by call id. A result is only a
+    visual if its own call was one — an `artifact_publish` result has the same
+    shape, and must stay a chip, not become a frame.
+  */
+  const visualCalls = new Set<string>();
 
   const end = await readSseFrames(res.body, (frame: SseFrame) => {
     if ('done' in frame && frame.done === true) {
@@ -2261,8 +2280,13 @@ async function streamReply(
       still not forwarded: what leaves this function is that line, not the
       arguments it came from.
     */
-    if (onToolUse && 'kind' in frame && frame.kind === 'tool-use') {
-      if (typeof frame.toolCallId === 'string' && typeof frame.toolName === 'string') {
+    if ('kind' in frame && frame.kind === 'tool-use') {
+      // Recorded whether or not anyone wants step rows: a caller may want
+      // visuals alone.
+      if (typeof frame.toolCallId === 'string' && isShowVisualToolName(frame.toolName)) {
+        visualCalls.add(frame.toolCallId);
+      }
+      if (onToolUse && typeof frame.toolCallId === 'string' && typeof frame.toolName === 'string') {
         onToolUse({
           toolCallId: frame.toolCallId,
           toolName: frame.toolName,
@@ -2272,13 +2296,23 @@ async function streamReply(
       }
       return 'continue';
     }
-    if (onToolResult && 'kind' in frame && frame.kind === 'tool-result') {
-      if (typeof frame.toolCallId === 'string') {
+    if ('kind' in frame && frame.kind === 'tool-result') {
+      if (onToolResult && typeof frame.toolCallId === 'string') {
         onToolResult({
           toolCallId: frame.toolCallId,
           isError: frame.isError,
           held: frame.held,
         });
+      }
+      if (
+        onVisual &&
+        typeof frame.toolCallId === 'string' &&
+        visualCalls.has(frame.toolCallId) &&
+        frame.isError !== true &&
+        frame.held !== true
+      ) {
+        const visual = visualFromToolResult(frame.output);
+        if (visual !== null) onVisual(visual);
       }
       return 'continue';
     }
