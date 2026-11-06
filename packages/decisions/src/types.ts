@@ -310,8 +310,8 @@ export interface Decision {
    * `markOutcomeUnknown`: a host connector call that went out and got no
    * reliable answer — a timeout, a dropped connection, a reply it could not
    * read (TASK-1046) — or a host tool call the bus stopped waiting on, which
-   * may still be running (TASK-285). Same meaning to a reader: no report, so the only honest receipt
-   * is that we cannot say. A host that was merely FROZEN can still thaw and
+   * may still be running (TASK-285). Same meaning to a reader: no report, so
+   * the only honest receipt is that we cannot say. A host that was merely FROZEN can still thaw and
    * finish; `markReplayed` clears this stamp when it does, so "set" never
    * coexists with `replayedAt`. Since review F3 `markOutcomeUnknown` also
    * writes it for a connector call whose service answered that it did not
