@@ -138,6 +138,8 @@ let discover: (url: string) => Record<string, unknown>;
 let refusePatch: (() => Response) | null;
 /** How many credential writes fail (500) before they start to succeed. */
 let failingCredentialWrites: number;
+/** The status those failing credential writes answer with. */
+let failingCredentialStatus: number;
 
 const subject = (c: Connector) =>
   ({ id: c.id, keyMode: c.keyMode, capabilities: c.capabilities }) as unknown as RetargetSubject;
@@ -150,6 +152,7 @@ beforeEach(() => {
   discover = () => OAUTH_SERVER;
   refusePatch = null;
   failingCredentialWrites = 0;
+  failingCredentialStatus = 500;
   vi.stubGlobal(
     'fetch',
     vi.fn(async (input: string, init?: RequestInit) => {
@@ -180,7 +183,7 @@ beforeEach(() => {
       if (input === '/admin/destinations/account/credential') {
         if (failingCredentialWrites > 0) {
           failingCredentialWrites--;
-          return new Response('', { status: 500 });
+          return new Response('{}', { status: failingCredentialStatus });
         }
         const destination = body.destination as { service: string; slot: string };
         if (body.scope === 'global')
@@ -283,7 +286,7 @@ describe('RemoteMcpConnectorForm — pointing a connector somewhere new signs ev
     fireEvent.click(saveButton());
     expect(
       await screen.findByText(
-        'Enter this value again. Changing where this connector points cleared it.',
+        'Enter this value again. Changing where this connector points clears it.',
       ),
     ).toBeVisible();
     expect(value).toHaveAttribute('aria-invalid', 'true');
@@ -362,7 +365,7 @@ describe('RemoteMcpConnectorForm — pointing a connector somewhere new signs ev
     fireEvent.click(saveButton());
     expect(
       await screen.findByText(
-        'Enter the client secret again, or remove it. Changing where this connector points cleared it.',
+        'Enter the client secret again, or remove it. Changing where this connector points clears it.',
       ),
     ).toBeVisible();
     const box = screen.getByLabelText(/Client secret/);
@@ -433,7 +436,7 @@ describe('RemoteMcpConnectorForm — pointing a connector somewhere new signs ev
     fireEvent.click(saveButton());
     expect(
       await screen.findByText(
-        'We saved the connector, but couldn’t save the key. Try saving again.',
+        /^We saved the connector, but couldn’t save the key\. Try saving again\./,
       ),
     ).toBeVisible();
     expect(calls).toEqual([
@@ -461,6 +464,47 @@ describe('RemoteMcpConnectorForm — pointing a connector somewhere new signs ev
     expect(vault.get(SHARED_KEY_REF)).toBe(btoa('new-shared-key'));
   });
 
+  it('partial save: a rejected key (422) shows the reason after the saved-the-connector sentence', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    discover = () => KEY_SERVER;
+    failingCredentialWrites = 1;
+    failingCredentialStatus = 422;
+    const options = await openEditor(sharedKeyConnector(), {
+      [SHARED_KEY_REF]: 'old-shared-key',
+    });
+    await moveTo('https://mcp.other-crm.example/mcp');
+    fireEvent.change(screen.getByLabelText('Value'), {
+      target: { value: 'new-shared-key' },
+    });
+    fireEvent.click(saveButton());
+    expect(
+      await screen.findByText(
+        'We saved the connector, but couldn’t save the key. Try saving again. We could not confirm this key. Check it and try again.',
+      ),
+    ).toBeVisible();
+    expect(options.onSaved).not.toHaveBeenCalled();
+  });
+
+  it('partial save: a rejected client secret (422) shows the reason after the saved-the-connector sentence', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    failingCredentialWrites = 1;
+    failingCredentialStatus = 422;
+    const options = await openEditor(ownClientConnector(), {
+      [OWN_SECRET_REF]: 'old-client-secret',
+    });
+    await moveTo('https://elsewhere.example/mcp');
+    fireEvent.change(screen.getByLabelText(/Client secret/), {
+      target: { value: 'new-client-secret' },
+    });
+    fireEvent.click(saveButton());
+    expect(
+      await screen.findByText(
+        'We saved the connector, but couldn’t save the client secret. Try saving again. We could not confirm this key. Check it and try again.',
+      ),
+    ).toBeVisible();
+    expect(options.onSaved).not.toHaveBeenCalled();
+  });
+
   it('partial save: a client secret write that fails after the PATCH says so, and Save writes it', async () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     failingCredentialWrites = 1;
@@ -474,7 +518,7 @@ describe('RemoteMcpConnectorForm — pointing a connector somewhere new signs ev
     fireEvent.click(saveButton());
     expect(
       await screen.findByText(
-        'We saved the connector, but couldn’t save the client secret. Try saving again.',
+        /^We saved the connector, but couldn’t save the client secret\. Try saving again\./,
       ),
     ).toBeVisible();
     expect(options.onSaved).not.toHaveBeenCalled();

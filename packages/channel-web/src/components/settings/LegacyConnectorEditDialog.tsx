@@ -54,6 +54,7 @@ import {
   type ConnectorWriteBase,
   type ServiceDescriptor,
 } from '@/lib/connectors';
+import { HttpError, userFacingMessage } from '@/lib/http';
 import {
   emptyConnectorForm,
   emptySlotRow,
@@ -691,10 +692,15 @@ export function LegacyConnectorEditDialog({
         await patchConnector(target.id, body, base);
         try {
           await writeClientSecrets();
-        } catch {
+        } catch (err) {
           // The connector is saved; only the secret is missing. Stay open —
-          // the typed secret is still in the field, and Save writes it.
-          setError(CLIENT_SECRET_AFTER_SAVE_FAILED_MESSAGE);
+          // the typed secret is still in the field, and Save writes it. When
+          // the server said why it refused the secret, say that too.
+          setError(
+            err instanceof HttpError
+              ? `${CLIENT_SECRET_AFTER_SAVE_FAILED_MESSAGE} ${userFacingMessage(err, 'connector-editor')}`
+              : CLIENT_SECRET_AFTER_SAVE_FAILED_MESSAGE,
+          );
           return;
         }
       }
@@ -1221,7 +1227,7 @@ export function LegacyConnectorEditDialog({
                     {signsInWithOAuth
                       ? 'Each agent signs in again from its Connectors tab.'
                       : form.keyMode === 'workspace'
-                        ? 'It also clears the shared key.'
+                        ? 'It also clears the shared key, and you can’t enter it again from here yet.'
                         : 'Each agent adds its key again from its Connectors tab.'}
                   </p>
                 )}

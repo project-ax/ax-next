@@ -4,6 +4,7 @@ import { LegacyConnectorEditDialog } from '../LegacyConnectorEditDialog';
 import * as connectorsLib from '@/lib/connectors';
 import * as credentialsLib from '@/lib/credentials';
 import * as oauthLib from '@/lib/connectors-oauth';
+import { HttpError } from '@/lib/http';
 import type { ConnectorSummary, Connector, ConnectorKeyMode } from '@/lib/connectors';
 
 /**
@@ -105,7 +106,7 @@ describe('LegacyConnectorEditDialog — a retarget signs everyone out (TASK-887)
     const alert = await screen.findByTestId(WARNING);
     expect(alert).toHaveTextContent('Changing where this connector points signs everyone out of it.');
     expect(alert).toHaveTextContent('Each agent adds its key again from its Connectors tab.');
-    expect(alert).not.toHaveTextContent('It also clears the shared key.');
+    expect(alert).not.toHaveTextContent('It also clears the shared key, and you can’t enter it again from here yet.');
     // A CLI connector has no server address, so no tool-permission sentence.
     expect(alert).not.toHaveTextContent(/resets its tool permissions/i);
   });
@@ -115,7 +116,7 @@ describe('LegacyConnectorEditDialog — a retarget signs everyone out (TASK-887)
     fireEvent.change(hosts, { target: { value: 'login.salesforce.com, test.salesforce.com' } });
     const alert = await screen.findByTestId(WARNING);
     expect(alert).toHaveTextContent('Changing where this connector points signs everyone out of it.');
-    expect(alert).toHaveTextContent('It also clears the shared key.');
+    expect(alert).toHaveTextContent('It also clears the shared key, and you can’t enter it again from here yet.');
     expect(alert).not.toHaveTextContent('Each agent adds its key again');
   });
 
@@ -199,6 +200,25 @@ describe('LegacyConnectorEditDialog — a retarget signs everyone out (TASK-887)
       connectorsLib.CONNECTOR_SIGN_OUT_FAILED_MESSAGE,
     );
     expect(credentialsLib.setDestinationCredential).not.toHaveBeenCalled();
+  });
+
+  it('a client-secret write the server rejects (422) shows the reason after the sentence', async () => {
+    vi.spyOn(credentialsLib, 'setDestinationCredential').mockRejectedValue(
+      new HttpError(
+        '/admin/destinations/account/credential',
+        422,
+        'We could not confirm this key. Check it and try again.',
+      ),
+    );
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const onSaved = vi.fn();
+    await openEditor(oauthConnector(), onSaved);
+    await typeClientSecret('typed-secret');
+    await save();
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'We saved the connector, but couldn’t save the client secret. Try saving again. We could not confirm this key. Check it and try again.',
+    );
+    expect(onSaved).not.toHaveBeenCalled();
   });
 
   it('a client-secret write that fails after the PATCH says so and stays open', async () => {

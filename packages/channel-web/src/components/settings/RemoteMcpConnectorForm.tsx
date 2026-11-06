@@ -15,6 +15,7 @@ import {
   CONNECTOR_ID_TAKEN_REQUEST_MESSAGE,
   type Connector,
 } from '@/lib/connectors';
+import { HttpError, userFacingMessage } from '@/lib/http';
 import { connectorIdFromName, pointsSomewhereNew } from '@/lib/connector-form';
 import {
   putToolPermissions,
@@ -421,6 +422,12 @@ export function RemoteMcpConnectorForm({
     onOpenChange(false);
   }
 
+  /** Why a secret write was refused, when the server said (a leading space
+   *  and the sentence), else nothing. */
+  function secretWriteReason(err: unknown): string {
+    return err instanceof HttpError ? ` ${userFacingMessage(err, 'connector-editor')}` : '';
+  }
+
   function toolPermissionsSaveError(err: unknown): string {
     const status = err instanceof ToolPermissionsError ? err.status : 0;
     return status === 503
@@ -478,7 +485,7 @@ export function RemoteMcpConnectorForm({
         'This connector uses a workspace key, but this server signs in with OAuth. Create a separate connector for it.';
     if (reenterSecret && !draft.clientSecret.trim())
       nextErrors.clientSecret =
-        'Enter the client secret again, or remove it. Changing where this connector points cleared it.';
+        'Enter the client secret again, or remove it. Changing where this connector points clears it.';
     setErrors(nextErrors);
     if (Object.keys(nextErrors).length) {
       if (
@@ -554,17 +561,19 @@ export function RemoteMcpConnectorForm({
         // twice.
         try {
           await writeClientSecret();
-        } catch {
+        } catch (err) {
           setSaveError(
-            'We saved the connector, but couldn’t save the client secret. Try saving again.',
+            `We saved the connector, but couldn’t save the client secret. Try saving again.${secretWriteReason(err)}`,
           );
           return;
         }
         if (writesClientSecret) setClientSecretMissing(false);
         try {
           await writeKeys();
-        } catch {
-          setSaveError('We saved the connector, but couldn’t save the key. Try saving again.');
+        } catch (err) {
+          setSaveError(
+            `We saved the connector, but couldn’t save the key. Try saving again.${secretWriteReason(err)}`,
+          );
           return;
         }
       } else {
