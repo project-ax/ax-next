@@ -109,7 +109,27 @@ export function sanitizeTokens(tokens: Readonly<Record<string, string>>): Record
     const value = raw.trim();
     if (VISUAL_TOKEN_VALUE.test(value)) out[name] = value;
   }
+  separateMuted(out);
   return out;
+}
+
+const MUTED_LIFT = 5;
+const HSL_PARTS = /^(\S+)\s+(\S+%)\s+(\d+(?:\.\d+)?)%$/;
+
+// In the app's dark theme --muted is the same color as --card, so a muted
+// panel inside a visual (which already sits on the card) disappears. For
+// visuals only, a --muted equal to --card is lifted 5 points of lightness
+// (clamped to 100). The app's own tokens are untouched, and so is
+// --muted-foreground. Every token value a frame sees, at build time and in
+// live theme messages, comes through sanitizeTokens, so this is the one place.
+function separateMuted(tokens: Record<string, string>): void {
+  const card = tokens['--card'];
+  const muted = tokens['--muted'];
+  if (card === undefined || muted === undefined || card !== muted) return;
+  const parts = HSL_PARTS.exec(card);
+  if (!parts) return;
+  const lightness = Math.min(100, Number(parts[3]) + MUTED_LIFT);
+  tokens['--muted'] = `${parts[1]} ${parts[2]} ${Math.round(lightness * 100) / 100}%`;
 }
 
 export function readThemeTokens(root: Element = document.documentElement): Record<string, string> {

@@ -194,6 +194,12 @@ field names backend-neutral: `visual`, `title`, `summary`, not storage terms.
   tokens go and the
   light/dark mode into the frame at creation. It posts again whenever the theme changes, and the
   frame swaps variables without reloading.
+- **`--muted` is lifted off `--card` for visuals only.** In the app's dark theme the two are the
+  same color, so a muted panel inside a visual (which already sits on the card) vanished. Where
+  `--muted` equals `--card`, the token pipeline (`sanitizeTokens` in `visual-doc.ts`, which both
+  the srcdoc build and live theme messages go through) sends `--muted` as `--card` with its
+  lightness raised 5 points, clamped to 100. In practice that only triggers in dark mode. The
+  app's own tokens in `index.css` and `--muted-foreground` are unchanged.
 - Fonts: only Inter is inlined into the srcdoc, as a Latin subset in a base64 `@font-face`,
   because the frame can't fetch it. Mono is the system stack, not inlined.
 - A small base stylesheet in the frame (body margin, typography, card surface) means a bare

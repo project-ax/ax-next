@@ -308,6 +308,30 @@ describe('VisualFrame', () => {
     expect(iframe.getAttribute('srcdoc')).toBe(before);
   });
 
+  it('the live theme message carries --muted lifted off an identical --card', async () => {
+    const root = document.documentElement;
+    root.style.setProperty('--card', '226.67 15.25% 11.57%');
+    root.style.setProperty('--muted', '226.67 15.25% 11.57%');
+    try {
+      mount();
+      const { win } = await frameWindow();
+      const postSpy = vi.spyOn(win, 'postMessage');
+      fromFrame(win, READY);
+      act(() => setTheme('dark'));
+      expect(postSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'ax-visual:theme',
+          mode: 'dark',
+          tokens: expect.objectContaining({ '--card': '226.67 15.25% 11.57%', '--muted': '226.67 15.25% 16.57%' }),
+        }),
+        '*',
+      );
+    } finally {
+      root.style.removeProperty('--card');
+      root.style.removeProperty('--muted');
+    }
+  });
+
   it('(RF3) a theme toggled while loading reaches the frame on ready', async () => {
     mount();
     const { win } = await frameWindow();

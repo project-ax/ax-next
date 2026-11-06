@@ -4,6 +4,7 @@ import {
   VISUAL_IFRAME_SANDBOX,
   VISUAL_MAX_HEIGHT,
   VISUAL_TOKEN_NAMES,
+  VISUAL_TOKEN_VALUE,
   buildVisualDocument,
   inlineScript,
   readThemeTokens,
@@ -201,6 +202,26 @@ describe('sanitizeTokens', () => {
         '--radius-panel': '1rem',
       }),
     ).toEqual({ '--primary': '242.71deg 63.03% 58.63%', '--radius': '9px', '--chart-5': '0 0% 100%' });
+  });
+
+  it('lifts --muted 5 points of lightness off --card when they are equal (dark), clamped to 100', () => {
+    const dark = '226.67 15.25% 11.57%';
+    expect(sanitizeTokens({ '--card': dark, '--muted': dark, '--muted-foreground': '219 11.9% 67.06%' })).toEqual({
+      '--card': dark,
+      '--muted': '226.67 15.25% 16.57%',
+      '--muted-foreground': '219 11.9% 67.06%', // untouched
+    });
+    // Equal after trimming, any hue unit; never above 100%.
+    const out = sanitizeTokens({ '--card': '0deg 0% 98%', '--muted': ' 0deg 0% 98% ' });
+    expect(out['--muted']).toBe('0deg 0% 100%');
+    for (const v of Object.values(out)) expect(v).toMatch(VISUAL_TOKEN_VALUE);
+  });
+
+  it('leaves --muted alone when it differs from --card, or either is missing', () => {
+    const light = { '--card': '0 0% 100%', '--muted': '220 14.29% 95.88%' };
+    expect(sanitizeTokens(light)).toEqual(light);
+    expect(sanitizeTokens({ '--muted': '0 0% 100%' })).toEqual({ '--muted': '0 0% 100%' });
+    expect(sanitizeTokens({ '--card': '0 0% 100%', '--muted': 'bogus' })).toEqual({ '--card': '0 0% 100%' });
   });
 
   it('lists the documented token names', () => {
