@@ -20,7 +20,12 @@ import type { Logger } from '@ax/core';
  * as it lands, and everyone waiting on it is refused.
  */
 
-export type ListenerHandler = (rawJson: string) => void;
+// TASK-1061: pg's TCP keepalive is off by default. First probe after this long
+// idle; Node then probes every 1 s, 10 times (its documented setKeepAlive
+// socket options), so a dead peer shows up in about 20 s. Not configurable.
+const KEEPALIVE_INITIAL_DELAY_MS = 10_000;
+
+export type ListenerHandler =(rawJson: string) => void;
 
 export interface ListenerOptions {
   connectionString: string;
@@ -71,6 +76,11 @@ export class Listener {
     const client = new pg.Client({
       connectionString: this.opts.connectionString,
       connectionTimeoutMillis: this.opts.connectTimeoutMs,
+      // TASK-1061: this connection is idle most of the time, exactly where a
+      // vanished peer goes unnoticed. Set here, not in the URL (pg ignores a
+      // URL `keepalives` param). Detection takes ~20 s.
+      keepAlive: true,
+      keepAliveInitialDelayMillis: KEEPALIVE_INITIAL_DELAY_MS,
     });
     client.on('error', (err) => this.onClientError(err));
     client.on('notification', (msg) => this.onNotification(msg));

@@ -83,6 +83,10 @@ function tagCheckoutTimeout(err: unknown): never {
 }
 
 const DEFAULT_CHECKOUT_TIMEOUT_MS = 5_000;
+// TASK-1061: pg's TCP keepalive is off by default. First probe after this long
+// idle; Node then probes every 1 s, 10 times (its documented setKeepAlive
+// socket options), so a dead peer shows up in about 20 s. Not configurable.
+const KEEPALIVE_INITIAL_DELAY_MS = 10_000;
 const DEFAULT_STATEMENT_TIMEOUT_MS = 30_000;
 // Node turns a longer timer into 1 ms, and Postgres refuses a longer
 // statement_timeout (which would fail every connect).
@@ -853,6 +857,11 @@ export function createSessionPostgresPlugin(
         // past statementTimeoutMs; the connection stays usable.
         connectionTimeoutMillis: checkoutTimeoutMs,
         statement_timeout: statementTimeoutMs,
+        // TASK-1061: a peer that vanishes without closing the connection is
+        // otherwise never noticed on a quiet socket. Set here, not in the URL:
+        // pg ignores a URL `keepalives` param. Detection takes ~20 s.
+        keepAlive: true,
+        keepAliveInitialDelayMillis: KEEPALIVE_INITIAL_DELAY_MS,
       });
       // pg.Pool emits 'error' when an IDLE pooled client fails (e.g., a
       // postgres restart in k8s closing an idle connection). Without a
@@ -916,6 +925,11 @@ export function createSessionPostgresPlugin(
       listenClient = new pg.Client({
         connectionString: config.connectionString,
         connectionTimeoutMillis: checkoutTimeoutMs,
+        // TASK-1061: this connection is idle most of the time, exactly where a
+        // vanished peer goes unnoticed. Set here, not in the URL (pg ignores a
+        // URL `keepalives` param). Detection takes ~20 s.
+        keepAlive: true,
+        keepAliveInitialDelayMillis: KEEPALIVE_INITIAL_DELAY_MS,
       });
       // Same risk on the LISTEN client — long-lived, idle most of the time,
       // exactly the connection a postgres restart will tear down. Crash-by-

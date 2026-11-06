@@ -30,6 +30,10 @@ import pg from 'pg';
 
 const PLUGIN_NAME = '@ax/database-postgres';
 const DEFAULT_CHECKOUT_TIMEOUT_MS = 5_000;
+// TASK-1061: pg's TCP keepalive is off by default. First probe after this long
+// idle; Node then probes every 1 s, 10 times (its documented setKeepAlive
+// socket options), so a dead peer shows up in about 20 s. Not configurable.
+const KEEPALIVE_INITIAL_DELAY_MS = 10_000;
 // Node turns any timer delay above this into 1 ms.
 const MAX_TIMER_DELAY_MS = 2_147_483_647;
 const DEFAULT_STATEMENT_TIMEOUT_MS = 30_000;
@@ -154,6 +158,12 @@ export function createDatabasePostgresPlugin(config: DatabasePostgresConfig): Pl
         // above a normal wait and below the kernel's 10 s per-plugin shutdown
         // deadline.
         connectionTimeoutMillis: checkoutTimeoutMs,
+        // TASK-1061: a peer that vanishes without closing the connection is
+        // otherwise never noticed on a quiet socket. Set here, not in the URL:
+        // pg ignores a URL `keepalives` param. Detection takes ~20 s (see
+        // KEEPALIVE_INITIAL_DELAY_MS).
+        keepAlive: true,
+        keepAliveInitialDelayMillis: KEEPALIVE_INITIAL_DELAY_MS,
         // TASK-1056: the database cancels a statement after this long, a lock
         // wait included, and the connection stays usable. Without it, a stuck
         // statement holds its pool slot forever. Nothing on this pool is

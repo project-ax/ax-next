@@ -19,8 +19,8 @@ The capability budget is one TCP connection to postgres, one channel-name allowl
 Every channel name passed to `eventbus:emit` or `eventbus:subscribe` must match `/^[a-zA-Z0-9_]+$/`. Anything else throws `PluginError(code: 'invalid-channel')` before any SQL touches the wire. This is enforced in `assertChannel()` (`plugin.ts:172-180`) and applied at BOTH hook boundaries.
 
 Why we belt-and-braces this:
-- `LISTEN`/`UNLISTEN` take a SQL identifier, not a parameter. We pass it through `pg.escapeIdentifier()` (`listener.ts:123`) which is the documented-safe way to embed a caller-supplied identifier into a SQL statement. So even if the regex were missing, escapeIdentifier would still defend.
-- `pg_notify(text, text)` takes both args as parameters; we bind them with `$1, $2` (`listener.ts:152`). So even if the channel name had SQL meta-characters, the wire protocol prevents injection on the emit side.
+- `LISTEN`/`UNLISTEN` take a SQL identifier, not a parameter. We pass it through `pg.escapeIdentifier()` (`listener.ts:168`) which is the documented-safe way to embed a caller-supplied identifier into a SQL statement. So even if the regex were missing, escapeIdentifier would still defend.
+- `pg_notify(text, text)` takes both args as parameters; we bind them with `$1, $2` (`listener.ts:197`). So even if the channel name had SQL meta-characters, the wire protocol prevents injection on the emit side.
 - The regex on top of these two defenses is for "no surprises" — it means a channel name in code-review looks like an identifier, full stop. A reviewer doesn't have to think "is this safe" for every emit/subscribe call.
 
 ### Payload byte cap
@@ -45,7 +45,7 @@ Payloads on this hook MAY carry untrusted content — tool output, model output,
 
 1. **Producer side.** `eventbus:emit({channel, payload})` accepts `payload: unknown`. We `JSON.stringify` it and check the byte length. We do NOT inspect the payload's contents, scrub it, or try to validate "is this safe."
 2. **Wire.** The JSON string is passed as `$2` to `pg_notify($1, $2)`. Parameter-bound. Postgres stores it in the per-channel queue.
-3. **Listener side.** `Client.on('notification')` fires (`listener.ts:101`); we look up the channel's local subscribers and call each handler with `JSON.parse(payload)` (`plugin.ts:131-132`). Parse errors are logged and dropped — a malformed payload doesn't crash the listener or take out other subscribers.
+3. **Listener side.** `Client.on('notification')` fires (`listener.ts:86`); we look up the channel's local subscribers and call each handler with `JSON.parse(payload)` (`plugin.ts:157`). Parse errors are logged and dropped — a malformed payload doesn't crash the listener or take out other subscribers.
 4. **Subscriber side.** Each handler is fired in its own try/catch so a throwing handler doesn't take out its peers (`plugin.ts:142-147`). Handlers receive the parsed value and own safe handling from there.
 
 What a malicious payload can NOT do here:
