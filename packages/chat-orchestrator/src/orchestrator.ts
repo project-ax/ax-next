@@ -2696,11 +2696,19 @@ export function createOrchestrator(
     // a reply to a message missing from the transcript — the gap the person
     // finds on reload. It ends before routing, queueing, binding or spawning,
     // so a turn already running on this conversation is untouched (ctx.sessionId
-    // here is a placeholder, and nothing below this refusal runs). One known
-    // leftover, shared with every other pre-routing refusal: channel-web bound
-    // `active_req_id` to this reqId at POST time, and nothing clears it, since
-    // only a turn-end does and this turn never has one. The reason is
-    // read by routines (`refusedBeforeAssembly`) and channel-web
+    // here is a placeholder, and nothing below this refusal runs). This refusal
+    // leaves `active_req_id` on its reqId, like every refusal after channel-web's
+    // POST-time bind, and that is on purpose (TASK-1063): the stream GET
+    // resolves the conversation by it, so a stream that opens after the refusal
+    // still replays it (channel-web `sse.ts`, step 4a-bis). It holds up
+    // nothing: the next POST rebinds it. (Ending a REAL bound session clears
+    // it; a turn posted while no real session was bound is bound to a POST-time
+    // placeholder, never a real session, so that clear never fires for it.
+    // Do not call or fire `session:terminate(ctx.sessionId)` here: when the POST
+    // found no session bound at all, ctx.sessionId IS the bound placeholder, so
+    // terminating it would clear the binding — pinned in
+    // `route-by-conversation.test.ts`.)
+    // The reason is read by routines (`refusedBeforeAssembly`) and channel-web
     // (`turn-error-labels.ts`); it carries no detail and no `error`, since a
     // `chat:end` subscriber could log either raw.
     if (!(await persistUserDisplayTurn(bus, ctx, input.message))) {
@@ -4672,7 +4680,10 @@ export function createOrchestrator(
       { conversationId: input.conversationId, userId: input.userId },
     );
     // `active_req_id` is bound at POST time and cleared on chat:turn-end, so
-    // null/empty means no turn is in flight.
+    // null/empty means no turn is in flight. Non-null doesn't prove one is
+    // running: a turn refused before it ran keeps its reqId bound until the next
+    // message (TASK-1063). The interrupt below then reaches whatever that
+    // session is running, if anything; an idle runner drops it.
     const reqId = conv.conversation.activeReqId;
     if (reqId === null || reqId.length === 0) return { interrupted: false };
 

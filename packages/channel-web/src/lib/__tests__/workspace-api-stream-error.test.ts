@@ -116,22 +116,22 @@ describe('streamReply — the SSE error frame', () => {
   });
 });
 
-describe('streamReply — where the person fixes it (TASK-796)', () => {
-  async function fixFrom(frames: unknown[]): Promise<{ message: string | null; fix: unknown }> {
-    vi.stubGlobal('fetch', vi.fn(async () => sseResponse(frames)));
-    let message: string | null = null;
-    let fix: unknown = 'not-called';
-    await workspaceApi.streamReply('r1', {
-      onText: () => undefined,
-      onDone: () => undefined,
-      onError: (m, f) => {
-        message = m;
-        fix = f;
-      },
-    });
-    return { message, fix };
-  }
+async function fixFrom(frames: unknown[]): Promise<{ message: string | null; fix: unknown }> {
+  vi.stubGlobal('fetch', vi.fn(async () => sseResponse(frames)));
+  let message: string | null = null;
+  let fix: unknown = 'not-called';
+  await workspaceApi.streamReply('r1', {
+    onText: () => undefined,
+    onDone: () => undefined,
+    onError: (m, f) => {
+      message = m;
+      fix = f;
+    },
+  });
+  return { message, fix };
+}
 
+describe('streamReply — where the person fixes it (TASK-796)', () => {
   it('an expired connector sign-in says so AND names the Connectors tab', async () => {
     const { message, fix } = await fixFrom([{ error: 'connector-needs-reconnect' }]);
     expect(message).toBe(ERROR_LABELS['connector-needs-reconnect']);
@@ -166,6 +166,24 @@ describe('streamReply — where the person fixes it (TASK-796)', () => {
 
   it('an ordinary failure carries no fix hint', async () => {
     const { fix } = await fixFrom([{ error: 'proxy-open-failed' }]);
+    expect(fix).toBeUndefined();
+  });
+});
+
+describe('streamReply — a refusal that left the message unsaved (TASK-1063)', () => {
+  it('conversation:message-not-saved hints that the message was not saved', async () => {
+    const { message, fix } = await fixFrom([{ error: 'conversation:message-not-saved' }]);
+    expect(message).toBe(ERROR_LABELS['conversation:message-not-saved']);
+    expect(fix).toEqual({ messageNotSaved: true });
+  });
+
+  it('a chat:start veto hints that the message was not saved', async () => {
+    const { fix } = await fixFrom([{ error: 'chat:start:usage-limit-daily' }]);
+    expect(fix).toEqual({ messageNotSaved: true });
+  });
+
+  it('a failure after the save carries no hint, so Resend never attaches the file twice', async () => {
+    const { fix } = await fixFrom([{ error: 'system-prompt:identity-unavailable' }]);
     expect(fix).toBeUndefined();
   });
 });

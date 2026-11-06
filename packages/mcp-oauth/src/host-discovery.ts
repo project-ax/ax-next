@@ -148,6 +148,7 @@ export async function discoverOAuthHosts(opts: {
         else if (response.ok) metadataSeen = true;
         return response;
       }
+      // nosemgrep: javascript.browser.tainted-redirect.tainted-redirect -- server-side metadata fetch, not a browser redirect; every hop goes back through check() (SSRF guard, host cap) and is capped at 5
       const location = response.headers.get('location');
       if (!location) return response;
       if (hop >= 5) throw new BlockedUrlError('too many OAuth metadata redirects');

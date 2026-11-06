@@ -9,7 +9,7 @@ import {
   ATTACHMENT_MEDIA_TYPE_MAX,
   AttachmentIdSchema,
 } from '@ax/ipc-protocol';
-import type { AttachmentsStore } from './store.js';
+import type { AttachmentsStore, FileRow } from './store.js';
 import type {
   AttachmentsConfig,
   AttachmentsListForConversationInput,
@@ -171,6 +171,26 @@ export interface CommitDeps {
   bus: HookBus;
 }
 
+/** The `attachment` block's fields for a committed row. */
+function toCommitOutput(row: FileRow): CommitOutput {
+  return {
+    attachmentId: row.id,
+    filename: row.displayName,
+    sha256: row.sha256,
+    mediaType: row.mediaType,
+    sizeBytes: row.sizeBytes,
+  };
+}
+
+/** Is this row already this person's file in this conversation? */
+function alreadyCommittedHere(
+  row: FileRow | null,
+  conversationId: string,
+  userId: string,
+): row is FileRow {
+  return row !== null && row.conversationId === conversationId && row.userId === userId;
+}
+
 /**
  * `attachments:commit` — turn a staged upload into a committed one, owned by
  * the conversation it was sent in. The upload keeps the id it was staged
@@ -178,8 +198,13 @@ export interface CommitDeps {
  * the runner's copy all use. No path is minted: where the bytes live is the
  * blob store's business, and where a copy lands in a sandbox is the runner's.
  *
+ * Committing an id that is already committed into the same conversation by the
+ * same person answers with the row as stored, whether or not its staged row
+ * survived (TASK-1063). Any other id without a staged upload gets the not-found
+ * an unknown id gets.
+ *
  * The caller (the chat-messages route) has already checked the person owns
- * `conversationId`; this hook checks the staged upload is theirs.
+ * `conversationId`; this hook checks the upload is theirs.
  */
 export function createCommitHandler(deps: CommitDeps) {
   return async function commit(
@@ -188,6 +213,17 @@ export function createCommitHandler(deps: CommitDeps) {
   ): Promise<CommitOutput> {
     const row = await deps.store.getTemp(input.attachmentId);
     if (!row) {
+      // TASK-1063: no staged row is the usual state after a commit (the commit
+      // below deletes it). Naming the id again into the same conversation, as
+      // the same person, is how Resend carries a file again after a turn that
+      // was refused before the message was saved. It grants nothing new: the
+      // person can already download that file there. Every other miss
+      // (unknown, someone else's, another conversation) gets the same
+      // not-found, so the answer never says whose file it is or where it lives.
+      const existing = await deps.store.getFileById(input.attachmentId);
+      if (alreadyCommittedHere(existing, input.conversationId, ctx.userId)) {
+        return toCommitOutput(existing);
+      }
       throw new PluginError({
         code: 'not-found',
         plugin: PLUGIN_NAME,
@@ -226,19 +262,16 @@ export function createCommitHandler(deps: CommitDeps) {
       mediaType: row.mediaType,
       sizeBytes: row.sizeBytes,
     };
-    let stored = fresh;
+    let stored: FileRow = fresh;
     if (!(await deps.store.insertFile(fresh))) {
-      // The id was committed before and its temp row outlived that commit (the
-      // delete below is best-effort). Re-sending into the SAME conversation is
-      // the same upload: answer with the row as stored. Anywhere else would
-      // hand that conversation a block whose row lives in another one — refuse,
-      // and leave the first row alone.
+      // The rarer twin of the no-staged-row branch above: the id was committed
+      // before and its temp row outlived that commit (the delete below is
+      // best-effort). Same rule: into the SAME conversation, by the same
+      // person, it is the same upload, so answer with the row as stored.
+      // Anywhere else would hand that conversation a block whose row lives in
+      // another one — refuse, and leave the first row alone.
       const existing = await deps.store.getFileById(input.attachmentId);
-      if (
-        existing === null ||
-        existing.conversationId !== input.conversationId ||
-        existing.userId !== ctx.userId
-      ) {
+      if (!alreadyCommittedHere(existing, input.conversationId, ctx.userId)) {
         throw new PluginError({
           code: 'not-found',
           plugin: PLUGIN_NAME,
@@ -259,13 +292,7 @@ export function createCommitHandler(deps: CommitDeps) {
       });
     }
 
-    return {
-      attachmentId: stored.id,
-      filename: stored.displayName,
-      sha256: stored.sha256,
-      mediaType: stored.mediaType,
-      sizeBytes: stored.sizeBytes,
-    };
+    return toCommitOutput(stored);
   };
 }
 
