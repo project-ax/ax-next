@@ -202,6 +202,10 @@ const withoutClientId = () => {
 };
 describe('remote connector editor', () => {
   it('opens invalid header fields and associates their errors for assistive technology', async () => {
+    // No custom client: adding a header points the connector somewhere new,
+    // which would also ask for its client secret again (TASK-887), and that
+    // field comes first.
+    withoutClientId();
     await openEditor();
     fireEvent.click(screen.getByRole('button', { name: /Request headers/ }));
     fireEvent.click(screen.getByRole('button', { name: 'Add header' }));
@@ -323,23 +327,26 @@ describe('remote connector editor', () => {
     });
     fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
     await waitFor(() => expect(writes).toHaveLength(2));
+    // TASK-887 — an edit saves the connector first, naming where the secret
+    // is stored, then writes the secret there.
+    expect(writes[0]!.url).toBe('/admin/connectors/linear');
+    expect(writes[0]!.body.capabilities).toMatchObject({
+      credentials: [{ clientSecretRef: 'account:linear:OAUTH_CLIENT_SECRET' }],
+    });
+    expect(JSON.stringify(writes[0]!.body)).not.toContain(
+      'new-confidential-value',
+    );
     // A shared connector's client secret is the workspace's (admin-only since
     // slice 2a), so it goes to the /admin side.
-    expect(writes[0]!.url).toBe('/admin/destinations/account/credential');
-    expect(writes[0]!.body.payloadB64).toBe(btoa('new-confidential-value'));
+    expect(writes[1]!.url).toBe('/admin/destinations/account/credential');
+    expect(writes[1]!.body.payloadB64).toBe(btoa('new-confidential-value'));
     // TASK-762 — the slot must fit the route's SCREAMING_SNAKE slot grammar;
     // `oauth-client-secret` was refused with `400 invalid account slot`.
-    expect(writes[0]!.body.destination).toEqual({
+    expect(writes[1]!.body.destination).toEqual({
       kind: 'account',
       service: 'linear',
       slot: 'OAUTH_CLIENT_SECRET',
     });
-    expect(writes[1]!.body.capabilities).toMatchObject({
-      credentials: [{ clientSecretRef: 'account:linear:OAUTH_CLIENT_SECRET' }],
-    });
-    expect(JSON.stringify(writes[1]!.body)).not.toContain(
-      'new-confidential-value',
-    );
   });
   it('preserves a saved secret if Replace is opened and left empty', async () => {
     await openEditor();
@@ -369,18 +376,19 @@ describe('remote connector editor', () => {
     expect(screen.getByTestId('connector-access-notice')).toBeVisible();
     fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
     await waitFor(() => expect(writes).toHaveLength(2));
-    expect(writes[0]!.body.destination).toMatchObject({
+    // TASK-887 — an edit saves the connector first, then its key.
+    expect(writes[0]!.body.capabilities).toMatchObject({
+      credentials: [
+        { kind: 'api-key', headerName: 'X-API-Key', server: 'linear' },
+      ],
+    });
+    expect(JSON.stringify(writes[0]!.body)).not.toContain('header-secret');
+    expect(writes[1]!.body.destination).toMatchObject({
       kind: 'account',
       service: 'linear',
       // TASK-762 — SCREAMING_SNAKE, or the route answers `invalid account slot`.
       slot: expect.stringMatching(/^HEADER_[0-9A-F]{32}$/),
     });
-    expect(writes[1]!.body.capabilities).toMatchObject({
-      credentials: [
-        { kind: 'api-key', headerName: 'X-API-Key', server: 'linear' },
-      ],
-    });
-    expect(JSON.stringify(writes[1]!.body)).not.toContain('header-secret');
   });
   it('points a server that challenges without OAuth at request headers', async () => {
     discovery = { hosts: ['mcp.example.com'], auth: 'other' };
@@ -688,35 +696,6 @@ describe('remote connector editor', () => {
     expect(screen.queryByRole('button', { name: /Workspace settings/ })).not.toBeInTheDocument();
     fixture.keyMode = original;
   });
-  it('requires confirmation before sending saved headers to a changed host', async () => {
-    const original = fixture.capabilities.credentials;
-    fixture.capabilities.credentials = [
-      {
-        kind: 'api-key',
-        slot: 'header-old',
-        server: 'linear',
-        headerName: 'X-Key',
-      },
-    ];
-    await openEditor();
-    fireEvent.change(screen.getByLabelText('Server URL'), {
-      target: { value: 'https://other.example.com/mcp' },
-    });
-    await waitFor(() =>
-      expect(
-        screen.getByRole('button', { name: 'Save changes' }),
-      ).toBeEnabled(),
-    );
-    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
-    const confirm = await screen.findByLabelText(
-      'Send saved headers to other.example.com',
-    );
-    expect(writes).toEqual([]);
-    fireEvent.click(confirm);
-    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
-    await waitFor(() => expect(writes).toHaveLength(1));
-    fixture.capabilities.credentials = original;
-  });
   it('saves discovered hosts without showing or asking for a host list', async () => {
     discovery = {
       hosts: ['auth.example.com', 'tokens.example.com'],
@@ -743,6 +722,9 @@ describe('remote connector editor', () => {
   });
   it('removes the chosen header and keeps the remaining value and summary', async () => {
     fixture.keyMode = 'workspace';
+    // No custom client: adding a header points the connector somewhere new,
+    // which would also ask for its client secret again (TASK-887).
+    withoutClientId();
     await openEditor();
     fireEvent.click(screen.getByRole('button', { name: /Request headers/ }));
     fireEvent.click(screen.getByRole('button', { name: 'Add header' }));
@@ -767,7 +749,8 @@ describe('remote connector editor', () => {
     ).toBeVisible();
     fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
     await waitFor(() => expect(writes).toHaveLength(2));
-    expect(writes[0]!.body.payloadB64).toBe(btoa('second-secret'));
+    // TASK-887 — the connector first, then the key that remains.
+    expect(writes[1]!.body.payloadB64).toBe(btoa('second-secret'));
     expect(JSON.stringify(writes)).not.toContain('first-secret');
   });
   describe('OAuth or an API key (TASK-761)', () => {
@@ -1505,16 +1488,17 @@ describe('custom client secret scope', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
     await waitFor(() => expect(options.onSaved).toHaveBeenCalled());
     expect(writes).toHaveLength(2);
-    expect(writes[0]!.url).toBe('/admin/destinations/account/credential');
-    expect(writes[0]!.body).toMatchObject({
+    // TASK-887 — an edit saves the connector first, then the secret.
+    // TASK-762 — the connector still names the slot the route accepts.
+    expect(writes[0]!.body.capabilities).toMatchObject({
+      credentials: [{ clientSecretRef: CANONICAL_SECRET_REF }],
+    });
+    expect(writes[1]!.url).toBe('/admin/destinations/account/credential');
+    expect(writes[1]!.body).toMatchObject({
       scope: 'global',
       ownerId: null,
       destination: secretDestination,
       payloadB64: btoa('admin-client-secret'),
-    });
-    // TASK-762 — the connector still names the slot the route accepts.
-    expect(writes[1]!.body.capabilities).toMatchObject({
-      credentials: [{ clientSecretRef: CANONICAL_SECRET_REF }],
     });
   });
 
@@ -1565,11 +1549,14 @@ describe('a client secret missing from the workspace', () => {
     fireEvent.change(box, { target: { value: 'fresh-secret' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
     await waitFor(() => expect(options.onSaved).toHaveBeenCalled());
+    // TASK-887 — an edit saves the connector first and the secret after: the
+    // server may clear the secret inside the PATCH, and a refused PATCH must
+    // write nothing.
     expect(calls).toEqual([
-      'POST /admin/destinations/account/credential',
       'PATCH /admin/connectors/linear',
+      'POST /admin/destinations/account/credential',
     ]);
-    expect(writes[0]!.body).toMatchObject({
+    expect(writes[1]!.body).toMatchObject({
       scope: 'global',
       destination: secretDestination,
       payloadB64: btoa('fresh-secret'),
@@ -1635,8 +1622,9 @@ describe('no Sharing control', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
     await waitFor(() => expect(options.onSaved).toHaveBeenCalled());
     expect(screen.queryByText(/Make it Shared/)).not.toBeInTheDocument();
-    expect(writes[0]!.body).toMatchObject({ scope: 'global', ownerId: null });
-    expect(writes[1]!.body).not.toHaveProperty('visibility');
+    // TASK-887 — the connector first, then the secret.
+    expect(writes[0]!.body).not.toHaveProperty('visibility');
+    expect(writes[1]!.body).toMatchObject({ scope: 'global', ownerId: null });
   });
 
   it('a whitespace-only client secret is no secret: the save still goes through', async () => {

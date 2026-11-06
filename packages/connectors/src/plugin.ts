@@ -5,7 +5,10 @@ import {
   type HookBus,
   type Plugin,
 } from '@ax/core';
-import { TOOL_PERMISSIONS_RESET_FAILED } from '@ax/core/error-codes';
+import {
+  CONNECTOR_SIGN_OUT_FAILED,
+  TOOL_PERMISSIONS_RESET_FAILED,
+} from '@ax/core/error-codes';
 import { type Kysely } from 'kysely';
 import {
   runConnectorsMigration,
@@ -36,8 +39,12 @@ import {
 import { authorizeAgentAccountRead, authorizeGlobalAccountRead } from './credential-authz.js';
 import { listEffectiveConnectors, logSkippedRow } from './effective-connectors.js';
 import { requireUserId } from './input-guards.js';
-import { assertOwnClientSecretRefs } from './oauth-client-secret-ref.js';
+import {
+  assertOwnClientSecretRefs,
+  oauthClientSecretRefFor,
+} from './oauth-client-secret-ref.js';
 import { purgeConnectorState } from './purge.js';
+import { pointsSomewhereNew, type RetargetSubject } from './retarget.js';
 import { sweepNonAdminConnectors } from './non-admin-sweep.js';
 import { sweepStdioConnectors } from './stdio-sweep.js';
 import { deriveToolNamespaces, diffToolNamespaces } from './tool-namespace.js';
@@ -74,6 +81,7 @@ import {
   type AuthorizeGlobalOutput,
   type AuthoredConnectorSlot,
   type Capabilities,
+  type CapabilitySlot,
   type ClearAuthoredByIdInput,
   type ClearAuthoredByIdOutput,
   type Connector,
@@ -219,16 +227,18 @@ export function createConnectorsPlugin(config: ConnectorsConfig = {}): Plugin {
       // credentials:delete is a SOFT dep: deleting a connector purges its stored
       // key(s) so a secret never lingers with no UI home. A preset without
       // @ax/credentials still deletes the connector — it just can't purge the key.
+      // TASK-887: an edit that points a connector somewhere new clears the same
+      // keys (and every agent's sign-ins) through the same two hooks first.
       optionalCalls: [
         {
           hook: 'credentials:delete',
           degradation:
-            'the connector is deleted but its stored key is left in the vault (no @ax/credentials provider to purge it)',
+            'the connector is deleted or pointed somewhere new but its stored key is left in the vault (no @ax/credentials provider to purge it)',
         },
         {
           hook: 'credentials:purge-account',
           degradation:
-            "the connector is deleted but agents' sign-ins for it are left in the vault (a later connector with the same id could read them)",
+            "the connector is deleted or pointed somewhere new but agents' sign-ins for it are left in the vault (a later same-id connector, or the new address, could receive them)",
         },
         // TASK-737 — the connector editor's per-tool permissions routes. The
         // values live in @ax/tool-policy: without it the routes answer 503
@@ -743,6 +753,28 @@ async function upsertConnector(
       cause: err,
     });
   }
+  // TASK-887 — an edit that would bind a stored credential somewhere it was not
+  // bound before (retarget.ts) first signs every agent out of this connector
+  // and clears its shared key and client secret. See `signOutBeforeRetarget`.
+  //   - LAST gate before the write, so an earlier gate that refuses the edit
+  //     (TASK-758's reset, TASK-809's ceiling sources) never signs anyone out
+  //     for nothing.
+  //   - BEFORE the write, all or nothing: a sign-out that fails refuses the
+  //     edit and the old row stands, still pointing where its credentials were
+  //     entered. After the write, a failure would leave the new address holding
+  //     them, and a retry would detect nothing (the row already has the new
+  //     address — the TASK-758 lesson). If the sign-out lands and the write
+  //     then fails, people are signed out of an unchanged connector: a UX cost,
+  //     never a leak, and Save retries (both hooks are idempotent).
+  //   - No caller flag: the sign-out is what pointing somewhere new costs, not a
+  //     privilege to opt into, so no caller can retarget without it. Every
+  //     caller of this hook is admin-only, and a cross-owner admin edit writes
+  //     the stored capabilities, so it can never retarget.
+  const retargeted: RetargetSubject = { id: connectorId, keyMode, capabilities };
+  const retargetedFrom = prior !== null && pointsSomewhereNew(prior, retargeted) ? prior : null;
+  if (retargetedFrom !== null) {
+    await signOutBeforeRetarget(bus, ctx, retargetedFrom, retargeted, hookName);
+  }
   const { connector, created } = await store.upsert({
     userId,
     connectorId,
@@ -755,6 +787,19 @@ async function upsertConnector(
     createOnly: input.createOnly === true,
     updateOnly: input.updateOnly === true,
   });
+  if (retargetedFrom !== null) {
+    // TASK-887 — the same sign-out again, now that the new address is
+    // committed. The first pass ran before the write, so a credential stored
+    // between it and the commit (an OAuth callback finishing, a key saved)
+    // would survive bound to the new address. Together with the OAuth
+    // callback's own re-check of the address after it stores a token
+    // (@ax/mcp-oauth routes.ts), every credential written in that window goes:
+    // one landing before this pass is purged by it; one landing after it is
+    // checked by its writer against the committed row. Best-effort: the edit
+    // is committed, so a failure here must not tell the editor it wasn't
+    // saved — it logs an error (where it stopped, and what it had cleared).
+    await signOutAfterRetarget(bus, ctx, retargetedFrom, retargeted);
+  }
   if (prior !== null) {
     await announceNamespaceChange(bus, ctx, userId, connectorId, prior, connector);
   }
@@ -920,6 +965,172 @@ async function resetMovedEndpoints(
       cause: err,
     });
   }
+}
+
+/** The vault hooks a retarget clears through (TASK-887); both optionalCalls. */
+const PURGE_ACCOUNT_HOOK = 'credentials:purge-account';
+const CREDENTIALS_DELETE_HOOK = 'credentials:delete';
+
+/**
+ * TASK-887 — the GLOBAL refs a retarget clears: the shared key(s) of the old
+ * and the new definition (so a slot renamed in the same edit loses both its
+ * refs), plus the connector's own OAuth client secret whenever either side has
+ * a top-level OAuth slot. The delete purge (purge.ts) clears that secret only
+ * while a slot names it; here it goes even when none does, because naming the
+ * own secret again later is not itself a retarget (retarget.ts treats absent
+ * and own alike), so a secret left behind now would be posted, unchecked, to
+ * whatever token endpoint the connector has by then.
+ */
+function retargetGlobalRefs(before: RetargetSubject, after: RetargetSubject): string[] {
+  const refs = new Set<string>();
+  for (const side of [before, after]) {
+    for (const entry of deriveCredentialPlan(side)) {
+      if (entry.scope === 'global') refs.add(entry.ref);
+    }
+  }
+  // `Capabilities` types its slots api-key only (the shared skills-parser
+  // shape); stored slots are this package's api-key | oauth union.
+  const hasOAuthSlot = (side: RetargetSubject): boolean =>
+    (side.capabilities.credentials as CapabilitySlot[]).some((slot) => slot.kind === 'oauth');
+  if (hasOAuthSlot(before) || hasOAuthSlot(after)) refs.add(oauthClientSecretRefFor(after.id));
+  return [...refs];
+}
+
+/**
+ * TASK-887 — sign every agent out of a connector that an edit is about to
+ * point somewhere new, and clear its shared key and client secret: every
+ * stored credential of it was entered for where it pointed BEFORE the edit.
+ *
+ *   - every agent's sign-ins and per-agent keys: `credentials:purge-account`
+ *     (agent scope; it matches `account:<id>` and `account:<id>:*` only, so an
+ *     agent keeps its sign-ins to other connectors);
+ *   - the shared key(s) and the client secret: `credentials:delete` at global
+ *     scope for `retargetGlobalRefs`.
+ *
+ * The same set a delete purges (purge.ts), minus the announcement. It runs
+ * twice per retarget: before the write (this function, all or nothing) and
+ * again once the write commits (`signOutAfterRetarget`, best-effort); both
+ * share `purgeRetargetCredentials`. Each hook is skipped when absent: no
+ * credentials provider, nothing stored. Here the first throw stops the rest
+ * and refuses the edit (`connector-sign-out-failed`); what was cleared before
+ * it stays cleared, which costs a sign-in, never reach. Only refs and counts
+ * are logged, never a value (none passes here).
+ */
+async function signOutBeforeRetarget(
+  bus: HookBus,
+  ctx: AgentContext,
+  before: Connector,
+  after: RetargetSubject,
+  hookName: string,
+): Promise<void> {
+  const connectorId = after.id;
+  const result = await purgeRetargetCredentials(bus, ctx, before, after);
+  if (result === null) return;
+  if (!result.ok) {
+    // `step` is the call that failed; `purged` counts the agent sign-ins and
+    // `deletedRefs` the shared refs already cleared before it, so an operator
+    // can tell what was signed out although the edit was refused.
+    ctx.logger.error('connectors_retarget_sign_out_failed', signOutFailureFields(connectorId, result));
+    throw new PluginError({
+      code: CONNECTOR_SIGN_OUT_FAILED,
+      plugin: PLUGIN_NAME,
+      hookName,
+      message:
+        'couldn\'t sign everyone out of this connector before pointing it somewhere new, so the edit was not saved',
+      cause: result.err,
+    });
+  }
+  ctx.logger.info('connectors_retarget_signed_out', {
+    connectorId,
+    purged: result.purged,
+    globalRefs: result.globalRefs,
+  });
+}
+
+/**
+ * TASK-887 — the second pass, AFTER the write commits (see the call site in
+ * `upsertConnector`). Never throws: the edit is saved, and an error would tell
+ * the editor it was not. A failure logs an error — the step it stopped at and
+ * what it had already cleared — and the upsert carries on.
+ */
+async function signOutAfterRetarget(
+  bus: HookBus,
+  ctx: AgentContext,
+  before: Connector,
+  after: RetargetSubject,
+): Promise<void> {
+  const connectorId = after.id;
+  const result = await purgeRetargetCredentials(bus, ctx, before, after);
+  if (result === null) return;
+  if (!result.ok) {
+    ctx.logger.error(
+      'connectors_retarget_post_commit_sign_out_failed',
+      signOutFailureFields(connectorId, result),
+    );
+    return;
+  }
+  ctx.logger.info('connectors_retarget_post_commit_signed_out', {
+    connectorId,
+    purged: result.purged,
+    globalRefs: result.globalRefs,
+  });
+}
+
+/** One pass of the retarget sign-out: what it cleared, or where it stopped. */
+type RetargetSignOut =
+  | { ok: true; purged: number; globalRefs: string[] }
+  | { ok: false; step: string; purged: number; deleted: string[]; err: unknown };
+
+/**
+ * TASK-887 — the purge loop both passes share: the agent-scope purge, then
+ * each global ref. `null` when no credentials hook is loaded (nothing to
+ * clear). The first throw stops the rest and is returned with the failing
+ * `step`, the agent sign-ins `purged` and the global refs `deleted` before it;
+ * each caller decides what a failure costs.
+ */
+async function purgeRetargetCredentials(
+  bus: HookBus,
+  ctx: AgentContext,
+  before: Connector,
+  after: RetargetSubject,
+): Promise<RetargetSignOut | null> {
+  const connectorId = after.id;
+  const purgeAgents = bus.hasService(PURGE_ACCOUNT_HOOK);
+  const globalRefs = bus.hasService(CREDENTIALS_DELETE_HOOK) ? retargetGlobalRefs(before, after) : [];
+  if (!purgeAgents && globalRefs.length === 0) return null;
+  let step = PURGE_ACCOUNT_HOOK;
+  let purged = 0;
+  const deleted: string[] = [];
+  try {
+    if (purgeAgents) {
+      const out = await bus.call<
+        { connectorId: string; scopes: Array<'agent'> },
+        { purged: number }
+      >(PURGE_ACCOUNT_HOOK, ctx, { connectorId, scopes: ['agent'] });
+      purged = out.purged;
+    }
+    for (const ref of globalRefs) {
+      step = `${CREDENTIALS_DELETE_HOOK}:global:${ref}`;
+      await bus.call(CREDENTIALS_DELETE_HOOK, ctx, { scope: 'global', ownerId: null, ref });
+      deleted.push(ref);
+    }
+  } catch (err) {
+    return { ok: false, step, purged, deleted, err };
+  }
+  return { ok: true, purged, globalRefs };
+}
+
+function signOutFailureFields(
+  connectorId: string,
+  failure: Extract<RetargetSignOut, { ok: false }>,
+): Record<string, unknown> {
+  return {
+    connectorId,
+    step: failure.step,
+    purged: failure.purged,
+    deletedRefs: failure.deleted,
+    err: failure.err instanceof Error ? failure.err.message : String(failure.err),
+  };
 }
 
 /**

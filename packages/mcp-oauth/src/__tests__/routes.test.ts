@@ -3120,6 +3120,206 @@ describe('mcp-oauth callback route', () => {
       );
       expect(out.logger.error).not.toHaveBeenCalled();
     });
+
+    // TASK-887 — a sign-in belongs to the address it began for. Pointing a
+    // connector somewhere new signs every agent out of it, but a popup opened
+    // before that edit can still come back within the pending TTL, carrying a
+    // code for the OLD address (`pending.resource`, the url `begin` read). The
+    // runtime sends the token to wherever the oauth slot's server points NOW.
+    describe('TASK-887: a sign-in begun for the old address is refused', () => {
+      const server = (name: string, url: string) => ({
+        name,
+        transport: 'http',
+        url,
+        allowedHosts: [],
+        credentials: [],
+      });
+
+      it.each([
+        [
+          'the connector now points its OAuth server somewhere else (changed mid-flow)',
+          connectorFixture({ mcpServers: [server('srv', 'https://elsewhere.example/mcp')] }),
+        ],
+        [
+          'only the path of its address changed',
+          connectorFixture({ mcpServers: [server('srv', 'https://mcp.example.com/v2/mcp')] }),
+        ],
+        [
+          // The old server is still there at the old address, but the slot no
+          // longer names it: the address is the slot's server's, not any server's.
+          'the oauth slot now names another server, at another address',
+          connectorFixture({
+            credentials: [{ slot: 'oauth-main', kind: 'oauth', server: 'srv2', scopes: ['read', 'write'] }],
+            mcpServers: [server('srv', 'https://mcp.example.com/mcp'), server('srv2', 'https://elsewhere.example/mcp')],
+          }),
+        ],
+        ['the oauth slot was removed mid-flow', connectorFixture({ credentials: [] })],
+        ['the server the oauth slot names was removed mid-flow', connectorFixture({ mcpServers: [] })],
+      ])('TASK-887. %s → reason=sign-in-failed before any token exchange; nothing written', async (_label, changed) => {
+        const out = await run({ stubs: { 'connectors:get': () => changed } });
+        expect(out.state.status).toBeUndefined();
+        expect(out.state.redirectUrl).toBe(
+          'https://app.example.com/settings/connectors?connector=conn-1&oauth=error&reason=sign-in-failed&agentId=agent-1',
+        );
+        // Refused before discovery and the token exchange: the code is never redeemed.
+        expect(out.flow.discover).not.toHaveBeenCalled();
+        expect(out.flow.redeemCode).not.toHaveBeenCalled();
+        expect(out.setSpy).not.toHaveBeenCalled();
+        expect(out.attachSpy).not.toHaveBeenCalled();
+        expect(out.deleteSpy).not.toHaveBeenCalled();
+        expect(out.store.clearNeedsReconnect).not.toHaveBeenCalled();
+        // A changed connector is not a server fault: a WARN with its own stage.
+        expect(out.logger.warn).toHaveBeenCalledWith(
+          'mcp_oauth_callback_failed',
+          expect.objectContaining({ stage: 'connector-changed', connectorId: 'conn-1' }),
+        );
+        expect(out.logger.error).not.toHaveBeenCalled();
+        const logged = JSON.stringify([...out.logger.warn.mock.calls, ...out.logger.info.mock.calls]);
+        for (const secret of ['auth-code-xyz', 'verifier-0', 'pending-secret']) {
+          expect(logged).not.toContain(secret);
+        }
+      });
+
+      // The other direction: the check compares the address only, the way
+      // `begin` derived it, so an edit that keeps the address must not cost
+      // anyone their sign-in.
+      it('TASK-887. an edit that keeps the address (server renamed, another server added first, scopes changed) still signs in', async () => {
+        const out = await run({
+          stubs: {
+            'connectors:get': () =>
+              connectorFixture({
+                credentials: [{ slot: 'oauth-main', kind: 'oauth', server: 'srv-renamed', scopes: ['read'] }],
+                mcpServers: [server('other', 'https://other.example/mcp'), server('srv-renamed', 'https://mcp.example.com/mcp')],
+              }),
+          },
+        });
+        expect(out.order).toEqual(['set', 'attach', 'clear']);
+        expect(out.state.redirectUrl).toBe(
+          'https://app.example.com/settings/connectors?connector=conn-1&oauth=success&agentId=agent-1',
+        );
+      });
+
+      // Only the FIRST same-name server receives the token at run time (the
+      // session proxy, call-tool and @ax/mcp-client's header builder), so a
+      // later twin does not refuse: a connector that has always carried one
+      // must not fail every sign-in after the provider's consent screen.
+      it.each([
+        ['at the SAME address', 'https://mcp.example.com/mcp'],
+        ['at another address', 'https://elsewhere.example/mcp'],
+      ])('TASK-887. a later same-name server %s still signs in (the first one still matches)', async (_label, twinUrl) => {
+        const out = await run({
+          stubs: {
+            'connectors:get': () =>
+              connectorFixture({
+                mcpServers: [server('srv', 'https://mcp.example.com/mcp'), server('srv', twinUrl)],
+              }),
+          },
+        });
+        expect(out.order).toEqual(['set', 'attach', 'clear']);
+        expect(out.state.redirectUrl).toBe(
+          'https://app.example.com/settings/connectors?connector=conn-1&oauth=success&agentId=agent-1',
+        );
+      });
+
+      it('TASK-887. a same-name server put FIRST at another address refuses', async () => {
+        const out = await run({
+          stubs: {
+            'connectors:get': () =>
+              connectorFixture({
+                mcpServers: [server('srv', 'https://elsewhere.example/mcp'), server('srv', 'https://mcp.example.com/mcp')],
+              }),
+          },
+        });
+        expect(out.setSpy).not.toHaveBeenCalled();
+        expect(out.attachSpy).not.toHaveBeenCalled();
+        expect(out.state.redirectUrl).toContain('oauth=error&reason=sign-in-failed');
+      });
+
+      // The check above runs before the token exchange, so an edit landing
+      // DURING the exchange would leave a token for the old address stored.
+      // The callback reads the connector again once the token is stored, and
+      // deletes it when the address moved. (@ax/connectors' second sign-out,
+      // after the edit commits, covers a token stored BEFORE that point.)
+      describe('the address is checked again after the token is stored', () => {
+        /** `connectors:get` answers `first` once, then `second()` on every later call. */
+        const movesAfterFirstRead = (second: () => unknown) => {
+          let reads = 0;
+          return () => {
+            reads += 1;
+            return reads === 1 ? connectorFixture() : second();
+          };
+        };
+
+        it.each([
+          ['moved to another address', () => connectorFixture({ mcpServers: [server('srv', 'https://elsewhere.example/mcp')] })],
+          ['deleted', () => rejectThrow('not found')],
+        ])('TASK-887. a connector %s while the code was exchanged → the stored token is deleted; no attach; sign-in-failed', async (_label, second) => {
+          const out = await run({ stubs: { 'connectors:get': movesAfterFirstRead(second) } });
+          expect(out.order).toEqual(['set', 'delete']);
+          expect(out.deleteSpy).toHaveBeenCalledWith({ scope: 'agent', ownerId: 'agent-1', ref: 'account:conn-1' });
+          expect(out.attachSpy).not.toHaveBeenCalled();
+          expect(out.store.clearNeedsReconnect).not.toHaveBeenCalled();
+          expect(out.state.redirectUrl).toBe(
+            'https://app.example.com/settings/connectors?connector=conn-1&oauth=error&reason=sign-in-failed&agentId=agent-1',
+          );
+          expect(out.logger.warn).toHaveBeenCalledWith('mcp_oauth_callback_failed', {
+            stage: 'connector-changed-after-store',
+            connectorId: 'conn-1',
+          });
+          expect(out.logger.error).not.toHaveBeenCalled();
+        });
+
+        it('TASK-887. the re-read throws (a server fault) → fails closed: the token is deleted and the sign-in refused', async () => {
+          const out = await run({
+            stubs: {
+              'connectors:get': movesAfterFirstRead(() => {
+                throw new Error('db down: at-123');
+              }),
+            },
+          });
+          expect(out.order).toEqual(['set', 'delete']);
+          expect(out.attachSpy).not.toHaveBeenCalled();
+          expect(out.store.clearNeedsReconnect).not.toHaveBeenCalled();
+          expect(out.state.redirectUrl).toContain('oauth=error&reason=sign-in-failed');
+          expect(out.logger.warn).toHaveBeenCalledWith('mcp_oauth_callback_failed', {
+            stage: 'connector-changed-after-store',
+            connectorId: 'conn-1',
+          });
+        });
+
+        it('TASK-887. the delete after a moved address throws → still refused, with an error log and no secret in it', async () => {
+          const out = await run({
+            pending: { ...pending, mode: 'sign-in-again' },
+            stubs: {
+              'connectors:get': movesAfterFirstRead(() =>
+                connectorFixture({ mcpServers: [server('srv', 'https://elsewhere.example/mcp')] }),
+              ),
+            },
+            del: () => {
+              throw new Error('vault down: at-123 pending-secret');
+            },
+          });
+          expect(out.order).toEqual(['set', 'delete']);
+          expect(out.store.clearNeedsReconnect).not.toHaveBeenCalled();
+          expect(out.state.redirectUrl).toContain('oauth=error&reason=sign-in-failed');
+          expect(out.logger.error).toHaveBeenCalledWith(
+            'mcp_oauth_changed_after_store_delete_failed',
+            expect.objectContaining({ connectorId: 'conn-1', agentId: 'agent-1' }),
+          );
+          const logged = JSON.stringify([...out.logger.error.mock.calls, ...out.logger.warn.mock.calls]);
+          for (const secret of ['at-123', 'rt-456', 'pending-secret', 'auth-code-xyz', 'verifier-0', 'vault down']) {
+            expect(logged).not.toContain(secret);
+          }
+        });
+
+        it('TASK-887. an unchanged connector is read twice and the sign-in completes', async () => {
+          const out = await run({});
+          expect(out.calls.filter((c) => c.hook === 'connectors:get')).toHaveLength(2);
+          expect(out.order).toEqual(['set', 'attach', 'clear']);
+          expect(out.state.redirectUrl).toContain('oauth=success');
+        });
+      });
+    });
   });
 
   it('Fix3. wrong-user callback returns 403 without consuming; a SUBSEQUENT legitimate consume still succeeds', async () => {

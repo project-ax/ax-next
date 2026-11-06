@@ -678,8 +678,8 @@ describe('admin connector routes', () => {
       expect(listed.captured.body).toMatchObject({ connectors: [{ id: 'crm', canEdit: false }] });
     });
 
-    // A NON-OWNER admin may relabel a shared connector, never retarget it — an endpoint / host / slot change would send every
-    // agent's stored sign-ins and the shared key somewhere new.
+    // A NON-OWNER admin may relabel a shared connector, never retarget it — an endpoint / host / slot change signs every
+    // agent out and clears the shared key (TASK-887), which is the owner's call.
     describe('a non-owner admin cannot change where it connects or who it is for', () => {
       async function seedAndShow(h: TestHarness) {
         const handlers = createAdminConnectorRouteHandlers({ bus: h.bus });
@@ -2259,5 +2259,84 @@ describe('an invalid capabilities value is a fixed field-level 400 (TASK-1036)',
     expect(captured.status).toBe(400);
     expect(captured.body).toEqual({ error: 'capabilities.services is not valid' });
     expect(JSON.stringify(captured.body)).not.toContain('CALLER_CHOSEN_KEY');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// TASK-887 — an edit that points a connector somewhere new signs every agent
+// out of it first (`connectors:upsert`). When that sign-out fails the edit is
+// refused, and the route answers 503 with the fixed code the editors key
+// their message on (never the vault's error text).
+// ---------------------------------------------------------------------------
+describe('a PATCH that points a connector somewhere new (TASK-887)', () => {
+  it('PATCH that points a connector somewhere new answers 503 connector-sign-out-failed when the sign-out fails, and nothing changes', async () => {
+    let purgeCalls = 0;
+    const h = await createTestHarness({
+      services: {
+        'credentials:purge-account': async () => {
+          purgeCalls += 1;
+          throw new Error('the vault is down');
+        },
+      },
+      plugins: [
+        createDatabasePostgresPlugin({ connectionString }),
+        authStubPlugin(),
+        credentialsStubPlugin(),
+        createConnectorsPlugin(),
+      ],
+    });
+    harnesses.push(h);
+    const handlers = createAdminConnectorRouteHandlers({ bus: h.bus });
+    currentActor = { id: 'admin1', isAdmin: true };
+    // A shared key sent as a request header: it is bound to the server's url.
+    const server = {
+      name: 'crm',
+      transport: 'http' as const,
+      url: 'https://mcp.crm.example/mcp',
+      allowedHosts: [],
+      credentials: [],
+    };
+    const caps: Capabilities = {
+      allowedHosts: ['mcp.crm.example'],
+      credentials: [{ slot: 'HEADER_1', kind: 'api-key', headerName: 'X-Api-Key', server: 'crm' }],
+      mcpServers: [server],
+      packages: { npm: [], pypi: [] },
+    };
+    const created = makeRes();
+    await handlers.create(
+      makeReq({ body: { connectorId: 'crm', name: 'CRM', keyMode: 'workspace', capabilities: caps } }),
+      created.res,
+    );
+    expect(created.captured.status).toBe(201);
+
+    // A relabel points nowhere new: it saves without touching the vault.
+    const renamed = makeRes();
+    await handlers.update(
+      makeReq({ params: { id: 'crm' }, body: { name: 'CRM (renamed)' } }),
+      renamed.res,
+    );
+    expect(renamed.captured.status).toBe(200);
+    expect(purgeCalls).toBe(0);
+
+    const moved = makeRes();
+    await handlers.update(
+      makeReq({
+        params: { id: 'crm' },
+        body: { capabilities: { ...caps, mcpServers: [{ ...server, url: 'https://crm-v2.example/mcp' }] } },
+      }),
+      moved.res,
+    );
+    expect(purgeCalls).toBe(1);
+    expect(moved.captured).toMatchObject({ status: 503, body: { error: 'connector-sign-out-failed' } });
+    expect(JSON.stringify(moved.captured.body)).not.toContain('vault');
+
+    const shown = makeRes();
+    await handlers.show(makeReq({ params: { id: 'crm' } }), shown.res);
+    expect(shown.captured.body).toMatchObject({
+      connector: {
+        name: 'CRM (renamed)',
+        capabilities: { mcpServers: [{ url: 'https://mcp.crm.example/mcp' }] },
+      },
+    });
   });
 });

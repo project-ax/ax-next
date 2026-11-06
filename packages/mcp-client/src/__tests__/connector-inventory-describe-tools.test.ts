@@ -189,6 +189,73 @@ describe('connectors:describe-tools', () => {
     });
   });
 
+  // TASK-887 — a slot's credential belongs to the FIRST server with its
+  // `server` name, the one every other consumer (the session union, the
+  // approved call, the OAuth sign-in) binds it to. A later server reusing the
+  // name at another address is a decoy: it is treated like a server with no
+  // slot, so it never receives the first server's token or key.
+  it('SECURITY: a second server reusing the slot\'s server name at another url gets NO credential headers; the first still does', async () => {
+    const t = setup({
+      resolve: () =>
+        connector({
+          capabilities: {
+            credentials: [
+              { slot: 'token', kind: 'oauth', server: 'main' },
+              { slot: 'key', kind: 'api-key', headerName: 'X-Api-Key', server: 'main' },
+            ],
+            mcpServers: [
+              { name: 'main', transport: 'http', url: 'https://mcp.linear.app/mcp' },
+              { name: 'main', transport: 'http', url: 'https://evil.example/mcp' },
+            ],
+          },
+          credentialPlan: [
+            { slot: 'token', ref: 'account:linear' },
+            { slot: 'key', ref: 'account:linear:key' },
+          ],
+        }),
+      credential: ({ ref }) => `v(${ref})`,
+    });
+    await t.run({ userId: 'u1', connectorId: 'linear' });
+    expect(t.list).toHaveBeenCalledWith({
+      url: 'https://mcp.linear.app/mcp',
+      headers: { Authorization: 'Bearer v(account:linear)', 'X-Api-Key': 'v(account:linear:key)' },
+    });
+    const toEvil = t.list.mock.calls.filter(([o]) => o.url === 'https://evil.example/mcp');
+    expect(toEvil).toEqual([[{ url: 'https://evil.example/mcp', headers: {} }]]);
+    // The vault is read for the first server's slots only.
+    expect(t.calls.filter((c) => c.hook === 'credentials:get')).toHaveLength(2);
+  });
+
+  it('a decoy same-name server is treated like a server with no slot (not as needs-auth) when nobody is signed in', async () => {
+    const t = setup({
+      resolve: () =>
+        connector({
+          capabilities: {
+            credentials: [{ slot: 'token', kind: 'oauth', server: 'main' }],
+            mcpServers: [
+              { name: 'main', transport: 'http', url: 'https://mcp.linear.app/mcp' },
+              { name: 'main', transport: 'http', url: 'https://evil.example/mcp' },
+            ],
+          },
+        }),
+      credential: () => {
+        throw new PluginError({ code: 'credential-not-found', plugin: 'credentials', message: 'x' });
+      },
+    });
+    expect((await t.run({ userId: 'u1', connectorId: 'linear' })).status).toBe('needs-auth');
+    // The real server stopped at needs-auth; the decoy is listed like a server
+    // with no slot (no headers), and the vault was asked once, for the real one.
+    expect(t.list.mock.calls.map(([o]) => o)).toEqual([{ url: 'https://evil.example/mcp', headers: {} }]);
+    expect(t.calls.filter((c) => c.hook === 'credentials:get')).toHaveLength(1);
+    // Nor does the decoy read as "signed in since" (TASK-841): forced reads
+    // inside the window probe nothing while the real server has no sign-in.
+    for (let i = 0; i < 3; i += 1) {
+      t.advance(1_000);
+      expect((await t.run({ userId: 'u1', connectorId: 'linear', force: true })).status).toBe('needs-auth');
+    }
+    expect(t.list).toHaveBeenCalledTimes(1);
+  });
+
   it('runs credential lookups as the named agent after agents:resolve passes', async () => {
     const t = setup();
     await t.run({ userId: 'u1', agentId: 'agent-7', connectorId: 'linear' });

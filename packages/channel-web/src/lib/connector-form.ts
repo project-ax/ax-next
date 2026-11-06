@@ -35,7 +35,10 @@ import {
   type ComposeDrop,
   type ComposeInvalid,
 } from '@ax/skills-parser';
+import { OAUTH_CLIENT_SECRET_SLOT } from './connector-credential-slots';
 import {
+  accountRef,
+  deriveCredentialPlan,
   emptyCapabilities,
   type Connector,
   type ConnectorSummary,
@@ -312,6 +315,125 @@ export function endpointChangedServers(
     }
   }
   return out;
+}
+
+// ---------------------------------------------------------------------------
+// TASK-887 — does an edit point a connector "somewhere new"?
+//
+// A COPY of `pointsSomewhereNew` in @ax/connectors `src/retarget.ts` (invariant
+// 2: no runtime import across plugins). READ THAT FILE for the rule, what each
+// fact mirrors, and what is deliberately not reach; this one only restates the
+// shape. The editors use it to warn before Save and to decide which saved
+// values must be typed again, and the server (`connectors:upsert`) runs the
+// original to sign everyone out. `src/__tests__/connector-retarget-contract.test.ts`
+// runs the server's whole table through both copies and fails on any
+// difference. Change one, change the other.
+//
+// Each side becomes a set of reach facts (the JSON of a tuple); the edit points
+// somewhere new iff `after` has a fact `before` lacks:
+//   ['slot', slot, occurrence, ref, kind, address, headerName, authServerUrl,
+//    tokenUrl, secretRef]  per top-level slot, per server carrying its name
+//                          (a deliberately cautious extra: only the first
+//                          gets the credential)
+//   ['slot-first', ...same] per top-level slot, with the address of the FIRST
+//                          server carrying its name, the one every consumer
+//                          binds to; the set above can't see [A, B] → [B, A]
+//   ['server-slot', address, slot, kind, headerName, authServerUrl, tokenUrl,
+//    secretRef]            per server-level slot, per server carrying its
+//                          server's name
+//   ['server-slot-first', ...same] per server-level slot, with the first such
+//                          server's address (it keys on a name, so it gets the
+//                          same order rule)
+//   ['host', host]         per top-level allowed host, only with an env key
+// ---------------------------------------------------------------------------
+
+type RetargetSubject = Pick<Connector, 'id' | 'keyMode' | 'capabilities'>;
+type RetargetAddress = [transport: string, url: string | null];
+
+function addressOf(server: ConnectorMcpServerSpec): RetargetAddress {
+  return [server.transport, server.url ?? null];
+}
+
+/** The address of every server called `name`, or `[null]` when none is. */
+function addressesNamed(
+  servers: readonly ConnectorMcpServerSpec[],
+  name: string | undefined,
+): Array<RetargetAddress | null> {
+  const named = name === undefined ? [] : servers.filter((s) => s.name === name);
+  return named.length > 0 ? named.map(addressOf) : [null];
+}
+
+/** The address of the FIRST server called `name` (the one a credential goes to), or null. */
+function firstAddressNamed(
+  servers: readonly ConnectorMcpServerSpec[],
+  name: string | undefined,
+): RetargetAddress | null {
+  const first = name === undefined ? undefined : servers.find((s) => s.name === name);
+  return first ? addressOf(first) : null;
+}
+
+/** An env key: an api-key slot that is not sent as a request header. */
+function isEnvKey(slot: ConnectorCredentialSlot): boolean {
+  return slot.kind === 'api-key' && !slot.headerName;
+}
+
+/** [headerName, authServerUrl, tokenUrl, secretRef], null where not applicable. */
+function retargetBindingFields(
+  connectorId: string,
+  slot: ConnectorCredentialSlot,
+): [string | null, string | null, string | null, string | null] {
+  if (slot.kind === 'api-key') return [slot.headerName ?? null, null, null, null];
+  const ref = slot.clientSecretRef;
+  const own = accountRef(connectorId, OAUTH_CLIENT_SECRET_SLOT);
+  return [null, slot.authServerUrl ?? null, slot.tokenUrl ?? null, !ref || ref === own ? 'own' : ref];
+}
+
+function reachFacts(c: RetargetSubject): Set<string> {
+  const facts = new Set<string>();
+  const add = (fact: unknown[]): void => {
+    facts.add(JSON.stringify(fact));
+  };
+  const slots = c.capabilities.credentials;
+  const servers = c.capabilities.mcpServers;
+  const plan = deriveCredentialPlan(c); // one entry per slot, in slot order
+  const seen = new Map<string, number>();
+  slots.forEach((slot, i) => {
+    const occurrence = seen.get(slot.slot) ?? 0;
+    seen.set(slot.slot, occurrence + 1);
+    const ref = plan[i]?.ref ?? null;
+    const binding = retargetBindingFields(c.id, slot);
+    for (const address of addressesNamed(servers, slot.server)) {
+      add(['slot', slot.slot, occurrence, ref, slot.kind, address, ...binding]);
+    }
+    add(['slot-first', slot.slot, occurrence, ref, slot.kind, firstAddressNamed(servers, slot.server), ...binding]);
+  });
+  for (const server of servers) {
+    for (const slot of server.credentials) {
+      const binding = retargetBindingFields(c.id, slot);
+      for (const address of addressesNamed(servers, server.name)) {
+        add(['server-slot', address, slot.slot, slot.kind, ...binding]);
+      }
+      add(['server-slot-first', firstAddressNamed(servers, server.name), slot.slot, slot.kind, ...binding]);
+    }
+  }
+  if (slots.some(isEnvKey)) {
+    for (const host of c.capabilities.allowedHosts) add(['host', host]);
+  }
+  return facts;
+}
+
+/**
+ * Would saving `after` over `before` bind a stored credential of this
+ * connector somewhere it was not bound before (TASK-887)? True iff `after` has
+ * a reach fact `before` lacks. Pure; neither input is modified. Copy of the
+ * server's rule, pinned by a contract test (see the comment above).
+ */
+export function pointsSomewhereNew(before: RetargetSubject, after: RetargetSubject): boolean {
+  const known = reachFacts(before);
+  for (const fact of reachFacts(after)) {
+    if (!known.has(fact)) return true;
+  }
+  return false;
 }
 
 /**

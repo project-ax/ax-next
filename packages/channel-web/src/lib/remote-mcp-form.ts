@@ -123,10 +123,15 @@ export function serverHost(url: string): string | undefined {
  * key (`workspace`) is typed once here; a per-agent key (`personal`) never is —
  * each agent adds its own value when it adds the connector — so its headers are
  * names only, and no value is asked for.
+ *
+ * `reenterSavedValues` (TASK-887): this save points the connector somewhere
+ * new, and the server clears its shared key when it does. So a saved value
+ * must be typed again in the same save, or the connector is left without one.
  */
 export function remoteErrors(
   draft: RemoteMcpDraft,
   keyMode: ConnectorKeyMode,
+  options: { reenterSavedValues?: boolean } = {},
 ): Record<string, string> {
   const errors: Record<string, string> = {};
   if (!draft.name.trim()) errors.name = 'Enter a name for this connector.';
@@ -159,8 +164,11 @@ export function remoteErrors(
       errors[`name-${header.slot}`] = 'Each header needs a different name.';
     names.add(name);
     if (keyMode !== 'workspace') continue;
-    if (!header.saved && !header.value)
+    if (!header.value && !header.saved)
       errors[`value-${header.slot}`] = 'Enter a header value.';
+    else if (!header.value && options.reenterSavedValues)
+      errors[`value-${header.slot}`] =
+        'Enter this value again. Changing where this connector points clears it.';
     if (/[\x00-\x1f\x7f]/.test(header.value) || header.value.length > 8192)
       errors[`value-${header.slot}`] =
         'Use a single line of text, up to 8,192 characters.';

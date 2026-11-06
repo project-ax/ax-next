@@ -5,7 +5,10 @@ import {
   type AgentContext,
   type HookBus,
 } from '@ax/core';
-import { TOOL_PERMISSIONS_RESET_FAILED } from '@ax/core/error-codes';
+import {
+  CONNECTOR_SIGN_OUT_FAILED,
+  TOOL_PERMISSIONS_RESET_FAILED,
+} from '@ax/core/error-codes';
 import type {
   ClearAuthoredByIdInput,
   ClearAuthoredByIdOutput,
@@ -171,7 +174,8 @@ function parseAndValidateBody(body: Buffer): ParsedBody<unknown> | ParseError {
 /**
  * Map a thrown PluginError from a `connectors:*` hook to an HTTP status. The
  * hooks throw structured codes (`invalid-payload`, `not-found`,
- * `tool-permissions-reset-failed`, `corrupt-row`); everything
+ * `tool-permissions-reset-failed`, `connector-sign-out-failed`,
+ * `corrupt-row`); everything
  * else bubbles as a 500 (re-thrown). We collapse the message — never echo
  * internal stack/field detail beyond the hook's own message string.
  *
@@ -205,6 +209,13 @@ function handleHookError(err: unknown, res: RouteResponse, logger: AgentContext[
     // string the editors key their message on (never the cause's text).
     if (err.code === TOOL_PERMISSIONS_RESET_FAILED) {
       res.status(503).json({ error: TOOL_PERMISSIONS_RESET_FAILED });
+      return;
+    }
+    // TASK-887 — an edit that would point the connector somewhere new, whose
+    // sign-out of every agent failed, was refused before anything was
+    // written. Same shape: retryable 503, fixed string, never the cause.
+    if (err.code === CONNECTOR_SIGN_OUT_FAILED) {
+      res.status(503).json({ error: CONNECTOR_SIGN_OUT_FAILED });
       return;
     }
   }
@@ -395,11 +406,11 @@ const DISPLAY_FIELDS = ['name', 'description', 'usageNote'] as const;
  * note; tool permissions on their own route) but never change where it
  * connects or who supplies the key. `capabilities` (servers + endpoints,
  * allowed hosts, credential slots incl. OAuth client fields, packages,
- * services) and `keyMode` are the owner's: an endpoint change
- * would hand every agent's stored sign-ins and the shared key to the new host
- * through the credential proxy (only tool permissions are reset on a move —
- * TASK-758). A field sent with its STORED value is fine; editors send the whole
- * form. Capabilities are compared after the same parse the store applies, so
+ * services) and `keyMode` are the owner's: pointing a connector somewhere new
+ * signs every agent out of it and clears its shared key and client secret
+ * (TASK-887) — the owner's call, not another admin's. A field sent with its
+ * STORED value is fine; editors send the whole form. Capabilities are
+ * compared after the same parse the store applies, so
  * defaults (e.g. `services: []`) never read as a change; an unparseable value
  * is a change (refused). Both sides also get the OAuth slot defaults
  * (`withCapabilityDefaults`): a slot that spells out

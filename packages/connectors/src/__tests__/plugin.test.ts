@@ -42,18 +42,19 @@ describe('@ax/connectors plugin manifest', () => {
       // database:get-instance is hard — the plugin runs its own migration on
       // init and can't function without a postgres instance.
       calls: ['database:get-instance'],
-      // credentials:delete is a soft dep — purge-on-delete degrades gracefully
-      // when no @ax/credentials provider is present.
+      // credentials:delete is a soft dep — purge-on-delete and the sign-out
+      // before a retarget (TASK-887) degrade gracefully when no
+      // @ax/credentials provider is present.
       optionalCalls: [
         {
           hook: 'credentials:delete',
           degradation:
-            'the connector is deleted but its stored key is left in the vault (no @ax/credentials provider to purge it)',
+            'the connector is deleted or pointed somewhere new but its stored key is left in the vault (no @ax/credentials provider to purge it)',
         },
         {
           hook: 'credentials:purge-account',
           degradation:
-            "the connector is deleted but agents' sign-ins for it are left in the vault (a later connector with the same id could read them)",
+            "the connector is deleted or pointed somewhere new but agents' sign-ins for it are left in the vault (a later same-id connector, or the new address, could receive them)",
         },
         {
           hook: 'tool-policy:get-connector-defaults',

@@ -1172,6 +1172,406 @@ describe('@ax/connectors hooks — upsert fires connectors:tool-namespaces-chang
   });
 });
 
+// ---------------------------------------------------------------------------
+// TASK-887 — an edit that would bind a stored credential somewhere it was not
+// bound before (`pointsSomewhereNew`, retarget.ts) first signs every agent out
+// of the connector and clears its shared key and client secret. It is the
+// last gate before the write, all or nothing. retarget.test.ts pins WHICH
+// edits count; this pins what the gate clears, when, and what a failure does.
+// ---------------------------------------------------------------------------
+describe('an edit that points a connector somewhere new signs everyone out first (TASK-887)', () => {
+  const PURGE = 'credentials:purge-account';
+  const DELETE = 'credentials:delete';
+  type VaultHook = typeof PURGE | typeof DELETE;
+  /** One vault call, with the connector's row as stored at that moment. */
+  interface VaultCall {
+    hook: VaultHook;
+    input: unknown;
+    storedAtCall: Capabilities | null;
+  }
+
+  const LINEAR_OLD = 'https://mcp.linear.app/mcp';
+  const LINEAR_NEW = 'https://elsewhere.example/mcp';
+  const CRM_OLD = 'https://mcp.crm.example/mcp';
+  const CRM_NEW = 'https://crm-v2.example/mcp';
+  const WORKSPACE = { keyMode: 'workspace' } as const;
+
+  /** Personal OAuth, with a pinned client and its own client secret. */
+  function linearCaps(
+    over: { url?: string; serverName?: string; allowedHosts?: string[]; slot?: Record<string, unknown> } = {},
+  ): Capabilities {
+    const server = over.serverName ?? 'linear';
+    return {
+      allowedHosts: over.allowedHosts ?? ['mcp.linear.app'],
+      credentials: [
+        {
+          slot: 'MCP_OAUTH',
+          kind: 'oauth',
+          server,
+          clientId: 'cid',
+          clientSecretRef: 'account:linear:OAUTH_CLIENT_SECRET',
+          ...over.slot,
+        },
+      ] as unknown as Capabilities['credentials'],
+      mcpServers: [
+        { name: server, transport: 'http', url: over.url ?? LINEAR_OLD, allowedHosts: [], credentials: [] },
+      ],
+      packages: { npm: [], pypi: [] },
+      services: [],
+    };
+  }
+
+  /** Workspace: one shared key, sent as a request header to its server. */
+  function crmCaps(over: { url?: string; slot?: string } = {}): Capabilities {
+    return {
+      allowedHosts: ['mcp.crm.example'],
+      credentials: [
+        { slot: over.slot ?? 'HEADER_1', kind: 'api-key', headerName: 'X-Api-Key', server: 'crm' },
+      ],
+      mcpServers: [
+        { name: 'crm', transport: 'http', url: over.url ?? CRM_OLD, allowedHosts: [], credentials: [] },
+      ],
+      packages: { npm: [], pypi: [] },
+      services: [],
+    };
+  }
+
+  function save(
+    h: TestHarness,
+    connectorId: string,
+    capabilities: Capabilities,
+    over: Partial<UpsertInput> = {},
+    ctx = h.ctx({ userId: 'userA' }),
+  ): Promise<UpsertOutput> {
+    return h.bus.call<UpsertInput, UpsertOutput>(
+      'connectors:upsert',
+      ctx,
+      upsertInput({ connectorId, name: connectorId, capabilities, ...over }),
+    );
+  }
+
+  async function stored(h: TestHarness, connectorId: string): Promise<Capabilities | null> {
+    try {
+      const got = await h.bus.call<GetInput, GetOutput>('connectors:get', h.ctx({ userId: 'userA' }), {
+        userId: 'userA',
+        connectorId,
+      });
+      return got.connector.capabilities;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Stand-ins for @ax/credentials' two purge hooks. Every call is recorded
+   * with the row as stored when it ran; `fail` makes that hook throw.
+   */
+  function spyOnVault(h: TestHarness, connectorId: string, fail?: VaultHook): VaultCall[] {
+    const calls: VaultCall[] = [];
+    const spy = (hook: VaultHook, out: unknown) => async (_ctx: unknown, input: unknown) => {
+      calls.push({ hook, input, storedAtCall: await stored(h, connectorId) });
+      if (hook === fail) throw new Error('the vault is down');
+      return out;
+    };
+    h.bus.registerService(PURGE, 'test/vault', spy(PURGE, { purged: 3 }));
+    h.bus.registerService(DELETE, 'test/vault', spy(DELETE, undefined));
+    return calls;
+  }
+
+  const inputsOf = (calls: VaultCall[], hook: VaultHook): unknown[] =>
+    calls.filter((c) => c.hook === hook).map((c) => c.input);
+
+  it('an OAuth server moving purges every agent’s sign-ins and the client secret, before the row changes', async () => {
+    const h = await makeHarness();
+    await save(h, 'linear', linearCaps());
+    const calls = spyOnVault(h, 'linear');
+    const lines: string[] = [];
+    await save(h, 'linear', linearCaps({ url: LINEAR_NEW }), {}, loggedCtx(h, 'userA', lines));
+    const purge = { connectorId: 'linear', scopes: ['agent'] };
+    const secret = { scope: 'global', ownerId: null, ref: 'account:linear:OAUTH_CLIENT_SECRET' };
+    // The same set twice: once before the write, once after it commits.
+    expect(calls.map((c) => [c.hook, c.input])).toEqual([
+      [PURGE, purge],
+      [DELETE, secret],
+      [PURGE, purge],
+      [DELETE, secret],
+    ]);
+    // The first pass ran while the row still pointed at the old address, the
+    // second once the new one was committed.
+    expect(calls.map((c) => c.storedAtCall?.mcpServers[0]?.url)).toEqual([
+      LINEAR_OLD,
+      LINEAR_OLD,
+      LINEAR_NEW,
+      LINEAR_NEW,
+    ]);
+    expect((await stored(h, 'linear'))?.mcpServers[0]?.url).toBe(LINEAR_NEW);
+    const signedOut = expect.objectContaining({
+      level: 'info',
+      connectorId: 'linear',
+      purged: 3,
+      globalRefs: ['account:linear:OAUTH_CLIENT_SECRET'],
+    });
+    expect(logged(lines, 'connectors_retarget_signed_out')).toEqual([signedOut]);
+    expect(logged(lines, 'connectors_retarget_post_commit_signed_out')).toEqual([signedOut]);
+  });
+
+  it('a credential written between the first sign-out and the commit is cleared by the second', async () => {
+    // An OAuth callback (or a key write) that lands while the edit is in
+    // flight: after the first purge, before the row changes. It would
+    // otherwise survive, bound to the new address.
+    const h = await makeHarness();
+    await save(h, 'linear', linearCaps());
+    const vault = new Set<string>(['agent-1:account:linear:MCP_OAUTH']);
+    let purges = 0;
+    h.bus.registerService(PURGE, 'test/vault', async () => {
+      purges += 1;
+      const purged = vault.size;
+      vault.clear();
+      // The late write, landing right after the first purge.
+      if (purges === 1) vault.add('agent-2:account:linear:MCP_OAUTH');
+      return { purged };
+    });
+    h.bus.registerService(DELETE, 'test/vault', async () => undefined);
+    await save(h, 'linear', linearCaps({ url: LINEAR_NEW }));
+    expect((await stored(h, 'linear'))?.mcpServers[0]?.url).toBe(LINEAR_NEW);
+    expect(purges).toBe(2);
+    expect([...vault]).toEqual([]);
+  });
+
+  it.each([PURGE, DELETE])(
+    'a failed sign-out after the commit (%s throws) keeps the edit, resolves, and logs an error',
+    async (failing) => {
+      const h = await makeHarness();
+      await save(h, 'linear', linearCaps());
+      const calls: VaultHook[] = [];
+      const spy = (hook: VaultHook, out: unknown) => async () => {
+        calls.push(hook);
+        // Only the post-commit pass (the hook's second call) fails.
+        if (hook === failing && calls.filter((c) => c === hook).length === 2) {
+          throw new Error('the vault is down');
+        }
+        return out;
+      };
+      h.bus.registerService(PURGE, 'test/vault', spy(PURGE, { purged: 3 }));
+      h.bus.registerService(DELETE, 'test/vault', spy(DELETE, undefined));
+      const lines: string[] = [];
+      const out = await save(h, 'linear', linearCaps({ url: LINEAR_NEW }), {}, loggedCtx(h, 'userA', lines));
+      expect(out.connector.capabilities.mcpServers[0]?.url).toBe(LINEAR_NEW);
+      expect((await stored(h, 'linear'))?.mcpServers[0]?.url).toBe(LINEAR_NEW);
+      expect(logged(lines, 'connectors_retarget_post_commit_sign_out_failed')).toEqual([
+        expect.objectContaining({
+          level: 'error',
+          connectorId: 'linear',
+          step: expect.stringContaining(failing),
+          purged: failing === PURGE ? 0 : 3,
+          deletedRefs: [],
+          err: expect.stringContaining('the vault is down'),
+        }),
+      ]);
+      expect(logged(lines, 'connectors_retarget_post_commit_signed_out')).toEqual([]);
+      // The pre-write pass succeeded and is logged as before.
+      expect(logged(lines, 'connectors_retarget_signed_out')).toHaveLength(1);
+      expect(logged(lines, 'connectors_retarget_sign_out_failed')).toEqual([]);
+    },
+  );
+
+  it('an OAuth connector that names no client secret still clears the one stored at its own ref', async () => {
+    // Naming its own secret again later is not itself a retarget, so a secret
+    // left behind now would be posted to whatever token endpoint it has then.
+    const h = await makeHarness();
+    const unnamed = (url: string) => linearCaps({ url, slot: { clientSecretRef: undefined } });
+    await save(h, 'linear', unnamed(LINEAR_OLD));
+    const calls = spyOnVault(h, 'linear');
+    await save(h, 'linear', unnamed(LINEAR_NEW));
+    const secret = { scope: 'global', ownerId: null, ref: 'account:linear:OAUTH_CLIENT_SECRET' };
+    expect(inputsOf(calls, DELETE)).toEqual([secret, secret]);
+  });
+
+  it('a shared-key connector moving clears its shared key; a slot renamed in the same edit clears the old and the new ref', async () => {
+    const h = await makeHarness();
+    await save(h, 'crm', crmCaps(), WORKSPACE);
+    const calls = spyOnVault(h, 'crm');
+    await save(h, 'crm', crmCaps({ url: CRM_NEW }), WORKSPACE);
+    const purge = { connectorId: 'crm', scopes: ['agent'] };
+    const key = { scope: 'global', ownerId: null, ref: 'account:crm:HEADER_1' };
+    expect(inputsOf(calls, PURGE)).toEqual([purge, purge]);
+    expect(inputsOf(calls, DELETE)).toEqual([key, key]);
+    expect(calls.map((c) => c.storedAtCall?.mcpServers[0]?.url)).toEqual([CRM_OLD, CRM_OLD, CRM_NEW, CRM_NEW]);
+
+    calls.length = 0;
+    await save(h, 'crm', crmCaps({ url: CRM_OLD, slot: 'HEADER_2' }), WORKSPACE);
+    expect(
+      inputsOf(calls, DELETE)
+        .map((i) => (i as { ref: string }).ref)
+        .sort(),
+    ).toEqual(['account:crm:HEADER_1', 'account:crm:HEADER_1', 'account:crm:HEADER_2', 'account:crm:HEADER_2']);
+    expect((await stored(h, 'crm'))?.credentials.map((s) => s.slot)).toEqual(['HEADER_2']);
+  });
+
+  it('a sign-out that fails part-way logs the shared refs it had already cleared', async () => {
+    // Two global refs (the slot is renamed in the same move): the first delete
+    // lands, the second throws. The edit is refused, and the operator can see
+    // which shared key is already gone.
+    const h = await makeHarness();
+    await save(h, 'crm', crmCaps(), WORKSPACE);
+    h.bus.registerService(PURGE, 'test/vault', async () => ({ purged: 2 }));
+    h.bus.registerService(DELETE, 'test/vault', async (_ctx: unknown, input: unknown) => {
+      if ((input as { ref: string }).ref === 'account:crm:HEADER_2') throw new Error('the vault is down');
+      return undefined;
+    });
+    const lines: string[] = [];
+    await expect(
+      save(h, 'crm', crmCaps({ url: CRM_NEW, slot: 'HEADER_2' }), WORKSPACE, loggedCtx(h, 'userA', lines)),
+    ).rejects.toMatchObject({ code: 'connector-sign-out-failed' });
+    expect((await stored(h, 'crm'))?.mcpServers[0]?.url).toBe(CRM_OLD);
+    expect(logged(lines, 'connectors_retarget_sign_out_failed')).toEqual([
+      expect.objectContaining({
+        step: expect.stringContaining('account:crm:HEADER_2'),
+        purged: 2,
+        deletedRefs: ['account:crm:HEADER_1'],
+      }),
+    ]);
+  });
+
+  it('a CLI connector gaining a site signs everyone out; losing one does not', async () => {
+    const h = await makeHarness();
+    await save(h, 'sf', cliCaps());
+    const calls = spyOnVault(h, 'sf');
+    await save(h, 'sf', { ...cliCaps(), allowedHosts: ['login.salesforce.com', 'test.salesforce.com'] });
+    const purge = { connectorId: 'sf', scopes: ['agent'] };
+    expect(inputsOf(calls, PURGE)).toEqual([purge, purge]);
+    // A personal connector keeps no shared key, and it has no client secret.
+    expect(inputsOf(calls, DELETE)).toEqual([]);
+    expect(calls.map((c) => c.storedAtCall?.allowedHosts)).toEqual([
+      ['login.salesforce.com'],
+      ['login.salesforce.com', 'test.salesforce.com'],
+    ]);
+
+    calls.length = 0;
+    await save(h, 'sf', cliCaps());
+    expect(calls).toEqual([]);
+    expect((await stored(h, 'sf'))?.allowedHosts).toEqual(['login.salesforce.com']);
+  });
+
+  it('two servers sharing the slot’s server name swapped signs everyone out (the first one gets the credential)', async () => {
+    // Same set of addresses before and after, but every runtime consumer binds
+    // the slot to the FIRST server with its name, so the token now goes to B.
+    const h = await makeHarness();
+    const twin = { name: 'linear', transport: 'http', url: LINEAR_NEW, allowedHosts: [], credentials: [] } as const;
+    const ab = { ...linearCaps(), mcpServers: [...linearCaps().mcpServers, twin] };
+    await save(h, 'linear', ab);
+    const calls = spyOnVault(h, 'linear');
+    await save(h, 'linear', { ...ab, mcpServers: [...ab.mcpServers].reverse() });
+    const purge = { connectorId: 'linear', scopes: ['agent'] };
+    expect(inputsOf(calls, PURGE)).toEqual([purge, purge]);
+    expect(calls.map((c) => c.storedAtCall?.mcpServers[0]?.url)).toEqual([
+      LINEAR_OLD,
+      LINEAR_OLD,
+      LINEAR_NEW,
+      LINEAR_NEW,
+    ]);
+    expect((await stored(h, 'linear'))?.mcpServers.map((s) => s.url)).toEqual([LINEAR_NEW, LINEAR_OLD]);
+  });
+
+  it('edits that point nowhere new clear nothing', async () => {
+    const h = await makeHarness();
+    await save(h, 'linear', linearCaps());
+    const calls = spyOnVault(h, 'linear');
+    await save(h, 'linear', linearCaps(), { description: 'just a description edit' });
+    await save(h, 'linear', linearCaps({ slot: { scopes: ['read', 'write'] } }));
+    // An OAuth-only connector: its token goes to its server alone, never to
+    // these hosts (and the remote editor merges discovered ones on a save).
+    await save(h, 'linear', linearCaps({ allowedHosts: ['mcp.linear.app', 'auth.linear.app'] }));
+    // A server renamed with its url kept, its slot following it.
+    await save(h, 'linear', linearCaps({ serverName: 'linear2' }));
+    expect(calls).toEqual([]);
+    expect((await stored(h, 'linear'))?.mcpServers.map((s) => [s.name, s.url])).toEqual([
+      ['linear2', LINEAR_OLD],
+    ]);
+  });
+
+  it.each([PURGE, DELETE])(
+    'a failed sign-out (%s throws) refuses the edit with connector-sign-out-failed and writes nothing',
+    async (failing) => {
+      const h = await makeHarness();
+      await save(h, 'linear', linearCaps());
+      spyOnVault(h, 'linear', failing);
+      const events: ConnectorToolNamespacesChangedEvent[] = [];
+      h.bus.subscribe<ConnectorToolNamespacesChangedEvent>(
+        'connectors:tool-namespaces-changed',
+        'test/capture',
+        async (_ctx, payload) => {
+          events.push(payload);
+          return undefined;
+        },
+      );
+      const lines: string[] = [];
+      await expect(
+        save(h, 'linear', linearCaps({ url: LINEAR_NEW }), {}, loggedCtx(h, 'userA', lines)),
+      ).rejects.toMatchObject({ code: 'connector-sign-out-failed' });
+      expect((await stored(h, 'linear'))?.mcpServers[0]?.url).toBe(LINEAR_OLD);
+      expect(events).toEqual([]);
+      expect(logged(lines, 'connectors_retarget_sign_out_failed')).toEqual([
+        expect.objectContaining({
+          level: 'error',
+          connectorId: 'linear',
+          step: expect.stringContaining(failing),
+          // How many agent sign-ins were already cleared before the failing
+          // step: an operator must be able to tell agents were signed out.
+          purged: failing === PURGE ? 0 : 3,
+          // The shared refs cleared before it: none here (the client secret
+          // is linear's only global ref, and it is the one that fails).
+          deletedRefs: [],
+          err: expect.stringContaining('the vault is down'),
+        }),
+      ]);
+      expect(logged(lines, 'connectors_retarget_signed_out')).toEqual([]);
+    },
+  );
+
+  it('with no credentials provider loaded the edit saves (nothing is stored)', async () => {
+    const h = await makeHarness();
+    expect(h.bus.hasService(PURGE) || h.bus.hasService(DELETE)).toBe(false);
+    await save(h, 'linear', linearCaps());
+    await save(h, 'linear', linearCaps({ url: LINEAR_NEW }));
+    expect((await stored(h, 'linear'))?.mcpServers[0]?.url).toBe(LINEAR_NEW);
+  });
+
+  it('a create never clears anything, nor does re-creating a deleted id (its delete purged)', async () => {
+    const h = await makeHarness();
+    const calls = spyOnVault(h, 'linear');
+    expect((await save(h, 'linear', linearCaps())).created).toBe(true);
+    expect(calls).toEqual([]);
+    await h.bus.call<DeleteInput, DeleteOutput>('connectors:delete', h.ctx({ userId: 'userA' }), {
+      userId: 'userA',
+      connectorId: 'linear',
+      purgeGlobal: true,
+    });
+    calls.length = 0; // the delete's own purge, not this gate
+    expect((await save(h, 'linear', linearCaps({ url: LINEAR_NEW }))).created).toBe(true);
+    expect(calls).toEqual([]);
+  });
+
+  it.each(['tool-policy:reset-tool-namespaces', 'tool-policy:set-ceiling-sources'])(
+    'the sign-out is the last gate: a failed %s call signs nobody out',
+    async (gate) => {
+      const h = await makeHarness();
+      // A header-key server: its url change is reset (TASK-758) and it keeps
+      // an admin ceiling, sent before the write (TASK-809).
+      await save(h, 'crm', crmCaps(), WORKSPACE);
+      const calls = spyOnVault(h, 'crm');
+      h.bus.registerService(gate, 'test/gate', async () => {
+        throw new Error('verdict store is down');
+      });
+      await expect(save(h, 'crm', crmCaps({ url: CRM_NEW }), WORKSPACE)).rejects.toMatchObject({
+        code: 'tool-permissions-reset-failed',
+      });
+      expect(calls).toEqual([]);
+      expect((await stored(h, 'crm'))?.mcpServers[0]?.url).toBe(CRM_OLD);
+    },
+  );
+});
+
 describe('@ax/connectors hooks — ceiling sources follow auth type (TASK-809)', () => {
   const HOOK = 'tool-policy:set-ceiling-sources';
   type SetInput = {

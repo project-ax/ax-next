@@ -13,7 +13,10 @@ import {
   type ConnectorFormState,
 } from '../connector-form';
 import {
+  CONNECTOR_SIGN_OUT_FAILED,
+  CONNECTOR_SIGN_OUT_FAILED_MESSAGE,
   emptyCapabilities,
+  isConnectorSignOutFailure,
   isToolPermissionsResetFailure,
   TOOL_PERMISSIONS_RESET_FAILED,
   type Connector,
@@ -707,6 +710,28 @@ describe('TOOL_PERMISSIONS_RESET_FAILED (TASK-758)', () => {
     expect(isToolPermissionsResetFailure(new Error('tool-permissions-reset-failed'))).toBe(true);
     expect(isToolPermissionsResetFailure(new Error('connector id taken'))).toBe(false);
     expect(isToolPermissionsResetFailure('tool-permissions-reset-failed')).toBe(false);
+  });
+});
+
+describe('CONNECTOR_SIGN_OUT_FAILED (TASK-887)', () => {
+  it('is the exact wire string @ax/connectors answers in the 503 body', () => {
+    // Pinned to the literal on purpose, the sibling of the TASK-758 pin above:
+    // a drift on either side reddens a test instead of silently falling back
+    // to the generic "couldn't save" message.
+    expect(CONNECTOR_SIGN_OUT_FAILED).toBe('connector-sign-out-failed');
+    expect(isConnectorSignOutFailure(new Error('connector-sign-out-failed'))).toBe(true);
+    expect(isConnectorSignOutFailure(new Error('tool-permissions-reset-failed'))).toBe(false);
+    expect(isConnectorSignOutFailure('connector-sign-out-failed')).toBe(false);
+  });
+
+  it('the message the editors show is pinned word for word, and never says settings are unchanged', () => {
+    // Every editor test renders this constant, so a revert of its text would
+    // stay green there. Pinned here instead. A save that fails part way may
+    // already have signed some agents out, so "nothing changed" would be a lie.
+    expect(CONNECTOR_SIGN_OUT_FAILED_MESSAGE).toBe(
+      'We couldn’t finish signing everyone out of this connector, so we didn’t save your changes. Some agents may need to sign in again. Try saving again in a moment.',
+    );
+    expect(CONNECTOR_SIGN_OUT_FAILED_MESSAGE).not.toMatch(/unchanged/);
   });
 });
 

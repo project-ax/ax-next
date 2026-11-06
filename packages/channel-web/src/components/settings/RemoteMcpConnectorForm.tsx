@@ -4,6 +4,8 @@ import { Spinner } from '@/components/ui/spinner';
 import {
   createConnector,
   patchConnector,
+  isConnectorSignOutFailure,
+  CONNECTOR_SIGN_OUT_FAILED_MESSAGE,
   isToolPermissionsResetFailure,
   TOOL_PERMISSIONS_RESET_FAILED_MESSAGE,
   isOwnerOnlyChange,
@@ -13,7 +15,8 @@ import {
   CONNECTOR_ID_TAKEN_REQUEST_MESSAGE,
   type Connector,
 } from '@/lib/connectors';
-import { connectorIdFromName } from '@/lib/connector-form';
+import { HTTP_FAILED, isConfirmedRefusal, userFacingMessage } from '@/lib/http';
+import { connectorIdFromName, pointsSomewhereNew } from '@/lib/connector-form';
 import {
   putToolPermissions,
   ToolPermissionsError,
@@ -70,7 +73,6 @@ import {
   CollapsibleTrigger,
 } from '@/components/ui/collapsible';
 import { Separator } from '@/components/ui/separator';
-import { Checkbox } from '@/components/ui/checkbox';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { ConnectorAccessNotice } from '@/components/credentials/ConnectorAccessNotice';
 import { ConnectorToolPermissions } from './ConnectorToolPermissions';
@@ -174,13 +176,21 @@ export function RemoteMcpConnectorForm({
     () =>
       `${connectorIdFromName(connector?.name ?? 'remote').slice(0, 48)}-${crypto.randomUUID().slice(0, 8)}`,
   );
+  // TASK-887 — the connector the server holds once a save's PATCH has landed.
+  // A later save in this same open editor (a retry after a secret write failed)
+  // is compared with it, not with the connector as loaded: the loaded one is
+  // stale by then, and the server judges the next PATCH against what it holds.
+  const [patched, setPatched] = useState<Connector | undefined>(undefined);
+  // What a landed PATCH cleared and this editor hasn't written back yet. A
+  // retry that keeps the new address points nowhere new, but the shared key
+  // or client secret that save cleared is still gone, so it's still asked for.
+  const [clearedBySave, setClearedBySave] = useState({ keys: false, secret: false });
   const [retry, setRetry] = useState(0);
   const [discovery, setDiscovery] = useState<
     | { url: string; status: 'loading' | 'failed' }
     | { url: string; status: 'ready'; result: OAuthDiscovery }
     | null
   >(null);
-  const [destinationConfirmed, setDestinationConfirmed] = useState(false);
   const fieldId = (name: string) => `${id}-${name}`;
   const update = <K extends keyof typeof draft>(
     key: K,
@@ -189,17 +199,18 @@ export function RemoteMcpConnectorForm({
   const url = draft.url.trim();
   const host = serverHost(url);
   const savedUrl = connector?.capabilities.mcpServers[0]?.url ?? '';
-  const originalHost = serverHost(savedUrl);
   // TASK-755 — the server's tool permissions belong to its address. Saving a
   // new one drops them (the server resets them to Ask first), so say so before
-  // Save, and don't write choices that were made for the old address.
-  const addressChanged = Boolean(connector) && url !== savedUrl;
-  const changedDestination = Boolean(
-    originalHost &&
-      host &&
-      host !== originalHost &&
-      draft.headers.some((h) => h.saved),
-  );
+  // Save. After a save's PATCH has landed, the address it saved is the one the
+  // sentence compares with (TASK-887), as for `retargeted` below.
+  const addressBaseline = (patched ?? connector)?.capabilities.mcpServers[0]?.url ?? '';
+  const addressChanged = Boolean(connector) && url !== addressBaseline;
+  // That sentence is about what Save does. The tool list on hand is another
+  // matter: it was loaded for the address the connector had when this form
+  // opened, so once a save has moved it (or this one will), the list is the
+  // old address's. It's then neither shown as current nor written.
+  const toolsForAnotherAddress =
+    Boolean(connector) && (url !== savedUrl || addressBaseline !== savedUrl);
   const discovered =
     discovery?.url === url && discovery.status === 'ready'
       ? discovery.result
@@ -267,6 +278,48 @@ export function RemoteMcpConnectorForm({
     registration,
     useKey,
   };
+  // A request is created under its own id: that is what clears it.
+  const connectorId = connector?.id ?? prefill?.connectorId ?? newId;
+  // A secret of only spaces is no secret.
+  const writesClientSecret =
+    signIn === 'oauth' && registration === 'custom' && draft.clientSecret.trim().length > 0;
+  const clientSecretDestination = {
+    kind: 'account' as const,
+    service: connectorId,
+    slot: OAUTH_CLIENT_SECRET_SLOT,
+  };
+  // Where a typed secret is stored is fixed, so the connector can name it
+  // before the secret is written (an edit saves the connector first).
+  const clientSecretRef = writesClientSecret
+    ? refForDestination(clientSecretDestination)
+    : draft.clientSecretRef;
+  // Exactly what Save sends.
+  const capabilities = remoteCapabilities(
+    { ...effectiveDraft, clientSecretRef },
+    connectorId,
+    connector,
+    discovered?.hosts ?? [],
+  );
+  // TASK-887 — a save that points the connector somewhere new (a new address,
+  // a new or re-pointed key) signs everyone out of it: the server clears every
+  // agent's sign-ins, the shared key and the client secret before the edit
+  // lands. Judged on what Save sends, against what was loaded, so the warning
+  // and the server agree (the contract test pins the rule to the server's).
+  const retargetBaseline = patched ?? connector;
+  const retargeted =
+    retargetBaseline !== undefined &&
+    pointsSomewhereNew(retargetBaseline, { ...retargetBaseline, capabilities });
+  // What that clears and only this form can put back, so it's asked for again:
+  // a shared key's saved values (a per-agent key is each agent's own), and a
+  // saved client secret, unless the admin removes it. Also what an earlier
+  // save's PATCH already cleared, until it's written back.
+  const reenterKeys = (retargeted || clearedBySave.keys) && keyMode === 'workspace';
+  const reenterSecret =
+    (retargeted || clearedBySave.secret) &&
+    signIn === 'oauth' &&
+    registration === 'custom' &&
+    draft.clientSecretRef !== '';
+  const reenterSavedHeader = reenterKeys && draft.headers.some((h) => h.saved);
   const newHeader = (name = '') => ({
     slot: newHeaderSlot(),
     name,
@@ -345,7 +398,6 @@ export function RemoteMcpConnectorForm({
     };
   }, [connector, savedClientSecretRef]);
   useEffect(() => {
-    setDestinationConfirmed(false);
     if (!host) {
       setDiscovery(null);
       return;
@@ -371,9 +423,11 @@ export function RemoteMcpConnectorForm({
   }, [url, host, retry]);
   useEffect(() => {
     // A server that wants a key but has no OAuth needs the header section.
-    // So does one that sends its API key there instead of OAuth.
-    if (discovered?.auth === 'other' || useKey) setHeadersOpen(true);
-  }, [discovered?.auth, useKey]);
+    // So does one that sends its API key there instead of OAuth, and a save
+    // that clears the shared key, so its values can be typed again (TASK-887).
+    if (discovered?.auth === 'other' || useKey || reenterSavedHeader)
+      setHeadersOpen(true);
+  }, [discovered?.auth, useKey, reenterSavedHeader]);
 
   const blocked = awaitingDiscovery || (discoveryFailed && !usingSavedSignIn);
   // Step two waits for the tool list (it resolves or errors), so Save never
@@ -384,11 +438,25 @@ export function RemoteMcpConnectorForm({
     if (created) toolsStepRef.current?.focus();
   }, [created]);
 
-  // The connector already exists once step two is showing, so any way out of
-  // the dialog refreshes the list (the parents' onSaved also closes it).
+  // The connector already exists once step two is showing, and it has changed
+  // once an edit's PATCH has landed (TASK-887: a secret write after it may
+  // have failed), so then any way out of the dialog refreshes the list (the
+  // parents' onSaved also closes it).
   function close() {
-    if (created) onSaved();
+    if (created || patched) onSaved();
     onOpenChange(false);
+  }
+
+  /** Why a secret write was refused, when the server answered about the key
+   *  itself (a leading space and the sentence), else nothing. A server error,
+   *  a missing route or a dropped connection says nothing about the key, and a
+   *  sentence about it ("The server ran into a problem.") would contradict
+   *  "Try saving again." Nor does a refusal with no words of its own: its
+   *  fallback sentence says the server couldn't be reached, which it was. */
+  function secretWriteReason(err: unknown): string {
+    if (!isConfirmedRefusal(err)) return '';
+    const reason = userFacingMessage(err, 'connector-editor');
+    return reason === HTTP_FAILED ? '' : ` ${reason}`;
   }
 
   function toolPermissionsSaveError(err: unknown): string {
@@ -429,10 +497,9 @@ export function RemoteMcpConnectorForm({
       return;
     }
     if (saving || blocked) return;
-    const nextErrors = remoteErrors(effectiveDraft, keyMode);
-    // A secret of only spaces is no secret.
-    const writesClientSecret =
-      signIn === 'oauth' && registration === 'custom' && draft.clientSecret.trim().length > 0;
+    const nextErrors = remoteErrors(effectiveDraft, keyMode, {
+      reenterSavedValues: reenterKeys,
+    });
     if (
       signIn === 'oauth' &&
       keyMode === 'workspace' &&
@@ -447,15 +514,15 @@ export function RemoteMcpConnectorForm({
     )
       nextErrors.workspace =
         'This connector uses a workspace key, but this server signs in with OAuth. Create a separate connector for it.';
-    if (changedDestination && !destinationConfirmed)
-      nextErrors.destination = 'Confirm the destination for saved headers.';
+    if (reenterSecret && !draft.clientSecret.trim())
+      nextErrors.clientSecret =
+        'Enter the client secret again, or remove it. Changing where this connector points clears it.';
     setErrors(nextErrors);
     if (Object.keys(nextErrors).length) {
       if (
         Object.keys(nextErrors).some(
           (key) => key.startsWith('name-') || key.startsWith('value-'),
         ) ||
-        nextErrors.destination ||
         nextErrors.keyHeader
       )
         setHeadersOpen(true);
@@ -468,73 +535,111 @@ export function RemoteMcpConnectorForm({
     }
     setSaving(true);
     setSaveError('');
-    // A request is created under its own id: that is what clears it.
-    const connectorId = connector?.id ?? prefill?.connectorId ?? newId;
-    try {
-      // Every secret this editor writes is the workspace's. Nothing is ever
-      // stored per person (slice 5).
-      const workspace = { scope: 'global' as const, ownerId: null };
-      let clientSecretRef = draft.clientSecretRef;
-      if (writesClientSecret) {
-        const destination = {
-          kind: 'account' as const,
-          service: connectorId,
-          slot: OAUTH_CLIENT_SECRET_SLOT,
-        };
+    // Every secret this editor writes is the workspace's. Nothing is ever
+    // stored per person (slice 5).
+    const workspace = { scope: 'global' as const, ownerId: null };
+    const writeClientSecret = async () => {
+      if (writesClientSecret)
         await setDestinationCredential({
-          destination,
+          destination: clientSecretDestination,
           slot: { kind: 'api-key' },
           scope: workspace,
           payload: draft.clientSecret,
         });
-        clientSecretRef = refForDestination(destination);
+    };
+    // A per-agent key's header values are each agent's own, added when it
+    // adds the connector — so only a shared key's are written here. (A
+    // value typed before switching to per-agent keys is dropped.)
+    const writeKeys = async () => {
+      if (keyMode !== 'workspace') return;
+      for (const header of draft.headers) {
+        if (header.value)
+          await setDestinationCredential({
+            destination: {
+              kind: 'account',
+              service: connectorId,
+              slot: header.slot,
+            },
+            slot: { kind: 'api-key' },
+            scope: workspace,
+            payload: header.value,
+          });
       }
-      // A per-agent key's header values are each agent's own, added when it
-      // adds the connector — so only a shared key's are written here. (A
-      // value typed before switching to per-agent keys is dropped.)
-      if (keyMode === 'workspace')
-        for (const header of draft.headers) {
-          if (header.value)
-            await setDestinationCredential({
-              destination: {
-                kind: 'account',
-                service: connectorId,
-                slot: header.slot,
-              },
-              slot: { kind: 'api-key' },
-              scope: workspace,
-              payload: header.value,
-            });
-        }
-      const capabilities = remoteCapabilities(
-        { ...effectiveDraft, clientSecretRef },
-        connectorId,
-        connector,
-        discovered?.hosts ?? [],
-      );
-      const input = {
-        connectorId,
-        name: draft.name.trim(),
-        capabilities,
-        keyMode,
-        ...(prefill ? { usageNote } : {}),
-      };
+    };
+    const input = {
+      connectorId,
+      name: draft.name.trim(),
+      capabilities,
+      keyMode,
+      ...(prefill ? { usageNote } : {}),
+    };
+    try {
       let added: Connector | undefined;
-      if (connector) await patchConnector(connectorId, input, base);
-      else
+      if (connector) {
+        // TASK-887 — an edit saves the connector FIRST and its secrets after.
+        // When the save points it somewhere new, the server clears the shared
+        // key and client secret inside the PATCH, so a value written before it
+        // would be wiped. And a refused PATCH must leave the live key alone.
+        // Every edit goes this way, not only the ones `retargeted` flags, so
+        // the editor's copy of the rule can never cost a typed key.
+        setPatched(await patchConnector(connectorId, input, base));
+        // Remember what this PATCH cleared, so a retry still asks for it.
+        if (reenterKeys || reenterSecret)
+          setClearedBySave((current) => ({
+            keys: current.keys || reenterKeys,
+            secret: current.secret || reenterSecret,
+          }));
+        // The connector now names the stored copy. A retry (of a secret or of
+        // tool permissions below) must not point it back at the one it replaced.
+        update('clientSecretRef', clientSecretRef);
+        // Past here the connector is saved. If a secret write fails, stay open
+        // with what was typed, so Save writes it. That retry sends the same
+        // connector again, which points nowhere new, so nobody is signed out
+        // twice.
+        try {
+          await writeClientSecret();
+        } catch (err) {
+          // The connector now names where this secret goes, and it isn't
+          // there, whatever the reason it wasn't stored before (a move cleared
+          // it, or it's the first one). So it's asked for, not "Saved securely".
+          if (writesClientSecret)
+            setClearedBySave((current) => ({ ...current, secret: true }));
+          setSaveError(
+            `We saved the connector, but couldn’t save the client secret. Try saving again.${secretWriteReason(err)}`,
+          );
+          return;
+        }
+        if (writesClientSecret) {
+          setClientSecretMissing(false);
+          setClearedBySave((current) => ({ ...current, secret: false }));
+        }
+        try {
+          await writeKeys();
+        } catch (err) {
+          setSaveError(
+            `We saved the connector, but couldn’t save the key. Try saving again.${secretWriteReason(err)}`,
+          );
+          return;
+        }
+        // Every shared value it asked for was typed, so all are written back.
+        setClearedBySave((current) => ({ ...current, keys: false }));
+      } else {
+        // A new connector writes its secrets first, so it never names one
+        // that isn't stored. Nobody has signed in to it yet.
+        await writeClientSecret();
+        await writeKeys();
         added = await createConnector(input, base);
+        update('clientSecretRef', clientSecretRef);
+        if (writesClientSecret) setClientSecretMissing(false);
+      }
       update('clientSecret', '');
-      // The connector now names the stored copy. A retry (say, of tool
-      // permissions below) must not point it back at the one it replaced.
-      update('clientSecretRef', clientSecretRef);
-      if (writesClientSecret) setClientSecretMissing(false);
       if (added && signIn !== 'oauth') {
         // TASK-809 — stay open on the new connector for step two (its tools).
         setCreated(added);
         return;
       }
       const toolChanges =
-        addressChanged || signIn === 'oauth' ? [] : toolPermissions.changes;
+        toolsForAnotherAddress || signIn === 'oauth' ? [] : toolPermissions.changes;
       if (connector && toolChanges.length) {
         try {
           await putToolPermissions(connectorId, base, toolChanges);
@@ -548,15 +653,17 @@ export function RemoteMcpConnectorForm({
       onOpenChange(false);
     } catch (err) {
       setSaveError(
-        isToolPermissionsResetFailure(err)
-          ? TOOL_PERMISSIONS_RESET_FAILED_MESSAGE
-          : isOwnerOnlyChange(err)
-            ? OWNER_ONLY_CHANGE_MESSAGE
-            : isConnectorIdTaken(err)
-              ? prefill
-                ? CONNECTOR_ID_TAKEN_REQUEST_MESSAGE
-                : CONNECTOR_ID_TAKEN_MESSAGE
-              : 'We couldn’t save this connector. Check the settings and try again.',
+        isConnectorSignOutFailure(err)
+          ? CONNECTOR_SIGN_OUT_FAILED_MESSAGE
+          : isToolPermissionsResetFailure(err)
+            ? TOOL_PERMISSIONS_RESET_FAILED_MESSAGE
+            : isOwnerOnlyChange(err)
+              ? OWNER_ONLY_CHANGE_MESSAGE
+              : isConnectorIdTaken(err)
+                ? prefill
+                  ? CONNECTOR_ID_TAKEN_REQUEST_MESSAGE
+                  : CONNECTOR_ID_TAKEN_MESSAGE
+                : 'We couldn’t save this connector. Check the settings and try again.',
       );
     } finally {
       setSaving(false);
@@ -584,6 +691,45 @@ export function RemoteMcpConnectorForm({
         <FieldError id={fieldId(`${name}-error`)}>{errors[name]}</FieldError>
       )}
     </Field>
+  );
+
+  const clientSecretInput = (className?: string) => (
+    <Input
+      id={fieldId('client-secret')}
+      type="password"
+      placeholder={
+        reenterSecret
+          ? 'Enter the client secret'
+          : 'Enter only if the service requires it'
+      }
+      autoComplete="new-password"
+      className={className}
+      value={draft.clientSecret}
+      aria-invalid={Boolean(errors.clientSecret)}
+      aria-describedby={
+        errors.clientSecret ? fieldId('client-secret-error') : undefined
+      }
+      onChange={(event) => update('clientSecret', event.target.value)}
+    />
+  );
+  const removeClientSecretButton = (
+    <Button
+      type="button"
+      size="sm"
+      variant="ghost"
+      onClick={() => {
+        update('clientSecretRef', '');
+        update('clientSecret', '');
+        // Nothing is left to type again (TASK-887).
+        setErrors((current) => {
+          const next = { ...current };
+          delete next.clientSecret;
+          return next;
+        });
+      }}
+    >
+      Remove
+    </Button>
   );
 
   const signInDescription = useKey
@@ -656,15 +802,34 @@ export function RemoteMcpConnectorForm({
                     </Field>
                   )}
                 </FieldGroup>
-                {addressChanged && (
+                {(addressChanged || retargeted) && (
                   // TASK-790 — advice beside a field being typed in, not an
                   // interruption: the shared Alert defaults to role="alert".
                   <Alert data-testid="address-change-resets-tools" role="note">
-                    <AlertDescription>
-                      Changing the address resets this server’s tool permissions.
-                      Every tool goes back to asking first, and choices people made
-                      for their own agents are cleared too. Once it’s saved, you can
-                      choose again.
+                    <AlertDescription className="flex flex-col gap-2">
+                      {retargeted && (
+                        // TASK-887 — what Save costs: the server signs everyone
+                        // out inside it.
+                        <p>
+                          Changing where this connector points signs everyone out
+                          of it.{' '}
+                          {signIn === 'oauth'
+                            ? 'Each agent signs in again from its Connectors tab.'
+                            : keyMode === 'personal'
+                              ? 'Each agent adds its key again from its Connectors tab.'
+                              : 'It also clears the shared key, so enter it again below.'}
+                          {reenterSecret &&
+                            ' It also clears the client secret, so enter it again below.'}
+                        </p>
+                      )}
+                      {addressChanged && (
+                        <p>
+                          Changing the address resets this server’s tool permissions.
+                          Every tool goes back to asking first, and choices people made
+                          for their own agents are cleared too. Once it’s saved, you can
+                          choose again.
+                        </p>
+                      )}
                     </AlertDescription>
                   </Alert>
                 )}
@@ -785,14 +950,25 @@ export function RemoteMcpConnectorForm({
                           {textField('clientId', 'Client ID')}
                           <Field data-invalid={Boolean(errors.clientSecret)}>
                             <FieldLabel htmlFor={fieldId('client-secret')}>
-                              Client secret{' '}
-                              <span className="font-normal text-muted-foreground">
-                                (optional)
-                              </span>
+                              Client secret
+                              {/* Required once this save clears the saved one
+                                  and asks for it again (TASK-887). */}
+                              {!reenterSecret && (
+                                <>
+                                  {' '}
+                                  <span className="font-normal text-muted-foreground">
+                                    (optional)
+                                  </span>
+                                </>
+                              )}
                             </FieldLabel>
+                            {/* A typed secret is never hidden behind "Saved
+                                securely": Save would write it unseen. */}
                             {draft.clientSecretRef &&
                             !editingClientSecret &&
-                            !clientSecretMissing ? (
+                            !clientSecretMissing &&
+                            !reenterSecret &&
+                            !draft.clientSecret ? (
                               <div className="flex min-h-10 flex-wrap items-center gap-2">
                                 <span className="flex-1 text-sm text-muted-foreground">
                                   Saved securely
@@ -805,35 +981,17 @@ export function RemoteMcpConnectorForm({
                                 >
                                   Replace
                                 </Button>
-                                <Button
-                                  type="button"
-                                  size="sm"
-                                  variant="ghost"
-                                  onClick={() => {
-                                    update('clientSecretRef', '');
-                                    update('clientSecret', '');
-                                  }}
-                                >
-                                  Remove
-                                </Button>
+                                {removeClientSecretButton}
+                              </div>
+                            ) : reenterSecret ? (
+                              // TASK-887 — this save clears the saved secret: type
+                              // it again, or remove it.
+                              <div className="flex items-center gap-2">
+                                {clientSecretInput('min-w-0 flex-1')}
+                                {removeClientSecretButton}
                               </div>
                             ) : (
-                              <Input
-                                id={fieldId('client-secret')}
-                                type="password"
-                                placeholder="Enter only if the service requires it"
-                                autoComplete="new-password"
-                                value={draft.clientSecret}
-                                aria-invalid={Boolean(errors.clientSecret)}
-                                aria-describedby={
-                                  errors.clientSecret
-                                    ? fieldId('client-secret-error')
-                                    : undefined
-                                }
-                                onChange={(event) =>
-                                  update('clientSecret', event.target.value)
-                                }
-                              />
+                              clientSecretInput()
                             )}
                             {clientSecretMissing &&
                               draft.clientId.trim() !== '' &&
@@ -1014,7 +1172,10 @@ export function RemoteMcpConnectorForm({
                                 Value
                                 {draft.headers.length > 1 ? ` ${index + 1}` : ''}
                               </FieldLabel>
-                              {header.saved ? (
+                              {/* TASK-887 — a save that clears the shared key asks
+                                  for a saved value again. A typed value is never
+                                  hidden: Save would write it unseen. */}
+                              {header.saved && !reenterKeys && !header.value ? (
                                 <Button
                                   type="button"
                                   variant="outline"
@@ -1109,41 +1270,6 @@ export function RemoteMcpConnectorForm({
                     {keyMode === 'workspace' && draft.headers.length > 0 && (
                       <ConnectorAccessNotice kind="author" />
                     )}
-                    {changedDestination && (
-                      <Field
-                        orientation="horizontal"
-                        className="items-start"
-                        data-invalid={Boolean(errors.destination)}
-                      >
-                        <Checkbox
-                          id={fieldId('destination')}
-                          checked={destinationConfirmed}
-                          aria-invalid={Boolean(errors.destination)}
-                          aria-describedby={
-                            errors.destination
-                              ? fieldId('destination-error')
-                              : undefined
-                          }
-                          onCheckedChange={(checked) =>
-                            setDestinationConfirmed(checked === true)
-                          }
-                        />
-                        <div>
-                          <FieldLabel htmlFor={fieldId('destination')}>
-                            Send saved headers to {host}
-                          </FieldLabel>
-                          <FieldDescription>
-                            The server address has changed. Confirm this
-                            destination before saving.
-                          </FieldDescription>
-                          {errors.destination && (
-                            <FieldError id={fieldId('destination-error')}>
-                              {errors.destination}
-                            </FieldError>
-                          )}
-                        </div>
-                      </Field>
-                    )}
                   </Disclosure>
                       {signIn === 'oauth' && (
                         <Disclosure
@@ -1178,7 +1304,7 @@ export function RemoteMcpConnectorForm({
                     />
                   </div>
                 ) : (
-                  !addressChanged &&
+                  !toolsForAnotherAddress &&
                   // TASK-809 — no admin tool permissions for OAuth; for a new
                   // connector, only once we know it won't sign in that way.
                   (connector ? signIn !== 'oauth' : signInKnown && signIn !== 'oauth') && (

@@ -40,7 +40,7 @@
 // A connector's declared services ride its opaque `capabilities` fill, exactly
 // like mcpServers/packages.
 import { ServiceDescriptorSchema, type ServiceDescriptor } from '@ax/skills-parser';
-import { TOOL_PERMISSIONS_RESET_FAILED } from '@ax/core/error-codes';
+import { CONNECTOR_SIGN_OUT_FAILED, TOOL_PERMISSIONS_RESET_FAILED } from '@ax/core/error-codes';
 
 /** Re-export so consumers in channel-web (the form, the dialog) reference one
  *  descriptor type. */
@@ -220,9 +220,9 @@ export async function patchConnector(
  * so the copy names neither cause.
  *
  * Defined once in `@ax/core/error-codes` (TASK-782) — the producer
- * (`@ax/connectors`) and `server/routes-chat.ts` import the same constant, so
- * the code the server answers and the code this file keys on cannot drift.
- * Re-exported here so the editors keep one import site.
+ * (`@ax/connectors`) and this file import the same constant, so the code the
+ * server answers and the code this file keys on cannot drift. Re-exported here
+ * so the editors keep one import site.
  */
 export { TOOL_PERMISSIONS_RESET_FAILED };
 
@@ -234,6 +234,25 @@ export const TOOL_PERMISSIONS_RESET_FAILED_MESSAGE =
  *  reset refusal. */
 export function isToolPermissionsResetFailure(err: unknown): boolean {
   return err instanceof Error && err.message === TOOL_PERMISSIONS_RESET_FAILED;
+}
+
+/**
+ * TASK-887 — the `error` a connector save answers (503) when it would point
+ * the connector somewhere new but couldn't first sign everyone out of it
+ * (their sign-ins, the shared key, the client secret). The server refused the
+ * whole save, so nothing changed. Same source and re-export as
+ * {@link TOOL_PERMISSIONS_RESET_FAILED}.
+ */
+export { CONNECTOR_SIGN_OUT_FAILED };
+
+/** What the editors say for {@link CONNECTOR_SIGN_OUT_FAILED}. */
+export const CONNECTOR_SIGN_OUT_FAILED_MESSAGE =
+  'We couldn’t finish signing everyone out of this connector, so we didn’t save your changes. Some agents may need to sign in again. Try saving again in a moment.';
+
+/** True when a {@link createConnector} / {@link patchConnector} failure is the
+ *  sign-out refusal. */
+export function isConnectorSignOutFailure(err: unknown): boolean {
+  return err instanceof Error && err.message === CONNECTOR_SIGN_OUT_FAILED;
 }
 
 /**
@@ -608,7 +627,7 @@ function scopeForKeyMode(keyMode: ConnectorKeyMode): ConnectorCredentialScope {
  * runs every derivation over one fixture table (TASK-807, TASK-810).
  */
 export function deriveCredentialPlan(
-  connector: Connector,
+  connector: Pick<Connector, 'id' | 'keyMode' | 'capabilities'>,
 ): ConnectorCredentialPlanEntry[] {
   const scope = scopeForKeyMode(connector.keyMode);
   // TASK-124 — the collapse-vs-expand rule keys on the connector's slot COUNT

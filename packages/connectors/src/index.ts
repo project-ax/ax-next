@@ -95,3 +95,5 @@ export {
   accountRef,
 } from './credential-plan.js';
 export type { CredentialPlanEntry, CredentialScope } from './credential-plan.js';
+export { pointsSomewhereNew } from './retarget.js';
+export type { RetargetSubject } from './retarget.js';

@@ -899,6 +899,8 @@ export function foldConnectorCaps(
       // classification/materialization, not resolution. The `api-key` path is
       // unchanged (identity map).
       const credKind = slotDef.kind === 'oauth' ? 'mcp-oauth' : slotDef.kind;
+      // TASK-887: @ax/connectors `retarget.ts` mirrors this binding to decide
+      // when an edit must sign agents out — change one, change the other.
       // Legacy API slots retain their declared hosts. Remote headers and OAuth
       // tokens bind only to their resource server, never an authorization host.
       const server = slotDef.server ? c.capabilities.mcpServers.find((s) => s.name === slotDef.server) : undefined;

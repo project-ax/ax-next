@@ -147,6 +147,33 @@ describe('remote MCP form data', () => {
     expect(Object.keys(remoteErrors(draft, 'workspace'))).toContain('value-a');
     expect(Object.keys(remoteErrors(draft, 'personal'))).not.toContain('value-a');
   });
+  // TASK-887 — a save that points the connector somewhere new clears its
+  // shared key, so a saved value has to be typed again in that save.
+  it('asks for a saved shared value again only when the save clears it', () => {
+    const draft = remoteDraft(connector);
+    draft.headers = [{ slot: 'a', name: 'X-Key', value: '', saved: true }];
+    expect(remoteErrors(draft, 'workspace')).toEqual({});
+    expect(remoteErrors(draft, 'workspace', { reenterSavedValues: true })).toEqual({
+      'value-a': 'Enter this value again. Changing where this connector points clears it.',
+    });
+    // A value typed again is enough, and a per-agent key is never asked for.
+    expect(
+      remoteErrors(
+        { ...draft, headers: [{ ...draft.headers[0]!, value: 'new-key' }] },
+        'workspace',
+        { reenterSavedValues: true },
+      ),
+    ).toEqual({});
+    expect(remoteErrors(draft, 'personal', { reenterSavedValues: true })).toEqual({});
+    // A header that was never saved keeps its own message.
+    expect(
+      remoteErrors(
+        { ...draft, headers: [{ ...draft.headers[0]!, saved: false }] },
+        'workspace',
+        { reenterSavedValues: true },
+      ),
+    ).toEqual({ 'value-a': 'Enter a header value.' });
+  });
   describe('OAuth or an API key (TASK-761)', () => {
     const keyConnector: Connector = {
       ...connector,
