@@ -83,12 +83,15 @@ export type ExecutionPath = 'agent-executes' | 'host-replays';
  * a claim that the thing happened (design H1), and the receipt reads
  * "Approved — it can do this the next time it tries", never "Sent".
  *
- * `failed` means the host tried the replay and the tool threw, or the host
- * sent a connector call and got no reliable answer (`replayAbandonedAt`; the
- * receipt then says it cannot tell), or the connector's service answered that
- * it did not work, so the tool may have run (abandoned too, with
- * `TOOL_ERROR_REPLAY_CODE`; the receipt says it may have done part of it). When it threw, nothing was completed. In
- * both cases the standing authorisation is gone, and the agent must raise the
+ * `failed` means the host tried the replay and the tool threw (anything but
+ * a timeout); or the host has no report of how the call ended
+ * (`replayAbandonedAt`; the receipt then says it cannot tell): the bus stopped
+ * waiting on a host tool that may still be running (TASK-285), a connector
+ * call got no reliable answer, or the host died mid-flight and the sweep gave
+ * up on it; or the connector's service answered that it did not work, so the
+ * tool may have run (abandoned too, with `TOOL_ERROR_REPLAY_CODE`; the receipt
+ * says it may have done part of it). When it threw, nothing was completed. In
+ * every case the standing authorisation is gone, and the agent must raise the
  * call again rather than silently inheriting a yes for an action that did not
  * happen (or may not have).
  */
@@ -304,9 +307,10 @@ export interface Decision {
    * Only ever on a row that is `failed`, and there are two writers. The
    * stranded-flight reclaim (TASK-253): the host stamped `replayClaimedAt`,
    * died inside the call, and nothing was left to record what happened. And
-   * `markOutcomeUnknown` (TASK-1046): a host connector call that went out and
-   * got no reliable answer — a timeout, a dropped connection, a reply it could
-   * not read. Same meaning to a reader: no report, so the only honest receipt
+   * `markOutcomeUnknown`: a host connector call that went out and got no
+   * reliable answer — a timeout, a dropped connection, a reply it could not
+   * read (TASK-1046) — or a host tool call the bus stopped waiting on, which
+   * may still be running (TASK-285). Same meaning to a reader: no report, so the only honest receipt
    * is that we cannot say. A host that was merely FROZEN can still thaw and
    * finish; `markReplayed` clears this stamp when it does, so "set" never
    * coexists with `replayedAt`. Since review F3 `markOutcomeUnknown` also

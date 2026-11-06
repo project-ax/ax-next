@@ -367,8 +367,10 @@ export const FAILED_RECEIPT = 'It tried to do this, and it did not work. Nothing
 export const EXPIRED_RECEIPT = 'This one ran out of time, so nothing happened.';
 
 /**
- * The receipt when the host TOOK the call and never came back — it died with
- * the replay in flight, and a later sweep reclaimed the row (TASK-253).
+ * The receipt when the host TOOK the call and has no report of how it ended:
+ * it died with the replay in flight and a later sweep reclaimed the row
+ * (TASK-253), a connector call it sent got no reliable answer (TASK-1046), or
+ * the bus stopped waiting on a host tool that may still be running (TASK-285).
  *
  * IT IS NOT `FAILED_RECEIPT`, AND THE DIFFERENCE IS THE WHOLE REASON THIS
  * CONSTANT EXISTS. That line ends "Nothing was completed", which is a report
