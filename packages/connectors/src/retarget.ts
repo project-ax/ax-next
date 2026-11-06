@@ -60,9 +60,8 @@ import type { Capabilities, CapabilitySlot, KeyMode } from './types.js';
 //     one per same-name server anyway (conservative: adding or moving a twin
 //     can only over-purge), plus `occurrence`.
 //   - Sign-in: @ax/mcp-oauth routes.ts, `begin` (~L614-698) and the
-//     callback's connector re-read (~L965-1023). `begin` reads the first
-//     server with the slot's name; the callback requires EVERY server with
-//     that name to still sit at that url. Both read authServerUrl and
+//     callback's connector re-read (~L965-1023). Both read the first server
+//     with the slot's name; the callback refuses when its url moved. Both read authServerUrl and
 //     clientSecretRef, and the top-level allowedHosts.
 //     Nothing reads `tokenUrl` today; it stays a fact for the same reason as
 //     server-level slots.

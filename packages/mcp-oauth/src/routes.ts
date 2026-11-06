@@ -644,8 +644,8 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
       return;
     }
     // The address this sign-in is FOR, stored raw as the pending row's
-    // `resource`. The callback finds the slot the same way and refuses unless
-    // every server with this name still points here (TASK-887): change one,
+    // `resource`. The callback derives it the same way (first oauth slot, first
+    // server with its name) and refuses when it moved (TASK-887): change one,
     // change the other.
     const server = caps.mcpServers.find((s) => s.name === slot.server);
     if (!server || !server.url) {
@@ -1002,32 +1002,22 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
     // connector's token to wherever its oauth slot's server points NOW, so it
     // must not land. Refused here, before the client lookup, discovery, the
     // token exchange, the vault write and the attach.
-    // The slot is found exactly as `begin` finds it (the first oauth slot), and
-    // EVERY server named by its `server` must still sit at the raw `url` `begin`
-    // stored as `resource` — not just the first one `begin` read. Only the
-    // FIRST same-name server receives a slot's token at run time (the session
+    // Derived exactly as `begin` derives `resource`: the first oauth slot, the
+    // FIRST server named by its `server`, that server's raw `url`. Only that
+    // first same-name server receives the slot's token at run time (the session
     // proxy, call-tool and @ax/mcp-client's header builder all bind to it), so
-    // checking every same-name server is a deliberately cautious extra: a twin
-    // added at another address mid-flow refuses too. Compared raw, so an
-    // unchanged connector always matches and a respelling refuses (the safe
+    // a later same-name twin is not where this token goes and does not refuse
+    // — refusing it would strand a connector that has always carried one, with
+    // every retry failing after the provider's consent screen. Compared raw, so
+    // an unchanged connector always matches and a respelling refuses (the safe
     // direction). No such server at all refuses. Keep in step with `begin`.
-    // The log stage tells a real address change apart from a connector that
-    // has always carried a same-name twin elsewhere (nobody edited it).
     const oauthSlotNow = connector.capabilities.credentials.find((c) => c.kind === 'oauth');
-    const serversNow =
+    const resourceNow =
       oauthSlotNow === undefined
-        ? []
-        : connector.capabilities.mcpServers.filter((s) => s.name === oauthSlotNow.server);
-    if (serversNow.length === 0 || !serversNow.every((s) => s.url === pending.resource)) {
-      const stage =
-        serversNow[0] !== undefined && serversNow[0].url === pending.resource
-          ? 'connector-server-name-shared'
-          : 'connector-changed';
-      logger.warn('mcp_oauth_callback_failed', {
-        stage,
-        connectorId,
-        sameNameServers: serversNow.length,
-      });
+        ? undefined
+        : connector.capabilities.mcpServers.find((s) => s.name === oauthSlotNow.server)?.url;
+    if (resourceNow === undefined || resourceNow !== pending.resource) {
+      logger.warn('mcp_oauth_callback_failed', { stage: 'connector-changed', connectorId });
       fail('sign-in-failed');
       return;
     }
