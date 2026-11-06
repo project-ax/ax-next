@@ -15,6 +15,9 @@ import type { Logger } from '@ax/core';
  * A connect the database accepts but never answers fails after
  * `connectTimeoutMs` and joins the same backoff chain. Without the bound it
  * hung forever, and every emit and subscribe waited on it.
+ *
+ * A connect still in flight when shutdown() runs ends its own client as soon
+ * as it lands, and everyone waiting on it is refused.
  */
 
 export type ListenerHandler = (rawJson: string) => void;
@@ -84,6 +87,13 @@ export class Listener {
       });
       this.scheduleReconnect();
       throw err;
+    }
+    if (this.shutdownRequested) {
+      // shutdown() ran while this connect was in flight and doesn't wait for
+      // it. End the client here, and refuse the caller rather than let it
+      // NOTIFY after shutdown.
+      void client.end().catch(() => {}); // not awaited: end() can wait on a server that stopped answering
+      throw new Error('eventbus-postgres listener is shut down');
     }
     this.client = client;
     this.backoffStep = 0;
