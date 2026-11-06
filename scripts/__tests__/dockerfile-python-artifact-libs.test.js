@@ -81,4 +81,21 @@ describe('container/agent/python-artifact-libs.txt', () => {
     expect(copyAt).toBeLessThan(install.index);
     expect(install.index).toBeLessThan(userAt);
   });
+
+  it('the build imports all four right after the install, leaving no cache or bytecode in the image', () => {
+    const text = readFileSync(DOCKERFILE, 'utf8');
+    const install = text.match(/^RUN uv pip install [^\n]*-r \/tmp\/python-artifact-libs\.txt[^\n]*$/m);
+    expect(install).not.toBeNull();
+    const smoke = text.match(/^RUN [^\n]*\/opt\/ax-python-venv-template\/bin\/python -c "import reportlab, docx, openpyxl, matplotlib\.pyplot"[^\n]*$/m);
+    expect(smoke, 'import smoke RUN missing').not.toBeNull();
+    const line = smoke[0];
+    // A wheel that installs but won't import (wrong arch, missing .so) fails the BUILD, not a session.
+    expect(install.index).toBeLessThan(smoke.index);
+    expect(smoke.index).toBeLessThan(text.indexOf('\nUSER 1000:1000'));
+    // matplotlib's font cache goes to a throwaway dir that is removed in the same RUN,
+    // and no root-owned __pycache__ lands in the 1000-owned venv.
+    expect(line).toMatch(/MPLCONFIGDIR="?\$\(mktemp -d\)"?/);
+    expect(line).toContain('PYTHONDONTWRITEBYTECODE=1');
+    expect(line).toMatch(/rm -rf "?\$MPLCONFIGDIR"?/);
+  });
 });

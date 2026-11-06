@@ -304,6 +304,11 @@ RUN uv venv --seed --relocatable /opt/ax-python-venv-template \
 # wheel cache out of the layer (it would otherwise double the layer size).
 COPY container/agent/python-artifact-libs.txt /tmp/python-artifact-libs.txt
 RUN uv pip install --no-cache --python /opt/ax-python-venv-template/bin/python --require-hashes --no-deps --only-binary :all: -r /tmp/python-artifact-libs.txt && rm /tmp/python-artifact-libs.txt && chown -R 1000:1000 /opt/ax-python-venv-template
+# Import smoke: a wheel that installs but won't import (wrong arch, a missing
+# shared library) fails the BUILD, not an agent's first chart. matplotlib's
+# font cache goes to a throwaway dir removed in the same layer, and no
+# root-owned __pycache__ lands in the 1000-owned venv.
+RUN export MPLCONFIGDIR="$(mktemp -d)" PYTHONDONTWRITEBYTECODE=1 && MPLBACKEND=Agg /opt/ax-python-venv-template/bin/python -c "import reportlab, docx, openpyxl, matplotlib.pyplot" && rm -rf "$MPLCONFIGDIR"
 
 USER 1000:1000
 
