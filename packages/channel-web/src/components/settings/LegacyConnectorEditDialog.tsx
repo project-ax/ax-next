@@ -54,7 +54,7 @@ import {
   type ConnectorWriteBase,
   type ServiceDescriptor,
 } from '@/lib/connectors';
-import { isConfirmedRefusal, userFacingMessage } from '@/lib/http';
+import { HTTP_FAILED, isConfirmedRefusal, userFacingMessage } from '@/lib/http';
 import {
   emptyConnectorForm,
   emptySlotRow,
@@ -710,9 +710,14 @@ export function LegacyConnectorEditDialog({
           // the typed secret is still in the field, and Save writes it. When
           // the server answered about the secret itself, say why too; a server
           // error says nothing about it and would contradict "Try saving again".
+          // Nor does a refusal with no words of its own: its fallback sentence
+          // says the server couldn't be reached, which it was.
+          const reason = isConfirmedRefusal(err)
+            ? userFacingMessage(err, 'connector-editor')
+            : '';
           setError(
-            isConfirmedRefusal(err)
-              ? `${CLIENT_SECRET_AFTER_SAVE_FAILED_MESSAGE} ${userFacingMessage(err, 'connector-editor')}`
+            reason && reason !== HTTP_FAILED
+              ? `${CLIENT_SECRET_AFTER_SAVE_FAILED_MESSAGE} ${reason}`
               : CLIENT_SECRET_AFTER_SAVE_FAILED_MESSAGE,
           );
           return;

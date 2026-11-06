@@ -503,6 +503,24 @@ describe('RemoteMcpConnectorForm — pointing a connector somewhere new signs ev
     ).toBeVisible();
   });
 
+  it('partial save: a 400 with no words of its own adds no reason (it would say the server was unreachable)', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    discover = () => KEY_SERVER;
+    failingCredentialWrites = 1;
+    failingCredentialStatus = 400;
+    await openEditor(sharedKeyConnector(), { [SHARED_KEY_REF]: 'old-shared-key' });
+    await moveTo('https://mcp.other-crm.example/mcp');
+    fireEvent.change(screen.getByLabelText('Value'), {
+      target: { value: 'new-shared-key' },
+    });
+    fireEvent.click(saveButton());
+    expect(
+      await screen.findByText(
+        'We saved the connector, but couldn’t save the key. Try saving again.',
+      ),
+    ).toBeVisible();
+  });
+
   it('partial save: a rejected key (422) shows the reason after the saved-the-connector sentence', async () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     discover = () => KEY_SERVER;

@@ -15,7 +15,7 @@ import {
   CONNECTOR_ID_TAKEN_REQUEST_MESSAGE,
   type Connector,
 } from '@/lib/connectors';
-import { isConfirmedRefusal, userFacingMessage } from '@/lib/http';
+import { HTTP_FAILED, isConfirmedRefusal, userFacingMessage } from '@/lib/http';
 import { connectorIdFromName, pointsSomewhereNew } from '@/lib/connector-form';
 import {
   putToolPermissions,
@@ -444,9 +444,12 @@ export function RemoteMcpConnectorForm({
    *  itself (a leading space and the sentence), else nothing. A server error,
    *  a missing route or a dropped connection says nothing about the key, and a
    *  sentence about it ("The server ran into a problem.") would contradict
-   *  "Try saving again." */
+   *  "Try saving again." Nor does a refusal with no words of its own: its
+   *  fallback sentence says the server couldn't be reached, which it was. */
   function secretWriteReason(err: unknown): string {
-    return isConfirmedRefusal(err) ? ` ${userFacingMessage(err, 'connector-editor')}` : '';
+    if (!isConfirmedRefusal(err)) return '';
+    const reason = userFacingMessage(err, 'connector-editor');
+    return reason === HTTP_FAILED ? '' : ` ${reason}`;
   }
 
   function toolPermissionsSaveError(err: unknown): string {

@@ -221,6 +221,22 @@ describe('LegacyConnectorEditDialog — a retarget signs everyone out (TASK-887)
     expect(onSaved).not.toHaveBeenCalled();
   });
 
+  it('a client-secret write refused with a bare 400 adds no reason (it would say the server was unreachable)', async () => {
+    vi.spyOn(credentialsLib, 'setDestinationCredential').mockRejectedValue(
+      new HttpError('/admin/destinations/account/credential', 400),
+    );
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const onSaved = vi.fn();
+    await openEditor(oauthConnector(), onSaved);
+    await typeClientSecret('typed-secret');
+    await save();
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent?.trim()).toBe(
+      'We saved the connector, but couldn’t save the client secret. Try saving again.',
+    );
+    expect(onSaved).not.toHaveBeenCalled();
+  });
+
   it.each([500, 503])(
     'a client-secret write the server fell over on (%i) adds no reason that contradicts the sentence',
     async (status) => {
