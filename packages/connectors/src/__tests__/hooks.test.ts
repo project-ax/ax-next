@@ -1336,6 +1336,31 @@ describe('an edit that points a connector somewhere new signs everyone out first
     expect((await stored(h, 'crm'))?.credentials.map((s) => s.slot)).toEqual(['HEADER_2']);
   });
 
+  it('a sign-out that fails part-way logs the shared refs it had already cleared', async () => {
+    // Two global refs (the slot is renamed in the same move): the first delete
+    // lands, the second throws. The edit is refused, and the operator can see
+    // which shared key is already gone.
+    const h = await makeHarness();
+    await save(h, 'crm', crmCaps(), WORKSPACE);
+    h.bus.registerService(PURGE, 'test/vault', async () => ({ purged: 2 }));
+    h.bus.registerService(DELETE, 'test/vault', async (_ctx: unknown, input: unknown) => {
+      if ((input as { ref: string }).ref === 'account:crm:HEADER_2') throw new Error('the vault is down');
+      return undefined;
+    });
+    const lines: string[] = [];
+    await expect(
+      save(h, 'crm', crmCaps({ url: CRM_NEW, slot: 'HEADER_2' }), WORKSPACE, loggedCtx(h, 'userA', lines)),
+    ).rejects.toMatchObject({ code: 'connector-sign-out-failed' });
+    expect((await stored(h, 'crm'))?.mcpServers[0]?.url).toBe(CRM_OLD);
+    expect(logged(lines, 'connectors_retarget_sign_out_failed')).toEqual([
+      expect.objectContaining({
+        step: expect.stringContaining('account:crm:HEADER_2'),
+        purged: 2,
+        deletedRefs: ['account:crm:HEADER_1'],
+      }),
+    ]);
+  });
+
   it('a CLI connector gaining a site signs everyone out; losing one does not', async () => {
     const h = await makeHarness();
     await save(h, 'sf', cliCaps());
