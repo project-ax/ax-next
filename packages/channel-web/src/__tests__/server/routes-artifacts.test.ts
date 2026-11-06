@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { PluginError, type HookBus } from '@ax/core';
 import {
   ARTIFACTS_ZIP_MAX_BYTES,
+  ARTIFACTS_ZIP_MAX_CONCURRENT,
   ARTIFACTS_ZIP_MAX_ENTRIES,
   ARTIFACT_TEXT_PREVIEW_MAX_BYTES,
   artifactRoutes,
@@ -170,7 +171,11 @@ describe('artifact owner routes', () => {
       const h = createArtifactsRouteHandlers({ bus, initCtx: mkInitCtx().ctx });
       const { res, got } = mkRes();
       await h[c.handler](mkReq(c.params, c.body), res);
-      expect({ route: c.name, status: got.status }).toEqual({ route: c.name, status: 401 });
+      expect({ route: c.name, status: got.status, cache: got.headers['cache-control'] }).toEqual({
+        route: c.name,
+        status: 401,
+        cache: 'private, no-store',
+      });
       expect(call.mock.calls.map(([hook]) => hook)).toEqual(['auth:require-user']);
     }
   });
@@ -199,7 +204,11 @@ describe('artifact owner routes', () => {
         const h = createArtifactsRouteHandlers({ bus, initCtx: mkInitCtx().ctx });
         const { res, got } = mkRes();
         await h[c.handler](mkReq(c.params, c.body), res);
-        expect({ route: c.name, status: got.status }).toEqual({ route: c.name, status: 404 });
+        expect({ route: c.name, status: got.status, cache: got.headers['cache-control'] }).toEqual({
+          route: c.name,
+          status: 404,
+          cache: 'private, no-store',
+        });
         bodies.add(JSON.stringify(got.json));
       }
     }
@@ -223,7 +232,11 @@ describe('artifact owner routes', () => {
       });
       const { res, got } = mkRes();
       await createArtifactsRouteHandlers({ bus, initCtx: ctx }).rename(mkReq({ artifactId: 'art-1' }, { title: 'x' }), res);
-      expect({ status: got.status, body: got.json }).toEqual({ status, body });
+      expect({ status: got.status, body: got.json, cache: got.headers['cache-control'] }).toEqual({
+        status,
+        body,
+        cache: 'private, no-store',
+      });
       expect(JSON.stringify(logger.errors)).not.toContain(SOURCE_PATH);
       if (status === 500) {
         expect(logger.errors.map((e) => e.event)).toContain('artifacts_route_failed');
@@ -271,7 +284,12 @@ describe('artifact owner routes', () => {
       const { bus } = fakeBus({ ...AUTH_OK, 'artifacts:read': () => readOut(new Uint8Array([1, 2, 3]), { preview }) });
       const { res, got } = mkRes();
       await createArtifactsRouteHandlers({ bus, initCtx: mkInitCtx().ctx }).text(mkReq({ artifactId: 'a', version: '1' }), res);
-      expect({ preview, status: got.status, body: got.json }).toEqual({ preview, status: 404, body: { error: 'not-previewable' } });
+      expect({ preview, status: got.status, body: got.json, cache: got.headers['cache-control'] }).toEqual({
+        preview,
+        status: 404,
+        body: { error: 'not-previewable' },
+        cache: 'private, no-store',
+      });
     }
   });
 
@@ -289,7 +307,12 @@ describe('artifact owner routes', () => {
       const { bus, call } = fakeBus(AUTH_OK);
       const { res, got } = mkRes();
       await createArtifactsRouteHandlers({ bus, initCtx: mkInitCtx().ctx })[handler](mkReq(params, body), res);
-      expect({ handler, status: got.status, body: got.json }).toEqual({ handler, status: 400, body: { error: 'invalid' } });
+      expect({ handler, status: got.status, body: got.json, cache: got.headers['cache-control'] }).toEqual({
+        handler,
+        status: 400,
+        body: { error: 'invalid' },
+        cache: 'private, no-store',
+      });
       expect(call.mock.calls.map(([hook]) => hook)).toEqual(['auth:require-user']);
     }
   });
@@ -471,16 +494,17 @@ describe('Download all', () => {
     expect(zipEntries(got.body!)).toEqual([{ name: 'Keep.txt', data: 'k' }]);
   });
 
-  it('Download all over 256 MiB or 500 files is a 413 with the message, and reads no bytes', async () => {
+  it('Download all over 100 MiB or 500 files is a 413 with the message, and reads no bytes', async () => {
     const tooBig = [summary({ artifactId: 'a1', sizeBytes: ARTIFACTS_ZIP_MAX_BYTES }), summary({ artifactId: 'a2', sizeBytes: 1 })];
     const tooMany = Array.from({ length: ARTIFACTS_ZIP_MAX_ENTRIES + 1 }, (_, i) => summary({ artifactId: `a${i}`, sizeBytes: 1 }));
     for (const artifacts of [tooBig, tooMany]) {
       const { bus, call } = downloadBus({ artifacts });
       const { res, got } = mkRes();
       await createArtifactsRouteHandlers({ bus, initCtx: mkInitCtx().ctx }).downloadAll(mkReq({ agentId: 'agent-1' }), res);
-      expect({ status: got.status, body: got.json }).toEqual({
+      expect({ status: got.status, body: got.json, cache: got.headers['cache-control'] }).toEqual({
         status: 413,
         body: { error: 'too-large', message: "That's too much to bundle at once — download them one at a time." },
+        cache: 'private, no-store',
       });
       expect(call.mock.calls.map(([hook]) => hook)).toEqual(['auth:require-user', 'artifacts:list']);
       expect(got.body).toBeUndefined();
@@ -495,5 +519,122 @@ describe('Download all', () => {
     await createArtifactsRouteHandlers({ bus, initCtx: mkInitCtx().ctx }).downloadAll(mkReq({ agentId: 'agent-1' }), res);
     expect(got.status).toBe(200);
     expect(zipEntries(got.body!)).toHaveLength(ARTIFACTS_ZIP_MAX_ENTRIES);
+  });
+
+  it('caps a bundle at 100 MiB, 500 files and 2 at once on the host', () => {
+    expect([ARTIFACTS_ZIP_MAX_BYTES, ARTIFACTS_ZIP_MAX_ENTRIES, ARTIFACTS_ZIP_MAX_CONCURRENT]).toEqual([
+      100 * 1024 * 1024,
+      500,
+      2,
+    ]);
+  });
+});
+
+// --- Download all: one at a time ---------------------------------------------
+
+describe('Download all concurrency', () => {
+  /** A signed-in request as `user` (the stub auth reads the header). */
+  function asUser(user: string): RouteRequest {
+    return { ...mkReq({ agentId: 'agent-1' }), headers: { 'x-test-user': user } };
+  }
+
+  /**
+   * A bus whose `artifacts:list` waits until the test lets it go, so a bundle
+   * can be held "in flight". `listBehaviour` picks what a released list does.
+   */
+  function gatedBus() {
+    const gates: Array<() => void> = [];
+    let listBehaviour: 'ok' | 'fault' = 'ok';
+    let resolveBehaviour: 'ok' | 'throw' = 'ok';
+    const { bus } = fakeBus({
+      'auth:require-user': (input) => ({
+        user: { id: (input as { req: RouteRequest }).req.headers['x-test-user'], isAdmin: false },
+      }),
+      'artifacts:list': async () => {
+        await new Promise<void>((release) => gates.push(release));
+        if (listBehaviour === 'fault') throw new Error('database went away');
+        return { artifacts: [summary({ artifactId: 'a1' })] };
+      },
+      'artifacts:read': () => readOut(new TextEncoder().encode('x'), { filename: 'x.txt' }),
+      'agents:resolve': () => {
+        if (resolveBehaviour === 'throw') return { agent: null };
+        return { agent: { id: 'agent-1', displayName: 'Ada' } };
+      },
+    });
+    const h = createArtifactsRouteHandlers({ bus, initCtx: mkInitCtx().ctx });
+    /** Start a request; resolves to its captured response once it finishes (and rejects if the handler throws). */
+    function start(user: string) {
+      const { res, got } = mkRes();
+      const done = h.downloadAll(asUser(user), res).then(() => got);
+      return { got, done };
+    }
+    const flush = () => new Promise((r) => setTimeout(r, 0));
+    return {
+      start,
+      flush,
+      releaseAll: () => gates.splice(0).forEach((g) => g()),
+      setList: (b: 'ok' | 'fault') => (listBehaviour = b),
+      setResolve: (b: 'ok' | 'throw') => (resolveBehaviour = b),
+    };
+  }
+
+  const ONE_AT_A_TIME = { error: 'busy', message: 'One download at a time, please — try again in a moment.' };
+  const HOST_BUSY = { error: 'busy', message: "We're bundling a few downloads already — try again in a moment." };
+
+  it("a second bundle from the same person is a 429 while the first is building", async () => {
+    const t = gatedBus();
+    const first = t.start('u1');
+    await t.flush();
+    const second = await t.start('u1').done;
+    expect({ status: second.status, body: second.json, cache: second.headers['cache-control'] }).toEqual({
+      status: 429,
+      body: ONE_AT_A_TIME,
+      cache: 'private, no-store',
+    });
+    t.releaseAll();
+    expect((await first.done).status).toBe(200);
+  });
+
+  it('a third bundle on the host is a 429 while two are building', async () => {
+    const t = gatedBus();
+    const a = t.start('u1');
+    const b = t.start('u2');
+    await t.flush();
+    const c = await t.start('u3').done;
+    expect({ status: c.status, body: c.json }).toEqual({ status: 429, body: HOST_BUSY });
+    t.releaseAll();
+    expect([(await a.done).status, (await b.done).status]).toEqual([200, 200]);
+  });
+
+  it('the slot is released after a success, after a refusal, and after a throw', async () => {
+    const t = gatedBus();
+
+    // Success.
+    const ok = t.start('u1');
+    await t.flush();
+    t.releaseAll();
+    expect((await ok.done).status).toBe(200);
+
+    // A hook fault, answered as a 500.
+    t.setList('fault');
+    const fault = t.start('u1');
+    await t.flush();
+    t.releaseAll();
+    expect((await fault.done).status).toBe(500);
+
+    // A throw out of the handler (a malformed resolve reply).
+    t.setList('ok');
+    t.setResolve('throw');
+    const thrown = t.start('u1');
+    await t.flush();
+    t.releaseAll();
+    await expect(thrown.done).rejects.toThrow();
+
+    // And the same person, and two others, can each bundle again.
+    t.setResolve('ok');
+    const again = [t.start('u1'), t.start('u2')];
+    await t.flush();
+    t.releaseAll();
+    expect(await Promise.all(again.map(async (r) => (await r.done).status))).toEqual([200, 200]);
   });
 });

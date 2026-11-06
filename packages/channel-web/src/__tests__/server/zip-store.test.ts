@@ -1,7 +1,8 @@
 // @vitest-environment node
+import { createHash } from 'node:crypto';
 import { crc32 } from 'node:zlib';
 import { describe, expect, it } from 'vitest';
-import { buildStoreZip, uniqueNames } from '../../server/zip-store.js';
+import { buildStoreZip, StoreZipWriter, uniqueNames } from '../../server/zip-store.js';
 
 interface Parsed {
   locals: Array<{ name: string; crc: number; size: number; method: number; data: Buffer }>;
@@ -74,6 +75,30 @@ describe('buildStoreZip', () => {
       { name: 'Notes.md', crc: crc32(a), size: a.length, method: 0, data: Buffer.from(a) },
       { name: 'Chart.png', crc: crc32(b), size: b.length, method: 0, data: Buffer.from(b) },
     ]);
+  });
+
+  it('is byte-identical to the archive the first (concat-based) writer produced for the two-file fixture', () => {
+    const a = new TextEncoder().encode('# Hello\n');
+    const b = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0, 1, 2, 3]);
+    const entries = [
+      { name: 'Notes.md', bytes: a, modified: new Date('2026-11-05T10:20:30Z') },
+      { name: 'Chart.png', bytes: b, modified: new Date('2026-11-05T10:20:30Z') },
+    ];
+    // Recorded from bf266f923's buildStoreZip before the one-buffer rewrite.
+    const BASELINE = '1064a926acadb55120166dfa2d1f76db5f294b7c2a192e478cd2d44838149494';
+    const zip = buildStoreZip(entries);
+    expect({ length: zip.length, sha256: createHash('sha256').update(zip).digest('hex') }).toEqual({
+      length: 224,
+      sha256: BASELINE,
+    });
+
+    // The writer the route uses gives the same bytes, whether its first
+    // allocation is roomy or too small and has to grow.
+    for (const capacity of [10_000, 1]) {
+      const w = new StoreZipWriter(capacity);
+      for (const e of entries) w.add(e);
+      expect(createHash('sha256').update(w.finish()).digest('hex')).toBe(BASELINE);
+    }
   });
 
   it('writes the modified time as a DOS date and time', () => {

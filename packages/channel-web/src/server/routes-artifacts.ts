@@ -8,7 +8,13 @@ import {
 } from '@ax/core';
 import type { RouteRequest, RouteResponse } from './routes-attachments.js';
 import { errorCodes } from './user-file-download.js';
-import { buildStoreZip, uniqueNames } from './zip-store.js';
+import {
+  createNameDeduper,
+  StoreZipWriter,
+  ZIP_END_OVERHEAD,
+  ZIP_ENTRY_NAME_MAX_BYTES,
+  zipEntryOverhead,
+} from './zip-store.js';
 
 // ---------------------------------------------------------------------------
 // @ax/channel-web — artifact routes for the agent's members (owners).
@@ -41,10 +47,14 @@ const PLUGIN_NAME = '@ax/channel-web';
 /** A text preview shows at most this much of the file. */
 export const ARTIFACT_TEXT_PREVIEW_MAX_BYTES = 1024 * 1024;
 /** Download all refuses a bundle bigger than this… */
-export const ARTIFACTS_ZIP_MAX_BYTES = 256 * 1024 * 1024;
+export const ARTIFACTS_ZIP_MAX_BYTES = 100 * 1024 * 1024;
 /** …or with more files than this. */
 export const ARTIFACTS_ZIP_MAX_ENTRIES = 500;
+/** Bundles being built at once on this host (each holds up to ARTIFACTS_ZIP_MAX_BYTES). One per person on top. */
+export const ARTIFACTS_ZIP_MAX_CONCURRENT = 2;
 
+const ONE_AT_A_TIME_MESSAGE = 'One download at a time, please — try again in a moment.';
+const HOST_BUSY_MESSAGE = "We're bundling a few downloads already — try again in a moment.";
 const TOO_LARGE_MESSAGE = "That's too much to bundle at once — download them one at a time.";
 
 // --- duck-typed hook payloads (I2; see @ax/attachments artifacts/types.ts) --
@@ -209,6 +219,8 @@ export interface ArtifactsRouteDeps {
 
 export function createArtifactsRouteHandlers(deps: ArtifactsRouteDeps) {
   const { bus, initCtx } = deps;
+  /** Users with a Download all being built right now. Its size is the host-wide count. */
+  const bundlesInFlight = new Set<string>();
 
   /** Call an `artifacts:*` hook; on a refusal, answer it and return undefined. */
   async function callOr<I, O>(res: RouteResponse, hook: string, ctx: AgentContext, input: I): Promise<O | undefined> {
@@ -220,8 +232,81 @@ export function createArtifactsRouteHandlers(deps: ArtifactsRouteDeps) {
     }
   }
 
+  /** Download all, once the caller holds a bundle slot. */
+  async function bundle(req: RouteRequest, res: RouteResponse, userId: string): Promise<void> {
+    const ctx = requestCtx(userId);
+    const agentId = req.params['agentId'] ?? '';
+
+    // The list is the access check (members only) and the size check: both
+    // happen before a single byte is read.
+    const listed = await callOr<{ agentId: string }, { artifacts: ArtifactSummaryWire[] }>(
+      res,
+      'artifacts:list',
+      ctx,
+      { agentId },
+    );
+    if (listed === undefined) return;
+    const summaries = listed.artifacts;
+    const declared = summaries.reduce((n, a) => n + a.sizeBytes, 0);
+    if (summaries.length > ARTIFACTS_ZIP_MAX_ENTRIES || declared > ARTIFACTS_ZIP_MAX_BYTES) {
+      res.status(413).json({ error: 'too-large', message: TOO_LARGE_MESSAGE });
+      return;
+    }
+
+    // The agent's name, for the zip's file name. The person wrote it, so it
+    // goes through the header sanitizer like any other download name.
+    const resolved = await callOr<{ agentId: string; userId: string }, { agent: { displayName?: unknown } }>(
+      res,
+      'agents:resolve',
+      ctx,
+      { agentId, userId },
+    );
+    if (resolved === undefined) return;
+    const agentName = typeof resolved.agent.displayName === 'string' ? resolved.agent.displayName : 'Agent';
+
+    // One buffer for the whole archive, sized from the list. Each version's
+    // bytes are copied in as they arrive and then let go, so the peak is the
+    // archive plus one file — not every file plus a second full copy.
+    const writer = new StoreZipWriter(
+      declared + summaries.length * zipEntryOverhead(ZIP_ENTRY_NAME_MAX_BYTES) + ZIP_END_OVERHEAD,
+    );
+    const nextName = createNameDeduper();
+    let total = 0;
+    for (const summary of summaries) {
+      let read: ArtifactReadWire;
+      try {
+        read = await bus.call<{ artifactId: string }, ArtifactReadWire>('artifacts:read', ctx, {
+          artifactId: summary.artifactId,
+        });
+      } catch (err) {
+        // Deleted since the list was read: leave it out rather than fail the bundle.
+        if (err instanceof PluginError && err.code === 'not-found') continue;
+        answerHookFailure(initCtx, res, 'artifacts:read', err);
+        return;
+      }
+      total += read.bytes.byteLength;
+      // Re-published bigger since the list: the cap holds on the real bytes too.
+      if (total > ARTIFACTS_ZIP_MAX_BYTES) {
+        res.status(413).json({ error: 'too-large', message: TOO_LARGE_MESSAGE });
+        return;
+      }
+      writer.add({ name: nextName(read.filename), bytes: read.bytes, modified: new Date(summary.updatedAt) });
+    }
+    const zip = writer.finish();
+
+    const filename = sanitizeContentDispositionFilename(`${agentName} artifacts.zip`);
+    res
+      .status(200)
+      .header('content-type', 'application/zip')
+      .header('content-length', String(zip.length))
+      .header('content-disposition', `attachment; filename="${filename}"`)
+      .header('x-content-type-options', 'nosniff')
+      .body(zip, 'application/zip');
+  }
+
   return {
     async list(req: RouteRequest, res: RouteResponse): Promise<void> {
+      noStore(res);
       const userId = await authOr401(bus, initCtx, req, res);
       if (userId === null) return;
       const out = await callOr<{ agentId: string }, { artifacts: ArtifactSummaryWire[] }>(
@@ -231,78 +316,34 @@ export function createArtifactsRouteHandlers(deps: ArtifactsRouteDeps) {
         { agentId: req.params['agentId'] ?? '' },
       );
       if (out === undefined) return;
-      noStore(res).status(200).json({ artifacts: out.artifacts.map(summaryBody) });
+      res.status(200).json({ artifacts: out.artifacts.map(summaryBody) });
     },
 
     async downloadAll(req: RouteRequest, res: RouteResponse): Promise<void> {
+      noStore(res);
       const userId = await authOr401(bus, initCtx, req, res);
       if (userId === null) return;
-      const ctx = requestCtx(userId);
-      const agentId = req.params['agentId'] ?? '';
-
-      // The list is the access check (members only) and the size check: both
-      // happen before a single byte is read.
-      const listed = await callOr<{ agentId: string }, { artifacts: ArtifactSummaryWire[] }>(
-        res,
-        'artifacts:list',
-        ctx,
-        { agentId },
-      );
-      if (listed === undefined) return;
-      const summaries = listed.artifacts;
-      const declared = summaries.reduce((n, a) => n + a.sizeBytes, 0);
-      if (summaries.length > ARTIFACTS_ZIP_MAX_ENTRIES || declared > ARTIFACTS_ZIP_MAX_BYTES) {
-        res.status(413).json({ error: 'too-large', message: TOO_LARGE_MESSAGE });
+      // A bundle holds up to ARTIFACTS_ZIP_MAX_BYTES in memory until it is
+      // sent, so they are rationed: one at a time per person, and only a few
+      // at once on the host. Released on every path, including a throw.
+      if (bundlesInFlight.has(userId)) {
+        res.status(429).json({ error: 'busy', message: ONE_AT_A_TIME_MESSAGE });
         return;
       }
-
-      // The agent's name, for the zip's file name. The person wrote it, so it
-      // goes through the header sanitizer like any other download name.
-      const resolved = await callOr<{ agentId: string; userId: string }, { agent: { displayName?: unknown } }>(
-        res,
-        'agents:resolve',
-        ctx,
-        { agentId, userId },
-      );
-      if (resolved === undefined) return;
-      const agentName = typeof resolved.agent.displayName === 'string' ? resolved.agent.displayName : 'Agent';
-
-      const files: Array<{ name: string; bytes: Uint8Array; modified: Date }> = [];
-      let total = 0;
-      for (const summary of summaries) {
-        let read: ArtifactReadWire;
-        try {
-          read = await bus.call<{ artifactId: string }, ArtifactReadWire>('artifacts:read', ctx, {
-            artifactId: summary.artifactId,
-          });
-        } catch (err) {
-          // Deleted since the list was read: leave it out rather than fail the bundle.
-          if (err instanceof PluginError && err.code === 'not-found') continue;
-          answerHookFailure(initCtx, res, 'artifacts:read', err);
-          return;
-        }
-        total += read.bytes.byteLength;
-        // Re-published bigger since the list: the cap holds on the real bytes too.
-        if (total > ARTIFACTS_ZIP_MAX_BYTES) {
-          res.status(413).json({ error: 'too-large', message: TOO_LARGE_MESSAGE });
-          return;
-        }
-        files.push({ name: read.filename, bytes: read.bytes, modified: new Date(summary.updatedAt) });
+      if (bundlesInFlight.size >= ARTIFACTS_ZIP_MAX_CONCURRENT) {
+        res.status(429).json({ error: 'busy', message: HOST_BUSY_MESSAGE });
+        return;
       }
-      const names = uniqueNames(files.map((f) => f.name));
-      const zip = buildStoreZip(files.map((f, i) => ({ ...f, name: names[i] ?? 'download' })));
-
-      const filename = sanitizeContentDispositionFilename(`${agentName} artifacts.zip`);
-      noStore(res)
-        .status(200)
-        .header('content-type', 'application/zip')
-        .header('content-length', String(zip.length))
-        .header('content-disposition', `attachment; filename="${filename}"`)
-        .header('x-content-type-options', 'nosniff')
-        .body(zip, 'application/zip');
+      bundlesInFlight.add(userId);
+      try {
+        await bundle(req, res, userId);
+      } finally {
+        bundlesInFlight.delete(userId);
+      }
     },
 
     async get(req: RouteRequest, res: RouteResponse): Promise<void> {
+      noStore(res);
       const userId = await authOr401(bus, initCtx, req, res);
       if (userId === null) return;
       const out = await callOr<{ artifactId: string }, { artifact: ArtifactDetailWire }>(
@@ -312,10 +353,11 @@ export function createArtifactsRouteHandlers(deps: ArtifactsRouteDeps) {
         { artifactId: req.params['artifactId'] ?? '' },
       );
       if (out === undefined) return;
-      noStore(res).status(200).json({ artifact: detailBody(out.artifact) });
+      res.status(200).json({ artifact: detailBody(out.artifact) });
     },
 
     async text(req: RouteRequest, res: RouteResponse): Promise<void> {
+      noStore(res);
       const userId = await authOr401(bus, initCtx, req, res);
       if (userId === null) return;
       const version = versionParam(req.params['version']);
@@ -335,7 +377,7 @@ export function createArtifactsRouteHandlers(deps: ArtifactsRouteDeps) {
         return;
       }
       const shown = utf8Prefix(read.bytes, ARTIFACT_TEXT_PREVIEW_MAX_BYTES);
-      noStore(res)
+      res
         .status(200)
         .json({
           text: new TextDecoder('utf-8', { fatal: false }).decode(shown),
@@ -344,6 +386,7 @@ export function createArtifactsRouteHandlers(deps: ArtifactsRouteDeps) {
     },
 
     async token(req: RouteRequest, res: RouteResponse): Promise<void> {
+      noStore(res);
       const userId = await authOr401(bus, initCtx, req, res);
       if (userId === null) return;
       const version = versionParam(req.params['version']);
@@ -361,10 +404,11 @@ export function createArtifactsRouteHandlers(deps: ArtifactsRouteDeps) {
         purpose: purpose as 'view' | 'download',
       });
       if (out === undefined) return;
-      noStore(res).status(200).json({ url: out.url, expiresAt: out.expiresAt });
+      res.status(200).json({ url: out.url, expiresAt: out.expiresAt });
     },
 
     async rename(req: RouteRequest, res: RouteResponse): Promise<void> {
+      noStore(res);
       const userId = await authOr401(bus, initCtx, req, res);
       if (userId === null) return;
       const title = jsonBody(req)?.['title'];
@@ -379,10 +423,11 @@ export function createArtifactsRouteHandlers(deps: ArtifactsRouteDeps) {
         { artifactId: req.params['artifactId'] ?? '', title },
       );
       if (out === undefined) return;
-      noStore(res).status(200).json({ artifact: summaryBody(out.artifact) });
+      res.status(200).json({ artifact: summaryBody(out.artifact) });
     },
 
     async restore(req: RouteRequest, res: RouteResponse): Promise<void> {
+      noStore(res);
       const userId = await authOr401(bus, initCtx, req, res);
       if (userId === null) return;
       const version = jsonBody(req)?.['version'];
@@ -397,10 +442,11 @@ export function createArtifactsRouteHandlers(deps: ArtifactsRouteDeps) {
         { artifactId: req.params['artifactId'] ?? '', version },
       );
       if (out === undefined) return;
-      noStore(res).status(200).json({ artifact: summaryBody(out.artifact) });
+      res.status(200).json({ artifact: summaryBody(out.artifact) });
     },
 
     async link(req: RouteRequest, res: RouteResponse): Promise<void> {
+      noStore(res);
       const userId = await authOr401(bus, initCtx, req, res);
       if (userId === null) return;
       const action = jsonBody(req)?.['action'];
@@ -416,10 +462,11 @@ export function createArtifactsRouteHandlers(deps: ArtifactsRouteDeps) {
       );
       if (out === undefined) return;
       // The one owner answer that carries a code: the owner copies the link from it.
-      noStore(res).status(200).json({ shareCode: out.shareCode });
+      res.status(200).json({ shareCode: out.shareCode });
     },
 
     async remove(req: RouteRequest, res: RouteResponse): Promise<void> {
+      noStore(res);
       const userId = await authOr401(bus, initCtx, req, res);
       if (userId === null) return;
       const out = await callOr<{ artifactId: string }, { deleted: true }>(
