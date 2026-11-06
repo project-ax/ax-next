@@ -469,6 +469,27 @@ export const CLAIM_REFUSED_DETAIL =
   'carried out yet, so this approval was not recorded.';
 
 /**
+ * Why an approval did nothing, when an IDENTICAL request has already gone out
+ * (TASK-286). Approval can still find that twin because undo is never refused:
+ * dismiss, the agent asks again, undo leaves two open cards for one call. And a
+ * twin that went out has left the partial unique index, so the index cannot
+ * refuse the second approval the way it refuses `CLAIM_REFUSED_DETAIL`'s case.
+ *
+ * Two sentences, not one, because "already ran" is false for a twin that went
+ * out with no answer: we do not know it ran. And `CLAIM_REFUSED_DETAIL`'s text
+ * could not be reused, because it says "has not been carried out yet", which is
+ * the opposite of what happened here.
+ *
+ * Each says what happened and that THIS one was not run again.
+ */
+export const CLAIM_ALREADY_RAN_DETAIL =
+  'An identical request from this agent already ran, so we did not run this one again.';
+
+export const CLAIM_OUTCOME_UNKNOWN_DETAIL =
+  'An identical request from this agent was already tried, and we cannot tell whether it finished, ' +
+  'so we did not run this one again.';
+
+/**
  * The receipt when the host cannot replay the call at all — a tool that only
  * runs inside the sandbox next to the agent, which the host has no way to
  * reach once the turn has ended. This is not a failure: nothing was

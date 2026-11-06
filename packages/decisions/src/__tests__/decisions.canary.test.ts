@@ -36,6 +36,8 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest
 import { UNDO_WINDOW_MS } from '../machine.js';
 import {
   ABANDONED_RECEIPT,
+  CLAIM_ALREADY_RAN_DETAIL,
+  CLAIM_OUTCOME_UNKNOWN_DETAIL,
   CLAIM_REFUSED_DETAIL,
   CONNECTOR_CALL_DETAIL,
   CONNECTOR_POLICY_DENIED_DETAIL,
@@ -1235,39 +1237,35 @@ describe('decisions canary — the same call, held twice', () => {
   });
 
   /**
-   * THE RESIDUE, pinned as it actually behaves rather than as it reads better.
+   * TWO OPEN ROWS FOR ONE CALL, AND STILL ONE SEND (TASK-286).
    *
    * `restore` (undo) walks a row back into `pending` without consulting the
-   * open row the agent's retry raised in the meantime, and it does not take
-   * the gate's lock. So dismiss → the agent tries the identical call → undo
-   * still produces two open rows for one call shape, and the collapse never
-   * sees it: both rows already existed when the undo landed.
+   * open row the agent's retry raised in the meantime, and it is never refused
+   * for that (the TASK-280 ruling). So dismiss → the agent tries the identical
+   * call → undo still produces two open rows for one call shape, and the gate's
+   * collapse never sees them.
    *
-   * What happens next is NOT uniform, which is the whole reason these two
-   * tests exist side by side. Where the first approval leaves the standing
-   * authorisation in place, the index refuses the second out loud. Where the
-   * first approval actually SENDS — the reversible unattended path, the one
-   * this card's headline is about — `replayed_at` takes the row out of the
-   * index, the second claim finds the slot free, and the call goes out again
-   * with nothing refused and nothing said.
-   *
-   * Not closed here on purpose: doing so means either collapsing at approve
-   * time or having `restore` decline to reopen over a colliding row, and both
-   * are decisions about what undo MEANS. Filed as its own card.
+   * What happens next is decided at approval. While the first yes is unspent,
+   * the index refuses the second (`CLAIM_REFUSED_DETAIL`). Once the first has
+   * gone out — the host replayed it, the warm agent took it, or it went out
+   * with no answer — `claimForApproval` refuses the second itself and says
+   * which. Before TASK-286 that second approval found the index slot free and
+   * the call went out again, silently: these tests used to pin exactly that,
+   * with the executor counting two.
    */
-  it('RESIDUE: two open rows made by an undo double-execute a reversible call, silently', async () => {
-    const h = await boot();
-    const executor = recordExecutor(h, HOLD_RULE.match.tool);
-
-    const first = await holdAndId(h, routineCtx(h), CALL);
+  /** Raise, dismiss, raise again, undo the first: two open rows for one call. */
+  async function twoOpenRowsFromAnUndo(
+    h: TestHarness,
+    ctx: AgentContext,
+  ): Promise<{ first: string; second: string }> {
+    const first = await holdAndId(h, ctx, CALL);
     await h.bus.call<unknown, DecisionsDismissOutput>('decisions:dismiss', userCtx(h), {
       decisionId: first,
       userId: 'u1',
     });
     // Dismissed is not open, so this is a genuinely new row.
-    const second = await holdAndId(h, routineCtx(h), CALL);
+    const second = await holdAndId(h, ctx, CALL);
     expect(second).not.toBe(first);
-
     const undone = await h.bus.call<unknown, DecisionsUndoOutput>('decisions:undo', userCtx(h), {
       decisionId: first,
       userId: 'u1',
@@ -1278,53 +1276,151 @@ describe('decisions canary — the same call, held twice', () => {
       status: 'pending',
     });
     expect(open.decisions).toHaveLength(2);
+    return { first, second };
+  }
+
+  it('two open rows made by an undo cannot both run a reversible call: approving the second is refused, and says the call already ran', async () => {
+    const h = await boot();
+    const executor = recordExecutor(h, HOLD_RULE.match.tool);
+    const { first, second } = await twoOpenRowsFromAnUndo(h, routineCtx(h));
 
     const a = await approve(h, userCtx(h), first);
-    const b = await approve(h, userCtx(h), second);
+    // The second approval runs under a ctx whose log we can read: the card
+    // does not render `error` yet, so this line is what an operator sees.
+    const lines: string[] = [];
+    const approver = h.ctx({
+      agentId: 'a1',
+      userId: 'u1',
+      conversationId: 'conv-web',
+      sessionId: 's1',
+      logger: createLogger({ reqId: 'req-approve', writer: (line) => lines.push(line) }),
+    });
+    const b = await approve(h, approver, second);
 
-    // TWICE. This is the true worst case, and it is the quiet one: no
-    // `DuplicateAuthorisationError`, no refusal sentence, both rows reading
-    // `executed`. If a later change closes this, THIS assertion is what
-    // notices — flip it to 1 and delete the comment above it.
-    expect(executor.calls).toHaveLength(2);
+    // THE ASSERTION is the side effect: the call went out once. It used to go
+    // out twice, with both rows reading `executed` and nothing said.
+    expect(executor.calls).toHaveLength(1);
+    expect(a.executed).toBe(true);
     expect(a.error).toBeNull();
-    expect(b.error).toBeNull();
+    expect(b.executed).toBe(false);
+    expect(b.path).toBeNull();
+    expect(b.error).toBe(CLAIM_ALREADY_RAN_DETAIL);
+    // The row stays open rather than reading as answered.
+    expect(b.decision!.status).toBe('pending');
+
+    // Said in the log too, with closed fields and ids only — never a message.
+    const refused = lines
+      .map((line) => JSON.parse(line) as Record<string, unknown>)
+      .filter((entry) => entry.msg === 'decision_claim_refused_twin_tried');
+    expect(refused).toHaveLength(1);
+    expect(refused[0]).toMatchObject({
+      plugin: '@ax/decisions',
+      decisionId: second,
+      twinId: first,
+      outcome: 'ran',
+      level: 'warn',
+    });
+    expect(refused[0]).not.toHaveProperty('err');
   });
 
-  it('RESIDUE: the same two rows on the ATTENDED path ARE refused out loud', async () => {
+  it('in the other order too: the restored card, approved after its twin ran, is the one refused', async () => {
+    const h = await boot();
+    const executor = recordExecutor(h, HOLD_RULE.match.tool);
+    const { first, second } = await twoOpenRowsFromAnUndo(h, routineCtx(h));
+
+    const b = await approve(h, userCtx(h), second);
+    const a = await approve(h, userCtx(h), first);
+
+    expect(executor.calls).toHaveLength(1);
+    expect(b.executed).toBe(true);
+    expect(b.error).toBeNull();
+    expect(a.executed).toBe(false);
+    expect(a.error).toBe(CLAIM_ALREADY_RAN_DETAIL);
+    expect(a.decision!.status).toBe('pending');
+  });
+
+  it('the same two rows on the ATTENDED path are refused through the index while the first yes is unspent', async () => {
     // The contrasting half. Nothing has been sent when the second approval
     // arrives — the warm agent has not cashed the authorisation yet — so the
     // first row still occupies its (agent, fingerprint) slot and the index
     // does its job. This is the sub-case TASK-253 made audible.
     const h = await boot();
     const executor = recordExecutor(h, HOLD_RULE.match.tool);
-
-    const first = await holdAndId(h, userCtx(h), CALL);
-    await h.bus.call<unknown, DecisionsDismissOutput>('decisions:dismiss', userCtx(h), {
-      decisionId: first,
-      userId: 'u1',
-    });
-    const second = await holdAndId(h, userCtx(h), CALL);
-    expect(second).not.toBe(first);
-    expect(
-      (
-        await h.bus.call<unknown, DecisionsUndoOutput>('decisions:undo', userCtx(h), {
-          decisionId: first,
-          userId: 'u1',
-        })
-      ).undone,
-    ).toBe(true);
+    const { first, second } = await twoOpenRowsFromAnUndo(h, userCtx(h));
 
     const a = await approve(h, userCtx(h), first);
     expect(a.error).toBeNull();
     const b = await approve(h, userCtx(h), second);
 
-    // Refused, and it SAYS so — the person is told, and the row stays open
-    // rather than reading as answered.
+    // Refused, and the answer says why (CLAIM_REFUSED_DETAIL); the row stays open rather than reading as answered.
     expect(b.error).toBe(CLAIM_REFUSED_DETAIL);
     expect(b.decision!.status).toBe('pending');
     // The host ran nothing on either: attended both times.
     expect(executor.calls).toHaveLength(0);
+  });
+
+  it('once the warm agent has spent the first yes, approving its twin is refused and the identical call is held, not authorised again', async () => {
+    // A clock the test moves, so "later" is later: an ask raised in the same
+    // instant as the answer it follows counts as that answer's twin.
+    const clock = movableClock();
+    const h = await boot({ now: clock.now });
+    const executor = recordExecutor(h, HOLD_RULE.match.tool);
+    const { first, second } = await twoOpenRowsFromAnUndo(h, userCtx(h));
+
+    const a = await approve(h, userCtx(h), first);
+    expect(a.error).toBeNull();
+    // The agent's own call goes through once, spending the yes.
+    expect(isHold(await h.bus.fire('tool:pre-call', userCtx(h), CALL))).toBe(false);
+
+    const b = await approve(h, userCtx(h), second);
+    expect(b.error).toBe(CLAIM_ALREADY_RAN_DETAIL);
+    expect(b.decision!.status).toBe('pending');
+    // Its next identical call is held, not authorised again — and held on a
+    // card of its OWN. Folding it into the refused card would make it
+    // unapprovable too, for as long as that card stayed open; it is asked
+    // after the call ran, so it is a new question the person can answer.
+    clock.advance(60_000);
+    const third = await holdAndId(h, userCtx(h), { ...CALL, id: 'c1-again' });
+    expect(third).not.toBe(second);
+    expect(third).not.toBe(first);
+    const c = await approve(h, userCtx(h), third);
+    expect(c.error).toBeNull();
+    expect(c.decision!.status).toBe('executed');
+    // The refused card stays refused: its twin ran, and that never changes.
+    expect((await approve(h, userCtx(h), second)).error).toBe(CLAIM_ALREADY_RAN_DETAIL);
+    // Attended throughout: the host ran nothing.
+    expect(executor.calls).toHaveLength(0);
+  });
+
+  it('a twin that went out with no answer refuses the other approval too, saying we cannot tell whether it finished', async () => {
+    const h = await boot();
+    // Not `recordExecutor`: this one stops answering, the nested-timeout shape
+    // TASK-285 records as outcome-unknown.
+    const calls: ToolCall[] = [];
+    h.bus.registerService<ToolCall, unknown>(
+      `tool:execute:${HOLD_RULE.match.tool}`,
+      '@ax/decisions/test/host-tool',
+      async (_c, call) => {
+        calls.push(call);
+        throw new PluginError({
+          code: 'timeout',
+          plugin: '@ax/decisions/test/host-tool',
+          message: 'stopped waiting',
+        });
+      },
+    );
+    const { first, second } = await twoOpenRowsFromAnUndo(h, routineCtx(h));
+
+    const a = await approve(h, userCtx(h), first);
+    const b = await approve(h, userCtx(h), second);
+
+    expect(a.executed).toBe(false);
+    expect(a.error).toBeNull();
+    expect(a.decision!.status).toBe('failed');
+    expect(a.decision!.replayAbandonedAt).not.toBeNull();
+    expect(b.error).toBe(CLAIM_OUTCOME_UNKNOWN_DETAIL);
+    expect(b.decision!.status).toBe('pending');
+    expect(calls).toHaveLength(1);
   });
 
   it('gives the human a fresh question after they said no, and it sends nothing until they say yes', async () => {

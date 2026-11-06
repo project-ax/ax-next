@@ -8,6 +8,8 @@ import {
   sanitizeCapability,
   sanitizeFailureDetail,
   sanitizeToolName,
+  CLAIM_ALREADY_RAN_DETAIL,
+  CLAIM_OUTCOME_UNKNOWN_DETAIL,
   CONNECTOR_CALL_DETAIL,
   CONNECTOR_POLICY_DENIED_DETAIL,
   CONNECTOR_POLICY_UNREADABLE_DETAIL,
@@ -467,6 +469,29 @@ describe('a hold Always Allow can never lift says so (TASK-941)', () => {
   it('says nothing about Always Allow unless told the hold can never lift', () => {
     for (const alwaysAsks of [undefined, false]) {
       expect(holdNote({ ...FIRE, alwaysAsks })).not.toContain('Always Allow');
+    }
+  });
+});
+
+describe('the approve-time twin refusals (TASK-286)', () => {
+  it('say exactly this, word for word', () => {
+    expect(CLAIM_ALREADY_RAN_DETAIL).toBe(
+      'An identical request from this agent already ran, so we did not run this one again.',
+    );
+    expect(CLAIM_OUTCOME_UNKNOWN_DETAIL).toBe(
+      'An identical request from this agent was already tried, and we cannot tell whether it finished, ' +
+        'so we did not run this one again.',
+    );
+  });
+
+  it('never claims an unknown twin "already ran", and says we cannot tell', () => {
+    expect(CLAIM_OUTCOME_UNKNOWN_DETAIL).not.toMatch(/already ran/);
+    expect(CLAIM_OUTCOME_UNKNOWN_DETAIL).toMatch(/cannot tell/);
+  });
+
+  it('leak no internals', () => {
+    for (const line of [CLAIM_ALREADY_RAN_DETAIL, CLAIM_OUTCOME_UNKNOWN_DETAIL]) {
+      expect(line).not.toMatch(/error|stack|postgres|sql|index|fingerprint|dec_/i);
     }
   });
 });

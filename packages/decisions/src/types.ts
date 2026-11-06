@@ -538,8 +538,8 @@ export interface DecisionsApproveOutput {
    */
   path: ExecutionPath | null;
   /**
-   * WHY THIS APPROVAL DID NOT DO WHAT IT LOOKS LIKE IT DID. Two things reach it,
-   * and neither is ever a receipt — a renderer shows the authored failure line
+   * WHY THIS APPROVAL DID NOT DO WHAT IT LOOKS LIKE IT DID. These reach it,
+   * and none is ever a receipt — a renderer shows the authored failure line
    * and this decision's id, never this string:
    *
    *   * the host executor's own failure detail when the replay threw, sanitised;
@@ -548,6 +548,15 @@ export interface DecisionsApproveOutput {
    *     not been carried out. That refusal used to be absorbed in silence, which
    *     is what made a replay stranded by a crash look like an approve button
    *     that does nothing (TASK-253).
+   *   * a routine change's authored failure line (`ROUTINE_GRANT_FAILED`, or
+   *     `routineFailureText` of the row);
+   *   * `CLAIM_ALREADY_RAN_DETAIL` or `CLAIM_OUTCOME_UNKNOWN_DETAIL` (TASK-286),
+   *     when an identical request this person approved on another card — one
+   *     answered after this card was raised, which an undo or a retry raced
+   *     against that approval makes possible — already ran, or went out with
+   *     no answer. Running this one too would
+   *     make the call twice. The row stays open, as it does for
+   *     `CLAIM_REFUSED_DETAIL`.
    *
    * Null when nothing went wrong, which includes every ordinary success.
    */
