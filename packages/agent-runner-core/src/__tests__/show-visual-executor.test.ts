@@ -29,6 +29,7 @@ describe('createShowVisualExecutor', () => {
   it('publishes the html as a text/html artifact and returns only id, title and summary', async () => {
     const c = client();
     expect(
+      // nosemgrep: javascript.lang.security.audit.unknown-value-with-script-tag.unknown-value-with-script-tag -- `c` is a mock IPC client; the <script> is the test's HTML fixture, not rendered anywhere
       await run(c, { title: ' Issues per cycle ', summary: 'Down 12% over 20 cycles.', html: HTML }),
     ).toStrictEqual({ artifactId: ID, title: 'Issues per cycle', summary: 'Down 12% over 20 cycles.' });
     expect(c.callBinaryUpload).toHaveBeenCalledWith('blob.put', Buffer.from(HTML, 'utf8'));

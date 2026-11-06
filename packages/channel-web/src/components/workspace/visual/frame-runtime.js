@@ -353,6 +353,7 @@ window.axVisualRuntime = function axVisualRuntime(win, host) {
 
   function post(msg) {
     try {
+      // nosemgrep: javascript.browser.security.wildcard-postmessage-configuration.wildcard-postmessage-configuration -- the frame (opaque origin) can't name the app's origin; the parent accepts only messages whose source is this frame and origin is 'null', and payloads are sizes/flags/a PNG of the frame's own content
       host.postMessage(msg, '*');
     } catch {
       // The parent went away; nothing to tell.

@@ -437,6 +437,7 @@ window.__chart = new Chart(document.getElementById('c'), {
       const light = await frame.evaluate(sampleGrid);
       expect(near(light.rgba, light.expect), JSON.stringify(light)).toBe(true);
       await page.evaluate((border) => {
+        // nosemgrep: javascript.browser.security.wildcard-postmessage-configuration.wildcard-postmessage-configuration -- test harness posting to the opaque-origin visual frame, same as VisualFrame
         document.querySelector('iframe')!.contentWindow!.postMessage(
           { type: 'ax-visual:theme', mode: 'dark', tokens: { '--border': border, '--card': '226.67 15.25% 11.57%' } },
           '*',
@@ -473,6 +474,7 @@ window.__chart = new Chart(document.getElementById('c'), {
       const light = await frame.evaluate(sampleGrid);
       expect(near(light.rgba, light.expect), JSON.stringify(light)).toBe(true);
       await page.evaluate((border) => {
+        // nosemgrep: javascript.browser.security.wildcard-postmessage-configuration.wildcard-postmessage-configuration -- test harness posting to the opaque-origin visual frame, same as VisualFrame
         document.querySelector('iframe')!.contentWindow!.postMessage(
           { type: 'ax-visual:theme', mode: 'dark', tokens: { '--border': border, '--card': '226.67 15.25% 11.57%' } },
           '*',

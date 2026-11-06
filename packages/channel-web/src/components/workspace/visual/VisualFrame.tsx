@@ -183,6 +183,7 @@ export function VisualFrame(props: { conversationId: string; visual: ThreadVisua
   // Covers a theme toggled while loading too: becoming ready posts the current one.
   useEffect(() => {
     if (!ready || failed) return;
+    // nosemgrep: javascript.browser.security.wildcard-postmessage-configuration.wildcard-postmessage-configuration -- the visual frame has an opaque origin, so no named target origin can reach it; the target is this frame's own contentWindow and the payload is public (theme tokens / export request / visibility ping)
     iframeRef.current?.contentWindow?.postMessage(
       { type: 'ax-visual:theme', mode, tokens: readThemeTokens() },
       '*',
@@ -194,6 +195,7 @@ export function VisualFrame(props: { conversationId: string; visual: ThreadVisua
   // at 0 width; the runtime refits its charts on this.
   useEffect(() => {
     if (!ready || failed || !watching) return;
+    // nosemgrep: javascript.browser.security.wildcard-postmessage-configuration.wildcard-postmessage-configuration -- the visual frame has an opaque origin, so no named target origin can reach it; the target is this frame's own contentWindow and the payload is public (theme tokens / export request / visibility ping)
     iframeRef.current?.contentWindow?.postMessage({ type: 'ax-visual:visible' }, '*');
   }, [ready, failed, watching]);
 
@@ -206,6 +208,7 @@ export function VisualFrame(props: { conversationId: string; visual: ThreadVisua
       if (settleExport(requestId)) setExportFailed(true);
     }, EXPORT_TIMEOUT_MS);
     pendingExports.current.set(requestId, timer);
+    // nosemgrep: javascript.browser.security.wildcard-postmessage-configuration.wildcard-postmessage-configuration -- the visual frame has an opaque origin, so no named target origin can reach it; the target is this frame's own contentWindow and the payload is public (theme tokens / export request / visibility ping)
     frame.postMessage({ type: 'ax-visual:export', requestId, format: 'png' }, '*');
   };
 
