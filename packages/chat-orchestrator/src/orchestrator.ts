@@ -1,5 +1,6 @@
 import {
   faultLogFields,
+  toWellFormedValue,
   PluginError,
   PROVIDER_ENDPOINTS,
   parseModelRef,
@@ -2509,7 +2510,16 @@ export function createOrchestrator(
   ): Promise<AgentOutcome> {
     pendingMessageReqIds.add(ctx.reqId);
     try {
-      return await runAgentInvokeTurn(ctx, input);
+      // TASK-1059: U+0000 and lone surrogates become U+FFFD before anything
+      // stores the message. Postgres refuses both (the display log AND the
+      // session inbox are jsonb), and a refused write fails on every retry, so
+      // a message carrying one could never be sent. Done once, here, so every
+      // writer and the runner see the same text. Same reference when clean.
+      const message = toWellFormedValue(input.message);
+      return await runAgentInvokeTurn(
+        ctx,
+        message === input.message ? input : { ...input, message },
+      );
     } finally {
       pendingMessageReqIds.delete(ctx.reqId);
       stopRequestedReqIds.delete(ctx.reqId);

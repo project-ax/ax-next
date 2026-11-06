@@ -681,6 +681,54 @@ describe('chat-orchestrator route-by-conversationId (Task 16, J6)', () => {
     expect(lines.join('\n')).not.toContain('PRIVATE');
   });
 
+  it('TASK-1059) U+0000 and lone surrogates reach every writer as U+FFFD, so the message can be stored', async () => {
+    // Postgres jsonb refuses both, in the display log AND the session inbox,
+    // and a refused write fails on every Resend. The orchestrator cleans the
+    // message once, before the display persist and the queue-work, so both
+    // writers (and the runner) see the same storable text.
+    const mocks = buildMocks({
+      conversations: { 'conv-wf': { activeSessionId: 's-wf' } },
+      liveSessions: new Set(['s-wf']),
+    });
+    const h = await createTestHarness({
+      services: mocks.services,
+      plugins: [
+        createChatOrchestratorPlugin({
+          runnerBinaries: { 'claude-sdk': '/irrelevant' },
+          chatTimeoutMs: 5_000,
+        }),
+      ],
+    });
+    const expected: AgentOutcome = { kind: 'complete', messages: [] };
+    arrangeImmediateEnd(h.bus, expected, 's-wf', 'req-WF');
+
+    const raw = 'a\u0000b\ud800c';
+    const clean = 'a�b�c';
+    await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
+      ctxWith({ sessionId: 'unused', conversationId: 'conv-wf', reqId: 'req-WF' }),
+      {
+        message: {
+          role: 'user',
+          content: raw,
+          contentBlocks: [{ type: 'text', text: raw }],
+        },
+      },
+    );
+
+    expect(mocks.trace.appendEvent).toHaveLength(1);
+    expect(mocks.trace.appendEvent[0]).toMatchObject({
+      kind: 'turn',
+      role: 'user',
+      payload: { blocks: [{ type: 'text', text: clean }, { type: 'text', text: clean }] },
+    });
+    expect(mocks.trace.queueWork).toHaveLength(1);
+    expect(mocks.trace.queueWork[0]!.payload).toMatchObject({
+      content: clean,
+      contentBlocks: [{ type: 'text', text: clean }],
+    });
+  });
+
   it('lookup failure (conversations:get throws something other than not-found) falls through to fresh sandbox', async () => {
     const mocks = buildMocks({ conversations: {}, liveSessions: new Set() });
     // Override conversations:get to blow up unexpectedly.
