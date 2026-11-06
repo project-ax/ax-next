@@ -197,7 +197,8 @@ describe('connect timeout, against a database that never answers', () => {
 // so each of these replaces statementTimeoutMs, and all but the first switch
 // the bound off. pg reads a bare key as unset; it decodes each key itself even
 // when an earlier one has a malformed escape; and its `new URL` parse drops
-// tab/LF/CR anywhere and trims trailing control characters. (The first row
+// tab/LF/CR anywhere, trims trailing control characters and ends the query
+// at `#`. (The first row
 // is also refused by the round-1 regex; it pins a later position.)
 it.each([
   'postgres://ax@127.0.0.1:1/ax?sslmode=no-verify&statement_timeout=60000',
@@ -206,6 +207,7 @@ it.each([
   'postgres://ax@127.0.0.1:1/ax?x%zz=1&%73tatement_timeout=0',
   'postgres://ax@127.0.0.1:1/ax?statement_time\tout=0',
   'postgres://ax@127.0.0.1:1/ax?statement_timeout\n',
+  'postgres://ax@127.0.0.1:1/ax?statement_timeout#',
 ])('refuses a connection string that sets the statement timeout itself: %s', (connectionString) => {
   expect(thrownBy(() => createSessionPostgresPlugin({ connectionString }))).toMatchObject({
     name: 'PluginError',
