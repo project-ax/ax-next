@@ -276,4 +276,54 @@ describe('conversations:append-event retries a checkout that never got a connect
     ).rejects.toMatchObject({ code: 'invalid-payload' });
     expect(entries('conversations_append_event_retrying')).toEqual([]);
   });
+
+  const skillCard = {
+    kind: 'skill',
+    skillId: 'linear',
+    description: 'Linear skill',
+    hosts: ['api.linear.app'],
+    slots: [{ slot: 'LINEAR_API_KEY', kind: 'api-key' }],
+  };
+
+  it.each([
+    {
+      title: 'a turn error',
+      hook: 'chat:turn-error',
+      payload: { reqId: 'r-1', reason: 'chat-run-timeout' },
+      failedMsg: 'conversations_persist_turn_error_failed',
+    },
+    {
+      title: 'an approval card',
+      hook: 'chat:permission-request',
+      payload: skillCard,
+      failedMsg: 'conversations_persist_permission_card_failed',
+    },
+  ])(
+    '$title the pool never lets through is logged once, as an error, in codes',
+    async ({ hook, payload, failedMsg }) => {
+      const { h, db } = await boot();
+      const userId = 'userA';
+      const conversationId = await createConv(h, userId);
+      const release = await holdOnlyConnection(db);
+      const { logger, lines, entries } = captureLog();
+
+      await h.bus.fire(hook, h.ctx({ userId, conversationId, logger }), payload);
+      release();
+
+      const failed = entries(failedMsg);
+      expect(failed).toHaveLength(1);
+      expect(failed[0]).toMatchObject({
+        level: 'error',
+        conversationId,
+        code: 'unknown',
+        name: 'PluginError',
+        causeName: 'Error',
+        hookName: 'conversations:append-event',
+        plugin: '@ax/conversations',
+      });
+      expect(failed[0]).not.toHaveProperty('err');
+      expect(entries('conversations_append_event_retrying')).toHaveLength(2);
+      expect(lines.join('\n')).not.toContain('timeout exceeded');
+    },
+  );
 });

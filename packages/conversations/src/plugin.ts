@@ -1171,6 +1171,8 @@ function collapseRoleRuns(roles: TurnRole[]): TurnRole[] {
  * Persist a surfaced turn-error display event. Folds on the originating reqId
  * so a re-fire for the same turn replaces the earlier one. ctx-less fires are
  * skipped. MUST NOT throw.
+ * The hook retries a checkout that never got a connection; a row still lost
+ * is logged once at error, codes only.
  */
 async function persistTurnError(
   bus: HookBus,
@@ -1206,9 +1208,9 @@ async function persistTurnError(
       },
     );
   } catch (err) {
-    ctx.logger.warn('conversations_persist_turn_error_failed', {
+    ctx.logger.error('conversations_persist_turn_error_failed', {
       conversationId,
-      err: err instanceof Error ? err : new Error(String(err)),
+      ...faultLogFields(err),
     });
   }
 }
@@ -1219,6 +1221,8 @@ async function persistTurnError(
  * variant) so a later resolution frame for the same card folds onto it on
  * replay — no special final-state bookkeeping. ctx-less fires are skipped.
  * MUST NOT throw.
+ * The hook retries a checkout that never got a connection; a row still lost
+ * is logged once at error, codes only.
  */
 async function persistPermissionCard(
   bus: HookBus,
@@ -1250,9 +1254,9 @@ async function persistPermissionCard(
       },
     );
   } catch (err) {
-    ctx.logger.warn('conversations_persist_permission_card_failed', {
+    ctx.logger.error('conversations_persist_permission_card_failed', {
       conversationId,
-      err: err instanceof Error ? err : new Error(String(err)),
+      ...faultLogFields(err),
     });
   }
 }
