@@ -73,6 +73,7 @@ export interface ArtifactStore {
   publishVersion(i: PublishVersionInput): Promise<PublishVersionResult>;
   /** Newest first (updated_at DESC), ties by artifact_id ASC. */
   listForAgent(agentId: string, limit: number): Promise<ArtifactRow[]>;
+  countForAgent(agentId: string): Promise<number>;
   getHead(artifactId: string): Promise<ArtifactRow | null>;
   /** Newest first. */
   listVersions(artifactId: string): Promise<VersionRow[]>;
@@ -375,6 +376,15 @@ export function createArtifactStore<DB>(database: Kysely<DB>): ArtifactStore {
         .limit(limit)
         .execute();
       return rows.map(artifactFrom);
+    },
+
+    async countForAgent(agentId) {
+      const row = await db
+        .selectFrom('attachments_v1_artifacts')
+        .select((eb) => eb.fn.countAll<number | string>().as('n'))
+        .where('agent_id', '=', agentId)
+        .executeTakeFirst();
+      return Number(row?.n ?? 0);
     },
 
     getHead(artifactId) {

@@ -90,6 +90,14 @@ describe('@ax/attachments plugin manifest', () => {
       'attachments:download',
       'attachments:list-for-conversation',
       'artifacts:publish-blob',
+      'artifacts:publish',
+      'artifacts:list',
+      'artifacts:get',
+      'artifacts:read',
+      'artifacts:rename',
+      'artifacts:restore',
+      'artifacts:delete',
+      'system-prompt:augment:optional:artifacts',
     ]);
     expect(plugin.manifest.calls).toContain('database:get-instance');
     expect(plugin.manifest.calls).toContain('blob:put');
@@ -123,6 +131,9 @@ describe('@ax/attachments plugin init / shutdown', () => {
     expect(harness.bus.hasService('attachments:download')).toBe(true);
     expect(harness.bus.hasService('attachments:list-for-conversation')).toBe(true);
     expect(harness.bus.hasService('artifacts:publish-blob')).toBe(true);
+    for (const hook of createAttachmentsPlugin().manifest.registers) {
+      expect(harness.bus.hasService(hook)).toBe(true);
+    }
   });
 
   it('runs the attachments_v1_temps migration on init', async () => {

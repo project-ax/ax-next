@@ -10,6 +10,9 @@
 import { z, type ZodType } from 'zod';
 import { AttachmentIdSchema } from '@ax/ipc-protocol';
 
+// The artifact owner hooks' I/O and returns contracts.
+export * from './artifacts/types.js';
+
 // Service hook payloads.
 
 export interface StoreTempInput {

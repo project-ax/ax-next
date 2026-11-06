@@ -157,6 +157,19 @@ export const ARTIFACT_TITLE_MAX = 200;
 export const ArtifactKindSchema = z.enum(['document', 'web', 'spreadsheet', 'image', 'code', 'file']);
 
 /**
+ * The words a person (and the agent's artifact list) sees for each kind. One
+ * map, so the agent's notes and channel-web never drift apart.
+ */
+export const ARTIFACT_KIND_LABELS = {
+  document: 'Document',
+  web: 'Web page',
+  spreadsheet: 'Spreadsheet',
+  image: 'Image',
+  code: 'Code',
+  file: 'File',
+} as const satisfies Record<z.infer<typeof ArtifactKindSchema>, string>;
+
+/**
  * A user-attached file OR an agent-published artifact, as it appears in a
  * stored conversation turn and on the wire (`chat:start`, `agent:invoke`,
  * `conversations:get`, `event.turn-end`).

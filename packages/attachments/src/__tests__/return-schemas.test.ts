@@ -1,5 +1,15 @@
 import { describe, it, expect } from 'vitest';
 import {
+  ArtifactsDeleteOutputSchema,
+  ArtifactsGetOutputSchema,
+  ArtifactsListOutputSchema,
+  ArtifactsPublishOutputSchema,
+  ArtifactsReadOutputSchema,
+  ArtifactsSummaryOutputSchema,
+  type ArtifactSummary,
+  type ArtifactsGetOutput,
+  type ArtifactsPublishOutput,
+  type ArtifactsReadOutput,
   ArtifactsPublishBlobOutputSchema,
   AttachmentsListForConversationOutputSchema,
   CommitOutputSchema,
@@ -131,5 +141,80 @@ describe('attachments return schemas', () => {
 
   it('attachments:list-for-conversation accepts an empty file list', () => {
     expect(AttachmentsListForConversationOutputSchema.parse({ files: [] })).toEqual({ files: [] });
+  });
+});
+
+describe('artifact owner hook return schemas', () => {
+  const summary: ArtifactSummary = {
+    artifactId: '0123456789abcdef0123456789abcdef',
+    agentId: 'agt-1',
+    title: 'Q3 pipeline report',
+    mediaType: 'application/pdf',
+    kind: 'document',
+    preview: 'pdf',
+    extension: 'PDF',
+    currentVersion: 2,
+    sizeBytes: 2048,
+    linkOn: true,
+    createdAt: '2026-11-04T10:00:00.000Z',
+    updatedAt: '2026-11-05T10:00:00.000Z',
+  };
+
+  it('artifacts:publish round-trips a fully-populated output', () => {
+    const full: ArtifactsPublishOutput = {
+      artifactId: summary.artifactId,
+      version: 1,
+      title: 'Q3',
+      kind: 'web',
+      extension: 'HTML',
+    };
+    expect(ArtifactsPublishOutputSchema.parse(full)).toEqual(full);
+  });
+
+  it('artifacts:list, rename and restore round-trip a summary', () => {
+    expect(ArtifactsListOutputSchema.parse({ artifacts: [summary] })).toEqual({ artifacts: [summary] });
+    expect(ArtifactsSummaryOutputSchema.parse({ artifact: summary })).toEqual({ artifact: summary });
+  });
+
+  it('artifacts:get round-trips a detail with its versions', () => {
+    const full: ArtifactsGetOutput = {
+      artifact: {
+        ...summary,
+        versions: [
+          { version: 2, mediaType: 'application/pdf', sizeBytes: 2048, createdAt: summary.updatedAt },
+          { version: 1, mediaType: 'application/pdf', sizeBytes: 1024, createdAt: summary.createdAt },
+        ],
+      },
+    };
+    expect(ArtifactsGetOutputSchema.parse(full)).toEqual(full);
+  });
+
+  it('artifacts:read keeps the bytes by reference', () => {
+    const bytes = new Uint8Array([1, 2, 3]);
+    const full: ArtifactsReadOutput = {
+      bytes,
+      mediaType: 'text/html',
+      preview: 'html',
+      sizeBytes: 3,
+      filename: 'Page.html',
+      version: 1,
+    };
+    const parsed = ArtifactsReadOutputSchema.parse(full);
+    expect(parsed.bytes).toBe(bytes);
+    expect(parsed).toEqual(full);
+  });
+
+  it('artifacts:delete answers only deleted: true', () => {
+    expect(ArtifactsDeleteOutputSchema.parse({ deleted: true })).toEqual({ deleted: true });
+    expect(ArtifactsDeleteOutputSchema.safeParse({ deleted: false }).success).toBe(false);
+  });
+
+  it('strips a share code or a source path a handler leaked, rather than shipping it', () => {
+    const leaky = { ...summary, shareCode: 'Z'.repeat(32), sourcePath: 'reports/q3.pdf' };
+    expect(ArtifactsSummaryOutputSchema.parse({ artifact: leaky })).toEqual({ artifact: summary });
+  });
+
+  it('refuses a kind outside the one list', () => {
+    expect(ArtifactsListOutputSchema.safeParse({ artifacts: [{ ...summary, kind: 'video' }] }).success).toBe(false);
   });
 });

@@ -397,6 +397,12 @@ export interface PublishArtifactInput {
   title: unknown;
   /** Re-publish this artifact rather than the one keyed by `sourcePath`. */
   artifactId?: string;
+  /**
+   * The agent the caller runs as, when it is one. The conversation must be
+   * with that agent, or the publish is refused (`forbidden`): an agent cannot
+   * publish into another agent's list through a chat its person owns.
+   */
+  callerAgentId?: string;
 }
 
 function publishRefusal(hookName: string, code: 'forbidden' | 'not-found', message: string): PluginError {
@@ -405,7 +411,8 @@ function publishRefusal(hookName: string, code: 'forbidden' | 'not-found', messa
 
 /**
  * The one publish chain, shared by every hook that publishes an artifact:
- *   1. the caller owns the conversation (and it names the agent);
+ *   1. the caller owns the conversation (and it names the agent, which must
+ *      be the caller's own agent when the caller is one);
  *   2. the agent resolves for the caller, which names the quota owner (C4);
  *   3. the blob store holds the sha, and says its size (D10);
  *   4. the media type comes from the path, never the caller;
@@ -432,6 +439,9 @@ export async function publishArtifact(
   const agentId = await ownedConversationAgent(deps.bus, ctx, input.conversationId);
   if (agentId === null) {
     throw publishRefusal(hookName, 'forbidden', 'artifacts can be published only into a conversation the caller owns');
+  }
+  if (input.callerAgentId !== undefined && input.callerAgentId !== agentId) {
+    throw publishRefusal(hookName, 'forbidden', 'an agent can publish only into its own conversations');
   }
   let resolved: unknown;
   try {

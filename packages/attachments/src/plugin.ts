@@ -12,6 +12,7 @@ import { runAttachmentsMigration, type AttachmentsDatabase } from './migrations.
 import { createAttachmentsStore, type AttachmentsStore } from './store.js';
 import { backfillArtifactAgents, finishArtifactsMigration } from './artifacts/migrations.js';
 import { createArtifactStore } from './artifacts/store.js';
+import { ARTIFACT_HOOKS, registerArtifactHooks } from './artifacts/handlers.js';
 import {
   createStoreTempHandler,
   createCommitHandler,
@@ -108,6 +109,11 @@ function agentIdsVia(bus: HookBus, ctx: AgentContext) {
 //   - attachments:download     (callers: GET /api/files; future Slack plugin)
 //   - attachments:list-for-conversation (caller: ipc-core `attachments.list`)
 //   - artifacts:publish-blob   (caller: ipc-core `artifact.publish`)
+//   - artifacts:publish / list / get / read / rename / restore / delete: the
+//     artifact owner hooks. Every one runs the single access rule
+//     (artifacts/access.ts: agents:resolve membership -> role -> can), and
+//     every refusal is the same not-found.
+//   - system-prompt:augment:optional:artifacts: the agent's own artifact list.
 //
 // Manifest decisions (the authoritative list is the `calls:` array below —
 // this prose is a summary):
@@ -151,6 +157,7 @@ export function createAttachmentsPlugin(
         // artifact.publish / attachments.list actions drive.
         'attachments:list-for-conversation',
         'artifacts:publish-blob',
+        ...ARTIFACT_HOOKS,
       ],
       calls: [
         'database:get-instance',
@@ -237,6 +244,7 @@ export function createAttachmentsPlugin(
         publishArtifactBlobHandler,
         { returns: ArtifactsPublishBlobOutputSchema },
       );
+      registerArtifactHooks(bus, PLUGIN_NAME, { artifacts, bus });
 
       // 5) TASK-718: a purged conversation's upload rows go with it; its
       //    artifacts stay (they are the agent's, D12) and their versions just
