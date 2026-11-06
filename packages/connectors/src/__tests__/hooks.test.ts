@@ -1398,6 +1398,9 @@ describe('an edit that points a connector somewhere new signs everyone out first
           // How many agent sign-ins were already cleared before the failing
           // step: an operator must be able to tell agents were signed out.
           purged: failing === PURGE ? 0 : 3,
+          // The shared refs cleared before it: none here (the client secret
+          // is linear's only global ref, and it is the one that fails).
+          deletedRefs: [],
           err: expect.stringContaining('the vault is down'),
         }),
       ]);

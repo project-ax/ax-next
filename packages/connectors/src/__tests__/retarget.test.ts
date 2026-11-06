@@ -251,9 +251,10 @@ const rows: Array<[name: string, before: RetargetSubject, after: RetargetSubject
     }),
     false,
   ],
-  // The host-side header builder (@ax/mcp-client connector-headers.ts) sends a
-  // slot's credential to EVERY server carrying the slot's server name, not just
-  // the first, and the write schema allows a repeated server name.
+  // The write schema allows a repeated server name. Only the FIRST same-name
+  // server receives a slot's credential at run time (proxy, call-tool and the
+  // host-side header builder all bind to it); the rule still emits a fact per
+  // same-name server as a deliberately cautious extra.
   ['linear: a second server added under the oauth slot’s server name, at a new url', linear(), linearWithTwin, true],
   ['linear: that duplicate-name server removed again', linearWithTwin, linear(), false],
   [

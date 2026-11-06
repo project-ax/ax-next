@@ -1012,6 +1012,7 @@ async function signOutBeforeRetarget(
   if (!purgeAgents && globalRefs.length === 0) return;
   let step = PURGE_ACCOUNT_HOOK;
   let purged = 0;
+  const deleted: string[] = [];
   try {
     if (purgeAgents) {
       const out = await bus.call<
@@ -1023,15 +1024,17 @@ async function signOutBeforeRetarget(
     for (const ref of globalRefs) {
       step = `${CREDENTIALS_DELETE_HOOK}:global:${ref}`;
       await bus.call(CREDENTIALS_DELETE_HOOK, ctx, { scope: 'global', ownerId: null, ref });
+      deleted.push(ref);
     }
   } catch (err) {
-    // `step` is the call that failed; `purged` counts the agent sign-ins
-    // already cleared before it (0 when the purge itself failed), so an
-    // operator can tell everyone was signed out although the edit was refused.
+    // `step` is the call that failed; `purged` counts the agent sign-ins and
+    // `deletedRefs` the shared refs already cleared before it, so an operator
+    // can tell what was signed out although the edit was refused.
     ctx.logger.error('connectors_retarget_sign_out_failed', {
       connectorId,
       step,
       purged,
+      deletedRefs: deleted,
       err: err instanceof Error ? err.message : String(err),
     });
     throw new PluginError({
