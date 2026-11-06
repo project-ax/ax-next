@@ -3,6 +3,7 @@ import {
   VISUAL_FRAME_CSP,
   VISUAL_IFRAME_SANDBOX,
   VISUAL_MAX_HEIGHT,
+  VISUAL_STANDALONE_CSP,
   VISUAL_TOKEN_NAMES,
   buildVisualDocument,
   inlineScript,
@@ -130,13 +131,56 @@ describe('buildVisualDocument', () => {
     expect(doc).not.toContain('<script>x</script>');
   });
 
-  it('adds the standalone page styles only for standalone documents', () => {
-    const inline = buildVisualDocument({ html: '', mode: 'light', tokens: {} }, fake);
-    const page = buildVisualDocument({ html: '', mode: 'light', tokens: {}, standalone: true }, fake);
-    const extra = 'html{overflow:auto;background:hsl(var(--card))}body{max-width:720px;margin:24px auto}';
-    expect(inline).not.toContain(extra);
-    expect(parse(page).getElementById('ax-base')?.textContent).toContain(extra);
-    expect(parse(page).head.firstElementChild!.getAttribute('content')).toBe(VISUAL_FRAME_CSP);
+  it('refuses font CSS that could close its style element', () => {
+    expect(() =>
+      buildVisualDocument({ html: '', mode: 'light', tokens: {} }, { ...fake, fontFaceCss: 'a{}</STYLE><script>x</script>' }),
+    ).toThrow(/<\/style/);
+  });
+});
+
+describe('buildVisualDocument standalone', () => {
+  const standalone = (html: string, title: string) =>
+    buildVisualDocument({ html, mode: 'dark', tokens: { '--card': '0 0% 10%' }, standalone: true, title }, fake);
+
+  it('boxes the visual in a sandboxed frame under a script-free outer page', () => {
+    const outer = parse(standalone('<div class="k">x</div><script>window.agent=1</script>', 'Issues'));
+    const first = outer.head.firstElementChild!;
+    expect([first.getAttribute('http-equiv'), first.getAttribute('content')]).toEqual([
+      'Content-Security-Policy',
+      VISUAL_STANDALONE_CSP,
+    ]);
+    expect(VISUAL_STANDALONE_CSP).not.toContain('script-src');
+    expect(VISUAL_STANDALONE_CSP).toContain("frame-src 'none'");
+    expect(outer.querySelectorAll('script')).toHaveLength(0);
+    const frames = outer.querySelectorAll('iframe');
+    expect(frames).toHaveLength(1);
+    expect(frames[0]!.getAttribute('sandbox')).toBe('allow-scripts');
+    expect(frames[0]!.getAttribute('title')).toBe('Issues');
+    expect(outer.title).toBe('Issues');
+
+    const inner = parse(frames[0]!.getAttribute('srcdoc')!);
+    expect(inner.head.firstElementChild!.getAttribute('content')).toBe(VISUAL_FRAME_CSP);
+    expect(inner.querySelector('body .k')?.textContent).toBe('x');
+    expect(inner.body.querySelector('script')?.textContent).toBe('window.agent=1');
+    expect(inner.documentElement.getAttribute('data-theme')).toBe('dark');
+    expect(inner.getElementById('ax-base')?.textContent).toContain('html{overflow:auto');
+  });
+
+  it('keeps a hostile title and agent markup out of the outer page', () => {
+    const hostile = '"><script>x</script>';
+    const raw = standalone('</iframe><script>y</script>"', hostile);
+    const outer = parse(raw);
+    expect(outer.querySelectorAll('script')).toHaveLength(0);
+    expect(outer.querySelectorAll('iframe')).toHaveLength(1);
+    expect(outer.body.children).toHaveLength(1);
+    expect(outer.querySelector('iframe')!.getAttribute('title')).toBe(hostile);
+    expect(outer.title).toBe(hostile);
+  });
+
+  it('leaves the in-chat document without the standalone frame styles', () => {
+    const inline = parse(buildVisualDocument({ html: '', mode: 'light', tokens: {} }, fake));
+    expect(inline.getElementById('ax-base')?.textContent).not.toContain('overflow:auto');
+    expect(inline.querySelector('iframe')).toBeNull();
   });
 });
 
@@ -189,6 +233,8 @@ describe('visualFileName', () => {
     expect(visualFileName('  ...  ', 'png')).toBe('visual.png');
     expect(visualFileName('x'.repeat(200), 'html')).toBe(`${'x'.repeat(80)}.html`);
     expect(visualFileName('../../etc/passwd', 'html')).toBe('etcpasswd.html');
+    expect(visualFileName('. .bashrc', 'html')).toBe('bashrc.html');
+    expect(visualFileName('..  ..env', 'png')).toBe('env.png');
   });
 });
 
