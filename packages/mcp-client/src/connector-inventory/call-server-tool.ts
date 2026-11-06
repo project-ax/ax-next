@@ -95,7 +95,10 @@ function classifyConnectError(err: unknown): ServerCallOutcome {
 /** A failure after `tools/call` was sent: definite only when the answer says so. */
 function classifyCallError(err: unknown): ServerCallOutcome {
   // An HTTP status, as the transport saw it. Only these mean the request
-  // itself was turned away.
+  // itself was turned away, and that is an ASSUMPTION (review r3 S2): a
+  // conformant server sends a 4xx only when it cannot accept the request. A
+  // gateway or WAF that rewrites an answered call's RESPONSE into a 4xx would
+  // make a call that ran read as refused: an accepted residual, invisible here.
   if (err instanceof StreamableHTTPError) {
     const status = err.code;
     if (status === 401 || status === 403) return { outcome: 'failed', reason: 'needs-auth' };
