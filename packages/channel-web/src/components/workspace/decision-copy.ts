@@ -132,11 +132,15 @@ export const DECISION_STALE_SUMMARY = 'Needs another look — things changed sin
  * `@ax/decisions` puts on the Activity receipt for the same outcome — the two
  * surfaces describing one event differently is how a reader learns not to trust
  * either.
+ *
+ * The note says nothing about whether the run has ENDED (TASK-1046 review F9):
+ * a wake-up the `chat:resume` gate refused (TASK-692) parks a call whose run
+ * may still be there, and the note has to be true for that row too.
  */
 export const DECISION_PENDING_AGENT =
   'Approved — it can do this the next time it tries.';
 export const DECISION_PENDING_AGENT_NOTE =
-  'Nothing has happened yet. It can only do this during one of its own runs, and that run had already ended. If a later run makes exactly this request, it goes ahead without asking you again.';
+  'Nothing has happened yet. It can only do this during one of its own runs. If a later run makes exactly this request, it goes ahead without asking you again.';
 
 /**
  * Approved, irreversible, and the grace period has not run out yet.

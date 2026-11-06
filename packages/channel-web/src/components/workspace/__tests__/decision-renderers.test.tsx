@@ -158,9 +158,13 @@ describe('one row, three renderers — the outcome line', () => {
     // Pinned by literal: `@ax/decisions` pins the headline on its side
     // (templates.test.ts), so neither copy can drift without a red test.
     expect(DECISION_PENDING_AGENT).toBe('Approved — it can do this the next time it tries.');
+    // Review F9: no "that run had already ended". A refused wake-up (TASK-692)
+    // parks a call whose run may still be there, and the note has to be true
+    // for that row too.
     expect(DECISION_PENDING_AGENT_NOTE).toBe(
-      'Nothing has happened yet. It can only do this during one of its own runs, and that run had already ended. If a later run makes exactly this request, it goes ahead without asking you again.',
+      'Nothing has happened yet. It can only do this during one of its own runs. If a later run makes exactly this request, it goes ahead without asking you again.',
     );
+    expect(DECISION_PENDING_AGENT_NOTE).not.toMatch(/already ended/);
     const parked = resolvedFixture('approved-pending-agent');
     for (const text of [queueText(parked), cardText(parked)]) {
       expect(text).toContain(DECISION_PENDING_AGENT_NOTE);
