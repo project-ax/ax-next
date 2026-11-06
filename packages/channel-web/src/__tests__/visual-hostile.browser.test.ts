@@ -99,8 +99,11 @@ const json = (value: unknown) => JSON.stringify(value).replace(/</g, '\\u003c');
  * visual with buildVisualDocument and mounts it the way VisualFrame does.
  * Every message any frame posts to this window lands in window.__results.
  */
-function appPage(visuals: Record<string, string>, spacerPx = 0): string {
-  return `<!doctype html><html lang="en"><head>${appCspMeta()}<meta charset="utf-8"><title>visual box probe</title></head><body>
+function appPage(visuals: Record<string, string>, spacerPx = 0, frameSrc?: string): string {
+  // `frameSrc`: the shell as a deploy with a content origin serves it, its
+  // meta widened by @ax/static-files to `frame-src <content>/v/`.
+  const meta = frameSrc === undefined ? appCspMeta() : appCspMeta().replace("frame-src 'none'", () => `frame-src ${frameSrc}`);
+  return `<!doctype html><html lang="en"><head>${meta}<meta charset="utf-8"><title>visual box probe</title></head><body>
 <script type="module">
 import { buildVisualDocument, VISUAL_IFRAME_SANDBOX } from '/visual-doc.js';
 const assets = ${json(DEFAULT_VISUAL_ASSETS)};
@@ -154,6 +157,10 @@ window.__mounted = Object.keys(visuals).length;
 describe.skipIf(CHROMIUM_MISSING && !IN_CI)('chat visual box in Chromium (hostile content)', () => {
   let browser: Browser;
   let canary: Server;
+  let content: Server;
+  let contentUrl: string;
+  /** Paths the stand-in artifact content origin was asked for. It 404s them all. */
+  const contentHits: string[] = [];
   let app: Server;
   let canaryPort: number;
   let appPort: number;
@@ -193,6 +200,14 @@ describe.skipIf(CHROMIUM_MISSING && !IN_CI)('chat visual box in Chromium (hostil
     canaryPort = await listen(canary);
     canaryUrl = `http://127.0.0.1:${canaryPort}`;
 
+    // The artifact content origin the widened shell may frame (its /v/ route).
+    // Every token here is unknown, so every answer is the origin's 404.
+    content = createServer((req, res) => {
+      contentHits.push(req.url ?? '');
+      res.writeHead(404, { 'content-type': 'text/plain' }).end('not found');
+    });
+    contentUrl = `http://127.0.0.1:${await listen(content)}`;
+
     app = createServer((req, res) => {
       const url = req.url ?? '/';
       if (url === '/visual-doc.js') {
@@ -228,6 +243,7 @@ describe.skipIf(CHROMIUM_MISSING && !IN_CI)('chat visual box in Chromium (hostil
     await isolatedBrowser?.close();
     await browser?.close();
     await close(canary);
+    await close(content);
     await close(app);
   });
 
@@ -258,9 +274,10 @@ describe.skipIf(CHROMIUM_MISSING && !IN_CI)('chat visual box in Chromium (hostil
       spacerPx = 0,
       settleTimeoutMs = 20_000,
       isolate = false,
-    }: { spacerPx?: number; settleTimeoutMs?: number; isolate?: boolean } = {},
+      frameSrc,
+    }: { spacerPx?: number; settleTimeoutMs?: number; isolate?: boolean; frameSrc?: string } = {},
   ): Promise<Run> {
-    pages.set(path, appPage(visuals, spacerPx));
+    pages.set(path, appPage(visuals, spacerPx, frameSrc));
     const hitsBefore = canaryHits.length;
     const connectionsBefore = tcpConnections;
     const page = await (isolate ? await isolated() : browser).newPage();
@@ -645,6 +662,50 @@ window.__chart = new Chart(document.getElementById('c'), {
         );
         expect(canaryHits.filter((h) => h.url?.includes('self-nav-bug3'))).toEqual([]);
         expect(canaryLeaks(requests)).toEqual([]);
+      } finally {
+        await page.close();
+      }
+    });
+
+    // R31: with a content origin the shell's frame-src is widened to
+    // `<content>/v/` (the artifact viewer frames it). A visual navigating its
+    // own frame may now reach that route, but nothing else: the attacker's
+    // origin and the content origin's other paths stay refused, and a /v/ URL
+    // with no valid token is the origin's 404, which the parent sees as a
+    // second load and fails the card for.
+    it('under the widened shell (frame-src <content>/v/) a visual can reach only <content>/v/, and that fails its card', async () => {
+      const go = (url: string) => `<p>nav</p><script>setTimeout(function () { location.href = '${url}'; }, 300);</script>`;
+      const visuals = {
+        attacker: go(`${canaryUrl}/widened-attacker`),
+        other: go(`${contentUrl}/x/widened-other`),
+        view: go(`${contentUrl}/v/widened-view`),
+      };
+      const hitsBefore = contentHits.length;
+      const { page, requests } = await run(`/${mode}/widened`, visuals, Object.keys(visuals), 0, {
+        isolate,
+        frameSrc: `${contentUrl}/v/`,
+      });
+      try {
+        const meta = await page.evaluate(
+          () => document.querySelector('meta[http-equiv="Content-Security-Policy"]')?.getAttribute('content'),
+        );
+        expect(meta).toBe(`frame-src ${contentUrl}/v/`);
+        // Every one of them leaves its srcdoc: a second load the parent fails.
+        await page.waitForFunction(
+          () => {
+            const l = (window as unknown as { __loads: Record<string, number> }).__loads;
+            return (l.attacker ?? 0) >= 2 && (l.other ?? 0) >= 2 && (l.view ?? 0) >= 2;
+          },
+          undefined,
+          { timeout: 5000 },
+        );
+        await page.waitForTimeout(500);
+        // The attacker heard nothing; the content origin was asked only for /v/.
+        expect(canaryHits.filter((h) => h.url?.includes('widened'))).toEqual([]);
+        expect(canaryLeaks(requests)).toEqual([]);
+        expect(contentHits.slice(hitsBefore).filter((u) => u.includes('widened'))).toEqual(['/v/widened-view']);
+        expect(requests.get(`${contentUrl}/x/widened-other`) ?? 'never started').not.toMatch(/^response/);
+        expect(requests.get(`${contentUrl}/v/widened-view`)).toBe('response 404');
       } finally {
         await page.close();
       }
