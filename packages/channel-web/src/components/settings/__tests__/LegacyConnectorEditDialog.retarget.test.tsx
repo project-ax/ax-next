@@ -59,13 +59,17 @@ function oauthConnector(): Connector {
   };
 }
 
-async function openEditor(connector: Connector, onSaved: () => void = () => {}) {
+async function openEditor(
+  connector: Connector,
+  onSaved: () => void = () => {},
+  onOpenChange: (open: boolean) => void = () => {},
+) {
   vi.spyOn(connectorsLib, 'getConnector').mockResolvedValue(connector);
   render(
     <LegacyConnectorEditDialog
       target={connector}
       open
-      onOpenChange={() => {}}
+      onOpenChange={onOpenChange}
       onSaved={onSaved}
     />,
   );
@@ -319,6 +323,32 @@ describe('LegacyConnectorEditDialog — a retarget signs everyone out (TASK-887)
     // Putting the original address back is a new address again.
     fireEvent.change(url, { target: { value: URL_SAVED } });
     await waitFor(() => expect(screen.getByTestId(WARNING)).toHaveTextContent(TOOLS_RESET));
+  });
+
+  it('closing after a partial save refreshes the list (the connector did change)', async () => {
+    vi.spyOn(credentialsLib, 'setDestinationCredential').mockRejectedValue(new Error('boom'));
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const onSaved = vi.fn();
+    const onOpenChange = vi.fn();
+    await openEditor(oauthConnector(), onSaved, onOpenChange);
+    await typeClientSecret('typed-secret');
+    await save();
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'We saved the connector, but couldn’t save the client secret. Try saving again.',
+    );
+    expect(onSaved).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(onSaved).toHaveBeenCalledTimes(1);
+    expect(onOpenChange).toHaveBeenCalledWith(false);
+  });
+
+  it('closing without saving does not refresh the list', async () => {
+    const onSaved = vi.fn();
+    const onOpenChange = vi.fn();
+    await openEditor(oauthConnector(), onSaved, onOpenChange);
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(onOpenChange).toHaveBeenCalledWith(false);
+    expect(onSaved).not.toHaveBeenCalled();
   });
 
   it('a client-secret write that fails after the PATCH says so and stays open', async () => {

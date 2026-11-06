@@ -433,10 +433,12 @@ export function RemoteMcpConnectorForm({
     if (created) toolsStepRef.current?.focus();
   }, [created]);
 
-  // The connector already exists once step two is showing, so any way out of
-  // the dialog refreshes the list (the parents' onSaved also closes it).
+  // The connector already exists once step two is showing, and it has changed
+  // once an edit's PATCH has landed (TASK-887: a secret write after it may
+  // have failed), so then any way out of the dialog refreshes the list (the
+  // parents' onSaved also closes it).
   function close() {
-    if (created) onSaved();
+    if (created || patched) onSaved();
     onOpenChange(false);
   }
 

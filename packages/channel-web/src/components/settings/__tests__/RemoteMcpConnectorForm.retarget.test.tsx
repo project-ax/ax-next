@@ -695,6 +695,36 @@ describe('RemoteMcpConnectorForm — pointing a connector somewhere new signs ev
     expect(note()).toHaveTextContent(TOOLS_RESET);
   });
 
+  it('closing after a partial save refreshes the list (the connector did change)', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    discover = () => KEY_SERVER;
+    failingCredentialWrites = 1;
+    const options = await openEditor(sharedKeyConnector(), {
+      [SHARED_KEY_REF]: 'old-shared-key',
+    });
+    await moveTo('https://mcp.other-crm.example/mcp');
+    fireEvent.change(screen.getByLabelText('Value'), {
+      target: { value: 'new-shared-key' },
+    });
+    fireEvent.click(saveButton());
+    expect(
+      await screen.findByText(
+        'We saved the connector, but couldn’t save the key. Try saving again.',
+      ),
+    ).toBeVisible();
+    expect(options.onSaved).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(options.onSaved).toHaveBeenCalledTimes(1);
+    expect(options.onOpenChange).toHaveBeenCalledWith(false);
+  });
+
+  it('closing without saving does not refresh the list', async () => {
+    const options = await openEditor(oauthConnector());
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(options.onOpenChange).toHaveBeenCalledWith(false);
+    expect(options.onSaved).not.toHaveBeenCalled();
+  });
+
   // A partial save's PATCH landed and cleared the saved key or secret, so a
   // retry that keeps the new address still has to write it: the vault no
   // longer holds one, whatever the next save's own comparison says.

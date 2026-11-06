@@ -772,8 +772,19 @@ export function LegacyConnectorEditDialog({
       ),
     }));
 
+  // TASK-887 — once an edit's PATCH has landed the connector has changed, even
+  // if the secret write after it failed, so any way out refreshes the list
+  // (the parent's onSaved also closes the dialog).
+  const close = () => {
+    if (savedCapabilities) onSaved();
+    onOpenChange(false);
+  };
+
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog
+      open={open}
+      onOpenChange={(nextOpen) => (nextOpen ? onOpenChange(true) : close())}
+    >
       <DialogContent className="max-h-[85vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>
@@ -1278,7 +1289,7 @@ export function LegacyConnectorEditDialog({
             <Button
               type="button"
               variant="ghost"
-              onClick={() => onOpenChange(false)}
+              onClick={close}
               disabled={busy}
             >
               Cancel
