@@ -87,7 +87,7 @@ export interface VisualDocInput {
 // A bare HSL triplet ("226.67 15.25% 11.57%") or a single length ("0.5625rem").
 // Anything else — semicolons, braces, angle brackets, url() — can't match, so a
 // value can never close the style block or add a declaration.
-const TOKEN_VALUE = /^(?:\d+(?:\.\d+)?(?:deg)?\s+\d+(?:\.\d+)?%\s+\d+(?:\.\d+)?%|\d+(?:\.\d+)?(?:rem|px))$/;
+export const VISUAL_TOKEN_VALUE = /^(?:\d+(?:\.\d+)?(?:deg)?\s+\d+(?:\.\d+)?%\s+\d+(?:\.\d+)?%|\d+(?:\.\d+)?(?:rem|px))$/;
 
 export function sanitizeTokens(tokens: Readonly<Record<string, string>>): Record<string, string> {
   const out: Record<string, string> = {};
@@ -96,7 +96,7 @@ export function sanitizeTokens(tokens: Readonly<Record<string, string>>): Record
     const raw = tokens[name];
     if (typeof raw !== 'string') continue;
     const value = raw.trim();
-    if (TOKEN_VALUE.test(value)) out[name] = value;
+    if (VISUAL_TOKEN_VALUE.test(value)) out[name] = value;
   }
   return out;
 }

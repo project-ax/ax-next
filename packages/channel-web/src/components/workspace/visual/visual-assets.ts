@@ -24,6 +24,8 @@ import htmlToImageSource from 'ax-vendor/html-to-image.js?raw';
 import inter400 from './fonts/inter-400-latin.woff?inline';
 import inter500 from './fonts/inter-500-latin.woff?inline';
 import inter600 from './fonts/inter-600-latin.woff?inline';
+import { FRAME_RUNTIME_SOURCE } from './frame-runtime-source';
+import type { VisualAssets } from './visual-doc';
 
 type FontWeight = 400 | 500 | 600;
 
@@ -49,3 +51,9 @@ export function fontFaceCss(urls: Readonly<Record<FontWeight, string>>): string 
 }
 
 export const VISUAL_FONT_FACE_CSS: string = fontFaceCss(INTER_FONT_URLS);
+
+export const DEFAULT_VISUAL_ASSETS: VisualAssets = Object.freeze({
+  fontFaceCss: VISUAL_FONT_FACE_CSS,
+  librarySources: VISUAL_LIBRARY_SOURCES,
+  runtimeSource: FRAME_RUNTIME_SOURCE,
+});
