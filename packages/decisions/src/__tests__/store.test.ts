@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   stopPostgresContainer,
   startTestContainer,
@@ -10,6 +10,7 @@ import { runDecisionsMigration, type DecisionsDatabase } from '../migrations.js'
 import {
   createDecisionsStore,
   DuplicateAuthorisationError,
+  IdenticalCallAlreadyTriedError,
   type DecisionStore,
 } from '../store.js';
 import { receiptFor } from '../receipts.js';
@@ -382,7 +383,8 @@ describe('decisions store — the standing authorisation', () => {
     await s.claimForApproval('dec_1', { nowIso: T_SOON, status: 'executed' });
     expect((await s.takeApproval('a1', 'fp-1', T_SOON))!.id).toBe('dec_1');
 
-    await s.create(base({ id: 'dec_2' }));
+    // Raised AFTER the first was answered: a later ask. A hold raised before that answer is its co-open twin (TASK-286), refused below.
+    await s.create(base({ id: 'dec_2', createdAt: T_LATE }));
     const second = await s.claimForApproval('dec_2', { nowIso: T_LATE, status: 'executed' });
     expect(second!.status).toBe('executed');
   });
@@ -1060,7 +1062,8 @@ describe('decisions store — a replay that actually ran', () => {
     await s.claimForApproval('dec_1', { nowIso: T_SOON, status: 'executed' });
     await s.markReplayed('dec_1', T_SOON);
 
-    await s.create(base({ id: 'dec_2' }));
+    // Raised AFTER the first was answered: a later ask. A hold raised before that answer is its co-open twin (TASK-286), refused below.
+    await s.create(base({ id: 'dec_2', createdAt: T_LATE }));
     const second = await s.claimForApproval('dec_2', { nowIso: T_LATE, status: 'executed' });
     expect(second!.status).toBe('executed');
     expect(second!.replayedAt).toBeNull();
@@ -1431,7 +1434,8 @@ describe('decisions store — reclaiming a stranded flight', () => {
 
         // The point of the whole exercise: the slot is free, so the same call
         // can be held and approved again.
-        await s.create(base({ id: 'dec_2' }));
+        // Raised AFTER the first was answered: a later ask. A hold raised before that answer is its co-open twin (TASK-286), refused below.
+        await s.create(base({ id: 'dec_2', createdAt: T_RECLAIMED }));
         expect(
           await s.claimForApproval('dec_2', { nowIso: T_RECLAIMED, status: 'executed' }),
         ).not.toBeNull();
@@ -1688,7 +1692,8 @@ describe('decisions store — an outcome nobody reported (TASK-1046)', () => {
       expect(await s.takeApproval('a1', 'fp-1', T_LATE)).toBeNull();
       // …and the index slot is free, so the same call can be held and
       // approved again.
-      await s.create(base({ id: 'dec_2' }));
+      // Raised AFTER the first was answered: a later ask. A hold raised before that answer is its co-open twin (TASK-286), refused below.
+      await s.create(base({ id: 'dec_2', createdAt: T_LATE }));
       expect(
         await s.claimForApproval('dec_2', { nowIso: T_LATE, status: 'executed' }),
       ).not.toBeNull();
@@ -1850,6 +1855,351 @@ describe('decisions store — one OPEN question per (agent, call shape)', () => 
     const ids = new Set(results.map((r) => r.decision.id));
     expect(ids.size).toBe(1);
     expect(await s.list({ ownerUserId: 'u1' })).toHaveLength(1);
+  });
+});
+
+/**
+ * TASK-286. An undo can leave TWO open rows for one (agent, owner, call
+ * shape): dismiss → the agent asks the identical call again → undo. Undo is
+ * never refused for that (the TASK-280 ruling), so the pair may exist. It may
+ * not run the call twice — and a twin that has gone out has left the partial
+ * unique index, so the index can no longer refuse the other one.
+ * `claimForApproval` does, and these cases pin exactly when.
+ *
+ * A TWIN of row S has S's agent, owner and call fingerprint, another id, and an
+ * answer given at or after S was raised. It RAN when it authorises and was
+ * replayed or consumed; its outcome is UNKNOWN when it failed with
+ * `replay_abandoned_at` set. No other twin refuses.
+ *
+ * Cases 1–10 run on real Postgres AND the fake, which shares the rule through
+ * `firstTriedTwin`. Each names its leg, so a red run says which store answered
+ * differently. The two races at the end are real Postgres only.
+ */
+describe('decisions store — an approval whose identical twin already went out (TASK-286)', () => {
+  const T_DISMISSED = '2026-08-20T09:00:01.000Z';
+  const T_ASKED_AGAIN = '2026-08-20T09:00:02.000Z';
+  const T_APPROVED = '2026-08-20T09:00:03.000Z';
+  const T_AFTER = '2026-08-20T09:00:04.000Z';
+
+  /** Both stores, named, so a red run says WHICH one answered differently. */
+  const both = async (): Promise<Array<readonly [leg: string, s: DecisionStore]>> => [
+    ['postgres', await freshStore()],
+    ['fake', createFakeStore()],
+  ];
+
+  /** The only way to get two OPEN rows for one call: raise, dismiss, the agent asks again, undo. */
+  async function openTwins(s: DecisionStore): Promise<void> {
+    expect((await s.createOrReuseOpen(base({ attendance: 'unattended' }))).created).toBe(true);
+    await s.markDismissed('dec_1', T_DISMISSED);
+    expect(
+      (
+        await s.createOrReuseOpen(
+          base({ id: 'dec_2', attendance: 'unattended', createdAt: T_ASKED_AGAIN }),
+        )
+      ).created,
+    ).toBe(true);
+    expect(await s.restore('dec_1')).not.toBeNull();
+  }
+
+  /** Reversible, unattended: claimed with the flight, then the host's replay returns. */
+  async function hostRan(s: DecisionStore, id: string, at = T_APPROVED): Promise<void> {
+    expect(
+      await s.claimForApproval(id, { nowIso: at, status: 'executed', replayClaimedAt: at }),
+    ).not.toBeNull();
+    expect((await s.markReplayed(id, at))!.replayedAt).toBe(at);
+  }
+
+  /** The approval under test. */
+  const claim = (s: DecisionStore, id: string): Promise<Decision | null> =>
+    s.claimForApproval(id, { nowIso: T_AFTER, status: 'executed' });
+
+  /** What a claim resolved to, or what it threw. A red run then shows the row it claimed. */
+  const settled = (p: Promise<unknown>): Promise<unknown> =>
+    p.then(
+      (v) => v,
+      (e: unknown) => e,
+    );
+
+  it('refuses the second approval once its twin was replayed by the host, and leaves it open', async () => {
+    for (const [leg, s] of await both()) {
+      await openTwins(s);
+      await hostRan(s, 'dec_1');
+
+      const err = await settled(claim(s, 'dec_2'));
+      expect(err, leg).toBeInstanceOf(IdenticalCallAlreadyTriedError);
+      expect(err, leg).toMatchObject({ twinId: 'dec_1', outcome: 'ran' });
+      // Refused, not resolved: the card stays open, and still answerable.
+      expect((await s.get('dec_2'))!.status, leg).toBe('pending');
+    }
+  });
+
+  for (const status of ['executed', 'approved-pending-agent'] as const) {
+    it(`refuses once the agent took its twin's yes at the gate — ${status}`, async () => {
+      for (const [leg, s] of await both()) {
+        await openTwins(s);
+        expect(await s.claimForApproval('dec_1', { nowIso: T_APPROVED, status }), leg).not.toBeNull();
+        expect((await s.takeApproval('a1', 'fp-1', T_APPROVED))!.id, leg).toBe('dec_1');
+
+        const err = await settled(claim(s, 'dec_2'));
+        expect(err, leg).toBeInstanceOf(IdenticalCallAlreadyTriedError);
+        expect(err, leg).toMatchObject({ twinId: 'dec_1', outcome: 'ran' });
+        expect((await s.get('dec_2'))!.status, leg).toBe('pending');
+      }
+    });
+  }
+
+  for (const [name, wentOut] of [
+    ['no answer came back', (s: DecisionStore) => s.markOutcomeUnknown('dec_1', T_AFTER)],
+    [
+      'the service answered tool-error',
+      (s: DecisionStore) => s.markOutcomeUnknown('dec_1', T_AFTER, TOOL_ERROR_REPLAY_CODE),
+    ],
+    [
+      'a stranded flight was reclaimed',
+      (s: DecisionStore) =>
+        s.reclaimStrandedFlights({ nowIso: T_AFTER, claimedBeforeIso: T_AFTER, limit: 10 }),
+    ],
+  ] as const) {
+    it(`refuses once its twin went out with no answer — ${name}`, async () => {
+      for (const [leg, s] of await both()) {
+        await openTwins(s);
+        expect(
+          await s.claimForApproval('dec_1', {
+            nowIso: T_APPROVED,
+            status: 'executed',
+            replayClaimedAt: T_APPROVED,
+          }),
+          leg,
+        ).not.toBeNull();
+        await wentOut(s);
+        expect((await s.get('dec_1'))!.replayAbandonedAt, leg).not.toBeNull();
+
+        // It may have landed. Running the twin too is the double send.
+        const err = await settled(claim(s, 'dec_2'));
+        expect(err, leg).toBeInstanceOf(IdenticalCallAlreadyTriedError);
+        expect(err, leg).toMatchObject({ twinId: 'dec_1', outcome: 'outcome-unknown' });
+        expect((await s.get('dec_2'))!.status, leg).toBe('pending');
+      }
+    });
+  }
+
+  it('refuses the restored card too, once its newer twin ran first', async () => {
+    // The ruling's "the restored card is then unapprovable": the twin the agent
+    // raised after the dismissal is approved and runs, and the person learns
+    // about the restored card when they press Approve on it.
+    for (const [leg, s] of await both()) {
+      await openTwins(s);
+      await hostRan(s, 'dec_2');
+
+      const err = await settled(claim(s, 'dec_1'));
+      expect(err, leg).toBeInstanceOf(IdenticalCallAlreadyTriedError);
+      expect(err, leg).toMatchObject({ twinId: 'dec_2', outcome: 'ran' });
+      expect((await s.get('dec_1'))!.status, leg).toBe('pending');
+    }
+  });
+
+  it('leaves a twin that has not gone out to the index — DuplicateAuthorisationError, as before', async () => {
+    // In flight: claimed with the host's flight, still holding its index slot.
+    for (const [leg, s] of await both()) {
+      await openTwins(s);
+      expect(
+        await s.claimForApproval('dec_1', {
+          nowIso: T_APPROVED,
+          status: 'executed',
+          replayClaimedAt: T_APPROVED,
+        }),
+        leg,
+      ).not.toBeNull();
+
+      const err = await settled(claim(s, 'dec_2'));
+      expect(err, leg).toBeInstanceOf(DuplicateAuthorisationError);
+      expect(err, leg).not.toBeInstanceOf(IdenticalCallAlreadyTriedError);
+      expect((await s.get('dec_2'))!.status, leg).toBe('pending');
+    }
+  });
+
+  it('lets the twin through when the first one definitely did not run', async () => {
+    // A definite failure ran nothing, and its receipt says "Nothing was
+    // completed". Approving the other card is the honest retry, and refusing
+    // it would say something false.
+    for (const [leg, s] of await both()) {
+      await openTwins(s);
+      await s.claimForApproval('dec_1', {
+        nowIso: T_APPROVED,
+        status: 'executed',
+        replayClaimedAt: T_APPROVED,
+      });
+      expect(await s.markFailed('dec_1', { error: 'it threw' }), leg).toMatchObject({
+        status: 'failed',
+        replayAbandonedAt: null,
+      });
+
+      expect(await claim(s, 'dec_2'), leg).toMatchObject({ id: 'dec_2', status: 'executed' });
+    }
+  });
+
+  for (const [name, close] of [
+    ['dismissed', (s: DecisionStore) => s.markDismissed('dec_1', T_APPROVED)],
+    ['expired', (s: DecisionStore) => s.markExpired('dec_1', T_APPROVED)],
+  ] as const) {
+    it(`lets the twin through when the first was ${name} — nothing ran`, async () => {
+      for (const [leg, s] of await both()) {
+        await openTwins(s);
+        expect(await close(s), leg).toMatchObject({ status: name });
+
+        expect(await claim(s, 'dec_2'), leg).toMatchObject({ id: 'dec_2', status: 'executed' });
+      }
+    });
+  }
+
+  it('never refuses a LATER ask — a hold raised after the first was answered is a new question', async () => {
+    for (const [leg, s] of await both()) {
+      await s.create(base());
+      await hostRan(s, 'dec_1');
+      await s.create(base({ id: 'dec_2', createdAt: T_AFTER }));
+
+      expect(await claim(s, 'dec_2'), leg).toMatchObject({ id: 'dec_2', status: 'executed' });
+    }
+  });
+
+  it('counts a twin answered in the same instant this one was raised', async () => {
+    // The canary's movable clocks stamp both in one instant, and the safe
+    // direction is to refuse.
+    for (const [leg, s] of await both()) {
+      await openTwins(s);
+      await hostRan(s, 'dec_1', T_ASKED_AGAIN);
+
+      const err = await settled(claim(s, 'dec_2'));
+      expect(err, leg).toBeInstanceOf(IdenticalCallAlreadyTriedError);
+      expect(err, leg).toMatchObject({ outcome: 'ran' });
+    }
+  });
+
+  it("is owner-scoped — another person's identical call that ran does not refuse this one", async () => {
+    // TASK-254's two-owner residue: two people answering two cards on a shared
+    // team agent. The twin check does not reach across owners, so this second
+    // send stays possible, by the ruling's (agent, owner, fingerprint) key.
+    for (const [leg, s] of await both()) {
+      await s.create(base({ id: 'dec_u2', ownerUserId: 'u2' }));
+      await hostRan(s, 'dec_u2');
+      await s.create(base());
+
+      expect(await claim(s, 'dec_1'), leg).toMatchObject({ id: 'dec_1', status: 'executed' });
+    }
+  });
+
+  // ---------------------------------------------------------------------------
+  // THE TWO RACES, real Postgres only. The fake is single-threaded, so it
+  // cannot fail them and must not be allowed to claim it passes them.
+  //
+  // Each slows ONE claim with a BEFORE UPDATE trigger that sleeps. That fires
+  // after `claimForApproval`'s twin check and before the row reaches the
+  // partial unique index: the window each lock exists to close. The trigger
+  // dies with the table in `afterEach`.
+  // ---------------------------------------------------------------------------
+
+  /** Its own pool, WARMED: a pool still opening connections serialises callers by accident (TASK-254). */
+  async function raceStore(): Promise<{ db: Kysely<DecisionsDatabase>; s: DecisionStore }> {
+    const db = makeKysely();
+    await runDecisionsMigration(db);
+    await Promise.all(Array.from({ length: 4 }, () => sql`SELECT 1`.execute(db)));
+    return { db, s: createDecisionsStore(db) };
+  }
+
+  /**
+   * Slow `decisionId`'s claim INSIDE its UPDATE — after the twin check, before
+   * the unique check. DDL takes no bind parameters, so the id is a literal.
+   *
+   * One second, not less: the red run needs a whole competing claim, and on
+   * R2 its replay, to land inside the window on a loaded machine.
+   */
+  async function slowClaimOf(db: Kysely<DecisionsDatabase>, decisionId: string): Promise<void> {
+    await sql`CREATE OR REPLACE FUNCTION decisions_v1_test_slow_claim() RETURNS trigger AS $$
+      BEGIN PERFORM pg_sleep(1); RETURN NEW; END; $$ LANGUAGE plpgsql`.execute(db);
+    await sql`CREATE TRIGGER decisions_v1_test_slow_claim_trg BEFORE UPDATE ON decisions_v1_decisions
+      FOR EACH ROW WHEN (NEW.decision_id = ${sql.lit(decisionId)} AND NEW.status = 'executed')
+      EXECUTE FUNCTION decisions_v1_test_slow_claim()`.execute(db);
+  }
+
+  /** Until some backend is asleep in that trigger. Bounded by time, not by a count of tries. */
+  async function untilSleeping(db: Kysely<DecisionsDatabase>): Promise<void> {
+    await vi.waitFor(
+      async () => {
+        const { rows } = await sql<{ n: number }>`
+          SELECT count(*)::int AS n FROM pg_stat_activity WHERE wait_event = 'PgSleep'`.execute(db);
+        if ((rows[0]?.n ?? 0) === 0) throw new Error('no claim is asleep in the trigger yet');
+      },
+      { timeout: 10_000, interval: 10 },
+    );
+  }
+
+  const isRow = (v: unknown): v is Decision =>
+    typeof v === 'object' && v !== null && !(v instanceof Error) && 'id' in v;
+
+  it('holds a claimed twin in place until this claim lands — its replay cannot slip in between', async () => {
+    // `FOR UPDATE`'s job. The twin check found dec_1 in flight (nothing to
+    // refuse yet), so dec_2's claim is left to the index — but dec_1's replay
+    // returning in the gap would take it OUT of the index, and the claim would
+    // then find the slot free.
+    const { db, s } = await raceStore();
+    await openTwins(s);
+    expect(
+      await s.claimForApproval('dec_1', {
+        nowIso: T_APPROVED,
+        status: 'executed',
+        replayClaimedAt: T_APPROVED,
+      }),
+    ).not.toBeNull();
+    await slowClaimOf(db, 'dec_2');
+
+    const second = settled(claim(s, 'dec_2'));
+    await untilSleeping(db);
+    // dec_2's claim has checked its twin and is asleep before the index. The
+    // twin's replay returns now.
+    await Promise.all([second, s.markReplayed('dec_1', T_AFTER)]);
+
+    expect(await second).toBeInstanceOf(DuplicateAuthorisationError);
+    expect((await s.get('dec_2'))!.status).toBe('pending');
+    // The replay was not lost, only held: it landed after the claim let go.
+    expect((await s.get('dec_1'))!.replayedAt).toBe(T_AFTER);
+
+    // And now that dec_1 has gone out, it is the twin check that refuses.
+    await sql`DROP TRIGGER decisions_v1_test_slow_claim_trg ON decisions_v1_decisions`.execute(db);
+    const again = await settled(claim(s, 'dec_2'));
+    expect(again).toBeInstanceOf(IdenticalCallAlreadyTriedError);
+    expect(again).toMatchObject({ twinId: 'dec_1', outcome: 'ran' });
+  });
+
+  it('serialises two approvals of co-open twins — the later one sees the first', async () => {
+    // The advisory lock's job, which `FOR UPDATE` cannot do: while dec_2 is
+    // still PENDING the twin check does not match it, so there is nothing to
+    // lock. Approval A (dec_1) checks, finds nothing and falls asleep before
+    // the index. Without the lock, approval B (dec_2) is claimed, replayed and
+    // out of the index before A wakes, and A then finds the slot free too.
+    const { db, s } = await raceStore();
+    await openTwins(s);
+    await slowClaimOf(db, 'dec_1');
+    const opts = { nowIso: T_APPROVED, status: 'executed', replayClaimedAt: T_APPROVED } as const;
+
+    const first = settled(s.claimForApproval('dec_1', opts));
+    await untilSleeping(db);
+    // B: reversible and unattended, so the host replays it the moment it is
+    // claimed.
+    const second = settled(
+      s.claimForApproval('dec_2', opts).then(async (row) => {
+        if (row !== null) await s.markReplayed('dec_2', T_AFTER);
+        return row;
+      }),
+    );
+    const [a, b] = await Promise.all([first, second]);
+
+    // Exactly ONE of the two approvals is entitled to run anything.
+    expect([a, b].filter(isRow).map((d) => d.id)).toEqual(['dec_1']);
+    expect(a).toMatchObject({ id: 'dec_1', status: 'executed' });
+    expect(b).toBeInstanceOf(DuplicateAuthorisationError);
+    const dec2 = (await s.get('dec_2'))!;
+    expect(dec2.status).toBe('pending');
+    expect(dec2.replayedAt).toBeNull();
   });
 });
 

@@ -7,9 +7,21 @@
  * against real Postgres in `store.test.ts`, and the two are driven together
  * for real in `decisions.canary.test.ts`. This fake exists so the gate's tests
  * stay fast and hermetic, not to stand in for either of those.
+ *
+ * ONE RULE IT DOES NOT RESTATE: which co-open twin refuses an approval
+ * (TASK-286). That is `firstTriedTwin`, imported from the real store, so the
+ * two cannot disagree about it; only the selection (same key, answered at or
+ * after this row was raised) is written out here. The two races the rule
+ * depends on, the advisory lock and `FOR UPDATE`, stay Postgres-only in
+ * `store.test.ts`: one JS thread cannot race itself.
  */
 import { RECEIPT_STATUSES } from '../receipts.js';
-import { DuplicateAuthorisationError, type DecisionStore } from '../store.js';
+import {
+  DuplicateAuthorisationError,
+  firstTriedTwin,
+  IdenticalCallAlreadyTriedError,
+  type DecisionStore,
+} from '../store.js';
 import { AUTHORISING_STATUSES, OPEN_STATUSES, type Decision } from '../types.js';
 
 // The store's own open-set, not a third copy of it. A fake that disagreed
@@ -184,6 +196,23 @@ export function createFakeStore(): FakeStore {
     ) {
       const row = open(decisionId);
       if (row === null) return null;
+      // TASK-286's twin check, BEFORE the index simulation, as in the real
+      // store. Instants compared as instants, never as strings (see `count`).
+      const raisedAt = Date.parse(row.createdAt);
+      const tried = firstTriedTwin(
+        [...rows.values()].filter(
+          (twin) =>
+            twin.id !== decisionId &&
+            twin.agentId === row.agentId &&
+            twin.ownerUserId === row.ownerUserId &&
+            twin.callFingerprint === row.callFingerprint &&
+            twin.resolvedAt !== null &&
+            Date.parse(twin.resolvedAt) >= raisedAt,
+        ),
+      );
+      if (tried !== null) {
+        throw new IdenticalCallAlreadyTriedError(decisionId, tried.twinId, tried.outcome);
+      }
       for (const other of rows.values()) {
         if (
           other.id !== decisionId &&
