@@ -88,8 +88,20 @@ describe('artifact.publish handler', () => {
 
   it('forwards visual: true to the hook as visual: true (a chat visual)', async () => {
     const bus = fakeBus(async () => HOOK_OUT);
-    await artifactPublishHandler({ ...validReq, path: 'visuals/x.html', visual: true }, fakeCtx(), bus as never);
-    expect(bus.call.mock.calls[0]![2]).toMatchObject({ sourcePath: 'visuals/x.html', visual: true });
+    const path = `visuals/${VALID_SHA}.html`;
+    await artifactPublishHandler({ ...validReq, path, visual: true }, fakeCtx(), bus as never);
+    expect(bus.call.mock.calls[0]![2]).toMatchObject({ sourcePath: path, visual: true });
+  });
+
+  it('refuses a visual at any path but visuals/<its sha256>.html, before the hook (R30)', async () => {
+    const bus = fakeBus(async () => HOOK_OUT);
+    const r = (await artifactPublishHandler(
+      { ...validReq, path: 'reports/report.pdf', visual: true },
+      fakeCtx(),
+      bus as never,
+    )) as HandlerErr;
+    expect(r.status).toBe(400);
+    expect(bus.call).not.toHaveBeenCalled();
   });
 
   it('leaves visual out of the hook payload when the runner sent none', async () => {

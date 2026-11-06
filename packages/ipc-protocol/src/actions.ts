@@ -435,8 +435,20 @@ export type BlobGetRequest = z.infer<typeof BlobGetRequestSchema>;
 // stores so the chat can render it. It stays out of every Artifacts surface
 // (list, the agent's prompt list, links, the viewer); only its chat card loads
 // it. Set by the runner's show_visual executor alone; the model-facing
-// `artifact_publish` input has no such field.
+// `artifact_publish` input has no such field. The host decides what a visual
+// looks like (R30): its path must be `visuals/<its own sha256>.html` (checked
+// here) and its bytes at most MAX_VISUAL_HTML_BYTES (checked by
+// `artifacts:publish` against the blob store's size), so a runner can't hide an
+// arbitrary file by calling it a visual.
 // ---------------------------------------------------------------------------
+
+/** Largest chat visual (show_visual HTML), in bytes: 100 KB. */
+export const MAX_VISUAL_HTML_BYTES = 102_400;
+
+/** Where a chat visual with this content hash must live. */
+export function visualPathFor(sha256: string): string {
+  return `visuals/${sha256}.html`;
+}
 
 export const ArtifactPublishRequestSchema = z
   .object({
@@ -447,7 +459,11 @@ export const ArtifactPublishRequestSchema = z
     artifactId: AttachmentIdSchema.optional(),
     visual: z.literal(true).optional(),
   })
-  .strict();
+  .strict()
+  .refine((r) => r.visual !== true || r.path === visualPathFor(r.sha256), {
+    message: 'a visual must be published at visuals/<sha256>.html',
+    path: ['path'],
+  });
 export type ArtifactPublishRequest = z.infer<typeof ArtifactPublishRequestSchema>;
 
 export const ArtifactPublishResponseSchema = z.object({

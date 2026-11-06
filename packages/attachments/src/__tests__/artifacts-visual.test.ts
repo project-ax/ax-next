@@ -1,9 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import { PluginError } from '@ax/core';
+import { MAX_VISUAL_HTML_BYTES } from '@ax/ipc-protocol';
 import { createArtifactsMintViewTokenHandler } from '../artifacts/handlers.js';
 import { newShareCode } from '../artifacts/share-code.js';
 import type { ArtifactsListOutput } from '../artifacts/types.js';
-import { SHA, SHA2, ctxFor, makeRig, publish, useArtifactsDb, type Rig } from './artifacts-fixture.js';
+import { BYTES, SHA, ctxFor, makeRig, publish, useArtifactsDb, type Rig } from './artifacts-fixture.js';
 
 // Ruling U1: a chart from show_visual (a "chat visual") is stored as an
 // artifact so its chat card can load it, but it is NOT one of the agent's
@@ -31,7 +32,7 @@ async function refusal(p: Promise<unknown>): Promise<{ code: string; message: st
   throw new Error('expected a refusal');
 }
 
-const VISUAL = { sourcePath: 'visuals/abc.html', title: 'Issues per cycle', visual: true };
+const VISUAL = { sourcePath: `visuals/${SHA}.html`, title: 'Issues per cycle', visual: true };
 
 describe('chat visuals are not artifacts (U1)', () => {
   it('a visual is left out of artifacts:list; a normal artifact beside it is listed', async () => {
@@ -47,7 +48,9 @@ describe('chat visuals are not artifacts (U1)', () => {
     const rig = await makeRig();
     // Over the row cap in visuals alone: none may show, nor count as "more".
     for (let i = 0; i < 55; i++) {
-      await publish(rig, { ...VISUAL, sourcePath: `visuals/${i}.html` });
+      const sha = i.toString(16).padStart(64, '0');
+      BYTES[sha] = new Uint8Array([i]);
+      await publish(rig, { ...VISUAL, sha256: sha, sourcePath: `visuals/${sha}.html` });
     }
     const empty = await rig.bus.call<unknown, { context?: string }>(AUGMENT, ctxFor('u-1', 'agt-1'), {});
     expect(empty).toEqual({});
@@ -117,7 +120,8 @@ describe('chat visuals are not artifacts (U1)', () => {
   it('re-publishing a visual keeps it hidden; publishing its path without the marker makes it a normal artifact', async () => {
     const rig = await makeRig();
     const v1 = await publish(rig, VISUAL);
-    const v2 = await publish(rig, { ...VISUAL, sha256: SHA2 });
+    // The same chart published again (as show_visual would, same bytes).
+    const v2 = await publish(rig, VISUAL);
     expect(v2).toMatchObject({ artifactId: v1.artifactId, version: 2 });
     expect((await list(rig)).artifacts).toEqual([]);
     // An explicit artifact_publish of that same file (no marker): the agent
@@ -142,11 +146,37 @@ describe('chat visuals are not artifacts (U1)', () => {
       rig.bus.call('artifacts:publish', ctxFor('u-1', 'agt-1'), {
         conversationId: 'c-1',
         sha256: SHA,
-        sourcePath: 'visuals/x.html',
+        sourcePath: `visuals/${SHA}.html`,
         title: 'X',
         visual: 'yes',
       }),
     );
     expect(r.code).toBe('invalid-payload');
+  });
+
+  // R30: the hook re-checks what the wire schema checks, plus the size, which
+  // only the blob store knows.
+  it('publish refuses a visual at a path other than visuals/<its sha256>.html', async () => {
+    const rig = await makeRig();
+    for (const sourcePath of ['reports/q3.html', `visuals/${'b'.repeat(64)}.html`, 'visuals/abc.html']) {
+      const r = await refusal(publish(rig, { ...VISUAL, sourcePath }));
+      expect(r.code, sourcePath).toBe('invalid-payload');
+    }
+    expect(await rig.artifacts.countForAgent('agt-1')).toBe(0);
+  });
+
+  it('publish refuses a visual over the 100 KB cap (size from blob:stat)', async () => {
+    const rig = await makeRig();
+    const big = 'f'.repeat(63) + '0';
+    BYTES[big] = new Uint8Array(MAX_VISUAL_HTML_BYTES + 1);
+    const at = 'f'.repeat(63) + '1';
+    BYTES[at] = new Uint8Array(MAX_VISUAL_HTML_BYTES);
+    const r = await refusal(publish(rig, { ...VISUAL, sha256: big, sourcePath: `visuals/${big}.html` }));
+    expect(r.code).toBe('invalid-payload');
+    await expect(publish(rig, { ...VISUAL, sha256: at, sourcePath: `visuals/${at}.html` })).resolves.toMatchObject({
+      version: 1,
+    });
+    // A normal artifact of that size is fine.
+    await expect(publish(rig, { sha256: big, sourcePath: 'reports/big.html' })).resolves.toMatchObject({ version: 1 });
   });
 });

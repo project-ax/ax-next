@@ -10,6 +10,7 @@ import {
   ATTACHMENT_FILENAME_MAX,
   ATTACHMENT_MEDIA_TYPE_MAX,
   AttachmentIdSchema,
+  MAX_VISUAL_HTML_BYTES,
 } from '@ax/ipc-protocol';
 import type { AttachmentsStore, FileRow } from './store.js';
 import type { ArtifactStore, PublishVersionResult } from './artifacts/store.js';
@@ -405,7 +406,11 @@ export interface PublishArtifactInput {
   callerAgentId?: string;
 }
 
-function publishRefusal(hookName: string, code: 'forbidden' | 'not-found', message: string): PluginError {
+function publishRefusal(
+  hookName: string,
+  code: 'forbidden' | 'not-found' | 'invalid-payload',
+  message: string,
+): PluginError {
   return new PluginError({ code, plugin: PLUGIN_NAME, hookName, message });
 }
 
@@ -471,6 +476,10 @@ export async function publishArtifact(
     throw publishRefusal(hookName, 'not-found', 'artifact bytes are not in the blob store');
   }
   const sizeBytes = (stat as { size: number }).size;
+  // R30: a chat visual is small by definition; the runner's word is not enough.
+  if (input.visual === true && sizeBytes > MAX_VISUAL_HTML_BYTES) {
+    throw publishRefusal(hookName, 'invalid-payload', `a visual is at most ${MAX_VISUAL_HTML_BYTES} bytes`);
+  }
 
   const title =
     normalizeArtifactTitle(input.title) ??

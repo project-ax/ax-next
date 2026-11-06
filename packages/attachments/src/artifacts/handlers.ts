@@ -5,7 +5,7 @@ import {
   type AgentContext,
   type HookBus,
 } from '@ax/core';
-import { isShareCode } from '@ax/ipc-protocol';
+import { isShareCode, visualPathFor } from '@ax/ipc-protocol';
 import { publishArtifact } from '../handlers.js';
 import { ARTIFACTS_AUGMENT_HOOK, createArtifactsAugmentHandler } from './augment.js';
 import { can, isAgentMember, roleFor, type ArtifactAction } from './access.js';
@@ -184,6 +184,11 @@ export function createArtifactsPublishHandler(deps: ArtifactHookDeps) {
     if (input.artifactId !== undefined && !isId(input.artifactId)) throw notFound(hookName);
     if (input.visual !== undefined && typeof input.visual !== 'boolean') {
       throw fail(hookName, 'invalid-payload', 'visual must be a boolean');
+    }
+    // R30: what a chat visual looks like is the host's call. The size check
+    // runs in publishArtifact, against the blob store's size.
+    if (input.visual === true && input.sourcePath !== visualPathFor(input.sha256)) {
+      throw fail(hookName, 'invalid-payload', 'a visual must be published at visuals/<sha256>.html');
     }
 
     const result = await publishArtifact(deps, ctx, hookName, {
