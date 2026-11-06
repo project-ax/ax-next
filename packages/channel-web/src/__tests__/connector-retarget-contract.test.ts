@@ -270,9 +270,12 @@ const rows: Array<[name: string, before: RetargetSubject, after: RetargetSubject
     }),
     false,
   ],
-  // The host-side header builder (@ax/mcp-client connector-headers.ts) sends a
-  // slot's credential to EVERY server carrying the slot's server name, not just
-  // the first, and the write schema allows a repeated server name.
+  // The write schema allows a repeated server name. The host-side header
+  // builder (@ax/mcp-client connector-headers.ts) now sends a slot's credential
+  // to only the FIRST server carrying that name, but the rule still emits a
+  // reach fact for every same-name server, a deliberately cautious extra: it
+  // may warn about a server that would never get the credential, and it can't
+  // miss one that would.
   ['linear: a second server added under the oauth slot’s server name, at a new url', linear(), linearWithTwin, true],
   ['linear: that duplicate-name server removed again', linearWithTwin, linear(), false],
   [
@@ -517,12 +520,14 @@ function subjectsById(): Map<string, RetargetSubject[]> {
 describe('pointsSomewhereNew: client copy === server original over every same-id pair (TASK-887)', () => {
   it('agrees on every before × after pair drawn from the table’s fixtures', () => {
     let pairs = 0;
+    const outcomes = new Set<boolean>();
     const disagreements: string[] = [];
     for (const [id, group] of subjectsById()) {
       for (const before of group) {
         for (const after of group) {
           pairs++;
           const server = serverPointsSomewhereNew(before, after);
+          outcomes.add(server);
           const client = clientPointsSomewhereNew(asClient(before), asClient(after));
           if (client !== server) {
             disagreements.push(
@@ -535,6 +540,8 @@ describe('pointsSomewhereNew: client copy === server original over every same-id
     expect(disagreements).toEqual([]);
     // Non-vacuous: the sweep visited a lot of pairs.
     expect(pairs).toBeGreaterThan(200);
+    // ...and it saw both answers, so it isn't agreeing on a constant.
+    expect([...outcomes].sort()).toEqual([false, true]);
     console.info(`[contract] same-id pairs checked: ${pairs}`);
   });
 });
