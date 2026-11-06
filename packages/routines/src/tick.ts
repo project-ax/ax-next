@@ -216,7 +216,8 @@ const ADVISORY_LOCK_KEY = 'ax/routines.tick';
 export async function runTickLoop(input: TickLoopInput): Promise<void> {
   let failures = 0; // failed elections in a row
   while (!input.signal.aborted) {
-    // Connection-pin the elected ticker's whole lifetime. Both the advisory
+    // Connection-pin the elected ticker's whole term (it ends at shutdown, or
+    // when Postgres ends the session: TASK-1048 below). Both the advisory
     // lock and the store ops it gates must run on the same backend session
     // (pg_try_advisory_lock is session-scoped, and routing store ops to
     // other pool connections would self-deadlock when pool.max === 1 since
@@ -251,6 +252,17 @@ export async function runTickLoop(input: TickLoopInput): Promise<void> {
               );
             }
             await input.clock.sleep(input.tickIntervalMs, input.signal);
+            // TASK-1048: Postgres can end this session at any time (a restart,
+            // a failover, an admin's pg_terminate_backend), and the advisory
+            // lock goes with it. A client whose session is gone fails every
+            // query, so a leader that never checked would fail every tick
+            // until the host restarted. So before the next tick, the session
+            // must answer. If it can't, step down: the finally below tries the
+            // unlock (it fails quietly on a dead client), execute() hands the
+            // client back, pg-pool drops it, and the loop above runs the
+            // election again at once on a fresh connection. Nothing is logged
+            // here: the database plugin logs a dropped connection, in codes.
+            if (!input.signal.aborted && !(await sessionAnswers(pinned))) break;
           }
         } finally {
           await releaseAdvisoryLock(pinned);
@@ -296,5 +308,15 @@ async function releaseAdvisoryLock(db: Kysely<RoutinesDatabase>): Promise<void> 
     await sql`SELECT pg_advisory_unlock(hashtext(${ADVISORY_LOCK_KEY}))`.execute(db);
   } catch {
     // disconnect handles it
+  }
+}
+
+/** TASK-1048: whether the pinned session still answers. A leader whose session doesn't steps down. */
+async function sessionAnswers(db: Kysely<RoutinesDatabase>): Promise<boolean> {
+  try {
+    await sql`SELECT 1`.execute(db);
+    return true;
+  } catch {
+    return false;
   }
 }
