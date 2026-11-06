@@ -282,7 +282,7 @@ describe('accepted DB fire dispatch', () => {
   });
   // TASK-908: `system-prompt:` is the landed veto's, fired before connector assembly too. A repeat routine's run
   // stores the reason as its code (TASK-1038); only a task's is worded (checkin.test.ts).
-  it.each(['chat:start:denied', 'agent-resolve:forbidden', 'system-prompt:brief-missing'])('preserves the previous warning for a pre-assembly gate %s', async (reason) => {
+  it.each(['chat:start:denied', 'agent-resolve:forbidden', 'system-prompt:brief-missing', 'conversation:message-not-saved'])('preserves the previous warning for a pre-assembly gate %s', async (reason) => {
     const h = await setup({ invoke: async () => ({ kind: 'terminated', reason }) });
     await f.store.finishDispatch({ dispatchId: h.accepted.dispatchId, outcome: { status: 'ok', conversationId: 'c', error: null, renderedPrompt: 'p', warning: 'Previous warning' } });
     const next = (await f.store.acceptDispatch({ ...h.row, expectedRevision: h.row.revision, actorUserId: 'owner', requestId: 'second', source: 'manual', now: new Date(now.getTime() + 1) }))!.accepted;
