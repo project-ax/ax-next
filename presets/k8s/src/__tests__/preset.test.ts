@@ -1,4 +1,5 @@
 import { HookBus, makeAgentContext, type ToolDescriptor } from '@ax/core';
+import { DISPATCHER_DEPENDENCIES } from '@ax/ipc-core';
 import { REQUEST_CAPABILITY_DESCRIPTOR, SEARCH_CATALOG_DESCRIPTOR } from '@ax/skill-broker';
 import { ARTIFACT_PUBLISH_DESCRIPTOR, SHOW_VISUAL_DESCRIPTOR } from '@ax/tool-artifact-publish';
 import { CONNECTOR_PROPOSE_DESCRIPTOR } from '@ax/tool-connector-propose';
@@ -1619,6 +1620,91 @@ describe('@ax/preset-k8s — default routines (routines-half closes here)', () =
     const routines = plugins.find((p) => p.manifest.name === '@ax/routines');
     expect(routines, '@ax/routines plugin').toBeDefined();
     expect(routines!.manifest.subscribes).not.toContain('agents:created');
+  });
+});
+
+describe('@ax/preset-k8s — agent artifacts (half-wired window closed)', () => {
+  // The artifacts feature lands whole: @ax/attachments owns every artifact
+  // hook (I4), channel-web's owner + share routes and ipc-core's
+  // artifact.publish action are their callers, and the acceptance canary
+  // drives them end to end. If one of these has to be deleted, its caller or
+  // producer went with it: do not delete one side and keep the other.
+  const OWNER_HOOKS = [
+    'artifacts:list',
+    'artifacts:get',
+    'artifacts:read',
+    'artifacts:rename',
+    'artifacts:restore',
+    'artifacts:delete',
+    'artifacts:set-link',
+    'artifacts:mint-view-token',
+    'artifacts:resolve-share-code',
+  ];
+  const HOST_ONLY = ['conversations:agent-ids', 'agents:get-display-name'];
+  const callsOf = (m: {
+    calls: readonly string[];
+    optionalCalls?: ReadonlyArray<{ hook: string }> | undefined;
+  }): string[] => [
+    ...m.calls,
+    ...(m.optionalCalls ?? []).map((c) => c.hook),
+  ];
+
+  it('@ax/attachments registers artifacts:* and the augment provider and subscribes agents:deleted; channel-web and ipc-core call them', () => {
+    const plugins = createK8sPlugins(stubConfig);
+    const att = plugins.find((p) => p.manifest.name === '@ax/attachments');
+    expect(att, '@ax/attachments plugin').toBeDefined();
+    expect(att!.manifest.registers).toEqual(
+      expect.arrayContaining([
+        'artifacts:publish',
+        ...OWNER_HOOKS,
+        'system-prompt:augment:optional:artifacts',
+      ]),
+    );
+    expect(att!.manifest.subscribes).toContain('agents:deleted');
+
+    // One owner per hook (I4): nobody else registers an artifacts:* hook.
+    const otherRegistrants = plugins
+      .filter((p) => p.manifest.name !== '@ax/attachments')
+      .flatMap((p) => p.manifest.registers.filter((h) => h.startsWith('artifacts:')));
+    expect(otherRegistrants).toEqual([]);
+
+    // channel-web's owner + share routes are the hard callers of the owner hooks.
+    const cw = plugins.find((p) => p.manifest.name === '@ax/channel-web');
+    expect(cw, '@ax/channel-web plugin').toBeDefined();
+    expect(cw!.manifest.calls).toEqual(expect.arrayContaining(OWNER_HOOKS));
+
+    // ipc-core's artifact.publish action is the caller of artifacts:publish,
+    // stamped into @ax/ipc-http's manifest from DISPATCHER_DEPENDENCIES.
+    expect(DISPATCHER_DEPENDENCIES.optionalCalls.map((c) => c.hook)).toContain('artifacts:publish');
+    const ipc = plugins.find((p) => p.manifest.name === '@ax/ipc-http');
+    expect(ipc, '@ax/ipc-http plugin').toBeDefined();
+    expect(callsOf(ipc!.manifest)).toContain('artifacts:publish');
+  });
+
+  it('conversations:agent-ids and agents:get-display-name have their one caller and are not IPC actions', () => {
+    // Ruling P4: the dispatcher's ACTIONS map is private, so the pin is its
+    // published dependency list. Neither host-only lookup is a hook the runner
+    // can reach (no IPC action calls it) nor one the browser routes call.
+    const dispatcherHooks = [
+      ...DISPATCHER_DEPENDENCIES.requiredCalls,
+      ...DISPATCHER_DEPENDENCIES.optionalCalls.map((c) => c.hook),
+    ];
+    const plugins = createK8sPlugins(stubConfig);
+    const cw = plugins.find((p) => p.manifest.name === '@ax/channel-web')!;
+    for (const hook of HOST_ONLY) {
+      expect(dispatcherHooks, hook).not.toContain(hook);
+      expect(callsOf(cw.manifest), hook).not.toContain(hook);
+      // Exactly one caller in the preset: @ax/attachments.
+      const callers = plugins
+        .filter((p) => callsOf(p.manifest).includes(hook))
+        .map((p) => p.manifest.name);
+      expect(callers, hook).toEqual(['@ax/attachments']);
+    }
+    // And their producers are the plugins that own the data.
+    const registrantOf = (hook: string) =>
+      plugins.filter((p) => p.manifest.registers.includes(hook)).map((p) => p.manifest.name);
+    expect(registrantOf('conversations:agent-ids')).toEqual(['@ax/conversations']);
+    expect(registrantOf('agents:get-display-name')).toEqual(['@ax/agents']);
   });
 });
 

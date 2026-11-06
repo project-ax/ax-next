@@ -73,6 +73,8 @@ const T_RETIRE = GRACE_MS + HOUR;
 const T_PURGE = T_RETIRE + RETENTION_MS + HOUR;
 
 const USER_A = 'bgc-enf-user-a';
+const ARTIFACT_AGENT = 'bgc-agent';
+const ARTIFACT_CONVERSATION = 'bgc-enf-artifact-conv';
 const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 
 /** A holder the test controls: answers nothing, or throws. */
@@ -134,11 +136,22 @@ function createStubsPlugin(routes: CapturedRoute[]): Plugin {
       bus.registerService('auth:require-user', name, async () => ({
         user: { id: 'bgc-admin', isAdmin: true },
       }));
-      bus.registerService('conversations:get', name, async () => {
+      // One conversation exists, USER_A's chat with ARTIFACT_AGENT, so the
+      // artifact case can publish into it. Everything else is not-found.
+      bus.registerService('conversations:get', name, async (_ctx, input) => {
+        const i = input as { conversationId?: string; userId?: string };
+        if (i.conversationId === ARTIFACT_CONVERSATION && i.userId === USER_A) {
+          return { conversation: { conversationId: ARTIFACT_CONVERSATION, agentId: ARTIFACT_AGENT, userId: USER_A } };
+        }
         throw new PluginError({ code: 'not-found', plugin: name, message: 'no conversations' });
       });
-      // @ax/attachments charges a published version to the agent's owner.
-      bus.registerService('agents:resolve', name, async () => {
+      // @ax/attachments charges a published version to the agent's owner, and
+      // agents:resolve is its membership check: USER_A owns ARTIFACT_AGENT.
+      bus.registerService('agents:resolve', name, async (_ctx, input) => {
+        const i = input as { agentId?: string; userId?: string };
+        if (i.agentId === ARTIFACT_AGENT && i.userId === USER_A) {
+          return { agent: { id: ARTIFACT_AGENT, ownerId: USER_A, ownerType: 'user' } };
+        }
         throw new PluginError({ code: 'not-found', plugin: name, message: 'no agents' });
       });
     },
@@ -460,6 +473,83 @@ describe('@ax/preset-k8s blob GC enforce-mode canary (TASK-778)', () => {
     expect(await gcRow(sha)).toBeUndefined();
     expect(await getBytes(sha)).toBeUndefined();
     expect(freeing(sha).map((c) => c.hook)).toEqual(['blob:retire', 'blob:purge']);
+  });
+
+  it('a pruned artifact version\'s bytes are retired and purged, and the 20 kept versions stay held', async () => {
+    // Publish one artifact 21 times from the same file. MAX_RETAINED_VERSIONS
+    // is 20, so the 21st publish prunes version 1: its row is gone, and its
+    // bytes are held by nobody. Only the GC in enforce mode frees them.
+    const b = live().bus;
+    const ctx = ctxFor(USER_A);
+    const versions: Array<{ sha: string; bytes: Buffer }> = [];
+    let artifactId = '';
+    for (let n = 1; n <= 21; n += 1) {
+      const bytes = Buffer.from(`<!doctype html><p>version ${n} ${randomBytes(8).toString('hex')}</p>`);
+      const sha = await putBlob(bytes);
+      const out = await b.call<
+        { conversationId: string; sha256: string; sourcePath: string; title: string },
+        { artifactId: string; version: number }
+      >('artifacts:publish', ctx, {
+        conversationId: ARTIFACT_CONVERSATION,
+        sha256: sha,
+        sourcePath: 'site/index.html',
+        title: 'Status page',
+      });
+      expect(out.version).toBe(n);
+      if (n === 1) artifactId = out.artifactId;
+      expect(out.artifactId).toBe(artifactId);
+      versions.push({ sha, bytes });
+    }
+    const pruned = versions[0]!;
+    const kept = versions.slice(1);
+
+    // The pruned version is gone from the artifact; the kept ones are listed.
+    const detail = await b.call<{ artifactId: string }, { artifact: { versions: Array<{ version: number }> } }>(
+      'artifacts:get',
+      ctx,
+      { artifactId },
+    );
+    expect(detail.artifact.versions.map((v) => v.version).sort((x, y) => x - y)).toEqual(
+      Array.from({ length: 20 }, (_, i) => i + 2),
+    );
+    await expect(
+      b.call('artifacts:read', ctx, { artifactId, version: 1 }),
+    ).rejects.toMatchObject({ code: 'not-found' });
+
+    await setEnforce();
+    clockSkewMs = T_RETIRE;
+    expect(await live().gc.sweep()).toMatchObject({
+      outcome: 'reported',
+      report: { mode: 'enforce', candidates: 21, held: 20, retired: 1 },
+    });
+    expect(freeing().map((c) => [c.hook, c.sha256])).toEqual([['blob:retire', pruned.sha]]);
+    expect(await exists(livePath(pruned.sha))).toBe(false);
+    expect(await exists(retPath(pruned.sha))).toBe(true);
+
+    clockSkewMs = T_PURGE;
+    expect(await live().gc.sweep()).toMatchObject({
+      outcome: 'reported',
+      report: { purged: 1, bytesPurged: pruned.bytes.length, restored: 0 },
+    });
+    expect(freeing().map((c) => [c.hook, c.sha256])).toEqual([
+      ['blob:retire', pruned.sha],
+      ['blob:purge', pruned.sha],
+    ]);
+    expect(await exists(retPath(pruned.sha))).toBe(false);
+    expect(await getBytes(pruned.sha)).toBeUndefined();
+
+    // Every kept version is still held, still live, and still reads back.
+    for (const v of kept) {
+      expect(await exists(livePath(v.sha))).toBe(true);
+      expect(await getBytes(v.sha)).toEqual(v.bytes);
+    }
+    const current = await b.call<{ artifactId: string }, { bytes: Uint8Array; version: number }>(
+      'artifacts:read',
+      ctx,
+      { artifactId },
+    );
+    expect(current.version).toBe(21);
+    expect(Buffer.from(current.bytes)).toEqual(kept[kept.length - 1]!.bytes);
   });
 
   it('a read restores a retired blob; the purge pass then frees nothing and re-lives the row; it is retired again later and purging it frees real bytes', async () => {

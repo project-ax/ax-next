@@ -1949,3 +1949,90 @@ cannot reach the network, the app's cookies, or the app's DOM.
 ### Cleanup
 
 Delete the walk's conversations. Nothing else persists.
+
+## Scenario: Agent artifacts (publish, view, share)
+
+### What this proves
+
+An agent can hand a person a finished file (a PDF, a web page, a chart) as an
+**artifact**: it shows up in the agent's Artifacts panel and as a card in chat,
+it keeps its last 20 versions, and the owner can share the current version with
+a signed-in person through a link they can turn off.
+
+The cluster-only surfaces this proves (the canary in
+`presets/k8s/src/__tests__/acceptance.test.ts` and the unit tests can't):
+
+- Agent-made HTML really runs on the **content origin** (`content-http`, :9091),
+  a different site from the app, inside a sandboxed iframe. It can't call our
+  API, can't read cookies, can't navigate the app away and can't post forms.
+  This is a real browser enforcing a real CSP, which no unit test does.
+- The runner image really carries the PDF, Word, Excel and chart libraries.
+- Sharing survives a real sign-in round trip.
+
+Everything else (version pruning, the GC purge of pruned bytes, the token and
+link rules, the 404 shapes) is pinned by the canary and the GC test. Blob GC
+runs in **report** mode on kind, so the purge is the test's job, not this walk's.
+
+### Prerequisites
+
+- Goldenpath cluster up, wizard walked, image rebuilt from the branch under
+  test (`make image`). Check the runner image has the Python libraries:
+  `kubectl --context kind-ax-next-dev -n ax-next-runners exec <sandbox-pod> -- /opt/ax-python-venv-template/bin/python -c 'import reportlab, docx, openpyxl, matplotlib'`.
+- Both port-forwards live: `9090:9090` (the app, `http://localhost:9090`) and
+  `9091:9091` (artifact content, `http://127.0.0.1:9091`). See step 6b of the
+  goldenpath setup. Without 9091, previews stay blank.
+- A second account (B) signed in with a helper cookie (see the "Headless
+  authenticated chat" block in the `/tmp` scenario above for how to mint one).
+- A team holding both accounts, with a team agent, for step 6.
+
+### Walk
+
+1. **PDF.** Ask the agent for a one-page PDF report. It appears in the
+   Artifacts panel and as a card in chat. The viewer says "Download to open"
+   (we never render PDFs inline). The downloaded file starts with `%PDF-`.
+2. **HTML attack page.** Ask for an HTML dashboard whose script tries four
+   things: `fetch('http://localhost:9090/api/workspace/agents')`,
+   `document.cookie`, `top.location = 'http://localhost:9090/?pwned'`, and
+   submitting a `<form>`. Open it in the viewer. It renders, and DevTools shows:
+   - the fetch blocked by `connect-src 'none'`;
+   - `document.cookie` empty (the frame has an opaque origin);
+   - the top navigation blocked (sandbox, no `allow-top-navigation`);
+   - the form blocked (`form-action 'none'`, no `allow-forms`).
+3. **Share.** Click **Copy link**. Grep that conversation's stored events for
+   the code: 0 hits (the agent never sees it). Account B opens `/a/<code>`
+   signed out, lands on the login page, signs in (helper cookie), sees the page
+   and downloads it.
+4. **Update.** In a new chat, ask the agent to "update the dashboard". The
+   artifact keeps its id and moves to v2. B's open link shows v2 on reload.
+5. **Restore and turn off.** Restore v1: B's link shows v1. Turn the link off:
+   B sees "This link doesn't work anymore — ask whoever sent it for a fresh one."
+6. **Team.** On the team agent, member B sees the artifacts member A made in
+   A's chat.
+7. **Versions.** Publish 21 versions of one file. Then
+   `SELECT count(*) FROM attachments_v1_artifact_versions WHERE artifact_id = '<id>'`
+   returns 20, and the first version's sha is gone from that table.
+8. **Helper file.** Have the agent write a helper script and not publish it.
+   It is not in the Artifacts list.
+9. **Deleted chat.** Delete the chat that made an artifact. The artifact and
+   its link still work (artifacts outlive their chat).
+
+### Acceptance criteria
+
+- Steps 1-9 behave as written. Record each with its evidence in
+  `deploy/kind/walks/<date>-<TASK-ID>/RESULTS.md`.
+- In step 2, all four attacks fail, and every content-origin response carries
+  `X-Content-Type-Options: nosniff`, `Cache-Control: private, no-store` and
+  `Referrer-Policy: no-referrer`. The HTML CSP ends with
+  `frame-ancestors http://localhost:9090 http://localhost:19090 http://localhost:5173; sandbox allow-scripts allow-downloads`
+  (kind's `contentOrigin.frameAncestors`).
+- The share code never appears in a conversation event, a host log line, or the
+  agent's tool output (`ax://artifact/<id>` only).
+- A wrong code, a turned-off link and someone else's artifact all look the same:
+  a 404.
+
+### Cleanup
+
+- Delete the test artifacts from the Artifacts panel (or delete the test agent:
+  deleting an agent deletes its artifacts).
+- Scrub any file holding B's cookie. It is a live session.
+- Add a line to the "Walks completed" list (under "When this passes, do").

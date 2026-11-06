@@ -1713,9 +1713,15 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
   //     tool_result blocks intact, since channel-web's MarkdownText resolves
   //     ax://artifact/<id> links by looking up the tool_result in the
   //     conversation history.
+  //   - Agent artifacts end to end (steps 7-14): an HTML page published
+  //     through the same executor shows in the owner's Artifacts list, still
+  //     views after its working copy is deleted, is served by attachments'
+  //     content origin (its own listener) with the exact CSP and base headers,
+  //     is shared with a second signed-in person by link, follows a restore
+  //     (the old link-minted token dies), and 404s once the link is off.
   // ---------------------------------------------------------------------------
   it(
-    'Phase 3 canary: publishes report.md as "Weekly report" (v1), re-publishes the same path (v2, same id), and another session\'s sha is still a 404',
+    'Phase 3 canary: publish → list → view through the content origin → share → restore → link off',
     { timeout: 180_000 },
     async () => {
       const connectionString = await ensurePostgresStarted();
@@ -1798,10 +1804,20 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
             AGENTS_STUB_NAME,
             async (_ctx: AgentContext, input) => {
               const i = input as { agentId?: string; userId?: string };
+              // agents:resolve is the artifact ACL (membership): the agent is
+              // phase-3-artifact-user's, and anyone else is refused the way
+              // @ax/agents refuses someone else's personal agent.
+              if (i.userId !== undefined && i.userId !== 'phase-3-artifact-user') {
+                throw new PluginError({
+                  code: 'forbidden',
+                  plugin: AGENTS_STUB_NAME,
+                  message: 'not your agent',
+                });
+              }
               return {
                 agent: {
                   id: i.agentId ?? 'phase-3-artifact-agent',
-                  ownerId: i.userId ?? 'phase-3-artifact-user',
+                  ownerId: 'phase-3-artifact-user',
                   ownerType: 'user' as const,
                   visibility: 'personal' as const,
                   displayName: 'Phase 3 artifact canary agent',
@@ -1921,6 +1937,13 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
         },
       };
 
+      // The content origin (§6.5): attachments' second listener, on its own
+      // port. Port 0 mints URLs under http://127.0.0.1:<bound port>.
+      const APP_ORIGIN = 'http://localhost:8080';
+      const attachments = createAttachmentsPlugin({
+        contentOrigin: { host: '127.0.0.1', port: 0, frameAncestors: [APP_ORIGIN] },
+      });
+
       const plugins: Plugin[] = [
         http,
         createDatabasePostgresPlugin({ connectionString }),
@@ -1928,7 +1951,7 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
         // TASK-68: attachments/artifacts ride the content-addressed blob store.
         // A tmpdir root so the fs backend's ensureRoot() succeeds.
         createBlobStoreFsPlugin({ root: path.join(workspaceRoot, 'blobs') }),
-        createAttachmentsPlugin(),
+        attachments,
         toolRegisterStubPlugin,
         createToolArtifactPublishPlugin(),
         createChannelWebServerPlugin(),
@@ -2225,12 +2248,191 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
         expect(toolResult).toBeTruthy();
         expect(blocks.some((b) => b.type === 'attachment')).toBe(false);
 
-        // 7. show_visual: registered by the real plugin, executed through the
-        //    REAL runner executor and ipc-core dispatcher (same hostClient and
-        //    session), downloadable immediately (no turn commit needed) as an
-        //    octet-stream attachment. It is an artifact of the agent (D12), so
-        //    another of this person's chats with the same agent reaches it and
-        //    another person does not.
+        // ---- The artifacts surface, end to end (agent artifacts, Task 16) ----
+        const OTHER_USER = 'phase-3-artifact-other-user';
+        const api = (
+          method: 'GET' | 'POST',
+          route: string,
+          opts: { user?: string; body?: unknown } = {},
+        ): Promise<Response> =>
+          fetch(`http://127.0.0.1:${port}${route}`, {
+            method,
+            headers: {
+              'x-test-user': opts.user ?? USER,
+              ...(method === 'POST'
+                ? {
+                    'content-type': 'application/json',
+                    origin: REQUEST_ORIGIN,
+                    'x-requested-with': 'ax-admin',
+                  }
+                : {}),
+            },
+            ...(opts.body !== undefined ? { body: JSON.stringify(opts.body) } : {}),
+          });
+        const contentOriginUrl = attachments.contentOriginUrl();
+        expect(contentOriginUrl).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
+        const HTML_CSP =
+          "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline' 'self'; " +
+          "img-src data: blob: 'self'; font-src 'self'; connect-src 'none'; form-action 'none'; " +
+          `frame-ancestors ${APP_ORIGIN}; sandbox allow-scripts allow-downloads`;
+        /** GET a minted URL on the content origin; check the headers every response carries. */
+        const viewOnContentOrigin = async (url: string): Promise<Response> => {
+          expect(url.startsWith(`${contentOriginUrl}/v/`)).toBe(true);
+          const r = await fetch(url);
+          expect(r.headers.get('x-content-type-options')).toBe('nosniff');
+          expect(r.headers.get('cache-control')).toBe('private, no-store');
+          expect(r.headers.get('referrer-policy')).toBe('no-referrer');
+          expect(r.headers.get('set-cookie')).toBeNull();
+          return r;
+        };
+
+        // 7. The agent publishes an HTML page through the real executor and
+        //    dispatcher: a 'web' artifact, version 1.
+        const HTML_PATH = 'site/status.html';
+        const htmlAbsPath = path.join(runnerCheckoutRoot, HTML_PATH);
+        await fs.mkdir(path.dirname(htmlAbsPath), { recursive: true, mode: 0o755 });
+        const HTML_V1 = '<!doctype html><title>Status</title><p>All systems go (v1).</p>';
+        const HTML_V2 = '<!doctype html><title>Status</title><p>One system down (v2).</p>';
+        await fs.writeFile(htmlAbsPath, HTML_V1);
+        const page = (await executor({
+          id: 'toolu_3',
+          name: 'artifact_publish',
+          input: { path: htmlAbsPath, title: 'Status page' },
+        })) as { artifactId: string; version: number; kind: string; extension: string; url: string };
+        expect(page).toMatchObject({ version: 1, kind: 'web', extension: 'HTML', path: HTML_PATH });
+        expect(page.artifactId).not.toBe(artifactResult.artifactId);
+        const PAGE = page.artifactId;
+
+        // 8. The owner's Artifacts list (GET /api/workspace/agents/:id/artifacts)
+        //    names it 'web' / 'HTML'; someone who isn't on the agent gets 404.
+        const listResp = await api('GET', `/api/workspace/agents/${AGENT}/artifacts`);
+        expect(listResp.status).toBe(200);
+        expect(listResp.headers.get('cache-control')).toBe('private, no-store');
+        const listed = ((await listResp.json()) as { artifacts: Array<Record<string, unknown>> }).artifacts;
+        expect(listed.map((a) => a['artifactId']).sort()).toEqual(
+          [artifactResult.artifactId, PAGE].sort(),
+        );
+        const listedPage = listed.find((a) => a['artifactId'] === PAGE)!;
+        expect(listedPage).toMatchObject({
+          title: 'Status page',
+          kind: 'web',
+          extension: 'HTML',
+          currentVersion: 1,
+          linkOn: false,
+        });
+        // The owner list never carries the source path or a share code.
+        expect(Object.keys(listedPage)).not.toContain('sourcePath');
+        expect(Object.keys(listedPage)).not.toContain('shareCode');
+        expect(
+          (await api('GET', `/api/workspace/agents/${AGENT}/artifacts`, { user: OTHER_USER })).status,
+        ).toBe(404);
+
+        // 9. Delete the working copy under /files. The artifact still views:
+        //    its bytes were copied into the blob store at publish (D3).
+        await fs.rm(htmlAbsPath);
+        const v1Token = await api('POST', `/api/workspace/artifacts/${PAGE}/versions/1/token`, {
+          body: { purpose: 'view' },
+        });
+        expect(v1Token.status).toBe(200);
+        const v1Minted = (await v1Token.json()) as { url: string; expiresAt: string };
+        expect(Date.parse(v1Minted.expiresAt)).toBeGreaterThan(Date.now());
+        const v1View = await viewOnContentOrigin(v1Minted.url);
+        expect(v1View.status).toBe(200);
+        expect(v1View.headers.get('content-type')).toBe('text/html; charset=utf-8');
+        expect(v1View.headers.get('content-security-policy')).toBe(HTML_CSP);
+        expect(await v1View.text()).toBe(HTML_V1);
+        // Not the person's to mint: same 404 as a missing artifact.
+        expect(
+          (
+            await api('POST', `/api/workspace/artifacts/${PAGE}/versions/1/token`, {
+              user: OTHER_USER,
+              body: { purpose: 'view' },
+            })
+          ).status,
+        ).toBe(404);
+
+        // 10. The agent re-publishes the same path: version 2 of the same artifact.
+        await fs.writeFile(htmlAbsPath, HTML_V2);
+        expect(
+          await executor({
+            id: 'toolu_4',
+            name: 'artifact_publish',
+            input: { path: HTML_PATH, title: 'Status page' },
+          }),
+        ).toMatchObject({ artifactId: PAGE, version: 2 });
+
+        // 11. Copy link mints the code on first use (C1: the tool never returned one).
+        const ensured = await api('POST', `/api/workspace/artifacts/${PAGE}/link`, {
+          body: { action: 'ensure' },
+        });
+        expect(ensured.status).toBe(200);
+        const { shareCode } = (await ensured.json()) as { shareCode: string };
+        expect(shareCode).toMatch(/^[A-Za-z0-9_-]{32}$/);
+        expect(JSON.stringify(page)).not.toContain(shareCode);
+
+        // 12. A second signed-in person opens the link: the current version (v2).
+        const shared = await api('GET', `/api/shared/${shareCode}`, { user: OTHER_USER });
+        expect(shared.status).toBe(200);
+        const sharedView = ((await shared.json()) as { artifact: Record<string, unknown> }).artifact;
+        expect(sharedView).toMatchObject({
+          title: 'Status page',
+          kind: 'web',
+          extension: 'HTML',
+          sizeBytes: new TextEncoder().encode(HTML_V2).byteLength,
+        });
+        // A link holder gets no id, no version picker and no path.
+        for (const k of ['artifactId', 'agentId', 'version', 'currentVersion', 'versions', 'sourcePath']) {
+          expect(Object.keys(sharedView)).not.toContain(k);
+        }
+        const byCode = await api('POST', `/api/shared/${shareCode}/token`, {
+          user: OTHER_USER,
+          body: { purpose: 'view' },
+        });
+        expect(byCode.status).toBe(200);
+        const v2LinkUrl = ((await byCode.json()) as { url: string }).url;
+        expect(v2LinkUrl).not.toContain(shareCode);
+        const v2View = await viewOnContentOrigin(v2LinkUrl);
+        expect(v2View.status).toBe(200);
+        expect(v2View.headers.get('content-security-policy')).toBe(HTML_CSP);
+        expect(await v2View.text()).toBe(HTML_V2);
+        // The link holder still can't reach the owner routes.
+        expect((await api('GET', `/api/workspace/artifacts/${PAGE}`, { user: OTHER_USER })).status).toBe(404);
+
+        // 13. The owner restores v1. The link-minted token was bound to v2,
+        //    so it is now a 404; the link itself follows the restore.
+        const restored = await api('POST', `/api/workspace/artifacts/${PAGE}/restore`, {
+          body: { version: 1 },
+        });
+        expect(restored.status).toBe(200);
+        expect(((await restored.json()) as { artifact: { currentVersion: number } }).artifact.currentVersion).toBe(1);
+        expect((await viewOnContentOrigin(v2LinkUrl)).status).toBe(404);
+        const afterRestore = await api('POST', `/api/shared/${shareCode}/token`, {
+          user: OTHER_USER,
+          body: { purpose: 'view' },
+        });
+        expect(afterRestore.status).toBe(200);
+        const v1LinkView = await viewOnContentOrigin(((await afterRestore.json()) as { url: string }).url);
+        expect(v1LinkView.status).toBe(200);
+        expect(await v1LinkView.text()).toBe(HTML_V1);
+
+        // 14. Link off: the code is dead, and a dead link is the same 404 as a wrong one.
+        const off = await api('POST', `/api/workspace/artifacts/${PAGE}/link`, {
+          body: { action: 'off' },
+        });
+        expect(off.status).toBe(200);
+        const dead = await api('GET', `/api/shared/${shareCode}`, { user: OTHER_USER });
+        expect(dead.status).toBe(404);
+        expect(await dead.json()).toEqual({ error: 'link-not-found' });
+        const wrong = await api('GET', `/api/shared/${'A'.repeat(32)}`, { user: OTHER_USER });
+        expect(wrong.status).toBe(404);
+        expect(await wrong.json()).toEqual({ error: 'link-not-found' });
+
+        // 15. show_visual: registered by the real plugin, executed through the
+        //     REAL runner executor and ipc-core dispatcher (same hostClient and
+        //     session), downloadable immediately (no turn commit needed) as an
+        //     octet-stream attachment. It is an artifact of the agent (D12), so
+        //     another of this person's chats with the same agent reaches it and
+        //     another person does not.
         expect(registered.map((d) => [d.name, d.executesIn])).toEqual(
           expect.arrayContaining([['show_visual', 'sandbox']]),
         );

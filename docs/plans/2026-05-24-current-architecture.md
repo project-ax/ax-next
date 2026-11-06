@@ -380,6 +380,28 @@ and consumer. Treat their *shape* as a contract; changing it is a boundary revie
 - **Conversations:** `conversations:get-metadata`,
   `conversations:store-runner-session` (and the `conversations:bind-session` /
   `:get` / `:list` family).
+- **Artifacts (`@ax/attachments`, the one owner of artifact metadata).** An
+  artifact is a file the agent published from `/files` for a person: it belongs
+  to the agent (not the chat), keeps its last 20 versions (the current one is
+  never pruned), and its bytes are copied into the blob store at publish.
+  Design: `docs/superpowers/specs/2026-11-05-agent-artifacts-design.md`.
+  - `artifacts:publish` — the runner's IPC `artifact.publish` (wire `path` →
+    hook `sourcePath`, relative to the files root; size and media type are
+    host-derived). Returns `ax://artifact/<id>`, never a share code.
+  - `artifacts:list` / `:get` / `:read` / `:rename` / `:restore` / `:delete` /
+    `:set-link` / `:resolve-share-code` / `:mint-view-token` — HTTP only,
+    called by channel-web's owner routes (`/api/workspace/.../artifacts`) and
+    the login-gated share routes (`/api/shared/:code`, 30 lookups/min per
+    person). Every one runs a single access rule (agent membership via
+    `agents:resolve`, or holding the current share code), and every refusal is
+    the same not-found, so a wrong code and someone else's artifact look alike.
+  - `system-prompt:augment:optional:artifacts` — the agent's own artifact list,
+    framed as data.
+  - Two **host-only** lookups, called only by `@ax/attachments` and never an IPC
+    action or an HTTP route (pinned in `presets/k8s` preset.test.ts):
+    `conversations:agent-ids` (maps legacy conversation-scoped artifacts to their
+    agent at init) and `agents:get-display-name` (the agent's name on the share
+    page; absent, it says "an agent").
 - **Deleting an agent (TASK-718).** `agents:deleted { agentId, ownerId, ownerType }`
   is a subscriber hook `@ax/agents` fires once the agent row is gone; each
   subscriber gets 150 s before the next one runs, so a wedged one cannot hold the
@@ -388,19 +410,24 @@ and consumer. Treat their *shape* as a contract; changing it is a boundary revie
   subscribes and deletes its own**: conversations (+ events + transcripts, hard
   delete, no retention), sessions (terminated first, which revokes the runner's
   token), skills, connectors, host grants, decisions, MCP handshakes, remembered
-  facts, routines, the durable-files directory (a reclaim pod that runs as root
-  with `DAC_OVERRIDE` + `FOWNER` only) and the orchestrator's warm sandboxes.
+  facts, routines, artifacts (`@ax/attachments` deletes the agent's artifacts
+  and all their versions), the durable-files directory (a reclaim pod that runs
+  as root with `DAC_OVERRIDE` + `FOWNER` only) and the orchestrator's warm
+  sandboxes.
   `@ax/disk-quota` drops its `agent-files:<agentId>` ledger row on the same hook.
   (Until TASK-995 the agent's git repository was removed here too, and fired
   `workspace:deleted`; both are gone.)
   Rows keyed only on a conversation id are cleaned by a second hook,
   `conversations:purged { conversationIds }`, which `@ax/conversations` fires
   after its purge commits (at most 500 ids per fire; today `@ax/attachments`
-  subscribes). `scripts/__tests__/agent-keyed-tables-are-cleaned.test.js` fails
-  the PR that adds an agent-scoped table with no cleanup. **Not covered yet**
-  (no delete hook exists, or the store is shared): blob bytes behind attachments
-  and skills, `routines_v1_fires` history (kept on purpose), and key-value
-  leftovers.
+  subscribes). It deletes that chat's uploads, but artifacts outlive their chat,
+  so for artifact versions it only clears the chat id.
+  `scripts/__tests__/agent-keyed-tables-are-cleaned.test.js` fails
+  the PR that adds an agent-scoped table with no cleanup. **Not covered by these
+  hooks** (the store is shared, or no delete hook exists): blob bytes behind
+  attachments, artifacts and skills (only `@ax/blob-gc` in enforce mode frees
+  them, see "What frees storage" below), `routines_v1_fires` history (kept on
+  purpose), and key-value leftovers.
 - **Credentials:** `credentials:get`, `credentials:resolve:<kind>`,
   `credentials:list`, `credentials:list-kinds`, plus the `credentials:store-blob:*`
   storage seam.
@@ -510,10 +537,16 @@ and consumer. Treat their *shape* as a contract; changing it is a boundary revie
   - **What frees storage (TASK-993).** The agent cleaning up its own `/files`,
     which is re-measured at the next turn end or sweep; and deleting a whole
     agent, where `agents:deleted` drops its `agent-files:<agentId>` row. (Boot
-    also deletes any leftover `workspace` ledger rows from the git era.) Almost
-    nothing frees blob bytes: `blob:delete` has one caller, the branding logo,
-    which is unmetered; there is no blob GC; and attachments and artifacts cannot
-    be deleted. So the refusal sentences tell a person to ask
+    also deletes any leftover `workspace` ledger rows from the git era.) Blob
+    bytes are a different story. `blob:delete` has one caller, the branding
+    logo, which is unmetered. Artifacts can be deleted (the owner's Delete,
+    `artifacts:delete`, or deleting the agent) and are pruned to their last 20
+    versions, but that only drops the rows. The bytes are freed only when
+    `@ax/blob-gc` runs in **enforce** mode (an admin setting; the default is
+    report-only): a sweep asks every holder over `blob:collect-refs`, retires
+    what nobody references past the grace window, and purges it past retention
+    (pinned by `presets/k8s` blob-gc-enforce-acceptance.test.ts). Uploads still
+    cannot be deleted by a person. So the refusal sentences tell a person to ask
     their agent to clean up files it no longer needs, or to ask an admin for more
     room. There is no delete button in the Files tab (a host write path into an
     agent-writable tree), and the copy never suggests deleting an agent.
@@ -553,6 +586,11 @@ intentionally unschema'd — there's nothing to validate.
   hostile to streaming text. It is **not** the chat-stream transport. Today the
   eventbus's only production use is cross-replica re-broadcast of small events
   (e.g. `session:terminate`, live title refresh).
+- **Artifact view tokens** are signed with a key `@ax/attachments` makes at
+  boot and holds only in memory (300 s tokens, one artifact version each). A
+  host restart retires every token in flight (the viewer just mints another),
+  and a second replica could not verify the first one's tokens. The chart's
+  `replicas: 1` pin already covers this; lifting it needs a shared key.
 - **Agent files** no longer pin the host to one replica: `/files` is a
   filestore (NFS) export that every host and runner pod can mount. (The old
   RWO-PVC git workspace backend, which did, is gone.)
@@ -596,10 +634,22 @@ production plugin set against a Postgres testcontainer, swapping only the k8s
 sandbox seam for a fake — proving the production assembly is well-formed without a
 real cluster.
 
-The two listeners in the host pod are distinct: `@ax/ipc-http` (runner ↔ host
-back-channel, Service :80) and `@ax/http-server` (public — `/chat`, `/health`,
-`/admin/*`, `/auth/*`, `/api/chat/*`, Service :9090). State-changing public routes
+The three listeners in the host pod are distinct: `@ax/ipc-http` (runner ↔ host
+back-channel, Service :80), `@ax/http-server` (public — `/chat`, `/health`,
+`/admin/*`, `/auth/*`, `/api/chat/*`, Service :9090), and `@ax/attachments`'s
+content origin (`content-http`, Service :9091). State-changing public routes
 are CSRF-gated by an `@ax/http-server` subscriber.
+
+The content origin serves agent-made artifacts (`/v/<token>` to view, `/d/<token>`
+to download) on a **different registrable domain** from the app (kind:
+`127.0.0.1:9091` vs `localhost:9090`; GKE: its own Ingress host,
+`contentOrigin.publicOrigin`, which the chart refuses to render without). It
+reads no cookies and takes only a short-lived signed token. It never sniffs: a
+view gets the stored media type and a download `application/octet-stream`, with
+`nosniff` / `private, no-store` / `no-referrer` on every response. It
+gives HTML a fixed CSP (no network, no forms, `frame-ancestors` = the app
+origins, `sandbox allow-scripts allow-downloads`). The app shows it in an iframe
+with `sandbox="allow-scripts allow-downloads"`, never `allow-same-origin`.
 
 ---
 
