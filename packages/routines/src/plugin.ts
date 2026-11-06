@@ -158,7 +158,7 @@ export function createRoutinesPlugin(
             // `agentGone` path removes the rows on the agent's next due fire.
             ctx.logger.warn('routines_remove_for_deleted_agent_failed', {
               agentId: payload.agentId,
-              err: err instanceof Error ? err.message : String(err),
+              ...faultLogFields(err),
             });
           }
           return undefined;
@@ -178,9 +178,7 @@ export function createRoutinesPlugin(
           try {
             stashConnectorsSkipped(pending, payload, ctx.logger);
           } catch (err) {
-            ctx.logger.warn('routines_connectors_skipped_failed', {
-              err: err instanceof Error ? err.message : String(err),
-            });
+            ctx.logger.warn('routines_connectors_skipped_failed', faultLogFields(err));
           }
           return undefined;
         },
@@ -252,9 +250,7 @@ export function createRoutinesPlugin(
               warning,
             } });
           } catch (err) {
-            ctx.logger.warn('routines_turn_end_handler_failed', {
-              reqId, err: err instanceof Error ? err.message : String(err),
-            });
+            ctx.logger.warn('routines_turn_end_handler_failed', { reqId, ...faultLogFields(err) });
           }
           return undefined;
         }
@@ -281,7 +277,7 @@ export function createRoutinesPlugin(
               } catch (err) {
                 ctx.logger.warn('routines_drop_turn_failed', {
                   conversationId: pf.conversationId,
-                  err: err instanceof Error ? err.message : String(err),
+                  ...faultLogFields(err),
                 });
               }
             } else {
@@ -302,7 +298,7 @@ export function createRoutinesPlugin(
               } catch (err) {
                 ctx.logger.warn('routines_hide_failed', {
                   conversationId: pf.conversationId,
-                  err: err instanceof Error ? err.message : String(err),
+                  ...faultLogFields(err),
                 });
               }
             }
@@ -321,9 +317,7 @@ export function createRoutinesPlugin(
             } });
           }
         } catch (err) {
-          ctx.logger.warn('routines_turn_end_handler_failed', {
-            reqId, err: err instanceof Error ? err.message : String(err),
-          });
+          ctx.logger.warn('routines_turn_end_handler_failed', { reqId, ...faultLogFields(err) });
         }
         return undefined;
       }));

@@ -181,6 +181,18 @@ describe('connect timeout, against a database that never answers', () => {
     expect(waited).toBeLessThan(3_000);
   }, 10_000);
 
+  // TASK-1058: the timeout carries a code, so a code-only log line can tell it
+  // from other database errors (same codes as @ax/database-postgres).
+  it('an unanswered new connection carries code db-connect-timeout (TASK-1058)', async () => {
+    const silent = await silentServer();
+    const err = await errorOf(boot({ connectionString: silent, checkoutTimeoutMs: 300, logger }));
+    // One level down, where faultLogFields reads it as causeCode (init wraps it as init-failed).
+    expect((err as Error).cause).toMatchObject({
+      code: 'db-connect-timeout',
+      message: 'Connection terminated due to connection timeout',
+    });
+  }, 10_000);
+
   it('waits 5 seconds when checkoutTimeoutMs is not set', async () => {
     const silent = await silentServer();
     const started = performance.now();
@@ -318,6 +330,23 @@ describe('against a real database', () => {
     expect(performance.now() - started).toBeLessThan(3_000);
     await release();
     await expect(call()).resolves.toBeNull(); // poolMax 1: the cancelled statement's connection came back usable
+  }, 15_000);
+
+  it('a caller queued behind a full pool carries code db-checkout-timeout (TASK-1058)', async () => {
+    // 1 s, not shorter: boot opens two real connections under the same bound, and the
+    // holder waits behind the lock for up to the 30 s statement timeout anyway.
+    const h = await boot({ connectionString, poolMax: 1, checkoutTimeoutMs: 1_000, logger });
+    const release = await holdTableLock(); // after boot: the migration creates the table
+    const call = () =>
+      h.bus.call('session:resolve-token', h.ctx(), { token: 'task-1058-no-such-token' });
+    const holder = errorOf(call()); // takes the only connection and waits behind the lock
+    const err = await errorOf(call()); // queues behind it
+    expect((err as { cause?: { code?: string; message?: string } } | undefined)?.cause).toMatchObject({
+      code: 'db-checkout-timeout',
+      message: 'timeout exceeded when trying to connect',
+    }); // the bus wraps pg-pool's error
+    await release();
+    await holder;
   }, 15_000);
 
   it('defaults: the pool connects with a 30 s statement_timeout, the LISTEN client with none', async () => {

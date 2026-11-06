@@ -1,9 +1,11 @@
+import { inspect } from 'node:util';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { makeAgentContext, type AgentContext, type ToolCall } from '@ax/core';
 import { RoutineDefinitionSchema, type RoutineFireView, type RoutineListToolOutput, type RoutineView } from '@ax/routines-contract';
 import { renderCheckInMessage } from '../checkin-message.js';
 import { BRIEF_DIDNT_LOAD, BRIEF_TOO_LONG, BRIEF_UNCONFIRMED, renderTaskBrief, ROUTINES_AUGMENT_PROVIDER } from '../brief.js';
 import { createRoutinesStore } from '../store.js';
+import { failQueries } from './support/fail-query.js';
 import { captureExpectedStderr } from './support/expected-diagnostics.js';
 import { createCheckInHarness, routineRunner, TASK_DEFINITION, type CheckInHarness } from './support/check-in.js';
 
@@ -211,6 +213,22 @@ describe('the brief, its veto and the belt (TASK-908)', () => {
     expect(await onlyRun(task)).toMatchObject({ status: 'error', error: BRIEF_UNCONFIRMED, renderedPrompt: null, report: NEEDS_YOU });
     // It reported, so it isn't a missed check-in.
     expect((await createRoutinesStore(h.db).findOne(task))?.noRecentUpdate).toBeNull();
+  });
+
+  it("the belt: a run that can't be recorded logs its codes, not its message (TASK-1058)", async () => {
+    h = await createCheckInHarness();
+    const task = await create(TASK_DEFINITION, 'task');
+    let warn: ReturnType<typeof vi.spyOn> | undefined;
+    let restore = () => {};
+    try {
+      await h.checkIn(task, 'run', async ctx => {
+        warn = vi.spyOn(ctx.logger, 'warn'); // the same ctx goes to chat:turn-end
+        restore = failQueries(/insert into "routines_v1_fires"/, Object.assign(new Error('PRIVATE pg text at 10.0.0.7'), { code: '57P01' }));
+      }, { landed: null }); // never landed, so the belt branch
+    } finally { restore(); }
+    expect(warn).toHaveBeenCalledWith('routines_turn_end_handler_failed', { reqId: expect.any(String), code: '57P01', name: 'Error' });
+    // toHaveBeenCalledWith matches any one call: no call may carry the message beside it.
+    expect(inspect(warn!.mock.calls, { depth: null, getters: true })).not.toMatch(/PRIVATE|10\.0\.0\.7/);
   });
 
   it('the belt without a report counts as brief-unconfirmed', async () => {

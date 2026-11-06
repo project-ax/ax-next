@@ -101,7 +101,7 @@ describe('tick loop on a pool whose checkout times out', () => {
     expect(sleeps).toEqual([2_000, 2_000]); // the wait after the timed-out election, then the elected ticker's own tick
     expect(fire).toHaveBeenCalledOnce();
     expect(fire.mock.calls[0]![0].row.routineId).toBe(row.routineId);
-    expect(log.entries()).toStrictEqual([{ name: 'Error', consecutiveFailures: 1, retryInMs: 2_000, level: 'warn', msg: 'routines_tick_election_failed' }]);
+    expect(log.entries()).toStrictEqual([{ code: 'db-checkout-timeout', name: 'Error', consecutiveFailures: 1, retryInMs: 2_000, level: 'warn', msg: 'routines_tick_election_failed' }]);
     expect(log.text()).not.toContain('timeout exceeded');
   }, 15_000);
 

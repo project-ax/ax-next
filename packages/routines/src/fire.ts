@@ -176,7 +176,8 @@ function refusedBeforeAssembly(reason: string): boolean {
  * words and, when there is one, the failure's code. Never the error's message:
  * the run's error is the routine's `lastError` and its run history, both shown
  * to the owner, and a hook's message can quote a database or a provider. The
- * detail goes to the log (`routines_fire_failed` / `routines_fire_invoke_failed`).
+ * log (`routines_fire_failed` / `routines_fire_invoke_failed`) carries every
+ * code and class name, never the message either (TASK-1058).
  * The error's own code is shown; its cause's only when the own code is the
  * bus's `unknown` wrap. Only a plain word-shaped code is shown: the log helper
  * also accepts `.` and `:` (errno, SQLSTATE), which could spell a host here.
@@ -267,21 +268,16 @@ export function createFireRoutine(deps: FireDeps) {
       agentId: row.agentId,
       userId: row.ownerUserId,
     });
-    // The detail of a host failure: codes always, the error itself except for
-    // a webhook fire (whose failures are kept to codes, like its stored text).
-    // Never throws: an error's getters are arbitrary, and a failed log line
-    // must not cost the run its row.
+    // The detail of a host failure: codes only, for every source (TASK-1058;
+    // until then a non-webhook fire logged the whole error, TASK-1031). A
+    // driver's message can carry a host, a user or a query value. Never throws:
+    // `faultLogFields` reads no throwing getter, and a failed log line must not
+    // cost the run its row.
     function logFault(event: 'routines_fire_failed' | 'routines_fire_invoke_failed', err: unknown, level: 'warn' | 'error' = 'error'): void {
-      const fields = { agentId: row.agentId, routineId: row.routineId, source, ...faultLogFields(err) };
       try {
-        baseCtx.logger[level](event, { ...fields, ...(source === 'webhook' ? {} : { err }) });
+        baseCtx.logger[level](event, { agentId: row.agentId, routineId: row.routineId, source, ...faultLogFields(err) });
       } catch {
-        // The logger read a throwing getter on `err`: keep the line, codes only.
-        try {
-          baseCtx.logger[level](event, { ...fields, errUnreadable: true });
-        } catch {
-          // Best-effort: the run's row doesn't depend on its log line.
-        }
+        // Best-effort: the run's row doesn't depend on its log line.
       }
     }
 
@@ -472,7 +468,7 @@ export function createFireRoutine(deps: FireDeps) {
         } });
       } catch (err) {
         process.stderr.write(
-          `[ax/routines] recording failed fire for ${row.agentId}/${row.routineId} failed: ${source === 'webhook' ? 'app update accounting unavailable' : err instanceof Error ? err.message : String(err)}\n`,
+          `[ax/routines] recording failed fire for ${row.agentId}/${row.routineId} failed: ${source === 'webhook' ? 'app update accounting unavailable' : JSON.stringify(faultLogFields(err))}\n`,
         );
       }
     };

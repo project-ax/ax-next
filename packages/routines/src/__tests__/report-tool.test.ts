@@ -299,15 +299,15 @@ describe('routine_report (TASK-907)', () => {
     for (const person of [h.teamMember, h.teamAdmin]) expect(await fires(person), person.userId).toEqual({ byRoutine: [], forAgent: [] });
   });
 
-  it('a failed lookup leaves one warn line for the operator, from pre-call and from the call: the ids and the database\'s words, none of the report', async () => {
+  it('a failed lookup leaves one warn line for the operator, from pre-call and from the call: the ids and the database\'s codes, none of the report', async () => {
     await start();
     const task = await create(TASK, 'task');
     const call = reportCall({ status: 'on-track', update: 'SECRET update', ask: 'SECRET ask?', notes: 'SECRET notes' });
     await checkIn(task, 'run', async ctx => {
       await sql`ALTER TABLE routines_v1_dispatches RENAME TO report_tool_test_dispatches`.execute(h.db);
       try {
-        const expected = { level: 'warn', stage: 'lookup', agentId: ctx.agentId, conversationId: ctx.conversationId!, err: expect.stringMatching(/routines_v1_dispatches/) };
-        const keys = ['level', 'ts', 'reqId', 'msg', 'stage', 'agentId', 'conversationId', 'err'];
+        const expected = { level: 'warn', stage: 'lookup', agentId: ctx.agentId, conversationId: ctx.conversationId!, code: '42P01', name: 'error' };
+        const keys = ['level', 'ts', 'reqId', 'msg', 'stage', 'agentId', 'conversationId', 'code', 'name'];
         const lineOf = (lines: readonly string[]) => lines.map(line => JSON.parse(line) as Record<string, unknown>);
         const preCall = logged(runner(ctx));
         expect(await h.bus.fire('tool:pre-call', preCall.ctx, call)).toMatchObject({ rejected: true, reason: UNAVAILABLE });
@@ -316,7 +316,7 @@ describe('routine_report (TASK-907)', () => {
         for (const { lines } of [preCall, execute]) {
           expect(lineOf(lines)).toEqual([expect.objectContaining({ msg: 'routines_report_failed', ...expected })]);
           for (const key of Object.keys(lineOf(lines)[0]!)) expect(keys, key).toContain(key);
-          expect(lines.join('\n')).not.toMatch(/SECRET/);
+          expect(lines.join('\n')).not.toMatch(/SECRET|routines_v1_dispatches/);
         }
       } finally {
         await sql`ALTER TABLE report_tool_test_dispatches RENAME TO routines_v1_dispatches`.execute(h.db);
@@ -514,7 +514,7 @@ describe('routine_report (TASK-907)', () => {
       try {
         const write = logged(runner(ctx));
         await expect(report(write.ctx, call)).rejects.toMatchObject({ toolCode: 'unavailable', field: 'input' });
-        expectOneFailure(write.lines, ids, new RegExp(`dispatch ${run!.dispatchId} \\(SQLSTATE 23514\\)`), /SECRET/, 'a refused write');
+        expectOneFailure(write.lines, ids, { code: 'unknown', causeCode: '23514', hookName: 'routines:report', plugin: '@ax/routines' }, /SECRET|Could not save/, 'a refused write');
       } finally {
         await sql`ALTER TABLE routines_v1_definitions DROP CONSTRAINT report_tool_test_refuses`.execute(h.db);
       }
@@ -523,7 +523,7 @@ describe('routine_report (TASK-907)', () => {
       try {
         const fence = logged(runner(ctx));
         await expect(report(fence.ctx, call)).rejects.toMatchObject({ toolCode: 'unavailable', field: 'input' });
-        expectOneFailure(fence.lines, ids, /routines_v1_retired_agents/, /SECRET/, 'a failed fence');
+        expectOneFailure(fence.lines, ids, { code: 'unknown', causeCode: '42P01', hookName: 'routines:report', plugin: '@ax/routines' }, /SECRET|retired_agents/, 'a failed fence');
       } finally {
         await sql`ALTER TABLE report_tool_test_retired_agents RENAME TO routines_v1_retired_agents`.execute(h.db);
       }

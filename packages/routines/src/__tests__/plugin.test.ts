@@ -6,6 +6,8 @@ import { createRoutinesPlugin } from '../plugin.js';
 import { CAPTURE_CHECK_DEADLINE_MS } from '../capture.js';
 import { createRoutinesStore } from '../store.js';
 import { createRoutineHarness, type RoutineHarness } from './support/routine-harness.js';
+import { logged } from './support/report-log.js';
+import { failQueries } from './support/fail-query.js';
 let h: RoutineHarness;
 afterEach(async () => { vi.restoreAllMocks(); await h?.close(); });
 const definition = RoutineDefinitionSchema.parse({ name: 'Check', promptBody: 'Check', silenceToken: 'QUIET', trigger: { kind: 'interval', every: '1h' } });
@@ -98,5 +100,71 @@ describe('the capture veto while routines starts (TASK-908)', () => {
       await vi.advanceTimersByTimeAsync(CAPTURE_CHECK_DEADLINE_MS);
       expect(await asked).toMatchObject({ rejected: true, source: '@ax/routines', reason: 'task-check-in' });
     } finally { vi.useRealTimers(); }
+  });
+});
+
+// TASK-1058: a subscriber's failure line carries the ids and the error's codes, never its message.
+const PRIVATE = () => Object.assign(new Error('PRIVATE pg text at 10.0.0.7'), { code: '57P01' });
+/** The one `msg` line: these ids, the injected error's codes, nothing else, and no message text anywhere. */
+function expectOneCodeOnly(lines: readonly string[], msg: string, ids: Record<string, unknown>): void {
+  const entries = lines.map(l => JSON.parse(l) as Record<string, unknown>).filter(e => e.msg === msg);
+  expect(entries).toEqual([{ level: 'warn', ts: expect.any(String), reqId: expect.any(String), msg, ...ids, code: '57P01', name: 'Error' }]);
+  expect(lines.join('\n')).not.toMatch(/PRIVATE|10\.0\.0\.7/);
+}
+describe('failure lines carry codes only (TASK-1058)', () => {
+  it('a purge that fails for a deleted agent', async () => {
+    h = await createRoutineHarness();
+    const { ctx, lines } = logged(h.owner);
+    const restore = failQueries(/insert into "routines_v1_retired_agents"/, PRIVATE());
+    try { await h.bus.fire('agents:deleted', ctx, { agentId: h.agentId }); } finally { restore(); }
+    expectOneCodeOnly(lines, 'routines_remove_for_deleted_agent_failed', { agentId: h.agentId });
+  });
+
+  it('a connectors-skipped payload that throws when read', async () => {
+    h = await createRoutineHarness();
+    const { ctx, lines } = logged(h.owner);
+    await h.bus.fire('chat:connectors-skipped', ctx, { get reqId(): string { throw PRIVATE(); }, connectors: [] });
+    expectOneCodeOnly(lines, 'routines_connectors_skipped_failed', {});
+  });
+
+  it('drop-turn and hide failures on a silenced turn', async () => {
+    const lines: string[] = [];
+    h = await createRoutineHarness({ invoke: async (ctx, bus) => {
+      const l = logged(ctx);
+      await bus.fire('chat:turn-end', l.ctx, { reqId: ctx.reqId, contentBlocks: [{ type: 'text', text: 'QUIET' }], turnId: 'turn' });
+      lines.push(...l.lines);
+      return { kind: 'complete' };
+    } });
+    const row = await create();
+    const callThrough = h.bus.call.bind(h.bus);
+    vi.spyOn(h.bus, 'call').mockImplementation(async (hook: string, ctx: Parameters<typeof callThrough>[1], input: unknown) => {
+      if (hook === 'conversations:drop-turn' || hook === 'conversations:hide') throw PRIVATE();
+      return callThrough(hook, ctx, input);
+    });
+    await h.bus.call('routines:fire-now', h.owner, fireInput(row));
+    const store = createRoutinesStore(h.db);
+    const asOwner = { ...row, actorUserId: h.owner.userId };
+    await expect.poll(async () => (await store.recentFires(asOwner)).length).toBe(1);
+    expect((await store.recentFires(asOwner))[0]).toMatchObject({ status: 'silenced' });
+    expectOneCodeOnly(lines, 'routines_drop_turn_failed', { conversationId: expect.any(String) });
+    expectOneCodeOnly(lines, 'routines_hide_failed', { conversationId: expect.any(String) });
+  });
+
+  it("a turn-end whose run can't be recorded", async () => {
+    const lines: string[] = [];
+    let ended!: () => void;
+    const done = new Promise<void>(r => { ended = r; });
+    h = await createRoutineHarness({ invoke: async (ctx, bus) => {
+      const l = logged(ctx);
+      const restore = failQueries(/insert into "routines_v1_fires"/, PRIVATE());
+      try { await bus.fire('chat:turn-end', l.ctx, { reqId: ctx.reqId, contentBlocks: [{ type: 'text', text: 'done' }] }); } finally { restore(); }
+      lines.push(...l.lines);
+      ended();
+      return { kind: 'complete' };
+    } });
+    const row = await create();
+    await h.bus.call('routines:fire-now', h.owner, fireInput(row));
+    await done;
+    expectOneCodeOnly(lines, 'routines_turn_end_handler_failed', {});
   });
 });

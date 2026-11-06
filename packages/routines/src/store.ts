@@ -993,16 +993,20 @@ export function sqlState(error: unknown): string | null {
 /**
  * A refused write can quote what it was sent (Postgres puts it in the error's
  * `where` or `detail`), and a report's text is the agent's. Keep only the run's
- * id and the SQLSTATE, and drop the original error.
+ * id and the SQLSTATE, and drop the original error. TASK-1058: the SQLSTATE
+ * rides as `code` too, so a code-only log line (`faultLogFields`) keeps it.
  */
 function reportWriteError(dispatchId: string, error: unknown): Error {
   const code = sqlState(error);
-  return new Error(`Could not save the report for dispatch ${dispatchId}${code === null ? '' : ` (SQLSTATE ${code})`}.`);
+  return withCode(new Error(`Could not save the report for dispatch ${dispatchId}${code === null ? '' : ` (SQLSTATE ${code})`}.`), code);
 }
 /** TASK-949. `reportWriteError`'s rule for a person's step changes, whose text is theirs: only the routine's id and the SQLSTATE. */
 function stepsWriteError(routineId: string, error: unknown): Error {
   const code = sqlState(error);
-  return new Error(`Could not save the steps for routine ${routineId}${code === null ? '' : ` (SQLSTATE ${code})`}.`);
+  return withCode(new Error(`Could not save the steps for routine ${routineId}${code === null ? '' : ` (SQLSTATE ${code})`}.`), code);
+}
+function withCode(error: Error, code: string | null): Error {
+  return code === null ? error : Object.assign(error, { code });
 }
 /**
  * TASK-949. Why `setSteps` changed nothing. Thrown inside its receipt's

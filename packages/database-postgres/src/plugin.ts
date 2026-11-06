@@ -35,6 +35,27 @@ const MAX_TIMER_DELAY_MS = 2_147_483_647;
 const DEFAULT_STATEMENT_TIMEOUT_MS = 30_000;
 // Postgres refuses a larger statement_timeout, which would fail every connect.
 const MAX_STATEMENT_TIMEOUT_MS = 2_147_483_647;
+// TASK-1058: pg-pool 3.13.0's two timeout rejections carry no code, so a
+// code-only log line can't tell them from a database error or from each other.
+// Each gets its own backend-neutral code:
+// - `index.js:224` (`db-checkout-timeout`): the pool was full when the caller
+//   asked, so it queued, and its wait ran out before it got a working
+//   connection. The slots stayed busy (with work: the pool is starved; or
+//   with new connections the database hasn't answered, since pg-pool counts
+//   one still connecting as a used slot), or a slot freed up and the new
+//   connection opened for the caller went unanswered: the queue timer keeps
+//   running and fires first. So in an outage with more callers than
+//   `poolMax`, the queued callers get this code too.
+// - `:276` (`db-connect-timeout`): the pool had room when the caller asked,
+//   and the database didn't answer the new connection opened for it. The
+//   database is slow or unreachable; any of these in the same window means
+//   the queued timeouts point at the database too.
+// checkout-timeout.test.ts pins both messages against the real pool, so a
+// pg-pool upgrade that rewords them fails there.
+const CHECKOUT_TIMEOUT_CODES: ReadonlyMap<string, string> = new Map([
+  ['timeout exceeded when trying to connect', 'db-checkout-timeout'],
+  ['Connection terminated due to connection timeout', 'db-connect-timeout'],
+]);
 
 export interface DatabasePostgresConfig {
   connectionString: string;
@@ -42,8 +63,13 @@ export interface DatabasePostgresConfig {
   /**
    * How long a caller waits for a connection before the call fails with pg's
    * timeout error. That covers a free connection, one another caller hands
-   * back, or a new one the database has to answer. A whole number of ms from
-   * 1 to 2147483647; default 5000. Maps to pg's `connectionTimeoutMillis`.
+   * back, or a new one the database has to answer. The error is pg's own, with
+   * a code added: `db-checkout-timeout` when the pool was full when the caller
+   * asked, so it queued, and its wait ran out first (the slots stayed busy,
+   * or the new connection opened for it once one freed up went unanswered);
+   * `db-connect-timeout` when the pool had room and the database didn't answer
+   * the new connection opened for the caller. A whole number of ms from 1 to
+   * 2147483647; default 5000. Maps to pg's `connectionTimeoutMillis`.
    */
   checkoutTimeoutMs?: number;
   /**
@@ -146,7 +172,12 @@ export function createDatabasePostgresPlugin(config: DatabasePostgresConfig): Pl
         if (listener !== undefined) client.removeListener('error', listener);
       });
       kysely = new Kysely<unknown>({
-        dialect: new PostgresDialect({ pool }),
+        // Kysely checks connections out through `connect()` alone and rethrows
+        // what it rejects with, so tagging here reaches every caller. The
+        // 'acquire'/'release' listeners above stay on the real pool.
+        dialect: new PostgresDialect({
+          pool: { connect: () => pool.connect().catch(tagCheckoutTimeout), end: () => pool.end() },
+        }),
       });
 
       bus.registerService<unknown, DatabaseGetInstanceOutput>(
@@ -181,6 +212,21 @@ function validateConnectionString(connectionString: unknown): void {
       message: `${PLUGIN_NAME}: connectionString must start with postgres:// or postgresql://`,
     });
   }
+}
+
+/**
+ * Sets `code` on pg-pool's checkout-timeout errors and rethrows that same
+ * object, so its message, stack, cause and class stay pg-pool's. Only an exact
+ * message match with no code of its own is tagged: a refused connection or an
+ * auth failure keeps its own code, and a connection dropped without one stays
+ * untagged.
+ */
+function tagCheckoutTimeout(err: unknown): never {
+  if (err instanceof Error && (err as { code?: unknown }).code === undefined) {
+    const code = CHECKOUT_TIMEOUT_CODES.get(err.message);
+    if (code !== undefined) (err as { code?: string }).code = code;
+  }
+  throw err;
 }
 
 function resolveCheckoutTimeoutMs(value: unknown): number {

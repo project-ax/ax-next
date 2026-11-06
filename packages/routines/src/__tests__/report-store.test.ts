@@ -430,6 +430,8 @@ it('a report the database refuses fails naming only its run, and writes nothing'
     .then(() => null, (e: unknown) => e);
   expect(error).toBeInstanceOf(Error);
   expect((error as Error).message).toBe(`Could not save the report for dispatch ${run.dispatchId} (SQLSTATE 22P02).`);
+  // TASK-1058: the SQLSTATE rides as `code` too, so a code-only log line keeps it.
+  expect(error).toMatchObject({ code: '22P02' });
   expect((error as Error).cause).toBeUndefined();
   expect(inspect(error, { depth: 10, showHidden: true })).not.toMatch(/Queue|Secret/);
   expect(await snapshot()).toEqual(before);

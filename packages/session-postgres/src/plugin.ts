@@ -1,5 +1,6 @@
 import {
   createLogger,
+  faultLogFields,
   PluginError,
   type AgentContext,
   type Logger,
@@ -55,6 +56,32 @@ import {
 
 const PLUGIN_NAME = '@ax/session-postgres';
 
+// TASK-1058: the same codes, for the same pg-pool 3.13.0 messages, as
+// @ax/database-postgres (copied, not imported: no cross-plugin imports).
+// - `index.js:224` (`db-checkout-timeout`): the pool was full when the caller
+//   asked, so it queued, and its wait ran out first. Usually starvation, but
+//   in an outage the queued callers get it too.
+// - `:276` (`db-connect-timeout`): the pool had room, and the database didn't
+//   answer the new connection opened for the caller.
+// timeouts.test.ts pins both against the real pool.
+const CHECKOUT_TIMEOUT_CODES: ReadonlyMap<string, string> = new Map([
+  ['timeout exceeded when trying to connect', 'db-checkout-timeout'],
+  ['Connection terminated due to connection timeout', 'db-connect-timeout'],
+]);
+
+/**
+ * Sets `code` on pg-pool's checkout-timeout errors and rethrows that same
+ * object (message, stack, cause and class stay pg-pool's). Only an exact
+ * message match with no code of its own is tagged.
+ */
+function tagCheckoutTimeout(err: unknown): never {
+  if (err instanceof Error && (err as { code?: unknown }).code === undefined) {
+    const code = CHECKOUT_TIMEOUT_CODES.get(err.message);
+    if (code !== undefined) (err as { code?: string }).code = code;
+  }
+  throw err;
+}
+
 const DEFAULT_CHECKOUT_TIMEOUT_MS = 5_000;
 const DEFAULT_STATEMENT_TIMEOUT_MS = 30_000;
 // Node turns a longer timer into 1 ms, and Postgres refuses a longer
@@ -67,8 +94,11 @@ export interface SessionPostgresConfig {
   /**
    * How long a caller waits for a pooled connection, including a new one the
    * database has to answer. The dedicated LISTEN client's connect at boot gets
-   * the same bound. A whole number of ms from 1 to 2147483647; default 5000.
-   * Maps to pg's `connectionTimeoutMillis`.
+   * the same bound. A pooled timeout carries a code (TASK-1058):
+   * `db-checkout-timeout` when the pool was full and the caller queued,
+   * `db-connect-timeout` when the database didn't answer a new connection. The
+   * LISTEN client's timeout (pg's own) carries none. A whole number of ms from
+   * 1 to 2147483647; default 5000. Maps to pg's `connectionTimeoutMillis`.
    */
   checkoutTimeoutMs?: number;
   /**
@@ -81,10 +111,14 @@ export interface SessionPostgresConfig {
    */
   statementTimeoutMs?: number;
   /**
-   * Optional logger for background events that don't ride a request — pg.Pool
-   * idle errors, LISTEN client socket errors, init failure cleanup. Defaults
-   * to a stdout JSON logger tagged `reqId=session-postgres-bg`. Tests can
-   * pass a noop or recording logger.
+   * Optional logger for background connection failures that don't ride a
+   * request (e.g., a postgres restart in k8s): `session_postgres_pool_error`
+   * when an idle pooled connection fails, `session_postgres_client_error` when
+   * a checked-out one does (TASK-1058), and
+   * `session_postgres_listen_client_error` when the LISTEN connection does.
+   * All three carry codes only (`faultLogFields`). Defaults to a stdout JSON
+   * logger tagged `reqId=session-postgres-bg`. Tests can pass a noop or
+   * recording logger.
    */
   logger?: Logger;
 }
@@ -820,16 +854,59 @@ export function createSessionPostgresPlugin(
         connectionTimeoutMillis: checkoutTimeoutMs,
         statement_timeout: statementTimeoutMs,
       });
-      // pg.Pool emits 'error' for idle-pool errors (e.g., postgres restart in
-      // k8s closing an idle connection). Without a listener Node treats them
-      // as unhandled and crashes the process.
+      // pg.Pool emits 'error' when an IDLE pooled client fails (e.g., a
+      // postgres restart in k8s closing an idle connection). Without a
+      // listener Node treats it as unhandled and crashes the process. This
+      // listener covers idle clients only; checked-out ones are covered next.
       pool.on('error', (err) => {
-        bgLogger.error('session_postgres_pool_error', {
-          err: err instanceof Error ? err : new Error(String(err)),
-        });
+        bgLogger.error('session_postgres_pool_error', faultLogFields(err));
       });
+      // TASK-1058: the same gap and the same fix as @ax/database-postgres
+      // (TASK-1048). pg-pool listens for a client's 'error' only while the
+      // client is idle in the pool: it removes that listener at checkout and
+      // puts it back at release, and Kysely adds none. A checked-out client
+      // whose session Postgres ends (a restart, a failover,
+      // pg_terminate_backend) emits 'error' with nobody listening, and Node
+      // turns that into an uncaught exception that ends the host. Our
+      // transactions (session:create, the agents:deleted purge) keep a client
+      // checked out through Kysely's ROLLBACK while its socket closes, and an
+      // abrupt drop (a reset, a killed pod) does the same mid-statement. So a
+      // checked-out client gets a listener for exactly as long as pg-pool's
+      // is off ('acquire' fires before pg-pool removes its own; 'release'
+      // fires after it puts it back). The caller still sees the failure: its
+      // queries reject, and pg-pool drops the dead client at release. A client
+      // that dies between queries emits twice (the server's error with its
+      // SQLSTATE, then the socket closing); one that dies mid-query hands the
+      // server's error to that query and emits only the socket close, which
+      // has no code. Either way only the first event is logged. Codes only: a
+      // driver's message can carry a host, a user or a query value.
+      const checkedOutListeners = new WeakMap<pg.PoolClient, (err: Error) => void>();
+      pool.on('acquire', (client) => {
+        let listener = checkedOutListeners.get(client);
+        if (listener === undefined) {
+          let reported = false;
+          listener = (err) => {
+            if (reported) return;
+            reported = true;
+            bgLogger.error('session_postgres_client_error', faultLogFields(err));
+          };
+          checkedOutListeners.set(client, listener);
+        }
+        client.on('error', listener);
+      });
+      pool.on('release', (_err, client) => {
+        const listener = checkedOutListeners.get(client);
+        if (listener !== undefined) client.removeListener('error', listener);
+      });
+      // TASK-1058: pg-pool's checkout timeouts carry a code (see
+      // tagCheckoutTimeout). Kysely checks connections out through `connect()`
+      // alone and rethrows what it rejects with, so tagging here reaches every
+      // caller; the listeners above stay on the real pool.
+      const timedPool = pool;
       kysely = new Kysely<SessionDatabase>({
-        dialect: new PostgresDialect({ pool }),
+        dialect: new PostgresDialect({
+          pool: { connect: () => timedPool.connect().catch(tagCheckoutTimeout), end: () => timedPool.end() },
+        }),
       });
 
       // TASK-1056: without a connect bound, a database that never answers
@@ -842,11 +919,11 @@ export function createSessionPostgresPlugin(
       });
       // Same risk on the LISTEN client — long-lived, idle most of the time,
       // exactly the connection a postgres restart will tear down. Crash-by-
-      // unhandled-'error' is the failure mode we're avoiding here.
+      // unhandled-'error' is the failure mode we're avoiding here. Every event
+      // is logged (a terminated backend writes two: the server's error, then
+      // the socket closing). Codes only, for the same reason as above.
       listenClient.on('error', (err) => {
-        bgLogger.error('session_postgres_listen_client_error', {
-          err: err instanceof Error ? err : new Error(String(err)),
-        });
+        bgLogger.error('session_postgres_listen_client_error', faultLogFields(err));
       });
 
       // Mid-init failure: the kernel rolls back plugins 0..N-1 (the ones
