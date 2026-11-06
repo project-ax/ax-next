@@ -1,6 +1,6 @@
 import { HookBus, makeAgentContext, type ToolDescriptor } from '@ax/core';
 import { REQUEST_CAPABILITY_DESCRIPTOR, SEARCH_CATALOG_DESCRIPTOR } from '@ax/skill-broker';
-import { ARTIFACT_PUBLISH_DESCRIPTOR } from '@ax/tool-artifact-publish';
+import { ARTIFACT_PUBLISH_DESCRIPTOR, SHOW_VISUAL_DESCRIPTOR } from '@ax/tool-artifact-publish';
 import { CONNECTOR_PROPOSE_DESCRIPTOR } from '@ax/tool-connector-propose';
 // Derived, not copied: the assertions below check that the preset applies THE
 // DEFAULT. A literal makes a deliberate model-policy change look like a broken
@@ -697,6 +697,7 @@ describe('@ax/preset-k8s wiring', () => {
     WEB_SEARCH_DESCRIPTOR,
     WEB_EXTRACT_DESCRIPTOR,
     ARTIFACT_PUBLISH_DESCRIPTOR,
+    SHOW_VISUAL_DESCRIPTOR,
     SKILL_PROPOSE_DESCRIPTOR,
     CONNECTOR_PROPOSE_DESCRIPTOR,
   ];

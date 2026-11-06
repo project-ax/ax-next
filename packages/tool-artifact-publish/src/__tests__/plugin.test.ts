@@ -44,4 +44,15 @@ describe('createToolArtifactPublishPlugin', () => {
     expect(desc.name).toBe(ARTIFACT_PUBLISH_TOOL_NAME);
     expect(desc.executesIn).toBe('sandbox');
   });
+
+  it('registers artifact_publish then show_visual on init', async () => {
+    const plugin = createToolArtifactPublishPlugin();
+    const { bus, calls } = fakeBus();
+    await plugin.init({ bus, config: {} as never });
+    expect(
+      calls
+        .filter((c) => c.hook === 'tool:register')
+        .map((c) => (c.payload as ToolDescriptor).name),
+    ).toEqual(['artifact_publish', 'show_visual']);
+  });
 });
