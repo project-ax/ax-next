@@ -1,5 +1,5 @@
 import type * as http from 'node:http';
-import { MAX_FRAME, type AgentContext, type HookBus } from '@ax/core';
+import { MAX_FRAME, faultLogFields, type AgentContext, type HookBus } from '@ax/core';
 import {
   internalError,
   logInternalError,
@@ -476,22 +476,34 @@ export async function dispatch(
       if (evt.persist !== undefined) {
         // Persist-before-ack (TASK-66 / B3): AWAIT only the ISOLATED persist
         // before the 202 so the turn's frames are durable in the display event
-        // log before the runner sees the turn acked. `event.turn-end` and
-        // `event.chat-end` (TASK-731, refused-final-save notice) opt in; each
-        // is once per turn / per run, so one DB write of added latency is
-        // fine. The broadcast `fire` runs fire-and-forget AFTER, so a slow
-        // observer (e.g. the title-LLM subscriber) never delays the ack.
+        // log before the runner sees the turn acked. Only `event.turn-end`
+        // has a persist step (`event.chat-end`'s went with TASK-995); it runs
+        // once per turn, so one DB write of added latency is fine. The
+        // broadcast `fire` runs fire-and-forget AFTER, so a slow observer
+        // (e.g. the title-LLM subscriber) never delays the ack.
         //
-        // No-omission (B3): if the awaited persist THROWS (a real DB outage
-        // — the store retries the seq-allocation race internally), do NOT
-        // falsely ack — write a 500 + log loudly so the missing display row is
-        // never silent.
+        // No false ack (B3): if the awaited persist THROWS, answer 500, never
+        // a 202. @ax/conversations retries only a checkout that never got a
+        // connection (TASK-1059), so what reaches here is any other failure,
+        // or a checkout that failed three times.
+        //
+        // The 500 does not bring the row back. The runner sends
+        // `event.turn-end` once (`IpcClient.event()` never retries), and
+        // agent-runner-core's `closeTurn` catches the non-2xx, logs
+        // `ipc_event_refused` and carries on. So the row is lost, and this
+        // line is the host's only record that it was. It carries codes only:
+        // the bus copies the service's message (a database's can quote a
+        // host, a user or a row value) into its wrap.
+        //
+        // This path also returns before the broadcast, so `chat:turn-end`
+        // never fires for this turn-end. That is older than TASK-1059 and is
+        // its own follow-up.
         try {
           await evt.persist(ctx, bus, validated.payload);
         } catch (err) {
           ctx.logger.error('event_persist_failed', {
             hook: pathname,
-            err: err instanceof Error ? err : new Error(String(err)),
+            ...faultLogFields(err),
           });
           writeJsonError(
             res,

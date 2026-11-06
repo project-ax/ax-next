@@ -57,13 +57,20 @@ import {
 //                              so misuse is a compile error.
 //
 //   event(name, payload)     — POST /<name> fire-and-forget. Resolves on
-//                              202; connection-level errors reject, but
-//                              callers usually log and move on.
+//                              a 2xx; anything else rejects. One attempt,
+//                              never retried (see the policy below).
 //
 // Retry and timeout policy lives in this file:
-//   - 5xx + connection errors → retry, exponential backoff, cap maxRetries.
+//   - Connection errors → retry with exponential backoff until the wall-clock
+//     budget runs out: `maxElapsedMs` (default 2 min), or a fixed 3 s for
+//     tool.execute-host / tool.pre-call / tool.list.
+//   - 5xx → at most MAX_5XX_RETRIES (3) retries on the same backoff, never the
+//     wall-clock window.
+//   - `event()` → one attempt with a 10 s timeout, never retried. A non-2xx or
+//     a connection error rejects; the runner's callers catch it and carry on.
+//   - `maxRetries`, when set, caps the connection and 5xx retries too.
 //   - 401 → SessionInvalidError (terminal).
-//   - 400/404/409 → IpcRequestError (don't retry).
+//   - Any other non-2xx (400/404/409, …) → IpcRequestError (don't retry).
 //   - Per-action timeout from IPC_TIMEOUTS_MS (overridable for tests).
 //
 // Response-body cap (JSON path): we drain into a Buffer capped at
@@ -146,21 +153,25 @@ export interface IpcClientOptions {
    * Hard cap on retry attempts (on top of the first try) for connection-level
    * errors / 5xx. When set, the loop stops after this many retries regardless
    * of the wall-clock deadline. When UNSET it defaults to effectively
-   * unbounded (Number.MAX_SAFE_INTEGER) so `maxElapsedMs` is the binding
-   * constraint — that's what lets the runner ride out a host restart. Existing
-   * callers that pass a number keep their exact attempt-count semantics.
+   * unbounded (Number.MAX_SAFE_INTEGER), so the wall-clock budget binds for
+   * connection errors (that's what lets the runner ride out a host restart)
+   * and MAX_5XX_RETRIES binds for a 5xx. Existing callers that pass a number
+   * keep their exact attempt-count semantics.
    */
   maxRetries?: number;
   /**
-   * Wall-clock ceiling (ms) for the transient-error retry SERIES. Retries on
-   * connection-level / 5xx errors keep going (at the backoff cadence, capped
-   * at 30 s/attempt) until this much real time has elapsed since the first
-   * attempt, then the final error is rethrown. This is the knob that lets the
-   * runner survive a host OOMKill → reschedule → boot instead of giving up
-   * after the old ~3 s / 6-attempt budget and dropping the turn's transcript
-   * ship or crashing (session.next-message poll). Default 120_000 (2 min). Distinct
-   * from the per-attempt wire timeout in IPC_TIMEOUTS_MS — that bounds ONE
-   * request; this bounds the whole retry series.
+   * Wall-clock ceiling (ms) for the CONNECTION-error retry SERIES. Retries on
+   * connection-level errors keep going (at the backoff cadence, capped at
+   * 30 s/attempt) until the next wait would pass this much real time since the
+   * first attempt, then the last error is rethrown. Only connection-level
+   * errors use this window: a 5xx gets at most MAX_5XX_RETRIES (3) retries,
+   * tool.execute-host / tool.pre-call / tool.list have a fixed 3 s budget, and
+   * `event()` never retries. This is the knob that lets the runner survive a
+   * host OOMKill → reschedule → boot instead of giving up after the old ~3 s /
+   * 6-attempt budget and dropping the turn's transcript ship or crashing
+   * (session.next-message poll). Default 120_000 (2 min). Distinct from the
+   * per-attempt wire timeout in IPC_TIMEOUTS_MS — that bounds ONE request;
+   * this bounds the whole retry series.
    */
   maxElapsedMs?: number;
   /** Testable seam. */
