@@ -29,6 +29,7 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyTitle } from '@/components/ui/empty';
 import { Skeleton } from '@/components/ui/skeleton';
+import { checkContentOriginUrl } from '@/lib/file-download';
 import { logRequestFailure } from '@/lib/http';
 import type { ArtifactPreviewKind } from '@/lib/workspace-types';
 
@@ -110,7 +111,13 @@ function FromContentOrigin({
   title: string;
   loadToken(purpose: 'view'): Promise<{ url: string }>;
 }) {
-  const load = useCallback(() => loadToken('view'), [loadToken]);
+  // A minted address is checked before it is used: content origin, /v/, never
+  // the app's own origin. Anything else fails closed into the error state.
+  const load = useCallback(async () => {
+    const token = await loadToken('view');
+    checkContentOriginUrl(token.url, 'view');
+    return token;
+  }, [loadToken]);
   const [token, retry] = useLoad(load, 'artifact-view-token');
   if (token.state === 'loading') return <Loading />;
   if (token.state === 'failed') return <Failed retry={retry} />;

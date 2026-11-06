@@ -27,6 +27,7 @@ import { timeAgo } from '@/lib/workspace-time';
 import { artifactPreviewKind, type ArtifactTokenPurpose, type ArtifactVersion } from '@/lib/workspace-types';
 import { ArtifactOwnerMenu } from './ArtifactOwnerMenu';
 import { ArtifactPreview } from './ArtifactPreview';
+import { ShareLinkDialog } from './ShareLinkDialog';
 import { IconAction } from './task-bits';
 
 const DOWNLOAD_FAILED = 'That download didn’t start, so nothing was saved. Try again in a moment.';
@@ -55,6 +56,7 @@ export function ArtifactViewer({
   const [restoring, setRestoring] = useState(false);
   const [downloading, setDownloading] = useState(false);
   const [copying, setCopying] = useState(false);
+  const [manualUrl, setManualUrl] = useState<string | null>(null);
   const downloadInFlight = useRef(false);
   useEffect(() => setPicked(null), [artifactId]);
 
@@ -93,8 +95,10 @@ export function ArtifactViewer({
   async function copyLink() {
     if (copying) return;
     setCopying(true);
-    await copyShareLink(artifactId);
+    // No await before this call: the clipboard write must start in the click.
+    const outcome = await copyShareLink(artifactId);
     setCopying(false);
+    if (outcome.kind === 'manual') setManualUrl(outcome.url);
     // The link may have just been turned on: the ⋯ menu should know.
     refresh();
   }
@@ -157,6 +161,16 @@ export function ArtifactViewer({
   }
 
   const versions = [...artifact.versions].sort((a, b) => b.version - a.version);
+  /*
+    The preview word describes the CURRENT version. An older version saved as a
+    different type could be anything, so it gets Download only rather than a
+    preview chosen for some other kind of file.
+  */
+  const shownVersion = versions.find((v) => v.version === version);
+  const preview =
+    shownVersion !== undefined && shownVersion.mediaType !== artifact.mediaType
+      ? 'none'
+      : artifactPreviewKind(artifact.preview);
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-2 py-1">
@@ -227,13 +241,14 @@ export function ArtifactViewer({
         <ArtifactPreview
           // A new version is a new preview: fresh token, fresh text.
           key={version}
-          preview={artifactPreviewKind(artifact.preview)}
+          preview={preview}
           title={artifact.title}
           loadToken={loadToken}
           loadText={loadText}
           onDownload={download}
         />
       </div>
+      <ShareLinkDialog url={manualUrl} onClose={() => setManualUrl(null)} />
     </div>
   );
 }

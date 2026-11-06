@@ -86,6 +86,33 @@ export function saveFromUrl(url: string): void {
 }
 
 /**
+ * A minted artifact address, checked before anything loads it (spec §6.5).
+ *
+ * It must be absolute http(s), on a DIFFERENT origin from this app (the
+ * content origin is another site by design — an address on our own origin
+ * would run agent-made bytes with our cookies' origin), and on the path the
+ * purpose calls for: `/v/` to view, `/d/` to download. Anything else throws,
+ * so a caller fails closed into its own error state.
+ */
+export function checkContentOriginUrl(url: string, purpose: 'view' | 'download'): URL {
+  let resolved: URL;
+  try {
+    resolved = new URL(url);
+  } catch {
+    throw new Error('checkContentOriginUrl: not an absolute address');
+  }
+  const path = purpose === 'view' ? '/v/' : '/d/';
+  if (
+    (resolved.protocol !== 'https:' && resolved.protocol !== 'http:') ||
+    resolved.origin === window.location.origin ||
+    !resolved.pathname.startsWith(path)
+  ) {
+    throw new Error(`checkContentOriginUrl: refusing an address that is not an artifact ${purpose} address`);
+  }
+  return resolved;
+}
+
+/**
  * Hand an artifact's minted DOWNLOAD address to the browser (spec §6.5).
  *
  * The same idea as `saveFromUrl` — the browser streams the file to disk, the
@@ -95,20 +122,12 @@ export function saveFromUrl(url: string): void {
  * `Content-Disposition: attachment` (P14), so clicking it saves a file and
  * leaves this page where it is.
  *
- * Only an absolute http(s) `/d/` address is accepted (it came from our own
- * token route, never from an agent), and the click carries no referrer, so the
- * content origin never learns which page of the app asked.
+ * The address is checked first (`checkContentOriginUrl`), and the click
+ * carries no referrer, so the content origin never learns which page of the
+ * app asked.
  */
 export function saveFromContentOrigin(url: string): void {
-  let resolved: URL;
-  try {
-    resolved = new URL(url);
-  } catch {
-    throw new Error('saveFromContentOrigin: not an absolute address');
-  }
-  if ((resolved.protocol !== 'https:' && resolved.protocol !== 'http:') || !resolved.pathname.startsWith('/d/')) {
-    throw new Error('saveFromContentOrigin: refusing an address that is not an artifact download');
-  }
+  const resolved = checkContentOriginUrl(url, 'download');
   const a = document.createElement('a');
   a.href = resolved.href;
   a.rel = 'noreferrer';

@@ -138,6 +138,75 @@ describe('ArtifactViewer', () => {
     expect(api.setArtifactLink).toHaveBeenCalledWith('art-1', 'ensure');
   });
 
+  it('Copy link: when the browser refuses the clipboard, the link is shown to copy by hand', async () => {
+    api.setArtifactLink.mockResolvedValue('A'.repeat(32));
+    writeText.mockRejectedValueOnce(new DOMException('NotAllowedError'));
+    const show = vi.spyOn(toastActions, 'show');
+    const error = vi.spyOn(toastActions, 'error');
+    renderViewer();
+    await screen.findByTitle('Deal tracker');
+    fireEvent.click(screen.getByRole('button', { name: 'Copy link' }));
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).getByText('Your browser wouldn’t let us copy it — here’s the link to copy yourself.')).toBeTruthy();
+    const field = within(dialog).getByRole<HTMLInputElement>('textbox', { name: 'Link' });
+    expect(field.value).toBe(`${window.location.origin}/a/${'A'.repeat(32)}`);
+    expect(field.readOnly).toBe(true);
+    // The code never goes into a toast or the console.
+    const said = JSON.stringify([show.mock.calls, error.mock.calls, vi.mocked(console.warn).mock.calls]);
+    expect(said).not.toContain('A'.repeat(32));
+  });
+
+  it('Copy link starts a ClipboardItem write in the click, before the link exists', async () => {
+    const items: Array<Record<string, Promise<Blob>>> = [];
+    class FakeClipboardItem {
+      constructor(data: Record<string, Promise<Blob>>) {
+        items.push(data);
+      }
+    }
+    vi.stubGlobal('ClipboardItem', FakeClipboardItem);
+    const write = vi.fn(async (data: FakeClipboardItem[]) => {
+      void data;
+      await items[0]!['text/plain'];
+    });
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText, write }, configurable: true });
+    let resolveCode!: (c: string) => void;
+    api.setArtifactLink.mockReturnValue(new Promise<string | null>((r) => (resolveCode = r)));
+    renderViewer();
+    await screen.findByTitle('Deal tracker');
+    fireEvent.click(screen.getByRole('button', { name: 'Copy link' }));
+    // Synchronously, in the gesture: the request is still out.
+    expect(write).toHaveBeenCalledTimes(1);
+    resolveCode('C'.repeat(32));
+    const blob = (await items[0]!['text/plain'])!;
+    // jsdom's Blob has no .text(); FileReader reads it.
+    const text = await new Promise<string>((res) => {
+      const r = new FileReader();
+      r.onload = () => res(String(r.result));
+      r.readAsText(blob);
+    });
+    expect(text).toBe(`${window.location.origin}/a/${'C'.repeat(32)}`);
+    expect(writeText).not.toHaveBeenCalled();
+    vi.unstubAllGlobals();
+  });
+
+  it('a picked version saved as another type gets Download only, not a preview', async () => {
+    api.artifact.mockResolvedValue(
+      detail({
+        versions: [
+          { version: 3, mediaType: 'text/html', sizeBytes: 10, createdAt: '2026-11-06T10:00:00Z' },
+          { version: 1, mediaType: 'application/vnd.ms-excel', sizeBytes: 8, createdAt: '2026-11-01T00:00:00Z' },
+        ],
+      }),
+    );
+    renderViewer();
+    const picker = await screen.findByRole('combobox', { name: 'Version' });
+    await screen.findByTitle('Deal tracker');
+    fireEvent.keyDown(picker, { key: 'ArrowDown' });
+    fireEvent.click(await screen.findByRole('option', { name: /^v1 · / }));
+    expect(await screen.findByText('We can’t preview this one yet')).toBeTruthy();
+    expect(api.artifactToken).not.toHaveBeenCalledWith('art-1', 1, 'view');
+  });
+
   it('the menu offers Rename, Turn off link / Get a new link only while on, and Delete with a confirm', async () => {
     renderViewer();
     await screen.findByTitle('Deal tracker');
@@ -181,6 +250,20 @@ describe('ArtifactViewer', () => {
     fireEvent.click(within(dialog).getByRole('button', { name: 'Get a new link' }));
     await waitFor(() => expect(api.setArtifactLink).toHaveBeenCalledWith('art-1', 'rotate'));
     await waitFor(() => expect(writeText).toHaveBeenCalledWith(`${window.location.origin}/a/${'B'.repeat(32)}`));
+  });
+
+  it('Get a new link: when the clipboard refuses, the new link is shown to copy by hand', async () => {
+    api.artifact.mockResolvedValue(detail({ linkOn: true }));
+    api.setArtifactLink.mockResolvedValue('B'.repeat(32));
+    writeText.mockRejectedValueOnce(new DOMException('NotAllowedError'));
+    renderViewer();
+    await screen.findByTitle('Deal tracker');
+    openMenu();
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Get a new link…' }));
+    fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Get a new link' }));
+    const field = await screen.findByRole<HTMLInputElement>('textbox', { name: 'Link' });
+    expect(field.value).toBe(`${window.location.origin}/a/${'B'.repeat(32)}`);
+    expect(api.setArtifactLink).toHaveBeenCalledWith('art-1', 'rotate');
   });
 
   it('Delete asks first, then deletes and goes back to the list', async () => {

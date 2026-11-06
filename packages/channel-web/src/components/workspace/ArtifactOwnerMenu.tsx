@@ -26,11 +26,12 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { Field, FieldError, FieldGroup, FieldLabel } from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
-import { writeShareLink } from '@/lib/copy-share-link';
+import { copyLinkFrom } from '@/lib/copy-share-link';
 import { HttpError, logRequestFailure } from '@/lib/http';
 import { toastActions } from '@/lib/toast-store';
 import { workspaceApi } from '@/lib/workspace-api';
 import type { ArtifactDetail, ArtifactSummary } from '@/lib/workspace-types';
+import { ShareLinkDialog } from './ShareLinkDialog';
 
 type Pending = 'rename' | 'link-off' | 'link-new' | 'delete';
 
@@ -65,6 +66,10 @@ export function ArtifactOwnerMenu({
   onChanged(next: ArtifactSummary | null): void;
 }) {
   const [pending, setPending] = useState<Pending | null>(null);
+  // What the dialog shows: the last thing opened, kept while it animates shut,
+  // so a closing confirm never flips to the Rename copy.
+  const [shown, setShown] = useState<Pending>('rename');
+  const [manualUrl, setManualUrl] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [title, setTitle] = useState('');
   const [nameError, setNameError] = useState<string | null>(null);
@@ -72,6 +77,7 @@ export function ArtifactOwnerMenu({
 
   function open(next: Pending) {
     setPending(next);
+    setShown(next);
     setError(null);
     setNameError(null);
     if (next === 'rename') setTitle(artifact.title);
@@ -90,16 +96,15 @@ export function ArtifactOwnerMenu({
         onChanged({ ...artifact, linkOn: false });
         toastActions.show({ title: 'Link turned off' });
       } else if (pending === 'link-new') {
-        const shareCode = await workspaceApi.setArtifactLink(artifact.artifactId, 'rotate');
-        onChanged({ ...artifact, linkOn: shareCode !== null });
-        if (shareCode !== null) {
-          try {
-            await writeShareLink(shareCode, 'New link copied');
-          } catch (e) {
-            logRequestFailure(e, 'artifact-copy-link');
-            toastActions.error('The new link is on, but we couldn’t copy it. Use Copy link.');
-          }
+        // Started in the click, before any await, so Safari allows the copy.
+        const outcome = await copyLinkFrom(() => workspaceApi.setArtifactLink(artifact.artifactId, 'rotate'));
+        if (outcome.kind === 'failed') {
+          setError(FAILED);
+          return;
         }
+        onChanged({ ...artifact, linkOn: true });
+        if (outcome.kind === 'copied') toastActions.show({ title: 'New link copied' });
+        else setManualUrl(outcome.url);
       } else {
         await workspaceApi.deleteArtifact(artifact.artifactId);
         toastActions.show({ title: 'Artifact deleted' });
@@ -115,7 +120,7 @@ export function ArtifactOwnerMenu({
     }
   }
 
-  const confirm = pending !== null && pending !== 'rename' ? CONFIRM[pending] : null;
+  const confirm = shown !== 'rename' ? CONFIRM[shown] : null;
 
   return (
     <>
@@ -159,7 +164,7 @@ export function ArtifactOwnerMenu({
             <DialogTitle>{confirm?.title ?? 'Rename artifact'}</DialogTitle>
             <DialogDescription>{confirm?.description ?? 'Give it a name that’s easy to find later.'}</DialogDescription>
           </DialogHeader>
-          {pending === 'rename' && (
+          {shown === 'rename' && (
             <form
               id="artifact-rename"
               onSubmit={(e) => {
@@ -194,14 +199,14 @@ export function ArtifactOwnerMenu({
             <Button type="button" variant="outline" disabled={busy} onClick={() => setPending(null)}>
               Cancel
             </Button>
-            {pending === 'rename' ? (
+            {shown === 'rename' ? (
               <Button type="submit" form="artifact-rename" disabled={busy || title.trim() === ''}>
                 {busy ? 'Saving…' : 'Save'}
               </Button>
             ) : (
               <Button
                 type="button"
-                variant={pending === 'delete' ? 'destructive' : 'default'}
+                variant={shown === 'delete' ? 'destructive' : 'default'}
                 disabled={busy}
                 onClick={() => void act()}
               >
@@ -211,6 +216,7 @@ export function ArtifactOwnerMenu({
           </DialogFooter>
         </DialogContent>
       </Dialog>
+      <ShareLinkDialog url={manualUrl} onClose={() => setManualUrl(null)} />
     </>
   );
 }

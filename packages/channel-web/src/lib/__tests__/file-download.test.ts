@@ -694,7 +694,14 @@ describe('saveFromContentOrigin', () => {
     spy.mockRestore();
   });
 
-  it.each(['javascript:alert(1)//d/', '/d/tok', 'http://127.0.0.1:9091/v/tok', 'data:text/html,x'])(
+  it.each([
+    'javascript:alert(1)//d/',
+    '/d/tok',
+    'http://127.0.0.1:9091/v/tok',
+    'data:text/html,x',
+    // The APP origin is never the content origin.
+    `${window.location.origin}/d/tok`,
+  ])(
     'refuses %s before any click',
     async (url) => {
       const { saveFromContentOrigin } = await import('../file-download');
@@ -704,4 +711,15 @@ describe('saveFromContentOrigin', () => {
       spy.mockRestore();
     },
   );
+});
+
+describe('checkContentOriginUrl', () => {
+  it('accepts a content-origin /v/ for view and /d/ for download, nothing crossed', async () => {
+    const { checkContentOriginUrl } = await import('../file-download');
+    expect(checkContentOriginUrl('https://usercontent.example/v/t', 'view').href).toBe('https://usercontent.example/v/t');
+    expect(checkContentOriginUrl('https://usercontent.example/d/t', 'download').pathname).toBe('/d/t');
+    expect(() => checkContentOriginUrl('https://usercontent.example/d/t', 'view')).toThrow();
+    expect(() => checkContentOriginUrl('https://usercontent.example/v/t', 'download')).toThrow();
+    expect(() => checkContentOriginUrl(`${window.location.origin}/v/t`, 'view')).toThrow();
+  });
 });

@@ -31,6 +31,16 @@ describe('ArtifactPreview', () => {
     expect(props.loadToken).toHaveBeenCalledWith('view');
   });
 
+  it('a minted address on the app origin, or off the /v/ path, is refused: no frame', async () => {
+    for (const url of [`${window.location.origin}/v/tok`, 'http://127.0.0.1:9091/d/tok', 'javascript:alert(1)']) {
+      vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const r = renderPreview({ loadToken: vi.fn(async () => ({ url })) });
+      expect(await screen.findByRole('button', { name: 'Try again' })).toBeTruthy();
+      expect(screen.queryByTitle('Deal tracker')).toBeNull();
+      r.unmount();
+    }
+  });
+
   it('markdown keeps <script> as text and images as alt text', async () => {
     const { container } = renderPreview({
       preview: 'markdown',
