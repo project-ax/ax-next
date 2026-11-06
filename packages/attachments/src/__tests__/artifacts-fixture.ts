@@ -133,6 +133,8 @@ export interface PublishArgs {
   sourcePath?: string;
   title?: string;
   artifactId?: string;
+  /** A chat visual (show_visual): kept out of every Artifacts surface. */
+  visual?: boolean;
 }
 
 /** Publish as u-1's agt-1 from c-1, unless told otherwise. */
@@ -147,6 +149,7 @@ export function publish(rig: Rig, args: PublishArgs = {}, userId = 'u-1', agentI
       sourcePath: args.sourcePath ?? 'reports/q3.pdf',
       title: args.title ?? 'Q3 pipeline report',
       ...(args.artifactId !== undefined ? { artifactId: args.artifactId } : {}),
+      ...(args.visual !== undefined ? { visual: args.visual } : {}),
     },
   );
 }

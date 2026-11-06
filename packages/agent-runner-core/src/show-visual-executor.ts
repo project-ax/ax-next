@@ -2,7 +2,8 @@
 // Sandbox-side executor for the `show_visual` tool. The model hands us a title,
 // a plain-text summary and a self-contained HTML document; we store the HTML as
 // a text/html artifact (blob.put + artifact.publish, the same pair
-// `artifact_publish` uses; the host derives text/html from the `.html` key) and
+// `artifact_publish` uses; the host derives text/html from the `.html` key),
+// marked as a chat visual so it never shows among the agent's Artifacts, and
 // return only the reference. The chat renders it
 // later inside a sandboxed, no-network frame.
 //
@@ -95,6 +96,9 @@ export function createShowVisualExecutor(opts: CreateShowVisualExecutorOptions) 
       bytes,
       path: `visuals/${localSha}.html`,
       title,
+      // A chart in chat is not a deliverable (ruling U1): kept out of the
+      // Artifacts list, the agent's prompt list and share links.
+      visual: true,
     });
 
     return { artifactId: published.artifactId, title, summary };

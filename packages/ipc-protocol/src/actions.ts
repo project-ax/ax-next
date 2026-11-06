@@ -430,6 +430,12 @@ export type BlobGetRequest = z.infer<typeof BlobGetRequestSchema>;
 // size are not on the wire: the host takes them from the path and the blob
 // store. The response carries the artifact's id, never a share code (C1): the
 // runner builds `ax://artifact/<id>` itself.
+//
+// `visual: true` marks a chat visual: a chart the runner's `show_visual` tool
+// stores so the chat can render it. It stays out of every Artifacts surface
+// (list, the agent's prompt list, links, the viewer); only its chat card loads
+// it. Set by the runner's show_visual executor alone; the model-facing
+// `artifact_publish` input has no such field.
 // ---------------------------------------------------------------------------
 
 export const ArtifactPublishRequestSchema = z
@@ -439,6 +445,7 @@ export const ArtifactPublishRequestSchema = z
     path: z.string().min(1).max(1024),
     title: z.string().min(1).max(ARTIFACT_TITLE_MAX),
     artifactId: AttachmentIdSchema.optional(),
+    visual: z.literal(true).optional(),
   })
   .strict();
 export type ArtifactPublishRequest = z.infer<typeof ArtifactPublishRequestSchema>;

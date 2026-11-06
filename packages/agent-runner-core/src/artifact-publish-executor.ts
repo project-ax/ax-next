@@ -259,6 +259,8 @@ export async function publishBytesToHost(args: {
   path: string;
   title: string;
   artifactId?: string;
+  /** A chat visual (show_visual only): kept out of the Artifacts list. */
+  visual?: true;
 }): Promise<ArtifactPublishResponse> {
   const put = (await args.client.callBinaryUpload('blob.put', args.bytes)) as { sha256: string };
   return (await args.client.call('artifact.publish', {
@@ -267,5 +269,6 @@ export async function publishBytesToHost(args: {
     path: args.path,
     title: args.title,
     ...(args.artifactId !== undefined ? { artifactId: args.artifactId } : {}),
+    ...(args.visual === true ? { visual: true } : {}),
   })) as ArtifactPublishResponse;
 }

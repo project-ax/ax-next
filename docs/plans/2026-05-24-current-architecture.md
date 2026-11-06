@@ -413,6 +413,14 @@ and consumer. Treat their *shape* as a contract; changing it is a boundary revie
     foreign or refused ids are dropped (no card, no chip). A hook outage shows
     no cards at all, with a code-only log line, rather than falling back to the
     tool text.
+  - **Chat visuals are not artifacts.** `show_visual` publishes its chart with
+    `visual: true` on `artifact.publish` (only the runner's executor sets it;
+    the `artifact_publish` tool input has no such field). A visual head is left
+    out of `artifacts:list` (panel, Download all, chat cards) and the prompt
+    list, and every owner, share and view-token hook answers it with the
+    uniform not-found. The chart card loads it through `attachments:download`
+    (`/api/files`), which reads the store directly. A publish without the
+    marker clears it; a visual publish never hides a visible artifact.
   - Two **host-only** lookups, called only by `@ax/attachments` and never an IPC
     action or an HTTP route (pinned in `presets/k8s` preset.test.ts):
     `conversations:agent-ids` (maps legacy conversation-scoped artifacts to their

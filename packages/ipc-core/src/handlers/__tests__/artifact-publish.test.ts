@@ -86,6 +86,18 @@ describe('artifact.publish handler', () => {
     expect(bus.call.mock.calls[0]![2]).not.toHaveProperty('artifactId');
   });
 
+  it('forwards visual: true to the hook as visual: true (a chat visual)', async () => {
+    const bus = fakeBus(async () => HOOK_OUT);
+    await artifactPublishHandler({ ...validReq, path: 'visuals/x.html', visual: true }, fakeCtx(), bus as never);
+    expect(bus.call.mock.calls[0]![2]).toMatchObject({ sourcePath: 'visuals/x.html', visual: true });
+  });
+
+  it('leaves visual out of the hook payload when the runner sent none', async () => {
+    const bus = fakeBus(async () => HOOK_OUT);
+    await artifactPublishHandler(validReq, fakeCtx(), bus as never);
+    expect(bus.call.mock.calls[0]![2]).not.toHaveProperty('visual');
+  });
+
   it('hands the hook the session ctx as-is, so the hook sees the real agent id', async () => {
     const bus = fakeBus(async () => HOOK_OUT);
     const ctx = fakeCtx();

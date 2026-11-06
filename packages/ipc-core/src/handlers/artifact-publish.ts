@@ -56,6 +56,8 @@ interface ArtifactsPublishInput {
   sourcePath: string;
   title: string;
   artifactId?: string;
+  /** A chat visual (the runner's show_visual): kept out of every Artifacts surface. */
+  visual?: boolean;
 }
 
 // The one response for "not this session's blob" and "the blob is gone": the
@@ -82,7 +84,7 @@ export const artifactPublishHandler: ActionHandler = async (rawPayload, ctx, bus
     ctx.logger.warn('artifact_publish_unput_sha_refused', { action: 'artifact.publish' });
     return notFound(PUBLISH_NOT_FOUND);
   }
-  const { conversationId, sha256, path: sourcePath, title, artifactId } = parsed.data;
+  const { conversationId, sha256, path: sourcePath, title, artifactId, visual } = parsed.data;
   let out: unknown;
   try {
     out = await bus.call<ArtifactsPublishInput, unknown>('artifacts:publish', ctx, {
@@ -91,6 +93,7 @@ export const artifactPublishHandler: ActionHandler = async (rawPayload, ctx, bus
       sourcePath,
       title,
       ...(artifactId !== undefined ? { artifactId } : {}),
+      ...(visual === true ? { visual: true } : {}),
     });
   } catch (err) {
     // A PluginError from the hook (e.g. forbidden: foreign conversation) maps to

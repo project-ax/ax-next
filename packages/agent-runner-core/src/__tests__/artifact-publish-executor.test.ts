@@ -74,6 +74,14 @@ describe('artifact_publish executor: what it sends and returns', () => {
     ]);
   });
 
+  it('never marks a publish as a chat visual, even when the model asks', async () => {
+    await write(files, 'visuals/chart.html', '<p>hi</p>');
+    const { exec, calls } = executor();
+    await exec(call({ path: path.join(files, 'visuals/chart.html'), title: 'Chart', visual: true, hidden: true }));
+    expect(calls.publish).toHaveLength(1);
+    expect(calls.publish[0]!.payload).not.toHaveProperty('visual');
+  });
+
   it('returns url ax://artifact/<id> and the relative path, and never a share code', async () => {
     await write(files, 'reports/Q4.pdf', 'hello pdf');
     // A host answer carrying more than the wire allows still yields only the named fields.

@@ -45,6 +45,8 @@ export interface ArtifactRow {
   /** Never log this, in full or in part. */
   shareCode: string | null;
   titleSetByUser: boolean;
+  /** A chat visual (show_visual): never listed, counted or reached by an owner hook. */
+  visual: boolean;
   createdByUserId: string;
   createdAt: Date;
   updatedAt: Date;
@@ -63,6 +65,12 @@ export interface PublishVersionInput {
   conversationId: string | null;
   publishedBy: string;
   quotaOwner: string;
+  /**
+   * A chat visual. A new artifact takes it as given; a re-publish can only
+   * clear it (visible stays visible): a publish without it makes a hidden
+   * artifact a normal one, and a visual publish never hides a visible one.
+   */
+  visual?: boolean;
 }
 
 export type PublishVersionResult =
@@ -71,8 +79,9 @@ export type PublishVersionResult =
 
 export interface ArtifactStore {
   publishVersion(i: PublishVersionInput): Promise<PublishVersionResult>;
-  /** Newest first (updated_at DESC), ties by artifact_id ASC. */
+  /** Newest first (updated_at DESC), ties by artifact_id ASC. Chat visuals are left out. */
   listForAgent(agentId: string, limit: number): Promise<ArtifactRow[]>;
+  /** Chat visuals are not counted. */
   countForAgent(agentId: string): Promise<number>;
   getHead(artifactId: string): Promise<ArtifactRow | null>;
   /** Newest first. */
@@ -119,6 +128,7 @@ interface JoinedRow {
   current_version: number;
   share_code: string | null;
   title_set_by_user: boolean;
+  visual: boolean;
   created_by_user_id: string;
   created_at: Date;
   updated_at: Date;
@@ -145,6 +155,7 @@ function headsWithCurrent(db: Db | Trx) {
       'h.current_version',
       'h.share_code',
       'h.title_set_by_user',
+      'h.visual',
       'h.created_by_user_id',
       'h.created_at',
       'h.updated_at',
@@ -167,6 +178,7 @@ function artifactFrom(r: JoinedRow): ArtifactRow {
     currentVersion: r.current_version,
     shareCode: r.share_code,
     titleSetByUser: r.title_set_by_user,
+    visual: r.visual,
     createdByUserId: r.created_by_user_id,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
@@ -274,6 +286,7 @@ async function publishIn(trx: Trx, i: PublishVersionInput): Promise<PublishVersi
         current_version: 1,
         share_code: null,
         title_set_by_user: false,
+        visual: i.visual === true,
         created_by_user_id: i.publishedBy,
         created_at: now,
         updated_at: now,
@@ -315,6 +328,9 @@ async function publishIn(trx: Trx, i: PublishVersionInput): Promise<PublishVersi
       source_path: i.sourcePath,
       // C5: a title the user set sticks.
       title: sql<string>`CASE WHEN title_set_by_user THEN title ELSE ${i.title} END`,
+      // Only ever cleared: a publish without the marker makes a chat visual a
+      // normal artifact; a visual publish never hides a visible one.
+      visual: sql<boolean>`visual AND ${i.visual === true}`,
     })
     .where('artifact_id', '=', artifactId)
     .returning('title')
@@ -371,6 +387,7 @@ export function createArtifactStore<DB>(database: Kysely<DB>): ArtifactStore {
     async listForAgent(agentId, limit) {
       const rows = await headsWithCurrent(db)
         .where('h.agent_id', '=', agentId)
+        .where('h.visual', '=', false)
         .orderBy('h.updated_at', 'desc')
         .orderBy('h.artifact_id', 'asc')
         .limit(limit)
@@ -383,6 +400,7 @@ export function createArtifactStore<DB>(database: Kysely<DB>): ArtifactStore {
         .selectFrom('attachments_v1_artifacts')
         .select((eb) => eb.fn.countAll<number | string>().as('n'))
         .where('agent_id', '=', agentId)
+        .where('visual', '=', false)
         .executeTakeFirst();
       return Number(row?.n ?? 0);
     },

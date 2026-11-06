@@ -38,6 +38,8 @@ describe('createShowVisualExecutor', () => {
       sha256: sha(HTML),
       path: `visuals/${sha(HTML)}.html`,
       title: 'Issues per cycle',
+      // A chat visual: kept out of the Artifacts list (ruling U1).
+      visual: true,
     });
   });
 

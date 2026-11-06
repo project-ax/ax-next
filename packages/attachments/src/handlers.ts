@@ -395,6 +395,8 @@ export interface PublishArtifactInput {
   title: unknown;
   /** Re-publish this artifact rather than the one keyed by `sourcePath`. */
   artifactId?: string;
+  /** A chat visual (show_visual): kept out of every Artifacts surface. */
+  visual?: boolean;
   /**
    * The agent the caller runs as, when it is one. The conversation must be
    * with that agent, or the publish is refused (`forbidden`): an agent cannot
@@ -486,6 +488,7 @@ export async function publishArtifact(
     conversationId: input.conversationId,
     publishedBy: ctx.userId,
     quotaOwner,
+    visual: input.visual === true,
   });
 }
 

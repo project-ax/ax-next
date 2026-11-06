@@ -80,6 +80,13 @@ export interface ArtifactsPublishInput {
   title: string;
   /** Re-publish this artifact rather than the one keyed by `sourcePath`. */
   artifactId?: string;
+  /**
+   * A chat visual (the runner's show_visual): stored so its chat card can load
+   * it (attachments:download), but no Artifacts surface lists or reaches it.
+   * A publish without it makes the artifact a normal one again; a publish with
+   * it never hides an artifact that is already visible.
+   */
+  visual?: boolean;
 }
 export interface ArtifactsPublishOutput {
   artifactId: string;

@@ -148,11 +148,12 @@ async function seedUpload(
 async function seedArtifact(
   artifacts: ArtifactStore,
   agentId: string,
-  opts: { sha256?: string; title?: string; conversationId?: string } = {},
+  opts: { sha256?: string; title?: string; conversationId?: string; sourcePath?: string; visual?: boolean } = {},
 ): Promise<string> {
   const r = await artifacts.publishVersion({
     agentId,
-    sourcePath: 'out/chart.png',
+    sourcePath: opts.sourcePath ?? 'out/chart.png',
+    ...(opts.visual !== undefined ? { visual: opts.visual } : {}),
     title: opts.title ?? 'chart.png',
     sha256: opts.sha256 ?? SHA_PNG,
     mediaType: 'image/png',
@@ -235,6 +236,23 @@ describe('attachments:download (by id)', () => {
     const id = await seedArtifact(r.artifacts, 'a-1', { conversationId: 'c-1' });
     const out = await r.download(makeCtx('u-1'), { attachmentId: id, conversationId: 'c-1b', userId: 'u-1' });
     expect(Buffer.from(out.bytes).toString()).toBe('png-bytes');
+  });
+
+  // Ruling U1: a show_visual chart is kept out of Artifacts, but its card in
+  // chat loads it through /api/files (this hook), in that chat and in the
+  // caller's other chats with the same agent.
+  it('a chat visual still loads by id, in its own chat and another chat with the same agent', async () => {
+    const r = await rig();
+    const id = await seedArtifact(r.artifacts, 'a-1', { sourcePath: 'visuals/abc.html', visual: true });
+    expect((await r.artifacts.getHead(id))!.visual).toBe(true);
+    for (const conversationId of ['c-1', 'c-1b']) {
+      const out = await r.download(makeCtx('u-1'), { attachmentId: id, conversationId, userId: 'u-1' });
+      expect(Buffer.from(out.bytes).toString()).toBe('png-bytes');
+    }
+    await expect(
+      // Another agent's chat: the same 404 as any foreign artifact.
+      r.download(makeCtx('u-1'), { attachmentId: id, conversationId: 'c-2', userId: 'u-1' }),
+    ).rejects.toMatchObject({ code: 'not-found' });
   });
 
   it('an artifact of another agent, named from my own conversation, is a 404', async () => {

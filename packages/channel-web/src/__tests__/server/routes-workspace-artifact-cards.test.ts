@@ -83,12 +83,16 @@ describe('artifact cards in buildThread', () => {
     });
   });
 
-  async function thread(results: unknown[], ctx: AgentContext = initCtx): Promise<Array<Record<string, unknown>>> {
+  async function thread(
+    results: unknown[],
+    ctx: AgentContext = initCtx,
+    toolName = 'artifact_publish',
+  ): Promise<Array<Record<string, unknown>>> {
     turns = [
       { turnId: 't1', turnIndex: 0, role: 'user', contentBlocks: [{ type: 'text', text: 'go' }], createdAt: '2026-08-01T10:00:00.000Z' },
       {
         turnId: 't2', turnIndex: 1, role: 'assistant', createdAt: '2026-08-01T10:00:01.000Z',
-        contentBlocks: results.map((_, i) => ({ type: 'tool_use', id: `p${i}`, name: 'artifact_publish', input: {} })),
+        contentBlocks: results.map((_, i) => ({ type: 'tool_use', id: `p${i}`, name: toolName, input: {} })),
       },
       {
         turnId: 't3', turnIndex: 2, role: 'tool', createdAt: '2026-08-01T10:00:02.000Z',
@@ -108,6 +112,22 @@ describe('artifact cards in buildThread', () => {
       { artifactId: ID1, version: 1, title: 'Q3 report', kind: 'document', extension: 'PDF' },
     ]);
     expect(t.flatMap((m) => (m['attachments'] as unknown[] | undefined) ?? [])).toStrictEqual([]);
+  });
+
+  // U1: a show_visual chart is shown by its own chart card, never as an
+  // artifact card, and the store is not even asked about it.
+  it('a show_visual result makes no artifact card and no store read', async () => {
+    const t = await thread([{ artifactId: ID1, title: 'Issues per cycle', summary: 'Down 12%.' }], initCtx, 'show_visual');
+    expect(t.some((m) => m['artifacts'] !== undefined)).toBe(false);
+    expect(listCalls + getCalls).toBe(0);
+  });
+
+  // U1: the store hides a chat visual (list leaves it out, get is not-found),
+  // so even a forged publish result naming one shows no card.
+  it('a publish result naming a chat visual shows no card', async () => {
+    stored.delete(ID1);
+    const t = await thread([published()]);
+    expect(t.some((m) => m['artifacts'] !== undefined)).toBe(false);
   });
 
   it('a legacy publish result without a version still becomes a download chip', async () => {

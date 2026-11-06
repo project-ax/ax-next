@@ -31,6 +31,8 @@ export interface ArtifactsTable {
   current_version: number;
   share_code: string | null;
   title_set_by_user: boolean;
+  /** A chat visual (show_visual): kept out of every Artifacts surface. */
+  visual: boolean;
   created_by_user_id: string;
   created_at: Date;
   updated_at: Date;
@@ -96,6 +98,7 @@ export async function runArtifactsMigration<DB>(db: Kysely<DB>): Promise<void> {
       current_version    INTEGER NOT NULL CHECK (current_version >= 1),
       share_code         TEXT NULL,
       title_set_by_user  BOOLEAN NOT NULL DEFAULT false,
+      visual             BOOLEAN NOT NULL DEFAULT false,
       created_by_user_id TEXT NOT NULL,
       created_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_at         TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -115,6 +118,13 @@ export async function runArtifactsMigration<DB>(db: Kysely<DB>): Promise<void> {
       created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       PRIMARY KEY (artifact_id, version)
     )
+  `.execute(k);
+
+  // 1b. Chat visuals (show_visual) are kept out of every Artifacts surface.
+  //     Additive: every existing row is a normal, visible artifact.
+  await sql`
+    ALTER TABLE attachments_v1_artifacts
+      ADD COLUMN IF NOT EXISTS visual BOOLEAN NOT NULL DEFAULT false
   `.execute(k);
 
   // 2. Every new head column, nullable (a legacy table has rows to fill first;

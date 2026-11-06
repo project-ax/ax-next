@@ -130,6 +130,13 @@ describe('artifact.publish wire', () => {
     expect(ArtifactPublishRequestSchema.safeParse({ ...base, title: 'R', artifactId: '../x' }).success).toBe(false);
   });
 
+  it('takes an optional visual: true (a chat visual) and nothing else in that field', () => {
+    expect(ArtifactPublishRequestSchema.parse({ ...base, title: 'R', visual: true })).toEqual({ ...base, title: 'R', visual: true });
+    expect(ArtifactPublishRequestSchema.parse({ ...base, title: 'R' })).not.toHaveProperty('visual');
+    expect(ArtifactPublishRequestSchema.safeParse({ ...base, title: 'R', visual: false }).success).toBe(false);
+    expect(ArtifactPublishRequestSchema.safeParse({ ...base, title: 'R', visual: 'yes' }).success).toBe(false);
+  });
+
   it('answers {artifactId, version, title, kind, extension} and no download URL', () => {
     const ok = { artifactId: 'abc', version: 2, title: 'Report', kind: 'document', extension: 'PDF' };
     expect(ArtifactPublishResponseSchema.parse({ ...ok, downloadUrl: 'ax://artifact/abc' })).toEqual(ok);

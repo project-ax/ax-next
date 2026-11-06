@@ -22,6 +22,10 @@ describe('artifact_publish descriptor', () => {
     expect(props.artifactId!.type).toBe('string');
     expect(schema.required).toEqual(['path', 'title']);
     expect(schema.additionalProperties).toBe(false);
+    // The chat-visual marker is set only by show_visual; the model can't hide a
+    // deliverable or un-hide a chart through this tool.
+    expect(props).not.toHaveProperty('visual');
+    expect(JSON.stringify(schema)).not.toMatch(/visual|hidden/i);
   });
 
   it('the description says: publish only things for the person, publish again after changes, no helper files, inline everything in HTML', () => {

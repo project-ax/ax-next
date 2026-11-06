@@ -149,6 +149,7 @@ const HEAD_COLUMNS = [
   'title',
   'title_set_by_user',
   'updated_at',
+  'visual',
 ];
 
 function attachmentsHarness(services: Record<string, (ctx: unknown, input: unknown) => Promise<unknown>>, withConversations = false) {
@@ -362,6 +363,35 @@ describe('artifact storage migration', () => {
     await createLegacyTable(db);
     await insertLegacy(db, [{ id: 'pending', conversationId: 'c-1' }]);
     await expect(attachmentsHarness({})).rejects.toThrow(/conversations:agent-ids/);
+  });
+
+  it('adds the chat-visual column to an existing table idempotently; existing rows stay visible', async () => {
+    const db = makeKysely();
+    await migrate(db);
+    // The table as it was before the column existed, with a row in it.
+    await sql`ALTER TABLE attachments_v1_artifacts DROP COLUMN visual`.execute(db);
+    await sql`
+      INSERT INTO attachments_v1_artifacts
+        (artifact_id, agent_id, title, source_path, current_version, created_by_user_id)
+      VALUES ('old-1', 'agt-1', 'Old report', 'reports/old.pdf', 1, 'u-1')
+    `.execute(db);
+    await sql`
+      INSERT INTO attachments_v1_artifact_versions
+        (artifact_id, version, sha256, media_type, size_bytes, conversation_id, published_by_user, quota_owner)
+      VALUES ('old-1', 1, ${'a'.repeat(64)}, 'application/pdf', 3, 'c-1', 'u-1', 'u-1')
+    `.execute(db);
+    await migrate(db);
+    await migrate(db);
+    expect(await columnsOf(db, 'attachments_v1_artifacts')).toEqual(HEAD_COLUMNS);
+    const col = await sql<{ is_nullable: string; column_default: string | null }>`
+      SELECT is_nullable, column_default FROM information_schema.columns
+      WHERE table_name = 'attachments_v1_artifacts' AND column_name = 'visual'
+    `.execute(db);
+    expect(col.rows[0]).toEqual({ is_nullable: 'NO', column_default: 'false' });
+    const store = createArtifactStore(db);
+    expect((await store.getHead('old-1'))!.visual).toBe(false);
+    expect((await store.listForAgent('agt-1', 10)).map((h) => h.artifactId)).toEqual(['old-1']);
+    expect(await store.countForAgent('agt-1')).toBe(1);
   });
 
   it('is idempotent, and a fresh install creates the new shape with its unique and share-code indexes', async () => {

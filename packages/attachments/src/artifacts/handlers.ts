@@ -137,7 +137,9 @@ type ArtifactRef = { artifactId: unknown } | { shareCode: unknown };
  *   index. A match is the `link` role.
  *
  * A missing artifact, a foreign one, a malformed, wrong, turned-off or rotated
- * code, and a ctx with no person are indistinguishable.
+ * code, and a ctx with no person are indistinguishable. So is a chat visual
+ * (ruling U1): no owner hook, share link or view token reaches one. Its chat
+ * card loads it through attachments:download, which reads the store itself.
  */
 async function headFor(
   deps: ArtifactHookDeps,
@@ -160,6 +162,7 @@ async function headFor(
     if (head === null) throw notFound(hookName);
     agentMember = await isAgentMember(deps.bus, ctx, head.agentId);
   }
+  if (head.visual) throw notFound(hookName);
   if (!can(roleFor({ agentMember, codeMatched }), action(head))) throw notFound(hookName);
   return head;
 }
@@ -179,6 +182,9 @@ export function createArtifactsPublishHandler(deps: ArtifactHookDeps) {
       throw fail(hookName, 'invalid-payload', 'the file must be a relative path inside the files folder');
     }
     if (input.artifactId !== undefined && !isId(input.artifactId)) throw notFound(hookName);
+    if (input.visual !== undefined && typeof input.visual !== 'boolean') {
+      throw fail(hookName, 'invalid-payload', 'visual must be a boolean');
+    }
 
     const result = await publishArtifact(deps, ctx, hookName, {
       conversationId: input.conversationId,
@@ -186,6 +192,7 @@ export function createArtifactsPublishHandler(deps: ArtifactHookDeps) {
       sourcePath: input.sourcePath,
       title,
       ...(input.artifactId !== undefined ? { artifactId: input.artifactId } : {}),
+      ...(input.visual === true ? { visual: true } : {}),
       ...(isRealAgentId(ctx.agentId) ? { callerAgentId: ctx.agentId } : {}),
     });
     if (!result.ok) {
