@@ -3040,10 +3040,10 @@ describe('decisions canary — approved connector calls run on the host (TASK-10
       const id = await holdAndId(dead, routineCtx(dead), CONNECTOR_CALL);
       // Nobody awaits this: the host is about to die underneath it.
       void approve(dead, userCtx(dead), id).catch(() => {});
-      for (let i = 0; i < 500 && sent.length === 0; i += 1) {
-        await new Promise((resolve) => setTimeout(resolve, 10));
-      }
-      expect(sent).toHaveLength(1);
+      await vi.waitFor(() => expect(sent).toHaveLength(1), {
+        timeout: 5_000,
+        interval: 10,
+      });
 
       const stranded = await readDecision(dead, userCtx(dead), id);
       expect(stranded.status).toBe('executed');
