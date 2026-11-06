@@ -201,6 +201,13 @@ describe('workspace approve adapter with the actual decisions service', () => {
 
 
 describe('durable late failure with real decisions and PostgreSQL', () => {
+  // Its OWN call body, never the one the describe above approves and runs.
+  // Every test in this file shares one database, and this one runs on a fixed
+  // clock that is earlier than the wall-clock instant the describe above
+  // answers its identical call at. So a byte-identical call here reads as that
+  // row's co-open twin that already ran, and decisions:approve refuses it
+  // (TASK-286), correctly. The two tests are about different calls.
+  const LATE_BODY = 'A reviewed late-failure message';
   it.each(['gmail_send','routine_update'])('retains %s failure after grace for a fresh conversation read', async name => {
     let clock=new Date('2026-10-26T12:00:00Z');
     const ctx=makeAgentContext({sessionId:'history-turn',agentId:'a1',userId:'u1',conversationId:'c1'});
@@ -214,7 +221,7 @@ describe('durable late failure with real decisions and PostgreSQL', () => {
     }}); harnesses.push(h);
     let executions=0;
     h.bus.registerService(`tool:execute:${name}`,'@ax/test-effect',async()=>{executions++;throw new Error('provider refused the operation');});
-    await h.bus.fire('tool:pre-call',ctx,{id:`history-${name}`,name,input:name==='routine_update'?{requestId:'history-edit',routineId:'r1',expectedRevision:'v1',patch:{name:'Updated'}}:{body:'A reviewed message'}});
+    await h.bus.fire('tool:pre-call',ctx,{id:`history-${name}`,name,input:name==='routine_update'?{requestId:'history-edit',routineId:'r1',expectedRevision:'v1',patch:{name:'Updated'}}:{body:LATE_BODY}});
     const listed=await h.bus.call<unknown,{decisions:Decision[]}>('decisions:list',ctx,{userId:'u1',agentId:'a1'});
     const held=listed.decisions.find(d=>d.call.id===`history-${name}`)!; expect(held).toBeTruthy();
     const approved=await h.bus.call<unknown,DecisionsApproveOutput>('decisions:approve',ctx,{decisionId:held.id,userId:'u1'});
@@ -230,7 +237,7 @@ describe('durable late failure with real decisions and PostgreSQL', () => {
       const row=(body as {decisions:Array<{id:string;status:string;routineOutcome?:string;undoable:boolean}>}).decisions.find(d=>d.id===held.id)!;
       expect(row).toBeTruthy(); expect(row.undoable).toBe(false);
       if(name==='routine_update') expect(row.routineOutcome).toBe('failed'); else expect(row.status).toBe('failed');
-      const bytes=JSON.stringify(body); expect(bytes).not.toContain('A reviewed message'); expect(bytes).not.toContain('callFingerprint');
+      const bytes=JSON.stringify(body); expect(bytes).not.toContain(LATE_BODY); expect(bytes).not.toContain('callFingerprint');
     }
     await expect(h.bus.call('decisions:recent-for-conversation',makeAgentContext({sessionId:'peer',agentId:'a1',userId:'peer'}),{userId:'u1',agentId:'a1',conversationId:'c1'})).rejects.toThrow(/scope/);
   });
