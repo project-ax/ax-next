@@ -7,8 +7,9 @@ import type { RoutinesStore } from '../store.js';
 import type { AcceptedDispatch,StoredRoutine } from '../types.js';
 const row:StoredRoutine={...RoutineDefinitionSchema.parse({name:'Job',promptBody:'Review',schedule:null,webhook:{kind:'webhook',path:'/hook'}}),agentId:'a',routineId:'r',revision:'v',ownerUserId:'owner',definitionId:null,definitionUpdatedAt:null,nextRunAt:null,lastRunAt:null,lastStatus:null,lastError:null,lastWarning:null,task:null,noRecentUpdate:null,steps:[],finishBy:null,finishByTimeZone:null,done:null};
 const accepted:AcceptedDispatch={row,dispatchId:'d',reqId:'req',source:'webhook',acceptedAt:new Date('2026-10-26')};
-function fixture(saved=row){
- const bus=new HookBus();bus.registerService('blob:get','test',async()=>({bytes:Buffer.from(JSON.stringify({row:saved,payload:{secret:'PRIVATE'}}))}));
+/** `envelope` replaces the stored delivery admission writes, `{ row, payload }`. */
+function fixture(saved=row,envelope?:Record<string,unknown>){
+ const bus=new HookBus();bus.registerService('blob:get','test',async()=>({bytes:Buffer.from(JSON.stringify(envelope??{row:saved,payload:{secret:'PRIVATE'}}))}));
  const claim=vi.fn().mockResolvedValueOnce({deliveryId:'q',blobRef:'a'.repeat(64),accepted}).mockResolvedValue(null);
  const expired=vi.fn(async()=>[] as Array<{dispatch_id:string;agent_id:string;run_as_user_id:string;conversation_id:string|null;executor_released:boolean}>);
  const settle=vi.fn(async()=>{}),finishDispatch=vi.fn(async()=>true),fire=vi.fn(async()=>({status:'ok' as const,error:null,renderedPrompt:null}));
@@ -37,7 +38,8 @@ describe('repeat queue worker authority and uncertain claims',()=>{
    expect(terminate).toHaveBeenCalledWith(expect.objectContaining({agentId:'a',userId:'owner'}),{sessionId:'stale-session'});
    expect(f.finishDispatch).toHaveBeenCalledWith(expect.objectContaining({dispatchId:'abandoned',onlyIfExpired:{conversationId:'c'},outcome:expect.objectContaining({status:'error',renderedPrompt:null})}));
  });
- it('joins concurrent drains and invokes the pinned payload once',async()=>{const f=fixture();await Promise.all([f.pump(),f.pump()]);expect(f.fire).toHaveBeenCalledTimes(1);expect(f.fire).toHaveBeenCalledWith(accepted,{secret:'PRIVATE'});});
+ it('joins concurrent drains and invokes the pinned payload once',async()=>{const f=fixture();await Promise.all([f.pump(),f.pump()]);expect(f.fire).toHaveBeenCalledTimes(1);expect(f.fire).toHaveBeenCalledWith(accepted,{deliveryId:'q',payload:{secret:'PRIVATE'}});});
+ it('refuses an envelope without a payload, without reflecting it',async()=>{const f=fixture(row,{row});await f.pump();expect(f.fire).not.toHaveBeenCalled();expect(f.finishDispatch).toHaveBeenCalledWith({dispatchId:'d',outcome:expect.objectContaining({status:'error',error:'This app update could not run. Try a new delivery.',renderedPrompt:null})});});
  it.each([{ownerUserId:'peer'},{promptBody:'Different accepted config'}])('refuses a mismatched blob without reflecting its content',async(over)=>{const f=fixture({...row,...over});await f.pump();expect(f.fire).not.toHaveBeenCalled();expect(f.finishDispatch).toHaveBeenCalledWith({dispatchId:'d',outcome:expect.objectContaining({status:'error',renderedPrompt:null})});expect(JSON.stringify(f.finishDispatch.mock.calls)).not.toContain('PRIVATE');});
  it('does not free a foreign live execution; accounts only a proven inactive one',async()=>{
    const f=fixture();f.claim.mockReset().mockResolvedValue(null);

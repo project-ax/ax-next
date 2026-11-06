@@ -105,6 +105,11 @@ export type AcceptedDispatch = {
   dispatchId: string; reqId: string; row: StoredRoutine; source: FireSource; acceptedAt: Date;
 };
 /**
+ * TASK-1050. The app update a repeat run was started by, as the delivery pump hands it to
+ * fire: its host-minted id and its payload.
+ */
+export type RepeatDelivery = { deliveryId: string; payload: unknown };
+/**
  * TASK-930. Why an `error` run left no report, set by the code that recorded it,
  * which knows. Absent: `failed`. A run that didn't end in an error left no
  * report because it didn't send one (`no-report`), and only the store says so.
