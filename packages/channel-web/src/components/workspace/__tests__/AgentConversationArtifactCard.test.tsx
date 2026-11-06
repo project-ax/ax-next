@@ -25,4 +25,20 @@ describe('AgentConversation artifact cards', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Open' }));
     expect(onOpenArtifact).toHaveBeenCalledWith('art-1');
   });
+
+  it('with no onOpenArtifact (check-in page) the card is still drawn, with Download and no Open', () => {
+    const thread = [{
+      kind: 'agent', id: 'r1', text: 'Done.', at: '2026-09-17T16:12:00.000Z',
+      artifacts: [{ artifactId: 'art-1', version: 1, title: 'Q3 report', kind: 'document', extension: 'PDF' }],
+    }] as ThreadMessage[];
+    const props: ComponentProps<typeof AgentConversation> = {
+      agent: quill, thread, conversationId: 'c1', decisions: [], readOnly: true,
+      onSend: vi.fn(), onApprove: vi.fn(), onDismiss: vi.fn(), onUndo: vi.fn(), approvalRead: 'ok',
+      onRetryApprovals: vi.fn(), grants: [], onGrantResolved: vi.fn(), onGranted: vi.fn(async () => true),
+    };
+    render(<AgentConversation {...props} />);
+    expect(screen.getByText('Q3 report')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Download' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Open' })).toBeNull();
+  });
 });

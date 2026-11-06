@@ -1312,7 +1312,7 @@ function Message({
             ))}
           </div>
         )}
-        {'artifacts' in m && onOpenArtifact !== undefined && (m.artifacts?.length ?? 0) > 0 && (
+        {'artifacts' in m && (m.artifacts?.length ?? 0) > 0 && (
           <div className="mt-3 flex max-w-[604px] flex-col gap-2">
             {m.artifacts?.map((a) => (
               <ArtifactCard key={a.artifactId} artifact={a} onOpen={onOpenArtifact} />
