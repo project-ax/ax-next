@@ -20,14 +20,21 @@
 //      microtask, before an async child load can start running.
 //   3. Locks on the APIs that build shadow roots or parse markup outside the
 //      observer's sight (attachShadow, setHTML/setHTMLUnsafe,
-//      parseHTML/parseHTMLUnsafe, XSLTProcessor, document.write/open), and on
-//      the getters that would hand a script a child's window.
+//      parseHTML/parseHTMLUnsafe, XSLTProcessor, document.write/open). The
+//      contentWindow/contentDocument/getSVGDocument getters answer null, but
+//      that's defense in depth only: window[n] and frames[n] can't be
+//      locked. What actually keeps a script out of a child is that every
+//      sandboxed document gets its own opaque origin, so touching a child's
+//      window throws SecurityError (verified in Chromium, Firefox, WebKit).
 //   4. A backstop that doesn't depend on that list: window.length counts the
 //      child browsing contexts in the document tree. If it's ever above zero
 //      after a purge, the runtime removes the whole document (discarding
-//      every child), reports an error and stops. It's checked in the
-//      observer, every animation frame, and on a slow timer for frames the
-//      browser isn't painting.
+//      every child) and reports `ax-visual:error`; the parent unmounts the
+//      frame on any error. It's checked in the observer, every animation
+//      frame, and on a timer for frames the browser isn't painting.
+//      After a kill only the reporting stops (ready, size, theme, export):
+//      the observer, the checks and the locks keep running, and any new
+//      document element is removed too.
 //
 // Residual, measured in Chromium, Firefox and WebKit:
 // - Layer 4 is blind to a child inside a shadow root: window.length only
@@ -72,8 +79,9 @@ window.axVisualRuntime = function axVisualRuntime(win, host) {
     return null;
   }
 
-  // An accessor that always answers null, for the getters that hand out a
-  // child frame's window or document.
+  // An accessor that always answers null, for the contentWindow-style getters.
+  // Defense in depth only (window[n] can't be locked); the opaque origin is
+  // what keeps a child's window out of reach.
   function lockGetter(target, name) {
     if (!target) return;
     try {
@@ -178,22 +186,30 @@ window.axVisualRuntime = function axVisualRuntime(win, host) {
     return getChildCount ? apply(getChildCount, win, []) : win.length;
   }
 
-  // A child frame exists that the layers above didn't stop. Removing the
-  // document element discards every child browsing context, wherever it was.
-  function kill() {
-    if (killed) return;
-    killed = true;
+  // Removing the document element discards every child browsing context in
+  // the document tree, wherever it was.
+  function removeRoot() {
     try {
       var rootEl = apply(getDocumentElement, win.document, []);
       if (rootEl) apply(removeEl, rootEl, []);
     } catch {
-      // Still report it.
+      // Keep going: the caller still reports, and the next check tries again.
     }
+  }
+
+  // A child frame exists that the layers above didn't stop. Only reporting
+  // stops after this; every guard keeps running.
+  function kill() {
+    removeRoot();
+    if (killed) return;
+    killed = true;
     post({ type: 'ax-visual:error' });
   }
 
+  // Once killed, the frame stays empty: agent timers still run in this realm
+  // and could rebuild the page, so any new root goes too.
   function check() {
-    if (!killed && childCount() > 0) kill();
+    if (killed || childCount() > 0) kill();
   }
 
   try {
@@ -212,7 +228,6 @@ window.axVisualRuntime = function axVisualRuntime(win, host) {
       locked = false;
     }
     new win.MutationObserver(function (records) {
-      if (killed) return;
       try {
         for (var r = 0; r < records.length; r++) {
           var added = apply(getAddedNodes, records[r], []);
@@ -227,16 +242,23 @@ window.axVisualRuntime = function axVisualRuntime(win, host) {
     locked = false;
   }
 
-  // One property read per frame. rAF stops in a frame that isn't painted
-  // (offscreen, hidden tab), so a slow timer backs it up.
+  // One property read per frame, for the life of the frame (a kill doesn't
+  // stop it). rAF stops in a frame that isn't painted (offscreen, hidden tab),
+  // so a timer backs it up: every 250 ms until ready, then every second.
   if (typeof raf === 'function') {
     var everyFrame = function () {
       check();
-      if (!killed) apply(raf, win, [everyFrame]);
+      apply(raf, win, [everyFrame]);
     };
     apply(raf, win, [everyFrame]);
   }
-  if (typeof setTimer === 'function') apply(setTimer, win, [check, 250]);
+  var clearTimer = win.clearInterval;
+  var timer = typeof setTimer === 'function' ? apply(setTimer, win, [check, 250]) : undefined;
+  function slowTimer() {
+    if (timer === undefined || typeof clearTimer !== 'function') return;
+    apply(clearTimer, win, [timer]);
+    timer = apply(setTimer, win, [check, 1000]);
+  }
 
   var TOKEN_NAMES = [
     '--background',
@@ -370,6 +392,7 @@ window.axVisualRuntime = function axVisualRuntime(win, host) {
       nextFrame(function () {
         if (ready || killed) return;
         ready = true;
+        slowTimer();
         var h = measure();
         lastHeight = h;
         var body = doc.body;

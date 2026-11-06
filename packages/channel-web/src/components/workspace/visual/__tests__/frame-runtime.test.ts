@@ -363,7 +363,7 @@ describe('frame runtime: shadow roots, child windows, kill switch', () => {
     expect(win.eval('typeof XSLTProcessor')).toBe('undefined');
   });
 
-  it("never hands out a child frame's window or document", () => {
+  it("answers null from the child-window getters (defense in depth)", () => {
     const { win } = setup((w) => {
       w.document.body.appendChild(w.document.createElement('iframe'));
     });
@@ -389,6 +389,31 @@ describe('frame runtime: shadow roots, child windows, kill switch', () => {
     win.dispatchEvent(new win.Event('load'));
     await frames();
     expect(posted(host, 'ax-visual:ready')).toEqual([]);
+  });
+
+  it('keeps guarding after a kill: purges new frames and removes a new root', async () => {
+    const { win, host } = setup((w) => {
+      w.document.body.appendChild(w.document.createElement('iframe'));
+    });
+    await frames();
+    expect(win.document.documentElement).toBeNull();
+
+    const html = win.document.createElement('html');
+    const iframe = win.document.createElement('iframe');
+    html.appendChild(iframe);
+    win.document.appendChild(html);
+    await microtask();
+    expect(iframe.isConnected).toBe(false);
+    expect(win.document.documentElement).toBeNull();
+
+    // A root that arrives with no frame in it goes too, on the next check.
+    win.document.appendChild(win.document.createElement('html'));
+    await frames();
+    expect(win.document.documentElement).toBeNull();
+    // Reporting stopped after the one error.
+    expect(posted(host, 'ax-visual:error')).toHaveLength(1);
+    sendFrom(win, host, { type: 'ax-visual:export', requestId: 'late', format: 'png' });
+    expect(posted(host, 'ax-visual:export-result')).toEqual([]);
   });
 
   it('checks the child count right after each purge, with the original getter', async () => {
