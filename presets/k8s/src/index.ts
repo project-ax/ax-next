@@ -1128,11 +1128,15 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   // TASK-226 (AW-5) CLOSES the unattended half of that window. Approving an
   // unattended decision now replays the recorded call host-side through the
   // dynamic `tool:execute:<name>` hook — the same seam `tool.execute-host`
-  // uses — exactly once, and only while the decision is live. A tool that runs
-  // in the sandbox has no such hook and cannot be replayed after the turn
-  // ended, so it resolves to `approved-pending-agent` and the agent performs it
-  // on its next run. @ax/skill-broker's `request_capability` (pushed
-  // unconditionally above) is the host-executed case the canary exercises.
+  // uses — exactly once, and only while the decision is live. An approved
+  // connector call (`mcp.<ns>.<tool>`) is made host-side too, through
+  // @ax/mcp-client's `connectors:call-tool` (TASK-1046), which re-derives the
+  // decision owner's access first. A call with neither, such as a tool that
+  // runs in the sandbox, cannot be replayed after the turn ended, so it
+  // resolves to `approved-pending-agent` and goes ahead only if a later run
+  // makes exactly the same request. @ax/skill-broker's `request_capability`
+  // (pushed unconditionally above) is the host-executed case the canary
+  // exercises.
   //
   // `decisions:sweep` runs on a timer inside the plugin and does three things:
   // it expires decisions nobody answered; it runs the deferred replay of an

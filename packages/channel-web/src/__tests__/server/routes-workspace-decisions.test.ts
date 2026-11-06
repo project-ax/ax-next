@@ -141,6 +141,8 @@ interface ApproveBody {
 }
 
 interface BootOpts {
+  /** The stored row `decisions:get` / `decisions:list` answer with. Default `STORED`. */
+  stored?: Omit<typeof STORED, 'call'> & { call: { id: string; name: string; input: unknown } };
   history?: unknown[];
   historyFails?: boolean;
   conversation?: {userId:string;agentId:string};
@@ -153,6 +155,7 @@ interface BootOpts {
     decisionId: string;
     userId: string;
     continuationReqId: string;
+    requestShownInFull: boolean;
   }) => unknown;
   /** `conversations:get-metadata` mock. Absent = no producer (degraded). */
   metadata?: (input: { conversationId: string; userId: string }) => unknown;
@@ -163,7 +166,12 @@ interface BootOpts {
 interface Booted extends BootOpts {
   harness: TestHarness;
   port: number;
-  approveInputs: Array<{ decisionId: string; userId: string; continuationReqId: string }>;
+  approveInputs: Array<{
+    decisionId: string;
+    userId: string;
+    continuationReqId: string;
+    requestShownInFull: boolean;
+  }>;
   binds: Array<{ conversationId: string; sessionId: string; reqId: string }>;
 }
 
@@ -191,17 +199,18 @@ async function boot(opts: BootOpts = {}): Promise<Booted> {
       }
       return { agent: { id: 'a1', displayName: 'Inbox' } };
     },
-    'decisions:list': async () => ({ decisions: [STORED] }),
+    'decisions:list': async () => ({ decisions: [opts.stored ?? STORED] }),
     'decisions:get': async (_ctx: unknown, input: unknown) => {
       const { decisionId } = input as { decisionId: string };
       // Owner-scoped: anything that is not this caller's row is `null`.
-      return { decision: decisionId === STORED.id ? STORED : null };
+      return { decision: decisionId === STORED.id ? (opts.stored ?? STORED) : null };
     },
     'decisions:approve': async (_ctx: unknown, input: unknown) => {
       const typed = input as {
         decisionId: string;
         userId: string;
         continuationReqId: string;
+        requestShownInFull: boolean;
       };
       approveInputs.push(typed);
       if (opts.approve !== undefined) return opts.approve(typed);
@@ -263,6 +272,58 @@ describe('the decision routes over a real socket', () => {
     const raw=await response.text(); const rows=JSON.parse(raw).decisions;
     expect(rows).toHaveLength(1); expect(rows[0]).toMatchObject({id:'d1',status:'failed',undoable:false});
     expectNarrowerThanTheRow(raw,rows[0]);
+  });
+  it('a failed row with replayAbandonedAt projects outcomeUnknown: true; without it, or on any other status, false (TASK-1046)', async () => {
+    const ABANDONED_AT = '2026-08-21T11:20:00.000Z';
+    const base = { ...STORED, resolvedAt: '2026-08-21T11:00:00.000Z', replayedAt: null, replayClaimedAt: '2026-08-21T11:01:00.000Z' };
+    const h = await boot({ history: [
+      { ...base, id: 'unknown', status: 'failed', replayAbandonedAt: ABANDONED_AT },
+      { ...base, id: 'definite', status: 'failed', replayAbandonedAt: null },
+      { ...base, id: 'older-producer', status: 'failed' },
+      { ...base, id: 'executed', status: 'executed', replayAbandonedAt: ABANDONED_AT },
+      { ...base, id: 'parked', status: 'approved-pending-agent', replayAbandonedAt: ABANDONED_AT },
+    ] });
+    harness = h.harness;
+    const response = await fetch(`http://127.0.0.1:${h.port}/api/workspace/agents/a1/conversations/c1/decisions`);
+    expect(response.status).toBe(200);
+    const raw = await response.text();
+    const byId = new Map((JSON.parse(raw) as DecisionsBody).decisions.map((d) => [d['id'], d]));
+    expect(byId.get('unknown')).toMatchObject({ status: 'failed', outcomeUnknown: true });
+    for (const id of ['definite', 'older-producer', 'executed', 'parked']) {
+      expect(byId.get(id)).toMatchObject({ outcomeUnknown: false });
+    }
+    // The flag is derived. The instant itself is host bookkeeping and stays home.
+    expect(raw).not.toContain('replayAbandonedAt');
+    expect(raw).not.toContain(ABANDONED_AT);
+  });
+  it('a call the service said failed projects toolReportedError: true, and only that row (review F3)', async () => {
+    // `@ax/decisions` writes it as `failed` + `replayAbandonedAt` (so it never
+    // reads "nothing was completed") with the closed code `tool-error` in
+    // `replayError` (so it never reads "interrupted" either). The card learns
+    // it through one derived boolean; the code and the instant stay home.
+    const ABANDONED_AT = '2026-08-21T11:20:00.000Z';
+    const base = { ...STORED, resolvedAt: '2026-08-21T11:00:00.000Z', replayedAt: null, replayClaimedAt: '2026-08-21T11:01:00.000Z' };
+    const h = await boot({ history: [
+      { ...base, id: 'said-no', status: 'failed', replayAbandonedAt: ABANDONED_AT, replayError: 'tool-error' },
+      { ...base, id: 'unknown', status: 'failed', replayAbandonedAt: ABANDONED_AT, replayError: null },
+      // An ordinary failure whose detail happens to read the same is a report.
+      { ...base, id: 'ordinary', status: 'failed', replayAbandonedAt: null, replayError: 'tool-error' },
+      { ...base, id: 'older-producer', status: 'failed', replayError: 'tool-error' },
+      { ...base, id: 'executed', status: 'executed', replayAbandonedAt: ABANDONED_AT, replayError: 'tool-error' },
+    ] });
+    harness = h.harness;
+    const response = await fetch(`http://127.0.0.1:${h.port}/api/workspace/agents/a1/conversations/c1/decisions`);
+    expect(response.status).toBe(200);
+    const raw = await response.text();
+    const byId = new Map((JSON.parse(raw) as DecisionsBody).decisions.map((d) => [d['id'], d]));
+    // Both flags: it may have done part of it, AND the service said so.
+    expect(byId.get('said-no')).toMatchObject({ status: 'failed', outcomeUnknown: true, toolReportedError: true });
+    expect(byId.get('unknown')).toMatchObject({ outcomeUnknown: true, toolReportedError: false });
+    for (const id of ['ordinary', 'older-producer', 'executed']) {
+      expect(byId.get(id)).toMatchObject({ toolReportedError: false });
+    }
+    expect(raw).not.toContain('replayError');
+    expect(raw).not.toContain('"tool-error"');
   });
   it.each([{userId:'peer',agentId:'a1'},{userId:'u1',agentId:'a2'}])('refuses a foreign conversation before reading outcomes: %j', async (conversation) => {
     const h=await boot({historyFails:true,conversation}); harness=h.harness;
@@ -359,6 +420,53 @@ describe('the decision routes over a real socket', () => {
     );
     // 404, not 403: we do not tell a foreign caller whether an id is real.
     expect(r.status).toBe(404);
+  });
+
+  // Review F2. The card shows a held call's input cut to `wireRequest`'s caps
+  // ("This is only the beginning…"), and the host replay would send the whole
+  // thing. So the route tells `@ax/decisions` whether the card showed it ALL,
+  // computed from the stored row with the card's own function, never taken
+  // from the client. Decisions makes a connector call only on `true`.
+  const CONNECTOR = 'mcp.c5e0235982f.save_comment';
+  // [label, stored call, the card's `truncated`, what the route says]
+  it.each([
+    ['a short request', { id: 'tu1', name: CONNECTOR, input: { body: 'Shipped' } }, false, true],
+    ['no input at all, which the card says in words', { id: 'tu1', name: CONNECTOR, input: {} }, false, true],
+    ['an input past the character cap', { id: 'tu1', name: CONNECTOR, input: { body: 'x'.repeat(2100) } }, true, false],
+    [
+      'an input past the line cap',
+      { id: 'tu1', name: CONNECTOR, input: Object.fromEntries(Array.from({ length: 45 }, (_, i) => [`k${i}`, i])) },
+      true,
+      false,
+    ],
+    // The input fits, but the tool line the card printed was cut short.
+    ['a tool name past its cap', { id: 'tu1', name: `mcp.c5e0235982f.${'a'.repeat(110)}`, input: { body: 'Shipped' } }, false, false],
+  ] as const)('tells decisions:approve whether the card showed the whole request: %s (review F2)', async (_label, call, cardTruncated, shown) => {
+    const booted = await boot({ stored: { ...STORED, call } });
+    harness = booted.harness;
+
+    // What the card drew for this row, read the way the browser reads it.
+    const card = (await (await fetch(`http://127.0.0.1:${booted.port}/api/workspace/decisions/d1`)).json()) as DecisionBody;
+    expect((card.decision['request'] as { truncated: boolean }).truncated).toBe(cardTruncated);
+
+    await postApprove(booted.port);
+
+    expect(booted.approveInputs).toHaveLength(1);
+    expect(booted.approveInputs[0]!.requestShownInFull).toBe(shown);
+  });
+
+  it('a client cannot claim the card showed it all: a body naming the flag is refused (review F2)', async () => {
+    const booted = await boot({ stored: { ...STORED, call: { id: 'tu1', name: CONNECTOR, input: { body: 'x'.repeat(2100) } } } });
+    harness = booted.harness;
+
+    const r = await fetch(`http://127.0.0.1:${booted.port}/api/workspace/decisions/d1/approve`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-requested-with': 'ax-admin' },
+      body: JSON.stringify({ requestShownInFull: true }),
+    });
+
+    expect(r.status).toBe(400);
+    expect(booted.approveInputs).toEqual([]);
   });
 
   // TASK-278 — the continuation turn streams live on the open thread.

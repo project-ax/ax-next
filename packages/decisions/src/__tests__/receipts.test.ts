@@ -14,7 +14,13 @@
 import { describe, expect, it } from 'vitest';
 import { createFakeStore, type FakeStore } from './fake-store.js';
 import { receiptFor, RECEIPT_STATUSES } from '../receipts.js';
-import { EXPIRED_RECEIPT, FAILED_RECEIPT, PENDING_AGENT_RECEIPT } from '../templates.js';
+import {
+  ABANDONED_RECEIPT,
+  EXPIRED_RECEIPT,
+  FAILED_RECEIPT,
+  PENDING_AGENT_RECEIPT,
+  TOOL_ERROR_RECEIPT,
+} from '../templates.js';
 import {
   DECISION_RECEIPT_OUTCOMES,
   DecisionReceiptSchema,
@@ -107,7 +113,7 @@ describe('receiptFor — the outcomes that have one', () => {
 
   it('a parked row the agent HAS since performed stops promising and reports', () => {
     // The receipt tracks the row because it is read from the row. A persisted
-    // one would still be saying "it will do this the next time it runs" hours
+    // one would still be saying "it can do this the next time it tries" hours
     // after it did.
     const r = receiptFor(
       base({ status: 'approved-pending-agent', consumedAt: T_RAN }),
@@ -149,6 +155,33 @@ describe('receiptFor — the outcomes that have one', () => {
     expect(r?.receipt).not.toContain(decision.approvedText);
     // No executor ever reported anything, so there is no audit detail to carry.
     expect(r?.error).toBeNull();
+  });
+
+  it('a call the service said failed reads as "may have done part of it" (review F3)', () => {
+    // The connector's service answered that the call did not work: it went
+    // out, and the tool may have run and done part of the work. Abandoned like an unknown
+    // outcome, so nothing here claims nothing happened, but under its own
+    // closed code, so the line is not "interrupted" either.
+    const decision = base({
+      status: 'failed',
+      replayClaimedAt: T_RESOLVED,
+      replayAbandonedAt: T_RAN,
+      replayError: 'tool-error',
+    });
+    const r = receiptFor(decision);
+    expect(r).toMatchObject({ outcome: 'failed', receipt: TOOL_ERROR_RECEIPT, error: null });
+    expect(r?.receipt).not.toContain('Nothing was completed');
+    expect(r?.receipt).not.toContain('interrupted');
+  });
+
+  it('the closed code means a tool error only on an ABANDONED row', () => {
+    // A host tool's sanitised message that happens to read `tool-error` is an
+    // ordinary report: "nothing was completed", with the words beside it.
+    const ordinary = receiptFor(base({ status: 'failed', replayError: 'tool-error' }));
+    expect(ordinary).toMatchObject({ receipt: FAILED_RECEIPT, error: 'tool-error' });
+    // And an abandoned row with any other detail keeps the "cannot tell" line.
+    const unknown = receiptFor(base({ status: 'failed', replayAbandonedAt: T_RAN, replayError: null }));
+    expect(unknown).toMatchObject({ receipt: ABANDONED_RECEIPT, error: null });
   });
 });
 

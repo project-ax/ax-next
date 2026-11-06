@@ -29,6 +29,7 @@
  */
 import type { AgentContext, HookBus } from '@ax/core';
 import { deliverResolution } from './delivery.js';
+import { hostExecutorFor } from './host-executor.js';
 import { replayContext, settleReplay } from './replay.js';
 import type { DecisionStore } from './store.js';
 import type { Decision } from './types.js';
@@ -49,11 +50,14 @@ export const DEFAULT_RECLAIM_BATCH = 25;
  * FIFTEEN MINUTES, AND THE NUMBER IS DERIVED RATHER THAN FELT. A host replay is
  * one `bus.call('tool:execute:<name>')`, and `HookBus` wraps every service call
  * in a timeout — `DEFAULT_SERVICE_TIMEOUT_MS`, 120 s, which nothing in this repo
- * overrides for a tool executor. So a live flight cannot outlast 120 s plus the
- * two store writes around it, in this process or in any other replica: they all
- * run the same bus with the same ceiling. Fifteen minutes is that bound with an
- * order of magnitude of headroom, which is where the clock skew between two
- * hosts comparing `replay_claimed_at` against their own `now()` goes.
+ * overrides for a tool executor. A connector replay (TASK-1046) is two calls in
+ * a row, `tool-policy:evaluate` and then `connectors:call-tool`, and the second
+ * bounds itself at 45 s, well inside the same ceiling. So a live flight cannot
+ * outlast about 240 s (two calls at the ceiling) plus the store writes around
+ * it, in this process or in any other replica: they all run the same bus with
+ * the same ceiling. Fifteen minutes is that bound with several times its
+ * headroom, which is where the clock skew between two hosts comparing
+ * `replay_claimed_at` against their own `now()` goes.
  *
  * IT IS NOT THE SAFETY PROPERTY, THOUGH, AND SHOULD NOT BE READ AS ONE. The
  * safety property is that the reclaim RUNS NOTHING (see
@@ -191,9 +195,13 @@ export async function runDueReplays(args: {
  * wait for a run that may never come (TASK-277). So the host takes the replay
  * itself — and takes the FLIGHT first, as one conditional UPDATE off the same
  * columns `restore` and `takeApproval` guard, so a consuming agent or another
- * resolver that got there first wins and nothing runs. Gated on the executor
- * existing: with no executor `settleReplay` parks the row for the agent's next
- * run, and a flight taken on that side would close the row to nothing.
+ * resolver that got there first wins and nothing runs. Gated on a host executor
+ * (`hostExecutorFor`) existing: with none, `settleReplay` parks the row for a
+ * later run to make the identical call, and a flight taken on that side would
+ * close the row to nothing. Every row here was held in a chat, so a CONNECTOR
+ * call always parks here (review F1): the host makes connector calls only for
+ * rows held during a task run, and the agent's next turn in the thread
+ * re-issues this one and cashes the yes once.
  *
  * Each row is settled independently: one failing delivery must not strand the
  * rest of the batch.
@@ -238,7 +246,7 @@ export async function runDueDeliveries(args: {
         reason: delivery.reason,
       });
       let flight: Decision = decision;
-      if (bus.hasService(`tool:execute:${decision.call.name}`)) {
+      if (hostExecutorFor(bus, decision) !== null) {
         const taken = await store.claimReplayFlight(decision.id, now.toISOString());
         if (taken === null) {
           logCtx.logger.warn('decision_replay_flight_lost', {

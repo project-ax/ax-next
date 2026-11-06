@@ -132,11 +132,15 @@ export const DECISION_STALE_SUMMARY = 'Needs another look — things changed sin
  * `@ax/decisions` puts on the Activity receipt for the same outcome — the two
  * surfaces describing one event differently is how a reader learns not to trust
  * either.
+ *
+ * The note says nothing about whether the run has ENDED (TASK-1046 review F9):
+ * a wake-up the `chat:resume` gate refused (TASK-692) parks a call whose run
+ * may still be there, and the note has to be true for that row too.
  */
 export const DECISION_PENDING_AGENT =
-  'Approved — it will do this the next time it runs.';
+  'Approved — it can do this the next time it tries.';
 export const DECISION_PENDING_AGENT_NOTE =
-  'It needs its own tools for this one, so it happens on its next run rather than now.';
+  'Nothing has happened yet. It can only do this during one of its own runs. If a later run makes exactly this request, it goes ahead without asking you again.';
 
 /**
  * Approved, irreversible, and the grace period has not run out yet.
@@ -163,6 +167,28 @@ export const DECISION_ROUTINE_UNDERWAY_NOTE = 'We’ll update this when it’s d
 export const DECISION_FAILED = 'It tried to do this, and it did not work.';
 export const DECISION_FAILED_NOTE =
   'Nothing was completed. Your yes does not carry over, so it will ask again if it still needs to.';
+
+/**
+ * The host made the call and got no reliable answer (TASK-1046), so it may have
+ * gone through. Joined with one space, the two are word for word
+ * `ABANDONED_RECEIPT` in `@ax/decisions` (pinned by literal on both sides):
+ * saying "nothing was completed" here would be a lie that gets a person to
+ * approve, and post, twice.
+ */
+export const DECISION_OUTCOME_UNKNOWN =
+  'This was interrupted while it was running, so we cannot tell you whether it finished.';
+export const DECISION_OUTCOME_UNKNOWN_NOTE = 'Worth checking before you approve it again.';
+
+/**
+ * The host made a connector call, and the service answered that it did not
+ * work, so the tool may have run (TASK-1046, review F3). Neither line above is true: "Nothing
+ * was completed" would send a person to approve, and do, part of it again, and
+ * nothing was interrupted, the service answered. The Activity receipt says the
+ * same in its own words (`TOOL_ERROR_RECEIPT` in `@ax/decisions`); each side
+ * pins its copy by literal.
+ */
+export const DECISION_TOOL_ERROR = "It tried to do this, and the service said it didn't work.";
+export const DECISION_TOOL_ERROR_NOTE = 'It may have done part of it. Worth checking before you approve it again.';
 
 /** Nobody answered in time. */
 export const DECISION_EXPIRED = 'This one ran out of time, so nothing happened.';
@@ -405,7 +431,14 @@ export function decisionOutcome(
     case 'dismissed':
       return { line: d.dismissedText, note: null, tone: 'quiet' };
     case 'failed':
-      return { line: DECISION_FAILED, note: DECISION_FAILED_NOTE, tone: 'bad' };
+      // The tool-error row is also `outcomeUnknown` (it may have done part of
+      // it), so it is asked first.
+      if (d.toolReportedError === true) {
+        return { line: DECISION_TOOL_ERROR, note: DECISION_TOOL_ERROR_NOTE, tone: 'bad' };
+      }
+      return d.outcomeUnknown === true
+        ? { line: DECISION_OUTCOME_UNKNOWN, note: DECISION_OUTCOME_UNKNOWN_NOTE, tone: 'bad' }
+        : { line: DECISION_FAILED, note: DECISION_FAILED_NOTE, tone: 'bad' };
     case 'expired':
       return { line: DECISION_EXPIRED, note: DECISION_EXPIRED_NOTE, tone: 'quiet' };
   }

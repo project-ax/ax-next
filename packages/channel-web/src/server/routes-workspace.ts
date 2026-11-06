@@ -962,7 +962,15 @@ interface StoredDecision {
   replayDueAt: string | null;
   replayClaimedAt: string | null;
   replayedAt: string | null;
+  // On an ABANDONED row, the closed code `tool-error` when the connector's
+  // service said the call failed, so the tool may have run (TASK-1046 review
+  // F3; `TOOL_ERROR_REPLAY_CODE`).
+  // Never crosses the wire; `toolReportedError` is derived from it.
   replayError: string | null;
+  // TASK-1046 — set when the host sent a call and got no reliable answer (a
+  // failed row that is ABANDONED rather than refused). Optional: an older
+  // producer omits it. It never crosses the wire; `outcomeUnknown` is derived.
+  replayAbandonedAt?: string | null;
   // TASK-574 — the attended path's deferred delivery. `deliveryDueAt` is when
   // the resolution is due to reach the warm agent (the undo window closing;
   // the sweep clears it as it delivers), `deliveredAt` is when it did. Both
@@ -1027,6 +1035,15 @@ interface DecisionsApproveInput extends DecisionsResolveInput {
    * file (I2): `@ax/decisions` declares the contract, we just speak it.
    */
   continuationReqId: string;
+  /**
+   * TASK-1046, review F2 — did the card show the person this request WHOLE?
+   * `@ax/decisions` makes a connector call on the host only on `true`, because
+   * it sends the recorded input verbatim and the card caps what it shows.
+   * Computed HERE from the stored row by `requestShownInFull`, with the same
+   * function the card is drawn from, and never read from the request body
+   * (which may carry only `approvalScope`).
+   */
+  requestShownInFull: boolean;
 }
 interface DecisionsApproveOutput {
   decision: StoredDecision | null;
@@ -2596,6 +2613,14 @@ const APPROVED_CAP_KINDS: readonly ApprovedCapKind[] = [
  * Open rows only. A receipt does not ask anything, so it has no reader for the
  * input, and minimising what crosses the wire is the default (invariant 5).
  */
+/**
+ * The closed code `@ax/decisions` writes to `replayError` on an abandoned row
+ * when the connector's service answered that the call did not work, so the
+ * tool may have run (TASK-1046, review F3). A local twin of its `TOOL_ERROR_REPLAY_CODE`, never an import
+ * (invariant 2), pinned by the same literal on both sides.
+ */
+const TOOL_ERROR_REPLAY_CODE = 'tool-error';
+
 function wireRequest(stored: StoredDecision): DecisionRequest | null {
   if (!isOpenDecision(stored)) return null;
   const tool = fenceLine(stored.call?.name, DECISION_REQUEST_TOOL_MAX_CHARS);
@@ -2614,6 +2639,27 @@ function wireRequest(stored: StoredDecision): DecisionRequest | null {
   if (json === undefined || json === '{}' || json === '[]' || json === 'null') json = undefined;
   const block = fenceBlock(json, DECISION_REQUEST_INPUT_MAX_CHARS, DECISION_REQUEST_INPUT_MAX_LINES);
   return { tool, input: block?.text ?? null, truncated: block?.truncated ?? false };
+}
+
+/**
+ * Did the card show this held call WHOLE? (TASK-1046, review F2.)
+ *
+ * The approve route tells `@ax/decisions`, which makes a connector call on the
+ * host only when the answer is yes: the host sends the recorded input
+ * verbatim, and a person who read "This is only the beginning…" never saw the
+ * rest of what would go out.
+ *
+ * Read off `wireRequest` itself, the function the card's request block is
+ * drawn from, so the two cannot disagree about what was on screen. Yes means
+ * the block exists, its input was not cut (`truncated`), and its tool line is
+ * the call's name exactly (`fenceLine` caps a long one too). An input with
+ * nothing in it is shown whole: the card says so in words. Everything else is
+ * no, including a row with no request block at all, so an unreadable or
+ * missing rendering fails closed (the call parks for the agent).
+ */
+function requestShownInFull(stored: StoredDecision): boolean {
+  const request = wireRequest(stored);
+  return request !== null && !request.truncated && request.tool === stored.call?.name;
 }
 
 /**
@@ -2763,6 +2809,20 @@ export function toWireDecision(stored: StoredDecision, eligible = false, checkIn
     // closes (`deliveryDueAt`). The two never overlap on one row; replay wins
     // if a producer ever sent both, since that is the call itself going out.
     pendingUntil: stored.replayDueAt ?? stored.deliveryDueAt ?? (stored.consentDeliveryState === 'pending' ? stored.routineReleaseAt ?? null : null),
+    // The host sent the call and got no reliable answer (TASK-1046): the row is
+    // `failed` AND abandoned. Derived here so the abandoned instant, which is
+    // host bookkeeping, never crosses the wire. A definite failure is the same
+    // status without it, and the card must not say "nothing was completed" about
+    // a call that may have landed.
+    outcomeUnknown: stored.status === 'failed' && (stored.replayAbandonedAt ?? null) !== null,
+    // Review F3: of those, the one where the connector's service said the call
+    // did not work (the tool may have run). `outcomeUnknown` stays true for it (it may have done part
+    // of it, so never "nothing was completed"); this second flag is what keeps
+    // the card from saying "interrupted". Derived, so the code stays home.
+    toolReportedError:
+      stored.status === 'failed' &&
+      (stored.replayAbandonedAt ?? null) !== null &&
+      stored.replayError === TOOL_ERROR_REPLAY_CODE,
     /*
       Can this still be taken back?
 
@@ -6944,7 +7004,15 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
       const out = await bus.call<DecisionsApproveInput, DecisionsApproveOutput>(
         'decisions:approve',
         agentWorkspaceCtx(stored.agentId, userId),
-        { decisionId: stored.id, userId, continuationReqId, ...(approvalScope === undefined ? {} : { approvalScope }) },
+        {
+          decisionId: stored.id,
+          userId,
+          continuationReqId,
+          // Review F2: from the STORED row and the card's own rendering of it,
+          // never from the body. A connector call reaches the host only on true.
+          requestShownInFull: requestShownInFull(stored),
+          ...(approvalScope === undefined ? {} : { approvalScope }),
+        },
       );
       const decision = await resolvedOrGone(out.decision, res, userId);
       if (decision === null) return;

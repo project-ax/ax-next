@@ -719,9 +719,11 @@ describe("Today's decision rows name the check-in they were held in (TASK-932)",
       expect(captured.statusCode).toBe(200);
       expect(decisionOf(captured).status).toBe('executed');
       expect(decisionOf(captured).checkIn).toBeNull();
-      // Approving is unchanged: the bus input is exactly what it was before TASK-932.
+      // Approving is unchanged by TASK-932: the bus input carries no check-in.
+      // `requestShownInFull` is TASK-1046's (review F2): the card showed this
+      // short request whole.
       expect(approveCalls).toStrictEqual([
-        { decisionId: 'd1', userId: 'alice', continuationReqId: expect.any(String) },
+        { decisionId: 'd1', userId: 'alice', continuationReqId: expect.any(String), requestShownInFull: true },
       ]);
       // A resolved row's answer asks nothing (TASK-933), so a failing routines read can't slow it.
       expect(lookups).toStrictEqual([]);

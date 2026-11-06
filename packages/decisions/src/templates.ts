@@ -31,6 +31,7 @@
  * earns bespoke prose, the prose belongs on the rule.
  */
 
+import type { ConnectorCallFailedReason } from './host-executor.js';
 import { connectorToolLabel, parseConnectorToolKey } from './tool-label.js';
 
 /** Matches `@ax/tool-policy`'s own `CAPABILITY_MAX_CHARS`, with headroom. */
@@ -316,7 +317,9 @@ export function decisionText(input: DecisionTextInput): DecisionText {
  * neither of them is "the call went out as recorded":
  *
  *   - a host replay that ran and failed partway, and
- *   - a call the host cannot even attempt (sandbox-only tool).
+ *   - a call the host cannot even attempt (sandbox-only tool). Connector
+ *     calls are NOT in this group: since TASK-1046 the host attempts them
+ *     itself, through `connectors:call-tool`.
  *
  * Both are constants, not templates built from `capability` or `toolName`, on
  * purpose. The design this whole file exists to avoid derived one outcome line
@@ -385,6 +388,64 @@ export const ABANDONED_RECEIPT =
   'it finished. Worth checking before you approve it again.';
 
 /**
+ * Why an approved connector call the HOST made did not work (TASK-1046): the
+ * second line under `FAILED_RECEIPT`, carried on the row as `replayError`.
+ *
+ * One authored sentence per closed reason code `connectors:call-tool` answers
+ * with, and never the service's own words: a third-party server's error text
+ * is untrusted, and can quote the call's input or a secret straight back. Each
+ * says what went wrong and none says anything went out — every one of them
+ * sits under "Nothing was completed", and every one is true of a call that did
+ * not happen. A call that went out with no reliable answer gets none of these:
+ * its row is abandoned and reads `ABANDONED_RECEIPT`. Nor does `tool-error`,
+ * the service's own "it didn't work" once the call went out (review F3): the
+ * tool may have run and done part of the work, so its row is abandoned too
+ * and reads `TOOL_ERROR_RECEIPT`.
+ */
+export const CONNECTOR_CALL_DETAIL: Readonly<
+  Record<Exclude<ConnectorCallFailedReason, 'tool-error'>, string>
+> = {
+  'invalid-call': "The request wasn't in a form we could send.",
+  'not-connected': "We couldn't find this connector on this agent.",
+  'needs-auth': "The sign-in for this connector didn't work.",
+  unavailable: "We couldn't check this connector just now.",
+  unreachable: "We couldn't reach this connector's service.",
+  rejected: "This connector's service turned the request down.",
+};
+
+/**
+ * The receipt when the host made a connector call and the SERVICE answered
+ * that it did not work (MCP `isError` or a JSON-RPC error object, TASK-1046
+ * review F3 and r3 S1).
+ *
+ * Neither neighbour is true here. `FAILED_RECEIPT` ends "Nothing was
+ * completed", but the tool may have run and done part of the work: a person
+ * who believes nothing happened approves it again and does it twice.
+ * `ABANDONED_RECEIPT` says it was interrupted, and it was not: the service
+ * answered. So it says what we know (it tried, the service said no), what we
+ * do not (whether, and how much, it did), and what to do about it. Read off the row's
+ * `TOOL_ERROR_REPLAY_CODE`. The card says the same thing in its own two lines
+ * (`DECISION_TOOL_ERROR` / `DECISION_TOOL_ERROR_NOTE` in channel-web); each
+ * side pins its own words by literal, and the closed code by the same one.
+ */
+export const TOOL_ERROR_RECEIPT =
+  "It tried to do this, and the service said it didn't work. It may have done part of it, so check before you approve it again.";
+
+/**
+ * The host re-read this tool's policy right before the call and it says Deny
+ * now, so the call was not made (TASK-1046). A Deny saved after the hold beats
+ * the yes given to the hold.
+ */
+export const CONNECTOR_POLICY_DENIED_DETAIL = "This agent's settings for this tool now block it.";
+
+/**
+ * The policy re-read failed or answered something unreadable, so the call was
+ * not made (TASK-1046). Fails CLOSED: not being able to ask is not a yes.
+ */
+export const CONNECTOR_POLICY_UNREADABLE_DETAIL =
+  "We couldn't check this agent's settings for this tool.";
+
+/**
  * Why an approval did nothing, when it did nothing.
  *
  * `decisions:approve` absorbs the partial unique index's refusal — a second
@@ -408,11 +469,13 @@ export const CLAIM_REFUSED_DETAIL =
  * The receipt when the host cannot replay the call at all — a tool that only
  * runs inside the sandbox next to the agent, which the host has no way to
  * reach once the turn has ended. This is not a failure: nothing was
- * attempted and nothing went wrong. It is a promise about the future, so it
- * says exactly that and nothing more — never "Sent", because nothing has
- * gone anywhere yet.
+ * attempted and nothing went wrong. The approval stands, but the call goes
+ * ahead only if a later run makes exactly the same request, which may never
+ * happen. So it says what is possible ("can"), not what will happen — never
+ * "Sent", because nothing has gone anywhere yet. Word for word
+ * `DECISION_PENDING_AGENT` in channel-web, pinned by literal on both sides.
  */
-export const PENDING_AGENT_RECEIPT = 'Approved — it will do this the next time it runs.';
+export const PENDING_AGENT_RECEIPT = 'Approved — it can do this the next time it tries.';
 
 /**
  * The two sentences the MODEL reads when a person has ANSWERED a call it held

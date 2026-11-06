@@ -133,3 +133,101 @@ export const InventoryToolTitlesInputSchema = z
     connectorIds: z.array(z.string().min(1).max(128)).max(500),
   })
   .strict();
+
+// ---------------------------------------------------------------------------
+// `connectors:call-tool` (service, TASK-1046). The host makes ONE connector
+// call that a person approved, when no live agent is there to make it. Its
+// intended caller is @ax/decisions; nothing in the hook enforces that (see
+// call-tool.ts). It re-derives access from `userId` and `agentId` (the
+// decision's owner and agent) on every call, sends one guarded `tools/call`,
+// and answers with a closed code.
+//
+// Boundary review:
+//   - Alternate impl: a one-shot sandbox replay, i.e. a short-lived runner
+//     session for (user, agent) that makes the call through the
+//     credential-proxy and reports the outcome. Or a non-MCP connector backend
+//     (a REST/OpenAPI connector) answering the same canonical toolKey.
+//   - Payload field names that might leak: `toolKey`'s value carries the
+//     `mcp.` prefix. It is the canonical permission key since TASK-734, shared
+//     by tool-policy, decisions, `connectors:tool-labels` and
+//     `connectors:describe-tools`, not a transport field. `input` is the
+//     ToolCall vocabulary, not MCP's `arguments`. The reason codes carry no
+//     URL, header, HTTP status, server name or session id. `tool-error` (the
+//     service answered that the call did not work, after it went out) is
+//     MCP's `isError` or a JSON-RPC error object in our words; a REST
+//     connector has the same answer (a tool-level failure body).
+//   - Subscriber risk: none. It is a service hook, and nothing fires.
+//   - Wire surface: none. It is deliberately NOT an IPC action, and NOT a
+//     `tool:execute:<name>`: `tool.execute-host` dispatches only those, and no
+//     IPC handler forwards `connectors:*`. The sandbox cannot reach it.
+// ---------------------------------------------------------------------------
+
+/**
+ * A definite answer. Every reason but `tool-error` means nothing completed.
+ * `tool-error` (review F3) is the service answering that the call did not
+ * work after it was sent: the tool's own `isError`, or any JSON-RPC error
+ * object the server sends back for it except -32001/-32000, which read
+ * `unknown` (review r3 S1, after r2 R1 moved
+ * -32602): a relay or an SDK can send any code after the tool ran. The tool
+ * may have run and done part of the work, so a caller must never read it as
+ * "nothing happened". Kept under `failed` because the service did
+ * answer, and given its own code so it is never confused with `rejected`
+ * (the request was turned away before anything ran: before the send, or an
+ * HTTP 4xx from the transport).
+ */
+export type ConnectorCallFailedReason =
+  | 'invalid-call'
+  | 'not-connected'
+  | 'needs-auth'
+  | 'unavailable'
+  | 'unreachable'
+  | 'rejected'
+  | 'tool-error';
+
+/** The call went out and no reliable answer came back: it may have happened. */
+export type ConnectorCallUnknownReason = 'timeout' | 'interrupted';
+
+export interface ConnectorCallToolInput {
+  /** The decision's owner. The caller's ctx must name the same user. */
+  userId: string;
+  /** The agent whose call it was. The caller's ctx must name the same agent. */
+  agentId: string;
+  /** Canonical connector toolKey: `mcp.<toolNamespace>.<tool>`. */
+  toolKey: string;
+  /** The call's recorded arguments, sent exactly as given. */
+  input: Record<string, unknown>;
+}
+
+export type ConnectorCallToolOutput =
+  | { outcome: 'succeeded' }
+  | { outcome: 'failed'; reason: ConnectorCallFailedReason }
+  | { outcome: 'unknown'; reason: ConnectorCallUnknownReason };
+
+/** `mcp.<toolNamespace>.<tool>`: the namespace we mint, then the server's tool name. */
+export const CONNECTOR_TOOL_KEY_RE = /^mcp\.(c[0-9a-f]{10})\.([\x21-\x7e]{1,128})$/;
+
+export const ConnectorCallToolInputSchema = z
+  .object({
+    userId: z.string().min(1).max(256),
+    agentId: z.string().min(1).max(256),
+    toolKey: z.string().regex(CONNECTOR_TOOL_KEY_RE),
+    input: z.record(z.unknown()),
+  })
+  .strict();
+
+const FAILED_REASONS = [
+  'invalid-call',
+  'not-connected',
+  'needs-auth',
+  'unavailable',
+  'unreachable',
+  'rejected',
+  'tool-error',
+] as const satisfies readonly ConnectorCallFailedReason[];
+
+/** The bus holds the hook to these shapes: no field can carry a server's text. */
+export const ConnectorCallToolOutputSchema: z.ZodType<ConnectorCallToolOutput> = z.discriminatedUnion('outcome', [
+  z.object({ outcome: z.literal('succeeded') }).strict(),
+  z.object({ outcome: z.literal('failed'), reason: z.enum(FAILED_REASONS) }).strict(),
+  z.object({ outcome: z.literal('unknown'), reason: z.enum(['timeout', 'interrupted']) }).strict(),
+]);

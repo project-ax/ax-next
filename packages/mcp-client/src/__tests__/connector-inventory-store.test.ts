@@ -353,6 +353,7 @@ describe('plugin wiring', () => {
       'connectors:describe-tools',
       'connectors:inventory-status-batch',
       'connectors:inventory-tool-titles',
+      'connectors:call-tool',
     ]);
     expect(on.manifest.subscribes).toEqual(['agents:deleted', 'connectors:auth-failure-reported']);
     expect(p.manifest.optionalCalls?.map((c) => c.hook)).not.toContain('connectors:list-effective');

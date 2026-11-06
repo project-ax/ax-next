@@ -235,3 +235,75 @@ describe('durable late failure with real decisions and PostgreSQL', () => {
     await expect(h.bus.call('decisions:recent-for-conversation',makeAgentContext({sessionId:'peer',agentId:'a1',userId:'peer'}),{userId:'u1',agentId:'a1',conversationId:'c1'})).rejects.toThrow(/scope/);
   });
 });
+
+// Review F2, end to end: channel-web's real approve route over the real
+// decisions service and PostgreSQL. The card cuts a long request short ("This
+// is only the beginning…"), and the host would send all of it. So the route
+// tells decisions whether the card showed the request whole, computed from the
+// stored row with the card's own function, and decisions makes a connector
+// call only when it did.
+describe('a connector approval through the real route and the real decisions service (review F2)', () => {
+  it.each([
+    ['a short request the card showed whole is made by the host, once', 'short', { body: 'Shipped' }, true],
+    ['a long request the card cut short parks, and the host sends nothing', 'long', { body: 'x'.repeat(2100) }, false],
+  ] as const)('%s', async (_label, tag, input, made) => {
+    const sent: unknown[] = [];
+    const h = await createTestHarness({
+      plugins: [
+        createDatabasePostgresPlugin({ connectionString: container.getConnectionUri() }),
+        createDecisionsPlugin({ sweepIntervalMs: 0, attendanceFor: () => 'unattended' }),
+      ],
+      services: {
+        'auth:require-user': async () => ({ user: { id: 'u1', isAdmin: false } }),
+        'agents:resolve': async () => ({ agent: { id: 'a1', displayName: 'Agent' } }),
+        'tool-policy:evaluate': async () => ({ verdict: 'hold', ruleId: null, capability: null }),
+        'connectors:call-tool': async (_ctx, payload) => {
+          sent.push(payload);
+          return { outcome: 'succeeded' };
+        },
+      },
+    });
+    harnesses.push(h);
+    const call: ToolCall = { id: `call-connector-${tag}`, name: 'mcp.c5e0235982f.save_comment', input };
+    await h.bus.fire('tool:pre-call', actor, call);
+    const { decisions } = await h.bus.call<unknown, { decisions: Decision[] }>('decisions:list', actor, {
+      userId: 'u1',
+    });
+    const held = decisions.find((d) => d.call.id === call.id)!;
+    expect(held.status).toBe('pending');
+
+    let status = 0;
+    let body: unknown;
+    const res: RouteResponse = {
+      status(code) {
+        status = code;
+        return res;
+      },
+      json(value) {
+        body = value;
+      },
+      text() {},
+      end() {},
+    };
+    await makeWorkspaceHandlers({ bus: h.bus, initCtx }).approveDecision(
+      {
+        headers: {},
+        body: Buffer.alloc(0),
+        cookies: {},
+        query: {},
+        params: { decisionId: held.id },
+        signedCookie: () => null,
+      },
+      res,
+    );
+
+    expect(status).toBe(200);
+    expect((body as DecisionsApproveOutput).executed).toBe(made);
+    expect(sent).toEqual(made ? [{ userId: 'u1', agentId: 'a1', toolKey: call.name, input }] : []);
+    const reread = await h.bus.call<unknown, { decision: Decision }>('decisions:get', actor, {
+      decisionId: held.id,
+      userId: 'u1',
+    });
+    expect(reread.decision.status).toBe(made ? 'executed' : 'approved-pending-agent');
+  });
+});

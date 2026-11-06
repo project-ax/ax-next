@@ -40,8 +40,9 @@ import {
   EXPIRED_RECEIPT,
   FAILED_RECEIPT,
   PENDING_AGENT_RECEIPT,
+  TOOL_ERROR_RECEIPT,
 } from './templates.js';
-import { DECISION_STATUSES, OPEN_STATUSES } from './types.js';
+import { DECISION_STATUSES, OPEN_STATUSES, TOOL_ERROR_REPLAY_CODE } from './types.js';
 import type { Decision, DecisionReceipt, DecisionStatus } from './types.js';
 
 /**
@@ -94,7 +95,7 @@ export const RECEIPT_STATUSES: readonly DecisionStatus[] = DECISION_STATUSES.fil
  * settled, and the difference is the whole of TASK-447. For four of the five
  * outcomes below nothing was sent, nothing was moved and nothing was spent, and
  * all four still owe the person a line — "you turned this down", "it ran out of
- * time", "it tried and it failed", "it will do this next time it runs" are
+ * time", "it tried and it failed", "it can do this the next time it tries" are
  * things that happened to them. Only `executed` claims the action itself
  * occurred.
  *
@@ -147,7 +148,14 @@ export function receiptFor(decision: Decision): DecisionReceipt | null {
 
     // Checked before anything that reads `made`, so a row carrying both a
     // failure and a spent authorisation can never be reported as a success.
-    case 'failed':
+    case 'failed': {
+      const abandoned = decision.replayAbandonedAt !== null;
+      // Review F3: the connector's service answered that the call did not work,
+      // so the tool may have run. Abandoned, because it may have done part of
+      // it, but not interrupted:
+      // the closed code on the row says which. Only on an abandoned row, so an
+      // ordinary failure whose message reads the same stays an ordinary one.
+      const toolError = abandoned && decision.replayError === TOOL_ERROR_REPLAY_CODE;
       return {
         ...row,
         outcome: 'failed',
@@ -158,21 +166,24 @@ export function receiptFor(decision: Decision): DecisionReceipt | null {
         // inside it (TASK-253), and the crash could have landed either side of
         // the tool's own side effect. Printing the ordinary line over that
         // would send a person off to redo an action that may already have
-        // happened.
+        // happened. Since TASK-1046 the same applies to a host connector call:
+        // it was sent and no reliable answer came back (a timeout, a dropped
+        // connection), so it is recorded as abandoned and reads as "cannot tell".
         //
         // The outcome stays `failed` for both, deliberately. It is the same
         // thing to a reader deciding what to do next — this did not go
         // through, look at it — and splitting the union would make every
         // renderer choose a rendering for a case it has no different rendering
         // for.
-        receipt: decision.replayAbandonedAt !== null ? ABANDONED_RECEIPT : FAILED_RECEIPT,
+        receipt: toolError ? TOOL_ERROR_RECEIPT : abandoned ? ABANDONED_RECEIPT : FAILED_RECEIPT,
         // The executor's own message, already sanitised on the way onto the
         // row. It rides BESIDE the receipt and is never the receipt: a host
         // tool's failure text can quote model-authored input back at us, and
         // the sentence a person reads as our claim about what happened has to
-        // be ours.
-        error: routine ? routineFailureText(decision) : decision.replayError,
+        // be ours. A tool error's closed code is not a message: no second line.
+        error: routine ? routineFailureText(decision) : toolError ? null : decision.replayError,
       };
+    }
 
     // The call was MADE — `replayedAt` (the host performed it) or `consumedAt`
     // (the agent took the standing authorisation up at the gate). Both mean the

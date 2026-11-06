@@ -13,8 +13,14 @@ import {
   type DecisionStore,
 } from '../store.js';
 import { receiptFor } from '../receipts.js';
+import { ABANDONED_RECEIPT, TOOL_ERROR_RECEIPT } from '../templates.js';
 import { createFakeStore } from './fake-store.js';
-import { DecisionStatusSchema, type Decision, type DecisionStatus } from '../types.js';
+import {
+  DecisionStatusSchema,
+  TOOL_ERROR_REPLAY_CODE,
+  type Decision,
+  type DecisionStatus,
+} from '../types.js';
 
 let container: StartedPostgreSqlContainer;
 let connectionString: string;
@@ -1574,6 +1580,118 @@ describe('decisions store — reclaiming a stranded flight', () => {
           limit: 2,
         }),
       ).toHaveLength(1);
+    }
+  });
+});
+
+/**
+ * TASK-1046. The host SENT a connector call and got no reliable answer — a
+ * timeout, a dropped connection, a reply it could not read. The call may have
+ * landed. `markOutcomeUnknown` writes the shape the stranded-flight reclaim
+ * writes, because it means the same thing to a reader: no report, so the
+ * receipt says we cannot tell, and never "Nothing was completed".
+ */
+describe('decisions store — an outcome nobody reported (TASK-1046)', () => {
+  const T_ANSWERLESS = '2026-08-20T09:00:50.000Z';
+
+  /** A host flight on its way out, claimed the way `decisions:approve` claims one. */
+  async function inFlight(): Promise<DecisionStore[]> {
+    const stores = [await freshStore(), createFakeStore()];
+    for (const s of stores) {
+      await s.create(base({ attendance: 'unattended' }));
+      await s.claimForApproval('dec_1', {
+        nowIso: T_SOON,
+        status: 'executed',
+        replayClaimedAt: T_SOON,
+      });
+    }
+    return stores;
+  }
+
+  it('markOutcomeUnknown moves a claimed executed row to failed with replay_abandoned_at, keeps resolved_at, clears replay_error', async () => {
+    for (const s of [await freshStore(), createFakeStore()]) {
+      // Seeded rather than claimed: the claim already clears `replay_error`, so
+      // this is the only way a test can see this write clear it too.
+      await s.create(
+        base({
+          attendance: 'unattended',
+          status: 'executed',
+          resolvedAt: T_SOON,
+          replayClaimedAt: T_SOON,
+          replayError: 'words from an earlier attempt',
+        }),
+      );
+
+      const row = await s.markOutcomeUnknown('dec_1', T_ANSWERLESS);
+
+      expect(row).toMatchObject({
+        status: 'failed',
+        replayAbandonedAt: T_ANSWERLESS,
+        resolvedAt: T_SOON,
+        replayError: null,
+        replayDueAt: null,
+        replayedAt: null,
+        consumedAt: null,
+      });
+      // Read back, not trusted from the write's own return.
+      expect(await s.get('dec_1')).toEqual(row);
+      expect(receiptFor(row!)).toMatchObject({
+        outcome: 'failed',
+        receipt: ABANDONED_RECEIPT,
+        error: null,
+      });
+    }
+  });
+
+  it('with the tool-error code it stores that code, and the receipt says the service said no (review F3)', async () => {
+    for (const s of await inFlight()) {
+      const row = await s.markOutcomeUnknown('dec_1', T_ANSWERLESS, TOOL_ERROR_REPLAY_CODE);
+
+      expect(row).toMatchObject({
+        status: 'failed',
+        replayAbandonedAt: T_ANSWERLESS,
+        replayError: 'tool-error',
+        replayedAt: null,
+      });
+      expect(await s.get('dec_1')).toEqual(row);
+      expect(receiptFor(row!)).toMatchObject({
+        outcome: 'failed',
+        receipt: TOOL_ERROR_RECEIPT,
+        error: null,
+      });
+      // Spent like any other abandoned row: an identical agent call holds again.
+      expect(await s.takeApproval('a1', 'fp-1', T_LATE)).toBeNull();
+    }
+  });
+
+  it('it refuses a row that is not executed', async () => {
+    for (const s of [await freshStore(), createFakeStore()]) {
+      for (const status of ['pending', 'approved-pending-agent', 'failed', 'dismissed'] as const) {
+        const seeded = base({
+          id: `dec_${status}`,
+          status,
+          resolvedAt: status === 'pending' ? null : T_SOON,
+        });
+        await s.create(seeded);
+        expect(await s.markOutcomeUnknown(seeded.id, T_ANSWERLESS)).toBeNull();
+        expect(await s.get(seeded.id)).toEqual(seeded);
+      }
+      expect(await s.markOutcomeUnknown('dec_missing', T_ANSWERLESS)).toBeNull();
+    }
+  });
+
+  it('the row leaves the standing-authorisation set', async () => {
+    for (const s of await inFlight()) {
+      expect(await s.markOutcomeUnknown('dec_1', T_ANSWERLESS)).not.toBeNull();
+
+      // It authorises nothing: an identical agent call is held again…
+      expect(await s.takeApproval('a1', 'fp-1', T_LATE)).toBeNull();
+      // …and the index slot is free, so the same call can be held and
+      // approved again.
+      await s.create(base({ id: 'dec_2' }));
+      expect(
+        await s.claimForApproval('dec_2', { nowIso: T_LATE, status: 'executed' }),
+      ).not.toBeNull();
     }
   });
 });

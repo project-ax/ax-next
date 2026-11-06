@@ -72,18 +72,25 @@ export type ExecutionPath = 'agent-executes' | 'host-replays';
  * agent re-issuing its call.
  *
  * `approved-pending-agent` is the honest answer for a call the host physically
- * CANNOT make: `tool.execute-host` dispatches to `tool:execute:<name>`, and a
- * tool whose descriptor says `executesIn: 'sandbox'` has no such hook and no
- * sandbox to run in once the turn ended. The approval is real and stands at the
- * gate — the agent performs it the next time it runs. It is deliberately NOT
- * `executed`, because `executed` is a claim that the thing happened (design
- * H1), and the receipt reads "Approved — it will do this the next time it
- * runs", never "Sent".
+ * CANNOT make: no `tool:execute:<name>` hook (`tool.execute-host` dispatches to
+ * it, and a tool whose descriptor says `executesIn: 'sandbox'` has none, and no
+ * sandbox to run in once the turn ended) AND, for a connector key
+ * `mcp.<ns>.<tool>`, no `connectors:call-tool` either, or a connector call
+ * held in a chat (`attended`) whose session has gone: the host makes connector
+ * calls only for rows held during a task run (review F1). The approval is real
+ * and stands at the gate — the call goes ahead if a later run makes exactly
+ * the same request. It is deliberately NOT `executed`, because `executed` is
+ * a claim that the thing happened (design H1), and the receipt reads
+ * "Approved — it can do this the next time it tries", never "Sent".
  *
- * `failed` means the host tried the replay and the tool threw. Nothing was
- * completed, the standing authorisation is gone, and the agent must raise the
+ * `failed` means the host tried the replay and the tool threw, or the host
+ * sent a connector call and got no reliable answer (`replayAbandonedAt`; the
+ * receipt then says it cannot tell), or the connector's service answered that
+ * it did not work, so the tool may have run (abandoned too, with
+ * `TOOL_ERROR_REPLAY_CODE`; the receipt says it may have done part of it). When it threw, nothing was completed. In
+ * both cases the standing authorisation is gone, and the agent must raise the
  * call again rather than silently inheriting a yes for an action that did not
- * happen.
+ * happen (or may not have).
  */
 export const DECISION_STATUSES = [
   'pending',
@@ -162,6 +169,26 @@ export interface FreshnessPredicate {
   value: string;
   label: string | null;
 }
+
+/**
+ * TASK-1046, review F3 — what `replayError` holds on an ABANDONED row when the
+ * connector's service answered that the call did not work (MCP `isError`, or
+ * a JSON-RPC error object: review r3 S1).
+ *
+ * The tool may have run and done part of the work, so the row is written
+ * abandoned (`failed` + `replayAbandonedAt`) like any outcome nobody can vouch
+ * for, and never reads "Nothing was completed". But it was not interrupted
+ * either, and this closed code is how a reader tells the two apart with no new
+ * status and no migration: `receiptFor` turns it into `TOOL_ERROR_RECEIPT`, and
+ * channel-web projects it as the card's `toolReportedError` (the same literal,
+ * pinned on both sides). A code, not a sentence: nothing renders it.
+ *
+ * It means this ONLY on an abandoned row. An ordinary failure's `replayError`
+ * is a sanitised executor message, and one that happens to read `tool-error` is
+ * still an ordinary failure.
+ */
+export const TOOL_ERROR_REPLAY_CODE = 'tool-error';
+export type ToolErrorReplayCode = typeof TOOL_ERROR_REPLAY_CODE;
 
 export interface Decision {
   id: string;
@@ -272,34 +299,46 @@ export interface Decision {
    */
   replayedAt: string | null;
   /**
-   * When a sweep GAVE UP on a flight this host never came back from.
+   * When the host GAVE UP on knowing whether a call it took went out.
    *
-   * Set only by the stranded-flight reclaim (TASK-253), and only on a row that
-   * is `failed`: the host stamped `replayClaimedAt`, died inside the call, and
-   * nothing was left to record what happened. A host that was merely FROZEN
-   * can still thaw and finish; `markReplayed` clears this stamp when it does,
-   * so "set" never coexists with a call that went out. The reclaim frees the standing
-   * authorisation the dead flight was holding, so the same call can be held and
-   * approved again.
+   * Only ever on a row that is `failed`, and there are two writers. The
+   * stranded-flight reclaim (TASK-253): the host stamped `replayClaimedAt`,
+   * died inside the call, and nothing was left to record what happened. And
+   * `markOutcomeUnknown` (TASK-1046): a host connector call that went out and
+   * got no reliable answer — a timeout, a dropped connection, a reply it could
+   * not read. Same meaning to a reader: no report, so the only honest receipt
+   * is that we cannot say. A host that was merely FROZEN can still thaw and
+   * finish; `markReplayed` clears this stamp when it does, so "set" never
+   * coexists with `replayedAt`. Since review F3 `markOutcomeUnknown` also
+   * writes it for a connector call whose service answered that it did not
+   * work (the tool may have run), with `replayError` set to
+   * `TOOL_ERROR_REPLAY_CODE`: a report, but not
+   * one that says nothing happened. Both writers free the standing authorisation
+   * the flight was holding, so the same call can be held and approved again.
    *
    * It exists because the row cannot otherwise tell the two kinds of `failed`
    * apart, and the receipt has to. An ordinary failure is a REPORT — the
    * executor threw, so "nothing was completed" is something we know. This is an
-   * ABSENCE: the crash could have landed either side of the tool's own side
-   * effect, so the only honest receipt is that we cannot say. See
-   * `ABANDONED_RECEIPT`.
+   * ABSENCE: the crash, or the lost answer, could have landed either side of
+   * the tool's own side effect, so the only honest receipt is that we cannot
+   * say. See `ABANDONED_RECEIPT`.
    */
   replayAbandonedAt: string | null;
   /**
    * The host executor's failure detail, sanitised. Kept for the audit trail
    * ONLY — the receipt a human reads is always the authored failure line, never
    * this string, because a host tool's message can quote model-authored input
-   * back at us.
+   * back at us. For a connector call the host made (TASK-1046) it is never the
+   * service's words at all: it is our sentence for the closed reason code
+   * (`CONNECTOR_CALL_DETAIL`, or a policy refusal).
    *
    * Null on an abandoned row, and that is not an oversight: no executor ever
    * reported anything, so there is no detail to carry. The reclaim does not
    * write its own prose here — this field is the TOOL's words, and filling it
-   * with ours would make the audit trail unreadable as either.
+   * with ours would make the audit trail unreadable as either. The one
+   * exception is a closed code, never prose: `TOOL_ERROR_REPLAY_CODE` on an
+   * abandoned row whose service said the call failed, after the tool may have
+   * run (review F3).
    */
   replayError: string | null;
   /**
@@ -461,6 +500,20 @@ export interface DecisionsApproveInput {
    * streaming hint.
    */
   continuationReqId?: string;
+  /**
+   * TASK-1046, review F2 — did the surface the person approved on show them
+   * the WHOLE request? The host sends a connector call's recorded input
+   * verbatim, so it makes one only on `true`. A surface that cut the request
+   * short (channel-web's card caps it and says "This is only the beginning…"),
+   * or that says nothing, leaves the call to park for the agent
+   * (`approved-pending-agent`): absent, false or any other value fails closed,
+   * so a stale client or another caller cannot trigger a host write.
+   *
+   * The approving surface computes it from its own rendering of the stored
+   * call, never from anything its client sends. A `tool:execute:<name>` host
+   * replay ignores it.
+   */
+  requestShownInFull?: boolean;
 }
 
 export interface DecisionsApproveOutput {

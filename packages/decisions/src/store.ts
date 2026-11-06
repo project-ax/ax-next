@@ -28,6 +28,7 @@ import {
   type DecisionStatus,
   type FreshnessPredicate,
   type ToolCall,
+  type ToolErrorReplayCode,
 } from './types.js';
 
 /**
@@ -337,6 +338,34 @@ export interface DecisionStore {
   markFailed(
     decisionId: string,
     opts: { error: string | null; failureCode?: SafeToolCode },
+  ): Promise<Decision | null>;
+
+  /**
+   * The host SENT the call and got no reliable answer (TASK-1046): a connector
+   * call that timed out, lost its connection, or came back unreadable. It may
+   * or may not have happened.
+   *
+   * `failed` + `replay_abandoned_at`, the shape `reclaimStrandedFlights`
+   * writes, because to a reader it means the same thing: no report, so
+   * `receiptFor` says we cannot tell (`ABANDONED_RECEIPT`) and never "Nothing
+   * was completed". Like `markFailed` it drops the standing authorisation (the
+   * partial index does not cover `failed`), so the yes is spent and a later
+   * identical call holds again. `replay_error` is cleared — nobody reported
+   * anything, so there is no detail to carry — and `resolved_at` is untouched.
+   *
+   * Reachable only from `executed`. A null return means the row moved first (a
+   * reclaim, a returning `markReplayed`), and whoever moved it owns what it
+   * says.
+   *
+   * `code` (review F3): `TOOL_ERROR_REPLAY_CODE` when the connector's service
+   * answered that the call did not work (the tool may have run). It is written to `replay_error` in
+   * place of null, the one closed code an abandoned row may carry, so the
+   * receipt can say the service said no rather than "interrupted".
+   */
+  markOutcomeUnknown(
+    decisionId: string,
+    nowIso: string,
+    code?: ToolErrorReplayCode | null,
   ): Promise<Decision | null>;
 
   /**
@@ -875,6 +904,15 @@ export function createDecisionsStore(db: Kysely<DecisionsDatabase>): DecisionSto
               routine_outcome: 'failed',
             }
           : {}),
+        replay_due_at: null,
+      });
+    },
+
+    markOutcomeUnknown(decisionId, nowIso, code = null) {
+      return transition(decisionId, ['executed'], {
+        status: 'failed',
+        replay_abandoned_at: new Date(nowIso),
+        replay_error: code,
         replay_due_at: null,
       });
     },

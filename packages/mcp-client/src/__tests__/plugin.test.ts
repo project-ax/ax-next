@@ -146,6 +146,9 @@ describe('@ax/mcp-client plugin', () => {
         'connectors:describe-tools',
         'connectors:inventory-status-batch',
         'connectors:inventory-tool-titles',
+        // TASK-1046 — one approved connector call. A named service, never a
+        // `tool:execute:*`: the sandbox can reach every one of those.
+        'connectors:call-tool',
       ],
       calls: [
         'storage:list-prefix',
@@ -153,7 +156,7 @@ describe('@ax/mcp-client plugin', () => {
         'database:get-instance',
         'connectors:resolve',
         'agents:resolve',
-        // describe-tools spends the connector's credential plan.
+        // describe-tools and connectors:call-tool spend the connector's credential plan.
         'credentials:get',
       ],
       optionalCalls: [

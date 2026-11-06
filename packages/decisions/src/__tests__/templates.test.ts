@@ -8,13 +8,18 @@ import {
   sanitizeCapability,
   sanitizeFailureDetail,
   sanitizeToolName,
+  CONNECTOR_CALL_DETAIL,
+  CONNECTOR_POLICY_DENIED_DETAIL,
+  CONNECTOR_POLICY_UNREADABLE_DETAIL,
   FAILED_RECEIPT,
   GATE_FAILURE_SENTENCE,
   PENDING_AGENT_RECEIPT,
   ROUTINE_ALWAYS_ASKS_SENTENCE,
   ROUTINE_FIRE_NOW_DETAIL,
   ROUTINE_KIND_CHANGE_SENTENCE,
+  TOOL_ERROR_RECEIPT,
 } from '../templates.js';
+import { TOOL_ERROR_REPLAY_CODE } from '../types.js';
 
 const CAP = 'gain access to a new service or key';
 
@@ -260,6 +265,7 @@ describe('the AW-5 authored receipts', () => {
   const RECEIPTS = [
     ['FAILED_RECEIPT', FAILED_RECEIPT],
     ['PENDING_AGENT_RECEIPT', PENDING_AGENT_RECEIPT],
+    ['TOOL_ERROR_RECEIPT', TOOL_ERROR_RECEIPT],
   ] as const;
 
   it.each(RECEIPTS)('%s is non-empty and single-line', (_name, receipt) => {
@@ -292,7 +298,8 @@ describe('the AW-5 authored receipts', () => {
 
   it('PENDING_AGENT_RECEIPT never says the call went out', () => {
     expect(PENDING_AGENT_RECEIPT).not.toMatch(/sent/i);
-    expect(PENDING_AGENT_RECEIPT).toMatch(/next time it runs/i);
+    expect(PENDING_AGENT_RECEIPT).toMatch(/next time it tries/i);
+    expect(PENDING_AGENT_RECEIPT).toBe('Approved — it can do this the next time it tries.');
   });
 
   it('FAILED_RECEIPT does not claim the call succeeded', () => {
@@ -300,6 +307,49 @@ describe('the AW-5 authored receipts', () => {
     expect(FAILED_RECEIPT).not.toMatch(/\bdid\b(?!\s+not\b)/i);
   });
 
+});
+
+describe('the tool-error receipt (TASK-1046, review F3)', () => {
+  it('is word for word what the person reads, pinned by literal', () => {
+    expect(TOOL_ERROR_RECEIPT).toBe(
+      "It tried to do this, and the service said it didn't work. It may have done part of it, so check before you approve it again.",
+    );
+  });
+
+  it('never claims nothing happened, and never says it was interrupted', () => {
+    // The service answered that it did not work, and the tool may have run.
+    // Both of the other failure lines would be false here.
+    expect(TOOL_ERROR_RECEIPT).not.toMatch(/nothing was completed/i);
+    expect(TOOL_ERROR_RECEIPT).not.toMatch(/interrupted/i);
+  });
+
+  it('keys on a closed code, which channel-web pins by the same literal', () => {
+    expect(TOOL_ERROR_REPLAY_CODE).toBe('tool-error');
+  });
+});
+
+describe('the connector replay details (TASK-1046)', () => {
+  // The second line under FAILED_RECEIPT when the host's connector call did
+  // not work: one authored sentence per closed reason code, never the
+  // service's own words.
+  const DETAILS = [
+    ...Object.entries(CONNECTOR_CALL_DETAIL),
+    ['CONNECTOR_POLICY_DENIED_DETAIL', CONNECTOR_POLICY_DENIED_DETAIL],
+    ['CONNECTOR_POLICY_UNREADABLE_DETAIL', CONNECTOR_POLICY_UNREADABLE_DETAIL],
+  ] as const;
+
+  it('connector details are authored constants that never say the call went out', () => {
+    // Six reason codes and the two policy refusals. Fewer means a code that
+    // would reach the row with no sentence at all.
+    expect(DETAILS).toHaveLength(8);
+    for (const [, text] of DETAILS) {
+      expect(typeof text).toBe('string');
+      expect(text.length).toBeGreaterThan(0);
+      expect(text).not.toContain('\n');
+      // Every one of these sits under "Nothing was completed".
+      expect(text).not.toMatch(/sent|completed/i);
+    }
+  });
 });
 
 describe('no producer in this module ever prints a decision id', () => {

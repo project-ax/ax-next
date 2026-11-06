@@ -10,13 +10,19 @@ import { routineToolKind } from '@ax/routines-contract';
  * So the host runs the recorded call itself, byte for byte, which is the whole
  * reason the approval card can promise that what you approved is what happens.
  *
- * THE CONSTRAINT, STATED OUT LOUD: the host can only replay a call whose tool
- * has a host-side executor. `tool.execute-host` dispatches to a dynamic
- * `tool:execute:<name>` service hook, and a tool whose descriptor says
- * `executesIn: 'sandbox'` has no such hook — and no sandbox to run in, because
- * the turn is over. We do NOT try, and we do NOT fabricate a receipt. The
- * approval stands at the gate and the agent performs it the next time it runs.
- * (`skill_propose` is exactly this case; `request_capability` is the
+ * THE CONSTRAINT, STATED OUT LOUD: the host replays a call through a host
+ * executor (`hostExecutorFor`), and only through one. That is a dynamic
+ * `tool:execute:<name>` service hook — what `tool.execute-host` dispatches to —
+ * or, for a connector toolKey `mcp.<ns>.<tool>` held during a task run,
+ * `@ax/mcp-client`'s `connectors:call-tool` (TASK-1046), which re-derives the
+ * decision owner's access to that connector instead of trusting this package.
+ * (A connector call held in a chat stays the agent's: review F1, see
+ * `host-executor.ts`.) A call with
+ * neither parks: a tool whose descriptor says `executesIn: 'sandbox'` has no
+ * host hook — and no sandbox to run in, because the turn is over. We do NOT
+ * try, and we do NOT fabricate a receipt. The approval stands at the gate and
+ * the call goes ahead if a later run makes exactly the same request.
+ * (`skill_propose` is exactly the parked case; `request_capability` is a
  * host-executed one.)
  *
  * WHY THE DYNAMIC HOOK NAME IS OK HERE. `bus.call('tool:execute:' + name)` is
@@ -39,7 +45,9 @@ import {
 import type { DecisionStore } from './store.js';
 import { sanitizeFailureDetail } from './templates.js';
 import { PLUGIN_NAME } from './pre-call.js';
-import type { Decision } from './types.js';
+import { replayConnectorCall } from './connector-replay.js';
+import { hostExecutorFor } from './host-executor.js';
+import { TOOL_ERROR_REPLAY_CODE, type Decision } from './types.js';
 
 export interface ReplayOutcome {
   /** True only when a host executor actually returned. */
@@ -52,6 +60,23 @@ export interface ReplayOutcome {
   status?: 'approved-pending-agent';
   pending?: boolean;
   failureCode?: import('@ax/core').SafeToolCode;
+  /**
+   * The host SENT the call and got no reliable answer, so it may or may not
+   * have happened (TASK-1046: a connector call that timed out, lost its
+   * connection, or came back unreadable). `settleReplay` records it as
+   * abandoned — "we cannot tell you whether it finished" — and never as a
+   * failure, whose receipt says nothing was completed.
+   */
+  outcomeUnknown?: true;
+  /**
+   * With `outcomeUnknown` (review F3): the service DID answer, that the call
+   * did not work (a connector tool's `isError`, or a JSON-RPC error object).
+   * The tool may have run and done part of it, so it is abandoned like an
+   * unknown outcome, but under the
+   * closed code `TOOL_ERROR_REPLAY_CODE`, so its receipt says the service said
+   * no instead of "interrupted".
+   */
+  toolError?: true;
 }
 
 const pendingEffectSchema = z.object({ authorizationId: z.string().min(1), requestId: z.string().min(1),
@@ -121,9 +146,9 @@ export async function replayOnApprove(args: {
   decision: Decision;
 }): Promise<ReplayOutcome> {
   const { bus, ctx, decision } = args;
-  const hookName = `tool:execute:${decision.call.name}`;
+  const executor = hostExecutorFor(bus, decision);
 
-  if (!bus.hasService(hookName)) {
+  if (executor === null) {
     ctx.logger.info('decision_replay_parked', {
       plugin: PLUGIN_NAME,
       decisionId: decision.id,
@@ -131,6 +156,13 @@ export async function replayOnApprove(args: {
     });
     return { executed: false, path: null, error: null, status: 'approved-pending-agent' };
   }
+
+  // TASK-1046 — a connector toolKey (`mcp.<ns>.<tool>`) goes to
+  // @ax/mcp-client's `connectors:call-tool`, never to a `tool:execute:<key>`.
+  // It is never a routine tool (`routineToolKind` is null for it), so nothing
+  // below applies to it.
+  if (executor.kind === 'connector') return replayConnectorCall({ bus, ctx, decision });
+  const hookName = executor.hook;
 
   try {
     // The recorded call, verbatim — the same `{id, name, input}` object the
@@ -256,6 +288,29 @@ export async function settleReplay(args: {
   // receipt is justified until the joined executor can recover its effect.
   // The existing stranded-routine sweep retries only this recorded request.
   if (outcome.pending) return outcome;
+  // TASK-1046 — sent, with no reliable answer. The row goes where the
+  // stranded-flight reclaim puts one: `failed` + `replay_abandoned_at`, whose
+  // receipt says we cannot tell whether it finished. Never `markFailed`: its
+  // receipt says nothing was completed, and this call may have landed. The yes
+  // is spent either way, so a later identical call holds again.
+  //
+  // Review F3: a call the service answered as not working lands here too
+  // (`toolError`), because the tool may have run and done part of it. Its
+  // closed code rides in `replay_error`, which is how its receipt says "the
+  // service said it didn't work" and not "interrupted", with no new status.
+  if (outcome.outcomeUnknown === true) {
+    warnIfLost(
+      ctx,
+      decision,
+      'markOutcomeUnknown',
+      await store.markOutcomeUnknown(
+        decision.id,
+        now().toISOString(),
+        outcome.toolError === true ? TOOL_ERROR_REPLAY_CODE : null,
+      ),
+    );
+    return outcome;
+  }
   if (routine) {
     // A joined executor may settle the durable effect before its response is lost.
     const stored = await store.get(decision.id, decision.ownerUserId);

@@ -25,6 +25,11 @@ import { deliverResolution, SESSION_QUEUE_HOOK, validContinuationReqId } from '.
 import { reclaimStrandedReplays, runDueDeliveries, runDueReplays, sweepExpired } from './expiry.js';
 import { auditFreshnessPairs, checkFreshness } from './freshness.js';
 import {
+  CONNECTOR_CALL_TOOL_HOOK,
+  hostExecutorFor,
+  hostExecutorForApproval,
+} from './host-executor.js';
+import {
   approveDecision,
   dismissDecision,
   undoDecision,
@@ -249,6 +254,10 @@ export function createDecisionsPlugin(opts?: DecisionsPluginOptions): Plugin {
       // documentation is `presets/k8s`' test asserting that the two producers
       // AW-7 ships are actually loaded — an unpaired or missing producer is
       // otherwise a silent, permanent downgrade nobody can catch.
+      //
+      // `connectors:call-tool` (TASK-1046) is the opposite case: a NAMED hook,
+      // so it IS declared, as an `optionalCalls` entry below. Only the
+      // per-tool `tool:execute:<name>` family has no name to write.
       calls: ['database:get-instance', 'tool-policy:evaluate'],
       // OPTIONAL, not required, and the distinction is load-bearing in both
       // directions. A host with no conversations store has no channels to read
@@ -280,6 +289,16 @@ export function createDecisionsPlugin(opts?: DecisionsPluginOptions): Plugin {
           degradation:
             'A held connector tool with no capability clause is named by its tool name ' +
             'alone ("Create issue"), without the connector it belongs to.',
+        },
+        {
+          // TASK-1046 — @ax/mcp-client makes an approved connector call
+          // (`mcp.<toolNamespace>.<tool>`) when no live agent is there to make
+          // it. A NAMED hook, unlike the dynamic `tool:execute:<name>`, so it
+          // can be declared here; `hostExecutorFor` is the only reader.
+          hook: CONNECTOR_CALL_TOOL_HOOK,
+          degradation:
+            'An approved connector call from a run with no live agent cannot be made by the host; ' +
+            'it waits (approved-pending-agent) for the agent to make the same call again.',
         },
         {
           hook: CONVERSATION_METADATA_HOOK,
@@ -684,10 +703,21 @@ export function createDecisionsPlugin(opts?: DecisionsPluginOptions): Plugin {
           //   attended                  -> the agent is still warm; it
           //                                re-issues its own call and the
           //                                fingerprint gate authorises it once.
-          //   unattended, no executor   -> the host physically cannot make this
-          //                                call. `approved-pending-agent`: the
-          //                                approval waits at the gate for the
-          //                                agent's next run. NOT "Sent".
+          //   unattended, no host        -> `hostExecutorFor` finds neither a
+          //   executor                     `tool:execute:<name>` nor, for a
+          //                                connector key, `connectors:call-tool`,
+          //                                so the host cannot make this call.
+          //                                `approved-pending-agent`: the
+          //                                approval waits at the gate for a
+          //                                later run to make the identical
+          //                                call. NOT "Sent". A connector call
+          //                                held in a CHAT lands here too once
+          //                                its session is gone (review F1): the
+          //                                host makes connector calls only for
+          //                                rows held during a task run, so the
+          //                                agent's next turn re-issues it and
+          //                                the gate lets it through once,
+          //                                instead of holding it a second time.
           //   unattended, irreversible  -> claim now, replay when the undo
           //                                window closes.
           //   unattended, reversible    -> claim now, replay now.
@@ -734,7 +764,11 @@ export function createDecisionsPlugin(opts?: DecisionsPluginOptions): Plugin {
                   ?.activeSessionId ?? null)
               : null;
           const attended = liveSessionId !== null;
-          const hasExecutor = bus.hasService(`tool:execute:${current.call.name}`);
+          // Review F2: a connector call reaches the host only on an approval
+          // whose surface showed the person the whole request
+          // (`hostExecutorForApproval`). Otherwise it parks, right here in the
+          // claim, and no later sweep replays a parked row.
+          const hasExecutor = hostExecutorForApproval(bus, current, input) !== null;
           const parked = !attended && !hasExecutor;
           const deferred =
             !attended &&
@@ -881,9 +915,21 @@ export function createDecisionsPlugin(opts?: DecisionsPluginOptions): Plugin {
 
           if (parked) {
             // The row IS the receipt. `approved-pending-agent` with nothing yet
-            // consumed reads back as "Approved — it will do this the next time
-            // it runs" (see `receiptFor`), so there is nothing to announce here
+            // consumed reads back as "Approved — it can do this the next time
+            // it tries" (see `receiptFor`), so there is nothing to announce here
             // and nothing that can announce it wrongly.
+            //
+            // Review F2: the host COULD have made this call, and this approval
+            // did not let it (the person was not shown the whole request). The
+            // row reads like any other park, so the reason goes in a log line,
+            // where a surface that never sends the flag would show up.
+            if (hostExecutorFor(bus, current) !== null) {
+              ctx.logger.info('decision_parked_request_not_shown_in_full', {
+                plugin: PLUGIN_NAME,
+                decisionId,
+                tool: current.call.name,
+              });
+            }
             return inert(claimed);
           }
 

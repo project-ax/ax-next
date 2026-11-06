@@ -2267,6 +2267,8 @@ describe('channel-web agent-workspace BFF', () => {
       'staleReason',
       'pendingUntil',
       'undoable',
+      'outcomeUnknown',
+      'toolReportedError',
     ].sort();
 
     /** One instant, reused, so the fixtures never disagree about "when". */

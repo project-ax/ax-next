@@ -14,7 +14,7 @@
  *
  * The row that matters most is `approved-pending-agent`. It is a REAL approval
  * for an action that HAS NOT HAPPENED — the host cannot make the call itself and
- * the agent will do it on its next run. Both renderers say exactly that, and
+ * it goes ahead only if a later run makes the identical call. Both renderers say exactly that, and
  * neither of them says "Sent".
  */
 import { act } from 'react';
@@ -27,10 +27,16 @@ import {
   DECISION_FAILED,
   DECISION_GOING_OUT,
   DECISION_GOING_OUT_NOTE,
+  DECISION_FAILED_NOTE,
+  DECISION_OUTCOME_UNKNOWN,
+  DECISION_OUTCOME_UNKNOWN_NOTE,
   DECISION_PENDING_AGENT,
+  DECISION_PENDING_AGENT_NOTE,
   DECISION_ROUTINE_UNDERWAY,
   DECISION_ROUTINE_UNDERWAY_NOTE,
   DECISION_STALE_LEAD,
+  DECISION_TOOL_ERROR,
+  DECISION_TOOL_ERROR_NOTE,
 } from '../decision-copy';
 import { decisionFixture, resolvedFixture } from './decision-fixture';
 import {
@@ -122,6 +128,17 @@ describe('one row, three renderers — the outcome line', () => {
       line: DECISION_FAILED,
     },
     {
+      name: 'failed, outcome unknown',
+      decision: resolvedFixture('failed', { undoable: false, outcomeUnknown: true }),
+      line: DECISION_OUTCOME_UNKNOWN,
+    },
+    {
+      // Review F3: the server sends both flags for this row.
+      name: 'failed, the tool said it did not work',
+      decision: resolvedFixture('failed', { undoable: false, outcomeUnknown: true, toolReportedError: true }),
+      line: DECISION_TOOL_ERROR,
+    },
+    {
       name: 'expired',
       decision: resolvedFixture('expired', { undoable: false }),
       line: DECISION_EXPIRED,
@@ -136,6 +153,60 @@ describe('one row, three renderers — the outcome line', () => {
       expect(inThread).toContain(c.line);
     });
   }
+
+  it('the parked line and note say plainly what will happen (TASK-1046)', () => {
+    // Pinned by literal: `@ax/decisions` pins the headline on its side
+    // (templates.test.ts), so neither copy can drift without a red test.
+    expect(DECISION_PENDING_AGENT).toBe('Approved — it can do this the next time it tries.');
+    // Review F9: no "that run had already ended". A refused wake-up (TASK-692)
+    // parks a call whose run may still be there, and the note has to be true
+    // for that row too.
+    expect(DECISION_PENDING_AGENT_NOTE).toBe(
+      'Nothing has happened yet. It can only do this during one of its own runs. If a later run makes exactly this request, it goes ahead without asking you again.',
+    );
+    expect(DECISION_PENDING_AGENT_NOTE).not.toMatch(/already ended/);
+    const parked = resolvedFixture('approved-pending-agent');
+    for (const text of [queueText(parked), cardText(parked)]) {
+      expect(text).toContain(DECISION_PENDING_AGENT_NOTE);
+    }
+  });
+
+  it('an outcome-unknown failure never says nothing was completed (TASK-1046)', () => {
+    const unknown = resolvedFixture('failed', { undoable: false, outcomeUnknown: true });
+    for (const text of [queueText(unknown), cardText(unknown)]) {
+      expect(text).toContain(DECISION_OUTCOME_UNKNOWN_NOTE);
+      expect(text).not.toContain(DECISION_FAILED_NOTE);
+      expect(text).not.toContain(DECISION_FAILED);
+    }
+    // And the definite failure keeps saying what it always said.
+    const definite = resolvedFixture('failed', { undoable: false, outcomeUnknown: false });
+    for (const text of [queueText(definite), cardText(definite)]) {
+      expect(text).toContain(DECISION_FAILED_NOTE);
+      expect(text).not.toContain(DECISION_OUTCOME_UNKNOWN);
+    }
+  });
+
+  it('a tool that said it failed reads as "may have done part of it", pinned by literal (review F3)', () => {
+    expect(DECISION_TOOL_ERROR).toBe("It tried to do this, and the service said it didn't work.");
+    expect(DECISION_TOOL_ERROR_NOTE).toBe('It may have done part of it. Worth checking before you approve it again.');
+    const toolError = resolvedFixture('failed', { undoable: false, outcomeUnknown: true, toolReportedError: true });
+    for (const text of [queueText(toolError), cardText(toolError)]) {
+      expect(text).toContain(DECISION_TOOL_ERROR);
+      expect(text).toContain(DECISION_TOOL_ERROR_NOTE);
+      // The tool may have run: neither "nothing was completed" nor "interrupted" is true.
+      expect(text).not.toContain(DECISION_FAILED_NOTE);
+      expect(text).not.toContain(DECISION_OUTCOME_UNKNOWN);
+      expect(text).not.toMatch(/interrupted/i);
+      expect(text).not.toMatch(/nothing was completed/i);
+    }
+  });
+
+  it("the unknown pair matches the server's abandoned receipt word for word (TASK-1046)", () => {
+    // `@ax/decisions` ABANDONED_RECEIPT, pinned by literal on both sides.
+    expect(`${DECISION_OUTCOME_UNKNOWN} ${DECISION_OUTCOME_UNKNOWN_NOTE}`).toBe(
+      'This was interrupted while it was running, so we cannot tell you whether it finished. Worth checking before you approve it again.',
+    );
+  });
 
   it('never claims an unattended-parked approval was sent', () => {
     // The one sentence this whole surface exists to get right. The host CANNOT
