@@ -17,6 +17,7 @@ import { changeStoredSteps, storedSteps, StepsReceiptSchema } from './steps.js';
 import { copiedSteps, duplicateName } from './duplicate.js';
 import { createWebhookHealthStore } from './webhook-health.js';
 import { createWebhookAddressStore, unreadableWebhookRoutine, type UnreadableWebhookRoutine } from './webhook-address.js';
+import { createRepeatUpdateStore } from './repeat-updates.js';
 
 type DB = Kysely<RoutinesDatabase>;
 type Actor = { actorUserId: string };
@@ -24,7 +25,7 @@ export type CleanupJob = { agentId: string; routineId: string; credentialRef: st
 export type AcceptDispatchInput = RoutineKey & Actor & { expectedRevision: string; source: FireSource; requestId: string; now: Date };
 export type OperationKey = { agentId: string; actorUserId: string; operation: string; requestId: string; inputHash: string; compatibleInputHashes?: readonly string[] };
 export type DefaultRoutineDetailRow = Omit<import('@ax/routines-contract').RoutineGetDefaultOutput, 'updatedAt'> & { updatedAt: Date };
-export interface RoutinesStore extends ReturnType<typeof createWebhookHealthStore>, ReturnType<typeof createWebhookAddressStore>, ReturnType<typeof createTaskEventStore> {
+export interface RoutinesStore extends ReturnType<typeof createWebhookHealthStore>, ReturnType<typeof createWebhookAddressStore>, ReturnType<typeof createTaskEventStore>, ReturnType<typeof createRepeatUpdateStore> {
   createAuthored(input: RoutineCreateInput & Actor & { ownerUserId: string; now: Date }): Promise<StoredRoutine>;
   updateAuthored(input: RoutineUpdateInput & Actor & { now: Date; stopOnly: boolean }): Promise<StoredRoutine>;
   /**
@@ -1089,6 +1090,7 @@ export function createRoutinesStore(db: DB, executorId?: string): RoutinesStore 
     ...createWebhookHealthStore(db),
     ...createWebhookAddressStore(db, { lockLiveAgent, readRoutineRow }),
     ...createTaskEventStore(db),
+    ...createRepeatUpdateStore(db),
     async createAuthored(input) {
       const definition = validateDefinition(input.definition);
       const hashes = createRequestHashes(input);
