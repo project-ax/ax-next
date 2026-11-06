@@ -1279,9 +1279,14 @@ async function handleTurnEndClearReqId(
   if (typeof reqId !== 'string' || reqId.length === 0) return;
   // TASK-785 — a message folded into this turn (sent while it ran) is answered
   // here and never gets a turn-end of its own, yet it is usually the bound
-  // active_req_id: it was posted last. Clear it too, or a reload reattaches to
-  // a stream that never ends. Same compare-and-clear, so a listed id that is
-  // not the bound one (or is from anywhere else) changes nothing.
+  // active_req_id: it was posted last. Clear it too, so the row stops naming a
+  // turn that has ended: `agent:interrupt` and the usage-limits suspend sweep
+  // treat a bound reqId as a turn that may be running. A stream GET for a
+  // stale-but-bound reqId would also resolve once the chunk buffer's TTL
+  // (`chunk-buffer.ts`, ~60 s) has dropped the turn's error, find nothing
+  // buffered, and sit on keepalives; no client does that today. Same
+  // compare-and-clear, so a listed id that is not the bound one (or is from
+  // anywhere else) changes nothing.
   const folded = Array.isArray(payload.foldedReqIds)
     ? payload.foldedReqIds.filter((id): id is string => typeof id === 'string' && id.length > 0)
     : [];

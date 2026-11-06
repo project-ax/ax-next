@@ -562,7 +562,7 @@ a task to wake up, next to its schedule, a reply and Check now. What an update
 does depends on the kind:
 
 - **Repeat a job:** one run per update, with the update as its input. This is
-  exactly what webhook routines do today.
+  exactly what webhook routines do today. (TASK-1050: as built until 2026-11-06, the update reached the run only through `{{payload…}}` fields its prompt named, so a prompt that named none ran without it. Now such a run's first message names the update's eventId and the run reads it with routine_read_update, quoted as outside content. A prompt that names payload fields keeps exactly its rendered text.)
 - **Stay on top / Get done:** a nudge to check in soon. Updates are batched: one
   check-in runs at a time, and it sees everything that arrived since the last
   one, so fifty pings cost one check-in.
@@ -1174,3 +1174,4 @@ view-only sharing of a task and an "Also ask" list.
 | 2026-10-27 | Implemented (TASK-982) | Task addresses are private owner-only setup state, outside definitions, approval receipts and payload blobs. Provisioning keeps a migrated legacy alias; Replace checks a separate address version and revokes that task’s previous token and alias under its admission lock. Already accepted updates remain queued. Removing app updates, owner reconciliation and deletion revoke old reach. New tasks have no legacy alias. |
 | 2026-11-02 | Implemented (TASK-1026) | Webhook signatures are paste-the-secret only. A saved secret (or a setting saved earlier) turns checks on; the host verifies Stripe, Slack and Zendesk by their timestamped protocols and everything else by an HMAC-SHA256 of the body in any header. The app picker and header/algorithm/prefix fields are gone from the task form, routine editor and agent tools. |
 | 2026-11-03 | Implemented (TASK-1027) | Signature settings saved before TASK-1026 are parsed and ignored: a saved secret is the only switch, so a task that kept one without a secret now accepts unsigned updates like any task without a secret. Stored settings aren't rewritten (queued updates and receipts parse and hash them), and agents still can't send one. |
+| 2026-11-06 | Implemented (TASK-1050) | A Repeat run that an app update started gets the update's eventId and received time in its first message, never its content, and reads it in full with routine_read_update: only in that open run, for the routine's current owner, framed as outside content, at most 1 MB. The content stays out of the user turn because memory learns from user turns and never from tool results. A prompt that names payload fields keeps exactly its rendered text and gets no note. |

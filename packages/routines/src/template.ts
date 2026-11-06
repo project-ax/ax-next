@@ -18,6 +18,9 @@
  * One host value, never from the payload: `{{lastCompletedRun}}`
  * (TASK-991), filled by `fire.ts` from this routine's own fire records
  * BEFORE the payload pass, so payload text can't produce or re-render it.
+ *
+ * A repeat run an app update started, whose prompt names no payload field,
+ * gets the update's eventId instead (fire.ts, TASK-1050); `usesPayload` decides.
  */
 // Single regex matches BOTH emission shapes so substitution is a
 // single-pass walk over `body`. The optional capture group is `undefined`
@@ -83,4 +86,12 @@ export function usesLastCompletedRun(body: string): boolean {
 export function renderLastCompletedRun(body: string, lastCompletedRun: Date | null): string {
   const value = lastCompletedRun === null ? 'never' : lastCompletedRun.toISOString().slice(0, 10);
   return body.replace(LAST_COMPLETED_RUN_ALL_RE, () => value);
+}
+
+// Non-global twin of TEMPLATE_RE: `.test()` on a global regex is stateful.
+const USES_PAYLOAD_RE = /\{\{\s*payload((?:\.[a-zA-Z0-9_-]+)+)?\s*\}\}/;
+
+/** Whether `body` names a payload field, i.e. `renderTemplate` would substitute something in it. */
+export function usesPayload(body: string): boolean {
+  return USES_PAYLOAD_RE.test(body);
 }
