@@ -282,7 +282,7 @@ describe('accepted DB fire dispatch', () => {
   });
   // TASK-908: `system-prompt:` is the landed veto's, fired before connector assembly too. A repeat routine's run
   // stores the reason as its code (TASK-1038); only a task's is worded (checkin.test.ts).
-  it.each(['chat:start:denied', 'agent-resolve:forbidden', 'system-prompt:brief-missing'])('preserves the previous warning for a pre-assembly gate %s', async (reason) => {
+  it.each(['chat:start:denied', 'agent-resolve:forbidden', 'system-prompt:brief-missing', 'conversation:message-not-saved'])('preserves the previous warning for a pre-assembly gate %s', async (reason) => {
     const h = await setup({ invoke: async () => ({ kind: 'terminated', reason }) });
     await f.store.finishDispatch({ dispatchId: h.accepted.dispatchId, outcome: { status: 'ok', conversationId: 'c', error: null, renderedPrompt: 'p', warning: 'Previous warning' } });
     const next = (await f.store.acceptDispatch({ ...h.row, expectedRevision: h.row.revision, actorUserId: 'owner', requestId: 'second', source: 'manual', now: new Date(now.getTime() + 1) }))!.accepted;
@@ -290,6 +290,21 @@ describe('accepted DB fire dispatch', () => {
     await h.fire(next);
     await expect.poll(async () => (await f.store.recentFires(h.row)).length).toBe(2);
     expect((await f.store.recentFires(h.row))[0]).toMatchObject({ status: 'error', error: `This run failed because of a problem on our side (code: ${reason}).`, warning: 'Previous warning' });
+    expect(diagnostic.messages).toHaveLength(1);
+  });
+  // TASK-1059: only the one `conversation:` reason the orchestrator raises before routing counts; any other
+  // `conversation:` reason is an ordinary run failure and does not keep the old warning.
+  it('does not treat another conversation: reason as a pre-assembly gate', async () => {
+    const reason = 'conversation:something-else';
+    const h = await setup({ invoke: async () => ({ kind: 'terminated', reason }) });
+    await f.store.finishDispatch({ dispatchId: h.accepted.dispatchId, outcome: { status: 'ok', conversationId: 'c', error: null, renderedPrompt: 'p', warning: 'Previous warning' } });
+    const next = (await f.store.acceptDispatch({ ...h.row, expectedRevision: h.row.revision, actorUserId: 'owner', requestId: 'second', source: 'manual', now: new Date(now.getTime() + 1) }))!.accepted;
+    const diagnostic = captureExpectedStderr(message => message.startsWith(`[ax/routines] agent:invoke failed for a/${h.row.routineId}:`));
+    await h.fire(next);
+    await expect.poll(async () => (await f.store.recentFires(h.row)).length).toBe(2);
+    const latest = (await f.store.recentFires(h.row))[0];
+    expect(latest).toMatchObject({ status: 'error' });
+    expect(latest?.warning).not.toBe('Previous warning');
     expect(diagnostic.messages).toHaveLength(1);
   });
   it('marks abandoned accepted work interrupted on startup without reinvocation', async () => {
@@ -320,7 +335,7 @@ describe('a run its invoke ended terminated stores fixed words and a code (TASK-
   }
   it.each([
     'chat-run-timeout', 'sandbox-exit-before-chat-end', 'connector-needs-reconnect',
-    'chat:start:usage-limit-daily', 'agent-resolve:forbidden', 'system-prompt:identity-unavailable',
+    'chat:start:usage-limit-daily', 'agent-resolve:forbidden', 'system-prompt:identity-unavailable', 'conversation:message-not-saved',
     'a'.repeat(64),
   ])('keeps the host code %s', async (reason) => {
     expect(await terminatedWith(reason)).toEqual({ error: stored(reason), lastError: stored(reason), stderr: [`${stored(reason)}\n`] });

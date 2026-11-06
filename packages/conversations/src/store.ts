@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from 'node:crypto';
-import { PluginError } from '@ax/core';
+import { PluginError, stringifyWellFormed } from '@ax/core';
 import { ContentBlockSchema, type ContentBlock } from '@ax/ipc-protocol';
 import { z } from 'zod';
 import { sql, type Kysely } from 'kysely';
@@ -405,11 +405,12 @@ export interface ConversationStore {
   findOrCreate(args: ConversationStoreFindOrCreateArgs): Promise<FindOrCreateResult>;
   /**
    * TASK-66 (out-of-git Part B / B1). Append one display frame to the
-   * conversation's redisplay log. Mints the next per-conversation monotonic
-   * `seq` and INSERTs in a single statement (single writer per conversation
-   * — the host — so SELECT MAX()+1 is contention-free, NOT a CAS). Returns
-   * the seq assigned. No userId scope — called only by `@ax/conversations`'
-   * own host-side subscribers, gated upstream by the orchestrator's J1 check.
+   * conversation's redisplay log: one transaction that takes the
+   * per-conversation advisory lock, then mints the next monotonic `seq` and
+   * INSERTs (see the CONTRACT comment in the implementation). Returns the
+   * seq assigned. No userId scope — its only caller is the
+   * `conversations:append-event` handler, which is host-internal and runs it
+   * on a connection it pinned for the call (TASK-1059).
    */
   appendEvent(args: StoreAppendEventArgs): Promise<number>;
   /**
@@ -1030,9 +1031,20 @@ export function createConversationStore(
       // the retired `save-refused` (old rows stay valid), so this check is
       // what refuses a new one (TASK-995).
       validateEventKind(kind);
+      // jsonb refuses U+0000 and lone surrogates, which a message or tool
+      // output can carry, and a refused row fails on every retry. They become
+      // U+FFFD here (TASK-1059): a replacement character in a redisplay beats
+      // a missing row. Done before the transaction so a large payload's
+      // serialization never stretches the advisory lock or the transaction.
+      const payloadJson = stringifyWellFormed(payload);
       // CONTRACT: appends to ONE conversation are fully serialized, so an
-      // append NEVER fails and NEVER drops an event, at ANY concurrency.
-      // Callers may fan out as wide as they like.
+      // append never fails on a seq race, at any concurrency. It CAN still
+      // fail in two bounded ways: the pool refuses a connection on every
+      // attempt (append-event retries a checkout only 3 times, TASK-1059), or
+      // the lock wait outlasts the pool's statement timeout (30 s by default,
+      // SQLSTATE 57014, TASK-1056; after hand-over, so not retried). Either
+      // surfaces like any other lost row: the card subscribers log it, the
+      // person's message ends its turn, and event.turn-end answers 500.
       //
       // Why a lock and not a retry budget. The seq is minted by
       // INSERT ... SELECT COALESCE(MAX(seq),0)+1 — atomic within ONE
@@ -1073,8 +1085,10 @@ export function createConversationStore(
       //     pg_advisory_xact_lock call, whose snapshot registers BEFORE the
       //     lock is granted — so a predecessor that commits while we block on
       //     the lock would be invisible, we'd mint its seq, and hit the PK.
-      //     With the retry loop gone that now THROWS, and the persist callers
-      //     log-and-swallow, so the event drops again (noisily this time).
+      //     With the retry loop gone that now THROWS after the connection was
+      //     handed over, so append-event does not retry it (TASK-1059) and
+      //     the event is lost: the card subscribers log it, the person's own
+      //     message ends its turn, and event.turn-end answers 500.
       //     Postgres defaults to READ COMMITTED and nothing here overrides it.
       //     Do not raise the isolation default without revisiting this.
       //
@@ -1084,8 +1098,10 @@ export function createConversationStore(
       //     nest; this is not. If a caller ever wraps append-event in an outer
       //     db.transaction(), a burst can deadlock on pool exhaustion — outer
       //     transactions holding every connection, each awaiting an append
-      //     that cannot get one. All four current callers are single awaited
-      //     calls outside any transaction.
+      //     that cannot get one. The only caller, the append-event handler,
+      //     runs this on a connection it pinned for the call, never inside a
+      //     transaction (TASK-1059), and the hook's four callers are single
+      //     awaited calls outside any transaction.
       //
       // Advisory-lock keyspace note: pg_advisory_xact_lock(hashtext(...)) is a
       // SINGLE global bigint space, shared here with @ax/attachments' per-user
@@ -1117,11 +1133,10 @@ export function createConversationStore(
                 sql<string>`${kind}`.as('event_kind'),
                 sql<string | null>`${role ?? null}`.as('role'),
                 sql<string>`${foldKey ?? ''}`.as('fold_key'),
-                // Serialize once here so the JSONB column gets a single text
-                // value (kysely's pg driver passes the string straight
-                // through to ::jsonb). The payload is opaque; never
-                // interpolated.
-                sql<string>`${JSON.stringify(payload)}::jsonb`.as('payload'),
+                // Serialized once, above the lock (see `payloadJson`); kysely's
+                // pg driver passes the string straight through to ::jsonb.
+                // The payload is opaque; never interpolated.
+                sql<string>`${payloadJson}::jsonb`.as('payload'),
               ]),
           )
           .returning('seq')

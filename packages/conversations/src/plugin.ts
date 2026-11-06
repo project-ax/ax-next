@@ -1,4 +1,5 @@
 import {
+  faultLogFields,
   makeAgentContext,
   PluginError,
   type AgentContext,
@@ -7,6 +8,7 @@ import {
 } from '@ax/core';
 import { AgentFileBlockSchema, type ContentBlock } from '@ax/ipc-protocol';
 import { type Kysely } from 'kysely';
+import { withCheckoutRetry } from './checkout-retry.js';
 import {
   runConversationsMigration,
   type ConversationDatabase,
@@ -269,13 +271,15 @@ export function createConversationsPlugin(
         // externalKey. Half-wired window OPEN: caller lands in Phase B.
         'conversations:find-or-create',
         // TASK-66 (out-of-git Part B / B1, 2026-05-30): host-internal
-        // append to the display event log (the redisplay SoT). Fed by this
-        // plugin's own chat:turn-end / chat:turn-error /
-        // chat:permission-request subscribers below — NOT reachable by the
-        // untrusted runner over IPC (it only reaches the event.* IPC
-        // events, which those subscribers translate). Half-wired window
-        // CLOSED: the caller (the subscribers) AND the consumer
-        // (conversations:get reading the log) ship in this same PR.
+        // append to the display event log (the redisplay SoT). Four
+        // host-side callers: @ax/ipc-core's event.turn-end persist (the
+        // runner's assistant and tool turns), @ax/chat-orchestrator's user
+        // turn, and this plugin's chat:turn-error and chat:permission-request
+        // subscribers below. NOT an IPC action: the untrusted runner reaches
+        // it only through event.turn-end, with a host-stamped ctx. TASK-1059:
+        // it retries a checkout that never got a connection (see
+        // appendEvent). Half-wired window CLOSED: TASK-66 shipped its callers
+        // and its consumer (conversations:get reading the log) in one PR.
         'conversations:append-event',
         // TASK-67 (out-of-git Part B / B2, 2026-05-30): the resume transcript
         // store (the resume SoT). Host-internal, ctx-scoped — the untrusted
@@ -330,6 +334,12 @@ export function createConversationsPlugin(
       db = shared as Kysely<ConversationDatabase>;
       await runConversationsMigration(db);
       const localStore = createConversationStore(db);
+      // TASK-1059: the append-event handler pins a connection per attempt, so
+      // it takes the pool-level handle itself. Captured as a const, like
+      // localStore: shutdown() clears `db`, and an undefined handle inside the
+      // retry would throw before any checkout and be retried as if the pool
+      // had refused.
+      const localDb = db;
       _store = localStore;
       busRef = bus;
       stopped = false;
@@ -454,17 +464,21 @@ export function createConversationsPlugin(
 
       // TASK-66 (out-of-git Part B / B1): host-internal append to the display
       // event log. ctx-scoped only (no agents:resolve round-trip — same
-      // posture as bind-session; the orchestrator already gated the user at
-      // agent:invoke entry, and the untrusted runner can't reach this hook
-      // over IPC). The conversationId comes from the input; the seq is minted
-      // by the store. Used only by this plugin's own subscribers below
-      // (closing the half-wired window in one PR), but registered as a hook so
-      // the persist stays storage-agnostic (an alternate display-log backend
-      // could register it).
+      // posture as bind-session: the orchestrator already gated the user at
+      // agent:invoke entry, and the untrusted runner never calls this hook
+      // directly; ipc-core's event.turn-end handler calls it with a
+      // host-stamped ctx). The conversationId comes from the input; the seq
+      // is minted by the store. Four callers: that event.turn-end persist,
+      // the orchestrator's user turn, and this plugin's turn-error and
+      // permission-card subscribers below. Registered as a hook so the
+      // persist stays storage-agnostic (an alternate display-log backend
+      // could register it). TASK-1059: it gets the pool-level handle, not
+      // localStore, because each attempt pins its own connection and a
+      // checkout that never got one is retried.
       bus.registerService<AppendEventInput, AppendEventOutput>(
         'conversations:append-event',
         PLUGIN_NAME,
-        async (ctx, input) => appendEvent(localStore, ctx, input),
+        async (ctx, input) => appendEvent(localDb, ctx, input),
       );
 
       // TASK-67 (out-of-git Part B / B2): the resume transcript store. All
@@ -894,9 +908,16 @@ async function handleTurnEnd(
  * boundary, then mints + appends a row. ctx-scoped only (no agents:resolve —
  * host-internal; see the registration comment). `appendEvent` is the persist
  * primitive both the subscribers and any alternate display-log backend use.
+ *
+ * TASK-1059: the existence check and the append run on ONE pinned connection
+ * per attempt, and an attempt whose checkout never got a connection is retried
+ * (`withCheckoutRetry`: three attempts, waiting 250 ms and then 1 s). A failure
+ * after the connection was handed over is never retried, so a row is never
+ * written twice. Each retry logs `conversations_append_event_retrying`, codes
+ * only; a failure that is left propagates, and the caller logs it once.
  */
 async function appendEvent(
-  store: ConversationStore,
+  db: Kysely<ConversationDatabase>,
   ctx: AgentContext,
   input: AppendEventInput,
 ): Promise<AppendEventOutput> {
@@ -906,29 +927,50 @@ async function appendEvent(
     'conversationId',
     hookName,
   );
-  // TASK-718: a turn already in flight when its agent was deleted finishes
-  // AFTER the purge and would write an event row for a conversation that no
-  // longer exists: an orphan nothing can ever read or clean up. Drop it quietly.
-  // The turn-end that got here has nothing left to display into, and failing it
-  // would only turn a clean delete into a runner-side error. Rows that DO exist,
-  // soft-deleted ones included, are written as before.
-  //
-  // Check-then-insert is not atomic: a purge that commits in the millisecond
-  // between the two can still leave one orphan. This shrinks "every late turn"
-  // to "one racing append", and neither is readable.
-  if (!(await store.conversationExists(conversationId))) {
-    ctx.logger.debug('conversations_append_event_skipped_missing_conversation', {
-      conversationId,
-    });
-    return;
-  }
-  await store.appendEvent({
-    conversationId,
-    kind: input.kind,
-    ...(input.role !== undefined ? { role: input.role } : {}),
-    ...(input.key !== undefined ? { foldKey: input.key } : {}),
-    payload: input.payload,
-  });
+  // Everything here runs on `pinned`; a second checkout from in here waits out
+  // the checkout timeout on a one-connection pool (and, coming after hand-over,
+  // is not retried).
+  await withCheckoutRetry(
+    db,
+    async (pinned) => {
+      const store = createConversationStore(pinned);
+      // TASK-718: a turn already in flight when its agent was deleted finishes
+      // AFTER the purge and would write an event row for a conversation that no
+      // longer exists: an orphan nothing can ever read or clean up. Drop it
+      // quietly. The turn-end that got here has nothing left to display into,
+      // and failing it would only turn a clean delete into a runner-side error.
+      // Rows that DO exist, soft-deleted ones included, are written as before.
+      //
+      // Check-then-insert is not atomic: a purge that commits in the
+      // millisecond between the two can still leave one orphan. This shrinks
+      // "every late turn" to "one racing append", and neither is readable.
+      if (!(await store.conversationExists(conversationId))) {
+        ctx.logger.debug('conversations_append_event_skipped_missing_conversation', {
+          conversationId,
+        });
+        return;
+      }
+      await store.appendEvent({
+        conversationId,
+        kind: input.kind,
+        ...(input.role !== undefined ? { role: input.role } : {}),
+        ...(input.key !== undefined ? { foldKey: input.key } : {}),
+        payload: input.payload,
+      });
+    },
+    {
+      // Codes only: the core logger writes an Error's message whole, and a
+      // driver's message can name a host, a user or a query value.
+      onRetry: (err, attempt, retryInMs) => {
+        ctx.logger.warn('conversations_append_event_retrying', {
+          conversationId,
+          attempt,
+          retryInMs,
+          ...faultLogFields(err),
+        });
+      },
+    },
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -1129,6 +1171,8 @@ function collapseRoleRuns(roles: TurnRole[]): TurnRole[] {
  * Persist a surfaced turn-error display event. Folds on the originating reqId
  * so a re-fire for the same turn replaces the earlier one. ctx-less fires are
  * skipped. MUST NOT throw.
+ * The hook retries a checkout that never got a connection; a row still lost
+ * is logged once at error, codes only.
  */
 async function persistTurnError(
   bus: HookBus,
@@ -1164,9 +1208,9 @@ async function persistTurnError(
       },
     );
   } catch (err) {
-    ctx.logger.warn('conversations_persist_turn_error_failed', {
+    ctx.logger.error('conversations_persist_turn_error_failed', {
       conversationId,
-      err: err instanceof Error ? err : new Error(String(err)),
+      ...faultLogFields(err),
     });
   }
 }
@@ -1177,6 +1221,8 @@ async function persistTurnError(
  * variant) so a later resolution frame for the same card folds onto it on
  * replay — no special final-state bookkeeping. ctx-less fires are skipped.
  * MUST NOT throw.
+ * The hook retries a checkout that never got a connection; a row still lost
+ * is logged once at error, codes only.
  */
 async function persistPermissionCard(
   bus: HookBus,
@@ -1208,9 +1254,9 @@ async function persistPermissionCard(
       },
     );
   } catch (err) {
-    ctx.logger.warn('conversations_persist_permission_card_failed', {
+    ctx.logger.error('conversations_persist_permission_card_failed', {
       conversationId,
-      err: err instanceof Error ? err : new Error(String(err)),
+      ...faultLogFields(err),
     });
   }
 }

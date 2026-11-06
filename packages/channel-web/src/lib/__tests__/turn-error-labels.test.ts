@@ -220,3 +220,22 @@ describe('turnErrorText — the agent’s identity could not be read at spawn (T
     expect(text).not.toContain('identity-unavailable');
   });
 });
+
+describe('turnErrorText — the person’s message could not be saved (TASK-1059)', () => {
+  const text = turnErrorText('conversation:message-not-saved');
+
+  it('says plainly that the message did not reach the agent, not the generic line', () => {
+    expect(text).not.toBe(DEFAULT_TURN_ERROR);
+    expect(text).toMatch(/didn’t reach the agent/);
+  });
+
+  it('owns the fault and suggests a retry', () => {
+    expect(text).toMatch(/on us/);
+    expect(text).toMatch(/try again/);
+  });
+
+  it('never prints the reason code', () => {
+    expect(text).not.toContain('message-not-saved');
+    expect(text).not.toContain('conversation:');
+  });
+});

@@ -2,7 +2,7 @@ import * as http from 'node:http';
 import { promises as fsp } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { PluginError, reject, hold } from '@ax/core';
 import type {
   ToolCall,
@@ -139,6 +139,40 @@ function doRequest(
     if (method === 'POST' && body !== undefined) req.write(body);
     req.end();
   });
+}
+
+/**
+ * Records every chunk written to `stream`, and still writes it through.
+ * The listener's per-request ctx logs with the default core logger, which
+ * writes one JSON line per entry to process.stdout — so this sees the real
+ * serialization, Error bindings included. Same shape as ipc-http's
+ * listener.test.ts (TASK-1018).
+ */
+function captureWrites(stream: NodeJS.WriteStream): {
+  chunks: string[];
+  restore: () => void;
+} {
+  const chunks: string[] = [];
+  const original = stream.write.bind(stream);
+  const spy = vi.spyOn(stream, 'write').mockImplementation(((chunk: unknown, ...rest: unknown[]) => {
+    chunks.push(String(chunk));
+    return (original as (...a: unknown[]) => boolean)(chunk, ...rest);
+  }) as typeof stream.write);
+  return { chunks, restore: () => spy.mockRestore() };
+}
+
+/** The JSON log entries among captured chunks; anything else is skipped. */
+function parsedEntries(chunks: readonly string[]): Array<Record<string, unknown>> {
+  return chunks
+    .flatMap((chunk) => chunk.split('\n'))
+    .filter((line) => line.startsWith('{'))
+    .flatMap((line) => {
+      try {
+        return [JSON.parse(line) as Record<string, unknown>];
+      } catch {
+        return [];
+      }
+    });
 }
 
 describe('dispatcher', () => {
@@ -1009,6 +1043,86 @@ describe('dispatcher', () => {
       // The persist threw → the turn must NOT be falsely acked.
       expect(res.status).toBe(500);
     } finally {
+      await listener.close();
+      await fsp.rm(tempDir, { recursive: true, force: true }).catch(() => {});
+    }
+  });
+
+  it('POST /event.turn-end — a persist failure logs one code-only line (TASK-1059)', async () => {
+    // The bus wraps a service's throw as "service hook '…' threw: <its
+    // message>", and the core logger writes an Error binding's message whole.
+    // A database's message can quote a host, a user or a row value, so the
+    // give-up line carries codes only.
+    const s = await setup({
+      sessionId: 's-disp-codes',
+      services: {
+        'conversations:append-event': async () => {
+          throw new Error('PRIVATE row text from 10.0.0.7');
+        },
+      },
+    });
+    setups.push(s);
+    const { token } = await s.harness.bus.call<
+      SessionCreateInput,
+      SessionCreateOutput
+    >('session:create', s.harness.ctx(), {
+      sessionId: 's-disp-codes2',
+      workspaceRoot: '/tmp/ws',
+      owner: {
+        userId: 'u-1',
+        agentId: 'a-1',
+        agentConfig: {
+          displayName: 'Test Agent',
+          systemPromptAugment: 'be helpful',
+          allowedTools: [],
+          mcpConfigIds: [],
+          model: 'anthropic/claude-sonnet-4-7',
+          runner: 'claude-sdk',
+        },
+        conversationId: 'conv-codes',
+      },
+    });
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'ax-ipc-disp-c-'));
+    const socketPath = path.join(tempDir, 'ipc.sock');
+    const listener = await createListener({
+      socketPath,
+      sessionId: 's-disp-codes2',
+      bus: s.harness.bus,
+    });
+    const stdout = captureWrites(process.stdout);
+    try {
+      const res = await doRequest(
+        socketPath,
+        'POST',
+        '/event.turn-end',
+        token,
+        JSON.stringify({
+          reqId: 'r1',
+          reason: 'complete' as const,
+          role: 'assistant' as const,
+          contentBlocks: [{ type: 'text', text: 'hi' }],
+        }),
+      );
+      expect(res.status).toBe(500);
+
+      // The line is written before the 500, so it is already captured here.
+      const failures = parsedEntries(stdout.chunks).filter(
+        (entry) => entry.msg === 'event_persist_failed',
+      );
+      expect(failures).toHaveLength(1);
+      expect(failures[0]).toMatchObject({
+        level: 'error',
+        hook: '/event.turn-end',
+        code: 'unknown',
+        name: 'PluginError',
+        causeName: 'Error',
+        hookName: 'conversations:append-event',
+        plugin: 'mock',
+      });
+      expect(failures[0]).not.toHaveProperty('err');
+      expect(stdout.chunks.filter((chunk) => chunk.includes('PRIVATE'))).toEqual([]);
+    } finally {
+      stdout.restore();
       await listener.close();
       await fsp.rm(tempDir, { recursive: true, force: true }).catch(() => {});
     }

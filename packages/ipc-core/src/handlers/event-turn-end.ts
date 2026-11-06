@@ -77,9 +77,13 @@ interface AppendEventCall {
  * Only non-heartbeat turns (role + non-empty contentBlocks) are displayed, so
  * only those persist. conversationId comes from the host-stamped ctx (NOT the
  * untrusted payload), so a runner can't aim a frame at a foreign conversation.
- * The append-event store retries the seq-allocation race internally; a genuine
- * persist failure re-throws → the dispatcher returns a non-2xx + logs loudly
- * (B3 no-omission: never a silent drop).
+ *
+ * A failure propagates, and the dispatcher answers 500 instead of a false 202
+ * (B3). Before it throws, @ax/conversations retries a checkout that never got
+ * a connection, three attempts in all (TASK-1059); nothing else is retried.
+ * The runner sends this event once and catches the 500 (agent-runner-core
+ * `closeTurn`), so the row is then lost: the dispatcher's code-only
+ * `event_persist_failed` line is the host's only record that it was.
  */
 export async function persistEventTurnEnd(
   ctx: AgentContext,

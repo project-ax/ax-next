@@ -58,6 +58,11 @@ export type { MemoryPreCapturePayload } from './memory-capture.js';
 export { safePath, assertWithinBase } from './util/safe-path.js';
 export { faultLogFields, type FaultLogFields } from './fault-code.js';
 export {
+  toWellFormedText,
+  toWellFormedValue,
+  stringifyWellFormed,
+} from './well-formed-text.js';
+export {
   AUTH_REQUIRE_USER_HOOK,
   answerRequireUserFailure,
   isUnauthenticated,

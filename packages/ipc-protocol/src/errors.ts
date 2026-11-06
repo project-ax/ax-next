@@ -65,15 +65,19 @@ export type IpcErrorEnvelope = z.infer<typeof IpcErrorEnvelopeSchema>;
 //
 //   HostUnavailableError  — the host-side listener is not reachable
 //                           (ECONNREFUSED, ECONNRESET, EPIPE, missing socket
-//                           file, per-action timeout). Transient — the
-//                           client retries with exponential backoff before
-//                           raising this to the caller.
+//                           file, per-action timeout). Transient — call(),
+//                           callGet() and the binary calls retry with
+//                           exponential backoff before raising this to the
+//                           caller. event() makes ONE attempt and never
+//                           retries (TASK-1059).
 //
 //   IpcRequestError       — the host accepted the request but rejected it
 //                           with a structured error envelope (400/404/409/
 //                           5xx). Carries the wire-level error code and
 //                           HTTP status. 4xx is a caller bug (don't retry);
-//                           5xx is transient (the client already retried).
+//                           5xx is transient (call()/callGet()/the binary
+//                           calls already retried it, capped; event() did
+//                           not).
 // ---------------------------------------------------------------------------
 
 export class SessionInvalidError extends Error {
