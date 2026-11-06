@@ -771,8 +771,9 @@ async function upsertConnector(
   //     caller of this hook is admin-only, and a cross-owner admin edit writes
   //     the stored capabilities, so it can never retarget.
   const retargeted: RetargetSubject = { id: connectorId, keyMode, capabilities };
-  if (prior !== null && pointsSomewhereNew(prior, retargeted)) {
-    await signOutBeforeRetarget(bus, ctx, prior, retargeted, hookName);
+  const retargetedFrom = prior !== null && pointsSomewhereNew(prior, retargeted) ? prior : null;
+  if (retargetedFrom !== null) {
+    await signOutBeforeRetarget(bus, ctx, retargetedFrom, retargeted, hookName);
   }
   const { connector, created } = await store.upsert({
     userId,
@@ -786,6 +787,19 @@ async function upsertConnector(
     createOnly: input.createOnly === true,
     updateOnly: input.updateOnly === true,
   });
+  if (retargetedFrom !== null) {
+    // TASK-887 — the same sign-out again, now that the new address is
+    // committed. The first pass ran before the write, so a credential stored
+    // between it and the commit (an OAuth callback finishing, a key saved)
+    // would survive bound to the new address. Together with the OAuth
+    // callback's own re-check of the address after it stores a token
+    // (@ax/mcp-oauth routes.ts), every credential written in that window goes:
+    // one landing before this pass is purged by it; one landing after it is
+    // checked by its writer against the committed row. Best-effort: the edit
+    // is committed, so a failure here must not tell the editor it wasn't
+    // saved — it logs an error (where it stopped, and what it had cleared).
+    await signOutAfterRetarget(bus, ctx, retargetedFrom, retargeted);
+  }
   if (prior !== null) {
     await announceNamespaceChange(bus, ctx, userId, connectorId, prior, connector);
   }
@@ -993,11 +1007,14 @@ function retargetGlobalRefs(before: RetargetSubject, after: RetargetSubject): st
  *   - the shared key(s) and the client secret: `credentials:delete` at global
  *     scope for `retargetGlobalRefs`.
  *
- * The same set a delete purges (purge.ts), minus the announcement. Each hook is
- * skipped when absent: no credentials provider, nothing stored. The first
- * throw stops the rest and refuses the edit (`connector-sign-out-failed`);
- * what was cleared before it stays cleared, which costs a sign-in, never
- * reach. Only refs and counts are logged, never a value (none passes here).
+ * The same set a delete purges (purge.ts), minus the announcement. It runs
+ * twice per retarget: before the write (this function, all or nothing) and
+ * again once the write commits (`signOutAfterRetarget`, best-effort); both
+ * share `purgeRetargetCredentials`. Each hook is skipped when absent: no
+ * credentials provider, nothing stored. Here the first throw stops the rest
+ * and refuses the edit (`connector-sign-out-failed`); what was cleared before
+ * it stays cleared, which costs a sign-in, never reach. Only refs and counts
+ * are logged, never a value (none passes here).
  */
 async function signOutBeforeRetarget(
   bus: HookBus,
@@ -1007,9 +1024,80 @@ async function signOutBeforeRetarget(
   hookName: string,
 ): Promise<void> {
   const connectorId = after.id;
+  const result = await purgeRetargetCredentials(bus, ctx, before, after);
+  if (result === null) return;
+  if (!result.ok) {
+    // `step` is the call that failed; `purged` counts the agent sign-ins and
+    // `deletedRefs` the shared refs already cleared before it, so an operator
+    // can tell what was signed out although the edit was refused.
+    ctx.logger.error('connectors_retarget_sign_out_failed', signOutFailureFields(connectorId, result));
+    throw new PluginError({
+      code: CONNECTOR_SIGN_OUT_FAILED,
+      plugin: PLUGIN_NAME,
+      hookName,
+      message:
+        'couldn\'t sign everyone out of this connector before pointing it somewhere new, so the edit was not saved',
+      cause: result.err,
+    });
+  }
+  ctx.logger.info('connectors_retarget_signed_out', {
+    connectorId,
+    purged: result.purged,
+    globalRefs: result.globalRefs,
+  });
+}
+
+/**
+ * TASK-887 — the second pass, AFTER the write commits (see the call site in
+ * `upsertConnector`). Never throws: the edit is saved, and an error would tell
+ * the editor it was not. A failure logs an error — the step it stopped at and
+ * what it had already cleared — and the upsert carries on.
+ */
+async function signOutAfterRetarget(
+  bus: HookBus,
+  ctx: AgentContext,
+  before: Connector,
+  after: RetargetSubject,
+): Promise<void> {
+  const connectorId = after.id;
+  const result = await purgeRetargetCredentials(bus, ctx, before, after);
+  if (result === null) return;
+  if (!result.ok) {
+    ctx.logger.error(
+      'connectors_retarget_post_commit_sign_out_failed',
+      signOutFailureFields(connectorId, result),
+    );
+    return;
+  }
+  ctx.logger.info('connectors_retarget_post_commit_signed_out', {
+    connectorId,
+    purged: result.purged,
+    globalRefs: result.globalRefs,
+  });
+}
+
+/** One pass of the retarget sign-out: what it cleared, or where it stopped. */
+type RetargetSignOut =
+  | { ok: true; purged: number; globalRefs: string[] }
+  | { ok: false; step: string; purged: number; deleted: string[]; err: unknown };
+
+/**
+ * TASK-887 — the purge loop both passes share: the agent-scope purge, then
+ * each global ref. `null` when no credentials hook is loaded (nothing to
+ * clear). The first throw stops the rest and is returned with the failing
+ * `step`, the agent sign-ins `purged` and the global refs `deleted` before it;
+ * each caller decides what a failure costs.
+ */
+async function purgeRetargetCredentials(
+  bus: HookBus,
+  ctx: AgentContext,
+  before: Connector,
+  after: RetargetSubject,
+): Promise<RetargetSignOut | null> {
+  const connectorId = after.id;
   const purgeAgents = bus.hasService(PURGE_ACCOUNT_HOOK);
   const globalRefs = bus.hasService(CREDENTIALS_DELETE_HOOK) ? retargetGlobalRefs(before, after) : [];
-  if (!purgeAgents && globalRefs.length === 0) return;
+  if (!purgeAgents && globalRefs.length === 0) return null;
   let step = PURGE_ACCOUNT_HOOK;
   let purged = 0;
   const deleted: string[] = [];
@@ -1027,26 +1115,22 @@ async function signOutBeforeRetarget(
       deleted.push(ref);
     }
   } catch (err) {
-    // `step` is the call that failed; `purged` counts the agent sign-ins and
-    // `deletedRefs` the shared refs already cleared before it, so an operator
-    // can tell what was signed out although the edit was refused.
-    ctx.logger.error('connectors_retarget_sign_out_failed', {
-      connectorId,
-      step,
-      purged,
-      deletedRefs: deleted,
-      err: err instanceof Error ? err.message : String(err),
-    });
-    throw new PluginError({
-      code: CONNECTOR_SIGN_OUT_FAILED,
-      plugin: PLUGIN_NAME,
-      hookName,
-      message:
-        'couldn\'t sign everyone out of this connector before pointing it somewhere new, so the edit was not saved',
-      cause: err,
-    });
+    return { ok: false, step, purged, deleted, err };
   }
-  ctx.logger.info('connectors_retarget_signed_out', { connectorId, purged, globalRefs });
+  return { ok: true, purged, globalRefs };
+}
+
+function signOutFailureFields(
+  connectorId: string,
+  failure: Extract<RetargetSignOut, { ok: false }>,
+): Record<string, unknown> {
+  return {
+    connectorId,
+    step: failure.step,
+    purged: failure.purged,
+    deletedRefs: failure.deleted,
+    err: failure.err instanceof Error ? failure.err.message : String(failure.err),
+  };
 }
 
 /**

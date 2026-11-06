@@ -1287,22 +1287,93 @@ describe('an edit that points a connector somewhere new signs everyone out first
     const calls = spyOnVault(h, 'linear');
     const lines: string[] = [];
     await save(h, 'linear', linearCaps({ url: LINEAR_NEW }), {}, loggedCtx(h, 'userA', lines));
-    expect(inputsOf(calls, PURGE)).toEqual([{ connectorId: 'linear', scopes: ['agent'] }]);
-    expect(inputsOf(calls, DELETE)).toEqual([
-      { scope: 'global', ownerId: null, ref: 'account:linear:OAUTH_CLIENT_SECRET' },
+    const purge = { connectorId: 'linear', scopes: ['agent'] };
+    const secret = { scope: 'global', ownerId: null, ref: 'account:linear:OAUTH_CLIENT_SECRET' };
+    // The same set twice: once before the write, once after it commits.
+    expect(calls.map((c) => [c.hook, c.input])).toEqual([
+      [PURGE, purge],
+      [DELETE, secret],
+      [PURGE, purge],
+      [DELETE, secret],
     ]);
-    // Every call ran while the row still pointed at the old address.
-    expect(calls.map((c) => c.storedAtCall?.mcpServers[0]?.url)).toEqual([LINEAR_OLD, LINEAR_OLD]);
+    // The first pass ran while the row still pointed at the old address, the
+    // second once the new one was committed.
+    expect(calls.map((c) => c.storedAtCall?.mcpServers[0]?.url)).toEqual([
+      LINEAR_OLD,
+      LINEAR_OLD,
+      LINEAR_NEW,
+      LINEAR_NEW,
+    ]);
     expect((await stored(h, 'linear'))?.mcpServers[0]?.url).toBe(LINEAR_NEW);
-    expect(logged(lines, 'connectors_retarget_signed_out')).toEqual([
-      expect.objectContaining({
-        level: 'info',
-        connectorId: 'linear',
-        purged: 3,
-        globalRefs: ['account:linear:OAUTH_CLIENT_SECRET'],
-      }),
-    ]);
+    const signedOut = expect.objectContaining({
+      level: 'info',
+      connectorId: 'linear',
+      purged: 3,
+      globalRefs: ['account:linear:OAUTH_CLIENT_SECRET'],
+    });
+    expect(logged(lines, 'connectors_retarget_signed_out')).toEqual([signedOut]);
+    expect(logged(lines, 'connectors_retarget_post_commit_signed_out')).toEqual([signedOut]);
   });
+
+  it('a credential written between the first sign-out and the commit is cleared by the second', async () => {
+    // An OAuth callback (or a key write) that lands while the edit is in
+    // flight: after the first purge, before the row changes. It would
+    // otherwise survive, bound to the new address.
+    const h = await makeHarness();
+    await save(h, 'linear', linearCaps());
+    const vault = new Set<string>(['agent-1:account:linear:MCP_OAUTH']);
+    let purges = 0;
+    h.bus.registerService(PURGE, 'test/vault', async () => {
+      purges += 1;
+      const purged = vault.size;
+      vault.clear();
+      // The late write, landing right after the first purge.
+      if (purges === 1) vault.add('agent-2:account:linear:MCP_OAUTH');
+      return { purged };
+    });
+    h.bus.registerService(DELETE, 'test/vault', async () => undefined);
+    await save(h, 'linear', linearCaps({ url: LINEAR_NEW }));
+    expect((await stored(h, 'linear'))?.mcpServers[0]?.url).toBe(LINEAR_NEW);
+    expect(purges).toBe(2);
+    expect([...vault]).toEqual([]);
+  });
+
+  it.each([PURGE, DELETE])(
+    'a failed sign-out after the commit (%s throws) keeps the edit, resolves, and logs an error',
+    async (failing) => {
+      const h = await makeHarness();
+      await save(h, 'linear', linearCaps());
+      const calls: VaultHook[] = [];
+      const spy = (hook: VaultHook, out: unknown) => async () => {
+        calls.push(hook);
+        // Only the post-commit pass (the hook's second call) fails.
+        if (hook === failing && calls.filter((c) => c === hook).length === 2) {
+          throw new Error('the vault is down');
+        }
+        return out;
+      };
+      h.bus.registerService(PURGE, 'test/vault', spy(PURGE, { purged: 3 }));
+      h.bus.registerService(DELETE, 'test/vault', spy(DELETE, undefined));
+      const lines: string[] = [];
+      const out = await save(h, 'linear', linearCaps({ url: LINEAR_NEW }), {}, loggedCtx(h, 'userA', lines));
+      expect(out.connector.capabilities.mcpServers[0]?.url).toBe(LINEAR_NEW);
+      expect((await stored(h, 'linear'))?.mcpServers[0]?.url).toBe(LINEAR_NEW);
+      expect(logged(lines, 'connectors_retarget_post_commit_sign_out_failed')).toEqual([
+        expect.objectContaining({
+          level: 'error',
+          connectorId: 'linear',
+          step: expect.stringContaining(failing),
+          purged: failing === PURGE ? 0 : 3,
+          deletedRefs: [],
+          err: expect.stringContaining('the vault is down'),
+        }),
+      ]);
+      expect(logged(lines, 'connectors_retarget_post_commit_signed_out')).toEqual([]);
+      // The pre-write pass succeeded and is logged as before.
+      expect(logged(lines, 'connectors_retarget_signed_out')).toHaveLength(1);
+      expect(logged(lines, 'connectors_retarget_sign_out_failed')).toEqual([]);
+    },
+  );
 
   it('an OAuth connector that names no client secret still clears the one stored at its own ref', async () => {
     // Naming its own secret again later is not itself a retarget, so a secret
@@ -1312,9 +1383,8 @@ describe('an edit that points a connector somewhere new signs everyone out first
     await save(h, 'linear', unnamed(LINEAR_OLD));
     const calls = spyOnVault(h, 'linear');
     await save(h, 'linear', unnamed(LINEAR_NEW));
-    expect(inputsOf(calls, DELETE)).toEqual([
-      { scope: 'global', ownerId: null, ref: 'account:linear:OAUTH_CLIENT_SECRET' },
-    ]);
+    const secret = { scope: 'global', ownerId: null, ref: 'account:linear:OAUTH_CLIENT_SECRET' };
+    expect(inputsOf(calls, DELETE)).toEqual([secret, secret]);
   });
 
   it('a shared-key connector moving clears its shared key; a slot renamed in the same edit clears the old and the new ref', async () => {
@@ -1322,9 +1392,11 @@ describe('an edit that points a connector somewhere new signs everyone out first
     await save(h, 'crm', crmCaps(), WORKSPACE);
     const calls = spyOnVault(h, 'crm');
     await save(h, 'crm', crmCaps({ url: CRM_NEW }), WORKSPACE);
-    expect(inputsOf(calls, PURGE)).toEqual([{ connectorId: 'crm', scopes: ['agent'] }]);
-    expect(inputsOf(calls, DELETE)).toEqual([{ scope: 'global', ownerId: null, ref: 'account:crm:HEADER_1' }]);
-    expect(calls.map((c) => c.storedAtCall?.mcpServers[0]?.url)).toEqual([CRM_OLD, CRM_OLD]);
+    const purge = { connectorId: 'crm', scopes: ['agent'] };
+    const key = { scope: 'global', ownerId: null, ref: 'account:crm:HEADER_1' };
+    expect(inputsOf(calls, PURGE)).toEqual([purge, purge]);
+    expect(inputsOf(calls, DELETE)).toEqual([key, key]);
+    expect(calls.map((c) => c.storedAtCall?.mcpServers[0]?.url)).toEqual([CRM_OLD, CRM_OLD, CRM_NEW, CRM_NEW]);
 
     calls.length = 0;
     await save(h, 'crm', crmCaps({ url: CRM_OLD, slot: 'HEADER_2' }), WORKSPACE);
@@ -1332,7 +1404,7 @@ describe('an edit that points a connector somewhere new signs everyone out first
       inputsOf(calls, DELETE)
         .map((i) => (i as { ref: string }).ref)
         .sort(),
-    ).toEqual(['account:crm:HEADER_1', 'account:crm:HEADER_2']);
+    ).toEqual(['account:crm:HEADER_1', 'account:crm:HEADER_1', 'account:crm:HEADER_2', 'account:crm:HEADER_2']);
     expect((await stored(h, 'crm'))?.credentials.map((s) => s.slot)).toEqual(['HEADER_2']);
   });
 
@@ -1366,10 +1438,14 @@ describe('an edit that points a connector somewhere new signs everyone out first
     await save(h, 'sf', cliCaps());
     const calls = spyOnVault(h, 'sf');
     await save(h, 'sf', { ...cliCaps(), allowedHosts: ['login.salesforce.com', 'test.salesforce.com'] });
-    expect(inputsOf(calls, PURGE)).toEqual([{ connectorId: 'sf', scopes: ['agent'] }]);
+    const purge = { connectorId: 'sf', scopes: ['agent'] };
+    expect(inputsOf(calls, PURGE)).toEqual([purge, purge]);
     // A personal connector keeps no shared key, and it has no client secret.
     expect(inputsOf(calls, DELETE)).toEqual([]);
-    expect(calls[0]?.storedAtCall?.allowedHosts).toEqual(['login.salesforce.com']);
+    expect(calls.map((c) => c.storedAtCall?.allowedHosts)).toEqual([
+      ['login.salesforce.com'],
+      ['login.salesforce.com', 'test.salesforce.com'],
+    ]);
 
     calls.length = 0;
     await save(h, 'sf', cliCaps());
@@ -1386,8 +1462,14 @@ describe('an edit that points a connector somewhere new signs everyone out first
     await save(h, 'linear', ab);
     const calls = spyOnVault(h, 'linear');
     await save(h, 'linear', { ...ab, mcpServers: [...ab.mcpServers].reverse() });
-    expect(inputsOf(calls, PURGE)).toEqual([{ connectorId: 'linear', scopes: ['agent'] }]);
-    expect(calls.map((c) => c.storedAtCall?.mcpServers[0]?.url)).toEqual([LINEAR_OLD, LINEAR_OLD]);
+    const purge = { connectorId: 'linear', scopes: ['agent'] };
+    expect(inputsOf(calls, PURGE)).toEqual([purge, purge]);
+    expect(calls.map((c) => c.storedAtCall?.mcpServers[0]?.url)).toEqual([
+      LINEAR_OLD,
+      LINEAR_OLD,
+      LINEAR_NEW,
+      LINEAR_NEW,
+    ]);
     expect((await stored(h, 'linear'))?.mcpServers.map((s) => s.url)).toEqual([LINEAR_NEW, LINEAR_OLD]);
   });
 
