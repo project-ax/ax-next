@@ -1949,6 +1949,35 @@ describeIfHelm('ax-next chart: artifact content origin (agent artifacts §6.5)',
     expect(runnerRule && admits9091(runnerRule)).toBe(false);
   });
 
+  it('with host.ports.content missing (helm upgrade --reuse-values from a pre-artifacts release) all four sites still say 9091', () => {
+    // --reuse-values reuses the OLD release's values, which have no
+    // host.ports.content. An empty containerPort/AX_CONTENT_PORT breaks the
+    // host, and a NetworkPolicy `- port:` with no port admits EVERY TCP port.
+    const docs = helmTemplate([
+      '--set', 'host.ports.content=null',
+      '--set', 'networkPolicies.enabled=true',
+      '--set-json', 'networkPolicies.lbHealthCheckCidrs=["35.191.0.0/16"]',
+    ]);
+    const container = hostDeployment(docs)?.spec?.template.spec.containers[0];
+    expect(container.ports).toEqual(expect.arrayContaining([
+      { name: 'content-http', containerPort: 9091, protocol: 'TCP' },
+    ]));
+    expect(container.env).toEqual(expect.arrayContaining([{ name: 'AX_CONTENT_PORT', value: '9091' }]));
+
+    const np = docs.find((d) => d.kind === 'NetworkPolicy' && d.metadata?.name === HOST_NP);
+    const ingress = (np?.spec?.ingress ?? []) as Array<{
+      from?: Array<{ ipBlock?: unknown; namespaceSelector?: unknown; podSelector?: unknown }>;
+      ports?: Array<{ port?: number; protocol?: string }>;
+    }>;
+    const nsRule = ingress.find((r) => (r.from ?? []).some((f) => f.namespaceSelector && !f.podSelector));
+    const lbRule = ingress.find((r) => (r.from ?? []).some((f) => f.ipBlock));
+    for (const rule of [nsRule, lbRule]) {
+      expect(rule?.ports).toEqual(expect.arrayContaining([{ port: 9091, protocol: 'TCP' }]));
+    }
+    // No rule anywhere in the host policy names a protocol without a port.
+    for (const r of ingress) for (const p of r.ports ?? []) expect(p.port, JSON.stringify(p)).toBeDefined();
+  });
+
   it('gke-values.yaml alone (a routine upgrade without overrides) fails the render with the --set hint', () => {
     // The committed overlay ships contentOrigin empty, so an upgrade that forgot
     // the content domain can't ship placeholder frame-ancestors or point the

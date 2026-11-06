@@ -1208,6 +1208,33 @@ Don't upgrade until the newest backup says `SUCCESSFUL`. And add the
 `contentOrigin.*` overrides first: without them `helm upgrade` stops at render
 time with `set contentOrigin.publicOrigin=https://<a domain that is not ingress.host>`.
 
+**Upgrading with `--reuse-values`?** Then Helm reuses the *old* release's values
+and ignores anything new in `gke-values.yaml`. Two things the old release
+doesn't have need saying out loud: the content origin, and the second
+certificate in the Ingress annotation. (The content port itself is fine: the
+chart falls back to 9091 when the old values don't mention it.)
+
+```bash
+helm upgrade ax-next deploy/charts/ax-next \
+  --kube-context "$KCTX" \
+  --namespace ax-next \
+  --reuse-values \
+  --set contentOrigin.publicOrigin="https://$CONTENT_DOMAIN" \
+  --set "contentOrigin.frameAncestors={https://$DOMAIN}" \
+  --set 'ingress.annotations.networking\.gke\.io/managed-certificates=ax-next-cert\,ax-next-content-cert'
+```
+
+The backslashes are load-bearing, and yes, they're ugly. `\.` keeps the
+annotation name in one piece (unescaped, Helm would read every dot as a nested
+key), and `\,` keeps the two certificate names in one value (unescaped, Helm
+would read the comma as the start of another `--set`). If you renamed the certs
+in 5c or above, use your names. Set `KCTX=<your GKE context>` first (`kubectl config get-contexts`), and
+check it names the cluster you mean to upgrade.
+
+Want to see it before it lands? Swap `helm upgrade` for `helm template` (drop
+`--reuse-values` and `--kube-context`, add your usual `-f` files), and look for
+`ax-next-content-cert` in the Ingress and `9091` in the host Deployment.
+
 ---
 
 ## Step 6 — Edit the overlay and install

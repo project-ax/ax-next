@@ -64,7 +64,7 @@ spec:
           protocol: TCP
         # The artifact content origin (agent-made pages); the ingress
         # controller reaches it here. Runner pods never do (rule above).
-        - port: {{ .Values.host.ports.content }}
+        - port: {{ .Values.host.ports.content | default 9091 }}
           protocol: TCP
     {{- with .Values.networkPolicies.lbHealthCheckCidrs }}
     # Cloud load-balancer health-check probes reach the pod IP directly on the
@@ -81,7 +81,7 @@ spec:
         - port: {{ $.Values.host.ports.publicHttp }}
           protocol: TCP
         # The content origin is its own LB backend, health-checked at GET /.
-        - port: {{ $.Values.host.ports.content }}
+        - port: {{ $.Values.host.ports.content | default 9091 }}
           protocol: TCP
     {{- end }}
   egress:

@@ -103,7 +103,7 @@ spec:
             # The artifact content origin (AX_CONTENT_*): agent-made pages on
             # a different site from the app. Ingress gives it its own hostname.
             - name: content-http
-              containerPort: {{ .Values.host.ports.content }}
+              containerPort: {{ .Values.host.ports.content | default 9091 }}
               protocol: TCP
             {{- if (include "ax-next.bool" .Values.credentialProxy.tcp.enabled) }}
             # @ax/credential-proxy TCP listener (TASK-149, production gVisor).
@@ -142,7 +142,7 @@ spec:
             - name: AX_CONTENT_ORIGIN
               value: {{ .Values.contentOrigin.publicOrigin | quote }}
             - name: AX_CONTENT_PORT
-              value: {{ .Values.host.ports.content | quote }}
+              value: {{ .Values.host.ports.content | default 9091 | quote }}
             - name: AX_CONTENT_FRAME_ANCESTORS
               value: {{ join "," .Values.contentOrigin.frameAncestors | quote }}
             {{- if .Values.http.allowedOrigins }}
