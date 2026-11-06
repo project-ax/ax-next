@@ -260,12 +260,15 @@ export async function runTickLoop(input: TickLoopInput): Promise<void> {
             // must answer. If it can't, step down: the finally below tries the
             // unlock (it fails quietly on a dead client), execute() hands the
             // client back, pg-pool drops it, and the loop above runs the
-            // election again at once on a fresh connection. A dropped
-            // connection is logged by the database plugin, in codes, and the
-            // dead client's own rejection carries no code, so that case writes
-            // nothing here. A session that refuses the probe but is still alive
-            // (a cancel, a timeout) emits no 'error', so its code is logged here
-            // or nothing would record why the leader gave up its lock.
+            // election again at once on a fresh connection. The line below is
+            // written when the refusal carries a code. A session that refuses
+            // the probe but is still alive (a cancel, a timeout) emits no
+            // 'error', so without it nothing would record why the leader gave
+            // up its lock. A session that died while the leader slept is
+            // already logged by the database plugin, and the dead client's own
+            // rejection has no code, so it writes nothing here. A session that
+            // dies while the probe is in flight hands its code to the probe,
+            // so it writes this line too, next to the plugin's line.
             if (input.signal.aborted) continue;
             const refused = await probeSession(pinned);
             if (refused !== null) {
