@@ -89,13 +89,13 @@ describe('@ax/preset-k8s wiring', () => {
     const SHELL =
       '<html><head><meta http-equiv="Content-Security-Policy" content="frame-src \'none\'" /></head></html>';
     /** Boot the preset's @ax/static-files against a one-file dir; return the served shell. */
-    async function servedShell(contentOrigin: K8sPresetConfig['contentOrigin']): Promise<string> {
+    async function servedShell(contentOrigin: K8sPresetConfig['contentOrigin'], shell = SHELL): Promise<string> {
       const { mkdtemp, writeFile, rm } = await import('node:fs/promises');
       const { tmpdir } = await import('node:os');
       const { join } = await import('node:path');
       const dir = await mkdtemp(join(tmpdir(), 'ax-shell-'));
       try {
-        await writeFile(join(dir, 'index.html'), SHELL);
+        await writeFile(join(dir, 'index.html'), shell);
         const plugins = createK8sPlugins({
           ...stubConfig,
           staticFiles: { dir },
@@ -137,6 +137,29 @@ describe('@ax/preset-k8s wiring', () => {
       ).toBe(
         '<html><head><meta http-equiv="Content-Security-Policy" content="frame-src https://ax-usercontent.example.net/v/" /></head></html>',
       );
+    });
+
+    // R31: the rewrite matches the meta byte for byte, so prove it against the
+    // shell channel-web actually ships, not a copy of it in this test.
+    it('widens the REAL channel-web index.html', async () => {
+      const { readFile } = await import('node:fs/promises');
+      const { fileURLToPath } = await import('node:url');
+      const real = await readFile(
+        fileURLToPath(new URL('../../../../packages/channel-web/index.html', import.meta.url)),
+        'utf8',
+      );
+      expect(real).toContain(`content="frame-src 'none'"`);
+      const served = await servedShell(
+        {
+          host: '0.0.0.0',
+          port: 9091,
+          publicOrigin: 'https://ax-usercontent.example.net',
+          frameAncestors: ['https://admin.ax-next.example'],
+        },
+        real,
+      );
+      expect(served).toContain('content="frame-src https://ax-usercontent.example.net/v/"');
+      expect(served).not.toContain("'none'");
     });
 
     it("keeps frame-src 'none' with no content origin, or none with a public URL", async () => {

@@ -2460,6 +2460,22 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
         expect(
           (await download(visual.artifactId, conversationId, 'phase-3-artifact-other-user')).status,
         ).toBe(404);
+        // But a chart is not one of the person's Artifacts (U1): the list still
+        // holds only the two published deliverables, and the owner routes
+        // answer the chart with the same 404 as a missing artifact.
+        const afterChart = await api('GET', `/api/workspace/agents/${AGENT}/artifacts`);
+        expect(afterChart.status).toBe(200);
+        expect(
+          ((await afterChart.json()) as { artifacts: Array<{ artifactId: string }> }).artifacts
+            .map((a) => a.artifactId)
+            .sort(),
+        ).toEqual([artifactResult.artifactId, PAGE].sort());
+        expect((await api('GET', `/api/workspace/artifacts/${visual.artifactId}`)).status).toBe(404);
+        expect(
+          (
+            await api('POST', `/api/workspace/artifacts/${visual.artifactId}/link`, { body: { action: 'ensure' } })
+          ).status,
+        ).toBe(404);
       } finally {
         if (handle !== null) await handle.shutdown();
         await fs.rm(workspaceRoot, { recursive: true, force: true });
