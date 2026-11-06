@@ -154,15 +154,16 @@ async function headFor(
   if ('shareCode' in ref) {
     if (!hasPerson(ctx) || !isShareCode(ref.shareCode)) throw notFound(hookName);
     head = await deps.artifacts.findByShareCode(ref.shareCode);
-    if (head === null) throw notFound(hookName);
+    if (head === null || head.visual) throw notFound(hookName);
     codeMatched = true;
   } else {
     if (!isId(ref.artifactId)) throw notFound(hookName);
     head = await deps.artifacts.getHead(ref.artifactId);
-    if (head === null) throw notFound(hookName);
+    // A visual is refused before membership is asked: nothing about it, not
+    // even an agents:resolve round trip, depends on who is asking.
+    if (head === null || head.visual) throw notFound(hookName);
     agentMember = await isAgentMember(deps.bus, ctx, head.agentId);
   }
-  if (head.visual) throw notFound(hookName);
   if (!can(roleFor({ agentMember, codeMatched }), action(head))) throw notFound(hookName);
   return head;
 }

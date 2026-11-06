@@ -316,7 +316,8 @@ export function createStaticFilesPlugin(config: StaticFilesConfig): Plugin {
     const raw = await fs.readFile(candidate);
     const body =
       widen && raw.includes(FRAME_SRC_NONE_META)
-        ? Buffer.from(raw.toString('utf8').replace(FRAME_SRC_NONE_META, frameSrcMeta!), 'utf8')
+        ? // A replacer function, so a `$` pattern in the meta is never expanded.
+          Buffer.from(raw.toString('utf8').replace(FRAME_SRC_NONE_META, () => frameSrcMeta!), 'utf8')
         : raw;
 
     const cacheControl = HASHED_FILENAME.test(candidate)

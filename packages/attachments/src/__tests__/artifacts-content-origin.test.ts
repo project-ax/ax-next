@@ -241,6 +241,18 @@ describe('content origin', () => {
     expect((await fetch(other.url)).status).toBe(404);
   });
 
+  // R31: the mint refuses a chat visual, and the content origin re-checks on
+  // every request, so even a validly signed token for one serves nothing.
+  it('a signed token for a chat visual is a 404', async () => {
+    const o = await startOrigin();
+    const { artifactId } = await publish(o.rig, { sha256: HTML_SHA, sourcePath: `visuals/${HTML_SHA}.html`, visual: true });
+    const now = Math.floor(Date.now() / 1000);
+    for (const purpose of ['view', 'download'] as const) {
+      const token = signViewToken(o.key, { artifactId, version: 1, purpose, linkBinding: null, expiresAt: now + 60 });
+      expect((await fetch(`${o.url}/${purpose === 'view' ? 'v' : 'd'}/${token}`)).status).toBe(404);
+    }
+  });
+
   it('a view token is refused at /d/ and a download token at /v/', async () => {
     const o = await startOrigin();
     const view = await publishAndMint(o, { purpose: 'view' });

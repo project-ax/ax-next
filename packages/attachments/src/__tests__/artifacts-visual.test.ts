@@ -88,6 +88,15 @@ describe('chat visuals are not artifacts (U1)', () => {
     expect(head!.shareCode).toBeNull();
   });
 
+  it('a visual is refused before membership is asked (an agents:resolve outage still answers not-found)', async () => {
+    const rig = await makeRig();
+    const { artifactId } = await publish(rig, VISUAL);
+    rig.outage.on = true;
+    expect(await refusal(rig.bus.call('artifacts:get', ctxFor('u-1'), { artifactId }))).toMatchObject({
+      code: 'not-found',
+    });
+  });
+
   it('a share code on a visual (however it got there) resolves to nothing', async () => {
     const rig = await makeRig();
     const { artifactId } = await publish(rig, VISUAL);

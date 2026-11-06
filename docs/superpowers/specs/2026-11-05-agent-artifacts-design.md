@@ -52,8 +52,8 @@ scoped to a single conversation and a single user, so nobody else can open it.
 - Chat charts from `show_visual` as artifacts (ruling U1). They ride the
   publish path only so their chat card can load them, marked `visual` on the
   head: no Artifacts list, Download all, prompt list, chat artifact card, viewer
-  or share link reaches one. An explicit `artifact_publish` of the same file
-  makes it a normal artifact. A "Save as artifact" button on the chart card is a
+  or share link reaches one. An explicit `artifact_publish` of the same path, or
+  with the artifactId show_visual returned, makes it a normal artifact. A "Save as artifact" button on the chart card is a
   follow-up.
 
 ## 4. Anti-goals — things that would make this a failure even if it works

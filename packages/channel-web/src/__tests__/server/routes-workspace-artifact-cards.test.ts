@@ -122,14 +122,6 @@ describe('artifact cards in buildThread', () => {
     expect(listCalls + getCalls).toBe(0);
   });
 
-  // U1: the store hides a chat visual (list leaves it out, get is not-found),
-  // so even a forged publish result naming one shows no card.
-  it('a publish result naming a chat visual shows no card', async () => {
-    stored.delete(ID1);
-    const t = await thread([published()]);
-    expect(t.some((m) => m['artifacts'] !== undefined)).toBe(false);
-  });
-
   it('a legacy publish result without a version still becomes a download chip', async () => {
     const legacy = published();
     delete (legacy as Record<string, unknown>)['version'];

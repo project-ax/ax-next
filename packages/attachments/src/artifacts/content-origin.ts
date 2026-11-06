@@ -265,12 +265,14 @@ function sameBinding(a: string, b: string): boolean {
  * The lookup behind a verified token. Re-reads the head on every request, so
  * a deleted artifact, a pruned version, or (for a link holder's token) a link
  * turned off, rotated, or moved to another version stops serving at once.
+ * A chat visual never serves here (U1): no hook mints a token for one, and
+ * this re-check holds even if one were signed.
  */
 export function createArtifactServe(deps: ArtifactServeDeps): (c: ViewTokenClaims) => Promise<ServedArtifact | null> {
   const ctx = makeAgentContext({ sessionId: 'content-origin', agentId: PLUGIN_NAME, userId: 'system' });
   return async (c) => {
     const head = await deps.artifacts.getHead(c.artifactId);
-    if (head === null) return null;
+    if (head === null || head.visual) return null;
     if (c.linkBinding !== null) {
       if (head.shareCode === null) return null;
       if (!sameBinding(linkBindingFor(head.shareCode), c.linkBinding)) return null;
