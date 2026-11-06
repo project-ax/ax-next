@@ -34,7 +34,14 @@ import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testconta
 import pg from 'pg';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { UNDO_WINDOW_MS } from '../machine.js';
-import { CLAIM_REFUSED_DETAIL } from '../templates.js';
+import {
+  ABANDONED_RECEIPT,
+  CLAIM_REFUSED_DETAIL,
+  CONNECTOR_CALL_DETAIL,
+  CONNECTOR_POLICY_DENIED_DETAIL,
+  FAILED_RECEIPT,
+  PENDING_AGENT_RECEIPT,
+} from '../templates.js';
 import { createDecisionsPlugin, type DecisionsPluginOptions } from '../plugin.js';
 import type {
   Decision,
@@ -2739,5 +2746,324 @@ describe('decisions canary — connector tools are named, never hashed (TASK-744
     const { h } = await bootWithConnectors('absent');
     const row = await heldRow(h);
     expect(row.summary).toBe('Wants to use Create issue');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// TASK-1046. An approved connector call with no live agent behind it is made by
+// the HOST, through @ax/mcp-client's `connectors:call-tool`. The service is a
+// recording stub here (mcp-client has its own suite); what is real is
+// everything @ax/decisions owns around it: Postgres, the claim, the real
+// tool-policy rule table, the sweep.
+// ---------------------------------------------------------------------------
+describe('decisions canary — approved connector calls run on the host (TASK-1046)', () => {
+  const CONNECTOR_CALL = {
+    id: 'c-conn',
+    name: 'mcp.c5e0235982f.save_comment',
+    input: { issueId: 'ENG-1', body: 'Shipped', nested: { b: 2, a: [1, 2] } },
+  };
+
+  interface ConnectorCallSeen {
+    input: unknown;
+    ctx: AgentContext;
+  }
+
+  /**
+   * Stand in for `@ax/mcp-client`'s `connectors:call-tool`. Records what the
+   * replay handed it and answers `outcome`. `delayMs` keeps a call in flight
+   * long enough for a concurrent approval to arrive.
+   */
+  function recordConnectorCalls(
+    h: TestHarness,
+    outcome: unknown = { outcome: 'succeeded' },
+    delayMs = 0,
+  ): { calls: ConnectorCallSeen[] } {
+    const calls: ConnectorCallSeen[] = [];
+    h.bus.registerService<unknown, unknown>(
+      'connectors:call-tool',
+      '@ax/decisions/test/connectors',
+      async (ctx, input) => {
+        calls.push({ input, ctx });
+        if (delayMs > 0) await new Promise((resolve) => setTimeout(resolve, delayMs));
+        return outcome;
+      },
+    );
+    return { calls };
+  }
+
+  it('an unattended connector approval is made by the host, once, byte for byte, as the decision’s owner', async () => {
+    // THE test for the approve route's park-or-claim question. With the route
+    // asking `hasService('tool:execute:mcp.…')` (the pre-TASK-1046 question)
+    // this approval parks and the stub below is never called.
+    const h = await boot();
+    const connector = recordConnectorCalls(h);
+    const id = await holdAndId(h, routineCtx(h), CONNECTOR_CALL);
+
+    const out = await approve(h, userCtx(h), id);
+
+    expect(connector.calls).toHaveLength(1);
+    expect(connector.calls[0]!.input).toEqual({
+      userId: 'u1',
+      agentId: 'a1',
+      toolKey: CONNECTOR_CALL.name,
+      input: CONNECTOR_CALL.input,
+    });
+    expect(connector.calls[0]!.ctx.userId).toBe('u1');
+    expect(connector.calls[0]!.ctx.agentId).toBe('a1');
+    expect(out.executed).toBe(true);
+    expect(out.path).toBe('host-replays');
+    expect(out.error).toBeNull();
+
+    const row = await readDecision(h, userCtx(h), id);
+    expect(row.status).toBe('executed');
+    expect(row.replayedAt).not.toBeNull();
+    const receipts = await readReceipts(h);
+    expect(receipts).toHaveLength(1);
+    expect(receipts[0]!.outcome).toBe('executed');
+    expect(receipts[0]!.receipt).toBe(row.approvedText);
+
+    // The yes is spent: the same call again holds, and nothing ran twice.
+    expect(isHold(await h.bus.fire('tool:pre-call', routineCtx(h), CONNECTOR_CALL))).toBe(true);
+    expect(connector.calls).toHaveLength(1);
+  });
+
+  it('the host call runs under the decision’s owner and agent, never the approver’s', async () => {
+    // The approving request is the owner (approve refuses anyone else) but
+    // can be ANY of their sessions: another thread, another agent's chat. The
+    // hook re-derives access from the ctx it is handed and from the payload,
+    // and both must name the decision's agent, not this session's.
+    const h = await boot();
+    const connector = recordConnectorCalls(h);
+    const id = await holdAndId(h, routineCtx(h), CONNECTOR_CALL);
+    const approver = h.ctx({
+      agentId: 'a-approver',
+      userId: 'u1',
+      conversationId: 'conv-elsewhere',
+      sessionId: 's-approver',
+    });
+
+    const out = await approve(h, approver, id);
+
+    expect(out.executed).toBe(true);
+    expect(connector.calls).toHaveLength(1);
+    const seen = connector.calls[0]!;
+    expect(seen.ctx.userId).toBe('u1');
+    expect(seen.ctx.agentId).toBe('a1');
+    expect(seen.ctx.sessionId).toBe(`decision-replay-${id}`);
+    expect(seen.ctx.sessionId).not.toBe('s-approver');
+    expect(seen.input).toMatchObject({ userId: 'u1', agentId: 'a1' });
+  });
+
+  it('an attended connector approval with a live session is left to the agent; the host never calls', async () => {
+    const clock = movableClock();
+    const h = await boot({ now: clock.now });
+    const connector = recordConnectorCalls(h);
+    const id = await holdAndId(h, userCtx(h), CONNECTOR_CALL);
+    expect((await readDecision(h, userCtx(h), id)).attendance).toBe('attended');
+
+    const out = await approve(h, userCtx(h), id);
+
+    expect(out.path).toBe('agent-executes');
+    expect(out.pendingUntil).not.toBeNull();
+    expect(connector.calls).toEqual([]);
+    // Past the undo window the warm agent is told. Still not the host's call.
+    clock.pastWindow();
+    expect((await sweepNow(h)).delivered).toBe(1);
+    expect(h.delivered).toHaveLength(1);
+    expect(connector.calls).toEqual([]);
+    expect((await readDecision(h, userCtx(h), id)).replayedAt).toBeNull();
+  });
+
+  it('an attended connector decision whose session has since ended is made by the host at once', async () => {
+    const channels = liveChannels();
+    const h = await boot({}, undefined, channels);
+    const connector = recordConnectorCalls(h);
+    const id = await holdAndId(h, userCtx(h), CONNECTOR_CALL);
+    channels['conv-web']!.activeSessionId = null;
+
+    const out = await approve(h, userCtx(h), id);
+
+    expect(connector.calls).toHaveLength(1);
+    expect(out.path).toBe('host-replays');
+    expect(out.pendingUntil).toBeNull();
+    expect(h.delivered).toEqual([]);
+    const after = await readDecision(h, userCtx(h), id);
+    expect(after.replayClaimedAt).not.toBeNull();
+    expect(after.replayedAt).not.toBeNull();
+  });
+
+  it('a session that dies before the hand-over falls back to the host’s connector call', async () => {
+    const clock = movableClock();
+    const h = await boot({ now: clock.now }, undefined, liveChannels(), {
+      throws: 'unknown-session',
+    });
+    const connector = recordConnectorCalls(h);
+    const id = await holdAndId(h, userCtx(h), CONNECTOR_CALL);
+
+    const out = await approve(h, userCtx(h), id);
+    expect(out.path).toBe('agent-executes');
+    expect(connector.calls).toEqual([]);
+
+    clock.pastWindow();
+    expect((await sweepNow(h)).delivered).toBe(1);
+
+    expect(connector.calls).toHaveLength(1);
+    expect((await readDecision(h, userCtx(h), id)).replayedAt).not.toBeNull();
+    expect(isHold(await h.bus.fire('tool:pre-call', userCtx(h), CONNECTOR_CALL))).toBe(true);
+    expect(connector.calls).toHaveLength(1);
+  });
+
+  it('a Deny saved after the hold stops the call', async () => {
+    // Its OWN tool name: tool-policy's verdict store is not the decisions
+    // table, so the afterEach drop does not clear a saved Deny, and one on the
+    // shared fixture would turn every later hold in this file into a rejection.
+    const denied = { ...CONNECTOR_CALL, id: 'c-deny', name: 'mcp.c5e0235982f.deny_probe' };
+    const h = await boot();
+    const connector = recordConnectorCalls(h);
+    const id = await holdAndId(h, routineCtx(h), denied);
+    await h.bus.call('tool-policy:set-agent-override', userCtx(h), {
+      agentId: 'a1',
+      toolKey: denied.name,
+      verdict: 'deny',
+    });
+
+    const out = await approve(h, userCtx(h), id);
+
+    expect(connector.calls).toEqual([]);
+    expect(out.executed).toBe(false);
+    const row = await readDecision(h, userCtx(h), id);
+    expect(row.status).toBe('failed');
+    expect(row.replayError).toBe(CONNECTOR_POLICY_DENIED_DETAIL);
+    const receipts = await readReceipts(h);
+    expect(receipts).toHaveLength(1);
+    expect(receipts[0]!.receipt).toBe(FAILED_RECEIPT);
+    expect(receipts[0]!.error).toBe(CONNECTOR_POLICY_DENIED_DETAIL);
+  });
+
+  it('a refused call fails honestly and spends the yes', async () => {
+    const h = await boot();
+    const connector = recordConnectorCalls(h, { outcome: 'failed', reason: 'rejected' });
+    const id = await holdAndId(h, routineCtx(h), CONNECTOR_CALL);
+
+    const out = await approve(h, userCtx(h), id);
+
+    expect(connector.calls).toHaveLength(1);
+    expect(out.executed).toBe(false);
+    const row = await readDecision(h, userCtx(h), id);
+    expect(row.status).toBe('failed');
+    expect(row.replayAbandonedAt).toBeNull();
+    const receipts = await readReceipts(h);
+    expect(receipts[0]!.receipt).toBe(FAILED_RECEIPT);
+    expect(receipts[0]!.error).toBe(CONNECTOR_CALL_DETAIL.rejected);
+    // The yes does not carry over.
+    expect(isHold(await h.bus.fire('tool:pre-call', routineCtx(h), CONNECTOR_CALL))).toBe(true);
+    expect(connector.calls).toHaveLength(1);
+  });
+
+  it('a call with no reliable answer never reads as nothing-completed', async () => {
+    const h = await boot();
+    const connector = recordConnectorCalls(h, { outcome: 'unknown', reason: 'timeout' });
+    const id = await holdAndId(h, routineCtx(h), CONNECTOR_CALL);
+
+    await approve(h, userCtx(h), id);
+
+    expect(connector.calls).toHaveLength(1);
+    const row = await readDecision(h, userCtx(h), id);
+    expect(row.status).toBe('failed');
+    expect(row.replayAbandonedAt).not.toBeNull();
+    const receipts = await readReceipts(h);
+    expect(receipts).toHaveLength(1);
+    expect(receipts[0]!.receipt).toBe(ABANDONED_RECEIPT);
+    expect(receipts[0]!.receipt).not.toContain('Nothing was completed');
+    const undone = await h.bus.call<unknown, DecisionsUndoOutput>('decisions:undo', userCtx(h), {
+      decisionId: id,
+      userId: 'u1',
+    });
+    expect(undone.undone).toBe(false);
+  });
+
+  it('without connectors:call-tool a connector approval still parks', async () => {
+    const h = await boot();
+    const id = await holdAndId(h, routineCtx(h), CONNECTOR_CALL);
+
+    const out = await approve(h, userCtx(h), id);
+
+    expect(out.decision!.status).toBe('approved-pending-agent');
+    const receipts = await readReceipts(h);
+    expect(receipts).toHaveLength(1);
+    expect(receipts[0]!.receipt).toBe(PENDING_AGENT_RECEIPT);
+  });
+
+  it('a connector key never goes to a registered tool:execute:<key>', async () => {
+    // Every `tool:execute:*` is reachable from the sandbox, so a connector
+    // call must go through the named host hook or park, never through one.
+    const h = await boot();
+    const executor = recordExecutor(h, CONNECTOR_CALL.name);
+    const id = await holdAndId(h, routineCtx(h), CONNECTOR_CALL);
+
+    const out = await approve(h, userCtx(h), id);
+
+    expect(executor.calls).toEqual([]);
+    expect(out.decision!.status).toBe('approved-pending-agent');
+  });
+
+  it('two concurrent approvals make the connector call exactly once', async () => {
+    const h = await boot();
+    const connector = recordConnectorCalls(h, { outcome: 'succeeded' }, 25);
+    const id = await holdAndId(h, routineCtx(h), CONNECTOR_CALL);
+
+    const [a, b] = await Promise.all([approve(h, userCtx(h), id), approve(h, userCtx(h), id)]);
+
+    expect(connector.calls).toHaveLength(1);
+    expect([a.executed, b.executed].filter(Boolean)).toHaveLength(1);
+    const loser = a.executed ? b : a;
+    expect(loser.decision).not.toBeNull();
+    expect(loser.path).toBeNull();
+  });
+
+  describe('a connector flight stranded by a crash', () => {
+    const T_CRASH = new Date('2026-08-21T09:00:00.000Z');
+    const T_RECOVERED = new Date(T_CRASH.getTime() + 60 * 60_000);
+
+    it('is given up, never re-sent', async () => {
+      const dead = await boot({ now: () => T_CRASH });
+      const sent: unknown[] = [];
+      // Takes the call and NEVER answers: what a crashed process leaves behind.
+      dead.bus.registerService<unknown, unknown>(
+        'connectors:call-tool',
+        '@ax/decisions/test/hanging-connectors',
+        async (_ctx, input) => {
+          sent.push(input);
+          return new Promise<never>(() => {});
+        },
+      );
+      const id = await holdAndId(dead, routineCtx(dead), CONNECTOR_CALL);
+      // Nobody awaits this: the host is about to die underneath it.
+      void approve(dead, userCtx(dead), id).catch(() => {});
+      for (let i = 0; i < 500 && sent.length === 0; i += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      expect(sent).toHaveLength(1);
+
+      const stranded = await readDecision(dead, userCtx(dead), id);
+      expect(stranded.status).toBe('executed');
+      expect(stranded.replayClaimedAt).not.toBeNull();
+      expect(stranded.replayedAt).toBeNull();
+
+      // THE CRASH.
+      await harnesses.pop()!.close({ onError: () => {} });
+
+      const h = await boot({ now: () => T_RECOVERED });
+      const recovered = recordConnectorCalls(h);
+      expect((await sweepNow(h, routineCtx(h))).reclaimed).toBe(1);
+
+      expect(recovered.calls).toEqual([]);
+      const row = await readDecision(h, userCtx(h), id);
+      expect(row.status).toBe('failed');
+      expect(row.replayAbandonedAt).not.toBeNull();
+      const receipts = await readReceipts(h);
+      expect(receipts).toHaveLength(1);
+      expect(receipts[0]!.receipt).toBe(ABANDONED_RECEIPT);
+    });
   });
 });
