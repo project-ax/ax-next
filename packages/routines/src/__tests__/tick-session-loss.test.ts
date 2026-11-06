@@ -69,6 +69,11 @@ async function startLoop() {
   // Stands in for the host. Production has no uncaughtException handler, so an
   // 'error' nobody listens for ends the process. vitest stays quiet while
   // another listener exists, so this list is the only witness.
+  // The listeners go on after the last setup step that can throw, and come
+  // off in stop() before it waits for the loop, so neither a failed setup nor
+  // a hung loop leaves them hiding errors from the rest of the file.
+  const admin = new pg.Client({ connectionString });
+  await admin.connect();
   const uncaught: unknown[] = [];
   const onUncaught = (err: unknown) => { uncaught.push(err); };
   process.on('uncaughtException', onUncaught);
@@ -78,8 +83,6 @@ async function startLoop() {
   const logger = createLogger({ reqId: 'tick-test', writer: (line) => { tickLines.push(line); } });
   const gate = gatedClock(now);
   const fire = vi.fn(async (_d: AcceptedDispatch) => result);
-  const admin = new pg.Client({ connectionString });
-  await admin.connect();
   const controller = new AbortController();
   const loop = runTickLoop({
     db, fire, getAgents: async () => [], logger, clock: gate.clock, signal: controller.signal,
@@ -104,10 +107,9 @@ async function startLoop() {
     },
     async stop() {
       controller.abort();
-      await loop;
       process.off('uncaughtException', onUncaught);
       process.off('unhandledRejection', onUncaught);
-      await admin.end();
+      try { await loop; } finally { await admin.end(); }
     },
   };
 }
@@ -148,7 +150,9 @@ describe('tick leader when Postgres ends its session (TASK-1048)', () => {
         await expect.poll(() => run.gate.sleeps.length).toBe(2);
       } finally { restore(); }
       expect(run.uncaught).toEqual([]);
-      expect(run.gate.sleeps[1]).toBe(5_000); // TASK-1041's first backoff: one tick
+      // One tick, whether it is TASK-1041's first backoff or a leader's tick;
+      // the tick log below is what shows an election failed.
+      expect(run.gate.sleeps[1]).toBe(5_000);
       expect(run.tickLog()).toStrictEqual([{ level: 'warn', msg: 'routines_tick_election_failed', code: '57P03', name: 'Error', consecutiveFailures: 1, retryInMs: 5_000 }]);
       run.gate.wake();
       await expect.poll(() => run.gate.sleeps.length).toBe(3);

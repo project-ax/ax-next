@@ -101,10 +101,12 @@ export function createDatabasePostgresPlugin(config: DatabasePostgresConfig): Pl
       // exactly as long as pg-pool's is off ('acquire' fires before pg-pool
       // removes its own; 'release' fires after it puts it back). The caller
       // still sees the failure: its queries reject, and pg-pool drops the dead
-      // client at release. A dying client emits twice (the server's error,
-      // then the socket closing); only the first, which carries the SQLSTATE,
-      // is logged. Codes only: a driver's message can carry a host, a user or
-      // a query value.
+      // client at release. A client that dies between queries emits twice
+      // (the server's error with its SQLSTATE, then the socket closing); one
+      // that dies mid-query hands the server's error to that query and emits
+      // only the socket close, which has no code. Either way only the first
+      // event is logged. Codes only: a driver's message can carry a host, a
+      // user or a query value.
       const checkedOutListeners = new WeakMap<pg.PoolClient, (err: Error) => void>();
       pool.on('acquire', (client) => {
         let listener = checkedOutListeners.get(client);
