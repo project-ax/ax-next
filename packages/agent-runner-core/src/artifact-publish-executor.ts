@@ -227,7 +227,6 @@ export function createArtifactPublishExecutor(
       relativePath,
       displayName,
       mediaType,
-      sizeBytes: lst.size,
     });
 
     return {
@@ -255,7 +254,6 @@ async function publishToHost(args: {
   relativePath: string;
   displayName: string;
   mediaType: string;
-  sizeBytes: number;
 }): Promise<{ artifactId: string; downloadUrl: string; sha256: string }> {
   const { opts, bytes, localSha } = args;
   if (opts.client === undefined) {
@@ -266,34 +264,55 @@ async function publishToHost(args: {
     return { artifactId, downloadUrl: `ax://artifact/${artifactId}`, sha256: localSha };
   }
 
-  // 1) Stream the bytes to the content-addressed blob store (REQUEST-direction
-  //    binary channel). The host returns the authoritative content hash.
-  const put = (await opts.client.callBinaryUpload('blob.put', bytes)) as {
-    sha256: string;
-    size: number;
-  };
-
   if (opts.conversationId === undefined || opts.conversationId === null) {
     // Bytes are durable in the blob store, but with no conversation binding we
     // can't record an ownership row. Return blob-derived metadata; the artifact
     // is reachable only once a row exists, so this is a degraded path.
+    const put = (await opts.client.callBinaryUpload('blob.put', bytes)) as {
+      sha256: string;
+      size: number;
+    };
     const artifactId = put.sha256.slice(0, 16);
     return { artifactId, downloadUrl: `ax://artifact/${artifactId}`, sha256: put.sha256 };
   }
 
-  // 2) Record the metadata row (ownership + display). Returns the stable id.
-  const pub = (await opts.client.call('artifact.publish', {
+  return publishBytesToHost({
+    client: opts.client,
     conversationId: opts.conversationId,
-    sha256: put.sha256,
+    bytes,
     path: args.relativePath,
     displayName: args.displayName,
     mediaType: args.mediaType,
-    size: args.sizeBytes,
-  })) as { artifactId: string; downloadUrl: string };
+  });
+}
 
-  return {
-    artifactId: pub.artifactId,
-    downloadUrl: pub.downloadUrl,
-    sha256: put.sha256,
+/**
+ * The put-then-publish pair, with both host bindings present: stream the bytes
+ * to the content-addressed blob store (`blob.put`, the REQUEST-direction binary
+ * channel), then record the ownership + display row (`artifact.publish`).
+ * Durability is observable at the `blob.put` success. The returned `sha256` is
+ * the host's, not a local one — the host hashed the bytes it actually stored.
+ * Shared by `artifact_publish` and `show_visual`.
+ */
+export async function publishBytesToHost(args: {
+  client: Pick<IpcClient, 'callBinaryUpload' | 'call'>;
+  conversationId: string;
+  bytes: Buffer;
+  path: string;
+  displayName: string;
+  mediaType: string;
+}): Promise<{ artifactId: string; downloadUrl: string; sha256: string }> {
+  const put = (await args.client.callBinaryUpload('blob.put', args.bytes)) as {
+    sha256: string;
+    size: number;
   };
+  const pub = (await args.client.call('artifact.publish', {
+    conversationId: args.conversationId,
+    sha256: put.sha256,
+    path: args.path,
+    displayName: args.displayName,
+    mediaType: args.mediaType,
+    size: args.bytes.byteLength,
+  })) as { artifactId: string; downloadUrl: string };
+  return { artifactId: pub.artifactId, downloadUrl: pub.downloadUrl, sha256: put.sha256 };
 }
