@@ -367,14 +367,17 @@ export const FAILED_RECEIPT = 'It tried to do this, and it did not work. Nothing
 export const EXPIRED_RECEIPT = 'This one ran out of time, so nothing happened.';
 
 /**
- * The receipt when the host TOOK the call and never came back — it died with
- * the replay in flight, and a later sweep reclaimed the row (TASK-253).
+ * The receipt when the host TOOK the call and has no report of how it ended:
+ * it died with the replay in flight and a later sweep reclaimed the row
+ * (TASK-253), a connector call it sent got no reliable answer (TASK-1046), or
+ * the bus stopped waiting on a host tool that may still be running (TASK-285).
  *
  * IT IS NOT `FAILED_RECEIPT`, AND THE DIFFERENCE IS THE WHOLE REASON THIS
  * CONSTANT EXISTS. That line ends "Nothing was completed", which is a report
  * from the executor: the tool threw, so we know what did not happen. Here we
- * know nothing of the kind. The process died somewhere inside the call, and
- * the crash could have landed on either side of the tool's own side effect —
+ * know nothing of the kind. The host died somewhere inside the call, or
+ * stopped waiting on it, and either could have happened on either side of the
+ * tool's own side effect —
  * the email may be sent, the invite may be out. Printing "nothing was
  * completed" over that would be the same class of lie as claiming an unsent
  * message was sent (design H1), pointed the other way, and it is the more
@@ -464,6 +467,27 @@ export const CONNECTOR_POLICY_UNREADABLE_DETAIL =
 export const CLAIM_REFUSED_DETAIL =
   'An identical request from this agent is already approved and has not been ' +
   'carried out yet, so this approval was not recorded.';
+
+/**
+ * Why an approval did nothing, when an IDENTICAL request has already gone out
+ * (TASK-286). Approval can still find that twin because undo is never refused:
+ * dismiss, the agent asks again, undo leaves two open cards for one call. And a
+ * twin that went out has left the partial unique index, so the index cannot
+ * refuse the second approval the way it refuses `CLAIM_REFUSED_DETAIL`'s case.
+ *
+ * Two sentences, not one, because "already ran" is false for a twin that went
+ * out with no answer: we do not know it ran. And `CLAIM_REFUSED_DETAIL`'s text
+ * could not be reused, because it says "has not been carried out yet", which is
+ * the opposite of what happened here.
+ *
+ * Each says what happened and that THIS one was not run again.
+ */
+export const CLAIM_ALREADY_RAN_DETAIL =
+  'An identical request from this agent already ran, so we did not run this one again.';
+
+export const CLAIM_OUTCOME_UNKNOWN_DETAIL =
+  'An identical request from this agent was already tried, and we cannot tell whether it finished, ' +
+  'so we did not run this one again.';
 
 /**
  * The receipt when the host cannot replay the call at all — a tool that only

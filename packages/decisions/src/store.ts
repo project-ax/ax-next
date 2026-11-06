@@ -65,6 +65,142 @@ export class DuplicateAuthorisationError extends Error {
   }
 }
 
+/** What an approval's identical twin did, as far as this store can tell. */
+export type TwinOutcome = 'ran' | 'outcome-unknown';
+
+/**
+ * `claimForApproval` refused because an identical call this person approved on
+ * ANOTHER card — a co-open twin — already went out (TASK-286). `outcome` says
+ * how: `'ran'` (the host replayed it, the warm agent took it, or a routine
+ * write claimed it) or `'outcome-unknown'` (it was sent and nobody can say
+ * whether it landed). Running this one too would make the call twice.
+ *
+ * Co-open twins come from two routes: an undo (never refused, the TASK-280
+ * ruling), and an identical retry the gate stamped BEFORE an approval that it
+ * then lands after — `pre-call` stamps `createdAt`, then awaits the
+ * attendance and freshness reads before `createOrReuseOpen`, and the first row
+ * can be approved in between. Before TASK-286 the second route double-sent
+ * too. Do not narrow this rule to restored rows. A twin that has gone out has
+ * left the partial unique index, so the index cannot refuse this claim; the
+ * store has to.
+ *
+ * TYPED, for the same two reasons `DuplicateAuthorisationError` is. The plugin
+ * speaks a different sentence for this refusal than for the index's, and a
+ * different one again for each outcome — so it must be able to tell them
+ * apart without guessing from where the throw sits (a catch that turns an
+ * exception into prose must test for its cause: TASK-253 F1). And the
+ * classification is a question about rows this file owns, so the store
+ * answers it in the vocabulary of the decision and no caller reads a column.
+ *
+ * The row is left exactly as it was: still open, and still answerable.
+ */
+export class IdenticalCallAlreadyTriedError extends Error {
+  /** The twin that already went out — the same owner's row. */
+  readonly twinId: string;
+  readonly outcome: TwinOutcome;
+
+  constructor(decisionId: string, twinId: string, outcome: TwinOutcome) {
+    super(
+      outcome === 'ran'
+        ? `decision '${decisionId}' was not claimed: its identical twin '${twinId}' already ran`
+        : `decision '${decisionId}' was not claimed: its identical twin '${twinId}' was sent with no answer`,
+    );
+    this.name = 'IdenticalCallAlreadyTriedError';
+    this.twinId = twinId;
+    this.outcome = outcome;
+  }
+}
+
+/**
+ * Which co-open twin, if any, refuses an approval (TASK-286). The RULE both
+ * stores share, so the in-memory fake cannot drift from this one.
+ *
+ * The caller selects the candidates: this row's agent, owner and call
+ * fingerprint, another id, and an answer given at or after this row was
+ * raised (`resolved_at >= created_at`; equal instants count). This only
+ * classifies them:
+ *
+ *   * RAN — an authorising status AND `replayed_at` or `consumed_at`: the host
+ *     replayed it, the warm agent took it at the gate, or a routine write
+ *     claimed it (`claimRoutineAuthority` stamps `consumed_at`).
+ *   * OUTCOME UNKNOWN — `failed` AND `replay_abandoned_at`: a reclaimed
+ *     stranded flight, or a call sent with no reliable answer, the connector's
+ *     `tool-error` code included. It may have landed.
+ *
+ * NOTHING ELSE REFUSES. A definite failure ran nothing, and its receipt says
+ * so, so approving the other card is the honest retry. A dismissed or expired
+ * twin never ran. A twin still holding its index slot (deferred, in flight,
+ * or authorised and not yet taken) is the index's to refuse, as before.
+ *
+ * Returns the `ran` twin with the smallest id, else the `outcome-unknown` one
+ * with the smallest id, else null: the same answer whatever order the rows
+ * arrive in.
+ */
+export function firstTriedTwin(
+  twins: readonly Decision[],
+): { twinId: string; outcome: TwinOutcome } | null {
+  let ran: string | null = null;
+  let unknown: string | null = null;
+  for (const twin of twins) {
+    if (
+      AUTHORISING_STATUSES.includes(twin.status) &&
+      (twin.replayedAt !== null || twin.consumedAt !== null)
+    ) {
+      if (ran === null || twin.id < ran) ran = twin.id;
+    } else if (twin.status === 'failed' && twin.replayAbandonedAt !== null) {
+      if (unknown === null || twin.id < unknown) unknown = twin.id;
+    }
+  }
+  if (ran !== null) return { twinId: ran, outcome: 'ran' };
+  if (unknown !== null) return { twinId: unknown, outcome: 'outcome-unknown' };
+  return null;
+}
+
+/**
+ * Which OPEN row an identical new hold should be folded into, if any
+ * (TASK-286). The rule both stores share, beside `firstTriedTwin`.
+ *
+ * The oldest open row, EXCEPT one whose co-open twin already ran or went out
+ * with no answer. That row is the card an undo, or a retry stamped before its
+ * twin's approval, left behind (both routes: `IdenticalCallAlreadyTriedError`'s
+ * doc — do not narrow this to restored rows). Approving it is
+ * refused for good (`IdenticalCallAlreadyTriedError`), because the twin that
+ * ran never changes. Folding the agent's NEXT identical call into it would
+ * make that call unapprovable too, until someone dismissed the card or it
+ * expired. That next call is asked after the call ran, so it is a new
+ * question, and it gets a card it can be answered on. The refused card stays
+ * where it is: nothing here closes it (the ruling).
+ *
+ * ONE WINDOW IT LEAVES, on purpose: while the twin is still in flight it has
+ * not gone out yet, so a later hold IS folded into this row, and becomes
+ * unapprovable with it if that replay then returns. The next identical call
+ * after that gets its own card. Skipping on "in flight" too would raise a
+ * second card for a call whose answer is not in yet, which is TASK-254's
+ * duplicate.
+ *
+ * `open` is every open row for the key, oldest first. `answered` is every
+ * other row for the key with an answer (`resolvedAt` set). Instants are
+ * compared as instants, never as strings.
+ */
+export function reusableOpenRow(
+  open: readonly Decision[],
+  answered: readonly Decision[],
+): Decision | undefined {
+  return open.find((row) => {
+    const raisedAt = Date.parse(row.createdAt);
+    return (
+      firstTriedTwin(
+        answered.filter(
+          (twin) =>
+            twin.id !== row.id &&
+            twin.resolvedAt !== null &&
+            Date.parse(twin.resolvedAt) >= raisedAt,
+        ),
+      ) === null
+    );
+  });
+}
+
 /** Does this driver error say "you broke a unique index"? */
 function isUniqueViolation(err: unknown): boolean {
   // Duck-typed rather than `instanceof pg.DatabaseError`: this file talks to
@@ -80,9 +216,9 @@ function isUniqueViolation(err: unknown): boolean {
 }
 
 /**
- * The advisory-lock key `createOrReuseOpen` serialises on: one lock per
- * (agent, call shape), so two agents holding unrelated calls never wait on
- * each other.
+ * The advisory-lock key `createOrReuseOpen` and `claimForApproval` serialise
+ * on: one lock per (agent, call shape), so two agents holding or approving
+ * unrelated calls never wait on each other.
  *
  * Derived in JS rather than with `hashtext(...)` in SQL: that function is an
  * undocumented Postgres internal, so nothing promises its value is stable
@@ -91,12 +227,16 @@ function isUniqueViolation(err: unknown): boolean {
  * upgrade are not queueing behind each other at all. A sha256 truncated to a
  * signed 64-bit integer is stable by construction.
  *
- * A collision costs a spurious wait on an unrelated hold and nothing else: the
- * lock only orders the callers, and the SELECT inside it still matches on the
- * real columns. The agent id is folded in for the same reason it is a column
- * — this is the key the standing authorisation is keyed on.
+ * A collision costs a spurious wait on an unrelated hold or approval and
+ * nothing else: the lock only orders the callers, and the SELECT inside it
+ * still matches on the real columns. The agent id is folded in for the same
+ * reason it is a column — this is the key the standing authorisation is keyed
+ * on.
+ *
+ * Exported for `store.test.ts` only, which holds this lock from a second
+ * connection to stop a claim at it; nothing outside this file takes it.
  */
-function openHoldLockKey(agentId: string, callFingerprint: string): string {
+export function openHoldLockKey(agentId: string, callFingerprint: string): string {
   return createHash('sha256')
     .update(`${agentId}\u0000${callFingerprint}`)
     .digest()
@@ -192,11 +332,17 @@ export interface DecisionStore {
    * that index. Reads are owner-scoped; handing user B the id of user A's row
    * on a shared team agent would give B a question they cannot see, answer or
    * dismiss — a question nobody can answer is worse than two that collide. The
-   * collision that leaves is the same one the `restore` race leaves, with the
-   * same two outcomes and the same nasty half: refused out loud where nothing
-   * has gone out yet, and a SECOND SEND where the host has already replayed
-   * and freed the index slot. See the note on the implementation. Pinned by a
-   * test rather than left to be rediscovered.
+   * collision that leaves has two outcomes: refused where nothing has gone out
+   * yet (the index), and a SECOND SEND where the host has already replayed and
+   * freed the index slot. The `restore` race used to share both; TASK-286's
+   * approve-time check (`claimForApproval`) now refuses its second send, but
+   * that check is owner-scoped like this collapse, so the two-owner second send
+   * remains. Pinned by a test rather than left to be rediscovered.
+   *
+   * ONE OPEN ROW IS NEVER HANDED BACK (TASK-286): a card whose identical twin
+   * already ran or went out with no answer. Approving it is refused for good,
+   * so a later identical call folded into it could never be approved either.
+   * That call gets a card of its own instead (`reusableOpenRow`).
    *
    * ATOMIC, because the caller's read-then-create is not. Two byte-identical
    * `tool:pre-call` events race in the ordinary course of a turn, and this
@@ -262,6 +408,17 @@ export interface DecisionStore {
    * standing authorisation, so both live under the partial unique index — and
    * this throws `DuplicateAuthorisationError` if one already exists for this
    * (agent, call fingerprint). Refusing loudly is the point.
+   *
+   * IT ALSO THROWS `IdenticalCallAlreadyTriedError` when a co-open twin ran or
+   * went out with no answer (TASK-286): an identical row this person approved
+   * on another card, answered after this one was raised. Co-open twins come
+   * from an undo (never refused) or from a retry the gate stamped before that
+   * approval landed (see `IdenticalCallAlreadyTriedError`). Such a twin has left the
+   * index, so the index cannot refuse this claim, and the claim is therefore
+   * one transaction with a check in front of it. The lock `createOrReuseOpen`
+   * takes keeps a second approval from interleaving. `FOR UPDATE` keeps a
+   * twin's replay, consume or abandon from landing between the check and the
+   * claim. The refused row is left open.
    *
    * ANY OTHER FAILURE COMES BACK AS ITSELF. Only the index's refusal is
    * translated; a deadlock, a lock timeout or an unreachable database is a
@@ -330,10 +487,12 @@ export interface DecisionStore {
   claimReplayFlight(decisionId: string, nowIso: string): Promise<Decision | null>;
 
   /**
-   * The host replay threw. Records the failure and DROPS the standing
-   * authorisation with it (the partial index does not cover `failed`), because
-   * an action that did not happen must not leave behind a yes the agent can
-   * quietly cash in later.
+   * The host replay threw (anything but a timeout on a non-routine host tool:
+   * a call the bus stopped waiting on may still land, so it goes to
+   * `markOutcomeUnknown`, TASK-285).
+   * Records the failure and DROPS the standing authorisation with it (the
+   * partial index does not cover `failed`), because an action that did not
+   * happen must not leave behind a yes the agent can quietly cash in later.
    */
   markFailed(
     decisionId: string,
@@ -341,9 +500,10 @@ export interface DecisionStore {
   ): Promise<Decision | null>;
 
   /**
-   * The host SENT the call and got no reliable answer (TASK-1046): a connector
-   * call that timed out, lost its connection, or came back unreadable. It may
-   * or may not have happened.
+   * The host SENT the call and got no reliable answer: a connector call that
+   * timed out, lost its connection, or came back unreadable (TASK-1046), or a
+   * host tool call the bus stopped waiting on (TASK-285; the bus's timeout does
+   * not stop the tool). It may or may not have happened.
    *
    * `failed` + `replay_abandoned_at`, the shape `reclaimStrandedFlights`
    * writes, because to a reader it means the same thing: no report, so
@@ -493,10 +653,14 @@ export interface DecisionStore {
    * same call again before a second one goes out.
    *
    * `claimedBeforeIso` is the caller's age cutoff and it is belt to that
-   * braces: `HookBus` bounds every service call at 120 s by default, so a flight
-   * older than a cutoff comfortably past that ceiling cannot still be inside its
-   * `bus.call` in any host, this one or another replica. See
-   * `STRANDED_REPLAY_TIMEOUT_MS`.
+   * braces. `HookBus` bounds every service call at its ceiling (120 s by
+   * default, and no tool executor here registers a longer one), so a host
+   * replay older than a cutoff comfortably past about 240 s (a connector
+   * replay is two calls in a row) is no longer inside its `bus.call` in any
+   * host. A ROUTINE replay is the exception: it runs through `callJoined`,
+   * which waits for every nested call with no ceiling, so the bound does not
+   * hold for it — and the reclaim stays safe all the same, because it runs
+   * nothing. See `STRANDED_REPLAY_TIMEOUT_MS`.
    *
    * The predicates are the same three columns `restore`, `takeApproval` and
    * `claimReplayFlight` guard, for the same reason — plus the age comparison,
@@ -579,12 +743,14 @@ export interface DecisionStore {
 export function createDecisionsStore(db: Kysely<DecisionsDatabase>): DecisionStore {
   const table = 'decisions_v1_decisions' as const;
 
+  /** `on` is `db`, or the transaction a caller is already inside. */
   async function transition(
+    on: Kysely<DecisionsDatabase>,
     decisionId: string,
     from: readonly DecisionStatus[],
     set: Partial<DecisionRow>,
   ): Promise<Decision | null> {
-    const row = await db
+    const row = await on
       .updateTable(table)
       .set(set)
       .where('decision_id', '=', decisionId)
@@ -596,6 +762,7 @@ export function createDecisionsStore(db: Kysely<DecisionsDatabase>): DecisionSto
 
   /** The claim itself, unwrapped. `claimForApproval` owns the translation. */
   function claim(
+    on: Kysely<DecisionsDatabase>,
     decisionId: string,
     opts: {
       nowIso: string;
@@ -610,7 +777,7 @@ export function createDecisionsStore(db: Kysely<DecisionsDatabase>): DecisionSto
     },
   ): Promise<Decision | null> {
     const { nowIso, status, replayDueAt, replayClaimedAt, deliveryDueAt, continuationReqId } = opts;
-    return transition(decisionId, OPEN_STATUSES, {
+    return transition(on, decisionId, OPEN_STATUSES, {
       status,
       resolved_at: new Date(nowIso),
       // The guard passed, so whatever it said last time is no longer true.
@@ -665,41 +832,29 @@ export function createDecisionsStore(db: Kysely<DecisionsDatabase>): DecisionSto
         // constrains only the callers that take it, which is the trade being
         // made deliberately.
         //
-        // WHAT IT DOES NOT COVER, and the cost is worse than it first reads.
-        // `restore` (undo) walks a row back into `pending` without consulting
-        // the open row an agent's retry raised in the meantime, so dismiss →
-        // the agent tries the identical call → undo still leaves TWO open rows
-        // for one call shape. The gate never sees that pair: both rows already
-        // existed when the undo landed.
+        // WHAT IT DOES NOT COVER. `restore` (undo) walks a row back into
+        // `pending` without consulting the open row an agent's retry raised in
+        // the meantime, so dismiss → the agent tries the identical call → undo
+        // still leaves TWO open rows for one call shape. The gate never sees
+        // that pair: both rows already existed when the undo landed. That is
+        // allowed on purpose — Undo is a grace period and is never refused for
+        // a new reason (the TASK-280 ruling, upheld for TASK-286).
         //
-        // Approving both is then not one outcome but two, and only one of them
-        // is loud:
+        // What stops the pair from running the call twice sits at the point of
+        // consequence instead: `claimForApproval` takes THIS lock too, and
+        // refuses an approval whose identical twin — answered after this row
+        // was raised — already ran or went out with no answer
+        // (`IdenticalCallAlreadyTriedError`). Before that check the reversible
+        // unattended path sent the call a second time: `markReplayed` stamps
+        // `replayed_at`, which is in the index's own predicate, so the second
+        // claim found the slot free. So did an attended or parked pair once the
+        // agent had taken the first yes. `decisions.canary.test.ts` pins the
+        // refusal by the executor's invocation count.
         //
-        //   * ATTENDED, or PARKED, or a DEFERRED irreversible call — nothing
-        //     has gone out when the second approval arrives, so the first row
-        //     still occupies its slot in `decisions_v1_authorised_unconsumed`,
-        //     the claim raises `23505`, and the person is told
-        //     (`CLAIM_REFUSED_DETAIL`). This is the sub-case TASK-253 made
-        //     audible.
-        //   * REVERSIBLE and UNATTENDED — the host replays immediately and
-        //     `markReplayed` stamps `replayed_at`, which is in the index's own
-        //     predicate. The row LEAVES the index, the second claim finds the
-        //     slot free, and THE CALL GOES OUT A SECOND TIME with nothing
-        //     refused and nothing said. That is the true worst case, and it is
-        //     the same double send this collapse exists to remove — reached by
-        //     a different route.
-        //
-        // Both halves are pinned in `decisions.canary.test.ts` ("RESIDUE:"),
-        // asserting the executor's invocation count rather than a row status.
-        //
-        // TAKING THIS LOCK IN `restore` WOULD NOT CLOSE IT. The two writes
-        // touch DIFFERENT rows, so serialising them changes nothing: `restore`
-        // never asks whether a colliding open row exists, and after it returns
-        // both rows are `pending` however the two were ordered. Closing this
-        // needs either a collapse at approve time or a `restore` that declines
-        // to reopen over a colliding row — both are rulings on what undo
-        // MEANS, and both are somebody's decision to make rather than a
-        // side effect of this one. Filed as its own card.
+        // TAKING THIS LOCK IN `restore` WOULD NOT HAVE CLOSED IT, and still
+        // would not. The two writes touch DIFFERENT rows: `restore` never asks
+        // whether a colliding open row exists, and after it returns both rows
+        // are `pending` however the two were ordered.
         //
         // It is held for the two statements below and released by COMMIT or
         // ROLLBACK whatever happens — the transaction-scoped variant cannot be
@@ -710,18 +865,39 @@ export function createDecisionsStore(db: Kysely<DecisionsDatabase>): DecisionSto
           decision.callFingerprint,
         )}::bigint)`.execute(trx);
 
-        const existing = await trx
-          .selectFrom(table)
-          .selectAll()
-          .where('agent_id', '=', decision.agentId)
-          .where('owner_user_id', '=', decision.ownerUserId)
-          .where('call_fingerprint', '=', decision.callFingerprint)
-          .where('status', 'in', OPEN_STATUSES as string[])
-          .orderBy('created_at', 'asc')
-          .orderBy('decision_id', 'asc')
-          .executeTakeFirst();
+        const open = (
+          await trx
+            .selectFrom(table)
+            .selectAll()
+            .where('agent_id', '=', decision.agentId)
+            .where('owner_user_id', '=', decision.ownerUserId)
+            .where('call_fingerprint', '=', decision.callFingerprint)
+            .where('status', 'in', OPEN_STATUSES as string[])
+            .orderBy('created_at', 'asc')
+            .orderBy('decision_id', 'asc')
+            .execute()
+        ).map(toDecision);
+        // TASK-286: skip an open row whose twin already went out — see
+        // `reusableOpenRow`. Its possible twins were answered at or after the
+        // oldest open row was raised, so that bounds the read; nearly always
+        // there is one open row and this finds nothing.
+        const oldest = open[0];
+        const answered =
+          oldest === undefined
+            ? []
+            : (
+                await trx
+                  .selectFrom(table)
+                  .selectAll()
+                  .where('agent_id', '=', decision.agentId)
+                  .where('owner_user_id', '=', decision.ownerUserId)
+                  .where('call_fingerprint', '=', decision.callFingerprint)
+                  .where('resolved_at', '>=', new Date(oldest.createdAt))
+                  .execute()
+              ).map(toDecision);
+        const existing = reusableOpenRow(open, answered);
         if (existing !== undefined) {
-          return { decision: toDecision(existing), created: false };
+          return { decision: existing, created: false };
         }
         await trx.insertInto(table).values(fromDecision(decision)).execute();
         return { decision, created: true };
@@ -814,11 +990,97 @@ export function createDecisionsStore(db: Kysely<DecisionsDatabase>): DecisionSto
 
     async claimForApproval(decisionId, opts) {
       try {
-        return await claim(decisionId, opts);
+        return await db.transaction().execute(async (trx) => {
+          // THIS ROW FIRST. Its agent and call shape are the lock key, and a
+          // row that is no longer open answers with the same "someone else
+          // resolved it" null as ever, never with the twin refusal below over
+          // a card another tab already answered.
+          const self = await trx
+            .selectFrom(table)
+            .select(['agent_id', 'owner_user_id', 'call_fingerprint', 'created_at', 'status'])
+            .where('decision_id', '=', decisionId)
+            .executeTakeFirst();
+          if (self === undefined || !(OPEN_STATUSES as readonly string[]).includes(self.status)) {
+            return null;
+          }
+
+          // THE LOCK `createOrReuseOpen` TAKES, and it stops approve against
+          // approve. While a twin is still PENDING it has no `resolved_at`, so
+          // the read below does not match it and `FOR UPDATE` has nothing to
+          // hold. Without this, two approvals of a co-open pair can each check
+          // while the other is still open; one is then claimed, replayed and
+          // out of the index before the other's UPDATE reaches it, the slot is
+          // free, and the call goes out twice.
+          await sql`SELECT pg_advisory_xact_lock(${openHoldLockKey(
+            self.agent_id,
+            self.call_fingerprint,
+          )}::bigint)`.execute(trx);
+
+          // AND THIS ROW AGAIN, now under the lock and held. The read above
+          // was only for the key: a dismiss in another tab or the expiry sweep
+          // can close the row while this approval waits for the lock, and the
+          // answer for that is the same null, not the twin refusal below about
+          // a card that was already answered another way. `FOR UPDATE` keeps
+          // it open until the claim lands, so the two cannot disagree.
+          const stillOpen = await trx
+            .selectFrom(table)
+            .select('status')
+            .where('decision_id', '=', decisionId)
+            .forUpdate()
+            .executeTakeFirst();
+          if (
+            stillOpen === undefined ||
+            !(OPEN_STATUSES as readonly string[]).includes(stillOpen.status)
+          ) {
+            return null;
+          }
+
+          // THE TWINS, held until this claim commits. A twin's replay
+          // returning (`markReplayed`), the agent taking it (`takeApproval`)
+          // and an abandon (`markOutcomeUnknown`, the stranded-flight reclaim)
+          // never take the lock above; `FOR UPDATE` is what keeps them from
+          // landing between this check and the claim, taking the twin out of
+          // the index the claim is counting on. Locked in id order, so the
+          // order is deterministic. Two multi-row writers lock these rows in
+          // other orders — `claimRoutineAuthority` (newest first) and
+          // `recoverRoutineReplays` — so two undo-made ROUTINE twins can
+          // deadlock against them in principle. That surfaces as a `40P01`
+          // fault the approver sees, never as a silent second send.
+          //
+          // Not one `UPDATE ... WHERE NOT EXISTS`: that reads the twins from
+          // the statement's snapshot while the unique check sees the current
+          // state, so a replay committing in between leaves the slot free.
+          const twins = await trx
+            .selectFrom(table)
+            .selectAll()
+            .where('agent_id', '=', self.agent_id)
+            .where('owner_user_id', '=', self.owner_user_id)
+            .where('call_fingerprint', '=', self.call_fingerprint)
+            .where('decision_id', '<>', decisionId)
+            // Answered at or after this question was raised. Two rows are
+            // co-open only after an undo, or when a retry was stamped before
+            // an approval that landed first (see the error's doc). A later ask
+            // is raised after the answer it follows, so it is not refused —
+            // short of clock skew between two replicas, a window of the skew
+            // itself (milliseconds under NTP), in either direction.
+            .where('resolved_at', '>=', self.created_at)
+            .orderBy('decision_id')
+            .forUpdate()
+            .execute();
+          const tried = firstTriedTwin(twins.map(toDecision));
+          if (tried !== null) {
+            throw new IdenticalCallAlreadyTriedError(decisionId, tried.twinId, tried.outcome);
+          }
+
+          // A twin that has NOT gone out still holds its index slot, and the
+          // index refuses this claim exactly as before (`23505`, below).
+          return claim(trx, decisionId, opts);
+        });
       } catch (err) {
         // Translate ONLY the index's refusal. `throw err` for everything else
         // is not a fallthrough — it is the branch that keeps a transient write
-        // failure from being reported as a standing authorisation.
+        // failure from being reported as a standing authorisation. (The twin
+        // refusal above is already typed, and leaves as itself.)
         if (isUniqueViolation(err)) throw new DuplicateAuthorisationError(decisionId, err);
         throw err;
       }
@@ -880,7 +1142,7 @@ export function createDecisionsStore(db: Kysely<DecisionsDatabase>): DecisionSto
     },
 
     parkForAgent(decisionId) {
-      return transition(decisionId, ['executed'], {
+      return transition(db, decisionId, ['executed'], {
         status: 'approved-pending-agent',
         replay_due_at: null,
         // RELINQUISH the flight. This is only ever reached from inside
@@ -894,7 +1156,7 @@ export function createDecisionsStore(db: Kysely<DecisionsDatabase>): DecisionSto
     },
 
     markFailed(decisionId, { error, failureCode }) {
-      return transition(decisionId, ['executed'], {
+      return transition(db, decisionId, ['executed'], {
         status: 'failed',
         replay_error: error,
         ...(failureCode
@@ -909,7 +1171,7 @@ export function createDecisionsStore(db: Kysely<DecisionsDatabase>): DecisionSto
     },
 
     markOutcomeUnknown(decisionId, nowIso, code = null) {
-      return transition(decisionId, ['executed'], {
+      return transition(db, decisionId, ['executed'], {
         status: 'failed',
         replay_abandoned_at: new Date(nowIso),
         replay_error: code,
@@ -918,14 +1180,14 @@ export function createDecisionsStore(db: Kysely<DecisionsDatabase>): DecisionSto
     },
 
     markDismissed(decisionId, nowIso) {
-      return transition(decisionId, OPEN_STATUSES, {
+      return transition(db, decisionId, OPEN_STATUSES, {
         status: 'dismissed',
         resolved_at: new Date(nowIso),
       });
     },
 
     markStale(decisionId, { staleReason, freshness }) {
-      return transition(decisionId, OPEN_STATUSES, {
+      return transition(db, decisionId, OPEN_STATUSES, {
         status: 'stale',
         stale_reason: staleReason,
         freshness_json: freshness === null ? null : JSON.stringify(freshness),
@@ -934,7 +1196,7 @@ export function createDecisionsStore(db: Kysely<DecisionsDatabase>): DecisionSto
     },
 
     markExpired(decisionId, nowIso) {
-      return transition(decisionId, OPEN_STATUSES, {
+      return transition(db, decisionId, OPEN_STATUSES, {
         status: 'expired',
         resolved_at: new Date(nowIso),
       });

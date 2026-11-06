@@ -83,12 +83,15 @@ export type ExecutionPath = 'agent-executes' | 'host-replays';
  * a claim that the thing happened (design H1), and the receipt reads
  * "Approved — it can do this the next time it tries", never "Sent".
  *
- * `failed` means the host tried the replay and the tool threw, or the host
- * sent a connector call and got no reliable answer (`replayAbandonedAt`; the
- * receipt then says it cannot tell), or the connector's service answered that
- * it did not work, so the tool may have run (abandoned too, with
- * `TOOL_ERROR_REPLAY_CODE`; the receipt says it may have done part of it). When it threw, nothing was completed. In
- * both cases the standing authorisation is gone, and the agent must raise the
+ * `failed` means the host tried the replay and the tool threw (anything but
+ * a timeout on a non-routine host tool); or the host has no report of how the call ended
+ * (`replayAbandonedAt`; the receipt then says it cannot tell): the bus stopped
+ * waiting on a host tool that may still be running (TASK-285), a connector
+ * call got no reliable answer, or the host died mid-flight and the sweep gave
+ * up on it; or the connector's service answered that it did not work, so the
+ * tool may have run (abandoned too, with `TOOL_ERROR_REPLAY_CODE`; the receipt
+ * says it may have done part of it). When it threw, nothing was completed. In
+ * every case the standing authorisation is gone, and the agent must raise the
  * call again rather than silently inheriting a yes for an action that did not
  * happen (or may not have).
  */
@@ -304,10 +307,11 @@ export interface Decision {
    * Only ever on a row that is `failed`, and there are two writers. The
    * stranded-flight reclaim (TASK-253): the host stamped `replayClaimedAt`,
    * died inside the call, and nothing was left to record what happened. And
-   * `markOutcomeUnknown` (TASK-1046): a host connector call that went out and
-   * got no reliable answer — a timeout, a dropped connection, a reply it could
-   * not read. Same meaning to a reader: no report, so the only honest receipt
-   * is that we cannot say. A host that was merely FROZEN can still thaw and
+   * `markOutcomeUnknown`: a host connector call that went out and got no
+   * reliable answer — a timeout, a dropped connection, a reply it could not
+   * read (TASK-1046) — or a host tool call the bus stopped waiting on, which
+   * may still be running (TASK-285). Same meaning to a reader: no report, so
+   * the only honest receipt is that we cannot say. A host that was merely FROZEN can still thaw and
    * finish; `markReplayed` clears this stamp when it does, so "set" never
    * coexists with `replayedAt`. Since review F3 `markOutcomeUnknown` also
    * writes it for a connector call whose service answered that it did not
@@ -534,8 +538,8 @@ export interface DecisionsApproveOutput {
    */
   path: ExecutionPath | null;
   /**
-   * WHY THIS APPROVAL DID NOT DO WHAT IT LOOKS LIKE IT DID. Two things reach it,
-   * and neither is ever a receipt — a renderer shows the authored failure line
+   * WHY THIS APPROVAL DID NOT DO WHAT IT LOOKS LIKE IT DID. These reach it,
+   * and none is ever a receipt — a renderer shows the authored failure line
    * and this decision's id, never this string:
    *
    *   * the host executor's own failure detail when the replay threw, sanitised;
@@ -544,6 +548,15 @@ export interface DecisionsApproveOutput {
    *     not been carried out. That refusal used to be absorbed in silence, which
    *     is what made a replay stranded by a crash look like an approve button
    *     that does nothing (TASK-253).
+   *   * a routine change's authored failure line (`ROUTINE_GRANT_FAILED`, or
+   *     `routineFailureText` of the row);
+   *   * `CLAIM_ALREADY_RAN_DETAIL` or `CLAIM_OUTCOME_UNKNOWN_DETAIL` (TASK-286),
+   *     when an identical request this person approved on another card — one
+   *     answered after this card was raised, which an undo or a retry raced
+   *     against that approval makes possible — already ran, or went out with
+   *     no answer. Running this one too would
+   *     make the call twice. The row stays open, as it does for
+   *     `CLAIM_REFUSED_DETAIL`.
    *
    * Null when nothing went wrong, which includes every ordinary success.
    */
