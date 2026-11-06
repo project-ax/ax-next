@@ -201,8 +201,11 @@ export function RemoteMcpConnectorForm({
   const savedUrl = connector?.capabilities.mcpServers[0]?.url ?? '';
   // TASK-755 — the server's tool permissions belong to its address. Saving a
   // new one drops them (the server resets them to Ask first), so say so before
-  // Save, and don't write choices that were made for the old address.
-  const addressChanged = Boolean(connector) && url !== savedUrl;
+  // Save, and don't write choices that were made for the old address. After a
+  // save's PATCH has landed, the address it saved is the one to compare with
+  // (TASK-887), as for `retargeted` below.
+  const addressBaseline = (patched ?? connector)?.capabilities.mcpServers[0]?.url ?? '';
+  const addressChanged = Boolean(connector) && url !== addressBaseline;
   const discovered =
     discovery?.url === url && discovery.status === 'ready'
       ? discovery.result

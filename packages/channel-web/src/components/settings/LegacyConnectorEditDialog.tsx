@@ -583,11 +583,12 @@ export function LegacyConnectorEditDialog({
   // TASK-758 — a saved server that keeps its name but gets a new URL
   // loses its tool permissions on save (the server resets them to
   // Ask first), so say so before Save. Compared on what Save would actually
-  // send, against what was loaded; a new connector has nothing to lose.
+  // send, against what was loaded (or, once a save's PATCH has landed, what it
+  // saved — TASK-887); a new connector has nothing to lose.
   const endpointChanged =
     target !== 'new' &&
     endpointChangedServers(
-      form.baseCapabilities.mcpServers,
+      (savedCapabilities ?? form.baseCapabilities).mcpServers,
       capabilitiesFromForm(form).mcpServers,
     ).length > 0;
 

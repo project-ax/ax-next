@@ -262,17 +262,47 @@ describe('LegacyConnectorEditDialog — a retarget signs everyone out (TASK-887)
     expect(await screen.findByRole('alert')).toHaveTextContent(
       'We saved the connector, but couldn’t save the client secret. Try saving again.',
     );
-    // The server holds the new address now: keeping it points nowhere new.
-    expect(screen.getByTestId(WARNING)).not.toHaveTextContent(SIGNS_OUT);
+    // The server holds the new address now: keeping it points nowhere new and
+    // changes no address, so nothing at all is said.
+    expect(screen.queryByTestId(WARNING)).not.toBeInTheDocument();
     // Putting the original address back is another move.
     fireEvent.change(url, { target: { value: URL_SAVED } });
     await waitFor(() => expect(screen.getByTestId(WARNING)).toHaveTextContent(SIGNS_OUT));
     // The retry that keeps the new address saves it and writes the secret.
     fireEvent.change(url, { target: { value: MOVED } });
-    await waitFor(() => expect(screen.getByTestId(WARNING)).not.toHaveTextContent(SIGNS_OUT));
+    await waitFor(() => expect(screen.queryByTestId(WARNING)).not.toBeInTheDocument());
     await save();
     await waitFor(() => expect(onSaved).toHaveBeenCalled());
     expect(credentialsLib.setDestinationCredential).toHaveBeenCalledTimes(2);
+  });
+
+  it('after a partial save, the tool-permission sentence is judged against the saved address too', async () => {
+    const TOOLS_RESET = /Changing this server’s address resets its tool permissions/;
+    const MOVED = 'https://mcp.example.com/gdrive-v2';
+    vi.spyOn(connectorsLib, 'patchConnector').mockImplementation(async (_id, body) => ({
+      ...oauthConnector(),
+      capabilities: body.capabilities!,
+    }));
+    vi.spyOn(credentialsLib, 'setDestinationCredential').mockRejectedValueOnce(
+      new Error('boom'),
+    );
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await openEditor(oauthConnector());
+    const url = screen.getByLabelText(/^url$/i);
+    fireEvent.change(url, { target: { value: MOVED } });
+    expect(await screen.findByTestId(WARNING)).toHaveTextContent(TOOLS_RESET);
+    await typeClientSecret('typed-secret');
+    await save();
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'We saved the connector, but couldn’t save the client secret. Try saving again.',
+    );
+    // The server holds the new address: keeping it resets nothing.
+    await waitFor(() =>
+      expect(screen.queryByTestId(WARNING)?.textContent ?? '').not.toMatch(TOOLS_RESET),
+    );
+    // Putting the original address back is a new address again.
+    fireEvent.change(url, { target: { value: URL_SAVED } });
+    await waitFor(() => expect(screen.getByTestId(WARNING)).toHaveTextContent(TOOLS_RESET));
   });
 
   it('a client-secret write that fails after the PATCH says so and stays open', async () => {

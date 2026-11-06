@@ -600,7 +600,8 @@ describe('RemoteMcpConnectorForm — pointing a connector somewhere new signs ev
       expect(signOuts).toBe(1);
       // The server holds the new address now: keeping it points nowhere new.
       await saveIsLive();
-      expect(note()).not.toHaveTextContent(SIGNS_OUT);
+      // Nor does it change the address, so nothing at all is said.
+      expect(note()).toBeNull();
       // Putting the original address back is another move, and warns.
       await moveTo('https://mcp.crm.example/mcp');
       expect(note()).toHaveTextContent(SIGNS_OUT);
@@ -629,7 +630,8 @@ describe('RemoteMcpConnectorForm — pointing a connector somewhere new signs ev
       ).toBeVisible();
       expect(signOuts).toBe(1);
       await saveIsLive();
-      expect(note()).not.toHaveTextContent(SIGNS_OUT);
+      // Nor does it change the address, so nothing at all is said.
+      expect(note()).toBeNull();
       // That save's PATCH already cleared the saved secret, so it's still asked
       // for, not optional.
       expect(screen.queryByText('(optional)')).toBeNull();
@@ -649,6 +651,30 @@ describe('RemoteMcpConnectorForm — pointing a connector somewhere new signs ev
       ).toBeVisible();
       expect(patches()).toBe(before);
     });
+  });
+
+  it('after a partial save, the tool-permission sentence is judged against the saved address too', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    discover = () => KEY_SERVER;
+    failingCredentialWrites = 1;
+    await openEditor(sharedKeyConnector(), { [SHARED_KEY_REF]: 'old-shared-key' });
+    await moveTo('https://mcp.other-crm.example/mcp');
+    expect(note()).toHaveTextContent(TOOLS_RESET);
+    fireEvent.change(screen.getByLabelText('Value'), {
+      target: { value: 'new-shared-key' },
+    });
+    fireEvent.click(saveButton());
+    expect(
+      await screen.findByText(
+        'We saved the connector, but couldn’t save the key. Try saving again.',
+      ),
+    ).toBeVisible();
+    await saveIsLive();
+    // The server holds the new address: keeping it resets nothing.
+    expect(note()?.textContent ?? '').not.toContain(TOOLS_RESET);
+    // Putting the original address back is a new address again.
+    await moveTo('https://mcp.crm.example/mcp');
+    expect(note()).toHaveTextContent(TOOLS_RESET);
   });
 
   // A partial save's PATCH landed and cleared the saved key or secret, so a
