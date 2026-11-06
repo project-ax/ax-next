@@ -218,6 +218,14 @@ function chatRunMockPlugin(
    * blows its service timeout.
    */
   rejects = false,
+  /**
+   * TASK-1063 — make the turn end the way the orchestrator's pre-routing
+   * refusals do: fire `chat:turn-error` and `chat:end` for this reqId, then
+   * return `terminated` with the same reason. No handler throws, so this is the
+   * "refused inside agent:invoke" shape (`rejects` above is the "agent:invoke
+   * itself rejected" one).
+   */
+  refuseWith?: string,
 ): Plugin {
   return {
     manifest: {
@@ -243,6 +251,12 @@ function chatRunMockPlugin(
             input: input as { message: { role: string; content: string } },
           });
           if (rejects) throw new Error("service hook 'agent:invoke' exceeded 1ms");
+          if (refuseWith !== undefined) {
+            await bus.fire('chat:turn-error', ctx, { reqId: ctx.reqId, reason: refuseWith });
+            const outcome = { kind: 'terminated', reason: refuseWith };
+            await bus.fire('chat:end', ctx, { outcome });
+            return outcome;
+          }
           // Mimic agent:invoke's contract — return a AgentOutcome shape; the
           // route handler's dispatch is fire-and-forget so the value is
           // unobserved, but we keep the shape correct in case a future
@@ -338,6 +352,8 @@ interface BootArgs {
   allowedOrigins?: readonly string[];
   /** TASK-498 — see `chatRunMockPlugin`'s `rejects`. */
   dispatchRejects?: boolean;
+  /** TASK-1063 — see `chatRunMockPlugin`'s `refuseWith`. */
+  refuseWith?: string;
   /**
    * Phase 3 (attachments): when true, boot `@ax/attachments` alongside an
    * in-memory blob store (the content-addressed store its commit/download
@@ -527,7 +543,7 @@ async function boot(args: BootArgs): Promise<BootResult> {
         : {}),
     }),
     createConversationsPlugin({ purgeSweepIntervalMs: 0 }),
-    chatRunMockPlugin(chatRunCaptures, args.dispatchRejects === true),
+    chatRunMockPlugin(chatRunCaptures, args.dispatchRejects === true, args.refuseWith),
     grantMockPlugin(grantCaptures),
   ];
   if (args.includeAttachments === true) {
@@ -884,6 +900,126 @@ describe('@ax/channel-web POST /api/chat/messages', () => {
     expect(booted.chatRunCaptures).toHaveLength(1);
     expect(fired).toEqual([]);
   });
+
+  /*
+    TASK-1063 — FORWARD GUARD (passes on the code it was written against).
+
+    A turn that is refused leaves its reqId bound as the conversation's
+    `active_req_id`, on purpose. The card proposed clearing it at refusal;
+    that would turn step 4 below into a 404, because the stream GET resolves
+    the conversation through `active_req_id` (sse.ts step 2) before step 4a-bis
+    can replay the buffered refusal. The person would read "couldn't find that"
+    instead of their refusal. It also blocks nothing: the next POST rebinds it.
+  */
+  it.each([
+    [
+      'refused inside agent:invoke',
+      { refuseWith: 'conversation:message-not-saved' },
+      'conversation:message-not-saved',
+    ],
+    ['whose agent:invoke call rejected', { dispatchRejects: true }, 'chat-run-dispatch-failed'],
+  ] as const)(
+    'TASK-1063: a turn %s leaves its reqId bound, replays to a late stream, and the next turn starts normally',
+    async (_label, mode, reason) => {
+      const booted = await boot({
+        user: { id: 'userA', isAdmin: false },
+        allowedFor: new Set(['userA']),
+        ...mode,
+      });
+      harnesses.push(booted.harness);
+
+      const fired: Array<{ reqId?: string; reason?: string }> = [];
+      booted.harness.bus.subscribe<unknown>('chat:turn-error', 'spy', async (_ctx, payload) => {
+        fired.push(payload as { reqId?: string; reason?: string });
+        return undefined;
+      });
+      const activeReqId = async (conversationId: string): Promise<string | null> => {
+        const got = await booted.harness.bus.call<
+          { conversationId: string; userId: string },
+          { conversation: { activeReqId: string | null } }
+        >('conversations:get', booted.harness.ctx({ userId: 'userA' }), {
+          conversationId,
+          userId: 'userA',
+        });
+        return got.conversation.activeReqId;
+      };
+
+      // 1. POST 1 is accepted, then refused.
+      const r1 = await postMessage(booted.port, {
+        conversationId: null,
+        agentId: 'agt_test',
+        contentBlocks: [{ type: 'text', text: 'first' }],
+      });
+      expect(r1.status).toBe(202);
+      const { conversationId: C, reqId: R1 } = (await r1.json()) as {
+        conversationId: string;
+        reqId: string;
+      };
+
+      // 2. The refusal fires for that exact reqId.
+      await vi.waitFor(() => expect(fired).toEqual([{ reqId: R1, reason }]), {
+        timeout: 30_000,
+        interval: 5,
+      });
+
+      // 3. The refused turn's reqId is still the bound one.
+      expect(await activeReqId(C)).toBe(R1);
+
+      // 4. A stream that opens after the refusal still replays it.
+      const late = await fetch(`http://127.0.0.1:${booted.port}/api/chat/stream/${R1}`, {
+        signal: AbortSignal.timeout(5_000),
+      });
+      expect(late.status).toBe(200);
+      expect(await late.text()).toContain(`"error":"${reason}"`);
+
+      // 5. An HTTP refusal happens before a reqId is minted, so it binds nothing.
+      const bad = await postMessage(booted.port, {
+        conversationId: C,
+        agentId: 'agt_test',
+        contentBlocks: [
+          {
+            type: 'attachment',
+            attachmentId: 'x',
+            filename: 'x.pdf',
+            mediaType: 'application/pdf',
+            sizeBytes: 1,
+          },
+        ],
+      });
+      expect(bad.status).toBe(400);
+      expect(await bad.json()).toEqual({ error: 'invalid-content-block' });
+      expect(await activeReqId(C)).toBe(R1);
+
+      // 6. The next turn rebinds and dispatches normally.
+      const r2 = await postMessage(booted.port, {
+        conversationId: C,
+        agentId: 'agt_test',
+        contentBlocks: [{ type: 'text', text: 'second' }],
+      });
+      expect(r2.status).toBe(202);
+      const { reqId: R2 } = (await r2.json()) as { reqId: string };
+      expect(R2).not.toBe(R1);
+      expect(await activeReqId(C)).toBe(R2);
+      await vi.waitFor(() => expect(booted.chatRunCaptures).toHaveLength(2), {
+        timeout: 30_000,
+        interval: 5,
+      });
+      expect(booted.chatRunCaptures[1]!.ctx).toMatchObject({ conversationId: C, reqId: R2 });
+      // Both modes refuse POST 2 too; let its persist finish before afterEach
+      // drops the tables.
+      await vi.waitFor(() => expect(fired).toHaveLength(2), {
+        timeout: 30_000,
+        interval: 5,
+      });
+
+      // 7. The old id is retired.
+      const old = await fetch(`http://127.0.0.1:${booted.port}/api/chat/stream/${R1}`, {
+        signal: AbortSignal.timeout(5_000),
+      });
+      expect(old.status).toBe(404);
+      await old.text();
+    },
+  );
 
   it('5. existing conversation: 202 returned, no new conversation created, no append-turn call', async () => {
     const booted = await boot({
@@ -2264,7 +2400,7 @@ describe('@ax/channel-web GET /api/chat/agents', () => {
 //
 //   - a client-sent `attachment` block → 400 invalid-content-block, before
 //     anything is committed (only a committed ref may become one)
-//   - attachmentId not found in temp store → 400 attachment-not-found
+//   - attachmentId neither staged nor already committed to this conversation by this person → 400 attachment-not-found
 //   - attachmentId belongs to a different user → 400 attachment-foreign-user
 //   - cumulative attachment bytes > 100 MiB → 413 attachment-total-too-large
 //
@@ -2476,6 +2612,40 @@ describe('POST /api/chat/messages — attachment_ref handling', () => {
     expect(booted.chatRunCaptures).toHaveLength(0);
   });
 
+  it('TASK-1063: returns 400 invalid-content-block when one message names the same attachment_ref id twice; nothing is committed or dispatched', async () => {
+    const booted = await boot({
+      user: { id: 'userA', isAdmin: false },
+      allowedFor: new Set(['userA']),
+      includeAttachments: true,
+    });
+    harnesses.push(booted.harness);
+    const stored = await booted.harness.bus.call<
+      unknown,
+      { attachmentId: string }
+    >('attachments:store-temp', userCtx('userA'), {
+      bytes: Buffer.from('hello pdf bytes'),
+      displayName: 'note.pdf',
+      mediaType: 'application/pdf',
+    });
+
+    // attachments:commit answers a repeated (id, conversation, owner) with the
+    // same stored file, so without this refusal the second ref would 202 and
+    // the model would be handed the one file twice.
+    const r = await postMessage(booted.port, {
+      conversationId: null,
+      agentId: 'agt_test',
+      contentBlocks: [
+        { type: 'attachment_ref', attachmentId: stored.attachmentId },
+        { type: 'attachment_ref', attachmentId: stored.attachmentId },
+      ],
+    });
+    expect(r.status).toBe(400);
+    expect(await r.json()).toEqual({ error: 'invalid-content-block' });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(booted.chatRunCaptures).toHaveLength(0);
+    expect(await countConversations()).toBe(0);
+  });
+
   it('TASK-690: returns 413 storage-full, with the sentence, when the storage limit refuses the upload; nothing is dispatched', async () => {
     const booted = await boot({
       user: { id: 'userA', isAdmin: false },
@@ -2598,4 +2768,97 @@ describe('POST /api/chat/messages — attachment_ref handling', () => {
     // deadline tracks the work, not the runner's mood. (Every other test here
     // fits the default — only the 120 MiB payload needs this.)
   }, 30_000);
+
+  // TASK-1063: a turn refused before the person's message was saved leaves its
+  // files committed into the conversation, with no saved message naming them.
+  // Resend then names the same ids again, in the same conversation.
+  async function stagedNotePdf(booted: BootResult): Promise<string> {
+    const stored = await booted.harness.bus.call<unknown, { attachmentId: string }>(
+      'attachments:store-temp',
+      userCtx('userA'),
+      {
+        bytes: Buffer.from('hello pdf bytes'),
+        displayName: 'note.pdf',
+        mediaType: 'application/pdf',
+      },
+    );
+    return stored.attachmentId;
+  }
+
+  it('TASK-1063: a resend that names a file already sent in this conversation is accepted and carries it again', async () => {
+    const booted = await boot({
+      user: { id: 'userA', isAdmin: false },
+      allowedFor: new Set(['userA']),
+      includeAttachments: true,
+    });
+    harnesses.push(booted.harness);
+    const attachmentId = await stagedNotePdf(booted);
+    const contentBlocks = [
+      { type: 'text', text: 'have a look' },
+      { type: 'attachment_ref', attachmentId },
+    ];
+
+    const r1 = await postMessage(booted.port, { conversationId: null, agentId: 'agt_test', contentBlocks });
+    expect(r1.status).toBe(202);
+    const { conversationId } = (await r1.json()) as { conversationId: string };
+    await vi.waitFor(() => expect(booted.chatRunCaptures).toHaveLength(1), {
+      timeout: 30_000,
+      interval: 5,
+    });
+
+    const r2 = await postMessage(booted.port, { conversationId, agentId: 'agt_test', contentBlocks });
+    expect(r2.status).toBe(202);
+    await vi.waitFor(() => expect(booted.chatRunCaptures).toHaveLength(2), {
+      timeout: 30_000,
+      interval: 5,
+    });
+
+    // Both turns carry the same file, as first committed. 15 is
+    // `'hello pdf bytes'.length`.
+    const block = {
+      type: 'attachment',
+      attachmentId,
+      filename: 'note.pdf',
+      mediaType: 'application/pdf',
+      sizeBytes: 15,
+    };
+    expect(booted.chatRunCaptures[0]!.input.message.contentBlocks).toStrictEqual([block]);
+    expect(booted.chatRunCaptures[1]!.input.message.contentBlocks).toStrictEqual([block]);
+    expect(booted.chatRunCaptures[1]!.ctx.conversationId).toBe(conversationId);
+  });
+
+  it('TASK-1063: a resend that names a file already sent in another conversation is refused, and the file stays put', async () => {
+    const booted = await boot({
+      user: { id: 'userA', isAdmin: false },
+      allowedFor: new Set(['userA']),
+      includeAttachments: true,
+    });
+    harnesses.push(booted.harness);
+    const attachmentId = await stagedNotePdf(booted);
+    const contentBlocks = [
+      { type: 'text', text: 'have a look' },
+      { type: 'attachment_ref', attachmentId },
+    ];
+
+    const r1 = await postMessage(booted.port, { conversationId: null, agentId: 'agt_test', contentBlocks });
+    expect(r1.status).toBe(202);
+    const { conversationId } = (await r1.json()) as { conversationId: string };
+    await vi.waitFor(() => expect(booted.chatRunCaptures).toHaveLength(1), {
+      timeout: 30_000,
+      interval: 5,
+    });
+
+    // A new chat: the route opens another conversation, where this id is not
+    // this person's file.
+    const r2 = await postMessage(booted.port, { conversationId: null, agentId: 'agt_test', contentBlocks });
+    expect(r2.status).toBe(400);
+    expect(await r2.json()).toEqual({ error: 'attachment-not-found' });
+    // The route refuses before it dispatches, so there is nothing to wait for.
+    expect(booted.chatRunCaptures).toHaveLength(1);
+    const listed = await booted.harness.bus.call<
+      { conversationId: string },
+      { files: Array<{ attachmentId: string }> }
+    >('attachments:list-for-conversation', userCtx('userA'), { conversationId });
+    expect(listed.files.map((f) => f.attachmentId)).toEqual([attachmentId]);
+  });
 });

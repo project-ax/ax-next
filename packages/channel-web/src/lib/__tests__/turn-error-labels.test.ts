@@ -3,6 +3,7 @@ import {
   DEFAULT_TURN_ERROR,
   ERROR_LABELS,
   MAX_DETAIL_CHARS,
+  turnErrorMessageNotSaved,
   turnErrorOpensConnectors,
   turnErrorText,
 } from '../turn-error-labels';
@@ -237,5 +238,38 @@ describe('turnErrorText — the person’s message could not be saved (TASK-1059
   it('never prints the reason code', () => {
     expect(text).not.toContain('message-not-saved');
     expect(text).not.toContain('conversation:');
+  });
+});
+
+describe('turnErrorMessageNotSaved — refusals that left the person’s message unsaved (TASK-1063)', () => {
+  it.each([
+    'conversation:message-not-saved',
+    'chat:start:usage-limit-daily',
+    'chat:start:usage-check-unavailable',
+    'chat:start:blocked',
+    'agent-resolve:internal',
+    'agent-resolve:forbidden',
+  ])('%s -> true', (reason) => {
+    expect(turnErrorMessageNotSaved(reason)).toBe(true);
+  });
+
+  it.each([
+    'system-prompt:identity-unavailable',
+    'chat-run-timeout',
+    'chat-run-dispatch-failed',
+    'runner-boot-failed',
+    'connector-needs-reconnect',
+    'conversation:something-else',
+    'chat:start',
+    'agent-resolve',
+    '',
+    'toString',
+  ])('%s -> false (the message was saved, or the reason is unknown)', (reason) => {
+    expect(turnErrorMessageNotSaved(reason)).toBe(false);
+  });
+
+  it('null and undefined -> false', () => {
+    expect(turnErrorMessageNotSaved(null)).toBe(false);
+    expect(turnErrorMessageNotSaved(undefined)).toBe(false);
   });
 });
