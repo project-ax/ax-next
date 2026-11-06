@@ -86,6 +86,39 @@ export function saveFromUrl(url: string): void {
 }
 
 /**
+ * Hand an artifact's minted DOWNLOAD address to the browser (spec §6.5).
+ *
+ * The same idea as `saveFromUrl` — the browser streams the file to disk, the
+ * tab never holds it, no blob — but the address is on the CONTENT origin, a
+ * different site from this app, so `saveFromUrl`'s same-origin rule would
+ * refuse it. The content origin answers `/d/<token>` with
+ * `Content-Disposition: attachment` (P14), so clicking it saves a file and
+ * leaves this page where it is.
+ *
+ * Only an absolute http(s) `/d/` address is accepted (it came from our own
+ * token route, never from an agent), and the click carries no referrer, so the
+ * content origin never learns which page of the app asked.
+ */
+export function saveFromContentOrigin(url: string): void {
+  let resolved: URL;
+  try {
+    resolved = new URL(url);
+  } catch {
+    throw new Error('saveFromContentOrigin: not an absolute address');
+  }
+  if ((resolved.protocol !== 'https:' && resolved.protocol !== 'http:') || !resolved.pathname.startsWith('/d/')) {
+    throw new Error('saveFromContentOrigin: refusing an address that is not an artifact download');
+  }
+  const a = document.createElement('a');
+  a.href = resolved.href;
+  a.rel = 'noreferrer';
+  a.style.display = 'none';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+
+/**
  * Hand a blob to the browser's download machinery.
  *
  * Only chat ATTACHMENT chips use this now (`/api/files`). A file from the

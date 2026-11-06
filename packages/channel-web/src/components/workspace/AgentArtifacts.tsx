@@ -22,7 +22,7 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Empty, EmptyDescription, EmptyHeader } from '@/components/ui/empty';
 import { Skeleton } from '@/components/ui/skeleton';
-import { artifactTypeLabel } from '@/lib/artifact-labels';
+import { artifactTypeLine } from '@/lib/artifact-labels';
 import { DOWNLOAD_STARTED_MS, DOWNLOAD_STARTED_NOTE, saveFromUrl } from '@/lib/file-download';
 import { logRequestFailure } from '@/lib/http';
 import { useAgentArtifacts } from '@/lib/use-agent-artifacts';
@@ -54,10 +54,7 @@ function downloadNote(e: unknown): string {
 
 function ArtifactRow({ artifact, onOpen }: { artifact: ArtifactSummary; onOpen: () => void }) {
   const Icon = KIND_ICONS[artifact.kind];
-  const line =
-    artifact.extension === ''
-      ? artifactTypeLabel(artifact.kind)
-      : `${artifactTypeLabel(artifact.kind)} · ${artifact.extension}`;
+  const line = artifactTypeLine(artifact);
   return (
     <Button
       variant="ghost"

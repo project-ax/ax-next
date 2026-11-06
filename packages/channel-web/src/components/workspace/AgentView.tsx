@@ -78,6 +78,7 @@ import { STOPPED_NOTICE, STOP_COPY, STOP_FALLBACK_MS } from './stop-copy';
 import { AgentConversation, approvalReadFrom, type ApprovalRead } from './AgentConversation';
 import { AgentFiles } from './AgentFiles';
 import { AgentArtifacts } from './AgentArtifacts';
+import { ArtifactViewer } from './ArtifactViewer';
 import { SkippedConnectorsNotice } from './SkippedConnectorsNotice';
 import { MemorySurface } from './FactsMemory';
 import { AgentInstructions } from './AgentInstructions';
@@ -422,8 +423,10 @@ export function AgentView({
   const setOpenPanel = compactRail ? setSheetPanel : setDesktopPanel;
   const [settingsListRequested, setSettingsListRequested] = useState(false);
   const [fileCount, setFileCount] = useState<number | null>(null);
-  // The artifact the Artifacts panel has open (Tasks 12-13 draw it); null is the list.
+  // The artifact the Artifacts panel has open (ArtifactViewer); null is the list.
   const [openArtifactId, setOpenArtifactId] = useState<string | null>(null);
+  // Another agent's artifacts are another list: never keep this one's open.
+  useEffect(() => setOpenArtifactId(null), [agentId]);
   const [pastId, setPastId] = useState<string | null>(null);
   /**
    * The excerpt for the past conversation the rail has open, fetched on demand
@@ -1743,7 +1746,11 @@ export function AgentView({
     shownPanel === 'memory' ? learnedBlock
     : shownPanel === 'files' ? <AgentFiles agentId={agent.id} agentName={agent.name} onCount={setFileCount} />
     : shownPanel === 'activity' ? <AgentActivity agent={agent} busy={streaming || rereading} />
-    : shownPanel === 'artifacts' ? <AgentArtifacts agentId={agent.id} agentName={agent.name} onOpen={setOpenArtifactId} />
+    : shownPanel === 'artifacts' ? (
+      openArtifactId !== null
+        ? <ArtifactViewer key={openArtifactId} artifactId={openArtifactId} agentName={agent.name} onBack={() => setOpenArtifactId(null)} onClose={() => { setOpenArtifactId(null); setOpenPanel(null); }} />
+        : <AgentArtifacts agentId={agent.id} agentName={agent.name} onOpen={setOpenArtifactId} />
+    )
     : null;
   const panelMeta =
     shownPanel === 'files' && fileCount !== null
@@ -2065,7 +2072,7 @@ export function AgentView({
         </div>
         <LearnedAnnouncer announcement={learned.announcement} />
         {compactRail ? <Sheet open={shownPanel !== null} onOpenChange={(open) => { if (!open) setSheetPanel(null); }}>
-          <SheetContent side="right" aria-describedby={undefined} className={cn('flex max-w-[calc(100vw-24px)] flex-col gap-0 p-0', wide ? 'w-[min(560px,calc(100vw-24px))]' : 'w-[320px]')}>
+          <SheetContent side="right" aria-describedby={undefined} className={cn('flex max-w-[calc(100vw-24px)] flex-col gap-0 p-0', wide ? 'w-[calc(100vw-24px)]' : 'w-[320px]')}>
             {/* Named for the view, so the sheet and its heading agree. */}
             <SheetTitle className="sr-only">{shownPanel !== null ? `${RAIL_PANELS[shownPanel].label} panel` : 'Side panel'}</SheetTitle>
             {shownPanel !== null && <AgentRailContent panel={shownPanel} meta={panelMeta} wide={wide}>{panelBody}</AgentRailContent>}

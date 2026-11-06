@@ -74,7 +74,7 @@ export function AgentRail(props: Props) {
       aria-label={RAIL_PANELS[props.panel].label}
       className={cn(
         'flex min-h-0 shrink-0 flex-col border-l border-border',
-        props.wide ? 'w-[min(560px,45vw)]' : 'w-[320px]',
+        props.wide ? 'w-1/2 min-w-[480px]' : 'w-[320px]',
       )}
     >
       <AgentRailContent {...props} />

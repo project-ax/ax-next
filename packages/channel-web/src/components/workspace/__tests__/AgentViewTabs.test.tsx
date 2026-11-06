@@ -30,6 +30,8 @@ vi.mock('@/lib/workspace-api', async () => {
       // called only once its own view is open.
       rail: vi.fn(async () => railFixture()),
       artifacts: vi.fn(async () => []),
+      artifact: vi.fn(),
+      artifactToken: vi.fn(async () => ({ url: 'http://127.0.0.1:9091/v/tok', expiresAt: '2026-11-06T12:05:00Z' })),
       probeArtifactsDownload: vi.fn(),
       artifactsDownloadAllUrl: vi.fn(() => '/api/workspace/agents/a-quill/artifacts/download-all'),
       // A root 404 is an empty list.
@@ -182,6 +184,42 @@ describe('AgentView side-panel toggles — the accessibility tree', () => {
     await waitFor(() => expect(workspaceApi.artifacts).toHaveBeenCalledWith('a-quill'));
     expect(workspaceApi.userFiles).not.toHaveBeenCalled();
     expect(workspaceApi.rail).not.toHaveBeenCalled();
+  });
+
+  it('the rail widens while the viewer is open and is 320px again after Back', async () => {
+    const summary = {
+      artifactId: 'art-1',
+      agentId: 'a-quill',
+      title: 'Deal tracker',
+      mediaType: 'text/html',
+      kind: 'web' as const,
+      preview: 'html',
+      extension: 'HTML',
+      currentVersion: 1,
+      sizeBytes: 10,
+      linkOn: false,
+      createdAt: '2026-11-01T00:00:00Z',
+      updatedAt: '2026-11-01T00:00:00Z',
+    };
+    vi.mocked(workspaceApi.artifacts).mockResolvedValueOnce([summary]);
+    vi.mocked(workspaceApi.artifact).mockResolvedValue({
+      ...summary,
+      versions: [{ version: 1, mediaType: 'text/html', sizeBytes: 10, createdAt: '2026-11-01T00:00:00Z' }],
+    });
+    renderView();
+    await screen.findByRole('group', { name: 'Side panel' });
+    fireEvent.click(screen.getByRole('radio', { name: 'Artifacts' }));
+    const rail = screen.getByRole('complementary', { name: 'Artifacts' });
+    expect(rail.className).toContain('w-[320px]');
+
+    fireEvent.click(await within(rail).findByRole('button', { name: /Deal tracker/ }));
+    expect(await within(rail).findByTitle('Deal tracker')).toBeTruthy();
+    expect(rail.className).toContain('w-1/2');
+    expect(rail.className).toContain('min-w-[480px]');
+    expect(rail.className).not.toContain('w-[320px]');
+
+    fireEvent.click(within(rail).getByRole('button', { name: 'Back' }));
+    await waitFor(() => expect(screen.getByRole('complementary', { name: 'Artifacts' }).className).toContain('w-[320px]'));
   });
 
   /*

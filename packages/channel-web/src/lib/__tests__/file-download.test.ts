@@ -678,3 +678,30 @@ describe('saveFromUrl', () => {
     expect(document.querySelectorAll('a')).toHaveLength(0);
   });
 });
+
+describe('saveFromContentOrigin', () => {
+  it('clicks a hidden, referrer-free link to a content-origin /d/ address', async () => {
+    const { saveFromContentOrigin } = await import('../file-download');
+    const clicked: HTMLAnchorElement[] = [];
+    const spy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (this: HTMLAnchorElement) {
+      clicked.push(this);
+    });
+    saveFromContentOrigin('http://127.0.0.1:9091/d/tok');
+    expect(clicked).toHaveLength(1);
+    expect(clicked[0]!.href).toBe('http://127.0.0.1:9091/d/tok');
+    expect(clicked[0]!.rel).toBe('noreferrer');
+    expect(clicked[0]!.isConnected).toBe(false);
+    spy.mockRestore();
+  });
+
+  it.each(['javascript:alert(1)//d/', '/d/tok', 'http://127.0.0.1:9091/v/tok', 'data:text/html,x'])(
+    'refuses %s before any click',
+    async (url) => {
+      const { saveFromContentOrigin } = await import('../file-download');
+      const spy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+      expect(() => saveFromContentOrigin(url)).toThrow();
+      expect(spy).not.toHaveBeenCalled();
+      spy.mockRestore();
+    },
+  );
+});

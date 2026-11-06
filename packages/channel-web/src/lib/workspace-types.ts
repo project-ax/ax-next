@@ -1632,3 +1632,12 @@ export const ArtifactTokenSchema = z.object({ url: z.string(), expiresAt: z.stri
 export const ArtifactShareCodeSchema = z.object({ shareCode: z.string().nullable() });
 export type ArtifactTokenPurpose = 'view' | 'download';
 export type ArtifactLinkAction = 'ensure' | 'off' | 'rotate';
+
+/** How a version is shown (the server decides from the stored media type). */
+export const ARTIFACT_PREVIEW_KINDS = ['html', 'markdown', 'image', 'text', 'pdf', 'none'] as const;
+export type ArtifactPreviewKind = (typeof ARTIFACT_PREVIEW_KINDS)[number];
+
+/** A preview word we don't know is drawn as `none` (Download only), never guessed at. */
+export function artifactPreviewKind(raw: string): ArtifactPreviewKind {
+  return (ARTIFACT_PREVIEW_KINDS as readonly string[]).includes(raw) ? (raw as ArtifactPreviewKind) : 'none';
+}
