@@ -57,7 +57,7 @@ function tokensAfter(selector: string): Map<string, string> {
   }
   const body = CSS.slice(start, i);
   const out = new Map<string, string>();
-  for (const m of body.matchAll(/(--[a-z-]+)\s*:\s*([^;]+);/g)) {
+  for (const m of body.matchAll(/(--[a-z0-9-]+)\s*:\s*([^;]+);/g)) {
     out.set(m[1]!, m[2]!.trim());
   }
   return out;
@@ -2058,4 +2058,17 @@ describe("Routines' error chip and banner clear AA in every state", () => {
       ),
     );
   });
+});
+
+describe('chart palette (VISUALS-1)', () => {
+  for (const [name, selector] of THEMES) {
+    const tokens = tokensAfter(selector);
+    for (const n of [1, 2, 3, 4, 5]) for (const surface of ['--background', '--card'] as const) {
+      it(`${name}: --chart-${n} on ${surface} clears ${AA_NON_TEXT}:1`, () => {
+        const c = tokens.get(`--chart-${n}`);
+        expect(c, `--chart-${n} missing from ${selector}`).toBeDefined();
+        expect(contrast(c!, tokens.get(surface)!)).toBeGreaterThanOrEqual(AA_NON_TEXT);
+      });
+    }
+  }
 });
