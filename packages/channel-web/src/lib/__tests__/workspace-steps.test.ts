@@ -40,6 +40,25 @@ const texts = (panel: { steps: Array<{ text: string }> } | null): string[] =>
   (panel?.steps ?? []).map((s) => s.text);
 
 describe('shapeSteps', () => {
+  it("hides the SDK's ToolSearch plumbing row; counts and panel follow what remains", () => {
+    const panel = shapeSteps([
+      done({ id: 'ts', name: 'ToolSearch', detail: 'select:mcp__ax-sandbox-tools__show_visual' }),
+      done({ id: 'v', name: 'mcp__ax-sandbox-tools__show_visual', phrase: 'Making a visual' }),
+    ]);
+    expect(texts(panel)).toEqual(['Making a visual']);
+    expect(panel?.label).toMatch(/^1 step/);
+  });
+
+  it('is null when the only call was ToolSearch, failed or not', () => {
+    expect(shapeSteps([done({ name: 'ToolSearch' })])).toBeNull();
+    expect(shapeSteps([done({ name: 'ToolSearch', status: 'failed' })])).toBeNull();
+  });
+
+  it('hides only the exact name: a connector tool called tool_search still shows', () => {
+    const panel = shapeSteps([done({ name: 'mcp__docs__ToolSearch' }), done({ id: 'b', name: 'toolsearch' })]);
+    expect(texts(panel)).toHaveLength(2);
+  });
+
   it('is null for a turn that ran nothing, so no empty disclosure appears', () => {
     expect(shapeSteps([])).toBeNull();
   });
