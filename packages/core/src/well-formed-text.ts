@@ -31,7 +31,7 @@ export function toWellFormedText(s: string): string {
  * collapse to one (the last wins), which only a hand-built or model-written
  * object can produce.
  */
-export function wellFormedJsonReplacer(_key: string, value: unknown): unknown {
+function wellFormedJsonReplacer(_key: string, value: unknown): unknown {
   if (typeof value === 'string') return toWellFormedText(value);
   if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
     const entries = Object.entries(value);
