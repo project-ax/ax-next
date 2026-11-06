@@ -36,6 +36,7 @@ import { routineToolKind } from '@ax/routines-contract';
  * escalate, and a miss parks the decision instead of running anything.
  */
 import {
+  PluginError,
   SafeToolError,
   safeToolMessage,
   makeAgentContext,
@@ -63,9 +64,11 @@ export interface ReplayOutcome {
   /**
    * The host SENT the call and got no reliable answer, so it may or may not
    * have happened (TASK-1046: a connector call that timed out, lost its
-   * connection, or came back unreadable). `settleReplay` records it as
-   * abandoned — "we cannot tell you whether it finished" — and never as a
-   * failure, whose receipt says nothing was completed.
+   * connection, or came back unreadable; TASK-285: a host tool whose bus call
+   * timed out, its own or one nested inside it, while the tool may still be
+   * running). `settleReplay` records it as abandoned — "we cannot tell you
+   * whether it finished" — and never as a failure, whose receipt says nothing
+   * was completed.
    */
   outcomeUnknown?: true;
   /**
@@ -135,10 +138,10 @@ export function replayContext(decision: Decision): AgentContext {
 /**
  * Replay a decision's recorded call on the host.
  *
- * Never throws. Every outcome — ran, could not run, tried and failed — comes
- * back as a value, because the caller has a durable row to update either way
- * and an exception here would leave it saying "approved" with nothing behind
- * it.
+ * Never throws. Every outcome — ran, could not run, tried and failed, or ran
+ * out of time — comes back as a value, because the caller has a durable row to
+ * update either way and an exception here would leave it saying "approved"
+ * with nothing behind it.
  */
 export async function replayOnApprove(args: {
   bus: HookBus;
@@ -187,6 +190,30 @@ export async function replayOnApprove(args: {
     });
     return { executed: true, path: 'host-replays', error: null };
   } catch (err) {
+    // TASK-285 — the bus stopped waiting, but it did not stop the tool: its
+    // timeout races the executor and never cancels it, so the work may still
+    // land after we give up. "Nothing was completed" would be the lie TASK-253
+    // took out for a host that crashed mid-flight, so this is an unknown
+    // outcome and its receipt says we cannot tell. The bus re-throws a
+    // `PluginError` unchanged, so a timeout on a call nested inside the
+    // executor arrives here looking the same as one on the executor itself.
+    //
+    // Never for a routine tool: `callJoined` waits for its effect to settle,
+    // and for a write `settleReplay` then reads the durable `routineOutcome`
+    // and settles its authority through `decisions:settle-routine-call`, which
+    // an unknown outcome skips. The message is never logged: it quotes the
+    // tool name, which the model wrote. And not `invalid-return`: no
+    // `tool:execute:*` registers `returns`, and an executor that returned did
+    // not time out.
+    if (routineToolKind(decision.call.name) === null && err instanceof PluginError && err.code === 'timeout') {
+      ctx.logger.warn('decision_replay_unknown', {
+        plugin: PLUGIN_NAME,
+        decisionId: decision.id,
+        tool: decision.call.name,
+        reason: 'timeout',
+      });
+      return { executed: false, path: null, error: null, outcomeUnknown: true };
+    }
     if (routineToolKind(decision.call.name) === 'write' && pendingEffect(ctx, decision))
       return { executed: false, path: null, error: safeToolMessage('unavailable', 'input'), pending: true };
     const routineFailure =
@@ -288,7 +315,8 @@ export async function settleReplay(args: {
   // receipt is justified until the joined executor can recover its effect.
   // The existing stranded-routine sweep retries only this recorded request.
   if (outcome.pending) return outcome;
-  // TASK-1046 — sent, with no reliable answer. The row goes where the
+  // TASK-1046 / TASK-285 — sent, with no reliable answer: a connector call, or
+  // a host tool call the bus stopped waiting on. The row goes where the
   // stranded-flight reclaim puts one: `failed` + `replay_abandoned_at`, whose
   // receipt says we cannot tell whether it finished. Never `markFailed`: its
   // receipt says nothing was completed, and this call may have landed. The yes

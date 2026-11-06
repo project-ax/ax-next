@@ -9,7 +9,7 @@
  * writes when things go wrong.
  */
 import { describe, expect, it } from 'vitest';
-import { HookBus, SafeToolError, makeAgentContext, type AgentContext, type ToolCall } from '@ax/core';
+import { HookBus, SafeToolError, createLogger, makeAgentContext, type AgentContext, type ToolCall } from '@ax/core';
 import { callFingerprint } from '../fingerprint.js';
 import { receiptFor } from '../receipts.js';
 import { replayContext, replayOnApprove, settleReplay } from '../replay.js';
@@ -266,6 +266,114 @@ describe('settleReplay — failure', () => {
     expect(receipt.receipt).not.toBe(decision.approvedText);
     // The executor's own words ride BESIDE the receipt, never as it.
     expect(receipt.error).toContain('upstream 503');
+  });
+});
+
+describe('settleReplay — a host tool call that timed out (TASK-285)', () => {
+  const T_DONE = '2026-08-20T09:02:00.000Z';
+  /** Claimed on the immediate path: `executed`, flight stamped. */
+  const claimed = (): Decision => base({ replayClaimedAt: T0 });
+
+  it('is failed + replayAbandonedAt, reads ABANDONED_RECEIPT, and the tool can still finish afterwards', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let late: Promise<unknown> | undefined;
+    let landed = 0;
+    const bus = new HookBus();
+    bus.registerService(
+      'tool:execute:request_capability',
+      'test',
+      () => (late = gate.then(() => { landed += 1; return { ok: true }; })),
+      { timeoutMs: 20 },
+    );
+    const store = createFakeStore();
+    const decision = claimed();
+    store.rows.set(decision.id, decision);
+
+    const outcome = await settleReplay({
+      store, bus, ctx: replayContext(decision), decision, now: () => new Date(T_DONE),
+    });
+
+    expect(outcome).toEqual({ executed: false, path: null, error: null, outcomeUnknown: true });
+    const row = store.rows.get(decision.id)!;
+    expect(row).toMatchObject({
+      status: 'failed', replayAbandonedAt: T_DONE, replayError: null, replayedAt: null, resolvedAt: T0,
+    });
+    const receipt = receiptFor(row)!;
+    expect(receipt).toMatchObject({ outcome: 'failed', receipt: ABANDONED_RECEIPT, error: null });
+    expect(receipt.receipt).not.toContain('Nothing was completed');
+
+    // The premise, measured: the bus stopped waiting; it did not stop the tool.
+    release();
+    await late;
+    expect(landed).toBe(1);
+    expect(store.rows.get(decision.id)).toEqual(row);
+  });
+
+  it('a timeout from a call nested inside the executor is unknown too', async () => {
+    const bus = new HookBus();
+    bus.registerService('test:slow-effect', 'test', () => new Promise<never>(() => {}), { timeoutMs: 20 });
+    bus.registerService('tool:execute:request_capability', 'test', (ctx) =>
+      bus.call('test:slow-effect', ctx, {}),
+    );
+    const store = createFakeStore();
+    const decision = claimed();
+    store.rows.set(decision.id, decision);
+
+    await settleReplay({ store, bus, ctx: replayContext(decision), decision, now: () => new Date(T_DONE) });
+
+    const row = store.rows.get(decision.id)!;
+    expect(row).toMatchObject({ status: 'failed', replayAbandonedAt: T_DONE, replayError: null });
+    expect(receiptFor(row)!.receipt).toBe(ABANDONED_RECEIPT);
+  });
+
+  it('logs decision_replay_unknown with its reason, never the bus message', async () => {
+    const lines: Record<string, unknown>[] = [];
+    const decision = claimed();
+    const ctx = makeAgentContext({
+      sessionId: `decision-replay-${decision.id}`,
+      agentId: decision.agentId,
+      userId: decision.ownerUserId,
+      source: 'routine',
+      logger: createLogger({
+        reqId: 'req-replay',
+        writer: (line) => lines.push(JSON.parse(line) as Record<string, unknown>),
+      }),
+    });
+    const bus = new HookBus();
+    bus.registerService('tool:execute:request_capability', 'test', () => new Promise<never>(() => {}), {
+      timeoutMs: 20,
+    });
+
+    await replayOnApprove({ bus, ctx, decision });
+
+    expect(lines.find((l) => l.msg === 'decision_replay_unknown')).toMatchObject({
+      level: 'warn',
+      plugin: '@ax/decisions',
+      decisionId: 'dec_1',
+      tool: 'request_capability',
+      reason: 'timeout',
+    });
+    expect(lines.map((l) => l.msg)).not.toContain('decision_replay_failed');
+    // HookBus's message reads "service hook 'tool:execute:request_capability' exceeded 20ms".
+    expect(JSON.stringify(lines)).not.toContain('exceeded');
+  });
+
+  it('a routine tool that times out keeps the routine path, never outcomeUnknown', async () => {
+    const decision = base({ call: { id: 'c', name: 'routine_update', input: {} } });
+    const bus = new HookBus();
+    // callJoined holds the timeout until the handler settles, so this handler must settle.
+    bus.registerService(
+      'tool:execute:routine_update',
+      'test',
+      () => new Promise((resolve) => setTimeout(() => resolve({ ok: true }), 60)),
+      { timeoutMs: 20 },
+    );
+
+    const outcome = await replayOnApprove({ bus, ctx: replayContext(decision), decision });
+
+    expect(outcome.outcomeUnknown).toBeUndefined();
+    expect(outcome).toMatchObject({ executed: false, path: null, failureCode: 'unavailable' });
   });
 });
 
