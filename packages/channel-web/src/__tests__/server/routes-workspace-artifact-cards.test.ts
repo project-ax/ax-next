@@ -1,5 +1,5 @@
 /** Artifact cards in the chat thread (agent artifacts, Task 13). */
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { HookBus, PluginError, makeAgentContext, type AgentContext } from '@ax/core';
 import { makeWorkspaceHandlers } from '../../server/routes-workspace.js';
 import type { RouteRequest, RouteResponse } from '../../server/routes-chat.js';
@@ -32,11 +32,20 @@ describe('artifact cards in buildThread', () => {
   let turns: unknown[];
   let stored: Map<string, Record<string, unknown>>;
   let getFault: PluginError | null = null;
+  let listFault: PluginError | null = null;
+  let listCalls = 0;
+  let getCalls = 0;
+  // Ids the list leaves out, as if past its 1000-row cap.
+  let pastListCap: Set<string>;
 
   beforeEach(() => {
     bus = new HookBus();
     turns = [];
     getFault = null;
+    listFault = null;
+    listCalls = 0;
+    getCalls = 0;
+    pastListCap = new Set();
     bus.registerService('auth:require-user', 'auth', async () => ({ user: { id: 'u1', isAdmin: false } }));
     bus.registerService('agents:list-for-user', 'agents', async () => ({
       agents: [{ id: 'a1', displayName: 'Inbox', visibility: 'personal' }],
@@ -52,7 +61,16 @@ describe('artifact cards in buildThread', () => {
       [ID1, { artifactId: ID1, agentId: 'a1', title: 'Q3 report', kind: 'document', extension: 'PDF', currentVersion: 1 }],
       [ID2, { artifactId: ID2, agentId: 'a1', title: 'Other', kind: 'document', extension: 'PDF', currentVersion: 1 }],
     ]);
+    bus.registerService('artifacts:list', 'artifacts', async (_c, i: unknown) => {
+      listCalls++;
+      if (listFault !== null) throw listFault;
+      const agentId = (i as { agentId: string }).agentId;
+      return {
+        artifacts: [...stored.values()].filter((a) => a['agentId'] === agentId && !pastListCap.has(a['artifactId'] as string)),
+      };
+    });
     bus.registerService('artifacts:get', 'artifacts', async (_c, i: unknown) => {
+      getCalls++;
       if (getFault !== null) throw getFault;
       const a = stored.get((i as { artifactId: string }).artifactId);
       if (a === undefined) throw new PluginError({ code: 'not-found', plugin: 'artifacts', message: 'nope' });
@@ -65,7 +83,7 @@ describe('artifact cards in buildThread', () => {
     });
   });
 
-  async function thread(results: unknown[]): Promise<Array<Record<string, unknown>>> {
+  async function thread(results: unknown[], ctx: AgentContext = initCtx): Promise<Array<Record<string, unknown>>> {
     turns = [
       { turnId: 't1', turnIndex: 0, role: 'user', contentBlocks: [{ type: 'text', text: 'go' }], createdAt: '2026-08-01T10:00:00.000Z' },
       {
@@ -77,7 +95,7 @@ describe('artifact cards in buildThread', () => {
         contentBlocks: results.map((r, i) => ({ type: 'tool_result', tool_use_id: `p${i}`, content: JSON.stringify(r) })),
       },
     ];
-    const h = makeWorkspaceHandlers({ bus, initCtx });
+    const h = makeWorkspaceHandlers({ bus, initCtx: ctx });
     const { res, captured } = mkRes();
     await h.agentDetail(mkReq({ agentId: 'a1' }), res);
     return (captured.body as { thread: Array<Record<string, unknown>> }).thread;
@@ -121,6 +139,13 @@ describe('artifact cards in buildThread', () => {
     ]);
   });
 
+  it('a list refusal (not a member) shows no cards and is not an outage', async () => {
+    listFault = new PluginError({ code: 'not-found', plugin: 'artifacts', message: 'nope' });
+    const t = await thread([published()]);
+    expect(t.some((m) => m['artifacts'] !== undefined)).toBe(false);
+    expect(getCalls).toBe(0);
+  });
+
   it('an unknown or foreign artifact id is dropped, with no chip either', async () => {
     stored.set(ID2, { ...stored.get(ID2), agentId: 'someone-elses-agent' });
     const t = await thread([published({ artifactId: ID2 }), published({ artifactId: 'ffffffffffffffffffffffffffffffff' })]);
@@ -129,9 +154,54 @@ describe('artifact cards in buildThread', () => {
   });
 
   it('a hook outage omits the cards rather than trusting the tool text', async () => {
-    getFault = new PluginError({ code: 'unavailable', plugin: 'artifacts', message: 'db down' });
+    // The list is the first read; the fallback get's own outage is pinned below.
+    listFault = new PluginError({ code: 'unavailable', plugin: 'artifacts', message: 'db down' });
     const t = await thread([published()]);
     expect(t.some((m) => m['artifacts'] !== undefined)).toBe(false);
     expect(t.flatMap((m) => (m['attachments'] as unknown[] | undefined) ?? [])).toStrictEqual([]);
+  });
+
+  it('reads the store with one list call when every claimed id is in it', async () => {
+    const t = await thread([published(), published({ artifactId: ID2, title: 'Other' })]);
+    expect(t.find((m) => m['artifacts'] !== undefined)!['artifacts']).toHaveLength(2);
+    expect(listCalls).toBe(1);
+    expect(getCalls).toBe(0);
+  });
+
+  it('an artifact past the list cap is still verified, by one get', async () => {
+    pastListCap.add(ID2);
+    const t = await thread([published(), published({ artifactId: ID2, title: 'Other' })]);
+    const cards = t.find((m) => m['artifacts'] !== undefined)!['artifacts'] as Array<{ artifactId: string }>;
+    expect(cards.map((c) => c.artifactId)).toStrictEqual([ID1, ID2]);
+    expect(listCalls).toBe(1);
+    expect(getCalls).toBe(1);
+  });
+
+  it('100 claimed ids cost at most 1 list and 20 gets', async () => {
+    const ids = Array.from({ length: 100 }, (_, i) => i.toString(16).padStart(32, '0'));
+    await thread(ids.map((artifactId) => published({ artifactId })));
+    expect(listCalls).toBeLessThanOrEqual(1);
+    expect(getCalls).toBeLessThanOrEqual(20);
+  });
+
+  it('a list outage omits the cards, with one code-only log line', async () => {
+    const ctx = makeAgentContext({ sessionId: 'init', agentId: '@ax/channel-web', userId: 'system' });
+    const warn = vi.spyOn(ctx.logger, 'warn');
+    listFault = new PluginError({ code: 'unavailable', plugin: 'artifacts', message: 'db down' });
+    const t = await thread([published(), published({ artifactId: ID2 })], ctx);
+    expect(t.some((m) => m['artifacts'] !== undefined)).toBe(false);
+    const lines = warn.mock.calls.filter((c) => c[0] === 'workspace_artifact_cards_unverified');
+    expect(lines).toStrictEqual([['workspace_artifact_cards_unverified', { code: 'unavailable' }]]);
+  });
+
+  it('several failing fallback gets log once for the thread, not once per id', async () => {
+    const ctx = makeAgentContext({ sessionId: 'init', agentId: '@ax/channel-web', userId: 'system' });
+    const warn = vi.spyOn(ctx.logger, 'warn');
+    pastListCap = new Set([ID1, ID2]);
+    getFault = new PluginError({ code: 'unavailable', plugin: 'artifacts', message: 'db down' });
+    const t = await thread([published(), published({ artifactId: ID2 })], ctx);
+    expect(t.some((m) => m['artifacts'] !== undefined)).toBe(false);
+    expect(getCalls).toBe(2);
+    expect(warn.mock.calls.filter((c) => c[0] === 'workspace_artifact_cards_unverified')).toHaveLength(1);
   });
 });

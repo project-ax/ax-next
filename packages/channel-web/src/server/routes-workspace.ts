@@ -3965,6 +3965,13 @@ const PublishedArtifactSchema = z.object({
 
 const PUBLISH_TOOL_NAMES = new Set(['artifact_publish', 'mcp__ax-sandbox-tools__artifact_publish']);
 
+/**
+ * Claimed artifact ids the agent's `artifacts:list` didn't hold (it stops at
+ * its newest 1000) are checked one `artifacts:get` each, up to this many per
+ * thread read; the rest are dropped, never trusted.
+ */
+const CARD_GET_FALLBACK_MAX = 20;
+
 /** The text parts of a tool_result block's content. */
 function toolResultTexts(block: { content?: unknown }): string[] {
   return typeof block.content === 'string' ? [block.content]
@@ -4452,10 +4459,15 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
   /**
    * Ground the thread's artifact cards in the store. The publish result is
    * produced by the runner (agent-controlled code), so a card's id, title,
-   * kind and version are read back through `artifacts:get` as the viewer, one
-   * call per distinct id, and must belong to this agent. Unknown, foreign or
-   * refused ids are simply absent. A hook outage returns `null` (no cards,
-   * code-only log line) rather than falling back to the tool text.
+   * kind and version are read back as the viewer and must belong to this
+   * agent. Unknown, foreign or refused ids are simply absent. A hook outage
+   * returns `null` (no cards, ONE code-only log line for the thread) rather
+   * than falling back to the tool text.
+   *
+   * Bounded: one `artifacts:list` for the agent (it checks membership and
+   * scope itself) intersected with the claimed ids. The list stops at its
+   * newest ARTIFACT_LIST_MAX, so a claimed id it doesn't hold gets an
+   * `artifacts:get`, for at most CARD_GET_FALLBACK_MAX ids; the rest drop.
    */
   async function verifiedArtifacts(
     turns: TurnRow[],
@@ -4465,36 +4477,62 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
     const ids = claimedArtifactIds(turns);
     const out = new Map<string, ThreadArtifact>();
     if (ids.length === 0) return out;
-    if (!bus.hasService('artifacts:get')) return null;
+    if (!bus.hasService('artifacts:list')) return null;
     const ctx = agentWorkspaceCtx(agentId, userId);
-    let outage = false;
-    await Promise.all(ids.map(async (artifactId) => {
-      try {
-        const got = await bus.call<{ artifactId: string }, { artifact: {
-          artifactId: string; agentId: string; title: string; kind: ThreadArtifact['kind'];
-          extension: string; currentVersion: number;
-        } }>('artifacts:get', ctx, { artifactId });
-        const a = got.artifact;
-        if (a.agentId !== agentId) return;
-        const title = fenceLine(a.title, 200);
-        if (title === null) return;
-        out.set(a.artifactId, {
-          artifactId: a.artifactId,
-          version: a.currentVersion,
-          title,
-          kind: a.kind,
-          extension: fenceLine(a.extension, 16) ?? '',
-        });
-      } catch (err) {
-        // not-found / forbidden: the id is not this viewer's — drop it.
-        // Anything else is an outage: omit every card.
-        const code = err instanceof PluginError ? err.code : 'unknown';
-        if (code === 'not-found' || code === 'forbidden') return;
-        outage = true;
-        initCtx.logger.warn('workspace_artifact_cards_unverified', { code });
-      }
-    }));
-    return outage ? null : out;
+    type StoredArtifact = {
+      artifactId: string; agentId: string; title: string; kind: ThreadArtifact['kind'];
+      extension: string; currentVersion: number;
+    };
+    const keep = (a: StoredArtifact): void => {
+      if (a.agentId !== agentId) return;
+      const title = fenceLine(a.title, 200);
+      if (title === null) return;
+      out.set(a.artifactId, {
+        artifactId: a.artifactId,
+        version: a.currentVersion,
+        title,
+        kind: a.kind,
+        extension: fenceLine(a.extension, 16) ?? '',
+      });
+    };
+    // not-found / forbidden: not this viewer's — drop. Anything else is an outage.
+    const refused = (err: unknown): string | null => {
+      const code = err instanceof PluginError ? err.code : 'unknown';
+      return code === 'not-found' || code === 'forbidden' ? null : code;
+    };
+    let outage: string | null = null;
+
+    const claimed = new Set(ids);
+    try {
+      const listed = await bus.call<{ agentId: string }, { artifacts: StoredArtifact[] }>(
+        'artifacts:list', ctx, { agentId },
+      );
+      for (const a of listed.artifacts) if (claimed.has(a.artifactId)) keep(a);
+    } catch (err) {
+      const code = refused(err);
+      if (code === null) return out;
+      initCtx.logger.warn('workspace_artifact_cards_unverified', { code });
+      return null;
+    }
+
+    const missing = ids.filter((id) => !out.has(id)).slice(0, CARD_GET_FALLBACK_MAX);
+    if (missing.length > 0 && bus.hasService('artifacts:get')) {
+      await Promise.all(missing.map(async (artifactId) => {
+        try {
+          const got = await bus.call<{ artifactId: string }, { artifact: StoredArtifact }>(
+            'artifacts:get', ctx, { artifactId },
+          );
+          keep(got.artifact);
+        } catch (err) {
+          outage ??= refused(err);
+        }
+      }));
+    }
+    if (outage !== null) {
+      initCtx.logger.warn('workspace_artifact_cards_unverified', { code: outage });
+      return null;
+    }
+    return out;
   }
 
   async function connectorNames(userId: string): Promise<ConnectorNames> {
