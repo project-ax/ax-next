@@ -368,7 +368,10 @@ export function createSseHandler(deps: SseHandlerDeps) {
     // the error frame on connect and close — the turn already ended, so we do
     // NOT attach the live subscribers (there's nothing more coming). Without
     // this the client would sit on keepalives forever — the exact silent hang
-    // this path is meant to surface.
+    // this path is meant to surface. This replay works only because a refused
+    // turn's reqId stays bound: step 2 resolves the stream through
+    // `active_req_id`, so a refusal that cleared it would get a 404 here
+    // instead (TASK-1063, pinned in `routes-chat.test.ts`).
     const replayTurnError = deps.buffer.tailTurnError(reqId);
     if (replayTurnError !== null) {
       safeWrite({
