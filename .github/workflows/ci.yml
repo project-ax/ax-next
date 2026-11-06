@@ -176,6 +176,32 @@ jobs:
       # deleting the coverage again.
       - name: Install zsh (the shell the skill blocks actually run under)
         run: sudo apt-get update -qq && sudo apt-get install -y -qq zsh
+      # The chat-visuals hostile-content suite
+      # (packages/channel-web/src/__tests__/visual-hostile.browser.test.ts)
+      # drives a real Chromium to prove a visual can't send a request, navigate,
+      # or read cookies/storage. Locally it skips when Chromium isn't installed;
+      # here it must RUN, so the suite fails outright when `CI` is set and the
+      # browser is missing. This step is what makes it present. The browser is
+      # cached on the exact resolved playwright version (a bump changes the
+      # browser build, so it changes the key); `--with-deps` runs every time
+      # because the apt packages it installs aren't in the cache.
+      - name: Resolve Playwright version
+        id: playwright
+        working-directory: packages/channel-web
+        run: |
+          version=$(node -p "require('playwright/package.json').version")
+          if [ -z "$version" ]; then
+            echo "::error::could not resolve the playwright version for @ax/channel-web"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Cache Playwright browsers
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.playwright.outputs.version }}-chromium
+      - name: Install Playwright Chromium
+        run: pnpm --filter @ax/channel-web exec playwright install --with-deps chromium
       # Tests: affected packages + dependents on PRs (fast feedback), or the full
       # suite on a PR that changes a repo-wide input such as the lockfile (the
       # step says which, and why);

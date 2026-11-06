@@ -737,6 +737,9 @@ importers:
       pg:
         specifier: 8.20.0
         version: 8.20.0
+      playwright:
+        specifier: ^1.59.1
+        version: 1.59.1
       postcss:
         specifier: ^8.5.23
         version: 8.5.26
