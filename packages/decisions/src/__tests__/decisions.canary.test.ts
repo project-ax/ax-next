@@ -2874,25 +2874,106 @@ describe('decisions canary — approved connector calls run on the host (TASK-10
     expect((await readDecision(h, userCtx(h), id)).replayedAt).toBeNull();
   });
 
-  it('an attended connector decision whose session has since ended is made by the host at once', async () => {
+  // Review F1. Host replay is for connector calls held during a TASK RUN. A
+  // call held in a chat (`attended`) stays the agent's: the host making it
+  // after the session ended would leave the agent's next turn to re-issue it
+  // and hold it again, a second card for a call that already went out. So an
+  // attended connector call parks exactly as it did before TASK-1046.
+  it('an attended connector decision whose session has since ended parks for the agent, as before (review F1)', async () => {
+    const channels = liveChannels();
+    const h = await boot({}, undefined, channels);
+    const connector = recordConnectorCalls(h);
+    const id = await holdAndId(h, userCtx(h), CONNECTOR_CALL);
+    expect((await readDecision(h, userCtx(h), id)).attendance).toBe('attended');
+    channels['conv-web']!.activeSessionId = null;
+
+    const out = await approve(h, userCtx(h), id);
+
+    expect(connector.calls).toEqual([]);
+    expect(out.decision!.status).toBe('approved-pending-agent');
+    expect(out.executed).toBe(false);
+    expect(out.path).toBeNull();
+    expect(out.pendingUntil).toBeNull();
+    expect(h.delivered).toEqual([]);
+    const after = await readDecision(h, userCtx(h), id);
+    expect(after.replayClaimedAt).toBeNull();
+    expect(after.replayedAt).toBeNull();
+    const receipts = await readReceipts(h);
+    expect(receipts).toHaveLength(1);
+    expect(receipts[0]!.receipt).toBe(PENDING_AGENT_RECEIPT);
+  });
+
+  it('the next chat turn’s identical connector call goes ahead once, with no second card (review F1)', async () => {
+    // THE REGRESSION. With the host making the call, the yes was spent by
+    // `replayed_at`, the agent never heard, and this re-issued call met the
+    // gate with nothing standing: a second hold, a second card, and a person
+    // one click from posting the same comment twice.
     const channels = liveChannels();
     const h = await boot({}, undefined, channels);
     const connector = recordConnectorCalls(h);
     const id = await holdAndId(h, userCtx(h), CONNECTOR_CALL);
     channels['conv-web']!.activeSessionId = null;
+    await approve(h, userCtx(h), id);
+
+    // The person comes back and the thread wakes a fresh session, whose agent
+    // re-issues the call it was held on.
+    channels['conv-web']!.activeSessionId = 'sess-next';
+    const nextTurn = h.ctx({
+      agentId: 'a1',
+      userId: 'u1',
+      conversationId: 'conv-web',
+      sessionId: 'sess-next',
+    });
+    const fired = await h.bus.fire('tool:pre-call', nextTurn, CONNECTOR_CALL);
+
+    expect(isHold(fired)).toBe(false);
+    expect(fired.rejected).toBe(false);
+    const open = await h.bus.call<unknown, DecisionsListOutput>('decisions:list', nextTurn, {
+      userId: 'u1',
+      status: 'pending',
+    });
+    expect(open.decisions).toEqual([]);
+    expect((await readDecision(h, nextTurn, id)).consumedAt).not.toBeNull();
+    // The agent made the call itself; the host never did.
+    expect(connector.calls).toEqual([]);
+    // One yes, one call: the same call after that is a new question.
+    expect(isHold(await h.bus.fire('tool:pre-call', nextTurn, CONNECTOR_CALL))).toBe(true);
+  });
+
+  it('an attended connector call parks at the approve route itself, even an irreversible one (review F1)', async () => {
+    // The route must park it IN THE CLAIM, not leave the replay to discover
+    // it. A rule may mark a connector call irreversible (the undo-window
+    // follow-up would), and a route that took it for a host replay would
+    // defer it: the row sits `executed` with a replay due, closed to the
+    // agent's gate, so the next turn's re-issued call is held a second time.
+    const clock = movableClock();
+    const channels = liveChannels();
+    const irreversible = [
+      { ...HOLD_RULE, id: 'test.connector-irreversible', match: { tool: CONNECTOR_CALL.name }, irreversible: true },
+    ];
+    const h = await boot({ now: clock.now }, { rules: irreversible }, channels);
+    const connector = recordConnectorCalls(h);
+    const id = await holdAndId(h, userCtx(h), CONNECTOR_CALL);
+    const held = await readDecision(h, userCtx(h), id);
+    expect(held.irreversible).toBe(true);
+    expect(held.attendance).toBe('attended');
+    channels['conv-web']!.activeSessionId = null;
 
     const out = await approve(h, userCtx(h), id);
 
-    expect(connector.calls).toHaveLength(1);
-    expect(out.path).toBe('host-replays');
+    expect(out.decision!.status).toBe('approved-pending-agent');
+    expect(out.path).toBeNull();
     expect(out.pendingUntil).toBeNull();
-    expect(h.delivered).toEqual([]);
-    const after = await readDecision(h, userCtx(h), id);
-    expect(after.replayClaimedAt).not.toBeNull();
-    expect(after.replayedAt).not.toBeNull();
+    expect((await readDecision(h, userCtx(h), id)).replayDueAt).toBeNull();
+    // Inside what would have been the undo window, the agent's own call goes
+    // through once, and the host never calls.
+    expect(isHold(await h.bus.fire('tool:pre-call', userCtx(h), CONNECTOR_CALL))).toBe(false);
+    clock.pastWindow();
+    expect((await sweepNow(h)).replayed).toBe(0);
+    expect(connector.calls).toEqual([]);
   });
 
-  it('a session that dies before the hand-over falls back to the host’s connector call', async () => {
+  it('a session that dies before the hand-over parks the connector call for the agent (review F1)', async () => {
     const clock = movableClock();
     const h = await boot({ now: clock.now }, undefined, liveChannels(), {
       throws: 'unknown-session',
@@ -2907,10 +2988,16 @@ describe('decisions canary — approved connector calls run on the host (TASK-10
     clock.pastWindow();
     expect((await sweepNow(h)).delivered).toBe(1);
 
-    expect(connector.calls).toHaveLength(1);
-    expect((await readDecision(h, userCtx(h), id)).replayedAt).not.toBeNull();
+    // The fallback parks, as it does for a call the host cannot make: the
+    // host never calls, and the yes waits at the gate for the agent.
+    expect(connector.calls).toEqual([]);
+    const after = await readDecision(h, userCtx(h), id);
+    expect(after.status).toBe('approved-pending-agent');
+    expect(after.replayClaimedAt).toBeNull();
+    expect(after.replayedAt).toBeNull();
+    expect((await h.bus.fire('tool:pre-call', userCtx(h), CONNECTOR_CALL)).rejected).toBe(false);
     expect(isHold(await h.bus.fire('tool:pre-call', userCtx(h), CONNECTOR_CALL))).toBe(true);
-    expect(connector.calls).toHaveLength(1);
+    expect(connector.calls).toEqual([]);
   });
 
   it('a Deny saved after the hold stops the call', async () => {

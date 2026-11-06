@@ -4,7 +4,7 @@ This package does four things now. None of them hands the model a host-side MCP 
 
 - **The tool catalog** (`createToolDispatcherPlugin`). Owns `tool:register` / `tool:list` and filters the catalog per agent at list time (`scope.ts`). Pure bookkeeping: no network, no processes, no secrets.
 - **The connector tool inventory** (`connectorToolInventory: true`, k8s preset only). The host lists a connector server's tools so the UI can show and permission them.
-- **Approved connector calls** (the same flag). When a person approves a held connector call and no live agent is there to make it, the host makes that one call itself.
+- **Approved connector calls** (the same flag). When a person approves a connector call held during a task run, so no live agent will make it, the host makes that one call itself.
 - **A boot sweep** that deletes retired host MCP server config (next section).
 
 The inventory and approved calls are the only places this package opens network connections. Each gets its own section below.
@@ -46,9 +46,9 @@ The k8s preset turns on `connectorToolInventory`, which makes the host itself li
 
 ## Approved connector calls (`connectors:call-tool`, TASK-1046)
 
-Sometimes an agent asks to use a connector tool, we hold the call for a person, and by the time they say yes the run is over. Someone still has to make the call they approved. Since TASK-1046, that's the host. It makes that one call itself, as the person and agent the call belonged to. The same `connectorToolInventory` flag turns it on, so only the k8s preset has it.
+Sometimes an agent in a task run asks to use a connector tool, we hold the call for a person, and by the time they say yes the run is over. Someone still has to make the call they approved. Since TASK-1046, that's the host. It makes that one call itself, as the person and agent the call belonged to. The same `connectorToolInventory` flag turns it on, so only the k8s preset has it.
 
-- **Intended caller:** `@ax/decisions`, after a decision's owner approves a held call and no live agent is there to make it. That is a convention, not a check. See the residual at the end of this section.
+- **Intended caller:** `@ax/decisions`, after a decision's owner approves a call held during a task run. (A call held in a chat stays the agent's: its next turn makes it.) That is a convention, not a check. See the residual at the end of this section.
   - What is enforced: `connectors:call-tool` is a named service hook. It is not an IPC action, not a `tool:execute:*` hook (the sandbox reaches every one of those through `tool.execute-host`), and not in the tool catalog. The sandbox has no way to call it.
   - The caller's context must name the same user and agent as the request, and an owner-less user or agent gets nothing. That catches a confused caller, not a hostile one: host code can build any context it likes.
 - **Authorization:** re-derived from the decision's user and agent on every call, never from whoever approved it. Nothing is sent until every check passes:

@@ -559,6 +559,26 @@ describe('settleReplay — an approved connector call the host makes (TASK-1046)
     expect(await store.takeApproval('agent-1', 'fp-conn', T_DONE)).toBeNull();
   });
 
+  it('an attended connector row parks for the agent and the host never calls (review F1)', async () => {
+    // The delivery fallback hands settleReplay an attended row WITHOUT taking
+    // the flight (it asked the same helper and got no executor). The replay
+    // must give the same answer, or the host would make a connector call on a
+    // row nothing has closed.
+    const { bus, sent } = connectorBus({ outcome: 'succeeded' });
+    const store = createFakeStore();
+    const decision = { ...claimedConnector(), attendance: 'attended' as const, replayClaimedAt: null };
+    store.rows.set(decision.id, decision);
+
+    const outcome = await settleReplay({ store, bus, ctx: replayContext(decision), decision });
+
+    expect(sent).toEqual([]);
+    expect(outcome.status).toBe('approved-pending-agent');
+    expect(store.rows.get(decision.id)).toMatchObject({
+      status: 'approved-pending-agent',
+      replayedAt: null,
+    });
+  });
+
   it('a connector key never reaches a tool:execute:<key>, even when one is registered', async () => {
     // No `connectors:call-tool` here, so the host cannot make this call, and a
     // `tool:execute:` hook under the same name must not stand in for it: every

@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. Every task heading carries a `[tier: …]` tag; map it to model/effort without re-deciding.
 
-**Goal:** When a person approves a held connector (MCP) call on a decision that is not routed to a live agent, the host makes that exact call once, through `@ax/mcp-client`'s guarded MCP client, with the credentials the sandbox would have used, and tells the person honestly what happened.
+**Goal:** When a person approves a connector (MCP) call held during a task run (an unattended decision, so no live agent will make it), the host makes that exact call once, through `@ax/mcp-client`'s guarded MCP client, with the credentials the sandbox would have used, and tells the person honestly what happened.
 
-**Architecture:** `@ax/mcp-client` gains one service hook, `connectors:call-tool`, which re-derives authorization from the decision's `(ownerUserId, agentId)`, resolves the connector and its credentials the way a session does, and sends one `tools/call` through the existing SSRF-guarded fetch. It returns a closed outcome code and never server text. `@ax/decisions` treats a connector toolKey (`mcp.<ns>.<tool>`) as host-executable when that hook exists. It re-checks tool-policy `deny` at replay time and maps the outcome onto the existing claim → replay → settle machinery. A call that went out with no reliable answer is recorded as "can't tell whether it finished", never as "nothing was completed".
+**Architecture:** `@ax/mcp-client` gains one service hook, `connectors:call-tool`, which re-derives authorization from the decision's `(ownerUserId, agentId)`, resolves the connector and its credentials the way a session does, and sends one `tools/call` through the existing SSRF-guarded fetch. It returns a closed outcome code and never server text. `@ax/decisions` treats a connector toolKey (`mcp.<ns>.<tool>`) as host-executable when that hook exists and the decision was held during a task run (Decision 10). It re-checks tool-policy `deny` at replay time and maps the outcome onto the existing claim → replay → settle machinery. A call that went out with no reliable answer is recorded as "can't tell whether it finished", never as "nothing was completed".
 
 **Tech Stack:** TypeScript, `@modelcontextprotocol/sdk` 1.32.1 (already pinned), undici, zod v3, kysely/Postgres, vitest, React (channel-web).
 
@@ -62,7 +62,7 @@ These are the inputs most likely to bite a person after Allow, each pinned by a 
 4. **Exactly-once rides the existing claim-first machinery, unchanged:**
    - `claimForApproval` stamps `replay_claimed_at` on the immediate path;
    - `claimDueReplays` stamps it on the deferred path;
-   - `claimReplayFlight` stamps it on the attended-delivery fallback;
+   - `claimReplayFlight` stamps it on the attended-delivery fallback (tool:execute rows only since Decision 10: an attended connector row parks there and is never host-made);
    - the call runs only after one of these claims.
 
    A crash mid-call leaves `executed + replay_claimed_at`. `reclaimStrandedFlights` moves it to `failed` + abandoned after 15 min and never re-runs it. `recoverRoutineReplays` only touches `routine_release_at IS NOT NULL` rows (routine write tools), so it never re-queues a connector row. The hook itself never retries.
@@ -78,6 +78,7 @@ These are the inputs most likely to bite a person after Allow, each pinned by a 
    - no conversation write;
    - no new status;
    - no migration.
+10. **Host replay is for connector calls held during a task run (review F1, owner scope "from a task run").** `hostExecutorFor` takes the decision, and a connector key whose stored attendance is `attended` has no host executor, at all three sites. An attended connector row with no live session parks (`approved-pending-agent`) exactly as before this PR, at the approve route and at the `runDueDeliveries` fallback. The agent's next turn in that thread re-issues the call and the gate lets it through once. Host-making it instead spent the yes in a way the agent never heard about, so that same re-issued call was held again: a second card for a call that already went out. `tool:execute:*` routing is unchanged.
 
 ### Boundary review (paste into the PR body)
 
@@ -106,7 +107,7 @@ Finalized by Task 2's builder with `security-checklist` (2026-11-05), for the `@
   - The destination must also clear the authorization checks of Decision 2, including the connector's `allowedHosts` (exact match, IPv6 brackets stripped, as the proxy does) and no URL fragment. Nothing is read from the vault until the URL checks pass, and nothing is sent until every check passes.
   - `connectors:call-tool` is a named service. It is not an IPC action, not a `tool:execute:*` hook and not a catalog entry, so the sandbox cannot reach it. The caller's ctx must name the payload's user and agent, and an owner-less id gets nothing. That catches a confused caller, not a hostile one: host code can build any ctx.
   - No processes are spawned. There are no filesystem or env reads.
-  - The intended trigger is `decisions:approve` by the decision's owner (`plugin.ts:599`), or the sweep's due replay or delivery fallback of an approval that owner already made. The hook does not enforce that (the Supply chain residual below).
+  - The intended trigger is `decisions:approve` by the decision's owner (`plugin.ts:599`), or the sweep's due replay of an approval that owner already made. Never the delivery fallback: an attended connector row parks there (Decision 10). The hook does not enforce that (the Supply chain residual below).
 - **Prompt injection:**
   - `input` is model-authored and sent verbatim. That is the WYSIWYG promise the card makes. The person approved exactly those bytes. The handler sends the caller's own object, never a parsed copy.
   - The namespace-to-connector mapping is the host's answer, never the model's.
@@ -120,9 +121,9 @@ Finalized by Task 2's builder with `security-checklist` (2026-11-05), for the `@
   - a connector whose server URL changed since the hold is called at its current URL (parity with a fresh session);
   - a paused (kill-switch) account's prior approvals still run, consistent with TASK-692/TASK-716;
   - a verdict-store outage inside tool-policy reads as `hold`, so a Deny saved after the hold is not seen during it (Decision 2);
-  - serial host calls in one sweep pass can outlive the 15-min reclaim. That is pre-existing for every host executor. Connector rows reach it only through the attended-delivery fallback, where `runDueDeliveries` stamps each flight with the pass's own `now` (`expiry.ts:242`), so a very long pass makes a late flight look old. It is rare. It is still never a double-send, because the reclaim runs nothing and `markReplayed` wins if the call lands.
+  - serial host calls in one sweep pass can outlive the 15-min reclaim. That is pre-existing for every host executor. Connector rows do not reach it today. They never defer (Decision 5), and the attended-delivery fallback, where `runDueDeliveries` stamps each flight with the pass's own `now` so a very long pass makes a late flight look old, parks them instead (Decision 10). It is rare. It is still never a double-send, because the reclaim runs nothing and `markReplayed` wins if the call lands.
 
-### What the person sees after Allow (connector call, no live agent)
+### What the person sees after Allow (connector call held during a task run)
 
 | Outcome | Today / in-thread card | Activity receipt (+ second line) |
 |---|---|---|
@@ -130,6 +131,8 @@ Finalized by Task 2's builder with `security-checklist` (2026-11-05), for the `@
 | failed (definite) | "It tried to do this, and it did not work." / "Nothing was completed. Your yes does not carry over, so it will ask again if it still needs to." | `FAILED_RECEIPT` + authored detail for the reason |
 | unknown | **new:** "This was interrupted while it was running, so we cannot tell you whether it finished." / "Worth checking before you approve it again." | `ABANDONED_RECEIPT` (no second line) |
 | hook absent (host truly cannot) | **new wording:** "Approved — it can do this the next time it tries." / the new note in Task 5 | same headline |
+
+A connector call held in a chat (`attended`) is not in this table: with no live session it parks and reads like the last row, and the agent's next turn makes it (Decision 10).
 
 ---
 

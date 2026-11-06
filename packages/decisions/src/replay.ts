@@ -13,9 +13,11 @@ import { routineToolKind } from '@ax/routines-contract';
  * THE CONSTRAINT, STATED OUT LOUD: the host replays a call through a host
  * executor (`hostExecutorFor`), and only through one. That is a dynamic
  * `tool:execute:<name>` service hook — what `tool.execute-host` dispatches to —
- * or, for a connector toolKey `mcp.<ns>.<tool>`, `@ax/mcp-client`'s
- * `connectors:call-tool` (TASK-1046), which re-derives the decision owner's
- * access to that connector instead of trusting this package. A call with
+ * or, for a connector toolKey `mcp.<ns>.<tool>` held during a task run,
+ * `@ax/mcp-client`'s `connectors:call-tool` (TASK-1046), which re-derives the
+ * decision owner's access to that connector instead of trusting this package.
+ * (A connector call held in a chat stays the agent's: review F1, see
+ * `host-executor.ts`.) A call with
  * neither parks: a tool whose descriptor says `executesIn: 'sandbox'` has no
  * host hook — and no sandbox to run in, because the turn is over. We do NOT
  * try, and we do NOT fabricate a receipt. The approval stands at the gate and
@@ -135,7 +137,7 @@ export async function replayOnApprove(args: {
   decision: Decision;
 }): Promise<ReplayOutcome> {
   const { bus, ctx, decision } = args;
-  const executor = hostExecutorFor(bus, decision.call.name);
+  const executor = hostExecutorFor(bus, decision);
 
   if (executor === null) {
     ctx.logger.info('decision_replay_parked', {

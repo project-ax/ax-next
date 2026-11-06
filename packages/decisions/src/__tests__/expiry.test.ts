@@ -345,7 +345,12 @@ describe('the sweep and approved connector calls (TASK-1046)', () => {
     return { bus, calls, policyCtx };
   }
 
-  it('a hand-over that finds nobody takes the flight before the host makes the connector call', async () => {
+  it('a hand-over that finds nobody leaves an attended connector call to the agent: no flight, no host call (review F1)', async () => {
+    // Every row this path sees was held in a chat (`attended`). Host replay is
+    // for calls held during a task run: a host-made call here would never
+    // reach the agent, whose next turn in the thread re-issues it and meets a
+    // second card. So the hand-over's fallback parks it, as it did before
+    // TASK-1046, and the agent's own identical call cashes the yes once.
     const store = createFakeStore();
     store.rows.set(
       'dec_conn',
@@ -361,16 +366,19 @@ describe('the sweep and approved connector calls (TASK-1046)', () => {
     );
     const { bus, calls, policyCtx } = connectorHost(store);
 
-    // No `session:queue-work` on this bus: the hand-over reaches nobody, so the
-    // host makes the approved call itself.
+    // No `session:queue-work` on this bus: the hand-over reaches nobody.
     expect(await runDueDeliveries({ store, bus, now: NOW, logCtx })).toBe(1);
 
-    expect(calls).toEqual([{ ctx: DECISION_CTX, payload: SENT, flight: NOW.toISOString() }]);
-    expect(policyCtx).toEqual([DECISION_CTX]);
+    expect(calls).toEqual([]);
+    expect(policyCtx).toEqual([]);
     expect(store.rows.get('dec_conn')).toMatchObject({
-      status: 'executed',
-      replayedAt: NOW.toISOString(),
+      status: 'approved-pending-agent',
+      replayClaimedAt: null,
+      replayedAt: null,
     });
+    // The yes stands at the gate for the agent's own identical call, once.
+    expect(await store.takeApproval('agent-1', 'fp-1', NOW.toISOString())).not.toBeNull();
+    expect(await store.takeApproval('agent-1', 'fp-1', NOW.toISOString())).toBeNull();
   });
 
   it('a deferred connector replay is made through connectors:call-tool, as the decision’s owner and agent', async () => {

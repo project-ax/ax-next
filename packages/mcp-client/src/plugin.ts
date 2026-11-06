@@ -16,12 +16,12 @@
 //      and purges it on `agents:deleted`. The k8s preset turns it on; the CLI
 //      preset (no database, no `@ax/connectors`) leaves it off.
 //   3. Approved connector calls (same flag, TASK-1046). Registers
-//      `connectors:call-tool`: a person approved a held connector call and no
-//      live agent is there to make it, so @ax/decisions asks the host to make
-//      that one call. It re-derives access from the decision's user and agent
-//      and sends one guarded `tools/call` (connector-inventory/call-tool.ts).
-//      Not an IPC action and not a `tool:execute:*`: the sandbox cannot
-//      reach it.
+//      `connectors:call-tool`: a person approved a connector call held during
+//      a task run, so no live agent will make it, and @ax/decisions asks the
+//      host to make that one call. It re-derives access from the decision's
+//      user and agent and sends one guarded `tools/call`
+//      (connector-inventory/call-tool.ts). Not an IPC action and not a
+//      `tool:execute:*`: the sandbox cannot reach it.
 //
 // `credentials:list` / `credentials:delete` are optional calls: the sweep
 // purges through them when present (and init orders after the credentials

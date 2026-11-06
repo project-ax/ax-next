@@ -15,6 +15,16 @@
  *     `tool.execute-host`, so routing a credentialed connector call through
  *     one would hand a compromised runner a host-side path to third-party
  *     servers that skips the approval gate.
+ *   * And only when it was held during a TASK RUN (review F1): the row's
+ *     stored attendance is not `attended`. A connector call held in a chat
+ *     stays the agent's, even after its session ended, exactly as before
+ *     TASK-1046. The host making it would never reach the agent: its next turn
+ *     in that thread re-issues the call, meets the gate with the yes already
+ *     spent, and the person gets a second card for a call that already went
+ *     out. Parked, the agent's own re-issued call cashes the yes once. This is
+ *     the STORED attendance (the channel that opened the conversation), not a
+ *     live session read, so the approve route and the delivery fallback give
+ *     the same answer for the same row.
  *   * Anything else needs its own `tool:execute:<name>`. That name is built
  *     from `call.name`, which is model-authored: the documented
  *     dynamic-service-hook exception (`replay.ts` says why it is safe —
@@ -32,6 +42,7 @@
 import type { HookBus } from '@ax/core';
 import { z } from 'zod';
 import { parseConnectorToolKey } from './tool-label.js';
+import type { Decision } from './types.js';
 
 /** @ax/mcp-client's service: the host makes one approved connector call. */
 export const CONNECTOR_CALL_TOOL_HOOK = 'connectors:call-tool';
@@ -94,14 +105,21 @@ export type HostExecutor = { kind: 'tool'; hook: string } | { kind: 'connector' 
 
 /**
  * A connector toolKey (parseConnectorToolKey !== null) is host-executable ONLY
- * via the connector hook — never via a `tool:execute:<key>` even if one exists.
- * Anything else needs `tool:execute:<name>`. Null means the host cannot run it.
+ * via the connector hook — never via a `tool:execute:<key>` even if one exists
+ * — and only for a decision held during a task run (`attendance` is not
+ * `attended`, review F1). Anything else needs `tool:execute:<name>`, whatever
+ * its attendance. Null means the host cannot run it.
+ *
+ * Asked about the DECISION, not a bare tool name, so the one rule covers all
+ * three sites: they hand in the same row and cannot answer differently.
  */
 export function hostExecutorFor(
   bus: Pick<HookBus, 'hasService'>,
-  toolName: string,
+  decision: Pick<Decision, 'call' | 'attendance'>,
 ): HostExecutor | null {
+  const toolName = decision.call.name;
   if (parseConnectorToolKey(toolName) !== null) {
+    if (decision.attendance === 'attended') return null;
     return bus.hasService(CONNECTOR_CALL_TOOL_HOOK) ? { kind: 'connector' } : null;
   }
   const hook = `tool:execute:${toolName}`;

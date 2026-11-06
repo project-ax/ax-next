@@ -12,6 +12,7 @@
 import { describe, expect, it } from 'vitest';
 import { HookBus } from '@ax/core';
 import { CONNECTOR_CALL_TOOL_HOOK, hostExecutorFor } from '../host-executor.js';
+import type { Attendance } from '../types.js';
 
 /** `c5e0235982f` is the namespace literal @ax/connectors' tests pin. */
 const CONNECTOR_KEY = 'mcp.c5e0235982f.save_comment';
@@ -23,6 +24,11 @@ function busWith(...hooks: string[]): HookBus {
     bus.registerService(hook, '@ax/decisions/test/producer', async () => ({}));
   }
   return bus;
+}
+
+/** The two fields of a decision row the helper reads. Held from a task run unless told otherwise. */
+function held(name: string, attendance: Attendance = 'unattended') {
+  return { call: { id: 'call-1', name, input: {} }, attendance };
 }
 
 describe('hostExecutorFor', () => {
@@ -43,21 +49,55 @@ describe('hostExecutorFor', () => {
     ],
     ['a plain name, its tool:execute hook absent', PLAIN, [], null],
   ] as const)('%s', (_label, name, hooks, expected) => {
-    expect(hostExecutorFor(busWith(...hooks), name)).toEqual(expected);
+    expect(hostExecutorFor(busWith(...hooks), held(name))).toEqual(expected);
   });
 
   it('a connector key never routes to tool:execute:<key>', () => {
     const bus = busWith('tool:execute:mcp.c5e0235982f.x');
-    expect(hostExecutorFor(bus, 'mcp.c5e0235982f.x')).toBeNull();
+    expect(hostExecutorFor(bus, held('mcp.c5e0235982f.x'))).toBeNull();
   });
 
   it('a connector key goes to the connector hook even when a tool:execute:<key> exists', () => {
     const bus = busWith('tool:execute:mcp.c5e0235982f.x', 'connectors:call-tool');
-    expect(hostExecutorFor(bus, 'mcp.c5e0235982f.x')).toEqual({ kind: 'connector' });
+    expect(hostExecutorFor(bus, held('mcp.c5e0235982f.x'))).toEqual({ kind: 'connector' });
   });
 
   it('the connector hook makes no other tool host-executable', () => {
-    expect(hostExecutorFor(busWith('connectors:call-tool'), PLAIN)).toBeNull();
-    expect(hostExecutorFor(busWith('connectors:call-tool'), 'skill_propose')).toBeNull();
+    expect(hostExecutorFor(busWith('connectors:call-tool'), held(PLAIN))).toBeNull();
+    expect(hostExecutorFor(busWith('connectors:call-tool'), held('skill_propose'))).toBeNull();
+  });
+});
+
+/**
+ * Review F1. Host replay is for connector calls held during a TASK RUN. A call
+ * held in a chat is `attended`: the person's conversation is where the agent
+ * makes it. If the host made it after that session ended, the agent would
+ * never learn: its next turn in the same thread re-issues the call, meets the
+ * gate with the yes already spent, and the person gets a second card for a
+ * call that already went out. So an attended connector call parks for the
+ * agent (`approved-pending-agent`), exactly as it did before TASK-1046, and the
+ * agent's own re-issued call cashes the yes once.
+ */
+describe('hostExecutorFor — an attended connector call stays the agent’s (review F1)', () => {
+  it('an attended connector decision has no host executor, even with connectors:call-tool present', () => {
+    const bus = busWith('connectors:call-tool');
+    expect(hostExecutorFor(bus, held(CONNECTOR_KEY, 'attended'))).toBeNull();
+    // The same key held from a task run is the host's to make.
+    expect(hostExecutorFor(bus, held(CONNECTOR_KEY, 'unattended'))).toEqual({ kind: 'connector' });
+  });
+
+  it('an attended connector decision never falls through to a tool:execute:<key> either', () => {
+    const bus = busWith('connectors:call-tool', `tool:execute:${CONNECTOR_KEY}`);
+    expect(hostExecutorFor(bus, held(CONNECTOR_KEY, 'attended'))).toBeNull();
+  });
+
+  it('tool:execute:* is unchanged: an attended plain tool keeps its host executor', () => {
+    // The TASK-277 fallback (session gone, the host makes the call) still
+    // holds for a host tool. Only connector calls changed.
+    const bus = busWith('tool:execute:request_capability', 'connectors:call-tool');
+    expect(hostExecutorFor(bus, held(PLAIN, 'attended'))).toEqual({
+      kind: 'tool',
+      hook: 'tool:execute:request_capability',
+    });
   });
 });

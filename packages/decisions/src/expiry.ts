@@ -198,7 +198,10 @@ export async function runDueReplays(args: {
  * resolver that got there first wins and nothing runs. Gated on a host executor
  * (`hostExecutorFor`) existing: with none, `settleReplay` parks the row for a
  * later run to make the identical call, and a flight taken on that side would
- * close the row to nothing.
+ * close the row to nothing. Every row here was held in a chat, so a CONNECTOR
+ * call always parks here (review F1): the host makes connector calls only for
+ * rows held during a task run, and the agent's next turn in the thread
+ * re-issues this one and cashes the yes once.
  *
  * Each row is settled independently: one failing delivery must not strand the
  * rest of the batch.
@@ -243,7 +246,7 @@ export async function runDueDeliveries(args: {
         reason: delivery.reason,
       });
       let flight: Decision = decision;
-      if (hostExecutorFor(bus, decision.call.name) !== null) {
+      if (hostExecutorFor(bus, decision) !== null) {
         const taken = await store.claimReplayFlight(decision.id, now.toISOString());
         if (taken === null) {
           logCtx.logger.warn('decision_replay_flight_lost', {

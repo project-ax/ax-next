@@ -75,7 +75,9 @@ export type ExecutionPath = 'agent-executes' | 'host-replays';
  * CANNOT make: no `tool:execute:<name>` hook (`tool.execute-host` dispatches to
  * it, and a tool whose descriptor says `executesIn: 'sandbox'` has none, and no
  * sandbox to run in once the turn ended) AND, for a connector key
- * `mcp.<ns>.<tool>`, no `connectors:call-tool` either. The approval is real
+ * `mcp.<ns>.<tool>`, no `connectors:call-tool` either, or a connector call
+ * held in a chat (`attended`) whose session has gone: the host makes connector
+ * calls only for rows held during a task run (review F1). The approval is real
  * and stands at the gate — the call goes ahead if a later run makes exactly
  * the same request. It is deliberately NOT `executed`, because `executed` is
  * a claim that the thing happened (design H1), and the receipt reads

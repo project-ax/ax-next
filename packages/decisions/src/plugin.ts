@@ -706,7 +706,14 @@ export function createDecisionsPlugin(opts?: DecisionsPluginOptions): Plugin {
           //                                `approved-pending-agent`: the
           //                                approval waits at the gate for a
           //                                later run to make the identical
-          //                                call. NOT "Sent".
+          //                                call. NOT "Sent". A connector call
+          //                                held in a CHAT lands here too once
+          //                                its session is gone (review F1): the
+          //                                host makes connector calls only for
+          //                                rows held during a task run, so the
+          //                                agent's next turn re-issues it and
+          //                                the gate lets it through once,
+          //                                instead of holding it a second time.
           //   unattended, irreversible  -> claim now, replay when the undo
           //                                window closes.
           //   unattended, reversible    -> claim now, replay now.
@@ -753,7 +760,7 @@ export function createDecisionsPlugin(opts?: DecisionsPluginOptions): Plugin {
                   ?.activeSessionId ?? null)
               : null;
           const attended = liveSessionId !== null;
-          const hasExecutor = hostExecutorFor(bus, current.call.name) !== null;
+          const hasExecutor = hostExecutorFor(bus, current) !== null;
           const parked = !attended && !hasExecutor;
           const deferred =
             !attended &&

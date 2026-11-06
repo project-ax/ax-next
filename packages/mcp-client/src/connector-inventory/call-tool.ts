@@ -2,13 +2,14 @@
 // `connectors:call-tool` — the host makes ONE connector call that a person
 // approved (TASK-1046).
 //
-// Intended caller: @ax/decisions, after a decision's owner approved a held
-// connector call and no live agent is there to make it. Nothing here
-// enforces that. Any host plugin holds the same bus, the request carries no
-// proof that anyone approved it, and the tool-policy re-check is the
-// caller's job. What IS enforced: this is a NAMED service, not a
-// `tool:execute:<name>` (the sandbox reaches every one of those through
-// `tool.execute-host`) and not an IPC action, so a runner cannot call it.
+// Intended caller: @ax/decisions, after a decision's owner approved a
+// connector call held during a task run, so no live agent will make it.
+// Nothing here enforces that. Any host plugin holds the same bus, the
+// request carries no proof that anyone approved it, and the tool-policy
+// re-check is the caller's job. What IS enforced: this is a NAMED
+// service, not a `tool:execute:<name>` (the sandbox reaches every one of
+// those through `tool.execute-host`) and not an IPC action, so a runner
+// cannot call it.
 //
 // Access is re-derived on every call from the payload's (userId, agentId),
 // which are the decision's owner and agent. The caller's ctx must name the
