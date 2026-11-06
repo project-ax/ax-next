@@ -3,9 +3,26 @@
 // libraries and before the agent's markup, and called as
 // `axVisualRuntime(window, parent)`.
 //
-// It runs inside the untrusted box and grants nothing, so it is not a security
-// boundary — the sandbox and CSP are. It reports size/ready/error to the
-// parent, applies live theme changes, exports a PNG, and themes Chart.js.
+// It runs inside the untrusted box and grants nothing: the sandbox and CSP
+// are the boundary. It reports size/ready/error to the parent, applies live
+// theme changes, exports a PNG, and themes Chart.js.
+//
+// It does add one hardening layer the CSP can't: CSP doesn't govern WebRTC,
+// so the runtime pins the WebRTC constructors to undefined. That only holds in
+// this realm — a child frame, even a srcdoc one (frame-src 'none' doesn't stop
+// those), would get fresh ones. So the frame must never get a child browsing
+// context: visual-doc.ts strips frame-making elements from the markup, and
+// this runtime removes any that a script inserts later (a MutationObserver
+// fires in a microtask, before the async child load can start running) and
+// locks the APIs that could hide one from that observer (attachShadow,
+// setHTMLUnsafe, parseHTMLUnsafe, document.write/writeln/open).
+//
+// Residual: this is in-realm hardening, written before agent code runs, not a
+// browser boundary. A browser bug that loads a child synchronously, or a new
+// API that builds a shadow root or child frame some other way, would get past
+// it. A declarative shadow root the parser builds from the markup is invisible
+// to the observer, so stripChildFrames() in visual-doc.ts is the only layer
+// against those. If any lock can't be installed, `ready` says `locked: false`.
 //
 // The token allow-list and value pattern restate VISUAL_TOKEN_NAMES and
 // VISUAL_TOKEN_VALUE from visual-doc.ts (this file can't import them); a test
@@ -13,10 +30,29 @@
 window.axVisualRuntime = function axVisualRuntime(win, host) {
   'use strict';
 
-  // CSP doesn't govern WebRTC, so a peer connection could still reach the
-  // network from inside the frame. Pin the constructors to undefined before
-  // any agent script runs: non-writable and non-configurable, so they can't be
-  // put back. A nested frame (a fresh realm) is blocked by frame-src 'none'.
+  var locked = true;
+
+  // Non-writable and non-configurable, so agent code can't put the original
+  // back. A failure is recorded, never swallowed: the parent hears about it.
+  function lock(target, name, value) {
+    if (!target) return;
+    try {
+      Object.defineProperty(target, name, {
+        value: value,
+        writable: false,
+        configurable: false,
+        enumerable: false,
+      });
+      if (target[name] !== value) locked = false;
+    } catch {
+      locked = false;
+    }
+  }
+
+  function refuse() {
+    throw new TypeError('Not available in a chat visual.');
+  }
+
   [
     'RTCPeerConnection',
     'webkitRTCPeerConnection',
@@ -24,17 +60,63 @@ window.axVisualRuntime = function axVisualRuntime(win, host) {
     'RTCSessionDescription',
     'RTCIceCandidate',
   ].forEach(function (name) {
-    try {
-      Object.defineProperty(win, name, {
-        value: undefined,
-        writable: false,
-        configurable: false,
-        enumerable: false,
-      });
-    } catch {
-      // Already locked (or not ours to redefine); nothing more we can do.
-    }
+    lock(win, name, undefined);
   });
+
+  var elementProto = win.Element && win.Element.prototype;
+  lock(elementProto, 'attachShadow', refuse);
+  lock(elementProto, 'setHTMLUnsafe', refuse);
+  if (win.ShadowRoot) lock(win.ShadowRoot.prototype, 'setHTMLUnsafe', refuse);
+  if (win.Document) {
+    lock(win.Document, 'parseHTMLUnsafe', refuse);
+    lock(win.Document.prototype, 'write', refuse);
+    lock(win.Document.prototype, 'writeln', refuse);
+    lock(win.Document.prototype, 'open', refuse);
+  }
+
+  // Remove child-frame elements the moment they're inserted. The observer
+  // only uses methods captured here, so agent code that later patches
+  // Element.prototype.remove (or NodeList, or MutationRecord) can't blind it.
+  var CHILD_FRAMES = 'iframe,frame,frameset,object,embed,portal,fencedframe';
+  var apply = Reflect.apply;
+  function getter(proto, name) {
+    var d = proto && Object.getOwnPropertyDescriptor(proto, name);
+    return d && d.get;
+  }
+  var nodeProto = win.Node && win.Node.prototype;
+  var getNodeType = getter(nodeProto, 'nodeType');
+  var getAddedNodes = getter(win.MutationRecord && win.MutationRecord.prototype, 'addedNodes');
+  var getListLength = getter(win.NodeList && win.NodeList.prototype, 'length');
+  var listItem = win.NodeList && win.NodeList.prototype.item;
+  var matches = elementProto && elementProto.matches;
+  var queryAll = elementProto && elementProto.querySelectorAll;
+  var removeEl = elementProto && elementProto.remove;
+
+  function purge(node) {
+    if (apply(getNodeType, node, []) !== 1) return;
+    if (apply(matches, node, [CHILD_FRAMES])) {
+      apply(removeEl, node, []);
+      return;
+    }
+    var found = apply(queryAll, node, [CHILD_FRAMES]);
+    var n = apply(getListLength, found, []);
+    for (var i = 0; i < n; i++) apply(removeEl, apply(listItem, found, [i]), []);
+  }
+
+  try {
+    if (!getNodeType || !getAddedNodes || !getListLength || !listItem || !matches || !queryAll || !removeEl) {
+      throw new Error('missing DOM primitives');
+    }
+    new win.MutationObserver(function (records) {
+      for (var r = 0; r < records.length; r++) {
+        var added = apply(getAddedNodes, records[r], []);
+        var count = apply(getListLength, added, []);
+        for (var a = 0; a < count; a++) purge(apply(listItem, added, [a]));
+      }
+    }).observe(win.document, { childList: true, subtree: true });
+  } catch {
+    locked = false;
+  }
 
   var TOKEN_NAMES = [
     '--background',
@@ -171,7 +253,7 @@ window.axVisualRuntime = function axVisualRuntime(win, host) {
         lastHeight = h;
         var body = doc.body;
         var hasContent = !!body && (body.children.length > 0 || body.textContent.trim() !== '');
-        post({ type: 'ax-visual:ready', height: h, rendered: hasContent && h >= 8 });
+        post({ type: 'ax-visual:ready', height: h, rendered: hasContent && h >= 8, locked: locked });
       });
     });
   });

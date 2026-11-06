@@ -31,6 +31,7 @@ export const SHOW_VISUAL_DESCRIPTOR: ToolDescriptor = {
     'The HTML runs in a sandboxed frame with scripts but NO network: nothing can be',
     'fetched or loaded (no CDNs, web fonts, remote images or APIs). Gather the data',
     'with your other tools first and write it into the HTML.',
+    "Don't use iframes, objects or embeds; they are removed.",
     '',
     'Look like the app:',
     '- Color only with the provided CSS variables, written as hsl(var(--name)):',

@@ -82,8 +82,25 @@ describe('frame runtime', () => {
     win.dispatchEvent(new win.Event('load'));
     await frames();
     expect(readyCalls(host)).toEqual([
-      [{ type: 'ax-visual:ready', height: expect.any(Number), rendered: expect.any(Boolean) }, '*'],
+      [
+        {
+          type: 'ax-visual:ready',
+          height: expect.any(Number),
+          rendered: expect.any(Boolean),
+          locked: true,
+        },
+        '*',
+      ],
     ]);
+  });
+
+  it('says locked:false in ready when a lock could not be installed', async () => {
+    const { win, host } = setup((w) => {
+      Object.defineProperty(w, 'RTCPeerConnection', { value: function () {}, configurable: false });
+    });
+    win.dispatchEvent(new win.Event('load'));
+    await frames();
+    expect(posted(host, 'ax-visual:ready')).toEqual([expect.objectContaining({ locked: false })]);
   });
 
   it('reports an error before ready, once, without its text', () => {
@@ -267,6 +284,52 @@ describe('frame runtime', () => {
     expect(win.RTCPeerConnection).toBeUndefined();
     expect(win.eval('typeof RTCPeerConnection')).toBe('undefined');
     expect(win.eval('typeof webkitRTCPeerConnection')).toBe('undefined');
+  });
+});
+
+describe('frame runtime: no child frames', () => {
+  const microtask = () => new Promise<void>((r) => queueMicrotask(r));
+
+  it('removes frame-making elements a script inserts, before the next task', async () => {
+    const { win } = setup();
+    const doc = win.document;
+    const iframe = doc.createElement('iframe');
+    iframe.srcdoc = '<script>top.postMessage(1, "*")</script>';
+    doc.body.appendChild(iframe);
+    const wrap = doc.createElement('div');
+    wrap.innerHTML = '<span><object data="data:text/html,x"></object><embed src="data:text/html,x"><frame></span>';
+    doc.body.appendChild(wrap);
+    doc.body.insertAdjacentHTML('beforeend', '<iframe src="javascript:1"></iframe>');
+    await microtask();
+    expect(doc.querySelectorAll('iframe,object,embed,frame')).toHaveLength(0);
+    expect(wrap.querySelector('span')).not.toBeNull();
+  });
+
+  it("can't be blinded by patching Element.prototype.remove or NodeList", async () => {
+    const { win } = setup();
+    win.eval(
+      'Element.prototype.remove = function () {};' +
+        'Object.defineProperty(NodeList.prototype, "length", { get() { return 0; } });' +
+        'document.body.appendChild(document.createElement("iframe"));',
+    );
+    await microtask();
+    expect(win.document.querySelectorAll('iframe')).toHaveLength(0);
+  });
+
+  it('makes attachShadow, setHTMLUnsafe and document.write throw, for good', () => {
+    const { win } = setup();
+    const div = win.document.createElement('div');
+    expect(() => div.attachShadow({ mode: 'open' })).toThrow();
+    expect(() => win.eval('document.body.setHTMLUnsafe("<p>")')).toThrow();
+    expect(() => win.eval('Document.parseHTMLUnsafe("<p>")')).toThrow();
+    expect(() => win.document.write('<iframe></iframe>')).toThrow();
+    expect(() => win.eval('Document.prototype.writeln.call(document, "x")')).toThrow();
+    win.eval('try { Element.prototype.attachShadow = HTMLElement.prototype.click; } catch {}');
+    expect(() => div.attachShadow({ mode: 'closed' })).toThrow();
+    expect(Object.getOwnPropertyDescriptor(win.Element.prototype, 'attachShadow')).toMatchObject({
+      writable: false,
+      configurable: false,
+    });
   });
 });
 

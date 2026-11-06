@@ -5,7 +5,11 @@
 // document we wrap it in opens with a CSP meta that denies every load CSP
 // governs. CSP does not govern WebRTC (RTCPeerConnection's ICE/STUN traffic),
 // so the frame runtime removes the WebRTC constructors before any agent markup
-// runs. That meta has to be the very first thing in <head>: a policy only governs
+// runs. That only holds in the frame's own realm: a child frame (even a srcdoc
+// one, which frame-src 'none' does not block) gets fresh constructors. So the
+// visual must never get a child browsing context: stripChildFrames() takes
+// frame-making elements out of the markup here, and the runtime removes any a
+// script inserts later and locks the APIs that could hide one from it. That meta has to be the very first thing in <head>: a policy only governs
 // what is parsed after it, so nothing — not our own styles, and certainly not
 // the agent's markup — may come before it. The agent's HTML goes last, into
 // <body>. If it brings its own <html>/<head>/<meta CSP>, the parser drops or
@@ -186,8 +190,54 @@ function buildFrameDocument(input: VisualDocInput, assets: VisualAssets, extraCs
     `<style id="ax-base">${baseCss}</style>` +
     libraries +
     runtime +
-    `</head><body>${input.html}</body></html>`
+    `</head><body>${stripChildFrames(input.html)}</body></html>`
   );
+}
+
+// Everything that can give the frame a child browsing context, plus <noscript>:
+// we parse here with scripting off but the frame parses with it on, so a
+// <noscript> body is markup to us and raw text there — the classic way to
+// smuggle a tag past a parse-and-check. Scripts always run in the frame, so a
+// <noscript> never shows anyway.
+const CHILD_FRAME_SELECTOR = 'iframe,frame,frameset,object,embed,portal,fencedframe,noscript';
+
+function scrubChildFrames(root: ParentNode): boolean {
+  let removed = false;
+  for (const el of Array.from(root.querySelectorAll(CHILD_FRAME_SELECTOR))) {
+    el.remove();
+    removed = true;
+  }
+  for (const template of Array.from(root.querySelectorAll('template'))) {
+    // A declarative shadow root would hide its contents from the runtime's
+    // MutationObserver; without the attribute it's an inert template.
+    for (const attr of ['shadowrootmode', 'shadowroot']) {
+      if (template.hasAttribute(attr)) {
+        template.removeAttribute(attr);
+        removed = true;
+      }
+    }
+    if (scrubChildFrames(template.content)) removed = true;
+  }
+  return removed;
+}
+
+/**
+ * Removes every element that could open a child frame (and declarative shadow
+ * roots) from the agent's markup. Untouched markup comes back as the same
+ * string. Otherwise the cleaned tree is serialized and checked again until a
+ * parse finds nothing — a serialize/re-parse round trip can grow new elements
+ * (mutation XSS), and the frame parses exactly what we return. Markup that
+ * never settles is dropped.
+ */
+export function stripChildFrames(html: string): string {
+  let current = html;
+  for (let pass = 0; pass < 4; pass++) {
+    // The doctype keeps this parse in no-quirks mode, like the frame's body.
+    const doc = new DOMParser().parseFromString(`<!doctype html>${current}`, 'text/html');
+    if (!scrubChildFrames(doc)) return current;
+    current = doc.documentElement.outerHTML;
+  }
+  return '';
 }
 
 /** A download name built from the title: plain characters only, never a path. */

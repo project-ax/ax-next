@@ -8,6 +8,7 @@ import {
   inlineScript,
   readThemeTokens,
   sanitizeTokens,
+  stripChildFrames,
   visualFileName,
   type VisualAssets,
 } from '../visual-doc';
@@ -239,5 +240,61 @@ describe('visualFileName', () => {
 describe('constants', () => {
   it('sandboxes with scripts only', () => {
     expect(VISUAL_IFRAME_SANDBOX).toBe('allow-scripts');
+  });
+});
+
+describe('stripChildFrames', () => {
+  it('returns markup with nothing to strip as the very same string', () => {
+    const html = '<style>.a{color:red}</style><div class="a">x</div><script>1<2</script><template><p>t</p></template>';
+    expect(stripChildFrames(html)).toBe(html);
+  });
+
+  it('removes every element that can open a child frame', () => {
+    for (const tag of ['iframe', 'frame', 'frameset', 'object', 'embed', 'portal', 'fencedframe', 'noscript']) {
+      const out = stripChildFrames(`<p>keep</p><div><${tag} src="data:text/html,x"></${tag}></div>`);
+      const d = parse(`<!doctype html>${out}`);
+      expect(d.querySelector(tag), tag).toBeNull();
+      expect(d.querySelector('p')?.textContent, tag).toBe('keep');
+    }
+  });
+
+  it('removes them inside template contents, nested', () => {
+    const out = stripChildFrames('<template><div><template><iframe srcdoc="x"></iframe></template></div></template>');
+    expect(out).not.toMatch(/iframe/i);
+    expect(out).toMatch(/<template><div><template><\/template><\/div><\/template>/);
+  });
+
+  it('drops declarative shadow roots', () => {
+    for (const attr of ['shadowrootmode="open"', 'shadowrootmode="closed"', 'shadowroot="open"']) {
+      const out = stripChildFrames(`<div><template ${attr}><b>x</b></template></div>`);
+      expect(out).not.toMatch(/shadowroot/i);
+      expect(out).toContain('<b>x</b>');
+    }
+  });
+
+  it("closes the noscript smuggle (markup to us, raw text to the frame)", () => {
+    // With scripting on (the frame), the noscript body is raw text up to the
+    // first </noscript>, so the "attribute" below would become a real iframe.
+    for (const html of [
+      '<div><noscript><p title="</noscript><iframe srcdoc=x>"></p></noscript></div><i>ok</i>',
+      '<noscript><p title="</noscript><iframe srcdoc=x>"></p></noscript><i>ok</i>',
+    ]) {
+      const out = stripChildFrames(html);
+      expect(out).not.toMatch(/<noscript/i);
+      const d = parse(`<!doctype html><body>${out}`);
+      expect(d.querySelectorAll('noscript,iframe')).toHaveLength(0);
+      expect(d.querySelector('i')?.textContent).toBe('ok');
+    }
+  });
+
+  it('is applied to the agent markup, keeping CSP first and a whole agent document', () => {
+    const html =
+      '<!doctype html><html><head><style>.k{color:hsl(var(--primary))}</style></head><body><div class="k">x</div><iframe srcdoc="y"></iframe></body></html>';
+    const doc = buildVisualDocument({ html, mode: 'light', tokens: {} }, fake);
+    const d = parse(doc);
+    expect(d.head.firstElementChild!.getAttribute('content')).toBe(VISUAL_FRAME_CSP);
+    expect(d.querySelector('iframe')).toBeNull();
+    expect(d.documentElement.innerHTML).toContain('.k{color:hsl(var(--primary))}');
+    expect(d.querySelector('body .k')?.textContent).toBe('x');
   });
 });
