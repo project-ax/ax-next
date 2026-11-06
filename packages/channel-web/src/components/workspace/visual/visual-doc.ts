@@ -15,6 +15,10 @@
 // The standalone HTML download gets the same box: an outer page with no
 // scripts at all, holding the visual in a sandboxed srcdoc frame. Opened from
 // disk there's no app around it to set frame-src, so the outer page sets it.
+// The outer page carries VISUAL_FRAME_CSP itself, not something stricter: a
+// srcdoc frame inherits its parent's policy on top of its own, so anything the
+// outer policy denies (inline script, data: images and fonts) dies inside the
+// frame too, and the visual renders blank.
 //
 // Assets (fonts, library sources, runtime) are passed in rather than imported,
 // so the ~230 KB of library text stays in a lazily-loaded chunk.
@@ -32,13 +36,6 @@ export const APP_FRAME_CSP = "frame-src 'none'";
 
 /** Scripts only. Never add allow-same-origin: with it, the frame could reach the app. */
 export const VISUAL_IFRAME_SANDBOX = 'allow-scripts';
-
-/**
- * The outer page of a standalone download. No scripts may run there; frame-src
- * 'none' stops the inner visual navigating its frame to a URL.
- */
-export const VISUAL_STANDALONE_CSP =
-  "default-src 'none'; style-src 'unsafe-inline'; frame-src 'none'; base-uri 'none'; form-action 'none'";
 
 export const VISUAL_MIN_HEIGHT = 48;
 export const VISUAL_DEFAULT_HEIGHT = 280;
@@ -152,7 +149,7 @@ export function buildVisualDocument(input: VisualDocInput, assets: VisualAssets)
   const frame = buildFrameDocument(input, assets, STANDALONE_FRAME_CSS);
   return (
     '<!doctype html><html lang="en"><head>' +
-    `<meta http-equiv="Content-Security-Policy" content="${VISUAL_STANDALONE_CSP}">` +
+    `<meta http-equiv="Content-Security-Policy" content="${VISUAL_FRAME_CSP}">` +
     '<meta charset="utf-8">' +
     `<title>${title}</title>` +
     `<style>${STANDALONE_PAGE_CSS}</style>` +

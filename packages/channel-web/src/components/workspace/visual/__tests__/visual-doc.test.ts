@@ -3,7 +3,6 @@ import {
   VISUAL_FRAME_CSP,
   VISUAL_IFRAME_SANDBOX,
   VISUAL_MAX_HEIGHT,
-  VISUAL_STANDALONE_CSP,
   VISUAL_TOKEN_NAMES,
   buildVisualDocument,
   inlineScript,
@@ -145,12 +144,11 @@ describe('buildVisualDocument standalone', () => {
   it('boxes the visual in a sandboxed frame under a script-free outer page', () => {
     const outer = parse(standalone('<div class="k">x</div><script>window.agent=1</script>', 'Issues'));
     const first = outer.head.firstElementChild!;
+    // The frame inherits this policy, so it must be exactly the frame's own.
     expect([first.getAttribute('http-equiv'), first.getAttribute('content')]).toEqual([
       'Content-Security-Policy',
-      VISUAL_STANDALONE_CSP,
+      VISUAL_FRAME_CSP,
     ]);
-    expect(VISUAL_STANDALONE_CSP).not.toContain('script-src');
-    expect(VISUAL_STANDALONE_CSP).toContain("frame-src 'none'");
     expect(outer.querySelectorAll('script')).toHaveLength(0);
     const frames = outer.querySelectorAll('iframe');
     expect(frames).toHaveLength(1);
