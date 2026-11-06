@@ -64,7 +64,11 @@ import { readStorageFull } from './storage-full';
   `transport.ts` with the rest of chat, and this is now the surface that is
   left. The table lives in `./turn-error-labels`, outside the tree that went.
 */
-import { turnErrorOpensConnectors, turnErrorText } from './turn-error-labels';
+import {
+  turnErrorMessageNotSaved,
+  turnErrorOpensConnectors,
+  turnErrorText,
+} from './turn-error-labels';
 import { readSseFrames } from './sse-frames';
 // The ONE producer of a step row's qualifier, shared with the reload path so
 // the same call cannot read two ways (TASK-419).
@@ -1072,12 +1076,18 @@ export interface StreamHandlers {
   /**
    * The turn ended badly, or the stream dropped without a terminator.
    *
-   * `fix` (TASK-796) says where the person fixes it, when that is somewhere
-   * on this agent: `opensConnectors` for a connector that needs a sign-in. It is
-   * derived from the reason code here, so the code itself still never leaves
-   * this module. Absent for everything else.
+   * `hints` says what else the reason means, derived from the reason code here
+   * so the code itself still never leaves this module. Absent when neither
+   * applies:
+   * - `opensConnectors` (TASK-796): a connector needs a sign-in, so the person
+   *   fixes it on this agent's Connectors tab.
+   * - `messageNotSaved` (TASK-1063): the turn was refused before the person's
+   *   message was saved, so Resend sends their files again.
    */
-  onError: (message: string, fix?: { opensConnectors: true }) => void;
+  onError: (
+    message: string,
+    hints?: { opensConnectors?: true; messageNotSaved?: true },
+  ) => void;
   /**
    * The agent stopped mid-turn to ask for something. NON-TERMINAL — the stream
    * stays open and the turn carries on parking for an answer.
@@ -2233,8 +2243,16 @@ async function streamReply(
           ? frame.detail
           : null,
       );
-      if (turnErrorOpensConnectors(frame.error)) onError(text, { opensConnectors: true });
-      else onError(text);
+      const opensConnectors = turnErrorOpensConnectors(frame.error);
+      const messageNotSaved = turnErrorMessageNotSaved(frame.error);
+      if (opensConnectors || messageNotSaved) {
+        onError(text, {
+          ...(opensConnectors ? { opensConnectors: true as const } : {}),
+          ...(messageNotSaved ? { messageNotSaved: true as const } : {}),
+        });
+      } else {
+        onError(text);
+      }
       return 'stop';
     }
     if ('kind' in frame && frame.kind === 'text' && typeof frame.text === 'string') {

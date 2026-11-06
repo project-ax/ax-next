@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import {
   HookBus,
+  PluginError,
+  reject,
   makeAgentContext,
   createLogger,
   type Logger,
@@ -911,6 +913,67 @@ describe('chat-orchestrator route-by-conversationId (Task 16, J6)', () => {
         ],
       },
     });
+  });
+
+  // TASK-1063 — channel-web's Resend sends a refused turn's files again only
+  // when the person's message was NOT saved (turnErrorMessageNotSaved). That is
+  // true only while chat:start and agents:resolve run BEFORE the user-turn
+  // save. If the save moves above them, these fail: a resend would otherwise
+  // attach files to a message that was already saved.
+  it('TASK-1063) a chat:start veto saves no user turn, so channel-web may resend its files', async () => {
+    const mocks = buildMocks({
+      conversations: { 'conv-g': { activeSessionId: null } },
+      liveSessions: new Set(),
+    });
+    const h = await createTestHarness({
+      services: mocks.services,
+      plugins: [
+        createChatOrchestratorPlugin({
+          runnerBinaries: { 'claude-sdk': '/irrelevant' },
+          chatTimeoutMs: 1_000,
+        }),
+      ],
+    });
+    h.bus.subscribe('chat:start', 'blocker', async () => reject({ reason: 'blocked' }));
+
+    const outcome = await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
+      ctxWith({ sessionId: 'placeholder-g', conversationId: 'conv-g', reqId: 'req-g' }),
+      { message: { role: 'user', content: 'hi' } },
+    );
+
+    expect(outcome.kind).toBe('terminated');
+    if (outcome.kind === 'terminated') expect(outcome.reason).toMatch(/^chat:start:/);
+    expect(mocks.trace.appendEvent).toEqual([]);
+  });
+
+  it('TASK-1063) an agents:resolve refusal saves no user turn, so channel-web may resend its files', async () => {
+    const mocks = buildMocks({
+      conversations: { 'conv-g': { activeSessionId: null } },
+      liveSessions: new Set(),
+    });
+    mocks.services['agents:resolve'] = async () => {
+      throw new PluginError({ code: 'forbidden', plugin: 'agents', message: 'nope' });
+    };
+    const h = await createTestHarness({
+      services: mocks.services,
+      plugins: [
+        createChatOrchestratorPlugin({
+          runnerBinaries: { 'claude-sdk': '/irrelevant' },
+          chatTimeoutMs: 1_000,
+        }),
+      ],
+    });
+
+    const outcome = await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
+      ctxWith({ sessionId: 'placeholder-g', conversationId: 'conv-g', reqId: 'req-g' }),
+      { message: { role: 'user', content: 'hi' } },
+    );
+
+    expect(outcome.kind).toBe('terminated');
+    if (outcome.kind === 'terminated') expect(outcome.reason).toMatch(/^agent-resolve:/);
+    expect(mocks.trace.appendEvent).toEqual([]);
   });
 
   it('TASK-66) does NOT persist a user turn when ctx.conversationId is unset', async () => {

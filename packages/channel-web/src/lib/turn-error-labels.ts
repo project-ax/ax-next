@@ -155,9 +155,8 @@ export const ERROR_LABELS: Record<string, string> = {
   'system-prompt:identity-unavailable':
     'We couldn’t load this agent’s identity and instructions, so it didn’t start. Try again in a moment.',
   // TASK-1059 — the host couldn't save the person's message, so the turn never
-  // started, and a retry can work. Resend carries their words; it does NOT
-  // carry attachments (AgentView drops `resendable` files once the POST lands),
-  // which is a known gap tracked as a follow-up.
+  // started, and a retry can work. Resend carries all of it, words and files
+  // (TASK-1063: see `turnErrorMessageNotSaved`).
   'conversation:message-not-saved':
     'Your message didn’t reach the agent. That’s on us, not you — try again in a moment.',
 };
@@ -188,6 +187,28 @@ const CONNECTORS_TAB_REASONS: ReadonlySet<string> = new Set([
 /** True when the turn failed for a reason the Connectors tab fixes. */
 export function turnErrorOpensConnectors(reason: string | null | undefined): boolean {
   return typeof reason === 'string' && CONNECTORS_TAB_REASONS.has(reason);
+}
+
+/**
+ * True when the turn was refused before the person's message was saved
+ * (TASK-1063), so Resend must send their files again as well as their words.
+ *
+ * The set is exactly the refusals that come before the save: a `chat:start`
+ * veto, an `agents:resolve` refusal, and the save failing itself. It depends on
+ * the order in the orchestrator's agent-invoke turn: it runs `chat:start`, then
+ * `agents:resolve`, THEN saves the person's message. A message that was saved
+ * shows its files in the transcript, so Resend must not attach them twice.
+ * Every other reason (`system-prompt:*`, `chat-run-*`, a dropped stream)
+ * happens after the save and stays out. A guard in the orchestrator's
+ * `route-by-conversation.test.ts` fails if the save moves earlier.
+ */
+export function turnErrorMessageNotSaved(reason: string | null | undefined): boolean {
+  if (typeof reason !== 'string') return false;
+  return (
+    reason === 'conversation:message-not-saved' ||
+    reason.startsWith('chat:start:') ||
+    reason.startsWith('agent-resolve:')
+  );
 }
 
 /** Max chars of the untrusted `detail` line we render (defense-in-depth — it's
