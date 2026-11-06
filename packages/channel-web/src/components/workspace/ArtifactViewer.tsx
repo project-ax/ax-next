@@ -30,7 +30,7 @@ import { ArtifactPreview } from './ArtifactPreview';
 import { ShareLinkDialog } from './ShareLinkDialog';
 import { IconAction } from './task-bits';
 
-const DOWNLOAD_FAILED = 'That download didn’t start, so nothing was saved. Try again in a moment.';
+export const DOWNLOAD_FAILED = 'That download didn’t start, so nothing was saved. Try again in a moment.';
 const RESTORE_FAILED = 'We couldn’t restore that version just now. Nothing changed.';
 
 /** "v3 · 2 hr ago" — the clock words come from the one time module. */

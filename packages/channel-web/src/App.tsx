@@ -15,7 +15,12 @@
  *        - elsewhere   → fetch `/admin/me`, then render `<LoginPage />`
  *          or `<AppContent />`.
  *
- * Signed in, there is one surface: the agent workspace. (The old chat
+ * A share link (`/a/<code>`, Task 14) is the one exception to the workspace:
+ * signed in, it shows `<SharedArtifactPage />` alone; signed out, the sign-in
+ * page, which comes back to the same `/a/<code>` afterwards. The URL is never
+ * rewritten, and the page sends no referrer (the code is in its address).
+ *
+ * Otherwise, signed in, there is one surface: the agent workspace. (The old chat
  * screen was deleted in TASK-360; `/chat` links land on `/` — see
  * `lib/retired-chat-path.ts`.)
  *
@@ -54,6 +59,8 @@ import {
 import { toastActions } from './lib/toast-store';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { redirectRetiredChatPath } from './lib/retired-chat-path';
+import { applyShareReferrerPolicy, parseShareRoute } from './lib/share-route';
+import { SharedArtifactPage } from './components/SharedArtifactPage';
 
 type AppMode =
   | { kind: 'loading' }
@@ -68,6 +75,12 @@ function isSetupPath(): boolean {
 
 export const App = () => {
   const [mode, setMode] = useState<AppMode>({ kind: 'loading' });
+  // Read once: the share page never navigates within the SPA. The referrer
+  // policy goes on before anything else is requested from this page.
+  const [share] = useState(() => {
+    applyShareReferrerPolicy(window.location.pathname);
+    return parseShareRoute(window.location.pathname);
+  });
   /*
     Post-boot sign-out. `lib/http.ts` sets this latch when a request that had a
     session comes back 401, and the only thing that happens as a result is the
@@ -189,6 +202,19 @@ export const App = () => {
   if (sessionExpired) {
     // (B1) Say why they are suddenly looking at a sign-in page.
     return <LoginPage sessionExpired />;
+  }
+  // Before the workspace: a share link shows the one artifact and nothing of
+  // the workspace (no agents, no chat). Signed out, it was the LoginPage above,
+  // which hands this same path to sign-in so Google brings them back here.
+  if (share !== null) {
+    return (
+      <>
+        <ErrorBoundary surface="shared-artifact">
+          <SharedArtifactPage code={share.code} />
+        </ErrorBoundary>
+        <ToastStack />
+      </>
+    );
   }
   return <AppContent user={mode.user} />;
 };
