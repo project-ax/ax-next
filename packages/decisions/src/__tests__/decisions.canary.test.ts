@@ -1285,7 +1285,17 @@ describe('decisions canary — the same call, held twice', () => {
     const { first, second } = await twoOpenRowsFromAnUndo(h, routineCtx(h));
 
     const a = await approve(h, userCtx(h), first);
-    const b = await approve(h, userCtx(h), second);
+    // The second approval runs under a ctx whose log we can read: the card
+    // does not render `error` yet, so this line is what an operator sees.
+    const lines: string[] = [];
+    const approver = h.ctx({
+      agentId: 'a1',
+      userId: 'u1',
+      conversationId: 'conv-web',
+      sessionId: 's1',
+      logger: createLogger({ reqId: 'req-approve', writer: (line) => lines.push(line) }),
+    });
+    const b = await approve(h, approver, second);
 
     // THE ASSERTION is the side effect: the call went out once. It used to go
     // out twice, with both rows reading `executed` and nothing said.
@@ -1297,6 +1307,20 @@ describe('decisions canary — the same call, held twice', () => {
     expect(b.error).toBe(CLAIM_ALREADY_RAN_DETAIL);
     // The row stays open rather than reading as answered.
     expect(b.decision!.status).toBe('pending');
+
+    // Said in the log too, with closed fields and ids only — never a message.
+    const refused = lines
+      .map((line) => JSON.parse(line) as Record<string, unknown>)
+      .filter((entry) => entry.msg === 'decision_claim_refused_twin_tried');
+    expect(refused).toHaveLength(1);
+    expect(refused[0]).toMatchObject({
+      plugin: '@ax/decisions',
+      decisionId: second,
+      twinId: first,
+      outcome: 'ran',
+      level: 'warn',
+    });
+    expect(refused[0]).not.toHaveProperty('err');
   });
 
   it('in the other order too: the restored card, approved after its twin ran, is the one refused', async () => {
@@ -1336,7 +1360,10 @@ describe('decisions canary — the same call, held twice', () => {
   });
 
   it('once the warm agent has spent the first yes, approving its twin is refused and the identical call is held, not authorised again', async () => {
-    const h = await boot();
+    // A clock the test moves, so "later" is later: an ask raised in the same
+    // instant as the answer it follows counts as that answer's twin.
+    const clock = movableClock();
+    const h = await boot({ now: clock.now });
     const executor = recordExecutor(h, HOLD_RULE.match.tool);
     const { first, second } = await twoOpenRowsFromAnUndo(h, userCtx(h));
 
@@ -1348,8 +1375,20 @@ describe('decisions canary — the same call, held twice', () => {
     const b = await approve(h, userCtx(h), second);
     expect(b.error).toBe(CLAIM_ALREADY_RAN_DETAIL);
     expect(b.decision!.status).toBe('pending');
-    // Its next identical call is held on the refused card, not authorised again.
-    expect(await holdAndId(h, userCtx(h), { ...CALL, id: 'c1-again' })).toBe(second);
+    // Its next identical call is held, not authorised again — and held on a
+    // card of its OWN. Folding it into the refused card would make it
+    // unapprovable too, for as long as that card stayed open; it is asked
+    // after the call ran, so it is a new question the person can answer.
+    clock.advance(60_000);
+    const third = await holdAndId(h, userCtx(h), { ...CALL, id: 'c1-again' });
+    expect(third).not.toBe(second);
+    expect(third).not.toBe(first);
+    const c = await approve(h, userCtx(h), third);
+    expect(c.error).toBeNull();
+    expect(c.decision!.status).toBe('executed');
+    // The refused card stays refused: its twin ran, and that never changes.
+    expect((await approve(h, userCtx(h), second)).error).toBe(CLAIM_ALREADY_RAN_DETAIL);
+    // Attended throughout: the host ran nothing.
     expect(executor.calls).toHaveLength(0);
   });
 

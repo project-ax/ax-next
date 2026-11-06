@@ -364,8 +364,9 @@ describe('tool:pre-call subscriber — one call, one question', () => {
   // that index (loudly, since TASK-253) or — where the host had already
   // replayed the first and freed the slot — quietly ran the call A SECOND
   // TIME. The gate collapses the duplicate now, so neither is reachable from
-  // an agent retrying its call. `decisions.canary.test.ts` carries both, and
-  // the residue that survives via undo.
+  // an agent retrying its call. `decisions.canary.test.ts` carries both. An
+  // undo can still make two open rows, and since TASK-286 approving the second
+  // is refused once the first has gone out (`claimForApproval`).
 
   it('raises ONE row for two identical held calls, and hands back the same decision', async () => {
     const { sub, store } = build(HOLD);

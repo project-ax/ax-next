@@ -8,9 +8,10 @@
  * for real in `decisions.canary.test.ts`. This fake exists so the gate's tests
  * stay fast and hermetic, not to stand in for either of those.
  *
- * ONE RULE IT DOES NOT RESTATE: which co-open twin refuses an approval
- * (TASK-286). That is `firstTriedTwin`, imported from the real store, so the
- * two cannot disagree about it; only the selection (same key, answered at or
+ * TWO RULES IT DOES NOT RESTATE: which co-open twin refuses an approval, and
+ * which open row a new identical hold is folded into (TASK-286). Those are
+ * `firstTriedTwin` and `reusableOpenRow`, imported from the real store, so the
+ * two cannot disagree about them; only the selection (same key, answered at or
  * after this row was raised) is written out here. The two races the rule
  * depends on, the advisory lock and `FOR UPDATE`, stay Postgres-only in
  * `store.test.ts`: one JS thread cannot race itself.
@@ -20,6 +21,7 @@ import {
   DuplicateAuthorisationError,
   firstTriedTwin,
   IdenticalCallAlreadyTriedError,
+  reusableOpenRow,
   type DecisionStore,
 } from '../store.js';
 import { AUTHORISING_STATUSES, OPEN_STATUSES, type Decision } from '../types.js';
@@ -92,21 +94,26 @@ export function createFakeStore(): FakeStore {
      * rather than pretended at here.
      */
     async createOrReuseOpen(decision) {
-      const existing = [...rows.values()]
-        .filter(
-          (r) =>
-            r.agentId === decision.agentId &&
-            r.ownerUserId === decision.ownerUserId &&
-            r.callFingerprint === decision.callFingerprint &&
-            OPEN.includes(r.status),
-        )
+      const sameKey = [...rows.values()].filter(
+        (r) =>
+          r.agentId === decision.agentId &&
+          r.ownerUserId === decision.ownerUserId &&
+          r.callFingerprint === decision.callFingerprint,
+      );
+      const openRows = sameKey
+        .filter((r) => OPEN.includes(r.status))
         .sort((a, b) =>
           a.createdAt === b.createdAt
             ? a.id.localeCompare(b.id)
             : a.createdAt < b.createdAt
               ? -1
               : 1,
-        )[0];
+        );
+      // TASK-286: the real store's rule, shared rather than restated.
+      const existing = reusableOpenRow(
+        openRows,
+        sameKey.filter((r) => r.resolvedAt !== null),
+      );
       if (existing !== undefined) return { decision: existing, created: false };
       return { decision: insert(decision), created: true };
     },

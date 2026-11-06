@@ -2061,6 +2061,48 @@ describe('decisions store — an approval whose identical twin already went out 
     }
   });
 
+  it('gives a later identical hold its own card, not the one its twin made unapprovable', async () => {
+    // The card an undo left behind is refused for good once its twin ran.
+    // Folding the agent's NEXT identical call into it would make that call
+    // unapprovable too; it is asked after the call ran, so it is a new question.
+    for (const [leg, s] of await both()) {
+      await openTwins(s);
+      await hostRan(s, 'dec_1');
+
+      const later = await s.createOrReuseOpen(
+        base({ id: 'dec_3', attendance: 'unattended', createdAt: T_AFTER }),
+      );
+      expect(later.created, leg).toBe(true);
+      expect(later.decision.id, leg).toBe('dec_3');
+      expect(await claim(s, 'dec_3'), leg).toMatchObject({ id: 'dec_3', status: 'executed' });
+      // The refused card is still there, and still refused.
+      expect(await settled(claim(s, 'dec_2')), leg).toBeInstanceOf(IdenticalCallAlreadyTriedError);
+    }
+  });
+
+  it('still folds a later identical hold into an open card whose twin has NOT gone out', async () => {
+    // The skip is only for a twin that ran or went out with no answer. A twin
+    // still in flight is the index's to refuse, and the open card stays the
+    // one question for this call.
+    for (const [leg, s] of await both()) {
+      await openTwins(s);
+      expect(
+        await s.claimForApproval('dec_1', {
+          nowIso: T_APPROVED,
+          status: 'executed',
+          replayClaimedAt: T_APPROVED,
+        }),
+        leg,
+      ).not.toBeNull();
+
+      const later = await s.createOrReuseOpen(
+        base({ id: 'dec_3', attendance: 'unattended', createdAt: T_AFTER }),
+      );
+      expect(later.created, leg).toBe(false);
+      expect(later.decision.id, leg).toBe('dec_2');
+    }
+  });
+
   it('counts a twin answered in the same instant this one was raised', async () => {
     // The canary's movable clocks stamp both in one instant, and the safe
     // direction is to refuse.

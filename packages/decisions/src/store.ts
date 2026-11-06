@@ -151,6 +151,42 @@ export function firstTriedTwin(
   return null;
 }
 
+/**
+ * Which OPEN row an identical new hold should be folded into, if any
+ * (TASK-286). The rule both stores share, beside `firstTriedTwin`.
+ *
+ * The oldest open row, EXCEPT one whose co-open twin already ran or went out
+ * with no answer. That row is the card an undo left behind: approving it is
+ * refused for good (`IdenticalCallAlreadyTriedError`), because the twin that
+ * ran never changes. Folding the agent's NEXT identical call into it would
+ * make that call unapprovable too, until someone dismissed the card or it
+ * expired. That next call is asked after the call ran, so it is a new
+ * question, and it gets a card it can be answered on. The refused card stays
+ * where it is: undo made it, and nothing here closes it (the ruling).
+ *
+ * `open` is every open row for the key, oldest first. `answered` is every
+ * other row for the key with an answer (`resolvedAt` set). Instants are
+ * compared as instants, never as strings.
+ */
+export function reusableOpenRow(
+  open: readonly Decision[],
+  answered: readonly Decision[],
+): Decision | undefined {
+  return open.find((row) => {
+    const raisedAt = Date.parse(row.createdAt);
+    return (
+      firstTriedTwin(
+        answered.filter(
+          (twin) =>
+            twin.id !== row.id &&
+            twin.resolvedAt !== null &&
+            Date.parse(twin.resolvedAt) >= raisedAt,
+        ),
+      ) === null
+    );
+  });
+}
+
 /** Does this driver error say "you broke a unique index"? */
 function isUniqueViolation(err: unknown): boolean {
   // Duck-typed rather than `instanceof pg.DatabaseError`: this file talks to
@@ -288,6 +324,11 @@ export interface DecisionStore {
    * approve-time check (`claimForApproval`) now refuses its second send, but
    * that check is owner-scoped like this collapse, so the two-owner second send
    * remains. Pinned by a test rather than left to be rediscovered.
+   *
+   * ONE OPEN ROW IS NEVER HANDED BACK (TASK-286): a card whose identical twin
+   * already ran or went out with no answer. Approving it is refused for good,
+   * so a later identical call folded into it could never be approved either.
+   * That call gets a card of its own instead (`reusableOpenRow`).
    *
    * ATOMIC, because the caller's read-then-create is not. Two byte-identical
    * `tool:pre-call` events race in the ordinary course of a turn, and this
@@ -809,18 +850,39 @@ export function createDecisionsStore(db: Kysely<DecisionsDatabase>): DecisionSto
           decision.callFingerprint,
         )}::bigint)`.execute(trx);
 
-        const existing = await trx
-          .selectFrom(table)
-          .selectAll()
-          .where('agent_id', '=', decision.agentId)
-          .where('owner_user_id', '=', decision.ownerUserId)
-          .where('call_fingerprint', '=', decision.callFingerprint)
-          .where('status', 'in', OPEN_STATUSES as string[])
-          .orderBy('created_at', 'asc')
-          .orderBy('decision_id', 'asc')
-          .executeTakeFirst();
+        const open = (
+          await trx
+            .selectFrom(table)
+            .selectAll()
+            .where('agent_id', '=', decision.agentId)
+            .where('owner_user_id', '=', decision.ownerUserId)
+            .where('call_fingerprint', '=', decision.callFingerprint)
+            .where('status', 'in', OPEN_STATUSES as string[])
+            .orderBy('created_at', 'asc')
+            .orderBy('decision_id', 'asc')
+            .execute()
+        ).map(toDecision);
+        // TASK-286: skip an open row whose twin already went out — see
+        // `reusableOpenRow`. Its possible twins were answered at or after the
+        // oldest open row was raised, so that bounds the read; nearly always
+        // there is one open row and this finds nothing.
+        const oldest = open[0];
+        const answered =
+          oldest === undefined
+            ? []
+            : (
+                await trx
+                  .selectFrom(table)
+                  .selectAll()
+                  .where('agent_id', '=', decision.agentId)
+                  .where('owner_user_id', '=', decision.ownerUserId)
+                  .where('call_fingerprint', '=', decision.callFingerprint)
+                  .where('resolved_at', '>=', new Date(oldest.createdAt))
+                  .execute()
+              ).map(toDecision);
+        const existing = reusableOpenRow(open, answered);
         if (existing !== undefined) {
-          return { decision: toDecision(existing), created: false };
+          return { decision: existing, created: false };
         }
         await trx.insertInto(table).values(fromDecision(decision)).execute();
         return { decision, created: true };
@@ -964,7 +1026,11 @@ export function createDecisionsStore(db: Kysely<DecisionsDatabase>): DecisionSto
           // never take the lock above; `FOR UPDATE` is what keeps them from
           // landing between this check and the claim, taking the twin out of
           // the index the claim is counting on. Locked in id order, so the
-          // order is deterministic.
+          // order is deterministic. Two multi-row writers lock these rows in
+          // other orders — `claimRoutineAuthority` (newest first) and
+          // `recoverRoutineReplays` — so two undo-made ROUTINE twins can
+          // deadlock against them in principle. That surfaces as a `40P01`
+          // fault the approver sees, never as a silent second send.
           //
           // Not one `UPDATE ... WHERE NOT EXISTS`: that reads the twins from
           // the statement's snapshot while the unique check sees the current
