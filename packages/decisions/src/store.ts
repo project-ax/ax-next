@@ -161,13 +161,15 @@ export function firstTriedTwin(
  * (TASK-286). The rule both stores share, beside `firstTriedTwin`.
  *
  * The oldest open row, EXCEPT one whose co-open twin already ran or went out
- * with no answer. That row is the card an undo left behind: approving it is
+ * with no answer. That row is the card an undo, or a retry stamped before its
+ * twin's approval, left behind (both routes: `IdenticalCallAlreadyTriedError`'s
+ * doc — do not narrow this to restored rows). Approving it is
  * refused for good (`IdenticalCallAlreadyTriedError`), because the twin that
  * ran never changes. Folding the agent's NEXT identical call into it would
  * make that call unapprovable too, until someone dismissed the card or it
  * expired. That next call is asked after the call ran, so it is a new
  * question, and it gets a card it can be answered on. The refused card stays
- * where it is: undo made it, and nothing here closes it (the ruling).
+ * where it is: nothing here closes it (the ruling).
  *
  * ONE WINDOW IT LEAVES, on purpose: while the twin is still in flight it has
  * not gone out yet, so a later hold IS folded into this row, and becomes
@@ -1058,7 +1060,9 @@ export function createDecisionsStore(db: Kysely<DecisionsDatabase>): DecisionSto
             // Answered at or after this question was raised. Two rows are
             // co-open only after an undo, or when a retry was stamped before
             // an approval that landed first (see the error's doc). A later ask
-            // is raised after the answer it follows, so it is never refused.
+            // is raised after the answer it follows, so it is not refused —
+            // short of clock skew between two replicas, a window of the skew
+            // itself (milliseconds under NTP), in either direction.
             .where('resolved_at', '>=', self.created_at)
             .orderBy('decision_id')
             .forUpdate()

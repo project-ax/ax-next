@@ -1886,7 +1886,7 @@ describe('decisions store — an approval whose identical twin already went out 
     ['fake', createFakeStore()],
   ];
 
-  /** The only way to get two OPEN rows for one call: raise, dismiss, the agent asks again, undo. */
+  /** The undo route to two OPEN rows for one call: raise, dismiss, the agent asks again, undo. */
   async function openTwins(s: DecisionStore): Promise<void> {
     expect((await s.createOrReuseOpen(base({ attendance: 'unattended' }))).created).toBe(true);
     await s.markDismissed('dec_1', T_DISMISSED);
