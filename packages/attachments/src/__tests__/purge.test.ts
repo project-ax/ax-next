@@ -382,7 +382,41 @@ describe('@ax/attachments subscribes to conversations:purged', () => {
     // Every artifact is still there, at its current version.
     expect((await rig.artifacts.listForAgent('agt-C1', 10)).map((a) => a.current.version)).toEqual([1]);
     const info = rig.lines.find((l) => l.level === 'info');
-    expect(info?.bindings).toEqual({ conversations: 2, files: 3, clearedVersions: 2 });
+    expect(info?.bindings).toEqual({ conversations: 2, files: 3, deletedVisuals: 0, clearedVersions: 2 });
+  });
+
+  // R29: a chat visual dies with its chat. Nobody can delete one (no owner hook
+  // reaches it), so the purge must, or its row and bytes would live forever.
+  it('a chart referenced only by purged chats is deleted and its bytes are released; one also in a live chat survives', async () => {
+    const rig = await makePluginRig();
+    const CHART = 'c'.repeat(64);
+    const SHARED_CHART = 'd'.repeat(64);
+    const NORMAL = 'e'.repeat(64);
+    const pub = (sourcePath: string, sha256: string, conversationId: string, visual: boolean) =>
+      rig.artifacts.publishVersion({
+        agentId: 'agt-1', sourcePath, title: 't', sha256, mediaType: 'text/html', sizeBytes: 1,
+        conversationId, publishedBy: 'u-1', quotaOwner: 'u-1', visual,
+      });
+    const only = await pub(`visuals/${CHART}.html`, CHART, 'C1', true);
+    // The same chart shown again in a chat that is NOT purged.
+    const shared = await pub(`visuals/${SHARED_CHART}.html`, SHARED_CHART, 'C1', true);
+    await pub(`visuals/${SHARED_CHART}.html`, SHARED_CHART, 'C2', true);
+    const normal = await pub('reports/r.html', NORMAL, 'C1', false);
+    if (!only.ok || !shared.ok || !normal.ok) throw new Error('seed');
+
+    await rig.purged({ conversationIds: ['C1'] });
+
+    expect(await rig.artifacts.getHead(only.artifactId)).toBeNull();
+    expect(await rig.artifacts.getHead(shared.artifactId)).not.toBeNull();
+    expect(await rig.artifacts.getHead(normal.artifactId)).not.toBeNull();
+    expect(await rig.artifacts.blobRefs([CHART])).toEqual([]);
+    expect((await rig.artifacts.blobRefs([SHARED_CHART, NORMAL])).length).toBeGreaterThan(0);
+    const info = rig.lines.find((l) => l.level === 'info');
+    expect(info?.bindings).toMatchObject({ deletedVisuals: 1 });
+    // A later purge of the other chat takes the shared chart too.
+    await rig.purged({ conversationIds: ['C2'] });
+    expect(await rig.artifacts.getHead(shared.artifactId)).toBeNull();
+    expect(await rig.artifacts.getHead(normal.artifactId)).not.toBeNull();
   });
 
   it('never calls blob:delete, blob:retire or blob:purge (blobs are shared by sha256; bytes stay in place)', async () => {

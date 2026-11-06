@@ -282,7 +282,9 @@ export function createAttachmentsPlugin(
 
       // 5) TASK-718: a purged conversation's upload rows go with it; its
       //    artifacts stay (they are the agent's, D12) and their versions just
-      //    lose the chat id. Rows only — see `store.purgeForConversations` for
+      //    lose the chat id. R29: chat visuals are the exception — a chart only
+      //    those chats reference is deleted with them (no person can delete
+      //    one), which also lets blob reclamation take its bytes. Rows only — see `store.purgeForConversations` for
       //    why the blob bytes stay. K10: a subscriber must never propagate, so
       //    every failure is logged and swallowed; a missed purge leaves dead
       //    rows, not readable ones (attachments:download's owner gate calls
@@ -302,10 +304,13 @@ export function createAttachmentsPlugin(
           if (ids.length === 0) return undefined;
           try {
             const { files } = await store.purgeForConversations(ids);
+            // Before clearing: it reads the version -> chat link that clears.
+            const deletedVisuals = await artifacts.deleteVisualsOnlyIn(ids);
             const clearedVersions = await artifacts.clearConversations(ids);
             ctx.logger.info('attachments_purged_for_conversations', {
               conversations: ids.length,
               files,
+              deletedVisuals,
               clearedVersions,
             });
           } catch (err) {

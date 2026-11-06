@@ -99,6 +99,13 @@ export interface ArtifactStore {
   setShareCode(artifactId: string, mode: 'ensure' | 'rotate' | 'off', fresh: () => string): Promise<string | null>;
   deleteArtifact(artifactId: string): Promise<boolean>;
   deleteForAgent(agentId: string): Promise<{ artifacts: number; versions: number }>;
+  /**
+   * R29: deletes the chat visuals that only those chats reference (some version
+   * names one of them, and no version names a chat outside them). A chart dies
+   * with its chat; nobody else can delete it. Run before clearConversations,
+   * which erases the link this reads. Returns the heads deleted.
+   */
+  deleteVisualsOnlyIn(conversationIds: string[]): Promise<number>;
   /** Nulls conversation_id on those chats' versions. Deletes nothing (D12). */
   clearConversations(conversationIds: string[]): Promise<number>;
   /** One `{ sha256, userIds: [quota_owner] }` per version that points at a candidate. */
@@ -500,6 +507,36 @@ export function createArtifactStore<DB>(database: Kysely<DB>): ArtifactStore {
         const h = await trx.deleteFrom('attachments_v1_artifacts').where('agent_id', '=', agentId).executeTakeFirst();
         return { artifacts: Number(h.numDeletedRows), versions: Number(v.numDeletedRows) };
       });
+    },
+
+    async deleteVisualsOnlyIn(conversationIds) {
+      if (conversationIds.length === 0) return 0;
+      // One array parameter, so no bind-parameter limit. Versions go with the
+      // head (ON DELETE CASCADE).
+      const r = await db
+        .deleteFrom('attachments_v1_artifacts as h')
+        .where('h.visual', '=', true)
+        .where(({ exists, selectFrom }) =>
+          exists(
+            selectFrom('attachments_v1_artifact_versions as v')
+              .select('v.artifact_id')
+              .whereRef('v.artifact_id', '=', 'h.artifact_id')
+              .where(sql<boolean>`v.conversation_id = ANY(${conversationIds}::text[])`),
+          ),
+        )
+        .where(({ not, exists, selectFrom }) =>
+          not(
+            exists(
+              selectFrom('attachments_v1_artifact_versions as v')
+                .select('v.artifact_id')
+                .whereRef('v.artifact_id', '=', 'h.artifact_id')
+                .where('v.conversation_id', 'is not', null)
+                .where(sql<boolean>`NOT (v.conversation_id = ANY(${conversationIds}::text[]))`),
+            ),
+          ),
+        )
+        .executeTakeFirst();
+      return Number(r.numDeletedRows);
     },
 
     async clearConversations(conversationIds) {
