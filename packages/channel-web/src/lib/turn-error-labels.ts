@@ -201,6 +201,10 @@ export function turnErrorOpensConnectors(reason: string | null | undefined): boo
  * Every other reason (`system-prompt:*`, `chat-run-*`, a dropped stream)
  * happens after the save and stays out. A guard in the orchestrator's
  * `route-by-conversation.test.ts` fails if the save moves earlier.
+ *
+ * `conversation:message-not-saved` means the save threw, not that it is proven
+ * unsaved: in the rare case a write landed after hand-over, Resend can repeat
+ * the files as well as the words.
  */
 export function turnErrorMessageNotSaved(reason: string | null | undefined): boolean {
   if (typeof reason !== 'string') return false;

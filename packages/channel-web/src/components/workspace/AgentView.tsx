@@ -1047,7 +1047,9 @@ export function AgentView({
           // TASK-1063 — the turn was refused before the host saved the
           // message, so its files reach the conversation only through
           // Resend, and the commit accepts them again in the same
-          // conversation.
+          // conversation. (`conversation:message-not-saved` means the save
+          // threw, not that it is proven unsaved: in the rare case a write
+          // landed after hand-over, Resend can repeat the files too.)
           if (fix?.messageNotSaved === true) {
             setSent((prev) => (prev === null ? prev : { ...prev, resendable: true }));
           }

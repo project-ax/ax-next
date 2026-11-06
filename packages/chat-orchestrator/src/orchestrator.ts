@@ -2698,9 +2698,10 @@ export function createOrchestrator(
     // POST-time bind, and that is on purpose (TASK-1063): the stream GET
     // resolves the conversation by it, so a stream that opens after the refusal
     // still replays it (channel-web `sse.ts`, step 4a-bis). It holds up
-    // nothing: the next POST rebinds it, and ending the bound session clears
-    // it. The reason is
-    // read by routines (`refusedBeforeAssembly`) and channel-web
+    // nothing: the next POST rebinds it. (Ending a REAL bound session clears
+    // it on later turns; a first-turn refusal is bound to the POST-time
+    // placeholder, never a real session, so that clear never fires for it.)
+    // The reason is read by routines (`refusedBeforeAssembly`) and channel-web
     // (`turn-error-labels.ts`); it carries no detail and no `error`, since a
     // `chat:end` subscriber could log either raw.
     if (!(await persistUserDisplayTurn(bus, ctx, input.message))) {
