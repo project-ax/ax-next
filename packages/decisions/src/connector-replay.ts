@@ -37,12 +37,16 @@
  * reclaim's to give up on, never to re-run.
  *
  * Logs carry the decision id, the tool key and a closed code. Never the
- * input, never an error's message, never anything the hook returned.
+ * input, never an error's message, never anything the hook returned. When a
+ * refusal or an unknown outcome came from a THROW, the line also carries the
+ * error's `code` if it is a PluginError's short slug (review r2 R4): the
+ * difference between a policy hook that timed out and one that answered
+ * garbage, without a word of what it said.
  *
  * Type-only import of `replay.ts`: that module calls this one, and keeping the
  * edge back type-only means there is no runtime import cycle between the two.
  */
-import type { AgentContext, HookBus } from '@ax/core';
+import { PluginError, type AgentContext, type HookBus } from '@ax/core';
 import { z } from 'zod';
 import {
   CONNECTOR_CALL_TOOL_HOOK,
@@ -61,12 +65,41 @@ import type { Decision } from './types.js';
 /** The one field of `tool-policy:evaluate`'s answer this reads (invariant 2: no import). */
 const PolicyVerdictView = z.object({ verdict: z.enum(['allow', 'hold', 'deny']) }).passthrough();
 
-/** The verdict right now, or null when it cannot be read. Never throws. */
+/** A code is vocabulary only as a short lower-case slug: `timeout`, `invalid-return`, `not-found`. */
+const LOGGABLE_CODE = /^[a-z][a-z-]{0,39}$/;
+
+/**
+ * A thrown error's code, when it is safe to log (review r2 R4), else
+ * undefined. Only a `PluginError`'s `code`, and only a short lower-case slug:
+ * the bus's own codes and a plugin's are a closed vocabulary. Narrower than
+ * `@ax/core`'s `faultLogFields`, whose identifier shape also admits digits and
+ * capitals. The MESSAGE is never read: `HookBus.call` folds whatever a handler
+ * threw into it. Never throws (plugin code can mutate an Error).
+ */
+function loggableCode(err: unknown): string | undefined {
+  try {
+    if (!(err instanceof PluginError)) return undefined;
+    const code: unknown = err.code;
+    return typeof code === 'string' && LOGGABLE_CODE.test(code) ? code : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** The bit of a log line that names a thrown error's code, or nothing. */
+function codeField(code: string | undefined): { code?: string } {
+  return code !== undefined ? { code } : {};
+}
+
+/**
+ * The verdict right now, or null when it cannot be read, with the thrown
+ * error's loggable code when the read threw. Never throws.
+ */
 async function currentVerdict(
   bus: HookBus,
   ctx: AgentContext,
   decision: Decision,
-): Promise<'allow' | 'hold' | 'deny' | null> {
+): Promise<{ verdict: 'allow' | 'hold' | 'deny' | null; code?: string }> {
   try {
     const answer = await bus.call<
       { call: { name: string; input: unknown }; agentId: string },
@@ -76,10 +109,10 @@ async function currentVerdict(
       agentId: decision.agentId,
     });
     const parsed = PolicyVerdictView.safeParse(answer);
-    return parsed.success ? parsed.data.verdict : null;
-  } catch {
-    // Unreadable, and the reason is not logged: a thrown message is not ours.
-    return null;
+    return { verdict: parsed.success ? parsed.data.verdict : null };
+  } catch (err) {
+    // Unreadable. Its code may be logged; its message never: it is not ours.
+    return { verdict: null, ...codeField(loggableCode(err)) };
   }
 }
 
@@ -88,12 +121,14 @@ function outcomeUnknown(
   ctx: AgentContext,
   decision: Decision,
   reason: 'timeout' | 'interrupted' | 'threw' | 'unreadable',
+  code?: string,
 ): ReplayOutcome {
   ctx.logger.warn('decision_connector_replay_unknown', {
     plugin: PLUGIN_NAME,
     decisionId: decision.id,
     tool: decision.call.name,
     reason,
+    ...codeField(code),
   });
   return { executed: false, path: null, error: null, outcomeUnknown: true };
 }
@@ -110,13 +145,14 @@ export async function replayConnectorCall(args: {
 }): Promise<ReplayOutcome> {
   const { bus, ctx, decision } = args;
 
-  const verdict = await currentVerdict(bus, ctx, decision);
+  const { verdict, code } = await currentVerdict(bus, ctx, decision);
   if (verdict === 'deny' || verdict === null) {
     ctx.logger.warn('decision_connector_replay_refused', {
       plugin: PLUGIN_NAME,
       decisionId: decision.id,
       tool: decision.call.name,
       reason: verdict === 'deny' ? 'policy-deny' : 'policy-unreadable',
+      ...codeField(code),
     });
     return {
       executed: false,
@@ -136,8 +172,8 @@ export async function replayConnectorCall(args: {
       toolKey: decision.call.name,
       input: decision.call.input,
     });
-  } catch {
-    return outcomeUnknown(ctx, decision, 'threw');
+  } catch (err) {
+    return outcomeUnknown(ctx, decision, 'threw', loggableCode(err));
   }
 
   const parsed = ConnectorCallOutcomeSchema.safeParse(answer);

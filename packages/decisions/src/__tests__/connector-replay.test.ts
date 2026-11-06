@@ -14,6 +14,7 @@ import {
   createLogger,
   HookBus,
   makeAgentContext,
+  PluginError,
   type AgentContext,
   type ToolCall,
 } from '@ax/core';
@@ -405,4 +406,93 @@ describe('replayConnectorCall — whose call it is (TASK-1046)', () => {
       agentId: 'agent-1',
     });
   });
+});
+
+/**
+ * Review r2 R4. A refusal or an unknown outcome that came from a THROW used to
+ * log no cause, so a policy hook that timed out and one that answered garbage
+ * read the same. The line now carries the error's `code` when it is a
+ * PluginError's short slug (the bus's own codes, a plugin's): vocabulary, not
+ * text. Never the message: the bus folds whatever a handler threw into it.
+ */
+describe('replayConnectorCall — a swallowed throw leaves its code (review r2 R4)', () => {
+  const pluginError = (code: string) =>
+    new PluginError({ code, plugin: '@ax/decisions/test', message: HOSTILE });
+
+  it("a PluginError from the policy re-check logs its code on the refusal, never its message", async () => {
+    const decision = claimed();
+    const { ctx, lines } = decisionCtx(decision);
+    const h = busFor({ policy: async () => Promise.reject(pluginError('not-found')) });
+
+    const outcome = await replayConnectorCall({ bus: h.bus, ctx, decision });
+
+    expect(outcome.error).toBe(CONNECTOR_POLICY_UNREADABLE_DETAIL);
+    expect(lines.find((l) => l.msg === 'decision_connector_replay_refused')).toMatchObject({
+      reason: 'policy-unreadable',
+      code: 'not-found',
+    });
+    expect(JSON.stringify(lines)).not.toContain('IGNORE');
+    expect(JSON.stringify(lines)).not.toContain('sk-live');
+  });
+
+  it('an unreadable policy ANSWER (no throw) logs no code', async () => {
+    const decision = claimed();
+    const { ctx, lines } = decisionCtx(decision);
+    const h = busFor({ policy: async () => policyAnswer('maybe') });
+
+    await replayConnectorCall({ bus: h.bus, ctx, decision });
+
+    const line = lines.find((l) => l.msg === 'decision_connector_replay_refused')!;
+    expect(line).toMatchObject({ reason: 'policy-unreadable' });
+    expect(line).not.toHaveProperty('code');
+  });
+
+  it('a PluginError from the connector hook logs its code on the unknown outcome, never its message', async () => {
+    const decision = claimed();
+    const { ctx, lines } = decisionCtx(decision);
+    const h = busFor({ answer: async () => Promise.reject(pluginError('timeout')) });
+
+    const outcome = await replayConnectorCall({ bus: h.bus, ctx, decision });
+
+    expect(outcome).toEqual({ executed: false, path: null, error: null, outcomeUnknown: true });
+    expect(lines.find((l) => l.msg === 'decision_connector_replay_unknown')).toMatchObject({
+      reason: 'threw',
+      code: 'timeout',
+    });
+    expect(JSON.stringify(lines)).not.toContain('IGNORE');
+    expect(JSON.stringify(lines)).not.toContain('sk-live');
+  });
+
+  it("a raw Error the bus wrapped logs the bus's code, never the words it folded in", async () => {
+    // `HookBus.call` turns a handler's raw throw into
+    // PluginError{ code: 'unknown', message: "service hook … threw: <its words>" }.
+    const decision = claimed();
+    const { ctx, lines } = decisionCtx(decision);
+    const h = busFor({ answer: async () => Promise.reject(new Error(HOSTILE)) });
+
+    await replayConnectorCall({ bus: h.bus, ctx, decision });
+
+    expect(lines.find((l) => l.msg === 'decision_connector_replay_unknown')).toMatchObject({
+      reason: 'threw',
+      code: 'unknown',
+    });
+    expect(JSON.stringify(lines)).not.toContain('IGNORE');
+    expect(JSON.stringify(lines)).not.toContain('sk-live');
+  });
+
+  it.each(['sk-live-123', 'IGNORE PREVIOUS', 'Not-A-Slug', 'x'.repeat(41)])(
+    'a code that is not a short lower-case slug is not logged (%s)',
+    async (code) => {
+      const decision = claimed();
+      const { ctx, lines } = decisionCtx(decision);
+      const h = busFor({ answer: async () => Promise.reject(pluginError(code)) });
+
+      await replayConnectorCall({ bus: h.bus, ctx, decision });
+
+      const line = lines.find((l) => l.msg === 'decision_connector_replay_unknown')!;
+      expect(line).toMatchObject({ reason: 'threw' });
+      expect(line).not.toHaveProperty('code');
+      expect(JSON.stringify(lines)).not.toContain(code);
+    },
+  );
 });

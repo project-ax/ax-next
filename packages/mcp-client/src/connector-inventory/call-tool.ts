@@ -39,7 +39,10 @@
 // Never logged or returned: the input, a header, the url, anything the server
 // said. One `connector_call_tool` line per call, codes only. (A credential
 // read failure also logs connectorHeaders' own line: connector id and an
-// error code.)
+// error code.) A failure the handler did not foresee says so: `unexpected:
+// true`, plus a PluginError's `code` when it is a short lower-case slug
+// (review r2 R4). Without it, the catch-all's `unavailable` read exactly like
+// a genuine one. Its message is never logged.
 // ---------------------------------------------------------------------------
 
 import { PluginError, isOwnerlessId, makeAgentContext, type AgentContext } from '@ax/core';
@@ -92,6 +95,26 @@ function stringList(v: unknown): string[] {
 }
 
 const failed = (reason: ConnectorCallFailedReason): ConnectorCallToolOutput => ({ outcome: 'failed', reason });
+
+/** A code is vocabulary only as a short lower-case slug: `timeout`, `invalid-return`, `not-found`. */
+const LOGGABLE_CODE = /^[a-z][a-z-]{0,39}$/;
+
+/**
+ * A thrown error's code, when it is safe to log (review r2 R4), else
+ * undefined. Only a `PluginError`'s `code`, and only a short lower-case slug.
+ * Narrower than `@ax/core`'s `faultLogFields`, whose identifier shape also
+ * admits digits and capitals. The MESSAGE is never read: the SDK and the bus
+ * both put a server's or a handler's words in it. Never throws.
+ */
+function loggableCode(err: unknown): string | undefined {
+  try {
+    if (!(err instanceof PluginError)) return undefined;
+    const code: unknown = err.code;
+    return typeof code === 'string' && LOGGABLE_CODE.test(code) ? code : undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 /** A lookup that says "not this user's" is an access miss. Anything else is a blip. */
 function lookupFailure(err: unknown): ConnectorCallToolOutput {
@@ -214,18 +237,23 @@ export function createCallTool(deps: CallToolDeps) {
     const deadline = now() + CALL_LIMITS.budgetMs;
     const state: { sent: boolean; connectorId?: string } = { sent: false };
     let out: ConnectorCallToolOutput;
+    // Set only by the catch-all, so its answer cannot pass for a genuine one.
+    let unexpected: { code?: string } | null = null;
     try {
       out = await attempt(callerCtx, rawInput, deadline, state);
-    } catch {
+    } catch (err) {
       // 10. Something we did not foresee. Before the send nothing went out;
       //     after it, the call may have landed.
       out = state.sent ? { outcome: 'unknown', reason: 'interrupted' } : failed('unavailable');
+      const code = loggableCode(err);
+      unexpected = code !== undefined ? { code } : {};
     }
     try {
       callerCtx.logger.info('connector_call_tool', {
         ...(state.connectorId !== undefined ? { connectorId: state.connectorId } : {}),
         outcome: out.outcome,
         ...('reason' in out ? { reason: out.reason } : {}),
+        ...(unexpected !== null ? { unexpected: true, ...unexpected } : {}),
       });
     } catch {
       // A log line must never change the answer.
