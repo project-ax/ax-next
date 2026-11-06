@@ -634,6 +634,13 @@ describe('chat-orchestrator route-by-conversationId (Task 16, J6)', () => {
       turnEnds.push(payload);
       return undefined;
     });
+    // Conversations clears on the FIRED session:terminate event too (its
+    // subscriber), a separate bus lane from the service call recorded above.
+    const terminateFires: unknown[] = [];
+    h.bus.subscribe('session:terminate', 'binding-clear-spy', async (_ctx, payload) => {
+      terminateFires.push(payload);
+      return undefined;
+    });
     const turnErrors: unknown[] = [];
     const ends: unknown[] = [];
     h.bus.subscribe('chat:turn-error', 'probe', async (_ctx, payload) => {
@@ -668,6 +675,7 @@ describe('chat-orchestrator route-by-conversationId (Task 16, J6)', () => {
     expect(mocks.trace.bindSession).toEqual([]);
     expect(mocks.trace.sandboxOpen).toBe(0);
     expect(terminates).toEqual([]);
+    expect(terminateFires).toEqual([]);
     expect(unbinds).toEqual([]);
     expect(turnEnds).toEqual([]);
 
@@ -969,6 +977,13 @@ describe('chat-orchestrator route-by-conversationId (Task 16, J6)', () => {
       turnEnds.push(payload);
       return undefined;
     });
+    // Conversations clears on the FIRED session:terminate event too (its
+    // subscriber), a separate bus lane from the service call recorded above.
+    const terminateFires: unknown[] = [];
+    h.bus.subscribe('session:terminate', 'binding-clear-spy', async (_ctx, payload) => {
+      terminateFires.push(payload);
+      return undefined;
+    });
     h.bus.subscribe('chat:start', 'blocker', async () => reject({ reason: 'blocked' }));
 
     const outcome = await h.bus.call<unknown, AgentOutcome>(
@@ -984,6 +999,7 @@ describe('chat-orchestrator route-by-conversationId (Task 16, J6)', () => {
     expect(turnEnds).toEqual([]);
     expect(unbinds).toEqual([]);
     expect(terminates).toEqual([]);
+    expect(terminateFires).toEqual([]);
   });
 
   it('TASK-1063) an agents:resolve refusal saves no user turn, so channel-web may resend its files', async () => {
@@ -1009,6 +1025,13 @@ describe('chat-orchestrator route-by-conversationId (Task 16, J6)', () => {
       turnEnds.push(payload);
       return undefined;
     });
+    // Conversations clears on the FIRED session:terminate event too (its
+    // subscriber), a separate bus lane from the service call recorded above.
+    const terminateFires: unknown[] = [];
+    h.bus.subscribe('session:terminate', 'binding-clear-spy', async (_ctx, payload) => {
+      terminateFires.push(payload);
+      return undefined;
+    });
 
     const outcome = await h.bus.call<unknown, AgentOutcome>(
       'agent:invoke',
@@ -1022,6 +1045,7 @@ describe('chat-orchestrator route-by-conversationId (Task 16, J6)', () => {
     expect(turnEnds).toEqual([]);
     expect(unbinds).toEqual([]);
     expect(terminates).toEqual([]);
+    expect(terminateFires).toEqual([]);
   });
 
   it('TASK-66) does NOT persist a user turn when ctx.conversationId is unset', async () => {

@@ -2701,8 +2701,10 @@ export function createOrchestrator(
     // nothing: the next POST rebinds it. (Ending a REAL bound session clears
     // it; a turn posted while no real session was bound is bound to a POST-time
     // placeholder, never a real session, so that clear never fires for it.
-    // Do not `session:terminate(ctx.sessionId)` here: for that placeholder it
-    // WOULD clear the binding — pinned in `route-by-conversation.test.ts`.)
+    // Do not call or fire `session:terminate(ctx.sessionId)` here: when the POST
+    // found no session bound at all, ctx.sessionId IS the bound placeholder, so
+    // terminating it would clear the binding — pinned in
+    // `route-by-conversation.test.ts`.)
     // The reason is read by routines (`refusedBeforeAssembly`) and channel-web
     // (`turn-error-labels.ts`); it carries no detail and no `error`, since a
     // `chat:end` subscriber could log either raw.
