@@ -148,7 +148,7 @@ describe('TASK-66 display event log — persist + read', () => {
     const conversationId = await createConv(h, userId);
 
     await appendTurn(h, conversationId, 'user', [
-      { type: 'text', text: 'a\u0000b\ud800c\udc00d😀e' },
+      { type: 'text', text: 'a\u0000b\ud800c\udc00d\ud83d\ude00e\ud800\ud800f' },
       { type: 'text', text: 'plain', ['k\u0000ey']: 'v\ud800' },
     ]);
 
@@ -160,9 +160,9 @@ describe('TASK-66 display event log — persist + read', () => {
     expect(got.turns).toHaveLength(1);
     expect(got.turns[0]!.contentBlocks).toEqual([
       // A well-formed pair (the emoji) is kept; only the broken parts change.
-      { type: 'text', text: 'a�b�c�d😀e' },
+      { type: 'text', text: 'a\uFFFDb\uFFFDc\uFFFDd\ud83d\ude00e\uFFFD\uFFFDf' },
       // The unsafe KEY no longer fails the write; the read's block schema
-      // drops the unknown field (toJsonbText's unit test pins the key swap).
+      // drops the unknown field (@ax/core's well-formed-text test pins the key swap).
       { type: 'text', text: 'plain' },
     ]);
   });

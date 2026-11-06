@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from 'node:crypto';
-import { PluginError } from '@ax/core';
+import { PluginError, stringifyWellFormed } from '@ax/core';
 import { ContentBlockSchema, type ContentBlock } from '@ax/ipc-protocol';
 import { z } from 'zod';
 import { sql, type Kysely } from 'kysely';
@@ -679,36 +679,6 @@ async function purgeAgentConversations(
   });
 }
 
-/**
- * `JSON.stringify` for a Postgres `jsonb` column. jsonb refuses two things a JS
- * string can hold: U+0000 (SQLSTATE 22P05, "cannot be converted to text") and
- * a lone UTF-16 surrogate (22P02). Both can arrive in a person's message or in
- * tool output, and a refused write fails every time, so no retry can save the
- * row. Each one becomes U+FFFD, in values and in object keys; a well-formed
- * surrogate pair is kept. The display log is for showing a conversation again,
- * and a replacement character there beats a missing row (TASK-1059).
- */
-export function toJsonbText(value: unknown): string {
-  return JSON.stringify(value, (_key, v: unknown) => {
-    if (typeof v === 'string') return jsonbSafeString(v);
-    if (v !== null && typeof v === 'object' && !Array.isArray(v)) {
-      const entries = Object.entries(v);
-      if (entries.some(([k]) => jsonbSafeString(k) !== k)) {
-        return Object.fromEntries(entries.map(([k, x]) => [jsonbSafeString(k), x]));
-      }
-    }
-    return v;
-  });
-}
-
-// U+0000, a high surrogate with no low after it, or a low with no high before.
-const JSONB_UNSAFE =
-  /\u0000|[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g;
-
-function jsonbSafeString(s: string): string {
-  return s.replace(JSONB_UNSAFE, '�');
-}
-
 export function createConversationStore(
   db: Kysely<ConversationDatabase>,
 ): ConversationStore {
@@ -1061,6 +1031,12 @@ export function createConversationStore(
       // the retired `save-refused` (old rows stay valid), so this check is
       // what refuses a new one (TASK-995).
       validateEventKind(kind);
+      // jsonb refuses U+0000 and lone surrogates, which a message or tool
+      // output can carry, and a refused row fails on every retry. They become
+      // U+FFFD here (TASK-1059): a replacement character in a redisplay beats
+      // a missing row. Done before the transaction so a large payload's
+      // serialization never stretches the advisory lock or the connection.
+      const payloadJson = stringifyWellFormed(payload);
       // CONTRACT: appends to ONE conversation are fully serialized, so an
       // append NEVER fails and NEVER drops an event, at ANY concurrency.
       // Callers may fan out as wide as they like.
@@ -1152,14 +1128,10 @@ export function createConversationStore(
                 sql<string>`${kind}`.as('event_kind'),
                 sql<string | null>`${role ?? null}`.as('role'),
                 sql<string>`${foldKey ?? ''}`.as('fold_key'),
-                // Serialize once here so the JSONB column gets a single text
-                // value (kysely's pg driver passes the string straight
-                // through to ::jsonb). The payload is opaque; never
-                // interpolated. `toJsonbText` swaps the two things jsonb
-                // refuses (U+0000, a lone surrogate) for U+FFFD, so a
-                // message carrying one is stored instead of refused forever
-                // (TASK-1059).
-                sql<string>`${toJsonbText(payload)}::jsonb`.as('payload'),
+                // Serialized once, above the lock (see `payloadJson`); kysely's
+                // pg driver passes the string straight through to ::jsonb.
+                // The payload is opaque; never interpolated.
+                sql<string>`${payloadJson}::jsonb`.as('payload'),
               ]),
           )
           .returning('seq')
