@@ -181,6 +181,10 @@ export function RemoteMcpConnectorForm({
   // is compared with it, not with the connector as loaded: the loaded one is
   // stale by then, and the server judges the next PATCH against what it holds.
   const [patched, setPatched] = useState<Connector | undefined>(undefined);
+  // What a landed PATCH cleared and this editor hasn't written back yet. A
+  // retry that keeps the new address points nowhere new, but the shared key
+  // or client secret that save cleared is still gone, so it's still asked for.
+  const [clearedBySave, setClearedBySave] = useState({ keys: false, secret: false });
   const [retry, setRetry] = useState(0);
   const [discovery, setDiscovery] = useState<
     | { url: string; status: 'loading' | 'failed' }
@@ -299,10 +303,14 @@ export function RemoteMcpConnectorForm({
     pointsSomewhereNew(retargetBaseline, { ...retargetBaseline, capabilities });
   // What that clears and only this form can put back, so it's asked for again:
   // a shared key's saved values (a per-agent key is each agent's own), and a
-  // saved client secret, unless the admin removes it.
-  const reenterKeys = retargeted && keyMode === 'workspace';
+  // saved client secret, unless the admin removes it. Also what an earlier
+  // save's PATCH already cleared, until it's written back.
+  const reenterKeys = (retargeted || clearedBySave.keys) && keyMode === 'workspace';
   const reenterSecret =
-    retargeted && signIn === 'oauth' && registration === 'custom' && draft.clientSecretRef !== '';
+    (retargeted || clearedBySave.secret) &&
+    signIn === 'oauth' &&
+    registration === 'custom' &&
+    draft.clientSecretRef !== '';
   const reenterSavedHeader = reenterKeys && draft.headers.some((h) => h.saved);
   const newHeader = (name = '') => ({
     slot: newHeaderSlot(),
@@ -562,6 +570,12 @@ export function RemoteMcpConnectorForm({
         // Every edit goes this way, not only the ones `retargeted` flags, so
         // the editor's copy of the rule can never cost a typed key.
         setPatched(await patchConnector(connectorId, input, base));
+        // Remember what this PATCH cleared, so a retry still asks for it.
+        if (reenterKeys || reenterSecret)
+          setClearedBySave((current) => ({
+            keys: current.keys || reenterKeys,
+            secret: current.secret || reenterSecret,
+          }));
         // The connector now names the stored copy. A retry (of a secret or of
         // tool permissions below) must not point it back at the one it replaced.
         update('clientSecretRef', clientSecretRef);
@@ -577,7 +591,10 @@ export function RemoteMcpConnectorForm({
           );
           return;
         }
-        if (writesClientSecret) setClientSecretMissing(false);
+        if (writesClientSecret) {
+          setClientSecretMissing(false);
+          setClearedBySave((current) => ({ ...current, secret: false }));
+        }
         try {
           await writeKeys();
         } catch (err) {
@@ -586,6 +603,8 @@ export function RemoteMcpConnectorForm({
           );
           return;
         }
+        // Every shared value it asked for was typed, so all are written back.
+        setClearedBySave((current) => ({ ...current, keys: false }));
       } else {
         // A new connector writes its secrets first, so it never names one
         // that isn't stored. Nobody has signed in to it yet.

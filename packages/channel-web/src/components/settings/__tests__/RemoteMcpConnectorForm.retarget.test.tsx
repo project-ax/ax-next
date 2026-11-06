@@ -630,7 +630,9 @@ describe('RemoteMcpConnectorForm — pointing a connector somewhere new signs ev
       expect(signOuts).toBe(1);
       await saveIsLive();
       expect(note()).not.toHaveTextContent(SIGNS_OUT);
-      expect(screen.getByText('(optional)')).toBeVisible();
+      // That save's PATCH already cleared the saved secret, so it's still asked
+      // for, not optional.
+      expect(screen.queryByText('(optional)')).toBeNull();
       await moveTo('https://mcp.linear.app/mcp');
       expect(note()).toHaveTextContent(SIGNS_OUT);
       expect(note()).toHaveTextContent('It also clears the client secret, so enter it again below.');
@@ -646,6 +648,74 @@ describe('RemoteMcpConnectorForm — pointing a connector somewhere new signs ev
         ),
       ).toBeVisible();
       expect(patches()).toBe(before);
+    });
+  });
+
+  // A partial save's PATCH landed and cleared the saved key or secret, so a
+  // retry that keeps the new address still has to write it: the vault no
+  // longer holds one, whatever the next save's own comparison says.
+  describe('after a partial save, what that PATCH cleared is still asked for', () => {
+    it('a shared key: emptying the box is refused, not shown as "Saved securely"', async () => {
+      vi.spyOn(console, 'warn').mockImplementation(() => {});
+      discover = () => KEY_SERVER;
+      failingCredentialWrites = 1;
+      const options = await openEditor(sharedKeyConnector(), {
+        [SHARED_KEY_REF]: 'old-shared-key',
+      });
+      await moveTo('https://mcp.other-crm.example/mcp');
+      fireEvent.change(screen.getByLabelText('Value'), {
+        target: { value: 'new-shared-key' },
+      });
+      fireEvent.click(saveButton());
+      expect(
+        await screen.findByText(
+          'We saved the connector, but couldn’t save the key. Try saving again.',
+        ),
+      ).toBeVisible();
+      expect(vault.has(SHARED_KEY_REF)).toBe(false);
+      await saveIsLive();
+      fireEvent.change(screen.getByLabelText('Value'), { target: { value: '' } });
+      expect(screen.queryByText('Saved securely')).toBeNull();
+      const before = calls.length;
+      fireEvent.click(saveButton());
+      expect(
+        await screen.findByText(
+          'Enter this value again. Changing where this connector points clears it.',
+        ),
+      ).toBeVisible();
+      expect(calls.length).toBe(before);
+      expect(options.onSaved).not.toHaveBeenCalled();
+    });
+
+    it('a client secret: emptying the box is refused, not shown as "Saved securely"', async () => {
+      vi.spyOn(console, 'warn').mockImplementation(() => {});
+      failingCredentialWrites = 1;
+      const options = await openEditor(ownClientConnector(), {
+        [OWN_SECRET_REF]: 'old-client-secret',
+      });
+      await moveTo('https://elsewhere.example/mcp');
+      fireEvent.change(screen.getByLabelText(/Client secret/), {
+        target: { value: 'new-client-secret' },
+      });
+      fireEvent.click(saveButton());
+      expect(
+        await screen.findByText(
+          'We saved the connector, but couldn’t save the client secret. Try saving again.',
+        ),
+      ).toBeVisible();
+      expect(vault.has(OWN_SECRET_REF)).toBe(false);
+      await saveIsLive();
+      fireEvent.change(screen.getByLabelText(/Client secret/), { target: { value: '' } });
+      expect(screen.queryByText('Saved securely')).toBeNull();
+      const before = calls.length;
+      fireEvent.click(saveButton());
+      expect(
+        await screen.findByText(
+          'Enter the client secret again, or remove it. Changing where this connector points clears it.',
+        ),
+      ).toBeVisible();
+      expect(calls.length).toBe(before);
+      expect(options.onSaved).not.toHaveBeenCalled();
     });
   });
 
