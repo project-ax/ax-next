@@ -56,6 +56,32 @@ import {
 
 const PLUGIN_NAME = '@ax/session-postgres';
 
+// TASK-1058: the same codes, for the same pg-pool 3.13.0 messages, as
+// @ax/database-postgres (copied, not imported: no cross-plugin imports).
+// - `index.js:224` (`db-checkout-timeout`): the pool was full when the caller
+//   asked, so it queued, and its wait ran out first. Usually starvation, but
+//   in an outage the queued callers get it too.
+// - `:276` (`db-connect-timeout`): the pool had room, and the database didn't
+//   answer the new connection opened for the caller.
+// timeouts.test.ts pins both against the real pool.
+const CHECKOUT_TIMEOUT_CODES: ReadonlyMap<string, string> = new Map([
+  ['timeout exceeded when trying to connect', 'db-checkout-timeout'],
+  ['Connection terminated due to connection timeout', 'db-connect-timeout'],
+]);
+
+/**
+ * Sets `code` on pg-pool's checkout-timeout errors and rethrows that same
+ * object (message, stack, cause and class stay pg-pool's). Only an exact
+ * message match with no code of its own is tagged.
+ */
+function tagCheckoutTimeout(err: unknown): never {
+  if (err instanceof Error && (err as { code?: unknown }).code === undefined) {
+    const code = CHECKOUT_TIMEOUT_CODES.get(err.message);
+    if (code !== undefined) (err as { code?: string }).code = code;
+  }
+  throw err;
+}
+
 const DEFAULT_CHECKOUT_TIMEOUT_MS = 5_000;
 const DEFAULT_STATEMENT_TIMEOUT_MS = 30_000;
 // Node turns a longer timer into 1 ms, and Postgres refuses a longer
@@ -869,8 +895,15 @@ export function createSessionPostgresPlugin(
         const listener = checkedOutListeners.get(client);
         if (listener !== undefined) client.removeListener('error', listener);
       });
+      // TASK-1058: pg-pool's checkout timeouts carry a code (see
+      // tagCheckoutTimeout). Kysely checks connections out through `connect()`
+      // alone and rethrows what it rejects with, so tagging here reaches every
+      // caller; the listeners above stay on the real pool.
+      const timedPool = pool;
       kysely = new Kysely<SessionDatabase>({
-        dialect: new PostgresDialect({ pool }),
+        dialect: new PostgresDialect({
+          pool: { connect: () => timedPool.connect().catch(tagCheckoutTimeout), end: () => timedPool.end() },
+        }),
       });
 
       // TASK-1056: without a connect bound, a database that never answers
