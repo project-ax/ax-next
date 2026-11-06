@@ -162,8 +162,15 @@ export interface ApprovalView {
  * sends its recorded input verbatim, so the person must have been shown the
  * whole request. The card cuts a long one short, and a yes to its beginning is
  * not a yes to the rest. Only an explicit `true` passes; anything else parks
- * the call for the agent, so the failure mode is a call that waits, never a
- * write nobody read.
+ * the call for the agent, so a HOST replay never sends a request the person
+ * saw only the beginning of.
+ *
+ * That closes the host path and only the host path (review r2 R2). A parked
+ * row is still a standing yes (`takeApproval`): if the agent's own run
+ * re-issues the identical call, the gate lets it through, with the same bytes
+ * the card cut short. That residual predates this check (the card has capped
+ * the request since TASK-699, and a parked yes was always the agent's to
+ * cash), and it is the same for every parked call, connector or not.
  *
  * Asked only where the yes is given. The two later sites need no flag: a row
  * the route parked is never replayed (no sweep picks up a parked row), a row it
