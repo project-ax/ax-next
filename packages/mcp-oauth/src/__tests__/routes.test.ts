@@ -2200,6 +2200,37 @@ describe('mcp-oauth callback route', () => {
     expect(store.clearNeedsReconnect).not.toHaveBeenCalled();
   });
 
+  it('the callback redirect never leaves publicOrigin, even with hostile connector/agent ids in the consumed state', async () => {
+    // semgrep flags res.redirect(returnUrl(...)) as an open redirect. This pins
+    // why it isn't: the origin and path are config, and the ids only ever land
+    // URI-encoded in the query string.
+    const hostile = [
+      { connectorId: '//evil.example/x', agentId: '' },
+      { connectorId: 'conn-1', agentId: '@evil.example' },
+      { connectorId: 'https://evil.example/', agentId: '/../\\evil.example' },
+    ];
+    for (const ids of hostile) {
+      const store = storeWithPending({ ...pending, state: 'STATE-H', ...ids });
+      const { deps } = makeCbDeps(
+        {
+          'auth:require-user': () => OK_USER,
+          'connectors:get': () => connectorFixture(),
+          'credentials:set': () => {},
+        },
+        { store },
+      );
+      const { res, state } = fakeRes();
+      await createMcpOAuthRouteHandlers(deps).callback(
+        fakeReq({ query: { code: 'auth-code-xyz', state: 'STATE-H' } }),
+        res,
+      );
+      const url = new URL(state.redirectUrl!);
+      expect(url.origin).toBe('https://app.example.com');
+      expect(url.pathname).toBe('/settings/connectors');
+      expect(url.searchParams.get('connector')).toBe(ids.connectorId);
+    }
+  });
+
   it('TASK-741: a sign-in whose token could not be stored leaves the marker alone', async () => {
     const store = storeWithPending(pending);
     const { deps } = makeCbDeps(
