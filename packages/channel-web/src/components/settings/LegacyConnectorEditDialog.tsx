@@ -497,6 +497,11 @@ export function LegacyConnectorEditDialog({
   );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // TASK-887 — what the server holds once a save's PATCH has landed. A later
+  // save in this same open editor (a retry after the client secret write failed)
+  // is compared with it, not with the connector as loaded: the server judges
+  // that PATCH against what it holds. Cleared when the form reloads.
+  const [savedCapabilities, setSavedCapabilities] = useState<Connector['capabilities'] | null>(null);
   const [hostDiscovery, setHostDiscovery] = useState<{
     url: string;
     status: 'loading' | 'ready' | 'error';
@@ -553,6 +558,7 @@ export function LegacyConnectorEditDialog({
     setError(null);
     setBusy(false);
     setOauthClientSecrets({});
+    setSavedCapabilities(null);
     if (connector) {
       setForm(formFromConnector(connector));
       return;
@@ -592,7 +598,11 @@ export function LegacyConnectorEditDialog({
   const retargeted =
     target !== 'new' &&
     pointsSomewhereNew(
-      { id: form.connectorId, keyMode: form.keyMode, capabilities: form.baseCapabilities },
+      {
+        id: form.connectorId,
+        keyMode: form.keyMode,
+        capabilities: savedCapabilities ?? form.baseCapabilities,
+      },
       {
         id: form.connectorId,
         keyMode: form.keyMode,
@@ -689,7 +699,9 @@ export function LegacyConnectorEditDialog({
       if (target === 'new') {
         await createConnector(body, base);
       } else {
-        await patchConnector(target.id, body, base);
+        const saved = await patchConnector(target.id, body, base);
+        // `saved` is undefined only where a test double answers nothing.
+        if (saved) setSavedCapabilities(saved.capabilities);
         try {
           await writeClientSecrets();
         } catch (err) {

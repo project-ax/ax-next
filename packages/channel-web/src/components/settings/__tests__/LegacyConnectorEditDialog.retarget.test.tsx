@@ -240,6 +240,41 @@ describe('LegacyConnectorEditDialog — a retarget signs everyone out (TASK-887)
     },
   );
 
+  it('after a partial save, putting the original address back warns again; keeping the new one does not', async () => {
+    const SIGNS_OUT = 'Changing where this connector points signs everyone out of it.';
+    const MOVED = 'https://mcp.example.com/gdrive-v2';
+    // The server answers with the connector it now holds.
+    vi.spyOn(connectorsLib, 'patchConnector').mockImplementation(async (_id, body) => ({
+      ...oauthConnector(),
+      capabilities: body.capabilities!,
+    }));
+    vi.spyOn(credentialsLib, 'setDestinationCredential').mockRejectedValueOnce(
+      new Error('boom'),
+    );
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const onSaved = vi.fn();
+    await openEditor(oauthConnector(), onSaved);
+    const url = screen.getByLabelText(/^url$/i);
+    fireEvent.change(url, { target: { value: MOVED } });
+    expect(await screen.findByTestId(WARNING)).toHaveTextContent(SIGNS_OUT);
+    await typeClientSecret('typed-secret');
+    await save();
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'We saved the connector, but couldn’t save the client secret. Try saving again.',
+    );
+    // The server holds the new address now: keeping it points nowhere new.
+    expect(screen.getByTestId(WARNING)).not.toHaveTextContent(SIGNS_OUT);
+    // Putting the original address back is another move.
+    fireEvent.change(url, { target: { value: URL_SAVED } });
+    await waitFor(() => expect(screen.getByTestId(WARNING)).toHaveTextContent(SIGNS_OUT));
+    // The retry that keeps the new address saves it and writes the secret.
+    fireEvent.change(url, { target: { value: MOVED } });
+    await waitFor(() => expect(screen.getByTestId(WARNING)).not.toHaveTextContent(SIGNS_OUT));
+    await save();
+    await waitFor(() => expect(onSaved).toHaveBeenCalled());
+    expect(credentialsLib.setDestinationCredential).toHaveBeenCalledTimes(2);
+  });
+
   it('a client-secret write that fails after the PATCH says so and stays open', async () => {
     vi.spyOn(credentialsLib, 'setDestinationCredential').mockRejectedValue(new Error('boom'));
     const onSaved = vi.fn();
