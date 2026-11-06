@@ -346,6 +346,16 @@ export class WorkspaceApiError extends HttpError {
   }
 }
 
+/** Download all's probe said no. `serverMessage` is the route's own sentence (429, 413), already plain. */
+export class ArtifactsDownloadRefused extends WorkspaceApiError {
+  readonly serverMessage: string | null;
+  constructor(path: string, status: number, serverMessage: string | null) {
+    super(path, status);
+    this.name = 'ArtifactsDownloadRefused';
+    this.serverMessage = serverMessage;
+  }
+}
+
 /**
  * A 200 whose BODY is not the shape we asked for.
  *
@@ -1706,6 +1716,31 @@ export const workspaceApi = {
   /** Where Download all lives: a root-relative route, for an `<a href>`. */
   artifactsDownloadAllUrl: (agentId: string): string =>
     `/api/workspace/agents/${encodeURIComponent(agentId)}/artifacts/download-all`,
+
+  /**
+   * Ask Download all whether it would start (`?probe=1`, the TASK-1022
+   * pattern): the same refusals as the real download, answered before the
+   * browser is handed anything. Resolves to the route to hand the browser;
+   * a refusal throws `ArtifactsDownloadRefused`, carrying the server's own
+   * sentence when it sent one.
+   */
+  probeArtifactsDownload: async (agentId: string): Promise<string> => {
+    const route = `/agents/${encodeURIComponent(agentId)}/artifacts/download-all`;
+    const res = await httpFetch(`/api/workspace${route}?probe=1`);
+    if (!res.ok) {
+      let serverMessage: string | null = null;
+      try {
+        const body: unknown = await res.json();
+        if (typeof body === 'object' && body !== null && 'message' in body && typeof body.message === 'string') {
+          serverMessage = body.message;
+        }
+      } catch {
+        // not JSON: the status alone will pick the sentence
+      }
+      throw new ArtifactsDownloadRefused(route, res.status, serverMessage);
+    }
+    return `/api/workspace${route}`;
+  },
 
   /**
    * Take back one grant.

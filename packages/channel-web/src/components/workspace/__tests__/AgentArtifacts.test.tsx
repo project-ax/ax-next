@@ -1,8 +1,14 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import { workspaceApi } from '@/lib/workspace-api';
+import { ArtifactsDownloadRefused, workspaceApi } from '@/lib/workspace-api';
+import { saveFromUrl } from '@/lib/file-download';
 import type { ArtifactSummary } from '@/lib/workspace-types';
 import { AgentArtifacts } from '../AgentArtifacts';
+
+vi.mock('@/lib/file-download', async () => ({
+  ...(await vi.importActual<Record<string, unknown>>('@/lib/file-download')),
+  saveFromUrl: vi.fn(),
+}));
 
 vi.mock('@/lib/workspace-api', async () => {
   const actual = await vi.importActual<Record<string, unknown>>('@/lib/workspace-api');
@@ -10,6 +16,7 @@ vi.mock('@/lib/workspace-api', async () => {
     ...actual,
     workspaceApi: {
       artifacts: vi.fn(),
+      probeArtifactsDownload: vi.fn(),
       artifactsDownloadAllUrl: (id: string) => `/api/workspace/agents/${id}/artifacts/download-all`,
     },
   };
@@ -35,7 +42,12 @@ function art(over: Partial<ArtifactSummary>): ArtifactSummary {
   };
 }
 
-beforeEach(() => listMock.mockReset());
+const probeMock = vi.mocked(workspaceApi.probeArtifactsDownload);
+beforeEach(() => {
+  listMock.mockReset();
+  probeMock.mockReset();
+  vi.mocked(saveFromUrl).mockReset();
+});
 
 function renderPanel(onOpen = vi.fn()) {
   render(<AgentArtifacts agentId="a-quill" agentName="Quill" onOpen={onOpen} />);
@@ -71,16 +83,62 @@ describe('AgentArtifacts', () => {
     expect(link.getAttribute('href')).toBe('/api/workspace/agents/a-quill/artifacts/download-all');
   });
 
-  it('a refused Download all shows the server’s sentence instead of crashing', async () => {
+  it('a clear probe hands the browser the download route: no blob, no fetch of the zip', async () => {
     listMock.mockResolvedValue([art({})]);
-    const fetchMock = vi.fn(async () =>
-      new Response(JSON.stringify({ error: 'busy', message: 'One download at a time, please — try again in a moment.' }), { status: 429 }),
-    );
-    vi.stubGlobal('fetch', fetchMock);
+    probeMock.mockResolvedValue('/api/workspace/agents/a-quill/artifacts/download-all');
+    const fetchSpy = vi.fn();
+    vi.stubGlobal('fetch', fetchSpy);
     renderPanel();
     fireEvent.click(await screen.findByRole('link', { name: /Download all/ }));
-    expect(await screen.findByRole('status')).toHaveProperty('textContent', 'One download at a time, please — try again in a moment.');
+    await waitFor(() =>
+      expect(saveFromUrl).toHaveBeenCalledWith('/api/workspace/agents/a-quill/artifacts/download-all'),
+    );
+    expect(probeMock).toHaveBeenCalledWith('a-quill');
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect((await screen.findByRole('status')).textContent).toContain('Download started');
     vi.unstubAllGlobals();
+  });
+
+  it('a double click starts one download', async () => {
+    listMock.mockResolvedValue([art({})]);
+    probeMock.mockResolvedValue('/api/workspace/agents/a-quill/artifacts/download-all');
+    renderPanel();
+    const link = await screen.findByRole('link', { name: /Download all/ });
+    fireEvent.click(link);
+    fireEvent.click(link);
+    await waitFor(() => expect(saveFromUrl).toHaveBeenCalledTimes(1));
+    expect(probeMock).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    [429, 'One download at a time, please — try again in a moment.'],
+    [413, 'That’s too much to bundle at once — download them one at a time.'],
+  ])('a %i probe shows the sentence and starts no download', async (status, message) => {
+    listMock.mockResolvedValue([art({})]);
+    probeMock.mockRejectedValue(new ArtifactsDownloadRefused('/x', status, message));
+    renderPanel();
+    fireEvent.click(await screen.findByRole('link', { name: /Download all/ }));
+    expect((await screen.findByRole('status')).textContent).toBe(message);
+    expect(saveFromUrl).not.toHaveBeenCalled();
+  });
+
+  it('a probe failure with no sentence shows the generic copy, and a retry can run', async () => {
+    listMock.mockResolvedValue([art({})]);
+    probeMock.mockRejectedValueOnce(new TypeError('network')).mockResolvedValueOnce('/api/workspace/x');
+    renderPanel();
+    const link = await screen.findByRole('link', { name: /Download all/ });
+    fireEvent.click(link);
+    expect((await screen.findByRole('status')).textContent).toBe(
+      'That download didn’t start, so nothing was saved. Try again in a moment.',
+    );
+    fireEvent.click(link);
+    await waitFor(() => expect(saveFromUrl).toHaveBeenCalledWith('/api/workspace/x'));
+  });
+
+  it('rows are a list', async () => {
+    listMock.mockResolvedValue([art({ artifactId: 'a' }), art({ artifactId: 'b', title: 'Other' })]);
+    renderPanel();
+    expect((await screen.findAllByRole('listitem')).length).toBe(2);
   });
 
   it('a failed load shows an alert with Try again, which reloads', async () => {

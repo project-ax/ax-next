@@ -511,6 +511,32 @@ describe('Download all', () => {
     }
   });
 
+  const probeReq = (): RouteRequest => ({ ...mkReq({ agentId: 'agent-1' }), query: { probe: '1' } });
+
+  it('?probe=1 answers 204 after the same list checks, building no zip', async () => {
+    const { bus, call } = downloadBus({ artifacts: [summary({ artifactId: 'a1' })] });
+    const { res, got } = mkRes();
+    await createArtifactsRouteHandlers({ bus, initCtx: mkInitCtx().ctx }).downloadAll(probeReq(), res);
+    expect({ status: got.status, ended: got.ended, body: got.body, cache: got.headers['cache-control'] }).toEqual({
+      status: 204,
+      ended: true,
+      body: undefined,
+      cache: 'private, no-store',
+    });
+    expect(call.mock.calls.map(([hook]) => hook)).toEqual(['auth:require-user', 'artifacts:list']);
+  });
+
+  it('?probe=1 answers the 413 a real download would', async () => {
+    const tooMany = Array.from({ length: ARTIFACTS_ZIP_MAX_ENTRIES + 1 }, (_, i) => summary({ artifactId: `a${i}`, sizeBytes: 0 }));
+    const { bus } = downloadBus({ artifacts: tooMany });
+    const { res, got } = mkRes();
+    await createArtifactsRouteHandlers({ bus, initCtx: mkInitCtx().ctx }).downloadAll(probeReq(), res);
+    expect({ status: got.status, body: got.json }).toEqual({
+      status: 413,
+      body: { error: 'too-large', message: "That's too much to bundle at once — download them one at a time." },
+    });
+  });
+
   it('exactly at the caps still bundles', async () => {
     const atCap = Array.from({ length: ARTIFACTS_ZIP_MAX_ENTRIES }, (_, i) => summary({ artifactId: `a${i}`, sizeBytes: 0 }));
     const files = Object.fromEntries(atCap.map((a) => [a.artifactId as string, { filename: 'f.txt', text: '' }]));
@@ -568,9 +594,16 @@ describe('Download all concurrency', () => {
       const done = h.downloadAll(asUser(user), res).then(() => got);
       return { got, done };
     }
+    /** A `?probe=1` request as `user`. */
+    function probe(user: string) {
+      const { res, got } = mkRes();
+      const done = h.downloadAll({ ...asUser(user), query: { probe: '1' } }, res).then(() => got);
+      return { got, done };
+    }
     const flush = () => new Promise((r) => setTimeout(r, 0));
     return {
       start,
+      probe,
       flush,
       releaseAll: () => gates.splice(0).forEach((g) => g()),
       setList: (b: 'ok' | 'fault') => (listBehaviour = b),
@@ -636,5 +669,40 @@ describe('Download all concurrency', () => {
     await t.flush();
     t.releaseAll();
     expect(await Promise.all(again.map(async (r) => (await r.done).status))).toEqual([200, 200]);
+  });
+
+  describe('?probe=1', () => {
+    it("answers 429 while that person's bundle is building", async () => {
+      const t = gatedBus();
+      const building = t.start('u1');
+      await t.flush();
+      const refused = await t.probe('u1').done;
+      expect({ status: refused.status, body: refused.json }).toEqual({ status: 429, body: ONE_AT_A_TIME });
+      t.releaseAll();
+      expect((await building.done).status).toBe(200);
+    });
+
+    it('answers the host-busy 429 when two bundles are building', async () => {
+      const t = gatedBus();
+      const a = t.start('u1');
+      const b = t.start('u2');
+      await t.flush();
+      const refused = await t.probe('u3').done;
+      expect({ status: refused.status, body: refused.json }).toEqual({ status: 429, body: HOST_BUSY });
+      t.releaseAll();
+      expect([(await a.done).status, (await b.done).status]).toEqual([200, 200]);
+    });
+
+    it('never holds a slot: two probes in flight do not crowd out two real downloads', async () => {
+      const t = gatedBus();
+      const p1 = t.probe('u3');
+      const p2 = t.probe('u4');
+      const a = t.start('u1');
+      const b = t.start('u2');
+      await t.flush();
+      t.releaseAll();
+      expect([(await p1.done).status, (await p2.done).status]).toEqual([204, 204]);
+      expect([(await a.done).status, (await b.done).status]).toEqual([200, 200]);
+    });
   });
 });

@@ -254,26 +254,40 @@ export function createArtifactsRouteHandlers(deps: ArtifactsRouteDeps) {
     }
   }
 
-  /** Download all, once the caller holds a bundle slot. */
-  async function bundle(req: RouteRequest, res: RouteResponse, userId: string): Promise<void> {
-    const ctx = requestCtx(userId);
-    const agentId = req.params['agentId'] ?? '';
-
-    // The list is the access check (members only) and the size check: both
-    // happen before a single byte is read.
+  /**
+   * The list is the access check (members only) and the size check: both
+   * happen before a single byte is read. Answers 413 itself (and returns
+   * undefined) for a bundle over the caps.
+   */
+  async function listWithinCaps(
+    res: RouteResponse,
+    ctx: AgentContext,
+    agentId: string,
+  ): Promise<ArtifactSummaryWire[] | undefined> {
     const listed = await callOr<{ agentId: string }, { artifacts: ArtifactSummaryWire[] }>(
       res,
       'artifacts:list',
       ctx,
       { agentId },
     );
-    if (listed === undefined) return;
+    if (listed === undefined) return undefined;
     const summaries = listed.artifacts;
     const declared = summaries.reduce((n, a) => n + a.sizeBytes, 0);
     if (summaries.length > ARTIFACTS_ZIP_MAX_ENTRIES || declared > ARTIFACTS_ZIP_MAX_BYTES) {
       res.status(413).json({ error: 'too-large', message: TOO_LARGE_MESSAGE });
-      return;
+      return undefined;
     }
+    return summaries;
+  }
+
+  /** Download all, once the caller holds a bundle slot. */
+  async function bundle(req: RouteRequest, res: RouteResponse, userId: string): Promise<void> {
+    const ctx = requestCtx(userId);
+    const agentId = req.params['agentId'] ?? '';
+
+    const summaries = await listWithinCaps(res, ctx, agentId);
+    if (summaries === undefined) return;
+    const declared = summaries.reduce((n, a) => n + a.sizeBytes, 0);
 
     // The agent's name, for the zip's file name. The person wrote it, so it
     // goes through the header sanitizer like any other download name.
@@ -354,6 +368,13 @@ export function createArtifactsRouteHandlers(deps: ArtifactsRouteDeps) {
       }
       if (bundlesInFlight.size >= ARTIFACTS_ZIP_MAX_CONCURRENT) {
         res.status(429).json({ error: 'busy', message: HOST_BUSY_MESSAGE });
+        return;
+      }
+      // `?probe=1` (the TASK-1022 pattern): every refusal the real download
+      // makes before its first byte, then a 204. No zip, and no slot taken.
+      if (req.query['probe'] === '1') {
+        const ok = await listWithinCaps(res, requestCtx(userId), req.params['agentId'] ?? '');
+        if (ok !== undefined) res.status(204).end();
         return;
       }
       bundlesInFlight.add(userId);

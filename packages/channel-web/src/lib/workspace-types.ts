@@ -50,14 +50,14 @@ import type {
   RoutineReportStatus,
   TaskKind,
 } from '@ax/routines-contract';
+import { z } from 'zod';
+import { ArtifactKindSchema } from '@ax/ipc-protocol/content-blocks';
 
 /**
  * TASK-948 — a task's kind, the routines contract's own list (`TASK_KINDS`),
  * not a copy: `'stay-on-top' | 'get-done'`. What each is called, and how a
  * kind this page doesn't know is read, live in `./task-kinds.js`.
  */
-import { z } from 'zod';
-import { ArtifactKindSchema } from '@ax/ipc-protocol/content-blocks';
 
 export type { TaskKind };
 

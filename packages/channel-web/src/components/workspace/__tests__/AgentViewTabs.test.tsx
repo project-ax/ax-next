@@ -30,6 +30,7 @@ vi.mock('@/lib/workspace-api', async () => {
       // called only once its own view is open.
       rail: vi.fn(async () => railFixture()),
       artifacts: vi.fn(async () => []),
+      probeArtifactsDownload: vi.fn(),
       artifactsDownloadAllUrl: vi.fn(() => '/api/workspace/agents/a-quill/artifacts/download-all'),
       // A root 404 is an empty list.
       userFiles: vi.fn(async () => {

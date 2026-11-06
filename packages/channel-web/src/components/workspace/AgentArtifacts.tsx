@@ -6,7 +6,7 @@
  * Each row has an icon square (the slot a thumbnail will fill later), the
  * title, and "Type · EXT" underneath.
  */
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   Code2,
   Download,
@@ -23,10 +23,10 @@ import { Button } from '@/components/ui/button';
 import { Empty, EmptyDescription, EmptyHeader } from '@/components/ui/empty';
 import { Skeleton } from '@/components/ui/skeleton';
 import { artifactTypeLabel } from '@/lib/artifact-labels';
-import { saveBlob } from '@/lib/file-download';
-import { httpFetch, logRequestFailure } from '@/lib/http';
+import { DOWNLOAD_STARTED_MS, DOWNLOAD_STARTED_NOTE, saveFromUrl } from '@/lib/file-download';
+import { logRequestFailure } from '@/lib/http';
 import { useAgentArtifacts } from '@/lib/use-agent-artifacts';
-import { workspaceApi } from '@/lib/workspace-api';
+import { ArtifactsDownloadRefused, workspaceApi } from '@/lib/workspace-api';
 import type { ArtifactSummary } from '@/lib/workspace-types';
 
 const KIND_ICONS: Record<ArtifactKind, LucideIcon> = {
@@ -38,8 +38,19 @@ const KIND_ICONS: Record<ArtifactKind, LucideIcon> = {
   file: File,
 };
 
-const BUSY_NOTE = 'One download at a time, please — try again in a moment.';
 const FAILED_NOTE = 'That download didn’t start, so nothing was saved. Try again in a moment.';
+const BUSY_NOTE = 'One download at a time, please — try again in a moment.';
+const TOO_BIG_NOTE = 'That’s too much to bundle at once — download them one at a time.';
+
+/** What a refused Download all says: the server's own sentence, else one by status. */
+function downloadNote(e: unknown): string {
+  if (e instanceof ArtifactsDownloadRefused) {
+    if (e.serverMessage !== null) return e.serverMessage;
+    if (e.status === 429) return BUSY_NOTE;
+    if (e.status === 413) return TOO_BIG_NOTE;
+  }
+  return FAILED_NOTE;
+}
 
 function ArtifactRow({ artifact, onOpen }: { artifact: ArtifactSummary; onOpen: () => void }) {
   const Icon = KIND_ICONS[artifact.kind];
@@ -77,41 +88,63 @@ export function AgentArtifacts({
 }) {
   const { status, artifacts, reload } = useAgentArtifacts(agentId);
   const [note, setNote] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
   const url = workspaceApi.artifactsDownloadAllUrl(agentId);
+  // Written synchronously, so two clicks in one frame start one download.
+  const inFlight = useRef(false);
+  const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const mounted = useRef(false);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      clearTimeout(timer.current);
+    };
+  }, []);
+  // A note is about the list it was shown over; a reload or another agent clears it.
+  useEffect(() => {
+    setNote(null);
+  }, [agentId, status]);
 
   /*
     The link stays a real link (middle-click, "save link as"), but a plain click
-    asks first: a refusal (429 one-at-a-time, 413 too much) arrives as JSON with
-    its own sentence, and a browser download bar would only say "Failed".
+    asks the route first (`?probe=1`): a refusal arrives as JSON with its own
+    sentence, which a browser download bar would only call "Failed". On a yes the
+    BROWSER takes the download (it streams to disk, the tab never holds the zip,
+    and the name comes from the server's Content-Disposition).
   */
-  async function downloadAll(e: React.MouseEvent<HTMLAnchorElement>) {
+  function downloadAll(e: React.MouseEvent<HTMLAnchorElement>) {
     e.preventDefault();
+    if (inFlight.current) return;
+    inFlight.current = true;
+    setBusy(true);
     setNote(null);
-    try {
-      const res = await httpFetch(url);
-      if (res.ok) {
-        saveBlob(await res.blob(), `${agentName} artifacts.zip`);
-        return;
-      }
-      let message: string | null = null;
+    void (async () => {
+      let handedOver = false;
       try {
-        const body: unknown = await res.json();
-        if (typeof body === 'object' && body !== null && 'message' in body && typeof body.message === 'string') {
-          message = body.message;
+        saveFromUrl(await workspaceApi.probeArtifactsDownload(agentId));
+        handedOver = true;
+        if (mounted.current) {
+          setNote(DOWNLOAD_STARTED_NOTE);
+          timer.current = setTimeout(() => {
+            timer.current = undefined;
+            inFlight.current = false;
+            setNote(null);
+          }, DOWNLOAD_STARTED_MS);
         }
-      } catch {
-        // not JSON: fall through to our own sentence
+      } catch (err) {
+        logRequestFailure(err, 'artifacts-download-all');
+        if (mounted.current) setNote(downloadNote(err));
+      } finally {
+        if (!handedOver) inFlight.current = false;
+        if (mounted.current) setBusy(false);
       }
-      setNote(message ?? (res.status === 429 ? BUSY_NOTE : FAILED_NOTE));
-    } catch (err) {
-      logRequestFailure(err, 'artifacts-download-all');
-      setNote(FAILED_NOTE);
-    }
+    })();
   }
 
   if (status === 'loading') {
     return (
-      <div className="space-y-2 py-2" aria-label="Loading artifacts">
+      <div className="space-y-2 py-2" role="status">
         <span className="sr-only">Loading…</span>
         {[0, 1, 2].map((i) => (
           <Skeleton key={i} className="h-12 w-full" />
@@ -146,7 +179,7 @@ export function AgentArtifacts({
     <div>
       <div className="flex justify-end pb-1">
         <Button asChild variant="ghost" size="sm" className="gap-1.5 text-[12px] text-muted-foreground">
-          <a href={url} download onClick={(e) => void downloadAll(e)}>
+          <a href={url} download="" aria-disabled={busy} onClick={downloadAll}>
             <Download size={13} aria-hidden />
             Download all
           </a>
@@ -157,11 +190,13 @@ export function AgentArtifacts({
           <AlertDescription>{note}</AlertDescription>
         </Alert>
       )}
-      <div className="flex flex-col gap-0.5">
+      <ul className="flex flex-col gap-0.5">
         {artifacts.map((a) => (
-          <ArtifactRow key={a.artifactId} artifact={a} onOpen={() => onOpen(a.artifactId)} />
+          <li key={a.artifactId}>
+            <ArtifactRow artifact={a} onOpen={() => onOpen(a.artifactId)} />
+          </li>
         ))}
-      </div>
+      </ul>
     </div>
   );
 }
