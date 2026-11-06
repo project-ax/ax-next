@@ -41,10 +41,37 @@ import { parseSingleFileMultipart } from './multipart.js';
 //   - I5: 25 MiB body cap per-route; MIME allowlist enforced by
 //     attachments:store-temp; 200 MiB per-user pending quota inside the
 //     hook; auth required for both; CSRF gated for POST; the download's id
-//     is shape-checked here before the hook sees it.
+//     is shape-checked here before the hook sees it. The download serves
+//     agent-authored bytes on the app origin, so a row whose type a browser
+//     would run as a document (html, xhtml, svg, xml) is sent as
+//     application/octet-stream — see downloadContentType — on top of
+//     `content-disposition: attachment` and `nosniff`.
 // ---------------------------------------------------------------------------
 
 const PLUGIN_NAME = '@ax/channel-web';
+
+// Media types a browser renders as an active document (scripts, event
+// handlers, foreign objects). Served as themselves from /api/files they would
+// run on the app origin if anything ever navigated to the URL, so they are
+// downgraded to an opaque download. Callers that want the text (the chat's
+// visual renderer) read it with fetch().text(), which doesn't care.
+const ACTIVE_CONTENT_TYPES: ReadonlySet<string> = new Set([
+  'text/html',
+  'application/xhtml+xml',
+  'image/svg+xml',
+  'text/xml',
+  'application/xml',
+]);
+
+/**
+ * The content-type GET /api/files sends for a stored media type: active
+ * content becomes `application/octet-stream`; everything else passes through
+ * unchanged. Matching is on the lowercased essence (before any `;` params).
+ */
+export function downloadContentType(mediaType: string): string {
+  const essence = (mediaType.split(';')[0] ?? '').trim().toLowerCase();
+  return ACTIVE_CONTENT_TYPES.has(essence) ? 'application/octet-stream' : mediaType;
+}
 
 // Per-route body cap for POST /api/attachments. Matches the per-file cap
 // the @ax/attachments plugin defaults to (25 MiB). This is the framework-
@@ -255,13 +282,14 @@ export function createAttachmentsRouteHandlers(deps: AttachmentsRouteDeps) {
         // is single-shot; bytes are flushed atomically. For 25 MiB this
         // is a one-shot write — memory and latency both fine.
         const filename = sanitizeContentDispositionFilename(out.displayName);
+        const contentType = downloadContentType(out.mediaType);
         res
           .status(200)
-          .header('content-type', out.mediaType)
+          .header('content-type', contentType)
           .header('content-length', String(out.sizeBytes))
           .header('content-disposition', `attachment; filename="${filename}"`)
           .header('x-content-type-options', 'nosniff')
-          .body(out.bytes, out.mediaType);
+          .body(out.bytes, contentType);
       } catch (err) {
         if (err instanceof PluginError) {
           // Uniform 404, with no bytes, for every forbidden / not-found
