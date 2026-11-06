@@ -30,10 +30,13 @@ const published = (over: Record<string, unknown> = {}) => ({
 describe('artifact cards in buildThread', () => {
   let bus: HookBus;
   let turns: unknown[];
+  let stored: Map<string, Record<string, unknown>>;
+  let getFault: PluginError | null = null;
 
   beforeEach(() => {
     bus = new HookBus();
     turns = [];
+    getFault = null;
     bus.registerService('auth:require-user', 'auth', async () => ({ user: { id: 'u1', isAdmin: false } }));
     bus.registerService('agents:list-for-user', 'agents', async () => ({
       agents: [{ id: 'a1', displayName: 'Inbox', visibility: 'personal' }],
@@ -45,6 +48,16 @@ describe('artifact cards in buildThread', () => {
       conversationId: 'c1', userId: 'u1', agentId: 'a1', title: null, activeSessionId: null,
       activeReqId: null, createdAt: '2026-08-01T10:00:00.000Z', lastActivityAt: null,
     };
+    stored = new Map([
+      [ID1, { artifactId: ID1, agentId: 'a1', title: 'Q3 report', kind: 'document', extension: 'PDF', currentVersion: 1 }],
+      [ID2, { artifactId: ID2, agentId: 'a1', title: 'Other', kind: 'document', extension: 'PDF', currentVersion: 1 }],
+    ]);
+    bus.registerService('artifacts:get', 'artifacts', async (_c, i: unknown) => {
+      if (getFault !== null) throw getFault;
+      const a = stored.get((i as { artifactId: string }).artifactId);
+      if (a === undefined) throw new PluginError({ code: 'not-found', plugin: 'artifacts', message: 'nope' });
+      return { artifact: a };
+    });
     bus.registerService('conversations:list', 'conversations', async () => [row]);
     bus.registerService('conversations:get', 'conversations', async () => {
       if (row === undefined) throw new PluginError({ code: 'not-found', plugin: 'x', message: 'x' });
@@ -93,9 +106,32 @@ describe('artifact cards in buildThread', () => {
     expect(a.title).toBe('Q3 report');
   });
 
-  it('two publishes of one artifact in a turn show one card at the higher version', async () => {
+  it('two publishes of one artifact in a turn show one card at the stored current version', async () => {
+    stored.set(ID1, { ...stored.get(ID1), currentVersion: 3 });
     const t = await thread([published({ version: 3 }), published({ version: 2 }), published({ artifactId: ID2, title: 'Other' })]);
     const cards = t.find((m) => m['artifacts'] !== undefined)!['artifacts'] as Array<{ artifactId: string; version: number }>;
     expect(cards.map((c) => [c.artifactId, c.version])).toStrictEqual([[ID1, 3], [ID2, 1]]);
+  });
+
+  it('a forged title, kind and version are replaced by the stored artifact', async () => {
+    const t = await thread([published({ title: 'Payroll (private)', kind: 'image', extension: 'PNG', version: 9 })]);
+    const cards = t.find((m) => m['artifacts'] !== undefined)!['artifacts'];
+    expect(cards).toStrictEqual([
+      { artifactId: ID1, version: 1, title: 'Q3 report', kind: 'document', extension: 'PDF' },
+    ]);
+  });
+
+  it('an unknown or foreign artifact id is dropped, with no chip either', async () => {
+    stored.set(ID2, { ...stored.get(ID2), agentId: 'someone-elses-agent' });
+    const t = await thread([published({ artifactId: ID2 }), published({ artifactId: 'ffffffffffffffffffffffffffffffff' })]);
+    expect(t.some((m) => m['artifacts'] !== undefined)).toBe(false);
+    expect(t.flatMap((m) => (m['attachments'] as unknown[] | undefined) ?? [])).toStrictEqual([]);
+  });
+
+  it('a hook outage omits the cards rather than trusting the tool text', async () => {
+    getFault = new PluginError({ code: 'unavailable', plugin: 'artifacts', message: 'db down' });
+    const t = await thread([published()]);
+    expect(t.some((m) => m['artifacts'] !== undefined)).toBe(false);
+    expect(t.flatMap((m) => (m['attachments'] as unknown[] | undefined) ?? [])).toStrictEqual([]);
   });
 });

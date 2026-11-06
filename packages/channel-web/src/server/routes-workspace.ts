@@ -221,7 +221,6 @@ import {
   attachmentBlockFromArtifact,
   type AttachmentBlock,
 } from '@ax/ipc-protocol';
-import { ArtifactKindSchema } from '@ax/ipc-protocol/content-blocks';
 import { z } from 'zod';
 import {
   answerRequireUserFailure,
@@ -3962,25 +3961,48 @@ function errorMessages(
 const PublishedArtifactSchema = z.object({
   artifactId: AttachmentIdSchema,
   version: z.number().int().positive(),
-  title: z.string(),
-  kind: ArtifactKindSchema,
-  extension: z.string(),
 }).passthrough();
 
-/** A publish result that names a version → a card; legacy results → null. */
-function publishedArtifactCard(raw: unknown): ThreadArtifact | null {
-  const r = PublishedArtifactSchema.safeParse(raw);
-  if (!r.success) return null;
-  const title = fenceLine(r.data.title, 200);
-  if (title === null) return null;
-  return {
-    artifactId: r.data.artifactId,
-    version: r.data.version,
-    title,
-    kind: r.data.kind,
-    extension: fenceLine(r.data.extension, 16) ?? '',
-  };
+const PUBLISH_TOOL_NAMES = new Set(['artifact_publish', 'mcp__ax-sandbox-tools__artifact_publish']);
+
+/** The text parts of a tool_result block's content. */
+function toolResultTexts(block: { content?: unknown }): string[] {
+  return typeof block.content === 'string' ? [block.content]
+    : Array.isArray(block.content) ? block.content.flatMap((c: unknown) =>
+      c !== null && typeof c === 'object' && 'type' in c && c.type === 'text' &&
+      'text' in c && typeof c.text === 'string' ? [c.text] : []) : [];
 }
+
+/** The artifact id a publish result names, if it is a versioned (new-style) one. */
+function publishedArtifactId(raw: unknown): string | null {
+  const r = PublishedArtifactSchema.safeParse(raw);
+  return r.success ? r.data.artifactId : null;
+}
+
+/** Distinct artifact ids the turns' successful publish results CLAIM. Untrusted. */
+function claimedArtifactIds(turns: TurnRow[]): string[] {
+  const publishIds = new Set(turns.flatMap(turn => (turn.contentBlocks ?? []).flatMap(block =>
+    block.type === 'tool_use' && typeof block.id === 'string' && PUBLISH_TOOL_NAMES.has(block.name ?? '')
+      ? [block.id] : [])));
+  const ids = new Set<string>();
+  for (const turn of turns) {
+    if (turn.role !== 'tool') continue;
+    for (const block of turn.contentBlocks ?? []) {
+      if (block.type !== 'tool_result' || block.is_error || block.held ||
+        !publishIds.has(block.tool_use_id ?? '')) continue;
+      for (const text of toolResultTexts(block)) {
+        try {
+          const id = publishedArtifactId(JSON.parse(text));
+          if (id !== null) ids.add(id);
+        } catch { /* not a publish result */ }
+      }
+    }
+  }
+  return [...ids];
+}
+
+/** What the store says about each claimed artifact, or `null` on an outage. */
+type VerifiedArtifacts = ReadonlyMap<string, ThreadArtifact> | null;
 
 /**
  * Interleave the turns with the host-only rows (turn failures), by instant.
@@ -3999,13 +4021,17 @@ function buildThread(
   // TASK-744 — namespace → connector name for the reader, so a connector
   // tool's step names its connector instead of an opaque hash.
   connectors: ConnectorNames = new Map(),
+  // Artifact cards come from the STORE, never from the runner's tool text
+  // (which agent-controlled code produces). `null` = the store couldn't be
+  // read: no cards, rather than trusting the claim.
+  verified: VerifiedArtifacts = new Map(),
 ): ThreadMessage[] {
   const dated: Array<{ at: string; msg: ThreadMessage }> = [];
   const out: ThreadMessage[] = [];
   const outcomes = toolOutcomes(turns);
   const publishIds = new Set(turns.flatMap(turn => (turn.contentBlocks ?? []).flatMap(block =>
     block.type === 'tool_use' && typeof block.id === 'string' &&
-    (block.name === 'artifact_publish' || block.name === 'mcp__ax-sandbox-tools__artifact_publish')
+    PUBLISH_TOOL_NAMES.has(block.name ?? '')
       ? [block.id] : [],
   )));
   const visualIds = new Set(turns.flatMap(turn => (turn.contentBlocks ?? []).flatMap(block =>
@@ -4026,20 +4052,21 @@ function buildThread(
       // A publish result carrying a `version` is a published artifact: it is
       // drawn as a card (highest version per id), never as a download chip.
       const cards = new Map<string, ThreadArtifact>();
+      const claimedIds = new Set<string>();
       for (const block of blocks) {
         if (block.type !== 'tool_result' || block.is_error || block.held ||
           !publishIds.has(block.tool_use_id ?? '')) continue;
-        const texts = typeof block.content === 'string' ? [block.content]
-          : Array.isArray(block.content) ? block.content.flatMap((c: unknown) =>
-            c !== null && typeof c === 'object' && 'type' in c && c.type === 'text' &&
-            'text' in c && typeof c.text === 'string' ? [c.text] : []) : [];
+        const texts = toolResultTexts(block);
         for (const text of texts) {
           try {
             const parsed: unknown = JSON.parse(text);
-            const card = publishedArtifactCard(parsed);
-            if (card !== null) {
-              const seen = cards.get(card.artifactId);
-              if (seen === undefined || card.version > seen.version) cards.set(card.artifactId, card);
+            const claimed = publishedArtifactId(parsed);
+            if (claimed !== null) {
+              claimedIds.add(claimed);
+              // A versioned result is never a chip. It is a card only if the
+              // store vouches for it; unknown, foreign or refused ids vanish.
+              const card = verified?.get(claimed);
+              if (card !== undefined) cards.set(card.artifactId, card);
               continue;
             }
             // The publish result object → a chip, every field re-validated;
@@ -4054,7 +4081,7 @@ function buildThread(
       // An agent file has no id (it is null), so it is keyed by its path: a null
       // id must not collapse every agent file into one chip.
       const attachments = [...new Map(files.filter(file =>
-        file.attachmentId === null || file.attachmentId === undefined || !cards.has(file.attachmentId),
+        file.attachmentId === null || file.attachmentId === undefined || !claimedIds.has(file.attachmentId),
       ).map(file => [
         file.agentFilePath !== undefined ? `file:${file.agentFilePath}` : `id:${file.attachmentId}`,
         file,
@@ -4422,6 +4449,54 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
    * A failed or missing read degrades to an empty map: connector tools are
    * then named by their tool name alone — a worse label, not a wrong one.
    */
+  /**
+   * Ground the thread's artifact cards in the store. The publish result is
+   * produced by the runner (agent-controlled code), so a card's id, title,
+   * kind and version are read back through `artifacts:get` as the viewer, one
+   * call per distinct id, and must belong to this agent. Unknown, foreign or
+   * refused ids are simply absent. A hook outage returns `null` (no cards,
+   * code-only log line) rather than falling back to the tool text.
+   */
+  async function verifiedArtifacts(
+    turns: TurnRow[],
+    agentId: string,
+    userId: string,
+  ): Promise<VerifiedArtifacts> {
+    const ids = claimedArtifactIds(turns);
+    const out = new Map<string, ThreadArtifact>();
+    if (ids.length === 0) return out;
+    if (!bus.hasService('artifacts:get')) return null;
+    const ctx = agentWorkspaceCtx(agentId, userId);
+    let outage = false;
+    await Promise.all(ids.map(async (artifactId) => {
+      try {
+        const got = await bus.call<{ artifactId: string }, { artifact: {
+          artifactId: string; agentId: string; title: string; kind: ThreadArtifact['kind'];
+          extension: string; currentVersion: number;
+        } }>('artifacts:get', ctx, { artifactId });
+        const a = got.artifact;
+        if (a.agentId !== agentId) return;
+        const title = fenceLine(a.title, 200);
+        if (title === null) return;
+        out.set(a.artifactId, {
+          artifactId: a.artifactId,
+          version: a.currentVersion,
+          title,
+          kind: a.kind,
+          extension: fenceLine(a.extension, 16) ?? '',
+        });
+      } catch (err) {
+        // not-found / forbidden: the id is not this viewer's — drop it.
+        // Anything else is an outage: omit every card.
+        const code = err instanceof PluginError ? err.code : 'unknown';
+        if (code === 'not-found' || code === 'forbidden') return;
+        outage = true;
+        initCtx.logger.warn('workspace_artifact_cards_unverified', { code });
+      }
+    }));
+    return outage ? null : out;
+  }
+
   async function connectorNames(userId: string): Promise<ConnectorNames> {
     if (!bus.hasService('connectors:tool-labels')) return new Map();
     try {
@@ -7925,7 +8000,8 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
         edits memory, which a read-only page has no business offering.
       */
       const thread = [
-        ...buildThread(got.turns ?? [], got.displayEvents ?? [], approvals.live, connectors),
+        ...buildThread(got.turns ?? [], got.displayEvents ?? [], approvals.live, connectors,
+          await verifiedArtifacts(got.turns ?? [], key.agentId, userId)),
         ...approvals.messages,
       ].filter((m) => m.kind !== 'user');
       res.status(200).json(toTaskCheckin(own.agent, own.view, fire, thread, approvals.status));
@@ -8053,7 +8129,8 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
           const approvals = await approvalMessages(userId, agentId, threadConversationId);
           decisionsRead = approvals.status;
           thread = [
-            ...buildThread(got.turns ?? [], got.displayEvents ?? [], approvals.live, connectors),
+            ...buildThread(got.turns ?? [], got.displayEvents ?? [], approvals.live, connectors,
+              await verifiedArtifacts(got.turns ?? [], agentId, userId)),
             ...approvals.messages,
           ];
           thread = await withMemoryUsed(
