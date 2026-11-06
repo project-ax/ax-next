@@ -201,8 +201,9 @@ export async function replayOnApprove(args: {
     // Never for a routine tool: `callJoined` waits for its effect to settle,
     // and for a write `settleReplay` then reads the durable `routineOutcome`
     // and settles its authority through `decisions:settle-routine-call`, which
-    // an unknown outcome skips. The message is never logged: it quotes the
-    // tool name, which the model wrote. And not `invalid-return`: no
+    // an unknown outcome skips. The error's message is never logged (the
+    // TASK-1046 r2 R4 rule): a `PluginError` that reaches us from a nested
+    // call carries text this package did not write. And not `invalid-return`: no
     // `tool:execute:*` registers `returns`, and an executor that returned did
     // not time out.
     if (routineToolKind(decision.call.name) === null && err instanceof PluginError && err.code === 'timeout') {
