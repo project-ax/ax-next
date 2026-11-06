@@ -915,6 +915,22 @@ describe('chat-orchestrator route-by-conversationId (Task 16, J6)', () => {
     });
   });
 
+  // TASK-1063 — a refused turn keeps the reqId channel-web bound at POST time,
+  // on purpose: a stream GET that opens after the refusal resolves the
+  // conversation by it and replays the error. What clears a bound reqId is a
+  // `chat:turn-end` (conversations compare-and-clears on it) or an explicit
+  // unbind. A refusal that fired either would drop the binding and the late
+  // stream would find nothing, so the guards below assert neither happens.
+  // Register BEFORE createTestHarness: the harness takes its services then.
+  function recordUnbinds(mocks: BuiltMocks): unknown[] {
+    const unbinds: unknown[] = [];
+    mocks.services['conversations:unbind-session'] = async (_ctx, input: unknown) => {
+      unbinds.push(input);
+      return undefined;
+    };
+    return unbinds;
+  }
+
   // TASK-1063 — channel-web's Resend sends a refused turn's files again only
   // when the person's message was NOT saved (turnErrorMessageNotSaved). That is
   // true only while chat:start and agents:resolve run BEFORE the user-turn
@@ -925,6 +941,7 @@ describe('chat-orchestrator route-by-conversationId (Task 16, J6)', () => {
       conversations: { 'conv-g': { activeSessionId: null } },
       liveSessions: new Set(),
     });
+    const unbinds = recordUnbinds(mocks);
     const h = await createTestHarness({
       services: mocks.services,
       plugins: [
@@ -933,6 +950,11 @@ describe('chat-orchestrator route-by-conversationId (Task 16, J6)', () => {
           chatTimeoutMs: 1_000,
         }),
       ],
+    });
+    const turnEnds: unknown[] = [];
+    h.bus.subscribe('chat:turn-end', 'binding-clear-spy', async (_ctx, payload) => {
+      turnEnds.push(payload);
+      return undefined;
     });
     h.bus.subscribe('chat:start', 'blocker', async () => reject({ reason: 'blocked' }));
 
@@ -945,6 +967,9 @@ describe('chat-orchestrator route-by-conversationId (Task 16, J6)', () => {
     expect(outcome.kind).toBe('terminated');
     if (outcome.kind === 'terminated') expect(outcome.reason).toMatch(/^chat:start:/);
     expect(mocks.trace.appendEvent).toEqual([]);
+    // The refusal leaves the POST-time bound reqId alone (see the note above).
+    expect(turnEnds).toEqual([]);
+    expect(unbinds).toEqual([]);
   });
 
   it('TASK-1063) an agents:resolve refusal saves no user turn, so channel-web may resend its files', async () => {
@@ -955,6 +980,7 @@ describe('chat-orchestrator route-by-conversationId (Task 16, J6)', () => {
     mocks.services['agents:resolve'] = async () => {
       throw new PluginError({ code: 'forbidden', plugin: 'agents', message: 'nope' });
     };
+    const unbinds = recordUnbinds(mocks);
     const h = await createTestHarness({
       services: mocks.services,
       plugins: [
@@ -963,6 +989,11 @@ describe('chat-orchestrator route-by-conversationId (Task 16, J6)', () => {
           chatTimeoutMs: 1_000,
         }),
       ],
+    });
+    const turnEnds: unknown[] = [];
+    h.bus.subscribe('chat:turn-end', 'binding-clear-spy', async (_ctx, payload) => {
+      turnEnds.push(payload);
+      return undefined;
     });
 
     const outcome = await h.bus.call<unknown, AgentOutcome>(
@@ -974,6 +1005,8 @@ describe('chat-orchestrator route-by-conversationId (Task 16, J6)', () => {
     expect(outcome.kind).toBe('terminated');
     if (outcome.kind === 'terminated') expect(outcome.reason).toMatch(/^agent-resolve:/);
     expect(mocks.trace.appendEvent).toEqual([]);
+    expect(turnEnds).toEqual([]);
+    expect(unbinds).toEqual([]);
   });
 
   it('TASK-66) does NOT persist a user turn when ctx.conversationId is unset', async () => {
