@@ -1150,12 +1150,16 @@ on the same mistakes against `contentOrigin.frameAncestors`. Neither can tell
 two siblings under one registrable domain apart (`a.example.com` vs
 `b.example.com`), so that part is on us.
 
-> **Check the domain with Vinay before deploying.** Which domain we own and use
-> for user content is a product decision, not a placeholder to fill in. Don't
-> register or point a domain until it's agreed.
+**Picking the domain.** Register one you control and keep it for user content
+only: nothing else, no app, no mail, no other services on it. The usual shape
+is your name plus "usercontent" on its own domain (`ax-usercontent.example.net`,
+or `examplecontent.com`). Use the bare domain or a name under it; either works.
+Two don't: a subdomain of the app's domain (cookies again), and a host on a
+shared platform domain you don't own, since other tenants there could set
+cookies or serve pages from your "site".
 
 ```bash
-CONTENT_DOMAIN=<the agreed content domain>   # e.g. ax-usercontent.example.net
+CONTENT_DOMAIN=<your content domain>   # e.g. ax-usercontent.example.net
 ```
 
 1. **DNS.** Create an **A record** for `$CONTENT_DOMAIN` pointing at **the same
@@ -1702,7 +1706,7 @@ onboarding:
 # registrable domain from ingress.host, never a subdomain of it. The chart
 # will not render without publicOrigin.
 contentOrigin:
-  publicOrigin: https://<the agreed content domain>
+  publicOrigin: https://<your content domain>
   frameAncestors:
     - https://your.domain.example      # the app's origin: who may show its pages
 # REQUIRED: every agent's home directory (/files). The chart will not render

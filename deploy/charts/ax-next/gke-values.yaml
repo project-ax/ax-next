@@ -222,7 +222,7 @@ http:
 # next to ax.example.com), never a subdomain of it: a subdomain could share the
 # app's cookies. The chart adds an Ingress rule for it on the same static IP;
 # give it an A record and the ax-next-content-cert ManagedCertificate
-# (deploy/GKE.md, Step 5d). CHECK THE DOMAIN WITH VINAY BEFORE DEPLOYING.
+# (deploy/GKE.md, Step 5d, which also covers picking the domain).
 #
 # Both are EMPTY on purpose: the render fails until your gke-values.local.yaml
 # sets them, so an upgrade can never ship a placeholder domain or point the

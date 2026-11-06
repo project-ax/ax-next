@@ -432,7 +432,7 @@ Invoked from host/deployment.yaml, which always renders.
 {{- $hint := "set contentOrigin.publicOrigin=https://<a domain that is not ingress.host>" -}}
 {{- $origin := toString ($co.publicOrigin | default "") -}}
 {{- if not $origin -}}
-{{- fail (printf "contentOrigin.publicOrigin is empty. Agent-made pages are shown from a second site, which must be a different domain from the app, never a subdomain of it: %s (deploy/GKE.md, Step 5d)." $hint) -}}
+{{- fail (printf "contentOrigin.publicOrigin is empty. Agent-made pages are shown from a second site, which must be a different domain from the app, never a subdomain of it: %s (see 'The content domain' in deploy/README.md; on GKE, deploy/GKE.md Step 5d)." $hint) -}}
 {{- end -}}
 {{- $contentHost := lower (urlParse $origin).hostname -}}
 {{- if not $contentHost -}}

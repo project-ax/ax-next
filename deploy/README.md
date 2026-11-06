@@ -115,6 +115,54 @@ on purpose: on a machine that also talks to a real cluster your *default* contex
 is often not kind, and a bare `rollout restart` acts on whatever it is. (One did,
 once, to a live host.) `make rollout` and friends are pinned the same way.
 
+## The content domain (every production install needs one)
+
+Agents can publish web pages and images ("artifacts"). We show those from a
+**second domain** you own, never from the app's own. An artifact page runs
+whatever scripts the agent wrote, and the browser only keeps those scripts
+away from your users' sign-ins if the page lives on a different site.
+
+So a production install has two domains:
+
+| | Example | What it serves |
+|---|---|---|
+| App | `ax.example.com` | the AX app, sign-in, the share links people send |
+| Content | `ax-usercontent.example.net` | only the inside of artifact frames |
+
+The content domain must be a **different registrable domain**, not a
+subdomain of the app (`content.ax.example.com` would share cookies with it).
+Keep it for user content only. Users never see it in the address bar: share
+links stay on the app domain, and the content domain only fills the frame.
+
+What to set up, on any cluster:
+
+1. **DNS** for the content domain, pointing at the same load balancer or
+   Ingress as the app.
+2. **A TLS certificate** for it. The app is https, and a browser blocks an
+   http frame inside an https page.
+3. **Routing**: send requests for the content hostname to the host Service's
+   `content-http` port (9091, `host.ports.content`). With the chart's Ingress
+   on, it adds that rule for you; with your own proxy or Ingress controller,
+   add it yourself. `GET /` answers 200 for health checks.
+4. **Chart values**:
+
+   ```yaml
+   contentOrigin:
+     publicOrigin: https://ax-usercontent.example.net
+     frameAncestors: [https://ax.example.com]   # the app's own origin
+   ```
+
+   Not using the chart? The host reads the same settings from
+   `AX_CONTENT_ORIGIN`, `AX_CONTENT_FRAME_ANCESTORS` (comma-separated) and
+   `AX_CONTENT_PORT` (default 9091).
+
+Both values ship empty, and the render (and the host) refuse to start
+without them, or when the content hostname equals the app's or sits under it.
+We'd rather fail at install than quietly put agent pages next to your cookies.
+GKE has a full walkthrough, with the managed certificate: [`GKE.md`](GKE.md),
+Step 5d. The kind setup above uses `http://127.0.0.1:9091`, which is fine on a
+laptop and nowhere else.
+
 ## Switching an existing deployment to facts memory (one-time operator runbook)
 
 Facts memory (`host.preset: memory`) is the chart default, so a fresh install can skip this section.
