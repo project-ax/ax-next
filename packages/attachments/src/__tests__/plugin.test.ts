@@ -11,7 +11,7 @@ import {
   startTestContainer,
 } from '@ax/test-harness';
 import { createDatabasePostgresPlugin } from '@ax/database-postgres';
-import { createAttachmentsPlugin } from '../plugin.js';
+import { createAttachmentsPlugin, type AttachmentsPlugin } from '../plugin.js';
 
 let container: StartedPostgreSqlContainer;
 let connectionString: string;
@@ -19,6 +19,7 @@ const harnesses: TestHarness[] = [];
 
 async function makeHarness(
   config: Parameters<typeof createAttachmentsPlugin>[0] = {},
+  plugin: AttachmentsPlugin = createAttachmentsPlugin(config),
 ): Promise<TestHarness> {
   const h = await createTestHarness({
     // Mock the hooks this plugin `calls` but doesn't register itself.
@@ -46,7 +47,7 @@ async function makeHarness(
     },
     plugins: [
       createDatabasePostgresPlugin({ connectionString }),
-      createAttachmentsPlugin(config),
+      plugin,
     ],
   });
   harnesses.push(h);
@@ -100,6 +101,7 @@ describe('@ax/attachments plugin manifest', () => {
       'artifacts:set-link',
       'artifacts:resolve-share-code',
       'system-prompt:augment:optional:artifacts',
+      'artifacts:mint-view-token',
     ]);
     expect(plugin.manifest.calls).toContain('database:get-instance');
     expect(plugin.manifest.calls).toContain('blob:put');
@@ -233,5 +235,44 @@ describe('@ax/attachments artifacts:publish-blob wiring (D10)', () => {
       SELECT count(*)::text AS n FROM attachments_v1_artifact_versions
     `.execute(db);
     expect(rows.rows[0]!.n).toBe('0');
+  });
+
+  it('starts the content origin in init when configured, and closes it on shutdown', async () => {
+    const plugin = createAttachmentsPlugin({
+      contentOrigin: { host: '127.0.0.1', port: 0, frameAncestors: ['http://localhost:9090'] },
+    });
+    expect(plugin.contentOriginUrl()).toBeUndefined();
+    const harness = await makeHarness({}, plugin);
+    const url = plugin.contentOriginUrl();
+    expect(url).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
+    const r = await fetch(`${url}/`);
+    expect(r.status).toBe(200);
+    expect(await r.text()).toBe('ok');
+
+    // Access runs first: a missing artifact is the one not-found, not a URL.
+    await expect(
+      harness.bus.call('artifacts:mint-view-token', harness.ctx({ userId: 'test-user' }), {
+        artifactId: 'nope',
+        version: 1,
+        purpose: 'view',
+      }),
+    ).rejects.toMatchObject({ code: 'not-found' });
+
+    await harness.close();
+    expect(plugin.contentOriginUrl()).toBeUndefined();
+    await expect(fetch(`${url}/`)).rejects.toThrow();
+  });
+
+  it('with no content origin configured, no listener starts and minting is unavailable', async () => {
+    const plugin = createAttachmentsPlugin();
+    const harness = await makeHarness({}, plugin);
+    expect(plugin.contentOriginUrl()).toBeUndefined();
+    await expect(
+      harness.bus.call('artifacts:mint-view-token', harness.ctx({ userId: 'test-user' }), {
+        artifactId: 'nope',
+        version: 1,
+        purpose: 'view',
+      }),
+    ).rejects.toMatchObject({ code: 'unavailable' });
   });
 });

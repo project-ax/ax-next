@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import {
   BLOB_COLLECT_REFS_HOOK,
   PluginError,
@@ -16,8 +17,11 @@ import {
   AGENT_DISPLAY_NAME_DEGRADATION,
   AGENT_DISPLAY_NAME_HOOK,
   ARTIFACT_HOOKS,
+  MINT_VIEW_TOKEN_HOOK,
+  createArtifactsMintViewTokenHandler,
   registerArtifactHooks,
 } from './artifacts/handlers.js';
+import { createArtifactServe, startContentOrigin, type ContentOriginHandle } from './artifacts/content-origin.js';
 import {
   createStoreTempHandler,
   createCommitHandler,
@@ -28,6 +32,7 @@ import {
 import { startJanitor, type JanitorHandle } from './janitor.js';
 import {
   type AttachmentsConfig,
+  ArtifactsMintViewTokenOutputSchema,
   ArtifactsPublishBlobOutputSchema,
   AttachmentsListForConversationOutputSchema,
   CommitOutputSchema,
@@ -123,6 +128,11 @@ function agentIdsVia(bus: HookBus, ctx: AgentContext) {
 //     version's metadata). artifacts:read also takes a share code. Codes go
 //     through the same access rule; a bad code is the same not-found.
 //   - system-prompt:augment:optional:artifacts: the agent's own artifact list.
+//   - artifacts:mint-view-token: a short-lived URL on the content origin for
+//     one version (§6.5). The content origin is this plugin's second listener
+//     (artifacts/content-origin.ts), started in init when `contentOrigin` is
+//     configured and closed in shutdown. Its signing key is random per process
+//     and never leaves memory.
 //
 // Manifest decisions (the authoritative list is the `calls:` array below —
 // this prose is a summary):
@@ -149,10 +159,17 @@ function agentIdsVia(bus: HookBus, ctx: AgentContext) {
 //     blob store does not hold, so no row ever points at missing bytes.
 // ---------------------------------------------------------------------------
 
+/** The plugin, plus where its content origin listens once init has run. */
+export type AttachmentsPlugin = Plugin & {
+  /** The content origin's public URL, or undefined when none is configured or running. */
+  contentOriginUrl(): string | undefined;
+};
+
 export function createAttachmentsPlugin(
   config: AttachmentsConfig = {},
-): Plugin {
+): AttachmentsPlugin {
   let janitor: JanitorHandle | undefined;
+  let contentOrigin: { handle: ContentOriginHandle; key: Uint8Array } | undefined;
   let _store: AttachmentsStore | undefined;
   let _db: Kysely<AttachmentsDatabase> | undefined;
 
@@ -169,6 +186,7 @@ export function createAttachmentsPlugin(
         'attachments:list-for-conversation',
         'artifacts:publish-blob',
         ...ARTIFACT_HOOKS,
+        MINT_VIEW_TOKEN_HOOK,
       ],
       calls: [
         'database:get-instance',
@@ -261,6 +279,27 @@ export function createAttachmentsPlugin(
       );
       registerArtifactHooks(bus, PLUGIN_NAME, { artifacts, bus });
 
+      // The content origin (§6.5). The key is made here and held only in
+      // memory: a restart retires every token in flight.
+      if (config.contentOrigin !== undefined) {
+        const key = randomBytes(32);
+        const handle = await startContentOrigin({
+          ...config.contentOrigin,
+          key,
+          logger: initCtx.logger,
+          serve: createArtifactServe({ artifacts, bus }),
+        });
+        contentOrigin = { handle, key };
+      }
+      bus.registerService(
+        MINT_VIEW_TOKEN_HOOK,
+        PLUGIN_NAME,
+        createArtifactsMintViewTokenHandler({ artifacts, bus }, () =>
+          contentOrigin === undefined ? undefined : { key: contentOrigin.key, publicOrigin: contentOrigin.handle.url },
+        ),
+        { returns: ArtifactsMintViewTokenOutputSchema },
+      );
+
       // 5) TASK-718: a purged conversation's upload rows go with it; its
       //    artifacts stay (they are the agent's, D12) and their versions just
       //    lose the chat id. Rows only — see `store.purgeForConversations` for
@@ -339,6 +378,10 @@ export function createAttachmentsPlugin(
       });
     },
 
+    contentOriginUrl() {
+      return contentOrigin?.handle.url;
+    },
+
     async shutdown() {
       // Stop the periodic sweep so the test harness / kernel can drain.
       // The bus's service-handler registrations don't need explicit unregister
@@ -346,6 +389,11 @@ export function createAttachmentsPlugin(
       if (janitor !== undefined) {
         await janitor.stop();
         janitor = undefined;
+      }
+      if (contentOrigin !== undefined) {
+        const { handle } = contentOrigin;
+        contentOrigin = undefined;
+        await handle.close();
       }
       // Drop references so a re-init doesn't pick up a stale store.
       _store = undefined;

@@ -207,6 +207,25 @@ export interface AttachmentsConfig {
    * Override via `allowedMediaTypes` if you want broader admission.
    */
   allowedMediaTypes?: string[];
+
+  /**
+   * The content origin (§6.5): a second listener, on a different site from
+   * the app, that serves artifact bytes against short-lived view tokens.
+   * Omitted: no listener starts and `artifacts:mint-view-token` answers
+   * `unavailable`.
+   */
+  contentOrigin?: ContentOriginConfig;
+}
+
+export interface ContentOriginConfig {
+  /** Bind address. */
+  host: string;
+  /** Bind port; 0 picks a free one (tests). */
+  port: number;
+  /** The URL the browser reaches it at. Defaults to `http://127.0.0.1:<bound port>` (tests). */
+  publicOrigin?: string;
+  /** The app origins allowed to frame artifact HTML. */
+  frameAncestors: string[];
 }
 
 export const DEFAULT_MAX_FILE_BYTES = 25 * 1024 * 1024;

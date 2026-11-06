@@ -16,7 +16,7 @@ import { describe, expect, it } from 'vitest';
 import {
   FALLBACK_DOWNLOAD_FILENAME,
   sanitizeContentDispositionFilename,
-} from '../../server/content-disposition.js';
+} from '../util/content-disposition.js';
 
 const s = sanitizeContentDispositionFilename;
 

@@ -67,7 +67,7 @@ export interface StoreTempDeps {
  */
 export function resolveAttachmentsConfig(
   input: AttachmentsConfig,
-): Required<AttachmentsConfig> {
+): Required<Omit<AttachmentsConfig, 'contentOrigin'>> {
   return {
     maxFileBytes: input.maxFileBytes ?? DEFAULT_MAX_FILE_BYTES,
     maxPendingBytesPerUser:

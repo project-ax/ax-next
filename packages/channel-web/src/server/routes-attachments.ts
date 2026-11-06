@@ -2,11 +2,11 @@ import {
   answerRequireUserFailure,
   makeAgentContext,
   PluginError,
+  sanitizeContentDispositionFilename,
   type AgentContext,
   type HookBus,
 } from '@ax/core';
 import { AttachmentIdSchema } from '@ax/ipc-protocol';
-import { sanitizeContentDispositionFilename } from './content-disposition.js';
 import { parseSingleFileMultipart } from './multipart.js';
 
 // ---------------------------------------------------------------------------

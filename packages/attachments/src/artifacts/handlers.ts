@@ -12,6 +12,7 @@ import { describeMediaType, downloadFilename, mediaTypeForPath } from './media.j
 import type { ArtifactRow, ArtifactStore, VersionRow } from './store.js';
 import { isShareCode, newShareCode } from './share-code.js';
 import { normalizeArtifactTitle } from './title.js';
+import { VIEW_TOKEN_TTL_SECONDS, linkBindingFor, signViewToken } from './view-token.js';
 import {
   ArtifactsDeleteOutputSchema,
   ArtifactsGetOutputSchema,
@@ -29,6 +30,8 @@ import {
   type ArtifactsGetOutput,
   type ArtifactsListInput,
   type ArtifactsListOutput,
+  type ArtifactsMintViewTokenInput,
+  type ArtifactsMintViewTokenOutput,
   type ArtifactsPublishInput,
   type ArtifactsPublishOutput,
   type ArtifactsReadInput,
@@ -62,7 +65,10 @@ export interface ArtifactHookDeps {
 export const AGENT_DISPLAY_NAME_HOOK = 'agents:get-display-name';
 export const AGENT_DISPLAY_NAME_DEGRADATION = "the share page says 'an agent'";
 
-function fail(hookName: string, code: 'not-found' | 'invalid-payload' | 'conflict', message: string): PluginError {
+function fail(
+  hookName: string,
+  code: 'not-found' | 'invalid-payload' | 'conflict' | 'unavailable',
+  message: string): PluginError {
   return new PluginError({ code, plugin: PLUGIN_NAME, hookName, message });
 }
 
@@ -362,6 +368,81 @@ export function createArtifactsResolveShareCodeHandler(deps: ArtifactHookDeps) {
         updatedAt: head.updatedAt.toISOString(),
         agentName: await agentNameFor(deps, ctx, head.agentId),
       },
+    };
+  };
+}
+
+/** What the mint needs from a running content origin. */
+export interface ContentOriginKey {
+  key: Uint8Array;
+  publicOrigin: string;
+}
+
+export const MINT_VIEW_TOKEN_HOOK = 'artifacts:mint-view-token';
+
+const PURPOSES: ReadonlySet<unknown> = new Set(['view', 'download']);
+/** The previews the content origin shows inline at /v/. */
+const INLINE_PREVIEWS: ReadonlySet<string> = new Set(['html', 'image']);
+
+/**
+ * `artifacts:mint-view-token` — a short-lived content-origin URL for one
+ * version (§6.5). Access runs first, through the same rule as every hook, so a
+ * refusal says nothing about the artifact. A link holder's token is for the
+ * current version and is bound to the code: turning the link off, rotating it,
+ * or moving the artifact to another version retires it (content-origin.ts).
+ * With no content origin running the answer is `unavailable`, never a URL.
+ */
+export function createArtifactsMintViewTokenHandler(
+  deps: ArtifactHookDeps,
+  origin: () => ContentOriginKey | undefined,
+) {
+  const hookName = MINT_VIEW_TOKEN_HOOK;
+  return async (ctx: AgentContext, input: ArtifactsMintViewTokenInput): Promise<ArtifactsMintViewTokenOutput> => {
+    const running = origin();
+    if (running === undefined) throw fail(hookName, 'unavailable', 'artifact previews are not available here');
+
+    const raw = (input ?? {}) as { artifactId?: unknown; version?: unknown; shareCode?: unknown; purpose?: unknown };
+    const purpose = raw.purpose;
+    if (!PURPOSES.has(purpose)) throw fail(hookName, 'invalid-payload', "purpose must be 'view' or 'download'");
+    const p = purpose as 'view' | 'download';
+
+    let head: ArtifactRow;
+    let version: VersionRow | null;
+    let linkBinding: string | null = null;
+    if ('shareCode' in raw) {
+      if (raw.version !== undefined || raw.artifactId !== undefined) {
+        throw fail(hookName, 'invalid-payload', 'a share code mints the current version and takes nothing else');
+      }
+      head = await headFor(deps, ctx, hookName, { shareCode: raw.shareCode }, () =>
+        p === 'download' ? 'download' : 'view-current',
+      );
+      version = head.current;
+      // headFor checked the code's shape and matched it to this head.
+      linkBinding = linkBindingFor(raw.shareCode as string);
+    } else {
+      const wanted = raw.version;
+      if (!isVersion(wanted)) throw fail(hookName, 'invalid-payload', 'version must be a positive integer');
+      head = await headFor(deps, ctx, hookName, { artifactId: raw.artifactId }, (h) =>
+        wanted !== h.currentVersion ? 'view-any-version' : p === 'download' ? 'download' : 'view-current',
+      );
+      version = wanted === head.currentVersion ? head.current : await deps.artifacts.getVersion(head.artifactId, wanted);
+    }
+    if (version === null) throw notFound(hookName);
+    if (p === 'view' && !INLINE_PREVIEWS.has(describeMediaType(version.mediaType).preview)) {
+      throw fail(hookName, 'invalid-payload', 'only HTML and images open inline; download the rest');
+    }
+
+    const expiresAt = Math.floor(Date.now() / 1000) + VIEW_TOKEN_TTL_SECONDS;
+    const token = signViewToken(running.key, {
+      artifactId: head.artifactId,
+      version: version.version,
+      purpose: p,
+      linkBinding,
+      expiresAt,
+    });
+    return {
+      url: `${running.publicOrigin}/${p === 'view' ? 'v' : 'd'}/${token}`,
+      expiresAt: new Date(expiresAt * 1000).toISOString(),
     };
   };
 }

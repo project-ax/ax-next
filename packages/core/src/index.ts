@@ -57,6 +57,7 @@ export type {
 export { MEMORY_PRE_CAPTURE_HOOK, MEMORY_PRE_CAPTURE_SUBSCRIBER_TIMEOUT_MS, MemoryPreCapturePayloadSchema } from './memory-capture.js';
 export type { MemoryPreCapturePayload } from './memory-capture.js';
 export { safePath, assertWithinBase } from './util/safe-path.js';
+export { sanitizeContentDispositionFilename, FALLBACK_DOWNLOAD_FILENAME } from './util/content-disposition.js';
 export { faultLogFields, type FaultLogFields } from './fault-code.js';
 export {
   toWellFormedText,

@@ -231,3 +231,25 @@ export const ArtifactsResolveShareCodeOutputSchema = z.object({
     agentName: z.string().nullable(),
   }),
 }) as ZodType<ArtifactsResolveShareCodeOutput>;
+
+// --- artifacts:mint-view-token ---------------------------------------------
+
+/**
+ * Two forms, as `artifacts:read`. By id (members): any retained version. By
+ * share code (a signed-in link holder): the current version, and the token is
+ * bound to that code. `view` is for an inline preview (HTML or an image);
+ * `download` for any type.
+ */
+export type ArtifactsMintViewTokenInput =
+  | { artifactId: string; version: number; purpose: 'view' | 'download' }
+  | { shareCode: string; purpose: 'view' | 'download' };
+/** A content-origin URL that serves one version for a few minutes. Never carries the share code. */
+export interface ArtifactsMintViewTokenOutput {
+  url: string;
+  /** ISO 8601. */
+  expiresAt: string;
+}
+export const ArtifactsMintViewTokenOutputSchema = z.object({
+  url: z.string(),
+  expiresAt: z.string(),
+}) as ZodType<ArtifactsMintViewTokenOutput>;
