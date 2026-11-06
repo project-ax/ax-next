@@ -72,18 +72,21 @@ export type ExecutionPath = 'agent-executes' | 'host-replays';
  * agent re-issuing its call.
  *
  * `approved-pending-agent` is the honest answer for a call the host physically
- * CANNOT make: `tool.execute-host` dispatches to `tool:execute:<name>`, and a
- * tool whose descriptor says `executesIn: 'sandbox'` has no such hook and no
- * sandbox to run in once the turn ended. The approval is real and stands at the
- * gate — the agent performs it the next time it runs. It is deliberately NOT
- * `executed`, because `executed` is a claim that the thing happened (design
- * H1), and the receipt reads "Approved — it will do this the next time it
- * runs", never "Sent".
+ * CANNOT make: no `tool:execute:<name>` hook (`tool.execute-host` dispatches to
+ * it, and a tool whose descriptor says `executesIn: 'sandbox'` has none, and no
+ * sandbox to run in once the turn ended) AND, for a connector key
+ * `mcp.<ns>.<tool>`, no `connectors:call-tool` either. The approval is real
+ * and stands at the gate — the call goes ahead if a later run makes exactly
+ * the same request. It is deliberately NOT `executed`, because `executed` is
+ * a claim that the thing happened (design H1), and the receipt reads
+ * "Approved — it can do this the next time it tries", never "Sent".
  *
- * `failed` means the host tried the replay and the tool threw. Nothing was
- * completed, the standing authorisation is gone, and the agent must raise the
+ * `failed` means the host tried the replay and the tool threw, or the host
+ * sent a connector call and got no reliable answer (`replayAbandonedAt`; the
+ * receipt then says it cannot tell). When it threw, nothing was completed. In
+ * both cases the standing authorisation is gone, and the agent must raise the
  * call again rather than silently inheriting a yes for an action that did not
- * happen.
+ * happen (or may not have).
  */
 export const DECISION_STATUSES = [
   'pending',

@@ -250,6 +250,10 @@ export function createDecisionsPlugin(opts?: DecisionsPluginOptions): Plugin {
       // documentation is `presets/k8s`' test asserting that the two producers
       // AW-7 ships are actually loaded — an unpaired or missing producer is
       // otherwise a silent, permanent downgrade nobody can catch.
+      //
+      // `connectors:call-tool` (TASK-1046) is the opposite case: a NAMED hook,
+      // so it IS declared, as an `optionalCalls` entry below. Only the
+      // per-tool `tool:execute:<name>` family has no name to write.
       calls: ['database:get-instance', 'tool-policy:evaluate'],
       // OPTIONAL, not required, and the distinction is load-bearing in both
       // directions. A host with no conversations store has no channels to read
@@ -695,10 +699,14 @@ export function createDecisionsPlugin(opts?: DecisionsPluginOptions): Plugin {
           //   attended                  -> the agent is still warm; it
           //                                re-issues its own call and the
           //                                fingerprint gate authorises it once.
-          //   unattended, no executor   -> the host physically cannot make this
-          //                                call. `approved-pending-agent`: the
-          //                                approval waits at the gate for the
-          //                                agent's next run. NOT "Sent".
+          //   unattended, no host        -> `hostExecutorFor` finds neither a
+          //   executor                     `tool:execute:<name>` nor, for a
+          //                                connector key, `connectors:call-tool`,
+          //                                so the host cannot make this call.
+          //                                `approved-pending-agent`: the
+          //                                approval waits at the gate for a
+          //                                later run to make the identical
+          //                                call. NOT "Sent".
           //   unattended, irreversible  -> claim now, replay when the undo
           //                                window closes.
           //   unattended, reversible    -> claim now, replay now.

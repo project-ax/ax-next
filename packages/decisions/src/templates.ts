@@ -317,7 +317,9 @@ export function decisionText(input: DecisionTextInput): DecisionText {
  * neither of them is "the call went out as recorded":
  *
  *   - a host replay that ran and failed partway, and
- *   - a call the host cannot even attempt (sandbox-only tool).
+ *   - a call the host cannot even attempt (sandbox-only tool). Connector
+ *     calls are NOT in this group: since TASK-1046 the host attempts them
+ *     itself, through `connectors:call-tool`.
  *
  * Both are constants, not templates built from `capability` or `toolName`, on
  * purpose. The design this whole file exists to avoid derived one outcome line

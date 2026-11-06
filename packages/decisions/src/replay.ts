@@ -10,13 +10,17 @@ import { routineToolKind } from '@ax/routines-contract';
  * So the host runs the recorded call itself, byte for byte, which is the whole
  * reason the approval card can promise that what you approved is what happens.
  *
- * THE CONSTRAINT, STATED OUT LOUD: the host can only replay a call whose tool
- * has a host-side executor. `tool.execute-host` dispatches to a dynamic
- * `tool:execute:<name>` service hook, and a tool whose descriptor says
- * `executesIn: 'sandbox'` has no such hook — and no sandbox to run in, because
- * the turn is over. We do NOT try, and we do NOT fabricate a receipt. The
- * approval stands at the gate and the agent performs it the next time it runs.
- * (`skill_propose` is exactly this case; `request_capability` is the
+ * THE CONSTRAINT, STATED OUT LOUD: the host replays a call through a host
+ * executor (`hostExecutorFor`), and only through one. That is a dynamic
+ * `tool:execute:<name>` service hook — what `tool.execute-host` dispatches to —
+ * or, for a connector toolKey `mcp.<ns>.<tool>`, `@ax/mcp-client`'s
+ * `connectors:call-tool` (TASK-1046), which re-derives the decision owner's
+ * access to that connector instead of trusting this package. A call with
+ * neither parks: a tool whose descriptor says `executesIn: 'sandbox'` has no
+ * host hook — and no sandbox to run in, because the turn is over. We do NOT
+ * try, and we do NOT fabricate a receipt. The approval stands at the gate and
+ * the call goes ahead if a later run makes exactly the same request.
+ * (`skill_propose` is exactly the parked case; `request_capability` is a
  * host-executed one.)
  *
  * WHY THE DYNAMIC HOOK NAME IS OK HERE. `bus.call('tool:execute:' + name)` is
