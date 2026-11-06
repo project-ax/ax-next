@@ -51,10 +51,14 @@ describe('createShowVisualExecutor', () => {
     expect(c.callBinaryUpload).not.toHaveBeenCalled();
   });
 
-  it('counts UTF-8 bytes, not characters', async () => {
-    await expect(run(client(), { title: 't', summary: 's', html: '€'.repeat(34_134) })).rejects.toThrow(
-      /over the 100 KB limit/,
+  it('counts UTF-8 bytes, not characters, and refuses before any IPC', async () => {
+    // 34,134 euro signs: 34,134 characters (well under 102,400) but 102,402 bytes.
+    const c = client();
+    await expect(run(c, { title: 't', summary: 's', html: '€'.repeat(34_134) })).rejects.toThrow(
+      /102402 bytes, over the 100 KB limit/,
     );
+    expect(c.callBinaryUpload).not.toHaveBeenCalled();
+    expect(c.call).not.toHaveBeenCalled();
   });
 
   it.each([

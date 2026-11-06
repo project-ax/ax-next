@@ -1003,7 +1003,10 @@ export function AgentView({
       visualsTurnRef.current += 1;
       setLiveVisuals(null);
       setWitnessed(new Set());
-      setStreamConversation(conversationRef.current);
+      // The conversation this turn belongs to, fixed now: a new chat opened
+      // while it streams moves `conversationRef`, not this turn.
+      const turnConversation = conversationRef.current;
+      setStreamConversation(turnConversation);
       setPhase(null);
       setTurnError(null);
       await workspaceApi.streamReply(reqId, {
@@ -1019,7 +1022,7 @@ export function AgentView({
         onToolResult: (result) =>
           setLiveCalls((prev) => applyToolResult(prev, result)),
         onVisual: (visual) => {
-          const conversationId = conversationRef.current;
+          const conversationId = turnConversation;
           // No conversation, no way to fetch the artifact: the re-read draws it.
           if (conversationId === null) return;
           setLiveVisuals((prev) => {

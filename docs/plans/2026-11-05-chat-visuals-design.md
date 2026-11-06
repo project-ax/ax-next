@@ -163,6 +163,17 @@ field names backend-neutral: `visual`, `title`, `summary`, not storage terms.
   lands, reserve the card's space and fade the frame in.
 - **Failure:** if the HTML throws or renders nothing, the summary text still stands. Show a quiet
   "This visual couldn't be displayed" state instead of a broken box.
+  As built: "renders nothing" means the frame's `<body>` holds no element that draws and no
+  non-blank text once it loads (`<script>`, `<style>`, `<template>`, `<noscript>`, `<link>` and
+  `<meta>` don't count), or its height is under 8 px. A visual that hasn't said `ready` within
+  **8 s of being watchable** fails too. The 8 s budget only runs while the tab is visible and the
+  card intersects the viewport, and it pauses and resumes rather than restarting, because
+  browsers don't run animation frames for a frame they aren't painting: a visual above the
+  scroll position on reload, or one that arrives in a background tab, must not fail for being
+  off screen. The frame runtime itself doesn't depend on painting either: it says `ready` from
+  `load` on the next animation frame or a 100 ms timer, whichever comes first. The HTML fetch
+  has its own 15 s timeout, so a hung request fails and leaves the cache instead of sticking
+  until a reload.
 
 ### Matching the app's look
 

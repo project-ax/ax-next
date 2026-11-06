@@ -95,12 +95,26 @@ export function VisualFrame(props: { conversationId: string; visual: ThreadVisua
     };
   }, [conversationId, artifactId]);
 
-  // Counted from mount, so a fetch that never answers fails too.
+  // The ready budget only runs while someone could be looking: the tab is
+  // visible and the card is on screen. A browser may not run a frame it isn't
+  // painting, so a visual scrolled out of view (or one that arrived in a
+  // background tab) mustn't be failed for being slow. The budget pauses and
+  // resumes rather than restarting, so scrolling past a broken visual a few
+  // times still ends in the quiet failure after 8 s of it being in view.
+  // It starts at mount, not at load, so a fetch that never answers fails too (the fetch
+  // has its own timeout as well, for cards that are never seen).
+  const cardRef = useRef<HTMLDivElement>(null);
+  const watching = useWatched(cardRef);
+  const readyBudget = useRef(READY_TIMEOUT_MS);
   useEffect(() => {
-    if (ready || failed) return;
-    const timer = setTimeout(() => setFailed(true), READY_TIMEOUT_MS);
-    return () => clearTimeout(timer);
-  }, [ready, failed]);
+    if (ready || failed || !watching) return;
+    const started = Date.now();
+    const timer = setTimeout(() => setFailed(true), readyBudget.current);
+    return () => {
+      clearTimeout(timer);
+      readyBudget.current = Math.max(0, readyBudget.current - (Date.now() - started));
+    };
+  }, [ready, failed, watching]);
 
   const settleExport = useCallback((requestId: string): boolean => {
     const timer = pendingExports.current.get(requestId);
@@ -192,7 +206,7 @@ export function VisualFrame(props: { conversationId: string; visual: ThreadVisua
   };
 
   return (
-    <Card className="w-full max-w-[604px] overflow-hidden">
+    <Card ref={cardRef} className="w-full max-w-[604px] overflow-hidden">
       <CardHeader className="flex-row items-center justify-between gap-2 py-1 pl-4 pr-1">
         <CardTitle className="truncate text-sm font-medium">{title}</CardTitle>
         <DropdownMenu modal={false}>
@@ -250,6 +264,35 @@ export function VisualFrame(props: { conversationId: string; visual: ThreadVisua
       </CardContent>
     </Card>
   );
+}
+
+/**
+ * True while the page is visible and the element intersects the viewport.
+ * Without IntersectionObserver the element counts as on screen, so the ready
+ * timeout still applies.
+ */
+function useWatched(ref: React.RefObject<HTMLElement | null>): boolean {
+  const [pageVisible, setPageVisible] = useState(() => document.visibilityState === 'visible');
+  const [onScreen, setOnScreen] = useState(() => typeof IntersectionObserver !== 'function');
+
+  useEffect(() => {
+    const update = () => setPageVisible(document.visibilityState === 'visible');
+    document.addEventListener('visibilitychange', update);
+    return () => document.removeEventListener('visibilitychange', update);
+  }, []);
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || typeof IntersectionObserver !== 'function') return;
+    const observer = new IntersectionObserver((entries) => {
+      const last = entries[entries.length - 1];
+      if (last) setOnScreen(last.isIntersecting);
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [ref]);
+
+  return pageVisible && onScreen;
 }
 
 function clearAll(pending: Map<string, ReturnType<typeof setTimeout>>): void {

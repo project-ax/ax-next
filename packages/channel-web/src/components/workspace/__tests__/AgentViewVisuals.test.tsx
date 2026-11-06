@@ -83,12 +83,16 @@ function renderView(
 function View({
   agentId,
   pendingReply = null,
+  chatCommand = null,
 }: {
   agentId: string;
   pendingReply?: ComponentProps<typeof AgentView>['pendingReply'];
+  chatCommand?: ComponentProps<typeof AgentView>['chatCommand'];
 }) {
   return (
     <AgentView
+      chatCommand={chatCommand}
+      onChatCommandConsumed={vi.fn()}
       pendingReply={pendingReply}
       onPendingReplyConsumed={vi.fn()}
       agentId={agentId}
@@ -206,6 +210,18 @@ describe('a visual shown during a live turn', () => {
     await showChart();
     const frame = await screen.findByTestId('visual');
     expect(frame).toHaveAttribute('data-conv', 'c-new');
+  });
+
+  it('keeps a visual with the turn that made it when a new chat opens mid-stream', async () => {
+    const { rerender } = await sendHello(detail());
+    // The person starts a new chat while the c1 turn is still streaming.
+    agentMock.mockResolvedValue(detail({ conversationId: 'c2' }));
+    rerender(<View agentId="a1" chatCommand={{ nonce: 1, agentId: 'a1', kind: 'new', conversationId: 'c2' }} />);
+    await waitFor(() => expect(agentMock).toHaveBeenCalledWith('a1', 'c2'));
+    // The old turn's visual arrives now: it belongs to c1, so the new chat
+    // doesn't draw it (c1's re-read will).
+    await showChart();
+    expect(screen.queryByTestId('visual')).toBeNull();
   });
 
   it('drops live visuals when the person moves to another agent', async () => {

@@ -160,6 +160,7 @@ window.axVisualRuntime = function axVisualRuntime(win, host) {
   var queryAll = elementProto && elementProto.querySelectorAll;
   var removeEl = elementProto && elementProto.remove;
   var setTimer = win.setInterval;
+  var setTimeoutFn = win.setTimeout;
   var raf = win.requestAnimationFrame;
 
   // Frame-making elements go, and so does any element hosting an open shadow
@@ -287,6 +288,9 @@ window.axVisualRuntime = function axVisualRuntime(win, host) {
   var TOKEN_VALUE = /^(?:\d+(?:\.\d+)?(?:deg)?\s+\d+(?:\.\d+)?%\s+\d+(?:\.\d+)?%|\d+(?:\.\d+)?(?:rem|px))$/;
   var FONT_FAMILY = 'Inter, -apple-system, BlinkMacSystemFont, system-ui, sans-serif';
   var PER_POINT_TYPES = { pie: true, doughnut: true, polarArea: true };
+  var FRAME_FALLBACK_MS = 100;
+  // Body children that draw nothing: a body holding only these rendered nothing.
+  var NON_RENDERING = { SCRIPT: true, STYLE: true, TEMPLATE: true, NOSCRIPT: true, LINK: true, META: true };
 
   var doc = win.document;
   var root = doc.documentElement;
@@ -304,9 +308,19 @@ window.axVisualRuntime = function axVisualRuntime(win, host) {
     }
   }
 
+  // The next frame, or FRAME_FALLBACK_MS, whichever comes first. rAF never
+  // runs in a frame the browser isn't painting (scrolled offscreen, hidden
+  // tab), and a visual has to say ready and report its size there too.
+  // measure() forces layout, so a height read from the timer is still right.
   function nextFrame(fn) {
-    if (typeof win.requestAnimationFrame === 'function') win.requestAnimationFrame(fn);
-    else win.setTimeout(fn, 16);
+    var done = false;
+    function once() {
+      if (done) return;
+      done = true;
+      fn();
+    }
+    if (typeof win.requestAnimationFrame === 'function') win.requestAnimationFrame(once);
+    if (typeof setTimeoutFn === 'function') apply(setTimeoutFn, win, [once, FRAME_FALLBACK_MS]);
   }
 
   // Only a broken render matters, and only until it's shown. The error text
@@ -387,17 +401,31 @@ window.axVisualRuntime = function axVisualRuntime(win, host) {
     }
   }
 
+  // Something a person can see: an element that draws, or non-blank text.
+  // Script and style text don't count, and neither does the body's padding.
+  function hasContent(body) {
+    if (!body) return false;
+    var nodes = body.childNodes;
+    for (var i = 0; i < nodes.length; i++) {
+      var node = nodes[i];
+      if (node.nodeType === 1 && !NON_RENDERING[String(node.nodeName).toUpperCase()]) return true;
+      if (node.nodeType === 3 && node.nodeValue.trim() !== '') return true;
+    }
+    return false;
+  }
+
   win.addEventListener('load', function () {
     nextFrame(function () {
       nextFrame(function () {
+        // From the timer this can beat the per-frame check: run it first, so
+        // a frame with a child says error, never ready.
+        check();
         if (ready || killed) return;
         ready = true;
         slowTimer();
         var h = measure();
         lastHeight = h;
-        var body = doc.body;
-        var hasContent = !!body && (body.children.length > 0 || body.textContent.trim() !== '');
-        post({ type: 'ax-visual:ready', height: h, rendered: hasContent && h >= 8, locked: locked });
+        post({ type: 'ax-visual:ready', height: h, rendered: hasContent(doc.body) && h >= 8, locked: locked });
       });
     });
   });

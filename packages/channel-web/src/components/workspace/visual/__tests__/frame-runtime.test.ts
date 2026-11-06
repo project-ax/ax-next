@@ -94,6 +94,42 @@ describe('frame runtime', () => {
     ]);
   });
 
+  it('says ready even when no animation frame ever runs (offscreen or hidden)', async () => {
+    const { win, host } = setup((w) => {
+      // What a browser does for a frame it isn't painting: rAF never calls back.
+      w.requestAnimationFrame = () => 0;
+    });
+    win.dispatchEvent(new win.Event('load'));
+    await new Promise((r) => setTimeout(r, 400));
+    expect(posted(host, 'ax-visual:ready')).toEqual([expect.objectContaining({ type: 'ax-visual:ready' })]);
+  });
+
+  describe('rendered', () => {
+    // jsdom has no layout: give the page the height the body padding alone makes.
+    const tall = (body: string) => (w: FrameWindow) => {
+      w.document.body.innerHTML = body;
+      Object.defineProperty(w.document.documentElement, 'scrollHeight', { value: 28, configurable: true });
+    };
+
+    it('is false for a body holding only scripts, styles, templates and whitespace', async () => {
+      const { win, host } = setup(
+        tall('\n  <script>var a = "lots of script text";</script>\n<style>p{color:red}</style><template><p>x</p></template>  '),
+      );
+      win.dispatchEvent(new win.Event('load'));
+      await frames();
+      expect(posted(host, 'ax-visual:ready')).toEqual([expect.objectContaining({ rendered: false })]);
+    });
+
+    it('is true for an element that draws, or for bare text', async () => {
+      for (const body of ['<script>1</script><canvas></canvas>', '<script>1</script> hello ']) {
+        const { win, host } = setup(tall(body));
+        win.dispatchEvent(new win.Event('load'));
+        await frames();
+        expect(posted(host, 'ax-visual:ready')).toEqual([expect.objectContaining({ rendered: true })]);
+      }
+    });
+  });
+
   it('says locked:false in ready when a lock could not be installed', async () => {
     const { win, host } = setup((w) => {
       Object.defineProperty(w, 'RTCPeerConnection', { value: function () {}, configurable: false });

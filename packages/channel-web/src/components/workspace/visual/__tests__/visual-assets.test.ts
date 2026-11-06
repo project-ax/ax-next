@@ -50,4 +50,16 @@ describe('visual assets', () => {
       '1.11.13',
     ]);
   });
+
+  it('vendors libraries with no `<!--` or `</script` in them', () => {
+    // They're inlined into a <script>. Either sequence would have to be
+    // escaped there, and an escape inside a string or regex literal changes
+    // what the library does. A version bump that brings one in fails here
+    // instead of quietly shipping a rewritten library.
+    expect(VISUAL_LIBRARY_SOURCES).toHaveLength(2);
+    for (const source of VISUAL_LIBRARY_SOURCES) {
+      expect(source).not.toMatch(/<!--/);
+      expect(source).not.toMatch(/<\/script/i);
+    }
+  });
 });

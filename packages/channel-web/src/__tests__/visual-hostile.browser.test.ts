@@ -98,7 +98,7 @@ const json = (value: unknown) => JSON.stringify(value).replace(/</g, '\\u003c');
  * visual with buildVisualDocument and mounts it the way VisualFrame does.
  * Every message any frame posts to this window lands in window.__results.
  */
-function appPage(visuals: Record<string, string>): string {
+function appPage(visuals: Record<string, string>, spacerPx = 0): string {
   return `<!doctype html><html lang="en"><head>${appCspMeta()}<meta charset="utf-8"><title>visual box probe</title></head><body>
 <script type="module">
 import { buildVisualDocument, VISUAL_IFRAME_SANDBOX } from '/visual-doc.js';
@@ -127,6 +127,12 @@ window.__exportPng = (name) => new Promise((done) => {
   window.addEventListener('message', onMessage);
   f.contentWindow.postMessage({ type: 'ax-visual:export', requestId: 'r1', format: 'png' }, '*');
 });
+if (${spacerPx} > 0) {
+  // Pushes every visual below the fold, where the browser doesn't paint it.
+  const spacer = document.createElement('div');
+  spacer.style.height = '${spacerPx}px';
+  document.body.appendChild(spacer);
+}
 for (const [name, html] of Object.entries(visuals)) {
   const f = document.createElement('iframe');
   f.setAttribute('sandbox', VISUAL_IFRAME_SANDBOX);
@@ -232,8 +238,9 @@ describe.skipIf(CHROMIUM_MISSING && !IN_CI)('chat visual box in Chromium (hostil
     visuals: Record<string, string>,
     settle: string[] = Object.keys(visuals),
     settleMs = 3000,
+    { spacerPx = 0, settleTimeoutMs = 20_000 }: { spacerPx?: number; settleTimeoutMs?: number } = {},
   ): Promise<Run> {
-    pages.set(path, appPage(visuals));
+    pages.set(path, appPage(visuals, spacerPx));
     const hitsBefore = canaryHits.length;
     const connectionsBefore = tcpConnections;
     const page = await browser.newPage();
@@ -266,7 +273,7 @@ describe.skipIf(CHROMIUM_MISSING && !IN_CI)('chat visual box in Chromium (hostil
         );
       },
       settle,
-      { timeout: 20_000 },
+      { timeout: settleTimeoutMs },
     );
     await page.waitForTimeout(settleMs);
     const results = await page.evaluate(() => (window as unknown as { __results: Recorded[] }).__results);
@@ -317,6 +324,46 @@ describe.skipIf(CHROMIUM_MISSING && !IN_CI)('chat visual box in Chromium (hostil
       expect(hits).toEqual([]);
       expect(canaryLeaks(requests)).toEqual([]);
       expect(consoleErrors.filter((e) => /SyntaxError/.test(e))).toEqual([]);
+    } finally {
+      await page.close();
+    }
+  });
+
+  it('a visual below the fold says ready without being scrolled into view', async () => {
+    // Chromium runs no animation frames for an offscreen cross-origin frame;
+    // a ready that waits on rAF alone would never come. The parent's 8 s
+    // budget doesn't run while the card is off screen, but the frame must
+    // still say ready on its own, well inside that.
+    const { page, results } = await run(
+      '/offscreen',
+      { below: '<div style="height:120px">hello chart</div>' },
+      ['below'],
+      0,
+      { spacerPx: 5000, settleTimeoutMs: 4000 },
+    );
+    try {
+      const inView = await page.evaluate(() => {
+        const f = document.querySelector('iframe')!;
+        return f.getBoundingClientRect().top < window.innerHeight;
+      });
+      expect(inView).toBe(false);
+      expect(from(results, 'below')).toContainEqual({
+        type: 'ax-visual:ready',
+        height: expect.any(Number),
+        rendered: true,
+        locked: true,
+      });
+      const ready = from(results, 'below').find((m) => m.type === 'ax-visual:ready')!;
+      expect(ready.height as number).toBeGreaterThanOrEqual(120);
+    } finally {
+      await page.close();
+    }
+  });
+
+  it('a visual whose body is only a script says it rendered nothing', async () => {
+    const { page, results } = await run('/script-only', { empty: '<script>var a = "only script text here";</script>' }, ['empty'], 0);
+    try {
+      expect(from(results, 'empty')).toContainEqual(expect.objectContaining({ type: 'ax-visual:ready', rendered: false }));
     } finally {
       await page.close();
     }

@@ -10,6 +10,12 @@ import { HttpError, httpFetch } from '@/lib/http';
 /** A visual is a chart, not a website. The tool refuses bigger ones too. */
 export const VISUAL_MAX_FETCH_BYTES = 256 * 1024;
 
+/**
+ * A fetch that hangs would otherwise sit in the cache until a reload. Past
+ * this it's aborted, so it fails, leaves the cache, and the next mount retries.
+ */
+export const VISUAL_FETCH_TIMEOUT_MS = 15_000;
+
 const MAX_HTML_ENTRIES = 32;
 const MAX_HEIGHT_ENTRIES = 200;
 
@@ -27,18 +33,26 @@ function evictOldest<K, V>(map: Map<K, V>, max: number): void {
 
 async function fetchVisualHtml(conversationId: string, artifactId: string): Promise<string> {
   const url = `/api/files?conversationId=${encodeURIComponent(conversationId)}&id=${encodeURIComponent(artifactId)}`;
-  const res = await httpFetch(url);
-  if (!res.ok) throw new HttpError(url, res.status);
-  // Refuse on the header before reading a byte of the body.
-  const declared = Number(res.headers.get('content-length'));
-  if (Number.isFinite(declared) && declared > VISUAL_MAX_FETCH_BYTES) {
-    throw new Error('visual too large');
+  // A plain timer rather than AbortSignal.timeout: it covers the body read
+  // too, and it's cleared the moment we're done.
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(new Error('visual fetch timed out')), VISUAL_FETCH_TIMEOUT_MS);
+  try {
+    const res = await httpFetch(url, { signal: ac.signal });
+    if (!res.ok) throw new HttpError(url, res.status);
+    // Refuse on the header before reading a byte of the body.
+    const declared = Number(res.headers.get('content-length'));
+    if (Number.isFinite(declared) && declared > VISUAL_MAX_FETCH_BYTES) {
+      throw new Error('visual too large');
+    }
+    const text = await res.text();
+    if (new TextEncoder().encode(text).byteLength > VISUAL_MAX_FETCH_BYTES) {
+      throw new Error('visual too large');
+    }
+    return text;
+  } finally {
+    clearTimeout(timer);
   }
-  const text = await res.text();
-  if (new TextEncoder().encode(text).byteLength > VISUAL_MAX_FETCH_BYTES) {
-    throw new Error('visual too large');
-  }
-  return text;
 }
 
 export function loadVisualHtml(conversationId: string, artifactId: string): Promise<string> {

@@ -92,7 +92,9 @@ describe('VisualFrame', () => {
     expect(f.getAttribute('sandbox')).toBe('allow-scripts');
     expect(f.getAttribute('srcdoc')).toContain('<p>chart</p>');
     expect(document.getElementById(f.getAttribute('aria-describedby')!)?.textContent).toBe('Down 12%.');
-    expect(httpFetch).toHaveBeenCalledWith('/api/files?conversationId=c1&id=0123456789abcdef0123456789abcdef');
+    expect(httpFetch).toHaveBeenCalledWith('/api/files?conversationId=c1&id=0123456789abcdef0123456789abcdef', {
+      signal: expect.any(AbortSignal),
+    });
     expect(f.className).toContain('opacity-0');
   });
 
@@ -154,6 +156,103 @@ describe('VisualFrame', () => {
       vi.advanceTimersByTime(8_000);
     });
     expect(screen.getByText(FAILED)).toBeInTheDocument();
+  });
+
+  describe('the ready timeout only runs while the card could be seen', () => {
+    // A hand-cranked IntersectionObserver: `scroll(true|false)` says whether
+    // the card is on screen.
+    let observed: Array<(entries: Array<{ isIntersecting: boolean }>) => void> = [];
+    const scroll = (isIntersecting: boolean) =>
+      act(() => {
+        for (const cb of observed) cb([{ isIntersecting }]);
+      });
+    let visibility: DocumentVisibilityState = 'visible';
+    const setVisibility = (next: DocumentVisibilityState) =>
+      act(() => {
+        visibility = next;
+        document.dispatchEvent(new Event('visibilitychange'));
+      });
+
+    beforeEach(() => {
+      observed = [];
+      visibility = 'visible';
+      vi.stubGlobal(
+        'IntersectionObserver',
+        class {
+          constructor(cb: (entries: Array<{ isIntersecting: boolean }>) => void) {
+            observed.push(cb);
+          }
+          observe() {}
+          disconnect() {}
+        },
+      );
+      vi.spyOn(document, 'visibilityState', 'get').mockImplementation(() => visibility);
+    });
+    afterEach(() => {
+      vi.unstubAllGlobals();
+    });
+
+    it('does not fail a card that is off screen, however long it waits', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      mount();
+      await frameWindow();
+      scroll(false);
+      act(() => {
+        vi.advanceTimersByTime(60_000);
+      });
+      expect(screen.queryByText(FAILED)).toBeNull();
+      // Once it's on screen, it gets the full 8 s, and then fails.
+      scroll(true);
+      act(() => {
+        vi.advanceTimersByTime(7_900);
+      });
+      expect(screen.queryByText(FAILED)).toBeNull();
+      act(() => {
+        vi.advanceTimersByTime(200);
+      });
+      expect(screen.getByText(FAILED)).toBeInTheDocument();
+    });
+
+    it('does not fail a card in a hidden tab, and pauses rather than restarts the budget', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      mount();
+      await frameWindow();
+      scroll(true);
+      act(() => {
+        vi.advanceTimersByTime(5_000);
+      });
+      setVisibility('hidden');
+      act(() => {
+        vi.advanceTimersByTime(60_000);
+      });
+      expect(screen.queryByText(FAILED)).toBeNull();
+      setVisibility('visible');
+      act(() => {
+        vi.advanceTimersByTime(2_900);
+      });
+      expect(screen.queryByText(FAILED)).toBeNull();
+      act(() => {
+        vi.advanceTimersByTime(200);
+      });
+      expect(screen.getByText(FAILED)).toBeInTheDocument();
+    });
+
+    it('a card that comes on screen and says ready in time is shown', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      mount();
+      const { iframe, win } = await frameWindow();
+      scroll(false);
+      act(() => {
+        vi.advanceTimersByTime(30_000);
+      });
+      scroll(true);
+      fromFrame(win, READY);
+      act(() => {
+        vi.advanceTimersByTime(10_000);
+      });
+      expect(screen.queryByText(FAILED)).toBeNull();
+      expect(iframe.className).toContain('opacity-100');
+    });
   });
 
   it('(RF5) never reads an oversized artifact', async () => {
