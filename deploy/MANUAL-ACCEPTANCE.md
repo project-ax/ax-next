@@ -1888,9 +1888,24 @@ cannot reach the network, the app's cookies, or the app's DOM.
 4. Reload the page and reopen the conversation.
 5. Download PNG and HTML from the visual's menu. Open the HTML from disk with
    the network inspector open.
-6. Hostile visual: ask the agent to call `show_visual` with the Task 14 probe
-   HTML (`fetch`, `top.location`, `document.cookie`, `parent.document`, a remote
-   `<img>`, an `RTCPeerConnection`, nested frames), pointed at a URL you control.
+6. Hostile visual: ask the agent to call `show_visual` with this HTML, with
+   `<YOUR_URL>` replaced by a URL you control (watch it with a local
+   `python3 -m http.server` request log or any request-bin you control):
+
+   ```html
+   <p>probe</p>
+   <img src="<YOUR_URL>/img">
+   <meta http-equiv="refresh" content="0;url=<YOUR_URL>/refresh">
+   <iframe srcdoc="<script>top.postMessage('child','*');fetch('<YOUR_URL>/child')</script>"></iframe>
+   <script>
+     fetch('<YOUR_URL>/fetch');
+     try { new RTCPeerConnection({ iceServers: [{ urls: 'stun:<YOUR_HOST>:3478' }] }); } catch (e) {}
+     location.href = '<YOUR_URL>/nav';
+   </script>
+   ```
+
+   The full set lives in
+   `packages/channel-web/src/__tests__/visual-hostile.browser.test.ts`.
 
 ### Acceptance criteria
 

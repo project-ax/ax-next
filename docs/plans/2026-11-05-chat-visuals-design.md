@@ -93,10 +93,10 @@ Vinay chose "scripts allowed, in a box." The box:
   of message types (size report, export result), validates and clamps every field (height capped,
   export payload size capped, MIME type checked), and never evaluates or renders the frame's
   strings as markup.
-- **Size cap** on the HTML: 100 KB, built as 102,400 bytes. The model writes the HTML itself, so it stays in
-  the model's history and gets re-sent on every later turn in both runners. 100 KB is about 25k
-  tokens, which is a tolerable worst case. Typical charts and cards are far smaller, because the
-  chart library and theme are injected and don't count toward the cap. Over the cap, the tool
+- **Size cap** on the HTML: 100 KB, built as 102,400 bytes. The model writes the HTML itself, so
+  it stays in the model's history and gets re-sent on every later turn in both runners. 100 KB is
+  about 25k tokens, which is a tolerable worst case. Typical charts and cards are far smaller,
+  because the chart library and theme are injected and don't count toward the cap. Over the cap, the tool
   call fails with a clear error, so the agent can simplify and retry. v1 does not strip old
   visuals from history.
 - **The frame's own CSP meta tag** must be first in the srcdoc `<head>`, ahead of anything
@@ -113,8 +113,8 @@ The agent produces a visual by calling a tool, roughly `show_visual({ title, sum
 **Route (Vinay chose this, option A).** Model-written tool *input* never reaches the browser.
 That rule is deliberate (invariant #5, `channel-web/src/lib/workspace-steps.ts`) and **stays
 untouched**. As built, the input is never rendered or forwarded past the stream reader;
-`stepDetail` keeps one fenced line and nothing more. As built, the input is never rendered or forwarded past the stream reader; `stepDetail`
-keeps one fenced line (the title) and nothing more. Instead, the visual follows the same route `artifact_publish` chips use today:
+`stepDetail` keeps one fenced line (the title) and nothing more.
+Instead, the visual follows the same route `artifact_publish` chips use today:
 
 1. The sandbox-side executor validates the input (required fields, the size cap), then streams the
    HTML bytes to the host blob store (`blob.put`) and records the metadata row
