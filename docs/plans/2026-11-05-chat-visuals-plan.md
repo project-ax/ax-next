@@ -938,7 +938,8 @@ Run `security-checklist`.
 
 **Files:**
 - Modify: `packages/channel-web/package.json`. Add devDependency `"playwright": "^1.59.1"`, the same spec as `presets/k8s`, so the lockfile entry is reused.
-- Create: `packages/channel-web/src/__tests__/visual-hostile.browser.test.ts` (`// @vitest-environment node`). Gate it with `describe.skipIf(!existsSync(chromium.executablePath()))`. CI has no browser; say so in the PR and paste a local run.
+- Create: `packages/channel-web/src/__tests__/visual-hostile.browser.test.ts` (`// @vitest-environment node`). Locally, gate it with `describe.skipIf(!existsSync(chromium.executablePath()) && !process.env.CI)`. **In CI it must run and never skip** (Vinay, 2026-11-05): when `CI` is set and Chromium is missing, the suite FAILS. It does not skip.
+- Modify: `.github/workflows/ci.yml`, job `test`. Before the "Test (affected packages + dependents)" step, add a step that runs `pnpm --filter @ax/channel-web exec playwright install --with-deps chromium`, cached on the resolved playwright version (`actions/cache` on `~/.cache/ms-playwright`). Both test steps (affected and full suite) then pick the test up. Verify on the PR that the CI log shows the hostile suite running, not skipped.
 
 **Interfaces:**
 - Consumes: `buildVisualDocument`, `VISUAL_IFRAME_SANDBOX` (Task 9); `DEFAULT_VISUAL_ASSETS` (Task 10); the parent CSP read from `packages/channel-web/index.html`, the same file the app ships.
