@@ -215,7 +215,7 @@ const GKE_VALUES = resolve(chartDir, 'gke-values.yaml');
 const SHIPPED_RENDERS: ReadonlyArray<readonly [label: string, args: readonly string[]]> = [
   ['defaults', []],
   ['kind-dev-values.yaml', ['-f', KIND_VALUES]],
-  ['gke-values.yaml', ['-f', GKE_VALUES, '--set', 'sandbox.filestore.server=10.9.8.7']],
+  ['gke-values.yaml', ['-f', GKE_VALUES, '-f', CONTENT_ORIGIN_FIXTURE, '--set', 'sandbox.filestore.server=10.9.8.7']],
   [
     'old values from a pre-TASK-996 release',
     [
@@ -269,7 +269,7 @@ describeIfHelm('ax-next chart: the host disk follows blob.backend (TASK-996)', (
 
   it.each([
     ['defaults', [] as string[]],
-    ['gke-values.yaml', ['-f', GKE_VALUES, '--set', 'sandbox.filestore.server=10.9.8.7']],
+    ['gke-values.yaml', ['-f', GKE_VALUES, '-f', CONTENT_ORIGIN_FIXTURE, '--set', 'sandbox.filestore.server=10.9.8.7']],
   ])('fs blobs (%s): the -workspace PVC renders, keeps its name, and stays on uninstall', (_l, args) => {
     const pvc = workspacePvc(helmTemplate(args));
     expect(pvc, 'the host PVC renders under its old name').toBeDefined();
@@ -1563,6 +1563,7 @@ const QUOTED_BOOL_CONTEXT: readonly string[] = [
   '--set', 'postgresql.auth.postgresPassword=pinned-pg-admin',
   '--set', 'ingress.enabled=true',
   '--set', 'ingress.host=h.example.com',
+  '--set-json', 'contentOrigin.frameAncestors=["https://h.example.com"]',
   '--set', 'postgres.external.existingSecret=pinned-pg-secret',
   '--set', 'blob.backend=s3',
   '--set', 'blob.s3.bucket=pinned-bucket',
@@ -1948,8 +1949,17 @@ describeIfHelm('ax-next chart: artifact content origin (agent artifacts §6.5)',
     expect(runnerRule && admits9091(runnerRule)).toBe(false);
   });
 
-  it('gke-values.yaml: a separate content site and both managed certificates', () => {
-    const docs = helmTemplate(['-f', GKE_VALUES, '--set', 'sandbox.filestore.server=10.9.8.7']);
+  it('gke-values.yaml alone (a routine upgrade without overrides) fails the render with the --set hint', () => {
+    // The committed overlay ships contentOrigin empty, so an upgrade that forgot
+    // the content domain can't ship placeholder frame-ancestors or point the
+    // Ingress at an ax-next-content-cert that doesn't exist yet (R10).
+    const r = helmTemplateExpectFailure(['-f', GKE_VALUES, '--set', 'sandbox.filestore.server=10.9.8.7']);
+    expect(r.status).not.toBe(0);
+    expect(r.stderr).toContain(SET_HINT);
+  });
+
+  it('gke-values.yaml plus content overrides: a separate content site and both managed certificates', () => {
+    const docs = helmTemplate(['-f', GKE_VALUES, '-f', CONTENT_ORIGIN_FIXTURE, '--set', 'sandbox.filestore.server=10.9.8.7']);
     const env = hostDeployment(docs)?.spec?.template.spec.containers[0].env as Array<{ name: string; value?: string }>;
     expect(env.find((e) => e.name === 'AX_CONTENT_ORIGIN')?.value).toBe('https://ax-usercontent.example.net');
     expect(env.find((e) => e.name === 'AX_CONTENT_FRAME_ANCESTORS')?.value).toBe('https://ax.example.com');
@@ -1961,6 +1971,32 @@ describeIfHelm('ax-next chart: artifact content origin (agent artifacts §6.5)',
       'ax.example.com',
       'ax-usercontent.example.net',
     ]);
+  });
+
+  it('with the Ingress on, fails unless some frameAncestors entry is the app itself (ingress.host)', () => {
+    const r = helmTemplateExpectFailure([
+      ...ingressArgs,
+      '--set-json', 'contentOrigin.frameAncestors=["https://other.example.org","http://localhost:9090"]',
+    ]);
+    expect(r.status).not.toBe(0);
+    expect(r.stderr).toContain('contentOrigin.frameAncestors');
+    expect(r.stderr).toContain('https://ax.example.com');
+    // The app among several is enough; case doesn't matter.
+    const ok = helmTemplate([
+      ...ingressArgs,
+      '--set-json', 'contentOrigin.frameAncestors=["http://localhost:9090","https://AX.example.com"]',
+    ]);
+    expect(ok.find((d) => d.kind === 'Ingress')).toBeDefined();
+  });
+
+  it('with the Ingress on, fails on an http (non-https) publicOrigin: mixed content', () => {
+    const r = helmTemplateExpectFailure([...ingressArgs, '--set', 'contentOrigin.publicOrigin=http://ax-usercontent.example.net']);
+    expect(r.status).not.toBe(0);
+    expect(r.stderr).toContain('must be https');
+    expect(r.stderr).toContain(SET_HINT);
+    // Without an Ingress (kind, port-forward) http is the norm and renders.
+    const kind = helmTemplate(['--set', 'contentOrigin.publicOrigin=http://127.0.0.1:9091']);
+    expect(hostDeployment(kind)).toBeDefined();
   });
 
   it('kind-dev-values.yaml: 127.0.0.1 content next to the localhost app origins', () => {

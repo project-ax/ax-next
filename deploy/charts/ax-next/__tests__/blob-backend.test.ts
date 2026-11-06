@@ -138,7 +138,7 @@ const PINNED_ROOT = '/var/lib/ax-next/workspaces/blobs';
 /** The two fs renders that carry real blobs: a default install and the GKE overlay. */
 const FS_RENDERS: ReadonlyArray<readonly [label: string, args: readonly string[]]> = [
   ['default render', []],
-  ['gke-values.yaml', ['-f', GKE_VALUES, '--set', 'sandbox.filestore.server=10.9.8.7']],
+  ['gke-values.yaml', ['-f', GKE_VALUES, '-f', CONTENT_ORIGIN_FIXTURE, '--set', 'sandbox.filestore.server=10.9.8.7']],
   // The retired key GKE prod's release still carries (TASK-996), layered on
   // this chart's defaults: `workspace.backend=local` must not change where blobs
   // live. (A real `--reuse-values` render uses the OLD release's values instead
@@ -147,6 +147,7 @@ const FS_RENDERS: ReadonlyArray<readonly [label: string, args: readonly string[]
     'old GKE release values (workspace.backend=local)',
     [
       '-f', GKE_VALUES,
+      '-f', CONTENT_ORIGIN_FIXTURE,
       '--set', 'sandbox.filestore.server=10.9.8.7',
       '--set', 'workspace.backend=local',
       '--set', 'gitServer.enabled=false',

@@ -225,6 +225,8 @@ describeIfHelm('memory preset opt-in (TASK-496)', () => {
     const { container, spec } = hostSpec(hostDeployment(render([
       '-f',
       resolve(chartDir, 'gke-values.yaml'),
+      '-f',
+      CONTENT_ORIGIN_FIXTURE,
       '--set',
       'sandbox.filestore.server=10.9.8.7',
     ])));
@@ -245,6 +247,8 @@ describeIfHelm('memory preset opt-in (TASK-496)', () => {
     const { container } = hostSpec(hostDeployment(render([
       '-f',
       resolve(chartDir, 'gke-values.yaml'),
+      '-f',
+      CONTENT_ORIGIN_FIXTURE,
       '--set',
       'sandbox.filestore.server=10.9.8.7',
       '--set',

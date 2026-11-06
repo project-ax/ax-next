@@ -229,6 +229,11 @@ The chart doesn't ship an Ingress on kind, so reach the public surface via port-
 # The Service's :80 is the runner-IPC back-channel — NOT for browser traffic.
 kubectl --context kind-ax-next-dev -n ax-next port-forward svc/ax-next-host 9090:9090 >/tmp/pf.log 2>&1 &
 echo $! > /tmp/pf.pid
+# Agent artifacts (HTML/image previews) come from the content origin, a
+# different site: http://127.0.0.1:9091 (content-http). Forward it too, or
+# artifact previews stay blank.
+kubectl --context kind-ax-next-dev -n ax-next port-forward svc/ax-next-host 9091:9091 >/tmp/pf-content.log 2>&1 &
+echo $! > /tmp/pf-content.pid
 
 # Sanity-check before launching the browser
 curl -fsS http://localhost:9090/health | jq .

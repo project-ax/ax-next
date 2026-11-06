@@ -223,10 +223,13 @@ http:
 # app's cookies. The chart adds an Ingress rule for it on the same static IP;
 # give it an A record and the ax-next-content-cert ManagedCertificate
 # (deploy/GKE.md, Step 5d). CHECK THE DOMAIN WITH VINAY BEFORE DEPLOYING.
+#
+# Both are EMPTY on purpose: the render fails until your gke-values.local.yaml
+# sets them, so an upgrade can never ship a placeholder domain or point the
+# Ingress at a content certificate that doesn't exist yet.
 contentOrigin:
-  publicOrigin: https://ax-usercontent.example.net   # >>> EDIT (placeholder: a separate domain)
-  frameAncestors:
-    - https://ax.example.com                         # >>> EDIT (the app's https origin)
+  publicOrigin: ""      # >>> EDIT (https://<a separate domain>, e.g. https://ax-usercontent.example.net)
+  frameAncestors: []    # >>> EDIT (the app's https origin, e.g. [https://ax.example.com])
 
 # ─── Onboarding ──────────────────────────────────────────────────
 # publicBaseUrl is the URL printed in the first-run banner and used by the

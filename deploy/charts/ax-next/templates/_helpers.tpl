@@ -417,6 +417,10 @@ or set the app's cookies. So:
     to catch; values.yaml and deploy/GKE.md say to use a separate domain.)
   - contentOrigin.frameAncestors is required: the host refuses to boot
     without one, so we say so here instead of crash-looping the pod.
+  - with the Ingress on (ingress.enabled + ingress.host), publicOrigin must
+    be https (an http frame inside the https app is blocked as mixed
+    content), and some frameAncestors entry must be the app itself
+    (hostname == ingress.host), or the app could never show the pages.
 
 The schema already refused anything that is not a bare http(s) origin. The
 host repeats these checks at boot against frameAncestors (content-origin.ts).
@@ -442,6 +446,20 @@ Invoked from host/deployment.yaml, which always renders.
 {{- end -}}
 {{- if not $co.frameAncestors -}}
 {{- fail "contentOrigin.frameAncestors is empty: the host will not boot without the app origins allowed to show artifact pages. Set it to the app's origin, for example --set contentOrigin.frameAncestors={https://<ingress.host>}." -}}
+{{- end -}}
+{{- if and (include "ax-next.bool" .Values.ingress.enabled) $appHost -}}
+{{- if ne (lower (urlParse $origin).scheme) "https" -}}
+{{- fail (printf "contentOrigin.publicOrigin (%s) must be https when the Ingress is on: the app is served over https, and a browser blocks an http frame inside it (mixed content). %s" $origin $hint) -}}
+{{- end -}}
+{{- $appFramed := false -}}
+{{- range $co.frameAncestors -}}
+{{- if eq (lower (urlParse (toString .)).hostname) $appHost -}}
+{{- $appFramed = true -}}
+{{- end -}}
+{{- end -}}
+{{- if not $appFramed -}}
+{{- fail (printf "contentOrigin.frameAncestors (%s) does not include the app's own origin, so the app could not show artifact pages. Add it: --set contentOrigin.frameAncestors={https://%s}" (join "," $co.frameAncestors) $appHost) -}}
+{{- end -}}
 {{- end -}}
 {{- end -}}
 

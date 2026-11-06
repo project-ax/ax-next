@@ -78,6 +78,12 @@ kubectl --context kind-ax-next-dev wait -n ax-next --for=condition=Ready pod \
 #    it cluster-internally.
 kubectl --context kind-ax-next-dev port-forward -n ax-next svc/ax-next-host 9090:9090 &
 
+# 6b. Port-forward the artifact content origin too (content-http, 9091).
+#     Agent-made pages and images are shown from http://127.0.0.1:9091, a
+#     different site from the app at localhost:9090 (kind-dev-values.yaml).
+#     Without this forward, artifact previews stay blank.
+kubectl --context kind-ax-next-dev port-forward -n ax-next svc/ax-next-host 9091:9091 &
+
 # 7. Walk the first-use wizard at http://localhost:9090/setup. See the
 #    "First-use wizard" scenario below for the full operator-facing
 #    procedure (token scrape, 3-step wizard, first chat).
@@ -167,7 +173,7 @@ Default Agent. After completion, every `/setup/*` path returns 410 Gone (I11)
 ### Prerequisites
 
 - Goldenpath bring-up complete: kind cluster + image loaded + chart installed +
-  port-forward `9090:9090` is live.
+  port-forwards `9090:9090` and `9091:9091` (artifact content) are live.
 - A real Anthropic API key (export `ANTHROPIC_API_KEY` for convenience — the
   wizard validates it synchronously with a 10s timeout per I8).
 - A browser pointed at `http://localhost:9090`. The wizard SPA is a small
@@ -530,7 +536,7 @@ scenario we hate skipping the most.
 ### Prerequisites
 
 - The kind goldenpath above already booted. The host pod is Ready, and
-  port-forward 9090 is live.
+  port-forwards 9090 and 9091 (artifact content) are live.
 - `credentials.admin.enabled=true` on the chart values. The default is
   off — flip it on with `--set credentials.admin.enabled=true` on the
   `helm upgrade` from the goldenpath section. Without this flag the
@@ -1354,7 +1360,7 @@ covering authentication for everyone who isn't the bootstrap admin.
 **Cluster setup:**
 
 - Goldenpath bring-up complete: kind cluster + image loaded + chart installed +
-  port-forward `9090:9090` is live.
+  port-forwards `9090:9090` and `9091:9091` (artifact content) are live.
 - The chart must be installed with a stable `http.cookieKey` value. Better-auth
   uses it to sign session cookies. If the value rotates between restarts,
   existing sessions break — that's expected and correct, but jarring mid-walk.

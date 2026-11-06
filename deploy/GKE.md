@@ -1178,8 +1178,14 @@ CONTENT_DOMAIN=<the agreed content domain>   # e.g. ax-usercontent.example.net
    ```
 
 3. **Overlay.** `gke-values.yaml` already lists both certificates in the
-   Ingress annotation (`ax-next-cert,ax-next-content-cert`). Set
-   `contentOrigin.*` in your overrides (Step 6). The chart then adds an Ingress
+   Ingress annotation (`ax-next-cert,ax-next-content-cert`), and ships
+   `contentOrigin.*` **empty**, so the render fails until you set them in your
+   overrides (Step 6). That's on purpose: an upgrade can't quietly ship a
+   placeholder domain or point the Ingress at a certificate that doesn't exist
+   yet. With the Ingress on, the chart also wants `publicOrigin` to be `https://`
+   (an `http` frame inside the `https` app is blocked as mixed content) and
+   `frameAncestors` to include the app's own origin (`https://$DOMAIN`). The
+   chart then adds an Ingress
    rule for `$CONTENT_DOMAIN` that goes to the host's `content-http` port
    (9091). The load balancer health-checks it at `GET /`, which answers 200.
 

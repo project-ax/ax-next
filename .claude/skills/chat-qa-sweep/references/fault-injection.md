@@ -31,7 +31,8 @@ Cluster handles (verified on `ax-next-dev` 2026-05-23 — the host label is **no
   `app.kubernetes.io/component=ax-next-runner` (equivalently `ax.io/plane=execution`); pods
   are named `ax-sandbox-*` and are **idle-reaped** when warm-idle — "no runner pods" is
   normal between turns; spawn one by sending a message first
-- helm release `ax-next`; public port-forward `svc/ax-next-host 9090:9090`
+- helm release `ax-next`; public port-forward `svc/ax-next-host 9090:9090`, plus
+  `svc/ax-next-host 9091:9091` for the artifact content origin (previews)
 
 **Before each fault:** confirm a clean baseline — host `Ready`, port-forward alive
 (`curl -fsS http://localhost:9090/health`), one normal message → normal reply. Don't inject

@@ -710,6 +710,9 @@ ingress:
 # publicOrigin is empty, or when its hostname is ingress.host, sits under it,
 # or sits above it. The host refuses to boot on the same mistakes against
 # frameAncestors.
+# With the Ingress on, publicOrigin must also be https (mixed content), and
+# frameAncestors must include the app itself (an entry whose hostname is
+# ingress.host).
 #
 # publicOrigin   — the URL browsers reach it at (scheme://host[:port], no path).
 #                  With the Ingress on, the chart adds a rule for its hostname
