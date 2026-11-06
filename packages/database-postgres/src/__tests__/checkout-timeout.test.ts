@@ -89,7 +89,10 @@ describe('checkout timeout, against a database that never answers', () => {
       'Connection terminated due to connection timeout',
     );
     const waited = performance.now() - started;
-    expect(waited).toBeGreaterThanOrEqual(250);
+    // Loose floor: a new timer counts from the event loop's cached time, so on a
+    // starved runner it can fire a little early by wall clock. The message above
+    // already proves the timeout path ran.
+    expect(waited).toBeGreaterThanOrEqual(200);
     expect(waited).toBeLessThan(3_000);
   }, 10_000);
 
@@ -124,6 +127,8 @@ describe('checkout timeout, against a database that never answers', () => {
     },
   );
 
+  // These pass on the unfixed plugin too (it ignored the field). They only guard
+  // against a validator that refuses the ends of the valid range.
   it.each([1, 2_147_483_647])('accepts checkoutTimeoutMs %s', async (value) => {
     // Boots; the pool is lazy, so nothing connects.
     await instance({ connectionString: 'postgres://ax@127.0.0.1:1/ax', checkoutTimeoutMs: value });

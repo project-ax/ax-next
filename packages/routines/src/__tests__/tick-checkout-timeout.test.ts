@@ -117,7 +117,11 @@ describe('tick loop on a pool whose checkout times out', () => {
     const abortedAt = performance.now();
     await loop;
     const took = performance.now() - abortedAt;
-    expect(took).toBeGreaterThanOrEqual(900); // the abort alone can't end a pending checkout
+    // The contract is the ceiling: shutdown ends well inside the pod's 30 s grace.
+    // The floor only proves the hold really held. It also records today's limit
+    // (the abort alone can't end a pending checkout); if a later change makes the
+    // election checkout honour abort, lower the floor rather than keep it.
+    expect(took).toBeGreaterThanOrEqual(900);
     expect(took).toBeLessThan(3_000);
     expect(log.text()).not.toContain('timeout exceeded');
   }, 15_000);
