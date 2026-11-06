@@ -67,6 +67,7 @@ describe('system-prompt:augment:optional:artifacts', () => {
   });
 
   it('quoteForNotes escapes what JSON.stringify leaves raw', () => {
+    expect(quoteForNotes('x\u061c')).toBe('"x\\u061c"');
     expect(quoteForNotes('a"b\\c\u0085\u2029\u200b\ufeff')).toBe('"a\\"b\\\\c\\u0085\\u2029\\u200b\\ufeff"');
   });
 

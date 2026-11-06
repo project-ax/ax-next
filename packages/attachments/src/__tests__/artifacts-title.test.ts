@@ -22,4 +22,9 @@ describe('normalizeArtifactTitle', () => {
     expect(normalizeArtifactTitle('   ')).toBeNull();
     expect(normalizeArtifactTitle(null)).toBeNull();
   });
+
+  it('follows the shared surface-text class: separators become spaces, the Arabic letter mark goes', () => {
+    expect(normalizeArtifactTitle('a\u2028b\u2029c')).toBe('a b c');
+    expect(normalizeArtifactTitle('Q\u061c3')).toBe('Q3');
+  });
 });

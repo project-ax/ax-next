@@ -4,6 +4,7 @@ import {
   type SystemPromptAugmentInput,
   type SystemPromptAugmentOutput,
 } from '@ax/core';
+import { REWRITES_THE_SURFACE } from '@ax/core/surface-text';
 import { ARTIFACT_KIND_LABELS } from '@ax/ipc-protocol';
 import { isAgentMember } from './access.js';
 import type { ArtifactHookDeps } from './handlers.js';
@@ -25,15 +26,13 @@ const HEADER = [
 // JSON.stringify escapes C0 controls, quotes and backslashes, but leaves C1
 // controls, the line/paragraph separators and invisible or directional marks
 // raw. Any of those could break a row onto a second line or make it read
-// differently, so they are escaped too.
-const UNSAFE_IN_QUOTES = /[\u007f-\u009f\u200b-\u200f\u2028-\u202e\u2060-\u2064\u2066-\u2069\ufeff]/g;
-
+// differently, so every surface-rewriting character (the one class, owned by
+// @ax/core/surface-text) that survives JSON.stringify is escaped too.
 /** One quoted, single-line, visibly escaped string. Titles and paths are agent-written. */
 export function quoteForNotes(s: string): string {
-  return JSON.stringify(s).replace(
-    UNSAFE_IN_QUOTES,
-    (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`,
-  );
+  return Array.from(JSON.stringify(s), (c) =>
+    REWRITES_THE_SURFACE.test(c) ? `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}` : c,
+  ).join('');
 }
 
 function rowLine(row: ArtifactRow): string {
