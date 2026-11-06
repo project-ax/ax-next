@@ -29,10 +29,20 @@ import pg from 'pg';
  */
 
 const PLUGIN_NAME = '@ax/database-postgres';
+const DEFAULT_CHECKOUT_TIMEOUT_MS = 5_000;
+// Node turns any timer delay above this into 1 ms.
+const MAX_TIMER_DELAY_MS = 2_147_483_647;
 
 export interface DatabasePostgresConfig {
   connectionString: string;
   poolMax?: number;
+  /**
+   * How long a caller waits for a connection before the call fails with pg's
+   * timeout error. That covers a free connection, one another caller hands
+   * back, or a new one the database has to answer. A whole number of ms from
+   * 1 to 2147483647; default 5000. Maps to pg's `connectionTimeoutMillis`.
+   */
+  checkoutTimeoutMs?: number;
   /**
    * Optional logger for background pg.Pool errors (idle-pool socket failures,
    * e.g., postgres restart in k8s). Defaults to a stdout JSON logger tagged
@@ -59,12 +69,19 @@ export function createDatabasePostgresPlugin(config: DatabasePostgresConfig): Pl
     },
     init({ bus }) {
       validateConnectionString(config.connectionString);
+      const checkoutTimeoutMs = resolveCheckoutTimeoutMs(config.checkoutTimeoutMs);
       const bgLogger =
         config.logger ?? createLogger({ reqId: 'database-postgres-bg' });
 
       const pool = new pg.Pool({
         connectionString: config.connectionString,
         max: config.poolMax ?? 10,
+        // TASK-1049: pg's default of 0 waits forever, both behind a full pool
+        // and on a new connection the database never answers. A hung wait can
+        // hold host shutdown past the pod's 30 s grace period. 5 s is far
+        // above a normal wait and below the kernel's 10 s per-plugin shutdown
+        // deadline.
+        connectionTimeoutMillis: checkoutTimeoutMs,
       });
       // pg.Pool emits 'error' for idle-pool socket failures (e.g., postgres
       // restart). Without a listener Node treats it as unhandled and crashes
@@ -111,4 +128,16 @@ function validateConnectionString(connectionString: unknown): void {
       message: `${PLUGIN_NAME}: connectionString must start with postgres:// or postgresql://`,
     });
   }
+}
+
+function resolveCheckoutTimeoutMs(value: unknown): number {
+  if (value === undefined) return DEFAULT_CHECKOUT_TIMEOUT_MS;
+  if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 1 && value <= MAX_TIMER_DELAY_MS) {
+    return value;
+  }
+  throw new PluginError({
+    code: 'invalid-config',
+    plugin: PLUGIN_NAME,
+    message: `${PLUGIN_NAME}: checkoutTimeoutMs must be a whole number of milliseconds from 1 to ${MAX_TIMER_DELAY_MS}`,
+  });
 }

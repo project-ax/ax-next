@@ -24,8 +24,9 @@ The `connectionString` is the secret in this plugin's blast radius. We treat it 
 `max: 10` by default, overridable via `config.poolMax`. Pool sizing is a denial-of-service surface — too small and a noisy plugin starves its peers; too large and a runaway query loop exhausts the postgres `max_connections` quota.
 
 - **Default of 10.** Sized for a single-process MVP host. A multi-replica deploy may want to scale this down per-replica (because total connections = replicas × poolMax) and enforce the bound at the postgres side via `max_connections` and `pgBouncer`.
+- **Checkout timeout: 5 s (`checkoutTimeoutMs`).** A caller that can't get a connection within 5 s gets an error instead of waiting. That happens when every connection is checked out, or when a new connection is opened and the database never answers. Without the timeout, `pg` waits forever, and a hung wait could hold the host's shutdown past the pod's 30 s grace period. 5 s sits far above a normal wait and below the kernel's 10 s per-plugin shutdown deadline. It doesn't bound a query that's already running; see the statement-timeout bullet below for that gap.
 - **No idle timeout configured.** `pg`'s default is 10 seconds for `idleTimeoutMillis`; we don't override it. Long-running idle connections close on their own.
-- **No statement timeout configured at the pool level.** Per-query timeouts are the consumer's responsibility — Kysely supports `db.executeQuery(...)` with `AbortSignal` for that. A future hardening pass may wire a default `statement_timeout` GUC at connection time.
+- **No statement timeout configured at the pool level.** A query that's already running isn't bounded by anything here, and Kysely 0.28 has no per-query cancel (`executeQuery` takes no `AbortSignal`). The real bound would be postgres's `statement_timeout` GUC or `pg`'s `query_timeout`, set at connection time. That's a future hardening pass; until then, a query on a database that stops answering mid-statement can still hang its caller.
 
 ## Boundary review
 
@@ -36,7 +37,7 @@ The `connectionString` is the secret in this plugin's blast radius. We treat it 
 
 ## Known limits
 
-- **No connection draining on shutdown.** When the kernel gains a plugin-shutdown lifecycle, we'll call `pool.end()` from there. Today, the process exits before anything can close gracefully; `pg` cleans up its own sockets via Node teardown. A long-running migration or in-flight query will be cut off mid-flight on SIGTERM, which is a correctness concern, not a security one.
+- **Shutdown waits for checked-out connections, but only so long.** `shutdown()` destroys the Kysely instance. That ends the pool, and ending the pool waits for checked-out connections to come back. The kernel gives this 10 s, then the host exits, which cuts off a long-running query. A caller still waiting for a connection gets the checkout timeout, because `pg` doesn't reject waiting callers when the pool ends.
 - **No per-tenant pool isolation.** All consumers share the same pool. A multi-tenant deploy with strict isolation needs either per-tenant `database-postgres` instances (one pool each) or row-level security inside postgres. Week 9.5's auth slice will tell us which.
 - **No TLS enforcement.** Whether the connection uses TLS is determined by the `connectionString` (`?sslmode=require`) and the postgres server's config. We don't enforce it on this side. Production deploys MUST set `sslmode=require` (or stricter) — a plaintext connection over an untrusted network is how credentials get scraped. We'll add a config-shape hint in a future hardening pass.
 
