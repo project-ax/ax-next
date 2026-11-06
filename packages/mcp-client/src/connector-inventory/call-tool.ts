@@ -97,7 +97,6 @@ function stringList(v: unknown): string[] {
 
 const failed = (reason: ConnectorCallFailedReason): ConnectorCallToolOutput => ({ outcome: 'failed', reason });
 
-
 /** A lookup that says "not this user's" is an access miss. Anything else is a blip. */
 function lookupFailure(err: unknown): ConnectorCallToolOutput {
   return err instanceof PluginError && (err.code === 'not-found' || err.code === 'forbidden')

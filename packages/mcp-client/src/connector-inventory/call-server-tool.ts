@@ -10,8 +10,8 @@
 //     send) or the transport answered it with an HTTP 4xx (401/403 is
 //     `needs-auth`, the rest `rejected`). The one `failed` that is NOT
 //     "nothing completed" is `tool-error`: the tool answered `isError`, or
-//     the server answered with ANY JSON-RPC error object after the send
-//     (review r3 S1). Nothing in such an answer proves the tool did not run:
+//     the server answered with any JSON-RPC error object after the send
+//     except -32001/-32000, which read `unknown` (review r3 S1). Nothing in such an answer proves the tool did not run:
 //     a relay puts whatever its upstream threw on the wire, and some SDKs
 //     throw only after running the callback (see `classifyCallError`). It has
 //     its own closed code so no caller can mistake it for a refusal.
@@ -123,6 +123,9 @@ function classifyCallError(err: unknown): ServerCallOutcome {
   // wraps) and -32000 ConnectionClosed (the transport closed with the call
   // pending). By code, a server sending either number reads the same, and
   // "no reliable answer" is the honest reading of both: `unknown`.
+  // -32000 is defensive: on SDK 1.32.1 the transport only fires onclose from
+  // close(), which we call after the request settles, so mid-call it can only
+  // come from the server. -32001 is load-bearing (our timeouts and budget).
   if (err instanceof McpError) {
     if (err.code === ErrorCode.RequestTimeout) return { outcome: 'unknown', reason: 'timeout' };
     if (err.code === ErrorCode.ConnectionClosed) return { outcome: 'unknown', reason: 'interrupted' };
