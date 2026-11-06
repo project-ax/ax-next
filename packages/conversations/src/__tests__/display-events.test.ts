@@ -137,6 +137,36 @@ describe('TASK-66 display event log — persist + read', () => {
     expect(got.displayEvents).toEqual([]);
   });
 
+  // TASK-1059 review: Postgres jsonb refuses U+0000 and a lone UTF-16
+  // surrogate, both of which a plain JS string (and so a message, or tool
+  // output) can carry. Before the fix this append threw on every attempt, so
+  // a message containing either was refused forever ("try again" could never
+  // work). The display log stores the replacement character instead.
+  it('stores text Postgres jsonb cannot hold (U+0000, a lone surrogate) with U+FFFD in its place (TASK-1059)', async () => {
+    const h = await makeHarness();
+    const userId = 'userA';
+    const conversationId = await createConv(h, userId);
+
+    await appendTurn(h, conversationId, 'user', [
+      { type: 'text', text: 'a\u0000b\ud800c\udc00d😀e' },
+      { type: 'text', text: 'plain', ['k\u0000ey']: 'v\ud800' },
+    ]);
+
+    const got = await h.bus.call<GetInput, GetOutput>(
+      'conversations:get',
+      h.ctx({ userId }),
+      { conversationId, userId },
+    );
+    expect(got.turns).toHaveLength(1);
+    expect(got.turns[0]!.contentBlocks).toEqual([
+      // A well-formed pair (the emoji) is kept; only the broken parts change.
+      { type: 'text', text: 'a�b�c�d😀e' },
+      // The unsafe KEY no longer fails the write; the read's block schema
+      // drops the unknown field (toJsonbText's unit test pins the key swap).
+      { type: 'text', text: 'plain' },
+    ]);
+  });
+
   it('persists a host-only permission card and a surfaced error; conversations:get returns them on displayEvents (host-only UI on reload)', async () => {
     const h = await makeHarness();
     const userId = 'userA';
