@@ -742,7 +742,8 @@ async function forwardToBetterAuth(
     // here: Better Auth failing before it routes (adapter init, base-URL or
     // origin resolution), or our own `new Request(url, init)` throwing on a
     // malformed `Host` or `X-Forwarded-Proto` header. An endpoint's own error
-    // never does, because Better Auth's router answers it with a 500 itself.
+    // never does, because Better Auth's router answers it itself (an APIError
+    // with its own status, anything else with a 500).
     //
     // The line names the route as registered, never the request path. Better
     // Auth mounts `GET /reset-password/:token`, so once `sendResetPassword` is
