@@ -1004,19 +1004,30 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
     // token exchange, the vault write and the attach.
     // The slot is found exactly as `begin` finds it (the first oauth slot), and
     // EVERY server named by its `server` must still sit at the raw `url` `begin`
-    // stored as `resource` — not just the first one `begin` read: @ax/mcp-client
-    // has sent a slot's token to every server with that name, so a second
-    // same-name server added at a new address mid-flow must refuse too. Compared
-    // raw, so an unchanged connector always matches and a respelling refuses
-    // (the safe direction). No such server at all refuses. Keep in step with
-    // `begin`.
+    // stored as `resource` — not just the first one `begin` read. Only the
+    // FIRST same-name server receives a slot's token at run time (the session
+    // proxy, call-tool and @ax/mcp-client's header builder all bind to it), so
+    // checking every same-name server is a deliberately cautious extra: a twin
+    // added at another address mid-flow refuses too. Compared raw, so an
+    // unchanged connector always matches and a respelling refuses (the safe
+    // direction). No such server at all refuses. Keep in step with `begin`.
+    // The log stage tells a real address change apart from a connector that
+    // has always carried a same-name twin elsewhere (nobody edited it).
     const oauthSlotNow = connector.capabilities.credentials.find((c) => c.kind === 'oauth');
     const serversNow =
       oauthSlotNow === undefined
         ? []
         : connector.capabilities.mcpServers.filter((s) => s.name === oauthSlotNow.server);
     if (serversNow.length === 0 || !serversNow.every((s) => s.url === pending.resource)) {
-      logger.warn('mcp_oauth_callback_failed', { stage: 'connector-changed', connectorId });
+      const stage =
+        serversNow[0] !== undefined && serversNow[0].url === pending.resource
+          ? 'connector-server-name-shared'
+          : 'connector-changed';
+      logger.warn('mcp_oauth_callback_failed', {
+        stage,
+        connectorId,
+        sameNameServers: serversNow.length,
+      });
       fail('sign-in-failed');
       return;
     }

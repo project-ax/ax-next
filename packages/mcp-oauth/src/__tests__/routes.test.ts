@@ -3139,10 +3139,12 @@ describe('mcp-oauth callback route', () => {
         [
           'the connector now points its OAuth server somewhere else (changed mid-flow)',
           connectorFixture({ mcpServers: [server('srv', 'https://elsewhere.example/mcp')] }),
+          'connector-changed',
         ],
         [
           'only the path of its address changed',
           connectorFixture({ mcpServers: [server('srv', 'https://mcp.example.com/v2/mcp')] }),
+          'connector-changed',
         ],
         [
           // The old server is still there at the old address, but the slot no
@@ -3152,19 +3154,21 @@ describe('mcp-oauth callback route', () => {
             credentials: [{ slot: 'oauth-main', kind: 'oauth', server: 'srv2', scopes: ['read', 'write'] }],
             mcpServers: [server('srv', 'https://mcp.example.com/mcp'), server('srv2', 'https://elsewhere.example/mcp')],
           }),
+          'connector-changed',
         ],
         [
-          // The runtime sends the oauth slot's token to EVERY server with the
-          // slot's server name, so a second same-name server added at a new
-          // address would receive it even though the first still matches.
+          // Only the first same-name server receives the token at run time;
+          // refusing a twin at another address is a deliberately cautious
+          // extra (logged as its own stage, see below).
           'a second server with the oauth slot\'s server name was added at another address',
           connectorFixture({
             mcpServers: [server('srv', 'https://mcp.example.com/mcp'), server('srv', 'https://elsewhere.example/mcp')],
           }),
+          'connector-server-name-shared',
         ],
-        ['the oauth slot was removed mid-flow', connectorFixture({ credentials: [] })],
-        ['the server the oauth slot names was removed mid-flow', connectorFixture({ mcpServers: [] })],
-      ])('TASK-887. %s → reason=sign-in-failed before any token exchange; nothing written', async (_label, changed) => {
+        ['the oauth slot was removed mid-flow', connectorFixture({ credentials: [] }), 'connector-changed'],
+        ['the server the oauth slot names was removed mid-flow', connectorFixture({ mcpServers: [] }), 'connector-changed'],
+      ])('TASK-887. %s → reason=sign-in-failed before any token exchange; nothing written', async (_label, changed, stage) => {
         const out = await run({ stubs: { 'connectors:get': () => changed } });
         expect(out.state.status).toBeUndefined();
         expect(out.state.redirectUrl).toBe(
@@ -3177,10 +3181,11 @@ describe('mcp-oauth callback route', () => {
         expect(out.attachSpy).not.toHaveBeenCalled();
         expect(out.deleteSpy).not.toHaveBeenCalled();
         expect(out.store.clearNeedsReconnect).not.toHaveBeenCalled();
-        // A changed connector is not a server fault: a WARN with its own stage.
+        // A changed connector is not a server fault: a WARN with its own stage
+        // (a same-name twin elsewhere is logged apart from a moved address).
         expect(out.logger.warn).toHaveBeenCalledWith(
           'mcp_oauth_callback_failed',
-          expect.objectContaining({ stage: 'connector-changed', connectorId: 'conn-1' }),
+          expect.objectContaining({ stage, connectorId: 'conn-1' }),
         );
         expect(out.logger.error).not.toHaveBeenCalled();
         const logged = JSON.stringify([...out.logger.warn.mock.calls, ...out.logger.info.mock.calls]);
