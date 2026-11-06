@@ -1,13 +1,12 @@
 import { defineConfig } from 'vitest/config';
 import react from '@vitejs/plugin-react';
 import { resolve } from 'node:path';
+import { vendorAliasEntries } from './vendor-aliases';
 
 export default defineConfig({
   plugins: [react()],
   resolve: {
-    alias: {
-      '@': resolve(__dirname, './src'),
-    },
+    alias: [{ find: '@', replacement: resolve(__dirname, './src') }, ...vendorAliasEntries],
   },
   test: {
     environment: 'jsdom',

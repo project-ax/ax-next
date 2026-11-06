@@ -1,6 +1,7 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import { resolve } from 'node:path';
+import { vendorAliasEntries } from './vendor-aliases';
 import { mockMiddleware } from './mock/server';
 
 // Two dev modes, picked by env:
@@ -30,9 +31,7 @@ export default defineConfig({
     outDir: 'dist-web',
   },
   resolve: {
-    alias: {
-      '@': resolve(__dirname, './src'),
-    },
+    alias: [{ find: '@', replacement: resolve(__dirname, './src') }, ...vendorAliasEntries],
   },
   plugins: [
     react(),
