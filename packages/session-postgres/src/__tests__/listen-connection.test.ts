@@ -23,7 +23,11 @@ import {
 //      nothing connects after shutdown();
 //   3. a connect that lands after shutdown() ends its client;
 //   4. a new client serves no caller until it has LISTENed every bound channel,
-//      or a pg_notify could go out before the LISTEN a parked claim needs.
+//      or a pg_notify could go out before the LISTEN a parked claim needs;
+//   5. an 'error' from a client that is no longer live drops nothing. The
+//      plugin-level reconnect test can't see this one: a killed client's second
+//      event lands long before the 1 s reconnect, so dropping "the live client"
+//      then is a no-op either way.
 // ---------------------------------------------------------------------------
 
 /** Port 1 is closed on test hosts, so a connect is refused at once (ECONNREFUSED). */
@@ -271,5 +275,54 @@ describe('against a real database', () => {
       openGate(); // a red run must not leave the LISTEN parked
       spy.mockRestore();
     }
+  });
+
+  it("an 'error' from a client that is no longer live drops nothing", async () => {
+    const { records, logger } = recordingLogger();
+    const listen = open({
+      connectionString,
+      connectTimeoutMs: 10_000,
+      keepAliveInitialDelayMs: 10_000,
+      logger,
+    });
+    // Keep a handle on the first client, so the test can make it speak after
+    // it has been dropped.
+    const made: pg.Client[] = [];
+    const originalConnect = pg.Client.prototype.connect as (this: pg.Client, ...args: unknown[]) => unknown;
+    const spy = vi.spyOn(pg.Client.prototype, 'connect').mockImplementation(function (
+      this: pg.Client,
+      ...args: unknown[]
+    ) {
+      made.push(this);
+      return originalConnect.apply(this, args);
+    } as never);
+    try {
+      await listen.ensureConnected();
+    } finally {
+      spy.mockRestore();
+    }
+    expect(made).toHaveLength(1);
+    const livePid = async (): Promise<number> =>
+      (await listen.query('SELECT pg_backend_pid() AS pid')).rows[0].pid as number;
+    const oldPid = await livePid();
+    const admin = new pg.Client({ connectionString });
+    await admin.connect();
+    try {
+      await admin.query('SELECT pg_terminate_backend($1)', [oldPid]);
+    } finally {
+      await admin.end().catch(() => {});
+    }
+    await expect.poll(() => records.length, { timeout: 5_000 }).toBe(2); // the server's error, then the close
+    const newPid = await livePid(); // reconnects: a new client on a new backend
+    expect(newPid).not.toBe(oldPid);
+    // Stands in for a dropped client's late event (say, its socket close
+    // arriving after the reconnect): it must not drop the newer client.
+    made[0]!.emit('error', new Error('Connection terminated unexpectedly'));
+    expect(await livePid()).toBe(newPid); // same backend: nothing was dropped, nothing reconnected
+    expect(records.map((r) => [r.level, r.msg, r.bindings])).toStrictEqual([
+      ['error', 'session_postgres_listen_client_error', { code: '57P01', name: 'error' }],
+      ['error', 'session_postgres_listen_client_error', { name: 'Error' }],
+      ['error', 'session_postgres_listen_client_error', { name: 'Error' }],
+    ]);
   });
 });
