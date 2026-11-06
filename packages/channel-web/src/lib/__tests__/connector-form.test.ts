@@ -14,6 +14,7 @@ import {
 } from '../connector-form';
 import {
   CONNECTOR_SIGN_OUT_FAILED,
+  CONNECTOR_SIGN_OUT_FAILED_MESSAGE,
   emptyCapabilities,
   isConnectorSignOutFailure,
   isToolPermissionsResetFailure,
@@ -721,6 +722,16 @@ describe('CONNECTOR_SIGN_OUT_FAILED (TASK-887)', () => {
     expect(isConnectorSignOutFailure(new Error('connector-sign-out-failed'))).toBe(true);
     expect(isConnectorSignOutFailure(new Error('tool-permissions-reset-failed'))).toBe(false);
     expect(isConnectorSignOutFailure('connector-sign-out-failed')).toBe(false);
+  });
+
+  it('the message the editors show is pinned word for word, and never says settings are unchanged', () => {
+    // Every editor test renders this constant, so a revert of its text would
+    // stay green there. Pinned here instead. A save that fails part way may
+    // already have signed some agents out, so "nothing changed" would be a lie.
+    expect(CONNECTOR_SIGN_OUT_FAILED_MESSAGE).toBe(
+      'We couldn’t finish signing everyone out of this connector, so we didn’t save your changes. Some agents may need to sign in again. Try saving again in a moment.',
+    );
+    expect(CONNECTOR_SIGN_OUT_FAILED_MESSAGE).not.toMatch(/unchanged/);
   });
 });
 
