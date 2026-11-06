@@ -55,9 +55,31 @@ import {
 
 const PLUGIN_NAME = '@ax/session-postgres';
 
+const DEFAULT_CHECKOUT_TIMEOUT_MS = 5_000;
+const DEFAULT_STATEMENT_TIMEOUT_MS = 30_000;
+// Node turns a longer timer into 1 ms, and Postgres refuses a longer
+// statement_timeout (which would fail every connect).
+const MAX_TIMEOUT_MS = 2_147_483_647;
+
 export interface SessionPostgresConfig {
   connectionString: string;
   poolMax?: number;
+  /**
+   * How long a caller waits for a pooled connection, including a new one the
+   * database has to answer. The dedicated LISTEN client's connect at boot gets
+   * the same bound. A whole number of ms from 1 to 2147483647; default 5000.
+   * Maps to pg's `connectionTimeoutMillis`.
+   */
+  checkoutTimeoutMs?: number;
+  /**
+   * How long one statement on a pooled connection may run, a lock wait
+   * included, before Postgres cancels it with SQLSTATE `57014`. The connection
+   * stays usable and a surrounding transaction rolls back. A whole number of
+   * ms from 1 to 2147483647; default 30000. Maps to pg's `statement_timeout`.
+   * Pool only: the LISTEN client gets none, because waiting for a
+   * notification isn't a statement.
+   */
+  statementTimeoutMs?: number;
   /**
    * Optional logger for background events that don't ride a request — pg.Pool
    * idle errors, LISTEN client socket errors, init failure cleanup. Defaults
@@ -683,10 +705,36 @@ function validateConnectionString(connectionString: unknown): void {
   }
 }
 
+function resolveTimeoutMs(
+  field: 'checkoutTimeoutMs' | 'statementTimeoutMs',
+  value: unknown,
+  fallback: number,
+): number {
+  if (value === undefined) return fallback;
+  if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 1 && value <= MAX_TIMEOUT_MS) {
+    return value;
+  }
+  throw new PluginError({
+    code: 'invalid-config',
+    plugin: PLUGIN_NAME,
+    message: `${PLUGIN_NAME}: ${field} must be a whole number of milliseconds from 1 to ${MAX_TIMEOUT_MS}`,
+  });
+}
+
 export function createSessionPostgresPlugin(
   config: SessionPostgresConfig,
 ): Plugin {
   validateConnectionString(config.connectionString);
+  const checkoutTimeoutMs = resolveTimeoutMs(
+    'checkoutTimeoutMs',
+    config.checkoutTimeoutMs,
+    DEFAULT_CHECKOUT_TIMEOUT_MS,
+  );
+  const statementTimeoutMs = resolveTimeoutMs(
+    'statementTimeoutMs',
+    config.statementTimeoutMs,
+    DEFAULT_STATEMENT_TIMEOUT_MS,
+  );
 
   let pool: pg.Pool | undefined;
   let listenClient: pg.Client | undefined;
@@ -726,6 +774,12 @@ export function createSessionPostgresPlugin(
       pool = new pg.Pool({
         connectionString: config.connectionString,
         max: config.poolMax ?? 10,
+        // TASK-1056: pg waits forever by default. Bound a new connection the
+        // database never answers (a hung connect also holds up pool.end()),
+        // and let Postgres cancel a statement that runs or waits on a lock
+        // past statementTimeoutMs; the connection stays usable.
+        connectionTimeoutMillis: checkoutTimeoutMs,
+        statement_timeout: statementTimeoutMs,
       });
       // pg.Pool emits 'error' for idle-pool errors (e.g., postgres restart in
       // k8s closing an idle connection). Without a listener Node treats them
@@ -739,7 +793,14 @@ export function createSessionPostgresPlugin(
         dialect: new PostgresDialect({ pool }),
       });
 
-      listenClient = new pg.Client({ connectionString: config.connectionString });
+      // TASK-1056: without a connect bound, a database that never answers
+      // hangs init forever. No statement_timeout here, on purpose: this client
+      // only runs LISTEN, UNLISTEN and pg_notify, and waiting for
+      // notifications isn't a statement.
+      listenClient = new pg.Client({
+        connectionString: config.connectionString,
+        connectionTimeoutMillis: checkoutTimeoutMs,
+      });
       // Same risk on the LISTEN client — long-lived, idle most of the time,
       // exactly the connection a postgres restart will tear down. Crash-by-
       // unhandled-'error' is the failure mode we're avoiding here.
