@@ -60,7 +60,7 @@ Sometimes an agent in a task run asks to use a connector tool, we hold the call 
   - Limits: 30 s per request, 45 s in all, 2 MiB per response.
   - The 45 s count from when the hook starts, its own reads included. With less than 15 s left, it sends nothing.
 - **Credentials:** the refs in the connector's own `credentialPlan`, read through `credentials:get` as the user and agent. Those are the refs, and the scope walk, that a session's credential-proxy spends. They live in one transport's header map for one call. They are never logged, stored, or returned.
-- **Injection:** the arguments are the approved call's recorded input, sent unchanged. That's the promise: the person approved exactly those bytes.
+- **Injection:** the arguments are the approved call's recorded input, sent unchanged. That's the promise: the person approved exactly those bytes. `@ax/decisions` keeps it by asking for the call only when the person was shown the whole request: a long one the approval card cut short parks for the agent instead.
   - The reply is read only for `isError`, through a minimal local schema. We never call `client.callTool()`, so the host never compiles a schema the server supplied. The reply's content is dropped unread.
   - Failures are short codes (`not-connected`, `needs-auth`, `rejected`, …), never the server's text. The bus holds the hook's answer to those shapes.
   - One `connector_call_tool` line per call: the connector id and the code. A credential read failure also logs the shared header builder's `connector_inventory_credential_unavailable` line, with the connector id and an error code. Neither ever carries the input, a header, the URL, or the reply.

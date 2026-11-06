@@ -471,6 +471,20 @@ export interface DecisionsApproveInput {
    * streaming hint.
    */
   continuationReqId?: string;
+  /**
+   * TASK-1046, review F2 — did the surface the person approved on show them
+   * the WHOLE request? The host sends a connector call's recorded input
+   * verbatim, so it makes one only on `true`. A surface that cut the request
+   * short (channel-web's card caps it and says "This is only the beginning…"),
+   * or that says nothing, leaves the call to park for the agent
+   * (`approved-pending-agent`): absent, false or any other value fails closed,
+   * so a stale client or another caller cannot trigger a host write.
+   *
+   * The approving surface computes it from its own rendering of the stored
+   * call, never from anything its client sends. A `tool:execute:<name>` host
+   * replay ignores it.
+   */
+  requestShownInFull?: boolean;
 }
 
 export interface DecisionsApproveOutput {

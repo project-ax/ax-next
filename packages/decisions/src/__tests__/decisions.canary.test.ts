@@ -281,14 +281,22 @@ async function holdAndId(
   return (fired as unknown as Hold).hold.decisionId;
 }
 
+/**
+ * `approval` carries what the approving surface adds about this yes. Review F2:
+ * `requestShownInFull: true` says the card showed the whole request, and only
+ * then does the host make a CONNECTOR call. Every other caller here sends
+ * nothing, which is what a host tool's replay is unaffected by.
+ */
 function approve(
   h: TestHarness,
   ctx: AgentContext,
   decisionId: string,
+  approval: { requestShownInFull?: unknown } = {},
 ): Promise<DecisionsApproveOutput> {
   return h.bus.call<unknown, DecisionsApproveOutput>('decisions:approve', ctx, {
     decisionId,
     userId: 'u1',
+    ...approval,
   });
 }
 
@@ -2769,6 +2777,14 @@ describe('decisions canary — approved connector calls run on the host (TASK-10
   }
 
   /**
+   * What channel-web's approve route sends when the card showed this request
+   * whole (review F2). Every case here that expects the host to make the call
+   * sends it, and so do the cases that expect a park for some OTHER reason, so
+   * that each park is pinned to its own cause.
+   */
+  const SHOWN = { requestShownInFull: true } as const;
+
+  /**
    * Stand in for `@ax/mcp-client`'s `connectors:call-tool`. Records what the
    * replay handed it and answers `outcome`. `delayMs` keeps a call in flight
    * long enough for a concurrent approval to arrive.
@@ -2799,7 +2815,7 @@ describe('decisions canary — approved connector calls run on the host (TASK-10
     const connector = recordConnectorCalls(h);
     const id = await holdAndId(h, routineCtx(h), CONNECTOR_CALL);
 
-    const out = await approve(h, userCtx(h), id);
+    const out = await approve(h, userCtx(h), id, SHOWN);
 
     expect(connector.calls).toHaveLength(1);
     expect(connector.calls[0]!.input).toEqual({
@@ -2842,7 +2858,7 @@ describe('decisions canary — approved connector calls run on the host (TASK-10
       sessionId: 's-approver',
     });
 
-    const out = await approve(h, approver, id);
+    const out = await approve(h, approver, id, SHOWN);
 
     expect(out.executed).toBe(true);
     expect(connector.calls).toHaveLength(1);
@@ -2861,7 +2877,7 @@ describe('decisions canary — approved connector calls run on the host (TASK-10
     const id = await holdAndId(h, userCtx(h), CONNECTOR_CALL);
     expect((await readDecision(h, userCtx(h), id)).attendance).toBe('attended');
 
-    const out = await approve(h, userCtx(h), id);
+    const out = await approve(h, userCtx(h), id, SHOWN);
 
     expect(out.path).toBe('agent-executes');
     expect(out.pendingUntil).not.toBeNull();
@@ -2887,7 +2903,7 @@ describe('decisions canary — approved connector calls run on the host (TASK-10
     expect((await readDecision(h, userCtx(h), id)).attendance).toBe('attended');
     channels['conv-web']!.activeSessionId = null;
 
-    const out = await approve(h, userCtx(h), id);
+    const out = await approve(h, userCtx(h), id, SHOWN);
 
     expect(connector.calls).toEqual([]);
     expect(out.decision!.status).toBe('approved-pending-agent');
@@ -2913,7 +2929,7 @@ describe('decisions canary — approved connector calls run on the host (TASK-10
     const connector = recordConnectorCalls(h);
     const id = await holdAndId(h, userCtx(h), CONNECTOR_CALL);
     channels['conv-web']!.activeSessionId = null;
-    await approve(h, userCtx(h), id);
+    await approve(h, userCtx(h), id, SHOWN);
 
     // The person comes back and the thread wakes a fresh session, whose agent
     // re-issues the call it was held on.
@@ -2959,7 +2975,7 @@ describe('decisions canary — approved connector calls run on the host (TASK-10
     expect(held.attendance).toBe('attended');
     channels['conv-web']!.activeSessionId = null;
 
-    const out = await approve(h, userCtx(h), id);
+    const out = await approve(h, userCtx(h), id, SHOWN);
 
     expect(out.decision!.status).toBe('approved-pending-agent');
     expect(out.path).toBeNull();
@@ -2981,7 +2997,7 @@ describe('decisions canary — approved connector calls run on the host (TASK-10
     const connector = recordConnectorCalls(h);
     const id = await holdAndId(h, userCtx(h), CONNECTOR_CALL);
 
-    const out = await approve(h, userCtx(h), id);
+    const out = await approve(h, userCtx(h), id, SHOWN);
     expect(out.path).toBe('agent-executes');
     expect(connector.calls).toEqual([]);
 
@@ -3014,7 +3030,7 @@ describe('decisions canary — approved connector calls run on the host (TASK-10
       verdict: 'deny',
     });
 
-    const out = await approve(h, userCtx(h), id);
+    const out = await approve(h, userCtx(h), id, SHOWN);
 
     expect(connector.calls).toEqual([]);
     expect(out.executed).toBe(false);
@@ -3032,7 +3048,7 @@ describe('decisions canary — approved connector calls run on the host (TASK-10
     const connector = recordConnectorCalls(h, { outcome: 'failed', reason: 'rejected' });
     const id = await holdAndId(h, routineCtx(h), CONNECTOR_CALL);
 
-    const out = await approve(h, userCtx(h), id);
+    const out = await approve(h, userCtx(h), id, SHOWN);
 
     expect(connector.calls).toHaveLength(1);
     expect(out.executed).toBe(false);
@@ -3052,7 +3068,7 @@ describe('decisions canary — approved connector calls run on the host (TASK-10
     const connector = recordConnectorCalls(h, { outcome: 'unknown', reason: 'timeout' });
     const id = await holdAndId(h, routineCtx(h), CONNECTOR_CALL);
 
-    await approve(h, userCtx(h), id);
+    await approve(h, userCtx(h), id, SHOWN);
 
     expect(connector.calls).toHaveLength(1);
     const row = await readDecision(h, userCtx(h), id);
@@ -3073,12 +3089,51 @@ describe('decisions canary — approved connector calls run on the host (TASK-10
     const h = await boot();
     const id = await holdAndId(h, routineCtx(h), CONNECTOR_CALL);
 
-    const out = await approve(h, userCtx(h), id);
+    const out = await approve(h, userCtx(h), id, SHOWN);
 
     expect(out.decision!.status).toBe('approved-pending-agent');
     const receipts = await readReceipts(h);
     expect(receipts).toHaveLength(1);
     expect(receipts[0]!.receipt).toBe(PENDING_AGENT_RECEIPT);
+  });
+
+  // Review F2. The card cuts a long request short ("This is only the
+  // beginning…"), and the host would send all of it. So the host makes a
+  // connector call only on an approval that says the card showed it whole.
+  // Anything else parks, through the real approve route, and stays parked.
+  it.each([
+    ['says nothing about it', {}],
+    ['says the card cut it short', { requestShownInFull: false }],
+    ['says so with anything but true', { requestShownInFull: 'true' }],
+  ])('an approval that %s parks the connector call and the host never sends it (review F2)', async (_label, approval) => {
+    const h = await boot();
+    const connector = recordConnectorCalls(h);
+    const id = await holdAndId(h, routineCtx(h), CONNECTOR_CALL);
+
+    const out = await approve(h, userCtx(h), id, approval);
+
+    expect(connector.calls).toEqual([]);
+    expect(out.decision!.status).toBe('approved-pending-agent');
+    expect(out.executed).toBe(false);
+    expect(out.path).toBeNull();
+    const receipts = await readReceipts(h);
+    expect(receipts).toHaveLength(1);
+    expect(receipts[0]!.receipt).toBe(PENDING_AGENT_RECEIPT);
+    // Nothing is due later either: no sweep pass makes it.
+    expect((await sweepNow(h)).replayed).toBe(0);
+    expect(connector.calls).toEqual([]);
+  });
+
+  it('a host tool’s replay is unaffected by the flag (review F2)', async () => {
+    const h = await boot();
+    const executor = recordExecutor(h, HOLD_RULE.match.tool);
+    const id = await holdAndId(h, routineCtx(h), CALL);
+
+    const out = await approve(h, userCtx(h), id, { requestShownInFull: false });
+
+    expect(out.executed).toBe(true);
+    expect(out.path).toBe('host-replays');
+    expect(executor.calls).toEqual([CALL]);
   });
 
   it('a connector key never goes to a registered tool:execute:<key>', async () => {
@@ -3088,7 +3143,7 @@ describe('decisions canary — approved connector calls run on the host (TASK-10
     const executor = recordExecutor(h, CONNECTOR_CALL.name);
     const id = await holdAndId(h, routineCtx(h), CONNECTOR_CALL);
 
-    const out = await approve(h, userCtx(h), id);
+    const out = await approve(h, userCtx(h), id, SHOWN);
 
     expect(executor.calls).toEqual([]);
     expect(out.decision!.status).toBe('approved-pending-agent');
@@ -3099,7 +3154,7 @@ describe('decisions canary — approved connector calls run on the host (TASK-10
     const connector = recordConnectorCalls(h, { outcome: 'succeeded' }, 25);
     const id = await holdAndId(h, routineCtx(h), CONNECTOR_CALL);
 
-    const [a, b] = await Promise.all([approve(h, userCtx(h), id), approve(h, userCtx(h), id)]);
+    const [a, b] = await Promise.all([approve(h, userCtx(h), id, SHOWN), approve(h, userCtx(h), id, SHOWN)]);
 
     expect(connector.calls).toHaveLength(1);
     expect([a.executed, b.executed].filter(Boolean)).toHaveLength(1);
@@ -3126,7 +3181,7 @@ describe('decisions canary — approved connector calls run on the host (TASK-10
       );
       const id = await holdAndId(dead, routineCtx(dead), CONNECTOR_CALL);
       // Nobody awaits this: the host is about to die underneath it.
-      void approve(dead, userCtx(dead), id).catch(() => {});
+      void approve(dead, userCtx(dead), id, SHOWN).catch(() => {});
       await vi.waitFor(() => expect(sent).toHaveLength(1), {
         timeout: 5_000,
         interval: 10,

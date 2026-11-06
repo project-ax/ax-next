@@ -24,7 +24,11 @@ import {
 import { deliverResolution, SESSION_QUEUE_HOOK, validContinuationReqId } from './delivery.js';
 import { reclaimStrandedReplays, runDueDeliveries, runDueReplays, sweepExpired } from './expiry.js';
 import { auditFreshnessPairs, checkFreshness } from './freshness.js';
-import { CONNECTOR_CALL_TOOL_HOOK, hostExecutorFor } from './host-executor.js';
+import {
+  CONNECTOR_CALL_TOOL_HOOK,
+  hostExecutorFor,
+  hostExecutorForApproval,
+} from './host-executor.js';
 import {
   approveDecision,
   dismissDecision,
@@ -760,7 +764,11 @@ export function createDecisionsPlugin(opts?: DecisionsPluginOptions): Plugin {
                   ?.activeSessionId ?? null)
               : null;
           const attended = liveSessionId !== null;
-          const hasExecutor = hostExecutorFor(bus, current) !== null;
+          // Review F2: a connector call reaches the host only on an approval
+          // whose surface showed the person the whole request
+          // (`hostExecutorForApproval`). Otherwise it parks, right here in the
+          // claim, and no later sweep replays a parked row.
+          const hasExecutor = hostExecutorForApproval(bus, current, input) !== null;
           const parked = !attended && !hasExecutor;
           const deferred =
             !attended &&
@@ -910,6 +918,18 @@ export function createDecisionsPlugin(opts?: DecisionsPluginOptions): Plugin {
             // consumed reads back as "Approved — it can do this the next time
             // it tries" (see `receiptFor`), so there is nothing to announce here
             // and nothing that can announce it wrongly.
+            //
+            // Review F2: the host COULD have made this call, and this approval
+            // did not let it (the person was not shown the whole request). The
+            // row reads like any other park, so the reason goes in a log line,
+            // where a surface that never sends the flag would show up.
+            if (hostExecutorFor(bus, current) !== null) {
+              ctx.logger.info('decision_parked_request_not_shown_in_full', {
+                plugin: PLUGIN_NAME,
+                decisionId,
+                tool: current.call.name,
+              });
+            }
             return inert(claimed);
           }
 

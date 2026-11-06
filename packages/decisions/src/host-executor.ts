@@ -125,3 +125,33 @@ export function hostExecutorFor(
   const hook = `tool:execute:${toolName}`;
   return bus.hasService(hook) ? { kind: 'tool', hook } : null;
 }
+
+/** What an approval says about itself that the approve route's question reads. */
+export interface ApprovalView {
+  /** `decisions:approve`'s `requestShownInFull`. Read as `=== true` only. */
+  requestShownInFull?: unknown;
+}
+
+/**
+ * The approve route's question (review F2): may the host make this call on
+ * THIS yes? `hostExecutorFor`, plus one rule for a connector call: the host
+ * sends its recorded input verbatim, so the person must have been shown the
+ * whole request. The card cuts a long one short, and a yes to its beginning is
+ * not a yes to the rest. Only an explicit `true` passes; anything else parks
+ * the call for the agent, so the failure mode is a call that waits, never a
+ * write nobody read.
+ *
+ * Asked only where the yes is given. The two later sites need no flag: a row
+ * the route parked is never replayed (no sweep picks up a parked row), a row it
+ * claimed or deferred for the host already passed this check, and the delivery
+ * fallback only ever sees attended rows, which have no connector executor.
+ */
+export function hostExecutorForApproval(
+  bus: Pick<HookBus, 'hasService'>,
+  decision: Pick<Decision, 'call' | 'attendance'>,
+  approval: ApprovalView,
+): HostExecutor | null {
+  const executor = hostExecutorFor(bus, decision);
+  if (executor?.kind === 'connector' && approval.requestShownInFull !== true) return null;
+  return executor;
+}

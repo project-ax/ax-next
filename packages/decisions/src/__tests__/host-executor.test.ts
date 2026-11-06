@@ -11,7 +11,11 @@
  */
 import { describe, expect, it } from 'vitest';
 import { HookBus } from '@ax/core';
-import { CONNECTOR_CALL_TOOL_HOOK, hostExecutorFor } from '../host-executor.js';
+import {
+  CONNECTOR_CALL_TOOL_HOOK,
+  hostExecutorFor,
+  hostExecutorForApproval,
+} from '../host-executor.js';
 import type { Attendance } from '../types.js';
 
 /** `c5e0235982f` is the namespace literal @ax/connectors' tests pin. */
@@ -99,5 +103,48 @@ describe('hostExecutorFor — an attended connector call stays the agent’s (re
       kind: 'tool',
       hook: 'tool:execute:request_capability',
     });
+  });
+});
+
+/**
+ * Review F2. The host sends a connector call's recorded input verbatim, so it
+ * does so only on an approval whose surface showed the person the WHOLE
+ * request. The card cuts a long one short ("This is only the beginning…"); a
+ * yes to a beginning is not a yes to the rest. Only an explicit `true` lets the
+ * host make it: absent, false or anything else parks, so a stale client or
+ * another caller cannot trigger a host write.
+ */
+describe('hostExecutorForApproval — only a request shown whole reaches the host (review F2)', () => {
+  const bus = busWith('connectors:call-tool', 'tool:execute:request_capability');
+
+  it('a connector call the person saw in full goes to the host', () => {
+    expect(hostExecutorForApproval(bus, held(CONNECTOR_KEY), { requestShownInFull: true })).toEqual({
+      kind: 'connector',
+    });
+  });
+
+  it.each([
+    ['absent', {}],
+    ['false', { requestShownInFull: false }],
+    ['a truthy string', { requestShownInFull: 'true' }],
+    ['one', { requestShownInFull: 1 }],
+  ])('a connector call parks when the flag is %s', (_label, approval) => {
+    expect(hostExecutorForApproval(bus, held(CONNECTOR_KEY), approval)).toBeNull();
+  });
+
+  it('tool:execute:* is unaffected: a host tool runs whatever the flag says', () => {
+    for (const approval of [{}, { requestShownInFull: false }, { requestShownInFull: true }]) {
+      expect(hostExecutorForApproval(bus, held(PLAIN), approval)).toEqual({
+        kind: 'tool',
+        hook: 'tool:execute:request_capability',
+      });
+    }
+  });
+
+  it('the flag never makes a call host-executable that was not', () => {
+    // An attended connector call (review F1) and a call with no executor stay null.
+    expect(hostExecutorForApproval(bus, held(CONNECTOR_KEY, 'attended'), { requestShownInFull: true })).toBeNull();
+    expect(hostExecutorForApproval(busWith(), held(CONNECTOR_KEY), { requestShownInFull: true })).toBeNull();
+    expect(hostExecutorForApproval(bus, held('skill_propose'), { requestShownInFull: true })).toBeNull();
   });
 });

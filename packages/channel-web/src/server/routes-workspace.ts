@@ -1031,6 +1031,15 @@ interface DecisionsApproveInput extends DecisionsResolveInput {
    * file (I2): `@ax/decisions` declares the contract, we just speak it.
    */
   continuationReqId: string;
+  /**
+   * TASK-1046, review F2 — did the card show the person this request WHOLE?
+   * `@ax/decisions` makes a connector call on the host only on `true`, because
+   * it sends the recorded input verbatim and the card caps what it shows.
+   * Computed HERE from the stored row by `requestShownInFull`, with the same
+   * function the card is drawn from, and never read from the request body
+   * (which may carry only `approvalScope`).
+   */
+  requestShownInFull: boolean;
 }
 interface DecisionsApproveOutput {
   decision: StoredDecision | null;
@@ -2618,6 +2627,27 @@ function wireRequest(stored: StoredDecision): DecisionRequest | null {
   if (json === undefined || json === '{}' || json === '[]' || json === 'null') json = undefined;
   const block = fenceBlock(json, DECISION_REQUEST_INPUT_MAX_CHARS, DECISION_REQUEST_INPUT_MAX_LINES);
   return { tool, input: block?.text ?? null, truncated: block?.truncated ?? false };
+}
+
+/**
+ * Did the card show this held call WHOLE? (TASK-1046, review F2.)
+ *
+ * The approve route tells `@ax/decisions`, which makes a connector call on the
+ * host only when the answer is yes: the host sends the recorded input
+ * verbatim, and a person who read "This is only the beginning…" never saw the
+ * rest of what would go out.
+ *
+ * Read off `wireRequest` itself, the function the card's request block is
+ * drawn from, so the two cannot disagree about what was on screen. Yes means
+ * the block exists, its input was not cut (`truncated`), and its tool line is
+ * the call's name exactly (`fenceLine` caps a long one too). An input with
+ * nothing in it is shown whole: the card says so in words. Everything else is
+ * no, including a row with no request block at all, so an unreadable or
+ * missing rendering fails closed (the call parks for the agent).
+ */
+function requestShownInFull(stored: StoredDecision): boolean {
+  const request = wireRequest(stored);
+  return request !== null && !request.truncated && request.tool === stored.call?.name;
 }
 
 /**
@@ -6954,7 +6984,15 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
       const out = await bus.call<DecisionsApproveInput, DecisionsApproveOutput>(
         'decisions:approve',
         agentWorkspaceCtx(stored.agentId, userId),
-        { decisionId: stored.id, userId, continuationReqId, ...(approvalScope === undefined ? {} : { approvalScope }) },
+        {
+          decisionId: stored.id,
+          userId,
+          continuationReqId,
+          // Review F2: from the STORED row and the card's own rendering of it,
+          // never from the body. A connector call reaches the host only on true.
+          requestShownInFull: requestShownInFull(stored),
+          ...(approvalScope === undefined ? {} : { approvalScope }),
+        },
       );
       const decision = await resolvedOrGone(out.decision, res, userId);
       if (decision === null) return;
