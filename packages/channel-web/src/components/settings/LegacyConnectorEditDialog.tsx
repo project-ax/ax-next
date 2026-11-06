@@ -701,8 +701,7 @@ export function LegacyConnectorEditDialog({
         await createConnector(body, base);
       } else {
         const saved = await patchConnector(target.id, body, base);
-        // `saved` is undefined only where a test double answers nothing.
-        if (saved) setSavedCapabilities(saved.capabilities);
+        setSavedCapabilities(saved.capabilities);
         try {
           await writeClientSecrets();
         } catch (err) {

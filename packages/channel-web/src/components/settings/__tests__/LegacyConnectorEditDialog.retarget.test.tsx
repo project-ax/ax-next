@@ -98,7 +98,14 @@ describe('LegacyConnectorEditDialog — a retarget signs everyone out (TASK-887)
       auth: 'oauth',
       clientRegistration: { cimd: false, dcr: true },
     });
-    vi.spyOn(connectorsLib, 'patchConnector').mockResolvedValue(cliConnector('personal'));
+    // Like the server, a PATCH answers with the connector it now holds: what
+    // was sent. (The editor compares its next save with that.)
+    vi.spyOn(connectorsLib, 'patchConnector').mockImplementation(async (id, body) => ({
+      ...summary(body.keyMode ?? 'personal'),
+      id,
+      name: body.name ?? '',
+      capabilities: body.capabilities!,
+    }));
     vi.spyOn(credentialsLib, 'setDestinationCredential').mockResolvedValue(undefined);
   });
   afterEach(() => vi.restoreAllMocks());
