@@ -84,6 +84,7 @@ import {
   DECISION_SESSION_EXPIRED,
   DECISION_THREAD_READ_FAILED,
 } from './decision-copy';
+import { ArtifactCard } from './ArtifactCard';
 import { Markdown } from '@/components/Markdown';
 import { WorkspaceAttachmentChip } from './WorkspaceAttachmentChip';
 import { ChatComposer, CHAT_CONTENT_CLASS } from './ChatComposer';
@@ -356,9 +357,12 @@ interface Props {
    * is that same signal.
    */
   fileRecheckKey?: number;
+  /** Open an artifact in the viewer (owned by `AgentView`). Cards need it. */
+  onOpenArtifact?: (artifactId: string) => void;
 }
 
 export function AgentConversation({
+  onOpenArtifact,
   agent,
   thread,
   conversationId,
@@ -592,6 +596,7 @@ export function AgentConversation({
               agent={agent}
               conversationId={conversationId}
               fileRecheckKey={fileRecheckKey}
+              {...(onOpenArtifact !== undefined ? { onOpenArtifact } : {})}
               decisions={decisions}
               onApprove={onApprove}
               onDismiss={onDismiss}
@@ -917,6 +922,7 @@ function ThreadApproval({ children }: { children: ReactNode }) {
 
 function Message({
   m,
+  onOpenArtifact,
   agent,
   conversationId,
   fileRecheckKey,
@@ -929,6 +935,7 @@ function Message({
   notices,
 }: {
   m: ThreadMessage;
+  onOpenArtifact?: (artifactId: string) => void;
   agent: Pick<WorkspaceAgent, 'id' | 'name'>;
   /** See `Props.conversationId` — what turns an attachment id into a URL. */
   conversationId: string | null;
@@ -1302,6 +1309,13 @@ function Message({
               >
                 <VisualFrame conversationId={conversationId} visual={v} />
               </Suspense>
+            ))}
+          </div>
+        )}
+        {'artifacts' in m && onOpenArtifact !== undefined && (m.artifacts?.length ?? 0) > 0 && (
+          <div className="mt-3 flex max-w-[604px] flex-col gap-2">
+            {m.artifacts?.map((a) => (
+              <ArtifactCard key={a.artifactId} artifact={a} onOpen={onOpenArtifact} />
             ))}
           </div>
         )}

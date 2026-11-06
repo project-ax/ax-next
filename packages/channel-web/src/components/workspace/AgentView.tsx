@@ -2009,6 +2009,7 @@ export function AgentView({
                 </div>
               )}
               <AgentConversation
+                onOpenArtifact={(id) => { setOpenArtifactId(id); setOpenPanel('artifacts'); }}
                 agent={agent}
                 thread={past ? pastThread : liveThread}
                 /*

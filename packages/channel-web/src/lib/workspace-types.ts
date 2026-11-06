@@ -683,6 +683,16 @@ export interface ThreadVisual {
   summary: string;
 }
 
+/** A published artifact, drawn as a card in the turn that published it. */
+export interface ThreadArtifact {
+  artifactId: string;
+  version: number;
+  title: string;
+  kind: z.infer<typeof ArtifactKindSchema>;
+  /** Uppercase, no dot: "PDF". */
+  extension: string;
+}
+
 export type ThreadMessage =
   | {
       kind: 'agent';
@@ -710,6 +720,8 @@ export type ThreadMessage =
       attachments?: readonly ThreadAttachment[];
       /** Visuals shown by this turn's `show_visual` calls; absent when none. */
       visuals?: readonly ThreadVisual[];
+      /** Artifacts published by this turn — cards that open the viewer. */
+      artifacts?: readonly ThreadArtifact[];
     }
   | {
       kind: 'user';

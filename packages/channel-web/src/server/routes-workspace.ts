@@ -217,9 +217,12 @@ import type {
 import {
   AgentFileBlockSchema,
   AttachmentBlockSchema,
+  AttachmentIdSchema,
   attachmentBlockFromArtifact,
   type AttachmentBlock,
 } from '@ax/ipc-protocol';
+import { ArtifactKindSchema } from '@ax/ipc-protocol/content-blocks';
+import { z } from 'zod';
 import {
   answerRequireUserFailure,
   PluginError,
@@ -287,6 +290,7 @@ import type {
   WorkspaceAgent,
   WorkspaceReadStatus,
 } from '../lib/workspace-types.js';
+import type { ThreadArtifact } from '../lib/workspace-types.js';
 import { AGENT_ABILITIES, isOpenDecision, ROUTINE_DECISION_OPERATIONS } from '../lib/workspace-types.js';
 import { byVerdict } from '../lib/permission-frames.js';
 import { fenceBlock, fenceLine } from '../lib/fence-line.js';
@@ -3955,6 +3959,29 @@ function errorMessages(
   return out;
 }
 
+const PublishedArtifactSchema = z.object({
+  artifactId: AttachmentIdSchema,
+  version: z.number().int().positive(),
+  title: z.string(),
+  kind: ArtifactKindSchema,
+  extension: z.string(),
+}).passthrough();
+
+/** A publish result that names a version → a card; legacy results → null. */
+function publishedArtifactCard(raw: unknown): ThreadArtifact | null {
+  const r = PublishedArtifactSchema.safeParse(raw);
+  if (!r.success) return null;
+  const title = fenceLine(r.data.title, 200);
+  if (title === null) return null;
+  return {
+    artifactId: r.data.artifactId,
+    version: r.data.version,
+    title,
+    kind: r.data.kind,
+    extension: fenceLine(r.data.extension, 16) ?? '',
+  };
+}
+
 /**
  * Interleave the turns with the host-only rows (turn failures), by instant.
  *
@@ -3996,6 +4023,9 @@ function buildThread(
       // endpoint independently checks conversation access and a durable row,
       // so a chip here only ever names an id; it grants nothing.
       const files = [...turnAttachments(blocks), ...turnAgentFiles(blocks)];
+      // A publish result carrying a `version` is a published artifact: it is
+      // drawn as a card (highest version per id), never as a download chip.
+      const cards = new Map<string, ThreadArtifact>();
       for (const block of blocks) {
         if (block.type !== 'tool_result' || block.is_error || block.held ||
           !publishIds.has(block.tool_use_id ?? '')) continue;
@@ -4005,9 +4035,16 @@ function buildThread(
             'text' in c && typeof c.text === 'string' ? [c.text] : []) : [];
         for (const text of texts) {
           try {
+            const parsed: unknown = JSON.parse(text);
+            const card = publishedArtifactCard(parsed);
+            if (card !== null) {
+              const seen = cards.get(card.artifactId);
+              if (seen === undefined || card.version > seen.version) cards.set(card.artifactId, card);
+              continue;
+            }
             // The publish result object → a chip, every field re-validated;
             // its sandbox-relative `path` is dropped.
-            const file = attachmentBlockFromArtifact(JSON.parse(text));
+            const file = attachmentBlockFromArtifact(parsed);
             if (file !== null) files.push(threadAttachment(file));
           } catch { /* A failed/non-JSON publication has no download. */ }
         }
@@ -4016,7 +4053,9 @@ function buildThread(
       // one chip per id. Two files that merely share a name keep two chips.
       // An agent file has no id (it is null), so it is keyed by its path: a null
       // id must not collapse every agent file into one chip.
-      const attachments = [...new Map(files.map(file => [
+      const attachments = [...new Map(files.filter(file =>
+        file.attachmentId === null || file.attachmentId === undefined || !cards.has(file.attachmentId),
+      ).map(file => [
         file.agentFilePath !== undefined ? `file:${file.agentFilePath}` : `id:${file.attachmentId}`,
         file,
       ])).values()];
@@ -4030,10 +4069,12 @@ function buildThread(
         return v === null ? [] : [[v.artifactId, v] as const];
       })).values()];
       const text = renderableText(blocks);
-      if (attachments.length > 0 || text.length > 0 || visuals.length > 0) dated.push({
+      const artifacts = [...cards.values()];
+      if (attachments.length > 0 || artifacts.length > 0 || text.length > 0 || visuals.length > 0) dated.push({
         at: turn.createdAt,
         msg: {
           kind: 'agent', id: turn.turnId, text, at: turn.createdAt, attachments,
+          ...(artifacts.length > 0 ? { artifacts } : {}),
           ...(visuals.length > 0 ? { visuals } : {}),
         },
       });

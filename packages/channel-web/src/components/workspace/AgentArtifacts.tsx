@@ -29,7 +29,7 @@ import { useAgentArtifacts } from '@/lib/use-agent-artifacts';
 import { ArtifactsDownloadRefused, workspaceApi } from '@/lib/workspace-api';
 import type { ArtifactSummary } from '@/lib/workspace-types';
 
-const KIND_ICONS: Record<ArtifactKind, LucideIcon> = {
+export const KIND_ICONS: Record<ArtifactKind, LucideIcon> = {
   document: FileText,
   web: Globe,
   spreadsheet: SheetIcon,
