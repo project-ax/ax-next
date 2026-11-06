@@ -3,6 +3,7 @@ import {
   HookBus,
   makeAgentContext,
   createLogger,
+  type Logger,
   type AgentMessage,
   type AgentOutcome,
   type ServiceHandler,
@@ -188,6 +189,7 @@ function ctxWith(opts: {
   sessionId?: string;
   conversationId?: string;
   reqId?: string;
+  logger?: Logger;
 }) {
   return makeAgentContext({
     sessionId: opts.sessionId ?? 'fresh-session',
@@ -195,7 +197,7 @@ function ctxWith(opts: {
     userId: 'test-user',
     ...(opts.conversationId !== undefined ? { conversationId: opts.conversationId } : {}),
     ...(opts.reqId !== undefined ? { reqId: opts.reqId } : {}),
-    logger: createLogger({ reqId: 'orch-test', writer: () => undefined }),
+    logger: opts.logger ?? createLogger({ reqId: 'orch-test', writer: () => undefined }),
   });
 }
 
@@ -601,6 +603,82 @@ describe('chat-orchestrator route-by-conversationId (Task 16, J6)', () => {
     expect(endFires).toBe(1);
     // No sandbox was opened on the routed path.
     expect(mocks.trace.sandboxOpen).toBe(0);
+  });
+
+  it('TASK-1059) a message that cannot be saved ends the turn before it is routed', async () => {
+    // A live session is already running on this conversation. The refusal
+    // must happen before routing/queueing/binding, and must never touch it.
+    const mocks = buildMocks({
+      conversations: { 'conv-ns': { activeSessionId: 's-live' } },
+      liveSessions: new Set(['s-live']),
+    });
+    mocks.services['conversations:append-event'] = async () => {
+      throw new Error('PRIVATE row text from 10.0.0.7');
+    };
+    let terminates = 0;
+    mocks.services['session:terminate'] = async () => {
+      terminates += 1;
+      return {};
+    };
+    const h = await createTestHarness({
+      services: mocks.services,
+      plugins: [
+        createChatOrchestratorPlugin({
+          runnerBinaries: { 'claude-sdk': '/irrelevant' },
+          chatTimeoutMs: 1_000,
+        }),
+      ],
+    });
+    const turnErrors: unknown[] = [];
+    const ends: unknown[] = [];
+    h.bus.subscribe('chat:turn-error', 'probe', async (_ctx, payload) => {
+      turnErrors.push(payload);
+      return undefined;
+    });
+    h.bus.subscribe('chat:end', 'probe', async (_ctx, payload) => {
+      ends.push(payload);
+      return undefined;
+    });
+    const lines: string[] = [];
+    const logger = createLogger({ reqId: 'req-NS', writer: (line) => lines.push(line) });
+
+    const outcome = await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
+      ctxWith({
+        sessionId: 'placeholder-ns',
+        conversationId: 'conv-ns',
+        reqId: 'req-NS',
+        logger,
+      }),
+      { message: { role: 'user', content: 'hello' } },
+    );
+
+    expect(outcome).toEqual({ kind: 'terminated', reason: 'conversation:message-not-saved' });
+    expect(turnErrors).toEqual([{ reqId: 'req-NS', reason: 'conversation:message-not-saved' }]);
+    expect(ends).toEqual([{ outcome }]);
+    // Nothing ran: not routed into the live session, not queued, not bound,
+    // no sandbox, and the live session was not terminated.
+    expect(mocks.trace.conversationsGet).toBe(0);
+    expect(mocks.trace.queueWork).toEqual([]);
+    expect(mocks.trace.bindSession).toEqual([]);
+    expect(mocks.trace.sandboxOpen).toBe(0);
+    expect(terminates).toBe(0);
+
+    const failed = lines
+      .map((line) => JSON.parse(line) as Record<string, unknown>)
+      .filter((entry) => entry.msg === 'orchestrator_persist_user_turn_failed');
+    expect(failed).toHaveLength(1);
+    expect(failed[0]).toMatchObject({
+      level: 'error',
+      conversationId: 'conv-ns',
+      code: 'unknown',
+      name: 'PluginError',
+      causeName: 'Error',
+      hookName: 'conversations:append-event',
+      plugin: 'mock',
+    });
+    expect(failed[0]).not.toHaveProperty('err');
+    expect(lines.join('\n')).not.toContain('PRIVATE');
   });
 
   it('lookup failure (conversations:get throws something other than not-found) falls through to fresh sandbox', async () => {

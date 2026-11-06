@@ -118,7 +118,7 @@ describe('terminated turns surface themselves', () => {
       the whole point.
     */
     const all = exits();
-    expect(all.length).toBe(17);
+    expect(all.length).toBe(18);
     expect(all.every((e) => e.terminated)).toBe(true);
   });
 });

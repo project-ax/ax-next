@@ -1,4 +1,5 @@
 import {
+  faultLogFields,
   PluginError,
   PROVIDER_ENDPOINTS,
   parseModelRef,
@@ -2673,11 +2674,28 @@ export function createOrchestrator(
     // live stream before the turn runs. Persisting here, off the turn-end
     // path, captures the user's own message for redisplay with no side
     // effects. Gated on `conversations:append-event` being registered (same
-    // hasService posture as the conversations:* peers above); best-effort —
-    // a persist failure must not block the chat (the runner still streams the
-    // reply; only this turn's redisplay loses the user bubble). conversationId
+    // hasService posture as the conversations:* peers above). conversationId
     // is host-stamped on ctx.
-    await persistUserDisplayTurn(bus, ctx, input.message);
+    //
+    // A message that still can't be saved ends THIS turn here (TASK-1059).
+    // The hook already retried a checkout that never got a connection, so what
+    // reaches this line is a real failure. Running the turn anyway would leave
+    // a reply to a message missing from the transcript — the gap the person
+    // finds on reload. It ends before routing, queueing, binding or spawning,
+    // so a turn already running on this conversation is untouched (ctx.sessionId
+    // here is a placeholder, and nothing below this refusal runs). The reason is
+    // read by routines (`refusedBeforeAssembly`) and channel-web
+    // (`turn-error-labels.ts`); it carries no detail and no `error`, since a
+    // `chat:end` subscriber could log either raw.
+    if (!(await persistUserDisplayTurn(bus, ctx, input.message))) {
+      const outcome: AgentOutcome = {
+        kind: 'terminated',
+        reason: 'conversation:message-not-saved',
+      };
+      await fireTurnError(ctx, ctx.reqId, outcome.reason);
+      await fireChatEvent('chat:end', ctx, { outcome });
+      return outcome;
+    }
 
     // 4. Decide: route to existing sandbox session, or open a fresh one?
     //
@@ -4913,9 +4931,11 @@ function endpointToProxyConfig(
 // contentBlocks (the chat UI renders an `attachment` block as a download
 // chip). I2: we call `conversations:append-event` over the bus with a
 // duck-typed payload (no @ax/conversations import). Gated on the hook being
-// registered; best-effort — a persist failure logs + returns (the chat still
-// runs; only this turn's redisplay loses the user bubble). conversationId is
-// host-stamped on ctx.
+// registered. A failed save is reported to the caller (TASK-1059): the hook
+// already retried a checkout that never got a connection, and a message still
+// not saved ends the turn before anything runs, because a reply to a message
+// missing from the transcript is the gap the person would find on reload.
+// conversationId is host-stamped on ctx.
 // ---------------------------------------------------------------------------
 interface AppendEventCall {
   conversationId: string;
@@ -4928,10 +4948,10 @@ async function persistUserDisplayTurn(
   bus: HookBus,
   ctx: AgentContext,
   message: AgentMessage,
-): Promise<void> {
+): Promise<boolean> {
   const conversationId = ctx.conversationId;
-  if (conversationId === undefined) return;
-  if (!bus.hasService('conversations:append-event')) return;
+  if (conversationId === undefined) return true;
+  if (!bus.hasService('conversations:append-event')) return true;
 
   const text = typeof message.content === 'string' ? message.content : '';
   const attachmentBlocks = Array.isArray(message.contentBlocks)
@@ -4942,7 +4962,7 @@ async function persistUserDisplayTurn(
     ...attachmentBlocks,
   ];
   // Nothing displayable (no text, no blocks) → nothing to persist.
-  if (blocks.length === 0) return;
+  if (blocks.length === 0) return true;
 
   try {
     await bus.call<AppendEventCall, void>(
@@ -4950,10 +4970,14 @@ async function persistUserDisplayTurn(
       ctx,
       { conversationId, kind: 'turn', role: 'user', payload: { blocks } },
     );
+    return true;
   } catch (err) {
-    ctx.logger.warn('orchestrator_persist_user_turn_failed', {
+    // Codes only: the database's own message can carry a host, a user or a
+    // query value, and the bus copies it into its wrap.
+    ctx.logger.error('orchestrator_persist_user_turn_failed', {
       conversationId,
-      err: err instanceof Error ? err : new Error(String(err)),
+      ...faultLogFields(err),
     });
+    return false;
   }
 }
