@@ -93,30 +93,42 @@ afterAll(async () => {
   }
 });
 
+interface Captured {
+  /** Every write, from every channel, one entry per write. */
+  output: string[];
+  /** The auth-better lines, each tagged with the channel it went to. */
+  authLines: Array<{ via: 'stderr' | 'stdout' | 'console'; line: string }>;
+}
+
 /**
- * Everything written while `run` is in flight, one entry per write: stderr,
- * stdout (the core logger's channel) and the console. vitest gives its workers
- * a console of its own that never calls process.stdout/stderr.write, so a
- * `console.error(err)` would slip past the two stream spies unless the console
- * is captured too.
+ * Everything written while `run` is in flight: stderr, stdout (the core
+ * logger's channel) and the console. vitest gives its workers a console of its
+ * own that never calls process.stdout/stderr.write, so a `console.error(err)`
+ * would slip past the two stream spies unless the console is captured too.
  */
-async function captureOutput<T>(run: () => Promise<T>): Promise<{ result: T; output: string[] }> {
+async function captureOutput<T>(run: () => Promise<T>): Promise<{ result: T } & Captured> {
   const output: string[] = [];
-  const record = ((chunk: unknown) => {
-    output.push(String(chunk));
-    return true;
-  }) as typeof process.stderr.write;
+  const authLines: Captured['authLines'] = [];
+  const push = (via: 'stderr' | 'stdout' | 'console', text: string): void => {
+    output.push(text);
+    if (text.startsWith('[ax/auth-better]')) authLines.push({ via, line: text });
+  };
+  const recordTo = (via: 'stderr' | 'stdout') =>
+    ((chunk: unknown) => {
+      push(via, String(chunk));
+      return true;
+    }) as typeof process.stderr.write;
   const spies = [
-    vi.spyOn(process.stderr, 'write').mockImplementation(record),
-    vi.spyOn(process.stdout, 'write').mockImplementation(record),
+    vi.spyOn(process.stderr, 'write').mockImplementation(recordTo('stderr')),
+    vi.spyOn(process.stdout, 'write').mockImplementation(recordTo('stdout')),
     ...(['log', 'info', 'warn', 'error', 'debug'] as const).map((method) =>
       vi.spyOn(console, method).mockImplementation((...args: unknown[]) => {
-        output.push(format(...args));
+        push('console', format(...args));
       }),
     ),
   ];
   try {
-    return { result: await run(), output };
+    return { result: await run(), output, authLines };
   } finally {
     for (const spy of spies) spy.mockRestore();
   }
@@ -135,26 +147,30 @@ async function fetchResetLink(init: RequestInit = {}): Promise<{ status: number;
 
 describe('@ax/auth-better: the /auth/* handler-error line (TASK-1047)', () => {
   it('a Better Auth throw logs the route and its codes, never the path, the token or the message', async () => {
-    const { result, output } = await captureOutput(() => fetchResetLink());
+    const { result, output, authLines } = await captureOutput(() => fetchResetLink());
     expect(result).toEqual({ status: 500, body: { error: 'auth-handler-failed' } });
-    expect(output.filter((l) => l.startsWith('[ax/auth-better]'))).toEqual([
-      '[ax/auth-better] handler error on GET /auth/* {"code":"57P01","name":"Error"}\n',
+    expect(authLines).toEqual([
+      {
+        via: 'stderr',
+        line: '[ax/auth-better] handler error on GET /auth/* {"code":"57P01","name":"Error"}\n',
+      },
     ]);
     expect(output.join('')).not.toContain(TOKEN);
     expect(output.join('')).not.toContain('PRIVATE-MESSAGE');
   });
 
   it('a malformed X-Forwarded-Proto (our Request build throws, the URL in its message) logs the same line', async () => {
-    const { result, output } = await captureOutput(() =>
+    const { result, output, authLines } = await captureOutput(() =>
       fetchResetLink({ headers: { 'x-forwarded-proto': 'a b' } }),
     );
     expect(result).toEqual({ status: 500, body: { error: 'auth-handler-failed' } });
-    const lines = output.filter((l) => l.startsWith('[ax/auth-better]'));
-    expect(lines).toHaveLength(1);
+    expect(authLines).toHaveLength(1);
+    const { via, line } = authLines[0]!;
+    expect(via).toBe('stderr');
     const prefix = '[ax/auth-better] handler error on GET /auth/* ';
-    expect(lines[0]!.startsWith(prefix), `line: ${lines[0]}`).toBe(true);
+    expect(line.startsWith(prefix), `line: ${line}`).toBe(true);
     // Node's own TypeError. Its cause codes are a Node detail, so only the name is pinned.
-    expect(JSON.parse(lines[0]!.slice(prefix.length))).toMatchObject({ name: 'TypeError' });
+    expect(JSON.parse(line.slice(prefix.length))).toMatchObject({ name: 'TypeError' });
     expect(output.join('')).not.toContain(TOKEN);
   });
 });
