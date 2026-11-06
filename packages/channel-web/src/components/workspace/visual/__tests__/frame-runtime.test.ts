@@ -377,6 +377,65 @@ describe('frame runtime', () => {
       });
       expect(options.scales.y.grid.color).toBe(border);
     });
+
+    it('(2b) re-themes hsl() strings built from an old token value, keeping alpha; leaves others alone', () => {
+      const update = vi.fn();
+      const instance: Record<string, unknown> = { update };
+      const { win, host } = withChart({ 0: instance });
+      // What an agent's own cssVar() helper builds: getComputedStyle, not ax.color.
+      const raw = (name: string) => win.getComputedStyle(win.document.documentElement).getPropertyValue(name).trim();
+      const grid = 'hsl(' + raw('--chart-2') + ')';
+      expect(grid).toBe('hsl(173 80% 29%)');
+      const options = {
+        scales: {
+          y: { grid: { color: grid }, ticks: { color: 'hsl(242.71, 63.03%, 58.63%)' } },
+          x: { grid: { color: 'hsl(173 80% 29%/0.4)' }, ticks: { color: 'hsl( 173  80%  29% / 0.25 )' } },
+        },
+        plugins: { legend: { labels: { color: 'hsl(10 20% 30%)' } }, title: { color: 'red' } },
+      };
+      const datasets = [{ borderColor: 'hsl(173 80% 29%)', backgroundColor: ['hsl(242.71 63.03% 58.63%)', 'blue'] }];
+      Object.assign(instance, { config: { options }, options, data: { datasets } });
+
+      sendFrom(win, host, {
+        type: 'ax-visual:theme',
+        mode: 'dark',
+        tokens: { '--chart-2': '11 22% 33%', '--chart-1': '44 55% 66%' },
+      });
+      expect(options.scales.y.grid.color).toBe('hsl(11 22% 33%)');
+      expect(options.scales.y.ticks.color).toBe('hsl(44 55% 66%)');
+      expect(options.scales.x.grid.color).toBe('hsl(11 22% 33% / 0.4)');
+      expect(options.scales.x.ticks.color).toBe('hsl(11 22% 33% / 0.25)');
+      expect(options.plugins.legend.labels.color).toBe('hsl(10 20% 30%)'); // a custom color, untouched
+      expect(options.plugins.title.color).toBe('red');
+      expect(datasets[0]!.borderColor).toBe('hsl(11 22% 33%)');
+      expect(datasets[0]!.backgroundColor).toEqual(['hsl(44 55% 66%)', 'blue']);
+    });
+
+    it('(2b) breaks ties between tokens sharing an old value: shared new value, else the earliest token', () => {
+      const instance: Record<string, unknown> = { update: vi.fn() };
+      const { win, host } = withChart({ 0: instance });
+      const options = { a: 'hsl(5 5% 5%)', b: 'hsl(7 7% 7%)' };
+      Object.assign(instance, { config: { options }, options, data: { datasets: [] } });
+      sendFrom(win, host, {
+        type: 'ax-visual:theme',
+        mode: 'light',
+        tokens: {
+          '--card': '5 5% 5%', '--popover': '5 5% 5%', '--muted': '5 5% 5%',
+          '--accent': '7 7% 7%', '--destructive': '7 7% 7%',
+        },
+      });
+      sendFrom(win, host, {
+        type: 'ax-visual:theme',
+        mode: 'dark',
+        tokens: {
+          // card differs; popover and muted agree, so either one gives the same answer.
+          '--card': '1 1% 1%', '--popover': '2 2% 2%', '--muted': '2 2% 2%',
+          // No agreement: the earlier token in the list (--accent) wins.
+          '--accent': '3 3% 3%', '--destructive': '4 4% 4%',
+        },
+      });
+      expect(options).toEqual({ a: 'hsl(2 2% 2%)', b: 'hsl(3 3% 3%)' });
+    });
   });
 
   it('removes WebRTC for good before anything else runs', () => {

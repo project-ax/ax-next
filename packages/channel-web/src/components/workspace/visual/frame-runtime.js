@@ -520,11 +520,67 @@ window.axVisualRuntime = function axVisualRuntime(win, host) {
   // Colors that only get resolved, never filled from the palette.
   var EXTRA_COLOR_KEYS = ['hoverBackgroundColor', 'hoverBorderColor', 'pointBackgroundColor', 'pointBorderColor'];
 
+  // An hsl() color: space or comma separated, optional alpha after / or a
+  // comma, spacing loose. Group 1-3 are the triplet, group 4 the alpha.
+  var HSL_COLOR =
+    /^\s*hsl\(\s*([0-9.]+(?:deg)?)\s*[\s,]\s*([0-9.]+%)\s*[\s,]\s*([0-9.]+%)\s*(?:[,/]\s*([0-9.]+%?)\s*)?\)\s*$/;
+  var HSL_TRIPLET = /^\S+\s+\S+%\s+\S+%$/;
+
+  // Old token triplet -> the token it most likely came from, for a theme
+  // change. A model that reads a token with getComputedStyle and wraps it in
+  // hsl() writes exactly that triplet, and an exact match on one is almost
+  // never a coincidence. When tokens shared an old value, prefer the token
+  // whose NEW value the most of them share (so the answer is the same
+  // whichever one the agent meant); on a tie, the earliest in TOKEN_NAMES.
+  function tokensByOldValue(oldValues) {
+    var groups = new Map();
+    TOKEN_NAMES.forEach(function (name, i) {
+      var old = oldValues[i].split(/\s+/).join(' ');
+      if (!HSL_TRIPLET.test(old)) return;
+      if (!groups.has(old)) groups.set(old, []);
+      groups.get(old).push(name);
+    });
+    var byOld = new Map();
+    groups.forEach(function (names, old) {
+      var best = null;
+      var bestCount = 0;
+      names.forEach(function (name) {
+        var fresh = tokenValue(name);
+        var count = names.filter(function (other) {
+          return tokenValue(other) === fresh;
+        }).length;
+        if (count > bestCount) {
+          best = name;
+          bestCount = count;
+        }
+      });
+      if (best) byOld.set(old, best);
+    });
+    return byOld;
+  }
+
+  // The current-theme version of a color string from the old theme, or
+  // undefined to leave it alone. ax.color's own strings first, then an
+  // hsl() whose triplet was an old token value. Anything else is the
+  // agent's own color.
+  function freshColor(value, byOld) {
+    var known = issued.get(value);
+    if (known) return ax.color(known.name, known.alpha);
+    if (!byOld || !byOld.size) return undefined;
+    var m = HSL_COLOR.exec(value);
+    if (!m) return undefined;
+    var name = byOld.get(m[1] + ' ' + m[2] + ' ' + m[3]);
+    if (!name) return undefined;
+    var token = tokenValue(name);
+    if (!token) return undefined;
+    return m[4] === undefined ? 'hsl(' + token + ')' : 'hsl(' + token + ' / ' + m[4] + ')';
+  }
+
   // A color string ax.color handed out under the old theme, swapped for the
   // same token's current value. Walks plain objects and arrays only, to a
   // fixed depth and node budget, so a huge or cyclic options tree stays cheap.
   // `skip` names one key to leave out (a dataset's data points).
-  function healColors(node, depth, budget, skip) {
+  function healColors(node, depth, budget, byOld, skip) {
     if (depth > 8 || budget.left <= 0 || !node || typeof node !== 'object') return;
     var isArray = Array.isArray(node);
     if (!isArray) {
@@ -546,31 +602,29 @@ window.axVisualRuntime = function axVisualRuntime(win, host) {
         continue;
       }
       if (typeof value === 'string') {
-        var known = issued.get(value);
-        if (!known) continue;
-        var fresh = ax.color(known.name, known.alpha);
-        if (fresh === value) continue;
+        var fresh = freshColor(value, byOld);
+        if (fresh === undefined || fresh === value) continue;
         try {
           node[key] = fresh;
         } catch {
           // A frozen object keeps its color.
         }
       } else if (value && typeof value === 'object') {
-        healColors(value, depth + 1, budget);
+        healColors(value, depth + 1, budget, byOld);
       }
     }
   }
 
-  function healChart(chart) {
-    if (!issued.size) return;
+  function healChart(chart, byOld) {
+    if (!issued.size && !byOld.size) return;
     var budget = { left: 5000 };
     // config.options is what the agent wrote; chart.options is a resolver over
     // it and every default.
-    healColors(chart.config && chart.config.options ? chart.config.options : chart.options, 0, budget);
+    healColors(chart.config && chart.config.options ? chart.config.options : chart.options, 0, budget, byOld);
     var datasets = chart.data && chart.data.datasets;
     if (!Array.isArray(datasets)) return;
     datasets.forEach(function (ds) {
-      healColors(ds, 1, budget, 'data');
+      healColors(ds, 1, budget, byOld, 'data');
     });
   }
 
@@ -606,6 +660,7 @@ window.axVisualRuntime = function axVisualRuntime(win, host) {
     if (mode !== 'light' && mode !== 'dark') return;
     var tokens = data.tokens;
     if (!tokens || typeof tokens !== 'object') return;
+    var oldValues = TOKEN_NAMES.map(tokenValue);
     TOKEN_NAMES.forEach(function (name) {
       if (!Object.prototype.hasOwnProperty.call(tokens, name)) return;
       var raw = tokens[name];
@@ -619,11 +674,12 @@ window.axVisualRuntime = function axVisualRuntime(win, host) {
     var Chart = win.Chart;
     if (Chart) {
       try {
+        var byOld = tokensByOldValue(oldValues);
         applyChartDefaults();
         var instances = Chart.instances || {};
         Object.keys(instances).forEach(function (key) {
           try {
-            healChart(instances[key]);
+            healChart(instances[key], byOld);
             instances[key].update('none');
           } catch {
             // One broken chart shouldn't stop the rest from re-theming.

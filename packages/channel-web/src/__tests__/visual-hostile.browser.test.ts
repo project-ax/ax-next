@@ -433,6 +433,42 @@ window.__chart = new Chart(document.getElementById('c'), {
     }
   });
 
+  // What the walk agent's own cssVar() helper did: read the token with
+  // getComputedStyle and wrap it in hsl(). The plain form happens to equal a
+  // string the runtime's own defaults got from ax.color('border'); the comma
+  // form never comes from ax.color, so only the token-triplet match heals it.
+  it.each([
+    ['plain', "'hsl(' + v + ')'"],
+    ['comma', "'hsl(' + v.split(/\\s+/).join(', ') + ')'"],
+  ])('(VISUALS-1) a gridline color the agent built from getComputedStyle (%s) follows the theme', async (form, expr) => {
+    const chart = WALK_CHART.replace(
+      "window.__grid = ax.color('border');",
+      "var v = getComputedStyle(document.documentElement).getPropertyValue('--border').trim(); window.__grid = " + expr + ';',
+    );
+    expect(chart).not.toBe(WALK_CHART);
+    const { page } = await run(`/walk-grid-css-${form}`, { chart }, ['chart'], 0);
+    try {
+      const frame = page.frames().find((f) => f.url() === 'about:srcdoc')!;
+      const grid = await frame.evaluate(() => (window as unknown as { __grid: string }).__grid);
+      expect(grid).toMatch(form === 'comma' ? /^hsl\(240, 5\.9%, 90%\)$/ : /^hsl\(240 5\.9% 90%\)$/);
+      const light = await frame.evaluate(sampleGrid);
+      expect(near(light.rgba, light.expect), JSON.stringify(light)).toBe(true);
+      await page.evaluate((border) => {
+        document.querySelector('iframe')!.contentWindow!.postMessage(
+          { type: 'ax-visual:theme', mode: 'dark', tokens: { '--border': border, '--card': '226.67 15.25% 11.57%' } },
+          '*',
+        );
+      }, DARK_BORDER);
+      await frame.waitForFunction(() => document.documentElement.dataset.theme === 'dark');
+      await page.waitForTimeout(200);
+      const dark = await frame.evaluate(sampleGrid);
+      expect(near(dark.expect, light.expect)).toBe(false);
+      expect(near(dark.rgba, dark.expect), JSON.stringify(dark)).toBe(true);
+    } finally {
+      await page.close();
+    }
+  });
+
   it('a visual below the fold says ready without being scrolled into view', async () => {
     // Chromium runs no animation frames for an offscreen cross-origin frame;
     // a ready that waits on rAF alone would never come. The parent's 8 s

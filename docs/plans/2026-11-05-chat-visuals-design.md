@@ -200,6 +200,11 @@ field names backend-neutral: `visual`, `title`, `summary`, not storage terms.
   holding `ax.chartColor(...)` or `var()` entries is resolved per point (Chart.js itself only calls
   a function that is the whole option), and on a theme change any `ax.color` string the agent
   wrote into chart options or datasets is swapped for the new theme's value before re-render.
+  So is any `hsl(h s% l%)` / `hsl(h s% l% / a)` string (comma form and loose spacing too) whose
+  triplet exactly equals an old-theme token value, as a model reading tokens through
+  `getComputedStyle` would write; the alpha is kept and any other color is left alone. When
+  tokens shared the old value, the token whose new value most of them share wins, then the
+  earliest in the token list.
 - **The agent's instructions** live in the `show_visual` tool description (not in
   `communicationNote()`), so both runners get them and they appear only where the tool does. They say three things. Style
   only with the provided CSS variables, never raw colors or other fonts. Use the provided chart
