@@ -397,9 +397,13 @@ export const ABANDONED_RECEIPT =
  * says what went wrong and none says anything went out — every one of them
  * sits under "Nothing was completed", and every one is true of a call that did
  * not happen. A call that went out with no reliable answer gets none of these:
- * its row is abandoned and reads `ABANDONED_RECEIPT`.
+ * its row is abandoned and reads `ABANDONED_RECEIPT`. Nor does `tool-error`,
+ * the tool's own "it didn't work" after it ran (review F3): it may have done
+ * part of the work, so its row is abandoned too and reads `TOOL_ERROR_RECEIPT`.
  */
-export const CONNECTOR_CALL_DETAIL: Readonly<Record<ConnectorCallFailedReason, string>> = {
+export const CONNECTOR_CALL_DETAIL: Readonly<
+  Record<Exclude<ConnectorCallFailedReason, 'tool-error'>, string>
+> = {
   'invalid-call': "The request wasn't in a form we could send.",
   'not-connected': "We couldn't find this connector on this agent.",
   'needs-auth': "The sign-in for this connector didn't work.",
@@ -407,6 +411,23 @@ export const CONNECTOR_CALL_DETAIL: Readonly<Record<ConnectorCallFailedReason, s
   unreachable: "We couldn't reach this connector's service.",
   rejected: "This connector's service turned the request down.",
 };
+
+/**
+ * The receipt when the host made a connector call and the TOOL answered that it
+ * did not work (MCP `isError`, TASK-1046 review F3).
+ *
+ * Neither neighbour is true here. `FAILED_RECEIPT` ends "Nothing was
+ * completed", but the tool ran and may have done part of the work: a person
+ * who believes nothing happened approves it again and does it twice.
+ * `ABANDONED_RECEIPT` says it was interrupted, and it was not: the service
+ * answered. So it says what we know (it ran, the service said no), what we do
+ * not (how much it did), and what to do about it. Read off the row's
+ * `TOOL_ERROR_REPLAY_CODE`. The card says the same thing in its own two lines
+ * (`DECISION_TOOL_ERROR` / `DECISION_TOOL_ERROR_NOTE` in channel-web); each
+ * side pins its own words by literal, and the closed code by the same one.
+ */
+export const TOOL_ERROR_RECEIPT =
+  "It tried to do this, and the service said it didn't work. It may have done part of it, so check before you approve it again.";
 
 /**
  * The host re-read this tool's policy right before the call and it says Deny

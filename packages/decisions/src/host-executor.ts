@@ -47,14 +47,21 @@ import type { Decision } from './types.js';
 /** @ax/mcp-client's service: the host makes one approved connector call. */
 export const CONNECTOR_CALL_TOOL_HOOK = 'connectors:call-tool';
 
-/** Definite: nothing completed, or the service said the call failed. */
+/**
+ * A definite answer. Every reason but `tool-error` means nothing completed.
+ * `tool-error` (review F3) is the tool itself answering that the call did not
+ * work: it RAN and may have done part of the work, so this package records it
+ * like an unknown outcome (abandoned: never "Nothing was completed") under its
+ * own closed code (never "interrupted").
+ */
 export type ConnectorCallFailedReason =
   | 'invalid-call'
   | 'not-connected'
   | 'needs-auth'
   | 'unavailable'
   | 'unreachable'
-  | 'rejected';
+  | 'rejected'
+  | 'tool-error';
 
 /** The call went out and no reliable answer came back: it may have happened. */
 export type ConnectorCallUnknownReason = 'timeout' | 'interrupted';
@@ -84,6 +91,7 @@ const FAILED_REASONS = [
   'unavailable',
   'unreachable',
   'rejected',
+  'tool-error',
 ] as const satisfies readonly ConnectorCallFailedReason[];
 
 const UNKNOWN_REASONS = [

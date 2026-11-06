@@ -152,21 +152,31 @@ export const InventoryToolTitlesInputSchema = z
 //     by tool-policy, decisions, `connectors:tool-labels` and
 //     `connectors:describe-tools`, not a transport field. `input` is the
 //     ToolCall vocabulary, not MCP's `arguments`. The reason codes carry no
-//     URL, header, HTTP status, server name or session id.
+//     URL, header, HTTP status, server name or session id. `tool-error` (the
+//     tool answered that it did not work) is MCP's `isError` in our words; a
+//     REST connector has the same answer (a tool-level failure body).
 //   - Subscriber risk: none. It is a service hook, and nothing fires.
 //   - Wire surface: none. It is deliberately NOT an IPC action, and NOT a
 //     `tool:execute:<name>`: `tool.execute-host` dispatches only those, and no
 //     IPC handler forwards `connectors:*`. The sandbox cannot reach it.
 // ---------------------------------------------------------------------------
 
-/** Definite: nothing completed, or the service said the call failed. */
+/**
+ * A definite answer. Every reason but `tool-error` means nothing completed.
+ * `tool-error` (review F3) is the tool itself answering that the call did not
+ * work: it RAN, and may have done part of the work, so a caller must never
+ * read it as "nothing happened". Kept under `failed` because the service did
+ * answer, and given its own code so it is never confused with `rejected`
+ * (the server refused the request, so nothing ran).
+ */
 export type ConnectorCallFailedReason =
   | 'invalid-call'
   | 'not-connected'
   | 'needs-auth'
   | 'unavailable'
   | 'unreachable'
-  | 'rejected';
+  | 'rejected'
+  | 'tool-error';
 
 /** The call went out and no reliable answer came back: it may have happened. */
 export type ConnectorCallUnknownReason = 'timeout' | 'interrupted';
@@ -206,6 +216,7 @@ const FAILED_REASONS = [
   'unavailable',
   'unreachable',
   'rejected',
+  'tool-error',
 ] as const satisfies readonly ConnectorCallFailedReason[];
 
 /** The bus holds the hook to these shapes: no field can carry a server's text. */

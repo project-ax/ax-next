@@ -296,15 +296,16 @@ export function createFakeStore(): FakeStore {
       return next;
     },
 
-    // Sent, no reliable answer (TASK-1046): the reclaim's abandoned shape.
-    async markOutcomeUnknown(decisionId, nowIso) {
+    // Sent, no reliable answer (TASK-1046): the reclaim's abandoned shape. A
+    // tool that ran and said it failed carries its closed code (review F3).
+    async markOutcomeUnknown(decisionId, nowIso, code = null) {
       const row = rows.get(decisionId);
       if (row === undefined || row.status !== 'executed') return null;
       const next: Decision = {
         ...row,
         status: 'failed',
         replayAbandonedAt: nowIso,
-        replayError: null,
+        replayError: code,
         replayDueAt: null,
       };
       rows.set(decisionId, next);

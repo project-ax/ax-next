@@ -17,7 +17,9 @@ import {
   ROUTINE_ALWAYS_ASKS_SENTENCE,
   ROUTINE_FIRE_NOW_DETAIL,
   ROUTINE_KIND_CHANGE_SENTENCE,
+  TOOL_ERROR_RECEIPT,
 } from '../templates.js';
+import { TOOL_ERROR_REPLAY_CODE } from '../types.js';
 
 const CAP = 'gain access to a new service or key';
 
@@ -263,6 +265,7 @@ describe('the AW-5 authored receipts', () => {
   const RECEIPTS = [
     ['FAILED_RECEIPT', FAILED_RECEIPT],
     ['PENDING_AGENT_RECEIPT', PENDING_AGENT_RECEIPT],
+    ['TOOL_ERROR_RECEIPT', TOOL_ERROR_RECEIPT],
   ] as const;
 
   it.each(RECEIPTS)('%s is non-empty and single-line', (_name, receipt) => {
@@ -304,6 +307,25 @@ describe('the AW-5 authored receipts', () => {
     expect(FAILED_RECEIPT).not.toMatch(/\bdid\b(?!\s+not\b)/i);
   });
 
+});
+
+describe('the tool-error receipt (TASK-1046, review F3)', () => {
+  it('is word for word what the person reads, pinned by literal', () => {
+    expect(TOOL_ERROR_RECEIPT).toBe(
+      "It tried to do this, and the service said it didn't work. It may have done part of it, so check before you approve it again.",
+    );
+  });
+
+  it('never claims nothing happened, and never says it was interrupted', () => {
+    // The tool ran and answered that it did not work. Both of the other
+    // failure lines would be false here.
+    expect(TOOL_ERROR_RECEIPT).not.toMatch(/nothing was completed/i);
+    expect(TOOL_ERROR_RECEIPT).not.toMatch(/interrupted/i);
+  });
+
+  it('keys on a closed code, which channel-web pins by the same literal', () => {
+    expect(TOOL_ERROR_REPLAY_CODE).toBe('tool-error');
+  });
 });
 
 describe('the connector replay details (TASK-1046)', () => {

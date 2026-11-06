@@ -296,6 +296,35 @@ describe('the decision routes over a real socket', () => {
     expect(raw).not.toContain('replayAbandonedAt');
     expect(raw).not.toContain(ABANDONED_AT);
   });
+  it('a tool that ran and said it failed projects toolReportedError: true, and only that row (review F3)', async () => {
+    // `@ax/decisions` writes it as `failed` + `replayAbandonedAt` (so it never
+    // reads "nothing was completed") with the closed code `tool-error` in
+    // `replayError` (so it never reads "interrupted" either). The card learns
+    // it through one derived boolean; the code and the instant stay home.
+    const ABANDONED_AT = '2026-08-21T11:20:00.000Z';
+    const base = { ...STORED, resolvedAt: '2026-08-21T11:00:00.000Z', replayedAt: null, replayClaimedAt: '2026-08-21T11:01:00.000Z' };
+    const h = await boot({ history: [
+      { ...base, id: 'said-no', status: 'failed', replayAbandonedAt: ABANDONED_AT, replayError: 'tool-error' },
+      { ...base, id: 'unknown', status: 'failed', replayAbandonedAt: ABANDONED_AT, replayError: null },
+      // An ordinary failure whose detail happens to read the same is a report.
+      { ...base, id: 'ordinary', status: 'failed', replayAbandonedAt: null, replayError: 'tool-error' },
+      { ...base, id: 'older-producer', status: 'failed', replayError: 'tool-error' },
+      { ...base, id: 'executed', status: 'executed', replayAbandonedAt: ABANDONED_AT, replayError: 'tool-error' },
+    ] });
+    harness = h.harness;
+    const response = await fetch(`http://127.0.0.1:${h.port}/api/workspace/agents/a1/conversations/c1/decisions`);
+    expect(response.status).toBe(200);
+    const raw = await response.text();
+    const byId = new Map((JSON.parse(raw) as DecisionsBody).decisions.map((d) => [d['id'], d]));
+    // Both flags: it may have done part of it, AND the service said so.
+    expect(byId.get('said-no')).toMatchObject({ status: 'failed', outcomeUnknown: true, toolReportedError: true });
+    expect(byId.get('unknown')).toMatchObject({ outcomeUnknown: true, toolReportedError: false });
+    for (const id of ['ordinary', 'older-producer', 'executed']) {
+      expect(byId.get(id)).toMatchObject({ toolReportedError: false });
+    }
+    expect(raw).not.toContain('replayError');
+    expect(raw).not.toContain('"tool-error"');
+  });
   it.each([{userId:'peer',agentId:'a1'},{userId:'u1',agentId:'a2'}])('refuses a foreign conversation before reading outcomes: %j', async (conversation) => {
     const h=await boot({historyFails:true,conversation}); harness=h.harness;
     expect((await fetch(`http://127.0.0.1:${h.port}/api/workspace/agents/a1/conversations/c1/decisions`)).status).toBe(404);

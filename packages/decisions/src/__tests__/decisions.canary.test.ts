@@ -41,6 +41,7 @@ import {
   CONNECTOR_POLICY_DENIED_DETAIL,
   FAILED_RECEIPT,
   PENDING_AGENT_RECEIPT,
+  TOOL_ERROR_RECEIPT,
 } from '../templates.js';
 import { createDecisionsPlugin, type DecisionsPluginOptions } from '../plugin.js';
 import type {
@@ -3083,6 +3084,36 @@ describe('decisions canary — approved connector calls run on the host (TASK-10
       userId: 'u1',
     });
     expect(undone.undone).toBe(false);
+  });
+
+  it('a tool that ran and said it failed reads as "may have done part of it", never nothing-completed or interrupted (review F3)', async () => {
+    const h = await boot();
+    const connector = recordConnectorCalls(h, { outcome: 'failed', reason: 'tool-error' });
+    const id = await holdAndId(h, routineCtx(h), CONNECTOR_CALL);
+
+    const out = await approve(h, userCtx(h), id, SHOWN);
+
+    expect(connector.calls).toHaveLength(1);
+    expect(out.executed).toBe(false);
+    expect(out.error).toBeNull();
+    const row = await readDecision(h, userCtx(h), id);
+    expect(row.status).toBe('failed');
+    expect(row.replayAbandonedAt).not.toBeNull();
+    expect(row.replayError).toBe('tool-error');
+    const receipts = await readReceipts(h);
+    expect(receipts).toHaveLength(1);
+    expect(receipts[0]!.receipt).toBe(TOOL_ERROR_RECEIPT);
+    expect(receipts[0]!.error).toBeNull();
+    expect(receipts[0]!.receipt).not.toContain('Nothing was completed');
+    expect(receipts[0]!.receipt).not.toContain('interrupted');
+    const undone = await h.bus.call<unknown, DecisionsUndoOutput>('decisions:undo', userCtx(h), {
+      decisionId: id,
+      userId: 'u1',
+    });
+    expect(undone.undone).toBe(false);
+    // The yes is spent: the same call again is a new question, and nothing re-ran.
+    expect(isHold(await h.bus.fire('tool:pre-call', routineCtx(h), CONNECTOR_CALL))).toBe(true);
+    expect(connector.calls).toHaveLength(1);
   });
 
   it('without connectors:call-tool a connector approval still parks', async () => {

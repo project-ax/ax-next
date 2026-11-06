@@ -18,8 +18,9 @@ import {
   CONNECTOR_CALL_DETAIL,
   FAILED_RECEIPT,
   PENDING_AGENT_RECEIPT,
+  TOOL_ERROR_RECEIPT,
 } from '../templates.js';
-import type { Decision } from '../types.js';
+import { TOOL_ERROR_REPLAY_CODE, type Decision } from '../types.js';
 import { createFakeStore } from './fake-store.js';
 
 const T0 = '2026-08-20T09:00:00.000Z';
@@ -556,6 +557,24 @@ describe('settleReplay — an approved connector call the host makes (TASK-1046)
     // to approve it again and post it twice.
     expect(receipt.receipt).not.toContain('Nothing was completed');
     // The yes is spent all the same: a later identical call holds again.
+    expect(await store.takeApproval('agent-1', 'fp-conn', T_DONE)).toBeNull();
+  });
+
+  it('a tool-error is failed + abandoned under its closed code, and the receipt says the service said no (review F3)', async () => {
+    const { row, store } = await settle({ outcome: 'failed', reason: 'tool-error' });
+
+    expect(row).toMatchObject({
+      status: 'failed',
+      replayAbandonedAt: T_DONE,
+      replayError: TOOL_ERROR_REPLAY_CODE,
+      replayedAt: null,
+      resolvedAt: T0,
+    });
+    const receipt = receiptFor(row)!;
+    expect(receipt).toMatchObject({ outcome: 'failed', receipt: TOOL_ERROR_RECEIPT, error: null });
+    expect(receipt.receipt).not.toContain('Nothing was completed');
+    expect(receipt.receipt).not.toContain('interrupted');
+    // The yes is spent: a later identical call holds again.
     expect(await store.takeApproval('agent-1', 'fp-conn', T_DONE)).toBeNull();
   });
 

@@ -962,6 +962,9 @@ interface StoredDecision {
   replayDueAt: string | null;
   replayClaimedAt: string | null;
   replayedAt: string | null;
+  // On an ABANDONED row, the closed code `tool-error` when the connector's tool
+  // ran and said it failed (TASK-1046 review F3; `TOOL_ERROR_REPLAY_CODE`).
+  // Never crosses the wire; `toolReportedError` is derived from it.
   replayError: string | null;
   // TASK-1046 — set when the host sent a call and got no reliable answer (a
   // failed row that is ABANDONED rather than refused). Optional: an older
@@ -2609,6 +2612,14 @@ const APPROVED_CAP_KINDS: readonly ApprovedCapKind[] = [
  * Open rows only. A receipt does not ask anything, so it has no reader for the
  * input, and minimising what crosses the wire is the default (invariant 5).
  */
+/**
+ * The closed code `@ax/decisions` writes to `replayError` on an abandoned row
+ * when the connector's tool RAN and answered that it did not work (TASK-1046,
+ * review F3). A local twin of its `TOOL_ERROR_REPLAY_CODE`, never an import
+ * (invariant 2), pinned by the same literal on both sides.
+ */
+const TOOL_ERROR_REPLAY_CODE = 'tool-error';
+
 function wireRequest(stored: StoredDecision): DecisionRequest | null {
   if (!isOpenDecision(stored)) return null;
   const tool = fenceLine(stored.call?.name, DECISION_REQUEST_TOOL_MAX_CHARS);
@@ -2803,6 +2814,14 @@ export function toWireDecision(stored: StoredDecision, eligible = false, checkIn
     // status without it, and the card must not say "nothing was completed" about
     // a call that may have landed.
     outcomeUnknown: stored.status === 'failed' && (stored.replayAbandonedAt ?? null) !== null,
+    // Review F3: of those, the one where the connector's tool RAN and said it
+    // did not work. `outcomeUnknown` stays true for it (it may have done part
+    // of it, so never "nothing was completed"); this second flag is what keeps
+    // the card from saying "interrupted". Derived, so the code stays home.
+    toolReportedError:
+      stored.status === 'failed' &&
+      (stored.replayAbandonedAt ?? null) !== null &&
+      stored.replayError === TOOL_ERROR_REPLAY_CODE,
     /*
       Can this still be taken back?
 

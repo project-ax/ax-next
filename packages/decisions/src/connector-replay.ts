@@ -21,6 +21,9 @@
  *      succeeded  → executed; the receipt is the row's `approvedText`;
  *      failed     → our authored sentence for that one code (never the
  *                   service's text), under "Nothing was completed";
+ *      failed/tool-error → the tool RAN and said it did not work (review
+ *                   F3): `outcomeUnknown` + `toolError`, written abandoned
+ *                   under its closed code, "it may have done part of it";
  *      unknown    → `outcomeUnknown`, which `settleReplay` writes as abandoned:
  *                   "we cannot tell you whether it finished".
  *    `unknown` also covers ANY throw from the hook call — the bus's own
@@ -156,6 +159,12 @@ export async function replayConnectorCall(args: {
       tool: decision.call.name,
       reason: result.reason,
     });
+    // Review F3: the tool ran and answered that it did not work, so it may
+    // have done part of the work. Never a detail under "Nothing was
+    // completed"; the row is written abandoned, under its own closed code.
+    if (result.reason === 'tool-error') {
+      return { executed: false, path: null, error: null, outcomeUnknown: true, toolError: true };
+    }
     return { executed: false, path: null, error: CONNECTOR_CALL_DETAIL[result.reason] };
   }
   return outcomeUnknown(ctx, decision, result.reason);

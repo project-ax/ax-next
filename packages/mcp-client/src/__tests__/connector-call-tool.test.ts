@@ -453,6 +453,7 @@ describe('connectors:call-tool', () => {
     { outcome: 'failed', reason: 'needs-auth' },
     { outcome: 'failed', reason: 'unreachable' },
     { outcome: 'failed', reason: 'rejected' },
+    { outcome: 'failed', reason: 'tool-error' },
     { outcome: 'unknown', reason: 'timeout' },
     { outcome: 'unknown', reason: 'interrupted' },
   ])("passes the transport's outcome through (%j)", async (outcome) => {
@@ -587,7 +588,7 @@ describe('connectors:call-tool', () => {
 describe('ConnectorCallToolOutputSchema', () => {
   it.each<unknown>([
     { outcome: 'succeeded' },
-    ...['invalid-call', 'not-connected', 'needs-auth', 'unavailable', 'unreachable', 'rejected'].map((reason) => ({
+    ...['invalid-call', 'not-connected', 'needs-auth', 'unavailable', 'unreachable', 'rejected', 'tool-error'].map((reason) => ({
       outcome: 'failed',
       reason,
     })),
@@ -604,6 +605,9 @@ describe('ConnectorCallToolOutputSchema', () => {
     { outcome: 'succeeded', content: [{ type: 'text', text: 'done' }] },
     { outcome: 'failed', reason: 'upstream said <script>' },
     { outcome: 'unknown', reason: 'lost' },
+    // Review F3: `tool-error` is a `failed` reason, closed to that arm.
+    { outcome: 'unknown', reason: 'tool-error' },
+    { outcome: 'failed', reason: 'tool-error', detail: 'it said no' },
     { outcome: 'unknown' },
     { outcome: 'done' },
     {},

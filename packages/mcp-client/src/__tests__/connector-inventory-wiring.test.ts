@@ -449,12 +449,14 @@ describe('connectors:call-tool through the real connectors:resolve + list-effect
     expect(seen).toEqual([]);
   });
 
-  it('a tool that answers isError is failed/rejected', async () => {
+  // Review F3: the tool RAN and answered isError, so it may have done part of
+  // the work. Its own closed code, never `rejected` (which means nothing ran).
+  it('a tool that answers isError is failed/tool-error', async () => {
     const h = await boot();
     const resolved = await seedConnector(h);
     await storeKey(h, resolved, agentId);
 
-    expect(await approvedCall(h, 'refuse_comment', { body: 'x' })).toEqual({ outcome: 'failed', reason: 'rejected' });
+    expect(await approvedCall(h, 'refuse_comment', { body: 'x' })).toEqual({ outcome: 'failed', reason: 'tool-error' });
     expect(toolRuns.map((r) => r.tool)).toEqual(['refuse_comment']);
   });
 

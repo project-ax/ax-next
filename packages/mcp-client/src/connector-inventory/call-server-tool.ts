@@ -5,10 +5,13 @@
 // so it is built to send AT MOST ONCE and to say honestly what it knows:
 //   - One `tools/call` per invocation. Nothing retries it: no 401 renewal, no
 //     resumption of a dropped stream (`maxRetries: 0`), no loop.
-//   - `failed` only when the call certainly did not complete: it was never
-//     sent (a refused URL, a failed connect, a budget spent before the send),
-//     the server refused the request (HTTP 401/403/other 4xx, or a JSON-RPC
-//     "bad request" code), or the tool itself answered `isError`.
+//   - `failed` only on a definite answer. Nothing completed when the call was
+//     never sent (a refused URL, a failed connect, a budget spent before the
+//     send) or the server refused the request (HTTP 401/403/other 4xx, or a
+//     JSON-RPC "bad request" code). The one `failed` that is NOT "nothing
+//     completed" is `tool-error`: the tool RAN and answered `isError`, so it
+//     may have done part of the work. It has its own closed code so no caller
+//     can mistake it for a refusal.
 //   - `unknown` when it was sent and no reliable answer came back: a timeout,
 //     a reset, a 5xx, any other JSON-RPC error, a redirect, an oversize or
 //     unreadable reply. A caller must never read that as "nothing happened",
@@ -50,7 +53,7 @@ export const CALL_LIMITS = {
 
 export type ServerCallOutcome =
   | { outcome: 'succeeded' }
-  | { outcome: 'failed'; reason: 'needs-auth' | 'unreachable' | 'rejected' }
+  | { outcome: 'failed'; reason: 'needs-auth' | 'unreachable' | 'rejected' | 'tool-error' }
   | { outcome: 'unknown'; reason: 'timeout' | 'interrupted' };
 
 export interface CallServerToolOptions {
@@ -188,7 +191,9 @@ export async function callServerTool(opts: CallServerToolOptions): Promise<Serve
         CallResultView,
         { signal: budget, timeout: limits.requestTimeoutMs },
       );
-      return reply.isError === true ? { outcome: 'failed', reason: 'rejected' } : { outcome: 'succeeded' };
+      // `isError` is the tool's own answer after it ran (review F3): not a
+      // refusal, and the work may be partly done.
+      return reply.isError === true ? { outcome: 'failed', reason: 'tool-error' } : { outcome: 'succeeded' };
     } catch (err) {
       // An oversize reply aborts the budget, which the SDK reports as a
       // request timeout, so the size check comes first.

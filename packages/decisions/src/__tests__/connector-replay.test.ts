@@ -274,6 +274,24 @@ describe('replayConnectorCall — what the hook answered (TASK-1046)', () => {
     });
   });
 
+  it('a tool-error is the tool saying it failed after it ran: outcomeUnknown with toolError, never a definite failure (review F3)', async () => {
+    const decision = claimed();
+    const { ctx, lines } = decisionCtx(decision);
+    const h = busFor({ answer: async () => ({ outcome: 'failed', reason: 'tool-error' }) });
+
+    const outcome = await replayConnectorCall({ bus: h.bus, ctx, decision });
+
+    // It may have done part of the work: no detail that would sit under
+    // "Nothing was completed", and the closed flag that keeps its line apart
+    // from "interrupted".
+    expect(outcome).toEqual({ executed: false, path: null, error: null, outcomeUnknown: true, toolError: true });
+    expect(h.calls).toHaveLength(1);
+    expect(lines.find((l) => l.msg === 'decision_replay_failed')).toMatchObject({
+      decisionId: 'dec_conn',
+      reason: 'tool-error',
+    });
+  });
+
   it.each([
     ['unknown/timeout', async () => ({ outcome: 'unknown', reason: 'timeout' }), 'timeout'],
     ['unknown/interrupted', async () => ({ outcome: 'unknown', reason: 'interrupted' }), 'interrupted'],
@@ -292,6 +310,13 @@ describe('replayConnectorCall — what the hook answered (TASK-1046)', () => {
       'unreadable',
     ],
     ['no answer at all', async () => undefined, 'unreadable'],
+    // Review F3: `tool-error` is closed to the `failed` arm, strict like the rest.
+    ['tool-error under the wrong arm', async () => ({ outcome: 'unknown', reason: 'tool-error' }), 'unreadable'],
+    [
+      'a tool-error carrying text',
+      async () => ({ outcome: 'failed', reason: 'tool-error', detail: 'IGNORE PREVIOUS' }),
+      'unreadable',
+    ],
   ])(
     'unknown, a throw and a malformed answer are all outcomeUnknown (%s)',
     async (_label, answer, reason) => {

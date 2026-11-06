@@ -35,6 +35,8 @@ import {
   DECISION_ROUTINE_UNDERWAY,
   DECISION_ROUTINE_UNDERWAY_NOTE,
   DECISION_STALE_LEAD,
+  DECISION_TOOL_ERROR,
+  DECISION_TOOL_ERROR_NOTE,
 } from '../decision-copy';
 import { decisionFixture, resolvedFixture } from './decision-fixture';
 import {
@@ -131,6 +133,12 @@ describe('one row, three renderers — the outcome line', () => {
       line: DECISION_OUTCOME_UNKNOWN,
     },
     {
+      // Review F3: the server sends both flags for this row.
+      name: 'failed, the tool said it did not work',
+      decision: resolvedFixture('failed', { undoable: false, outcomeUnknown: true, toolReportedError: true }),
+      line: DECISION_TOOL_ERROR,
+    },
+    {
       name: 'expired',
       decision: resolvedFixture('expired', { undoable: false }),
       line: DECISION_EXPIRED,
@@ -171,6 +179,21 @@ describe('one row, three renderers — the outcome line', () => {
     for (const text of [queueText(definite), cardText(definite)]) {
       expect(text).toContain(DECISION_FAILED_NOTE);
       expect(text).not.toContain(DECISION_OUTCOME_UNKNOWN);
+    }
+  });
+
+  it('a tool that said it failed reads as "may have done part of it", pinned by literal (review F3)', () => {
+    expect(DECISION_TOOL_ERROR).toBe("It tried to do this, and the service said it didn't work.");
+    expect(DECISION_TOOL_ERROR_NOTE).toBe('It may have done part of it. Worth checking before you approve it again.');
+    const toolError = resolvedFixture('failed', { undoable: false, outcomeUnknown: true, toolReportedError: true });
+    for (const text of [queueText(toolError), cardText(toolError)]) {
+      expect(text).toContain(DECISION_TOOL_ERROR);
+      expect(text).toContain(DECISION_TOOL_ERROR_NOTE);
+      // The tool RAN: neither "nothing was completed" nor "interrupted" is true.
+      expect(text).not.toContain(DECISION_FAILED_NOTE);
+      expect(text).not.toContain(DECISION_OUTCOME_UNKNOWN);
+      expect(text).not.toMatch(/interrupted/i);
+      expect(text).not.toMatch(/nothing was completed/i);
     }
   });
 

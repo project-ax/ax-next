@@ -175,6 +175,17 @@ export const DECISION_OUTCOME_UNKNOWN =
   'This was interrupted while it was running, so we cannot tell you whether it finished.';
 export const DECISION_OUTCOME_UNKNOWN_NOTE = 'Worth checking before you approve it again.';
 
+/**
+ * The host made a connector call, and the service's tool RAN and answered that
+ * it did not work (TASK-1046, review F3). Neither line above is true: "Nothing
+ * was completed" would send a person to approve, and do, part of it again, and
+ * nothing was interrupted, the service answered. The Activity receipt says the
+ * same in its own words (`TOOL_ERROR_RECEIPT` in `@ax/decisions`); each side
+ * pins its copy by literal.
+ */
+export const DECISION_TOOL_ERROR = "It tried to do this, and the service said it didn't work.";
+export const DECISION_TOOL_ERROR_NOTE = 'It may have done part of it. Worth checking before you approve it again.';
+
 /** Nobody answered in time. */
 export const DECISION_EXPIRED = 'This one ran out of time, so nothing happened.';
 export const DECISION_EXPIRED_NOTE =
@@ -416,6 +427,11 @@ export function decisionOutcome(
     case 'dismissed':
       return { line: d.dismissedText, note: null, tone: 'quiet' };
     case 'failed':
+      // The tool-error row is also `outcomeUnknown` (it may have done part of
+      // it), so it is asked first.
+      if (d.toolReportedError === true) {
+        return { line: DECISION_TOOL_ERROR, note: DECISION_TOOL_ERROR_NOTE, tone: 'bad' };
+      }
       return d.outcomeUnknown === true
         ? { line: DECISION_OUTCOME_UNKNOWN, note: DECISION_OUTCOME_UNKNOWN_NOTE, tone: 'bad' }
         : { line: DECISION_FAILED, note: DECISION_FAILED_NOTE, tone: 'bad' };

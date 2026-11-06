@@ -85,7 +85,9 @@ export type ExecutionPath = 'agent-executes' | 'host-replays';
  *
  * `failed` means the host tried the replay and the tool threw, or the host
  * sent a connector call and got no reliable answer (`replayAbandonedAt`; the
- * receipt then says it cannot tell). When it threw, nothing was completed. In
+ * receipt then says it cannot tell), or the connector's tool ran and answered
+ * that it did not work (abandoned too, with `TOOL_ERROR_REPLAY_CODE`; the
+ * receipt says it may have done part of it). When it threw, nothing was completed. In
  * both cases the standing authorisation is gone, and the agent must raise the
  * call again rather than silently inheriting a yes for an action that did not
  * happen (or may not have).
@@ -167,6 +169,25 @@ export interface FreshnessPredicate {
   value: string;
   label: string | null;
 }
+
+/**
+ * TASK-1046, review F3 — what `replayError` holds on an ABANDONED row when the
+ * connector's service answered that the call did not work (MCP `isError`).
+ *
+ * The tool RAN: it may have done part of the work, so the row is written
+ * abandoned (`failed` + `replayAbandonedAt`) like any outcome nobody can vouch
+ * for, and never reads "Nothing was completed". But it was not interrupted
+ * either, and this closed code is how a reader tells the two apart with no new
+ * status and no migration: `receiptFor` turns it into `TOOL_ERROR_RECEIPT`, and
+ * channel-web projects it as the card's `toolReportedError` (the same literal,
+ * pinned on both sides). A code, not a sentence: nothing renders it.
+ *
+ * It means this ONLY on an abandoned row. An ordinary failure's `replayError`
+ * is a sanitised executor message, and one that happens to read `tool-error` is
+ * still an ordinary failure.
+ */
+export const TOOL_ERROR_REPLAY_CODE = 'tool-error';
+export type ToolErrorReplayCode = typeof TOOL_ERROR_REPLAY_CODE;
 
 export interface Decision {
   id: string;
@@ -287,7 +308,10 @@ export interface Decision {
    * not read. Same meaning to a reader: no report, so the only honest receipt
    * is that we cannot say. A host that was merely FROZEN can still thaw and
    * finish; `markReplayed` clears this stamp when it does, so "set" never
-   * coexists with `replayedAt`. Both writers free the standing authorisation
+   * coexists with `replayedAt`. Since review F3 `markOutcomeUnknown` also
+   * writes it for a connector call whose tool ran and answered that it did not
+   * work, with `replayError` set to `TOOL_ERROR_REPLAY_CODE`: a report, but not
+   * one that says nothing happened. Both writers free the standing authorisation
    * the flight was holding, so the same call can be held and approved again.
    *
    * It exists because the row cannot otherwise tell the two kinds of `failed`
@@ -309,7 +333,9 @@ export interface Decision {
    * Null on an abandoned row, and that is not an oversight: no executor ever
    * reported anything, so there is no detail to carry. The reclaim does not
    * write its own prose here — this field is the TOOL's words, and filling it
-   * with ours would make the audit trail unreadable as either.
+   * with ours would make the audit trail unreadable as either. The one
+   * exception is a closed code, never prose: `TOOL_ERROR_REPLAY_CODE` on an
+   * abandoned row whose tool ran and said it failed (review F3).
    */
   replayError: string | null;
   /**

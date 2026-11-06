@@ -28,6 +28,7 @@ import {
   type DecisionStatus,
   type FreshnessPredicate,
   type ToolCall,
+  type ToolErrorReplayCode,
 } from './types.js';
 
 /**
@@ -355,8 +356,17 @@ export interface DecisionStore {
    * Reachable only from `executed`. A null return means the row moved first (a
    * reclaim, a returning `markReplayed`), and whoever moved it owns what it
    * says.
+   *
+   * `code` (review F3): `TOOL_ERROR_REPLAY_CODE` when the connector's tool ran
+   * and answered that it did not work. It is written to `replay_error` in
+   * place of null, the one closed code an abandoned row may carry, so the
+   * receipt can say the service said no rather than "interrupted".
    */
-  markOutcomeUnknown(decisionId: string, nowIso: string): Promise<Decision | null>;
+  markOutcomeUnknown(
+    decisionId: string,
+    nowIso: string,
+    code?: ToolErrorReplayCode | null,
+  ): Promise<Decision | null>;
 
   /**
    * The host replay succeeded. Stamps `replayed_at`, which is what takes the
@@ -898,11 +908,11 @@ export function createDecisionsStore(db: Kysely<DecisionsDatabase>): DecisionSto
       });
     },
 
-    markOutcomeUnknown(decisionId, nowIso) {
+    markOutcomeUnknown(decisionId, nowIso, code = null) {
       return transition(decisionId, ['executed'], {
         status: 'failed',
         replay_abandoned_at: new Date(nowIso),
-        replay_error: null,
+        replay_error: code,
         replay_due_at: null,
       });
     },

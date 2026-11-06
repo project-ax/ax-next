@@ -143,12 +143,22 @@ describe('callServerTool', () => {
     expect(server.toolCalls()).toHaveLength(1);
   });
 
-  it('isError result is a definite failure', async () => {
+  // Review F3. `isError` is the TOOL answering that it did not work. Unlike a
+  // refusal (a 4xx, a JSON-RPC protocol code), the tool RAN, and it may have
+  // done part of the work, so it gets its own closed code and never `rejected`.
+  it('isError result is the tool saying it failed: tool-error, not a refusal', async () => {
     const server = fakeMcpServer({
       toolsCall: (msg) => json(msg.id, { result: { content: [{ type: 'text', text: 'no' }], isError: true } }),
     });
-    expect(await call(server)).toStrictEqual({ outcome: 'failed', reason: 'rejected' });
+    expect(await call(server)).toStrictEqual({ outcome: 'failed', reason: 'tool-error' });
     expect(server.toolCalls()).toHaveLength(1);
+  });
+
+  it('isError false or absent is success; only true is tool-error', async () => {
+    for (const result of [{ isError: false }, {}]) {
+      const server = fakeMcpServer({ toolsCall: (msg) => json(msg.id, { result: { content: [], ...result } }) });
+      expect(await call(server)).toStrictEqual({ outcome: 'succeeded' });
+    }
   });
 
   it('JSON-RPC invalid params is a definite failure', async () => {
@@ -287,7 +297,7 @@ describe('callServerTool', () => {
     const as500 = fakeMcpServer({ toolsCall: () => new Response(HOSTILE, { status: 500 }) });
     const outcomes: ServerCallOutcome[] = [await call(asError), await call(as500)];
     expect(outcomes).toStrictEqual([
-      { outcome: 'failed', reason: 'rejected' },
+      { outcome: 'failed', reason: 'tool-error' },
       { outcome: 'unknown', reason: 'interrupted' },
     ]);
     for (const out of outcomes) {

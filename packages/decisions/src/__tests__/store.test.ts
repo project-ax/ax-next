@@ -13,9 +13,14 @@ import {
   type DecisionStore,
 } from '../store.js';
 import { receiptFor } from '../receipts.js';
-import { ABANDONED_RECEIPT } from '../templates.js';
+import { ABANDONED_RECEIPT, TOOL_ERROR_RECEIPT } from '../templates.js';
 import { createFakeStore } from './fake-store.js';
-import { DecisionStatusSchema, type Decision, type DecisionStatus } from '../types.js';
+import {
+  DecisionStatusSchema,
+  TOOL_ERROR_REPLAY_CODE,
+  type Decision,
+  type DecisionStatus,
+} from '../types.js';
 
 let container: StartedPostgreSqlContainer;
 let connectionString: string;
@@ -1635,6 +1640,27 @@ describe('decisions store — an outcome nobody reported (TASK-1046)', () => {
         receipt: ABANDONED_RECEIPT,
         error: null,
       });
+    }
+  });
+
+  it('with the tool-error code it stores that code, and the receipt says the service said no (review F3)', async () => {
+    for (const s of await inFlight()) {
+      const row = await s.markOutcomeUnknown('dec_1', T_ANSWERLESS, TOOL_ERROR_REPLAY_CODE);
+
+      expect(row).toMatchObject({
+        status: 'failed',
+        replayAbandonedAt: T_ANSWERLESS,
+        replayError: 'tool-error',
+        replayedAt: null,
+      });
+      expect(await s.get('dec_1')).toEqual(row);
+      expect(receiptFor(row!)).toMatchObject({
+        outcome: 'failed',
+        receipt: TOOL_ERROR_RECEIPT,
+        error: null,
+      });
+      // Spent like any other abandoned row: an identical agent call holds again.
+      expect(await s.takeApproval('a1', 'fp-1', T_LATE)).toBeNull();
     }
   });
 
