@@ -467,6 +467,21 @@ export function createChatRouteHandlers(deps: ChatRouteDeps) {
         return;
       }
 
+      // TASK-1063: one file is named once per message. attachments:commit is
+      // idempotent per (id, conversation, owner) — that is what lets Resend
+      // name a file again — so a message repeating an id would commit the one
+      // file twice and hand the model two copies. The browser never sends
+      // that; a crafted request is refused before anything is committed.
+      const refIds = new Set<string>();
+      for (const block of body.contentBlocks) {
+        if (block.type !== 'attachment_ref') continue;
+        if (refIds.has(block.attachmentId)) {
+          res.status(400).json({ error: 'invalid-content-block' });
+          return;
+        }
+        refIds.add(block.attachmentId);
+      }
+
       // 3) agents:resolve gate. forbidden → 403, not-found → 404.
       try {
         await bus.call<AgentsResolveInput, AgentsResolveOutput>(

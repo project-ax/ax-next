@@ -2612,6 +2612,40 @@ describe('POST /api/chat/messages — attachment_ref handling', () => {
     expect(booted.chatRunCaptures).toHaveLength(0);
   });
 
+  it('TASK-1063: returns 400 invalid-content-block when one message names the same attachment_ref id twice; nothing is committed or dispatched', async () => {
+    const booted = await boot({
+      user: { id: 'userA', isAdmin: false },
+      allowedFor: new Set(['userA']),
+      includeAttachments: true,
+    });
+    harnesses.push(booted.harness);
+    const stored = await booted.harness.bus.call<
+      unknown,
+      { attachmentId: string }
+    >('attachments:store-temp', userCtx('userA'), {
+      bytes: Buffer.from('hello pdf bytes'),
+      displayName: 'note.pdf',
+      mediaType: 'application/pdf',
+    });
+
+    // attachments:commit answers a repeated (id, conversation, owner) with the
+    // same stored file, so without this refusal the second ref would 202 and
+    // the model would be handed the one file twice.
+    const r = await postMessage(booted.port, {
+      conversationId: null,
+      agentId: 'agt_test',
+      contentBlocks: [
+        { type: 'attachment_ref', attachmentId: stored.attachmentId },
+        { type: 'attachment_ref', attachmentId: stored.attachmentId },
+      ],
+    });
+    expect(r.status).toBe(400);
+    expect(await r.json()).toEqual({ error: 'invalid-content-block' });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(booted.chatRunCaptures).toHaveLength(0);
+    expect(await countConversations()).toBe(0);
+  });
+
   it('TASK-690: returns 413 storage-full, with the sentence, when the storage limit refuses the upload; nothing is dispatched', async () => {
     const booted = await boot({
       user: { id: 'userA', isAdmin: false },
