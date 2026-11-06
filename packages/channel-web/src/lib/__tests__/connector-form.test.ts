@@ -13,7 +13,9 @@ import {
   type ConnectorFormState,
 } from '../connector-form';
 import {
+  CONNECTOR_SIGN_OUT_FAILED,
   emptyCapabilities,
+  isConnectorSignOutFailure,
   isToolPermissionsResetFailure,
   TOOL_PERMISSIONS_RESET_FAILED,
   type Connector,
@@ -707,6 +709,18 @@ describe('TOOL_PERMISSIONS_RESET_FAILED (TASK-758)', () => {
     expect(isToolPermissionsResetFailure(new Error('tool-permissions-reset-failed'))).toBe(true);
     expect(isToolPermissionsResetFailure(new Error('connector id taken'))).toBe(false);
     expect(isToolPermissionsResetFailure('tool-permissions-reset-failed')).toBe(false);
+  });
+});
+
+describe('CONNECTOR_SIGN_OUT_FAILED (TASK-887)', () => {
+  it('is the exact wire string @ax/connectors answers in the 503 body', () => {
+    // Pinned to the literal on purpose, the sibling of the TASK-758 pin above:
+    // a drift on either side reddens a test instead of silently falling back
+    // to the generic "couldn't save" message.
+    expect(CONNECTOR_SIGN_OUT_FAILED).toBe('connector-sign-out-failed');
+    expect(isConnectorSignOutFailure(new Error('connector-sign-out-failed'))).toBe(true);
+    expect(isConnectorSignOutFailure(new Error('tool-permissions-reset-failed'))).toBe(false);
+    expect(isConnectorSignOutFailure('connector-sign-out-failed')).toBe(false);
   });
 });
 
