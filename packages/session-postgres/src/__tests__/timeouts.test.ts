@@ -186,9 +186,11 @@ describe('connect timeout, against a database that never answers', () => {
   it('an unanswered new connection carries code db-connect-timeout (TASK-1058)', async () => {
     const silent = await silentServer();
     const err = await errorOf(boot({ connectionString: silent, checkoutTimeoutMs: 300, logger }));
-    const chain: unknown[] = [];
-    for (let e: unknown = err; e instanceof Error && chain.length < 5; e = e.cause) chain.push(e);
-    expect(chain.map((e) => (e as { code?: unknown }).code)).toContain('db-connect-timeout');
+    // One level down, where faultLogFields reads it as causeCode (init wraps it as init-failed).
+    expect((err as Error).cause).toMatchObject({
+      code: 'db-connect-timeout',
+      message: 'Connection terminated due to connection timeout',
+    });
   }, 10_000);
 
   it('waits 5 seconds when checkoutTimeoutMs is not set', async () => {
@@ -331,7 +333,9 @@ describe('against a real database', () => {
   }, 15_000);
 
   it('a caller queued behind a full pool carries code db-checkout-timeout (TASK-1058)', async () => {
-    const h = await boot({ connectionString, poolMax: 1, checkoutTimeoutMs: 300, logger });
+    // 1 s, not shorter: boot opens two real connections under the same bound, and the
+    // holder waits behind the lock for up to the 30 s statement timeout anyway.
+    const h = await boot({ connectionString, poolMax: 1, checkoutTimeoutMs: 1_000, logger });
     const release = await holdTableLock(); // after boot: the migration creates the table
     const call = () =>
       h.bus.call('session:resolve-token', h.ctx(), { token: 'task-1058-no-such-token' });

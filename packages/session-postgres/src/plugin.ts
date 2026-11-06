@@ -94,8 +94,11 @@ export interface SessionPostgresConfig {
   /**
    * How long a caller waits for a pooled connection, including a new one the
    * database has to answer. The dedicated LISTEN client's connect at boot gets
-   * the same bound. A whole number of ms from 1 to 2147483647; default 5000.
-   * Maps to pg's `connectionTimeoutMillis`.
+   * the same bound. A pooled timeout carries a code (TASK-1058):
+   * `db-checkout-timeout` when the pool was full and the caller queued,
+   * `db-connect-timeout` when the database didn't answer a new connection. The
+   * LISTEN client's timeout (pg's own) carries none. A whole number of ms from
+   * 1 to 2147483647; default 5000. Maps to pg's `connectionTimeoutMillis`.
    */
   checkoutTimeoutMs?: number;
   /**

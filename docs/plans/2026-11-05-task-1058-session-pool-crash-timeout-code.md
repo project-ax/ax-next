@@ -480,7 +480,7 @@ pg's `DatabaseError` names itself `error`, lowercase (TASK-1048, measured). The 
 
 - [ ] **Memory.** Write `.claude/memory/patterns/2026-11-05-TASK-1058.md` (path from `scripts/memory-write-target.sh --shard patterns TASK-1058`, after `mkdir -p` of its directory). Its rows:
   1. session-postgres's pool now has TASK-1048's listener and writes `session_postgres_client_error`. This supersedes the last sentence of `patterns/2026-11-05-TASK-1048.md:3`.
-  2. A database-postgres checkout timeout carries `code: 'db-checkout-timeout'`. This supersedes `patterns/2026-11-05-TASK-1049.md:4`. Pools built elsewhere don't tag.
+  2. A database-postgres checkout timeout carries `code: 'db-checkout-timeout'`. This supersedes `patterns/2026-11-05-TASK-1049.md:4`. (Revised: session-postgres's pool tags too, after the rebase onto TASK-1056.)
   3. A dropped session crashes only if the client is still checked out when its socket closes: a transaction (Kysely's ROLLBACK), or an abrupt drop. A lone statement is released first. The repro recipe: `LOCK TABLE … IN ACCESS EXCLUSIVE MODE` from a second client, find the waiter through `pg_blocking_pids`, then `pg_terminate_backend(pid, 10000)`. In the same query, pg_stat_activity's row fields lag `pg_blocking_pids`.
   4. Routines lines outside `tick.ts` are code-only. The known exception is `tick.ts`'s three stderr lines.
   
@@ -502,7 +502,7 @@ pg's `DatabaseError` names itself `error`, lowercase (TASK-1048, measured). The 
 
 ## Follow-ups (not this PR)
 
-1. Once TASK-1056 sets `connectionTimeoutMillis` on session-postgres's pool, its timeouts carry no code. Give that pool the same adapter; whichever card lands second does it.
+1. ~~Once TASK-1056 sets `connectionTimeoutMillis` on session-postgres's pool, give it the same adapter.~~ Done in this PR after the rebase onto TASK-1056.
 2. The three stderr lines in `tick.ts` (`materialize/refresh error`, `fire failed for`, `tick error`) go code-only. This was deferred by TASK-1041 row 5.
 3. session-postgres's `session_postgres_terminate_for_deleted_agent_failed` and `session_postgres_purge_for_deleted_agent_failed` log the raw `err`. `agents-deleted.test.ts:381` pins it.
 4. routines-admin-routes `plugin.ts:94`, `:119` write an unregister error's message with `console.warn`.
