@@ -657,6 +657,13 @@ export interface ThreadAttachment {
   sizeBytes?: number;
 }
 
+/** An inline visual the agent showed with `show_visual` (id + fenced labels only; the HTML is fetched separately). */
+export interface ThreadVisual {
+  artifactId: string;
+  title: string;
+  summary: string;
+}
+
 export type ThreadMessage =
   | {
       kind: 'agent';
@@ -682,6 +689,8 @@ export type ThreadMessage =
       memoryUsed?: MemoryUsed;
       /** Files published by this turn, persisted with the conversation. */
       attachments?: readonly ThreadAttachment[];
+      /** Visuals shown by this turn's `show_visual` calls; absent when none. */
+      visuals?: readonly ThreadVisual[];
     }
   | {
       kind: 'user';
