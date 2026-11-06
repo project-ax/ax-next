@@ -201,11 +201,16 @@ export function RemoteMcpConnectorForm({
   const savedUrl = connector?.capabilities.mcpServers[0]?.url ?? '';
   // TASK-755 — the server's tool permissions belong to its address. Saving a
   // new one drops them (the server resets them to Ask first), so say so before
-  // Save, and don't write choices that were made for the old address. After a
-  // save's PATCH has landed, the address it saved is the one to compare with
-  // (TASK-887), as for `retargeted` below.
+  // Save. After a save's PATCH has landed, the address it saved is the one the
+  // sentence compares with (TASK-887), as for `retargeted` below.
   const addressBaseline = (patched ?? connector)?.capabilities.mcpServers[0]?.url ?? '';
   const addressChanged = Boolean(connector) && url !== addressBaseline;
+  // That sentence is about what Save does. The tool list on hand is another
+  // matter: it was loaded for the address the connector had when this form
+  // opened, so once a save has moved it (or this one will), the list is the
+  // old address's. It's then neither shown as current nor written.
+  const toolsForAnotherAddress =
+    Boolean(connector) && (url !== savedUrl || addressBaseline !== savedUrl);
   const discovered =
     discovery?.url === url && discovery.status === 'ready'
       ? discovery.result
@@ -629,7 +634,7 @@ export function RemoteMcpConnectorForm({
         return;
       }
       const toolChanges =
-        addressChanged || signIn === 'oauth' ? [] : toolPermissions.changes;
+        toolsForAnotherAddress || signIn === 'oauth' ? [] : toolPermissions.changes;
       if (connector && toolChanges.length) {
         try {
           await putToolPermissions(connectorId, base, toolChanges);
@@ -1294,7 +1299,7 @@ export function RemoteMcpConnectorForm({
                     />
                   </div>
                 ) : (
-                  !addressChanged &&
+                  !toolsForAnotherAddress &&
                   // TASK-809 — no admin tool permissions for OAuth; for a new
                   // connector, only once we know it won't sign in that way.
                   (connector ? signIn !== 'oauth' : signInKnown && signIn !== 'oauth') && (

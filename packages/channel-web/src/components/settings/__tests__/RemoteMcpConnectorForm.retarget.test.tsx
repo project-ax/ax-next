@@ -140,6 +140,8 @@ let refusePatch: (() => Response) | null;
 let failingCredentialWrites: number;
 /** The status those failing credential writes answer with. */
 let failingCredentialStatus: number;
+/** What the connector's tool list answers, for the address it was loaded at. */
+let toolInventory: Record<string, unknown>;
 
 const subject = (c: Connector) =>
   ({ id: c.id, keyMode: c.keyMode, capabilities: c.capabilities }) as unknown as RetargetSubject;
@@ -153,6 +155,7 @@ beforeEach(() => {
   refusePatch = null;
   failingCredentialWrites = 0;
   failingCredentialStatus = 500;
+  toolInventory = { status: 'ok', checkedAt: null, tools: [], defaults: [] };
   vi.stubGlobal(
     'fetch',
     vi.fn(async (input: string, init?: RequestInit) => {
@@ -164,8 +167,12 @@ beforeEach(() => {
         });
       if (input.endsWith('/discover-hosts'))
         return json(discover((JSON.parse(String(init?.body)) as { url: string }).url));
-      if (input.includes('/tool-permissions'))
-        return json({ status: 'ok', checkedAt: null, tools: [], defaults: [] });
+      if (input.includes('/tool-permissions')) {
+        if (method === 'GET') return json(toolInventory);
+        calls.push(`${method} ${input}`);
+        writes.push({ url: input, body: JSON.parse(String(init?.body)) as Record<string, unknown> });
+        return json({ ok: true });
+      }
       if (input === '/admin/credentials')
         return json({
           credentials: [...vault.keys()].map((ref) => ({
@@ -693,6 +700,59 @@ describe('RemoteMcpConnectorForm — pointing a connector somewhere new signs ev
     // Putting the original address back is a new address again.
     await moveTo('https://mcp.crm.example/mcp');
     expect(note()).toHaveTextContent(TOOLS_RESET);
+  });
+
+  // TASK-755/758 — the tool list loaded at open is the OLD address's. Once a
+  // save's PATCH has moved the connector, a retry that keeps the new address
+  // must neither show that list as the new address's nor write it there.
+  it('after a partial save that moved the connector, the old address’s tool list is neither shown nor written', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    discover = () => KEY_SERVER;
+    failingCredentialWrites = 1;
+    // A read-only tool with no saved default: Save would write its suggestion.
+    toolInventory = {
+      status: 'ok',
+      checkedAt: null,
+      tools: [
+        {
+          toolKey: 'mcp.crm.list_records',
+          name: 'list_records',
+          title: 'List records',
+          description: '',
+          readOnly: true,
+          outward: false,
+        },
+      ],
+      defaults: [],
+    };
+    const options = await openEditor(sharedKeyConnector(), {
+      [SHARED_KEY_REF]: 'old-shared-key',
+    });
+    const toolRow = () => screen.queryByRole('group', { name: 'Permission for List records' });
+    await waitFor(() => expect(toolRow()).not.toBeNull());
+    await moveTo('https://mcp.other-crm.example/mcp');
+    expect(toolRow()).toBeNull();
+    fireEvent.change(screen.getByLabelText('Value'), {
+      target: { value: 'new-shared-key' },
+    });
+    fireEvent.click(saveButton());
+    expect(
+      await screen.findByText(
+        'We saved the connector, but couldn’t save the key. Try saving again.',
+      ),
+    ).toBeVisible();
+    await saveIsLive();
+    // The list on hand is the old address's, so it isn't offered as the new one's.
+    expect(toolRow()).toBeNull();
+    fireEvent.click(saveButton());
+    await waitFor(() => expect(options.onSaved).toHaveBeenCalled());
+    expect(calls).toEqual([
+      'PATCH /admin/connectors/crm',
+      'POST /admin/destinations/account/credential',
+      'PATCH /admin/connectors/crm',
+      'POST /admin/destinations/account/credential',
+    ]);
+    expect(calls.some((c) => c.includes('/tool-permissions'))).toBe(false);
   });
 
   it('closing after a partial save refreshes the list (the connector did change)', async () => {
