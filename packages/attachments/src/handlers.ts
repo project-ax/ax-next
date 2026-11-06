@@ -1,6 +1,8 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
+import { posix } from 'node:path';
 import {
   PluginError,
+  quotaOwnerKey,
   type AgentContext,
   type HookBus,
 } from '@ax/core';
@@ -10,6 +12,9 @@ import {
   AttachmentIdSchema,
 } from '@ax/ipc-protocol';
 import type { AttachmentsStore, FileRow } from './store.js';
+import type { ArtifactStore, PublishVersionResult } from './artifacts/store.js';
+import { describeMediaType, downloadFilename, mediaTypeForPath } from './artifacts/media.js';
+import { normalizeArtifactTitle } from './artifacts/title.js';
 import type {
   AttachmentsConfig,
   AttachmentsListForConversationInput,
@@ -334,124 +339,184 @@ export function createListForConversationHandler(deps: ListForConversationDeps) 
   };
 }
 
-// Local shape of conversations:get — only its success matters here (it is the
-// owner gate). Importing the full type from @ax/conversations would create a
-// cross-plugin import (I2 violation), so we narrow at the call site instead.
+// Local shapes of conversations:get and agents:resolve — only the fields used
+// here. Importing the full types would be a cross-plugin import (I2 violation),
+// so we narrow at the call site instead, and treat the answers as untrusted.
 interface ConversationsGetInput {
   conversationId: string;
   userId: string;
 }
+interface AgentsResolveInput {
+  agentId: string;
+  userId: string;
+}
+
+function isAclRefusal(err: unknown): boolean {
+  return err instanceof PluginError && (err.code === 'not-found' || err.code === 'forbidden');
+}
 
 /**
- * Does ctx.userId own `conversationId`? `conversations:get` is the owner gate:
- * it answers not-found / forbidden for a conversation that is missing, deleted,
- * someone else's, or behind an agent the user can no longer reach. Any other
- * failure is an outage, not an answer, and propagates as itself.
+ * Does ctx.userId own `conversationId`, and which agent is it with?
+ * `conversations:get` is the owner gate: it answers not-found / forbidden for a
+ * conversation that is missing, deleted, someone else's, or behind an agent the
+ * user can no longer reach — all of which come back as null here, as does an
+ * answer without a usable agent id (fail closed). Any other failure is an
+ * outage, not an answer, and propagates as itself.
  */
-async function callerOwnsConversation(
+async function ownedConversationAgent(
   bus: HookBus,
   ctx: AgentContext,
   conversationId: string,
-): Promise<boolean> {
+): Promise<string | null> {
+  let out: unknown;
   try {
-    await bus.call<ConversationsGetInput, unknown>('conversations:get', ctx, {
+    out = await bus.call<ConversationsGetInput, unknown>('conversations:get', ctx, {
       conversationId,
       userId: ctx.userId,
     });
-    return true;
   } catch (err) {
-    if (err instanceof PluginError && (err.code === 'not-found' || err.code === 'forbidden')) {
-      return false;
-    }
+    if (isAclRefusal(err)) return null;
     throw err;
   }
+  const agentId = (out as { conversation?: { agentId?: unknown } } | null)?.conversation?.agentId;
+  return typeof agentId === 'string' && agentId.length > 0 ? agentId : null;
 }
 
-export interface PublishArtifactBlobDeps {
-  store: AttachmentsStore;
+export interface PublishArtifactDeps {
+  artifacts: ArtifactStore;
   bus: HookBus;
 }
 
+export interface PublishArtifactInput {
+  /** The chat it is published from; the caller must own it. */
+  conversationId: string;
+  sha256: string;
+  /** Relative to the agent's files root: the re-publish key. */
+  sourcePath: string;
+  /** The agent's proposed title (untrusted); normalized, else the file name. */
+  title: unknown;
+  /** Re-publish this artifact rather than the one keyed by `sourcePath`. */
+  artifactId?: string;
+}
+
+function publishRefusal(hookName: string, code: 'forbidden' | 'not-found', message: string): PluginError {
+  return new PluginError({ code, plugin: PLUGIN_NAME, hookName, message });
+}
+
 /**
- * `artifacts:publish-blob` — inserts a published-artifact metadata row after the
- * runner streamed the bytes to `blob:put`. Scoped to ctx.userId. Identity is
- * scoped to the conversation and path: identical bytes can be published under
- * different names or in different conversations without a primary-key clash.
- * Idempotent on (conversationId, path); blob deduplication still uses sha256.
+ * The one publish chain, shared by every hook that publishes an artifact:
+ *   1. the caller owns the conversation (and it names the agent);
+ *   2. the agent resolves for the caller, which names the quota owner (C4);
+ *   3. the blob store holds the sha, and says its size (D10);
+ *   4. the media type comes from the path, never the caller;
+ *   5. the title is normalized, falling back to the file name;
+ *   6. one store transaction adds the version.
  *
- * The row is only written once `blob:stat` confirms the store holds the sha
- * (TASK-776, blob-gc design D10). Without that, a runner could publish a row
- * for bytes that were never put or have since been purged, and the person gets
- * a download link that 404s. A `blob:stat` failure propagates — "could not
- * check" must never turn into "assume it is there".
+ * Ownership comes first: a caller refused there must not learn, from a
+ * not-found vs forbidden split, whether a sha is in the store. A blob:stat or
+ * agents:resolve outage propagates — "could not check" never turns into
+ * "assume it is fine".
  *
- * This hook does NOT check that the caller put the sha, and a sha is not proof
- * the caller holds the bytes: hashes leak into model-visible text, and the
- * store is shared. That check is the untrusted caller's boundary, ipc-core's
+ * This does NOT check that the caller put the sha, and a sha is not proof the
+ * caller holds the bytes: hashes leak into model-visible text, and the store is
+ * shared. That check is the untrusted caller's boundary, ipc-core's
  * `artifact.publish`, which accepts only a sha its own session's `blob.put`
  * returned (TASK-1010). A host-side caller must pass a sha it put itself.
- *
- * Where the row lands decides who can download it (`attachments:download`
- * resolves the id, then requires the row's conversation and owner to match),
- * so the caller must own the conversation, and a re-publish never takes over
- * a row another user wrote.
  */
-export function createPublishArtifactBlobHandler(deps: PublishArtifactBlobDeps) {
+export async function publishArtifact(
+  deps: PublishArtifactDeps,
+  ctx: AgentContext,
+  hookName: string,
+  input: PublishArtifactInput,
+): Promise<PublishVersionResult> {
+  const agentId = await ownedConversationAgent(deps.bus, ctx, input.conversationId);
+  if (agentId === null) {
+    throw publishRefusal(hookName, 'forbidden', 'artifacts can be published only into a conversation the caller owns');
+  }
+  let resolved: unknown;
+  try {
+    resolved = await deps.bus.call<AgentsResolveInput, unknown>('agents:resolve', ctx, {
+      agentId,
+      userId: ctx.userId,
+    });
+  } catch (err) {
+    if (isAclRefusal(err)) {
+      throw publishRefusal(hookName, 'forbidden', 'artifacts can be published only into a conversation the caller owns');
+    }
+    throw err;
+  }
+  const agent = (resolved as { agent?: { ownerId?: unknown; ownerType?: unknown } } | null)?.agent;
+  if (typeof agent?.ownerId !== 'string' || agent.ownerId.length === 0) {
+    throw publishRefusal(hookName, 'forbidden', 'the conversation\'s agent has no usable owner');
+  }
+  const quotaOwner = quotaOwnerKey({
+    ownerType: agent.ownerType === 'team' ? 'team' : 'user',
+    ownerId: agent.ownerId,
+  });
+
+  const stat = await deps.bus.call<BlobStatInput, BlobStatOutput>('blob:stat', ctx, {
+    sha256: input.sha256,
+  });
+  if ('found' in stat && stat.found === false) {
+    throw publishRefusal(hookName, 'not-found', 'artifact bytes are not in the blob store');
+  }
+  const sizeBytes = (stat as { size: number }).size;
+
+  const title =
+    normalizeArtifactTitle(input.title) ??
+    normalizeArtifactTitle(posix.basename(input.sourcePath)) ??
+    'Untitled';
+
+  return deps.artifacts.publishVersion({
+    agentId,
+    ...(input.artifactId !== undefined ? { artifactId: input.artifactId } : {}),
+    sourcePath: input.sourcePath,
+    title,
+    sha256: input.sha256,
+    mediaType: mediaTypeForPath(input.sourcePath),
+    sizeBytes,
+    conversationId: input.conversationId,
+    publishedBy: ctx.userId,
+    quotaOwner,
+  });
+}
+
+/**
+ * `artifacts:publish-blob` — the IPC `artifact.publish` action calls this after
+ * the runner streamed the bytes to `blob:put`. Same I/O as ever; underneath it
+ * is the shared publish chain (`publishArtifact`): the artifact is the agent's,
+ * keyed by `path` within it, and a re-publish of the same path adds a version
+ * to the same artifact. `mediaType` and `size` in the input are no longer
+ * trusted: the type comes from the path, the size from the blob store.
+ */
+export function createPublishArtifactBlobHandler(deps: PublishArtifactDeps) {
   return async function publishArtifactBlob(
     ctx: AgentContext,
     input: ArtifactsPublishBlobInput,
   ): Promise<ArtifactsPublishBlobOutput> {
-    // Ownership first: a caller refused here must not learn, from a not-found
-    // vs forbidden split, whether a sha is in the store.
-    if (!(await callerOwnsConversation(deps.bus, ctx, input.conversationId))) {
-      throw new PluginError({
-        code: 'forbidden',
-        plugin: PLUGIN_NAME,
-        hookName: 'artifacts:publish-blob',
-        message: 'artifacts can be published only into a conversation the caller owns',
-      });
-    }
-    const stat = await deps.bus.call<BlobStatInput, BlobStatOutput>('blob:stat', ctx, {
-      sha256: input.sha256,
-    });
-    if ('found' in stat && stat.found === false) {
-      throw new PluginError({
-        code: 'not-found',
-        plugin: PLUGIN_NAME,
-        hookName: 'artifacts:publish-blob',
-        message: 'artifact bytes are not in the blob store',
-      });
-    }
-    const artifactId = createHash('sha256')
-      .update(JSON.stringify([input.conversationId, input.path]))
-      .digest('hex').slice(0, 32);
-    const written = await deps.store.upsertArtifact({
-      id: artifactId,
+    const result = await publishArtifact(deps, ctx, 'artifacts:publish-blob', {
       conversationId: input.conversationId,
-      userId: ctx.userId,
       sha256: input.sha256,
-      path: input.path,
-      displayName: input.displayName,
-      mediaType: input.mediaType,
-      sizeBytes: input.size,
+      sourcePath: input.path,
+      title: input.displayName,
     });
-    if (!written) {
-      // Another user's row already holds this key. With the owner gate above
-      // that can only be a row written before the gate existed; leave it be.
+    if (!result.ok) {
+      // Unreachable without an artifactId; kept so a refusal is never a success.
       throw new PluginError({
         code: 'conflict',
         plugin: PLUGIN_NAME,
         hookName: 'artifacts:publish-blob',
-        message: 'an artifact at this path belongs to another user',
+        message: `artifact could not be published (${result.reason})`,
       });
     }
-    return { artifactId };
+    return { artifactId: result.artifactId };
   };
 }
 
 export interface DownloadDeps {
   bus: HookBus;
   store: AttachmentsStore;
+  artifacts: ArtifactStore;
 }
 
 function downloadNotFound(message: string): PluginError {
@@ -472,17 +537,20 @@ function downloadNotFound(message: string): PluginError {
  * The ladder, each step failing closed:
  *   1. the id is well-formed;
  *   2. the caller is who they say (input.userId === ctx.userId);
- *   3. the caller owns the conversation they name (conversations:get);
- *   4. the id resolves to a row (an upload, else an artifact) that belongs to
- *      THAT conversation and was written by that same person;
+ *   3. the caller owns the conversation they name (conversations:get), which
+ *      also names that conversation's agent;
+ *   4. the id resolves to
+ *        - an upload that belongs to THAT conversation and was written by that
+ *          same person, or else
+ *        - an artifact of THAT conversation's agent (artifacts are the agent's
+ *          and outlive the chat that made them, D12), served at its CURRENT
+ *          version — an old chip downloads what the artifact is now;
  *   5. the blob store still holds the bytes.
  *
  * Step 4 is what makes a chip safe to trust: a forged `attachment` block (a
  * crafted client request, or an untrusted runner's turn) can name any id, but
- * an id from another conversation — the same person's or anyone else's — only
- * ever reaches a 404. A conversation has one owner, and every row in it was
- * written by that owner (their upload, or their own runner's publish), so the
- * row-owner check costs nothing legitimate.
+ * an upload from another conversation, or an artifact of another agent, only
+ * ever reaches a 404.
  *
  * Every refusal is the same `not-found` (existence-leak prevention: a foreign
  * id and a missing one look identical), and no refusal fetches bytes. A
@@ -500,21 +568,30 @@ export function createDownloadHandler(deps: DownloadDeps) {
     if (input.userId !== ctx.userId) {
       throw downloadNotFound('conversation not found');
     }
-    if (!(await callerOwnsConversation(deps.bus, ctx, input.conversationId))) {
+    const agentId = await ownedConversationAgent(deps.bus, ctx, input.conversationId);
+    if (agentId === null) {
       throw downloadNotFound('conversation not found');
     }
 
     // Uploads and artifacts have distinct id shapes (store-temp UUIDs vs hex),
     // so the two lookups never compete for one id.
-    const row =
-      (await deps.store.getFileById(input.attachmentId)) ??
-      (await deps.store.getArtifactById(input.attachmentId));
-    if (
-      row === null ||
-      row.conversationId !== input.conversationId ||
-      row.userId !== ctx.userId
-    ) {
-      throw downloadNotFound('file not found');
+    let row: { sha256: string; mediaType: string; displayName: string };
+    const file = await deps.store.getFileById(input.attachmentId);
+    if (file !== null) {
+      if (file.conversationId !== input.conversationId || file.userId !== ctx.userId) {
+        throw downloadNotFound('file not found');
+      }
+      row = file;
+    } else {
+      const head = await deps.artifacts.getHead(input.attachmentId);
+      if (head === null || head.agentId !== agentId) {
+        throw downloadNotFound('file not found');
+      }
+      row = {
+        sha256: head.current.sha256,
+        mediaType: head.current.mediaType,
+        displayName: downloadFilename(head.title, describeMediaType(head.current.mediaType).extension),
+      };
     }
 
     // `blob:get` re-verifies the bytes against the digest on read (TASK-65),

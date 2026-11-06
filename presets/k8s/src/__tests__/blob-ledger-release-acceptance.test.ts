@@ -42,7 +42,8 @@ import { createK8sPlugins, type K8sPresetConfig } from '../index.js';
 // can step past the 24 h grace window instead of sleeping through it.
 //
 // Stubbed: `conversations:get` (the owner gate `artifacts:publish-blob` asks
-// first; USER_A owns `conv-a`), `http:register-route` and `auth:require-user`
+// first; USER_A owns `conv-a`, with agent `agt-a`), `agents:resolve` (that
+// agent's owner), `http:register-route` and `auth:require-user`
 // (disk-quota mounts its storage routes at init; they have their own suite).
 // The "agent delete" is the `conversations:purged` notice @ax/conversations
 // fires after a hard delete, fired here directly.
@@ -96,7 +97,7 @@ function createStubsPlugin(): Plugin {
     manifest: {
       name,
       version: '0.0.0',
-      registers: ['http:register-route', 'auth:require-user', 'conversations:get'],
+      registers: ['http:register-route', 'auth:require-user', 'conversations:get', 'agents:resolve'],
       calls: [],
       subscribes: [],
     },
@@ -109,9 +110,15 @@ function createStubsPlugin(): Plugin {
       // owns `conv-a`, and nobody owns anything else.
       bus.registerService('conversations:get', name, async (ctx, input) => {
         const { conversationId } = input as { conversationId: string };
-        if (ctx.userId === USER_A && conversationId === 'conv-a') return { conversationId };
+        if (ctx.userId === USER_A && conversationId === 'conv-a') {
+          return { conversation: { conversationId, agentId: 'agt-a' }, turns: [] };
+        }
         throw new PluginError({ code: 'not-found', plugin: name, message: 'no such conversation' });
       });
+      // Then the agent's owner, who a published version is charged to.
+      bus.registerService('agents:resolve', name, async () => ({
+        agent: { id: 'agt-a', ownerType: 'user', ownerId: USER_A },
+      }));
     },
   };
 }
@@ -229,7 +236,7 @@ describe('@ax/preset-k8s blob ledger release canary (TASK-776)', () => {
     await sql`TRUNCATE disk_quota_v1_usage`.execute(await db());
     await sql`TRUNCATE disk_quota_v1_ref_holders`.execute(await db());
     await sql`TRUNCATE attachments_v1_files`.execute(await db());
-    await sql`TRUNCATE attachments_v1_artifacts`.execute(await db());
+    await sql`TRUNCATE attachments_v1_artifacts, attachments_v1_artifact_versions`.execute(await db());
   });
 
   afterAll(async () => {
@@ -343,7 +350,7 @@ describe('@ax/preset-k8s blob ledger release canary (TASK-776)', () => {
 
   async function artifactRowCount(): Promise<string> {
     const rows = await sql<{ n: string }>`
-      SELECT count(*)::text AS n FROM attachments_v1_artifacts
+      SELECT count(*)::text AS n FROM attachments_v1_artifact_versions
     `.execute(await db());
     return rows.rows[0]!.n;
   }

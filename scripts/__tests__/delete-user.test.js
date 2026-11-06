@@ -313,7 +313,11 @@ function migrationSchema() {
   for (const pkg of readdirSync(join(REPO_ROOT, 'packages'))) {
     let files;
     try {
-      files = readdirSync(join(REPO_ROOT, 'packages', pkg, 'src')).filter((f) => /migration.*\.ts$/.test(f));
+      // `recursive`: a plugin may keep a concept's migration in its own folder
+      // (@ax/attachments' artifacts/migrations.ts). Never a test file.
+      files = readdirSync(join(REPO_ROOT, 'packages', pkg, 'src'), { recursive: true })
+        .map(String)
+        .filter((f) => /(^|\/)migration[^/]*\.ts$/.test(f) && !/(^|\/)__tests__\//.test(f));
     } catch {
       continue;
     }
@@ -353,7 +357,7 @@ function unknownNames(sql, schema) {
   const text = sql.replace(/--[^\n]*/g, '').replace(/^\\.*$/gm, '');
   for (const stmt of text.split(';')) {
     const s = stmt.replace(/:?'[^']*'/g, ' ');
-    const tables = [...s.matchAll(/\b(?:FROM|INTO)\s+(\w+)/g)].map((m) => m[1]);
+    const tables = [...s.matchAll(/\b(?:FROM|INTO|UPDATE)\s+(\w+)/g)].map((m) => m[1]);
     for (const t of tables) if (!schema.has(t)) bad.push(`table ${t}`);
     for (const [w] of s.matchAll(/\b[a-z][a-z0-9_]*\b/g)) {
       if (tables.includes(w)) continue;

@@ -146,6 +146,16 @@ export const ATTACHMENT_FILENAME_MAX = 1024;
  */
 export const ATTACHMENT_MEDIA_TYPE_MAX = 255;
 
+/** Longest artifact title (UTF-16 code units), after normalization. */
+export const ARTIFACT_TITLE_MAX = 200;
+
+/**
+ * What kind of thing an artifact is, as people see it. The one definition:
+ * `@ax/attachments` derives it from the stored media type, and the wire and
+ * channel-web read it from here.
+ */
+export const ArtifactKindSchema = z.enum(['document', 'web', 'spreadsheet', 'image', 'code', 'file']);
+
 /**
  * A user-attached file OR an agent-published artifact, as it appears in a
  * stored conversation turn and on the wire (`chat:start`, `agent:invoke`,

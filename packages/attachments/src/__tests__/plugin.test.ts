@@ -41,6 +41,8 @@ async function makeHarness(
         },
         turns: [],
       }),
+      // A published version is charged to the agent's owner (C4).
+      'agents:resolve': async () => ({ agent: { ownerType: 'user', ownerId: 'test-user' } }),
     },
     plugins: [
       createDatabasePostgresPlugin({ connectionString }),
@@ -66,6 +68,7 @@ afterEach(async () => {
   try {
     await cleanup.query('DROP TABLE IF EXISTS attachments_v1_temps');
     await cleanup.query('DROP TABLE IF EXISTS attachments_v1_files');
+    await cleanup.query('DROP TABLE IF EXISTS attachments_v1_artifact_versions');
     await cleanup.query('DROP TABLE IF EXISTS attachments_v1_artifacts');
   } finally {
     await cleanup.end().catch(() => {});
@@ -94,12 +97,21 @@ describe('@ax/attachments plugin manifest', () => {
     // TASK-776 (D10): artifacts:publish-blob refuses a sha the store lacks.
     expect(plugin.manifest.calls).toContain('blob:stat');
     expect(plugin.manifest.calls).toContain('conversations:get');
+    expect(plugin.manifest.calls).toContain('agents:resolve');
+    // Only needed to map legacy artifacts to their agent at init.
+    expect(plugin.manifest.optionalCalls).toEqual([
+      {
+        hook: 'conversations:agent-ids',
+        degradation: 'legacy artifacts cannot be mapped; init refuses to start while any are pending',
+      },
+    ]);
     // The git path is removed (acceptance criterion).
     expect(plugin.manifest.calls).not.toContain('workspace:apply');
     expect(plugin.manifest.calls).not.toContain('workspace:read');
     // TASK-718: drop a purged conversation's metadata rows. TASK-776: answer
     // blob:collect-refs (it stores shas in its own rows, so it is a holder).
-    expect(plugin.manifest.subscribes).toEqual(['conversations:purged', 'blob:collect-refs']);
+    // agents:deleted: deleting the agent deletes its artifacts (D12).
+    expect(plugin.manifest.subscribes).toEqual(['conversations:purged', 'blob:collect-refs', 'agents:deleted']);
   });
 });
 
@@ -203,7 +215,7 @@ describe('@ax/attachments artifacts:publish-blob wiring (D10)', () => {
       {},
     );
     const rows = await sql<{ n: string }>`
-      SELECT count(*)::text AS n FROM attachments_v1_artifacts
+      SELECT count(*)::text AS n FROM attachments_v1_artifact_versions
     `.execute(db);
     expect(rows.rows[0]!.n).toBe('0');
   });

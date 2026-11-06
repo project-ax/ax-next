@@ -118,7 +118,7 @@ function createStubsPlugin(routes: CapturedRoute[]): Plugin {
     manifest: {
       name,
       version: '0.0.0',
-      registers: ['http:register-route', 'auth:require-user', 'conversations:get'],
+      registers: ['http:register-route', 'auth:require-user', 'conversations:get', 'agents:resolve'],
       calls: [],
       subscribes: [],
     },
@@ -136,6 +136,10 @@ function createStubsPlugin(routes: CapturedRoute[]): Plugin {
       }));
       bus.registerService('conversations:get', name, async () => {
         throw new PluginError({ code: 'not-found', plugin: name, message: 'no conversations' });
+      });
+      // @ax/attachments charges a published version to the agent's owner.
+      bus.registerService('agents:resolve', name, async () => {
+        throw new PluginError({ code: 'not-found', plugin: name, message: 'no agents' });
       });
     },
   };
@@ -377,7 +381,7 @@ describe('@ax/preset-k8s blob GC enforce-mode canary (TASK-778)', () => {
     testHolderMode = 'answer';
     const d = await db();
     await sql`TRUNCATE blob_gc_v1_blobs, blob_gc_v1_roster`.execute(d);
-    await sql`TRUNCATE attachments_v1_files, attachments_v1_artifacts`.execute(d);
+    await sql`TRUNCATE attachments_v1_files, attachments_v1_artifacts, attachments_v1_artifact_versions`.execute(d);
     // The GC settings, the GC report and branding's pointers all live here.
     await sql`TRUNCATE storage_postgres_v1_kv`.execute(d);
     await fs.rm(blobRoot, { recursive: true, force: true });

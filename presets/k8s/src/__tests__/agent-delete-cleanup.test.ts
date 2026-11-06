@@ -125,28 +125,27 @@ async function seedAgent(h: TestHarness, name: string): Promise<Seeded> {
     ctx,
     {},
   );
+  const sha = 'ab'.repeat(32);
   for (const conversationId of conversationIds) {
-    for (const table of ['attachments_v1_artifacts', 'attachments_v1_files']) {
-      const idColumn = table === 'attachments_v1_artifacts' ? 'artifact_id' : 'attachment_id';
-      const id = `${table}-${conversationId}`;
-      const sha = 'ab'.repeat(32);
-      // Artifact rows keep the publish key `path`; upload rows are addressed by
-      // id alone (TASK-995) and have no such column.
-      await (table === 'attachments_v1_artifacts'
-        ? sql`
-            INSERT INTO ${sql.table(table)}
-              (${sql.ref(idColumn)}, conversation_id, user_id, sha256, path, display_name, media_type, size_bytes)
-            VALUES
-              (${id}, ${conversationId}, ${USER}, ${sha}, ${'notes.txt'}, ${'notes.txt'}, ${'text/plain'}, ${5})
-          `
-        : sql`
-            INSERT INTO ${sql.table(table)}
-              (${sql.ref(idColumn)}, conversation_id, user_id, sha256, display_name, media_type, size_bytes)
-            VALUES
-              (${id}, ${conversationId}, ${USER}, ${sha}, ${'notes.txt'}, ${'text/plain'}, ${5})
-          `
-      ).execute(db);
-    }
+    // An upload, addressed by id alone (TASK-995).
+    await sql`
+      INSERT INTO attachments_v1_files
+        (attachment_id, conversation_id, user_id, sha256, display_name, media_type, size_bytes)
+      VALUES
+        (${`file-${conversationId}`}, ${conversationId}, ${USER}, ${sha}, ${'notes.txt'}, ${'text/plain'}, ${5})
+    `.execute(db);
+    // An artifact: the agent's head, plus a version published from this chat.
+    const artifactId = `artifact-${conversationId}`;
+    await sql`
+      INSERT INTO attachments_v1_artifacts
+        (artifact_id, agent_id, title, source_path, current_version, created_by_user_id)
+      VALUES (${artifactId}, ${agentId}, ${'notes.txt'}, ${`notes-${conversationId}.txt`}, ${1}, ${USER})
+    `.execute(db);
+    await sql`
+      INSERT INTO attachments_v1_artifact_versions
+        (artifact_id, version, sha256, media_type, size_bytes, conversation_id, published_by_user, quota_owner)
+      VALUES (${artifactId}, ${1}, ${sha}, ${'text/plain'}, ${5}, ${conversationId}, ${USER}, ${USER})
+    `.execute(db);
   }
 
   // One live session (with an inbox entry) and one already terminated.
@@ -254,7 +253,8 @@ describe('deleting an agent through agents:delete leaves nothing of it in the da
         'conversations_v1_conversations.conversation_id',
         'conversations_v1_events.conversation_id',
         'conversations_v1_transcripts.conversation_id',
-        'attachments_v1_artifacts.conversation_id',
+        'attachments_v1_artifacts.agent_id',
+        'attachments_v1_artifact_versions.conversation_id',
         'attachments_v1_files.conversation_id',
         'session_postgres_v1_sessions.session_id',
         'session_postgres_v1_inbox.session_id',

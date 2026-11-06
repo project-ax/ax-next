@@ -47,7 +47,10 @@ export interface CommitOutput {
 export interface DownloadInput {
   /** An upload's or a published artifact's id. */
   attachmentId: string;
-  /** The conversation being read; the row must belong to it. */
+  /**
+   * The conversation being read. An upload must belong to it; an artifact must
+   * belong to its agent.
+   */
   conversationId: string;
   /**
    * Caller-supplied userId. Must equal ctx.userId, and the hook re-validates it
@@ -68,10 +71,13 @@ export interface DownloadOutput {
 
 /**
  * `artifacts:publish-blob` — the IPC `artifact.publish` action calls this after
- * the runner streamed the artifact bytes to `blob:put`. Inserts the artifact
- * metadata row scoped to ctx.userId, into a conversation ctx.userId owns;
+ * the runner streamed the artifact bytes to `blob:put`. Publishes a version of
+ * the conversation's AGENT's artifact at `path` (a re-publish of the same path
+ * adds a version to the same artifact), into a conversation ctx.userId owns;
  * returns the stable artifactId the chat chip and the download use. `path` is
- * the row's re-publish key and never leaves this plugin.
+ * the re-publish key and never leaves this plugin except back to the agent.
+ * `displayName` proposes the title; `mediaType` and `size` are not trusted (the
+ * type comes from the path, the size from the blob store).
  *
  * The hook does not check who put `sha256`; a caller must pass a sha it put
  * itself (ipc-core enforces that for runners, TASK-1010).

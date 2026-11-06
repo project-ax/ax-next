@@ -131,6 +131,7 @@ afterEach(async () => {
   try {
     await cleanup.query('DROP TABLE IF EXISTS attachments_v1_temps');
     await cleanup.query('DROP TABLE IF EXISTS attachments_v1_files');
+    await cleanup.query('DROP TABLE IF EXISTS attachments_v1_artifact_versions');
     await cleanup.query('DROP TABLE IF EXISTS attachments_v1_artifacts');
     await cleanup.query('DROP TABLE IF EXISTS conversations_v1_turns');
     await cleanup.query('DROP TABLE IF EXISTS conversations_v1_conversations');

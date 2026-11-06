@@ -162,11 +162,16 @@ function conversationsGetMockPlugin(
     manifest: {
       name: 'mock-conversations',
       version: '0.0.0',
-      registers: ['conversations:get'],
+      // agents:resolve: @ax/attachments charges a published artifact to the
+      // agent's owner. No case here publishes, so it only has to exist.
+      registers: ['conversations:get', 'agents:resolve'],
       calls: [],
       subscribes: [],
     },
     init({ bus }) {
+      bus.registerService('agents:resolve', 'mock-conversations', async () => ({
+        agent: { id: 'agent-1', ownerType: 'user', ownerId: 'user-1' },
+      }));
       bus.registerService(
         'conversations:get',
         'mock-conversations',
@@ -182,7 +187,7 @@ function conversationsGetMockPlugin(
               message: `conversation '${conversationId}' not found`,
             });
           }
-          return { conversation: { conversationId, userId }, turns: [] };
+          return { conversation: { conversationId, userId, agentId: 'agent-1' }, turns: [] };
         },
       );
     },
@@ -266,6 +271,7 @@ afterEach(async () => {
   try {
     await cleanup.query('DROP TABLE IF EXISTS attachments_v1_temps');
     await cleanup.query('DROP TABLE IF EXISTS attachments_v1_files');
+    await cleanup.query('DROP TABLE IF EXISTS attachments_v1_artifact_versions');
     await cleanup.query('DROP TABLE IF EXISTS attachments_v1_artifacts');
   } finally {
     await cleanup.end().catch(() => {});

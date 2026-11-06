@@ -1,12 +1,17 @@
 import {
   BLOB_COLLECT_REFS_HOOK,
+  PluginError,
   answerBlobCollectRefs,
   makeAgentContext,
+  type AgentContext,
+  type HookBus,
   type Plugin,
 } from '@ax/core';
 import type { Kysely } from 'kysely';
 import { runAttachmentsMigration, type AttachmentsDatabase } from './migrations.js';
 import { createAttachmentsStore, type AttachmentsStore } from './store.js';
+import { backfillArtifactAgents, finishArtifactsMigration } from './artifacts/migrations.js';
+import { createArtifactStore } from './artifacts/store.js';
 import {
   createStoreTempHandler,
   createCommitHandler,
@@ -50,6 +55,47 @@ function parsePurgedIds(payload: unknown): string[] | undefined {
   return ids as string[];
 }
 
+/** An agent id longer than this is not one. */
+const MAX_AGENT_ID = 256;
+
+/**
+ * The deleted agent's id from an `agents:deleted` payload (untrusted, from
+ * another plugin), or undefined when malformed.
+ */
+function parseDeletedAgentId(payload: unknown): string | undefined {
+  if (typeof payload !== 'object' || payload === null) return undefined;
+  const id = (payload as { agentId?: unknown }).agentId;
+  if (typeof id !== 'string' || id.length === 0 || id.length > MAX_AGENT_ID) return undefined;
+  return id;
+}
+
+const AGENT_IDS_HOOK = 'conversations:agent-ids';
+const AGENT_IDS_DEGRADATION =
+  'legacy artifacts cannot be mapped; init refuses to start while any are pending';
+
+/**
+ * `mapAgents` for the legacy-artifact backfill: conversation id -> agent id,
+ * through the host-only `conversations:agent-ids` (soft-deleted chats
+ * included). Absent service + pending rows = refuse to start, rather than
+ * guess or drop a person's artifacts.
+ */
+function agentIdsVia(bus: HookBus, ctx: AgentContext) {
+  return async (conversationIds: string[]): Promise<Map<string, string>> => {
+    if (!bus.hasService(AGENT_IDS_HOOK)) {
+      throw new PluginError({
+        code: 'init-failed',
+        plugin: PLUGIN_NAME,
+        message: `legacy artifacts are waiting to be mapped to their agents, and ${AGENT_IDS_HOOK} is not available`,
+      });
+    }
+    const out = await bus.call<
+      { conversationIds: string[] },
+      { conversations: Array<{ conversationId: string; agentId: string }> }
+    >(AGENT_IDS_HOOK, ctx, { conversationIds });
+    return new Map(out.conversations.map((c) => [c.conversationId, c.agentId]));
+  };
+}
+
 // ---------------------------------------------------------------------------
 // @ax/attachments plugin — the host-side home of uploads and published
 // artifacts: their metadata rows (bytes live in the content-addressed blob
@@ -67,14 +113,21 @@ function parsePurgedIds(payload: unknown): string[] | undefined {
 // this prose is a summary):
 //   - calls: database:get-instance (own table + migration), blob:put (for
 //     attachments:commit), blob:get (for attachments:download),
-//     conversations:get (owner gate in attachments:download).
+//     conversations:get (owner gate in attachments:download and publish, and
+//     the conversation's agent), agents:resolve (a published version's quota
+//     owner: the user, or `team:<id>` for a team agent, C4).
+//   - optionalCalls: conversations:agent-ids, only to map legacy
+//     conversation-scoped artifacts to their agent at init.
 //   - subscribes: `conversations:purged` (TASK-718). A hard-deleted
-//     conversation (agent delete) takes its files/artifacts metadata rows with
-//     it. The blob bytes are left in place (content-addressed + shared).
+//     conversation takes its uploads' rows with it; artifacts outlive their
+//     chat (D12), so their versions only lose the chat id. The blob bytes are
+//     left in place (content-addressed + shared).
+//   - subscribes: `agents:deleted`. Deleting the agent deletes its artifacts.
 //   - subscribes: `blob:collect-refs` (TASK-776). We store blob shas in our own
 //     rows, so we answer "which of these do you still reference, and for
-//     whom?" from both tables. Reclaiming bytes is the sweeper's job, and it
-//     only deletes what every holder agrees nobody references.
+//     whom?" from uploads and artifact versions. Reclaiming bytes is the
+//     sweeper's job, and it only deletes what every holder agrees nobody
+//     references.
 //   - calls `blob:stat` (TASK-776): artifacts:publish-blob refuses a sha the
 //     blob store does not hold, so no row ever points at missing bytes.
 // ---------------------------------------------------------------------------
@@ -109,11 +162,14 @@ export function createAttachmentsPlugin(
         // TASK-776 (D10): artifacts:publish-blob refuses a sha the store lacks.
         'blob:stat',
         'conversations:get',
+        // A published version is charged to the agent's owner (C4).
+        'agents:resolve',
       ],
+      optionalCalls: [{ hook: AGENT_IDS_HOOK, degradation: AGENT_IDS_DEGRADATION }],
       // `blob:collect-refs`: this plugin stores blob shas in its own rows, so it
       // is a holder (TASK-776, D2/D7). It must answer, or a sweep would read the
       // absence as "no one holds these bytes".
-      subscribes: ['conversations:purged', BLOB_COLLECT_REFS_HOOK],
+      subscribes: ['conversations:purged', BLOB_COLLECT_REFS_HOOK, 'agents:deleted'],
     },
 
     async init({ bus }) {
@@ -132,17 +188,26 @@ export function createAttachmentsPlugin(
       const db = shared as Kysely<AttachmentsDatabase>;
       _db = db;
 
-      // 2) Run the migration. Idempotent: safe on every boot.
+      // 2) Run the migration. Idempotent: safe on every boot. In this order:
+      //    DDL + legacy upgrade, then each legacy artifact's agent (a failure
+      //    rejects init and leaves the rows for the next boot), then NOT NULL +
+      //    indexes. Nothing is registered until all three are done.
       await runAttachmentsMigration(db);
+      const backfill = await backfillArtifactAgents(db, agentIdsVia(bus, initCtx));
+      if (backfill.mapped + backfill.dropped > 0) {
+        initCtx.logger.info('attachments_artifacts_backfilled', backfill);
+      }
+      await finishArtifactsMigration(db);
 
       // 3) Store + handlers.
       const store = createAttachmentsStore(db);
       _store = store;
+      const artifacts = createArtifactStore(db);
       const storeTempHandler = createStoreTempHandler({ store, config });
       const commitHandler = createCommitHandler({ store, bus });
-      const downloadHandler = createDownloadHandler({ bus, store });
+      const downloadHandler = createDownloadHandler({ bus, store, artifacts });
       const listForConversationHandler = createListForConversationHandler({ store });
-      const publishArtifactBlobHandler = createPublishArtifactBlobHandler({ store, bus });
+      const publishArtifactBlobHandler = createPublishArtifactBlobHandler({ artifacts, bus });
 
       // 4) Register the hooks. `bus.registerService` is generic in I/O;
       //    each handler factory above returned a correctly-typed closure,
@@ -173,11 +238,12 @@ export function createAttachmentsPlugin(
         { returns: ArtifactsPublishBlobOutputSchema },
       );
 
-      // 5) TASK-718: a purged conversation's files/artifacts rows go with it.
-      //    Rows only — see the comment in `store.purgeForConversations` for why
-      //    the blob bytes stay. K10: a subscriber must never propagate, so every
-      //    failure is logged and swallowed; a missed purge leaves dead rows,
-      //    not readable ones (attachments:download's owner gate calls
+      // 5) TASK-718: a purged conversation's upload rows go with it; its
+      //    artifacts stay (they are the agent's, D12) and their versions just
+      //    lose the chat id. Rows only — see `store.purgeForConversations` for
+      //    why the blob bytes stay. K10: a subscriber must never propagate, so
+      //    every failure is logged and swallowed; a missed purge leaves dead
+      //    rows, not readable ones (attachments:download's owner gate calls
       //    `conversations:get`, which answers not-found once the conversation
       //    row is gone).
       bus.subscribe<{ conversationIds: unknown }>(
@@ -193,10 +259,12 @@ export function createAttachmentsPlugin(
           }
           if (ids.length === 0) return undefined;
           try {
-            const counts = await store.purgeForConversations(ids);
+            const { files } = await store.purgeForConversations(ids);
+            const clearedVersions = await artifacts.clearConversations(ids);
             ctx.logger.info('attachments_purged_for_conversations', {
               conversations: ids.length,
-              ...counts,
+              files,
+              clearedVersions,
             });
           } catch (err) {
             ctx.logger.error('attachments_purge_for_purged_conversations_failed', {
@@ -208,13 +276,34 @@ export function createAttachmentsPlugin(
         },
       );
 
+      // Deleting an agent deletes its artifacts, every version (D12). Fired by
+      // @ax/agents after the agent row is gone; the payload is untrusted.
+      // Observation-only: logged and swallowed, never thrown into the bus.
+      bus.subscribe<unknown>('agents:deleted', PLUGIN_NAME, async (ctx, payload) => {
+        const agentId = parseDeletedAgentId(payload);
+        if (agentId === undefined) {
+          ctx.logger.warn('attachments_agents_deleted_ignored_malformed_payload', {});
+          return undefined;
+        }
+        try {
+          const counts = await artifacts.deleteForAgent(agentId);
+          ctx.logger.info('attachments_artifacts_deleted_for_agent', { agentId, ...counts });
+        } catch (err) {
+          ctx.logger.error('attachments_artifacts_delete_for_agent_failed', { agentId, err });
+        }
+        return undefined;
+      });
+
       // 6) TASK-776: answer "which of these blobs do you still reference, and
       //    for whom?" from our own rows (D7). `answerBlobCollectRefs` validates
       //    the (untrusted) payload and turns any failure into `ok: false`
       //    instead of throwing: HookBus.fire swallows a throw, which the caller
       //    would read as "nothing here references these bytes".
       bus.subscribe<unknown>(BLOB_COLLECT_REFS_HOOK, PLUGIN_NAME, async (_ctx, payload) =>
-        answerBlobCollectRefs(payload, PLUGIN_NAME, (shas) => store.blobRefs(shas)),
+        answerBlobCollectRefs(payload, PLUGIN_NAME, async (shas) => [
+          ...(await store.blobRefs(shas)),
+          ...(await artifacts.blobRefs(shas)),
+        ]),
       );
 
       // 7) Start the janitor. The interval defaults to 5 minutes; tests

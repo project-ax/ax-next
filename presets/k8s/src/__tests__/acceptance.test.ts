@@ -2163,8 +2163,9 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
         expect(downloadResp.status).toBe(200);
         expect(await downloadResp.text()).toBe(ARTIFACT_BYTES_TEXT);
 
-        // 5b. The same id through another conversation of the same user, and
-        // through the right conversation as someone else → 404.
+        // 5b. Artifacts are the agent's and outlive the chat that made them
+        // (D12): the same id through another of this user's chats with the
+        // SAME agent → 200. Through the right conversation as someone else → 404.
         const otherChat = await fetch(
           `http://127.0.0.1:${port}/api/chat/messages`,
           {
@@ -2187,7 +2188,9 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
           (await otherChat.json()) as { conversationId: string }
         ).conversationId;
         expect(otherConversationId).not.toBe(conversationId);
-        expect((await download(chip.attachmentId, otherConversationId)).status).toBe(404);
+        const viaOtherChat = await download(chip.attachmentId, otherConversationId);
+        expect(viaOtherChat.status).toBe(200);
+        expect(await viaOtherChat.text()).toBe(ARTIFACT_BYTES_TEXT);
         expect(
           (await download(chip.attachmentId, conversationId, 'phase-3-artifact-other-user'))
             .status,

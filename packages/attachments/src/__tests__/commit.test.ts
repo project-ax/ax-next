@@ -107,6 +107,7 @@ afterEach(async () => {
     try {
       await k.schema.dropTable('attachments_v1_temps').ifExists().execute();
       await k.schema.dropTable('attachments_v1_files').ifExists().execute();
+      await k.schema.dropTable('attachments_v1_artifact_versions').ifExists().execute();
       await k.schema.dropTable('attachments_v1_artifacts').ifExists().execute();
     } catch {
       /* drained pool */

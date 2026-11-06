@@ -15,8 +15,9 @@
 //     never read one to decide your own.
 //   - Never throw. `HookBus.fire` swallows a throw and carries on, which would
 //     read as "no references". Catch your own errors and answer `ok: false`.
-//   - `userIds` names the people the reference belongs to; `[]` means "held,
-//     but not by a person" (a global skill, a branding logo). Bytes held that
+//   - `userIds` names the ledger owner keys the reference belongs to (a user
+//     id, or `team:<id>`: see `quotaOwnerKey`); `[]` means "held, but not by
+//     an owner" (a global skill, a branding logo). Bytes held that
 //     way are kept, and no ledger charge is released for that sha.
 //
 // The caller fails CLOSED (`readBlobCollectRefsAnswers` gives it what it needs):
@@ -39,8 +40,21 @@ const MAX_HOLDER_NAME = 200;
 
 export interface BlobRef {
   sha256: string;
-  /** Who holds it. `[]` = held, but not by a person. */
+  /**
+   * Who holds it, as ledger owner keys (`quotaOwnerKey`): a user id for bytes
+   * charged to a person, `team:<id>` for bytes charged to a team. `[]` = held,
+   * but not by an owner.
+   */
   userIds: string[];
+}
+
+/**
+ * The ledger owner key a quota is charged to: the user id for a personal
+ * owner, `team:<id>` for a team. The one spelling of it, so a holder's answer
+ * and the ledger's rows always agree.
+ */
+export function quotaOwnerKey(owner: { ownerType: 'user' | 'team'; ownerId: string }): string {
+  return owner.ownerType === 'team' ? `team:${owner.ownerId}` : owner.ownerId;
 }
 
 export interface BlobCollectRefsAnswer {

@@ -29,6 +29,7 @@ export {
   answerBlobCollectRefs,
   isBlobSha256,
   parseBlobCandidates,
+  quotaOwnerKey,
   readBlobCollectRefsAnswers,
 } from './blob-collect-refs.js';
 export type {
