@@ -490,6 +490,17 @@ function stepsLabel(
  * `agent` bubble, and an empty disclosure reading "0 steps" would be a control
  * that opens onto nothing.
  */
+/**
+ * Tool calls that are the runner's own plumbing, not something the agent did.
+ *
+ * `ToolSearch` is the Claude Agent SDK loading a deferred tool's schema before
+ * the agent can call it ("ToolSearch: select:mcp__ax-sandbox-tools__show_visual").
+ * The reader asked for a chart, not for the SDK to look one up, so the row is
+ * noise — and it names wire identifiers we otherwise never show. Exact name
+ * only: a connector's own `mcp__x__ToolSearch` is a real step and keeps its row.
+ */
+const PLUMBING_TOOL_NAMES: ReadonlySet<string> = new Set(['ToolSearch']);
+
 export function shapeSteps(
   calls: readonly WorkspaceToolCall[],
   /**
@@ -499,10 +510,11 @@ export function shapeSteps(
    */
   connectors?: ConnectorNames,
 ): WorkspaceStepPanel | null {
-  if (calls.length === 0) return null;
+  const shown = calls.filter((call) => !PLUMBING_TOOL_NAMES.has(call.name));
+  if (shown.length === 0) return null;
   const steps: WorkspaceStep[] = [];
   const counts = { failed: 0, waiting: 0, running: 0 };
-  for (const call of calls) {
+  for (const call of shown) {
     const row = stepRow(call, connectors);
     if (call.status === 'done') {
       steps.push({ text: row, status: 'done' });
