@@ -44,13 +44,21 @@ export function ArtifactViewer({
   agentName,
   onBack,
   onClose,
+  recheckKey = 0,
 }: {
   artifactId: string;
   agentName: string;
   onBack(): void;
   onClose(): void;
+  /**
+   * Moves when a new version may have landed (a thread re-read, a failed turn,
+   * Open on this same card): the viewer re-reads quietly. With no version
+   * picked it shows whatever is current, so a new version takes the frame; an
+   * older one the person picked stays picked.
+   */
+  recheckKey?: number;
 }) {
-  const { status, artifact, reload, refresh, apply } = useArtifact(artifactId);
+  const { status, artifact, reload, refresh, apply } = useArtifact(artifactId, recheckKey);
   // null: whichever version is current.
   const [picked, setPicked] = useState<number | null>(null);
   const [restoring, setRestoring] = useState(false);

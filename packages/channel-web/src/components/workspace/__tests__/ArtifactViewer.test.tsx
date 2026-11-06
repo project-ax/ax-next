@@ -324,4 +324,80 @@ describe('ArtifactViewer', () => {
     expect(await screen.findByText(/We couldn’t find this artifact/)).toBeTruthy();
     expect(api.artifactToken).not.toHaveBeenCalled();
   });
+  /*
+    Goal 4: the person keeps asking for changes and watches them land. The
+    viewer stays mounted across a turn, so it re-reads when the parent's
+    re-check key moves (a durable thread read or a failed turn).
+  */
+  describe('re-check key', () => {
+    const v1 = () => detail({
+      currentVersion: 1,
+      versions: [{ version: 1, mediaType: 'text/html', sizeBytes: 8, createdAt: '2026-11-01T00:00:00Z' }],
+    });
+    const v2 = () => detail({
+      currentVersion: 2,
+      versions: [
+        { version: 2, mediaType: 'text/html', sizeBytes: 9, createdAt: '2026-11-06T11:00:00Z' },
+        { version: 1, mediaType: 'text/html', sizeBytes: 8, createdAt: '2026-11-01T00:00:00Z' },
+      ],
+    });
+    const props = { artifactId: 'art-1', agentName: 'Quill', onBack: vi.fn(), onClose: vi.fn() };
+
+    it('a moved key re-reads, and the frame moves to the new current version', async () => {
+      api.artifact.mockResolvedValueOnce(v1()).mockResolvedValueOnce(v2());
+      const { rerender } = render(<ArtifactViewer {...props} recheckKey={0} />);
+      expect((await screen.findByTitle('Deal tracker')).getAttribute('src')).toBe('http://127.0.0.1:9091/v/tok-v1');
+
+      rerender(<ArtifactViewer {...props} recheckKey={1} />);
+      await waitFor(() => expect(api.artifact).toHaveBeenCalledTimes(2));
+      await waitFor(() => expect(api.artifactToken).toHaveBeenCalledWith('art-1', 2, 'view'));
+      await waitFor(() =>
+        expect(screen.getByTitle('Deal tracker').getAttribute('src')).toBe('http://127.0.0.1:9091/v/tok-v2'));
+    });
+
+    it('the same key does not re-read', async () => {
+      const { rerender } = render(<ArtifactViewer {...props} recheckKey={4} />);
+      await screen.findByTitle('Deal tracker');
+      rerender(<ArtifactViewer {...props} recheckKey={4} />);
+      await new Promise((r) => setTimeout(r, 0));
+      expect(api.artifact).toHaveBeenCalledTimes(1);
+    });
+
+    it('an older version the person picked stays picked across a re-read', async () => {
+      api.artifact.mockResolvedValueOnce(detail()).mockResolvedValueOnce(detail({
+        currentVersion: 4,
+        versions: [
+          { version: 4, mediaType: 'text/html', sizeBytes: 11, createdAt: '2026-11-06T11:30:00Z' },
+          ...detail().versions,
+        ],
+      }));
+      const { rerender } = render(<ArtifactViewer {...props} recheckKey={0} />);
+      await screen.findByTitle('Deal tracker');
+      fireEvent.click(screen.getByRole('combobox'));
+      fireEvent.click(await screen.findByRole('option', { name: /^v1/ }));
+      await waitFor(() =>
+        expect(screen.getByTitle('Deal tracker').getAttribute('src')).toBe('http://127.0.0.1:9091/v/tok-v1'));
+
+      rerender(<ArtifactViewer {...props} recheckKey={1} />);
+      await waitFor(() => expect(api.artifact).toHaveBeenCalledTimes(2));
+      await new Promise((r) => setTimeout(r, 0));
+      expect(screen.getByTitle('Deal tracker').getAttribute('src')).toBe('http://127.0.0.1:9091/v/tok-v1');
+      expect(api.artifactToken).not.toHaveBeenCalledWith('art-1', 4, 'view');
+    });
+    it('a re-read that blips keeps the frame; a re-read that 404s says it is gone', async () => {
+      api.artifact
+        .mockResolvedValueOnce(detail())
+        .mockRejectedValueOnce(new Error('blip'))
+        .mockRejectedValueOnce(new WorkspaceApiError('/artifacts/art-1', 404));
+      const { rerender } = render(<ArtifactViewer {...props} recheckKey={0} />);
+      await screen.findByTitle('Deal tracker');
+      rerender(<ArtifactViewer {...props} recheckKey={1} />);
+      await waitFor(() => expect(api.artifact).toHaveBeenCalledTimes(2));
+      await new Promise((r) => setTimeout(r, 0));
+      expect(screen.getByTitle('Deal tracker')).toBeTruthy();
+
+      rerender(<ArtifactViewer {...props} recheckKey={2} />);
+      expect(await screen.findByText(/We couldn’t find this artifact/)).toBeTruthy();
+    });
+  });
 });

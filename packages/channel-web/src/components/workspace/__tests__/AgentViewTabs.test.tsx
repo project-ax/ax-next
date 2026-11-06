@@ -222,6 +222,37 @@ describe('AgentView side-panel toggles — the accessibility tree', () => {
     await waitFor(() => expect(screen.getByRole('complementary', { name: 'Artifacts' }).className).toContain('w-[320px]'));
   });
 
+  it('Open on the card of the artifact already open re-reads it (a new version may have landed)', async () => {
+    const summary = {
+      artifactId: 'art-1', agentId: 'a-quill', title: 'Deal tracker', mediaType: 'text/html',
+      kind: 'web' as const, preview: 'html', extension: 'HTML', currentVersion: 1, sizeBytes: 10,
+      linkOn: false, createdAt: '2026-11-01T00:00:00Z', updatedAt: '2026-11-01T00:00:00Z',
+    };
+    vi.mocked(workspaceApi.artifact).mockReset();
+    vi.mocked(workspaceApi.artifact).mockResolvedValue({
+      ...summary,
+      versions: [{ version: 1, mediaType: 'text/html', sizeBytes: 10, createdAt: '2026-11-01T00:00:00Z' }],
+    });
+    agentMock.mockResolvedValue({
+      ...detail(),
+      thread: [
+        { kind: 'user', id: 't1', text: 'make me a tracker' },
+        {
+          kind: 'agent', id: 'r1', text: 'Done.', at: '2026-11-01T00:00:00.000Z',
+          artifacts: [{ artifactId: 'art-1', version: 1, title: 'Deal tracker', kind: 'web', extension: 'HTML' }],
+        },
+      ],
+    } as AgentDetail);
+    renderView();
+    fireEvent.click(await screen.findByRole('button', { name: 'Open' }));
+    const rail = await screen.findByRole('complementary', { name: 'Artifacts' });
+    expect(await within(rail).findByTitle('Deal tracker')).toBeTruthy();
+    await waitFor(() => expect(workspaceApi.artifact).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open' }));
+    await waitFor(() => expect(workspaceApi.artifact).toHaveBeenCalledTimes(2));
+  });
+
   /*
     KEYBOARD: the strip is ONE Tab stop and the arrow keys move within it
     (Radix's roving tabindex on the toggle group). Pins against a rewrite into

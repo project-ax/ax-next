@@ -19,8 +19,11 @@ export interface ArtifactState {
  * One artifact's detail and versions. A response is applied only while it is
  * the most recent request (the house pattern), so a quick reopen never lets a
  * stale answer paint over a fresh one.
+ *
+ * `recheckKey`: whenever it moves, read again quietly — the agent may have
+ * published a new version while the viewer stayed open (Goal 4).
  */
-export function useArtifact(artifactId: string): ArtifactState {
+export function useArtifact(artifactId: string, recheckKey = 0): ArtifactState {
   const [status, setStatus] = useState<ArtifactState['status']>('loading');
   const [artifact, setArtifact] = useState<ArtifactDetail | null>(null);
   const request = useRef(0);
@@ -38,8 +41,11 @@ export function useArtifact(artifactId: string): ArtifactState {
         } catch (e) {
           if (request.current !== id) return;
           logRequestFailure(e, 'artifact');
+          const gone = e instanceof HttpError && e.status === 404;
+          // A quiet re-read that blips keeps what's on screen; a 404 never does.
+          if (quiet && !gone) return;
           setArtifact(null);
-          setStatus(e instanceof HttpError && e.status === 404 ? 'gone' : 'failed');
+          setStatus(gone ? 'gone' : 'failed');
         }
       })();
     },
@@ -53,6 +59,14 @@ export function useArtifact(artifactId: string): ArtifactState {
       request.current++;
     };
   }, [read]);
+
+  // Not on mount (the read above covers it): only when the key moves after.
+  const seenKey = useRef(recheckKey);
+  useEffect(() => {
+    if (seenKey.current === recheckKey) return;
+    seenKey.current = recheckKey;
+    read(true);
+  }, [recheckKey, read]);
 
   const apply = useCallback((summary: ArtifactSummary) => {
     setArtifact((prev) => (prev === null ? prev : { ...prev, ...pickSummary(summary) }));

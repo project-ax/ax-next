@@ -425,6 +425,12 @@ export function AgentView({
   const [fileCount, setFileCount] = useState<number | null>(null);
   // The artifact the Artifacts panel has open (ArtifactViewer); null is the list.
   const [openArtifactId, setOpenArtifactId] = useState<string | null>(null);
+  /*
+    Moves on every Open from a chat card. Open on the artifact ALREADY open
+    sets the same id (a no-op for React), and that card may be announcing a
+    version the viewer hasn't read yet, so it re-reads on this instead.
+  */
+  const [artifactOpens, setArtifactOpens] = useState(0);
   // Another agent's artifacts are another list: never keep this one's open.
   useEffect(() => setOpenArtifactId(null), [agentId]);
   const [pastId, setPastId] = useState<string | null>(null);
@@ -1742,14 +1748,20 @@ export function AgentView({
     (id) => id !== 'memory' || detail.memory.factsAvailable === true,
   );
   const shownPanel = openPanel !== null && panelIds.includes(openPanel) ? openPanel : null;
+  /*
+    Goal 4 — the open viewer and the Artifacts list re-read on the SAME signal
+    the file chips use: once per durable thread read and once per failed turn
+    (TASK-1017/1019), so a version published mid-conversation shows up.
+  */
+  const artifactRecheckKey = threadReads + failedTurns;
   const panelBody =
     shownPanel === 'memory' ? learnedBlock
     : shownPanel === 'files' ? <AgentFiles agentId={agent.id} agentName={agent.name} onCount={setFileCount} />
     : shownPanel === 'activity' ? <AgentActivity agent={agent} busy={streaming || rereading} />
     : shownPanel === 'artifacts' ? (
       openArtifactId !== null
-        ? <ArtifactViewer key={openArtifactId} artifactId={openArtifactId} agentName={agent.name} onBack={() => setOpenArtifactId(null)} onClose={() => { setOpenArtifactId(null); setOpenPanel(null); }} />
-        : <AgentArtifacts agentId={agent.id} agentName={agent.name} onOpen={setOpenArtifactId} />
+        ? <ArtifactViewer key={openArtifactId} artifactId={openArtifactId} agentName={agent.name} recheckKey={artifactRecheckKey + artifactOpens} onBack={() => setOpenArtifactId(null)} onClose={() => { setOpenArtifactId(null); setOpenPanel(null); }} />
+        : <AgentArtifacts agentId={agent.id} agentName={agent.name} recheckKey={artifactRecheckKey} onOpen={setOpenArtifactId} />
     )
     : null;
   const panelMeta =
@@ -2009,7 +2021,7 @@ export function AgentView({
                 </div>
               )}
               <AgentConversation
-                onOpenArtifact={(id) => { setOpenArtifactId(id); setOpenPanel('artifacts'); }}
+                onOpenArtifact={(id) => { setOpenArtifactId(id); setArtifactOpens((n) => n + 1); setOpenPanel('artifacts'); }}
                 agent={agent}
                 thread={past ? pastThread : liveThread}
                 /*

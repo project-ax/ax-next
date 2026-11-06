@@ -78,12 +78,15 @@ export function AgentArtifacts({
   agentId,
   agentName,
   onOpen,
+  recheckKey = 0,
 }: {
   agentId: string;
   agentName: string;
   onOpen(artifactId: string): void;
+  /** Moves when the agent may have published something: the list re-reads quietly. */
+  recheckKey?: number;
 }) {
-  const { status, artifacts, reload } = useAgentArtifacts(agentId);
+  const { status, artifacts, reload } = useAgentArtifacts(agentId, recheckKey);
   const [note, setNote] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const url = workspaceApi.artifactsDownloadAllUrl(agentId);

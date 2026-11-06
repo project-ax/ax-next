@@ -155,4 +155,30 @@ describe('AgentArtifacts', () => {
     fireEvent.click(await screen.findByRole('button', { name: /Q3 report/ }));
     await waitFor(() => expect(onOpen).toHaveBeenCalledWith('art-42'));
   });
+  it('a moved re-check key reloads the list quietly, showing the new artifact', async () => {
+    listMock
+      .mockResolvedValueOnce([art({ artifactId: 'a1', title: 'First' })])
+      .mockResolvedValueOnce([
+        art({ artifactId: 'a2', title: 'Second', updatedAt: '2026-11-02T00:00:00Z' }),
+        art({ artifactId: 'a1', title: 'First' }),
+      ]);
+    const { rerender } = render(<AgentArtifacts agentId="a-quill" agentName="Quill" onOpen={vi.fn()} recheckKey={0} />);
+    expect(await screen.findByText('First')).toBeTruthy();
+    rerender(<AgentArtifacts agentId="a-quill" agentName="Quill" onOpen={vi.fn()} recheckKey={1} />);
+    // Quiet: the rows stay on screen while the re-read is in flight.
+    expect(screen.getByText('First')).toBeTruthy();
+    expect(await screen.findByText('Second')).toBeTruthy();
+    expect(listMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('a quiet reload that fails keeps the rows that were there', async () => {
+    listMock.mockResolvedValueOnce([art({ title: 'Kept' })]).mockRejectedValueOnce(new Error('blip'));
+    const { rerender } = render(<AgentArtifacts agentId="a-quill" agentName="Quill" onOpen={vi.fn()} recheckKey={0} />);
+    expect(await screen.findByText('Kept')).toBeTruthy();
+    rerender(<AgentArtifacts agentId="a-quill" agentName="Quill" onOpen={vi.fn()} recheckKey={1} />);
+    await waitFor(() => expect(listMock).toHaveBeenCalledTimes(2));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(screen.getByText('Kept')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull();
+  });
 });
