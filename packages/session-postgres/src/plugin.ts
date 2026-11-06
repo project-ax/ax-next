@@ -103,7 +103,8 @@ export interface SessionPostgresConfig {
   /**
    * How long a caller waits for a pooled connection, including a new one the
    * database has to answer. Each connect of the dedicated LISTEN connection
-   * (at boot, and every reconnect) gets the same bound. A pooled timeout
+   * (at boot, and every reconnect) gets the same bound, for startup only: the
+   * re-LISTEN replay after it isn't bounded (see listen-connection.ts). A pooled timeout
    * carries a code (TASK-1058): `db-checkout-timeout` when the pool was full
    * and the caller queued, `db-connect-timeout` when the database didn't
    * answer a new connection. The LISTEN connection's timeout (pg's own)
@@ -930,7 +931,8 @@ export function createSessionPostgresPlugin(
       // anyone can use it again. It also logs every 'error' event of its
       // clients (session_postgres_listen_client_error, codes only), so a
       // postgres restart can't crash the host through an unhandled 'error'.
-      // Each connect is bounded by checkoutTimeoutMs (TASK-1056), and TCP
+      // Each connect's startup is bounded by checkoutTimeoutMs (TASK-1056; the
+      // re-LISTEN replay isn't, see listen-connection.ts), and TCP
       // keepalive is on: this connection is idle most of the time, exactly
       // where a vanished peer goes unnoticed. Constructing it opens nothing.
       listen = new ListenConnection({

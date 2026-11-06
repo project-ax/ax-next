@@ -33,7 +33,10 @@ import { faultLogFields, type Logger } from '@ax/core';
 // once startup completes, so the re-LISTEN replay inside connect() is not
 // bounded. A database that accepts the connection and then stops answering
 // leaves the replay's LISTEN, and every caller waiting on the connect, pending
-// until TCP gives up (unacknowledged bytes: keepalive doesn't fire). The old
+// until the socket errors: TCP's retransmission timeout on a dead path
+// (keepalive doesn't fire on unacknowledged bytes), and never for a peer that
+// still acknowledges (a wedged backend, a proxy in front of a dead database).
+// shutdown() can't end that client either, since it isn't live yet. The old
 // single client queued every query behind a stuck LISTEN the same way.
 // ---------------------------------------------------------------------------
 
@@ -167,9 +170,9 @@ export class ListenConnection {
    * Runs a statement on the live client, connecting (and LISTENing again)
    * first if there is none. Rejects with LISTEN_CONNECTION_SHUT_DOWN once
    * shutdown() has run. A client whose backend has died but whose 'error'
-   * pg hasn't delivered yet is still live here, so that one query rejects
-   * with pg's own error and is not retried; the 'error' then drops the
-   * client and the next caller reconnects.
+   * pg hasn't delivered yet is still live here, so a query sent in that
+   * window rejects with pg's own error and is not retried; the 'error' then
+   * drops the client and the next caller reconnects.
    */
   async query(text: string, values?: unknown[]): Promise<pg.QueryResult> {
     await this.ensureConnected();
