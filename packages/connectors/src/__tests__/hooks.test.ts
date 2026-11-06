@@ -1395,6 +1395,9 @@ describe('an edit that points a connector somewhere new signs everyone out first
           level: 'error',
           connectorId: 'linear',
           step: expect.stringContaining(failing),
+          // How many agent sign-ins were already cleared before the failing
+          // step: an operator must be able to tell agents were signed out.
+          purged: failing === PURGE ? 0 : 3,
           err: expect.stringContaining('the vault is down'),
         }),
       ]);

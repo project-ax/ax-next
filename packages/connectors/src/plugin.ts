@@ -1025,9 +1025,13 @@ async function signOutBeforeRetarget(
       await bus.call(CREDENTIALS_DELETE_HOOK, ctx, { scope: 'global', ownerId: null, ref });
     }
   } catch (err) {
+    // `step` is the call that failed; `purged` counts the agent sign-ins
+    // already cleared before it (0 when the purge itself failed), so an
+    // operator can tell everyone was signed out although the edit was refused.
     ctx.logger.error('connectors_retarget_sign_out_failed', {
       connectorId,
       step,
+      purged,
       err: err instanceof Error ? err.message : String(err),
     });
     throw new PluginError({
