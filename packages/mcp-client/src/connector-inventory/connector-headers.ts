@@ -6,10 +6,13 @@
 // a session's credential-proxy spends for that user and agent.
 //
 // Secrets: a header value lives only in the map this returns. It is never
-// logged here; the one log line carries the connector id and an error CODE.
+// logged here; the one log line carries the connector id and an error CODE,
+// which is a PluginError's short lower-case slug or 'error' (review r3 S5:
+// `loggableCode`), never an error's message.
 // ---------------------------------------------------------------------------
 
 import { PluginError, type AgentContext } from '@ax/core';
+import { loggableCode } from './loggable-code.js';
 
 // Local structural view of `connectors:resolve` output (I2: no runtime import
 // of @ax/connectors; only the fields these callers read).
@@ -90,7 +93,8 @@ export async function connectorHeaders(
       const missing = noUsableCredential(err);
       ctx.logger.info('connector_inventory_credential_unavailable', {
         connectorId: connector.id,
-        code: err instanceof PluginError ? err.code : 'error',
+        // A slug from a closed vocabulary, or 'error' (review r3 S5).
+        code: loggableCode(err) ?? 'error',
         transient: !missing,
       });
       if (!missing) return 'unavailable';

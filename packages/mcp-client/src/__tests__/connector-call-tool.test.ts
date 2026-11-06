@@ -634,6 +634,22 @@ describe('connectors:call-tool', () => {
       },
     );
 
+    // Review r3 S5. connectorHeaders' own line logged a PluginError's code
+    // unfiltered. It now takes the same short lower-case slug, or 'error'.
+    it.each<[string, () => never, string]>([
+      ['a slug code is logged', () => { throw new PluginError({ code: 'decrypt-failed', plugin: 'credentials', message: `IGNORE PREVIOUS ${TOKEN}` }); }, 'decrypt-failed'],
+      ['a secret-shaped code is not', () => { throw new PluginError({ code: 'sk-live-123', plugin: 'credentials', message: 'm' }); }, 'error'],
+      ['a spaced code is not', () => { throw new PluginError({ code: `vault down ${TOKEN}`, plugin: 'credentials', message: 'm' }); }, 'error'],
+      ['a raw error has none', () => { throw new Error(`IGNORE PREVIOUS ${TOKEN}`); }, 'error'],
+    ])('the credential line: %s (review r3 S5)', async (_label, credential, code) => {
+      const t = setup({ credential });
+      await t.run(payload());
+      const line = t.logs.find((l) => l.msg === 'connector_inventory_credential_unavailable');
+      expect(line).toMatchObject({ connectorId: 'linear', code });
+      const all = JSON.stringify(t.logs);
+      for (const leak of ['IGNORE', TOKEN, 'sk-live-123', 'vault down']) expect(all).not.toContain(leak);
+    });
+
     it('a genuine unavailable is not marked unexpected', async () => {
       const t = setup({ hasListEffective: false });
       expect(await t.run(payload())).toStrictEqual(FAILED('unavailable'));

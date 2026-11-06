@@ -53,6 +53,7 @@ import {
   type ServerCallOutcome,
 } from './call-server-tool.js';
 import { connectorHeaders, type ResolvedConnector } from './connector-headers.js';
+import { loggableCode } from './loggable-code.js';
 import { assertAllowedServerUrl } from './safe-fetch.js';
 import {
   CONNECTOR_TOOL_KEY_RE,
@@ -96,25 +97,6 @@ function stringList(v: unknown): string[] {
 
 const failed = (reason: ConnectorCallFailedReason): ConnectorCallToolOutput => ({ outcome: 'failed', reason });
 
-/** A code is vocabulary only as a short lower-case slug: `timeout`, `invalid-return`, `not-found`. */
-const LOGGABLE_CODE = /^[a-z][a-z-]{0,39}$/;
-
-/**
- * A thrown error's code, when it is safe to log (review r2 R4), else
- * undefined. Only a `PluginError`'s `code`, and only a short lower-case slug.
- * Narrower than `@ax/core`'s `faultLogFields`, whose identifier shape also
- * admits digits and capitals. The MESSAGE is never read: the SDK and the bus
- * both put a server's or a handler's words in it. Never throws.
- */
-function loggableCode(err: unknown): string | undefined {
-  try {
-    if (!(err instanceof PluginError)) return undefined;
-    const code: unknown = err.code;
-    return typeof code === 'string' && LOGGABLE_CODE.test(code) ? code : undefined;
-  } catch {
-    return undefined;
-  }
-}
 
 /** A lookup that says "not this user's" is an access miss. Anything else is a blip. */
 function lookupFailure(err: unknown): ConnectorCallToolOutput {
