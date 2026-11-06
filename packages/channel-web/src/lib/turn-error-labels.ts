@@ -154,6 +154,11 @@ export const ERROR_LABELS: Record<string, string> = {
   // fair thing to suggest.
   'system-prompt:identity-unavailable':
     'We couldn’t load this agent’s identity and instructions, so it didn’t start. Try again in a moment.',
+  // TASK-1059 — the host couldn't save the person's message, so the turn never
+  // started. Their words are still behind Resend (the headline's "Nothing you
+  // sent was lost" stays true), and a retry can work.
+  'conversation:message-not-saved':
+    'Your message didn’t reach the agent. That’s on us, not you — try again in a moment.',
 };
 
 /**
