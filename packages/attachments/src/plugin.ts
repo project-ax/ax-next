@@ -279,18 +279,7 @@ export function createAttachmentsPlugin(
       );
       registerArtifactHooks(bus, PLUGIN_NAME, { artifacts, bus });
 
-      // The content origin (§6.5). The key is made here and held only in
-      // memory: a restart retires every token in flight.
-      if (config.contentOrigin !== undefined) {
-        const key = randomBytes(32);
-        const handle = await startContentOrigin({
-          ...config.contentOrigin,
-          key,
-          logger: initCtx.logger,
-          serve: createArtifactServe({ artifacts, bus }),
-        });
-        contentOrigin = { handle, key };
-      }
+      // The content origin itself starts last (step 8): mint reads it lazily.
       bus.registerService(
         MINT_VIEW_TOKEN_HOOK,
         PLUGIN_NAME,
@@ -376,6 +365,27 @@ export function createAttachmentsPlugin(
           config.janitorIntervalSeconds ?? DEFAULT_JANITOR_INTERVAL_SECONDS,
         ctx: initCtx,
       });
+
+      // 8) The content origin (§6.5), last, so no later init step can fail
+      //    and leave its port bound. If it cannot start, stop the janitor too:
+      //    a failed init holds nothing. The key is made here and held only in
+      //    memory: a restart retires every token in flight.
+      if (config.contentOrigin !== undefined) {
+        const key = randomBytes(32);
+        try {
+          const handle = await startContentOrigin({
+            ...config.contentOrigin,
+            key,
+            logger: initCtx.logger,
+            serve: createArtifactServe({ artifacts, bus }),
+          });
+          contentOrigin = { handle, key };
+        } catch (err) {
+          await janitor?.stop();
+          janitor = undefined;
+          throw err;
+        }
+      }
     },
 
     contentOriginUrl() {

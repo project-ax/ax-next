@@ -71,6 +71,9 @@ function htmlCsp(frameAncestors: readonly string[]): string {
     "connect-src 'none'",
     "form-action 'none'",
     `frame-ancestors ${frameAncestors.join(' ')}`,
+    // Ruling R8: a /v/ URL opened top-level (not in our iframe) still runs in
+    // an opaque origin, so two artifacts never share storage on this origin.
+    'sandbox allow-scripts allow-downloads',
   ].join('; ');
 }
 
@@ -93,12 +96,32 @@ function routeOf(pathname: string): { route: Route; token: string } | null {
   return { route: m[1] === 'v' ? '/v/:token' : '/d/:token', token: m[2] ?? '' };
 }
 
+/** Sent on every response, Node's own parse-error answers included. */
+const BASE_HEADERS = {
+  'x-content-type-options': 'nosniff',
+  'cache-control': 'private, no-store',
+  'referrer-policy': 'no-referrer',
+} as const;
+
+/**
+ * What a request Node could not parse gets (a malformed request line, headers
+ * too large, a header timeout): one fixed 400 with the base headers, then the
+ * socket is closed. Node's default answer would skip them.
+ */
+const CLIENT_ERROR_RESPONSE = [
+  'HTTP/1.1 400 Bad Request',
+  ...Object.entries(BASE_HEADERS).map(([k, v]) => `${k}: ${v}`),
+  'content-type: text/plain; charset=utf-8',
+  'content-length: 11',
+  'connection: close',
+  '',
+  'bad request',
+].join('\r\n');
+
 function send(res: ServerResponse, status: number, headers: Record<string, string>, body: Uint8Array | string): void {
   const buf = typeof body === 'string' ? Buffer.from(body, 'utf8') : body;
   res.writeHead(status, {
-    'x-content-type-options': 'nosniff',
-    'cache-control': 'private, no-store',
-    'referrer-policy': 'no-referrer',
+    ...BASE_HEADERS,
     'content-length': String(buf.byteLength),
     ...headers,
   });
@@ -192,6 +215,14 @@ export async function startContentOrigin(o: ContentOriginOptions): Promise<Conte
         /* socket already gone */
       }
     });
+  });
+  srv.on('clientError', (err: NodeJS.ErrnoException, socket) => {
+    // Nothing is logged: the error can quote the bytes the client sent.
+    if (err.code === 'ECONNRESET' || !socket.writable) {
+      socket.destroy();
+      return;
+    }
+    socket.end(CLIENT_ERROR_RESPONSE, () => socket.destroy());
   });
   srv.headersTimeout = HEADERS_TIMEOUT_MS;
   srv.requestTimeout = REQUEST_TIMEOUT_MS;

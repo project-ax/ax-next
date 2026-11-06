@@ -1,5 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import { request } from 'node:http';
+import { connect } from 'node:net';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { PluginError, type Logger } from '@ax/core';
 import { MAX_RETAINED_VERSIONS } from '../artifacts/store.js';
@@ -19,7 +20,7 @@ BYTES[HTML_SHA] = new TextEncoder().encode(HTML);
 BYTES[SVG_SHA] = new TextEncoder().encode(SVG);
 
 const HTML_CSP =
-  "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline' 'self'; img-src data: blob: 'self'; font-src 'self'; connect-src 'none'; form-action 'none'; frame-ancestors http://localhost:9090";
+  "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline' 'self'; img-src data: blob: 'self'; font-src 'self'; connect-src 'none'; form-action 'none'; frame-ancestors http://localhost:9090; sandbox allow-scripts allow-downloads";
 
 /** A logger that records every line it is handed, so a test can scan them all. */
 function captureLogger(): { logger: Logger; lines: string[] } {
@@ -127,6 +128,10 @@ describe('content origin', () => {
     const r = await fetch(url);
     expect(r.status).toBe(200);
     expect(r.headers.get('content-security-policy')).toBe(HTML_CSP);
+    // Ruling R8: opened top-level, the page still gets an opaque origin, with no allow-same-origin.
+    const directives = (r.headers.get('content-security-policy') ?? '').split('; ');
+    expect(directives).toContain('sandbox allow-scripts allow-downloads');
+    expect(r.headers.get('content-security-policy')).not.toContain('allow-same-origin');
     expect(r.headers.get('content-type')).toBe('text/html; charset=utf-8');
     expect(r.headers.get('content-disposition')).toBeNull();
     expectBaseHeaders(r);
@@ -317,6 +322,34 @@ describe('content origin', () => {
     expect((await fetch(`${o.url}/api/me`)).status).toBe(404);
     expect((await fetch(`${o.url}/`, { method: 'POST' })).status).toBe(405);
     expect((await fetch(`${o.url}/d/x`, { method: 'DELETE' })).status).toBe(405);
+  });
+
+  it("a request Node can't parse gets a fixed 400 with the base headers, then the socket closes", async () => {
+    const o = await startOrigin();
+    const u = new URL(o.url);
+    const raw = await new Promise<string>((resolve, reject) => {
+      const sock = connect(Number(u.port), u.hostname, () => sock.write('GARBAGE \u0001\r\n\r\n'));
+      let got = '';
+      sock.setEncoding('latin1');
+      sock.on('data', (d: string) => (got += d));
+      sock.on('close', () => resolve(got));
+      sock.on('error', reject);
+    });
+    const [head = '', body] = raw.split('\r\n\r\n');
+    const lines = head.split('\r\n');
+    expect(lines[0]).toBe('HTTP/1.1 400 Bad Request');
+    const headers = Object.fromEntries(
+      lines.slice(1).map((l) => [l.slice(0, l.indexOf(':')).toLowerCase(), l.slice(l.indexOf(':') + 1).trim()]),
+    );
+    expect(headers).toMatchObject({
+      'x-content-type-options': 'nosniff',
+      'cache-control': 'private, no-store',
+      'referrer-policy': 'no-referrer',
+      connection: 'close',
+    });
+    expect(headers['set-cookie']).toBeUndefined();
+    expect(body).toBe('bad request');
+    expect(o.lines).toEqual([]);
   });
 
   it('never reads a cookie: a request carrying one is answered the same', async () => {

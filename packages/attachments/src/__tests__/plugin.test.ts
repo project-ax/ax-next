@@ -3,6 +3,7 @@ import {
   PostgreSqlContainer,
   type StartedPostgreSqlContainer,
 } from '@testcontainers/postgresql';
+import { createServer } from 'node:net';
 import { sql, type Kysely } from 'kysely';
 import {
   createTestHarness,
@@ -274,5 +275,21 @@ describe('@ax/attachments artifacts:publish-blob wiring (D10)', () => {
         purpose: 'view',
       }),
     ).rejects.toMatchObject({ code: 'unavailable' });
+  });
+
+  it('a content origin that cannot bind fails init and leaves nothing running', async () => {
+    const blocker = createServer();
+    await new Promise<void>((r) => blocker.listen(0, '127.0.0.1', () => r()));
+    const port = (blocker.address() as { port: number }).port;
+    try {
+      const plugin = createAttachmentsPlugin({
+        janitorIntervalSeconds: 1,
+        contentOrigin: { host: '127.0.0.1', port, frameAncestors: ['http://localhost:9090'] },
+      });
+      await expect(makeHarness({}, plugin)).rejects.toThrow();
+      expect(plugin.contentOriginUrl()).toBeUndefined();
+    } finally {
+      await new Promise<void>((r) => blocker.close(() => r()));
+    }
   });
 });
