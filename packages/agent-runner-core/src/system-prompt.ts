@@ -231,6 +231,7 @@ export function pythonVenvNote(): string {
     `installed packages are importable immediately.`,
     `The environment is discarded when the session ends, and installs are limited to the`,
     `package registries your agent is permitted to reach.`,
+    `These Python libraries are already installed, so there's nothing to download: reportlab for PDFs, python-docx for Word documents, openpyxl for Excel spreadsheets, and matplotlib for charts (save charts as PNG or SVG).`,
   ].join(' ');
 }
 

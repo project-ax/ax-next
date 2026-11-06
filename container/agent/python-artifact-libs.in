@@ -1,0 +1,15 @@
+# Python libraries baked into the agent image's venv template so an agent can
+# write PDFs, Word documents, spreadsheets and charts without reaching pypi.
+#
+# Exact pins only. After editing, regenerate the hash-pinned lock with uv
+# 0.11.16 (the Dockerfile's pin) from the repo root:
+#
+#   uv pip compile --universal --python-version 3.11 --generate-hashes \
+#     container/agent/python-artifact-libs.in -o container/agent/python-artifact-libs.txt
+#
+# Each bump must still ship CPython 3.11 wheels for manylinux x86_64 (GKE) and
+# aarch64 (kind): the image installs with --only-binary :all: and has no compiler.
+reportlab==5.1.0
+python-docx==1.2.0
+openpyxl==3.1.5
+matplotlib==3.11.2
