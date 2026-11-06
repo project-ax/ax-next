@@ -1927,6 +1927,19 @@ cannot reach the network, the app's cookies, or the app's DOM.
   removed (stripped when the document is built, or purged at runtime) and the
   visual stays up. The child's script never runs.
 
+### Walks completed
+- **VISUALS-1 (chat visuals)** — walked 2026-11-06 on `kind-ax-next-dev`
+  (rebuilt `ax-next/agent:dev`). Full walk, steps 0–6, passed on both a
+  `claude-sdk` and an `aisdk` agent at `0b3bbd44a` (walk 3), except
+  self-navigation. A self-navigating frame, or a click on a plain link,
+  showed Chrome's "This content is blocked" page (BUG-3). We fixed it in
+  `81758aaba` and rechecked it there on `claude-sdk` (the fix is
+  client-side). Plain, middle, modifier and keyboard link clicks now do
+  nothing, and the visual stays up. A `location.href` visual now shows
+  "This visual couldn't be displayed." with its summary, both live and after
+  a reload. The canary logged nothing. Ordinary charts still render and
+  survive a reload.
+
 ### Cleanup
 
 Delete the walk's conversations. Nothing else persists.
