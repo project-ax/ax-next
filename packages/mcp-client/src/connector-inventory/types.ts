@@ -153,8 +153,9 @@ export const InventoryToolTitlesInputSchema = z
 //     `connectors:describe-tools`, not a transport field. `input` is the
 //     ToolCall vocabulary, not MCP's `arguments`. The reason codes carry no
 //     URL, header, HTTP status, server name or session id. `tool-error` (the
-//     tool answered that it did not work) is MCP's `isError` in our words; a
-//     REST connector has the same answer (a tool-level failure body).
+//     service answered that the call did not work, after it went out) is
+//     MCP's `isError` or a JSON-RPC error object in our words; a REST
+//     connector has the same answer (a tool-level failure body).
 //   - Subscriber risk: none. It is a service hook, and nothing fires.
 //   - Wire surface: none. It is deliberately NOT an IPC action, and NOT a
 //     `tool:execute:<name>`: `tool.execute-host` dispatches only those, and no
@@ -164,12 +165,14 @@ export const InventoryToolTitlesInputSchema = z
 /**
  * A definite answer. Every reason but `tool-error` means nothing completed.
  * `tool-error` (review F3) is the service answering that the call did not
- * work after it was sent: the tool's own `isError`, or a JSON-RPC -32602
- * (InvalidParams), which a server can send after the tool ran (review r2 R1).
- * The tool may have RUN and done part of the work, so a caller must never
- * read it as "nothing happened". Kept under `failed` because the service did
+ * work after it was sent: the tool's own `isError`, or ANY JSON-RPC error
+ * object the server sends back for it (review r3 S1, after r2 R1 moved
+ * -32602): a relay or an SDK can send any code after the tool ran. The tool
+ * may have run and done part of the work, so a caller must never read it as
+ * "nothing happened". Kept under `failed` because the service did
  * answer, and given its own code so it is never confused with `rejected`
- * (the server refused the request, so nothing ran).
+ * (the request was turned away before anything ran: before the send, or an
+ * HTTP 4xx from the transport).
  */
 export type ConnectorCallFailedReason =
   | 'invalid-call'

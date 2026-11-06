@@ -7,15 +7,16 @@
 //     resumption of a dropped stream (`maxRetries: 0`), no loop.
 //   - `failed` only on a definite answer. Nothing completed when the call was
 //     never sent (a refused URL, a failed connect, a budget spent before the
-//     send) or the server refused the request (HTTP 401/403/other 4xx, or
-//     JSON-RPC parse error, invalid request or method not found). The one
-//     `failed` that is NOT "nothing completed" is `tool-error`: the tool
-//     answered `isError`, or the server answered -32602 (InvalidParams),
-//     which it can send AFTER the tool ran (see `classifyCallError`). Either
-//     way it may have done part of the work. It has its own closed code so no
-//     caller can mistake it for a refusal.
+//     send) or the transport answered it with an HTTP 4xx (401/403 is
+//     `needs-auth`, the rest `rejected`). The one `failed` that is NOT
+//     "nothing completed" is `tool-error`: the tool answered `isError`, or
+//     the server answered with ANY JSON-RPC error object after the send
+//     (review r3 S1). Nothing in such an answer proves the tool did not run:
+//     a relay puts whatever its upstream threw on the wire, and some SDKs
+//     throw only after running the callback (see `classifyCallError`). It has
+//     its own closed code so no caller can mistake it for a refusal.
 //   - `unknown` when it was sent and no reliable answer came back: a timeout,
-//     a reset, a 5xx, any other JSON-RPC error, a redirect, an oversize or
+//     a reset, a 5xx, a closed connection, a redirect, an oversize or
 //     unreadable reply. A caller must never read that as "nothing happened",
 //     or a person re-approves and the call lands twice.
 //
@@ -76,21 +77,6 @@ export interface CallServerToolOptions {
 /** The one field of a `tools/call` result we read. The rest is never looked at. */
 const CallResultView = z.object({ isError: z.boolean().optional() }).passthrough();
 
-/**
- * JSON-RPC codes that mean the server refused the request rather than ran it.
- *
- * NOT -32602 (InvalidParams, review r2 R1). An McpServer on SDK 1.12-1.20 runs
- * the tool callback first and only then throws InvalidParams for "output
- * schema but no structured content", and a low-level Server handler can answer
- * -32602 at any point. Read as a refusal it would print "Nothing was
- * completed" over a call that ran, and a second approve would post it twice.
- */
-const REJECTED_RPC_CODES: ReadonlySet<number> = new Set([
-  ErrorCode.ParseError,
-  ErrorCode.InvalidRequest,
-  ErrorCode.MethodNotFound,
-]);
-
 function errorName(err: unknown): string {
   if (err === null || typeof err !== 'object') return '';
   const name = (err as { name?: unknown }).name;
@@ -116,15 +102,28 @@ function classifyCallError(err: unknown): ServerCallOutcome {
     if (status !== undefined && status >= 400 && status <= 499) return { outcome: 'failed', reason: 'rejected' };
     return { outcome: 'unknown', reason: 'interrupted' };
   }
-  // A JSON-RPC error. The server picks the number, so only the codes that say
-  // the request was malformed or unknown are a refusal.
+  // A JSON-RPC error. No code means "refused, nothing ran" once the call is
+  // out (review r3 S1), so there is no rejected set here any more. The server
+  // picks the number, and the number says nothing about whether the tool ran:
+  //   - an McpServer on SDK 1.12-1.20 runs the callback and then throws
+  //     -32602 (InvalidParams) for "output schema but no structured content"
+  //     (review r2 R1);
+  //   - SDK 1.32.1's own `Client.callTool` throws -32600 (InvalidRequest)
+  //     AFTER getting such a result, and a low-level `Server` relay puts
+  //     whatever its upstream threw on the wire, so -32600, -32700 or -32601
+  //     can come back for a call that already completed.
+  // So any JSON-RPC error object is the server's answer to a call it had:
+  // `tool-error`, the same answer as `isError`.
+  //
+  // Except the two codes the SDK raises ITSELF after the send, with no answer
+  // at all: -32001 RequestTimeout (our own deadline, or a budget abort it
+  // wraps) and -32000 ConnectionClosed (the transport closed with the call
+  // pending). By code, a server sending either number reads the same, and
+  // "no reliable answer" is the honest reading of both: `unknown`.
   if (err instanceof McpError) {
-    if (REJECTED_RPC_CODES.has(err.code)) return { outcome: 'failed', reason: 'rejected' };
-    // The server answered that the call failed, and the tool may already have
-    // run (see REJECTED_RPC_CODES): the same answer as `isError`.
-    if (err.code === ErrorCode.InvalidParams) return { outcome: 'failed', reason: 'tool-error' };
     if (err.code === ErrorCode.RequestTimeout) return { outcome: 'unknown', reason: 'timeout' };
-    return { outcome: 'unknown', reason: 'interrupted' };
+    if (err.code === ErrorCode.ConnectionClosed) return { outcome: 'unknown', reason: 'interrupted' };
+    return { outcome: 'failed', reason: 'tool-error' };
   }
   const name = errorName(err);
   if (name === 'TimeoutError' || name === 'AbortError') return { outcome: 'unknown', reason: 'timeout' };

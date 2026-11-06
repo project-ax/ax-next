@@ -176,6 +176,29 @@ describe('callServerTool', () => {
     expect(server.toolCalls()).toHaveLength(1);
   });
 
+  // Review r3 S1. A low-level `Server` relay puts any thrown error's code on the
+  // wire, and SDK 1.32.1's own `Client.callTool` throws McpError(-32600) AFTER
+  // it got a result that lacks structuredContent despite an output schema. So
+  // a relay answers -32600 for a call its upstream already completed (the
+  // round-3 probe printed `code=-32600 sideEffects=1`), and the same path can
+  // surface -32700 or -32601. Each is answered here only after the server has
+  // the call.
+  it.each([-32600, -32700, -32601])(
+    'a JSON-RPC %i answered after the server has the call is tool-error, never a refusal',
+    async (code) => {
+      let callsWhenAnswered = -1;
+      const server = fakeMcpServer({
+        toolsCall: (msg) => {
+          callsWhenAnswered = server.toolCalls().length;
+          return json(msg.id, { error: { code, message: HOSTILE } });
+        },
+      });
+      expect(await call(server)).toStrictEqual({ outcome: 'failed', reason: 'tool-error' });
+      expect(callsWhenAnswered).toBe(1);
+      expect(server.toolCalls()).toHaveLength(1);
+    },
+  );
+
   it('401 on initialize is needs-auth and never sends tools/call', async () => {
     const server = fakeMcpServer({ initialize: () => new Response('who are you', { status: 401 }) });
     expect(await call(server)).toStrictEqual({ outcome: 'failed', reason: 'needs-auth' });
@@ -317,9 +340,12 @@ describe('callServerTool', () => {
 
 // ---------------------------------------------------------------------------
 // The rest of the plan's classification table, one row each. The line that
-// matters: after the send, only an answer that says the call did not happen
-// is `failed`. HTTP statuses come from the transport, so a JSON-RPC error
-// that merely carries the number 401 is a server error, not a sign-in one.
+// matters: after the send, a JSON-RPC error object is the SERVER'S answer to a
+// call it already had, so it is `tool-error` whatever its number (review r3
+// S1); only the transport's HTTP 4xx is `rejected`. HTTP statuses come from
+// the transport, so a JSON-RPC error that merely carries the number 401 is a
+// server error, not a sign-in one. The two codes the SDK raises itself with no
+// answer (-32001 timeout, -32000 connection closed) stay `unknown`.
 // ---------------------------------------------------------------------------
 
 describe('callServerTool classification', () => {
@@ -331,16 +357,20 @@ describe('callServerTool classification', () => {
     ['HTTP 404', status(404), { outcome: 'failed', reason: 'rejected' }],
     ['HTTP 429', status(429), { outcome: 'failed', reason: 'rejected' }],
     ['HTTP 502', status(502), { outcome: 'unknown', reason: 'interrupted' }],
-    ['JSON-RPC parse error', rpcError(-32700), { outcome: 'failed', reason: 'rejected' }],
-    ['JSON-RPC invalid request', rpcError(-32600), { outcome: 'failed', reason: 'rejected' }],
-    ['JSON-RPC method not found', rpcError(-32601), { outcome: 'failed', reason: 'rejected' }],
-    // Review r2 R1: the one JSON-RPC "bad request" code a server can send after
-    // the tool ran. Not a refusal.
+    // Review r3 S1: every JSON-RPC error object after the send is the server's
+    // answer, and none of them proves the tool did not run.
+    ['JSON-RPC parse error', rpcError(-32700), { outcome: 'failed', reason: 'tool-error' }],
+    ['JSON-RPC invalid request', rpcError(-32600), { outcome: 'failed', reason: 'tool-error' }],
+    ['JSON-RPC method not found', rpcError(-32601), { outcome: 'failed', reason: 'tool-error' }],
     ['JSON-RPC invalid params', rpcError(-32602), { outcome: 'failed', reason: 'tool-error' }],
-    ['JSON-RPC internal error', rpcError(-32603), { outcome: 'unknown', reason: 'interrupted' }],
+    ['JSON-RPC internal error', rpcError(-32603), { outcome: 'failed', reason: 'tool-error' }],
+    ['a server-defined JSON-RPC error', rpcError(-32050), { outcome: 'failed', reason: 'tool-error' }],
+    ['a JSON-RPC error numbered 401', rpcError(401), { outcome: 'failed', reason: 'tool-error' }],
+    // The SDK raises these two itself when no answer came (its own deadline, a
+    // closed transport), so by code a server sending them reads the same: no
+    // reliable answer, which `unknown` says honestly.
     ['JSON-RPC connection closed', rpcError(-32000), { outcome: 'unknown', reason: 'interrupted' }],
     ['JSON-RPC request timeout', rpcError(-32001), { outcome: 'unknown', reason: 'timeout' }],
-    ['a JSON-RPC error numbered 401', rpcError(401), { outcome: 'unknown', reason: 'interrupted' }],
     [
       'an unexpected content type',
       () => new Response(HOSTILE, { headers: { 'content-type': 'text/html' } }),
