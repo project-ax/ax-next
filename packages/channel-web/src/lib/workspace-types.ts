@@ -56,6 +56,9 @@ import type {
  * not a copy: `'stay-on-top' | 'get-done'`. What each is called, and how a
  * kind this page doesn't know is read, live in `./task-kinds.js`.
  */
+import { z } from 'zod';
+import { ArtifactKindSchema } from '@ax/ipc-protocol/content-blocks';
+
 export type { TaskKind };
 
 export type Attendance = 'attended' | 'unattended';
@@ -1569,3 +1572,63 @@ export interface TaskCheckin {
   /** How the approval cards in `thread` were read, the agent view's field. */
   decisions: { status: WorkspaceReadStatus };
 }
+
+// ---------------------------------------------------------------------------
+// Artifacts — the agent's finished pieces of work (docs, pages, sheets).
+//
+// Client mirrors of the owner shapes `routes-artifacts.ts` answers with, read
+// through zod so a malformed 200 is a failed read, never an empty list. Not
+// imported from `@ax/attachments` (invariant 2).
+// ---------------------------------------------------------------------------
+
+export const ArtifactSummarySchema = z.object({
+  artifactId: z.string(),
+  agentId: z.string(),
+  title: z.string(),
+  mediaType: z.string(),
+  kind: ArtifactKindSchema,
+  preview: z.string(),
+  /** Uppercase, no dot: "PDF". */
+  extension: z.string(),
+  currentVersion: z.number().int(),
+  sizeBytes: z.number(),
+  linkOn: z.boolean(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+});
+export type ArtifactSummary = z.infer<typeof ArtifactSummarySchema>;
+
+export const ArtifactVersionSchema = z.object({
+  version: z.number().int(),
+  mediaType: z.string(),
+  sizeBytes: z.number(),
+  createdAt: z.string(),
+});
+export type ArtifactVersion = z.infer<typeof ArtifactVersionSchema>;
+
+export const ArtifactDetailSchema = ArtifactSummarySchema.extend({
+  versions: z.array(ArtifactVersionSchema),
+});
+export type ArtifactDetail = z.infer<typeof ArtifactDetailSchema>;
+
+/** What a share-link holder sees: no artifact id, no version numbers. */
+export const SharedArtifactViewSchema = z.object({
+  title: z.string(),
+  kind: ArtifactKindSchema,
+  preview: z.string(),
+  extension: z.string(),
+  mediaType: z.string(),
+  sizeBytes: z.number(),
+  updatedAt: z.string(),
+  agentName: z.string().nullable(),
+});
+export type SharedArtifactView = z.infer<typeof SharedArtifactViewSchema>;
+
+export const ArtifactListSchema = z.object({ artifacts: z.array(ArtifactSummarySchema) });
+export const ArtifactDetailBodySchema = z.object({ artifact: ArtifactDetailSchema });
+export const ArtifactSummaryBodySchema = z.object({ artifact: ArtifactSummarySchema });
+export const ArtifactTextSchema = z.object({ text: z.string(), truncated: z.boolean() });
+export const ArtifactTokenSchema = z.object({ url: z.string(), expiresAt: z.string() });
+export const ArtifactShareCodeSchema = z.object({ shareCode: z.string().nullable() });
+export type ArtifactTokenPurpose = 'view' | 'download';
+export type ArtifactLinkAction = 'ensure' | 'off' | 'rotate';

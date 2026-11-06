@@ -77,6 +77,7 @@ import type { PhaseKind } from '@/server/types';
 import { STOPPED_NOTICE, STOP_COPY, STOP_FALLBACK_MS } from './stop-copy';
 import { AgentConversation, approvalReadFrom, type ApprovalRead } from './AgentConversation';
 import { AgentFiles } from './AgentFiles';
+import { AgentArtifacts } from './AgentArtifacts';
 import { SkippedConnectorsNotice } from './SkippedConnectorsNotice';
 import { MemorySurface } from './FactsMemory';
 import { AgentInstructions } from './AgentInstructions';
@@ -421,6 +422,8 @@ export function AgentView({
   const setOpenPanel = compactRail ? setSheetPanel : setDesktopPanel;
   const [settingsListRequested, setSettingsListRequested] = useState(false);
   const [fileCount, setFileCount] = useState<number | null>(null);
+  // The artifact the Artifacts panel has open (Tasks 12-13 draw it); null is the list.
+  const [openArtifactId, setOpenArtifactId] = useState<string | null>(null);
   const [pastId, setPastId] = useState<string | null>(null);
   /**
    * The excerpt for the past conversation the rail has open, fetched on demand
@@ -1740,11 +1743,13 @@ export function AgentView({
     shownPanel === 'memory' ? learnedBlock
     : shownPanel === 'files' ? <AgentFiles agentId={agent.id} agentName={agent.name} onCount={setFileCount} />
     : shownPanel === 'activity' ? <AgentActivity agent={agent} busy={streaming || rereading} />
+    : shownPanel === 'artifacts' ? <AgentArtifacts agentId={agent.id} agentName={agent.name} onOpen={setOpenArtifactId} />
     : null;
   const panelMeta =
     shownPanel === 'files' && fileCount !== null
       ? `${fileCount} ${fileCount === 1 ? 'file' : 'files'}`
       : null;
+  const wide = shownPanel === 'artifacts' && openArtifactId !== null;
   const memoryUnseen = learnedUnseen > 0 && shownPanel !== 'memory';
   const panelToggles = (
     <ChatPanelToggles
@@ -2060,12 +2065,12 @@ export function AgentView({
         </div>
         <LearnedAnnouncer announcement={learned.announcement} />
         {compactRail ? <Sheet open={shownPanel !== null} onOpenChange={(open) => { if (!open) setSheetPanel(null); }}>
-          <SheetContent side="right" aria-describedby={undefined} className="flex w-[320px] max-w-[calc(100vw-24px)] flex-col gap-0 p-0">
+          <SheetContent side="right" aria-describedby={undefined} className={cn('flex max-w-[calc(100vw-24px)] flex-col gap-0 p-0', wide ? 'w-[min(560px,calc(100vw-24px))]' : 'w-[320px]')}>
             {/* Named for the view, so the sheet and its heading agree. */}
             <SheetTitle className="sr-only">{shownPanel !== null ? `${RAIL_PANELS[shownPanel].label} panel` : 'Side panel'}</SheetTitle>
-            {shownPanel !== null && <AgentRailContent panel={shownPanel} meta={panelMeta}>{panelBody}</AgentRailContent>}
+            {shownPanel !== null && <AgentRailContent panel={shownPanel} meta={panelMeta} wide={wide}>{panelBody}</AgentRailContent>}
           </SheetContent>
-        </Sheet> : shownPanel !== null && <AgentRail panel={shownPanel} meta={panelMeta}>{panelBody}</AgentRail>}
+        </Sheet> : shownPanel !== null && <AgentRail panel={shownPanel} meta={panelMeta} wide={wide}>{panelBody}</AgentRail>}
       </div>
     </MemoryFixesContext.Provider>
   );

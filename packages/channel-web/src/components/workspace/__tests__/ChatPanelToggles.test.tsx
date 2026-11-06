@@ -35,13 +35,14 @@ const group = () => screen.getByRole('group', { name: 'Side panel' });
 const toggle = (name: string) => within(group()).getByRole('radio', { name });
 
 describe('ChatPanelToggles', () => {
-  it('draws Memory, Files and Activity in that order, none pressed when closed', () => {
+  it('draws Memory, Files, Activity and Artifacts in that order, none pressed when closed', () => {
     render(<Harness />);
     const items = within(group()).getAllByRole('radio');
     expect(items.map((i) => i.getAttribute('aria-label'))).toEqual([
       'Memory',
       'Files',
       'Activity',
+      'Artifacts',
     ]);
     for (const item of items) expect(item.getAttribute('aria-checked')).toBe('false');
   });

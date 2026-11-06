@@ -29,6 +29,8 @@ vi.mock('@/lib/workspace-api', async () => {
       // Activity reads the rail route; Files reads user files. Each should be
       // called only once its own view is open.
       rail: vi.fn(async () => railFixture()),
+      artifacts: vi.fn(async () => []),
+      artifactsDownloadAllUrl: vi.fn(() => '/api/workspace/agents/a-quill/artifacts/download-all'),
       // A root 404 is an empty list.
       userFiles: vi.fn(async () => {
         const E = actual.WorkspaceApiError as new (path: string, status: number) => Error;
@@ -99,6 +101,7 @@ beforeEach(() => {
   agentMock.mockResolvedValue(detail());
   vi.mocked(workspaceApi.rail).mockClear();
   vi.mocked(workspaceApi.userFiles).mockClear();
+  vi.mocked(workspaceApi.artifacts).mockClear();
 });
 
 afterEach(() => localStorage.clear());
@@ -112,6 +115,7 @@ describe('AgentView side-panel toggles — the accessibility tree', () => {
     expect(toggles().map((t) => t.getAttribute('aria-label'))).toEqual([
       RAIL_PANELS.files.label,
       RAIL_PANELS.activity.label,
+      RAIL_PANELS.artifacts.label,
     ]);
     for (const t of toggles()) expect(t.getAttribute('aria-checked')).toBe('false');
     expect(screen.queryAllByRole('tab', { hidden: true })).toHaveLength(0);
@@ -165,6 +169,17 @@ describe('AgentView side-panel toggles — the accessibility tree', () => {
 
     fireEvent.click(screen.getByRole('radio', { name: 'Files' }));
     await waitFor(() => expect(workspaceApi.userFiles).toHaveBeenCalled());
+    expect(workspaceApi.rail).not.toHaveBeenCalled();
+  });
+
+  it('opening Artifacts fetches only the artifact list', async () => {
+    renderView();
+    await screen.findByRole('group', { name: 'Side panel' });
+    expect(workspaceApi.artifacts).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('radio', { name: 'Artifacts' }));
+    await waitFor(() => expect(workspaceApi.artifacts).toHaveBeenCalledWith('a-quill'));
+    expect(workspaceApi.userFiles).not.toHaveBeenCalled();
     expect(workspaceApi.rail).not.toHaveBeenCalled();
   });
 
