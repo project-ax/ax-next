@@ -43,6 +43,8 @@ import {
   isOwnerOnlyChange,
   OWNER_ONLY_CHANGE_MESSAGE,
   isConnectorIdTaken,
+  isConnectorSignOutFailure,
+  CONNECTOR_SIGN_OUT_FAILED_MESSAGE,
   CONNECTOR_ID_TAKEN_MESSAGE,
   CONNECTOR_ID_TAKEN_REQUEST_MESSAGE,
   type Connector,
@@ -59,6 +61,7 @@ import {
   formFromConnector,
   capabilitiesFromForm,
   endpointChangedServers,
+  pointsSomewhereNew,
   applyComposeToForm,
   summaryToForm,
   connectorIdFromName,
@@ -473,6 +476,11 @@ function ServicesSection({
   );
 }
 
+/** An edit saved the connector, then the client secret write failed (TASK-887:
+ *  edits write the connector first). */
+const CLIENT_SECRET_AFTER_SAVE_FAILED_MESSAGE =
+  'We saved the connector, but couldn’t save the client secret. Try saving again.';
+
 export function LegacyConnectorEditDialog({
   target,
   open,
@@ -576,6 +584,25 @@ export function LegacyConnectorEditDialog({
       capabilitiesFromForm(form).mcpServers,
     ).length > 0;
 
+  // TASK-887 — an edit that points the connector somewhere new (a new site, a
+  // re-pointed key) signs everyone out of it; the server does that inside the
+  // save. Compared on what Save would actually send (discovered hosts merged
+  // in), against what was loaded. A create has nobody to sign out.
+  const retargeted =
+    target !== 'new' &&
+    pointsSomewhereNew(
+      { id: form.connectorId, keyMode: form.keyMode, capabilities: form.baseCapabilities },
+      {
+        id: form.connectorId,
+        keyMode: form.keyMode,
+        capabilities: capabilitiesFromForm({
+          ...form,
+          allowedHosts: [...new Set([...splitList(form.allowedHosts), ...discoveredHosts])].join(', '),
+        }),
+      },
+    );
+  const signsInWithOAuth = capabilitiesFromForm(form).credentials.some((c) => c.kind === 'oauth');
+
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (busy || discoveringHosts) return;
@@ -588,59 +615,64 @@ export function LegacyConnectorEditDialog({
     setError(null);
 
     // --- oauth client_secret persistence ------------------------------------
-    // For each oauth slot that has a newly-entered client_secret: write the
-    // secret to the vault and attach the resulting ref to the slot row.
-    // The raw secret MUST NOT flow into capabilitiesFromForm — only the ref.
+    // For each oauth slot with a newly-typed client_secret, the vault ref is
+    // deterministic (`refForDestination`), so the connector body can name it
+    // before the secret is written. The raw secret MUST NOT flow into
+    // capabilitiesFromForm — only the ref.
     //
-    // M3 — The vault write happens BEFORE the connector write deliberately:
-    // an orphaned secret on a connector-write failure is harmless and
-    // self-healing on re-save; the reverse order would leave the connector
-    // pointing at a missing ref.
+    // ORDER (TASK-887). An EDIT writes the connector first and the secret
+    // after: the server may clear the client secret inside the PATCH when the
+    // edit points the connector somewhere new, so a secret written earlier
+    // would be wiped, and a refused PATCH must write nothing. A CREATE still
+    // writes the secret first (M3): an orphaned secret after a failed create is
+    // harmless and self-healing on re-save, whereas the reverse order would
+    // leave the connector pointing at a missing ref.
     //
     // NOTE: the secret is always stored at the workspace (global), so anyone
     // who signs in can use it. Nothing is stored per person (slice 5).
-    let updatedSlots = form.credentialSlots;
-    try {
-      const slotPatches: Record<number, { clientSecretRef: string }> = {};
-      for (const [idxStr, secret] of Object.entries(oauthClientSecrets)) {
-        const idx = Number(idxStr);
-        const row = form.credentialSlots[idx];
-        if (!row || row.kind !== 'oauth' || !secret.trim()) continue;
-        const destination = {
-          kind: 'account' as const,
-          service: connectorId,
-          slot: OAUTH_CLIENT_SECRET_SLOT,
-        };
+    const secretDestination = {
+      kind: 'account' as const,
+      service: connectorId,
+      slot: OAUTH_CLIENT_SECRET_SLOT,
+    };
+    const typedSecrets: string[] = [];
+    const slotPatches: Record<number, { clientSecretRef: string }> = {};
+    for (const [idxStr, secret] of Object.entries(oauthClientSecrets)) {
+      const idx = Number(idxStr);
+      const row = form.credentialSlots[idx];
+      if (!row || row.kind !== 'oauth' || !secret.trim()) continue;
+      typedSecrets.push(secret);
+      slotPatches[idx] = { clientSecretRef: refForDestination(secretDestination) };
+    }
+    const writeClientSecrets = async () => {
+      for (const payload of typedSecrets) {
         await setDestinationCredential({
-          destination,
+          destination: secretDestination,
           slot: { kind: 'api-key' },
           scope: { scope: 'global', ownerId: null },
-          payload: secret,
+          payload,
         });
-        slotPatches[idx] = {
-          clientSecretRef: refForDestination(destination),
-        };
       }
-      // Apply clientSecretRef patches. Do this outside the loop so we mutate the
-      // slot array once (avoids multiple setForm calls racing with each other).
-      if (Object.keys(slotPatches).length > 0) {
-        updatedSlots = form.credentialSlots.map((row, idx) =>
-          slotPatches[idx] ? { ...row, ...slotPatches[idx] } : row,
+    };
+    if (target === 'new') {
+      try {
+        await writeClientSecrets();
+      } catch (err) {
+        setError(
+          `Failed to save OAuth client secret: ${err instanceof Error ? err.message : String(err)}`,
         );
+        setBusy(false);
+        return;
       }
-    } catch (err) {
-      setError(
-        `Failed to save OAuth client secret: ${err instanceof Error ? err.message : String(err)}`,
-      );
-      setBusy(false);
-      return;
     }
     // Build capabilities from the slot list that now carries clientSecretRefs (not raw
     // secrets). The raw secrets are in oauthClientSecrets (local state only) and never
     // reach the connector body.
     const formWithSecretRefs: ConnectorFormState = {
       ...form,
-      credentialSlots: updatedSlots,
+      credentialSlots: form.credentialSlots.map((row, idx) =>
+        slotPatches[idx] ? { ...row, ...slotPatches[idx] } : row,
+      ),
       allowedHosts: [...new Set([...splitList(form.allowedHosts), ...discoveredHosts])].join(', '),
     };
 
@@ -657,19 +689,29 @@ export function LegacyConnectorEditDialog({
         await createConnector(body, base);
       } else {
         await patchConnector(target.id, body, base);
+        try {
+          await writeClientSecrets();
+        } catch {
+          // The connector is saved; only the secret is missing. Stay open —
+          // the typed secret is still in the field, and Save writes it.
+          setError(CLIENT_SECRET_AFTER_SAVE_FAILED_MESSAGE);
+          return;
+        }
       }
       onSaved();
     } catch (err) {
       setError(
-        isToolPermissionsResetFailure(err)
-          ? TOOL_PERMISSIONS_RESET_FAILED_MESSAGE
-          : isOwnerOnlyChange(err)
-            ? OWNER_ONLY_CHANGE_MESSAGE
-            : isConnectorIdTaken(err)
-              ? fromRequest
-                ? CONNECTOR_ID_TAKEN_REQUEST_MESSAGE
-                : CONNECTOR_ID_TAKEN_MESSAGE
-              : "We couldn't save this connector. Please try again.",
+        isConnectorSignOutFailure(err)
+          ? CONNECTOR_SIGN_OUT_FAILED_MESSAGE
+          : isToolPermissionsResetFailure(err)
+            ? TOOL_PERMISSIONS_RESET_FAILED_MESSAGE
+            : isOwnerOnlyChange(err)
+              ? OWNER_ONLY_CHANGE_MESSAGE
+              : isConnectorIdTaken(err)
+                ? fromRequest
+                  ? CONNECTOR_ID_TAKEN_REQUEST_MESSAGE
+                  : CONNECTOR_ID_TAKEN_MESSAGE
+                : "We couldn't save this connector. Please try again.",
       );
     } finally {
       setBusy(false);
@@ -829,16 +871,6 @@ export function LegacyConnectorEditDialog({
                     }
                   />
                 </div>
-                {endpointChanged && (
-                  <Alert role="note" data-testid="endpoint-change-resets-tools">
-                    <AlertDescription>
-                      Changing this server’s address resets its tool permissions.
-                      Every tool goes back to asking first, and choices people made
-                      for their own agents are cleared too. Once it’s saved, you can
-                      choose again.
-                    </AlertDescription>
-                  </Alert>
-                )}
               </>
             )}
 
@@ -1176,6 +1208,34 @@ export function LegacyConnectorEditDialog({
               )}
             </div>
           </div>
+
+          {/* TASK-887 / TASK-758 — what Save will cost, right above Save. Sits
+              below every per-mechanism field: a new site is typed in the hosts
+              field, and a server address only exists for an MCP connector. */}
+          {(retargeted || endpointChanged) && (
+            <Alert role="note" data-testid="endpoint-change-resets-tools">
+              <AlertDescription className="flex flex-col gap-2">
+                {retargeted && (
+                  <p>
+                    Changing where this connector points signs everyone out of it.{' '}
+                    {signsInWithOAuth
+                      ? 'Each agent signs in again from its Connectors tab.'
+                      : form.keyMode === 'workspace'
+                        ? 'It also clears the shared key.'
+                        : 'Each agent adds its key again from its Connectors tab.'}
+                  </p>
+                )}
+                {endpointChanged && (
+                  <p>
+                    Changing this server’s address resets its tool permissions.
+                    Every tool goes back to asking first, and choices people made
+                    for their own agents are cleared too. Once it’s saved, you can
+                    choose again.
+                  </p>
+                )}
+              </AlertDescription>
+            </Alert>
+          )}
 
           {/* Services (service bundle) — independent of the mechanism choice. */}
           <ServicesSection
