@@ -137,11 +137,11 @@ describe('checkout timeout, against a real database', () => {
   beforeAll(async () => {
     container = await startTestContainer(new PostgreSqlContainer('postgres:16-alpine'));
     connectionString = container.getConnectionUri();
-  }, 120_000);
+  });
 
   afterAll(async () => {
     if (container) await stopPostgresContainer(container);
-  }, 60_000);
+  });
 
   it('a caller waiting for the only connection fails once the timeout passes, and the pool still serves afterwards', async () => {
     const db = await instance({ connectionString, poolMax: 1, checkoutTimeoutMs: 1_000 });
