@@ -2,6 +2,7 @@ import { randomBytes } from 'node:crypto';
 import {
   PluginError,
   answerRequireUserFailure,
+  faultLogFields,
   makeAgentContext,
   type AgentContext,
   type HookBus,
@@ -44,6 +45,8 @@ import {
 const PLUGIN_NAME = '@ax/auth-better';
 const DEFAULT_SESSION_COOKIE_NAME = 'ax_auth_session';
 const DEFAULT_SESSION_LIFETIME_SECS = 7 * 24 * 60 * 60;
+// Every Better Auth request arrives on this splat; the handler-error line names it, never the path (TASK-1047).
+const AUTH_ROUTE = '/auth/*';
 
 // Validation rails for `auth:create-bootstrap-user` input. The bootstrap
 // caller is the unauthenticated UI — input is untrusted (Invariant I5).
@@ -335,7 +338,7 @@ export function createAuthBetterPlugin(config: AuthBetterConfig = {}): Plugin {
         const { unregister } = await bus.call<HttpRegisterRouteInput, HttpRegisterRouteOutput>(
           'http:register-route',
           initCtx,
-          { method, path: '/auth/*', handler },
+          { method, path: AUTH_ROUTE, handler },
         );
         unregisterRoutes.push(unregister);
       }
@@ -735,15 +738,22 @@ async function forwardToBetterAuth(
   try {
     webResponse = await sessionTokenALS.run(box, () => handle.current()(new Request(url, init)));
   } catch (err) {
-    // If better-auth's adapter init failed (handler.ts catches the
-    // construction-side rejection but request-time rejections still
-    // propagate), surface a 500 without leaking the inner message —
-    // better-auth's errors can echo request-derived fields (state,
-    // email, callback URL params), so we omit `err.message` from the
-    // log line entirely. Method + path is enough to correlate with
-    // upstream http-server access logs.
-    void err;
-    process.stderr.write(`[ax/auth-better] handler error on ${req.method} ${req.path}\n`);
+    // The request failed before Better Auth could answer it. Two things land
+    // here: Better Auth failing before it routes (adapter init, base-URL or
+    // origin resolution), or our own `new Request(url, init)` throwing on a
+    // malformed `Host` or `X-Forwarded-Proto` header. An endpoint's own error
+    // never does, because Better Auth's router answers it itself (an APIError
+    // with its own status, anything else with a 500).
+    //
+    // The line names the route as registered, never the request path. Better
+    // Auth mounts `GET /reset-password/:token`, so once `sendResetPassword` is
+    // configured, a failing reset link would write a live token here. It
+    // carries the failure's codes, never its message: Better Auth's errors can
+    // echo state, email or callback-URL params, and `new Request` quotes the
+    // whole URL. The client gets a bare 500 either way (TASK-1047).
+    process.stderr.write(
+      `[ax/auth-better] handler error on ${req.method} ${AUTH_ROUTE} ${JSON.stringify(faultLogFields(err))}\n`,
+    );
     res.status(500).json({ error: 'auth-handler-failed' });
     return;
   }
