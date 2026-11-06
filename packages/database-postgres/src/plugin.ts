@@ -1,4 +1,4 @@
-import { createLogger, PluginError, type Logger, type Plugin } from '@ax/core';
+import { createLogger, faultLogFields, PluginError, type Logger, type Plugin } from '@ax/core';
 import { Kysely, PostgresDialect } from 'kysely';
 import pg from 'pg';
 
@@ -44,10 +44,12 @@ export interface DatabasePostgresConfig {
    */
   checkoutTimeoutMs?: number;
   /**
-   * Optional logger for background pg.Pool errors (idle-pool socket failures,
-   * e.g., postgres restart in k8s). Defaults to a stdout JSON logger tagged
-   * `reqId=database-postgres-bg`. Without a listener attached, an unhandled
-   * 'error' from the pool would crash the process.
+   * Optional logger for background connection failures (e.g., a postgres
+   * restart in k8s): `database_postgres_pool_error` when an idle pooled
+   * connection fails, and `database_postgres_client_error` when a checked-out
+   * one does (TASK-1048). Both carry `faultLogFields` codes only. Defaults to
+   * a stdout JSON logger tagged `reqId=database-postgres-bg`. Without these
+   * listeners, an unhandled 'error' would crash the process.
    */
   logger?: Logger;
 }
@@ -88,9 +90,38 @@ export function createDatabasePostgresPlugin(config: DatabasePostgresConfig): Pl
       // the process — exactly the failure mode this pool sits idle waiting
       // for between requests.
       pool.on('error', (err) => {
-        bgLogger.error('database_postgres_pool_error', {
-          err: err instanceof Error ? err : new Error(String(err)),
-        });
+        bgLogger.error('database_postgres_pool_error', faultLogFields(err));
+      });
+      // TASK-1048: pg-pool listens for a client's 'error' only while the client
+      // is idle in the pool. It removes that listener at checkout and puts it
+      // back at release. A checked-out client whose session Postgres ends (a
+      // restart, a failover, pg_terminate_backend) emits 'error' with nobody
+      // listening, and Node turns that into an uncaught exception that ends the
+      // host. Kysely adds no listener. So a checked-out client gets one for
+      // exactly as long as pg-pool's is off ('acquire' fires before pg-pool
+      // removes its own; 'release' fires after it puts it back). The caller
+      // still sees the failure: its queries reject, and pg-pool drops the dead
+      // client at release. A dying client emits twice (the server's error,
+      // then the socket closing); only the first, which carries the SQLSTATE,
+      // is logged. Codes only: a driver's message can carry a host, a user or
+      // a query value.
+      const checkedOutListeners = new WeakMap<pg.PoolClient, (err: Error) => void>();
+      pool.on('acquire', (client) => {
+        let listener = checkedOutListeners.get(client);
+        if (listener === undefined) {
+          let reported = false;
+          listener = (err) => {
+            if (reported) return;
+            reported = true;
+            bgLogger.error('database_postgres_client_error', faultLogFields(err));
+          };
+          checkedOutListeners.set(client, listener);
+        }
+        client.on('error', listener);
+      });
+      pool.on('release', (_err, client) => {
+        const listener = checkedOutListeners.get(client);
+        if (listener !== undefined) client.removeListener('error', listener);
       });
       kysely = new Kysely<unknown>({
         dialect: new PostgresDialect({ pool }),

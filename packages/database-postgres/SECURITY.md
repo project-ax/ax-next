@@ -16,7 +16,7 @@ The `connectionString` is the secret in this plugin's blast radius. We treat it 
 
 - **Where it comes from.** Plugin config, set by the host process at construction time. Not from a hook payload, not from `process.env`, not from a file this plugin reads. The host is responsible for sourcing it (env var, secret manager, KMS) — we just hold whatever they hand us.
 - **Where it goes.** Into `new pg.Pool({connectionString})` in `init()`. That's it. The pool stores it internally; subsequent queries reuse the parsed value. We don't keep our own copy outside the closure.
-- **What we log.** Nothing about it. The plugin's only direct log calls (none today) would have to go through `ctx.logger`; if a future change adds connection logging, mask the password with the `pg-connection-string` parser before logging.
+- **What we log.** Nothing about it. The plugin writes two background lines through its `logger` (default: stdout JSON, `reqId=database-postgres-bg`): `database_postgres_pool_error` when an idle pooled connection fails, and `database_postgres_client_error` when a checked-out one does (TASK-1048). Both carry `faultLogFields` codes only, never the message, the stack or the connection string. If a future change adds connection logging, mask the password with the `pg-connection-string` parser before logging.
 - **What `pg` logs.** `pg` itself does not log connection details at info-or-below. It does emit error messages on connect failure that may include the host:port (but not the password — the password is stripped by `pg-connection-string` before any error formatting). If you tail postgres server logs, `log_connections=on` will record the username and source IP, which is server-side and outside this plugin's control.
 
 ## Pool sizing and resource limits

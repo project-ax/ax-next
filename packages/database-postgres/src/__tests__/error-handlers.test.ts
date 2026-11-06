@@ -107,9 +107,49 @@ describe('@ax/database-postgres background error handler', () => {
     process.off('unhandledRejection', onUnhandled);
 
     expect(unhandled).toEqual([]);
-    const poolErrors = records.filter(
-      (r) => r.level === 'error' && r.msg === 'database_postgres_pool_error',
-    );
-    expect(poolErrors.length).toBeGreaterThanOrEqual(1);
+    // TASK-1048: codes only, and only the pool's line. This client was checked
+    // out once (the warm-up query) before it went idle, so a checked-out
+    // listener still attached after release would add a second line here.
+    expect(records.map((r) => [r.level, r.msg, r.bindings])).toStrictEqual([
+      ['error', 'database_postgres_pool_error', { code: '57P01', name: 'error' }],
+    ]);
   }, 15000);
+
+  it("survives Postgres ending a checked-out client's session: one code-only line, no crash (TASK-1048)", async () => {
+    const { records, logger } = makeRecordingLogger();
+    const h = await createTestHarness({ plugins: [createDatabasePostgresPlugin({ connectionString, logger })] });
+    const { db } = await h.bus.call<unknown, { db: Kysely<unknown> }>('database:get-instance', h.ctx(), {});
+    opened.push(db);
+    // Stands in for the host. Production has no uncaughtException handler, so
+    // an 'error' nobody listens for ends the process. vitest stays quiet while
+    // another listener exists, so this list is the only witness.
+    const unhandled: unknown[] = [];
+    const onUnhandled = (err: unknown) => { unhandled.push(err); };
+    process.on('uncaughtException', onUnhandled);
+    process.on('unhandledRejection', onUnhandled);
+    let probe: unknown;
+    try {
+      await db.connection().execute(async (conn) => {
+        const { rows } = await sql<{ pid: number }>`SELECT pg_backend_pid() AS pid`.execute(conn);
+        const admin = new pg.Client({ connectionString });
+        await admin.connect();
+        try { await admin.query('SELECT pg_terminate_backend($1)', [rows[0]!.pid]); }
+        finally { await admin.end().catch(() => {}); }
+        // The server's 57P01, then the socket closing: both land while the client is checked out.
+        await expect.poll(() => records.length + unhandled.length, { timeout: 10_000 }).toBeGreaterThan(0);
+        await new Promise((r) => setTimeout(r, 200));
+        probe = await sql`SELECT 1`.execute(conn).then(() => 'answered', (err: unknown) => err);
+      });
+      // pg-pool dropped the dead client at release, and the pool still answers.
+      expect((await sql<{ one: number }>`SELECT 1::int AS one`.execute(db)).rows).toEqual([{ one: 1 }]);
+    } finally {
+      process.off('uncaughtException', onUnhandled);
+      process.off('unhandledRejection', onUnhandled);
+    }
+    expect(unhandled).toEqual([]);
+    expect(probe).toBeInstanceOf(Error); // the caller still sees the failure
+    expect(records.map((r) => [r.level, r.msg, r.bindings])).toStrictEqual([
+      ['error', 'database_postgres_client_error', { code: '57P01', name: 'error' }],
+    ]);
+  }, 30_000);
 });
