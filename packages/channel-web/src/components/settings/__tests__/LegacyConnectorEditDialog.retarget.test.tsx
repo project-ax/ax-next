@@ -106,7 +106,7 @@ describe('LegacyConnectorEditDialog — a retarget signs everyone out (TASK-887)
     const alert = await screen.findByTestId(WARNING);
     expect(alert).toHaveTextContent('Changing where this connector points signs everyone out of it.');
     expect(alert).toHaveTextContent('Each agent adds its key again from its Connectors tab.');
-    expect(alert).not.toHaveTextContent('It also clears the shared key, and you can’t enter it again from here yet.');
+    expect(alert).not.toHaveTextContent(/clears the shared key/);
     // A CLI connector has no server address, so no tool-permission sentence.
     expect(alert).not.toHaveTextContent(/resets its tool permissions/i);
   });
