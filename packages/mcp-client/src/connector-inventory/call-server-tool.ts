@@ -7,11 +7,13 @@
 //     resumption of a dropped stream (`maxRetries: 0`), no loop.
 //   - `failed` only on a definite answer. Nothing completed when the call was
 //     never sent (a refused URL, a failed connect, a budget spent before the
-//     send) or the server refused the request (HTTP 401/403/other 4xx, or a
-//     JSON-RPC "bad request" code). The one `failed` that is NOT "nothing
-//     completed" is `tool-error`: the tool RAN and answered `isError`, so it
-//     may have done part of the work. It has its own closed code so no caller
-//     can mistake it for a refusal.
+//     send) or the server refused the request (HTTP 401/403/other 4xx, or
+//     JSON-RPC parse error, invalid request or method not found). The one
+//     `failed` that is NOT "nothing completed" is `tool-error`: the tool
+//     answered `isError`, or the server answered -32602 (InvalidParams),
+//     which it can send AFTER the tool ran (see `classifyCallError`). Either
+//     way it may have done part of the work. It has its own closed code so no
+//     caller can mistake it for a refusal.
 //   - `unknown` when it was sent and no reliable answer came back: a timeout,
 //     a reset, a 5xx, any other JSON-RPC error, a redirect, an oversize or
 //     unreadable reply. A caller must never read that as "nothing happened",
@@ -74,12 +76,19 @@ export interface CallServerToolOptions {
 /** The one field of a `tools/call` result we read. The rest is never looked at. */
 const CallResultView = z.object({ isError: z.boolean().optional() }).passthrough();
 
-/** JSON-RPC codes that mean the server refused the request rather than ran it. */
+/**
+ * JSON-RPC codes that mean the server refused the request rather than ran it.
+ *
+ * NOT -32602 (InvalidParams, review r2 R1). An McpServer on SDK 1.12-1.20 runs
+ * the tool callback first and only then throws InvalidParams for "output
+ * schema but no structured content", and a low-level Server handler can answer
+ * -32602 at any point. Read as a refusal it would print "Nothing was
+ * completed" over a call that ran, and a second approve would post it twice.
+ */
 const REJECTED_RPC_CODES: ReadonlySet<number> = new Set([
   ErrorCode.ParseError,
   ErrorCode.InvalidRequest,
   ErrorCode.MethodNotFound,
-  ErrorCode.InvalidParams,
 ]);
 
 function errorName(err: unknown): string {
@@ -111,6 +120,9 @@ function classifyCallError(err: unknown): ServerCallOutcome {
   // the request was malformed or unknown are a refusal.
   if (err instanceof McpError) {
     if (REJECTED_RPC_CODES.has(err.code)) return { outcome: 'failed', reason: 'rejected' };
+    // The server answered that the call failed, and the tool may already have
+    // run (see REJECTED_RPC_CODES): the same answer as `isError`.
+    if (err.code === ErrorCode.InvalidParams) return { outcome: 'failed', reason: 'tool-error' };
     if (err.code === ErrorCode.RequestTimeout) return { outcome: 'unknown', reason: 'timeout' };
     return { outcome: 'unknown', reason: 'interrupted' };
   }

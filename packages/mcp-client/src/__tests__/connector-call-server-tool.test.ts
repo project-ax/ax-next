@@ -161,11 +161,19 @@ describe('callServerTool', () => {
     }
   });
 
-  it('JSON-RPC invalid params is a definite failure', async () => {
+  // Review r2 R1. -32602 (InvalidParams) is NOT a sign that nothing ran. An
+  // McpServer on SDK 1.12-1.20 runs the tool callback first and only then
+  // throws InvalidParams ("…output schema but no structured content…"), and a
+  // low-level Server handler can answer -32602 at any point. So it is the
+  // tool-error answer ("it may have done part of it"), never `rejected`
+  // ("nothing was completed"), which would invite a second approve and a
+  // double post.
+  it('JSON-RPC invalid params after the send is tool-error: the tool may already have run', async () => {
     const server = fakeMcpServer({
-      toolsCall: (msg) => json(msg.id, { error: { code: -32602, message: 'bad arguments' } }),
+      toolsCall: (msg) => json(msg.id, { error: { code: -32602, message: 'output schema but no structured content' } }),
     });
-    expect(await call(server)).toStrictEqual({ outcome: 'failed', reason: 'rejected' });
+    expect(await call(server)).toStrictEqual({ outcome: 'failed', reason: 'tool-error' });
+    expect(server.toolCalls()).toHaveLength(1);
   });
 
   it('401 on initialize is needs-auth and never sends tools/call', async () => {
@@ -326,6 +334,9 @@ describe('callServerTool classification', () => {
     ['JSON-RPC parse error', rpcError(-32700), { outcome: 'failed', reason: 'rejected' }],
     ['JSON-RPC invalid request', rpcError(-32600), { outcome: 'failed', reason: 'rejected' }],
     ['JSON-RPC method not found', rpcError(-32601), { outcome: 'failed', reason: 'rejected' }],
+    // Review r2 R1: the one JSON-RPC "bad request" code a server can send after
+    // the tool ran. Not a refusal.
+    ['JSON-RPC invalid params', rpcError(-32602), { outcome: 'failed', reason: 'tool-error' }],
     ['JSON-RPC internal error', rpcError(-32603), { outcome: 'unknown', reason: 'interrupted' }],
     ['JSON-RPC connection closed', rpcError(-32000), { outcome: 'unknown', reason: 'interrupted' }],
     ['JSON-RPC request timeout', rpcError(-32001), { outcome: 'unknown', reason: 'timeout' }],

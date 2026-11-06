@@ -163,8 +163,10 @@ export const InventoryToolTitlesInputSchema = z
 
 /**
  * A definite answer. Every reason but `tool-error` means nothing completed.
- * `tool-error` (review F3) is the tool itself answering that the call did not
- * work: it RAN, and may have done part of the work, so a caller must never
+ * `tool-error` (review F3) is the service answering that the call did not
+ * work after it was sent: the tool's own `isError`, or a JSON-RPC -32602
+ * (InvalidParams), which a server can send after the tool ran (review r2 R1).
+ * The tool may have RUN and done part of the work, so a caller must never
  * read it as "nothing happened". Kept under `failed` because the service did
  * answer, and given its own code so it is never confused with `rejected`
  * (the server refused the request, so nothing ran).
