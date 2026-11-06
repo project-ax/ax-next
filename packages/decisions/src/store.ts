@@ -330,10 +330,12 @@ export interface DecisionStore {
   claimReplayFlight(decisionId: string, nowIso: string): Promise<Decision | null>;
 
   /**
-   * The host replay threw. Records the failure and DROPS the standing
-   * authorisation with it (the partial index does not cover `failed`), because
-   * an action that did not happen must not leave behind a yes the agent can
-   * quietly cash in later.
+   * The host replay threw (anything but a timeout on a non-routine host tool:
+   * a call the bus stopped waiting on may still land, so it goes to
+   * `markOutcomeUnknown`, TASK-285).
+   * Records the failure and DROPS the standing authorisation with it (the
+   * partial index does not cover `failed`), because an action that did not
+   * happen must not leave behind a yes the agent can quietly cash in later.
    */
   markFailed(
     decisionId: string,
@@ -341,9 +343,10 @@ export interface DecisionStore {
   ): Promise<Decision | null>;
 
   /**
-   * The host SENT the call and got no reliable answer (TASK-1046): a connector
-   * call that timed out, lost its connection, or came back unreadable. It may
-   * or may not have happened.
+   * The host SENT the call and got no reliable answer: a connector call that
+   * timed out, lost its connection, or came back unreadable (TASK-1046), or a
+   * host tool call the bus stopped waiting on (TASK-285; the bus's timeout does
+   * not stop the tool). It may or may not have happened.
    *
    * `failed` + `replay_abandoned_at`, the shape `reclaimStrandedFlights`
    * writes, because to a reader it means the same thing: no report, so

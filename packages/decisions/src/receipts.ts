@@ -166,11 +166,13 @@ export function receiptFor(decision: Decision): DecisionReceipt | null {
         // inside it (TASK-253), and the crash could have landed either side of
         // the tool's own side effect. Printing the ordinary line over that
         // would send a person off to redo an action that may already have
-        // happened. Since TASK-1046 the same applies to a host connector call:
-        // it was sent and no reliable answer came back (a timeout, a dropped
-        // connection), so it is recorded as abandoned and reads as "cannot tell".
+        // happened. Since TASK-1046 the same applies to a host connector call
+        // that was sent and got no reliable answer back (a timeout, a dropped
+        // connection), and since TASK-285 to a host tool call the bus stopped
+        // waiting on, which may still finish: both are recorded as abandoned
+        // and read as "cannot tell".
         //
-        // The outcome stays `failed` for both, deliberately. It is the same
+        // The outcome stays `failed` for both kinds of `failed`, deliberately. It is the same
         // thing to a reader deciding what to do next — this did not go
         // through, look at it — and splitting the union would make every
         // renderer choose a rendering for a case it has no different rendering
