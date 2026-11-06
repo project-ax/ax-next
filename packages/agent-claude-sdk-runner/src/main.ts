@@ -97,11 +97,14 @@ const PLACEHOLDER_RE = /^ax-cred:[0-9a-f]{32}$/;
 
 export {
   createArtifactPublishExecutor,
+  createShowVisualExecutor,
   createSkillProposeExecutor,
 } from '@ax/agent-runner-core';
 export type {
   ArtifactPublishOutput,
   CreateArtifactPublishExecutorOptions,
+  CreateShowVisualExecutorOptions,
+  ShowVisualOutput,
 } from '@ax/agent-runner-core';
 
 export function createClaudeSdkLoop(deps: RunnerDeps): Loop {

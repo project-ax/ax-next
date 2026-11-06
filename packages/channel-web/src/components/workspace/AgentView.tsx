@@ -91,6 +91,7 @@ import type { SidebarChatCommand, SidebarChatList } from '@/lib/sidebar-chats';
 import { AgentTile } from './bits';
 import type {
   ThreadMessage,
+  ThreadVisual,
 } from '@/lib/workspace-api';
 import {
   workspaceGrantActions,
@@ -573,6 +574,25 @@ export function AgentView({
    * back the server's version of the same turn.
    */
   const [liveCalls, setLiveCalls] = useState<readonly WorkspaceToolCall[]>([]);
+  /*
+    Visuals the in-flight (or just-ended) turn showed, with the conversation
+    they were shown in. Unlike the rest of the live turn this OUTLIVES `done`:
+    the durable copy only exists once the re-read lands, and clearing at `done`
+    would blank the visual for that gap. It goes when the re-read lands (by
+    then the thread carries it), when a new turn starts, or when the person
+    moves to another agent or conversation. The conversation id is what a new
+    chat draws with before its first re-read gives `detail` one.
+  */
+  const [liveVisuals, setLiveVisuals] = useState<{
+    conversationId: string;
+    visuals: readonly ThreadVisual[];
+  } | null>(null);
+  /*
+    Bumped at the start of every turn. A re-read that lands after the NEXT turn
+    has begun must not clear that turn's visuals, so it only clears when the
+    count it started under is still current.
+  */
+  const visualsTurnRef = useRef(0);
   /**
    * The conversation the in-flight turn belongs to, captured when it starts
    * (TASK-532). The live panel asks the queue what is still open HERE, and a
@@ -886,6 +906,7 @@ export function AgentView({
         conversationRef.current = conversationId;
         setPastId(null);
         setSent(null);
+        setLiveVisuals(null);
         setTurnError(null);
         setDetail(next);
       } catch (e) {
@@ -926,6 +947,7 @@ export function AgentView({
     setSent(null);
     setStreamed('');
     setLiveCalls([]);
+    setLiveVisuals(null);
     setWitnessed(new Set());
     setStreamConversation(null);
     setPhase(null);
@@ -978,8 +1000,13 @@ export function AgentView({
       setStreaming(true);
       setStreamed('');
       setLiveCalls([]);
+      visualsTurnRef.current += 1;
+      setLiveVisuals(null);
       setWitnessed(new Set());
-      setStreamConversation(conversationRef.current);
+      // The conversation this turn belongs to, fixed now: a new chat opened
+      // while it streams moves `conversationRef`, not this turn.
+      const turnConversation = conversationRef.current;
+      setStreamConversation(turnConversation);
       setPhase(null);
       setTurnError(null);
       await workspaceApi.streamReply(reqId, {
@@ -994,6 +1021,16 @@ export function AgentView({
         onToolUse: (call) => setLiveCalls((prev) => applyToolUse(prev, call)),
         onToolResult: (result) =>
           setLiveCalls((prev) => applyToolResult(prev, result)),
+        onVisual: (visual) => {
+          const conversationId = turnConversation;
+          // No conversation, no way to fetch the artifact: the re-read draws it.
+          if (conversationId === null) return;
+          setLiveVisuals((prev) => {
+            const kept = prev !== null && prev.conversationId === conversationId ? prev.visuals : [];
+            if (kept.some((v) => v.artifactId === visual.artifactId)) return prev;
+            return { conversationId, visuals: [...kept, visual] };
+          });
+        },
         /*
           Pre-content only, and the gate is structural: the status row below
           exists ONLY while the turn has produced no text and no steps, so a
@@ -1027,7 +1064,11 @@ export function AgentView({
           // gap until it lands (TASK-689): `load` settles after BOTH of its
           // outcomes have written state, so `finally` is the honest "landed".
           setRereading(true);
-          void load().finally(() => setRereading(false));
+          const turn = visualsTurnRef.current;
+          void load().finally(() => {
+            setRereading(false);
+            if (visualsTurnRef.current === turn) setLiveVisuals(null);
+          });
           onChanged();
         },
         onError: (message, fix) => {
@@ -1166,7 +1207,10 @@ export function AgentView({
         resetLiveTurn();
         setStopping(false);
         setStopNotice(conversationId);
-        void load();
+        const turn = visualsTurnRef.current;
+        void load().finally(() => {
+          if (visualsTurnRef.current === turn) setLiveVisuals(null);
+        });
         onChanged();
       }, STOP_FALLBACK_MS);
     } catch (e) {
@@ -1560,6 +1604,28 @@ export function AgentView({
   }
 
   /*
+    Visuals the live turn showed, after its reply — until the re-read brings
+    the committed turn that carries them. Anything the durable thread already
+    has is left out, so the hand-over never draws one twice. Only in the
+    conversation they were shown in; a new chat's `detail` has no id yet, and
+    those are its own.
+  */
+  if (
+    liveVisuals !== null &&
+    (detail.conversationId === null || detail.conversationId === liveVisuals.conversationId)
+  ) {
+    const durable = new Set(
+      detail.thread.flatMap((m) =>
+        m.kind === 'agent' ? (m.visuals ?? []).map((v) => v.artifactId) : [],
+      ),
+    );
+    const pending = liveVisuals.visuals.filter((v) => !durable.has(v.artifactId));
+    if (pending.length > 0) {
+      liveThread.push({ kind: 'agent', id: 'pending-visuals', text: '', at: '', visuals: pending });
+    }
+  }
+
+  /*
     "You stopped this reply" (TASK-688), at the very end: after the reply it is
     about, after any approval pointers the server appended. Only in the
     conversation it was earned in — a read that came back with a different one
@@ -1934,7 +2000,9 @@ export function AgentView({
                   would turn a working thumbnail into a broken image.
                 */
                 conversationId={
-                  past ? (pastDetail?.conversationId ?? null) : detail.conversationId
+                  past
+                    ? (pastDetail?.conversationId ?? null)
+                    : (detail.conversationId ?? liveVisuals?.conversationId ?? null)
                 }
                 decisions={decisions}
                 readOnly={past !== null}

@@ -302,6 +302,15 @@ export const BUILTIN_RULES: readonly PolicyRule[] = [
     subject: 'agent',
     provenance: 'catalog',
   },
+  {
+    id: 'visuals.show',
+    match: { tool: 'show_visual' },
+    providedBy: 'host',
+    verdict: 'allow',
+    capability: 'show you charts and visual cards in the chat',
+    subject: 'agent',
+    provenance: 'catalog',
+  },
 
   // -------------------------------------------------------------------------
   // The sandbox floor — CATALOG FACTS about the six built-in tools every

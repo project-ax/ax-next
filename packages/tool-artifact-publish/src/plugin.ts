@@ -5,16 +5,18 @@ import {
   type ToolDescriptor,
 } from '@ax/core';
 import { ARTIFACT_PUBLISH_DESCRIPTOR } from './descriptor.js';
+import { SHOW_VISUAL_DESCRIPTOR } from './show-visual.js';
 
 const PLUGIN_NAME = '@ax/tool-artifact-publish';
 
 /**
- * Phase 2 — host-side plugin that adds the `artifact_publish` descriptor
- * to the tool catalog. The executor that runs the tool's actual work
- * lives sandbox-side in `@ax/agent-claude-sdk-runner` (D1): only the
- * sandbox process has filesystem access to /agent at call time.
+ * Phase 2 — host-side plugin that adds the `artifact_publish` and
+ * `show_visual` descriptors to the tool catalog. The executors that run
+ * the tools' actual work live sandbox-side in `@ax/agent-claude-sdk-runner`
+ * (D1): only the sandbox process has filesystem access to /agent at call time.
  *
- * This plugin therefore does NOT register `tool:execute:artifact_publish`.
+ * This plugin therefore does NOT register `tool:execute:artifact_publish`
+ * (or `tool:execute:show_visual`).
  * Tool dispatch for sandbox-executed tools happens inside the runner
  * through its local-dispatcher; no IPC round-trip.
  */
@@ -40,6 +42,11 @@ export function createToolArtifactPublishPlugin(): Plugin {
         'tool:register',
         ctx,
         ARTIFACT_PUBLISH_DESCRIPTOR,
+      );
+      await bus.call<ToolDescriptor, { ok: true }>(
+        'tool:register',
+        ctx,
+        SHOW_VISUAL_DESCRIPTOR,
       );
     },
   };

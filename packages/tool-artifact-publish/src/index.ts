@@ -11,4 +11,11 @@ export {
   type PublishRoot,
   type PublishRoots,
 } from './path-allowlist.js';
+export {
+  MAX_VISUAL_HTML_BYTES,
+  MAX_VISUAL_SUMMARY_CHARS,
+  MAX_VISUAL_TITLE_CHARS,
+  SHOW_VISUAL_DESCRIPTOR,
+  SHOW_VISUAL_TOOL_NAME,
+} from './show-visual.js';
 export { createToolArtifactPublishPlugin } from './plugin.js';

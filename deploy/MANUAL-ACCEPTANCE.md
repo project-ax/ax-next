@@ -1859,3 +1859,87 @@ happened 45 s later). Then the same conversation keeps working, warm.
 ### Cleanup
 
 Nothing to clean: `/tmp/cancel-probe.txt` should not exist.
+
+## Scenario: chat visuals (VISUALS-1)
+
+> **Unit and browser halves are auto-tested.** The `show_visual` tool, the
+> srcdoc assembly, the parent message filter, and the hostile-content probes
+> (including real Chromium, Firefox and WebKit runs) are covered by tests. This
+> walk covers what only a cluster can: the rebuilt runner and host images, a
+> real connector, and how the result looks next to the rest of the app.
+
+### What this proves
+
+The agent can answer with an inline visual that looks native to AX in light and
+dark, works (hover, toggles), survives a reload, downloads as PNG and HTML, and
+cannot reach the network, the app's cookies, or the app's DOM.
+
+### Walk (run once on a `claude-sdk` agent and once on an `aisdk` agent)
+
+0. Rebuild the images and roll the kind deployment. Grep the runner image's
+   compiled `main.js` for `show_visual` to rule out a stale build cache. Every
+   `kubectl` call takes `--context kind-ax-next-dev`.
+1. Ask "Show issues per cycle over the past 20 cycles" (Linear connector). If
+   Linear is not connected, supply the 20 numbers inline and say so.
+2. Ask "What's the weather forecast for Brooklyn?" (web tools). Without a
+   web-tools key, supply the forecast inline.
+3. Toggle light, dark and system while a visual is on screen. Take a screenshot
+   in each theme.
+4. Reload the page and reopen the conversation.
+5. Download PNG and HTML from the visual's menu. Open the HTML from disk with
+   the network inspector open.
+6. Hostile visual: ask the agent to call `show_visual` with this HTML, with
+   `<YOUR_URL>` replaced by a URL you control (watch it with a local
+   `python3 -m http.server` request log or any request-bin you control):
+
+   ```html
+   <p>probe</p>
+   <img src="<YOUR_URL>/img">
+   <meta http-equiv="refresh" content="0;url=<YOUR_URL>/refresh">
+   <iframe srcdoc="<script>top.postMessage('child','*');fetch('<YOUR_URL>/child')</script>"></iframe>
+   <script>
+     fetch('<YOUR_URL>/fetch');
+     try { new RTCPeerConnection({ iceServers: [{ urls: 'stun:<YOUR_HOST>:3478' }] }); } catch (e) {}
+     location.href = '<YOUR_URL>/nav';
+   </script>
+   ```
+
+   The full set lives in
+   `packages/channel-web/src/__tests__/visual-hostile.browser.test.ts`.
+
+### Acceptance criteria
+
+- The step row reads "Making a visual: ...", a short text summary is present,
+  and the chart has working hover tooltips. The weather card renders.
+- No inner scrollbar and no layout jump when the visual finishes loading.
+- Theme switches swap colors in place: no reload, no wrong-theme flash. Judged
+  against the "jarring" anti-goal: no off-palette colors, no foreign fonts, no
+  wrong-theme backdrop, in both themes.
+- After reload, both visuals render from history.
+- The PNG opens at 2x. The HTML opens from disk, renders, and makes no network
+  request; the agent's script does not run at the top level of the file.
+- Hostile visual: `browser_network_requests` shows nothing to your URL, the
+  console shows CSP refusals, and the app's cookies and session are untouched.
+  Self-navigation (`location.href`, meta refresh) is refused and the card shows
+  the quiet "couldn't be displayed" state; nothing reaches the canary. Clicking
+  an ordinary link inside a visual does nothing, and the visual stays up.
+- A visual that tries to open a nested frame: the child frame element is
+  removed (stripped when the document is built, or purged at runtime) and the
+  visual stays up. The child's script never runs.
+
+### Walks completed
+- **VISUALS-1 (chat visuals)** — walked 2026-11-06 on `kind-ax-next-dev`
+  (rebuilt `ax-next/agent:dev`). Full walk, steps 0–6, passed on both a
+  `claude-sdk` and an `aisdk` agent at `0b3bbd44a` (walk 3), except
+  self-navigation. A self-navigating frame, or a click on a plain link,
+  showed Chrome's "This content is blocked" page (BUG-3). We fixed it in
+  `81758aaba` and rechecked it there on `claude-sdk` (the fix is
+  client-side). Plain, middle, modifier and keyboard link clicks now do
+  nothing, and the visual stays up. A `location.href` visual now shows
+  "This visual couldn't be displayed." with its summary, both live and after
+  a reload. The canary logged nothing. Ordinary charts still render and
+  survive a reload.
+
+### Cleanup
+
+Delete the walk's conversations. Nothing else persists.

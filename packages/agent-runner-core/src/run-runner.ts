@@ -9,9 +9,10 @@ import {
   type SessionGetConfigResponse,
   type ToolListResponse,
 } from '@ax/ipc-protocol';
-import { ARTIFACT_PUBLISH_TOOL_NAME } from '@ax/tool-artifact-publish';
+import { ARTIFACT_PUBLISH_TOOL_NAME, SHOW_VISUAL_TOOL_NAME } from '@ax/tool-artifact-publish';
 import { SKILL_PROPOSE_TOOL_NAME } from '@ax/tool-skill-propose';
 import { createArtifactPublishExecutor } from './artifact-publish-executor.js';
+import { createShowVisualExecutor } from './show-visual-executor.js';
 import { trackGeneratedFiles, publishedAttachments, type GeneratedFileFailure } from './generated-files.js';
 import { createToolPolicy } from './tool-policy.js';
 import { translateContentBlocks } from './attachment-translation.js';
@@ -705,7 +706,7 @@ async function runRunnerInner(
   let transcriptShipState: TranscriptShipState = { sentOffset: 0, sentSeq: 0 };
 
   // Phase 2: sandbox-MCP bridge. The local-dispatcher holds executors for
-  // tools marked `executesIn: 'sandbox'` (`artifact_publish`, `skill_propose`).
+  // tools marked `executesIn: 'sandbox'` (`artifact_publish`, `show_visual`, `skill_propose`).
   const localDispatcher = createLocalDispatcher();
   if (tools.some((t) => t.name === ARTIFACT_PUBLISH_TOOL_NAME && t.executesIn === 'sandbox')) {
     // TASK-68: the executor streams artifact bytes to the host blob store
@@ -724,6 +725,15 @@ async function runRunnerInner(
         client,
         conversationId,
       }),
+    );
+  }
+  // show_visual: same sandbox-executed shape as artifact_publish — it stores the
+  // model's HTML as a text/html artifact, so it needs the IPC client and the
+  // bound conversation, but no filesystem roots (the HTML arrives inline).
+  if (tools.some((t) => t.name === SHOW_VISUAL_TOOL_NAME && t.executesIn === 'sandbox')) {
+    localDispatcher.register(
+      SHOW_VISUAL_TOOL_NAME,
+      createShowVisualExecutor({ client, conversationId }),
     );
   }
   // TASK-74 — skill_propose executor (sandbox-executed, like artifact_publish):

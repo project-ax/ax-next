@@ -1236,6 +1236,56 @@ describe('channel-web agent-workspace BFF', () => {
     ]);
   });
 
+  describe('(VISUALS-1) show_visual', () => {
+    const ok = { artifactId: '0123456789abcdef0123456789abcdef', title: 'Issues per cycle', summary: 'Down 12%.' };
+    const run = async (assistant: unknown[], tool: unknown[]) => {
+      registerAuth({ id: 'u1', isAdmin: false });
+      conversations = [conv({ conversationId: 'c1', agentId: 'a1' })];
+      turnsByConversation.set('c1', [
+        { turnId: 't1', turnIndex: 0, role: 'user', contentBlocks: [{ type: 'text', text: 'Chart it.' }], createdAt: '2026-08-01T10:00:00.000Z' },
+        { turnId: 't2', turnIndex: 1, role: 'assistant', contentBlocks: assistant, createdAt: '2026-08-01T10:00:02.000Z' },
+        { turnId: 't3', turnIndex: 2, role: 'tool', contentBlocks: tool, createdAt: '2026-08-01T10:00:03.000Z' },
+      ] as never);
+      const h = makeWorkspaceHandlers({ bus, initCtx });
+      const { res, captured } = mkRes();
+      await h.agentDetail(mkReq({ agentId: 'a1' }), res);
+      const body = captured.body as { thread: Array<Record<string, unknown>> };
+      return { body, captured };
+    };
+    const use = (id: string, name: string) =>
+      ({ type: 'tool_use', id, name, input: { title: ok.title, summary: ok.summary, html: '<p>secret-markup</p>' } });
+
+    it('draws a visual from a show_visual result and never sends its html', async () => {
+      const { body, captured } = await run(
+        [use('v1', 'mcp__ax-sandbox-tools__show_visual'), use('v2', 'show_visual'), use('v3', 'show_visual'),
+          { type: 'tool_use', id: 'p1', name: 'artifact_publish', input: {} }],
+        [
+          { type: 'tool_result', tool_use_id: 'v1', content: [{ type: 'text', text: JSON.stringify(ok) }] },
+          { type: 'tool_result', tool_use_id: 'v2', content: JSON.stringify(ok), is_error: true },
+          { type: 'tool_result', tool_use_id: 'v3', content: JSON.stringify(ok), held: true },
+          { type: 'tool_result', tool_use_id: 'p1', content: JSON.stringify(ok) },
+        ],
+      );
+      const agents = body.thread.filter((m) => m.kind === 'agent');
+      expect(agents.flatMap((m) => (m.visuals as unknown[] | undefined) ?? [])).toStrictEqual([ok]);
+      expect(JSON.stringify(captured.body)).not.toContain('secret-markup');
+    });
+
+    it('keeps two visuals from one turn and folds a repeated id', async () => {
+      const other = { ...ok, artifactId: 'fedcba9876543210fedcba9876543210', title: 'Second' };
+      const { body } = await run(
+        [use('v1', 'show_visual'), use('v2', 'show_visual'), use('v3', 'show_visual')],
+        [
+          { type: 'tool_result', tool_use_id: 'v1', content: JSON.stringify(ok) },
+          { type: 'tool_result', tool_use_id: 'v2', content: JSON.stringify(other) },
+          { type: 'tool_result', tool_use_id: 'v3', content: JSON.stringify(ok) },
+        ],
+      );
+      const visuals = body.thread.flatMap((m) => (m.visuals as unknown[] | undefined) ?? []);
+      expect(visuals).toStrictEqual([ok, other]);
+    });
+  });
+
   it('(TASK-1012) draws an agent-file chip per key, beside published artifacts', async () => {
     registerAuth({ id: 'u1', isAdmin: false });
     conversations = [conv({ conversationId: 'c1', agentId: 'a1' })];

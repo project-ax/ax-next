@@ -463,6 +463,40 @@ describe('runRunner — uploads', () => {
   });
 });
 
+describe('runRunner — show_visual', () => {
+  const withCatalog = (tools: unknown[]) => {
+    const original = fakeClient.call.getMockImplementation()!;
+    fakeClient.call.mockImplementation(async (action: string, ...args: unknown[]) => {
+      if (action === 'session.get-config') return { ...await original(action, ...args), conversationId: 'c1' };
+      if (action === 'tool.list') return { tools };
+      if (action === 'artifact.publish') return { artifactId: 'art-1' };
+      return original(action, ...args);
+    });
+    fakeClient.callBinaryUpload = vi.fn(async () => ({ sha256: 'a'.repeat(64), size: 8 }));
+  };
+
+  it('(VISUALS-1) registers show_visual when the catalog lists it, bound to the conversation', async () => {
+    withCatalog([{ name: 'show_visual', executesIn: 'sandbox', inputSchema: {} }]);
+    let dispatcher!: RunnerDeps['localDispatcher'];
+    const loop: Loop = { run: async () => {
+      await dispatcher.execute({ id: 't1', name: 'show_visual', input: { title: 'T', summary: 'S', html: '<p>x</p>' } });
+      return 0;
+    } };
+    expect(await runRunner((deps) => { dispatcher = deps.localDispatcher; return loop; }, seams(fakeEnv))).toBe(0);
+    expect(dispatcher.has('show_visual')).toBe(true);
+    expect(fakeClient.call.mock.calls.find((c) => c[0] === 'artifact.publish')?.[1])
+      .toMatchObject({ conversationId: 'c1', mediaType: 'text/html', displayName: 'visual.html' });
+  });
+
+  it('(VISUALS-1) does not register show_visual when the catalog lacks it', async () => {
+    withCatalog([]);
+    let dispatcher!: RunnerDeps['localDispatcher'];
+    const loop: Loop = { run: async () => 0 };
+    expect(await runRunner((deps) => { dispatcher = deps.localDispatcher; return loop; }, seams(fakeEnv))).toBe(0);
+    expect(dispatcher.has('show_visual')).toBe(false);
+  });
+});
+
 describe('runRunner — working directory', () => {
   // TASK-995: the agent's home is AX_USERFILES_ROOT, with no fallback, and the
   // scratch root is separate from it. Loops use `homeDir` for the SDK's

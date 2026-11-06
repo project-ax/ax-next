@@ -2,6 +2,10 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
+    <!-- The app loads no frames from URLs. Chat visuals are srcdoc frames, which this
+         does not block, but it does stop a visual from navigating its own frame to a
+         URL (a way to send data out that the frame's own CSP can't cover). -->
+    <meta http-equiv="Content-Security-Policy" content="frame-src 'none'" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>

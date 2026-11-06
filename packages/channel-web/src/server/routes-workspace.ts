@@ -290,6 +290,7 @@ import type {
 import { AGENT_ABILITIES, isOpenDecision, ROUTINE_DECISION_OPERATIONS } from '../lib/workspace-types.js';
 import { byVerdict } from '../lib/permission-frames.js';
 import { fenceBlock, fenceLine } from '../lib/fence-line.js';
+import { isShowVisualToolName, visualFromToolResult } from '../lib/visual-result.js';
 // A proposed task's schedule in words (TASK-906), and a task page's header
 // phrase (TASK-910). Pure, no DOM, and it imports its own sibling relatively,
 // so the built server can load it.
@@ -3980,6 +3981,10 @@ function buildThread(
     (block.name === 'artifact_publish' || block.name === 'mcp__ax-sandbox-tools__artifact_publish')
       ? [block.id] : [],
   )));
+  const visualIds = new Set(turns.flatMap(turn => (turn.contentBlocks ?? []).flatMap(block =>
+    block.type === 'tool_use' && typeof block.id === 'string' && isShowVisualToolName(block.name)
+      ? [block.id] : [],
+  )));
   for (const turn of turns) {
     // Tool outcomes hang off the assistant's step panel. Published files are
     // also drawn here, outside that collapsible panel, so a closed step list
@@ -4015,10 +4020,22 @@ function buildThread(
         file.agentFilePath !== undefined ? `file:${file.agentFilePath}` : `id:${file.attachmentId}`,
         file,
       ])).values()];
+      // A visual is drawn from the show_visual RESULT (id + title + summary);
+      // the tool's html input is never read here. Errored and held calls drew
+      // nothing, same as a failed publish.
+      const visuals = [...new Map(blocks.flatMap(block => {
+        if (block.type !== 'tool_result' || block.is_error || block.held ||
+          !visualIds.has(block.tool_use_id ?? '')) return [];
+        const v = visualFromToolResult(block.content);
+        return v === null ? [] : [[v.artifactId, v] as const];
+      })).values()];
       const text = renderableText(blocks);
-      if (attachments.length > 0 || text.length > 0) dated.push({
+      if (attachments.length > 0 || text.length > 0 || visuals.length > 0) dated.push({
         at: turn.createdAt,
-        msg: { kind: 'agent', id: turn.turnId, text, at: turn.createdAt, attachments },
+        msg: {
+          kind: 'agent', id: turn.turnId, text, at: turn.createdAt, attachments,
+          ...(visuals.length > 0 ? { visuals } : {}),
+        },
       });
       continue;
     }

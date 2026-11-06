@@ -219,4 +219,48 @@ describe('the workspace reply stream', () => {
     });
     expect(uses).toEqual([]);
   });
+
+  it('(VISUALS-1) forwards a parsed visual and nothing of its html', async () => {
+    stubStream([
+      { kind: 'tool-use', toolCallId: 'v1', toolName: 'mcp__ax-sandbox-tools__show_visual', input: { title: 'T', summary: 'S', html: '<p>secret-markup</p>' } },
+      { kind: 'tool-result', toolCallId: 'v1', output: JSON.stringify({ artifactId: 'a1', title: 'T', summary: 'S' }) },
+      { kind: 'tool-use', toolCallId: 'v2', toolName: 'show_visual', input: {} },
+      { kind: 'tool-result', toolCallId: 'v2', output: JSON.stringify({ artifactId: 'a2', title: 'T', summary: 'S' }), isError: true },
+      { kind: 'tool-use', toolCallId: 'p1', toolName: 'artifact_publish', input: {} },
+      { kind: 'tool-result', toolCallId: 'p1', output: JSON.stringify({ artifactId: 'a3', title: 'T', summary: 'S' }) },
+      { done: true },
+    ]);
+    const seen: unknown[] = [];
+    await workspaceApi.streamReply('r1', {
+      onText() {},
+      onDone() {},
+      onError() {},
+      onToolUse: (c) => seen.push(c),
+      onToolResult: (r) => seen.push(r),
+      onVisual: (v) => seen.push(v),
+    });
+    expect(seen.filter((x) => (x as { artifactId?: string }).artifactId)).toEqual([
+      { artifactId: 'a1', title: 'T', summary: 'S' },
+    ]);
+    expect(JSON.stringify(seen)).not.toContain('secret-markup');
+  });
+
+  it('(VISUALS-1) finds a visual even when nobody asked for tool rows, and skips a held one', async () => {
+    stubStream([
+      { kind: 'tool-use', toolCallId: 'v1', toolName: 'show_visual', input: { html: '<p>x</p>' } },
+      { kind: 'tool-result', toolCallId: 'v1', output: JSON.stringify({ artifactId: 'a1', title: 'T', summary: 'S' }) },
+      { kind: 'tool-use', toolCallId: 'v2', toolName: 'show_visual', input: {} },
+      { kind: 'tool-result', toolCallId: 'v2', output: JSON.stringify({ artifactId: 'a2', title: 'T', summary: 'S' }), held: true },
+      { kind: 'tool-result', toolCallId: 'v3', output: JSON.stringify({ artifactId: 'a3', title: 'T', summary: 'S' }) },
+      { done: true },
+    ]);
+    const seen: unknown[] = [];
+    await workspaceApi.streamReply('r1', {
+      onText() {},
+      onDone() {},
+      onError() {},
+      onVisual: (v) => seen.push(v),
+    });
+    expect(seen).toEqual([{ artifactId: 'a1', title: 'T', summary: 'S' }]);
+  });
 });

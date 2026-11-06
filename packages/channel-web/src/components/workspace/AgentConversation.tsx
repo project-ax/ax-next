@@ -12,6 +12,8 @@
  */
 import { MEMORY_SOURCE_CLASS, TURN_ID_ATTR } from '@/lib/thread-jump';
 import {
+  lazy,
+  Suspense,
   useLayoutEffect,
   useRef,
   useState,
@@ -42,6 +44,7 @@ import {
 } from '@/components/ui/empty';
 import { workspaceApi } from '@/lib/workspace-api';
 import { Separator } from '@/components/ui/separator';
+import { Skeleton } from '@/components/ui/skeleton';
 import { cn } from '@/lib/utils';
 import type {
   WorkspaceStep,
@@ -88,6 +91,15 @@ import pearlOrb from '@/assets/design/pearl-orb.svg';
 import { AttachmentChip } from '@/components/AttachmentChip';
 import { GeneratedFileChip } from './GeneratedFileChip';
 import { AGENT_CONVERSATION_ATTR } from '@/lib/new-agent-return-focus';
+import { VISUAL_DEFAULT_HEIGHT } from './visual/visual-doc';
+
+/*
+  LAZY on purpose. The frame carries ~355 KB of vendored strings (chart.js,
+  html-to-image, base64 fonts) that only a thread with a visual in it needs;
+  imported statically they would ride in the entry chunk every page loads.
+  `visual-doc` above is the small, asset-free module — safe to import here.
+*/
+const VisualFrame = lazy(() => import('./visual/VisualFrame'));
 
 /**
  * What this thread can honestly say about its approvals.
@@ -160,7 +172,13 @@ function threadGrowthKey(thread: readonly ThreadMessage[]): string {
         */
         case 'user':
           return `user:${m.id}:${m.text.length}:${(m.attachments ?? []).length}`;
+        /*
+          A visual is a block that appears without the text changing — on a
+          tool-only turn there is no text at all — so its count is part of
+          the key, the same way a user message's files are.
+        */
         case 'agent':
+          return `agent:${m.id}:${m.text.length}:${(m.visuals ?? []).length}`;
         case 'status':
         case 'fold':
         case 'stopped':
@@ -1265,6 +1283,28 @@ function Message({
           </div>
         )}
         {m.kind === 'steps' && <Steps label={m.stepsLabel} steps={m.steps} />}
+        {/*
+          Keyed by artifact id: the frame holds per-visual state (height,
+          ready, the loaded document), and a positional key would hand one
+          visual's state to the next.
+        */}
+        {conversationId !== null && m.kind === 'agent' && (m.visuals?.length ?? 0) > 0 && (
+          <div className="mt-3 flex flex-col gap-3">
+            {m.visuals?.map((v) => (
+              <Suspense
+                key={v.artifactId}
+                fallback={
+                  <Skeleton
+                    className="w-full max-w-[604px]"
+                    style={{ height: VISUAL_DEFAULT_HEIGHT }}
+                  />
+                }
+              >
+                <VisualFrame conversationId={conversationId} visual={v} />
+              </Suspense>
+            ))}
+          </div>
+        )}
         {conversationId !== null && (m.attachments?.length ?? 0) > 0 && (
           <div className="mt-3 flex flex-wrap gap-2">
             {m.attachments?.map((file, i) => (

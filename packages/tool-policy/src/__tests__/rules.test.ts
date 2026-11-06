@@ -67,6 +67,7 @@ describe('BUILTIN_RULES', () => {
       'memory.recall',
       'skills.search-catalog',
       'artifacts.publish',
+      'visuals.show',
     ]);
     for (const rule of BUILTIN_RULES) {
       if (CATALOG_FACTS.has(rule.id)) {
@@ -265,6 +266,7 @@ describe('BUILTIN_RULES', () => {
         'memory_use',
         'request_capability',
         'search_catalog',
+        'show_visual',
         'skill_propose',
         'web_extract',
         'routine_list',
@@ -322,5 +324,14 @@ describe('BUILTIN_RULES', () => {
     for (const rule of BUILTIN_RULES) {
       expect(rule.subject, rule.id).toBe('agent');
     }
+  });
+
+  it('(VISUALS-1) show_visual is a catalog allow with a lint-clean clause', () => {
+    expect(evaluate(BUILTIN_RULES, { name: 'show_visual', input: {} })).toMatchObject({
+      verdict: 'allow',
+      ruleId: 'visuals.show',
+      capability: 'show you charts and visual cards in the chat',
+    });
+    expect(lintCapability('show you charts and visual cards in the chat')).toEqual([]);
   });
 });
