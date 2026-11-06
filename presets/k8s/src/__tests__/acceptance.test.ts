@@ -28,6 +28,7 @@ import { createBlobStoreFsPlugin } from '@ax/blob-store-fs';
 import { createToolArtifactPublishPlugin } from '@ax/tool-artifact-publish';
 import {
   createArtifactPublishExecutor,
+  createShowVisualExecutor,
   type CreateArtifactPublishExecutorOptions,
 } from '@ax/agent-claude-sdk-runner';
 import { createChannelWebServerPlugin } from '@ax/channel-web/server';
@@ -1901,6 +1902,9 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
       // exercise. Stub the no-op contract instead.
       const TOOL_REGISTER_STUB_NAME =
         '@ax/preset-k8s/test/phase-3-artifact-tool-register-stub';
+      // It records each descriptor so the canary can prove the real plugin
+      // registers show_visual too (no half-wired plugins).
+      const registered: Array<{ name: string; executesIn: string }> = [];
       const toolRegisterStubPlugin: Plugin = {
         manifest: {
           name: TOOL_REGISTER_STUB_NAME,
@@ -1913,7 +1917,10 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
           bus.registerService(
             'tool:register',
             TOOL_REGISTER_STUB_NAME,
-            async () => ({ ok: true as const }),
+            async (_ctx, input) => {
+              registered.push(input as { name: string; executesIn: string });
+              return { ok: true as const };
+            },
           );
         },
       };
@@ -2214,6 +2221,35 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
         const storedChip = blocks.find((b) => b.type === 'attachment');
         expect(storedChip).toEqual(chip);
         expect(storedChip).not.toHaveProperty('path');
+
+        // 7. show_visual: registered by the real plugin, executed through the
+        //    REAL runner executor and ipc-core dispatcher (same hostClient and
+        //    session), downloadable immediately (no turn commit needed) as an
+        //    octet-stream attachment, and invisible from another conversation.
+        expect(registered.map((d) => [d.name, d.executesIn])).toEqual(
+          expect.arrayContaining([['show_visual', 'sandbox']]),
+        );
+        const VISUAL_HTML = '<div class="k">Rain, 54\u00b0F</div>';
+        const visual = await createShowVisualExecutor({
+          client: hostClient as never,
+          conversationId,
+        })({
+          id: 'toolu_v1',
+          name: 'show_visual',
+          input: { title: 'Brooklyn', summary: 'Rain all day.', html: VISUAL_HTML },
+        });
+        expect(visual).toEqual({
+          artifactId: expect.stringMatching(/^[A-Za-z0-9_-]{1,128}$/),
+          title: 'Brooklyn',
+          summary: 'Rain all day.',
+        });
+        const visualResp = await download(visual.artifactId, conversationId);
+        expect(visualResp.status).toBe(200);
+        expect(await visualResp.text()).toBe(VISUAL_HTML);
+        expect(visualResp.headers.get('content-type')).toMatch(/^application\/octet-stream/);
+        expect(visualResp.headers.get('content-disposition')).toMatch(/^attachment;/);
+        expect(visualResp.headers.get('x-content-type-options')).toBe('nosniff');
+        expect((await download(visual.artifactId, otherConversationId)).status).toBe(404);
       } finally {
         if (handle !== null) await handle.shutdown();
         await fs.rm(workspaceRoot, { recursive: true, force: true });
