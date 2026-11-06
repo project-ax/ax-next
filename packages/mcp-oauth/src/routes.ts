@@ -31,7 +31,7 @@ import {
 // ---------------------------------------------------------------------------
 // The OAuth begin/callback HTTP routes — the security lynchpin of the MCP-OAuth
 // flow. These must hold or a token can be bound to the wrong agent / a CSRF'd
-// victim / a client that can't refresh it:
+// victim / a client that can't refresh it / an address it was not issued for:
 //
 //   1. CSRF binding. `state` is server-generated, single-use, TTL'd, and bound
 //      to the initiating user at `begin`. `callback` re-checks `pending.userId`
@@ -51,6 +51,11 @@ import {
 //      resolver later refreshes as the same client. (`begin` re-registers a
 //      dynamic client every time, so "the client for this connector" is not a
 //      stable thing to look up later — only the token's own client is.)
+//
+//   5. The token lands only for the address it was issued for (TASK-887).
+//      `begin` records the connector's resource (the url of the server its
+//      oauth slot names) on the pending row; `callback` refuses, before the
+//      token exchange, when the connector has been pointed somewhere else since.
 //
 // We NEVER log the authorization code, tokens, code_verifier, or client secret.
 // Error responses carry only neutral codes (and, for discovery, an error
@@ -638,6 +643,9 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
       res.status(400).json({ error: 'oauth_client_secret_ref_not_allowed' });
       return;
     }
+    // The address this sign-in is FOR, stored raw as the pending row's
+    // `resource`. The callback derives it again the same way and refuses when
+    // the connector no longer points here (TASK-887): change one, change the other.
     const server = caps.mcpServers.find((s) => s.name === slot.server);
     if (!server || !server.url) {
       res.status(400).json({ error: 'oauth slot references no mcpServer with a url' });
@@ -981,6 +989,29 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
         connectorId,
         ...errFields(err),
       });
+      fail('sign-in-failed');
+      return;
+    }
+
+    // TASK-887 — a sign-in belongs to the address it began for. Pointing a
+    // connector somewhere new signs every agent out of it (@ax/connectors'
+    // `connectors:upsert` clears their sign-ins before the edit commits), but a
+    // popup opened before that edit can still come back within `pendingTtlMs`.
+    // Its code was issued for the OLD address, and the runtime sends a
+    // connector's token to wherever its oauth slot's server points NOW, so it
+    // must not land. Refused here, before the client lookup, discovery, the
+    // token exchange, the vault write and the attach.
+    // Derived exactly as `begin` derives `resource` (the first oauth slot, the
+    // first server named by its `server`, that server's raw `url`) and compared
+    // raw with the `resource` `begin` stored, so an unchanged connector always
+    // matches and a respelling refuses (the safe direction). Keep the two in step.
+    const oauthSlotNow = connector.capabilities.credentials.find((c) => c.kind === 'oauth');
+    const resourceNow =
+      oauthSlotNow === undefined
+        ? undefined
+        : connector.capabilities.mcpServers.find((s) => s.name === oauthSlotNow.server)?.url;
+    if (resourceNow !== pending.resource) {
+      logger.warn('mcp_oauth_callback_failed', { stage: 'connector-changed', connectorId });
       fail('sign-in-failed');
       return;
     }
