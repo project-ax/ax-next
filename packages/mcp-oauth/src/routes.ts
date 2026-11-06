@@ -55,7 +55,9 @@ import {
 //   5. The token lands only for the address it was issued for (TASK-887).
 //      `begin` records the connector's resource (the url of the server its
 //      oauth slot names) on the pending row; `callback` refuses, before the
-//      token exchange, when the connector has been pointed somewhere else since.
+//      token exchange, when the connector has been pointed somewhere else since,
+//      and checks again once the token is stored, deleting it if the connector
+//      moved (or vanished) during the exchange.
 //
 // We NEVER log the authorization code, tokens, code_verifier, or client secret.
 // Error responses carry only neutral codes (and, for discovery, an error
@@ -230,6 +232,18 @@ interface ConnectorView {
     credentials: Array<{ kind: string; [k: string]: unknown }>;
     mcpServers: Array<{ name: string; url?: string; [k: string]: unknown }>;
   };
+}
+
+/**
+ * TASK-887 — the address a connector's OAuth token goes to NOW: the first oauth
+ * slot, the FIRST server named by its `server`, that server's raw `url`
+ * (`undefined` when there is no such slot or server). The callback compares it
+ * with `pending.resource`, which `begin` derived the same way.
+ */
+function oauthResourceOf(connector: ConnectorView): string | undefined {
+  const slot = connector.capabilities.credentials.find((c) => c.kind === 'oauth');
+  if (slot === undefined) return undefined;
+  return connector.capabilities.mcpServers.find((s) => s.name === slot.server)?.url;
 }
 
 /**
@@ -964,8 +978,7 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
 
     // Re-fetch the connector to re-derive allowedHosts for the redeem hop
     // (guards discovery/redeem against a connector that changed/vanished).
-    let connector: ConnectorView;
-    try {
+    const readConnector = async (): Promise<ConnectorView> => {
       const out = await bus.call<
         { userId: string; connectorId: string },
         { connector: ConnectorView }
@@ -973,7 +986,11 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
         userId: pending.userId,
         connectorId,
       });
-      connector = out.connector;
+      return out.connector;
+    };
+    let connector: ConnectorView;
+    try {
+      connector = await readConnector();
     } catch (err) {
       if (isReject(err)) {
         // The connector vanished (or is no longer visible to the signer) while
@@ -1011,11 +1028,8 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
     // every retry failing after the provider's consent screen. Compared raw, so
     // an unchanged connector always matches and a respelling refuses (the safe
     // direction). No such server at all refuses. Keep in step with `begin`.
-    const oauthSlotNow = connector.capabilities.credentials.find((c) => c.kind === 'oauth');
-    const resourceNow =
-      oauthSlotNow === undefined
-        ? undefined
-        : connector.capabilities.mcpServers.find((s) => s.name === oauthSlotNow.server)?.url;
+    // Checked again after the vault write, below.
+    const resourceNow = oauthResourceOf(connector);
     if (resourceNow === undefined || resourceNow !== pending.resource) {
       logger.warn('mcp_oauth_callback_failed', { stage: 'connector-changed', connectorId });
       fail('sign-in-failed');
@@ -1205,6 +1219,45 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
         connectorId,
         ...errFields(err),
       });
+      fail('sign-in-failed');
+      return;
+    }
+
+    // TASK-887 — the address again, now that the token is stored. The check
+    // above ran before discovery and the token exchange, so an edit pointing
+    // the connector somewhere new can land in between. @ax/connectors signs
+    // every agent out a second time once such an edit commits: that pass
+    // removes a token stored BEFORE it; this re-read catches one stored AFTER
+    // it, by seeing the committed row. A moved or vanished connector deletes
+    // the token just written (as a failed Add does) and refuses — no attach,
+    // the reconnect marker stays. A re-read that throws fails closed the same
+    // way: we cannot show the token's address still holds.
+    let stillHere = false;
+    try {
+      stillHere = oauthResourceOf(await readConnector()) === pending.resource;
+    } catch (err) {
+      if (!isReject(err)) {
+        logger.error('mcp_oauth_callback_failed', { stage: 'connector-recheck', connectorId, ...errFields(err) });
+      }
+    }
+    if (!stillHere) {
+      try {
+        await bus.call<{ scope: 'agent'; ownerId: string; ref: string }, void>(
+          'credentials:delete',
+          ctxFor(pending.userId),
+          { scope: 'agent', ownerId: agentId, ref },
+        );
+      } catch (deleteErr) {
+        // A token for the old address outlives the refusal. The connector's
+        // own sign-out would have cleared it had it landed sooner; an operator
+        // must know it did not.
+        logger.error('mcp_oauth_changed_after_store_delete_failed', {
+          connectorId,
+          agentId,
+          ...errFields(deleteErr),
+        });
+      }
+      logger.warn('mcp_oauth_callback_failed', { stage: 'connector-changed-after-store', connectorId });
       fail('sign-in-failed');
       return;
     }
