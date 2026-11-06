@@ -490,3 +490,51 @@ describe('pointsSomewhereNew: client copy === server original (TASK-887)', () =>
     expect(client).toBe(server);
   });
 });
+
+// ---------------------------------------------------------------------------
+// THE TABLE ABOVE ONLY PINS THE PAIRS SOMEONE THOUGHT OF. Every row is one
+// hand-picked before/after, so a future drift in a fact no row exercises (a
+// field one copy stops reading, say) passes. This walks EVERY ordered
+// before × after pair of the same connector id, drawn from both sides of every
+// row, and asks only that the two copies agree. It needs no expected value, so
+// a fixture added to the table above joins the sweep for free.
+// ---------------------------------------------------------------------------
+
+/** Every distinct (by content) subject in the table, grouped by connector id. */
+function subjectsById(): Map<string, RetargetSubject[]> {
+  const byId = new Map<string, Map<string, RetargetSubject>>();
+  for (const [, rawBefore, rawAfter] of rows) {
+    for (const raw of [rawBefore, rawAfter]) {
+      const s = parsed(raw);
+      const group = byId.get(s.id) ?? new Map<string, RetargetSubject>();
+      group.set(JSON.stringify([s.keyMode, s.capabilities]), s);
+      byId.set(s.id, group);
+    }
+  }
+  return new Map([...byId].map(([id, group]) => [id, [...group.values()]]));
+}
+
+describe('pointsSomewhereNew: client copy === server original over every same-id pair (TASK-887)', () => {
+  it('agrees on every before × after pair drawn from the table’s fixtures', () => {
+    let pairs = 0;
+    const disagreements: string[] = [];
+    for (const [id, group] of subjectsById()) {
+      for (const before of group) {
+        for (const after of group) {
+          pairs++;
+          const server = serverPointsSomewhereNew(before, after);
+          const client = clientPointsSomewhereNew(asClient(before), asClient(after));
+          if (client !== server) {
+            disagreements.push(
+              `${id}: server=${server} client=${client}\n  before=${JSON.stringify(before.capabilities)}\n  after=${JSON.stringify(after.capabilities)}`,
+            );
+          }
+        }
+      }
+    }
+    expect(disagreements).toEqual([]);
+    // Non-vacuous: the sweep visited a lot of pairs.
+    expect(pairs).toBeGreaterThan(200);
+    console.info(`[contract] same-id pairs checked: ${pairs}`);
+  });
+});
