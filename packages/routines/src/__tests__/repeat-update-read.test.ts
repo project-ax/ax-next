@@ -37,11 +37,13 @@ describe('repeat job app updates', () => {
           const read = await bus.call('tool:execute:routine_read_update', routineRunner(ctx), call);
           runs.push({ message, eventId: eventId!, read });
           contexts.push(ctx);
-          for (const outside of [
-            routineRunner(ctx, { userId: 'peer' }),
-            routineRunner(ctx, { conversationId: 'other' }),
-            makeAgentContext({ userId: ctx.userId, agentId: ctx.agentId, sessionId: 'chat', conversationId: ctx.conversationId }),
-          ]) await expect(bus.call('tool:execute:routine_read_update', outside, call)).rejects.toBeDefined();
+          // Each refusal names its reason: another user or conversation finds no such update,
+          // and a chat (no routine source) is refused before any lookup.
+          for (const [outside, toolCode] of [
+            [routineRunner(ctx, { userId: 'peer' }), 'not-found'],
+            [routineRunner(ctx, { conversationId: 'other' }), 'not-found'],
+            [makeAgentContext({ userId: ctx.userId, agentId: ctx.agentId, sessionId: 'chat', conversationId: ctx.conversationId! }), 'forbidden'],
+          ] as const) await expect(bus.call('tool:execute:routine_read_update', outside, call)).rejects.toMatchObject({ toolCode });
           await expect(bus.call('tool:execute:routine_read_update', routineRunner(ctx), { id: 'unknown', name: 'routine_read_update', input: { eventId: `delivery_${'0'.repeat(32)}` } }))
             .rejects.toMatchObject({ toolCode: 'not-found' });
         } catch (error) { errors.push(error); }
@@ -62,6 +64,7 @@ describe('repeat job app updates', () => {
     try {
       for (const route of h.routes) await transport.bus.call('http:register-route', h.owner, route);
       const store = createRoutinesStore(h.db);
+      const history = { agentId: job.agentId, routineId: job.routineId, actorUserId: h.owner.userId };
       const bodies = ['A', 'B'].map((marker, i) => JSON.stringify({
         action: 'create', data: { identifier: `TES-${3 + i}`, title: `PAYLOAD_PRIVATE_${marker}`, description: 'x'.repeat(5000) + `PAYLOAD_PRIVATE_TAIL_${marker}` },
       }));
@@ -69,7 +72,7 @@ describe('repeat job app updates', () => {
         const response = await fetch(`http://127.0.0.1:${server.boundPort()}/webhooks/${token}/issues`, { method: 'POST', headers: { 'content-type': 'application/json' }, body });
         expect(response.status).toBe(202);
         await vi.waitFor(async () => {
-          expect((await store.recentFires(job)).map(run => run.status)).toEqual(Array(i + 1).fill('ok'));
+          expect((await store.recentFires(history)).map(run => run.status)).toEqual(Array(i + 1).fill('ok'));
         }, { timeout: 60_000 });
       }
       if (errors.length) throw errors[0];
@@ -91,7 +94,7 @@ describe('repeat job app updates', () => {
       // The run is over: its own update is no longer readable.
       await expect(h.bus.call('tool:execute:routine_read_update', routineRunner(contexts[0]!), { id: 'after', name: 'routine_read_update', input: { eventId: runs[0]!.eventId } }))
         .rejects.toMatchObject({ toolCode: 'not-found' });
-      const fires = await store.recentFires(job);
+      const fires = await store.recentFires(history);
       expect(fires).toHaveLength(2);
       for (const fire of fires) expect(fire).toMatchObject({ triggerSource: 'webhook', renderedPrompt: null });
     } finally { await transport.close(); listening.restore(); }
