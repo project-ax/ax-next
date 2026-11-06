@@ -27,13 +27,11 @@ import {
   createCommitHandler,
   createDownloadHandler,
   createListForConversationHandler,
-  createPublishArtifactBlobHandler,
 } from './handlers.js';
 import { startJanitor, type JanitorHandle } from './janitor.js';
 import {
   type AttachmentsConfig,
   ArtifactsMintViewTokenOutputSchema,
-  ArtifactsPublishBlobOutputSchema,
   AttachmentsListForConversationOutputSchema,
   CommitOutputSchema,
   DEFAULT_JANITOR_INTERVAL_SECONDS,
@@ -118,10 +116,10 @@ function agentIdsVia(bus: HookBus, ctx: AgentContext) {
 //   - attachments:commit       (caller: POST /api/chat/messages handler)
 //   - attachments:download     (callers: GET /api/files; future Slack plugin)
 //   - attachments:list-for-conversation (caller: ipc-core `attachments.list`)
-//   - artifacts:publish-blob   (caller: ipc-core `artifact.publish`)
 //   - artifacts:publish / list / get / read / rename / restore / delete: the
-//     artifact owner hooks. Every one runs the single access rule
-//     (artifacts/access.ts: agents:resolve membership -> role -> can), and
+//     artifact owner hooks (caller of publish: ipc-core `artifact.publish`,
+//     for the agent's artifact_publish tool). Every one runs the single
+//     access rule (artifacts/access.ts: agents:resolve membership -> role -> can), and
 //     every refusal is the same not-found.
 //   - artifacts:set-link (owner: Copy link / Get new link / turn off) and
 //     artifacts:resolve-share-code (a signed-in link holder: the current
@@ -155,7 +153,7 @@ function agentIdsVia(bus: HookBus, ctx: AgentContext) {
 //     whom?" from uploads and artifact versions. Reclaiming bytes is the
 //     sweeper's job, and it only deletes what every holder agrees nobody
 //     references.
-//   - calls `blob:stat` (TASK-776): artifacts:publish-blob refuses a sha the
+//   - calls `blob:stat` (TASK-776): artifacts:publish refuses a sha the
 //     blob store does not hold, so no row ever points at missing bytes.
 // ---------------------------------------------------------------------------
 
@@ -181,10 +179,10 @@ export function createAttachmentsPlugin(
         'attachments:store-temp',
         'attachments:commit',
         'attachments:download',
-        // TASK-68 (out-of-git Part C): the host-side metadata hooks the IPC
-        // artifact.publish / attachments.list actions drive.
+        // TASK-68 (out-of-git Part C): the host-side metadata hook the IPC
+        // attachments.list action drives. artifact.publish drives
+        // artifacts:publish, one of ARTIFACT_HOOKS.
         'attachments:list-for-conversation',
-        'artifacts:publish-blob',
         ...ARTIFACT_HOOKS,
         MINT_VIEW_TOKEN_HOOK,
       ],
@@ -195,7 +193,7 @@ export function createAttachmentsPlugin(
         // via blob:get.
         'blob:put',
         'blob:get',
-        // TASK-776 (D10): artifacts:publish-blob refuses a sha the store lacks.
+        // TASK-776 (D10): artifacts:publish refuses a sha the store lacks.
         'blob:stat',
         'conversations:get',
         // A published version is charged to the agent's owner (C4).
@@ -247,7 +245,6 @@ export function createAttachmentsPlugin(
       const commitHandler = createCommitHandler({ store, bus });
       const downloadHandler = createDownloadHandler({ bus, store, artifacts });
       const listForConversationHandler = createListForConversationHandler({ store });
-      const publishArtifactBlobHandler = createPublishArtifactBlobHandler({ artifacts, bus });
 
       // 4) Register the hooks. `bus.registerService` is generic in I/O;
       //    each handler factory above returned a correctly-typed closure,
@@ -264,18 +261,12 @@ export function createAttachmentsPlugin(
       bus.registerService('attachments:download', PLUGIN_NAME, downloadHandler, {
         returns: DownloadOutputSchema,
       });
-      // TASK-68: host-side metadata hooks driven by the IPC dispatcher.
+      // TASK-68: host-side metadata hook driven by the IPC dispatcher.
       bus.registerService(
         'attachments:list-for-conversation',
         PLUGIN_NAME,
         listForConversationHandler,
         { returns: AttachmentsListForConversationOutputSchema },
-      );
-      bus.registerService(
-        'artifacts:publish-blob',
-        PLUGIN_NAME,
-        publishArtifactBlobHandler,
-        { returns: ArtifactsPublishBlobOutputSchema },
       );
       registerArtifactHooks(bus, PLUGIN_NAME, { artifacts, bus });
 

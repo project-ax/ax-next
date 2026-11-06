@@ -30,7 +30,7 @@ async function makeHarness(
     services: {
       'blob:put': async () => ({ sha256: 'a'.repeat(64), size: 0 }),
       'blob:get': async () => ({ found: false }) as const,
-      // D10: artifacts:publish-blob stats the sha before it writes a row.
+      // D10: artifacts:publish stats the sha before it writes a row.
       'blob:stat': async (_ctx: unknown, input: unknown) =>
         (input as { sha256: string }).sha256 === 'a'.repeat(64)
           ? { size: 1 }
@@ -91,7 +91,6 @@ describe('@ax/attachments plugin manifest', () => {
       'attachments:commit',
       'attachments:download',
       'attachments:list-for-conversation',
-      'artifacts:publish-blob',
       'artifacts:publish',
       'artifacts:list',
       'artifacts:get',
@@ -107,7 +106,7 @@ describe('@ax/attachments plugin manifest', () => {
     expect(plugin.manifest.calls).toContain('database:get-instance');
     expect(plugin.manifest.calls).toContain('blob:put');
     expect(plugin.manifest.calls).toContain('blob:get');
-    // TASK-776 (D10): artifacts:publish-blob refuses a sha the store lacks.
+    // TASK-776 (D10): artifacts:publish refuses a sha the store lacks.
     expect(plugin.manifest.calls).toContain('blob:stat');
     expect(plugin.manifest.calls).toContain('conversations:get');
     expect(plugin.manifest.calls).toContain('agents:resolve');
@@ -137,7 +136,8 @@ describe('@ax/attachments plugin init / shutdown', () => {
     expect(harness.bus.hasService('attachments:commit')).toBe(true);
     expect(harness.bus.hasService('attachments:download')).toBe(true);
     expect(harness.bus.hasService('attachments:list-for-conversation')).toBe(true);
-    expect(harness.bus.hasService('artifacts:publish-blob')).toBe(true);
+    expect(harness.bus.hasService('artifacts:publish')).toBe(true);
+    expect(harness.bus.hasService('artifacts:publish-blob')).toBe(false);
     for (const hook of createAttachmentsPlugin().manifest.registers) {
       expect(harness.bus.hasService(hook)).toBe(true);
     }
@@ -202,20 +202,18 @@ describe('@ax/attachments plugin init / shutdown', () => {
   });
 });
 
-describe('@ax/attachments artifacts:publish-blob wiring (D10)', () => {
+describe('@ax/attachments artifacts:publish wiring (D10)', () => {
   const publish = (sha256: string) => ({
     conversationId: 'c-1',
     sha256,
-    path: 'workspace/report.pdf',
-    displayName: 'report.pdf',
-    mediaType: 'application/pdf',
-    size: 1,
+    sourcePath: 'reports/report.pdf',
+    title: 'Report',
   });
 
   it('publishes a sha the blob store holds', async () => {
     const harness = await makeHarness();
     const out = await harness.bus.call<unknown, { artifactId: string }>(
-      'artifacts:publish-blob',
+      'artifacts:publish',
       harness.ctx(),
       publish('a'.repeat(64)),
     );
@@ -225,7 +223,7 @@ describe('@ax/attachments artifacts:publish-blob wiring (D10)', () => {
   it('refuses a sha the blob store does not hold, and leaves no row behind', async () => {
     const harness = await makeHarness();
     await expect(
-      harness.bus.call('artifacts:publish-blob', harness.ctx(), publish('b'.repeat(64))),
+      harness.bus.call('artifacts:publish', harness.ctx(), publish('b'.repeat(64))),
     ).rejects.toMatchObject({ code: 'not-found', plugin: '@ax/attachments' });
     const { db } = await harness.bus.call<unknown, { db: Kysely<unknown> }>(
       'database:get-instance',

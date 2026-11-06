@@ -47,12 +47,10 @@ describe('TASK-68 blob.* / metadata IPC schemas', () => {
     const valid = {
       conversationId: 'conv-1',
       sha256: VALID_SHA,
-      path: 'workspace/report.pdf',
-      displayName: 'report.pdf',
-      mediaType: 'application/pdf',
-      size: 1024,
+      path: 'reports/report.pdf',
+      title: 'Report',
     };
-    it('accepts a full metadata envelope', () => {
+    it('accepts {conversationId, sha256, path, title}', () => {
       expect(ArtifactPublishRequestSchema.safeParse(valid).success).toBe(true);
     });
     it('rejects a missing required field', () => {
@@ -69,33 +67,37 @@ describe('TASK-68 blob.* / metadata IPC schemas', () => {
         ArtifactPublishRequestSchema.safeParse({ ...valid, oid: 'deadbeef' }).success,
       ).toBe(false);
     });
-    // Every recorded artifact must be able to become an `attachment` chip, so
-    // the display fields stop at the block's limits.
-    it('caps displayName and mediaType at the attachment block limits', () => {
+    // Media type and size are the host's to decide; the runner cannot send them.
+    it('refuses mediaType and size', () => {
       expect(
-        ArtifactPublishRequestSchema.safeParse({ ...valid, mediaType: 'm'.repeat(256) }).success,
+        ArtifactPublishRequestSchema.safeParse({ ...valid, mediaType: 'text/html' }).success,
       ).toBe(false);
-      expect(
-        ArtifactPublishRequestSchema.safeParse({ ...valid, displayName: 'd'.repeat(1025) }).success,
-      ).toBe(false);
-      expect(
-        ArtifactPublishRequestSchema.safeParse({
-          ...valid,
-          mediaType: 'm'.repeat(255),
-          displayName: 'd'.repeat(1024),
-        }).success,
-      ).toBe(true);
+      expect(ArtifactPublishRequestSchema.safeParse({ ...valid, size: 1 }).success).toBe(false);
     });
   });
 
   describe('ArtifactPublishResponseSchema', () => {
-    it('accepts {artifactId, downloadUrl}', () => {
+    it('accepts {artifactId, version, title, kind, extension}', () => {
       expect(
         ArtifactPublishResponseSchema.safeParse({
           artifactId: 'abc123',
-          downloadUrl: 'ax://artifact/abc123',
+          version: 1,
+          title: 'Report',
+          kind: 'document',
+          extension: 'PDF',
         }).success,
       ).toBe(true);
+    });
+    it('refuses an artifact id that is not an attachment id', () => {
+      expect(
+        ArtifactPublishResponseSchema.safeParse({
+          artifactId: '../x',
+          version: 1,
+          title: 'Report',
+          kind: 'document',
+          extension: 'PDF',
+        }).success,
+      ).toBe(false);
     });
   });
 

@@ -19,8 +19,6 @@ import type {
   AttachmentsConfig,
   AttachmentsListForConversationInput,
   AttachmentsListForConversationOutput,
-  ArtifactsPublishBlobInput,
-  ArtifactsPublishBlobOutput,
   CommitInput,
   CommitOutput,
   DownloadInput,
@@ -302,7 +300,7 @@ export function createCommitHandler(deps: CommitDeps) {
 }
 
 // ---------------------------------------------------------------------------
-// TASK-68: attachments:list-for-conversation + artifacts:publish-blob.
+// TASK-68: attachments:list-for-conversation + the shared publish chain.
 // ---------------------------------------------------------------------------
 
 export interface ListForConversationDeps {
@@ -489,38 +487,6 @@ export async function publishArtifact(
     publishedBy: ctx.userId,
     quotaOwner,
   });
-}
-
-/**
- * `artifacts:publish-blob` — the IPC `artifact.publish` action calls this after
- * the runner streamed the bytes to `blob:put`. Same I/O as ever; underneath it
- * is the shared publish chain (`publishArtifact`): the artifact is the agent's,
- * keyed by `path` within it, and a re-publish of the same path adds a version
- * to the same artifact. `mediaType` and `size` in the input are no longer
- * trusted: the type comes from the path, the size from the blob store.
- */
-export function createPublishArtifactBlobHandler(deps: PublishArtifactDeps) {
-  return async function publishArtifactBlob(
-    ctx: AgentContext,
-    input: ArtifactsPublishBlobInput,
-  ): Promise<ArtifactsPublishBlobOutput> {
-    const result = await publishArtifact(deps, ctx, 'artifacts:publish-blob', {
-      conversationId: input.conversationId,
-      sha256: input.sha256,
-      sourcePath: input.path,
-      title: input.displayName,
-    });
-    if (!result.ok) {
-      // Unreachable without an artifactId; kept so a refusal is never a success.
-      throw new PluginError({
-        code: 'conflict',
-        plugin: PLUGIN_NAME,
-        hookName: 'artifacts:publish-blob',
-        message: `artifact could not be published (${result.reason})`,
-      });
-    }
-    return { artifactId: result.artifactId };
-  };
 }
 
 export interface DownloadDeps {

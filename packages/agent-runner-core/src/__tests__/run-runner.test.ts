@@ -298,6 +298,43 @@ describe('runRunner — generated file attachment', () => {
     expect(toolTurnEnds[0]).toContainEqual(NOT_ATTACHED);
     expect(fakeClient.event.mock.calls.some(c => c[0] === 'event.tool-post-call')).toBe(false);
   });
+  // P1: a file the model published this turn is shown by its artifact card,
+  // so auto-attach must not also give it an agent_file chip. The publish result
+  // makes no attachment chip of its own either.
+  it('a new file the model published this turn gets neither an agent_file chip nor an attachment chip', async () => {
+    const home = await fs.mkdtemp(path.join(os.tmpdir(), 'ax-files-shell-'));
+    const original = fakeClient.call.getMockImplementation()!;
+    fakeClient.call.mockImplementation(async (action: string, ...args: unknown[]) => {
+      if (action === 'session.get-config') return { ...await original(action, ...args), conversationId: 'c1' };
+      if (action === 'tool.list') return { tools: [{ name: 'artifact_publish', executesIn: 'sandbox', inputSchema: {} }] };
+      if (action === 'tool.pre-call') return { verdict: 'allow' };
+      return original(action, ...args);
+    });
+    const published = {
+      artifactId: 'art_1', version: 1, title: 'Weekly report', kind: 'document', extension: 'MD',
+      url: 'ax://artifact/art_1', path: 'report.md',
+    };
+    const loop: Loop = { run: async ctx => {
+      await fs.writeFile(path.join(home, 'report.md'), '# report');
+      await ctx.endTurn({
+        contentBlocks: [
+          { type: 'tool_use', id: 'p1', name: 'mcp__ax-sandbox-tools__artifact_publish', input: { path: 'report.md', title: 'Weekly report' } },
+          { type: 'text', text: 'Published.' },
+        ],
+        toolResultBlocks: [{ type: 'tool_result', tool_use_id: 'p1', content: JSON.stringify(published) }],
+        usage: null, readTurnId: async () => undefined,
+      });
+      return 0;
+    } };
+    try {
+      expect(await runRunner(() => loop, seams(() => ({ ...fakeEnv(), userFilesRoot: home })))).toBe(0);
+    } finally { await fs.rm(home, { recursive: true, force: true }); }
+    const blocks = fakeClient.event.mock.calls
+      .filter(c => c[0] === 'event.turn-end')
+      .flatMap(c => c[1].contentBlocks as Array<{ type: string }>);
+    expect(blocks.some(block => block.type === 'agent_file' || block.type === 'attachment')).toBe(false);
+    expect(fakeClient.call.mock.calls.some(c => c[0] === 'tool.pre-call')).toBe(false);
+  });
 });
 
 describe('runRunner — uploads', () => {
@@ -485,7 +522,7 @@ describe('runRunner — show_visual', () => {
     expect(await runRunner((deps) => { dispatcher = deps.localDispatcher; return loop; }, seams(fakeEnv))).toBe(0);
     expect(dispatcher.has('show_visual')).toBe(true);
     expect(fakeClient.call.mock.calls.find((c) => c[0] === 'artifact.publish')?.[1])
-      .toMatchObject({ conversationId: 'c1', mediaType: 'text/html', displayName: 'visual.html' });
+      .toMatchObject({ conversationId: 'c1', title: 'T', path: expect.stringMatching(/^visuals\/[0-9a-f]{64}\.html$/) });
   });
 
   it('(VISUALS-1) does not register show_visual when the catalog lacks it', async () => {

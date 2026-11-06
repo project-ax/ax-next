@@ -6,9 +6,7 @@ export {
   checkPublishablePath,
   describeRoots,
   MAX_ARTIFACT_BYTES,
-  MAX_DISPLAY_NAME_CHARS,
   type PathCheckResult,
-  type PublishRoot,
   type PublishRoots,
 } from './path-allowlist.js';
 export {

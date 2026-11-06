@@ -1699,22 +1699,23 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
   //
   //   - No multipart upload. The deliverable is a file in the agent's home,
   //     published through the REAL runner executor (createArtifactPublishExecutor)
-  //     whose IPC client is wired straight to blob:put / artifacts:publish-blob,
-  //     the hooks the `blob.put` and `artifact.publish` handlers drive. The id it
-  //     returns is the one the host minted.
-  //   - The stored assistant turn carries a `tool_use` block, a `tool_result`
-  //     whose content is the executor's JSON, AND the download chip: one
-  //     `attachment` block whose `attachmentId` is the artifactId. No path.
-  //   - The chip downloads BY ID (GET /api/files?id=...), and only through the
-  //     conversation the row belongs to: another conversation of the same user,
-  //     and another user, both get 404.
+  //     whose IPC client drives the REAL ipc-core dispatcher (`blob.put`, then
+  //     `artifact.publish` → `artifacts:publish`). The id it returns is the one
+  //     the host minted. Publishing the same path again adds version 2 to the
+  //     same artifact.
+  //   - The stored assistant turn carries a `tool_use` block and a
+  //     `tool_result` whose content is the executor's JSON. No download chip:
+  //     the result names no file name, media type or size, so it makes none
+  //     (the artifact's card shows it).
+  //   - The artifact downloads BY ID (GET /api/files?id=...) through any of the
+  //     person's chats with the agent; another user gets 404.
   //   - We also assert that `conversations:get` surfaces the tool_use +
   //     tool_result blocks intact, since channel-web's MarkdownText resolves
   //     ax://artifact/<id> links by looking up the tool_result in the
   //     conversation history.
   // ---------------------------------------------------------------------------
   it(
-    'Phase 3 canary: artifact_publish round-trip via assistant tool_result + GET /api/files',
+    'Phase 3 canary: publishes report.md as "Weekly report" (v1), re-publishes the same path (v2, same id), and another session\'s sha is still a 404',
     { timeout: 180_000 },
     async () => {
       const connectionString = await ensurePostgresStarted();
@@ -1723,11 +1724,6 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
       );
       const runnerCheckoutRoot = await fs.realpath(
         await fs.mkdtemp(path.join(os.tmpdir(), 'ax-phase-3-artifact-runner-')),
-      );
-      // The session scratch root (AX_EPHEMERAL_ROOT): the executor requires both
-      // roots, and only `<scratch>/artifacts/**` is publishable from it.
-      const scratchRoot = await fs.realpath(
-        await fs.mkdtemp(path.join(os.tmpdir(), 'ax-phase-3-artifact-scratch-')),
       );
 
       const originalAllowNoOrigins = process.env.AX_HTTP_ALLOW_NO_ORIGINS;
@@ -1981,15 +1977,15 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
         // 2. Stage the deliverable in the agent's home (/files), the tier
         // artifacts are published from and the agent's cwd in production. The
         // artifact's durability comes from the blob store at publish time
-        // (TASK-68). `ARTIFACT_PATH` is the row's re-publish key, relative to
-        // the home; it never leaves the host as part of a chip.
+        // (TASK-68). `ARTIFACT_PATH` is the artifact's re-publish key, relative
+        // to the home; it goes back only to the agent.
         const seedCtx = makeAgentContext({
           sessionId: 'phase-3-artifact-canary',
           agentId: AGENT,
           userId: USER,
           workspace: { rootPath: workspaceRoot },
         });
-        const ARTIFACT_PATH = 'reports/summary.md';
+        const ARTIFACT_PATH = 'report.md';
         const artifactAbsPath = path.join(runnerCheckoutRoot, ARTIFACT_PATH);
         await fs.mkdir(path.dirname(artifactAbsPath), {
           recursive: true,
@@ -2032,34 +2028,65 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
           }
         };
         const RUNNER_SESSION = 'phase-3-artifact-canary-runner';
+        const putShas: string[] = [];
         const hostClient = {
           callBinaryUpload: async (action: string, bytes: Uint8Array) => {
             expect(action).toBe('blob.put');
             const r = await ipcPost(RUNNER_SESSION, action, bytes, 'application/octet-stream');
             expect(r.status).toBe(200);
-            return JSON.parse(r.text) as { sha256: string; size: number };
+            const put = JSON.parse(r.text) as { sha256: string; size: number };
+            putShas.push(put.sha256);
+            return put;
           },
           call: async (action: string, payload: unknown) => {
             expect(action).toBe('artifact.publish');
             const r = await ipcPost(RUNNER_SESSION, action, JSON.stringify(payload), 'application/json');
             expect(r.status).toBe(200);
-            return JSON.parse(r.text) as { artifactId: string; downloadUrl: string };
+            return JSON.parse(r.text) as unknown;
           },
         };
         const executor = createArtifactPublishExecutor({
           userFilesRoot: runnerCheckoutRoot,
-          ephemeralRoot: scratchRoot,
-          client: hostClient as unknown as NonNullable<
-            CreateArtifactPublishExecutorOptions['client']
-          >,
+          client: hostClient as unknown as CreateArtifactPublishExecutorOptions['client'],
           conversationId,
         });
+        const publishInput = { path: artifactAbsPath, title: 'Weekly report' };
         const artifactResult = await executor({
           id: 'toolu_1',
           name: 'artifact_publish',
           // The REAL absolute path — what the operating notes hand the model
           // and what it actually wrote to, in every sandbox shape.
-          input: { path: artifactAbsPath, displayName: 'summary.md' },
+          input: publishInput,
+        });
+
+        // Lock-down: the tool result names the artifact by id and
+        // ax://artifact/<id>, never a share code (C1), plus the path relative
+        // to the files folder. With no file name, media type or size in it, it
+        // makes no download chip.
+        expect(artifactResult).toEqual({
+          artifactId: expect.stringMatching(/^[A-Za-z0-9_-]{1,128}$/),
+          version: 1,
+          title: 'Weekly report',
+          kind: 'document',
+          extension: 'MD',
+          url: `ax://artifact/${artifactResult.artifactId}`,
+          path: ARTIFACT_PATH,
+        });
+
+        // 3a. Edit the file and publish the same path again, this time by the
+        // relative path the agent's artifact list names it by: version 2 of
+        // the SAME artifact.
+        const V2_TEXT = `${ARTIFACT_BYTES_TEXT}\nUpdated.\n`;
+        await fs.writeFile(artifactAbsPath, V2_TEXT);
+        const republished = await executor({
+          id: 'toolu_2',
+          name: 'artifact_publish',
+          input: { path: ARTIFACT_PATH, title: 'Weekly report' },
+        });
+        expect(republished).toMatchObject({
+          artifactId: artifactResult.artifactId,
+          version: 2,
+          path: ARTIFACT_PATH,
         });
 
         // 3b. TASK-1010: a session that never put the bytes cannot publish
@@ -2072,43 +2099,19 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
               conversationId,
               sha256,
               path: 'reports/laundered.md',
-              displayName: 'laundered.md',
-              mediaType: 'text/markdown',
-              size: ARTIFACT_BYTES.byteLength,
+              title: 'Laundered',
             }),
             'application/json',
           );
-        const launder = await publishAs('phase-3-artifact-canary-other', artifactResult.sha256);
+        expect(putShas).toHaveLength(2);
+        const launder = await publishAs('phase-3-artifact-canary-other', putShas[0]!);
         expect(launder.status).toBe(404);
         const unknownSha = await publishAs('phase-3-artifact-canary-other', 'f'.repeat(64));
         expect(unknownSha).toEqual(launder);
 
-        // Lock-down: the chip is built from this shape. The id is opaque (the
-        // host decides its form); it only has to be a well-formed attachment id.
-        expect(artifactResult.artifactId).toMatch(/^[A-Za-z0-9_-]{1,128}$/);
-        expect(artifactResult.downloadUrl).toBe(
-          `ax://artifact/${artifactResult.artifactId}`,
-        );
-        expect(artifactResult.path).toBe(ARTIFACT_PATH);
-        expect(artifactResult.displayName).toBe('summary.md');
-        expect(artifactResult.mediaType).toBe('text/markdown');
-        expect(artifactResult.sizeBytes).toBe(ARTIFACT_BYTES.byteLength);
-        expect(artifactResult.sha256).toMatch(/^[0-9a-f]{64}$/);
-
-        // The tool-turn chip: ONE `attachment` block, id = the artifact's id,
-        // display metadata only. No path (the tool_result text above keeps the
-        // model-facing `path`; the chip drops it).
-        const chip = {
-          type: 'attachment' as const,
-          attachmentId: artifactResult.artifactId,
-          filename: artifactResult.displayName,
-          mediaType: artifactResult.mediaType,
-          sizeBytes: artifactResult.sizeBytes,
-        };
-
         // 4. Append the user turn, then the assistant turn carrying the
-        // tool_use + tool_result + chip + closing text, to the display event log
-        // — exactly what the orchestrator/runner persist in production.
+        // tool_use + tool_result + closing text, to the display event log —
+        // exactly what the orchestrator/runner persist in production.
         await bus.call<
           ConversationsAppendEventInput,
           ConversationsAppendEventOutput
@@ -2131,17 +2134,16 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
                 type: 'tool_use',
                 id: 'toolu_1',
                 name: 'artifact_publish',
-                input: { path: artifactAbsPath, displayName: 'summary.md' },
+                input: publishInput,
               },
               {
                 type: 'tool_result',
                 tool_use_id: 'toolu_1',
                 content: JSON.stringify(artifactResult),
               },
-              chip,
               {
                 type: 'text',
-                text: `Done. See [download](${artifactResult.downloadUrl}).`,
+                text: `Done. See [the report](${artifactResult.url}).`,
               },
             ],
           },
@@ -2158,10 +2160,10 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
             { method: 'GET', headers: { 'x-test-user': user } },
           );
 
-        // 5. Download by id (the chip's attachmentId) → 200 + bytes match.
-        const downloadResp = await download(chip.attachmentId, conversationId);
+        // 5. Download by id → 200 + the newest version's bytes.
+        const downloadResp = await download(artifactResult.artifactId, conversationId);
         expect(downloadResp.status).toBe(200);
-        expect(await downloadResp.text()).toBe(ARTIFACT_BYTES_TEXT);
+        expect(await downloadResp.text()).toBe(V2_TEXT);
 
         // 5b. Artifacts are the agent's and outlive the chat that made them
         // (D12): the same id through another of this user's chats with the
@@ -2188,17 +2190,17 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
           (await otherChat.json()) as { conversationId: string }
         ).conversationId;
         expect(otherConversationId).not.toBe(conversationId);
-        const viaOtherChat = await download(chip.attachmentId, otherConversationId);
+        const viaOtherChat = await download(artifactResult.artifactId, otherConversationId);
         expect(viaOtherChat.status).toBe(200);
-        expect(await viaOtherChat.text()).toBe(ARTIFACT_BYTES_TEXT);
+        expect(await viaOtherChat.text()).toBe(V2_TEXT);
         expect(
-          (await download(chip.attachmentId, conversationId, 'phase-3-artifact-other-user'))
+          (await download(artifactResult.artifactId, conversationId, 'phase-3-artifact-other-user'))
             .status,
         ).toBe(404);
 
-        // 6. conversations:get returns the tool_use + tool_result blocks and the
-        //    id chip, so MarkdownText's Anchor can resolve ax://artifact/<id>
-        //    links and the chat renders the download chip.
+        // 6. conversations:get returns the tool_use + tool_result blocks, so
+        //    MarkdownText's Anchor can resolve ax://artifact/<id> links. No
+        //    download chip rides the turn.
         const got = await bus.call<
           ConversationsGetInput,
           ConversationsGetOutput
@@ -2221,14 +2223,14 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
         );
         expect(toolUse).toBeTruthy();
         expect(toolResult).toBeTruthy();
-        const storedChip = blocks.find((b) => b.type === 'attachment');
-        expect(storedChip).toEqual(chip);
-        expect(storedChip).not.toHaveProperty('path');
+        expect(blocks.some((b) => b.type === 'attachment')).toBe(false);
 
         // 7. show_visual: registered by the real plugin, executed through the
         //    REAL runner executor and ipc-core dispatcher (same hostClient and
         //    session), downloadable immediately (no turn commit needed) as an
-        //    octet-stream attachment, and invisible from another conversation.
+        //    octet-stream attachment. It is an artifact of the agent (D12), so
+        //    another of this person's chats with the same agent reaches it and
+        //    another person does not.
         expect(registered.map((d) => [d.name, d.executesIn])).toEqual(
           expect.arrayContaining([['show_visual', 'sandbox']]),
         );
@@ -2252,12 +2254,14 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
         expect(visualResp.headers.get('content-type')).toMatch(/^application\/octet-stream/);
         expect(visualResp.headers.get('content-disposition')).toMatch(/^attachment;/);
         expect(visualResp.headers.get('x-content-type-options')).toBe('nosniff');
-        expect((await download(visual.artifactId, otherConversationId)).status).toBe(404);
+        expect((await download(visual.artifactId, otherConversationId)).status).toBe(200);
+        expect(
+          (await download(visual.artifactId, conversationId, 'phase-3-artifact-other-user')).status,
+        ).toBe(404);
       } finally {
         if (handle !== null) await handle.shutdown();
         await fs.rm(workspaceRoot, { recursive: true, force: true });
         await fs.rm(runnerCheckoutRoot, { recursive: true, force: true });
-        await fs.rm(scratchRoot, { recursive: true, force: true });
         if (originalAllowNoOrigins === undefined) {
           delete process.env.AX_HTTP_ALLOW_NO_ORIGINS;
         } else {

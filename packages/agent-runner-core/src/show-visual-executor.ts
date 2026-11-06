@@ -2,7 +2,8 @@
 // Sandbox-side executor for the `show_visual` tool. The model hands us a title,
 // a plain-text summary and a self-contained HTML document; we store the HTML as
 // a text/html artifact (blob.put + artifact.publish, the same pair
-// `artifact_publish` uses) and return only the reference. The chat renders it
+// `artifact_publish` uses; the host derives text/html from the `.html` key) and
+// return only the reference. The chat renders it
 // later inside a sandboxed, no-network frame.
 //
 // Every field is model output, so every check runs BEFORE any byte crosses to
@@ -84,16 +85,16 @@ export function createShowVisualExecutor(opts: CreateShowVisualExecutorOptions) 
       );
     }
 
-    // The row key is derived from the content, never from model input, so the
-    // model has no say over the stored path.
+    // The re-publish key is derived from the content, never from model input,
+    // so the model has no say over it; the host types it text/html from the
+    // `.html` extension.
     const localSha = createHash('sha256').update(bytes).digest('hex');
     const published = await publishBytesToHost({
       client: opts.client,
       conversationId: opts.conversationId,
       bytes,
       path: `visuals/${localSha}.html`,
-      displayName: 'visual.html',
-      mediaType: 'text/html',
+      title,
     });
 
     return { artifactId: published.artifactId, title, summary };

@@ -296,26 +296,51 @@ describe('generated files', () => {
       { type: 'tool_use', id: 'p', name: 'mcp__ax-sandbox-tools__artifact_publish', input: {} },
     ], [
       { type: 'tool_result', tool_use_id: 'p', content: [{ type: 'text', text: JSON.stringify(RESULT) }] },
-      { type: 'tool_result', tool_use_id: 'unknown', content: JSON.stringify(RESULT) },
-      { type: 'tool_result', tool_use_id: 'p', is_error: true, content: JSON.stringify(RESULT) },
-    ])).toEqual({ blocks: [CHIP], paths: ['out/a.txt'] });
+      { type: 'tool_result', tool_use_id: 'unknown', content: JSON.stringify({ ...RESULT, path: 'x' }) },
+      { type: 'tool_result', tool_use_id: 'p', is_error: true, content: JSON.stringify({ ...RESULT, path: 'y' }) },
+    ])).toEqual({ blocks: [], paths: ['out/a.txt'] });
   });
 
-  it('artifact chips carry the artifactId, not a path', () => {
-    const { blocks } = publishedAttachments(
+  // P1: a published file is shown by its artifact card. Its path is recorded
+  // from every successful publish result, chip or not, so auto-attach does not
+  // also give it an agent_file chip.
+  it('a published new file gets no agent_file chip next to its card', async () => {
+    const dir = await root();
+    const { tracker, admit, attached } = await track(dir);
+    await fs.mkdir(path.join(dir, 'out'));
+    await fs.writeFile(path.join(dir, 'out', 'a.txt'), 'a');
+    const explicit = publishedAttachments(
       [{ type: 'tool_use', id: 'p', name: 'artifact_publish', input: {} }],
       [{ type: 'tool_result', tool_use_id: 'p', content: JSON.stringify(RESULT) }],
     );
+    expect(explicit).toEqual({ blocks: [], paths: ['out/a.txt'] });
+    expect(await tracker.collect(explicit.paths)).toEqual([]);
+    expect(admit).not.toHaveBeenCalled();
+    expect(attached).not.toHaveBeenCalled();
+  });
+
+  it('a result in the old chip-making shape still makes its chip, named by artifactId, not a path', () => {
+    const { blocks, paths } = publishedAttachments(
+      [{ type: 'tool_use', id: 'p', name: 'artifact_publish', input: {} }],
+      [{ type: 'tool_result', tool_use_id: 'p', content: JSON.stringify(LEGACY_RESULT) }],
+    );
     expect(blocks).toEqual([CHIP]);
+    expect(paths).toEqual(['out/a.txt']);
     expect(blocks.every(block => !('path' in block))).toBe(true);
   });
 
-  it('a publish result that cannot name its artifact attaches nothing', () => {
+  it('a publish result that cannot make a chip attaches nothing, but its path still counts as published', () => {
     // The result rides a tool_result, so every field is checked again here.
-    for (const bad of [{ ...RESULT, artifactId: '../x' }, { ...RESULT, displayName: '' }, { path: 'out/a.txt' }]) {
+    for (const bad of [{ ...LEGACY_RESULT, artifactId: '../x' }, { ...LEGACY_RESULT, displayName: '' }, { path: 'out/a.txt' }]) {
       expect(publishedAttachments(
         [{ type: 'tool_use', id: 'p', name: 'artifact_publish', input: {} }],
         [{ type: 'tool_result', tool_use_id: 'p', content: JSON.stringify(bad) }],
+      )).toEqual({ blocks: [], paths: ['out/a.txt'] });
+    }
+    for (const notAPath of [{ ...RESULT, path: 7 }, 'just text', null]) {
+      expect(publishedAttachments(
+        [{ type: 'tool_use', id: 'p', name: 'artifact_publish', input: {} }],
+        [{ type: 'tool_result', tool_use_id: 'p', content: JSON.stringify(notAPath) }],
       )).toEqual({ blocks: [], paths: [] });
     }
   });
@@ -372,6 +397,16 @@ describe('agentFileReference', () => {
 
 /** An `artifact_publish` result as the executor returns it. */
 const RESULT = {
+  artifactId: '0123456789abcdef',
+  version: 1,
+  title: 'A notes',
+  kind: 'document',
+  extension: 'TXT',
+  url: 'ax://artifact/0123456789abcdef',
+  path: 'out/a.txt',
+};
+/** The result the executor returned before artifacts had cards: it made a chip. */
+const LEGACY_RESULT = {
   artifactId: '0123456789abcdef',
   downloadUrl: 'ax://artifact/0123456789abcdef',
   path: 'out/a.txt',

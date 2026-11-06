@@ -16,11 +16,10 @@ const VALID_SHA = 'a'.repeat(64);
 const validReq = {
   conversationId: 'conv-1',
   sha256: VALID_SHA,
-  path: 'workspace/report.pdf',
-  displayName: 'report.pdf',
-  mediaType: 'application/pdf',
-  size: 1024,
+  path: 'reports/report.pdf',
+  title: 'Weekly report',
 };
+const HOOK_OUT = { artifactId: 'abc123', version: 1, title: 'Weekly report', kind: 'document', extension: 'PDF' };
 
 function fakeBus(impl: (hook: string, payload: unknown) => Promise<unknown>) {
   return {
@@ -50,25 +49,86 @@ beforeEach(() => {
 });
 
 describe('artifact.publish handler', () => {
-  it('inserts the metadata row and mints ax://artifact/<id>', async () => {
+  it('forwards path as sourcePath with title and artifactId, and answers {artifactId, version, title, kind, extension}', async () => {
+    const seen: { hook: string; payload: unknown }[] = [];
     const bus = fakeBus(async (hook, payload) => {
-      expect(hook).toBe('artifacts:publish-blob');
-      expect(payload).toMatchObject({
+      seen.push({ hook, payload });
+      return { ...HOOK_OUT, version: 2, sourcePath: 'leak' };
+    });
+    const result = (await artifactPublishHandler(
+      { ...validReq, artifactId: 'abc123' },
+      fakeCtx(),
+      bus as never,
+    )) as HandlerOk;
+    expect(result.status).toBe(200);
+    expect(seen).toEqual([{
+      hook: 'artifacts:publish',
+      payload: {
         conversationId: 'conv-1',
         sha256: VALID_SHA,
-        path: 'workspace/report.pdf',
-        displayName: 'report.pdf',
-        mediaType: 'application/pdf',
-        size: 1024,
-      });
-      return { artifactId: 'abc123' };
-    });
-    const result = (await artifactPublishHandler(validReq, fakeCtx(), bus as never)) as HandlerOk;
-    expect(result.status).toBe(200);
-    expect(result.body).toEqual({
-      artifactId: 'abc123',
-      downloadUrl: 'ax://artifact/abc123',
-    });
+        sourcePath: 'reports/report.pdf',
+        title: 'Weekly report',
+        artifactId: 'abc123',
+      },
+    }]);
+    // Only the declared fields go back to the runner: no share code, no path.
+    expect(result.body).toEqual({ ...HOOK_OUT, version: 2 });
+  });
+
+  it('leaves artifactId out of the hook payload when the runner sent none', async () => {
+    const bus = fakeBus(async () => HOOK_OUT);
+    await artifactPublishHandler(validReq, fakeCtx(), bus as never);
+    expect(bus.call.mock.calls[0]![2]).not.toHaveProperty('artifactId');
+  });
+
+  it('hands the hook the session ctx as-is, so the hook sees the real agent id', async () => {
+    const bus = fakeBus(async () => HOOK_OUT);
+    const ctx = fakeCtx();
+    await artifactPublishHandler(validReq, ctx, bus as never);
+    expect(bus.call.mock.calls[0]![1]).toBe(ctx);
+    expect((bus.call.mock.calls[0]![1] as { agentId: string }).agentId).toBe('a1');
+  });
+
+  it('still refuses a foreign conversation (403) and a sha this session did not put (404) before calling the hook', async () => {
+    const bus = fakeBus(async () => HOOK_OUT);
+    const foreign = (await artifactPublishHandler(
+      { ...validReq, conversationId: 'conv-2' }, fakeCtx(), bus as never,
+    )) as HandlerErr;
+    const unput = (await artifactPublishHandler(
+      { ...validReq, sha256: 'b'.repeat(64) }, fakeCtx(), bus as never,
+    )) as HandlerErr;
+    expect(foreign.status).toBe(403);
+    expect(unput.status).toBe(404);
+    expect(bus.call).not.toHaveBeenCalled();
+  });
+
+  it('refuses the old displayName / mediaType / size request (a warm runner from the old image)', async () => {
+    const bus = fakeBus(async () => HOOK_OUT);
+    const { title: _t, ...rest } = validReq;
+    const result = (await artifactPublishHandler(
+      { ...rest, displayName: 'report.pdf', mediaType: 'application/pdf', size: 3 },
+      fakeCtx(),
+      bus as never,
+    )) as HandlerErr;
+    expect(result.status).toBe(400);
+    expect(bus.call).not.toHaveBeenCalled();
+  });
+
+  it('refuses a path holding a control or bidi character before calling the hook', async () => {
+    const bus = fakeBus(async () => HOOK_OUT);
+    for (const bad of ['a\u0007b.md', 'evil\u202Efdp.exe', 'line\u2028break.md', 'x\u0085y.md']) {
+      const result = (await artifactPublishHandler(
+        { ...validReq, path: bad }, fakeCtx(), bus as never,
+      )) as HandlerErr;
+      expect(result.status).toBe(400);
+    }
+    expect(bus.call).not.toHaveBeenCalled();
+  });
+
+  it('answers 500 when the hook answers a shape the wire does not allow', async () => {
+    const bus = fakeBus(async () => ({ ...HOOK_OUT, kind: 'video' }));
+    const result = (await artifactPublishHandler(validReq, fakeCtx(), bus as never)) as HandlerErr;
+    expect(result.status).toBe(500);
   });
 
   it('maps a forbidden PluginError (foreign conversation) to its HTTP status', async () => {
@@ -87,7 +147,7 @@ describe('artifact.publish handler', () => {
   // row is recorded decides who can read it. A runner records rows only for
   // the conversation its session is bound to.
   it("refuses a conversation other than the session's bound one, without calling the hook", async () => {
-    const bus = fakeBus(async () => ({ artifactId: 'abc123' }));
+    const bus = fakeBus(async () => HOOK_OUT);
     const ctx = fakeCtx('conv-1') as unknown as { logger: { warn: ReturnType<typeof vi.fn> } };
     const result = (await artifactPublishHandler(
       { ...validReq, conversationId: 'conv-2' },
@@ -101,7 +161,7 @@ describe('artifact.publish handler', () => {
   });
 
   it('refuses a session bound to no conversation', async () => {
-    const bus = fakeBus(async () => ({ artifactId: 'abc123' }));
+    const bus = fakeBus(async () => HOOK_OUT);
     const result = (await artifactPublishHandler(validReq, fakeCtx(null), bus as never)) as HandlerErr;
     expect(result.status).toBe(403);
     expect(bus.call).not.toHaveBeenCalled();
@@ -125,7 +185,7 @@ describe('artifact.publish handler', () => {
 // blob.put returned may be published; everything else is one 404.
 describe('artifact.publish: only this session\'s own blob.put shas', () => {
   const OTHER_SHA = 'b'.repeat(64);
-  const okBus = () => fakeBus(async () => ({ artifactId: 'abc123' }));
+  const okBus = () => fakeBus(async () => HOOK_OUT);
 
   it('refuses a sha this session never put, without calling the hook or logging the sha', async () => {
     const bus = okBus();
@@ -165,7 +225,7 @@ describe('artifact.publish: only this session\'s own blob.put shas', () => {
       throw new PluginError({
         code: 'not-found',
         plugin: '@ax/attachments',
-        hookName: 'artifacts:publish-blob',
+        hookName: 'artifacts:publish',
         message: 'artifact bytes are not in the blob store',
       });
     });
@@ -182,7 +242,7 @@ describe('artifact.publish: only this session\'s own blob.put shas', () => {
     resetSessionBlobPutsForTests();
     const bus = fakeBus(async (hook) => {
       if (hook === 'blob:put') return { sha256: OTHER_SHA, size: 3 };
-      if (hook === 'artifacts:publish-blob') return { artifactId: 'abc123' };
+      if (hook === 'artifacts:publish') return HOOK_OUT;
       throw new Error(`unexpected hook ${hook}`);
     });
     const before = (await artifactPublishHandler(
@@ -243,7 +303,7 @@ describe('artifact.publish: only this session\'s own blob.put shas', () => {
       throw new PluginError({
         code: 'unknown',
         plugin: '@ax/attachments',
-        hookName: 'artifacts:publish-blob',
+        hookName: 'artifacts:publish',
         message: 'connection refused',
       });
     });

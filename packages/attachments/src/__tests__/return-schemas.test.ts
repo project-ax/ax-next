@@ -10,12 +10,10 @@ import {
   type ArtifactsGetOutput,
   type ArtifactsPublishOutput,
   type ArtifactsReadOutput,
-  ArtifactsPublishBlobOutputSchema,
   AttachmentsListForConversationOutputSchema,
   CommitOutputSchema,
   DownloadOutputSchema,
   StoreTempOutputSchema,
-  type ArtifactsPublishBlobOutput,
   type AttachmentsListForConversationOutput,
   type CommitOutput,
   type DownloadOutput,
@@ -103,11 +101,6 @@ describe('attachments return schemas', () => {
   });
 
   // TASK-68 hooks.
-  it('artifacts:publish-blob round-trips a fully-populated output', () => {
-    const full: ArtifactsPublishBlobOutput = { artifactId: 'abc123' };
-    expect(ArtifactsPublishBlobOutputSchema.parse(full)).toEqual(full);
-  });
-
   it('attachments:list-for-conversation round-trips a fully-populated output', () => {
     const full: AttachmentsListForConversationOutput = {
       files: [

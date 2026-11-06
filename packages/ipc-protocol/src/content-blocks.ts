@@ -155,6 +155,7 @@ export const ARTIFACT_TITLE_MAX = 200;
  * channel-web read it from here.
  */
 export const ArtifactKindSchema = z.enum(['document', 'web', 'spreadsheet', 'image', 'code', 'file']);
+export type ArtifactKind = z.infer<typeof ArtifactKindSchema>;
 
 /**
  * The words a person (and the agent's artifact list) sees for each kind. One
@@ -167,7 +168,7 @@ export const ARTIFACT_KIND_LABELS = {
   image: 'Image',
   code: 'Code',
   file: 'File',
-} as const satisfies Record<z.infer<typeof ArtifactKindSchema>, string>;
+} as const satisfies Record<ArtifactKind, string>;
 
 /**
  * A user-attached file OR an agent-published artifact, as it appears in a

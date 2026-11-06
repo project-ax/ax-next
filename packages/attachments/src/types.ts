@@ -73,31 +73,6 @@ export interface DownloadOutput {
 // TASK-68 (out-of-git Part C): host-side metadata hooks.
 
 /**
- * `artifacts:publish-blob` — the IPC `artifact.publish` action calls this after
- * the runner streamed the artifact bytes to `blob:put`. Publishes a version of
- * the conversation's AGENT's artifact at `path` (a re-publish of the same path
- * adds a version to the same artifact), into a conversation ctx.userId owns;
- * returns the stable artifactId the chat chip and the download use. `path` is
- * the re-publish key and never leaves this plugin except back to the agent.
- * `displayName` proposes the title; `mediaType` and `size` are not trusted (the
- * type comes from the path, the size from the blob store).
- *
- * The hook does not check who put `sha256`; a caller must pass a sha it put
- * itself (ipc-core enforces that for runners, TASK-1010).
- */
-export interface ArtifactsPublishBlobInput {
-  conversationId: string;
-  sha256: string;
-  path: string;
-  displayName: string;
-  mediaType: string;
-  size: number;
-}
-export interface ArtifactsPublishBlobOutput {
-  artifactId: string;
-}
-
-/**
  * `attachments:list-for-conversation` — the IPC `attachments.list` action calls
  * this when a runner starts (and when a later message brings an upload it has
  * not seen). Returns the conversation's committed uploads, owned by ctx.userId,
@@ -155,10 +130,6 @@ export const DownloadOutputSchema = z.object({
 
 // TASK-68 returns contracts. Storage-agnostic: `artifactId`/`attachmentId`
 // opaque ids, `sha256` the file's own content digest (not a backend pointer).
-export const ArtifactsPublishBlobOutputSchema = z.object({
-  artifactId: z.string(),
-}) as unknown as ZodType<ArtifactsPublishBlobOutput>;
-
 export const AttachmentsListForConversationOutputSchema = z.object({
   files: z.array(
     z.object({

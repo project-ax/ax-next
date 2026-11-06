@@ -4,6 +4,8 @@ import {
   ToolPreCallResponseSchema,
   SessionNextMessageResponseSchema,
   SkillProposeResponseSchema,
+  ArtifactPublishRequestSchema,
+  ArtifactPublishResponseSchema,
   PRE_CALL_REJECT_REASON_MAX,
   SKILL_PROPOSE_REASON_MAX,
 } from '../actions.js';
@@ -107,5 +109,31 @@ describe('wire reason/note caps (TASK-781)', () => {
       }).success;
     expect(at(SKILL_PROPOSE_REASON_MAX)).toBe(true);
     expect(at(SKILL_PROPOSE_REASON_MAX + 1)).toBe(false);
+  });
+});
+
+describe('artifact.publish wire', () => {
+  const base = { conversationId: 'conv-1', sha256: 'a'.repeat(64), path: 'reports/q3.pdf' };
+
+  it('artifact.publish requires title and refuses the old displayName / mediaType / size fields', () => {
+    expect(ArtifactPublishRequestSchema.safeParse({ ...base, title: 'Report' }).success).toBe(true);
+    expect(ArtifactPublishRequestSchema.safeParse({ ...base, title: 'Report', displayName: 'r.pdf' }).success).toBe(false);
+    expect(ArtifactPublishRequestSchema.safeParse({ ...base, title: 'Report', mediaType: 'application/pdf' }).success).toBe(false);
+    expect(ArtifactPublishRequestSchema.safeParse({ ...base, title: 'Report', size: 3 }).success).toBe(false);
+    expect(ArtifactPublishRequestSchema.safeParse(base).success).toBe(false);
+  });
+
+  it('caps the title at 200 and takes an optional artifact id of the attachment-id shape', () => {
+    expect(ArtifactPublishRequestSchema.safeParse({ ...base, title: 'x'.repeat(200) }).success).toBe(true);
+    expect(ArtifactPublishRequestSchema.safeParse({ ...base, title: 'x'.repeat(201) }).success).toBe(false);
+    expect(ArtifactPublishRequestSchema.safeParse({ ...base, title: 'R', artifactId: 'abc_123' }).success).toBe(true);
+    expect(ArtifactPublishRequestSchema.safeParse({ ...base, title: 'R', artifactId: '../x' }).success).toBe(false);
+  });
+
+  it('answers {artifactId, version, title, kind, extension} and no download URL', () => {
+    const ok = { artifactId: 'abc', version: 2, title: 'Report', kind: 'document', extension: 'PDF' };
+    expect(ArtifactPublishResponseSchema.parse({ ...ok, downloadUrl: 'ax://artifact/abc' })).toEqual(ok);
+    expect(ArtifactPublishResponseSchema.safeParse({ ...ok, version: 0 }).success).toBe(false);
+    expect(ArtifactPublishResponseSchema.safeParse({ ...ok, kind: 'video' }).success).toBe(false);
   });
 });

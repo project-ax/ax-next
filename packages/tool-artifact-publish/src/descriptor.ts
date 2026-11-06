@@ -1,19 +1,18 @@
 import type { ToolDescriptor } from '@ax/core';
+import { ARTIFACT_TITLE_MAX } from '@ax/ipc-protocol';
 
 export const ARTIFACT_PUBLISH_TOOL_NAME = 'artifact_publish' as const;
 
 /**
- * The model invokes this with an absolute path; the runner-side executor
- * validates it against the SESSION'S REAL ROOTS, stats + hashes the file,
- * streams the bytes to the host blob store and returns the artifact metadata.
+ * The model invokes this with a path in its files folder and a short title; the
+ * runner-side executor validates the path against the session's real files
+ * root, stats + hashes the file, streams the bytes to the host blob store and
+ * asks the host (`artifact.publish` → `artifacts:publish`) to add a version.
  *
  * The DESCRIPTOR is host-side and static (catalog advertisement), so — exactly
- * like `@ax/tool-skill-propose`'s — it does NOT hard-code the tier paths. It
- * names the two locations by role and defers to the per-session operating notes
- * for their literal paths, which the runner composes from the resolved roots
- * (`userFilesNote` / `ephemeralScratchNote`). The previous version hard-coded
- * `/ephemeral/artifacts/**` and `/agent/workspace/**`, which were only true on
- * k8s and named a directory nothing creates; see `path-allowlist.ts`.
+ * like `@ax/tool-skill-propose`'s — it does NOT hard-code the folder's path. It
+ * names the folder by role; the per-session operating notes give its literal
+ * path, and a relative path is taken relative to it.
  *
  * Sandbox-executed (D1): the executor runs inside the runner pod because only it
  * can read the file at call time. The host-side plugin in this package only
@@ -21,23 +20,8 @@ export const ARTIFACT_PUBLISH_TOOL_NAME = 'artifact_publish' as const;
  */
 export const ARTIFACT_PUBLISH_DESCRIPTOR: ToolDescriptor = {
   name: ARTIFACT_PUBLISH_TOOL_NAME,
-  description: [
-    'Publish a file as a downloadable artifact for the user.',
-    'Returns a stable ax://artifact/<id> URL that you can embed in your',
-    'response text or markdown links.',
-    '',
-    'Pass the absolute path of a file you have already written. You can publish:',
-    '  - any file in your files directory (your working directory — the usual',
-    '    place to put a deliverable), or',
-    '  - a file in the artifacts/ subdirectory of your scratch space, for a',
-    '    deliverable you do not otherwise need to keep.',
-    'Both directories are named by their full path in your operating notes.',
-    'Nothing else is publishable — a rejection tells you the exact paths that are.',
-    '',
-    'The bytes are stored durably the moment this tool returns — nothing is',
-    'committed, and the URL works immediately. Symlinks and files larger than',
-    '100 MiB are rejected.',
-  ].join('\n'),
+  description:
+    'Publish a finished file from your files folder so the person can open it, preview it and share it. Give it a short human name in `title`, like "Q3 pipeline report". Publish only things meant for the person — never helper scripts, scratch notes or intermediate data. After you change the file, publish it again: the same path (or the same artifactId) adds a new version, and anyone with its link sees the newest one. To update something you published in an earlier chat, edit its file and publish that path again. Web pages open in a locked-down viewer with no internet access, so keep every script, style and image inside the HTML file; fetch(), forms and outside scripts or fonts won\'t work. Returns { artifactId, version, title, kind, extension, url, path }. Symlinks and files over 100 MiB are refused.',
   activityPhrase: 'Publishing a file',
   inputSchema: {
     type: 'object',
@@ -45,14 +29,20 @@ export const ARTIFACT_PUBLISH_DESCRIPTOR: ToolDescriptor = {
       path: {
         type: 'string',
         description:
-          'Absolute path of the file to publish — in your files directory, or in the artifacts/ subdirectory of your scratch space (see your operating notes for both paths).',
+          'The file to publish: a path relative to your files folder (like "reports/q3.pdf"), or its absolute path there.',
       },
-      displayName: {
+      title: {
         type: 'string',
-        description: 'Optional user-friendly name. Defaults to basename(path).',
+        maxLength: ARTIFACT_TITLE_MAX,
+        description: 'A short human name for it, like "Q3 pipeline report".',
+      },
+      artifactId: {
+        type: 'string',
+        description:
+          'Optional. The id of an artifact you published before, to add this file as its new version.',
       },
     },
-    required: ['path'],
+    required: ['path', 'title'],
     additionalProperties: false,
   },
   executesIn: 'sandbox',

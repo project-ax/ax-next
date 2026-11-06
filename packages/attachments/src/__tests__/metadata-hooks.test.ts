@@ -14,13 +14,12 @@ import { runAttachmentsMigration, type AttachmentsDatabase } from '../migrations
 import { createAttachmentsStore } from '../store.js';
 import { finishArtifactsMigration } from '../artifacts/migrations.js';
 import { createArtifactStore } from '../artifacts/store.js';
-import {
-  createListForConversationHandler,
-  createPublishArtifactBlobHandler,
-} from '../handlers.js';
+import { createListForConversationHandler } from '../handlers.js';
+import { createArtifactsPublishHandler } from '../artifacts/handlers.js';
 
 // ---------------------------------------------------------------------------
-// TASK-68: attachments:list-for-conversation + artifacts:publish-blob against a
+// TASK-68: attachments:list-for-conversation, and the shared publish chain the
+// IPC `artifact.publish` action drives through `artifacts:publish`, against a
 // real Postgres metadata store.
 // ---------------------------------------------------------------------------
 
@@ -36,8 +35,13 @@ function makeKysely(): Kysely<AttachmentsDatabase> {
   return k;
 }
 
-function makeCtx(userId: string) {
-  return makeAgentContext({ sessionId: 's', agentId: 'a', userId });
+function makeCtx(userId: string, agentId = 'a') {
+  return makeAgentContext({ sessionId: 's', agentId, userId });
+}
+
+/** The ctx a runner's publish arrives with: the session's own agent. */
+function agentCtx(userId: string, agentId = 'agt-1') {
+  return makeCtx(userId, agentId);
 }
 
 async function freshSetup() {
@@ -88,7 +92,7 @@ const OWNER_OF: Record<string, { ownerType: string; ownerId: string }> = {
   'agt-other': { ownerType: 'user', ownerId: 'u-2' },
 };
 
-// D10: `artifacts:publish-blob` asks the blob store whether the sha is there
+// D10: `artifacts:publish` asks the blob store whether the sha is there
 // before it writes a row. `stored` maps the shas this fake store holds to their
 // size. It also asks conversations:get whether the caller owns the
 // conversation (and which agent it is with), then agents:resolve for the
@@ -133,27 +137,27 @@ function makeBlobStatBus(
   return { bus, stats, resolves };
 }
 
+// No media type or size: the type comes from the path, the size from the store.
 const REPORT = {
   conversationId: 'c-1',
   sha256: SHA,
-  path: 'workspace/report.pdf',
-  displayName: 'report.pdf',
-  // Neither of these is trusted: the type comes from the path, the size from the store.
-  mediaType: 'text/html',
-  size: 1,
+  sourcePath: 'reports/report.pdf',
+  title: 'report.pdf',
 };
 
-describe('artifacts:publish-blob handler', () => {
+const publishWith = createArtifactsPublishHandler;
+
+describe('the publish chain, through artifacts:publish', () => {
   it("publishes v1 of the conversation's agent's artifact and returns an opaque id", async () => {
     const { artifacts } = await freshSetup();
-    const handler = createPublishArtifactBlobHandler({ artifacts, bus: makeBlobStatBus().bus });
-    const out = await handler(makeCtx('u-1'), REPORT);
+    const handler = publishWith({ artifacts, bus: makeBlobStatBus().bus });
+    const out = await handler(agentCtx('u-1'), REPORT);
     expect(out.artifactId).toMatch(/^[a-f0-9]{32}$/);
     const head = await artifacts.getHead(out.artifactId);
     expect(head).toMatchObject({
       agentId: 'agt-1',
       title: 'report.pdf',
-      sourcePath: 'workspace/report.pdf',
+      sourcePath: 'reports/report.pdf',
       currentVersion: 1,
       createdByUserId: 'u-1',
     });
@@ -169,9 +173,9 @@ describe('artifacts:publish-blob handler', () => {
 
   it('a re-publish of the same path adds a version to the same artifact, from any chat with the agent', async () => {
     const { db, artifacts } = await freshSetup();
-    const handler = createPublishArtifactBlobHandler({ artifacts, bus: makeBlobStatBus().bus });
-    const first = await handler(makeCtx('u-1'), REPORT);
-    const second = await handler(makeCtx('u-1'), { ...REPORT, conversationId: 'c-2', sha256: SHA2 });
+    const handler = publishWith({ artifacts, bus: makeBlobStatBus().bus });
+    const first = await handler(agentCtx('u-1'), REPORT);
+    const second = await handler(agentCtx('u-1'), { ...REPORT, conversationId: 'c-2', sha256: SHA2 });
     expect(second.artifactId).toBe(first.artifactId);
     expect((await artifacts.getHead(first.artifactId))!.current).toMatchObject({
       version: 2,
@@ -183,26 +187,27 @@ describe('artifacts:publish-blob handler', () => {
 
   it('identical bytes under different paths are different artifacts', async () => {
     const { artifacts } = await freshSetup();
-    const handler = createPublishArtifactBlobHandler({ artifacts, bus: makeBlobStatBus().bus });
-    const a = await handler(makeCtx('u-1'), { ...REPORT, path: 'a.txt' });
-    const b = await handler(makeCtx('u-1'), { ...REPORT, path: 'b.txt' });
+    const handler = publishWith({ artifacts, bus: makeBlobStatBus().bus });
+    const a = await handler(agentCtx('u-1'), { ...REPORT, sourcePath: 'a.txt' });
+    const b = await handler(agentCtx('u-1'), { ...REPORT, sourcePath: 'b.txt' });
     expect(a.artifactId).not.toBe(b.artifactId);
   });
 
   it("charges a team agent's version to the team (C4)", async () => {
     const { artifacts } = await freshSetup();
-    const handler = createPublishArtifactBlobHandler({ artifacts, bus: makeBlobStatBus().bus });
-    const out = await handler(makeCtx('u-1'), { ...REPORT, conversationId: 'c-team' });
+    const handler = publishWith({ artifacts, bus: makeBlobStatBus().bus });
+    const out = await handler(agentCtx('u-1', 'agt-team'), { ...REPORT, conversationId: 'c-team' });
     expect((await artifacts.getHead(out.artifactId))!.current).toMatchObject({ publishedBy: 'u-1', quotaOwner: 'team:t-1' });
   });
 
-  it('normalizes the proposed title, and falls back to the file name', async () => {
+  it('normalizes the proposed title, and refuses one with nothing visible', async () => {
     const { artifacts } = await freshSetup();
-    const handler = createPublishArtifactBlobHandler({ artifacts, bus: makeBlobStatBus().bus });
-    const named = await handler(makeCtx('u-1'), { ...REPORT, path: 'a.html', displayName: ' Deal\u000atracker\u202e ' });
+    const handler = publishWith({ artifacts, bus: makeBlobStatBus().bus });
+    const named = await handler(agentCtx('u-1'), { ...REPORT, sourcePath: 'a.html', title: ' Deal\u000atracker\u202e ' });
     expect((await artifacts.getHead(named.artifactId))!.title).toBe('Deal tracker');
-    const unnamed = await handler(makeCtx('u-1'), { ...REPORT, path: 'out/q3.html', displayName: '\u200b' });
-    expect((await artifacts.getHead(unnamed.artifactId))!.title).toBe('q3.html');
+    await expect(
+      handler(agentCtx('u-1'), { ...REPORT, sourcePath: 'out/q3.html', title: '\u200b' }),
+    ).rejects.toMatchObject({ code: 'invalid-payload' });
   });
 
   // TASK-776 / design D10. The bug this closes: a runner could publish a row
@@ -211,12 +216,12 @@ describe('artifacts:publish-blob handler', () => {
   it('publish of an unknown sha writes no row', async () => {
     const { db, artifacts } = await freshSetup();
     const { bus, stats } = makeBlobStatBus({}); // the store holds nothing
-    const handler = createPublishArtifactBlobHandler({ artifacts, bus });
-    const err = await handler(makeCtx('u-1'), REPORT).catch((e: unknown) => e);
+    const handler = publishWith({ artifacts, bus });
+    const err = await handler(agentCtx('u-1'), REPORT).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(PluginError);
     expect((err as PluginError).code).toBe('not-found');
     expect((err as PluginError).plugin).toBe('@ax/attachments');
-    expect((err as PluginError).hookName).toBe('artifacts:publish-blob');
+    expect((err as PluginError).hookName).toBe('artifacts:publish');
     expect(stats).toEqual([SHA]);
     expect(await artifactRowCount(db)).toBe(0);
   });
@@ -229,8 +234,8 @@ describe('artifacts:publish-blob handler', () => {
     bus.registerService('blob:stat', 'test-blob', async () => {
       throw new Error('blob store unreachable');
     });
-    const handler = createPublishArtifactBlobHandler({ artifacts, bus });
-    await expect(handler(makeCtx('u-1'), REPORT)).rejects.toThrow(/blob store unreachable/);
+    const handler = publishWith({ artifacts, bus });
+    await expect(handler(agentCtx('u-1'), REPORT)).rejects.toThrow(/blob store unreachable/);
     expect(await artifactRowCount(db)).toBe(0);
   });
 
@@ -242,16 +247,16 @@ describe('artifacts:publish-blob handler', () => {
       throw new Error('agents store unreachable');
     });
     bus.registerService('blob:stat', 'test-blob', async () => ({ size: 1 }));
-    const handler = createPublishArtifactBlobHandler({ artifacts, bus });
-    await expect(handler(makeCtx('u-1'), REPORT)).rejects.toThrow(/agents store unreachable/);
+    const handler = publishWith({ artifacts, bus });
+    await expect(handler(agentCtx('u-1'), REPORT)).rejects.toThrow(/agents store unreachable/);
     expect(await artifactRowCount(db)).toBe(0);
   });
 
   it('a re-publish of an unknown sha leaves the earlier version current', async () => {
     const { artifacts } = await freshSetup();
-    const first = await createPublishArtifactBlobHandler({ artifacts, bus: makeBlobStatBus().bus })(makeCtx('u-1'), REPORT);
-    const gone = createPublishArtifactBlobHandler({ artifacts, bus: makeBlobStatBus({}).bus });
-    await expect(gone(makeCtx('u-1'), { ...REPORT, sha256: SHA2 })).rejects.toThrow(PluginError);
+    const first = await publishWith({ artifacts, bus: makeBlobStatBus().bus })(agentCtx('u-1'), REPORT);
+    const gone = publishWith({ artifacts, bus: makeBlobStatBus({}).bus });
+    await expect(gone(agentCtx('u-1'), { ...REPORT, sha256: SHA2 })).rejects.toThrow(PluginError);
     expect((await artifacts.getHead(first.artifactId))!.current).toMatchObject({ version: 1, sha256: SHA });
   });
 
@@ -260,10 +265,10 @@ describe('artifacts:publish-blob handler', () => {
   it('refuses to publish into a conversation the caller does not own, and writes no row', async () => {
     const { db, artifacts } = await freshSetup();
     const { bus, stats, resolves } = makeBlobStatBus();
-    const handler = createPublishArtifactBlobHandler({ artifacts, bus });
+    const handler = publishWith({ artifacts, bus });
     await expect(
-      handler(makeCtx('u-1'), { ...REPORT, conversationId: 'c-other', path: 'out/planted.html' }),
-    ).rejects.toMatchObject({ code: 'forbidden', hookName: 'artifacts:publish-blob' });
+      handler(agentCtx('u-1'), { ...REPORT, conversationId: 'c-other', sourcePath: 'out/planted.html' }),
+    ).rejects.toMatchObject({ code: 'forbidden', hookName: 'artifacts:publish' });
     // A refused caller must not learn whether a sha is in the store.
     expect(stats).toEqual([]);
     expect(resolves).toEqual([]);
@@ -273,8 +278,8 @@ describe('artifacts:publish-blob handler', () => {
   it('refuses as forbidden when the agent no longer resolves for the caller, before blob:stat', async () => {
     const { db, artifacts } = await freshSetup();
     const { bus, stats } = makeBlobStatBus();
-    const handler = createPublishArtifactBlobHandler({ artifacts, bus });
-    await expect(handler(makeCtx('u-1'), { ...REPORT, conversationId: 'c-gone' })).rejects.toMatchObject({
+    const handler = publishWith({ artifacts, bus });
+    await expect(handler(agentCtx('u-1', 'agt-gone'), { ...REPORT, conversationId: 'c-gone' })).rejects.toMatchObject({
       code: 'forbidden',
     });
     expect(stats).toEqual([]);

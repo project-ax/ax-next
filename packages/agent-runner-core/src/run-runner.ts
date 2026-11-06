@@ -713,15 +713,14 @@ async function runRunnerInner(
     // (blob.put) + records the metadata row (artifact.publish), so it needs the
     // IPC client + the bound conversationId.
     //
-    // It also needs the session's REAL roots, because the allowlist validates
-    // against them rather than against hardcoded sandbox-absolute literals: the
-    // home is publishable in full (the usual home of a deliverable) and the
-    // scratch root only under `artifacts/` — never its uploads or transcripts.
+    // It also needs the session's REAL files root, because the allowlist
+    // validates against it rather than a hardcoded sandbox-absolute literal.
+    // The files folder is the only publishable place (C2): never the scratch
+    // root's uploads or transcripts.
     localDispatcher.register(
       ARTIFACT_PUBLISH_TOOL_NAME,
       createArtifactPublishExecutor({
         userFilesRoot: env.userFilesRoot,
-        ephemeralRoot: env.ephemeralRoot,
         client,
         conversationId,
       }),

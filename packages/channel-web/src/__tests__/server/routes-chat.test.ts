@@ -433,7 +433,7 @@ function blobStorePlugin(): Plugin {
           return bytes === undefined ? { found: false } : { bytes };
         },
       );
-      // @ax/attachments declares blob:stat (artifacts:publish-blob checks the sha
+      // @ax/attachments declares blob:stat (artifacts:publish checks the sha
       // exists); these tests never publish, the stub just has to register.
       bus.registerService(
         'blob:stat',

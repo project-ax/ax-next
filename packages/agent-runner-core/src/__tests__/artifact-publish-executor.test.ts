@@ -1,22 +1,19 @@
 import { describe, it, expect, beforeEach } from 'vitest';
+import { createHash } from 'node:crypto';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import * as os from 'node:os';
+import { attachmentBlockFromArtifact } from '@ax/ipc-protocol';
 import { createArtifactPublishExecutor } from '../artifact-publish-executor.js';
 
-// The executor validates against the session's REAL roots, so these tests use
-// real temp directories as the roots and pass real absolute paths — the same
-// thing the model does, since the operating notes hand it the real paths. An
-// earlier version of this file passed sandbox-absolute literals that the
-// executor mapped back onto temp dirs, which is exactly the indirection that let
-// the advertised paths and the real ones drift.
+// The executor validates against the session's REAL files root, so these tests
+// use a real temp directory as the root and pass real paths — the same thing
+// the model does, since the operating notes hand it the real path.
 
 let files: string;
-let ephemeral: string;
 
 beforeEach(async () => {
   files = await fs.mkdtemp(path.join(os.tmpdir(), 'ax-files-'));
-  ephemeral = await fs.mkdtemp(path.join(os.tmpdir(), 'ax-eph-'));
 });
 
 async function write(root: string, rel: string, bytes: Buffer | string): Promise<string> {
@@ -26,363 +23,255 @@ async function write(root: string, rel: string, bytes: Buffer | string): Promise
   return abs;
 }
 
-function executor() {
-  return createArtifactPublishExecutor({ userFilesRoot: files, ephemeralRoot: ephemeral });
+/** A host that answers like `artifact.publish` does: id, version, title, kind, extension. */
+function mockClient(answer: Record<string, unknown> = {}) {
+  const calls: { put: Buffer[]; publish: { action: string; payload: unknown }[] } = { put: [], publish: [] };
+  const client = {
+    callBinaryUpload: async (_action: string, bytes: Buffer) => {
+      calls.put.push(bytes);
+      return { sha256: createHash('sha256').update(bytes).digest('hex'), size: bytes.length };
+    },
+    call: async (action: string, payload: unknown) => {
+      calls.publish.push({ action, payload });
+      const p = payload as { title: string };
+      return { artifactId: 'art_1', version: 1, title: p.title, kind: 'document', extension: 'PDF', ...answer };
+    },
+  };
+  return { client: client as never, calls };
+}
+
+function executor(over: { conversationId?: string | null; answer?: Record<string, unknown> } = {}) {
+  const { client, calls } = mockClient(over.answer);
+  const exec = createArtifactPublishExecutor({
+    userFilesRoot: files,
+    client,
+    conversationId: 'conversationId' in over ? over.conversationId : 'conv-1',
+  });
+  return { exec, calls };
 }
 
 const call = (input: unknown) => ({ id: 'toolu_1', name: 'artifact_publish', input }) as never;
+const sha = (s: string) => createHash('sha256').update(s).digest('hex');
 
-describe('artifact_publish executor', () => {
-  // The case the old allowlist rejected: the agent's own working directory.
-  it('publishes a file from the durable user-files tier', async () => {
-    await write(files, 'reports/Q4.pdf', Buffer.from('hello pdf'));
-    const out = await executor()(call({ path: path.join(files, 'reports/Q4.pdf') }));
-    const parsed = typeof out === 'string' ? JSON.parse(out) : out;
-    expect(parsed.path).toBe('reports/Q4.pdf');
-    expect(parsed.displayName).toBe('Q4.pdf');
-    expect(parsed.mediaType).toBe('application/pdf');
-    expect(parsed.sizeBytes).toBe(9);
-    expect(parsed.sha256).toMatch(/^[0-9a-f]{64}$/);
-    expect(parsed.artifactId).toBe(parsed.sha256.slice(0, 16));
-    expect(parsed.downloadUrl).toBe(`ax://artifact/${parsed.artifactId}`);
+describe('artifact_publish executor: what it sends and returns', () => {
+  it('sends {conversationId, sha256, path: <relative>, title, artifactId} and nothing else', async () => {
+    await write(files, 'reports/Q4.pdf', 'hello pdf');
+    const { exec, calls } = executor();
+    await exec(call({ path: path.join(files, 'reports/Q4.pdf'), title: 'Q4 report' }));
+    await exec(call({ path: path.join(files, 'reports/Q4.pdf'), title: 'Q4 report', artifactId: 'art_1' }));
+    expect(calls.put.map(String)).toEqual(['hello pdf', 'hello pdf']);
+    expect(calls.publish).toEqual([
+      {
+        action: 'artifact.publish',
+        payload: { conversationId: 'conv-1', sha256: sha('hello pdf'), path: 'reports/Q4.pdf', title: 'Q4 report' },
+      },
+      {
+        action: 'artifact.publish',
+        payload: {
+          conversationId: 'conv-1', sha256: sha('hello pdf'), path: 'reports/Q4.pdf', title: 'Q4 report', artifactId: 'art_1',
+        },
+      },
+    ]);
   });
 
-  it('publishes a file at the very root of the user-files tier', async () => {
-    // A deliverable written to cwd with a bare relative path lands here.
-    await write(files, 'summary.md', 'x');
-    const out = await executor()(call({ path: path.join(files, 'summary.md') }));
-    const parsed = typeof out === 'string' ? JSON.parse(out) : out;
-    expect(parsed.path).toBe('summary.md');
-    expect(parsed.mediaType).toBe('text/markdown');
+  it('returns url ax://artifact/<id> and the relative path, and never a share code', async () => {
+    await write(files, 'reports/Q4.pdf', 'hello pdf');
+    // A host answer carrying more than the wire allows still yields only the named fields.
+    const { exec } = executor({ answer: { version: 3, title: 'Stored title', shareCode: 'A'.repeat(32) } });
+    const out = await exec(call({ path: path.join(files, 'reports/Q4.pdf'), title: 'Q4 report' }));
+    expect(out).toEqual({
+      artifactId: 'art_1',
+      version: 3,
+      title: 'Stored title',
+      kind: 'document',
+      extension: 'PDF',
+      url: 'ax://artifact/art_1',
+      path: 'reports/Q4.pdf',
+    });
+    expect(JSON.stringify(out)).not.toContain('A'.repeat(32));
   });
 
-  it('publishes from the scratch artifacts/ namespace', async () => {
-    await write(ephemeral, 'artifacts/draft.png', Buffer.from('img'));
-    const out = await executor()(call({ path: path.join(ephemeral, 'artifacts/draft.png') }));
-    const parsed = typeof out === 'string' ? JSON.parse(out) : out;
-    expect(parsed.path).toBe('draft.png');
-    expect(parsed.mediaType).toBe('image/png');
+  it('its output makes no attachment block', async () => {
+    await write(files, 'r.pdf', 'x');
+    const { exec } = executor();
+    const out = await exec(call({ path: path.join(files, 'r.pdf'), title: 'R' }));
+    expect(attachmentBlockFromArtifact(out)).toBeNull();
   });
 
-  it('honours displayName when provided', async () => {
-    await write(files, 'data.bin', Buffer.from('x'));
-    const out = await executor()(
-      call({ path: path.join(files, 'data.bin'), displayName: 'Friendly Name.bin' }),
+  // P6: the agent's artifact list names files relative to the files folder.
+  it('takes a relative path relative to the files folder', async () => {
+    await write(files, 'reports/q3.pdf', 'q3');
+    const { exec, calls } = executor();
+    const out = await exec(call({ path: 'reports/q3.pdf', title: 'Q3' }));
+    expect(out.path).toBe('reports/q3.pdf');
+    expect(calls.publish[0]!.payload).toMatchObject({ path: 'reports/q3.pdf', sha256: sha('q3') });
+  });
+
+  it('refuses a relative path that climbs out of the files folder', async () => {
+    const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'ax-outside-'));
+    await fs.writeFile(path.join(outside, 'secret.txt'), 'no');
+    const { exec, calls } = executor();
+    const rel = path.relative(files, path.join(outside, 'secret.txt'));
+    expect(rel.startsWith('..')).toBe(true);
+    await expect(exec(call({ path: rel, title: 'S' }))).rejects.toThrow(/artifact-path-not-publishable/);
+    expect(calls.put).toHaveLength(0);
+  });
+});
+
+describe('artifact_publish executor: input checks, before any byte leaves', () => {
+  it('refuses a missing or blank title', async () => {
+    await write(files, 'r.pdf', 'x');
+    const { exec, calls } = executor();
+    for (const title of [undefined, '', '   ', 7]) {
+      await expect(exec(call({ path: path.join(files, 'r.pdf'), title }))).rejects.toThrow(/title is required/);
+    }
+    expect(calls.put).toHaveLength(0);
+  });
+
+  it('refuses a title over 200 characters', async () => {
+    await write(files, 'r.pdf', 'x');
+    const { exec, calls } = executor();
+    await expect(exec(call({ path: path.join(files, 'r.pdf'), title: 'a'.repeat(201) }))).rejects.toThrow(/title too long/);
+    expect(calls.put).toHaveLength(0);
+  });
+
+  it('refuses a non-string artifactId', async () => {
+    await write(files, 'r.pdf', 'x');
+    const { exec } = executor();
+    await expect(exec(call({ path: path.join(files, 'r.pdf'), title: 'R', artifactId: 5 }))).rejects.toThrow(/artifactId/);
+  });
+
+  it('refuses a path holding a control or bidi character', async () => {
+    const { exec, calls } = executor();
+    for (const name of ['a\u0007b.md', 'evil\u202Efdp.exe', 'x\u2028y.md', 'z\u200Bw.md']) {
+      await write(files, name, 'x');
+      await expect(exec(call({ path: path.join(files, name), title: 'T' }))).rejects.toThrow(/control or invisible/);
+    }
+    expect(calls.put).toHaveLength(0);
+  });
+
+  it('refuses when the session is bound to no conversation', async () => {
+    await write(files, 'r.pdf', 'x');
+    const { exec, calls } = executor({ conversationId: null });
+    await expect(exec(call({ path: path.join(files, 'r.pdf'), title: 'R' }))).rejects.toThrow(/not bound to a conversation/);
+    expect(calls.put).toHaveLength(0);
+  });
+
+  it('rejects non-object / missing path input', async () => {
+    const { exec } = executor();
+    await expect(exec(call({}))).rejects.toThrow(/path/);
+    await expect(exec(call(undefined))).rejects.toThrow(/path/);
+  });
+});
+
+describe('artifact_publish executor: only the files folder (C2)', () => {
+  it('refuses a scratch artifacts/ path', async () => {
+    const scratch = await fs.mkdtemp(path.join(os.tmpdir(), 'ax-eph-'));
+    const abs = await write(scratch, 'artifacts/draft.png', 'img');
+    const { exec, calls } = executor();
+    await expect(exec(call({ path: abs, title: 'Draft' }))).rejects.toThrow(/^artifact-path-not-publishable:/);
+    expect(calls.put).toHaveLength(0);
+  });
+
+  it('refuses scratch uploads and transcripts, and a link in the files folder that leads to them', async () => {
+    const scratch = await fs.mkdtemp(path.join(os.tmpdir(), 'ax-scratch-'));
+    const upload = await write(scratch, 'uploads/a.pdf', 'the person file');
+    const transcript = await write(scratch, 'transcripts/s.jsonl', '{"type":"user"}\n');
+    const { exec, calls } = executor();
+    for (const p of [upload, transcript]) {
+      await expect(exec(call({ path: p, title: 'T' }))).rejects.toThrow(/artifact-path-not-publishable/);
+    }
+    await fs.symlink(transcript, path.join(files, 'x.jsonl'));
+    await expect(exec(call({ path: path.join(files, 'x.jsonl'), title: 'T' }))).rejects.toThrow(/symlink/i);
+    await fs.symlink(path.join(scratch, 'uploads'), path.join(files, 'u'));
+    await expect(exec(call({ path: path.join(files, 'u/a.pdf'), title: 'T' }))).rejects.toThrow(
+      /resolved outside the files folder/,
     );
-    const parsed = typeof out === 'string' ? JSON.parse(out) : out;
-    expect(parsed.displayName).toBe('Friendly Name.bin');
+    expect(calls.put).toHaveLength(0);
   });
 
-  it('rejects an over-long displayName', async () => {
-    // Model output that gets stored and rendered — bounded rather than trusted.
-    await write(files, 'data.bin', Buffer.from('x'));
-    await expect(
-      executor()(call({ path: path.join(files, 'data.bin'), displayName: 'a'.repeat(257) })),
-    ).rejects.toThrow(/displayName too long/i);
+  it('rejects paths outside the files folder, naming the real root', async () => {
+    const { exec } = executor();
+    await expect(exec(call({ path: '/etc/passwd', title: 'P' }))).rejects.toThrow(
+      new RegExp(`artifact-path-not-publishable: path must be under ${files.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/\\*\\*`),
+    );
   });
 
-  it('falls back to application/octet-stream for unknown extensions', async () => {
-    await write(files, 'blob.xyzzy', Buffer.from('x'));
-    const out = await executor()(call({ path: path.join(files, 'blob.xyzzy') }));
-    const parsed = typeof out === 'string' ? JSON.parse(out) : out;
-    expect(parsed.mediaType).toBe('application/octet-stream');
-  });
-
-  it('rejects paths outside every publishable root', async () => {
-    await expect(executor()(call({ path: '/etc/passwd' }))).rejects.toThrow(
+  it("rejects another agent's files folder (only this session's is publishable)", async () => {
+    const other = await fs.mkdtemp(path.join(os.tmpdir(), 'ax-files-other-'));
+    await write(other, 'x.pdf', 'not this session');
+    const { exec, calls } = executor();
+    await expect(exec(call({ path: path.join(other, 'x.pdf'), title: 'X' }))).rejects.toThrow(
       /artifact-path-not-publishable/,
     );
+    expect(calls.put).toHaveLength(0);
   });
 
-  it('rejects the scratch tier outside artifacts/', async () => {
-    await write(ephemeral, '.venv/pyvenv.cfg', 'x');
-    await expect(
-      executor()(call({ path: path.join(ephemeral, '.venv/pyvenv.cfg') })),
-    ).rejects.toThrow(/artifact-path-not-publishable/);
+  it('refuses a real file in a sibling memory tree, directly and through a link in the files folder', async () => {
+    const t = await fs.mkdtemp(path.join(os.tmpdir(), 'ax-mem-'));
+    const filesRoot = path.join(t, 'files');
+    await fs.mkdir(filesRoot, { recursive: true });
+    const factFile = await write(t, 'memory/facts/a.md', 'real fact bytes');
+    const { client } = mockClient();
+    const exec = createArtifactPublishExecutor({ userFilesRoot: filesRoot, client, conversationId: 'conv-1' });
+    await expect(exec(call({ path: factFile, title: 'F' }))).rejects.toThrow(/artifact-path-not-publishable/);
+    // The link passes the lexical allowlist; the realpath containment re-check refuses it.
+    await fs.symlink(path.join(t, 'memory'), path.join(filesRoot, 'mem'));
+    await expect(exec(call({ path: path.join(filesRoot, 'mem/facts/a.md'), title: 'F' }))).rejects.toThrow(
+      /^artifact_publish: resolved outside the files folder/,
+    );
   });
+});
 
+describe('artifact_publish executor: the file itself', () => {
   it('rejects a symlinked final component', async () => {
     const real = await write(files, 'real.txt', 'r');
     await fs.symlink(real, path.join(files, 'link.txt'));
-    await expect(executor()(call({ path: path.join(files, 'link.txt') }))).rejects.toThrow(
-      /symlink/i,
-    );
+    const { exec, calls } = executor();
+    await expect(exec(call({ path: path.join(files, 'link.txt'), title: 'L' }))).rejects.toThrow(/symlink/i);
+    expect(calls.put).toHaveLength(0);
   });
 
-  // The hole the security checklist surfaced while widening the tier. The
-  // textual allowlist does no I/O, so it cannot see that a directory is a
-  // symlink; `lstat` declines to follow only the FINAL component and traverses
-  // symlinked directories on the way there. The agent writes every byte of its
-  // own tier, so planting one is trivial — the executor's realpath containment
-  // is what actually enforces "inside the tier".
+  // The textual allowlist does no I/O, so it cannot see that a directory is a
+  // symlink; `lstat` declines to follow only the FINAL component. The agent
+  // writes every byte of its own folder, so planting one is trivial — the
+  // executor's realpath containment is what actually enforces "inside".
   it('rejects a path that escapes through a symlinked INTERMEDIATE directory', async () => {
     const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'ax-outside-'));
     await fs.writeFile(path.join(outside, 'secret.txt'), 'not yours');
     await fs.symlink(outside, path.join(files, 'escape'));
-    // Textually this is squarely inside the tier and contains no `..`.
-    await expect(
-      executor()(call({ path: path.join(files, 'escape/secret.txt') })),
-    ).rejects.toThrow(/resolved outside the publishable tier/i);
+    const { exec, calls } = executor();
+    await expect(exec(call({ path: path.join(files, 'escape/secret.txt'), title: 'S' }))).rejects.toThrow(
+      /resolved outside the files folder/,
+    );
+    expect(calls.put).toHaveLength(0);
   });
 
-  it('still publishes through a symlinked directory that stays INSIDE the tier', async () => {
-    // Containment, not a blanket symlink ban — an agent organising its own
-    // files with a symlink has done nothing wrong.
+  it('still publishes through a symlinked directory that stays INSIDE the folder', async () => {
     await write(files, 'real/deck.pdf', 'x');
     await fs.symlink(path.join(files, 'real'), path.join(files, 'alias'));
-    const out = await executor()(call({ path: path.join(files, 'alias/deck.pdf') }));
-    const parsed = typeof out === 'string' ? JSON.parse(out) : out;
-    expect(parsed.mediaType).toBe('application/pdf');
+    const { exec } = executor();
+    const out = await exec(call({ path: path.join(files, 'alias/deck.pdf'), title: 'Deck' }));
+    expect(out.path).toBe('alias/deck.pdf');
   });
 
   it('rejects directories', async () => {
     await fs.mkdir(path.join(files, 'dir'), { recursive: true });
-    await expect(executor()(call({ path: path.join(files, 'dir') }))).rejects.toThrow(
-      /not a regular file/i,
-    );
+    const { exec } = executor();
+    await expect(exec(call({ path: path.join(files, 'dir'), title: 'D' }))).rejects.toThrow(/not a regular file/i);
   });
 
   it('rejects files larger than 100 MiB', async () => {
-    // fs.truncate grows the file to MAX+1 bytes as a sparse file on supported
-    // filesystems — same size on disk as a real 100 MiB write, but no 100 MiB
-    // allocation in the test process. The executor's lstat sees the full size
-    // and rejects before any byte read, so we never materialize the body.
+    // A sparse file: lstat sees the full size and the executor refuses before any read.
     const abs = await write(files, 'big.bin', Buffer.alloc(0));
     await fs.truncate(abs, 100 * 1024 * 1024 + 1);
-    await expect(executor()(call({ path: abs }))).rejects.toThrow(/100 MiB|too large/i);
+    const { exec, calls } = executor();
+    await expect(exec(call({ path: abs, title: 'B' }))).rejects.toThrow(/100 MiB|too large/i);
+    expect(calls.put).toHaveLength(0);
   });
 
   it('rejects missing files', async () => {
-    await expect(executor()(call({ path: path.join(files, 'nope.txt') }))).rejects.toThrow(
-      /not found|ENOENT/i,
-    );
-  });
-
-  it('rejects non-object / missing path input', async () => {
-    await expect(executor()(call({}))).rejects.toThrow(/path/);
-  });
-
-  describe('a path outside both roots is unreachable', () => {
-    // Only the roots the executor is handed are publishable, so anything else
-    // on disk is out of reach of a "publish your instructions" injection by
-    // construction rather than by an allowlist entry.
-    it('rejects it even when it exists on disk', async () => {
-      const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'ax-outside-'));
-      await fs.mkdir(path.join(outside, 'private'), { recursive: true });
-      await fs.writeFile(path.join(outside, 'private/notes.md'), 'my notes');
-      await fs.writeFile(path.join(outside, 'Q4.pdf'), 'x');
-
-      for (const p of ['private/notes.md', 'Q4.pdf']) {
-        await expect(executor()(call({ path: path.join(outside, p) }))).rejects.toThrow(
-          /artifact-path-not-publishable/,
-        );
-      }
-    });
-  });
-
-  // TASK-995: the scratch root also holds the person's uploads (`uploads/`)
-  // and the SDK's conversation log (`transcripts/`), right next to the one
-  // publishable part of it, `artifacts/`. Neither may leave the sandbox as an
-  // artifact, directly or through a link the agent plants in `artifacts/`.
-  describe('uploads and transcripts in the scratch root are unpublishable', () => {
-    let scratch: string;
-    beforeEach(async () => {
-      scratch = path.join(await fs.mkdtemp(path.join(os.tmpdir(), 'ax-scratch-')), 'tmp');
-      await write(scratch, 'uploads/a.pdf', 'the person file');
-      await write(scratch, 'transcripts/s.jsonl', '{"type":"user"}\n');
-      await fs.mkdir(path.join(scratch, 'artifacts'), { recursive: true });
-    });
-    const exec = () => createArtifactPublishExecutor({ userFilesRoot: files, ephemeralRoot: scratch });
-
-    it('refuses them directly', async () => {
-      for (const rel of ['uploads/a.pdf', 'transcripts/s.jsonl']) {
-        await expect(exec()(call({ path: path.join(scratch, rel) }))).rejects.toThrow(
-          /artifact-path-not-publishable/,
-        );
-      }
-    });
-
-    it('refuses a symlink in artifacts/ that points at one of them', async () => {
-      await fs.symlink(path.join(scratch, 'transcripts/s.jsonl'), path.join(scratch, 'artifacts/x'));
-      await fs.symlink(path.join(scratch, 'uploads/a.pdf'), path.join(scratch, 'artifacts/y.pdf'));
-      for (const rel of ['artifacts/x', 'artifacts/y.pdf']) {
-        await expect(exec()(call({ path: path.join(scratch, rel) }))).rejects.toThrow(/symlink/i);
-      }
-    });
-
-    it('refuses a symlinked directory in artifacts/ that leads into one of them', async () => {
-      await fs.symlink(path.join(scratch, 'transcripts'), path.join(scratch, 'artifacts/t'));
-      await fs.symlink(path.join(scratch, 'uploads'), path.join(scratch, 'artifacts/u'));
-      for (const rel of ['artifacts/t/s.jsonl', 'artifacts/u/a.pdf']) {
-        await expect(exec()(call({ path: path.join(scratch, rel) }))).rejects.toThrow(
-          /resolved outside the publishable tier/i,
-        );
-      }
-    });
-  });
-
-  describe('the facts export (/memory) is unreachable', () => {
-    it('refuses a real file in a sibling memory tree, directly and through a link in the agent files', async () => {
-      const t = await fs.mkdtemp(path.join(os.tmpdir(), 'ax-mem-'));
-      const filesRoot = path.join(t, 'files');
-      await fs.mkdir(filesRoot, { recursive: true });
-      const factFile = await write(t, 'memory/facts/a.md', 'real fact bytes');
-      // Constructed the way run-runner.ts does: durable + scratch roots only.
-      const exec = createArtifactPublishExecutor({
-        userFilesRoot: filesRoot,
-        ephemeralRoot: ephemeral,
-      });
-
-      await expect(exec(call({ path: factFile }))).rejects.toThrow(
-        /artifact-path-not-publishable/,
-      );
-
-      // The link path passes the lexical allowlist (it is under the files
-      // root), so it is the realpath containment re-check that refuses it.
-      await fs.symlink(path.join(t, 'memory'), path.join(filesRoot, 'mem'));
-      await expect(
-        exec(call({ path: path.join(filesRoot, 'mem/facts/a.md') })),
-      ).rejects.toThrow(/^artifact_publish: resolved outside the publishable tier/);
-    });
-  });
-
-  describe('rejection messages', () => {
-    it('name the real roots of this session, not literals from another shape', async () => {
-      await expect(executor()(call({ path: '/etc/passwd' }))).rejects.toThrow(
-        new RegExp(files.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
-      );
-    });
-  });
-});
-
-// ---------------------------------------------------------------------------
-// TASK-68: durable publish via blob.put + artifact.publish over IPC.
-// ---------------------------------------------------------------------------
-describe('artifact_publish executor — durable blob store path (TASK-68)', () => {
-  function mockClient() {
-    const calls: { put: Buffer[]; publish: unknown[] } = { put: [], publish: [] };
-    const client = {
-      callBinaryUpload: async (_action: string, bytes: Buffer) => {
-        calls.put.push(bytes);
-        // Compute the real content hash so the executor's returned sha256 is
-        // exercised end-to-end.
-        const { createHash } = await import('node:crypto');
-        const sha256 = createHash('sha256').update(bytes).digest('hex');
-        return { sha256, size: bytes.length };
-      },
-      call: async (_action: string, payload: unknown) => {
-        calls.publish.push(payload);
-        const sha = (payload as { sha256: string }).sha256;
-        return {
-          artifactId: sha.slice(0, 16),
-          downloadUrl: `ax://artifact/${sha.slice(0, 16)}`,
-        };
-      },
-    };
-    return { client, calls };
-  }
-
-  it('streams user-files bytes to blob.put then records artifact.publish', async () => {
-    await write(files, 'reports/report.pdf', Buffer.from('durable pdf bytes'));
-    const { client, calls } = mockClient();
-    const exec = createArtifactPublishExecutor({
-      userFilesRoot: files,
-      ephemeralRoot: ephemeral,
-      client,
-      conversationId: 'conv-1',
-    });
-    const out = await exec(call({ path: path.join(files, 'reports/report.pdf') }));
-    const parsed = typeof out === 'string' ? JSON.parse(out) : out;
-
-    // The bytes were streamed to blob.put...
-    expect(calls.put).toHaveLength(1);
-    expect(calls.put[0]!.toString()).toBe('durable pdf bytes');
-    // ...and the metadata row was recorded with the right scope + content hash.
-    expect(calls.publish).toHaveLength(1);
-    expect(calls.publish[0]).toMatchObject({
-      conversationId: 'conv-1',
-      path: 'reports/report.pdf',
-      displayName: 'report.pdf',
-      mediaType: 'application/pdf',
-      size: 'durable pdf bytes'.length,
-    });
-    expect(parsed.sha256).toMatch(/^[0-9a-f]{64}$/);
-    expect(parsed.downloadUrl).toBe(`ax://artifact/${parsed.artifactId}`);
-    expect(parsed.path).toBe('reports/report.pdf');
-  });
-
-  it('streams scratch artifacts/ bytes the same way', async () => {
-    await write(ephemeral, 'artifacts/report.pdf', Buffer.from('scratch bytes'));
-    const { client, calls } = mockClient();
-    const exec = createArtifactPublishExecutor({
-      userFilesRoot: files,
-      ephemeralRoot: ephemeral,
-      client,
-      conversationId: 'conv-1',
-    });
-    await exec(call({ path: path.join(ephemeral, 'artifacts/report.pdf') }));
-    expect(calls.put[0]!.toString()).toBe('scratch bytes');
-    expect(calls.publish[0]).toMatchObject({ path: 'report.pdf' });
-  });
-
-  it("rejects another scratch root's artifacts/ (only this session's is publishable)", async () => {
-    const { client } = mockClient();
-    const exec = createArtifactPublishExecutor({
-      userFilesRoot: files,
-      ephemeralRoot: await fs.mkdtemp(path.join(os.tmpdir(), 'ax-eph-other-')),
-      client,
-      conversationId: 'conv-1',
-    });
-    await expect(
-      exec(call({ path: path.join(ephemeral, 'artifacts/x.pdf') })),
-    ).rejects.toThrow(/artifact-path-not-publishable/);
-  });
-
-  it("rejects another agent's home (only this session's is publishable)", async () => {
-    await write(files, 'x.pdf', 'not this session');
-    const { client, calls } = mockClient();
-    const exec = createArtifactPublishExecutor({
-      userFilesRoot: await fs.mkdtemp(path.join(os.tmpdir(), 'ax-files-other-')),
-      ephemeralRoot: ephemeral,
-      client,
-      conversationId: 'conv-1',
-    });
-    await expect(exec(call({ path: path.join(files, 'x.pdf') }))).rejects.toThrow(
-      /artifact-path-not-publishable/,
-    );
-    expect(calls.put).toHaveLength(0);
-  });
-
-  it('validates before any blob.put — a symlink never reaches the host', async () => {
-    const real = await write(ephemeral, 'artifacts/real.txt', 'r');
-    await fs.symlink(real, path.join(ephemeral, 'artifacts/link.txt'));
-    const { client, calls } = mockClient();
-    const exec = createArtifactPublishExecutor({
-      userFilesRoot: files,
-      ephemeralRoot: ephemeral,
-      client,
-      conversationId: 'conv-1',
-    });
-    await expect(
-      exec(call({ path: path.join(ephemeral, 'artifacts/link.txt') })),
-    ).rejects.toThrow(/symlink/i);
-    expect(calls.put).toHaveLength(0);
-  });
-
-  it('validates containment before any blob.put — an escape never reaches the host', async () => {
-    const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'ax-outside-'));
-    await fs.writeFile(path.join(outside, 'secret.txt'), 'not yours');
-    await fs.symlink(outside, path.join(files, 'escape'));
-    const { client, calls } = mockClient();
-    const exec = createArtifactPublishExecutor({
-      userFilesRoot: files,
-      ephemeralRoot: ephemeral,
-      client,
-      conversationId: 'conv-1',
-    });
-    await expect(
-      exec(call({ path: path.join(files, 'escape/secret.txt') })),
-    ).rejects.toThrow(/resolved outside the publishable tier/i);
-    expect(calls.put).toHaveLength(0);
+    const { exec } = executor();
+    await expect(exec(call({ path: path.join(files, 'nope.txt'), title: 'N' }))).rejects.toThrow(/not found|ENOENT/i);
   });
 });

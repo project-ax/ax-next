@@ -862,7 +862,7 @@ describe('@ax/preset-k8s wiring', () => {
   // `optionalCalls` counts too: @ax/ipc-http declares blob:put there. The one
   // exception is @ax/ipc-http itself, which puts on the RUNNER's behalf; the
   // runner's references are the rows @ax/attachments writes
-  // (artifacts:publish-blob, attachments:commit).
+  // (artifacts:publish, attachments:commit).
   // -------------------------------------------------------------------------
   const BLOB_WRITER_HOLDER_EXCEPTIONS = ['@ax/ipc-http'];
 

@@ -3,82 +3,65 @@ import {
   checkPublishablePath,
   describeRoots,
   MAX_ARTIFACT_BYTES,
-  MAX_DISPLAY_NAME_CHARS,
 } from '../path-allowlist.js';
 
-// The allowlist validates against the session's REAL roots, not hardcoded
-// sandbox-absolute literals. These use k8s-shaped roots in most cases because
-// they read clearly, and subprocess-shaped (mkdtemp) roots where the point is
-// specifically that literals are not assumed.
+// The allowlist validates against the session's REAL files root, not a
+// hardcoded sandbox-absolute literal. These use a k8s-shaped root in most cases
+// because it reads clearly, and subprocess-shaped (mkdtemp) roots where the
+// point is specifically that literals are not assumed.
 
 const FILES = '/files';
-const EPHEM = '/ephemeral';
-const BOTH = { userFilesRoot: FILES, ephemeralRoot: EPHEM };
+const ROOTS = { userFilesRoot: FILES };
 
 describe('checkPublishablePath', () => {
-  describe('the durable user-files tier', () => {
-    // The case the old allowlist rejected outright: the agent's cwd, where the
-    // operating notes tell it to put anything it wants to keep, and therefore
-    // where a deliverable lands by default.
-    it('accepts a file at the root of the tier', () => {
-      expect(checkPublishablePath('/files/report.pdf', BOTH)).toEqual({
+  describe('the files folder', () => {
+    // The agent's cwd, where the operating notes tell it to put anything it
+    // wants to keep, and therefore where a deliverable lands by default.
+    it('accepts a file at the root of the folder', () => {
+      expect(checkPublishablePath('/files/report.pdf', ROOTS)).toEqual({
         ok: true,
-        root: 'user-files',
         base: '/files',
         relativePath: 'report.pdf',
       });
     });
 
     it('accepts a nested file', () => {
-      expect(checkPublishablePath('/files/q4/decks/final.pdf', BOTH)).toEqual({
+      expect(checkPublishablePath('/files/q4/decks/final.pdf', ROOTS)).toEqual({
         ok: true,
-        root: 'user-files',
         base: '/files',
         relativePath: 'q4/decks/final.pdf',
       });
     });
 
     it('rejects the bare root (a directory is not a file)', () => {
-      expect(checkPublishablePath('/files', BOTH).ok).toBe(false);
-      expect(checkPublishablePath('/files/', BOTH).ok).toBe(false);
+      expect(checkPublishablePath('/files', ROOTS).ok).toBe(false);
+      expect(checkPublishablePath('/files/', ROOTS).ok).toBe(false);
     });
 
     it('is not fooled by a sibling whose name merely starts with the root', () => {
       // `/filesX` shares a textual prefix with `/files` but is a different tree;
       // a naive startsWith on the un-slashed root would accept it.
-      expect(checkPublishablePath('/filesX/secret', BOTH).ok).toBe(false);
-      expect(checkPublishablePath('/files-backup/secret', BOTH).ok).toBe(false);
+      expect(checkPublishablePath('/filesX/secret', ROOTS).ok).toBe(false);
+      expect(checkPublishablePath('/files-backup/secret', ROOTS).ok).toBe(false);
     });
   });
 
-  describe('the scratch tier', () => {
-    it('accepts paths under its artifacts/ namespace', () => {
-      expect(checkPublishablePath('/ephemeral/artifacts/report.pdf', BOTH)).toEqual({
-        ok: true,
-        root: 'ephemeral',
-        base: '/ephemeral/artifacts',
-        relativePath: 'report.pdf',
-      });
+  describe('the scratch root is not publishable at all (C2)', () => {
+    // Publishing is only from the files folder. The scratch root holds the
+    // person's uploads, the SDK's conversation log, the venv and caches, and
+    // its old artifacts/ namespace is gone with the rest of it.
+    it('refuses a scratch artifacts/ path', () => {
+      for (const p of ['/tmp/artifacts/report.pdf', '/ephemeral/artifacts/report.pdf']) {
+        const result = checkPublishablePath(p, ROOTS);
+        expect(result.ok).toBe(false);
+        if (!result.ok) expect(result.reason).toMatch(/^artifact-path-not-publishable:/);
+      }
     });
 
-    it('accepts nested paths under artifacts/', () => {
-      expect(checkPublishablePath('/ephemeral/artifacts/sub/dir/img.png', BOTH)).toEqual({
-        ok: true,
-        root: 'ephemeral',
-        base: '/ephemeral/artifacts',
-        relativePath: 'sub/dir/img.png',
-      });
-    });
-
-    it('rejects the rest of the tier (venv, caches, build trees)', () => {
-      expect(checkPublishablePath('/ephemeral/.venv/secret', BOTH).ok).toBe(false);
-      expect(checkPublishablePath('/ephemeral/uploads/c/t/f', BOTH).ok).toBe(false);
-      expect(checkPublishablePath('/ephemeral/report.pdf', BOTH).ok).toBe(false);
-    });
-
-    it('rejects the bare artifacts/ prefix with no file component', () => {
-      expect(checkPublishablePath('/ephemeral/artifacts', BOTH).ok).toBe(false);
-      expect(checkPublishablePath('/ephemeral/artifacts/', BOTH).ok).toBe(false);
+    it('refuses uploads, transcripts and anything else in the scratch root', () => {
+      for (const p of ['/tmp/uploads/a.pdf', '/tmp/transcripts/s.jsonl', '/tmp/a.txt', '/tmp/.venv/k']) {
+        expect(checkPublishablePath(p, ROOTS).ok).toBe(false);
+      }
     });
   });
 
@@ -88,7 +71,7 @@ describe('checkPublishablePath', () => {
     // fossil of the pre-split layout. Neither is a root, so nothing under them
     // is publishable; these pin that the old paths stay refused.
     it('rejects the retired /agent/workspace/ fossil', () => {
-      expect(checkPublishablePath('/agent/workspace/reports/Q4.pdf', BOTH).ok).toBe(false);
+      expect(checkPublishablePath('/agent/workspace/reports/Q4.pdf', ROOTS).ok).toBe(false);
     });
 
     it('rejects the agent state a prompt injection would target', () => {
@@ -99,143 +82,79 @@ describe('checkPublishablePath', () => {
         '/agent/.ax/uploads/c/t/private.pdf',
         '/agent/memory/system/rules.md',
       ]) {
-        expect(checkPublishablePath(p, BOTH).ok).toBe(false);
-      }
-    });
-  });
-
-  describe('the scratch root also holds uploads and transcripts (TASK-995)', () => {
-    // k8s now mounts one scratch root at /tmp: the person's uploads, the SDK's
-    // conversation log and the agent's caches sit next to artifacts/, the only
-    // part of it that is publishable.
-    const ROOTS = { userFilesRoot: '/files', ephemeralRoot: '/tmp' };
-
-    it('refuses uploads, transcripts and anything else outside artifacts/', () => {
-      for (const p of ['/tmp/uploads/a.pdf', '/tmp/transcripts/s.jsonl', '/tmp/a.txt']) {
         expect(checkPublishablePath(p, ROOTS).ok).toBe(false);
       }
-    });
-
-    it('still publishes from artifacts/', () => {
-      expect(checkPublishablePath('/tmp/artifacts/a.png', ROOTS)).toEqual({
-        ok: true,
-        root: 'ephemeral',
-        base: '/tmp/artifacts',
-        relativePath: 'a.png',
-      });
     });
   });
 
   describe('traversal and shape', () => {
-    it('rejects traversal that would escape either tier', () => {
-      expect(checkPublishablePath('/files/../etc/passwd', BOTH).ok).toBe(false);
-      expect(checkPublishablePath('/files/a/../../etc/passwd', BOTH).ok).toBe(false);
-      expect(checkPublishablePath('/ephemeral/artifacts/../../etc/passwd', BOTH).ok).toBe(false);
-      expect(checkPublishablePath('/ephemeral/artifacts/../.venv/k', BOTH).ok).toBe(false);
+    it('rejects traversal that would escape the folder', () => {
+      expect(checkPublishablePath('/files/../etc/passwd', ROOTS).ok).toBe(false);
+      expect(checkPublishablePath('/files/a/../../etc/passwd', ROOTS).ok).toBe(false);
     });
 
-    it('normalises traversal that stays INSIDE the tier rather than rejecting it', () => {
-      // `path.resolve` collapses this to /files/bar, which is publishable. The
-      // old check refused any path containing `..` textually; normalising is
-      // both more accurate and what the executor then reads.
-      expect(checkPublishablePath('/files/foo/../bar.pdf', BOTH)).toEqual({
+    it('normalises traversal that stays INSIDE the folder rather than rejecting it', () => {
+      // `path.resolve` collapses this to /files/bar, which is publishable.
+      expect(checkPublishablePath('/files/foo/../bar.pdf', ROOTS)).toEqual({
         ok: true,
-        root: 'user-files',
         base: '/files',
         relativePath: 'bar.pdf',
       });
     });
 
-    it('rejects relative paths', () => {
-      expect(checkPublishablePath('report.pdf', BOTH).ok).toBe(false);
-      expect(checkPublishablePath('artifacts/report.pdf', BOTH).ok).toBe(false);
-      expect(checkPublishablePath('../files/report.pdf', BOTH).ok).toBe(false);
+    it('rejects relative paths (the executor resolves them against the files root first)', () => {
+      expect(checkPublishablePath('report.pdf', ROOTS).ok).toBe(false);
+      expect(checkPublishablePath('../files/report.pdf', ROOTS).ok).toBe(false);
     });
 
     it('rejects the empty path and non-strings', () => {
-      expect(checkPublishablePath('', BOTH).ok).toBe(false);
-      expect(checkPublishablePath(undefined as unknown as string, BOTH).ok).toBe(false);
+      expect(checkPublishablePath('', ROOTS).ok).toBe(false);
+      expect(checkPublishablePath(undefined as unknown as string, ROOTS).ok).toBe(false);
     });
 
-    it('rejects anything outside both roots', () => {
-      expect(checkPublishablePath('/etc/passwd', BOTH).ok).toBe(false);
-      expect(checkPublishablePath('/', BOTH).ok).toBe(false);
+    it('rejects anything outside the folder', () => {
+      expect(checkPublishablePath('/etc/passwd', ROOTS).ok).toBe(false);
+      expect(checkPublishablePath('/', ROOTS).ok).toBe(false);
     });
   });
 
   describe('roots are runtime values, not literals', () => {
-    // The regression that made this tool unusable outside k8s: the model is told
-    // its real roots in the operating notes, so a real path must validate and a
-    // literal from another deployment shape must not.
-    const SUBPROC = {
-      userFilesRoot: '/var/folders/xy/T/ax-userfiles-abc/agent-1',
-      ephemeralRoot: '/var/folders/xy/T/ax-ipc-def/ephemeral',
-    };
+    // The model is told its real files root in the operating notes, so a real
+    // path must validate and a literal from another deployment shape must not.
+    const SUBPROC = { userFilesRoot: '/var/folders/xy/T/ax-userfiles-abc/agent-1' };
 
     it('accepts the real mkdtemp-shaped paths the subprocess sandbox hands out', () => {
-      const r = checkPublishablePath(`${SUBPROC.userFilesRoot}/report.pdf`, SUBPROC);
-      expect(r.ok).toBe(true);
-      const e = checkPublishablePath(`${SUBPROC.ephemeralRoot}/artifacts/x.png`, SUBPROC);
-      expect(e.ok).toBe(true);
+      expect(checkPublishablePath(`${SUBPROC.userFilesRoot}/report.pdf`, SUBPROC).ok).toBe(true);
     });
 
-    it('rejects the k8s literals when those are not the roots of this session', () => {
+    it('rejects the k8s literal when it is not the root of this session', () => {
       expect(checkPublishablePath('/files/report.pdf', SUBPROC).ok).toBe(false);
-      expect(checkPublishablePath('/ephemeral/artifacts/x.png', SUBPROC).ok).toBe(false);
     });
 
     it('tolerates a trailing slash on a configured root', () => {
-      const r = checkPublishablePath('/files/report.pdf', {
-        userFilesRoot: '/files/',
-        ephemeralRoot: '/ephemeral/',
-      });
-      expect(r).toEqual({
+      expect(checkPublishablePath('/files/report.pdf', { userFilesRoot: '/files/' })).toEqual({
         ok: true,
-        root: 'user-files',
         base: '/files',
         relativePath: 'report.pdf',
       });
     });
   });
 
-  describe('partially-wired deployments', () => {
-    it('publishes from scratch only when no durable mount is wired', () => {
-      const roots = { ephemeralRoot: EPHEM };
-      expect(checkPublishablePath('/ephemeral/artifacts/r.pdf', roots).ok).toBe(true);
-      expect(checkPublishablePath('/files/r.pdf', roots).ok).toBe(false);
-    });
-
-    it('publishes from the durable tier only when no scratch tier is wired', () => {
-      const roots = { userFilesRoot: FILES };
-      expect(checkPublishablePath('/files/r.pdf', roots).ok).toBe(true);
-      expect(checkPublishablePath('/ephemeral/artifacts/r.pdf', roots).ok).toBe(false);
-    });
-
-    it('publishes nothing, and says so, when neither is wired', () => {
-      const result = checkPublishablePath('/files/r.pdf', {});
-      expect(result.ok).toBe(false);
-      if (!result.ok) {
-        expect(result.reason).toContain('no publishable location wired');
-      }
-    });
+  it('publishes nothing, and says so, when no files folder is wired', () => {
+    const result = checkPublishablePath('/files/r.pdf', {});
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toContain('no publishable location wired');
   });
 
-  describe('rejection messages name the real paths of this session', () => {
+  describe('rejection messages name the real path of this session', () => {
     // A rejection that names a literal from another deployment is how the model
     // ends up retrying a path it can never write to.
-    it('lists both live roots', () => {
-      const result = checkPublishablePath('/etc/passwd', BOTH);
+    it('names the live files root and nothing else', () => {
+      const result = checkPublishablePath('/etc/passwd', ROOTS);
       expect(result.ok).toBe(false);
       if (!result.ok) {
         expect(result.reason).toContain('/files/**');
-        expect(result.reason).toContain('/ephemeral/artifacts/**');
-      }
-    });
-
-    it('never names the retired literals', () => {
-      const result = checkPublishablePath('/etc/passwd', BOTH);
-      expect(result.ok).toBe(false);
-      if (!result.ok) {
+        expect(result.reason).not.toContain('artifacts/**');
         expect(result.reason).not.toContain('/agent/workspace');
       }
     });
@@ -246,20 +165,18 @@ describe('checkPublishablePath', () => {
   });
 
   describe('the facts export (/memory) is not publishable — design §11', () => {
-    it('rejects /memory and anything under it with k8s-shaped roots', () => {
-      expect(checkPublishablePath('/memory/facts/a.md', BOTH).ok).toBe(false);
-      expect(checkPublishablePath('/memory', BOTH).ok).toBe(false);
+    it('rejects /memory and anything under it with a k8s-shaped root', () => {
+      expect(checkPublishablePath('/memory/facts/a.md', ROOTS).ok).toBe(false);
+      expect(checkPublishablePath('/memory', ROOTS).ok).toBe(false);
     });
 
-    it('rejects a sibling memory tree next to subprocess-shaped roots', () => {
+    it('rejects a sibling memory tree next to a subprocess-shaped root', () => {
       const base = '/tmp/ax-sbx-123';
-      const roots = { userFilesRoot: `${base}/files`, ephemeralRoot: `${base}/ephemeral` };
-      expect(checkPublishablePath(`${base}/memory/facts/a.md`, roots).ok).toBe(false);
+      expect(checkPublishablePath(`${base}/memory/facts/a.md`, { userFilesRoot: `${base}/files` }).ok).toBe(false);
     });
   });
 
-  it('exposes the caps', () => {
+  it('exposes the size cap', () => {
     expect(MAX_ARTIFACT_BYTES).toBe(100 * 1024 * 1024);
-    expect(MAX_DISPLAY_NAME_CHARS).toBe(256);
   });
 });

@@ -1312,7 +1312,8 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   // ----- 9a. attachments ----------------------------------------------------
   // The attachments & artifacts subsystem. Service hooks
   // (attachments:store-temp / commit / download / list-for-conversation +
-  // artifacts:publish-blob). commit/download/publish ride the
+  // the artifacts:* owner hooks, publish among them). commit/download/publish
+  // ride the
   // content-addressed blob store (the selected blob:* backend registered at
   // step 3b above — fs or s3); attachments are addressed by ID. The IPC
   // dispatcher's blob.put/blob.get/artifact.publish/attachments.list actions
