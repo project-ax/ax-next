@@ -53,14 +53,17 @@ import type { Capabilities, CapabilitySlot, KeyMode } from './types.js';
 //     to the host of the first server its slot names; an env key to the
 //     top-level allowedHosts. A repeated slot name is skipped (L893).
 //   - Host-side tool listing and approved calls: @ax/mcp-client
-//     connector-inventory/connector-headers.ts (L80-110). It matches a slot to
-//     a server by name and describe-tools calls it for EVERY server, so a
-//     slot's token or header goes to every server with that name, not just
-//     the first. It also finds a slot's ref by slot name. Hence one fact per
-//     same-name server, and `occurrence`.
+//     connector-inventory/connector-headers.ts (~L75-120). It matches a slot
+//     to a server by name, but only the FIRST server with that name gets the
+//     slot's token or header; a later same-name server gets none, like a
+//     server with no slot. It finds a slot's ref by slot name. The facts stay
+//     one per same-name server anyway (conservative: adding or moving a twin
+//     can only over-purge), plus `occurrence`.
 //   - Sign-in: @ax/mcp-oauth routes.ts, `begin` (~L614-698) and the
-//     callback's connector re-read (~L966-1018). They read the slot's server
-//     url, authServerUrl and clientSecretRef, and the top-level allowedHosts.
+//     callback's connector re-read (~L965-1023). `begin` reads the first
+//     server with the slot's name; the callback requires EVERY server with
+//     that name to still sit at that url. Both read authServerUrl and
+//     clientSecretRef, and the top-level allowedHosts.
 //     Nothing reads `tokenUrl` today; it stays a fact for the same reason as
 //     server-level slots.
 //

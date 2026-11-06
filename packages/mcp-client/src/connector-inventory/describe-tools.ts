@@ -379,6 +379,10 @@ export function createDescribeTools(deps: DescribeToolsDeps) {
     const found = new Set<string>();
     for (const server of connector.capabilities.mcpServers) {
       if (!absent.has(server.name)) continue;
+      // Only the first server with a name holds its slots' credentials
+      // (TASK-887); a later same-name decoy answers `{ headers: {} }` and must
+      // not read as "signed in since".
+      if (connector.capabilities.mcpServers.find((s) => s.name === server.name) !== server) continue;
       const headers = await connectorHeaders(deps.bus, connector, server, ctx, userId).catch(() => 'unavailable' as const);
       if (typeof headers === 'object') found.add(server.name);
     }

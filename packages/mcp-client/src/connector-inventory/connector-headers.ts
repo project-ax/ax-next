@@ -57,7 +57,12 @@ export function noUsableCredential(err: unknown): boolean {
 }
 
 /**
- * The headers `server` needs, read from the vault as (`userId`, `ctx.agentId`):
+ * The headers `server` needs, read from the vault as (`userId`, `ctx.agentId`).
+ * A slot's credential belongs to the FIRST server in `mcpServers` with the
+ * slot's `server` name — the one the session union, the approved call and the
+ * OAuth sign-in all bind it to (TASK-887). A later server reusing that name
+ * (possibly at another address) is treated like a server with no slot: no
+ * vault read, no credential header, `{ headers: {} }`. Otherwise:
  *   - `'absent'`: nothing is stored for a slot's ref (never signed in, or
  *     signed out; TASK-841);
  *   - `'needs-auth'`: no ref is planned for a slot, an OAuth sign-in was
@@ -75,6 +80,9 @@ export async function connectorHeaders(
   userId: string,
 ): Promise<{ headers: Record<string, string>; bearerRef?: string } | 'absent' | 'needs-auth' | 'unavailable'> {
   const headers: Record<string, string> = {};
+  // Same-name decoy: only the first server with this name gets credentials.
+  // Compared by identity, so a caller passing a copy gets none (fail closed).
+  if (connector.capabilities.mcpServers.find((s) => s.name === server.name) !== server) return { headers };
   // The ref whose token is in `Authorization` (the last OAuth slot wins).
   let bearerRef: string | undefined;
   for (const slot of connector.capabilities.credentials) {
