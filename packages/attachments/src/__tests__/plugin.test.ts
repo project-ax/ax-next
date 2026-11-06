@@ -97,6 +97,8 @@ describe('@ax/attachments plugin manifest', () => {
       'artifacts:rename',
       'artifacts:restore',
       'artifacts:delete',
+      'artifacts:set-link',
+      'artifacts:resolve-share-code',
       'system-prompt:augment:optional:artifacts',
     ]);
     expect(plugin.manifest.calls).toContain('database:get-instance');
@@ -112,6 +114,8 @@ describe('@ax/attachments plugin manifest', () => {
         hook: 'conversations:agent-ids',
         degradation: 'legacy artifacts cannot be mapped; init refuses to start while any are pending',
       },
+      // The agent's name on the share page.
+      { hook: 'agents:get-display-name', degradation: "the share page says 'an agent'" },
     ]);
     // The git path is removed (acceptance criterion).
     expect(plugin.manifest.calls).not.toContain('workspace:apply');

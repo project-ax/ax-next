@@ -12,7 +12,12 @@ import { runAttachmentsMigration, type AttachmentsDatabase } from './migrations.
 import { createAttachmentsStore, type AttachmentsStore } from './store.js';
 import { backfillArtifactAgents, finishArtifactsMigration } from './artifacts/migrations.js';
 import { createArtifactStore } from './artifacts/store.js';
-import { ARTIFACT_HOOKS, registerArtifactHooks } from './artifacts/handlers.js';
+import {
+  AGENT_DISPLAY_NAME_DEGRADATION,
+  AGENT_DISPLAY_NAME_HOOK,
+  ARTIFACT_HOOKS,
+  registerArtifactHooks,
+} from './artifacts/handlers.js';
 import {
   createStoreTempHandler,
   createCommitHandler,
@@ -113,6 +118,10 @@ function agentIdsVia(bus: HookBus, ctx: AgentContext) {
 //     artifact owner hooks. Every one runs the single access rule
 //     (artifacts/access.ts: agents:resolve membership -> role -> can), and
 //     every refusal is the same not-found.
+//   - artifacts:set-link (owner: Copy link / Get new link / turn off) and
+//     artifacts:resolve-share-code (a signed-in link holder: the current
+//     version's metadata). artifacts:read also takes a share code. Codes go
+//     through the same access rule; a bad code is the same not-found.
 //   - system-prompt:augment:optional:artifacts: the agent's own artifact list.
 //
 // Manifest decisions (the authoritative list is the `calls:` array below —
@@ -123,7 +132,9 @@ function agentIdsVia(bus: HookBus, ctx: AgentContext) {
 //     the conversation's agent), agents:resolve (a published version's quota
 //     owner: the user, or `team:<id>` for a team agent, C4).
 //   - optionalCalls: conversations:agent-ids, only to map legacy
-//     conversation-scoped artifacts to their agent at init.
+//     conversation-scoped artifacts to their agent at init;
+//     agents:get-display-name, the agent's name on the share page (without
+//     it the page says "an agent").
 //   - subscribes: `conversations:purged` (TASK-718). A hard-deleted
 //     conversation takes its uploads' rows with it; artifacts outlive their
 //     chat (D12), so their versions only lose the chat id. The blob bytes are
@@ -172,7 +183,11 @@ export function createAttachmentsPlugin(
         // A published version is charged to the agent's owner (C4).
         'agents:resolve',
       ],
-      optionalCalls: [{ hook: AGENT_IDS_HOOK, degradation: AGENT_IDS_DEGRADATION }],
+      optionalCalls: [
+        { hook: AGENT_IDS_HOOK, degradation: AGENT_IDS_DEGRADATION },
+        // The agent's name on the share page.
+        { hook: AGENT_DISPLAY_NAME_HOOK, degradation: AGENT_DISPLAY_NAME_DEGRADATION },
+      ],
       // `blob:collect-refs`: this plugin stores blob shas in its own rows, so it
       // is a holder (TASK-776, D2/D7). It must answer, or a sweep would read the
       // absence as "no one holds these bytes".

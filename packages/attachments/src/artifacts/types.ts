@@ -2,9 +2,10 @@
  * Hook I/O for the artifact owner hooks (`artifacts:*`), with their runtime
  * `returns` contracts.
  *
- * What never appears here: the share code and the source path. The code is a
- * capability (§6.3) and the path is the agent's own file layout (C2); the only
- * place either leaves this plugin is back to the agent, through the augment.
+ * What never appears here: the source path, and the share code outside
+ * `artifacts:set-link`. The code is a capability (§6.3): only its owner gets it
+ * back, from set-link, to copy the link. The path is the agent's own file
+ * layout (C2); it leaves this plugin only back to the agent, through the augment.
  * The `returns` schemas strip any key they do not declare, so a field added to
  * a row by mistake is dropped at the bus rather than shipped.
  */
@@ -118,11 +119,18 @@ export const ArtifactsGetOutputSchema = z.object({
   artifact: z.object({ ...ArtifactSummaryShape, versions: z.array(ArtifactVersionInfoSchema) }),
 }) as ZodType<ArtifactsGetOutput>;
 
-export interface ArtifactsReadInput {
-  artifactId: string;
-  /** Defaults to the current version. */
-  version?: number;
-}
+/**
+ * Two forms. By id (members only): any retained version, the current one by
+ * default. By share code (anyone signed in who holds the link): the current
+ * version and nothing else.
+ */
+export type ArtifactsReadInput =
+  | {
+      artifactId: string;
+      /** Defaults to the current version. */
+      version?: number;
+    }
+  | { shareCode: string };
 export interface ArtifactsReadOutput {
   bytes: Uint8Array;
   mediaType: string;
@@ -167,3 +175,59 @@ export interface ArtifactsDeleteOutput {
 export const ArtifactsDeleteOutputSchema = z.object({
   deleted: z.literal(true),
 }) as ZodType<ArtifactsDeleteOutput>;
+
+
+// --- artifacts:set-link / resolve-share-code -------------------------------
+
+/** `ensure` is Copy link (mint once, then the same code); `rotate` is Get new link; `off` turns it off. */
+export type ArtifactLinkAction = 'ensure' | 'off' | 'rotate';
+
+export interface ArtifactsSetLinkInput {
+  artifactId: string;
+  action: ArtifactLinkAction;
+}
+/**
+ * The code now in force, null when the link is off. Owner-only, and the only
+ * hook whose answer carries a code: the owner needs it to copy the link.
+ */
+export interface ArtifactsSetLinkOutput {
+  shareCode: string | null;
+}
+export const ArtifactsSetLinkOutputSchema = z.object({
+  shareCode: z.string().nullable(),
+}) as ZodType<ArtifactsSetLinkOutput>;
+
+/**
+ * What a link holder sees: the current version's metadata. No artifact id, no
+ * versions, no code, no path.
+ */
+export interface SharedArtifactView {
+  title: string;
+  mediaType: string;
+  kind: ArtifactKind;
+  preview: ArtifactPreview;
+  extension: string;
+  sizeBytes: number;
+  updatedAt: string;
+  /** The agent's display name; null when it cannot be looked up (the page says "an agent"). */
+  agentName: string | null;
+}
+
+export interface ArtifactsResolveShareCodeInput {
+  shareCode: string;
+}
+export interface ArtifactsResolveShareCodeOutput {
+  artifact: SharedArtifactView;
+}
+export const ArtifactsResolveShareCodeOutputSchema = z.object({
+  artifact: z.object({
+    title: z.string(),
+    mediaType: z.string(),
+    kind: ArtifactKindSchema,
+    preview: ArtifactPreviewSchema,
+    extension: z.string(),
+    sizeBytes: z.number().int().nonnegative(),
+    updatedAt: z.string(),
+    agentName: z.string().nullable(),
+  }),
+}) as ZodType<ArtifactsResolveShareCodeOutput>;
