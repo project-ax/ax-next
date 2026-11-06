@@ -31,3 +31,9 @@ spec:
       port: {{ .Values.host.publicHttpServicePort | default 9090 }}
       targetPort: public-http
       protocol: TCP
+    # The artifact content origin (agent-made pages, a different site from
+    # the app). The Ingress content-host rule targets this port by name.
+    - name: content-http
+      port: {{ .Values.host.contentServicePort | default 9091 }}
+      targetPort: content-http
+      protocol: TCP

@@ -1,0 +1,8 @@
+# Chart-test fixture (agent artifacts, Task 6): every render needs the artifact
+# content origin's public URL, on a different site from the app. Suites pass
+# this with -f right after filestore-values.yaml, so kind-dev-values.yaml /
+# gke-values.yaml passed later override it, and any --set overrides both.
+contentOrigin:
+  publicOrigin: https://ax-usercontent.example.net
+  frameAncestors:
+    - https://ax.example.com

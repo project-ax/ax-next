@@ -1,4 +1,7 @@
 {{- if (include "ax-next.bool" .Values.ingress.enabled) }}
+{{- /* validateContentOrigin (host/deployment.yaml) has already refused an
+     empty publicOrigin and one that shares the app's host. */ -}}
+{{- $contentHost := lower (urlParse .Values.contentOrigin.publicOrigin).hostname }}
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -18,6 +21,7 @@ spec:
   tls:
     - hosts:
         - {{ .Values.ingress.host | quote }}
+        - {{ $contentHost | quote }}
       {{- if .Values.ingress.tlsSecretName }}
       secretName: {{ .Values.ingress.tlsSecretName }}
       {{- end }}
@@ -35,8 +39,22 @@ spec:
                   # Must match a named port on the host Service (service.yaml).
                   # That Service exposes `ipc` (runner back-channel, :80) and
                   # `public-http` (the public surface — /chat, /setup, /health,
-                  # /admin/*, /auth/*). Ingress MUST target `public-http`; a
+                  # /admin/*, /auth/*), plus `content-http` (the content rule
+                  # below). This rule MUST target `public-http`; a
                   # value of `http` matches no port and the LB never wires a
                   # backend (silent 404/502). See render.test.ts ingress guard.
                   name: public-http
+    # The artifact content origin: agent-made pages, on their own hostname
+    # (a different site from the app, so they never get the app's cookies).
+    # Rule order matters to nobody but the tests: the app rule stays first.
+    - host: {{ $contentHost | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "ax-next.hostComponentName" . }}
+                port:
+                  name: content-http
 {{- end }}

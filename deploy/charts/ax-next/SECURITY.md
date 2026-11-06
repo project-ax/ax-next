@@ -185,6 +185,14 @@ Applies to pods labeled `app.kubernetes.io/name: <release>-host` in
     GCP's `35.191.0.0/16` + `130.211.0.0/22`. This widens ingress on a port that is
     already the intended public surface, so the exposure delta is the health-check
     source range only.
+  - The artifact **content port** (`host.ports.content`, 9091, named
+    `content-http`) from the host's own namespace and, when set, the same
+    `lbHealthCheckCidrs`. It serves agent-made pages on a separate site from the
+    app (`contentOrigin.publicOrigin`), so the Ingress gives it its own hostname
+    and the load balancer reaches it like the public surface. **Runner pods are
+    not admitted** on it: their rule lists only the IPC (and TCP proxy) ports.
+    Every artifact response needs a signed, single-artifact, 300-second view
+    token, so reaching the port gets you nothing without one.
 - **Egress allowed to:**
   - Postgres (5432) — DB writes.
   - k8s API server (443 + 6443; the dual port covers Calico DNAT edge

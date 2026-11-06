@@ -58,6 +58,9 @@ const minRequired = (extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv => ({
   AX_HTTP_HOST: '0.0.0.0',
   AX_HTTP_PORT: '8080',
   AX_HTTP_COOKIE_KEY: '0'.repeat(64),
+  AX_CONTENT_ORIGIN: 'http://127.0.0.1:9091',
+  AX_CONTENT_PORT: '0',
+  AX_CONTENT_FRAME_ANCESTORS: 'http://localhost:9090',
   AX_HTTP_ALLOWED_ORIGINS: 'https://admin.ax-next.example',
   ...extra,
 });

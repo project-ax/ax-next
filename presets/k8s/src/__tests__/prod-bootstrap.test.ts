@@ -464,6 +464,9 @@ describe('@ax/preset-k8s production bootstrap (testcontainer + fake-k8s)', () =>
         // lane's hermeticity.
         PORT: '8080',
         AX_HTTP_COOKIE_KEY: randomBytes(32).toString('hex'),
+        AX_CONTENT_ORIGIN: 'http://127.0.0.1:9091',
+        AX_CONTENT_PORT: '0',
+        AX_CONTENT_FRAME_ANCESTORS: 'http://localhost:9090',
         AX_HTTP_ALLOWED_ORIGINS: '',
         AX_PROXY_SOCKET_PATH: path.join(tmp, 'proxy-env.sock'),
         AX_PROXY_CA_DIR: path.join(tmp, 'proxy-ca-env'),
@@ -487,6 +490,18 @@ describe('@ax/preset-k8s production bootstrap (testcontainer + fake-k8s)', () =>
       try {
         expect(bus.hasService('agent:invoke')).toBe(true);
         expect(bus.hasService('sandbox:open-session')).toBe(true);
+        // The artifact content origin came up from the env (AX_CONTENT_*),
+        // on an ephemeral port: AX_CONTENT_PORT=0 omits publicOrigin, so the
+        // URL is the bound one, and its health route answers.
+        const attachments = plugins.find((p) => p.manifest.name === '@ax/attachments') as
+          | (Plugin & { contentOriginUrl(): string | undefined })
+          | undefined;
+        const contentUrl = attachments?.contentOriginUrl();
+        expect(contentUrl).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
+        expect(contentUrl).not.toBe('http://127.0.0.1:9091');
+        const res = await fetch(`${contentUrl}/`);
+        expect(res.status).toBe(200);
+        expect(res.headers.get('x-content-type-options')).toBe('nosniff');
       } finally {
         await handle.shutdown();
       }

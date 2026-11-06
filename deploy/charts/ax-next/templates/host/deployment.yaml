@@ -6,6 +6,7 @@
 {{- include "ax-next.validateDevServicesKubeVersion" . -}}
 {{- include "ax-next.validateAllowedModels" . -}}
 {{- include "ax-next.validateSharedPool" . -}}
+{{- include "ax-next.validateContentOrigin" . -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -99,6 +100,11 @@ spec:
             - name: public-http
               containerPort: {{ .Values.host.ports.publicHttp }}
               protocol: TCP
+            # The artifact content origin (AX_CONTENT_*): agent-made pages on
+            # a different site from the app. Ingress gives it its own hostname.
+            - name: content-http
+              containerPort: {{ .Values.host.ports.content }}
+              protocol: TCP
             {{- if (include "ax-next.bool" .Values.credentialProxy.tcp.enabled) }}
             # @ax/credential-proxy TCP listener (TASK-149, production gVisor).
             # The credential-proxy-service.yaml ClusterIP Service targets this
@@ -128,6 +134,17 @@ spec:
                 secretKeyRef:
                   name: {{ include "ax-next.fullname" . }}-secrets
                   key: http-cookie-key
+            # The artifact content origin (agent artifacts §6.5). Same bind
+            # interface as the public listener (AX_HTTP_HOST). The URL must be
+            # a different site from the app; validateContentOrigin has already
+            # failed the render otherwise, and the host checks it again
+            # against the frame ancestors at boot.
+            - name: AX_CONTENT_ORIGIN
+              value: {{ .Values.contentOrigin.publicOrigin | quote }}
+            - name: AX_CONTENT_PORT
+              value: {{ .Values.host.ports.content | quote }}
+            - name: AX_CONTENT_FRAME_ANCESTORS
+              value: {{ join "," .Values.contentOrigin.frameAncestors | quote }}
             {{- if .Values.http.allowedOrigins }}
             - name: AX_HTTP_ALLOWED_ORIGINS
               value: {{ join "," .Values.http.allowedOrigins | quote }}

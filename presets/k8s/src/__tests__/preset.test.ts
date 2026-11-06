@@ -445,6 +445,9 @@ describe('@ax/preset-k8s wiring', () => {
       AX_HTTP_HOST: '0.0.0.0',
       AX_HTTP_PORT: '9090',
       AX_HTTP_COOKIE_KEY: '0'.repeat(64),
+      AX_CONTENT_ORIGIN: 'http://127.0.0.1:9091',
+      AX_CONTENT_PORT: '0',
+      AX_CONTENT_FRAME_ANCESTORS: 'http://localhost:9090',
       AX_HTTP_ALLOWED_ORIGINS: '',
     };
     const seeded = loadK8sConfigFromEnv({
@@ -1280,6 +1283,9 @@ describe('@ax/preset-k8s — onboarding wiring (I3: half-wired window closed)', 
       AX_HTTP_HOST: '0.0.0.0',
       AX_HTTP_PORT: '9090',
       AX_HTTP_COOKIE_KEY: HEX_KEY,
+      AX_CONTENT_ORIGIN: 'http://127.0.0.1:9091',
+      AX_CONTENT_PORT: '0',
+      AX_CONTENT_FRAME_ANCESTORS: 'http://localhost:9090',
       AX_HTTP_ALLOWED_ORIGINS: '',
       AX_PUBLIC_BASE_URL: 'https://ax.example.com',
     };
@@ -1298,6 +1304,9 @@ describe('@ax/preset-k8s — onboarding wiring (I3: half-wired window closed)', 
       AX_HTTP_HOST: '0.0.0.0',
       AX_HTTP_PORT: '9090',
       AX_HTTP_COOKIE_KEY: HEX_KEY,
+      AX_CONTENT_ORIGIN: 'http://127.0.0.1:9091',
+      AX_CONTENT_PORT: '0',
+      AX_CONTENT_FRAME_ANCESTORS: 'http://localhost:9090',
       AX_HTTP_ALLOWED_ORIGINS: '',
     };
     const cfg = loadK8sConfigFromEnv(env);
@@ -1320,6 +1329,9 @@ describe('@ax/preset-k8s — onboarding wiring (I3: half-wired window closed)', 
       AX_HTTP_HOST: '0.0.0.0',
       AX_HTTP_PORT: '9090',
       AX_HTTP_COOKIE_KEY: HEX_KEY,
+      AX_CONTENT_ORIGIN: 'http://127.0.0.1:9091',
+      AX_CONTENT_PORT: '0',
+      AX_CONTENT_FRAME_ANCESTORS: 'http://localhost:9090',
       AX_HTTP_ALLOWED_ORIGINS: '',
     };
     const cfg = loadK8sConfigFromEnv(env);
@@ -1349,6 +1361,9 @@ describe('@ax/preset-k8s — onboarding wiring (I3: half-wired window closed)', 
       AX_HTTP_HOST: '0.0.0.0',
       AX_HTTP_PORT: '9090',
       AX_HTTP_COOKIE_KEY: HEX_KEY,
+      AX_CONTENT_ORIGIN: 'http://127.0.0.1:9091',
+      AX_CONTENT_PORT: '0',
+      AX_CONTENT_FRAME_ANCESTORS: 'http://localhost:9090',
       AX_HTTP_ALLOWED_ORIGINS: '',
       AX_PUBLIC_BASE_URL: 'https://ax.example.com',
     };
@@ -1370,6 +1385,9 @@ describe('@ax/preset-k8s — onboarding wiring (I3: half-wired window closed)', 
       AX_HTTP_HOST: '0.0.0.0',
       AX_HTTP_PORT: '9090',
       AX_HTTP_COOKIE_KEY: HEX_KEY,
+      AX_CONTENT_ORIGIN: 'http://127.0.0.1:9091',
+      AX_CONTENT_PORT: '0',
+      AX_CONTENT_FRAME_ANCESTORS: 'http://localhost:9090',
       AX_HTTP_ALLOWED_ORIGINS: '',
     };
     const cfg = loadK8sConfigFromEnv(env);
@@ -1394,6 +1412,9 @@ describe('@ax/preset-k8s — onboarding wiring (I3: half-wired window closed)', 
       AX_HTTP_HOST: '0.0.0.0',
       AX_HTTP_PORT: '9090',
       AX_HTTP_COOKIE_KEY: HEX_KEY,
+      AX_CONTENT_ORIGIN: 'http://127.0.0.1:9091',
+      AX_CONTENT_PORT: '0',
+      AX_CONTENT_FRAME_ANCESTORS: 'http://localhost:9090',
       AX_HTTP_ALLOWED_ORIGINS: '',
       AX_PUBLIC_BASE_URL: 'https://ax.example.com/some/path?query=1',
     };
@@ -1422,6 +1443,9 @@ describe('@ax/preset-k8s — onboarding wiring (I3: half-wired window closed)', 
       AX_HTTP_HOST: '0.0.0.0',
       AX_HTTP_PORT: '9090',
       AX_HTTP_COOKIE_KEY: HEX_KEY,
+      AX_CONTENT_ORIGIN: 'http://127.0.0.1:9091',
+      AX_CONTENT_PORT: '0',
+      AX_CONTENT_FRAME_ANCESTORS: 'http://localhost:9090',
       AX_HTTP_ALLOWED_ORIGINS: '',
       AX_PUBLIC_BASE_URL: '  https://ax.example.com  ',
     };
@@ -1441,6 +1465,9 @@ describe('@ax/preset-k8s — onboarding wiring (I3: half-wired window closed)', 
       AX_HTTP_HOST: '0.0.0.0',
       AX_HTTP_PORT: '9090',
       AX_HTTP_COOKIE_KEY: HEX_KEY,
+      AX_CONTENT_ORIGIN: 'http://127.0.0.1:9091',
+      AX_CONTENT_PORT: '0',
+      AX_CONTENT_FRAME_ANCESTORS: 'http://localhost:9090',
       AX_HTTP_ALLOWED_ORIGINS: '',
       AX_PUBLIC_BASE_URL: 'not a url',
     };
@@ -1458,6 +1485,9 @@ describe('@ax/preset-k8s — onboarding wiring (I3: half-wired window closed)', 
       AX_HTTP_HOST: '0.0.0.0',
       AX_HTTP_PORT: '9090',
       AX_HTTP_COOKIE_KEY: HEX_KEY,
+      AX_CONTENT_ORIGIN: 'http://127.0.0.1:9091',
+      AX_CONTENT_PORT: '0',
+      AX_CONTENT_FRAME_ANCESTORS: 'http://localhost:9090',
       AX_HTTP_ALLOWED_ORIGINS: '',
       AX_PUBLIC_BASE_URL: 'file:///etc/passwd',
     };
@@ -1647,6 +1677,9 @@ describe('loadK8sConfigFromEnv', () => {
     AX_HTTP_HOST: '0.0.0.0',
     AX_HTTP_PORT: '8080',
     AX_HTTP_COOKIE_KEY: HEX_KEY,
+    AX_CONTENT_ORIGIN: 'http://127.0.0.1:9091',
+    AX_CONTENT_PORT: '0',
+    AX_CONTENT_FRAME_ANCESTORS: 'http://localhost:9090',
     AX_HTTP_ALLOWED_ORIGINS: 'https://admin.ax-next.example',
     ...extra,
   });
@@ -1873,6 +1906,36 @@ describe('loadK8sConfigFromEnv', () => {
     expect('workspace' in cfg).toBe(false);
   });
 
+  it('builds the artifact content origin from AX_CONTENT_* on the public listener interface', () => {
+    const cfg = loadK8sConfigFromEnv(
+      minRequired({
+        AX_CONTENT_ORIGIN: 'https://ax-usercontent.example.net',
+        AX_CONTENT_PORT: '9091',
+        AX_CONTENT_FRAME_ANCESTORS: 'https://admin.ax-next.example',
+      }),
+    );
+    expect(cfg.contentOrigin).toEqual({
+      host: '0.0.0.0',
+      port: 9091,
+      publicOrigin: 'https://ax-usercontent.example.net',
+      frameAncestors: ['https://admin.ax-next.example'],
+    });
+  });
+
+  it('throws when AX_CONTENT_ORIGIN is missing', () => {
+    const env = minRequired();
+    delete env.AX_CONTENT_ORIGIN;
+    expect(() => loadK8sConfigFromEnv(env)).toThrowError(/AX_CONTENT_ORIGIN/);
+  });
+
+  it('throws when the content origin sits under the app host', () => {
+    const env = minRequired({
+      AX_CONTENT_ORIGIN: 'https://c.admin.ax-next.example',
+      AX_CONTENT_FRAME_ANCESTORS: 'https://admin.ax-next.example',
+    });
+    expect(() => loadK8sConfigFromEnv(env)).toThrowError(/AX_CONTENT_ORIGIN/);
+  });
+
   it('throws when AX_HTTP_HOST is missing', () => {
     const env = minRequired();
     delete env.AX_HTTP_HOST;
@@ -2055,6 +2118,9 @@ describe('@ax/preset-k8s — allow_user_installed_skills flag (TASK-38)', () => 
     AX_HTTP_HOST: '0.0.0.0',
     AX_HTTP_PORT: '9090',
     AX_HTTP_COOKIE_KEY: HEX_KEY,
+    AX_CONTENT_ORIGIN: 'http://127.0.0.1:9091',
+    AX_CONTENT_PORT: '0',
+    AX_CONTENT_FRAME_ANCESTORS: 'http://localhost:9090',
     AX_HTTP_ALLOWED_ORIGINS: '',
   });
 
@@ -2130,6 +2196,9 @@ describe('@ax/preset-k8s — filestore mount wiring', () => {
     AX_HTTP_HOST: '0.0.0.0',
     AX_HTTP_PORT: '9090',
     AX_HTTP_COOKIE_KEY: HEX_KEY,
+    AX_CONTENT_ORIGIN: 'http://127.0.0.1:9091',
+    AX_CONTENT_PORT: '0',
+    AX_CONTENT_FRAME_ANCESTORS: 'http://localhost:9090',
     AX_HTTP_ALLOWED_ORIGINS: '',
     AX_BLOB_FS_ROOT: '/var/lib/ax-next/workspaces/blobs',
   };

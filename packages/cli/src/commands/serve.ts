@@ -43,8 +43,11 @@ env (required):
   AX_BLOB_FS_ROOT             blob directory (when AX_BLOB_BACKEND is fs, the default)
   AX_FILESTORE_SERVER         NFS server for every agent's durable /files home
   AX_FILESTORE_EXPORT_PATH    the NFS export path on that server, e.g. /vol1
+  AX_CONTENT_ORIGIN           artifact content site URL (a different domain from the app)
+  AX_CONTENT_FRAME_ANCESTORS  comma-separated app origins that may show artifact pages
 
 env (optional):
+  AX_CONTENT_PORT             artifact content listener port (default 9091)
   AX_PRESET                   'memory' (the default and only value — facts memory).
                               'k8s' (the legacy Strata memory) was removed and
                               now refuses to boot.

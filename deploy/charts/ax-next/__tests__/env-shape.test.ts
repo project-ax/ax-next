@@ -41,10 +41,14 @@ const KIND_DEV_VALUES = resolve(chartDir, 'kind-dev-values.yaml');
 // Every render needs a durable /files home (TASK-992). A values FILE, passed
 // first, so kind-dev-values.yaml passed later and any --set still win over it.
 const FILESTORE_FIXTURE = resolve(here, 'fixtures/filestore-values.yaml');
+// Every render needs the artifact content origin's URL (agent artifacts).
+const CONTENT_ORIGIN_FIXTURE = resolve(here, 'fixtures/content-origin-values.yaml');
 
 const REQUIRED = [
   '-f',
   FILESTORE_FIXTURE,
+  '-f',
+  CONTENT_ORIGIN_FIXTURE,
   '--set',
   'credentials.key=test',
   '--set',
@@ -318,6 +322,29 @@ describeIfHelm('host deployment env vs preset loader', () => {
     expect(publicHttpPort).toBeDefined();
     expect(httpPortEnv).toBeDefined();
     expect(String(publicHttpPort)).toBe(String(httpPortEnv));
+  });
+
+  it('stamps the artifact content origin env the loader reads, and content-http matches AX_CONTENT_PORT', () => {
+    // parseContentOrigin (content-origin.ts) refuses to boot without
+    // AX_CONTENT_ORIGIN / AX_CONTENT_FRAME_ANCESTORS, and its message lives
+    // outside index.ts, so the required-set scan above can't see it. Pin the
+    // trio here: the loader reads each, and both renders stamp each.
+    const CONTENT_ENV = ['AX_CONTENT_ORIGIN', 'AX_CONTENT_PORT', 'AX_CONTENT_FRAME_ANCESTORS'];
+    const { all: loaderReads } = collectLoaderEnvReads();
+    expect(CONTENT_ENV.filter((v) => !loaderReads.has(v))).toEqual([]);
+    for (const dep of [renderHostDeployment(), renderHostDeploymentDefaults()]) {
+      const container = (dep.spec as {
+        template?: { spec?: { containers?: Array<{
+          ports?: Array<{ name?: string; containerPort?: number }>;
+          env?: Array<{ name?: string; value?: string }>;
+        }> } };
+      }).template?.spec?.containers?.[0];
+      const env = new Map((container?.env ?? []).map((e) => [e.name, e.value]));
+      for (const v of CONTENT_ENV) expect(env.get(v), v).toBeTruthy();
+      const contentPort = container?.ports?.find((p) => p.name === 'content-http')?.containerPort;
+      expect(String(contentPort)).toBe(env.get('AX_CONTENT_PORT'));
+      expect(env.get('AX_CONTENT_PORT')).toBe('9091');
+    }
   });
 
   it('ipc-http port and PORT env match', () => {

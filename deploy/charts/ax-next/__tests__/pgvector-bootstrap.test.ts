@@ -44,10 +44,14 @@ const JOB_NAME = `${RELEASE}-ax-next-pg-init`;
 // Every render needs a durable /files home (TASK-992). A values FILE, passed
 // first, so any --set still wins over it.
 const FILESTORE_FIXTURE = resolve(here, 'fixtures/filestore-values.yaml');
+// Every render needs the artifact content origin's URL (agent artifacts).
+const CONTENT_ORIGIN_FIXTURE = resolve(here, 'fixtures/content-origin-values.yaml');
 
 const REQUIRED = [
   '-f',
   FILESTORE_FIXTURE,
+  '-f',
+  CONTENT_ORIGIN_FIXTURE,
   '--set',
   'credentials.key=test',
   '--set',

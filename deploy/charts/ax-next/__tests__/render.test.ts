@@ -29,11 +29,15 @@ const chartDir = resolve(here, '..');
 // Every render needs a durable /files home (TASK-992). A values FILE, passed
 // first, so overlay files passed later and any --set still win over it.
 const FILESTORE_FIXTURE = resolve(here, 'fixtures/filestore-values.yaml');
+// Every render needs the artifact content origin's URL (agent artifacts).
+const CONTENT_ORIGIN_FIXTURE = resolve(here, 'fixtures/content-origin-values.yaml');
 
 /** Stable required values so each test only sets what it's actually checking. */
 const REQUIRED = [
   '-f',
   FILESTORE_FIXTURE,
+  '-f',
+  CONTENT_ORIGIN_FIXTURE,
   '--set',
   'credentials.key=test',
   '--set',
@@ -1829,5 +1833,142 @@ describe('ax-next chart: every ax-next.bool gate is enumerated (TASK-516)', () =
   it('every .Values path passed to ax-next.bool has a boolean default in values.yaml', () => {
     const paths = [...new Set(calls.map((c) => c.slice('.Values.'.length)))].sort();
     expect(paths.filter((p) => !BOOLEAN_PATHS.includes(p))).toEqual([]);
+  });
+});
+
+describeIfHelm('ax-next chart: artifact content origin (agent artifacts §6.5)', () => {
+  // The content origin serves agent-made HTML on a second listener. It must be
+  // a different site from the app, so its cookies can never be the app's: the
+  // chart refuses a content host equal to the Ingress host or under it, and
+  // gives the content host its own Ingress rule (and TLS host) to the
+  // content-http port. The fixture sets publicOrigin=https://ax-usercontent.example.net.
+  const HOST_SVC = 'ax-test-ax-next-host';
+  const HOST_NP = 'ax-test-ax-next-host-network';
+  const SET_HINT = 'set contentOrigin.publicOrigin=https://<a domain that is not ingress.host>';
+  const ingressArgs = [
+    '--set', 'ingress.enabled=true',
+    '--set', 'ingress.host=ax.example.com',
+    '--set', 'ingress.tls=true',
+  ];
+
+  function hostDeployment(docs: K8sDoc[]): K8sDoc | undefined {
+    return docs.find(
+      (d) => d.kind === 'Deployment' && d.metadata?.labels?.['app.kubernetes.io/component'] === 'host',
+    );
+  }
+
+  it('renders the content env, the content-http container and Service ports, and an Ingress rule for the content host', () => {
+    const docs = helmTemplate(ingressArgs);
+    const container = hostDeployment(docs)?.spec?.template.spec.containers[0];
+    expect(container.env).toEqual(expect.arrayContaining([
+      { name: 'AX_CONTENT_ORIGIN', value: 'https://ax-usercontent.example.net' },
+      { name: 'AX_CONTENT_PORT', value: '9091' },
+      { name: 'AX_CONTENT_FRAME_ANCESTORS', value: 'https://ax.example.com' },
+    ]));
+    expect(container.ports).toEqual(expect.arrayContaining([
+      { name: 'content-http', containerPort: 9091, protocol: 'TCP' },
+    ]));
+
+    const svc = docs.find((d) => d.kind === 'Service' && d.metadata?.name === HOST_SVC);
+    expect(svc?.spec?.ports).toEqual(expect.arrayContaining([
+      { name: 'content-http', port: 9091, targetPort: 'content-http', protocol: 'TCP' },
+    ]));
+
+    const ing = docs.find((d) => d.kind === 'Ingress');
+    const rules = ing?.spec?.rules as Array<{ host: string; http: { paths: Array<{ backend: { service: { name: string; port: { name: string } } } }> } }>;
+    // The app rule stays first; the content rule is its own host.
+    expect(rules.map((r) => r.host)).toEqual(['ax.example.com', 'ax-usercontent.example.net']);
+    expect(rules[1]!.http.paths[0]!.backend.service).toEqual({
+      name: HOST_SVC,
+      port: { name: 'content-http' },
+    });
+    expect(ing?.spec?.tls?.[0]?.hosts).toEqual(['ax.example.com', 'ax-usercontent.example.net']);
+  });
+
+  it('has no TLS hosts without ingress.tls, and no Ingress at all without ingress.enabled', () => {
+    const noTls = helmTemplate(['--set', 'ingress.enabled=true', '--set', 'ingress.host=ax.example.com']);
+    expect(noTls.find((d) => d.kind === 'Ingress')?.spec?.tls).toBeUndefined();
+    expect(helmTemplate([]).find((d) => d.kind === 'Ingress')).toBeUndefined();
+  });
+
+  it('fails the render without contentOrigin.publicOrigin and prints the --set to use', () => {
+    const r = helmTemplateExpectFailure(['--set', 'contentOrigin.publicOrigin=']);
+    expect(r.status).not.toBe(0);
+    expect(r.stderr).toContain(SET_HINT);
+  });
+
+  it.each([
+    ['the ingress host', 'https://ax.example.com'],
+    ['under the ingress host', 'https://c.ax.example.com'],
+    ['under it, in another case', 'https://C.AX.Example.com'],
+    ['above the ingress host', 'https://example.com'],
+  ])('fails when the content host is %s (%s)', (_label, origin) => {
+    const r = helmTemplateExpectFailure([...ingressArgs, '--set', `contentOrigin.publicOrigin=${origin}`]);
+    expect(r.status).not.toBe(0);
+    expect(r.stderr).toContain(SET_HINT);
+  });
+
+  it('a lookalike that only ends with the ingress host as text is still a different site', () => {
+    const docs = helmTemplate([...ingressArgs, '--set', 'contentOrigin.publicOrigin=https://notax.example.com']);
+    expect(docs.find((d) => d.kind === 'Ingress')).toBeDefined();
+  });
+
+  it('fails when contentOrigin.frameAncestors is empty, instead of crash-looping the host', () => {
+    const r = helmTemplateExpectFailure(['--set-json', 'contentOrigin.frameAncestors=[]']);
+    expect(r.status).not.toBe(0);
+    expect(r.stderr).toContain('contentOrigin.frameAncestors');
+  });
+
+  it('the schema refuses a publicOrigin with a path or a non-http scheme', () => {
+    for (const bad of ['https://ax-usercontent.example.net/x', 'ftp://ax-usercontent.example.net']) {
+      const r = helmTemplateExpectFailure(['--set', `contentOrigin.publicOrigin=${bad}`]);
+      expect(r.status, bad).not.toBe(0);
+      expect(r.stderr, bad).toContain('publicOrigin');
+    }
+  });
+
+  it('the host NetworkPolicy admits content-http from the namespace and the LB health-check ranges', () => {
+    const docs = helmTemplate([
+      '--set', 'networkPolicies.enabled=true',
+      '--set-json', 'networkPolicies.lbHealthCheckCidrs=["35.191.0.0/16","130.211.0.0/22"]',
+    ]);
+    const np = docs.find((d) => d.kind === 'NetworkPolicy' && d.metadata?.name === HOST_NP);
+    const ingress = (np?.spec?.ingress ?? []) as Array<{
+      from?: Array<{ ipBlock?: { cidr?: string }; namespaceSelector?: unknown; podSelector?: unknown }>;
+      ports?: Array<{ port?: number; protocol?: string }>;
+    }>;
+    const admits9091 = (r: (typeof ingress)[number]) =>
+      (r.ports ?? []).some((p) => p.port === 9091 && p.protocol === 'TCP');
+    const nsRule = ingress.find((r) => (r.from ?? []).some((f) => f.namespaceSelector && !f.podSelector));
+    expect(nsRule && admits9091(nsRule)).toBe(true);
+    const lbRule = ingress.find((r) => (r.from ?? []).some((f) => f.ipBlock));
+    expect(lbRule && admits9091(lbRule)).toBe(true);
+    // Runner pods (namespace + pod selector) never reach the content port.
+    const runnerRule = ingress.find((r) => (r.from ?? []).some((f) => f.namespaceSelector && f.podSelector));
+    expect(runnerRule && admits9091(runnerRule)).toBe(false);
+  });
+
+  it('gke-values.yaml: a separate content site and both managed certificates', () => {
+    const docs = helmTemplate(['-f', GKE_VALUES, '--set', 'sandbox.filestore.server=10.9.8.7']);
+    const env = hostDeployment(docs)?.spec?.template.spec.containers[0].env as Array<{ name: string; value?: string }>;
+    expect(env.find((e) => e.name === 'AX_CONTENT_ORIGIN')?.value).toBe('https://ax-usercontent.example.net');
+    expect(env.find((e) => e.name === 'AX_CONTENT_FRAME_ANCESTORS')?.value).toBe('https://ax.example.com');
+    const ing = docs.find((d) => d.kind === 'Ingress');
+    expect(ing?.metadata?.annotations?.['networking.gke.io/managed-certificates']).toBe(
+      'ax-next-cert,ax-next-content-cert',
+    );
+    expect((ing?.spec?.rules as Array<{ host: string }>).map((r) => r.host)).toEqual([
+      'ax.example.com',
+      'ax-usercontent.example.net',
+    ]);
+  });
+
+  it('kind-dev-values.yaml: 127.0.0.1 content next to the localhost app origins', () => {
+    const docs = helmTemplate(['-f', resolve(chartDir, 'kind-dev-values.yaml')]);
+    const env = hostDeployment(docs)?.spec?.template.spec.containers[0].env as Array<{ name: string; value?: string }>;
+    expect(env.find((e) => e.name === 'AX_CONTENT_ORIGIN')?.value).toBe('http://127.0.0.1:9091');
+    expect(env.find((e) => e.name === 'AX_CONTENT_FRAME_ANCESTORS')?.value).toBe(
+      'http://localhost:9090,http://localhost:19090,http://localhost:5173',
+    );
   });
 });

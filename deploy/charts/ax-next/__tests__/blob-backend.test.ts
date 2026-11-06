@@ -32,10 +32,14 @@ const GKE_VALUES = resolve(chartDir, 'gke-values.yaml');
 // Every render needs a durable /files home (TASK-992). A values FILE, passed
 // first, so overlay files passed later and any --set still win over it.
 const FILESTORE_FIXTURE = resolve(here, 'fixtures/filestore-values.yaml');
+// Every render needs the artifact content origin's URL (agent artifacts).
+const CONTENT_ORIGIN_FIXTURE = resolve(here, 'fixtures/content-origin-values.yaml');
 
 const REQUIRED = [
   '-f',
   FILESTORE_FIXTURE,
+  '-f',
+  CONTENT_ORIGIN_FIXTURE,
   '--set',
   'credentials.key=test',
   '--set',

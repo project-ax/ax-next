@@ -121,6 +121,21 @@ networkPolicies:
 ingress:
   enabled: false
 
+# ─── Artifact content origin (agent artifacts) ────────────────────
+# Agent-made pages are shown from a second site. On kind, 127.0.0.1 and
+# localhost are different sites to the browser (different hosts, so no shared
+# cookies), which is exactly the separation production gets from a second
+# domain. Reach it with a port-forward of the host Service's content-http
+# port (9091) next to the usual 9090 one. frameAncestors lists every origin
+# the app is opened at locally: the 9090 port-forward, the 19090 one some
+# walks use, and the Vite dev server.
+contentOrigin:
+  publicOrigin: http://127.0.0.1:9091
+  frameAncestors:
+    - http://localhost:9090
+    - http://localhost:19090
+    - http://localhost:5173
+
 # ─── HTTP-server (issue #39) ─────────────────────────────────────
 # 32-byte signing key for auth-better session cookies. Hex form (64
 # chars) is what `openssl rand -hex 32` outputs. This default value

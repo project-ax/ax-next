@@ -9,7 +9,8 @@ const base = ['template', 'ax-test', chart, '--namespace', 'host', '--kube-versi
   '--set', 'credentials.key=test', '--set', 'http.cookieKey=' + '0'.repeat(64),
   '--set', 'sandbox.backend=agent-sandbox', '--set', 'credentialProxy.tcp.enabled=true',
   '--set', 'sandbox.sharedPool.enabled=true', '--set', 'sandbox.filestore.server=192.0.2.9',
-  '--set', 'sandbox.sharedPool.clientTlsSecret=controller-tls', '--set', 'sandbox.sharedPool.serverTlsSecret=storage-tls'];
+  '--set', 'sandbox.sharedPool.clientTlsSecret=controller-tls', '--set', 'sandbox.sharedPool.serverTlsSecret=storage-tls',
+  '-f', resolve(chart, '__tests__/fixtures/content-origin-values.yaml')];
 type Port = { port: number; protocol: string };
 type Volume = { name: string; hostPath?: { path: string }; secret?: { secretName: string } };
 type Container = { securityContext: object; args: string[]; volumeMounts: object[]; env: object[] };
