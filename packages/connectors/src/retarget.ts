@@ -21,13 +21,26 @@ import type { Capabilities, CapabilitySlot, KeyMode } from './types.js';
 //      One per top-level slot and EVERY server carrying the name the slot
 //      names (server names may repeat); one with address null when no
 //      server carries it.
-//   2. ['server-slot', address, slot, kind, headerName, authServerUrl,
+//   2. ['slot-first', slot, occurrence, ref, kind, address, headerName,
+//       authServerUrl, tokenUrl, secretRef]
+//      One per top-level slot, with the address of the FIRST server carrying
+//      the slot's server name (null when none does). Fact 1 is a set, so it
+//      can't see order; this one can. Every consumer below binds a slot to
+//      that first server, so swapping [A, B] to [B, A], or dropping A from
+//      [A, B], moves every stored credential to B and must count.
+//   3. ['server-slot', address, slot, kind, headerName, authServerUrl,
 //       tokenUrl, secretRef]
 //      One per server-level slot and every server carrying its server's
 //      name, by the same rule. No credential is bound to these today;
 //      keeping them as facts means a later consumer can't make one live
 //      silently (the TASK-712 precedent).
-//   3. ['host', host]
+//   4. ['server-slot-first', address, slot, kind, headerName, authServerUrl,
+//       tokenUrl, secretRef]
+//      One per server-level slot, with the address of the first server
+//      carrying its server's name. Fact 3 keys on that name, as fact 1 does,
+//      so it gets fact 2's order rule too: a later consumer that looks the
+//      server up by name gets the first one, like every consumer today.
+//   5. ['host', host]
 //      One per top-level allowed host, only when the connector has an env
 //      key (an api-key slot with no headerName): env keys are the only
 //      credentials bound to those hosts.
@@ -56,9 +69,10 @@ import type { Capabilities, CapabilitySlot, KeyMode } from './types.js';
 //     connector-inventory/connector-headers.ts (~L75-120). It matches a slot
 //     to a server by name, but only the FIRST server with that name gets the
 //     slot's token or header; a later same-name server gets none, like a
-//     server with no slot. It finds a slot's ref by slot name. The facts stay
-//     one per same-name server anyway (conservative: adding or moving a twin
-//     can only over-purge), plus `occurrence`.
+//     server with no slot. It finds a slot's ref by slot name. Fact 2 pins
+//     that first server; fact 1 stays one per same-name server anyway, a
+//     deliberately cautious extra (adding a twin can only over-purge), plus
+//     `occurrence`.
 //   - Sign-in: @ax/mcp-oauth routes.ts, `begin` (~L614-698) and the
 //     callback's connector re-read (~L965-1023). Both read the first server
 //     with the slot's name; the callback refuses when its url moved. Both read authServerUrl and
@@ -106,6 +120,15 @@ function addressesNamed(servers: readonly ServerSpec[], name: string | undefined
   return named.length > 0 ? named.map(addressOf) : [null];
 }
 
+/**
+ * The address of the FIRST server called `name`, the one every consumer binds
+ * a credential to, or null when none is.
+ */
+function firstAddressNamed(servers: readonly ServerSpec[], name: string | undefined): Address | null {
+  const first = name === undefined ? undefined : servers.find((s) => s.name === name);
+  return first ? addressOf(first) : null;
+}
+
 /** An env key: an api-key slot that is not sent as a request header. */
 function isEnvKey(slot: CapabilitySlot): boolean {
   return slot.kind === 'api-key' && !slot.headerName;
@@ -137,15 +160,19 @@ function reachFacts(c: RetargetSubject): Set<string> {
     const occurrence = seen.get(slot.slot) ?? 0;
     seen.set(slot.slot, occurrence + 1);
     const ref = plan[i]?.ref ?? null;
+    const binding = bindingFields(c.id, slot);
     for (const address of addressesNamed(servers, slot.server)) {
-      add(['slot', slot.slot, occurrence, ref, slot.kind, address, ...bindingFields(c.id, slot)]);
+      add(['slot', slot.slot, occurrence, ref, slot.kind, address, ...binding]);
     }
+    add(['slot-first', slot.slot, occurrence, ref, slot.kind, firstAddressNamed(servers, slot.server), ...binding]);
   });
   for (const server of servers) {
     for (const slot of server.credentials as CapabilitySlot[]) {
+      const binding = bindingFields(c.id, slot);
       for (const address of addressesNamed(servers, server.name)) {
-        add(['server-slot', address, slot.slot, slot.kind, ...bindingFields(c.id, slot)]);
+        add(['server-slot', address, slot.slot, slot.kind, ...binding]);
       }
+      add(['server-slot-first', firstAddressNamed(servers, server.name), slot.slot, slot.kind, ...binding]);
     }
   }
   if (slots.some(isEnvKey)) {

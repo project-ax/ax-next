@@ -189,6 +189,10 @@ const linearWithTwin = edit(linear(), (c) => {
 const docsWithInner = edit(docs(), (c) => {
   c.mcpServers[0]!.credentials.push({ slot: 'INNER', kind: 'api-key', headerName: 'X-Inner' });
 });
+// ...and a second server under that server's name, after it.
+const docsWithInnerTwin = edit(docsWithInner, (c) => {
+  c.mcpServers.push({ name: 'docs', transport: 'http', url: ELSEWHERE_URL, allowedHosts: [], credentials: [] });
+});
 const crmWithTwoHeaders = edit(crm(), (c) => {
   c.credentials.push({ slot: 'HEADER_2', kind: 'api-key', headerName: 'X-Org', server: 'crm' });
 });
@@ -270,12 +274,14 @@ const rows: Array<[name: string, before: RetargetSubject, after: RetargetSubject
     }),
     false,
   ],
-  // The write schema allows a repeated server name. The host-side header
-  // builder (@ax/mcp-client connector-headers.ts) now sends a slot's credential
-  // to only the FIRST server carrying that name, but the rule still emits a
-  // reach fact for every same-name server, a deliberately cautious extra: it
-  // may warn about a server that would never get the credential, and it can't
-  // miss one that would.
+  // The write schema allows a repeated server name. At run time a slot's
+  // credential goes only to the FIRST server carrying that name (the session
+  // proxy, the host-side header builder and sign-in all bind to it), so the
+  // rule binds each slot to that first server's address: putting a twin ahead
+  // of it, or dropping it, re-points every stored credential. The rule also
+  // keeps a fact per same-name server, a deliberately cautious extra: it may
+  // warn about a twin that never gets the credential, and can't miss one that
+  // would.
   ['linear: a second server added under the oauth slot’s server name, at a new url', linear(), linearWithTwin, true],
   ['linear: that duplicate-name server removed again', linearWithTwin, linear(), false],
   [
@@ -283,6 +289,31 @@ const rows: Array<[name: string, before: RetargetSubject, after: RetargetSubject
     linear(),
     edit(linear(), (c) => {
       c.mcpServers.push({ name: 'linear', transport: 'http', url: LINEAR_URL, allowedHosts: [], credentials: [] });
+    }),
+    false,
+  ],
+  ['linear: [A, B] same-name servers kept as they are', linearWithTwin, linearWithTwin, false],
+  [
+    'linear: [A, B] same-name servers swapped to [B, A]',
+    linearWithTwin,
+    edit(linearWithTwin, (c) => {
+      c.mcpServers.reverse();
+    }),
+    true,
+  ],
+  [
+    'linear: [A, B] same-name servers → [B] (the first one dropped)',
+    linearWithTwin,
+    edit(linearWithTwin, (c) => {
+      c.mcpServers.shift();
+    }),
+    true,
+  ],
+  [
+    'linear: [A, B] same-name servers → [A] (the second one dropped)',
+    linearWithTwin,
+    edit(linearWithTwin, (c) => {
+      c.mcpServers.pop();
     }),
     false,
   ],
@@ -442,6 +473,15 @@ const rows: Array<[name: string, before: RetargetSubject, after: RetargetSubject
     docsWithInner,
     edit(docsWithInner, (c) => {
       c.mcpServers.push({ name: 'docs', transport: 'http', url: ELSEWHERE_URL, allowedHosts: [], credentials: [] });
+    }),
+    true,
+  ],
+  // ...and, like a top-level slot, follows the FIRST server with that name.
+  [
+    'server-level slot: its server and a same-name server swapped',
+    docsWithInnerTwin,
+    edit(docsWithInnerTwin, (c) => {
+      c.mcpServers.reverse();
     }),
     true,
   ],

@@ -333,9 +333,17 @@ export function endpointChangedServers(
 // somewhere new iff `after` has a fact `before` lacks:
 //   ['slot', slot, occurrence, ref, kind, address, headerName, authServerUrl,
 //    tokenUrl, secretRef]  per top-level slot, per server carrying its name
+//                          (a deliberately cautious extra: only the first
+//                          gets the credential)
+//   ['slot-first', ...same] per top-level slot, with the address of the FIRST
+//                          server carrying its name, the one every consumer
+//                          binds to; the set above can't see [A, B] → [B, A]
 //   ['server-slot', address, slot, kind, headerName, authServerUrl, tokenUrl,
 //    secretRef]            per server-level slot, per server carrying its
 //                          server's name
+//   ['server-slot-first', ...same] per server-level slot, with the first such
+//                          server's address (it keys on a name, so it gets the
+//                          same order rule)
 //   ['host', host]         per top-level allowed host, only with an env key
 // ---------------------------------------------------------------------------
 
@@ -353,6 +361,15 @@ function addressesNamed(
 ): Array<RetargetAddress | null> {
   const named = name === undefined ? [] : servers.filter((s) => s.name === name);
   return named.length > 0 ? named.map(addressOf) : [null];
+}
+
+/** The address of the FIRST server called `name` (the one a credential goes to), or null. */
+function firstAddressNamed(
+  servers: readonly ConnectorMcpServerSpec[],
+  name: string | undefined,
+): RetargetAddress | null {
+  const first = name === undefined ? undefined : servers.find((s) => s.name === name);
+  return first ? addressOf(first) : null;
 }
 
 /** An env key: an api-key slot that is not sent as a request header. */
@@ -384,15 +401,19 @@ function reachFacts(c: RetargetSubject): Set<string> {
     const occurrence = seen.get(slot.slot) ?? 0;
     seen.set(slot.slot, occurrence + 1);
     const ref = plan[i]?.ref ?? null;
+    const binding = retargetBindingFields(c.id, slot);
     for (const address of addressesNamed(servers, slot.server)) {
-      add(['slot', slot.slot, occurrence, ref, slot.kind, address, ...retargetBindingFields(c.id, slot)]);
+      add(['slot', slot.slot, occurrence, ref, slot.kind, address, ...binding]);
     }
+    add(['slot-first', slot.slot, occurrence, ref, slot.kind, firstAddressNamed(servers, slot.server), ...binding]);
   });
   for (const server of servers) {
     for (const slot of server.credentials) {
+      const binding = retargetBindingFields(c.id, slot);
       for (const address of addressesNamed(servers, server.name)) {
-        add(['server-slot', address, slot.slot, slot.kind, ...retargetBindingFields(c.id, slot)]);
+        add(['server-slot', address, slot.slot, slot.kind, ...binding]);
       }
+      add(['server-slot-first', firstAddressNamed(servers, server.name), slot.slot, slot.kind, ...binding]);
     }
   }
   if (slots.some(isEnvKey)) {

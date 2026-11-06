@@ -1377,6 +1377,20 @@ describe('an edit that points a connector somewhere new signs everyone out first
     expect((await stored(h, 'sf'))?.allowedHosts).toEqual(['login.salesforce.com']);
   });
 
+  it('two servers sharing the slot’s server name swapped signs everyone out (the first one gets the credential)', async () => {
+    // Same set of addresses before and after, but every runtime consumer binds
+    // the slot to the FIRST server with its name, so the token now goes to B.
+    const h = await makeHarness();
+    const twin = { name: 'linear', transport: 'http', url: LINEAR_NEW, allowedHosts: [], credentials: [] } as const;
+    const ab = { ...linearCaps(), mcpServers: [...linearCaps().mcpServers, twin] };
+    await save(h, 'linear', ab);
+    const calls = spyOnVault(h, 'linear');
+    await save(h, 'linear', { ...ab, mcpServers: [...ab.mcpServers].reverse() });
+    expect(inputsOf(calls, PURGE)).toEqual([{ connectorId: 'linear', scopes: ['agent'] }]);
+    expect(calls.map((c) => c.storedAtCall?.mcpServers[0]?.url)).toEqual([LINEAR_OLD, LINEAR_OLD]);
+    expect((await stored(h, 'linear'))?.mcpServers.map((s) => s.url)).toEqual([LINEAR_NEW, LINEAR_OLD]);
+  });
+
   it('edits that point nowhere new clear nothing', async () => {
     const h = await makeHarness();
     await save(h, 'linear', linearCaps());
