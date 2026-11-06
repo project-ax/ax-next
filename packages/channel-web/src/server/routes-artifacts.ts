@@ -34,7 +34,7 @@ import {
 // for a stranger exactly as for a missing id, and this file folds both (and
 // any `forbidden`) into the one 404 body, so a non-member learns nothing.
 //
-// These are the OWNER shapes. A link holder (Task 10, /api/shared/*) gets a
+// These are the OWNER shapes. A link holder (routes-shared-artifacts.ts) gets a
 // separate, narrower shape — no artifact id, no version numbers. Bodies here
 // are built field by field rather than passed through, so a field a hook adds
 // by mistake (a source path, a share code) is dropped here too (I5).
@@ -128,7 +128,7 @@ function detailBody(a: ArtifactDetailWire): ArtifactDetailWire {
 
 // --- helpers ----------------------------------------------------------------
 
-async function authOr401(
+export async function authOr401(
   bus: HookBus,
   initCtx: AgentContext,
   req: RouteRequest,
@@ -145,11 +145,11 @@ async function authOr401(
   }
 }
 
-function requestCtx(userId: string): AgentContext {
+export function requestCtx(userId: string): AgentContext {
   return makeAgentContext({ sessionId: 'artifacts', agentId: PLUGIN_NAME, userId });
 }
 
-function noStore(res: RouteResponse): RouteResponse {
+export function noStore(res: RouteResponse): RouteResponse {
   return res.header('cache-control', 'private, no-store');
 }
 
@@ -158,10 +158,16 @@ function noStore(res: RouteResponse): RouteResponse {
  * (a 403 would say the artifact exists); anything unplanned is a 500 whose log
  * line carries codes only — never the message, which can hold input (TASK-1024).
  */
-function answerHookFailure(initCtx: AgentContext, res: RouteResponse, hook: string, err: unknown): void {
+export function answerHookFailure(
+  initCtx: AgentContext,
+  res: RouteResponse,
+  hook: string,
+  err: unknown,
+  notFoundError: 'artifact-not-found' | 'link-not-found' = 'artifact-not-found',
+): void {
   const code = err instanceof PluginError ? err.code : undefined;
   if (code === 'not-found' || code === 'forbidden') {
-    res.status(404).json({ error: 'artifact-not-found' });
+    res.status(404).json({ error: notFoundError });
     return;
   }
   if (code === 'invalid-payload') {
@@ -177,7 +183,7 @@ function answerHookFailure(initCtx: AgentContext, res: RouteResponse, hook: stri
 }
 
 /** A JSON object body, or null for anything else (missing, malformed, an array). */
-function jsonBody(req: RouteRequest): Record<string, unknown> | null {
+export function jsonBody(req: RouteRequest): Record<string, unknown> | null {
   try {
     const v: unknown = JSON.parse(req.body.toString('utf8'));
     return typeof v === 'object' && v !== null && !Array.isArray(v) ? (v as Record<string, unknown>) : null;
@@ -198,7 +204,7 @@ function isPositiveInt(v: unknown): v is number {
 }
 
 const LINK_ACTIONS: ReadonlySet<unknown> = new Set(['ensure', 'off', 'rotate']);
-const TOKEN_PURPOSES: ReadonlySet<unknown> = new Set(['view', 'download']);
+export const TOKEN_PURPOSES: ReadonlySet<unknown> = new Set(['view', 'download']);
 const TEXT_PREVIEWS: ReadonlySet<string> = new Set(['markdown', 'text']);
 
 /** The first `max` bytes, cut back to a UTF-8 character boundary. */
@@ -208,6 +214,22 @@ function utf8Prefix(bytes: Uint8Array, max: number): Uint8Array {
   // A continuation byte (10xxxxxx) at the cut means a character straddles it.
   while (end > 0 && ((bytes[end] ?? 0) & 0xc0) === 0x80) end--;
   return bytes.subarray(0, end);
+}
+
+/**
+ * The text preview of a read: markdown and plain text only, the first
+ * ARTIFACT_TEXT_PREVIEW_MAX_BYTES of it. Shared by the owner and link-holder routes.
+ */
+export function answerTextPreview(res: RouteResponse, read: { bytes: Uint8Array; preview: string }): void {
+  if (!TEXT_PREVIEWS.has(read.preview)) {
+    res.status(404).json({ error: 'not-previewable' });
+    return;
+  }
+  const shown = utf8Prefix(read.bytes, ARTIFACT_TEXT_PREVIEW_MAX_BYTES);
+  res.status(200).json({
+    text: new TextDecoder('utf-8', { fatal: false }).decode(shown),
+    truncated: shown.byteLength < read.bytes.byteLength,
+  });
 }
 
 // --- handlers ---------------------------------------------------------------
@@ -372,17 +394,7 @@ export function createArtifactsRouteHandlers(deps: ArtifactsRouteDeps) {
         { artifactId: req.params['artifactId'] ?? '', version },
       );
       if (read === undefined) return;
-      if (!TEXT_PREVIEWS.has(read.preview)) {
-        res.status(404).json({ error: 'not-previewable' });
-        return;
-      }
-      const shown = utf8Prefix(read.bytes, ARTIFACT_TEXT_PREVIEW_MAX_BYTES);
-      res
-        .status(200)
-        .json({
-          text: new TextDecoder('utf-8', { fatal: false }).decode(shown),
-          truncated: shown.byteLength < read.bytes.byteLength,
-        });
+      answerTextPreview(res, read);
     },
 
     async token(req: RouteRequest, res: RouteResponse): Promise<void> {

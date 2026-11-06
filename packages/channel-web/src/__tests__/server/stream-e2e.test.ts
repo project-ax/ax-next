@@ -68,7 +68,7 @@ function authMockPlugin(args: {
   };
 }
 
-/** The `artifacts:*` hooks channel-web's owner routes declare as hard calls. */
+/** The `artifacts:*` hooks channel-web's owner and link-holder routes declare as hard calls. */
 const ARTIFACT_HOOKS = [
   'artifacts:list',
   'artifacts:get',
@@ -78,6 +78,7 @@ const ARTIFACT_HOOKS = [
   'artifacts:delete',
   'artifacts:set-link',
   'artifacts:mint-view-token',
+  'artifacts:resolve-share-code',
 ] as const;
 
 /**
@@ -102,6 +103,7 @@ function attachmentsMockPlugin(): Plugin {
         'artifacts:delete',
         'artifacts:set-link',
         'artifacts:mint-view-token',
+        'artifacts:resolve-share-code',
       ],
       calls: [],
       subscribes: [],
