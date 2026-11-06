@@ -5,12 +5,13 @@ import {
   type AgentContext,
   type HookBus,
 } from '@ax/core';
+import { isShareCode } from '@ax/ipc-protocol';
 import { publishArtifact } from '../handlers.js';
 import { ARTIFACTS_AUGMENT_HOOK, createArtifactsAugmentHandler } from './augment.js';
 import { can, isAgentMember, roleFor, type ArtifactAction } from './access.js';
 import { describeMediaType, downloadFilename, mediaTypeForPath } from './media.js';
 import type { ArtifactRow, ArtifactStore, VersionRow } from './store.js';
-import { isShareCode, newShareCode } from './share-code.js';
+import { newShareCode } from './share-code.js';
 import { normalizeArtifactTitle } from './title.js';
 import { VIEW_TOKEN_TTL_SECONDS, linkBindingFor, signViewToken } from './view-token.js';
 import {

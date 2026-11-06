@@ -5,17 +5,13 @@ import { randomBytes } from 'node:crypto';
  * 128-bit floor), URL-safe base64 with no padding. Stored as plaintext so
  * Copy link can hand back the same code, and looked up only through the
  * unique index. Never log one, in full or in part.
+ *
+ * The shape check (`SHARE_CODE_RE` / `isShareCode`) lives in @ax/ipc-protocol,
+ * shared with channel-web's link-holder routes.
  */
 export const SHARE_CODE_BYTES = 24;
 
-/** Exactly what `newShareCode` mints: 24 bytes -> 32 base64url characters. */
-export const SHARE_CODE_RE = /^[A-Za-z0-9_-]{32}$/;
-
+/** Always matches `SHARE_CODE_RE` (@ax/ipc-protocol): 24 bytes -> 32 base64url characters. */
 export function newShareCode(): string {
   return randomBytes(SHARE_CODE_BYTES).toString('base64url');
-}
-
-/** Checked before any lookup, so a malformed code never reaches the store. */
-export function isShareCode(v: unknown): v is string {
-  return typeof v === 'string' && SHARE_CODE_RE.test(v);
 }

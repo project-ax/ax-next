@@ -1,4 +1,5 @@
 import type { AgentContext, HookBus } from '@ax/core';
+import { isShareCode } from '@ax/ipc-protocol';
 import type { RouteRequest, RouteResponse } from './routes-attachments.js';
 import {
   answerHookFailure,
@@ -25,16 +26,22 @@ import { createPerUserRateLimiter, type PerUserRateLimiter } from './per-user-ra
 // (30/min, 429 + Retry-After: 60), then the code's shape, then the hook. A
 // malformed code, a wrong one, a turned-off one and a deleted artifact are
 // all the same 404 — and every lookup counts, because guessing is what the
-// limit is there to slow down.
+// limit is there to slow down. The shape check is @ax/ipc-protocol's
+// `isShareCode`, the same one @ax/attachments applies.
 //
-// A link holder sees the CURRENT version only: bodies are built field by
-// field, so a version number, a version list, a source path, an artifact id
-// or the code itself never goes back out, whatever a hook hands us (I5).
+// A link holder sees the CURRENT version only: response bodies are built
+// field by field, so no body carries a version number, a version list, a
+// source path, an artifact id or the code, whatever a hook hands us (I5). The
+// minted token URL is the exception: it goes out as the hook made it, and its
+// payload is signed, not encrypted — anyone holding the URL can read what it
+// binds (the artifact id and version number). The code itself is not in it,
+// only a truncated hash of it (@ax/attachments view-token.ts).
 //
 // The code is a capability (§6.3): it is never logged, whole or in part. The
 // limiter keys on the person; failures log codes only (answerHookFailure).
 //
-// I2: only @ax/core and local modules; @ax/attachments is reached by the bus.
+// I2: only @ax/core, the @ax/ipc-protocol wire contract and local modules;
+// @ax/attachments is reached by the bus.
 // ---------------------------------------------------------------------------
 
 /** Lookups one person may make across all /api/shared routes in a minute. */
@@ -44,16 +51,6 @@ const WINDOW_MS = 60_000;
 const MAX_TRACKED_USERS = 10_000;
 
 const RATE_LIMITED_MESSAGE = "That's a lot of shared links in a minute — give it a moment and try again.";
-
-/**
- * The share-code shape (24 random bytes, base64url). Checked here so a
- * malformed code never reaches the index; @ax/attachments checks it again.
- * Duplicated rather than imported: plugins share no code (I2).
- */
-const SHARE_CODE_RE = /^[A-Za-z0-9_-]{32}$/;
-function isShareCode(v: unknown): v is string {
-  return typeof v === 'string' && SHARE_CODE_RE.test(v);
-}
 
 // --- duck-typed hook payloads (I2; see @ax/attachments artifacts/types.ts) --
 

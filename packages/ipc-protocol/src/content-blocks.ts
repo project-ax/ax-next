@@ -171,6 +171,20 @@ export const ARTIFACT_KIND_LABELS = {
 } as const satisfies Record<ArtifactKind, string>;
 
 /**
+ * An artifact share code's shape (§6.3): 24 CSPRNG bytes as unpadded
+ * base64url, 32 characters. `@ax/attachments` mints them and checks this
+ * before any lookup; channel-web checks it before a lookup reaches the bus.
+ * One definition so the two never drift. A code is a capability: never log
+ * one, in full or in part.
+ */
+export const SHARE_CODE_RE = /^[A-Za-z0-9_-]{32}$/;
+
+/** True for exactly the minted shape; anything else is refused before a lookup. */
+export function isShareCode(v: unknown): v is string {
+  return typeof v === 'string' && SHARE_CODE_RE.test(v);
+}
+
+/**
  * A user-attached file OR an agent-published artifact, as it appears in a
  * stored conversation turn and on the wire (`chat:start`, `agent:invoke`,
  * `conversations:get`, `event.turn-end`).

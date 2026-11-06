@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { PluginError, makeAgentContext, ownerlessIdFor, type Logger } from '@ax/core';
-import { SHARE_CODE_RE, isShareCode, newShareCode } from '../artifacts/share-code.js';
+import { SHARE_CODE_RE, isShareCode } from '@ax/ipc-protocol';
+import { newShareCode } from '../artifacts/share-code.js';
 import type { ArtifactsReadOutput, ArtifactsResolveShareCodeOutput, ArtifactsSetLinkOutput } from '../artifacts/types.js';
 import { SHA, SHA2, ctxFor, makeRig, publish, useArtifactsDb, type Rig } from './artifacts-fixture.js';
 
