@@ -120,8 +120,8 @@ describe('accepted DB fire dispatch', () => {
     expect(h.pending.size).toBe(0);
     expect(await f.store.recentFires(h.row)).toMatchObject([{ status: 'error', error: RUN_FAILED }]);
   });
-  // TASK-1031: a hook failure's code reaches the owner; its message only the log.
-  it('records a hook failure as fixed words and its code, and logs the detail', async () => {
+  // TASK-1031: a hook failure's code reaches the owner. TASK-1058: the log gets its codes too, never its message.
+  it('records a hook failure as fixed words and its code, and logs codes only', async () => {
     const h = await setup({ resolveError: new PluginError({ code: 'forbidden', plugin: 'teams', hookName: 'teams:is-member', message: 'PRIVATE pg text at 10.0.0.7' }) });
     const lines = await stdoutOf(() => h.fire(h.accepted).then(() => undefined));
     const [fire] = await f.store.recentFires(h.row);
@@ -129,7 +129,9 @@ describe('accepted DB fire dispatch', () => {
     expect((await f.store.findOne(h.row))?.lastError).toBe('This run failed because of a problem on our side (code: forbidden).');
     const logged = lines.filter((l) => l.includes('routines_fire_failed')).map((l) => JSON.parse(l) as Record<string, unknown>);
     expect(logged).toHaveLength(1);
-    expect(logged[0]).toMatchObject({ level: 'error', code: 'forbidden', routineId: h.row.routineId, err: { message: 'PRIVATE pg text at 10.0.0.7' } });
+    expect(logged[0]).toMatchObject({ level: 'error', code: 'forbidden', routineId: h.row.routineId });
+    expect(logged[0]).not.toHaveProperty('err');
+    expect(lines.join('\n')).not.toMatch(/PRIVATE|10\.0\.0\.7/);
   });
   it('a bind refused because the run closed keeps the store\'s own sentence', async () => {
     const h = await setup({ bind: async () => { throw new Error(RUN_CLOSED); } });
@@ -163,14 +165,37 @@ describe('accepted DB fire dispatch', () => {
     // The log line survives too, with its codes and without the unreadable error.
     const logged = lines.filter((l) => l.includes('routines_fire_failed')).map((l) => JSON.parse(l) as Record<string, unknown>);
     expect(logged).toHaveLength(1);
-    expect(logged[0]).toMatchObject({ code: 'forbidden', errUnreadable: true });
+    expect(logged[0]).toMatchObject({ code: 'forbidden' });
+    expect(logged[0]).not.toHaveProperty('errUnreadable');
   });
-  it('a log line that throws does not cost the run its row', async () => {
-    const hostile = new PluginError({ code: 'forbidden', plugin: 'teams', message: 'denied' });
-    Object.defineProperty(hostile, 'stack', { get() { throw new Error('getter'); } });
-    const h = await setup({ resolveError: hostile });
-    await stdoutOf(() => h.fire(h.accepted).then(() => undefined));
+  it('a log line that throws neither rejects the fire nor costs the run its row', async () => {
+    const h = await setup({ resolveError: new PluginError({ code: 'forbidden', plugin: 'teams', message: 'denied' }) });
+    // TASK-1058: the line carries codes only, so no getter on the error is read; the logger's write is what throws.
+    let thrown = 0;
+    const spy = vi.spyOn(process.stdout, 'write').mockImplementation((chunk: unknown) => {
+      if (String(chunk).includes('routines_fire_failed')) { thrown += 1; throw new Error('stdout closed'); }
+      return true;
+    });
+    try {
+      await expect(h.fire(h.accepted)).resolves.toMatchObject({ status: 'error' });
+    } finally {
+      spy.mockRestore();
+    }
+    expect(thrown).toBe(1); // the write really threw, so logFault's catch was reached
     expect((await f.store.recentFires(h.row))[0]).toMatchObject({ status: 'error', error: 'This run failed because of a problem on our side (code: forbidden).' });
+  });
+  it("a run that can't be recorded after its invoke writes codes, not the message, to stderr (TASK-1058)", async () => {
+    const h = await setup({
+      finish: async () => { throw Object.assign(new Error('PRIVATE pg text at 10.0.0.7'), { code: '57P01' }); },
+      invoke: async () => ({ kind: 'terminated', reason: 'stopped' }),
+    });
+    const diagnostic = captureExpectedStderr((m) => m.startsWith('[ax/routines] '));
+    try {
+      await h.fire(h.accepted);
+      await expect.poll(() => diagnostic.messages.some((m) => m.includes('recording failed fire'))).toBe(true);
+    } finally { diagnostic.restore(); }
+    expect(diagnostic.messages).toContain(`[ax/routines] recording failed fire for a/${h.row.routineId} failed: {"code":"57P01","name":"Error"}\n`);
+    expect(diagnostic.messages.join('')).not.toMatch(/PRIVATE|10\.0\.0\.7/);
   });
   it('a webhook fire logs codes only', async () => {
     const h = await setup({ resolveError: new PluginError({ code: 'forbidden', plugin: 'teams', message: 'PRIVATE' }) });

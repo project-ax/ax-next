@@ -315,6 +315,8 @@ describe("a person's step changes (store, TASK-949)", () => {
       await sql`ALTER TABLE routines_v1_definitions DROP CONSTRAINT IF EXISTS task_949_no_steps`.execute(f.db);
     }
     expect((failure as Error).message).toBe(`Could not save the steps for routine ${task.routineId} (SQLSTATE 23514).`);
+    // TASK-1058: the SQLSTATE rides as `code` too, so a code-only log line keeps it.
+    expect(failure).toMatchObject({ code: '23514' });
     expect(inspect(failure)).not.toContain('SECRET');
     expect(await receipts()).toEqual([]);
     expect(await stepsColumn(task.routineId)).toEqual([]);

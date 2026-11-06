@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
-import { createServer, type Socket } from 'node:net';
+import { createServer, type AddressInfo, type Socket } from 'node:net';
 import { sql, type Kysely } from 'kysely';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import {
@@ -85,9 +85,10 @@ describe('checkout timeout, against a database that never answers', () => {
   it('a new connection the database never answers fails once the timeout passes', async () => {
     const db = await instance({ connectionString: await silentServer(), checkoutTimeoutMs: 300 });
     const started = performance.now();
-    await expect(sql`SELECT 1`.execute(db)).rejects.toThrow(
-      'Connection terminated due to connection timeout',
-    );
+    await expect(sql`SELECT 1`.execute(db)).rejects.toMatchObject({
+      message: 'Connection terminated due to connection timeout',
+      code: 'db-connect-timeout',
+    });
     const waited = performance.now() - started;
     // Loose floor: a new timer counts from the event loop's cached time, so on a
     // starved runner it can fire a little early by wall clock. The message above
@@ -96,12 +97,62 @@ describe('checkout timeout, against a database that never answers', () => {
     expect(waited).toBeLessThan(3_000);
   }, 10_000);
 
+  // Passes on the unfixed plugin too: it guards against tagging every connect failure.
+  it('a refused connection keeps its own code: only a timeout is tagged (TASK-1058)', async () => {
+    const closed = createServer(); // a port nothing listens on: bind one, note it, close it
+    await new Promise<void>((resolve) => closed.listen(0, '127.0.0.1', resolve));
+    const { port } = closed.address() as AddressInfo;
+    await new Promise<void>((resolve) => closed.close(() => resolve()));
+    const db = await instance({
+      connectionString: `postgres://ax:unused@127.0.0.1:${port}/ax`,
+      checkoutTimeoutMs: 300,
+    });
+    await expect(sql`SELECT 1`.execute(db)).rejects.toMatchObject({ code: 'ECONNREFUSED' });
+  });
+
+  // TASK-1058 review: a connect failure with no code of its own that ISN'T a
+  // timeout (a server that answers junk and hangs up) stays untagged. Passes on
+  // the unfixed plugin too: it is a forward guard for the exact-message check,
+  // without which this would read as a timeout.
+  it('a connection the server drops without a code stays untagged: only a timeout is tagged (TASK-1058)', async () => {
+    const sockets: Socket[] = [];
+    const junk = createServer((socket) => {
+      socket.on('error', () => {});
+      sockets.push(socket);
+      socket.once('data', () => socket.end('Z'));
+    });
+    await new Promise<void>((resolve) => junk.listen(0, '127.0.0.1', resolve));
+    unblock.push(async () => {
+      for (const s of sockets) s.destroy();
+      await new Promise<void>((resolve) => junk.close(() => resolve()));
+    });
+    const { port } = junk.address() as AddressInfo;
+    const db = await instance({ connectionString: `postgres://ax:unused@127.0.0.1:${port}/ax`, checkoutTimeoutMs: 2_000 });
+    const err: unknown = await sql`SELECT 1`.execute(db).then(() => undefined, (e: unknown) => e);
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).message).toBe('Connection terminated unexpectedly');
+    expect(err).not.toHaveProperty('code');
+  });
+
+  // TASK-1058 review: pg-pool counts a connection still connecting as a busy
+  // slot, so in an outage a caller queued behind it gets db-checkout-timeout,
+  // not db-connect-timeout. Pins the behaviour SECURITY.md describes.
+  it('in an outage, a caller queued behind an unanswered connection gets db-checkout-timeout (TASK-1058)', async () => {
+    const db = await instance({ connectionString: await silentServer(), poolMax: 1, checkoutTimeoutMs: 400 });
+    const codes = await Promise.all(
+      [0, 1].map(() => sql`SELECT 1`.execute(db).then(() => 'ok', (e: unknown) => (e as { code?: unknown }).code)),
+    );
+    // Sorted: pins one of each without depending on the order Kysely resumes the callers in.
+    expect([...codes].sort()).toEqual(['db-checkout-timeout', 'db-connect-timeout']);
+  }, 10_000);
+
   it('waits 5 seconds when checkoutTimeoutMs is not set', async () => {
     const db = await instance({ connectionString: await silentServer() });
     const started = performance.now();
-    await expect(sql`SELECT 1`.execute(db)).rejects.toThrow(
-      'Connection terminated due to connection timeout',
-    );
+    await expect(sql`SELECT 1`.execute(db)).rejects.toMatchObject({
+      message: 'Connection terminated due to connection timeout',
+      code: 'db-connect-timeout',
+    });
     const waited = performance.now() - started;
     expect(waited).toBeGreaterThanOrEqual(4_900);
     expect(waited).toBeLessThan(10_000);
@@ -152,9 +203,10 @@ describe('checkout timeout, against a real database', () => {
     const db = await instance({ connectionString, poolMax: 1, checkoutTimeoutMs: 1_000 });
     const { release, holder } = await holdOnlyConnection(db);
     const started = performance.now();
-    await expect(sql`SELECT 1`.execute(db)).rejects.toThrow(
-      'timeout exceeded when trying to connect',
-    );
+    await expect(sql`SELECT 1`.execute(db)).rejects.toMatchObject({
+      message: 'timeout exceeded when trying to connect',
+      code: 'db-checkout-timeout',
+    });
     const waited = performance.now() - started;
     expect(waited).toBeGreaterThanOrEqual(900);
     expect(waited).toBeLessThan(3_000);

@@ -49,7 +49,7 @@ describe('taskCaptureVeto (TASK-908)', () => {
     const ctx = { ...routineRun(), logger: { ...routineRun().logger, warn } };
     const hung = { isTaskConversation: vi.fn(() => new Promise<boolean>(() => {})) };
     expect(await taskCaptureVeto(hung, ctx, { conversationId: 'c-chat' }, 20)).toEqual({ rejected: true, reason: 'task-check-in' });
-    expect(warn).toHaveBeenCalledWith('routines_capture_check_failed', { agentId: 'agent', err: 'capture check took longer than 20 ms' });
+    expect(warn).toHaveBeenCalledWith('routines_capture_check_failed', { agentId: 'agent', code: 'timeout', name: 'Error' });
   });
 
   it('answers inside memory\'s own subscriber bound, so a slow lookup is refused, not skipped', () => {
@@ -80,8 +80,9 @@ describe('taskCaptureVeto (TASK-908)', () => {
   it('refuses when the lookup throws', async () => {
     const warn = vi.fn();
     const ctx = { ...routineRun(), logger: { ...routineRun().logger, warn } };
-    expect(await taskCaptureVeto(storeAnswering(new Error('database unavailable')), ctx, { conversationId: 'c-task' }))
+    const failure = Object.assign(new Error('PRIVATE pg text at 10.0.0.7'), { code: '57P01' });
+    expect(await taskCaptureVeto(storeAnswering(failure), ctx, { conversationId: 'c-task' }))
       .toEqual({ rejected: true, reason: 'task-check-in' });
-    expect(warn).toHaveBeenCalledWith('routines_capture_check_failed', { agentId: 'agent', err: 'database unavailable' });
+    expect(warn).toHaveBeenCalledWith('routines_capture_check_failed', { agentId: 'agent', code: '57P01', name: 'Error' });
   });
 });

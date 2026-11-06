@@ -1,5 +1,5 @@
 import {
-  makeAgentContext, reject, SafeToolError, safeToolMessage,
+  faultLogFields, makeAgentContext, reject, SafeToolError, safeToolMessage,
   type AgentContext, type HookBus, type ToolCall, type ToolDescriptor,
 } from '@ax/core';
 import { z } from 'zod';
@@ -36,14 +36,14 @@ function safeFailure(error: unknown): SafeToolError {
 /**
  * TASK-907. A report the hook couldn't write. The agent gets the closed
  * "unavailable" (`safeFailure`), and the operator this one warn line: the run,
- * its task and the hook's message. A failed write's message names only the run
- * and the SQLSTATE (store.ts, `reportWriteError`), and the hook's other
- * statements carry no report text, so no message can quote it. A refusal is a
- * `SafeToolError` with a line of its own (`reportRefused`).
+ * its task and the failure's codes (TASK-1058: codes only, no message). A
+ * failed write's error carries its SQLSTATE as `code` (store.ts,
+ * `reportWriteError`), so behind the bus it shows as `causeCode`. A refusal is
+ * a `SafeToolError` with a line of its own (`reportRefused`).
  */
 function reportFailed(ctx: AgentContext, run: ReportRun, error: unknown): void {
   ctx.logger.warn('routines_report_failed', {
-    agentId: ctx.agentId, conversationId: ctx.conversationId, ...run, err: error instanceof Error ? error.message : 'not an Error',
+    agentId: ctx.agentId, conversationId: ctx.conversationId, ...run, ...faultLogFields(error),
   });
 }
 function requireAllowed(allowed: boolean): void { if (!allowed) throw new SafeToolError('forbidden', 'input'); }
@@ -66,11 +66,11 @@ async function prepareReport({ store, ctx, call }: Pick<Invocation, 'store' | 'c
   if (ctx.source !== 'routine') throw reportRefused(ctx, 'tool', 'no-source');
   if (typeof conversationId !== 'string' || conversationId.length === 0) throw reportRefused(ctx, 'tool', 'no-conversation');
   const lookup = await store.findOpenDispatchByConversation({ agentId: ctx.agentId, conversationId }).catch((error: unknown) => {
-    // No run to name yet, so this line carries the ids the lookup was given, which the host set, and the database's
-    // own words: a select over those two ids, so nothing in the message can quote the report. The agent still gets
-    // the closed "unavailable" (`safeFailure`). Pre-call and the call each run this lookup, so each leaves a line.
+    // No run to name yet, so this line carries the ids the lookup was given, which the host set, and the
+    // database's codes (TASK-1058: codes only, no message). The agent still gets the closed "unavailable"
+    // (`safeFailure`). Pre-call and the call each run this lookup, so each leaves a line.
     ctx.logger.warn('routines_report_failed', {
-      stage: 'lookup', agentId: ctx.agentId, conversationId, err: error instanceof Error ? error.message : 'not an Error',
+      stage: 'lookup', agentId: ctx.agentId, conversationId, ...faultLogFields(error),
     });
     throw error;
   });

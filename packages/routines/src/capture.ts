@@ -1,5 +1,5 @@
 import {
-  MEMORY_PRE_CAPTURE_SUBSCRIBER_TIMEOUT_MS, MemoryPreCapturePayloadSchema, reject, type AgentContext, type Rejection,
+  MEMORY_PRE_CAPTURE_SUBSCRIBER_TIMEOUT_MS, MemoryPreCapturePayloadSchema, faultLogFields, reject, type AgentContext, type Rejection,
 } from '@ax/core';
 import type { RoutinesStore } from './store.js';
 
@@ -50,7 +50,7 @@ export async function taskCaptureVeto(
     if (parsed.success) ids.add(parsed.data.conversationId);
     if (ids.size === 0) return undefined;
     const deadline = new Promise<never>((_resolve, rejectDeadline) => {
-      timer = setTimeout(() => rejectDeadline(new Error(`capture check took longer than ${deadlineMs} ms`)), deadlineMs);
+      timer = setTimeout(() => rejectDeadline(Object.assign(new Error(`capture check took longer than ${deadlineMs} ms`), { code: 'timeout' })), deadlineMs);
       timer.unref?.();
     });
     const answers = await Promise.race([
@@ -61,7 +61,7 @@ export async function taskCaptureVeto(
   } catch (err) {
     // Logged after the refusal is built: a logger that throws can't turn it into a skipped subscriber.
     try {
-      ctx.logger.warn('routines_capture_check_failed', { agentId: ctx.agentId, err: err instanceof Error ? err.message : String(err) });
+      ctx.logger.warn('routines_capture_check_failed', { agentId: ctx.agentId, ...faultLogFields(err) });
     } catch { /* the refusal stands */ }
   } finally {
     if (timer !== undefined) clearTimeout(timer);

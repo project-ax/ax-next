@@ -1,5 +1,6 @@
 import {
   createLogger,
+  faultLogFields,
   PluginError,
   type AgentContext,
   type Logger,
@@ -81,10 +82,14 @@ export interface SessionPostgresConfig {
    */
   statementTimeoutMs?: number;
   /**
-   * Optional logger for background events that don't ride a request — pg.Pool
-   * idle errors, LISTEN client socket errors, init failure cleanup. Defaults
-   * to a stdout JSON logger tagged `reqId=session-postgres-bg`. Tests can
-   * pass a noop or recording logger.
+   * Optional logger for background connection failures that don't ride a
+   * request (e.g., a postgres restart in k8s): `session_postgres_pool_error`
+   * when an idle pooled connection fails, `session_postgres_client_error` when
+   * a checked-out one does (TASK-1058), and
+   * `session_postgres_listen_client_error` when the LISTEN connection does.
+   * All three carry codes only (`faultLogFields`). Defaults to a stdout JSON
+   * logger tagged `reqId=session-postgres-bg`. Tests can pass a noop or
+   * recording logger.
    */
   logger?: Logger;
 }
@@ -820,13 +825,49 @@ export function createSessionPostgresPlugin(
         connectionTimeoutMillis: checkoutTimeoutMs,
         statement_timeout: statementTimeoutMs,
       });
-      // pg.Pool emits 'error' for idle-pool errors (e.g., postgres restart in
-      // k8s closing an idle connection). Without a listener Node treats them
-      // as unhandled and crashes the process.
+      // pg.Pool emits 'error' when an IDLE pooled client fails (e.g., a
+      // postgres restart in k8s closing an idle connection). Without a
+      // listener Node treats it as unhandled and crashes the process. This
+      // listener covers idle clients only; checked-out ones are covered next.
       pool.on('error', (err) => {
-        bgLogger.error('session_postgres_pool_error', {
-          err: err instanceof Error ? err : new Error(String(err)),
-        });
+        bgLogger.error('session_postgres_pool_error', faultLogFields(err));
+      });
+      // TASK-1058: the same gap and the same fix as @ax/database-postgres
+      // (TASK-1048). pg-pool listens for a client's 'error' only while the
+      // client is idle in the pool: it removes that listener at checkout and
+      // puts it back at release, and Kysely adds none. A checked-out client
+      // whose session Postgres ends (a restart, a failover,
+      // pg_terminate_backend) emits 'error' with nobody listening, and Node
+      // turns that into an uncaught exception that ends the host. Our
+      // transactions (session:create, the agents:deleted purge) keep a client
+      // checked out through Kysely's ROLLBACK while its socket closes, and an
+      // abrupt drop (a reset, a killed pod) does the same mid-statement. So a
+      // checked-out client gets a listener for exactly as long as pg-pool's
+      // is off ('acquire' fires before pg-pool removes its own; 'release'
+      // fires after it puts it back). The caller still sees the failure: its
+      // queries reject, and pg-pool drops the dead client at release. A client
+      // that dies between queries emits twice (the server's error with its
+      // SQLSTATE, then the socket closing); one that dies mid-query hands the
+      // server's error to that query and emits only the socket close, which
+      // has no code. Either way only the first event is logged. Codes only: a
+      // driver's message can carry a host, a user or a query value.
+      const checkedOutListeners = new WeakMap<pg.PoolClient, (err: Error) => void>();
+      pool.on('acquire', (client) => {
+        let listener = checkedOutListeners.get(client);
+        if (listener === undefined) {
+          let reported = false;
+          listener = (err) => {
+            if (reported) return;
+            reported = true;
+            bgLogger.error('session_postgres_client_error', faultLogFields(err));
+          };
+          checkedOutListeners.set(client, listener);
+        }
+        client.on('error', listener);
+      });
+      pool.on('release', (_err, client) => {
+        const listener = checkedOutListeners.get(client);
+        if (listener !== undefined) client.removeListener('error', listener);
       });
       kysely = new Kysely<SessionDatabase>({
         dialect: new PostgresDialect({ pool }),
@@ -842,11 +883,11 @@ export function createSessionPostgresPlugin(
       });
       // Same risk on the LISTEN client — long-lived, idle most of the time,
       // exactly the connection a postgres restart will tear down. Crash-by-
-      // unhandled-'error' is the failure mode we're avoiding here.
+      // unhandled-'error' is the failure mode we're avoiding here. Every event
+      // is logged (a terminated backend writes two: the server's error, then
+      // the socket closing). Codes only, for the same reason as above.
       listenClient.on('error', (err) => {
-        bgLogger.error('session_postgres_listen_client_error', {
-          err: err instanceof Error ? err : new Error(String(err)),
-        });
+        bgLogger.error('session_postgres_listen_client_error', faultLogFields(err));
       });
 
       // Mid-init failure: the kernel rolls back plugins 0..N-1 (the ones

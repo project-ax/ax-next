@@ -22,22 +22,23 @@ export function expectOneRefusal(lines: readonly string[], expected: { stage: 't
   expect(lines.join('\n'), label).not.toMatch(secret);
 }
 
-/** Every key a failed report's log line may carry: the logger's own, ids, and the hook's message (TASK-907). */
-const FAILURE_LOG_KEYS = ['level', 'ts', 'reqId', 'msg', 'agentId', 'conversationId', 'dispatchId', 'routineId', 'err'];
+/** Every key a failed report's log line may carry: the logger's own, ids, and the failure's codes (TASK-907, TASK-1058). */
+const FAILURE_LOG_KEYS = ['level', 'ts', 'reqId', 'msg', 'agentId', 'conversationId', 'dispatchId', 'routineId', 'code', 'causeCode', 'name', 'causeName', 'hookName', 'plugin'];
 
 /**
- * The lines hold exactly one failed report, at warn, with these ids and a hook
- * message matching `why`, nothing but ids beside them, and no refusal. `secret`
- * matches the report's text, which no line may carry.
+ * The lines hold exactly one failed report, at warn, with these ids and these
+ * codes (`fault`), nothing but ids and codes beside them, and no refusal.
+ * `leaks` matches text no line may carry: the report's, and the failure's
+ * message (TASK-1058: codes only).
  */
 export function expectOneFailure(
   lines: readonly string[], ids: { agentId: string; conversationId: string; dispatchId: string; routineId: string },
-  why: RegExp, secret: RegExp, label: string,
+  fault: Record<string, string>, leaks: RegExp, label: string,
 ): void {
   const entries = lines.map(line => JSON.parse(line) as Record<string, unknown>);
   const failures = entries.filter(entry => entry.msg === 'routines_report_failed');
-  expect(failures, label).toEqual([expect.objectContaining({ level: 'warn', ...ids, err: expect.stringMatching(why) })]);
+  expect(failures, label).toEqual([expect.objectContaining({ level: 'warn', ...ids, ...fault })]);
   expect(entries.filter(entry => entry.msg === 'routines_report_refused'), label).toEqual([]);
   for (const key of Object.keys(failures[0] ?? {})) expect(FAILURE_LOG_KEYS, `${label}: ${key}`).toContain(key);
-  expect(lines.join('\n'), label).not.toMatch(secret);
+  expect(lines.join('\n'), label).not.toMatch(leaks);
 }
