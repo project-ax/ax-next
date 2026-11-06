@@ -371,7 +371,9 @@ export function createSseHandler(deps: SseHandlerDeps) {
     // this path is meant to surface. This replay works only because a refused
     // turn's reqId stays bound: step 2 resolves the stream through
     // `active_req_id`, so a refusal that cleared it would get a 404 here
-    // instead (TASK-1063, pinned in `routes-chat.test.ts`).
+    // instead (TASK-1063). `routes-chat.test.ts` pins this conversations side;
+    // the orchestrator guards in `route-by-conversation.test.ts` pin that a
+    // refusal does not clear the binding.
     const replayTurnError = deps.buffer.tailTurnError(reqId);
     if (replayTurnError !== null) {
       safeWrite({
