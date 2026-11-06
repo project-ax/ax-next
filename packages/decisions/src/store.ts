@@ -357,8 +357,8 @@ export interface DecisionStore {
    * reclaim, a returning `markReplayed`), and whoever moved it owns what it
    * says.
    *
-   * `code` (review F3): `TOOL_ERROR_REPLAY_CODE` when the connector's tool ran
-   * and answered that it did not work. It is written to `replay_error` in
+   * `code` (review F3): `TOOL_ERROR_REPLAY_CODE` when the connector's service
+   * answered that the call did not work (the tool may have run). It is written to `replay_error` in
    * place of null, the one closed code an abandoned row may carry, so the
    * receipt can say the service said no rather than "interrupted".
    */

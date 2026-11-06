@@ -962,8 +962,9 @@ interface StoredDecision {
   replayDueAt: string | null;
   replayClaimedAt: string | null;
   replayedAt: string | null;
-  // On an ABANDONED row, the closed code `tool-error` when the connector's tool
-  // ran and said it failed (TASK-1046 review F3; `TOOL_ERROR_REPLAY_CODE`).
+  // On an ABANDONED row, the closed code `tool-error` when the connector's
+  // service said the call failed, so the tool may have run (TASK-1046 review
+  // F3; `TOOL_ERROR_REPLAY_CODE`).
   // Never crosses the wire; `toolReportedError` is derived from it.
   replayError: string | null;
   // TASK-1046 — set when the host sent a call and got no reliable answer (a
@@ -2614,8 +2615,8 @@ const APPROVED_CAP_KINDS: readonly ApprovedCapKind[] = [
  */
 /**
  * The closed code `@ax/decisions` writes to `replayError` on an abandoned row
- * when the connector's tool RAN and answered that it did not work (TASK-1046,
- * review F3). A local twin of its `TOOL_ERROR_REPLAY_CODE`, never an import
+ * when the connector's service answered that the call did not work, so the
+ * tool may have run (TASK-1046, review F3). A local twin of its `TOOL_ERROR_REPLAY_CODE`, never an import
  * (invariant 2), pinned by the same literal on both sides.
  */
 const TOOL_ERROR_REPLAY_CODE = 'tool-error';
@@ -2814,8 +2815,8 @@ export function toWireDecision(stored: StoredDecision, eligible = false, checkIn
     // status without it, and the card must not say "nothing was completed" about
     // a call that may have landed.
     outcomeUnknown: stored.status === 'failed' && (stored.replayAbandonedAt ?? null) !== null,
-    // Review F3: of those, the one where the connector's tool RAN and said it
-    // did not work. `outcomeUnknown` stays true for it (it may have done part
+    // Review F3: of those, the one where the connector's service said the call
+    // did not work (the tool may have run). `outcomeUnknown` stays true for it (it may have done part
     // of it, so never "nothing was completed"); this second flag is what keeps
     // the card from saying "interrupted". Derived, so the code stays home.
     toolReportedError:

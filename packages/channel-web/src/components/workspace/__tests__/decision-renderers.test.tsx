@@ -193,7 +193,7 @@ describe('one row, three renderers — the outcome line', () => {
     for (const text of [queueText(toolError), cardText(toolError)]) {
       expect(text).toContain(DECISION_TOOL_ERROR);
       expect(text).toContain(DECISION_TOOL_ERROR_NOTE);
-      // The tool RAN: neither "nothing was completed" nor "interrupted" is true.
+      // The tool may have run: neither "nothing was completed" nor "interrupted" is true.
       expect(text).not.toContain(DECISION_FAILED_NOTE);
       expect(text).not.toContain(DECISION_OUTCOME_UNKNOWN);
       expect(text).not.toMatch(/interrupted/i);

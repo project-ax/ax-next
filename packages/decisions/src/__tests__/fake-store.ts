@@ -297,7 +297,8 @@ export function createFakeStore(): FakeStore {
     },
 
     // Sent, no reliable answer (TASK-1046): the reclaim's abandoned shape. A
-    // tool that ran and said it failed carries its closed code (review F3).
+    // call the service said failed (the tool may have run) carries its closed
+    // code (review F3).
     async markOutcomeUnknown(decisionId, nowIso, code = null) {
       const row = rows.get(decisionId);
       if (row === undefined || row.status !== 'executed') return null;

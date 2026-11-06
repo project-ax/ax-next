@@ -143,9 +143,10 @@ describe('callServerTool', () => {
     expect(server.toolCalls()).toHaveLength(1);
   });
 
-  // Review F3. `isError` is the TOOL answering that it did not work. Unlike a
-  // refusal (a 4xx, a JSON-RPC protocol code), the tool RAN, and it may have
-  // done part of the work, so it gets its own closed code and never `rejected`.
+  // Review F3. `isError` is the service answering that the call did not work.
+  // Unlike a refusal (an HTTP 4xx), the call went out and the tool may have
+  // run and done part of the work, so it gets its own closed code and never
+  // `rejected`.
   it('isError result is the tool saying it failed: tool-error, not a refusal', async () => {
     const server = fakeMcpServer({
       toolsCall: (msg) => json(msg.id, { result: { content: [{ type: 'text', text: 'no' }], isError: true } }),

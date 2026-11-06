@@ -275,7 +275,7 @@ describe('replayConnectorCall — what the hook answered (TASK-1046)', () => {
     });
   });
 
-  it('a tool-error is the tool saying it failed after it ran: outcomeUnknown with toolError, never a definite failure (review F3)', async () => {
+  it('a tool-error is the service saying the call failed once it went out: outcomeUnknown with toolError, never a definite failure (review F3)', async () => {
     const decision = claimed();
     const { ctx, lines } = decisionCtx(decision);
     const h = busFor({ answer: async () => ({ outcome: 'failed', reason: 'tool-error' }) });

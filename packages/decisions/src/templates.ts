@@ -398,8 +398,9 @@ export const ABANDONED_RECEIPT =
  * sits under "Nothing was completed", and every one is true of a call that did
  * not happen. A call that went out with no reliable answer gets none of these:
  * its row is abandoned and reads `ABANDONED_RECEIPT`. Nor does `tool-error`,
- * the tool's own "it didn't work" after it ran (review F3): it may have done
- * part of the work, so its row is abandoned too and reads `TOOL_ERROR_RECEIPT`.
+ * the service's own "it didn't work" once the call went out (review F3): the
+ * tool may have run and done part of the work, so its row is abandoned too
+ * and reads `TOOL_ERROR_RECEIPT`.
  */
 export const CONNECTOR_CALL_DETAIL: Readonly<
   Record<Exclude<ConnectorCallFailedReason, 'tool-error'>, string>
@@ -413,15 +414,16 @@ export const CONNECTOR_CALL_DETAIL: Readonly<
 };
 
 /**
- * The receipt when the host made a connector call and the TOOL answered that it
- * did not work (MCP `isError`, TASK-1046 review F3).
+ * The receipt when the host made a connector call and the SERVICE answered
+ * that it did not work (MCP `isError` or a JSON-RPC error object, TASK-1046
+ * review F3 and r3 S1).
  *
  * Neither neighbour is true here. `FAILED_RECEIPT` ends "Nothing was
- * completed", but the tool ran and may have done part of the work: a person
+ * completed", but the tool may have run and done part of the work: a person
  * who believes nothing happened approves it again and does it twice.
  * `ABANDONED_RECEIPT` says it was interrupted, and it was not: the service
- * answered. So it says what we know (it ran, the service said no), what we do
- * not (how much it did), and what to do about it. Read off the row's
+ * answered. So it says what we know (it tried, the service said no), what we
+ * do not (whether, and how much, it did), and what to do about it. Read off the row's
  * `TOOL_ERROR_REPLAY_CODE`. The card says the same thing in its own two lines
  * (`DECISION_TOOL_ERROR` / `DECISION_TOOL_ERROR_NOTE` in channel-web); each
  * side pins its own words by literal, and the closed code by the same one.

@@ -3086,7 +3086,7 @@ describe('decisions canary — approved connector calls run on the host (TASK-10
     expect(undone.undone).toBe(false);
   });
 
-  it('a tool that ran and said it failed reads as "may have done part of it", never nothing-completed or interrupted (review F3)', async () => {
+  it('a call the service said failed reads as "may have done part of it", never nothing-completed or interrupted (review F3)', async () => {
     const h = await boot();
     const connector = recordConnectorCalls(h, { outcome: 'failed', reason: 'tool-error' });
     const id = await holdAndId(h, routineCtx(h), CONNECTOR_CALL);

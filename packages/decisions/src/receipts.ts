@@ -150,8 +150,9 @@ export function receiptFor(decision: Decision): DecisionReceipt | null {
     // failure and a spent authorisation can never be reported as a success.
     case 'failed': {
       const abandoned = decision.replayAbandonedAt !== null;
-      // Review F3: the connector's tool RAN and answered that it did not work.
-      // Abandoned, because it may have done part of it, but not interrupted:
+      // Review F3: the connector's service answered that the call did not work,
+      // so the tool may have run. Abandoned, because it may have done part of
+      // it, but not interrupted:
       // the closed code on the row says which. Only on an abandoned row, so an
       // ordinary failure whose message reads the same stays an ordinary one.
       const toolError = abandoned && decision.replayError === TOOL_ERROR_REPLAY_CODE;

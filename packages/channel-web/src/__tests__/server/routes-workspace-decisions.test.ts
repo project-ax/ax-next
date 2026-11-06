@@ -296,7 +296,7 @@ describe('the decision routes over a real socket', () => {
     expect(raw).not.toContain('replayAbandonedAt');
     expect(raw).not.toContain(ABANDONED_AT);
   });
-  it('a tool that ran and said it failed projects toolReportedError: true, and only that row (review F3)', async () => {
+  it('a call the service said failed projects toolReportedError: true, and only that row (review F3)', async () => {
     // `@ax/decisions` writes it as `failed` + `replayAbandonedAt` (so it never
     // reads "nothing was completed") with the closed code `tool-error` in
     // `replayError` (so it never reads "interrupted" either). The card learns

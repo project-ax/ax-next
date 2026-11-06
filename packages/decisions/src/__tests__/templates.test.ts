@@ -317,8 +317,8 @@ describe('the tool-error receipt (TASK-1046, review F3)', () => {
   });
 
   it('never claims nothing happened, and never says it was interrupted', () => {
-    // The tool ran and answered that it did not work. Both of the other
-    // failure lines would be false here.
+    // The service answered that it did not work, and the tool may have run.
+    // Both of the other failure lines would be false here.
     expect(TOOL_ERROR_RECEIPT).not.toMatch(/nothing was completed/i);
     expect(TOOL_ERROR_RECEIPT).not.toMatch(/interrupted/i);
   });

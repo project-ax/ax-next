@@ -180,8 +180,8 @@ export const DECISION_OUTCOME_UNKNOWN =
 export const DECISION_OUTCOME_UNKNOWN_NOTE = 'Worth checking before you approve it again.';
 
 /**
- * The host made a connector call, and the service's tool RAN and answered that
- * it did not work (TASK-1046, review F3). Neither line above is true: "Nothing
+ * The host made a connector call, and the service answered that it did not
+ * work, so the tool may have run (TASK-1046, review F3). Neither line above is true: "Nothing
  * was completed" would send a person to approve, and do, part of it again, and
  * nothing was interrupted, the service answered. The Activity receipt says the
  * same in its own words (`TOOL_ERROR_RECEIPT` in `@ax/decisions`); each side

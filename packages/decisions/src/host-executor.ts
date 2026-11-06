@@ -71,10 +71,11 @@ export const CONNECTOR_CALL_TOOL_KEY_RE = /^mcp\.(c[0-9a-f]{10})\.([\x21-\x7e]{1
 
 /**
  * A definite answer. Every reason but `tool-error` means nothing completed.
- * `tool-error` (review F3) is the tool itself answering that the call did not
- * work: it RAN and may have done part of the work, so this package records it
- * like an unknown outcome (abandoned: never "Nothing was completed") under its
- * own closed code (never "interrupted").
+ * `tool-error` (review F3) is the service answering, once the call went out,
+ * that it did not work: the tool's own `isError`, or any JSON-RPC error
+ * object (review r3 S1). The tool may have run and done part of the work, so
+ * this package records it like an unknown outcome (abandoned: never "Nothing
+ * was completed") under its own closed code (never "interrupted").
  */
 export type ConnectorCallFailedReason =
   | 'invalid-call'

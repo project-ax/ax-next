@@ -70,8 +70,9 @@ export interface ReplayOutcome {
   outcomeUnknown?: true;
   /**
    * With `outcomeUnknown` (review F3): the service DID answer, that the call
-   * did not work (a connector tool's `isError`). The tool ran and may have
-   * done part of it, so it is abandoned like an unknown outcome, but under the
+   * did not work (a connector tool's `isError`, or a JSON-RPC error object).
+   * The tool may have run and done part of it, so it is abandoned like an
+   * unknown outcome, but under the
    * closed code `TOOL_ERROR_REPLAY_CODE`, so its receipt says the service said
    * no instead of "interrupted".
    */
@@ -293,10 +294,10 @@ export async function settleReplay(args: {
   // receipt says nothing was completed, and this call may have landed. The yes
   // is spent either way, so a later identical call holds again.
   //
-  // Review F3: a tool that RAN and answered that it did not work lands here
-  // too (`toolError`), because it may have done part of it. Its closed code
-  // rides in `replay_error`, which is how its receipt says "the service said
-  // it didn't work" and not "interrupted", with no new status.
+  // Review F3: a call the service answered as not working lands here too
+  // (`toolError`), because the tool may have run and done part of it. Its
+  // closed code rides in `replay_error`, which is how its receipt says "the
+  // service said it didn't work" and not "interrupted", with no new status.
   if (outcome.outcomeUnknown === true) {
     warnIfLost(
       ctx,

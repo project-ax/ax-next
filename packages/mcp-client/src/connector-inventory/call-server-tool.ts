@@ -205,8 +205,8 @@ export async function callServerTool(opts: CallServerToolOptions): Promise<Serve
         CallResultView,
         { signal: budget, timeout: limits.requestTimeoutMs },
       );
-      // `isError` is the tool's own answer after it ran (review F3): not a
-      // refusal, and the work may be partly done.
+      // `isError` is the service's answer once the call went out (review F3):
+      // not a refusal. The tool may have run and done part of the work.
       return reply.isError === true ? { outcome: 'failed', reason: 'tool-error' } : { outcome: 'succeeded' };
     } catch (err) {
       // An oversize reply aborts the budget, which the SDK reports as a

@@ -157,9 +157,9 @@ describe('receiptFor — the outcomes that have one', () => {
     expect(r?.error).toBeNull();
   });
 
-  it('a tool that RAN and said it failed reads as "may have done part of it" (review F3)', () => {
-    // The connector's service answered `isError`: the call went out, the tool
-    // ran, and it may have done part of the work. Abandoned like an unknown
+  it('a call the service said failed reads as "may have done part of it" (review F3)', () => {
+    // The connector's service answered that the call did not work: it went
+    // out, and the tool may have run and done part of the work. Abandoned like an unknown
     // outcome, so nothing here claims nothing happened, but under its own
     // closed code, so the line is not "interrupted" either.
     const decision = base({

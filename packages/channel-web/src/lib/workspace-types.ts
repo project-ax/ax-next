@@ -330,8 +330,8 @@ export interface Decision {
   outcomeUnknown?: boolean;
   /**
    * SERVER-DERIVED (TASK-1046, review F3): true when the host made a connector
-   * call and the service's tool RAN and answered that it did not work. It may
-   * have done part of it, so `outcomeUnknown` is true too, and the card says
+   * call and the service answered that it did not work. The tool may have run
+   * and done part of it, so `outcomeUnknown` is true too, and the card says
    * the service said no rather than "interrupted". Optional for an older
    * server: read it as `d.toolReportedError === true`.
    */
