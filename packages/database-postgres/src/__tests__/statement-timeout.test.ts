@@ -70,6 +70,24 @@ async function holdAdvisoryLock(
 }
 
 describe('statement timeout, config', () => {
+  // pg lays the connection string's query parameters over the explicit config,
+  // so one of these would silently replace (or switch off) statementTimeoutMs.
+  it.each([
+    'postgres://ax@127.0.0.1:1/ax?statement_timeout=0',
+    'postgres://ax@127.0.0.1:1/ax?sslmode=no-verify&STATEMENT_TIMEOUT=0',
+    'postgres://ax@127.0.0.1:1/ax?statement%5Ftimeout=0',
+    'postgres://ax@127.0.0.1:1/ax?options=-c%20statement_timeout%3D0',
+  ])('refuses a connection string that sets the statement timeout itself: %s', async (connectionString) => {
+    await expect(
+      createTestHarness({ plugins: [createDatabasePostgresPlugin({ connectionString })] }),
+    ).rejects.toMatchObject({
+      name: 'PluginError',
+      code: 'invalid-config',
+      plugin: '@ax/database-postgres',
+      message: expect.stringContaining('statementTimeoutMs'),
+    });
+  });
+
   it.each([0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, 2_147_483_648, '300'])(
     'refuses statementTimeoutMs %s at boot',
     async (value) => {

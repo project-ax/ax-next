@@ -705,6 +705,27 @@ function validateConnectionString(connectionString: unknown): void {
   }
 }
 
+// pg lays the connection string's query parameters over the explicit config,
+// so `?statement_timeout=0` (or `?options=-c statement_timeout=0`) would
+// silently replace statementTimeoutMs, or switch the bound off. The bound has
+// one home: refuse the other. Matched on the decoded string, case-insensitive;
+// a false positive only refuses a config, it never weakens the bound.
+function refuseStatementTimeoutInConnectionString(connectionString: string): void {
+  let decoded = connectionString;
+  try {
+    decoded = decodeURIComponent(connectionString);
+  } catch {
+    // Malformed escapes: match the raw string instead.
+  }
+  if (/[?&]statement_timeout=|[?&]options=[^&]*statement_timeout/i.test(decoded)) {
+    throw new PluginError({
+      code: 'invalid-config',
+      plugin: PLUGIN_NAME,
+      message: `${PLUGIN_NAME}: connectionString must not set statement_timeout; use statementTimeoutMs`,
+    });
+  }
+}
+
 function resolveTimeoutMs(
   field: 'checkoutTimeoutMs' | 'statementTimeoutMs',
   value: unknown,
@@ -725,6 +746,7 @@ export function createSessionPostgresPlugin(
   config: SessionPostgresConfig,
 ): Plugin {
   validateConnectionString(config.connectionString);
+  refuseStatementTimeoutInConnectionString(config.connectionString);
   const checkoutTimeoutMs = resolveTimeoutMs(
     'checkoutTimeoutMs',
     config.checkoutTimeoutMs,

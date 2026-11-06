@@ -84,6 +84,7 @@ export function createDatabasePostgresPlugin(config: DatabasePostgresConfig): Pl
     },
     init({ bus }) {
       validateConnectionString(config.connectionString);
+      refuseStatementTimeoutInConnectionString(config.connectionString);
       const checkoutTimeoutMs = resolveCheckoutTimeoutMs(config.checkoutTimeoutMs);
       const statementTimeoutMs = resolveStatementTimeoutMs(config.statementTimeoutMs);
       const bgLogger =
@@ -192,6 +193,27 @@ function resolveCheckoutTimeoutMs(value: unknown): number {
     plugin: PLUGIN_NAME,
     message: `${PLUGIN_NAME}: checkoutTimeoutMs must be a whole number of milliseconds from 1 to ${MAX_TIMER_DELAY_MS}`,
   });
+}
+
+// pg lays the connection string's query parameters over the explicit config,
+// so `?statement_timeout=0` (or `?options=-c statement_timeout=0`) would
+// silently replace statementTimeoutMs, or switch the bound off. The bound has
+// one home: refuse the other. Matched on the decoded string, case-insensitive;
+// a false positive only refuses a config, it never weakens the bound.
+function refuseStatementTimeoutInConnectionString(connectionString: string): void {
+  let decoded = connectionString;
+  try {
+    decoded = decodeURIComponent(connectionString);
+  } catch {
+    // Malformed escapes: match the raw string instead.
+  }
+  if (/[?&]statement_timeout=|[?&]options=[^&]*statement_timeout/i.test(decoded)) {
+    throw new PluginError({
+      code: 'invalid-config',
+      plugin: PLUGIN_NAME,
+      message: `${PLUGIN_NAME}: connectionString must not set statement_timeout; use statementTimeoutMs`,
+    });
+  }
 }
 
 function resolveStatementTimeoutMs(value: unknown): number {
