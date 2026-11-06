@@ -3,18 +3,25 @@
 // The agent's HTML is untrusted. It renders inside `sandbox="allow-scripts"`
 // (an opaque origin: no cookies, no app DOM, no same-origin anything), and the
 // document we wrap it in opens with a CSP meta that denies every load CSP
-// governs. CSP does not govern WebRTC (RTCPeerConnection's ICE/STUN traffic),
-// so the frame runtime removes the WebRTC constructors before any agent markup
-// runs. That only holds in the frame's own realm: a child frame (even a srcdoc
-// one, which frame-src 'none' does not block) gets fresh constructors. So the
-// visual must never get a child browsing context: stripChildFrames() takes
-// frame-making elements out of the markup here, and the runtime removes any a
-// script inserts later and locks the APIs that could hide one from it. That meta has to be the very first thing in <head>: a policy only governs
-// what is parsed after it, so nothing — not our own styles, and certainly not
-// the agent's markup — may come before it. The agent's HTML goes last, into
-// <body>. If it brings its own <html>/<head>/<meta CSP>, the parser drops or
-// demotes those (a CSP meta outside <head> is ignored, and a second policy
-// could only ever narrow ours anyway).
+// governs. That meta has to be the very first thing in <head>: a policy only
+// governs what is parsed after it, so nothing — not our own styles, and
+// certainly not the agent's markup — may come before it. The agent's HTML goes
+// last, into <body>. If it brings its own <html>/<head>/<meta CSP>, the parser
+// drops or demotes those (a CSP meta outside <head> is ignored, and a second
+// policy could only ever narrow ours anyway).
+//
+// CSP does not govern WebRTC (RTCPeerConnection's ICE/STUN traffic), so the
+// frame runtime removes the WebRTC constructors before any agent markup runs.
+// That only holds in the frame's own realm: a child frame (even a srcdoc one,
+// which frame-src 'none' does not block) gets fresh constructors. So the
+// visual must never get a child browsing context. stripChildFrames() takes
+// frame-making elements and declarative shadow roots out of the markup here;
+// the runtime (frame-runtime.js) removes any a script inserts later, locks the
+// APIs that build shadow roots or parse markup out of its sight (setHTML,
+// parseHTML and friends ship today), and tears the document down if a child
+// frame appears in the document tree anyway. None of it is a browser
+// boundary, and a child inside a shadow root escapes that last check; see the
+// runtime's notes.
 //
 // The standalone HTML download gets the same box: an outer page with no
 // scripts at all, holding the visual in a sandboxed srcdoc frame. Opened from

@@ -7,22 +7,40 @@
 // are the boundary. It reports size/ready/error to the parent, applies live
 // theme changes, exports a PNG, and themes Chart.js.
 //
-// It does add one hardening layer the CSP can't: CSP doesn't govern WebRTC,
-// so the runtime pins the WebRTC constructors to undefined. That only holds in
-// this realm — a child frame, even a srcdoc one (frame-src 'none' doesn't stop
-// those), would get fresh ones. So the frame must never get a child browsing
-// context: visual-doc.ts strips frame-making elements from the markup, and
-// this runtime removes any that a script inserts later (a MutationObserver
-// fires in a microtask, before the async child load can start running) and
-// locks the APIs that could hide one from that observer (attachShadow,
-// setHTMLUnsafe, parseHTMLUnsafe, document.write/writeln/open).
+// It also adds hardening the CSP can't. CSP doesn't govern WebRTC, so the
+// runtime pins the WebRTC constructors to undefined. That only holds in this
+// realm: a child frame, even a srcdoc one (frame-src 'none' doesn't stop
+// those), gets fresh ones. So the frame must never get a child browsing
+// context. Four layers, in order:
+//   1. visual-doc.ts strips frame-making elements and declarative shadow
+//      roots from the markup.
+//   2. A MutationObserver removes frame-making elements a script inserts, and
+//      any element that carries an open shadow root (visuals have no use for
+//      shadow DOM; the observer can't see inside one). It runs in a
+//      microtask, before an async child load can start running.
+//   3. Locks on the APIs that build shadow roots or parse markup outside the
+//      observer's sight (attachShadow, setHTML/setHTMLUnsafe,
+//      parseHTML/parseHTMLUnsafe, XSLTProcessor, document.write/open), and on
+//      the getters that would hand a script a child's window.
+//   4. A backstop that doesn't depend on that list: window.length counts the
+//      child browsing contexts in the document tree. If it's ever above zero
+//      after a purge, the runtime removes the whole document (discarding
+//      every child), reports an error and stops. It's checked in the
+//      observer, every animation frame, and on a slow timer for frames the
+//      browser isn't painting.
 //
-// Residual: this is in-realm hardening, written before agent code runs, not a
-// browser boundary. A browser bug that loads a child synchronously, or a new
-// API that builds a shadow root or child frame some other way, would get past
-// it. A declarative shadow root the parser builds from the markup is invisible
-// to the observer, so stripChildFrames() in visual-doc.ts is the only layer
-// against those. If any lock can't be installed, `ready` says `locked: false`.
+// Residual, measured in Chromium, Firefox and WebKit:
+// - Layer 4 is blind to a child inside a shadow root: window.length only
+//   counts document-tree children. So a closed shadow root from some API not
+//   locked in layer 3 would get a live child past everything here. We know of
+//   no unlocked route to one; setHTML/parseHTML did ship and are locked now.
+// - Layer 4 tears a child down; it doesn't prevent it. A child it catches has
+//   usually already run its first script by the next frame.
+// - CSP's `webrtc 'block'` would cover children too, but no engine honors it.
+// This is in-realm hardening, installed before agent code runs, not a browser
+// boundary. `ready.locked` is advisory: it means every lock above was
+// installed. It never proves a child frame is impossible, and the parent must
+// not make a security decision on it.
 //
 // The token allow-list and value pattern restate VISUAL_TOKEN_NAMES and
 // VISUAL_TOKEN_VALUE from visual-doc.ts (this file can't import them); a test
@@ -31,6 +49,7 @@ window.axVisualRuntime = function axVisualRuntime(win, host) {
   'use strict';
 
   var locked = true;
+  var killed = false;
 
   // Non-writable and non-configurable, so agent code can't put the original
   // back. A failure is recorded, never swallowed: the parent hears about it.
@@ -49,8 +68,35 @@ window.axVisualRuntime = function axVisualRuntime(win, host) {
     }
   }
 
+  function noWindow() {
+    return null;
+  }
+
+  // An accessor that always answers null, for the getters that hand out a
+  // child frame's window or document.
+  function lockGetter(target, name) {
+    if (!target) return;
+    try {
+      Object.defineProperty(target, name, {
+        get: noWindow,
+        set: undefined,
+        enumerable: true,
+        configurable: false,
+      });
+      var d = Object.getOwnPropertyDescriptor(target, name);
+      if (!d || d.get !== noWindow) locked = false;
+    } catch {
+      locked = false;
+    }
+  }
+
   function refuse() {
     throw new TypeError('Not available in a chat visual.');
+  }
+
+  function proto(name) {
+    var ctor = win[name];
+    return ctor && ctor.prototype;
   }
 
   [
@@ -59,64 +105,138 @@ window.axVisualRuntime = function axVisualRuntime(win, host) {
     'RTCDataChannel',
     'RTCSessionDescription',
     'RTCIceCandidate',
+    'XSLTProcessor',
   ].forEach(function (name) {
     lock(win, name, undefined);
   });
 
-  var elementProto = win.Element && win.Element.prototype;
+  var elementProto = proto('Element');
   lock(elementProto, 'attachShadow', refuse);
+  lock(elementProto, 'setHTML', refuse);
   lock(elementProto, 'setHTMLUnsafe', refuse);
-  if (win.ShadowRoot) lock(win.ShadowRoot.prototype, 'setHTMLUnsafe', refuse);
-  if (win.Document) {
-    lock(win.Document, 'parseHTMLUnsafe', refuse);
-    lock(win.Document.prototype, 'write', refuse);
-    lock(win.Document.prototype, 'writeln', refuse);
-    lock(win.Document.prototype, 'open', refuse);
-  }
+  lock(proto('ShadowRoot'), 'setHTML', refuse);
+  lock(proto('ShadowRoot'), 'setHTMLUnsafe', refuse);
+  lock(win.Document, 'parseHTML', refuse);
+  lock(win.Document, 'parseHTMLUnsafe', refuse);
+  var documentProto = proto('Document');
+  lock(documentProto, 'parseHTML', refuse);
+  lock(documentProto, 'write', refuse);
+  lock(documentProto, 'writeln', refuse);
+  lock(documentProto, 'open', refuse);
 
-  // Remove child-frame elements the moment they're inserted. The observer
-  // only uses methods captured here, so agent code that later patches
-  // Element.prototype.remove (or NodeList, or MutationRecord) can't blind it.
+  ['HTMLIFrameElement', 'HTMLFrameElement', 'HTMLObjectElement'].forEach(function (name) {
+    lockGetter(proto(name), 'contentWindow');
+    lockGetter(proto(name), 'contentDocument');
+  });
+  lock(proto('HTMLObjectElement'), 'getSVGDocument', noWindow);
+  lock(proto('HTMLEmbedElement'), 'getSVGDocument', noWindow);
+
+  // Everything below uses methods captured here, so agent code that later
+  // patches Element.prototype.remove (or NodeList, MutationRecord,
+  // window.length) can't blind it.
   var CHILD_FRAMES = 'iframe,frame,frameset,object,embed,portal,fencedframe';
   var apply = Reflect.apply;
-  function getter(proto, name) {
-    var d = proto && Object.getOwnPropertyDescriptor(proto, name);
+  function getter(target, name) {
+    var d = target && Object.getOwnPropertyDescriptor(target, name);
     return d && d.get;
   }
-  var nodeProto = win.Node && win.Node.prototype;
+  var nodeProto = proto('Node');
   var getNodeType = getter(nodeProto, 'nodeType');
-  var getAddedNodes = getter(win.MutationRecord && win.MutationRecord.prototype, 'addedNodes');
-  var getListLength = getter(win.NodeList && win.NodeList.prototype, 'length');
-  var listItem = win.NodeList && win.NodeList.prototype.item;
+  var getAddedNodes = getter(proto('MutationRecord'), 'addedNodes');
+  var getListLength = getter(proto('NodeList'), 'length');
+  var listItem = proto('NodeList') && proto('NodeList').item;
+  var getShadowRoot = getter(elementProto, 'shadowRoot');
+  var getDocumentElement = getter(documentProto, 'documentElement');
+  var getChildCount = getter(win, 'length') || getter(proto('Window'), 'length');
   var matches = elementProto && elementProto.matches;
   var queryAll = elementProto && elementProto.querySelectorAll;
   var removeEl = elementProto && elementProto.remove;
+  var setTimer = win.setInterval;
+  var raf = win.requestAnimationFrame;
+
+  // Frame-making elements go, and so does any element hosting an open shadow
+  // root (the observer can't see inside it).
+  function forbidden(el) {
+    return apply(matches, el, [CHILD_FRAMES]) || apply(getShadowRoot, el, []) !== null;
+  }
 
   function purge(node) {
     if (apply(getNodeType, node, []) !== 1) return;
-    if (apply(matches, node, [CHILD_FRAMES])) {
+    if (forbidden(node)) {
       apply(removeEl, node, []);
       return;
     }
-    var found = apply(queryAll, node, [CHILD_FRAMES]);
-    var n = apply(getListLength, found, []);
-    for (var i = 0; i < n; i++) apply(removeEl, apply(listItem, found, [i]), []);
+    var all = apply(queryAll, node, ['*']);
+    var n = apply(getListLength, all, []);
+    for (var i = 0; i < n; i++) {
+      var el = apply(listItem, all, [i]);
+      if (forbidden(el)) apply(removeEl, el, []);
+    }
+  }
+
+  function childCount() {
+    return getChildCount ? apply(getChildCount, win, []) : win.length;
+  }
+
+  // A child frame exists that the layers above didn't stop. Removing the
+  // document element discards every child browsing context, wherever it was.
+  function kill() {
+    if (killed) return;
+    killed = true;
+    try {
+      var rootEl = apply(getDocumentElement, win.document, []);
+      if (rootEl) apply(removeEl, rootEl, []);
+    } catch {
+      // Still report it.
+    }
+    post({ type: 'ax-visual:error' });
+  }
+
+  function check() {
+    if (!killed && childCount() > 0) kill();
   }
 
   try {
-    if (!getNodeType || !getAddedNodes || !getListLength || !listItem || !matches || !queryAll || !removeEl) {
-      throw new Error('missing DOM primitives');
+    if (
+      !getNodeType ||
+      !getAddedNodes ||
+      !getListLength ||
+      !listItem ||
+      !getShadowRoot ||
+      !getDocumentElement ||
+      !getChildCount ||
+      !matches ||
+      !queryAll ||
+      !removeEl
+    ) {
+      locked = false;
     }
     new win.MutationObserver(function (records) {
-      for (var r = 0; r < records.length; r++) {
-        var added = apply(getAddedNodes, records[r], []);
-        var count = apply(getListLength, added, []);
-        for (var a = 0; a < count; a++) purge(apply(listItem, added, [a]));
+      if (killed) return;
+      try {
+        for (var r = 0; r < records.length; r++) {
+          var added = apply(getAddedNodes, records[r], []);
+          var count = apply(getListLength, added, []);
+          for (var a = 0; a < count; a++) purge(apply(listItem, added, [a]));
+        }
+      } finally {
+        check();
       }
     }).observe(win.document, { childList: true, subtree: true });
   } catch {
     locked = false;
   }
+
+  // One property read per frame. rAF stops in a frame that isn't painted
+  // (offscreen, hidden tab), so a slow timer backs it up.
+  if (typeof raf === 'function') {
+    var everyFrame = function () {
+      check();
+      if (!killed) apply(raf, win, [everyFrame]);
+    };
+    apply(raf, win, [everyFrame]);
+  }
+  if (typeof setTimer === 'function') apply(setTimer, win, [check, 250]);
 
   var TOKEN_NAMES = [
     '--background',
@@ -216,6 +336,7 @@ window.axVisualRuntime = function axVisualRuntime(win, host) {
   }
 
   function reportSize() {
+    if (killed) return;
     var h = measure();
     if (h === lastHeight) return;
     lastHeight = h;
@@ -247,7 +368,7 @@ window.axVisualRuntime = function axVisualRuntime(win, host) {
   win.addEventListener('load', function () {
     nextFrame(function () {
       nextFrame(function () {
-        if (ready) return;
+        if (ready || killed) return;
         ready = true;
         var h = measure();
         lastHeight = h;
@@ -401,7 +522,7 @@ window.axVisualRuntime = function axVisualRuntime(win, host) {
   }
 
   win.addEventListener('message', function (event) {
-    if (event.source !== host) return;
+    if (killed || event.source !== host) return;
     var data = event.data;
     if (!data || typeof data !== 'object') return;
     if (data.type === 'ax-visual:theme') applyTheme(data);

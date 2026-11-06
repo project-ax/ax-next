@@ -333,6 +333,79 @@ describe('frame runtime: no child frames', () => {
   });
 });
 
+describe('frame runtime: shadow roots, child windows, kill switch', () => {
+  const microtask = () => new Promise<void>((r) => queueMicrotask(r));
+  type Loose = FrameWindow & Record<string, unknown>;
+
+  it('removes any inserted element that hosts an open shadow root, nested or not', async () => {
+    const { win } = setup((w) => {
+      // Made before the runtime locks attachShadow, as another API could.
+      const a = w.document.createElement('div');
+      a.attachShadow({ mode: 'open' });
+      const b = w.document.createElement('span');
+      b.attachShadow({ mode: 'open' });
+      const wrap = w.document.createElement('section');
+      wrap.appendChild(b);
+      Object.assign(w, { __a: a, __wrap: wrap, __b: b });
+    });
+    const loose = win as Loose;
+    win.document.body.append(loose.__a as Node, loose.__wrap as Node);
+    await microtask();
+    expect((loose.__a as Node).isConnected).toBe(false);
+    expect((loose.__b as Node).isConnected).toBe(false);
+    expect((loose.__wrap as Node).isConnected).toBe(true);
+  });
+
+  it('locks setHTML, parseHTML and XSLTProcessor', () => {
+    const { win } = setup();
+    expect(() => win.eval('document.body.setHTML("<p>")')).toThrow();
+    expect(() => win.eval('Document.parseHTML("<p>")')).toThrow();
+    expect(win.eval('typeof XSLTProcessor')).toBe('undefined');
+  });
+
+  it("never hands out a child frame's window or document", () => {
+    const { win } = setup((w) => {
+      w.document.body.appendChild(w.document.createElement('iframe'));
+    });
+    const iframe = win.document.querySelector('iframe')!;
+    expect(iframe.contentWindow).toBeNull();
+    expect(iframe.contentDocument).toBeNull();
+    const objectEl = win.document.createElement('object');
+    expect(objectEl.contentWindow).toBeNull();
+    expect(objectEl.getSVGDocument()).toBeNull();
+    expect((win.document.createElement('embed') as unknown as { getSVGDocument(): unknown }).getSVGDocument()).toBeNull();
+  });
+
+  it('kills the document on the next frame when a child frame exists anyway', async () => {
+    const { win, host } = setup((w) => {
+      // Present before the observer, like one hidden in a closed shadow root.
+      w.document.body.appendChild(w.document.createElement('iframe'));
+    });
+    expect(win.length).toBe(1);
+    await frames();
+    expect(win.document.documentElement).toBeNull();
+    expect(win.length).toBe(0);
+    expect(posted(host, 'ax-visual:error')).toEqual([{ type: 'ax-visual:error' }]);
+    win.dispatchEvent(new win.Event('load'));
+    await frames();
+    expect(posted(host, 'ax-visual:ready')).toEqual([]);
+  });
+
+  it('checks the child count right after each purge, with the original getter', async () => {
+    let children = 0;
+    const { win, host } = setup((w) => {
+      Object.defineProperty(w, 'length', { get: () => children, configurable: true });
+    });
+    // Agent code shadowing window.length can't hide a child.
+    win.eval('try { Object.defineProperty(window, "length", { get: () => 0 }) } catch {}');
+    children = 1;
+    win.document.body.appendChild(win.document.createElement('div'));
+    await microtask();
+    expect(win.document.documentElement).toBeNull();
+    expect(posted(host, 'ax-visual:error')).toEqual([{ type: 'ax-visual:error' }]);
+  });
+});
+
 describe('DEFAULT_VISUAL_ASSETS', () => {
   it('bundles the fonts, libraries and runtime', () => {
     expect(DEFAULT_VISUAL_ASSETS).toEqual({
