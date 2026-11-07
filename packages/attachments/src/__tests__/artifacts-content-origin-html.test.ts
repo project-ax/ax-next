@@ -463,7 +463,7 @@ describe('content origin: prepared-HTML cache', () => {
   it.each(['busy', 'worker_failed'] as const)(
     'a page refused as %s is not remembered: that is the moment and not the page, and the next view tries again',
     async (reason) => {
-      let answers: frameGuard.PreparedPage[] = [{ ok: false, reason }];
+      const answers: frameGuard.PreparedPage[] = [{ ok: false, reason }];
       let asked = 0;
       const base = await start({
         htmlPreparer: {
