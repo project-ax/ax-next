@@ -699,7 +699,7 @@ function boundedAdapter(run: Run): TreeAdapter<DefaultTreeAdapterMap> {
     },
     createTextNode: (value) => {
       built();
-      return tree.createTextNode(flat(value));
+      return tree.createTextNode(value);
     },
     insertText: (parent, text) => {
       const before = parent.childNodes.length;
@@ -743,7 +743,6 @@ function boundedAdapter(run: Run): TreeAdapter<DefaultTreeAdapterMap> {
     adoptAttributes: (recipient, attributes) => {
       heavy();
       attrs(attributes.length);
-      flatAttrs(attributes);
       let names = adopted.get(recipient);
       if (names === undefined) {
         names = new Set(recipient.attrs.map((attr) => attr.name));

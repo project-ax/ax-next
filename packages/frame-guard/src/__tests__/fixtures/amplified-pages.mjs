@@ -35,7 +35,9 @@ export const shapes = {
   // Many tokens of 20 to 40 KB, 4 MiB in all, of each kind parse5 builds a character at a time and the tree keeps.
   texts4: () => `<!doctype html>${`<p>${'w'.repeat(40_000)}</p>`.repeat(100)}`,
   comments4: () => `<!doctype html>${`<!--${'c'.repeat(40_000)}-->`.repeat(100)}`,
-  names4: () => `<!doctype html><div${Array.from({ length: 200 }, (_, i) => ` a${i}${'n'.repeat(20_000)}`).join('')}>`,
+  // (Two names of different lengths on each tag: the tokenizer compares a new name with the ones before it on the tag, and
+  // that reads two of the same length flat.)
+  names4: () => `<!doctype html>${`<div a${'n'.repeat(20_000)} b${'n'.repeat(20_001)}>`.repeat(100)}`,
   // Text that is foster-parented in front of a table arrives in the tree by yet another call.
   fostered4: () => `<!doctype html><table>${`${'w'.repeat(40_000)}<i></i>`.repeat(100)}`,
   // Repeated <body> tags add their attributes to the first one: the values arrive by another way into the tree.

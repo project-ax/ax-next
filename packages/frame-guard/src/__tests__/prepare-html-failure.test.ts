@@ -112,6 +112,22 @@ describe('prepareArtifactHtml when parse5 misbehaves', () => {
     expect(transform(page, { now: () => 0, budgetMs: 100 }).ok).toBe(true);
   });
 
+  it('refuses a page that would come back at over 1.5 times its length before any of it is written and before a second parse', () => {
+    // Ten formatting elements with 30 KB attributes, brought back three times: 1.2 MB out of 300 KB in. The second
+    // pass is the expensive one (it tokenizes everything the first wrote), so it must not start, and nothing has to
+    // be written to find out.
+    let parses = 0;
+    let written = 0;
+    hooks.beforeParse = () => void (parses += 1);
+    hooks.beforeSerialize = () => void (written += 1);
+    let page = '<div>';
+    for (let i = 0; i < 10; i++) page += `<b x=${i} y='${'a'.repeat(30_000)}'>`;
+    page += `</div>${'<div><span></div>'.repeat(3)}`;
+    expect(transform(page)).toEqual({ ok: false, reason: 'output_too_large' });
+    expect(parses).toBe(1);
+    expect(written).toBe(0);
+  });
+
   it('checks the length of what was written, too, whatever the tree said it would be', () => {
     // The count of the tree, made before anything is written, is meant never to be low (a test holds it to
     // that); this is the second check, on the string itself, for the day it is.

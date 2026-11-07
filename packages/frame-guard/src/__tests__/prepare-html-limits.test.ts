@@ -473,6 +473,24 @@ describe('each limit on its own, with a small page', () => {
       expect(verdict(prepareArtifactHtml(`<p title='${'"'.repeat(1 * MiB)}'>x</p>`))).toBe('output_too_large'); // 6 MiB out
     });
 
+    it('lets a result be 1.5 times the page and not much more: 1.4 times is served, 1.7 times is refused', () => {
+      // Ten formatting elements with a long attribute each, which the one <div><span> after them brings back, so each is
+      // written out twice: a page that is 1 MiB with `ratio - 1` of it attributes comes back `ratio` times as long.
+      // (The factor is a bound on what the second pass has to read, and the length of the response: it was 4.)
+      // (The plain text goes first: text after them would bring the elements back a second time.)
+      const amplified = (total: number, ratio: number): string => {
+        const each = Math.floor((total * (ratio - 1)) / 10);
+        let page = '</p><div>';
+        for (let i = 0; i < 10; i++) page += `<b x=${i} y='${'a'.repeat(each)}'>`;
+        page += '</div><div><span></div>';
+        return `<p>${'w'.repeat(total - page.length - 3)}${page}`;
+      };
+      const LONG = { budgetMs: 60_000 };
+      expect(amplified(MiB, 1.7)).toHaveLength(MiB);
+      expect(verdict(prepareArtifactHtml(amplified(MiB, 1.4), LONG))).toBe('served');
+      expect(verdict(prepareArtifactHtml(amplified(MiB, 1.7), LONG))).toBe('output_too_large');
+    });
+
     it('serves what real pages do: markup that grows a little when it is written out', () => {
       const grows = '<table><tr><td>a<td>b<tr><td>c</table><p>one<p>two<ul><li>x<li>y</ul><br><input disabled><img alt>'.repeat(500);
       const out = prepareArtifactHtml(grows);
