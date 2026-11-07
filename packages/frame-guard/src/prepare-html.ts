@@ -80,13 +80,14 @@ const MAX_DEPTH = 512;
  * Nodes (elements, text, comments) one parse may build. A real page is nowhere
  * near it: measured, a 1 MB page of HTML is 100 to 33,000 nodes (a dense
  * reference page 32 per KB), and a table of numbers about 170 per KB, so
- * 250,000 nodes is a 1.5 MB table. This is what stops a page whose parse builds
+ * 150,000 nodes is a 900 KB table. This is what stops a page whose parse builds
  * nodes the markup never wrote: each `<span>` after 500 formatting elements
  * brings all 500 back, 30 nodes per input byte, and the number is the cap on
- * that whatever the size of the page. A parse takes about 0.2 to 0.5 s at it
- * (this holds the thread, so the next limit's budget has to cover that).
+ * that whatever the size of the page. It is also the biggest thing a page can
+ * ask of the thread without breaking a limit: parsing and writing out 150,000
+ * nodes twice takes 0.3 to 0.8 s, and that is the worst case of this transform.
  */
-const MAX_NODES = 250_000;
+const MAX_NODES = 150_000;
 
 /**
  * Calls parse5 may make to the tree adapter, over every pass of one transform. It reads the tree
@@ -134,13 +135,14 @@ const CLOCK_EVERY = 1024;
 /**
  * The time one call may take: a floor, plus a share for each MiB of page. The
  * limits above stop every shape measured in a quarter of a second or less; this
- * is the backstop for the ones nobody has found, and it has to leave room for
- * the biggest ordinary pages: 4 MiB of script or inlined data takes 0.4 s on a
- * fast machine, and a table at the node limit about 0.25 s. A slower or busier
- * host takes twice that.
+ * is the backstop for the ones nobody has found. It has to leave room for the
+ * biggest ordinary pages (4 MiB of script or inlined data takes 0.4 s on a fast
+ * machine, an ordinary page under 0.05 s) on a host that is slower or busy: the
+ * clock is wall time, and a pause the process doesn't choose counts. About four
+ * times what the biggest takes, and ten for the usual page.
  */
-const BUDGET_BASE_MS = 300;
-const BUDGET_PER_MIB_MS = 200;
+const BUDGET_BASE_MS = 400;
+const BUDGET_PER_MIB_MS = 300;
 
 const NUL = '\u0000';
 

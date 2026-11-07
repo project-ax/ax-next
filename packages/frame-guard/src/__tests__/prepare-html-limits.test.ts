@@ -194,8 +194,8 @@ describe('ordinary pages, big and dense, are still served', () => {
     expect(verdict(out)).toBe('served');
   });
 
-  it('1 MiB of prose with a link or an emphasis every dozen characters (180,000 nodes)', () => {
-    const out = run(repeat('<p>Hello <b>world</b> and <a href="x">more</a>.</p>\n', MiB), LONG);
+  it('0.75 MiB of prose with a link or an emphasis every dozen characters (130,000 nodes)', () => {
+    const out = run(repeat('<p>Hello <b>world</b> and <a href="x">more</a>.</p>\n', 0.75 * MiB), LONG);
     expect(verdict(out)).toBe('served');
   });
 
