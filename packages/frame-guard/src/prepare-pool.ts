@@ -8,8 +8,14 @@ import { isPrepareRefusal, type PrepareRefusal } from './prepare-html.js';
 // page at a time, and answers a page the worker could not handle with a refusal
 // instead of an error:
 //
-//   - it has a heap limit, so a page that makes the transform run out of memory ends
-//     the worker (`worker_oom`) and not the process;
+//   - it has a heap limit, so a page that makes the transform run out of memory
+//     ends the worker (`worker_oom`) and, in everything measured, not the process.
+//     That is not a guarantee. V8 ended the whole process when a worker was given
+//     far less heap than its work needed (a 4 MiB script at 64 to 128 MB), and
+//     only the worker at 160 MB and up and for every memory-hungry page found so
+//     far (the 1 GB reconstruction page of the first round, the 16.8 million
+//     quotes of the second) at 256 to 512 MB. A process is the one boundary that
+//     holds; this is a thread;
 //   - it has a wall-clock deadline, so a page that holds it where nothing in the
 //     transform can look at a clock is ended from outside (`worker_timeout`);
 //   - pages wait in a line bounded by how many there are and how much text they
@@ -74,10 +80,10 @@ export interface HtmlPreparerOptions {
 const DEFAULT_WORKER_URL = new URL('./prepare-worker.js', import.meta.url);
 /**
  * What the transform may use of heap before the worker is ended. The biggest real
- * page measured (a 4 MiB page, 4.1 MB on disk) needs about 270 MB, nearly all of it
- * the tokenizer's text: parse5 appends a character at a time, which is a string
+ * page measured (a 4 MiB page, 4.1 MB on disk) needs between 256 and 288 MB, nearly all
+ * of it the tokenizer's text: parse5 appends a character at a time, which is a string
  * join each until something flattens the result (the parse of that page holds 125 MB
- * of them). 256 MB refuses it, 288 serves it; this leaves it half again.
+ * of them). 256 MB refuses it and 288 serves it; this is a third more than the 288.
  */
 const DEFAULT_OLD_GENERATION_MB = 384;
 /**

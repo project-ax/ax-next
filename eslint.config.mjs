@@ -69,7 +69,9 @@
 //                           declarative-shadow-root attribute lists, and the
 //                           server-side page transform that cuts that markup
 //                           and puts the script first in <head>
-//                           (prepareArtifactHtml). Shared by @ax/attachments
+//                           (prepareArtifactHtml), and the worker thread that
+//                           runs it off the thread that serves requests
+//                           (createHtmlPreparer). Shared by @ax/attachments
 //                           (artifact content origin) and @ax/channel-web
 //                           (chat visuals) so the two can't drift. No
 //                           manifest, no hooks, no @ax/core dep.

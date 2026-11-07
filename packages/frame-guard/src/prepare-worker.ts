@@ -10,9 +10,10 @@ import { prepareArtifactHtml, type PrepareRefusal } from './prepare-html.js';
 // This is a thread, not a sandbox: it shares the process and its privileges. What
 // it buys is that the work is somewhere else. A page that costs the transform its
 // whole time budget holds this thread, not the one that serves requests; one that
-// runs it out of memory ends this thread (the pool gives it a heap limit) and not the
-// process; one that holds it in a stretch nothing can interrupt is ended by the pool
-// from outside.
+// runs it out of memory ends this thread (the pool gives it a heap limit) and, as
+// measured, not the process, though V8 can end the process instead when the limit is
+// far below the work (see prepare-pool.ts); one that holds it in a stretch nothing
+// can interrupt is ended by the pool from outside.
 
 /**
  * The CPU the transform may use on one page in this thread: four times the heaviest real page measured

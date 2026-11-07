@@ -89,10 +89,13 @@ const MAX_DEPTH = 512;
  * 150,000 nodes is a 900 KB table. This is what stops a page whose parse builds
  * nodes the markup never wrote: each `<span>` after 500 formatting elements
  * brings all 500 back, 30 nodes per input byte, and the number is the cap on
- * that whatever the size of the page. It is also the biggest thing a page can
- * ask of the thread without breaking a limit: parsing and writing out 150,000
- * nodes twice takes about 0.3 s here (the costliest shape measured, 140,000
- * `<input>`s), and that is the worst case of this transform.
+ * that whatever the size of the page. A page that stays inside it costs what its
+ * size and shape cost, and the numbers are measured, not a bound: of 14 shapes,
+ * the biggest page each is served at (the limits all in force, the time budget
+ * not) takes 0.06 to 0.31 s of CPU (150,000 foster-parented `<input>`s are 0.15 s,
+ * 150,000 `<input type=hidden>`, the dearest, 0.3 s), and 4 MiB of text with
+ * nothing in it to count 0.34 s. The shapes that cost more than that are the ones
+ * nothing counts, and the time budget is what stops them.
  */
 const MAX_NODES = 150_000;
 
@@ -103,8 +106,8 @@ const MAX_NODES = 150_000;
  * each of which looks through all 500, builds no nodes at all. A real page makes
  * under one call per character of HTML (measured: 0.01 to 0.9; a table of
  * numbers is the top), so even 4 MiB of it needs under 8 million over its two
- * passes; this is 25 million, about a quarter of a second of parse5's time,
- * which is where that scan page is stopped.
+ * passes; this is 25 million, which stops that scan page after 0.19 to 0.25 s
+ * of CPU (measured: 500 open elements, then end tags or list items).
  */
 const MAX_CALLS = 25_000_000;
 
@@ -163,8 +166,8 @@ const CLOCK_EVERY = 1024;
  * slow is measured against, and that is the page and not the machine, so it can be
  * remembered. The heaviest real pages (3 to 4 MiB of script or inlined data; 40
  * distinct ones were measured) take 0.29 to 0.35 s of CPU on the machine measured
- * on and an ordinary page under 0.05 s, which this passes with room on that machine
- * and not much to spare on a slower one. Those pages are served by the worker thread
+ * on and an ordinary one of 100 to 170 KiB 7 to 15 ms, which this passes with room
+ * on that machine and not much to spare on a slower one. Those pages are served by the worker thread
  * (prepare-worker.ts), which gives the transform `WORKER_BUDGET_MS` and is the only
  * caller that does; nothing that serves requests runs a longer one.
  */
@@ -856,13 +859,18 @@ function settle(source: string, run: Run): string {
  * where a browser would have skipped it. No doctype is added or removed.
  * Calling it on its own output returns that output unchanged.
  *
- * Synchronous, on the caller's thread, and bounded by what the parse builds
- * and by the clock, not by the page's size (see the limits above): an ordinary
- * page takes under a quarter of a second per MB of HTML (two parses of it; 4 MiB
- * of script is 0.4 s), and every hostile shape measured is refused in under a
- * second, most in milliseconds (the costliest page that stays inside every
- * limit is about 0.3 s). Still hand it a bounded page: even a refusal costs the
- * time it took to get there.
+ * Synchronous, on the caller's thread: run it where holding the thread does not
+ * matter, as the content origin does, on a worker (`createHtmlPreparer`). It is
+ * bounded by what the parse builds, what the serializer would have to escape and
+ * the clock (500 ms of this thread's CPU unless the caller gives more), not by the
+ * page's size (see the limits above). Measured on 86 shapes of 4 MiB each, hostile
+ * and ordinary: a page of markup costs about 0.15 s of CPU per MB and one of script
+ * or text about 0.1 s (3 to 4 MiB of either, 0.3 to 0.5 s; a 4 MiB comment is the
+ * dearest, 0.475 s). The slowest refusal of a shape the clock does not have to stop
+ * is 0.39 s (4 MiB of `&`), most are refused in under 0.1 s, and a page that holds
+ * the budget is stopped at it, give or take the longest stretch nothing here can
+ * look at the clock in (10 to 45 ms measured). Still hand it a bounded page: even a
+ * refusal costs the time it took to get there.
  *
  * `limits` is for tests; leave it out.
  */
