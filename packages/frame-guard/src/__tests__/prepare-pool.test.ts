@@ -219,12 +219,15 @@ describe('a worker that is held, out of memory, or gone', () => {
     expect(thread(third!)).toBe(thread(second!));
   });
 
-  it('does not take a refusal code it does not know: that is a worker that is not working', async () => {
-    const f = faults();
-    const p = preparer({ onFault: f.report });
-    expect(await p.prepare('refuse:made_up_code')).toEqual({ ok: false, reason: 'worker_failed' });
-    expect(f.seen).toHaveLength(1);
-  });
+  it.each(['made_up_code', 'constructor', 'toString', '__proto__', ''])(
+    'does not take a refusal code it does not know (%j, names on the prototype included): that is a worker that is not working',
+    async (code) => {
+      const f = faults();
+      const p = preparer({ onFault: f.report });
+      expect(await p.prepare(`refuse:${code}`)).toEqual({ ok: false, reason: 'worker_failed' });
+      expect(f.seen).toHaveLength(1);
+    },
+  );
 });
 
 describe('turning pages away', () => {
