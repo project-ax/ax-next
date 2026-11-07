@@ -20,6 +20,7 @@ async function bootHarness(opts: {
   spaFallback?: boolean | string;
   mountPath?: string;
   apiPathPrefixes?: readonly string[];
+  frameSrc?: readonly string[];
   /**
    * Register `apiRoutes` AFTER static-files' catchall instead of before it.
    * That is the order the memory preset actually ran in production
@@ -48,6 +49,7 @@ async function bootHarness(opts: {
     ...(opts.apiPathPrefixes !== undefined
       ? { apiPathPrefixes: opts.apiPathPrefixes }
       : {}),
+    ...(opts.frameSrc !== undefined ? { frameSrc: opts.frameSrc } : {}),
   });
 
   // API-routes plugin: registers routes BEFORE static-files's catchall.
@@ -349,6 +351,62 @@ describe('@ax/static-files', () => {
     // And the SPA still owns everything the API does not.
     const spa = await fetch(`http://127.0.0.1:${port}/settings/agents`);
     expect(await spa.text()).toBe('<html>spa</html>');
+  });
+
+  describe('frameSrc (the shell may frame the artifact content origin)', () => {
+    const SHELL =
+      '<html><head><meta http-equiv="Content-Security-Policy" content="frame-src \'none\'" /></head><body></body></html>';
+
+    it('widens the shell meta to the configured origins, on the file and the SPA fallback', async () => {
+      writeFileSync(join(dir, 'index.html'), SHELL);
+      const port = await boot({ dir, spaFallback: true, frameSrc: ['https://c.example.net'] });
+      // Exactly the view route, never the bare origin.
+      const want =
+        '<html><head><meta http-equiv="Content-Security-Policy" content="frame-src https://c.example.net/v/" /></head><body></body></html>';
+      for (const p of ['/index.html', '/agents/abc']) {
+        const r = await fetch(`http://127.0.0.1:${port}${p}`);
+        expect(r.status).toBe(200);
+        expect(await r.text()).toBe(want);
+      }
+    });
+
+    it('scopes every configured origin to its /v/ route', async () => {
+      writeFileSync(join(dir, 'index.html'), SHELL);
+      const port = await boot({ dir, frameSrc: ['https://a.example.net', 'http://127.0.0.1:9091'] });
+      expect(await (await fetch(`http://127.0.0.1:${port}/index.html`)).text()).toContain(
+        'content="frame-src https://a.example.net/v/ http://127.0.0.1:9091/v/"',
+      );
+    });
+
+    it("leaves the shell at frame-src 'none' with no origins, and never touches non-HTML", async () => {
+      writeFileSync(join(dir, 'index.html'), SHELL);
+      writeFileSync(join(dir, 'app.js'), `const s = 'content="frame-src \'none\'"';`);
+      const plain = await boot({ dir });
+      expect(await (await fetch(`http://127.0.0.1:${plain}/index.html`)).text()).toBe(SHELL);
+      const widened = await boot({ dir, frameSrc: ['http://127.0.0.1:9091'] });
+      expect(await (await fetch(`http://127.0.0.1:${widened}/app.js`)).text()).toBe(
+        `const s = 'content="frame-src \'none\'"';`,
+      );
+    });
+
+    it('gives a widened shell its own ETag, so a copy cached under other origins is refetched', async () => {
+      writeFileSync(join(dir, 'index.html'), SHELL);
+      const plain = await fetch(`http://127.0.0.1:${await boot({ dir })}/index.html`);
+      const a = await fetch(`http://127.0.0.1:${await boot({ dir, frameSrc: ['https://a.example.net'] })}/index.html`);
+      const b = await fetch(`http://127.0.0.1:${await boot({ dir, frameSrc: ['https://b.example.net'] })}/index.html`);
+      const tags = [plain, a, b].map((r) => r.headers.get('etag'));
+      expect(new Set(tags).size).toBe(3);
+    });
+
+    it.each([
+      "https://c.example.net; script-src *",
+      'https://c.example.net/path',
+      '"><script>',
+      "'self'",
+      '*',
+    ])('refuses a frameSrc entry that is not a bare origin: %s', (entry) => {
+      expect(() => createStaticFilesPlugin({ dir, frameSrc: [entry] })).toThrow(/bare http\(s\) origin/);
+    });
   });
 
   it('rejects an unusable apiPathPrefixes entry at construction', () => {

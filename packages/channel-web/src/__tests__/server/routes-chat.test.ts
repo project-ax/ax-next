@@ -433,7 +433,7 @@ function blobStorePlugin(): Plugin {
           return bytes === undefined ? { found: false } : { bytes };
         },
       );
-      // @ax/attachments declares blob:stat (artifacts:publish-blob checks the sha
+      // @ax/attachments declares blob:stat (artifacts:publish checks the sha
       // exists); these tests never publish, the stub just has to register.
       bus.registerService(
         'blob:stat',
@@ -446,6 +446,19 @@ function blobStorePlugin(): Plugin {
     },
   };
 }
+
+/** The `artifacts:*` hooks channel-web's owner and link-holder routes declare as hard calls. */
+const ARTIFACT_HOOKS = [
+  'artifacts:list',
+  'artifacts:get',
+  'artifacts:read',
+  'artifacts:rename',
+  'artifacts:restore',
+  'artifacts:delete',
+  'artifacts:set-link',
+  'artifacts:mint-view-token',
+  'artifacts:resolve-share-code',
+] as const;
 
 /**
  * No-op stub for `attachments:*`. Channel-web declares `attachments:store-temp`
@@ -465,6 +478,15 @@ function attachmentsStubPlugin(): Plugin {
         'attachments:store-temp',
         'attachments:commit',
         'attachments:download',
+        'artifacts:list',
+        'artifacts:get',
+        'artifacts:read',
+        'artifacts:rename',
+        'artifacts:restore',
+        'artifacts:delete',
+        'artifacts:set-link',
+        'artifacts:mint-view-token',
+        'artifacts:resolve-share-code',
       ],
       calls: [],
       subscribes: [],
@@ -480,6 +502,8 @@ function attachmentsStubPlugin(): Plugin {
       bus.registerService('attachments:store-temp', 'mock-attachments-stub', notImpl);
       bus.registerService('attachments:commit', 'mock-attachments-stub', notImpl);
       bus.registerService('attachments:download', 'mock-attachments-stub', notImpl);
+      // Agent artifacts (owner routes) — declared hard calls, not exercised here.
+      for (const hook of ARTIFACT_HOOKS) bus.registerService(hook, 'mock-attachments-stub', notImpl);
     },
   };
 }

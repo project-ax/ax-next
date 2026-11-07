@@ -181,6 +181,12 @@ describe('operationalNotes — the single assembly point', () => {
     expect(withVenv).toContain(ephemeralScratchNote(SCRATCH));
   });
 
+  it('the Python note names the four libraries and what each is for', () => {
+    expect(pythonVenvNote()).toContain(
+      "These Python libraries are already installed, so there's nothing to download: reportlab for PDFs, python-docx for Word documents, openpyxl for Excel spreadsheets, and matplotlib for charts (save charts as PNG or SVG).",
+    );
+  });
+
   it('defaults pythonVenvActive to false (2-arg call)', () => {
     expect(operationalNotes(HOME, SCRATCH)).not.toContain(pythonVenvNote());
   });

@@ -4,34 +4,45 @@
 // sandbox-MCP bridge (sandbox-mcp-server.ts) dispatches to this function via the
 // runner's local-dispatcher.
 //
-// The validation order is unchanged (it's the security floor):
-//   1. Allowlist (pure-path) — the session's REAL roots: <userFilesRoot>/** plus
-//      <ephemeralRoot>/artifacts/**. See @ax/tool-artifact-publish for why only
-//      those.
+// The validation order (it's the security floor):
+//   0. Input shape: a non-blank `title` of at most ARTIFACT_TITLE_MAX, an
+//      optional string `artifactId`, a `path` with no control, format or bidi
+//      character (the class `@ax/core/surface-text` owns), and a conversation
+//      to publish into.
+//   1. Allowlist (pure-path) — the session's REAL files root, <userFilesRoot>/**
+//      and nothing else (C2). A relative path is taken relative to that root
+//      first: the agent's artifact list names files that way. See
+//      @ax/tool-artifact-publish.
 //   2. lstat → catches a symlinked final component before any byte read.
 //   3. realpath containment → catches a symlinked INTERMEDIATE directory, which
 //      the textual check structurally cannot see (step 1 does no I/O) and which
 //      lstat does not catch either (it follows every component but the last).
 //   4. Size cap.
-//   5. read + sha256.
-//   6. mediaType sniff (extension only — no content sniffing v1).
+//   5. read, then stream the bytes to the host's content-addressed blob store
+//      (blob.put — the REQUEST-direction binary IPC channel).
+//   6. artifact.publish: the host adds a version to the artifact published
+//      from this path (or named by `artifactId`), or makes a new one. Media
+//      type and size are the host's to decide (from the path, from the store).
 //
-// Durability: the executor STREAMS the bytes to the host's content-addressed
-// blob store (blob.put — the REQUEST-direction binary IPC channel) and records
-// the metadata row (artifact.publish). Durability is observable EXACTLY at this
-// function's return: a blob.put success means the bytes are durable.
+// The result names the artifact by id and `ax://artifact/<id>` — never a share
+// code (C1) — plus the root-relative `path`, which auto-attach keys on so the
+// published file gets no `agent_file` chip next to its card.
 // ---------------------------------------------------------------------------
 
-import { createHash } from 'node:crypto';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
-import type { ToolCall } from '@ax/ipc-protocol';
-import type { IpcClient } from '@ax/ipc-protocol';
+import { REWRITES_THE_SURFACE } from '@ax/core/surface-text';
+import {
+  ARTIFACT_TITLE_MAX,
+  type ArtifactKind,
+  type ArtifactPublishResponse,
+  type IpcClient,
+  type ToolCall,
+} from '@ax/ipc-protocol';
 import {
   checkPublishablePath,
   describeRoots,
   MAX_ARTIFACT_BYTES,
-  MAX_DISPLAY_NAME_CHARS,
   type PublishRoots,
 } from '@ax/tool-artifact-publish';
 
@@ -52,9 +63,9 @@ const EXTENSION_TO_MEDIA_TYPE: Record<string, string> = {
 };
 
 /**
- * A file's media type, from its extension alone (no content sniffing). Also
- * labels the files auto-attach references (`generated-files.ts`), so an
- * automatic chip and an explicit publish of the same file agree.
+ * A file's media type, from its extension alone (no content sniffing). Labels
+ * the files auto-attach references (`generated-files.ts`). A published
+ * artifact's media type is the host's to decide, from the path.
  */
 export function mediaTypeFromExtension(filename: string): string {
   const ext = path.extname(filename).toLowerCase();
@@ -63,41 +74,37 @@ export function mediaTypeFromExtension(filename: string): string {
 
 export interface CreateArtifactPublishExecutorOptions {
   /**
-   * The agent's home (`AX_USERFILES_ROOT`). Publishable in full — it is the
-   * agent's cwd and holds only user content. Required: the runner refuses to
-   * start without it.
+   * The agent's files folder (`AX_USERFILES_ROOT`). The only publishable place
+   * (C2) — it is the agent's cwd and holds only its own files. Required: the
+   * runner refuses to start without it.
    */
   userFilesRoot: string;
   /**
-   * Session scratch root (`AX_EPHEMERAL_ROOT`). Only `<root>/artifacts/**` is
-   * publishable — the rest of it is uploads, transcripts, the venv, caches and
-   * build trees. Required: the runner refuses to start without it.
+   * IPC client to the host. The executor streams the bytes to `blob.put` and
+   * adds the version via `artifact.publish`.
    */
-  ephemeralRoot: string;
+  client: Pick<IpcClient, 'callBinaryUpload' | 'call'>;
   /**
-   * IPC client to the host. The executor streams artifact bytes to `blob.put`
-   * and records the metadata row via `artifact.publish`. When undefined (older
-   * call sites / tests that only exercise validation), the executor returns the
-   * computed metadata WITHOUT a durable store — see `publishToHost`.
-   */
-  client?: Pick<IpcClient, 'callBinaryUpload' | 'call'>;
-  /**
-   * The conversation this session is bound to. Required to record the artifact
-   * row (it's the ownership scope). When null/undefined, the executor still
-   * stores the blob but cannot record a metadata row, so it returns metadata
-   * without calling artifact.publish.
+   * The conversation this session is bound to: the ownership scope of the
+   * publish. With none, the executor refuses before any byte leaves.
    */
   conversationId?: string | null;
 }
 
 export interface ArtifactPublishOutput {
   artifactId: string;
-  downloadUrl: string;
+  version: number;
+  title: string;
+  kind: ArtifactKind;
+  extension: string;
+  /** `ax://artifact/<id>` — never a share code (C1). */
+  url: string;
+  /** Relative to the files folder; the re-publish key. */
   path: string;
-  displayName: string;
-  mediaType: string;
-  sizeBytes: number;
-  sha256: string;
+}
+
+function fail(message: string): never {
+  throw new Error(`artifact_publish: ${message}`);
 }
 
 export function createArtifactPublishExecutor(
@@ -106,35 +113,40 @@ export function createArtifactPublishExecutor(
   return async function execute(
     call: ToolCall,
   ): Promise<ArtifactPublishOutput> {
-    const input = call.input as { path?: unknown; displayName?: unknown };
-    if (typeof input?.path !== 'string' || input.path.length === 0) {
-      throw new Error('artifact_publish: input.path is required (string)');
+    const input = (call.input ?? {}) as { path?: unknown; title?: unknown; artifactId?: unknown };
+    if (typeof input.path !== 'string' || input.path.length === 0) {
+      fail('input.path is required (string)');
     }
-    if (
-      input.displayName !== undefined &&
-      typeof input.displayName !== 'string'
-    ) {
-      throw new Error(
-        'artifact_publish: input.displayName must be a string when provided',
-      );
+    // `title` is model output the host stores and shows. The host normalizes
+    // it; a blank or over-long one is refused here, with a message the model
+    // can act on, rather than as a wire error.
+    if (typeof input.title !== 'string' || input.title.trim().length === 0) {
+      fail('input.title is required: a short human name, like "Q3 pipeline report"');
     }
-    // `displayName` is model output that gets stored and rendered as the
-    // artifact's label. Bound it here rather than accept whatever the model
-    // emits; the row and the chat bubble both assume something filename-sized.
-    if (
-      typeof input.displayName === 'string' &&
-      input.displayName.length > MAX_DISPLAY_NAME_CHARS
-    ) {
-      throw new Error(
-        `artifact_publish: displayName too long (${input.displayName.length} chars, max ${MAX_DISPLAY_NAME_CHARS})`,
-      );
+    if (input.title.length > ARTIFACT_TITLE_MAX) {
+      fail(`title too long (${input.title.length} chars, max ${ARTIFACT_TITLE_MAX})`);
+    }
+    if (input.artifactId !== undefined && typeof input.artifactId !== 'string') {
+      fail('input.artifactId must be a string when provided');
+    }
+    // The path is stored and shown back to the agent and the person; a control
+    // or bidi character could make it read as a different name.
+    if (REWRITES_THE_SURFACE.test(input.path)) {
+      fail('the path holds a control or invisible character; rename the file first');
+    }
+    const conversationId = opts.conversationId;
+    if (conversationId === undefined || conversationId === null) {
+      fail('this session is not bound to a conversation, so there is nowhere to publish to');
     }
 
-    const roots: PublishRoots = {
-      userFilesRoot: opts.userFilesRoot,
-      ephemeralRoot: opts.ephemeralRoot,
-    };
-    const check = checkPublishablePath(input.path, roots);
+    const roots: PublishRoots = { userFilesRoot: opts.userFilesRoot };
+    // The agent's artifact list names files relative to the files folder, so a
+    // relative path is taken relative to it. `..` cannot escape: the allowlist
+    // resolves and re-checks containment.
+    const requested = path.isAbsolute(input.path)
+      ? input.path
+      : path.resolve(opts.userFilesRoot, input.path);
+    const check = checkPublishablePath(requested, roots);
     if (!check.ok) {
       throw new Error(check.reason);
     }
@@ -170,9 +182,9 @@ export function createArtifactPublishExecutor(
     // `<root>/reports` is a symlink to `/etc`. `lstat` does not close that
     // either: it declines to follow only the FINAL component, and happily
     // traverses symlinked directories on the way there. Since the agent now has
-    // a whole tier of its own to publish from, and it writes every byte of it,
+    // a whole folder of its own to publish from, and it writes every byte of it,
     // planting such a directory is trivial. Resolving both sides and re-testing
-    // containment is what actually enforces "inside the tier".
+    // containment is what actually enforces "inside the folder".
     //
     // Residual, stated rather than papered over: this is a check-then-read, so a
     // component swapped between `realpath` and `readFile` would still be
@@ -199,7 +211,7 @@ export function createArtifactPublishExecutor(
       !realTarget.startsWith(realBase + path.sep)
     ) {
       throw new Error(
-        `artifact_publish: resolved outside the publishable tier — ${describeRoots(roots)}`,
+        `artifact_publish: resolved outside the files folder — ${describeRoots(roots)}`,
       );
     }
 
@@ -210,109 +222,53 @@ export function createArtifactPublishExecutor(
     }
 
     const bytes = await fs.readFile(absInRoot);
-    const localSha = createHash('sha256').update(bytes).digest('hex');
 
-    const filename = path.basename(absInRoot);
-    const displayName =
-      typeof input.displayName === 'string' ? input.displayName : filename;
-    const mediaType = mediaTypeFromExtension(filename);
-
-    // Stream the bytes to the host blob store + record the metadata row. The
-    // host computes the authoritative sha256 (we sent the bytes; it hashes them),
-    // so `publishToHost` returns that — `localSha` is a sanity reference.
-    const published = await publishToHost({
-      opts,
+    const published = await publishBytesToHost({
+      client: opts.client,
+      conversationId,
       bytes,
-      localSha,
-      relativePath,
-      displayName,
-      mediaType,
+      path: relativePath,
+      title: input.title,
+      ...(input.artifactId !== undefined ? { artifactId: input.artifactId } : {}),
     });
-
+    // The client checked the answer against the wire schema; only the fields
+    // named here reach the model.
     return {
       artifactId: published.artifactId,
-      downloadUrl: published.downloadUrl,
+      version: published.version,
+      title: published.title,
+      kind: published.kind,
+      extension: published.extension,
+      url: `ax://artifact/${published.artifactId}`,
       path: relativePath,
-      displayName,
-      mediaType,
-      sizeBytes: lst.size,
-      sha256: published.sha256,
     };
   };
 }
-
 /**
- * Store the artifact durably on the host and record its metadata row. Durability
- * is observable at the `blob.put` success. When no IPC client / conversationId
- * is wired (older call sites, validation-only tests), fall back to the prior
- * "compute metadata only" behavior with the locally-computed sha + id.
- */
-async function publishToHost(args: {
-  opts: CreateArtifactPublishExecutorOptions;
-  bytes: Buffer;
-  localSha: string;
-  relativePath: string;
-  displayName: string;
-  mediaType: string;
-}): Promise<{ artifactId: string; downloadUrl: string; sha256: string }> {
-  const { opts, bytes, localSha } = args;
-  if (opts.client === undefined) {
-    // No host wiring (validation-only path): return the computed metadata
-    // without a durable store. Used by call sites that only exercise the
-    // path/symlink/size checks.
-    const artifactId = localSha.slice(0, 16);
-    return { artifactId, downloadUrl: `ax://artifact/${artifactId}`, sha256: localSha };
-  }
-
-  if (opts.conversationId === undefined || opts.conversationId === null) {
-    // Bytes are durable in the blob store, but with no conversation binding we
-    // can't record an ownership row. Return blob-derived metadata; the artifact
-    // is reachable only once a row exists, so this is a degraded path.
-    const put = (await opts.client.callBinaryUpload('blob.put', bytes)) as {
-      sha256: string;
-      size: number;
-    };
-    const artifactId = put.sha256.slice(0, 16);
-    return { artifactId, downloadUrl: `ax://artifact/${artifactId}`, sha256: put.sha256 };
-  }
-
-  return publishBytesToHost({
-    client: opts.client,
-    conversationId: opts.conversationId,
-    bytes,
-    path: args.relativePath,
-    displayName: args.displayName,
-    mediaType: args.mediaType,
-  });
-}
-
-/**
- * The put-then-publish pair, with both host bindings present: stream the bytes
- * to the content-addressed blob store (`blob.put`, the REQUEST-direction binary
- * channel), then record the ownership + display row (`artifact.publish`).
- * Durability is observable at the `blob.put` success. The returned `sha256` is
- * the host's, not a local one — the host hashed the bytes it actually stored.
- * Shared by `artifact_publish` and `show_visual`.
+ * The put-then-publish pair: stream the bytes to the content-addressed blob
+ * store (`blob.put`, the REQUEST-direction binary channel), then add the
+ * version (`artifact.publish`). The host hashes the bytes it stored and that
+ * hash is what the version records. Shared by `artifact_publish` and
+ * `show_visual`.
  */
 export async function publishBytesToHost(args: {
   client: Pick<IpcClient, 'callBinaryUpload' | 'call'>;
   conversationId: string;
   bytes: Buffer;
+  /** Relative to the files folder (or a reserved key); the re-publish key. */
   path: string;
-  displayName: string;
-  mediaType: string;
-}): Promise<{ artifactId: string; downloadUrl: string; sha256: string }> {
-  const put = (await args.client.callBinaryUpload('blob.put', args.bytes)) as {
-    sha256: string;
-    size: number;
-  };
-  const pub = (await args.client.call('artifact.publish', {
+  title: string;
+  artifactId?: string;
+  /** A chat visual (show_visual only): kept out of the Artifacts list. */
+  visual?: true;
+}): Promise<ArtifactPublishResponse> {
+  const put = (await args.client.callBinaryUpload('blob.put', args.bytes)) as { sha256: string };
+  return (await args.client.call('artifact.publish', {
     conversationId: args.conversationId,
     sha256: put.sha256,
     path: args.path,
-    displayName: args.displayName,
-    mediaType: args.mediaType,
-    size: args.bytes.byteLength,
-  })) as { artifactId: string; downloadUrl: string };
-  return { artifactId: pub.artifactId, downloadUrl: pub.downloadUrl, sha256: put.sha256 };
+    title: args.title,
+    ...(args.artifactId !== undefined ? { artifactId: args.artifactId } : {}),
+    ...(args.visual === true ? { visual: true } : {}),
+  })) as ArtifactPublishResponse;
 }

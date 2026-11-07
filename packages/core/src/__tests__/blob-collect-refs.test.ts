@@ -5,6 +5,7 @@ import {
   answerBlobCollectRefs,
   isBlobSha256,
   parseBlobCandidates,
+  quotaOwnerKey,
   readBlobCollectRefsAnswers,
   type BlobCollectRefsPayload,
 } from '../blob-collect-refs.js';
@@ -208,5 +209,14 @@ describe('over the real HookBus', () => {
     const out = readBlobCollectRefsAnswers(res.rejected ? undefined : res.payload, [A]);
     expect([...out.answered].sort()).toEqual(['h1', 'h2']);
     expect(out.answered.has('boom')).toBe(false);
+  });
+});
+
+describe('quotaOwnerKey', () => {
+  // The ledger owner key a holder answers in `userIds`: a team agent's bytes
+  // are charged to the team, a personal agent's to its person.
+  it('quotaOwnerKey spells team owners team:<id> and personal owners as the user id', () => {
+    expect(quotaOwnerKey({ ownerType: 'team', ownerId: 't1' })).toBe('team:t1');
+    expect(quotaOwnerKey({ ownerType: 'user', ownerId: 'u1' })).toBe('u1');
   });
 });

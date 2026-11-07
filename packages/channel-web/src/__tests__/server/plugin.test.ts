@@ -176,6 +176,19 @@ function conversationsMockPlugin(args: {
   };
 }
 
+/** The `artifacts:*` hooks channel-web's owner and link-holder routes declare as hard calls. */
+const ARTIFACT_HOOKS = [
+  'artifacts:list',
+  'artifacts:get',
+  'artifacts:read',
+  'artifacts:rename',
+  'artifacts:restore',
+  'artifacts:delete',
+  'artifacts:set-link',
+  'artifacts:mint-view-token',
+  'artifacts:resolve-share-code',
+] as const;
+
 /**
  * Stub for `attachments:store-temp` / `attachments:commit` / `attachments:download`.
  * Channel-web declares all three as hard calls (Phase 3). This suite doesn't
@@ -193,6 +206,15 @@ function attachmentsMockPlugin(): Plugin {
         'attachments:store-temp',
         'attachments:commit',
         'attachments:download',
+        'artifacts:list',
+        'artifacts:get',
+        'artifacts:read',
+        'artifacts:rename',
+        'artifacts:restore',
+        'artifacts:delete',
+        'artifacts:set-link',
+        'artifacts:mint-view-token',
+        'artifacts:resolve-share-code',
       ],
       calls: [],
       subscribes: [],
@@ -219,6 +241,16 @@ function attachmentsMockPlugin(): Plugin {
           message: 'attachments:download stub (not exercised by this suite)',
         });
       });
+      // Agent artifacts (owner routes) — declared hard calls, not exercised here.
+      for (const hook of ARTIFACT_HOOKS) {
+        bus.registerService(hook, 'mock-attachments', async () => {
+          throw new PluginError({
+            code: 'not-implemented',
+            plugin: 'mock-attachments',
+            message: `${hook} stub (not exercised by this suite)`,
+          });
+        });
+      }
     },
   };
 }
@@ -700,6 +732,15 @@ describe('@ax/channel-web server plugin (integration)', () => {
         'attachments:store-temp',
         'attachments:commit',
         'attachments:download',
+        'artifacts:list',
+        'artifacts:get',
+        'artifacts:read',
+        'artifacts:rename',
+        'artifacts:restore',
+        'artifacts:delete',
+        'artifacts:set-link',
+        'artifacts:mint-view-token',
+        'artifacts:resolve-share-code',
         'proxy:add-host',
         'skills:list',
         'skills:list-user-attachments',

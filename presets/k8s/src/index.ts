@@ -53,6 +53,7 @@ import {
 import { createMemoryFactsPostgresPlugin } from '@ax/memory-facts-postgres';
 import { createWebToolsPlugin } from '@ax/web-tools';
 import { createRetireStrataIndexPlugin } from './retire-strata-index.js';
+import { parseContentOrigin, type ParsedContentOrigin } from './content-origin.js';
 import { createChannelWebServerPlugin } from '@ax/channel-web/server';
 import { createOnboardingPlugin, type OnboardingConfig } from '@ax/onboarding';
 import { createBlobStoreFsPlugin } from '@ax/blob-store-fs';
@@ -436,6 +437,19 @@ export interface K8sPresetConfig {
     /** Exact-match CSRF allow-list. Empty allows only X-Requested-With callers. */
     allowedOrigins: string[];
   };
+  /**
+   * The artifact content origin (spec §6.5): a second listener, on a different
+   * site from the app, that serves agent-made HTML and images under signed,
+   * short-lived view tokens. `loadK8sConfigFromEnv` always sets it, from
+   * AX_CONTENT_ORIGIN / AX_CONTENT_PORT / AX_CONTENT_FRAME_ANCESTORS (see
+   * content-origin.ts). Configs built in code may omit it; then no listener
+   * starts and minting a view token answers `unavailable`.
+   *
+   * Single host replica only: the view-token key is 32 random bytes made per
+   * process, so a second replica would refuse the first one's tokens. The
+   * chart's validateHostReplicas already pins replicas to 1.
+   */
+  contentOrigin?: ParsedContentOrigin;
   /**
    * @ax/auth-better config. Auth-better is config-light by design — providers
    * (google / github / generic OIDC) live exclusively in the `auth_providers`
@@ -1298,12 +1312,17 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   // ----- 9a. attachments ----------------------------------------------------
   // The attachments & artifacts subsystem. Service hooks
   // (attachments:store-temp / commit / download / list-for-conversation +
-  // artifacts:publish-blob). commit/download/publish ride the
+  // the artifacts:* owner hooks, publish among them). commit/download/publish
+  // ride the
   // content-addressed blob store (the selected blob:* backend registered at
   // step 3b above — fs or s3); attachments are addressed by ID. The IPC
   // dispatcher's blob.put/blob.get/artifact.publish/attachments.list actions
   // drive these from the runner.
-  plugins.push(createAttachmentsPlugin());
+  plugins.push(
+    createAttachmentsPlugin(
+      config.contentOrigin === undefined ? {} : { contentOrigin: config.contentOrigin },
+    ),
+  );
   // Phase 2: registers the `artifact_publish` tool descriptor so the canary
   // smoke flow includes it in tool.list. The sandbox-MCP bridge dispatches
   // calls once the runner's allowedTools includes `artifact_publish`.
@@ -1471,6 +1490,15 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
           ? { mountPath: config.staticFiles.mountPath }
           : {}),
         spaFallback: config.staticFiles.spaFallback ?? true,
+        // The artifact viewer frames `<content origin>/v/<token>`. The shell's
+        // CSP ships `frame-src 'none'` (it also stops a chat visual navigating
+        // its own frame out); static-files widens it to that origin's /v/
+        // route only (`frame-src <origin>/v/`). With no
+        // public content origin the shell keeps 'none' — the viewer can't
+        // load, which is the safe way to be wrong.
+        ...(config.contentOrigin?.publicOrigin !== undefined
+          ? { frameSrc: [config.contentOrigin.publicOrigin] }
+          : {}),
       }),
     );
   }
@@ -1575,6 +1603,10 @@ export function blobConfigFromEnv(
 //   - AX_HTTP_HOST / AX_HTTP_PORT  — public-facing http listener
 //   - AX_HTTP_COOKIE_KEY           — 32-byte signing key (hex / base64)
 //   - AX_HTTP_ALLOWED_ORIGINS      — CSRF allow-list (comma-separated)
+//   - AX_CONTENT_ORIGIN /          — the artifact content origin: its public
+//     AX_CONTENT_FRAME_ANCESTORS     URL (a different site from the app) and the
+//                                    app origins that may frame it.
+//                                    AX_CONTENT_PORT is optional (default 9091).
 //   - AX_FILESTORE_SERVER /        — the durable per-agent /files NFS export
 //     AX_FILESTORE_EXPORT_PATH       (every agent needs a home)
 //   - AX_BLOB_FS_ROOT              — the blob directory, when AX_BLOB_BACKEND is
@@ -1866,6 +1898,19 @@ export function loadK8sConfigFromEnv(
     auth.secret = authSecret;
   }
 
+  // ---- artifact content origin (spec §6.5) ------------------------------
+  // Required from env: the chart always stamps all three. It binds the same
+  // interface as the public listener. Read literally here so the chart's
+  // env-shape test sees them; content-origin.ts validates (bare origins, a
+  // different site from every frame ancestor, port 0..65535 with 0 for test
+  // fixtures only).
+  const contentOrigin = parseContentOrigin({
+    origin: env.AX_CONTENT_ORIGIN,
+    port: env.AX_CONTENT_PORT,
+    frameAncestors: env.AX_CONTENT_FRAME_ANCESTORS,
+    bindHost: httpHost,
+  });
+
   const config: K8sPresetConfig = {
     database: { connectionString: databaseUrl },
     eventbus: { connectionString: databaseUrl },
@@ -1883,6 +1928,7 @@ export function loadK8sConfigFromEnv(
       cookieKey,
       allowedOrigins,
     },
+    contentOrigin,
   };
   // Only attach `auth` when something was set. Empty `auth: {}` is harmless,
   // but the loader's "optional unless populated" pattern keeps the rendered

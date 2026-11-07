@@ -90,7 +90,7 @@ function createStubsPlugin(): Plugin {
     manifest: {
       name,
       version: '0.0.0',
-      registers: ['http:register-route', 'auth:require-user', 'conversations:get'],
+      registers: ['http:register-route', 'auth:require-user', 'conversations:get', 'agents:resolve'],
       calls: [],
       subscribes: [],
     },
@@ -101,6 +101,10 @@ function createStubsPlugin(): Plugin {
       });
       bus.registerService('conversations:get', name, async () => {
         throw new PluginError({ code: 'not-found', plugin: name, message: 'no conversations' });
+      });
+      // @ax/attachments charges a published version to the agent's owner.
+      bus.registerService('agents:resolve', name, async () => {
+        throw new PluginError({ code: 'not-found', plugin: name, message: 'no agents' });
       });
     },
   };
@@ -264,7 +268,7 @@ describe('@ax/preset-k8s blob GC report-mode canary (TASK-777)', () => {
     testHolderMode = 'answer';
     await sql`TRUNCATE blob_gc_v1_blobs, blob_gc_v1_roster`.execute(await db());
     await sql`TRUNCATE attachments_v1_files`.execute(await db());
-    await sql`TRUNCATE attachments_v1_artifacts`.execute(await db());
+    await sql`TRUNCATE attachments_v1_artifacts, attachments_v1_artifact_versions`.execute(await db());
     await fs.rm(blobRoot, { recursive: true, force: true });
     await fs.mkdir(blobRoot, { recursive: true });
     backendCalls.length = 0;

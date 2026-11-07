@@ -86,6 +86,58 @@ export function saveFromUrl(url: string): void {
 }
 
 /**
+ * A minted artifact address, checked before anything loads it (spec §6.5).
+ *
+ * It must be absolute http(s), on a DIFFERENT origin from this app (the
+ * content origin is another site by design — an address on our own origin
+ * would run agent-made bytes with our cookies' origin), and on the path the
+ * purpose calls for: `/v/` to view, `/d/` to download. Anything else throws,
+ * so a caller fails closed into its own error state.
+ */
+export function checkContentOriginUrl(url: string, purpose: 'view' | 'download'): URL {
+  let resolved: URL;
+  try {
+    resolved = new URL(url);
+  } catch {
+    throw new Error('checkContentOriginUrl: not an absolute address');
+  }
+  const path = purpose === 'view' ? '/v/' : '/d/';
+  if (
+    (resolved.protocol !== 'https:' && resolved.protocol !== 'http:') ||
+    resolved.origin === window.location.origin ||
+    !resolved.pathname.startsWith(path)
+  ) {
+    throw new Error(`checkContentOriginUrl: refusing an address that is not an artifact ${purpose} address`);
+  }
+  return resolved;
+}
+
+/**
+ * Hand an artifact's minted DOWNLOAD address to the browser (spec §6.5).
+ *
+ * The same idea as `saveFromUrl` — the browser streams the file to disk, the
+ * tab never holds it, no blob — but the address is on the CONTENT origin, a
+ * different site from this app, so `saveFromUrl`'s same-origin rule would
+ * refuse it. The content origin answers `/d/<token>` with
+ * `Content-Disposition: attachment` (P14), so clicking it saves a file and
+ * leaves this page where it is.
+ *
+ * The address is checked first (`checkContentOriginUrl`), and the click
+ * carries no referrer, so the content origin never learns which page of the
+ * app asked.
+ */
+export function saveFromContentOrigin(url: string): void {
+  const resolved = checkContentOriginUrl(url, 'download');
+  const a = document.createElement('a');
+  a.href = resolved.href;
+  a.rel = 'noreferrer';
+  a.style.display = 'none';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+
+/**
  * Hand a blob to the browser's download machinery.
  *
  * Only chat ATTACHMENT chips use this now (`/api/files`). A file from the

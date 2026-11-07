@@ -12,16 +12,24 @@
 // env.ephemeralRoot) instead. It is granted to the SDK as an additional
 // directory and is gone with the session, matching D's "per-session ephemeral
 // fetch" intent.
+//
+// matplotlib (pre-installed in the venv template for charts) writes its config
+// and font cache to MPLCONFIGDIR, defaulting to ~/.config/matplotlib — i.e.
+// `/files`. Point it at scratch too, and pin the headless Agg backend so a
+// chart script never probes for a display.
 // ---------------------------------------------------------------------------
 
 /**
- * Env vars that redirect `npx` (npm) and `uvx` (uv) fetch caches off the
- * agent's home and onto the session scratch root.
+ * Env vars that redirect `npx` (npm), `uvx` (uv) and matplotlib caches off the
+ * agent's home and onto the session scratch root, plus matplotlib's headless
+ * backend.
  */
 export function buildToolCacheEnv(ephemeralRoot: string): Record<string, string> {
   return {
     npm_config_cache: `${ephemeralRoot}/.npm`, // npx fetch-and-run cache
     UV_CACHE_DIR: `${ephemeralRoot}/uv`, // uvx ephemeral-env cache
     XDG_CACHE_HOME: `${ephemeralRoot}/.cache`, // belt-and-suspenders for other XDG-aware tools
+    MPLCONFIGDIR: `${ephemeralRoot}/.matplotlib`, // matplotlib config + font cache
+    MPLBACKEND: 'Agg', // headless rendering; no display in the sandbox
   };
 }

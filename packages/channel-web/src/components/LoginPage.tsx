@@ -73,7 +73,8 @@ export function LoginPage({ sessionExpired = false }: { sessionExpired?: boolean
             // misconfigured provider or an unreachable host it throws, and the
             // person stays here — which is exactly when they need to be told.
             setFailed(false);
-            void signInWithGoogle().catch((err: unknown) => {
+            // From a share link, come back to it (validated in signInWithGoogle).
+            void signInWithGoogle(window.location.pathname).catch((err: unknown) => {
               console.warn('[auth] could not start sign-in', err);
               setFailed(true);
             });

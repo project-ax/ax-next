@@ -17,7 +17,8 @@ import { mediaTypeFromExtension } from './artifact-publish-executor.js';
 // the sandbox here and nothing is copied into the blob store, so the file is
 // charged once, as an agent file. The chip downloads the file itself, live,
 // through the host's confined reader. A file the model publishes explicitly
-// (`artifact_publish`) keeps its blob-backed `attachment` chip.
+// (`artifact_publish`) is shown by its artifact card instead, so it gets no
+// chip here.
 //
 // /files is also HOME. Configuration, SDK state and dependencies are not
 // deliverables. Never follow symlinks, including intermediate directories.
@@ -139,8 +140,10 @@ export async function agentFileReference(root: string, relative: string): Promis
 }
 
 /**
- * Download chips for the model's explicit `artifact_publish` calls this turn,
- * and the root-relative paths they came from (so auto-attach skips them).
+ * The root-relative paths the model's explicit `artifact_publish` calls
+ * published this turn (so auto-attach skips them), and a download chip for any
+ * result that can still make one. Today's results name no file name, media type
+ * or size, so they make none: the artifact's card shows them.
  *
  * A chip names the artifact by id (`artifactId`); where the file sat in the
  * sandbox never leaves it (Invariant 1). The result rides a tool_result, so
@@ -162,11 +165,12 @@ export function publishedAttachments(
     for (const text of texts) {
       let value: unknown;
       try { value = JSON.parse(text); } catch { continue; /* A non-artifact tool result has no chip. */ }
-      const chip = attachmentBlockFromArtifact(value);
-      if (chip === null) continue;
-      blocks.push(chip);
-      const published = (value as { path?: unknown }).path;
+      // Every successful publish counts, chip or not: the artifact's card shows
+      // the file, so auto-attach must not chip it as well.
+      const published = (value as { path?: unknown } | null)?.path;
       if (typeof published === 'string') paths.push(published);
+      const chip = attachmentBlockFromArtifact(value);
+      if (chip !== null) blocks.push(chip);
     }
   }
   return { blocks, paths };

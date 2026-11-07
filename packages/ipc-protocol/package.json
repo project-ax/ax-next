@@ -9,6 +9,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./content-blocks": {
+      "types": "./dist/content-blocks.d.ts",
+      "default": "./dist/content-blocks.js"
     }
   },
   "files": ["dist"],

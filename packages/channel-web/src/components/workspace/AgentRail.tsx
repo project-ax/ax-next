@@ -1,5 +1,6 @@
 import { useState } from 'react';
-import { Activity, Brain, Folder } from 'lucide-react';
+import { Activity, Brain, Folder, Shapes } from 'lucide-react';
+import { cn } from '@/lib/utils';
 import { CompactSurfaceContext } from '@/lib/use-compact';
 import type { GrantRow, GrantRef } from '@/lib/workspace-api';
 
@@ -11,6 +12,7 @@ export const RAIL_PANELS = {
   memory: { label: 'Memory', Icon: Brain },
   files: { label: 'Files', Icon: Folder },
   activity: { label: 'Activity', Icon: Activity },
+  artifacts: { label: 'Artifacts', Icon: Shapes },
 } as const;
 export type RailPanel = keyof typeof RAIL_PANELS;
 export const RAIL_PANEL_IDS = Object.keys(RAIL_PANELS) as RailPanel[];
@@ -23,6 +25,8 @@ interface Props {
   panel: RailPanel;
   /** A muted aside next to the heading — e.g. "3 files". */
   meta?: string | null;
+  /** A wider column, for a panel showing something to read (an open artifact). */
+  wide?: boolean;
   children: React.ReactNode;
 }
 
@@ -68,7 +72,10 @@ export function AgentRail(props: Props) {
   return (
     <aside
       aria-label={RAIL_PANELS[props.panel].label}
-      className="flex min-h-0 w-[320px] shrink-0 flex-col border-l border-border"
+      className={cn(
+        'flex min-h-0 shrink-0 flex-col border-l border-border',
+        props.wide ? 'w-1/2 min-w-[480px]' : 'w-[320px]',
+      )}
     >
       <AgentRailContent {...props} />
     </aside>

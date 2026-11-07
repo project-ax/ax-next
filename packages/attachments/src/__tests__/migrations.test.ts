@@ -14,6 +14,7 @@ import {
   type AttachmentsDatabase,
 } from '../migrations.js';
 import { createAttachmentsStore } from '../store.js';
+import { finishArtifactsMigration } from '../artifacts/migrations.js';
 
 let container: StartedPostgreSqlContainer;
 let connectionString: string;
@@ -40,6 +41,7 @@ afterEach(async () => {
     try {
       await k.schema.dropTable('attachments_v1_temps').ifExists().execute();
       await k.schema.dropTable('attachments_v1_files').ifExists().execute();
+      await k.schema.dropTable('attachments_v1_artifact_versions').ifExists().execute();
       await k.schema.dropTable('attachments_v1_artifacts').ifExists().execute();
     } catch {
       // drained pool — ignore
@@ -104,11 +106,12 @@ describe('runAttachmentsMigration', () => {
   // TASK-776 (blob-gc design D7): @ax/attachments answers `blob:collect-refs`
   // with one `WHERE sha256 = ANY($1)` per table, once per sweep batch. Without
   // these indexes that is a full scan of each table on every batch.
-  it.each(['attachments_v1_files', 'attachments_v1_artifacts'])(
+  it.each(['attachments_v1_files', 'attachments_v1_artifact_versions'])(
     'indexes %s.sha256 for the blob:collect-refs holder lookup',
     async (table) => {
       const db = makeKysely();
       await runAttachmentsMigration(db);
+      await finishArtifactsMigration(db);
       const result = await sql<{ indexdef: string }>`
         SELECT indexdef FROM pg_indexes WHERE tablename = ${table}
       `.execute(db);
@@ -125,12 +128,12 @@ describe('runAttachmentsMigration', () => {
   }
 
   // Uploads are addressed by id; nothing reads or writes a path for them.
-  // Artifacts keep theirs: it is the re-publish key.
-  it('a fresh install has no path column on files; artifacts keep theirs', async () => {
+  // Artifacts keep a source path: it is the re-publish key.
+  it('a fresh install has no path column on files; artifacts keep a source path', async () => {
     const db = makeKysely();
     await runAttachmentsMigration(db);
     expect(await columnsOf(db, 'attachments_v1_files')).not.toContain('path');
-    expect(await columnsOf(db, 'attachments_v1_artifacts')).toContain('path');
+    expect(await columnsOf(db, 'attachments_v1_artifacts')).toContain('source_path');
   });
 
   it('an attachments_v1_files table created with a path column upgrades: path is gone and old rows still read by id', async () => {

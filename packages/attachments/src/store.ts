@@ -27,7 +27,7 @@ export type InsertTempIfWithinQuotaResult =
   | { ok: true }
   | { ok: false; reason: 'quota-exceeded' };
 
-// TASK-68: durable metadata for a committed upload / published artifact. The
+// TASK-68: durable metadata for a committed upload. The
 // bytes are in the blob store (sha256-addressed); this is the row that maps an
 // id → owner, conversation, sha256 + display metadata.
 export interface FileRowInsert {
@@ -41,17 +41,6 @@ export interface FileRowInsert {
 }
 
 export type FileRow = FileRowInsert;
-
-/**
- * A published artifact also records the file's location relative to its
- * publish root: the re-publish key (publishing the same file again updates the
- * row). It never leaves this plugin.
- */
-export interface ArtifactRowInsert extends FileRowInsert {
-  path: string;
-}
-
-export type ArtifactRow = ArtifactRowInsert;
 
 /**
  * Pure data access over `attachments_v1_temps`. No policy, no ACL — handlers
@@ -98,33 +87,23 @@ export interface AttachmentsStore {
    */
   listFilesForConversation(conversationId: string, userId: string): Promise<FileRow[]>;
 
-  // --- TASK-68: published-artifact metadata ---
-  /**
-   * Upsert a published-artifact row, idempotent on (conversationId, path).
-   * Returns `false` — and changes nothing — when that key already belongs to a
-   * row another user wrote: a write never takes over someone else's row.
-   */
-  upsertArtifact(input: ArtifactRowInsert): Promise<boolean>;
-  /** Resolve a published artifact by its id. Null if absent. */
-  getArtifactById(id: string): Promise<ArtifactRow | null>;
-
   // --- TASK-718: conversation purge ---
   /**
-   * Delete every committed-upload (`attachments_v1_files`) and published-artifact
-   * (`attachments_v1_artifacts`) row that belongs to one of `conversationIds`, in
-   * one transaction. Returns how many rows went from each table. An empty list
-   * is a no-op. Never touches `attachments_v1_temps` (pre-commit uploads carry
-   * no conversation id; the TTL janitor owns them) and never touches blob bytes.
+   * Delete every committed-upload (`attachments_v1_files`) row that belongs to
+   * one of `conversationIds`, in one transaction. Returns how many went. An
+   * empty list is a no-op. Never touches `attachments_v1_temps` (pre-commit
+   * uploads carry no conversation id; the TTL janitor owns them), published
+   * artifacts (they outlive their chat, D12: the artifact store clears their
+   * chat ids instead) or blob bytes.
    */
-  purgeForConversations(
-    conversationIds: string[],
-  ): Promise<{ files: number; artifacts: number }>;
+  purgeForConversations(conversationIds: string[]): Promise<{ files: number }>;
 
   // --- TASK-776: blob:collect-refs holder ---
   /**
-   * Which of `shas` do committed uploads or published artifacts still point at,
-   * and for whom? One entry per ROW (so two users holding the same bytes give two
-   * entries; the caller merges them), from both tables, with the row's owner.
+   * Which of `shas` do committed uploads still point at, and for whom? One
+   * entry per ROW (so two users holding the same bytes give two entries; the
+   * caller merges them), with the row's owner. Artifact versions answer through
+   * the artifact store.
    *
    * Reads every row, whatever state its conversation is in: a soft-deleted
    * conversation can come back, so it still holds its files. Throws on a query
@@ -302,68 +281,10 @@ export function createAttachmentsStore(
       return rows.map(fileRowFrom);
     },
 
-    async upsertArtifact(input) {
-      const written = await db
-        .insertInto('attachments_v1_artifacts')
-        .values({
-          artifact_id: input.id,
-          conversation_id: input.conversationId,
-          user_id: input.userId,
-          sha256: input.sha256,
-          path: input.path,
-          display_name: input.displayName,
-          media_type: input.mediaType,
-          size_bytes: input.sizeBytes,
-          created_at: new Date(),
-        })
-        // Re-publishing the same file refreshes its row — but only for the user
-        // who owns that row. Another user's write to the same key updates
-        // nothing (and RETURNING comes back empty), so it can never take the
-        // row over.
-        .onConflict((oc) =>
-          oc
-            .columns(['conversation_id', 'path'])
-            .doUpdateSet({
-              artifact_id: input.id,
-              sha256: input.sha256,
-              display_name: input.displayName,
-              media_type: input.mediaType,
-              size_bytes: input.sizeBytes,
-            })
-            .where('attachments_v1_artifacts.user_id', '=', input.userId),
-        )
-        .returning('artifact_id')
-        .executeTakeFirst();
-      return written !== undefined;
-    },
-
-    async getArtifactById(id) {
-      const row = await db
-        .selectFrom('attachments_v1_artifacts')
-        .selectAll()
-        .where('artifact_id', '=', id)
-        .executeTakeFirst();
-      if (!row) return null;
-      return {
-        id: row.artifact_id,
-        conversationId: row.conversation_id,
-        userId: row.user_id,
-        sha256: row.sha256,
-        path: row.path,
-        displayName: row.display_name,
-        mediaType: row.media_type,
-        sizeBytes: Number(row.size_bytes),
-      };
-    },
-
     async purgeForConversations(conversationIds) {
-      if (conversationIds.length === 0) return { files: 0, artifacts: 0 };
-      // Files and artifacts go together or not at all: a half-purged
-      // conversation would leave downloads resolving for one namespace and 404ing
-      // for the other.
+      if (conversationIds.length === 0) return { files: 0 };
       return db.transaction().execute(async (trx) => {
         let files = 0;
-        let artifacts = 0;
         for (let i = 0; i < conversationIds.length; i += PURGE_ID_CHUNK) {
           const chunk = conversationIds.slice(i, i + PURGE_ID_CHUNK);
           // Rows only. The blob bytes these rows pointed at are deliberately
@@ -378,35 +299,22 @@ export function createAttachmentsStore(
             .deleteFrom('attachments_v1_files')
             .where('conversation_id', 'in', chunk)
             .executeTakeFirst();
-          const a = await trx
-            .deleteFrom('attachments_v1_artifacts')
-            .where('conversation_id', 'in', chunk)
-            .executeTakeFirst();
           files += Number(f.numDeletedRows);
-          artifacts += Number(a.numDeletedRows);
         }
-        return { files, artifacts };
+        return { files };
       });
     },
 
     async blobRefs(shas) {
       if (shas.length === 0) return [];
       // `= ANY(array)` rather than IN (...): one bind parameter however many
-      // candidates there are, and it uses the sha256 indexes from the migration.
+      // candidates there are, and it uses the sha256 index from the migration.
       const files = await db
         .selectFrom('attachments_v1_files')
         .select(['sha256', 'user_id'])
         .where(sql<boolean>`sha256 = ANY(${shas}::text[])`)
         .execute();
-      const artifacts = await db
-        .selectFrom('attachments_v1_artifacts')
-        .select(['sha256', 'user_id'])
-        .where(sql<boolean>`sha256 = ANY(${shas}::text[])`)
-        .execute();
-      return [...files, ...artifacts].map((r) => ({
-        sha256: r.sha256,
-        userIds: [r.user_id],
-      }));
+      return files.map((r) => ({ sha256: r.sha256, userIds: [r.user_id] }));
     },
   };
 }

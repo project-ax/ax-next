@@ -26,6 +26,7 @@
  * Cookies are HttpOnly + Secure-when-https + SameSite=Lax — the browser
  * sends them automatically on same-origin fetches with credentials:'include'.
  */
+import { parseShareRoute } from './share-route';
 
 export interface AuthUser {
   id: string;
@@ -79,7 +80,15 @@ export async function getSession(): Promise<AuthSession | null> {
   }
 }
 
-export async function signInWithGoogle(): Promise<void> {
+/**
+ * Start Google sign-in. `callbackPath` is where to land afterwards — pass the
+ * current path. Only a share page (`/a/<code>`, matched exactly by
+ * `parseShareRoute`) is honoured; anything else, forged or not, lands on `/`.
+ * So the value sent is always one of two same-origin relative shapes, and
+ * this can never be turned into an open redirect.
+ */
+export async function signInWithGoogle(callbackPath: string = '/'): Promise<void> {
+  const callbackURL = parseShareRoute(callbackPath) ? callbackPath : '/';
   // better-auth has no `GET /sign-in/google` route. Social sign-in is a
   // POST to `/auth/sign-in/social` carrying the provider in the body;
   // better-auth builds the Google authorize URL and hands it back as
@@ -97,7 +106,7 @@ export async function signInWithGoogle(): Promise<void> {
       'Content-Type': 'application/json',
       'X-Requested-With': 'ax-admin',
     },
-    body: JSON.stringify({ provider: 'google', callbackURL: '/' }),
+    body: JSON.stringify({ provider: 'google', callbackURL }),
   });
   if (!res.ok) {
     // Most likely the Google provider isn't configured (better-auth

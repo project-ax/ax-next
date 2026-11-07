@@ -3,6 +3,7 @@ import {
   PostgreSqlContainer,
   type StartedPostgreSqlContainer,
 } from '@testcontainers/postgresql';
+import { createServer } from 'node:net';
 import { sql, type Kysely } from 'kysely';
 import {
   createTestHarness,
@@ -11,7 +12,7 @@ import {
   startTestContainer,
 } from '@ax/test-harness';
 import { createDatabasePostgresPlugin } from '@ax/database-postgres';
-import { createAttachmentsPlugin } from '../plugin.js';
+import { createAttachmentsPlugin, type AttachmentsPlugin } from '../plugin.js';
 
 let container: StartedPostgreSqlContainer;
 let connectionString: string;
@@ -19,6 +20,7 @@ const harnesses: TestHarness[] = [];
 
 async function makeHarness(
   config: Parameters<typeof createAttachmentsPlugin>[0] = {},
+  plugin: AttachmentsPlugin = createAttachmentsPlugin(config),
 ): Promise<TestHarness> {
   const h = await createTestHarness({
     // Mock the hooks this plugin `calls` but doesn't register itself.
@@ -28,7 +30,7 @@ async function makeHarness(
     services: {
       'blob:put': async () => ({ sha256: 'a'.repeat(64), size: 0 }),
       'blob:get': async () => ({ found: false }) as const,
-      // D10: artifacts:publish-blob stats the sha before it writes a row.
+      // D10: artifacts:publish stats the sha before it writes a row.
       'blob:stat': async (_ctx: unknown, input: unknown) =>
         (input as { sha256: string }).sha256 === 'a'.repeat(64)
           ? { size: 1 }
@@ -41,10 +43,12 @@ async function makeHarness(
         },
         turns: [],
       }),
+      // A published version is charged to the agent's owner (C4).
+      'agents:resolve': async () => ({ agent: { ownerType: 'user', ownerId: 'test-user' } }),
     },
     plugins: [
       createDatabasePostgresPlugin({ connectionString }),
-      createAttachmentsPlugin(config),
+      plugin,
     ],
   });
   harnesses.push(h);
@@ -66,6 +70,7 @@ afterEach(async () => {
   try {
     await cleanup.query('DROP TABLE IF EXISTS attachments_v1_temps');
     await cleanup.query('DROP TABLE IF EXISTS attachments_v1_files');
+    await cleanup.query('DROP TABLE IF EXISTS attachments_v1_artifact_versions');
     await cleanup.query('DROP TABLE IF EXISTS attachments_v1_artifacts');
   } finally {
     await cleanup.end().catch(() => {});
@@ -86,20 +91,41 @@ describe('@ax/attachments plugin manifest', () => {
       'attachments:commit',
       'attachments:download',
       'attachments:list-for-conversation',
-      'artifacts:publish-blob',
+      'artifacts:publish',
+      'artifacts:list',
+      'artifacts:get',
+      'artifacts:read',
+      'artifacts:rename',
+      'artifacts:restore',
+      'artifacts:delete',
+      'artifacts:set-link',
+      'artifacts:resolve-share-code',
+      'system-prompt:augment:optional:artifacts',
+      'artifacts:mint-view-token',
     ]);
     expect(plugin.manifest.calls).toContain('database:get-instance');
     expect(plugin.manifest.calls).toContain('blob:put');
     expect(plugin.manifest.calls).toContain('blob:get');
-    // TASK-776 (D10): artifacts:publish-blob refuses a sha the store lacks.
+    // TASK-776 (D10): artifacts:publish refuses a sha the store lacks.
     expect(plugin.manifest.calls).toContain('blob:stat');
     expect(plugin.manifest.calls).toContain('conversations:get');
+    expect(plugin.manifest.calls).toContain('agents:resolve');
+    // Only needed to map legacy artifacts to their agent at init.
+    expect(plugin.manifest.optionalCalls).toEqual([
+      {
+        hook: 'conversations:agent-ids',
+        degradation: 'legacy artifacts cannot be mapped; init refuses to start while any are pending',
+      },
+      // The agent's name on the share page.
+      { hook: 'agents:get-display-name', degradation: "the share page says 'an agent'" },
+    ]);
     // The git path is removed (acceptance criterion).
     expect(plugin.manifest.calls).not.toContain('workspace:apply');
     expect(plugin.manifest.calls).not.toContain('workspace:read');
     // TASK-718: drop a purged conversation's metadata rows. TASK-776: answer
     // blob:collect-refs (it stores shas in its own rows, so it is a holder).
-    expect(plugin.manifest.subscribes).toEqual(['conversations:purged', 'blob:collect-refs']);
+    // agents:deleted: deleting the agent deletes its artifacts (D12).
+    expect(plugin.manifest.subscribes).toEqual(['conversations:purged', 'blob:collect-refs', 'agents:deleted']);
   });
 });
 
@@ -110,7 +136,11 @@ describe('@ax/attachments plugin init / shutdown', () => {
     expect(harness.bus.hasService('attachments:commit')).toBe(true);
     expect(harness.bus.hasService('attachments:download')).toBe(true);
     expect(harness.bus.hasService('attachments:list-for-conversation')).toBe(true);
-    expect(harness.bus.hasService('artifacts:publish-blob')).toBe(true);
+    expect(harness.bus.hasService('artifacts:publish')).toBe(true);
+    expect(harness.bus.hasService('artifacts:publish-blob')).toBe(false);
+    for (const hook of createAttachmentsPlugin().manifest.registers) {
+      expect(harness.bus.hasService(hook)).toBe(true);
+    }
   });
 
   it('runs the attachments_v1_temps migration on init', async () => {
@@ -172,20 +202,18 @@ describe('@ax/attachments plugin init / shutdown', () => {
   });
 });
 
-describe('@ax/attachments artifacts:publish-blob wiring (D10)', () => {
+describe('@ax/attachments artifacts:publish wiring (D10)', () => {
   const publish = (sha256: string) => ({
     conversationId: 'c-1',
     sha256,
-    path: 'workspace/report.pdf',
-    displayName: 'report.pdf',
-    mediaType: 'application/pdf',
-    size: 1,
+    sourcePath: 'reports/report.pdf',
+    title: 'Report',
   });
 
   it('publishes a sha the blob store holds', async () => {
     const harness = await makeHarness();
     const out = await harness.bus.call<unknown, { artifactId: string }>(
-      'artifacts:publish-blob',
+      'artifacts:publish',
       harness.ctx(),
       publish('a'.repeat(64)),
     );
@@ -195,7 +223,7 @@ describe('@ax/attachments artifacts:publish-blob wiring (D10)', () => {
   it('refuses a sha the blob store does not hold, and leaves no row behind', async () => {
     const harness = await makeHarness();
     await expect(
-      harness.bus.call('artifacts:publish-blob', harness.ctx(), publish('b'.repeat(64))),
+      harness.bus.call('artifacts:publish', harness.ctx(), publish('b'.repeat(64))),
     ).rejects.toMatchObject({ code: 'not-found', plugin: '@ax/attachments' });
     const { db } = await harness.bus.call<unknown, { db: Kysely<unknown> }>(
       'database:get-instance',
@@ -203,8 +231,63 @@ describe('@ax/attachments artifacts:publish-blob wiring (D10)', () => {
       {},
     );
     const rows = await sql<{ n: string }>`
-      SELECT count(*)::text AS n FROM attachments_v1_artifacts
+      SELECT count(*)::text AS n FROM attachments_v1_artifact_versions
     `.execute(db);
     expect(rows.rows[0]!.n).toBe('0');
+  });
+
+  it('starts the content origin in init when configured, and closes it on shutdown', async () => {
+    const plugin = createAttachmentsPlugin({
+      contentOrigin: { host: '127.0.0.1', port: 0, frameAncestors: ['http://localhost:9090'] },
+    });
+    expect(plugin.contentOriginUrl()).toBeUndefined();
+    const harness = await makeHarness({}, plugin);
+    const url = plugin.contentOriginUrl();
+    expect(url).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
+    const r = await fetch(`${url}/`);
+    expect(r.status).toBe(200);
+    expect(await r.text()).toBe('ok');
+
+    // Access runs first: a missing artifact is the one not-found, not a URL.
+    await expect(
+      harness.bus.call('artifacts:mint-view-token', harness.ctx({ userId: 'test-user' }), {
+        artifactId: 'nope',
+        version: 1,
+        purpose: 'view',
+      }),
+    ).rejects.toMatchObject({ code: 'not-found' });
+
+    await harness.close();
+    expect(plugin.contentOriginUrl()).toBeUndefined();
+    await expect(fetch(`${url}/`)).rejects.toThrow();
+  });
+
+  it('with no content origin configured, no listener starts and minting is unavailable', async () => {
+    const plugin = createAttachmentsPlugin();
+    const harness = await makeHarness({}, plugin);
+    expect(plugin.contentOriginUrl()).toBeUndefined();
+    await expect(
+      harness.bus.call('artifacts:mint-view-token', harness.ctx({ userId: 'test-user' }), {
+        artifactId: 'nope',
+        version: 1,
+        purpose: 'view',
+      }),
+    ).rejects.toMatchObject({ code: 'unavailable' });
+  });
+
+  it('a content origin that cannot bind fails init and leaves nothing running', async () => {
+    const blocker = createServer();
+    await new Promise<void>((r) => blocker.listen(0, '127.0.0.1', () => r()));
+    const port = (blocker.address() as { port: number }).port;
+    try {
+      const plugin = createAttachmentsPlugin({
+        janitorIntervalSeconds: 1,
+        contentOrigin: { host: '127.0.0.1', port, frameAncestors: ['http://localhost:9090'] },
+      });
+      await expect(makeHarness({}, plugin)).rejects.toThrow();
+      expect(plugin.contentOriginUrl()).toBeUndefined();
+    } finally {
+      await new Promise<void>((r) => blocker.close(() => r()));
+    }
   });
 });

@@ -81,12 +81,11 @@
  * duck-typed mirror of `@ax/http-server`'s adapter the rest of this package
  * uses, and the hook's types are type-only imports from its contract package.
  */
-import { PluginError, type AgentContext, type HookBus } from '@ax/core';
+import { PluginError, sanitizeContentDispositionFilename, type AgentContext, type HookBus } from '@ax/core';
 import type {
   ReadUserFileRangeInput,
   ReadUserFileRangeOutput,
 } from '@ax/sandbox-mount-protocol';
-import { sanitizeContentDispositionFilename } from './content-disposition.js';
 
 /**
  * How much one range read asks for: a megabyte, the same per-request memory

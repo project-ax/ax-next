@@ -1,4 +1,5 @@
 import { HookBus, makeAgentContext, type ToolDescriptor } from '@ax/core';
+import { DISPATCHER_DEPENDENCIES } from '@ax/ipc-core';
 import { REQUEST_CAPABILITY_DESCRIPTOR, SEARCH_CATALOG_DESCRIPTOR } from '@ax/skill-broker';
 import { ARTIFACT_PUBLISH_DESCRIPTOR, SHOW_VISUAL_DESCRIPTOR } from '@ax/tool-artifact-publish';
 import { CONNECTOR_PROPOSE_DESCRIPTOR } from '@ax/tool-connector-propose';
@@ -84,6 +85,89 @@ describe('@ax/preset-k8s wiring', () => {
     expect(() => createK8sPlugins({ ...stubConfig, sandbox: { ...stubConfig.sandbox,
       backend: 'agent-sandbox', runtimeClassName: '' } })).toThrow(/agent-sandbox requires/);
   });
+  describe('the app shell may frame the artifact content origin (and nothing else)', () => {
+    const SHELL =
+      '<html><head><meta http-equiv="Content-Security-Policy" content="frame-src \'none\'" /></head></html>';
+    /** Boot the preset's @ax/static-files against a one-file dir; return the served shell. */
+    async function servedShell(contentOrigin: K8sPresetConfig['contentOrigin'], shell = SHELL): Promise<string> {
+      const { mkdtemp, writeFile, rm } = await import('node:fs/promises');
+      const { tmpdir } = await import('node:os');
+      const { join } = await import('node:path');
+      const dir = await mkdtemp(join(tmpdir(), 'ax-shell-'));
+      try {
+        await writeFile(join(dir, 'index.html'), shell);
+        const plugins = createK8sPlugins({
+          ...stubConfig,
+          staticFiles: { dir },
+          ...(contentOrigin !== undefined ? { contentOrigin } : {}),
+        });
+        const plugin = plugins.find((p) => p.manifest.name === '@ax/static-files');
+        expect(plugin).toBeDefined();
+        let handler: ((req: unknown, res: unknown) => Promise<void>) | undefined;
+        const bus = {
+          call: async (_hook: string, _ctx: unknown, input: { handler: typeof handler }) => {
+            handler = input.handler;
+            return { unregister() {} };
+          },
+        };
+        await plugin!.init({ bus } as never);
+        let body = '';
+        const res = {
+          status() { return res; },
+          header() { return res; },
+          body(buf: Buffer) { body = buf.toString('utf8'); },
+          end() {},
+          json() {},
+        };
+        await handler!({ path: '/agents/a', headers: {}, params: { '*': '/agents/a' } }, res);
+        return body;
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
+    }
+
+    it("widens frame-src to the public content origin's /v/ route only", async () => {
+      expect(
+        await servedShell({
+          host: '0.0.0.0',
+          port: 9091,
+          publicOrigin: 'https://ax-usercontent.example.net',
+          frameAncestors: ['https://admin.ax-next.example'],
+        }),
+      ).toBe(
+        '<html><head><meta http-equiv="Content-Security-Policy" content="frame-src https://ax-usercontent.example.net/v/" /></head></html>',
+      );
+    });
+
+    // R31: the rewrite matches the meta byte for byte, so prove it against the
+    // shell channel-web actually ships, not a copy of it in this test.
+    it('widens the REAL channel-web index.html', async () => {
+      const { readFile } = await import('node:fs/promises');
+      const { fileURLToPath } = await import('node:url');
+      const real = await readFile(
+        fileURLToPath(new URL('../../../../packages/channel-web/index.html', import.meta.url)),
+        'utf8',
+      );
+      expect(real).toContain(`content="frame-src 'none'"`);
+      const served = await servedShell(
+        {
+          host: '0.0.0.0',
+          port: 9091,
+          publicOrigin: 'https://ax-usercontent.example.net',
+          frameAncestors: ['https://admin.ax-next.example'],
+        },
+        real,
+      );
+      expect(served).toContain('content="frame-src https://ax-usercontent.example.net/v/"');
+      expect(served).not.toContain("'none'");
+    });
+
+    it("keeps frame-src 'none' with no content origin, or none with a public URL", async () => {
+      expect(await servedShell(undefined)).toBe(SHELL);
+      expect(await servedShell({ host: '127.0.0.1', port: 0, frameAncestors: [] })).toBe(SHELL);
+    });
+  });
+
   it('returns a non-empty plugin array', () => {
     const plugins = createK8sPlugins(stubConfig);
     expect(plugins.length).toBeGreaterThan(0);
@@ -445,6 +529,9 @@ describe('@ax/preset-k8s wiring', () => {
       AX_HTTP_HOST: '0.0.0.0',
       AX_HTTP_PORT: '9090',
       AX_HTTP_COOKIE_KEY: '0'.repeat(64),
+      AX_CONTENT_ORIGIN: 'http://127.0.0.1:9091',
+      AX_CONTENT_PORT: '0',
+      AX_CONTENT_FRAME_ANCESTORS: 'http://localhost:9090',
       AX_HTTP_ALLOWED_ORIGINS: '',
     };
     const seeded = loadK8sConfigFromEnv({
@@ -859,7 +946,7 @@ describe('@ax/preset-k8s wiring', () => {
   // `optionalCalls` counts too: @ax/ipc-http declares blob:put there. The one
   // exception is @ax/ipc-http itself, which puts on the RUNNER's behalf; the
   // runner's references are the rows @ax/attachments writes
-  // (artifacts:publish-blob, attachments:commit).
+  // (artifacts:publish, attachments:commit).
   // -------------------------------------------------------------------------
   const BLOB_WRITER_HOLDER_EXCEPTIONS = ['@ax/ipc-http'];
 
@@ -1280,6 +1367,9 @@ describe('@ax/preset-k8s — onboarding wiring (I3: half-wired window closed)', 
       AX_HTTP_HOST: '0.0.0.0',
       AX_HTTP_PORT: '9090',
       AX_HTTP_COOKIE_KEY: HEX_KEY,
+      AX_CONTENT_ORIGIN: 'http://127.0.0.1:9091',
+      AX_CONTENT_PORT: '0',
+      AX_CONTENT_FRAME_ANCESTORS: 'http://localhost:9090',
       AX_HTTP_ALLOWED_ORIGINS: '',
       AX_PUBLIC_BASE_URL: 'https://ax.example.com',
     };
@@ -1298,6 +1388,9 @@ describe('@ax/preset-k8s — onboarding wiring (I3: half-wired window closed)', 
       AX_HTTP_HOST: '0.0.0.0',
       AX_HTTP_PORT: '9090',
       AX_HTTP_COOKIE_KEY: HEX_KEY,
+      AX_CONTENT_ORIGIN: 'http://127.0.0.1:9091',
+      AX_CONTENT_PORT: '0',
+      AX_CONTENT_FRAME_ANCESTORS: 'http://localhost:9090',
       AX_HTTP_ALLOWED_ORIGINS: '',
     };
     const cfg = loadK8sConfigFromEnv(env);
@@ -1320,6 +1413,9 @@ describe('@ax/preset-k8s — onboarding wiring (I3: half-wired window closed)', 
       AX_HTTP_HOST: '0.0.0.0',
       AX_HTTP_PORT: '9090',
       AX_HTTP_COOKIE_KEY: HEX_KEY,
+      AX_CONTENT_ORIGIN: 'http://127.0.0.1:9091',
+      AX_CONTENT_PORT: '0',
+      AX_CONTENT_FRAME_ANCESTORS: 'http://localhost:9090',
       AX_HTTP_ALLOWED_ORIGINS: '',
     };
     const cfg = loadK8sConfigFromEnv(env);
@@ -1349,6 +1445,9 @@ describe('@ax/preset-k8s — onboarding wiring (I3: half-wired window closed)', 
       AX_HTTP_HOST: '0.0.0.0',
       AX_HTTP_PORT: '9090',
       AX_HTTP_COOKIE_KEY: HEX_KEY,
+      AX_CONTENT_ORIGIN: 'http://127.0.0.1:9091',
+      AX_CONTENT_PORT: '0',
+      AX_CONTENT_FRAME_ANCESTORS: 'http://localhost:9090',
       AX_HTTP_ALLOWED_ORIGINS: '',
       AX_PUBLIC_BASE_URL: 'https://ax.example.com',
     };
@@ -1370,6 +1469,9 @@ describe('@ax/preset-k8s — onboarding wiring (I3: half-wired window closed)', 
       AX_HTTP_HOST: '0.0.0.0',
       AX_HTTP_PORT: '9090',
       AX_HTTP_COOKIE_KEY: HEX_KEY,
+      AX_CONTENT_ORIGIN: 'http://127.0.0.1:9091',
+      AX_CONTENT_PORT: '0',
+      AX_CONTENT_FRAME_ANCESTORS: 'http://localhost:9090',
       AX_HTTP_ALLOWED_ORIGINS: '',
     };
     const cfg = loadK8sConfigFromEnv(env);
@@ -1394,6 +1496,9 @@ describe('@ax/preset-k8s — onboarding wiring (I3: half-wired window closed)', 
       AX_HTTP_HOST: '0.0.0.0',
       AX_HTTP_PORT: '9090',
       AX_HTTP_COOKIE_KEY: HEX_KEY,
+      AX_CONTENT_ORIGIN: 'http://127.0.0.1:9091',
+      AX_CONTENT_PORT: '0',
+      AX_CONTENT_FRAME_ANCESTORS: 'http://localhost:9090',
       AX_HTTP_ALLOWED_ORIGINS: '',
       AX_PUBLIC_BASE_URL: 'https://ax.example.com/some/path?query=1',
     };
@@ -1422,6 +1527,9 @@ describe('@ax/preset-k8s — onboarding wiring (I3: half-wired window closed)', 
       AX_HTTP_HOST: '0.0.0.0',
       AX_HTTP_PORT: '9090',
       AX_HTTP_COOKIE_KEY: HEX_KEY,
+      AX_CONTENT_ORIGIN: 'http://127.0.0.1:9091',
+      AX_CONTENT_PORT: '0',
+      AX_CONTENT_FRAME_ANCESTORS: 'http://localhost:9090',
       AX_HTTP_ALLOWED_ORIGINS: '',
       AX_PUBLIC_BASE_URL: '  https://ax.example.com  ',
     };
@@ -1441,6 +1549,9 @@ describe('@ax/preset-k8s — onboarding wiring (I3: half-wired window closed)', 
       AX_HTTP_HOST: '0.0.0.0',
       AX_HTTP_PORT: '9090',
       AX_HTTP_COOKIE_KEY: HEX_KEY,
+      AX_CONTENT_ORIGIN: 'http://127.0.0.1:9091',
+      AX_CONTENT_PORT: '0',
+      AX_CONTENT_FRAME_ANCESTORS: 'http://localhost:9090',
       AX_HTTP_ALLOWED_ORIGINS: '',
       AX_PUBLIC_BASE_URL: 'not a url',
     };
@@ -1458,6 +1569,9 @@ describe('@ax/preset-k8s — onboarding wiring (I3: half-wired window closed)', 
       AX_HTTP_HOST: '0.0.0.0',
       AX_HTTP_PORT: '9090',
       AX_HTTP_COOKIE_KEY: HEX_KEY,
+      AX_CONTENT_ORIGIN: 'http://127.0.0.1:9091',
+      AX_CONTENT_PORT: '0',
+      AX_CONTENT_FRAME_ANCESTORS: 'http://localhost:9090',
       AX_HTTP_ALLOWED_ORIGINS: '',
       AX_PUBLIC_BASE_URL: 'file:///etc/passwd',
     };
@@ -1592,6 +1706,91 @@ describe('@ax/preset-k8s — default routines (routines-half closes here)', () =
   });
 });
 
+describe('@ax/preset-k8s — agent artifacts (half-wired window closed)', () => {
+  // The artifacts feature lands whole: @ax/attachments owns every artifact
+  // hook (I4), channel-web's owner + share routes and ipc-core's
+  // artifact.publish action are their callers, and the acceptance canary
+  // drives them end to end. If one of these has to be deleted, its caller or
+  // producer went with it: do not delete one side and keep the other.
+  const OWNER_HOOKS = [
+    'artifacts:list',
+    'artifacts:get',
+    'artifacts:read',
+    'artifacts:rename',
+    'artifacts:restore',
+    'artifacts:delete',
+    'artifacts:set-link',
+    'artifacts:mint-view-token',
+    'artifacts:resolve-share-code',
+  ];
+  const HOST_ONLY = ['conversations:agent-ids', 'agents:get-display-name'];
+  const callsOf = (m: {
+    calls: readonly string[];
+    optionalCalls?: ReadonlyArray<{ hook: string }> | undefined;
+  }): string[] => [
+    ...m.calls,
+    ...(m.optionalCalls ?? []).map((c) => c.hook),
+  ];
+
+  it('@ax/attachments registers artifacts:* and the augment provider and subscribes agents:deleted; channel-web and ipc-core call them', () => {
+    const plugins = createK8sPlugins(stubConfig);
+    const att = plugins.find((p) => p.manifest.name === '@ax/attachments');
+    expect(att, '@ax/attachments plugin').toBeDefined();
+    expect(att!.manifest.registers).toEqual(
+      expect.arrayContaining([
+        'artifacts:publish',
+        ...OWNER_HOOKS,
+        'system-prompt:augment:optional:artifacts',
+      ]),
+    );
+    expect(att!.manifest.subscribes).toContain('agents:deleted');
+
+    // One owner per hook (I4): nobody else registers an artifacts:* hook.
+    const otherRegistrants = plugins
+      .filter((p) => p.manifest.name !== '@ax/attachments')
+      .flatMap((p) => p.manifest.registers.filter((h) => h.startsWith('artifacts:')));
+    expect(otherRegistrants).toEqual([]);
+
+    // channel-web's owner + share routes are the hard callers of the owner hooks.
+    const cw = plugins.find((p) => p.manifest.name === '@ax/channel-web');
+    expect(cw, '@ax/channel-web plugin').toBeDefined();
+    expect(cw!.manifest.calls).toEqual(expect.arrayContaining(OWNER_HOOKS));
+
+    // ipc-core's artifact.publish action is the caller of artifacts:publish,
+    // stamped into @ax/ipc-http's manifest from DISPATCHER_DEPENDENCIES.
+    expect(DISPATCHER_DEPENDENCIES.optionalCalls.map((c) => c.hook)).toContain('artifacts:publish');
+    const ipc = plugins.find((p) => p.manifest.name === '@ax/ipc-http');
+    expect(ipc, '@ax/ipc-http plugin').toBeDefined();
+    expect(callsOf(ipc!.manifest)).toContain('artifacts:publish');
+  });
+
+  it('conversations:agent-ids and agents:get-display-name have their one caller and are not IPC actions', () => {
+    // Ruling P4: the dispatcher's ACTIONS map is private, so the pin is its
+    // published dependency list. Neither host-only lookup is a hook the runner
+    // can reach (no IPC action calls it) nor one the browser routes call.
+    const dispatcherHooks = [
+      ...DISPATCHER_DEPENDENCIES.requiredCalls,
+      ...DISPATCHER_DEPENDENCIES.optionalCalls.map((c) => c.hook),
+    ];
+    const plugins = createK8sPlugins(stubConfig);
+    const cw = plugins.find((p) => p.manifest.name === '@ax/channel-web')!;
+    for (const hook of HOST_ONLY) {
+      expect(dispatcherHooks, hook).not.toContain(hook);
+      expect(callsOf(cw.manifest), hook).not.toContain(hook);
+      // Exactly one caller in the preset: @ax/attachments.
+      const callers = plugins
+        .filter((p) => callsOf(p.manifest).includes(hook))
+        .map((p) => p.manifest.name);
+      expect(callers, hook).toEqual(['@ax/attachments']);
+    }
+    // And their producers are the plugins that own the data.
+    const registrantOf = (hook: string) =>
+      plugins.filter((p) => p.manifest.registers.includes(hook)).map((p) => p.manifest.name);
+    expect(registrantOf('conversations:agent-ids')).toEqual(['@ax/conversations']);
+    expect(registrantOf('agents:get-display-name')).toEqual(['@ax/agents']);
+  });
+});
+
 describe('@ax/preset-k8s loads no workspace backend (TASK-995)', () => {
   // The git workspace tier is gone: no plugin of the preset registers, calls,
   // optionally calls or subscribes to a `workspace:*` hook, and the
@@ -1647,6 +1846,9 @@ describe('loadK8sConfigFromEnv', () => {
     AX_HTTP_HOST: '0.0.0.0',
     AX_HTTP_PORT: '8080',
     AX_HTTP_COOKIE_KEY: HEX_KEY,
+    AX_CONTENT_ORIGIN: 'http://127.0.0.1:9091',
+    AX_CONTENT_PORT: '0',
+    AX_CONTENT_FRAME_ANCESTORS: 'http://localhost:9090',
     AX_HTTP_ALLOWED_ORIGINS: 'https://admin.ax-next.example',
     ...extra,
   });
@@ -1873,6 +2075,36 @@ describe('loadK8sConfigFromEnv', () => {
     expect('workspace' in cfg).toBe(false);
   });
 
+  it('builds the artifact content origin from AX_CONTENT_* on the public listener interface', () => {
+    const cfg = loadK8sConfigFromEnv(
+      minRequired({
+        AX_CONTENT_ORIGIN: 'https://ax-usercontent.example.net',
+        AX_CONTENT_PORT: '9091',
+        AX_CONTENT_FRAME_ANCESTORS: 'https://admin.ax-next.example',
+      }),
+    );
+    expect(cfg.contentOrigin).toEqual({
+      host: '0.0.0.0',
+      port: 9091,
+      publicOrigin: 'https://ax-usercontent.example.net',
+      frameAncestors: ['https://admin.ax-next.example'],
+    });
+  });
+
+  it('throws when AX_CONTENT_ORIGIN is missing', () => {
+    const env = minRequired();
+    delete env.AX_CONTENT_ORIGIN;
+    expect(() => loadK8sConfigFromEnv(env)).toThrowError(/AX_CONTENT_ORIGIN/);
+  });
+
+  it('throws when the content origin sits under the app host', () => {
+    const env = minRequired({
+      AX_CONTENT_ORIGIN: 'https://c.admin.ax-next.example',
+      AX_CONTENT_FRAME_ANCESTORS: 'https://admin.ax-next.example',
+    });
+    expect(() => loadK8sConfigFromEnv(env)).toThrowError(/AX_CONTENT_ORIGIN/);
+  });
+
   it('throws when AX_HTTP_HOST is missing', () => {
     const env = minRequired();
     delete env.AX_HTTP_HOST;
@@ -2055,6 +2287,9 @@ describe('@ax/preset-k8s — allow_user_installed_skills flag (TASK-38)', () => 
     AX_HTTP_HOST: '0.0.0.0',
     AX_HTTP_PORT: '9090',
     AX_HTTP_COOKIE_KEY: HEX_KEY,
+    AX_CONTENT_ORIGIN: 'http://127.0.0.1:9091',
+    AX_CONTENT_PORT: '0',
+    AX_CONTENT_FRAME_ANCESTORS: 'http://localhost:9090',
     AX_HTTP_ALLOWED_ORIGINS: '',
   });
 
@@ -2130,6 +2365,9 @@ describe('@ax/preset-k8s — filestore mount wiring', () => {
     AX_HTTP_HOST: '0.0.0.0',
     AX_HTTP_PORT: '9090',
     AX_HTTP_COOKIE_KEY: HEX_KEY,
+    AX_CONTENT_ORIGIN: 'http://127.0.0.1:9091',
+    AX_CONTENT_PORT: '0',
+    AX_CONTENT_FRAME_ANCESTORS: 'http://localhost:9090',
     AX_HTTP_ALLOWED_ORIGINS: '',
     AX_BLOB_FS_ROOT: '/var/lib/ax-next/workspaces/blobs',
   };

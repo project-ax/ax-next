@@ -1133,6 +1133,112 @@ spec:
 EOF
 ```
 
+### 5d — The content site: a second hostname and certificate
+
+Agents can publish web pages and images ("artifacts"). We show those from a
+**second site**, never from the app's own domain. An artifact page runs
+whatever scripts the agent wrote, and we'd rather it never got anywhere near
+your users' sign-in cookies. A different site is how browsers keep the two apart.
+
+**It must be a different registrable domain, not a subdomain.** Cookies set for
+`ax.example.com` can be shared with `content.ax.example.com`, and both live
+under `example.com`. So use something like `ax-usercontent.example.net` next to
+`ax.example.com`, the way other products put user content on a separate
+domain. The chart refuses to render if the content hostname equals your
+`ingress.host` or sits under it (or above it), and the host refuses to boot
+on the same mistakes against `contentOrigin.frameAncestors`. Neither can tell
+two siblings under one registrable domain apart (`a.example.com` vs
+`b.example.com`), so that part is on us.
+
+**Picking the domain.** Register one you control and keep it for user content
+only: nothing else, no app, no mail, no other services on it. The usual shape
+is your name plus "usercontent" on its own domain (`ax-usercontent.example.net`,
+or `examplecontent.com`). Use the bare domain or a name under it; either works.
+Two don't: a subdomain of the app's domain (cookies again), and a host on a
+shared platform domain you don't own, since other tenants there could set
+cookies or serve pages from your "site".
+
+```bash
+CONTENT_DOMAIN=<your content domain>   # e.g. ax-usercontent.example.net
+```
+
+1. **DNS.** Create an **A record** for `$CONTENT_DOMAIN` pointing at **the same
+   static IP** as `$DOMAIN` (5a). The Ingress serves both hostnames from one
+   load balancer and routes by host.
+2. **Certificate.** A second ManagedCertificate, so each domain gets its own
+   cert:
+
+   ```bash
+   cat <<EOF | kubectl apply -f -
+   apiVersion: networking.gke.io/v1
+   kind: ManagedCertificate
+   metadata:
+     name: ax-next-content-cert
+     namespace: ax-next
+   spec:
+     domains:
+       - $CONTENT_DOMAIN
+   EOF
+   ```
+
+3. **Overlay.** `gke-values.yaml` already lists both certificates in the
+   Ingress annotation (`ax-next-cert,ax-next-content-cert`), and ships
+   `contentOrigin.*` **empty**, so the render fails until you set them in your
+   overrides (Step 6). That's on purpose: an upgrade can't quietly ship a
+   placeholder domain or point the Ingress at a certificate that doesn't exist
+   yet. With the Ingress on, the chart also wants `publicOrigin` to be `https://`
+   (an `http` frame inside the `https` app is blocked as mixed content) and
+   `frameAncestors` to include the app's own origin (`https://$DOMAIN`). The
+   chart then adds an Ingress
+   rule for `$CONTENT_DOMAIN` that goes to the host's `content-http` port
+   (9091). The load balancer health-checks it at `GET /`, which answers 200.
+
+The host must stay at **one replica**. It signs the short-lived artifact view
+links with a key it makes at start and keeps only in memory, so a second
+replica would refuse the first one's links. (The chart already pins
+`replicas: 1` for chat.) A restart retires links in flight. Viewers just
+fetch fresh ones.
+
+**Upgrading an existing deployment to the artifacts release? Back up the DB
+first.** The artifacts migration drops legacy columns, and a backup is the only
+undo there is:
+
+```bash
+gcloud sql backups create --instance=ax-next-db --project=$PROJECT_ID
+gcloud sql backups list --instance=ax-next-db --project=$PROJECT_ID --limit=1   # status SUCCESSFUL
+```
+
+Don't upgrade until the newest backup says `SUCCESSFUL`. And add the
+`contentOrigin.*` overrides first: without them `helm upgrade` stops at render
+time with `set contentOrigin.publicOrigin=https://<a domain that is not ingress.host>`.
+
+**Upgrading with `--reuse-values`?** Then Helm reuses the *old* release's values
+and ignores anything new in `gke-values.yaml`. Two things the old release
+doesn't have need saying out loud: the content origin, and the second
+certificate in the Ingress annotation. (The content port itself is fine: the
+chart falls back to 9091 when the old values don't mention it.)
+
+```bash
+helm upgrade ax-next deploy/charts/ax-next \
+  --kube-context "$KCTX" \
+  --namespace ax-next \
+  --reuse-values \
+  --set contentOrigin.publicOrigin="https://$CONTENT_DOMAIN" \
+  --set "contentOrigin.frameAncestors={https://$DOMAIN}" \
+  --set 'ingress.annotations.networking\.gke\.io/managed-certificates=ax-next-cert\,ax-next-content-cert'
+```
+
+The backslashes are load-bearing, and yes, they're ugly. `\.` keeps the
+annotation name in one piece (unescaped, Helm would read every dot as a nested
+key), and `\,` keeps the two certificate names in one value (unescaped, Helm
+would read the comma as the start of another `--set`). If you renamed the certs
+in 5c or above, use your names. Set `KCTX=<your GKE context>` first (`kubectl config get-contexts`), and
+check it names the cluster you mean to upgrade.
+
+Want to see it before it lands? Swap `helm upgrade` for `helm template` (drop
+`--reuse-values` and `--kube-context`, add your usual `-f` files), and look for
+`ax-next-content-cert` in the Ingress and `9091` in the host Deployment.
+
 ---
 
 ## Step 6 — Edit the overlay and install
@@ -1596,6 +1702,13 @@ http:
     - https://your.domain.example      # MUST exactly match the origin, or the CSRF gate 403s
 onboarding:
   publicBaseUrl: https://your.domain.example
+# REQUIRED: the content site for agent-made pages (Step 5d). A DIFFERENT
+# registrable domain from ingress.host, never a subdomain of it. The chart
+# will not render without publicOrigin.
+contentOrigin:
+  publicOrigin: https://<your content domain>
+  frameAncestors:
+    - https://your.domain.example      # the app's origin: who may show its pages
 # REQUIRED: every agent's home directory (/files). The chart will not render
 # without it. See "Provision the user-files Filestore" above.
 sandbox:
@@ -1610,8 +1723,9 @@ memory:
   exports:
     server: <your memory Filestore instance IP>
     exportPath: /memory_vol
-# If you named the static IP / cert something other than ax-next-ip / ax-next-cert
-# in Step 5, override ingress.annotations here too.
+# If you named the static IP / certs something other than ax-next-ip /
+# ax-next-cert / ax-next-content-cert in Step 5, override ingress.annotations
+# here too (the managed-certificates value lists both certs, comma-separated).
 ```
 
 About `workspace.storage`: `100Gi` is a starting point, so edit it to taste. Blobs
@@ -1846,6 +1960,10 @@ kubectl exec -n ax-next deploy/ax-next-host -- \
 
 # Cert is serving real HTTPS.
 curl -sSI https://$DOMAIN/health   # expect HTTP/2 200
+
+# The content site (Step 5d) has its own cert and answers with its headers.
+curl -sSI https://$CONTENT_DOMAIN/   # expect HTTP/2 200 and x-content-type-options: nosniff
+kubectl get managedcertificate ax-next-content-cert -n ax-next   # Status: Active
 ```
 
 - [ ] Chat returns a response that references a runner-side bash execution.

@@ -20,10 +20,14 @@ const KIND_DEV_VALUES = resolve(chartDir, 'kind-dev-values.yaml');
 // Every render needs a durable /files home (TASK-992). A values FILE, passed
 // first, so overlay files passed later and any --set still win over it.
 const FILESTORE_FIXTURE = resolve(here, 'fixtures/filestore-values.yaml');
+// Every render needs the artifact content origin's URL (agent artifacts).
+const CONTENT_ORIGIN_FIXTURE = resolve(here, 'fixtures/content-origin-values.yaml');
 
 const REQUIRED = [
   '-f',
   FILESTORE_FIXTURE,
+  '-f',
+  CONTENT_ORIGIN_FIXTURE,
   '--set',
   'credentials.key=test',
   '--set',
@@ -221,6 +225,8 @@ describeIfHelm('memory preset opt-in (TASK-496)', () => {
     const { container, spec } = hostSpec(hostDeployment(render([
       '-f',
       resolve(chartDir, 'gke-values.yaml'),
+      '-f',
+      CONTENT_ORIGIN_FIXTURE,
       '--set',
       'sandbox.filestore.server=10.9.8.7',
     ])));
@@ -241,6 +247,8 @@ describeIfHelm('memory preset opt-in (TASK-496)', () => {
     const { container } = hostSpec(hostDeployment(render([
       '-f',
       resolve(chartDir, 'gke-values.yaml'),
+      '-f',
+      CONTENT_ORIGIN_FIXTURE,
       '--set',
       'sandbox.filestore.server=10.9.8.7',
       '--set',

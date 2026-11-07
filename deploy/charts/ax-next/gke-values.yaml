@@ -197,7 +197,8 @@ ingress:
   annotations:
     kubernetes.io/ingress.class: gce                         # selects glbc (see note above)
     kubernetes.io/ingress.global-static-ip-name: ax-next-ip  # >>> EDIT (reserved global IP name)
-    networking.gke.io/managed-certificates: ax-next-cert     # >>> EDIT (ManagedCertificate name)
+    # The app's cert AND the content site's cert (deploy/GKE.md Step 5c + 5d).
+    networking.gke.io/managed-certificates: ax-next-cert,ax-next-content-cert  # >>> EDIT (ManagedCertificate names)
   # SSE backend timeout: the GCE LB defaults backend timeoutSec to 30s and cuts
   # long-lived chat streams mid-answer. ON for any GCE-ingress deploy — renders a
   # BackendConfig (timeoutSec below) + the host Service's backend-config
@@ -214,6 +215,21 @@ http:
   cookieKey: ""                                  # provide via --set (openssl rand -hex 32)
   allowedOrigins:
     - https://ax.example.com                     # >>> EDIT (must match your domain, https)
+
+# ─── Artifact content origin (agent artifacts) ────────────────────
+# Agent-made pages are shown from a SECOND site with its own hostname. It must
+# be a different registrable domain from the app (ax-usercontent.example.net
+# next to ax.example.com), never a subdomain of it: a subdomain could share the
+# app's cookies. The chart adds an Ingress rule for it on the same static IP;
+# give it an A record and the ax-next-content-cert ManagedCertificate
+# (deploy/GKE.md, Step 5d, which also covers picking the domain).
+#
+# Both are EMPTY on purpose: the render fails until your gke-values.local.yaml
+# sets them, so an upgrade can never ship a placeholder domain or point the
+# Ingress at a content certificate that doesn't exist yet.
+contentOrigin:
+  publicOrigin: ""      # >>> EDIT (https://<a separate domain>, e.g. https://ax-usercontent.example.net)
+  frameAncestors: []    # >>> EDIT (the app's https origin, e.g. [https://ax.example.com])
 
 # ─── Onboarding ──────────────────────────────────────────────────
 # publicBaseUrl is the URL printed in the first-run banner and used by the

@@ -225,6 +225,22 @@
             "memory"
           ],
           "description": "Which memory the host boots. 'memory' (the default) renders the facts PVC and env; memory.exports is optional (both-or-neither) and adds the /memory NFS export. 'k8s' (the legacy Strata memory) is kept in this enum ONLY so `helm template` reaches the chart's own fail message instead of a generic schema-validation error \u2014 it always fails render with a pointer to deploy/README.md's 'Switching an existing deployment to facts memory' runbook (TASK-608)."
+        },
+        "ports": {
+          "type": "object",
+          "properties": {
+            "content": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 65535,
+              "description": "The artifact content origin's container port (content-http). The chart always sets a real port; 0 (ephemeral) is for test fixtures only."
+            }
+          }
+        },
+        "contentServicePort": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
         }
       }
     },
@@ -252,6 +268,25 @@
               "type": "string"
             }
           }
+        }
+      }
+    },
+    "contentOrigin": {
+      "type": "object",
+      "description": "The artifact content origin: a different site from the app (never a subdomain of ingress.host). It lands in the host's CSP frame-ancestors and in minted URLs, so every value must be a bare origin, scheme://host[:port], with no path, query or credentials.",
+      "properties": {
+        "publicOrigin": {
+          "type": "string",
+          "pattern": "^$|^https?://[A-Za-z0-9.-]+(:[0-9]{1,5})?$",
+          "description": "The URL browsers reach the content origin at. Required (the render fails while it is empty)."
+        },
+        "frameAncestors": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^https?://[A-Za-z0-9.-]+(:[0-9]{1,5})?$"
+          },
+          "description": "The app origins allowed to show artifact pages in a frame. Required, one or more."
         }
       }
     }

@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import { extname, normalize, resolve, sep } from 'node:path';
 import { PluginError, makeAgentContext, type Plugin } from '@ax/core';
@@ -66,6 +67,22 @@ export interface StaticFilesConfig {
    * one segment. Defaults to `['/api']`; passing a list REPLACES the default.
    */
   apiPathPrefixes?: readonly string[];
+  /**
+   * Origins whose view route (`/v/`) the app shell may load in a frame. The
+   * shell's HTML ships a CSP meta of exactly `frame-src 'none'` (channel-web's
+   * index.html); with origins here, every `.html` file served gets that
+   * directive widened to `frame-src <origin>/v/ …` on the way out, and nothing
+   * else changes. The artifact viewer frames `<content origin>/v/<token>`, and
+   * the content origin is only known at deploy time, so the built file cannot
+   * name it. Scoped to `/v/` so neither the shell nor a chat visual navigating
+   * its own frame (governed by this same directive) reaches any other route.
+   *
+   * Fails closed: a file without that exact meta is served as it is on disk,
+   * and with no origins the meta stays `'none'`. Each entry must be a bare
+   * `scheme://host[:port]` origin (http or https); anything else is refused at
+   * construction, because it lands in an HTML attribute and a CSP.
+   */
+  frameSrc?: readonly string[];
 }
 
 interface RegisterRouteResult {
@@ -102,6 +119,26 @@ interface RegisterRouteInput {
 
 const DEFAULT_API_PATH_PREFIXES: readonly string[] = ['/api'];
 
+// The one path the shell may frame on a `frameSrc` origin: the content
+// origin's token view route. A source ending in `/` matches that path prefix.
+// The one meta the shell ships (channel-web index.html). Matched exactly: a
+// meta spelled any other way is left alone, which keeps its own policy.
+const FRAME_SRC_NONE_META = `content="frame-src 'none'"`;
+const BARE_ORIGIN = /^https?:\/\/[A-Za-z0-9.-]+(?::\d{1,5})?$/;
+
+function normalizeFrameSrc(origins: readonly string[]): string[] {
+  return origins.map((raw) => {
+    if (!BARE_ORIGIN.test(raw)) {
+      throw new PluginError({
+        code: 'invalid-config',
+        plugin: PLUGIN_NAME,
+        message: `static-files frameSrc entry must be a bare http(s) origin, got ${JSON.stringify(raw)}`,
+      });
+    }
+    return raw;
+  });
+}
+
 /**
  * Trim trailing slashes and refuse anything that would swallow the whole site
  * (`/`, `//`) or is not an absolute path (`api`, ``). Returns bare prefixes
@@ -137,6 +174,11 @@ export function createStaticFilesPlugin(config: StaticFilesConfig): Plugin {
   // 405), because this GET catchall matches it.
   const isApiPath = (path: string): boolean =>
     apiPrefixes.some((p) => path === p || path.startsWith(`${p}/`));
+  const frameSrc = normalizeFrameSrc(config.frameSrc ?? []);
+  const frameSrcMeta =
+    frameSrc.length === 0 ? null : `content="frame-src ${frameSrc.map((o) => `${o}/v/`).join(' ')}"`;
+  const frameSrcTag =
+    frameSrcMeta === null ? '' : createHash('sha256').update(frameSrcMeta).digest('hex').slice(0, 8);
   const mountPath = config.mountPath ?? '/*';
   const fallbackFile =
     config.spaFallback === true
@@ -260,14 +302,23 @@ export function createStaticFilesPlugin(config: StaticFilesConfig): Plugin {
     // Weak ETag = `<size-hex>-<mtime-hex>`. Cheap to compute and good
     // enough for cache validation; clients only need a stable value
     // that changes when the file changes.
-    const etag = `W/"${stat.size.toString(16)}-${Math.floor(stat.mtimeMs).toString(16)}"`;
+    // A widened shell is different bytes from the file on disk, so its tag
+    // says so (a cached copy from a deploy with other origins is refetched).
+    const widen = frameSrcMeta !== null && (ext === '.html' || ext === '.htm');
+    const etagSuffix = widen ? `-f${frameSrcTag}` : '';
+    const etag = `W/"${stat.size.toString(16)}-${Math.floor(stat.mtimeMs).toString(16)}${etagSuffix}"`;
 
     if (ifNoneMatch !== undefined && ifNoneMatch === etag) {
       res.status(304).header('etag', etag).end();
       return '304';
     }
 
-    const body = await fs.readFile(candidate);
+    const raw = await fs.readFile(candidate);
+    const body =
+      widen && raw.includes(FRAME_SRC_NONE_META)
+        ? // A replacer function, so a `$` pattern in the meta is never expanded.
+          Buffer.from(raw.toString('utf8').replace(FRAME_SRC_NONE_META, () => frameSrcMeta!), 'utf8')
+        : raw;
 
     const cacheControl = HASHED_FILENAME.test(candidate)
       ? 'public, max-age=31536000, immutable'

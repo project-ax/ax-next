@@ -292,6 +292,24 @@ COPY --from=ghcr.io/astral-sh/uv:0.11.16@sha256:440fd6477af86a2f1b38080c539f1672
 RUN uv venv --seed --relocatable /opt/ax-python-venv-template \
  && chown -R 1000:1000 /opt/ax-python-venv-template
 
+# PDFs, Word documents, spreadsheets and charts out of the box: reportlab,
+# python-docx, openpyxl, matplotlib (+ their transitive closure) pre-installed
+# into the venv template, so every session's copy has them with no network.
+# Supply chain: the lock is exact `==` pins with sha256 hashes for every wheel
+# (regenerate per the header of python-artifact-libs.in). --require-hashes
+# refuses anything unhashed, --no-deps resolves nothing beyond the lock, and
+# --only-binary :all: refuses sdists — no setup.py runs and no compiler is
+# needed (this stage has none). Each pinned version ships cp311 manylinux
+# wheels for both amd64 (GKE) and arm64 (kind). --no-cache keeps uv's ~185 MB
+# wheel cache out of the layer (it would otherwise double the layer size).
+COPY container/agent/python-artifact-libs.txt /tmp/python-artifact-libs.txt
+RUN uv pip install --no-cache --python /opt/ax-python-venv-template/bin/python --require-hashes --no-deps --only-binary :all: -r /tmp/python-artifact-libs.txt && rm /tmp/python-artifact-libs.txt && chown -R 1000:1000 /opt/ax-python-venv-template
+# Import smoke: a wheel that installs but won't import (wrong arch, a missing
+# shared library) fails the BUILD, not an agent's first chart. matplotlib's
+# font cache goes to a throwaway dir removed in the same layer, and no
+# root-owned __pycache__ lands in the 1000-owned venv.
+RUN export MPLCONFIGDIR="$(mktemp -d)" PYTHONDONTWRITEBYTECODE=1 && MPLBACKEND=Agg /opt/ax-python-venv-template/bin/python -c "import reportlab, docx, openpyxl, matplotlib.pyplot" && rm -rf "$MPLCONFIGDIR"
+
 USER 1000:1000
 
 # The host pod listens here. Runner pods don't expose ports inbound — they

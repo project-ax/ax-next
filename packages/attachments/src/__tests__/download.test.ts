@@ -12,6 +12,8 @@ import pg from 'pg';
 import { HookBus, PluginError, makeAgentContext, type AgentContext } from '@ax/core';
 import { runAttachmentsMigration, type AttachmentsDatabase } from '../migrations.js';
 import { createAttachmentsStore, type AttachmentsStore } from '../store.js';
+import { finishArtifactsMigration } from '../artifacts/migrations.js';
+import { createArtifactStore, type ArtifactStore } from '../artifacts/store.js';
 import { createDownloadHandler } from '../handlers.js';
 
 // ---------------------------------------------------------------------------
@@ -19,8 +21,9 @@ import { createDownloadHandler } from '../handlers.js';
 //
 // The ACL ladder: the caller is who they say they are (input.userId ===
 // ctx.userId) → the caller owns the conversation they name
-// (conversations:get) → the id resolves to a row in THAT conversation, written
-// by that same user → blob:get. Every refusal is the same `not-found`, and no
+// (conversations:get) → the id resolves to an upload in THAT conversation,
+// written by that same user, or to an artifact of THAT conversation's agent
+// (served at its current version) → blob:get. Every refusal is the same `not-found`, and no
 // refusal ever fetches bytes.
 //
 // The metadata rows are real (Postgres); conversations:get and blob:get are
@@ -46,17 +49,26 @@ function makeCtx(userId: string): AgentContext {
 const SHA_PDF = 'a'.repeat(64);
 const SHA_PNG = 'b'.repeat(64);
 const SHA_GONE = 'c'.repeat(64);
-const ARTIFACT_ID = '0123456789abcdef0123456789abcdef';
+const SHA_PNG_V2 = 'd'.repeat(64);
 
 /** Who owns which conversation, as conversations:get would answer. */
 const OWNERS: Record<string, string> = {
   'c-1': 'u-1',
+  'c-1b': 'u-1',
   'c-2': 'u-1',
   'c-other': 'u-2',
+};
+/** Which agent each conversation is with. */
+const AGENTS: Record<string, string> = {
+  'c-1': 'a-1',
+  'c-1b': 'a-1',
+  'c-2': 'a-2',
+  'c-other': 'a-other',
 };
 
 interface Rig {
   store: AttachmentsStore;
+  artifacts: ArtifactStore;
   download: ReturnType<typeof createDownloadHandler>;
   blobGets: string[];
   conversationGets: Array<{ conversationId: string; userId: string }>;
@@ -67,7 +79,9 @@ async function rig(
 ): Promise<Rig> {
   const db = makeKysely();
   await runAttachmentsMigration(db);
+  await finishArtifactsMigration(db);
   const store = createAttachmentsStore(db);
+  const artifacts = createArtifactStore(db);
   const bus = new HookBus();
   const blobGets: string[] = [];
   const conversationGets: Array<{ conversationId: string; userId: string }> = [];
@@ -81,12 +95,20 @@ async function rig(
         throw new PluginError({ code: 'not-found', plugin: 'test-conversations', message: 'conversation not found' });
       }
       return {
-        conversation: { conversationId: input.conversationId, userId: input.userId, agentId: 'a-1' },
+        conversation: {
+          conversationId: input.conversationId,
+          userId: input.userId,
+          agentId: AGENTS[input.conversationId],
+        },
         turns: [],
       };
     },
   );
-  const blobs: Record<string, string> = { [SHA_PDF]: 'pdf-bytes', [SHA_PNG]: 'png-bytes' };
+  const blobs: Record<string, string> = {
+    [SHA_PDF]: 'pdf-bytes',
+    [SHA_PNG]: 'png-bytes',
+    [SHA_PNG_V2]: 'png-bytes-v2',
+  };
   bus.registerService<{ sha256: string }, { bytes: Uint8Array } | { found: false }>(
     'blob:get',
     'test-blob',
@@ -96,7 +118,13 @@ async function rig(
       return bytes === undefined ? { found: false } : { bytes: new Uint8Array(Buffer.from(bytes)) };
     },
   );
-  return { store, download: createDownloadHandler({ bus, store }), blobGets, conversationGets };
+  return {
+    store,
+    artifacts,
+    download: createDownloadHandler({ bus, store, artifacts }),
+    blobGets,
+    conversationGets,
+  };
 }
 
 async function seedUpload(
@@ -116,17 +144,26 @@ async function seedUpload(
   });
 }
 
-async function seedArtifact(store: AttachmentsStore, id: string, conversationId: string): Promise<void> {
-  await store.upsertArtifact({
-    id,
-    conversationId,
-    userId: 'u-1',
-    sha256: SHA_PNG,
-    path: 'out/chart.png',
-    displayName: 'chart.png',
+/** Publish a version of `agentId`'s out/chart.png; returns the artifact id. */
+async function seedArtifact(
+  artifacts: ArtifactStore,
+  agentId: string,
+  opts: { sha256?: string; title?: string; conversationId?: string; sourcePath?: string; visual?: boolean } = {},
+): Promise<string> {
+  const r = await artifacts.publishVersion({
+    agentId,
+    sourcePath: opts.sourcePath ?? 'out/chart.png',
+    ...(opts.visual !== undefined ? { visual: opts.visual } : {}),
+    title: opts.title ?? 'chart.png',
+    sha256: opts.sha256 ?? SHA_PNG,
     mediaType: 'image/png',
     sizeBytes: 9,
+    conversationId: opts.conversationId ?? 'c-1',
+    publishedBy: 'u-1',
+    quotaOwner: 'u-1',
   });
+  if (!r.ok) throw new Error(r.reason);
+  return r.artifactId;
 }
 
 beforeAll(async () => {
@@ -140,6 +177,7 @@ afterEach(async () => {
     try {
       await k.schema.dropTable('attachments_v1_temps').ifExists().execute();
       await k.schema.dropTable('attachments_v1_files').ifExists().execute();
+      await k.schema.dropTable('attachments_v1_artifact_versions').ifExists().execute();
       await k.schema.dropTable('attachments_v1_artifacts').ifExists().execute();
     } catch {
       /* drained pool */
@@ -168,28 +206,90 @@ describe('attachments:download (by id)', () => {
 
   it('download serves an artifact by id', async () => {
     const r = await rig();
-    await seedArtifact(r.store, ARTIFACT_ID, 'c-1');
+    const id = await seedArtifact(r.artifacts, 'a-1');
 
-    const out = await r.download(makeCtx('u-1'), { attachmentId: ARTIFACT_ID, conversationId: 'c-1', userId: 'u-1' });
+    const out = await r.download(makeCtx('u-1'), { attachmentId: id, conversationId: 'c-1', userId: 'u-1' });
 
     expect(Buffer.from(out.bytes).toString()).toBe('png-bytes');
     expect(out.mediaType).toBe('image/png');
     expect(out.displayName).toBe('chart.png');
   });
 
-  // Review focus 2: a chip in a conversation the caller owns, pointing at an
-  // id from ANOTHER conversation (the caller's own other chat, or someone
-  // else's), must not serve that file.
-  it('download refuses an attachment that belongs to another conversation', async () => {
+  it("an old chip id downloads the artifact's current version", async () => {
     const r = await rig();
-    await seedUpload(r.store, 'up-in-c2', 'c-2');
-    await seedArtifact(r.store, ARTIFACT_ID, 'c-2');
+    const id = await seedArtifact(r.artifacts, 'a-1', { title: 'Sales chart' });
+    // The same file published again: the chip from v1 now means v2.
+    await seedArtifact(r.artifacts, 'a-1', { sha256: SHA_PNG_V2, title: 'Sales chart' });
 
-    for (const attachmentId of ['up-in-c2', ARTIFACT_ID]) {
+    const out = await r.download(makeCtx('u-1'), { attachmentId: id, conversationId: 'c-1', userId: 'u-1' });
+
+    expect(Buffer.from(out.bytes).toString()).toBe('png-bytes-v2');
+    expect(r.blobGets).toEqual([SHA_PNG_V2]);
+    // Saved under the title plus the extension of its type.
+    expect(out.displayName).toBe('Sales chart.png');
+  });
+
+  // Artifacts are the agent's (D12): any of the caller's chats with that agent
+  // reaches them, including after the chat that made them is gone.
+  it("downloads an artifact from another of the caller's chats with the same agent", async () => {
+    const r = await rig();
+    const id = await seedArtifact(r.artifacts, 'a-1', { conversationId: 'c-1' });
+    const out = await r.download(makeCtx('u-1'), { attachmentId: id, conversationId: 'c-1b', userId: 'u-1' });
+    expect(Buffer.from(out.bytes).toString()).toBe('png-bytes');
+  });
+
+  // Ruling U1: a show_visual chart is kept out of Artifacts, but its card in
+  // chat loads it through /api/files (this hook), in that chat and in the
+  // caller's other chats with the same agent.
+  it('a chat visual still loads by id, in its own chat and another chat with the same agent', async () => {
+    const r = await rig();
+    const id = await seedArtifact(r.artifacts, 'a-1', { sourcePath: 'visuals/abc.html', visual: true });
+    expect((await r.artifacts.getHead(id))!.visual).toBe(true);
+    for (const conversationId of ['c-1', 'c-1b']) {
+      const out = await r.download(makeCtx('u-1'), { attachmentId: id, conversationId, userId: 'u-1' });
+      expect(Buffer.from(out.bytes).toString()).toBe('png-bytes');
+    }
+    await expect(
+      // Another agent's chat: the same 404 as any foreign artifact.
+      r.download(makeCtx('u-1'), { attachmentId: id, conversationId: 'c-2', userId: 'u-1' }),
+    ).rejects.toMatchObject({ code: 'not-found' });
+  });
+
+  it('an artifact of another agent, named from my own conversation, is a 404', async () => {
+    const r = await rig();
+    const mineElsewhere = await seedArtifact(r.artifacts, 'a-2', { conversationId: 'c-2' });
+    const someoneElses = await seedArtifact(r.artifacts, 'a-other', { conversationId: 'c-other' });
+
+    for (const attachmentId of [mineElsewhere, someoneElses]) {
       await expect(
         r.download(makeCtx('u-1'), { attachmentId, conversationId: 'c-1', userId: 'u-1' }),
       ).rejects.toMatchObject({ code: 'not-found' });
     }
+    expect(r.blobGets).toEqual([]);
+  });
+
+  // Review focus 2: a chip in a conversation the caller owns, pointing at an
+  // id from ANOTHER conversation (the caller's own other chat, or someone
+  // else's), must not serve that file.
+  it('download refuses an upload that belongs to another conversation', async () => {
+    const r = await rig();
+    await seedUpload(r.store, 'up-in-c2', 'c-2');
+
+    await expect(
+      r.download(makeCtx('u-1'), { attachmentId: 'up-in-c2', conversationId: 'c-1', userId: 'u-1' }),
+    ).rejects.toMatchObject({ code: 'not-found' });
+    expect(r.blobGets).toEqual([]);
+  });
+
+  // An owner-gate answer without a usable agent id fails closed.
+  it('refuses an artifact when conversations:get names no agent', async () => {
+    const r = await rig({
+      conversationsGet: async (input) => ({ conversation: { conversationId: input.conversationId }, turns: [] }),
+    });
+    const id = await seedArtifact(r.artifacts, 'a-1');
+    await expect(
+      r.download(makeCtx('u-1'), { attachmentId: id, conversationId: 'c-1', userId: 'u-1' }),
+    ).rejects.toMatchObject({ code: 'not-found' });
     expect(r.blobGets).toEqual([]);
   });
 

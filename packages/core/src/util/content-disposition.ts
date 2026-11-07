@@ -1,10 +1,10 @@
 /**
  * The one sanitizer for a filename we put in a `Content-Disposition` header.
  *
- * It lives on its own because there are now TWO routes that hand a file to a
- * browser — the chat attachment download (`routes-attachments.ts`) and the
- * workspace file downloads (`routes-workspace.ts`) — and the name going into
- * that header is agent- or user-authored either way. Two copies of a header
+ * It lives in @ax/core because more than one plugin hands a file to a browser —
+ * channel-web's chat attachment and workspace file downloads, and the artifact
+ * content origin in @ax/attachments — and the name going into that header is
+ * agent- or user-authored every time. Two copies of a header
  * sanitizer is two places a fix has to land and one place it silently doesn't
  * (invariant 4).
  *

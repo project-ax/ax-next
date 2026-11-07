@@ -115,7 +115,9 @@ BEGIN;
 -- conversations with team agents (those with personal agents went with agents:deleted)
 DELETE FROM conversations_v1_events WHERE conversation_id IN (SELECT conversation_id FROM conversations_v1_conversations WHERE user_id = :'uid');
 DELETE FROM conversations_v1_transcripts WHERE conversation_id IN (SELECT conversation_id FROM conversations_v1_conversations WHERE user_id = :'uid');
-DELETE FROM attachments_v1_artifacts WHERE user_id = :'uid' OR conversation_id IN (SELECT conversation_id FROM conversations_v1_conversations WHERE user_id = :'uid');
+-- artifacts belong to their agent and outlive the chat (a personal agent's went with
+-- agents:deleted); a team agent's keep their versions, which only lose the chat id
+UPDATE attachments_v1_artifact_versions SET conversation_id = NULL WHERE conversation_id IN (SELECT conversation_id FROM conversations_v1_conversations WHERE user_id = :'uid');
 DELETE FROM attachments_v1_files WHERE user_id = :'uid' OR conversation_id IN (SELECT conversation_id FROM conversations_v1_conversations WHERE user_id = :'uid');
 DELETE FROM attachments_v1_temps WHERE user_id = :'uid';
 -- runner session state (find the ids before removing the rows that name them)

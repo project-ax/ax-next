@@ -16,10 +16,13 @@ import { createDatabasePostgresPlugin } from '@ax/database-postgres';
 import { createAttachmentsPlugin } from '../plugin.js';
 import { runAttachmentsMigration, type AttachmentsDatabase } from '../migrations.js';
 import { createAttachmentsStore, type AttachmentsStore } from '../store.js';
+import { finishArtifactsMigration } from '../artifacts/migrations.js';
+import { createArtifactStore, type ArtifactStore } from '../artifacts/store.js';
 
 // ---------------------------------------------------------------------------
 // TASK-718: `conversations:purged` -> delete the purged conversations'
-// `attachments_v1_files` / `attachments_v1_artifacts` rows.
+// `attachments_v1_files` rows. Artifacts outlive their chat (D12): their
+// versions only lose the purged conversation id.
 //
 // Two layers, one Postgres container:
 //   - AttachmentsStore.purgeForConversations, against a bare Kysely handle;
@@ -42,10 +45,12 @@ function makeKysely(): Kysely<AttachmentsDatabase> {
 async function freshDbAndStore(): Promise<{
   db: Kysely<AttachmentsDatabase>;
   store: AttachmentsStore;
+  artifacts: ArtifactStore;
 }> {
   const db = makeKysely();
   await runAttachmentsMigration(db);
-  return { db, store: createAttachmentsStore(db) };
+  await finishArtifactsMigration(db);
+  return { db, store: createAttachmentsStore(db), artifacts: createArtifactStore(db) };
 }
 
 beforeAll(async () => {
@@ -67,6 +72,7 @@ afterEach(async () => {
   try {
     await cleanup.query('DROP TABLE IF EXISTS attachments_v1_temps');
     await cleanup.query('DROP TABLE IF EXISTS attachments_v1_files');
+    await cleanup.query('DROP TABLE IF EXISTS attachments_v1_artifact_versions');
     await cleanup.query('DROP TABLE IF EXISTS attachments_v1_artifacts');
   } finally {
     await cleanup.end().catch(() => {});
@@ -86,7 +92,7 @@ const OTHER_SHA = 'b'.repeat(64);
  * C1 and C3 reference the SAME sha256 (content-addressed blobs are shared), so a
  * purge that cleaned up "by sha" would break C3.
  */
-async function seed(store: AttachmentsStore): Promise<void> {
+async function seed(store: AttachmentsStore, artifacts: ArtifactStore): Promise<void> {
   const row = (
     id: string,
     conversationId: string,
@@ -105,9 +111,20 @@ async function seed(store: AttachmentsStore): Promise<void> {
   await store.insertFile(row('f-c1b', 'C1', 'b.txt', OTHER_SHA));
   await store.insertFile(row('f-c2', 'C2', 'a.txt', OTHER_SHA));
   await store.insertFile(row('f-c3', 'C3', 'a.txt', SHARED_SHA));
-  await store.upsertArtifact({ ...row('a-c1', 'C1', 'r.pdf', SHARED_SHA), path: 'artifacts/r.pdf' });
-  await store.upsertArtifact({ ...row('a-c2', 'C2', 'r.pdf', OTHER_SHA), path: 'artifacts/r.pdf' });
-  await store.upsertArtifact({ ...row('a-c3', 'C3', 'r.pdf', SHARED_SHA), path: 'artifacts/r.pdf' });
+  // One artifact per chat (each chat's agent publishes its own r.pdf).
+  for (const [conversationId, sha256] of [['C1', SHARED_SHA], ['C2', OTHER_SHA], ['C3', SHARED_SHA]] as const) {
+    await artifacts.publishVersion({
+      agentId: `agt-${conversationId}`,
+      sourcePath: 'artifacts/r.pdf',
+      title: 'r.pdf',
+      sha256,
+      mediaType: 'application/pdf',
+      sizeBytes: 1,
+      conversationId,
+      publishedBy: 'u-1',
+      quotaOwner: 'u-1',
+    });
+  }
   // Pre-commit uploads carry no conversation id at all; they belong to the TTL
   // janitor, never to a conversation purge.
   await store.insertTemp({
@@ -130,14 +147,17 @@ async function fileIds(db: Kysely<AttachmentsDatabase>): Promise<string[]> {
   return rows.map((r) => r.attachment_id);
 }
 
-async function artifactIds(db: Kysely<AttachmentsDatabase>): Promise<string[]> {
+/** `agent:conversation` per artifact version, sorted; `-` for a cleared chat id. */
+async function artifactChats(db: Kysely<AttachmentsDatabase>): Promise<string[]> {
   const rows = await db
-    .selectFrom('attachments_v1_artifacts')
-    .select('artifact_id')
-    .orderBy('artifact_id')
+    .selectFrom('attachments_v1_artifact_versions as v')
+    .innerJoin('attachments_v1_artifacts as h', 'h.artifact_id', 'v.artifact_id')
+    .select(['h.agent_id', 'v.conversation_id'])
     .execute();
-  return rows.map((r) => r.artifact_id);
+  return rows.map((r) => `${r.agent_id}:${r.conversation_id ?? '-'}`).sort();
 }
+
+const ALL_ARTIFACTS = ['agt-C1:C1', 'agt-C2:C2', 'agt-C3:C3'];
 
 async function tempIds(db: Kysely<AttachmentsDatabase>): Promise<string[]> {
   const rows = await db
@@ -153,65 +173,62 @@ async function tempIds(db: Kysely<AttachmentsDatabase>): Promise<string[]> {
 // ---------------------------------------------------------------------------
 
 describe('AttachmentsStore.purgeForConversations', () => {
-  it('deletes exactly the named conversations files + artifacts, keeps the rest, and counts them', async () => {
-    const { db, store } = await freshDbAndStore();
-    await seed(store);
+  it('deletes exactly the named conversations files, keeps the rest (and every artifact), and counts them', async () => {
+    const { db, store, artifacts } = await freshDbAndStore();
+    await seed(store, artifacts);
 
     const out = await store.purgeForConversations(['C1', 'C2']);
 
-    expect(out).toEqual({ files: 3, artifacts: 2 });
+    expect(out).toEqual({ files: 3 });
     // C3 survives, including the row that shares C1's sha256.
     expect(await fileIds(db)).toEqual(['f-c3']);
-    expect(await artifactIds(db)).toEqual(['a-c3']);
+    expect(await artifactChats(db)).toEqual(ALL_ARTIFACTS);
   });
 
   it('never touches attachments_v1_temps', async () => {
-    const { db, store } = await freshDbAndStore();
-    await seed(store);
+    const { db, store, artifacts } = await freshDbAndStore();
+    await seed(store, artifacts);
 
     await store.purgeForConversations(['C1', 'C2', 'C3']);
 
     expect(await fileIds(db)).toEqual([]);
-    expect(await artifactIds(db)).toEqual([]);
     expect(await tempIds(db)).toEqual(['t-1']);
   });
 
   it('an empty list is a no-op that returns zeros', async () => {
-    const { db, store } = await freshDbAndStore();
-    await seed(store);
+    const { db, store, artifacts } = await freshDbAndStore();
+    await seed(store, artifacts);
 
     const out = await store.purgeForConversations([]);
 
-    expect(out).toEqual({ files: 0, artifacts: 0 });
+    expect(out).toEqual({ files: 0 });
     expect(await fileIds(db)).toHaveLength(4);
-    expect(await artifactIds(db)).toHaveLength(3);
   });
 
   it('ids that own no rows delete nothing (and a repeat purge is a no-op)', async () => {
-    const { db, store } = await freshDbAndStore();
-    await seed(store);
+    const { db, store, artifacts } = await freshDbAndStore();
+    await seed(store, artifacts);
 
-    expect(await store.purgeForConversations(['nope'])).toEqual({ files: 0, artifacts: 0 });
-    expect(await store.purgeForConversations(['C1'])).toEqual({ files: 2, artifacts: 1 });
-    expect(await store.purgeForConversations(['C1'])).toEqual({ files: 0, artifacts: 0 });
+    expect(await store.purgeForConversations(['nope'])).toEqual({ files: 0 });
+    expect(await store.purgeForConversations(['C1'])).toEqual({ files: 2 });
+    expect(await store.purgeForConversations(['C1'])).toEqual({ files: 0 });
     expect(await fileIds(db)).toEqual(['f-c2', 'f-c3']);
   });
 
   it('binds ids as parameters: SQL metacharacters in an id are just an id', async () => {
-    const { db, store } = await freshDbAndStore();
-    await seed(store);
+    const { db, store, artifacts } = await freshDbAndStore();
+    await seed(store, artifacts);
     const hostile = `C1' OR '1'='1`;
 
     const out = await store.purgeForConversations([hostile, `x'); DROP TABLE attachments_v1_files; --`]);
 
-    expect(out).toEqual({ files: 0, artifacts: 0 });
+    expect(out).toEqual({ files: 0 });
     expect(await fileIds(db)).toHaveLength(4);
-    expect(await artifactIds(db)).toHaveLength(3);
   });
 
   it('accepts a list far past the Postgres bind-parameter limit', async () => {
-    const { db, store } = await freshDbAndStore();
-    await seed(store);
+    const { db, store, artifacts } = await freshDbAndStore();
+    await seed(store, artifacts);
     // 70k > 65535 bind parameters: an unchunked `IN ($1..$70000)` cannot run.
     const many = Array.from({ length: 70_000 }, (_, i) => `filler-${i}`);
     many[0] = 'C1';
@@ -219,18 +236,30 @@ describe('AttachmentsStore.purgeForConversations', () => {
 
     const out = await store.purgeForConversations(many);
 
-    expect(out).toEqual({ files: 3, artifacts: 2 });
+    expect(out).toEqual({ files: 3 });
     expect(await fileIds(db)).toEqual(['f-c3']);
   });
 
-  it('is one transaction: if the artifacts delete fails, the files delete rolls back', async () => {
-    const { db, store } = await freshDbAndStore();
-    await seed(store);
-    await sql`DROP TABLE attachments_v1_artifacts`.execute(db);
+  // The artifact half lives in the artifact store: clearConversations.
+});
 
-    await expect(store.purgeForConversations(['C1', 'C2'])).rejects.toThrow();
+describe('ArtifactStore.clearConversations (the artifact half of a purge)', () => {
+  it('accepts a list far past the Postgres bind-parameter limit', async () => {
+    const { db, store, artifacts } = await freshDbAndStore();
+    await seed(store, artifacts);
+    const many = Array.from({ length: 70_000 }, (_, i) => `filler-${i}`);
+    many[0] = 'C1';
+    many[69_999] = 'C2';
 
-    expect(await fileIds(db)).toHaveLength(4);
+    expect(await artifacts.clearConversations(many)).toBe(2);
+    expect(await artifactChats(db)).toEqual(['agt-C1:-', 'agt-C2:-', 'agt-C3:C3']);
+  });
+
+  it('binds ids as parameters: SQL metacharacters in an id are just an id', async () => {
+    const { db, store, artifacts } = await freshDbAndStore();
+    await seed(store, artifacts);
+    expect(await artifacts.clearConversations([`C1' OR '1'='1`])).toBe(0);
+    expect(await artifactChats(db)).toEqual(ALL_ARTIFACTS);
   });
 });
 
@@ -264,6 +293,7 @@ interface PluginRig {
   harness: TestHarness;
   db: Kysely<AttachmentsDatabase>;
   store: AttachmentsStore;
+  artifacts: ArtifactStore;
   lines: LogLine[];
   blobDeleteCalls: unknown[];
   /** Fire `conversations:purged` as @ax/conversations would. */
@@ -295,6 +325,7 @@ async function makePluginRig(): Promise<PluginRig> {
         conversation: { conversationId: 'mock-conv', userId: 'test-user', agentId: 'test-agent' },
         turns: [],
       }),
+      'agents:resolve': async () => ({ agent: { ownerType: 'user', ownerId: 'test-user' } }),
     },
     plugins: [
       createDatabasePostgresPlugin({ connectionString }),
@@ -312,6 +343,7 @@ async function makePluginRig(): Promise<PluginRig> {
     harness,
     db,
     store: createAttachmentsStore(db),
+    artifacts: createArtifactStore(db),
     lines,
     blobDeleteCalls,
     async purged(payload) {
@@ -327,31 +359,69 @@ async function makePluginRig(): Promise<PluginRig> {
 describe('@ax/attachments subscribes to conversations:purged', () => {
   it('lists the subscription in the manifest', () => {
     // Plus blob:collect-refs (TASK-776): the holder side of blob reclamation.
+    // And agents:deleted: deleting the agent deletes its artifacts (D12).
     expect(createAttachmentsPlugin().manifest.subscribes).toEqual([
       'conversations:purged',
       'blob:collect-refs',
+      'agents:deleted',
     ]);
   });
 
-  it('deletes the purged conversations rows, keeps the others (shared sha256 too), leaves temps alone', async () => {
+  it('conversations:purged clears the chat id on versions and keeps the artifacts (D12); uploads are still purged', async () => {
     const rig = await makePluginRig();
-    await seed(rig.store);
+    await seed(rig.store, rig.artifacts);
 
     await rig.purged({ conversationIds: ['C1', 'C2'] });
 
     expect(await fileIds(rig.db)).toEqual(['f-c3']);
-    expect(await artifactIds(rig.db)).toEqual(['a-c3']);
+    expect(await artifactChats(rig.db)).toEqual(['agt-C1:-', 'agt-C2:-', 'agt-C3:C3']);
     expect(await tempIds(rig.db)).toEqual(['t-1']);
     // The surviving C3 file still resolves through the public store surface.
     const kept = await rig.store.getFileById('f-c3');
     expect(kept?.sha256).toBe(SHARED_SHA);
+    // Every artifact is still there, at its current version.
+    expect((await rig.artifacts.listForAgent('agt-C1', 10)).map((a) => a.current.version)).toEqual([1]);
     const info = rig.lines.find((l) => l.level === 'info');
-    expect(info?.bindings).toMatchObject({ conversations: 2, files: 3, artifacts: 2 });
+    expect(info?.bindings).toEqual({ conversations: 2, files: 3, deletedVisuals: 0, clearedVersions: 2 });
+  });
+
+  // R29: a chat visual dies with its chat. Nobody can delete one (no owner hook
+  // reaches it), so the purge must, or its row and bytes would live forever.
+  it('a chart referenced only by purged chats is deleted and its bytes are released; one also in a live chat survives', async () => {
+    const rig = await makePluginRig();
+    const CHART = 'c'.repeat(64);
+    const SHARED_CHART = 'd'.repeat(64);
+    const NORMAL = 'e'.repeat(64);
+    const pub = (sourcePath: string, sha256: string, conversationId: string, visual: boolean) =>
+      rig.artifacts.publishVersion({
+        agentId: 'agt-1', sourcePath, title: 't', sha256, mediaType: 'text/html', sizeBytes: 1,
+        conversationId, publishedBy: 'u-1', quotaOwner: 'u-1', visual,
+      });
+    const only = await pub(`visuals/${CHART}.html`, CHART, 'C1', true);
+    // The same chart shown again in a chat that is NOT purged.
+    const shared = await pub(`visuals/${SHARED_CHART}.html`, SHARED_CHART, 'C1', true);
+    await pub(`visuals/${SHARED_CHART}.html`, SHARED_CHART, 'C2', true);
+    const normal = await pub('reports/r.html', NORMAL, 'C1', false);
+    if (!only.ok || !shared.ok || !normal.ok) throw new Error('seed');
+
+    await rig.purged({ conversationIds: ['C1'] });
+
+    expect(await rig.artifacts.getHead(only.artifactId)).toBeNull();
+    expect(await rig.artifacts.getHead(shared.artifactId)).not.toBeNull();
+    expect(await rig.artifacts.getHead(normal.artifactId)).not.toBeNull();
+    expect(await rig.artifacts.blobRefs([CHART])).toEqual([]);
+    expect((await rig.artifacts.blobRefs([SHARED_CHART, NORMAL])).length).toBeGreaterThan(0);
+    const info = rig.lines.find((l) => l.level === 'info');
+    expect(info?.bindings).toMatchObject({ deletedVisuals: 1 });
+    // A later purge of the other chat takes the shared chart too.
+    await rig.purged({ conversationIds: ['C2'] });
+    expect(await rig.artifacts.getHead(shared.artifactId)).toBeNull();
+    expect(await rig.artifacts.getHead(normal.artifactId)).not.toBeNull();
   });
 
   it('never calls blob:delete, blob:retire or blob:purge (blobs are shared by sha256; bytes stay in place)', async () => {
     const rig = await makePluginRig();
-    await seed(rig.store);
+    await seed(rig.store, rig.artifacts);
 
     await rig.purged({ conversationIds: ['C1', 'C2'] });
 
@@ -364,13 +434,13 @@ describe('@ax/attachments subscribes to conversations:purged', () => {
 
   it('a re-fired purge is a no-op', async () => {
     const rig = await makePluginRig();
-    await seed(rig.store);
+    await seed(rig.store, rig.artifacts);
 
     await rig.purged({ conversationIds: ['C1', 'C2'] });
     await rig.purged({ conversationIds: ['C1', 'C2'] });
 
     expect(await fileIds(rig.db)).toEqual(['f-c3']);
-    expect(await artifactIds(rig.db)).toEqual(['a-c3']);
+    expect(await artifactChats(rig.db)).toEqual(['agt-C1:-', 'agt-C2:-', 'agt-C3:C3']);
     expect(rig.lines.filter((l) => l.level === 'error')).toEqual([]);
   });
 
@@ -378,18 +448,18 @@ describe('@ax/attachments subscribes to conversations:purged', () => {
   // forwards `[]` to a bare `IN ()` (a Postgres syntax error -> error log).
   it('an empty conversationIds list deletes nothing and logs no error', async () => {
     const rig = await makePluginRig();
-    await seed(rig.store);
+    await seed(rig.store, rig.artifacts);
 
     await rig.purged({ conversationIds: [] });
 
     expect(await fileIds(rig.db)).toHaveLength(4);
-    expect(await artifactIds(rig.db)).toHaveLength(3);
+    expect(await artifactChats(rig.db)).toEqual(ALL_ARTIFACTS);
     expect(rig.lines.filter((l) => l.level === 'error')).toEqual([]);
   });
 
   it('accepts exactly 1000 ids', async () => {
     const rig = await makePluginRig();
-    await seed(rig.store);
+    await seed(rig.store, rig.artifacts);
     const ids = Array.from({ length: 1000 }, (_, i) => `filler-${i}`);
     ids[0] = 'C1';
 
@@ -417,12 +487,12 @@ describe('@ax/attachments subscribes to conversations:purged', () => {
   ];
   it.each(malformed)('ignores %s: deletes nothing and warns', async (_name, payload) => {
     const rig = await makePluginRig();
-    await seed(rig.store);
+    await seed(rig.store, rig.artifacts);
 
     await rig.purged(payload);
 
     expect(await fileIds(rig.db)).toHaveLength(4);
-    expect(await artifactIds(rig.db)).toHaveLength(3);
+    expect(await artifactChats(rig.db)).toEqual(ALL_ARTIFACTS);
     expect(rig.lines.some((l) => l.level === 'warn')).toBe(true);
     expect(rig.lines.filter((l) => l.level === 'error')).toEqual([]);
     expect(rig.blobDeleteCalls).toEqual([]);
@@ -430,8 +500,8 @@ describe('@ax/attachments subscribes to conversations:purged', () => {
 
   it('a failing store logs an error, rolls back, and does not throw (not even into the bus)', async () => {
     const rig = await makePluginRig();
-    await seed(rig.store);
-    await sql`DROP TABLE attachments_v1_artifacts`.execute(rig.db);
+    await seed(rig.store, rig.artifacts);
+    await sql`DROP TABLE attachments_v1_files`.execute(rig.db);
 
     await expect(rig.purged({ conversationIds: ['C1', 'C2'] })).resolves.toBeUndefined();
 
@@ -441,7 +511,7 @@ describe('@ax/attachments subscribes to conversations:purged', () => {
     expect(errors.map((l) => l.msg)).toEqual(['attachments_purge_for_purged_conversations_failed']);
     expect(errors[0]?.bindings).toMatchObject({ count: 2 });
     expect(errors[0]?.bindings?.err).toBeInstanceOf(Error);
-    // Nothing half-deleted.
-    expect(await fileIds(rig.db)).toHaveLength(4);
+    // The artifacts are untouched.
+    expect(await artifactChats(rig.db)).toEqual(ALL_ARTIFACTS);
   });
 });

@@ -10,6 +10,9 @@
 import { z, type ZodType } from 'zod';
 import { AttachmentIdSchema } from '@ax/ipc-protocol';
 
+// The artifact owner hooks' I/O and returns contracts.
+export * from './artifacts/types.js';
+
 // Service hook payloads.
 
 export interface StoreTempInput {
@@ -47,7 +50,10 @@ export interface CommitOutput {
 export interface DownloadInput {
   /** An upload's or a published artifact's id. */
   attachmentId: string;
-  /** The conversation being read; the row must belong to it. */
+  /**
+   * The conversation being read. An upload must belong to it; an artifact must
+   * belong to its agent.
+   */
   conversationId: string;
   /**
    * Caller-supplied userId. Must equal ctx.userId, and the hook re-validates it
@@ -65,28 +71,6 @@ export interface DownloadOutput {
 }
 
 // TASK-68 (out-of-git Part C): host-side metadata hooks.
-
-/**
- * `artifacts:publish-blob` — the IPC `artifact.publish` action calls this after
- * the runner streamed the artifact bytes to `blob:put`. Inserts the artifact
- * metadata row scoped to ctx.userId, into a conversation ctx.userId owns;
- * returns the stable artifactId the chat chip and the download use. `path` is
- * the row's re-publish key and never leaves this plugin.
- *
- * The hook does not check who put `sha256`; a caller must pass a sha it put
- * itself (ipc-core enforces that for runners, TASK-1010).
- */
-export interface ArtifactsPublishBlobInput {
-  conversationId: string;
-  sha256: string;
-  path: string;
-  displayName: string;
-  mediaType: string;
-  size: number;
-}
-export interface ArtifactsPublishBlobOutput {
-  artifactId: string;
-}
 
 /**
  * `attachments:list-for-conversation` — the IPC `attachments.list` action calls
@@ -146,10 +130,6 @@ export const DownloadOutputSchema = z.object({
 
 // TASK-68 returns contracts. Storage-agnostic: `artifactId`/`attachmentId`
 // opaque ids, `sha256` the file's own content digest (not a backend pointer).
-export const ArtifactsPublishBlobOutputSchema = z.object({
-  artifactId: z.string(),
-}) as unknown as ZodType<ArtifactsPublishBlobOutput>;
-
 export const AttachmentsListForConversationOutputSchema = z.object({
   files: z.array(
     z.object({
@@ -198,6 +178,25 @@ export interface AttachmentsConfig {
    * Override via `allowedMediaTypes` if you want broader admission.
    */
   allowedMediaTypes?: string[];
+
+  /**
+   * The content origin (§6.5): a second listener, on a different site from
+   * the app, that serves artifact bytes against short-lived view tokens.
+   * Omitted: no listener starts and `artifacts:mint-view-token` answers
+   * `unavailable`.
+   */
+  contentOrigin?: ContentOriginConfig;
+}
+
+export interface ContentOriginConfig {
+  /** Bind address. */
+  host: string;
+  /** Bind port; 0 picks a free one (tests). */
+  port: number;
+  /** The URL the browser reaches it at. Defaults to `http://127.0.0.1:<bound port>` (tests). */
+  publicOrigin?: string;
+  /** The app origins allowed to frame artifact HTML. */
+  frameAncestors: string[];
 }
 
 export const DEFAULT_MAX_FILE_BYTES = 25 * 1024 * 1024;

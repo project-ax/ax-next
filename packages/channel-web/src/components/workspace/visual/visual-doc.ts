@@ -41,7 +41,12 @@ export const VISUAL_FRAME_CSP =
 /**
  * The app shell's own policy (index.html). Srcdoc frames still load, but a
  * visual can't navigate its frame to a URL: that navigation is checked against
- * the embedder's frame-src, which the frame's own CSP has no say over.
+ * the embedder's frame-src, which the frame's own CSP has no say over. A
+ * deployment with an artifact content origin serves this widened to
+ * `frame-src <content origin>/v/` (@ax/static-files `frameSrc`), so the
+ * artifact viewer can load; a visual could then navigate only to our own
+ * content origin's token view route, which serves nothing without a valid
+ * signed token (and the frame stays sandboxed if it does).
  */
 export const APP_FRAME_CSP = "frame-src 'none'";
 

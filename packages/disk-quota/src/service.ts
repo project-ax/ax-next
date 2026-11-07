@@ -3,6 +3,7 @@ import {
   BLOB_COLLECT_REFS_MAX_CANDIDATES,
   isOwnerlessId,
   makeAgentContext,
+  quotaOwnerKey,
   readBlobCollectRefsAnswers,
   type AgentContext,
   type BlobHolding,
@@ -244,7 +245,10 @@ export function createDiskQuotaService(deps: {
       >('agents:resolve', ctx, { agentId, userId: ctx.userId });
       const agent = out?.agent;
       if (typeof agent?.ownerId === 'string' && agent.ownerId.length > 0) {
-        const owner = agent.ownerType === 'team' ? `team:${agent.ownerId}` : agent.ownerId;
+        const owner = quotaOwnerKey({
+          ownerType: agent.ownerType === 'team' ? 'team' : 'user',
+          ownerId: agent.ownerId,
+        });
         // A resolve that was in flight across the delete must not re-cache it.
         if (!deletedAgents.has(agentId)) {
           if (ownerCache.size >= OWNER_CACHE_MAX) ownerCache.clear();

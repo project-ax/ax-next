@@ -393,6 +393,9 @@ it also needs, at minimum (each is in-process today and says so at its site):
   - @ax/ipc-core's per-session record of `blob.put` shas
     (handlers/session-blob-puts.ts, TASK-1010): `artifact.publish` landing on
     another replica than its `blob.put` would be refused as not-found.
+  - @ax/attachments' artifact view-token key (artifacts/content-origin.ts):
+    32 random bytes made at start and held only in memory, so a token minted
+    on one replica is refused by the content origin on another.
 
 So we refuse to render a multi-replica host until a distributed stream broker
 (and a multi-replica blob backend, s3) lands. Better to fail the `helm
@@ -400,10 +403,70 @@ template` than to ship a valid-looking Deployment that drops chat streams.
 
 Invoked from host/deployment.yaml, which always renders.
 */}}
+{{/*
+ax-next.validateContentOrigin — the artifact content origin (agent artifacts,
+spec §6.5) must be a different site from the app.
+
+Agent-made HTML runs its own scripts on the content origin. If that origin
+shared a host with the app (or sat under it, or above it), the page could see
+or set the app's cookies. So:
+
+  - contentOrigin.publicOrigin is required; an empty value fails the render.
+  - its hostname may not equal ingress.host, sit under it, or sit above it.
+    (A sibling under the same registrable domain needs the public suffix list
+    to catch; values.yaml and deploy/GKE.md say to use a separate domain.)
+  - contentOrigin.frameAncestors is required: the host refuses to boot
+    without one, so we say so here instead of crash-looping the pod.
+  - with the Ingress on (ingress.enabled + ingress.host), publicOrigin must
+    be https (an http frame inside the https app is blocked as mixed
+    content), and some frameAncestors entry must be the app itself
+    (hostname == ingress.host), or the app could never show the pages.
+
+The schema already refused anything that is not a bare http(s) origin. The
+host repeats these checks at boot against frameAncestors (content-origin.ts).
+
+Invoked from host/deployment.yaml, which always renders.
+*/}}
+{{- define "ax-next.validateContentOrigin" -}}
+{{- $co := .Values.contentOrigin | default dict -}}
+{{- $hint := "set contentOrigin.publicOrigin=https://<a domain that is not ingress.host>" -}}
+{{- $origin := toString ($co.publicOrigin | default "") -}}
+{{- if not $origin -}}
+{{- fail (printf "contentOrigin.publicOrigin is empty. Agent-made pages are shown from a second site, which must be a different domain from the app, never a subdomain of it: %s (see 'The content domain' in deploy/README.md; on GKE, deploy/GKE.md Step 5d)." $hint) -}}
+{{- end -}}
+{{- $contentHost := lower (urlParse $origin).hostname -}}
+{{- if not $contentHost -}}
+{{- fail (printf "contentOrigin.publicOrigin (%s) has no hostname: %s" $origin $hint) -}}
+{{- end -}}
+{{- $appHost := lower (toString (.Values.ingress.host | default "")) -}}
+{{- if $appHost -}}
+{{- if or (eq $contentHost $appHost) (hasSuffix (printf ".%s" $appHost) $contentHost) (hasSuffix (printf ".%s" $contentHost) $appHost) -}}
+{{- fail (printf "contentOrigin.publicOrigin's host (%s) is ingress.host (%s) or one sits under the other, so agent-made pages would share the app's cookies: %s" $contentHost $appHost $hint) -}}
+{{- end -}}
+{{- end -}}
+{{- if not $co.frameAncestors -}}
+{{- fail "contentOrigin.frameAncestors is empty: the host will not boot without the app origins allowed to show artifact pages. Set it to the app's origin, for example --set contentOrigin.frameAncestors={https://<ingress.host>}." -}}
+{{- end -}}
+{{- if and (include "ax-next.bool" .Values.ingress.enabled) $appHost -}}
+{{- if ne (lower (urlParse $origin).scheme) "https" -}}
+{{- fail (printf "contentOrigin.publicOrigin (%s) must be https when the Ingress is on: the app is served over https, and a browser blocks an http frame inside it (mixed content). %s" $origin $hint) -}}
+{{- end -}}
+{{- $appFramed := false -}}
+{{- range $co.frameAncestors -}}
+{{- if eq (lower (urlParse (toString .)).hostname) $appHost -}}
+{{- $appFramed = true -}}
+{{- end -}}
+{{- end -}}
+{{- if not $appFramed -}}
+{{- fail (printf "contentOrigin.frameAncestors (%s) does not include the app's own origin, so the app could not show artifact pages. Add it: --set contentOrigin.frameAncestors={https://%s}" (join "," $co.frameAncestors) $appHost) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
 {{- define "ax-next.validateHostReplicas" -}}
 {{- $replicas := .Values.replicas | default 1 | int -}}
 {{- if gt $replicas 1 -}}
-{{- fail (printf "replicas must be 1: the web chat surface is single-replica-only (in-process SSE chunk buffer); got %d. Multi-replica chat needs a distributed stream broker — pin replicas to 1 until that ships." $replicas) -}}
+{{- fail (printf "replicas must be 1: the web chat surface is single-replica-only (in-process SSE chunk buffer, and the artifact view-token key is made per process); got %d. Multi-replica chat needs a distributed stream broker — pin replicas to 1 until that ships." $replicas) -}}
 {{- end -}}
 {{- end -}}
 

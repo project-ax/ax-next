@@ -48,7 +48,17 @@ import {
   RoutineStatusSchema,
   type RoutineStepOp,
 } from '@ax/routines-contract';
-import { ROUTINE_DECISION_OPERATIONS } from './workspace-types';
+import {
+  ArtifactDetailBodySchema,
+  ArtifactListSchema,
+  ArtifactShareCodeSchema,
+  ArtifactSummaryBodySchema,
+  ArtifactTextSchema,
+  ArtifactTokenSchema,
+  ROUTINE_DECISION_OPERATIONS,
+  type ArtifactLinkAction,
+  type ArtifactTokenPurpose,
+} from './workspace-types';
 import { toWorkspaceTaskKind as toTaskKind } from './task-kinds';
 import { attachmentRefBlock } from './attachment-upload';
 import { HttpError, httpErrorMessage, httpFetch, REQUEST_TIMEOUT_MS, withRequestTimeout } from './http';
@@ -333,6 +343,16 @@ export class WorkspaceApiError extends HttpError {
   constructor(path: string, status: number) {
     super(`workspace ${path}`, status);
     this.name = 'WorkspaceApiError';
+  }
+}
+
+/** Download all's probe said no. `serverMessage` is the route's own sentence (429, 413), already plain. */
+export class ArtifactsDownloadRefused extends WorkspaceApiError {
+  readonly serverMessage: string | null;
+  constructor(path: string, status: number, serverMessage: string | null) {
+    super(path, status);
+    this.name = 'ArtifactsDownloadRefused';
+    this.serverMessage = serverMessage;
   }
 }
 
@@ -1625,6 +1645,102 @@ export const workspaceApi = {
    */
   rail: (agentId: string) =>
     req<AgentRailData>(`/agents/${encodeURIComponent(agentId)}/rail`),
+
+  /** The agent's artifacts, as the server sends them. A body we cannot read is a failed read. */
+  artifacts: async (agentId: string) => {
+    const path = `/agents/${encodeURIComponent(agentId)}/artifacts`;
+    const parsed = ArtifactListSchema.safeParse(await req<unknown>(path));
+    if (!parsed.success) throw new WorkspaceShapeError(path);
+    return parsed.data.artifacts;
+  },
+
+  artifact: async (artifactId: string) => {
+    const path = `/artifacts/${encodeURIComponent(artifactId)}`;
+    const parsed = ArtifactDetailBodySchema.safeParse(await req<unknown>(path));
+    if (!parsed.success) throw new WorkspaceShapeError(path);
+    return parsed.data.artifact;
+  },
+
+  /** A text preview of one version (markdown and plain text only). */
+  artifactText: async (artifactId: string, version: number) => {
+    const path = `/artifacts/${encodeURIComponent(artifactId)}/versions/${version}/text`;
+    const parsed = ArtifactTextSchema.safeParse(await req<unknown>(path));
+    if (!parsed.success) throw new WorkspaceShapeError(path);
+    return parsed.data;
+  },
+
+  /** A short-lived address to view or download one version. */
+  artifactToken: async (artifactId: string, version: number, purpose: ArtifactTokenPurpose) => {
+    const path = `/artifacts/${encodeURIComponent(artifactId)}/versions/${version}/token`;
+    const parsed = ArtifactTokenSchema.safeParse(
+      await req<unknown>(path, { method: 'POST', body: { purpose } }),
+    );
+    if (!parsed.success) throw new WorkspaceShapeError(path);
+    return parsed.data;
+  },
+
+  renameArtifact: async (artifactId: string, title: string) => {
+    const path = `/artifacts/${encodeURIComponent(artifactId)}`;
+    const parsed = ArtifactSummaryBodySchema.safeParse(
+      await req<unknown>(path, { method: 'PATCH', body: { title } }),
+    );
+    if (!parsed.success) throw new WorkspaceShapeError(path);
+    return parsed.data.artifact;
+  },
+
+  restoreArtifact: async (artifactId: string, version: number) => {
+    const path = `/artifacts/${encodeURIComponent(artifactId)}/restore`;
+    const parsed = ArtifactSummaryBodySchema.safeParse(
+      await req<unknown>(path, { method: 'POST', body: { version } }),
+    );
+    if (!parsed.success) throw new WorkspaceShapeError(path);
+    return parsed.data.artifact;
+  },
+
+  /** Share link: turn on, off, or rotate. `shareCode` is a capability; never log it. */
+  setArtifactLink: async (artifactId: string, action: ArtifactLinkAction) => {
+    const path = `/artifacts/${encodeURIComponent(artifactId)}/link`;
+    const parsed = ArtifactShareCodeSchema.safeParse(
+      await req<unknown>(path, { method: 'POST', body: { action } }),
+    );
+    if (!parsed.success) throw new WorkspaceShapeError(path);
+    return parsed.data.shareCode;
+  },
+
+  deleteArtifact: async (artifactId: string): Promise<void> => {
+    const path = `/artifacts/${encodeURIComponent(artifactId)}`;
+    const res = await httpFetch(`/api/workspace${path}`, { method: 'DELETE', headers: writeHeaders });
+    if (!res.ok) throw new WorkspaceApiError(path, res.status);
+  },
+
+  /** Where Download all lives: a root-relative route, for an `<a href>`. */
+  artifactsDownloadAllUrl: (agentId: string): string =>
+    `/api/workspace/agents/${encodeURIComponent(agentId)}/artifacts/download-all`,
+
+  /**
+   * Ask Download all whether it would start (`?probe=1`, the TASK-1022
+   * pattern): the same refusals as the real download, answered before the
+   * browser is handed anything. Resolves to the route to hand the browser;
+   * a refusal throws `ArtifactsDownloadRefused`, carrying the server's own
+   * sentence when it sent one.
+   */
+  probeArtifactsDownload: async (agentId: string): Promise<string> => {
+    const route = `/agents/${encodeURIComponent(agentId)}/artifacts/download-all`;
+    const res = await httpFetch(`/api/workspace${route}?probe=1`);
+    if (!res.ok) {
+      let serverMessage: string | null = null;
+      try {
+        const body: unknown = await res.json();
+        if (typeof body === 'object' && body !== null && 'message' in body && typeof body.message === 'string') {
+          serverMessage = body.message;
+        }
+      } catch {
+        // not JSON: the status alone will pick the sentence
+      }
+      throw new ArtifactsDownloadRefused(route, res.status, serverMessage);
+    }
+    return `/api/workspace${route}`;
+  },
 
   /**
    * Take back one grant.

@@ -19,11 +19,12 @@ import { createDatabasePostgresPlugin } from '@ax/database-postgres';
 import { createAttachmentsPlugin } from '../plugin.js';
 import type { AttachmentsDatabase } from '../migrations.js';
 import { createAttachmentsStore } from '../store.js';
+import { createArtifactStore, type ArtifactStore } from '../artifacts/store.js';
 
 // ---------------------------------------------------------------------------
 // TASK-776 (blob-gc design D2/D7): @ax/attachments is a `blob:collect-refs`
-// holder. It answers from BOTH of its sha columns, for every row, whatever
-// state the conversation is in (a soft-deleted conversation still holds its
+// holder. It answers from uploads AND artifact versions, for every row,
+// whatever state the conversation is in (a soft-deleted conversation still holds its
 // files — soft delete exists so it can come back).
 // ---------------------------------------------------------------------------
 
@@ -46,6 +47,9 @@ async function makeHarness(): Promise<TestHarness> {
       'blob:stat': async () => ({ size: 1 }),
       'conversations:get': async () => {
         throw new Error('the blob:collect-refs holder must not consult conversation state');
+      },
+      'agents:resolve': async () => {
+        throw new Error('the blob:collect-refs holder must not consult agents');
       },
     },
     plugins: [createDatabasePostgresPlugin({ connectionString }), createAttachmentsPlugin()],
@@ -82,8 +86,20 @@ function fileRow(id: string, conversationId: string, userId: string, sha256: str
   };
 }
 
-function artifactRow(id: string, conversationId: string, userId: string, sha256: string) {
-  return { ...fileRow(id, conversationId, userId, sha256), path: `${id}.txt` };
+/** An artifact version charged to `quotaOwner` (a user id, or `team:<id>`). */
+async function publish(artifacts: ArtifactStore, id: string, quotaOwner: string, sha256: string): Promise<void> {
+  const r = await artifacts.publishVersion({
+    agentId: `agt-${id}`,
+    sourcePath: `${id}.txt`,
+    title: `${id}.txt`,
+    sha256,
+    mediaType: 'text/plain',
+    sizeBytes: 1,
+    conversationId: 'c1',
+    publishedBy: 'u-publisher',
+    quotaOwner,
+  });
+  if (!r.ok) throw new Error(r.reason);
 }
 
 beforeAll(async () => {
@@ -101,6 +117,7 @@ afterEach(async () => {
   try {
     await cleanup.query('DROP TABLE IF EXISTS attachments_v1_temps');
     await cleanup.query('DROP TABLE IF EXISTS attachments_v1_files');
+    await cleanup.query('DROP TABLE IF EXISTS attachments_v1_artifact_versions');
     await cleanup.query('DROP TABLE IF EXISTS attachments_v1_artifacts');
   } finally {
     await cleanup.end().catch(() => {});
@@ -112,11 +129,11 @@ afterAll(async () => {
 });
 
 describe('AttachmentsStore.blobRefs', () => {
-  it('returns every row of BOTH tables that points at a candidate, with its owner', async () => {
+  it('returns every upload row that points at a candidate, with its owner', async () => {
     const h = await makeHarness();
     const store = createAttachmentsStore(await dbOf(h));
     await store.insertFile(fileRow('f1', 'c1', 'u1', A));
-    await store.upsertArtifact(artifactRow('r1', 'c1', 'u2', B));
+    await store.insertFile(fileRow('f2', 'c1', 'u2', B));
     const refs = await store.blobRefs([A, B, C]);
     expect(refs).toHaveLength(2);
     expect(refs).toContainEqual({ sha256: A, userIds: ['u1'] });
@@ -128,39 +145,41 @@ describe('AttachmentsStore.blobRefs', () => {
     const store = createAttachmentsStore(await dbOf(h));
     await store.insertFile(fileRow('f1', 'c1', 'u1', A));
     await store.insertFile(fileRow('f2', 'c2', 'u2', A));
-    await store.upsertArtifact(artifactRow('r1', 'c3', 'u3', A));
     const refs = await store.blobRefs([A]);
     expect(refs.every((r) => r.sha256 === A)).toBe(true);
-    expect(refs.flatMap((r) => r.userIds).sort()).toEqual(['u1', 'u2', 'u3']);
+    expect(refs.flatMap((r) => r.userIds).sort()).toEqual(['u1', 'u2']);
   });
 
   it('leaves out rows whose sha is not a candidate', async () => {
     const h = await makeHarness();
     const store = createAttachmentsStore(await dbOf(h));
     await store.insertFile(fileRow('f1', 'c1', 'u1', A));
-    await store.upsertArtifact(artifactRow('r1', 'c1', 'u1', D));
     expect(await store.blobRefs([B, C])).toEqual([]);
     expect(await store.blobRefs([])).toEqual([]);
   });
 });
 
 describe('@ax/attachments as a blob:collect-refs holder', () => {
-  it('appends one ok answer covering both tables, per user', async () => {
+  it('appends one ok answer covering uploads and artifact versions, per ledger owner', async () => {
     const h = await makeHarness();
-    const store = createAttachmentsStore(await dbOf(h));
+    const db = await dbOf(h);
+    const store = createAttachmentsStore(db);
     await store.insertFile(fileRow('f1', 'c1', 'u1', A));
     await store.insertFile(fileRow('f2', 'c2', 'u2', A));
-    await store.upsertArtifact(artifactRow('r1', 'c1', 'u3', B));
+    // A version is held for whoever it is charged to: a team agent's, the team.
+    await publish(createArtifactStore(db), 'r1', 'u3', B);
+    await publish(createArtifactStore(db), 'r2', 'team:t1', D);
 
-    const out = await ask(h, [A, B, C]);
+    const out = await ask(h, [A, B, C, D]);
     expect(out.answers).toHaveLength(1);
     expect(out.answers[0]!.holder).toBe('@ax/attachments');
     expect(out.answers[0]!.ok).toBe(true);
 
-    const read = readBlobCollectRefsAnswers(out, [A, B, C]);
+    const read = readBlobCollectRefsAnswers(out, [A, B, C, D]);
     expect(read.failed).toEqual([]);
     expect([...read.held.get(A)!.userIds].sort()).toEqual(['u1', 'u2']);
     expect([...read.held.get(B)!.userIds]).toEqual(['u3']);
+    expect([...read.held.get(D)!.userIds]).toEqual(['team:t1']);
     expect(read.held.get(A)!.unattributed).toBe(false);
     // C is held by nobody — and not by an unattributed holder either.
     expect(read.held.has(C)).toBe(false);
@@ -181,7 +200,7 @@ describe('@ax/attachments as a blob:collect-refs holder', () => {
   it('answers ok:false (never "no refs") when it cannot read its own table', async () => {
     const h = await makeHarness();
     const db = await dbOf(h);
-    await sql`DROP TABLE attachments_v1_artifacts`.execute(db);
+    await sql`DROP TABLE attachments_v1_artifact_versions`.execute(db);
 
     const out = await ask(h, [A]);
     expect(out.answers).toEqual([{ holder: '@ax/attachments', ok: false, refs: [] }]);

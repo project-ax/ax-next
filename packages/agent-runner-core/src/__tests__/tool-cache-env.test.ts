@@ -7,6 +7,8 @@ describe('buildToolCacheEnv', () => {
       npm_config_cache: '/tmp/.npm',
       UV_CACHE_DIR: '/tmp/uv',
       XDG_CACHE_HOME: '/tmp/.cache',
+      MPLCONFIGDIR: '/tmp/.matplotlib',
+      MPLBACKEND: 'Agg',
     });
   });
 
@@ -15,11 +17,17 @@ describe('buildToolCacheEnv', () => {
       npm_config_cache: '/var/folders/xx/ax-ipc-abc/ephemeral/.npm',
       UV_CACHE_DIR: '/var/folders/xx/ax-ipc-abc/ephemeral/uv',
       XDG_CACHE_HOME: '/var/folders/xx/ax-ipc-abc/ephemeral/.cache',
+      MPLCONFIGDIR: '/var/folders/xx/ax-ipc-abc/ephemeral/.matplotlib',
+      MPLBACKEND: 'Agg',
     });
   });
 
+  it('points matplotlib at scratch and the Agg backend', () =>
+    expect(buildToolCacheEnv('/tmp')).toMatchObject({ MPLCONFIGDIR: '/tmp/.matplotlib', MPLBACKEND: 'Agg' }));
+
   it("keeps every cache off the agent's home, so none of it lands in the person's files", () => {
-    for (const value of Object.values(buildToolCacheEnv('/tmp'))) {
+    const { MPLBACKEND: _backend, ...dirs } = buildToolCacheEnv('/tmp');
+    for (const value of Object.values(dirs)) {
       expect(value.startsWith('/tmp/')).toBe(true);
       expect(value.startsWith('/files')).toBe(false);
     }

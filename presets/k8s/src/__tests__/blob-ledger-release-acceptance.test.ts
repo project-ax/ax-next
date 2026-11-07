@@ -41,8 +41,9 @@ import { createK8sPlugins, type K8sPresetConfig } from '../index.js';
 // an injected clock (manifest asserted identical to the preset's) so a test
 // can step past the 24 h grace window instead of sleeping through it.
 //
-// Stubbed: `conversations:get` (the owner gate `artifacts:publish-blob` asks
-// first; USER_A owns `conv-a`), `http:register-route` and `auth:require-user`
+// Stubbed: `conversations:get` (the owner gate `artifacts:publish` asks
+// first; USER_A owns `conv-a`, with agent `agt-a`), `agents:resolve` (that
+// agent's owner), `http:register-route` and `auth:require-user`
 // (disk-quota mounts its storage routes at init; they have their own suite).
 // The "agent delete" is the `conversations:purged` notice @ax/conversations
 // fires after a hard delete, fired here directly.
@@ -64,6 +65,8 @@ const PAST_GRACE_MS = 25 * HOUR_MS;
 
 const USER_A = 'blr-user-a';
 const USER_B = 'blr-user-b';
+const TEAM_ID = 'blr-team';
+const TEAM_KEY = `team:${TEAM_ID}`;
 
 /** A holder the test controls: answers, throws, or answers `ok: false`. */
 const TEST_HOLDER = '@ax/preset-k8s/test/blob-holder';
@@ -96,7 +99,7 @@ function createStubsPlugin(): Plugin {
     manifest: {
       name,
       version: '0.0.0',
-      registers: ['http:register-route', 'auth:require-user', 'conversations:get'],
+      registers: ['http:register-route', 'auth:require-user', 'conversations:get', 'agents:resolve'],
       calls: [],
       subscribes: [],
     },
@@ -105,12 +108,26 @@ function createStubsPlugin(): Plugin {
       bus.registerService('auth:require-user', name, async () => {
         throw new PluginError({ code: 'unauthenticated', plugin: name, message: 'no http plane' });
       });
-      // The owner gate `artifacts:publish-blob` asks before `blob:stat`: USER_A
+      // The owner gate `artifacts:publish` asks before `blob:stat`: USER_A
       // owns `conv-a`, and nobody owns anything else.
       bus.registerService('conversations:get', name, async (ctx, input) => {
         const { conversationId } = input as { conversationId: string };
-        if (ctx.userId === USER_A && conversationId === 'conv-a') return { conversationId };
+        if (ctx.userId === USER_A && conversationId === 'conv-a') {
+          return { conversation: { conversationId, agentId: 'agt-a' }, turns: [] };
+        }
+        // A team agent's conversation: USER_A is a member of team TEAM_ID.
+        if (ctx.userId === USER_A && conversationId === 'conv-team') {
+          return { conversation: { conversationId, agentId: 'agt-team' }, turns: [] };
+        }
         throw new PluginError({ code: 'not-found', plugin: name, message: 'no such conversation' });
+      });
+      // Then the agent's owner, who a published version is charged to.
+      bus.registerService('agents:resolve', name, async (_ctx, input) => {
+        const { agentId } = input as { agentId: string };
+        if (agentId === 'agt-team') {
+          return { agent: { id: agentId, ownerType: 'team', ownerId: TEAM_ID } };
+        }
+        return { agent: { id: 'agt-a', ownerType: 'user', ownerId: USER_A } };
       });
     },
   };
@@ -229,7 +246,7 @@ describe('@ax/preset-k8s blob ledger release canary (TASK-776)', () => {
     await sql`TRUNCATE disk_quota_v1_usage`.execute(await db());
     await sql`TRUNCATE disk_quota_v1_ref_holders`.execute(await db());
     await sql`TRUNCATE attachments_v1_files`.execute(await db());
-    await sql`TRUNCATE attachments_v1_artifacts`.execute(await db());
+    await sql`TRUNCATE attachments_v1_artifacts, attachments_v1_artifact_versions`.execute(await db());
   });
 
   afterAll(async () => {
@@ -323,16 +340,16 @@ describe('@ax/preset-k8s blob ledger release canary (TASK-776)', () => {
     expect(await blobRows()).toEqual([{ owner: USER_A, source: `blob:${sha}` }]);
   });
 
-  async function publishBlobError(userId: string, sha256: string): Promise<PluginError> {
+  async function publishError(userId: string, sha256: string): Promise<PluginError> {
     let err: unknown;
     try {
-      await live().bus.call('artifacts:publish-blob', ctxFor(userId), {
+      // The ctx a runner's publish arrives with: its session's own agent.
+      const ctx = makeAgentContext({ sessionId: `blr-publish-${userId}`, agentId: 'agt-a', userId });
+      await live().bus.call('artifacts:publish', ctx, {
         conversationId: 'conv-a',
         sha256,
-        path: 'out/report.md',
-        displayName: 'report.md',
-        mediaType: 'text/markdown',
-        size: 10,
+        sourcePath: 'out/report.md',
+        title: 'Report',
       });
     } catch (e) {
       err = e;
@@ -343,23 +360,56 @@ describe('@ax/preset-k8s blob ledger release canary (TASK-776)', () => {
 
   async function artifactRowCount(): Promise<string> {
     const rows = await sql<{ n: string }>`
-      SELECT count(*)::text AS n FROM attachments_v1_artifacts
+      SELECT count(*)::text AS n FROM attachments_v1_artifact_versions
     `.execute(await db());
     return rows.rows[0]!.n;
   }
 
-  it('artifacts:publish-blob refuses a sha that is not stored and writes no row (D10)', async () => {
+  it('artifacts:publish refuses a sha that is not stored and writes no row (D10)', async () => {
     // The owner of the conversation gets past the owner gate, so the refusal
     // is the store's answer.
-    expect((await publishBlobError(USER_A, sha256Hex(randomBytes(64)))).code).toBe('not-found');
+    expect((await publishError(USER_A, sha256Hex(randomBytes(64)))).code).toBe('not-found');
     expect(await artifactRowCount()).toBe('0');
   });
 
-  it('artifacts:publish-blob refuses a non-owner before asking the store, stored sha or not', async () => {
+  it('artifacts:publish refuses a non-owner before asking the store, stored sha or not', async () => {
     const stored = await attach(USER_A, 'conv-a', randomBytes(1000));
     // The same answer either way: a refused caller cannot learn whether a sha is stored.
-    expect((await publishBlobError(USER_B, sha256Hex(randomBytes(64)))).code).toBe('forbidden');
-    expect((await publishBlobError(USER_B, stored)).code).toBe('forbidden');
+    expect((await publishError(USER_B, sha256Hex(randomBytes(64)))).code).toBe('forbidden');
+    expect((await publishError(USER_B, stored)).code).toBe('forbidden');
     expect(await artifactRowCount()).toBe('0');
+  });
+
+  it("a team agent's artifact version is charged to team:<id>; once the version is pruned and its bytes are gone the team charge is released", async () => {
+    const { bus } = live();
+    const bytes = randomBytes(2500);
+    // What ipc-core's blob.put does for a team agent: put as the team.
+    const put = await bus.call<{ bytes: Buffer }, { sha256: string }>(
+      'blob:put',
+      makeAgentContext({ sessionId: 'blr-team-put', agentId: 'agt-team', userId: TEAM_KEY }),
+      { bytes },
+    );
+    // The member who publishes is not charged.
+    expect(await blobRows()).toEqual([{ owner: TEAM_KEY, source: `blob:${put.sha256}` }]);
+    await bus.call(
+      'artifacts:publish',
+      makeAgentContext({ sessionId: 'blr-team-pub', agentId: 'agt-team', userId: USER_A }),
+      { conversationId: 'conv-team', sha256: put.sha256, sourcePath: 'out/a.md', title: 'A' },
+    );
+    // While the version is retained, the team's charge stays through a pass.
+    clockSkewMs = PAST_GRACE_MS;
+    await live().diskQuota.reconcile();
+    expect(await blobRows()).toEqual([{ owner: TEAM_KEY, source: `blob:${put.sha256}` }]);
+
+    // The version goes (its conversation is purged) and, with no holder left
+    // and the bytes not yet gone, the charge stays: bytes are never left unowned.
+    await purgeConversation('conv-team');
+    await sql`DELETE FROM attachments_v1_artifact_versions`.execute(await db());
+    await live().diskQuota.reconcile();
+    expect(await blobRows()).toEqual([{ owner: TEAM_KEY, source: `blob:${put.sha256}` }]);
+    // Bytes gone: the team's charge is released.
+    await fs.rm(path.join(tmp, 'blobs'), { recursive: true, force: true });
+    await live().diskQuota.reconcile();
+    expect(await blobRows()).toEqual([]);
   });
 });

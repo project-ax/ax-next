@@ -77,6 +77,8 @@ import type { PhaseKind } from '@/server/types';
 import { STOPPED_NOTICE, STOP_COPY, STOP_FALLBACK_MS } from './stop-copy';
 import { AgentConversation, approvalReadFrom, type ApprovalRead } from './AgentConversation';
 import { AgentFiles } from './AgentFiles';
+import { AgentArtifacts } from './AgentArtifacts';
+import { ArtifactViewer } from './ArtifactViewer';
 import { SkippedConnectorsNotice } from './SkippedConnectorsNotice';
 import { MemorySurface } from './FactsMemory';
 import { AgentInstructions } from './AgentInstructions';
@@ -421,6 +423,16 @@ export function AgentView({
   const setOpenPanel = compactRail ? setSheetPanel : setDesktopPanel;
   const [settingsListRequested, setSettingsListRequested] = useState(false);
   const [fileCount, setFileCount] = useState<number | null>(null);
+  // The artifact the Artifacts panel has open (ArtifactViewer); null is the list.
+  const [openArtifactId, setOpenArtifactId] = useState<string | null>(null);
+  /*
+    Moves on every Open from a chat card. Open on the artifact ALREADY open
+    sets the same id (a no-op for React), and that card may be announcing a
+    version the viewer hasn't read yet, so it re-reads on this instead.
+  */
+  const [artifactOpens, setArtifactOpens] = useState(0);
+  // Another agent's artifacts are another list: never keep this one's open.
+  useEffect(() => setOpenArtifactId(null), [agentId]);
   const [pastId, setPastId] = useState<string | null>(null);
   /**
    * The excerpt for the past conversation the rail has open, fetched on demand
@@ -1736,15 +1748,27 @@ export function AgentView({
     (id) => id !== 'memory' || detail.memory.factsAvailable === true,
   );
   const shownPanel = openPanel !== null && panelIds.includes(openPanel) ? openPanel : null;
+  /*
+    Goal 4 — the open viewer and the Artifacts list re-read on the SAME signal
+    the file chips use: once per durable thread read and once per failed turn
+    (TASK-1017/1019), so a version published mid-conversation shows up.
+  */
+  const artifactRecheckKey = threadReads + failedTurns;
   const panelBody =
     shownPanel === 'memory' ? learnedBlock
     : shownPanel === 'files' ? <AgentFiles agentId={agent.id} agentName={agent.name} onCount={setFileCount} />
     : shownPanel === 'activity' ? <AgentActivity agent={agent} busy={streaming || rereading} />
+    : shownPanel === 'artifacts' ? (
+      openArtifactId !== null
+        ? <ArtifactViewer key={openArtifactId} artifactId={openArtifactId} agentName={agent.name} recheckKey={artifactRecheckKey + artifactOpens} onBack={() => setOpenArtifactId(null)} onClose={() => { setOpenArtifactId(null); setOpenPanel(null); }} />
+        : <AgentArtifacts agentId={agent.id} agentName={agent.name} recheckKey={artifactRecheckKey} onOpen={setOpenArtifactId} />
+    )
     : null;
   const panelMeta =
     shownPanel === 'files' && fileCount !== null
       ? `${fileCount} ${fileCount === 1 ? 'file' : 'files'}`
       : null;
+  const wide = shownPanel === 'artifacts' && openArtifactId !== null;
   const memoryUnseen = learnedUnseen > 0 && shownPanel !== 'memory';
   const panelToggles = (
     <ChatPanelToggles
@@ -1997,6 +2021,7 @@ export function AgentView({
                 </div>
               )}
               <AgentConversation
+                onOpenArtifact={(id) => { setOpenArtifactId(id); setArtifactOpens((n) => n + 1); setOpenPanel('artifacts'); }}
                 agent={agent}
                 thread={past ? pastThread : liveThread}
                 /*
@@ -2060,12 +2085,12 @@ export function AgentView({
         </div>
         <LearnedAnnouncer announcement={learned.announcement} />
         {compactRail ? <Sheet open={shownPanel !== null} onOpenChange={(open) => { if (!open) setSheetPanel(null); }}>
-          <SheetContent side="right" aria-describedby={undefined} className="flex w-[320px] max-w-[calc(100vw-24px)] flex-col gap-0 p-0">
+          <SheetContent side="right" aria-describedby={undefined} className={cn('flex max-w-[calc(100vw-24px)] flex-col gap-0 p-0', wide ? 'w-[calc(100vw-24px)]' : 'w-[320px]')}>
             {/* Named for the view, so the sheet and its heading agree. */}
             <SheetTitle className="sr-only">{shownPanel !== null ? `${RAIL_PANELS[shownPanel].label} panel` : 'Side panel'}</SheetTitle>
-            {shownPanel !== null && <AgentRailContent panel={shownPanel} meta={panelMeta}>{panelBody}</AgentRailContent>}
+            {shownPanel !== null && <AgentRailContent panel={shownPanel} meta={panelMeta} wide={wide}>{panelBody}</AgentRailContent>}
           </SheetContent>
-        </Sheet> : shownPanel !== null && <AgentRail panel={shownPanel} meta={panelMeta}>{panelBody}</AgentRail>}
+        </Sheet> : shownPanel !== null && <AgentRail panel={shownPanel} meta={panelMeta} wide={wide}>{panelBody}</AgentRail>}
       </div>
     </MemoryFixesContext.Provider>
   );

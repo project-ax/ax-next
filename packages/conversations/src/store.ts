@@ -354,6 +354,13 @@ export interface ConversationStore {
    */
   getMetadata(conversationId: string): Promise<ConversationMetadata | null>;
   /**
+   * Host-only batch id -> agent id map. No user filter, no `deleted_at` /
+   * `hidden` filter; unknown ids are absent from the result.
+   */
+  agentIdsFor(
+    ids: string[],
+  ): Promise<Array<{ conversationId: string; agentId: string }>>;
+  /**
    * Phase B. Bind `runner_session_id` once per conversation. Idempotent
    * for the same value; conflict on a different value (I7). The user_id
    * filter ensures a misbehaving caller cannot bind a cross-tenant row.
@@ -852,6 +859,19 @@ export function createConversationStore(
         .where('deleted_at', 'is', null)
         .executeTakeFirst();
       return Number(result.numUpdatedRows ?? 0n);
+    },
+
+    async agentIdsFor(ids) {
+      if (ids.length === 0) return [];
+      const rows = await db
+        .selectFrom('conversations_v1_conversations')
+        .select(['conversation_id', 'agent_id'])
+        .where('conversation_id', 'in', ids)
+        .execute();
+      return rows.map((r) => ({
+        conversationId: r.conversation_id,
+        agentId: r.agent_id,
+      }));
     },
 
     async getMetadata(conversationId) {

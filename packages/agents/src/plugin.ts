@@ -37,6 +37,8 @@ import {
   AGENTS_IDENTITY_SELF_CHANGES_FOR_USER_HOOK,
   AGENTS_IDENTITY_SET_HOOK,
   CanManageRoutinesInputSchema,
+  GetDisplayNameInputSchema,
+  GetDisplayNameOutputSchema,
   CanManageRoutinesOutputSchema,
   AgentsResolveAuthoredSkillsOutputSchema,
   IdentityCompleteBootstrapOutputSchema,
@@ -161,6 +163,7 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
         'agents:can-manage-connectors',
         'agents:can-set-shared-credential',
         'agents:list-ids',
+        'agents:get-display-name',
         'agents:list-personal-owners',
         'agents:list-authored-skills',
         'agents:resolve-authored-skills',
@@ -417,6 +420,22 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
         PLUGIN_NAME,
         async () => ({ agentIds: await localStore.listAllIds() }),
       );
+
+      // HOST-ONLY (never in ipc-core ACTIONS, never an HTTP route): any
+      // agent's display name, no ACL. Artifacts label shared items with it.
+      bus.registerService('agents:get-display-name', PLUGIN_NAME, async (_ctx, raw) => {
+        const input = GetDisplayNameInputSchema.parse(raw);
+        const agent = await localStore.getById(input.agentId);
+        if (agent === null) {
+          throw new PluginError({
+            code: 'not-found',
+            plugin: PLUGIN_NAME,
+            hookName: 'agents:get-display-name',
+            message: `agent '${input.agentId}' not found`,
+          });
+        }
+        return { displayName: agent.displayName };
+      }, { returns: GetDisplayNameOutputSchema });
 
       // Personal-agent enumeration with owners. Backs the
       // @ax/routines tick loop's defaults-materialize step — it must

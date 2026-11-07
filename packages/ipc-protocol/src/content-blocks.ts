@@ -146,6 +146,44 @@ export const ATTACHMENT_FILENAME_MAX = 1024;
  */
 export const ATTACHMENT_MEDIA_TYPE_MAX = 255;
 
+/** Longest artifact title (UTF-16 code units), after normalization. */
+export const ARTIFACT_TITLE_MAX = 200;
+
+/**
+ * What kind of thing an artifact is, as people see it. The one definition:
+ * `@ax/attachments` derives it from the stored media type, and the wire and
+ * channel-web read it from here.
+ */
+export const ArtifactKindSchema = z.enum(['document', 'web', 'spreadsheet', 'image', 'code', 'file']);
+export type ArtifactKind = z.infer<typeof ArtifactKindSchema>;
+
+/**
+ * The words a person (and the agent's artifact list) sees for each kind. One
+ * map, so the agent's notes and channel-web never drift apart.
+ */
+export const ARTIFACT_KIND_LABELS = {
+  document: 'Document',
+  web: 'Web page',
+  spreadsheet: 'Spreadsheet',
+  image: 'Image',
+  code: 'Code',
+  file: 'File',
+} as const satisfies Record<ArtifactKind, string>;
+
+/**
+ * An artifact share code's shape (§6.3): 24 CSPRNG bytes as unpadded
+ * base64url, 32 characters. `@ax/attachments` mints them and checks this
+ * before any lookup; channel-web checks it before a lookup reaches the bus.
+ * One definition so the two never drift. A code is a capability: never log
+ * one, in full or in part.
+ */
+export const SHARE_CODE_RE = /^[A-Za-z0-9_-]{32}$/;
+
+/** True for exactly the minted shape; anything else is refused before a lookup. */
+export function isShareCode(v: unknown): v is string {
+  return typeof v === 'string' && SHARE_CODE_RE.test(v);
+}
+
 /**
  * A user-attached file OR an agent-published artifact, as it appears in a
  * stored conversation turn and on the wire (`chat:start`, `agent:invoke`,

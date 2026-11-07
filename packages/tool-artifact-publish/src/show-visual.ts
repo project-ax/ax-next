@@ -1,9 +1,13 @@
 import type { ToolDescriptor } from '@ax/core';
+import { MAX_VISUAL_HTML_BYTES } from '@ax/ipc-protocol';
 
 export const SHOW_VISUAL_TOOL_NAME = 'show_visual' as const;
 
-/** Largest HTML body we accept, in UTF-8 bytes (100 KB). */
-export const MAX_VISUAL_HTML_BYTES = 102_400;
+/**
+ * Largest HTML body we accept, in UTF-8 bytes (100 KB). Owned by
+ * @ax/ipc-protocol, where the host enforces it too (R30); re-exported here.
+ */
+export { MAX_VISUAL_HTML_BYTES };
 export const MAX_VISUAL_TITLE_CHARS = 120;
 export const MAX_VISUAL_SUMMARY_CHARS = 1000;
 

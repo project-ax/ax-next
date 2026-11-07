@@ -14,7 +14,7 @@ const client = () => ({
     sha256: sha(Buffer.from(b).toString('utf8')),
     size: b.byteLength,
   })),
-  call: vi.fn(async () => ({ artifactId: ID, downloadUrl: `ax://artifact/${ID}` })),
+  call: vi.fn(async () => ({ artifactId: ID, version: 1, title: 'Issues per cycle', kind: 'web', extension: 'HTML' })),
 });
 const run = (c: ReturnType<typeof client>, input: unknown, conversationId: string | null = 'conv-1') =>
   createShowVisualExecutor({ client: c, conversationId })({
@@ -37,9 +37,9 @@ describe('createShowVisualExecutor', () => {
       conversationId: 'conv-1',
       sha256: sha(HTML),
       path: `visuals/${sha(HTML)}.html`,
-      displayName: 'visual.html',
-      mediaType: 'text/html',
-      size: Buffer.byteLength(HTML),
+      title: 'Issues per cycle',
+      // A chat visual: kept out of the Artifacts list (ruling U1).
+      visual: true,
     });
   });
 

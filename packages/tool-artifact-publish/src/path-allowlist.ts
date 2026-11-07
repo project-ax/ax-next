@@ -15,24 +15,16 @@
  * Parameterising on the roots is the same shape `@ax/tool-skill-propose`'s
  * `checkDraftPath(absPath, root)` already uses, and it works in both sandboxes.
  *
- * WHAT IS PUBLISHABLE:
+ * WHAT IS PUBLISHABLE: `<userFilesRoot>/**`, the agent's files folder, whole.
+ * It is the agent's cwd and HOME, it holds nothing but the agent's own files by
+ * construction, and the returned `relativePath` is the artifact's re-publish
+ * key, the same key the Files tab lists the file by.
  *
- *  - `<userFilesRoot>/**` — the durable per-agent tier, whole. It is the agent's
- *    cwd and HOME, it holds nothing but user content by construction, and it is
- *    where the operating notes tell the agent to put anything it wants to keep.
- *    A deliverable written to the working directory is the overwhelmingly common
- *    case, and it was the one case the old allowlist rejected.
- *  - `<ephemeralRoot>/artifacts/**` — the scratch artifact namespace, unchanged.
- *    Still a subdirectory rather than the whole root: the scratch root also holds the
- *    python venv, tool caches and build trees, none of which are deliverables.
- *
- * WHAT IS NOT: the old list also carried a `/agent/workspace/**` entry, "the rare
- * Pattern A case: ax-hosted project code under git". It was a fossil of the
- * pre-split layout and pointed at a directory nothing in the repo creates, so it
- * went (and the whole git workspace tier went later, TASK-995). Nothing outside
- * the two roots above is publishable: the scratch root's `uploads/` originals and
- * `transcripts/` sit beside `artifacts/` but outside it, so they are structurally
- * out of reach of a prompt-injected "publish your transcript" attempt.
+ * WHAT IS NOT: everything else. The scratch root's old `artifacts/` namespace
+ * was dropped (C2): an artifact is a file the person can find again in /files,
+ * and the scratch root's `uploads/` originals, `transcripts/`, venv and caches
+ * are structurally out of reach of a prompt-injected "publish your transcript"
+ * attempt. The `/agent/workspace/**` fossil went long ago (TASK-995).
  */
 
 import * as path from 'node:path';
@@ -40,39 +32,20 @@ import * as path from 'node:path';
 export const MAX_ARTIFACT_BYTES = 100 * 1024 * 1024; // 100 MiB
 
 /**
- * Longest accepted `displayName`. The model chooses this string and it is stored
- * and rendered as the artifact's label, so it is bounded here rather than left to
- * whatever the model emits. Generous for a filename, far below anything that
- * would bloat a row or a chat bubble.
- */
-export const MAX_DISPLAY_NAME_CHARS = 256;
-
-/** Which tier a publishable path resolved against. */
-export type PublishRoot = 'user-files' | 'ephemeral';
-
-/** The scratch tier's artifact namespace — the only publishable part of it. */
-const EPHEMERAL_ARTIFACTS_SUBDIR = 'artifacts';
-
-/**
- * The runtime roots to validate against. Both optional and independent: a
- * deployment may wire a durable mount, a scratch tier, both, or neither, and the
- * allowlist is exactly the roots that are present. Absent roots are not "denied"
- * — they simply do not exist to publish from, which is what the caller is told.
+ * The runtime root to validate against. Optional: a deployment that wires no
+ * files folder has nothing to publish from, which is what the caller is told.
  */
 export interface PublishRoots {
-  /** `AX_USERFILES_ROOT` — durable per-agent tier. Publishable in full. */
+  /** `AX_USERFILES_ROOT` — the agent's files folder. Publishable in full. */
   userFilesRoot?: string;
-  /** `AX_EPHEMERAL_ROOT` — session scratch. Only `<root>/artifacts/**`. */
-  ephemeralRoot?: string;
 }
 
 export type PathCheckResult =
   | {
       ok: true;
-      root: PublishRoot;
       /** Absolute root the path resolved under — the executor reads from here. */
       base: string;
-      /** Path relative to `base`. The stable display/scope key the host stores. */
+      /** Path relative to `base`: the re-publish key the host stores. */
       relativePath: string;
     }
   | { ok: false; reason: string };
@@ -120,33 +93,11 @@ export function checkPublishablePath(
     };
   }
 
-  const { userFilesRoot, ephemeralRoot } = roots;
-
+  const { userFilesRoot } = roots;
   if (userFilesRoot !== undefined) {
     const rel = containedRelative(absPath, userFilesRoot);
     if (rel !== null) {
-      return {
-        ok: true,
-        root: 'user-files',
-        base: trimTrailingSlashes(path.resolve(userFilesRoot)),
-        relativePath: rel,
-      };
-    }
-  }
-
-  if (ephemeralRoot !== undefined) {
-    const artifactsBase = path.join(
-      trimTrailingSlashes(path.resolve(ephemeralRoot)),
-      EPHEMERAL_ARTIFACTS_SUBDIR,
-    );
-    const rel = containedRelative(absPath, artifactsBase);
-    if (rel !== null) {
-      return {
-        ok: true,
-        root: 'ephemeral',
-        base: artifactsBase,
-        relativePath: rel,
-      };
+      return { ok: true, base: trimTrailingSlashes(path.resolve(userFilesRoot)), relativePath: rel };
     }
   }
 
@@ -162,17 +113,8 @@ export function checkPublishablePath(
  * never a literal from another deployment shape.
  */
 export function describeRoots(roots: PublishRoots): string {
-  const parts: string[] = [];
-  if (roots.userFilesRoot !== undefined) {
-    parts.push(`${trimTrailingSlashes(roots.userFilesRoot)}/**`);
-  }
-  if (roots.ephemeralRoot !== undefined) {
-    parts.push(
-      `${trimTrailingSlashes(roots.ephemeralRoot)}/${EPHEMERAL_ARTIFACTS_SUBDIR}/**`,
-    );
-  }
-  if (parts.length === 0) {
+  if (roots.userFilesRoot === undefined) {
     return 'this deployment has no publishable location wired';
   }
-  return `path must be under one of ${parts.join(', ')}`;
+  return `path must be under ${trimTrailingSlashes(roots.userFilesRoot)}/**`;
 }

@@ -217,9 +217,11 @@ import type {
 import {
   AgentFileBlockSchema,
   AttachmentBlockSchema,
+  AttachmentIdSchema,
   attachmentBlockFromArtifact,
   type AttachmentBlock,
 } from '@ax/ipc-protocol';
+import { z } from 'zod';
 import {
   answerRequireUserFailure,
   PluginError,
@@ -287,6 +289,7 @@ import type {
   WorkspaceAgent,
   WorkspaceReadStatus,
 } from '../lib/workspace-types.js';
+import type { ThreadArtifact } from '../lib/workspace-types.js';
 import { AGENT_ABILITIES, isOpenDecision, ROUTINE_DECISION_OPERATIONS } from '../lib/workspace-types.js';
 import { byVerdict } from '../lib/permission-frames.js';
 import { fenceBlock, fenceLine } from '../lib/fence-line.js';
@@ -3955,6 +3958,59 @@ function errorMessages(
   return out;
 }
 
+const PublishedArtifactSchema = z.object({
+  artifactId: AttachmentIdSchema,
+  version: z.number().int().positive(),
+}).passthrough();
+
+const PUBLISH_TOOL_NAMES = new Set(['artifact_publish', 'mcp__ax-sandbox-tools__artifact_publish']);
+
+/**
+ * Claimed artifact ids the agent's `artifacts:list` didn't hold (it stops at
+ * its newest 1000) are checked one `artifacts:get` each, up to this many per
+ * thread read; the rest are dropped, never trusted.
+ */
+const CARD_GET_FALLBACK_MAX = 20;
+
+/** The text parts of a tool_result block's content. */
+function toolResultTexts(block: { content?: unknown }): string[] {
+  return typeof block.content === 'string' ? [block.content]
+    : Array.isArray(block.content) ? block.content.flatMap((c: unknown) =>
+      c !== null && typeof c === 'object' && 'type' in c && c.type === 'text' &&
+      'text' in c && typeof c.text === 'string' ? [c.text] : []) : [];
+}
+
+/** The artifact id a publish result names, if it is a versioned (new-style) one. */
+function publishedArtifactId(raw: unknown): string | null {
+  const r = PublishedArtifactSchema.safeParse(raw);
+  return r.success ? r.data.artifactId : null;
+}
+
+/** Distinct artifact ids the turns' successful publish results CLAIM. Untrusted. */
+function claimedArtifactIds(turns: TurnRow[]): string[] {
+  const publishIds = new Set(turns.flatMap(turn => (turn.contentBlocks ?? []).flatMap(block =>
+    block.type === 'tool_use' && typeof block.id === 'string' && PUBLISH_TOOL_NAMES.has(block.name ?? '')
+      ? [block.id] : [])));
+  const ids = new Set<string>();
+  for (const turn of turns) {
+    if (turn.role !== 'tool') continue;
+    for (const block of turn.contentBlocks ?? []) {
+      if (block.type !== 'tool_result' || block.is_error || block.held ||
+        !publishIds.has(block.tool_use_id ?? '')) continue;
+      for (const text of toolResultTexts(block)) {
+        try {
+          const id = publishedArtifactId(JSON.parse(text));
+          if (id !== null) ids.add(id);
+        } catch { /* not a publish result */ }
+      }
+    }
+  }
+  return [...ids];
+}
+
+/** What the store says about each claimed artifact, or `null` on an outage. */
+type VerifiedArtifacts = ReadonlyMap<string, ThreadArtifact> | null;
+
 /**
  * Interleave the turns with the host-only rows (turn failures), by instant.
  *
@@ -3972,13 +4028,17 @@ function buildThread(
   // TASK-744 — namespace → connector name for the reader, so a connector
   // tool's step names its connector instead of an opaque hash.
   connectors: ConnectorNames = new Map(),
+  // Artifact cards come from the STORE, never from the runner's tool text
+  // (which agent-controlled code produces). `null` = the store couldn't be
+  // read: no cards, rather than trusting the claim.
+  verified: VerifiedArtifacts = new Map(),
 ): ThreadMessage[] {
   const dated: Array<{ at: string; msg: ThreadMessage }> = [];
   const out: ThreadMessage[] = [];
   const outcomes = toolOutcomes(turns);
   const publishIds = new Set(turns.flatMap(turn => (turn.contentBlocks ?? []).flatMap(block =>
     block.type === 'tool_use' && typeof block.id === 'string' &&
-    (block.name === 'artifact_publish' || block.name === 'mcp__ax-sandbox-tools__artifact_publish')
+    PUBLISH_TOOL_NAMES.has(block.name ?? '')
       ? [block.id] : [],
   )));
   const visualIds = new Set(turns.flatMap(turn => (turn.contentBlocks ?? []).flatMap(block =>
@@ -3996,18 +4056,29 @@ function buildThread(
       // endpoint independently checks conversation access and a durable row,
       // so a chip here only ever names an id; it grants nothing.
       const files = [...turnAttachments(blocks), ...turnAgentFiles(blocks)];
+      // A publish result carrying a `version` is a published artifact: it is
+      // drawn as a card (highest version per id), never as a download chip.
+      const cards = new Map<string, ThreadArtifact>();
+      const claimedIds = new Set<string>();
       for (const block of blocks) {
         if (block.type !== 'tool_result' || block.is_error || block.held ||
           !publishIds.has(block.tool_use_id ?? '')) continue;
-        const texts = typeof block.content === 'string' ? [block.content]
-          : Array.isArray(block.content) ? block.content.flatMap((c: unknown) =>
-            c !== null && typeof c === 'object' && 'type' in c && c.type === 'text' &&
-            'text' in c && typeof c.text === 'string' ? [c.text] : []) : [];
+        const texts = toolResultTexts(block);
         for (const text of texts) {
           try {
+            const parsed: unknown = JSON.parse(text);
+            const claimed = publishedArtifactId(parsed);
+            if (claimed !== null) {
+              claimedIds.add(claimed);
+              // A versioned result is never a chip. It is a card only if the
+              // store vouches for it; unknown, foreign or refused ids vanish.
+              const card = verified?.get(claimed);
+              if (card !== undefined) cards.set(card.artifactId, card);
+              continue;
+            }
             // The publish result object → a chip, every field re-validated;
             // its sandbox-relative `path` is dropped.
-            const file = attachmentBlockFromArtifact(JSON.parse(text));
+            const file = attachmentBlockFromArtifact(parsed);
             if (file !== null) files.push(threadAttachment(file));
           } catch { /* A failed/non-JSON publication has no download. */ }
         }
@@ -4016,7 +4087,9 @@ function buildThread(
       // one chip per id. Two files that merely share a name keep two chips.
       // An agent file has no id (it is null), so it is keyed by its path: a null
       // id must not collapse every agent file into one chip.
-      const attachments = [...new Map(files.map(file => [
+      const attachments = [...new Map(files.filter(file =>
+        file.attachmentId === null || file.attachmentId === undefined || !claimedIds.has(file.attachmentId),
+      ).map(file => [
         file.agentFilePath !== undefined ? `file:${file.agentFilePath}` : `id:${file.attachmentId}`,
         file,
       ])).values()];
@@ -4030,10 +4103,12 @@ function buildThread(
         return v === null ? [] : [[v.artifactId, v] as const];
       })).values()];
       const text = renderableText(blocks);
-      if (attachments.length > 0 || text.length > 0 || visuals.length > 0) dated.push({
+      const artifacts = [...cards.values()];
+      if (attachments.length > 0 || artifacts.length > 0 || text.length > 0 || visuals.length > 0) dated.push({
         at: turn.createdAt,
         msg: {
           kind: 'agent', id: turn.turnId, text, at: turn.createdAt, attachments,
+          ...(artifacts.length > 0 ? { artifacts } : {}),
           ...(visuals.length > 0 ? { visuals } : {}),
         },
       });
@@ -4381,6 +4456,85 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
    * A failed or missing read degrades to an empty map: connector tools are
    * then named by their tool name alone — a worse label, not a wrong one.
    */
+  /**
+   * Ground the thread's artifact cards in the store. The publish result is
+   * produced by the runner (agent-controlled code), so a card's id, title,
+   * kind and version are read back as the viewer and must belong to this
+   * agent. Unknown, foreign or refused ids are simply absent. A hook outage
+   * returns `null` (no cards, ONE code-only log line for the thread) rather
+   * than falling back to the tool text.
+   *
+   * Bounded: one `artifacts:list` for the agent (it checks membership and
+   * scope itself) intersected with the claimed ids. The list stops at its
+   * newest ARTIFACT_LIST_MAX, so a claimed id it doesn't hold gets an
+   * `artifacts:get`, for at most CARD_GET_FALLBACK_MAX ids; the rest drop.
+   */
+  async function verifiedArtifacts(
+    turns: TurnRow[],
+    agentId: string,
+    userId: string,
+  ): Promise<VerifiedArtifacts> {
+    const ids = claimedArtifactIds(turns);
+    const out = new Map<string, ThreadArtifact>();
+    if (ids.length === 0) return out;
+    if (!bus.hasService('artifacts:list')) return null;
+    const ctx = agentWorkspaceCtx(agentId, userId);
+    type StoredArtifact = {
+      artifactId: string; agentId: string; title: string; kind: ThreadArtifact['kind'];
+      extension: string; currentVersion: number;
+    };
+    const keep = (a: StoredArtifact): void => {
+      if (a.agentId !== agentId) return;
+      const title = fenceLine(a.title, 200);
+      if (title === null) return;
+      out.set(a.artifactId, {
+        artifactId: a.artifactId,
+        version: a.currentVersion,
+        title,
+        kind: a.kind,
+        extension: fenceLine(a.extension, 16) ?? '',
+      });
+    };
+    // not-found / forbidden: not this viewer's — drop. Anything else is an outage.
+    const refused = (err: unknown): string | null => {
+      const code = err instanceof PluginError ? err.code : 'unknown';
+      return code === 'not-found' || code === 'forbidden' ? null : code;
+    };
+    let outage: string | null = null;
+
+    const claimed = new Set(ids);
+    try {
+      const listed = await bus.call<{ agentId: string }, { artifacts: StoredArtifact[] }>(
+        'artifacts:list', ctx, { agentId },
+      );
+      for (const a of listed.artifacts) if (claimed.has(a.artifactId)) keep(a);
+    } catch (err) {
+      const code = refused(err);
+      if (code === null) return out;
+      initCtx.logger.warn('workspace_artifact_cards_unverified', { code });
+      return null;
+    }
+
+    const missing = ids.filter((id) => !out.has(id)).slice(0, CARD_GET_FALLBACK_MAX);
+    if (missing.length > 0 && bus.hasService('artifacts:get')) {
+      await Promise.all(missing.map(async (artifactId) => {
+        try {
+          const got = await bus.call<{ artifactId: string }, { artifact: StoredArtifact }>(
+            'artifacts:get', ctx, { artifactId },
+          );
+          keep(got.artifact);
+        } catch (err) {
+          outage ??= refused(err);
+        }
+      }));
+    }
+    if (outage !== null) {
+      initCtx.logger.warn('workspace_artifact_cards_unverified', { code: outage });
+      return null;
+    }
+    return out;
+  }
+
   async function connectorNames(userId: string): Promise<ConnectorNames> {
     if (!bus.hasService('connectors:tool-labels')) return new Map();
     try {
@@ -7884,7 +8038,8 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
         edits memory, which a read-only page has no business offering.
       */
       const thread = [
-        ...buildThread(got.turns ?? [], got.displayEvents ?? [], approvals.live, connectors),
+        ...buildThread(got.turns ?? [], got.displayEvents ?? [], approvals.live, connectors,
+          await verifiedArtifacts(got.turns ?? [], key.agentId, userId)),
         ...approvals.messages,
       ].filter((m) => m.kind !== 'user');
       res.status(200).json(toTaskCheckin(own.agent, own.view, fire, thread, approvals.status));
@@ -8012,7 +8167,8 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
           const approvals = await approvalMessages(userId, agentId, threadConversationId);
           decisionsRead = approvals.status;
           thread = [
-            ...buildThread(got.turns ?? [], got.displayEvents ?? [], approvals.live, connectors),
+            ...buildThread(got.turns ?? [], got.displayEvents ?? [], approvals.live, connectors,
+              await verifiedArtifacts(got.turns ?? [], agentId, userId)),
             ...approvals.messages,
           ];
           thread = await withMemoryUsed(

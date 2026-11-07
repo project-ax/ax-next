@@ -1,8 +1,10 @@
 import { z } from 'zod';
 import { HOLD_NOTE_MAX } from '@ax/core';
 import {
+  ARTIFACT_TITLE_MAX,
   ATTACHMENT_FILENAME_MAX,
   ATTACHMENT_MEDIA_TYPE_MAX,
+  ArtifactKindSchema,
   AttachmentIdSchema,
   CONTENT_BLOCKS_MAX,
   ContentBlockSchema,
@@ -416,37 +418,60 @@ export const BlobGetRequestSchema = z
 export type BlobGetRequest = z.infer<typeof BlobGetRequestSchema>;
 
 // ---------------------------------------------------------------------------
-// artifact.publish — TASK-68 (out-of-git Part C, outbound). After the runner
-// streams an artifact's bytes via `blob.put`, it posts this small metadata
-// envelope so the host inserts the artifact row and mints the stable
-// `ax://artifact/<id>` URL.
+// artifact.publish — the agent publishes a file from its files folder. After
+// the runner streams the bytes via `blob.put`, it posts this small envelope;
+// the host's `artifacts:publish` hook adds a version to the agent's artifact
+// (a new one, or the one keyed by `path` / `artifactId`).
 //
 // Field names are storage-agnostic (I1): `conversationId` scopes ownership,
-// `sha256` is the content hash linking the row to the stored blob, `path` is
-// the file's location relative to its publish root, used only as the row's
-// re-publish key (publishing the same file again updates its row) and never
-// handed back out — the chat chip and the download address the artifact by
-// `artifactId`. `displayName`/`mediaType` are untrusted display text (the
-// renderer treats them as untrusted; never shell-interpolated); they are capped
-// at the `attachment` block's limits so every recorded artifact can become a
-// chip. No backend vocabulary.
+// `sha256` is the content hash linking the version to the stored blob, `path`
+// is the file's location relative to the agent's files folder, the re-publish
+// key. `title` is untrusted model text; the host normalizes it. Media type and
+// size are not on the wire: the host takes them from the path and the blob
+// store. The response carries the artifact's id, never a share code (C1): the
+// runner builds `ax://artifact/<id>` itself.
+//
+// `visual: true` marks a chat visual: a chart the runner's `show_visual` tool
+// stores so the chat can render it. It stays out of every Artifacts surface
+// (list, the agent's prompt list, links, the viewer); only its chat card loads
+// it. Set by the runner's show_visual executor alone; the model-facing
+// `artifact_publish` input has no such field. The host decides what a visual
+// looks like (R30): its path must be `visuals/<its own sha256>.html` (checked
+// here) and its bytes at most MAX_VISUAL_HTML_BYTES (checked by
+// `artifacts:publish` against the blob store's size), so a runner can't hide an
+// arbitrary file by calling it a visual.
 // ---------------------------------------------------------------------------
+
+/** Largest chat visual (show_visual HTML), in bytes: 100 KB. */
+export const MAX_VISUAL_HTML_BYTES = 102_400;
+
+/** Where a chat visual with this content hash must live. */
+export function visualPathFor(sha256: string): string {
+  return `visuals/${sha256}.html`;
+}
 
 export const ArtifactPublishRequestSchema = z
   .object({
     conversationId: z.string().min(1).max(256),
     sha256: z.string().regex(SHA256_RE),
     path: z.string().min(1).max(1024),
-    displayName: z.string().min(1).max(ATTACHMENT_FILENAME_MAX),
-    mediaType: z.string().min(1).max(ATTACHMENT_MEDIA_TYPE_MAX),
-    size: z.number().int().nonnegative(),
+    title: z.string().min(1).max(ARTIFACT_TITLE_MAX),
+    artifactId: AttachmentIdSchema.optional(),
+    visual: z.literal(true).optional(),
   })
-  .strict();
+  .strict()
+  .refine((r) => r.visual !== true || r.path === visualPathFor(r.sha256), {
+    message: 'a visual must be published at visuals/<sha256>.html',
+    path: ['path'],
+  });
 export type ArtifactPublishRequest = z.infer<typeof ArtifactPublishRequestSchema>;
 
 export const ArtifactPublishResponseSchema = z.object({
-  artifactId: z.string(),
-  downloadUrl: z.string(),
+  artifactId: AttachmentIdSchema,
+  version: z.number().int().positive(),
+  title: z.string().min(1).max(ARTIFACT_TITLE_MAX),
+  kind: ArtifactKindSchema,
+  extension: z.string().max(16),
 });
 export type ArtifactPublishResponse = z.infer<typeof ArtifactPublishResponseSchema>;
 

@@ -1,4 +1,5 @@
 import { sql, type Kysely } from 'kysely';
+import { runArtifactsMigration, type ArtifactsDatabase } from './artifacts/migrations.js';
 
 /**
  * @ax/attachments owns tables under the `attachments_v1_` prefix
@@ -42,8 +43,8 @@ export interface AttachmentTempsTable {
 // a published artifact. `sha256` is the OWN content digest of the file
 // (storage-agnostic identity, the same value the alternate
 // @ax/attachments-pg-bytea-only impl would compute), NOT a git sha / backend
-// pointer — so it's allowed (I1). Artifacts also keep `path`, the file's place
-// under its publish root: the re-publish key, never handed out.
+// pointer — so it's allowed (I1). Artifacts are agent-scoped and versioned;
+// their tables live in artifacts/migrations.ts.
 //
 // Files (inbound uploads) and artifacts (outbound deliverables) get separate
 // tables — distinct lifecycles + namespaces. Both are owned by @ax/attachments
@@ -60,22 +61,9 @@ export interface AttachmentFilesTable {
   created_at: Date;
 }
 
-export interface ArtifactFilesTable {
-  artifact_id: string;
-  conversation_id: string;
-  user_id: string;
-  sha256: string;
-  path: string;
-  display_name: string;
-  media_type: string;
-  size_bytes: number;
-  created_at: Date;
-}
-
-export interface AttachmentsDatabase {
+export interface AttachmentsDatabase extends ArtifactsDatabase {
   attachments_v1_temps: AttachmentTempsTable;
   attachments_v1_files: AttachmentFilesTable;
-  attachments_v1_artifacts: ArtifactFilesTable;
 }
 
 export async function runAttachmentsMigration<DB>(
@@ -144,32 +132,8 @@ export async function runAttachmentsMigration<DB>(
       ON attachments_v1_files (sha256)
   `.execute(db);
 
-  // Published artifacts. Separate namespace + lifecycle (outbound). Their
-  // (conversation_id, path) stays UNIQUE: it is the re-publish key, so
-  // publishing the same file again updates its row instead of adding one.
-  await sql`
-    CREATE TABLE IF NOT EXISTS attachments_v1_artifacts (
-      artifact_id     TEXT PRIMARY KEY,
-      conversation_id TEXT NOT NULL,
-      user_id         TEXT NOT NULL,
-      sha256          TEXT NOT NULL,
-      path            TEXT NOT NULL,
-      display_name    TEXT NOT NULL,
-      media_type      TEXT NOT NULL,
-      size_bytes      BIGINT NOT NULL CHECK (size_bytes >= 0),
-      created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      UNIQUE (conversation_id, path)
-    )
-  `.execute(db);
-
-  await sql`
-    CREATE INDEX IF NOT EXISTS attachments_v1_artifacts_conversation_id_idx
-      ON attachments_v1_artifacts (conversation_id)
-  `.execute(db);
-
-  // Same reason as attachments_v1_files_sha256_idx above.
-  await sql`
-    CREATE INDEX IF NOT EXISTS attachments_v1_artifacts_sha256_idx
-      ON attachments_v1_artifacts (sha256)
-  `.execute(db);
+  // Published artifacts: agent-scoped heads + versions, upgraded in place from
+  // the single-version table (artifacts/migrations.ts). The plugin then runs
+  // backfillArtifactAgents and finishArtifactsMigration.
+  await runArtifactsMigration(db);
 }

@@ -26,6 +26,7 @@ describe('@ax/conversations plugin manifest', () => {
         'conversations:unbind-session',
         // Phase B (2026-04-29): runner-owned-sessions metadata reads.
         'conversations:get-metadata',
+        'conversations:agent-ids',
         'conversations:store-runner-session',
         // Phase F (2026-05-03): post-creation title update for the
         // auto-title pipeline + future user-driven rename UI.

@@ -68,6 +68,19 @@ function authMockPlugin(args: {
   };
 }
 
+/** The `artifacts:*` hooks channel-web's owner and link-holder routes declare as hard calls. */
+const ARTIFACT_HOOKS = [
+  'artifacts:list',
+  'artifacts:get',
+  'artifacts:read',
+  'artifacts:rename',
+  'artifacts:restore',
+  'artifacts:delete',
+  'artifacts:set-link',
+  'artifacts:mint-view-token',
+  'artifacts:resolve-share-code',
+] as const;
+
 /**
  * Stub for `attachments:store-temp` / `:commit` / `:download`. Channel-web
  * declares all three as hard calls (Phase 3); this suite doesn't exercise
@@ -82,6 +95,15 @@ function attachmentsMockPlugin(): Plugin {
         'attachments:store-temp',
         'attachments:commit',
         'attachments:download',
+        'artifacts:list',
+        'artifacts:get',
+        'artifacts:read',
+        'artifacts:rename',
+        'artifacts:restore',
+        'artifacts:delete',
+        'artifacts:set-link',
+        'artifacts:mint-view-token',
+        'artifacts:resolve-share-code',
       ],
       calls: [],
       subscribes: [],
@@ -97,6 +119,8 @@ function attachmentsMockPlugin(): Plugin {
       bus.registerService('attachments:store-temp', 'mock-attachments', notImpl);
       bus.registerService('attachments:commit', 'mock-attachments', notImpl);
       bus.registerService('attachments:download', 'mock-attachments', notImpl);
+      // Agent artifacts (owner routes) — declared hard calls, not exercised here.
+      for (const hook of ARTIFACT_HOOKS) bus.registerService(hook, 'mock-attachments', notImpl);
     },
   };
 }

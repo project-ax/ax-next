@@ -816,6 +816,12 @@ export interface AgentsConfig {
   deletedSubscriberTimeoutMs?: number;
 }
 
+/** HOST-ONLY: any agent's display name, no ACL. Never an IPC action or HTTP route. */
+export const GetDisplayNameInputSchema = z.object({ agentId: z.string().min(1).max(256) }).strict();
+export const GetDisplayNameOutputSchema = z.object({ displayName: z.string() }).strict();
+export type GetDisplayNameInput = z.infer<typeof GetDisplayNameInputSchema>;
+export type GetDisplayNameOutput = z.infer<typeof GetDisplayNameOutputSchema>;
+
 export const CanManageRoutinesInputSchema = z.object({ agentId: z.string().min(1).max(256) }).strict();
 /** Membership permits one's own routines; only a current team admin may stop another member's work. */
 export const CanManageRoutinesOutputSchema = z.object({ allowed: z.boolean(), stopOthers: z.boolean() }).strict();

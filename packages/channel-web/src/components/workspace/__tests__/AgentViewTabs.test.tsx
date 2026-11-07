@@ -29,6 +29,11 @@ vi.mock('@/lib/workspace-api', async () => {
       // Activity reads the rail route; Files reads user files. Each should be
       // called only once its own view is open.
       rail: vi.fn(async () => railFixture()),
+      artifacts: vi.fn(async () => []),
+      artifact: vi.fn(),
+      artifactToken: vi.fn(async () => ({ url: 'http://127.0.0.1:9091/v/tok', expiresAt: '2026-11-06T12:05:00Z' })),
+      probeArtifactsDownload: vi.fn(),
+      artifactsDownloadAllUrl: vi.fn(() => '/api/workspace/agents/a-quill/artifacts/download-all'),
       // A root 404 is an empty list.
       userFiles: vi.fn(async () => {
         const E = actual.WorkspaceApiError as new (path: string, status: number) => Error;
@@ -99,6 +104,7 @@ beforeEach(() => {
   agentMock.mockResolvedValue(detail());
   vi.mocked(workspaceApi.rail).mockClear();
   vi.mocked(workspaceApi.userFiles).mockClear();
+  vi.mocked(workspaceApi.artifacts).mockClear();
 });
 
 afterEach(() => localStorage.clear());
@@ -112,6 +118,7 @@ describe('AgentView side-panel toggles — the accessibility tree', () => {
     expect(toggles().map((t) => t.getAttribute('aria-label'))).toEqual([
       RAIL_PANELS.files.label,
       RAIL_PANELS.activity.label,
+      RAIL_PANELS.artifacts.label,
     ]);
     for (const t of toggles()) expect(t.getAttribute('aria-checked')).toBe('false');
     expect(screen.queryAllByRole('tab', { hidden: true })).toHaveLength(0);
@@ -166,6 +173,84 @@ describe('AgentView side-panel toggles — the accessibility tree', () => {
     fireEvent.click(screen.getByRole('radio', { name: 'Files' }));
     await waitFor(() => expect(workspaceApi.userFiles).toHaveBeenCalled());
     expect(workspaceApi.rail).not.toHaveBeenCalled();
+  });
+
+  it('opening Artifacts fetches only the artifact list', async () => {
+    renderView();
+    await screen.findByRole('group', { name: 'Side panel' });
+    expect(workspaceApi.artifacts).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('radio', { name: 'Artifacts' }));
+    await waitFor(() => expect(workspaceApi.artifacts).toHaveBeenCalledWith('a-quill'));
+    expect(workspaceApi.userFiles).not.toHaveBeenCalled();
+    expect(workspaceApi.rail).not.toHaveBeenCalled();
+  });
+
+  it('the rail widens while the viewer is open and is 320px again after Back', async () => {
+    const summary = {
+      artifactId: 'art-1',
+      agentId: 'a-quill',
+      title: 'Deal tracker',
+      mediaType: 'text/html',
+      kind: 'web' as const,
+      preview: 'html',
+      extension: 'HTML',
+      currentVersion: 1,
+      sizeBytes: 10,
+      linkOn: false,
+      createdAt: '2026-11-01T00:00:00Z',
+      updatedAt: '2026-11-01T00:00:00Z',
+    };
+    vi.mocked(workspaceApi.artifacts).mockResolvedValueOnce([summary]);
+    vi.mocked(workspaceApi.artifact).mockResolvedValue({
+      ...summary,
+      versions: [{ version: 1, mediaType: 'text/html', sizeBytes: 10, createdAt: '2026-11-01T00:00:00Z' }],
+    });
+    renderView();
+    await screen.findByRole('group', { name: 'Side panel' });
+    fireEvent.click(screen.getByRole('radio', { name: 'Artifacts' }));
+    const rail = screen.getByRole('complementary', { name: 'Artifacts' });
+    expect(rail.className).toContain('w-[320px]');
+
+    fireEvent.click(await within(rail).findByRole('button', { name: /Deal tracker/ }));
+    expect(await within(rail).findByTitle('Deal tracker')).toBeTruthy();
+    expect(rail.className).toContain('w-1/2');
+    expect(rail.className).toContain('min-w-[480px]');
+    expect(rail.className).not.toContain('w-[320px]');
+
+    fireEvent.click(within(rail).getByRole('button', { name: 'Back' }));
+    await waitFor(() => expect(screen.getByRole('complementary', { name: 'Artifacts' }).className).toContain('w-[320px]'));
+  });
+
+  it('Open on the card of the artifact already open re-reads it (a new version may have landed)', async () => {
+    const summary = {
+      artifactId: 'art-1', agentId: 'a-quill', title: 'Deal tracker', mediaType: 'text/html',
+      kind: 'web' as const, preview: 'html', extension: 'HTML', currentVersion: 1, sizeBytes: 10,
+      linkOn: false, createdAt: '2026-11-01T00:00:00Z', updatedAt: '2026-11-01T00:00:00Z',
+    };
+    vi.mocked(workspaceApi.artifact).mockReset();
+    vi.mocked(workspaceApi.artifact).mockResolvedValue({
+      ...summary,
+      versions: [{ version: 1, mediaType: 'text/html', sizeBytes: 10, createdAt: '2026-11-01T00:00:00Z' }],
+    });
+    agentMock.mockResolvedValue({
+      ...detail(),
+      thread: [
+        { kind: 'user', id: 't1', text: 'make me a tracker' },
+        {
+          kind: 'agent', id: 'r1', text: 'Done.', at: '2026-11-01T00:00:00.000Z',
+          artifacts: [{ artifactId: 'art-1', version: 1, title: 'Deal tracker', kind: 'web', extension: 'HTML' }],
+        },
+      ],
+    } as AgentDetail);
+    renderView();
+    fireEvent.click(await screen.findByRole('button', { name: 'Open' }));
+    const rail = await screen.findByRole('complementary', { name: 'Artifacts' });
+    expect(await within(rail).findByTitle('Deal tracker')).toBeTruthy();
+    await waitFor(() => expect(workspaceApi.artifact).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open' }));
+    await waitFor(() => expect(workspaceApi.artifact).toHaveBeenCalledTimes(2));
   });
 
   /*

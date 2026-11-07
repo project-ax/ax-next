@@ -80,6 +80,10 @@ export const DISPATCHER_DEPENDENCIES: DispatcherDependencies = {
   ],
   optionalCalls: [
     {
+      hook: 'agents:resolve',
+      degradation: 'runner blob.put charges the session person',
+    },
+    {
       // NOT required: the dispatcher calls this unconditionally on the
       // /conversation.store-runner-session route, but the route is only
       // exercised by conversation-scoped deployments. The local CLI is
@@ -122,9 +126,9 @@ export const DISPATCHER_DEPENDENCIES: DispatcherDependencies = {
         'POST /blob.get returns 500 — the runner cannot copy uploads into the scratch uploads directory or stream a stored blob; unreachable in deployments with no blob backend.',
     },
     {
-      hook: 'artifacts:publish-blob',
+      hook: 'artifacts:publish',
       degradation:
-        'POST /artifact.publish returns 500 — a published artifact is not recorded in the metadata store; unreachable in deployments that never publish artifacts.',
+        'POST /artifact.publish returns 500 — the agent cannot publish a file as an artifact; unreachable in deployments that never publish artifacts.',
     },
     {
       hook: 'attachments:list-for-conversation',
