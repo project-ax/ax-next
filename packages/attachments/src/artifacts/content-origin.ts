@@ -74,6 +74,11 @@ export interface ContentOriginOptions {
   serve: (c: ViewTokenClaims) => Promise<ServedArtifact | null>;
   /** Where a failed lookup's route + codes go. Defaults to stderr. */
   logger?: Logger;
+  /**
+   * Bounds of the prepared-HTML cache. A knob for tests: a byte bound is only
+   * visible with pages that add up to it, and the real one is 32 MiB.
+   */
+  htmlCache?: { maxEntries?: number; maxBytes?: number };
 }
 
 export interface ContentOriginHandle {
@@ -112,7 +117,7 @@ export const MAX_HTML_TRANSFORM_BYTES = 4 * 1024 * 1024;
 
 /** Prepared pages kept so a reload of the same bytes skips the transform: at most this many... */
 const HTML_CACHE_MAX_ENTRIES = 16;
-/** ...and at most this many bytes of prepared output in all. */
+/** ...and at most this many bytes of prepared output in all (a page is at most 4x its input, 16 MiB). */
 const HTML_CACHE_MAX_BYTES = 32 * 1024 * 1024;
 
 /**
@@ -236,6 +241,8 @@ export async function startContentOrigin(o: ContentOriginOptions): Promise<Conte
   // for good. Map order is recency: a hit is re-inserted last, the oldest goes first.
   const htmlCache = new Map<string, PreparedHtml>();
   let htmlCacheBytes = 0;
+  const maxEntries = o.htmlCache?.maxEntries ?? HTML_CACHE_MAX_ENTRIES;
+  const maxBytes = o.htmlCache?.maxBytes ?? HTML_CACHE_MAX_BYTES;
   const cost = (p: PreparedHtml): number => ('html' in p ? p.html.byteLength : 0);
 
   function prepareHtml(served: ServedArtifact): PreparedHtml {
@@ -254,11 +261,11 @@ export async function startContentOrigin(o: ContentOriginOptions): Promise<Conte
       out = prepared.ok ? { html: Buffer.from(prepared.html, 'utf8') } : { refusal: prepared.reason };
     }
     const timedOut = 'refusal' in out && out.refusal === 'too_slow';
-    if (key !== undefined && !timedOut && cost(out) <= HTML_CACHE_MAX_BYTES) {
+    if (key !== undefined && !timedOut && cost(out) <= maxBytes) {
       htmlCache.set(key, out);
       htmlCacheBytes += cost(out);
       for (const [k, v] of htmlCache) {
-        if (htmlCache.size <= HTML_CACHE_MAX_ENTRIES && htmlCacheBytes <= HTML_CACHE_MAX_BYTES) break;
+        if (htmlCache.size <= maxEntries && htmlCacheBytes <= maxBytes) break;
         htmlCache.delete(k);
         htmlCacheBytes -= cost(v);
       }

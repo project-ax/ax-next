@@ -6,6 +6,7 @@ import {
   HTML_REFUSED_BODY,
   MAX_HTML_TRANSFORM_BYTES,
   startContentOrigin,
+  type ContentOriginOptions,
   type ServedArtifact,
 } from '../artifacts/content-origin.js';
 import { signViewToken } from '../artifacts/view-token.js';
@@ -56,7 +57,7 @@ function logger(): Logger {
   return l;
 }
 
-async function start(): Promise<string> {
+async function start(extra: Partial<ContentOriginOptions> = {}): Promise<string> {
   const origin = await startContentOrigin({
     host: '127.0.0.1',
     port: 0,
@@ -64,6 +65,7 @@ async function start(): Promise<string> {
     key,
     logger: logger(),
     serve: async (c) => stubs.get(c.artifactId)?.served ?? null,
+    ...extra,
   });
   closers.push(() => origin.close());
   return origin.url;
@@ -394,5 +396,43 @@ describe('content origin: prepared-HTML cache', () => {
     expect(prepare).toHaveBeenCalledTimes(17);
     await (await fetch(tokenUrl(base, 'p1'))).arrayBuffer();
     expect(prepare).toHaveBeenCalledTimes(18);
+  });
+
+  describe('its byte bound', () => {
+    // The bound is on the bytes of prepared pages, apart from how many there are: 1 MiB pages against a 2.5 MiB
+    // bound (the real one is 32 MiB, and 4 MiB pages are what it is for, which is a second of test per page).
+    const MAX_BYTES = 2.5 * 1024 * 1024;
+    const PAGES = 6;
+    const big = (n: number): Uint8Array => {
+      const head = `<!doctype html><p>big ${n}</p><!--`;
+      const tail = '-->';
+      return enc(head + 'a'.repeat(1024 * 1024 - head.length - tail.length) + tail);
+    };
+    const view = async (base: string, id: string): Promise<void> => void (await (await fetch(tokenUrl(base, id))).arrayBuffer());
+
+    it('pushes the oldest pages out by size with only a few in it, keeps the newest, and takes back what it pushed out', async () => {
+      const base = await start({ htmlCache: { maxBytes: MAX_BYTES } });
+      for (let i = 0; i < PAGES; i++) put(`b${i}`, { bytes: big(i), contentKey: `sha-big-${i}` });
+      for (let i = 0; i < PAGES; i++) await view(base, `b${i}`);
+      expect(prepare).toHaveBeenCalledTimes(PAGES);
+
+      // The two newest fit in 2.5 MiB and are still there: what the bound took out was the oldest, not
+      // everything. (If the bytes of a page it pushed out were never taken back, it would think it was still
+      // over, and push these out too.)
+      await view(base, `b${PAGES - 1}`);
+      await view(base, `b${PAGES - 2}`);
+      expect(prepare).toHaveBeenCalledTimes(PAGES);
+      // The oldest is not: six pages are far under the 16 the entry bound allows, so only the bytes sent it away.
+      await view(base, 'b0');
+      expect(prepare).toHaveBeenCalledTimes(PAGES + 1);
+    });
+
+    it('is a bound apart from the entry bound: the same pages with room for every byte are all kept', async () => {
+      const base = await start({ htmlCache: { maxBytes: 64 * 1024 * 1024 } });
+      for (let i = 0; i < PAGES; i++) put(`b${i}`, { bytes: big(i), contentKey: `sha-big-${i}` });
+      for (let i = 0; i < PAGES; i++) await view(base, `b${i}`);
+      for (let i = 0; i < PAGES; i++) await view(base, `b${i}`);
+      expect(prepare).toHaveBeenCalledTimes(PAGES);
+    });
   });
 });
