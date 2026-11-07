@@ -656,7 +656,19 @@ interface OrdinaryRun {
   after: OrdinaryFacts;
 }
 
-/** Reads the ordinary page once its script has run, clicks its #anchor link, and reads it again. */
+/**
+ * Reads the ordinary page once its script has run, follows its #anchor link, and
+ * reads it again.
+ *
+ * The link is activated with a script-dispatched click, not Playwright's mouse
+ * click: that is routed by the browser to the frame under the cursor, and in the
+ * site-isolated model, under this suite's load, it sometimes never reaches the
+ * out-of-process artifact frame at all (measured: in 5 of 12 runs of the isolated
+ * framed cell, no mousedown, mouseup or click event arrived at a link in plain
+ * view). That is input routing, not what this test is about. `click()` runs the
+ * link's real activation behavior (the fragment navigation, `:target`, the
+ * scroll), which is what the guard must not break.
+ */
 async function exerciseOrdinary(frame: Frame): Promise<OrdinaryRun> {
   // The page's script marks its table when it has run. If it never does, the facts say `ready: null`.
   await frame
@@ -665,8 +677,10 @@ async function exerciseOrdinary(frame: Frame): Promise<OrdinaryRun> {
     })
     .catch(() => undefined);
   const before = (await frame.evaluate(ORDINARY_FACTS)) as OrdinaryFacts;
-  await frame.click('#jump');
-  await frame.waitForFunction("location.hash === '#end'", undefined, { timeout: 2000 }).catch(() => undefined);
+  await frame.evaluate("document.getElementById('jump').click()");
+  await frame
+    .waitForFunction("location.hash === '#end' && window.scrollY > 0", undefined, { timeout: 5000 })
+    .catch(() => undefined);
   const after = (await frame.evaluate(ORDINARY_FACTS)) as OrdinaryFacts;
   return { before, after };
 }
@@ -1021,7 +1035,8 @@ describe.skipIf(CHROMIUM_MISSING && !IN_CI)('artifact HTML in Chromium (hostile 
     return { vectors, ordinary: ran.ordinary, kill, nav, navOpen };
   }
 
-  describe.each(CELLS)('$label', ({ mode, framing, label }) => {
+  // `%s`, not `$label`: vitest cuts an interpolated string off at 40 characters ("...framed by the a…").
+  describe.each(CELLS.map((cell) => [cell.label, cell] as const))('%s', (_title, { mode, framing, label }) => {
     let fromOrigin: Results;
     let fromControl: Results;
     let scenarios: Scenarios;
