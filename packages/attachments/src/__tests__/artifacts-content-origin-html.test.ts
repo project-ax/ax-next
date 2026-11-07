@@ -245,6 +245,45 @@ describe('content origin: HTML goes through prepareArtifactHtml', () => {
   });
 });
 
+describe('content origin: what the bytes are, as text', () => {
+  const PAGE = '<!doctype html><title>t</title><p>héllo 日本語 😀</p>';
+  const utf16le = (text: string): Uint8Array => Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(text, 'utf16le')]);
+  const utf16be = (text: string): Uint8Array => Buffer.concat([Buffer.from([0xfe, 0xff]), Buffer.from(text, 'utf16le').swap16()]);
+
+  it.each([
+    ['UTF-16LE with a byte order mark', utf16le(PAGE)],
+    ['UTF-16BE with a byte order mark', utf16be(PAGE)],
+  ])('a page saved as %s is served, guarded, text intact, as UTF-8', async (_name, bytes) => {
+    const base = await start();
+    put('a', { bytes });
+    const r = await fetch(tokenUrl(base, 'a'));
+    expect(r.status).toBe(200);
+    expect(r.headers.get('content-type')).toBe('text/html; charset=utf-8');
+    const body = await r.text();
+    expect(body).toMatch(GUARD_FIRST_IN_HEAD);
+    expect(body).toContain('<title>t</title></head><body><p>héllo 日本語 😀</p></body></html>');
+    expect(body).not.toContain('\u0000');
+    expect(body).not.toContain('\ufeff');
+    expect(lines).toHaveLength(0);
+  });
+
+  it('a UTF-8 byte order mark is dropped, as a browser does', async () => {
+    const base = await start();
+    put('a', { bytes: Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from(PAGE)]) });
+    const body = await (await fetch(tokenUrl(base, 'a'))).text();
+    expect(body.startsWith('<!DOCTYPE html><html><head><script>')).toBe(true);
+    expect(body).toContain('<p>héllo 日本語 😀</p>');
+  });
+
+  it('UTF-16 with no byte order mark is not sniffed (a browser would not either): its NULs refuse the page', async () => {
+    const base = await start();
+    put('a', { bytes: Buffer.from(PAGE, 'utf16le') });
+    const r = await fetch(tokenUrl(base, 'a'));
+    expect(r.status).toBe(422);
+    expect(JSON.parse(lines[0]!)[2]).toMatchObject({ code: 'nul' });
+  });
+});
+
 describe('content origin: everything that is not inline HTML is byte-identical', () => {
   const SVG = '<svg xmlns="http://www.w3.org/2000/svg"><iframe/><script>alert(1)</script></svg>';
   // Looks like HTML on purpose: nothing but `preview === 'html'` may be rewritten.

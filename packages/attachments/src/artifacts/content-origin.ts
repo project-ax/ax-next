@@ -132,6 +132,18 @@ class HtmlRefusal extends Error {
 
 type PreparedHtml = { html: Buffer } | { refusal: HtmlRefusal['code'] };
 
+/**
+ * The text of an HTML page's bytes, as a browser reads it for `charset=utf-8`:
+ * UTF-8, except that a UTF-16 byte order mark outranks the header, so a page
+ * that starts with one is UTF-16 to a browser (Windows PowerShell's `Out-File`
+ * writes them). Both decoders drop the mark. Nothing else is sniffed.
+ */
+function decodePage(bytes: Uint8Array): string {
+  if (bytes[0] === 0xff && bytes[1] === 0xfe) return new TextDecoder('utf-16le').decode(bytes);
+  if (bytes[0] === 0xfe && bytes[1] === 0xff) return new TextDecoder('utf-16be').decode(bytes);
+  return new TextDecoder().decode(bytes);
+}
+
 /** An origin, and nothing that could end the CSP directive or the header: no path, quote, `;`, `,` or space. */
 const ORIGIN_RE = /^https?:\/\/[A-Za-z0-9.-]+(?::\d{1,5})?$/;
 
@@ -238,7 +250,7 @@ export async function startContentOrigin(o: ContentOriginOptions): Promise<Conte
     if (served.bytes.byteLength > MAX_HTML_TRANSFORM_BYTES) {
       out = { refusal: 'html_too_large' };
     } else {
-      const prepared = prepareArtifactHtml(new TextDecoder().decode(served.bytes));
+      const prepared = prepareArtifactHtml(decodePage(served.bytes));
       out = prepared.ok ? { html: Buffer.from(prepared.html, 'utf8') } : { refusal: prepared.reason };
     }
     const timedOut = 'refusal' in out && out.refusal === 'too_slow';
