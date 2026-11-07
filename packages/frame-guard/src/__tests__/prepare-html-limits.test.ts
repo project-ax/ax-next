@@ -122,12 +122,12 @@ function run(html: string, limits: PrepareLimits = {}): Run {
  * that an abort takes milliseconds, and a timeslice the machine took for something else (measured: 30 times
  * the normal time, once in a few dozen runs) is not a regression. A real one is slow every time.
  */
-function bestRun(html: string, limits: PrepareLimits = {}): Run {
+function bestRun(html: string, limits: PrepareLimits = {}, maxMs = FAST_MS): Run {
   let best: Run | undefined;
   for (let attempt = 0; attempt < 3; attempt++) {
     const r = run(html, limits);
     if (best === undefined || r.ms < best.ms) best = r;
-    if (r.ms < FAST_MS && r.grownMB < HEAP_MB) break;
+    if (r.ms < maxMs && r.grownMB < HEAP_MB) break;
   }
   return best as Run;
 }
@@ -139,8 +139,8 @@ function verdict(r: Run | PrepareResult): string {
 }
 
 /** Generous for ordinary machines, not so for the minutes these used to take. */
-function expectFast(r: Run): void {
-  expect(r.ms, 'milliseconds to answer').toBeLessThan(FAST_MS);
+function expectFast(r: Run, maxMs = FAST_MS): void {
+  expect(r.ms, 'milliseconds to answer').toBeLessThan(maxMs);
   expect(r.samples, 'the transform never looked at the clock, so the heap was never sampled').toBeGreaterThan(0);
   expect(r.grownMB, 'MB of heap growth').toBeLessThan(HEAP_MB);
 }
@@ -179,16 +179,18 @@ describe('other shapes that cost parse5 minutes, at the 4 MiB cap', () => {
   // Each of these was measured in plain parse5 before the fix (the comment above says what). Where a
   // small copy is already slow in plain parse5 it is run first, so a regression fails in about a second
   // instead of hanging the run on the full size.
-  const SHAPES: Array<{ name: string; make: (bytes: number) => string; reason: string; canary: boolean | number }> = [
+  const SHAPES: Array<{ name: string; make: (bytes: number) => string; reason: string; canary: boolean | number; ms?: number }> = [
     // (A `canary` that is a number is the size of the small copy, where 1/32 of the cap is not slow enough to tell.)
     { name: 'one tag with thousands of attributes', make: attributeFlood, reason: 'too_many_attrs', canary: CAP / 16 },
     { name: '<body> repeated, each with new attributes', make: bodyAttributes, reason: 'too_many_attrs', canary: true },
     { name: '<body x> repeated 500,000 times after 250 attributes on the first (served: it is linear)', make: bodyRepeated, reason: 'served', canary: false },
     { name: '<a><div>x</a> repeated (adoption agency)', make: adoptionAgency, reason: 'too_deep', canary: true },
-    { name: 'table content moved in front of the table', make: fosterParented, reason: 'too_many_nodes', canary: false },
-    { name: '...void elements, one search for the table each', make: fosterParentedInputs, reason: 'too_many_nodes', canary: false },
-    { name: '...text between elements, one search for the table each', make: fosterParentedText, reason: 'too_many_nodes', canary: false },
-    { name: '...text and void elements, half the searches for text', make: fosterParentedTextOnly, reason: 'too_many_nodes', canary: false },
+    // (The foster-parenting shapes take ~70 ms; searching for the table from the front of the child list
+    // instead of the back adds 0.5 s to each, which the usual one-second limit would let through.)
+    { name: 'table content moved in front of the table', make: fosterParented, reason: 'too_many_nodes', canary: false, ms: 500 },
+    { name: '...void elements, one search for the table each', make: fosterParentedInputs, reason: 'too_many_nodes', canary: false, ms: 500 },
+    { name: '...text between elements, one search for the table each', make: fosterParentedText, reason: 'too_many_nodes', canary: false, ms: 500 },
+    { name: '...text and void elements, half the searches for text', make: fosterParentedTextOnly, reason: 'too_many_nodes', canary: false, ms: 500 },
     { name: '<table><tr><td> nested', make: nestedTables, reason: 'too_deep', canary: true },
     { name: '<template> nested', make: nestedTemplates, reason: 'too_deep', canary: true },
     { name: '<pre> nested', make: nestedPre, reason: 'too_deep', canary: true },
@@ -206,15 +208,15 @@ describe('other shapes that cost parse5 minutes, at the 4 MiB cap', () => {
     expect(verdict(run(adoptedChildren(60 * KiB)))).toBe('served');
   });
 
-  it.each(SHAPES)('$name', ({ make, reason, canary }) => {
+  it.each(SHAPES)('$name', ({ make, reason, canary, ms }) => {
     if (canary !== false) {
       const small = bestRun(make(canary === true ? CAP / 32 : canary));
       expect(verdict(small)).toBe(reason);
       expect(small.ms).toBeLessThan(FAST_MS);
     }
-    const full = bestRun(make(CAP));
+    const full = bestRun(make(CAP), {}, ms);
     expect(verdict(full)).toBe(reason);
-    expectFast(full);
+    expectFast(full, ms);
   });
 });
 
