@@ -42,11 +42,28 @@ const { queries, barrier } = vi.hoisted(() => ({
   // When `size` > 0, Better Auth's handler holds each call until `size` calls
   // have entered it, then lets them all go. That forces concurrent requests to
   // overlap between forwardToBetterAuth writing its box and the refuse plugin
-  // reading it. Without it nothing in that stretch waits on I/O, so each
-  // request finishes before the next starts, and a box shared across requests
-  // would still pass (MEASURED by review).
-  barrier: { size: 0, held: [] as Array<() => void> },
+  // reading it. Without it, each request gets from writing its box to the
+  // plugin reading it without yielding to the event loop, so a box shared
+  // across requests would still pass (MEASURED by review).
+  //
+  // Bounded: if fewer than `size` calls arrive within STALL_MS (a request that
+  // failed before reaching Better Auth), it records how many did in
+  // `stalledAt` and releases them, so the test fails on that, not a timeout.
+  barrier: {
+    size: 0,
+    held: [] as Array<() => void>,
+    stalledAt: undefined as number | undefined,
+    timer: undefined as ReturnType<typeof setTimeout> | undefined,
+  },
 }));
+
+const STALL_MS = 5_000;
+
+function releaseBarrier(): void {
+  clearTimeout(barrier.timer);
+  barrier.timer = undefined;
+  for (const release of barrier.held.splice(0)) release();
+}
 
 vi.mock('better-auth', async (importOriginal) => {
   const actual = await importOriginal<typeof import('better-auth')>();
@@ -68,7 +85,12 @@ vi.mock('better-auth', async (importOriginal) => {
             await new Promise<void>((go) => {
               barrier.held.push(go);
               if (barrier.held.length >= barrier.size) {
-                for (const release of barrier.held.splice(0)) release();
+                releaseBarrier();
+              } else if (barrier.timer === undefined) {
+                barrier.timer = setTimeout(() => {
+                  barrier.stalledAt = barrier.held.length;
+                  releaseBarrier();
+                }, STALL_MS);
               }
             });
           }
@@ -240,11 +262,14 @@ describe('@ax/auth-better: a malformed Host is a counted 400 (TASK-1052)', () =>
     expect(statuses).toEqual([401, 401, 401, 429]);
   });
 
-  it('a refusal never leaks into a concurrent request', async () => {
+  // Pins the `malformedHost` flag. A leaked `refused` flag would only change
+  // which GET's method lands in the (identical) log line, so it isn't pinned here.
+  it('a malformed-Host flag never leaks into a concurrent request', async () => {
     const getSession = () => statusOf(fetch(`http://127.0.0.1:${port}/auth/get-session`));
     // All four are inside Better Auth's handler, boxes written, before any of
     // them reaches the refuse plugin.
     barrier.size = 4;
+    barrier.stalledAt = undefined;
     const { result, authLines } = await captureOutput(() =>
       Promise.all([
         requestWithHost(port, { method: 'GET', path: '/auth/get-session', host: 'marker six' }).then(
@@ -256,7 +281,10 @@ describe('@ax/auth-better: a malformed Host is a counted 400 (TASK-1052)', () =>
       ]),
     ).finally(() => {
       barrier.size = 0;
+      releaseBarrier();
     });
+    // All four reached Better Auth's handler together.
+    expect(barrier.stalledAt).toBeUndefined();
     // With no cookie, Better Auth answers `null` with a 200.
     expect(result).toEqual([400, 200, 200, 200]);
     expect(authLines).toEqual([
