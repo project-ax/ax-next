@@ -11,17 +11,18 @@
 // policy could only ever narrow ours anyway).
 //
 // CSP does not govern WebRTC (RTCPeerConnection's ICE/STUN traffic), so the
-// frame runtime removes the WebRTC constructors before any agent markup runs.
-// That only holds in the frame's own realm: a child frame (even a srcdoc one,
-// which frame-src 'none' does not block) gets fresh constructors. So the
-// visual must never get a child browsing context. stripChildFrames() takes
-// frame-making elements and declarative shadow roots out of the markup here;
-// the runtime (frame-runtime.js) removes any a script inserts later, locks the
-// APIs that build shadow roots or parse markup out of its sight (setHTML,
-// parseHTML and friends ship today), and tears the document down if a child
-// frame appears in the document tree anyway. None of it is a browser
-// boundary, and a child inside a shadow root escapes that last check; see the
-// runtime's notes.
+// frame runtime starts the shared guard (@ax/frame-guard, joined to the
+// runtime in frame-runtime-source.ts), which removes the WebRTC constructors
+// before any agent markup runs. That only holds in the frame's own realm: a
+// child frame (even a srcdoc one, which frame-src 'none' does not block)
+// gets fresh constructors. So the visual must never get a child browsing
+// context. stripChildFrames() takes frame-making elements and declarative
+// shadow roots out of the markup here; the guard removes any a script inserts
+// later, locks the APIs that build shadow roots or parse markup out of its
+// sight (setHTML, parseHTML and friends ship today), and tears the document
+// down if a child frame appears in the document tree anyway. None of it is a
+// browser boundary, and a child inside a shadow root escapes that last check;
+// see the notes in frame-guard.js.
 //
 // The standalone HTML download gets the same box: an outer page with no
 // scripts at all, holding the visual in a sandboxed srcdoc frame. Opened from
@@ -231,7 +232,14 @@ function buildFrameDocument(input: VisualDocInput, assets: VisualAssets, extraCs
 // <noscript> body is markup to us and raw text there — the classic way to
 // smuggle a tag past a parse-and-check. Scripts always run in the frame, so a
 // <noscript> never shows anyway.
-const CHILD_FRAME_SELECTOR = 'iframe,frame,frameset,object,embed,portal,fencedframe,noscript';
+//
+// This restates CHILD_FRAME_TAGS from @ax/frame-guard (and DSD_ATTRIBUTES below
+// restates DSD_ATTRS). This file can't import them: visual-hostile.browser.test.ts
+// loads it raw in a browser. A test keeps the copies in sync.
+export const CHILD_FRAME_SELECTOR = 'iframe,frame,frameset,object,embed,portal,fencedframe,noscript';
+
+// The attributes that turn a <template> into a declarative shadow root.
+export const DSD_ATTRIBUTES: readonly string[] = ['shadowrootmode', 'shadowroot'];
 
 function scrubChildFrames(root: ParentNode): boolean {
   let removed = false;
@@ -242,7 +250,7 @@ function scrubChildFrames(root: ParentNode): boolean {
   for (const template of Array.from(root.querySelectorAll('template'))) {
     // A declarative shadow root would hide its contents from the runtime's
     // MutationObserver; without the attribute it's an inert template.
-    for (const attr of ['shadowrootmode', 'shadowroot']) {
+    for (const attr of DSD_ATTRIBUTES) {
       if (template.hasAttribute(attr)) {
         template.removeAttribute(attr);
         removed = true;

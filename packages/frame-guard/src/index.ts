@@ -7,12 +7,17 @@ import { readFileSync } from 'node:fs';
 // origin (attachments) both consume it, so the two can't drift apart.
 
 /**
- * The guard runtime, as text, ready to be placed in a <script> element. Read
- * from frame-guard.js next to this module (src/ when run from source, dist/
- * after the build copies it). Defines `window.axFrameGuard(win, opts)`.
+ * The guard runtime, as text, ready to be placed in a <script> element.
+ * Defines `window.axFrameGuard(win, opts)`.
+ *
+ * Read from src/frame-guard.js whether this module runs from src/ (vitest) or
+ * from dist/ (the compiled package), so a bare `tsc --build` is all it takes:
+ * there is no copy step to forget. package.json `files` ships that one file
+ * with dist/, and channel-web takes the same file as a raw string through the
+ * `./frame-guard.js` export.
  */
 export const FRAME_GUARD_SOURCE: string = readFileSync(
-  new URL('./frame-guard.js', import.meta.url),
+  new URL('../src/frame-guard.js', import.meta.url),
   'utf8',
 );
 

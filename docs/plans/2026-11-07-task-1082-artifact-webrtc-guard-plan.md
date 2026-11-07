@@ -46,7 +46,7 @@ Files: create `packages/attachments/src/__tests__/artifacts-webrtc-hostile.brows
 ### T2 [tier: integration] Scaffold `@ax/frame-guard`
 Files: create `packages/frame-guard/{package.json,tsconfig.json,src/index.ts}`; modify root `tsconfig.json` refs, `eslint.config.mjs` (allow-list + message), `packages/attachments/{package.json,tsconfig.json}` (dep + ref), `packages/channel-web/package.json` (dep). Check whether `eslint-rules`/`scripts` tests pin the allow-list text (`pnpm test:eslint-rules`). Add a changeset.
 - [ ] `package.json` exports `.` (types+js) and `./frame-guard.js` (the raw runtime file; `files` includes it). Deps: `parse5` `7.3.0` exact.
-- [ ] `src/frame-guard.js` is plain ES2020, no imports (like `frame-runtime.js`). `src/index.ts` exports `FRAME_GUARD_SOURCE` (read from that file with `readFileSync(new URL(...))` for Node; build step copies the .js into dist), `CHILD_FRAME_TAGS`, `DSD_ATTRS`.
+- [ ] `src/frame-guard.js` is plain ES2020, no imports (like `frame-runtime.js`). `src/index.ts` exports `FRAME_GUARD_SOURCE` (read with `readFileSync(new URL('../src/frame-guard.js', import.meta.url))`, which is the same file whether the module runs from `src/` or `dist/`), `CHILD_FRAME_TAGS`, `DSD_ATTRS`. **No build-step copy into `dist/`** (T3 removed it): CI runs only `tsc --build` before the tests, so a copied `dist/frame-guard.js` does not exist there. The `./frame-guard.js` export points at `src/frame-guard.js` and `files` ships it.
 - [ ] Verify `pnpm --filter @ax/frame-guard build` and that `pnpm deploy` for the host image includes it via the attachments dependency.
 
 ### T3 [tier: sensitive] Extract the guard from `frame-runtime.js`; channel-web consumes it
