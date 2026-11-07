@@ -78,7 +78,7 @@ Shipped in `packages/attachments/src/__tests__/artifacts-webrtc-hostile.browser.
 ### T7 [tier: mechanical] Stale text, CI comment, memory
 - [x] Edit the stale items listed above (content-origin header, ArtifactPreview header, chat-visuals design doc, ci.yml comment, the guard's layer-3 comment, `current-architecture.md` section on the content origin). `descriptor.ts` "no internet access" kept: it is the contract we enforce and a test pins it.
 - [x] Shard `.claude/memory/decisions/2026-11-07-TASK-1082.md` (planner rows already written).
-- [ ] Run the full gate: `pnpm build`, then `pnpm -r --no-bail run test && pnpm test:eslint-rules && pnpm test:scripts`, and `pnpm lint`.
+- [x] Run the full gate (see the T7 report; `presets/k8s` acceptance asserted the stored bytes through the content origin and now asserts the guarded page): `pnpm build`, then `pnpm -r --no-bail run test && pnpm test:eslint-rules && pnpm test:scripts`, and `pnpm lint`.
 
 ### T8 [tier: integration] Kind walk (separate `(walk)` card, not yolo-ship-able)
 - [ ] Open a hostile artifact on `ax-next-dev` (always `--context kind-ax-next-dev`), UDP canary silent; control page reaches it. Record in the PR; deploy only with Vinay's go-ahead.

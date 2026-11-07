@@ -2293,6 +2293,17 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
         await fs.mkdir(path.dirname(htmlAbsPath), { recursive: true, mode: 0o755 });
         const HTML_V1 = '<!doctype html><title>Status</title><p>All systems go (v1).</p>';
         const HTML_V2 = '<!doctype html><title>Status</title><p>One system down (v2).</p>';
+        // The content origin does not serve the stored bytes as they are: HTML goes
+        // through the frame guard (TASK-1082), which re-serializes the page with the
+        // guard script first in <head>. So the viewed page is the guard, then the
+        // author's page as the HTML parser reads it.
+        const guarded = (served: string, title: string, body: string): void => {
+          expect(served.startsWith('<!DOCTYPE html><html><head><script>')).toBe(true);
+          expect(served).toContain('axFrameGuard(window');
+          expect(served.slice(served.indexOf('</script>') + '</script>'.length)).toBe(
+            `<title>${title}</title></head><body><p>${body}</p></body></html>`,
+          );
+        };
         await fs.writeFile(htmlAbsPath, HTML_V1);
         const page = (await executor({
           id: 'toolu_3',
@@ -2340,7 +2351,7 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
         expect(v1View.status).toBe(200);
         expect(v1View.headers.get('content-type')).toBe('text/html; charset=utf-8');
         expect(v1View.headers.get('content-security-policy')).toBe(HTML_CSP);
-        expect(await v1View.text()).toBe(HTML_V1);
+        guarded(await v1View.text(), 'Status', 'All systems go (v1).');
         // Not the person's to mint: same 404 as a missing artifact.
         expect(
           (
@@ -2394,7 +2405,7 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
         const v2View = await viewOnContentOrigin(v2LinkUrl);
         expect(v2View.status).toBe(200);
         expect(v2View.headers.get('content-security-policy')).toBe(HTML_CSP);
-        expect(await v2View.text()).toBe(HTML_V2);
+        guarded(await v2View.text(), 'Status', 'One system down (v2).');
         // The link holder still can't reach the owner routes.
         expect((await api('GET', `/api/workspace/artifacts/${PAGE}`, { user: OTHER_USER })).status).toBe(404);
 
@@ -2413,7 +2424,7 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
         expect(afterRestore.status).toBe(200);
         const v1LinkView = await viewOnContentOrigin(((await afterRestore.json()) as { url: string }).url);
         expect(v1LinkView.status).toBe(200);
-        expect(await v1LinkView.text()).toBe(HTML_V1);
+        guarded(await v1LinkView.text(), 'Status', 'All systems go (v1).');
 
         // 14. Link off: the code is dead, and a dead link is the same 404 as a wrong one.
         const off = await api('POST', `/api/workspace/artifacts/${PAGE}/link`, {
