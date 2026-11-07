@@ -28,6 +28,7 @@
     { "path": "../credentials-admin-routes" },
     { "path": "../skills" },
     { "path": "../skills-parser" },
+    { "path": "../frame-guard" },
     { "path": "../routines" },
     { "path": "../routines-admin-routes" },
     { "path": "../routines-contract" },

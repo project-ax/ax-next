@@ -27,6 +27,7 @@
     "@ax/core": "workspace:*",
     "@ax/routines-contract": "workspace:*",
     "@ax/credentials": "workspace:*",
+    "@ax/frame-guard": "workspace:*",
     "@ax/http-server": "workspace:*",
     "@ax/ipc-protocol": "workspace:*",
     "@ax/routines": "workspace:*",

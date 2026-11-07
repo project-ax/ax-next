@@ -116,6 +116,11 @@ COPY . .
 # at boot whenever open mode is on (`skills.allowUserInstalled: true`, the
 # chart default). Enforced by presets/k8s image-asset-packaging.test.ts.
 #
+# `pnpm --filter @ax/frame-guard build` is the same story again: its build
+# script runs tsc THEN copies frame-guard.js into dist/. FRAME_GUARD_SOURCE
+# reads that file at import time, so without this line the host (a prod dep
+# of @ax/cli through @ax/attachments) crashes on import with ENOENT.
+#
 # `pnpm deploy --prod --legacy /tmp/deploy` stamps a self-contained tree
 # with only the prod deps of @ax/cli resolved + copied in. channel-web's
 # `files: ["dist", "dist-web"]` brings the SPA bundle along. The --legacy
@@ -127,6 +132,7 @@ RUN pnpm install --frozen-lockfile \
  && pnpm --filter @ax/cli build \
  && pnpm --filter @ax/channel-web build \
  && pnpm --filter @ax/preset-k8s build \
+ && pnpm --filter @ax/frame-guard build \
  && pnpm --filter @ax/cli deploy --prod --legacy /tmp/deploy
 
 # -----------------------------------------------------------------------------
