@@ -27,6 +27,9 @@ export interface HttpRequest {
    * `http`, never an error. It is the same decision that sets cookie
    * `Secure`, so a handler building absolute URLs from it always agrees
    * with the cookies it sets. Read this; never re-read `X-Forwarded-Proto`.
+   * It is for building URLs and cookie flags, not for authorization: with
+   * proxy trust on, a proxy that appends to `X-Forwarded-Proto` rather than
+   * overwriting it leaves the first hop client-chosen.
    */
   readonly protocol: 'http' | 'https';
   /**

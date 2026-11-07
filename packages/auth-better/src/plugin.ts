@@ -757,7 +757,10 @@ async function forwardToBetterAuth(
 
   if (box.refused === true) {
     // Only when the 400 was actually served: over the limit, Better Auth
-    // answered 429 and nothing is written, so the limiter bounds this line.
+    // answered 429 and nothing is written. That bounds this line per client
+    // per path only: the limiter keys on ip|path and the refusal runs before
+    // routing, so a client rotating the path under /auth/* gets a fresh bucket
+    // (and a line) each time, as a throwing Host did before.
     // Code-only, like the line above: never the Host value, the path or the query.
     process.stderr.write(
       `[ax/auth-better] bad request on ${req.method} ${AUTH_ROUTE} {"code":"malformed-host"}\n`,

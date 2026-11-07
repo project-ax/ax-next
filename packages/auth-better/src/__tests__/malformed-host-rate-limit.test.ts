@@ -37,21 +37,45 @@ import { requestWithHost } from './support/request-with-host.js';
 // fallback (127.0.0.1) for all of them.
 // ---------------------------------------------------------------------------
 
-const { queries } = vi.hoisted(() => ({ queries: [] as string[] }));
+const { queries, barrier } = vi.hoisted(() => ({
+  queries: [] as string[],
+  // When `size` > 0, Better Auth's handler holds each call until `size` calls
+  // have entered it, then lets them all go. That forces concurrent requests to
+  // overlap between forwardToBetterAuth writing its box and the refuse plugin
+  // reading it. Without it nothing in that stretch waits on I/O, so each
+  // request finishes before the next starts, and a box shared across requests
+  // would still pass (MEASURED by review).
+  barrier: { size: 0, held: [] as Array<() => void> },
+}));
 
 vi.mock('better-auth', async (importOriginal) => {
   const actual = await importOriginal<typeof import('better-auth')>();
   type Options = Parameters<typeof actual.betterAuth>[0];
   return {
     ...actual,
-    betterAuth: (o: Options) =>
-      actual.betterAuth({
+    betterAuth: (o: Options) => {
+      const built = actual.betterAuth({
         ...o,
         advanced: {
           ...o.advanced,
           database: { ...o.advanced?.database, validateSchema: false },
         },
-      }),
+      });
+      const inner = built.handler;
+      return Object.assign(built, {
+        handler: async (r: Request) => {
+          if (barrier.size > 0) {
+            await new Promise<void>((go) => {
+              barrier.held.push(go);
+              if (barrier.held.length >= barrier.size) {
+                for (const release of barrier.held.splice(0)) release();
+              }
+            });
+          }
+          return inner(r);
+        },
+      });
+    },
   };
 });
 
@@ -159,7 +183,7 @@ describe('@ax/auth-better: a malformed Host is a counted 400 (TASK-1052)', () =>
     for (const a of result.slice(0, 3)) {
       expect(JSON.parse(a.body)).toEqual({ error: 'malformed-host' });
     }
-    // One line per 400 actually served: the limiter bounds the log volume.
+    // One line per 400 actually served: a 429 writes none (bounded per client per path).
     expect(authLines).toEqual([
       { via: 'stderr', line: BAD_REQUEST_LINE },
       { via: 'stderr', line: BAD_REQUEST_LINE },
@@ -218,6 +242,9 @@ describe('@ax/auth-better: a malformed Host is a counted 400 (TASK-1052)', () =>
 
   it('a refusal never leaks into a concurrent request', async () => {
     const getSession = () => statusOf(fetch(`http://127.0.0.1:${port}/auth/get-session`));
+    // All four are inside Better Auth's handler, boxes written, before any of
+    // them reaches the refuse plugin.
+    barrier.size = 4;
     const { result, authLines } = await captureOutput(() =>
       Promise.all([
         requestWithHost(port, { method: 'GET', path: '/auth/get-session', host: 'marker six' }).then(
@@ -227,7 +254,9 @@ describe('@ax/auth-better: a malformed Host is a counted 400 (TASK-1052)', () =>
         getSession(),
         getSession(),
       ]),
-    );
+    ).finally(() => {
+      barrier.size = 0;
+    });
     // With no cookie, Better Auth answers `null` with a 200.
     expect(result).toEqual([400, 200, 200, 200]);
     expect(authLines).toEqual([

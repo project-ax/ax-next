@@ -49,8 +49,8 @@ Planning settled this (decisions rows in brackets). MEASURED means a probe ran o
 1. **Legitimate Host shapes must never be refused:** a port, an IPv6 literal, uppercase, an underscore (compose-style service names), punycode. Pinned by Task 2's `ACCEPTED` table.
 2. **An empty Host** (an authority-less request, which RFC 9110 allows) means `localhost`, not a 400, and must not move the path. Today it does: host `auth`, path `/x`. Pinned by Task 2's unit table and its integration test.
 3. **Proxy trust on with a multi-hop or odd-case header** (`HTTPS, http`) means `https`, and garbage means `http`, the same as cookie `Secure`. Pinned by Task 1's table.
-4. **A refused request's flag never leaks into a concurrent one.** Pinned by Task 3 test 4.
-5. **Log volume is bounded by the limiter.** A malformed request answered 429 writes no line. Pinned by Task 3 test 1 (four malformed requests, exactly three lines).
+4. **A refused request's flag never leaks into a concurrent one.** Pinned by Task 3 test 4, which holds all four requests at a barrier inside Better Auth's handler so they overlap between writing the box and the plugin reading it. (Review found the first version didn't overlap, so a shared box passed it.)
+5. **Log volume is bounded by the limiter, per client per path.** A malformed request answered 429 writes no line. The limiter keys on `ip|path` and the refusal runs before routing, so rotating the path under `/auth/*` starts fresh buckets (no worse than before, when every throwing Host wrote a line). Pinned by Task 3 test 1 (four malformed requests, exactly three lines).
 
 Known and not handled here: Better Auth's limiter keys on the client-controlled `X-Forwarded-For` (follow-up (a)).
 

@@ -158,6 +158,6 @@ describe('@ax/auth-better: the URL Better Auth sees (TASK-1052)', () => {
     // With it on, Better Auth would read a client's X-Forwarded-Proto again
     // (`getBaseURL`), around http-server's proxy-trust decision.
     expect(configs.length).toBeGreaterThan(0);
-    expect(configs.at(-1)?.advanced?.trustedProxyHeaders).not.toBe(true);
+    expect(configs.at(-1)?.advanced?.trustedProxyHeaders).toBeFalsy();
   });
 });
