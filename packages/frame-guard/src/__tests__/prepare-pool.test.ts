@@ -56,6 +56,15 @@ describe('a page goes to the worker and comes back as bytes', () => {
     expect(await preparer().prepare('refuse:too_deep')).toEqual({ ok: false, reason: 'too_deep' });
   });
 
+  it('leaves no timer behind once the page is answered (the deadline is for a page that is not)', async () => {
+    const p = preparer({ deadlineMs: 60_000 });
+    await p.prepare('echo:warm'); // the worker is started, and any timers it needs exist
+    const timers = (): number => process.getActiveResourcesInfo().filter((r) => r === 'Timeout').length;
+    const before = timers();
+    await p.prepare('echo:x');
+    expect(timers()).toBe(before);
+  });
+
   it('prepares one page at a time, in the order they came', async () => {
     const p = preparer();
     const pages = await Promise.all([p.prepare('window:120'), p.prepare('window:10'), p.prepare('window:10')]);
@@ -85,6 +94,17 @@ describe('a worker that is held, out of memory, or gone', () => {
     const after = await p.prepare('echo:after');
     expect(said(after)).toMatch(/:after$/);
     expect(thread(after)).not.toBe(before);
+  });
+
+  it('really ends the worker it gives up on: nothing is left spinning', async () => {
+    // A worker that was "ended" but still runs would hold a core for good. This process's CPU time is the sum of
+    // its threads', so a spinning one shows as most of a second of CPU in a second of waiting.
+    const p = preparer({ deadlineMs: 100 });
+    expect(await p.prepare('spin:')).toEqual({ ok: false, reason: 'worker_timeout' });
+    const before = process.cpuUsage();
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    const used = process.cpuUsage(before);
+    expect((used.user + used.system) / 1000).toBeLessThan(150);
   });
 
   it('answers a page that runs the worker out of memory as that, and the process, and the next page, are fine', async () => {
