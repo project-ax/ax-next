@@ -1,5 +1,4 @@
 import { randomBytes } from 'node:crypto';
-import { format } from 'node:util';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   DummyDriver,
@@ -10,6 +9,7 @@ import {
 } from 'kysely';
 import { createTestHarness, type TestHarness } from '@ax/test-harness';
 import { createHttpServerPlugin } from '@ax/http-server';
+import { captureOutput } from './support/capture-output.js';
 
 // ---------------------------------------------------------------------------
 // TASK-1047: when /auth/* fails before Better Auth can answer, the stderr line
@@ -17,9 +17,8 @@ import { createHttpServerPlugin } from '@ax/http-server';
 // codes. Never the request path, the query or the error's message.
 //
 // The path can carry a capability: Better Auth mounts
-// `GET /reset-password/:token`. The message is no safer. Better Auth's errors
-// can echo request fields, and Node's `new Request` TypeError quotes the whole
-// URL.
+// `GET /reset-password/:token`. The message is no safer: Better Auth's errors
+// can echo request fields, the URL among them.
 //
 // No Docker, on purpose. Better Auth is mocked to throw, so a request never
 // touches the database. Init only needs the migration and the provider load to
@@ -93,47 +92,6 @@ afterAll(async () => {
   }
 });
 
-interface Captured {
-  /** Every write, from every channel, one entry per write. */
-  output: string[];
-  /** The auth-better lines, each tagged with the channel it went to. */
-  authLines: Array<{ via: 'stderr' | 'stdout' | 'console'; line: string }>;
-}
-
-/**
- * Everything written while `run` is in flight: stderr, stdout (the core
- * logger's channel) and the console. vitest gives its workers a console of its
- * own that never calls process.stdout/stderr.write, so a `console.error(err)`
- * would slip past the two stream spies unless the console is captured too.
- */
-async function captureOutput<T>(run: () => Promise<T>): Promise<{ result: T } & Captured> {
-  const output: string[] = [];
-  const authLines: Captured['authLines'] = [];
-  const push = (via: 'stderr' | 'stdout' | 'console', text: string): void => {
-    output.push(text);
-    if (text.startsWith('[ax/auth-better]')) authLines.push({ via, line: text });
-  };
-  const recordTo = (via: 'stderr' | 'stdout') =>
-    ((chunk: unknown) => {
-      push(via, String(chunk));
-      return true;
-    }) as typeof process.stderr.write;
-  const spies = [
-    vi.spyOn(process.stderr, 'write').mockImplementation(recordTo('stderr')),
-    vi.spyOn(process.stdout, 'write').mockImplementation(recordTo('stdout')),
-    ...(['log', 'info', 'warn', 'error', 'debug'] as const).map((method) =>
-      vi.spyOn(console, method).mockImplementation((...args: unknown[]) => {
-        push('console', format(...args));
-      }),
-    ),
-  ];
-  try {
-    return { result: await run(), output, authLines };
-  } finally {
-    for (const spy of spies) spy.mockRestore();
-  }
-}
-
 /** The shape of a real reset link: the token in the path, a callback in the query. */
 function resetLink(): string {
   return `${baseUrl}/auth/reset-password/${TOKEN}?callbackURL=%2F`;
@@ -159,18 +117,18 @@ describe('@ax/auth-better: the /auth/* handler-error line (TASK-1047)', () => {
     expect(output.join('')).not.toContain('PRIVATE-MESSAGE');
   });
 
-  it('a malformed X-Forwarded-Proto (our Request build throws, the URL in its message) logs the same route label', async () => {
+  it('a malformed X-Forwarded-Proto no longer breaks our URL build: the request reaches Better Auth', async () => {
     const { result, output, authLines } = await captureOutput(() =>
       fetchResetLink({ headers: { 'x-forwarded-proto': 'a b' } }),
     );
     expect(result).toEqual({ status: 500, body: { error: 'auth-handler-failed' } });
-    expect(authLines).toHaveLength(1);
-    const { via, line } = authLines[0]!;
-    expect(via).toBe('stderr');
-    const prefix = '[ax/auth-better] handler error on GET /auth/* ';
-    expect(line.startsWith(prefix), `line: ${line}`).toBe(true);
-    // Node's own TypeError. Its cause codes are a Node detail, so only the name is pinned.
-    expect(JSON.parse(line.slice(prefix.length))).toMatchObject({ name: 'TypeError' });
+    // The mocked Better Auth's own throw, not a TypeError from building the Request.
+    expect(authLines).toEqual([
+      {
+        via: 'stderr',
+        line: '[ax/auth-better] handler error on GET /auth/* {"code":"57P01","name":"Error"}\n',
+      },
+    ]);
     expect(output.join('')).not.toContain(TOKEN);
   });
 });

@@ -413,7 +413,9 @@ async function handle(
   const url = new URL(req.url ?? '/', 'http://http-server.local');
   const path = url.pathname;
   const headers = lowercaseHeaders(req.headers);
-  const cookieEnv: CookieEnv = { isSecureRequest: deriveSecure(req, headers, trustProxy) };
+  // Decided once: the handler's `req.protocol` and cookie `Secure` share it.
+  const protocol = deriveSecure(req, headers, trustProxy) ? 'https' : 'http';
+  const cookieEnv: CookieEnv = { isSecureRequest: protocol === 'https' };
 
   const ctx = makeAgentContext({
     sessionId: 'http-server',
@@ -484,6 +486,7 @@ async function handle(
     method,
     path,
     rawPath,
+    protocol,
     query,
     params: matched.params,
     headers,

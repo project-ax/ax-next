@@ -30,12 +30,13 @@ import type {
   User,
 } from './types.js';
 import { runAuthBetterMigration, type AuthBetterDatabase } from './migrations.js';
+import { betterAuthUrl } from './better-auth-url.js';
 import {
   createBetterAuthHandler,
   type HandlerHandle,
   type ProviderRow,
 } from './handler.js';
-import { sessionTokenALS } from './session-bridge.js';
+import { sessionTokenALS, type AuthRequestBox } from './session-bridge.js';
 import {
   createProvidersStore,
   type CredentialsEnvelope,
@@ -690,8 +691,9 @@ function rowToUser(row: {
 //
 // The /auth/* splat is registered for every method we expect better-auth
 // to route. The adapter:
-//   1. Builds a fetch.Request from HttpRequest (URL = path + query, body
-//      = req.body when present, headers as-is).
+//   1. Builds a fetch.Request from HttpRequest (URL = `betterAuthUrl(req)`:
+//      http-server's scheme, the Host header when well-formed, the path and
+//      the query; body = req.body when present, headers as-is).
 //   2. Invokes handle.current()(webRequest) → fetch.Response.
 //   3. Translates the Response back: status, every header (including
 //      multi-value Set-Cookie), and the raw body bytes.
@@ -712,13 +714,7 @@ async function forwardToBetterAuth(
   res: HttpResponse,
   bridge: BridgeOpts,
 ): Promise<void> {
-  // Synthesize an absolute URL — better-auth's internal router parses
-  // it via WHATWG URL. Hostname doesn't matter; better-auth keys off
-  // the pathname + search.
-  const host = req.headers['host'] ?? 'localhost';
-  const proto = req.headers['x-forwarded-proto'] ?? 'http';
-  const queryString = serializeQuery(req.query);
-  const url = `${proto}://${host}${req.path}${queryString.length > 0 ? `?${queryString}` : ''}`;
+  const { url, malformedHost } = betterAuthUrl(req);
 
   // Fetch.Request rejects bodies on GET (and HEAD, which @ax/http-server
   // doesn't expose anyway). Pass body only when there's something to send.
@@ -732,30 +728,43 @@ async function forwardToBetterAuth(
   }
 
   // Run the better-auth call inside the ALS so session.create.after
-  // (in handler.ts) can write the minted token into box.token.
-  const box: { token?: string } = {};
+  // (in handler.ts) can write the minted token into box.token, and the
+  // refuse plugin (also handler.ts) can answer a malformed Host with a 400
+  // after Better Auth's rate limiter has counted it.
+  const box: AuthRequestBox = malformedHost ? { malformedHost: true } : {};
   let webResponse: Response;
   try {
     webResponse = await sessionTokenALS.run(box, () => handle.current()(new Request(url, init)));
   } catch (err) {
-    // The request failed before Better Auth could answer it. Two things land
-    // here: Better Auth failing before it routes (adapter init, base-URL or
-    // origin resolution), or our own `new Request(url, init)` throwing on a
-    // malformed `Host` or `X-Forwarded-Proto` header. An endpoint's own error
-    // never does, because Better Auth's router answers it itself (an APIError
-    // with its own status, anything else with a 500).
+    // The request failed before Better Auth could answer it: Better Auth
+    // failing before it routes (adapter init, base-URL or origin resolution).
+    // An endpoint's own error never lands here, because Better Auth's router
+    // answers it itself (an APIError with its own status, anything else with
+    // a 500).
     //
     // The line names the route as registered, never the request path. Better
     // Auth mounts `GET /reset-password/:token`, so once `sendResetPassword` is
     // configured, a failing reset link would write a live token here. It
     // carries the failure's codes, never its message: Better Auth's errors can
-    // echo state, email or callback-URL params, and `new Request` quotes the
-    // whole URL. The client gets a bare 500 either way (TASK-1047).
+    // echo state, email or callback-URL params. The client gets a bare 500
+    // either way (TASK-1047).
     process.stderr.write(
       `[ax/auth-better] handler error on ${req.method} ${AUTH_ROUTE} ${JSON.stringify(faultLogFields(err))}\n`,
     );
     res.status(500).json({ error: 'auth-handler-failed' });
     return;
+  }
+
+  if (box.refused === true) {
+    // Only when the 400 was actually served: over the limit, Better Auth
+    // answered 429 and nothing is written. That bounds this line per client
+    // per path only: the limiter keys on ip|path and the refusal runs before
+    // routing, so a client rotating the path under /auth/* gets a fresh bucket
+    // (and a line) each time, as a throwing Host did before.
+    // Code-only, like the line above: never the Host value, the path or the query.
+    process.stderr.write(
+      `[ax/auth-better] bad request on ${req.method} ${AUTH_ROUTE} {"code":"malformed-host"}\n`,
+    );
   }
 
   res.status(webResponse.status);
@@ -834,14 +843,6 @@ function readSetCookies(h: Headers): string[] {
   }
   const single = h.get('set-cookie');
   return single === null ? [] : [single];
-}
-
-function serializeQuery(query: Record<string, string>): string {
-  const pairs: string[] = [];
-  for (const [k, v] of Object.entries(query)) {
-    pairs.push(`${encodeURIComponent(k)}=${encodeURIComponent(v)}`);
-  }
-  return pairs.join('&');
 }
 
 // ---------------------------------------------------------------------------
