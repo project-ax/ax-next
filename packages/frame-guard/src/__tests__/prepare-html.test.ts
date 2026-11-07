@@ -533,6 +533,15 @@ describe('failing closed', () => {
     expect(verdict('<svg>'.repeat(8000))).toBe('too_deep');
   });
 
+  it('also refuses a TREE that is deeper than the stack of open elements ever was: the adoption agency nests', () => {
+    // Each copy of this leaves the stack one shorter than the tree is deep, and they add up: 110 copies are a
+    // stack of 442 open elements (under the cap, so the parse is not stopped) and a tree 552 deep, which only
+    // a look at the finished tree can see. 100 copies, a tree of 502, are fine.
+    const copy = '<a href=1><table><em><a><td></a>';
+    expect(verdict(copy.repeat(100))).toBe('served');
+    expect(verdict(copy.repeat(110))).toBe('too_deep');
+  });
+
   it('draws the line at the depth browsers stop nesting at (html and body count)', () => {
     // 510 divs + html + body = 512 open elements; one more is past the cap.
     expect(verdict(nested('<div>', '</div>', 510))).toBe('served');

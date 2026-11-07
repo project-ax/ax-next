@@ -74,6 +74,8 @@ const fosterParented = (bytes: number): string => repeat('<div>x</div>', bytes, 
 /** The same with void elements, and with text between them: every one is a search for where the table is. */
 const fosterParentedInputs = (bytes: number): string => repeat('<input>', bytes, '<table>');
 const fosterParentedText = (bytes: number): string => repeat('a<b></b>', bytes, '<table>');
+/** Text and a void element, over and over: half of the searches are for where to put text. */
+const fosterParentedTextOnly = (bytes: number): string => repeat('a<br>', bytes, '<table>');
 const nestedTables = (bytes: number): string => repeat('<table><tr><td>', bytes);
 const nestedTemplates = (bytes: number): string => repeat('<template>', bytes);
 /** `<pre>` is a block, so each one scans the whole stack for an open paragraph: 100 s for 1 MiB in plain parse5. */
@@ -176,14 +178,16 @@ describe('other shapes that cost parse5 minutes, at the 4 MiB cap', () => {
   // Each of these was measured in plain parse5 before the fix (the comment above says what). Where a
   // small copy is already slow in plain parse5 it is run first, so a regression fails in about a second
   // instead of hanging the run on the full size.
-  const SHAPES: Array<{ name: string; make: (bytes: number) => string; reason: string; canary: boolean }> = [
-    { name: 'one tag with thousands of attributes', make: attributeFlood, reason: 'too_many_attrs', canary: true },
+  const SHAPES: Array<{ name: string; make: (bytes: number) => string; reason: string; canary: boolean | number }> = [
+    // (A `canary` that is a number is the size of the small copy, where 1/32 of the cap is not slow enough to tell.)
+    { name: 'one tag with thousands of attributes', make: attributeFlood, reason: 'too_many_attrs', canary: CAP / 16 },
     { name: '<body> repeated, each with new attributes', make: bodyAttributes, reason: 'too_many_attrs', canary: true },
     { name: '<body x> repeated 500,000 times after 250 attributes on the first (served: it is linear)', make: bodyRepeated, reason: 'served', canary: false },
     { name: '<a><div>x</a> repeated (adoption agency)', make: adoptionAgency, reason: 'too_deep', canary: true },
     { name: 'table content moved in front of the table', make: fosterParented, reason: 'too_many_nodes', canary: false },
     { name: '...void elements, one search for the table each', make: fosterParentedInputs, reason: 'too_many_nodes', canary: false },
     { name: '...text between elements, one search for the table each', make: fosterParentedText, reason: 'too_many_nodes', canary: false },
+    { name: '...text and void elements, half the searches for text', make: fosterParentedTextOnly, reason: 'too_many_nodes', canary: false },
     { name: '<table><tr><td> nested', make: nestedTables, reason: 'too_deep', canary: true },
     { name: '<template> nested', make: nestedTemplates, reason: 'too_deep', canary: true },
     { name: '<pre> nested', make: nestedPre, reason: 'too_deep', canary: true },
@@ -202,8 +206,8 @@ describe('other shapes that cost parse5 minutes, at the 4 MiB cap', () => {
   });
 
   it.each(SHAPES)('$name', ({ make, reason, canary }) => {
-    if (canary) {
-      const small = bestRun(make(CAP / 32));
+    if (canary !== false) {
+      const small = bestRun(make(canary === true ? CAP / 32 : canary));
       expect(verdict(small)).toBe(reason);
       expect(small.ms).toBeLessThan(FAST_MS);
     }
