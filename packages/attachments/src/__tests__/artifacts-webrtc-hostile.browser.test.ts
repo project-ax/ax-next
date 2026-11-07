@@ -313,7 +313,11 @@ const ORDINARY_FACTS = `(() => {
 // <iframe> whose disconnectedCallback runs inside the guard's own remove() call,
 // after the guard took its mutation records, and inserts a second iframe. The
 // guard's check() then finds window.length > 0 before its observer sees the new
-// frame. The page also tries to rebuild itself afterwards: it must stay blank.
+// frame. The page logs from inside the callback (`ax-kill:reentered 1`: the bait
+// is gone, the second frame is the one child), which is how a test knows this
+// route was taken: with a broken purge the bait itself would be the live child,
+// and the page would blank all the same. The page also tries to rebuild itself
+// afterwards: it must stay blank.
 const KILL_ID = 'kill-reentrant';
 const KILL_WARNING = 'blocked: this page tried to open a nested frame';
 const killPage = (c: Canary) =>
@@ -324,6 +328,7 @@ const killPage = (c: Canary) =>
       var f = document.createElement('iframe');
       f.srcdoc = ${js(script(rtcScript(c)))};
       document.body.appendChild(f);
+      console.log('ax-kill:reentered ' + window.length);
     }
   }
   customElements.define('x-bait', Bait, { extends: 'iframe' });
@@ -1121,8 +1126,8 @@ describe.skipIf(CHROMIUM_MISSING && !IN_CI)('artifact HTML in Chromium (hostile 
         expect.soft(r.error, 'the page was examined').toBeNull();
         expect.soft(
           r.console.map((l) => l.text),
-          'the page armed the trap and sprang it (customized built-in iframes work in this Chromium)',
-        ).toEqual(expect.arrayContaining(['ax-kill:armed', 'ax-kill:inserted']));
+          "the page armed the trap, and the guard's purge sprang it: its callback ran with the bait gone and one new child",
+        ).toEqual(expect.arrayContaining(['ax-kill:armed', 'ax-kill:inserted', 'ax-kill:reentered 1']));
         expect.soft(guardWarnings(r), "the guard's console warning, once").toHaveLength(1);
         expect.soft(r.dom?.root, 'the page is blank').toBe(false);
         expect.soft(r.dom?.bodyText, 'nothing of the page is left').toBeNull();
@@ -1157,6 +1162,9 @@ describe.skipIf(CHROMIUM_MISSING && !IN_CI)('artifact HTML in Chromium (hostile 
     });
 
     if (framing === 'framed') {
+      // The shell's meta is restated here, as for every framed page in this file: channel-web's
+      // visual-hostile test pins that index.html carries `frame-src 'none'`, and @ax/static-files'
+      // tests pin its widening to `frame-src <content origin>/v/`.
       describe('a page navigating itself, framed by the app (the shell allows only <content origin>/v/)', () => {
         const canaryUrl = (probe: string) => httpUrl(canaries.get(navId(probe))!);
         /** The app page `inspect` served for this probe, on the real shell. */
