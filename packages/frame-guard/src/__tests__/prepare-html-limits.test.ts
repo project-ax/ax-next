@@ -498,7 +498,7 @@ describe('the weight it counts before it writes anything', () => {
   // The limit on what a page may come back as is checked on the tree, before the page is written, so the count
   // has to be what the serializer will really write: never lower (or a hostile page gets through it, which is
   // what the escaped quotes did), and close to it (or a good page is refused).
-  const doc = (): Tree.Document => parse('<!doctype html><title>t</title><p>x</p><script></script>', { scriptingEnabled: true });
+  const doc = (): Tree.Document => parse('<!doctype html><title>t</title><p>x</p><script></script><template></template>', { scriptingEnabled: true });
   const find = (d: Tree.Document, name: string): Tree.Element => {
     const stack: Tree.Node[] = [d];
     for (let n = stack.pop(); n !== undefined; n = stack.pop()) {
@@ -544,6 +544,12 @@ describe('the weight it counts before it writes anything', () => {
     tree.insertText(find(scripted, 'script'), value);
     expect(weighTree(scripted).weight - baseWeight).toBe(written(scripted) - baseWritten);
     expect(weighTree(scripted).escapes).toBe(0);
+
+    // In the content of a template, whose text has no element around it, so it is escaped like any text.
+    const templated = doc();
+    tree.insertText(tree.getTemplateContent(find(templated, 'template') as Tree.Template), value);
+    expect(weighTree(templated).weight - baseWeight).toBe(written(templated) - baseWritten);
+    expect(weighTree(templated).escapes).toBe(count(value, /[&<>\u00a0]/g));
   });
 
   it('is never lower than what the page comes back as, and close to it', () => {

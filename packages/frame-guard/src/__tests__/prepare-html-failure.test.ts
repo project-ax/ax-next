@@ -12,6 +12,8 @@ const hooks = vi.hoisted(() => ({
   afterParse: undefined as ((doc: unknown) => void) | undefined,
   beforeSerialize: undefined as (() => void) | undefined,
   afterSerialize: undefined as (() => void) | undefined,
+  /** Changes what the serializer wrote, as a serializer that wrote more than the tree's count said would. */
+  serialized: undefined as ((written: string) => string) | undefined,
 }));
 
 vi.mock('parse5', async (importOriginal) => {
@@ -35,7 +37,8 @@ vi.mock('parse5', async (importOriginal) => {
     serializeOuter: ((...args: Parameters<typeof real.serializeOuter>) => {
       hooks.beforeSerialize?.();
       try {
-        return real.serializeOuter(...args);
+        const written = real.serializeOuter(...args);
+        return hooks.serialized?.(written) ?? written;
       } finally {
         hooks.afterSerialize?.();
       }
@@ -56,6 +59,7 @@ beforeEach(() => {
   hooks.afterParse = undefined;
   hooks.beforeSerialize = undefined;
   hooks.afterSerialize = undefined;
+  hooks.serialized = undefined;
 });
 
 /** Adds a fresh <iframe> to the body of a parsed page, as a parse that keeps revealing one would. */
@@ -106,6 +110,15 @@ describe('prepareArtifactHtml when parse5 misbehaves', () => {
     expect(transform(page, { now, budgetMs: 100 })).toEqual({ ok: false, reason: 'too_slow' });
     // ...and with the clock where it was, the same page is fine.
     expect(transform(page, { now: () => 0, budgetMs: 100 }).ok).toBe(true);
+  });
+
+  it('checks the length of what was written, too, whatever the tree said it would be', () => {
+    // The count of the tree, made before anything is written, is meant never to be low (a test holds it to
+    // that); this is the second check, on the string itself, for the day it is.
+    hooks.serialized = (written) => `${written}${' '.repeat(200_000)}`;
+    expect(transform('<p>x</p>')).toEqual({ ok: false, reason: 'output_too_large' });
+    hooks.serialized = undefined;
+    expect(transform('<p>x</p>').ok).toBe(true);
   });
 
   it('refuses a page that keeps growing something to cut as never settling, after exactly four parses', () => {
