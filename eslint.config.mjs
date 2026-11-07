@@ -65,11 +65,14 @@
 //   @ax/frame-guard       — pure-library guard for agent-authored HTML that runs
 //                           in a sandboxed frame: the in-page script that
 //                           locks WebRTC and child browsing contexts
-//                           (FRAME_GUARD_SOURCE) plus the child-frame tag and
-//                           declarative-shadow-root attribute lists. Shared by
-//                           @ax/attachments (artifact content origin) and
-//                           @ax/channel-web (chat visuals) so the two can't
-//                           drift. No manifest, no hooks, no @ax/core dep.
+//                           (FRAME_GUARD_SOURCE), the child-frame tag and
+//                           declarative-shadow-root attribute lists, and the
+//                           server-side page transform that cuts that markup
+//                           and puts the script first in <head>
+//                           (prepareArtifactHtml). Shared by @ax/attachments
+//                           (artifact content origin) and @ax/channel-web
+//                           (chat visuals) so the two can't drift. No
+//                           manifest, no hooks, no @ax/core dep.
 //
 // These shared-import expansions of the kernel-only allowlist form the
 // documented one-way boundary between host-side plugins and sandbox-side
