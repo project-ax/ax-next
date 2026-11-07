@@ -592,6 +592,79 @@ describe('content origin: prepared-HTML cache', () => {
     });
   });
 
+  describe('how long a refusal is remembered', () => {
+    const THE_MINUTE = 60_000;
+    function clock(): { now: () => number; set: (ms: number) => void } {
+      let t = 1_000_000;
+      return { now: () => t, set: (ms) => void (t = 1_000_000 + ms) };
+    }
+
+    it('a worker_timeout is remembered for a minute and no longer: it is a wall-clock deadline, and a good page can meet a bad minute', async () => {
+      const c = clock();
+      const preparer = refusing('worker_timeout');
+      const base = await start({ htmlPreparer: preparer, htmlCache: { now: c.now } });
+      put('a', { bytes: page(1), contentKey: 'sha-held' });
+      expect((await fetch(tokenUrl(base, 'a'))).status).toBe(422);
+      c.set(THE_MINUTE - 1);
+      expect((await fetch(tokenUrl(base, 'a'))).status).toBe(422);
+      expect(preparer.asked).toBe(1); // inside the minute: not prepared again
+      c.set(THE_MINUTE);
+      expect((await fetch(tokenUrl(base, 'a'))).status).toBe(422);
+      expect(preparer.asked).toBe(2); // the minute is up: it gets another go...
+      expect((await fetch(tokenUrl(base, 'a'))).status).toBe(422);
+      expect(preparer.asked).toBe(2); // ...and is remembered for a minute from then
+    });
+
+    it('a page that meets a bad minute and is fine the next time is served, and stays served', async () => {
+      const c = clock();
+      const answers: frameGuard.PreparedPage[] = [{ ok: false, reason: 'worker_timeout' }];
+      const base = await start({
+        htmlPreparer: {
+          prepare: async (html) => answers.shift() ?? (await inThread.prepare(html)),
+          close: async () => undefined,
+        },
+        htmlCache: { now: c.now },
+      });
+      put('a', { bytes: page(1), contentKey: 'sha-bad-minute' });
+      expect((await fetch(tokenUrl(base, 'a'))).status).toBe(422);
+      c.set(THE_MINUTE);
+      expect((await fetch(tokenUrl(base, 'a'))).status).toBe(200);
+      c.set(10 * THE_MINUTE);
+      expect((await fetch(tokenUrl(base, 'a'))).status).toBe(200);
+      expect(prepare).toHaveBeenCalledTimes(1);
+    });
+
+    it.each(['too_slow', 'worker_oom', 'too_many_nodes', 'plaintext'] as const)(
+      'a refusal as %s is the page\'s and is remembered for good, however long it is since',
+      async (reason) => {
+        const c = clock();
+        const preparer = refusing(reason);
+        const base = await start({ htmlPreparer: preparer, htmlCache: { now: c.now } });
+        put('a', { bytes: page(1), contentKey: 'sha-forever' });
+        expect((await fetch(tokenUrl(base, 'a'))).status).toBe(422);
+        c.set(365 * 24 * 60 * THE_MINUTE);
+        expect((await fetch(tokenUrl(base, 'a'))).status).toBe(422);
+        expect(preparer.asked).toBe(1);
+      },
+    );
+
+    it('a refusal that has run out does not stay in the place a live one would hold', async () => {
+      const c = clock();
+      const preparer = refusing('worker_timeout');
+      const base = await start({ htmlPreparer: preparer, htmlCache: { now: c.now, maxRefusals: 2 } });
+      for (const id of ['a', 'b']) put(id, { bytes: page(1), contentKey: `sha-${id}` });
+      await (await fetch(tokenUrl(base, 'a'))).arrayBuffer();
+      await (await fetch(tokenUrl(base, 'b'))).arrayBuffer();
+      c.set(THE_MINUTE);
+      // Both have run out: each is prepared again, and each is remembered again, in the same two places.
+      await (await fetch(tokenUrl(base, 'a'))).arrayBuffer();
+      await (await fetch(tokenUrl(base, 'b'))).arrayBuffer();
+      await (await fetch(tokenUrl(base, 'a'))).arrayBuffer();
+      await (await fetch(tokenUrl(base, 'b'))).arrayBuffer();
+      expect(preparer.asked).toBe(4);
+    });
+  });
+
   it('is bounded: the 17th distinct page pushes the oldest out; a hit keeps a page fresh', async () => {
     const base = await start();
     for (let i = 0; i < 17; i++) put(`p${i}`, { bytes: page(i), contentKey: `sha-${i}` });

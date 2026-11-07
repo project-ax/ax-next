@@ -702,7 +702,9 @@ right now, try again" for a page that was turned away unseen, busy or the worker
 failed; or "can't show this page safely"; the reason goes to the log as a code, at
 warn), not the 404 a bad token gets. A refusal that is about the page is remembered
 by content hash, in a place of its own (4,096 of them) so that refusals never push a
-served page out of the sixteen. That defense is enumeration-based, and a page
+served page out of the sixteen; `worker_timeout`, a wall-clock deadline that can meet
+a starved machine, is remembered for a minute only. That defense is enumeration-based,
+and a page
 opened top-level on `/v/` can navigate itself away; the full fix is
 network-level (TASK-1065). The app shows it in an iframe
 with `sandbox="allow-scripts allow-downloads"`, never `allow-same-origin`.

@@ -79,10 +79,11 @@ export interface ContentOriginOptions {
   logger?: Logger;
   /**
    * Bounds of the prepared-HTML cache, and of the refusals kept beside it. A knob
-   * for tests: a byte bound is only visible with pages that add up to it, and the
-   * real one is 32 MiB.
+   * for tests: a byte bound is only visible with pages that add up to it (the real
+   * one is 32 MiB), and the minute `worker_timeout` is remembered for, and the clock
+   * that measures it, are things a test has to be able to move.
    */
-  htmlCache?: { maxEntries?: number; maxBytes?: number; maxRefusals?: number };
+  htmlCache?: { maxEntries?: number; maxBytes?: number; maxRefusals?: number; briefMs?: number; now?: () => number };
   /**
    * What prepares HTML pages. Default: a worker thread of its own, closed with
    * the origin, so a page that costs the transform seconds, or all of its memory,
@@ -141,6 +142,8 @@ const HTML_CACHE_MAX_BYTES = 32 * 1024 * 1024;
  * entries, was that), nor get a page prepared twice for the price of seventeen views.
  */
 const REFUSALS_MAX_ENTRIES = 4096;
+/** How long a refusal that may only have met a bad minute is remembered (see REFUSALS). */
+const BRIEFLY_MS = 60_000;
 
 /**
  * What the viewer is told when a page is refused: one line, the same every time,
@@ -169,24 +172,28 @@ export const HTML_TRY_AGAIN_BODY = "AX can't show this page right now. Try again
 type RefusalCode = 'html_too_large' | PrepareRefusal | PoolRefusal;
 
 /**
- * For each reason: which line the viewer is told, and whether the refusal is
+ * For each reason: which line the viewer is told, and how long the refusal is
  * remembered with the page. A record, so a reason added to @ax/frame-guard does
  * not compile until it has an answer here.
  *
- * A reason about the page is remembered (the same bytes are refused the same
- * way, and the transform running on them again is all a hostile page asks for);
- * that includes `too_slow` and the worker's `worker_timeout` and `worker_oom`,
- * which are measured on CPU time and on a heap that does not depend on what else
- * the machine is doing. `busy` and `worker_failed` are about the moment, not the
- * page, and the next view should try again.
+ * A reason about the page is remembered for good: the same bytes are refused the
+ * same way, and the transform running on them again is all a hostile page asks
+ * for. `too_slow` is measured on the thread's CPU time and `worker_oom` on the
+ * worker's heap, so both are the page's. `worker_timeout` is not: it is a deadline
+ * on the WALL clock, six seconds from the moment the page was handed over, so it
+ * includes the worker's start-up and whatever CPU the machine took from the worker
+ * meanwhile, and a good page can meet a starved minute. It is remembered for a
+ * minute: long enough that a worker that really is held is not held again by every
+ * view, short enough that a page refused on a bad minute gets another go. `busy`
+ * and `worker_failed` are about the moment, not the page, and are not remembered.
  */
-const REFUSALS: Record<RefusalCode, { line: 'unsafe' | 'too_large' | 'later'; remembered: 'always' | 'never' }> = {
+const REFUSALS: Record<RefusalCode, { line: 'unsafe' | 'too_large' | 'later'; remembered: 'always' | 'briefly' | 'never' }> = {
   html_too_large: { line: 'too_large', remembered: 'always' },
   too_many_nodes: { line: 'too_large', remembered: 'always' },
   too_much_work: { line: 'too_large', remembered: 'always' },
   too_slow: { line: 'too_large', remembered: 'always' },
   output_too_large: { line: 'too_large', remembered: 'always' },
-  worker_timeout: { line: 'too_large', remembered: 'always' },
+  worker_timeout: { line: 'too_large', remembered: 'briefly' },
   worker_oom: { line: 'too_large', remembered: 'always' },
   nul: { line: 'unsafe', remembered: 'always' },
   cr_entity: { line: 'unsafe', remembered: 'always' },
@@ -331,10 +338,12 @@ export async function startContentOrigin(o: ContentOriginOptions): Promise<Conte
   // re-inserted last, the oldest goes first.
   const htmlCache = new Map<string, PreparedHtml>();
   let htmlCacheBytes = 0;
-  const refusals = new Map<string, RefusalCode>();
+  const refusals = new Map<string, { code: RefusalCode; until: number }>();
   const maxEntries = o.htmlCache?.maxEntries ?? HTML_CACHE_MAX_ENTRIES;
   const maxBytes = o.htmlCache?.maxBytes ?? HTML_CACHE_MAX_BYTES;
   const maxRefusals = o.htmlCache?.maxRefusals ?? REFUSALS_MAX_ENTRIES;
+  const briefMs = o.htmlCache?.briefMs ?? BRIEFLY_MS;
+  const now = o.htmlCache?.now ?? Date.now;
   const cost = (p: PreparedHtml): number => ('html' in p ? p.html.byteLength : 0);
   /** Pages being prepared now, by key: a view of the same bytes while one is going waits for it, and does not start another. */
   const preparing = new Map<string, Promise<PreparedHtml>>();
@@ -342,8 +351,9 @@ export async function startContentOrigin(o: ContentOriginOptions): Promise<Conte
   /** Only after a miss, and only by the one view preparing that key (`preparing`), so the key is not in either place already. */
   function remember(key: string, out: PreparedHtml): void {
     if ('refusal' in out) {
-      if (REFUSALS[out.refusal].remembered === 'never') return;
-      refusals.set(key, out.refusal);
+      const how = REFUSALS[out.refusal].remembered;
+      if (how === 'never') return;
+      refusals.set(key, { code: out.refusal, until: how === 'always' ? Infinity : now() + briefMs });
       for (const oldest of refusals.keys()) {
         if (refusals.size <= maxRefusals) break;
         refusals.delete(oldest);
@@ -360,7 +370,7 @@ export async function startContentOrigin(o: ContentOriginOptions): Promise<Conte
     }
   }
 
-  /** What is remembered of a key: its page, or its refusal. */
+  /** What is remembered of a key: its page, or its refusal if it has not run out. */
   function recall(key: string): PreparedHtml | undefined {
     const page = htmlCache.get(key);
     if (page !== undefined) {
@@ -371,8 +381,9 @@ export async function startContentOrigin(o: ContentOriginOptions): Promise<Conte
     const known = refusals.get(key);
     if (known === undefined) return undefined;
     refusals.delete(key);
+    if (known.until <= now()) return undefined;
     refusals.set(key, known);
-    return { refusal: known };
+    return { refusal: known.code };
   }
 
   async function prepareFresh(served: ServedArtifact): Promise<PreparedHtml> {
