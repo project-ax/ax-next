@@ -4,6 +4,7 @@ import type { Logger } from '@ax/core';
 import * as frameGuard from '@ax/frame-guard';
 import {
   HTML_REFUSED_BODY,
+  HTML_TOO_LARGE_BODY,
   MAX_HTML_TRANSFORM_BYTES,
   startContentOrigin,
   type ContentOriginOptions,
@@ -185,9 +186,9 @@ describe('content origin: HTML goes through prepareArtifactHtml', () => {
     expect((await fetch(tokenUrl(base, 'good'))).status).toBe(200);
   });
 
-  it('every reason answers with the same status, body and headers, so the viewer cannot tell them apart; the log says which', async () => {
+  it('every reason for a page that is not safe answers with the same status, body and headers, so the viewer cannot tell them apart; the log says which', async () => {
     const base = await start();
-    // One page per cause the transform can refuse for, plus the origin's own cap.
+    // One page per cause the transform can refuse for that is about what the page does, not how big it is.
     const causes: Array<[string, Uint8Array]> = [
       ['plaintext', enc('<plaintext>x')],
       ['too_deep', enc('<div>'.repeat(600))],
@@ -195,7 +196,6 @@ describe('content origin: HTML goes through prepareArtifactHtml', () => {
       ['cr_entity', enc('x&#13;y')],
       ['quirks', enc('<!DOCTYPE html foo><p>x</p>')],
       ['too_many_attrs', enc(`<div${Array.from({ length: 300 }, (_, i) => ` a${i}`).join('')}>`)],
-      ['html_too_large', new Uint8Array(MAX_HTML_TRANSFORM_BYTES + 1).fill(0x61)],
     ];
     const answers: string[] = [];
     for (const [code, bytes] of causes) {
@@ -204,10 +204,49 @@ describe('content origin: HTML goes through prepareArtifactHtml', () => {
       answers.push(JSON.stringify([r.status, await r.text(), [...r.headers].filter(([k]) => k !== 'date' && k !== 'content-length')]));
     }
     expect(new Set(answers).size).toBe(1);
-    expect(JSON.parse(answers[0]!)[0]).toBe(422);
+    expect(JSON.parse(answers[0]!).slice(0, 2)).toEqual([422, HTML_REFUSED_BODY]);
     // The log is where the reason is: one warn per refusal, its code, and nothing else about it.
     expect(lines.map((l) => (JSON.parse(l) as [string, string, { code: string }])[2].code)).toEqual(causes.map(([code]) => code));
     for (const l of lines) expect(JSON.parse(l)[0]).toBe('warn');
+  });
+
+  it('every reason for a page that is too big or too heavy answers with the second line, and otherwise the same status and headers; the log says which', async () => {
+    const base = await start();
+    const MARK = 'SECRETPAGECONTENT';
+    // The real causes the transform has for it, by a page that causes each, and the origin's own cap.
+    const real: Array<[string, Uint8Array]> = [
+      ['html_too_large', new Uint8Array(MAX_HTML_TRANSFORM_BYTES + 1).fill(0x61)],
+      ['too_many_nodes', enc(`<p>${MARK}</p>`.repeat(80_000))],
+      ['output_too_large', enc(`<p title='${'"'.repeat(1024 * 1024)}'>${MARK}</p>`)],
+    ];
+    const answers: string[] = [];
+    for (const [code, bytes] of real) {
+      put(code, { bytes });
+      const r = await fetch(tokenUrl(base, code));
+      answers.push(JSON.stringify([r.status, await r.text(), [...r.headers].filter(([k]) => k !== 'date' && k !== 'content-length')]));
+    }
+    // ...and the two that are about time and work, which need a page the transform will not finish: it is told to refuse.
+    for (const reason of ['too_slow', 'too_much_work'] as const) {
+      prepare.mockImplementationOnce(() => ({ ok: false, reason }));
+      put(reason, { bytes: enc(`<p>${MARK}</p>`) });
+      const r = await fetch(tokenUrl(base, reason));
+      answers.push(JSON.stringify([r.status, await r.text(), [...r.headers].filter(([k]) => k !== 'date' && k !== 'content-length')]));
+    }
+    expect(new Set(answers).size).toBe(1);
+    expect(JSON.parse(answers[0]!).slice(0, 2)).toEqual([422, HTML_TOO_LARGE_BODY]);
+    expect(lines.map((l) => (JSON.parse(l) as [string, string, { code: string }])[2].code)).toEqual([
+      'html_too_large',
+      'too_many_nodes',
+      'output_too_large',
+      'too_slow',
+      'too_much_work',
+    ]);
+    expect(lines.join('\n')).not.toContain(MARK);
+  });
+
+  it('the two lines are fixed: they say nothing of the limit or the page', () => {
+    expect(HTML_REFUSED_BODY).toBe("AX can't show this page safely.");
+    expect(HTML_TOO_LARGE_BODY).toBe('This page is too large to preview here. Download it instead.');
   });
 
   it('HTML over the transform cap is a 422, never served as it was; at the cap it is served', async () => {
@@ -220,7 +259,7 @@ describe('content origin: HTML goes through prepareArtifactHtml', () => {
 
     const over = await fetch(tokenUrl(base, 'over'));
     expect(over.status).toBe(422);
-    expect(await over.text()).toBe(HTML_REFUSED_BODY);
+    expect(await over.text()).toBe(HTML_TOO_LARGE_BODY);
     expectBaseHeaders(over);
     expect(over.headers.get('content-security-policy')).toBe(DOWNLOAD_CSP);
     // Refused before it was parsed: the cap exists to bound the CPU.

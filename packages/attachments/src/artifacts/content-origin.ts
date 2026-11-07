@@ -45,10 +45,12 @@ import { linkBindingFor, verifyViewToken, type ViewTokenClaims } from './view-to
  *   artifact, version or bytes; wrong route for the token; a link that went
  *   off) is the same 404. A page the origin FOUND but will not serve (HTML the
  *   transform refuses, or too big for it) is a 422 with one fixed line and the
- *   download CSP, whatever the reason: the requester holds a valid token for it,
- *   so that tells them nothing they could not already see, and without it a
- *   page that rendered before would read as "not found". The reason goes to the
- *   log (warn, as a code) and nowhere else.
+ *   download CSP: the requester holds a valid token for it, so that tells them
+ *   nothing they could not already see, and without it a page that rendered
+ *   before would read as "not found". There are two lines, one for a page that is
+ *   too big or too heavy to preview (which can be downloaded instead) and one for
+ *   the rest, each the same whatever the cause within its kind. The reason goes to
+ *   the log (warn, as a code) and nowhere else.
  */
 
 export interface ServedArtifact {
@@ -124,11 +126,20 @@ const HTML_CACHE_MAX_ENTRIES = 16;
 const HTML_CACHE_MAX_BYTES = 32 * 1024 * 1024;
 
 /**
- * What the viewer is told when a page is refused, whatever the reason: one
- * line, the same every time, nothing of the page. 422, not 404: the requester's
- * token is good, and the page exists.
+ * What the viewer is told when a page is refused: one line, the same every time,
+ * nothing of the page. 422, not 404: the requester's token is good, and the page
+ * exists. There are two lines, by kind of refusal and no finer: this one, for a
+ * page that is not safe to show, and `HTML_TOO_LARGE_BODY` for one that is too big
+ * or too heavy.
  */
 export const HTML_REFUSED_BODY = "AX can't show this page safely.";
+
+/**
+ * The second line, for a page too big or too heavy to preview: it does not say
+ * which limit, and a download of the same page is its bytes (a refusal is about
+ * what renders), so it says where to go.
+ */
+export const HTML_TOO_LARGE_BODY = 'This page is too large to preview here. Download it instead.';
 
 /** Why a page was refused. The code is fixed; the message says nothing about the page. */
 class HtmlRefusal extends Error {
@@ -137,6 +148,28 @@ class HtmlRefusal extends Error {
     this.name = 'HtmlRefusal';
   }
 }
+
+/**
+ * The refusals that mean "too big or too heavy for the viewer" and not "not safe":
+ * the page is what it is, and its download is its bytes. Everything else is the
+ * first line. A record, so a reason added to @ax/frame-guard does not compile
+ * until it has been put on one side or the other.
+ */
+const TOO_LARGE: Record<'html_too_large' | PrepareRefusal, boolean> = {
+  html_too_large: true,
+  too_many_nodes: true,
+  too_much_work: true,
+  too_slow: true,
+  output_too_large: true,
+  nul: false,
+  cr_entity: false,
+  too_deep: false,
+  too_many_attrs: false,
+  plaintext: false,
+  quirks: false,
+  no_fixpoint: false,
+  parse_error: false,
+};
 
 type PreparedHtml = { html: Buffer } | { refusal: HtmlRefusal['code'] };
 
@@ -320,7 +353,8 @@ export async function startContentOrigin(o: ContentOriginOptions): Promise<Conte
       if ('refusal' in prepared) {
         logRefusal(matched.route, new HtmlRefusal(prepared.refusal));
         // The download CSP (no script, sandboxed) though the body is plain text: belt and braces.
-        sendText(res, 422, HTML_REFUSED_BODY, { 'content-security-policy': DOWNLOAD_CSP });
+        const body = TOO_LARGE[prepared.refusal] ? HTML_TOO_LARGE_BODY : HTML_REFUSED_BODY;
+        sendText(res, 422, body, { 'content-security-policy': DOWNLOAD_CSP });
         return;
       }
       send(res, 200, { 'content-type': 'text/html; charset=utf-8', 'content-security-policy': csp }, prepared.html);
