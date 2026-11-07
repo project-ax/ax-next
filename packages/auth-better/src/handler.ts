@@ -1,7 +1,32 @@
 import { betterAuth } from 'better-auth';
+import type { BetterAuthPlugin } from 'better-auth';
 import type { Kysely } from 'kysely';
 import type { AuthBetterDatabase } from './migrations.js';
 import { parseDomains, assertDomainAllowed, sessionTokenALS } from './session-bridge.js';
+
+/**
+ * Refuses a request whose Host header was malformed with a fixed 400
+ * `{"error":"malformed-host"}`. forwardToBetterAuth (plugin.ts) flags it in the
+ * request's async-local box; the client can't set or clear that flag.
+ *
+ * It answers from `onRequest` because of where better-auth 1.7.7 runs that
+ * hook: the router's `onRequest` checks disabled paths, then the schema, then
+ * the rate limiter, then each plugin's `onRequest` (`dist/api/index.mjs`). So a
+ * refused request is counted by the limiter like any other auth request, and
+ * the endpoint never runs. Over the limit, Better Auth answers its own 429 and
+ * this never runs. malformed-host-rate-limit.test.ts pins that order: a Better
+ * Auth upgrade that reorders it goes red there.
+ */
+const refuseMalformedHost: BetterAuthPlugin = {
+  id: 'ax-refuse-malformed-host',
+  onRequest: async () => {
+    const box = sessionTokenALS.getStore();
+    if (box?.malformedHost !== true) return;
+    box.refused = true;
+    // A fresh Response per refusal: a body can be read only once.
+    return { response: Response.json({ error: 'malformed-host' }, { status: 400 }) };
+  },
+};
 
 /**
  * Provider-row shape consumed by the handler factory. Mirrors the row
@@ -329,6 +354,8 @@ function build(input: HandlerInput): BuiltHandler {
       max: 30,
       storage: 'memory',
     },
+    // Runs after the limiter above, so a refused malformed Host still counts.
+    plugins: [refuseMalformedHost],
   });
 
   // better-auth eagerly resolves its database adapter inside the

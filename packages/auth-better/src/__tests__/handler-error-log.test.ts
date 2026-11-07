@@ -1,5 +1,4 @@
 import { randomBytes } from 'node:crypto';
-import { format } from 'node:util';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   DummyDriver,
@@ -10,6 +9,7 @@ import {
 } from 'kysely';
 import { createTestHarness, type TestHarness } from '@ax/test-harness';
 import { createHttpServerPlugin } from '@ax/http-server';
+import { captureOutput } from './support/capture-output.js';
 
 // ---------------------------------------------------------------------------
 // TASK-1047: when /auth/* fails before Better Auth can answer, the stderr line
@@ -91,47 +91,6 @@ afterAll(async () => {
     process.env.AX_HTTP_ALLOW_NO_ORIGINS = ORIGINAL_ALLOW_NO_ORIGINS;
   }
 });
-
-interface Captured {
-  /** Every write, from every channel, one entry per write. */
-  output: string[];
-  /** The auth-better lines, each tagged with the channel it went to. */
-  authLines: Array<{ via: 'stderr' | 'stdout' | 'console'; line: string }>;
-}
-
-/**
- * Everything written while `run` is in flight: stderr, stdout (the core
- * logger's channel) and the console. vitest gives its workers a console of its
- * own that never calls process.stdout/stderr.write, so a `console.error(err)`
- * would slip past the two stream spies unless the console is captured too.
- */
-async function captureOutput<T>(run: () => Promise<T>): Promise<{ result: T } & Captured> {
-  const output: string[] = [];
-  const authLines: Captured['authLines'] = [];
-  const push = (via: 'stderr' | 'stdout' | 'console', text: string): void => {
-    output.push(text);
-    if (text.startsWith('[ax/auth-better]')) authLines.push({ via, line: text });
-  };
-  const recordTo = (via: 'stderr' | 'stdout') =>
-    ((chunk: unknown) => {
-      push(via, String(chunk));
-      return true;
-    }) as typeof process.stderr.write;
-  const spies = [
-    vi.spyOn(process.stderr, 'write').mockImplementation(recordTo('stderr')),
-    vi.spyOn(process.stdout, 'write').mockImplementation(recordTo('stdout')),
-    ...(['log', 'info', 'warn', 'error', 'debug'] as const).map((method) =>
-      vi.spyOn(console, method).mockImplementation((...args: unknown[]) => {
-        push('console', format(...args));
-      }),
-    ),
-  ];
-  try {
-    return { result: await run(), output, authLines };
-  } finally {
-    for (const spy of spies) spy.mockRestore();
-  }
-}
 
 /** The shape of a real reset link: the token in the path, a callback in the query. */
 function resetLink(): string {

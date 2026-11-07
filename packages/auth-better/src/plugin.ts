@@ -36,7 +36,7 @@ import {
   type HandlerHandle,
   type ProviderRow,
 } from './handler.js';
-import { sessionTokenALS } from './session-bridge.js';
+import { sessionTokenALS, type AuthRequestBox } from './session-bridge.js';
 import {
   createProvidersStore,
   type CredentialsEnvelope,
@@ -714,7 +714,7 @@ async function forwardToBetterAuth(
   res: HttpResponse,
   bridge: BridgeOpts,
 ): Promise<void> {
-  const { url } = betterAuthUrl(req);
+  const { url, malformedHost } = betterAuthUrl(req);
 
   // Fetch.Request rejects bodies on GET (and HEAD, which @ax/http-server
   // doesn't expose anyway). Pass body only when there's something to send.
@@ -728,8 +728,10 @@ async function forwardToBetterAuth(
   }
 
   // Run the better-auth call inside the ALS so session.create.after
-  // (in handler.ts) can write the minted token into box.token.
-  const box: { token?: string } = {};
+  // (in handler.ts) can write the minted token into box.token, and the
+  // refuse plugin (also handler.ts) can answer a malformed Host with a 400
+  // after Better Auth's rate limiter has counted it.
+  const box: AuthRequestBox = malformedHost ? { malformedHost: true } : {};
   let webResponse: Response;
   try {
     webResponse = await sessionTokenALS.run(box, () => handle.current()(new Request(url, init)));
@@ -751,6 +753,15 @@ async function forwardToBetterAuth(
     );
     res.status(500).json({ error: 'auth-handler-failed' });
     return;
+  }
+
+  if (box.refused === true) {
+    // Only when the 400 was actually served: over the limit, Better Auth
+    // answered 429 and nothing is written, so the limiter bounds this line.
+    // Code-only, like the line above: never the Host value, the path or the query.
+    process.stderr.write(
+      `[ax/auth-better] bad request on ${req.method} ${AUTH_ROUTE} {"code":"malformed-host"}\n`,
+    );
   }
 
   res.status(webResponse.status);
