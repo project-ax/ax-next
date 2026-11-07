@@ -14,7 +14,7 @@
 //   1. The consumer strips frame-making elements and declarative shadow roots
 //      from the markup before the browser parses it. That isn't this file's
 //      job: each consumer has its own parser. CHILD_FRAME_TAGS and DSD_ATTRS
-//      (index.ts) are the lists they strip.
+//      (guard.ts) are the lists they strip.
 //   2. A MutationObserver removes frame-making elements a script inserts, and
 //      any element that carries an open shadow root (frames of this kind have
 //      no use for shadow DOM; the observer can't see inside one). It runs in a

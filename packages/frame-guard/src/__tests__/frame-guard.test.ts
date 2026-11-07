@@ -305,7 +305,7 @@ describe('axFrameGuard: child frames', () => {
     expect(guard.isKilled()).toBe(true);
   });
 
-  it('works with no options at all (the artifact page calls it that way)', async () => {
+  it('works with no options at all', async () => {
     const { win, guard } = started(undefined, (w) => {
       w.eval('document.body.appendChild(document.createElement("iframe"))');
     });
