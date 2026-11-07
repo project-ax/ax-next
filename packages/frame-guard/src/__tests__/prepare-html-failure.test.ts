@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { getHeapStatistics } from 'node:v8';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { defaultTreeAdapter as tree, html as spec, type DefaultTreeAdapterTypes as Tree } from 'parse5';
 
@@ -110,6 +111,26 @@ describe('prepareArtifactHtml when parse5 misbehaves', () => {
     expect(transform(page, { now, budgetMs: 100 })).toEqual({ ok: false, reason: 'too_slow' });
     // ...and with the clock where it was, the same page is fine.
     expect(transform(page, { now: () => 0, budgetMs: 100 }).ok).toBe(true);
+  });
+
+  it('holds the attributes that repeated <body> tags add as flat strings, not as the joins parse5 made them from: the first parse grows the heap by the text, not by 32 bytes a character', () => {
+    // 200 tags of `<body aN='...20 KB...'>`: 4 MiB of values that all end up on the first body's list. Left as parse5 builds them
+    // (a join per character) the first parse holds every one of them at once until the page is weighed, 122 MB of joins; read
+    // flat as they arrive they are garbage as the parse goes and it holds 23. (The second parse reads the same values as ONE
+    // tag, which holds them as joins until the tag ends, 128 MB: the biggest token, and not what this is about, so only the
+    // first parse is watched.)
+    let parses = 0;
+    hooks.beforeParse = () => void (parses += 1);
+    const before = getHeapStatistics().used_heap_size;
+    let peak = 0;
+    const now = (): number => {
+      if (parses === 1) peak = Math.max(peak, getHeapStatistics().used_heap_size - before);
+      return 0;
+    };
+    const page = `<!doctype html><body>${Array.from({ length: 200 }, (_, i) => `<body a${i}='${'x'.repeat(20_000)}'>`).join('')}`;
+    expect(transform(page, { now, budgetMs: 1e9 }).ok).toBe(true);
+    expect(parses).toBe(2);
+    expect(peak / (1024 * 1024)).toBeLessThan(60);
   });
 
   it('refuses a page that would come back at over 1.5 times its length before any of it is written and before a second parse', () => {

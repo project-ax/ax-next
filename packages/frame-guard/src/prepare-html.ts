@@ -751,6 +751,9 @@ function boundedAdapter(run: Run): TreeAdapter<DefaultTreeAdapterMap> {
       for (const attr of attributes) {
         if (names.has(attr.name)) continue;
         names.add(attr.name);
+        // Only the ones that are kept (one the element already has is dropped, joins and all).
+        flat(attr.name);
+        flat(attr.value);
         recipient.attrs.push(attr);
       }
       attrs(recipient.attrs.length);

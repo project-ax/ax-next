@@ -613,6 +613,23 @@ describe('the weight it counts before it writes anything', () => {
     }
   });
 
+  it('weighs the attributes that repeated <html> and <body> tags add to the first one like any other: by their escaped size, and against the limit on escapes', () => {
+    // `<body a0='...'>` again and again does not make elements; each adds an attribute to the first body's own list, which is
+    // where the weighing finds it. (The reads that make a value flat as it is added are about memory and weigh nothing.)
+    const repeated = (tag: 'body' | 'html', n: number, quotes: number): string =>
+      `<${tag}>${Array.from({ length: n }, (_, i) => `<${tag} a${i}='${'"'.repeat(quotes)}'>`).join('')}<p>x`;
+    for (const tag of ['body', 'html'] as const) {
+      // 100 tags of 1,000 quotes: 101 KB in, 600 KB out. Weighed as they are written they are past 1.5 times and the slack.
+      expect(verdict(prepareArtifactHtml(repeated(tag, 100, 1000)))).toBe('output_too_large');
+      // The same tags with few quotes come back at the size they went in.
+      expect(verdict(prepareArtifactHtml(repeated(tag, 100, 10)))).toBe('served');
+      // And every quote counts against the limit on escapes, once.
+      const fifty = repeated(tag, 50, 10); // 500
+      expect(verdict(prepareArtifactHtml(fifty, { maxEscapes: 500 }))).toBe('served');
+      expect(verdict(prepareArtifactHtml(fifty, { maxEscapes: 499 }))).toBe('output_too_large');
+    }
+  });
+
   it('counts a shared attribute again for every copy of the element, and a page that needs too many escapes is refused', () => {
     // Twenty formatting elements with five characters to escape each; every `<span>` brings them all back.
     const attributes = '&amp;'.repeat(5);

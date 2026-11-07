@@ -87,7 +87,10 @@ describe('the heap the heaviest pages need, against the one the worker is given 
   // goes: the heap it needs follows the biggest token, not the page. Measured, with that: the 1.5 times page needs under
   // 96 MB (256 to 288 before); a page of 4 MiB in tokens of 20 to 40 KB of any kind under 48; one token that is the
   // whole page (a 4 MiB script, a data URI, a tag with 200 long attributes, which is what the second pass sees of
-  // 200 repeated <body> tags) about 160, which is the joins of that one token and cannot be less. These run with well
+  // 200 repeated <body> tags) about 160 (the last, 136 to 144), which is the joins of that one token and cannot be
+  // less. (Those cannot tell whether the attributes the repeated tags add are read flat in the FIRST pass: the second
+  // holds them all as one tag either way, and the build before the reads served the page with 160 as well. That is
+  // watched in prepare-html-failure.test.ts, by what the first parse holds.) These run with well
   // over those and well under the default, so a change that brings the old figures back is seen here and not by a
   // person with a host that has ended. (A limit far below the need ends the PROCESS, which is also why they are in a child.)
   it('serves the 1.5 times page with a third of the default heap (128 MB)', { timeout: 90_000 }, () => {
