@@ -267,8 +267,8 @@ function settle(source: string): string | null {
  * html/head/body made explicit, attributes double-quoted, comments and text
  * kept as they were parsed), but it renders as before apart from what was cut
  * and two things that differ: parse5 keeps only option, optgroup, hr, script
- * and template inside a <select>, as browsers did before 2025, so a newer
- * browser's richer <select> content (a div, a button, an img) is lost; and a
+ * and template inside a <select>, while Chromium 147 keeps more (a div, a
+ * button, an img), so that content is lost; and a
  * <script> the page never closed (it ends the document) is closed, so it runs,
  * where a browser would have skipped it. No doctype is added or removed.
  * Calling it on its own output returns that output unchanged.
