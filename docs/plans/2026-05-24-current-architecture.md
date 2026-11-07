@@ -681,11 +681,19 @@ gives HTML a fixed CSP (no CSP-governed network, no forms, `frame-ancestors` =
 the app origins, `sandbox allow-scripts allow-downloads`). CSP does not cover
 WebRTC, so HTML also goes through `@ax/frame-guard`'s `prepareArtifactHtml`
 (child frames cut, a guard script that locks WebRTC injected first; chat
-visuals share the same runtime). The transform bounds its own work (parse
-depth, node, attribute and call counts, and a CPU-time budget), because it runs
-on the host's one thread on bytes an agent chose. A page it refuses, or one
-over 4 MiB, is a 422 with one fixed line (the reason goes to the log as a code,
-at warn), not the 404 a bad token gets. That defense is enumeration-based, and a page
+visuals share the same runtime). The transform runs a third-party parser over
+bytes an agent chose, so it never runs on the thread that serves requests: every
+page goes to a worker thread (`createHtmlPreparer`: one page at a time, a heap
+limit, a wall-clock deadline, a short line of waiting pages, and a busy rule), and
+the transform bounds its own work as well (parse depth, node, attribute and call
+counts, the characters the serializer would have to escape, and a CPU-time budget:
+500 ms by default, 1.5 s only inside the worker). A thread is not a process: V8 can
+end the process when a worker is given far less heap than its work needs, so the
+heap limit sits well above the heaviest real page and is not a guarantee. A page it
+refuses, or one over 4 MiB, is a 422 with one of two fixed lines ("too large to
+preview here, download it instead", or "can't show this page safely"; the reason
+goes to the log as a code, at warn), not the 404 a bad token gets, and a refusal
+that is about the page is remembered by content hash. That defense is enumeration-based, and a page
 opened top-level on `/v/` can navigate itself away; the full fix is
 network-level (TASK-1065). The app shows it in an iframe
 with `sandbox="allow-scripts allow-downloads"`, never `allow-same-origin`.
