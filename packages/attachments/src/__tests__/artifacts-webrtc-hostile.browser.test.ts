@@ -318,7 +318,9 @@ const ORDINARY_FACTS = `(() => {
 // <iframe> whose disconnectedCallback runs inside the guard's own remove() call,
 // after the guard took its mutation records, and inserts a second iframe. The
 // guard's check() then finds window.length > 0 before its observer sees the new
-// frame. The page logs from inside the callback (`ax-kill:reentered 1`: the bait
+// frame. (Its timers are short on purpose: the guard acts in a microtask, which
+// always comes before any timer, so 50 ms is "after the kill" with the settle wait
+// to spare.) The page logs from inside the callback (`ax-kill:reentered 1`: the bait
 // is gone, the second frame is the one child), which is how a test knows this
 // route was taken: with a broken purge the bait itself would be the live child,
 // and the page would blank all the same. The page also tries to rebuild itself
@@ -345,7 +347,7 @@ const killPage = (c: Canary) =>
     html.appendChild(body);
     document.appendChild(html);
     console.log('ax-kill:rebuilt');
-  }, 400);
+  }, 50);
   document.body.appendChild(document.createElement('iframe', { is: 'x-bait' }));
   console.log('ax-kill:inserted');
 } catch (e) { console.log('ax-kill:setup-failed ' + e); }` +
@@ -357,7 +359,7 @@ const PURGE_ID = 'kill-purge-keeps-page';
 const purgePage = (c: Canary) =>
   '<!doctype html><html lang="en"><head><meta charset="utf-8"><title>purge</title></head><body><p id="alive">alive</p>' +
   script(
-    `setTimeout(function () { document.getElementById('alive').textContent = 'still alive'; }, 700);` +
+    `setTimeout(function () { document.getElementById('alive').textContent = 'still alive'; }, 50);` +
       `var f = document.createElement('iframe'); f.srcdoc = ${js(script(rtcScript(c)))}; document.body.appendChild(f);`,
   ) +
   '</body></html>';
