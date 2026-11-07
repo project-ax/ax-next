@@ -696,11 +696,13 @@ be at most 1.5 times the page, and strings are read flat as they arrive, so the
 heap a page needs follows its biggest token, about 160 MB for 4 MiB of one,
 measured), with the limit as the net under them, and a limit that is low or only
 just over the need can abort the process. A child process is the real boundary and
-is a follow-up. A page it refuses, or one over 4 MiB, is a 422 with one of two fixed
-lines ("too large to preview here, download it instead", or "can't show this page
-safely"; the reason goes to the log as a code, at warn), not the 404 a bad token
-gets, and a refusal that is about the page is remembered by content hash. That
-defense is enumeration-based, and a page
+is a follow-up. A page it refuses, or one over 4 MiB, is a 422 with one of three
+fixed lines ("too large to preview here, download it instead"; "can't show this page
+right now, try again" for a page that was turned away unseen, busy or the worker
+failed; or "can't show this page safely"; the reason goes to the log as a code, at
+warn), not the 404 a bad token gets. A refusal that is about the page is remembered
+by content hash, in a place of its own (4,096 of them) so that refusals never push a
+served page out of the sixteen. That defense is enumeration-based, and a page
 opened top-level on `/v/` can navigate itself away; the full fix is
 network-level (TASK-1065). The app shows it in an iframe
 with `sandbox="allow-scripts allow-downloads"`, never `allow-same-origin`.

@@ -4,8 +4,8 @@ import type { Logger } from '@ax/core';
 import * as frameGuard from '@ax/frame-guard';
 import { createHtmlPreparer, type HtmlPreparer } from '@ax/frame-guard';
 import {
-  HTML_REFUSED_BODY,
   HTML_TOO_LARGE_BODY,
+  HTML_TRY_AGAIN_BODY,
   MAX_HTML_TRANSFORM_BYTES,
   startContentOrigin,
   type ContentOriginOptions,
@@ -237,7 +237,7 @@ describe('the content origin on its real worker thread', () => {
     const two = await fetch(tokenUrl(base, 'two'));
     const one = await firstView;
     expect(one.status).toBe(200);
-    expect([two.status, await two.text()]).toEqual([422, HTML_REFUSED_BODY]);
+    expect([two.status, await two.text()]).toEqual([422, HTML_TRY_AGAIN_BODY]);
     expect(lines.map((l) => (JSON.parse(l) as [string, string, { code: string }])[2].code)).toEqual(['busy']);
     const retry = await fetch(tokenUrl(base, 'two'));
     expect(retry.status).toBe(200);
@@ -249,7 +249,7 @@ describe('the content origin on its real worker thread', () => {
     const base = await start();
     put('a', enc('<!doctype html><p>x</p>'));
     const r = await fetch(tokenUrl(base, 'a'));
-    expect([r.status, await r.text()]).toEqual([422, HTML_REFUSED_BODY]);
+    expect([r.status, await r.text()]).toEqual([422, HTML_TRY_AGAIN_BODY]);
     const logged = lines.map((l) => JSON.parse(l) as [string, string, Record<string, unknown>]);
     // The failure, as an error with its codes; then the refusal the viewer got, as the warning it always is.
     expect(logged.map(([level, message]) => [level, message])).toEqual([

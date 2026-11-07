@@ -5,6 +5,7 @@ import * as frameGuard from '@ax/frame-guard';
 import {
   HTML_REFUSED_BODY,
   HTML_TOO_LARGE_BODY,
+  HTML_TRY_AGAIN_BODY,
   MAX_HTML_TRANSFORM_BYTES,
   startContentOrigin,
   type ContentOriginOptions,
@@ -272,19 +273,25 @@ describe('content origin: HTML goes through prepareArtifactHtml', () => {
     expect(lines.join('\n')).not.toContain(MARK);
   });
 
-  it('a refusal that is about the moment (busy, the worker failed) is the first line, whatever the page, and the log says which', async () => {
+  it('a page turned away unseen (busy, the worker failed) is told to try again, not that it is unsafe, whatever the page; the log says which', async () => {
+    const answers: string[] = [];
     for (const reason of ['busy', 'worker_failed'] as const) {
       const base = await start({ htmlPreparer: refusing(reason) });
       put(reason, { bytes: enc('<p>x</p>') });
       const r = await fetch(tokenUrl(base, reason));
-      expect([r.status, await r.text()]).toEqual([422, HTML_REFUSED_BODY]);
+      answers.push(JSON.stringify([r.status, await r.text(), [...r.headers].filter(([k]) => k !== 'date' && k !== 'content-length')]));
     }
+    // The same answer for both, in status, body and headers, and not the one for a page that is not safe.
+    expect(new Set(answers).size).toBe(1);
+    expect(JSON.parse(answers[0]!).slice(0, 2)).toEqual([422, HTML_TRY_AGAIN_BODY]);
+    expect(HTML_TRY_AGAIN_BODY).not.toBe(HTML_REFUSED_BODY);
     expect(lines.map((l) => (JSON.parse(l) as [string, string, { code: string }])[2].code)).toEqual(['busy', 'worker_failed']);
   });
 
-  it('the two lines are fixed: they say nothing of the limit, the page or what the worker did', () => {
+  it('the three lines are fixed: they say nothing of the limit, the page or what the worker did', () => {
     expect(HTML_REFUSED_BODY).toBe("AX can't show this page safely.");
     expect(HTML_TOO_LARGE_BODY).toBe('This page is too large to preview here. Download it instead.');
+    expect(HTML_TRY_AGAIN_BODY).toBe("AX can't show this page right now. Try again in a moment.");
   });
 
   it('HTML over the transform cap is a 422, never served as it was; at the cap it is served', async () => {
@@ -527,6 +534,62 @@ describe('content origin: prepared-HTML cache', () => {
     put('a', { bytes: page(1) });
     await Promise.all([fetch(tokenUrl(base, 'a')), fetch(tokenUrl(base, 'a'))].map(async (v) => (await v).arrayBuffer()));
     expect(asked).toBe(2);
+  });
+
+  describe('refusals are kept apart from pages', () => {
+    // A hundred hostile pages viewed in turn used to push every page someone was reading out of the sixteen,
+    // and seventeen of them in rotation were prepared again on every lap.
+    it('however many pages are refused, none of them pushes a page out of the cache', async () => {
+      const base = await start({ htmlCache: { maxEntries: 2 } });
+      put('good1', { bytes: page(1), contentKey: 'sha-good-1' });
+      put('good2', { bytes: page(2), contentKey: 'sha-good-2' });
+      await (await fetch(tokenUrl(base, 'good1'))).arrayBuffer();
+      await (await fetch(tokenUrl(base, 'good2'))).arrayBuffer();
+      expect(prepare).toHaveBeenCalledTimes(2);
+      for (let i = 0; i < 40; i++) {
+        put(`bad${i}`, { bytes: enc(`<!doctype html><plaintext>${i}`), contentKey: `sha-bad-${i}` });
+        expect((await fetch(tokenUrl(base, `bad${i}`))).status).toBe(422);
+      }
+      expect(prepare).toHaveBeenCalledTimes(42);
+      // Both pages are still there: viewing them prepares nothing.
+      expect((await fetch(tokenUrl(base, 'good1'))).status).toBe(200);
+      expect((await fetch(tokenUrl(base, 'good2'))).status).toBe(200);
+      expect(prepare).toHaveBeenCalledTimes(42);
+    });
+
+    it('and they do not count against the pages\' entries: two pages and forty refusals are all kept', async () => {
+      const base = await start({ htmlCache: { maxEntries: 2 } });
+      for (let i = 0; i < 40; i++) put(`bad${i}`, { bytes: enc(`<!doctype html><plaintext>${i}`), contentKey: `sha-bad-${i}` });
+      for (let i = 0; i < 40; i++) await (await fetch(tokenUrl(base, `bad${i}`))).arrayBuffer();
+      for (let i = 0; i < 40; i++) await (await fetch(tokenUrl(base, `bad${i}`))).arrayBuffer();
+      expect(prepare).toHaveBeenCalledTimes(40); // the second lap prepared nothing
+    });
+
+    it('a refusal is remembered in rotation of far more than sixteen: a lap of 40 hostile pages prepares each once', async () => {
+      const base = await start();
+      for (let i = 0; i < 40; i++) put(`bad${i}`, { bytes: enc(`<!doctype html><plaintext>${i}`), contentKey: `sha-bad-${i}` });
+      for (let lap = 0; lap < 3; lap++) for (let i = 0; i < 40; i++) await (await fetch(tokenUrl(base, `bad${i}`))).arrayBuffer();
+      expect(prepare).toHaveBeenCalledTimes(40);
+    });
+
+    it('is bounded all the same: past maxRefusals the oldest refusal is forgotten (and prepared again), and a hit keeps one fresh', async () => {
+      const base = await start({ htmlCache: { maxRefusals: 3 } });
+      for (let i = 0; i < 4; i++) put(`bad${i}`, { bytes: enc(`<!doctype html><plaintext>${i}`), contentKey: `sha-bad-${i}` });
+      const view = async (i: number): Promise<void> => void (await (await fetch(tokenUrl(base, `bad${i}`))).arrayBuffer());
+      await view(0);
+      await view(1);
+      await view(2);
+      await view(0); // a hit: 0 is now the newest, 1 the oldest
+      expect(prepare).toHaveBeenCalledTimes(3);
+      await view(3); // a fourth: 1 goes
+      expect(prepare).toHaveBeenCalledTimes(4);
+      await view(0);
+      await view(2);
+      await view(3);
+      expect(prepare).toHaveBeenCalledTimes(4); // all three still there
+      await view(1);
+      expect(prepare).toHaveBeenCalledTimes(5); // 1 was forgotten
+    });
   });
 
   it('is bounded: the 17th distinct page pushes the oldest out; a hit keeps a page fresh', async () => {

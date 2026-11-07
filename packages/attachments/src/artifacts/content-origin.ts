@@ -47,10 +47,11 @@ import { linkBindingFor, verifyViewToken, type ViewTokenClaims } from './view-to
  *   transform refuses, or too big for it) is a 422 with one fixed line and the
  *   download CSP: the requester holds a valid token for it, so that tells them
  *   nothing they could not already see, and without it a page that rendered
- *   before would read as "not found". There are two lines, one for a page that is
- *   too big or too heavy to preview (which can be downloaded instead) and one for
- *   the rest, each the same whatever the cause within its kind. The reason goes to
- *   the log (warn, as a code) and nowhere else.
+ *   before would read as "not found". There are three lines, one for a page that
+ *   is too big or too heavy to preview (which can be downloaded instead), one for
+ *   a page that was turned away unseen (busy, or the worker failed: try again) and
+ *   one for the rest, each the same whatever the cause within its kind. The reason
+ *   goes to the log (warn, as a code) and nowhere else.
  */
 
 export interface ServedArtifact {
@@ -77,10 +78,11 @@ export interface ContentOriginOptions {
   /** Where a failed lookup's route + codes go. Defaults to stderr. */
   logger?: Logger;
   /**
-   * Bounds of the prepared-HTML cache. A knob for tests: a byte bound is only
-   * visible with pages that add up to it, and the real one is 32 MiB.
+   * Bounds of the prepared-HTML cache, and of the refusals kept beside it. A knob
+   * for tests: a byte bound is only visible with pages that add up to it, and the
+   * real one is 32 MiB.
    */
-  htmlCache?: { maxEntries?: number; maxBytes?: number };
+  htmlCache?: { maxEntries?: number; maxBytes?: number; maxRefusals?: number };
   /**
    * What prepares HTML pages. Default: a worker thread of its own, closed with
    * the origin, so a page that costs the transform seconds, or all of its memory,
@@ -129,15 +131,23 @@ export const MAX_HTML_TRANSFORM_BYTES = 4 * 1024 * 1024;
 
 /** Prepared pages kept so a reload of the same bytes skips the transform: at most this many... */
 const HTML_CACHE_MAX_ENTRIES = 16;
-/** ...and at most this many bytes of prepared output in all (a page is at most 4x its input, 16 MiB). */
+/** ...and at most this many bytes of prepared output in all (a page is at most 1.5x its input and a little over, 6.1 MiB). */
 const HTML_CACHE_MAX_BYTES = 32 * 1024 * 1024;
+/**
+ * Refusals are kept apart from the pages, in a much bigger place: each is a 64-character key and a code, a few
+ * hundred bytes in all, so 4,096 of them are about a megabyte. They have to be bigger than the pages' because
+ * what they are for is the page nobody wants served: someone who publishes a hundred hostile pages and views
+ * them in turn must not be able to push everyone else's pages out of the cache (one place for both, sixteen
+ * entries, was that), nor get a page prepared twice for the price of seventeen views.
+ */
+const REFUSALS_MAX_ENTRIES = 4096;
 
 /**
  * What the viewer is told when a page is refused: one line, the same every time,
  * nothing of the page. 422, not 404: the requester's token is good, and the page
- * exists. There are two lines, by kind of refusal and no finer: this one for a
- * page that is not safe to show (or could not be shown: the origin was busy, the
- * worker failed), and `HTML_TOO_LARGE_BODY` for one that is too big or too heavy.
+ * exists. There are three lines, by kind of refusal and no finer: this one for a
+ * page that is not safe to show, `HTML_TOO_LARGE_BODY` for one that is too big or
+ * too heavy, and `HTML_TRY_AGAIN_BODY` for a page that was not looked at.
  */
 export const HTML_REFUSED_BODY = "AX can't show this page safely.";
 
@@ -147,6 +157,13 @@ export const HTML_REFUSED_BODY = "AX can't show this page safely.";
  * what renders), so it says where to go.
  */
 export const HTML_TOO_LARGE_BODY = 'This page is too large to preview here. Download it instead.';
+
+/**
+ * The third, for a page that was turned away without being looked at (the worker
+ * was busy, or failed): not a verdict on the page, which may be perfectly good, so
+ * it says nothing of it and asks for another go, which is what will work.
+ */
+export const HTML_TRY_AGAIN_BODY = "AX can't show this page right now. Try again in a moment.";
 
 /** Why a page was not served as HTML. The origin's own cap, the transform's reasons, and the worker's. */
 type RefusalCode = 'html_too_large' | PrepareRefusal | PoolRefusal;
@@ -163,25 +180,31 @@ type RefusalCode = 'html_too_large' | PrepareRefusal | PoolRefusal;
  * the machine is doing. `busy` and `worker_failed` are about the moment, not the
  * page, and the next view should try again.
  */
-const REFUSALS: Record<RefusalCode, { line: 'too_large' | 'unsafe'; remembered: boolean }> = {
-  html_too_large: { line: 'too_large', remembered: true },
-  too_many_nodes: { line: 'too_large', remembered: true },
-  too_much_work: { line: 'too_large', remembered: true },
-  too_slow: { line: 'too_large', remembered: true },
-  output_too_large: { line: 'too_large', remembered: true },
-  worker_timeout: { line: 'too_large', remembered: true },
-  worker_oom: { line: 'too_large', remembered: true },
-  nul: { line: 'unsafe', remembered: true },
-  cr_entity: { line: 'unsafe', remembered: true },
-  too_deep: { line: 'unsafe', remembered: true },
-  too_many_attrs: { line: 'unsafe', remembered: true },
-  plaintext: { line: 'unsafe', remembered: true },
-  quirks: { line: 'unsafe', remembered: true },
-  no_fixpoint: { line: 'unsafe', remembered: true },
-  parse_error: { line: 'unsafe', remembered: true },
-  busy: { line: 'unsafe', remembered: false },
-  worker_failed: { line: 'unsafe', remembered: false },
+const REFUSALS: Record<RefusalCode, { line: 'unsafe' | 'too_large' | 'later'; remembered: 'always' | 'never' }> = {
+  html_too_large: { line: 'too_large', remembered: 'always' },
+  too_many_nodes: { line: 'too_large', remembered: 'always' },
+  too_much_work: { line: 'too_large', remembered: 'always' },
+  too_slow: { line: 'too_large', remembered: 'always' },
+  output_too_large: { line: 'too_large', remembered: 'always' },
+  worker_timeout: { line: 'too_large', remembered: 'always' },
+  worker_oom: { line: 'too_large', remembered: 'always' },
+  nul: { line: 'unsafe', remembered: 'always' },
+  cr_entity: { line: 'unsafe', remembered: 'always' },
+  too_deep: { line: 'unsafe', remembered: 'always' },
+  too_many_attrs: { line: 'unsafe', remembered: 'always' },
+  plaintext: { line: 'unsafe', remembered: 'always' },
+  quirks: { line: 'unsafe', remembered: 'always' },
+  no_fixpoint: { line: 'unsafe', remembered: 'always' },
+  parse_error: { line: 'unsafe', remembered: 'always' },
+  busy: { line: 'later', remembered: 'never' },
+  worker_failed: { line: 'later', remembered: 'never' },
 };
+
+const REFUSAL_BODIES = {
+  unsafe: HTML_REFUSED_BODY,
+  too_large: HTML_TOO_LARGE_BODY,
+  later: HTML_TRY_AGAIN_BODY,
+} as const;
 
 /** Why a page was refused. The code is fixed; the message says nothing about the page. */
 class HtmlRefusal extends Error {
@@ -299,24 +322,35 @@ export async function startContentOrigin(o: ContentOriginOptions): Promise<Conte
   const preparer = o.htmlPreparer ?? createHtmlPreparer({ onFault: logWorkerFault });
 
   // Keyed by content hash: the same bytes always prepare the same way, so no
-  // version or artifact id is needed (and none can be stale). A refusal is
-  // remembered like a page (it costs nothing against the byte bound, and counts
-  // as an entry), so a hostile page can't be retried to burn the worker's time,
-  // whatever the size of the page it would have been or the reason: out of time,
-  // out of memory, too deep. The two that are not remembered are about the moment
-  // and not the page (REFUSALS). Map order is recency: a hit is re-inserted last,
-  // the oldest goes first.
+  // version or artifact id is needed (and none can be stale). Pages and refusals
+  // are kept apart. A refusal is remembered (so a hostile page can't be retried
+  // to burn the worker's time, whatever its size or the reason: out of time, out
+  // of memory, too deep) but in a place of its own, much bigger, because a
+  // refusal costs nothing against the byte bound and must never push a page
+  // someone is reading out of the sixteen. Map order is recency: a hit is
+  // re-inserted last, the oldest goes first.
   const htmlCache = new Map<string, PreparedHtml>();
   let htmlCacheBytes = 0;
+  const refusals = new Map<string, RefusalCode>();
   const maxEntries = o.htmlCache?.maxEntries ?? HTML_CACHE_MAX_ENTRIES;
   const maxBytes = o.htmlCache?.maxBytes ?? HTML_CACHE_MAX_BYTES;
+  const maxRefusals = o.htmlCache?.maxRefusals ?? REFUSALS_MAX_ENTRIES;
   const cost = (p: PreparedHtml): number => ('html' in p ? p.html.byteLength : 0);
   /** Pages being prepared now, by key: a view of the same bytes while one is going waits for it, and does not start another. */
   const preparing = new Map<string, Promise<PreparedHtml>>();
 
-  /** Only after a miss, and only by the one view preparing that key (`preparing`), so the key is not in the cache already. */
+  /** Only after a miss, and only by the one view preparing that key (`preparing`), so the key is not in either place already. */
   function remember(key: string, out: PreparedHtml): void {
-    if (('refusal' in out && !REFUSALS[out.refusal].remembered) || cost(out) > maxBytes) return;
+    if ('refusal' in out) {
+      if (REFUSALS[out.refusal].remembered === 'never') return;
+      refusals.set(key, out.refusal);
+      for (const oldest of refusals.keys()) {
+        if (refusals.size <= maxRefusals) break;
+        refusals.delete(oldest);
+      }
+      return;
+    }
+    if (cost(out) > maxBytes) return;
     htmlCache.set(key, out);
     htmlCacheBytes += cost(out);
     for (const [k, v] of htmlCache) {
@@ -324,6 +358,21 @@ export async function startContentOrigin(o: ContentOriginOptions): Promise<Conte
       htmlCache.delete(k);
       htmlCacheBytes -= cost(v);
     }
+  }
+
+  /** What is remembered of a key: its page, or its refusal. */
+  function recall(key: string): PreparedHtml | undefined {
+    const page = htmlCache.get(key);
+    if (page !== undefined) {
+      htmlCache.delete(key);
+      htmlCache.set(key, page);
+      return page;
+    }
+    const known = refusals.get(key);
+    if (known === undefined) return undefined;
+    refusals.delete(key);
+    refusals.set(key, known);
+    return { refusal: known };
   }
 
   async function prepareFresh(served: ServedArtifact): Promise<PreparedHtml> {
@@ -337,12 +386,8 @@ export async function startContentOrigin(o: ContentOriginOptions): Promise<Conte
   async function prepareHtml(served: ServedArtifact): Promise<PreparedHtml> {
     const key = served.contentKey;
     if (key === undefined) return prepareFresh(served);
-    const hit = htmlCache.get(key);
-    if (hit !== undefined) {
-      htmlCache.delete(key);
-      htmlCache.set(key, hit);
-      return hit;
-    }
+    const hit = recall(key);
+    if (hit !== undefined) return hit;
     let pending = preparing.get(key);
     if (pending === undefined) {
       pending = prepareFresh(served)
@@ -400,8 +445,7 @@ export async function startContentOrigin(o: ContentOriginOptions): Promise<Conte
       if ('refusal' in prepared) {
         logRefusal(matched.route, new HtmlRefusal(prepared.refusal));
         // The download CSP (no script, sandboxed) though the body is plain text: belt and braces.
-        const body = REFUSALS[prepared.refusal].line === 'too_large' ? HTML_TOO_LARGE_BODY : HTML_REFUSED_BODY;
-        sendText(res, 422, body, { 'content-security-policy': DOWNLOAD_CSP });
+        sendText(res, 422, REFUSAL_BODIES[REFUSALS[prepared.refusal].line], { 'content-security-policy': DOWNLOAD_CSP });
         return;
       }
       send(res, 200, { 'content-type': 'text/html; charset=utf-8', 'content-security-policy': csp }, prepared.html);
