@@ -15,8 +15,13 @@ export interface Vector {
   html: string;
 }
 
-/** A child frame that is a real browsing context everywhere (srcdoc needs no network). */
-const IFRAME = '<iframe srcdoc="x"></iframe>';
+/**
+ * A child frame that is a real browsing context everywhere (srcdoc needs no
+ * network). Exported so the Chromium suite in @ax/attachments can swap it for a
+ * frame whose script reaches for a canary: the pages are the same, the frame
+ * then has something to leak.
+ */
+export const IFRAME = '<iframe srcdoc="x"></iframe>';
 /** The same, inside a closed declarative shadow root: no `shadowRoot`, nothing for an observer to see. */
 const closedShadow = (inner: string, attrs = 'shadowrootmode="closed"') => `<div><template ${attrs}>${inner}</template></div>`;
 
