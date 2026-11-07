@@ -648,20 +648,21 @@ describe('content origin: prepared-HTML cache', () => {
       },
     );
 
-    it('a refusal that has run out does not stay in the place a live one would hold', async () => {
+    it('a refusal that has run out is taken out, so that when it is remembered again it is the newest and not in the place it was', async () => {
       const c = clock();
       const preparer = refusing('worker_timeout');
       const base = await start({ htmlPreparer: preparer, htmlCache: { now: c.now, maxRefusals: 2 } });
-      for (const id of ['a', 'b']) put(id, { bytes: page(1), contentKey: `sha-${id}` });
-      await (await fetch(tokenUrl(base, 'a'))).arrayBuffer();
-      await (await fetch(tokenUrl(base, 'b'))).arrayBuffer();
-      c.set(THE_MINUTE);
-      // Both have run out: each is prepared again, and each is remembered again, in the same two places.
-      await (await fetch(tokenUrl(base, 'a'))).arrayBuffer();
-      await (await fetch(tokenUrl(base, 'b'))).arrayBuffer();
-      await (await fetch(tokenUrl(base, 'a'))).arrayBuffer();
-      await (await fetch(tokenUrl(base, 'b'))).arrayBuffer();
+      for (const id of ['a', 'b', 'c']) put(id, { bytes: page(1), contentKey: `sha-${id}` });
+      const view = async (id: string): Promise<void> => void (await (await fetch(tokenUrl(base, id))).arrayBuffer());
+      await view('a');
+      await view('b');
+      c.set(THE_MINUTE); // both have run out
+      await view('a'); // prepared again, and remembered again: now the newest of the two
+      expect(preparer.asked).toBe(3);
+      await view('c'); // a third: the oldest goes, and that is b (which ran out), not a
       expect(preparer.asked).toBe(4);
+      await view('a');
+      expect(preparer.asked).toBe(4); // still there
     });
   });
 

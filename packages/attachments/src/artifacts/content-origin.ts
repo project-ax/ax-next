@@ -80,10 +80,10 @@ export interface ContentOriginOptions {
   /**
    * Bounds of the prepared-HTML cache, and of the refusals kept beside it. A knob
    * for tests: a byte bound is only visible with pages that add up to it (the real
-   * one is 32 MiB), and the minute `worker_timeout` is remembered for, and the clock
-   * that measures it, are things a test has to be able to move.
+   * one is 32 MiB), and the clock the minute `worker_timeout` is remembered for is
+   * measured on is something a test has to be able to move.
    */
-  htmlCache?: { maxEntries?: number; maxBytes?: number; maxRefusals?: number; briefMs?: number; now?: () => number };
+  htmlCache?: { maxEntries?: number; maxBytes?: number; maxRefusals?: number; now?: () => number };
   /**
    * What prepares HTML pages. Default: a worker thread of its own, closed with
    * the origin, so a page that costs the transform seconds, or all of its memory,
@@ -342,7 +342,6 @@ export async function startContentOrigin(o: ContentOriginOptions): Promise<Conte
   const maxEntries = o.htmlCache?.maxEntries ?? HTML_CACHE_MAX_ENTRIES;
   const maxBytes = o.htmlCache?.maxBytes ?? HTML_CACHE_MAX_BYTES;
   const maxRefusals = o.htmlCache?.maxRefusals ?? REFUSALS_MAX_ENTRIES;
-  const briefMs = o.htmlCache?.briefMs ?? BRIEFLY_MS;
   const now = o.htmlCache?.now ?? Date.now;
   const cost = (p: PreparedHtml): number => ('html' in p ? p.html.byteLength : 0);
   /** Pages being prepared now, by key: a view of the same bytes while one is going waits for it, and does not start another. */
@@ -353,7 +352,7 @@ export async function startContentOrigin(o: ContentOriginOptions): Promise<Conte
     if ('refusal' in out) {
       const how = REFUSALS[out.refusal].remembered;
       if (how === 'never') return;
-      refusals.set(key, { code: out.refusal, until: how === 'always' ? Infinity : now() + briefMs });
+      refusals.set(key, { code: out.refusal, until: how === 'always' ? Infinity : now() + BRIEFLY_MS });
       for (const oldest of refusals.keys()) {
         if (refusals.size <= maxRefusals) break;
         refusals.delete(oldest);
