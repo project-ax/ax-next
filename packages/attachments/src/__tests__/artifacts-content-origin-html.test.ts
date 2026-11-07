@@ -150,7 +150,7 @@ describe('content origin: HTML goes through prepareArtifactHtml', () => {
     expect(refused.headers.get('content-type')).toBe(unknown.headers.get('content-type'));
     expect(refused.headers.get('content-security-policy')).toBeNull();
     expectBaseHeaders(refused);
-    expect(prepare).toHaveLastReturnedWith(null);
+    expect(prepare).toHaveLastReturnedWith({ ok: false, reason: 'plaintext' });
 
     expect(lines).toHaveLength(1);
     expect(JSON.parse(lines[0]!)).toEqual([

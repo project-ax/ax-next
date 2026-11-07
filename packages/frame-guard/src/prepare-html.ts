@@ -2,8 +2,12 @@ import {
   defaultTreeAdapter as tree,
   html as spec,
   parse,
+  Parser,
   serializeOuter,
+  type DefaultTreeAdapterMap,
   type DefaultTreeAdapterTypes as Tree,
+  type Tokenizer,
+  type TreeAdapter,
 } from 'parse5';
 import { CHILD_FRAME_TAGS, DSD_ATTRS, FRAME_GUARD_SOURCE } from './guard.js';
 
@@ -33,7 +37,21 @@ import { CHILD_FRAME_TAGS, DSD_ATTRS, FRAME_GUARD_SOURCE } from './guard.js';
 // rebuild from parse5's tree (tags in a <select>) or refuse (a NUL, a carriage
 // return written as a character reference); anywhere else they might, the
 // guard's observer and its window.length check are what catch the rest. The
-// answer to "I can't be sure" is null: the caller serves its ordinary 404.
+// answer to "I can't be sure" is a refusal with a reason code: the caller serves
+// its fixed "can't show this" answer.
+//
+// It also runs on the caller's thread, on bytes an agent chose, and parse5 is
+// not linear: nested `<div>`s, formatting elements that come back for every
+// following tag, thousands of attributes on one tag and a few other shapes cost
+// it quadratic time or memory, so 4 MiB of the right markup holds a thread for
+// the better part of an hour or ends the process. The cost therefore has to be
+// bounded by something the page does not pick, and the page's size is not that:
+// the PARSE is bounded. parse5 gets our own tree adapter that counts what it
+// builds (elements and text, how deep the stack of open elements is, how many
+// attributes one element has) and looks at the clock, and the tokenizer, which
+// calls nothing of ours while it reads a tag, is made to look at the clock and
+// at the tag it is in the middle of every few thousand characters. Whichever
+// limit is crossed first ends the parse with a reason.
 
 /** What the guard script does on a kill. The page is already blank by then; this says why. */
 const START_GUARD =
@@ -51,11 +69,148 @@ const MAX_PASSES = 4;
  * nested divs put the deepest at depth 513, 513 and 512) and attach what comes
  * next to an ancestor, so a tree deeper than that is shaped differently there
  * than here. No page comes near it. Past it we refuse, which also keeps the
- * recursive serializer well clear of the call stack limit.
+ * recursive serializer well clear of the call stack limit. Checked twice: on the
+ * stack of open elements while parsing (so a deep page is refused after 512
+ * elements, not after the quadratic cost of building all of them), and on the
+ * finished tree (where adoption can have put things deeper than the stack was).
  */
 const MAX_DEPTH = 512;
 
+/**
+ * Nodes (elements, text, comments) one parse may build. A real page is nowhere
+ * near it: measured, a 1 MB page of HTML is 100 to 33,000 nodes (a dense
+ * reference page 32 per KB), and a table of numbers about 170 per KB, so
+ * 250,000 nodes is a 1.5 MB table. This is what stops a page whose parse builds
+ * nodes the markup never wrote: each `<span>` after 500 formatting elements
+ * brings all 500 back, 30 nodes per input byte, and the number is the cap on
+ * that whatever the size of the page. A parse takes about 0.2 to 0.5 s at it
+ * (this holds the thread, so the next limit's budget has to cover that).
+ */
+const MAX_NODES = 250_000;
+
+/**
+ * Calls parse5 may make to the tree adapter, over every pass of one transform. It reads the tree
+ * through the adapter for everything it checks, so this counts the work of its
+ * scans, which node counts don't: 500 open elements and then a million `</i>`,
+ * each of which looks through all 500, builds no nodes at all. A real page makes
+ * under one call per character of HTML (measured: 0.01 to 0.9; a table of
+ * numbers is the top), so even 4 MiB of it needs under 8 million over its two
+ * passes; this is 25 million, about a quarter of a second of parse5's time,
+ * which is where that scan page is stopped.
+ */
+const MAX_CALLS = 25_000_000;
+
+/**
+ * Attributes one element may have. parse5 checks each new attribute against
+ * every earlier one on the tag, so thousands on one tag cost quadratic time in
+ * the tokenizer, where nothing else can interrupt it; and `<body>` and `<html>`
+ * tags repeated in a page copy theirs onto the first. A real element has a
+ * dozen.
+ */
+const MAX_ATTRS = 256;
+
+/**
+ * What the result may weigh, as a multiple of the page plus a little for the
+ * guard. Writing a tree out repeats the attribute text of every element parse5
+ * rebuilt (so one big attribute and a few hundred rebuilt elements is a result
+ * of gigabytes from a few hundred nodes), and escaping can turn one character
+ * into six. A real page comes back at about its own size.
+ */
+const OUTPUT_FACTOR = 4;
+const OUTPUT_SLACK = 64 * 1024;
+
+/**
+ * Characters the tokenizer reads between looks at the clock and at the tag it is
+ * in the middle of. The tokenizer is where one tag with thousands of attributes
+ * costs quadratic time (each new attribute is compared with every earlier one),
+ * and it calls nothing we hold while it does. After this many characters of such
+ * a tag it has 700 attributes to compare, about a millisecond.
+ */
+const LOOK_EVERY = 4096;
+
+/** The adapter checks its call count and the clock once per this many calls. */
+const CLOCK_EVERY = 1024;
+
+/**
+ * The time one call may take: a floor, plus a share for each MiB of page. The
+ * limits above stop every shape measured in a quarter of a second or less; this
+ * is the backstop for the ones nobody has found, and it has to leave room for
+ * the biggest ordinary pages: 4 MiB of script or inlined data takes 0.4 s on a
+ * fast machine, and a table at the node limit about 0.25 s. A slower or busier
+ * host takes twice that.
+ */
+const BUDGET_BASE_MS = 300;
+const BUDGET_PER_MIB_MS = 200;
+
 const NUL = '\u0000';
+
+/**
+ * Why a page was not prepared. Fixed codes, so a log line can say which without
+ * saying anything about the page.
+ */
+export type PrepareRefusal =
+  /** A U+0000 in the page: browsers and parse5 read it differently while `<head>` is open. */
+  | 'nul'
+  /** A carriage return written as a character reference (`&#13;`). */
+  | 'cr_entity'
+  /** Elements nested deeper than a browser keeps them. */
+  | 'too_deep'
+  /** The parse built more nodes than any real page needs. */
+  | 'too_many_nodes'
+  /** An element with more attributes than any real page has. */
+  | 'too_many_attrs'
+  /** The parse made more calls to the tree adapter than any real page does: it is scanning, not building. */
+  | 'too_much_work'
+  /** The transform ran out of its time. */
+  | 'too_slow'
+  /** The result would be far larger than the page. */
+  | 'output_too_large'
+  /** `<plaintext>`: the rest of the document is its text, and writing the page back out changes it. */
+  | 'plaintext'
+  /** A doctype whose quirks mode can't be written back. */
+  | 'quirks'
+  /** Reading the result back keeps changing it. */
+  | 'no_fixpoint'
+  /** The parser itself threw. */
+  | 'parse_error';
+
+export type PrepareResult = { ok: true; html: string } | { ok: false; reason: PrepareRefusal };
+
+/**
+ * Knobs for tests: the defaults are the policy. Each one lets a test cross a
+ * limit with a small page, or take the clock out of the picture.
+ */
+export interface PrepareLimits {
+  /** Milliseconds the whole call may take. Default: `BUDGET_BASE_MS` plus `BUDGET_PER_MIB_MS` per MiB of page. */
+  budgetMs?: number;
+  /** Nodes one parse may build. Default: `MAX_NODES`. */
+  maxNodes?: number;
+  /** Characters the tokenizer reads between looks at the clock and at the tag it is in. Default: `LOOK_EVERY`. */
+  lookEvery?: number;
+  /** The clock, in milliseconds. Default: `performance.now`. */
+  now?: () => number;
+}
+
+/** What ends a transform early. Private: it never leaves this module, `prepareArtifactHtml` turns it into a result. */
+class Refusal extends Error {
+  constructor(readonly reason: PrepareRefusal) {
+    super(reason);
+    this.name = 'Refusal';
+  }
+}
+
+/** What one call to the transform works under. */
+interface Run {
+  now: () => number;
+  /** Tree adapter calls so far, over every parse of this transform. */
+  calls: number;
+  /** When `now()` reaches this, the call is out of time. */
+  deadline: number;
+  maxNodes: number;
+  look: number;
+  /** The most the result may weigh, in characters. */
+  maxOutput: number;
+}
 
 const PARSE_OPTIONS = { scriptingEnabled: true } as const;
 const SERIALIZE_OPTIONS = { scriptingEnabled: true } as const;
@@ -116,12 +271,19 @@ function walk(root: Tree.ParentNode, visit: (node: Tree.ParentNode) => void): vo
     visit(node);
     for (const child of node.childNodes) {
       if (!isElement(child)) continue;
-      if (depth + 1 > MAX_DEPTH) throw new Error(`nested more than ${MAX_DEPTH} elements deep`);
+      if (depth + 1 > MAX_DEPTH) throw new Refusal('too_deep');
       pending.push([child, depth + 1]);
       const content = templateContent(child);
       if (content !== null) pending.push([content, depth + 1]);
     }
   }
+}
+
+/** About what an element weighs written out: its tags, and each attribute's name, value, quotes and space. */
+function elementWeight(el: Tree.Element): number {
+  let weight = 2 * el.tagName.length + 5;
+  for (const attr of el.attrs) weight += attr.name.length + attr.value.length + 4;
+  return weight;
 }
 
 /**
@@ -130,9 +292,15 @@ function walk(root: Tree.ParentNode, visit: (node: Tree.ParentNode) => void): vo
  * namespace, the way a CSS type selector does: an `<iframe>` parsed into SVG is
  * inert today, but it is one mutation round trip from not being. Reports
  * whether it cut anything.
+ *
+ * It also adds up what the rest weighs written out, and refuses before anything
+ * is written if that is more than `maxOutput`: the parser shares an element's
+ * attribute list with every copy it makes of the element, so a tree of a few
+ * hundred nodes can still be gigabytes of markup.
  */
-function scrub(doc: Tree.Document): boolean {
+function scrub(doc: Tree.Document, maxOutput: number): boolean {
   let cut = false;
+  let weight = 0;
   walk(doc, (node) => {
     const kept: Tree.ChildNode[] = [];
     for (const child of node.childNodes) {
@@ -143,6 +311,10 @@ function scrub(doc: Tree.Document): boolean {
           cut = true;
           continue;
         }
+        // Everything after <plaintext> is its text, including the end tags the serializer writes, so every
+        // pass reads more text than the last and the page never settles. (In SVG and MathML it is an
+        // ordinary element, which settles.)
+        if (name === 'plaintext' && child.namespaceURI === spec.NS.HTML) throw new Refusal('plaintext');
         if (name === 'template') {
           const attrs = child.attrs.filter((attr) => !SHADOW_ROOT_ATTRS.has(attr.name));
           if (attrs.length !== child.attrs.length) {
@@ -150,10 +322,16 @@ function scrub(doc: Tree.Document): boolean {
             cut = true;
           }
         }
+        weight += elementWeight(child);
+      } else if (tree.isTextNode(child)) {
+        weight += child.value.length;
+      } else if (tree.isCommentNode(child)) {
+        weight += child.data.length + 7;
       }
       kept.push(child);
     }
     node.childNodes = kept;
+    if (weight > maxOutput) throw new Refusal('output_too_large');
   });
   return cut;
 }
@@ -195,7 +373,7 @@ function serializeDoctype(node: Tree.DocumentType): string {
 }
 
 /** The document as markup the browser parses back into the same tree. Reshapes `doc`. */
-function render(doc: Tree.Document): string {
+function render(doc: Tree.Document, maxOutput: number): string {
   restoreSkippedNewlines(doc);
   let out = '';
   for (const child of doc.childNodes) {
@@ -206,7 +384,8 @@ function render(doc: Tree.Document): string {
   // an LF; written as a reference it would be read as whitespace by a browser
   // and as text by parse5, which only counts tab, LF, FF and space, and ends a
   // <head> at it. Nothing legitimate spells one, so the page is refused.
-  if (out.includes('\r')) throw new Error('the page holds a carriage return written as a character reference');
+  if (out.length > maxOutput) throw new Refusal('output_too_large');
+  if (out.includes('\r')) throw new Refusal('cr_entity');
   return out;
 }
 
@@ -221,29 +400,238 @@ function putGuardFirst(doc: Tree.Document): void {
   else tree.insertBefore(head, script, first);
 }
 
-function settle(source: string): string | null {
+/** Looks at the clock; out of time is a refusal. */
+function checkClock(run: Run): void {
+  if (run.now() >= run.deadline) throw new Refusal('too_slow');
+}
+
+/**
+ * The tree adapter parse5 builds the page with: the default one, with limits on
+ * what it may build. Everything parse5 does to the tree goes through these
+ * calls, which is what makes them a place to count and to look at the clock:
+ *
+ *   - nodes made (elements, text, comments, template contents), against `maxNodes`;
+ *   - the stack of open elements, which parse5 reports as it pushes and pops, so
+ *     a page nested past MAX_DEPTH is refused at element 513, not after the
+ *     time it takes to build a hundred thousand more (every start tag scans
+ *     that stack, which is what makes deep nesting quadratic);
+ *   - the attributes on an element, as it is made and as `<html>`/`<body>` tags
+ *     repeated in a page add theirs to the first;
+ *   - the clock: on every call that has to walk a list (moving and inserting
+ *     nodes, copying attributes) and once per CLOCK_EVERY of the cheap ones.
+ *
+ * The default adapter's own calls to itself (`insertText` making its text node)
+ * don't come back through here, so the two that make text nodes are wrapped.
+ */
+function boundedAdapter(run: Run): TreeAdapter<DefaultTreeAdapterMap> {
+  let nodes = 0;
+  let open = 0;
+  let lookAt = run.calls + CLOCK_EVERY;
+  let heavyCalls = 0;
+  const adopted = new WeakMap<Tree.Element, Set<string>>();
+  const look = (): void => {
+    lookAt = run.calls + CLOCK_EVERY;
+    if (run.calls > MAX_CALLS) throw new Refusal('too_much_work');
+    checkClock(run);
+  };
+  const lap = (): void => {
+    if (++run.calls >= lookAt) look();
+  };
+  // A call that can walk a long list (the child list of a node, the attributes of an element): look after
+  // every 16 of them, so a flood of them can't run a thousand times as long between looks as a flood of reads.
+  const heavy = (): void => {
+    lap();
+    if ((++heavyCalls & 15) === 0) look();
+  };
+  const built = (): void => {
+    if (++nodes > run.maxNodes) throw new Refusal('too_many_nodes');
+    lap();
+  };
+  const attrs = (count: number): void => {
+    if (count > MAX_ATTRS) throw new Refusal('too_many_attrs');
+  };
+  return {
+    ...tree,
+    createDocumentFragment: () => {
+      built();
+      return tree.createDocumentFragment();
+    },
+    createElement: (name, namespace, attributes) => {
+      attrs(attributes.length);
+      built();
+      return tree.createElement(name, namespace, attributes);
+    },
+    createCommentNode: (data) => {
+      built();
+      return tree.createCommentNode(data);
+    },
+    createTextNode: (value) => {
+      built();
+      return tree.createTextNode(value);
+    },
+    insertText: (parent, text) => {
+      const before = parent.childNodes.length;
+      tree.insertText(parent, text);
+      if (parent.childNodes.length > before) built();
+      else lap();
+    },
+    // The default adapter looks for the reference from the front of the child list. It is nearly always the
+    // last child: the <table> that content is foster-parented in front of. From the front, each of N
+    // foster-parented siblings costs a walk past the N before it.
+    insertTextBefore: (parent, text, reference) => {
+      heavy();
+      const siblings = parent.childNodes;
+      const at = siblings.lastIndexOf(reference);
+      const previous = siblings[at - 1];
+      if (previous !== undefined && tree.isTextNode(previous)) {
+        previous.value += text;
+        return;
+      }
+      built();
+      const node = tree.createTextNode(text);
+      siblings.splice(at, 0, node);
+      node.parentNode = parent;
+    },
+    appendChild: (parent, node) => {
+      lap();
+      tree.appendChild(parent, node);
+    },
+    insertBefore: (parent, node, reference) => {
+      heavy();
+      parent.childNodes.splice(parent.childNodes.lastIndexOf(reference), 0, node);
+      node.parentNode = parent;
+    },
+    detachNode: (node) => {
+      heavy();
+      tree.detachNode(node);
+    },
+    // The default adapter builds a set of the recipient's attribute names on every call, so `<body x>` repeated
+    // 100,000 times with a few hundred attributes already on the first body costs that set 100,000 times.
+    adoptAttributes: (recipient, attributes) => {
+      heavy();
+      attrs(attributes.length);
+      let names = adopted.get(recipient);
+      if (names === undefined) {
+        names = new Set(recipient.attrs.map((attr) => attr.name));
+        adopted.set(recipient, names);
+      }
+      for (const attr of attributes) {
+        if (names.has(attr.name)) continue;
+        names.add(attr.name);
+        recipient.attrs.push(attr);
+      }
+      attrs(recipient.attrs.length);
+    },
+    getTagName: (el) => {
+      lap();
+      return tree.getTagName(el);
+    },
+    getNamespaceURI: (el) => {
+      lap();
+      return tree.getNamespaceURI(el);
+    },
+    getAttrList: (el) => {
+      lap();
+      return tree.getAttrList(el);
+    },
+    getFirstChild: (node) => {
+      lap();
+      return tree.getFirstChild(node);
+    },
+    getParentNode: (node) => {
+      lap();
+      return tree.getParentNode(node);
+    },
+    getTemplateContent: (el) => {
+      lap();
+      return tree.getTemplateContent(el);
+    },
+    onItemPush: () => {
+      if (++open > MAX_DEPTH) throw new Refusal('too_deep');
+      lap();
+    },
+    onItemPop: () => {
+      open--;
+    },
+  };
+}
+
+/** The tag the tokenizer is partway through, if it has one: its attributes so far. Not part of parse5's typed surface. */
+function attributesInFlight(tokenizer: Tokenizer): number {
+  const token = (tokenizer as unknown as { currentToken?: { attrs?: readonly unknown[] } | null }).currentToken;
+  return token?.attrs?.length ?? 0;
+}
+
+/**
+ * Makes the tokenizer look at the clock, and at the tag it is reading, every
+ * `run.look` characters. It reads its input through the preprocessor's
+ * `advance`, one character at a time, which is the one call it makes all the
+ * time and the only one while it is inside a single tag, a comment or a long
+ * script: nothing of ours runs then, and one tag with thousands of attributes
+ * costs the tokenizer quadratic time. The page is still handed over whole, in
+ * one write, so what it reads is exactly what plain `parse` would read.
+ *
+ * (Feeding it the page in pieces would be the plain way, but a piece joins what
+ * the tokenizer is still holding, so one long script copies a growing buffer on
+ * every piece, and giving back what it has read between pieces, which parse5 does
+ * for itself at the end of a tag, corrupts a character reference that is
+ * split across the cut: measured.)
+ */
+function watchTokenizer(tokenizer: Tokenizer, run: Run): void {
+  const input = tokenizer.preprocessor;
+  const advance = input.advance;
+  let untilLook = run.look;
+  input.advance = (): number => {
+    if (--untilLook === 0) {
+      untilLook = run.look;
+      checkClock(run);
+      if (attributesInFlight(tokenizer) > MAX_ATTRS) throw new Refusal('too_many_attrs');
+    }
+    return advance.call(input);
+  };
+}
+
+/** parse5's `parse`, with the limits on it. */
+function parseBounded(source: string, run: Run): Tree.Document {
+  const parser = new Parser<DefaultTreeAdapterMap>({ ...PARSE_OPTIONS, treeAdapter: boundedAdapter(run) });
+  watchTokenizer(parser.tokenizer, run);
+  parser.tokenizer.write(source, true);
+  return parser.document;
+}
+
+function settle(source: string, run: Run): string {
   // A NUL is the one character parse5 and Chromium, Firefox and WebKit all read
   // differently while a <head> is open: the browsers skip it and keep the head
   // going, parse5 ends the head there. Text that holds one is not text we can
   // read the way a browser will, and no real page has one.
-  if (source.includes(NUL)) return null;
+  if (source.includes(NUL)) throw new Refusal('nul');
   let current = source;
   let mode: string | undefined;
   for (let pass = 0; pass < MAX_PASSES; pass++) {
-    const doc = parse(current, PARSE_OPTIONS);
+    const doc = parseBounded(current, run);
+    checkClock(run);
     const modeNow = tree.getDocumentMode(doc);
     mode ??= modeNow;
-    const cut = scrub(doc);
+    const cut = scrub(doc, run.maxOutput);
     putGuardFirst(doc);
-    const next = render(doc);
+    checkClock(run);
+    const next = render(doc, run.maxOutput);
     // Nothing left to cut, and writing the tree back out, guard and all, gives
     // the string we just read (so the guard was already first in <head>, and
     // this string is one parse5 reproduces from its own reading of it):
     // `current` is the page to serve.
-    if (!cut && next === current) return modeNow === mode ? current : null;
+    if (!cut && next === current) {
+      if (modeNow !== mode) throw new Refusal('quirks');
+      return current;
+    }
     current = next;
   }
-  return null;
+  throw new Refusal('no_fixpoint');
+}
+
+/** What a call may take: a floor, and a share per MiB of page. */
+function budgetFor(chars: number): number {
+  return BUDGET_BASE_MS + (BUDGET_PER_MIB_MS * chars) / (1024 * 1024);
 }
 
 /**
@@ -256,12 +644,17 @@ function settle(source: string): string | null {
  * mark; a U+FEFF left at the start is the page's own text, as it is to a
  * browser) and returns it to be served as UTF-8 (`text/html; charset=utf-8`).
  *
- * Returns null when it can't vouch for the result, and the caller must refuse
- * the page: it holds a NUL character or a carriage return written as a
- * character reference (&#13;), the markup never settles (re-reading it keeps
- * revealing frame-makers, or keeps changing as `<plaintext>` does), it nests
- * deeper than a browser does, its doctype can't be written back without
- * changing the page's quirks mode, or the parser threw. It never throws.
+ * Answers `{ ok: true, html }`, or `{ ok: false, reason }` when it can't vouch
+ * for the result, and the caller must refuse the page. The reason is a fixed
+ * code (`PrepareRefusal`) for the caller's log; none of them says anything
+ * about the page. The causes: it holds a NUL character or a carriage return
+ * written as a character reference (&#13;); the markup never settles
+ * (`<plaintext>`, or re-reading it keeps revealing frame-makers); it nests
+ * deeper than a browser does; its doctype can't be written back without
+ * changing the page's quirks mode; parsing it would build more nodes, or give
+ * one element more attributes, or take longer, than any real page does; the
+ * result would be several times the page's size; or the parser threw. It never
+ * throws.
  *
  * The page is rebuilt from a parse, so it comes back normalized (implied
  * html/head/body made explicit, attributes double-quoted, comments and text
@@ -273,13 +666,27 @@ function settle(source: string): string | null {
  * where a browser would have skipped it. No doctype is added or removed.
  * Calling it on its own output returns that output unchanged.
  *
- * Synchronous and linear in the page size (a few parses of it), on the
- * caller's thread: roughly 0.15 to 0.2 s per MB of HTML, so bound what you hand it.
+ * Synchronous, on the caller's thread, and bounded by what the parse builds
+ * and by the clock, not by the page's size (see the limits above): an ordinary
+ * page takes under a quarter of a second per MB of HTML (two parses of it), and
+ * a hostile one is refused in well under a second whatever its size. Still
+ * hand it a bounded page: even a refusal costs the time it took to get there.
+ *
+ * `limits` is for tests; leave it out.
  */
-export function prepareArtifactHtml(html: string): string | null {
+export function prepareArtifactHtml(html: string, limits: PrepareLimits = {}): PrepareResult {
   try {
-    return settle(html);
-  } catch {
-    return null;
+    const now = limits.now ?? ((): number => performance.now());
+    const run: Run = {
+      now,
+      calls: 0,
+      deadline: now() + (limits.budgetMs ?? budgetFor(html.length)),
+      maxNodes: limits.maxNodes ?? MAX_NODES,
+      look: Math.max(1, Math.floor(limits.lookEvery ?? LOOK_EVERY)),
+      maxOutput: OUTPUT_FACTOR * html.length + OUTPUT_SLACK,
+    };
+    return { ok: true, html: settle(html, run) };
+  } catch (err) {
+    return { ok: false, reason: err instanceof Refusal ? err.reason : 'parse_error' };
   }
 }

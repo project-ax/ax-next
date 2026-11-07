@@ -2,11 +2,11 @@ import { readFileSync } from 'node:fs';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { defaultTreeAdapter as tree, html as spec, type DefaultTreeAdapterTypes as Tree } from 'parse5';
 
-// prepareArtifactHtml answers null when it cannot vouch for a page, and never
-// throws. Real input reaches a few of those paths (prepare-html.test.ts: deep
-// nesting, <plaintext>, doctypes). The rest need parse5 to misbehave in ways no
-// markup makes it: throw from deep inside, or keep handing back a tree with
-// something new to cut. So parse5 is wrapped here, and a test says how.
+// prepareArtifactHtml refuses a page it cannot vouch for, with a reason, and
+// never throws. Real input reaches most of those paths (prepare-html.test.ts:
+// deep nesting, <plaintext>, doctypes). The rest need parse5 to misbehave in ways
+// no markup makes it: throw from deep inside, or keep handing back a tree with
+// something new to cut. So parse5's parser is wrapped here, and a test says how.
 const hooks = vi.hoisted(() => ({
   beforeParse: undefined as (() => void) | undefined,
   afterParse: undefined as ((doc: unknown) => void) | undefined,
@@ -15,14 +15,22 @@ const hooks = vi.hoisted(() => ({
 
 vi.mock('parse5', async (importOriginal) => {
   const real = await importOriginal<typeof import('parse5')>();
+  // One of these per parse: `beforeParse` runs as the parser is made, `afterParse` once the last of the
+  // page has been written to its tokenizer, with the document it built.
+  class HookedParser<T extends import('parse5').TreeAdapterTypeMap> extends real.Parser<T> {
+    constructor(...args: ConstructorParameters<typeof real.Parser<T>>) {
+      hooks.beforeParse?.();
+      super(...args);
+      const write = this.tokenizer.write.bind(this.tokenizer);
+      this.tokenizer.write = (chunk: string, isLastChunk: boolean, writeCallback?: () => void): void => {
+        write(chunk, isLastChunk, writeCallback);
+        if (isLastChunk) hooks.afterParse?.(this.document);
+      };
+    }
+  }
   return {
     ...real,
-    parse: ((...args: Parameters<typeof real.parse>) => {
-      hooks.beforeParse?.();
-      const doc = real.parse(...args);
-      hooks.afterParse?.(doc);
-      return doc;
-    }) as typeof real.parse,
+    Parser: HookedParser,
     serializeOuter: ((...args: Parameters<typeof real.serializeOuter>) => {
       hooks.beforeSerialize?.();
       return real.serializeOuter(...args);
@@ -30,7 +38,13 @@ vi.mock('parse5', async (importOriginal) => {
   };
 });
 
-import { prepareArtifactHtml } from '../index.js';
+import { prepareArtifactHtml as transform, type PrepareResult } from '../index.js';
+
+/** The page, or the reason it was refused. */
+const outcome = (html: string): string => {
+  const result: PrepareResult = transform(html);
+  return result.ok ? result.html : `refused: ${result.reason}`;
+};
 
 beforeEach(() => {
   hooks.beforeParse = undefined;
@@ -50,34 +64,34 @@ describe('prepareArtifactHtml when parse5 misbehaves', () => {
   it('passes a page through when nothing is wrong (so the wrapper itself is not what fails below)', () => {
     let parses = 0;
     hooks.beforeParse = () => void (parses += 1);
-    expect(prepareArtifactHtml('<p>x</p>')).toEqual(expect.stringContaining('<p>x</p>'));
+    expect(outcome('<p>x</p>')).toEqual(expect.stringContaining('<p>x</p>'));
     expect(parses).toBe(2);
   });
 
   it.each([
     ['a stack overflow while parsing', () => new RangeError('Maximum call stack size exceeded')],
     ['any other error while parsing', () => new TypeError('boom')],
-  ])('answers null, not a throw, after %s', (_name, make) => {
+  ])('refuses with the parser-error code, not a throw, after %s', (_name, make) => {
     hooks.beforeParse = () => {
       throw make();
     };
-    expect(() => prepareArtifactHtml('<p>x</p>')).not.toThrow();
-    expect(prepareArtifactHtml('<p>x</p>')).toBeNull();
+    expect(() => transform('<p>x</p>')).not.toThrow();
+    expect(outcome('<p>x</p>')).toBe('refused: parse_error');
   });
 
-  it('answers null, not a throw, after a stack overflow while serializing', () => {
+  it('refuses with the parser-error code, not a throw, after a stack overflow while serializing', () => {
     hooks.beforeSerialize = () => {
       throw new RangeError('Maximum call stack size exceeded');
     };
-    expect(() => prepareArtifactHtml('<p>x</p>')).not.toThrow();
-    expect(prepareArtifactHtml('<p>x</p>')).toBeNull();
+    expect(() => transform('<p>x</p>')).not.toThrow();
+    expect(outcome('<p>x</p>')).toBe('refused: parse_error');
   });
 
-  it('answers null for a page that keeps growing something to cut, after exactly four parses', () => {
+  it('refuses a page that keeps growing something to cut as never settling, after exactly four parses', () => {
     let parses = 0;
     hooks.beforeParse = () => void (parses += 1);
     hooks.afterParse = addIframe;
-    expect(prepareArtifactHtml('<p>x</p>')).toBeNull();
+    expect(outcome('<p>x</p>')).toBe('refused: no_fixpoint');
     expect(parses).toBe(4);
   });
 
@@ -88,8 +102,8 @@ describe('prepareArtifactHtml when parse5 misbehaves', () => {
       // Something to cut in the first three parses; the fourth is clean.
       if (parses <= 3) addIframe(doc);
     };
-    const out = prepareArtifactHtml('<p>x</p>');
-    expect(out).not.toBeNull();
+    const out = outcome('<p>x</p>');
+    expect(out).not.toMatch(/^refused/);
     expect(out).not.toContain('<iframe');
     expect(parses).toBe(4);
   });
@@ -100,7 +114,7 @@ describe('prepareArtifactHtml when parse5 misbehaves', () => {
     hooks.afterParse = (doc) => {
       if (parses <= 2) addIframe(doc);
     };
-    expect(prepareArtifactHtml('<p>x</p>')).not.toBeNull();
+    expect(outcome('<p>x</p>')).not.toMatch(/^refused/);
     expect(parses).toBe(3);
   });
 });

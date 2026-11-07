@@ -8,3 +8,4 @@
 // can't drift apart.
 export { CHILD_FRAME_TAGS, DSD_ATTRS, FRAME_GUARD_SOURCE } from './guard.js';
 export { prepareArtifactHtml } from './prepare-html.js';
+export type { PrepareLimits, PrepareRefusal, PrepareResult } from './prepare-html.js';

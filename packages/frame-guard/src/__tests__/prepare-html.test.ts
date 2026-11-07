@@ -1,7 +1,7 @@
 import { createRequire } from 'node:module';
 import { afterEach, describe, expect, it } from 'vitest';
 import { defaultTreeAdapter as tree, parse, serialize, type DefaultTreeAdapterTypes as Tree } from 'parse5';
-import { CHILD_FRAME_TAGS, DSD_ATTRS, FRAME_GUARD_SOURCE, prepareArtifactHtml } from '../index.js';
+import { CHILD_FRAME_TAGS, DSD_ATTRS, FRAME_GUARD_SOURCE, prepareArtifactHtml as transform } from '../index.js';
 import { HOSTILE_VECTORS, NEWLINE_PAGES, REALISTIC_PAGE, STRUCTURE_PAGES as STRUCTURES, TEXT_VECTORS } from './prepare-html-corpus.js';
 
 // prepareArtifactHtml takes an agent's page and hands back the page to serve:
@@ -12,6 +12,18 @@ import { HOSTILE_VECTORS, NEWLINE_PAGES, REALISTIC_PAGE, STRUCTURE_PAGES as STRU
 // loads the same corpus into Chromium (see the T4 notes in the plan).
 
 // ---- reading a result -------------------------------------------------------
+
+/** The page, or null when it was refused: the assertions that only care whether it was served. */
+function prepare(html: string): string | null {
+  const result = transform(html);
+  return result.ok ? result.html : null;
+}
+
+/** Why a page was refused, or 'served' when it was not. */
+function verdict(html: string): string {
+  const result = transform(html);
+  return result.ok ? 'served' : result.reason;
+}
 
 /** What a frame-making page looks like to a parse: these names, wherever they are. */
 const FRAME_MAKING = ['iframe', 'frame', 'frameset', 'object', 'embed', 'portal', 'fencedframe', 'noscript'];
@@ -96,9 +108,9 @@ function unguarded(out: string): string {
 }
 
 function prepared(html: string): string {
-  const out = prepareArtifactHtml(html);
-  if (out === null) throw new Error(`expected a page, got null for ${JSON.stringify(html.slice(0, 120))}`);
-  return out;
+  const result = transform(html);
+  if (!result.ok) throw new Error(`expected a page, got "${result.reason}" for ${JSON.stringify(html.slice(0, 120))}`);
+  return result.html;
 }
 
 /** The page's body (and head) with the guard marker, for exact expectations. */
@@ -251,7 +263,7 @@ describe('frame-making markup', () => {
     const out = prepared(html);
     expect(dangerIn(out)).toEqual([]);
     expect(leadingGuardText(out)).not.toBeNull();
-    expect(prepareArtifactHtml(out)).toBe(out);
+    expect(prepare(out)).toBe(out);
   });
 
   it('has a corpus whose size is pinned, so deleting rows is noticed (and adding some means updating this)', () => {
@@ -274,7 +286,7 @@ describe('markup that only talks about frames', () => {
     const out = prepared(v.html);
     expect(dangerIn(out)).toEqual([]);
     for (const piece of v.keep) expect(out).toContain(piece);
-    expect(prepareArtifactHtml(out)).toBe(out);
+    expect(prepare(out)).toBe(out);
   });
 });
 
@@ -358,7 +370,7 @@ describe('quirks mode', () => {
     // The mode comes from a flag the tokenizer sets on malformed doctypes, which the tree does not keep.
     for (const doctype of ['<!DOCTYPE html foo>', '<!DOCTYPE html PUBLIC>', '<!DOCTYPE html "x">']) {
       expect(modeOf(`${doctype}<p>x</p>`), doctype).toBe('quirks');
-      expect(prepareArtifactHtml(`${doctype}<p>x</p>`), doctype).toBeNull();
+      expect(verdict(`${doctype}<p>x</p>`), doctype).toBe('quirks');
     }
   });
 
@@ -366,7 +378,7 @@ describe('quirks mode', () => {
     // `""` and a missing identifier are different to the browser and the same in parse5's tree.
     const html = '<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN" "">';
     expect(modeOf(`${html}<p>x</p>`)).toBe('limited-quirks');
-    expect(prepareArtifactHtml(`${html}<p>x</p>`)).toBeNull();
+    expect(verdict(`${html}<p>x</p>`)).toBe('quirks');
   });
 });
 
@@ -458,7 +470,7 @@ describe('running it on its own output', () => {
 
   it.each(ALL)('gives the same string back: %s', (_name, html) => {
     const once = prepared(html);
-    expect(prepareArtifactHtml(once)).toBe(once);
+    expect(prepare(once)).toBe(once);
   });
 
   it('does not put a second guard in a page that already has one first', () => {
@@ -513,21 +525,21 @@ describe('running it on its own output', () => {
 describe('failing closed', () => {
   const nested = (open: string, close: string, depth: number) => open.repeat(depth) + 'x' + close.repeat(depth);
 
-  it('answers null, and does not throw, for nesting thousands deep', () => {
-    expect(() => prepareArtifactHtml('<div>'.repeat(8000))).not.toThrow();
-    expect(prepareArtifactHtml('<div>'.repeat(8000))).toBeNull();
-    expect(prepareArtifactHtml(nested('<div>', '</div>', 8000))).toBeNull();
-    expect(prepareArtifactHtml('<template>'.repeat(8000))).toBeNull();
-    expect(prepareArtifactHtml('<svg>'.repeat(8000))).toBeNull();
+  it('refuses nesting thousands deep as too deep, and does not throw', () => {
+    expect(() => transform('<div>'.repeat(8000))).not.toThrow();
+    expect(verdict('<div>'.repeat(8000))).toBe('too_deep');
+    expect(verdict(nested('<div>', '</div>', 8000))).toBe('too_deep');
+    expect(verdict('<template>'.repeat(8000))).toBe('too_deep');
+    expect(verdict('<svg>'.repeat(8000))).toBe('too_deep');
   });
 
   it('draws the line at the depth browsers stop nesting at (html and body count)', () => {
     // 510 divs + html + body = 512 open elements; one more is past the cap.
-    expect(prepareArtifactHtml(nested('<div>', '</div>', 510))).not.toBeNull();
-    expect(prepareArtifactHtml(nested('<div>', '</div>', 511))).toBeNull();
+    expect(verdict(nested('<div>', '</div>', 510))).toBe('served');
+    expect(verdict(nested('<div>', '</div>', 511))).toBe('too_deep');
     // Nesting through templates counts, even though a template's children hang off its content.
-    expect(prepareArtifactHtml(nested('<template>', '</template>', 510))).not.toBeNull();
-    expect(prepareArtifactHtml(nested('<template>', '</template>', 511))).toBeNull();
+    expect(verdict(nested('<template>', '</template>', 510))).toBe('served');
+    expect(verdict(nested('<template>', '</template>', 511))).toBe('too_deep');
   });
 
   it('answers null for a page with a NUL in it, wherever it is', () => {
@@ -542,7 +554,7 @@ describe('failing closed', () => {
       '<!--\u0000-->',
       '<p>x</p>\u0000',
     ]) {
-      expect(prepareArtifactHtml(html), JSON.stringify(html)).toBeNull();
+      expect(verdict(html), JSON.stringify(html)).toBe('nul');
     }
   });
 
@@ -563,27 +575,35 @@ describe('failing closed', () => {
       '<title>a&#13;b</title>',
       '<p>&#00013;</p>',
     ]) {
-      expect(prepareArtifactHtml(html), html).toBeNull();
+      expect(verdict(html), html).toBe('cr_entity');
     }
     expect(prepared('<p>a\r\nb\rc</p>')).toContain('<p>a\nb\nc</p>');
   });
 
-  it('answers null for markup that never settles', () => {
+  it('refuses <plaintext>, which never settles', () => {
     // Everything after <plaintext> is text, so the </plaintext> the serializer adds becomes part of the text on
     // the next read, and the page grows by one on every pass.
-    expect(prepareArtifactHtml('<plaintext><p>x')).toBeNull();
+    expect(verdict('<plaintext><p>x')).toBe('plaintext');
+    expect(verdict('<div><template><plaintext>x</template></div>')).toBe('plaintext');
   });
 
-  it('answers null, not a string, for input that is not text', () => {
-    expect(prepareArtifactHtml(undefined as unknown as string)).toBeNull();
-    expect(prepareArtifactHtml(42 as unknown as string)).toBeNull();
+  it('serves a <plaintext> that is only inside a frame it cuts, and one in SVG or MathML (an ordinary element there)', () => {
+    expect(verdict('<object><plaintext>x</object>')).toBe('served');
+    expect(verdict('<svg><plaintext>x</plaintext></svg><p>after</p>')).toBe('served');
+    expect(verdict('<math><plaintext>x</plaintext></math><p>after</p>')).toBe('served');
+  });
+
+  it('refuses input that is not text, with the parser-error code, and does not throw', () => {
+    expect(() => transform(undefined as unknown as string)).not.toThrow();
+    expect(verdict(undefined as unknown as string)).toBe('parse_error');
+    expect(verdict(42 as unknown as string)).toBe('parse_error');
   });
 
   it('serves a page with lots of siblings and long runs', () => {
-    expect(prepareArtifactHtml('<p>x</p>'.repeat(20000))).not.toBeNull();
-    expect(prepareArtifactHtml('<b>'.repeat(300) + 'x')).not.toBeNull();
-    expect(prepareArtifactHtml(`<p title="${'a'.repeat(200000)}">${'b'.repeat(200000)}</p>`)).not.toBeNull();
-    expect(prepareArtifactHtml('<'.repeat(100000))).not.toBeNull();
+    expect(verdict('<p>x</p>'.repeat(20000))).toBe('served');
+    expect(verdict('<b>'.repeat(300) + 'x')).toBe('served');
+    expect(verdict(`<p title="${'a'.repeat(200000)}">${'b'.repeat(200000)}</p>`)).toBe('served');
+    expect(verdict('<'.repeat(100000))).toBe('served');
   });
 });
 

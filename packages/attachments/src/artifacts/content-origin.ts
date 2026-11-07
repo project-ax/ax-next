@@ -214,7 +214,7 @@ export async function startContentOrigin(o: ContentOriginOptions): Promise<Conte
       out = { refusal: 'html_too_large' };
     } else {
       const prepared = prepareArtifactHtml(new TextDecoder().decode(served.bytes));
-      out = prepared === null ? { refusal: 'html_unsafe' } : { html: Buffer.from(prepared, 'utf8') };
+      out = prepared.ok ? { html: Buffer.from(prepared.html, 'utf8') } : { refusal: 'html_unsafe' };
     }
     if (key !== undefined && cost(out) <= HTML_CACHE_MAX_BYTES) {
       htmlCache.set(key, out);
