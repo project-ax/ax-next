@@ -269,10 +269,11 @@ class WorkerPreparer implements HtmlPreparer {
     const page = readAnswer(message, running.id);
     if (page === null) return;
     if (!page.ok && page.reason === 'worker_failed') {
-      // Something other than an answer: it is not to be trusted again.
+      // Something other than an answer: it is not to be trusted again. Ended BEFORE the page is finished, as
+      // finishing starts the next waiting page, which must go to a worker that is not the one just ended.
       this.onFault(new Error('prepare worker sent a message that is not an answer'));
-      this.finish(running, page);
       this.discard();
+      this.finish(running, page);
       return;
     }
     this.finish(running, page);

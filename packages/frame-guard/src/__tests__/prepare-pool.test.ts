@@ -206,6 +206,19 @@ describe('a worker that is held, out of memory, or gone', () => {
     expect(thread(await p.prepare('echo:after'))).not.toBe(before);
   });
 
+  it('gives the pages waiting behind a worker that sent nonsense to a new worker, not the one it ended', async () => {
+    const p = preparer();
+    const before = thread(await p.prepare('echo:before'));
+    const pages = [p.prepare('nonsense:'), p.prepare('echo:b'), p.prepare('echo:c')];
+    const [first, second, third] = await Promise.all(pages);
+    expect(first).toEqual({ ok: false, reason: 'worker_failed' });
+    expect(said(second!)).toMatch(/:b$/);
+    expect(said(third!)).toMatch(/:c$/);
+    // Both on the one new worker, which is not the one that was ended.
+    expect(thread(second!)).not.toBe(before);
+    expect(thread(third!)).toBe(thread(second!));
+  });
+
   it('does not take a refusal code it does not know: that is a worker that is not working', async () => {
     const f = faults();
     const p = preparer({ onFault: f.report });
