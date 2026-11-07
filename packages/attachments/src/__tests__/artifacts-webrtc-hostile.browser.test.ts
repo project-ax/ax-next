@@ -175,7 +175,7 @@ const PROBES: readonly Probe[] = [
           "document.body.appendChild(p.transformToFragment(new DOMParser().parseFromString('<a/>', 'application/xml'), document));",
       ),
   },
-  // A child inside a closed shadow root, made three ways at run time and once at parse time.
+  // A child inside a closed shadow root, made four ways at run time and once at parse time.
   {
     name: 'set-html-unsafe',
     body: (rtc) => `<div id="host"></div>` + script(`document.getElementById('host').setHTMLUnsafe(${js(closedShadow(rtc))});`),
@@ -191,6 +191,11 @@ const PROBES: readonly Probe[] = [
       script(`document.getElementById('host').attachShadow({ mode: 'closed' }).innerHTML = ${js(childFrame(rtc))};`),
   },
   { name: 'closed-dsd', body: (rtc) => closedShadow(rtc) },
+  // `document.write` runs the streaming parser, which builds declarative shadow roots: the closed-shadow-root
+  // frame again, made at run time, in a place the observer and `window.length` can't see. A plain iframe
+  // written the same way (the `document-write` probe) is another matter: the observer sees that one, so no
+  // lock on `document.write` is needed to stop it. This is the route that needs the lock.
+  { name: 'document-write-closed-dsd', body: (rtc) => script(`document.write(${js(closedShadow(rtc))});`) },
 ];
 
 const PROBE_NAMES = PROBES.map((p) => p.name);
