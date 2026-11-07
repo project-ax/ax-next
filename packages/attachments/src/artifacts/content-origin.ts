@@ -122,7 +122,7 @@ function htmlCsp(frameAncestors: readonly string[]): string {
  * read; the 25 MiB `DEFAULT_MAX_FILE_BYTES` is the attachments UPLOAD cap and
  * does not apply to artifacts). The transform runs off this thread and has limits
  * of its own (see prepareArtifactHtml), but an ordinary 4 MiB page still costs it
- * 0.3 to 0.35 s of CPU and a heap of 256 to 288 MB (measured on the heaviest real
+ * up to 0.35 s of CPU and a heap of 256 to 288 MB (measured on the heaviest real
  * pages), so bigger HTML is refused, never served untransformed.
  */
 export const MAX_HTML_TRANSFORM_BYTES = 4 * 1024 * 1024;

@@ -164,10 +164,11 @@ const CLOCK_EVERY = 1024;
  * serves other work must not hold it for longer than that, so this is what anyone
  * gets who calls `prepareArtifactHtml` directly. It is also what a refusal as too
  * slow is measured against, and that is the page and not the machine, so it can be
- * remembered. The heaviest real pages (3 to 4 MiB of script or inlined data; 40
- * distinct ones were measured) take 0.29 to 0.35 s of CPU on the machine measured
- * on and an ordinary one of 100 to 170 KiB 7 to 15 ms, which this passes with room
- * on that machine and not much to spare on a slower one. Those pages are served by the worker thread
+ * remembered. The heaviest real pages (3 to 4 MiB of script or inlined data; 49
+ * real pages of 0.4 to 4 MiB were measured) take up to 0.35 s of CPU on the machine
+ * measured on (the 3 to 4 MiB ones 0.22 to 0.35 s) and an ordinary one of 100 to 170
+ * KiB 7 to 15 ms, which this passes with room on that machine and not much to spare
+ * on a slower one. Those pages are served by the worker thread
  * (prepare-worker.ts), which gives the transform `WORKER_BUDGET_MS` and is the only
  * caller that does; nothing that serves requests runs a longer one.
  */
