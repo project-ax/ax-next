@@ -1,3 +1,5 @@
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createHtmlPreparer, prepareArtifactHtml, type HtmlPreparer, type HtmlPreparerOptions, type PreparedPage } from '../index.js';
 import { answerJob } from '../prepare-worker.js';
@@ -45,6 +47,19 @@ describe('a page goes to the worker and comes back as bytes', () => {
     expect(said(page)).toMatch(/^\d+:hello$/);
   });
 
+  it('does not keep the process alive once its pages are answered: an idle worker lets a process end', { timeout: 40_000 }, () => {
+    // A worker that was not unref-ed would hold a command, a test run or a server that is shutting down open for good.
+    const fixture = fileURLToPath(new URL('./fixtures/idle-pool.ts', import.meta.url));
+    const child = spawnSync(process.execPath, ['--import', 'tsx', fixture], {
+      cwd: fileURLToPath(new URL('../..', import.meta.url)),
+      encoding: 'utf8',
+      timeout: 30_000,
+    });
+    expect(child.error, 'the child did not end by itself').toBeUndefined();
+    expect(child.status).toBe(0);
+    expect(child.stdout).toContain('"ok":true');
+  });
+
   it('keeps the one worker for the pages that follow', async () => {
     const p = preparer();
     const first = thread(await p.prepare('echo:1'));
@@ -85,12 +100,16 @@ describe('a page goes to the worker and comes back as bytes', () => {
 
 describe('a worker that is held, out of memory, or gone', () => {
   it('ends a page that outstays the deadline, and the next page gets a new worker', async () => {
-    const p = preparer({ deadlineMs: 150 });
+    const f = faults();
+    const p = preparer({ deadlineMs: 150, onFault: f.report });
     const before = thread(await p.prepare('echo:before'));
     const started = performance.now();
     expect(await p.prepare('spin:')).toEqual({ ok: false, reason: 'worker_timeout' });
     // The deadline, not something that takes much longer than it.
     expect(performance.now() - started).toBeLessThan(1500);
+    // The worker that was ended says it has gone while the pool is idle: that is what was done to it, not a fault.
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(f.seen).toEqual([]);
     const after = await p.prepare('echo:after');
     expect(said(after)).toMatch(/:after$/);
     expect(thread(after)).not.toBe(before);
@@ -135,6 +154,14 @@ describe('a worker that is held, out of memory, or gone', () => {
     expect(await p.prepare('exit:')).toEqual({ ok: false, reason: 'worker_failed' });
     expect(f.seen).toHaveLength(1);
     expect(said(await p.prepare('echo:after'))).toMatch(/:after$/);
+  });
+
+  it('answers a worker that cannot be made at all (Node refuses its options) as failed, tells onFault, and does not throw', async () => {
+    const f = faults();
+    const p = preparer({ execArgv: ['--there-is-no-such-flag'], onFault: f.report });
+    expect(await p.prepare('echo:1')).toEqual({ ok: false, reason: 'worker_failed' });
+    expect(await p.prepare('echo:2')).toEqual({ ok: false, reason: 'worker_failed' });
+    expect(f.seen.map((e) => (e as NodeJS.ErrnoException).code)).toEqual(['ERR_WORKER_INVALID_EXEC_ARGV', 'ERR_WORKER_INVALID_EXEC_ARGV']);
   });
 
   it('answers a worker that cannot start as failed (not a hang), and keeps answering', async () => {
@@ -239,6 +266,29 @@ describe('turning pages away', () => {
         expect(refusal(await p.prepare(`echo:${i}`))).toBe('answered');
       }
     });
+  });
+});
+
+describe('options that would end the process are refused when the pool is made', () => {
+  // Node ends the whole process, not the worker, for a heap limit of 0, 1, 2 bytes... of MB, or a negative or non-numeric one (measured).
+  it.each([0, 1, 2, 4, 15, -5, Number.NaN, Number.POSITIVE_INFINITY])('a heap limit of %s', (limit) => {
+    expect(() => createHtmlPreparer({ maxOldGenerationSizeMb: limit })).toThrow(RangeError);
+  });
+
+  it.each([
+    ['deadlineMs', 0],
+    ['maxQueued', -1],
+    ['maxQueuedChars', -1],
+    ['busyWindowMs', 0],
+    ['maxBusyMs', Number.NaN],
+  ] as const)('%s of %s', (name, value) => {
+    expect(() => createHtmlPreparer({ [name]: value })).toThrow(new RegExp(`${name} must be a number`));
+  });
+
+  it('takes the least that works, and the defaults', async () => {
+    const small = preparer({ maxOldGenerationSizeMb: 16 });
+    expect(said(await small.prepare('echo:ok'))).toMatch(/:ok$/);
+    expect(() => createHtmlPreparer()).not.toThrow();
   });
 });
 

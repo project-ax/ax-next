@@ -47,7 +47,7 @@ export interface HtmlPreparer {
 export interface HtmlPreparerOptions {
   /** The worker's entry. Default: `prepare-worker.js` next to this file, which exists in the compiled package. */
   workerUrl?: URL;
-  /** Heap the worker may use before it is ended, in MB. Default 384. */
+  /** Heap the worker may use before it is ended, in MB: 16 or more (a smaller limit would end the process). Default 384. */
   maxOldGenerationSizeMb?: number;
   /** Milliseconds, on the wall clock, a page may take before the worker is ended. Default 6000. */
   deadlineMs?: number;
@@ -80,6 +80,14 @@ const DEFAULT_WORKER_URL = new URL('./prepare-worker.js', import.meta.url);
  * of them). 256 MB refuses it, 288 serves it; this leaves it half again.
  */
 const DEFAULT_OLD_GENERATION_MB = 384;
+/**
+ * The least heap limit the pool will start a worker with. Node does not end the worker for a limit
+ * that is too small, it ends the PROCESS: measured, 0, 1, 2, a negative number and NaN abort it with
+ * "Fatal JavaScript out of memory: GC during deserialization" while the worker is being made, 4 gives
+ * a worker that runs out of memory at once, and 8 and up work. A limit is a thing the code that makes
+ * the pool writes down, so a bad one is refused when the pool is made and not with the first page.
+ */
+const MIN_OLD_GENERATION_MB = 16;
 const DEFAULT_DEADLINE_MS = 6000;
 /** A burst a person can make (the browser tests load sixteen pages at once) fits; the line is for the rest. */
 const DEFAULT_MAX_QUEUED = 32;
@@ -100,6 +108,14 @@ interface Running {
   id: number;
   startedAt: number;
   timer: NodeJS.Timeout;
+}
+
+/** A number option that must be usable as it is. */
+function atLeast(name: string, value: number, min: number): number {
+  if (!Number.isFinite(value) || value < min) {
+    throw new RangeError(`@ax/frame-guard: ${name} must be a number of at least ${min} (got ${String(value)})`);
+  }
+  return value;
 }
 
 function refused(reason: PrepareRefusal | PoolRefusal): PreparedPage {
@@ -140,12 +156,14 @@ class WorkerPreparer implements HtmlPreparer {
 
   constructor(options: HtmlPreparerOptions) {
     this.workerUrl = options.workerUrl ?? DEFAULT_WORKER_URL;
-    this.limits = { maxOldGenerationSizeMb: options.maxOldGenerationSizeMb ?? DEFAULT_OLD_GENERATION_MB };
-    this.deadlineMs = options.deadlineMs ?? DEFAULT_DEADLINE_MS;
-    this.maxQueued = options.maxQueued ?? DEFAULT_MAX_QUEUED;
-    this.maxQueuedChars = options.maxQueuedChars ?? DEFAULT_MAX_QUEUED_CHARS;
-    this.busyWindowMs = options.busyWindowMs ?? DEFAULT_BUSY_WINDOW_MS;
-    this.maxBusyMs = options.maxBusyMs ?? DEFAULT_MAX_BUSY_MS;
+    this.limits = {
+      maxOldGenerationSizeMb: atLeast('maxOldGenerationSizeMb', options.maxOldGenerationSizeMb ?? DEFAULT_OLD_GENERATION_MB, MIN_OLD_GENERATION_MB),
+    };
+    this.deadlineMs = atLeast('deadlineMs', options.deadlineMs ?? DEFAULT_DEADLINE_MS, 1);
+    this.maxQueued = atLeast('maxQueued', options.maxQueued ?? DEFAULT_MAX_QUEUED, 0);
+    this.maxQueuedChars = atLeast('maxQueuedChars', options.maxQueuedChars ?? DEFAULT_MAX_QUEUED_CHARS, 0);
+    this.busyWindowMs = atLeast('busyWindowMs', options.busyWindowMs ?? DEFAULT_BUSY_WINDOW_MS, 1);
+    this.maxBusyMs = atLeast('maxBusyMs', options.maxBusyMs ?? DEFAULT_MAX_BUSY_MS, 0);
     this.now = options.now ?? (() => performance.now());
     this.execArgv = options.execArgv ?? [];
     this.onFault = options.onFault ?? (() => undefined);
@@ -232,12 +250,15 @@ class WorkerPreparer implements HtmlPreparer {
       env: {},
       execArgv: this.execArgv,
     });
-    worker.unref();
     worker.on('message', (message: unknown) => this.answered(generation, message));
     worker.on('error', (err: Error & { code?: string }) =>
       this.ended(generation, err.code === 'ERR_WORKER_OUT_OF_MEMORY' ? 'worker_oom' : 'worker_failed', err),
     );
     worker.on('exit', () => this.ended(generation, 'worker_failed', undefined));
+    // After the listeners, not before: a 'message' listener takes hold of the worker's port again (measured: a
+    // worker unref-ed first and given its listeners after kept an idle process from ever ending). While a page is
+    // being prepared it is the deadline timer that keeps the process open, which is what is wanted.
+    worker.unref();
     this.worker = worker;
     return worker;
   }
