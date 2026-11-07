@@ -687,9 +687,11 @@ function budgetFor(chars: number): number {
  *
  * Synchronous, on the caller's thread, and bounded by what the parse builds
  * and by the clock, not by the page's size (see the limits above): an ordinary
- * page takes under a quarter of a second per MB of HTML (two parses of it), and
- * a hostile one is refused in well under a second whatever its size. Still
- * hand it a bounded page: even a refusal costs the time it took to get there.
+ * page takes under a quarter of a second per MB of HTML (two parses of it; 4 MiB
+ * of script is 0.4 s), and every hostile shape measured is refused in under a
+ * second, most in milliseconds (the costliest page that stays inside every
+ * limit is about 0.3 s). Still hand it a bounded page: even a refusal costs the
+ * time it took to get there.
  *
  * `limits` is for tests; leave it out.
  */
