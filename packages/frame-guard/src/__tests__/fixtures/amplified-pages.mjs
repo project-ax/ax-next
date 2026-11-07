@@ -42,4 +42,8 @@ export const shapes = {
   fostered4: () => `<!doctype html><table>${`${'w'.repeat(40_000)}<i></i>`.repeat(100)}`,
   // Repeated <body> tags add their attributes to the first one: the values arrive by another way into the tree.
   bodies4: () => `<!doctype html><body>${Array.from({ length: 200 }, (_, i) => `<body a${i}='${'x'.repeat(20_000)}'>`).join('')}`,
+  // The same tags with a quote for every character of the values: each goes out as `&quot;`, so the page is refused after
+  // its FIRST parse and the second never reads it. What it needs is what the first parse holds of 4 MiB of attribute values
+  // that were added to the first <body> a tag at a time.
+  bodies4q: () => `<!doctype html><body>${Array.from({ length: 200 }, (_, i) => `<body a${i}='${'"'.repeat(20_000)}'>`).join('')}`,
 };

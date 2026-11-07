@@ -88,11 +88,12 @@ describe('the heap the heaviest pages need, against the one the worker is given 
   // 96 MB (256 to 288 before); a page of 4 MiB in tokens of 20 to 40 KB of any kind under 48; one token that is the
   // whole page (a 4 MiB script, a data URI, a tag with 200 long attributes, which is what the second pass sees of
   // 200 repeated <body> tags) about 160 (the last, 136 to 144), which is the joins of that one token and cannot be
-  // less. (Those cannot tell whether the attributes the repeated tags add are read flat in the FIRST pass: the second
-  // holds them all as one tag either way, and the build before the reads served the page with 160 as well. That is
-  // watched in prepare-html-failure.test.ts, by what the first parse holds.) These run with well
-  // over those and well under the default, so a change that brings the old figures back is seen here and not by a
-  // person with a host that has ended. (A limit far below the need ends the PROCESS, which is also why they are in a child.)
+  // less. (The page of repeated <body> tags that is SERVED cannot tell whether the attributes the repeated tags add are
+  // read flat in the FIRST pass: the second pass holds them all as one tag either way, and the build before the reads
+  // served it with 160 as well. The one that tells is the same page refused after its first parse, the last test here.)
+  // These run with well over those and well under the default, so a change that brings the old figures back is seen here
+  // and not by a person with a host that has ended. (A limit far below the need ends the PROCESS, which is also why they
+  // are in a child.)
   it('serves the 1.5 times page with a third of the default heap (128 MB)', { timeout: 90_000 }, () => {
     const outcome = run('mixed', 128);
     expect(outcome.status, `was ended by ${how(outcome)}`).toBe(0);
@@ -105,9 +106,28 @@ describe('the heap the heaviest pages need, against the one the worker is given 
     expect(outcome.answer).toMatchObject({ ok: true, faults: [] });
   });
 
-  it.each(['script4', 'attr4', 'bodies4'])('serves 4 MiB in one token (%s) with 224 MB, well under the default', { timeout: 90_000 }, (shape) => {
-    const outcome = run(shape, 224);
+  it.each([
+    ['script4', 224],
+    ['attr4', 224],
+    // The one big tag of the second pass: served every time from 144 MB (18 runs in 18) and only some of the time at 140 and below.
+    ['bodies4', 192],
+  ] as const)('serves 4 MiB in one token (%s) with %i MB, well under the default', { timeout: 90_000 }, (shape, heapMb) => {
+    const outcome = run(shape, heapMb);
     expect(outcome.status, `was ended by ${how(outcome)}`).toBe(0);
     expect(outcome.answer).toMatchObject({ ok: true, faults: [] });
+  });
+
+  // 200 repeated <body> tags with a quote in every character of their values (4 MiB; each quote is written as six characters,
+  // so the page is refused as too large after its FIRST parse and the second never reads it). What it needs is what the first
+  // parse holds of the attributes the repeated tags added to the first <body>, a value at a time: flat as they arrive, under
+  // 32 MB; as the joins parse5 built them, all of them at once, about 122 MB. At 64 the first is refused and the second is
+  // out of memory (19 in 20) or ends the process (1 in 20): this is the test that fails when `adoptAttributes` stops
+  // reading what it adds.
+  it('refuses 4 MiB of attributes that repeated <body> tags add, six times as long written out, as too large with 64 MB', { timeout: 90_000 }, () => {
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      const outcome = run('bodies4q', 64);
+      expect(outcome.status, `attempt ${attempt} was ended by ${how(outcome)}`).toBe(0);
+      expect(outcome.answer, `attempt ${attempt}`).toMatchObject({ ok: false, reason: 'output_too_large', faults: [] });
+    }
   });
 });
