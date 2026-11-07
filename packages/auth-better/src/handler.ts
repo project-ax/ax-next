@@ -184,9 +184,11 @@ function build(input: HandlerInput): BuiltHandler {
     // configured callback matches. When UNSET (local dev / tests, where
     // the OS-assigned port moves between boots), better-auth re-resolves
     // the base URL per request from the synthesized request URL's origin
-    // (forwardToBetterAuth in plugin.ts builds it from the `Host` header +
-    // `x-forwarded-proto`; better-auth ≥1.6 reads `request.url`'s origin,
-    // not the bare `Host` header). In that unset case better-auth logs a
+    // (forwardToBetterAuth in plugin.ts builds it in `better-auth-url.ts`
+    // from http-server's `req.protocol` — `X-Forwarded-Proto` counts only
+    // under `AX_TRUST_PROXY=1` — and the Host header when well-formed;
+    // better-auth ≥1.6 reads `request.url`'s origin, not the bare `Host`
+    // header). In that unset case better-auth logs a
     // construction-time "Base URL could not be determined" warning — it's
     // benign because per-request resolution covers it; setting baseURL
     // silences it AND makes redirect_uri robust.

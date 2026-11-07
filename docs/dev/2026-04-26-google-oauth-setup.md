@@ -132,4 +132,6 @@ check the env vars in `presets/k8s/src/index.ts`'s
 - **HTTPS** — dev runs over plain HTTP. Cookies won't have `Secure`.
   Production must terminate TLS in front of `ax-next serve` and set
   `AX_TRUST_PROXY=1` so the cookie picks up `Secure` from
-  `X-Forwarded-Proto`.
+  `X-Forwarded-Proto`. The same setting decides whether Better Auth sees
+  `https`. If `AX_PUBLIC_BASE_URL` isn't set either, sign-in builds
+  `http://` callback URLs behind your TLS proxy, and Google will refuse them.
