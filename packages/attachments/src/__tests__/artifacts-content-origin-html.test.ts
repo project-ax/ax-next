@@ -403,10 +403,10 @@ describe('content origin: prepared-HTML cache', () => {
     // bound (the real one is 32 MiB, and 4 MiB pages are what it is for, which is a second of test per page).
     const MAX_BYTES = 2.5 * 1024 * 1024;
     const PAGES = 6;
-    const big = (n: number): Uint8Array => {
+    const big = (n: number, mib = 1): Uint8Array => {
       const head = `<!doctype html><p>big ${n}</p><!--`;
       const tail = '-->';
-      return enc(head + 'a'.repeat(1024 * 1024 - head.length - tail.length) + tail);
+      return enc(head + 'a'.repeat(mib * 1024 * 1024 - head.length - tail.length) + tail);
     };
     const view = async (base: string, id: string): Promise<void> => void (await (await fetch(tokenUrl(base, id))).arrayBuffer());
 
@@ -425,6 +425,23 @@ describe('content origin: prepared-HTML cache', () => {
       // The oldest is not: six pages are far under the 16 the entry bound allows, so only the bytes sent it away.
       await view(base, 'b0');
       expect(prepare).toHaveBeenCalledTimes(PAGES + 1);
+    });
+
+    it('does not cache a page bigger than the whole bound, and does not push the others out to make room for it', async () => {
+      const base = await start({ htmlCache: { maxBytes: MAX_BYTES } });
+      put('s0', { bytes: big(0), contentKey: 'sha-s0' });
+      put('s1', { bytes: big(1), contentKey: 'sha-s1' });
+      put('huge', { bytes: big(2, 3), contentKey: 'sha-huge' }); // 3 MiB against a 2.5 MiB bound
+      await view(base, 's0');
+      await view(base, 's1');
+      await view(base, 'huge');
+      expect(prepare).toHaveBeenCalledTimes(3);
+      // The two small ones are still there; the huge one never was.
+      await view(base, 's0');
+      await view(base, 's1');
+      expect(prepare).toHaveBeenCalledTimes(3);
+      await view(base, 'huge');
+      expect(prepare).toHaveBeenCalledTimes(4);
     });
 
     it('is a bound apart from the entry bound: the same pages with room for every byte are all kept', async () => {
