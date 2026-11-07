@@ -11,6 +11,7 @@ const hooks = vi.hoisted(() => ({
   beforeParse: undefined as (() => void) | undefined,
   afterParse: undefined as ((doc: unknown) => void) | undefined,
   beforeSerialize: undefined as (() => void) | undefined,
+  afterSerialize: undefined as (() => void) | undefined,
 }));
 
 vi.mock('parse5', async (importOriginal) => {
@@ -33,7 +34,11 @@ vi.mock('parse5', async (importOriginal) => {
     Parser: HookedParser,
     serializeOuter: ((...args: Parameters<typeof real.serializeOuter>) => {
       hooks.beforeSerialize?.();
-      return real.serializeOuter(...args);
+      try {
+        return real.serializeOuter(...args);
+      } finally {
+        hooks.afterSerialize?.();
+      }
     }) as typeof real.serializeOuter,
   };
 });
@@ -50,6 +55,7 @@ beforeEach(() => {
   hooks.beforeParse = undefined;
   hooks.afterParse = undefined;
   hooks.beforeSerialize = undefined;
+  hooks.afterSerialize = undefined;
 });
 
 /** Adds a fresh <iframe> to the body of a parsed page, as a parse that keeps revealing one would. */
@@ -85,6 +91,21 @@ describe('prepareArtifactHtml when parse5 misbehaves', () => {
     };
     expect(() => transform('<p>x</p>')).not.toThrow();
     expect(outcome('<p>x</p>')).toBe('refused: parse_error');
+  });
+
+  it('looks at the clock while the page is being written out: a clock that runs out of time only then still refuses it', () => {
+    // The clock is read at the start, after the parse and just before the page is written; none of those sees
+    // the jump. It happens inside the serializer (for the length of one call of it, so the second pass reads
+    // a good clock again and cannot be what notices): only a look that the serializer's own reads of the tree
+    // make can. 2,000 paragraphs are 4,000 nodes, a look every 1,024 of them.
+    let late = false;
+    hooks.beforeSerialize = () => void (late = true);
+    hooks.afterSerialize = () => void (late = false);
+    const now = (): number => (late ? 10_000 : 0);
+    const page = '<p>x</p>'.repeat(2000);
+    expect(transform(page, { now, budgetMs: 100 })).toEqual({ ok: false, reason: 'too_slow' });
+    // ...and with the clock where it was, the same page is fine.
+    expect(transform(page, { now: () => 0, budgetMs: 100 }).ok).toBe(true);
   });
 
   it('refuses a page that keeps growing something to cut as never settling, after exactly four parses', () => {

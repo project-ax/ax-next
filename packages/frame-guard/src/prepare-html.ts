@@ -116,10 +116,26 @@ const MAX_ATTRS = 256;
  * guard. Writing a tree out repeats the attribute text of every element parse5
  * rebuilt (so one big attribute and a few hundred rebuilt elements is a result
  * of gigabytes from a few hundred nodes), and escaping can turn one character
- * into six. A real page comes back at about its own size.
+ * into six. A real page comes back at about its own size. Checked twice: on the
+ * tree before anything is written, counting each character as the serializer will
+ * write it (`weigh`), and on the string that comes out.
  */
 const OUTPUT_FACTOR = 4;
 const OUTPUT_SLACK = 64 * 1024;
+
+/**
+ * Characters the serializer may have to rewrite (`"`, `&`, `<`, `>` and the
+ * no-break space become `&quot;`, `&amp;`, `&lt;`, `&gt;` and `&nbsp;`), over the
+ * whole tree. parse5 escapes one match at a time, a regular expression match and
+ * two string joins for each, and the joins stay in memory until the result is
+ * flattened: measured, about 45 ns and 40 bytes of heap per character (a million
+ * is 50 ms and 44 MB; 4 MiB of nothing but `<`, which is four million, is 200 ms
+ * and 160 MB). So this, with the length limit, is what bounds writing a page out,
+ * whatever its size. Real pages have almost none: the densest of 1,341 pages
+ * of 20 KiB to 4 MiB had 0.6% (254 in 41,000 characters) and the most in any one
+ * was 287. A million is a 4 MiB page of which a quarter is such characters.
+ */
+const MAX_ESCAPES = 1_000_000;
 
 /**
  * Characters the tokenizer reads between looks at the clock and at the tag it is
@@ -165,7 +181,7 @@ export type PrepareRefusal =
   | 'too_much_work'
   /** The transform ran out of its time. */
   | 'too_slow'
-  /** The result would be far larger than the page. */
+  /** The result would be far larger than the page, or have far more characters to escape than any page does. */
   | 'output_too_large'
   /** `<plaintext>`: the rest of the document is its text, and writing the page back out changes it. */
   | 'plaintext'
@@ -189,6 +205,8 @@ export interface PrepareLimits {
   maxNodes?: number;
   /** Tree adapter calls the whole transform may make. Default: `MAX_CALLS`. */
   maxCalls?: number;
+  /** Characters the serializer may have to escape, in one tree. Default: `MAX_ESCAPES`. */
+  maxEscapes?: number;
   /** Characters the tokenizer reads between looks at the clock and at the tag it is in. Default: `LOOK_EVERY`. */
   lookEvery?: number;
   /** The clock, in milliseconds. Default: this thread's CPU time (`defaultClock`). */
@@ -230,6 +248,8 @@ interface Run {
   look: number;
   /** The most the result may weigh, in characters. */
   maxOutput: number;
+  /** The most characters the serializer may have to escape. */
+  maxEscapes: number;
 }
 
 const PARSE_OPTIONS = { scriptingEnabled: true } as const;
@@ -299,11 +319,117 @@ function walk(root: Tree.ParentNode, visit: (node: Tree.ParentNode) => void): vo
   }
 }
 
-/** About what an element weighs written out: its tags, and each attribute's name, value, quotes and space. */
-function elementWeight(el: Tree.Element): number {
-  let weight = 2 * el.tagName.length + 5;
-  for (const attr of el.attrs) weight += attr.name.length + attr.value.length + 4;
-  return weight;
+/**
+ * Adds up, before anything is written, what the finished page will weigh and how
+ * many characters its writing will escape, and refuses the moment either is past
+ * its limit. It has to be told what the serializer does, character by character,
+ * because the tree is not the page: the parser shares an element's attribute list
+ * with every copy it makes of the element (so a tree of a few hundred nodes can be
+ * gigabytes of markup), and the serializer turns one character into up to six.
+ * Counted as one each, 80 copies of an attribute of 200 KiB of quotes read as
+ * 16 MiB and were 100 MiB, and writing them took more than half a gigabyte.
+ *
+ * These are parse5's own rules (`serializer/index.js`, `entities/escape`):
+ * in an attribute value `"` and U+00A0 are six characters (`&quot;`, `&nbsp;`)
+ * and `&` is five; in text `&` is five, `<` and `>` are four and U+00A0 is six,
+ * except in the raw text of `script`, `style` and the like, which is written as
+ * it is. Elements are counted with both tags, so a void element is counted a few
+ * characters over. The count may be high, never low: a test holds it to that.
+ * The exact length is checked again once the page is written.
+ */
+class Weigher {
+  /** About the length of the page written out, in characters. */
+  weight = 0;
+  /** The characters in it that the serializer rewrites. */
+  escapes = 0;
+
+  constructor(
+    private readonly maxWeight: number,
+    private readonly maxEscapes: number,
+  ) {}
+
+  add(chars: number): void {
+    this.weight += chars;
+    if (this.weight > this.maxWeight || this.escapes > this.maxEscapes) throw new Refusal('output_too_large');
+  }
+
+  /** An attribute value: `"` and no-break space written as six, `&` as five. */
+  attribute(value: string): void {
+    let grown = 0;
+    let escapes = 0;
+    for (let i = 0; i < value.length; i++) {
+      const c = value.charCodeAt(i);
+      if (c === 34 || c === 160) {
+        grown += 5;
+        escapes++;
+      } else if (c === 38) {
+        grown += 4;
+        escapes++;
+      }
+    }
+    this.escapes += escapes;
+    this.add(value.length + grown);
+  }
+
+  /** Text outside a raw-text element: `&` as five, `<` and `>` as four, no-break space as six. */
+  text(value: string): void {
+    let grown = 0;
+    let escapes = 0;
+    for (let i = 0; i < value.length; i++) {
+      const c = value.charCodeAt(i);
+      if (c === 38) {
+        grown += 4;
+        escapes++;
+      } else if (c === 60 || c === 62) {
+        grown += 3;
+        escapes++;
+      } else if (c === 160) {
+        grown += 5;
+        escapes++;
+      }
+    }
+    this.escapes += escapes;
+    this.add(value.length + grown);
+  }
+
+  /**
+   * An element: its tags, and each attribute's name (with the `xlink:` sort of prefix), value, quotes and space,
+   * and the newline that `restoreSkippedNewlines` may put back after a `<pre>`.
+   */
+  element(el: Tree.Element): void {
+    this.add(2 * el.tagName.length + 5 + (EATS_FIRST_NEWLINE.has(el.tagName) ? 1 : 0));
+    for (const attr of el.attrs) {
+      this.add(attr.name.length + (attr.prefix === undefined ? 0 : attr.prefix.length + 1) + 4);
+      this.attribute(attr.value);
+    }
+  }
+}
+
+/** Whether the serializer writes the text of this element as it is: `script`, `style` and the few more raw-text elements. */
+function writesTextAsIs(node: Tree.ParentNode): boolean {
+  return isElement(node) && node.namespaceURI === spec.NS.HTML && spec.hasUnescapedText(node.tagName, SERIALIZE_OPTIONS.scriptingEnabled);
+}
+
+/** Adds up the whole tree. Refuses as it goes, so what it costs is bounded by the limits, not by the tree. */
+function weigh(doc: Tree.Document, weigher: Weigher): void {
+  walk(doc, (parent) => {
+    const asIs = writesTextAsIs(parent);
+    for (const child of parent.childNodes) {
+      if (isElement(child)) weigher.element(child);
+      else if (tree.isTextNode(child)) {
+        if (asIs) weigher.add(child.value.length);
+        else weigher.text(child.value);
+      } else if (tree.isCommentNode(child)) weigher.add(child.data.length + 7);
+      else if (tree.isDocumentTypeNode(child)) weigher.add(child.name.length + child.publicId.length + child.systemId.length + 40);
+    }
+  });
+}
+
+/** What `weigh` adds up for a tree, with no limit. Exported for tests, which hold the count to what the serializer writes. */
+export function weighTree(doc: Tree.Document): { weight: number; escapes: number } {
+  const weigher = new Weigher(Infinity, Infinity);
+  weigh(doc, weigher);
+  return { weight: weigher.weight, escapes: weigher.escapes };
 }
 
 /**
@@ -312,15 +438,9 @@ function elementWeight(el: Tree.Element): number {
  * namespace, the way a CSS type selector does: an `<iframe>` parsed into SVG is
  * inert today, but it is one mutation round trip from not being. Reports
  * whether it cut anything.
- *
- * It also adds up what the rest weighs written out, and refuses before anything
- * is written if that is more than `maxOutput`: the parser shares an element's
- * attribute list with every copy it makes of the element, so a tree of a few
- * hundred nodes can still be gigabytes of markup.
  */
-function scrub(doc: Tree.Document, maxOutput: number): boolean {
+function scrub(doc: Tree.Document): boolean {
   let cut = false;
-  let weight = 0;
   walk(doc, (node) => {
     const kept: Tree.ChildNode[] = [];
     for (const child of node.childNodes) {
@@ -342,16 +462,10 @@ function scrub(doc: Tree.Document, maxOutput: number): boolean {
             cut = true;
           }
         }
-        weight += elementWeight(child);
-      } else if (tree.isTextNode(child)) {
-        weight += child.value.length;
-      } else if (tree.isCommentNode(child)) {
-        weight += child.data.length + 7;
       }
       kept.push(child);
     }
     node.childNodes = kept;
-    if (weight > maxOutput) throw new Refusal('output_too_large');
   });
   return cut;
 }
@@ -392,19 +506,47 @@ function serializeDoctype(node: Tree.DocumentType): string {
   return `<!DOCTYPE ${node.name}${ids}>`;
 }
 
+/**
+ * The tree adapter parse5's serializer reads the tree through: the default one,
+ * with a look at the clock every CLOCK_EVERY nodes it visits. The serializer is
+ * recursive and writes with `+=`, and it is the one part of a pass that calls
+ * nothing of ours, so without this a page that is slow to write out (the weight
+ * and escape limits bound how much there is to write, not how long a slow machine
+ * takes to write it) would be written whatever the budget said. A refusal thrown
+ * from here ends the serializer's recursion at once.
+ */
+function meteredSerializer(run: Run): TreeAdapter<DefaultTreeAdapterMap> {
+  let visited = 0;
+  const lap = (): void => {
+    if (++visited % CLOCK_EVERY === 0) checkClock(run);
+  };
+  return {
+    ...tree,
+    getChildNodes: (node) => {
+      lap();
+      return tree.getChildNodes(node);
+    },
+    getTextNodeContent: (node) => {
+      lap();
+      return tree.getTextNodeContent(node);
+    },
+  };
+}
+
 /** The document as markup the browser parses back into the same tree. Reshapes `doc`. */
-function render(doc: Tree.Document, maxOutput: number): string {
+function render(doc: Tree.Document, run: Run): string {
   restoreSkippedNewlines(doc);
+  const options = { ...SERIALIZE_OPTIONS, treeAdapter: meteredSerializer(run) };
   let out = '';
   for (const child of doc.childNodes) {
-    out += tree.isDocumentTypeNode(child) ? serializeDoctype(child) : serializeOuter(child, SERIALIZE_OPTIONS);
+    out += tree.isDocumentTypeNode(child) ? serializeDoctype(child) : serializeOuter(child, options);
   }
   // Reading turns every CR and CRLF in the input into LF, so a CR in the tree
   // came from a character reference (&#13;). Written raw it would come back as
   // an LF; written as a reference it would be read as whitespace by a browser
   // and as text by parse5, which only counts tab, LF, FF and space, and ends a
   // <head> at it. Nothing legitimate spells one, so the page is refused.
-  if (out.length > maxOutput) throw new Refusal('output_too_large');
+  if (out.length > run.maxOutput) throw new Refusal('output_too_large');
   if (out.includes('\r')) throw new Refusal('cr_entity');
   return out;
 }
@@ -632,10 +774,12 @@ function settle(source: string, run: Run): string {
     checkClock(run);
     const modeNow = tree.getDocumentMode(doc);
     mode ??= modeNow;
-    const cut = scrub(doc, run.maxOutput);
+    const cut = scrub(doc);
+    // Before anything is written: what writing it would weigh, and how much it would have to escape.
+    weigh(doc, new Weigher(run.maxOutput, run.maxEscapes));
     putGuardFirst(doc);
     checkClock(run);
-    const next = render(doc, run.maxOutput);
+    const next = render(doc, run);
     // Nothing left to cut, and writing the tree back out, guard and all, gives
     // the string we just read (so the guard was already first in <head>, and
     // this string is one parse5 reproduces from its own reading of it):
@@ -705,6 +849,7 @@ export function prepareArtifactHtml(html: string, limits: PrepareLimits = {}): P
       deadline: now() + (limits.budgetMs ?? budgetFor(html.length)),
       maxNodes: limits.maxNodes ?? MAX_NODES,
       maxCalls: limits.maxCalls ?? MAX_CALLS,
+      maxEscapes: limits.maxEscapes ?? MAX_ESCAPES,
       look: Math.max(1, Math.floor(limits.lookEvery ?? LOOK_EVERY)),
       maxOutput: OUTPUT_FACTOR * html.length + OUTPUT_SLACK,
     };

@@ -1,8 +1,11 @@
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { getHeapStatistics } from 'node:v8';
 import { describe, expect, it } from 'vitest';
-import { parse, serialize } from 'parse5';
+import { defaultTreeAdapter as tree, parse, serialize, type DefaultTreeAdapterTypes as Tree } from 'parse5';
 import { FRAME_GUARD_SOURCE, prepareArtifactHtml, type PrepareLimits, type PrepareResult } from '../index.js';
-import { defaultClock } from '../prepare-html.js';
+import { defaultClock, weighTree } from '../prepare-html.js';
+import { escapeAmplification } from './hostile-pages.js';
 
 // The transform runs on the host's one thread, on a page an agent wrote, so what
 // it costs has to be bounded by something the agent does not choose. These tests
@@ -444,6 +447,144 @@ describe('each limit on its own, with a small page', () => {
       expect(verdict(out)).toBe('served');
       if (out.ok) expect(out.html.length).toBeGreaterThan(grows.length);
     });
+  });
+});
+
+// ---- what the serializer has to do to the characters (second review, finding 1) -----
+
+describe('a page the serializer would have to rewrite millions of characters of', () => {
+  // A quote in an attribute is written as six characters (`&quot;`), one at a time, and parse5 gives every copy
+  // of a rebuilt formatting element the SAME attribute list. Counted as one character each, 80 copies of a
+  // 200 KiB attribute looked like 16 MiB, which is inside the output limit; written out it is 100 MiB, and
+  // the serializer's work to get there is more than half a gigabyte of heap.
+  it('is refused before any of it is written, in milliseconds', () => {
+    const out = bestRun(escapeAmplification(CAP, 3));
+    expect(verdict(out)).toBe('output_too_large');
+    expectFast(out);
+  });
+
+  it('does not end a process with a 256 MB heap', { timeout: 60_000 }, () => {
+    // The same page in a child, with the heap a small host might give the whole process. On the old transform
+    // the child dies ("JavaScript heap out of memory", exit 134) after about a second of work; the answer
+    // is not repeated, because nothing is cached when the process is gone.
+    const packageDir = fileURLToPath(new URL('../..', import.meta.url));
+    const fixture = fileURLToPath(new URL('./fixtures/run-page.ts', import.meta.url));
+    const child = spawnSync(process.execPath, ['--max-old-space-size=256', '--import', 'tsx', fixture, 'escape-amplification'], {
+      cwd: packageDir,
+      encoding: 'utf8',
+      timeout: 50_000,
+    });
+    expect(child.status, `the child ended with ${child.signal ?? child.status}: ${child.stderr.slice(-600)}`).toBe(0);
+    const answer = JSON.parse(child.stdout.trim().split('\n').pop() ?? '{}') as { ok: boolean; reason: string | null; ms: number };
+    expect(answer).toMatchObject({ ok: false, reason: 'output_too_large' });
+    expect(answer.ms).toBeLessThan(FAST_MS);
+  });
+});
+
+describe('the weight it counts before it writes anything', () => {
+  // The limit on what a page may come back as is checked on the tree, before the page is written, so the count
+  // has to be what the serializer will really write: never lower (or a hostile page gets through it, which is
+  // what the escaped quotes did), and close to it (or a good page is refused).
+  const doc = (): Tree.Document => parse('<!doctype html><title>t</title><p>x</p><script></script>', { scriptingEnabled: true });
+  const find = (d: Tree.Document, name: string): Tree.Element => {
+    const stack: Tree.Node[] = [d];
+    for (let n = stack.pop(); n !== undefined; n = stack.pop()) {
+      if (tree.isElementNode(n) && n.tagName === name) return n;
+      if ('childNodes' in n) stack.push(...n.childNodes);
+    }
+    throw new Error(`no <${name}>`);
+  };
+  const written = (d: Tree.Document): number => serialize(d, { scriptingEnabled: true }).length;
+
+  /** A made-up string of the characters the serializer treats specially, and a few it does not. */
+  function sample(seed: number, length: number): string {
+    const chars = ['a', 'é', '"', "'", '&', '<', '>', '\u00a0', '\n', ' ', ';', '\u{1F600}'];
+    let out = '';
+    for (let i = 0, x = seed; i < length; i++) {
+      x = (Math.imul(x, 1103515245) + 12345) >>> 0;
+      out += chars[(x >>> 8) % chars.length];
+    }
+    return out;
+  }
+  const count = (value: string, set: RegExp): number => (value.match(set) ?? []).length;
+
+  it.each([1, 2, 3, 4, 5, 6])('counts a string as the serializer writes it: one that grows by exactly what the count says (sample %i)', (seed) => {
+    const value = sample(seed, 400);
+    const before = doc();
+    const baseWeight = weighTree(before).weight;
+    const baseWritten = written(before);
+
+    // In an attribute value: `"` and no-break space are six characters, `&` is five.
+    const attributed = doc();
+    find(attributed, 'p').attrs.push({ name: 'title', value });
+    expect(weighTree(attributed).weight - baseWeight).toBe(written(attributed) - baseWritten);
+    expect(weighTree(attributed).escapes).toBe(count(value, /["&\u00a0]/g));
+
+    // In text: `&` is five, `<` and `>` four, no-break space six.
+    const texted = doc();
+    tree.insertText(find(texted, 'p'), value);
+    expect(weighTree(texted).weight - baseWeight).toBe(written(texted) - baseWritten);
+    expect(weighTree(texted).escapes).toBe(count(value, /[&<>\u00a0]/g));
+
+    // In a script, which the serializer writes as it is: no escapes, no growth.
+    const scripted = doc();
+    tree.insertText(find(scripted, 'script'), value);
+    expect(weighTree(scripted).weight - baseWeight).toBe(written(scripted) - baseWritten);
+    expect(weighTree(scripted).escapes).toBe(0);
+  });
+
+  it('is never lower than what the page comes back as, and close to it', () => {
+    const PAGES = [
+      '<!doctype html><title>t</title><p>one &amp; two &lt;three&gt; "four"</p>',
+      '<img src=a alt="x &quot;y&quot;"><br><input value="1&2"><hr>',
+      '<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"><use xlink:href="#a" xml:lang="en"/></svg>',
+      '<template><p title="a&b">x&y</p></template><textarea>a&lt;b</textarea><pre>\n\nx</pre>',
+      '<style>a>b{content:"<"}</style><script>if(a<b&&c>d){}</script><xmp><b>&amp;</b></xmp>',
+      '<!doctype html public "-//W3C//DTD HTML 4.01 Transitional//EN" "http://www.w3.org/TR/html4/loose.dtd"><p>x',
+      '<table><tr><td>a<td>b<tr><td>c</table><!-- a comment --><p>one<p>two<ul><li>x<li>y</ul>',
+      '<div><b x=1 y="&amp;&amp;"><i>one</b>two</i></div><div><span></div>'.repeat(20),
+    ];
+    for (const page of PAGES) {
+      const result = prepareArtifactHtml(page);
+      expect(result.ok).toBe(true);
+      if (!result.ok) continue;
+      const open = result.html.indexOf(`<script>${FRAME_GUARD_SOURCE}`);
+      const actual = result.html.length - (result.html.indexOf('</script>', open) + '</script>'.length - open);
+      const counted = weighTree(parse(page, { scriptingEnabled: true })).weight;
+      expect(counted, page).toBeGreaterThanOrEqual(actual);
+      // a void element's end tag and a doctype's spacing are the only things counted that are not written
+      expect(counted - actual, page).toBeLessThan(actual * 0.2 + 80);
+    }
+  });
+
+  it('counts a shared attribute again for every copy of the element, and a page that needs too many escapes is refused', () => {
+    // Twenty formatting elements with five characters to escape each; every `<span>` brings them all back.
+    const attributes = '&amp;'.repeat(5);
+    let page = '<div>';
+    for (let i = 0; i < 20; i++) page += `<b x=${i} y="${attributes}">`;
+    page += `</div>${'<div><span></div>'.repeat(40)}`; // 800 copies: 4,000 escapes, from a page with a hundred in it
+    expect(verdict(prepareArtifactHtml(page, { maxEscapes: 10_000 }))).toBe('served');
+    expect(verdict(prepareArtifactHtml(page, { maxEscapes: 3000 }))).toBe('output_too_large');
+  });
+
+  it('lets a text, an attribute or a comment have exactly maxEscapes characters to escape, and no more; a raw-text element has none', () => {
+    const text = (n: number): string => `<p>${'&'.repeat(n)}</p>`;
+    expect(verdict(prepareArtifactHtml(text(100), { maxEscapes: 100 }))).toBe('served');
+    expect(verdict(prepareArtifactHtml(text(101), { maxEscapes: 100 }))).toBe('output_too_large');
+    const attribute = (n: number): string => `<p title="${'&quot;'.repeat(n)}">x</p>`;
+    expect(verdict(prepareArtifactHtml(attribute(100), { maxEscapes: 100 }))).toBe('served');
+    expect(verdict(prepareArtifactHtml(attribute(101), { maxEscapes: 100 }))).toBe('output_too_large');
+    // Written as they are, so nothing to escape however many there are:
+    expect(verdict(prepareArtifactHtml(`<script>${'<'.repeat(5000)}</script><style>${'>'.repeat(5000)}</style><!--${'&'.repeat(5000)}-->`, { maxEscapes: 10 }))).toBe('served');
+  });
+
+  it('counts escapes in one string without building anything: 1 MiB of text of `<` is refused on the count alone', () => {
+    // Four characters out for each, so 4 MiB written: not over four times the page. Only the escape limit says no.
+    const page = `<p>${'<'.repeat(1 * MiB)}</p>`;
+    expect(verdict(prepareArtifactHtml(page, { maxEscapes: 500_000 }))).toBe('output_too_large');
+    const out = bestRun(page);
+    expect(verdict(out)).toBe('output_too_large'); // the real limit is a million
+    expectFast(out);
   });
 });
 
