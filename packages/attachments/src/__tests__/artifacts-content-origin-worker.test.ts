@@ -230,8 +230,12 @@ describe('the content origin on its real worker thread', () => {
     const base = await start({ htmlPreparer: preparer });
     put('one', enc(`<!doctype html><script>${'a=1;'.repeat(CAP / 4 - 64)}</script>`));
     put('two', enc('<!doctype html><p>two</p>'));
-    // The first holds the worker for a few hundred milliseconds; the second arrives while it does.
-    const [one, two] = await Promise.all([fetch(tokenUrl(base, 'one')), fetch(tokenUrl(base, 'two'))]);
+    // The first holds the worker for a few hundred milliseconds; the second arrives while it does (a moment after
+    // it was sent, not at the same time: two requests sent together reach the server in either order).
+    const firstView = fetch(tokenUrl(base, 'one'));
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const two = await fetch(tokenUrl(base, 'two'));
+    const one = await firstView;
     expect(one.status).toBe(200);
     expect([two.status, await two.text()]).toEqual([422, HTML_REFUSED_BODY]);
     expect(lines.map((l) => (JSON.parse(l) as [string, string, { code: string }])[2].code)).toEqual(['busy']);
