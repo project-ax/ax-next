@@ -133,13 +133,12 @@ const LOOK_EVERY = 4096;
 const CLOCK_EVERY = 1024;
 
 /**
- * The time one call may take: a floor, plus a share for each MiB of page. The
- * limits above stop every shape measured in a quarter of a second or less; this
- * is the backstop for the ones nobody has found. It has to leave room for the
- * biggest ordinary pages (4 MiB of script or inlined data takes 0.4 s on a fast
- * machine, an ordinary page under 0.05 s) on a host that is slower or busy: the
- * clock is wall time, and a pause the process doesn't choose counts. About four
- * times what the biggest takes, and ten for the usual page.
+ * The time one call may take, of this thread's CPU: a floor, plus a share for
+ * each MiB of page. The limits above stop every shape measured in a quarter of
+ * a second or less; this is the backstop for the ones nobody has found. It has
+ * to leave room for the biggest ordinary pages (4 MiB of script or inlined data
+ * takes 0.4 s on a fast machine, an ordinary page under 0.05 s) on a host that
+ * is slower: about four times what the biggest takes, and ten for the usual page.
  */
 const BUDGET_BASE_MS = 400;
 const BUDGET_PER_MIB_MS = 300;
@@ -191,8 +190,23 @@ export interface PrepareLimits {
   maxCalls?: number;
   /** Characters the tokenizer reads between looks at the clock and at the tag it is in. Default: `LOOK_EVERY`. */
   lookEvery?: number;
-  /** The clock, in milliseconds. Default: `performance.now`. */
+  /** The clock, in milliseconds. Default: this thread's CPU time (`defaultClock`). */
   now?: () => number;
+}
+
+/**
+ * The clock the time budget runs on: the CPU time this thread has used, in
+ * milliseconds. Not the wall clock. The budget is for work, and a stretch the OS
+ * gives the thread to something else (a busy host, a CPU quota, a test runner
+ * with every core taken) is not the page's doing: measured, a wall clock turned
+ * good pages into refused ones whenever the machine was busy, and a refusal is
+ * cached. Where the runtime has no per-thread CPU time it is the wall clock (every
+ * Node this repo supports has it).
+ */
+export function defaultClock(): number {
+  if (typeof process.threadCpuUsage !== 'function') return performance.now();
+  const { user, system } = process.threadCpuUsage();
+  return (user + system) / 1000;
 }
 
 /** What ends a transform early. Private: it never leaves this module, `prepareArtifactHtml` turns it into a result. */
@@ -681,7 +695,7 @@ function budgetFor(chars: number): number {
  */
 export function prepareArtifactHtml(html: string, limits: PrepareLimits = {}): PrepareResult {
   try {
-    const now = limits.now ?? ((): number => performance.now());
+    const now = limits.now ?? defaultClock;
     const run: Run = {
       now,
       calls: 0,

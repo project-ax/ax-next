@@ -2,6 +2,7 @@ import { getHeapStatistics } from 'node:v8';
 import { describe, expect, it } from 'vitest';
 import { parse, serialize } from 'parse5';
 import { FRAME_GUARD_SOURCE, prepareArtifactHtml, type PrepareLimits, type PrepareResult } from '../index.js';
+import { defaultClock } from '../prepare-html.js';
 
 // The transform runs on the host's one thread, on a page an agent wrote, so what
 // it costs has to be bounded by something the agent does not choose. These tests
@@ -102,7 +103,7 @@ interface Run {
  * work that never yields.
  */
 function run(html: string, limits: PrepareLimits = {}): Run {
-  const clock = limits.now ?? ((): number => performance.now());
+  const clock = limits.now ?? defaultClock;
   const base = getHeapStatistics().used_heap_size;
   let peak = base;
   let samples = 0;
@@ -328,6 +329,21 @@ describe('each limit on its own, with a small page', () => {
   });
 
   describe('the clock', () => {
+    it('is the CPU time of the thread by default: a pause that uses none does not move it', () => {
+      // A stretch where the OS gives the thread to something else (a busy host, a CPU quota) must not count
+      // against the page, or a good page is refused (and the refusal cached) whenever the machine is busy.
+      if (typeof process.threadCpuUsage !== 'function') return;
+      const before = defaultClock();
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 150); // 150 ms asleep, none of it CPU
+      expect(defaultClock() - before).toBeLessThan(60);
+      // ...and CPU spent is counted.
+      const spinFrom = defaultClock();
+      for (let end = performance.now() + 80; performance.now() < end; ) {
+        /* burn */
+      }
+      expect(defaultClock() - spinFrom).toBeGreaterThan(40);
+    });
+
     it('refuses a page whose parse runs past the budget, partway through', () => {
       // Each read of the clock is a millisecond; a page this size is looked at dozens of times.
       const page = '<p>x</p>'.repeat(5000);
