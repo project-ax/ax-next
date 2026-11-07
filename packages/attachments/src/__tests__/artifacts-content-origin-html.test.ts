@@ -444,6 +444,20 @@ describe('content origin: prepared-HTML cache', () => {
       expect(prepare).toHaveBeenCalledTimes(4);
     });
 
+    it('holds at its real size: 4 MiB pages against the real 32 MiB bound, with ten pages (far fewer than 16)', { timeout: 60_000 }, async () => {
+      // The pages the origin transforms at most (4 MiB each): eight are over 32 MiB, so by the tenth the oldest
+      // has gone by size. This one runs the default bound, which the tests above lower to stay quick.
+      const base = await start();
+      const TEN = 10;
+      for (let i = 0; i < TEN; i++) put(`r${i}`, { bytes: big(i, 4), contentKey: `sha-real-${i}` });
+      for (let i = 0; i < TEN; i++) await view(base, `r${i}`);
+      expect(prepare).toHaveBeenCalledTimes(TEN);
+      await view(base, `r${TEN - 1}`); // the newest is kept
+      expect(prepare).toHaveBeenCalledTimes(TEN);
+      await view(base, 'r0'); // the oldest went by size
+      expect(prepare).toHaveBeenCalledTimes(TEN + 1);
+    });
+
     it('is a bound apart from the entry bound: the same pages with room for every byte are all kept', async () => {
       const base = await start({ htmlCache: { maxBytes: 64 * 1024 * 1024 } });
       for (let i = 0; i < PAGES; i++) put(`b${i}`, { bytes: big(i), contentKey: `sha-big-${i}` });
