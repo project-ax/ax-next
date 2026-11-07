@@ -125,11 +125,25 @@ const MAX_ATTRS = 256;
  * guard. Writing a tree out repeats the attribute text of every element parse5
  * rebuilt (so one big attribute and a few hundred rebuilt elements is a result
  * of gigabytes from a few hundred nodes), and escaping can turn one character
- * into six. A real page comes back at about its own size. Checked twice: on the
- * tree before anything is written, counting each character as the serializer will
- * write it (`weigh`), and on the string that comes out.
+ * into six. A real page comes back at its own size: of 3,869 real pages (up to
+ * 4 MiB) none came back more than 1.001 times as long as soon as it was over 256
+ * KiB (947 of them), and the most any grew was 1.27 times, a page of 1 KiB, which
+ * the slack covers.
+ *
+ * It is also what bounds the second pass, which has to tokenize everything the
+ * first wrote. It was 4, and an ASCII page under 4 MiB (ten attributes of 420 KB
+ * on formatting elements, rebuilt twice) that wrote out at three times its length
+ * was let through and ended the process: the second pass over 12.6 MB needed more
+ * than 400 MB of heap and V8 aborted, which it does instead of ending the worker
+ * when a limit is that far under the need. 1.5 refuses every such shape found
+ * (measured, a fraction of a second each), and the most it lets through is the
+ * worst legitimate page: half a script, half attributes written out once more.
+ * That page needs under 96 MB with the reads in `boundedAdapter`; 256 to 288
+ * without them. Checked twice: on the tree before anything is written, counting
+ * each character as the serializer will write it (`weigh`), and on the string
+ * that comes out, so a second pass never starts on more than this.
  */
-const OUTPUT_FACTOR = 4;
+const OUTPUT_FACTOR = 1.5;
 const OUTPUT_SLACK = 64 * 1024;
 
 /**
@@ -285,6 +299,8 @@ interface Run {
   maxOutput: number;
   /** The most characters the serializer may have to escape. */
   maxEscapes: number;
+  /** Where the reads that make a string flat (see `boundedAdapter`) go. Nothing reads it. */
+  sink: number;
 }
 
 const PARSE_OPTIONS = { scriptingEnabled: true } as const;
@@ -647,6 +663,24 @@ function boundedAdapter(run: Run): TreeAdapter<DefaultTreeAdapterMap> {
   const attrs = (count: number): void => {
     if (count > MAX_ATTRS) throw new Refusal('too_many_attrs');
   };
+  // parse5 builds a token's text one character at a time (`value += character`), and a string made that way is
+  // a chain of joins, about 32 bytes a character, until something reads it flat. Nothing did until the whole
+  // page was weighed, after the parse, so a page held every character of every token as a join at once: the
+  // second pass over a page that had been written out three times as long, its long attributes tokenized one
+  // character at a time, needed more than 400 MB of heap and ended the process. Reading each string flat as it
+  // arrives lets the joins go as the parse goes, so the heap it needs follows the biggest token and not the
+  // page (measured: the 1.5x page that needed 256 to 288 MB needs under 96). `run.sink` takes the read, which
+  // is all it is for.
+  const flat = (value: string): string => {
+    run.sink |= value.charCodeAt(0);
+    return value;
+  };
+  const flatAttrs = (list: readonly { name: string; value: string }[]): void => {
+    for (const a of list) {
+      flat(a.name);
+      flat(a.value);
+    }
+  };
   return {
     ...tree,
     createDocumentFragment: () => {
@@ -656,19 +690,23 @@ function boundedAdapter(run: Run): TreeAdapter<DefaultTreeAdapterMap> {
     createElement: (name, namespace, attributes) => {
       attrs(attributes.length);
       built();
+      flatAttrs(attributes);
       return tree.createElement(name, namespace, attributes);
     },
     createCommentNode: (data) => {
       built();
-      return tree.createCommentNode(data);
+      return tree.createCommentNode(flat(data));
     },
     createTextNode: (value) => {
       built();
-      return tree.createTextNode(value);
+      return tree.createTextNode(flat(value));
+    },
+    setDocumentType: (document, name, publicId, systemId) => {
+      tree.setDocumentType(document, flat(name), flat(publicId), flat(systemId));
     },
     insertText: (parent, text) => {
       const before = parent.childNodes.length;
-      tree.insertText(parent, text);
+      tree.insertText(parent, flat(text));
       if (parent.childNodes.length > before) built();
       else lap();
     },
@@ -677,6 +715,7 @@ function boundedAdapter(run: Run): TreeAdapter<DefaultTreeAdapterMap> {
     // foster-parented siblings costs a walk past the N before it.
     insertTextBefore: (parent, text, reference) => {
       heavy();
+      flat(text);
       const siblings = parent.childNodes;
       const at = siblings.lastIndexOf(reference);
       const previous = siblings[at - 1];
@@ -707,6 +746,7 @@ function boundedAdapter(run: Run): TreeAdapter<DefaultTreeAdapterMap> {
     adoptAttributes: (recipient, attributes) => {
       heavy();
       attrs(attributes.length);
+      flatAttrs(attributes);
       let names = adopted.get(recipient);
       if (names === undefined) {
         names = new Set(recipient.attrs.map((attr) => attr.name));
@@ -847,7 +887,7 @@ function settle(source: string, run: Run): string {
  * deeper than a browser does; its doctype can't be written back without
  * changing the page's quirks mode; parsing it would build more nodes, or give
  * one element more attributes, or take longer, than any real page does; the
- * result would be several times the page's size; or the parser threw. It never
+ * result would be more than one and a half times the page's size; or the parser threw. It never
  * throws.
  *
  * The page is rebuilt from a parse, so it comes back normalized (implied
@@ -885,6 +925,7 @@ export function prepareArtifactHtml(html: string, limits: PrepareLimits = {}): P
       maxNodes: limits.maxNodes ?? MAX_NODES,
       maxCalls: limits.maxCalls ?? MAX_CALLS,
       maxEscapes: limits.maxEscapes ?? MAX_ESCAPES,
+      sink: 0,
       look: Math.max(1, Math.floor(limits.lookEvery ?? LOOK_EVERY)),
       maxOutput: OUTPUT_FACTOR * html.length + OUTPUT_SLACK,
     };

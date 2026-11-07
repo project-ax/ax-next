@@ -468,7 +468,8 @@ describe('each limit on its own, with a small page', () => {
     });
 
     it('refuses a result that only escaping makes too large (a quote in an attribute is six characters out)', () => {
-      expect(verdict(prepareArtifactHtml(`<p title='${'"'.repeat(15_000)}'>x</p>`))).toBe('served'); // 90 KB out: under the slack
+      expect(verdict(prepareArtifactHtml(`<p title='${'"'.repeat(10_000)}'>x</p>`))).toBe('served'); // 60 KB out: under the slack
+      expect(verdict(prepareArtifactHtml(`<p title='${'"'.repeat(15_000)}'>x</p>`))).toBe('output_too_large'); // 90 KB out: past 1.5x and the slack
       expect(verdict(prepareArtifactHtml(`<p title='${'"'.repeat(1 * MiB)}'>x</p>`))).toBe('output_too_large'); // 6 MiB out
     });
 
@@ -615,11 +616,13 @@ describe('the weight it counts before it writes anything', () => {
     expect(verdict(prepareArtifactHtml(`<script>${'<'.repeat(5000)}</script><style>${'>'.repeat(5000)}</style><!--${'&'.repeat(5000)}-->`, { maxEscapes: 10 }))).toBe('served');
   });
 
-  it('counts escapes in one string without building anything: 1 MiB of text of `<` is refused on the count alone', () => {
-    // Four characters out for each, so 4 MiB written: not over four times the page. Only the escape limit says no.
-    const page = `<p>${'<'.repeat(1 * MiB)}</p>`;
-    expect(verdict(prepareArtifactHtml(page, { maxEscapes: 500_000 }))).toBe('output_too_large');
-    const out = bestRun(page);
+  it('counts escapes in one string without building anything: a million `<` written as `&lt;` is refused on the count alone', () => {
+    // `&lt;` is four characters in and four out, so the result is no bigger than the page: the escape limit is the
+    // only one that says no (the length limit, 1.5 times the page, says yes).
+    const page = `<p>${'&lt;'.repeat(600_000)}</p>`;
+    expect(verdict(prepareArtifactHtml(page, { maxEscapes: 500_000, budgetMs: 60_000 }))).toBe('output_too_large');
+    expect(verdict(prepareArtifactHtml(page, { budgetMs: 60_000 }))).toBe('served'); // 600,000: under the real limit
+    const out = bestRun(`<p>${'&lt;'.repeat(1_000_001)}</p>`, { budgetMs: 60_000 });
     expect(verdict(out)).toBe('output_too_large'); // the real limit is a million
     expectFast(out);
   });
