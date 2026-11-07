@@ -156,16 +156,19 @@ const LOOK_EVERY = 4096;
 const CLOCK_EVERY = 1024;
 
 /**
- * The time one call may take, of this thread's CPU, whatever the size of the page.
- * The limits above stop the shapes measured in a fraction of this; it is the
- * backstop for the ones nobody has found, and what a refusal as too slow is
- * measured against (a caller may cache that refusal: it is the page, not the
- * machine). So it has to leave room for the biggest page that is meant to be served,
- * on a host slower than the one measured. The heaviest real pages (4 MiB of script or
- * inlined data; the 40 biggest of the ones on this machine) take 0.29 to 0.35 s of CPU
- * here and an ordinary page under 0.05 s, so this is four times the first.
+ * The time one call may take, of this thread's CPU, when the caller does not say
+ * otherwise: 500 ms, whatever the size of the page. A call made on a thread that
+ * serves other work must not hold it for longer than that, so this is what anyone
+ * gets who calls `prepareArtifactHtml` directly. It is also what a refusal as too
+ * slow is measured against, and that is the page and not the machine, so it can be
+ * remembered. The heaviest real pages (3 to 4 MiB of script or inlined data; 40
+ * distinct ones were measured) take 0.29 to 0.35 s of CPU on the machine measured
+ * on and an ordinary page under 0.05 s, which this passes with room on that machine
+ * and not much to spare on a slower one. Those pages are served by the worker thread
+ * (prepare-worker.ts), which gives the transform `WORKER_BUDGET_MS` and is the only
+ * caller that does; nothing that serves requests runs a longer one.
  */
-const BUDGET_MS = 1500;
+const BUDGET_MS = 500;
 
 const NUL = '\u0000';
 
@@ -227,7 +230,7 @@ export function isPrepareRefusal(value: unknown): value is PrepareRefusal {
  * limit with a small page, or take the clock out of the picture.
  */
 export interface PrepareLimits {
-  /** Milliseconds of CPU the whole call may take. Default: `BUDGET_MS`. */
+  /** Milliseconds of CPU the whole call may take. Default: `BUDGET_MS` (500). */
   budgetMs?: number;
   /** Nodes one parse may build. Default: `MAX_NODES`. */
   maxNodes?: number;

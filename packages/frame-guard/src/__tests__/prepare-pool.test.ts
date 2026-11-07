@@ -1,9 +1,15 @@
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createHtmlPreparer, prepareArtifactHtml, type HtmlPreparer, type HtmlPreparerOptions, type PreparedPage } from '../index.js';
-import { answerJob } from '../prepare-worker.js';
+import { answerJob, WORKER_BUDGET_MS } from '../prepare-worker.js';
 import { escapeAmplification } from './hostile-pages.js';
+
+// Watches the transform, so a test can see with what limits the worker's part calls it.
+vi.mock('../prepare-html.js', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../prepare-html.js')>();
+  return { ...real, prepareArtifactHtml: vi.fn(real.prepareArtifactHtml) };
+});
 
 // The pool runs the transform on a worker thread, and says what became of each page. Its machinery is
 // tested here with stand-in workers (fixtures/pool-worker.mjs: the page says what the worker does), on real
@@ -344,6 +350,17 @@ describe("the real worker's part: what it makes of a page", () => {
     expect(answer.ok && transfer).toEqual([answer.bytes.buffer]);
     expect(answer.ok && answer.bytes.byteOffset).toBe(0);
     expect(answer.ok && answer.bytes.byteLength).toBe(answer.ok ? answer.bytes.buffer.byteLength : -1);
+  });
+
+  it('gives the transform the worker\'s budget as an argument: 1.5 s, where anything else that calls it gets 500 ms', () => {
+    // The only caller that runs the transform for longer than its short default is this thread, which holds
+    // nothing but pages. The number is pinned so that changing it is a choice.
+    expect(WORKER_BUDGET_MS).toBe(1500);
+    const spy = vi.mocked(prepareArtifactHtml);
+    spy.mockClear();
+    answerJob({ id: 9, html: '<p>x</p>' });
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(spy).toHaveBeenCalledWith('<p>x</p>', { budgetMs: WORKER_BUDGET_MS });
   });
 
   it("answers with the transform's refusal, and hands nothing over", () => {

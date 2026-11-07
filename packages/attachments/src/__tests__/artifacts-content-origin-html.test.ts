@@ -13,15 +13,39 @@ import {
 import { signViewToken } from '../artifacts/view-token.js';
 
 // The HTML branch of the content origin (TASK-1082 T5), with a stub `serve` so
-// no Postgres is needed: every page goes through prepareArtifactHtml, and
-// nothing else does. artifacts-content-origin.test.ts covers the same branch
-// end to end through the real artifact store.
+// no Postgres is needed: every page goes through the HTML preparer, and nothing
+// else does. artifacts-content-origin.test.ts covers the same branch end to end
+// through the real artifact store, and artifacts-content-origin-worker.test.ts
+// through the real worker thread. Here the preparer runs the transform in THIS
+// thread, through a spy, so a test can count how often it ran and make it answer
+// as the worker would (out of time, out of memory, busy).
 
 vi.mock('@ax/frame-guard', async (importOriginal) => {
   const real = await importOriginal<typeof import('@ax/frame-guard')>();
   return { ...real, prepareArtifactHtml: vi.fn(real.prepareArtifactHtml) };
 });
 const prepare = vi.mocked(frameGuard.prepareArtifactHtml);
+
+/** The transform, in this thread, behind the preparer's interface. */
+const inThread: frameGuard.HtmlPreparer = {
+  prepare: async (html) => {
+    const result = prepare(html);
+    return result.ok ? { ok: true, bytes: new TextEncoder().encode(result.html) } : result;
+  },
+  close: async () => undefined,
+};
+/** A preparer that refuses every page for one reason, as the worker does for a page that holds it or a pool that is full. */
+const refusing = (reason: frameGuard.PoolRefusal): frameGuard.HtmlPreparer & { asked: number } => {
+  const p = {
+    asked: 0,
+    prepare: async (): Promise<frameGuard.PreparedPage> => {
+      p.asked += 1;
+      return { ok: false, reason };
+    },
+    close: async () => undefined,
+  };
+  return p;
+};
 
 const HTML_CSP =
   "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline' 'self'; img-src data: blob: 'self'; font-src 'self'; connect-src 'none'; form-action 'none'; frame-ancestors http://localhost:9090; sandbox allow-scripts allow-downloads";
@@ -66,6 +90,7 @@ async function start(extra: Partial<ContentOriginOptions> = {}): Promise<string>
     key,
     logger: logger(),
     serve: async (c) => stubs.get(c.artifactId)?.served ?? null,
+    htmlPreparer: inThread,
     ...extra,
   });
   closers.push(() => origin.close());
@@ -211,23 +236,24 @@ describe('content origin: HTML goes through prepareArtifactHtml', () => {
   });
 
   it('every reason for a page that is too big or too heavy answers with the second line, and otherwise the same status and headers; the log says which', async () => {
-    const base = await start();
     const MARK = 'SECRETPAGECONTENT';
-    // The real causes the transform has for it, by a page that causes each, and the origin's own cap.
+    // The real causes the transform has for it, by a page that causes each, and the worker's (out of time, out of memory).
     const real: Array<[string, Uint8Array]> = [
       ['html_too_large', new Uint8Array(MAX_HTML_TRANSFORM_BYTES + 1).fill(0x61)],
       ['too_many_nodes', enc(`<p>${MARK}</p>`.repeat(80_000))],
       ['output_too_large', enc(`<p title='${'"'.repeat(1024 * 1024)}'>${MARK}</p>`)],
     ];
     const answers: string[] = [];
-    for (const [code, bytes] of real) {
-      put(code, { bytes });
-      const r = await fetch(tokenUrl(base, code));
-      answers.push(JSON.stringify([r.status, await r.text(), [...r.headers].filter(([k]) => k !== 'date' && k !== 'content-length')]));
+    {
+      const base = await start();
+      for (const [code, bytes] of real) {
+        put(code, { bytes });
+        const r = await fetch(tokenUrl(base, code));
+        answers.push(JSON.stringify([r.status, await r.text(), [...r.headers].filter(([k]) => k !== 'date' && k !== 'content-length')]));
+      }
     }
-    // ...and the two that are about time and work, which need a page the transform will not finish: it is told to refuse.
-    for (const reason of ['too_slow', 'too_much_work'] as const) {
-      prepare.mockImplementationOnce(() => ({ ok: false, reason }));
+    for (const reason of ['too_slow', 'too_much_work', 'worker_timeout', 'worker_oom'] as const) {
+      const base = await start({ htmlPreparer: refusing(reason) });
       put(reason, { bytes: enc(`<p>${MARK}</p>`) });
       const r = await fetch(tokenUrl(base, reason));
       answers.push(JSON.stringify([r.status, await r.text(), [...r.headers].filter(([k]) => k !== 'date' && k !== 'content-length')]));
@@ -240,11 +266,23 @@ describe('content origin: HTML goes through prepareArtifactHtml', () => {
       'output_too_large',
       'too_slow',
       'too_much_work',
+      'worker_timeout',
+      'worker_oom',
     ]);
     expect(lines.join('\n')).not.toContain(MARK);
   });
 
-  it('the two lines are fixed: they say nothing of the limit or the page', () => {
+  it('a refusal that is about the moment (busy, the worker failed) is the first line, whatever the page, and the log says which', async () => {
+    for (const reason of ['busy', 'worker_failed'] as const) {
+      const base = await start({ htmlPreparer: refusing(reason) });
+      put(reason, { bytes: enc('<p>x</p>') });
+      const r = await fetch(tokenUrl(base, reason));
+      expect([r.status, await r.text()]).toEqual([422, HTML_REFUSED_BODY]);
+    }
+    expect(lines.map((l) => (JSON.parse(l) as [string, string, { code: string }])[2].code)).toEqual(['busy', 'worker_failed']);
+  });
+
+  it('the two lines are fixed: they say nothing of the limit, the page or what the worker did', () => {
     expect(HTML_REFUSED_BODY).toBe("AX can't show this page safely.");
     expect(HTML_TOO_LARGE_BODY).toBe('This page is too large to preview here. Download it instead.');
   });
@@ -406,20 +444,89 @@ describe('content origin: prepared-HTML cache', () => {
     expect(lines).toHaveLength(2);
   });
 
-  it('a page refused for running out of time is not cached: that is the machine, and a hiccup must not stick', async () => {
-    const base = await start();
-    put('a', { bytes: page(1), contentKey: 'sha-slow' });
-    prepare.mockImplementationOnce(() => ({ ok: false, reason: 'too_slow' }));
-    const first = await fetch(tokenUrl(base, 'a'));
-    expect(first.status).toBe(422);
-    expect(JSON.parse(lines[0]!)[2]).toMatchObject({ code: 'too_slow' });
-    // The next view runs the transform again, and this time it is fine.
-    const second = await fetch(tokenUrl(base, 'a'));
-    expect(second.status).toBe(200);
-    expect(prepare).toHaveBeenCalledTimes(2);
-    // ...and that one is cached.
-    expect((await fetch(tokenUrl(base, 'a'))).status).toBe(200);
-    expect(prepare).toHaveBeenCalledTimes(2);
+  it.each(['too_slow', 'worker_timeout', 'worker_oom', 'too_many_nodes', 'output_too_large'] as const)(
+    'a page refused as %s is remembered like any refusal: the same bytes are not sent to be prepared again, and are still a 422, logged each time',
+    async (reason) => {
+      // Out of time is the thread's CPU time and out of memory the worker's heap, so both are the page (a hostile one is
+      // one that is retried to burn the worker), and a good page near the limit is the cost of a limit.
+      const preparer = refusing(reason);
+      const base = await start({ htmlPreparer: preparer });
+      put('a', { bytes: page(1), contentKey: 'sha-slow' });
+      expect((await fetch(tokenUrl(base, 'a'))).status).toBe(422);
+      expect((await fetch(tokenUrl(base, 'a'))).status).toBe(422);
+      expect((await fetch(tokenUrl(base, 'a'))).status).toBe(422);
+      expect(preparer.asked).toBe(1);
+      expect(lines.map((l) => (JSON.parse(l) as [string, string, { code: string }])[2].code)).toEqual([reason, reason, reason]);
+    },
+  );
+
+  it.each(['busy', 'worker_failed'] as const)(
+    'a page refused as %s is not remembered: that is the moment and not the page, and the next view tries again',
+    async (reason) => {
+      let answers: frameGuard.PreparedPage[] = [{ ok: false, reason }];
+      let asked = 0;
+      const base = await start({
+        htmlPreparer: {
+          prepare: async (html) => {
+            asked += 1;
+            return answers.shift() ?? (await inThread.prepare(html));
+          },
+          close: async () => undefined,
+        },
+      });
+      put('a', { bytes: page(1), contentKey: 'sha-moment' });
+      expect((await fetch(tokenUrl(base, 'a'))).status).toBe(422);
+      // The next view is prepared, and this time it is fine...
+      const second = await fetch(tokenUrl(base, 'a'));
+      expect(second.status).toBe(200);
+      expect(asked).toBe(2);
+      // ...and that one is remembered.
+      expect((await fetch(tokenUrl(base, 'a'))).status).toBe(200);
+      expect(asked).toBe(2);
+    },
+  );
+
+  it('views of the same bytes that overlap are prepared once: the second waits for the first', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    let asked = 0;
+    const base = await start({
+      htmlPreparer: {
+        prepare: async (html) => {
+          asked += 1;
+          await gate;
+          return inThread.prepare(html);
+        },
+        close: async () => undefined,
+      },
+    });
+    put('a', { bytes: page(1), contentKey: 'sha-once' });
+    put('b', { bytes: page(1), contentKey: 'sha-once' });
+    const views = [fetch(tokenUrl(base, 'a')), fetch(tokenUrl(base, 'b')), fetch(tokenUrl(base, 'a'))];
+    // Let all three requests reach the preparer's door before it opens.
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(asked).toBe(1);
+    release();
+    const bodies = await Promise.all(views.map(async (v) => (await v).text()));
+    expect(new Set(bodies).size).toBe(1);
+    expect(bodies[0]).toContain('page 1');
+    expect(asked).toBe(1);
+  });
+
+  it('views of pages with no content key are each prepared, and are never waited for', async () => {
+    let asked = 0;
+    const base = await start({
+      htmlPreparer: {
+        prepare: async (html) => {
+          asked += 1;
+          return inThread.prepare(html);
+        },
+        close: async () => undefined,
+      },
+    });
+    put('a', { bytes: page(1) });
+    await Promise.all([fetch(tokenUrl(base, 'a')), fetch(tokenUrl(base, 'a'))].map(async (v) => (await v).arrayBuffer()));
+    expect(asked).toBe(2);
   });
 
   it('is bounded: the 17th distinct page pushes the oldest out; a hit keeps a page fresh', async () => {

@@ -14,6 +14,16 @@ import { prepareArtifactHtml, type PrepareRefusal } from './prepare-html.js';
 // process; one that holds it in a stretch nothing can interrupt is ended by the pool
 // from outside.
 
+/**
+ * The CPU the transform may use on one page in this thread: four times the heaviest real page measured
+ * (0.35 s of CPU for 3 to 4 MiB of script, on the machine measured on), so a slower host serves it too.
+ * It can be this long because nothing else runs here: the thread that serves requests is not held while
+ * it is used up. It is given as an argument and not the transform's default, which is short, so no caller
+ * that does not run on a worker of its own gets it. A refusal as too slow is remembered with the page, so
+ * a page near this must not be near it on a slower host: that is what the factor of four is for.
+ */
+export const WORKER_BUDGET_MS = 1500;
+
 /** What the pool sends. */
 export interface WorkerJob {
   id: number;
@@ -25,7 +35,7 @@ export type WorkerAnswer = { id: number; ok: true; bytes: Uint8Array } | { id: n
 
 /** The answer to one page, and what is to be handed over rather than copied when it is sent. Exported for the tests; the thread uses it below. */
 export function answerJob(job: WorkerJob): { answer: WorkerAnswer; transfer: ArrayBuffer[] } {
-  const result = prepareArtifactHtml(job.html);
+  const result = prepareArtifactHtml(job.html, { budgetMs: WORKER_BUDGET_MS });
   if (!result.ok) return { answer: { id: job.id, ok: false, reason: result.reason }, transfer: [] };
   // `encode` returns a view of a buffer that is the page's alone, so it can be handed over whole.
   const bytes = new TextEncoder().encode(result.html);

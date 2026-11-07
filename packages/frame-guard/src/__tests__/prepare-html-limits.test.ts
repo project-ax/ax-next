@@ -203,17 +203,16 @@ describe('other shapes that cost parse5 minutes, at the 4 MiB cap', () => {
 
   it('stops the one shape no count catches, by the clock: a block of 70,000 children moved by the adoption agency', () => {
     // Each child is moved out of a list that is 70,000 long (plain parse5: ~6 s for 1 MiB of this, quadratic),
-    // which no node, depth, attribute or call limit sees. The time budget is what ends it: 1.5 s of CPU, the
-    // same for every page, so the same page padded out to the 4 MiB cap with a comment (nothing for the parser
+    // which no node, depth, attribute or call limit sees. The time budget is what ends it: 500 ms of CPU by default,
+    // the same for every page, so the same page padded out to the 4 MiB cap with a comment (nothing for the parser
     // to do with it, and nothing that makes the shape cost less) is stopped at the same time, not at a longer
-    // one for being bigger.
-    const LIMIT = 2500;
-    const out = bestRun(adoptedChildren(MiB), {}, LIMIT);
+    // one for being bigger. Held on a thread that serves requests, this page cost 1.6 s a view.
+    const out = bestRun(adoptedChildren(MiB));
     expect(verdict(out)).toBe('too_slow');
-    expect(out.ms).toBeLessThan(LIMIT);
-    const padded = bestRun(`<!--${'x'.repeat(CAP - adoptedChildren(MiB).length - 7)}-->${adoptedChildren(MiB)}`, {}, LIMIT);
+    expect(out.ms).toBeLessThan(FAST_MS);
+    const padded = bestRun(`<!--${'x'.repeat(CAP - adoptedChildren(MiB).length - 7)}-->${adoptedChildren(MiB)}`);
     expect(verdict(padded)).toBe('too_slow');
-    expect(padded.ms).toBeLessThan(LIMIT);
+    expect(padded.ms).toBeLessThan(FAST_MS);
     // ...and a page of the same shape that is small enough is served.
     expect(verdict(run(adoptedChildren(60 * KiB)))).toBe('served');
   });
@@ -374,6 +373,18 @@ describe('each limit on its own, with a small page', () => {
       const run = (page: string): string => verdict(prepareArtifactHtml(page, { now: ticking(), budgetMs: 12, lookEvery: 1_000_000 }));
       expect(run(plain)).toBe('served');
       expect(run(fostered)).toBe('too_slow');
+    });
+
+    it('has a default budget of 500 ms of CPU, the same for a small page as for a 4 MiB one: nothing that calls it directly holds its thread longer', () => {
+      // The first read of the clock is the start; every read after it says that much time has gone by.
+      const after = (ms: number): (() => number) => {
+        let reads = 0;
+        return () => (reads++ === 0 ? 0 : ms);
+      };
+      for (const page of ['<p>x</p>', `<p>${'word '.repeat(CAP / 5 - 8)}</p>`]) {
+        expect(verdict(prepareArtifactHtml(page, { now: after(499) }))).toBe('served');
+        expect(verdict(prepareArtifactHtml(page, { now: after(500) }))).toBe('too_slow');
+      }
     });
 
     it('refuses at once with no time at all', () => {

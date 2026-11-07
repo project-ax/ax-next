@@ -8,7 +8,7 @@ import {
   type HookBus,
   type Logger,
 } from '@ax/core';
-import { prepareArtifactHtml, type PrepareRefusal } from '@ax/frame-guard';
+import { createHtmlPreparer, type HtmlPreparer, type PoolRefusal, type PrepareRefusal } from '@ax/frame-guard';
 import { describeMediaType, downloadFilename, type ArtifactPreview } from './media.js';
 import type { ArtifactStore } from './store.js';
 import { linkBindingFor, verifyViewToken, type ViewTokenClaims } from './view-token.js';
@@ -25,11 +25,11 @@ import { linkBindingFor, verifyViewToken, type ViewTokenClaims } from './view-to
  *   in the URL is not cached and not sent onward as a Referer.
  * - HTML gets the strict CSP: no CSP-governed network (`connect-src 'none'`),
  *   no forms, and only the app may frame it. CSP does not govern WebRTC, so the HTML is also
- *   rewritten (@ax/frame-guard `prepareArtifactHtml`): child frames and
- *   declarative shadow roots are cut and a guard script that locks WebRTC goes
- *   first in `<head>`. A page it cannot rewrite safely (or one over
- *   MAX_HTML_TRANSFORM_BYTES) is a 422 with one fixed line of text; HTML is
- *   never served untransformed. Images get the sandboxing CSP, so an SVG opened
+ *   rewritten (@ax/frame-guard `prepareArtifactHtml`, on a worker thread, not
+ *   this one): child frames and declarative shadow roots are cut and a guard
+ *   script that locks WebRTC goes first in `<head>`. A page it cannot rewrite
+ *   safely (or one over MAX_HTML_TRANSFORM_BYTES) is a 422 with one fixed line
+ *   of text; HTML is never served untransformed. Images get the sandboxing CSP, so an SVG opened
  *   on its own runs no script. Downloads are always octet-stream attachments.
  *   Two residuals, stated plainly (artifacts-webrtc-hostile.browser.test.ts
  *   has the `known gap` tests): the guard is an enumeration of the routes we
@@ -81,6 +81,13 @@ export interface ContentOriginOptions {
    * visible with pages that add up to it, and the real one is 32 MiB.
    */
   htmlCache?: { maxEntries?: number; maxBytes?: number };
+  /**
+   * What prepares HTML pages. Default: a worker thread of its own, closed with
+   * the origin, so a page that costs the transform seconds, or all of its memory,
+   * costs them there and not on the thread that serves every request. A test can
+   * pass its own (which it then closes itself).
+   */
+  htmlPreparer?: HtmlPreparer;
 }
 
 export interface ContentOriginHandle {
@@ -110,13 +117,12 @@ function htmlCsp(frameAncestors: readonly string[]): string {
 }
 
 /**
- * The most HTML the transform is handed. It is synchronous, in the host
- * process, on bytes the agent chose, and an artifact can be up to 100 MiB
+ * The most HTML the transform is handed. An artifact can be up to 100 MiB
  * (`MAX_ARTIFACT_BYTES` in @ax/tool-artifact-publish, checked where the file is
  * read; the 25 MiB `DEFAULT_MAX_FILE_BYTES` is the attachments UPLOAD cap and
- * does not apply to artifacts). The transform bounds its own work (see
- * prepareArtifactHtml), but an ordinary 4 MiB page still costs it 0.4 s, so
- * bigger HTML is refused, never served untransformed.
+ * does not apply to artifacts). The transform runs off this thread and has limits
+ * of its own (see prepareArtifactHtml), but an ordinary 4 MiB page still costs it
+ * 0.3 to 0.4 s and 270 MB, so bigger HTML is refused, never served untransformed.
  */
 export const MAX_HTML_TRANSFORM_BYTES = 4 * 1024 * 1024;
 
@@ -128,9 +134,9 @@ const HTML_CACHE_MAX_BYTES = 32 * 1024 * 1024;
 /**
  * What the viewer is told when a page is refused: one line, the same every time,
  * nothing of the page. 422, not 404: the requester's token is good, and the page
- * exists. There are two lines, by kind of refusal and no finer: this one, for a
- * page that is not safe to show, and `HTML_TOO_LARGE_BODY` for one that is too big
- * or too heavy.
+ * exists. There are two lines, by kind of refusal and no finer: this one for a
+ * page that is not safe to show (or could not be shown: the origin was busy, the
+ * worker failed), and `HTML_TOO_LARGE_BODY` for one that is too big or too heavy.
  */
 export const HTML_REFUSED_BODY = "AX can't show this page safely.";
 
@@ -141,37 +147,50 @@ export const HTML_REFUSED_BODY = "AX can't show this page safely.";
  */
 export const HTML_TOO_LARGE_BODY = 'This page is too large to preview here. Download it instead.';
 
+/** Why a page was not served as HTML. The origin's own cap, the transform's reasons, and the worker's. */
+type RefusalCode = 'html_too_large' | PrepareRefusal | PoolRefusal;
+
+/**
+ * For each reason: which line the viewer is told, and whether the refusal is
+ * remembered with the page. A record, so a reason added to @ax/frame-guard does
+ * not compile until it has an answer here.
+ *
+ * A reason about the page is remembered (the same bytes are refused the same
+ * way, and the transform running on them again is all a hostile page asks for);
+ * that includes `too_slow` and the worker's `worker_timeout` and `worker_oom`,
+ * which are measured on CPU time and on a heap that does not depend on what else
+ * the machine is doing. `busy` and `worker_failed` are about the moment, not the
+ * page, and the next view should try again.
+ */
+const REFUSALS: Record<RefusalCode, { line: 'too_large' | 'unsafe'; remembered: boolean }> = {
+  html_too_large: { line: 'too_large', remembered: true },
+  too_many_nodes: { line: 'too_large', remembered: true },
+  too_much_work: { line: 'too_large', remembered: true },
+  too_slow: { line: 'too_large', remembered: true },
+  output_too_large: { line: 'too_large', remembered: true },
+  worker_timeout: { line: 'too_large', remembered: true },
+  worker_oom: { line: 'too_large', remembered: true },
+  nul: { line: 'unsafe', remembered: true },
+  cr_entity: { line: 'unsafe', remembered: true },
+  too_deep: { line: 'unsafe', remembered: true },
+  too_many_attrs: { line: 'unsafe', remembered: true },
+  plaintext: { line: 'unsafe', remembered: true },
+  quirks: { line: 'unsafe', remembered: true },
+  no_fixpoint: { line: 'unsafe', remembered: true },
+  parse_error: { line: 'unsafe', remembered: true },
+  busy: { line: 'unsafe', remembered: false },
+  worker_failed: { line: 'unsafe', remembered: false },
+};
+
 /** Why a page was refused. The code is fixed; the message says nothing about the page. */
 class HtmlRefusal extends Error {
-  constructor(readonly code: 'html_too_large' | PrepareRefusal) {
+  constructor(readonly code: RefusalCode) {
     super('html refused');
     this.name = 'HtmlRefusal';
   }
 }
 
-/**
- * The refusals that mean "too big or too heavy for the viewer" and not "not safe":
- * the page is what it is, and its download is its bytes. Everything else is the
- * first line. A record, so a reason added to @ax/frame-guard does not compile
- * until it has been put on one side or the other.
- */
-const TOO_LARGE: Record<'html_too_large' | PrepareRefusal, boolean> = {
-  html_too_large: true,
-  too_many_nodes: true,
-  too_much_work: true,
-  too_slow: true,
-  output_too_large: true,
-  nul: false,
-  cr_entity: false,
-  too_deep: false,
-  too_many_attrs: false,
-  plaintext: false,
-  quirks: false,
-  no_fixpoint: false,
-  parse_error: false,
-};
-
-type PreparedHtml = { html: Buffer } | { refusal: HtmlRefusal['code'] };
+type PreparedHtml = { html: Buffer } | { refusal: RefusalCode };
 
 /**
  * The text of an HTML page's bytes, as a browser reads it for `charset=utf-8`:
@@ -268,45 +287,74 @@ export async function startContentOrigin(o: ContentOriginOptions): Promise<Conte
     else process.stderr.write(`[ax/attachments] content origin ${route} 422 ${JSON.stringify(fields)}\n`);
   };
 
+  // A fault of the worker that prepares pages (it crashed, it could not start), not of a page: an error, with
+  // the codes of the failure and nothing else. What the viewer gets for it is the refusal below.
+  const logWorkerFault = (err: unknown): void => {
+    const fields = { ...faultLogFields(err) };
+    if (o.logger !== undefined) o.logger.error('artifacts_content_origin_worker_failed', fields);
+    else process.stderr.write(`[ax/attachments] content origin html worker failed ${JSON.stringify(fields)}\n`);
+  };
+  const ownsPreparer = o.htmlPreparer === undefined;
+  const preparer = o.htmlPreparer ?? createHtmlPreparer({ onFault: logWorkerFault });
+
   // Keyed by content hash: the same bytes always prepare the same way, so no
-  // version or artifact id is needed (and none can be stale). Refusals are
-  // cached too, so a hostile page can't be retried to burn CPU, whatever size
-  // the page it would have been: they cost nothing against the byte bound.
-  // Except one: running out of time depends on the machine and what else it was
-  // doing, not on the page, and a hiccup must not make a good page a refused one
-  // for good. Map order is recency: a hit is re-inserted last, the oldest goes first.
+  // version or artifact id is needed (and none can be stale). A refusal is
+  // remembered like a page (it costs nothing against the byte bound, and counts
+  // as an entry), so a hostile page can't be retried to burn the worker's time,
+  // whatever the size of the page it would have been or the reason: out of time,
+  // out of memory, too deep. The two that are not remembered are about the moment
+  // and not the page (REFUSALS). Map order is recency: a hit is re-inserted last,
+  // the oldest goes first.
   const htmlCache = new Map<string, PreparedHtml>();
   let htmlCacheBytes = 0;
   const maxEntries = o.htmlCache?.maxEntries ?? HTML_CACHE_MAX_ENTRIES;
   const maxBytes = o.htmlCache?.maxBytes ?? HTML_CACHE_MAX_BYTES;
   const cost = (p: PreparedHtml): number => ('html' in p ? p.html.byteLength : 0);
+  /** Pages being prepared now, by key: a view of the same bytes while one is going waits for it, and does not start another. */
+  const preparing = new Map<string, Promise<PreparedHtml>>();
 
-  function prepareHtml(served: ServedArtifact): PreparedHtml {
+  function remember(key: string, out: PreparedHtml): void {
+    if (('refusal' in out && !REFUSALS[out.refusal].remembered) || cost(out) > maxBytes) return;
+    const before = htmlCache.get(key);
+    if (before !== undefined) htmlCacheBytes -= cost(before);
+    htmlCache.delete(key);
+    htmlCache.set(key, out);
+    htmlCacheBytes += cost(out);
+    for (const [k, v] of htmlCache) {
+      if (htmlCache.size <= maxEntries && htmlCacheBytes <= maxBytes) break;
+      htmlCache.delete(k);
+      htmlCacheBytes -= cost(v);
+    }
+  }
+
+  async function prepareFresh(served: ServedArtifact): Promise<PreparedHtml> {
+    if (served.bytes.byteLength > MAX_HTML_TRANSFORM_BYTES) return { refusal: 'html_too_large' };
+    const prepared = await preparer.prepare(decodePage(served.bytes));
+    if (!prepared.ok) return { refusal: prepared.reason };
+    // The worker handed its buffer over: this is a view of it, not a copy.
+    return { html: Buffer.from(prepared.bytes.buffer, prepared.bytes.byteOffset, prepared.bytes.byteLength) };
+  }
+
+  async function prepareHtml(served: ServedArtifact): Promise<PreparedHtml> {
     const key = served.contentKey;
-    const hit = key === undefined ? undefined : htmlCache.get(key);
-    if (key !== undefined && hit !== undefined) {
+    if (key === undefined) return prepareFresh(served);
+    const hit = htmlCache.get(key);
+    if (hit !== undefined) {
       htmlCache.delete(key);
       htmlCache.set(key, hit);
       return hit;
     }
-    let out: PreparedHtml;
-    if (served.bytes.byteLength > MAX_HTML_TRANSFORM_BYTES) {
-      out = { refusal: 'html_too_large' };
-    } else {
-      const prepared = prepareArtifactHtml(decodePage(served.bytes));
-      out = prepared.ok ? { html: Buffer.from(prepared.html, 'utf8') } : { refusal: prepared.reason };
+    let pending = preparing.get(key);
+    if (pending === undefined) {
+      pending = prepareFresh(served)
+        .then((out) => {
+          remember(key, out);
+          return out;
+        })
+        .finally(() => preparing.delete(key));
+      preparing.set(key, pending);
     }
-    const timedOut = 'refusal' in out && out.refusal === 'too_slow';
-    if (key !== undefined && !timedOut && cost(out) <= maxBytes) {
-      htmlCache.set(key, out);
-      htmlCacheBytes += cost(out);
-      for (const [k, v] of htmlCache) {
-        if (htmlCache.size <= maxEntries && htmlCacheBytes <= maxBytes) break;
-        htmlCache.delete(k);
-        htmlCacheBytes -= cost(v);
-      }
-    }
-    return out;
+    return pending;
   }
 
   async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -349,11 +397,11 @@ export async function startContentOrigin(o: ContentOriginOptions): Promise<Conte
       return;
     }
     if (served.preview === 'html') {
-      const prepared = prepareHtml(served);
+      const prepared = await prepareHtml(served);
       if ('refusal' in prepared) {
         logRefusal(matched.route, new HtmlRefusal(prepared.refusal));
         // The download CSP (no script, sandboxed) though the body is plain text: belt and braces.
-        const body = TOO_LARGE[prepared.refusal] ? HTML_TOO_LARGE_BODY : HTML_REFUSED_BODY;
+        const body = REFUSALS[prepared.refusal].line === 'too_large' ? HTML_TOO_LARGE_BODY : HTML_REFUSED_BODY;
         sendText(res, 422, body, { 'content-security-policy': DOWNLOAD_CSP });
         return;
       }
@@ -408,11 +456,13 @@ export async function startContentOrigin(o: ContentOriginOptions): Promise<Conte
 
   return {
     url,
-    close: () =>
-      new Promise<void>((resolve) => {
+    close: async () => {
+      await new Promise<void>((resolve) => {
         srv.close(() => resolve());
         srv.closeAllConnections();
-      }),
+      });
+      if (ownsPreparer) await preparer.close();
+    },
   };
 }
 
