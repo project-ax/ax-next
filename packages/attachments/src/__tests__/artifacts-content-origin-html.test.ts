@@ -210,7 +210,7 @@ describe('content origin: everything that is not inline HTML is byte-identical',
 
   it('a PDF download, an HTML download and a PDF opened inline', async () => {
     const base = await start();
-    put('pdf', { bytes: PDF, mediaType: 'application/pdf', preview: 'other', filename: 'r.pdf' });
+    put('pdf', { bytes: PDF, mediaType: 'application/pdf', preview: 'pdf', filename: 'r.pdf' });
     put('html', { bytes: enc(HTML_LOOKING) });
 
     const dl = await fetch(tokenUrl(base, 'pdf', 'download'));
