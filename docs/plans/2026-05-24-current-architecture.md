@@ -687,13 +687,20 @@ page goes to a worker thread (`createHtmlPreparer`: one page at a time, a heap
 limit, a wall-clock deadline, a short line of waiting pages, and a busy rule), and
 the transform bounds its own work as well (parse depth, node, attribute and call
 counts, the characters the serializer would have to escape, and a CPU-time budget:
-500 ms by default, 1.5 s only inside the worker). A thread is not a process: V8 can
-end the process when a worker is given far less heap than its work needs, so the
-heap limit sits well above the heaviest real page and is not a guarantee. A page it
-refuses, or one over 4 MiB, is a 422 with one of two fixed lines ("too large to
-preview here, download it instead", or "can't show this page safely"; the reason
-goes to the log as a code, at warn), not the 404 a bad token gets, and a refusal
-that is about the page is remembered by content hash. That defense is enumeration-based, and a page
+500 ms by default, 1.5 s only inside the worker). A thread is not a process: when a
+page needs far more heap than the worker's limit, V8 aborts the whole process
+instead of ending the worker (it did, at the 384 MB default, for a page 4 MiB long
+that the output cap then allowed to come back at three times its length). So the
+limit is not what keeps the host up: the transform's own bounds are (a result may
+be at most 1.5 times the page, and strings are read flat as they arrive, so the
+heap a page needs follows its biggest token, about 160 MB for 4 MiB of one,
+measured), with the limit as the net under them, and a limit that is low or only
+just over the need can abort the process. A child process is the real boundary and
+is a follow-up. A page it refuses, or one over 4 MiB, is a 422 with one of two fixed
+lines ("too large to preview here, download it instead", or "can't show this page
+safely"; the reason goes to the log as a code, at warn), not the 404 a bad token
+gets, and a refusal that is about the page is remembered by content hash. That
+defense is enumeration-based, and a page
 opened top-level on `/v/` can navigate itself away; the full fix is
 network-level (TASK-1065). The app shows it in an iframe
 with `sandbox="allow-scripts allow-downloads"`, never `allow-same-origin`.
