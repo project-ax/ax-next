@@ -29,7 +29,15 @@ export const shapes = {
   amp3_twobyte: () => amplified(3, 20, 'ā'), // two bytes a character in the page, one in the string
   // The most a page that is let through can be: half a heavy script, half attributes written out once more. 1.5 times the page.
   mixed: () => `<script>${'a=1;'.repeat(512 * 1024)}</script>${amplified(1, 20, 'a', 2 * MiB - 4000)}`,
-  // The heaviest single tokens there are: 4 MiB of script, of text, of attribute value (a data URI), of comment.
+  // The heaviest single tokens there are: 4 MiB of script, of attribute value (a data URI).
   script4: () => `<!doctype html><script>${'a=1;'.repeat(CAP / 4 - 64)}</script>`,
   attr4: () => `<img src="data:image/png;base64,${'QUJD'.repeat(CAP / 4 - 64)}">`,
+  // Many tokens of 20 to 40 KB, 4 MiB in all, of each kind parse5 builds a character at a time and the tree keeps.
+  texts4: () => `<!doctype html>${`<p>${'w'.repeat(40_000)}</p>`.repeat(100)}`,
+  comments4: () => `<!doctype html>${`<!--${'c'.repeat(40_000)}-->`.repeat(100)}`,
+  names4: () => `<!doctype html><div${Array.from({ length: 200 }, (_, i) => ` a${i}${'n'.repeat(20_000)}`).join('')}>`,
+  // Text that is foster-parented in front of a table arrives in the tree by yet another call.
+  fostered4: () => `<!doctype html><table>${`${'w'.repeat(40_000)}<i></i>`.repeat(100)}`,
+  // Repeated <body> tags add their attributes to the first one: the values arrive by another way into the tree.
+  bodies4: () => `<!doctype html><body>${Array.from({ length: 200 }, (_, i) => `<body a${i}='${'x'.repeat(20_000)}'>`).join('')}`,
 };

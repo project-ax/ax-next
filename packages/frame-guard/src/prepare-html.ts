@@ -701,9 +701,6 @@ function boundedAdapter(run: Run): TreeAdapter<DefaultTreeAdapterMap> {
       built();
       return tree.createTextNode(flat(value));
     },
-    setDocumentType: (document, name, publicId, systemId) => {
-      tree.setDocumentType(document, flat(name), flat(publicId), flat(systemId));
-    },
     insertText: (parent, text) => {
       const before = parent.childNodes.length;
       tree.insertText(parent, flat(text));
