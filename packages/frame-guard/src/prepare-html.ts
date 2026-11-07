@@ -85,7 +85,8 @@ const MAX_DEPTH = 512;
  * brings all 500 back, 30 nodes per input byte, and the number is the cap on
  * that whatever the size of the page. It is also the biggest thing a page can
  * ask of the thread without breaking a limit: parsing and writing out 150,000
- * nodes twice takes 0.3 to 0.8 s, and that is the worst case of this transform.
+ * nodes twice takes about 0.3 s here (the costliest shape measured, 140,000
+ * `<input>`s), and that is the worst case of this transform.
  */
 const MAX_NODES = 150_000;
 
