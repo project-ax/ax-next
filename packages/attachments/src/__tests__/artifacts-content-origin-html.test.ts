@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Logger } from '@ax/core';
 import * as frameGuard from '@ax/frame-guard';
 import {
+  HTML_REFUSED_BODY,
   MAX_HTML_TRANSFORM_BYTES,
   startContentOrigin,
   type ServedArtifact,
@@ -43,12 +44,13 @@ afterEach(async () => {
   prepare.mockClear();
 });
 
+/** Every line the origin logs, as `[level, message, fields]`. */
 function logger(): Logger {
   const l: Logger = {
-    debug: (m, b) => void lines.push(JSON.stringify([m, b ?? {}])),
-    info: (m, b) => void lines.push(JSON.stringify([m, b ?? {}])),
-    warn: (m, b) => void lines.push(JSON.stringify([m, b ?? {}])),
-    error: (m, b) => void lines.push(JSON.stringify([m, b ?? {}])),
+    debug: (m, b) => void lines.push(JSON.stringify(['debug', m, b ?? {}])),
+    info: (m, b) => void lines.push(JSON.stringify(['info', m, b ?? {}])),
+    warn: (m, b) => void lines.push(JSON.stringify(['warn', m, b ?? {}])),
+    error: (m, b) => void lines.push(JSON.stringify(['error', m, b ?? {}])),
     child: () => l,
   };
   return l;
@@ -137,25 +139,26 @@ describe('content origin: HTML goes through prepareArtifactHtml', () => {
     expect(body).not.toMatch(/<iframe/i);
   });
 
-  it('a page the transform refuses (null) is the same 404, with the base headers, and logs a fixed code only', async () => {
+  it('a page the transform refuses is a 422 with one fixed line, the base headers and the strict CSP; the log gets a reason code and nothing else', async () => {
     const base = await start();
     const MARK = 'SECRETPAGECONTENT';
     put('art-secret-id', { bytes: enc(`<!doctype html><plaintext>${MARK}`) });
     const url = tokenUrl(base, 'art-secret-id');
     const refused = await fetch(url);
-    const unknown = await fetch(`${base}/v/garbage`);
-    expect(refused.status).toBe(404);
-    expect(unknown.status).toBe(404);
-    expect(await refused.text()).toBe(await unknown.text());
-    expect(refused.headers.get('content-type')).toBe(unknown.headers.get('content-type'));
-    expect(refused.headers.get('content-security-policy')).toBeNull();
+    expect(refused.status).toBe(422);
+    expect(await refused.text()).toBe(HTML_REFUSED_BODY);
+    expect(refused.headers.get('content-type')).toBe('text/plain; charset=utf-8');
+    expect(refused.headers.get('content-security-policy')).toBe(DOWNLOAD_CSP);
+    expect(refused.headers.get('content-disposition')).toBeNull();
     expectBaseHeaders(refused);
     expect(prepare).toHaveLastReturnedWith({ ok: false, reason: 'plaintext' });
 
+    // A warning, not an error: agent content the origin declined is not a fault of the origin.
     expect(lines).toHaveLength(1);
     expect(JSON.parse(lines[0]!)).toEqual([
-      'artifacts_content_origin_failed',
-      { route: '/v/:token', status: 404, code: 'html_unsafe', name: 'HtmlRefusal' },
+      'warn',
+      'artifacts_content_origin_refused',
+      { route: '/v/:token', status: 422, code: 'plaintext', name: 'HtmlRefusal' },
     ]);
     const everything = lines.join('\n');
     for (const secret of [MARK, 'art-secret-id', url.slice(url.lastIndexOf('/') + 1), '/v/garbage']) {
@@ -163,7 +166,49 @@ describe('content origin: HTML goes through prepareArtifactHtml', () => {
     }
   });
 
-  it('HTML over the transform cap is a 404, never served as it was; at the cap it is served', async () => {
+  it('a forged token, an unknown artifact and a refused page are told apart by status alone: 404, 404, 422', async () => {
+    const base = await start();
+    put('bad', { bytes: enc('<plaintext>x') });
+    put('good', { bytes: enc('<!doctype html><p>x</p>') });
+    const forged = await fetch(`${base}/v/garbage`);
+    const missing = await fetch(tokenUrl(base, 'nobody-home'));
+    const refused = await fetch(tokenUrl(base, 'bad'));
+    expect([forged.status, missing.status, refused.status]).toEqual([404, 404, 422]);
+    expect(await forged.text()).toBe('not found');
+    expect(await missing.text()).toBe('not found');
+    expect(forged.headers.get('content-security-policy')).toBeNull();
+    expect(missing.headers.get('content-security-policy')).toBeNull();
+    // Only the refused page logs; the two lookups that found nothing log nothing.
+    expect(lines).toHaveLength(1);
+    expect((await fetch(tokenUrl(base, 'good'))).status).toBe(200);
+  });
+
+  it('every reason answers with the same status, body and headers, so the viewer cannot tell them apart; the log says which', async () => {
+    const base = await start();
+    // One page per cause the transform can refuse for, plus the origin's own cap.
+    const causes: Array<[string, Uint8Array]> = [
+      ['plaintext', enc('<plaintext>x')],
+      ['too_deep', enc('<div>'.repeat(600))],
+      ['nul', enc('a\u0000b')],
+      ['cr_entity', enc('x&#13;y')],
+      ['quirks', enc('<!DOCTYPE html foo><p>x</p>')],
+      ['too_many_attrs', enc(`<div${Array.from({ length: 300 }, (_, i) => ` a${i}`).join('')}>`)],
+      ['html_too_large', new Uint8Array(MAX_HTML_TRANSFORM_BYTES + 1).fill(0x61)],
+    ];
+    const answers: string[] = [];
+    for (const [code, bytes] of causes) {
+      put(code, { bytes });
+      const r = await fetch(tokenUrl(base, code));
+      answers.push(JSON.stringify([r.status, await r.text(), [...r.headers].filter(([k]) => k !== 'date' && k !== 'content-length')]));
+    }
+    expect(new Set(answers).size).toBe(1);
+    expect(JSON.parse(answers[0]!)[0]).toBe(422);
+    // The log is where the reason is: one warn per refusal, its code, and nothing else about it.
+    expect(lines.map((l) => (JSON.parse(l) as [string, string, { code: string }])[2].code)).toEqual(causes.map(([code]) => code));
+    for (const l of lines) expect(JSON.parse(l)[0]).toBe('warn');
+  });
+
+  it('HTML over the transform cap is a 422, never served as it was; at the cap it is served', async () => {
     const base = await start();
     const head = '<!doctype html><p>x</p><!--';
     const tail = '-->';
@@ -172,21 +217,31 @@ describe('content origin: HTML goes through prepareArtifactHtml', () => {
     put('over', { bytes: enc(pad(MAX_HTML_TRANSFORM_BYTES + 1)) });
 
     const over = await fetch(tokenUrl(base, 'over'));
-    expect(over.status).toBe(404);
-    expect(await over.text()).toBe('not found');
+    expect(over.status).toBe(422);
+    expect(await over.text()).toBe(HTML_REFUSED_BODY);
     expectBaseHeaders(over);
-    expect(over.headers.get('content-security-policy')).toBeNull();
+    expect(over.headers.get('content-security-policy')).toBe(DOWNLOAD_CSP);
     // Refused before it was parsed: the cap exists to bound the CPU.
     expect(prepare).not.toHaveBeenCalled();
     expect(lines).toHaveLength(1);
     expect(JSON.parse(lines[0]!)).toEqual([
-      'artifacts_content_origin_failed',
-      { route: '/v/:token', status: 404, code: 'html_too_large', name: 'HtmlRefusal' },
+      'warn',
+      'artifacts_content_origin_refused',
+      { route: '/v/:token', status: 422, code: 'html_too_large', name: 'HtmlRefusal' },
     ]);
 
     const at = await fetch(tokenUrl(base, 'at'));
     expect(at.status).toBe(200);
     expect((await at.text()).length).toBeGreaterThan(MAX_HTML_TRANSFORM_BYTES);
+  });
+
+  it('a download of a page the viewer refuses is still its bytes: refusal is about what renders', async () => {
+    const base = await start();
+    put('bad', { bytes: enc('<plaintext>x') });
+    const dl = await fetch(tokenUrl(base, 'bad', 'download'));
+    expect(dl.status).toBe(200);
+    expect(await dl.text()).toBe('<plaintext>x');
+    expect(lines).toHaveLength(0);
   });
 });
 
@@ -262,13 +317,29 @@ describe('content origin: prepared-HTML cache', () => {
     expect(prepare).toHaveBeenCalledTimes(2);
   });
 
-  it('a refusal is cached too: the same hostile page is not re-parsed, and is still a 404', async () => {
+  it('a refusal is cached too: the same hostile page is not re-parsed, and is still a 422, logged each time', async () => {
     const base = await start();
     put('a', { bytes: enc('<!doctype html><plaintext>x'), contentKey: 'sha-bad' });
-    expect((await fetch(tokenUrl(base, 'a'))).status).toBe(404);
-    expect((await fetch(tokenUrl(base, 'a'))).status).toBe(404);
+    expect((await fetch(tokenUrl(base, 'a'))).status).toBe(422);
+    expect((await fetch(tokenUrl(base, 'a'))).status).toBe(422);
     expect(prepare).toHaveBeenCalledTimes(1);
     expect(lines).toHaveLength(2);
+  });
+
+  it('a page refused for running out of time is not cached: that is the machine, and a hiccup must not stick', async () => {
+    const base = await start();
+    put('a', { bytes: page(1), contentKey: 'sha-slow' });
+    prepare.mockImplementationOnce(() => ({ ok: false, reason: 'too_slow' }));
+    const first = await fetch(tokenUrl(base, 'a'));
+    expect(first.status).toBe(422);
+    expect(JSON.parse(lines[0]!)[2]).toMatchObject({ code: 'too_slow' });
+    // The next view runs the transform again, and this time it is fine.
+    const second = await fetch(tokenUrl(base, 'a'));
+    expect(second.status).toBe(200);
+    expect(prepare).toHaveBeenCalledTimes(2);
+    // ...and that one is cached.
+    expect((await fetch(tokenUrl(base, 'a'))).status).toBe(200);
+    expect(prepare).toHaveBeenCalledTimes(2);
   });
 
   it('is bounded: the 17th distinct page pushes the oldest out; a hit keeps a page fresh', async () => {

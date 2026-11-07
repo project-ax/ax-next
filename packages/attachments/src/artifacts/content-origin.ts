@@ -8,7 +8,7 @@ import {
   type HookBus,
   type Logger,
 } from '@ax/core';
-import { prepareArtifactHtml } from '@ax/frame-guard';
+import { prepareArtifactHtml, type PrepareRefusal } from '@ax/frame-guard';
 import { describeMediaType, downloadFilename, type ArtifactPreview } from './media.js';
 import type { ArtifactStore } from './store.js';
 import { linkBindingFor, verifyViewToken, type ViewTokenClaims } from './view-token.js';
@@ -28,7 +28,7 @@ import { linkBindingFor, verifyViewToken, type ViewTokenClaims } from './view-to
  *   rewritten (@ax/frame-guard `prepareArtifactHtml`): child frames and
  *   declarative shadow roots are cut and a guard script that locks WebRTC goes
  *   first in `<head>`. A page it cannot rewrite safely (or one over
- *   MAX_HTML_TRANSFORM_BYTES) is the same 404 as any other refusal; HTML is
+ *   MAX_HTML_TRANSFORM_BYTES) is a 422 with one fixed line of text; HTML is
  *   never served untransformed. Images get the sandboxing CSP, so an SVG opened
  *   on its own runs no script. Downloads are always octet-stream attachments.
  *   Two residuals, stated plainly (artifacts-webrtc-hostile.browser.test.ts
@@ -41,8 +41,14 @@ import { linkBindingFor, verifyViewToken, type ViewTokenClaims } from './view-to
  *   navigation. The real fix is network-level (TASK-1065).
  * - Nothing logs the request path or the token. A line names the route
  *   pattern, the status and the failure's codes (TASK-1044).
- * - Every refusal (bad, forged, expired token; missing artifact, version or
- *   bytes; wrong route for the token; a link that went off) is the same 404.
+ * - Every refusal to look something up (bad, forged, expired token; missing
+ *   artifact, version or bytes; wrong route for the token; a link that went
+ *   off) is the same 404. A page the origin FOUND but will not serve (HTML the
+ *   transform refuses, or too big for it) is a 422 with one fixed line and the
+ *   download CSP, whatever the reason: the requester holds a valid token for it,
+ *   so that tells them nothing they could not already see, and without it a
+ *   page that rendered before would read as "not found". The reason goes to the
+ *   log (warn, as a code) and nowhere else.
  */
 
 export interface ServedArtifact {
@@ -109,9 +115,16 @@ const HTML_CACHE_MAX_ENTRIES = 16;
 /** ...and at most this many bytes of prepared output in all. */
 const HTML_CACHE_MAX_BYTES = 32 * 1024 * 1024;
 
+/**
+ * What the viewer is told when a page is refused, whatever the reason: one
+ * line, the same every time, nothing of the page. 422, not 404: the requester's
+ * token is good, and the page exists.
+ */
+export const HTML_REFUSED_BODY = "AX can't show this page safely.";
+
 /** Why a page was refused. The code is fixed; the message says nothing about the page. */
 class HtmlRefusal extends Error {
-  constructor(readonly code: 'html_too_large' | 'html_unsafe') {
+  constructor(readonly code: 'html_too_large' | PrepareRefusal) {
     super('html refused');
     this.name = 'HtmlRefusal';
   }
@@ -193,10 +206,22 @@ export async function startContentOrigin(o: ContentOriginOptions): Promise<Conte
     else process.stderr.write(`[ax/attachments] content origin ${route} ${status} ${JSON.stringify(fields)}\n`);
   };
 
+  // A refusal of a page is the origin's answer, not a fault: a warning with the
+  // reason code, never the error level an alert would page on. Route and a
+  // fixed code only: nothing of the path, the token or the page.
+  const logRefusal = (route: Route, refusal: HtmlRefusal): void => {
+    const fields = { route, status: 422, ...faultLogFields(refusal) };
+    if (o.logger !== undefined) o.logger.warn('artifacts_content_origin_refused', fields);
+    else process.stderr.write(`[ax/attachments] content origin ${route} 422 ${JSON.stringify(fields)}\n`);
+  };
+
   // Keyed by content hash: the same bytes always prepare the same way, so no
   // version or artifact id is needed (and none can be stale). Refusals are
-  // cached too, so a hostile page can't be retried to burn CPU. Map order is
-  // recency: a hit is re-inserted last, the oldest goes first.
+  // cached too, so a hostile page can't be retried to burn CPU, whatever size
+  // the page it would have been: they cost nothing against the byte bound.
+  // Except one: running out of time depends on the machine and what else it was
+  // doing, not on the page, and a hiccup must not make a good page a refused one
+  // for good. Map order is recency: a hit is re-inserted last, the oldest goes first.
   const htmlCache = new Map<string, PreparedHtml>();
   let htmlCacheBytes = 0;
   const cost = (p: PreparedHtml): number => ('html' in p ? p.html.byteLength : 0);
@@ -214,9 +239,10 @@ export async function startContentOrigin(o: ContentOriginOptions): Promise<Conte
       out = { refusal: 'html_too_large' };
     } else {
       const prepared = prepareArtifactHtml(new TextDecoder().decode(served.bytes));
-      out = prepared.ok ? { html: Buffer.from(prepared.html, 'utf8') } : { refusal: 'html_unsafe' };
+      out = prepared.ok ? { html: Buffer.from(prepared.html, 'utf8') } : { refusal: prepared.reason };
     }
-    if (key !== undefined && cost(out) <= HTML_CACHE_MAX_BYTES) {
+    const timedOut = 'refusal' in out && out.refusal === 'too_slow';
+    if (key !== undefined && !timedOut && cost(out) <= HTML_CACHE_MAX_BYTES) {
       htmlCache.set(key, out);
       htmlCacheBytes += cost(out);
       for (const [k, v] of htmlCache) {
@@ -270,9 +296,10 @@ export async function startContentOrigin(o: ContentOriginOptions): Promise<Conte
     if (served.preview === 'html') {
       const prepared = prepareHtml(served);
       if ('refusal' in prepared) {
-        // Route and a fixed code only: nothing of the path, token or page.
-        logFailure(matched.route, 404, new HtmlRefusal(prepared.refusal));
-        return notFound(res);
+        logRefusal(matched.route, new HtmlRefusal(prepared.refusal));
+        // The download CSP (no script, sandboxed) though the body is plain text: belt and braces.
+        sendText(res, 422, HTML_REFUSED_BODY, { 'content-security-policy': DOWNLOAD_CSP });
+        return;
       }
       send(res, 200, { 'content-type': 'text/html; charset=utf-8', 'content-security-policy': csp }, prepared.html);
       return;
