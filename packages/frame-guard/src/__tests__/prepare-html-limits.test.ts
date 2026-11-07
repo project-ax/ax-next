@@ -255,6 +255,38 @@ describe('each limit on its own, with a small page', () => {
     });
   });
 
+  describe('calls to the tree adapter', () => {
+    // A page that makes thousands of calls (the limit is looked at every 1,024 of them).
+    const page = '<p>x</p>'.repeat(2000);
+    const served = (maxCalls: number): boolean => prepareArtifactHtml(page, { maxCalls }).ok;
+
+    /** The fewest calls that still serve the page. */
+    function needed(): number {
+      let lo = 0;
+      let hi = 1_000_000;
+      while (lo + 1 < hi) {
+        const mid = (lo + hi) >> 1;
+        if (served(mid)) hi = mid;
+        else lo = mid;
+      }
+      return hi;
+    }
+
+    it('refuses a parse that makes more calls than maxCalls, as too much work', () => {
+      expect(verdict(prepareArtifactHtml(page, { maxCalls: 2000 }))).toBe('too_much_work');
+      expect(verdict(prepareArtifactHtml(page, { maxCalls: 1_000_000 }))).toBe('served');
+    });
+
+    it('counts the calls of every pass together, not each pass on its own', () => {
+      const all = needed();
+      expect(all).toBeGreaterThan(10_000);
+      // A page is read twice (it is read again once it has the guard and what the parser fixed). Each read
+      // makes about half of `all`: three quarters of it would pass if the passes were counted separately.
+      expect(served(all)).toBe(true);
+      expect(served(Math.floor(all * 0.75))).toBe(false);
+    });
+  });
+
   describe('the clock', () => {
     it('refuses a page whose parse runs past the budget, partway through', () => {
       // Each read of the clock is a millisecond; a page this size is looked at dozens of times.

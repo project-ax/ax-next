@@ -187,6 +187,8 @@ export interface PrepareLimits {
   budgetMs?: number;
   /** Nodes one parse may build. Default: `MAX_NODES`. */
   maxNodes?: number;
+  /** Tree adapter calls the whole transform may make. Default: `MAX_CALLS`. */
+  maxCalls?: number;
   /** Characters the tokenizer reads between looks at the clock and at the tag it is in. Default: `LOOK_EVERY`. */
   lookEvery?: number;
   /** The clock, in milliseconds. Default: `performance.now`. */
@@ -209,6 +211,7 @@ interface Run {
   /** When `now()` reaches this, the call is out of time. */
   deadline: number;
   maxNodes: number;
+  maxCalls: number;
   look: number;
   /** The most the result may weigh, in characters. */
   maxOutput: number;
@@ -433,7 +436,7 @@ function boundedAdapter(run: Run): TreeAdapter<DefaultTreeAdapterMap> {
   const adopted = new WeakMap<Tree.Element, Set<string>>();
   const look = (): void => {
     lookAt = run.calls + CLOCK_EVERY;
-    if (run.calls > MAX_CALLS) throw new Refusal('too_much_work');
+    if (run.calls > run.maxCalls) throw new Refusal('too_much_work');
     checkClock(run);
   };
   const lap = (): void => {
@@ -684,6 +687,7 @@ export function prepareArtifactHtml(html: string, limits: PrepareLimits = {}): P
       calls: 0,
       deadline: now() + (limits.budgetMs ?? budgetFor(html.length)),
       maxNodes: limits.maxNodes ?? MAX_NODES,
+      maxCalls: limits.maxCalls ?? MAX_CALLS,
       look: Math.max(1, Math.floor(limits.lookEvery ?? LOOK_EVERY)),
       maxOutput: OUTPUT_FACTOR * html.length + OUTPUT_SLACK,
     };
