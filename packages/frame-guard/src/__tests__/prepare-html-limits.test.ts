@@ -356,6 +356,19 @@ describe('each limit on its own, with a small page', () => {
       expect(verdict(prepareArtifactHtml(page, { now: ticking(), budgetMs: 3 }))).toBe('too_slow');
     });
 
+    it('looks after every 16 calls that walk a list, apart from the look every 1,024 calls of any kind', () => {
+      // Each foster-parented `<input>` is a search of its parent's child list (the calls that can be quadratic, so
+      // a flood of them must not go a thousand calls between looks). 160 of them are 160 such calls, and 160
+      // `<br>`s make about as many calls in all (3,500 or so, three looks at one per 1,024) with none of them.
+      const fostered = `<table>${'<input>'.repeat(160)}`;
+      const plain = `<p>${'<br>'.repeat(160)}`;
+      // A clock that moves a millisecond with every look, and room for twelve of them: the plain page takes
+      // eight looks; the other ten more, one per 16 searches.
+      const run = (page: string): string => verdict(prepareArtifactHtml(page, { now: ticking(), budgetMs: 12, lookEvery: 1_000_000 }));
+      expect(run(plain)).toBe('served');
+      expect(run(fostered)).toBe('too_slow');
+    });
+
     it('refuses at once with no time at all', () => {
       expect(verdict(prepareArtifactHtml('<p>x</p>', { budgetMs: 0 }))).toBe('too_slow');
     });
