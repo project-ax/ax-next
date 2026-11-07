@@ -55,6 +55,15 @@ function bodyAttributes(bytes: number): string {
   return s;
 }
 
+/**
+ * 500 attributes' worth of names on the first `<body>`, then `<body x>` over and over. Each repeat adds its
+ * attributes to the first body; the default adapter rebuilds a set of the ~250 names that body has on every call.
+ */
+const bodyRepeated = (bytes: number): string => {
+  const names = Array.from({ length: 250 }, (_, i) => ` a${i}`).join('');
+  return repeat('<body x>', bytes, `<body${names}>`);
+};
+
 /** `<a><div>x</a>`, over and over: the adoption agency moves a growing pile of children every time. Plain parse5: 21 s per MiB. */
 const adoptionAgency = (bytes: number): string => repeat('<a><div>x</a>', bytes);
 /** Everything in a table that is not table content is moved in front of it, one search through the siblings at a time. */
@@ -149,6 +158,7 @@ describe('other shapes that cost parse5 minutes, at the 4 MiB cap', () => {
   const SHAPES: Array<{ name: string; make: (bytes: number) => string; reason: string; canary: boolean }> = [
     { name: 'one tag with thousands of attributes', make: attributeFlood, reason: 'too_many_attrs', canary: true },
     { name: '<body> repeated, each with new attributes', make: bodyAttributes, reason: 'too_many_attrs', canary: true },
+    { name: '<body x> repeated 500,000 times after 250 attributes on the first (served: it is linear)', make: bodyRepeated, reason: 'served', canary: false },
     { name: '<a><div>x</a> repeated (adoption agency)', make: adoptionAgency, reason: 'too_deep', canary: true },
     { name: 'table content moved in front of the table', make: fosterParented, reason: 'too_many_nodes', canary: false },
     { name: '<table><tr><td> nested', make: nestedTables, reason: 'too_deep', canary: true },
