@@ -20,6 +20,16 @@ export interface HttpRequest {
    */
   readonly rawPath: string;
   /**
+   * The scheme the client used, as http-server decided it. `https` when the
+   * socket itself is TLS, or — only when proxy trust is on
+   * (`AX_TRUST_PROXY=1`) — when the first `X-Forwarded-Proto` hop is
+   * `https` (case-insensitive). Everything else, untrusted or malformed, is
+   * `http`, never an error. It is the same decision that sets cookie
+   * `Secure`, so a handler building absolute URLs from it always agrees
+   * with the cookies it sets. Read this; never re-read `X-Forwarded-Proto`.
+   */
+  readonly protocol: 'http' | 'https';
+  /**
    * Parsed query parameters, lowercased keys, repeated keys collapsed to
    * the LAST value. Empty object when the URL has no `?...`. Provided so
    * route handlers (e.g. /auth/callback?code=...&state=...) don't have to
