@@ -23,14 +23,22 @@ import { linkBindingFor, verifyViewToken, type ViewTokenClaims } from './view-to
  *   artifact, for minutes.
  * - Every response says nosniff, private no-store and no-referrer, so the token
  *   in the URL is not cached and not sent onward as a Referer.
- * - HTML gets the strict CSP: no network (`connect-src 'none'`), no forms, and
- *   only the app may frame it. CSP does not govern WebRTC, so the HTML is also
+ * - HTML gets the strict CSP: no CSP-governed network (`connect-src 'none'`),
+ *   no forms, and only the app may frame it. CSP does not govern WebRTC, so the HTML is also
  *   rewritten (@ax/frame-guard `prepareArtifactHtml`): child frames and
  *   declarative shadow roots are cut and a guard script that locks WebRTC goes
  *   first in `<head>`. A page it cannot rewrite safely (or one over
  *   MAX_HTML_TRANSFORM_BYTES) is the same 404 as any other refusal; HTML is
  *   never served untransformed. Images get the sandboxing CSP, so an SVG opened
  *   on its own runs no script. Downloads are always octet-stream attachments.
+ *   Two residuals, stated plainly (artifacts-webrtc-hostile.browser.test.ts
+ *   has the `known gap` tests): the guard is an enumeration of the routes we
+ *   know about, so a browser API that makes a child frame or shadow root
+ *   outside those entry points would get past it; and a page opened top-level
+ *   on /v/ can navigate itself away (meta refresh, `location =`) to a document
+ *   with no guard. Inside the app's frame the app's `frame-src` and the
+ *   sandbox refuse that; a header cannot stop it, because it is the page's own
+ *   navigation. The real fix is network-level (TASK-1065).
  * - Nothing logs the request path or the token. A line names the route
  *   pattern, the status and the failure's codes (TASK-1044).
  * - Every refusal (bad, forged, expired token; missing artifact, version or

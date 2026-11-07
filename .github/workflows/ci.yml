@@ -180,15 +180,22 @@ jobs:
       # deleting the coverage again.
       - name: Install zsh (the shell the skill blocks actually run under)
         run: sudo apt-get update -qq && sudo apt-get install -y -qq zsh
-      # The chat-visuals hostile-content suite
-      # (packages/channel-web/src/__tests__/visual-hostile.browser.test.ts)
-      # drives a real Chromium to prove a visual can't send a request, navigate,
-      # or read cookies/storage. Locally it skips when Chromium isn't installed;
-      # here it must RUN, so the suite fails outright when `CI` is set and the
-      # browser is missing. This step is what makes it present. The browser is
-      # cached on the exact resolved playwright version (a bump changes the
-      # browser build, so it changes the key); `--with-deps` runs every time
-      # because the apt packages it installs aren't in the cache.
+      # Two hostile-content suites drive a real Chromium:
+      #  - packages/channel-web/src/__tests__/visual-hostile.browser.test.ts
+      #    (a chat visual can't send a request, navigate, or read cookies/storage)
+      #  - packages/attachments/src/__tests__/artifacts-webrtc-hostile.browser.test.ts
+      #    (artifact HTML served by the real content origin can't reach a UDP/TCP
+      #    canary through WebRTC or a child frame; TASK-1082)
+      # Locally each skips when Chromium isn't installed; here they must RUN, so
+      # each fails outright when `CI` is set and the browser is missing. This step
+      # is what makes it present, for both packages: one install into
+      # ~/.cache/ms-playwright serves every package that resolves the same
+      # playwright version, and the step below fails if the two disagree (a second
+      # version would need a second browser build that nothing here installs). It
+      # runs before the test steps. The browser is cached on the exact resolved
+      # playwright version (a bump changes the browser build, so it changes the
+      # key); `--with-deps` runs every time because the apt packages it installs
+      # aren't in the cache.
       - name: Resolve Playwright version
         id: playwright
         working-directory: packages/channel-web
@@ -196,6 +203,11 @@ jobs:
           version=$(node -p "require('playwright/package.json').version")
           if [ -z "$version" ]; then
             echo "::error::could not resolve the playwright version for @ax/channel-web"
+            exit 1
+          fi
+          attachments_version=$(cd ../attachments && node -p "require('playwright/package.json').version")
+          if [ "$attachments_version" != "$version" ]; then
+            echo "::error::@ax/attachments resolves playwright $attachments_version but @ax/channel-web resolves $version; the one Chromium install below only serves one of them"
             exit 1
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"

@@ -24,7 +24,7 @@
 5. **No CSP nonce/hash, CSP unchanged.** `script-src 'unsafe-inline'` already allows the guard and must keep allowing agent inline scripts; a hash or nonce would block them, and an agent can read a nonce anyway. A test pins `htmlCsp` text unchanged.
 6. **Only `preview === 'html'` responses are transformed.** Images (SVG sandbox CSP), downloads, PDFs are byte-identical (tests pin this).
 7. **Guard on kill:** removes the document root and leaves the page blank (console message only). Visual path passes `onKill` = post `ax-visual:error`.
-8. **Visual refactor keeps `frame-runtime.test.ts`, `visual-doc.test.ts`, `VisualFrame.test.tsx`, `visual-hostile.browser.test.ts` untouched.** `FRAME_RUNTIME_SOURCE` becomes `guardSource + '\n' + visualRuntime` (same global `axVisualRuntime(win, host)` entry); the guard exposes `axFrameGuard(win,{onKill,onTick}) -> {check, slowTimer, isLocked, isKilled}` so the visual runtime keeps exactly one interval and its `ready.locked` semantics. Visual-only code stays in `frame-runtime.js`: link/submit suppression, theme, export, chart helpers, sizing.
+8. **Visual refactor keeps `frame-runtime.test.ts`, `visual-doc.test.ts`, `VisualFrame.test.tsx`, `visual-hostile.browser.test.ts` untouched.** `FRAME_RUNTIME_SOURCE` becomes `guardSource + '\n' + visualRuntime` (same global `axVisualRuntime(win, host)` entry); the guard exposes `axFrameGuard(win,{onKill,onTick,refusalMessage}) -> {check, slowTimer, isLocked, isKilled}` (`refusalMessage` is optional and was added in T3, so a lock's refusal text does not say "chat visual" on an artifact; `onKill` is wrapped in try/catch, `onTick` is not; the visual deletes `win.axFrameGuard` after starting it) so the visual runtime keeps exactly one interval and its `ready.locked` semantics. Visual-only code stays in `frame-runtime.js`: link/submit suppression, theme, export, chart helpers, sizing.
 9. **Hostile test lives in `@ax/attachments`** (`startContentOrigin` takes a `serve` stub, so no Postgres/Docker needed), uses a **UDP (dgram) canary** — the existing TCP canary cannot see STUN — plus a control server (same CSP, no guard) that must reach the canary. `playwright` added as an `@ax/attachments` devDependency at the same version as channel-web (already in the lockfile).
 
 ## Security review (security-checklist)
@@ -45,7 +45,7 @@ Files: create `packages/attachments/src/__tests__/artifacts-webrtc-hostile.brows
 
 ### T2 [tier: integration] Scaffold `@ax/frame-guard`
 Files: create `packages/frame-guard/{package.json,tsconfig.json,src/index.ts}`; modify root `tsconfig.json` refs, `eslint.config.mjs` (allow-list + message), `packages/attachments/{package.json,tsconfig.json}` (dep + ref), `packages/channel-web/package.json` (dep). Check whether `eslint-rules`/`scripts` tests pin the allow-list text (`pnpm test:eslint-rules`). Add a changeset.
-- [ ] `package.json` exports `.` (types+js) and `./frame-guard.js` (the raw runtime file; `files` includes it). Deps: `parse5` `7.3.0` exact.
+- [ ] `package.json` exports `.` (types+js) and `./frame-guard.js` (the raw runtime file, `./src/frame-guard.js`; `files` is `["dist","src/frame-guard.js"]`). There is no Dockerfile `--filter @ax/frame-guard build` line: T2 added one, T3 removed it with the copy step, because the image build walks `tsc --build` references and the guard is read from `src/`. Deps: `parse5` `7.3.0` exact.
 - [ ] `src/frame-guard.js` is plain ES2020, no imports (like `frame-runtime.js`). `src/index.ts` exports `FRAME_GUARD_SOURCE` (read with `readFileSync(new URL('../src/frame-guard.js', import.meta.url))`, which is the same file whether the module runs from `src/` or `dist/`), `CHILD_FRAME_TAGS`, `DSD_ATTRS`. **No build-step copy into `dist/`** (T3 removed it): CI runs only `tsc --build` before the tests, so a copied `dist/frame-guard.js` does not exist there. The `./frame-guard.js` export points at `src/frame-guard.js` and `files` ships it.
 - [ ] Verify `pnpm --filter @ax/frame-guard build` and that `pnpm deploy` for the host image includes it via the attachments dependency.
 
@@ -76,8 +76,8 @@ Shipped in `packages/attachments/src/__tests__/artifacts-webrtc-hostile.browser.
 - [x] **Mutation check** (17 mutants against the final commit; commit first, mutate, red, `git checkout HEAD --`, clean tree between): 15 killed, 2 survive on purpose (the `contentWindow`/`contentDocument`/`getSVGDocument` getter locks, which the guard calls defense in depth, and the rAF/timer sweeps). Purge, observer, kill-on-child, root removal, kill warning, the server's DSD strip, its frame cut and its single-pass shortcut are killed only by T6 tests. The table, with predictions, is in `.claude/memory/decisions/2026-11-07-TASK-1082.md`.
 
 ### T7 [tier: mechanical] Stale text, CI comment, memory
-- [ ] Edit the stale items listed above (content-origin header, ArtifactPreview header, chat-visuals design doc, ci.yml comment).
-- [ ] Shard `.claude/memory/decisions/2026-11-07-TASK-1082.md` (planner rows already written).
+- [x] Edit the stale items listed above (content-origin header, ArtifactPreview header, chat-visuals design doc, ci.yml comment, the guard's layer-3 comment, `current-architecture.md` section on the content origin). `descriptor.ts` "no internet access" kept: it is the contract we enforce and a test pins it.
+- [x] Shard `.claude/memory/decisions/2026-11-07-TASK-1082.md` (planner rows already written).
 - [ ] Run the full gate: `pnpm build`, then `pnpm -r --no-bail run test && pnpm test:eslint-rules && pnpm test:scripts`, and `pnpm lint`.
 
 ### T8 [tier: integration] Kind walk (separate `(walk)` card, not yolo-ship-able)

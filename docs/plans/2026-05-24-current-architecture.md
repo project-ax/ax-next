@@ -677,8 +677,13 @@ to download) on a **different registrable domain** from the app (kind:
 reads no cookies and takes only a short-lived signed token. It never sniffs: a
 view gets the stored media type and a download `application/octet-stream`, with
 `nosniff` / `private, no-store` / `no-referrer` on every response. It
-gives HTML a fixed CSP (no network, no forms, `frame-ancestors` = the app
-origins, `sandbox allow-scripts allow-downloads`). The app shows it in an iframe
+gives HTML a fixed CSP (no CSP-governed network, no forms, `frame-ancestors` =
+the app origins, `sandbox allow-scripts allow-downloads`). CSP does not cover
+WebRTC, so HTML also goes through `@ax/frame-guard`'s `prepareArtifactHtml`
+(child frames cut, a guard script that locks WebRTC injected first; chat
+visuals share the same runtime). That defense is enumeration-based, and a page
+opened top-level on `/v/` can navigate itself away; the full fix is
+network-level (TASK-1065). The app shows it in an iframe
 with `sandbox="allow-scripts allow-downloads"`, never `allow-same-origin`.
 
 ---

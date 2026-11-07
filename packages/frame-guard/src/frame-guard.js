@@ -19,10 +19,16 @@
 //      any element that carries an open shadow root (frames of this kind have
 //      no use for shadow DOM; the observer can't see inside one). It runs in a
 //      microtask, before an async child load can start running.
-//   3. Locks on the APIs that build shadow roots or parse markup outside the
-//      observer's sight (attachShadow, setHTML/setHTMLUnsafe,
-//      parseHTML/parseHTMLUnsafe, XSLTProcessor, document.write/open). The
-//      contentWindow/contentDocument/getSVGDocument getters answer null, but
+//   3. Locks on the APIs that build shadow roots or parse markup, so a
+//      frame can't be made where the observer and window.length can't see
+//      (attachShadow, setHTML/setHTMLUnsafe, parseHTML/parseHTMLUnsafe,
+//      XSLTProcessor, document.write/open). Not every lock covers a route the
+//      observer is blind to on its own: measured in Chromium, a plain iframe
+//      written with document.write is seen and purged anyway. What only the
+//      document.write lock stops is the streaming parser building a CLOSED
+//      declarative shadow root at run time, and that frame is invisible to
+//      both the observer and window.length. The contentWindow,
+//      contentDocument and getSVGDocument getters also answer null, but
 //      that's defense in depth only: window[n] and frames[n] can't be
 //      locked. What actually keeps a script out of a child is that every
 //      sandboxed document gets its own opaque origin, so touching a child's
