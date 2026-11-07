@@ -119,6 +119,29 @@ describe('prepareArtifactHtml when parse5 misbehaves', () => {
   });
 });
 
+describe('a limit ends the transform in the parse that crosses it', () => {
+  // Reading the result back would find most of these too (a tag that grew 300 attributes is one tag with 300
+  // in the next pass). The point of a limit is to stop the work, so the number of parses is what shows it.
+  const attributes = (from: number, count: number): string => Array.from({ length: count }, (_, i) => ` b${from + i}`).join('');
+
+  it('repeated <body> tags that add too many attributes: one parse, not two', () => {
+    let parses = 0;
+    hooks.beforeParse = () => void (parses += 1);
+    expect(outcome(`<body${attributes(0, 200)}><body${attributes(200, 100)}>`)).toBe('refused: too_many_attrs');
+    expect(parses).toBe(1);
+  });
+
+  it('a page nested too deep: one parse (and an ordinary page takes two)', () => {
+    let parses = 0;
+    hooks.beforeParse = () => void (parses += 1);
+    expect(outcome('<div>'.repeat(600))).toBe('refused: too_deep');
+    expect(parses).toBe(1);
+    parses = 0;
+    expect(outcome('<p>x</p>'.repeat(50))).not.toMatch(/^refused/);
+    expect(parses).toBe(2);
+  });
+});
+
 describe('loading prepare-html when the guard script cannot ride in a <script> element', () => {
   // The guard goes out inline. If the HTML parser would change its text, we
   // would ship a script nobody tested, and "the guard is already there" could
