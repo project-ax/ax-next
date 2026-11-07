@@ -24,9 +24,22 @@ import { signViewToken } from '../artifacts/view-token.js';
 // Counts the calls of the transform made in THIS thread, the one that serves every request. The worker
 // thread loads its own copy of the package, so a call it makes is not counted here: what is counted is a
 // page that was prepared on the request thread.
+// The preparers the origin makes for itself are watched too: what options it made them with can be added to
+// (a worker that cannot start), and whether it closed them.
+const made = vi.hoisted(() => ({ preparers: [] as Array<{ close: () => Promise<void> }>, extra: {} as Record<string, unknown> }));
 vi.mock('@ax/frame-guard', async (importOriginal) => {
   const real = await importOriginal<typeof import('@ax/frame-guard')>();
-  return { ...real, prepareArtifactHtml: vi.fn(real.prepareArtifactHtml) };
+  return {
+    ...real,
+    prepareArtifactHtml: vi.fn(real.prepareArtifactHtml),
+    createHtmlPreparer: vi.fn((options?: Parameters<typeof real.createHtmlPreparer>[0]) => {
+      const preparer = real.createHtmlPreparer({ ...options, ...made.extra });
+      const close = preparer.close.bind(preparer);
+      preparer.close = vi.fn(close);
+      made.preparers.push(preparer);
+      return preparer;
+    }),
+  };
 });
 const transformHere = vi.mocked(frameGuard.prepareArtifactHtml);
 
@@ -43,6 +56,8 @@ afterEach(async () => {
   stubs.clear();
   lines = [];
   transformHere.mockClear();
+  made.preparers.length = 0;
+  made.extra = {};
 });
 
 function logger(): Logger {
@@ -225,7 +240,34 @@ describe('the content origin on its real worker thread', () => {
     expect(await retry.text()).toContain('<p>two</p>');
   });
 
+  it('a worker that cannot start is an error in the log (the codes of the failure and nothing else) and a refusal for the viewer, not a hang', async () => {
+    made.extra = { workerUrl: new URL('file:///there-is-no-such-worker-entry.js') };
+    const base = await start();
+    put('a', enc('<!doctype html><p>x</p>'));
+    const r = await fetch(tokenUrl(base, 'a'));
+    expect([r.status, await r.text()]).toEqual([422, HTML_REFUSED_BODY]);
+    const logged = lines.map((l) => JSON.parse(l) as [string, string, Record<string, unknown>]);
+    // The failure, as an error with its codes; then the refusal the viewer got, as the warning it always is.
+    expect(logged.map(([level, message]) => [level, message])).toEqual([
+      ['error', 'artifacts_content_origin_worker_failed'],
+      ['warn', 'artifacts_content_origin_refused'],
+    ]);
+    expect(logged[0]![2]).toMatchObject({ code: expect.stringMatching(/MODULE_NOT_FOUND$/) });
+    expect(logged[1]![2]).toMatchObject({ code: 'worker_failed' });
+    expect(JSON.stringify(logged)).not.toContain('there-is-no-such-worker-entry');
+    // ...and it is not remembered: the next view tries a worker again (and the log says so again).
+    await (await fetch(tokenUrl(base, 'a'))).arrayBuffer();
+    expect(lines.filter((l) => l.includes('artifacts_content_origin_worker_failed'))).toHaveLength(2);
+  });
+
   it('closing the origin closes the worker it made, and not one it was given', async () => {
+    const base = await start();
+    put('a', enc('<!doctype html><p>x</p>'));
+    expect((await fetch(tokenUrl(base, 'a'))).status).toBe(200);
+    expect(made.preparers).toHaveLength(1);
+    await closers.pop()!();
+    expect(made.preparers[0]!.close).toHaveBeenCalledTimes(1);
+
     let closed = 0;
     const given: HtmlPreparer = {
       prepare: async () => ({ ok: true, bytes: enc('<p>given</p>') }),
@@ -241,5 +283,6 @@ describe('the content origin on its real worker thread', () => {
     });
     await origin.close();
     expect(closed).toBe(0);
+    expect(made.preparers).toHaveLength(1); // and it made none of its own for that one
   });
 });

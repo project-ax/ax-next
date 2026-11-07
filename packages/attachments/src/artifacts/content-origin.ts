@@ -313,11 +313,9 @@ export async function startContentOrigin(o: ContentOriginOptions): Promise<Conte
   /** Pages being prepared now, by key: a view of the same bytes while one is going waits for it, and does not start another. */
   const preparing = new Map<string, Promise<PreparedHtml>>();
 
+  /** Only after a miss, and only by the one view preparing that key (`preparing`), so the key is not in the cache already. */
   function remember(key: string, out: PreparedHtml): void {
     if (('refusal' in out && !REFUSALS[out.refusal].remembered) || cost(out) > maxBytes) return;
-    const before = htmlCache.get(key);
-    if (before !== undefined) htmlCacheBytes -= cost(before);
-    htmlCache.delete(key);
     htmlCache.set(key, out);
     htmlCacheBytes += cost(out);
     for (const [k, v] of htmlCache) {
