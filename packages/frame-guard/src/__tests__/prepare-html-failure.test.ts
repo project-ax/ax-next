@@ -115,8 +115,13 @@ describe('prepareArtifactHtml when parse5 misbehaves', () => {
   it('checks the length of what was written, too, whatever the tree said it would be', () => {
     // The count of the tree, made before anything is written, is meant never to be low (a test holds it to
     // that); this is the second check, on the string itself, for the day it is.
+    let parses = 0;
+    hooks.beforeParse = () => void (parses += 1);
     hooks.serialized = (written) => `${written}${' '.repeat(200_000)}`;
     expect(transform('<p>x</p>')).toEqual({ ok: false, reason: 'output_too_large' });
+    // Refused on the string itself, before it is read again: the next pass would refuse it too (its tree
+    // weighs what it is), which is why the count of parses is what shows this check is there.
+    expect(parses).toBe(1);
     hooks.serialized = undefined;
     expect(transform('<p>x</p>').ok).toBe(true);
   });
