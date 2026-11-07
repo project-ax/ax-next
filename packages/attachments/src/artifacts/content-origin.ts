@@ -109,9 +109,12 @@ function htmlCsp(frameAncestors: readonly string[]): string {
 
 /**
  * The most HTML the transform is handed. It is synchronous, in the host
- * process, and costs about 0.15-0.2 s per MB (measured in T4); the file cap is
- * 25 MiB (~4 s per view), and the agent picks the bytes. Bigger HTML is a 404,
- * not an untransformed page.
+ * process, on bytes the agent chose, and an artifact can be up to 100 MiB
+ * (`MAX_ARTIFACT_BYTES` in @ax/tool-artifact-publish, checked where the file is
+ * read; the 25 MiB `DEFAULT_MAX_FILE_BYTES` is the attachments UPLOAD cap and
+ * does not apply to artifacts). The transform bounds its own work (see
+ * prepareArtifactHtml), but an ordinary 4 MiB page still costs it 0.4 s, so
+ * bigger HTML is refused, never served untransformed.
  */
 export const MAX_HTML_TRANSFORM_BYTES = 4 * 1024 * 1024;
 
