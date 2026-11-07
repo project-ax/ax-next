@@ -52,6 +52,12 @@ import { CHILD_FRAME_TAGS, DSD_ATTRS, FRAME_GUARD_SOURCE } from './guard.js';
 // calls nothing of ours while it reads a tag, is made to look at the clock and
 // at the tag it is in the middle of every few thousand characters. Whichever
 // limit is crossed first ends the parse with a reason.
+//
+// Those limits are measured, and they are the first layer, not the only one: the
+// shapes found so far are not all there are. The content origin does not call this
+// on the thread that serves its requests. It calls `createHtmlPreparer`
+// (prepare-pool.ts), which runs it on a worker thread with a heap limit and a
+// deadline, so what the limits miss is held there.
 
 /** What the guard script does on a kill. The page is already blank by then; this says why. */
 const START_GUARD =
@@ -150,15 +156,16 @@ const LOOK_EVERY = 4096;
 const CLOCK_EVERY = 1024;
 
 /**
- * The time one call may take, of this thread's CPU: a floor, plus a share for
- * each MiB of page. The limits above stop every shape measured in a quarter of
- * a second or less; this is the backstop for the ones nobody has found. It has
- * to leave room for the biggest ordinary pages (4 MiB of script or inlined data
- * takes 0.4 s on a fast machine, an ordinary page under 0.05 s) on a host that
- * is slower: about four times what the biggest takes, and ten for the usual page.
+ * The time one call may take, of this thread's CPU, whatever the size of the page.
+ * The limits above stop the shapes measured in a fraction of this; it is the
+ * backstop for the ones nobody has found, and what a refusal as too slow is
+ * measured against (a caller may cache that refusal: it is the page, not the
+ * machine). So it has to leave room for the biggest page that is meant to be served,
+ * on a host slower than the one measured. The heaviest real pages (4 MiB of script or
+ * inlined data; the 40 biggest of the ones on this machine) take 0.29 to 0.35 s of CPU
+ * here and an ordinary page under 0.05 s, so this is four times the first.
  */
-const BUDGET_BASE_MS = 400;
-const BUDGET_PER_MIB_MS = 300;
+const BUDGET_MS = 1500;
 
 const NUL = '\u0000';
 
@@ -194,12 +201,33 @@ export type PrepareRefusal =
 
 export type PrepareResult = { ok: true; html: string } | { ok: false; reason: PrepareRefusal };
 
+/** Every `PrepareRefusal`, as a record so the compiler says when this list and the type above part ways. */
+const REFUSAL_CODES: Record<PrepareRefusal, true> = {
+  nul: true,
+  cr_entity: true,
+  too_deep: true,
+  too_many_nodes: true,
+  too_many_attrs: true,
+  too_much_work: true,
+  too_slow: true,
+  output_too_large: true,
+  plaintext: true,
+  quirks: true,
+  no_fixpoint: true,
+  parse_error: true,
+};
+
+/** Whether a value read off a message is one of the refusal codes. */
+export function isPrepareRefusal(value: unknown): value is PrepareRefusal {
+  return typeof value === 'string' && Object.hasOwn(REFUSAL_CODES, value);
+}
+
 /**
  * Knobs for tests: the defaults are the policy. Each one lets a test cross a
  * limit with a small page, or take the clock out of the picture.
  */
 export interface PrepareLimits {
-  /** Milliseconds the whole call may take. Default: `BUDGET_BASE_MS` plus `BUDGET_PER_MIB_MS` per MiB of page. */
+  /** Milliseconds of CPU the whole call may take. Default: `BUDGET_MS`. */
   budgetMs?: number;
   /** Nodes one parse may build. Default: `MAX_NODES`. */
   maxNodes?: number;
@@ -793,11 +821,6 @@ function settle(source: string, run: Run): string {
   throw new Refusal('no_fixpoint');
 }
 
-/** What a call may take: a floor, and a share per MiB of page. */
-function budgetFor(chars: number): number {
-  return BUDGET_BASE_MS + (BUDGET_PER_MIB_MS * chars) / (1024 * 1024);
-}
-
 /**
  * Makes an agent-written HTML page safe to serve with the frame guard in it.
  * Strips everything that can open a child browsing context (iframe, frame,
@@ -846,7 +869,7 @@ export function prepareArtifactHtml(html: string, limits: PrepareLimits = {}): P
     const run: Run = {
       now,
       calls: 0,
-      deadline: now() + (limits.budgetMs ?? budgetFor(html.length)),
+      deadline: now() + (limits.budgetMs ?? BUDGET_MS),
       maxNodes: limits.maxNodes ?? MAX_NODES,
       maxCalls: limits.maxCalls ?? MAX_CALLS,
       maxEscapes: limits.maxEscapes ?? MAX_ESCAPES,
