@@ -164,6 +164,24 @@ describe('a worker that is held, out of memory, or gone', () => {
     expect(f.seen.map((e) => (e as NodeJS.ErrnoException).code)).toEqual(['ERR_WORKER_INVALID_EXEC_ARGV', 'ERR_WORKER_INVALID_EXEC_ARGV']);
   });
 
+  it('does not strand the pages waiting behind one when no worker can be made for them', async () => {
+    // The worker starts fine for the first page; then Node starts refusing to make one (here: the options the pool
+    // reads each time it does are changed under it). The page that ends the first worker, and the two waiting, must
+    // each be answered, not left waiting for a worker that is never made.
+    const f = faults();
+    const argv: string[] = [];
+    const p = preparer({ execArgv: argv, onFault: f.report });
+    expect(said(await p.prepare('echo:warm'))).toMatch(/:warm$/);
+    argv.push('--there-is-no-such-flag');
+    const pages = [p.prepare('exit:'), p.prepare('echo:b'), p.prepare('echo:c')];
+    expect(await Promise.all(pages)).toEqual([
+      { ok: false, reason: 'worker_failed' },
+      { ok: false, reason: 'worker_failed' },
+      { ok: false, reason: 'worker_failed' },
+    ]);
+    expect(f.seen).toHaveLength(3); // the worker that exited, and the two that could not be made
+  });
+
   it('answers a worker that cannot start as failed (not a hang), and keeps answering', async () => {
     const f = faults();
     const p = preparer({ workerUrl: new URL('./fixtures/there-is-no-such-worker.mjs', import.meta.url), onFault: f.report });
