@@ -9,13 +9,11 @@
 // its own fresh, unlocked copy of every API, so locking the top window alone is
 // not enough either.
 //
-// RED ON PURPOSE until the guard lands (TASK-1082, T1 of
-// docs/plans/2026-11-07-task-1082-artifact-webrtc-guard-plan.md). Today every
-// "the real content origin" test below FAILS: the page reaches the canaries.
-// The "unguarded control" tests pass, and they are what make those failures
-// mean something: they show the canaries hear what this Chromium sends. T5
-// wires the guard into the origin and turns the failing half green; delete
-// this paragraph then.
+// It was red on purpose until the guard landed (TASK-1082, T1 of
+// docs/plans/2026-11-07-task-1082-artifact-webrtc-guard-plan.md): the page
+// reached the canaries. T5 wired prepareArtifactHtml into the origin and this
+// went green. The "unguarded control" tests are what make a silent canary mean
+// something: they show the canaries hear what this Chromium sends.
 //
 // The rig, all real except the artifact lookup:
 // - the real startContentOrigin, with a stub `serve` that returns hostile HTML,

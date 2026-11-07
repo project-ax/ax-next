@@ -8,6 +8,7 @@ import {
   type HookBus,
   type Logger,
 } from '@ax/core';
+import { prepareArtifactHtml } from '@ax/frame-guard';
 import { describeMediaType, downloadFilename, type ArtifactPreview } from './media.js';
 import type { ArtifactStore } from './store.js';
 import { linkBindingFor, verifyViewToken, type ViewTokenClaims } from './view-token.js';
@@ -23,7 +24,12 @@ import { linkBindingFor, verifyViewToken, type ViewTokenClaims } from './view-to
  * - Every response says nosniff, private no-store and no-referrer, so the token
  *   in the URL is not cached and not sent onward as a Referer.
  * - HTML gets the strict CSP: no network (`connect-src 'none'`), no forms, and
- *   only the app may frame it. Images get the sandboxing CSP, so an SVG opened
+ *   only the app may frame it. CSP does not govern WebRTC, so the HTML is also
+ *   rewritten (@ax/frame-guard `prepareArtifactHtml`): child frames and
+ *   declarative shadow roots are cut and a guard script that locks WebRTC goes
+ *   first in `<head>`. A page it cannot rewrite safely (or one over
+ *   MAX_HTML_TRANSFORM_BYTES) is the same 404 as any other refusal; HTML is
+ *   never served untransformed. Images get the sandboxing CSP, so an SVG opened
  *   on its own runs no script. Downloads are always octet-stream attachments.
  * - Nothing logs the request path or the token. A line names the route
  *   pattern, the status and the failure's codes (TASK-1044).
@@ -36,6 +42,11 @@ export interface ServedArtifact {
   mediaType: string;
   preview: ArtifactPreview;
   filename: string;
+  /**
+   * Names these exact bytes, for the prepared-HTML cache: the blob's content
+   * hash. Optional; a serve without one (a test stub) is never cached.
+   */
+  contentKey?: string;
 }
 
 export interface ContentOriginOptions {
@@ -76,6 +87,29 @@ function htmlCsp(frameAncestors: readonly string[]): string {
     'sandbox allow-scripts allow-downloads',
   ].join('; ');
 }
+
+/**
+ * The most HTML the transform is handed. It is synchronous, in the host
+ * process, and costs about 0.15-0.2 s per MB (measured in T4); the file cap is
+ * 25 MiB (~4 s per view), and the agent picks the bytes. Bigger HTML is a 404,
+ * not an untransformed page.
+ */
+export const MAX_HTML_TRANSFORM_BYTES = 4 * 1024 * 1024;
+
+/** Prepared pages kept so a reload of the same bytes skips the transform: at most this many... */
+const HTML_CACHE_MAX_ENTRIES = 16;
+/** ...and at most this many bytes of prepared output in all. */
+const HTML_CACHE_MAX_BYTES = 32 * 1024 * 1024;
+
+/** Why a page was refused. The code is fixed; the message says nothing about the page. */
+class HtmlRefusal extends Error {
+  constructor(readonly code: 'html_too_large' | 'html_unsafe') {
+    super('html refused');
+    this.name = 'HtmlRefusal';
+  }
+}
+
+type PreparedHtml = { html: Buffer } | { refusal: HtmlRefusal['code'] };
 
 /** An origin, and nothing that could end the CSP directive or the header: no path, quote, `;`, `,` or space. */
 const ORIGIN_RE = /^https?:\/\/[A-Za-z0-9.-]+(?::\d{1,5})?$/;
@@ -151,6 +185,41 @@ export async function startContentOrigin(o: ContentOriginOptions): Promise<Conte
     else process.stderr.write(`[ax/attachments] content origin ${route} ${status} ${JSON.stringify(fields)}\n`);
   };
 
+  // Keyed by content hash: the same bytes always prepare the same way, so no
+  // version or artifact id is needed (and none can be stale). Refusals are
+  // cached too, so a hostile page can't be retried to burn CPU. Map order is
+  // recency: a hit is re-inserted last, the oldest goes first.
+  const htmlCache = new Map<string, PreparedHtml>();
+  let htmlCacheBytes = 0;
+  const cost = (p: PreparedHtml): number => ('html' in p ? p.html.byteLength : 0);
+
+  function prepareHtml(served: ServedArtifact): PreparedHtml {
+    const key = served.contentKey;
+    const hit = key === undefined ? undefined : htmlCache.get(key);
+    if (key !== undefined && hit !== undefined) {
+      htmlCache.delete(key);
+      htmlCache.set(key, hit);
+      return hit;
+    }
+    let out: PreparedHtml;
+    if (served.bytes.byteLength > MAX_HTML_TRANSFORM_BYTES) {
+      out = { refusal: 'html_too_large' };
+    } else {
+      const prepared = prepareArtifactHtml(new TextDecoder().decode(served.bytes));
+      out = prepared === null ? { refusal: 'html_unsafe' } : { html: Buffer.from(prepared, 'utf8') };
+    }
+    if (key !== undefined && cost(out) <= HTML_CACHE_MAX_BYTES) {
+      htmlCache.set(key, out);
+      htmlCacheBytes += cost(out);
+      for (const [k, v] of htmlCache) {
+        if (htmlCache.size <= HTML_CACHE_MAX_ENTRIES && htmlCacheBytes <= HTML_CACHE_MAX_BYTES) break;
+        htmlCache.delete(k);
+        htmlCacheBytes -= cost(v);
+      }
+    }
+    return out;
+  }
+
   async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
     // Read nothing else from the request: not its cookies, not its query.
     if (req.method !== 'GET') {
@@ -191,7 +260,13 @@ export async function startContentOrigin(o: ContentOriginOptions): Promise<Conte
       return;
     }
     if (served.preview === 'html') {
-      send(res, 200, { 'content-type': 'text/html; charset=utf-8', 'content-security-policy': csp }, served.bytes);
+      const prepared = prepareHtml(served);
+      if ('refusal' in prepared) {
+        // Route and a fixed code only: nothing of the path, token or page.
+        logFailure(matched.route, 404, new HtmlRefusal(prepared.refusal));
+        return notFound(res);
+      }
+      send(res, 200, { 'content-type': 'text/html; charset=utf-8', 'content-security-policy': csp }, prepared.html);
       return;
     }
     if (served.preview === 'image') {
@@ -291,6 +366,7 @@ export function createArtifactServe(deps: ArtifactServeDeps): (c: ViewTokenClaim
       mediaType: version.mediaType,
       preview: described.preview,
       filename: downloadFilename(head.title, described.extension),
+      contentKey: version.sha256,
     };
   };
 }
