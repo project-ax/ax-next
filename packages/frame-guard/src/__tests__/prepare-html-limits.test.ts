@@ -371,12 +371,14 @@ describe('each limit on its own, with a small page', () => {
       const before = defaultClock();
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 150); // 150 ms asleep, none of it CPU
       expect(defaultClock() - before).toBeLessThan(60);
-      // ...and CPU spent is counted.
+      // ...and CPU spent is counted: burn until the clock has moved by 40 ms, however long that takes the machine. (It used to burn for 80
+      // ms of wall time and expect more than 40 of CPU, which a thread the OS shares with other work does not get: 27 ms was measured on
+      // a loaded machine. The wall limit is only there so that a clock that never moves fails, instead of hanging.)
       const spinFrom = defaultClock();
-      for (let end = performance.now() + 80; performance.now() < end; ) {
+      for (const end = performance.now() + 20_000; defaultClock() - spinFrom < 40 && performance.now() < end; ) {
         /* burn */
       }
-      expect(defaultClock() - spinFrom).toBeGreaterThan(40);
+      expect(defaultClock() - spinFrom).toBeGreaterThanOrEqual(40);
     });
 
     it('refuses a page whose parse runs past the budget, partway through', () => {
