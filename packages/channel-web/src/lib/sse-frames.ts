@@ -63,6 +63,16 @@ export type SseReadEnd =
    */
   | { reason: 'body-error'; error: unknown };
 
+/**
+ * The TASK-23 sequence cursor, owned by the caller when it must outlive one
+ * body (TASK-27's reconnect). `lastSeq` is the highest content `seq` accepted
+ * so far. 0 = nothing seq-bearing yet, which is a distinct state: 1 is a clean
+ * start and anything above it is a truncated head.
+ */
+export interface SeqCursor {
+  lastSeq: number;
+}
+
 /** The `data: ` field prefix, and its length — the only wire field we read. */
 const DATA_PREFIX = 'data: ';
 
@@ -86,16 +96,17 @@ const DATA_PREFIX = 'data: ';
  * numeric `seq` at all — an older server build — bypass the cursor entirely and
  * stream as before.
  *
- * Both the carry buffer and the sequence cursor are per-BODY, because a body is
- * read exactly once: `openSseStream` retries the *open*, and each successful
- * open feeds one body to one call of this function. When the automatic
- * same-reqId reconnect lands (TASK-27 / TASK-30) the cursor will need to
- * outlive a single body; it can be lifted into a caller-owned argument then,
- * rather than added now as a parameter no caller varies.
+ * The carry buffer is per-BODY: half a line from a dead connection is not the
+ * start of a line on the next one. The sequence cursor is NOT necessarily —
+ * pass a `SeqCursor` and it outlives the body, which is what the same-reqId
+ * reconnect (TASK-27) needs: the host replays its buffered tail on every open,
+ * and the cursor is what makes that replay render once instead of twice. With
+ * no cursor passed, each call starts its own at 0, as before.
  */
 export async function readSseFrames(
   body: ReadableStream<Uint8Array>,
   onFrame: (frame: SseFrame) => FrameVerdict,
+  cursor: SeqCursor = { lastSeq: 0 },
 ): Promise<SseReadEnd> {
   const reader = body
     .pipeThrough(new TextDecoderStream() as ReadableWritablePair<string, Uint8Array>)
@@ -103,13 +114,6 @@ export async function readSseFrames(
 
   /** Partial trailing line carried into the next read. */
   let carry = '';
-  /**
-   * Highest content `seq` accepted so far. 0 = nothing seq-bearing yet, which
-   * is a distinct state: the first frame is allowed to be any value only in the
-   * sense that 1 is a clean start and anything above it is a truncated head.
-   */
-  let lastSeq = 0;
-
   /**
    * True once we have actively cancelled the reader for a locally-detected gap.
    * `reader.cancel()` already releases the lock, so the `finally` must NOT also
@@ -156,15 +160,15 @@ export async function readSseFrames(
         // TASK-23 — dedup + gap, content frames only.
         if ('kind' in frame && typeof (frame as { seq?: unknown }).seq === 'number') {
           const seq = (frame as { seq: number }).seq;
-          if (seq <= lastSeq) {
+          if (seq <= cursor.lastSeq) {
             continue; // Replayed duplicate — the caller has already seen it.
           }
-          if (lastSeq === 0) {
+          if (cursor.lastSeq === 0) {
             if (seq > 1) return await cancelForGap('truncated-head');
-          } else if (seq > lastSeq + 1) {
+          } else if (seq > cursor.lastSeq + 1) {
             return await cancelForGap('mid-stream');
           }
-          lastSeq = seq;
+          cursor.lastSeq = seq;
         }
 
         if (onFrame(frame) === 'stop') return { reason: 'stopped' };

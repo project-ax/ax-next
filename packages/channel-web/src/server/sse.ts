@@ -686,6 +686,43 @@ export function createSseHandler(deps: SseHandlerDeps) {
       (keepaliveTimer as { unref: () => void }).unref();
     }
 
+    // 4e) TASK-27 — did the turn end before we were listening?
+    //
+    // Step 2 looked the reqId up, then steps 2–3a awaited, and only after
+    // that did 4c attach the turn-end subscriber. A turn that ended inside
+    // that window fired its `chat:turn-end` at nobody here, so this stream
+    // would replay the buffered tail and then sit on keepalives forever. That
+    // window was always there on a first open; the browser's same-reqId
+    // reconnect (a phone coming back from the background) makes it a real
+    // path, because it reopens exactly when a turn may be finishing.
+    //
+    // So ask again, now that the subscribers are attached: either the turn
+    // is still running (its turn-end will reach us) or the lookup now says
+    // not-found (`@ax/conversations` clears the active reqId at turn end) and
+    // we close with `done` — the browser re-reads the transcript, which holds
+    // the whole answer. Any other failure leaves the stream as it is; the
+    // normal terminal paths still apply.
+    void (async () => {
+      try {
+        await deps.bus.call<{ reqId: string; userId: string }, unknown>(
+          'conversations:get-by-req-id',
+          deps.initCtx,
+          { reqId, userId },
+        );
+      } catch (err) {
+        if (closed) return;
+        if (!(err instanceof PluginError && err.code === 'not-found')) return;
+        safeWrite({ reqId, done: true });
+        deps.buffer.evictReqId(reqId);
+        cleanup();
+        try {
+          stream.close();
+        } catch {
+          // already closed
+        }
+      }
+    })();
+
     // Handler returns now; the stream lives on until cleanup fires.
   };
 }

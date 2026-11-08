@@ -79,7 +79,7 @@ import {
   turnErrorOpensConnectors,
   turnErrorText,
 } from './turn-error-labels';
-import { readSseFrames } from './sse-frames';
+import { readSseFrames, type FrameVerdict, type SeqCursor } from './sse-frames';
 // The ONE producer of a step row's qualifier, shared with the reload path so
 // the same call cannot read two ways (TASK-419).
 import { stepDetail } from './workspace-steps';
@@ -1157,7 +1157,22 @@ export interface StreamHandlers {
    */
   onPermissionRequest?: (request: PermissionRequest) => void;
   signal?: AbortSignal;
+  /**
+   * How long to wait before each same-reqId reconnect (TASK-27), and so how
+   * many there are. Defaults to `STREAM_RECONNECT_DELAYS_MS`. Tests pass
+   * zeros for speed, or `[]` to pin the single-body behaviour.
+   */
+  reconnectDelaysMs?: readonly number[];
 }
+
+/**
+ * Back-off before each automatic reconnect of a dropped reply stream
+ * (TASK-27): five tries over roughly fifteen seconds of a VISIBLE page. Time
+ * spent hidden doesn't count — see `waitToReconnect`. The counter resets
+ * whenever a reconnect brings new content, so a flaky-but-working connection
+ * is never given up on.
+ */
+export const STREAM_RECONNECT_DELAYS_MS: readonly number[] = [500, 1000, 2000, 4000, 8000];
 
 /**
  * Shown when the stream ends with no `done` and no `error` — the host bounced
@@ -2305,33 +2320,9 @@ async function streamReply(
     onDecisionRaised,
     onPermissionRequest,
     signal,
+    reconnectDelaysMs = STREAM_RECONNECT_DELAYS_MS,
   }: StreamHandlers,
 ): Promise<void> {
-  let res: Response;
-  try {
-    const init: RequestInit = {
-      method: 'GET',
-      headers: { accept: 'text/event-stream' },
-    };
-    if (signal) init.signal = signal;
-    res = await httpFetch(`/api/chat/stream/${encodeURIComponent(reqId)}`, init);
-  } catch (e) {
-    if (signal?.aborted) return;
-    // A network-level throw carries a browser string (`Failed to fetch`), not
-    // a sentence. It goes to the console; the reader gets the authored line.
-    console.warn('[workspace] reply stream could not be opened', e);
-    onError(WORKSPACE_STREAM_LOST);
-    return;
-  }
-  if (!res.ok || !res.body) {
-    // The status used to be glued into this sentence — an authored line with a
-    // raw number inside it, which is the shape a grep for `statusText` never
-    // finds. It is a console line now, and the reader gets a whole sentence.
-    console.warn(`[workspace] reply stream would not open → ${res.status}`);
-    onError(httpErrorMessage(res.status));
-    return;
-  }
-
   /**
    * Set by the two terminal branches. `stopped` tells us the caller-facing
    * callback has already fired, so the end-of-read handling below must not
@@ -2345,7 +2336,17 @@ async function streamReply(
   */
   const visualCalls = new Set<string>();
 
-  const end = await readSseFrames(res.body, (frame: SseFrame) => {
+  /*
+    TASK-27 — set once a gap shows frames this reader never saw are gone from
+    the host's buffer. Content can no longer be rendered as a whole answer, so
+    the reader stops rendering it and only waits for the turn to END; the
+    caller's `onDone` then re-reads the durable transcript, which has all of
+    it. Before this, a gap was a "That reply didn't finish" banner over a reply
+    that was, in fact, finishing fine on the server.
+  */
+  let following = false;
+
+  const onFrame = (frame: SseFrame): FrameVerdict => {
     if ('done' in frame && frame.done === true) {
       terminated = true;
       onDone();
@@ -2390,6 +2391,8 @@ async function streamReply(
       }
       return 'stop';
     }
+    // Following (see above): content frames are not rendered — the re-read is.
+    if (following && 'kind' in frame) return 'continue';
     if ('kind' in frame && frame.kind === 'text' && typeof frame.text === 'string') {
       onText(frame.text);
       return 'continue';
@@ -2493,22 +2496,147 @@ async function streamReply(
       }
     }
     return 'continue';
-  });
+  };
 
-  if (terminated) return;
+  /*
+    TASK-27 — SAME-reqId RECONNECT.
 
-  // Every remaining end is a stream that stopped without saying so. An abort is
-  // the one that is not a failure: the caller asked for it, and firing an error
-  // line at someone who navigated away is noise.
-  if (signal?.aborted) return;
-  if (end.reason === 'body-error') {
-    console.warn('[workspace] reply stream ended badly', end.error);
-  } else if (end.reason === 'gap') {
-    // TASK-23 territory, newly reachable on this surface. The rest of the turn
-    // is unrecoverable from here — frames this client never saw are already
-    // gone from the host's bounded buffer — so the honest outcome is the
-    // lost-stream line, not a short answer that looks complete.
-    console.warn(`[workspace] reply stream lost frames (${end.kind})`);
+    A reply stream can die while its turn carries on: the classic is iOS
+    Safari, which drops every open connection when the person switches apps,
+    but a proxy idle-cull or a network change does the same. The host keeps
+    running the turn either way, so a dead connection is not a dead reply.
+
+    So a drop reopens `/api/chat/stream/:reqId`. The host replays its buffered
+    tail on every open, and `cursor` — which outlives each body — drops what
+    this reader already rendered, so the reply picks up where it left off with
+    nothing doubled. Three ways a reopen can answer:
+
+      - frames, with no hole → keep rendering, as if nothing happened;
+      - a hole (the buffer no longer holds what we missed) → `following`;
+      - 404 → the turn is no longer running (the host clears the
+        conversation's active reqId when a turn ends), so it finished while we
+        were away: `onDone`, and the caller re-reads the durable transcript.
+
+    The banner is now the LAST resort: every retry in `reconnectDelaysMs`
+    failed. A first open that fails is still reported at once — there is no
+    turn on screen yet to rescue, and the existing copy says what went wrong.
+  */
+  const cursor: SeqCursor = { lastSeq: 0 };
+  let opened = false;
+  let failures = 0;
+
+  for (;;) {
+    let res: Response | null = null;
+    try {
+      const init: RequestInit = {
+        method: 'GET',
+        headers: { accept: 'text/event-stream' },
+      };
+      if (signal) init.signal = signal;
+      res = await httpFetch(`/api/chat/stream/${encodeURIComponent(reqId)}`, init);
+    } catch (e) {
+      if (signal?.aborted) return;
+      // A network-level throw carries a browser string (`Failed to fetch`), not
+      // a sentence. It goes to the console; the reader gets the authored line.
+      console.warn('[workspace] reply stream could not be opened', e);
+      if (!opened) {
+        onError(WORKSPACE_STREAM_LOST);
+        return;
+      }
+    }
+
+    if (res !== null) {
+      if (opened && res.status === 404) {
+        // The turn ended while we were disconnected. Not a failure: the answer
+        // is in the transcript, and `onDone` is what re-reads it.
+        onDone();
+        return;
+      }
+      if (!res.ok || !res.body) {
+        // The status used to be glued into this sentence — an authored line
+        // with a raw number inside it. It is a console line now, and the
+        // reader gets a whole sentence.
+        console.warn(`[workspace] reply stream would not open → ${res.status}`);
+        // A first open, or a reconnect refused for a reason retrying cannot
+        // fix (signed out, not allowed), is reported now. A 5xx mid-turn —
+        // the host restarting under us — is worth another try.
+        if (!opened || res.status < 500) {
+          onError(httpErrorMessage(res.status));
+          return;
+        }
+      } else {
+        opened = true;
+        const before = cursor.lastSeq;
+        // Following reads with a cursor already past every seq, so each content
+        // frame is a "duplicate" and no hole can open: only the out-of-band
+        // frames and the terminators get through, which is all it wants.
+        const end = await readSseFrames(
+          res.body,
+          onFrame,
+          following ? { lastSeq: Number.POSITIVE_INFINITY } : cursor,
+        );
+        if (terminated) return;
+        // An abort is the one end that is not a failure: the caller asked for
+        // it, and firing an error line at someone who navigated away is noise.
+        if (signal?.aborted) return;
+        if (cursor.lastSeq > before) failures = 0;
+        if (end.reason === 'body-error') {
+          console.warn('[workspace] reply stream ended badly', end.error);
+        } else if (end.reason === 'gap') {
+          // TASK-23 territory: frames this client never saw are already gone
+          // from the host's bounded buffer. Stop rendering and follow the turn
+          // to its end instead (see `following`).
+          console.warn(`[workspace] reply stream lost frames (${end.kind})`);
+          following = true;
+        }
+      }
+    }
+
+    const delay = reconnectDelaysMs[failures];
+    if (delay === undefined) break;
+    failures += 1;
+    if (!(await waitToReconnect(delay, signal))) return;
   }
+
   onError(WORKSPACE_STREAM_LOST);
+}
+
+/**
+ * Wait out one reconnect back-off (TASK-27), then until the page is VISIBLE.
+ * Resolves `false` if the caller aborted meanwhile.
+ *
+ * Visibility is the point: a phone suspends a backgrounded page's network, so
+ * a retry fired while hidden fails for a reason that says nothing about the
+ * host, and burns an attempt the person will want when they come back. Hidden
+ * time therefore costs nothing — the next try goes out when they return.
+ */
+function waitToReconnect(delayMs: number, signal: AbortSignal | undefined): Promise<boolean> {
+  return new Promise((resolve) => {
+    if (signal?.aborted) {
+      resolve(false);
+      return;
+    }
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const finish = (ok: boolean) => {
+      if (timer !== null) clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
+      if (typeof document !== 'undefined') {
+        document.removeEventListener('visibilitychange', onVisible);
+      }
+      resolve(ok);
+    };
+    const onAbort = () => finish(false);
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') finish(true);
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+    timer = setTimeout(() => {
+      timer = null;
+      if (typeof document === 'undefined' || document.visibilityState !== 'hidden') {
+        finish(true);
+        return;
+      }
+      document.addEventListener('visibilitychange', onVisible);
+    }, delayMs);
+  });
 }
