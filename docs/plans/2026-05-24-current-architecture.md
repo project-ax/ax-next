@@ -733,8 +733,11 @@ budget: 500 ms by default, 1.5 s only inside the worker). A page it refuses, or 
 over 4 MiB, is a 422 with one of three fixed lines ("too large to preview here,
 download it instead"; "can't show this page right now, try again" for a page that was
 turned away unseen, busy or the worker failed; or "can't show this page safely"; the
-reason goes to the log as a code, at warn), not the 404 a bad token gets. A refusal
-that is about the page is remembered by content hash, in a place of its own (4,096 of
+reason goes to the log as a code, at warn), not the 404 a bad token gets. A fault of
+the worker (it crashed, it could not start, it said something wrong) is logged with its
+code at error, except a heap abort, which is the design at work and a warning like the
+refusal that goes with it: any page can cause one, and an error is what an alert
+pages on. A refusal that is about the page is remembered by content hash, in a place of its own (4,096 of
 them) so that refusals never push a served page out of the sixteen; `worker_timeout`,
 a wall-clock deadline that can meet a starved machine, `worker_oom`, which a page at
 the edge of the heap limit or a machine short of memory can give a good page, and

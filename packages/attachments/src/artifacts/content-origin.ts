@@ -8,7 +8,7 @@ import {
   type HookBus,
   type Logger,
 } from '@ax/core';
-import { createHtmlPreparer, MAX_PREPARED_BYTES, type HtmlPreparer, type PoolRefusal, type PrepareRefusal } from '@ax/frame-guard';
+import { createHtmlPreparer, faultSeverity, MAX_PREPARED_BYTES, type HtmlPreparer, type PoolRefusal, type PrepareRefusal } from '@ax/frame-guard';
 import { describeMediaType, downloadFilename, type ArtifactPreview } from './media.js';
 import type { ArtifactStore } from './store.js';
 import { linkBindingFor, verifyViewToken, type ViewTokenClaims } from './view-token.js';
@@ -334,11 +334,16 @@ export async function startContentOrigin(o: ContentOriginOptions): Promise<Conte
   };
 
   // A fault of the worker that prepares pages (it crashed, it could not start), not of a page: an error, with
-  // the codes of the failure and nothing else. What the viewer gets for it is the refusal below.
+  // the codes of the failure and nothing else. What the viewer gets for it is the refusal below. The one that is
+  // not an error is the pool's own design at work: a page that needs more heap than the worker has ends it at the
+  // limit (V8 aborts it), the pool says so, and the refusal that goes with it is a warning like every other. Any
+  // page can do that, so an error line for it would let a page make an alert page someone. The pool says which
+  // (`faultSeverity`); a fault that says nothing is an error.
   const logWorkerFault = (err: unknown): void => {
     const fields = { ...faultLogFields(err) };
-    if (o.logger !== undefined) o.logger.error('artifacts_content_origin_worker_failed', fields);
-    else process.stderr.write(`[ax/attachments] content origin html worker failed ${JSON.stringify(fields)}\n`);
+    const level = faultSeverity(err);
+    if (o.logger !== undefined) o.logger[level]('artifacts_content_origin_worker_failed', fields);
+    else process.stderr.write(`[ax/attachments] content origin html worker ${level === 'warn' ? 'aborted' : 'failed'} ${JSON.stringify(fields)}\n`);
   };
   const ownsPreparer = o.htmlPreparer === undefined;
   const preparer = o.htmlPreparer ?? createHtmlPreparer({ onFault: logWorkerFault });

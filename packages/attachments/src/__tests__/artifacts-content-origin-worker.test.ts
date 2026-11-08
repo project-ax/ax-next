@@ -265,6 +265,25 @@ describe('the content origin on its real worker process', () => {
     expect(lines.filter((l) => l.includes('artifacts_content_origin_worker_failed'))).toHaveLength(2);
   });
 
+  it('a page that needs more heap than the worker has (4 MiB of text in a table, in a container of 1 GiB) is two warnings and a refusal, never an error', async () => {
+    // At 1 GiB the worker is given 195 MB of heap (prepare-pool.ts, `oldGenerationFor`) and this page needs 352 to 368, so V8 ends the worker
+    // at its limit, every time. The pool says so (`worker_aborted`) and answers `worker_oom`; any page anyone publishes can do this, and the
+    // origin's error level is the one an alert pages on, so a page must not be able to make it: both lines are warnings.
+    made.extra = { containerMemoryBytes: () => 1024 * MiB };
+    const base = await start();
+    put('table', enc(`<table>${'a '.repeat((CAP - 15) >> 1)}</table>`));
+    const r = await fetch(tokenUrl(base, 'table'));
+    expect([r.status, await r.text()]).toEqual([422, HTML_TOO_LARGE_BODY]);
+    const logged = lines.map((l) => JSON.parse(l) as [string, string, Record<string, unknown>]);
+    expect(logged.map(([level, message, fields]) => [level, message, fields.code])).toEqual([
+      ['warn', 'artifacts_content_origin_worker_failed', 'worker_aborted'],
+      ['warn', 'artifacts_content_origin_refused', 'worker_oom'],
+    ]);
+    // ...and the next page is served by the worker that is started for it.
+    put('after', enc('<!doctype html><p>still here</p>'));
+    expect((await fetch(tokenUrl(base, 'after'))).status).toBe(200);
+  });
+
   it('closing the origin closes the worker it made, and not one it was given', async () => {
     const base = await start();
     put('a', enc('<!doctype html><p>x</p>'));

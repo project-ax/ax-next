@@ -123,8 +123,11 @@ export interface HtmlPreparerOptions {
   coolDownMs?: number;
   /**
    * Told when the worker fails in a way the page does not explain (a crash, a worker that cannot start, one that
-   * does not have the heap limit it was asked for, one that says something that is not an answer). The fault is
-   * an Error whose `code` says which, in the form of an identifier. Never given a page.
+   * does not have the heap limit it was asked for, one that says something that is not an answer), and when it ends at
+   * its heap limit, so that an abort is never a quiet refusal. The fault is an Error whose `code` says which, in the
+   * form of an identifier, and whose severity (`faultSeverity`) says how loud a log line for it should be: a heap abort
+   * is a page doing what the limit is for, and the refusal that goes with it says so, so it is a warning; every other
+   * fault is an error. Never given a page.
    */
   onFault?: (fault: unknown) => void;
   /** For tests: the clock the busy window is kept on, in milliseconds. */
@@ -273,7 +276,8 @@ function refused(reason: PrepareRefusal | PoolRefusal): PreparedPage {
  *                            stopped being there with none
  *   worker_signal_<S>        it was ended by signal <S> that is not one of memory (a crash: the same)
  *   worker_aborted           it aborted (SIGABRT, or exit code 134), which V8 does at its heap limit; the page is
- *                            answered `worker_oom`. The worker's streams are ignored, so this is the only trace
+ *                            answered `worker_oom`. The worker's streams are ignored, so this is the only trace. The
+ *                            one fault whose severity is `warn`: a page anyone can publish does this, by design
  *   worker_killed            it was killed from outside, which is the kernel running out of memory where it chooses
  *                            the worker alone (where the container's limit ends every process in it, the host goes
  *                            too, and nothing is told; see `oldGenerationFor`); the page is answered `worker_oom`
@@ -290,9 +294,28 @@ class PoolFault extends Error {
   constructor(
     readonly code: string,
     message: string,
+    /** How loud a log line for it should be; see `faultSeverity`. */
+    readonly severity: FaultSeverity = 'error',
   ) {
     super(message);
     this.name = 'PoolFault';
+  }
+}
+
+/** How loud a log line for a fault from `onFault` should be. */
+export type FaultSeverity = 'warn' | 'error';
+
+/**
+ * How loud a log line for a fault from `onFault` should be: what the fault says of itself, and `error` for anything that says
+ * nothing or something else. Only a heap abort (`worker_aborted`) says `warn`. It is the pool's own design at work, answered with
+ * a refusal that is logged as a warning, and any page can cause it, so an error line for it is a way for a page to make an alert
+ * page someone. A crash, a worker that cannot start, one that says something wrong are the worker's or the machine's, and errors.
+ */
+export function faultSeverity(fault: unknown): FaultSeverity {
+  try {
+    return (fault as { severity?: unknown }).severity === 'warn' ? 'warn' : 'error';
+  } catch {
+    return 'error';
   }
 }
 
@@ -603,7 +626,7 @@ class WorkerPreparer implements HtmlPreparer {
       // The worker's standard streams are ignored, so V8's "Reached heap limit" is not anywhere: this code is. An abort is the
       // page's (out of memory) as far as anyone can tell, and not a fault of the worker's that is the host's to fix, but it is
       // said, because a worker that aborted for another reason would otherwise be a quiet refusal that is remembered.
-      this.ended(generation, new PoolFault('worker_aborted', `the prepare worker aborted (${how}), which V8 does at its heap limit`), 'worker_oom');
+      this.ended(generation, new PoolFault('worker_aborted', `the prepare worker aborted (${how}), which V8 does at its heap limit`, 'warn'), 'worker_oom');
     } else if (worker.ready && signal === 'SIGKILL') {
       this.ended(generation, new PoolFault('worker_killed', `the prepare worker was killed (${how}), which in a pod is the kernel running out of memory`), 'worker_oom');
     } else if (!worker.ready) {

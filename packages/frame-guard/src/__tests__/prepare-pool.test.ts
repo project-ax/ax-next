@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createHtmlPreparer, prepareArtifactHtml, type HtmlPreparer, type HtmlPreparerOptions, type PreparedPage } from '../index.js';
 import { GUARD_MARKER, MAX_PREPARED_BYTES } from '../prepare-html.js';
-import { oldGenerationFor, readContainerMemoryLimit } from '../prepare-pool.js';
+import { faultSeverity, oldGenerationFor, readContainerMemoryLimit } from '../prepare-pool.js';
 import { answerJob, handleJob, lowerTheOtherThreads, WORKER_ARG, WORKER_BUDGET_MS, type WorkerAnswer } from '../prepare-worker.js';
 import { escapeAmplification } from './hostile-pages.js';
 
@@ -402,6 +402,61 @@ describe('a worker that starts wrongly is not used', () => {
     expect(refusal(await p.prepare('one'))).toBe('worker_failed');
     expect(refusal(await p.prepare('two'))).toBe('worker_failed');
     expect(f.codes()).toEqual(['worker_limit_mismatch', 'worker_limit_mismatch']);
+  });
+});
+
+describe('how loud a log line for a fault should be (faultSeverity)', () => {
+  // A heap abort is a page doing what the limit is for: the pool answers it `worker_oom`, the refusal is logged as a warning, and any page
+  // anyone publishes can cause it, so an error line for it would let a page make an alert page someone (at a 1 GiB container, 4 MiB of
+  // text in a table does it every time). Everything else the worker can do to the pool is the worker's or the machine's: an error.
+  it('is warn for a heap abort, however it is reported (SIGABRT, exit code 134), and error for every other fault the worker can cause', async () => {
+    const f = faults();
+    const p = preparer({ onFault: f.report });
+    for (const page of ['abort:', 'exit:134', 'signal:SIGKILL', 'exit:3', 'signal:SIGTERM', 'throw:', 'nonsense:', 'unguarded:x']) await p.prepare(page);
+    expect(f.seen.map((fault) => [fault.code, faultSeverity(fault)])).toEqual([
+      ['worker_aborted', 'warn'],
+      ['worker_aborted', 'warn'],
+      ['worker_killed', 'error'],
+      ['worker_exit_3', 'error'],
+      ['worker_signal_SIGTERM', 'error'],
+      ['worker_exit_1', 'error'],
+      ['worker_bad_message', 'error'],
+      ['worker_bad_answer', 'error'],
+    ]);
+  });
+
+  it('is error for every fault of a worker or a machine that cannot start one', async () => {
+    const f = faults();
+    const starts = (how: string): HtmlPreparer => preparer({ workerUrl: STARTS, execArgv: [`--title=${how}`], onFault: f.report });
+    await starts('limit-high').prepare('anything');
+    await starts('talks').prepare('anything');
+    await preparer({ execArgv: ['--there-is-no-such-flag'], onFault: f.report }).prepare('anything');
+    await preparer({ containerMemoryBytes: () => 200 * MiB, onFault: f.report }).prepare('echo:x');
+    expect(f.seen.map((fault) => [fault.code, faultSeverity(fault)])).toEqual([
+      ['worker_limit_mismatch', 'error'],
+      ['worker_bad_ready', 'error'],
+      ['worker_start_exit_9', 'error'],
+      ['worker_budget_too_small', 'error'],
+    ]);
+  });
+
+  it('takes anything that does not say warn for an error, and never throws', () => {
+    const throws = {
+      get severity(): string {
+        throw new Error('no severity for you');
+      },
+    };
+    expect([undefined, null, 'warn', 7, new Error('x'), { severity: 'loud' }, { severity: 'WARN' }, throws].map((fault) => faultSeverity(fault))).toEqual([
+      'error',
+      'error',
+      'error',
+      'error',
+      'error',
+      'error',
+      'error',
+      'error',
+    ]);
+    expect(faultSeverity({ severity: 'warn' })).toBe('warn');
   });
 });
 
