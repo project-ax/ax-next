@@ -64,13 +64,39 @@ export interface WorkerReady {
   heapLimitMb: number;
 }
 
-/** The answer to one page. Exported for the tests; the process uses it below. */
+/**
+ * The answer to one page, and always an answer: the transform does not throw, and encoding a string it made does not, but if either
+ * does it is this page that did it (what else has the worker been given?), and the answer is that the parser threw. An exception
+ * that left the worker would end it, and the pool would call that a crash on this page, which it is, only more slowly and with a
+ * process started again. Exported for the tests; the process uses it below.
+ */
 export function answerJob(job: WorkerJob): WorkerAnswer {
-  const result = prepareArtifactHtml(job.html, { budgetMs: WORKER_BUDGET_MS });
-  if (!result.ok) return { id: job.id, ok: false, reason: result.reason };
-  const bytes = new TextEncoder().encode(result.html);
-  if (bytes.byteLength > MAX_PREPARED_BYTES) return { id: job.id, ok: false, reason: 'output_too_large' };
-  return { id: job.id, ok: true, bytes };
+  try {
+    const result = prepareArtifactHtml(job.html, { budgetMs: WORKER_BUDGET_MS });
+    if (!result.ok) return { id: job.id, ok: false, reason: result.reason };
+    const bytes = new TextEncoder().encode(result.html);
+    if (bytes.byteLength > MAX_PREPARED_BYTES) return { id: job.id, ok: false, reason: 'output_too_large' };
+    return { id: job.id, ok: true, bytes };
+  } catch {
+    return { id: job.id, ok: false, reason: 'parse_error' };
+  }
+}
+
+/**
+ * Answers one page over `send`. If sending the answer throws (it is big, and the channel can refuse it), the refusal is sent
+ * instead, which is small; if that cannot be sent either there is nobody to tell, and `giveUp` ends the process. Exported for the
+ * tests; the process uses it below.
+ */
+export function handleJob(job: WorkerJob, send: (answer: WorkerAnswer) => void, giveUp: () => void = () => process.exit(1)): void {
+  try {
+    send(answerJob(job));
+  } catch {
+    try {
+      send({ id: job.id, ok: false, reason: 'parse_error' });
+    } catch {
+      giveUp();
+    }
+  }
 }
 
 function isJob(message: unknown): message is WorkerJob {
@@ -101,7 +127,7 @@ if (process.argv[2] === WORKER_ARG && typeof process.send === 'function') {
   // The host let go of the channel, or went away: there is nobody to answer, and nothing to wait for.
   process.on('disconnect', () => process.exit(0));
   process.on('message', (message: unknown) => {
-    if (isJob(message)) send(answerJob(message));
+    if (isJob(message)) handleJob(message, send);
   });
   askToBeGivenUpFirst();
   const ready: WorkerReady = { ready: true, heapLimitMb: getHeapStatistics().heap_size_limit / (1024 * 1024) };

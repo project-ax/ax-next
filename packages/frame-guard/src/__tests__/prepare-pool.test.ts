@@ -3,7 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createHtmlPreparer, prepareArtifactHtml, type HtmlPreparer, type HtmlPreparerOptions, type PreparedPage } from '../index.js';
 import { MAX_PREPARED_BYTES } from '../prepare-html.js';
-import { answerJob, WORKER_ARG, WORKER_BUDGET_MS } from '../prepare-worker.js';
+import { answerJob, handleJob, WORKER_ARG, WORKER_BUDGET_MS, type WorkerAnswer } from '../prepare-worker.js';
 import { escapeAmplification } from './hostile-pages.js';
 
 // Watches the transform, so a test can see with what limits the worker's part calls it.
@@ -199,8 +199,8 @@ describe('a worker that is held, out of memory, or gone', () => {
     expect(await p.prepare('exit:134')).toEqual({ ok: false, reason: 'worker_oom' });
     expect(f.codes()).toEqual(['worker_aborted']);
     expect(f.seen[0]!.message).toContain('exit code 134');
-    // ...and any other code is a worker that failed
-    expect(await p.prepare('exit:135')).toEqual({ ok: false, reason: 'worker_failed' });
+    // ...and any other code, with a page in hand, is a crash on that page
+    expect(await p.prepare('exit:135')).toEqual({ ok: false, reason: 'worker_crashed' });
     expect(f.codes()).toEqual(['worker_aborted', 'worker_exit_135']);
   });
 
@@ -212,28 +212,28 @@ describe('a worker that is held, out of memory, or gone', () => {
     expect(said(await p.prepare('echo:after'))).toMatch(/:after$/);
   });
 
-  it('answers a worker that another signal ended as failed, with the signal in the fault code', async () => {
+  it('answers a worker that another signal ended, with a page in hand, as crashed (the page\'s), with the signal in the fault code', async () => {
     const f = faults();
     const p = preparer({ onFault: f.report });
-    expect(await p.prepare('signal:SIGTERM')).toEqual({ ok: false, reason: 'worker_failed' });
+    expect(await p.prepare('signal:SIGTERM')).toEqual({ ok: false, reason: 'worker_crashed' });
     expect(f.codes()).toEqual(['worker_signal_SIGTERM']);
   });
 
-  it('answers a worker that throws as failed, tells onFault what happened to it, and starts another for the next page', async () => {
+  it('answers a worker that throws, with a page in hand, as crashed, tells onFault what happened to it, and starts another for the next page', async () => {
     const f = faults();
     const p = preparer({ onFault: f.report });
     const before = pid(await p.prepare('echo:before'));
-    expect(await p.prepare('throw:')).toEqual({ ok: false, reason: 'worker_failed' });
+    expect(await p.prepare('throw:')).toEqual({ ok: false, reason: 'worker_crashed' });
     expect(f.codes()).toEqual(['worker_exit_1']);
     expect(f.seen[0]).toBeInstanceOf(Error);
     expect(f.seen[0]!.message).toContain('exit code 1');
     expect(pid(await p.prepare('echo:after'))).not.toBe(before);
   });
 
-  it('answers a worker that exits as failed, and tells onFault with the exit code', async () => {
+  it('answers a worker that exits, with a page in hand, as crashed, and tells onFault with the exit code', async () => {
     const f = faults();
     const p = preparer({ onFault: f.report });
-    expect(await p.prepare('exit:')).toEqual({ ok: false, reason: 'worker_failed' });
+    expect(await p.prepare('exit:')).toEqual({ ok: false, reason: 'worker_crashed' });
     expect(f.codes()).toEqual(['worker_exit_3']);
     expect(said(await p.prepare('echo:after'))).toMatch(/:after$/);
   });
@@ -258,8 +258,8 @@ describe('a worker that is held, out of memory, or gone', () => {
     argv.push('--there-is-no-such-flag');
     const pages = [p.prepare('exit:'), p.prepare('echo:b'), p.prepare('echo:c')];
     expect(await Promise.all(pages)).toEqual([
-      { ok: false, reason: 'worker_failed' },
-      { ok: false, reason: 'worker_failed' },
+      { ok: false, reason: 'worker_crashed' }, // the worker that exited had the page
+      { ok: false, reason: 'worker_failed' }, // and the two that could not be made did not
       { ok: false, reason: 'worker_failed' },
     ]);
     expect(f.codes()).toEqual(['worker_exit_3', 'worker_start_exit_9', 'worker_start_exit_9']);
@@ -278,7 +278,7 @@ describe('a worker that is held, out of memory, or gone', () => {
     const f = faults();
     const p = preparer({ onFault: f.report });
     const before = pid(await p.prepare('echo:before'));
-    expect(await p.prepare('nonsense:')).toEqual({ ok: false, reason: 'worker_failed' });
+    expect(await p.prepare('nonsense:')).toEqual({ ok: false, reason: 'worker_crashed' });
     expect(f.codes()).toEqual(['worker_bad_message']);
     const after = pid(await p.prepare('echo:after'));
     expect(after).not.toBe(before);
@@ -290,7 +290,7 @@ describe('a worker that is held, out of memory, or gone', () => {
     const before = pid(await p.prepare('echo:before'));
     const pages = [p.prepare('nonsense:'), p.prepare('echo:b'), p.prepare('echo:c')];
     const [first, second, third] = await Promise.all(pages);
-    expect(first).toEqual({ ok: false, reason: 'worker_failed' });
+    expect(first).toEqual({ ok: false, reason: 'worker_crashed' });
     expect(said(second!)).toMatch(/:b$/);
     expect(said(third!)).toMatch(/:c$/);
     // Both on the one new worker, which is not the one that was ended.
@@ -303,7 +303,7 @@ describe('a worker that is held, out of memory, or gone', () => {
     async (code) => {
       const f = faults();
       const p = preparer({ onFault: f.report });
-      expect(await p.prepare(`refuse:${code}`)).toEqual({ ok: false, reason: 'worker_failed' });
+      expect(await p.prepare(`refuse:${code}`)).toEqual({ ok: false, reason: 'worker_crashed' });
       expect(f.codes()).toEqual(['worker_bad_message']);
     },
   );
@@ -438,26 +438,47 @@ describe('turning pages away', () => {
 
 describe('when workers keep failing', () => {
   // `worker_failed` is not remembered with a page, so a machine that cannot make a worker (no memory to fork, a file that is gone)
-  // had every view start a process and write an error to the log. After `failureLimit` in a row pages are turned away as busy, with
-  // no worker made for them, for `coolDownMs`; then one is tried. Out of memory and the deadline are the page's, and do not count.
+  // had every view start a process and write an error to the log. After `failureLimit` of them in a row pages are turned away as
+  // busy, with no worker made for them, for `coolDownMs`; then one is tried. ONLY a failure no page can cause counts: the count is
+  // global, and a page that crashes the worker is that page's refusal (remembered with it), or a few such pages would turn every
+  // tenant's pages away.
   function clock(): { now: () => number; set: (t: number) => void } {
     let t = 0;
     return { now: () => t, set: (to) => void (t = to) };
   }
+  const BAD = '--there-is-no-such-flag';
+  /**
+   * A pool whose workers cannot be started while it is broken (the options are read each time one is made). `crash` ends the
+   * worker that is running, by a page that makes it exit (its refusal, which does not count), so that the next page has to start one.
+   */
+  function breakable(options: HtmlPreparerOptions = {}): { p: HtmlPreparer; broken: (on: boolean) => void; crash: () => Promise<void> } {
+    const argv: string[] = [];
+    const p = preparer({ execArgv: argv, ...options });
+    return {
+      p,
+      broken: (on) => {
+        argv.length = 0;
+        if (on) argv.push(BAD);
+      },
+      crash: async () => void (await p.prepare('exit:')),
+    };
+  }
   const fail = async (p: HtmlPreparer, times: number): Promise<void> => {
-    for (let i = 0; i < times; i++) expect(await p.prepare('exit:')).toEqual({ ok: false, reason: 'worker_failed' });
+    for (let i = 0; i < times; i++) expect(await p.prepare('echo:x')).toEqual({ ok: false, reason: 'worker_failed' });
   };
 
-  it('turns pages away as busy after five failures in a row, makes no worker for them, and tries one when the cool-down is over', async () => {
+  it('turns pages away as busy after five workers in a row that could not be started, makes no worker for them, and tries one when the cool-down is over', async () => {
     const f = faults();
     const c = clock();
-    const p = preparer({ now: c.now, onFault: f.report });
+    const { p, broken } = breakable({ now: c.now, onFault: f.report });
+    broken(true);
     await fail(p, 5);
-    expect(f.codes()).toEqual(Array(5).fill('worker_exit_3'));
+    expect(f.codes()).toEqual(Array(5).fill('worker_start_exit_9'));
     const started = performance.now();
     for (let i = 0; i < 3; i++) expect(await p.prepare('echo:x')).toEqual({ ok: false, reason: 'busy' });
     expect(performance.now() - started).toBeLessThan(500); // no process is started for a page that is turned away
     expect(f.seen).toHaveLength(5); // nothing failed, so nothing was logged
+    broken(false);
     c.set(29_999);
     expect(refusal(await p.prepare('echo:x'))).toBe('busy');
     c.set(30_000);
@@ -465,80 +486,106 @@ describe('when workers keep failing', () => {
   });
 
   it('puts the count back to none on an answer: four failures, a page, and four failures are not five in a row', async () => {
-    const p = preparer({ now: clock().now });
+    const { p, broken, crash } = breakable({ now: clock().now });
+    broken(true);
     await fail(p, 4);
+    broken(false);
     expect(said(await p.prepare('echo:between'))).toMatch(/:between$/);
+    await crash(); // it is running: ended, so that the next page has to start one
+    broken(true);
     await fail(p, 4);
+    broken(false);
     expect(said(await p.prepare('echo:after'))).toMatch(/:after$/);
   });
 
   it('counts the refusal of a page as an answer too: the worker did what it is for', async () => {
-    const p = preparer({ now: clock().now });
+    const { p, broken, crash } = breakable({ now: clock().now });
+    broken(true);
     await fail(p, 4);
+    broken(false);
     expect(await p.prepare('refuse:too_deep')).toEqual({ ok: false, reason: 'too_deep' });
+    await crash();
+    broken(true);
     await fail(p, 4);
+    broken(false);
     expect(refusal(await p.prepare('echo:x'))).toBe('answered');
   });
 
   it('tries one page after the cool-down, and at the first failure of that one turns pages away again at once', async () => {
     const c = clock();
     const f = faults();
-    const p = preparer({ now: c.now, onFault: f.report });
+    const { p, broken, crash } = breakable({ now: c.now, onFault: f.report });
+    broken(true);
     await fail(p, 5);
     c.set(30_000);
-    expect(await p.prepare('exit:')).toEqual({ ok: false, reason: 'worker_failed' }); // the one that is tried
+    await fail(p, 1); // the one that is tried
     expect(refusal(await p.prepare('echo:x'))).toBe('busy'); // not five more: one
     expect(f.seen).toHaveLength(6);
+    broken(false);
     c.set(59_999);
     expect(refusal(await p.prepare('echo:x'))).toBe('busy');
     c.set(60_000);
     expect(said(await p.prepare('echo:ok'))).toMatch(/:ok$/);
+    await crash();
+    broken(true);
     await fail(p, 4); // and a worker that answered started the count again from none
+    broken(false);
     expect(said(await p.prepare('echo:fine'))).toMatch(/:fine$/);
   });
 
-  it('does not count what is a page\'s: ten workers aborted by V8, and ten that outstay the deadline, are not failures', async () => {
+  it('does NOT count what a page can do to the worker: pages that abort it, hold it, crash it or break its protocol, any number of them, turn nobody away', async () => {
+    // The count is global. If a crash on a page were a failure of the pool, N pages that crash the parser would put every
+    // other tenant's uncached page into 'busy'. Each of these is that page's refusal, and the next page is served.
     const f = faults();
     const p = preparer({ now: clock().now, deadlineMs: 150, onFault: f.report });
-    for (let i = 0; i < 10; i++) expect(await p.prepare('abort:')).toEqual({ ok: false, reason: 'worker_oom' });
+    for (let i = 0; i < 8; i++) expect(await p.prepare('abort:')).toEqual({ ok: false, reason: 'worker_oom' });
     for (let i = 0; i < 6; i++) expect(await p.prepare('sleep:')).toEqual({ ok: false, reason: 'worker_timeout' });
+    for (let i = 0; i < 8; i++) expect(await p.prepare('exit:')).toEqual({ ok: false, reason: 'worker_crashed' });
+    for (let i = 0; i < 8; i++) expect(await p.prepare('throw:')).toEqual({ ok: false, reason: 'worker_crashed' });
+    for (let i = 0; i < 8; i++) expect(await p.prepare('signal:SIGTERM')).toEqual({ ok: false, reason: 'worker_crashed' });
+    for (let i = 0; i < 8; i++) expect(await p.prepare('nonsense:')).toEqual({ ok: false, reason: 'worker_crashed' });
     expect(said(await p.prepare('echo:fine'))).toMatch(/:fine$/);
+    // ...and each was told to onFault, so that it is in the log
+    expect(f.seen.length).toBeGreaterThanOrEqual(8 * 5);
   });
 
-  it('counts a worker that cannot be started, too: five in a row and the sixth is turned away', async () => {
-    const f = faults();
-    const p = preparer({ now: clock().now, execArgv: ['--there-is-no-such-flag'], onFault: f.report });
-    for (let i = 0; i < 5; i++) expect(await p.prepare('echo:x')).toEqual({ ok: false, reason: 'worker_failed' });
-    expect(await p.prepare('echo:x')).toEqual({ ok: false, reason: 'busy' });
-    expect(f.codes()).toEqual(Array(5).fill('worker_start_exit_9'));
-  });
-
-  it('counts a worker that has not the limit it was asked for, and one that sends something that is not an answer', async () => {
+  it('DOES count a worker that has not the limit it was asked for, one whose first word is not "ready", and one that cannot be forked: no page was sent to any of them', async () => {
     const f = faults();
     const wrong = preparer({ now: clock().now, workerUrl: STARTS, execArgv: ['--title=limit-high'], onFault: f.report });
     for (let i = 0; i < 5; i++) expect(refusal(await wrong.prepare('x'))).toBe('worker_failed');
     expect(refusal(await wrong.prepare('x'))).toBe('busy');
     expect(f.codes()).toEqual(Array(5).fill('worker_limit_mismatch'));
+
     const g = faults();
-    const rude = preparer({ now: clock().now, onFault: g.report });
-    for (let i = 0; i < 5; i++) expect(await rude.prepare('nonsense:')).toEqual({ ok: false, reason: 'worker_failed' });
-    expect(refusal(await rude.prepare('echo:x'))).toBe('busy');
-    expect(g.codes()).toEqual(Array(5).fill('worker_bad_message'));
+    const mute = preparer({ now: clock().now, workerUrl: STARTS, execArgv: ['--title=talks'], onFault: g.report });
+    for (let i = 0; i < 5; i++) expect(refusal(await mute.prepare('x'))).toBe('worker_failed');
+    expect(refusal(await mute.prepare('x'))).toBe('busy');
+    expect(g.codes()).toEqual(Array(5).fill('worker_bad_ready'));
+
+    // fork itself throws for an argument with a NUL in it
+    const h = faults();
+    const unmade = preparer({ now: clock().now, execArgv: ['--title=a\u0000b'], onFault: h.report });
+    for (let i = 0; i < 5; i++) expect(await unmade.prepare('x')).toEqual({ ok: false, reason: 'worker_failed' });
+    expect(refusal(await unmade.prepare('x'))).toBe('busy');
+    expect(h.codes()).toEqual(Array(5).fill('worker_spawn_failed'));
   });
 
   it('answers the pages waiting behind the fifth failure as busy, and does not start a worker for each', async () => {
     const f = faults();
-    const p = preparer({ now: clock().now, onFault: f.report });
-    const answers = await Promise.all(Array.from({ length: 8 }, () => p.prepare('exit:')));
+    const { p, broken } = breakable({ now: clock().now, onFault: f.report });
+    broken(true);
+    const answers = await Promise.all(Array.from({ length: 8 }, () => p.prepare('echo:x')));
     expect(answers.map(refusal)).toEqual([...Array(5).fill('worker_failed'), ...Array(3).fill('busy')]);
     expect(f.seen).toHaveLength(5);
   });
 
   it('has its own limit and cool-down to set', async () => {
     const c = clock();
-    const p = preparer({ now: c.now, failureLimit: 2, coolDownMs: 1000 });
+    const { p, broken } = breakable({ now: c.now, failureLimit: 2, coolDownMs: 1000 });
+    broken(true);
     await fail(p, 2);
     expect(refusal(await p.prepare('echo:x'))).toBe('busy');
+    broken(false);
     c.set(1000);
     expect(said(await p.prepare('echo:y'))).toMatch(/:y$/);
   });
@@ -661,6 +708,62 @@ describe("the real worker's part: what it makes of a page", () => {
 
   it('refuses the page that ended the host (200 KiB of quotes, 80 times over) in the worker too, without making it', () => {
     expect(answerJob({ id: 3, html: escapeAmplification(4 * MiB, 3) })).toEqual({ id: 3, ok: false, reason: 'output_too_large' });
+  });
+
+  describe('whatever goes wrong with a page, the worker answers it', () => {
+    // An exception that left the worker would end it, and the pool would call that a crash on this page: true, and slower, and with
+    // a process started again. The transform does not throw, nor does encoding what it made, nor does the channel refuse a small
+    // answer; if one does, it is an answer about this page.
+    it('answers a page for which the transform throws as a refusal of that page (the parser threw), and does not throw', () => {
+      vi.mocked(prepareArtifactHtml).mockImplementationOnce(() => {
+        throw new Error('boom');
+      });
+      expect(answerJob({ id: 11, html: '<p>x</p>' })).toEqual({ id: 11, ok: false, reason: 'parse_error' });
+    });
+
+    it('answers a page the same way when encoding what the transform made throws', () => {
+      const spy = vi.spyOn(TextEncoder.prototype, 'encode').mockImplementationOnce(() => {
+        throw new RangeError('Array buffer allocation failed');
+      });
+      try {
+        expect(answerJob({ id: 12, html: '<p>x</p>' })).toEqual({ id: 12, ok: false, reason: 'parse_error' });
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    it('sends the answer, once, when all goes well', () => {
+      const sent: WorkerAnswer[] = [];
+      handleJob({ id: 13, html: '<p>x</p>' }, (answer) => void sent.push(answer), () => expect.unreachable('it did not give up'));
+      expect(sent).toHaveLength(1);
+      expect(sent[0]).toMatchObject({ id: 13, ok: true });
+    });
+
+    it('sends a refusal when the channel will not take the answer, which is small', () => {
+      const sent: WorkerAnswer[] = [];
+      let calls = 0;
+      handleJob(
+        { id: 14, html: '<p>x</p>' },
+        (answer) => {
+          if (++calls === 1) throw new Error('the answer was too big for the channel');
+          sent.push(answer);
+        },
+        () => expect.unreachable('it did not give up'),
+      );
+      expect(sent).toEqual([{ id: 14, ok: false, reason: 'parse_error' }]);
+    });
+
+    it('gives up (the process ends) only when not even the refusal can be sent, and does not throw', () => {
+      let gaveUp = 0;
+      handleJob(
+        { id: 15, html: '<p>x</p>' },
+        () => {
+          throw new Error('the channel is closed');
+        },
+        () => void (gaveUp += 1),
+      );
+      expect(gaveUp).toBe(1);
+    });
   });
 
   describe('the bytes of a prepared page are counted where they are made', () => {

@@ -234,10 +234,15 @@ describe('content origin: HTML goes through prepareArtifactHtml', () => {
       const r = await fetch(tokenUrl(base, code));
       answers.push(JSON.stringify([r.status, await r.text(), [...r.headers].filter(([k]) => k !== 'date' && k !== 'content-length')]));
     }
+    // ...and a page that crashed the worker, which is the worker's to say and not the transform's.
+    const crashed = await start({ htmlPreparer: refusing('worker_crashed') });
+    put('worker_crashed', { bytes: enc('<p>x</p>') });
+    const r = await fetch(tokenUrl(crashed, 'worker_crashed'));
+    answers.push(JSON.stringify([r.status, await r.text(), [...r.headers].filter(([k]) => k !== 'date' && k !== 'content-length')]));
     expect(new Set(answers).size).toBe(1);
     expect(JSON.parse(answers[0]!).slice(0, 2)).toEqual([422, HTML_REFUSED_BODY]);
     // The log is where the reason is: one warn per refusal, its code, and nothing else about it.
-    expect(lines.map((l) => (JSON.parse(l) as [string, string, { code: string }])[2].code)).toEqual(causes.map(([code]) => code));
+    expect(lines.map((l) => (JSON.parse(l) as [string, string, { code: string }])[2].code)).toEqual([...causes.map(([code]) => code), 'worker_crashed']);
     for (const l of lines) expect(JSON.parse(l)[0]).toBe('warn');
   });
 
@@ -456,7 +461,7 @@ describe('content origin: prepared-HTML cache', () => {
     expect(lines).toHaveLength(2);
   });
 
-  it.each(['too_slow', 'worker_timeout', 'worker_oom', 'too_many_nodes', 'output_too_large'] as const)(
+  it.each(['too_slow', 'worker_timeout', 'worker_oom', 'worker_crashed', 'too_many_nodes', 'output_too_large'] as const)(
     'a page refused as %s is remembered like any refusal: the same bytes are not sent to be prepared again, and are still a 422, logged each time',
     async (reason) => {
       // A hostile page is one that is retried to burn the worker, so the views that follow a refusal do not reach it, and a
@@ -608,6 +613,7 @@ describe('content origin: prepared-HTML cache', () => {
     it.each([
       ['worker_timeout', 'it is a wall-clock deadline, and a good page can meet a bad minute'],
       ['worker_oom', 'a page can sit on the edge of the heap limit, and the kernel that kills a worker for the pod\'s memory is not the page'],
+      ['worker_crashed', 'a page can crash a parser and the same bytes will again, but a worker can be ended by something that is not the page too'],
     ] as const)('a %s is remembered for a minute and no longer: %s', async (reason) => {
       const c = clock();
       const preparer = refusing(reason);

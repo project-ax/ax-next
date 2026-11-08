@@ -45,7 +45,14 @@ export type PoolRefusal =
   | 'worker_timeout'
   /** The worker ran out of memory, or was killed for it, and is gone. */
   | 'worker_oom'
-  /** The worker could not start, or ended, for a reason the page does not explain. Not the page's fault. */
+  /**
+   * The worker ended while it had the page, and not by running out of memory or the deadline: a crash (a signal that is
+   * not one of memory, an exit it chose, an exception it did not catch, something said that is not an answer). The page's, as
+   * far as anyone can tell: a page can crash a parser, and the same bytes will again. It does not count toward
+   * `failureLimit`, which is for what no page can cause.
+   */
+  | 'worker_crashed'
+  /** The worker could not start, or was not there for the page, for a reason the page does not explain. Not the page's fault. */
   | 'worker_failed'
   /** Not tried: too many pages are waiting, or the worker has been busy for too much of the last few seconds. Not the page's fault. */
   | 'busy';
@@ -85,9 +92,11 @@ export interface HtmlPreparerOptions {
    */
   idleMs?: number;
   /**
-   * Workers in a row that failed (could not start, ended without a page's doing it, said something that is not an answer or had
-   * not the limit asked for: not out of memory, not the deadline) after which pages are turned away as busy for `coolDownMs`,
-   * instead of starting another worker for each. One answer from a worker puts the count back to none. Default 5.
+   * Workers in a row that failed in a way NO PAGE CAN CAUSE (a process that could not be made, one that ended before it said
+   * it was ready, one that has not the heap limit it was asked for) after which pages are turned away as busy for
+   * `coolDownMs`, instead of starting another worker for each. What a page can do (run the worker out of memory, hold it,
+   * crash it) is that page's, remembered with it, and does not count: or a few pages that crash the parser would turn
+   * every other page away. One answer from a worker puts the count back to none. Default 5.
    */
   failureLimit?: number;
   /** Milliseconds, on the clock of the busy window, pages are turned away for after `failureLimit` failures; then one is tried. Default 30000. */
@@ -141,9 +150,12 @@ const DEFAULT_BUSY_WINDOW_MS = 10_000;
 const DEFAULT_MAX_BUSY_MS = 5000;
 const DEFAULT_IDLE_MS = 20_000;
 /**
- * A worker that keeps failing is a machine that cannot make one (no memory to fork, a file that is gone, a flag Node does not
- * take), and `worker_failed` is not remembered with a page, so without this every view would fork a process (35 ms of CPU) and
- * write an error to the log, for as long as it lasted. Five in a row is not a page: one answer in between ends the count.
+ * A machine that cannot make a worker (no memory to fork, a file that is gone, a flag Node does not take, a heap limit it does
+ * not give) fails to start one for every page, and `worker_failed` is not remembered with a page, so without this every view
+ * would fork a process (35 ms of CPU) and write an error to the log, for as long as it lasted. Only a failure that no page can
+ * cause counts, because the count is global: a page that crashes the worker is that page's refusal (`worker_crashed`), and if
+ * crashes counted, a few such pages would turn every tenant's pages away. Five in a row is not a page: one answer in between
+ * ends the count.
  */
 const DEFAULT_FAILURE_LIMIT = 5;
 const DEFAULT_COOL_DOWN_MS = 30_000;
@@ -183,19 +195,22 @@ function refused(reason: PrepareRefusal | PoolRefusal): PreparedPage {
  * What `onFault` is given: an error with an identifier for a `code`, which is all a log line is to carry of
  * it (the code is the part of an error that is safe to write down; the message may say more, for a person).
  * The ones there are:
- *   worker_spawn_failed      the process could not be made
+ *   worker_spawn_failed      the process could not be made (counts toward the failure limit)
+ *   worker_send_failed       the page could not be sent to a worker that had said it was ready (the page is
+ *                            answered `worker_failed`: it was not delivered)
  *   worker_start_exit_<n>    it ended with exit code <n> before it said it was ready (a bad flag is 9, a
- *                            module it could not load is 1)
- *   worker_start_signal_<S>  it was ended by signal <S> before it said it was ready
- *   worker_exit_<n>          it ended with exit code <n> while it had a page, or stopped being there with none
- *   worker_signal_<S>        it was ended by signal <S> that is not one of memory (a crash)
+ *                            module it could not load is 1); counts toward the failure limit
+ *   worker_start_signal_<S>  it was ended by signal <S> before it said it was ready; counts too
+ *   worker_exit_<n>          it ended with exit code <n> while it had a page (answered `worker_crashed`), or
+ *                            stopped being there with none
+ *   worker_signal_<S>        it was ended by signal <S> that is not one of memory (a crash: the same)
  *   worker_aborted           it aborted (SIGABRT, or exit code 134), which V8 does at its heap limit; the page is
  *                            answered `worker_oom`. The worker's streams are ignored, so this is the only trace
  *   worker_killed            it was killed from outside, which in a pod is the kernel running out of memory;
  *                            the page is answered `worker_oom`
- *   worker_limit_mismatch    its heap limit is not the one it was asked for
- *   worker_bad_ready         the first thing it said was not what a worker says when it starts
- *   worker_bad_message       it said something that is not an answer
+ *   worker_limit_mismatch    its heap limit is not the one it was asked for (counts toward the failure limit)
+ *   worker_bad_ready         the first thing it said was not what a worker says when it starts (counts too)
+ *   worker_bad_message       it said something that is not an answer to the page it had (`worker_crashed`)
  */
 class PoolFault extends Error {
   constructor(
@@ -279,7 +294,7 @@ class WorkerPreparer implements HtmlPreparer {
   prepare(html: string): Promise<PreparedPage> {
     if (this.closed) return Promise.resolve(refused('worker_failed'));
     const inFlight = this.waiting.length + (this.running === null ? 0 : 1);
-    if (this.cooling() || inFlight > this.maxQueued || this.busyTime() >= this.maxBusyMs || (inFlight > 0 && this.heldChars() + html.length > this.maxQueuedChars)) {
+    if (inFlight > this.maxQueued || this.busyTime() >= this.maxBusyMs || (inFlight > 0 && this.heldChars() + html.length > this.maxQueuedChars)) {
       return Promise.resolve(refused('busy'));
     }
     return new Promise((resolve) => {
@@ -374,10 +389,10 @@ class WorkerPreparer implements HtmlPreparer {
     try {
       // `html` is the only thing the worker is told: no environment, no option, no path.
       worker.process.send({ id: running.id, html: running.job.html }, (err) => {
-        if (err !== null) this.ended(generation, new PoolFault('worker_spawn_failed', `the page could not be sent to the prepare worker: ${describe(err)}`), 'worker_failed');
+        if (err !== null) this.ended(generation, new PoolFault('worker_send_failed', `the page could not be sent to the prepare worker: ${describe(err)}`), 'worker_failed', false);
       });
     } catch (err) {
-      this.ended(generation, new PoolFault('worker_spawn_failed', `the page could not be sent to the prepare worker: ${describe(err)}`), 'worker_failed');
+      this.ended(generation, new PoolFault('worker_send_failed', `the page could not be sent to the prepare worker: ${describe(err)}`), 'worker_failed', false);
     }
   }
 
@@ -396,7 +411,7 @@ class WorkerPreparer implements HtmlPreparer {
     const worker: Worker = { process: child, ready: false };
     child.on('message', (message: unknown) => this.heard(generation, worker, message));
     // 'error' is the process that could not be made, or told to end, or sent to. It must have a listener or it throws.
-    child.on('error', (err: Error) => this.ended(generation, new PoolFault('worker_spawn_failed', `the prepare worker failed: ${describe(err)}`), 'worker_failed'));
+    child.on('error', (err: Error) => this.ended(generation, new PoolFault('worker_spawn_failed', `the prepare worker failed: ${describe(err)}`), 'worker_failed', !worker.ready));
     child.on('exit', (code, signal) => this.exited(generation, worker, code, signal));
     // After the listeners, not before: a 'message' listener takes hold of the channel again (measured with threads: a
     // worker unref-ed first and given its listeners after kept an idle process from ever ending). While a page is
@@ -418,12 +433,12 @@ class WorkerPreparer implements HtmlPreparer {
     const page = readAnswer(message, running.id);
     if (page === null) return;
     if (!page.ok && page.reason === 'worker_failed') {
-      // Something other than an answer: it is not to be trusted again. Ended BEFORE the page is finished, as
+      // Something other than an answer, to a page: it is not to be trusted again, and the page is the one that did it, as far
+      // as anyone can tell (a crash is the same: `worker_crashed`, and not counted). Ended BEFORE the page is finished, as
       // finishing starts the next waiting page, which must go to a worker that is not the one just ended.
       this.onFault(new PoolFault('worker_bad_message', 'the prepare worker sent a message that is not an answer'));
-      this.failed();
       this.discard();
-      this.finish(running, page);
+      this.finish(running, refused('worker_crashed'));
       return;
     }
     // An answer, of either kind: the worker did what it is for, whatever it thought of the page.
@@ -466,21 +481,24 @@ class WorkerPreparer implements HtmlPreparer {
     } else if (worker.ready && signal === 'SIGKILL') {
       this.ended(generation, new PoolFault('worker_killed', `the prepare worker was killed (${how}), which in a pod is the kernel running out of memory`), 'worker_oom');
     } else if (!worker.ready) {
+      // Before it said it was ready no page had been sent it: this is the machine's, and the only kind that counts.
       const code_ = signal !== null ? `worker_start_signal_${signal}` : `worker_start_exit_${String(code)}`;
-      this.ended(generation, new PoolFault(code_, `the prepare worker ended (${how}) before it said it was ready`), 'worker_failed');
+      this.ended(generation, new PoolFault(code_, `the prepare worker ended (${how}) before it said it was ready`), 'worker_failed', true);
     } else {
+      // With a page in hand (it is sent as soon as the worker is ready) a crash is that page's: the same bytes will do it again,
+      // and it is answered and remembered like any refusal of a page, and does not count toward the failure limit. With none,
+      // nobody is waiting for the answer.
       const code_ = signal !== null ? `worker_signal_${signal}` : `worker_exit_${String(code)}`;
-      this.ended(generation, new PoolFault(code_, `the prepare worker ended (${how})`), 'worker_failed');
+      this.ended(generation, new PoolFault(code_, `the prepare worker ended (${how})`), this.running !== null ? 'worker_crashed' : 'worker_failed');
     }
   }
 
   /** The worker ended by itself: out of memory, a crash, or it exited; or a message to it could not be sent. */
-  private ended(generation: number, fault: PoolFault | null, reason: PoolRefusal): void {
+  private ended(generation: number, fault: PoolFault | null, reason: PoolRefusal, counts = false): void {
     if (generation !== this.generation) return;
     this.discard();
     if (fault !== null) this.onFault(fault);
-    // Out of memory is the page's, and so is the deadline (see `timedOut`): a worker that cannot be made or kept is not.
-    if (reason === 'worker_failed') this.failed();
+    if (counts) this.failed();
     const running = this.running;
     if (running !== null) this.finish(running, refused(reason));
   }
