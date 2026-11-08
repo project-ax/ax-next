@@ -682,28 +682,40 @@ the app origins, `sandbox allow-scripts allow-downloads`). CSP does not cover
 WebRTC, so HTML also goes through `@ax/frame-guard`'s `prepareArtifactHtml`
 (child frames cut, a guard script that locks WebRTC injected first; chat
 visuals share the same runtime). The transform runs a third-party parser over
-bytes an agent chose, so it never runs on the thread that serves requests: every
-page goes to a worker thread (`createHtmlPreparer`: one page at a time, a heap
-limit, a wall-clock deadline, a short line of waiting pages, and a busy rule), and
-the transform bounds its own work as well (parse depth, node, attribute and call
-counts, the characters the serializer would have to escape, and a CPU-time budget:
-500 ms by default, 1.5 s only inside the worker). A thread is not a process: when a
-page needs far more heap than the worker's limit, V8 aborts the whole process
-instead of ending the worker (it did, at the 384 MB default, for a page 4 MiB long
-that the output cap then allowed to come back at three times its length). So the
-limit is not what keeps the host up: the transform's own bounds are (a result may
-be at most 1.5 times the page, and strings are read flat as they arrive, so the
-heap a page needs follows its biggest token, about 160 MB for 4 MiB of one,
-measured), with the limit as the net under them, and a limit that is low or only
-just over the need can abort the process. A child process is the real boundary and
-is a follow-up. A page it refuses, or one over 4 MiB, is a 422 with one of three
+bytes an agent chose, so it runs neither on the thread that serves requests nor in
+the process that has it: every page goes to a worker PROCESS (`createHtmlPreparer`
+forks the built `prepare-worker.js` of `@ax/frame-guard`: one page at a time, an
+empty environment, no standard streams, only the page over its channel, a heap limit
+V8 enforces on it with the young generation pinned so that the limit is the same on
+every machine, a wall-clock deadline, a short line of waiting pages, and a busy
+rule). A page that needs more memory than the worker has is aborted by V8, one that
+holds its CPU is killed at the deadline, one that crashes it or is killed by the
+kernel for the pod's memory is gone, and the pool answers each with a refusal
+(`worker_oom`, `worker_timeout`, `worker_failed`) and starts another worker for the
+next page: the host sees a refused page and nothing more. (It was a thread, and a
+thread is not a boundary: when a page needed far more heap than the thread's limit,
+V8 aborted the whole host, at the 384 MB default for a page 4 MiB long that the
+transform wrote out at three times its length. Even with the transform's own bounds,
+4 MiB of text inside a `<table>`, which parse5 holds a token at a time, needs 352 to
+368 MB of the 384, so what happens at the limit has to be safe, not unlikely.) The
+worker says what heap limit it really has when it starts, and one that is not the
+limit asked for is not used; it asks the kernel to kill it before anything else in
+the pod and to give the CPU to the host first; and it is ended when the host lets go
+of the channel and when it has had nothing to do for 20 seconds (one that has
+prepared a heavy page holds 250 MB or more until it ends). It is not a sandbox: same
+user, same files. The transform bounds its own work as well (parse depth, node,
+attribute and call counts, the characters the serializer would have to escape, a
+result of at most four times the page and never over 8 MiB, in characters and in
+bytes, and a CPU-time budget: 500 ms by default, 1.5 s only inside the worker). A
+page it refuses, or one over 4 MiB, is a 422 with one of three
 fixed lines ("too large to preview here, download it instead"; "can't show this page
 right now, try again" for a page that was turned away unseen, busy or the worker
 failed; or "can't show this page safely"; the reason goes to the log as a code, at
 warn), not the 404 a bad token gets. A refusal that is about the page is remembered
 by content hash, in a place of its own (4,096 of them) so that refusals never push a
 served page out of the sixteen; `worker_timeout`, a wall-clock deadline that can meet
-a starved machine, is remembered for a minute only. That defense is enumeration-based,
+a starved machine, and `worker_oom`, which a page at the edge of the heap limit or a
+pod short of memory can give a good page, are remembered for a minute only. That defense is enumeration-based,
 and a page
 opened top-level on `/v/` can navigate itself away; the full fix is
 network-level (TASK-1065). The app shows it in an iframe
