@@ -46,7 +46,7 @@ describe('shapeSteps', () => {
       done({ id: 'v', name: 'mcp__ax-sandbox-tools__show_visual', phrase: 'Making a visual' }),
     ]);
     expect(texts(panel)).toEqual(['Making a visual']);
-    expect(panel?.label).toMatch(/^1 step/);
+    expect(panel?.label).toBe('Making a visual');
   });
 
   it('is null when the only call was ToolSearch, failed or not', () => {
@@ -97,19 +97,20 @@ describe('shapeSteps', () => {
   it('says a failed step failed, in words, not only in colour', () => {
     const panel = shapeSteps([done({ status: 'failed', phrase: 'Sending the email' })]);
     expect(texts(panel)).toEqual(["Sending the email — didn't finish"]);
-    expect(panel?.label).toBe("1 step, 1 didn't finish");
+    expect(panel?.label).toBe("Sending the email, 1 didn't finish");
   });
 
   it('says a held step is waiting on the reader', () => {
     const panel = shapeSteps([done({ status: 'waiting', phrase: 'Sending the email' })]);
     expect(texts(panel)).toEqual(['Sending the email — waiting for you']);
-    expect(panel?.label).toBe('1 step, 1 waiting for you');
+    expect(panel?.label).toBe('Sending the email, 1 waiting for you');
   });
 
   it('says a step still in flight is in progress', () => {
     const panel = shapeSteps([done({ status: 'running', phrase: 'Searching the web' })]);
     expect(texts(panel)).toEqual(['Searching the web — in progress']);
-    expect(panel?.label).toBe('1 step, 1 in progress');
+    // Shut, the panel says what is happening NOW, in the present tense.
+    expect(panel?.label).toBe('Searching the web…');
   });
 
   it('leads with the failure when a panel holds both a failure and a hold', () => {
@@ -122,23 +123,43 @@ describe('shapeSteps', () => {
       done({ id: 'a', status: 'waiting', phrase: 'Sending the email' }),
       done({ id: 'b', status: 'failed', phrase: 'Reading the calendar' }),
     ]);
-    expect(panel?.label).toBe("2 steps, 1 didn't finish");
+    expect(panel?.label).toBe("Used tools, 1 didn't finish");
     expect(texts(panel)).toEqual([
       'Sending the email — waiting for you',
       "Reading the calendar — didn't finish",
     ]);
   });
 
-  it('reports the count it renders, for every size', () => {
-    for (const n of [1, 2, 7]) {
-      const calls = Array.from({ length: n }, (_, i) => done({ id: `tu${i}` }));
-      const panel = shapeSteps(calls);
-      expect(panel).not.toBeNull();
-      const reported = /^(\d+) steps?\b/.exec(panel!.label);
-      expect(reported).not.toBeNull();
-      expect(Number(reported![1])).toBe(panel!.steps.length);
-      expect(panel!.steps).toHaveLength(n);
-    }
+  it('titles a panel by what it mostly did, never by a count', () => {
+    const panel = shapeSteps([
+      done({ id: 'a', name: 'Read', detail: 'src/a.ts' }),
+      done({ id: 'b', name: 'Grep', detail: 'TODO' }),
+      done({ id: 'c', name: 'Read', detail: 'src/b.ts' }),
+      done({ id: 'd', name: 'Bash', detail: 'ls' }),
+    ])!;
+    expect(panel.label).toBe('Looked through files and ran commands');
+    expect(panel.label).not.toMatch(/\d/);
+    expect(panel.steps).toHaveLength(4);
+  });
+
+  it('titles a one-step panel by that step', () => {
+    expect(shapeSteps([done({ name: 'Read', detail: 'src/app.ts' })])?.label).toBe('Read app.ts');
+  });
+
+  it('titles a panel of one repeated tool by what that tool did', () => {
+    const panel = shapeSteps([
+      done({ id: 'a', phrase: 'Searching memory' }),
+      done({ id: 'b', phrase: 'Searching memory' }),
+    ]);
+    expect(panel?.label).toBe('Searching memory');
+  });
+
+  it('while a step is running, the title is that step in the present tense', () => {
+    const panel = shapeSteps([
+      done({ id: 'a', name: 'Read', detail: 'src/a.ts' }),
+      { id: 'b', name: 'Read', detail: 'src/index.ts', status: 'running' },
+    ]);
+    expect(panel?.label).toBe('Reading index.ts…');
   });
 });
 
@@ -211,16 +232,50 @@ describe('the live accumulator', () => {
  * a count and nothing else. The count was right and the rows were useless, so
  * the defect is in what a row SAYS, not in whether it appears.
  */
+describe('plain words for built-in tools', () => {
+  it('names a built-in by what it did, and keeps the raw input as detail', () => {
+    const panel = shapeSteps([
+      done({ id: 'a', name: 'Read', detail: '/tmp/repo/src/index.js' }),
+      done({ id: 'b', name: 'Edit', detail: 'src/app.ts' }),
+      done({ id: 'c', name: 'Write', detail: 'notes/plan.md' }),
+      done({ id: 'd', name: 'Grep', detail: 'path:' }),
+      done({ id: 'e', name: 'WebFetch', detail: 'https://example.com/docs?x=1' }),
+      done({ id: 'f', name: 'WebSearch', detail: 'vue 3 migration' }),
+    ])!;
+    expect(texts(panel)).toEqual([
+      'Read index.js',
+      'Edited app.ts',
+      'Wrote plan.md',
+      'Searched files',
+      'Opened example.com',
+      'Searched the web',
+    ]);
+    expect(panel.steps.map((s) => s.kind)).toEqual(['read', 'edit', 'edit', 'search', 'web', 'web']);
+    expect(panel.steps[0]?.detail).toBe('/tmp/repo/src/index.js');
+  });
+
+  it('does not treat a connector tool that shares a built-in name as the built-in', () => {
+    const panel = shapeSteps([done({ name: 'mcp__docs__Read', detail: 'x' })]);
+    expect(panel?.steps[0]?.kind).toBe('other');
+    expect(texts(panel)).toEqual(['Read']);
+  });
+});
+
 describe('telling one call from the next', () => {
   it('draws two Bash calls as two DIFFERENT rows', () => {
     const rows = shapeSteps([
       done({ id: 'a', detail: stepDetail({ command: 'pnpm build' }) }),
       done({ id: 'b', detail: stepDetail({ command: 'pnpm test' }) }),
     ])!.steps.map((step) => step.text);
-    expect(rows).toEqual(['Bash: pnpm build', 'Bash: pnpm test']);
-    // The assertion the card is actually about: not "they read nicely", but
-    // "they do not read the same".
-    expect(rows[0]).not.toBe(rows[1]);
+    // The words read like a person's; "which one" moved out of the sentence
+    // into `detail`, which the panel shows when a row is opened.
+    expect(rows).toEqual(['Ran a command', 'Ran a command']);
+    const details = shapeSteps([
+      done({ id: 'a', detail: stepDetail({ command: 'pnpm build' }) }),
+      done({ id: 'b', detail: stepDetail({ command: 'pnpm test' }) }),
+    ])!.steps.map((step) => step.detail);
+    // The assertion the card is actually about: they do not read the same.
+    expect(details).toEqual(['pnpm build', 'pnpm test']);
   });
 
   it('still says which one when the call is mid-flight or failed', () => {
@@ -231,18 +286,19 @@ describe('telling one call from the next', () => {
       { id: 'b', name: 'Bash', detail: 'pnpm test', status: 'failed' },
     ]);
     expect(texts(panel)).toEqual([
-      'Bash: pnpm build — in progress',
-      'Bash: pnpm test — didn\'t finish',
+      'Ran a command — in progress',
+      'Ran a command — didn\'t finish',
     ]);
+    expect(panel?.steps.map((s) => s.detail)).toEqual(['pnpm build', 'pnpm test']);
   });
 
   it('leaves a row bare rather than ending it in a dangling separator', () => {
     // A tool whose input has no string in it at all (`TodoWrite` takes a list).
     // There is no "which one" to show, so the row is just the name.
     expect(stepDetail({ todos: [] })).toBeUndefined();
-    expect(texts(shapeSteps([done({ detail: stepDetail({ todos: [] }) })]))).toEqual([
-      'Bash',
-    ]);
+    const panel = shapeSteps([done({ name: 'TodoWrite', detail: stepDetail({ todos: [] }) })]);
+    expect(texts(panel)).toEqual(['TodoWrite']);
+    expect(panel?.steps[0]).not.toHaveProperty('detail');
   });
 
   it('hands the renderer the STATE of each row, not just its words', () => {
@@ -276,7 +332,8 @@ describe('telling one call from the next', () => {
         detail: stepDetail({ title: 'Login is broken' }),
       }),
     ]);
-    expect(texts(panel)).toEqual(['Filing a Linear issue: Login is broken']);
+    expect(texts(panel)).toEqual(['Filing a Linear issue']);
+    expect(panel?.steps[0]?.detail).toBe('Login is broken');
   });
 });
 
@@ -373,8 +430,9 @@ describe('stepDetail', () => {
     const panel = shapeSteps([
       { id: 'c1', name: 'Read', detail: stepDetail({ file_path: path }), status: 'done' },
     ])!;
-    expect(panel.steps[0]!.text).toBe(`Read: ${path}`);
-    expect(panel.steps[0]!.text).not.toContain('…');
+    expect(panel.steps[0]!.text).toBe(`Read ${'a'.repeat(80)}.md`);
+    expect(panel.steps[0]!.detail).toBe(path);
+    expect(panel.steps[0]!.detail).not.toContain('…');
   });
 
   it('never lets an argument that names a secret qualify the row', () => {
@@ -480,8 +538,8 @@ describe('settleHolds — a hold the person has since answered (TASK-517)', () =
     const panel = shapeSteps(settleHolds([held()], none));
     expect(texts(panel)).toEqual(['Reading a web page — no longer waiting for you']);
     expect(panel?.steps[0]?.status).toBe('settled');
-    // And the header stops counting it as waiting.
-    expect(panel?.label).toBe('1 step');
+    // And the title stops saying it is waiting.
+    expect(panel?.label).toBe('Reading a web page');
   });
 
   it('a hold whose call id is still open stays waiting', () => {

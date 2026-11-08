@@ -3,8 +3,8 @@
  *
  * The seam test (`src/__tests__/workspace-steps-seam.test.tsx`) proves the two
  * paths agree; this proves the thing they agree ON is actually drawable — the
- * disclosure opens and shuts, identical rows survive, and a tool-only turn
- * renders its panel without an empty bubble above it.
+ * disclosure starts shut and opens, sits ABOVE the reply and its artifacts,
+ * folds a run of one kind, and keeps the raw input one click further down.
  */
 import type { ComponentProps } from 'react';
 import { describe, expect, it, vi } from 'vitest';
@@ -58,9 +58,16 @@ const steps = (over: Partial<Extract<ThreadMessage, { kind: 'steps' }>> = {}) =>
     ...over,
   }) as ThreadMessage;
 
-function rows(container: HTMLElement): string[] {
-  const panel = container.querySelector('[data-testid="workspace-steps"]');
+function panelOf(container: HTMLElement): HTMLElement {
+  const panel = container.querySelector<HTMLElement>('[data-testid="workspace-steps"]');
   if (panel === null) throw new Error('no step panel');
+  return panel;
+}
+
+/** Open the panel (it starts shut) and read its rows. */
+function rows(container: HTMLElement): string[] {
+  const panel = panelOf(container);
+  if (panel.querySelectorAll('li').length === 0) fireEvent.click(panel.querySelector('button')!);
   return [...panel.querySelectorAll('li')].map((li) => (li.textContent ?? '').trim());
 }
 
@@ -82,28 +89,106 @@ describe('the step panel', () => {
     expect(rows(container)).toEqual(['Bash', 'Bash']);
   });
 
-  it('opens by default and can be shut', () => {
-    const { container } = renderThread([steps()]);
-    expect(rows(container)).toHaveLength(2);
-    const trigger = container.querySelector(
-      '[data-testid="workspace-steps"] button',
-    );
-    fireEvent.click(trigger!);
-    expect(
-      container.querySelectorAll('[data-testid="workspace-steps"] li'),
-    ).toHaveLength(0);
+  it('starts shut, says what it did in one line, and opens on click', () => {
+    const { container } = renderThread([
+      steps({
+        steps: [
+          { text: 'Read index.js', status: 'done', kind: 'read', detail: '/tmp/r/index.js' },
+          { text: 'Ran a command', status: 'done', kind: 'command', detail: 'ls -la' },
+          { text: 'Ran a command', status: 'done', kind: 'command', detail: 'cat README.md' },
+        ],
+      }),
+    ]);
+    const panel = panelOf(container);
+    expect(panel.querySelectorAll('li')).toHaveLength(0);
+    const trigger = panel.querySelector('button')!;
+    expect(trigger.textContent).toBe('Ran commands and looked through files');
+    expect(trigger.getAttribute('aria-expanded')).toBe('false');
+    fireEvent.click(trigger);
+    expect(trigger.getAttribute('aria-expanded')).toBe('true');
+    expect(panel.querySelectorAll('li').length).toBeGreaterThan(0);
+  });
+
+  it('folds a run of one kind into one row, with each raw input inside it', () => {
+    const { container } = renderThread([
+      steps({
+        steps: [
+          { text: 'Ran a command', status: 'done', kind: 'command', detail: 'ls -la' },
+          { text: 'Ran a command', status: 'done', kind: 'command', detail: 'cat README.md' },
+          { text: 'Read index.js', status: 'done', kind: 'read', detail: '/tmp/r/index.js' },
+        ],
+      }),
+    ]);
+    expect(rows(container)).toEqual(['Ran 2 commands', 'Read index.js']);
+    // The raw command is not on screen until its row is opened.
+    expect(container.textContent).not.toContain('ls -la');
+    const group = [...panelOf(container).querySelectorAll('li button')].find((b) =>
+      (b.textContent ?? '').includes('Ran 2 commands'),
+    )!;
+    fireEvent.click(group);
+    const codes = [...panelOf(container).querySelectorAll('code')].map((c) => c.textContent);
+    expect(codes).toEqual(['ls -la', 'cat README.md']);
+  });
+
+  it('never folds a failed step into a group', () => {
+    const { container } = renderThread([
+      steps({
+        steps: [
+          { text: 'Ran a command', status: 'done', kind: 'command', detail: 'a' },
+          { text: "Ran a command — didn't finish", status: 'failed', kind: 'command', detail: 'b' },
+          { text: 'Ran a command', status: 'done', kind: 'command', detail: 'c' },
+        ],
+      }),
+    ]);
+    expect(rows(container)).toEqual(['Ran a command', "Ran a command — didn't finish", 'Ran a command']);
+    expect(panelOf(container).querySelector('button')!.textContent).toBe("Ran commands, 1 didn't finish");
+  });
+
+  it('sits ABOVE the reply, and the reply\'s artifact sits below both', () => {
+    const { container } = renderThread([
+      steps({ id: 't1', text: '', steps: [{ text: 'Making a report', status: 'done' }] }),
+      {
+        kind: 'agent',
+        id: 't2',
+        text: '',
+        at: '2026-09-17T16:12:01.000Z',
+        artifacts: [{ artifactId: 'art1', version: 1, title: 'Q3 report', kind: 'document', extension: 'PDF' }],
+      } as ThreadMessage,
+      steps({ id: 't3', text: '', steps: [{ text: 'Checking the report', status: 'done' }] }),
+      { kind: 'agent', id: 't4', text: 'Your report is ready.', at: '2026-09-17T16:12:03.000Z' } as ThreadMessage,
+    ]);
+    // One panel for the whole reply, holding the steps from BOTH sides of the card.
+    expect(container.querySelectorAll('[data-testid="workspace-steps"]')).toHaveLength(1);
+    expect(rows(container)).toEqual(['Making a report', 'Checking the report']);
+    const text = container.textContent ?? '';
+    const at = (s: string) => text.indexOf(s);
+    expect(at('Making a report')).toBeGreaterThan(-1);
+    expect(at('Making a report')).toBeLessThan(at('Your report is ready.'));
+    expect(at('Your report is ready.')).toBeLessThan(at('Q3 report'));
+  });
+
+  it('keeps narration from between the steps inside the panel, not in the reply', () => {
+    const { container } = renderThread([
+      steps({ id: 't1', text: 'Let me look at the repo.', steps: [{ text: 'Ran a command', status: 'done' }] }),
+      { kind: 'agent', id: 't2', text: 'Here is how it works.', at: '2026-09-17T16:12:03.000Z' } as ThreadMessage,
+    ]);
+    expect(container.querySelector('.text-pretty')?.textContent).toBe('Here is how it works.');
+    expect(rows(container)).toEqual(['Let me look at the repo.', 'Ran a command']);
   });
 
   it('draws no empty bubble above a turn that only ran tools', () => {
     const { container } = renderThread([steps({ text: '' })]);
-    expect(rows(container)).toHaveLength(2);
+    expect(rows(container)).toEqual(['Bash', 'Bash']);
     // The prose bubble carries this class; with no prose it must not exist.
     expect(container.querySelector('.text-pretty')).toBeNull();
   });
 
-  it('still draws the reply above the panel when there is one', () => {
+  it('still draws the reply, under the panel, when there is one', () => {
     const { container } = renderThread([steps({ text: 'Done.' })]);
     expect(container.querySelector('.text-pretty')?.textContent).toContain('Done.');
+    const panel = panelOf(container);
+    const reply = container.querySelector('.text-pretty')!;
+    expect(panel.compareDocumentPosition(reply) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   // --- a failure has to LOOK like one (TASK-419) ---------------------------
@@ -127,6 +212,7 @@ describe('the step panel', () => {
 
   /** The `li` for one row, by the text it carries. */
   function rowFor(container: HTMLElement, text: string): HTMLElement {
+    rows(container);
     const li = [...container.querySelectorAll('li')].find((el) =>
       (el.textContent ?? '').includes(text),
     );
@@ -211,6 +297,7 @@ describe('a clamped step row (TASK-436)', () => {
     const { container } = renderThread([
       steps({ stepsLabel: '1 step', steps: [{ text: row, status: 'done' }] }),
     ]);
+    rows(container);
     const span = container.querySelector(
       '[data-testid="workspace-steps"] li span[title]',
     );
@@ -230,6 +317,7 @@ describe('a clamped step row (TASK-436)', () => {
         steps: [{ text: "Sending the email — didn't finish", status: 'failed' }],
       }),
     ]);
+    rows(container);
     const span = container.querySelector(
       '[data-testid="workspace-steps"] li span[title]',
     );

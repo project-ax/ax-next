@@ -508,8 +508,16 @@ describe('GET /api/workspace/tasks/:agentId/:routineId/checkins/:conversationId 
           id: 'turn-2',
           text: 'Checking the queue.',
           at: '2026-10-22T09:57:02.000Z',
-          stepsLabel: '1 step',
-          steps: [{ text: 'Bash: pnpm test', status: 'done' }],
+          stepsLabel: 'Ran a command',
+          steps: [
+            {
+              text: 'Ran a command',
+              status: 'done',
+              kind: 'command',
+              doing: 'Running a command',
+              detail: 'pnpm test',
+            },
+          ],
         },
         { kind: 'agent', id: 'turn-4', text: 'Queue is empty.', at: '2026-10-22T09:57:04.000Z' },
       ],

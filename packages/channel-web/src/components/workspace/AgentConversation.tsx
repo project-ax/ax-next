@@ -10,7 +10,8 @@
  * it with this component, read-only. That is why `agent` is only an id and a
  * name.
  */
-import { MEMORY_SOURCE_CLASS, TURN_ID_ATTR } from '@/lib/thread-jump';
+import { MEMORY_SOURCE_CLASS, TURN_ID_ATTR, TURN_IDS_ATTR } from '@/lib/thread-jump';
+import { groupReplies, type ActivityEntry, type ReplyGroup } from '@/lib/reply-groups';
 import {
   lazy,
   Suspense,
@@ -25,7 +26,6 @@ import {
   CircleStop,
   Hand,
   Layers,
-  ListChecks,
   type LucideIcon,
 } from 'lucide-react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
@@ -46,9 +46,11 @@ import { workspaceApi } from '@/lib/workspace-api';
 import { Separator } from '@/components/ui/separator';
 import { Skeleton } from '@/components/ui/skeleton';
 import { cn } from '@/lib/utils';
-import type {
-  WorkspaceStep,
-  WorkspaceStepStatus,
+import {
+  stepsTitle,
+  type StepKind,
+  type WorkspaceStep,
+  type WorkspaceStepStatus,
 } from '@/lib/workspace-steps';
 import { signInWithGoogle } from '@/lib/auth';
 import { readAlertVariant } from '@/lib/read-register';
@@ -577,7 +579,25 @@ export function AgentConversation({
         className={cn("overflow-y-auto py-6 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring", welcome ? "shrink-0" : "flex-1")}
       >
         <div ref={contentRef} className={cn(CHAT_CONTENT_CLASS, "flex flex-col gap-[26px]")}>
-          {thread.map((m, i) => {
+          {groupReplies(thread).map((item, i) => {
+            /*
+              A reply that ran tools arrives as several stored turns; it is
+              drawn as one — steps above, answer, then what it made. See
+              `lib/reply-groups.ts`.
+            */
+            if (item.kind === 'reply') {
+              return (
+                <AgentReply
+                  key={`${i}:${item.id}`}
+                  reply={item}
+                  agent={agent}
+                  conversationId={conversationId}
+                  fileRecheckKey={fileRecheckKey}
+                  {...(onOpenArtifact !== undefined ? { onOpenArtifact } : {})}
+                />
+              );
+            }
+            const m = item.message;
             /*
               Position AND id, not `m.id` alone: on a duplicate id React would
               drop or duplicate a `Message`. Cost of the position-bearing key:
@@ -1242,13 +1262,58 @@ function Message({
     );
   }
 
-  /*
-    Read ONCE. The guard below and the child it renders have to be the same
-    string, and two calls are two chances for them to disagree — not today,
-    when `localTime` is pure, but the moment someone reaches for `Date.now()`
-    inside it. Also just cheaper: one `Date`, not two, per bubble per render.
-  */
-  const clock = localTime(m.at);
+  return (
+    <AgentReply
+      reply={replyFromMessage(m)}
+      agent={agent}
+      conversationId={conversationId}
+      fileRecheckKey={fileRecheckKey}
+      {...(onOpenArtifact !== undefined ? { onOpenArtifact } : {})}
+    />
+  );
+}
+
+/**
+ * A lone agent message in the shape `AgentReply` draws. The conversation
+ * folds every reply that ran tools through `groupReplies` first, so a `steps`
+ * message rarely reaches here — but one that does still draws its steps
+ * above its words rather than losing them.
+ */
+function replyFromMessage(m: Extract<ThreadMessage, { kind: 'agent' } | { kind: 'steps' }>): ReplyGroup {
+  return {
+    kind: 'reply',
+    id: m.id,
+    turnIds: [m.id],
+    activity: m.kind === 'steps' ? m.steps.map((step) => ({ kind: 'step' as const, step })) : [],
+    text: m.text,
+    at: m.at,
+    visuals: m.kind === 'agent' ? [...(m.visuals ?? [])] : [],
+    artifacts: m.kind === 'agent' ? [...(m.artifacts ?? [])] : [],
+    attachments: [...(m.attachments ?? [])],
+    ...(m.memoryUsed !== undefined ? { memoryUsed: m.memoryUsed } : {}),
+  };
+}
+
+/**
+ * One agent reply: what it did (collapsed, ABOVE), what it said, then what it
+ * made. Steps sit above the words and the deliverables below both, so the
+ * tool calls that built an artifact read as the work before the result rather
+ * than trailing after its card.
+ */
+function AgentReply({
+  reply: r,
+  agent,
+  conversationId,
+  fileRecheckKey,
+  onOpenArtifact,
+}: {
+  reply: ReplyGroup;
+  agent: Pick<WorkspaceAgent, 'id' | 'name'>;
+  conversationId: string | null;
+  fileRecheckKey: number;
+  onOpenArtifact?: (artifactId: string) => void;
+}) {
+  const clock = localTime(r.at);
 
   return (
     <div
@@ -1258,7 +1323,7 @@ function Message({
         id here the rail's link to it found nothing and did nothing. Same
         attribute and highlight as the person's bubble above.
       */
-      {...{ [TURN_ID_ATTR]: m.id }}
+      {...{ [TURN_ID_ATTR]: r.id, [TURN_IDS_ATTR]: r.turnIds.join(' ') }}
       className={`-mx-2 -my-1 flex gap-3 rounded-lg px-2 py-1 ${MEMORY_SOURCE_CLASS}`}
     >
       <AgentTile agent={agent} size={24} />
@@ -1284,20 +1349,21 @@ function Message({
           browser call out), and file download links are omitted from prose.
           Persisted attachments supply the download chips below.
         */}
-        {m.text.length > 0 && (
+        {r.activity.length > 0 && <Activity entries={r.activity} />}
+        {r.text.length > 0 && (
           <div className="max-w-[604px] text-[15px] leading-[1.58] text-pretty">
-            <Markdown text={m.text} hideFileDownloadLinks />
+            <Markdown text={r.text} hideFileDownloadLinks />
           </div>
         )}
-        {m.kind === 'steps' && <Steps label={m.stepsLabel} steps={m.steps} />}
+        
         {/*
           Keyed by artifact id: the frame holds per-visual state (height,
           ready, the loaded document), and a positional key would hand one
           visual's state to the next.
         */}
-        {conversationId !== null && m.kind === 'agent' && (m.visuals?.length ?? 0) > 0 && (
+        {conversationId !== null && r.visuals.length > 0 && (
           <div className="mt-3 flex flex-col gap-3">
-            {m.visuals?.map((v) => (
+            {r.visuals.map((v) => (
               <Suspense
                 key={v.artifactId}
                 fallback={
@@ -1312,16 +1378,16 @@ function Message({
             ))}
           </div>
         )}
-        {'artifacts' in m && (m.artifacts?.length ?? 0) > 0 && (
+        {r.artifacts.length > 0 && (
           <div className="mt-3 flex max-w-[604px] flex-col gap-2">
-            {m.artifacts?.map((a) => (
+            {r.artifacts.map((a) => (
               <ArtifactCard key={a.artifactId} artifact={a} onOpen={onOpenArtifact} />
             ))}
           </div>
         )}
-        {conversationId !== null && (m.attachments?.length ?? 0) > 0 && (
+        {conversationId !== null && r.attachments.length > 0 && (
           <div className="mt-3 flex flex-wrap gap-2">
-            {m.attachments?.map((file, i) => (
+            {r.attachments.map((file, i) => (
               <GeneratedFileChip key={`${i}-${file.attachmentId ?? file.agentFilePath ?? file.displayName}`} file={file} conversationId={conversationId} recheckKey={fileRecheckKey} />
             ))}
           </div>
@@ -1331,8 +1397,8 @@ function Message({
           used some, and on a tool-only turn too — that turn has no prose, but
           it still answered from memory.
         */}
-        {m.memoryUsed !== undefined && m.memoryUsed.statements.length > 0 && (
-          <MemoryUsedChip used={m.memoryUsed} agentId={agent.id} />
+        {r.memoryUsed !== undefined && r.memoryUsed.statements.length > 0 && (
+          <MemoryUsedChip used={r.memoryUsed} agentId={agent.id} />
         )}
         {/*
           `at` is `''` on the live streaming frame (no committed instant until
@@ -1354,107 +1420,220 @@ function Message({
 }
 
 /**
- * What the agent did, as a list you can shut.
+ * What the agent did, folded into one quiet line ABOVE its reply.
  *
- * `label` and `steps` come from ONE producer — `lib/workspace-steps.ts`'s
- * `shapeSteps` — whether this turn is streaming or was read back from the
- * transcript, so the header's count is `steps.length` by construction rather
- * than by agreement. This draws them and derives nothing.
+ * CLOSED BY DEFAULT. This used to start open, on the argument that a
+ * disclosure that starts shut answers "what did it do" only for people who
+ * click. In practice a 48-step turn pushed the answer off screen under a wall
+ * of shell commands. The title now answers the question on its own —
+ * "Looked through files and ran commands", or, while it runs, the step in
+ * progress — and the rows are one click away for whoever wants them.
  *
- * Open by default: the panel exists to answer "what did it actually do", and a
- * disclosure that starts shut answers that only for people who thought to
- * click. (Chat's chain-of-thought starts CLOSED for the opposite reason —
- * invariant J4, it holds reasoning. This one holds no reasoning at all.)
+ * NO CARD. The title is plain muted text with a chevron, the way the reply's
+ * own clock is plain text: chrome around it made a list of side effects look
+ * like the main event.
  *
- * A real `ul`/`li`, not a stack of divs: it is a list, and a screen reader that
- * announces "list, 4 items" is telling the reader the same thing the header
- * does. The key is position-bearing because two steps can still read the same
- * — TASK-419 gave rows a qualifier, but two calls with the same qualifier are
- * legal — and a key that was just the sentence would be a duplicate React key
- * across siblings, which is a reconciliation bug waiting for the first list
- * that grows in the middle. `AgentConversationSteps.test.tsx` renders that case.
+ * Inside, a run of the same kind of built-in step folds into one row ("Ran 6
+ * commands"), and the raw command / path / query sits behind each row's own
+ * chevron, in monospace — the words first, the machine's view on request.
+ * Narration the agent wrote between steps is drawn in order, between them.
  *
- * A FAILED ROW LOOKS FAILED (TASK-419). It used to be the same grey as every
- * other row, with the difference carried by three trailing words — so a walk
- * against the live deployment read a step that had failed as one that had
- * worked. The state comes off `shapeSteps`, never off matching our own copy,
- * and it lands on the tokens the rest of the product already uses for the same
- * two ideas: `text-destructive` for a failure (chat's tool panel, the activity
- * feed's stopped row), `text-warning` for a hold. The mark is an ICON AND a
- * colour, because colour alone is not a signal a colour-blind reader can read.
+ * EXCEPTIONS STAY LOUD. A failed step and a held one never fold into a group,
+ * keep an icon AND a colour (a colour alone is not a signal a colour-blind
+ * reader can read — TASK-419), and the title says so with words even shut.
  */
 const STEP_MARK: Record<
   WorkspaceStepStatus,
   { Icon: LucideIcon; tone: string } | null
 > = {
-  // A finished step and one still going get no mark: the panel is mostly
-  // these, and a row of icons saying "fine" is noise the exceptions have to
-  // compete with.
   done: null,
   running: null,
-  // A hold that has since been answered (TASK-517). No hand, no warning tone:
-  // there is nothing left for the reader to do, and the words say so.
+  // A hold that has since been answered (TASK-517): nothing left to do.
   settled: null,
   failed: { Icon: AlertTriangle, tone: 'text-destructive' },
   waiting: { Icon: Hand, tone: 'text-warning' },
 };
 
-function Steps({ label, steps }: { label: string; steps: WorkspaceStep[] }) {
+type ActivityRow =
+  | { kind: 'note'; turnId: string; text: string }
+  | { kind: 'step'; step: WorkspaceStep }
+  | { kind: 'group'; stepKind: Exclude<StepKind, 'other'>; steps: WorkspaceStep[] };
+
+/** "Ran 6 commands" — how a folded run of one kind reads. */
+function groupLabel(kind: Exclude<StepKind, 'other'>, n: number): string {
+  switch (kind) {
+    case 'read':
+      return `Read ${n} files`;
+    case 'search':
+      return `Searched files ${n} times`;
+    case 'command':
+      return `Ran ${n} commands`;
+    case 'edit':
+      return `Made ${n} edits`;
+    case 'web':
+      return `Looked up ${n} things on the web`;
+  }
+}
+
+/**
+ * Fold back-to-back finished steps of one built-in kind into a group. A step
+ * that failed, is waiting or is still going stays its own row, and so does a
+ * tool with words of its own (`other`).
+ */
+function activityRows(entries: readonly ActivityEntry[]): ActivityRow[] {
+  const rows: ActivityRow[] = [];
+  for (const entry of entries) {
+    if (entry.kind === 'note') {
+      rows.push(entry);
+      continue;
+    }
+    const { step } = entry;
+    const kind = step.kind ?? 'other';
+    if (kind === 'other' || step.status !== 'done') {
+      rows.push(entry);
+      continue;
+    }
+    const prev = rows[rows.length - 1];
+    if (prev?.kind === 'group' && prev.stepKind === kind) {
+      prev.steps.push(step);
+    } else if (prev?.kind === 'step' && prev.step.status === 'done' && prev.step.kind === kind) {
+      rows[rows.length - 1] = { kind: 'group', stepKind: kind, steps: [prev.step, step] };
+    } else {
+      rows.push(entry);
+    }
+  }
+  return rows;
+}
+
+/** A chevron that turns when its disclosure opens. */
+function Chevron({ className }: { className?: string }) {
   return (
-    <Collapsible
-      defaultOpen
-      data-testid="workspace-steps"
-      className="mt-3 max-w-[600px] overflow-hidden rounded-lg border border-border"
+    <ChevronRight
+      size={13}
+      aria-hidden="true"
+      className={cn(
+        'shrink-0 transition-transform duration-150 group-data-[state=open]/row:rotate-90 motion-reduce:transition-none',
+        className,
+      )}
+    />
+  );
+}
+
+const ROW_TRIGGER =
+  'group/row flex w-full min-w-0 items-center gap-1.5 rounded-sm text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring';
+
+/** The raw "which one", for whoever opened a row to see it. */
+function Detail({ text }: { text: string }) {
+  return (
+    <code
+      className="block truncate font-mono text-[12px] text-muted-foreground"
+      // The fence is the bound on what crosses (see `STEP_DETAIL_MAX_CHARS`);
+      // `title` recovers what the CSS clamp hides, up to it.
+      title={text}
     >
-      <CollapsibleTrigger className="group flex w-full items-center gap-2 bg-muted px-3.5 py-2 text-[12px] text-muted-foreground">
-        <ListChecks size={12} aria-hidden="true" />
-        {label}
-        <ChevronRight
-          size={12}
-          aria-hidden="true"
-          className="ml-auto transition-transform duration-150 group-data-[state=open]:rotate-90"
-        />
+      {text}
+    </code>
+  );
+}
+
+function StepRow({ step }: { step: WorkspaceStep }) {
+  const mark = STEP_MARK[step.status];
+  const tone = mark === null ? 'text-muted-foreground' : mark.tone;
+  const words = (
+    <>
+      {mark !== null && <mark.Icon size={12} aria-hidden="true" className="shrink-0" />}
+      <span className="min-w-0 truncate" title={step.text}>
+        {step.text}
+      </span>
+    </>
+  );
+  if (step.detail === undefined) {
+    return <li className={cn('flex items-center gap-1.5', tone)}>{words}</li>;
+  }
+  return (
+    <li className={tone}>
+      <Collapsible>
+        {/* Hover brightens an ordinary row; a failed or held one keeps its tone. */}
+        <CollapsibleTrigger className={cn(ROW_TRIGGER, mark === null && 'hover:text-foreground')}>
+          {words}
+          <Chevron className="opacity-60" />
+        </CollapsibleTrigger>
+        <CollapsibleContent className="pt-1 pl-0.5">
+          <Detail text={step.detail} />
+        </CollapsibleContent>
+      </Collapsible>
+    </li>
+  );
+}
+
+function GroupRow({ row }: { row: Extract<ActivityRow, { kind: 'group' }> }) {
+  return (
+    <li className="text-muted-foreground">
+      <Collapsible>
+        <CollapsibleTrigger className={cn(ROW_TRIGGER, 'hover:text-foreground')}>
+          <span className="min-w-0 truncate">{groupLabel(row.stepKind, row.steps.length)}</span>
+          <Chevron className="opacity-60" />
+        </CollapsibleTrigger>
+        <CollapsibleContent>
+          <ul className="flex flex-col gap-1 pt-1 pl-0.5">
+            {row.steps.map((s, i) => (
+              <li key={`${i}-${s.text}-${s.detail ?? ''}`} className="min-w-0">
+                {/* A command's row says "Ran a command" six times; its detail is the useful part. */}
+                {s.detail !== undefined ? (
+                  <Detail text={s.detail} />
+                ) : (
+                  <span className="block truncate text-[12.5px]" title={s.text}>
+                    {s.text}
+                  </span>
+                )}
+              </li>
+            ))}
+          </ul>
+        </CollapsibleContent>
+      </Collapsible>
+    </li>
+  );
+}
+
+function Activity({ entries }: { entries: readonly ActivityEntry[] }) {
+  const steps = entries.flatMap((e) => (e.kind === 'step' ? [e.step] : []));
+  const rows = activityRows(entries);
+  const title = stepsTitle(steps);
+  const running = steps.some((s) => s.status === 'running');
+  const waiting = steps.some((s) => s.status === 'waiting');
+  const failed = steps.some((s) => s.status === 'failed');
+  const TitleMark = waiting ? STEP_MARK.waiting : failed ? STEP_MARK.failed : null;
+  return (
+    <Collapsible data-testid="workspace-steps" className="mb-2.5 max-w-[604px]">
+      <CollapsibleTrigger
+        className={cn(
+          'group/row inline-flex max-w-full items-center gap-1.5 rounded-sm py-0.5 text-[13.5px] text-muted-foreground',
+          'transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+        )}
+      >
+        {running && (
+          <span aria-hidden="true" className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-primary" />
+        )}
+        {TitleMark !== null && (
+          <TitleMark.Icon size={13} aria-hidden="true" className={cn('shrink-0', TitleMark.tone)} />
+        )}
+        <span className="min-w-0 truncate" title={title}>
+          {title}
+        </span>
+        <Chevron />
       </CollapsibleTrigger>
       <CollapsibleContent>
-        <ul className="px-3.5 py-1">
-          {steps.map((s, i) => {
-            const mark = STEP_MARK[s.status];
-            return (
-              <li
-                key={`${i}-${s.text}`}
-                className={cn(
-                  'flex items-start gap-1.5 py-2 text-[12.5px]',
-                  i > 0 && 'border-t border-rule-soft',
-                  mark === null ? 'text-muted-foreground' : mark.tone,
-                )}
-              >
-                {mark !== null && (
-                  <mark.Icon size={12} aria-hidden="true" className="mt-0.5 shrink-0" />
-                )}
-                {/*
-                  TASK-436 — CSS clamps the line, and `title` keeps what the
-                  clamp hides. `lib/workspace-steps.ts` used to do BOTH jobs:
-                  it fenced the row to 80/60 characters and wrote a literal
-                  `…` where it cut, which was the only copy — the characters
-                  it dropped existed nowhere else on this surface, so a deep
-                  path or a long command was unrecoverable. The fence stays
-                  (the text is untrusted), the layout moved here, and the
-                  whole fenced row is on the element that hides part of it.
-
-                  RECOVERY IS BOUNDED AT THE FENCE, AND THAT IS THE DECISION.
-                  `title` carries the row as `shapeSteps` fenced it, not the
-                  raw value — so a name or qualifier that outruns its cap
-                  still ends in a literal `…`, here and in a copy-paste. The
-                  alternative is putting the unfenced value in a tooltip,
-                  which hands back the whole of whatever the fence exists to
-                  bound. Hover recovers everything up to the cap; past it, the
-                  `…` is the honest statement that there was more.
-                */}
-                <span className="min-w-0 flex-1 truncate" title={s.text}>
-                  {s.text}
-                </span>
-              </li>
-            );
+        <ul className="mt-2 ml-[5px] flex flex-col gap-2 border-l border-border pl-4 text-[13px]">
+          {rows.map((row, i) => {
+            if (row.kind === 'note') {
+              return (
+                <li key={`${i}-note`} className="text-muted-foreground [&_p]:my-0">
+                  <Markdown text={row.text} hideFileDownloadLinks className="text-[13px] leading-[1.5]" />
+                </li>
+              );
+            }
+            if (row.kind === 'group') return <GroupRow key={`${i}-group`} row={row} />;
+            return <StepRow key={`${i}-${row.step.text}`} step={row.step} />;
           })}
         </ul>
       </CollapsibleContent>

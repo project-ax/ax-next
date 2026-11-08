@@ -51,7 +51,7 @@ function byTurn(container: HTMLElement, id: string): Element | undefined {
 afterEach(cleanup);
 
 describe('AgentConversation — turn ids the rail can jump to', () => {
-  it('tags the person’s message, the agent’s reply, and a tool-only turn', () => {
+  it('tags the person’s message and the agent’s reply, and a folded tool-only turn still lands', () => {
     const { container } = renderThread([
       { kind: 'user', id: 't1', text: 'Our go-live moved to Oct 14' },
       { kind: 'agent', id: 't2', text: 'Got it — Oct 14.', at: '2026-09-28T06:38:00.000Z' },
@@ -66,7 +66,10 @@ describe('AgentConversation — turn ids the rail can jump to', () => {
     ]);
     expect(byTurn(container, 't1')?.textContent).toContain('Our go-live');
     expect(byTurn(container, 't2')?.textContent).toContain('Got it');
-    expect(byTurn(container, 't3')).toBeDefined();
+    // The tool-only turn is folded into the reply it belongs to, so it has no
+    // element of its own — a jump to it lands on that reply instead.
+    expect(jumpToSource('t3')).toBe(true);
+    expect(byTurn(container, 't2')?.getAttribute(MEMORY_SOURCE_ATTR)).toBe('flash');
   });
 
   it('a jump to the agent’s reply lands and highlights it', () => {

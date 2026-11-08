@@ -1663,7 +1663,7 @@ describe('channel-web agent-workspace BFF', () => {
       kind: 'steps',
       id: 't2',
       text: 'Four things need you.',
-      stepsLabel: '1 step',
+      stepsLabel: 'Checking your inbox',
       // The host-authored phrase, not `mcp__gmail__gmail_list`.
       steps: [{ text: 'Checking your inbox', status: 'done' }],
     });
@@ -1676,7 +1676,7 @@ describe('channel-web agent-workspace BFF', () => {
       kind: 'steps',
       id: 't3',
       text: '',
-      stepsLabel: '1 step, 1 in progress',
+      stepsLabel: 'gmail_get…',
       steps: [{ text: 'gmail_get — in progress', status: 'running' }],
     });
     // The scratchpad never crosses the wire.
@@ -1718,7 +1718,7 @@ describe('channel-web agent-workspace BFF', () => {
     expect(body.thread).toHaveLength(1);
     expect(body.thread[0]).toMatchObject({
       kind: 'steps',
-      stepsLabel: "2 steps, 1 didn't finish",
+      stepsLabel: "Used tools, 1 didn't finish",
       // The STATUS rides on the wire beside the words (TASK-419): the renderer
       // marks a failure in the destructive token, and it must not have to
       // recover that by matching our own copy back out of the sentence.
@@ -1774,15 +1774,14 @@ describe('channel-web agent-workspace BFF', () => {
     const { res, captured } = mkRes();
     await h.agentDetail(mkReq({ agentId: 'a1' }), res);
     const body = captured.body as { thread: Array<Record<string, unknown>> };
-    const rows = (body.thread[0]!.steps as Array<{ text: string }>).map((r) => r.text);
-    expect(rows).toEqual([
-      'Write: src/app.ts',
-      'Bash: pnpm build',
-      'Bash: pnpm test',
-    ]);
+    const steps = body.thread[0]!.steps as Array<{ text: string; detail?: string }>;
+    expect(steps.map((r) => r.text)).toEqual(['Wrote app.ts', 'Ran a command', 'Ran a command']);
     // What the walk actually saw — `Write`, `Bash`, `Bash` — was three rows a
-    // reader could not tell apart.
-    expect(new Set(rows).size).toBe(3);
+    // reader could not tell apart. The words are plain now; WHICH one rides
+    // beside them as `detail`, which the panel shows when a row is opened.
+    const details = steps.map((r) => r.detail);
+    expect(details).toEqual(['src/app.ts', 'pnpm build', 'pnpm test']);
+    expect(new Set(details).size).toBe(3);
     // The arguments themselves do not go on the wire; one bounded line does.
     expect(JSON.stringify(body.thread)).not.toContain('x'.repeat(200));
   });
@@ -4062,7 +4061,7 @@ describe('channel-web agent-workspace BFF', () => {
       registerReads();
       const steps = await heldSteps();
       expect(steps).toMatchObject({
-        stepsLabel: '1 step',
+        stepsLabel: 'Reading a web page',
         steps: [{ text: 'Reading a web page — no longer waiting for you', status: 'settled' }],
       });
     });
@@ -4080,7 +4079,7 @@ describe('channel-web agent-workspace BFF', () => {
       registerReads();
       const steps = await heldSteps();
       expect(steps).toMatchObject({
-        stepsLabel: '1 step, 1 waiting for you',
+        stepsLabel: 'Reading a web page, 1 waiting for you',
         steps: [{ text: 'Reading a web page — waiting for you', status: 'waiting' }],
       });
     });
@@ -4129,7 +4128,7 @@ describe('channel-web agent-workspace BFF', () => {
       });
       const steps = await heldSteps();
       expect(steps).toMatchObject({
-        stepsLabel: '1 step, 1 waiting for you',
+        stepsLabel: 'Reading a web page, 1 waiting for you',
         steps: [{ status: 'waiting' }],
       });
     });

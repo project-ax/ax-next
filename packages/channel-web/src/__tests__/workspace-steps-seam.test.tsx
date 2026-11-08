@@ -110,6 +110,9 @@ function readPanels(container: HTMLElement): RenderedPanel[] {
     (panel) => {
       const trigger = panel.querySelector('button');
       if (trigger === null) throw new Error('the step panel has no header');
+      // The panel starts shut; open it once to read its rows. Already open
+      // (a `waitFor` re-reading it) is left alone rather than toggled shut.
+      if (panel.querySelectorAll('li').length === 0) fireEvent.click(trigger);
       return {
         label: (trigger.textContent ?? '').trim(),
         steps: [...panel.querySelectorAll('li')].map((li) =>
@@ -129,11 +132,10 @@ function readPanel(container: HTMLElement): RenderedPanel {
   return panels[0]!;
 }
 
-/** The count the header REPORTS, read back out of the header itself. */
-function reportedCount(label: string): number {
-  const m = /^(\d+) steps?\b/.exec(label);
-  if (m === null) throw new Error(`header does not report a count: "${label}"`);
-  return Number(m[1]);
+/** The raw inputs a panel shows once each of its folded rows is opened too. */
+function openDetails(panel: Element): string[] {
+  for (const b of panel.querySelectorAll('li button')) fireEvent.click(b);
+  return [...panel.querySelectorAll('code')].map((c) => c.textContent ?? '');
 }
 
 function conversationProps(
@@ -405,15 +407,13 @@ describe('a turn that ran tools', () => {
     expect(onLive.label).toBe(onReload.label);
     expect(onLive.steps).toEqual(onReload.steps);
 
-    // The header's own number, against the rows actually drawn. This is what
-    // fails first against the unfixed code.
-    expect(reportedCount(onReload.label)).toBe(onReload.steps.length);
-    expect(reportedCount(onLive.label)).toBe(onLive.steps.length);
     expect(onLive.steps).toHaveLength(CALLS.length);
+    // A title, not a tally.
+    expect(onLive.label).not.toMatch(/\d/);
 
     // The wire name never reaches the screen; the host's phrase does.
     expect(onLive.steps[0]).toBe('Filing a Linear issue');
-    expect(onLive.steps[1]).toBe('Bash');
+    expect(onLive.steps[1]).toBe('Ran a command');
     expect(live.container.textContent).not.toContain('mcp__');
 
     // And the model's scratchpad reaches neither path (invariant J4).
@@ -484,12 +484,11 @@ describe('a turn that ran tools', () => {
     const thread = await reloadThread(split);
     const reloaded = render(<AgentConversation {...conversationProps(thread)} />);
     const reloadPanels = readPanels(reloaded.container);
-    // Two assistant turns, so two panels — each honest about its own count.
-    expect(reloadPanels).toHaveLength(2);
-    for (const panel of reloadPanels) {
-      expect(reportedCount(panel.label)).toBe(panel.steps.length);
-    }
+    // Two assistant turns, ONE panel: the conversation folds a reply's turns
+    // together (`lib/reply-groups.ts`), so reload groups the way live does.
+    expect(reloadPanels).toHaveLength(1);
     const reloadSentences = reloadPanels.flatMap((p) => p.steps);
+    const reloadLabel = reloadPanels[0]!.label;
     reloaded.unmount();
 
     vi.mocked(workspaceApi.agent).mockResolvedValue(liveDetail());
@@ -518,9 +517,10 @@ describe('a turn that ran tools', () => {
       ).not.toBeNull();
     });
     const livePanels = readPanels(live.container);
-    // One panel live, because the wire carries no message boundary.
+    // One panel live, because the wire carries no message boundary — and now
+    // one on reload too, under the same title.
     expect(livePanels).toHaveLength(1);
-    expect(reportedCount(livePanels[0]!.label)).toBe(livePanels[0]!.steps.length);
+    expect(livePanels[0]!.label).toBe(reloadLabel);
 
     // The sentences agree, which is the part one shaping function owns.
     expect(livePanels.flatMap((p) => p.steps)).toEqual(reloadSentences);
@@ -577,6 +577,9 @@ describe('a turn that ran tools', () => {
     const thread = await reloadThread(turns);
     const reloaded = render(<AgentConversation {...conversationProps(thread)} />);
     const onReload = readPanel(reloaded.container);
+    const reloadDetails = openDetails(
+      reloaded.container.querySelector('[data-testid="workspace-steps"]')!,
+    );
     reloaded.unmount();
 
     // ---- live -------------------------------------------------------------
@@ -615,18 +618,20 @@ describe('a turn that ran tools', () => {
     for (const panel of [onReload, onLive]) {
       // The assertion that reddens against the unfixed code: two Bash rows
       // that are not the same row.
-      expect(panel.steps[1]).not.toBe(panel.steps[2]);
-      expect(new Set(panel.steps).size).toBe(panel.steps.length);
-      expect(panel.steps).toEqual([
-        'Write: src/app.ts',
-        'Bash: pnpm build',
-        'Bash: pnpm test',
-      ]);
+      // Back-to-back commands fold into one row; opened, each says which.
+      expect(panel.steps).toEqual(['Wrote app.ts', 'Ran 2 commands']);
+    }
+    const liveDetails = openDetails(
+      live.container.querySelector('[data-testid="workspace-steps"]')!,
+    );
+    // The assertion that reddens against the unfixed code: two Bash calls
+    // that do not read as the same call — on both paths.
+    for (const details of [reloadDetails, liveDetails]) {
+      expect(details).toEqual(['src/app.ts', 'pnpm build', 'pnpm test']);
     }
     // Still one producer, so the two paths cannot drift into two wordings.
     expect(onLive.steps).toEqual(onReload.steps);
     expect(onLive.label).toBe(onReload.label);
-    expect(reportedCount(onLive.label)).toBe(onLive.steps.length);
     // The file BODY is not a step row. It is the one input field that would
     // turn this list back into a wall of text.
     expect(live.container.textContent).not.toContain('content');
@@ -711,7 +716,7 @@ describe('a held step, answered while the turn is still live (TASK-532)', () => 
         'Sending the email — no longer waiting for you',
       ]);
     });
-    expect(readPanel(live.container).label).toBe('1 step');
+    expect(readPanel(live.container).label).toBe('Sending the email');
     live.unmount();
   });
 
