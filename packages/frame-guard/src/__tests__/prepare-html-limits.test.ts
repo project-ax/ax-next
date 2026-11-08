@@ -94,7 +94,10 @@ const listItemsOverDeepStack = (bytes: number): string => repeat('<li>', bytes, 
 
 interface Run {
   result: PrepareResult;
+  /** Wall-clock milliseconds. */
   ms: number;
+  /** The CPU time of this thread, in milliseconds: what the transform's budget is measured in, and what a busy machine does not stretch. */
+  cpuMs: number;
   /** The most the heap grew, sampled each time the transform looked at the clock. */
   grownMB: number;
   /** How many times it looked. A run with no samples says nothing about memory. */
@@ -116,9 +119,11 @@ function run(html: string, limits: PrepareLimits = {}): Run {
     return clock();
   };
   const started = performance.now();
+  const cpuFrom = typeof process.threadCpuUsage === 'function' ? process.threadCpuUsage() : undefined;
   const result = prepareArtifactHtml(html, { ...limits, now });
   const ms = performance.now() - started;
-  return { result, ms, grownMB: Math.max(0, peak - base) / MiB, samples };
+  const cpu = cpuFrom === undefined ? undefined : process.threadCpuUsage(cpuFrom);
+  return { result, ms, cpuMs: cpu === undefined ? ms : (cpu.user + cpu.system) / 1000, grownMB: Math.max(0, peak - base) / MiB, samples };
 }
 
 /**
@@ -221,12 +226,14 @@ describe('other shapes that cost parse5 minutes, at the 4 MiB cap', () => {
     // the same for every page, so the same page padded out to the 4 MiB cap with a comment (nothing for the parser
     // to do with it, and nothing that makes the shape cost less) is stopped at the same time, not at a longer
     // one for being bigger. Held on a thread that serves requests, this page cost 1.6 s a view.
+    // (The CPU the transform used, not the wall time it took: the budget is CPU, so the page is stopped at about 500 ms of it on any machine,
+    // and a runner that is busy with other work stretches the wall time to 1 s and more, which is not the page and not the budget.)
     const out = bestRun(adoptedChildren(MiB));
     expect(verdict(out)).toBe('too_slow');
-    expect(out.ms).toBeLessThan(FAST_MS);
+    expect(out.cpuMs).toBeLessThan(FAST_MS);
     const padded = bestRun(`<!--${'x'.repeat(CAP - adoptedChildren(MiB).length - 7)}-->${adoptedChildren(MiB)}`);
     expect(verdict(padded)).toBe('too_slow');
-    expect(padded.ms).toBeLessThan(FAST_MS);
+    expect(padded.cpuMs).toBeLessThan(FAST_MS);
     // ...and a page of the same shape that is small enough is served.
     expect(verdict(run(adoptedChildren(60 * KiB)))).toBe('served');
   });
