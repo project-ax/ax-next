@@ -795,6 +795,40 @@ export function AgentView({
   }, [load, version]);
 
   /*
+    A freshly published artifact opens itself in the side panel, the way Claude
+    does. "Fresh" means a card this conversation hasn't shown before: the first
+    read of a conversation only seeds what is already there, so reopening an old
+    chat never throws its artifacts at the reader. Not on a phone or tablet,
+    where the panel is a sheet that would cover the answer they are reading;
+    the card is still one tap.
+  */
+  const seenArtifacts = useRef<{ conversationId: string; keys: Set<string> } | null>(null);
+  const detailThread = detail?.thread;
+  const detailConversationId = detail?.conversationId ?? null;
+  useEffect(() => {
+    if (detailThread === undefined || detailConversationId === null) return;
+    const cards: { artifactId: string; key: string }[] = [];
+    for (const m of detailThread) {
+      if (m.kind !== 'agent') continue;
+      for (const a of m.artifacts ?? []) cards.push({ artifactId: a.artifactId, key: `${a.artifactId}@${a.version}` });
+    }
+    const seen = seenArtifacts.current;
+    if (seen === null || seen.conversationId !== detailConversationId) {
+      seenArtifacts.current = { conversationId: detailConversationId, keys: new Set(cards.map((c) => c.key)) };
+      return;
+    }
+    const fresh = cards.filter((c) => !seen.keys.has(c.key));
+    if (fresh.length === 0) return;
+    for (const c of fresh) seen.keys.add(c.key);
+    if (compactRail) return;
+    const latest = fresh[fresh.length - 1];
+    if (latest === undefined) return;
+    setOpenArtifactId(latest.artifactId);
+    setArtifactOpens((n) => n + 1);
+    setDesktopPanel('artifacts');
+  }, [detailThread, detailConversationId, compactRail, setDesktopPanel]);
+
+  /*
     TASK-539 — the "Loading…" pane below can hold focus: a finished create
     lands it there whenever the pane paints before the agent read returns,
     which is most creates and every slow one (see `AGENT_LOADING_ATTR`). The pane is REPLACED when the read lands, and a
