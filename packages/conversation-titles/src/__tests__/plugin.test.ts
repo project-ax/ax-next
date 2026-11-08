@@ -486,8 +486,13 @@ describe('@ax/conversation-titles chat:turn-end subscriber', () => {
 
     expect(stubs.llmCalls).toHaveLength(1);
     expect(stubs.llmCalls[0]?.model).toBe(DEFAULT_MODEL_ID);
-    expect(stubs.llmCalls[0]?.maxTokens).toBe(32);
     expect(stubs.llmCalls[0]?.temperature).toBe(0.3);
+    // Regression (2026-11-08): with maxTokens 32 and no reasoning cap, a
+    // reasoning title model (GLM 5.3 Flash via OpenRouter, which bills
+    // thinking against max_tokens) spent the whole budget thinking and
+    // returned empty text — every chat stayed "Untitled conversation".
+    expect(stubs.llmCalls[0]?.reasoningEffort).toBe('minimal');
+    expect(stubs.llmCalls[0]?.maxTokens).toBeGreaterThanOrEqual(512);
     expect(stubs.llmCalls[0]?.messages).toEqual([
       {
         role: 'user',
