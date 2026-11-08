@@ -815,6 +815,16 @@ describe('when workers keep failing', () => {
       expect(f.seen).toHaveLength(5);
     });
 
+    it('answers every page waiting behind a start timeout, each once (a page left unanswered would never be viewable again)', async () => {
+      const f = faults();
+      const { p } = mute({ now: clock().now, onFault: f.report });
+      expect(await Promise.all([p.prepare('a'), p.prepare('b')])).toEqual([
+        { ok: false, reason: 'worker_failed' },
+        { ok: false, reason: 'worker_failed' },
+      ]);
+      expect(f.codes()).toEqual(['worker_start_timeout', 'worker_start_timeout']);
+    });
+
     it('is counted again at the first failure of the one that is tried: pages are turned away at once, for another cool-down', async () => {
       const f = faults();
       const c = clock();
