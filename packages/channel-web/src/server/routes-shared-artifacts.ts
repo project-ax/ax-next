@@ -9,6 +9,7 @@ import {
   noStore,
   requestCtx,
   TOKEN_PURPOSES,
+  isOptionalTheme,
 } from './routes-artifacts.js';
 import { createPerUserRateLimiter, type PerUserRateLimiter } from './per-user-rate-limit.js';
 
@@ -162,18 +163,23 @@ export function createSharedArtifactsRouteHandlers(deps: SharedArtifactsRouteDep
     async token(req: RouteRequest, res: RouteResponse): Promise<void> {
       const ok = await admit(req, res);
       if (ok === null) return;
-      const purpose = jsonBody(req)?.['purpose'];
-      if (!TOKEN_PURPOSES.has(purpose)) {
+      const body = jsonBody(req);
+      const purpose = body?.['purpose'];
+      const theme = body?.['theme'];
+      if (!TOKEN_PURPOSES.has(purpose) || !isOptionalTheme(theme)) {
         res.status(400).json({ error: 'invalid' });
         return;
       }
       let out: { url: string; expiresAt: string };
       try {
-        out = await bus.call<{ shareCode: string; purpose: 'view' | 'download' }, { url: string; expiresAt: string }>(
-          'artifacts:mint-view-token',
-          requestCtx(ok.userId),
-          { shareCode: ok.shareCode, purpose: purpose as 'view' | 'download' },
-        );
+        out = await bus.call<
+          { shareCode: string; purpose: 'view' | 'download'; theme?: 'light' | 'dark' },
+          { url: string; expiresAt: string }
+        >('artifacts:mint-view-token', requestCtx(ok.userId), {
+          shareCode: ok.shareCode,
+          purpose: purpose as 'view' | 'download',
+          ...(theme === undefined ? {} : { theme }),
+        });
       } catch (err) {
         refuse(res, 'artifacts:mint-view-token', err);
         return;

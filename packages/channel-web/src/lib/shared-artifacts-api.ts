@@ -48,10 +48,10 @@ export const sharedArtifactsApi = {
 
   text: (code: string) => call(code, '/text', ArtifactTextSchema),
 
-  token: (code: string, purpose: ArtifactTokenPurpose) =>
+  token: (code: string, purpose: ArtifactTokenPurpose, theme?: 'light' | 'dark') =>
     call(code, '/token', ArtifactTokenSchema, {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-requested-with': 'ax-admin' },
-      body: JSON.stringify({ purpose }),
+      body: JSON.stringify(theme === undefined ? { purpose } : { purpose, theme }),
     }),
 };

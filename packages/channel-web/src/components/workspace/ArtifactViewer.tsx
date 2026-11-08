@@ -3,8 +3,8 @@
  * owner's controls. `AgentView` owns which artifact is open (P7); this draws it.
  *
  * Header, one row: ‹ Back, the name and type, then Download, Copy link, the ⋯
- * menu and ✕. A version picker (with "Restore this version" while an older
- * one is picked) appears underneath only when there is more than one version.
+ * menu and ✕. Versions live in the ⋯ menu; while an older one is on screen a
+ * slim bar says so and offers "Back to latest" and "Restore this version".
  *
  * No `message` listener and no `postMessage` anywhere here (§6.5): the page in
  * the frame has nobody to talk to.
@@ -13,18 +13,17 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { ChevronLeft, Download, Link as LinkIcon, X } from 'lucide-react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
-import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Spinner } from '@/components/ui/spinner';
-import { artifactTypeLine } from '@/lib/artifact-labels';
+import { artifactTypeLine, versionLabel } from '@/lib/artifact-labels';
 import { copyShareLink } from '@/lib/copy-share-link';
 import { saveFromContentOrigin } from '@/lib/file-download';
 import { logRequestFailure } from '@/lib/http';
 import { toastActions } from '@/lib/toast-store';
+import { useResolvedTheme } from '@/lib/theme';
 import { useArtifact } from '@/lib/use-artifact';
 import { workspaceApi } from '@/lib/workspace-api';
-import { timeAgo } from '@/lib/workspace-time';
-import { artifactPreviewKind, type ArtifactTokenPurpose, type ArtifactVersion } from '@/lib/workspace-types';
+import { artifactPreviewKind, type ArtifactTokenPurpose } from '@/lib/workspace-types';
 import { ArtifactOwnerMenu } from './ArtifactOwnerMenu';
 import { ArtifactPreview } from './ArtifactPreview';
 import { ShareLinkDialog } from './ShareLinkDialog';
@@ -32,12 +31,6 @@ import { IconAction } from './task-bits';
 
 export const DOWNLOAD_FAILED = 'That download didn’t start, so nothing was saved. Try again in a moment.';
 const RESTORE_FAILED = 'We couldn’t restore that version just now. Nothing changed.';
-
-/** "v3 · 2 hr ago" — the clock words come from the one time module. */
-function versionLabel(v: ArtifactVersion): string {
-  const when = timeAgo(v.createdAt);
-  return when === null ? `v${v.version}` : `v${v.version} · ${when}`;
-}
 
 export function ArtifactViewer({
   artifactId,
@@ -71,12 +64,16 @@ export function ArtifactViewer({
   const current = artifact?.currentVersion ?? null;
   const version = picked ?? current;
 
+  // A page that uses the app's `--ax-*` colors follows the theme; flipping it re-mints the view address.
+  const theme = useResolvedTheme();
   const loadToken = useCallback(
     async (purpose: ArtifactTokenPurpose) => {
       if (version === null) throw new Error('no version yet');
-      return workspaceApi.artifactToken(artifactId, version, purpose);
+      return purpose === 'view'
+        ? workspaceApi.artifactToken(artifactId, version, purpose, theme)
+        : workspaceApi.artifactToken(artifactId, version, purpose);
     },
-    [artifactId, version],
+    [artifactId, version, theme],
   );
   const loadText = useCallback(async () => {
     if (version === null) throw new Error('no version yet');
@@ -175,7 +172,6 @@ export function ArtifactViewer({
       ? 'none'
       : artifactPreviewKind(artifact.preview);
 
-  const hasVersions = versions.length > 1;
   return (
     <div className="flex h-full min-h-0 flex-col gap-2 py-1">
       <div className="flex items-center gap-1">
@@ -204,6 +200,8 @@ export function ArtifactViewer({
         />
         <ArtifactOwnerMenu
           artifact={artifact}
+          version={version ?? artifact.currentVersion}
+          onPickVersion={(n) => setPicked(n === artifact.currentVersion ? null : n)}
           onChanged={(next) => {
             if (next === null) onBack();
             else apply(next);
@@ -211,34 +209,18 @@ export function ArtifactViewer({
         />
         {close}
       </div>
-      {hasVersions && (
-        <div className="flex flex-wrap items-center gap-2">
-          <Select
-            value={String(version)}
-            onValueChange={(v) => {
-              const n = Number(v);
-              setPicked(n === artifact.currentVersion ? null : n);
-            }}
-          >
-            <SelectTrigger aria-label="Version" className="h-8 w-auto gap-2 text-[12px]">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectGroup>
-                {versions.map((v) => (
-                  <SelectItem key={v.version} value={String(v.version)}>
-                    {versionLabel(v)}
-                  </SelectItem>
-                ))}
-              </SelectGroup>
-            </SelectContent>
-          </Select>
-          {picked !== null && (
+      {picked !== null && shownVersion !== undefined && (
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md bg-muted px-3 py-2 text-[12px]">
+          <span className="text-muted-foreground">Viewing {versionLabel(shownVersion)}</span>
+          <div className="ml-auto flex items-center gap-1">
+            <Button type="button" size="sm" variant="ghost" onClick={() => setPicked(null)}>
+              Back to latest
+            </Button>
             <Button type="button" size="sm" variant="outline" disabled={restoring} onClick={() => void restore()}>
               {restoring && <Spinner data-icon="inline-start" />}
               Restore this version
             </Button>
-          )}
+          </div>
         </div>
       )}
       <div className="flex min-h-0 flex-1 flex-col">

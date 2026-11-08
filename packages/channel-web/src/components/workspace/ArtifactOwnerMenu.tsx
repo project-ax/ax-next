@@ -21,6 +21,9 @@ import {
   DropdownMenuContent,
   DropdownMenuGroup,
   DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
@@ -30,6 +33,7 @@ import { copyLinkFrom } from '@/lib/copy-share-link';
 import { HttpError, logRequestFailure } from '@/lib/http';
 import { toastActions } from '@/lib/toast-store';
 import { workspaceApi } from '@/lib/workspace-api';
+import { versionLabel } from '@/lib/artifact-labels';
 import type { ArtifactDetail, ArtifactSummary } from '@/lib/workspace-types';
 import { ShareLinkDialog } from './ShareLinkDialog';
 
@@ -59,9 +63,15 @@ const CONFIRM: Record<Exclude<Pending, 'rename'>, { title: string; description: 
 
 export function ArtifactOwnerMenu({
   artifact,
+  version,
+  onPickVersion,
   onChanged,
 }: {
   artifact: ArtifactDetail;
+  /** The version on screen. */
+  version: number;
+  /** Show another version; the newest one is `artifact.currentVersion`. */
+  onPickVersion(version: number): void;
   /** The artifact as it is now, or `null` once it's deleted. */
   onChanged(next: ArtifactSummary | null): void;
 }) {
@@ -132,6 +142,24 @@ export function ArtifactOwnerMenu({
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" sideOffset={4}>
+          {artifact.versions.length > 1 && (
+            <>
+              <DropdownMenuLabel>Versions</DropdownMenuLabel>
+              <DropdownMenuRadioGroup value={String(version)} onValueChange={(v) => onPickVersion(Number(v))}>
+                {[...artifact.versions]
+                  .sort((a, b) => b.version - a.version)
+                  .map((v) => (
+                    <DropdownMenuRadioItem key={v.version} value={String(v.version)}>
+                      {versionLabel(v)}
+                      {v.version === artifact.currentVersion && (
+                        <span className="ml-2 text-xs text-muted-foreground">latest</span>
+                      )}
+                    </DropdownMenuRadioItem>
+                  ))}
+              </DropdownMenuRadioGroup>
+              <DropdownMenuSeparator />
+            </>
+          )}
           <DropdownMenuGroup>
             <DropdownMenuItem onSelect={() => open('rename')}>Rename…</DropdownMenuItem>
             {artifact.linkOn && (

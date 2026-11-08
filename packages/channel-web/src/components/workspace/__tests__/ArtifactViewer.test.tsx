@@ -3,7 +3,8 @@
  * Copy link, and the ⋯ menu (rename, link off / new link, delete).
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { setTheme } from '@/lib/theme';
 import { WorkspaceApiError, workspaceApi } from '@/lib/workspace-api';
 import { saveFromContentOrigin } from '@/lib/file-download';
 import { toastActions } from '@/lib/toast-store';
@@ -67,6 +68,12 @@ function openMenu() {
   fireEvent.pointerDown(screen.getByRole('button', { name: 'More actions' }), { button: 0, ctrlKey: false });
 }
 
+/** Versions live in the ⋯ menu: open it and choose one. */
+async function pickVersion(name: RegExp) {
+  openMenu();
+  fireEvent.click(await screen.findByRole('menuitemradio', { name }));
+}
+
 const writeText = vi.fn(async (_t: string) => {});
 
 beforeEach(() => {
@@ -90,6 +97,8 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+const LOOK = expect.stringMatching(/^(light|dark)$/);
+
 describe('ArtifactViewer', () => {
   it('shows the name, the type, and the current version in the frame', async () => {
     renderViewer();
@@ -97,19 +106,25 @@ describe('ArtifactViewer', () => {
     expect(screen.getByText('Web page · HTML')).toBeTruthy();
     const f = await screen.findByTitle('Deal tracker');
     expect(f.getAttribute('src')).toBe('http://127.0.0.1:9091/v/tok-v3');
-    expect(api.artifactToken).toHaveBeenCalledWith('art-1', 3, 'view');
+    expect(api.artifactToken).toHaveBeenCalledWith('art-1', 3, 'view', LOOK);
   });
 
-  it('the version picker shows "v3 · 2 hr ago"; picking v1 offers Restore, which restores and reloads', async () => {
+  it('versions live in the ⋯ menu, not on the page; picking v1 offers Restore, which restores and reloads', async () => {
     renderViewer();
-    const picker = await screen.findByRole('combobox', { name: 'Version' });
-    expect(picker.textContent).toContain('v3 · 2 hr ago');
+    await screen.findByTitle('Deal tracker');
+    // No version dropdown at the top level, and nothing about restoring while the latest is shown.
+    expect(screen.queryByRole('combobox')).toBeNull();
     expect(screen.queryByRole('button', { name: 'Restore this version' })).toBeNull();
+    openMenu();
+    const latest = await screen.findByRole('menuitemradio', { name: /^v3 · 2 hr ago/ });
+    expect(latest.getAttribute('aria-checked')).toBe('true');
+    expect(latest.textContent).toContain('latest');
+    fireEvent.keyDown(latest, { key: 'Escape' });
 
-    fireEvent.keyDown(picker, { key: 'ArrowDown' });
-    fireEvent.click(await screen.findByRole('option', { name: /^v1 · / }));
+    await pickVersion(/^v1 · /);
+    expect(await screen.findByText(/Viewing v1 · /)).toBeTruthy();
     // A fresh token for the picked version: the frame shows v1.
-    await waitFor(() => expect(api.artifactToken).toHaveBeenCalledWith('art-1', 1, 'view'));
+    await waitFor(() => expect(api.artifactToken).toHaveBeenCalledWith('art-1', 1, 'view', LOOK));
     expect((await screen.findByTitle('Deal tracker')).getAttribute('src')).toBe('http://127.0.0.1:9091/v/tok-v1');
 
     api.restoreArtifact.mockResolvedValue(detail({ currentVersion: 1 }));
@@ -118,6 +133,31 @@ describe('ArtifactViewer', () => {
     await waitFor(() => expect(api.restoreArtifact).toHaveBeenCalledWith('art-1', 1));
     await waitFor(() => expect(api.artifact).toHaveBeenCalledTimes(2));
     await waitFor(() => expect(screen.queryByRole('button', { name: 'Restore this version' })).toBeNull());
+  });
+
+  it('"Back to latest" leaves an older version and the bar goes away', async () => {
+    renderViewer();
+    await screen.findByTitle('Deal tracker');
+    await pickVersion(/^v1 · /);
+    await screen.findByText(/Viewing v1 · /);
+    fireEvent.click(screen.getByRole('button', { name: 'Back to latest' }));
+    await waitFor(() => expect(screen.queryByText(/Viewing v1 · /)).toBeNull());
+    await waitFor(() => expect((screen.getByTitle('Deal tracker')).getAttribute('src')).toBe('http://127.0.0.1:9091/v/tok-v3'));
+  });
+
+  it('a view address asks for the app\'s look, and flipping the theme asks again; a download never does', async () => {
+    setTheme('dark');
+    try {
+      renderViewer();
+      await screen.findByTitle('Deal tracker');
+      expect(api.artifactToken).toHaveBeenCalledWith('art-1', 3, 'view', 'dark');
+      act(() => setTheme('light'));
+      await waitFor(() => expect(api.artifactToken).toHaveBeenCalledWith('art-1', 3, 'view', 'light'));
+      fireEvent.click(screen.getByRole('button', { name: 'Download' }));
+      await waitFor(() => expect(api.artifactToken).toHaveBeenCalledWith('art-1', 3, 'download'));
+    } finally {
+      setTheme('auto');
+    }
   });
 
   it('Download mints a download token and hands it to the browser', async () => {
@@ -199,12 +239,10 @@ describe('ArtifactViewer', () => {
       }),
     );
     renderViewer();
-    const picker = await screen.findByRole('combobox', { name: 'Version' });
     await screen.findByTitle('Deal tracker');
-    fireEvent.keyDown(picker, { key: 'ArrowDown' });
-    fireEvent.click(await screen.findByRole('option', { name: /^v1 · / }));
+    await pickVersion(/^v1 · /);
     expect(await screen.findByText('We can’t preview this one yet')).toBeTruthy();
-    expect(api.artifactToken).not.toHaveBeenCalledWith('art-1', 1, 'view');
+    expect(api.artifactToken).not.toHaveBeenCalledWith('art-1', 1, 'view', LOOK);
   });
 
   it('the menu offers Rename, Turn off link / Get a new link only while on, and Delete with a confirm', async () => {
@@ -350,7 +388,7 @@ describe('ArtifactViewer', () => {
 
       rerender(<ArtifactViewer {...props} recheckKey={1} />);
       await waitFor(() => expect(api.artifact).toHaveBeenCalledTimes(2));
-      await waitFor(() => expect(api.artifactToken).toHaveBeenCalledWith('art-1', 2, 'view'));
+      await waitFor(() => expect(api.artifactToken).toHaveBeenCalledWith('art-1', 2, 'view', LOOK));
       await waitFor(() =>
         expect(screen.getByTitle('Deal tracker').getAttribute('src')).toBe('http://127.0.0.1:9091/v/tok-v2'));
     });
@@ -373,8 +411,7 @@ describe('ArtifactViewer', () => {
       }));
       const { rerender } = render(<ArtifactViewer {...props} recheckKey={0} />);
       await screen.findByTitle('Deal tracker');
-      fireEvent.click(screen.getByRole('combobox'));
-      fireEvent.click(await screen.findByRole('option', { name: /^v1/ }));
+      await pickVersion(/^v1/);
       await waitFor(() =>
         expect(screen.getByTitle('Deal tracker').getAttribute('src')).toBe('http://127.0.0.1:9091/v/tok-v1'));
 
@@ -382,7 +419,7 @@ describe('ArtifactViewer', () => {
       await waitFor(() => expect(api.artifact).toHaveBeenCalledTimes(2));
       await new Promise((r) => setTimeout(r, 0));
       expect(screen.getByTitle('Deal tracker').getAttribute('src')).toBe('http://127.0.0.1:9091/v/tok-v1');
-      expect(api.artifactToken).not.toHaveBeenCalledWith('art-1', 4, 'view');
+      expect(api.artifactToken).not.toHaveBeenCalledWith('art-1', 4, 'view', LOOK);
     });
     it('a re-read that blips keeps the frame; a re-read that 404s says it is gone', async () => {
       api.artifact

@@ -211,15 +211,19 @@ describe('AgentView side-panel toggles — the accessibility tree', () => {
     fireEvent.click(screen.getByRole('radio', { name: 'Artifacts' }));
     const rail = screen.getByRole('complementary', { name: 'Artifacts' });
     expect(rail.className).toContain('w-[320px]');
+    // The list has its heading; the open viewer draws its own header instead.
+    expect(within(rail).getByRole('heading', { name: 'Artifacts' })).toBeTruthy();
 
     fireEvent.click(await within(rail).findByRole('button', { name: /Deal tracker/ }));
     expect(await within(rail).findByTitle('Deal tracker')).toBeTruthy();
+    expect(within(rail).queryByRole('heading', { name: 'Artifacts' })).toBeNull();
     expect(rail.className).toContain('w-1/2');
     expect(rail.className).toContain('min-w-[480px]');
     expect(rail.className).not.toContain('w-[320px]');
 
     fireEvent.click(within(rail).getByRole('button', { name: 'Back' }));
     await waitFor(() => expect(screen.getByRole('complementary', { name: 'Artifacts' }).className).toContain('w-[320px]'));
+    expect(within(screen.getByRole('complementary', { name: 'Artifacts' })).getByRole('heading', { name: 'Artifacts' })).toBeTruthy();
   });
 
   it('Open on the card of the artifact already open re-reads it (a new version may have landed)', async () => {

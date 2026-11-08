@@ -27,6 +27,8 @@ interface Props {
   meta?: string | null;
   /** A wider column, for a panel showing something to read (an open artifact). */
   wide?: boolean;
+  /** No heading row: the content draws its own header (an open artifact's name and actions). */
+  bare?: boolean;
   children: React.ReactNode;
 }
 
@@ -83,15 +85,17 @@ export function AgentRail(props: Props) {
 }
 
 /** One panel body for the desktop column and the phone/tablet sheet. */
-export function AgentRailContent({ panel, meta, children }: Props) {
+export function AgentRailContent({ panel, meta, bare = false, children }: Props) {
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="flex h-14 shrink-0 items-center gap-2 px-4 pr-14 lg:pr-4">
-        <h2 className="text-[14px] font-semibold">{RAIL_PANELS[panel].label}</h2>
-        {meta && <span className="text-[12px] text-muted-foreground">{meta}</span>}
-      </div>
+      {!bare && (
+        <div className="flex h-14 shrink-0 items-center gap-2 px-4 pr-14 lg:pr-4">
+          <h2 className="text-[14px] font-semibold">{RAIL_PANELS[panel].label}</h2>
+          {meta && <span className="text-[12px] text-muted-foreground">{meta}</span>}
+        </div>
+      )}
       <CompactSurfaceContext.Provider value={true}>
-        <div className="min-h-0 flex-1 overflow-y-auto px-3 pb-5">{children}</div>
+        <div className={cn('min-h-0 flex-1 overflow-y-auto px-3 pb-5', bare && 'pt-2')}>{children}</div>
       </CompactSurfaceContext.Provider>
     </div>
   );
