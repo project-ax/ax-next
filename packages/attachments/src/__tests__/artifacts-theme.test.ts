@@ -146,9 +146,12 @@ describe('content origin', () => {
     expect(res.headers.get('content-security-policy')).toContain('sandbox allow-scripts allow-downloads');
   });
 
-  it('a view token with no theme serves the page exactly as written', async () => {
+  it('a view token with no theme adds no theme block (the page still gets the frame guard)', async () => {
     const url = await start();
-    expect(await (await fetch(`${url}/v/${tokenFor('view')}`)).text()).toBe(PAGE);
+    const body = await (await fetch(`${url}/v/${tokenFor('view')}`)).text();
+    expect(body).not.toContain('id="ax-theme"');
+    expect(body).toContain('<title>t</title>');
+    expect(body).toContain('hi');
   });
 
   it('a download is never changed, theme or not', async () => {

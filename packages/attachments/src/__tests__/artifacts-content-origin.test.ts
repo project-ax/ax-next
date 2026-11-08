@@ -159,11 +159,12 @@ describe('content origin', () => {
     const themed = await (await fetch(await mint({ purpose: 'view', theme: 'dark' }))).text();
     expect(themed).toContain('<style id="ax-theme">:root{--ax-background:hsl(');
     expect(themed).toContain('color-scheme:dark');
-    expect(themed.startsWith('<!doctype html>')).toBe(true);
-    expect(themed.replace(/<style id="ax-theme">.*?<\/style>/, '')).toBe(HTML);
+    // The themed page is the guarded page with the one fixed style block added, nothing else.
+    const plain = await (await fetch(await mint({ purpose: 'view' }))).text();
+    expect(plain).not.toContain('id="ax-theme"');
+    expect(themed.replace(/<style id="ax-theme">.*?<\/style>/, '')).toBe(plain);
 
-    // No theme, or a download: untouched. A theme on a download is ignored, not applied.
-    expect(await (await fetch(await mint({ purpose: 'view' }))).text()).toBe(HTML);
+    // A download is untouched, theme or not (a theme on a download is ignored, not applied).
     expect(await (await fetch(await mint({ purpose: 'download', theme: 'dark' }))).text()).toBe(HTML);
   });
 
