@@ -49,6 +49,14 @@ function said(page: PreparedPage): string {
 const pid = (page: PreparedPage): number => Number(said(page).split(':')[0]);
 const refusal = (page: PreparedPage): string => (page.ok ? 'answered' : page.reason);
 
+/**
+ * The deadline of a test in which the deadline is what ends the page (a worker that is held, or never says it is ready). It is on the wall
+ * clock and it also covers starting the worker, so it cannot be as short as the test would like: the stand-in takes 40 to 100 ms to start on
+ * a CI runner, several times that when the machine is busy, and a start that does not finish in time is another refusal (`worker_failed`, the
+ * machine's) and not the one the test is about. Half a second leaves five times what a start takes, and costs half a second each time it fires.
+ */
+const SHORT_DEADLINE_MS = 500;
+
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 const alive = (id: number): boolean => {
   try {
@@ -157,12 +165,12 @@ describe('a page goes to the worker and comes back as bytes', () => {
 describe('a worker that is held, out of memory, or gone', () => {
   it('ends a page that outstays the deadline, and the next page gets a new worker', async () => {
     const f = faults();
-    const p = preparer({ deadlineMs: 150, onFault: f.report });
+    const p = preparer({ deadlineMs: SHORT_DEADLINE_MS, onFault: f.report });
     const before = pid(await p.prepare('echo:before'));
     const started = performance.now();
     expect(await p.prepare('spin:')).toEqual({ ok: false, reason: 'worker_timeout' });
     // The deadline, not something that takes much longer than it.
-    expect(performance.now() - started).toBeLessThan(1500);
+    expect(performance.now() - started).toBeLessThan(SHORT_DEADLINE_MS * 5);
     // The worker that was ended says it has gone while the pool is idle: that is what was done to it, not a fault.
     await sleep(150);
     expect(f.seen).toEqual([]);
@@ -173,7 +181,7 @@ describe('a worker that is held, out of memory, or gone', () => {
 
   it('really ends the worker it gives up on: nothing is left running', async () => {
     // A worker that was "ended" but still ran would hold a core for good.
-    const p = preparer({ deadlineMs: 150 });
+    const p = preparer({ deadlineMs: SHORT_DEADLINE_MS });
     const worker = pid(await p.prepare('echo:who'));
     expect(await p.prepare('spin:')).toEqual({ ok: false, reason: 'worker_timeout' });
     expect(await goneWithin(worker, 3000), `worker ${worker} is still running`).toBe(true);
@@ -741,21 +749,24 @@ describe('when workers keep failing', () => {
     expect(said(await p.prepare('echo:fine'))).toMatch(/:fine$/);
   });
 
-  it('does NOT count what a page can do to the worker: pages that abort it, hold it, crash it or break its protocol, any number of them, turn nobody away', async () => {
+  it('does NOT count what a page can do to the worker: pages that abort it, crash it or break its protocol, any number of them, turn nobody away', async () => {
     // The count is global. If a crash on a page were a failure of the pool, N pages that crash the parser would put every
-    // other tenant's uncached page into 'busy'. Each of these is that page's refusal, and the next page is served.
+    // other tenant's uncached page into 'busy'. Each of these is that page's refusal, and the next page is served. Six of each is one
+    // more than the limit (five): a kind that counted would turn the sixth away. (A page that HOLDS the worker is not here, because it
+    // needs a short deadline and the others must have a long one: a process that aborts can take a second or more to be gone where the
+    // kernel hands core dumps to a program, as it does on the CI runner, and a deadline of 150 ms turned each abort into a worker_timeout.
+    // It is the next describe's, 'is not the page that is held'.)
     const f = faults();
-    const p = preparer({ now: clock().now, deadlineMs: 150, onFault: f.report });
-    for (let i = 0; i < 8; i++) expect(await p.prepare('abort:')).toEqual({ ok: false, reason: 'worker_oom' });
-    for (let i = 0; i < 6; i++) expect(await p.prepare('sleep:')).toEqual({ ok: false, reason: 'worker_timeout' });
-    for (let i = 0; i < 8; i++) expect(await p.prepare('exit:')).toEqual({ ok: false, reason: 'worker_crashed' });
-    for (let i = 0; i < 8; i++) expect(await p.prepare('throw:')).toEqual({ ok: false, reason: 'worker_crashed' });
-    for (let i = 0; i < 8; i++) expect(await p.prepare('signal:SIGTERM')).toEqual({ ok: false, reason: 'worker_crashed' });
-    for (let i = 0; i < 8; i++) expect(await p.prepare('nonsense:')).toEqual({ ok: false, reason: 'worker_crashed' });
-    for (let i = 0; i < 8; i++) expect(await p.prepare('unguarded:no guard')).toEqual({ ok: false, reason: 'worker_crashed' });
+    const p = preparer({ now: clock().now, onFault: f.report });
+    for (let i = 0; i < 6; i++) expect(await p.prepare('abort:')).toEqual({ ok: false, reason: 'worker_oom' });
+    for (let i = 0; i < 6; i++) expect(await p.prepare('exit:')).toEqual({ ok: false, reason: 'worker_crashed' });
+    for (let i = 0; i < 6; i++) expect(await p.prepare('throw:')).toEqual({ ok: false, reason: 'worker_crashed' });
+    for (let i = 0; i < 6; i++) expect(await p.prepare('signal:SIGTERM')).toEqual({ ok: false, reason: 'worker_crashed' });
+    for (let i = 0; i < 6; i++) expect(await p.prepare('nonsense:')).toEqual({ ok: false, reason: 'worker_crashed' });
+    for (let i = 0; i < 6; i++) expect(await p.prepare('unguarded:no guard')).toEqual({ ok: false, reason: 'worker_crashed' });
     expect(said(await p.prepare('echo:fine'))).toMatch(/:fine$/);
     // ...and each was told to onFault, so that it is in the log
-    expect(f.seen.length).toBeGreaterThanOrEqual(8 * 6);
+    expect(f.seen.length).toBeGreaterThanOrEqual(6 * 6);
   });
 
   it('DOES count a worker that has not the limit it was asked for, one whose first word is not "ready", and one that cannot be forked: no page was sent to any of them', async () => {
@@ -786,7 +797,7 @@ describe('when workers keep failing', () => {
     /** A pool whose workers say nothing while `silent` is on, and are fine when it is off; the options are read each time one is made. */
     function mute(options: HtmlPreparerOptions = {}): { p: HtmlPreparer; silent: (on: boolean) => void } {
       const argv = ['--title=silent'];
-      const p = preparer({ workerUrl: STARTS, execArgv: argv, deadlineMs: 150, ...options });
+      const p = preparer({ workerUrl: STARTS, execArgv: argv, deadlineMs: SHORT_DEADLINE_MS, ...options });
       return {
         p,
         silent: (on) => {
@@ -804,7 +815,7 @@ describe('when workers keep failing', () => {
       expect(f.codes()).toEqual(Array(5).fill('worker_start_timeout'));
       const started = performance.now();
       expect(await p.prepare('x')).toEqual({ ok: false, reason: 'busy' });
-      expect(performance.now() - started).toBeLessThan(100); // a worker made for it would have taken the whole 150 ms deadline
+      expect(performance.now() - started).toBeLessThan(SHORT_DEADLINE_MS / 2); // a worker made for it would have taken the whole deadline
       expect(f.seen).toHaveLength(5);
       silent(false); // the machine is well again
       c.set(29_999);
@@ -843,7 +854,7 @@ describe('when workers keep failing', () => {
 
     it('is not the page that is held: a worker that has the page and outstays the deadline is still worker_timeout, and not counted', async () => {
       const f = faults();
-      const p = preparer({ now: clock().now, deadlineMs: 150, onFault: f.report });
+      const p = preparer({ now: clock().now, deadlineMs: SHORT_DEADLINE_MS, onFault: f.report });
       for (let i = 0; i < 6; i++) expect(await p.prepare('sleep:')).toEqual({ ok: false, reason: 'worker_timeout' });
       expect(said(await p.prepare('echo:fine'))).toMatch(/:fine$/);
       expect(f.seen).toEqual([]);
