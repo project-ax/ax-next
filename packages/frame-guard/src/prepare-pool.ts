@@ -26,7 +26,7 @@ import { WORKER_ARG } from './prepare-worker.js';
 //   - it is given nothing of the host's: an empty environment, none of its flags, no
 //     standard streams, and only the page over the channel. It is ended when the host lets
 //     go of the channel, and when nothing has been asked of it for a while, which gives its
-//     memory back (a worker that has prepared a heavy page holds 300 MB or more until it
+//     memory back (a worker that has prepared a heavy page holds 250 to 360 MB until it
 //     ends, measured);
 //   - pages wait in a line bounded by how many there are and how much text they hold (each
 //     is a string the caller has made and the worker has not read yet), and a page that
