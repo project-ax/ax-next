@@ -52,6 +52,17 @@ describe('ci-test-shard.sh partitions the workspace', () => {
     expect(byShard.agents).toHaveLength(3);
   });
 
+  it('keeps the scheduling the timing-budget suites need (run 42490563875)', () => {
+    // `web` holds channel-web's jsdom suite, attachments' Chromium tests and
+    // frame-guard's <1 s parse budgets: together on one runner they failed the
+    // budgets, one at a time they don't. And no shard starts every package at
+    // once (--no-sort) — the unsharded run never did, and two `rest` budget
+    // tests failed the one time it was tried.
+    const script = readFileSync(SCRIPT, 'utf8');
+    expect(script).toMatch(/if \[ "\$shard" = web \]; then concurrency=--workspace-concurrency=1; fi/);
+    expect(script).not.toMatch(/^[^#]*--no-sort/m);
+  });
+
   it('refuses a shard it does not define', () => {
     expect(() => execFileSync('bash', [SCRIPT, 'nope'], { cwd: REPO_ROOT, stdio: 'pipe' })).toThrow();
   });

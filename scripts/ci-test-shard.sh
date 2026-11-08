@@ -22,10 +22,18 @@
 #   agents     agents 215s, skills 194s, connectors 172s
 #   rest       ~75 packages, ~15 minutes summed, most under 30s each
 #
-# --no-sort: a package's tests don't wait on its dependencies' TESTS (only on
-# their builds, which `pnpm typecheck` already did), so topological order only
-# serializes work. --no-bail: report every failing package, not just the first
-# (`pnpm -r` stops at the first by default, which hides the rest).
+# --no-bail: report every failing package, not just the first (`pnpm -r`
+# stops at the first by default, which hides the rest).
+#
+# WHAT RUNS TOGETHER MATTERS. Several suites assert wall-clock budgets (frame-
+# guard's parse5 limits answer in <1 s, user-files-read's swap race needs
+# >=5000 iterations in its window, routines-contract's 5 s default timeout).
+# The first sharded run (2026-11-08, run 42490563875) put channel-web's jsdom
+# suite, attachments' Chromium tests and frame-guard's budgets on one runner at
+# once, and also used --no-sort (every package starts immediately instead of in
+# topological waves): four of those budget tests failed, nothing else did. So
+# `web` runs its three packages ONE AT A TIME (~400 s, still under `rest`), and
+# every shard keeps pnpm's default topological order, as the unsharded run had.
 #
 # Usage: scripts/ci-test-shard.sh <routines|web|agents|rest>
 #        scripts/ci-test-shard.sh --list <shard>   # print the shard's packages
@@ -80,8 +88,11 @@ filters=(); while IFS= read -r f; do filters+=("$f"); done < <(filters_for "$sha
 echo "Shard '$shard':"
 pnpm "${filters[@]}" list --depth -1 --parseable | sed "s|^$PWD/||" | sed 's/^/  /'
 
+concurrency=--workspace-concurrency=4
+if [ "$shard" = web ]; then concurrency=--workspace-concurrency=1; fi
+
 status=0
-pnpm "${filters[@]}" --no-sort --no-bail run test || status=$?
+pnpm "${filters[@]}" "$concurrency" --no-bail run test || status=$?
 if [ "$shard" = rest ]; then
   pnpm test:eslint-rules || status=$?
   pnpm test:scripts || status=$?
