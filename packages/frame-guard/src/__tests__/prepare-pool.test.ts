@@ -559,8 +559,11 @@ describe("the real worker's part: what it makes of a page", () => {
       expect(made.ok).toBe(true);
       expect(made.ok && made.html.length).toBeLessThan(6 * MiB);
       expect(made.ok && Buffer.byteLength(made.html)).toBeGreaterThan(MAX_PREPARED_BYTES);
-      // As bytes it is not, and the worker says so instead of sending 16 MB.
-      expect(answerJob({ id: 4, html })).toEqual({ id: 4, ok: false, reason: 'output_too_large' });
+      // As bytes it is not, and the worker says so instead of sending 16 MB. (Said in two small expectations: a failure of
+      // one that compared the whole answer would try to print a diff of 16 million numbers.)
+      const answer = answerJob({ id: 4, html });
+      expect(answer.id).toBe(4);
+      expect(answer.ok ? `${answer.bytes.byteLength} bytes were made` : answer.reason).toBe('output_too_large');
     });
 
     it('serves a page of the same characters that comes back at the size it went in', () => {
