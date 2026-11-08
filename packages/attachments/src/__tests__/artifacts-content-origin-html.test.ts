@@ -638,6 +638,28 @@ describe('content origin: prepared-HTML cache', () => {
       expect(prepare).toHaveBeenCalledTimes(1);
     });
 
+    it('measures the minute on a monotonic clock: setting the system clock neither forgets a refusal nor keeps one for good', async () => {
+      // No `now` option: the clock the origin has when nothing moves it. (A view token is checked against the system
+      // clock too, so each request is signed after the clock is set, for the time it says.)
+      const preparer = refusing('worker_timeout');
+      const base = await start({ htmlPreparer: preparer });
+      put('a', { bytes: page(1), contentKey: 'sha-monotonic' });
+      expect((await fetch(tokenUrl(base, 'a'))).status).toBe(422);
+      expect(preparer.asked).toBe(1);
+      const real = Date.now();
+      const spy = vi.spyOn(Date, 'now');
+      try {
+        spy.mockReturnValue(real + 2 * 3_600_000); // the system clock is put forward two hours...
+        expect((await fetch(tokenUrl(base, 'a'))).status).toBe(422);
+        expect(preparer.asked).toBe(1); // ...and no time has gone by for the refusal
+        spy.mockReturnValue(real - 2 * 3_600_000); // ...and back four
+        expect((await fetch(tokenUrl(base, 'a'))).status).toBe(422);
+        expect(preparer.asked).toBe(1);
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
     it.each(['too_slow', 'output_too_large', 'too_many_nodes', 'plaintext'] as const)(
       'a refusal as %s is the page\'s and is remembered for good, however long it is since',
       async (reason) => {

@@ -350,7 +350,8 @@ export async function startContentOrigin(o: ContentOriginOptions): Promise<Conte
   const maxEntries = o.htmlCache?.maxEntries ?? HTML_CACHE_MAX_ENTRIES;
   const maxBytes = o.htmlCache?.maxBytes ?? HTML_CACHE_MAX_BYTES;
   const maxRefusals = o.htmlCache?.maxRefusals ?? REFUSALS_MAX_ENTRIES;
-  const now = o.htmlCache?.now ?? Date.now;
+  // A monotonic clock: the minute a refusal is remembered for is not moved by the system clock being set.
+  const now = o.htmlCache?.now ?? ((): number => performance.now());
   const cost = (p: PreparedHtml): number => ('html' in p ? p.html.byteLength : 0);
   /** Pages being prepared now, by key: a view of the same bytes while one is going waits for it, and does not start another. */
   const preparing = new Map<string, Promise<PreparedHtml>>();
