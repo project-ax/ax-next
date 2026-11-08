@@ -6,7 +6,8 @@
 //   node --import tsx idle-pool.ts
 import { createHtmlPreparer } from '../../index.js';
 
-const preparer = createHtmlPreparer({ workerUrl: new URL('./pool-worker.mjs', import.meta.url) });
+// idleMs far longer than the test waits: a timer that ends an idle worker must not be what holds the process open.
+const preparer = createHtmlPreparer({ workerUrl: new URL('./pool-worker.mjs', import.meta.url), idleMs: 3_600_000 });
 const page = await preparer.prepare('echo:hello');
 const pid = page.ok ? Number(new TextDecoder().decode(page.bytes).split(':')[0]) : null;
 console.log(JSON.stringify({ ok: page.ok, pid }));

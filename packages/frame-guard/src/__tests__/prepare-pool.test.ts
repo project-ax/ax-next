@@ -77,8 +77,9 @@ describe('a page goes to the worker and comes back as bytes', () => {
   });
 
   it('does not keep the process alive once its pages are answered, and the worker does not outlive the process', { timeout: 40_000 }, async () => {
-    // A worker that was not unref-ed would hold a command, a test run or a server that is shutting down open for good;
-    // one that did not end when the process that made it did would be left running for good.
+    // A worker that was not unref-ed would hold a command, a test run or a server that is shutting down open for good, and
+    // so would the timer that ends an idle worker if it were not (the fixture gives it an hour); one that did not end when
+    // the process that made it did would be left running for good.
     const fixture = fileURLToPath(new URL('./fixtures/idle-pool.ts', import.meta.url));
     const child = spawnSync(process.execPath, ['--import', 'tsx', fixture], {
       cwd: fileURLToPath(new URL('../..', import.meta.url)),
@@ -444,14 +445,6 @@ describe('the worker is ended when nothing has been asked of it for a while, to 
     const page = await p.prepare('window:400');
     expect(refusal(page)).toBe('answered');
     expect(pid(await p.prepare('echo:two'))).toBe(first);
-  });
-
-  it('is not a reason to keep a process open: the timer that ends an idle worker is not one that holds the process', async () => {
-    const timers = (): number => process.getActiveResourcesInfo().filter((r) => r === 'Timeout').length;
-    const before = timers();
-    const p = preparer({ idleMs: 60_000 });
-    await p.prepare('echo:one');
-    expect(timers()).toBe(before);
   });
 });
 
