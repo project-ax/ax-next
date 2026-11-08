@@ -639,20 +639,22 @@ describe('content origin: prepared-HTML cache', () => {
     });
 
     it('measures the minute on a monotonic clock: setting the system clock neither forgets a refusal nor keeps one for good', async () => {
-      // No `now` option: the clock the origin has when nothing moves it. (A view token is checked against the system
-      // clock too, so each request is signed after the clock is set, for the time it says.)
-      const preparer = refusing('worker_timeout');
-      const base = await start({ htmlPreparer: preparer });
-      put('a', { bytes: page(1), contentKey: 'sha-monotonic' });
-      expect((await fetch(tokenUrl(base, 'a'))).status).toBe(422);
-      expect(preparer.asked).toBe(1);
-      const real = Date.now();
-      const spy = vi.spyOn(Date, 'now');
+      // No `now` option: the clock the origin has when nothing moves it. The system clock is a spy from before the origin
+      // starts (an origin that took `Date.now` as its clock took the spy), that says what time it is by an offset the test
+      // moves. A view token is checked against the system clock too, so each request is signed after the clock is set.
+      const realNow = Date.now.bind(Date);
+      let offsetMs = 0;
+      const spy = vi.spyOn(Date, 'now').mockImplementation(() => realNow() + offsetMs);
       try {
-        spy.mockReturnValue(real + 2 * 3_600_000); // the system clock is put forward two hours...
+        const preparer = refusing('worker_timeout');
+        const base = await start({ htmlPreparer: preparer });
+        put('a', { bytes: page(1), contentKey: 'sha-monotonic' });
+        expect((await fetch(tokenUrl(base, 'a'))).status).toBe(422);
+        expect(preparer.asked).toBe(1);
+        offsetMs = 2 * 3_600_000; // the system clock is put forward two hours...
         expect((await fetch(tokenUrl(base, 'a'))).status).toBe(422);
         expect(preparer.asked).toBe(1); // ...and no time has gone by for the refusal
-        spy.mockReturnValue(real - 2 * 3_600_000); // ...and back four
+        offsetMs = -2 * 3_600_000; // ...and back four
         expect((await fetch(tokenUrl(base, 'a'))).status).toBe(422);
         expect(preparer.asked).toBe(1);
       } finally {
@@ -753,17 +755,18 @@ describe('content origin: prepared-HTML cache', () => {
       expect(prepare).toHaveBeenCalledTimes(4);
     });
 
-    it('holds at its real size: 4 MiB pages against the real 32 MiB bound, with ten pages (far fewer than 16)', { timeout: 60_000 }, async () => {
-      // The pages the origin transforms at most (4 MiB each): eight are over 32 MiB, so by the tenth the oldest
-      // has gone by size. This one runs the default bound, which the tests above lower to stay quick.
+    it('holds at its real size: 4 MiB pages against the real 32 MiB bound, with ten pages (far fewer than 16): the newest seven', { timeout: 60_000 }, async () => {
+      // The pages the origin transforms at most (4 MiB each, 4.2 MB prepared): eight are over 32 MiB, so seven are kept and
+      // the three oldest of ten have gone by size. This one runs the default bound, which the tests above lower to stay
+      // quick, and which is four times the most a prepared page can be (8 MiB): a bound of one such page keeps only the newest.
       const base = await start();
       const TEN = 10;
       for (let i = 0; i < TEN; i++) put(`r${i}`, { bytes: big(i, 4), contentKey: `sha-real-${i}` });
       for (let i = 0; i < TEN; i++) await view(base, `r${i}`);
       expect(prepare).toHaveBeenCalledTimes(TEN);
-      await view(base, `r${TEN - 1}`); // the newest is kept
+      for (const i of [9, 8, 7, 6, 5, 4, 3]) await view(base, `r${i}`); // the newest seven are all still there
       expect(prepare).toHaveBeenCalledTimes(TEN);
-      await view(base, 'r0'); // the oldest went by size
+      await view(base, 'r2'); // the eighth newest went by size
       expect(prepare).toHaveBeenCalledTimes(TEN + 1);
     });
 
