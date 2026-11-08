@@ -460,7 +460,7 @@ describe("the worker's heap is sized from the container's memory limit", () => {
     expect(await startedWith(p)).toBe(384);
   });
 
-  it.each([0, -1, Number.NaN, Number.POSITIVE_INFINITY, 2 ** 64, 2 ** 63 - 4096, 'a lot' as unknown as number])(
+  it.each([0, -1, Number.NaN, Number.POSITIVE_INFINITY, 2 ** 64, 2 ** 63 - 4096, '1073741824' as unknown as number])(
     'takes %s for no limit (Node says 2^64 where the cgroup says "max", and 0 where it cannot tell)',
     async (nonsense) => {
       expect(await startedWith(preparer({ containerMemoryBytes: () => nonsense }))).toBe(384);

@@ -198,7 +198,7 @@ const MAX_PLAUSIBLE_LIMIT_BYTES = 2 ** 50;
 export function readContainerMemoryLimit(): number | undefined {
   try {
     const bytes = process.constrainedMemory();
-    return Number.isFinite(bytes) && bytes > 0 && bytes < MAX_PLAUSIBLE_LIMIT_BYTES ? bytes : undefined;
+    return bytes > 0 && bytes < MAX_PLAUSIBLE_LIMIT_BYTES ? bytes : undefined; // (NaN fails both comparisons)
   } catch {
     return undefined;
   }
@@ -425,11 +425,14 @@ class WorkerPreparer implements HtmlPreparer {
     await this.end();
   }
 
-  /** The container's memory limit, if it has one: a reader that throws, or answers what is not a limit, is no limit. */
+  /**
+   * The container's memory limit, if it has one: a reader that throws, or answers what is not a positive number (NaN fails the
+   * comparison; a limit past any machine gives the whole of what was asked for, as none does), is no limit.
+   */
   private limitOrNone(): number | undefined {
     try {
       const bytes = this.containerMemoryBytes();
-      return typeof bytes === 'number' && Number.isFinite(bytes) && bytes > 0 && bytes < MAX_PLAUSIBLE_LIMIT_BYTES ? bytes : undefined;
+      return typeof bytes === 'number' && bytes > 0 ? bytes : undefined;
     } catch {
       return undefined;
     }
