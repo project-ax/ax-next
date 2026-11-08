@@ -39,19 +39,33 @@ function sseResponse(frames: unknown[], { openEnded = false } = {}): Response {
   return new Response(body, { status: 200 });
 }
 
-/** Drive `streamReply` over those frames and collect everything it reports. */
+/**
+ * Drive `streamReply` over those frames and collect everything it reports.
+ *
+ * `reconnectDelaysMs: []` by default: these tests pin what ONE body does, and
+ * with no reconnects allowed a stream that ends without a terminator still
+ * reports the lost-stream line. What a reconnect does is
+ * `workspace-api-stream-reconnect.test.ts`.
+ */
 async function run(
   frames: unknown[],
-  opts: { openEnded?: boolean } = {},
-): Promise<{ text: string[]; error: string | null; done: boolean }> {
+  opts: { openEnded?: boolean; reconnectDelaysMs?: number[]; then?: unknown[] } = {},
+): Promise<{ text: string[]; error: string | null; done: boolean; opens: number }> {
+  let opens = 0;
   vi.stubGlobal(
     'fetch',
-    vi.fn(async () => sseResponse(frames, opts)),
+    vi.fn(async () => {
+      opens += 1;
+      return opens === 1 || opts.then === undefined
+        ? sseResponse(frames, opts)
+        : sseResponse(opts.then);
+    }),
   );
   const text: string[] = [];
   let error: string | null = null;
   let done = false;
   await workspaceApi.streamReply('r1', {
+    reconnectDelaysMs: opts.reconnectDelaysMs ?? [],
     onText: (t) => {
       text.push(t);
     },
@@ -62,7 +76,7 @@ async function run(
       error = m;
     },
   });
-  return { text, error, done };
+  return { text, error, done, opens };
 }
 
 afterEach(() => {
@@ -101,13 +115,14 @@ describe('streamReply — seq dedup', () => {
   });
 });
 
-describe('streamReply — a gap is a visible loss, not a short answer', () => {
+describe('streamReply — a gap is never rendered past', () => {
   it('stops at a mid-stream hole rather than rendering past it', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     // seq 3 never arrives. The OLD reader rendered 'after-the-hole' straight
     // into the thread, so the person read a reply with a piece missing and no
     // indication anything was gone — that missing-text assertion is the one
-    // that fails against it.
+    // that fails against it. With no reconnect allowed, the loss is the
+    // lost-stream line.
     const { text, error, done } = await run(
       [
         { reqId: 'r1', kind: 'text', text: 'before', seq: 1 },
@@ -121,6 +136,35 @@ describe('streamReply — a gap is a visible loss, not a short answer', () => {
     expect(text.join('')).not.toContain('after-the-hole');
     expect(error).toBe(WORKSPACE_STREAM_LOST);
     expect(done).toBe(false);
+    warn.mockRestore();
+  });
+
+  it('after a hole, follows the turn to its end instead of declaring it lost (TASK-27)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    // The reply is fine on the server; only this reader's copy has a hole. So
+    // it stops rendering content, reconnects, and waits for the terminator —
+    // the caller's onDone re-reads the whole transcript. Before TASK-27 this
+    // was a "didn't finish" banner over a reply that finished.
+    const { text, error, done, opens } = await run(
+      [
+        { reqId: 'r1', kind: 'text', text: 'before', seq: 1 },
+        { reqId: 'r1', kind: 'text', text: 'after-the-hole', seq: 3 },
+      ],
+      {
+        openEnded: true,
+        reconnectDelaysMs: [0],
+        then: [
+          { reqId: 'r1', kind: 'text', text: 'after-the-hole', seq: 3 },
+          { reqId: 'r1', kind: 'text', text: ' more', seq: 4 },
+          { reqId: 'r1', done: true },
+        ],
+      },
+    );
+
+    expect(opens).toBe(2);
+    expect(text.join('')).toBe('before');
+    expect(error).toBeNull();
+    expect(done).toBe(true);
     warn.mockRestore();
   });
 

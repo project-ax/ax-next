@@ -124,6 +124,12 @@ function fakeReq(opts: FakeReqOpts = {}): RouteRequest {
 }
 
 interface BootOpts {
+  /**
+   * TASK-27: the lookup succeeds once (the handler's step 2), then answers
+   * not-found — the turn ended (and its active reqId was cleared) while the
+   * handler was still setting up, before its turn-end subscriber existed.
+   */
+  turnEndsDuringSetup?: boolean;
   /** userId returned by auth:require-user; null → unauthenticated. */
   authUser?: { id: string; isAdmin: boolean } | null;
   /** auth:require-user crashes (a raw store fault the bus wraps). */
@@ -203,8 +209,10 @@ function bootHandler(opts: BootOpts = {}) {
     return { user: authUser };
   });
 
+  let lookups = 0;
   bus.registerService('conversations:get-by-req-id', 'mock-conv', async () => {
-    if (conversation === null) {
+    lookups += 1;
+    if (conversation === null || (opts.turnEndsDuringSetup === true && lookups > 1)) {
       throw new PluginError({
         code: 'not-found',
         plugin: 'mock-conv',
@@ -535,6 +543,45 @@ describe('@ax/channel-web SSE handler', () => {
         done: true,
       });
       expect(captured.streamClosed).toBe(true);
+    } finally {
+      buffer.dispose();
+    }
+  });
+
+  it('TASK-27: a turn that ended before the turn-end subscriber attached still closes the stream with done', async () => {
+    // The reconnect race: the browser reopens just as the turn finishes. The
+    // turn-end fired during the handler's setup awaits, at nobody, and the
+    // stream used to replay its tail and then hang on keepalives forever.
+    const { bus, initCtx, handler, buffer } = bootHandler({ turnEndsDuringSetup: true });
+    try {
+      await bus.fire<StreamChunk>('chat:stream-chunk', initCtx, {
+        reqId: 'r-test',
+        text: 'the answer',
+        kind: 'text',
+      });
+      const req = fakeReq();
+      const { res, captured } = fakeRes();
+      await handler(req, res);
+      await vi.waitFor(() => expect(captured.streamClosed).toBe(true));
+
+      const frames = dataFrames(captured.streamWrites);
+      expect(frames[0]).toMatchObject({ reqId: 'r-test', text: 'the answer' });
+      expect(frames[frames.length - 1]).toEqual({ reqId: 'r-test', done: true });
+    } finally {
+      buffer.dispose();
+    }
+  });
+
+  it('TASK-27: a turn still running when the subscriber attaches leaves the stream open', async () => {
+    const { handler, buffer } = bootHandler();
+    try {
+      const req = fakeReq();
+      const { res, captured } = fakeRes();
+      await handler(req, res);
+      await new Promise((r) => setTimeout(r, 10));
+
+      expect(captured.streamClosed).toBe(false);
+      expect(dataFrames(captured.streamWrites).some((f) => f.done === true)).toBe(false);
     } finally {
       buffer.dispose();
     }
