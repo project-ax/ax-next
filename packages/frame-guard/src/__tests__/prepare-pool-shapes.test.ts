@@ -96,8 +96,10 @@ describe('pages that are written out as a multiple of themselves, through the co
         expect(outcome.status, `attempt ${attempt} was ended by ${how(outcome)}`).toBe(0);
         expect(outcome.answer, `attempt ${attempt}: ${outcome.stderr.slice(-200)}`).toMatchObject({ ok: false, reason: 'output_too_large', faults: [] });
         // Refused after the first parse and the weighing (amp1: after the second, and the bytes), not after reading the
-        // whole of a result three or four times the page.
-        expect(outcome.answer!.ms, `attempt ${attempt}`).toBeLessThan(2000);
+        // whole of a result three or four times the page. Measured 0.1-0.3 s on a free machine and 2.8 s on the CI runner (about
+        // 3 times slower, the worker below the host in priority), so the ceiling is a wall-clock bound for 'not hung or wedged on
+        // the whole result' and not a speed claim; the exact refusal reason above is what pins the early exit.
+        expect(outcome.answer!.ms, `attempt ${attempt}`).toBeLessThan(10_000);
       }
     },
   );
