@@ -231,8 +231,11 @@ describe('loading prepare-html when the guard script cannot ride in a <script> e
   });
 
   it.each([
+    // nosemgrep: javascript.lang.security.audit.unknown-value-with-script-tag.unknown-value-with-script-tag -- test data: a guard source with something wrong appended, handed to the module's load-time check; it is never rendered
     ['a script-closing tag', `${GOOD}\n// </script>\n`],
+    // nosemgrep: javascript.lang.security.audit.unknown-value-with-script-tag.unknown-value-with-script-tag -- test data, as above
     ['a comment opener that stops the closing tag from closing', `${GOOD}\n// <!--<script>\n`],
+    // nosemgrep: javascript.lang.security.audit.unknown-value-with-script-tag.unknown-value-with-script-tag -- test data, as above
     ['a carriage return, which the parser turns into a line feed', `${GOOD}\r\n`],
   ])('refuses to load when the guard holds %s', async (_name, source) => {
     vi.resetModules();

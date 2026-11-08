@@ -16,4 +16,4 @@ if (make === undefined) throw new Error(`no such page: ${process.argv[2]}`);
 const page = make();
 const started = performance.now();
 const result = prepareArtifactHtml(page);
-console.log(JSON.stringify({ ok: result.ok, reason: result.ok ? null : result.reason, ms: Math.round(performance.now() - started) }));
+process.stdout.write(`${JSON.stringify({ ok: result.ok, reason: result.ok ? null : result.reason, ms: Math.round(performance.now() - started) })}\n`);

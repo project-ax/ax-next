@@ -12,4 +12,4 @@ const preparer = createHtmlPreparer({ workerUrl: new URL('./pool-worker.mjs', im
 const page = await preparer.prepare('echo:hello');
 // (the stand-in puts the guard in front of what it says, which the pool wants to see)
 const pid = page.ok ? Number(new TextDecoder().decode(page.bytes).slice(GUARD_MARKER.length).split(':')[0]) : null;
-console.log(JSON.stringify({ ok: page.ok, pid }));
+process.stdout.write(`${JSON.stringify({ ok: page.ok, pid })}\n`);

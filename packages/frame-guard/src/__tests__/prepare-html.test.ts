@@ -490,6 +490,7 @@ describe('running it on its own output', () => {
     const out = prepared(`<head><meta charset="utf-8"><script>${guard}</script></head><body>x</body>`);
     expect(guardsIn(out)).toBe(2);
     expect(leadingGuardText(out)).toBe(guard);
+    // nosemgrep: javascript.lang.security.audit.unknown-value-with-script-tag.unknown-value-with-script-tag -- an assertion on the text the transform wrote (the guard's own source, a module constant); nothing here is rendered
     expect(unguarded(out).startsWith(`<html><head>${GUARD}<meta charset="utf-8"><script>${FRAME_GUARD_SOURCE}`)).toBe(true);
   });
 
@@ -514,6 +515,7 @@ describe('running it on its own output', () => {
     const guard = leadingGuardText(prepared('<p>x</p>'))!;
     const edited = edit(guard);
     expect(edited).not.toBe(guard);
+    // nosemgrep: javascript.lang.security.audit.unknown-value-with-script-tag.unknown-value-with-script-tag -- test data: the guard's text with an edit, handed to the transform as input; it is never rendered
     const out = prepared(`<head><script>${edited}</script></head><body>x</body>`);
     expect(guardsIn(out)).toBe(2);
     expect(leadingGuardText(out)).toBe(guard);
