@@ -688,9 +688,15 @@ forks the built `prepare-worker.js` of `@ax/frame-guard`: one page at a time, an
 empty environment, no standard streams, only the page over its channel, a heap limit
 V8 enforces on it with the young generation pinned so that the limit is the same on
 every machine, a wall-clock deadline, a short line of waiting pages, and a busy
-rule). A page that needs more memory than the worker has is aborted by V8, one that
-holds its CPU is killed at the deadline, one that crashes it or is killed by the
-kernel for the pod's memory is gone, and the pool answers each with a refusal
+rule). The heap is sized from the container's memory limit (30% of it, less the young
+generation and 64 MB of the worker's other memory, at most 384 MB: 195 MB in a 1 GiB
+container, the full 384 from about 1.6 GiB, read again for each worker), because the
+worker is a process of the host's container and a V8 abort ends it alone but the
+container's limit does not: under `memory.oom.group` (Kubernetes sets it on cgroup v2)
+the kernel ends every process in the container, the host too, and `oom_score_adj`
+only chooses who is first (measured: 600 MiB, the host holding 300 MB, a heavy page:
+exit 137, whatever the worker's heap). A page that needs more memory than the worker has is aborted by V8, one that
+holds its CPU is killed at the deadline, one that crashes it is gone, and the pool answers each with a refusal
 (`worker_oom`, `worker_timeout`, `worker_failed`) and starts another worker for the
 next page: for a worker that FAILS, the host sees a refused page and nothing more. (It was a thread, and a
 thread is not a boundary: when a page needed far more heap than the thread's limit,
@@ -699,8 +705,8 @@ transform wrote out at three times its length. Even with the transform's own bou
 4 MiB of text inside a `<table>`, which parse5 holds a token at a time, needs 352 to
 368 MB of the 384, so what happens at the limit has to be safe, not unlikely.) The
 worker says what heap limit it really has when it starts, and one that is not the
-limit asked for is not used; it asks the kernel to kill it before anything else in
-the pod and to give the CPU to the host first; and it is ended when the host lets go
+limit asked for is not used; it asks the kernel to end it first when it must end
+one and to give the CPU to the host first; and it is ended when the host lets go
 of the channel and when it has had nothing to do for 20 seconds (one that has
 prepared a heavy page holds 250 MB or more until it ends). The host checks each answer
 (its shape, at most 8 MiB, the guard in it), which stops a worker that is wrong. It is

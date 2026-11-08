@@ -13,7 +13,11 @@ import { WORKER_ARG } from './prepare-worker.js';
 //   - the worker has a heap limit that V8 enforces on it (`--max-old-space-size`, with the
 //     young generation pinned so that the limit is the same on every machine). A page that
 //     needs more ends the worker: V8 aborts the process with "Reached heap limit" and the
-//     pool answers `worker_oom`. Nothing else is touched. (This used to be a thread. A thread
+//     pool answers `worker_oom`. Nothing else is touched by that. The container's memory
+//     limit is another matter, because it is the host's too: under `memory.oom.group`
+//     (Kubernetes sets it on cgroup v2) the kernel ends every process in the container when
+//     it is met, whichever one was using the memory. So the heap is sized from the limit, a
+//     share of it that leaves the host the rest (`oldGenerationFor`). (This used to be a thread. A thread
 //     that runs out of memory takes its whole process with it when the need is far over the
 //     limit, which it did at 384 MB for a page of 4 MiB that the transform wrote out at three
 //     times its length, and the plausible page that needs most, text inside a table, which
@@ -75,8 +79,19 @@ export interface HtmlPreparer {
 export interface HtmlPreparerOptions {
   /** The worker's entry. Default: `prepare-worker.js` next to this file, which exists in the compiled package. */
   workerUrl?: URL;
-  /** Heap the worker may use before it is ended, in MB: 16 or more. Default 384. */
+  /**
+   * Heap the worker may use before it is ended, in MB: 16 or more. Default 384. The most it is given: in a container with a
+   * memory limit it is given less when this would not fit beside the host (see `containerMemoryBytes`).
+   */
   maxOldGenerationSizeMb?: number;
+  /**
+   * The memory limit of the container the host is in, in bytes, or undefined if there is none. Read each time a worker is
+   * started, and the worker's heap is sized from it (`oldGenerationFor`): a worker is a process of the same container, and a
+   * limit on the container's memory is not the worker's alone to meet, because under `memory.oom.group` (which Kubernetes sets on
+   * cgroup v2) the kernel ends every process in the container, the host with it. Default: what Node reads of the container's
+   * cgroup (`readContainerMemoryLimit`). For tests.
+   */
+  containerMemoryBytes?: () => number | undefined;
   /** Milliseconds, on the wall clock, a page may take, starting the worker included, before the worker is ended. Default 6000. */
   deadlineMs?: number;
   /** Pages that may wait behind the one being prepared; the next is turned away as busy. Default 32. */
@@ -123,12 +138,12 @@ const DEFAULT_WORKER_URL = new URL('./prepare-worker.js', import.meta.url);
  * What the transform may use of heap before the worker is ended. The heaviest pages that are plausible (4 MiB
  * in one token: a script, a data URI, a tag with 200 long attributes) need between 144 and 160 MB, nearly all
  * of it the joins parse5 makes while it builds the token a character at a time (about 32 bytes a character).
- * The heaviest that are plausible (4 MiB of text inside a `<table>`, which parse5 holds a token at a time, 56
- * bytes each; a tag whose name is 4 MiB would need more, and is refused as too long before it is read) need 352
- * to 368, and are served or refused according to how the garbage collector's last run went:
- * a refusal as `worker_oom` is the answer to those, and it is remembered only for a little while for that
- * reason. 384 is 2.4 times the 160. The pod it runs in has 1 GiB to share with the host, which is what
- * keeps this from being larger.
+ * Text inside a `<table>`, which parse5 holds a token at a time (56 bytes each), is the heaviest: 4 MiB of it
+ * needs 352 to 368 MB, and is refused whichever way it goes (as out of memory under a smaller limit; at this one as too
+ * slow, because the collector's work near the limit uses up the transform's CPU budget: measured, six times in six). A
+ * tag whose name is 4 MiB would need more, and is refused as too long before it is read. 384 is 2.4 times the 160. It is
+ * the most a worker is given: in a container with a memory limit it is given less when this would not fit beside
+ * the host (`oldGenerationFor`).
  */
 const DEFAULT_OLD_GENERATION_MB = 384;
 /**
@@ -158,6 +173,53 @@ export const WORKER_V8_FLAGS: readonly string[] = ['--single-threaded'];
 const YOUNG_GENERATION_MB = 3 * SEMI_SPACE_MB;
 /** How far the heap limit a worker reports may be from `old + young`: V8 rounds to pages. */
 const LIMIT_TOLERANCE_MB = 2;
+const MiB = 1024 * 1024;
+/**
+ * How much of the container's memory limit a worker may take, resident, in all. The container is the host's and the worker's
+ * together, and a page can fill the worker's heap, so the heap is sized to leave the host the rest: 70% of the limit is the
+ * host's. At the 2 GiB the production values give the host that is 614 MB for the worker, and it took 475 at most, measured.
+ */
+const WORKER_SHARE_OF_CONTAINER_PERCENT = 30;
+/**
+ * What a worker is resident beyond its heap limit: V8's own and the runtime's (a worker with nothing to do holds 56 MB), the page's
+ * bytes, the answer's, and the copy of it that the channel makes. Measured with a page that fills the heap (ending the worker) and
+ * with ones that are served, at limits of 176 to 432 MB (old 128 to 384): 35 to 55 MB over the limit. 64 leaves room for an answer of
+ * 8 MiB.
+ */
+const WORKER_OVERHEAD_MB = 64;
+/** A container limit past this is not a limit (Node answers 2^64, or 2^63 less a page, where the cgroup says "max"). */
+const MAX_PLAUSIBLE_LIMIT_BYTES = 2 ** 50;
+
+/**
+ * The memory limit of the container this process is in, in bytes: what Node reads of its cgroup (v2 `memory.max`, or v1
+ * `memory.limit_in_bytes`, at the path `/proc/self/cgroup` names), or undefined where there is none or Node cannot tell (it
+ * answers 0 where it does not know, and a number past any machine where the file says "max": neither is a limit).
+ */
+export function readContainerMemoryLimit(): number | undefined {
+  try {
+    const bytes = process.constrainedMemory();
+    return Number.isFinite(bytes) && bytes > 0 && bytes < MAX_PLAUSIBLE_LIMIT_BYTES ? bytes : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The old generation to give a worker, in MB: the one asked for, or less when the container's memory limit cannot hold it beside
+ * the host. A V8 heap abort ends the worker alone, but a container limit does not: under `memory.oom.group` (Kubernetes sets it on
+ * cgroup v2, since 1.28) the kernel ends EVERY process in the container when the limit is met, and `oom_score_adj` only chooses who
+ * is first. Measured: a container of 600 MiB, the host holding 300 MB, a page of table text: the container exits 137, host and
+ * all, with the default heap and with a larger one. So the worker may take a share of the limit (`WORKER_SHARE_OF_CONTAINER_PERCENT`),
+ * and its heap is what that leaves after the young generation and the overhead; a page that needs more than that is refused as
+ * `worker_oom`, which is an answer, and not the end of the container. At a 1 GiB limit that is 195 MB (every heavy page measured but
+ * the table text is served with 192); at 2 GiB it is the 384 asked for. `budgetMet` is false where even the least a worker can be
+ * given (`MIN_OLD_GENERATION_MB`) takes more than the share, and the host is on its own.
+ */
+export function oldGenerationFor(requestedMb: number, limitBytes: number | undefined): { oldMb: number; budgetMet: boolean } {
+  if (limitBytes === undefined) return { oldMb: requestedMb, budgetMet: true };
+  const fits = Math.floor(((limitBytes / MiB) * WORKER_SHARE_OF_CONTAINER_PERCENT) / 100) - YOUNG_GENERATION_MB - WORKER_OVERHEAD_MB;
+  return { oldMb: Math.max(MIN_OLD_GENERATION_MB, Math.min(requestedMb, fits)), budgetMet: fits >= MIN_OLD_GENERATION_MB };
+}
 const DEFAULT_DEADLINE_MS = 6000;
 /** A burst a person can make (the browser tests load sixteen pages at once) fits; the line is for the rest. */
 const DEFAULT_MAX_QUEUED = 32;
@@ -222,13 +284,17 @@ function refused(reason: PrepareRefusal | PoolRefusal): PreparedPage {
  *   worker_signal_<S>        it was ended by signal <S> that is not one of memory (a crash: the same)
  *   worker_aborted           it aborted (SIGABRT, or exit code 134), which V8 does at its heap limit; the page is
  *                            answered `worker_oom`. The worker's streams are ignored, so this is the only trace
- *   worker_killed            it was killed from outside, which in a pod is the kernel running out of memory;
- *                            the page is answered `worker_oom`
+ *   worker_killed            it was killed from outside, which is the kernel running out of memory where it chooses
+ *                            the worker alone (where the container's limit ends every process in it, the host goes
+ *                            too, and nothing is told; see `oldGenerationFor`); the page is answered `worker_oom`
  *   worker_limit_mismatch    its heap limit is not the one it was asked for (counts toward the failure limit)
  *   worker_bad_ready         the first thing it said was not what a worker says when it starts (counts too)
  *   worker_bad_message       it said something that is not an answer to the page it had (`worker_crashed`)
  *   worker_bad_answer        it answered ok, with bytes this transform cannot have made: more than a page is let be, or
  *                            without the guard in them (`worker_crashed`)
+ *   worker_budget_too_small  the container's memory limit leaves the worker less than the least heap it can be started
+ *                            with: it is given that least, which is more than its share, and the host is at risk (told
+ *                            once; the worker still runs)
  */
 class PoolFault extends Error {
   constructor(
@@ -282,6 +348,8 @@ interface Worker {
   process: ChildProcess;
   /** Whether it has said that it is ready, and has the heap limit it was asked for. */
   ready: boolean;
+  /** The heap limit, in MB, that it was started with and has to say it has: its old generation and the young one. */
+  expectedLimitMb: number;
 }
 
 class WorkerPreparer implements HtmlPreparer {
@@ -311,7 +379,10 @@ class WorkerPreparer implements HtmlPreparer {
   private readonly coolDownMs: number;
   private readonly now: () => number;
   private readonly execArgv: string[];
+  private readonly containerMemoryBytes: () => number | undefined;
   private readonly onFault: (fault: unknown) => void;
+  /** Whether the host has been told that the container leaves the worker less than the least it can be given. */
+  private toldBudgetTooSmall = false;
 
   constructor(options: HtmlPreparerOptions) {
     this.entry = fileURLToPath(options.workerUrl ?? DEFAULT_WORKER_URL);
@@ -326,6 +397,7 @@ class WorkerPreparer implements HtmlPreparer {
     this.coolDownMs = atLeast('coolDownMs', options.coolDownMs ?? DEFAULT_COOL_DOWN_MS, 1);
     this.now = options.now ?? (() => performance.now());
     this.execArgv = options.execArgv ?? [];
+    this.containerMemoryBytes = options.containerMemoryBytes ?? readContainerMemoryLimit;
     this.onFault = options.onFault ?? (() => undefined);
   }
 
@@ -351,6 +423,16 @@ class WorkerPreparer implements HtmlPreparer {
       running.job.resolve(refused('worker_failed'));
     }
     await this.end();
+  }
+
+  /** The container's memory limit, if it has one: a reader that throws, or answers what is not a limit, is no limit. */
+  private limitOrNone(): number | undefined {
+    try {
+      const bytes = this.containerMemoryBytes();
+      return typeof bytes === 'number' && Number.isFinite(bytes) && bytes > 0 && bytes < MAX_PLAUSIBLE_LIMIT_BYTES ? bytes : undefined;
+    } catch {
+      return undefined;
+    }
   }
 
   /** Characters of page the worker has been given and has not finished: the one it is on, and the ones waiting. */
@@ -436,10 +518,22 @@ class WorkerPreparer implements HtmlPreparer {
 
   private start(): Worker {
     const generation = ++this.generation;
+    // The container's limit is read for each worker (it may be changed while the host runs), and what it allows is what the worker is
+    // told and what it has to say it has.
+    const { oldMb, budgetMet } = oldGenerationFor(this.oldGenerationMb, this.limitOrNone());
+    if (!budgetMet && !this.toldBudgetTooSmall) {
+      this.toldBudgetTooSmall = true;
+      this.onFault(
+        new PoolFault(
+          'worker_budget_too_small',
+          `the container's memory limit leaves the prepare worker less than the ${MIN_OLD_GENERATION_MB} MB of heap it can least be given: it is given that, which is more than its share`,
+        ),
+      );
+    }
     const child = fork(this.entry, [WORKER_ARG], {
       // The pool's flags first, so that the limit asked for is the one given; then the caller's (for tests). None of
       // this process's own flags are passed on, whatever it was started with.
-      execArgv: [`--max-old-space-size=${this.oldGenerationMb}`, `--max-semi-space-size=${SEMI_SPACE_MB}`, ...WORKER_V8_FLAGS, ...this.execArgv],
+      execArgv: [`--max-old-space-size=${oldMb}`, `--max-semi-space-size=${SEMI_SPACE_MB}`, ...WORKER_V8_FLAGS, ...this.execArgv],
       // No environment is handed to it (a NODE_OPTIONS of the host's would otherwise change the limits, and the host's secrets are
       // not the worker's to be given). That is what is handed, not what is out of reach: see the end of the header.
       env: {},
@@ -447,7 +541,7 @@ class WorkerPreparer implements HtmlPreparer {
       stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
       serialization: 'advanced',
     });
-    const worker: Worker = { process: child, ready: false };
+    const worker: Worker = { process: child, ready: false, expectedLimitMb: oldMb + YOUNG_GENERATION_MB };
     child.on('message', (message: unknown) => this.heard(generation, worker, message));
     // 'error' is the process that could not be made, or told to end, or sent to. It must have a listener or it throws.
     child.on('error', (err: Error) => this.ended(generation, new PoolFault('worker_spawn_failed', `the prepare worker failed: ${describe(err)}`), 'worker_failed', !worker.ready));
@@ -488,7 +582,7 @@ class WorkerPreparer implements HtmlPreparer {
   /** The first thing a worker says: that it is ready, and with what heap limit. A worker that is not as asked is not used. */
   private becameReady(generation: number, worker: Worker, message: unknown): void {
     const limit = readReady(message);
-    const expected = this.oldGenerationMb + YOUNG_GENERATION_MB;
+    const expected = worker.expectedLimitMb;
     if (limit === null || Math.abs(limit - expected) > LIMIT_TOLERANCE_MB) {
       this.onFault(
         limit === null

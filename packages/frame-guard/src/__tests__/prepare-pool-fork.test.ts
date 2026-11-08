@@ -49,7 +49,7 @@ afterEach(async () => {
 
 function pool(options: Parameters<typeof createHtmlPreparer>[0] = {}): { p: HtmlPreparer; seen: Array<Error & { code?: string }> } {
   const seen: Array<Error & { code?: string }> = [];
-  const p = createHtmlPreparer({ onFault: (fault) => void seen.push(fault as Error & { code?: string }), now: () => 0, ...options });
+  const p = createHtmlPreparer({ onFault: (fault) => void seen.push(fault as Error & { code?: string }), now: () => 0, containerMemoryBytes: () => undefined, ...options });
   open.push(p);
   return { p, seen };
 }

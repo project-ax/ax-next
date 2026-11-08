@@ -187,10 +187,12 @@ type RefusalCode = 'html_too_large' | PrepareRefusal | PoolRefusal;
  * WALL clock, six seconds from the moment the page was handed over, so it includes
  * the worker's start-up and whatever CPU the machine took from the worker
  * meanwhile, and a good page can meet a starved minute. `worker_oom` is the
- * worker's heap limit, which a page can sit on the edge of: 4 MiB of text inside a
- * `<table>` needs 352 to 368 MB of the 384 and is served or refused according to
- * how far the garbage collector had got, and a worker the kernel killed for the
- * pod's memory is the pod's moment as much as the page. `worker_crashed` is a worker
+ * worker's heap limit, which is a share of the container's memory (195 MB in a 1 GiB
+ * container, the 384 asked for in a 2 GiB one), so a page that needs a few
+ * hundred MB is refused or served by the deployment as much as by its bytes; and a
+ * worker the kernel killed from outside is the machine's moment as much as the
+ * page (where the container's own limit ends every process in it, the host goes
+ * too, which is why the share is kept). `worker_crashed` is a worker
  * that ended with the page in hand, other than for memory or time: a page can
  * crash a parser, and the same bytes will again, but a worker can also be ended by
  * something else while it has one. A minute is long enough that a worker that

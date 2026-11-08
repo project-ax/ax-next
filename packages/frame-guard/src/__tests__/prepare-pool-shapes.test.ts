@@ -45,13 +45,20 @@ interface Outcome {
   answer: { shape: string; ok: boolean; reason: string | null; bytes: number; ms: number; faults: string[] } | undefined;
 }
 
-/** Runs a shape through the pool in a process that stands for the host. `hostNodeOptions` is that host's NODE_OPTIONS. */
-function run(shape: string, heapMb?: number, hostNodeOptions?: string): Outcome {
+/**
+ * Runs a shape through the pool in a process that stands for the host. `hostNodeOptions` is that host's NODE_OPTIONS, and
+ * `containerMib` the memory limit of the container it is to think it is in (none by default, whatever machine this runs on).
+ */
+function run(shape: string, heapMb?: number, hostNodeOptions?: string, containerMib?: number): Outcome {
+  const env: NodeJS.ProcessEnv = { ...process.env };
+  delete env.CONTAINER_MIB;
+  if (hostNodeOptions !== undefined) env.NODE_OPTIONS = hostNodeOptions;
+  if (containerMib !== undefined) env.CONTAINER_MIB = String(containerMib);
   const child = spawnSync(process.execPath, [fixture, shape, ...(heapMb === undefined ? [] : [String(heapMb)])], {
     cwd: packageDir,
     encoding: 'utf8',
     timeout: 90_000,
-    env: hostNodeOptions === undefined ? process.env : { ...process.env, NODE_OPTIONS: hostNodeOptions },
+    env,
   });
   const last = child.stdout.trim().split('\n').pop() ?? '';
   let answer: Outcome['answer'];
@@ -132,6 +139,28 @@ describe('a page that needs more memory than the worker has ends the worker, and
     const refused = run('ttext', 128, '--max-old-space-size=96');
     expect(refused.status, `the host was ended by ${how(refused)}`).toBe(0);
     expect(refused.answer).toMatchObject({ ok: false, reason: 'worker_oom', faults: ['worker_aborted'] });
+  });
+});
+
+describe("in a container of 1 GiB (the chart's default host), where the worker is given 195 MB of old generation and not 384", () => {
+  // A container limit ends every process in the container under `memory.oom.group`, so the worker's heap is a share of it
+  // (prepare-pool.ts, `oldGenerationFor`). The heaviest pages that are plausible (4 MiB in one token) need 144 to 160 MB and are
+  // still served; text inside a table (352 to 368) cannot be, and is an answer: out of memory, every time, where with 384 it was
+  // too slow, because the collector's work near the limit used up the transform's CPU budget.
+  it.each(['script4', 'attr4', 'bodies4', 'texts4', 'mixed'])('serves %s, and the host is fine', { timeout: 90_000 }, (shape) => {
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      const outcome = run(shape, undefined, undefined, 1024);
+      expect(outcome.status, `attempt ${attempt} was ended by ${how(outcome)}`).toBe(0);
+      expect(outcome.answer, `attempt ${attempt}`).toMatchObject({ ok: true, faults: [] });
+    }
+  });
+
+  it('refuses 4 MiB of text inside a table as out of memory, three times in three processes, and the host exits 0', { timeout: 90_000 }, () => {
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      const outcome = run('ttext', undefined, undefined, 1024);
+      expect(outcome.status, `attempt ${attempt} was ended by ${how(outcome)}`).toBe(0);
+      expect(outcome.answer, `attempt ${attempt}`).toMatchObject({ ok: false, reason: 'worker_oom', faults: ['worker_aborted'] });
+    }
   });
 });
 

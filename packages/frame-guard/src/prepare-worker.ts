@@ -14,8 +14,8 @@ import { MAX_PREPARED_BYTES, prepareArtifactHtml, type PrepareRefusal } from './
 // can do is not to be slow but to need more memory than anyone thought of: a thread that
 // runs out takes the whole process with it (V8 aborts it rather than end the thread when the
 // need is far over the limit), and so would anything else that went wrong here. This process
-// can run out of its heap, hang or crash, and what the host sees is a page that was not
-// prepared. What it buys is that the work, and the memory and the crashes that come with it,
+// can run out of its heap (not the container's memory: see below), hang or crash, and what
+// the host sees is a page that was not prepared. What it buys is that the work, and the memory and the crashes that come with it,
 // are somewhere the host is not.
 //
 // It is not a sandbox, and it holds against nothing that has been TAKEN OVER (a flaw in the
@@ -31,12 +31,20 @@ import { MAX_PREPARED_BYTES, prepareArtifactHtml, type PrepareRefusal } from './
 // worker's own user or pod, a syscall filter, or a channel the host reads itself with a
 // bound; none of them is here.
 //
-// It is also the process to give up when the machine is short: it asks the kernel to kill it
-// before the other processes of the pod (`oom_score_adj`), and to give the host's threads the
-// CPU first (a lower priority; on Linux that belongs to one thread, so the pool starts it with
+// It is also the process to give up when the machine is short: it asks the kernel to end it
+// first when it must end one (`oom_score_adj`), and to give the host's threads the CPU first (a
+// lower priority; on Linux that belongs to one thread, so the pool starts it with
 // `--single-threaded` and all of V8's work is on the thread that was lowered). Both are only ever
 // a request to be treated worse, which needs no privilege, and both are skipped where they
 // cannot be made.
+//
+// Neither is what keeps the host alive when the CONTAINER's memory limit is met. `oom_score_adj`
+// only chooses who is first; under `memory.oom.group` (Kubernetes sets it on cgroup v2) the
+// kernel ends every process in the container, the host with them. Measured: a container of
+// 600 MiB, the host holding 300 MB and a heavy page, exits 137 whatever heap the worker was
+// given. A V8 heap abort ends this process alone; the container's limit does not. So the pool
+// sizes the heap from the container's limit, a share of it, and a page that needs more than
+// that is refused as out of memory, which is an answer (prepare-pool.ts, `oldGenerationFor`).
 
 /**
  * The CPU the transform may use on one page in this process: four times the heaviest real page measured

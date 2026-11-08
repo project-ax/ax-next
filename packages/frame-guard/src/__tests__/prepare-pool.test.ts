@@ -1,8 +1,10 @@
 import { spawnSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createHtmlPreparer, prepareArtifactHtml, type HtmlPreparer, type HtmlPreparerOptions, type PreparedPage } from '../index.js';
 import { GUARD_MARKER, MAX_PREPARED_BYTES } from '../prepare-html.js';
+import { oldGenerationFor, readContainerMemoryLimit } from '../prepare-pool.js';
 import { answerJob, handleJob, WORKER_ARG, WORKER_BUDGET_MS, type WorkerAnswer } from '../prepare-worker.js';
 import { escapeAmplification } from './hostile-pages.js';
 
@@ -28,8 +30,11 @@ afterEach(async () => {
   while (open.length > 0) await open.pop()!.close();
 });
 
+/** No container limit: the heap the worker is given is the one asked for, wherever these tests run (a CI job in a container has a limit). */
+const NO_LIMIT = (): undefined => undefined;
+
 function preparer(options: HtmlPreparerOptions = {}): HtmlPreparer {
-  const p = createHtmlPreparer({ workerUrl: WORKER, ...options });
+  const p = createHtmlPreparer({ workerUrl: WORKER, containerMemoryBytes: NO_LIMIT, ...options });
   open.push(p);
   return p;
 }
@@ -397,6 +402,108 @@ describe('a worker that starts wrongly is not used', () => {
     expect(refusal(await p.prepare('one'))).toBe('worker_failed');
     expect(refusal(await p.prepare('two'))).toBe('worker_failed');
     expect(f.codes()).toEqual(['worker_limit_mismatch', 'worker_limit_mismatch']);
+  });
+});
+
+describe("the worker's heap is sized from the container's memory limit", () => {
+  // The worker is a process of the container the host is in. A V8 heap abort ends the worker alone, but a limit on the container's
+  // memory does not: under `memory.oom.group` (Kubernetes sets it on cgroup v2) the kernel ends EVERY process in the container,
+  // the host with them, and `oom_score_adj` only chooses who is first. Measured: a container of 600 MiB, the host holding 300 MB,
+  // 4 MiB of text inside a table: the container exits 137, with the default heap and with a larger one. So the heap a page can fill
+  // is a share of the limit (30%, less the young generation's 48 MB and the 64 MB a worker is resident beyond its heap).
+  const mib = (n: number): number => n * MiB;
+  /** The old generation the pool started the stand-in with. The stand-in says its real heap limit, which the pool has to find as it asked. */
+  const startedWith = async (p: HtmlPreparer): Promise<number> => Number(/--max-old-space-size=(\d+)/.exec(said(await p.prepare('env:')))?.[1]);
+
+  it.each([
+    [undefined, 384], // no limit: what was asked for
+    [mib(64 * 1024), 384],
+    [mib(2048), 384], // the host of gke-values.yaml and kind-dev-values.yaml: 614 MB for the worker, 502 of old generation would fit
+    [mib(1654), 384], // the least that gives all of 384
+    [mib(1653), 383],
+    [mib(1536), 348],
+    [mib(1024), 195], // the chart's default host (values.yaml)
+    [mib(768), 118],
+    [mib(600), 68],
+    [mib(512), 41],
+    [mib(427), 16], // the least a worker can be given is what is left
+    [mib(256), 16], // ...and where nothing is
+  ])('a container of %s bytes gives the worker %s MB of old generation', (limit, expected) => {
+    expect(oldGenerationFor(384, limit).oldMb).toBe(expected);
+  });
+
+  it('says where the share cannot be met: the least a worker can be given is more than the container leaves it', () => {
+    expect(oldGenerationFor(384, mib(427)).budgetMet).toBe(true);
+    expect(oldGenerationFor(384, mib(426))).toEqual({ oldMb: 16, budgetMet: false });
+    expect(oldGenerationFor(384, undefined).budgetMet).toBe(true);
+  });
+
+  it('keeps a smaller heap that was asked for, and never gives more than was asked for', () => {
+    expect(oldGenerationFor(100, mib(8192)).oldMb).toBe(100);
+    expect(oldGenerationFor(100, mib(1024)).oldMb).toBe(100);
+    expect(oldGenerationFor(250, mib(1024)).oldMb).toBe(195);
+  });
+
+  it('starts the worker with the heap the container leaves it, and takes it only if it has that', async () => {
+    const f = faults();
+    expect(await startedWith(preparer({ containerMemoryBytes: () => mib(1024), onFault: f.report }))).toBe(195);
+    expect(f.codes()).toEqual([]);
+  });
+
+  it('reads the limit for each worker it starts: a container that is given more memory gets the bigger worker when the next one starts', async () => {
+    let limit = mib(1024);
+    const p = preparer({ containerMemoryBytes: () => limit });
+    expect(await startedWith(p)).toBe(195);
+    limit = mib(2048);
+    expect(await startedWith(p)).toBe(195); // the worker that is running is kept
+    expect(await p.prepare('exit:')).toEqual({ ok: false, reason: 'worker_crashed' });
+    expect(await startedWith(p)).toBe(384);
+  });
+
+  it.each([0, -1, Number.NaN, Number.POSITIVE_INFINITY, 2 ** 64, 2 ** 63 - 4096, 'a lot' as unknown as number])(
+    'takes %s for no limit (Node says 2^64 where the cgroup says "max", and 0 where it cannot tell)',
+    async (nonsense) => {
+      expect(await startedWith(preparer({ containerMemoryBytes: () => nonsense }))).toBe(384);
+    },
+  );
+
+  it('takes a reader that throws for no limit', async () => {
+    const throws = (): never => {
+      throw new Error('no cgroup');
+    };
+    expect(await startedWith(preparer({ containerMemoryBytes: throws }))).toBe(384);
+  });
+
+  it('tells onFault once, and still serves what fits, where the container leaves the worker less than the least it can be given', async () => {
+    const f = faults();
+    const p = preparer({ containerMemoryBytes: () => mib(200), onFault: f.report });
+    expect(await startedWith(p)).toBe(16);
+    expect(await p.prepare('exit:')).toEqual({ ok: false, reason: 'worker_crashed' });
+    expect(await startedWith(p)).toBe(16); // a second worker
+    expect(f.codes().filter((code) => code === 'worker_budget_too_small')).toEqual(['worker_budget_too_small']);
+  });
+
+  describe('the limit Node reads of the real container', () => {
+    const cgroupMax = ((): string | undefined => {
+      try {
+        return readFileSync('/sys/fs/cgroup/memory.max', 'utf8').trim();
+      } catch {
+        return undefined; // not Linux, or cgroup v1
+      }
+    })();
+
+    it('is a limit or none, and never a number that is not one', () => {
+      const limit = readContainerMemoryLimit();
+      expect(limit === undefined || (Number.isFinite(limit) && limit > 0 && limit < 2 ** 50)).toBe(true);
+    });
+
+    it.skipIf(cgroupMax === undefined || cgroupMax === 'max')("is the container's memory.max when it has one (run in a container with --memory)", () => {
+      expect(readContainerMemoryLimit()).toBe(Number(cgroupMax));
+    });
+
+    it.skipIf(cgroupMax !== 'max')('is none where memory.max says "max"', () => {
+      expect(readContainerMemoryLimit()).toBeUndefined();
+    });
   });
 });
 
