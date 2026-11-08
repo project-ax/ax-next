@@ -560,10 +560,15 @@ function stepName(call: WorkspaceToolCall, connectors: ConnectorNames | undefine
  *   * After, it is the one or two kinds of work the turn was mostly made of —
  *     "Looked through files and ran commands". A panel of one step is just
  *     that step.
- *   * Then at most one qualifier, failed → waiting, because a failure has
- *     nowhere else to go and a title that hides one is a claim of success we
- *     did not earn (TASK-335's ordering, kept). A hold also announces itself
- *     on the composer and its approval card; it still says so here.
+ *   * Then ", N waiting for you" when a step is held, because that one needs
+ *     the reader to act.
+ *
+ * A FAILED STEP IS NOT RAISED HERE, deliberately (Vinay, 2026-11-08). Agents
+ * routinely run a command that errors and then try another way; a title
+ * reading "…, 1 didn't finish" over a reply that worked is alarm about
+ * nothing. The failure is still marked, in words and in the destructive
+ * tone, on its own row inside the panel — and the reply itself says whether
+ * the job got done.
  *
  * Exported because the conversation folds several turns' steps into one panel
  * above the reply, and that panel's title has to come from the same words.
@@ -574,12 +579,10 @@ export function stepsTitle(steps: readonly WorkspaceStep[]): string {
   if (running !== undefined) {
     return `${running.doing ?? running.text.replace(/ — in progress$/, '')}…`;
   }
-  const failed = steps.filter((s) => s.status === 'failed').length;
   const waiting = steps.filter((s) => s.status === 'waiting').length;
   const base = steps.length === 1 ? baseText(steps[0]!) : summary(steps);
   // A comma, not an interpunct: it has to read as "and also" to somebody who
   // has never thought about typography.
-  if (failed > 0) return `${base}, ${failed} didn't finish`;
   if (waiting > 0) return `${base}, ${waiting} waiting for you`;
   return base;
 }

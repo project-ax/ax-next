@@ -1438,9 +1438,11 @@ function AgentReply({
  * chevron, in monospace — the words first, the machine's view on request.
  * Narration the agent wrote between steps is drawn in order, between them.
  *
- * EXCEPTIONS STAY LOUD. A failed step and a held one never fold into a group,
- * keep an icon AND a colour (a colour alone is not a signal a colour-blind
- * reader can read — TASK-419), and the title says so with words even shut.
+ * EXCEPTIONS ARE MARKED WHERE THEY ARE. A failed step and a held one never
+ * fold into a group and keep an icon AND a colour (a colour alone is not a
+ * signal a colour-blind reader can read — TASK-419). Shut, only a HOLD shows
+ * on the title, because only a hold needs the reader to do something; a
+ * failed command the agent worked around is not news.
  */
 const STEP_MARK: Record<
   WorkspaceStepStatus,
@@ -1601,8 +1603,9 @@ function Activity({ entries }: { entries: readonly ActivityEntry[] }) {
   const title = stepsTitle(steps);
   const running = steps.some((s) => s.status === 'running');
   const waiting = steps.some((s) => s.status === 'waiting');
-  const failed = steps.some((s) => s.status === 'failed');
-  const TitleMark = waiting ? STEP_MARK.waiting : failed ? STEP_MARK.failed : null;
+  // Only a hold marks the title: it needs the reader. A failed step is marked
+  // on its own row inside, not raised here (see `stepsTitle`).
+  const TitleMark = waiting ? STEP_MARK.waiting : null;
   return (
     <Collapsible data-testid="workspace-steps" className="mb-2.5 max-w-[604px]">
       <CollapsibleTrigger

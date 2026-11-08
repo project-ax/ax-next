@@ -239,8 +239,8 @@ describe('TaskCheckinPage (TASK-911)', () => {
     );
     renderPage();
     const steps = await screen.findByTestId('workspace-steps');
-    // Shut, it says what it did — and that something didn't finish.
-    const title = within(steps).getByText("Used tools, 1 didn't finish");
+    // Shut, it says what it did; the failed step is marked inside, not here.
+    const title = within(steps).getByText('Used tools');
     fireEvent.click(title);
     expect(within(steps).getByText('Ran pnpm test')).toBeInTheDocument();
     expect(within(steps).getByText('Send email')).toBeInTheDocument();

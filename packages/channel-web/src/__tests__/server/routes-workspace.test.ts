@@ -1718,7 +1718,7 @@ describe('channel-web agent-workspace BFF', () => {
     expect(body.thread).toHaveLength(1);
     expect(body.thread[0]).toMatchObject({
       kind: 'steps',
-      stepsLabel: "Used tools, 1 didn't finish",
+      stepsLabel: 'Used tools, 1 waiting for you',
       // The STATUS rides on the wire beside the words (TASK-419): the renderer
       // marks a failure in the destructive token, and it must not have to
       // recover that by matching our own copy back out of the sentence.

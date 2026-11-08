@@ -94,10 +94,11 @@ describe('shapeSteps', () => {
     expect(texts(panel)[0]?.endsWith('…')).toBe(true);
   });
 
-  it('says a failed step failed, in words, not only in colour', () => {
+  it('says a failed step failed on its row, but does not raise it in the title', () => {
     const panel = shapeSteps([done({ status: 'failed', phrase: 'Sending the email' })]);
     expect(texts(panel)).toEqual(["Sending the email — didn't finish"]);
-    expect(panel?.label).toBe("Sending the email, 1 didn't finish");
+    // Agents retry around a failed command all the time; the title stays calm.
+    expect(panel?.label).toBe('Sending the email');
   });
 
   it('says a held step is waiting on the reader', () => {
@@ -113,17 +114,16 @@ describe('shapeSteps', () => {
     expect(panel?.label).toBe('Searching the web…');
   });
 
-  it('leads with the failure when a panel holds both a failure and a hold', () => {
+  it('raises the hold, not the failure, when a panel holds both', () => {
     /*
-      Across a panel, failure outranks a hold — the hold has the composer line
-      and the approval card to announce itself, the failure has nowhere else.
-      Per CALL the ordering is the other way round, which the two rows show.
+      Only the hold needs the reader to act, so only the hold reaches the
+      title. Both still say what happened on their own rows.
     */
     const panel = shapeSteps([
       done({ id: 'a', status: 'waiting', phrase: 'Sending the email' }),
       done({ id: 'b', status: 'failed', phrase: 'Reading the calendar' }),
     ]);
-    expect(panel?.label).toBe("Used tools, 1 didn't finish");
+    expect(panel?.label).toBe('Used tools, 1 waiting for you');
     expect(texts(panel)).toEqual([
       'Sending the email — waiting for you',
       "Reading the calendar — didn't finish",

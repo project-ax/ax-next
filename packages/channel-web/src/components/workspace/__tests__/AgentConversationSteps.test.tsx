@@ -141,7 +141,11 @@ describe('the step panel', () => {
       }),
     ]);
     expect(rows(container)).toEqual(['Ran a command', "Ran a command — didn't finish", 'Ran a command']);
-    expect(panelOf(container).querySelector('button')!.textContent).toBe("Ran commands, 1 didn't finish");
+    // Shut, the title does not raise the failure — no words, no icon, no red.
+    const title = panelOf(container).querySelector('button')!;
+    expect(title.textContent).toBe('Ran commands');
+    expect(title.querySelector('svg.text-destructive')).toBeNull();
+    expect(title.className).not.toContain('text-destructive');
   });
 
   it('sits ABOVE the reply, and the reply\'s artifact sits below both', () => {
