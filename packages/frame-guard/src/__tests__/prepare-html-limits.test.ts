@@ -183,11 +183,24 @@ describe('other shapes that cost parse5 minutes, at the 4 MiB cap', () => {
   // Each of these was measured in plain parse5 before the fix (the comment above says what). Where a
   // small copy is already slow in plain parse5 it is run first, so a regression fails in about a second
   // instead of hanging the run on the full size.
-  const SHAPES: Array<{ name: string; make: (bytes: number) => string; reason: string; canary: boolean | number; ms?: number }> = [
+  // `reason` is what stops the shape, or the two things that do, whichever is first: the scans (500 open elements, then something that
+  // looks through all of them a million times) are bounded by the 25 million calls they make AND by the 500 ms of CPU, and which comes
+  // first depends on the machine: the calls took 156 to 254 ms of CPU where this was measured, and a CI runner two or three times
+  // slower reaches the clock first. Both are refusals the origin treats alike (the same line, remembered for good), so the table takes
+  // either, and the test after it shows the count stops them with the clock out of the way. `limits` is for the shape that is served:
+  // 500 ms is a CPU budget, and a machine that is slow enough turns a good page into a refusal.
+  const SHAPES: Array<{
+    name: string;
+    make: (bytes: number) => string;
+    reason: string | readonly string[];
+    canary: boolean | number;
+    ms?: number;
+    limits?: PrepareLimits;
+  }> = [
     // (A `canary` that is a number is the size of the small copy, where 1/32 of the cap is not slow enough to tell.)
     { name: 'one tag with thousands of attributes', make: attributeFlood, reason: 'too_many_attrs', canary: CAP / 16 },
     { name: '<body> repeated, each with new attributes', make: bodyAttributes, reason: 'too_many_attrs', canary: true },
-    { name: '<body x> repeated 500,000 times after 250 attributes on the first (served: it is linear)', make: bodyRepeated, reason: 'served', canary: false },
+    { name: '<body x> repeated 500,000 times after 250 attributes on the first (served: it is linear)', make: bodyRepeated, reason: 'served', canary: false, limits: { budgetMs: 60_000 } },
     { name: '<a><div>x</a> repeated (adoption agency)', make: adoptionAgency, reason: 'too_deep', canary: true },
     // (The foster-parenting shapes take ~70 ms; searching for the table from the front of the child list
     // instead of the back adds 0.5 s to each, which the usual one-second limit would let through.)
@@ -198,8 +211,8 @@ describe('other shapes that cost parse5 minutes, at the 4 MiB cap', () => {
     { name: '<table><tr><td> nested', make: nestedTables, reason: 'too_deep', canary: true },
     { name: '<template> nested', make: nestedTemplates, reason: 'too_deep', canary: true },
     { name: '<pre> nested', make: nestedPre, reason: 'too_deep', canary: true },
-    { name: '500 open elements, then end tags that match nothing', make: endTagsOverDeepStack, reason: 'too_much_work', canary: false },
-    { name: '500 open divs, then list items', make: listItemsOverDeepStack, reason: 'too_much_work', canary: false },
+    { name: '500 open elements, then end tags that match nothing', make: endTagsOverDeepStack, reason: ['too_much_work', 'too_slow'], canary: false },
+    { name: '500 open divs, then list items', make: listItemsOverDeepStack, reason: ['too_much_work', 'too_slow'], canary: false },
   ];
 
   it('stops the one shape no count catches, by the clock: a block of 70,000 children moved by the adoption agency', () => {
@@ -218,15 +231,25 @@ describe('other shapes that cost parse5 minutes, at the 4 MiB cap', () => {
     expect(verdict(run(adoptedChildren(60 * KiB)))).toBe('served');
   });
 
-  it.each(SHAPES)('$name', ({ make, reason, canary, ms }) => {
+  it.each(SHAPES)('$name', ({ make, reason, canary, ms, limits }) => {
+    const reasons = typeof reason === 'string' ? [reason] : reason;
     if (canary !== false) {
-      const small = bestRun(make(canary === true ? CAP / 32 : canary));
-      expect(verdict(small)).toBe(reason);
+      const small = bestRun(make(canary === true ? CAP / 32 : canary), limits);
+      expect(reasons).toContain(verdict(small));
       expect(small.ms).toBeLessThan(FAST_MS);
     }
-    const full = bestRun(make(CAP), {}, ms);
-    expect(verdict(full)).toBe(reason);
+    const full = bestRun(make(CAP), limits, ms);
+    expect(reasons).toContain(verdict(full));
     expectFast(full, ms);
+  });
+
+  it('stops the scans by the count of calls they make, with the clock out of the way: 500 open elements, then end tags or list items', () => {
+    // The table above takes the count or the 500 ms clock, whichever a machine reaches first. This is the count alone: the budget is 20
+    // seconds, so only the 25 million calls can stop these (they take well under a second), and a regression that stops counting them
+    // runs into the 20 seconds and fails here by name, on any machine.
+    for (const make of [endTagsOverDeepStack, listItemsOverDeepStack]) {
+      expect(verdict(run(make(CAP), { budgetMs: 20_000 }))).toBe('too_much_work');
+    }
   });
 });
 
