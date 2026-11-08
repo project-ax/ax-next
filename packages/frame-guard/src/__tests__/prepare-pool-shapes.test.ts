@@ -67,7 +67,9 @@ const how = (o: Outcome): string => `${o.signal ?? `exit ${o.status}`}: ${o.stde
 
 describe('pages that are written out as a multiple of themselves, through the compiled pool', () => {
   // The five the third review found, the two it said were alike (more and fewer elements; the same page in two-byte
-  // characters), and the ones in between: every one is refused as too large, none ends the host.
+  // characters), and the ones in between: every one is refused as too large, none ends the host. (amp1 is the page written
+  // out twice, 8.4 million characters, which the transform lets through now that a result may be 8 MiB, and the worker
+  // refuses as bytes, being just over; the others are refused by the transform after its first pass.)
   it.each(['amp1', 'amp2', 'amp3', 'amp2_x10', 'amp2_x40', 'amp3_x50', 'amp3_twobyte'])(
     '%s is refused as too large, three times in three processes, and none of them ends',
     { timeout: 90_000 },
@@ -76,7 +78,8 @@ describe('pages that are written out as a multiple of themselves, through the co
         const outcome = run(shape);
         expect(outcome.status, `attempt ${attempt} was ended by ${how(outcome)}`).toBe(0);
         expect(outcome.answer, `attempt ${attempt}: ${outcome.stderr.slice(-200)}`).toMatchObject({ ok: false, reason: 'output_too_large', faults: [] });
-        // Refused after the first parse and the weighing, not after a second parse of the whole of it.
+        // Refused after the first parse and the weighing (amp1: after the second, and the bytes), not after reading the
+        // whole of a result three or four times the page.
         expect(outcome.answer!.ms, `attempt ${attempt}`).toBeLessThan(2000);
       }
     },

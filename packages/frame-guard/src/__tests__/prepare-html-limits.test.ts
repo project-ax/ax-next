@@ -493,10 +493,10 @@ describe('each limit on its own, with a small page', () => {
       expect(verdict(prepareArtifactHtml(amplified(MiB, 4.4, 4), LONG))).toBe('output_too_large');
     });
 
-    it('never lets a result be more than 6 MiB, whatever the page: 5.8 MiB out of a 3 MiB page is served, 6.6 MiB is refused', () => {
-      // The ceiling is on what the second pass has to read, so a page of 3 MiB may come back at 1.9 times and not 4.
-      expect(verdict(prepareArtifactHtml(amplified(3 * MiB, 1.9, 1), LONG))).toBe('served');
-      expect(verdict(prepareArtifactHtml(amplified(3 * MiB, 2.2, 2), LONG))).toBe('output_too_large');
+    it('never lets a result be more than 8 MiB, whatever the page: 7.5 MiB out of a 3 MiB page is served, 8.7 MiB is refused', () => {
+      // The ceiling is on what a prepared page may be, so a page of 3 MiB may come back at 2.5 times and not 4.
+      expect(verdict(prepareArtifactHtml(amplified(3 * MiB, 2.5, 2), LONG))).toBe('served');
+      expect(verdict(prepareArtifactHtml(amplified(3 * MiB, 2.9, 3), LONG))).toBe('output_too_large');
     });
 
     // What a real page does when it is written out, which is what the limit must not refuse (the fourth review): pages
@@ -527,6 +527,12 @@ describe('each limit on its own, with a small page', () => {
         bytes: 2 * MiB,
         grows: [1.05, 1.3],
         page: (n) => document(`<table>${upTo(n, (i) => `<tr><td>${i}: the quarter's figures for the northern region<td>${(i * 1.37).toFixed(2)} on a base of ${(i % 97) + 3}, up on the year before<td>see the notes on page ${i % 40}\n`)}</table>`),
+      },
+      {
+        name: 'JSON in a single-quoted attribute, a lot of it (the 6 MiB ceiling of the first version of this refused it)',
+        bytes: 3 * MiB,
+        grows: [2, 2.5],
+        page: (n) => document(`<div id="chart" data-series='[${upTo(n, (i) => `{"x":${i},"y":${(i * 7) % 101},"label":"p${i}"},`)}{}]'></div>`),
       },
       {
         name: 'JSON in a single-quoted attribute',

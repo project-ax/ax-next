@@ -2,7 +2,8 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createHtmlPreparer, prepareArtifactHtml, type HtmlPreparer, type HtmlPreparerOptions, type PreparedPage } from '../index.js';
-import { answerJob, MAX_PREPARED_BYTES, WORKER_ARG, WORKER_BUDGET_MS } from '../prepare-worker.js';
+import { MAX_PREPARED_BYTES } from '../prepare-html.js';
+import { answerJob, WORKER_ARG, WORKER_BUDGET_MS } from '../prepare-worker.js';
 import { escapeAmplification } from './hostile-pages.js';
 
 // Watches the transform, so a test can see with what limits the worker's part calls it.

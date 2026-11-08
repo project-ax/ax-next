@@ -7,8 +7,7 @@
 // and the artifact content origin (attachments) both consume it, so the two
 // can't drift apart.
 export { CHILD_FRAME_TAGS, DSD_ATTRS, FRAME_GUARD_SOURCE } from './guard.js';
-export { prepareArtifactHtml } from './prepare-html.js';
+export { MAX_PREPARED_BYTES, prepareArtifactHtml } from './prepare-html.js';
 export type { PrepareLimits, PrepareRefusal, PrepareResult } from './prepare-html.js';
 export { createHtmlPreparer } from './prepare-pool.js';
-export { MAX_PREPARED_BYTES } from './prepare-worker.js';
 export type { HtmlPreparer, HtmlPreparerOptions, PoolRefusal, PreparedPage } from './prepare-pool.js';

@@ -122,39 +122,41 @@ const MAX_CALLS = 25_000_000;
 const MAX_ATTRS = 256;
 
 /**
- * What the result may weigh, in characters: the page's own length times a factor,
- * but never more than an absolute ceiling, and a little more for the guard.
- * Writing a tree out repeats the attribute text of every element parse5 rebuilt
- * (so one big attribute and a few hundred rebuilt elements is a result of gigabytes
- * from a few hundred nodes), and escaping can turn one character into six.
+ * The most a prepared page may be: 8 MiB, twice the largest page there can be as input. It is the ceiling on what the
+ * transform writes, in characters (below), and the ceiling on what the worker makes of it, in bytes of UTF-8, which
+ * for a page of wide characters is the lower of the two (prepare-worker.ts).
+ */
+export const MAX_PREPARED_BYTES = 8 * 1024 * 1024;
+
+/**
+ * What the result may weigh, in characters: the page's own length times a factor, but never more than a ceiling
+ * (`MAX_PREPARED_BYTES`), and a little more for the guard. Writing a tree out repeats the attribute text of every
+ * element parse5 rebuilt (so one big attribute and a few hundred rebuilt elements is a result of gigabytes from a few
+ * hundred nodes), and escaping can turn one character into six.
  *
- * The factor is for the pages that grow when they are written out and are still
- * pages: text of raw `<` is four times as long (`&amp;` is five), JSON in a single-quoted
- * attribute 2.2 times (every `"` is `&quot;`), the optional end tags a page leaves
- * out come back (`<tr><td>1<td>2`: 1.7 times), a raw no-break space is `&nbsp;`
- * (2.8 times for a page of indented text). It is 4, and was 1.5 for a while, which
- * refused all of those from 64 KiB up; of 3,869 real pages (up to 4 MiB) none came
- * back more than 1.001 times as long once it was over 256 KiB (947 of them), and the
- * most any grew was 1.27 times, a page of 1 KiB, so the real ones are not what this
- * is for.
+ * The factor is for the pages that grow when they are written out and are still pages: text of raw `<` is four times
+ * as long (`&amp;` is five), JSON in a single-quoted attribute 2.2 times (every `"` is `&quot;`), the optional end tags
+ * a page leaves out come back (`<tr><td>1<td>2`: 1.7 times), a raw no-break space is `&nbsp;` (2.8 times for a page of
+ * indented text). It is 4, and was 1.5 for a while, which refused all of those from 64 KiB up; of 3,869 real pages (up
+ * to 4 MiB) none came back more than 1.001 times as long once it was over 256 KiB (947 of them), and the most any grew
+ * was 1.27 times, a page of 1 KiB, so the real ones are not what this is for.
  *
- * The ceiling is for the second pass, which has to tokenize everything the first
- * wrote: it never reads more than 6 MiB and the slack, whatever the page, so a 4 MiB
- * page is allowed 1.5 times its length, a 1.5 MiB one 4 times. An ASCII page under
- * 4 MiB (ten attributes of 420 KB on formatting elements, rebuilt twice) wrote out at
- * three times its length, 12.6 MB, and the second pass over that, with every
- * attribute held as the joins parse5 makes while it builds it, needed more than
- * 400 MB of heap: that is what the ceiling was first for. It is still what keeps a
- * hostile page from making the worker read a page three times the largest there can
- * be, and from making the response, and the cache, hold one. (The ceiling is in
- * characters; the response is checked in bytes where it is made, see the worker.)
+ * The ceiling is for what is not a page. An ASCII page under 4 MiB (ten attributes of 420 KB on formatting elements,
+ * rebuilt twice) wrote out at three times its length, 12.6 MB, and the second pass over that, with every attribute held
+ * as the joins parse5 makes while it builds it, needed more than 400 MB of heap: that is what it was first for, at 1.5
+ * times the page, which refused real pages too. Each string is read flat as it arrives now (`boundedAdapter`), and
+ * what a large result costs was measured on those pages with no ceiling at all: 8.4 MB written (twice the page) takes
+ * 0.35 s of CPU and 90 MB of heap, 12.6 MB 0.45 s and 95 MB, 16.8 MB 0.55 s and 103 MB. So it is not the cost of
+ * reading it that stops a result larger than this, and not the worker's life, which its process and its CPU budget are
+ * for. It is that a response of tens of MB, kept four at a time in a cache, is not a preview, and that a page that
+ * grows this much is turned away in a tenth of a second, after the weighing of its first pass, and not after a second
+ * pass over it. A 4 MiB page is allowed twice its length, a 2 MiB one four times.
  *
- * Checked twice: on the tree before anything is written, counting each character as
- * the serializer will write it (`weigh`), and on the string that comes out, so a
- * second pass never starts on more than this.
+ * Checked twice: on the tree before anything is written, counting each character as the serializer will write it
+ * (`weigh`), and on the string that comes out, so a second pass never starts on more than this.
  */
 const OUTPUT_FACTOR = 4;
-const OUTPUT_CEILING = 6 * 1024 * 1024;
+const OUTPUT_CEILING = MAX_PREPARED_BYTES;
 const OUTPUT_SLACK = 64 * 1024;
 
 /**
@@ -937,7 +939,7 @@ function settle(source: string, run: Run): string {
  * deeper than a browser does; its doctype can't be written back without
  * changing the page's quirks mode; parsing it would build more nodes, or give
  * one element more attributes, or take longer, than any real page does; the
- * result would be more than one and a half times the page's size; or the parser threw. It never
+ * result would be more than four times the page's size, or more than 8 MiB; or the parser threw. It never
  * throws.
  *
  * The page is rebuilt from a parse, so it comes back normalized (implied

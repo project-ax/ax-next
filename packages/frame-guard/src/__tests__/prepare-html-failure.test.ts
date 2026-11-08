@@ -133,16 +133,16 @@ describe('prepareArtifactHtml when parse5 misbehaves', () => {
     expect(peak / (1024 * 1024)).toBeLessThan(60);
   });
 
-  it('refuses a page that would come back at over 6 MiB before any of it is written and before a second parse', () => {
-    // Ten formatting elements with 200 KB attributes, brought back three times: 8 MB out of 2 MB in, past the ceiling
-    // of 6 MiB on what the second pass may be given. The second pass is the expensive one (it tokenizes everything
-    // the first wrote), so it must not start, and nothing has to be written to find out.
+  it('refuses a page that would come back at over 8 MiB before any of it is written and before a second parse', () => {
+    // Ten formatting elements with 300 KB attributes, brought back three times: 12 MB out of 3 MB in, past the ceiling
+    // of 8 MiB on what a prepared page may be. The second pass is the expensive one (it tokenizes everything the first
+    // wrote), so it must not start, and nothing has to be written to find out.
     let parses = 0;
     let written = 0;
     hooks.beforeParse = () => void (parses += 1);
     hooks.beforeSerialize = () => void (written += 1);
     let page = '<div>';
-    for (let i = 0; i < 10; i++) page += `<b x=${i} y='${'a'.repeat(200_000)}'>`;
+    for (let i = 0; i < 10; i++) page += `<b x=${i} y='${'a'.repeat(300_000)}'>`;
     page += `</div>${'<div><span></div>'.repeat(3)}`;
     expect(transform(page)).toEqual({ ok: false, reason: 'output_too_large' });
     expect(parses).toBe(1);

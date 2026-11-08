@@ -1,7 +1,7 @@
 import { writeFileSync } from 'node:fs';
 import { getPriority, setPriority } from 'node:os';
 import { getHeapStatistics } from 'node:v8';
-import { prepareArtifactHtml, type PrepareRefusal } from './prepare-html.js';
+import { MAX_PREPARED_BYTES, prepareArtifactHtml, type PrepareRefusal } from './prepare-html.js';
 
 // The entry of the worker PROCESS `createHtmlPreparer` (prepare-pool.ts) starts: it runs
 // `prepareArtifactHtml` on the pages it is sent, one at a time, over the channel the pool
@@ -33,15 +33,10 @@ import { prepareArtifactHtml, type PrepareRefusal } from './prepare-html.js';
  */
 export const WORKER_BUDGET_MS = 1500;
 
-/**
- * The most a prepared page may be, in bytes of UTF-8: what is sent back, kept in the origin's cache and served. The
- * transform's own ceiling is in characters (6 MiB and a little over), and a character is up to three bytes, so a
- * page of 4 MiB whose CJK attribute was rebuilt 55 times came back as 16.8 MB, a response that large and half of the
- * 32 MiB the origin keeps. Where the bytes are made is where they are counted: for ASCII the character ceiling is the
- * lower of the two and this never refuses anything; it is for the pages whose characters are wider. Twice the largest
- * page there can be as input (4 MiB), which no page that is merely written out as it was came near.
- */
-export const MAX_PREPARED_BYTES = 8 * 1024 * 1024;
+// (`MAX_PREPARED_BYTES`, in prepare-html.ts, is the most a prepared page may be. The transform keeps to it in characters; a
+// character is up to three bytes, so a page of 4 MiB with a CJK attribute on a formatting element that a following tag
+// brings back 55 times came back as 16.8 MB in 352 ms, half of the 32 MiB the origin keeps. Where the bytes are made is where
+// they are counted, below. For ASCII the two are the same to within the guard's slack.)
 
 /**
  * The argument the pool starts this process with. The entry does nothing without it, so that
