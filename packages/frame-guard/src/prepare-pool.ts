@@ -85,6 +85,14 @@ export interface HtmlPreparerOptions {
    */
   idleMs?: number;
   /**
+   * Workers in a row that failed (could not start, ended without a page's doing it, said something that is not an answer or had
+   * not the limit asked for: not out of memory, not the deadline) after which pages are turned away as busy for `coolDownMs`,
+   * instead of starting another worker for each. One answer from a worker puts the count back to none. Default 5.
+   */
+  failureLimit?: number;
+  /** Milliseconds, on the clock of the busy window, pages are turned away for after `failureLimit` failures; then one is tried. Default 30000. */
+  coolDownMs?: number;
+  /**
    * Told when the worker fails in a way the page does not explain (a crash, a worker that cannot start, one that
    * does not have the heap limit it was asked for, one that says something that is not an answer). The fault is
    * an Error whose `code` says which, in the form of an identifier. Never given a page.
@@ -132,6 +140,13 @@ const DEFAULT_MAX_QUEUED_CHARS = 32 * 1024 * 1024;
 const DEFAULT_BUSY_WINDOW_MS = 10_000;
 const DEFAULT_MAX_BUSY_MS = 5000;
 const DEFAULT_IDLE_MS = 20_000;
+/**
+ * A worker that keeps failing is a machine that cannot make one (no memory to fork, a file that is gone, a flag Node does not
+ * take), and `worker_failed` is not remembered with a page, so without this every view would fork a process (35 ms of CPU) and
+ * write an error to the log, for as long as it lasted. Five in a row is not a page: one answer in between ends the count.
+ */
+const DEFAULT_FAILURE_LIMIT = 5;
+const DEFAULT_COOL_DOWN_MS = 30_000;
 /** How long `close` waits for the worker to be gone after it has been killed, which takes milliseconds. */
 const CLOSE_WAIT_MS = 2000;
 
@@ -225,6 +240,9 @@ class WorkerPreparer implements HtmlPreparer {
   private nextId = 1;
   private closed = false;
   private idleTimer: NodeJS.Timeout | null = null;
+  /** Workers that failed in a row, and until when (on the busy window's clock) pages are turned away because of it. */
+  private failures = 0;
+  private coolUntil = Number.NEGATIVE_INFINITY;
   /** When each finished page ended and how long it kept the worker, newest last, for the busy window. */
   private readonly spent: Array<{ endedAt: number; ms: number }> = [];
 
@@ -236,6 +254,8 @@ class WorkerPreparer implements HtmlPreparer {
   private readonly busyWindowMs: number;
   private readonly maxBusyMs: number;
   private readonly idleMs: number;
+  private readonly failureLimit: number;
+  private readonly coolDownMs: number;
   private readonly now: () => number;
   private readonly execArgv: string[];
   private readonly onFault: (fault: unknown) => void;
@@ -249,6 +269,8 @@ class WorkerPreparer implements HtmlPreparer {
     this.busyWindowMs = atLeast('busyWindowMs', options.busyWindowMs ?? DEFAULT_BUSY_WINDOW_MS, 1);
     this.maxBusyMs = atLeast('maxBusyMs', options.maxBusyMs ?? DEFAULT_MAX_BUSY_MS, 0);
     this.idleMs = atLeast('idleMs', options.idleMs ?? DEFAULT_IDLE_MS, 1);
+    this.failureLimit = atLeast('failureLimit', options.failureLimit ?? DEFAULT_FAILURE_LIMIT, 1);
+    this.coolDownMs = atLeast('coolDownMs', options.coolDownMs ?? DEFAULT_COOL_DOWN_MS, 1);
     this.now = options.now ?? (() => performance.now());
     this.execArgv = options.execArgv ?? [];
     this.onFault = options.onFault ?? (() => undefined);
@@ -257,7 +279,7 @@ class WorkerPreparer implements HtmlPreparer {
   prepare(html: string): Promise<PreparedPage> {
     if (this.closed) return Promise.resolve(refused('worker_failed'));
     const inFlight = this.waiting.length + (this.running === null ? 0 : 1);
-    if (inFlight > this.maxQueued || this.busyTime() >= this.maxBusyMs || (inFlight > 0 && this.heldChars() + html.length > this.maxQueuedChars)) {
+    if (this.cooling() || inFlight > this.maxQueued || this.busyTime() >= this.maxBusyMs || (inFlight > 0 && this.heldChars() + html.length > this.maxQueuedChars)) {
       return Promise.resolve(refused('busy'));
     }
     return new Promise((resolve) => {
@@ -285,6 +307,17 @@ class WorkerPreparer implements HtmlPreparer {
     return total;
   }
 
+  /** Whether workers have failed too often in a row for another to be tried yet. */
+  private cooling(): boolean {
+    return this.now() < this.coolUntil;
+  }
+
+  /** A worker failed in a way that is not a page's: the count goes up, and at the limit pages are turned away for a while. */
+  private failed(): void {
+    this.failures += 1;
+    if (this.failures >= this.failureLimit) this.coolUntil = this.now() + this.coolDownMs;
+  }
+
   /** How long the worker has been busy in the window: the pages it finished, and the one it is on. */
   private busyTime(): number {
     const t = this.now();
@@ -306,11 +339,18 @@ class WorkerPreparer implements HtmlPreparer {
     if (this.running !== null) return;
     const job = this.waiting.shift();
     if (job === undefined) return;
+    if (this.cooling()) {
+      // Workers failed five times in a row, perhaps while this page waited: no more are made for the pages behind.
+      job.resolve(refused('busy'));
+      this.next();
+      return;
+    }
     const id = this.nextId++;
     try {
       this.worker ??= this.start();
     } catch (err) {
       this.onFault(new PoolFault('worker_spawn_failed', `the prepare worker could not be started: ${describe(err)}`));
+      this.failed();
       job.resolve(refused('worker_failed'));
       this.next();
       return;
@@ -381,10 +421,13 @@ class WorkerPreparer implements HtmlPreparer {
       // Something other than an answer: it is not to be trusted again. Ended BEFORE the page is finished, as
       // finishing starts the next waiting page, which must go to a worker that is not the one just ended.
       this.onFault(new PoolFault('worker_bad_message', 'the prepare worker sent a message that is not an answer'));
+      this.failed();
       this.discard();
       this.finish(running, page);
       return;
     }
+    // An answer, of either kind: the worker did what it is for, whatever it thought of the page.
+    this.failures = 0;
     this.finish(running, page);
   }
 
@@ -398,6 +441,7 @@ class WorkerPreparer implements HtmlPreparer {
           ? new PoolFault('worker_bad_ready', 'the prepare worker did not start by saying that it is ready')
           : new PoolFault('worker_limit_mismatch', `the prepare worker has a heap limit of ${limit.toFixed(0)} MB and was asked for ${expected} MB`),
       );
+      this.failed();
       this.discard();
       const running = this.running;
       if (running !== null) this.finish(running, refused('worker_failed'));
@@ -435,6 +479,8 @@ class WorkerPreparer implements HtmlPreparer {
     if (generation !== this.generation) return;
     this.discard();
     if (fault !== null) this.onFault(fault);
+    // Out of memory is the page's, and so is the deadline (see `timedOut`): a worker that cannot be made or kept is not.
+    if (reason === 'worker_failed') this.failed();
     const running = this.running;
     if (running !== null) this.finish(running, refused(reason));
   }
