@@ -22,6 +22,7 @@ import { Spinner } from '@/components/ui/spinner';
 import { saveFromContentOrigin } from '@/lib/file-download';
 import { HttpError, logRequestFailure } from '@/lib/http';
 import { sharedArtifactsApi } from '@/lib/shared-artifacts-api';
+import { useResolvedTheme } from '@/lib/theme';
 import { toastActions } from '@/lib/toast-store';
 import { timeAgo } from '@/lib/workspace-time';
 import { artifactPreviewKind, type ArtifactTokenPurpose, type SharedArtifactView } from '@/lib/workspace-types';
@@ -86,7 +87,12 @@ function Shared({ code, artifact }: { code: string; artifact: SharedArtifactView
   const [downloading, setDownloading] = useState(false);
   const inFlight = useRef(false);
 
-  const loadToken = useCallback((purpose: ArtifactTokenPurpose) => sharedArtifactsApi.token(code, purpose), [code]);
+  const theme = useResolvedTheme();
+  const loadToken = useCallback(
+    (purpose: ArtifactTokenPurpose) =>
+      purpose === 'view' ? sharedArtifactsApi.token(code, purpose, theme) : sharedArtifactsApi.token(code, purpose),
+    [code, theme],
+  );
   const loadText = useCallback(() => sharedArtifactsApi.text(code), [code]);
 
   const download = useCallback(() => {

@@ -11,6 +11,7 @@ import {
 import { createHtmlPreparer, faultSeverity, MAX_PREPARED_BYTES, type HtmlPreparer, type PoolRefusal, type PrepareRefusal } from '@ax/frame-guard';
 import { describeMediaType, downloadFilename, type ArtifactPreview } from './media.js';
 import type { ArtifactStore } from './store.js';
+import { injectTheme } from './theme.js';
 import { linkBindingFor, verifyViewToken, type ViewTokenClaims } from './view-token.js';
 
 /**
@@ -481,7 +482,11 @@ export async function startContentOrigin(o: ContentOriginOptions): Promise<Conte
         sendText(res, 422, REFUSAL_BODIES[REFUSALS[prepared.refusal].line], { 'content-security-policy': DOWNLOAD_CSP });
         return;
       }
-      send(res, 200, { 'content-type': 'text/html; charset=utf-8', 'content-security-policy': csp }, prepared.html);
+      // The viewer's look, when it asked for one, is one fixed `<style>` block (theme.ts). It goes onto the
+      // guarded page, after the rewrite: the page cache keys on the page's own bytes, so a theme must not
+      // change what is cached, and the rewrite sees the page exactly as the author wrote it.
+      const body = claims.theme === undefined || claims.theme === null ? prepared.html : injectTheme(prepared.html, claims.theme);
+      send(res, 200, { 'content-type': 'text/html; charset=utf-8', 'content-security-policy': csp }, body);
       return;
     }
     if (served.preview === 'image') {

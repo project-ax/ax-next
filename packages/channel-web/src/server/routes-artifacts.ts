@@ -205,6 +205,10 @@ function isPositiveInt(v: unknown): v is number {
 
 const LINK_ACTIONS: ReadonlySet<unknown> = new Set(['ensure', 'off', 'rotate']);
 export const TOKEN_PURPOSES: ReadonlySet<unknown> = new Set(['view', 'download']);
+/** The look a viewer may ask the content origin to add to an HTML page; absent means none. */
+export function isOptionalTheme(v: unknown): v is 'light' | 'dark' | undefined {
+  return v === undefined || v === 'light' || v === 'dark';
+}
 const TEXT_PREVIEWS: ReadonlySet<string> = new Set(['markdown', 'text']);
 
 /** The first `max` bytes, cut back to a UTF-8 character boundary. */
@@ -423,18 +427,21 @@ export function createArtifactsRouteHandlers(deps: ArtifactsRouteDeps) {
       const userId = await authOr401(bus, initCtx, req, res);
       if (userId === null) return;
       const version = versionParam(req.params['version']);
-      const purpose = jsonBody(req)?.['purpose'];
-      if (version === null || !TOKEN_PURPOSES.has(purpose)) {
+      const body = jsonBody(req);
+      const purpose = body?.['purpose'];
+      const theme = body?.['theme'];
+      if (version === null || !TOKEN_PURPOSES.has(purpose) || !isOptionalTheme(theme)) {
         res.status(400).json({ error: 'invalid' });
         return;
       }
       const out = await callOr<
-        { artifactId: string; version: number; purpose: 'view' | 'download' },
+        { artifactId: string; version: number; purpose: 'view' | 'download'; theme?: 'light' | 'dark' },
         { url: string; expiresAt: string }
       >(res, 'artifacts:mint-view-token', requestCtx(userId), {
         artifactId: req.params['artifactId'] ?? '',
         version,
         purpose: purpose as 'view' | 'download',
+        ...(theme === undefined ? {} : { theme }),
       });
       if (out === undefined) return;
       res.status(200).json({ url: out.url, expiresAt: out.expiresAt });

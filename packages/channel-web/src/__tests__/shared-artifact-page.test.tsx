@@ -80,7 +80,7 @@ describe('SharedArtifactPage', () => {
     expect(screen.queryByText(/Copy link|Restore|Rename|Delete/)).toBeNull();
     // The view token is minted through the link, for viewing.
     const tokenCall = fetchMock.mock.calls.find((c) => String(c[0]) === `/api/shared/${CODE}/token`);
-    expect(JSON.parse(String(tokenCall?.[1]?.body))).toEqual({ purpose: 'view' });
+    expect(JSON.parse(String(tokenCall?.[1]?.body))).toEqual({ purpose: 'view', theme: 'light' });
     expect(tokenCall?.[1]?.method).toBe('POST');
   });
 

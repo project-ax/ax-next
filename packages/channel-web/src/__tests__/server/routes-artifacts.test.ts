@@ -335,6 +335,24 @@ describe('artifact owner routes', () => {
     expect(mint).toHaveBeenCalledWith({ artifactId: 'art-1', version: 2, purpose: 'download' });
   });
 
+  it('the token route passes a light or dark theme to the hook, and refuses any other value', async () => {
+    const mint = vi.fn(() => ({ url: 'https://content.example/v/tok', expiresAt: '2026-11-05T00:05:00.000Z' }));
+    const { bus } = fakeBus({ ...AUTH_OK, 'artifacts:mint-view-token': mint });
+    const h = createArtifactsRouteHandlers({ bus, initCtx: mkInitCtx().ctx });
+
+    const ok = mkRes();
+    await h.token(mkReq({ artifactId: 'art-1', version: '2' }, { purpose: 'view', theme: 'dark' }), ok.res);
+    expect(ok.got.status).toBe(200);
+    expect(mint).toHaveBeenCalledWith({ artifactId: 'art-1', version: 2, purpose: 'view', theme: 'dark' });
+
+    for (const theme of ['purple', '', 1, null, { x: 1 }]) {
+      const bad = mkRes();
+      await h.token(mkReq({ artifactId: 'art-1', version: '2' }, { purpose: 'view', theme }), bad.res);
+      expect({ theme, status: bad.got.status }).toEqual({ theme, status: 400 });
+    }
+    expect(mint).toHaveBeenCalledTimes(1);
+  });
+
   it('rename, restore, link and delete pass the request through and answer their shapes', async () => {
     const rename = vi.fn(() => ({ artifact: summary({ title: 'New' }) }));
     const restore = vi.fn(() => ({ artifact: summary({ currentVersion: 1 }) }));

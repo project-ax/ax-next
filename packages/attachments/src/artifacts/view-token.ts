@@ -1,5 +1,6 @@
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import { z } from 'zod';
+import { type ArtifactTheme } from './theme.js';
 
 /**
  * View tokens (§6.5): how the content origin knows a request may have one
@@ -8,7 +9,7 @@ import { z } from 'zod';
  * signature and the expiry and serves the bytes. A leaked token opens one
  * version of one artifact for at most five minutes.
  *
- * Wire: `v1.<b64url(JSON {a,n,p,l,e})>.<b64url(HMAC-SHA256(key, 'v1.' + payload))>`.
+ * Wire: `v1.<b64url(JSON {a,n,p,l,e[,t]})>.<b64url(HMAC-SHA256(key, 'v1.' + payload))>`.
  * The key lives only in this process's memory, so a restart retires every
  * token in flight; the viewer just mints another.
  */
@@ -35,6 +36,11 @@ export interface ViewTokenClaims {
   linkBinding: string | null;
   /** Epoch seconds. */
   expiresAt: number;
+  /**
+   * The look the viewer asked for. Only a `view` token for an HTML page uses it
+   * (theme.ts); absent means serve the page exactly as written.
+   */
+  theme?: ArtifactTheme | null;
 }
 
 const WireClaimsSchema = z
@@ -48,6 +54,7 @@ const WireClaimsSchema = z
       .regex(B64URL)
       .nullable(),
     e: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+    t: z.enum(['light', 'dark']).optional(),
   })
   .strict();
 
@@ -71,6 +78,8 @@ export function signViewToken(key: Uint8Array, c: ViewTokenClaims): string {
     p: c.purpose,
     l: c.linkBinding,
     e: c.expiresAt,
+    // Left out entirely when unset, so a token with no theme is byte-for-byte what it always was.
+    ...(c.theme === undefined || c.theme === null ? {} : { t: c.theme }),
   });
   const payload = Buffer.from(JSON.stringify(wire)).toString('base64url');
   const token = `${PREFIX}.${payload}.${sign(key, payload)}`;
@@ -106,5 +115,5 @@ export function verifyViewToken(key: Uint8Array, token: string, nowSeconds: numb
   if (!parsed.success) return null;
   const w = parsed.data;
   if (w.e <= nowSeconds || w.e > nowSeconds + VIEW_TOKEN_TTL_SECONDS + EXPIRY_SLACK_SECONDS) return null;
-  return { artifactId: w.a, version: w.n, purpose: w.p, linkBinding: w.l, expiresAt: w.e };
+  return { artifactId: w.a, version: w.n, purpose: w.p, linkBinding: w.l, expiresAt: w.e, ...(w.t === undefined ? {} : { theme: w.t }) };
 }

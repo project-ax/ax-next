@@ -309,6 +309,18 @@ describe('shared artifact routes', () => {
     for (const leak of [SOURCE_PATH, CODE, 'art-1', '"version"', 'versions']) expect(bodies).not.toContain(leak);
   });
 
+  it('the token route passes a light or dark theme along with the code, and refuses any other value', async () => {
+    const { bus, call } = fakeBus(storeWith());
+    const h = createSharedArtifactsRouteHandlers({ bus, initCtx: mkInitCtx().ctx });
+    const ok = await hit(h, 'token', CODE, { user: 'stranger', body: { purpose: 'view', theme: 'dark' } });
+    expect(ok.status).toBe(200);
+    const mints = call.mock.calls.filter((c) => c[0] === 'artifacts:mint-view-token');
+    expect(mints.map((c) => c[2])).toEqual([{ shareCode: CODE, purpose: 'view', theme: 'dark' }]);
+    const bad = await hit(h, 'token', CODE, { user: 'stranger', body: { purpose: 'view', theme: 'neon' } });
+    expect(bad.status).toBe(400);
+    expect(call.mock.calls.filter((c) => c[0] === 'artifacts:mint-view-token')).toHaveLength(1);
+  });
+
   it('the text route follows the owner rules: not-previewable for HTML, truncated past 1 MiB', async () => {
     const big = 'a'.repeat(1024 * 1024 + 10);
     const stubs = storeWith({ text: big });

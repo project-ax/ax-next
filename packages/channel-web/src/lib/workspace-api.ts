@@ -1685,10 +1685,16 @@ export const workspaceApi = {
   },
 
   /** A short-lived address to view or download one version. */
-  artifactToken: async (artifactId: string, version: number, purpose: ArtifactTokenPurpose) => {
+  artifactToken: async (
+    artifactId: string,
+    version: number,
+    purpose: ArtifactTokenPurpose,
+    /** The look to match, for a view of an HTML page: its `--ax-*` colors follow the app. */
+    theme?: 'light' | 'dark',
+  ) => {
     const path = `/artifacts/${encodeURIComponent(artifactId)}/versions/${version}/token`;
     const parsed = ArtifactTokenSchema.safeParse(
-      await req<unknown>(path, { method: 'POST', body: { purpose } }),
+      await req<unknown>(path, { method: 'POST', body: theme === undefined ? { purpose } : { purpose, theme } }),
     );
     if (!parsed.success) throw new WorkspaceShapeError(path);
     return parsed.data;

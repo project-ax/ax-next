@@ -2119,12 +2119,12 @@ export function AgentView({
         </div>
         <LearnedAnnouncer announcement={learned.announcement} />
         {compactRail ? <Sheet open={shownPanel !== null} onOpenChange={(open) => { if (!open) setSheetPanel(null); }}>
-          <SheetContent side="right" aria-describedby={undefined} className={cn('flex max-w-[calc(100vw-24px)] flex-col gap-0 p-0', wide ? 'w-[calc(100vw-24px)]' : 'w-[320px]')}>
+          <SheetContent side="right" aria-describedby={undefined} hideClose={wide} className={cn('flex max-w-[calc(100vw-24px)] flex-col gap-0 p-0', wide ? 'w-[calc(100vw-24px)]' : 'w-[320px]')}>
             {/* Named for the view, so the sheet and its heading agree. */}
             <SheetTitle className="sr-only">{shownPanel !== null ? `${RAIL_PANELS[shownPanel].label} panel` : 'Side panel'}</SheetTitle>
-            {shownPanel !== null && <AgentRailContent panel={shownPanel} meta={panelMeta} wide={wide}>{panelBody}</AgentRailContent>}
+            {shownPanel !== null && <AgentRailContent panel={shownPanel} meta={panelMeta} wide={wide} bare={wide}>{panelBody}</AgentRailContent>}
           </SheetContent>
-        </Sheet> : shownPanel !== null && <AgentRail panel={shownPanel} meta={panelMeta} wide={wide}>{panelBody}</AgentRail>}
+        </Sheet> : shownPanel !== null && <AgentRail panel={shownPanel} meta={panelMeta} wide={wide} bare={wide}>{panelBody}</AgentRail>}
       </div>
     </MemoryFixesContext.Provider>
   );

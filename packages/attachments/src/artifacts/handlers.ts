@@ -12,6 +12,7 @@ import { can, isAgentMember, roleFor, type ArtifactAction } from './access.js';
 import { describeMediaType, downloadFilename, mediaTypeForPath } from './media.js';
 import type { ArtifactRow, ArtifactStore, VersionRow } from './store.js';
 import { newShareCode } from './share-code.js';
+import { isArtifactTheme } from './theme.js';
 import { normalizeArtifactTitle } from './title.js';
 import { VIEW_TOKEN_TTL_SECONDS, linkBindingFor, signViewToken } from './view-token.js';
 import {
@@ -415,10 +416,15 @@ export function createArtifactsMintViewTokenHandler(
     const running = origin();
     if (running === undefined) throw fail(hookName, 'unavailable', 'artifact previews are not available here');
 
-    const raw = (input ?? {}) as { artifactId?: unknown; version?: unknown; shareCode?: unknown; purpose?: unknown };
+    const raw = (input ?? {}) as { artifactId?: unknown; version?: unknown; shareCode?: unknown; purpose?: unknown; theme?: unknown };
     const purpose = raw.purpose;
     if (!PURPOSES.has(purpose)) throw fail(hookName, 'invalid-payload', "purpose must be 'view' or 'download'");
     const p = purpose as 'view' | 'download';
+    // Absent is fine (serve the page as written); anything else must be one of the two looks.
+    if (raw.theme !== undefined && !isArtifactTheme(raw.theme)) {
+      throw fail(hookName, 'invalid-payload', "theme must be 'light' or 'dark'");
+    }
+    const theme = p === 'view' && isArtifactTheme(raw.theme) ? raw.theme : null;
 
     let head: ArtifactRow;
     let version: VersionRow | null;
@@ -453,6 +459,7 @@ export function createArtifactsMintViewTokenHandler(
       purpose: p,
       linkBinding,
       expiresAt,
+      theme,
     });
     return {
       url: `${running.publicOrigin}/${p === 'view' ? 'v' : 'd'}/${token}`,

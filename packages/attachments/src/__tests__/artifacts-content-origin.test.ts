@@ -150,6 +150,34 @@ describe('content origin', () => {
     expect(await serve(claims)).toMatchObject({ contentKey: HTML_SHA, preview: 'html' });
   });
 
+  it('a view minted with a theme serves the page with the app palette added; every other request is the page as written', async () => {
+    const o = await startOrigin();
+    const p = await publish(o.rig, { sha256: HTML_SHA, sourcePath: sourcePathFor('html') });
+    const mint = (extra: Record<string, unknown>) =>
+      o.mintRaw({ artifactId: p.artifactId, version: p.version, ...extra }).then((out) => out.url);
+
+    const themed = await (await fetch(await mint({ purpose: 'view', theme: 'dark' }))).text();
+    expect(themed).toContain('<style>:root{--ax-background:hsl(');
+    expect(themed).toContain('color-scheme:dark');
+    // The themed page is the guarded page with the one fixed style block added, nothing else.
+    const plain = await (await fetch(await mint({ purpose: 'view' }))).text();
+    expect(plain).not.toContain(':root{--ax-');
+    expect(themed.replace(/<style>:root\{--ax-.*?<\/style>/, '')).toBe(plain);
+
+    // A download is untouched, theme or not (a theme on a download is ignored, not applied).
+    expect(await (await fetch(await mint({ purpose: 'download', theme: 'dark' }))).text()).toBe(HTML);
+  });
+
+  it('mint refuses a theme that is not light or dark', async () => {
+    const o = await startOrigin();
+    const p = await publish(o.rig, { sha256: HTML_SHA, sourcePath: sourcePathFor('html') });
+    for (const theme of ['neon', '', 1, null]) {
+      await expect(
+        o.mintRaw({ artifactId: p.artifactId, version: p.version, purpose: 'view', theme }),
+      ).rejects.toMatchObject({ code: 'invalid-payload' });
+    }
+  });
+
   it('every content response says Referrer-Policy: no-referrer, 404s included', async () => {
     const o = await startOrigin();
     const view = await publishAndMint(o, { purpose: 'view' });

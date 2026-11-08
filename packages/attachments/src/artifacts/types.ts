@@ -245,11 +245,12 @@ export const ArtifactsResolveShareCodeOutputSchema = z.object({
  * Two forms, as `artifacts:read`. By id (members): any retained version. By
  * share code (a signed-in link holder): the current version, and the token is
  * bound to that code. `view` is for an inline preview (HTML or an image);
- * `download` for any type.
+ * `download` for any type. `theme` (view only) asks the content origin to add the
+ * app's palette as `--ax-*` variables to an HTML page; it changes nothing else.
  */
 export type ArtifactsMintViewTokenInput =
-  | { artifactId: string; version: number; purpose: 'view' | 'download' }
-  | { shareCode: string; purpose: 'view' | 'download' };
+  | { artifactId: string; version: number; purpose: 'view' | 'download'; theme?: 'light' | 'dark' }
+  | { shareCode: string; purpose: 'view' | 'download'; theme?: 'light' | 'dark' };
 /** A content-origin URL that serves one version for a few minutes. Never carries the share code. */
 export interface ArtifactsMintViewTokenOutput {
   url: string;
