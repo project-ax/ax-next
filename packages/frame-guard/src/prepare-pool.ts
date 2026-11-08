@@ -15,7 +15,7 @@ import { WORKER_ARG } from './prepare-worker.js';
 //     needs more ends the worker: V8 aborts the process with "Reached heap limit" and the
 //     pool answers `worker_oom`. Nothing else is touched by that. The container's memory
 //     limit is another matter, because it is the host's too: under `memory.oom.group`
-//     (Kubernetes sets it on cgroup v2) the kernel ends every process in the container when
+//     (Kubernetes sets it on cgroup v2 by default) the kernel ends every process in the container when
 //     it is met, whichever one was using the memory. So the heap is sized from the limit, a
 //     share of it that leaves the host the rest (`oldGenerationFor`). (This used to be a thread. A thread
 //     that runs out of memory takes its whole process with it when the need is far over the
@@ -87,7 +87,7 @@ export interface HtmlPreparerOptions {
   /**
    * The memory limit of the container the host is in, in bytes, or undefined if there is none. Read each time a worker is
    * started, and the worker's heap is sized from it (`oldGenerationFor`): a worker is a process of the same container, and a
-   * limit on the container's memory is not the worker's alone to meet, because under `memory.oom.group` (which Kubernetes sets on
+   * limit on the container's memory is not the worker's alone to meet, because under `memory.oom.group` (which Kubernetes sets by default on
    * cgroup v2) the kernel ends every process in the container, the host with it. Default: what Node reads of the container's
    * cgroup (`readContainerMemoryLimit`). For tests.
    */
@@ -207,7 +207,7 @@ export function readContainerMemoryLimit(): number | undefined {
 /**
  * The old generation to give a worker, in MB: the one asked for, or less when the container's memory limit cannot hold it beside
  * the host. A V8 heap abort ends the worker alone, but a container limit does not: under `memory.oom.group` (Kubernetes sets it on
- * cgroup v2, since 1.28) the kernel ends EVERY process in the container when the limit is met, and `oom_score_adj` only chooses who
+ * cgroup v2 by default) the kernel ends EVERY process in the container when the limit is met, and `oom_score_adj` only chooses who
  * is first. Measured: a container of 600 MiB, the host holding 300 MB, a page of table text: the container exits 137, host and
  * all, with the default heap and with a larger one. So the worker may take a share of the limit (`WORKER_SHARE_OF_CONTAINER_PERCENT`),
  * and its heap is what that leaves after the young generation and the overhead; a page that needs more than that is refused as

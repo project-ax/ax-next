@@ -407,7 +407,7 @@ describe('a worker that starts wrongly is not used', () => {
 
 describe("the worker's heap is sized from the container's memory limit", () => {
   // The worker is a process of the container the host is in. A V8 heap abort ends the worker alone, but a limit on the container's
-  // memory does not: under `memory.oom.group` (Kubernetes sets it on cgroup v2) the kernel ends EVERY process in the container,
+  // memory does not: under `memory.oom.group` (Kubernetes sets it on cgroup v2 by default) the kernel ends EVERY process in the container,
   // the host with them, and `oom_score_adj` only chooses who is first. Measured: a container of 600 MiB, the host holding 300 MB,
   // 4 MiB of text inside a table: the container exits 137, with the default heap and with a larger one. So the heap a page can fill
   // is a share of the limit (30%, less the young generation's 48 MB and the 64 MB a worker is resident beyond its heap).

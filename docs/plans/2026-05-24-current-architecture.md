@@ -694,7 +694,7 @@ container's memory limit (30% of it, less the young generation and 64 MB of the
 worker's other memory, at most 384 MB: 195 MB in a 1 GiB container, the full 384 from
 about 1.6 GiB, read again for each worker), because the worker is a process of the
 host's container and a V8 abort ends it alone but the container's limit does not:
-under `memory.oom.group` (Kubernetes sets it on cgroup v2) the kernel ends every
+under `memory.oom.group` (Kubernetes sets it on cgroup v2 by default) the kernel ends every
 process in the container, the host too, and `oom_score_adj` only chooses who is first
 (measured: 600 MiB, the host holding 300 MB, a heavy page: exit 137, whatever the
 worker's heap). What is guaranteed is that the worker takes no more than its share; a

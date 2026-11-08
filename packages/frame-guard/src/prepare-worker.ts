@@ -39,7 +39,7 @@ import { MAX_PREPARED_BYTES, prepareArtifactHtml, type PrepareRefusal } from './
 // cannot be made.
 //
 // Neither is what keeps the host alive when the CONTAINER's memory limit is met. `oom_score_adj`
-// only chooses who is first; under `memory.oom.group` (Kubernetes sets it on cgroup v2) the
+// only chooses who is first; under `memory.oom.group` (Kubernetes sets it on cgroup v2 by default) the
 // kernel ends every process in the container, the host with them. Measured: a container of
 // 600 MiB, the host holding 300 MB and a heavy page, exits 137 whatever heap the worker was
 // given. A V8 heap abort ends this process alone; the container's limit does not. So the pool
