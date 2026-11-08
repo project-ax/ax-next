@@ -122,12 +122,33 @@ describe('a page goes to the worker and comes back as bytes', () => {
   });
 
   it('leaves no timer behind once the page is answered (the deadline is for a page that is not)', async () => {
-    const p = preparer({ deadlineMs: 60_000 });
-    await p.prepare('echo:warm'); // the worker is started, and any timers it needs exist
-    const timers = (): number => process.getActiveResourcesInfo().filter((r) => r === 'Timeout').length;
-    const before = timers();
-    await p.prepare('echo:x');
-    expect(timers()).toBe(before);
+    // A page gets one timer, its deadline, and the answer has to clear it: left alone it would hold the process open for the deadline's
+    // length (a minute here). It is read as what the pool does with ITS timer, found by a deadline no other timer has, and not as how many
+    // timers the whole process has: that census (`process.getActiveResourcesInfo()`, before and after) read one timer too few on the CI
+    // runner, a timer of the test runner's own having ended between the two readings.
+    const DEADLINE_MS = 61_234;
+    const real = { set: globalThis.setTimeout, clear: globalThis.clearTimeout };
+    const made: unknown[] = [];
+    const cleared: unknown[] = [];
+    const set = vi.spyOn(globalThis, 'setTimeout').mockImplementation(((handler: () => void, ms?: number, ...args: unknown[]) => {
+      const timer = Reflect.apply(real.set, globalThis, [handler, ms, ...args]) as NodeJS.Timeout;
+      if (ms === DEADLINE_MS) made.push(timer);
+      return timer;
+    }) as unknown as typeof setTimeout);
+    const clear = vi.spyOn(globalThis, 'clearTimeout').mockImplementation(((timer?: NodeJS.Timeout) => {
+      cleared.push(timer);
+      real.clear(timer);
+    }) as typeof clearTimeout);
+    try {
+      const p = preparer({ deadlineMs: DEADLINE_MS });
+      await p.prepare('echo:warm');
+      await p.prepare('echo:x');
+      expect(made, 'one deadline timer for each page').toHaveLength(2);
+      for (const timer of made) expect(cleared, 'the deadline timer of an answered page is cleared').toContain(timer);
+    } finally {
+      set.mockRestore();
+      clear.mockRestore();
+    }
   });
 
   it('prepares one page at a time, in the order they came', async () => {
