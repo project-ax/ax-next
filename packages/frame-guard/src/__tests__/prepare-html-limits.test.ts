@@ -635,6 +635,23 @@ describe('a tag whose name is thousands of characters', () => {
     expectFast(out);
   });
 
+  it('holds the names of elements as flat strings, not as the joins parse5 built them from: 500 open elements with names of 1,000 characters grow the heap by the text', () => {
+    // `<nnn...(1000)>` 500 times, never closed: nothing compares one of the names with another (a comparison makes a string flat),
+    // so the tree keeps each as parse5 built it, a join per character, 48 MB of them, unless the element's name is read as the
+    // element is made, and then 8 to 11. (A name of 4 MiB is a chain of 128 MB; it is refused long before that, above, and this is
+    // what is left under the limit.) Every pass reads the same names, so the most the heap holds in the run is what is watched.
+    const before = getHeapStatistics().used_heap_size;
+    let peak = 0;
+    const now = (): number => {
+      peak = Math.max(peak, getHeapStatistics().used_heap_size - before);
+      return 0;
+    };
+    const name = 'n'.repeat(1000);
+    const out = prepareArtifactHtml(`<!doctype html><body>${`<${name}>`.repeat(500)}`, { now, budgetMs: 1e9, lookEvery: 64 });
+    expect(out.ok).toBe(true);
+    expect(peak / MiB).toBeLessThan(30);
+  });
+
   it('is served when it is a name there are, and the longest there can be: 1,000 characters', () => {
     const name = 'n'.repeat(1000);
     expect(verdict(prepareArtifactHtml(`<${name}>x</${name}><p>y</p>`))).toBe('served');

@@ -133,25 +133,6 @@ describe('prepareArtifactHtml when parse5 misbehaves', () => {
     expect(peak / (1024 * 1024)).toBeLessThan(60);
   });
 
-  it('holds the names of elements as flat strings, not as the joins parse5 made them from: 500 open elements with names of 1,000 characters grow the heap by the text', () => {
-    // `<nnn...(1000)>` 500 times, never closed: nothing compares one of the names with another (a comparison would make
-    // the string flat), so the tree keeps each as parse5 built it, a join per character, 49 MB of them, unless the element's
-    // name is read as the element is made, and then 7 MB. (A name of 4 MiB is a chain of 128 MB; a name is refused long
-    // before that, see 'a tag whose name is thousands of characters', and this is what is left under the limit.)
-    let parses = 0;
-    hooks.beforeParse = () => void (parses += 1);
-    const before = getHeapStatistics().used_heap_size;
-    let peak = 0;
-    const now = (): number => {
-      if (parses === 1) peak = Math.max(peak, getHeapStatistics().used_heap_size - before);
-      return 0;
-    };
-    const name = 'n'.repeat(1000);
-    const page = `<!doctype html><body>${`<${name}>`.repeat(500)}`;
-    expect(transform(page, { now, budgetMs: 1e9, lookEvery: 64 }).ok).toBe(true);
-    expect(peak / (1024 * 1024)).toBeLessThan(25);
-  });
-
   it('refuses a page that would come back at over 8 MiB before any of it is written and before a second parse', () => {
     // Ten formatting elements with 300 KB attributes, brought back three times: 12 MB out of 3 MB in, past the ceiling
     // of 8 MiB on what a prepared page may be. The second pass is the expensive one (it tokenizes everything the first
