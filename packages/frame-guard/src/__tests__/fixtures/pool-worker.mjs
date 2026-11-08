@@ -2,6 +2,7 @@
 // what it does ("verb:argument"), so one worker covers answering, refusing, being slow, running out of memory,
 // crashing and answering wrongly, without the real transform. Plain JavaScript, so Node runs it as it is. It is a
 // process, started the way the pool starts the real one, and says "ready" the way the real one does.
+import { fstatSync, statSync } from 'node:fs';
 import { getHeapStatistics } from 'node:v8';
 
 const burn = (ms) => {
@@ -61,6 +62,11 @@ process.on('message', ({ id, html }) => {
       process.send({ hello: 'there' });
       process.send({ id, hello: 'there' });
       return;
+    case 'stdio': { // whether each of the three standard streams is /dev/null
+      const nothing = statSync('/dev/null');
+      answer(id, JSON.stringify([0, 1, 2].map((fd) => fstatSync(fd).isCharacterDevice() && fstatSync(fd).rdev === nothing.rdev)));
+      return;
+    }
     case 'env':
       answer(
         id,

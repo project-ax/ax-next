@@ -137,6 +137,10 @@ describe('a page goes to the worker and comes back as bytes', () => {
     }
   });
 
+  it('gives the worker no standard streams: all three are /dev/null, so nothing it writes is anywhere and nothing is read from the host', async () => {
+    expect(said(await preparer().prepare('stdio:'))).toBe('[true,true,true]');
+  });
+
   it('gives the worker the heap limit it was asked for, and pins the young generation', async () => {
     expect(said(await preparer({ maxOldGenerationSizeMb: 200 }).prepare('env:'))).toContain('"--max-old-space-size=200","--max-semi-space-size=16"');
   });
