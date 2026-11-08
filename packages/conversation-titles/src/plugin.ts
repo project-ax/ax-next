@@ -26,7 +26,19 @@ const FAST_MODEL_STORAGE_KEY = 'settings:fast-model';
 const PLUGIN_NAME = '@ax/conversation-titles';
 const PLUGIN_VERSION = '0.0.0';
 
-const TITLE_MAX_TOKENS = 32;
+// The budget covers REASONING tokens too, not just the title: OpenRouter
+// counts a reasoning model's thinking against `max_tokens`, and the default
+// title model (GLM 5.3 Flash) cannot turn reasoning off. At the old 32 the
+// thinking consumed the whole budget and the call came back with EMPTY text
+// (prod 2026-11-08: `conversation_titles_validation_skipped`, rawLength 0, on
+// every attempt) — so every chat stayed "Untitled conversation". The title
+// itself is still clamped by `validateGeneratedTitle` (first line, ≤256
+// chars) and the prompt (≤8 words), so headroom here does not mean long
+// titles; it only stops the deliberation from starving the answer.
+const TITLE_MAX_TOKENS = 1024;
+// Least deliberation the endpoint allows (there is no `'none'` rung — see
+// `ReasoningEffort` in @ax/core). Same floor the memory path pins.
+const TITLE_REASONING_EFFORT = 'minimal' as const;
 // A touch of variety so titles don't all converge to the same dull phrase
 // across similar conversations, but mostly deterministic — a high-temperature
 // title is a coin flip and we'd rather it be readable.
@@ -52,9 +64,9 @@ const MAX_TITLE_ATTEMPT_TURNS = 3;
  * `llm:call:openrouter`) and `z-ai/glm-5.3-flash:nitro` is the model id the
  * call carries — a two-slash ref is expected here, not a typo.
  *
- * No `reasoningEffort`: naming a conversation is neither an orchestrator nor a
- * memory operation, so it takes the model's own default rather than the
- * `minimal` those roles pin.
+ * Reasoning is pinned to `minimal` (TITLE_REASONING_EFFORT): a one-line
+ * title needs no deliberation, and on a reasoning model the thinking shares
+ * the token budget with the answer (see TITLE_MAX_TOKENS).
  *
  * Operators override via the preset's `AX_TITLE_MODEL` env var, which flows
  * through `K8sPresetConfig.titles.model` to the factory's `cfg.model`.
@@ -357,6 +369,7 @@ async function handleTurnEnd(
       system: prompt.system,
       messages: [{ role: 'user', content: prompt.user }],
       temperature: TITLE_TEMPERATURE,
+      reasoningEffort: TITLE_REASONING_EFFORT,
     },
   );
 
@@ -375,6 +388,13 @@ async function handleTurnEnd(
     ctx.logger.debug('conversation_titles_validation_skipped', {
       conversationId: ctx.conversationId,
       rawLength: llmOut.text.length,
+      // `max_tokens` here with rawLength 0 means the budget went to
+      // reasoning — the failure TITLE_MAX_TOKENS documents.
+      stopReason: llmOut.stopReason,
+      // Which model answered: the admin "Helper model" (`settings:fast-model`)
+      // when set, else the configured fallback. Resolution is silent on the
+      // happy path, so without this a skip can't say which model to blame.
+      model: cfg.modelId,
     });
     return;
   }
