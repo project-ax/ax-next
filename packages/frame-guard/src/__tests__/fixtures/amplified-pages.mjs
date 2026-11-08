@@ -18,6 +18,12 @@ export function amplified(k = 3, n = 20, ch = 'a', budget = CAP - 4000) {
   return `${page}</div>${'<div><span></div>'.repeat(k)}`;
 }
 
+/** `head`, as many of `unit` as fit in `cap` bytes, `tail`. */
+function fill(head, unit, tail = '', cap = CAP) {
+  const room = cap - Buffer.byteLength(head) - Buffer.byteLength(tail);
+  return head + unit.repeat(Math.floor(room / Buffer.byteLength(unit))) + tail;
+}
+
 /** The shapes the third review sent, by the name it gave them. Which of them come back refused is the test's to say. */
 export const shapes = {
   amp1: () => amplified(1), // written out twice over
@@ -46,4 +52,10 @@ export const shapes = {
   // its FIRST parse and the second never reads it. What it needs is what the first parse holds of 4 MiB of attribute values
   // that were added to the first <body> a tag at a time.
   bodies4q: () => `<!doctype html><body>${Array.from({ length: 200 }, (_, i) => `<body a${i}='${'"'.repeat(20_000)}'>`).join('')}`,
+  // Text inside a <table>: parse5 holds every character token of it until a token that is not a character arrives (56
+  // bytes each, and 32 more when it is used), where nothing the transform does can read it flat. 4 MiB of it needs
+  // 352 to 368 MB, more than any other page there is. The fourth review's pages.
+  ttext: () => fill('<table>', 'a ', '</table>'),
+  template_ttext: () => fill('<template><table>', 'a '),
+  ttext_3m: () => fill('<table>', 'a ', '</table>', 3 * MiB),
 };

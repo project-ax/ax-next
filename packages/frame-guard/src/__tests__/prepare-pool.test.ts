@@ -2,7 +2,7 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createHtmlPreparer, prepareArtifactHtml, type HtmlPreparer, type HtmlPreparerOptions, type PreparedPage } from '../index.js';
-import { answerJob, WORKER_BUDGET_MS } from '../prepare-worker.js';
+import { answerJob, WORKER_ARG, WORKER_BUDGET_MS } from '../prepare-worker.js';
 import { escapeAmplification } from './hostile-pages.js';
 
 // Watches the transform, so a test can see with what limits the worker's part calls it.
@@ -11,13 +11,15 @@ vi.mock('../prepare-html.js', async (importOriginal) => {
   return { ...real, prepareArtifactHtml: vi.fn(real.prepareArtifactHtml) };
 });
 
-// The pool runs the transform on a worker thread, and says what became of each page. Its machinery is
-// tested here with stand-in workers (fixtures/pool-worker.mjs: the page says what the worker does), on real
-// threads with real limits and a real deadline, so a worker that is ended, runs out of memory or crashes is
-// the real thing. The real worker's own part (`answerJob`) is tested below, in this thread, and end to end
-// where the package is used from its compiled form (@ax/attachments' content origin tests).
+// The pool runs the transform in a process of its own, and says what became of each page. Its machinery is
+// tested here with stand-in workers (fixtures/pool-worker.mjs: the page says what the worker does), in real
+// processes with real limits and a real deadline, so a worker that is ended, runs out of memory or crashes is
+// the real thing. The real worker's own part (`answerJob`) is tested below, in this process, and end to end
+// where the package is used from its compiled form (prepare-pool-shapes.test.ts, and @ax/attachments' content
+// origin tests).
 
 const WORKER = new URL('./fixtures/pool-worker.mjs', import.meta.url);
+const STARTS = new URL('./fixtures/pool-worker-start.mjs', import.meta.url);
 const MiB = 1024 * 1024;
 
 const open: HtmlPreparer[] = [];
@@ -35,14 +37,29 @@ function preparer(options: HtmlPreparerOptions = {}): HtmlPreparer {
 function said(page: PreparedPage): string {
   return page.ok ? new TextDecoder().decode(page.bytes) : `refused:${page.reason}`;
 }
-/** The thread a stand-in worker ran on: its `echo` answers `thread:argument`. */
-const thread = (page: PreparedPage): string => said(page).split(':')[0] ?? '';
+/** The process a stand-in worker ran in: its `echo` answers `pid:argument`. */
+const pid = (page: PreparedPage): number => Number(said(page).split(':')[0]);
 const refusal = (page: PreparedPage): string => (page.ok ? 'answered' : page.reason);
 
-/** Faults the pool reports, as codes (the worker's own errors carry them). */
-function faults(): { seen: unknown[]; report: (fault: unknown) => void } {
-  const seen: unknown[] = [];
-  return { seen, report: (fault) => void seen.push(fault) };
+const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+const alive = (id: number): boolean => {
+  try {
+    process.kill(id, 0);
+    return true;
+  } catch {
+    return false;
+  }
+};
+/** Whether a process is gone, giving it a moment: a killed process is gone as soon as the kernel and the parent have seen to it. */
+async function goneWithin(id: number, ms: number): Promise<boolean> {
+  for (const end = Date.now() + ms; Date.now() < end; await sleep(20)) if (!alive(id)) return true;
+  return !alive(id);
+}
+
+/** What the pool tells `onFault`: the errors, with their codes. */
+function faults(): { seen: Array<Error & { code?: string }>; report: (fault: unknown) => void; codes: () => Array<string | undefined> } {
+  const seen: Array<Error & { code?: string }> = [];
+  return { seen, report: (fault) => void seen.push(fault as Error & { code?: string }), codes: () => seen.map((e) => e.code) };
 }
 
 describe('a page goes to the worker and comes back as bytes', () => {
@@ -53,8 +70,15 @@ describe('a page goes to the worker and comes back as bytes', () => {
     expect(said(page)).toMatch(/^\d+:hello$/);
   });
 
-  it('does not keep the process alive once its pages are answered: an idle worker lets a process end', { timeout: 40_000 }, () => {
-    // A worker that was not unref-ed would hold a command, a test run or a server that is shutting down open for good.
+  it('runs it in another process, not in this one', async () => {
+    const worker = pid(await preparer().prepare('echo:x'));
+    expect(worker).toBeGreaterThan(0);
+    expect(worker).not.toBe(process.pid);
+  });
+
+  it('does not keep the process alive once its pages are answered, and the worker does not outlive the process', { timeout: 40_000 }, async () => {
+    // A worker that was not unref-ed would hold a command, a test run or a server that is shutting down open for good;
+    // one that did not end when the process that made it did would be left running for good.
     const fixture = fileURLToPath(new URL('./fixtures/idle-pool.ts', import.meta.url));
     const child = spawnSync(process.execPath, ['--import', 'tsx', fixture], {
       cwd: fileURLToPath(new URL('../..', import.meta.url)),
@@ -64,13 +88,16 @@ describe('a page goes to the worker and comes back as bytes', () => {
     expect(child.error, 'the child did not end by itself').toBeUndefined();
     expect(child.status).toBe(0);
     expect(child.stdout).toContain('"ok":true');
+    const { pid: worker } = JSON.parse(child.stdout.trim().split('\n').pop() ?? '{}') as { pid: number };
+    expect(worker).toBeGreaterThan(0);
+    expect(await goneWithin(worker, 5000), `worker ${worker} is still running`).toBe(true);
   });
 
   it('keeps the one worker for the pages that follow', async () => {
     const p = preparer();
-    const first = thread(await p.prepare('echo:1'));
-    expect(thread(await p.prepare('echo:2'))).toBe(first);
-    expect(thread(await p.prepare('echo:3'))).toBe(first);
+    const first = pid(await p.prepare('echo:1'));
+    expect(pid(await p.prepare('echo:2'))).toBe(first);
+    expect(pid(await p.prepare('echo:3'))).toBe(first);
   });
 
   it("passes on the transform's own refusal", async () => {
@@ -94,13 +121,23 @@ describe('a page goes to the worker and comes back as bytes', () => {
     expect(spans[1]![1]).toBeLessThanOrEqual(spans[2]![0]);
   });
 
-  it('gives the worker nothing of this process: no environment, none of its flags', async () => {
+  it('gives the worker nothing of this process: no environment, none of its flags, only its own heap flags and the page', async () => {
     process.env.AX_POOL_TEST_SECRET = 'do-not-leak';
+    process.env.NODE_OPTIONS = '--no-warnings';
     try {
-      expect(said(await preparer().prepare('env:'))).toBe('[] []');
+      // The environment (a NODE_OPTIONS of the host's is the one that would change the limits the worker is given),
+      // Node's flags (the pool's two, and none of ours), and the arguments (the one that says it is the worker).
+      expect(said(await preparer().prepare('env:'))).toBe(
+        `[] ${JSON.stringify(['--max-old-space-size=384', '--max-semi-space-size=16'])} ${JSON.stringify([WORKER_ARG])}`,
+      );
     } finally {
       delete process.env.AX_POOL_TEST_SECRET;
+      delete process.env.NODE_OPTIONS;
     }
+  });
+
+  it('gives the worker the heap limit it was asked for, and pins the young generation', async () => {
+    expect(said(await preparer({ maxOldGenerationSizeMb: 200 }).prepare('env:'))).toContain('"--max-old-space-size=200","--max-semi-space-size=16"');
   });
 });
 
@@ -108,57 +145,78 @@ describe('a worker that is held, out of memory, or gone', () => {
   it('ends a page that outstays the deadline, and the next page gets a new worker', async () => {
     const f = faults();
     const p = preparer({ deadlineMs: 150, onFault: f.report });
-    const before = thread(await p.prepare('echo:before'));
+    const before = pid(await p.prepare('echo:before'));
     const started = performance.now();
     expect(await p.prepare('spin:')).toEqual({ ok: false, reason: 'worker_timeout' });
     // The deadline, not something that takes much longer than it.
     expect(performance.now() - started).toBeLessThan(1500);
     // The worker that was ended says it has gone while the pool is idle: that is what was done to it, not a fault.
-    await new Promise((resolve) => setTimeout(resolve, 150));
+    await sleep(150);
     expect(f.seen).toEqual([]);
     const after = await p.prepare('echo:after');
     expect(said(after)).toMatch(/:after$/);
-    expect(thread(after)).not.toBe(before);
+    expect(pid(after)).not.toBe(before);
   });
 
-  it('really ends the worker it gives up on: nothing is left spinning', async () => {
-    // A worker that was "ended" but still runs would hold a core for good. This process's CPU time is the sum of
-    // its threads', so a spinning one shows as most of a second of CPU in a second of waiting.
-    const p = preparer({ deadlineMs: 100 });
+  it('really ends the worker it gives up on: nothing is left running', async () => {
+    // A worker that was "ended" but still ran would hold a core for good.
+    const p = preparer({ deadlineMs: 150 });
+    const worker = pid(await p.prepare('echo:who'));
     expect(await p.prepare('spin:')).toEqual({ ok: false, reason: 'worker_timeout' });
-    const before = process.cpuUsage();
-    await new Promise((resolve) => setTimeout(resolve, 400));
-    const used = process.cpuUsage(before);
-    expect((used.user + used.system) / 1000).toBeLessThan(150);
+    expect(await goneWithin(worker, 3000), `worker ${worker} is still running`).toBe(true);
   });
 
   it('answers a page that runs the worker out of memory as that, and the process, and the next page, are fine', async () => {
     const f = faults();
     const p = preparer({ maxOldGenerationSizeMb: 64, onFault: f.report });
-    const before = thread(await p.prepare('echo:before'));
+    const before = pid(await p.prepare('echo:before'));
     expect(await p.prepare('oom:')).toEqual({ ok: false, reason: 'worker_oom' });
     const after = await p.prepare('echo:after');
-    expect(thread(after)).not.toBe(before);
+    expect(pid(after)).not.toBe(before);
     // Running out of memory is what a page can do to it, not a fault of the worker's.
     expect(f.seen).toEqual([]);
+    expect(alive(before)).toBe(false);
   });
 
-  it('answers a worker that throws as failed, tells onFault what it was, and starts another for the next page', async () => {
+  it('answers a worker that V8 aborts as out of memory (that is the only way V8 ends a process for its heap)', async () => {
     const f = faults();
     const p = preparer({ onFault: f.report });
-    const before = thread(await p.prepare('echo:before'));
-    expect(await p.prepare('throw:')).toEqual({ ok: false, reason: 'worker_failed' });
-    expect(f.seen).toHaveLength(1);
-    expect(f.seen[0]).toBeInstanceOf(Error);
-    expect((f.seen[0] as Error).message).toBe('the worker broke');
-    expect(thread(await p.prepare('echo:after'))).not.toBe(before);
+    expect(await p.prepare('abort:')).toEqual({ ok: false, reason: 'worker_oom' });
+    expect(f.seen).toEqual([]);
+    expect(said(await p.prepare('echo:after'))).toMatch(/:after$/);
   });
 
-  it('answers a worker that exits as failed, and tells onFault', async () => {
+  it('answers a worker that was killed from outside as out of memory (in a pod it is the kernel), and tells onFault', async () => {
+    const f = faults();
+    const p = preparer({ onFault: f.report });
+    expect(await p.prepare('signal:SIGKILL')).toEqual({ ok: false, reason: 'worker_oom' });
+    expect(f.codes()).toEqual(['worker_killed']);
+    expect(said(await p.prepare('echo:after'))).toMatch(/:after$/);
+  });
+
+  it('answers a worker that another signal ended as failed, with the signal in the fault code', async () => {
+    const f = faults();
+    const p = preparer({ onFault: f.report });
+    expect(await p.prepare('signal:SIGTERM')).toEqual({ ok: false, reason: 'worker_failed' });
+    expect(f.codes()).toEqual(['worker_signal_SIGTERM']);
+  });
+
+  it('answers a worker that throws as failed, tells onFault what happened to it, and starts another for the next page', async () => {
+    const f = faults();
+    const p = preparer({ onFault: f.report });
+    const before = pid(await p.prepare('echo:before'));
+    expect(await p.prepare('throw:')).toEqual({ ok: false, reason: 'worker_failed' });
+    expect(f.codes()).toEqual(['worker_exit_1']);
+    expect(f.seen[0]).toBeInstanceOf(Error);
+    expect(f.seen[0]!.message).toContain('exit code 1');
+    expect(pid(await p.prepare('echo:after'))).not.toBe(before);
+  });
+
+  it('answers a worker that exits as failed, and tells onFault with the exit code', async () => {
     const f = faults();
     const p = preparer({ onFault: f.report });
     expect(await p.prepare('exit:')).toEqual({ ok: false, reason: 'worker_failed' });
-    expect(f.seen).toHaveLength(1);
+    expect(f.codes()).toEqual(['worker_exit_3']);
     expect(said(await p.prepare('echo:after'))).toMatch(/:after$/);
   });
 
@@ -167,7 +225,8 @@ describe('a worker that is held, out of memory, or gone', () => {
     const p = preparer({ execArgv: ['--there-is-no-such-flag'], onFault: f.report });
     expect(await p.prepare('echo:1')).toEqual({ ok: false, reason: 'worker_failed' });
     expect(await p.prepare('echo:2')).toEqual({ ok: false, reason: 'worker_failed' });
-    expect(f.seen.map((e) => (e as NodeJS.ErrnoException).code)).toEqual(['ERR_WORKER_INVALID_EXEC_ARGV', 'ERR_WORKER_INVALID_EXEC_ARGV']);
+    // Node ends with 9 for an option it does not know.
+    expect(f.codes()).toEqual(['worker_start_exit_9', 'worker_start_exit_9']);
   });
 
   it('does not strand the pages waiting behind one when no worker can be made for them', async () => {
@@ -185,38 +244,40 @@ describe('a worker that is held, out of memory, or gone', () => {
       { ok: false, reason: 'worker_failed' },
       { ok: false, reason: 'worker_failed' },
     ]);
-    expect(f.seen).toHaveLength(3); // the worker that exited, and the two that could not be made
+    expect(f.codes()).toEqual(['worker_exit_3', 'worker_start_exit_9', 'worker_start_exit_9']);
   });
 
-  it('answers a worker that cannot start as failed (not a hang), and keeps answering', async () => {
+  it('answers a worker that cannot start (its file is not there) as failed, not a hang, and keeps answering', async () => {
     const f = faults();
     const p = preparer({ workerUrl: new URL('./fixtures/there-is-no-such-worker.mjs', import.meta.url), onFault: f.report });
     expect(await p.prepare('echo:1')).toEqual({ ok: false, reason: 'worker_failed' });
     expect(await p.prepare('echo:2')).toEqual({ ok: false, reason: 'worker_failed' });
-    expect(f.seen).toHaveLength(2);
-    expect((f.seen[0] as NodeJS.ErrnoException).code).toMatch(/MODULE_NOT_FOUND$/);
+    // Node ends with 1 for a module it cannot load.
+    expect(f.codes()).toEqual(['worker_start_exit_1', 'worker_start_exit_1']);
   });
 
   it('does not trust what is not an answer: a message with no id is ignored, one with no answer in it ends the worker', async () => {
     const f = faults();
     const p = preparer({ onFault: f.report });
-    const before = thread(await p.prepare('echo:before'));
+    const before = pid(await p.prepare('echo:before'));
     expect(await p.prepare('nonsense:')).toEqual({ ok: false, reason: 'worker_failed' });
-    expect(f.seen).toHaveLength(1);
-    expect(thread(await p.prepare('echo:after'))).not.toBe(before);
+    expect(f.codes()).toEqual(['worker_bad_message']);
+    const after = pid(await p.prepare('echo:after'));
+    expect(after).not.toBe(before);
+    expect(await goneWithin(before, 2000), `worker ${before} is still running`).toBe(true);
   });
 
   it('gives the pages waiting behind a worker that sent nonsense to a new worker, not the one it ended', async () => {
     const p = preparer();
-    const before = thread(await p.prepare('echo:before'));
+    const before = pid(await p.prepare('echo:before'));
     const pages = [p.prepare('nonsense:'), p.prepare('echo:b'), p.prepare('echo:c')];
     const [first, second, third] = await Promise.all(pages);
     expect(first).toEqual({ ok: false, reason: 'worker_failed' });
     expect(said(second!)).toMatch(/:b$/);
     expect(said(third!)).toMatch(/:c$/);
     // Both on the one new worker, which is not the one that was ended.
-    expect(thread(second!)).not.toBe(before);
-    expect(thread(third!)).toBe(thread(second!));
+    expect(pid(second!)).not.toBe(before);
+    expect(pid(third!)).toBe(pid(second!));
   });
 
   it.each(['made_up_code', 'constructor', 'toString', '__proto__', ''])(
@@ -225,9 +286,57 @@ describe('a worker that is held, out of memory, or gone', () => {
       const f = faults();
       const p = preparer({ onFault: f.report });
       expect(await p.prepare(`refuse:${code}`)).toEqual({ ok: false, reason: 'worker_failed' });
-      expect(f.seen).toHaveLength(1);
+      expect(f.codes()).toEqual(['worker_bad_message']);
     },
   );
+});
+
+describe('a worker that starts wrongly is not used', () => {
+  // What a worker says when it starts is the pool's one check on it. `--title` is a flag Node takes and a worker can read back.
+  const starts = (how: string, options: HtmlPreparerOptions = {}): HtmlPreparer => preparer({ workerUrl: STARTS, execArgv: [`--title=${how}`], ...options });
+
+  it('takes a worker that says it is ready with the heap limit the pool asked for', async () => {
+    const f = faults();
+    expect(said(await starts('right', { onFault: f.report }).prepare('anything'))).toBe('answered');
+    expect(f.seen).toEqual([]);
+  });
+
+  it.each(['limit-high', 'limit-low'])('refuses a worker whose heap limit is not the one asked for (%s), tells onFault, and ends it', async (how) => {
+    const f = faults();
+    expect(await starts(how, { onFault: f.report }).prepare('anything')).toEqual({ ok: false, reason: 'worker_failed' });
+    expect(f.codes()).toEqual(['worker_limit_mismatch']);
+    expect(f.seen[0]!.message).toMatch(/heap limit of \d+ MB and was asked for 432 MB/);
+  });
+
+  it('refuses a worker whose heap limit really is not the one asked for: a flag of the caller\'s that comes after the pool\'s', async () => {
+    // The stand-in reports the limit its V8 really has. Asked for 384 MB and given 1024 by a flag, it is not protecting anything.
+    const f = faults();
+    const p = preparer({ execArgv: ['--max-old-space-size=1024'], onFault: f.report });
+    expect(await p.prepare('echo:x')).toEqual({ ok: false, reason: 'worker_failed' });
+    expect(f.codes()).toEqual(['worker_limit_mismatch']);
+  });
+
+  it.each(['talks', 'answers', 'bad-limit'])('refuses a worker whose first message is not "ready" with a number (%s)', async (how) => {
+    const f = faults();
+    expect(await starts(how, { onFault: f.report }).prepare('anything')).toEqual({ ok: false, reason: 'worker_failed' });
+    expect(f.codes()).toEqual(['worker_bad_ready']);
+  });
+
+  it('gives a worker that never says it is ready the deadline, which starting it counts against', async () => {
+    const f = faults();
+    const started = performance.now();
+    expect(await starts('silent', { deadlineMs: 300, onFault: f.report }).prepare('anything')).toEqual({ ok: false, reason: 'worker_timeout' });
+    expect(performance.now() - started).toBeLessThan(2000);
+    expect(f.seen).toEqual([]);
+  });
+
+  it('starts another worker for the next page, and that one is checked too', async () => {
+    const f = faults();
+    const p = starts('limit-high', { onFault: f.report });
+    expect(refusal(await p.prepare('one'))).toBe('worker_failed');
+    expect(refusal(await p.prepare('two'))).toBe('worker_failed');
+    expect(f.codes()).toEqual(['worker_limit_mismatch', 'worker_limit_mismatch']);
+  });
 });
 
 describe('turning pages away', () => {
@@ -309,8 +418,45 @@ describe('turning pages away', () => {
   });
 });
 
-describe('options that would end the process are refused when the pool is made', () => {
-  // Node ends the whole process, not the worker, for a heap limit of 0, 1, 2 bytes... of MB, or a negative or non-numeric one (measured).
+describe('the worker is ended when nothing has been asked of it for a while, to give its memory back', () => {
+  it('ends it after idleMs, and the next page starts another', async () => {
+    const p = preparer({ idleMs: 150 });
+    const first = pid(await p.prepare('echo:one'));
+    expect(await goneWithin(first, 3000), `worker ${first} was not ended`).toBe(true);
+    const second = await p.prepare('echo:two');
+    expect(said(second)).toMatch(/:two$/);
+    expect(pid(second)).not.toBe(first);
+  });
+
+  it('keeps it for pages that come sooner than that, whatever the pages add up to', async () => {
+    const p = preparer({ idleMs: 600 });
+    const first = pid(await p.prepare('echo:one'));
+    for (let i = 0; i < 4; i++) {
+      await sleep(250);
+      expect(pid(await p.prepare(`echo:${i}`))).toBe(first);
+    }
+  });
+
+  it('does not end a worker that is in the middle of a page', async () => {
+    const p = preparer({ idleMs: 100 });
+    const first = pid(await p.prepare('echo:one'));
+    // A page that takes longer than idleMs: the worker is not idle while it has it.
+    const page = await p.prepare('window:400');
+    expect(refusal(page)).toBe('answered');
+    expect(pid(await p.prepare('echo:two'))).toBe(first);
+  });
+
+  it('is not a reason to keep a process open: the timer that ends an idle worker is not one that holds the process', async () => {
+    const timers = (): number => process.getActiveResourcesInfo().filter((r) => r === 'Timeout').length;
+    const before = timers();
+    const p = preparer({ idleMs: 60_000 });
+    await p.prepare('echo:one');
+    expect(timers()).toBe(before);
+  });
+});
+
+describe('options that would not make a worker are refused when the pool is made', () => {
+  // A Node process does not start with a heap limit this small, or one that is negative or not a number.
   it.each([0, 1, 2, 4, 15, -5, Number.NaN, Number.POSITIVE_INFINITY])('a heap limit of %s', (limit) => {
     expect(() => createHtmlPreparer({ maxOldGenerationSizeMb: limit })).toThrow(RangeError);
   });
@@ -321,6 +467,7 @@ describe('options that would end the process are refused when the pool is made',
     ['maxQueuedChars', -1],
     ['busyWindowMs', 0],
     ['maxBusyMs', Number.NaN],
+    ['idleMs', 0],
   ] as const)('%s of %s', (name, value) => {
     expect(() => createHtmlPreparer({ [name]: value })).toThrow(new RegExp(`${name} must be a number`));
   });
@@ -333,14 +480,17 @@ describe('options that would end the process are refused when the pool is made',
 });
 
 describe('closing', () => {
-  it('answers the pages waiting, and the one running, as failed, and stops the worker', async () => {
+  it('answers the pages waiting, and the one running, as failed, and ends the worker', async () => {
     const p = preparer({ deadlineMs: 60_000 });
+    const worker = pid(await p.prepare('echo:who'));
     const running = p.prepare('spin:');
     const waiting = p.prepare('echo:a');
     const closed = p.close();
     expect(await running).toEqual({ ok: false, reason: 'worker_failed' });
     expect(await waiting).toEqual({ ok: false, reason: 'worker_failed' });
     await closed;
+    // It is gone when close has returned, not only on its way.
+    expect(alive(worker)).toBe(false);
     // Nothing is taken after it, and closing again is harmless.
     expect(await p.prepare('echo:late')).toEqual({ ok: false, reason: 'worker_failed' });
     await p.close();
@@ -349,27 +499,32 @@ describe('closing', () => {
   it('is fine before any page has started a worker', async () => {
     await preparer().close();
   });
+
+  it('is fine after the worker is already gone', async () => {
+    const p = preparer({ idleMs: 100 });
+    const worker = pid(await p.prepare('echo:one'));
+    expect(await goneWithin(worker, 3000)).toBe(true);
+    await p.close();
+  });
 });
 
 describe("the real worker's part: what it makes of a page", () => {
-  // `answerJob` is all there is to the worker but the line that hands it a message; the thread itself is
-  // exercised through the compiled package by @ax/attachments' tests.
-  const decode = (answer: ReturnType<typeof answerJob>['answer']): string => (answer.ok ? new TextDecoder().decode(answer.bytes) : '');
+  // `answerJob` is all there is to the worker but the lines that hand it a message and say that it is ready; the
+  // process itself is exercised through the compiled package by prepare-pool-shapes.test.ts and by @ax/attachments' tests.
+  const decode = (answer: ReturnType<typeof answerJob>): string => (answer.ok ? new TextDecoder().decode(answer.bytes) : '');
 
-  it('answers with the page the transform makes, as UTF-8, and hands the buffer over whole', () => {
+  it('answers with the page the transform makes, as UTF-8', () => {
     const html = '<!doctype html><title>t</title><p>héllo 日本語 😀 &amp; <b>x</b></p>';
-    const { answer, transfer } = answerJob({ id: 7, html });
+    const answer = answerJob({ id: 7, html });
     const expected = prepareArtifactHtml(html);
     expect(answer.id).toBe(7);
     expect(answer.ok).toBe(true);
     expect(expected.ok && decode(answer)).toBe(expected.ok ? expected.html : '');
-    expect(answer.ok && transfer).toEqual([answer.bytes.buffer]);
-    expect(answer.ok && answer.bytes.byteOffset).toBe(0);
-    expect(answer.ok && answer.bytes.byteLength).toBe(answer.ok ? answer.bytes.buffer.byteLength : -1);
+    expect(answer.ok && answer.bytes).toBeInstanceOf(Uint8Array);
   });
 
-  it('gives the transform the worker\'s budget as an argument: 1.5 s, where anything else that calls it gets 500 ms', () => {
-    // The only caller that runs the transform for longer than its short default is this thread, which holds
+  it("gives the transform the worker's budget as an argument: 1.5 s, where anything else that calls it gets 500 ms", () => {
+    // The only caller that runs the transform for longer than its short default is this process, which holds
     // nothing but pages. The number is pinned so that changing it is a choice.
     expect(WORKER_BUDGET_MS).toBe(1500);
     const spy = vi.mocked(prepareArtifactHtml);
@@ -379,13 +534,19 @@ describe("the real worker's part: what it makes of a page", () => {
     expect(spy).toHaveBeenCalledWith('<p>x</p>', { budgetMs: WORKER_BUDGET_MS });
   });
 
-  it("answers with the transform's refusal, and hands nothing over", () => {
-    expect(answerJob({ id: 1, html: '<plaintext>x' })).toEqual({ answer: { id: 1, ok: false, reason: 'plaintext' }, transfer: [] });
-    expect(answerJob({ id: 2, html: 'a\u0000b' }).answer).toEqual({ id: 2, ok: false, reason: 'nul' });
+  it("answers with the transform's refusal", () => {
+    expect(answerJob({ id: 1, html: '<plaintext>x' })).toEqual({ id: 1, ok: false, reason: 'plaintext' });
+    expect(answerJob({ id: 2, html: 'a\u0000b' })).toEqual({ id: 2, ok: false, reason: 'nul' });
   });
 
   it('refuses the page that ended the host (200 KiB of quotes, 80 times over) in the worker too, without making it', () => {
-    const { answer } = answerJob({ id: 3, html: escapeAmplification(4 * MiB, 3) });
-    expect(answer).toEqual({ id: 3, ok: false, reason: 'output_too_large' });
+    expect(answerJob({ id: 3, html: escapeAmplification(4 * MiB, 3) })).toEqual({ id: 3, ok: false, reason: 'output_too_large' });
+  });
+
+  it('does nothing when it is imported: it takes hold of no channel unless it is started as the worker', () => {
+    // This test file is run in a process that may have a channel of its own (the test runner's). The worker's lines
+    // must not be what answers on it.
+    expect(process.argv[2]).not.toBe(WORKER_ARG);
+    expect(process.listeners('message').some((l) => String(l).includes('answerJob'))).toBe(false);
   });
 });

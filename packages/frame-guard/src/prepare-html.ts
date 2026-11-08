@@ -56,8 +56,9 @@ import { CHILD_FRAME_TAGS, DSD_ATTRS, FRAME_GUARD_SOURCE } from './guard.js';
 // Those limits are measured, and they are the first layer, not the only one: the
 // shapes found so far are not all there are. The content origin does not call this
 // on the thread that serves its requests. It calls `createHtmlPreparer`
-// (prepare-pool.ts), which runs it on a worker thread with a heap limit and a
-// deadline, so what the limits miss is held there.
+// (prepare-pool.ts), which runs it in a process of its own with a heap limit that
+// V8 enforces and a deadline, so what the limits miss is held there: a page that
+// needs more than the process is given ends that process, and nothing else.
 
 /** What the guard script does on a kill. The page is already blank by then; this says why. */
 const START_GUARD =
@@ -182,7 +183,7 @@ const CLOCK_EVERY = 1024;
  * real pages of 0.4 to 4 MiB were measured) take up to 0.35 s of CPU on the machine
  * measured on (the 3 to 4 MiB ones 0.22 to 0.35 s) and an ordinary one of 100 to 170
  * KiB 7 to 15 ms, which this passes with room on that machine and not much to spare
- * on a slower one. Those pages are served by the worker thread
+ * on a slower one. Those pages are served by the worker process
  * (prepare-worker.ts), which gives the transform `WORKER_BUDGET_MS` and is the only
  * caller that does; nothing that serves requests runs a longer one.
  */
@@ -667,10 +668,15 @@ function boundedAdapter(run: Run): TreeAdapter<DefaultTreeAdapterMap> {
   // a chain of joins, about 32 bytes a character, until something reads it flat. Nothing did until the whole
   // page was weighed, after the parse, so a page held every character of every token as a join at once: the
   // second pass over a page that had been written out three times as long, its long attributes tokenized one
-  // character at a time, needed more than 400 MB of heap and ended the process. Reading each string flat as it
-  // arrives lets the joins go as the parse goes, so the heap it needs follows the biggest token and not the
-  // page (measured: the 1.5x page that needed 256 to 288 MB needs under 96). `run.sink` takes the read, which
-  // is all it is for.
+  // character at a time, needed more than 400 MB of heap. Reading each string flat as it arrives lets the joins
+  // go as the parse goes, so the heap it needs follows the biggest token and not the page (measured: the page
+  // that is half script and half attributes written out once more, which needed 256 to 288 MB, needs under 96;
+  // 4 MiB in one token needs 144 to 160). `run.sink` takes the read, which is all it is for.
+  //
+  // This reaches the tokens that arrive in the tree one at a time, not the ones parse5 holds before they get
+  // here. Text inside a `<table>` is kept as a list of character tokens (56 bytes each, and 32 more when it is
+  // used) until a token that is not a character arrives, and nothing here can read that: 4 MiB of it needs
+  // 352 to 368 MB, more than any other page. That is what the heap limit of the worker process is for.
   const flat = (value: string): string => {
     run.sink |= value.charCodeAt(0);
     return value;

@@ -25,8 +25,8 @@ import { linkBindingFor, verifyViewToken, type ViewTokenClaims } from './view-to
  *   in the URL is not cached and not sent onward as a Referer.
  * - HTML gets the strict CSP: no CSP-governed network (`connect-src 'none'`),
  *   no forms, and only the app may frame it. CSP does not govern WebRTC, so the HTML is also
- *   rewritten (@ax/frame-guard `prepareArtifactHtml`, on a worker thread, not
- *   this one): child frames and declarative shadow roots are cut and a guard
+ *   rewritten (@ax/frame-guard `prepareArtifactHtml`, in a worker process of its
+ *   own, not on this thread): child frames and declarative shadow roots are cut and a guard
  *   script that locks WebRTC goes first in `<head>`. A page it cannot rewrite
  *   safely (or one over MAX_HTML_TRANSFORM_BYTES) is a 422 with one fixed line
  *   of text; HTML is never served untransformed. Images get the sandboxing CSP, so an SVG opened
@@ -85,10 +85,11 @@ export interface ContentOriginOptions {
    */
   htmlCache?: { maxEntries?: number; maxBytes?: number; maxRefusals?: number; now?: () => number };
   /**
-   * What prepares HTML pages. Default: a worker thread of its own, closed with
+   * What prepares HTML pages. Default: a worker process of its own, closed with
    * the origin, so a page that costs the transform seconds, or all of its memory,
-   * costs them there and not on the thread that serves every request. A test can
-   * pass its own (which it then closes itself).
+   * costs them there and not on the thread that serves every request, and a page
+   * that needs more memory than the worker is given ends the worker and nothing
+   * else. A test can pass its own (which it then closes itself).
    */
   htmlPreparer?: HtmlPreparer;
 }
@@ -123,10 +124,12 @@ function htmlCsp(frameAncestors: readonly string[]): string {
  * The most HTML the transform is handed. An artifact can be up to 100 MiB
  * (`MAX_ARTIFACT_BYTES` in @ax/tool-artifact-publish, checked where the file is
  * read; the 25 MiB `DEFAULT_MAX_FILE_BYTES` is the attachments UPLOAD cap and
- * does not apply to artifacts). The transform runs off this thread and has limits
- * of its own (see prepareArtifactHtml), but an ordinary 4 MiB page still costs it
- * up to 0.35 s of CPU and a heap of 256 to 288 MB (measured on the heaviest real
- * pages), so bigger HTML is refused, never served untransformed.
+ * does not apply to artifacts). The transform runs in a process of its own and has
+ * limits of its own (see prepareArtifactHtml), but an ordinary 4 MiB page still
+ * costs it up to 0.35 s of CPU (measured on the heaviest real pages), and a page that
+ * is one 4 MiB token, a script or a data URI, a heap of 144 to 160 MB; 4 MiB of text
+ * inside a `<table>` needs 352 to 368 MB of the 384 the worker is given. So bigger
+ * HTML is refused, never served untransformed.
  */
 export const MAX_HTML_TRANSFORM_BYTES = 4 * 1024 * 1024;
 

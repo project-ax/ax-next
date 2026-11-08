@@ -17,8 +17,8 @@ import { signViewToken } from '../artifacts/view-token.js';
 // no Postgres is needed: every page goes through the HTML preparer, and nothing
 // else does. artifacts-content-origin.test.ts covers the same branch end to end
 // through the real artifact store, and artifacts-content-origin-worker.test.ts
-// through the real worker thread. Here the preparer runs the transform in THIS
-// thread, through a spy, so a test can count how often it ran and make it answer
+// through the real worker process. Here the preparer runs the transform in THIS
+// process, through a spy, so a test can count how often it ran and make it answer
 // as the worker would (out of time, out of memory, busy).
 
 vi.mock('@ax/frame-guard', async (importOriginal) => {

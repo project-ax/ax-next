@@ -13,7 +13,7 @@ import {
 } from '../artifacts/content-origin.js';
 import { signViewToken } from '../artifacts/view-token.js';
 
-// The content origin on its real HTML preparer: the worker thread @ax/frame-guard
+// The content origin on its real HTML preparer: the worker process @ax/frame-guard
 // starts, from the compiled package (this is how it is used, and the only form a worker
 // can be started from). The transform bounds what it costs by counts and a CPU-time budget,
 // and a third review round after the first two found pages that got past both: one that cost
@@ -22,7 +22,7 @@ import { signViewToken } from '../artifacts/view-token.js';
 // page costs, it costs it on the worker, and the origin keeps answering.
 
 // Counts the calls of the transform made in THIS thread, the one that serves every request. The worker
-// thread loads its own copy of the package, so a call it makes is not counted here: what is counted is a
+// process loads its own copy of the package, so a call it makes is not counted here: what is counted is a
 // page that was prepared on the request thread.
 // The preparers the origin makes for itself are watched too: what options it made them with can be added to
 // (a worker that cannot start), and whether it closed them.
@@ -135,7 +135,7 @@ async function loopLag<T>(during: () => Promise<T>): Promise<{ result: T; lagMs:
 /** The loop is not held by a page's work: this much late is nothing, and a held loop is more than a second late. */
 const LAG_OK_MS = 400;
 
-describe('the content origin on its real worker thread', () => {
+describe('the content origin on its real worker process', () => {
   it('serves an ordinary page, guard first in head, with the headers it always had', async () => {
     const base = await start();
     put('a', enc('<!doctype html><title>t</title><p>hello</p><iframe srcdoc="x"></iframe>'));
@@ -256,7 +256,8 @@ describe('the content origin on its real worker thread', () => {
       ['error', 'artifacts_content_origin_worker_failed'],
       ['warn', 'artifacts_content_origin_refused'],
     ]);
-    expect(logged[0]![2]).toMatchObject({ code: expect.stringMatching(/MODULE_NOT_FOUND$/) });
+    // Node ends with 1 for a module it cannot load, and the process had not said it was ready.
+    expect(logged[0]![2]).toMatchObject({ code: 'worker_start_exit_1' });
     expect(logged[1]![2]).toMatchObject({ code: 'worker_failed' });
     expect(JSON.stringify(logged)).not.toContain('there-is-no-such-worker-entry');
     // ...and it is not remembered: the next view tries a worker again (and the log says so again).
