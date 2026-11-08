@@ -1,5 +1,5 @@
 import { writeFileSync } from 'node:fs';
-import { setPriority, constants as osConstants } from 'node:os';
+import { getPriority, setPriority } from 'node:os';
 import { getHeapStatistics } from 'node:v8';
 import { prepareArtifactHtml, type PrepareRefusal } from './prepare-html.js';
 
@@ -93,7 +93,8 @@ function askToBeGivenUpFirst(): void {
     // Not Linux, or a sandbox with no /proc to write: the heap limit is still what holds.
   }
   try {
-    setPriority(osConstants.priority.PRIORITY_BELOW_NORMAL);
+    // Ten steps below the host (the most the scheduler is asked to tell apart), whatever the host runs at.
+    setPriority(Math.min(19, getPriority() + 10));
   } catch {
     // Nothing is lost by running at the priority it was given.
   }

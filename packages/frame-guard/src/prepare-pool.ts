@@ -303,7 +303,6 @@ class WorkerPreparer implements HtmlPreparer {
     if (this.running !== null) return;
     const job = this.waiting.shift();
     if (job === undefined) return;
-    this.stopIdleTimer();
     const id = this.nextId++;
     try {
       this.worker ??= this.start();
@@ -501,6 +500,7 @@ class WorkerPreparer implements HtmlPreparer {
 
   private wentIdle(generation: number): void {
     this.idleTimer = null;
+    // (A timer set before a page came is for a worker that is not idle now: `running` says so, and this does nothing.)
     if (generation !== this.generation || this.running !== null) return;
     this.discard();
   }

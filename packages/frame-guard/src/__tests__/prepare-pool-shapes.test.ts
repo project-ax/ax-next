@@ -149,7 +149,8 @@ describe('the worker process that the pool starts, from the compiled package', (
       });
       // It says what limit it really has: the old generation asked for and the young one the pool pins (3 x 16).
       expect(ready).toEqual({ ready: true, heapLimitMb: 128 + 48 });
-      expect(getPriority(child.pid!)).toBeGreaterThan(0);
+      // Ten below the host, whatever the host runs at (a test runner started in the background may not be at 0).
+      expect(getPriority(child.pid!)).toBe(Math.min(19, getPriority() + 10));
       if (process.platform === 'linux') expect(readFileSync(`/proc/${child.pid}/oom_score_adj`, 'utf8').trim()).toBe('1000');
     } finally {
       child.kill('SIGKILL');
