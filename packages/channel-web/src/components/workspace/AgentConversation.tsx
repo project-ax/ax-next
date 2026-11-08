@@ -11,7 +11,7 @@
  * name.
  */
 import { MEMORY_SOURCE_CLASS, TURN_ID_ATTR, TURN_IDS_ATTR } from '@/lib/thread-jump';
-import { groupReplies, type ActivityEntry, type ReplyGroup } from '@/lib/reply-groups';
+import { groupReplies, liveNote, type ActivityEntry, type ReplyGroup } from '@/lib/reply-groups';
 import {
   lazy,
   Suspense,
@@ -1149,8 +1149,10 @@ function Message({
 
   if (m.kind === 'status') {
     return (
-      <div className="flex items-center gap-2.5 text-[12.5px] text-muted-foreground">
-        <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-primary" />
+      // Same line as the activity title it turns into once a step lands, so
+      // "Thinking…" is replaced in place rather than jumping.
+      <div className="mb-2.5 inline-flex items-center gap-1.5 py-0.5 text-[13.5px] text-muted-foreground">
+        <span aria-hidden="true" className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-primary" />
         {m.text}
       </div>
     );
@@ -1427,8 +1429,8 @@ function AgentReply({
  * disclosure that starts shut answers "what did it do" only for people who
  * click. In practice a 48-step turn pushed the answer off screen under a wall
  * of shell commands. The title now answers the question on its own —
- * "Looked through files and ran commands", or, while it runs, the step in
- * progress — and the rows are one click away for whoever wants them.
+ * "Read a file, ran 2 commands", or, while it runs, what the agent says it is
+ * doing — and the rows are one click away for whoever wants them.
  *
  * NO CARD. The title is plain muted text with a chevron, the way the reply's
  * own clock is plain text: chrome around it made a list of side effects look
@@ -1604,7 +1606,7 @@ function Activity({ entries, live }: { entries: readonly ActivityEntry[]; live: 
   const waiting = steps.some((s) => s.status === 'waiting');
   // While the reply streams, the title and its dot hold steady between one
   // call's result and the next call (see `stepsTitle`).
-  const title = stepsTitle(steps, { live });
+  const title = stepsTitle(steps, { live, note: live ? liveNote(entries) : undefined });
   const running = !waiting && (live || steps.some((s) => s.status === 'running'));
   // Only a hold marks the title: it needs the reader. A failed step is marked
   // on its own row inside, not raised here (see `stepsTitle`).

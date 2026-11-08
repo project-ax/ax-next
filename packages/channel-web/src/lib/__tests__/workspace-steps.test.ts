@@ -124,22 +124,21 @@ describe('shapeSteps', () => {
       done({ id: 'a', status: 'waiting', phrase: 'Sending the email' }),
       done({ id: 'b', status: 'failed', phrase: 'Reading the calendar' }),
     ]);
-    expect(panel?.label).toBe('Used tools, 1 waiting for you');
+    expect(panel?.label).toBe('Used 2 tools, 1 waiting for you');
     expect(texts(panel)).toEqual([
       'Sending the email — waiting for you',
       "Reading the calendar — didn't finish",
     ]);
   });
 
-  it('titles a panel by what it mostly did, never by a count', () => {
+  it('titles a panel by counting what it did, kind by kind, in order', () => {
     const panel = shapeSteps([
       done({ id: 'a', name: 'Read', detail: 'src/a.ts' }),
       done({ id: 'b', name: 'Grep', detail: 'TODO' }),
       done({ id: 'c', name: 'Read', detail: 'src/b.ts' }),
       done({ id: 'd', name: 'Bash', detail: 'ls' }),
     ])!;
-    expect(panel.label).toBe('Looked through files and ran commands');
-    expect(panel.label).not.toMatch(/\d/);
+    expect(panel.label).toBe('Read 2 files, ran a search, ran a command');
     expect(panel.steps).toHaveLength(4);
   });
 
@@ -164,7 +163,7 @@ describe('shapeSteps', () => {
     ])!.steps;
     expect(stepsTitle(steps, { live: true })).toBe('Running a command…');
     // Once the turn has ended, the same steps read as the summary.
-    expect(stepsTitle(steps)).toBe('Looked through files and ran commands');
+    expect(stepsTitle(steps)).toBe('Read a file, ran a command');
   });
 
   it('a live title still says when a step is waiting for the reader', () => {
@@ -172,7 +171,7 @@ describe('shapeSteps', () => {
       done({ id: 'a', name: 'Read', detail: 'src/a.ts' }),
       done({ id: 'b', status: 'waiting', phrase: 'Sending the email' }),
     ])!.steps;
-    expect(stepsTitle(steps, { live: true })).toBe('Looked through files and used tools, 1 waiting for you');
+    expect(stepsTitle(steps, { live: true })).toBe('Read a file, sending the email, 1 waiting for you');
   });
 
   it('while a step is running, the title is that step in the present tense', () => {

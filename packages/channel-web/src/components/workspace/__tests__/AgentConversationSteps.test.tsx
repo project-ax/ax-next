@@ -102,7 +102,7 @@ describe('the step panel', () => {
     const panel = panelOf(container);
     expect(panel.querySelectorAll('li')).toHaveLength(0);
     const trigger = panel.querySelector('button')!;
-    expect(trigger.textContent).toBe('Ran commands and looked through files');
+    expect(trigger.textContent).toBe('Read a file, ran 2 commands');
     expect(trigger.getAttribute('aria-expanded')).toBe('false');
     fireEvent.click(trigger);
     expect(trigger.getAttribute('aria-expanded')).toBe('true');
@@ -143,7 +143,7 @@ describe('the step panel', () => {
     expect(rows(container)).toEqual(['Ran a command', "Ran a command — didn't finish", 'Ran a command']);
     // Shut, the title does not raise the failure — no words, no icon, no red.
     const title = panelOf(container).querySelector('button')!;
-    expect(title.textContent).toBe('Ran commands');
+    expect(title.textContent).toBe('Ran 3 commands');
     expect(title.querySelector('svg.text-destructive')).toBeNull();
     expect(title.className).not.toContain('text-destructive');
   });

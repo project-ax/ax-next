@@ -65,12 +65,12 @@ import {
   applyToolUse,
   liveStreamHolds,
   settleHolds,
-  shapeSteps,
   witnessHolds,
   type WorkspaceToolCall,
 } from '@/lib/workspace-steps';
 import { isOpenDecision } from '@/lib/workspace-types';
 import { connectorNamesFromRows } from '@/lib/connector-tool-label';
+import { appendLiveCall, appendLiveText, liveReplyMessages, type LiveSegment } from '@/lib/live-segments';
 import { continuationActions } from '@/lib/continuation-actions';
 import type { SendableAttachment } from '@/lib/workspace-attachments';
 import type { PhaseKind } from '@/server/types';
@@ -577,22 +577,28 @@ export function AgentView({
    * something below" a beat after the agent said hello.
    */
   const [rereading, setRereading] = useState(false);
-  const [streamed, setStreamed] = useState('');
   const [streaming, setStreaming] = useState(false);
   /**
    * The tool calls this turn has made so far (TASK-352).
    *
-   * Separate state from `streamed` because it is not a string append: a
+   * Separate state from the text because it is not a string append: a
    * `tool-result` REVISES a row the `tool-use` already added, so a running step
    * becomes done, failed or waiting in place. It is shaped into the panel by
    * the same `shapeSteps` the server's reload path calls, which is the whole
    * point — the live row and the reloaded row cannot word themselves
    * differently if only one function words them.
    *
-   * Transient, like `streamed`: it clears on `done`, when the re-read brings
+   * Transient, like the text: it clears on `done`, when the re-read brings
    * back the server's version of the same turn.
    */
   const [liveCalls, setLiveCalls] = useState<readonly WorkspaceToolCall[]>([]);
+  /**
+   * The streamed text, cut by `liveCalls` in the ORDER it happened: each
+   * segment is some text, then the calls that followed it — the cut a reload
+   * makes (see `lib/live-segments`). It is what lets the live reply put the
+   * agent's in-between words in the panel title instead of the reply body.
+   */
+  const [liveSegments, setLiveSegments] = useState<readonly LiveSegment[]>([]);
   /*
     Visuals the in-flight (or just-ended) turn showed, with the conversation
     they were shown in. Unlike the rest of the live turn this OUTLIVES `done`:
@@ -988,8 +994,8 @@ export function AgentView({
   const resetLiveTurn = useCallback(() => {
     setStreaming(false);
     setSent(null);
-    setStreamed('');
     setLiveCalls([]);
+    setLiveSegments([]);
     setWitnessed(new Set());
     setStreamConversation(null);
     setPhase(null);
@@ -998,8 +1004,8 @@ export function AgentView({
   useEffect(() => {
     setPastId(null);
     setSent(null);
-    setStreamed('');
     setLiveCalls([]);
+    setLiveSegments([]);
     setLiveVisuals(null);
     setWitnessed(new Set());
     setStreamConversation(null);
@@ -1051,8 +1057,8 @@ export function AgentView({
       cancelStop();
       setStopNotice(null);
       setStreaming(true);
-      setStreamed('');
-      setLiveCalls([]);
+        setLiveCalls([]);
+    setLiveSegments([]);
       visualsTurnRef.current += 1;
       setLiveVisuals(null);
       setWitnessed(new Set());
@@ -1064,14 +1070,19 @@ export function AgentView({
       setTurnError(null);
       await workspaceApi.streamReply(reqId, {
         signal: ac.signal,
-        onText: (chunk) => setStreamed((prev) => prev + chunk),
+        onText: (chunk) => {
+          setLiveSegments((prev) => appendLiveText(prev, chunk));
+        },
         /*
           What the agent is doing, as it does it (TASK-352). `applyToolUse`
           adds the row; `applyToolResult` revises the one already there, which
           is why this is a list of calls rather than an append-only list of
           sentences — a step that failed has to stop claiming it ran.
         */
-        onToolUse: (call) => setLiveCalls((prev) => applyToolUse(prev, call)),
+        onToolUse: (call) => {
+          setLiveCalls((prev) => applyToolUse(prev, call));
+          setLiveSegments((prev) => appendLiveCall(prev, call.toolCallId));
+        },
         onToolResult: (result) =>
           setLiveCalls((prev) => applyToolResult(prev, result)),
         onVisual: (visual) => {
@@ -1618,7 +1629,7 @@ export function AgentView({
     });
   }
   /*
-    The in-flight reply. `livePanel` is built by the SAME `shapeSteps` the
+    The in-flight reply. Its panels are built by the SAME `shapeSteps` the
     server calls on reload (TASK-352), so the step labels a reader sees while
     the turn runs are the ones still there after they refresh.
 
@@ -1638,25 +1649,15 @@ export function AgentView({
     issue" now rather than only after a reload.
   */
   const connectorNames = connectorNamesFromRows(detail.connectorTools);
-  const livePanel = shapeSteps(
+  const liveReply = liveReplyMessages(
+    liveSegments,
     settleHolds(liveCalls, liveStreamHolds(liveCalls, openInConversation, witnessed)),
     connectorNames,
   );
-  const hasLiveContent = streamed.length > 0 || livePanel !== null;
+  const hasLiveContent = liveReply.length > 0;
   if (streaming || hasLiveContent) {
     if (hasLiveContent) {
-      liveThread.push(
-        livePanel === null
-          ? { kind: 'agent', id: 'pending-agent', text: streamed, at: '' }
-          : {
-              kind: 'steps',
-              id: 'pending-agent',
-              text: streamed,
-              at: '',
-              stepsLabel: livePanel.label,
-              steps: livePanel.steps,
-            },
-      );
+      liveThread.push(...liveReply);
     } else {
       liveThread.push({
         kind: 'status',

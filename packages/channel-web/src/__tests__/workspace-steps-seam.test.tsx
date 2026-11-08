@@ -524,7 +524,7 @@ describe('a turn that ran tools', () => {
     // one on reload too. (Its title is the summary; the streaming one is the
     // latest step, by design.)
     expect(livePanels).toHaveLength(1);
-    expect(reloadLabel).toBe('Used tools and ran commands');
+    expect(reloadLabel).toBe('Filing a Linear issue, ran a command');
     expect(livePanels[0]!.label).toBe('Running a command…');
 
     // The sentences agree, which is the part one shaping function owns.
@@ -636,7 +636,7 @@ describe('a turn that ran tools', () => {
     }
     // Still one producer, so the two paths cannot drift into two wordings.
     expect(onLive.steps).toEqual(onReload.steps);
-    expect(onReload.label).toBe('Ran commands and edited files');
+    expect(onReload.label).toBe('Edited a file, ran 2 commands');
     expect(onLive.label).toBe('Running a command…');
     // The file BODY is not a step row. It is the one input field that would
     // turn this list back into a wall of text.

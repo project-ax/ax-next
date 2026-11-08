@@ -158,7 +158,7 @@ export interface WorkspaceStep {
 
 /**
  * The handful of things an agent does over and over, which is what lets a
- * panel say "Looked through files and ran commands" instead of listing 48
+ * panel say "Read 4 files, ran 31 commands" instead of listing 48
  * rows — and lets a run of the same kind fold into one "Ran 6 commands" row.
  *
  * Classified off the BUILT-IN tool names only (both runners share them:
@@ -555,18 +555,20 @@ function stepName(call: WorkspaceToolCall, connectors: ConnectorNames | undefine
  * happened and nothing about what; "read 12 files, ran 31 commands" is the
  * same list again in a sentence. So:
  *
- *   * While a step is still going — or, with `live`, while the reply is still
- *     streaming at all — the title is the LATEST step, present tense:
- *     "Reading index.ts…". The line moves as the agent does.
+ *   * While the reply streams (`live`), the agent's own latest words when the
+ *     caller has them (`note`): "Working out the leg motion with a script."
+ *   * Otherwise, while a step is still going — or, with `live`, while the
+ *     reply is still streaming at all — the title is the LATEST step, present
+ *     tense: "Reading index.ts…". The line moves as the agent does.
  *
  *     WHY `live` AND NOT JUST "IS A STEP RUNNING". Between one call's result
  *     and the next call, nothing is running for a beat while the model
  *     decides. Keyed on `running` alone, the title snapped to the end-of-turn
  *     summary for that beat and back again on the next call — a flicker on
  *     every step. A turn that is still going stays in the present tense.
- *   * After, it is the one or two kinds of work the turn was mostly made of —
- *     "Looked through files and ran commands". A panel of one step is just
- *     that step.
+ *   * After, what it did, counted kind by kind in the order each came up —
+ *     "Read a file, ran 2 commands", as Claude does (Vinay, 2026-11-08). A
+ *     panel of one step is just that step.
  *   * Then ", N waiting for you" when a step is held, because that one needs
  *     the reader to act.
  *
@@ -582,11 +584,14 @@ function stepName(call: WorkspaceToolCall, connectors: ConnectorNames | undefine
  */
 export function stepsTitle(
   steps: readonly WorkspaceStep[],
-  opts: { live?: boolean } = {},
+  opts: { live?: boolean; note?: string | undefined } = {},
 ): string {
   if (steps.length === 0) return '';
   const waiting = steps.filter((s) => s.status === 'waiting').length;
   const running = [...steps].reverse().find((s) => s.status === 'running');
+  // The agent's own words for what it is doing, while it does it. A hold
+  // still outranks them: the turn is parked on the reader.
+  if (opts.live === true && waiting === 0 && opts.note !== undefined) return opts.note;
   // A hold outranks "live": the turn is parked on the reader, not working.
   const current = running ?? (opts.live === true && waiting === 0 ? steps[steps.length - 1] : undefined);
   if (current !== undefined) return `${current.doing ?? baseText(current)}…`;
@@ -603,44 +608,49 @@ function baseText(step: WorkspaceStep): string {
   return step.status === 'done' || at === -1 ? step.text : step.text.slice(0, at);
 }
 
-type SummaryKind = 'explore' | 'command' | 'edit' | 'web' | 'other';
-
-const SUMMARY_WORDS: Record<SummaryKind, string> = {
-  explore: 'Looked through files',
-  command: 'Ran commands',
-  edit: 'Edited files',
-  web: 'Searched the web',
-  other: 'Used tools',
+/**
+ * How each kind of step counts in the finished title, in Claude's register:
+ * "Read a file, ran 2 commands". Lower case, because they are joined into one
+ * sentence; the first part is capitalised by the caller.
+ */
+const COUNT_WORDS: Record<Exclude<StepKind, 'other'>, (n: number) => string> = {
+  read: (n) => (n === 1 ? 'read a file' : `read ${n} files`),
+  search: (n) => (n === 1 ? 'ran a search' : `ran ${n} searches`),
+  command: (n) => (n === 1 ? 'ran a command' : `ran ${n} commands`),
+  edit: (n) => (n === 1 ? 'edited a file' : `made ${n} edits`),
+  web: (n) => (n === 1 ? 'searched the web' : `searched the web ${n} times`),
 };
 
-function summaryKind(kind: StepKind | undefined): SummaryKind {
-  if (kind === 'read' || kind === 'search') return 'explore';
-  if (kind === 'command' || kind === 'edit' || kind === 'web') return kind;
-  return 'other';
+/** "Saved notes" reads "saved notes" mid-sentence; "Linear · Create issue" stays put. */
+function midSentence(text: string): string {
+  return /^[A-Z][a-z]/.test(text) && !text.includes(' · ') ? text.charAt(0).toLowerCase() + text.slice(1) : text;
 }
 
 /**
- * The one or two kinds the turn mostly was. Ties go to whichever came first,
- * so the title reads in the order the work happened.
+ * What the turn did, counted by kind in the order each kind first came up:
+ * "Read a file, ran 2 commands". A tool with no kind of its own names itself
+ * when it is the only one of its sort ("Saved pelican bike"), however many
+ * times it ran; several different ones become "used N tools".
  */
 function summary(steps: readonly WorkspaceStep[]): string {
-  const counts = new Map<SummaryKind, number>();
+  const order: (StepKind | 'other')[] = [];
+  const counts = new Map<StepKind | 'other', number>();
   for (const s of steps) {
-    const k = summaryKind(s.kind);
+    const k = s.kind ?? 'other';
+    if (!counts.has(k)) order.push(k);
     counts.set(k, (counts.get(k) ?? 0) + 1);
   }
-  const ranked = [...counts.entries()].sort((a, b) => b[1] - a[1]).map(([k]) => k);
-  // `other` alone is a pile of distinct tools; if every one of them did the
-  // same thing, that thing is the better title.
-  if (ranked.length === 1 && ranked[0] === 'other') {
-    const distinct = new Set(steps.map(baseText));
-    if (distinct.size === 1) return baseText(steps[0]!);
-  }
-  const [first, second] = ranked;
-  const head = SUMMARY_WORDS[first!];
-  if (second === undefined) return head;
-  const tail = SUMMARY_WORDS[second];
-  return `${head} and ${tail.charAt(0).toLowerCase()}${tail.slice(1)}`;
+  const others = steps.filter((s) => (s.kind ?? 'other') === 'other');
+  const parts = order.map((k) => {
+    const n = counts.get(k)!;
+    if (k !== 'other') return COUNT_WORDS[k](n);
+    const distinct = new Set(others.map(baseText));
+    // One tool, however many times: its own words say more than a count.
+    if (distinct.size === 1) return midSentence(baseText(others[0]!));
+    return n === 1 ? 'used a tool' : `used ${n} tools`;
+  });
+  const joined = parts.join(', ');
+  return joined.charAt(0).toUpperCase() + joined.slice(1);
 }
 
 /**
