@@ -698,8 +698,10 @@ host's container and a V8 abort ends it alone but the container's limit does not
 under `memory.oom.group` (Kubernetes sets it on cgroup v2 by default) the kernel ends every
 process in the container, the host too, and `oom_score_adj` only chooses who is first
 (measured: 600 MiB, the host holding 300 MB, a heavy page: exit 137, whatever the
-worker's heap). What is guaranteed is that the worker takes no more than its share; a
-host that is itself past the other 70% is not saved by it. A page that needs more
+worker's heap). The worker is sized so that its heap, its young generation and the
+64 MB measured for its other memory fit in its share. That is a measurement and not a
+bound: memory outside the heap (an encoded answer, its copy in the channel) is not
+limited by it, and a host that is itself past the other 70% is not saved by it. A page that needs more
 memory than the worker has is aborted by V8, one that holds its CPU is killed at the
 deadline, one that crashes it is gone, and the pool answers each with a refusal
 (`worker_oom`, `worker_timeout`, `worker_crashed`) and starts another worker for the
