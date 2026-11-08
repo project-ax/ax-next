@@ -8,7 +8,7 @@ import {
   type HookBus,
   type Logger,
 } from '@ax/core';
-import { createHtmlPreparer, type HtmlPreparer, type PoolRefusal, type PrepareRefusal } from '@ax/frame-guard';
+import { createHtmlPreparer, MAX_PREPARED_BYTES, type HtmlPreparer, type PoolRefusal, type PrepareRefusal } from '@ax/frame-guard';
 import { describeMediaType, downloadFilename, type ArtifactPreview } from './media.js';
 import type { ArtifactStore } from './store.js';
 import { linkBindingFor, verifyViewToken, type ViewTokenClaims } from './view-token.js';
@@ -135,8 +135,8 @@ export const MAX_HTML_TRANSFORM_BYTES = 4 * 1024 * 1024;
 
 /** Prepared pages kept so a reload of the same bytes skips the transform: at most this many... */
 const HTML_CACHE_MAX_ENTRIES = 16;
-/** ...and at most this many bytes of prepared output in all (a page is at most 1.5x its input and a little over, 6.1 MiB). */
-const HTML_CACHE_MAX_BYTES = 32 * 1024 * 1024;
+/** ...and at most this many bytes of prepared output in all: room for four of the largest page there can be (8 MiB of UTF-8, counted in bytes where the worker makes them). */
+const HTML_CACHE_MAX_BYTES = 4 * MAX_PREPARED_BYTES;
 /**
  * Refusals are kept apart from the pages, in a much bigger place: each is a 64-character key and a code, a few
  * hundred bytes in all, so 4,096 of them are about a megabyte. They have to be bigger than the pages' because

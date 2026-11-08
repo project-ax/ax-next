@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { CHILD_FRAME_TAGS, DSD_ATTRS, FRAME_GUARD_SOURCE } from '../index.js';
+import { CHILD_FRAME_TAGS, DSD_ATTRS, FRAME_GUARD_SOURCE, MAX_PREPARED_BYTES } from '../index.js';
 
 describe('@ax/frame-guard', () => {
   it('exposes the guard source as a non-empty string', () => {
@@ -12,6 +12,11 @@ describe('@ax/frame-guard', () => {
     // opener changes how the tokenizer treats the rest of the script.
     expect(FRAME_GUARD_SOURCE.toLowerCase()).not.toContain('</script');
     expect(FRAME_GUARD_SOURCE).not.toContain('<!--');
+  });
+
+  it('exposes the most a prepared page may be, in bytes, for the cache of whatever serves it', () => {
+    // Twice the largest page there can be as input (4 MiB): the origin keeps room for four of them.
+    expect(MAX_PREPARED_BYTES).toBe(8 * 1024 * 1024);
   });
 
   it('exposes non-empty constant lists', () => {

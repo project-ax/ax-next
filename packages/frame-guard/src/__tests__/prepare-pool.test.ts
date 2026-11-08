@@ -2,7 +2,7 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createHtmlPreparer, prepareArtifactHtml, type HtmlPreparer, type HtmlPreparerOptions, type PreparedPage } from '../index.js';
-import { answerJob, WORKER_ARG, WORKER_BUDGET_MS } from '../prepare-worker.js';
+import { answerJob, MAX_PREPARED_BYTES, WORKER_ARG, WORKER_BUDGET_MS } from '../prepare-worker.js';
 import { escapeAmplification } from './hostile-pages.js';
 
 // Watches the transform, so a test can see with what limits the worker's part calls it.
@@ -534,6 +534,42 @@ describe("the real worker's part: what it makes of a page", () => {
 
   it('refuses the page that ended the host (200 KiB of quotes, 80 times over) in the worker too, without making it', () => {
     expect(answerJob({ id: 3, html: escapeAmplification(4 * MiB, 3) })).toEqual({ id: 3, ok: false, reason: 'output_too_large' });
+  });
+
+  describe('the bytes of a prepared page are counted where they are made', () => {
+    // The transform's ceiling is on characters, and a character is up to three bytes of UTF-8: a page of 4 MiB with a
+    // CJK attribute (3 bytes a character) on a formatting element that a following tag brings back 55 times came back as
+    // 16.8 MB in 350 ms, the fourth review found, which is half of the 32 MiB the origin keeps and 16.8 MB to send.
+    const cjkPage = (copies: number): string => {
+      const page = `<div><b x='${'\u4e00'.repeat(100_000)}'></div>${'<div><span></div>'.repeat(copies)}`;
+      // `</x>` is read and dropped, so it pads the page to 4 MiB without being in what comes back.
+      const room = 4 * MiB - Buffer.byteLength(page);
+      return '</x>'.repeat(Math.floor(room / 4)) + page;
+    };
+
+    it('refuses a page whose characters are within the ceiling and whose bytes are not', () => {
+      const html = cjkPage(55);
+      expect(Buffer.byteLength(html)).toBeLessThanOrEqual(4 * MiB);
+      // As characters it is allowed: 5.5 million of 6.3.
+      const made = prepareArtifactHtml(html, { budgetMs: 60_000 });
+      expect(made.ok).toBe(true);
+      expect(made.ok && made.html.length).toBeLessThan(6 * MiB);
+      expect(made.ok && Buffer.byteLength(made.html)).toBeGreaterThan(MAX_PREPARED_BYTES);
+      // As bytes it is not, and the worker says so instead of sending 16 MB.
+      expect(answerJob({ id: 4, html })).toEqual({ id: 4, ok: false, reason: 'output_too_large' });
+    });
+
+    it('serves a page of the same characters that comes back at the size it went in', () => {
+      const html = `<!doctype html><p>${'\u4e00'.repeat(1_200_000)}</p>`; // 3.6 MB
+      const answer = answerJob({ id: 5, html });
+      expect(answer.ok).toBe(true);
+      expect(answer.ok && answer.bytes.byteLength).toBeGreaterThan(3 * MiB);
+      expect(answer.ok && answer.bytes.byteLength).toBeLessThan(MAX_PREPARED_BYTES);
+    });
+
+    it('is twice the largest page there can be as input, so that no page that is only written out as it was comes near', () => {
+      expect(MAX_PREPARED_BYTES).toBe(2 * 4 * MiB);
+    });
   });
 
   it('does nothing when it is imported: it takes hold of no channel unless it is started as the worker', () => {

@@ -34,6 +34,16 @@ import { prepareArtifactHtml, type PrepareRefusal } from './prepare-html.js';
 export const WORKER_BUDGET_MS = 1500;
 
 /**
+ * The most a prepared page may be, in bytes of UTF-8: what is sent back, kept in the origin's cache and served. The
+ * transform's own ceiling is in characters (6 MiB and a little over), and a character is up to three bytes, so a
+ * page of 4 MiB whose CJK attribute was rebuilt 55 times came back as 16.8 MB, a response that large and half of the
+ * 32 MiB the origin keeps. Where the bytes are made is where they are counted: for ASCII the character ceiling is the
+ * lower of the two and this never refuses anything; it is for the pages whose characters are wider. Twice the largest
+ * page there can be as input (4 MiB), which no page that is merely written out as it was came near.
+ */
+export const MAX_PREPARED_BYTES = 8 * 1024 * 1024;
+
+/**
  * The argument the pool starts this process with. The entry does nothing without it, so that
  * importing this file (a test, the pool itself) never takes hold of the channel of the process
  * that imported it, which for a test runner is the runner's own.
@@ -63,7 +73,9 @@ export interface WorkerReady {
 export function answerJob(job: WorkerJob): WorkerAnswer {
   const result = prepareArtifactHtml(job.html, { budgetMs: WORKER_BUDGET_MS });
   if (!result.ok) return { id: job.id, ok: false, reason: result.reason };
-  return { id: job.id, ok: true, bytes: new TextEncoder().encode(result.html) };
+  const bytes = new TextEncoder().encode(result.html);
+  if (bytes.byteLength > MAX_PREPARED_BYTES) return { id: job.id, ok: false, reason: 'output_too_large' };
+  return { id: job.id, ok: true, bytes };
 }
 
 function isJob(message: unknown): message is WorkerJob {
