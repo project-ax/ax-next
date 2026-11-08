@@ -687,9 +687,10 @@ the process that has it: every page goes to a worker PROCESS (`createHtmlPrepare
 forks the built `prepare-worker.js` of `@ax/frame-guard`: one page at a time, an
 empty environment, no standard streams, only the page over its channel, a heap limit
 V8 enforces on it with the young generation pinned so that the limit is the same on
-every machine, V8 single-threaded so that the lower priority the worker asks for
-reaches all of its work (on Linux a priority belongs to a thread), a wall-clock
-deadline, a short line of waiting pages, and a busy rule). The heap is sized from the
+every machine, the lower priority the worker asks for set on every one of its
+threads (on Linux a priority belongs to a thread, and V8's helpers are made before
+the worker can ask), a wall-clock deadline, a short line of waiting pages, and a busy
+rule). The heap is sized from the
 container's memory limit (30% of it, less the young generation and 64 MB of the
 worker's other memory, at most 384 MB: 195 MB in a 1 GiB container, the full 384 from
 about 1.6 GiB, read again for each worker), because the worker is a process of the

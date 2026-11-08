@@ -1,4 +1,4 @@
-import { writeFileSync } from 'node:fs';
+import { readdirSync, writeFileSync } from 'node:fs';
 import { getPriority, setPriority } from 'node:os';
 import { getHeapStatistics } from 'node:v8';
 import { MAX_PREPARED_BYTES, prepareArtifactHtml, type PrepareRefusal } from './prepare-html.js';
@@ -33,10 +33,9 @@ import { MAX_PREPARED_BYTES, prepareArtifactHtml, type PrepareRefusal } from './
 //
 // It is also the process to give up when the machine is short: it asks the kernel to end it
 // first when it must end one (`oom_score_adj`), and to give the host's threads the CPU first (a
-// lower priority; on Linux that belongs to one thread, so the pool starts it with
-// `--single-threaded` and all of V8's work is on the thread that was lowered). Both are only ever
-// a request to be treated worse, which needs no privilege, and both are skipped where they
-// cannot be made.
+// lower priority, which on Linux belongs to a thread, so it is set on each of the process's
+// threads, V8's helpers included). Both are only ever a request to be treated worse, which needs
+// no privilege, and both are skipped where they cannot be made.
 //
 // Neither is what keeps the host alive when the CONTAINER's memory limit is met. `oom_score_adj`
 // only chooses who is first; under `memory.oom.group` (Kubernetes sets it on cgroup v2 by default) the
@@ -137,12 +136,37 @@ function askToBeGivenUpFirst(): void {
     // Not Linux, or a sandbox with no /proc to write: the heap limit is still what holds.
   }
   try {
-    // Ten steps below the host (the most the scheduler is asked to tell apart), whatever the host runs at. This is the thread that
-    // calls it, and the only one the pool lets V8 run its work on (`--single-threaded`); the threads V8 made before this line
-    // would have stayed at the priority they were given.
-    setPriority(Math.min(19, getPriority() + 10));
+    // Ten steps below the host (the most the scheduler is asked to tell apart), whatever the host runs at.
+    const nice = Math.min(19, getPriority() + 10);
+    setPriority(nice);
+    lowerTheOtherThreads(nice);
   } catch {
     // Nothing is lost by running at the priority it was given.
+  }
+}
+
+/**
+ * On Linux a nice value belongs to a thread, and `setPriority(pid)` reaches only the main one. V8 made its helper threads (the
+ * collector, the compiler) before this runs, and measured, 29 to 50% of a worker's CPU on a heavy page ran on them at the priority
+ * the host has. They are tasks of this process, listed in /proc/self/task, and setpriority takes a task id; a thread made from here
+ * on takes the one that makes it (the main thread, already lowered). Each is tried on its own: one that is gone is no reason to
+ * leave the rest. (Elsewhere there is no /proc, and a process's priority is the process's.)
+ */
+function lowerTheOtherThreads(nice: number): void {
+  let tasks: string[];
+  try {
+    tasks = readdirSync('/proc/self/task');
+  } catch {
+    return;
+  }
+  for (const task of tasks) {
+    const id = Number(task);
+    if (id === process.pid) continue;
+    try {
+      setPriority(id, nice);
+    } catch {
+      // Ended since it was listed, or not ours to lower.
+    }
   }
 }
 

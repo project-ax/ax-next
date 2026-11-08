@@ -137,7 +137,7 @@ describe('a page goes to the worker and comes back as bytes', () => {
       // The environment (a NODE_OPTIONS of the host's is the one that would change the limits the worker is given),
       // Node's flags (the pool's two, and none of ours), and the arguments (the one that says it is the worker).
       expect(said(await preparer().prepare('env:'))).toBe(
-        `[] ${JSON.stringify(['--max-old-space-size=384', '--max-semi-space-size=16', '--single-threaded'])} ${JSON.stringify([WORKER_ARG])}`,
+        `[] ${JSON.stringify(['--max-old-space-size=384', '--max-semi-space-size=16'])} ${JSON.stringify([WORKER_ARG])}`,
       );
     } finally {
       delete process.env.AX_POOL_TEST_SECRET;
@@ -150,7 +150,7 @@ describe('a page goes to the worker and comes back as bytes', () => {
   });
 
   it('gives the worker the heap limit it was asked for, and pins the young generation', async () => {
-    expect(said(await preparer({ maxOldGenerationSizeMb: 200 }).prepare('env:'))).toContain('"--max-old-space-size=200","--max-semi-space-size=16","--single-threaded"');
+    expect(said(await preparer({ maxOldGenerationSizeMb: 200 }).prepare('env:'))).toContain('"--max-old-space-size=200","--max-semi-space-size=16"');
   });
 });
 

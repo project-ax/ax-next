@@ -139,9 +139,10 @@ const DEFAULT_WORKER_URL = new URL('./prepare-worker.js', import.meta.url);
  * in one token: a script, a data URI, a tag with 200 long attributes) need between 144 and 160 MB, nearly all
  * of it the joins parse5 makes while it builds the token a character at a time (about 32 bytes a character).
  * Text inside a `<table>`, which parse5 holds a token at a time (56 bytes each), is the heaviest: 4 MiB of it
- * needs 352 to 368 MB, and is refused whichever way it goes (as out of memory under a smaller limit; at this one as too
- * slow, because the collector's work near the limit uses up the transform's CPU budget: measured, six times in six). A
- * tag whose name is 4 MiB would need more, and is refused as too long before it is read. 384 is 2.4 times the 160. It is
+ * needs 352 to 368 MB, and is served or refused according to how the garbage collector's last run went (refused as
+ * out of memory, or as too slow when the collector's work near the limit has used up the transform's CPU budget); a refusal
+ * as `worker_oom` is the answer to those, and it is remembered only for a little while for that reason. A tag whose
+ * name is 4 MiB would need more, and is refused as too long before it is read. 384 is 2.4 times the 160. It is
  * the most a worker is given: in a container with a memory limit it is given less when this would not fit beside
  * the host (`oldGenerationFor`).
  */
@@ -159,17 +160,6 @@ const MIN_OLD_GENERATION_MB = 16;
  * everywhere, so what a page needs is too and the check that the worker has the limit asked for is exact.
  */
 const SEMI_SPACE_MB = 16;
-/**
- * V8 does its garbage collection and part of its compiling on helper threads, which exist before the worker can lower its own
- * priority, and on Linux a nice value belongs to one thread: measured (Node 24, Linux), 29 to 50% of a worker's CPU on pages
- * of 190 KB to 4 MiB ran on four helper threads at the host's priority, where its request to wait for the host's CPU did not
- * reach. `--single-threaded` keeps all of V8's work on the one thread that was lowered (0% elsewhere; prepare-pool-shapes.test.ts
- * looks). It costs nothing on a page of a few hundred bytes (1 ms), 10 ms on one of 190 KB (40 to 45, then 50), and 4 to
- * 30% of the time of the pages of 4 MiB (0.40 to 0.55 s, then 0.51 to 0.58 s); the CPU spent in all is lower. The transform's
- * budget is this thread's CPU time, so the collector's work now counts toward it, which beside it did not. The heap limit
- * the worker reports is the same.
- */
-export const WORKER_V8_FLAGS: readonly string[] = ['--single-threaded'];
 const YOUNG_GENERATION_MB = 3 * SEMI_SPACE_MB;
 /** How far the heap limit a worker reports may be from `old + young`: V8 rounds to pages. */
 const LIMIT_TOLERANCE_MB = 2;
@@ -177,14 +167,14 @@ const MiB = 1024 * 1024;
 /**
  * How much of the container's memory limit a worker may take, resident, in all. The container is the host's and the worker's
  * together, and a page can fill the worker's heap, so the heap is sized to leave the host the rest: 70% of the limit is the
- * host's. At the 2 GiB the production values give the host that is 614 MB for the worker, and it took 475 at most, measured.
+ * host's. At the 2 GiB the production values give the host that is 614 MB for the worker, and it took 453 at most, measured.
  */
 const WORKER_SHARE_OF_CONTAINER_PERCENT = 30;
 /**
- * What a worker is resident beyond its heap limit: V8's own and the runtime's (a worker with nothing to do holds 56 MB), the page's
+ * What a worker is resident beyond its heap limit: V8's own and the runtime's (a worker with nothing to do holds 58 MB), the page's
  * bytes, the answer's, and the copy of it that the channel makes. Measured with a page that fills the heap (ending the worker) and
- * with ones that are served, at limits of 176 to 432 MB (old 128 to 384): 35 to 55 MB over the limit. 64 leaves room for an answer of
- * 8 MiB.
+ * with ones that are served, at limits of 176 to 432 MB (old 128 to 384): up to 50 MB over the limit. 64 leaves room for an answer
+ * of 8 MiB.
  */
 const WORKER_OVERHEAD_MB = 64;
 /** A container limit past this is not a limit (Node answers 2^64, or 2^63 less a page, where the cgroup says "max"). */
@@ -536,7 +526,7 @@ class WorkerPreparer implements HtmlPreparer {
     const child = fork(this.entry, [WORKER_ARG], {
       // The pool's flags first, so that the limit asked for is the one given; then the caller's (for tests). None of
       // this process's own flags are passed on, whatever it was started with.
-      execArgv: [`--max-old-space-size=${oldMb}`, `--max-semi-space-size=${SEMI_SPACE_MB}`, ...WORKER_V8_FLAGS, ...this.execArgv],
+      execArgv: [`--max-old-space-size=${oldMb}`, `--max-semi-space-size=${SEMI_SPACE_MB}`, ...this.execArgv],
       // No environment is handed to it (a NODE_OPTIONS of the host's would otherwise change the limits, and the host's secrets are
       // not the worker's to be given). That is what is handed, not what is out of reach: see the end of the header.
       env: {},
