@@ -16,6 +16,16 @@ jobs:
     # ubuntu26.04-x64"), so every run failed before a single test. Move back to
     # ubuntu-latest once Playwright supports 26.04.
     runs-on: ubuntu-24.04
+    # A PR runs ONE job, still named `test`, over the packages it affects. A
+    # push to main runs the full suite as four parallel shards — one 4-core
+    # runner took ~22 minutes for it, most of that the slow packages queueing
+    # for the same four cores. The split lives in scripts/ci-test-shard.sh
+    # (with a test that every package lands in exactly one shard).
+    name: ${{ matrix.shard == 'pr' && 'test' || format('test ({0})', matrix.shard) }}
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(github.event_name == 'pull_request' && '["pr"]' || '["routines", "web", "agents", "rest"]') }}
     permissions:
       contents: read
     env:
@@ -72,7 +82,9 @@ jobs:
           cache: 'pnpm'
       - run: pnpm install --frozen-lockfile
       - run: pnpm typecheck
+      # Repo-wide checks run once: on the PR job, or on main's `rest` shard.
       - run: pnpm lint
+        if: matrix.shard == 'pr' || matrix.shard == 'rest'
       # The policy rule table's `capability` clauses are a security claim
       # (design H3) rendered verbatim in the permissions rail. `rules.test.ts`
       # asserts the same thing, but this step names the offending rule and its
@@ -80,6 +92,7 @@ jobs:
       # not code, and a vitest diff of the whole rule table is not a legible
       # message. Cheap enough to run unconditionally.
       - run: pnpm --filter @ax/tool-policy lint:capabilities
+        if: matrix.shard == 'pr' || matrix.shard == 'rest'
       # Pull the container images the suites need BEFORE the test phase, so a
       # Docker Hub blip mid-run cannot fail a package.
       #
@@ -179,6 +192,7 @@ jobs:
       # present whenever `CI` is set, so removing this step fails loudly rather than
       # deleting the coverage again.
       - name: Install zsh (the shell the skill blocks actually run under)
+        if: matrix.shard != 'routines' && matrix.shard != 'agents'
         run: sudo apt-get update -qq && sudo apt-get install -y -qq zsh
       # Two hostile-content suites drive a real Chromium:
       #  - packages/channel-web/src/__tests__/visual-hostile.browser.test.ts
@@ -186,6 +200,8 @@ jobs:
       #  - packages/attachments/src/__tests__/artifacts-webrtc-hostile.browser.test.ts
       #    (artifact HTML served by the real content origin can't reach a UDP/TCP
       #    canary through WebRTC or a child frame; TASK-1082)
+      # (The browser and zsh installs below are skipped only on main's
+      # `routines` and `agents` shards, whose packages use neither.)
       # Locally each skips when Chromium isn't installed; here they must RUN, so
       # each fails outright when `CI` is set and the browser is missing. This step
       # is what makes it present, for both packages: one install into
@@ -197,6 +213,7 @@ jobs:
       # key); `--with-deps` runs every time because the apt packages it installs
       # aren't in the cache.
       - name: Resolve Playwright version
+        if: matrix.shard != 'routines' && matrix.shard != 'agents'
         id: playwright
         working-directory: packages/channel-web
         run: |
@@ -212,11 +229,13 @@ jobs:
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
       - name: Cache Playwright browsers
+        if: matrix.shard != 'routines' && matrix.shard != 'agents'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/ms-playwright
           key: playwright-${{ runner.os }}-${{ steps.playwright.outputs.version }}-chromium
       - name: Install Playwright Chromium
+        if: matrix.shard != 'routines' && matrix.shard != 'agents'
         run: pnpm --filter @ax/channel-web exec playwright install --with-deps chromium
       # Tests: affected packages + dependents on PRs (fast feedback), or the full
       # suite on a PR that changes a repo-wide input such as the lockfile (the
@@ -322,8 +341,9 @@ jobs:
           pnpm test:scripts
       - name: Test (full suite)
         if: github.event_name != 'pull_request'
-        run: pnpm test
+        run: scripts/ci-test-shard.sh "${{ matrix.shard }}"
       - run: pnpm audit --audit-level moderate
+        if: matrix.shard == 'pr' || matrix.shard == 'rest'
 
   # Renders the Helm chart and runs its render-time guard suite. Without this
   # lane those guards (single-replica chat guard, blob-root and filestore guards)
