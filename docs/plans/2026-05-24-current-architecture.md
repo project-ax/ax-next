@@ -692,7 +692,7 @@ rule). A page that needs more memory than the worker has is aborted by V8, one t
 holds its CPU is killed at the deadline, one that crashes it or is killed by the
 kernel for the pod's memory is gone, and the pool answers each with a refusal
 (`worker_oom`, `worker_timeout`, `worker_failed`) and starts another worker for the
-next page: the host sees a refused page and nothing more. (It was a thread, and a
+next page: for a worker that FAILS, the host sees a refused page and nothing more. (It was a thread, and a
 thread is not a boundary: when a page needed far more heap than the thread's limit,
 V8 aborted the whole host, at the 384 MB default for a page 4 MiB long that the
 transform wrote out at three times its length. Even with the transform's own bounds,
@@ -702,8 +702,15 @@ worker says what heap limit it really has when it starts, and one that is not th
 limit asked for is not used; it asks the kernel to kill it before anything else in
 the pod and to give the CPU to the host first; and it is ended when the host lets go
 of the channel and when it has had nothing to do for 20 seconds (one that has
-prepared a heavy page holds 250 MB or more until it ends). It is not a sandbox: same
-user, same files. The transform bounds its own work as well (parse depth, node,
+prepared a heavy page holds 250 MB or more until it ends). The host checks each answer
+(its shape, at most 8 MiB, the guard in it), which stops a worker that is wrong. It is
+not a sandbox, and it holds against a worker that fails, not one that has been taken
+over (a flaw in the JavaScript engine that a page reaches, say): that one is the same
+user in the same pod, and can signal the host, read the host's environment from
+`/proc`, and write to the channel bytes that Node's reader throws on, which ends the
+host (measured, for `advanced` and for `json` serialization alike). What would close
+it is the worker's own user or pod, a syscall filter, or a channel the host reads
+itself with a bound; none is built. The transform bounds its own work as well (parse depth, node,
 attribute and call counts, the characters the serializer would have to escape, a
 result of at most four times the page and never over 8 MiB, in characters and in
 bytes, and a CPU-time budget: 500 ms by default, 1.5 s only inside the worker). A

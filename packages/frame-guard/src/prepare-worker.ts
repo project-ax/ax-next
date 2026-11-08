@@ -9,14 +9,27 @@ import { MAX_PREPARED_BYTES, prepareArtifactHtml, type PrepareRefusal } from './
 // It reads no file, uses no network and takes nothing from the environment after it has
 // loaded, and is started with an empty one.
 //
-// A process, because that is the one boundary that holds. The transform runs a third-party
-// parser over bytes an agent chose, and the worst such a page can do is not to be slow but
-// to need more memory than anyone thought of: a thread that runs out takes the whole process
-// with it (V8 aborts it rather than end the thread when the need is far over the limit), and
-// so would anything else that went wrong here. This process can run out of memory, be killed
-// or crash, and what the host sees is a page that was not prepared. It is not a sandbox: it
-// runs as the same user, with the same files. What it buys is that the work, and the memory
-// and the crashes that come with it, are somewhere the host is not.
+// A process, because that is the boundary that holds against a worker that FAILS. The
+// transform runs a third-party parser over bytes an agent chose, and the worst such a page
+// can do is not to be slow but to need more memory than anyone thought of: a thread that
+// runs out takes the whole process with it (V8 aborts it rather than end the thread when the
+// need is far over the limit), and so would anything else that went wrong here. This process
+// can run out of its heap, hang or crash, and what the host sees is a page that was not
+// prepared. What it buys is that the work, and the memory and the crashes that come with it,
+// are somewhere the host is not.
+//
+// It is not a sandbox, and it holds against nothing that has been TAKEN OVER (a flaw in the
+// JavaScript engine that a page's bytes reach, say). It runs as the same user in the same
+// pod: it can signal the host, read the host's environment from /proc (measured, in a
+// container with every capability dropped), and write to the channel what the host's Node
+// cannot read, which ends the host with an uncaught exception. (Measured: it is thrown from
+// the channel's read callback, so no handler on the child sees it, and only a process-wide
+// `uncaughtException` handler does, which a library must not install; `serialization: 'json'`
+// throws the same way, and a frame that announces gigabytes makes the host hold them first.)
+// The host checks what it is sent (an answer's shape, its length, that the guard is in it),
+// which stops a worker that is wrong and not one that is hostile. Against that the way is the
+// worker's own user or pod, a syscall filter, or a channel the host reads itself with a
+// bound; none of them is here.
 //
 // It is also the process to give up when the machine is short: it asks the kernel to kill it
 // before the other processes of the pod (`oom_score_adj`), and to give the host's threads the

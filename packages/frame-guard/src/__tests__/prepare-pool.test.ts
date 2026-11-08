@@ -2,7 +2,7 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createHtmlPreparer, prepareArtifactHtml, type HtmlPreparer, type HtmlPreparerOptions, type PreparedPage } from '../index.js';
-import { MAX_PREPARED_BYTES } from '../prepare-html.js';
+import { GUARD_MARKER, MAX_PREPARED_BYTES } from '../prepare-html.js';
 import { answerJob, handleJob, WORKER_ARG, WORKER_BUDGET_MS, type WorkerAnswer } from '../prepare-worker.js';
 import { escapeAmplification } from './hostile-pages.js';
 
@@ -34,9 +34,11 @@ function preparer(options: HtmlPreparerOptions = {}): HtmlPreparer {
   return p;
 }
 
-/** What a page came to, as a string. */
+/** What a page came to, as a string. The stand-in workers put the guard in front of what they say (the pool wants it there); it is taken off here. */
 function said(page: PreparedPage): string {
-  return page.ok ? new TextDecoder().decode(page.bytes) : `refused:${page.reason}`;
+  if (!page.ok) return `refused:${page.reason}`;
+  const text = new TextDecoder().decode(page.bytes);
+  return text.startsWith(GUARD_MARKER) ? text.slice(GUARD_MARKER.length) : text;
 }
 /** The process a stand-in worker ran in: its `echo` answers `pid:argument`. */
 const pid = (page: PreparedPage): number => Number(said(page).split(':')[0]);
@@ -307,6 +309,47 @@ describe('a worker that is held, out of memory, or gone', () => {
       expect(f.codes()).toEqual(['worker_bad_message']);
     },
   );
+
+  describe('an answer that the transform cannot have made is not served', () => {
+    // What the worker says is looked at before it is served: how much of it there is, and that the guard is in it. That is a check
+    // that the answer is the worker's work, so a worker that is wrong (a file left behind by an old build, a bug that returns the page
+    // as it came) is not served as if it were right. It is not a defense against a worker that has been taken over: that one
+    // can write the guard, and anything else beside it.
+    const unguarded = '<html><body><iframe srcdoc="x"></iframe>no guard</body></html>';
+
+    it('refuses a page with no guard in it as crashed (the page\'s), says why, and does not use that worker again', async () => {
+      const f = faults();
+      const p = preparer({ onFault: f.report });
+      const before = pid(await p.prepare('echo:before'));
+      expect(await p.prepare(`unguarded:${unguarded}`)).toEqual({ ok: false, reason: 'worker_crashed' });
+      expect(f.codes()).toEqual(['worker_bad_answer']);
+      expect(pid(await p.prepare('echo:after'))).not.toBe(before);
+      expect(await goneWithin(before, 2000), `worker ${before} is still running`).toBe(true);
+    });
+
+    it('refuses an empty page', async () => {
+      const f = faults();
+      expect(await preparer({ onFault: f.report }).prepare('unguarded:')).toEqual({ ok: false, reason: 'worker_crashed' });
+      expect(f.codes()).toEqual(['worker_bad_answer']);
+    });
+
+    it('looks for the guard in the page and not around it: a message with the guard on both sides of a page without it is refused', async () => {
+      // The bytes a worker sends arrive as a view onto the whole message, so the search is of the view and not of the buffer it is in.
+      const f = faults();
+      expect(await preparer({ onFault: f.report }).prepare(`smuggled:${unguarded}`)).toEqual({ ok: false, reason: 'worker_crashed' });
+      expect(f.codes()).toEqual(['worker_bad_answer']);
+    });
+
+    it('refuses a page of more than a page is let be (8 MiB), with the guard in it, and takes one of exactly that size', async () => {
+      const f = faults();
+      const p = preparer({ onFault: f.report });
+      expect(await p.prepare(`bytes:${MAX_PREPARED_BYTES + 1}`)).toEqual({ ok: false, reason: 'worker_crashed' });
+      expect(f.codes()).toEqual(['worker_bad_answer']);
+      const exact = await p.prepare(`bytes:${MAX_PREPARED_BYTES}`);
+      expect(exact.ok && exact.bytes.byteLength).toBe(MAX_PREPARED_BYTES);
+      expect(f.codes()).toEqual(['worker_bad_answer']);
+    });
+  });
 });
 
 describe('a worker that starts wrongly is not used', () => {
@@ -544,9 +587,10 @@ describe('when workers keep failing', () => {
     for (let i = 0; i < 8; i++) expect(await p.prepare('throw:')).toEqual({ ok: false, reason: 'worker_crashed' });
     for (let i = 0; i < 8; i++) expect(await p.prepare('signal:SIGTERM')).toEqual({ ok: false, reason: 'worker_crashed' });
     for (let i = 0; i < 8; i++) expect(await p.prepare('nonsense:')).toEqual({ ok: false, reason: 'worker_crashed' });
+    for (let i = 0; i < 8; i++) expect(await p.prepare('unguarded:no guard')).toEqual({ ok: false, reason: 'worker_crashed' });
     expect(said(await p.prepare('echo:fine'))).toMatch(/:fine$/);
     // ...and each was told to onFault, so that it is in the log
-    expect(f.seen.length).toBeGreaterThanOrEqual(8 * 5);
+    expect(f.seen.length).toBeGreaterThanOrEqual(8 * 6);
   });
 
   it('DOES count a worker that has not the limit it was asked for, one whose first word is not "ready", and one that cannot be forked: no page was sent to any of them', async () => {

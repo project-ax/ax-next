@@ -3,9 +3,10 @@
 // and a worker can read back), because a worker is started with no environment and no arguments of the test's own.
 // Plain JavaScript, so Node runs it as it is.
 import { getHeapStatistics } from 'node:v8';
+import { withGuard } from './guard-marker.mjs';
 
 process.on('disconnect', () => process.exit(0));
-process.on('message', ({ id }) => process.send({ id, ok: true, bytes: new TextEncoder().encode('answered') }));
+process.on('message', ({ id }) => process.send({ id, ok: true, bytes: withGuard('answered') }));
 
 const limit = getHeapStatistics().heap_size_limit / (1024 * 1024);
 
@@ -16,7 +17,7 @@ switch (process.title) {
     process.send({ hello: 'there' });
     break;
   case 'answers': // answers before it is ready
-    process.send({ id: 1, ok: true, bytes: new TextEncoder().encode('too early') });
+    process.send({ id: 1, ok: true, bytes: withGuard('too early') });
     break;
   case 'bad-limit': // says it is ready, with a heap limit that is not a number
     process.send({ ready: true, heapLimitMb: 'plenty' });

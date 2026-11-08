@@ -4,6 +4,7 @@
 // process, started the way the pool starts the real one, and says "ready" the way the real one does.
 import { fstatSync, statSync } from 'node:fs';
 import { getHeapStatistics } from 'node:v8';
+import { GUARD_MARKER, withGuard } from './guard-marker.mjs';
 
 const burn = (ms) => {
   for (const end = performance.now() + ms; performance.now() < end; ) {
@@ -20,8 +21,9 @@ function spin() {
   process.exit(1);
 }
 
+// An answer, with the guard in front of what it says, as every page the real worker makes has it.
 function answer(id, text) {
-  process.send({ id, ok: true, bytes: new TextEncoder().encode(text) });
+  process.send({ id, ok: true, bytes: withGuard(text) });
 }
 
 // The host let go of the channel: nothing more to do.
@@ -44,6 +46,20 @@ process.on('message', ({ id, html }) => {
     case 'refuse':
       process.send({ id, ok: false, reason: arg });
       return;
+    case 'unguarded': // says ok, with a page that has no guard in it (what the argument says, as it is)
+      process.send({ id, ok: true, bytes: new TextEncoder().encode(arg) });
+      return;
+    case 'smuggled': // says ok, with a page that has no guard in it, in a message that has the guard on both sides of the page
+      process.send({ id, before: GUARD_MARKER, ok: true, bytes: new TextEncoder().encode(arg), after: GUARD_MARKER });
+      return;
+    case 'bytes': { // says ok, with a page of exactly this many bytes, the guard at the front of it
+      const page = new Uint8Array(Number(arg));
+      const front = new TextEncoder().encode(GUARD_MARKER);
+      page.set(front.subarray(0, page.length));
+      page.fill(0x61, Math.min(front.length, page.length));
+      process.send({ id, ok: true, bytes: page });
+      return;
+    }
     case 'spin': // never answers, and does not let go (for SPIN_MS)
       spin();
       return;

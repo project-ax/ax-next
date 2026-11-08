@@ -1,6 +1,6 @@
 import { fork, type ChildProcess } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { isPrepareRefusal, type PrepareRefusal } from './prepare-html.js';
+import { GUARD_MARKER, isPrepareRefusal, MAX_PREPARED_BYTES, type PrepareRefusal } from './prepare-html.js';
 import { WORKER_ARG } from './prepare-worker.js';
 
 // `prepareArtifactHtml` is synchronous and its limits are measured, not proven: it runs a
@@ -23,11 +23,12 @@ import { WORKER_ARG } from './prepare-worker.js';
 //     limit asked for is not used;
 //   - it has a wall-clock deadline, so a page that holds the worker where nothing in the
 //     transform can look at a clock is ended from outside (`worker_timeout`);
-//   - it is given nothing of the host's: an empty environment, none of its flags, no
-//     standard streams, and only the page over the channel. It is ended when the host lets
-//     go of the channel, and when nothing has been asked of it for a while, which gives its
-//     memory back (a worker that has prepared a heavy page holds 250 to 380 MB until it
-//     ends, measured);
+//   - it is handed nothing of the host's: an empty environment, none of its flags, no
+//     standard streams, and only the page over the channel. (Handed: it is the same user,
+//     and a worker that has been taken over can read the host's environment from /proc.)
+//     It is ended when the host lets go of the channel, and when nothing has been asked of
+//     it for a while, which gives its memory back (a worker that has prepared a heavy page
+//     holds 250 to 380 MB until it ends, measured);
 //   - pages wait in a line bounded by how many there are and how much text they hold (each
 //     is a string the caller has made and the worker has not read yet), and a page that
 //     finds it full, or that arrives when the worker has been busy for half of the last ten
@@ -36,8 +37,12 @@ import { WORKER_ARG } from './prepare-worker.js';
 //
 // A worker that was ended is started again for the next page. The transform's own limits (and
 // its CPU-time budget) still apply inside the worker: they are what refuses most hostile pages
-// in milliseconds, and the process is what is left when they don't. It is not a sandbox
-// (same user, same files); see prepare-worker.ts.
+// in milliseconds, and the process is what is left when they don't.
+//
+// What this holds against is a worker that FAILS: runs out of its heap, hangs, crashes, or says
+// something wrong. It is not a sandbox and does not hold against one that has been TAKEN OVER:
+// same user, same pod, and a channel whose reader is Node's, which a worker can feed bytes that
+// end the host (prepare-worker.ts has the particulars, and what would close it).
 
 /** Why a page was not prepared, beyond the reasons the transform itself gives (`PrepareRefusal`). */
 export type PoolRefusal =
@@ -222,6 +227,8 @@ function refused(reason: PrepareRefusal | PoolRefusal): PreparedPage {
  *   worker_limit_mismatch    its heap limit is not the one it was asked for (counts toward the failure limit)
  *   worker_bad_ready         the first thing it said was not what a worker says when it starts (counts too)
  *   worker_bad_message       it said something that is not an answer to the page it had (`worker_crashed`)
+ *   worker_bad_answer        it answered ok, with bytes this transform cannot have made: more than a page is let be, or
+ *                            without the guard in them (`worker_crashed`)
  */
 class PoolFault extends Error {
   constructor(
@@ -233,14 +240,34 @@ class PoolFault extends Error {
   }
 }
 
-/** Reads a worker's answer. Anything that is not exactly one of the two answers it sends is a worker that is not working. */
-function readAnswer(message: unknown, id: number): PreparedPage | null {
+/** The guard's marker as the bytes a worker answers in. */
+const GUARD_MARKER_BYTES = Buffer.from(GUARD_MARKER, 'utf8');
+
+/** Whether the guard is in a page, by a search of its bytes (a view, not a copy; found in the first few kilobytes of a real one). */
+function carriesGuard(bytes: Uint8Array): boolean {
+  return Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).includes(GUARD_MARKER_BYTES);
+}
+
+/**
+ * Reads a worker's answer: the page, or the fault if it is not exactly one of the two answers it sends (a worker that is not
+ * working), or null for a message that is not for this page. What is checked of an `ok` answer is what the transform
+ * guarantees of what it makes: no more than a page is let be (the worker refuses a result over it too), and the guard
+ * in it. That is a check that this is the worker's work, which stops a worker that is wrong from being served. It does
+ * not stop one that has been taken over: it can write the guard, and anything else.
+ */
+function readAnswer(message: unknown, id: number): PreparedPage | PoolFault | null {
   if (typeof message !== 'object' || message === null) return null;
   const m = message as { id?: unknown; ok?: unknown; bytes?: unknown; reason?: unknown };
   if (m.id !== id) return null;
-  if (m.ok === true && m.bytes instanceof Uint8Array) return { ok: true, bytes: m.bytes };
+  if (m.ok === true && m.bytes instanceof Uint8Array) {
+    if (m.bytes.byteLength > MAX_PREPARED_BYTES) {
+      return new PoolFault('worker_bad_answer', `the prepare worker answered with ${m.bytes.byteLength} bytes, more than the ${MAX_PREPARED_BYTES} a page is let be`);
+    }
+    if (!carriesGuard(m.bytes)) return new PoolFault('worker_bad_answer', 'the prepare worker answered with a page that has no guard in it');
+    return { ok: true, bytes: m.bytes };
+  }
   if (m.ok === false && isPrepareRefusal(m.reason)) return refused(m.reason);
-  return refused('worker_failed');
+  return new PoolFault('worker_bad_message', 'the prepare worker sent a message that is not an answer');
 }
 
 /** The heap limit, in MB, in a worker's first message, if that is what it is. */
@@ -413,7 +440,8 @@ class WorkerPreparer implements HtmlPreparer {
       // The pool's flags first, so that the limit asked for is the one given; then the caller's (for tests). None of
       // this process's own flags are passed on, whatever it was started with.
       execArgv: [`--max-old-space-size=${this.oldGenerationMb}`, `--max-semi-space-size=${SEMI_SPACE_MB}`, ...WORKER_V8_FLAGS, ...this.execArgv],
-      // Nothing of ours for it to read: no environment (a NODE_OPTIONS of the host's would otherwise change the limits).
+      // No environment is handed to it (a NODE_OPTIONS of the host's would otherwise change the limits, and the host's secrets are
+      // not the worker's to be given). That is what is handed, not what is out of reach: see the end of the header.
       env: {},
       // No standard streams, and the one channel it is spoken to over. `advanced` carries the page's bytes as bytes.
       stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
@@ -443,11 +471,11 @@ class WorkerPreparer implements HtmlPreparer {
     if (running === null) return;
     const page = readAnswer(message, running.id);
     if (page === null) return;
-    if (!page.ok && page.reason === 'worker_failed') {
+    if (page instanceof PoolFault) {
       // Something other than an answer, to a page: it is not to be trusted again, and the page is the one that did it, as far
       // as anyone can tell (a crash is the same: `worker_crashed`, and not counted). Ended BEFORE the page is finished, as
       // finishing starts the next waiting page, which must go to a worker that is not the one just ended.
-      this.onFault(new PoolFault('worker_bad_message', 'the prepare worker sent a message that is not an answer'));
+      this.onFault(page);
       this.discard();
       this.finish(running, refused('worker_crashed'));
       return;

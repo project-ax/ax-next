@@ -5,9 +5,11 @@
 // TypeScript loader:
 //   node --import tsx idle-pool.ts
 import { createHtmlPreparer } from '../../index.js';
+import { GUARD_MARKER } from '../../prepare-html.js';
 
 // idleMs far longer than the test waits: a timer that ends an idle worker must not be what holds the process open.
 const preparer = createHtmlPreparer({ workerUrl: new URL('./pool-worker.mjs', import.meta.url), idleMs: 3_600_000 });
 const page = await preparer.prepare('echo:hello');
-const pid = page.ok ? Number(new TextDecoder().decode(page.bytes).split(':')[0]) : null;
+// (the stand-in puts the guard in front of what it says, which the pool wants to see)
+const pid = page.ok ? Number(new TextDecoder().decode(page.bytes).slice(GUARD_MARKER.length).split(':')[0]) : null;
 console.log(JSON.stringify({ ok: page.ok, pid }));
