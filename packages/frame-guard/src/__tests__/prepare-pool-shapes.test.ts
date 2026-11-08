@@ -45,11 +45,21 @@ interface Outcome {
 }
 
 /**
+ * The pool's deadline for a page in these tests: a minute, where the pool's own is 6 s. The deadline is on the wall clock and the worker
+ * runs below the host in priority, so on a runner busy with other work it gets a fraction of a core: a heap abort that takes half a second
+ * takes seconds (measured on CI: the same page at 160 MB, answered by the abort at 128 and by the deadline at 160), and where the kernel
+ * hands a core dump to a program (it does on CI) the abort itself takes a second or more. What these tests hold is what became of the
+ * page and that the host is fine, not how fast a loaded machine gets there, so the deadline is out of the way (and under the 90 s the
+ * child is given).
+ */
+const DEADLINE_MS = 60_000;
+
+/**
  * Runs a shape through the pool in a process that stands for the host. `hostNodeOptions` is that host's NODE_OPTIONS, and
  * `containerMib` the memory limit of the container it is to think it is in (none by default, whatever machine this runs on).
  */
 function run(shape: string, heapMb?: number, hostNodeOptions?: string, containerMib?: number): Outcome {
-  const env: NodeJS.ProcessEnv = { ...process.env };
+  const env: NodeJS.ProcessEnv = { ...process.env, POOL_DEADLINE_MS: String(DEADLINE_MS) };
   delete env.CONTAINER_MIB;
   if (hostNodeOptions !== undefined) env.NODE_OPTIONS = hostNodeOptions;
   if (containerMib !== undefined) env.CONTAINER_MIB = String(containerMib);

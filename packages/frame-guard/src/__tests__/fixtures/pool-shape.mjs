@@ -5,6 +5,7 @@
 // FRAME_GUARD_DIST names another build of the package (the one before a fix, to see the crash it fixed).
 // CONTAINER_MIB is the memory limit of the container to pretend the host is in, in MiB; without it there is none (whatever
 // the machine this runs on has, so that the figures do not change with it).
+// POOL_DEADLINE_MS is the pool's deadline for the page, in milliseconds; without it the pool's own (6 s).
 import { shapes } from './amplified-pages.mjs';
 
 const dist = process.env.FRAME_GUARD_DIST ?? new URL('../../../dist', import.meta.url).pathname;
@@ -16,8 +17,10 @@ if (make === undefined) throw new Error(`no such shape: ${name}`);
 
 const faults = [];
 const container = process.env.CONTAINER_MIB === undefined ? undefined : Number(process.env.CONTAINER_MIB) * 1024 * 1024;
+const deadline = process.env.POOL_DEADLINE_MS === undefined ? undefined : Number(process.env.POOL_DEADLINE_MS);
 const preparer = createHtmlPreparer({
   ...(heap === undefined ? {} : { maxOldGenerationSizeMb: Number(heap) }),
+  ...(deadline === undefined ? {} : { deadlineMs: deadline }),
   containerMemoryBytes: () => container,
   onFault: (fault) => faults.push(fault?.code ?? fault?.message ?? 'fault'),
 });
