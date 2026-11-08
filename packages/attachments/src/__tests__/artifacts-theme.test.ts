@@ -11,35 +11,34 @@ const dec = (b: Uint8Array) => new TextDecoder().decode(b);
 
 describe('injectTheme', () => {
   const style = themeStyleElement('dark');
+  const GUARD = '<script>/*guard*/</script>';
 
-  it('goes first inside <head>, after the doctype, so the page keeps standards mode', () => {
-    const out = dec(injectTheme(enc('<!DOCTYPE html>\n<html><head><meta charset="utf-8"><style>:root{--accent:#d9a05b}</style></head><body>x</body></html>'), 'dark'));
+  it('goes right after the guard, which stays first in <head>, after the doctype, so the page keeps standards mode', () => {
+    const out = dec(injectTheme(enc(`<!DOCTYPE html><html lang="en"><head>${GUARD}<meta charset="utf-8"><style>:root{--accent:#d9a05b}</style></head><body>x</body></html>`), 'dark'));
     expect(out.startsWith('<!DOCTYPE html>')).toBe(true);
-    expect(out).toContain(`<head>${style}<meta charset="utf-8">`);
+    expect(out).toContain(`<head>${GUARD}${style}<meta charset="utf-8">`);
     // The page's own style still comes later, so it wins for anything it names.
-    expect(out.indexOf('id="ax-theme"')).toBeLessThan(out.indexOf('--accent:#d9a05b'));
-  });
-
-  it('is case-insensitive and tolerates attributes on <head>', () => {
-    expect(dec(injectTheme(enc('<HTML><HEAD lang="en"><title>t</title></HEAD></HTML>'), 'light'))).toContain(
-      `<HEAD lang="en">${themeStyleElement('light')}<title>`,
-    );
-  });
-
-  it('falls back to after <html>, then after the doctype, then the very start', () => {
-    expect(dec(injectTheme(enc('<!doctype html><html lang="en"><body>x</body></html>'), 'dark'))).toContain(`<html lang="en">${style}<body>`);
-    expect(dec(injectTheme(enc('<!doctype html><p>x</p>'), 'dark'))).toBe(`<!doctype html>${style}<p>x</p>`);
-    expect(dec(injectTheme(enc('<p>x</p>'), 'dark'))).toBe(`${style}<p>x</p>`);
+    expect(out.indexOf(style)).toBeLessThan(out.indexOf('--accent:#d9a05b'));
   });
 
   it('inserts at a byte offset, whatever is in the file before the head', () => {
-    const out = injectTheme(enc('<!doctype html><!-- é — ü --><head><title>t</title></head>'), 'dark');
-    expect(dec(out)).toContain(`<head>${style}<title>t</title>`);
+    const out = injectTheme(enc(`<!-- é — ü --><!DOCTYPE html><html><head>${GUARD}<title>t</title></head>`), 'dark');
+    expect(dec(out)).toContain(`<head>${GUARD}${style}<title>t</title>`);
+  });
+
+  it('leaves a page that is not the guard\'s output exactly as it is', () => {
+    for (const page of [
+      '<!DOCTYPE html><html><head><meta charset="utf-8"></head><body>x</body></html>',
+      '<HTML><HEAD lang="en"><title>t</title></HEAD></HTML>',
+      '<p>x</p>',
+    ]) {
+      expect(dec(injectTheme(enc(page), 'dark'))).toBe(page);
+    }
   });
 
   it('adds nothing but the one fixed block: its text is the same whatever the page says', () => {
-    const page = '<head><title>"; } body{display:none} /*</title></head>';
-    expect(dec(injectTheme(enc(page), 'dark'))).toBe(`<head>${style}<title>"; } body{display:none} /*</title></head>`);
+    const page = `<html><head>${GUARD}<title>"; } body{display:none} /*</title></head></html>`;
+    expect(dec(injectTheme(enc(page), 'dark'))).toBe(`<html><head>${GUARD}${style}<title>"; } body{display:none} /*</title></head></html>`);
   });
 
   it('offers whole colors under --ax-*, never bare triplets and never an unprefixed name', () => {
@@ -149,7 +148,7 @@ describe('content origin', () => {
   it('a view token with no theme adds no theme block (the page still gets the frame guard)', async () => {
     const url = await start();
     const body = await (await fetch(`${url}/v/${tokenFor('view')}`)).text();
-    expect(body).not.toContain('id="ax-theme"');
+    expect(body).not.toContain(':root{--ax-');
     expect(body).toContain('<title>t</title>');
     expect(body).toContain('hi');
   });
