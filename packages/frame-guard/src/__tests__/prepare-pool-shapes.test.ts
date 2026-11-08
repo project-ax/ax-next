@@ -1,8 +1,9 @@
 import { spawnSync } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { getPriority } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { beforeAll, describe, expect, it } from 'vitest';
+import { WORKER_V8_FLAGS } from '../prepare-pool.js';
 import { WORKER_ARG } from '../prepare-worker.js';
 
 // Pages the transform is handed that would end the HOST if the transform ran in it, and are met by the worker instead
@@ -170,6 +171,47 @@ describe('the worker process that the pool starts, from the compiled package', (
       // Ten below the host, whatever the host runs at (a test runner started in the background may not be at 0).
       expect(getPriority(child.pid!)).toBe(Math.min(19, getPriority() + 10));
       if (process.platform === 'linux') expect(readFileSync(`/proc/${child.pid}/oom_score_adj`, 'utf8').trim()).toBe('1000');
+    } finally {
+      child.kill('SIGKILL');
+    }
+  });
+
+  // The priority above is a thread's on Linux, and V8 starts helper threads (for the collector and the compiler) before the
+  // worker can lower anything: measured, 29 to 50% of a worker's CPU ran on them, at the priority the host has, which is what
+  // the lower priority was to prevent. The pool starts the worker with the flags that keep V8's work on the one thread.
+  it.skipIf(process.platform !== 'linux')('spends none of its CPU on threads that were not lowered: V8 does its work on the one that was', { timeout: 60_000 }, async () => {
+    const { fork } = await import('node:child_process');
+    const child = fork(distWorker, [WORKER_ARG], {
+      // The pool's own flags (the ones it passes to every worker), so what is looked at is what the pool starts.
+      execArgv: ['--max-old-space-size=384', '--max-semi-space-size=16', ...WORKER_V8_FLAGS],
+      env: {},
+      stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
+      serialization: 'advanced',
+    });
+    try {
+      await new Promise<void>((resolve, reject) => {
+        child.once('message', () => resolve());
+        child.once('exit', () => reject(new Error('the worker ended before it said it was ready')));
+      });
+      // Three pages that take it about half a second each: a script of 4 MiB is one token, which is a lot of garbage.
+      const page = `<!doctype html><script>${'a=1;'.repeat(1_048_576 - 64)}</script>`;
+      for (let id = 1; id <= 3; id++) {
+        const answered = new Promise<{ ok?: boolean }>((resolve) => child.once('message', (m) => resolve(m as { ok?: boolean })));
+        child.send({ id, html: page });
+        expect(await answered).toMatchObject({ ok: true });
+      }
+      // Every thread's CPU time (user + system, in clock ticks) and nice value, from /proc: fields 14, 15 and 19 of its stat.
+      const threads = readdirSync(`/proc/${child.pid}/task`).map((tid) => {
+        const stat = readFileSync(`/proc/${child.pid}/task/${tid}/stat`, 'utf8');
+        const fields = stat.slice(stat.lastIndexOf(')') + 2).split(' '); // from field 3, the state
+        return { tid, ticks: Number(fields[11]) + Number(fields[12]), nice: Number(fields[16]) };
+      });
+      const lowered = getPriority(child.pid!); // the main thread's, which is the one the worker lowered
+      const total = threads.reduce((sum, t) => sum + t.ticks, 0);
+      const elsewhere = threads.filter((t) => t.nice < lowered).reduce((sum, t) => sum + t.ticks, 0);
+      expect(total, 'the pages were not worked on').toBeGreaterThanOrEqual(30);
+      // 43% of it before the flag; none after. A tenth, so that a thread that does a little at start-up is not a failure.
+      expect(elsewhere / total, `threads: ${JSON.stringify(threads)}`).toBeLessThan(0.1);
     } finally {
       child.kill('SIGKILL');
     }

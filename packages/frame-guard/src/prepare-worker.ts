@@ -19,9 +19,11 @@ import { MAX_PREPARED_BYTES, prepareArtifactHtml, type PrepareRefusal } from './
 // and the crashes that come with it, are somewhere the host is not.
 //
 // It is also the process to give up when the machine is short: it asks the kernel to kill it
-// before anything else in the pod (`oom_score_adj`), and to give the host's threads the CPU
-// first (a lower priority). Both are only ever a request to be treated worse, which needs no
-// privilege, and both are skipped where they cannot be made.
+// before the other processes of the pod (`oom_score_adj`), and to give the host's threads the
+// CPU first (a lower priority; on Linux that belongs to one thread, so the pool starts it with
+// `--single-threaded` and all of V8's work is on the thread that was lowered). Both are only ever
+// a request to be treated worse, which needs no privilege, and both are skipped where they
+// cannot be made.
 
 /**
  * The CPU the transform may use on one page in this process: four times the heaviest real page measured
@@ -114,7 +116,9 @@ function askToBeGivenUpFirst(): void {
     // Not Linux, or a sandbox with no /proc to write: the heap limit is still what holds.
   }
   try {
-    // Ten steps below the host (the most the scheduler is asked to tell apart), whatever the host runs at.
+    // Ten steps below the host (the most the scheduler is asked to tell apart), whatever the host runs at. This is the thread that
+    // calls it, and the only one the pool lets V8 run its work on (`--single-threaded`); the threads V8 made before this line
+    // would have stayed at the priority they were given.
     setPriority(Math.min(19, getPriority() + 10));
   } catch {
     // Nothing is lost by running at the priority it was given.

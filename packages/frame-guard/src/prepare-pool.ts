@@ -139,6 +139,17 @@ const MIN_OLD_GENERATION_MB = 16;
  * everywhere, so what a page needs is too and the check that the worker has the limit asked for is exact.
  */
 const SEMI_SPACE_MB = 16;
+/**
+ * V8 does its garbage collection and part of its compiling on helper threads, which exist before the worker can lower its own
+ * priority, and on Linux a nice value belongs to one thread: measured (Node 24, Linux), 29 to 50% of a worker's CPU on pages
+ * of 190 KB to 4 MiB ran on four helper threads at the host's priority, where its request to wait for the host's CPU did not
+ * reach. `--single-threaded` keeps all of V8's work on the one thread that was lowered (0% elsewhere; prepare-pool-shapes.test.ts
+ * looks). It costs nothing on a page of a few hundred bytes (1 ms), 10 ms on one of 190 KB (40 to 45, then 50), and 4 to
+ * 30% of the time of the pages of 4 MiB (0.40 to 0.55 s, then 0.51 to 0.58 s); the CPU spent in all is lower. The transform's
+ * budget is this thread's CPU time, so the collector's work now counts toward it, which beside it did not. The heap limit
+ * the worker reports is the same.
+ */
+export const WORKER_V8_FLAGS: readonly string[] = ['--single-threaded'];
 const YOUNG_GENERATION_MB = 3 * SEMI_SPACE_MB;
 /** How far the heap limit a worker reports may be from `old + young`: V8 rounds to pages. */
 const LIMIT_TOLERANCE_MB = 2;
@@ -401,7 +412,7 @@ class WorkerPreparer implements HtmlPreparer {
     const child = fork(this.entry, [WORKER_ARG], {
       // The pool's flags first, so that the limit asked for is the one given; then the caller's (for tests). None of
       // this process's own flags are passed on, whatever it was started with.
-      execArgv: [`--max-old-space-size=${this.oldGenerationMb}`, `--max-semi-space-size=${SEMI_SPACE_MB}`, ...this.execArgv],
+      execArgv: [`--max-old-space-size=${this.oldGenerationMb}`, `--max-semi-space-size=${SEMI_SPACE_MB}`, ...WORKER_V8_FLAGS, ...this.execArgv],
       // Nothing of ours for it to read: no environment (a NODE_OPTIONS of the host's would otherwise change the limits).
       env: {},
       // No standard streams, and the one channel it is spoken to over. `advanced` carries the page's bytes as bytes.
