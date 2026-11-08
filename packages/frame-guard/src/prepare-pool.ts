@@ -639,7 +639,7 @@ class WorkerPreparer implements HtmlPreparer {
       // said, because a worker that aborted for another reason would otherwise be a quiet refusal that is remembered.
       this.ended(generation, new PoolFault('worker_aborted', `the prepare worker aborted (${how}), which V8 does at its heap limit`, 'warn'), 'worker_oom');
     } else if (worker.ready && signal === 'SIGKILL') {
-      this.ended(generation, new PoolFault('worker_killed', `the prepare worker was killed (${how}), which in a pod is the kernel running out of memory`), 'worker_oom');
+      this.ended(generation, new PoolFault('worker_killed', `the prepare worker was killed (${how}) from outside, which is the kernel running out of memory where it chooses the worker alone`), 'worker_oom');
     } else if (!worker.ready) {
       // Before it said it was ready no page had been sent it: this is the machine's, and the only kind that counts.
       const code_ = signal !== null ? `worker_start_signal_${signal}` : `worker_start_exit_${String(code)}`;

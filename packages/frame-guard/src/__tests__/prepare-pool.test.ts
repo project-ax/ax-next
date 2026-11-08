@@ -211,7 +211,7 @@ describe('a worker that is held, out of memory, or gone', () => {
     expect(f.codes()).toEqual(['worker_aborted', 'worker_exit_135']);
   });
 
-  it('answers a worker that was killed from outside as out of memory (in a pod it is the kernel), and tells onFault', async () => {
+  it('answers a worker that was killed from outside as out of memory (the kernel, where it chooses the worker alone), and tells onFault', async () => {
     const f = faults();
     const p = preparer({ onFault: f.report });
     expect(await p.prepare('signal:SIGKILL')).toEqual({ ok: false, reason: 'worker_oom' });
