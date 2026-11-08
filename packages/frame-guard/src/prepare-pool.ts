@@ -213,8 +213,10 @@ export function readContainerMemoryLimit(): number | undefined {
  * is first. Measured: a container of 600 MiB, the host holding 300 MB, a page of table text: the container exits 137, host and
  * all, with the default heap and with a larger one. So the worker may take a share of the limit (`WORKER_SHARE_OF_CONTAINER_PERCENT`),
  * and its heap is what that leaves after the young generation and the overhead; a page that needs more than that is refused as
- * `worker_oom`, which is an answer, and not the end of the container. At a 1 GiB limit that is 195 MB (every heavy page measured but
- * the table text is served with 192); at 2 GiB it is the 384 asked for. `budgetMet` is false where even the least a worker can be
+ * `worker_oom`, which is an answer, and not the end of the container. At a 1 GiB limit that is 195 MB: every heavy page measured is
+ * served with 192 except 3 MiB or more of text in a table (2 MiB is served) and a contrived 4 MiB page of tags with 256 valueless
+ * attributes each; at 2 GiB it is the 384 asked for, which serves 3 MiB of the table text and that page (4 MiB of it is on the edge
+ * of the 384). `budgetMet` is false where even the least a worker can be
  * given (`MIN_OLD_GENERATION_MB`) takes more than the share, and the host is on its own.
  */
 export function oldGenerationFor(requestedMb: number, limitBytes: number | undefined): { oldMb: number; budgetMet: boolean } {

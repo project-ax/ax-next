@@ -71,9 +71,9 @@ const GUARD_SCRIPT = `${FRAME_GUARD_SOURCE}\n${START_GUARD}`;
 /**
  * What every page this transform makes contains, written out: the opening of the guard's <script> and the guard's text. The pool
  * (prepare-pool.ts) looks for it in what the worker sends back, so a worker that answers with something this did not make (a
- * stale file, a bug that returns the page as it came) is not served. It says the guard is IN the page; where, and that
- * nothing runs before it, is this transform's to get right and its tests', and a worker that was taken over can write it
- * and anything else beside it.
+ * stale file, a bug that returns the page as it came) is not served, unless the page itself carries the guard text, which any
+ * page can (it is the agent's to write). It says the guard is IN the page; where, and that nothing runs before it, is this
+ * transform's to get right and its tests', and a worker that was taken over can write it and anything else beside it.
  */
 export const GUARD_MARKER = `<script>${FRAME_GUARD_SOURCE}`;
 
