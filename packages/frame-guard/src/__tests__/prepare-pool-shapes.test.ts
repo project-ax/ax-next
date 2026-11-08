@@ -248,6 +248,30 @@ describe('the worker process that the pool starts, from the compiled package', (
     }
   });
 
+  // A worker that ends at its heap limit ends by aborting, which is how a page that needs too much is refused, and where core dumps are
+  // on (a container's limit on their size is usually unlimited) the kernel writes the worker's memory to disk when it does: measured, 634 MB
+  // for one that ran out of a 200 MB heap, which took 2.3 s on the CI runner and lost to the pool's deadline. The filter that says what a
+  // dump may hold is the worker's to set; 0 leaves the notes and nothing else (0.1 MB measured).
+  it.skipIf(process.platform !== 'linux')('asks that a core dump of it hold none of its memory', async () => {
+    const { fork } = await import('node:child_process');
+    const child = fork(distWorker, [WORKER_ARG], {
+      execArgv: ['--max-old-space-size=128', '--max-semi-space-size=16'],
+      env: {},
+      stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
+      serialization: 'advanced',
+    });
+    try {
+      await new Promise<void>((resolve, reject) => {
+        child.once('message', () => resolve());
+        child.once('exit', () => reject(new Error('the worker ended before it said it was ready')));
+      });
+      // The mask, in hex ("00000033" is the default: anonymous mappings, ELF headers and huge pages).
+      expect(Number.parseInt(readFileSync(`/proc/${child.pid}/coredump_filter`, 'utf8').trim(), 16)).toBe(0);
+    } finally {
+      child.kill('SIGKILL');
+    }
+  });
+
   it('does not outlive the host that made it: when the host is killed, the worker goes', { timeout: 40_000 }, async () => {
     const host = spawnSync(process.execPath, [orphan], { cwd: packageDir, encoding: 'utf8', timeout: 30_000 });
     expect(host.signal, 'the fixture ends itself with SIGKILL').toBe('SIGKILL');

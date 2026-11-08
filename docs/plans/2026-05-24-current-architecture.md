@@ -718,7 +718,11 @@ never sent to it: `worker_failed`, not the page's `worker_timeout`), is a failur
 row and pages are turned away as `busy` for 30 seconds, then one is tried (a crash
 with a page in hand is that page's refusal and does not count, or a few pages that
 crash the parser would turn every tenant away). It asks the kernel to end it first
-when it must end one and to give the CPU to the host first; and it is ended when the
+when it must end one, to give the CPU to the host first, and to leave its memory out of
+a core dump (it ends by aborting at its heap limit, and where core dumps are on, as they
+usually are in a container, that wrote 300 to 650 MB for every page refused: seconds of
+disk, which the CI runner lost to the pool's deadline, and other people's pages in it;
+with the filter at 0 the core is 0.1 MB); and it is ended when the
 host lets go of the channel and when it has had nothing to do for 20 seconds (one that
 has prepared a heavy page holds 250 to 380 MB until it ends). The host checks each
 answer (its shape, at most 8 MiB, the guard in it), which stops a worker that is

@@ -35,7 +35,10 @@ import { MAX_PREPARED_BYTES, prepareArtifactHtml, type PrepareRefusal } from './
 // first when it must end one (`oom_score_adj`), and to give the host's threads the CPU first (a
 // lower priority, which on Linux belongs to a thread, so it is set on each of the process's
 // threads, V8's helpers included). Both are only ever a request to be treated worse, which needs
-// no privilege, and both are skipped where they cannot be made.
+// no privilege, and both are skipped where they cannot be made. A third keeps its memory out of
+// a core dump (`coredump_filter`), because it ends by aborting at its heap limit, and a core
+// file of 300 to 650 MB for every page refused is a second or two of disk and other people's
+// pages on it (`keepMemoryOutOfCoreDumps`).
 //
 // Neither is what keeps the host alive when the CONTAINER's memory limit is met. `oom_score_adj`
 // only chooses who is first; under `memory.oom.group` (Kubernetes sets it on cgroup v2 by default) the
@@ -146,6 +149,24 @@ function askToBeGivenUpFirst(): void {
 }
 
 /**
+ * Asks the kernel to leave the worker's memory out of a core dump. A worker that ends at its heap limit does it by aborting (SIGABRT),
+ * which is the designed way a page that needs too much is refused, and where core dumps are on (a container's limit on their size is
+ * usually unlimited, and Kubernetes' runtimes start that way) the kernel writes a core file for it. Measured with the filter's default:
+ * 306 MB for a bare Node that aborts, 634 MB for one that ran out of a 200 MB heap. That is a second or two of disk on the CI runner (1.3 s
+ * for an abort, 2.3 s for a page refused at 195 MB, long enough to lose to the pool's deadline), a file the size of the heap for every page
+ * that is refused (on the container's disk, or the node's), and other people's pages in it. The filter is the mask of what a dump may hold,
+ * and a process may set its own: 0 leaves the notes and nothing else (0.1 MB, and the abort finished in 72 ms instead of 182). Linux only;
+ * elsewhere there is no such file, and nothing is lost.
+ */
+function keepMemoryOutOfCoreDumps(): void {
+  try {
+    writeFileSync('/proc/self/coredump_filter', '0');
+  } catch {
+    // Not Linux, or a sandbox with no /proc to write.
+  }
+}
+
+/**
  * On Linux a nice value belongs to a thread, and `setPriority(pid)` reaches only the main one. V8 made its helper threads (the
  * collector, the compiler) before this runs, and measured, 29 to 50% of a worker's CPU on a heavy page ran on them at the priority
  * the host has. They are tasks of this process, listed in /proc/self/task, and setpriority takes a task id; a thread made from here
@@ -186,6 +207,7 @@ if (process.argv[2] === WORKER_ARG && typeof process.send === 'function') {
     if (isJob(message)) handleJob(message, send);
   });
   askToBeGivenUpFirst();
+  keepMemoryOutOfCoreDumps();
   const ready: WorkerReady = { ready: true, heapLimitMb: getHeapStatistics().heap_size_limit / (1024 * 1024) };
   send(ready);
 }
