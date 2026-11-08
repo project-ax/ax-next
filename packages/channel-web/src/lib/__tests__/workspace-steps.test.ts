@@ -17,6 +17,7 @@ import {
   settleHolds,
   shapeSteps,
   stepDetail,
+  stepsTitle,
   witnessHolds,
   type WorkspaceToolCall,
 } from '../workspace-steps';
@@ -152,6 +153,26 @@ describe('shapeSteps', () => {
       done({ id: 'b', phrase: 'Searching memory' }),
     ]);
     expect(panel?.label).toBe('Searching memory');
+  });
+
+  it('a LIVE title holds on the latest step between one result and the next call', () => {
+    // The flicker: the first call's result is in, the next call has not
+    // started. Without `live` the title snapped to the summary for that beat.
+    const steps = shapeSteps([
+      done({ id: 'a', name: 'Read', detail: 'src/a.ts' }),
+      done({ id: 'b', name: 'Bash', detail: 'ls' }),
+    ])!.steps;
+    expect(stepsTitle(steps, { live: true })).toBe('Running a command…');
+    // Once the turn has ended, the same steps read as the summary.
+    expect(stepsTitle(steps)).toBe('Looked through files and ran commands');
+  });
+
+  it('a live title still says when a step is waiting for the reader', () => {
+    const steps = shapeSteps([
+      done({ id: 'a', name: 'Read', detail: 'src/a.ts' }),
+      done({ id: 'b', status: 'waiting', phrase: 'Sending the email' }),
+    ])!.steps;
+    expect(stepsTitle(steps, { live: true })).toBe('Looked through files and used tools, 1 waiting for you');
   });
 
   it('while a step is running, the title is that step in the present tense', () => {

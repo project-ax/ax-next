@@ -147,6 +147,25 @@ describe('the phase status line', () => {
     expect(screen.queryByText('Getting set up…')).toBeNull();
   });
 
+  it('holds the step title steady between one tool result and the next call', async () => {
+    // The flicker: the title read the running step, then snapped to the
+    // end-of-turn summary the moment its result landed, then back again when
+    // the next call started. While the turn streams it stays in the present.
+    let handlers!: StreamHandlers;
+    await startTurn((h) => {
+      handlers = h;
+      h.onToolUse?.({ toolCallId: 'tu1', toolName: 'Read', detail: 'src/a.ts' });
+    });
+    await waitFor(() => expect(screen.getByText('Reading a.ts…')).toBeTruthy());
+    act(() => handlers.onToolResult?.({ toolCallId: 'tu1' }));
+    expect(screen.getByText('Reading a.ts…')).toBeTruthy();
+    expect(screen.queryByText('Read a.ts')).toBeNull();
+    act(() => handlers.onToolUse?.({ toolCallId: 'tu2', toolName: 'Bash', detail: 'ls' }));
+    await waitFor(() => expect(screen.getByText('Running a command…')).toBeTruthy());
+    act(() => handlers.onToolResult?.({ toolCallId: 'tu2' }));
+    expect(screen.getByText('Running a command…')).toBeTruthy();
+  });
+
   it('never shows a phase arriving AFTER content — the rule, stated backwards', async () => {
     await startTurn((h) => {
       h.onText('Here we go.');

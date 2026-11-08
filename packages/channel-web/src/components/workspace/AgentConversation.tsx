@@ -1349,7 +1349,8 @@ function AgentReply({
           browser call out), and file download links are omitted from prose.
           Persisted attachments supply the download chips below.
         */}
-        {r.activity.length > 0 && <Activity entries={r.activity} />}
+        {/* `at` is '' only on the reply still streaming in (see `ThreadMessage`). */}
+        {r.activity.length > 0 && <Activity entries={r.activity} live={r.at === ''} />}
         {r.text.length > 0 && (
           <div className="max-w-[604px] text-[15px] leading-[1.58] text-pretty">
             <Markdown text={r.text} hideFileDownloadLinks />
@@ -1597,12 +1598,14 @@ function GroupRow({ row }: { row: Extract<ActivityRow, { kind: 'group' }> }) {
   );
 }
 
-function Activity({ entries }: { entries: readonly ActivityEntry[] }) {
+function Activity({ entries, live }: { entries: readonly ActivityEntry[]; live: boolean }) {
   const steps = entries.flatMap((e) => (e.kind === 'step' ? [e.step] : []));
   const rows = activityRows(entries);
-  const title = stepsTitle(steps);
-  const running = steps.some((s) => s.status === 'running');
   const waiting = steps.some((s) => s.status === 'waiting');
+  // While the reply streams, the title and its dot hold steady between one
+  // call's result and the next call (see `stepsTitle`).
+  const title = stepsTitle(steps, { live });
+  const running = !waiting && (live || steps.some((s) => s.status === 'running'));
   // Only a hold marks the title: it needs the reader. A failed step is marked
   // on its own row inside, not raised here (see `stepsTitle`).
   const TitleMark = waiting ? STEP_MARK.waiting : null;

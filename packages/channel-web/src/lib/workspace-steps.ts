@@ -555,8 +555,15 @@ function stepName(call: WorkspaceToolCall, connectors: ConnectorNames | undefine
  * happened and nothing about what; "read 12 files, ran 31 commands" is the
  * same list again in a sentence. So:
  *
- *   * While a step is still going, the title is THAT step, present tense —
+ *   * While a step is still going — or, with `live`, while the reply is still
+ *     streaming at all — the title is the LATEST step, present tense:
  *     "Reading index.ts…". The line moves as the agent does.
+ *
+ *     WHY `live` AND NOT JUST "IS A STEP RUNNING". Between one call's result
+ *     and the next call, nothing is running for a beat while the model
+ *     decides. Keyed on `running` alone, the title snapped to the end-of-turn
+ *     summary for that beat and back again on the next call — a flicker on
+ *     every step. A turn that is still going stays in the present tense.
  *   * After, it is the one or two kinds of work the turn was mostly made of —
  *     "Looked through files and ran commands". A panel of one step is just
  *     that step.
@@ -573,13 +580,16 @@ function stepName(call: WorkspaceToolCall, connectors: ConnectorNames | undefine
  * Exported because the conversation folds several turns' steps into one panel
  * above the reply, and that panel's title has to come from the same words.
  */
-export function stepsTitle(steps: readonly WorkspaceStep[]): string {
+export function stepsTitle(
+  steps: readonly WorkspaceStep[],
+  opts: { live?: boolean } = {},
+): string {
   if (steps.length === 0) return '';
-  const running = [...steps].reverse().find((s) => s.status === 'running');
-  if (running !== undefined) {
-    return `${running.doing ?? running.text.replace(/ — in progress$/, '')}…`;
-  }
   const waiting = steps.filter((s) => s.status === 'waiting').length;
+  const running = [...steps].reverse().find((s) => s.status === 'running');
+  // A hold outranks "live": the turn is parked on the reader, not working.
+  const current = running ?? (opts.live === true && waiting === 0 ? steps[steps.length - 1] : undefined);
+  if (current !== undefined) return `${current.doing ?? baseText(current)}…`;
   const base = steps.length === 1 ? baseText(steps[0]!) : summary(steps);
   // A comma, not an interpunct: it has to read as "and also" to somebody who
   // has never thought about typography.
