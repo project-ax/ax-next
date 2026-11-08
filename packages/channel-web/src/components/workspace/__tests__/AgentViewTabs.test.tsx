@@ -244,13 +244,66 @@ describe('AgentView side-panel toggles — the accessibility tree', () => {
       ],
     } as AgentDetail);
     renderView();
-    fireEvent.click(await screen.findByRole('button', { name: 'Open' }));
+    fireEvent.click(await screen.findByRole('button', { name: /Deal tracker/ }));
     const rail = await screen.findByRole('complementary', { name: 'Artifacts' });
     expect(await within(rail).findByTitle('Deal tracker')).toBeTruthy();
     await waitFor(() => expect(workspaceApi.artifact).toHaveBeenCalledTimes(1));
 
-    fireEvent.click(screen.getByRole('button', { name: 'Open' }));
+    fireEvent.click(screen.getByRole('button', { name: /Deal tracker/ }));
     await waitFor(() => expect(workspaceApi.artifact).toHaveBeenCalledTimes(2));
+  });
+
+  describe('a freshly published artifact opens itself in the side panel', () => {
+    const summary = {
+      artifactId: 'art-1', agentId: 'a-quill', title: 'Deal tracker', mediaType: 'text/html',
+      kind: 'web' as const, preview: 'html', extension: 'HTML', currentVersion: 1, sizeBytes: 10,
+      linkOn: false, createdAt: '2026-11-01T00:00:00Z', updatedAt: '2026-11-01T00:00:00Z',
+    };
+    const withCard = (): AgentDetail => ({
+      ...detail(),
+      thread: [
+        { kind: 'user', id: 't1', text: 'make me a tracker' },
+        {
+          kind: 'agent', id: 'r1', text: 'Done.', at: '2026-11-01T00:00:00.000Z',
+          artifacts: [{ artifactId: 'art-1', version: 1, title: 'Deal tracker', kind: 'web', extension: 'HTML' }],
+        },
+      ],
+    } as AgentDetail);
+    const noCard = (): AgentDetail => ({
+      ...detail(),
+      thread: [{ kind: 'user', id: 't1', text: 'make me a tracker' }],
+    } as AgentDetail);
+
+    it('opens the viewer when a later read brings a new card', async () => {
+      vi.mocked(workspaceApi.artifact).mockReset();
+      vi.mocked(workspaceApi.artifact).mockResolvedValue({
+        ...summary,
+        versions: [{ version: 1, mediaType: 'text/html', sizeBytes: 10, createdAt: '2026-11-01T00:00:00Z' }],
+      });
+      agentMock.mockResolvedValue(noCard());
+      const view = renderView();
+      await screen.findByRole('group', { name: 'Side panel' });
+      expect(screen.queryByRole('complementary', { name: 'Artifacts' })).toBeNull();
+
+      agentMock.mockResolvedValue(withCard());
+      view.rerender(
+        <AgentView
+          agentId="a-quill" tab="chat" onTab={vi.fn()} decisions={[]} threadGrants={[]}
+          onGrantResolved={vi.fn()} onGranted={vi.fn(async () => true)} onApprove={vi.fn()}
+          onDismiss={vi.fn()} onUndo={vi.fn()} onBack={vi.fn()} decisionsError={null}
+          version={1} onChanged={vi.fn()}
+        />,
+      );
+      const rail = await screen.findByRole('complementary', { name: 'Artifacts' });
+      expect(await within(rail).findByTitle('Deal tracker')).toBeTruthy();
+    });
+
+    it('does not open for artifacts already in the conversation when it is first read', async () => {
+      agentMock.mockResolvedValue(withCard());
+      renderView();
+      await screen.findByRole('button', { name: /Deal tracker/ });
+      expect(screen.queryByRole('complementary', { name: 'Artifacts' })).toBeNull();
+    });
   });
 
   /*

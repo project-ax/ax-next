@@ -9,7 +9,7 @@ const quill: WorkspaceAgent = {
 };
 
 describe('AgentConversation artifact cards', () => {
-  it('draws a card for a published artifact and Open hands its id to onOpenArtifact', () => {
+  it('draws a card for a published artifact and clicking it hands its id to onOpenArtifact', () => {
     const onOpenArtifact = vi.fn();
     const thread = [{
       kind: 'agent', id: 'r1', text: 'Done.', at: '2026-09-17T16:12:00.000Z',
@@ -22,11 +22,11 @@ describe('AgentConversation artifact cards', () => {
     };
     render(<AgentConversation {...props} />);
     expect(screen.getByText('Q3 report')).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: 'Open' }));
+    fireEvent.click(screen.getByRole('button', { name: /Q3 report/ }));
     expect(onOpenArtifact).toHaveBeenCalledWith('art-1');
   });
 
-  it('with no onOpenArtifact (check-in page) the card is still drawn, with Download and no Open', () => {
+  it('with no onOpenArtifact (check-in page) the card is still drawn, and clicking it downloads', () => {
     const thread = [{
       kind: 'agent', id: 'r1', text: 'Done.', at: '2026-09-17T16:12:00.000Z',
       artifacts: [{ artifactId: 'art-1', version: 1, title: 'Q3 report', kind: 'document', extension: 'PDF' }],
@@ -38,7 +38,7 @@ describe('AgentConversation artifact cards', () => {
     };
     render(<AgentConversation {...props} />);
     expect(screen.getByText('Q3 report')).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Download' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /Q3 report/ })).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Open' })).toBeNull();
   });
 });

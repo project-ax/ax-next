@@ -1,45 +1,30 @@
 /**
- * A published artifact, drawn in the turn that published it: name, "Type · EXT",
- * Open (the wide viewer, owned by AgentView) and Copy link. The title is
- * untrusted text and only ever a text child.
+ * A published artifact, drawn in the turn that published it: icon, name and
+ * "Type · EXT". The whole card is the control — one click opens it in the side
+ * panel (the viewer, owned by AgentView), where Download and Copy link live.
+ * The title is untrusted text and only ever a text child.
  */
 import { useState } from 'react';
-import { Card } from '@/components/ui/card';
-import { Button } from '@/components/ui/button';
+import { ChevronRight, Download } from 'lucide-react';
+import { Spinner } from '@/components/ui/spinner';
 import { artifactTypeLine } from '@/lib/artifact-labels';
-import { copyShareLink } from '@/lib/copy-share-link';
 import { saveFromContentOrigin } from '@/lib/file-download';
 import { logRequestFailure } from '@/lib/http';
 import { toastActions } from '@/lib/toast-store';
 import { workspaceApi } from '@/lib/workspace-api';
 import type { ThreadArtifact } from '@/lib/workspace-types';
 import { KIND_ICONS } from './AgentArtifacts';
-import { ShareLinkDialog } from './ShareLinkDialog';
 
 /**
- * `onOpen` is absent on surfaces with no viewer (the check-in page): the card
- * then offers Download instead of Open, so the deliverable is never hidden.
+ * `onOpen` is absent on surfaces with no viewer (the check-in page): a click
+ * then downloads instead, so the deliverable is never hidden.
  */
 export function ArtifactCard({ artifact, onOpen }: {
   artifact: ThreadArtifact;
   onOpen?: ((artifactId: string) => void) | undefined;
 }) {
   const [downloading, setDownloading] = useState(false);
-  const [copying, setCopying] = useState(false);
-  const [manualUrl, setManualUrl] = useState<string | null>(null);
   const Icon = KIND_ICONS[artifact.kind];
-
-  async function copyLink() {
-    if (copying) return;
-    setCopying(true);
-    try {
-      // Called synchronously from the click: Safari needs the gesture.
-      const outcome = await copyShareLink(artifact.artifactId);
-      if (outcome.kind === 'manual') setManualUrl(outcome.url);
-    } finally {
-      setCopying(false);
-    }
-  }
 
   async function download() {
     if (downloading) return;
@@ -55,19 +40,29 @@ export function ArtifactCard({ artifact, onOpen }: {
   }
 
   return (
-    <Card className="flex-row items-center gap-3 p-3">
-      <div className="flex size-10 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground">
+    <button
+      type="button"
+      disabled={downloading}
+      onClick={() => (onOpen !== undefined ? onOpen(artifact.artifactId) : void download())}
+      className="group flex w-full items-center gap-3 rounded-xl border border-border bg-card p-3 text-left text-card-foreground transition-colors hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-70"
+    >
+      <span className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground">
         <Icon className="size-5" aria-hidden="true" />
-      </div>
-      <div className="min-w-0 flex-1">
-        <div className="truncate text-sm font-medium">{artifact.title}</div>
-        <div className="truncate text-xs text-muted-foreground">{artifactTypeLine(artifact)}</div>
-      </div>
-      {onOpen !== undefined
-        ? <Button size="sm" onClick={() => onOpen(artifact.artifactId)}>Open</Button>
-        : <Button size="sm" disabled={downloading} onClick={() => void download()}>Download</Button>}
-      <Button size="sm" variant="outline" disabled={copying} onClick={() => void copyLink()}>Copy link</Button>
-      <ShareLinkDialog url={manualUrl} onClose={() => setManualUrl(null)} />
-    </Card>
+      </span>
+      <span className="flex min-w-0 flex-1 flex-col">
+        <span className="truncate text-sm font-medium">{artifact.title}</span>
+        <span className="truncate text-xs text-muted-foreground">{artifactTypeLine(artifact)}</span>
+      </span>
+      {downloading ? (
+        <Spinner className="size-4 shrink-0 text-muted-foreground" />
+      ) : onOpen !== undefined ? (
+        <ChevronRight
+          className="size-4 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-0.5"
+          aria-hidden="true"
+        />
+      ) : (
+        <Download className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+      )}
+    </button>
   );
 }

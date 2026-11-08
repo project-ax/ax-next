@@ -2,9 +2,9 @@
  * One artifact, open beside the chat: its preview, its versions, and the
  * owner's controls. `AgentView` owns which artifact is open (P7); this draws it.
  *
- * Header: ‹ Back, the name and type, ✕; then the version picker (with
- * "Restore this version" while an older one is picked), Download, Copy link
- * and the ⋯ menu.
+ * Header, one row: ‹ Back, the name and type, then Download, Copy link, the ⋯
+ * menu and ✕. A version picker (with "Restore this version" while an older
+ * one is picked) appears underneath only when there is more than one version.
  *
  * No `message` listener and no `postMessage` anywhere here (§6.5): the page in
  * the frame has nobody to talk to.
@@ -127,12 +127,7 @@ export function ArtifactViewer({
     }
   }
 
-  const back = (
-    <Button type="button" variant="ghost" size="sm" onClick={onBack} className="-ml-2 text-muted-foreground">
-      <ChevronLeft data-icon="inline-start" aria-hidden />
-      Back
-    </Button>
-  );
+  const back = <IconAction icon={ChevronLeft} label="Back" variant="ghost" onClick={onBack} className="-ml-1.5 shrink-0" />;
   const close = <IconAction icon={X} label="Close" variant="ghost" onClick={onClose} />;
 
   if (status !== 'ready' || artifact === null) {
@@ -180,71 +175,72 @@ export function ArtifactViewer({
       ? 'none'
       : artifactPreviewKind(artifact.preview);
 
+  const hasVersions = versions.length > 1;
   return (
     <div className="flex h-full min-h-0 flex-col gap-2 py-1">
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-1">
         {back}
-        <div className="flex min-w-0 flex-1 flex-col">
-          <h3 className="truncate text-[14px] font-medium text-foreground">
+        <div className="flex min-w-0 flex-1 flex-col px-1">
+          <h3 className="truncate text-[14px] font-medium leading-tight text-foreground">
             {artifact.title}
           </h3>
           <span className="truncate text-[12px] text-muted-foreground">{artifactTypeLine(artifact)}</span>
         </div>
+        <IconAction
+          icon={Download}
+          label="Download"
+          variant="ghost"
+          disabled={downloading}
+          reason="Getting your download ready…"
+          onClick={download}
+        />
+        <IconAction
+          icon={LinkIcon}
+          label="Copy link"
+          variant="ghost"
+          disabled={copying}
+          reason="Copying the link…"
+          onClick={() => void copyLink()}
+        />
+        <ArtifactOwnerMenu
+          artifact={artifact}
+          onChanged={(next) => {
+            if (next === null) onBack();
+            else apply(next);
+          }}
+        />
         {close}
       </div>
-      <div className="flex flex-wrap items-center gap-2">
-        <Select
-          value={String(version)}
-          onValueChange={(v) => {
-            const n = Number(v);
-            setPicked(n === artifact.currentVersion ? null : n);
-          }}
-        >
-          <SelectTrigger aria-label="Version" className="h-8 w-auto gap-2 text-[12px]">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectGroup>
-              {versions.map((v) => (
-                <SelectItem key={v.version} value={String(v.version)}>
-                  {versionLabel(v)}
-                </SelectItem>
-              ))}
-            </SelectGroup>
-          </SelectContent>
-        </Select>
-        {picked !== null && (
-          <Button type="button" size="sm" variant="outline" disabled={restoring} onClick={() => void restore()}>
-            {restoring && <Spinner data-icon="inline-start" />}
-            Restore this version
-          </Button>
-        )}
-        <div className="ml-auto flex items-center gap-1">
-          <IconAction
-            icon={Download}
-            label="Download"
-            variant="ghost"
-            disabled={downloading}
-            reason="Getting your download ready…"
-            onClick={download}
-          />
-          <IconAction
-            icon={LinkIcon}
-            label="Copy link"
-            variant="ghost"
-            disabled={copying}
-            reason="Copying the link…"
-            onClick={() => void copyLink()}
-          />
-          <ArtifactOwnerMenu
-            artifact={artifact}
-            onChanged={(next) => {
-              if (next === null) onBack();
-              else apply(next);
+      {hasVersions && (
+        <div className="flex flex-wrap items-center gap-2">
+          <Select
+            value={String(version)}
+            onValueChange={(v) => {
+              const n = Number(v);
+              setPicked(n === artifact.currentVersion ? null : n);
             }}
-          />
+          >
+            <SelectTrigger aria-label="Version" className="h-8 w-auto gap-2 text-[12px]">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectGroup>
+                {versions.map((v) => (
+                  <SelectItem key={v.version} value={String(v.version)}>
+                    {versionLabel(v)}
+                  </SelectItem>
+                ))}
+              </SelectGroup>
+            </SelectContent>
+          </Select>
+          {picked !== null && (
+            <Button type="button" size="sm" variant="outline" disabled={restoring} onClick={() => void restore()}>
+              {restoring && <Spinner data-icon="inline-start" />}
+              Restore this version
+            </Button>
+          )}
         </div>
-      </div>
+      )}
       <div className="flex min-h-0 flex-1 flex-col">
         <ArtifactPreview
           // A new version is a new preview: fresh token, fresh text.

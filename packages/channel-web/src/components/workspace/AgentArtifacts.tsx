@@ -56,21 +56,20 @@ function ArtifactRow({ artifact, onOpen }: { artifact: ArtifactSummary; onOpen: 
   const Icon = KIND_ICONS[artifact.kind];
   const line = artifactTypeLine(artifact);
   return (
-    <Button
-      variant="ghost"
+    <button
       type="button"
       onClick={onOpen}
       title={artifact.title}
-      className="h-auto w-full justify-start gap-3 overflow-hidden rounded-sm px-2.5 py-2 text-left font-normal hover:bg-muted"
+      className="group flex w-full items-center gap-3 rounded-lg px-2 py-2 text-left transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
     >
-      <span className="flex size-9 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground">
-        <Icon size={16} aria-hidden />
+      <span className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground group-hover:bg-background">
+        <Icon size={18} aria-hidden />
       </span>
-      <span className="flex min-w-0 flex-col">
-        <span className="truncate text-[13px] text-foreground">{artifact.title}</span>
+      <span className="flex min-w-0 flex-1 flex-col">
+        <span className="line-clamp-2 break-words text-[13px] font-medium leading-snug text-foreground">{artifact.title}</span>
         <span className="truncate text-[12px] text-muted-foreground">{line}</span>
       </span>
-    </Button>
+    </button>
   );
 }
 
@@ -177,8 +176,11 @@ export function AgentArtifacts({
   }
   return (
     <div>
-      <div className="flex justify-end pb-1">
-        <Button asChild variant="ghost" size="sm" className="gap-1.5 text-[12px] text-muted-foreground">
+      <div className="flex items-center justify-between px-2 pb-1">
+        <span className="text-[12px] text-muted-foreground">
+          {artifacts.length} {artifacts.length === 1 ? 'artifact' : 'artifacts'}
+        </span>
+        <Button asChild variant="ghost" size="sm" className="-mr-2 gap-1.5 text-[12px] text-muted-foreground">
           <a href={url} download="" aria-disabled={busy} onClick={downloadAll}>
             <Download size={13} aria-hidden />
             Download all
@@ -190,7 +192,7 @@ export function AgentArtifacts({
           <AlertDescription>{note}</AlertDescription>
         </Alert>
       )}
-      <ul className="flex flex-col gap-0.5">
+      <ul className="flex flex-col">
         {artifacts.map((a) => (
           <li key={a.artifactId}>
             <ArtifactRow artifact={a} onOpen={() => onOpen(a.artifactId)} />
