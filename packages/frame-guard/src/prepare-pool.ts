@@ -26,7 +26,9 @@ import { WORKER_ARG } from './prepare-worker.js';
 //     The worker says what limit it really has when it starts, and one that is not the
 //     limit asked for is not used;
 //   - it has a wall-clock deadline, so a page that holds the worker where nothing in the
-//     transform can look at a clock is ended from outside (`worker_timeout`);
+//     transform can look at a clock is ended from outside (`worker_timeout`). A worker that
+//     has not said it is ready by then was never given the page, and is the failure of starting
+//     one (`worker_failed`), not the page's;
 //   - it is handed nothing of the host's: an empty environment, none of its flags, no
 //     standard streams, and only the page over the channel. (Handed: it is the same user,
 //     and a worker that has been taken over can read the host's environment from /proc.)
@@ -50,7 +52,10 @@ import { WORKER_ARG } from './prepare-worker.js';
 
 /** Why a page was not prepared, beyond the reasons the transform itself gives (`PrepareRefusal`). */
 export type PoolRefusal =
-  /** The worker did not answer in time and was ended. (The transform's budget is CPU time; this is the wall clock.) */
+  /**
+   * The worker had the page and did not answer in time, and was ended. (The transform's budget is CPU time; this is the wall
+   * clock.) A worker that had not said it was ready by then never had the page: that is `worker_failed`.
+   */
   | 'worker_timeout'
   /** The worker ran out of memory, or was killed for it, and is gone. */
   | 'worker_oom'
@@ -92,7 +97,11 @@ export interface HtmlPreparerOptions {
    * cgroup (`readContainerMemoryLimit`). For tests.
    */
   containerMemoryBytes?: () => number | undefined;
-  /** Milliseconds, on the wall clock, a page may take, starting the worker included, before the worker is ended. Default 6000. */
+  /**
+   * Milliseconds, on the wall clock, a page may take, starting the worker included, before the worker is ended. Default 6000.
+   * A worker that has not said it is ready by then is a failure to start it (`worker_failed`, told to `onFault` as
+   * `worker_start_timeout`, and counted toward `failureLimit`), not the page's `worker_timeout`.
+   */
   deadlineMs?: number;
   /** Pages that may wait behind the one being prepared; the next is turned away as busy. Default 32. */
   maxQueued?: number;
@@ -112,7 +121,7 @@ export interface HtmlPreparerOptions {
    */
   idleMs?: number;
   /**
-   * Workers in a row that failed in a way NO PAGE CAN CAUSE (a process that could not be made, one that ended before it said
+   * Workers in a row that failed in a way NO PAGE CAN CAUSE (a process that could not be made, one that ended or never said
    * it was ready, one that has not the heap limit it was asked for) after which pages are turned away as busy for
    * `coolDownMs`, instead of starting another worker for each. What a page can do (run the worker out of memory, hold it,
    * crash it) is that page's, remembered with it, and does not count: or a few pages that crash the parser would turn
@@ -272,6 +281,8 @@ function refused(reason: PrepareRefusal | PoolRefusal): PreparedPage {
  *   worker_start_exit_<n>    it ended with exit code <n> before it said it was ready (a bad flag is 9, a
  *                            module it could not load is 1); counts toward the failure limit
  *   worker_start_signal_<S>  it was ended by signal <S> before it said it was ready; counts too
+ *   worker_start_timeout     it had not said it was ready when the page's deadline ran out, so the page was never sent
+ *                            it (answered `worker_failed`, not `worker_timeout`); counts too
  *   worker_exit_<n>          it ended with exit code <n> while it had a page (answered `worker_crashed`), or
  *                            stopped being there with none
  *   worker_signal_<S>        it was ended by signal <S> that is not one of memory (a crash: the same)
@@ -656,6 +667,15 @@ class WorkerPreparer implements HtmlPreparer {
   private timedOut(generation: number, id: number): void {
     const running = this.running;
     if (generation !== this.generation || running === null || running.id !== id) return;
+    if (!running.sent) {
+      // The worker never said it was ready, so the page was never handed to it: the deadline ran out on starting a worker, which is
+      // the machine's or the worker's and no verdict on the page. It is any other worker that fails to start: told, counted toward
+      // turning pages away, and answered `worker_failed`, which is not remembered with the page. (Blamed on the page, a machine
+      // whose workers never come up refused every page as too large for a minute at a time, logged nothing, and started a process
+      // for each view for as long as it lasted.)
+      this.ended(generation, new PoolFault('worker_start_timeout', `the prepare worker had not said it was ready after ${this.deadlineMs} ms`), 'worker_failed', true);
+      return;
+    }
     this.discard();
     this.finish(running, refused('worker_timeout'));
   }

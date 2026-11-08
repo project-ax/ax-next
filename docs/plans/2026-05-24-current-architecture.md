@@ -711,7 +711,8 @@ transform's own bounds, 4 MiB of text inside a `<table>`, which parse5 holds a t
 at a time, needs 352 to 368 MB of the 384, so what happens at the limit has to be
 safe, not unlikely.) The worker says what heap limit it really has when it starts,
 and one that is not the limit asked for is not used. A worker that cannot be made, or
-ends or starts wrongly before it is ready, is a failure no page can cause: five in a
+ends, starts wrongly or never says it is ready before the page's deadline (so the page was
+never sent to it: `worker_failed`, not the page's `worker_timeout`), is a failure no page can cause: five in a
 row and pages are turned away as `busy` for 30 seconds, then one is tried (a crash
 with a page in hand is that page's refusal and does not count, or a few pages that
 crash the parser would turn every tenant away). It asks the kernel to end it first

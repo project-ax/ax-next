@@ -388,12 +388,15 @@ describe('a worker that starts wrongly is not used', () => {
     expect(f.codes()).toEqual(['worker_bad_ready']);
   });
 
-  it('gives a worker that never says it is ready the deadline, which starting it counts against', async () => {
+  it('gives a worker that never says it is ready the deadline, which starting it counts against, and blames the worker and not the page: worker_failed, and told', async () => {
+    // The page was never sent, so it is not the page that was too slow: `worker_timeout` is remembered with the page for a minute and
+    // shown as "too large to preview", and a machine whose workers never come up was refusing every page that way, in silence.
     const f = faults();
     const started = performance.now();
-    expect(await starts('silent', { deadlineMs: 300, onFault: f.report }).prepare('anything')).toEqual({ ok: false, reason: 'worker_timeout' });
+    expect(await starts('silent', { deadlineMs: 300, onFault: f.report }).prepare('anything')).toEqual({ ok: false, reason: 'worker_failed' });
     expect(performance.now() - started).toBeLessThan(2000);
-    expect(f.seen).toEqual([]);
+    expect(f.codes()).toEqual(['worker_start_timeout']);
+    expect(f.seen[0]!.message).toContain('300 ms');
   });
 
   it('starts another worker for the next page, and that one is checked too', async () => {
@@ -774,6 +777,67 @@ describe('when workers keep failing', () => {
     for (let i = 0; i < 5; i++) expect(await unmade.prepare('x')).toEqual({ ok: false, reason: 'worker_failed' });
     expect(refusal(await unmade.prepare('x'))).toBe('busy');
     expect(h.codes()).toEqual(Array(5).fill('worker_spawn_failed'));
+  });
+
+  describe('a worker that never says it is ready', () => {
+    // The deadline covers starting the worker. One that has not said it is ready when it runs out was never given the page: that is
+    // a failure to start it, like a bad flag, and it is told and counted. (It was the page's `worker_timeout`: remembered, silent, and
+    // never counted, so seven pages on such a machine were seven refusals as too large, seven processes, and no log line.)
+    /** A pool whose workers say nothing while `silent` is on, and are fine when it is off; the options are read each time one is made. */
+    function mute(options: HtmlPreparerOptions = {}): { p: HtmlPreparer; silent: (on: boolean) => void } {
+      const argv = ['--title=silent'];
+      const p = preparer({ workerUrl: STARTS, execArgv: argv, deadlineMs: 150, ...options });
+      return {
+        p,
+        silent: (on) => {
+          argv.length = 0;
+          argv.push(on ? '--title=silent' : '--title=right');
+        },
+      };
+    }
+
+    it('is counted: five in a row turn the sixth page away as busy, with no worker made for it, and one is tried when the cool-down is over', async () => {
+      const f = faults();
+      const c = clock();
+      const { p, silent } = mute({ now: c.now, onFault: f.report });
+      for (let i = 0; i < 5; i++) expect(await p.prepare('x')).toEqual({ ok: false, reason: 'worker_failed' });
+      expect(f.codes()).toEqual(Array(5).fill('worker_start_timeout'));
+      const started = performance.now();
+      expect(await p.prepare('x')).toEqual({ ok: false, reason: 'busy' });
+      expect(performance.now() - started).toBeLessThan(100); // a worker made for it would have taken the whole 150 ms deadline
+      expect(f.seen).toHaveLength(5);
+      silent(false); // the machine is well again
+      c.set(29_999);
+      expect(refusal(await p.prepare('x'))).toBe('busy');
+      c.set(30_000);
+      expect(said(await p.prepare('x'))).toBe('answered'); // the half-open try is a worker, and it serves
+      expect(said(await p.prepare('y'))).toBe('answered'); // and the count is back to none: it is not busy
+      expect(f.seen).toHaveLength(5);
+    });
+
+    it('is counted again at the first failure of the one that is tried: pages are turned away at once, for another cool-down', async () => {
+      const f = faults();
+      const c = clock();
+      const { p, silent } = mute({ now: c.now, onFault: f.report });
+      for (let i = 0; i < 5; i++) await p.prepare('x');
+      c.set(30_000);
+      expect(refusal(await p.prepare('x'))).toBe('worker_failed'); // the one that is tried, still silent
+      expect(refusal(await p.prepare('x'))).toBe('busy'); // not five more: one
+      expect(f.codes()).toEqual(Array(6).fill('worker_start_timeout'));
+      silent(false);
+      c.set(59_999);
+      expect(refusal(await p.prepare('x'))).toBe('busy');
+      c.set(60_000);
+      expect(said(await p.prepare('x'))).toBe('answered');
+    });
+
+    it('is not the page that is held: a worker that has the page and outstays the deadline is still worker_timeout, and not counted', async () => {
+      const f = faults();
+      const p = preparer({ now: clock().now, deadlineMs: 150, onFault: f.report });
+      for (let i = 0; i < 6; i++) expect(await p.prepare('sleep:')).toEqual({ ok: false, reason: 'worker_timeout' });
+      expect(said(await p.prepare('echo:fine'))).toMatch(/:fine$/);
+      expect(f.seen).toEqual([]);
+    });
   });
 
   it('answers the pages waiting behind the fifth failure as busy, and does not start a worker for each', async () => {

@@ -186,7 +186,9 @@ type RefusalCode = 'html_too_large' | PrepareRefusal | PoolRefusal;
  * are not, and are remembered for a minute. `worker_timeout` is a deadline on the
  * WALL clock, six seconds from the moment the page was handed over, so it includes
  * the worker's start-up and whatever CPU the machine took from the worker
- * meanwhile, and a good page can meet a starved minute. `worker_oom` is the
+ * meanwhile, and a good page can meet a starved minute (a worker that never said
+ * it was ready in that time never had the page, and is `worker_failed`, not
+ * remembered). `worker_oom` is the
  * worker's heap limit, which is a share of the container's memory (195 MB in a 1 GiB
  * container, the 384 asked for in a 2 GiB one), so a page that needs a few
  * hundred MB is refused or served by the deployment as much as by its bytes; and a
