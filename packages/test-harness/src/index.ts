@@ -12,6 +12,11 @@ export {
   type StoppableContainer,
 } from './stop-postgres-container.js';
 export {
+  createSharedPostgres,
+  type SharedPostgres,
+  type SharedPostgresContainer,
+} from './shared-postgres.js';
+export {
   preflightDocker,
   startTestContainer,
   DOCKER_PREFLIGHT_TIMEOUT_MS,

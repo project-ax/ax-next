@@ -1,11 +1,12 @@
 import { createHash } from 'node:crypto';
-import { createTestHarness, startTestContainer, stopPostgresContainer } from '@ax/test-harness';
+import { afterAll } from 'vitest';
+import { createSharedPostgres, createTestHarness, startTestContainer } from '@ax/test-harness';
 import { createDatabasePostgresPlugin } from '@ax/database-postgres';
 import { createToolPolicyPlugin } from '@ax/tool-policy';
 import { createDecisionsPlugin } from '@ax/decisions';
 import { createAgentsPlugin } from '@ax/agents';
 import { registerBlobPutFacade, bootstrap, makeAgentContext, type AgentContext, type HookBus, type ToolDescriptor, PluginError } from '@ax/core';
-import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
+import { PostgreSqlContainer } from '@testcontainers/postgresql';
 import type { Kysely } from 'kysely';
 import type { HttpRegisterRouteInput } from '@ax/http-server';
 import { createRoutinesPlugin } from '../../plugin.js';
@@ -25,6 +26,27 @@ export type RoutineHarness = {
   db: Kysely<RoutinesDatabase>; invokeCalls: string[]; setTeamFailure(mode: 'missing' | 'outage' | null): void; setTeamRole(userId: string, role: 'admin' | 'member' | null): void; holdCredentialSet(): { started: Promise<void>; release(): void };
 };
 
+/*
+  ONE Postgres server per test file, ONE fresh database per harness.
+
+  This harness used to start a container per harness, which is per test
+  (`restart()` reused it). A container start is ~2–4.5 s
+  (more on CI, where starts also queue behind the host-wide start slots); a
+  database on a running server is ~25 ms; booting this harness on one is
+  ~0.3 s. So most of this package's ~9 CI minutes were Postgres booting.
+
+  Each harness still gets a brand-new, empty database, so nothing a test writes
+  is visible to the next (`createSharedPostgres` spells out what is and isn't
+  per-database). Tests in a file run one at a time, so the server-wide
+  `pg_stat_activity` lock counts some tests poll see only their own sessions.
+
+  The `afterAll` is registered when a test file imports this module, so it
+  belongs to that file: the server is stopped when the file finishes. A file
+  that imports the harness but never boots one never starts a server.
+*/
+const server = createSharedPostgres(() => startTestContainer(new PostgreSqlContainer('postgres:16-alpine')));
+afterAll(() => server.stop(), 60_000);
+
 /** Materialize the seeded defaults for the harness agents, as a later tick would. */
 export async function materializePersonalDefaults(harness: RoutineHarness): Promise<void> {
   const { agents } = await harness.bus.call<unknown, { agents: Array<{ agentId: string; ownerUserId: string }> }>(
@@ -36,8 +58,8 @@ export async function materializePersonalDefaults(harness: RoutineHarness): Prom
 export async function createRoutineHarness(options: { clock?: Clock; authenticatedUserId?: string; shutdownTimeoutMs?: number; onShutdownError?: (name: string, error: unknown) => void; credentialTimeoutMs?: number; invokeTimeoutMs?: number; dispatch?: boolean;
   /** Stands in for agent:invoke. `input` is what the caller sent: fire.ts sends the run's user message (TASK-908). */
   invoke?: (ctx: AgentContext, bus: HookBus, input: unknown) => Promise<unknown>;
-  reuse?: { container: StartedPostgreSqlContainer; agentId: string; teamAgentId: string; clock: number; secrets?: Map<string, Uint8Array>; blobs?: Map<string, Uint8Array> } } = {}): Promise<RoutineHarness> {
-  const container = options.reuse?.container ?? await startTestContainer(new PostgreSqlContainer('postgres:16-alpine'));
+  reuse?: { connectionString: string; agentId: string; teamAgentId: string; clock: number; secrets?: Map<string, Uint8Array>; blobs?: Map<string, Uint8Array> } } = {}): Promise<RoutineHarness> {
+  const connectionString = options.reuse?.connectionString ?? await server.database();
   let clock = options.reuse?.clock ?? Date.parse('2026-10-09T12:00:00Z');
   let attended = true;
   // The fixture vault, like production credentials, survives a host restart.
@@ -133,7 +155,7 @@ export async function createRoutineHarness(options: { clock?: Clock; authenticat
           secrets.set(input.ref, input.payload);
         }, { timeoutMs: options.credentialTimeoutMs ?? 120_000 });
       },
-    }, createDatabasePostgresPlugin({ connectionString: container.getConnectionUri() }), createToolPolicyPlugin(), createAgentsPlugin(), createDecisionsPlugin({ now: () => new Date(clock), sweepIntervalMs: 0, attendanceFor: () => attended ? 'attended' : 'unattended' }), routinesPlugin],
+    }, createDatabasePostgresPlugin({ connectionString }), createToolPolicyPlugin(), createAgentsPlugin(), createDecisionsPlugin({ now: () => new Date(clock), sweepIntervalMs: 0, attendanceFor: () => attended ? 'attended' : 'unattended' }), routinesPlugin],
   });
   await firstTick;
   const ctx = (userId: string) => makeAgentContext({ userId, agentId: 'test', sessionId: 'test' });
@@ -146,11 +168,11 @@ export async function createRoutineHarness(options: { clock?: Clock; authenticat
   const agentId = options.reuse?.agentId ?? await create(false), teamAgentId = options.reuse?.teamAgentId ?? await create(true);
   const { db } = await harness.bus.call<unknown, { db: Kysely<RoutinesDatabase> }>('database:get-instance', owner, {});
   const liveBus = harness.bus; const liveStore = createRoutinesStore(db);
-  return { routes, shutdownRoutines: async () => { await routinesPlugin.shutdown?.(); }, shutdownKernel: () => kernel.shutdown(), async restart() { await kernel.shutdown(); await harness.close(); return createRoutineHarness({ ...options, reuse: { container, agentId, teamAgentId, clock, secrets, blobs } }); }, setAttended(value) { attended = value; }, descriptors, advance(ms) { clock += ms; }, cleanupWarnings, invokeCalls, setTeamFailure(mode) { teamFailure = mode; }, setTeamRole(userId, role) { if (role === null) teamRoles.delete(userId); else teamRoles.set(userId, role); }, bus: harness.bus, owner, teamAdmin, teamMember, agentId, teamAgentId, credentialCalls, db,
+  return { routes, shutdownRoutines: async () => { await routinesPlugin.shutdown?.(); }, shutdownKernel: () => kernel.shutdown(), async restart() { await kernel.shutdown(); await harness.close(); return createRoutineHarness({ ...options, reuse: { connectionString, agentId, teamAgentId, clock, secrets, blobs } }); }, setAttended(value) { attended = value; }, descriptors, advance(ms) { clock += ms; }, cleanupWarnings, invokeCalls, setTeamFailure(mode) { teamFailure = mode; }, setTeamRole(userId, role) { if (role === null) teamRoles.delete(userId); else teamRoles.set(userId, role); }, bus: harness.bus, owner, teamAdmin, teamMember, agentId, teamAgentId, credentialCalls, db,
     failNextCredentialDelete() { failDelete = true; },
     seedSecret(key, value = 'test-secret') { secrets.set(credentialRef(key), new TextEncoder().encode(value)); },
     holdCredentialSet() { let release!: () => void; gate = new Promise(resolve => { release = resolve; }); const entered = new Promise<void>(resolve => { started = resolve; }); return { started: entered, release }; },
     drainCleanup: () => drainRoutineCleanup({ bus: harness.bus, store: createRoutinesStore(db) }),
-    async close() { await kernel.shutdown(); await harness.close(); await stopPostgresContainer(container); },
+    async close() { await kernel.shutdown(); await harness.close(); },
   };
 }
