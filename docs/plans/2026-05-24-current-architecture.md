@@ -677,8 +677,82 @@ to download) on a **different registrable domain** from the app (kind:
 reads no cookies and takes only a short-lived signed token. It never sniffs: a
 view gets the stored media type and a download `application/octet-stream`, with
 `nosniff` / `private, no-store` / `no-referrer` on every response. It
-gives HTML a fixed CSP (no network, no forms, `frame-ancestors` = the app
-origins, `sandbox allow-scripts allow-downloads`). The app shows it in an iframe
+gives HTML a fixed CSP (no CSP-governed network, no forms, `frame-ancestors` =
+the app origins, `sandbox allow-scripts allow-downloads`). CSP does not cover
+WebRTC, so HTML also goes through `@ax/frame-guard`'s `prepareArtifactHtml`
+(child frames cut, a guard script that locks WebRTC injected first; chat
+visuals share the same runtime). The transform runs a third-party parser over
+bytes an agent chose, so it runs neither on the thread that serves requests nor in
+the process that has it: every page goes to a worker PROCESS (`createHtmlPreparer`
+forks the built `prepare-worker.js` of `@ax/frame-guard`: one page at a time, an
+empty environment, no standard streams, only the page over its channel, a heap limit
+V8 enforces on it with the young generation pinned so that the limit is the same on
+every machine, the lower priority the worker asks for set on every one of its
+threads (on Linux a priority belongs to a thread, and V8's helpers are made before
+the worker can ask), a wall-clock deadline, a short line of waiting pages, and a busy
+rule). The heap is sized from the
+container's memory limit (30% of it, less the young generation and 64 MB of the
+worker's other memory, at most 384 MB: 195 MB in a 1 GiB container, the full 384 from
+about 1.6 GiB, read again for each worker), because the worker is a process of the
+host's container and a V8 abort ends it alone but the container's limit does not:
+under `memory.oom.group` (Kubernetes sets it on cgroup v2 by default) the kernel ends every
+process in the container, the host too, and `oom_score_adj` only chooses who is first
+(measured: 600 MiB, the host holding 300 MB, a heavy page: exit 137, whatever the
+worker's heap). The worker is sized so that its heap, its young generation and the
+64 MB measured for its other memory fit in its share. That is a measurement and not a
+bound: memory outside the heap (an encoded answer, its copy in the channel) is not
+limited by it, and a host that is itself past the other 70% is not saved by it. A page that needs more
+memory than the worker has is aborted by V8, one that holds its CPU is killed at the
+deadline, one that crashes it is gone, and the pool answers each with a refusal
+(`worker_oom`, `worker_timeout`, `worker_crashed`) and starts another worker for the
+next page: for a worker that FAILS, the host sees a refused page and nothing more.
+(It was a thread, and a thread is not a boundary: when a page needed far more heap
+than the thread's limit, V8 aborted the whole host, at the 384 MB default for a page 4
+MiB long that the transform wrote out at three times its length. Even with the
+transform's own bounds, 4 MiB of text inside a `<table>`, which parse5 holds a token
+at a time, needs 352 to 368 MB of the 384, so what happens at the limit has to be
+safe, not unlikely.) The worker says what heap limit it really has when it starts,
+and one that is not the limit asked for is not used. A worker that cannot be made, or
+ends, starts wrongly or never says it is ready before the page's deadline (so the page was
+never sent to it: `worker_failed`, not the page's `worker_timeout`), is a failure no page can cause: five in a
+row and pages are turned away as `busy` for 30 seconds, then one is tried (a crash
+with a page in hand is that page's refusal and does not count, or a few pages that
+crash the parser would turn every tenant away). It asks the kernel to end it first
+when it must end one, to give the CPU to the host first, and to leave its memory out of
+a core dump (it ends by aborting at its heap limit, and where core dumps are on, as they
+usually are in a container, that wrote 300 to 650 MB for every page refused: seconds of
+disk, which the CI runner lost to the pool's deadline, and other people's pages in it;
+with the filter at 0 the core is 0.1 MB); and it is ended when the
+host lets go of the channel and when it has had nothing to do for 20 seconds (one that
+has prepared a heavy page holds 250 to 380 MB until it ends). The host checks each
+answer (its shape, at most 8 MiB, the guard in it), which stops a worker that is
+wrong. It is not a sandbox, and it holds against a worker that fails, not one that has
+been taken over (a flaw in the JavaScript engine that a page reaches, say): that one
+is the same user in the same pod, and can signal the host, read the host's
+environment from `/proc`, and write to the channel bytes that Node's reader throws
+on, which ends the host (measured, for `advanced` and for `json` serialization
+alike). What would close it is the worker's own user or pod, a syscall filter, or a
+channel the host reads itself with a bound; none is built. The transform bounds its
+own work as well (parse depth, node, attribute and call counts, the length of a tag
+name, the characters the serializer would have to escape, a result of at most four
+times the page and never over 8 MiB, in characters and in bytes, and a CPU-time
+budget: 500 ms by default, 1.5 s only inside the worker). A page it refuses, or one
+over 4 MiB, is a 422 with one of three fixed lines ("too large to preview here,
+download it instead"; "can't show this page right now, try again" for a page that was
+turned away unseen, busy or the worker failed; or "can't show this page safely"; the
+reason goes to the log as a code, at warn), not the 404 a bad token gets. A fault of
+the worker (it crashed, it could not start, it said something wrong) is logged with its
+code at error, except a heap abort, which is the design at work and a warning like the
+refusal that goes with it: any page can cause one, and an error is what an alert
+pages on. A refusal that is about the page is remembered by content hash, in a place of its own (4,096 of
+them) so that refusals never push a served page out of the sixteen; `worker_timeout`,
+a wall-clock deadline that can meet a starved machine, `worker_oom`, which a page at
+the edge of the heap limit or a machine short of memory can give a good page, and
+`worker_crashed`, which something other than the page can also cause, are remembered
+for a minute only. That defense is enumeration-based,
+and a page
+opened top-level on `/v/` can navigate itself away; the full fix is
+network-level (TASK-1065). The app shows it in an iframe
 with `sandbox="allow-scripts allow-downloads"`, never `allow-same-origin`.
 
 ---

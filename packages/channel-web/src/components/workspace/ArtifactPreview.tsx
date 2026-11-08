@@ -11,7 +11,9 @@
  *     (the page would get an origin it could use), never
  *     `allow-top-navigation` (it could navigate this tab to a look-alike
  *     sign-in page). No referrer, and no `message` listener here at all:
- *     there is no channel for the page to talk back on.
+ *     there is no channel for the page to talk back on. The page is also
+ *     guarded server-side (WebRTC locked, child frames cut: @ax/frame-guard,
+ *     applied by the content origin), because CSP doesn't cover WebRTC.
  *   - Images load from the same kind of address, with no referrer.
  *   - Markdown goes through `Markdown`: no raw HTML, images as alt text,
  *     unsafe links blanked.

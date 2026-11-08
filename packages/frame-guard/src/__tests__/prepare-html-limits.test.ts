@@ -1,0 +1,962 @@
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import { getHeapStatistics, setFlagsFromString } from 'node:v8';
+import { runInNewContext } from 'node:vm';
+import { describe, expect, it } from 'vitest';
+import { defaultTreeAdapter as tree, html as spec, parse, serialize, type DefaultTreeAdapterTypes as Tree } from 'parse5';
+import { FRAME_GUARD_SOURCE, prepareArtifactHtml, type PrepareLimits, type PrepareResult } from '../index.js';
+import { defaultClock, VOID_ELEMENTS, weighTree } from '../prepare-html.js';
+import { escapeAmplification } from './hostile-pages.js';
+
+// The transform runs on the host's one thread, on a page an agent wrote, so what
+// it costs has to be bounded by something the agent does not choose. These tests
+// feed it the shapes that make parse5 itself slow, at the size the content
+// origin lets through (4 MiB), and assert on how long the answer takes and how
+// much memory it uses. Every one of them used to take minutes, or end the
+// process (TASK-1082 review, finding 1). The limits are then crossed one at a
+// time with small pages, through the knobs `PrepareLimits` gives a test, so a
+// limit that stops working fails here quickly and by name.
+
+const KiB = 1024;
+const MiB = 1024 * KiB;
+/** The most the content origin hands the transform (MAX_HTML_TRANSFORM_BYTES). */
+const CAP = 4 * MiB;
+
+/** Wall-clock ceiling for an abort. Measured at single-digit to a few hundred ms; CI machines are slower, not 4x slower. */
+const FAST_MS = 1000;
+/** Growth in the heap while a hostile page was being refused. Measured at a few tens of MB. */
+const HEAP_MB = 200;
+
+// ---- the shapes --------------------------------------------------------------
+
+const repeat = (unit: string, bytes: number, head = ''): string => head + unit.repeat(Math.ceil(bytes / unit.length));
+
+/** Reviewer's first input: nothing but open divs. Plain parse5 spends 1.3 s on 98 KiB and ~50 minutes on 4 MiB. */
+const nestedDivs = (bytes: number): string => repeat('<div>', bytes);
+
+/**
+ * Reviewer's second: `n` formatting elements with distinct attributes, closed by their parent, then
+ * every `<span>` that follows rebuilds all of them (the adoption agency's "reconstruct the active
+ * formatting elements"). Plain parse5 builds ~500 elements for every 17 bytes: 104 KiB took 20 s and 2 GB.
+ */
+function reconstruct(bytes: number, n = 500): string {
+  let head = '<div>';
+  for (let i = 0; i < n; i++) head += `<b x=${i}>`;
+  head += '</div>';
+  return repeat('<div><span></div>', bytes - head.length, head);
+}
+
+/** One start tag with thousands of distinct attributes: parse5's tokenizer compares each against all the ones before it. */
+function attributeFlood(bytes: number): string {
+  let s = '<div';
+  for (let i = 0; s.length < bytes; i++) s += ` a${i}`;
+  return `${s}>`;
+}
+
+/** Repeated `<body x>`: each one copies its attributes onto the first body, rebuilding a set of everything it has so far. */
+function bodyAttributes(bytes: number): string {
+  let s = '<body>';
+  for (let i = 0; s.length < bytes; i++) s += `<body a${i}>`;
+  return s;
+}
+
+/**
+ * 500 attributes' worth of names on the first `<body>`, then `<body x>` over and over. Each repeat adds its
+ * attributes to the first body; the default adapter rebuilds a set of the ~250 names that body has on every call.
+ */
+const bodyRepeated = (bytes: number): string => {
+  const names = Array.from({ length: 250 }, (_, i) => ` a${i}`).join('');
+  return repeat('<body x>', bytes, `<body${names}>`);
+};
+
+/** A block with tens of thousands of children, then the end tag of the formatting element around it: the adoption agency moves them one at a time. */
+const adoptedChildren = (bytes: number): string => repeat('<i></i>', bytes - 12, '<a><div>') + '</a>';
+
+/** `<a><div>x</a>`, over and over: the adoption agency moves a growing pile of children every time. Plain parse5: 21 s per MiB. */
+const adoptionAgency = (bytes: number): string => repeat('<a><div>x</a>', bytes);
+/** Everything in a table that is not table content is moved in front of it, one search through the siblings at a time. */
+const fosterParented = (bytes: number): string => repeat('<div>x</div>', bytes, '<table>');
+/** The same with void elements, and with text between them: every one is a search for where the table is. */
+const fosterParentedInputs = (bytes: number): string => repeat('<input>', bytes, '<table>');
+const fosterParentedText = (bytes: number): string => repeat('a<b></b>', bytes, '<table>');
+/** Text and a void element, over and over: half of the searches are for where to put text. */
+const fosterParentedTextOnly = (bytes: number): string => repeat('a<br>', bytes, '<table>');
+const nestedTables = (bytes: number): string => repeat('<table><tr><td>', bytes);
+const nestedTemplates = (bytes: number): string => repeat('<template>', bytes);
+/** `<pre>` is a block, so each one scans the whole stack for an open paragraph: 100 s for 1 MiB in plain parse5. */
+const nestedPre = (bytes: number): string => repeat('<pre>\nx', bytes);
+/** 500 open elements and then end tags nothing matches: each looks through all 500 and builds nothing. */
+const endTagsOverDeepStack = (bytes: number): string => repeat('</i>', bytes, '<span>'.repeat(500));
+/** The same under list items: each `<li>` looks down the whole stack for the list item it closes. */
+const listItemsOverDeepStack = (bytes: number): string => repeat('<li>', bytes, '<div>'.repeat(500));
+
+// ---- measuring -----------------------------------------------------------------
+
+interface Run {
+  result: PrepareResult;
+  /** Wall-clock milliseconds. */
+  ms: number;
+  /** The CPU time of this thread, in milliseconds: what the transform's budget is measured in, and what a busy machine does not stretch. */
+  cpuMs: number;
+  /** The most the heap grew, sampled each time the transform looked at the clock. */
+  grownMB: number;
+  /** How many times it looked. A run with no samples says nothing about memory. */
+  samples: number;
+}
+
+/**
+ * Runs the transform and reports how long it took and how far the heap grew. The heap is sampled
+ * from inside the call, through the `now` the transform takes: the only way to see the peak of
+ * work that never yields.
+ */
+function run(html: string, limits: PrepareLimits = {}): Run {
+  const clock = limits.now ?? defaultClock;
+  const base = getHeapStatistics().used_heap_size;
+  let peak = base;
+  let samples = 0;
+  const now = (): number => {
+    if (samples++ % 8 === 0) peak = Math.max(peak, getHeapStatistics().used_heap_size);
+    return clock();
+  };
+  const started = performance.now();
+  const cpuFrom = typeof process.threadCpuUsage === 'function' ? process.threadCpuUsage() : undefined;
+  const result = prepareArtifactHtml(html, { ...limits, now });
+  const ms = performance.now() - started;
+  const cpu = cpuFrom === undefined ? undefined : process.threadCpuUsage(cpuFrom);
+  return { result, ms, cpuMs: cpu === undefined ? ms : (cpu.user + cpu.system) / 1000, grownMB: Math.max(0, peak - base) / MiB, samples };
+}
+
+/**
+ * `run`, retried (twice at most) when it was slow or grew the heap, keeping the best one. These tests claim
+ * that an abort takes milliseconds, and a timeslice the machine took for something else (measured: 30 times
+ * the normal time, once in a few dozen runs) is not a regression. A real one is slow every time.
+ */
+function bestRun(html: string, limits: PrepareLimits = {}, maxMs = FAST_MS): Run {
+  let best: Run | undefined;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const r = run(html, limits);
+    if (best === undefined || r.ms < best.ms) best = r;
+    if (r.ms < maxMs && r.grownMB < HEAP_MB) break;
+  }
+  return best as Run;
+}
+
+/** The reason a run was refused, or 'served'. */
+function verdict(r: Run | PrepareResult): string {
+  const result = 'result' in r ? r.result : r;
+  return result.ok ? 'served' : result.reason;
+}
+
+/** Generous for ordinary machines, not so for the minutes these used to take. */
+function expectFast(r: Run, maxMs = FAST_MS): void {
+  expect(r.ms, 'milliseconds to answer').toBeLessThan(maxMs);
+  expect(r.samples, 'the transform never looked at the clock, so the heap was never sampled').toBeGreaterThan(0);
+  expect(r.grownMB, 'MB of heap growth').toBeLessThan(HEAP_MB);
+}
+
+// ---- the reviewer's two inputs, at the cap ---------------------------------------
+
+describe("the reviewer's two inputs, scaled to the 4 MiB cap", () => {
+  it('nested divs: refused as too deep, in milliseconds', () => {
+    // At 1/32 of the size a quadratic parse already takes ~2 s (and the full size ~50 minutes), so a
+    // regression is a quick failure here instead of a hung run below.
+    const canary = bestRun(nestedDivs(CAP / 32));
+    expect(verdict(canary)).toBe('too_deep');
+    expect(canary.ms).toBeLessThan(FAST_MS);
+
+    const full = bestRun(nestedDivs(CAP));
+    expect(verdict(full)).toBe('too_deep');
+    expectFast(full);
+  });
+
+  it('formatting-element reconstruction: refused for building too many nodes, in milliseconds, without the 2 GB', () => {
+    // 16 KiB of this took 1.6 s and 250 MB in plain parse5, and 4 MiB ended the process.
+    const canary = bestRun(reconstruct(16 * KiB));
+    expect(verdict(canary)).toBe('too_many_nodes');
+    expect(canary.ms).toBeLessThan(FAST_MS);
+    expect(canary.grownMB).toBeLessThan(HEAP_MB);
+
+    const full = bestRun(reconstruct(CAP));
+    expect(verdict(full)).toBe('too_many_nodes');
+    expectFast(full);
+  });
+});
+
+// ---- the other shapes that make parse5 itself slow -------------------------------
+
+describe('other shapes that cost parse5 minutes, at the 4 MiB cap', () => {
+  // Each of these was measured in plain parse5 before the fix (the comment above says what). Where a
+  // small copy is already slow in plain parse5 it is run first, so a regression fails in about a second
+  // instead of hanging the run on the full size.
+  // `reason` is what stops the shape, or the two things that do, whichever is first: the scans (500 open elements, then something that
+  // looks through all of them a million times) are bounded by the 25 million calls they make AND by the 500 ms of CPU, and which comes
+  // first depends on the machine: the calls took 156 to 254 ms of CPU where this was measured, and a CI runner two or three times
+  // slower reaches the clock first. Both are refusals the origin treats alike (the same line, remembered for good), so the table takes
+  // either, and the test after it shows the count stops them with the clock out of the way. `limits` is for the shape that is served:
+  // 500 ms is a CPU budget, and a machine that is slow enough turns a good page into a refusal.
+  const SHAPES: Array<{
+    name: string;
+    make: (bytes: number) => string;
+    reason: string | readonly string[];
+    canary: boolean | number;
+    ms?: number;
+    limits?: PrepareLimits;
+  }> = [
+    // (A `canary` that is a number is the size of the small copy, where 1/32 of the cap is not slow enough to tell.)
+    { name: 'one tag with thousands of attributes', make: attributeFlood, reason: 'too_many_attrs', canary: CAP / 16 },
+    { name: '<body> repeated, each with new attributes', make: bodyAttributes, reason: 'too_many_attrs', canary: true },
+    { name: '<body x> repeated 500,000 times after 250 attributes on the first (served: it is linear)', make: bodyRepeated, reason: 'served', canary: false, limits: { budgetMs: 60_000 } },
+    { name: '<a><div>x</a> repeated (adoption agency)', make: adoptionAgency, reason: 'too_deep', canary: true },
+    // (The foster-parenting shapes take ~70 ms; searching for the table from the front of the child list
+    // instead of the back adds 0.5 s to each, which the usual one-second limit would let through.)
+    { name: 'table content moved in front of the table', make: fosterParented, reason: 'too_many_nodes', canary: false, ms: 500 },
+    { name: '...void elements, one search for the table each', make: fosterParentedInputs, reason: 'too_many_nodes', canary: false, ms: 500 },
+    { name: '...text between elements, one search for the table each', make: fosterParentedText, reason: 'too_many_nodes', canary: false, ms: 500 },
+    { name: '...text and void elements, half the searches for text', make: fosterParentedTextOnly, reason: 'too_many_nodes', canary: false, ms: 500 },
+    { name: '<table><tr><td> nested', make: nestedTables, reason: 'too_deep', canary: true },
+    { name: '<template> nested', make: nestedTemplates, reason: 'too_deep', canary: true },
+    { name: '<pre> nested', make: nestedPre, reason: 'too_deep', canary: true },
+    { name: '500 open elements, then end tags that match nothing', make: endTagsOverDeepStack, reason: ['too_much_work', 'too_slow'], canary: false },
+    { name: '500 open divs, then list items', make: listItemsOverDeepStack, reason: ['too_much_work', 'too_slow'], canary: false },
+  ];
+
+  it('stops the one shape no count catches, by the clock: a block of 70,000 children moved by the adoption agency', () => {
+    // Each child is moved out of a list that is 70,000 long (plain parse5: ~6 s for 1 MiB of this, quadratic),
+    // which no node, depth, attribute or call limit sees. The time budget is what ends it: 500 ms of CPU by default,
+    // the same for every page, so the same page padded out to the 4 MiB cap with a comment (nothing for the parser
+    // to do with it, and nothing that makes the shape cost less) is stopped at the same time, not at a longer
+    // one for being bigger. Held on a thread that serves requests, this page cost 1.6 s a view.
+    // (The CPU the transform used, not the wall time it took: the budget is CPU, so the page is stopped at about 500 ms of it on any machine,
+    // and a runner that is busy with other work stretches the wall time to 1 s and more, which is not the page and not the budget.)
+    const out = bestRun(adoptedChildren(MiB));
+    expect(verdict(out)).toBe('too_slow');
+    expect(out.cpuMs).toBeLessThan(FAST_MS);
+    const padded = bestRun(`<!--${'x'.repeat(CAP - adoptedChildren(MiB).length - 7)}-->${adoptedChildren(MiB)}`);
+    expect(verdict(padded)).toBe('too_slow');
+    expect(padded.cpuMs).toBeLessThan(FAST_MS);
+    // ...and a page of the same shape that is small enough is served.
+    expect(verdict(run(adoptedChildren(60 * KiB)))).toBe('served');
+  });
+
+  it.each(SHAPES)('$name', ({ make, reason, canary, ms, limits }) => {
+    const reasons = typeof reason === 'string' ? [reason] : reason;
+    if (canary !== false) {
+      const small = bestRun(make(canary === true ? CAP / 32 : canary), limits);
+      expect(reasons).toContain(verdict(small));
+      expect(small.ms).toBeLessThan(FAST_MS);
+    }
+    const full = bestRun(make(CAP), limits, ms);
+    expect(reasons).toContain(verdict(full));
+    expectFast(full, ms);
+  });
+
+  it('stops the scans by the count of calls they make, with the clock out of the way: 500 open elements, then end tags or list items', () => {
+    // The table above takes the count or the 500 ms clock, whichever a machine reaches first. This is the count alone: the budget is 20
+    // seconds, so only the 25 million calls can stop these (they take well under a second), and a regression that stops counting them
+    // runs into the 20 seconds and fails here by name, on any machine.
+    for (const make of [endTagsOverDeepStack, listItemsOverDeepStack]) {
+      expect(verdict(run(make(CAP), { budgetMs: 20_000 }))).toBe('too_much_work');
+    }
+  });
+});
+
+// ---- the limits must not cost real pages ------------------------------------------
+
+describe('ordinary pages, big and dense, are still served', () => {
+  // These are the pages the limits could get wrong, so they run under the real node, call and attribute
+  // limits and a budget far longer than they need: what is asserted is that no limit but time is
+  // in their way. (Time on a loaded CI runner is not a thing a unit test should depend on.)
+  const LONG = { budgetMs: 60_000 };
+
+  it('4 MiB of inlined script', () => {
+    const page = `<!doctype html><title>t</title><script>${'a=1;'.repeat(CAP / 4 - 64)}</script><p>hi</p>`;
+    expect(verdict(run(page, LONG))).toBe('served');
+  });
+
+  it('4 MiB of text, and 4 MiB in one attribute value', () => {
+    expect(verdict(run(`<p>${'word '.repeat(CAP / 5 - 8)}</p>`, LONG))).toBe('served');
+    expect(verdict(run(`<img src="data:image/png;base64,${'QUJD'.repeat(CAP / 4 - 64)}">`, LONG))).toBe('served');
+  });
+
+  it('a table of 5,000 rows by 10 numbers (100,000 nodes, 0.4 MiB)', () => {
+    const row = `<tr>${'<td>12.5</td>'.repeat(10)}</tr>`;
+    const out = run(`<table><tbody>${row.repeat(5000)}</tbody></table>`, LONG);
+    expect(verdict(out)).toBe('served');
+  });
+
+  it('0.75 MiB of prose with a link or an emphasis every dozen characters (130,000 nodes)', () => {
+    const out = run(repeat('<p>Hello <b>world</b> and <a href="x">more</a>.</p>\n', 0.75 * MiB), LONG);
+    expect(verdict(out)).toBe('served');
+  });
+
+  it('a page whose end tags and stray tags are all over the place, a thousand times over', () => {
+    const messy = '<table><b>x<tr><td>cell</i></span><p>para</b></a></table>more text<li>item</font>';
+    expect(verdict(run(messy.repeat(1000), LONG))).toBe('served');
+  });
+
+  it('refuses a table 20 times that size, on the node limit, in milliseconds', () => {
+    const row = `<tr>${'<td>12.5</td>'.repeat(10)}</tr>`;
+    const out = bestRun(`<table><tbody>${row.repeat(100_000)}</tbody></table>`);
+    expect(verdict(out)).toBe('too_many_nodes');
+    expectFast(out);
+  });
+});
+
+// ---- the limits, one at a time ----------------------------------------------------
+
+describe('each limit on its own, with a small page', () => {
+  /** A clock that moves a millisecond every time it is read. */
+  const ticking = (): (() => number) => {
+    let t = 0;
+    return () => t++;
+  };
+
+  describe('nodes', () => {
+    it('counts what the parse builds, text and comments included, against maxNodes', () => {
+      const page = '<p>x</p>'.repeat(200); // html, head, body, then a <p> and its text each
+      expect(verdict(prepareArtifactHtml(page))).toBe('served');
+      expect(verdict(prepareArtifactHtml(page, { maxNodes: 1000 }))).toBe('served');
+      expect(verdict(prepareArtifactHtml(page, { maxNodes: 100 }))).toBe('too_many_nodes');
+      expect(verdict(prepareArtifactHtml('<!--c-->'.repeat(200), { maxNodes: 100 }))).toBe('too_many_nodes');
+    });
+
+    it('counts the nodes the parser makes that the markup never wrote: formatting elements that come back', () => {
+      // 100 formatting elements, then every <span> brings all 100 back: 40 KiB of markup, 2.4 million nodes.
+      const page = reconstruct(40 * KiB, 100);
+      const out = run(page, { maxNodes: 20_000 });
+      expect(verdict(out)).toBe('too_many_nodes');
+      expect(out.ms).toBeLessThan(FAST_MS);
+    });
+
+    it('is the number of nodes in ONE parse: another pass starts again from zero', () => {
+      // 60 nodes a pass, two passes, a limit of 80.
+      const page = '<p>x</p>'.repeat(28);
+      expect(verdict(prepareArtifactHtml(page, { maxNodes: 80 }))).toBe('served');
+    });
+  });
+
+  describe('calls to the tree adapter', () => {
+    // A page that makes thousands of calls (the limit is looked at every 1,024 of them).
+    const page = '<p>x</p>'.repeat(2000);
+
+    /** The fewest calls that still serve `html`. */
+    function needed(html: string): number {
+      let lo = 0;
+      let hi = 1_000_000;
+      while (lo + 1 < hi) {
+        const mid = (lo + hi) >> 1;
+        if (prepareArtifactHtml(html, { maxCalls: mid }).ok) hi = mid;
+        else lo = mid;
+      }
+      return hi;
+    }
+
+    it('refuses a parse that makes more calls than maxCalls, as too much work', () => {
+      expect(verdict(prepareArtifactHtml(page, { maxCalls: 2000 }))).toBe('too_much_work');
+      expect(verdict(prepareArtifactHtml(page, { maxCalls: 1_000_000 }))).toBe('served');
+    });
+
+    it('counts the calls of every pass together, not each pass on its own', () => {
+      // A page is read twice (it is read again once it has the guard and what the parser fixed), but a page that
+      // is already what the transform makes (its own output) is read once. The first costs the second's calls
+      // twice over if the passes share the limit, and the same if each pass has its own.
+      const result = prepareArtifactHtml(page);
+      expect(result.ok).toBe(true);
+      const once = result.ok ? result.html : '';
+      const twice = needed(page);
+      const single = needed(once);
+      expect(single).toBeGreaterThan(5_000);
+      expect(twice / single).toBeGreaterThan(1.5);
+    });
+  });
+
+  describe('the clock', () => {
+    it('is the CPU time of the thread by default: a pause that uses none does not move it', () => {
+      // A stretch where the OS gives the thread to something else (a busy host, a CPU quota) must not count
+      // against the page, or a good page is refused (and the refusal cached) whenever the machine is busy.
+      if (typeof process.threadCpuUsage !== 'function') return;
+      const before = defaultClock();
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 150); // 150 ms asleep, none of it CPU
+      expect(defaultClock() - before).toBeLessThan(60);
+      // ...and CPU spent is counted: burn until the clock has moved by 40 ms, however long that takes the machine. (It used to burn for 80
+      // ms of wall time and expect more than 40 of CPU, which a thread the OS shares with other work does not get: 27 ms was measured on
+      // a loaded machine. The wall limit is only there so that a clock that never moves fails, instead of hanging.)
+      const spinFrom = defaultClock();
+      for (const end = performance.now() + 20_000; defaultClock() - spinFrom < 40 && performance.now() < end; ) {
+        /* burn */
+      }
+      expect(defaultClock() - spinFrom).toBeGreaterThanOrEqual(40);
+    });
+
+    it('refuses a page whose parse runs past the budget, partway through', () => {
+      // Each read of the clock is a millisecond; a page this size is looked at dozens of times.
+      const page = '<p>x</p>'.repeat(5000);
+      expect(verdict(prepareArtifactHtml(page, { now: ticking(), budgetMs: 1_000_000 }))).toBe('served');
+      expect(verdict(prepareArtifactHtml(page, { now: ticking(), budgetMs: 3 }))).toBe('too_slow');
+    });
+
+    it('looks after every 16 calls that walk a list, apart from the look every 1,024 calls of any kind', () => {
+      // Each foster-parented `<input>` is a search of its parent's child list (the calls that can be quadratic, so
+      // a flood of them must not go a thousand calls between looks). 160 of them are 160 such calls, and 160
+      // `<br>`s make about as many calls in all (3,500 or so, three looks at one per 1,024) with none of them.
+      const fostered = `<table>${'<input>'.repeat(160)}`;
+      const plain = `<p>${'<br>'.repeat(160)}`;
+      // A clock that moves a millisecond with every look, and room for twelve of them: the plain page takes
+      // eight looks; the other ten more, one per 16 searches.
+      const run = (page: string): string => verdict(prepareArtifactHtml(page, { now: ticking(), budgetMs: 12, lookEvery: 1_000_000 }));
+      expect(run(plain)).toBe('served');
+      expect(run(fostered)).toBe('too_slow');
+    });
+
+    it('has a default budget of 500 ms of CPU, the same for a small page as for a 4 MiB one: nothing that calls it directly holds its thread longer', () => {
+      // The first read of the clock is the start; every read after it says that much time has gone by.
+      const after = (ms: number): (() => number) => {
+        let reads = 0;
+        return () => (reads++ === 0 ? 0 : ms);
+      };
+      for (const page of ['<p>x</p>', `<p>${'word '.repeat(CAP / 5 - 8)}</p>`]) {
+        expect(verdict(prepareArtifactHtml(page, { now: after(499) }))).toBe('served');
+        expect(verdict(prepareArtifactHtml(page, { now: after(500) }))).toBe('too_slow');
+      }
+    });
+
+    it('refuses at once with no time at all', () => {
+      expect(verdict(prepareArtifactHtml('<p>x</p>', { budgetMs: 0 }))).toBe('too_slow');
+    });
+
+    it('looks while the tokenizer is inside one token, where nothing of ours runs (lookEvery)', () => {
+      // A single run of text: three adapter calls in all, so only the tokenizer's own looks can see the clock.
+      const page = `<!--${'x'.repeat(2000)}-->`;
+      expect(verdict(prepareArtifactHtml(page, { now: ticking(), budgetMs: 1_000_000, lookEvery: 10 }))).toBe('served');
+      expect(verdict(prepareArtifactHtml(page, { now: ticking(), budgetMs: 50, lookEvery: 10 }))).toBe('too_slow');
+    });
+
+    it('looks every few thousand characters by default, and not much more often', () => {
+      let reads = 0;
+      const now = (): number => (reads++, 0);
+      prepareArtifactHtml(`<!--${'x'.repeat(40_000)}-->`, { now, budgetMs: 1_000_000 });
+      // 2 passes of ~49 KB: about a dozen looks each at one per 4096 characters, plus the few between phases.
+      expect(reads).toBeGreaterThan(10);
+      expect(reads).toBeLessThan(80);
+    });
+
+    describe('between the phases of a pass', () => {
+      // A small page makes no look of its own: the clock is read at the start, after the parse, and before the
+      // page is written out. `jumpAt(n)` is a clock that runs out of time on its n-th read (the first is the start).
+      const jumpAt = (n: number): (() => number) => {
+        let reads = 0;
+        return () => (reads++ < n ? 0 : 10_000);
+      };
+
+      it('looks after the parse, before the tree is cut: out of time first', () => {
+        // <plaintext> is refused by the cut that follows the parse.
+        expect(verdict(prepareArtifactHtml('<plaintext>x', { now: jumpAt(1), budgetMs: 100 }))).toBe('too_slow');
+        expect(verdict(prepareArtifactHtml('<plaintext>x', { now: jumpAt(2), budgetMs: 100 }))).toBe('plaintext');
+      });
+
+      it('looks again before the page is written out: out of time first', () => {
+        // A carriage return from a character reference is refused when the page is written out.
+        expect(verdict(prepareArtifactHtml('x&#13;', { now: jumpAt(2), budgetMs: 100 }))).toBe('too_slow');
+        expect(verdict(prepareArtifactHtml('x&#13;', { now: jumpAt(3), budgetMs: 100 }))).toBe('cr_entity');
+      });
+    });
+  });
+
+  describe('attributes', () => {
+    const tagWith = (n: number, close = '>'): string => `<div${Array.from({ length: n }, (_, i) => ` a${i}`).join('')}${close}`;
+
+    it('allows an element 256 attributes and refuses 257', () => {
+      expect(verdict(prepareArtifactHtml(tagWith(256)))).toBe('served');
+      expect(verdict(prepareArtifactHtml(tagWith(257)))).toBe('too_many_attrs');
+    });
+
+    it('counts the attributes <html> and <body> tags repeated in a page add to the first', () => {
+      const body = (from: number, n: number): string => `<body${Array.from({ length: n }, (_, i) => ` b${from + i}`).join('')}>`;
+      expect(verdict(prepareArtifactHtml(body(0, 100) + body(100, 100)))).toBe('served');
+      expect(verdict(prepareArtifactHtml(body(0, 200) + body(200, 100)))).toBe('too_many_attrs');
+      // ...and names it already has don't count twice.
+      expect(verdict(prepareArtifactHtml(body(0, 200) + body(0, 200)))).toBe('served');
+    });
+
+    it('looks at the tag being read, not only the finished tag (a tag that never ends)', () => {
+      // No `>`: the tokenizer drops the tag at the end of the page, so no element is ever made, and only a
+      // look at the tag in progress can tell. This is what ends a 4 MiB flood after 4 KiB instead of 2 minutes.
+      const unfinished = tagWith(300, '');
+      expect(verdict(prepareArtifactHtml(unfinished, { lookEvery: 16 }))).toBe('too_many_attrs');
+      expect(verdict(prepareArtifactHtml(tagWith(100, ''), { lookEvery: 16 }))).toBe('served');
+    });
+  });
+
+  describe('what it writes out', () => {
+    it('refuses a result several times the page before writing it: one big attribute that comes back with every span', () => {
+      // A 200 KiB attribute on 20 formatting elements that each span brings back: the tree is ten thousand
+      // nodes sharing the attribute lists, and written out it is 2 GB, past the longest string there is.
+      let page = '<div>';
+      for (let i = 0; i < 20; i++) page += `<b x=${i} y="${'v'.repeat(200 * KiB)}">`;
+      page += `</div>${'<div><span></div>'.repeat(500)}`;
+      const out = bestRun(page);
+      expect(verdict(out)).toBe('output_too_large');
+      expect(out.ms).toBeLessThan(FAST_MS);
+      expect(out.grownMB).toBeLessThan(HEAP_MB);
+    });
+
+    it('refuses a result that only escaping makes too large (a quote in an attribute is six characters out)', () => {
+      // Four times the page and the slack is what a page may come back as, up to the ceiling.
+      expect(verdict(prepareArtifactHtml(`<p title='${'"'.repeat(10_000)}'>x</p>`))).toBe('served'); // 60 KB out, from 10 KB
+      expect(verdict(prepareArtifactHtml(`<p title='${'"'.repeat(15_000)}'>x</p>`))).toBe('served'); // 90 KB out: under 4 times and the slack
+      expect(verdict(prepareArtifactHtml(`<p title='${'"'.repeat(40_000)}'>x</p>`))).toBe('output_too_large'); // 240 KB out: past 4 x 40 KB and the slack
+      expect(verdict(prepareArtifactHtml(`<p title='${'"'.repeat(1 * MiB)}'>x</p>`))).toBe('output_too_large'); // 6 MiB out of 1 MiB
+    });
+
+    // A page of `total` characters that comes back `ratio` times as long: some padding, then ten formatting elements with
+    // a long attribute each, which `copies` x `<div><span>` bring back, so each is written out `copies + 1` times.
+    // (The plain text goes first: text after them would bring the elements back again.)
+    const amplified = (total: number, ratio: number, copies: number): string => {
+      const each = Math.floor((total * (ratio - 1)) / copies / 10);
+      let page = '</p><div>';
+      for (let i = 0; i < 10; i++) page += `<b x=${i} y='${'a'.repeat(each)}'>`;
+      page += `</div>${'<div><span></div>'.repeat(copies)}`;
+      return `<p>${'w'.repeat(total - page.length - 3)}${page}`;
+    };
+    const LONG = { budgetMs: 60_000 };
+
+    it('lets a result be four times the page, and not much more: 3.8 times is served, 4.4 times is refused', () => {
+      expect(amplified(MiB, 4.4, 4)).toHaveLength(MiB);
+      expect(verdict(prepareArtifactHtml(amplified(MiB, 3.8, 4), LONG))).toBe('served');
+      expect(verdict(prepareArtifactHtml(amplified(MiB, 4.4, 4), LONG))).toBe('output_too_large');
+    });
+
+    it('does not add the slack to the ceiling: a result between 8 MiB and 8 MiB and 64 KiB is refused (the worker would throw it away in bytes), one just under is served', () => {
+      // A page that does not grow: `<p>` and N letters. The result is N and the guard and the tags, K more than the page; K is found
+      // from a small one, and the pages are 4 and 1 hundredths of a MiB either side of the ceiling (the slack is 64 KiB).
+      const page = (n: number): string => `<p>${'a'.repeat(n)}</p>`;
+      const result = (n: number): number => {
+        const out = prepareArtifactHtml(page(n), LONG);
+        return out.ok ? out.html.length : -1;
+      };
+      const overhead = result(1) - 1;
+      expect(overhead).toBeGreaterThan(10_000); // the guard
+      const CEILING = 8 * MiB;
+      expect(verdict(prepareArtifactHtml(page(CEILING - overhead - 32 * KiB), LONG))).toBe('served');
+      expect(verdict(prepareArtifactHtml(page(CEILING - overhead + 32 * KiB), LONG))).toBe('output_too_large');
+    });
+
+    it('never lets a result be more than 8 MiB, whatever the page: 7.5 MiB out of a 3 MiB page is served, 8.7 MiB is refused', () => {
+      // The ceiling is on what a prepared page may be, so a page of 3 MiB may come back at 2.5 times and not 4.
+      expect(verdict(prepareArtifactHtml(amplified(3 * MiB, 2.5, 2), LONG))).toBe('served');
+      expect(verdict(prepareArtifactHtml(amplified(3 * MiB, 2.9, 3), LONG))).toBe('output_too_large');
+    });
+
+    // What a real page does when it is written out, which is what the limit must not refuse (the fourth review): pages
+    // that are longer after parse5 than before, by their markup and not by anything hostile. The sizes are those at which
+    // the limit of 1.5 times the page, for a while, refused them.
+    const document = (body: string): string => `<!doctype html><html><head><meta charset="utf-8"><title>Report</title></head><body>${body}</body></html>`;
+    const upTo = (bytes: number, unit: (i: number) => string): string => {
+      const parts: string[] = [];
+      for (let n = 0, i = 0; n < bytes; i++) {
+        const part = unit(i);
+        parts.push(part);
+        n += part.length;
+      }
+      return parts.join('');
+    };
+    // (A page of dense markup cannot be much bigger than a MiB: it is past the limit on how many nodes there are first, at
+    // 150,000, which no factor of the output has to do with. These are the sizes at which each is a page, and each is
+    // one that a limit of 1.5 times the page refused.)
+    const plausible: Array<{ name: string; bytes: number; grows: [number, number]; page: (bytes: number) => string }> = [
+      {
+        name: 'a table that leaves out its optional end tags (<tr><td>1<td>2)',
+        bytes: 400 * KiB,
+        grows: [1.5, 2],
+        page: (n) => document(`<table>${upTo(n, (i) => `<tr><td>${i}<td>${(i * 1.37).toFixed(2)}<td>${(i % 97) + 3}\n`)}</table>`),
+      },
+      {
+        name: 'a long report of the same kind, with text in its cells',
+        bytes: 2 * MiB,
+        grows: [1.05, 1.3],
+        page: (n) => document(`<table>${upTo(n, (i) => `<tr><td>${i}: the quarter's figures for the northern region<td>${(i * 1.37).toFixed(2)} on a base of ${(i % 97) + 3}, up on the year before<td>see the notes on page ${i % 40}\n`)}</table>`),
+      },
+      {
+        name: 'JSON in a single-quoted attribute, a lot of it (the 6 MiB ceiling of the first version of this refused it)',
+        bytes: 3 * MiB,
+        grows: [2, 2.5],
+        page: (n) => document(`<div id="chart" data-series='[${upTo(n, (i) => `{"x":${i},"y":${(i * 7) % 101},"label":"p${i}"},`)}{}]'></div>`),
+      },
+      {
+        name: 'JSON in a single-quoted attribute',
+        bytes: 400 * KiB,
+        grows: [2, 2.5],
+        page: (n) => document(`<div id="chart" data-series='[${upTo(n, (i) => `{"x":${i},"y":${(i * 7) % 101},"label":"p${i}"},`)}{}]'></div>`),
+      },
+      {
+        name: 'lines of code indented with raw no-break spaces',
+        bytes: 1 * MiB,
+        grows: [2.5, 3.2],
+        page: (n) => document(`<div class=code>${upTo(n, (i) => `${'\u00a0'.repeat(8)}x${i} = y;<br>`)}</div>`),
+      },
+      {
+        name: 'a grid of checkboxes with their attributes bare',
+        bytes: 1 * MiB,
+        grows: [1.3, 1.5],
+        page: (n) => document(`<table>${upTo(n, () => '<tr><td><input type=checkbox checked disabled><td><input type=checkbox>')}</table>`),
+      },
+      {
+        name: 'short lines ending in <br>, which do not grow at all',
+        bytes: 300 * KiB,
+        grows: [0.99, 1.05],
+        page: (n) => document(upTo(n, (i) => `l${i % 10}<br>`)),
+      },
+      {
+        name: 'a list that leaves out its </li> and a listing of raw ampersands and angle brackets',
+        bytes: 1 * MiB,
+        grows: [1.2, 1.6],
+        page: (n) => document(`<ul>${upTo(n / 2, (i) => `<li>item ${i}\n`)}</ul><pre>${upTo(n / 2, (i) => `if (a${i} < b && c > d) { x -> y; }\n`)}</pre>`),
+      },
+    ];
+    it.each(plausible)('serves $name, $bytes bytes of it', ({ page, bytes, grows }) => {
+      const html = page(bytes);
+      const out = prepareArtifactHtml(html, LONG);
+      expect(verdict(out)).toBe('served');
+      // It is the sort of page the test is for only if it comes back as long as it was said to.
+      const ratio = out.ok ? out.html.length / html.length : 0;
+      expect(ratio).toBeGreaterThanOrEqual(grows[0]);
+      expect(ratio).toBeLessThanOrEqual(grows[1]);
+    });
+
+    it('serves what real pages do: markup that grows a little when it is written out', () => {
+      // A page well over the slack (the first version of this was 43 KB, which any limit at all would have served).
+      const unit = '<table><tr><td>a<td>b<tr><td>c</table><p>one<p>two<ul><li>x<li>y</ul><br><input disabled><img alt>';
+      const grows = unit.repeat(Math.ceil((400 * KiB) / unit.length));
+      const out = prepareArtifactHtml(grows, LONG);
+      expect(verdict(out)).toBe('served');
+      if (out.ok) {
+        expect(out.html.length).toBeGreaterThan(grows.length);
+        expect(out.html.length).toBeGreaterThan(grows.length + 96 * KiB); // not a hair over, or the slack is what served it
+      }
+    });
+  });
+});
+
+// ---- what the serializer has to do to the characters (second review, finding 1) -----
+
+describe('a page the serializer would have to rewrite millions of characters of', () => {
+  // A quote in an attribute is written as six characters (`&quot;`), one at a time, and parse5 gives every copy
+  // of a rebuilt formatting element the SAME attribute list. Counted as one character each, 80 copies of a
+  // 200 KiB attribute looked like 16 MiB, which is inside the output limit; written out it is 100 MiB, and
+  // the serializer's work to get there is more than half a gigabyte of heap.
+  it('is refused before any of it is written, in milliseconds', () => {
+    const out = bestRun(escapeAmplification(CAP, 3));
+    expect(verdict(out)).toBe('output_too_large');
+    expectFast(out);
+  });
+
+  it('does not end a process with a 256 MB heap', { timeout: 60_000 }, () => {
+    // The same page in a child, with the heap a small host might give the whole process. On the old transform
+    // the child dies ("JavaScript heap out of memory", exit 134) after about a second of work; the answer
+    // is not repeated, because nothing is cached when the process is gone.
+    const packageDir = fileURLToPath(new URL('../..', import.meta.url));
+    const fixture = fileURLToPath(new URL('./fixtures/run-page.ts', import.meta.url));
+    const child = spawnSync(process.execPath, ['--max-old-space-size=256', '--import', 'tsx', fixture, 'escape-amplification'], {
+      cwd: packageDir,
+      encoding: 'utf8',
+      timeout: 50_000,
+    });
+    expect(child.status, `the child ended with ${child.signal ?? child.status}: ${child.stderr.slice(-600)}`).toBe(0);
+    const answer = JSON.parse(child.stdout.trim().split('\n').pop() ?? '{}') as { ok: boolean; reason: string | null; ms: number };
+    expect(answer).toMatchObject({ ok: false, reason: 'output_too_large' });
+    expect(answer.ms).toBeLessThan(FAST_MS);
+  });
+});
+
+describe('a tag whose name is thousands of characters', () => {
+  // Real tags have a dozen (a custom element, thirty or forty). The tokenizer builds a name a character at a time, a chain of
+  // joins of 128 MB for 4 MiB, kept by the element made from it, and it was the whole of a page in the fifth review: refused as
+  // too large by the worker's heap at its default (and, at 40 KB shorter, served). It is looked at where the attributes are.
+  it.each([
+    ['a start tag', '<a' + 'a'.repeat(100_000) + '>x'],
+    ['an end tag', '<p>x</p></a' + 'a'.repeat(100_000) + '>'],
+    ['a start tag, a name of 4 MiB', '<a' + 'a'.repeat(4 * MiB - 3) + '>'],
+    ['a start tag, 4 MiB less 40 KB, and text', '<a' + 'a'.repeat(4 * MiB - 40 * KiB) + '>' + 'x'.repeat(40 * KiB - 3)],
+  ])('is refused as too much work, in milliseconds, after the first few thousand of them: %s', (_, page) => {
+    const out = bestRun(page);
+    expect(verdict(out)).toBe('too_much_work');
+    expectFast(out);
+  });
+
+  it('holds the names of elements as flat strings, not as the joins parse5 built them from: 500 open elements with names of 1,000 characters grow the heap by the text', () => {
+    // `<nnn...(1000)>` 500 times, never closed: nothing compares one of the names with another (a comparison makes a string flat),
+    // so the tree keeps each as parse5 built it, a join per character, 48 MB of them, unless the element's name is read as the
+    // element is made, and then 8 to 18. (A name of 4 MiB is a chain of 128 MB; it is refused long before that, above, and this is
+    // what is left under the limit.) What is watched is what the heap RETAINS: it is collected at every look at the clock, because
+    // after the heavy tests that come before this one the heap has room for a great deal of garbage, and the count of bytes used is
+    // that, not the names. Every pass reads the same names, so the most the heap holds in the run is what is looked at.
+    setFlagsFromString('--expose-gc');
+    const gc = runInNewContext('gc') as () => void;
+    gc();
+    const before = getHeapStatistics().used_heap_size;
+    let peak = 0;
+    const now = (): number => {
+      gc();
+      peak = Math.max(peak, getHeapStatistics().used_heap_size - before);
+      return 0;
+    };
+    const name = 'n'.repeat(1000);
+    const out = prepareArtifactHtml(`<!doctype html><body>${`<${name}>`.repeat(500)}`, { now, budgetMs: 1e9 });
+    expect(out.ok).toBe(true);
+    expect(peak / MiB).toBeLessThan(30);
+  });
+
+  it('is served when it is a name there are, and the longest there can be: 1,000 characters', () => {
+    const name = 'n'.repeat(1000);
+    expect(verdict(prepareArtifactHtml(`<${name}>x</${name}><p>y</p>`))).toBe('served');
+    expect(verdict(prepareArtifactHtml(`<my-custom-element-with-a-long-name data-x=1>x</my-custom-element-with-a-long-name>`))).toBe('served');
+  });
+});
+
+describe('the weight it counts before it writes anything', () => {
+  // The limit on what a page may come back as is checked on the tree, before the page is written, so the count
+  // has to be what the serializer will really write: never lower (or a hostile page gets through it, which is
+  // what the escaped quotes did), and close to it (or a good page is refused).
+  const doc = (): Tree.Document => parse('<!doctype html><title>t</title><p>x</p><script></script><template></template>', { scriptingEnabled: true });
+  const find = (d: Tree.Document, name: string): Tree.Element => {
+    const stack: Tree.Node[] = [d];
+    for (let n = stack.pop(); n !== undefined; n = stack.pop()) {
+      if (tree.isElementNode(n) && n.tagName === name) return n;
+      if ('childNodes' in n) stack.push(...n.childNodes);
+    }
+    throw new Error(`no <${name}>`);
+  };
+  const written = (d: Tree.Document): number => serialize(d, { scriptingEnabled: true }).length;
+
+  /** A made-up string of the characters the serializer treats specially, and a few it does not. */
+  function sample(seed: number, length: number): string {
+    const chars = ['a', 'é', '"', "'", '&', '<', '>', '\u00a0', '\n', ' ', ';', '\u{1F600}'];
+    let out = '';
+    for (let i = 0, x = seed; i < length; i++) {
+      x = (Math.imul(x, 1103515245) + 12345) >>> 0;
+      out += chars[(x >>> 8) % chars.length];
+    }
+    return out;
+  }
+  const count = (value: string, set: RegExp): number => (value.match(set) ?? []).length;
+
+  it.each([1, 2, 3, 4, 5, 6])('counts a string as the serializer writes it: one that grows by exactly what the count says (sample %i)', (seed) => {
+    const value = sample(seed, 400);
+    const before = doc();
+    const baseWeight = weighTree(before).weight;
+    const baseWritten = written(before);
+
+    // In an attribute value: `"` and no-break space are six characters, `&` is five.
+    const attributed = doc();
+    find(attributed, 'p').attrs.push({ name: 'title', value });
+    expect(weighTree(attributed).weight - baseWeight).toBe(written(attributed) - baseWritten);
+    expect(weighTree(attributed).escapes).toBe(count(value, /["&\u00a0]/g));
+
+    // In text: `&` is five, `<` and `>` four, no-break space six.
+    const texted = doc();
+    tree.insertText(find(texted, 'p'), value);
+    expect(weighTree(texted).weight - baseWeight).toBe(written(texted) - baseWritten);
+    expect(weighTree(texted).escapes).toBe(count(value, /[&<>\u00a0]/g));
+
+    // In a script, which the serializer writes as it is: no escapes, no growth.
+    const scripted = doc();
+    tree.insertText(find(scripted, 'script'), value);
+    expect(weighTree(scripted).weight - baseWeight).toBe(written(scripted) - baseWritten);
+    expect(weighTree(scripted).escapes).toBe(0);
+
+    // In the content of a template, whose text has no element around it, so it is escaped like any text.
+    const templated = doc();
+    tree.insertText(tree.getTemplateContent(find(templated, 'template') as Tree.Template), value);
+    expect(weighTree(templated).weight - baseWeight).toBe(written(templated) - baseWritten);
+    expect(weighTree(templated).escapes).toBe(count(value, /[&<>\u00a0]/g));
+  });
+
+  it('is never lower than what the page comes back as, and close to it', () => {
+    const PAGES = [
+      '<!doctype html><title>t</title><p>one &amp; two &lt;three&gt; "four"</p>',
+      '<img src=a alt="x &quot;y&quot;"><br><input value="1&2"><hr>',
+      '<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"><use xlink:href="#a" xml:lang="en"/></svg>',
+      '<template><p title="a&b">x&y</p></template><textarea>a&lt;b</textarea><pre>\n\nx</pre>',
+      '<style>a>b{content:"<"}</style><script>if(a<b&&c>d){}</script><xmp><b>&amp;</b></xmp>',
+      '<!doctype html public "-//W3C//DTD HTML 4.01 Transitional//EN" "http://www.w3.org/TR/html4/loose.dtd"><p>x',
+      '<table><tr><td>a<td>b<tr><td>c</table><!-- a comment --><p>one<p>two<ul><li>x<li>y</ul>',
+      '<div><b x=1 y="&amp;&amp;"><i>one</b>two</i></div><div><span></div>'.repeat(20),
+    ];
+    for (const page of PAGES) {
+      const result = prepareArtifactHtml(page);
+      expect(result.ok).toBe(true);
+      if (!result.ok) continue;
+      const open = result.html.indexOf(`<script>${FRAME_GUARD_SOURCE}`);
+      const actual = result.html.length - (result.html.indexOf('</script>', open) + '</script>'.length - open);
+      const counted = weighTree(parse(page, { scriptingEnabled: true })).weight;
+      expect(counted, page).toBeGreaterThanOrEqual(actual);
+      // a doctype's spacing is the only thing counted that is not written (and a newline after a <pre> that may not be)
+      expect(counted - actual, page).toBeLessThan(actual * 0.2 + 80);
+    }
+  });
+
+  /** The weight an element adds to the page, and what the serializer writes for it, with nothing else changed. */
+  function addedBy(name: string, namespace: string, attrs: Array<{ name: string; value: string }> = []): { counted: number; actual: number } {
+    const before = doc();
+    const after = doc();
+    const element = tree.createElement(name, namespace, attrs);
+    // The parser gives a <template> the fragment that holds its content; the walk expects it.
+    if (name === 'template' && namespace === spec.NS.HTML) tree.setTemplateContent(element as Tree.Template, tree.createDocumentFragment());
+    tree.appendChild(find(after, 'p'), element);
+    return { counted: weighTree(after).weight - weighTree(before).weight, actual: written(after) - written(before) };
+  }
+  // `<pre>`, `<listing>` and `<textarea>` may have a newline put back after them (restoreSkippedNewlines): one counted, not written here.
+  const eatsNewline = (name: string): number => (['pre', 'listing', 'textarea'].includes(name) ? 1 : 0);
+  const htmlNames = Object.values(spec.TAG_NAMES) as string[];
+
+  it.each([...VOID_ELEMENTS])('counts <%s>, a void element, as the serializer writes it: a start tag and no end tag, exactly', (name) => {
+    const { counted, actual } = addedBy(name, spec.NS.HTML, [{ name: 'a', value: 'b&"' }]);
+    expect(counted).toBe(actual);
+    expect(actual).toBe(`<${name} a="b&amp;&quot;">`.length);
+  });
+
+  it('counts every other element of HTML parse5 knows with both tags, exactly, and is told no void element it does not write one for', () => {
+    // Every tag name parse5 knows, so that a list that is out of step with the serializer's (a name it makes void that the
+    // list does not have, or the other way) is this test and not a count that is too low in production.
+    const others = htmlNames.filter((name) => !VOID_ELEMENTS.has(name));
+    expect(others.length).toBeGreaterThan(80);
+    for (const name of others) {
+      const { counted, actual } = addedBy(name, spec.NS.HTML);
+      expect(counted - eatsNewline(name), name).toBe(actual);
+      expect(actual, name).toBe(`<${name}></${name}>`.length);
+    }
+    for (const name of VOID_ELEMENTS) expect(htmlNames, `${name} is a tag name parse5 knows`).toContain(name);
+  });
+
+  it('counts the same names in SVG and MathML with an end tag: only HTML has void elements', () => {
+    for (const name of ['input', 'br', 'img', 'link']) {
+      const { counted, actual } = addedBy(name, spec.NS.SVG);
+      expect(counted).toBe(actual);
+      expect(actual).toBe(`<${name}></${name}>`.length);
+    }
+  });
+
+  it('counts a page of void elements as long as it is, and not as long again', () => {
+    const page = `<!doctype html><title>t</title><body>${'line<br>'.repeat(2000)}${'<input type=checkbox>'.repeat(500)}`;
+    const d = parse(page, { scriptingEnabled: true });
+    const counted = weighTree(d).weight;
+    const actual = written(d);
+    expect(counted).toBeGreaterThanOrEqual(actual);
+    expect(counted - actual).toBeLessThan(100); // the doctype's spacing; before, 2,000 x 5 + 500 x 8 more
+  });
+
+  it('weighs the attributes that repeated <html> and <body> tags add to the first one like any other: by their escaped size, and against the limit on escapes', () => {
+    // `<body a0='...'>` again and again does not make elements; each adds an attribute to the first body's own list, which is
+    // where the weighing finds it. (The reads that make a value flat as it is added are about memory and weigh nothing.)
+    const repeated = (tag: 'body' | 'html', n: number, quotes: number): string =>
+      `<${tag}>${Array.from({ length: n }, (_, i) => `<${tag} a${i}='${'"'.repeat(quotes)}'>`).join('')}<p>x`;
+    for (const tag of ['body', 'html'] as const) {
+      // 100 tags of 1,000 quotes: 101 KB in, 600 KB out. Weighed as they are written they are past 1.5 times and the slack.
+      expect(verdict(prepareArtifactHtml(repeated(tag, 100, 1000)))).toBe('output_too_large');
+      // The same tags with few quotes come back at the size they went in.
+      expect(verdict(prepareArtifactHtml(repeated(tag, 100, 10)))).toBe('served');
+      // And every quote counts against the limit on escapes, once.
+      const fifty = repeated(tag, 50, 10); // 500
+      expect(verdict(prepareArtifactHtml(fifty, { maxEscapes: 500 }))).toBe('served');
+      expect(verdict(prepareArtifactHtml(fifty, { maxEscapes: 499 }))).toBe('output_too_large');
+    }
+  });
+
+  it('counts a shared attribute again for every copy of the element, and a page that needs too many escapes is refused', () => {
+    // Twenty formatting elements with five characters to escape each; every `<span>` brings them all back.
+    const attributes = '&amp;'.repeat(5);
+    let page = '<div>';
+    for (let i = 0; i < 20; i++) page += `<b x=${i} y="${attributes}">`;
+    page += `</div>${'<div><span></div>'.repeat(40)}`; // 800 copies: 4,000 escapes, from a page with a hundred in it
+    expect(verdict(prepareArtifactHtml(page, { maxEscapes: 10_000 }))).toBe('served');
+    expect(verdict(prepareArtifactHtml(page, { maxEscapes: 3000 }))).toBe('output_too_large');
+  });
+
+  it('lets a text, an attribute or a comment have exactly maxEscapes characters to escape, and no more; a raw-text element has none', () => {
+    const text = (n: number): string => `<p>${'&'.repeat(n)}</p>`;
+    expect(verdict(prepareArtifactHtml(text(100), { maxEscapes: 100 }))).toBe('served');
+    expect(verdict(prepareArtifactHtml(text(101), { maxEscapes: 100 }))).toBe('output_too_large');
+    const attribute = (n: number): string => `<p title="${'&quot;'.repeat(n)}">x</p>`;
+    expect(verdict(prepareArtifactHtml(attribute(100), { maxEscapes: 100 }))).toBe('served');
+    expect(verdict(prepareArtifactHtml(attribute(101), { maxEscapes: 100 }))).toBe('output_too_large');
+    // Written as they are, so nothing to escape however many there are:
+    expect(verdict(prepareArtifactHtml(`<script>${'<'.repeat(5000)}</script><style>${'>'.repeat(5000)}</style><!--${'&'.repeat(5000)}-->`, { maxEscapes: 10 }))).toBe('served');
+  });
+
+  it('counts escapes in one string without building anything: 1 MiB of text of `<` is refused on the count alone', () => {
+    // Four characters out for each, so 4 MiB written: not over four times the page. Only the escape limit says no.
+    const page = `<p>${'<'.repeat(1 * MiB)}</p>`;
+    expect(verdict(prepareArtifactHtml(page, { maxEscapes: 500_000 }))).toBe('output_too_large');
+    const out = bestRun(page);
+    expect(verdict(out)).toBe('output_too_large'); // the real limit is a million
+    expectFast(out);
+  });
+
+  it('counts the same when the page already has them as `&lt;`: a million of them is refused on the count alone', () => {
+    // `&lt;` is four characters in and four out, so the result is no bigger than the page: the escape limit is the
+    // only one that says no (the length limit has nothing to say).
+    const page = `<p>${'&lt;'.repeat(600_000)}</p>`;
+    expect(verdict(prepareArtifactHtml(page, { maxEscapes: 500_000, budgetMs: 60_000 }))).toBe('output_too_large');
+    expect(verdict(prepareArtifactHtml(page, { budgetMs: 60_000 }))).toBe('served'); // 600,000: under the real limit
+    const out = bestRun(`<p>${'&lt;'.repeat(1_000_001)}</p>`, { budgetMs: 60_000 });
+    expect(verdict(out)).toBe('output_too_large'); // the real limit is a million
+    expectFast(out);
+  });
+});
+
+// ---- the parse is still parse5's ---------------------------------------------------
+
+describe('what the bounded parse builds is what plain parse5 builds', () => {
+  // The transform parses through its own tree adapter, which replaces three of the default's calls (how
+  // foster-parented nodes are inserted, and how repeated <html> and <body> tags add their attributes).
+  // Pages that go through those, written out by parse5 itself, must match what the transform serves.
+  const withGuard = (html: string): string => serialize(parse(html, { scriptingEnabled: true }), { scriptingEnabled: true }).replace('<head>', '<head><GUARD/>');
+  const unguarded = (out: string): string => {
+    const open = out.indexOf(`<script>${FRAME_GUARD_SOURCE}`);
+    return out.slice(0, open) + '<GUARD/>' + out.slice(out.indexOf('</script>', open) + '</script>'.length);
+  };
+
+  const PAGES: Array<[string, string]> = [
+    ['text and elements foster-parented out of a table', '<table>a<b>b</b><i>c<tr><td>d</td></tr>e<div>f</div></table>g'],
+    ['foster parenting inside nested tables', '<table><tr><td><table>x<b>y<tr><td>z</table>w</td></tr></table>'],
+    ['foster-parented text next to text', '<table>one two<tr><td>cell</td></tr>three</table>'],
+    ['a table inside formatting elements', '<b><table><i>x<tr><td>y</td></tr></i>z</table></b>'],
+    ['misnested formatting elements (the adoption agency)', '<p><b><i>one</b>two</i>three</p><a href=x><div>four</a>five</div>'],
+    ['formatting elements that come back after the paragraph that held them', '<p><b x=1><i x=2>one</p><p>two</p><p>three'],
+    ['<html> and <body> attributes added by tags that repeat', '<html a=1><body b=2><html c=3 a=9><body d=4 b=8><p>x'],
+    ['<body> after content, with the same name twice', '<p>x<body e=5 e=6 f><body g>'],
+    ['a template inside a table', '<table><template><tr><td>x</td></tr></template><tr><td>y</td></tr></table>'],
+    ['a select in a table cell and stray text', '<table><tr><td><select><option>a<option>b</select>stray</td></tr>more</table>'],
+  ];
+
+  it.each(PAGES)('%s', (_name, html) => {
+    const result = prepareArtifactHtml(html);
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(unguarded(result.html)).toBe(withGuard(html));
+  });
+
+  it('keeps foster-parented nodes where parse5 puts them: in front of the table, in order', () => {
+    const result = prepareArtifactHtml('<table>a<b>b</b>c<tr><td>d</td></tr></table>');
+    expect(result.ok && result.html.includes('<body>a<b>b</b>c<table><tbody><tr><td>d</td></tr></tbody></table></body>')).toBe(true);
+  });
+});
+
+// ---- the refusals say nothing about the page --------------------------------------
+
+describe('a refusal is a fixed code', () => {
+  it('names the limit and nothing of the page, whatever the page said', () => {
+    const SECRET = 'SECRET-PAGE-CONTENT-4f2a';
+    const hostile: Array<[string, string]> = [
+      ['too_deep', `<p>${SECRET}</p>${'<div>'.repeat(600)}`],
+      ['too_many_attrs', `<div title="${SECRET}" ${Array.from({ length: 300 }, (_, i) => `${SECRET}${i}`).join(' ')}>`],
+      ['plaintext', `<plaintext>${SECRET}`],
+      ['nul', `${SECRET}\u0000`],
+      ['cr_entity', `${SECRET}&#13;`],
+    ];
+    for (const [reason, page] of hostile) {
+      const result = prepareArtifactHtml(page);
+      expect(result).toEqual({ ok: false, reason });
+      expect(JSON.stringify(result)).not.toContain(SECRET);
+    }
+  });
+});

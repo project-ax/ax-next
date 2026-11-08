@@ -86,8 +86,11 @@ Vinay chose "scripts allowed, in a box." The box:
   does not block `srcdoc` frames, so the visual itself still renders.
 - **Residual risk.** This defense is enumeration-based. A future browser API that creates a
   shadow root or child browsing context without going through the locked entry points would bypass
-  it. No engine honors CSP `webrtc 'block'`. The airtight alternative is rendering visuals from a
-  separate origin.
+  it. No engine honors CSP `webrtc 'block'`. A separate origin is NOT the airtight alternative this
+  paragraph once called it: it does not touch the WebRTC gap. Published artifacts already render from
+  a separate origin (the content origin) and that origin has the same gap; it is closed there by the
+  same guard (TASK-1082, `@ax/frame-guard`: the runtime above plus a parse5 pre-insertion sanitizer,
+  applied to every `/v/` HTML response). The real fix is network-level egress control (TASK-1065).
 - **The parent trusts nothing from the frame.** The only channel is `postMessage`. The parent
   checks that `event.source` is that exact frame's `contentWindow`, accepts only a small fixed set
   of message types (size report, export result), validates and clamps every field (height capped,

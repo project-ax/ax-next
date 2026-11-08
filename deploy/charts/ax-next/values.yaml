@@ -95,6 +95,19 @@ host:
   # Service port for the content origin. Maps :contentServicePort →
   # :ports.content (the `content-http` port the Ingress content rule targets).
   contentServicePort: 9091
+  # The memory limit is the host's AND the artifact-HTML worker's: the worker (a child
+  # process of the host, in this container) takes a share of it for its heap, read from
+  # the container's cgroup when each worker starts: 30% of the limit less 112 MB, at most
+  # 384 MB. 1Gi gives it 195 MB of heap, which serves the heaviest pages measured (4 MiB
+  # in one token needs 144-160) and refuses 3 MiB or more of text in a table (2 MiB is
+  # served) and one contrived page, 4 MiB of tags with 256 attributes each and no
+  # values; 2Gi (gke-values.yaml, kind-dev-values.yaml) gives the full 384, which serves
+  # 3 MiB of the table text and that page (4 MiB of it needs 352-368 and is on the edge
+  # of it). It is a share because, on cgroup v2,
+  # Kubernetes sets memory.oom.group on the container (by default): meeting this limit ends EVERY
+  # process in it, the host too. Lowering the limit shrinks the worker's heap with it
+  # (below about 430Mi it is given the 16 MB it can least be started with, and the host
+  # is on its own); raising the limit past about 1.6Gi changes nothing for the worker.
   resources:
     requests:
       cpu: 200m

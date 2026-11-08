@@ -135,7 +135,19 @@ describe('content origin', () => {
     expect(r.headers.get('content-type')).toBe('text/html; charset=utf-8');
     expect(r.headers.get('content-disposition')).toBeNull();
     expectBaseHeaders(r);
-    expect(await r.text()).toBe(HTML);
+    // The page is rewritten (TASK-1082): its markup is all there, and the
+    // WebRTC guard is the first thing in <head>.
+    const body = await r.text();
+    expect(body).toMatch(/<head><script>[\s\S]*?axFrameGuard[\s\S]*?<\/script><title>t<\/title>/);
+    expect(body).toContain('<title>t</title><script>document.title="x"</script>');
+  });
+
+  it('createArtifactServe names the bytes by their blob hash, for the prepared-HTML cache', async () => {
+    const o = await startOrigin();
+    const { artifactId, version } = await publishAndMint(o, { purpose: 'view' });
+    const serve = createArtifactServe({ artifacts: o.rig.artifacts, bus: o.rig.bus });
+    const claims = { artifactId, version, purpose: 'view' as const, linkBinding: null, expiresAt: 0 };
+    expect(await serve(claims)).toMatchObject({ contentKey: HTML_SHA, preview: 'html' });
   });
 
   it('every content response says Referrer-Policy: no-referrer, 404s included', async () => {

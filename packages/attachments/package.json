@@ -19,6 +19,7 @@
   },
   "dependencies": {
     "@ax/core": "workspace:*",
+    "@ax/frame-guard": "workspace:*",
     "@ax/ipc-protocol": "workspace:*",
     "kysely": "0.28.17",
     "zod": "^3.23.8"
@@ -31,6 +32,7 @@
     "@types/node": "^25.6.0",
     "@types/pg": "8.20.0",
     "pg": "8.20.0",
+    "playwright": "^1.59.1",
     "typescript": "^6.0.3",
     "vitest": "^5.0.1"
   }

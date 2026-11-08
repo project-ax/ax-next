@@ -67,6 +67,7 @@
     { "path": "packages/skill-broker" },
     { "path": "packages/skills" },
     { "path": "packages/skills-parser" },
+    { "path": "packages/frame-guard" },
     { "path": "packages/host-grants" },
     { "path": "packages/sandbox-protocol" },
     { "path": "packages/sandbox-mount-protocol" },
