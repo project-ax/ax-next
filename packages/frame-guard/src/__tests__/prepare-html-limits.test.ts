@@ -494,6 +494,21 @@ describe('each limit on its own, with a small page', () => {
       expect(verdict(prepareArtifactHtml(amplified(MiB, 4.4, 4), LONG))).toBe('output_too_large');
     });
 
+    it('does not add the slack to the ceiling: a result between 8 MiB and 8 MiB and 64 KiB is refused (the worker would throw it away in bytes), one just under is served', () => {
+      // A page that does not grow: `<p>` and N letters. The result is N and the guard and the tags, K more than the page; K is found
+      // from a small one, and the pages are 4 and 1 hundredths of a MiB either side of the ceiling (the slack is 64 KiB).
+      const page = (n: number): string => `<p>${'a'.repeat(n)}</p>`;
+      const result = (n: number): number => {
+        const out = prepareArtifactHtml(page(n), LONG);
+        return out.ok ? out.html.length : -1;
+      };
+      const overhead = result(1) - 1;
+      expect(overhead).toBeGreaterThan(10_000); // the guard
+      const CEILING = 8 * MiB;
+      expect(verdict(prepareArtifactHtml(page(CEILING - overhead - 32 * KiB), LONG))).toBe('served');
+      expect(verdict(prepareArtifactHtml(page(CEILING - overhead + 32 * KiB), LONG))).toBe('output_too_large');
+    });
+
     it('never lets a result be more than 8 MiB, whatever the page: 7.5 MiB out of a 3 MiB page is served, 8.7 MiB is refused', () => {
       // The ceiling is on what a prepared page may be, so a page of 3 MiB may come back at 2.5 times and not 4.
       expect(verdict(prepareArtifactHtml(amplified(3 * MiB, 2.5, 2), LONG))).toBe('served');

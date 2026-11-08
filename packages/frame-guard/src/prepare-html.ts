@@ -138,8 +138,9 @@ const MAX_TAG_NAME = 1024;
 export const MAX_PREPARED_BYTES = 8 * 1024 * 1024;
 
 /**
- * What the result may weigh, in characters: the page's own length times a factor, but never more than a ceiling
- * (`MAX_PREPARED_BYTES`), and a little more for the guard. Writing a tree out repeats the attribute text of every
+ * What the result may weigh, in characters: the page's own length times a factor and a little more for the guard, but
+ * never more than a ceiling (`MAX_PREPARED_BYTES`), which the slack does not add to: the worker refuses a result over it
+ * in bytes, so a result in the gap would be written, read again and thrown away. Writing a tree out repeats the attribute text of every
  * element parse5 rebuilt (so one big attribute and a few hundred rebuilt elements is a result of gigabytes from a few
  * hundred nodes), and escaping can turn one character into six.
  *
@@ -159,7 +160,7 @@ export const MAX_PREPARED_BYTES = 8 * 1024 * 1024;
  * reading it that stops a result larger than this, and not the worker's life, which its process and its CPU budget are
  * for. It is that a response of tens of MB, kept four at a time in a cache, is not a preview, and that a page that
  * grows this much is turned away in a tenth of a second, after the weighing of its first pass, and not after a second
- * pass over it. A 4 MiB page is allowed twice its length, a 2 MiB one four times.
+ * pass over it. A 4 MiB page is allowed twice its length, exactly, a 2 MiB one four times.
  *
  * Checked twice: on the tree before anything is written, counting each character as the serializer will write it
  * (`weigh`), and on the string that comes out, so a second pass never starts on more than this.
@@ -998,7 +999,7 @@ export function prepareArtifactHtml(html: string, limits: PrepareLimits = {}): P
       maxEscapes: limits.maxEscapes ?? MAX_ESCAPES,
       sink: 0,
       look: Math.max(1, Math.floor(limits.lookEvery ?? LOOK_EVERY)),
-      maxOutput: Math.min(OUTPUT_FACTOR * html.length, OUTPUT_CEILING) + OUTPUT_SLACK,
+      maxOutput: Math.min(OUTPUT_FACTOR * html.length + OUTPUT_SLACK, OUTPUT_CEILING),
     };
     return { ok: true, html: settle(html, run) };
   } catch (err) {
