@@ -16,8 +16,8 @@ import { WORKER_ARG } from './prepare-worker.js';
 //     pool answers `worker_oom`. Nothing else is touched. (This used to be a thread. A thread
 //     that runs out of memory takes its whole process with it when the need is far over the
 //     limit, which it did at 384 MB for a page of 4 MiB that the transform wrote out at three
-//     times its length, and the pages that need most, such as text inside a table, which
-//     parse5 holds a token at a time, need 352 to 368 MB of the 384 given here: a limit is a
+//     times its length, and the plausible page that needs most, text inside a table, which
+//     parse5 holds a token at a time, needs 352 to 368 MB of the 384 given here: a limit is a
 //     thing a page can meet, and what happens then must not depend on how far over it went.)
 //     The worker says what limit it really has when it starts, and one that is not the
 //     limit asked for is not used;
@@ -101,8 +101,9 @@ const DEFAULT_WORKER_URL = new URL('./prepare-worker.js', import.meta.url);
  * What the transform may use of heap before the worker is ended. The heaviest pages that are plausible (4 MiB
  * in one token: a script, a data URI, a tag with 200 long attributes) need between 144 and 160 MB, nearly all
  * of it the joins parse5 makes while it builds the token a character at a time (about 32 bytes a character).
- * The heaviest there are (4 MiB of text inside a `<table>`, which parse5 holds a token at a time, 56 bytes
- * each) need 352 to 368, and are served or refused according to how the garbage collector's last run went:
+ * The heaviest that are plausible (4 MiB of text inside a `<table>`, which parse5 holds a token at a time, 56
+ * bytes each; a tag whose name is 4 MiB would need more, and is refused as too long before it is read) need 352
+ * to 368, and are served or refused according to how the garbage collector's last run went:
  * a refusal as `worker_oom` is the answer to those, and it is remembered only for a little while for that
  * reason. 384 is 2.4 times the 160. The pod it runs in has 1 GiB to share with the host, which is what
  * keeps this from being larger.

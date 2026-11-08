@@ -54,8 +54,16 @@ export const shapes = {
   bodies4q: () => `<!doctype html><body>${Array.from({ length: 200 }, (_, i) => `<body a${i}='${'"'.repeat(20_000)}'>`).join('')}`,
   // Text inside a <table>: parse5 holds every character token of it until a token that is not a character arrives (56
   // bytes each, and 32 more when it is used), where nothing the transform does can read it flat. 4 MiB of it needs
-  // 352 to 368 MB, more than any other page there is. The fourth review's pages.
+  // 352 to 368 MB, the most of the pages that are plausible. The fourth review's pages.
   ttext: () => fill('<table>', 'a ', '</table>'),
   template_ttext: () => fill('<template><table>', 'a '),
   ttext_3m: () => fill('<table>', 'a ', '</table>', 3 * MiB),
+  // A tag whose NAME is the page: parse5 builds a name a character at a time, a chain of joins of 128 MB for 4 MiB that is
+  // kept by the element made from it. The fifth review's pages: the first filled the worker's 384 MB at its default, the second
+  // (a name 40 KB shorter, padded with text) was served by the transform. Both are refused by the limit on a name now.
+  tagname1: () => fill('<a', 'a', '>'),
+  tagname_short: () => {
+    const n = CAP - 40 * 1024;
+    return `<a${'a'.repeat(n)}>${'x'.repeat(CAP - n - 3)}`;
+  },
 };

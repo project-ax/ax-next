@@ -134,6 +134,21 @@ describe('a page that needs more memory than the worker has ends the worker, and
   });
 });
 
+describe('a tag whose name is the page, with the worker at its default limit', () => {
+  // The fifth review: `<a` + 4 MiB of `a` + `>` filled the worker's 384 MB (always, as out of memory) and the same with a
+  // name 40 KB shorter, padded with text, was served by the transform. A name is refused as too much work after the first few
+  // thousand characters of it, in a fraction of a second, and the refusal is the page's for good; the worker is not asked to
+  // hold 128 MB of joins for it, and the host is fine.
+  it.each(['tagname1', 'tagname_short'])('%s is refused as too much work at once, three times in three processes', { timeout: 90_000 }, (shape) => {
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      const outcome = run(shape);
+      expect(outcome.status, `attempt ${attempt} was ended by ${how(outcome)}`).toBe(0);
+      expect(outcome.answer, `attempt ${attempt}`).toMatchObject({ ok: false, reason: 'too_much_work', faults: [] });
+      expect(outcome.answer!.ms, `attempt ${attempt}`).toBeLessThan(1500);
+    }
+  });
+});
+
 describe('the worker process that the pool starts, from the compiled package', () => {
   it('is below the host in priority, and asks the kernel to kill it before anything else', async () => {
     // It lowers its own priority and raises its own oom_score_adj when it starts. Started directly, the way the pool

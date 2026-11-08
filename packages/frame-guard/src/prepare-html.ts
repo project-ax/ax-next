@@ -122,6 +122,15 @@ const MAX_CALLS = 25_000_000;
 const MAX_ATTRS = 256;
 
 /**
+ * Characters in the name of a tag. A real one has a dozen (a custom element, thirty or forty), and the tokenizer builds a
+ * name a character at a time, so a name of 4 MiB is a chain of joins of 128 MB before anything of ours sees the tag, and
+ * every element made from it keeps its name. It is looked at where the attributes are, every few thousand characters, so
+ * a page of one huge name is refused after the first few thousand of them, with a reason that is remembered, and not after
+ * the whole of it. (A name of up to this many is made into a string at once, see `boundedAdapter`.)
+ */
+const MAX_TAG_NAME = 1024;
+
+/**
  * The most a prepared page may be: 8 MiB, twice the largest page there can be as input. It is the ceiling on what the
  * transform writes, in characters (below), and the ceiling on what the worker makes of it, in bytes of UTF-8, which
  * for a page of wide characters is the lower of the two (prepare-worker.ts).
@@ -720,10 +729,12 @@ function boundedAdapter(run: Run): TreeAdapter<DefaultTreeAdapterMap> {
   // that is half script and half attributes written out once more, which needed 256 to 288 MB, needs under 96;
   // 4 MiB in one token needs 144 to 160). `run.sink` takes the read, which is all it is for.
   //
-  // This reaches the tokens that arrive in the tree one at a time, not the ones parse5 holds before they get
-  // here. Text inside a `<table>` is kept as a list of character tokens (56 bytes each, and 32 more when it is
-  // used) until a token that is not a character arrives, and nothing here can read that: 4 MiB of it needs
-  // 352 to 368 MB, more than any other page. That is what the heap limit of the worker process is for.
+  // This reaches the tokens that arrive in the tree one at a time (the name of an element too: made into a string as
+  // the element is made, or the tree would keep a chain of joins for as long as the element), not the ones parse5
+  // holds before they get here. Text inside a `<table>` is kept as a list of character tokens (56 bytes each, and
+  // 32 more when it is used) until a token that is not a character arrives, and nothing here can read that: 4 MiB of
+  // it needs 352 to 368 MB, the most of the pages that are plausible. That is what the heap limit of the worker
+  // process is for.
   const flat = (value: string): string => {
     run.sink |= value.charCodeAt(0);
     return value;
@@ -741,6 +752,7 @@ function boundedAdapter(run: Run): TreeAdapter<DefaultTreeAdapterMap> {
       return tree.createDocumentFragment();
     },
     createElement: (name, namespace, attributes) => {
+      flat(name);
       attrs(attributes.length);
       built();
       flatAttrs(attributes);
@@ -851,6 +863,12 @@ function attributesInFlight(tokenizer: Tokenizer): number {
   return token?.attrs?.length ?? 0;
 }
 
+/** The tag the tokenizer is partway through, if it has one (start or end): the length of its name so far. */
+function tagNameInFlight(tokenizer: Tokenizer): number {
+  const token = (tokenizer as unknown as { currentToken?: { tagName?: unknown } | null }).currentToken;
+  return typeof token?.tagName === 'string' ? token.tagName.length : 0;
+}
+
 /**
  * Makes the tokenizer look at the clock, and at the tag it is reading, every
  * `run.look` characters. It reads its input through the preprocessor's
@@ -875,6 +893,7 @@ function watchTokenizer(tokenizer: Tokenizer, run: Run): void {
       untilLook = run.look;
       checkClock(run);
       if (attributesInFlight(tokenizer) > MAX_ATTRS) throw new Refusal('too_many_attrs');
+      if (tagNameInFlight(tokenizer) > MAX_TAG_NAME) throw new Refusal('too_much_work');
     }
     return advance.call(input);
   };

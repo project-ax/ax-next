@@ -620,6 +620,28 @@ describe('a page the serializer would have to rewrite millions of characters of'
   });
 });
 
+describe('a tag whose name is thousands of characters', () => {
+  // Real tags have a dozen (a custom element, thirty or forty). The tokenizer builds a name a character at a time, a chain of
+  // joins of 128 MB for 4 MiB, kept by the element made from it, and it was the whole of a page in the fifth review: refused as
+  // too large by the worker's heap at its default (and, at 40 KB shorter, served). It is looked at where the attributes are.
+  it.each([
+    ['a start tag', '<a' + 'a'.repeat(100_000) + '>x'],
+    ['an end tag', '<p>x</p></a' + 'a'.repeat(100_000) + '>'],
+    ['a start tag, a name of 4 MiB', '<a' + 'a'.repeat(4 * MiB - 3) + '>'],
+    ['a start tag, 4 MiB less 40 KB, and text', '<a' + 'a'.repeat(4 * MiB - 40 * KiB) + '>' + 'x'.repeat(40 * KiB - 3)],
+  ])('is refused as too much work, in milliseconds, after the first few thousand of them: %s', (_, page) => {
+    const out = bestRun(page);
+    expect(verdict(out)).toBe('too_much_work');
+    expectFast(out);
+  });
+
+  it('is served when it is a name there are, and the longest there can be: 1,000 characters', () => {
+    const name = 'n'.repeat(1000);
+    expect(verdict(prepareArtifactHtml(`<${name}>x</${name}><p>y</p>`))).toBe('served');
+    expect(verdict(prepareArtifactHtml(`<my-custom-element-with-a-long-name data-x=1>x</my-custom-element-with-a-long-name>`))).toBe('served');
+  });
+});
+
 describe('the weight it counts before it writes anything', () => {
   // The limit on what a page may come back as is checked on the tree, before the page is written, so the count
   // has to be what the serializer will really write: never lower (or a hostile page gets through it, which is

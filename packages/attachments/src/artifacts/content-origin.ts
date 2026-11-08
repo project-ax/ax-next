@@ -128,8 +128,9 @@ function htmlCsp(frameAncestors: readonly string[]): string {
  * limits of its own (see prepareArtifactHtml), but an ordinary 4 MiB page still
  * costs it up to 0.35 s of CPU (measured on the heaviest real pages), and a page that
  * is one 4 MiB token, a script or a data URI, a heap of 144 to 160 MB; 4 MiB of text
- * inside a `<table>` needs 352 to 368 MB of the 384 the worker is given. So bigger
- * HTML is refused, never served untransformed.
+ * inside a `<table>`, the most of the pages that are plausible, needs 352 to 368 MB
+ * of the 384 the worker is given. So bigger HTML is refused, never served
+ * untransformed.
  */
 export const MAX_HTML_TRANSFORM_BYTES = 4 * 1024 * 1024;
 
