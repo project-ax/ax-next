@@ -122,29 +122,39 @@ const MAX_CALLS = 25_000_000;
 const MAX_ATTRS = 256;
 
 /**
- * What the result may weigh, as a multiple of the page plus a little for the
- * guard. Writing a tree out repeats the attribute text of every element parse5
- * rebuilt (so one big attribute and a few hundred rebuilt elements is a result
- * of gigabytes from a few hundred nodes), and escaping can turn one character
- * into six. A real page comes back at its own size: of 3,869 real pages (up to
- * 4 MiB) none came back more than 1.001 times as long as soon as it was over 256
- * KiB (947 of them), and the most any grew was 1.27 times, a page of 1 KiB, which
- * the slack covers.
+ * What the result may weigh, in characters: the page's own length times a factor,
+ * but never more than an absolute ceiling, and a little more for the guard.
+ * Writing a tree out repeats the attribute text of every element parse5 rebuilt
+ * (so one big attribute and a few hundred rebuilt elements is a result of gigabytes
+ * from a few hundred nodes), and escaping can turn one character into six.
  *
- * It is also what bounds the second pass, which has to tokenize everything the
- * first wrote. It was 4, and an ASCII page under 4 MiB (ten attributes of 420 KB
- * on formatting elements, rebuilt twice) that wrote out at three times its length
- * was let through and ended the process: the second pass over 12.6 MB needed more
- * than 400 MB of heap and V8 aborted, which it does instead of ending the worker
- * when a limit is that far under the need. 1.5 refuses every such shape found
- * (measured, a fraction of a second each), and the most it lets through is the
- * worst legitimate page: half a script, half attributes written out once more.
- * That page needs under 96 MB with the reads in `boundedAdapter`; 256 to 288
- * without them. Checked twice: on the tree before anything is written, counting
- * each character as the serializer will write it (`weigh`), and on the string
- * that comes out, so a second pass never starts on more than this.
+ * The factor is for the pages that grow when they are written out and are still
+ * pages: text of raw `<` is four times as long (`&amp;` is five), JSON in a single-quoted
+ * attribute 2.2 times (every `"` is `&quot;`), the optional end tags a page leaves
+ * out come back (`<tr><td>1<td>2`: 1.7 times), a raw no-break space is `&nbsp;`
+ * (2.8 times for a page of indented text). It is 4, and was 1.5 for a while, which
+ * refused all of those from 64 KiB up; of 3,869 real pages (up to 4 MiB) none came
+ * back more than 1.001 times as long once it was over 256 KiB (947 of them), and the
+ * most any grew was 1.27 times, a page of 1 KiB, so the real ones are not what this
+ * is for.
+ *
+ * The ceiling is for the second pass, which has to tokenize everything the first
+ * wrote: it never reads more than 6 MiB and the slack, whatever the page, so a 4 MiB
+ * page is allowed 1.5 times its length, a 1.5 MiB one 4 times. An ASCII page under
+ * 4 MiB (ten attributes of 420 KB on formatting elements, rebuilt twice) wrote out at
+ * three times its length, 12.6 MB, and the second pass over that, with every
+ * attribute held as the joins parse5 makes while it builds it, needed more than
+ * 400 MB of heap: that is what the ceiling was first for. It is still what keeps a
+ * hostile page from making the worker read a page three times the largest there can
+ * be, and from making the response, and the cache, hold one. (The ceiling is in
+ * characters; the response is checked in bytes where it is made, see the worker.)
+ *
+ * Checked twice: on the tree before anything is written, counting each character as
+ * the serializer will write it (`weigh`), and on the string that comes out, so a
+ * second pass never starts on more than this.
  */
-const OUTPUT_FACTOR = 1.5;
+const OUTPUT_FACTOR = 4;
+const OUTPUT_CEILING = 6 * 1024 * 1024;
 const OUTPUT_SLACK = 64 * 1024;
 
 /**
@@ -312,6 +322,37 @@ const SHADOW_ROOT_ATTRS: ReadonlySet<string> = new Set(DSD_ATTRS);
 /** The elements whose first newline the parser eats ("in body": pre, listing, textarea). */
 const EATS_FIRST_NEWLINE: ReadonlySet<string> = new Set(['pre', 'listing', 'textarea']);
 
+/**
+ * The elements of HTML that parse5's serializer writes with a start tag and no end tag (its own list, in
+ * `serializer/index.js`, which it does not export). A test holds this to the serializer, for every tag name
+ * parse5 knows, so that an upgrade that changes the list is a failure there and not a count that is too low.
+ */
+export const VOID_ELEMENTS: ReadonlySet<string> = new Set([
+  'area',
+  'base',
+  'basefont',
+  'bgsound',
+  'br',
+  'col',
+  'embed',
+  'frame',
+  'hr',
+  'img',
+  'input',
+  'keygen',
+  'link',
+  'meta',
+  'param',
+  'source',
+  'track',
+  'wbr',
+]);
+
+/** Whether the serializer writes an end tag for this element: all but the void elements of HTML (the same name in SVG or MathML is an ordinary element). */
+function writesEndTag(el: Tree.Element): boolean {
+  return !(el.namespaceURI === spec.NS.HTML && VOID_ELEMENTS.has(el.tagName));
+}
+
 const isElement = (node: Tree.Node): node is Tree.Element => tree.isElementNode(node);
 const isHtmlElement =
   (name: string) =>
@@ -385,8 +426,10 @@ function walk(root: Tree.ParentNode, visit: (node: Tree.ParentNode) => void): vo
  * in an attribute value `"` and U+00A0 are six characters (`&quot;`, `&nbsp;`)
  * and `&` is five; in text `&` is five, `<` and `>` are four and U+00A0 is six,
  * except in the raw text of `script`, `style` and the like, which is written as
- * it is. Elements are counted with both tags, so a void element is counted a few
- * characters over. The count may be high, never low: a test holds it to that.
+ * it is. An element is counted with both tags, except a void element of HTML (`br`,
+ * `input`, `img`...), which the serializer writes with none: counted with an end tag
+ * a page of `<br>`s read as twice its length and was refused though it came back as
+ * long as it went in. The count may be high, never low: a test holds it to that.
  * The exact length is checked again once the page is written.
  */
 class Weigher {
@@ -449,7 +492,9 @@ class Weigher {
    * and the newline that `restoreSkippedNewlines` may put back after a `<pre>`.
    */
   element(el: Tree.Element): void {
-    this.add(2 * el.tagName.length + 5 + (EATS_FIRST_NEWLINE.has(el.tagName) ? 1 : 0));
+    // `<name` and `>`; then `</name>`, unless the serializer writes no end tag for it.
+    const endTag = writesEndTag(el) ? el.tagName.length + 3 : 0;
+    this.add(el.tagName.length + 2 + endTag + (EATS_FIRST_NEWLINE.has(el.tagName) ? 1 : 0));
     for (const attr of el.attrs) {
       this.add(attr.name.length + (attr.prefix === undefined ? 0 : attr.prefix.length + 1) + 4);
       this.attribute(attr.value);
@@ -932,7 +977,7 @@ export function prepareArtifactHtml(html: string, limits: PrepareLimits = {}): P
       maxEscapes: limits.maxEscapes ?? MAX_ESCAPES,
       sink: 0,
       look: Math.max(1, Math.floor(limits.lookEvery ?? LOOK_EVERY)),
-      maxOutput: OUTPUT_FACTOR * html.length + OUTPUT_SLACK,
+      maxOutput: Math.min(OUTPUT_FACTOR * html.length, OUTPUT_CEILING) + OUTPUT_SLACK,
     };
     return { ok: true, html: settle(html, run) };
   } catch (err) {

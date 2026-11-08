@@ -2,9 +2,9 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { getHeapStatistics } from 'node:v8';
 import { describe, expect, it } from 'vitest';
-import { defaultTreeAdapter as tree, parse, serialize, type DefaultTreeAdapterTypes as Tree } from 'parse5';
+import { defaultTreeAdapter as tree, html as spec, parse, serialize, type DefaultTreeAdapterTypes as Tree } from 'parse5';
 import { FRAME_GUARD_SOURCE, prepareArtifactHtml, type PrepareLimits, type PrepareResult } from '../index.js';
-import { defaultClock, weighTree } from '../prepare-html.js';
+import { defaultClock, VOID_ELEMENTS, weighTree } from '../prepare-html.js';
 import { escapeAmplification } from './hostile-pages.js';
 
 // The transform runs on the host's one thread, on a page an agent wrote, so what
@@ -468,34 +468,117 @@ describe('each limit on its own, with a small page', () => {
     });
 
     it('refuses a result that only escaping makes too large (a quote in an attribute is six characters out)', () => {
-      expect(verdict(prepareArtifactHtml(`<p title='${'"'.repeat(10_000)}'>x</p>`))).toBe('served'); // 60 KB out: under the slack
-      expect(verdict(prepareArtifactHtml(`<p title='${'"'.repeat(15_000)}'>x</p>`))).toBe('output_too_large'); // 90 KB out: past 1.5x and the slack
-      expect(verdict(prepareArtifactHtml(`<p title='${'"'.repeat(1 * MiB)}'>x</p>`))).toBe('output_too_large'); // 6 MiB out
+      // Four times the page and the slack is what a page may come back as, up to the ceiling.
+      expect(verdict(prepareArtifactHtml(`<p title='${'"'.repeat(10_000)}'>x</p>`))).toBe('served'); // 60 KB out, from 10 KB
+      expect(verdict(prepareArtifactHtml(`<p title='${'"'.repeat(15_000)}'>x</p>`))).toBe('served'); // 90 KB out: under 4 times and the slack
+      expect(verdict(prepareArtifactHtml(`<p title='${'"'.repeat(40_000)}'>x</p>`))).toBe('output_too_large'); // 240 KB out: past 4 x 40 KB and the slack
+      expect(verdict(prepareArtifactHtml(`<p title='${'"'.repeat(1 * MiB)}'>x</p>`))).toBe('output_too_large'); // 6 MiB out of 1 MiB
     });
 
-    it('lets a result be 1.5 times the page and not much more: 1.4 times is served, 1.7 times is refused', () => {
-      // Ten formatting elements with a long attribute each, which the one <div><span> after them brings back, so each is
-      // written out twice: a page that is 1 MiB with `ratio - 1` of it attributes comes back `ratio` times as long.
-      // (The factor is a bound on what the second pass has to read, and the length of the response: it was 4.)
-      // (The plain text goes first: text after them would bring the elements back a second time.)
-      const amplified = (total: number, ratio: number): string => {
-        const each = Math.floor((total * (ratio - 1)) / 10);
-        let page = '</p><div>';
-        for (let i = 0; i < 10; i++) page += `<b x=${i} y='${'a'.repeat(each)}'>`;
-        page += '</div><div><span></div>';
-        return `<p>${'w'.repeat(total - page.length - 3)}${page}`;
-      };
-      const LONG = { budgetMs: 60_000 };
-      expect(amplified(MiB, 1.7)).toHaveLength(MiB);
-      expect(verdict(prepareArtifactHtml(amplified(MiB, 1.4), LONG))).toBe('served');
-      expect(verdict(prepareArtifactHtml(amplified(MiB, 1.7), LONG))).toBe('output_too_large');
+    // A page of `total` characters that comes back `ratio` times as long: some padding, then ten formatting elements with
+    // a long attribute each, which `copies` x `<div><span>` bring back, so each is written out `copies + 1` times.
+    // (The plain text goes first: text after them would bring the elements back again.)
+    const amplified = (total: number, ratio: number, copies: number): string => {
+      const each = Math.floor((total * (ratio - 1)) / copies / 10);
+      let page = '</p><div>';
+      for (let i = 0; i < 10; i++) page += `<b x=${i} y='${'a'.repeat(each)}'>`;
+      page += `</div>${'<div><span></div>'.repeat(copies)}`;
+      return `<p>${'w'.repeat(total - page.length - 3)}${page}`;
+    };
+    const LONG = { budgetMs: 60_000 };
+
+    it('lets a result be four times the page, and not much more: 3.8 times is served, 4.4 times is refused', () => {
+      expect(amplified(MiB, 4.4, 4)).toHaveLength(MiB);
+      expect(verdict(prepareArtifactHtml(amplified(MiB, 3.8, 4), LONG))).toBe('served');
+      expect(verdict(prepareArtifactHtml(amplified(MiB, 4.4, 4), LONG))).toBe('output_too_large');
+    });
+
+    it('never lets a result be more than 6 MiB, whatever the page: 5.8 MiB out of a 3 MiB page is served, 6.6 MiB is refused', () => {
+      // The ceiling is on what the second pass has to read, so a page of 3 MiB may come back at 1.9 times and not 4.
+      expect(verdict(prepareArtifactHtml(amplified(3 * MiB, 1.9, 1), LONG))).toBe('served');
+      expect(verdict(prepareArtifactHtml(amplified(3 * MiB, 2.2, 2), LONG))).toBe('output_too_large');
+    });
+
+    // What a real page does when it is written out, which is what the limit must not refuse (the fourth review): pages
+    // that are longer after parse5 than before, by their markup and not by anything hostile. The sizes are those at which
+    // the limit of 1.5 times the page, for a while, refused them.
+    const document = (body: string): string => `<!doctype html><html><head><meta charset="utf-8"><title>Report</title></head><body>${body}</body></html>`;
+    const upTo = (bytes: number, unit: (i: number) => string): string => {
+      const parts: string[] = [];
+      for (let n = 0, i = 0; n < bytes; i++) {
+        const part = unit(i);
+        parts.push(part);
+        n += part.length;
+      }
+      return parts.join('');
+    };
+    // (A page of dense markup cannot be much bigger than a MiB: it is past the limit on how many nodes there are first, at
+    // 150,000, which no factor of the output has to do with. These are the sizes at which each is a page, and each is
+    // one that a limit of 1.5 times the page refused.)
+    const plausible: Array<{ name: string; bytes: number; grows: [number, number]; page: (bytes: number) => string }> = [
+      {
+        name: 'a table that leaves out its optional end tags (<tr><td>1<td>2)',
+        bytes: 400 * KiB,
+        grows: [1.5, 2],
+        page: (n) => document(`<table>${upTo(n, (i) => `<tr><td>${i}<td>${(i * 1.37).toFixed(2)}<td>${(i % 97) + 3}\n`)}</table>`),
+      },
+      {
+        name: 'a long report of the same kind, with text in its cells',
+        bytes: 2 * MiB,
+        grows: [1.05, 1.3],
+        page: (n) => document(`<table>${upTo(n, (i) => `<tr><td>${i}: the quarter's figures for the northern region<td>${(i * 1.37).toFixed(2)} on a base of ${(i % 97) + 3}, up on the year before<td>see the notes on page ${i % 40}\n`)}</table>`),
+      },
+      {
+        name: 'JSON in a single-quoted attribute',
+        bytes: 400 * KiB,
+        grows: [2, 2.5],
+        page: (n) => document(`<div id="chart" data-series='[${upTo(n, (i) => `{"x":${i},"y":${(i * 7) % 101},"label":"p${i}"},`)}{}]'></div>`),
+      },
+      {
+        name: 'lines of code indented with raw no-break spaces',
+        bytes: 1 * MiB,
+        grows: [2.5, 3.2],
+        page: (n) => document(`<div class=code>${upTo(n, (i) => `${'\u00a0'.repeat(8)}x${i} = y;<br>`)}</div>`),
+      },
+      {
+        name: 'a grid of checkboxes with their attributes bare',
+        bytes: 1 * MiB,
+        grows: [1.3, 1.5],
+        page: (n) => document(`<table>${upTo(n, () => '<tr><td><input type=checkbox checked disabled><td><input type=checkbox>')}</table>`),
+      },
+      {
+        name: 'short lines ending in <br>, which do not grow at all',
+        bytes: 300 * KiB,
+        grows: [0.99, 1.05],
+        page: (n) => document(upTo(n, (i) => `l${i % 10}<br>`)),
+      },
+      {
+        name: 'a list that leaves out its </li> and a listing of raw ampersands and angle brackets',
+        bytes: 1 * MiB,
+        grows: [1.2, 1.6],
+        page: (n) => document(`<ul>${upTo(n / 2, (i) => `<li>item ${i}\n`)}</ul><pre>${upTo(n / 2, (i) => `if (a${i} < b && c > d) { x -> y; }\n`)}</pre>`),
+      },
+    ];
+    it.each(plausible)('serves $name, $bytes bytes of it', ({ page, bytes, grows }) => {
+      const html = page(bytes);
+      const out = prepareArtifactHtml(html, LONG);
+      expect(verdict(out)).toBe('served');
+      // It is the sort of page the test is for only if it comes back as long as it was said to.
+      const ratio = out.ok ? out.html.length / html.length : 0;
+      expect(ratio).toBeGreaterThanOrEqual(grows[0]);
+      expect(ratio).toBeLessThanOrEqual(grows[1]);
     });
 
     it('serves what real pages do: markup that grows a little when it is written out', () => {
-      const grows = '<table><tr><td>a<td>b<tr><td>c</table><p>one<p>two<ul><li>x<li>y</ul><br><input disabled><img alt>'.repeat(500);
-      const out = prepareArtifactHtml(grows);
+      // A page well over the slack (the first version of this was 43 KB, which any limit at all would have served).
+      const unit = '<table><tr><td>a<td>b<tr><td>c</table><p>one<p>two<ul><li>x<li>y</ul><br><input disabled><img alt>';
+      const grows = unit.repeat(Math.ceil((400 * KiB) / unit.length));
+      const out = prepareArtifactHtml(grows, LONG);
       expect(verdict(out)).toBe('served');
-      if (out.ok) expect(out.html.length).toBeGreaterThan(grows.length);
+      if (out.ok) {
+        expect(out.html.length).toBeGreaterThan(grows.length);
+        expect(out.html.length).toBeGreaterThan(grows.length + 96 * KiB); // not a hair over, or the slack is what served it
+      }
     });
   });
 });
@@ -608,9 +691,59 @@ describe('the weight it counts before it writes anything', () => {
       const actual = result.html.length - (result.html.indexOf('</script>', open) + '</script>'.length - open);
       const counted = weighTree(parse(page, { scriptingEnabled: true })).weight;
       expect(counted, page).toBeGreaterThanOrEqual(actual);
-      // a void element's end tag and a doctype's spacing are the only things counted that are not written
+      // a doctype's spacing is the only thing counted that is not written (and a newline after a <pre> that may not be)
       expect(counted - actual, page).toBeLessThan(actual * 0.2 + 80);
     }
+  });
+
+  /** The weight an element adds to the page, and what the serializer writes for it, with nothing else changed. */
+  function addedBy(name: string, namespace: string, attrs: Array<{ name: string; value: string }> = []): { counted: number; actual: number } {
+    const before = doc();
+    const after = doc();
+    const element = tree.createElement(name, namespace, attrs);
+    // The parser gives a <template> the fragment that holds its content; the walk expects it.
+    if (name === 'template' && namespace === spec.NS.HTML) tree.setTemplateContent(element as Tree.Template, tree.createDocumentFragment());
+    tree.appendChild(find(after, 'p'), element);
+    return { counted: weighTree(after).weight - weighTree(before).weight, actual: written(after) - written(before) };
+  }
+  // `<pre>`, `<listing>` and `<textarea>` may have a newline put back after them (restoreSkippedNewlines): one counted, not written here.
+  const eatsNewline = (name: string): number => (['pre', 'listing', 'textarea'].includes(name) ? 1 : 0);
+  const htmlNames = Object.values(spec.TAG_NAMES) as string[];
+
+  it.each([...VOID_ELEMENTS])('counts <%s>, a void element, as the serializer writes it: a start tag and no end tag, exactly', (name) => {
+    const { counted, actual } = addedBy(name, spec.NS.HTML, [{ name: 'a', value: 'b&"' }]);
+    expect(counted).toBe(actual);
+    expect(actual).toBe(`<${name} a="b&amp;&quot;">`.length);
+  });
+
+  it('counts every other element of HTML parse5 knows with both tags, exactly, and is told no void element it does not write one for', () => {
+    // Every tag name parse5 knows, so that a list that is out of step with the serializer's (a name it makes void that the
+    // list does not have, or the other way) is this test and not a count that is too low in production.
+    const others = htmlNames.filter((name) => !VOID_ELEMENTS.has(name));
+    expect(others.length).toBeGreaterThan(80);
+    for (const name of others) {
+      const { counted, actual } = addedBy(name, spec.NS.HTML);
+      expect(counted - eatsNewline(name), name).toBe(actual);
+      expect(actual, name).toBe(`<${name}></${name}>`.length);
+    }
+    for (const name of VOID_ELEMENTS) expect(htmlNames, `${name} is a tag name parse5 knows`).toContain(name);
+  });
+
+  it('counts the same names in SVG and MathML with an end tag: only HTML has void elements', () => {
+    for (const name of ['input', 'br', 'img', 'link']) {
+      const { counted, actual } = addedBy(name, spec.NS.SVG);
+      expect(counted).toBe(actual);
+      expect(actual).toBe(`<${name}></${name}>`.length);
+    }
+  });
+
+  it('counts a page of void elements as long as it is, and not as long again', () => {
+    const page = `<!doctype html><title>t</title><body>${'line<br>'.repeat(2000)}${'<input type=checkbox>'.repeat(500)}`;
+    const d = parse(page, { scriptingEnabled: true });
+    const counted = weighTree(d).weight;
+    const actual = written(d);
+    expect(counted).toBeGreaterThanOrEqual(actual);
+    expect(counted - actual).toBeLessThan(100); // the doctype's spacing; before, 2,000 x 5 + 500 x 8 more
   });
 
   it('weighs the attributes that repeated <html> and <body> tags add to the first one like any other: by their escaped size, and against the limit on escapes', () => {
@@ -651,9 +784,18 @@ describe('the weight it counts before it writes anything', () => {
     expect(verdict(prepareArtifactHtml(`<script>${'<'.repeat(5000)}</script><style>${'>'.repeat(5000)}</style><!--${'&'.repeat(5000)}-->`, { maxEscapes: 10 }))).toBe('served');
   });
 
-  it('counts escapes in one string without building anything: a million `<` written as `&lt;` is refused on the count alone', () => {
+  it('counts escapes in one string without building anything: 1 MiB of text of `<` is refused on the count alone', () => {
+    // Four characters out for each, so 4 MiB written: not over four times the page. Only the escape limit says no.
+    const page = `<p>${'<'.repeat(1 * MiB)}</p>`;
+    expect(verdict(prepareArtifactHtml(page, { maxEscapes: 500_000 }))).toBe('output_too_large');
+    const out = bestRun(page);
+    expect(verdict(out)).toBe('output_too_large'); // the real limit is a million
+    expectFast(out);
+  });
+
+  it('counts the same when the page already has them as `&lt;`: a million of them is refused on the count alone', () => {
     // `&lt;` is four characters in and four out, so the result is no bigger than the page: the escape limit is the
-    // only one that says no (the length limit, 1.5 times the page, says yes).
+    // only one that says no (the length limit has nothing to say).
     const page = `<p>${'&lt;'.repeat(600_000)}</p>`;
     expect(verdict(prepareArtifactHtml(page, { maxEscapes: 500_000, budgetMs: 60_000 }))).toBe('output_too_large');
     expect(verdict(prepareArtifactHtml(page, { budgetMs: 60_000 }))).toBe('served'); // 600,000: under the real limit

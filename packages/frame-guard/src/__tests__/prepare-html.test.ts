@@ -612,6 +612,7 @@ describe('failing closed', () => {
     expect(verdict('<p>x</p>'.repeat(20000))).toBe('served');
     expect(verdict('<b>'.repeat(300) + 'x')).toBe('served');
     expect(verdict(`<p title="${'a'.repeat(200000)}">${'b'.repeat(200000)}</p>`)).toBe('served');
+    expect(verdict('<'.repeat(100000))).toBe('served'); // four characters out for each: four times the page, which is what it may be
     expect(verdict('&lt;'.repeat(100000))).toBe('served');
   });
 });
