@@ -27,10 +27,15 @@ vi.mock('@ax/frame-guard', async (importOriginal) => {
 });
 const prepare = vi.mocked(frameGuard.prepareArtifactHtml);
 
-/** The transform, in this thread, behind the preparer's interface. */
+/**
+ * The transform, in this thread, behind the preparer's interface. With a minute of CPU and not its own 500 ms: these
+ * tests are about what the origin does with an answer, and a 4 MiB page costs 0.3 s, which a loaded machine makes 0.5
+ * (a page refused as too slow is remembered for good, which turned one page of ten into a refusal in half of six runs
+ * at once). The limits of the transform itself are tested in @ax/frame-guard, and its worker's through the real one.
+ */
 const inThread: frameGuard.HtmlPreparer = {
   prepare: async (html) => {
-    const result = prepare(html);
+    const result = prepare(html, { budgetMs: 60_000 });
     return result.ok ? { ok: true, bytes: new TextEncoder().encode(result.html) } : result;
   },
   close: async () => undefined,
