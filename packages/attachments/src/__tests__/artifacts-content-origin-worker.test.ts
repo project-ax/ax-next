@@ -33,7 +33,11 @@ vi.mock('@ax/frame-guard', async (importOriginal) => {
     ...real,
     prepareArtifactHtml: vi.fn(real.prepareArtifactHtml),
     createHtmlPreparer: vi.fn((options?: Parameters<typeof real.createHtmlPreparer>[0]) => {
-      const preparer = real.createHtmlPreparer({ ...options, ...made.extra });
+      // The pool's deadline is 6 s of wall clock and its worker runs below the host in priority, so on a CI runner busy with other packages'
+      // tests the worker gets a fraction of a core: a page that costs 1.5 s of CPU, or a heap abort, outlasts it, and the page is answered by the
+      // deadline (worker_timeout) instead of by what it did (too_slow, worker_oom). What these tests hold is what became of the page, so the
+      // deadline is a minute here; a test that wants another sets it in `made.extra`.
+      const preparer = real.createHtmlPreparer({ deadlineMs: 60_000, ...options, ...made.extra });
       const close = preparer.close.bind(preparer);
       preparer.close = vi.fn(close);
       made.preparers.push(preparer);
