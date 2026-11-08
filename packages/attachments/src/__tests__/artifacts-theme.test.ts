@@ -16,6 +16,7 @@ describe('injectTheme', () => {
   it('goes right after the guard, which stays first in <head>, after the doctype, so the page keeps standards mode', () => {
     const out = dec(injectTheme(enc(`<!DOCTYPE html><html lang="en"><head>${GUARD}<meta charset="utf-8"><style>:root{--accent:#d9a05b}</style></head><body>x</body></html>`), 'dark'));
     expect(out.startsWith('<!DOCTYPE html>')).toBe(true);
+    // nosemgrep: javascript.lang.security.audit.unknown-value-with-script-tag.unknown-value-with-script-tag -- test expectation built from the fixed GUARD stand-in and themeStyleElement(); nothing external
     expect(out).toContain(`<head>${GUARD}${style}<meta charset="utf-8">`);
     // The page's own style still comes later, so it wins for anything it names.
     expect(out.indexOf(style)).toBeLessThan(out.indexOf('--accent:#d9a05b'));
@@ -23,6 +24,7 @@ describe('injectTheme', () => {
 
   it('inserts at a byte offset, whatever is in the file before the head', () => {
     const out = injectTheme(enc(`<!-- é — ü --><!DOCTYPE html><html><head>${GUARD}<title>t</title></head>`), 'dark');
+    // nosemgrep: javascript.lang.security.audit.unknown-value-with-script-tag.unknown-value-with-script-tag -- test expectation built from the fixed GUARD stand-in and themeStyleElement(); nothing external
     expect(dec(out)).toContain(`<head>${GUARD}${style}<title>t</title>`);
   });
 
@@ -38,6 +40,7 @@ describe('injectTheme', () => {
 
   it('adds nothing but the one fixed block: its text is the same whatever the page says', () => {
     const page = `<html><head>${GUARD}<title>"; } body{display:none} /*</title></head></html>`;
+    // nosemgrep: javascript.lang.security.audit.unknown-value-with-script-tag.unknown-value-with-script-tag -- test expectation built from the fixed GUARD stand-in and themeStyleElement(); nothing external
     expect(dec(injectTheme(enc(page), 'dark'))).toBe(`<html><head>${GUARD}${style}<title>"; } body{display:none} /*</title></head></html>`);
   });
 

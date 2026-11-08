@@ -41,6 +41,7 @@ describe('the theme block cannot be used to run page script ahead of the frame g
 
   it('a copy of the guard text inside an <html> attribute is not mistaken for the real one', () => {
     const asValue = FRAME_GUARD_SOURCE.replace(/&/g, '&amp;').replace(/"/g, '&quot;');
+    // nosemgrep: javascript.lang.security.audit.unknown-value-with-script-tag.unknown-value-with-script-tag -- test fixture: a hostile page on purpose; asValue is the guard's own source, escaped, never user input
     const out = themed(`<html a="<head><script>${asValue}</script>${SMUGGLED}"><body>x</body></html>`);
     expect(out).toContain('<head><script>' + FRAME_GUARD_SOURCE.replace(/&/g, '&amp;').replace(/"/g, '&quot;'));
     expect(out.split(themeStyleElement('dark'))).toHaveLength(2);
