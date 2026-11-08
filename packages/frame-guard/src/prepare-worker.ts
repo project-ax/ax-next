@@ -152,18 +152,25 @@ function askToBeGivenUpFirst(): void {
  * on takes the one that makes it (the main thread, already lowered). Each is tried on its own: one that is gone is no reason to
  * leave the rest. (Elsewhere there is no /proc, and a process's priority is the process's.)
  */
-function lowerTheOtherThreads(nice: number): void {
+export function lowerTheOtherThreads(
+  nice: number,
+  io: { tasks: () => string[]; set: (id: number, nice: number) => void; self: number } = {
+    tasks: () => readdirSync('/proc/self/task'),
+    set: setPriority,
+    self: process.pid,
+  },
+): void {
   let tasks: string[];
   try {
-    tasks = readdirSync('/proc/self/task');
+    tasks = io.tasks();
   } catch {
     return;
   }
   for (const task of tasks) {
     const id = Number(task);
-    if (id === process.pid) continue;
+    if (id === io.self) continue;
     try {
-      setPriority(id, nice);
+      io.set(id, nice);
     } catch {
       // Ended since it was listed, or not ours to lower.
     }

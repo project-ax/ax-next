@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createHtmlPreparer, prepareArtifactHtml, type HtmlPreparer, type HtmlPreparerOptions, type PreparedPage } from '../index.js';
 import { GUARD_MARKER, MAX_PREPARED_BYTES } from '../prepare-html.js';
 import { oldGenerationFor, readContainerMemoryLimit } from '../prepare-pool.js';
-import { answerJob, handleJob, WORKER_ARG, WORKER_BUDGET_MS, type WorkerAnswer } from '../prepare-worker.js';
+import { answerJob, handleJob, lowerTheOtherThreads, WORKER_ARG, WORKER_BUDGET_MS, type WorkerAnswer } from '../prepare-worker.js';
 import { escapeAmplification } from './hostile-pages.js';
 
 // Watches the transform, so a test can see with what limits the worker's part calls it.
@@ -953,6 +953,40 @@ describe("the real worker's part: what it makes of a page", () => {
 
     it('is twice the largest page there can be as input, so that no page that is only written out as it was comes near', () => {
       expect(MAX_PREPARED_BYTES).toBe(2 * 4 * MiB);
+    });
+  });
+
+  describe("lowering the priority of the process's other threads (Linux: a nice value is a thread's)", () => {
+    it('sets each task but its own to the value, the main thread having been set already', () => {
+      const set: Array<[number, number]> = [];
+      lowerTheOtherThreads(10, { tasks: () => ['100', '101', '102', '103'], set: (id, nice) => void set.push([id, nice]), self: 100 });
+      expect(set).toEqual([
+        [101, 10],
+        [102, 10],
+        [103, 10],
+      ]);
+    });
+
+    it('goes on to the rest when one cannot be lowered (it ended since it was listed, or is not ours)', () => {
+      const set: number[] = [];
+      lowerTheOtherThreads(10, {
+        tasks: () => ['100', '101', '102', '103'],
+        set: (id) => {
+          if (id === 101) throw new Error('ESRCH');
+          set.push(id);
+        },
+        self: 100,
+      });
+      expect(set).toEqual([102, 103]);
+    });
+
+    it('does nothing where there is no /proc (not Linux): the process priority it set first is all there is', () => {
+      const set: number[] = [];
+      const gone = (): string[] => {
+        throw new Error('ENOENT');
+      };
+      expect(() => lowerTheOtherThreads(10, { tasks: gone, set: (id) => void set.push(id), self: 100 })).not.toThrow();
+      expect(set).toEqual([]);
     });
   });
 
