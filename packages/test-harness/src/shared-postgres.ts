@@ -37,10 +37,13 @@ export interface SharedPostgres {
 }
 
 /**
- * `start` is how to start the server — typically
- * `() => startTestContainer(new PostgreSqlContainer('postgres:16-alpine'))`.
- * Passing it in keeps `pg` and testcontainers out of this package's
- * dependencies; the database is created with `psql` inside the container.
+ * `start` is how to start the server — typically `startTestContainer` on a
+ * testcontainers `PostgreSqlContainer` for `postgres:16-alpine` (see
+ * `routines`' routine-harness). Passing it in keeps `pg` and testcontainers out
+ * of this package's dependencies, and keeps this package out of the
+ * container-starting set `scripts/__tests__/out-of-process-test-timeouts`
+ * derives from source text; the database is created with `psql` inside the
+ * container.
  */
 export function createSharedPostgres(start: () => Promise<SharedPostgresContainer>): SharedPostgres {
   let server: Promise<SharedPostgresContainer> | null = null;
