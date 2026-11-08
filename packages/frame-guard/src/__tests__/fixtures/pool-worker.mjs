@@ -11,6 +11,15 @@ const burn = (ms) => {
   }
 };
 
+// A worker that holds the process must not be able to hold it for good: when the host that made it is killed (a test
+// run that is stopped, a mutation that stops the pool ending it) a loop that only ends when it is killed is a process
+// at 100% of a core, with no parent, until somebody notices. It ends itself after a few seconds, longer than any test waits.
+const SPIN_MS = 8000;
+function spin() {
+  burn(SPIN_MS);
+  process.exit(1);
+}
+
 function answer(id, text) {
   process.send({ id, ok: true, bytes: new TextEncoder().encode(text) });
 }
@@ -35,10 +44,9 @@ process.on('message', ({ id, html }) => {
     case 'refuse':
       process.send({ id, ok: false, reason: arg });
       return;
-    case 'spin': // never answers, and never lets go
-      for (;;) {
-        /* hold the process */
-      }
+    case 'spin': // never answers, and does not let go (for SPIN_MS)
+      spin();
+      return;
     case 'sleep': // never answers, but is not busy
       return;
     case 'oom': {
@@ -55,9 +63,8 @@ process.on('message', ({ id, html }) => {
       return;
     case 'signal': // ended by a signal the way a crash or the kernel's out-of-memory killer does it
       process.kill(process.pid, arg);
-      for (;;) {
-        /* wait for it */
-      }
+      spin(); // (a signal that does not end it is waited for for SPIN_MS)
+      return;
     case 'nonsense':
       process.send({ hello: 'there' });
       process.send({ id, hello: 'there' });
