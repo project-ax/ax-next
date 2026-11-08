@@ -454,8 +454,9 @@ describe('content origin: prepared-HTML cache', () => {
   it.each(['too_slow', 'worker_timeout', 'worker_oom', 'too_many_nodes', 'output_too_large'] as const)(
     'a page refused as %s is remembered like any refusal: the same bytes are not sent to be prepared again, and are still a 422, logged each time',
     async (reason) => {
-      // Out of time is the thread's CPU time and out of memory the worker's heap, so both are the page (a hostile one is
-      // one that is retried to burn the worker), and a good page near the limit is the cost of a limit.
+      // A hostile page is one that is retried to burn the worker, so the views that follow a refusal do not reach it, and a
+      // good page near a limit is the cost of a limit. (How long: `worker_timeout` and `worker_oom` a minute, the rest for
+      // good; see 'how long a refusal is remembered'.)
       const preparer = refusing(reason);
       const base = await start({ htmlPreparer: preparer });
       put('a', { bytes: page(1), contentKey: 'sha-slow' });
@@ -599,9 +600,12 @@ describe('content origin: prepared-HTML cache', () => {
       return { now: () => t, set: (ms) => void (t = 1_000_000 + ms) };
     }
 
-    it('a worker_timeout is remembered for a minute and no longer: it is a wall-clock deadline, and a good page can meet a bad minute', async () => {
+    it.each([
+      ['worker_timeout', 'it is a wall-clock deadline, and a good page can meet a bad minute'],
+      ['worker_oom', 'a page can sit on the edge of the heap limit, and the kernel that kills a worker for the pod\'s memory is not the page'],
+    ] as const)('a %s is remembered for a minute and no longer: %s', async (reason) => {
       const c = clock();
-      const preparer = refusing('worker_timeout');
+      const preparer = refusing(reason);
       const base = await start({ htmlPreparer: preparer, htmlCache: { now: c.now } });
       put('a', { bytes: page(1), contentKey: 'sha-held' });
       expect((await fetch(tokenUrl(base, 'a'))).status).toBe(422);
@@ -634,7 +638,7 @@ describe('content origin: prepared-HTML cache', () => {
       expect(prepare).toHaveBeenCalledTimes(1);
     });
 
-    it.each(['too_slow', 'worker_oom', 'too_many_nodes', 'plaintext'] as const)(
+    it.each(['too_slow', 'output_too_large', 'too_many_nodes', 'plaintext'] as const)(
       'a refusal as %s is the page\'s and is remembered for good, however long it is since',
       async (reason) => {
         const c = clock();

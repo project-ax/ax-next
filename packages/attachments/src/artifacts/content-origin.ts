@@ -181,14 +181,19 @@ type RefusalCode = 'html_too_large' | PrepareRefusal | PoolRefusal;
  *
  * A reason about the page is remembered for good: the same bytes are refused the
  * same way, and the transform running on them again is all a hostile page asks
- * for. `too_slow` is measured on the thread's CPU time and `worker_oom` on the
- * worker's heap, so both are the page's. `worker_timeout` is not: it is a deadline
- * on the WALL clock, six seconds from the moment the page was handed over, so it
- * includes the worker's start-up and whatever CPU the machine took from the worker
- * meanwhile, and a good page can meet a starved minute. It is remembered for a
- * minute: long enough that a worker that really is held is not held again by every
- * view, short enough that a page refused on a bad minute gets another go. `busy`
- * and `worker_failed` are about the moment, not the page, and are not remembered.
+ * for. `too_slow` is measured on the worker's CPU time, so it is the page's. Two
+ * are not, and are remembered for a minute. `worker_timeout` is a deadline on the
+ * WALL clock, six seconds from the moment the page was handed over, so it includes
+ * the worker's start-up and whatever CPU the machine took from the worker
+ * meanwhile, and a good page can meet a starved minute. `worker_oom` is the
+ * worker's heap limit, which a page can sit on the edge of: 4 MiB of text inside a
+ * `<table>` needs 352 to 368 MB of the 384 and is served or refused according to
+ * how far the garbage collector had got, and a worker the kernel killed for the
+ * pod's memory is the pod's moment as much as the page. A minute is long enough
+ * that a worker that really is held, or run out of memory, is not held again by
+ * every view, short enough that a page refused on a bad minute gets another go.
+ * `busy` and `worker_failed` are about the moment, not the page, and are not
+ * remembered.
  */
 const REFUSALS: Record<RefusalCode, { line: 'unsafe' | 'too_large' | 'later'; remembered: 'always' | 'briefly' | 'never' }> = {
   html_too_large: { line: 'too_large', remembered: 'always' },
@@ -197,7 +202,7 @@ const REFUSALS: Record<RefusalCode, { line: 'unsafe' | 'too_large' | 'later'; re
   too_slow: { line: 'too_large', remembered: 'always' },
   output_too_large: { line: 'too_large', remembered: 'always' },
   worker_timeout: { line: 'too_large', remembered: 'briefly' },
-  worker_oom: { line: 'too_large', remembered: 'always' },
+  worker_oom: { line: 'too_large', remembered: 'briefly' },
   nul: { line: 'unsafe', remembered: 'always' },
   cr_entity: { line: 'unsafe', remembered: 'always' },
   too_deep: { line: 'unsafe', remembered: 'always' },
