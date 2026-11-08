@@ -130,14 +130,124 @@ export interface WorkspaceToolCall {
  * which would put two modules in charge of one sentence. So it gets the state.
  */
 export interface WorkspaceStep {
-  /** What the row says. Already named, qualified and fenced. */
+  /**
+   * What the row says, in plain words — "Read index.ts", "Ran a command",
+   * "Searching memory". Already fenced. A status other than `done` carries its
+   * suffix here too ("— didn't finish"), so the words never depend on colour.
+   */
   text: string;
   status: WorkspaceStepStatus;
+  /**
+   * What sort of thing the step was — see {@link StepKind}. Optional on the
+   * wire: a dev-fast SPA can meet a server that predates it, and an absent
+   * kind reads as `other`.
+   */
+  kind?: StepKind;
+  /**
+   * The raw "which one" — the command, the path, the query — fenced by
+   * {@link stepDetail}. Kept OUT of `text` so the default view reads like a
+   * sentence; the panel shows it, in monospace, only when a row is opened.
+   */
+  detail?: string;
+  /**
+   * The same step in the present tense ("Running a command"), for the one
+   * line a collapsed panel shows while the step is still going.
+   */
+  doing?: string;
+}
+
+/**
+ * The handful of things an agent does over and over, which is what lets a
+ * panel say "Looked through files and ran commands" instead of listing 48
+ * rows — and lets a run of the same kind fold into one "Ran 6 commands" row.
+ *
+ * Classified off the BUILT-IN tool names only (both runners share them:
+ * Bash, Read, Write, Edit, Glob, Grep, …). Anything else — a catalog tool
+ * with its own phrase, a connector tool, an MCP server's tool — is `other`
+ * and keeps its own words.
+ */
+export type StepKind = 'read' | 'search' | 'command' | 'edit' | 'web' | 'other';
+
+const KIND_BY_TOOL: Readonly<Record<string, StepKind>> = {
+  Read: 'read',
+  NotebookRead: 'read',
+  LS: 'read',
+  Glob: 'search',
+  Grep: 'search',
+  Bash: 'command',
+  BashOutput: 'command',
+  KillShell: 'command',
+  KillBash: 'command',
+  Write: 'edit',
+  Edit: 'edit',
+  MultiEdit: 'edit',
+  NotebookEdit: 'edit',
+  WebFetch: 'web',
+  WebSearch: 'web',
+};
+
+/** The last path segment, so a row reads "Read index.ts", not the whole path. */
+function baseName(path: string): string {
+  const trimmed = path.replace(/[\\/]+$/, '');
+  const at = Math.max(trimmed.lastIndexOf('/'), trimmed.lastIndexOf('\\'));
+  return at === -1 ? trimmed : trimmed.slice(at + 1) || trimmed;
+}
+
+/** The host of a URL, or `null` when it does not parse as one. */
+function hostOf(url: string): string | null {
+  try {
+    return new URL(url).host || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * A built-in step in plain words: past tense for the row, present tense for a
+ * collapsed panel's live line. `null` for anything that is not a built-in we
+ * have words for — those keep the phrase / connector / tool-name path.
+ */
+function builtinWords(
+  tool: string,
+  kind: StepKind,
+  detail: string | undefined,
+): { done: string; doing: string } | null {
+  const file = detail !== undefined && detail.length > 0 ? baseName(detail) : null;
+  switch (kind) {
+    case 'read':
+      return file !== null
+        ? { done: `Read ${file}`, doing: `Reading ${file}` }
+        : { done: 'Read a file', doing: 'Reading a file' };
+    case 'search':
+      return { done: 'Searched files', doing: 'Searching files' };
+    case 'command':
+      return { done: 'Ran a command', doing: 'Running a command' };
+    case 'edit':
+      if (tool === 'Write') {
+        return file !== null
+          ? { done: `Wrote ${file}`, doing: `Writing ${file}` }
+          : { done: 'Wrote a file', doing: 'Writing a file' };
+      }
+      return file !== null
+        ? { done: `Edited ${file}`, doing: `Editing ${file}` }
+        : { done: 'Edited a file', doing: 'Editing a file' };
+    case 'web': {
+      if (tool === 'WebFetch') {
+        const host = detail !== undefined ? hostOf(detail) : null;
+        return host !== null
+          ? { done: `Opened ${host}`, doing: `Opening ${host}` }
+          : { done: 'Opened a web page', doing: 'Opening a web page' };
+      }
+      return { done: 'Searched the web', doing: 'Searching the web' };
+    }
+    case 'other':
+      return null;
+  }
 }
 
 /** The two fields the `steps` `ThreadMessage` variant carries. */
 export interface WorkspaceStepPanel {
-  /** The disclosure header. Always opens with the step COUNT — see below. */
+  /** The disclosure header — see {@link stepsTitle}. */
   label: string;
   /** One row per call, in call order. `label`'s count is `steps.length`. */
   steps: WorkspaceStep[];
@@ -439,47 +549,85 @@ function stepName(call: WorkspaceToolCall, connectors: ConnectorNames | undefine
 }
 
 /**
- * One call's row: what ran, and — when we can say it — which one.
+ * The panel's one-line title — what a COLLAPSED panel says.
  *
- * A COLON, not the em dash. The dash is already spoken for by the status
- * suffix below, and `Bash — ls -la — in progress` makes the reader work out
- * which half is the machine's and which is ours. `Bash: ls -la — in progress`
- * reads in one pass.
+ * No counts, and no list of counts. "48 steps" tells a reader how much
+ * happened and nothing about what; "read 12 files, ran 31 commands" is the
+ * same list again in a sentence. So:
+ *
+ *   * While a step is still going, the title is THAT step, present tense —
+ *     "Reading index.ts…". The line moves as the agent does.
+ *   * After, it is the one or two kinds of work the turn was mostly made of —
+ *     "Looked through files and ran commands". A panel of one step is just
+ *     that step.
+ *   * Then at most one qualifier, failed → waiting, because a failure has
+ *     nowhere else to go and a title that hides one is a claim of success we
+ *     did not earn (TASK-335's ordering, kept). A hold also announces itself
+ *     on the composer and its approval card; it still says so here.
+ *
+ * Exported because the conversation folds several turns' steps into one panel
+ * above the reply, and that panel's title has to come from the same words.
  */
-function stepRow(call: WorkspaceToolCall, connectors: ConnectorNames | undefined): string {
-  const name = stepName(call, connectors);
-  return call.detail === undefined || call.detail.length === 0
-    ? name
-    : `${name}: ${call.detail}`;
+export function stepsTitle(steps: readonly WorkspaceStep[]): string {
+  if (steps.length === 0) return '';
+  const running = [...steps].reverse().find((s) => s.status === 'running');
+  if (running !== undefined) {
+    return `${running.doing ?? running.text.replace(/ — in progress$/, '')}…`;
+  }
+  const failed = steps.filter((s) => s.status === 'failed').length;
+  const waiting = steps.filter((s) => s.status === 'waiting').length;
+  const base = steps.length === 1 ? baseText(steps[0]!) : summary(steps);
+  // A comma, not an interpunct: it has to read as "and also" to somebody who
+  // has never thought about typography.
+  if (failed > 0) return `${base}, ${failed} didn't finish`;
+  if (waiting > 0) return `${base}, ${waiting} waiting for you`;
+  return base;
+}
+
+/** A row's words without the status suffix `shapeSteps` puts on it. */
+function baseText(step: WorkspaceStep): string {
+  const at = step.text.lastIndexOf(' — ');
+  return step.status === 'done' || at === -1 ? step.text : step.text.slice(0, at);
+}
+
+type SummaryKind = 'explore' | 'command' | 'edit' | 'web' | 'other';
+
+const SUMMARY_WORDS: Record<SummaryKind, string> = {
+  explore: 'Looked through files',
+  command: 'Ran commands',
+  edit: 'Edited files',
+  web: 'Searched the web',
+  other: 'Used tools',
+};
+
+function summaryKind(kind: StepKind | undefined): SummaryKind {
+  if (kind === 'read' || kind === 'search') return 'explore';
+  if (kind === 'command' || kind === 'edit' || kind === 'web') return kind;
+  return 'other';
 }
 
 /**
- * The header for a panel of `total` steps.
- *
- * It ALWAYS opens with the count, and the count is always `steps.length` —
- * that is what lets a reader (and a test) check the header against the list
- * underneath it instead of taking the header's word for it.
- *
- * Then, at most one qualifier, in the order failed → waiting → running. That
- * inverts the per-call ordering at the top of this file, deliberately, and for
- * the reason TASK-335 gave chat's collapsed header: per call a hold is not a
- * failure and must not be painted as one, but across a whole panel a hold
- * already announces itself twice over (the composer's hold line, the approval
- * card) while a failure has nowhere else to go. A header that says "3 steps"
- * over a step that failed is a claim of success we did not earn.
+ * The one or two kinds the turn mostly was. Ties go to whichever came first,
+ * so the title reads in the order the work happened.
  */
-function stepsLabel(
-  total: number,
-  counts: { failed: number; waiting: number; running: number },
-): string {
-  const base = total === 1 ? '1 step' : `${total} steps`;
-  // A comma, not an interpunct. The separator has to read as "and also" to
-  // somebody who has never thought about typography, and a `·` reads as
-  // decoration to plenty of them.
-  if (counts.failed > 0) return `${base}, ${counts.failed} didn't finish`;
-  if (counts.waiting > 0) return `${base}, ${counts.waiting} waiting for you`;
-  if (counts.running > 0) return `${base}, ${counts.running} in progress`;
-  return base;
+function summary(steps: readonly WorkspaceStep[]): string {
+  const counts = new Map<SummaryKind, number>();
+  for (const s of steps) {
+    const k = summaryKind(s.kind);
+    counts.set(k, (counts.get(k) ?? 0) + 1);
+  }
+  const ranked = [...counts.entries()].sort((a, b) => b[1] - a[1]).map(([k]) => k);
+  // `other` alone is a pile of distinct tools; if every one of them did the
+  // same thing, that thing is the better title.
+  if (ranked.length === 1 && ranked[0] === 'other') {
+    const distinct = new Set(steps.map(baseText));
+    if (distinct.size === 1) return baseText(steps[0]!);
+  }
+  const [first, second] = ranked;
+  const head = SUMMARY_WORDS[first!];
+  if (second === undefined) return head;
+  const tail = SUMMARY_WORDS[second];
+  return `${head} and ${tail.charAt(0).toLowerCase()}${tail.slice(1)}`;
 }
 
 /**
@@ -513,25 +661,30 @@ export function shapeSteps(
   const shown = calls.filter((call) => !PLUMBING_TOOL_NAMES.has(call.name));
   if (shown.length === 0) return null;
   const steps: WorkspaceStep[] = [];
-  const counts = { failed: 0, waiting: 0, running: 0 };
   for (const call of shown) {
-    const row = stepRow(call, connectors);
-    if (call.status === 'done') {
-      steps.push({ text: row, status: 'done' });
-      continue;
-    }
-    // A settled hold is not something the header needs to raise: it is not
-    // waiting, has not failed, and is not running.
-    if (call.status !== 'settled') counts[call.status] += 1;
+    const tool = stripMcpToolPrefix(call.name);
+    // A connector tool or a phrase-carrying catalog tool is never a built-in,
+    // whatever it is called: only the bare built-in names classify.
+    const kind: StepKind =
+      call.phrase === undefined && tool === call.name ? (KIND_BY_TOOL[tool] ?? 'other') : 'other';
+    const words = builtinWords(tool, kind, call.detail);
+    const name = words?.done ?? stepName(call, connectors);
+    const doing = words?.doing ?? name;
+    const detail =
+      call.detail !== undefined && call.detail.length > 0 ? call.detail : undefined;
     // The words stay, ALONGSIDE the status — a colour is not a sentence, and a
     // reader who cannot see the difference between two greys still has to be
     // told what happened.
+    const text = call.status === 'done' ? name : `${name} — ${STATUS_SUFFIX[call.status]}`;
     steps.push({
-      text: `${row} — ${STATUS_SUFFIX[call.status]}`,
+      text,
       status: call.status,
+      kind,
+      doing,
+      ...(detail !== undefined ? { detail } : {}),
     });
   }
-  return { label: stepsLabel(steps.length, counts), steps };
+  return { label: stepsTitle(steps), steps };
 }
 
 /**

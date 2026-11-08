@@ -16,6 +16,12 @@
 import type { ThreadMessage } from './workspace-api';
 
 export const TURN_ID_ATTR = 'data-turn-id';
+/**
+ * Every turn id a folded reply stands for, space-separated. A reply that ran
+ * tools is drawn as one element for several stored turns (`reply-groups.ts`),
+ * and a source link to any of them has to land on it.
+ */
+export const TURN_IDS_ATTR = 'data-turn-ids';
 export const MEMORY_SOURCE_ATTR = 'data-memory-source';
 
 /**
@@ -34,6 +40,11 @@ const flashTimers = new WeakMap<HTMLElement, ReturnType<typeof setTimeout>>();
 function findTurn(turnId: string): HTMLElement | null {
   for (const el of document.querySelectorAll(`[${TURN_ID_ATTR}]`)) {
     if (el instanceof HTMLElement && el.getAttribute(TURN_ID_ATTR) === turnId) return el;
+  }
+  for (const el of document.querySelectorAll(`[${TURN_IDS_ATTR}]`)) {
+    if (el instanceof HTMLElement && (el.getAttribute(TURN_IDS_ATTR) ?? '').split(' ').includes(turnId)) {
+      return el;
+    }
   }
   return null;
 }
