@@ -1,6 +1,7 @@
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { getHeapStatistics } from 'node:v8';
+import { getHeapStatistics, setFlagsFromString } from 'node:v8';
+import { runInNewContext } from 'node:vm';
 import { describe, expect, it } from 'vitest';
 import { defaultTreeAdapter as tree, html as spec, parse, serialize, type DefaultTreeAdapterTypes as Tree } from 'parse5';
 import { FRAME_GUARD_SOURCE, prepareArtifactHtml, type PrepareLimits, type PrepareResult } from '../index.js';
@@ -638,16 +639,22 @@ describe('a tag whose name is thousands of characters', () => {
   it('holds the names of elements as flat strings, not as the joins parse5 built them from: 500 open elements with names of 1,000 characters grow the heap by the text', () => {
     // `<nnn...(1000)>` 500 times, never closed: nothing compares one of the names with another (a comparison makes a string flat),
     // so the tree keeps each as parse5 built it, a join per character, 48 MB of them, unless the element's name is read as the
-    // element is made, and then 8 to 11. (A name of 4 MiB is a chain of 128 MB; it is refused long before that, above, and this is
-    // what is left under the limit.) Every pass reads the same names, so the most the heap holds in the run is what is watched.
+    // element is made, and then 8 to 18. (A name of 4 MiB is a chain of 128 MB; it is refused long before that, above, and this is
+    // what is left under the limit.) What is watched is what the heap RETAINS: it is collected at every look at the clock, because
+    // after the heavy tests that come before this one the heap has room for a great deal of garbage, and the count of bytes used is
+    // that, not the names. Every pass reads the same names, so the most the heap holds in the run is what is looked at.
+    setFlagsFromString('--expose-gc');
+    const gc = runInNewContext('gc') as () => void;
+    gc();
     const before = getHeapStatistics().used_heap_size;
     let peak = 0;
     const now = (): number => {
+      gc();
       peak = Math.max(peak, getHeapStatistics().used_heap_size - before);
       return 0;
     };
     const name = 'n'.repeat(1000);
-    const out = prepareArtifactHtml(`<!doctype html><body>${`<${name}>`.repeat(500)}`, { now, budgetMs: 1e9, lookEvery: 64 });
+    const out = prepareArtifactHtml(`<!doctype html><body>${`<${name}>`.repeat(500)}`, { now, budgetMs: 1e9 });
     expect(out.ok).toBe(true);
     expect(peak / MiB).toBeLessThan(30);
   });
