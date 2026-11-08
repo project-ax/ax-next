@@ -26,7 +26,7 @@ import { WORKER_ARG } from './prepare-worker.js';
 //   - it is given nothing of the host's: an empty environment, none of its flags, no
 //     standard streams, and only the page over the channel. It is ended when the host lets
 //     go of the channel, and when nothing has been asked of it for a while, which gives its
-//     memory back (a worker that has prepared a heavy page holds 250 to 360 MB until it
+//     memory back (a worker that has prepared a heavy page holds 250 to 380 MB until it
 //     ends, measured);
 //   - pages wait in a line bounded by how many there are and how much text they hold (each
 //     is a string the caller has made and the worker has not read yet), and a page that
@@ -174,6 +174,8 @@ function refused(reason: PrepareRefusal | PoolRefusal): PreparedPage {
  *   worker_start_signal_<S>  it was ended by signal <S> before it said it was ready
  *   worker_exit_<n>          it ended with exit code <n> while it had a page, or stopped being there with none
  *   worker_signal_<S>        it was ended by signal <S> that is not one of memory (a crash)
+ *   worker_aborted           it aborted (SIGABRT, or exit code 134), which V8 does at its heap limit; the page is
+ *                            answered `worker_oom`. The worker's streams are ignored, so this is the only trace
  *   worker_killed            it was killed from outside, which in a pod is the kernel running out of memory;
  *                            the page is answered `worker_oom`
  *   worker_limit_mismatch    its heap limit is not the one it was asked for
@@ -413,7 +415,10 @@ class WorkerPreparer implements HtmlPreparer {
     // Out of memory is what V8 does at its heap limit: it aborts the process. From outside, the kernel's out-of-memory
     // killer sends SIGKILL, and nothing else is going to. Either is what a page can do to it; the rest is the worker.
     if (worker.ready && (signal === 'SIGABRT' || (signal === null && code === 134))) {
-      this.ended(generation, null, 'worker_oom');
+      // The worker's standard streams are ignored, so V8's "Reached heap limit" is not anywhere: this code is. An abort is the
+      // page's (out of memory) as far as anyone can tell, and not a fault of the worker's that is the host's to fix, but it is
+      // said, because a worker that aborted for another reason would otherwise be a quiet refusal that is remembered.
+      this.ended(generation, new PoolFault('worker_aborted', `the prepare worker aborted (${how}), which V8 does at its heap limit`), 'worker_oom');
     } else if (worker.ready && signal === 'SIGKILL') {
       this.ended(generation, new PoolFault('worker_killed', `the prepare worker was killed (${how}), which in a pod is the kernel running out of memory`), 'worker_oom');
     } else if (!worker.ready) {

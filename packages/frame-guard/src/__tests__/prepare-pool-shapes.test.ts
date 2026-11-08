@@ -104,8 +104,8 @@ describe('a page that needs more memory than the worker has ends the worker, and
     for (const heapMb of [128, 160, 192]) {
       const outcome = run(shape, heapMb);
       expect(outcome.status, `with ${heapMb} MB the host was ended by ${how(outcome)}`).toBe(0);
-      // No fault: running out of memory is what a page can do to the worker, not a fault of the worker's.
-      expect(outcome.answer, `with ${heapMb} MB`).toMatchObject({ ok: false, reason: 'worker_oom', faults: [] });
+      // V8 aborted the worker, which is out of memory and which the fault's code says (its streams are ignored).
+      expect(outcome.answer, `with ${heapMb} MB`).toMatchObject({ ok: false, reason: 'worker_oom', faults: ['worker_aborted'] });
     }
   });
 
@@ -130,7 +130,7 @@ describe('a page that needs more memory than the worker has ends the worker, and
     // ...and a page that needs more than the worker has, under the same host, is the worker's end and not the host's.
     const refused = run('ttext', 128, '--max-old-space-size=96');
     expect(refused.status, `the host was ended by ${how(refused)}`).toBe(0);
-    expect(refused.answer).toMatchObject({ ok: false, reason: 'worker_oom', faults: [] });
+    expect(refused.answer).toMatchObject({ ok: false, reason: 'worker_oom', faults: ['worker_aborted'] });
   });
 });
 

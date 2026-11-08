@@ -179,17 +179,29 @@ describe('a worker that is held, out of memory, or gone', () => {
     expect(await p.prepare('oom:')).toEqual({ ok: false, reason: 'worker_oom' });
     const after = await p.prepare('echo:after');
     expect(pid(after)).not.toBe(before);
-    // Running out of memory is what a page can do to it, not a fault of the worker's.
-    expect(f.seen).toEqual([]);
+    // V8's message is nowhere (the worker's streams are ignored): the fault's code is the trace that it was an abort.
+    expect(f.codes()).toEqual(['worker_aborted']);
     expect(alive(before)).toBe(false);
   });
 
-  it('answers a worker that V8 aborts as out of memory (that is the only way V8 ends a process for its heap)', async () => {
+  it('answers a worker that V8 aborts as out of memory (that is the only way V8 ends a process for its heap), and says it aborted', async () => {
     const f = faults();
     const p = preparer({ onFault: f.report });
     expect(await p.prepare('abort:')).toEqual({ ok: false, reason: 'worker_oom' });
-    expect(f.seen).toEqual([]);
+    expect(f.codes()).toEqual(['worker_aborted']);
+    expect(f.seen[0]!.message).toContain('signal SIGABRT');
     expect(said(await p.prepare('echo:after'))).toMatch(/:after$/);
+  });
+
+  it('answers a worker that ends with exit code 134 (a shell\'s way of saying SIGABRT, and a process that reports it so) as out of memory too', async () => {
+    const f = faults();
+    const p = preparer({ onFault: f.report });
+    expect(await p.prepare('exit:134')).toEqual({ ok: false, reason: 'worker_oom' });
+    expect(f.codes()).toEqual(['worker_aborted']);
+    expect(f.seen[0]!.message).toContain('exit code 134');
+    // ...and any other code is a worker that failed
+    expect(await p.prepare('exit:135')).toEqual({ ok: false, reason: 'worker_failed' });
+    expect(f.codes()).toEqual(['worker_aborted', 'worker_exit_135']);
   });
 
   it('answers a worker that was killed from outside as out of memory (in a pod it is the kernel), and tells onFault', async () => {
