@@ -13,6 +13,7 @@
 import { MEMORY_SOURCE_CLASS, TURN_ID_ATTR, TURN_IDS_ATTR } from '@/lib/thread-jump';
 import { groupReplies, liveNote, type ActivityEntry, type ReplyGroup } from '@/lib/reply-groups';
 import {
+  Fragment,
   lazy,
   Suspense,
   useLayoutEffect,
@@ -1287,6 +1288,12 @@ function replyFromMessage(m: Extract<ThreadMessage, { kind: 'agent' } | { kind: 
     kind: 'reply',
     id: m.id,
     turnIds: [m.id],
+    parts: [
+      ...(m.text.length > 0 ? [{ kind: 'text' as const, turnId: m.id, text: m.text }] : []),
+      ...(m.kind === 'steps' && m.steps.length > 0
+        ? [{ kind: 'activity' as const, entries: m.steps.map((step) => ({ kind: 'step' as const, step })) }]
+        : []),
+    ],
     activity: m.kind === 'steps' ? m.steps.map((step) => ({ kind: 'step' as const, step })) : [],
     text: m.text,
     at: m.at,
@@ -1317,6 +1324,15 @@ function AgentReply({
   onOpenArtifact?: (artifactId: string) => void;
 }) {
   const clock = localTime(r.at);
+  const lastActivity = r.parts.map((p) => p.kind).lastIndexOf('activity');
+  const cards =
+    r.artifacts.length > 0 ? (
+      <div className="mb-3 flex max-w-[604px] flex-col gap-2">
+        {r.artifacts.map((a) => (
+          <ArtifactCard key={a.artifactId} artifact={a} onOpen={onOpenArtifact} />
+        ))}
+      </div>
+    ) : null;
 
   return (
     <div
@@ -1352,26 +1368,40 @@ function AgentReply({
           browser call out), and file download links are omitted from prose.
           Persisted attachments supply the download chips below.
         */}
-        {/* `at` is '' only on the reply still streaming in (see `ThreadMessage`). */}
-        {r.activity.length > 0 && <Activity entries={r.activity} live={r.at === ''} published={r.artifacts} />}
         {/*
-          The file it made, right under the work that made it and ABOVE what
-          it says about it, as Claude draws it: the answer usually talks about
-          the card ("I made the animated SVG…"), so the card comes first.
+          The reply in the order it happened (see `lib/reply-groups`): each
+          stretch of tool calls under its own collapsed title, and what the
+          agent said between them as a normal message. Only the block it is
+          still working in is live: once it writes after a block, that block
+          is finished and reads as its summary. `at` is '' only on the reply
+          still streaming in (see `ThreadMessage`).
         */}
-        {r.artifacts.length > 0 && (
-          <div className="mb-3 flex max-w-[604px] flex-col gap-2">
-            {r.artifacts.map((a) => (
-              <ArtifactCard key={a.artifactId} artifact={a} onOpen={onOpenArtifact} />
-            ))}
-          </div>
-        )}
-        {r.text.length > 0 && (
-          <div className="max-w-[604px] text-[15px] leading-[1.58] text-pretty">
-            <Markdown text={r.text} hideFileDownloadLinks />
-          </div>
-        )}
-        
+        {r.parts.map((part, i) => {
+          const isLastActivity = i === lastActivity;
+          if (part.kind === 'activity') {
+            return (
+              <Fragment key={`${i}-activity`}>
+                <Activity
+                  entries={part.entries}
+                  live={r.at === '' && i === r.parts.length - 1}
+                  published={isLastActivity ? r.artifacts : []}
+                />
+                {/*
+                  The file it made, right under the work that made it and
+                  ABOVE what it says about it, as Claude draws it.
+                */}
+                {isLastActivity && cards}
+              </Fragment>
+            );
+          }
+          return (
+            <div key={`${i}-text`} className="mb-2.5 max-w-[604px] text-[15px] leading-[1.58] text-pretty last:mb-0">
+              <Markdown text={part.text} hideFileDownloadLinks />
+            </div>
+          );
+        })}
+        {lastActivity === -1 && cards}
+
         {/*
           Keyed by artifact id: the frame holds per-visual state (height,
           ready, the loaded document), and a positional key would hand one
@@ -1467,6 +1497,8 @@ const STEP_MARK: Record<
 
 type ActivityRow =
   | Extract<ActivityEntry, { kind: 'note' }>
+  /** A step summary and the steps it stands for: one row, the steps inside. */
+  | { kind: 'intent'; text: string; steps: WorkspaceStep[] }
   | { kind: 'step'; step: WorkspaceStep }
   | { kind: 'group'; stepKind: Exclude<StepKind, 'other'>; steps: WorkspaceStep[] };
 
@@ -1493,9 +1525,23 @@ function groupLabel(kind: Exclude<StepKind, 'other'>, n: number): string {
  */
 function activityRows(entries: readonly ActivityEntry[]): ActivityRow[] {
   const rows: ActivityRow[] = [];
+  // A summary names the steps after it, up to the next thing the agent said:
+  // "Checking for a virtual environment." IS "Ran 3 commands", so it takes
+  // that row's place instead of sitting on top of it.
+  let intent: Extract<ActivityRow, { kind: 'intent' }> | null = null;
   for (const entry of entries) {
+    if (entry.kind === 'note' && entry.intent === true) {
+      intent = { kind: 'intent', text: entry.text, steps: [] };
+      rows.push(intent);
+      continue;
+    }
     if (entry.kind === 'note') {
+      intent = null;
       rows.push(entry);
+      continue;
+    }
+    if (intent !== null) {
+      intent.steps.push(entry.step);
       continue;
     }
     const { step } = entry;
@@ -1571,6 +1617,49 @@ function StepRow({ step }: { step: WorkspaceStep }) {
         </CollapsibleTrigger>
         <CollapsibleContent className="pt-1 pl-0.5">
           <Detail text={step.detail} />
+        </CollapsibleContent>
+      </Collapsible>
+    </li>
+  );
+}
+
+/**
+ * One summary row: "Checking for an available virtual environment." Opens
+ * onto the steps it stands for, each still marked if it failed or is held.
+ * A held step raises its mark on the row too, because that one needs the
+ * reader; a failure stays inside, as in the title.
+ */
+function IntentRow({ row }: { row: Extract<ActivityRow, { kind: 'intent' }> }) {
+  const waiting = row.steps.some((s) => s.status === 'waiting');
+  const Mark = waiting ? STEP_MARK.waiting : null;
+  if (row.steps.length === 0) {
+    return <li className="text-muted-foreground">{row.text}</li>;
+  }
+  return (
+    <li className="text-muted-foreground">
+      <Collapsible>
+        <CollapsibleTrigger className={cn(ROW_TRIGGER, 'items-start hover:text-foreground')}>
+          {Mark !== null && <Mark.Icon size={12} aria-hidden="true" className={cn('mt-[3px] shrink-0', Mark.tone)} />}
+          <span className="min-w-0">{row.text}</span>
+          <Chevron className="mt-[3px] opacity-60" />
+        </CollapsibleTrigger>
+        <CollapsibleContent>
+          <ul className="flex flex-col gap-1.5 pt-1.5 pl-0.5">
+            {row.steps.map((s, i) => {
+              const key = `${i}-${s.text}-${s.detail ?? ''}`;
+              // "Ran a command" three times says nothing; the command does.
+              if (s.kind === 'command' && s.detail !== undefined) {
+                const mark = STEP_MARK[s.status];
+                return (
+                  <li key={key} className={cn('flex min-w-0 items-center gap-1.5', mark?.tone)} title={s.text}>
+                    {mark !== null && <mark.Icon size={12} aria-label={s.text} className="shrink-0" />}
+                    <Detail text={s.detail} />
+                  </li>
+                );
+              }
+              return <StepRow key={key} step={s} />;
+            })}
+          </ul>
         </CollapsibleContent>
       </Collapsible>
     </li>
@@ -1660,7 +1749,9 @@ function Activity({
       <CollapsibleContent>
         <ul className="mt-2 ml-[5px] flex flex-col gap-2 border-l border-border pl-4 text-[13px]">
           {rows.map((row, i) => {
+            if (row.kind === 'intent') return <IntentRow key={`${i}-intent`} row={row} />;
             if (row.kind === 'note' && row.intent === true) {
+              // A summary whose steps have not been folded under it (none yet).
               return (
                 <li key={`${i}-intent`} className="text-muted-foreground">
                   {row.text}
@@ -1669,7 +1760,9 @@ function Activity({
             }
             if (row.kind === 'note') {
               return (
-                <li key={`${i}-note`} className="text-muted-foreground [&_p]:my-0">
+                // Narration is a line in a list of steps, not a second reply:
+                // two lines at most, the whole of it on hover.
+                <li key={`${i}-note`} className="line-clamp-2 text-muted-foreground [&_p]:my-0 [&_p]:inline" title={row.text}>
                   <Markdown text={row.text} hideFileDownloadLinks className="text-[13px] leading-[1.5]" />
                 </li>
               );

@@ -167,27 +167,27 @@ describe('the phase status line', () => {
     expect(screen.getByText('Running a command…')).toBeTruthy();
   });
 
-  it('puts what the agent says between calls in the title, not the reply', async () => {
-    // Claude-style: "Sketching the frame first." is narration the moment a
-    // call follows it. It used to stream in as the reply body and then jump
-    // into the panel when the turn ended.
+  it('keeps what the agent says as a message, and starts a new step block under it', async () => {
+    // Claude-style: a message stays where it was written. Calls after it get
+    // their own collapsed title BELOW it; nothing jumps when they arrive.
     let handlers!: StreamHandlers;
     await startTurn((h) => {
       handlers = h;
-      h.onText('Sketching the frame first.');
+      h.onToolUse?.({ toolCallId: 'tu1', toolName: 'Bash', detail: 'ls' });
     });
-    await waitFor(() => expect(screen.getByText('Sketching the frame first.')).toBeTruthy());
-    act(() => handlers.onToolUse?.({ toolCallId: 'tu1', toolName: 'Bash', detail: 'node draw.js' }));
-    const panel = await screen.findByTestId('workspace-steps');
-    // The words are the panel's title now, and nothing else on the page says them.
-    expect(within(panel).getByText('Sketching the frame first.')).toBeTruthy();
-    expect(screen.getAllByText('Sketching the frame first.')).toHaveLength(1);
+    await screen.findByTestId('workspace-steps');
     act(() => handlers.onToolResult?.({ toolCallId: 'tu1' }));
-    act(() => handlers.onText('Here is the pelican.'));
-    // Text after the last call IS the reply, under the panel.
-    await waitFor(() => expect(screen.getByText('Here is the pelican.')).toBeTruthy());
-    expect(within(panel).queryByText('Here is the pelican.')).toBeNull();
-    expect(within(panel).getByText('Sketching the frame first.')).toBeTruthy();
+    act(() => handlers.onText('That failed, so I will try another way.'));
+    const said = await screen.findByText('That failed, so I will try another way.');
+    // Once it has said something after the block, that block is finished.
+    await waitFor(() => expect(screen.getByText('Ran a command')).toBeTruthy());
+    act(() => handlers.onToolUse?.({ toolCallId: 'tu2', toolName: 'Read', detail: 'src/a.ts' }));
+    await waitFor(() => expect(screen.getAllByTestId('workspace-steps')).toHaveLength(2));
+    const [first, second] = screen.getAllByTestId('workspace-steps');
+    // The message did not move: still between the two blocks, not in either.
+    expect(first!.compareDocumentPosition(said) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(said.compareDocumentPosition(second!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(within(second!).getByText('Reading a.ts…')).toBeTruthy();
   });
 
   it('draws an artifact card as soon as the file is published, from the store', async () => {
@@ -245,10 +245,15 @@ describe('the phase status line', () => {
     act(() => handlers.onStepSummary?.({ toolCallId: 'tu1', text: 'Working out the leg motion with a script.' }));
     const panel = await screen.findByTestId('workspace-steps');
     await waitFor(() => expect(within(panel).getByText('Working out the leg motion with a script.')).toBeTruthy());
-    fireEvent.click(within(panel).getByText('Working out the leg motion with a script.'));
-    const items = within(panel).getAllByRole('listitem').map((li) => li.textContent ?? '');
-    expect(items[0]).toBe('Working out the leg motion with a script.');
-    expect(items[1]).toContain('Ran a command');
+    // Open the panel: the summary is ONE row, standing in for its step
+    // rather than sitting on top of a "Ran a command" row.
+    fireEvent.click(within(panel).getAllByText('Working out the leg motion with a script.')[0]!);
+    const rows = () => within(panel).getAllByRole('listitem').map((li) => li.textContent ?? '');
+    expect(rows()).toEqual(['Working out the leg motion with a script.']);
+    // Open the row: the step it stands for is inside.
+    const row = within(panel).getAllByRole('listitem')[0]!;
+    fireEvent.click(within(row).getByText('Working out the leg motion with a script.'));
+    expect(within(row).getByText('node legs.js')).toBeTruthy();
   });
 
   it('never shows a phase arriving AFTER content — the rule, stated backwards', async () => {

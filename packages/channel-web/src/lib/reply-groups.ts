@@ -1,32 +1,29 @@
 /**
- * reply-groups — one reply, drawn as "what it did" ABOVE "what it said".
+ * reply-groups — one reply, drawn in the order it happened.
  *
  * The thread arrives as one message per stored turn. A reply that used tools
- * is several of them: an assistant turn of narration + tool calls ("Let me
- * look at the repo"), a tool turn carrying any artifact card or file it made,
- * more of the same, and finally the answer. Drawn one by one, that put a step
- * panel under each chunk of prose and the panels of later turns BELOW the
- * artifact card they produced — the work after the result.
+ * is several of them: an assistant turn of words + tool calls ("Let me look
+ * at the repo"), a tool turn carrying any artifact card or file it made, more
+ * of the same, and finally the answer.
  *
  * So a run of consecutive agent messages (`agent` / `steps`, nothing from the
  * person or an approval between them) that ran at least one tool becomes ONE
- * reply:
+ * reply whose `parts` alternate, the way Claude draws it:
  *
- *   * `activity` — every step of the run in order, with the narration that
- *     came between them as `note`s. The panel above the reply holds it.
- *   * `text` — the answer: the last thing the agent said in the run. Usually
- *     that comes after its last tool call; when it went quiet after (it
- *     answered, then saved a note to memory), its last words still are.
- *   * the deliverables — visuals, artifact cards, files — from every message
- *     in the run. Artifact cards sit between the panel and the answer; the
- *     rest under it.
+ *   * a step block: one stretch of tool calls, collapsed under its own title;
+ *   * a message: what the agent said between them, as a normal chat message.
+ *
+ * Words are never folded into a panel: a message the agent wrote mid-reply is
+ * drawn where it wrote it, and the next calls start a new block below it.
+ * The deliverables (visuals, artifact cards, files) come from every message
+ * in the run; artifact cards sit right after the last step block.
  *
  * A run with no steps is left exactly as it was.
  *
- * WHAT THE LIVE TURN GETS. The live wire has no turn boundaries, so the
- * view cuts the stream where a reload would (`lib/live-segments`): one message
- * per "text, then the calls after it". It groups like any other run, with one
- * difference: while it streams, only text after the last call is the answer.
+ * WHAT THE LIVE TURN GETS. The live wire has no turn boundaries, so the view
+ * cuts the stream where a reload would (`lib/live-segments`): one message per
+ * "text, then the calls after it". It groups exactly like a stored run, so
+ * nothing moves when the turn ends.
  */
 import type {
   MemoryUsed,
@@ -48,13 +45,22 @@ export type ActivityEntry =
   | { kind: 'step'; step: WorkspaceStep };
 
 /** A reply that ran tools, folded out of its turns. */
+/** One stretch of a reply: a block of steps, or something the agent said. */
+export type ReplyPart =
+  | { kind: 'activity'; entries: ActivityEntry[] }
+  | { kind: 'text'; turnId: string; text: string };
+
 export interface ReplyGroup {
   kind: 'reply';
   /** The answer's turn id when it has one, else the run's last. A React key. */
   id: string;
   /** Every turn folded in — so a source link to any of them still lands here. */
   turnIds: string[];
+  /** The reply in order: step blocks and messages, alternating. */
+  parts: ReplyPart[];
+  /** Every step block's entries, flattened. */
   activity: ActivityEntry[];
+  /** The last thing it said, when nothing came after it; else ''. */
   text: string;
   /** The last message's instant — `''` while the reply is still streaming. */
   at: string;
@@ -73,43 +79,28 @@ function isAgentLike(m: ThreadMessage): m is AgentLike {
 }
 
 function fold(run: AgentLike[]): ReplyGroup {
-  // The answer is the last thing the agent SAID in the reply. Usually that is
-  // the turn after its last tool call; when it went quiet after (narrated,
-  // published, stopped — or answered, then saved a note to memory), it is the
-  // last words it did write. Everything said before that is narration.
-  //
-  // Not while it streams. Live, words followed by a call are narration the
-  // moment the call lands, so the reply is only what it is saying after its
-  // LAST call — the trailing `agent` segment, if it has started one.
-  const last = run[run.length - 1]!;
-  let answerAt = -1;
-  if (last.at === '') {
-    // After the last `steps` message: the trailing words, if any. A live
-    // card or visual rides on a text-less `agent` message after them.
-    let lastSteps = -1;
-    run.forEach((m, i) => {
-      if (m.kind === 'steps') lastSteps = i;
-    });
-    run.forEach((m, i) => {
-      if (i > lastSteps && m.kind === 'agent' && m.text.length > 0) answerAt = i;
-    });
-  } else {
-    run.forEach((m, i) => {
-      if (m.text.length > 0) answerAt = i;
-    });
-  }
-  const text = answerAt === -1 ? '' : run[answerAt]!.text;
-
-  const activity: ActivityEntry[] = [];
-  run.forEach((m, i) => {
-    if (m.text.length > 0 && i !== answerAt) activity.push({ kind: 'note', turnId: m.id, text: m.text });
-    if (m.kind === 'steps') {
-      for (const step of m.steps) {
-        if (step.intent !== undefined) activity.push({ kind: 'note', turnId: m.id, text: step.intent, intent: true });
-        activity.push({ kind: 'step', step });
-      }
+  // In the order it happened: what the agent said is a chat message where it
+  // said it, and each stretch of tool calls between two messages is its own
+  // step block with its own title (Vinay, 2026-11-08, from Claude). A stored
+  // `steps` message's words came BEFORE its calls, so they go first.
+  const parts: ReplyPart[] = [];
+  for (const m of run) {
+    if (m.text.length > 0) parts.push({ kind: 'text', turnId: m.id, text: m.text });
+    if (m.kind !== 'steps' || m.steps.length === 0) continue;
+    let block = parts[parts.length - 1];
+    if (block?.kind !== 'activity') {
+      block = { kind: 'activity', entries: [] };
+      parts.push(block);
     }
-  });
+    for (const step of m.steps) {
+      if (step.intent !== undefined) block.entries.push({ kind: 'note', turnId: m.id, text: step.intent, intent: true });
+      block.entries.push({ kind: 'step', step });
+    }
+  }
+  const lastPart = parts[parts.length - 1];
+  const answer = lastPart?.kind === 'text' ? lastPart : undefined;
+  const lastSaid = [...parts].reverse().find((p): p is Extract<ReplyPart, { kind: 'text' }> => p.kind === 'text');
+  const activity = parts.flatMap((p) => (p.kind === 'activity' ? p.entries : []));
 
   const visuals = new Map<string, ThreadVisual>();
   const artifacts = new Map<string, ThreadArtifact>();
@@ -128,12 +119,16 @@ function fold(run: AgentLike[]): ReplyGroup {
     if (m.memoryUsed !== undefined && m.memoryUsed.statements.length > 0) memoryUsed = m.memoryUsed;
   }
 
+  const last = run[run.length - 1]!;
   return {
     kind: 'reply',
-    id: (answerAt === -1 ? last : run[answerAt]!).id,
+    // What it last SAID names the reply (a memory source points at words),
+    // even when a silent step block came after them.
+    id: lastSaid?.turnId ?? last.id,
     turnIds: run.map((m) => m.id),
+    parts,
     activity,
-    text,
+    text: answer?.text ?? '',
     at: last.at,
     visuals: [...visuals.values()],
     artifacts: [...artifacts.values()],

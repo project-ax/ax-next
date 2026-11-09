@@ -4177,20 +4177,33 @@ function buildThread(
     }
     const panel = shapeSteps(turnToolCalls(blocks, outcomes, live, intents), connectors);
     if (text.length === 0 && panel === null) continue;
+    if (panel === null) {
+      dated.push({ at: turn.createdAt, msg: { kind: 'agent', id: turn.turnId, text, at: turn.createdAt } });
+      continue;
+    }
+    /*
+      The reply is drawn in order: what was said, then the step block, then
+      what was said after it (`lib/reply-groups`). A `steps` message's words
+      come BEFORE its calls, so words written AFTER the first call in the same
+      turn are their own message right behind it, not hoisted above the work.
+    */
+    const firstCall = blocks.findIndex((b) => b.type === 'tool_use');
+    const before = renderableText(blocks.slice(0, firstCall));
+    const after = renderableText(blocks.slice(firstCall));
     dated.push({
       at: turn.createdAt,
-      msg:
-        panel === null
-          ? { kind: 'agent', id: turn.turnId, text, at: turn.createdAt }
-          : {
-              kind: 'steps',
-              id: turn.turnId,
-              text,
-              at: turn.createdAt,
-              stepsLabel: panel.label,
-              steps: panel.steps,
-            },
+      msg: {
+        kind: 'steps',
+        id: turn.turnId,
+        text: before,
+        at: turn.createdAt,
+        stepsLabel: panel.label,
+        steps: panel.steps,
+      },
     });
+    if (after.length > 0) {
+      dated.push({ at: turn.createdAt, msg: { kind: 'agent', id: `${turn.turnId}:after`, text: after, at: turn.createdAt } });
+    }
   }
   /*
     A STABLE merge, not a re-sort of everything. The turn order comes out of
