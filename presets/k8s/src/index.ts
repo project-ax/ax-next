@@ -547,9 +547,10 @@ export interface K8sPresetConfig {
   /**
    * @ax/connector-directory (TASK-1100) -- the host's own copy of the public
    * MCP Registry, searchable from Admin > Connectors. The plugin always loads
-   * (the `connectors:directory-search` hook must exist); `enabled` only decides
-   * whether it syncs. Absent means OFF, so a hand-built config never reaches the
-   * network. Set by `loadK8sConfigFromEnv` from `AX_CONNECTOR_DIRECTORY_ENABLED`,
+   * (the `connectors:directory-search` hook must exist); `enabled` decides
+   * whether it syncs and whether it remembers which connectors were set up from
+   * it. Absent means OFF, so a hand-built config never reaches the network.
+   * Set by `loadK8sConfigFromEnv` from `AX_CONNECTOR_DIRECTORY_ENABLED`,
    * `AX_CONNECTOR_DIRECTORY_REGISTRY_URL` and `AX_CONNECTOR_DIRECTORY_VERIFIED_ONLY`
    * (the chart's `connectorDirectory.*`). `fetchImpl` is for tests only.
    */

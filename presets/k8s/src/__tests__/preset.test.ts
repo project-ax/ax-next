@@ -1246,12 +1246,18 @@ describe('@ax/preset-k8s wiring', () => {
     const dir = plugins.find((p) => p.manifest.name === '@ax/connector-directory');
     expect(dir).toBeDefined();
     expect(dir!.manifest.registers).toEqual(['connectors:directory-search']);
-    // Off: no database, no network.
+    // Off: no database, no network, and nothing remembered (TASK-1102: no
+    // provenance hooks, no connectors:deleted subscriber).
     expect(dir!.manifest.calls).toEqual([]);
+    expect(dir!.manifest.subscribes).toEqual([]);
     // The admin route reaches it through the connectors plugin's optional call.
     const connectors = plugins.find((p) => p.manifest.name === '@ax/connectors');
-    expect(connectors!.manifest.optionalCalls?.map((c) => c.hook)).toContain(
-      'connectors:directory-search',
+    expect(connectors!.manifest.optionalCalls?.map((c) => c.hook)).toEqual(
+      expect.arrayContaining([
+        'connectors:directory-search',
+        'connectors:directory-provenance-record',
+        'connectors:directory-provenance-mark-edited',
+      ]),
     );
   });
 
@@ -1259,6 +1265,13 @@ describe('@ax/preset-k8s wiring', () => {
     const plugins = createK8sPlugins({ ...stubConfig, connectorDirectory: { enabled: true } });
     const dir = plugins.find((p) => p.manifest.name === '@ax/connector-directory');
     expect(dir!.manifest.calls).toEqual(['database:get-instance']);
+    // TASK-1102: on, it also remembers which listing a connector came from.
+    expect(dir!.manifest.registers).toEqual([
+      'connectors:directory-search',
+      'connectors:directory-provenance-record',
+      'connectors:directory-provenance-mark-edited',
+    ]);
+    expect(dir!.manifest.subscribes).toEqual(['connectors:deleted']);
   });
 
   it('an enabled directory with an http registry URL fails the preset build (TASK-1100)', () => {
