@@ -601,6 +601,8 @@ export function AgentView({
    * agent's in-between words in the panel title instead of the reply body.
    */
   const [liveSegments, setLiveSegments] = useState<readonly LiveSegment[]>([]);
+  /** Call id → the host's summary of what the agent meant it to do. */
+  const [liveIntents, setLiveIntents] = useState<ReadonlyMap<string, string>>(new Map());
   /*
     Visuals the in-flight (or just-ended) turn showed, with the conversation
     they were shown in. Unlike the rest of the live turn this OUTLIVES `done`:
@@ -1004,6 +1006,7 @@ export function AgentView({
     setSent(null);
     setLiveCalls([]);
     setLiveSegments([]);
+    setLiveIntents(new Map());
     setWitnessed(new Set());
     setStreamConversation(null);
     setPhase(null);
@@ -1014,6 +1017,7 @@ export function AgentView({
     setSent(null);
     setLiveCalls([]);
     setLiveSegments([]);
+    setLiveIntents(new Map());
     setLiveVisuals(null);
     setWitnessed(new Set());
     setStreamConversation(null);
@@ -1055,8 +1059,12 @@ export function AgentView({
     };
   }, [agentId, cancelStop]);
 
+  /** Every turn this view has streamed, so a reattach happens once per turn. */
+  const attachedReqIds = useRef(new Set<string>());
+
   const streamFrom = useCallback(
-    async (reqId: string) => {
+    async (reqId: string, opts: { resume?: boolean } = {}) => {
+      attachedReqIds.current.add(reqId);
       abortRef.current?.abort();
       const ac = new AbortController();
       abortRef.current = ac;
@@ -1067,6 +1075,7 @@ export function AgentView({
       setStreaming(true);
         setLiveCalls([]);
     setLiveSegments([]);
+    setLiveIntents(new Map());
       visualsTurnRef.current += 1;
       setLiveVisuals(null);
       setWitnessed(new Set());
@@ -1077,6 +1086,7 @@ export function AgentView({
       setPhase(null);
       setTurnError(null);
       await workspaceApi.streamReply(reqId, {
+        ...(opts.resume === true ? { resume: true } : {}),
         signal: ac.signal,
         onText: (chunk) => {
           setLiveSegments((prev) => appendLiveText(prev, chunk));
@@ -1111,6 +1121,8 @@ export function AgentView({
           this agent's — the reload path's rule. A failed read draws nothing:
           the re-read brings the card if it is real.
         */
+        onStepSummary: ({ toolCallId, text }) =>
+          setLiveIntents((prev) => new Map(prev).set(toolCallId, text)),
         onArtifactClaim: (artifactId) => {
           const conversationId = turnConversation;
           if (conversationId === null) return;
@@ -1419,6 +1431,23 @@ export function AgentView({
     void streamFrom(pendingReply.reqId);
   }, [pendingReply, streamFrom, onPendingReplyConsumed]);
 
+  /*
+    A page opened or reloaded mid-turn. The runner stores a reply only when it
+    ends, so the thread just read stops at the person's message, and nothing
+    on this page was listening for the rest. The server names the turn still
+    in flight (`liveReqId`); reattach to it once, and the host's buffer replays
+    the turn so far before the rest streams in. Never while this view is
+    already streaming (its own turn reads back as live too), and never twice
+    for one turn: a re-read that still names a turn that just ended must not
+    loop.
+  */
+  useEffect(() => {
+    const liveReqId = detail?.liveReqId ?? null;
+    if (liveReqId === null || streaming) return;
+    if (attachedReqIds.current.has(liveReqId)) return;
+    void streamFrom(liveReqId, { resume: true });
+  }, [detail, streaming, streamFrom]);
+
   const send = useCallback(
     async (text: string, attachments?: readonly SendableAttachment[]) => {
       const files = attachments ?? [];
@@ -1692,7 +1721,10 @@ export function AgentView({
   const connectorNames = connectorNamesFromRows(detail.connectorTools);
   const liveReply = liveReplyMessages(
     liveSegments,
-    settleHolds(liveCalls, liveStreamHolds(liveCalls, openInConversation, witnessed)),
+    settleHolds(liveCalls, liveStreamHolds(liveCalls, openInConversation, witnessed)).map((c) => {
+      const intent = liveIntents.get(c.id);
+      return intent === undefined ? c : { ...c, intent };
+    }),
     connectorNames,
   );
   const hasLiveContent = liveReply.length > 0;

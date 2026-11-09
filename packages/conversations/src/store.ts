@@ -1452,6 +1452,7 @@ const VALID_EVENT_KINDS: ReadonlySet<ConversationEventKind> = new Set([
   'turn',
   'permission-card',
   'turn-error',
+  'step-summary',
 ]);
 
 /**
@@ -1475,7 +1476,7 @@ function coerceSeq(value: string | number): number {
 
 function validateEventKind(value: string): ConversationEventKind {
   if (!isEventKind(value)) {
-    throw invalid("event_kind must be 'turn', 'permission-card', or 'turn-error'");
+    throw invalid("event_kind must be 'turn', 'permission-card', 'turn-error', or 'step-summary'");
   }
   return value as ConversationEventKind;
 }

@@ -115,6 +115,7 @@ const PLUGINS_TO_DROP = new Set<string>([
   '@ax/tool-policy',
   '@ax/llm-anthropic',
   '@ax/conversation-titles',
+  '@ax/step-summaries',
   '@ax/memory-facts-postgres',
   '@ax/preset-k8s/retire-strata-index',
   // Re-added below with an injected clock (manifest asserted identical).

@@ -331,6 +331,7 @@ import {
 import {
   settleHolds,
   shapeSteps,
+  STEP_INTENT_MAX_CHARS,
   stepDetail,
   type LiveHolds,
   type WorkspaceStepStatus,
@@ -645,6 +646,8 @@ interface ConversationRow {
   agentId: string;
   title: string | null;
   activeSessionId: string | null;
+  /** The turn in flight in this conversation, if any (cleared at its turn-end). */
+  activeReqId?: string | null;
   lastActivityAt?: string | null;
   createdAt: string;
 }
@@ -729,7 +732,7 @@ interface ConversationsGetInput {
  * before it leaves here, never spread.
  */
 interface DisplayEventRow {
-  kind: 'permission-card' | 'turn-error';
+  kind: 'permission-card' | 'turn-error' | 'step-summary';
   key: string;
   payload: Record<string, unknown>;
   createdAt: string;
@@ -1280,6 +1283,14 @@ export interface AgentDetail {
    * read (a benign race — see `agentDetail`).
    */
   conversationId: string | null;
+  /**
+   * The reply still being written in that conversation (its `active_req_id`),
+   * or `null`. A page opened or reloaded mid-turn reattaches to it: the runner
+   * stores a reply only when it ends, so without this the turn so far, and
+   * everything after, was invisible until then. The stream route re-checks
+   * ownership of the id itself (`conversations:get-by-req-id`).
+   */
+  liveReqId: string | null;
   /** Reconstructed from that conversation's turns. */
   thread: ThreadMessage[];
   /**
@@ -3762,10 +3773,27 @@ function toolOutcomes(
  * call waiting on a person has not failed, and the runners publish held
  * results with `is_error` omitted.
  */
+/**
+ * Call id → the host's one-line summary of what the agent set out to do with
+ * it (`step-summary` display events, written by `@ax/step-summaries`). The
+ * event's fold key is the call id; the text is model output, fenced here and
+ * again by `shapeSteps`, and drawn as plain text.
+ */
+function stepIntents(events: readonly DisplayEventRow[]): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const ev of events) {
+    if (ev.kind !== 'step-summary') continue;
+    const text = typeof ev.payload.text === 'string' ? fenceLine(ev.payload.text, STEP_INTENT_MAX_CHARS) : null;
+    if (ev.key.length > 0 && text !== null && text.length > 0) out.set(ev.key, text);
+  }
+  return out;
+}
+
 function turnToolCalls(
   blocks: TurnBlock[],
   outcomes: ReadonlyMap<string, { isError: boolean; held: boolean }>,
   live: LiveHolds | null,
+  intents: ReadonlyMap<string, string> = new Map(),
 ): WorkspaceToolCall[] {
   const calls: WorkspaceToolCall[] = [];
   for (const block of blocks) {
@@ -3785,6 +3813,7 @@ function turnToolCalls(
       name: block.name,
       phrase: block.activityPhrase,
       detail: stepDetail(block.input),
+      intent: intents.get(block.id),
       status,
     });
   }
@@ -4036,6 +4065,7 @@ function buildThread(
   const dated: Array<{ at: string; msg: ThreadMessage }> = [];
   const out: ThreadMessage[] = [];
   const outcomes = toolOutcomes(turns);
+  const intents = stepIntents(displayEvents);
   const publishIds = new Set(turns.flatMap(turn => (turn.contentBlocks ?? []).flatMap(block =>
     block.type === 'tool_use' && typeof block.id === 'string' &&
     PUBLISH_TOOL_NAMES.has(block.name ?? '')
@@ -4155,22 +4185,35 @@ function buildThread(
       });
       continue;
     }
-    const panel = shapeSteps(turnToolCalls(blocks, outcomes, live), connectors);
+    const panel = shapeSteps(turnToolCalls(blocks, outcomes, live, intents), connectors);
     if (text.length === 0 && panel === null) continue;
+    if (panel === null) {
+      dated.push({ at: turn.createdAt, msg: { kind: 'agent', id: turn.turnId, text, at: turn.createdAt } });
+      continue;
+    }
+    /*
+      The reply is drawn in order: what was said, then the step block, then
+      what was said after it (`lib/reply-groups`). A `steps` message's words
+      come BEFORE its calls, so words written AFTER the first call in the same
+      turn are their own message right behind it, not hoisted above the work.
+    */
+    const firstCall = blocks.findIndex((b) => b.type === 'tool_use');
+    const before = renderableText(blocks.slice(0, firstCall));
+    const after = renderableText(blocks.slice(firstCall));
     dated.push({
       at: turn.createdAt,
-      msg:
-        panel === null
-          ? { kind: 'agent', id: turn.turnId, text, at: turn.createdAt }
-          : {
-              kind: 'steps',
-              id: turn.turnId,
-              text,
-              at: turn.createdAt,
-              stepsLabel: panel.label,
-              steps: panel.steps,
-            },
+      msg: {
+        kind: 'steps',
+        id: turn.turnId,
+        text: before,
+        at: turn.createdAt,
+        stepsLabel: panel.label,
+        steps: panel.steps,
+      },
     });
+    if (after.length > 0) {
+      dated.push({ at: turn.createdAt, msg: { kind: 'agent', id: `${turn.turnId}:after`, text: after, at: turn.createdAt } });
+    }
   }
   /*
     A STABLE merge, not a re-sort of everything. The turn order comes out of
@@ -8092,6 +8135,7 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
 
       let thread: ThreadMessage[] = [];
       let threadConversationId: string | null = null;
+      let liveReqId: string | null = null;
       let decisionsRead: WorkspaceReadStatus = 'ok';
       // Read whether or not there is a thread yet: the live panel needs it for
       // the first turn too (TASK-744).
@@ -8141,6 +8185,7 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
             return;
           }
           threadConversationId = got.conversation.conversationId;
+          liveReqId = got.conversation.activeReqId ?? null;
           /*
             The still-open decisions raised in THIS conversation, as cards at
             the end of the thread. They go last because that is where they
@@ -8196,6 +8241,7 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
         // separately from the panel it hangs off is a claim nobody can reload
         // when it looks wrong.
         conversationId: threadConversationId,
+        liveReqId,
         thread,
         decisions: { status: decisionsRead },
         past,

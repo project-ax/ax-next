@@ -50,6 +50,7 @@ import {
   createConversationTitlesPlugin,
   DEFAULT_TITLE_MODEL,
 } from '@ax/conversation-titles';
+import { createStepSummariesPlugin } from '@ax/step-summaries';
 import { createMemoryFactsPostgresPlugin } from '@ax/memory-facts-postgres';
 import { createWebToolsPlugin } from '@ax/web-tools';
 import { createRetireStrataIndexPlugin } from './retire-strata-index.js';
@@ -1398,6 +1399,11 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   }
   plugins.push(...llmProviderPlugins);
   plugins.push(createConversationTitlesPlugin({ model: titleModel }));
+  // @ax/step-summaries: the line a person reads while the agent works
+  // ("Working out the leg motion with a script."), written by the same fast
+  // model as titles from the reasoning before each tool call. Same provider
+  // rule as titles, so the same model ref is valid here.
+  plugins.push(createStepSummariesPlugin({ model: titleModel }));
 
   // Host-side LLM TOOLS bundle (@ax/web-tools). UNLIKE titles, it constructs
   // its OWN Anthropic client from `ANTHROPIC_API_KEY` at init, so it stays

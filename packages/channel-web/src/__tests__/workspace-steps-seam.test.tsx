@@ -85,7 +85,10 @@ const CALLS = [
   { id: 'tu2', name: 'Bash', phrase: undefined },
 ] as const;
 
-const REPLY = 'Filed it, and the build is green.';
+// Two paragraphs: an answer by the live rule too (`LIVE_ANSWER_MIN_CHARS`),
+// so the live and stored replies draw the same rows. Short trailing words are
+// held as narration while live; reply-groups.test.ts covers that.
+const REPLY = 'Filed it, and the build is green.\n\nNothing else needed.';
 /** Never rendered on this surface — invariant J4. Present so the test can look. */
 const SCRATCHPAD = 'the user probably wants me to guess here';
 
@@ -404,15 +407,12 @@ describe('a turn that ran tools', () => {
     const onLive = readPanel(live.container);
 
     // ---- the seam ---------------------------------------------------------
-    // The ROWS agree. The titles differ on purpose: this turn is still
-    // streaming, so its title holds on the latest step in the present tense
-    // (no flicker between calls); the stored turn reads as the summary.
-    expect(onLive.label).toBe('Running a command…');
+    // The ROWS agree, and so do the titles: the agent has written after the
+    // block, so the block is finished and reads as its summary, live too.
+    expect(onLive.label).toBe(onReload.label);
     expect(onLive.steps).toEqual(onReload.steps);
 
     expect(onLive.steps).toHaveLength(CALLS.length);
-    // A title, not a tally.
-    expect(onLive.label).not.toMatch(/\d/);
 
     // The wire name never reaches the screen; the host's phrase does.
     expect(onLive.steps[0]).toBe('Filing a Linear issue');
@@ -520,12 +520,11 @@ describe('a turn that ran tools', () => {
       ).not.toBeNull();
     });
     const livePanels = readPanels(live.container);
-    // One panel live, because the wire carries no message boundary — and now
-    // one on reload too. (Its title is the summary; the streaming one is the
-    // latest step, by design.)
+    // One block live and one on reload: the calls ran back to back, with
+    // nothing said between them. Finished, so both read as the summary.
     expect(livePanels).toHaveLength(1);
     expect(reloadLabel).toBe('Filing a Linear issue, ran a command');
-    expect(livePanels[0]!.label).toBe('Running a command…');
+    expect(livePanels[0]!.label).toBe(reloadLabel);
 
     // The sentences agree, which is the part one shaping function owns.
     expect(livePanels.flatMap((p) => p.steps)).toEqual(reloadSentences);
@@ -637,7 +636,7 @@ describe('a turn that ran tools', () => {
     // Still one producer, so the two paths cannot drift into two wordings.
     expect(onLive.steps).toEqual(onReload.steps);
     expect(onReload.label).toBe('Edited a file, ran 2 commands');
-    expect(onLive.label).toBe('Running a command…');
+    expect(onLive.label).toBe(onReload.label);
     // The file BODY is not a step row. It is the one input field that would
     // turn this list back into a wall of text.
     expect(live.container.textContent).not.toContain('content');

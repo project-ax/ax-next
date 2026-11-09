@@ -8,7 +8,7 @@
  */
 import type { ComponentProps } from 'react';
 import { describe, expect, it, vi } from 'vitest';
-import { fireEvent, render } from '@testing-library/react';
+import { fireEvent, render, within } from '@testing-library/react';
 import { AgentConversation } from '../AgentConversation';
 import type { ThreadMessage, WorkspaceAgent } from '@/lib/workspace-api';
 
@@ -172,13 +172,52 @@ describe('the step panel', () => {
     expect(at('Q3 report')).toBeLessThan(at('Your report is ready.'));
   });
 
-  it('keeps narration from between the steps inside the panel, not in the reply', () => {
+  it('draws what the agent said between steps as a message, not inside the panel', () => {
     const { container } = renderThread([
       steps({ id: 't1', text: 'Let me look at the repo.', steps: [{ text: 'Ran a command', status: 'done' }] }),
       { kind: 'agent', id: 't2', text: 'Here is how it works.', at: '2026-09-17T16:12:03.000Z' } as ThreadMessage,
     ]);
-    expect(container.querySelector('.text-pretty')?.textContent).toBe('Here is how it works.');
-    expect(rows(container)).toEqual(['Let me look at the repo.', 'Ran a command']);
+    const said = [...container.querySelectorAll('.text-pretty')].map((el) => el.textContent);
+    expect(said).toEqual(['Let me look at the repo.', 'Here is how it works.']);
+    expect(rows(container)).toEqual(['Ran a command']);
+    // In order: the words, then the work, then the answer.
+    const panel = panelOf(container);
+    const [first, last] = container.querySelectorAll('.text-pretty');
+    expect(first!.compareDocumentPosition(panel) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(panel.compareDocumentPosition(last!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('starts a new step block after a message, each with its own title', () => {
+    const { container } = renderThread([
+      steps({ id: 't1', text: '', steps: [{ text: 'Ran a command', status: 'done', kind: 'command' }] }),
+      steps({ id: 't2', text: 'The first try failed; trying another way.', steps: [{ text: 'Read a.ts', status: 'done', kind: 'read' }] }),
+      { kind: 'agent', id: 't3', text: 'Done.', at: '2026-09-17T16:12:03.000Z' } as ThreadMessage,
+    ]);
+    const titles = [...container.querySelectorAll('[data-testid="workspace-steps"] > button')].map((b) => b.textContent);
+    expect(titles).toEqual(['Ran a command', 'Read a.ts']);
+  });
+
+  it('lets a step summary stand in for the steps it names, one row each', () => {
+    const { container } = renderThread([
+      steps({
+        text: '',
+        steps: [
+          { text: 'Ran a command', status: 'done', kind: 'command', detail: 'ls', intent: 'Checking for a virtual environment.' },
+          { text: 'Ran a command', status: 'done', kind: 'command', detail: 'which python' },
+          { text: "Ran a command — didn't finish", status: 'failed', kind: 'command', detail: 'pip install x' },
+          { text: 'Wrote gen.py', status: 'done', kind: 'edit', detail: 'gen.py', intent: 'Writing the drawing script.' },
+        ],
+      }),
+    ]);
+    // Two summaries, two rows: no "Ran 3 commands" under the first.
+    expect(rows(container)).toEqual(['Checking for a virtual environment.', 'Writing the drawing script.']);
+    // Opening a summary shows the steps it stands for, the failure still marked.
+    const panel = panelOf(container);
+    fireEvent.click(within(panel).getByText('Checking for a virtual environment.'));
+    expect(within(panel).getByText('which python')).toBeTruthy();
+    // The failed one still says so, in words, beside its command.
+    expect(within(panel).getByText('pip install x').closest('li')!.getAttribute('title')).toBe("Ran a command — didn't finish");
+    expect(within(panel).getByLabelText("Ran a command — didn't finish")).toBeTruthy();
   });
 
   it('draws no empty bubble above a turn that only ran tools', () => {
@@ -188,12 +227,13 @@ describe('the step panel', () => {
     expect(container.querySelector('.text-pretty')).toBeNull();
   });
 
-  it('still draws the reply, under the panel, when there is one', () => {
+  it('draws the words a turn wrote before its calls above its panel', () => {
+    // A stored `steps` message's text came BEFORE its calls.
     const { container } = renderThread([steps({ text: 'Done.' })]);
     expect(container.querySelector('.text-pretty')?.textContent).toContain('Done.');
     const panel = panelOf(container);
     const reply = container.querySelector('.text-pretty')!;
-    expect(panel.compareDocumentPosition(reply) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(reply.compareDocumentPosition(panel) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   // --- a failure has to LOOK like one (TASK-419) ---------------------------

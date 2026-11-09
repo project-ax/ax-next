@@ -24,6 +24,7 @@
     { "path": "../../packages/audit-log" },
     { "path": "../../packages/channel-web" },
     { "path": "../../packages/conversation-titles" },
+    { "path": "../../packages/step-summaries" },
     { "path": "../../packages/conversations" },
     { "path": "../../packages/connectors" },
     { "path": "../../packages/attachments" },

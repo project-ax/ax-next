@@ -200,6 +200,7 @@ const PLUGINS_TO_DROP = new Set<string>([
   // comes off as its now-orphaned pair). Static wiring is pinned in preset.test.ts.
   '@ax/llm-anthropic',
   '@ax/conversation-titles',
+  '@ax/step-summaries',
   // Memory facts engine (TASK-423): postgres-backed (`calls`
   // database:get-instance, dropped at the top of this list) and not on the
   // multi-tenant ACL canary's path. Static wiring is pinned in preset.test.ts;

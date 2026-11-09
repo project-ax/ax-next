@@ -2555,3 +2555,33 @@ describe('buffer-fill tool-result held (TASK-270)', () => {
     }
   });
 });
+
+describe('buffer-fill step-summary (@ax/step-summaries)', () => {
+  it('buffers one fenced line with only the fields a client needs', async () => {
+    const buffer = createChunkBuffer();
+    try {
+      const fill = createBufferFillSubscriber(buffer);
+      const ctx = makeAgentContext({ sessionId: 's', agentId: 'a', userId: 'u' });
+      await fill(ctx, {
+        reqId: 'r1',
+        kind: 'step-summary',
+        toolCallId: 'tu1',
+        text: 'Working out\nthe legs.',
+        reasoning: 'must never travel',
+      } as never);
+      await fill(ctx, { reqId: 'r1', kind: 'step-summary', toolCallId: 'tu2', text: '  ' } as never);
+      await fill(ctx, { reqId: 'r1', kind: 'step-summary', toolCallId: 7, text: 'x' } as never);
+      const tail = buffer.tail('r1');
+      expect(tail).toHaveLength(1);
+      expect(tail[0]).toEqual({
+        reqId: 'r1',
+        kind: 'step-summary',
+        toolCallId: 'tu1',
+        text: 'Working out the legs.',
+        seq: expect.any(Number),
+      });
+    } finally {
+      buffer.dispose();
+    }
+  });
+});
