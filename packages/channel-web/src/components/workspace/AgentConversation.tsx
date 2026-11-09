@@ -15,6 +15,7 @@ import { groupReplies, liveNote, type ActivityEntry, type ReplyGroup } from '@/l
 import {
   Fragment,
   lazy,
+  useEffect,
   Suspense,
   useLayoutEffect,
   useRef,
@@ -1401,6 +1402,15 @@ function AgentReply({
           );
         })}
         {lastActivity === -1 && cards}
+        {/*
+          The turn is not over, but nothing on screen says so: the agent has
+          finished a message and not started its next call (or ended the
+          turn) yet. A live step block has its own shimmer; this covers the
+          gap after words.
+        */}
+        {r.at === '' && r.parts[r.parts.length - 1]?.kind === 'text' && (
+          <StillWorking text={(r.parts[r.parts.length - 1] as { text: string }).text} />
+        )}
 
         {/*
           Keyed by artifact id: the frame holds per-visual state (height,
@@ -1692,6 +1702,33 @@ function GroupRow({ row }: { row: Extract<ActivityRow, { kind: 'group' }> }) {
         </CollapsibleContent>
       </Collapsible>
     </li>
+  );
+}
+
+/**
+ * How long words must sit still before "Thinking…" appears under them. While
+ * text streams, the growing text is the indicator; a line under every word
+ * would flicker.
+ */
+export const STILL_WORKING_AFTER_MS = 1200;
+
+/** "Thinking…" under a live message that has stopped growing. */
+function StillWorking({ text }: { text: string }) {
+  const [quiet, setQuiet] = useState(false);
+  useEffect(() => {
+    setQuiet(false);
+    const t = setTimeout(() => setQuiet(true), STILL_WORKING_AFTER_MS);
+    return () => clearTimeout(t);
+  }, [text]);
+  if (!quiet) return null;
+  return (
+    <div
+      data-testid="still-working"
+      className="mt-2.5 inline-flex animate-in fade-in items-center gap-1.5 py-0.5 text-[13.5px] text-muted-foreground duration-300"
+    >
+      <span aria-hidden="true" className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-primary" />
+      <span className="shimmer">Thinking…</span>
+    </div>
   );
 }
 

@@ -256,6 +256,28 @@ describe('the phase status line', () => {
     expect(within(row).getByText('node legs.js')).toBeTruthy();
   });
 
+  it('always shows the turn is still going, even after a finished message', async () => {
+    // The gap the reader saw: a message done, the next call not started, and
+    // nothing but the Stop button saying the agent was still at it.
+    let handlers!: StreamHandlers;
+    await startTurn((h) => {
+      handlers = h;
+      h.onToolUse?.({ toolCallId: 'tu1', toolName: 'Bash', detail: 'ls' });
+    });
+    await screen.findByTestId('workspace-steps');
+    act(() => handlers.onToolResult?.({ toolCallId: 'tu1' }));
+    act(() => handlers.onText('Found it. Now drawing the pelican.'));
+    await screen.findByText('Found it. Now drawing the pelican.');
+    // Not under words that are still arriving...
+    expect(screen.queryByTestId('still-working')).toBeNull();
+    // ...but once they stop, the turn says it is still working.
+    await waitFor(() => expect(screen.getByTestId('still-working')).toBeTruthy(), { timeout: 3000 });
+    // The next call has its own live title; the extra line goes.
+    act(() => handlers.onToolUse?.({ toolCallId: 'tu2', toolName: 'Read', detail: 'src/a.ts' }));
+    await waitFor(() => expect(screen.queryByTestId('still-working')).toBeNull());
+    expect(screen.getByText('Reading a.ts…')).toBeTruthy();
+  });
+
   it('never shows a phase arriving AFTER content — the rule, stated backwards', async () => {
     await startTurn((h) => {
       h.onText('Here we go.');
