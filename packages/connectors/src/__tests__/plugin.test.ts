@@ -91,6 +91,18 @@ describe('@ax/connectors plugin manifest', () => {
           degradation:
             'the admin connector directory answers as turned off (no @ax/connector-directory loaded)',
         },
+        // TASK-1102 — which directory listing a connector was set up from,
+        // and a hand-changed server address on one.
+        {
+          hook: 'connectors:directory-provenance-record',
+          degradation:
+            'a connector set up from the directory saves normally, but nothing remembers which listing it came from (no @ax/connector-directory loaded, or it is turned off)',
+        },
+        {
+          hook: 'connectors:directory-provenance-mark-edited',
+          degradation:
+            'a connector whose address is changed by hand saves normally, but its directory listing record is not marked as edited (no @ax/connector-directory loaded, or it is turned off)',
+        },
       ],
       // TASK-718 — a deleted agent's authored connector drafts go with it.
       subscribes: ['agents:deleted'],
