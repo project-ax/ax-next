@@ -112,7 +112,6 @@ export function SidebarChats({
     requestAnimationFrame(() => searchButtonRef.current?.focus());
   }
 
-  const busy = actionBusy || chats?.busy === true;
   const filtering = query.trim() !== '';
   const shown = chats ? filterChatsByTitle(chats.chats, query) : [];
   const openId = showSelection ? (chats?.openId ?? null) : null;
@@ -128,7 +127,7 @@ export function SidebarChats({
             size="icon"
             aria-label={`Options for ${name}`}
             className="absolute right-0 top-0 size-8 rounded-sm text-muted-foreground opacity-0 focus-visible:opacity-100 group-hover:opacity-100 data-[state=open]:opacity-100 max-md:size-11 max-md:opacity-100"
-            disabled={busy}
+            disabled={actionBusy}
           >
             <EllipsisVertical aria-hidden="true" />
           </Button>
@@ -172,7 +171,7 @@ export function SidebarChats({
       <div className="flex shrink-0 flex-col gap-0.5">
         <Button
           variant="navigation"
-          disabled={busy}
+          disabled={actionBusy}
           onClick={() => {
             onNew();
             onNavigate?.();
@@ -249,7 +248,6 @@ export function SidebarChats({
                 <li key={c.id} className="group relative flex h-8 items-center rounded-sm max-md:h-11">
                   <Button
                     variant="ghost"
-                    disabled={chats.busy}
                     aria-label={c.title}
                     aria-current={openId === c.id ? 'page' : undefined}
                     onClick={() => {
