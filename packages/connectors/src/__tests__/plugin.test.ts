@@ -85,6 +85,12 @@ describe('@ax/connectors plugin manifest', () => {
           degradation:
             'workspace-keyed (company) connector credentials are never authorized for reading, because the connector owner cannot be proven to be an admin; personal keys are unaffected (fail closed)',
         },
+        // TASK-1100 — the admin connector directory search route.
+        {
+          hook: 'connectors:directory-search',
+          degradation:
+            'the admin connector directory answers as turned off (no @ax/connector-directory loaded)',
+        },
       ],
       // TASK-718 — a deleted agent's authored connector drafts go with it.
       subscribes: ['agents:deleted'],

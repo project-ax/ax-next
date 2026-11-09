@@ -915,13 +915,13 @@ describe('mock connector tool permissions', () => {
       }
     });
 
-    it('the id `authored` is reserved', async () => {
+    it.each(['authored', 'directory'])('the id `%s` is reserved', async (connectorId) => {
       const { url, close } = await startServer(store);
       try {
         const res = await fetch(`${url}/admin/connectors`, {
           method: 'POST',
           headers: { cookie: ADMIN, 'content-type': 'application/json' },
-          body: JSON.stringify(upsertBody({ connectorId: 'authored' })),
+          body: JSON.stringify(upsertBody({ connectorId })),
         });
         await expectStatus(res, 400);
       } finally {

@@ -39,6 +39,16 @@ import {
   type SetConnectorDefaultsInputLike,
   type SetConnectorDefaultsOutputLike,
 } from './tool-permissions.js';
+import {
+  DIRECTORY_CURSOR_RE,
+  DIRECTORY_OFF_BODY,
+  DIRECTORY_PAGE_SIZE,
+  DIRECTORY_QUERY_MAX,
+  DIRECTORY_SEARCH_HOOK,
+  shapeDirectoryBody,
+  type DirectorySearchInputLike,
+  type DirectorySearchOutputLike,
+} from './directory-route.js';
 
 // Structural mirror of `auth:get-user` (registered by the auth plugin; I2 — no
 // import). Only the display fields are read, to label who asked for a proposal.
@@ -1083,6 +1093,46 @@ export function createConnectorRouteHandlers(
         handleHookError(err, res, ctx.logger);
       }
     },
+
+    /**
+     * GET /admin/connectors/directory?q=&cursor= — search the public MCP
+     * server directory mirror (TASK-1100). adminOnly on every bundle. Reads
+     * only; the provider (`@ax/connector-directory`) is optional: without it
+     * the answer is the "turned off" body, not an error. An empty `q` still
+     * asks the hook (the UI shows freshness before the admin types).
+     */
+    async directorySearch(req: RouteRequest, res: RouteResponse): Promise<void> {
+      const actor = await authenticate(req, res, { adminOnly: true });
+      if (actor === null) return;
+      const q = req.query.q ?? '';
+      if (q.length > DIRECTORY_QUERY_MAX) {
+        res.status(400).json({ error: 'invalid-query' });
+        return;
+      }
+      const cursor = req.query.cursor;
+      if (cursor !== undefined && cursor !== '' && !DIRECTORY_CURSOR_RE.test(cursor)) {
+        res.status(400).json({ error: 'invalid-cursor' });
+        return;
+      }
+      if (!deps.bus.hasService(DIRECTORY_SEARCH_HOOK)) {
+        res.status(200).json(DIRECTORY_OFF_BODY);
+        return;
+      }
+      try {
+        const out = await deps.bus.call<DirectorySearchInputLike, DirectorySearchOutputLike>(
+          DIRECTORY_SEARCH_HOOK,
+          ctx,
+          {
+            query: q,
+            limit: DIRECTORY_PAGE_SIZE,
+            ...(cursor !== undefined && cursor !== '' && { cursor }),
+          },
+        );
+        res.status(200).json(shapeDirectoryBody(out));
+      } catch (err) {
+        handleHookError(err, res, ctx.logger);
+      }
+    },
   };
 }
 
@@ -1125,6 +1175,9 @@ export async function registerAdminConnectorRoutes(
       path: '/admin/connectors/authored/:connectorId',
       handler: handlers.dismissAuthoredProposal,
     },
+    // TASK-1100 — directory search. Exact paths beat `:id` whatever the
+    // registration order, so `directory` is reserved like `authored`.
+    { method: 'GET', path: '/admin/connectors/directory', handler: handlers.directorySearch },
     { method: 'GET', path: '/admin/connectors/:id', handler: handlers.show },
     { method: 'PATCH', path: '/admin/connectors/:id', handler: handlers.update },
     { method: 'DELETE', path: '/admin/connectors/:id', handler: handlers.destroy },

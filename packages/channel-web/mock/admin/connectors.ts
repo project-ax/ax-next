@@ -115,7 +115,7 @@ const NAME_MAX = 200;
 const COLLECTION = 'connectors';
 const REQUESTS = 'connector_requests';
 /** Mirrors `@ax/connectors` `RESERVED_CONNECTOR_IDS`. */
-const RESERVED_IDS: ReadonlySet<string> = new Set(['authored']);
+const RESERVED_IDS: ReadonlySet<string> = new Set(['authored', 'directory']);
 
 /**
  * An agent's pending request for a connector nobody has defined (slice 2c).

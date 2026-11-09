@@ -48,13 +48,14 @@ function invalid(message: string): PluginError {
 
 /**
  * Ids a NEW connector may never take because a route path uses the same
- * segment: `/admin/connectors/authored` (slice 2c, the request queue) would
+ * segment: `/admin/connectors/authored` (slice 2c, the request queue) and
+ * `/admin/connectors/directory` (TASK-1100, the MCP directory search) would
  * shadow `/admin/connectors/:id` for a connector with that id (exact match
  * wins). Checked on create paths only (`assertConnectorIdCreatable`), so a
  * connector that already had this id before slice 2c can still be read,
  * edited and deleted, and `connectors:live-ids` still answers for it.
  */
-const RESERVED_CONNECTOR_IDS: ReadonlySet<string> = new Set(['authored']);
+const RESERVED_CONNECTOR_IDS: ReadonlySet<string> = new Set(['authored', 'directory']);
 
 /** Refuse an id no NEW connector or request may take. Call on create paths
  *  only, after `validateConnectorId`. */

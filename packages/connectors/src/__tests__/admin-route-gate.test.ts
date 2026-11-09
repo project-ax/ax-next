@@ -284,6 +284,8 @@ const ADMIN_ROUTES: RouteCase[] = [
     opts: (id) => ({ params: { connectorId: id } }),
     adminStatus: 204,
   },
+  // TASK-1100 — directory search (no directory plugin in this harness: 200 off body).
+  { label: 'GET /admin/connectors/directory', method: 'GET', path: '/admin/connectors/directory', opts: () => ({}), adminStatus: 200 },
   {
     label: 'POST /admin/connectors',
     method: 'POST',
