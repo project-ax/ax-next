@@ -159,6 +159,10 @@ const PLUGINS_TO_DROP = new Set<string>([
   // by @ax/connectors' own testcontainer suite; drop here so these sub-tests
   // don't need a postgres testcontainer.
   '@ax/connectors',
+  // TASK-1100: postgres-backed when enabled, and the route that reaches it
+  // (@ax/connectors) is dropped above; covered by
+  // connector-directory-composition.test.ts.
+  '@ax/connector-directory',
   // mcp-oauth (T11): postgres-backed (database:get-instance) and, with
   // mountRoutes:true in the preset, hard-calls http:register-route +
   // auth:require-user + connectors:get + agents:resolve + credentials:get/set

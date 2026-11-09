@@ -253,6 +253,9 @@ describe('@ax/preset-k8s production bootstrap (testcontainer + fake-k8s)', () =>
     // TASK-777 — blob GC, report mode. The boot test below proves its
     // migration ran on the shared database next to everyone else's.
     '@ax/blob-gc',
+    // TASK-1100 -- the connector directory. Loaded unconditionally; disabled in
+    // this lane's env, so it boots with no database call and no network.
+    '@ax/connector-directory',
   ] as const;
 
   it(

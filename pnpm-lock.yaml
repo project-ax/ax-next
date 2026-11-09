@@ -2809,6 +2809,9 @@ importers:
       '@ax/chat-orchestrator':
         specifier: workspace:*
         version: link:../../packages/chat-orchestrator
+      '@ax/connector-directory':
+        specifier: workspace:*
+        version: link:../../packages/connector-directory
       '@ax/connectors':
         specifier: workspace:*
         version: link:../../packages/connectors

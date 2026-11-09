@@ -206,6 +206,24 @@
         }
       }
     },
+    "connectorDirectory": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Refresh a copy of the public MCP Registry about hourly so Admin > Connectors can search it. false = no sync and no egress."
+        },
+        "registryUrl": {
+          "type": "string",
+          "pattern": "^$|^https://[A-Za-z0-9.-]+(:[0-9]{1,5})?(/[A-Za-z0-9._~/-]*)?$",
+          "description": "Empty = the public registry. A subregistry must be https."
+        },
+        "verifiedPublishersOnly": {
+          "type": "boolean",
+          "description": "Hide listings whose publisher proved only a GitHub account."
+        }
+      }
+    },
     "skills": {
       "type": "object",
       "properties": {

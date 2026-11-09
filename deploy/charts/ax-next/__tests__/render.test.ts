@@ -1496,6 +1496,46 @@ describeIfHelm('ax-next chart: previously unstampable env (TASK-347)', () => {
   });
 });
 
+describeIfHelm('ax-next chart: connector directory (TASK-1100)', () => {
+  const hostEnv = (extraArgs: readonly string[]) =>
+    findHostEnv(helmTemplate(extraArgs));
+  const dirNames = (extraArgs: readonly string[]) =>
+    hostEnv(extraArgs)
+      .map((e) => e.name)
+      .filter((n) => n.startsWith('AX_CONNECTOR_DIRECTORY_'));
+
+  it('is on by default and stamps nothing else', () => {
+    const env = hostEnv([]);
+    expect(env.find((e) => e.name === 'AX_CONNECTOR_DIRECTORY_ENABLED')?.value).toBe('true');
+    expect(dirNames([])).toEqual(['AX_CONNECTOR_DIRECTORY_ENABLED']);
+  });
+
+  it('enabled=false stamps none of the three', () => {
+    expect(dirNames(['--set', 'connectorDirectory.enabled=false'])).toEqual([]);
+  });
+
+  it('registryUrl is stamped verbatim', () => {
+    const found = hostEnv([
+      '--set', 'connectorDirectory.registryUrl=https://sub.example/registry',
+    ]).find((e) => e.name === 'AX_CONNECTOR_DIRECTORY_REGISTRY_URL');
+    expect(found?.value).toBe('https://sub.example/registry');
+  });
+
+  it('verifiedPublishersOnly stamps the flag', () => {
+    const found = hostEnv([
+      '--set', 'connectorDirectory.verifiedPublishersOnly=true',
+    ]).find((e) => e.name === 'AX_CONNECTOR_DIRECTORY_VERIFIED_ONLY');
+    expect(found?.value).toBe('true');
+  });
+
+  it('an http registryUrl fails the render', () => {
+    const r = helmTemplateExpectFailure([
+      '--set', 'connectorDirectory.registryUrl=http://sub.example',
+    ]);
+    expect(r.status).not.toBe(0);
+  });
+});
+
 // ─────────────────────────────────────────────────────────────────────────────
 // TASK-504 — a QUOTED boolean must never turn a gate ON.
 //

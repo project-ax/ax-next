@@ -36,6 +36,7 @@
     "@ax/branding": "workspace:*",
     "@ax/channel-web": "workspace:*",
     "@ax/chat-orchestrator": "workspace:*",
+    "@ax/connector-directory": "workspace:*",
     "@ax/connectors": "workspace:*",
     "@ax/conversation-titles": "workspace:*",
     "@ax/conversations": "workspace:*",

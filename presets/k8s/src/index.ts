@@ -43,6 +43,7 @@ import { createAuthBetterPlugin, type AuthBetterConfig } from '@ax/auth-better';
 import { createTeamsPlugin } from '@ax/teams';
 import { createStaticFilesPlugin } from '@ax/static-files';
 import { createConversationsPlugin } from '@ax/conversations';
+import { createConnectorDirectoryPlugin } from '@ax/connector-directory';
 import { createConnectorsPlugin } from '@ax/connectors';
 import { createLlmAnthropicPlugin } from '@ax/llm-anthropic';
 import { createLlmOpenRouterPlugin } from '@ax/llm-openrouter';
@@ -543,6 +544,21 @@ export interface K8sPresetConfig {
    * (the chart's `skills.allowUserInstalled=true`).
    */
   allowUserInstalledSkills?: boolean;
+  /**
+   * @ax/connector-directory (TASK-1100) -- the host's own copy of the public
+   * MCP Registry, searchable from Admin > Connectors. The plugin always loads
+   * (the `connectors:directory-search` hook must exist); `enabled` only decides
+   * whether it syncs. Absent means OFF, so a hand-built config never reaches the
+   * network. Set by `loadK8sConfigFromEnv` from `AX_CONNECTOR_DIRECTORY_ENABLED`,
+   * `AX_CONNECTOR_DIRECTORY_REGISTRY_URL` and `AX_CONNECTOR_DIRECTORY_VERIFIED_ONLY`
+   * (the chart's `connectorDirectory.*`). `fetchImpl` is for tests only.
+   */
+  connectorDirectory?: {
+    enabled?: boolean;
+    registryUrl?: string;
+    verifiedPublishersOnly?: boolean;
+    fetchImpl?: typeof fetch;
+  };
   /**
    * @ax/onboarding — first-run wizard. When set, the plugin loads and
    * serves the bootstrap wizard at /setup/*. The plugin reads
@@ -1276,6 +1292,21 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   // REST bridge so channel-web's connector registry UI can drive the
   // `connectors:*` hooks (adds `http:register-route` + `auth:require-user` to
   // its calls — both already loaded above; topo-sort orders them).
+  // TASK-1100: the directory loads BEFORE connectors so the admin route's
+  // optional `connectors:directory-search` call has a provider. Disabled it
+  // needs no database and no network (hand-built configs stay offline).
+  plugins.push(
+    createConnectorDirectoryPlugin({
+      enabled: config.connectorDirectory?.enabled === true,
+      verifiedPublishersOnly: config.connectorDirectory?.verifiedPublishersOnly === true,
+      ...(config.connectorDirectory?.registryUrl !== undefined
+        ? { registryUrl: config.connectorDirectory.registryUrl }
+        : {}),
+      ...(config.connectorDirectory?.fetchImpl !== undefined
+        ? { fetchImpl: config.connectorDirectory.fetchImpl }
+        : {}),
+    }),
+  );
   plugins.push(createConnectorsPlugin({ mountAdminRoutes: true }));
 
   // ----- 9b'. mcp-oauth -----------------------------------------------------
@@ -2026,6 +2057,24 @@ export function loadK8sConfigFromEnv(
   // defaults the broker's gate to false. Mirrors AX_CREDENTIALS_ADMIN_ENABLED.
   if ((env.AX_ALLOW_USER_INSTALLED_SKILLS ?? '').toLowerCase() === 'true') {
     config.allowUserInstalledSkills = true;
+  }
+
+  // ---- connector directory (TASK-1100) -------------------------------------
+  // Chart `connectorDirectory.*` -> AX_CONNECTOR_DIRECTORY_{ENABLED,VERIFIED_ONLY,
+  // REGISTRY_URL}. Only the literal 'true' (case-insensitive) turns a flag on.
+  // The config key is set only when one of the three says something, matching
+  // the "leave it unset" convention above.
+  {
+    const dirEnabled = (env.AX_CONNECTOR_DIRECTORY_ENABLED ?? '').toLowerCase() === 'true';
+    const dirVerified = (env.AX_CONNECTOR_DIRECTORY_VERIFIED_ONLY ?? '').toLowerCase() === 'true';
+    const dirUrl = env.AX_CONNECTOR_DIRECTORY_REGISTRY_URL ?? '';
+    if (dirEnabled || dirVerified || dirUrl !== '') {
+      config.connectorDirectory = {
+        enabled: dirEnabled,
+        verifiedPublishersOnly: dirVerified,
+        ...(dirUrl !== '' ? { registryUrl: dirUrl } : {}),
+      };
+    }
   }
 
   // ---- skills bundle byte-store -------------------------------------------
