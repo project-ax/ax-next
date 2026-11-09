@@ -848,6 +848,9 @@ export function createConnectorRouteHandlers(
       logCuration('update', actor.id, owner, existing.id);
       // TASK-1102 — a committed edit that moved a server address no longer
       // matches the listing it came from. Never fails the edit; never un-marks.
+      // It lives here, not in `connectors:upsert`, because these routes are the
+      // only edit path today; a new caller of the upsert hook that can change
+      // an address must call mark-edited too.
       if (serverAddressesChanged(existing.capabilities, out.connector.capabilities)) {
         await markDirectoryProvenanceEdited(deps.bus, ctx, existing.id);
       }

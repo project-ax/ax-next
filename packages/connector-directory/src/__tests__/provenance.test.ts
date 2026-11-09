@@ -292,7 +292,15 @@ describe('@ax/connector-directory: provenance', () => {
     expect(await row(ID)).toBeDefined();
 
     // Unsure is keep: no id, or an idStillLive that is not exactly false.
-    for (const junk of [null, { idStillLive: false }, { connectorId: ID, idStillLive: 'false' }]) {
+    // A payload that names the id but not `idStillLive` (missing or null) is
+    // also unsure: a truthiness check would delete on these.
+    for (const junk of [
+      null,
+      { idStillLive: false },
+      { connectorId: ID, idStillLive: 'false' },
+      { connectorId: ID, toolNamespaces: [] },
+      { connectorId: ID, toolNamespaces: [], idStillLive: null },
+    ]) {
       expect(await fire(junk)).toEqual({ rejected: false, payload: junk });
     }
     expect(await row(ID)).toBeDefined();

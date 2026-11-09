@@ -105,7 +105,10 @@ function invalid(): PluginError {
  * not compared with the mirror's: the mirror holds only the latest, and a
  * sync between prefill and save must not erase the version the admin saw.
  * `edited` is a raw compare with the listing's address: a respelling counts
- * as edited (over-claims, never under-claims).
+ * as edited (a respelling over-claims). `edited: false` is best-effort, not
+ * proof: an address changed while the directory was off, a failed
+ * mark-edited call, or an edit racing the create can leave it false. A reader
+ * that needs certainty re-compares the live connector's address.
  */
 export async function recordProvenance(
   store: ProvenanceStore,

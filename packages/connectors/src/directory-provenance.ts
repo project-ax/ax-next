@@ -1,4 +1,4 @@
-import type { AgentContext, HookBus } from '@ax/core';
+import { faultLogFields, type AgentContext, type HookBus } from '@ax/core';
 import type { Capabilities, Connector } from './types.js';
 
 // ---------------------------------------------------------------------------
@@ -93,11 +93,16 @@ export function serverAddressesChanged(
   return was.length !== now.length || was.some((url, i) => url !== now[i]);
 }
 
+/**
+ * Codes only, never the message: a provider's error text could quote the
+ * client's `directoryId` / `version` (the directory logs its own failures the
+ * same way).
+ */
 function logFailure(ctx: AgentContext, connectorId: string, hook: string, err: unknown): void {
   ctx.logger.warn('connectors_directory_provenance_failed', {
     connectorId,
     hook,
-    err: err instanceof Error ? err.message : String(err),
+    ...faultLogFields(err),
   });
 }
 

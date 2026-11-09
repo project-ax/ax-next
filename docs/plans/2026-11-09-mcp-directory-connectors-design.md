@@ -71,8 +71,10 @@ of servers.
    registry vocabulary. It lets a
    later change say "a newer version is listed". Editing the address by hand keeps
    the provenance but marks it edited. An address changed in the editor before the
-   first save counts too. So we never claim a hand-edited connector
-   matches its listing.
+   first save counts too. The mark is best-effort: an address changed while the
+   directory is off, or a mark that fails, leaves it unmarked, so whatever reads
+   it re-checks the live connector's address before claiming it matches its
+   listing.
 9. **Honest freshness.** The list shows "List updated N min ago". If sync fails
    while we hold a copy, a warning says how old it is. If no sync has ever
    succeeded (air-gapped install), we show an empty state and point to "New

@@ -325,10 +325,12 @@ describe('POST /admin/connectors with fromDirectory (TASK-1102)', () => {
         level: 'warn',
         connectorId: ID,
         hook: RECORD_HOOK,
-        err: 'invalid provenance input',
+        code: 'invalid-payload',
       }),
     ]);
     expect(logs.join('\n')).not.toContain('app.linear/linear');
+    // Codes, not the message.
+    expect(logs.join('\n')).not.toContain('invalid provenance input');
   });
 
   it('without the directory, create and PATCH behave as before', async () => {
