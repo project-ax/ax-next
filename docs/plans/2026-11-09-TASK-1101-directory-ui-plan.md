@@ -60,8 +60,8 @@
 | `loadFailed` | `Alert` (default role) + outline button | `We couldn’t load the directory just now.` / `Try again` |
 | `searching` | `p role="status"` + `Spinner` | `Searching…` |
 | `searchFailed` | `Alert` + outline button | `We couldn’t search the directory just now.` / `Try again` |
-| `count` | `p role="status"` above the rows | No `nextCursor`: `1 server matches` or `` `${n} servers match` ``. With `nextCursor`: `` `More than ${n} servers match` `` (the route sends 20 rows and no total). |
-| `noMatch` | `Empty` | Title `` `Nothing matches “${query}”` ``. Description `Try the service’s name rather than what it does. Not every service is listed yet. If you know its address, you can set it up by hand.` Button `New connector`. |
+| `count` | `p role="status"` above the rows | No `nextCursor`: `1 server matches` or `` `${n} servers match` ``. With `nextCursor`: `` `More than ${n} servers match` `` (the route sends 20 rows and no total), or `No servers here yet. There may be more.` when the page is empty after the client's drops. |
+| `noMatch` | `Empty` (only when the answer has no rows **and** no `nextCursor`; the title is `aria-hidden` and the same text goes in the persistent `role="status"` line, made `sr-only`, so it is heard once) | Title `` `Nothing matches “${query}”` ``. Description `Try the service’s name rather than what it does. Not every service is listed yet. If you know its address, you can set it up by hand.` Button `New connector`. |
 | `more` / `moreFailed` | outline button / muted line | `Show more` / `We couldn’t load more just now.` |
 | `localOnly` | footnote, muted | `Only servers on the web are listed. Ones that run on someone’s own computer can’t be reached by agents, so we leave them out.` |
 | `proofDomain` | row, `data-testid="directory-proof-domain"` | `ShieldCheck` icon (`aria-hidden`, `text-primary`), then `` `Published by ${publisher}` ``, then an `sr-only` ` (verified)` |
@@ -167,7 +167,7 @@
     - `throws on any other failure`: a 500 rejects with `/search directory: 500/`.
   - `describe('normalizeDirectoryPage')`:
     - `never upgrades trust`: `publisherProof` values `'Domain'`, `'verified'` and missing all become `'account'`. `auth` values `'oauth'`, `'Key'` and missing all become `'none'`.
-    - `drops listings it can't use`: entries with no `id`, no `url`, an `http://` url, or a url of `'not a url'` are dropped, and a valid one in the same list is kept.
+    - `drops listings it can't use`: entries with no `id`, no `url`, or a url the editor's `serverHost` refuses (`http://`, `'not a url'`, a non-443 port, a `#fragment`, credentials, over 2048 characters) are dropped, and a valid one in the same list is kept.
     - `falls back to the id when the title is empty`. Non-string `description`/`publisher`/`version`/`updatedAt` become `''`.
     - `keeps keyHeader only when it is a valid header name`: `'X-API-Key'` is kept. `'Bad Header'` and a 65-character name are removed (no `keyHeader` key).
     - `marks deprecated only when exactly true`: `true` gives `deprecated: true`. `'yes'` and `false` give no key.
@@ -423,7 +423,7 @@
      5. A non-abort failure shows `searchFailed`, and its Try again re-runs `q`.
    - **Results area:** `searching` while `results?.query !== q`, then `noMatch` or `count` + rows + `more`.
 4. **Show more** calls `searchDirectory(results.query, { cursor: results.nextCursor, signal })` under the same `latest` guard. It appends the entries whose `id` isn't shown yet and replaces `nextCursor`. A failure shows `moreFailed` and keeps the button.
-5. **Added detection.** An effect keyed on `connectors.map((c) => `${c.id}@${c.updatedAt}`).join('|')` runs `Promise.allSettled(connectors.map((c) => getConnector(c.id, '/admin/connectors')))`. It stores `connectorServerAddresses` of the fulfilled results. Rejected ones are skipped (fail open). A row is added when `serverAddressKey(entry.url)` is in that set.
+5. **Added detection.** Only once the directory is searchable (`enabled` and `syncedAt !== null`), an effect keyed on `connectors.map((c) => `${c.id}@${c.updatedAt}`).join('|')` runs `Promise.allSettled(connectors.map((c) => getConnector(c.id, '/admin/connectors')))`. It stores `connectorServerAddresses` of the fulfilled results. Rejected ones are skipped (fail open). A row is added when `serverAddressKey(entry.url)` is in that set.
 6. **Wiring.** `New connector` calls `onNewConnector`, `back` calls `onBack`, and a row's Set it up calls `onSetUp(entry)`.
 
 - [ ] **Step 1: Write the failing tests.**
