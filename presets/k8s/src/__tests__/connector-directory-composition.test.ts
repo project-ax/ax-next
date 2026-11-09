@@ -195,6 +195,12 @@ describe('@ax/preset-k8s connector directory composition (TASK-1100)', () => {
     actor = { id: 'admin-1', isAdmin: true };
     const result = await directory!.sync();
     expect(result.outcome).toBe('ok');
+    // Every registry request went to the configured origin's list endpoint.
+    expect(requests.length).toBeGreaterThan(0);
+    for (const url of requests) {
+      expect(url.origin).toBe(REGISTRY_ORIGIN);
+      expect(url.pathname).toBe('/v0.1/servers');
+    }
 
     const out = await callRoute({ q: 'linear' });
     expect(out.status).toBe(200);
@@ -221,13 +227,5 @@ describe('@ax/preset-k8s connector directory composition (TASK-1100)', () => {
     actor = { id: 'user-1', isAdmin: false };
     const out = await callRoute({ q: 'linear' });
     expect(out.status).toBe(403);
-  });
-
-  it('every registry request went to the configured origin', async () => {
-    expect(requests.length).toBeGreaterThan(0);
-    for (const url of requests) {
-      expect(url.origin).toBe(REGISTRY_ORIGIN);
-      expect(url.pathname).toBe('/v0.1/servers');
-    }
   });
 });
