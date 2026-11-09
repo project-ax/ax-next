@@ -152,6 +152,14 @@ export interface ConnectorUpsertInput {
   capabilities: ConnectorCapabilities;
 }
 
+/**
+ * Create body: the connector's fields, plus (only when the save started from
+ * a directory listing) which listing. The server strips it before the write.
+ */
+export type ConnectorCreateInput = ConnectorUpsertInput & {
+  fromDirectory?: { directoryId: string; version: string };
+};
+
 export async function listConnectors(
   base: ConnectorRouteBase,
 ): Promise<ConnectorSummary[]> {
@@ -174,7 +182,7 @@ export async function getConnector(
 }
 
 export async function createConnector(
-  input: ConnectorUpsertInput,
+  input: ConnectorCreateInput,
   base: ConnectorWriteBase,
 ): Promise<Connector> {
   const res = await fetch(base, {
@@ -503,8 +511,10 @@ export interface ConnectorPrefill {
   /**
    * Set only by `prefillFromDirectoryEntry`: the directory listing this
    * editor was filled from. Its presence switches the editor's copy from a
-   * request's to the directory's. Opaque: never shown or edited, and not part
-   * of the connector, so the create body doesn't carry it.
+   * request's to the directory's. Opaque: never shown or edited. It isn't
+   * part of the connector: the create body carries it beside the connector's
+   * fields, and the server hands it to the directory, which remembers it in
+   * its own table (TASK-1102).
    */
   fromDirectory?: { directoryId: string; version: string };
 }
