@@ -30,7 +30,6 @@ function chats(over: Partial<SidebarChatList> = {}): SidebarChatList {
       { id: 'c-vendor', title: 'Vendor review', lastActivityAt: recent },
     ],
     openId: 'c-live',
-    busy: false,
     ...over,
   };
 }
@@ -98,10 +97,10 @@ describe('SidebarChats — the list', () => {
     expect(screen.getByText('We couldn’t load these chats just now.')).toBeTruthy();
   });
 
-  it('holds chat switches while a turn is streaming', () => {
-    renderChats({ chats: chats({ busy: true }) });
-    expect(screen.getByRole('button', { name: 'Vendor review' })).toBeDisabled();
-    expect(screen.getByRole('button', { name: 'New chat' })).toBeDisabled();
+  it('never holds chat switches: a reply carries on while another chat is open', () => {
+    renderChats();
+    expect(screen.getByRole('button', { name: 'Vendor review' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'New chat' })).toBeEnabled();
   });
 });
 

@@ -719,7 +719,7 @@ export function AgentView({
         conversation it was earned in so it is only drawn there.
   */
   const [stopping, setStopping] = useState(false);
-  /** A message is posting (before its reply streams): no second send, no chat switch. */
+  /** A message is posting (before its reply streams): no second send. */
   const [sending, setSending] = useState(false);
   const [stopNotice, setStopNotice] = useState<string | null>(null);
   interface PendingStop {
@@ -927,7 +927,6 @@ export function AgentView({
   const chatsPast = detail?.past;
   const chatsLatest = detail?.latest;
   const chatsConversationId = detail?.conversationId;
-  const chatsBusy = streaming || rereading || sending;
   /*
     Held in a ref so a caller passing an inline arrow cannot turn every render
     into a publish, and every publish into a render.
@@ -945,29 +944,33 @@ export function AgentView({
         ...(chatsLatest !== undefined ? { latest: chatsLatest } : {}),
       }),
       openId: chatsConversationId,
-      busy: chatsBusy,
     });
-  }, [agentId, chatsPast, chatsLatest, chatsConversationId, chatsBusy]);
+  }, [agentId, chatsPast, chatsLatest, chatsConversationId]);
   useEffect(() => () => onChatsRef.current?.(null), []);
 
   /*
     What the chat being left was in the middle of: the last send, its error,
-    and a reply that failed part-way (kept on screen for Resend, but only in
-    its own chat). A turn still streaming is left alone — the sidebar holds
-    switches until it lands, and the render only draws it in its own chat.
+    a reply that failed part-way (kept on screen for Resend, but only in its
+    own chat) — and a reply still running.
+
+    A running reply is NOT stopped. The turn carries on on the server; this
+    view just stops listening, so it only ever streams the chat on screen.
+    Opening that chat again reattaches to the turn the way a reload does
+    (`liveReqId` below), so it is forgotten as attached here.
   */
   const leaveChat = () => {
     setSwitchError(null);
-    setSent(null);
-    setLiveVisuals(null);
     setTurnError(null);
-    if (!streaming) {
-      setLiveCalls([]);
-      setLiveSegments([]);
-      setLiveIntents(new Map());
-      setStreamConversation(null);
-      setPhase(null);
+    setLiveVisuals(null);
+    const left = streamingReqRef.current;
+    if (left !== null) {
+      attachedReqIds.current.delete(left);
+      streamingReqRef.current = null;
     }
+    abortRef.current?.abort();
+    abortRef.current = null;
+    cancelStop();
+    resetLiveTurn();
   };
 
   const switchTo = async (conversationId: string | null) => {
@@ -1098,13 +1101,31 @@ export function AgentView({
 
   /** Every turn this view has streamed, so a reattach happens once per turn. */
   const attachedReqIds = useRef(new Set<string>());
+  /** The turn this view is listening to right now, if any. */
+  const streamingReqRef = useRef<string | null>(null);
 
   const streamFrom = useCallback(
     async (reqId: string, opts: { resume?: boolean } = {}) => {
       attachedReqIds.current.add(reqId);
+      streamingReqRef.current = reqId;
       abortRef.current?.abort();
       const ac = new AbortController();
       abortRef.current = ac;
+      /*
+        Nothing from this stream lands once the view stopped listening to it
+        (the person left the chat, or a newer turn took over): a frame already
+        read off the wire would otherwise draw one chat's reply in another.
+      */
+      const live = <T extends object>(handlers: T): T =>
+        Object.fromEntries(
+          Object.entries(handlers).map(([name, value]) => [
+            name,
+            typeof value === 'function'
+              ? (...args: unknown[]): unknown =>
+                  ac.signal.aborted ? undefined : (value as (...a: unknown[]) => unknown)(...args)
+              : value,
+          ]),
+        ) as T;
       // A new turn supersedes any Stop still pending on the old one, and the
       // old turn's note.
       cancelStop();
@@ -1122,7 +1143,7 @@ export function AgentView({
       setStreamConversation(turnConversation);
       setPhase(null);
       setTurnError(null);
-      await workspaceApi.streamReply(reqId, {
+      await workspaceApi.streamReply(reqId, live({
         ...(opts.resume === true ? { resume: true } : {}),
         signal: ac.signal,
         onText: (chunk) => {
@@ -1311,7 +1332,7 @@ export function AgentView({
             agentId,
           });
         },
-      });
+      }));
     },
     [agentId, load, onChanged, onDecisionRaised, cancelStop, resetLiveTurn],
   );

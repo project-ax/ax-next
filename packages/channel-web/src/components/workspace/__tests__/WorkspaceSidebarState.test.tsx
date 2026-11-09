@@ -187,7 +187,6 @@ describe('the sidebar chat list', () => {
       { id: 'c-old', title: 'Old plans', lastActivityAt: new Date().toISOString() },
     ],
     openId: 'c-old',
-    busy: false,
   };
 
   it('lists the selected agent\'s chats under New chat and Search', () => {
