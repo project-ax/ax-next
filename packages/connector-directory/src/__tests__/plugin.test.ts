@@ -221,6 +221,44 @@ describe('@ax/connector-directory plugin', () => {
     expect(waits).toEqual([1_000, 1_000, 4_000]);
   });
 
+  it('shutdown cuts short the default retry wait', async () => {
+    // No injected `sleep`: this is the plugin's own wait. Only the timer
+    // functions are faked, so the wait can never end by time passing here.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'setInterval', 'clearTimeout', 'clearInterval'] });
+    // Not vi.waitFor: under fake timers it advances the clock on every poll,
+    // which could end the very wait this test is about. A deferred, resolved
+    // when the 1 s wait arms its timer, advances nothing.
+    let waiting!: () => void;
+    const armed = new Promise<void>((resolve) => {
+      waiting = resolve;
+    });
+    const fakeSetTimeout = globalThis.setTimeout;
+    vi.spyOn(globalThis, 'setTimeout').mockImplementation(((
+      fn: () => void,
+      ms?: number,
+    ): ReturnType<typeof setTimeout> => {
+      if (ms === 1_000) waiting();
+      return fakeSetTimeout(fn, ms);
+    }) as typeof setTimeout);
+    const fake = createFakeRegistry(() => new Response(null, { status: 503 }));
+    const { harness, plugin } = await boot({ fetchImpl: fake.fetchImpl });
+
+    const result = plugin.sync();
+    // The first page failed and the run is now sitting in its 1 s retry wait.
+    await armed;
+    expect(fake.requests).toHaveLength(1);
+
+    // Shutdown resolves, and so does the sync, without advancing fake time:
+    // a wait that ignored the signal would leave both hanging.
+    await harness.close();
+    expect(await result).toEqual({ outcome: 'failed', reason: 'aborted' });
+    expect(fake.requests).toHaveLength(1);
+    // The wait cleared its own timer on the way out.
+    expect(vi.getTimerCount()).toBe(0);
+    // Stopping is not failing.
+    expect(await stateRow()).toMatchObject({ last_attempt_failed: false, last_attempt_at: null });
+  }, 15_000);
+
   it('the returns schema holds the shape', async () => {
     const fake = createFakeRegistry(() =>
       page([
