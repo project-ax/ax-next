@@ -36,6 +36,12 @@ export const MAX_PAGES_PER_SYNC = 2_000;
 export const MAX_CURSOR_CHARS = 512;
 
 export const REQUEST_TIMEOUT_MS = 30_000;
+/**
+ * The wait before each retry of one page after a transient failure, in order:
+ * one entry per retry, so a page is asked for at most three times. Waits
+ * never outlast the run budget (they end when it does).
+ */
+export const PAGE_RETRY_BACKOFF_MS: readonly number[] = Object.freeze([1_000, 4_000]);
 export const SYNC_BUDGET_MS = 30 * 60_000;
 /** How far before the last checkpoint an incremental sync starts asking. */
 export const WATERMARK_OVERLAP_MS = 10 * 60_000;

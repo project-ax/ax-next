@@ -1,11 +1,13 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { PluginError } from '@ax/core';
 import { DEFAULT_REGISTRY_URL, MAX_CURSOR_CHARS, MAX_PAGE_BYTES } from '../limits.js';
 import {
   RegistryError,
   fetchRegistryPage,
+  fetchRegistryPageWithRetry,
   parseRegistryUrl,
   registryPageUrl,
+  waitUnlessAborted,
 } from '../registry-client.js';
 import { createFakeRegistry, page, waitForAbort } from './support/fake-registry.js';
 
@@ -296,5 +298,190 @@ describe('fetchRegistryPage', () => {
       expect(JSON.stringify(err)).not.toContain(SECRET);
       expect(err.cause).toBeUndefined();
     }
+  });
+});
+
+describe('fetchRegistryPageWithRetry', () => {
+  type Answer = (init: RequestInit) => Response | Promise<Response>;
+
+  /** A fake answering each request with the next answer, in order. */
+  function inTurn(...answers: Answer[]) {
+    return createFakeRegistry((_url, init) => {
+      const next = answers.shift();
+      if (next === undefined) throw new Error('asked for the page once too often');
+      return next(init);
+    });
+  }
+
+  /** A sleep that only records how long it was asked to wait. */
+  function recordingSleep() {
+    const waits: number[] = [];
+    return {
+      waits,
+      sleep: async (ms: number) => {
+        waits.push(ms);
+      },
+    };
+  }
+
+  const status = (n: number) => () => new Response(null, { status: n });
+
+  it('a page that fails once with 503 and then answers is returned, after one 1 s wait', async () => {
+    const fake = inTurn(status(503), () => page([], 'c2'));
+    const { waits, sleep } = recordingSleep();
+    expect(
+      await fetchRegistryPageWithRetry(fake.fetchImpl, BASE, { cursor: 'c1' }, { sleep }),
+    ).toEqual({ servers: [], nextCursor: 'c2' });
+    expect(waits).toEqual([1_000]);
+    // The retry asks for the same page again.
+    const same = registryPageUrl(BASE, { cursor: 'c1' }).href;
+    expect(fake.requests.map((u) => u.href)).toEqual([same, same]);
+  });
+
+  it('three 503s in a row: two retries, 1 s then 4 s apart, and the 503 is final', async () => {
+    const fake = createFakeRegistry(status(503));
+    const { waits, sleep } = recordingSleep();
+    const err = await failure(fetchRegistryPageWithRetry(fake.fetchImpl, BASE, {}, { sleep }));
+    expect(err.reason).toBe('http-503');
+    expect(fake.requests).toHaveLength(3);
+    expect(waits).toEqual([1_000, 4_000]);
+  });
+
+  it.each<[string, Answer]>([
+    ['a network failure', () => Promise.reject(new TypeError('fetch failed'))],
+    ['429', status(429)],
+    ['500', status(500)],
+    ['502', status(502)],
+    ['599', status(599)],
+    ['a request that outlives its own deadline', (init) => waitForAbort(init)],
+  ])('%s is asked for again', async (_label, first) => {
+    const fake = inTurn(first, () => page([]));
+    const { waits, sleep } = recordingSleep();
+    // A live caller signal, as the plugin always passes (run budget + shutdown).
+    const signal = new AbortController().signal;
+    expect(
+      await fetchRegistryPageWithRetry(fake.fetchImpl, BASE, {}, { signal, sleep, timeoutMs: 20 }),
+    ).toEqual({ servers: [] });
+    expect(fake.requests).toHaveLength(2);
+    expect(waits).toEqual([1_000]);
+  });
+
+  it.each<[string, Answer, string]>([
+    ['404', status(404), 'http-404'],
+    ['400', status(400), 'http-400'],
+    ['not JSON', () => json('not json'), 'invalid-json'],
+    [
+      'a redirect',
+      () => new Response(null, { status: 301, headers: { location: 'https://elsewhere.example/' } }),
+      'redirect',
+    ],
+    [
+      'a content-length over MAX_PAGE_BYTES',
+      () => json('{"servers":[]}', { headers: { 'content-length': String(MAX_PAGE_BYTES + 1) } }),
+      'too-large',
+    ],
+    ['a JSON array', () => json('[]'), 'invalid-shape'],
+  ])('%s is final at once: no retry', async (_label, respond, reason) => {
+    const fake = createFakeRegistry((_url, init) => respond(init));
+    const { waits, sleep } = recordingSleep();
+    const err = await failure(fetchRegistryPageWithRetry(fake.fetchImpl, BASE, {}, { sleep }));
+    expect(err.reason).toBe(reason);
+    expect(fake.requests).toHaveLength(1);
+    expect(waits).toEqual([]);
+  });
+
+  it('a shutdown abort is never retried', async () => {
+    const controller = new AbortController();
+    const fake = createFakeRegistry((_url, init) => {
+      const pending = waitForAbort(init);
+      controller.abort();
+      return pending;
+    });
+    const { waits, sleep } = recordingSleep();
+    const err = await failure(
+      fetchRegistryPageWithRetry(fake.fetchImpl, BASE, {}, { signal: controller.signal, sleep }),
+    );
+    expect(err.reason).toBe('aborted');
+    expect(fake.requests).toHaveLength(1);
+    expect(waits).toEqual([]);
+  });
+
+  it('a run budget that runs out is never retried, though it reads as timeout', async () => {
+    const fake = createFakeRegistry((_url, init) => waitForAbort(init));
+    const { waits, sleep } = recordingSleep();
+    const err = await failure(
+      fetchRegistryPageWithRetry(fake.fetchImpl, BASE, {}, {
+        signal: AbortSignal.timeout(20),
+        timeoutMs: 60_000,
+        sleep,
+      }),
+    );
+    expect(err.reason).toBe('timeout');
+    expect(fake.requests).toHaveLength(1);
+    expect(waits).toEqual([]);
+  });
+
+  it('a shutdown during the wait ends it there, without asking again', async () => {
+    const controller = new AbortController();
+    const fake = createFakeRegistry(status(503));
+    const waits: number[] = [];
+    const err = await failure(
+      fetchRegistryPageWithRetry(fake.fetchImpl, BASE, {}, {
+        signal: controller.signal,
+        sleep: async (ms) => {
+          waits.push(ms);
+          controller.abort();
+        },
+      }),
+    );
+    expect(err.reason).toBe('aborted');
+    expect(fake.requests).toHaveLength(1);
+    expect(waits).toEqual([1_000]);
+  });
+
+  it('a run budget that runs out during the wait ends it as timeout, without asking again', async () => {
+    const fake = createFakeRegistry(status(503));
+    const err = await failure(
+      fetchRegistryPageWithRetry(fake.fetchImpl, BASE, {}, {
+        signal: AbortSignal.timeout(20),
+        sleep: async (_ms, signal) => {
+          await vi.waitFor(() => expect(signal?.aborted).toBe(true));
+        },
+      }),
+    );
+    expect(err.reason).toBe('timeout');
+    expect(fake.requests).toHaveLength(1);
+  });
+});
+
+describe('waitUnlessAborted', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('waits the time it is given', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    let done = false;
+    void waitUnlessAborted(1_000).then(() => {
+      done = true;
+    });
+    await vi.advanceTimersByTimeAsync(999);
+    expect(done).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(done).toBe(true);
+  });
+
+  it('ends as soon as the signal aborts, leaving no timer behind', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const controller = new AbortController();
+    const wait = waitUnlessAborted(4_000, controller.signal);
+    expect(vi.getTimerCount()).toBe(1);
+    // No clock advance: only the abort can end this wait.
+    controller.abort();
+    await wait;
+    expect(vi.getTimerCount()).toBe(0);
+    // Already aborted: no wait and no timer at all.
+    await waitUnlessAborted(4_000, controller.signal);
+    expect(vi.getTimerCount()).toBe(0);
   });
 });

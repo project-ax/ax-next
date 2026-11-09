@@ -11,7 +11,9 @@
  *   - page URLs are built with URLSearchParams, so a hostile `nextCursor` is
  *     only ever one query value;
  *   - a deadline per request, plus the caller's signal (run budget, shutdown);
- *   - at most MAX_PAGE_BYTES of decoded body per page (`capResponseBody`).
+ *   - at most MAX_PAGE_BYTES of decoded body per page (`capResponseBody`);
+ *   - a transient failure is asked again at most twice
+ *     (`fetchRegistryPageWithRetry`), never once the caller's signal aborted.
  *
  * Failures are fixed short codes. A RegistryError never carries a URL, a
  * header, a byte of the response or an underlying error (JSON.parse's message
@@ -23,7 +25,13 @@
 import { PluginError } from '@ax/core';
 import { ResponseTooLargeError, capResponseBody } from '@ax/core/response-cap';
 import { REWRITES_THE_SURFACE } from '@ax/core/surface-text';
-import { MAX_CURSOR_CHARS, MAX_PAGE_BYTES, PAGE_LIMIT, REQUEST_TIMEOUT_MS } from './limits.js';
+import {
+  MAX_CURSOR_CHARS,
+  MAX_PAGE_BYTES,
+  PAGE_LIMIT,
+  PAGE_RETRY_BACKOFF_MS,
+  REQUEST_TIMEOUT_MS,
+} from './limits.js';
 
 export const PLUGIN_NAME = '@ax/connector-directory';
 
@@ -224,4 +232,71 @@ export async function fetchRegistryPage(
     throw new RegistryError('invalid-json');
   }
   return readPage(body);
+}
+
+/** How a retry waits: `ms`, or less once `signal` aborts. Never rejects. */
+export type Sleep = (ms: number, signal?: AbortSignal) => Promise<void>;
+
+/**
+ * Wait `ms`; end early, clearing the timer, once `signal` aborts (at once if
+ * it already has). Never rejects. The timer is unref'd: a wait never keeps the
+ * process alive.
+ */
+export const waitUnlessAborted: Sleep = (ms, signal) =>
+  new Promise<void>((resolve) => {
+    if (signal?.aborted === true) {
+      resolve();
+      return;
+    }
+    const finish = (): void => {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', finish);
+      resolve();
+    };
+    const timer = setTimeout(finish, ms);
+    timer.unref?.();
+    signal?.addEventListener('abort', finish, { once: true });
+  });
+
+/**
+ * Whether asking again may get a different answer: a request's own deadline,
+ * the wire, the registry asking us to slow down (429) or failing on its side
+ * (5xx). Not an answer we refused (redirect, too large, bad JSON or shape) or
+ * any other status, which would only come back the same; never an abort.
+ */
+function isTransient(reason: RegistryFailure): boolean {
+  return reason === 'timeout' || reason === 'network' || /^http-(429|5\d\d)$/.test(reason);
+}
+
+/**
+ * `fetchRegistryPage`, asked again after a transient failure: once per
+ * PAGE_RETRY_BACKOFF_MS entry, each after its wait. Never once the caller's
+ * signal has aborted, whatever the failure: a run budget that ran out reads as
+ * `timeout` too, and shutdown means stop. A wait the signal cuts short makes
+ * no further request (`fetchRegistryPage` checks the signal first), so the
+ * run budget is never overrun. Rejects with the last RegistryError.
+ */
+export async function fetchRegistryPageWithRetry(
+  fetchImpl: typeof fetch,
+  base: URL,
+  q: PageQuery,
+  opts: { signal?: AbortSignal; timeoutMs?: number; sleep?: Sleep } = {},
+): Promise<RegistryPage> {
+  const { sleep = waitUnlessAborted, ...once } = opts;
+  for (let retry = 0; ; retry += 1) {
+    try {
+      return await fetchRegistryPage(fetchImpl, base, q, once);
+    } catch (err) {
+      const wait = PAGE_RETRY_BACKOFF_MS[retry];
+      if (
+        wait === undefined ||
+        !(err instanceof RegistryError) ||
+        !isTransient(err.reason) ||
+        once.signal?.aborted === true
+      ) {
+        throw err;
+      }
+      await sleep(wait, once.signal);
+    }
+  }
 }

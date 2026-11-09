@@ -18,6 +18,7 @@ describe('connector-directory limits', () => {
       MAX_PAGES_PER_SYNC: 2_000,
       MAX_CURSOR_CHARS: 512,
       REQUEST_TIMEOUT_MS: 30_000,
+      PAGE_RETRY_BACKOFF_MS: [1_000, 4_000],
       SYNC_BUDGET_MS: 30 * 60_000,
       WATERMARK_OVERLAP_MS: 10 * 60_000,
       DEFAULT_SYNC_INTERVAL_MS: 60 * 60_000,

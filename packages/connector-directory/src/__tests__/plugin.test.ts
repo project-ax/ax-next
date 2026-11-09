@@ -189,6 +189,34 @@ describe('@ax/connector-directory plugin', () => {
     expect(fake.requests).toHaveLength(2);
   });
 
+  it('a page that fails for a moment is asked for again before the sync gives up', async () => {
+    let failuresLeft = 1;
+    const fake = createFakeRegistry(() => {
+      if (failuresLeft > 0) {
+        failuresLeft -= 1;
+        return new Response(null, { status: 503 });
+      }
+      return page([listing({ name: 'com.example/a' })]);
+    });
+    const waits: number[] = [];
+    const { plugin } = await boot({
+      fetchImpl: fake.fetchImpl,
+      sleep: async (ms) => {
+        waits.push(ms);
+      },
+    });
+
+    expect(await plugin.sync()).toMatchObject({ outcome: 'ok', pages: 1, upserted: 1 });
+    expect(fake.requests).toHaveLength(2);
+    expect(waits).toEqual([1_000]);
+
+    // Three in a row: two retries, then the sync fails with the registry's code.
+    failuresLeft = 3;
+    expect(await plugin.sync()).toEqual({ outcome: 'failed', reason: 'http-503' });
+    expect(fake.requests).toHaveLength(5);
+    expect(waits).toEqual([1_000, 1_000, 4_000]);
+  });
+
   it('the returns schema holds the shape', async () => {
     const fake = createFakeRegistry(() =>
       page([

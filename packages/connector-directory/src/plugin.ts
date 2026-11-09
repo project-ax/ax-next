@@ -15,7 +15,12 @@ import {
   SYNC_BUDGET_MS,
 } from './limits.js';
 import { runConnectorDirectoryMigration, type ConnectorDirectoryDatabase } from './migrations.js';
-import { fetchRegistryPage, parseRegistryUrl, PLUGIN_NAME } from './registry-client.js';
+import {
+  fetchRegistryPageWithRetry,
+  parseRegistryUrl,
+  PLUGIN_NAME,
+  type Sleep,
+} from './registry-client.js';
 import { parseSearchInput, searchDirectory } from './search.js';
 import { createDirectoryStore, type DirectoryStore } from './store.js';
 import { runSync, type SyncResult } from './sync.js';
@@ -29,8 +34,9 @@ import { runSync, type SyncResult } from './sync.js';
 //     `syncIntervalMs` (0 = no timers), from ONE operator-configured https
 //     origin (registry-client.ts), into its own `connector_directory_v1_*`
 //     tables. One sync at a time: a sync asked for while one runs joins it.
-//     Each run has SYNC_BUDGET_MS; shutdown aborts the request in flight and
-//     waits for the run to record itself.
+//     Each run has SYNC_BUDGET_MS; a page that fails for a moment (timeout,
+//     network, 429, 5xx) is asked for again, twice at most; shutdown aborts
+//     the request in flight (or the wait) and waits for the run to end.
 //   - ANSWERS `connectors:directory-search` from that copy (search.ts).
 //   - OFF (`enabled: false`): no database, no timers, no fetch; the hook
 //     still validates its input and answers the fixed off body, so the route
@@ -53,6 +59,11 @@ export interface ConnectorDirectoryConfig {
   syncIntervalMs?: number;
   /** Default DEFAULT_SYNC_INITIAL_DELAY_MS. */
   syncInitialDelayMs?: number;
+  /**
+   * Test seam: how a page retry waits. Default: a timer that ends early once
+   * the run budget runs out or shutdown begins.
+   */
+  sleep?: Sleep;
 }
 
 export interface ConnectorDirectoryPlugin extends Plugin {
@@ -133,6 +144,7 @@ export function createConnectorDirectoryPlugin(
   );
   const fetchImpl: typeof fetch = config.fetchImpl ?? ((input, init) => fetch(input, init));
   const now = config.now ?? (() => new Date());
+  const retryWait = config.sleep === undefined ? {} : { sleep: config.sleep };
   // Aborted once, at shutdown: the request in flight, and every later page.
   const stopping = new AbortController();
   let running: { store: DirectoryStore; logger: Logger } | undefined;
@@ -153,12 +165,12 @@ export function createConnectorDirectoryPlugin(
 
   async function runOnce(store: DirectoryStore, logger: Logger): Promise<SyncResult> {
     try {
-      // One budget for the whole run, shared by every page.
+      // One budget for the whole run, shared by every page and every retry.
       const signal = AbortSignal.any([AbortSignal.timeout(SYNC_BUDGET_MS), stopping.signal]);
       return await runSync({
         store,
         source: base.href,
-        fetchPage: (q) => fetchRegistryPage(fetchImpl, base, q, { signal }),
+        fetchPage: (q) => fetchRegistryPageWithRetry(fetchImpl, base, q, { signal, ...retryWait }),
         now,
         logger,
       });
