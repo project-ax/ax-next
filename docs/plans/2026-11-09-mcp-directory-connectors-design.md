@@ -23,6 +23,13 @@ of servers.
    own copy because it promises no uptime or durability. The guide documents no
    search endpoint. So: a host-side sync job writes to our DB, and search runs
    against our copy.
+
+   The details, measured on 2026-11-09. We read the list endpoint
+   `GET /v0.1/servers?version=latest`. The checkpoint is the time the sync
+   started. The next sync asks for `updated_since` that checkpoint minus a
+   10-minute overlap, so a slow write on their side can't slip through. We cap
+   stored rows at 100,000. The first 60,000 registry entries held 40,135 remote
+   listings, and a 20,000 cap would have cut the crawl off at `io.github.E…`.
 3. **Only remote (HTTP) servers.** Our connector schema is `transport: 'http'`
    only. We keep entries with `remotes[]` (streamable-http / sse) and drop
    package-only entries (npm/pypi/oci, which run locally). The UI says so in one
@@ -35,11 +42,18 @@ of servers.
 5. **Show the publisher's proof, rank by it.** The registry checks one thing: that
    the publisher controls the namespace. A reverse-DNS name (`com.linear/…`) means
    they proved control of a domain (DNS/HTTP challenge). An `io.github.<user>/…`
-   name means they proved control of a GitHub account. Domain-verified entries rank
+   name means they proved control of a GitHub account. Every `io.github…`
+   namespace counts as `account`, whatever follows it. Domain-verified entries rank
    first and show a shield plus the domain. GitHub-namespace entries say "Community ·
    GitHub user X" and, in detail, "It isn't checked against any company." This is
    the defense against a lookalike ("Notion Tasks" by a random user ranks below
-   Notion's own).
+   Notion's own). A listing whose verified domain contains the query as a whole
+   label also ranks first, because Notion's, Stripe's and PayPal's listings have
+   no title.
+
+   One note on `auth`. The registry has no sign-in declaration, so we never derive
+   `'signin'` from it. `'none'` only means "declares no required key". The editor
+   finds out about sign-in from the address.
 6. **No list until the admin types.** The directory view opens on the search box
    and the "List updated N min ago" line only. We have no popularity data, so we
    don't pretend to rank by it. Results appear once there is a query.
@@ -64,10 +78,10 @@ of servers.
 
 - **New plugin `@ax/connector-directory`.** It owns the mirrored table and the sync
   job, and registers one service hook:
-  - `connectors:directory-search({ query, limit, cursor? }) → { entries, syncedAt, nextCursor? }`
-  - `entry = { id, title, description, publisher, publisherProof: 'domain' | 'account', url, auth: 'signin' | 'key' | 'none', keyHeader?, version, updatedAt }`
+  - `connectors:directory-search({ query, limit?, cursor? }) → { enabled, entries, syncedAt, stale, verifiedOnly, nextCursor? }`
+  - `entry = { id, title, description, publisher, publisherProof: 'domain' | 'account', url, auth: 'signin' | 'key' | 'none', keyHeader?, version, updatedAt, deprecated? }`
 - **Admin route** in the connectors plugin's `admin-routes.ts`
-  (`GET /admin/connectors/directory?q=`). It's admin-gated like the other admin
+  (`GET /admin/connectors/directory?q=&cursor=`). It's admin-gated like the other admin
   connector reads, and it calls the hook. No cross-plugin import.
 - **channel-web:** `ConnectorsTab` gains a "Find in directory" action and a
   directory subview (rows plus a `SettingsDetailRow`-style sheet), then hands a
@@ -95,8 +109,11 @@ of servers.
 - **Network reach.** The sync job is the only new egress, to one fixed host, from
   the host and never from the sandbox. Self-hosters can turn it off
   (`connectorDirectory.enabled: false`) or point it at a subregistry URL.
-- **No bypass.** A prefilled URL goes through the same `input-guards.ts` checks
-  as a typed one. Header names go through the same reserved-header refine in
+- **No bypass.** A prefilled URL goes through the same `connectors:upsert` path
+  as a typed one. That path doesn't check URLs on the server. The directory only
+  stores https listings with no credentials or templates, and the connect-time
+  guards (mcp-oauth `ssrf.ts`, mcp-client `safe-fetch.ts`) apply as for any
+  connector. Header names go through the same reserved-header refine in
   `types.ts`.
 - **Moderation.** Entries the registry marks `status: deleted` are hidden on the
   next incremental sync. `deprecated` entries are shown with a note.
