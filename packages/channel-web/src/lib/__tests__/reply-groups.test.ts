@@ -175,3 +175,15 @@ describe('live reply with a card', () => {
     expect(reply.artifacts.map((a) => a.title)).toEqual(['pelican']);
   });
 });
+
+describe('whitespace between calls', () => {
+  it('is not a message: back-to-back calls stay one block', () => {
+    // Live, the stream can carry "\n\n" between two calls; it said nothing.
+    const reply = groupReplies([
+      { ...(steps('pending-agent-0', '', [{ text: 'Ran a command', status: 'done' }]) as object), at: '' } as ThreadMessage,
+      { ...(steps('pending-agent-1', '\n\n', [{ text: 'Ran a command', status: 'done' }]) as object), at: '' } as ThreadMessage,
+      { ...(steps('pending-agent', '  \n', [{ text: 'Ran a command — in progress', status: 'running' }]) as object), at: '' } as ThreadMessage,
+    ])[0] as ReplyGroup;
+    expect(reply.parts.map((p) => p.kind)).toEqual(['activity']);
+  });
+});

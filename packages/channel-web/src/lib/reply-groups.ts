@@ -85,7 +85,9 @@ function fold(run: AgentLike[]): ReplyGroup {
   // `steps` message's words came BEFORE its calls, so they go first.
   const parts: ReplyPart[] = [];
   for (const m of run) {
-    if (m.text.length > 0) parts.push({ kind: 'text', turnId: m.id, text: m.text });
+    // Whitespace is not something it said: the stream can carry a bare "\n\n"
+    // between two calls, and counting it split one block into several.
+    if (m.text.trim().length > 0) parts.push({ kind: 'text', turnId: m.id, text: m.text });
     if (m.kind !== 'steps' || m.steps.length === 0) continue;
     let block = parts[parts.length - 1];
     if (block?.kind !== 'activity') {
