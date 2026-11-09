@@ -107,6 +107,20 @@ async function makeHarness(policy: MockResolvePolicy): Promise<{
   return { h, resolveCalls };
 }
 
+async function readProvisionalFromDb(conversationId: string): Promise<boolean | undefined> {
+  const client = new pg.Client({ connectionString });
+  await client.connect();
+  try {
+    const r = await client.query<{ title_provisional: boolean }>(
+      'SELECT title_provisional FROM conversations_v1_conversations WHERE conversation_id = $1',
+      [conversationId],
+    );
+    return r.rows[0]?.title_provisional;
+  } finally {
+    await client.end().catch(() => {});
+  }
+}
+
 async function readTitleFromDb(
   conversationId: string,
 ): Promise<string | null | undefined> {
@@ -351,6 +365,77 @@ describe('conversations:set-title', () => {
     );
     expect(out).toEqual({ updated: false });
     expect(await readTitleFromDb(conv.conversationId)).toBe('Existing');
+  });
+
+  /*
+    The first-message stand-in. A new chat is created with its first message
+    as a PROVISIONAL title; the title model replaces it with `ifProvisional`,
+    which must never replace a title the person typed.
+  */
+  it('creates with a provisional title, and ifProvisional replaces it with a final one', async () => {
+    const { h } = await makeHarness({ decide: () => 'allow' });
+    const conv = await h.bus.call<CreateInput, CreateOutput>(
+      'conversations:create',
+      h.ctx({ userId: 'userA' }),
+      { userId: 'userA', agentId: 'agt_a', title: 'look at the Q3 numbers', titleProvisional: true },
+    );
+    expect(conv.titleProvisional).toBe(true);
+
+    const out = await h.bus.call<SetTitleInput, SetTitleOutput>(
+      'conversations:set-title',
+      h.ctx({ userId: 'userA' }),
+      { conversationId: conv.conversationId, userId: 'userA', title: 'Q3 Numbers Review', ifProvisional: true },
+    );
+    expect(out).toEqual({ updated: true });
+    expect(await readTitleFromDb(conv.conversationId)).toBe('Q3 Numbers Review');
+    expect(await readProvisionalFromDb(conv.conversationId)).toBe(false);
+
+    // Final now: a second model write is a no-op.
+    const again = await h.bus.call<SetTitleInput, SetTitleOutput>(
+      'conversations:set-title',
+      h.ctx({ userId: 'userA' }),
+      { conversationId: conv.conversationId, userId: 'userA', title: 'Something Else', ifProvisional: true },
+    );
+    expect(again).toEqual({ updated: false });
+    expect(await readTitleFromDb(conv.conversationId)).toBe('Q3 Numbers Review');
+  });
+
+  it('ifProvisional never replaces a rename, even over a provisional title', async () => {
+    const { h } = await makeHarness({ decide: () => 'allow' });
+    const conv = await h.bus.call<CreateInput, CreateOutput>(
+      'conversations:create',
+      h.ctx({ userId: 'userA' }),
+      { userId: 'userA', agentId: 'agt_a', title: 'look at the Q3 numbers', titleProvisional: true },
+    );
+    // The person renames while the model is still thinking.
+    await h.bus.call<SetTitleInput, SetTitleOutput>(
+      'conversations:set-title',
+      h.ctx({ userId: 'userA' }),
+      { conversationId: conv.conversationId, userId: 'userA', title: 'My Q3 chat' },
+    );
+    const out = await h.bus.call<SetTitleInput, SetTitleOutput>(
+      'conversations:set-title',
+      h.ctx({ userId: 'userA' }),
+      { conversationId: conv.conversationId, userId: 'userA', title: 'Q3 Numbers Review', ifProvisional: true },
+    );
+    expect(out).toEqual({ updated: false });
+    expect(await readTitleFromDb(conv.conversationId)).toBe('My Q3 chat');
+  });
+
+  it('ifProvisional writes a still-untitled row too', async () => {
+    const { h } = await makeHarness({ decide: () => 'allow' });
+    const conv = await h.bus.call<CreateInput, CreateOutput>(
+      'conversations:create',
+      h.ctx({ userId: 'userA' }),
+      { userId: 'userA', agentId: 'agt_a' },
+    );
+    expect(conv.titleProvisional).toBe(false);
+    const out = await h.bus.call<SetTitleInput, SetTitleOutput>(
+      'conversations:set-title',
+      h.ctx({ userId: 'userA' }),
+      { conversationId: conv.conversationId, userId: 'userA', title: 'Q3 Numbers Review', ifProvisional: true },
+    );
+    expect(out).toEqual({ updated: true });
   });
 
   it('throws not-found on a missing conversationId; never calls agents:resolve', async () => {

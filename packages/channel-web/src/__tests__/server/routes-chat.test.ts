@@ -13,6 +13,7 @@ import {
   it,
   vi,
 } from 'vitest';
+import { KICKOFF_TEXT } from '../../lib/bootstrap-kickoff.js';
 import {
   makeAgentContext,
   PluginError,
@@ -641,6 +642,19 @@ async function countConversations(): Promise<number> {
   }
 }
 
+async function countLiveConversations(): Promise<number> {
+  const client = new (await import('pg')).default.Client({ connectionString });
+  await client.connect();
+  try {
+    const r = await client.query(
+      'SELECT COUNT(*)::int AS n FROM conversations_v1_conversations WHERE deleted_at IS NULL',
+    );
+    return (r.rows[0] as { n: number }).n;
+  } finally {
+    await client.end().catch(() => {});
+  }
+}
+
 // Phase E (2026-05-09): the `listTurns` helper that queried
 // `conversations_v1_turns` was deleted alongside the table itself. The
 // runner-native workspace jsonl is now the source of truth for transcripts
@@ -649,6 +663,22 @@ async function countConversations(): Promise<number> {
 // into. The remaining tests still assert agent:invoke dispatch + the
 // absence of any conversations:append-turn hook call, which is the
 // real behavioral contract.
+
+async function readTitleRow(
+  conversationId: string,
+): Promise<{ title: string | null; title_provisional: boolean } | undefined> {
+  const client = new (await import('pg')).default.Client({ connectionString });
+  await client.connect();
+  try {
+    const r = await client.query<{ title: string | null; title_provisional: boolean }>(
+      'SELECT title, title_provisional FROM conversations_v1_conversations WHERE conversation_id = $1',
+      [conversationId],
+    );
+    return r.rows[0];
+  } finally {
+    await client.end().catch(() => {});
+  }
+}
 
 async function postMessage(
   port: number,
@@ -663,6 +693,56 @@ async function postMessage(
 }
 
 describe('@ax/channel-web POST /api/chat/messages', () => {
+  /*
+    A chat is created by its first message (there is no empty-chat create),
+    and is named after that message straight away — provisionally, so the
+    title model's summary can replace it.
+  */
+  it('names a new chat after the first line of its first message, provisionally', async () => {
+    const booted = await boot({
+      user: { id: 'userA', isAdmin: false },
+      allowedFor: new Set(['userA']),
+    });
+    harnesses.push(booted.harness);
+
+    const r = await postMessage(booted.port, {
+      conversationId: null,
+      agentId: 'agt_test',
+      contentBlocks: [{ type: 'text', text: '\n  Plan the   offsite\nfor the whole team' }],
+    });
+    expect(r.status).toBe(202);
+    const { conversationId } = (await r.json()) as { conversationId: string };
+    expect(await readTitleRow(conversationId)).toEqual({
+      title: 'Plan the offsite',
+      title_provisional: true,
+    });
+
+    // A follow-up message does not rename it.
+    const again = await postMessage(booted.port, {
+      conversationId,
+      agentId: 'agt_test',
+      contentBlocks: [{ type: 'text', text: 'something else entirely' }],
+    });
+    expect(again.status).toBeLessThan(500);
+    expect((await readTitleRow(conversationId))?.title).toBe('Plan the offsite');
+  });
+
+  it('leaves the hidden new-agent greeting untitled, for the title model', async () => {
+    const booted = await boot({
+      user: { id: 'userA', isAdmin: false },
+      allowedFor: new Set(['userA']),
+    });
+    harnesses.push(booted.harness);
+
+    const r = await postMessage(booted.port, {
+      conversationId: null,
+      agentId: 'agt_test',
+      contentBlocks: [{ type: 'text', text: KICKOFF_TEXT }],
+    });
+    const { conversationId } = (await r.json()) as { conversationId: string };
+    expect(await readTitleRow(conversationId)).toEqual({ title: null, title_provisional: false });
+  });
+
   it('1. returns 401 when unauthenticated and writes nothing', async () => {
     const booted = await boot({
       user: null,
@@ -2634,6 +2714,28 @@ describe('POST /api/chat/messages — attachment_ref handling', () => {
     // No agent:invoke fired.
     await new Promise((resolve) => setTimeout(resolve, 30));
     expect(booted.chatRunCaptures).toHaveLength(0);
+    // The chat this first message created is gone again: the browser got no
+    // id, so a Resend would make another, and each refusal would leave a
+    // named, empty chat in the sidebar.
+    expect(await countLiveConversations()).toBe(0);
+  });
+
+  it('keeps an EXISTING chat when a follow-up message is refused', async () => {
+    const booted = await boot({
+      user: { id: 'userA', isAdmin: false },
+      allowedFor: new Set(['userA']),
+      includeAttachments: true,
+    });
+    harnesses.push(booted.harness);
+    const conversationId = await createConversation(booted.port);
+
+    const r = await postMessage(booted.port, {
+      conversationId,
+      agentId: 'agt_test',
+      contentBlocks: [{ type: 'attachment_ref', attachmentId: 'does-not-exist' }],
+    });
+    expect(r.status).toBe(400);
+    expect(await countLiveConversations()).toBe(1);
   });
 
   it('TASK-1063: returns 400 invalid-content-block when one message names the same attachment_ref id twice; nothing is committed or dispatched', async () => {

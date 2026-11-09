@@ -549,7 +549,7 @@ describe('agent settings page (TASK-888)', () => {
   it('keeps a chat row\'s menu about the chat — agent settings live on the agent menu', async () => {
     withRules();
     renderAt('/workspace/agents/a-quill');
-    const options = await screen.findByRole('button', { name: 'Options for Current conversation' });
+    const options = await screen.findByRole('button', { name: 'Options for Untitled conversation' });
     fireEvent.pointerDown(options, { button: 0, ctrlKey: false, pointerType: 'mouse' });
     const menu = await screen.findByRole('menu');
     expect(within(menu).getByRole('menuitem', { name: 'Rename' })).toBeTruthy();

@@ -1,4 +1,4 @@
-import { httpJson, httpVoid } from './http';
+import { httpVoid } from './http';
 import { workspaceApi } from './workspace-api';
 
 const writeHeaders = {
@@ -12,12 +12,6 @@ const conversationPath = (id: string) => {
   return `/api/chat/conversations/${encodeURIComponent(id)}`;
 };
 export const conversationControls = {
-  create: (agentId: string) =>
-    httpJson<{ conversationId: string }>('/api/chat/conversations', {
-      method: 'POST',
-      headers: writeHeaders,
-      body: JSON.stringify({ agentId }),
-    }),
   rename: (id: string, title: string) =>
     httpVoid(conversationPath(id), {
       method: 'PATCH',

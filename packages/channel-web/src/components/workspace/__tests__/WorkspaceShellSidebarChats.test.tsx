@@ -6,13 +6,13 @@
  * `lib/sidebar-chats.ts`): the mounted agent view publishes its own, and off
  * the agent route (Today, Tasks) the shell reads the selected agent itself.
  * These pin the second producer and the round trips that cross routes: a chat
- * picked on Today opens on the agent's page, a new chat lands on screen, and
+ * picked on Today opens on the agent's page, a new chat is created (and named)
+ * by its first message, and
  * deleting the agent you are looking at takes you somewhere that still exists.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { workspaceApi, type AgentDetail } from '@/lib/workspace-api';
-import { conversationControls } from '@/lib/conversation-controls';
 import { deleteAgent } from '@/lib/admin';
 import { UserProvider } from '@/lib/user-context';
 import { WorkspaceShell } from '../WorkspaceShell';
@@ -26,6 +26,8 @@ vi.mock('@/lib/workspace-api', async () => {
     workspaceApi: {
       board: vi.fn(),
       agent: vi.fn(),
+      sendMessage: vi.fn(),
+      streamReply: vi.fn(),
       route: vi.fn(),
       decisions: vi.fn(async () => ({ decisions: [] })),
       conversationDecisions: vi.fn(async () => ({ decisions: [] })),
@@ -47,7 +49,6 @@ vi.mock('@/lib/workspace-api', async () => {
 
 vi.mock('@/lib/conversation-controls', () => ({
   conversationControls: {
-    create: vi.fn(),
     rename: vi.fn(),
     delete: vi.fn(),
     export: vi.fn(),
@@ -61,7 +62,8 @@ vi.mock('@/lib/admin', async () => {
 
 const boardMock = vi.mocked(workspaceApi.board);
 const agentMock = vi.mocked(workspaceApi.agent);
-const createMock = vi.mocked(conversationControls.create);
+const sendMock = vi.mocked(workspaceApi.sendMessage);
+const streamMock = vi.mocked(workspaceApi.streamReply);
 const deleteAgentMock = vi.mocked(deleteAgent);
 
 const QUILL = {
@@ -85,25 +87,28 @@ function detail(conversationId: string, over: Partial<AgentDetail> = {}): AgentD
       { id: 'c-march', title: 'March planning', lastActivityAt: '2026-10-01T10:00:00Z' },
       { id: 'c-april', title: 'April invoices', lastActivityAt: '2026-10-02T10:00:00Z' },
     ],
+    // The server's newest chat, whichever one a read names.
+    latest: { id: 'c-now', title: 'Earlier today', lastActivityAt: '2026-10-03T10:00:00Z' },
     memory: { rules: { status: 'unavailable', doc: null } },
     ...over,
   } as AgentDetail;
 }
 
 /**
- * The agent read, by the conversation it names: the live one, a past
- * excerpt, or the chat New chat just created.
+ * The agent read, by the conversation it names: the live one, a past one, or
+ * the chat a first message just created (the server's newest, named after
+ * that message).
  */
 function agentReads() {
   agentMock.mockImplementation(async (_id: string, conversationId?: string) => {
     if (conversationId === 'c-march')
       return detail('c-march', { thread: [{ kind: 'user', id: 'm1', text: 'the march thread' }] });
-    /*
-      Once a chat has been created it IS the agent's current one — the server
-      contract the view's plain re-read relies on (it names no conversation).
-    */
-    if (conversationId === 'c-new' || (conversationId === undefined && createMock.mock.calls.length > 0))
-      return detail('c-new', { thread: [], past: [{ id: 'c-now', title: 'Earlier today', lastActivityAt: '2026-10-03T10:00:00Z' }] });
+    if (conversationId === 'c-new' || (conversationId === undefined && sendMock.mock.calls.length > 0))
+      return detail('c-new', {
+        thread: [{ kind: 'user', id: 'x1', text: 'Plan the offsite' }],
+        latest: { id: 'c-new', title: 'Plan the offsite', lastActivityAt: '2026-10-04T10:00:00Z' },
+        past: [{ id: 'c-now', title: 'Earlier today', lastActivityAt: '2026-10-03T10:00:00Z' }],
+      });
     return detail('c-now', { thread: [{ kind: 'user', id: 'n1', text: 'the live thread' }] });
   });
 }
@@ -127,7 +132,8 @@ beforeEach(() => {
   boardMock.mockResolvedValue({ agents: [QUILL, TERN] });
   agentMock.mockReset();
   agentReads();
-  createMock.mockReset();
+  sendMock.mockReset();
+  streamMock.mockReset();
   deleteAgentMock.mockReset();
 });
 
@@ -161,30 +167,41 @@ describe('the sidebar chat list off the agent route', () => {
     ).toBeTruthy();
   });
 
-  it('New chat creates the conversation and lands on it', async () => {
-    createMock.mockResolvedValue({ conversationId: 'c-new' });
+  it('New chat opens an empty chat on the agent’s page and creates nothing yet', async () => {
     renderAt('/workspace');
     await screen.findByRole('button', { name: 'March planning' });
+    const rows = within(chats()).getAllByRole('button', { name: /^(?!Options)/ }).length;
 
     fireEvent.click(screen.getByRole('button', { name: 'New chat' }));
 
-    await waitFor(() => expect(createMock).toHaveBeenCalledWith('a-quill'));
     await waitFor(() => expect(window.location.pathname).toBe('/workspace/agents/a-quill'));
-    await waitFor(() => expect(agentMock).toHaveBeenCalledWith('a-quill', 'c-new'));
-    // The new chat's list is the one on screen: the old live one is now past.
-    expect(await within(chats()).findByRole('button', { name: 'Earlier today' })).toBeTruthy();
-    expect(screen.queryByText('the live thread')).toBeNull();
+    expect(await screen.findByPlaceholderText('Message Quill')).toBeTruthy();
+    await waitFor(() => expect(screen.queryByText('the live thread')).toBeNull());
+    // No empty chat in the list, and none marked open: it exists on its first message.
+    expect(within(chats()).getAllByRole('button', { name: /^(?!Options)/ })).toHaveLength(rows);
+    expect(within(chats()).queryByRole('button', { current: 'page' })).toBeNull();
+    expect(sendMock).not.toHaveBeenCalled();
   });
 
-  it('says so where the button was when New chat fails, and stays put', async () => {
-    createMock.mockRejectedValue(new Error('create → 500'));
-    renderAt('/workspace');
-    await screen.findByRole('button', { name: 'March planning' });
+  it('the first message creates the chat, which appears named after it while the reply runs', async () => {
+    sendMock.mockResolvedValue({ conversationId: 'c-new', reqId: 'r1' });
+    // The reply never finishes in this test: the row must not wait for it.
+    streamMock.mockImplementation(() => new Promise(() => {}));
+    renderAt('/workspace/agents/a-quill');
+    await screen.findByText('the live thread');
 
     fireEvent.click(screen.getByRole('button', { name: 'New chat' }));
+    await waitFor(() => expect(screen.queryByText('the live thread')).toBeNull());
+    const box = await screen.findByPlaceholderText('Message Quill');
+    fireEvent.change(box, { target: { value: 'Plan the offsite' } });
+    fireEvent.keyDown(box, { key: 'Enter' });
 
-    expect(await within(chats()).findByText(/couldn’t finish that just now/)).toBeTruthy();
-    expect(window.location.pathname).toBe('/workspace');
+    await waitFor(() =>
+      expect(sendMock).toHaveBeenCalledWith(expect.objectContaining({ conversationId: null })),
+    );
+    expect(
+      await within(chats()).findByRole('button', { name: 'Plan the offsite', current: 'page' }),
+    ).toBeTruthy();
   });
 });
 

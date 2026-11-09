@@ -10,7 +10,6 @@ import {
 import type { ContentBlock } from '@ax/ipc-protocol';
 import {
   ApproveAuthoredSkillRequest,
-  CreateConversationRequest,
   RenameConversationRequest,
   extractText,
   GetConversationQuery,
@@ -18,6 +17,7 @@ import {
   PermissionDecisionRequest,
   PostMessageRequest,
 } from '../wire/chat.js';
+import { quickTitle } from './quick-title.js';
 
 // ---------------------------------------------------------------------------
 // @ax/channel-web chat-flow REST surface.
@@ -143,6 +143,9 @@ interface ConversationsCreateInput {
    * conversation, which is what decides whether a held tool call is attended.
    */
   origin?: 'web' | 'routine';
+  /** Mirror of `CreateInput.title` / `titleProvisional` (see `quick-title.ts`). */
+  title?: string | null;
+  titleProvisional?: boolean;
 }
 interface ConversationsCreateOutput {
   conversationId: string;
@@ -509,7 +512,34 @@ export function createChatRouteHandlers(deps: ChatRouteDeps) {
       // bind below preserves it instead of clobbering with a placeholder
       // (would defeat the orchestrator's J6 routing — see comment there).
       let existingActiveSessionId: string | null = null;
+      /*
+        This message is creating its chat. If a later step refuses it (a file
+        that is not there, storage full, a bind that cannot land), the chat is
+        removed again: the browser gets no id back, so a Resend would create
+        another — and each refused attempt would leave a named, empty chat in
+        the sidebar.
+      */
+      let createdHere = false;
+      const dropCreated = async (): Promise<void> => {
+        if (!createdHere) return;
+        try {
+          await bus.call<ConversationsDeleteInput, void>('conversations:delete', initCtx, {
+            conversationId,
+            userId,
+          });
+        } catch (err) {
+          initCtx.logger.warn('chat_refused_first_message_cleanup_failed', {
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+      };
       if (body.conversationId === null) {
+        // Named from the first message until the title model's summary lands.
+        const title = quickTitle(
+          body.contentBlocks
+            .map((b) => (b.type === 'text' ? b.text : ''))
+            .join('\n'),
+        );
         const created = await bus.call<
           ConversationsCreateInput,
           ConversationsCreateOutput
@@ -522,8 +552,10 @@ export function createChatRouteHandlers(deps: ChatRouteDeps) {
           // as the next message. Passed explicitly rather than relying on the
           // default so the channel names itself.
           origin: 'web',
+          ...(title === null ? {} : { title, titleProvisional: true }),
         });
         conversationId = created.conversationId;
+        createdHere = true;
       } else {
         try {
           const got = await bus.call<
@@ -601,6 +633,7 @@ export function createChatRouteHandlers(deps: ChatRouteDeps) {
           });
           totalAttachmentBytes += committed.sizeBytes;
           if (totalAttachmentBytes > MAX_PER_MESSAGE_ATTACHMENT_BYTES) {
+            await dropCreated();
             res.status(413).json({ error: 'attachment-total-too-large' });
             return;
           }
@@ -614,10 +647,12 @@ export function createChatRouteHandlers(deps: ChatRouteDeps) {
         } catch (err) {
           if (err instanceof PluginError) {
             if (err.code === 'not-found') {
+              await dropCreated();
               res.status(400).json({ error: 'attachment-not-found' });
               return;
             }
             if (err.code === 'forbidden') {
+              await dropCreated();
               res.status(400).json({ error: 'attachment-foreign-user' });
               return;
             }
@@ -627,6 +662,7 @@ export function createChatRouteHandlers(deps: ChatRouteDeps) {
             // (the UI prefers it and has its own fallback for the code); an
             // opaque 500 here would tell the person nothing they can act on.
             if (err.code === 'rejected') {
+              await dropCreated();
               res.status(413).json({ error: 'storage-full', message: err.message });
               return;
             }
@@ -697,6 +733,7 @@ export function createChatRouteHandlers(deps: ChatRouteDeps) {
         reqId,
       });
       if (!bound) {
+        await dropCreated();
         res.status(503).json({ error: 'bind-unavailable' });
         return;
       }
@@ -1200,25 +1237,6 @@ export function createChatRouteHandlers(deps: ChatRouteDeps) {
     },
 
     /** Session-scoped controls, using the conversation store's existing ACLs. */
-    async createConversation(req: RouteRequest, res: RouteResponse): Promise<void> {
-      const userId = await authOr401(bus, initCtx, req, res);
-      if (userId === null) return;
-      let body;
-      try { body = CreateConversationRequest.parse(JSON.parse(req.body.toString('utf8'))); }
-      catch { res.status(400).json({ error: 'invalid-payload' }); return; }
-      try {
-        const result = await bus.call<ConversationsCreateInput, ConversationsCreateOutput>(
-          'conversations:create', initCtx, { userId, agentId: body.agentId, origin: 'web' },
-        );
-        res.status(201).json({ conversationId: result.conversationId });
-      } catch (err) {
-        if (err instanceof PluginError && (err.code === 'forbidden' || err.code === 'not-found')) {
-          res.status(404).json({ error: 'agent-not-found' }); return;
-        }
-        throw err;
-      }
-    },
-
     async renameConversation(req: RouteRequest, res: RouteResponse): Promise<void> {
       const userId = await authOr401(bus, initCtx, req, res);
       if (userId === null) return;
@@ -1521,11 +1539,6 @@ export async function registerChatRoutes(
       method: 'DELETE',
       path: '/api/chat/conversations/:id',
       handler: handlers.deleteConversation as unknown as RouteHandler,
-    },
-    {
-      method: 'POST',
-      path: '/api/chat/conversations',
-      handler: handlers.createConversation,
     },
     {
       method: 'PATCH',

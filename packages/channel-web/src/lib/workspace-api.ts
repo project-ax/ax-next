@@ -305,6 +305,12 @@ export interface AgentDetail {
   /** Older conversations, newest first. Pointers only — see `PastConversation`. */
   past: PastConversation[];
   /**
+   * The agent's most recently active conversation as a row (its title is
+   * what the sidebar shows), whichever conversation `thread` was read from.
+   * `null` before the agent has one; optional only for older servers.
+   */
+  latest?: PastConversation | null;
+  /**
    * The Instructions section's rules tier, carrying how its read went.
    *
    * Not a bare `MemoryDoc[]` any more (TASK-417): that shape could not tell
@@ -1605,8 +1611,8 @@ export const workspaceApi = {
   },
 
   /**
-   * One agent's panel. `conversationId` reads one of the agent's PAST
-   * conversations instead of its current one — the rail's read-only excerpt.
+   * One agent's panel. `conversationId` reads that conversation instead of
+   * the agent's most recent one — a chat picked from the sidebar.
    * The server re-checks ownership of that id and 404s a conversation that is
    * not this agent's, so a stale id in the rail can never render someone
    * else's transcript.

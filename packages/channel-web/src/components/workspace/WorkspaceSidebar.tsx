@@ -30,8 +30,8 @@ interface Props {
   onAgentDeleted?: ((id: string) => void) | undefined;
   chats: SidebarChatList | null;
   chatsError: boolean;
-  onOpenChat: (pastId: string | null) => void;
-  onNewChat: () => Promise<void>;
+  onOpenChat: (conversationId: string | null) => void;
+  onNewChat: () => void;
   onChatsChanged: () => void;
 }
 
@@ -87,12 +87,14 @@ export function WorkspaceSidebarNav({
     action: () => void,
     active = false,
     needsYou = false,
+    disabled = false,
   ) => (
     <IconTooltip label={label} side="right">
       <Button
         variant="ghost"
         size="icon"
         aria-label={label}
+        disabled={disabled}
         onClick={go(action)}
         className={cn(
           'relative rounded-sm',
@@ -163,7 +165,8 @@ export function WorkspaceSidebarNav({
             />
             {selected !== null && (
               <>
-                {iconRow('New chat', Plus, () => void onNewChat())}
+                {/* Held while a message posts or a reply streams, like the expanded list's. */}
+                {iconRow('New chat', Plus, onNewChat, false, false, chats?.busy === true)}
                 {iconRow('Search chats', Search, () => {
                   setSearchOnExpand(true);
                   onCollapse?.();

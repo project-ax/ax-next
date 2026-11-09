@@ -248,7 +248,7 @@ describe('@ax/conversation-titles chat:turn-end subscriber', () => {
     // the jsonl before it's flushed, an llm:call error, validation rejecting
     // the output. Earlier the one-shot gate (`assistantTurnCount === 1`) left
     // the chat permanently untitled in that case. Now a second untitled
-    // assistant turn re-attempts. `ifNull: true` keeps it idempotent.
+    // assistant turn re-attempts. `ifProvisional: true` keeps it idempotent.
     const stubs = makeStubsBus();
     stubs.setGetResult({
       conversation: makeConversation({ title: null }),
@@ -274,7 +274,7 @@ describe('@ax/conversation-titles chat:turn-end subscriber', () => {
     expect(stubs.llmCalls).toHaveLength(1);
     expect(stubs.setTitleCalls).toHaveLength(1);
     expect(stubs.setTitleCalls[0]?.title).toBe('Recovered Title');
-    expect(stubs.setTitleCalls[0]?.ifNull).toBe(true);
+    expect(stubs.setTitleCalls[0]?.ifProvisional).toBe(true);
   });
 
   it('STOPS retrying past MAX_TITLE_ATTEMPT_TURNS assistant turns (spend cap)', async () => {
@@ -332,6 +332,27 @@ describe('@ax/conversation-titles chat:turn-end subscriber', () => {
     expect(stubs.setTitleCalls).toHaveLength(0);
   });
 
+  it('replaces a provisional first-message title with the model\'s summary', async () => {
+    const stubs = makeStubsBus();
+    stubs.setGetResult({
+      conversation: makeConversation({ title: 'can you look at the Q3 numbers', titleProvisional: true }),
+      turns: [
+        turn('user', [{ type: 'text', text: 'can you look at the Q3 numbers' }]),
+        turn('assistant', [{ type: 'text', text: 'Sure.' }]),
+      ],
+    });
+    const plugin = createConversationTitlesPlugin();
+    await plugin.init({ bus: stubs.bus, config: {} });
+
+    await stubs.bus.fire('chat:turn-end', makeCtx({ conversationId: 'c1' }), { role: 'assistant' });
+
+    expect(stubs.llmCalls).toHaveLength(1);
+    expect(stubs.setTitleCalls).toHaveLength(1);
+    // Never a plain overwrite: a rename landing meanwhile must win.
+    expect(stubs.setTitleCalls[0]?.ifProvisional).toBe(true);
+    expect(stubs.setTitleCalls[0]?.ifNull).toBeUndefined();
+  });
+
   it('is a no-op when the transcript is empty AND the payload has no blocks', async () => {
     // A genuinely-empty heartbeat turn (no contentBlocks on the payload) has
     // nothing to title from — stay quiet. This is distinct from the
@@ -385,7 +406,7 @@ describe('@ax/conversation-titles chat:turn-end subscriber', () => {
     expect(stubs.llmCalls).toHaveLength(1);
     expect(stubs.setTitleCalls).toHaveLength(1);
     expect(stubs.setTitleCalls[0]?.title).toBe('Ocean Haiku');
-    expect(stubs.setTitleCalls[0]?.ifNull).toBe(true);
+    expect(stubs.setTitleCalls[0]?.ifProvisional).toBe(true);
   });
 
   it('includes the user prompt when the read has the user turn but not the assistant turn yet', async () => {
@@ -453,7 +474,7 @@ describe('@ax/conversation-titles chat:turn-end subscriber', () => {
     expect(content.match(/Assistant:/g)?.length ?? 0).toBe(1);
   });
 
-  it('happy path: reads transcript, calls llm, writes set-title with ifNull=true', async () => {
+  it('happy path: reads transcript, calls llm, writes set-title with ifProvisional=true', async () => {
     const stubs = makeStubsBus();
     stubs.setGetResult({
       conversation: makeConversation({ title: null }),
@@ -505,7 +526,7 @@ describe('@ax/conversation-titles chat:turn-end subscriber', () => {
       conversationId: 'c1',
       userId: 'userA',
       title: 'My Conversation',
-      ifNull: true,
+      ifProvisional: true,
     });
   });
 
@@ -615,7 +636,7 @@ describe('@ax/conversation-titles chat:turn-end subscriber', () => {
 
     expect(stubs.setTitleCalls).toHaveLength(1);
     expect(stubs.setTitleCalls[0]?.title).toBe('Hello World');
-    expect(stubs.setTitleCalls[0]?.ifNull).toBe(true);
+    expect(stubs.setTitleCalls[0]?.ifProvisional).toBe(true);
   });
 
   it('logs and tolerates a set-title returning { updated: false }', async () => {

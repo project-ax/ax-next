@@ -69,23 +69,6 @@ function harness(failure?: 'auth' | 'forbidden' | 'not-found') {
 }
 
 describe('conversation controls', () => {
-  it('creates an attended web conversation using the session owner', async () => {
-    const h = harness();
-    await h.handlers.createConversation(
-      h.req({ agentId: 'inbox', userId: 'foreign' }),
-      h.res,
-    );
-    expect(h.result).toEqual({
-      status: 201,
-      body: { conversationId: 'new-conversation' },
-    });
-    expect(h.calls).toEqual([
-      {
-        hook: 'conversations:create',
-        input: { agentId: 'inbox', userId: 'session-user', origin: 'web' },
-      },
-    ]);
-  });
   it('renames through the existing title hook, trimming the input', async () => {
     const h = harness();
     await h.handlers.renameConversation(
@@ -104,18 +87,12 @@ describe('conversation controls', () => {
       },
     ]);
   });
-  it.each(['createConversation', 'renameConversation'] as const)(
-    '%s refuses an unsigned caller',
-    async (method) => {
-      const h = harness('auth');
-      await h.handlers[method](
-        h.req({ agentId: 'inbox', title: 'Name' }),
-        h.res,
-      );
-      expect(h.result.status).toBe(401);
-      expect(h.calls).toEqual([]);
-    },
-  );
+  it('refuses an unsigned rename', async () => {
+    const h = harness('auth');
+    await h.handlers.renameConversation(h.req({ title: 'Name' }), h.res);
+    expect(h.result.status).toBe(401);
+    expect(h.calls).toEqual([]);
+  });
   it.each(['forbidden', 'not-found'] as const)(
     'hides %s conversation existence',
     async (failure) => {
@@ -127,29 +104,6 @@ describe('conversation controls', () => {
       });
     },
   );
-  it.each(['forbidden', 'not-found'] as const)(
-    'does not create a conversation for an unreachable agent: %s',
-    async (failure) => {
-      const h = harness(failure);
-      await h.handlers.createConversation(
-        h.req({ agentId: 'foreign-agent' }),
-        h.res,
-      );
-      expect(h.result).toEqual({
-        status: 404,
-        body: { error: 'agent-not-found' },
-      });
-    },
-  );
-  it.each(['', 'a'.repeat(257), null, 42])(
-    'rejects invalid agent id %j before calling the hook',
-    async (agentId) => {
-      const h = harness();
-      await h.handlers.createConversation(h.req({ agentId }), h.res);
-      expect(h.result.status).toBe(400);
-      expect(h.calls).toEqual([]);
-    },
-  );
   it.each(['', ' ', 'a'.repeat(257), 42])(
     'rejects invalid rename title %j before calling the hook',
     async (title) => {
@@ -159,7 +113,7 @@ describe('conversation controls', () => {
       expect(h.calls).toEqual([]);
     },
   );
-  it('registers both handlers on the authenticated, CSRF-gated HTTP server', async () => {
+  it('registers rename on the authenticated, CSRF-gated HTTP server, and no empty-chat create', async () => {
     const h = harness();
     const routes: unknown[] = [];
     h.bus.registerService(
@@ -171,12 +125,13 @@ describe('conversation controls', () => {
       },
     );
     await registerChatRoutes(h.bus, h.ctx);
+    // A chat is created by its first message (POST /api/chat/messages), so
+    // nothing can make an empty one.
+    expect(routes).not.toContainEqual(
+      expect.objectContaining({ method: 'POST', path: '/api/chat/conversations' }),
+    );
     expect(routes).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({
-          method: 'POST',
-          path: '/api/chat/conversations',
-        }),
         expect.objectContaining({
           method: 'PATCH',
           path: '/api/chat/conversations/:id',

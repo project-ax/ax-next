@@ -36,11 +36,13 @@ export interface Turn {
 
 // Mirrored from @ax/conversations (`packages/conversations/src/types.ts:49-88`).
 // Cross-plugin imports are forbidden (CLAUDE.md invariant 2). Keep in
-// lockstep with the source. We only read `title`; the actual payload
-// carries every Conversation field, but we declare just what we read so
-// any drift on unread fields is invisible to us.
+// lockstep with the source. We only read `title` and `titleProvisional`; the
+// actual payload carries every Conversation field, but we declare just what we
+// read so any drift on unread fields is invisible to us.
 export interface Conversation {
   title: string | null;
+  /** A first-message stand-in the model's title may replace. */
+  titleProvisional?: boolean;
 }
 
 // Mirrored from @ax/conversations (`packages/conversations/src/types.ts:106-120`).
@@ -64,6 +66,8 @@ export interface SetTitleInput {
   userId: string;
   title: string;
   ifNull?: boolean;
+  /** Write only if the title is NULL or still a provisional stand-in. */
+  ifProvisional?: boolean;
 }
 export interface SetTitleOutput {
   updated: boolean;

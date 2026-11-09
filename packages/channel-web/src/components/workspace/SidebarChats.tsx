@@ -37,8 +37,10 @@ interface Props {
   error: boolean;
   /** Draw the open chat as selected — only true on the agent's own route. */
   showSelection: boolean;
-  onOpen: (pastId: string | null) => void;
-  onNew: () => Promise<void>;
+  /** Show a chat; `null` is the agent's most recent one. */
+  onOpen: (conversationId: string | null) => void;
+  /** Start an empty chat (created on its first message). */
+  onNew: () => void;
   onChanged: () => void;
   onNavigate?: (() => void) | undefined;
   /** Mount with the search box already open (the collapsed rail's Search). */
@@ -112,8 +114,8 @@ export function SidebarChats({
 
   const busy = actionBusy || chats?.busy === true;
   const filtering = query.trim() !== '';
-  const past = chats ? filterChatsByTitle(chats.past, query) : [];
-  const openPastId = showSelection ? (chats?.openPastId ?? null) : undefined;
+  const shown = chats ? filterChatsByTitle(chats.chats, query) : [];
+  const openId = showSelection ? (chats?.openId ?? null) : null;
 
   function menu(id: string, name: string) {
     return (
@@ -172,10 +174,8 @@ export function SidebarChats({
           variant="navigation"
           disabled={busy}
           onClick={() => {
-            void act(async () => {
-              await onNew();
-              onNavigate?.();
-            });
+            onNew();
+            onNavigate?.();
           }}
           className="h-10 w-full gap-2.5 px-2 max-md:min-h-11"
         >
@@ -245,36 +245,18 @@ export function SidebarChats({
           )}
           {chats !== null && (
             <ul className="flex flex-col">
-              {!filtering && (
-                <li className="group relative flex h-8 items-center rounded-sm max-md:h-11">
-                  <Button
-                    variant="ghost"
-                    disabled={chats.busy}
-                    aria-current={openPastId === null ? 'page' : undefined}
-                    onClick={() => {
-                      onOpen(null);
-                      onNavigate?.();
-                    }}
-                    className={cn(ROW, openPastId === null && 'bg-primary-soft text-primary')}
-                  >
-                    <span aria-hidden="true" className="size-1.5 shrink-0 rounded-full bg-primary" />
-                    <span className="min-w-0 flex-1 text-left">Current conversation</span>
-                  </Button>
-                  {chats.conversationId && menu(chats.conversationId, 'Current conversation')}
-                </li>
-              )}
-              {past.map((c) => (
+              {shown.map((c) => (
                 <li key={c.id} className="group relative flex h-8 items-center rounded-sm max-md:h-11">
                   <Button
                     variant="ghost"
                     disabled={chats.busy}
                     aria-label={c.title}
-                    aria-current={openPastId === c.id ? 'page' : undefined}
+                    aria-current={openId === c.id ? 'page' : undefined}
                     onClick={() => {
                       onOpen(c.id);
                       onNavigate?.();
                     }}
-                    className={cn(ROW, openPastId === c.id && 'bg-primary-soft text-primary')}
+                    className={cn(ROW, openId === c.id && 'bg-primary-soft text-primary')}
                   >
                     <span
                       className="conversation-title-fade min-w-0 flex-1 overflow-hidden whitespace-nowrap text-left"
@@ -288,7 +270,7 @@ export function SidebarChats({
               ))}
             </ul>
           )}
-          {chats !== null && filtering && past.length === 0 && (
+          {chats !== null && filtering && shown.length === 0 && (
             <p role="status" className="px-2 py-1.5 text-[12.5px] text-muted-foreground">
               No chat titles match “{query.trim()}”.
             </p>
@@ -346,7 +328,8 @@ export function SidebarChats({
                     await conversationControls.rename(target.id, title.trim());
                   else {
                     await conversationControls.delete(target.id);
-                    if (chats?.openPastId === target.id) onOpen(null);
+                    // Deleting the chat on screen shows the most recent one left.
+                    if (chats?.openId === target.id) onOpen(null);
                   }
                   setEditing(null);
                   onChanged();
