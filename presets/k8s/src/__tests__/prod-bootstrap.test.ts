@@ -280,6 +280,7 @@ describe('@ax/preset-k8s production bootstrap (testcontainer + fake-k8s)', () =>
         '@ax/llm-anthropic',
         '@ax/web-tools',
         '@ax/conversation-titles',
+        '@ax/step-summaries',
       ]) {
         expect(nameSet.has(gated)).toBe(true);
       }

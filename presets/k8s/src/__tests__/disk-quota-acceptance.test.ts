@@ -121,6 +121,7 @@ const PLUGINS_TO_DROP = new Set<string>([
   '@ax/llm-anthropic',
   '@ax/llm-openrouter',
   '@ax/conversation-titles',
+  '@ax/step-summaries',
   '@ax/memory-facts-postgres',
   '@ax/preset-k8s/retire-strata-index',
   // The spend/rate-limit plugin has its own canary and is not on this path.
