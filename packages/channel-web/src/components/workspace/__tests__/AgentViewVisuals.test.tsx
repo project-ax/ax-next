@@ -121,7 +121,10 @@ async function sendHello(
   first: AgentDetail,
   conversationId = 'c1',
 ): Promise<ReturnType<typeof render>> {
-  agentMock.mockResolvedValue(first);
+  // A read names the chat it asks for, as the server does.
+  agentMock.mockImplementation(async (_id: string, asked?: string) =>
+    asked === undefined ? first : { ...first, conversationId: asked },
+  );
   sendMock.mockResolvedValue({ conversationId, reqId: 'r1' } as never);
   streamMock.mockImplementation(async (_reqId, h) => {
     const signal = h.signal ?? new AbortController().signal;
@@ -215,9 +218,7 @@ describe('a visual shown during a live turn', () => {
   it('keeps a visual with the turn that made it when a new chat opens mid-stream', async () => {
     const { rerender } = await sendHello(detail());
     // The person starts a new chat while the c1 turn is still streaming.
-    agentMock.mockResolvedValue(detail({ conversationId: 'c2' }));
-    rerender(<View agentId="a1" chatCommand={{ nonce: 1, agentId: 'a1', kind: 'new', conversationId: 'c2' }} />);
-    await waitFor(() => expect(agentMock).toHaveBeenCalledWith('a1', 'c2'));
+    rerender(<View agentId="a1" chatCommand={{ nonce: 1, agentId: 'a1', kind: 'new' }} />);
     // The old turn's visual arrives now: it belongs to c1, so the new chat
     // doesn't draw it (c1's re-read will).
     await showChart();

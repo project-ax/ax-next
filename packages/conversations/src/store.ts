@@ -158,6 +158,7 @@ export function rowToConversation(row: ConversationsRow): Conversation {
     userId: row.user_id,
     agentId: row.agent_id,
     title: row.title,
+    titleProvisional: row.title !== null && row.title_provisional === true,
     activeSessionId: row.active_session_id,
     activeReqId: row.active_req_id,
     runnerType: row.runner_type,
@@ -188,6 +189,8 @@ export interface ConversationStoreCreateArgs {
   userId: string;
   agentId: string;
   title: string | null;
+  /** `title` is a provisional stand-in (see `Conversation.titleProvisional`). */
+  titleProvisional?: boolean;
   /**
    * The runner that will serve this conversation's first turn — the plugin
    * layer seeds it from the resolved agent's `runner`. NOT frozen: every
@@ -392,6 +395,8 @@ export interface ConversationStore {
     userId: string;
     title: string;
     ifNull?: boolean;
+    /** Write only if the title is NULL or still provisional. */
+    ifProvisional?: boolean;
   }): Promise<boolean>;
   /**
    * Phase A (routines foundation, 2026-05-14). Set `hidden = true`. Filtered
@@ -730,6 +735,7 @@ export function createConversationStore(
       userId,
       agentId,
       title,
+      titleProvisional,
       runnerType,
       externalKey,
       hidden,
@@ -744,6 +750,7 @@ export function createConversationStore(
           user_id: userId,
           agent_id: agentId,
           title,
+          title_provisional: title !== null && titleProvisional === true,
           active_session_id: null,
           active_req_id: null,
           // Phase B: seed runner_type onto the row (bind-session refreshes
@@ -949,7 +956,7 @@ export function createConversationStore(
       return Number(result.numUpdatedRows ?? 0n) > 0;
     },
 
-    async setTitle({ conversationId, userId, title, ifNull }) {
+    async setTitle({ conversationId, userId, title, ifNull, ifProvisional }) {
       // The plugin layer has already validated `title` via
       // validateTitle(); we accept the trusted string here. The
       // (user_id, deleted_at IS NULL) predicates ensure foreign /
@@ -959,12 +966,18 @@ export function createConversationStore(
       // a user-driven rename that landed first.
       let q = db
         .updateTable('conversations_v1_conversations')
-        .set({ title, updated_at: new Date() })
+        // Every title written here is final (a model's or a person's); only
+        // create stores a provisional one.
+        .set({ title, title_provisional: false, updated_at: new Date() })
         .where('conversation_id', '=', conversationId)
         .where('user_id', '=', userId)
         .where('deleted_at', 'is', null);
       if (ifNull === true) {
         q = q.where('title', 'is', null);
+      } else if (ifProvisional === true) {
+        q = q.where((eb) =>
+          eb.or([eb('title', 'is', null), eb('title_provisional', '=', true)]),
+        );
       }
       const result = await q.executeTakeFirst();
       return Number(result.numUpdatedRows ?? 0n) > 0;
@@ -1009,6 +1022,7 @@ export function createConversationStore(
           user_id: userId,
           agent_id: agentId,
           title: fallback.title ?? null,
+          title_provisional: false,
           active_session_id: null,
           active_req_id: null,
           runner_type: fallback.runnerType ?? null,

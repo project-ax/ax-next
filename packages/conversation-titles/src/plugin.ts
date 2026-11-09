@@ -50,7 +50,7 @@ const TITLE_TEMPERATURE = 0.3;
 // skipped or failed for a transient reason: `conversations:get` reading the
 // runner's jsonl before it's flushed (0 turns), an `llm:call` error, or the
 // model returning an unusable title. Re-attempting on the next few turns
-// recovers from those; the `title !== null` guard + `ifNull: true` on
+// recovers from those; the final-title guard + `ifProvisional: true` on
 // set-title keep it idempotent (once a title lands we stop). The cap bounds
 // title-LLM spend if a model keeps emitting rejected output forever.
 const MAX_TITLE_ATTEMPT_TURNS = 3;
@@ -166,7 +166,7 @@ function assistantBlocksFromPayload(payload: TurnEndPayload): ContentBlock[] {
  * still-untitled conversation, and persists the validated result via
  * `conversations:set-title`.
  *
- * Idempotency / re-delivery safety: we use `ifNull: true` on the set-title
+ * Idempotency / re-delivery safety: we use `ifProvisional: true` on the set-title
  * call so a slow LLM round-trip can never clobber a user-driven rename.
  * At-least-once subscriber delivery is therefore safe.
  */
@@ -340,7 +340,9 @@ async function handleTurnEnd(
       userId: ctx.userId,
     },
   );
-  if (conv.conversation.title !== null) return;
+  // A provisional title is the person's first message standing in until we
+  // have a summary — replace it. Any other title (ours, or a rename) is final.
+  if (conv.conversation.title !== null && conv.conversation.titleProvisional !== true) return;
 
   // Fall back to the turn-end payload's assistant blocks when the canonical
   // read hasn't caught up to this turn yet (single-turn jsonl-sync race —
@@ -406,13 +408,15 @@ async function handleTurnEnd(
       conversationId: ctx.conversationId,
       userId: ctx.userId,
       title,
-      ifNull: true,
+      // NULL or the first-message stand-in only, so a rename that landed
+      // while the model was thinking is never overwritten.
+      ifProvisional: true,
     },
   );
   if (!result.updated) {
     // Race: a concurrent caller (probably a user-driven rename, possibly
-    // a duplicate subscriber delivery) titled the row first. Our `ifNull`
-    // guard caught it; nothing to do.
+    // a duplicate subscriber delivery) titled the row first. Our
+    // `ifProvisional` guard caught it; nothing to do.
     ctx.logger.debug('conversation_titles_already_set', {
       conversationId: ctx.conversationId,
     });

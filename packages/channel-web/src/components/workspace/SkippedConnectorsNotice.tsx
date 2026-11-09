@@ -100,19 +100,12 @@ interface Props {
   refreshKey: string | number;
   /** "Open Connectors" — the tab where each of these has Sign in / Add key. */
   onOpenConnectors: () => void;
-  /**
-   * Draw nothing for now, but stay mounted — so a dismissal survives. The
-   * notice is about the CURRENT chat, so the caller suppresses it while a past
-   * conversation is open and it is still dismissed when they come back.
-   */
-  suppressed?: boolean;
 }
 
 export function SkippedConnectorsNotice({
   agentId,
   refreshKey,
   onOpenConnectors,
-  suppressed = false,
 }: Props) {
   const [skipped, setSkipped] = useState<readonly Skipped[]>([]);
   const [dismissedKey, setDismissedKey] = useState<string | null>(null);
@@ -154,7 +147,7 @@ export function SkippedConnectorsNotice({
   const key = useMemo(() => setKey(skipped), [skipped]);
   const sentence = useMemo(() => skippedConnectorsSentence(skipped.map((c) => c.name)), [skipped]);
 
-  if (suppressed || skipped.length === 0 || key === dismissedKey) return null;
+  if (skipped.length === 0 || key === dismissedKey) return null;
 
   return (
     <div className="px-6 pt-4">

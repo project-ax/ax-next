@@ -1,3 +1,4 @@
+import type { AgentDetail } from './workspace-api';
 import type { PastConversation } from './workspace-types';
 
 /**
@@ -13,17 +14,32 @@ import type { PastConversation } from './workspace-types';
  */
 export interface SidebarChatList {
   agentId: string;
-  /** The live conversation's id; `null` before the agent has one. */
-  conversationId: string | null;
-  past: PastConversation[];
+  /** Every chat, newest first, each by its title. */
+  chats: PastConversation[];
   /**
-   * Which past conversation is open, `null` for the live one. Only meaningful
-   * while the agent's view is on screen; the shell's own read reports `null`
-   * and the sidebar draws no row as selected off the agent route.
+   * Which chat is on screen. Only meaningful while the agent's view is
+   * mounted; the shell's own read reports `null` and the sidebar draws no row
+   * as selected off the agent route.
    */
-  openPastId: string | null;
+  openId: string | null;
   /** A turn is streaming or settling — chat switches wait until it lands. */
   busy: boolean;
+}
+
+/**
+ * The detail's chats as one list: the most recent one, then the rest.
+ *
+ * A server that predates `latest` still names the current chat by id; it
+ * gets the same "Untitled conversation" label rather than vanishing.
+ */
+export function chatsFromDetail(d: Pick<AgentDetail, 'conversationId' | 'past' | 'latest'>): PastConversation[] {
+  const latest =
+    d.latest !== undefined
+      ? d.latest
+      : d.conversationId !== null && !d.past.some((p) => p.id === d.conversationId)
+        ? { id: d.conversationId, title: 'Untitled conversation', lastActivityAt: new Date(0).toISOString() }
+        : null;
+  return latest === null ? [...d.past] : [latest, ...d.past.filter((p) => p.id !== latest.id)];
 }
 
 /**
@@ -33,16 +49,17 @@ export interface SidebarChatList {
  * detail has loaded. `nonce` makes two identical asks two distinct requests.
  */
 export type SidebarChatCommand =
-  | { nonce: number; agentId: string; kind: 'open'; pastId: string | null }
-  /** Show a chat the shell has just created. */
-  | { nonce: number; agentId: string; kind: 'new'; conversationId: string };
+  /** Show a chat; `null` is the agent's most recent one. */
+  | { nonce: number; agentId: string; kind: 'open'; conversationId: string | null }
+  /** An empty chat to type into; the first send creates it. */
+  | { nonce: number; agentId: string; kind: 'new' };
 
 /** Title-only, case-insensitive. Full-text search across chats comes later. */
 export function filterChatsByTitle(
-  past: readonly PastConversation[],
+  chats: readonly PastConversation[],
   query: string,
 ): PastConversation[] {
   const q = query.trim().toLocaleLowerCase();
-  if (q === '') return [...past];
-  return past.filter((c) => c.title.toLocaleLowerCase().includes(q));
+  if (q === '') return [...chats];
+  return chats.filter((c) => c.title.toLocaleLowerCase().includes(q));
 }

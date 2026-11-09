@@ -17,7 +17,7 @@
  * turn ends we re-read the detail so the server's durable thread replaces it.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Archive, ArrowRight, Menu } from 'lucide-react';
+import { Menu } from 'lucide-react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Sheet, SheetContent, SheetTitle } from '@/components/ui/sheet';
@@ -40,7 +40,6 @@ import {
   AGENT_LOADING_ATTR,
   agentConversationTarget,
 } from '@/lib/new-agent-return-focus';
-import { relativeDay } from '@/lib/workspace-time';
 import { HTTP_SESSION_ENDED, logRequestFailure } from '@/lib/http';
 import { StorageFullError } from '@/lib/storage-full';
 import {
@@ -90,7 +89,7 @@ import { AgentActivity } from './AgentActivity';
 import { ChatPanelToggles } from './ChatPanelToggles';
 import { LearnedAnnouncer, LearnedInChat } from './LearnedInChat';
 import { learnedAnnouncement, learnedToggleLabel } from './memory-copy';
-import type { SidebarChatCommand, SidebarChatList } from '@/lib/sidebar-chats';
+import { chatsFromDetail, type SidebarChatCommand, type SidebarChatList } from '@/lib/sidebar-chats';
 import { AgentTile } from './bits';
 import type {
   ThreadMessage,
@@ -345,13 +344,19 @@ function hasDurableCopy(
   return false;
 }
 
-const PAST_COPY: Record<ReadOutcome, string> = {
+/** The agent's detail with no conversation on screen: what "New chat" shows. */
+function asEmptyChat(d: AgentDetail): AgentDetail {
+  // `liveReqId` is a turn running in the chat this read named, not in this
+  // empty one: carried over, the reattach effect would stream it in here.
+  return { ...d, conversationId: null, thread: [], decisions: { status: 'ok' }, liveReqId: null };
+}
+
+const SWITCH_COPY: Record<ReadOutcome, string> = {
   expired: HTTP_SESSION_ENDED,
   /*
-    "or is no longer yours" carries the 403 half of `gone`. A reviewer caught
-    the first draft asserting a DELETION alone, which is the 404 story — and
-    `toReadOutcome` maps 403 here too, so on an ownership change the alert would
-    have stated a cause that had not happened. Rare, and still wrong.
+    "or is no longer yours" carries the 403 half of `gone`: `toReadOutcome`
+    maps 403 here too, so a deletion alone would state a cause that may not
+    have happened.
   */
   gone: 'We could not open that conversation. It may have been deleted since this list was drawn, or is no longer yours.',
   failed: 'We could not open that conversation just now.',
@@ -394,11 +399,9 @@ export function AgentView({
     both its words and its CONTROLS — the bug was never only the copy, it was
     that a single string could not tell "Try again" whether it would work.
 
-    Every gate on these is an explicit `!== null` / `=== null` check (see
-    `pastThread` and `excerptOpening` below), never a truthiness test, so
-    swapping `string` for `ReadOutcome` is behaviour-preserving at all of them.
-    That is checked by a test rather than by reading, because it is one careless
-    `if (pastError)` away from being false.
+    Every gate on these is an explicit `!== null` / `=== null` check, never a
+    truthiness test, so swapping `string` for `ReadOutcome` is
+    behaviour-preserving at all of them.
   */
   const [loadError, setLoadError] = useState<ReadOutcome | null>(null);
   /**
@@ -435,27 +438,7 @@ export function AgentView({
   const [artifactOpens, setArtifactOpens] = useState(0);
   // Another agent's artifacts are another list: never keep this one's open.
   useEffect(() => setOpenArtifactId(null), [agentId]);
-  const [pastId, setPastId] = useState<string | null>(null);
-  /**
-   * The excerpt for the past conversation the rail has open, fetched on demand
-   * and kept SEPARATE from `detail` so the current conversation's id — the one
-   * a send lands in — is never overwritten by a read-only view.
-   */
-  const [pastDetail, setPastDetail] = useState<AgentDetail | null>(null);
-  const [pastError, setPastError] = useState<ReadOutcome | null>(null);
-  /**
-   * Bumped to re-fetch the excerpt on demand.
-   *
-   * `version` deliberately does NOT drive the excerpt's effect: it is a frozen
-   * read-only view, and re-pulling it every time somebody approves a row would
-   * blank it back to "Opening…" for no reason. But the approval notice can be
-   * reporting the EXCERPT's failed read, and a retry that only re-ran the
-   * current conversation's read would leave that notice on screen with nothing
-   * on the page able to clear it. This is the retry's way in.
-   */
-  const [pastReload, setPastReload] = useState(0);
-
-  const visibleConversationId = pastId !== null ? pastDetail?.conversationId ?? null : detail?.conversationId ?? null;
+  const visibleConversationId = detail?.conversationId ?? null;
   useEffect(() => {
     onConversationScope?.(visibleConversationId === null ? null : {agentId,conversationId:visibleConversationId});
     return () => onConversationScope?.(null);
@@ -466,18 +449,12 @@ export function AgentView({
     rail: below `lg` the rail is a `Sheet` whose content is unmounted while it
     is shut, and the "N new" count on its toggle and the batch announcement
     both have to keep working exactly then. It follows the conversation ON
-    SCREEN — a past one when the rail opened one — because a row's source link
-    points into the thread beside it. `undefined` while that id is not known
+    SCREEN, because a row's source link points into the thread beside it. `undefined` while that id is not known
     yet, so the block says "checking" rather than "nothing new".
   */
   const learned = useConversationMemory({
     agentId,
-    conversationId:
-      detail === null
-        ? undefined
-        : pastId !== null
-          ? (pastDetail?.conversationId ?? undefined)
-          : detail.conversationId,
+    conversationId: detail === null ? undefined : detail.conversationId,
     enabled: detail?.memory.factsAvailable === true,
     announce: learnedAnnouncement,
   });
@@ -704,6 +681,24 @@ export function AgentView({
   const [turnsEnded, setTurnsEnded] = useState(0);
   /** Set by a send before the re-read lands, so a follow-up hits the same row. */
   const conversationRef = useRef<string | null>(null);
+  /** Which agent `conversationRef` belongs to. */
+  const conversationAgentRef = useRef(agentId);
+  /*
+    "New chat": an empty thread to type into, with no conversation behind it
+    yet — the first send creates one (named after that message). While this
+    holds and nothing has been sent, a re-read keeps the pane empty instead of
+    filling it with the agent's latest chat; the agent, its memory and the
+    chat list still refresh.
+  */
+  const draftRef = useRef(false);
+  /*
+    Moves on every chat switch ("New chat" or a sidebar pick). A send or a
+    switch that started before it moved is about a chat that has been left,
+    and its answer must not be applied (last click wins).
+  */
+  const viewEpochRef = useRef(0);
+  /** Moves on every `load`; only the newest one's answer is applied. */
+  const loadSeqRef = useRef(0);
   const abortRef = useRef<AbortController | null>(null);
 
   /*
@@ -724,6 +719,8 @@ export function AgentView({
         conversation it was earned in so it is only drawn there.
   */
   const [stopping, setStopping] = useState(false);
+  /** A message is posting (before its reply streams): no second send, no chat switch. */
+  const [sending, setSending] = useState(false);
   const [stopNotice, setStopNotice] = useState<string | null>(null);
   interface PendingStop {
     conversationId: string;
@@ -772,8 +769,46 @@ export function AgentView({
   const [failedTurns, setFailedTurns] = useState(0);
 
   const load = useCallback(async () => {
+    const seq = ++loadSeqRef.current;
     try {
-      const next = await workspaceApi.agent(agentId);
+      /*
+        Re-read the chat ON SCREEN, not whichever is most recent: a chat
+        opened from the sidebar is carried on in place, and a send into it
+        must not snap the view to another one. With none chosen yet (first
+        read) the server serves the most recent. A chosen chat deleted
+        elsewhere falls back to the most recent rather than an error page.
+      */
+      // Another agent's chat id is not this agent's (a view reused across an
+      // agent switch rather than remounted).
+      if (conversationAgentRef.current !== agentId) {
+        conversationAgentRef.current = agentId;
+        conversationRef.current = null;
+        draftRef.current = false;
+      }
+      /*
+        Read the chat on screen — and read AGAIN if that changed while the
+        read was out (a first send created a chat, a pending reply named one,
+        the sidebar switched). The first answer is about the chat that was
+        left; applying it would put that one back, and the next message would
+        start yet another chat.
+      */
+      let shown: string | null;
+      let read: AgentDetail;
+      do {
+        shown = conversationRef.current;
+        if (shown !== null) draftRef.current = false;
+        read =
+          shown === null
+            ? await workspaceApi.agent(agentId)
+            : await workspaceApi.agent(agentId, shown).catch((e: unknown) => {
+                if (toReadOutcome(e) !== 'gone') throw e;
+                return workspaceApi.agent(agentId);
+              });
+      } while (conversationRef.current !== shown);
+      // A newer read is out (a turn ended, a chat was switched): its answer
+      // is the one to show, and this older one must not land on top of it.
+      if (seq !== loadSeqRef.current) return;
+      const next = draftRef.current ? asEmptyChat(read) : read;
       /*
         A receipt answered in this thread outlives the re-read that follows
         the answer — see `keepAnsweredApprovals`. Only within ONE
@@ -798,6 +833,7 @@ export function AgentView({
       setThreadReads((n) => n + 1);
       setLoadError(null);
     } catch (e) {
+      if (seq !== loadSeqRef.current) return;
       setDetail(null);
       // The operator's half goes to the console; the reader's half is chosen
       // from the kind, not carried out of the error as a string.
@@ -869,52 +905,18 @@ export function AgentView({
     return focusFirstWhenReady([agentConversationTarget(agentId)]);
   }, [hasDetail, agentId]);
 
-  /*
-    Open one of the rail's past conversations. The excerpt is a real re-read
-    (`?conversationId=`), not something the roster response carried: `past`
-    rows used to ship `msgs: []` and a `folded: 0`, which the pane rendered as
-    "Earlier turns were summarised into memory · 0 messages folded" above an
-    empty transcript. Nothing had been summarised and nothing had been read.
-  */
-  useEffect(() => {
-    if (pastId === null) {
-      setPastDetail(null);
-      setPastError(null);
-      return;
-    }
-    let cancelled = false;
-    setPastDetail(null);
-    setPastError(null);
-    void (async () => {
-      try {
-        const excerpt = await workspaceApi.agent(agentId, pastId);
-        if (!cancelled) setPastDetail(excerpt);
-      } catch (e) {
-        if (!cancelled) {
-          logRequestFailure(e, 'workspace-agent-past');
-          setPastError(toReadOutcome(e));
-        }
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [agentId, pastId, pastReload]);
+  /** The approval notice's "Try again": re-read the queue and this thread. */
+  const retryApprovals = onChanged;
 
-  /**
-   * The approval notice's "Try again", for whichever read is behind it.
-   *
-   * Three reads can put that notice on screen and the reader cannot be asked
-   * which, so the retry re-runs all of them: `onChanged` re-pulls the shell's
-   * queue and bumps `version` (which re-runs this panel's current-conversation
-   * read), and `pastReload` re-fetches the read-only excerpt, which `version`
-   * deliberately does not reach. Miss that last one and the notice over an
-   * excerpt has a button that cannot clear it.
-   */
-  const retryApprovals = useCallback(() => {
-    setPastReload((n) => n + 1);
-    onChanged();
-  }, [onChanged]);
+  /*
+    A chat picked from the sidebar that would not open. The thread on screen
+    stays as it was (it is still a working chat), and this says why nothing
+    changed, with a retry when one can work.
+  */
+  const [switchError, setSwitchError] = useState<{
+    outcome: ReadOutcome;
+    conversationId: string | null;
+  } | null>(null);
 
   /*
     THE SIDEBAR'S CHAT LIST, published from what this view already holds. The
@@ -923,8 +925,9 @@ export function AgentView({
     renamed or opened in step with the thread on screen.
   */
   const chatsPast = detail?.past;
+  const chatsLatest = detail?.latest;
   const chatsConversationId = detail?.conversationId;
-  const chatsBusy = streaming || rereading;
+  const chatsBusy = streaming || rereading || sending;
   /*
     Held in a ref so a caller passing an inline arrow cannot turn every render
     into a publish, and every publish into a render.
@@ -936,13 +939,55 @@ export function AgentView({
     if (!publish || chatsPast === undefined || chatsConversationId === undefined) return;
     publish({
       agentId,
-      conversationId: chatsConversationId,
-      past: chatsPast,
-      openPastId: pastId,
+      chats: chatsFromDetail({
+        conversationId: chatsConversationId,
+        past: chatsPast,
+        ...(chatsLatest !== undefined ? { latest: chatsLatest } : {}),
+      }),
+      openId: chatsConversationId,
       busy: chatsBusy,
     });
-  }, [agentId, chatsPast, chatsConversationId, pastId, chatsBusy]);
+  }, [agentId, chatsPast, chatsLatest, chatsConversationId, chatsBusy]);
   useEffect(() => () => onChatsRef.current?.(null), []);
+
+  /*
+    What the chat being left was in the middle of: the last send, its error,
+    and a reply that failed part-way (kept on screen for Resend, but only in
+    its own chat). A turn still streaming is left alone — the sidebar holds
+    switches until it lands, and the render only draws it in its own chat.
+  */
+  const leaveChat = () => {
+    setSwitchError(null);
+    setSent(null);
+    setLiveVisuals(null);
+    setTurnError(null);
+    if (!streaming) {
+      setLiveCalls([]);
+      setLiveSegments([]);
+      setLiveIntents(new Map());
+      setStreamConversation(null);
+      setPhase(null);
+    }
+  };
+
+  const switchTo = async (conversationId: string | null) => {
+    const epoch = ++viewEpochRef.current;
+    setSwitchError(null);
+    try {
+      const next = await workspaceApi.agent(agentId, conversationId ?? undefined);
+      // Another chat was picked while this one was opening: that one wins.
+      if (epoch !== viewEpochRef.current) return;
+      draftRef.current = false;
+      conversationRef.current = next.conversationId;
+      leaveChat();
+      setDetail(next);
+    } catch (e) {
+      if (epoch !== viewEpochRef.current) return;
+      logRequestFailure(e, 'workspace-agent-switch-chat');
+      setSwitchError({ outcome: toReadOutcome(e), conversationId });
+    }
+    onChanged();
+  };
 
   /*
     A chat switch the sidebar asked for. Waits for the first detail: picking a
@@ -952,37 +997,30 @@ export function AgentView({
   useEffect(() => {
     if (chatCommand === null || chatCommand.agentId !== agentId || !hasDetail) return;
     onChatCommandConsumed?.(chatCommand.nonce);
-    if (chatCommand.kind === 'open') {
-      setPastId(chatCommand.pastId);
-      return;
-    }
     /*
-      A fresh chat the shell already created (it owns the create, so a failure
-      is reported where the button was pressed). Same reset the rail's old
-      "New" did: the excerpt, the last send and its error belong to the
+      Switch the thread on screen — to an empty new chat, or to one picked
+      from the sidebar, which then carries on right here: the composer sends
+      into whichever chat is shown. The last send and its error belong to the
       conversation being left.
     */
+    if (chatCommand.kind === 'new') {
+      viewEpochRef.current += 1;
+      draftRef.current = true;
+      conversationRef.current = null;
+      leaveChat();
+      setDetail((d) => (d === null ? d : asEmptyChat(d)));
+      return;
+    }
+    // The chat already on screen: nothing to switch, and a failed send's
+    // Resend stays where it is.
+    if (chatCommand.conversationId !== null && chatCommand.conversationId === detail?.conversationId) return;
     /*
       Not cancelled when the request clears: consuming it re-runs this effect,
       and a cleanup flag would drop the very read it started. An agent switch
       remounts this view (it is keyed), so a late answer lands in a discarded
       instance, never in another agent's thread.
     */
-    const { conversationId } = chatCommand;
-    void (async () => {
-      try {
-        const next = await workspaceApi.agent(agentId, conversationId);
-        conversationRef.current = conversationId;
-        setPastId(null);
-        setSent(null);
-        setLiveVisuals(null);
-        setTurnError(null);
-        setDetail(next);
-      } catch (e) {
-        logRequestFailure(e, 'workspace-agent-new-chat');
-      }
-      onChanged();
-    })();
+    void switchTo(chatCommand.conversationId);
   }, [chatCommand, agentId, hasDetail]);
 
   /*
@@ -1013,7 +1051,6 @@ export function AgentView({
   }, []);
 
   useEffect(() => {
-    setPastId(null);
     setSent(null);
     setLiveCalls([]);
     setLiveSegments([]);
@@ -1270,7 +1307,7 @@ export function AgentView({
             routing concern on the wire (invariant 1).
           */
           workspaceGrantActions.raise(request, {
-            conversationId: conversationRef.current,
+            conversationId: turnConversation,
             agentId,
           });
         },
@@ -1455,10 +1492,13 @@ export function AgentView({
       setTurnError(null);
       // The last turn's "you stopped this" is history the moment they say more.
       setStopNotice(null);
+      const target = conversationRef.current;
+      const epoch = viewEpochRef.current;
+      setSending(true);
       try {
         const { conversationId, reqId } = await workspaceApi.sendMessage({
           agentId,
-          conversationId: conversationRef.current,
+          conversationId: target,
           text,
           ...(files.length > 0
             ? { attachmentIds: files.map((a) => a.attachmentId) }
@@ -1473,11 +1513,28 @@ export function AgentView({
           what they sent (TASK-424). The record stays; only the right to send
           it again goes.
         */
+        setSending(false);
+        /*
+          The view moved to another chat while this was posting. The turn runs
+          on in the chat it was sent to (opening that chat reattaches to it);
+          adopting its id here would point this view's next message at a chat
+          that is not on screen.
+        */
+        if (epoch !== viewEpochRef.current) return;
         setSent({ text, attachments: files, resendable: false });
+        const started = target === null;
         conversationRef.current = conversationId;
+        /*
+          This message just created the chat. Read it now rather than when the
+          reply lands, so the sidebar lists it — already named after the
+          message — while the reply is still running.
+        */
+        if (started) void load();
         await streamFrom(reqId);
       } catch (e) {
+        setSending(false);
         setStreaming(false);
+        if (epoch !== viewEpochRef.current) return;
         logRequestFailure(e, 'workspace-agent-send');
         const kind = toReadOutcome(e);
         /*
@@ -1501,7 +1558,7 @@ export function AgentView({
         });
       }
     },
-    [agentId, streamFrom],
+    [agentId, streamFrom, load],
   );
 
   if (loadError !== null) {
@@ -1615,7 +1672,6 @@ export function AgentView({
   }
 
   const { agent } = detail;
-  const past = detail.past.find((p) => p.id === pastId) ?? null;
 
 
   /*
@@ -1624,7 +1680,7 @@ export function AgentView({
     draws no link to a turn that is not here to jump to. The durable thread
     only — the in-flight turns' placeholder ids are never a stored source.
   */
-  const sources = turnSources(past !== null ? (pastDetail?.thread ?? []) : detail.thread);
+  const sources = turnSources(detail.thread);
 
   /*
     The Memory panel. Below `lg` the source link closes the sheet first —
@@ -1727,8 +1783,14 @@ export function AgentView({
     }),
     connectorNames,
   );
-  const hasLiveContent = liveReply.length > 0;
-  if (streaming || hasLiveContent) {
+  /*
+    The live reply belongs to the chat its turn was sent in. A new chat has no
+    id on `detail` until its re-read lands; there it is the chat the first
+    send created.
+  */
+  const turnHere = streamConversation === (detail.conversationId ?? conversationRef.current);
+  const hasLiveContent = turnHere && liveReply.length > 0;
+  if ((streaming && turnHere) || hasLiveContent) {
     if (hasLiveContent) {
       liveThread.push(...liveReply);
     } else {
@@ -1744,12 +1806,13 @@ export function AgentView({
     Visuals the live turn showed, after its reply — until the re-read brings
     the committed turn that carries them. Anything the durable thread already
     has is left out, so the hand-over never draws one twice. Only in the
-    conversation they were shown in; a new chat's `detail` has no id yet, and
-    those are its own.
+    conversation they were shown in. A new chat's `detail` has no id until its
+    re-read lands, so there it is the chat its first send created
+    (`conversationRef`) — not a turn still running in the chat that was left.
   */
   if (
     liveVisuals !== null &&
-    (detail.conversationId === null || detail.conversationId === liveVisuals.conversationId)
+    (detail.conversationId ?? conversationRef.current) === liveVisuals.conversationId
   ) {
     const durable = new Set(
       detail.thread.flatMap((m) =>
@@ -1787,20 +1850,6 @@ export function AgentView({
   }
 
   /*
-    The read-only excerpt. While it is in flight the pane says so rather than
-    rendering an empty transcript — an empty thread reads as "this
-    conversation had nothing in it", which is a claim about the content, not
-    about the fetch. On failure the alert above carries the news and the pane
-    stays blank rather than repeating it.
-  */
-  const pastThread: ThreadMessage[] =
-    pastDetail !== null
-      ? pastDetail.thread
-      : pastError !== null
-        ? []
-        : [{ kind: 'status', id: 'past-loading', text: 'Opening…' }];
-
-  /*
     How trustworthy the approval cards in the thread on screen are.
 
     TWO reads stand behind those cards and either one failing costs the reader
@@ -1812,10 +1861,6 @@ export function AgentView({
         pointer whose row is missing renders nothing (see `AgentConversation`),
         so a failed queue read empties the thread's cards just as thoroughly.
 
-    Read off the detail actually being rendered — the read-only excerpt has its
-    own read, and borrowing the current conversation's status while an excerpt
-    is up would put a notice over a thread it says nothing about.
-
     `unavailable` is not a failure and is not folded in: no decisions producer
     means no decision can exist, so a thread with no approval cards is true.
 
@@ -1825,34 +1870,8 @@ export function AgentView({
     in. Telling them a read failed and handing them "Try again" would be a
     button that cannot work — the exact offer TASK-276 took off the other two
     decision surfaces.
-
-    And nothing is claimed while an excerpt is still opening: the pane is a
-    placeholder, not a thread, so there is no conversation on screen for "this
-    conversation" to be about yet. The answer arrives with the excerpt.
   */
-  /*
-    The archived-conversation banner's one sentence, bound ONCE because it is
-    drawn twice — as the visible line and, since TASK-436, as the `title`
-    tooltip that recovers it when CSS clamps it. A tooltip that is not the line
-    it is recovering is worse than no tooltip.
-
-    Until TASK-435 the two slots trivially agreed: both read `past.meta`, a
-    string the server had already computed. They are now a CALL, and
-    `relativeDay(iso, now = new Date())` reads the wall clock per call — so two
-    calls either side of a local midnight (or a 7/14/60/365-day threshold) land
-    in different buckets, and the tooltip claims "today" over a line reading
-    "yesterday". Sub-millisecond window, cosmetic damage, and therefore
-    something nobody would ever find. One binding makes it unrepresentable
-    rather than unlikely.
-  */
-  const pastLine =
-    past === null
-      ? null
-      : `${past.title} · ${relativeDay(past.lastActivityAt)} · read-only`;
-
-  const excerptOpening = past !== null && pastDetail === null && pastError === null;
-  const shownRead = (past !== null ? pastDetail : detail)?.decisions.status ?? 'ok';
-  const approvalRead: ApprovalRead = excerptOpening ? 'ok' : approvalReadFrom(shownRead, decisionsError);
+  const approvalRead: ApprovalRead = approvalReadFrom(detail.decisions.status, decisionsError);
 
   function openSettings(section?: AgentSettingsSection) {
     // Generic Settings opens the phone index; named links drill in directly.
@@ -1947,45 +1966,21 @@ export function AgentView({
           </header>
           <h2 className="sr-only">Conversation</h2>
 
-              {past && (
-                <div className="flex items-center gap-2.5 border-b border-border bg-muted px-6 py-2.5">
-                  <Archive size={13} className="text-muted-foreground" />
-                  {/* One binding, two slots — see `pastLine` above for why. */}
-                  <span
-                    className="min-w-0 flex-1 truncate text-[12.5px] text-muted-foreground"
-                    title={pastLine ?? undefined}
-                  >
-                    {pastLine}
-                  </span>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => setPastId(null)}
-                    className="h-7 gap-1.5 text-[12px] text-primary"
-                  >
-                    Back to current
-                    <ArrowRight size={11} />
-                  </Button>
-                </div>
-              )}
               {/*
                 TASK-806 — "Gmail isn’t signed in yet, so it’s off for this
                 chat." A connector never signed in to is skipped for the turn,
                 not a reason to refuse it; this says so, on every tab (the
                 thread is beside the rail), never blocks the composer, and
                 reads the same list the Connectors settings section draws.
-                It is about the CURRENT chat, so it steps aside (staying mounted, so a
-                dismissal survives) while a past conversation is open. It
-                re-reads when a turn ends and when the tab changes — signing in
+                It re-reads when a turn ends and when the tab changes — signing in
                 on Connectors clears it on the way back.
               */}
               <SkippedConnectorsNotice
                 agentId={agentId}
                 refreshKey={`${turnsEnded}:${tab}:${settingsSection ?? 'chat'}`}
                 onOpenConnectors={() => openSettings('connectors')}
-                suppressed={past !== null}
               />
-              {turnError !== null && !past && (
+              {turnError !== null && (
                 /*
                   One sentence about one event, then the way out — and no
                   second line under it.
@@ -2103,40 +2098,25 @@ export function AgentView({
                   </Alert>
                 </div>
               )}
-              {past && pastError !== null && (
-                /*
-                  THE ONE ALERT ON THIS SURFACE THAT HAD NO WAY OUT AT ALL — no
-                  retry, no sign-in, not even a dismiss. `retryApprovals` was
-                  already bumping `pastReload`, which is exactly the re-read this
-                  needs, but it was wired only to `AgentConversation`'s approval
-                  notice: a reader whose excerpt failed on a blip was stranded
-                  until they happened to click a different rail row.
-
-                  And its single sentence claimed a DELETION on every mode. That
-                  claim is true of a 404 and false of a 500, so it now appears
-                  only under `gone` — where it also correctly has no retry,
-                  because nothing brings a deleted conversation back.
-
-                  No dismiss on the other branches, deliberately: unlike
-                  `turnError` this alert stands over a pane that is BLANK
-                  (`pastThread` renders `[]` while `pastError` is set), so
-                  dismissing it would leave an empty transcript with nothing on
-                  screen saying why. "Back to current" in the header above is
-                  the exit.
-                */
+              {switchError !== null && (
                 <div className="px-6 pt-4">
-                  <Alert variant={readAlertVariant(pastError)}>
+                  <Alert variant={readAlertVariant(switchError.outcome)}>
                     <AlertDescription className="flex flex-col items-start gap-2">
-                      <span>{PAST_COPY[pastError]}</span>
-                      {pastError === 'failed' && (
-                        <Button
-                          variant="secondary"
-                          size="sm"
-                          onClick={() => setPastReload((n) => n + 1)}
-                        >
-                          Try again
+                      <span>{SWITCH_COPY[switchError.outcome]}</span>
+                      <div className="flex items-center gap-2">
+                        {/* Nothing brings a deleted chat back, and a signed-out retry cannot work. */}
+                        {switchError.outcome === 'failed' && (
+                          <Button
+                            size="sm"
+                            onClick={() => void switchTo(switchError.conversationId)}
+                          >
+                            Try again
+                          </Button>
+                        )}
+                        <Button variant="secondary" size="sm" onClick={() => setSwitchError(null)}>
+                          Dismiss
                         </Button>
-                      )}
+                      </div>
                     </AlertDescription>
                   </Alert>
                 </div>
@@ -2144,40 +2124,30 @@ export function AgentView({
               <AgentConversation
                 onOpenArtifact={(id) => { setOpenArtifactId(id); setArtifactOpens((n) => n + 1); setOpenPanel('artifacts'); }}
                 agent={agent}
-                thread={past ? pastThread : liveThread}
+                thread={liveThread}
                 /*
                   TASK-1017 — chips recheck their files once per successful
                   DURABLE read (`threadReads`), and once per turn that failed
                   (`failedTurns`, TASK-1019), not as `liveThread`'s live
                   frames come and go while a turn streams.
                 */
-                fileRecheckKey={past ? pastThread.length : threadReads + failedTurns}
+                fileRecheckKey={threadReads + failedTurns}
                 /*
                   Whose conversation the thread on screen belongs to, so a
                   person's own attachments can be downloaded from it
-                  (TASK-424). Read from the SAME detail the thread came from —
-                  the excerpt's id when an excerpt is open, the current one
-                  otherwise — because a file path scoped to one conversation
+                  (TASK-424). Read from the SAME detail the thread came from,
+                  because a file path scoped to one conversation
                   answers 404 under another, and handing the wrong id here
                   would turn a working thumbnail into a broken image.
                 */
-                conversationId={
-                  past
-                    ? (pastDetail?.conversationId ?? null)
-                    : (detail.conversationId ?? liveVisuals?.conversationId ?? null)
-                }
+                conversationId={detail.conversationId ?? liveVisuals?.conversationId ?? null}
                 decisions={decisions}
-                readOnly={past !== null}
-                busy={streaming}
-                onStop={() => void stop()}
+                readOnly={false}
+                busy={streaming || sending}
+                {...(streaming ? { onStop: () => void stop() } : {})}
                 stopping={stopping}
                 settling={rereading}
-                /*
-                  The failure strip above renders on `turnError !== null &&
-                  !past`; this pane's own empty copy is already off for a past
-                  conversation (`readOnly`), so `turnError` alone is the right
-                  mirror of it (TASK-695).
-                */
+                /* The failure strip above renders on exactly this (TASK-695). */
                 failureStripShown={turnError !== null}
                 onSend={(text, attachments) => void send(text, attachments)}
                 onApprove={onApprove}
@@ -2194,13 +2164,11 @@ export function AgentView({
                   WHICH conversation that `thread` is (TASK-418). This panel
                   swaps it under a component that is mounted once and un-keyed,
                   so without this the scroller keeps the previous conversation's
-                  pixel offset and the excerpt opens at an arbitrary point. The
+                  pixel offset and a chat opens at an arbitrary point. The
                   agent id is in it because the panel outlives an agent switch
                   too.
                 */
-                conversationKey={
-                  past ? `past:${agent.id}:${past.id}` : `live:${agent.id}`
-                }
+                conversationKey={`${agent.id}:${detail.conversationId ?? ''}`}
               />
 
         </div>

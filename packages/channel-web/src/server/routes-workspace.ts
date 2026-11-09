@@ -1,8 +1,8 @@
 /**
  * GET  /api/workspace/state            — the agent roster
  * GET  /api/workspace/agents/:agentId  — one agent's detail panel
- *        ?conversationId=<id> reads that conversation instead of the current
- *        one (the rail's read-only past-conversation view)
+ *        ?conversationId=<id> reads that conversation instead of the most
+ *        recent one (a chat picked from the sidebar)
  *        ?agentId=<id> scopes it to one agent; ?before=<ISO>&limit=<n> page it
  * GET  /api/workspace/tasks            — every task the caller owns, across their agents (TASK-909)
  * GET  /api/workspace/tasks/:agentId/:routineId — one task's page: its latest update, brief, notes and updates (TASK-910)
@@ -1308,6 +1308,13 @@ export interface AgentDetail {
   decisions: { status: WorkspaceReadStatus };
   /** Older conversations, newest first, excluding the current one. */
   past: PastConversation[];
+  /**
+   * The current (most recently active) conversation as a list row, so the
+   * sidebar can name it by its title instead of "Current conversation".
+   * `null` when the agent has never had one. Present whichever conversation
+   * `thread` was read from: the sidebar lists `latest` + `past` either way.
+   */
+  latest: PastConversation | null;
   /**
    * The Memory tab, split by WHO OWNS IT (AW-13), each half carrying how its
    * read went.
@@ -8106,7 +8113,7 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
       // A pointer per row, nothing more: the transcript arrives from a second
       // read through `?conversationId=`, and there is no fold count to ship.
       // See `PastConversation` for why both fields are gone.
-      const past: PastConversation[] = convs.slice(1).map((c) => ({
+      const toRow = (c: ConversationRow): PastConversation => ({
         id: c.conversationId,
         // Fenced like every other label out of this file — see
         // CONVERSATION_TITLE_MAX_CHARS. A model wrote this string.
@@ -8114,12 +8121,15 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
           fenceLine(c.title, CONVERSATION_TITLE_MAX_CHARS) ??
           'Untitled conversation',
         lastActivityAt: c.lastActivityAt ?? c.createdAt,
-      }));
+      });
+      const past: PastConversation[] = convs.slice(1).map(toRow);
+      const latest = current === null ? null : toRow(current);
 
       /*
         Which conversation the caller is asking to READ. `?conversationId=`
-        opens one of the `past` rows read-only; without it we serve the
-        current one. Either way the ownership check below is the same, and it
+        opens that chat (any of the agent's, to carry on); without it we serve
+        the most recent one. `latest` and `past` describe the whole list either
+        way. Either way the ownership check below is the same, and it
         is `conversations:get` — not the list we just read — that decides.
 
         Read the key LOWERCASED. `http-server` projects the query string with
@@ -8245,6 +8255,7 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
         thread,
         decisions: { status: decisionsRead },
         past,
+        latest,
         memory: await readMemory(agent, userId),
         connectorTools: connectorNamesToRows(connectors),
       } satisfies AgentDetail);
