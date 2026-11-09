@@ -18,7 +18,8 @@
  * Bounded: at most `maxPages` pages, a cursor seen before ends the run, and
  * the store skips new names past `maxRows`. A failure keeps the copy and the
  * checkpoint, records the attempt, and is logged as a fixed short code: never
- * a URL, a header or a byte of the registry's answer.
+ * a URL, a header or a byte of the registry's answer. A shutdown abort is not
+ * a failure and records nothing.
  */
 import { faultLogFields, type Logger } from '@ax/core';
 import { MAX_PAGES_PER_SYNC, MAX_ROWS, WATERMARK_OVERLAP_MS } from './limits.js';
@@ -177,7 +178,10 @@ async function crawl(deps: SyncDeps): Promise<SyncResult> {
  * Run one sync. Never throws: every failure resolves `{ outcome: 'failed' }`
  * with a short code (a RegistryError's reason, the crawl's own, or `store` for
  * anything else), after recording the attempt (a failure to record it is
- * swallowed: the warn line still reports the run).
+ * swallowed: the warn line still reports the run). Except `aborted`: the
+ * caller stopped the run (shutdown), which is not a failed attempt. Nothing is
+ * recorded, so a deploy that lands mid-sync does not leave the copy reading
+ * as stale, and the run is logged at info.
  */
 export async function runSync(deps: SyncDeps): Promise<SyncResult> {
   try {
@@ -185,6 +189,10 @@ export async function runSync(deps: SyncDeps): Promise<SyncResult> {
   } catch (err) {
     const reason: SyncFailure =
       err instanceof RegistryError || err instanceof CrawlStopped ? err.reason : 'store';
+    if (reason === 'aborted') {
+      log(deps.logger, 'info', 'connector_directory_sync_aborted');
+      return { outcome: 'failed', reason };
+    }
     try {
       await deps.store.recordFailure(deps.now());
     } catch {

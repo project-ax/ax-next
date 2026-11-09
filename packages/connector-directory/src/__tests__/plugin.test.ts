@@ -289,8 +289,12 @@ describe('@ax/connector-directory plugin', () => {
       await inFlight;
       await harness.close();
       expect(await result).toEqual({ outcome: 'failed', reason: 'aborted' });
-      // The attempt was recorded before the database went away.
-      expect(await stateRow()).toMatchObject({ last_attempt_failed: true, synced_at: null });
+      // Stopping is not failing: nothing was recorded for the attempt.
+      expect(await stateRow()).toMatchObject({
+        last_attempt_failed: false,
+        last_attempt_at: null,
+        synced_at: null,
+      });
       // A stopped plugin starts nothing.
       expect(await plugin.sync()).toEqual({ outcome: 'disabled' });
       expect(fake.requests).toHaveLength(1);
@@ -322,6 +326,41 @@ describe('@ax/connector-directory plugin', () => {
     await harness.close();
     await plugin.drain();
     expect(fake.requests).toHaveLength(1);
-    expect(await stateRow()).toMatchObject({ last_attempt_failed: true });
+    expect(await stateRow()).toMatchObject({ last_attempt_failed: false });
+  });
+
+  it('a deploy that lands mid-sync leaves the directory fresh, not stale', async () => {
+    const good = createFakeRegistry(() => page([listing({ name: 'com.example/a' })]));
+    const first = await boot({ fetchImpl: good.fetchImpl });
+    expect(await first.plugin.sync()).toMatchObject({ outcome: 'ok' });
+    const ask = (h: TestHarness) =>
+      h.bus.call<unknown, DirectorySearchOutput>(DIRECTORY_SEARCH_HOOK, h.ctx(), { query: '' });
+    const { syncedAt } = await ask(first.harness);
+    expect(syncedAt).toEqual(expect.any(String));
+
+    // The old pod: its hourly sync is in flight when the deploy stops it.
+    let requested!: () => void;
+    const inFlight = new Promise<void>((resolve) => {
+      requested = resolve;
+    });
+    const hanging = createFakeRegistry((_url, init) => {
+      requested();
+      return waitForAbort(init);
+    });
+    const old = await boot({ fetchImpl: hanging.fetchImpl });
+    const result = old.plugin.sync();
+    await inFlight;
+    await old.harness.close();
+    expect(await result).toEqual({ outcome: 'failed', reason: 'aborted' });
+
+    // The new pod reads the same copy as fresh.
+    const next = await boot({ fetchImpl: good.fetchImpl });
+    expect(await ask(next.harness)).toEqual({
+      enabled: true,
+      entries: [],
+      syncedAt,
+      stale: false,
+      verifiedOnly: false,
+    });
   });
 });

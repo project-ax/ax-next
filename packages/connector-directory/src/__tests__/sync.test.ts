@@ -10,7 +10,12 @@ import { fetchRegistryPage, parseRegistryUrl } from '../registry-client.js';
 import { searchDirectory } from '../search.js';
 import { createDirectoryStore, type DirectoryStore, type SyncState } from '../store.js';
 import { runSync, type SyncResult } from '../sync.js';
-import { createFakeRegistry, page, type FakeRegistry } from './support/fake-registry.js';
+import {
+  createFakeRegistry,
+  page,
+  waitForAbort,
+  type FakeRegistry,
+} from './support/fake-registry.js';
 import { listing, npmPackage, remote } from './support/listing.js';
 
 const SOURCE = 'https://registry.test';
@@ -77,13 +82,21 @@ function world() {
   };
   const run = (
     fake: FakeRegistry,
-    o: { source?: string; maxRows?: number; maxPages?: number; store?: DirectoryStore } = {},
+    o: {
+      source?: string;
+      maxRows?: number;
+      maxPages?: number;
+      store?: DirectoryStore;
+      /** The caller's stop signal, as the plugin passes one (shutdown). */
+      signal?: AbortSignal;
+    } = {},
   ): Promise<SyncResult> => {
     const base = parseRegistryUrl(o.source ?? SOURCE);
+    const fetchOpts = o.signal === undefined ? {} : { signal: o.signal };
     return runSync({
       store: o.store ?? store,
       source: base.href,
-      fetchPage: (q) => fetchRegistryPage(fake.fetchImpl, base, q),
+      fetchPage: (q) => fetchRegistryPage(fake.fetchImpl, base, q, fetchOpts),
       now: () => clock.now(),
       logger,
       ...(o.maxRows === undefined ? {} : { maxRows: o.maxRows }),
@@ -281,6 +294,29 @@ describe('runSync', () => {
 
     expect(await w.run(serve(page([])))).toMatchObject({ outcome: 'ok', full: false });
     expect(await store.readState()).toMatchObject({ lastAttemptFailed: false });
+  });
+
+  it('a shutdown abort is not a failed attempt: nothing recorded, an info line', async () => {
+    const w = world();
+    await w.run(serve(page([listing({ name: 'com.example/a' })])));
+    const before = await store.readState();
+
+    w.clock.advance(HOUR);
+    const shutdown = new AbortController();
+    const fake = createFakeRegistry((_url, init) => {
+      const pending = waitForAbort(init);
+      shutdown.abort();
+      return pending;
+    });
+    expect(await w.run(fake, { signal: shutdown.signal })).toEqual({
+      outcome: 'failed',
+      reason: 'aborted',
+    });
+    // Recording it would mark the copy stale after every deploy.
+    expect(await store.readState()).toEqual(before);
+    expect(await ids()).toEqual(['com.example/a']);
+    expect(w.lines.at(-1)).toEqual({ level: 'info', msg: 'connector_directory_sync_aborted' });
+    expect(w.lines.map((l) => l.msg)).not.toContain('connector_directory_sync_failed');
   });
 
   it('a NUL or bidi character in a listing never fails the page', async () => {
