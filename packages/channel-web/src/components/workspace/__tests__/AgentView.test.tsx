@@ -1971,7 +1971,6 @@ describe('AgentView — the sidebar chat list (chats moved out of the rail)', ()
         agentId: 'a-quill',
         chats: [{ id: 'c-now', title: 'Today’s plan', lastActivityAt: TEN_DAYS_AGO }, PAST],
         openId: 'c-now',
-        busy: false,
       }),
     );
   });
@@ -2115,6 +2114,88 @@ describe('AgentView — the sidebar chat list (chats moved out of the rail)', ()
     expect(screen.queryByText('Thinking…')).toBeNull();
   });
 
+  /*
+    Leaving a chat mid-reply: the turn carries on on the server, this view
+    stops listening, and opening that chat again reattaches to the turn.
+  */
+  it('leaving a chat mid-reply stops listening; the new chat is free to use', async () => {
+    agentMock.mockResolvedValue(detail({ past: [PAST] }));
+    sendMock.mockResolvedValue({ conversationId: 'c-now', reqId: 'r1' });
+    let signal!: AbortSignal;
+    streamMock.mockImplementationOnce(
+      async (_reqId: string, h: { onText: (t: string) => void; signal?: AbortSignal }) => {
+        signal = h.signal as AbortSignal;
+        h.onText('STILL STREAMING');
+        await new Promise(() => {});
+      },
+    );
+    const view = renderBare({});
+    const box = await screen.findByPlaceholderText('Message Quill');
+    fireEvent.change(box, { target: { value: 'go' } });
+    fireEvent.keyDown(box, { key: 'Enter' });
+    expect(await screen.findByText(/STILL STREAMING/)).toBeTruthy();
+
+    view.rerenderWith({ chatCommand: { nonce: 1, agentId: 'a-quill', kind: 'new' } });
+    await waitFor(() => expect(screen.queryByText('what is on today')).toBeNull());
+    expect(signal.aborted).toBe(true);
+    expect(screen.queryByRole('button', { name: /stop/i })).toBeNull();
+
+    // The new chat takes a message straight away.
+    sendMock.mockResolvedValue({ conversationId: 'c-new', reqId: 'r2' });
+    streamMock.mockImplementation(() => new Promise(() => {}));
+    const box2 = screen.getByPlaceholderText('Message Quill');
+    fireEvent.change(box2, { target: { value: 'second' } });
+    fireEvent.keyDown(box2, { key: 'Enter' });
+    await waitFor(() =>
+      expect(sendMock).toHaveBeenLastCalledWith(expect.objectContaining({ conversationId: null, text: 'second' })),
+    );
+  });
+
+  it('a frame already on its way when the chat was left never lands in the next one', async () => {
+    agentMock.mockResolvedValue(detail({ past: [PAST] }));
+    sendMock.mockResolvedValue({ conversationId: 'c-now', reqId: 'r1' });
+    let late!: (t: string) => void;
+    streamMock.mockImplementation(async (_reqId: string, h: { onText: (t: string) => void }) => {
+      late = h.onText;
+      await new Promise(() => {});
+    });
+    const view = renderBare({});
+    const box = await screen.findByPlaceholderText('Message Quill');
+    fireEvent.change(box, { target: { value: 'go' } });
+    fireEvent.keyDown(box, { key: 'Enter' });
+    await waitFor(() => expect(streamMock).toHaveBeenCalledTimes(1));
+
+    view.rerenderWith({ chatCommand: { nonce: 1, agentId: 'a-quill', kind: 'new' } });
+    await waitFor(() => expect(screen.queryByText('what is on today')).toBeNull());
+    act(() => late('LATE FRAME'));
+    expect(screen.queryByText(/LATE FRAME/)).toBeNull();
+  });
+
+  it('opening a chat left mid-reply picks the reply back up', async () => {
+    let turnLive = true;
+    agentMock.mockImplementation(async (_id: string, conversationId?: string) =>
+      conversationId === 'c-old'
+        ? detail({ conversationId: 'c-old', thread: [{ kind: 'user', id: 'o1', text: 'the March question' }] })
+        : detail({ past: [PAST], ...(turnLive ? { liveReqId: 'r1' } : {}) }),
+    );
+    sendMock.mockResolvedValue({ conversationId: 'c-now', reqId: 'r1' });
+    streamMock.mockImplementation(() => new Promise(() => {}));
+    const view = renderBare({});
+    const box = await screen.findByPlaceholderText('Message Quill');
+    fireEvent.change(box, { target: { value: 'go' } });
+    fireEvent.keyDown(box, { key: 'Enter' });
+    await waitFor(() => expect(streamMock).toHaveBeenCalledWith('r1', expect.anything()));
+    const before = streamMock.mock.calls.length;
+
+    view.rerenderWith({ chatCommand: { nonce: 1, agentId: 'a-quill', kind: 'open', conversationId: 'c-old' } });
+    await screen.findByText('the March question');
+    view.rerenderWith({ chatCommand: { nonce: 2, agentId: 'a-quill', kind: 'open', conversationId: 'c-now' } });
+    await screen.findByText('what is on today');
+    await waitFor(() => expect(streamMock.mock.calls.length).toBe(before + 1));
+    expect(streamMock.mock.calls.at(-1)).toEqual(['r1', expect.objectContaining({ resume: true })]);
+    turnLive = false;
+  });
+
   it('a send that was still posting when New chat was pressed does not pull the view back', async () => {
     agentMock.mockResolvedValue(detail({ past: [PAST] }));
     let land!: (v: { conversationId: string; reqId: string }) => void;
@@ -2125,12 +2206,9 @@ describe('AgentView — the sidebar chat list (chats moved out of the rail)', ()
     const box = await screen.findByPlaceholderText('Message Quill');
     fireEvent.change(box, { target: { value: 'first' } });
     fireEvent.keyDown(box, { key: 'Enter' });
-    // While it posts, the sidebar holds chat switches.
-    await waitFor(() =>
-      expect(onChats).toHaveBeenLastCalledWith(expect.objectContaining({ busy: true })),
-    );
+    await waitFor(() => expect(sendMock).toHaveBeenCalledTimes(1));
 
-    // A New chat lands anyway (from the collapsed rail before the fix).
+    // New chat while the message is still posting.
     view.rerenderWith({ onChats, chatCommand: { nonce: 1, agentId: 'a-quill', kind: 'new' } });
     await waitFor(() => expect(screen.queryByText('what is on today')).toBeNull());
     const reads = agentMock.mock.calls.length;

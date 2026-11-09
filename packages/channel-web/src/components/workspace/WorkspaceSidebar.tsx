@@ -87,14 +87,12 @@ export function WorkspaceSidebarNav({
     action: () => void,
     active = false,
     needsYou = false,
-    disabled = false,
   ) => (
     <IconTooltip label={label} side="right">
       <Button
         variant="ghost"
         size="icon"
         aria-label={label}
-        disabled={disabled}
         onClick={go(action)}
         className={cn(
           'relative rounded-sm',
@@ -165,8 +163,7 @@ export function WorkspaceSidebarNav({
             />
             {selected !== null && (
               <>
-                {/* Held while a message posts or a reply streams, like the expanded list's. */}
-                {iconRow('New chat', Plus, onNewChat, false, false, chats?.busy === true)}
+                {iconRow('New chat', Plus, onNewChat)}
                 {iconRow('Search chats', Search, () => {
                   setSearchOnExpand(true);
                   onCollapse?.();

@@ -565,7 +565,6 @@ function Inner({
           agentId: selectedAgentId,
           chats: chatsFromDetail(d),
           openId: null,
-          busy: false,
         });
       } catch (e) {
         if (cancelled) return;

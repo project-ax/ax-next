@@ -22,8 +22,6 @@ export interface SidebarChatList {
    * as selected off the agent route.
    */
   openId: string | null;
-  /** A turn is streaming or settling — chat switches wait until it lands. */
-  busy: boolean;
 }
 
 /**
