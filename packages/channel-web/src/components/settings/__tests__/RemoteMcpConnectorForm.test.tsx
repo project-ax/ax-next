@@ -9,6 +9,8 @@ import {
 } from '@testing-library/react';
 import { ConnectorEditDialog } from '../ConnectorEditDialog';
 import type { Connector, ConnectorPrefill } from '@/lib/connectors';
+import { prefillFromDirectoryEntry } from '@/lib/connector-directory';
+import { directoryEntry } from '@/lib/__tests__/directory-fixtures';
 
 const fixture: Connector = {
   id: 'linear',
@@ -457,6 +459,9 @@ describe('remote connector editor', () => {
     discovery = { hosts: ['mcp.notion.example.com'], auth: 'other' };
     const options = { ...props(), target: 'new' as const, prefill: requestPrefill() };
     render(<ConnectorEditDialog {...options} />);
+    expect(
+      screen.getByText('Filled in from the request. Check each field before you add it.'),
+    ).toBeInTheDocument();
     expect(screen.getByLabelText('Name')).toHaveValue('Notion');
     expect(screen.getByLabelText('Server URL')).toHaveValue(
       'https://mcp.notion.example.com/mcp',
@@ -558,6 +563,89 @@ describe('remote connector editor', () => {
         'A connector with this id already exists. Dismiss this request if it’s no longer needed.',
       ),
     ).toBeInTheDocument();
+  });
+  describe('directory prefill (TASK-1101)', () => {
+    const key = directoryEntry({ auth: 'key', keyHeader: 'X-API-Key' });
+    const renderDirectory = (entry = key) => {
+      const options = {
+        ...props(),
+        target: 'new' as const,
+        prefill: prefillFromDirectoryEntry(entry),
+      };
+      render(<ConnectorEditDialog {...options} />);
+      return options;
+    };
+    it('says it was filled in from the directory and asks for the note to be rewritten', () => {
+      discovery = { hosts: ['mcp.linear.app'], auth: 'other' };
+      renderDirectory();
+      expect(
+        screen.getByText('Filled in from the directory. Check it over before you add it.'),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByText(
+          'Every assistant that uses this connector reads this note. The listing’s publisher wrote it, so rewrite it in your own words.',
+        ),
+      ).toBeInTheDocument();
+      expect(screen.getByLabelText('Name')).toHaveValue('Linear');
+      expect(screen.getByLabelText('Server URL')).toHaveValue('https://mcp.linear.app/mcp');
+      expect(screen.getByLabelText('How to use it')).toHaveValue(key.description);
+      expect(screen.queryByText(/Filled in from the request/)).toBeNull();
+      expect(screen.queryByTestId('request-left-out')).toBeNull();
+    });
+    it('a key listing opens with its header named and each agent bringing its own key', async () => {
+      discovery = { hosts: ['mcp.linear.app'], auth: 'other' };
+      renderDirectory();
+      expect(await screen.findByLabelText('Each agent adds its own key')).toBeChecked();
+      expect(screen.getByLabelText('Header name')).toHaveValue('X-API-Key');
+      expect(screen.queryByLabelText('Value')).toBeNull();
+    });
+    it('nothing is written until Add connector, and the create body is the ordinary one', async () => {
+      discovery = { hosts: ['mcp.linear.app'], auth: 'other' };
+      const options = renderDirectory();
+      await screen.findByLabelText('Each agent adds its own key');
+      expect(writes).toEqual([]);
+      await waitFor(() =>
+        expect(screen.getByRole('button', { name: 'Add connector' })).toBeEnabled(),
+      );
+      fireEvent.click(screen.getByRole('button', { name: 'Add connector' }));
+      await finishAdding();
+      await waitFor(() => expect(options.onSaved).toHaveBeenCalled());
+      const create = writes.find((w) => w.url === '/admin/connectors')!;
+      expect(create.body).toMatchObject({
+        connectorId: expect.stringMatching(/^linear-[0-9a-f]{8}$/),
+        name: 'Linear',
+        usageNote: key.description,
+        keyMode: 'personal',
+        capabilities: {
+          mcpServers: [expect.objectContaining({ url: 'https://mcp.linear.app/mcp' })],
+          credentials: [
+            expect.objectContaining({ kind: 'api-key', headerName: 'X-API-Key' }),
+          ],
+        },
+      });
+      // TASK-1102 adds `fromDirectory` to the create body and changes this line.
+      expect(Object.keys(create.body).sort()).toEqual([
+        'capabilities',
+        'connectorId',
+        'keyMode',
+        'name',
+        'usageNote',
+      ]);
+    });
+    it('an id clash on a directory prefill gets the plain message', async () => {
+      discovery = { hosts: ['mcp.linear.app'], auth: 'none' };
+      writeResponse = () =>
+        new Response(JSON.stringify({ error: 'connector-id-taken' }), { status: 409 });
+      renderDirectory(directoryEntry());
+      await waitFor(() =>
+        expect(screen.getByRole('button', { name: 'Add connector' })).toBeEnabled(),
+      );
+      fireEvent.click(screen.getByRole('button', { name: 'Add connector' }));
+      expect(
+        await screen.findByText('A connector with this id already exists.'),
+      ).toBeInTheDocument();
+      expect(screen.queryByText(/Dismiss this request/)).toBeNull();
+    });
   });
   it('blocks a new connector until its server can be checked, then retries', async () => {
     failDiscovery = true;
