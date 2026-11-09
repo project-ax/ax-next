@@ -13,3 +13,10 @@ export {
   type DirectorySearchOutput,
   type PublisherProof,
 } from './contract.js';
+export { DEFAULT_REGISTRY_URL } from './limits.js';
+export {
+  createConnectorDirectoryPlugin,
+  type ConnectorDirectoryConfig,
+  type ConnectorDirectoryPlugin,
+} from './plugin.js';
+export type { SyncFailure, SyncResult } from './sync.js';

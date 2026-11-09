@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { PluginError } from '@ax/core';
 import { DEFAULT_REGISTRY_URL, MAX_CURSOR_CHARS, MAX_PAGE_BYTES } from '../limits.js';
 import {
@@ -265,6 +265,18 @@ describe('fetchRegistryPage', () => {
       fetchRegistryPage(fake.fetchImpl, BASE, {}, { signal: controller.signal }),
     );
     expect(err.reason).toBe('aborted');
+    expect(fake.requests).toHaveLength(0);
+  });
+
+  it("a caller's deadline that ran out between pages is timeout, without a request", async () => {
+    // The sync's run budget, as the plugin builds it: a deadline joined with
+    // the shutdown signal. Spent before the next page, it is still a timeout.
+    const budget = AbortSignal.timeout(1);
+    await vi.waitFor(() => expect(budget.aborted).toBe(true));
+    const signal = AbortSignal.any([budget, new AbortController().signal]);
+    const fake = createFakeRegistry(() => page([]));
+    const err = await failure(fetchRegistryPage(fake.fetchImpl, BASE, {}, { signal }));
+    expect(err.reason).toBe('timeout');
     expect(fake.requests).toHaveLength(0);
   });
 

@@ -25,7 +25,7 @@ import { ResponseTooLargeError, capResponseBody } from '@ax/core/response-cap';
 import { REWRITES_THE_SURFACE } from '@ax/core/surface-text';
 import { MAX_CURSOR_CHARS, MAX_PAGE_BYTES, PAGE_LIMIT, REQUEST_TIMEOUT_MS } from './limits.js';
 
-const PLUGIN_NAME = '@ax/connector-directory';
+export const PLUGIN_NAME = '@ax/connector-directory';
 
 export type RegistryFailure =
   | 'timeout'
@@ -177,8 +177,11 @@ export async function fetchRegistryPage(
 ): Promise<RegistryPage> {
   const url = registryPageUrl(base, q);
   const caller = opts.signal;
-  // Already stopped (shutdown between pages): no request at all.
-  if (caller?.aborted === true) throw new RegistryError('aborted');
+  // Already stopped between pages: no request at all. A deadline that ran
+  // out (a run budget) is still a timeout; anything else (shutdown) aborted.
+  if (caller?.aborted === true) {
+    throw new RegistryError(hasName(caller.reason, 'TimeoutError') ? 'timeout' : 'aborted');
+  }
   const deadline = AbortSignal.timeout(opts.timeoutMs ?? REQUEST_TIMEOUT_MS);
   const signal = AbortSignal.any(caller === undefined ? [deadline] : [deadline, caller]);
 
