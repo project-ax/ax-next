@@ -42,6 +42,7 @@
     { "path": "packages/conversation-titles" },
     { "path": "packages/step-summaries" },
     { "path": "packages/conversations" },
+    { "path": "packages/connector-directory" },
     { "path": "packages/connectors" },
     { "path": "packages/mcp-oauth" },
     { "path": "packages/attachments" },
