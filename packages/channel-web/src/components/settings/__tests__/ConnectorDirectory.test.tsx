@@ -596,6 +596,68 @@ describe('ConnectorDirectory', () => {
       expect(rowNames()).toEqual(['Details for Notion']);
       expect(screen.getByRole('status')).toHaveTextContent(/^1 server matches$/);
     });
+
+    it('a Show more the admin typed past is cancelled quietly, not shown as a failure', async () => {
+      // What `fetch` does with an abort: the page request REJECTS. The new
+      // query's answer has more pages too, so a failure left behind would show.
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const notion = directoryEntry({
+        id: 'com.notion/mcp',
+        title: 'Notion',
+        publisher: 'notion.com',
+        url: 'https://mcp.notion.com/mcp',
+      });
+      search.mockImplementation(async (q, options) => {
+        if (q === '') return directoryPage();
+        if (options?.cursor === 'cur2') return untilAborted(options.signal);
+        if (q === 'notion') return directoryPage({ entries: [notion], nextCursor: 'cur9' });
+        return directoryPage({ entries: [linear, community], nextCursor: 'cur2' });
+      });
+      renderDirectory();
+      const box = await searchBox();
+      typeQuery(box, 'linear');
+      await screen.findByRole('button', { name: 'Details for Linear' });
+      fireEvent.click(screen.getByRole('button', { name: 'Show more' }));
+      await waitFor(() => expect(search).toHaveBeenLastCalledWith('linear', expect.objectContaining({ cursor: 'cur2' })));
+      typeQuery(box, 'notion');
+      await screen.findByRole('button', { name: 'Details for Notion' });
+      await pass(0);
+
+      expect(search.mock.calls[2]?.[1]?.signal?.aborted).toBe(true);
+      expect(screen.queryByText(MORE_FAILED)).toBeNull();
+      expect(warn).not.toHaveBeenCalled();
+      expect(screen.getByRole('button', { name: 'Show more' })).toBeEnabled();
+    });
+
+    it('a page that lands after the same query was searched again is not appended', async () => {
+      // The admin edits the text and back, so the box searches "linear" afresh
+      // while a Show more for the old answer is still out. An answer whose
+      // abort landed too late must not add its rows to the fresh answer.
+      const page2 = deferred<DirectoryPage>();
+      search.mockImplementation(async (q, options) => {
+        if (q === '') return directoryPage();
+        if (options?.cursor === 'cur2') return page2.promise;
+        return directoryPage({ entries: [linear, community], nextCursor: 'cur2' });
+      });
+      renderDirectory();
+      const box = await searchBox();
+      typeQuery(box, 'linear');
+      await screen.findByRole('button', { name: 'Details for Linear' });
+      fireEvent.click(screen.getByRole('button', { name: 'Show more' }));
+      await waitFor(() => expect(search).toHaveBeenLastCalledWith('linear', expect.objectContaining({ cursor: 'cur2' })));
+      typeQuery(box, 'linea');
+      typeQuery(box, 'linear');
+      await waitFor(() => expect(queries()).toEqual(['', 'linear', 'linear', 'linear']));
+      await pass(0);
+      expect(screen.getByRole('button', { name: 'Show more' })).toBeEnabled();
+
+      await act(async () => {
+        page2.resolve(directoryPage({ entries: [tickets] }));
+        await wait(0);
+      });
+      expect(rowNames()).toEqual(['Details for Linear', 'Details for Quick Notes']);
+      expect(screen.getByRole('status')).toHaveTextContent(/^More than 2 servers match$/);
+    });
   });
 
   describe('already in your connectors', () => {
