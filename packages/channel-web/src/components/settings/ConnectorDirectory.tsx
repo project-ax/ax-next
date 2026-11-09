@@ -93,6 +93,9 @@ function toResults(query: string, entries: DirectoryEntry[], page: DirectoryPage
 
 /** The route sends a page and no total, so while more pages remain the count is a floor. */
 function countLine({ entries, nextCursor }: Results): string {
+  // A page can arrive empty with more behind it: the client drops listings the
+  // editor couldn't save, so a short page isn't the end of the list.
+  if (nextCursor !== undefined && entries.length === 0) return 'No servers here yet. There may be more.';
   if (nextCursor !== undefined) return `More than ${entries.length} servers match`;
   return entries.length === 1 ? '1 server matches' : `${entries.length} servers match`;
 }
@@ -350,7 +353,7 @@ export function ConnectorDirectory({
         </Alert>
       );
     } else if (searching || shown !== null) {
-      const noMatch = shown !== null && shown.entries.length === 0;
+      const noMatch = shown !== null && shown.entries.length === 0 && shown.nextCursor === undefined;
       // One status line, mounted from "Searching…" through the answer, so a
       // screen reader hears the count or the no-match arrive in the same live
       // region. On no match it is visually hidden: the Empty's title says it

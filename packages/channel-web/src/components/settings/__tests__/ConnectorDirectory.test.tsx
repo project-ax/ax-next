@@ -448,11 +448,16 @@ describe('ConnectorDirectory', () => {
       typeQuery(await searchBox(), '  zzz ');
       const status = screen.getByRole('status');
       expect(status).toHaveTextContent('Searching…');
-      expect(await screen.findByText('Nothing matches “zzz”', { selector: '[data-slot="empty-title"]' })).toBeVisible();
+      const title = await screen.findByText('Nothing matches “zzz”', { selector: '[data-slot="empty-title"]' });
       // The live region that said "Searching…" stays put and says there's no
       // match, so a screen reader hears the answer arrive.
       expect(screen.getByRole('status')).toBe(status);
       expect(status).toHaveTextContent(/^Nothing matches “zzz”$/);
+      // Said once: the status is visually hidden and the on-screen title is
+      // hidden from screen readers. (jsdom loads no CSS, so toBeVisible can't
+      // tell; the attributes are what make this true.)
+      expect(status).toHaveClass('sr-only');
+      expect(title).toHaveAttribute('aria-hidden', 'true');
       expect(screen.getByText(NO_MATCH_DESCRIPTION)).toBeInTheDocument();
       expect(queries()).toEqual(['', 'zzz']);
       expect(screen.queryByText(/servers? match/)).toBeNull();
@@ -535,6 +540,24 @@ describe('ConnectorDirectory', () => {
       ]);
       expect(screen.getByRole('status')).toHaveTextContent(/^4 servers match$/);
       expect(screen.queryByRole('button', { name: 'Show more' })).toBeNull();
+    });
+
+    it('an empty page with more behind it offers Show more, not "Nothing matches"', async () => {
+      // The client drops listings the editor couldn't save, so a page can
+      // arrive empty while the route still has more.
+      search.mockImplementation(async (q, options) => {
+        if (q === '') return directoryPage();
+        if (options?.cursor === 'cur2') return directoryPage({ entries: [linear] });
+        return directoryPage({ entries: [], nextCursor: 'cur2' });
+      });
+      renderDirectory();
+      typeQuery(await searchBox(), 'linear');
+      const more = await screen.findByRole('button', { name: 'Show more' });
+      expect(screen.queryByText(/Nothing matches/)).toBeNull();
+      expect(screen.getByRole('status')).toHaveTextContent(/^No servers here yet\. There may be more\.$/);
+      fireEvent.click(more);
+      await screen.findByRole('button', { name: 'Details for Linear' });
+      expect(screen.getByRole('status')).toHaveTextContent(/^1 server matches$/);
     });
 
     it('Show more skips a listing it already shows', async () => {
@@ -748,7 +771,10 @@ describe('ConnectorDirectory', () => {
       // Never synced at first, then Try again finds a synced list.
       search.mockResolvedValueOnce(directoryPage({ syncedAt: null }));
       renderDirectory([SUMMARY]);
-      fireEvent.click(await screen.findByRole('button', { name: 'Try again' }));
+      const tryAgain = await screen.findByRole('button', { name: 'Try again' });
+      await pass(0);
+      expect(getConnector).not.toHaveBeenCalled();
+      fireEvent.click(tryAgain);
       await searchBox();
       await waitFor(() => expect(getConnector).toHaveBeenCalledTimes(1));
       expect(getConnector).toHaveBeenCalledWith(SUMMARY.id, '/admin/connectors');
