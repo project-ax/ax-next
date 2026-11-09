@@ -84,6 +84,7 @@ import { readSseFrames, type FrameVerdict, type SeqCursor } from './sse-frames';
 // the same call cannot read two ways (TASK-419).
 import { stepDetail } from './workspace-steps';
 import { isShowVisualToolName, visualFromToolResult } from './visual-result';
+import { claimedArtifactId, isArtifactPublishToolName } from './published-artifact';
 // The store owns "can this build draw it?", because `grantKey` is the function
 // that breaks without it. Read, not re-declared: a second copy of the same
 // three kinds is a drift waiting to happen.
@@ -1097,6 +1098,11 @@ export interface StreamHandlers {
    * a reload. Errored and held calls draw nothing, matching the reload path.
    */
   onVisual?: (visual: ThreadVisual) => void;
+  /**
+   * A publish call came back claiming an artifact id. A CLAIM: the caller
+   * reads the card from the store before drawing it (lib/published-artifact).
+   */
+  onArtifactClaim?: (artifactId: string) => void;
   /**
    * Sandbox provisioning changed phase (`sandbox-starting` / `sandbox-ready`).
    *
@@ -2322,6 +2328,7 @@ async function streamReply(
     onToolUse,
     onToolResult,
     onVisual,
+    onArtifactClaim,
     onPhase,
     onDecisionRaised,
     onPermissionRequest,
@@ -2341,6 +2348,7 @@ async function streamReply(
     shape, and must stay a chip, not become a frame.
   */
   const visualCalls = new Set<string>();
+  const publishCalls = new Set<string>();
 
   /*
     TASK-27 — set once a gap shows frames this reader never saw are gone from
@@ -2429,6 +2437,9 @@ async function streamReply(
       if (typeof frame.toolCallId === 'string' && isShowVisualToolName(frame.toolName)) {
         visualCalls.add(frame.toolCallId);
       }
+      if (typeof frame.toolCallId === 'string' && isArtifactPublishToolName(frame.toolName)) {
+        publishCalls.add(frame.toolCallId);
+      }
       if (onToolUse && typeof frame.toolCallId === 'string' && typeof frame.toolName === 'string') {
         onToolUse({
           toolCallId: frame.toolCallId,
@@ -2456,6 +2467,16 @@ async function streamReply(
       ) {
         const visual = visualFromToolResult(frame.output);
         if (visual !== null) onVisual(visual);
+      }
+      if (
+        onArtifactClaim &&
+        typeof frame.toolCallId === 'string' &&
+        publishCalls.has(frame.toolCallId) &&
+        frame.isError !== true &&
+        frame.held !== true
+      ) {
+        const claimed = claimedArtifactId(frame.output);
+        if (claimed !== null) onArtifactClaim(claimed);
       }
       return 'continue';
     }

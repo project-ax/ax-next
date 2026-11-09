@@ -3,7 +3,7 @@
  * what it said, then what it made.
  */
 import { describe, expect, it } from 'vitest';
-import { groupReplies, type ReplyGroup } from '../reply-groups';
+import { groupReplies, liveNote, type ReplyGroup } from '../reply-groups';
 import type { ThreadMessage } from '../workspace-types';
 import type { WorkspaceStep } from '../workspace-steps';
 
@@ -114,12 +114,60 @@ describe('groupReplies', () => {
     ]);
   });
 
-  it('draws the live turn with its panel above its streamed words', () => {
+  it('while live, words followed by a call are narration, not the reply', () => {
     const reply = groupReplies([
-      { ...(steps('pending-agent', 'Streaming…', [{ text: 'Ran a command — in progress', status: 'running' }]) as object), at: '' } as ThreadMessage,
+      { ...(steps('pending-agent', 'Sketching the frame first.', [{ text: 'Ran a command — in progress', status: 'running' }]) as object), at: '' } as ThreadMessage,
     ])[0] as ReplyGroup;
-    expect(reply.text).toBe('Streaming…');
+    expect(reply.text).toBe('');
     expect(reply.at).toBe('');
-    expect(reply.activity).toHaveLength(1);
+    expect(reply.activity.map((e) => e.kind)).toEqual(['note', 'step']);
+  });
+
+  it('while live, only what it says after its LAST call is the reply', () => {
+    const reply = groupReplies([
+      { ...(steps('pending-agent-0', 'Sketching the frame first.', [{ text: 'Ran a command', status: 'done' }]) as object), at: '' } as ThreadMessage,
+      { kind: 'agent', id: 'pending-agent', text: 'Here is the pelican.', at: '' },
+    ])[0] as ReplyGroup;
+    expect(reply.text).toBe('Here is the pelican.');
+    expect(reply.activity.map((e) => (e.kind === 'note' ? e.text : e.step.text))).toEqual([
+      'Sketching the frame first.',
+      'Ran a command',
+    ]);
+  });
+});
+
+describe('liveNote', () => {
+  const note = (text: string) => ({ kind: 'note' as const, turnId: 't', text });
+  const step = { kind: 'step' as const, step: { text: 'Ran a command', status: 'done' as const } };
+
+  it('is the first line of the latest note, without the markdown', () => {
+    expect(liveNote([note('## **Working** out the `legs`\nmore detail'), step])).toBe('Working out the legs');
+  });
+
+  it('stops standing for the steps after a few with no new words', () => {
+    expect(liveNote([note('Plan.'), step, step, step])).toBe('Plan.');
+    expect(liveNote([note('Plan.'), step, step, step, step])).toBeUndefined();
+  });
+
+  it('is nothing when the agent has said nothing', () => {
+    expect(liveNote([step])).toBeUndefined();
+  });
+});
+
+describe('live reply with a card', () => {
+  it('keeps the trailing words as the reply when a live card follows them', () => {
+    const reply = groupReplies([
+      { ...(steps('pending-agent-0', 'Drawing.', [{ text: 'Ran a command', status: 'done' }]) as object), at: '' } as ThreadMessage,
+      { kind: 'agent', id: 'pending-agent', text: 'Here it is.', at: '' },
+      {
+        kind: 'agent',
+        id: 'pending-visuals',
+        text: '',
+        at: '',
+        artifacts: [{ artifactId: 'a', version: 1, title: 'pelican', kind: 'image', extension: 'SVG' }],
+      },
+    ])[0] as ReplyGroup;
+    expect(reply.text).toBe('Here it is.');
+    expect(reply.artifacts.map((a) => a.title)).toEqual(['pelican']);
   });
 });

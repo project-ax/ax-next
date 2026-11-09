@@ -11,7 +11,7 @@
  * name.
  */
 import { MEMORY_SOURCE_CLASS, TURN_ID_ATTR, TURN_IDS_ATTR } from '@/lib/thread-jump';
-import { groupReplies, type ActivityEntry, type ReplyGroup } from '@/lib/reply-groups';
+import { groupReplies, liveNote, type ActivityEntry, type ReplyGroup } from '@/lib/reply-groups';
 import {
   lazy,
   Suspense,
@@ -63,7 +63,7 @@ import {
   useWorkspaceAttachments,
   type SendableAttachment,
 } from '@/lib/workspace-attachments';
-import { isOpenDecision } from '@/lib/workspace-types';
+import { isOpenDecision, type ThreadArtifact } from '@/lib/workspace-types';
 import type { DecisionReadError } from '@/lib/workspace-decisions';
 import type {
   Decision,
@@ -87,6 +87,7 @@ import {
   DECISION_THREAD_READ_FAILED,
 } from './decision-copy';
 import { ArtifactCard } from './ArtifactCard';
+import { KIND_ICONS } from './AgentArtifacts';
 import { Markdown } from '@/components/Markdown';
 import { WorkspaceAttachmentChip } from './WorkspaceAttachmentChip';
 import { ChatComposer, CHAT_CONTENT_CLASS } from './ChatComposer';
@@ -1149,9 +1150,11 @@ function Message({
 
   if (m.kind === 'status') {
     return (
-      <div className="flex items-center gap-2.5 text-[12.5px] text-muted-foreground">
-        <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-primary" />
-        {m.text}
+      // Same line as the activity title it turns into once a step lands, so
+      // "Thinking…" is replaced in place rather than jumping.
+      <div className="mb-2.5 inline-flex items-center gap-1.5 py-0.5 text-[13.5px] text-muted-foreground">
+        <span aria-hidden="true" className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-primary" />
+        <span className="shimmer">{m.text}</span>
       </div>
     );
   }
@@ -1349,7 +1352,20 @@ function AgentReply({
           browser call out), and file download links are omitted from prose.
           Persisted attachments supply the download chips below.
         */}
-        {r.activity.length > 0 && <Activity entries={r.activity} />}
+        {/* `at` is '' only on the reply still streaming in (see `ThreadMessage`). */}
+        {r.activity.length > 0 && <Activity entries={r.activity} live={r.at === ''} published={r.artifacts} />}
+        {/*
+          The file it made, right under the work that made it and ABOVE what
+          it says about it, as Claude draws it: the answer usually talks about
+          the card ("I made the animated SVG…"), so the card comes first.
+        */}
+        {r.artifacts.length > 0 && (
+          <div className="mb-3 flex max-w-[604px] flex-col gap-2">
+            {r.artifacts.map((a) => (
+              <ArtifactCard key={a.artifactId} artifact={a} onOpen={onOpenArtifact} />
+            ))}
+          </div>
+        )}
         {r.text.length > 0 && (
           <div className="max-w-[604px] text-[15px] leading-[1.58] text-pretty">
             <Markdown text={r.text} hideFileDownloadLinks />
@@ -1375,13 +1391,6 @@ function AgentReply({
               >
                 <VisualFrame conversationId={conversationId} visual={v} />
               </Suspense>
-            ))}
-          </div>
-        )}
-        {r.artifacts.length > 0 && (
-          <div className="mt-3 flex max-w-[604px] flex-col gap-2">
-            {r.artifacts.map((a) => (
-              <ArtifactCard key={a.artifactId} artifact={a} onOpen={onOpenArtifact} />
             ))}
           </div>
         )}
@@ -1426,8 +1435,8 @@ function AgentReply({
  * disclosure that starts shut answers "what did it do" only for people who
  * click. In practice a 48-step turn pushed the answer off screen under a wall
  * of shell commands. The title now answers the question on its own —
- * "Looked through files and ran commands", or, while it runs, the step in
- * progress — and the rows are one click away for whoever wants them.
+ * "Read a file, ran 2 commands", or, while it runs, what the agent says it is
+ * doing — and the rows are one click away for whoever wants them.
  *
  * NO CARD. The title is plain muted text with a chevron, the way the reply's
  * own clock is plain text: chrome around it made a list of side effects look
@@ -1438,9 +1447,11 @@ function AgentReply({
  * chevron, in monospace — the words first, the machine's view on request.
  * Narration the agent wrote between steps is drawn in order, between them.
  *
- * EXCEPTIONS STAY LOUD. A failed step and a held one never fold into a group,
- * keep an icon AND a colour (a colour alone is not a signal a colour-blind
- * reader can read — TASK-419), and the title says so with words even shut.
+ * EXCEPTIONS ARE MARKED WHERE THEY ARE. A failed step and a held one never
+ * fold into a group and keep an icon AND a colour (a colour alone is not a
+ * signal a colour-blind reader can read — TASK-419). Shut, only a HOLD shows
+ * on the title, because only a hold needs the reader to do something; a
+ * failed command the agent worked around is not news.
  */
 const STEP_MARK: Record<
   WorkspaceStepStatus,
@@ -1595,14 +1606,32 @@ function GroupRow({ row }: { row: Extract<ActivityRow, { kind: 'group' }> }) {
   );
 }
 
-function Activity({ entries }: { entries: readonly ActivityEntry[] }) {
+/** The finished title's file icon: the kind of the last card the reply published. */
+function PublishedMark({ artifacts }: { artifacts: readonly ThreadArtifact[] }) {
+  const Icon = KIND_ICONS[artifacts[artifacts.length - 1]!.kind];
+  return <Icon size={13} aria-hidden="true" className="shrink-0" />;
+}
+
+function Activity({
+  entries,
+  live,
+  published = [],
+}: {
+  entries: readonly ActivityEntry[];
+  live: boolean;
+  /** Cards the reply published: the finished title ends with the kind's icon, as Claude's does. */
+  published?: readonly ThreadArtifact[];
+}) {
   const steps = entries.flatMap((e) => (e.kind === 'step' ? [e.step] : []));
   const rows = activityRows(entries);
-  const title = stepsTitle(steps);
-  const running = steps.some((s) => s.status === 'running');
   const waiting = steps.some((s) => s.status === 'waiting');
-  const failed = steps.some((s) => s.status === 'failed');
-  const TitleMark = waiting ? STEP_MARK.waiting : failed ? STEP_MARK.failed : null;
+  // While the reply streams, the title and its dot hold steady between one
+  // call's result and the next call (see `stepsTitle`).
+  const title = stepsTitle(steps, { live, note: live ? liveNote(entries) : undefined });
+  const running = !waiting && (live || steps.some((s) => s.status === 'running'));
+  // Only a hold marks the title: it needs the reader. A failed step is marked
+  // on its own row inside, not raised here (see `stepsTitle`).
+  const TitleMark = waiting ? STEP_MARK.waiting : null;
   return (
     <Collapsible data-testid="workspace-steps" className="mb-2.5 max-w-[604px]">
       <CollapsibleTrigger
@@ -1617,9 +1646,15 @@ function Activity({ entries }: { entries: readonly ActivityEntry[] }) {
         {TitleMark !== null && (
           <TitleMark.Icon size={13} aria-hidden="true" className={cn('shrink-0', TitleMark.tone)} />
         )}
-        <span className="min-w-0 truncate" title={title}>
-          {title}
+        {/*
+          Keyed on the words, so each new title fades in rather than
+          snapping; the shimmer says "still going" without a spinner.
+        */}
+        {/* Two spans: the fade and the shimmer are both CSS animations. */}
+        <span key={title} className="min-w-0 truncate animate-in fade-in duration-300" title={title}>
+          <span className={cn(live && !waiting && 'shimmer')}>{title}</span>
         </span>
+        {!live && published.length > 0 && <PublishedMark artifacts={published} />}
         <Chevron />
       </CollapsibleTrigger>
       <CollapsibleContent>

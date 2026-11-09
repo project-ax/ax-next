@@ -324,6 +324,36 @@ input, textarea { caret-color: hsl(var(--primary)); }
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
 }
 
+/*
+  Shimmer — a band of light that sweeps across text while something is in
+  progress ("Thinking…", the live step title). The shadcn.io `shimmer`
+  utility, restated for Tailwind 3 on our tokens: the text stays
+  muted-foreground and the band is foreground, so it reads in both themes.
+  CSS only: no script, no timer. Reduced motion gets plain muted text.
+*/
+.shimmer {
+  background-image: linear-gradient(
+    90deg,
+    hsl(var(--muted-foreground)) 0%,
+    hsl(var(--muted-foreground)) 40%,
+    hsl(var(--foreground)) 50%,
+    hsl(var(--muted-foreground)) 60%,
+    hsl(var(--muted-foreground)) 100%
+  );
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: ax-shimmer 2s linear infinite;
+}
+@keyframes ax-shimmer {
+  from { background-position: 100% 0; }
+  to { background-position: -100% 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .shimmer { animation: none !important; background-image: none; color: hsl(var(--muted-foreground)); }
+}
+
 /* Agent settings forms share the workspace typography and semantic surfaces. */
 .settings-dialog { width: calc(100vw - 2rem); max-height: calc(100dvh - 2rem); overflow-y: auto; border-radius: 1rem; }
 .settings-form [data-slot="field"] { gap: 6px; }

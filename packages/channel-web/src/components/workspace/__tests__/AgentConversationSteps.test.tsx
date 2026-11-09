@@ -102,7 +102,7 @@ describe('the step panel', () => {
     const panel = panelOf(container);
     expect(panel.querySelectorAll('li')).toHaveLength(0);
     const trigger = panel.querySelector('button')!;
-    expect(trigger.textContent).toBe('Ran commands and looked through files');
+    expect(trigger.textContent).toBe('Read a file, ran 2 commands');
     expect(trigger.getAttribute('aria-expanded')).toBe('false');
     fireEvent.click(trigger);
     expect(trigger.getAttribute('aria-expanded')).toBe('true');
@@ -141,7 +141,11 @@ describe('the step panel', () => {
       }),
     ]);
     expect(rows(container)).toEqual(['Ran a command', "Ran a command — didn't finish", 'Ran a command']);
-    expect(panelOf(container).querySelector('button')!.textContent).toBe("Ran commands, 1 didn't finish");
+    // Shut, the title does not raise the failure — no words, no icon, no red.
+    const title = panelOf(container).querySelector('button')!;
+    expect(title.textContent).toBe('Ran 3 commands');
+    expect(title.querySelector('svg.text-destructive')).toBeNull();
+    expect(title.className).not.toContain('text-destructive');
   });
 
   it('sits ABOVE the reply, and the reply\'s artifact sits below both', () => {
@@ -163,8 +167,9 @@ describe('the step panel', () => {
     const text = container.textContent ?? '';
     const at = (s: string) => text.indexOf(s);
     expect(at('Making a report')).toBeGreaterThan(-1);
-    expect(at('Making a report')).toBeLessThan(at('Your report is ready.'));
-    expect(at('Your report is ready.')).toBeLessThan(at('Q3 report'));
+    // Work, then the file it made, then what it says about the file.
+    expect(at('Making a report')).toBeLessThan(at('Q3 report'));
+    expect(at('Q3 report')).toBeLessThan(at('Your report is ready.'));
   });
 
   it('keeps narration from between the steps inside the panel, not in the reply', () => {

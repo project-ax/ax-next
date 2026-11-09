@@ -17,6 +17,7 @@ import {
   settleHolds,
   shapeSteps,
   stepDetail,
+  stepsTitle,
   witnessHolds,
   type WorkspaceToolCall,
 } from '../workspace-steps';
@@ -94,10 +95,11 @@ describe('shapeSteps', () => {
     expect(texts(panel)[0]?.endsWith('…')).toBe(true);
   });
 
-  it('says a failed step failed, in words, not only in colour', () => {
+  it('says a failed step failed on its row, but does not raise it in the title', () => {
     const panel = shapeSteps([done({ status: 'failed', phrase: 'Sending the email' })]);
     expect(texts(panel)).toEqual(["Sending the email — didn't finish"]);
-    expect(panel?.label).toBe("Sending the email, 1 didn't finish");
+    // Agents retry around a failed command all the time; the title stays calm.
+    expect(panel?.label).toBe('Sending the email');
   });
 
   it('says a held step is waiting on the reader', () => {
@@ -113,32 +115,30 @@ describe('shapeSteps', () => {
     expect(panel?.label).toBe('Searching the web…');
   });
 
-  it('leads with the failure when a panel holds both a failure and a hold', () => {
+  it('raises the hold, not the failure, when a panel holds both', () => {
     /*
-      Across a panel, failure outranks a hold — the hold has the composer line
-      and the approval card to announce itself, the failure has nowhere else.
-      Per CALL the ordering is the other way round, which the two rows show.
+      Only the hold needs the reader to act, so only the hold reaches the
+      title. Both still say what happened on their own rows.
     */
     const panel = shapeSteps([
       done({ id: 'a', status: 'waiting', phrase: 'Sending the email' }),
       done({ id: 'b', status: 'failed', phrase: 'Reading the calendar' }),
     ]);
-    expect(panel?.label).toBe("Used tools, 1 didn't finish");
+    expect(panel?.label).toBe('Used 2 tools, 1 waiting for you');
     expect(texts(panel)).toEqual([
       'Sending the email — waiting for you',
       "Reading the calendar — didn't finish",
     ]);
   });
 
-  it('titles a panel by what it mostly did, never by a count', () => {
+  it('titles a panel by counting what it did, kind by kind, in order', () => {
     const panel = shapeSteps([
       done({ id: 'a', name: 'Read', detail: 'src/a.ts' }),
       done({ id: 'b', name: 'Grep', detail: 'TODO' }),
       done({ id: 'c', name: 'Read', detail: 'src/b.ts' }),
       done({ id: 'd', name: 'Bash', detail: 'ls' }),
     ])!;
-    expect(panel.label).toBe('Looked through files and ran commands');
-    expect(panel.label).not.toMatch(/\d/);
+    expect(panel.label).toBe('Read 2 files, ran a search, ran a command');
     expect(panel.steps).toHaveLength(4);
   });
 
@@ -152,6 +152,26 @@ describe('shapeSteps', () => {
       done({ id: 'b', phrase: 'Searching memory' }),
     ]);
     expect(panel?.label).toBe('Searching memory');
+  });
+
+  it('a LIVE title holds on the latest step between one result and the next call', () => {
+    // The flicker: the first call's result is in, the next call has not
+    // started. Without `live` the title snapped to the summary for that beat.
+    const steps = shapeSteps([
+      done({ id: 'a', name: 'Read', detail: 'src/a.ts' }),
+      done({ id: 'b', name: 'Bash', detail: 'ls' }),
+    ])!.steps;
+    expect(stepsTitle(steps, { live: true })).toBe('Running a command…');
+    // Once the turn has ended, the same steps read as the summary.
+    expect(stepsTitle(steps)).toBe('Read a file, ran a command');
+  });
+
+  it('a live title still says when a step is waiting for the reader', () => {
+    const steps = shapeSteps([
+      done({ id: 'a', name: 'Read', detail: 'src/a.ts' }),
+      done({ id: 'b', status: 'waiting', phrase: 'Sending the email' }),
+    ])!.steps;
+    expect(stepsTitle(steps, { live: true })).toBe('Read a file, sending the email, 1 waiting for you');
   });
 
   it('while a step is running, the title is that step in the present tense', () => {

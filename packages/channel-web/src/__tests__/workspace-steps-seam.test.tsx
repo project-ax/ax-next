@@ -404,7 +404,10 @@ describe('a turn that ran tools', () => {
     const onLive = readPanel(live.container);
 
     // ---- the seam ---------------------------------------------------------
-    expect(onLive.label).toBe(onReload.label);
+    // The ROWS agree. The titles differ on purpose: this turn is still
+    // streaming, so its title holds on the latest step in the present tense
+    // (no flicker between calls); the stored turn reads as the summary.
+    expect(onLive.label).toBe('Running a command…');
     expect(onLive.steps).toEqual(onReload.steps);
 
     expect(onLive.steps).toHaveLength(CALLS.length);
@@ -518,9 +521,11 @@ describe('a turn that ran tools', () => {
     });
     const livePanels = readPanels(live.container);
     // One panel live, because the wire carries no message boundary — and now
-    // one on reload too, under the same title.
+    // one on reload too. (Its title is the summary; the streaming one is the
+    // latest step, by design.)
     expect(livePanels).toHaveLength(1);
-    expect(livePanels[0]!.label).toBe(reloadLabel);
+    expect(reloadLabel).toBe('Filing a Linear issue, ran a command');
+    expect(livePanels[0]!.label).toBe('Running a command…');
 
     // The sentences agree, which is the part one shaping function owns.
     expect(livePanels.flatMap((p) => p.steps)).toEqual(reloadSentences);
@@ -631,7 +636,8 @@ describe('a turn that ran tools', () => {
     }
     // Still one producer, so the two paths cannot drift into two wordings.
     expect(onLive.steps).toEqual(onReload.steps);
-    expect(onLive.label).toBe(onReload.label);
+    expect(onReload.label).toBe('Edited a file, ran 2 commands');
+    expect(onLive.label).toBe('Running a command…');
     // The file BODY is not a step row. It is the one input field that would
     // turn this list back into a wall of text.
     expect(live.container.textContent).not.toContain('content');
@@ -716,7 +722,9 @@ describe('a held step, answered while the turn is still live (TASK-532)', () => 
         'Sending the email — no longer waiting for you',
       ]);
     });
-    expect(readPanel(live.container).label).toBe('Sending the email');
+    // Settled, and the turn still streaming: back to the present tense, with
+    // no "waiting for you".
+    expect(readPanel(live.container).label).toBe('Sending the email…');
     live.unmount();
   });
 

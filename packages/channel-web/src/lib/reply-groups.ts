@@ -18,14 +18,15 @@
  *     that comes after its last tool call; when it went quiet after (it
  *     answered, then saved a note to memory), its last words still are.
  *   * the deliverables — visuals, artifact cards, files — from every message
- *     in the run, under the answer.
+ *     in the run. Artifact cards sit between the panel and the answer; the
+ *     rest under it.
  *
  * A run with no steps is left exactly as it was.
  *
- * WHAT THE LIVE TURN GETS. The live wire has no turn boundaries, so a reply
- * streaming in is one `steps` message whose text is all of its prose. It
- * groups like any other run — panel above, text below — it just has no notes
- * until the turn ends and the re-read brings the stored turns back.
+ * WHAT THE LIVE TURN GETS. The live wire has no turn boundaries, so the
+ * view cuts the stream where a reload would (`lib/live-segments`): one message
+ * per "text, then the calls after it". It groups like any other run, with one
+ * difference: while it streams, only text after the last call is the answer.
  */
 import type {
   MemoryUsed,
@@ -71,10 +72,27 @@ function fold(run: AgentLike[]): ReplyGroup {
   // the turn after its last tool call; when it went quiet after (narrated,
   // published, stopped — or answered, then saved a note to memory), it is the
   // last words it did write. Everything said before that is narration.
+  //
+  // Not while it streams. Live, words followed by a call are narration the
+  // moment the call lands, so the reply is only what it is saying after its
+  // LAST call — the trailing `agent` segment, if it has started one.
+  const last = run[run.length - 1]!;
   let answerAt = -1;
-  run.forEach((m, i) => {
-    if (m.text.length > 0) answerAt = i;
-  });
+  if (last.at === '') {
+    // After the last `steps` message: the trailing words, if any. A live
+    // card or visual rides on a text-less `agent` message after them.
+    let lastSteps = -1;
+    run.forEach((m, i) => {
+      if (m.kind === 'steps') lastSteps = i;
+    });
+    run.forEach((m, i) => {
+      if (i > lastSteps && m.kind === 'agent' && m.text.length > 0) answerAt = i;
+    });
+  } else {
+    run.forEach((m, i) => {
+      if (m.text.length > 0) answerAt = i;
+    });
+  }
   const text = answerAt === -1 ? '' : run[answerAt]!.text;
 
   const activity: ActivityEntry[] = [];
@@ -100,7 +118,6 @@ function fold(run: AgentLike[]): ReplyGroup {
     if (m.memoryUsed !== undefined && m.memoryUsed.statements.length > 0) memoryUsed = m.memoryUsed;
   }
 
-  const last = run[run.length - 1]!;
   return {
     kind: 'reply',
     id: (answerAt === -1 ? last : run[answerAt]!).id,
@@ -135,4 +152,31 @@ export function groupReplies(thread: readonly ThreadMessage[]): ThreadItem[] {
   }
   flush();
   return out;
+}
+
+/**
+ * What the agent last SAID it was doing, as the live title: "Working out the
+ * leg motion with a script." The first line of its latest note, without the
+ * markdown. It stands for the steps that follow it, but not forever: after a
+ * few more steps with no new words, the step itself says more than a sentence
+ * written several calls ago.
+ */
+const NOTE_HOLDS_FOR_STEPS = 3;
+
+export function liveNote(entries: readonly ActivityEntry[]): string | undefined {
+  let stepsSince = 0;
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const e = entries[i]!;
+    if (e.kind === 'step') {
+      stepsSince += 1;
+      if (stepsSince > NOTE_HOLDS_FOR_STEPS) return undefined;
+      continue;
+    }
+    const line = e.text
+      .split('\n')
+      .map((l) => l.replace(/^\s*(?:#{1,6}\s+|>\s*|[-*+]\s+|\d+[.)]\s+)/, '').replace(/[*_`]/g, '').trim())
+      .find((l) => l.length > 0);
+    if (line !== undefined) return line.length > 200 ? `${line.slice(0, 199)}…` : line;
+  }
+  return undefined;
 }

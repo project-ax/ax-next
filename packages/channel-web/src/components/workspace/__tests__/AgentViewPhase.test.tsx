@@ -11,7 +11,7 @@
  * actually holds, in both directions.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, within, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { AgentView } from '../AgentView';
 import { workspaceApi } from '@/lib/workspace-api';
 import type { AgentDetail, StreamHandlers, WorkspaceAgent } from '@/lib/workspace-api';
@@ -27,6 +27,7 @@ vi.mock('@/lib/workspace-api', async () => {
       revokeGrant: vi.fn(),
       sendMessage: vi.fn(),
       streamReply: vi.fn(),
+      artifact: vi.fn(),
     },
   };
 });
@@ -145,6 +146,91 @@ describe('the phase status line', () => {
       expect(screen.getByText('Running a command…')).toBeTruthy();
     });
     expect(screen.queryByText('Getting set up…')).toBeNull();
+  });
+
+  it('holds the step title steady between one tool result and the next call', async () => {
+    // The flicker: the title read the running step, then snapped to the
+    // end-of-turn summary the moment its result landed, then back again when
+    // the next call started. While the turn streams it stays in the present.
+    let handlers!: StreamHandlers;
+    await startTurn((h) => {
+      handlers = h;
+      h.onToolUse?.({ toolCallId: 'tu1', toolName: 'Read', detail: 'src/a.ts' });
+    });
+    await waitFor(() => expect(screen.getByText('Reading a.ts…')).toBeTruthy());
+    act(() => handlers.onToolResult?.({ toolCallId: 'tu1' }));
+    expect(screen.getByText('Reading a.ts…')).toBeTruthy();
+    expect(screen.queryByText('Read a.ts')).toBeNull();
+    act(() => handlers.onToolUse?.({ toolCallId: 'tu2', toolName: 'Bash', detail: 'ls' }));
+    await waitFor(() => expect(screen.getByText('Running a command…')).toBeTruthy());
+    act(() => handlers.onToolResult?.({ toolCallId: 'tu2' }));
+    expect(screen.getByText('Running a command…')).toBeTruthy();
+  });
+
+  it('puts what the agent says between calls in the title, not the reply', async () => {
+    // Claude-style: "Sketching the frame first." is narration the moment a
+    // call follows it. It used to stream in as the reply body and then jump
+    // into the panel when the turn ended.
+    let handlers!: StreamHandlers;
+    await startTurn((h) => {
+      handlers = h;
+      h.onText('Sketching the frame first.');
+    });
+    await waitFor(() => expect(screen.getByText('Sketching the frame first.')).toBeTruthy());
+    act(() => handlers.onToolUse?.({ toolCallId: 'tu1', toolName: 'Bash', detail: 'node draw.js' }));
+    const panel = await screen.findByTestId('workspace-steps');
+    // The words are the panel's title now, and nothing else on the page says them.
+    expect(within(panel).getByText('Sketching the frame first.')).toBeTruthy();
+    expect(screen.getAllByText('Sketching the frame first.')).toHaveLength(1);
+    act(() => handlers.onToolResult?.({ toolCallId: 'tu1' }));
+    act(() => handlers.onText('Here is the pelican.'));
+    // Text after the last call IS the reply, under the panel.
+    await waitFor(() => expect(screen.getByText('Here is the pelican.')).toBeTruthy());
+    expect(within(panel).queryByText('Here is the pelican.')).toBeNull();
+    expect(within(panel).getByText('Sketching the frame first.')).toBeTruthy();
+  });
+
+  it('draws an artifact card as soon as the file is published, from the store', async () => {
+    vi.mocked(workspaceApi.artifact).mockResolvedValue({
+      artifactId: 'art1',
+      agentId: 'a1',
+      title: 'pelican bike',
+      kind: 'image',
+      extension: 'SVG',
+      currentVersion: 1,
+    } as never);
+    let handlers!: StreamHandlers;
+    await startTurn((h) => {
+      handlers = h;
+      h.onToolUse?.({ toolCallId: 'p1', toolName: 'artifact_publish' });
+    });
+    act(() => handlers.onToolResult?.({ toolCallId: 'p1' }));
+    act(() => handlers.onArtifactClaim?.('art1'));
+    // Mid-turn, before any `done`: the card is already there.
+    await waitFor(() => expect(screen.getByText('pelican bike')).toBeTruthy());
+    expect(workspaceApi.artifact).toHaveBeenCalledWith('art1');
+  });
+
+  it("never draws a claimed card the store says is another agent's", async () => {
+    vi.mocked(workspaceApi.artifact).mockResolvedValue({
+      artifactId: 'art2',
+      agentId: 'someone-else',
+      title: 'not yours',
+      kind: 'image',
+      extension: 'SVG',
+      currentVersion: 1,
+    } as never);
+    let handlers!: StreamHandlers;
+    await startTurn((h) => {
+      handlers = h;
+      h.onText('Working.');
+    });
+    act(() => handlers.onArtifactClaim?.('art2'));
+    await waitFor(() => expect(workspaceApi.artifact).toHaveBeenCalledWith('art2'));
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(screen.queryByText('not yours')).toBeNull();
   });
 
   it('never shows a phase arriving AFTER content — the rule, stated backwards', async () => {

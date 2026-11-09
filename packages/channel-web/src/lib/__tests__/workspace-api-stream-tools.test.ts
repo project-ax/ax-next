@@ -245,6 +245,29 @@ describe('the workspace reply stream', () => {
     expect(JSON.stringify(seen)).not.toContain('secret-markup');
   });
 
+  it('claims a published artifact id only from a successful publish result', async () => {
+    stubStream([
+      { kind: 'tool-use', toolCallId: 'p1', toolName: 'mcp__ax-sandbox-tools__artifact_publish', input: {} },
+      { kind: 'tool-result', toolCallId: 'p1', output: JSON.stringify({ artifactId: 'good1', version: 1 }) },
+      { kind: 'tool-use', toolCallId: 'p2', toolName: 'artifact_publish', input: {} },
+      { kind: 'tool-result', toolCallId: 'p2', output: JSON.stringify({ artifactId: 'bad1', version: 1 }), isError: true },
+      { kind: 'tool-use', toolCallId: 'p3', toolName: 'artifact_publish', input: {} },
+      { kind: 'tool-result', toolCallId: 'p3', output: JSON.stringify({ artifactId: 'bad2', version: 1 }), held: true },
+      // A result for a call that was never a publish claims nothing.
+      { kind: 'tool-use', toolCallId: 'b1', toolName: 'Bash', input: {} },
+      { kind: 'tool-result', toolCallId: 'b1', output: JSON.stringify({ artifactId: 'bad3', version: 1 }) },
+      { done: true },
+    ]);
+    const claims: string[] = [];
+    await workspaceApi.streamReply('r1', {
+      onText() {},
+      onDone() {},
+      onError() {},
+      onArtifactClaim: (id) => claims.push(id),
+    });
+    expect(claims).toEqual(['good1']);
+  });
+
   it('(VISUALS-1) finds a visual even when nobody asked for tool rows, and skips a held one', async () => {
     stubStream([
       { kind: 'tool-use', toolCallId: 'v1', toolName: 'show_visual', input: { html: '<p>x</p>' } },
