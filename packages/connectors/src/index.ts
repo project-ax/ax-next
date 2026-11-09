@@ -98,10 +98,11 @@ export type { CredentialPlanEntry, CredentialScope } from './credential-plan.js'
 export { pointsSomewhereNew } from './retarget.js';
 export type { RetargetSubject } from './retarget.js';
 // TASK-1101: for channel-web's test-only directory contract test, which
-// compares the admin client's mirrored copies against these.
+// compares the admin client's mirrored copies against these. Not for runtime
+// use by other plugins (invariant 2; lint blocks cross-plugin imports).
 export {
   DIRECTORY_CURSOR_RE,
   DIRECTORY_QUERY_MAX,
   shapeDirectoryBody,
 } from './directory-route.js';
-export type { DirectoryEntryLike, DirectorySearchOutputLike } from './directory-route.js';
+export type { DirectoryEntryLike } from './directory-route.js';
