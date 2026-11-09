@@ -10,6 +10,11 @@
  * never a timestamp from the registry: response data must not be able to move
  * it (a far-future `updatedAt` would freeze every later sync).
  *
+ * Only a list asked for with `updated_since` names deleted servers; the full
+ * list just leaves them out. So a full crawl starts from an empty mirror and
+ * a never-synced state (`store.reset`), as a source change does: a row kept
+ * from before it could never be removed.
+ *
  * Bounded: at most `maxPages` pages, a cursor seen before ends the run, and
  * the store skips new names past `maxRows`. A failure keeps the copy and the
  * checkpoint, records the attempt, and is logged as a fixed short code: never
@@ -85,7 +90,7 @@ function log(
  * Where an incremental sync asks from. No checkpoint: the full list. A
  * checkpoint AFTER this run's start means our clock went back since it was
  * written; asking from it would miss every change until the clock caught up,
- * so the run crawls in full instead.
+ * so the run starts over and crawls in full instead.
  */
 function sinceFor(watermark: Date | null, startedAt: Date): Date | undefined {
   if (watermark === null || watermark.getTime() > startedAt.getTime()) return undefined;
@@ -125,6 +130,12 @@ async function crawl(deps: SyncDeps): Promise<SyncResult> {
   }
   const state = await deps.store.readState();
   const since = sinceFor(state?.watermark ?? null, startedAt);
+  // The full list leaves deleted servers out, so a row kept from before this
+  // crawl (a first crawl that failed part way, or a checkpoint our clock has
+  // gone back past) would be served forever once the registry deleted it.
+  // Nothing correct is lost: a failed first crawl's rows were never served,
+  // and every server still listed comes back in this crawl.
+  if (since === undefined) await deps.store.reset();
 
   const totals: Totals = { pages: 0, upserted: 0, deleted: 0, skipped: 0, capped: 0 };
   const followed = new Set<string>();

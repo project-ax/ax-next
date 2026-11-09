@@ -23,6 +23,13 @@ export interface DirectoryStore {
    */
   useSource(source: string): Promise<boolean>;
   /**
+   * One transaction: delete every entry and reset the state to never synced
+   * (no checkpoint, no attempt), keeping the source: the same reset a source
+   * change does. A full crawl starts here, because the full list leaves
+   * deleted servers out and so could never remove a row kept from before.
+   */
+  reset(): Promise<void>;
+  /**
    * One transaction: deletes first; then upserts, where a NEW id is skipped
    * once the table holds `maxRows` rows (updates to stored ids still apply).
    * When an id appears twice in `upserts`, the later one wins.
@@ -40,6 +47,14 @@ export interface DirectoryStore {
 const ENTRIES = 'connector_directory_v1_entries';
 const STATE = 'connector_directory_v1_sync_state';
 const STATE_ID = 1;
+
+/** The state of a mirror that has never synced: nothing is served from it. */
+const NEVER_SYNCED = {
+  watermark: null,
+  synced_at: null,
+  last_attempt_at: null,
+  last_attempt_failed: false,
+} as const;
 
 /**
  * Rows (or ids) per statement. A registry page is capped in bytes, not in
@@ -91,13 +106,7 @@ export function createDirectoryStore(db: Kysely<ConnectorDirectoryDatabase>): Di
           if (current.source === source) return false;
           await trx
             .updateTable(STATE)
-            .set({
-              source,
-              watermark: null,
-              synced_at: null,
-              last_attempt_at: null,
-              last_attempt_failed: false,
-            })
+            .set({ source, ...NEVER_SYNCED })
             .where('id', '=', STATE_ID)
             .execute();
         }
@@ -105,6 +114,13 @@ export function createDirectoryStore(db: Kysely<ConnectorDirectoryDatabase>): Di
         // from somewhere else (or from nowhere we can name).
         const cleared = await trx.deleteFrom(ENTRIES).executeTakeFirst();
         return created === undefined || cleared.numDeletedRows > 0n;
+      });
+    },
+
+    async reset() {
+      await db.transaction().execute(async (trx) => {
+        await trx.updateTable(STATE).set(NEVER_SYNCED).where('id', '=', STATE_ID).execute();
+        await trx.deleteFrom(ENTRIES).execute();
       });
     },
 

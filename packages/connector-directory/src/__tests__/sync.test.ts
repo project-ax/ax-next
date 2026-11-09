@@ -7,7 +7,8 @@ import pg from 'pg';
 import { runConnectorDirectoryMigration, type ConnectorDirectoryDatabase } from '../migrations.js';
 import type { DirectoryRow } from '../normalize.js';
 import { fetchRegistryPage, parseRegistryUrl } from '../registry-client.js';
-import { createDirectoryStore, type DirectoryStore } from '../store.js';
+import { searchDirectory } from '../search.js';
+import { createDirectoryStore, type DirectoryStore, type SyncState } from '../store.js';
 import { runSync, type SyncResult } from '../sync.js';
 import { createFakeRegistry, page, type FakeRegistry } from './support/fake-registry.js';
 import { listing, npmPackage, remote } from './support/listing.js';
@@ -479,6 +480,64 @@ describe('runSync', () => {
     expect(fake.requests[0]!.searchParams.has('updated_since')).toBe(false);
     expect(await store.readState()).toMatchObject({ watermark: w.clock.calls[0] });
   });
+
+  // A list with no `updated_since` leaves deleted servers out altogether, so a
+  // full crawl can never remove a row it finds already there. Both tests
+  // below fail if a full crawl keeps what was stored before it.
+  it('a full crawl after a first crawl failed partway drops what the registry deleted since', async () => {
+    const w = world();
+    const first = serve(
+      page([listing({ name: 'com.evil/a' }), listing({ name: 'com.example/b' })], 'c1'),
+      new Response(null, { status: 503 }),
+    );
+    expect(await w.run(first)).toEqual({ outcome: 'failed', reason: 'http-503' });
+    // The partial copy stays behind, never served: nothing has synced yet.
+    expect(await ids()).toEqual(['com.evil/a', 'com.example/b']);
+
+    // Meanwhile the registry deleted com.evil/a.
+    w.clock.advance(HOUR);
+    const fake = serve(page([listing({ name: 'com.example/b' })]));
+    expect(await w.run(fake)).toMatchObject({ outcome: 'ok', full: true });
+    expect(fake.requests[0]!.searchParams.has('updated_since')).toBe(false);
+    expect(await ids()).toEqual(['com.example/b']);
+    const found = await searchDirectory(db, { query: 'evil' }, { verifiedOnly: false });
+    expect(found.syncedAt).not.toBeNull();
+    expect(found.entries).toEqual([]);
+  });
+
+  it('a full crawl after our clock went back starts over, as a source change does', async () => {
+    const w = world();
+    await w.run(serve(page([listing({ name: 'com.evil/a' }), listing({ name: 'com.example/b' })])));
+
+    // Our clock goes back past the checkpoint, so the next run cannot ask
+    // from it and crawls in full. Meanwhile the registry deleted com.evil/a.
+    w.clock.advance(-2 * HOUR);
+    let atFirstRequest: { ids: string[]; state: SyncState | null } | undefined;
+    const fake = createFakeRegistry(async () => {
+      atFirstRequest ??= { ids: await ids(), state: await store.readState() };
+      return page([listing({ name: 'com.example/b' })]);
+    });
+    expect(await w.run(fake)).toMatchObject({ outcome: 'ok', full: true });
+    expect(fake.requests[0]!.searchParams.has('updated_since')).toBe(false);
+
+    // Before its first request the crawl had emptied the copy and reset the
+    // state: nothing kept can outlive a deletion, and a crawl that fails
+    // part way serves nothing rather than half a list.
+    expect(atFirstRequest).toEqual({
+      ids: [],
+      state: {
+        source: 'https://registry.test/',
+        watermark: null,
+        syncedAt: null,
+        lastAttemptAt: null,
+        lastAttemptFailed: false,
+      },
+    });
+    expect(await ids()).toEqual(['com.example/b']);
+    const found = await searchDirectory(db, { query: 'evil' }, { verifiedOnly: false });
+    expect(found.syncedAt).not.toBeNull();
+    expect(found.entries).toEqual([]);
+  });
 });
 
 describe('DirectoryStore', () => {
@@ -501,6 +560,26 @@ describe('DirectoryStore', () => {
     await store.applyPage({ upserts: [directoryRow('com.example/orphan')], deletes: [] }, 10);
     expect(await store.useSource('https://registry.test/')).toBe(true);
     expect(await ids()).toEqual([]);
+  });
+
+  it('reset: empties the mirror and the state back to never synced, keeping the source', async () => {
+    await store.useSource('https://registry.test/');
+    await store.applyPage({ upserts: [directoryRow('com.example/a')], deletes: [] }, 10);
+    await store.recordSuccess({
+      watermark: new Date('2026-11-09T10:00:00Z'),
+      syncedAt: new Date('2026-11-09T10:05:00Z'),
+    });
+    await store.recordFailure(new Date('2026-11-09T11:00:00Z'));
+
+    await store.reset();
+    expect(await ids()).toEqual([]);
+    expect(await store.readState()).toEqual({
+      source: 'https://registry.test/',
+      watermark: null,
+      syncedAt: null,
+      lastAttemptAt: null,
+      lastAttemptFailed: false,
+    });
   });
 
   it('recordFailure keeps the checkpoint; recordSuccess clears the failure', async () => {
