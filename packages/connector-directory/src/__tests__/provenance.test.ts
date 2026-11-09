@@ -300,6 +300,7 @@ describe('@ax/connector-directory: provenance', () => {
       { connectorId: ID, idStillLive: 'false' },
       { connectorId: ID, toolNamespaces: [] },
       { connectorId: ID, toolNamespaces: [], idStillLive: null },
+      { connectorId: ID, toolNamespaces: [], idStillLive: 0 },
     ]) {
       expect(await fire(junk)).toEqual({ rejected: false, payload: junk });
     }
