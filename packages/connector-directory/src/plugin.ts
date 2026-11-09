@@ -42,7 +42,9 @@ import { runSync, type SyncResult } from './sync.js';
 //     still validates its input and answers the fixed off body, so the route
 //     and the UI have one shape in every case.
 //
-// No lock across replicas: the chart runs one host (decisions shard).
+// No lock across replicas: the chart runs one host (decisions shard). The
+// full-crawl reset in sync.ts relies on that single writer too: a second
+// host's sync running at the same time would find its rows wiped.
 // ---------------------------------------------------------------------------
 
 export interface ConnectorDirectoryConfig {

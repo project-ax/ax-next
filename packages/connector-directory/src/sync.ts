@@ -16,10 +16,12 @@
  * from before it could never be removed.
  *
  * Bounded: at most `maxPages` pages, a cursor seen before ends the run, and
- * the store skips new names past `maxRows`. A failure keeps the copy and the
- * checkpoint, records the attempt, and is logged as a fixed short code: never
- * a URL, a header or a byte of the registry's answer. A shutdown abort is not
- * a failure and records nothing.
+ * the store skips new names past `maxRows`. A failed incremental sync keeps the
+ * copy and the checkpoint; a failed full crawl has already reset both (above),
+ * so it leaves a partial copy and no checkpoint. Either way the attempt is
+ * recorded and logged as a fixed short code: never a URL, a header or a byte
+ * of the registry's answer. A shutdown abort is not a failure and records
+ * nothing.
  */
 import { faultLogFields, type Logger } from '@ax/core';
 import { MAX_PAGES_PER_SYNC, MAX_ROWS, WATERMARK_OVERLAP_MS } from './limits.js';
