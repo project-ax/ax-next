@@ -1155,7 +1155,6 @@ function Message({
       // Same line as the activity title it turns into once a step lands, so
       // "Thinking…" is replaced in place rather than jumping.
       <div className="mb-2.5 inline-flex items-center gap-1.5 py-0.5 text-[13.5px] text-muted-foreground">
-        <span aria-hidden="true" className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-primary" />
         <span className="shimmer">{m.text}</span>
       </div>
     );
@@ -1726,7 +1725,6 @@ function StillWorking({ text }: { text: string }) {
       data-testid="still-working"
       className="mt-2.5 inline-flex animate-in fade-in items-center gap-1.5 py-0.5 text-[13.5px] text-muted-foreground duration-300"
     >
-      <span aria-hidden="true" className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-primary" />
       <span className="shimmer">Thinking…</span>
     </div>
   );
@@ -1754,6 +1752,8 @@ function Activity({
   // While the reply streams, the title and its dot hold steady between one
   // call's result and the next call (see `stepsTitle`).
   const title = stepsTitle(steps, { live, note: live ? liveNote(entries) : undefined });
+  // Still going: the title shimmers. No dot beside it (Vinay, 2026-11-08);
+  // the shimmer alone says "working", the way Claude's title does.
   const running = !waiting && (live || steps.some((s) => s.status === 'running'));
   // Only a hold marks the title: it needs the reader. A failed step is marked
   // on its own row inside, not raised here (see `stepsTitle`).
@@ -1766,9 +1766,6 @@ function Activity({
           'transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
         )}
       >
-        {running && (
-          <span aria-hidden="true" className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-primary" />
-        )}
         {TitleMark !== null && (
           <TitleMark.Icon size={13} aria-hidden="true" className={cn('shrink-0', TitleMark.tone)} />
         )}
@@ -1778,7 +1775,7 @@ function Activity({
         */}
         {/* Two spans: the fade and the shimmer are both CSS animations. */}
         <span key={title} className="min-w-0 truncate animate-in fade-in duration-300" title={title}>
-          <span className={cn(live && !waiting && 'shimmer')}>{title}</span>
+          <span className={cn(running && 'shimmer')}>{title}</span>
         </span>
         {!live && published.length > 0 && <PublishedMark artifacts={published} />}
         <Chevron />
